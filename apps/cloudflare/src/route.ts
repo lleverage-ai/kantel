@@ -37,7 +37,7 @@ import {
 	viewClaims,
 	viewerPageHeaders,
 } from "@kantel/browser/runtime";
-import { API_KEYS_PATH, INVITES_PATH, KantelError } from "@kantel/contracts";
+import { API_KEYS_PATH, INVITES_PATH, KantelError, legacyHeaderName } from "@kantel/contracts";
 import { API_KEY_BODY_LIMIT } from "@kantel/identity/http";
 import { isPasskeyPath, PASSKEY_BODY_LIMIT } from "@kantel/identity/passkey/http";
 import { MEMORY_BODY_LIMIT } from "@kantel/memory/http";
@@ -229,8 +229,17 @@ async function routeView(request: Request, env: RouteEnv<unknown, unknown>): Pro
 const routeRefused = (status: number, code: string, message: string, headers: { [name: string]: string } = {}) =>
 	Response.json({ error: { code, message } }, { status, headers: { "cache-control": "no-store", ...headers } });
 
-/** What a tunnel's upgrade loses on its way to the object: the client's credentials, and any grant it made up. */
-const TUNNEL_DROPPED_HEADERS = [TUNNEL_GRANT_HEADER, "authorization", "cookie", "cf-access-jwt-assertion"];
+/**
+ * What a tunnel's upgrade loses on its way to the object: the client's credentials, and any grant it made up, under
+ * either name (the object reads the grant's name from before the rename too).
+ */
+const TUNNEL_DROPPED_HEADERS = [
+	TUNNEL_GRANT_HEADER,
+	legacyHeaderName(TUNNEL_GRANT_HEADER) as string,
+	"authorization",
+	"cookie",
+	"cf-access-jwt-assertion",
+];
 
 const TUNNEL_REFUSALS: { readonly [status in 401 | 403 | 404]: readonly [code: string, message: string] } = {
 	401: ["unauthenticated", "The tunnel token is missing or not valid"],

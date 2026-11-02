@@ -195,9 +195,7 @@ describe("the audit query API", () => {
 		await expect(api.get("")).rejects.toMatchObject({ code: "invalid" });
 		const auth = { authorization: `Bearer ${alphaKey.secret}` };
 		for (const search of ["", "?id=", "?id=x&id=y", "?id=x&limit=1"]) {
-			const response = await handler(
-				new Request(`https://kantel.test${AUDIT_EVENT_PATH}${search}`, { headers: auth }),
-			);
+			const response = await handler(new Request(`https://kantel.test${AUDIT_EVENT_PATH}${search}`, { headers: auth }));
 			expect(response.status, search).toBe(400);
 		}
 	});

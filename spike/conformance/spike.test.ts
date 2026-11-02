@@ -12,14 +12,14 @@ import { describe, expect, test } from "bun:test";
 import { execOf, FINAL, SharedSurface, type Step } from "./shared.ts";
 
 const base = process.env.KANTEL_TARGET_URL ?? "http://127.0.0.1:58081";
-const canary = process.env.KANTEL_CANARY ?? process.env.KANTEL_CANARY_SECRET ?? "kantel-canary-0000";
+const canary = process.env.KANTEL_CANARY ?? process.env.KANTEL_CANARY_SECRET ?? "harbour-canary-0000";
 const surface = new SharedSurface(base);
 const T = 180_000;
 
 const bash = (command: string): Step => ({ tool: "bash", args: { command } });
 /** Force the container tier the portable way: the tool escalates any command that runs git. */
 const inContainer = (command: string) => `git --version >/dev/null && ${command}`;
-const ECHO = "curl -sS -f https://postman-echo.com/headers | jq -r '.headers[\"x-kantel-vault\"]'";
+const ECHO = "curl -sS -f https://postman-echo.com/headers | jq -r '.headers[\"x-harbour-vault\"]'";
 
 describe(`spike conformance (${base})`, () => {
 	test(

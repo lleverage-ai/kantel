@@ -32,7 +32,7 @@ function changedIn(dir: string, commit: string): string[] {
 }
 
 async function wire(repo: string, branch: string) {
-	const sourceOf = salMemorySource({ repo, branch, producer: "kantel/test" });
+	const sourceOf = salMemorySource({ repo, branch, producer: "harbour/test" });
 	const memory = withBundlePublishing({
 		memory: createMemoryMemory(),
 		sourceFor: () => sourceOf,
@@ -51,7 +51,7 @@ async function wire(repo: string, branch: string) {
 }
 
 function concept(id: string, title: string, statement: string): ConceptInput {
-	return { id, title, statement, scope: { kind: "project", project: "kantel" }, sources: ["sal:session/abc"] };
+	return { id, title, statement, scope: { kind: "project", project: "harbour" }, sources: ["sal:session/abc"] };
 }
 
 describe("salMemorySource", () => {
@@ -62,28 +62,28 @@ describe("salMemorySource", () => {
 			"README.md": "# sal-memory\n",
 			"knowledge/index.md":
 				'---\nokf_version: "0.2"\n---\n\n# Sal knowledge\n\n- [Project knowledge](projects/index.md) - Scoped knowledge.\n',
-			"knowledge/projects/index.md": "# Project knowledge\n\n- [Kantel](kantel/index.md)\n",
-			"knowledge/projects/kantel/index.md":
+			"knowledge/projects/index.md": "# Project knowledge\n\n- [Kantel](harbour/index.md)\n",
+			"knowledge/projects/harbour/index.md":
 				"# Kantel\n\n- [CI runs on push](ci.md)\n- [Deploys need a green build](deploys.md) - Release rule\n",
-			"knowledge/projects/kantel/ci.md": conceptFile(
+			"knowledge/projects/harbour/ci.md": conceptFile(
 				{
 					title: "CI runs on push",
 					sources: [source("https://github.com/tvdavies/harbour")],
-					sal: { learned_from: "owner", scope: "project", project: "kantel" },
+					sal: { learned_from: "owner", scope: "project", project: "harbour" },
 				},
 				"CI runs biome, tsc and vitest on every push.",
 			),
-			"knowledge/projects/kantel/deploys.md": conceptFile(
+			"knowledge/projects/harbour/deploys.md": conceptFile(
 				{
 					title: "Deploys need a green build",
 					description: "Release rule",
 					extra_field: { kept: true },
 					sources: [source("https://example.com/a")],
-					sal: { learned_from: "owner", scope: "project", project: "kantel" },
+					sal: { learned_from: "owner", scope: "project", project: "harbour" },
 				},
 				"Deploy only from a green main build.",
 			),
-			"knowledge/projects/kantel/Broken Name.md": "not a concept Sal reads\n",
+			"knowledge/projects/harbour/Broken Name.md": "not a concept Sal reads\n",
 		});
 		return { repo, first };
 	}
@@ -98,18 +98,18 @@ describe("salMemorySource", () => {
 	it("commits an applied write as Sal's concept file with its indexes, and leaves every other file alone", async () => {
 		const { repo, first } = fixture();
 		const { memory, space, apply, source: sal } = await wire(repo.dir, "main");
-		await apply({ op: "remember", concept: concept("projects/kantel/lint", "Biome lints", "Biome lints the code.") });
+		await apply({ op: "remember", concept: concept("projects/harbour/lint", "Biome lints", "Biome lints the code.") });
 		const second = git(repo.dir, "rev-parse", "main");
 		expect(second).not.toBe(first);
 		expect(changedIn(repo.dir, second)).toEqual([
-			"knowledge/projects/kantel/index.md",
-			"knowledge/projects/kantel/lint.md",
+			"knowledge/projects/harbour/index.md",
+			"knowledge/projects/harbour/lint.md",
 		]);
-		const lint = git(repo.dir, "show", `${second}:knowledge/projects/kantel/lint.md`);
+		const lint = git(repo.dir, "show", `${second}:knowledge/projects/harbour/lint.md`);
 		expect(lint).toContain('title: "Biome lints"');
 		expect(lint).toContain('"learned_from":"session"');
-		expect(lint).toContain('generated: {"by":"kantel/test"');
-		expect(git(repo.dir, "show", `${second}:knowledge/projects/kantel/index.md`)).toBe(
+		expect(lint).toContain('generated: {"by":"harbour/test"');
+		expect(git(repo.dir, "show", `${second}:knowledge/projects/harbour/index.md`)).toBe(
 			"# Kantel\n\n- [CI runs on push](ci.md)\n- [Deploys need a green build](deploys.md) - Release rule\n- [Biome lints](lint.md)",
 		);
 		expect(git(repo.dir, "log", "-1", "--format=%an <%ae>%n%B", second)).toContain(`Harbour-Space: ${space.id}`);
@@ -117,7 +117,7 @@ describe("salMemorySource", () => {
 		// Sal reads it back as Kantel wrote it.
 		const snapshot = await sal.snapshot(second);
 		expect(snapshot.ref).toBe(second);
-		expect(snapshot.concepts.find((item) => item.id === "projects/kantel/lint")).toMatchObject({
+		expect(snapshot.concepts.find((item) => item.id === "projects/harbour/lint")).toMatchObject({
 			title: "Biome lints",
 			// As Sal reads a body: whole, from the blank line after the frontmatter.
 			statement: "\nBiome lints the code.\n",
@@ -131,12 +131,12 @@ describe("salMemorySource", () => {
 	it("writes a correction, a supersede and a forget as Sal does, keeping fields Kantel has no place for", async () => {
 		const { repo } = fixture();
 		const { memory, space } = await wire(repo.dir, "main");
-		const deploys = await memory.getConcept(service, space.id, "projects/kantel/deploys");
+		const deploys = await memory.getConcept(service, space.id, "projects/harbour/deploys");
 		// An agent may not change what the owner set: the owner's service corrects it.
 		const corrected = await memory.propose(service, space.id, {
 			op: "correct",
 			concept: {
-				...concept("projects/kantel/deploys", deploys.title, "Deploy only from a green main build, never on Fridays."),
+				...concept("projects/harbour/deploys", deploys.title, "Deploy only from a green main build, never on Fridays."),
 				description: "Release rule",
 				sources: ["https://example.com/a", "https://example.com/b"],
 			},
@@ -144,31 +144,31 @@ describe("salMemorySource", () => {
 		});
 		await memory.decide(service, corrected.id, { outcome: "apply" });
 		const afterCorrect = git(repo.dir, "rev-parse", "main");
-		const text = git(repo.dir, "show", `${afterCorrect}:knowledge/projects/kantel/deploys.md`);
+		const text = git(repo.dir, "show", `${afterCorrect}:knowledge/projects/harbour/deploys.md`);
 		expect(text).toContain('extra_field: {"kept":true}');
 		expect(text).toContain('"resource":"https://example.com/a","title":"Owner instruction","author":"human:tom"');
-		expect(text).toContain('{"id":"kantel","resource":"https://example.com/b"}');
+		expect(text).toContain('{"id":"harbour","resource":"https://example.com/b"}');
 		expect(text.endsWith("\n\nDeploy only from a green main build, never on Fridays.")).toBe(true);
 
-		const ci = await memory.getConcept(service, space.id, "projects/kantel/ci");
+		const ci = await memory.getConcept(service, space.id, "projects/harbour/ci");
 		const superseding = await memory.propose(service, space.id, {
 			op: "supersede",
 			conceptId: ci.id,
 			expectedVersion: ci.version,
-			replacement: concept("projects/kantel/ci-checks", "CI checks", "CI runs biome, tsc, vitest and the e2e suite."),
+			replacement: concept("projects/harbour/ci-checks", "CI checks", "CI runs biome, tsc, vitest and the e2e suite."),
 		});
 		await memory.decide(service, superseding.id, { outcome: "apply" });
 		const afterSupersede = git(repo.dir, "rev-parse", "main");
-		const old = git(repo.dir, "show", `${afterSupersede}:knowledge/projects/kantel/ci.md`);
+		const old = git(repo.dir, "show", `${afterSupersede}:knowledge/projects/harbour/ci.md`);
 		expect(old).toContain('status: "deprecated"');
-		expect(old).toContain('"superseded_by":"projects/kantel/ci-checks"');
-		expect(old).toContain("> Superseded by [CI checks](/projects/kantel/ci-checks.md) on ");
-		expect(okfConcept("projects/kantel/ci", `${old}\n`).concept).toMatchObject({
+		expect(old).toContain('"superseded_by":"projects/harbour/ci-checks"');
+		expect(old).toContain("> Superseded by [CI checks](/projects/harbour/ci-checks.md) on ");
+		expect(okfConcept("projects/harbour/ci", `${old}\n`).concept).toMatchObject({
 			status: "superseded",
-			supersededBy: "projects/kantel/ci-checks",
+			supersededBy: "projects/harbour/ci-checks",
 		});
 
-		const lint = await memory.getConcept(service, space.id, "projects/kantel/ci-checks");
+		const lint = await memory.getConcept(service, space.id, "projects/harbour/ci-checks");
 		const forgetting = await memory.propose(service, space.id, {
 			op: "forget",
 			conceptId: lint.id,
@@ -177,13 +177,13 @@ describe("salMemorySource", () => {
 		});
 		await memory.decide(service, forgetting.id, { outcome: "apply" });
 		const afterForget = git(repo.dir, "rev-parse", "main");
-		const gone = git(repo.dir, "show", `${afterForget}:knowledge/projects/kantel/ci-checks.md`);
-		expect(okfConcept("projects/kantel/ci-checks", `${gone}\n`).concept.status).toBe("forgotten");
+		const gone = git(repo.dir, "show", `${afterForget}:knowledge/projects/harbour/ci-checks.md`);
+		expect(okfConcept("projects/harbour/ci-checks", `${gone}\n`).concept.status).toBe("forgotten");
 		expect(gone).not.toContain("e2e suite");
-		expect(git(repo.dir, "show", `${afterForget}:knowledge/projects/kantel/index.md`)).toBe(
+		expect(git(repo.dir, "show", `${afterForget}:knowledge/projects/harbour/index.md`)).toBe(
 			"# Kantel\n\n- [Deploys need a green build](deploys.md) - Release rule",
 		);
-		expect(git(repo.dir, "show", `${afterForget}:knowledge/projects/kantel/Broken Name.md`)).toBe(
+		expect(git(repo.dir, "show", `${afterForget}:knowledge/projects/harbour/Broken Name.md`)).toBe(
 			"not a concept Sal reads",
 		);
 		expect(git(repo.dir, "show", `${afterForget}:README.md`)).toBe("# sal-memory");
@@ -191,7 +191,7 @@ describe("salMemorySource", () => {
 
 	it("never moves a branch that moved since it was read", () => {
 		const { repo, first } = fixture();
-		const second = repo.commit({ "knowledge/projects/kantel/other.md": "x\n" });
+		const second = repo.commit({ "knowledge/projects/harbour/other.md": "x\n" });
 		expect(() =>
 			commitFiles(repo.dir, {
 				branch: "main",
@@ -226,7 +226,7 @@ describe("salMemorySource", () => {
 	it("refuses to publish a concept Sal's layout has no file for, rather than leave it out", async () => {
 		const { repo } = fixture();
 		const sal = salMemorySource({ repo: repo.dir, branch: "main" });
-		await expect(sal.publish("space-1", [{ path: "projects/kantel/index.md", content: "x\n" }])).rejects.toThrow(
+		await expect(sal.publish("space-1", [{ path: "projects/harbour/index.md", content: "x\n" }])).rejects.toThrow(
 			/cannot hold/,
 		);
 	});
@@ -236,7 +236,7 @@ const SAL_MEMORY = process.env.SAL_MEMORY_REPO ?? join(process.env.HOME ?? "", "
 
 describe.skipIf(!existsSync(join(SAL_MEMORY, ".git")))("salMemorySource on the real sal-memory repo", () => {
 	function clone() {
-		const dir = mkdtempSync(join(tmpdir(), "kantel-sal-memory-"));
+		const dir = mkdtempSync(join(tmpdir(), "harbour-sal-memory-"));
 		cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 		execFileSync("git", ["clone", "-q", "--bare", "--no-hardlinks", SAL_MEMORY, dir]);
 		return dir;
@@ -269,14 +269,14 @@ describe.skipIf(!existsSync(join(SAL_MEMORY, ".git")))("salMemorySource on the r
 		await apply({
 			op: "remember",
 			concept: concept(
-				"projects/kantel/okf-export-test",
+				"projects/harbour/okf-export-test",
 				"Kantel publishes memory to sal-memory",
 				"Kantel's publishing test commits one learned concept into a throwaway clone of sal-memory.",
 			),
 		});
 		expect(changedIn(repo, git(repo, "rev-parse", branch))).toEqual([
-			"knowledge/projects/kantel/index.md",
-			"knowledge/projects/kantel/okf-export-test.md",
+			"knowledge/projects/harbour/index.md",
+			"knowledge/projects/harbour/okf-export-test.md",
 		]);
 	});
 });

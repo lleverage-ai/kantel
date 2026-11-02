@@ -682,6 +682,25 @@ describe("host-tool callbacks", () => {
 		expect(received).toEqual([call]);
 		expect(headers?.get(HEADERS.callId)).toBe("call-1");
 		expect(headers?.get(HEADERS.hostId)).toBe("atlas");
+		// Each also under its name before the rename, for a host checking with an older @kantel/runtime.
+		expect(headers?.get("harbour-call-id")).toBe("call-1");
+		expect(headers?.get("harbour-host-id")).toBe("atlas");
+		expect(headers?.get("harbour-signature")).toBe(headers?.get(HEADERS.signature));
+	});
+
+	it("takes a call signed under the signature header's name before the rename", async () => {
+		const endpoint = createHostToolEndpoint(async () => ({ output: "ok" }), { secret });
+		const body = JSON.stringify(call);
+		const signature = await signHostToolCall(secret, body, Date.now());
+		const response = await endpoint(
+			new Request("https://atlas.test/tools/atlas", {
+				method: "POST",
+				body,
+				headers: { "content-type": "application/json", "harbour-signature": signature },
+			}),
+		);
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ output: "ok" });
 	});
 
 	it("rejects an unsigned call at the endpoint, and fails the tool call when the host refuses or is down", async () => {

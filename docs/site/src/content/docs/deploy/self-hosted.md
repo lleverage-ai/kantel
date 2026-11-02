@@ -43,7 +43,7 @@ It also creates two agent profiles: `echo`, which always answers with the echo m
 
 ## Sign-in and API keys
 
-People sign in with a one-time code sent by email. Kantel is invite-only: the gateway invites `KANTEL_ADMIN_EMAIL` (default `admin@kantel.localhost`) as an organisation admin at start, and nobody else can sign in until invited.
+People sign in with a one-time code sent by email. Kantel is invite-only: the gateway invites `KANTEL_ADMIN_EMAIL` (default `admin@harbour.localhost`) as an organisation admin at start, and nobody else can sign in until invited.
 
 Codes go out through `KANTEL_SMTP_URL` from `KANTEL_MAIL_FROM`:
 

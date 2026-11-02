@@ -9,6 +9,7 @@
 
 // First: HARBOUR_* settings from before the rename still count.
 import "@kantel/contracts/legacy-env";
+import { readHeader, withLegacyHeaders } from "@kantel/contracts/legacy-names";
 import pg from "pg";
 import type { CreateSessionRequest, PromptRequest } from "../../../spike/contracts/index.ts";
 import { Audit } from "./audit.ts";
@@ -116,7 +117,8 @@ const json = (value: unknown, status = 200) =>
 async function forward(request: Request, base: string, body: string | undefined): Promise<Response> {
 	const url = new URL(request.url);
 	let response: Response;
-	const headers: Record<string, string> = { "content-type": "application/json", "x-kantel-forwarded": "1" };
+	// Also under its name before the rename, for a host built before it.
+	const headers = withLegacyHeaders({ "content-type": "application/json", "x-kantel-forwarded": "1" });
 	const authorization = request.headers.get("authorization");
 	if (authorization !== null) headers.authorization = authorization;
 	try {
@@ -170,7 +172,7 @@ async function serve() {
 				const body = request.method === "POST" ? await request.text() : undefined;
 				const routed = await host.route(sessionId);
 				if ("forward" in routed) {
-					if (request.headers.get("x-kantel-forwarded")) return json({ error: "owner moved; retry" }, 503);
+					if (readHeader(request.headers, "x-kantel-forwarded")) return json({ error: "owner moved; retry" }, 503);
 					return await forward(request, routed.forward, body);
 				}
 				const session = routed.session;
@@ -222,7 +224,7 @@ async function serve() {
 		if (!known) return json({ error: `unknown session ${sessionId}` }, 404);
 		const routed = await host.route(sessionId);
 		if ("forward" in routed) {
-			if (request.headers.get("x-kantel-forwarded")) return json({ error: "owner moved; retry" }, 503);
+			if (readHeader(request.headers, "x-kantel-forwarded")) return json({ error: "owner moved; retry" }, 503);
 			return await forward(request, routed.forward, body);
 		}
 		const session = routed.session;

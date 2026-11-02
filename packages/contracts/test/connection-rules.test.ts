@@ -381,7 +381,7 @@ describe("operation rules", () => {
 			decideConnectionRules(rules, scope, op("GET", "/repos/x/y", resource === undefined ? {} : { resource }), 0).rule
 				?.id;
 		expect(at("tvdavies/harbour")).toBe(exact.id);
-		expect(at("TvDavies/Kantel")).toBe(exact.id);
+		expect(at("TvDavies/Harbour")).toBe(exact.id);
 		expect(at("tvdavies/brwsr")).toBe(owner.id);
 		expect(at("acme/web")).toBe(every.id);
 		// A request that names no one repository (GraphQL, search) matches no rule naming one.

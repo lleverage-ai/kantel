@@ -49,7 +49,7 @@ describe("the ls-refs exchange", () => {
 	it("asks for HEAD and the branches, with symrefs, in protocol v2 framing", () => {
 		const request = lsRefsRequest();
 		expect(request).toBe(
-			"0014command=ls-refs\n0012agent=kantel\n0001000csymrefs\n0014ref-prefix HEAD\n001bref-prefix refs/heads/\n0000",
+			"0014command=ls-refs\n0011agent=kantel\n0001000csymrefs\n0014ref-prefix HEAD\n001bref-prefix refs/heads/\n0000",
 		);
 	});
 

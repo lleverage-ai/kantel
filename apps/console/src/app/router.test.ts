@@ -62,7 +62,7 @@ describe("routes", () => {
 			name: "memory",
 			conceptId: "projects/kantel/placement",
 		});
-		expect(parseRoute("/memory/projects%2Fharbour%2Fplacement")).toEqual({
+		expect(parseRoute("/memory/projects%2Fkantel%2Fplacement")).toEqual({
 			name: "memory",
 			conceptId: "projects/kantel/placement",
 		});

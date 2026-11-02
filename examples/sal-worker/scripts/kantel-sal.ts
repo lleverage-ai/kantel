@@ -81,7 +81,9 @@ function directoryBucket(root: string): ObjectBucket {
 
 async function durableStores(dir: string) {
 	mkdirSync(dir, { recursive: true });
-	const driver = syncSqliteDriver(new DatabaseSync(join(dir, "kantel.db")));
+	const driver = syncSqliteDriver(
+		new DatabaseSync(join(dir, "harbour.db") /* named before the rename: the file a running worker already holds */),
+	);
 	await migrateMemory(driver);
 	await migrateSkills(driver);
 	const clock = { now: () => now };

@@ -33,7 +33,7 @@ export interface SalMemorySourceInput extends OkfWriteOptions {
 	readonly bundleDir?: string;
 	/** Default `sal-memory`. */
 	readonly id?: string;
-	/** The commits' author and committer. Default `Kantel <kantel@localhost>`. */
+	/** The commits' author and committer. Default `Kantel <harbour@localhost>`. */
 	readonly author?: { readonly name: string; readonly email: string };
 }
 
@@ -51,7 +51,7 @@ const decoder = new TextDecoder();
 export function salMemorySource(input: SalMemorySourceInput): SalMemorySource {
 	const bundleDir = (input.bundleDir ?? "knowledge").replace(/^\.\/|\/+$/g, "");
 	const id = input.id ?? "sal-memory";
-	const author = input.author ?? { name: "Kantel", email: "kantel@localhost" };
+	const author = input.author ?? { name: "Kantel", email: "harbour@localhost" };
 
 	/** The branch's commit, or undefined when the branch does not exist yet. */
 	function head(): string | undefined {

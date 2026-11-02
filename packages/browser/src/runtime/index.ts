@@ -13,9 +13,13 @@ export * from "./views.ts";
 /** Which provider a deployment's broker uses: brwsr.dev (the default) or Kantel's own runtime. */
 export type BrowserProviderName = "brwsr" | "kantel";
 
-/** `KANTEL_BROWSER_PROVIDER`, read: anything but `kantel` is brwsr, so an unset or mistyped value keeps today's. */
+/**
+ * `KANTEL_BROWSER_PROVIDER`, read: anything but `kantel` (or `harbour`, its name before the rename) is brwsr, so an
+ * unset or mistyped value keeps today's.
+ */
 export function browserProviderName(value: string | undefined): BrowserProviderName {
-	return (value ?? "").trim().toLowerCase() === "kantel" ? "kantel" : "brwsr";
+	const named = (value ?? "").trim().toLowerCase();
+	return named === "kantel" || named === "harbour" /* before the rename */ ? "kantel" : "brwsr";
 }
 
 /**

@@ -21,6 +21,20 @@ describe("syncTheme", () => {
 		expect(save).not.toHaveBeenCalled();
 	});
 
+	it("reads a built-in theme saved by its ID from before the rename as today's, and saves it under that", () => {
+		const page = controller("nord", true);
+		const save = vi.fn();
+		syncTheme(page, { theme: "harbour-light" /* before the rename */ }, save);
+		expect(page.choose).toHaveBeenCalledWith("kantel-light");
+		expect(save).toHaveBeenCalledWith("kantel-light");
+
+		const same = controller("kantel", true);
+		const again = vi.fn();
+		syncTheme(same, { theme: "harbour" /* before the rename */ }, again);
+		expect(same.choose).not.toHaveBeenCalled();
+		expect(again).toHaveBeenCalledWith("kantel");
+	});
+
 	it("leaves the page alone when they agree", () => {
 		const page = controller("nord", true);
 		syncTheme(page, { theme: "nord" });

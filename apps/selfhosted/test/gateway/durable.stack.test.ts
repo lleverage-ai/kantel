@@ -30,9 +30,9 @@ const config: DurableConfig = {
 	schema: `m1sh_gateway_${run}`,
 	s3: {
 		endpoint: s3Endpoint,
-		bucket: process.env.KANTEL_TEST_S3_BUCKET ?? "kantel-m1-sh1",
-		accessKeyId: process.env.KANTEL_TEST_S3_ACCESS_KEY ?? "kantel",
-		secretAccessKey: process.env.KANTEL_TEST_S3_SECRET_KEY ?? "kantel-dev-secret",
+		bucket: process.env.KANTEL_TEST_S3_BUCKET ?? "harbour-m1-sh1",
+		accessKeyId: process.env.KANTEL_TEST_S3_ACCESS_KEY ?? "harbour",
+		secretAccessKey: process.env.KANTEL_TEST_S3_SECRET_KEY ?? "harbour-dev-secret",
 		prefix,
 		skillsPrefix: `${prefix}/skills`,
 	},
@@ -583,7 +583,7 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 
 	test("reads a database URL as node-postgres does, a socket URL with no host included", () => {
 		const socket = withSearchPath("postgres://harbour@/harbour?host=%2Fvar%2Frun%2Fpostgresql", "harbour_m1");
-		expect(socket).toMatchObject({ user: "kantel", database: "harbour", host: "/var/run/postgresql" });
+		expect(socket).toMatchObject({ user: "harbour", database: "harbour", host: "/var/run/postgresql" });
 		expect(socket.options).toBe("-c search_path=harbour_m1");
 	});
 

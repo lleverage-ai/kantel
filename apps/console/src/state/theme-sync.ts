@@ -3,7 +3,7 @@
 // the server wins, so a theme chosen on one machine follows them to the next. A theme the console doesn't know (one
 // from a newer console, say) leaves the page as it is.
 
-import type { UserPreferences } from "@kantel/contracts";
+import { currentThemeId, type UserPreferences } from "@kantel/contracts";
 import type { ThemeController } from "@kantel/ui";
 
 /**
@@ -15,9 +15,12 @@ export function syncTheme(
 	preferences: UserPreferences | undefined,
 	save?: (preference: string) => void,
 ): void {
-	const saved = preferences?.theme;
-	if (saved !== undefined) {
+	const kept = preferences?.theme;
+	if (kept !== undefined) {
+		// A built-in theme saved by its ID from before the rename is today's, and is saved again under it.
+		const saved = currentThemeId(kept);
 		if (saved !== controller.state().preference) controller.choose(saved);
+		if (saved !== kept) save?.(saved);
 		return;
 	}
 	if (controller.remembered()) save?.(controller.state().preference);

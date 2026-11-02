@@ -43,8 +43,12 @@ export { KantelBrowserDecisions, KantelTunnel } from "./index.ts";
 export {
 	KantelBrowser as HarbourBrowser,
 	KantelSandbox as HarbourSandbox,
-	KantelStack as KantelStack,
-	KantelVault as KantelVault,
+	KantelStack,
+	// Their names before the v6 renamed_classes migration (wrangler.jsonc), as aliases: a request that reaches the
+	// old name while the rename applies still finds the class.
+	KantelStack as HarbourStack,
+	KantelVault,
+	KantelVault as HarbourVault,
 };
 
 class KantelBrowser extends KantelBrowserBase {}

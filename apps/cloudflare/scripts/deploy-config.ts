@@ -110,7 +110,11 @@ const OPTIONAL_CHECKS: Readonly<
 	},
 	KANTEL_BROWSER_CONTAINERS: { test: (v) => v === "on" || v === "off", expect: "on or off" },
 	KANTEL_SANDBOX_CONTAINERS: { test: (v) => v === "on" || v === "off", expect: "on or off" },
-	KANTEL_BROWSER_PROVIDER: { test: (v) => v === "brwsr" || v === "kantel", expect: "brwsr or kantel" },
+	// `harbour` is `kantel`'s name before the rename, which a repository variable may still say.
+	KANTEL_BROWSER_PROVIDER: {
+		test: (v) => v === "brwsr" || v === "kantel" || v === "harbour",
+		expect: "brwsr or kantel (or harbour, before the rename)",
+	},
 	KANTEL_CONNECTIONS_PERSONAL: { test: (v) => v === "on" || v === "off", expect: "on or off" },
 	KANTEL_CONNECTIONS_CIMD: { test: (v) => v === "on" || v === "off", expect: "on or off" },
 	KANTEL_OAUTH_CLIENTS: {

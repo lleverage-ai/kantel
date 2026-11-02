@@ -4,7 +4,7 @@ export const THEME_STORAGE_KEY = "kantel.theme";
  * The key before the rename. Its CSS sets `--hb-*` tokens on `[data-hb-theme]`, which nothing reads now:
  * it is read only when the new key isn't there, through `legacyThemeCss`, and the controller then writes the new key.
  */
-export const LEGACY_THEME_STORAGE_KEY = "kantel.theme";
+export const LEGACY_THEME_STORAGE_KEY = "harbour.theme"; // before the rename
 
 /**
  * A theme rule written before the rename, in today's names: `--hb-*` tokens become `--kt-*`, and the selectors on

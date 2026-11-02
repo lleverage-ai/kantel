@@ -42,7 +42,10 @@ export const MODEL_GATEWAY_PATHS = {
 	images: "/images",
 } as const;
 
-/** The pi-ai provider ID and API the runtime uses for every model call. */
+/**
+ * The pi-ai provider ID and API the runtime uses for every model call. The ID is the one from before the rename: each
+ * session stores it in its model choices and transcript, so it stays.
+ */
 export const KANTEL_MODEL_PROVIDER = "harbour";
 export const KANTEL_MODEL_API = "pi-messages";
 

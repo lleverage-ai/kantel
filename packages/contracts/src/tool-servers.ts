@@ -138,7 +138,7 @@ export interface IssuedToolServerToken {
 }
 
 /** The prefix every tunnel token starts with. */
-export const TUNNEL_TOKEN_PREFIX = "ktt_";
+export const TUNNEL_TOKEN_PREFIX = "ktt_"; // hbt_ before the rename, still accepted (legacy-names.ts)
 
 export interface CreateToolServerInput {
 	/** The owning project; absent for an organisation-owned server. */
@@ -226,7 +226,8 @@ export const TOOL_SERVER_TOOL_SEPARATOR = "__";
 /**
  * The longest name the model may see for a server's tool. Anthropic allows 64 characters, and the model gateway sends
  * each tool to CLIProxyAPI as `mcp__kantel__<name>` (`KANTEL_TOOL_NAMESPACE` in `@kantel/models`), so a name longer
- * than 64 less those 14 would reach the model under an alias. A test in `@kantel/models` keeps the two in step.
+ * than 64 less those 13 would reach the model under an alias (50 leaves one to spare: it was set for `mcp__harbour__`,
+ * the namespace before the rename). A test in `@kantel/models` keeps the two in step.
  */
 export const TOOL_SERVER_MODEL_NAME_MAX = 50;
 const MODEL_NAME = /^[A-Za-z0-9_-]+$/;

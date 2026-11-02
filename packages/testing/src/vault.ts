@@ -477,10 +477,7 @@ export function createVaultConformance(options: {
 			assert.strictEqual((await vault.getGrant(projectOperator, grantId)).status, "active");
 			assert.strictEqual((await vault.getGrant(agent, grantId)).status, "active");
 			assert.strictEqual((await vault.listGrants(projectOperator, { sessionId: "session-1" })).items.length, 1);
-			assert.strictEqual(
-				(await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/repos/kantel`))).allow,
-				true,
-			);
+			assert.strictEqual((await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/repos/kantel`))).allow, true);
 			assert.strictEqual((await vault.listUses(agent, { sessionId: "session-1" })).items.length, 1);
 
 			const asked = await vault.propose(projectOperator, termsFor(item.id, ["POST"], { maxUses: 1 }));
@@ -605,7 +602,7 @@ export function createVaultConformance(options: {
 		test("never returns an item's value from getItem or listItems", async (vault) => {
 			const item = await putGithubToken(vault);
 			assert.strictEqual(item.hasValue, true);
-			assert.ok(/^kantel:\/\/github-token\/[0-9a-f]{6}$/.test(item.placeholder), "placeholder format");
+			assert.ok(/^harbour:\/\/github-token\/[0-9a-f]{6}$/.test(item.placeholder), "placeholder format");
 			const fetched = await vault.getItem(human, item.id);
 			const listed = await vault.listItems(human);
 			assert.strictEqual(fetched.hasValue, true);
@@ -1007,10 +1004,7 @@ export function createVaultConformance(options: {
 				assert.strictEqual(decision.inject, undefined, `nothing injected for ${label}`);
 				assert.ok(decision.fix !== undefined, `a fix for ${label}`);
 			}
-			assert.strictEqual(
-				(await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/repos/kantel`))).allow,
-				true,
-			);
+			assert.strictEqual((await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/repos/kantel`))).allow, true);
 		}),
 
 		test("matches a path prefix by whole segments", async (vault) => {
@@ -1018,10 +1012,7 @@ export function createVaultConformance(options: {
 			const proposal = await vault.propose(agent, termsFor(item.id, ["GET"], {}, "/repos"));
 			await vault.decide(human, approval(proposal));
 			assert.strictEqual((await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/repos`))).allow, true);
-			assert.strictEqual(
-				(await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/repos/kantel`))).allow,
-				true,
-			);
+			assert.strictEqual((await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/repos/kantel`))).allow, true);
 			assert.strictEqual(
 				(await vault.decideEgress(WORKER, egress("GET", `https://${HOST}/repositories`))).allow,
 				false,
@@ -2212,7 +2203,7 @@ export function createVaultDurableProofs(options: {
 				assert.strictEqual(errors.length, 4, "every refusal was captured");
 				assert.strictEqual(containsCanary(errors), false, "no error message holds it");
 				assert.strictEqual(containsCanary(written), false, "nothing written to the console holds it");
-				assert.ok(/^kantel:\/\/github-token\/[0-9a-f]{6}$/.test(placeholder), "the placeholder is random");
+				assert.ok(/^harbour:\/\/github-token\/[0-9a-f]{6}$/.test(placeholder), "the placeholder is random");
 				assert.strictEqual(containsCanary(placeholder), false, "the placeholder a sandbox holds is not the value");
 			},
 		),

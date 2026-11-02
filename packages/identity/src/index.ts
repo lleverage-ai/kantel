@@ -11,6 +11,7 @@ import {
 	type ApiKey,
 	type ApiKeyPermission,
 	type ApiKeyScope,
+	hasTokenPrefix,
 	INVITE_EMAIL_MAX_LENGTH,
 	KantelError,
 	MAX_LAST_MODEL_LENGTH,
@@ -21,12 +22,16 @@ import {
 	type Role,
 	roleSatisfies,
 	THEME_PREFERENCE_PATTERN,
+	TOKEN_PREFIXES,
 	type UserId,
 	type UserPreferences,
 } from "@kantel/contracts";
 
 /** Every API key secret starts with this, so leaked keys are easy to spot and scan for. */
-export const API_KEY_SECRET_PREFIX = "ktk_";
+export const API_KEY_SECRET_PREFIX = TOKEN_PREFIXES.apiKey.current;
+
+/** Whether a bearer is an API key secret: `ktk_…`, or `hbr_…` as keys issued before the rename are. */
+export const isApiKeySecret = (token: string): boolean => hasTokenPrefix(token, "apiKey");
 
 /** How many characters of a secret are kept as its displayable prefix. */
 export const API_KEY_PREFIX_LENGTH = 12;

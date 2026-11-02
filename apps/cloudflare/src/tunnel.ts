@@ -16,7 +16,7 @@
  *
  * Portable: the object's `ctx` comes in as `HeldSockets` and its synchronous storage, so the tests run it in Node.
  */
-import { type Clock, isKantelError, systemClock, type ToolServerTokenId } from "@kantel/contracts";
+import { type Clock, isKantelError, readHeader, systemClock, type ToolServerTokenId } from "@kantel/contracts";
 import { TunnelConnection, type TunnelConnectionState, type TunnelSocket } from "@kantel/tools/connection";
 import type { ToolServerRef } from "@kantel/tools/links";
 import { TUNNEL_CLOSE_GOING_AWAY, TUNNEL_CLOSE_REPLACED } from "@kantel/tools/protocol";
@@ -40,7 +40,7 @@ export function tunnelGrantHeader(grant: TunnelGrant): string {
 
 /** The grant a forwarded upgrade carries, or undefined when it has none or a malformed one. */
 export function tunnelGrantFrom(request: Request): TunnelGrant | undefined {
-	const header = request.headers.get(TUNNEL_GRANT_HEADER);
+	const header = readHeader(request.headers, TUNNEL_GRANT_HEADER);
 	if (header === null) return undefined;
 	let value: unknown;
 	try {

@@ -28,8 +28,10 @@ import {
 	isKantelError,
 	KantelError,
 	type ListOptions,
+	legacyHeaderName,
 	type Page,
 	type PageRequest,
+	readHeader,
 	type WorkspaceId,
 	type WorkspaceRecord,
 	type Workspaces,
@@ -45,6 +47,8 @@ export const DEFAULT_MAX_CONTENT_BYTES = 16 * 1024 * 1024;
 
 /** The response header carrying a file's version: a workspace version number, or a mount's pinned version string. */
 export const VERSION_HEADER = "Kantel-Version";
+/** The version header's name before the rename, sent too for clients built before it. */
+export const LEGACY_VERSION_HEADER = legacyHeaderName(VERSION_HEADER) as string;
 
 /**
  * The operations the read API uses. Any `Workspaces` satisfies it; nothing here can write. Without `export`, the export
@@ -241,14 +245,14 @@ export function createWorkspaceReadApi(options: WorkspaceReadApiOptions): Worksp
 		// carries the version that last changed it, not the mount's pin that read reports, so mounts always read.
 		if (!mounted && entry.digest !== undefined && matchesEtag(ifNoneMatch, `"${entry.digest}"`)) {
 			headers.ETag = `"${entry.digest}"`;
-			headers[VERSION_HEADER] = JSON.stringify(entry.version);
+			headers[VERSION_HEADER] = headers[LEGACY_VERSION_HEADER] = JSON.stringify(entry.version);
 			return new Response(null, { status: 304, headers });
 		}
 		const file = await workspaces.read(ctx, id, path, version);
 		// The file may have grown in a commit between stat and read.
 		if (file.content.byteLength > maxContentBytes) return tooLarge();
 		headers.ETag = `"${file.digest}"`;
-		headers[VERSION_HEADER] = JSON.stringify(file.version);
+		headers[VERSION_HEADER] = headers[LEGACY_VERSION_HEADER] = JSON.stringify(file.version);
 		if (matchesEtag(ifNoneMatch, headers.ETag)) return new Response(null, { status: 304, headers });
 		headers["Content-Length"] = String(file.content.byteLength);
 		return new Response(file.content as Uint8Array<ArrayBuffer>, { status: 200, headers });
@@ -461,7 +465,7 @@ export function createWorkspaceReadClient(options: WorkspaceReadClientOptions): 
 		async read(id, path, at, init) {
 			const response = await call(id, "content", { path, version: at?.version }, init);
 			const content = new Uint8Array(await response.arrayBuffer());
-			const version = JSON.parse(response.headers.get(VERSION_HEADER) ?? "null") as WorkspaceVersion | string;
+			const version = JSON.parse(readHeader(response.headers, VERSION_HEADER) ?? "null") as WorkspaceVersion | string;
 			const digest = (response.headers.get("ETag") ?? "").replace(/^W\//, "").replace(/"/g, "");
 			const contentType = response.headers.get("Content-Type") ?? "application/octet-stream";
 			return { path, content, version, digest, contentType };

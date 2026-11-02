@@ -171,6 +171,8 @@ describe("workspace read API", () => {
 		expect(await head.text()).toBe("# second");
 		expect(head.headers.get("Content-Type")).toBe("text/markdown; charset=utf-8");
 		expect(head.headers.get(VERSION_HEADER)).toBe("2");
+		// Also under its name before the rename, for a client built before it.
+		expect(head.headers.get("Harbour-Version")).toBe("2");
 		expect(head.headers.get("ETag")).toMatch(/^"[0-9a-f]{64}"$/);
 		expect(head.headers.get("Cache-Control")).toBe("private, no-cache");
 		const old = await get(route(fixture.record.id, "/content?path=notes/x.md&version=1"));

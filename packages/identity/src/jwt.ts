@@ -18,7 +18,7 @@ import {
 } from "@kantel/contracts";
 import { type CryptoKey, createLocalJWKSet, errors, type JWSHeaderParameters, type JWTPayload, jwtVerify } from "jose";
 import { bearerToken } from "./authenticator.ts";
-import { API_KEY_SECRET_PREFIX } from "./index.ts";
+import { isApiKeySecret } from "./index.ts";
 
 /** A configured sign-in provider: where it finds its token in a request, and how it verifies one. */
 export interface SignInProvider {
@@ -303,7 +303,7 @@ export function oidcProvider(options: OidcProviderOptions): SignInProvider {
 		issuer,
 		token(request) {
 			const token = bearerToken(request);
-			return token === undefined || token.startsWith(API_KEY_SECRET_PREFIX) ? undefined : token;
+			return token === undefined || isApiKeySecret(token) ? undefined : token;
 		},
 		async verify(token) {
 			const claims = await verifiedClaims(token, verifyOptions);

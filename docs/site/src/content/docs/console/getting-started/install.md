@@ -35,7 +35,7 @@ A session behind this gateway runs its commands in an isolate. The gateway has n
 
 Open <http://127.0.0.1:58090/>. On a remote machine, forward the port first: `ssh -L 58090:127.0.0.1:58090 <host>`.
 
-Kantel is invite-only. On its first start the gateway invites `admin@kantel.localhost` as the organisation's admin. To invite another address, start the stack with `env KANTEL_ADMIN_EMAIL=you@example.com docker compose …`. Sign in with that address:
+Kantel is invite-only. On its first start the gateway invites `admin@harbour.localhost` as the organisation's admin. To invite another address, start the stack with `env KANTEL_ADMIN_EMAIL=you@example.com docker compose …`. Sign in with that address:
 
 1. Enter the email and select **Email me a code**.
 2. Open Mailpit at <http://127.0.0.1:58025/> and copy the six-digit code.

@@ -190,6 +190,24 @@ describe("the tool servers registry", () => {
 		await expect(service.authenticateTunnel("ts_unknown", secret)).rejects.toMatchObject({ code: "not_found" });
 	});
 
+	it("checks a tunnel token issued before the rename (hbt_) as it checks a ktt_ one", async () => {
+		const { service, repository } = setUp();
+		const atlas = await service.create(ada, { name: "atlas", transport: "tunnel" });
+		const issued = atlas.token?.token;
+		if (issued === undefined) throw new Error("no token");
+		// A token issued before the rename: the same record, under the hash of an hbt_ secret.
+		const legacy = "hbt_issued-before-the-rename";
+		await repository.removeToken(issued.id);
+		await repository.insertToken({ token: issued, organisationId: ORG, hash: await hashTunnelToken(legacy) });
+		expect(await service.authenticateTunnel(atlas.server.id, legacy)).toEqual({
+			organisationId: ORG,
+			toolServerId: atlas.server.id,
+			tokenId: issued.id,
+		});
+		expect(await service.authenticateTunnel(atlas.server.id, "hbt_wrong")).toBeUndefined();
+		expect(await service.authenticateTunnel(atlas.server.id, "hbx_issued-before-the-rename")).toBeUndefined();
+	});
+
 	it("keeps the connection and snapshot on the record, audits the hashes and tells the runtime", async () => {
 		const { service, audit, changes, tick } = setUp();
 		const { server, token } = await service.create(ada, { name: "atlas", transport: "tunnel" });

@@ -1,4 +1,4 @@
-// The `kantel` model provider against a toy model gateway: a fetch handler serving `GET /v1/config` and an SSE
+// The `harbour` model provider against a toy model gateway: a fetch handler serving `GET /v1/config` and an SSE
 // `POST /messages` per the contract, with a fake `ModelSessionTokens` whose tokens name their session's scope.
 import { isRetryableAssistantError } from "@earendil-works/pi-ai/utils/retry";
 import {
@@ -186,16 +186,16 @@ function setUp() {
 }
 
 describe("kantelResolveModel", () => {
-	it("names the route, or route:modelId when a model is chosen, on the kantel provider", () => {
-		expect(kantelResolveModel({ route: "default" })).toEqual({ provider: "kantel", modelId: "default" });
+	it("names the route, or route:modelId when a model is chosen, on the harbour provider", () => {
+		expect(kantelResolveModel({ route: "default" })).toEqual({ provider: "harbour", modelId: "default" });
 		expect(kantelResolveModel({ route: "default", modelId: "claude-x", thinking: "high" })).toEqual({
-			provider: "kantel",
+			provider: "harbour",
 			modelId: "default:claude-x",
 		});
 	});
 });
 
-describe("kantel model provider", () => {
+describe("harbour model provider", () => {
 	it("runs a prompt end to end through the gateway with the route as the model", async () => {
 		const { service, gateway, ask } = setUp();
 		await service.profiles.put(ctx, profile("worker", { route: "default" }));
@@ -314,7 +314,7 @@ describe("kantel model provider", () => {
 			tokens,
 		})(session);
 		gateway.reply(tooMany);
-		const model = models.getModel("kantel", "default");
+		const model = models.getModel("harbour", "default");
 		if (model === undefined) throw new Error("The gateway's config lists the route");
 		const failed = await models.completeSimple(model, { messages: [] });
 		expect(failed).toMatchObject({ stopReason: "error", errorMessage: "429 Too Many Requests: slow down" });
@@ -371,7 +371,7 @@ describe("kantel model provider", () => {
 		gate = new Promise((resolve) => {
 			release = resolve;
 		});
-		const model = models.getModel("kantel", "default");
+		const model = models.getModel("harbour", "default");
 		if (model === undefined) throw new Error("The gateway's config lists the route");
 		gateway.reply(textReply("one"), textReply("two"));
 		const both = Promise.all([
@@ -387,9 +387,9 @@ describe("kantel model provider", () => {
 		// A failed mint fails that request only; the next one mints again.
 		now += 31_000;
 		failNext = true;
-		const failed = await models.refresh({ providers: ["kantel"] });
-		expect(failed.errors.get("kantel")?.message).toMatch(/Issuer down/);
-		const retried = await models.refresh({ providers: ["kantel"] });
+		const failed = await models.refresh({ providers: ["harbour"] });
+		expect(failed.errors.get("harbour")?.message).toMatch(/Issuer down/);
+		const retried = await models.refresh({ providers: ["harbour"] });
 		expect(retried.errors.size).toBe(0);
 		expect(inner.mints).toHaveLength(3);
 		expect(gateway.configs.at(-1)?.token).toBe("token-3");

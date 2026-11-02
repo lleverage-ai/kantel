@@ -59,11 +59,20 @@
 		{ "tag": "v2", "new_sqlite_classes": ["HarbourVault"] },
 		{ "tag": "v3", "new_sqlite_classes": ["HarbourBrowser"] },
 		{ "tag": "v4", "new_sqlite_classes": ["HarbourSandbox"] },
-		{ "tag": "v5", "new_sqlite_classes": ["KantelTunnel"] }
+		{ "tag": "v5", "new_sqlite_classes": ["KantelTunnel"] },
+		// The stack and the vault, renamed after the product (TASK-4492): every object, and its storage, moves to the new
+		// class. Applied once, at the deploy that carries it; the Worker still exports the old names as aliases.
+		{
+			"tag": "v6",
+			"renamed_classes": [
+				{ "from": "HarbourStack", "to": "KantelStack" },
+				{ "from": "HarbourVault", "to": "KantelVault" }
+			]
+		}
 	],
 	// Named but not given IDs: deploys find them by name, and wrangler's automatic provisioning would create one that's
 	// missing. A dry run creates nothing. D1 holds the directory and audit; R2 the workspaces. Both were made with the
-	// weur location hint, next to the objects; the first ones, `kantel` and
+	// weur location hint, next to the objects; the first ones, `harbour` and
 	// `harbour-workspaces`, are deleted. The deploy can point them at others (KANTEL_D1_DATABASE_NAME with
 	// KANTEL_D1_DATABASE_ID, KANTEL_R2_BUCKET; see scripts/deploy-config.ts).
 	"d1_databases": [{ "binding": "DB", "database_name": "harbour-weur" }],
@@ -179,7 +188,7 @@
 				// The name the console shows for the dev admin (src/config.ts); deployed, the admin's email stands in for it.
 				"KANTEL_ADMIN_NAME": "Dev admin",
 				"KANTEL_LOCATION_HINT": "weur",
-				// Local only, and public on purpose: the dev vault's key (base64 of "kantel-local-dev-vault-key-0001") and the
+				// Local only, and public on purpose: the dev vault's key (base64 of "harbour-local-dev-vault-key-0001", named before the rename) and the
 				// model gateway's shared key for it. They seal nothing but `wrangler dev`'s own state. The deployed Worker's are
 				// secrets; scripts/deploy-config.ts refuses them as vars.
 				"KANTEL_VAULT_KEY": "aGFyYm91ci1sb2NhbC1kZXYtdmF1bHQta2V5LTAwMDE=",
@@ -189,8 +198,8 @@
 				"KANTEL_BROWSER_PROVIDER": "kantel",
 				// The container tier in local Docker (src/sandbox-object.ts).
 				"KANTEL_SANDBOX_CONTAINERS": "on",
-				"KANTEL_BROWSER_VIEW_KEY": "kantel-local-dev-browser-view-key-0001",
-				"KANTEL_BROWSER_SEAL_KEY": "kantel-local-dev-browser-seal-key-0001",
+				"KANTEL_BROWSER_VIEW_KEY": "harbour-local-dev-browser-view-key-0001",
+				"KANTEL_BROWSER_SEAL_KEY": "harbour-local-dev-browser-seal-key-0001",
 				// Subagents, as deployed: the dev model's `delegate a > b > c` errand (src/dev-browser-model.ts) nests them.
 				"KANTEL_SUBAGENTS": "on",
 				"KANTEL_PROGRAMS": "on",

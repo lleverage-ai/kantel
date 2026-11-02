@@ -2,7 +2,7 @@
 // docker.ts does with containers on one machine. The host runs in the cluster (deploy/kubernetes), with a service
 // account that may only manage Pods, and create and delete Secrets, in its own namespace.
 //
-// - The agent's per-start token is in a Secret of its own (`kantel-browser-<id>`), which the Pod reads as its
+// - The agent's per-start token is in a Secret of its own (`harbour-browser-<id>`), which the Pod reads as its
 //   environment: it is never in the Pod's spec, and the host's role cannot read Secrets back.
 // - The host reaches the agent at the Pod's IP, port 8080. deploy/kubernetes's NetworkPolicy lets only the host in,
 //   and lets the browser out to the internet but not into the cluster.

@@ -270,10 +270,10 @@ implements the same contracts, and the conformance suite runs through it. Routes
 The runtime never calls a provider or holds a provider key: it calls Kantel's internal model gateway over pi-ai's
 `pi-messages` protocol (`packages/models/CONTRACT.md`, contracts in `@kantel/contracts` `models.ts`). `@kantel/runtime/models` holds its side:
 
-- `kantelResolveModel(choice)` gives `{ provider: "kantel", modelId }`, where `modelId` is the route, or
+- `kantelResolveModel(choice)` gives `{ provider: "harbour", modelId }` (the provider ID from before the rename, kept: sessions store it in their model choices), where `modelId` is the route, or
   `<route>:<modelId>` when the profile chooses a model. The profile's `thinking` is the conversation's thinking level,
   which Pi Durable sends as the request's `reasoning` option.
-- `kantelProvider({ baseUrl, fetch?, token })` is the pi-ai provider `kantel` on API `pi-messages`. Its models come
+- `kantelProvider({ baseUrl, fetch?, token })` is the pi-ai provider `harbour` (before the rename, as above) on API `pi-messages`. Its models come
   from `GET <baseUrl>/v1/config`; every request carries `Authorization: Bearer <token>` (read at each request) and
   goes through `fetch` when given, such as a Cloudflare service binding's.
 - `kantelModels({ gateway: { baseUrl, fetch? }, tokens, ttlMs?, clock? })` gives each session its own `Models`, with

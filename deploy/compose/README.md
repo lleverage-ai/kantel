@@ -16,7 +16,7 @@ bun spike/scenario/run.ts --crash \
   --fallback http://127.0.0.1:58082                        # kill the owner mid tool call
 deploy/compose/scripts/check-canary.sh                     # canary in no log, row or object
 # The scenario shared with the Cloudflare target (spikes/scenario), needs internet:
-KANTEL_SPIKE_TOKEN=unused KANTEL_CANARY=kantel-canary-0000 \
+KANTEL_SPIKE_TOKEN=unused KANTEL_CANARY=harbour-canary-0000 \
   bun spikes/scenario/run.ts --base-url http://127.0.0.1:58081 --kill-after-exec 2
 docker compose -f deploy/compose/compose.yaml down -v      # stop and delete all state
 ```
@@ -65,15 +65,15 @@ bun apps/selfhosted/test/gateway/stack.ts     # the end-to-end test CI runs agai
 ### Signing in, and mail
 
 Sign-in is by email one-time PIN (the flow in `packages/identity/CONTRACT.md`). Kantel is invite-only: the gateway
-invites `KANTEL_ADMIN_EMAIL` (default `admin@kantel.localhost`) as an organisation admin at start, unless someone can
+invites `KANTEL_ADMIN_EMAIL` (default `admin@harbour.localhost`) as an organisation admin at start, unless someone can
 already sign in with that email. To sign in as them:
 
 ```bash
 curl -s -X POST http://127.0.0.1:58090/auth/otp/start -H 'content-type: application/json' \
-  -d '{"email":"admin@kantel.localhost"}'                       # 202, whoever the email is
+  -d '{"email":"admin@harbour.localhost"}'                      # 202, whoever the email is
 # read the code at http://127.0.0.1:58025/, then:
 curl -s -X POST http://127.0.0.1:58090/auth/otp/verify -H 'content-type: application/json' \
-  -d '{"email":"admin@kantel.localhost","code":"123456"}'       # 200 {token: "kts_…", user, organisationIds}
+  -d '{"email":"admin@harbour.localhost","code":"123456"}'      # 200 {token: "kts_…", user, organisationIds}
 curl -s http://127.0.0.1:58090/v1/audit/events -H "authorization: Bearer kts_…"
 ```
 
@@ -85,7 +85,7 @@ limit there instead.
 The gateway sends codes through `KANTEL_SMTP_URL` from `KANTEL_MAIL_FROM`: `smtps://` (TLS from the start),
 `smtp://` (STARTTLS required), or `smtp://…?starttls=off` (in the clear, for a relay on a private network),
 credentials in the URL if the relay needs them. In compose both default to Mailpit
-(`smtp://mailpit:1025?starttls=off`, `Kantel <kantel@kantel.localhost>`); set them to use a real relay. Without
+(`smtp://mailpit:1025?starttls=off`, `Kantel <harbour@harbour.localhost>`); set them to use a real relay. Without
 `KANTEL_SMTP_URL` the sign-in routes answer 503. The gateway refuses to start on a malformed value, and
 `/v1/deployment` shows the server and From address, never the credentials. Read what was sent at
 <http://127.0.0.1:58025/> or through Mailpit's API (`/api/v1/search?query=to:"…"`), which is how the end-to-end tests
@@ -223,14 +223,14 @@ The tests take the matching URLs: `KANTEL_DATABASE_URL`, `S3_ENDPOINT`, `--base`
 | `postgres` | Session directory, leases, workspace heads and history, audit, and one schema per session for Pi Durable. | 55432 |
 | `minio` | Content-addressed workspace blobs and manifests. | 59000 |
 | `research-site` | The page the scripted task fetches. Answers only with the injected credential. | none |
-| `sandbox-image` | Builds `kantel-sandbox:dev`, the container tier's warm image, and exits. | none |
+| `sandbox-image` | Builds `harbour-sandbox:dev`, the container tier's warm image, and exits. | none |
 | `gateway` | The gateway (Bun): session, workspace read and audit query APIs behind the authenticator, email one-time PIN sign-in, and the console. | 58090 |
 | `mailpit` | The SMTP server sign-in codes go to. Keeps messages in memory and relays nothing; web UI and API on 58025, SMTP on 58125. | 58025, 58125 |
 
 Networks: `control` (everything but sandboxes and the fixture) and `upstream`
 (vault and fixture: the outside world). Each sandbox container gets its own
-`internal` network for the length of its command (`kantel-sbx-<token>`), and
-the session host connects the vault (container `kantel-vault-proxy`) to it as
+`internal` network for the length of its command (`harbour-sbx-<token>`), and
+the session host connects the vault (container `harbour-vault-proxy`) to it as
 `vault-proxy`. A sandbox has no other route out (`curl --noproxy '*'` to a
 public IP fails) and cannot reach another sandbox (the conformance suite
 probes for peers). Docker's default address pools allow about 30 such
@@ -253,7 +253,7 @@ docker compose up -d --build --wait
 ```
 
 - `browser-image` builds `images/browser` (Chromium and its agent) and exits; `browser-host` starts one container of it
-  per browser through the Docker socket, on the `kantel-browsers` network, and keeps profiles and recordings on its
+  per browser through the Docker socket, on the `harbour-browsers` network, and keeps profiles and recordings on its
   volume, sealed with `KANTEL_BROWSER_SEAL_KEY`.
 - The gateway gets `KANTEL_BROWSER_PROVIDER=kantel` and the host's URL and token. An agent asks before it opens any
   site; a person allows or declines it in the console, then watches it live and plays it back from the session.
@@ -306,10 +306,10 @@ it. CI's `selfhosted` job runs this way when dispatched with `-f egress_source=v
 ## Timing container seeds
 
 The stack gives you Postgres (`postgres://harbour:harbour@127.0.0.1:55432/harbour`),
-MinIO (`http://127.0.0.1:59000`, user `kantel`, password `kantel-dev-secret`,
-bucket `kantel`) and the warm sandbox image `kantel-sandbox:dev`. To time a
+MinIO (`http://127.0.0.1:59000`, user `harbour`, password `harbour-dev-secret`,
+bucket `harbour`) and the warm sandbox image `harbour-sandbox:dev`. To time a
 container seed the way the container tier starts one, create an internal
-network, connect `kantel-vault-proxy` to it with the alias `vault-proxy`, run
+network, connect `harbour-vault-proxy` to it with the alias `vault-proxy`, run
 on it with `--runtime "${KANTEL_SANDBOX_RUNTIME:-runc}"` and the vault as
 `HTTP(S)_PROXY`; the vault refuses everything not in
 `vault-policy.json`, so add a route (for example `github.com`, `tunnel: true`)

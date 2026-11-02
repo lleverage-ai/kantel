@@ -297,12 +297,20 @@ describe("the vault's deploy", () => {
 				{ name: "TUNNELS", class_name: "KantelTunnel" },
 			],
 		});
+		// v1 and v2 are history Cloudflare holds, under the names before the rename; v6 moves their objects.
 		expect(config.migrations).toEqual([
-			{ tag: "v1", new_sqlite_classes: ["KantelStack"] },
-			{ tag: "v2", new_sqlite_classes: ["KantelVault"] },
+			{ tag: "v1", new_sqlite_classes: ["HarbourStack"] },
+			{ tag: "v2", new_sqlite_classes: ["HarbourVault"] },
 			{ tag: "v3", new_sqlite_classes: ["HarbourBrowser"] },
 			{ tag: "v4", new_sqlite_classes: ["HarbourSandbox"] },
 			{ tag: "v5", new_sqlite_classes: ["KantelTunnel"] },
+			{
+				tag: "v6",
+				renamed_classes: [
+					{ from: "HarbourStack", to: "KantelStack" },
+					{ from: "HarbourVault", to: "KantelVault" },
+				],
+			},
 		]);
 		// Tool servers are off unless a deployment turns them on.
 		expect((config.vars as Record<string, unknown>).KANTEL_TOOL_SERVERS).toBe("");
@@ -354,6 +362,8 @@ describe("the vault's deploy", () => {
 		expect(() => deployValues({ KANTEL_BROWSER_PROVIDER: "browserbase" }, "dry-run")).toThrow(
 			/KANTEL_BROWSER_PROVIDER/,
 		);
+		// A repository variable set before the rename still says `harbour`.
+		expect(() => deployValues({ KANTEL_BROWSER_PROVIDER: "harbour" }, "dry-run")).not.toThrow();
 	});
 
 	it("sends the browser viewer page to the Worker first, for its framing headers, in both configs", () => {

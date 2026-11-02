@@ -3,8 +3,10 @@ import {
 	type CallContext,
 	callContextFor,
 	isKantelError,
+	KantelError,
 	systemContext,
 } from "@kantel/contracts";
+import { isApiKeySecret } from "@kantel/identity";
 import { authenticationFailureResponse, createAuthenticator, withAuthentication } from "@kantel/identity/authenticator";
 import { cloudflareAccessProvider, oidcProvider } from "@kantel/identity/jwt";
 import { createMemoryIdentity } from "@kantel/identity/memory";
@@ -98,6 +100,25 @@ describe("createAuthenticator with API keys", () => {
 		]) {
 			expect(await failureOf(authenticator.authenticate(request({ authorization }))), authorization).toBe("invalid");
 		}
+	});
+
+	it("takes a key issued before the rename (hbr_) as a key, never as a sign-in", async () => {
+		const seen: string[] = [];
+		const authenticator = createAuthenticator({
+			identity: {
+				async authenticateApiKey(_ctx, secret) {
+					seen.push(secret);
+					throw new KantelError("forbidden", "unknown key");
+				},
+			},
+		});
+		for (const secret of ["ktk_today", "hbr_before-the-rename"]) {
+			expect(await failureOf(authenticator.authenticate(request({ authorization: `Bearer ${secret}` })))).toBe(
+				"invalid",
+			);
+		}
+		expect(seen).toEqual(["ktk_today", "hbr_before-the-rename"]);
+		expect(isApiKeySecret("hbr_x") && isApiKeySecret("ktk_x") && !isApiKeySecret("kts_x")).toBe(true);
 	});
 
 	it("passes on errors that are not about the credentials", async () => {
@@ -228,6 +249,11 @@ describe("createAuthenticator with sign-in providers", () => {
 		expect(await failureOf(signIn())).toBe("organisation");
 		expect((await signIn({ "kantel-organisation": other.id })).organisationId).toBe(other.id);
 		expect((await signIn({ "kantel-organisation": organisation.id })).organisationId).toBe(organisation.id);
+		// The header's name before the rename still names one; today's wins when a client sends both.
+		expect((await signIn({ "harbour-organisation": other.id })).organisationId).toBe(other.id);
+		expect(await failureOf(signIn({ "harbour-organisation": "org_elsewhere" }))).toBe("organisation");
+		const both = { "kantel-organisation": organisation.id, "harbour-organisation": other.id };
+		expect((await signIn(both)).organisationId).toBe(organisation.id);
 	});
 
 	it("still takes API keys, and reads each credential with its own provider when both are configured", async () => {

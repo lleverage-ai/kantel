@@ -1,14 +1,14 @@
 /**
  * The Docker container tier against a real Docker daemon. Skipped unless KANTEL_TEST_DOCKER=1. Needs the sandbox image
- * (images/sandbox, built as kantel-sandbox:dev by default) and the runtime (runsc-kvm by default) registered with the
+ * (images/sandbox, built as harbour-sandbox:dev by default) and the runtime (runsc-kvm by default) registered with the
  * daemon:
  *
- *   docker build -t kantel-sandbox:dev images/sandbox
+ *   docker build -t harbour-sandbox:dev images/sandbox
  *   KANTEL_TEST_DOCKER=1 pnpm --filter @kantel/selfhosted-sandbox test
  *
  * Optional: KANTEL_TEST_SANDBOX_IMAGE, KANTEL_TEST_SANDBOX_RUNTIME (`runc` where gVisor is not installed) and
  * KANTEL_TEST_DOCKER_SOCKET. Every case labels what it creates with its own `<base>-<random>` prefix and removes it
- * afterwards; the base is KANTEL_TEST_LABEL_PREFIX (default `kantel-test`), which CI sets per run so it can remove
+ * afterwards; the base is KANTEL_TEST_LABEL_PREFIX (default `harbour-test`), which CI sets per run so it can remove
  * whatever a cancelled run left behind.
  */
 import { lookup } from "node:dns/promises";
@@ -35,7 +35,7 @@ const enabled = process.env.KANTEL_TEST_DOCKER === "1";
 const image = process.env.KANTEL_TEST_SANDBOX_IMAGE ?? "harbour-sandbox:dev";
 const runtime = process.env.KANTEL_TEST_SANDBOX_RUNTIME ?? "runsc-kvm";
 const socketPath = process.env.KANTEL_TEST_DOCKER_SOCKET;
-const labelBase = process.env.KANTEL_TEST_LABEL_PREFIX || "kantel-test";
+const labelBase = process.env.KANTEL_TEST_LABEL_PREFIX || "harbour-test";
 const docker = new DockerClient(socketPath === undefined ? {} : { socketPath });
 
 /** Every label prefix a case used, removed again in afterAll in case a case's own cleanup failed. */
@@ -113,8 +113,8 @@ registerSandboxConformance(
 	{ projectAccess: true },
 );
 
-const ORGANISATION = "org-kantel";
-const PROJECT = "proj-kantel";
+const ORGANISATION = "org-harbour";
+const PROJECT = "proj-harbour";
 const SESSION = "sess-container";
 const ctx: CallContext = contextFor(actors.agent("agent-1", SESSION), ORGANISATION, PROJECT);
 const owner: OwnerRef = { kind: "project", organisationId: ORGANISATION, projectId: PROJECT };
@@ -543,7 +543,7 @@ describe.skipIf(!enabled)(`Docker container tier, per-lease networks (${runtime}
 		run: (stack: Awaited<ReturnType<typeof stackFor>>) => Promise<void>,
 	): Promise<void> {
 		try {
-			await lookup("kantel-sandbox-test.localhost");
+			await lookup("harbour-sandbox-test.localhost");
 		} catch {
 			skip();
 			return;
@@ -737,7 +737,7 @@ describe.skipIf(!enabled)(`Docker container tier, per-lease networks (${runtime}
 describe.skipIf(!enabled)(`Docker container tier, proxy credentials on a shared network (${runtime})`, () => {
 	it("leaves a lease the janitor can find when its container fails after the token was issued", async (t) => {
 		try {
-			await lookup("kantel-sandbox-test.localhost");
+			await lookup("harbour-sandbox-test.localhost");
 		} catch {
 			t.skip();
 			return;

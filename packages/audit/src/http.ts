@@ -22,6 +22,7 @@ import {
 	KantelError,
 	type Page,
 	type PageRequest,
+	readHeader,
 } from "@kantel/contracts";
 
 /** Every `ErrorCode` and the status it answers with. */
@@ -90,7 +91,7 @@ export function createAuditQueryHandler(options: AuditQueryHandlerOptions): (req
 			return failed(error);
 		}
 
-		const requestId = request.headers.get("kantel-request-id") ?? undefined;
+		const requestId = readHeader(request.headers, "kantel-request-id") ?? undefined;
 		try {
 			if (isList) {
 				const { query, page } = auditQueryFromSearchParams(url.searchParams);

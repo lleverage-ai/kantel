@@ -95,7 +95,7 @@ describe("the console's skills and memory over the public API", () => {
 		const concepts = await agent.memory.listConcepts(spaceId, { status: "active" });
 		expect(concepts.items.map((concept) => concept.id)).toEqual(["projects/kantel/placement"]);
 		expect((await agent.memory.getConcept(spaceId, "projects/kantel/placement")).title).toBe("Kantel lives in weur");
-		expect(calls).toContain(`GET /v1/memory/spaces/${spaceId}/concepts/projects%2Fharbour%2Fplacement`);
+		expect(calls).toContain(`GET /v1/memory/spaces/${spaceId}/concepts/projects%2Fkantel%2Fplacement`);
 		const hits = await agent.memory.search({ spaceIds: [spaceId], query: "weur" });
 		expect(hits.map((hit) => hit.concept.id)).toEqual(["projects/kantel/placement"]);
 		const recall = await agent.memory.recall({

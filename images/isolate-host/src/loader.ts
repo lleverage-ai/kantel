@@ -146,6 +146,10 @@ function toVault(env: Env, request: Request, sessionId: string): Promise<Respons
 	headers.set("x-kantel-session", sessionId);
 	headers.set("x-kantel-tier", "isolate");
 	headers.set("x-kantel-host-key", env.VAULT_ISOLATE_KEY);
+	// The same under their names before the rename, for a vault proxy built before it; set here, so never the sandbox's.
+	headers.set("x-harbour-session", sessionId); // before the rename
+	headers.set("x-harbour-tier", "isolate"); // before the rename
+	headers.set("x-harbour-host-key", env.VAULT_ISOLATE_KEY); // before the rename
 	return env.VAULT.fetch(new Request(request, { headers }));
 }
 

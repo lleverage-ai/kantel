@@ -64,7 +64,7 @@ function fakeApi() {
 	return { pods, secrets, calls, agentCalls, fetch };
 }
 
-const options = (fetch: KubernetesOptions["fetch"], stack = "kantel"): KubernetesOptions => ({
+const options = (fetch: KubernetesOptions["fetch"], stack = "harbour"): KubernetesOptions => ({
 	apiUrl: "https://kubernetes.invalid",
 	token: async () => "sa-token",
 	namespace: "browsers",
@@ -79,7 +79,7 @@ const options = (fetch: KubernetesOptions["fetch"], stack = "kantel"): Kubernete
 describe("the browser host's Kubernetes machines", () => {
 	it("names a browser's objects as Kubernetes takes them", () => {
 		expect(objectName("6F1C2E1A-0000-4000-8000-ABCDEFABCDEF")).toBe(
-			"kantel-browser-6f1c2e1a-0000-4000-8000-abcdefabcdef",
+			"harbour-browser-6f1c2e1a-0000-4000-8000-abcdefabcdef",
 		);
 		expect(objectName("x".repeat(100))).toHaveLength(63);
 		expect(labelValue("-a b-")).toBe("a-b");
@@ -90,7 +90,7 @@ describe("the browser host's Kubernetes machines", () => {
 		const text = JSON.stringify(pod);
 		expect(pod.spec.runtimeClassName).toBe("gvisor");
 		expect(pod.spec.automountServiceAccountToken).toBe(false);
-		expect(pod.spec.containers[0]?.envFrom).toEqual([{ secretRef: { name: "kantel-browser-b1" } }]);
+		expect(pod.spec.containers[0]?.envFrom).toEqual([{ secretRef: { name: "harbour-browser-b1" } }]);
 		expect(pod.spec.containers[0]?.resources.limits).toEqual({ memory: "2048Mi", cpu: "1000m" });
 		expect(text).not.toContain("agent-token");
 	});
@@ -99,8 +99,8 @@ describe("the browser host's Kubernetes machines", () => {
 		const api = fakeApi();
 		const machine = kubernetesMachine(options(api.fetch), "b1");
 		await machine.start({ AGENT_TOKEN: "agent-token" });
-		expect(api.secrets.get("kantel-browser-b1")?.stringData).toEqual({ AGENT_TOKEN: "agent-token" });
-		expect(JSON.stringify(api.pods.get("kantel-browser-b1")?.spec)).not.toContain("agent-token");
+		expect(api.secrets.get("harbour-browser-b1")?.stringData).toEqual({ AGENT_TOKEN: "agent-token" });
+		expect(JSON.stringify(api.pods.get("harbour-browser-b1")?.spec)).not.toContain("agent-token");
 		expect(machine.address()).toEqual({ host: expect.stringMatching(/^10\.0\.0\./), port: 8080 });
 		expect((await machine.fetch("/health")).ok).toBe(true);
 		expect(api.agentCalls).toEqual([`GET ${machine.address()?.host}:8080/health`]);
@@ -124,7 +124,7 @@ describe("the browser host's Kubernetes machines", () => {
 		await kubernetesMachine(options(api.fetch), "left").start({ AGENT_TOKEN: "b" });
 		await kubernetesMachine(options(api.fetch, "other"), "theirs").start({ AGENT_TOKEN: "c" });
 		expect(await removeKubernetesLeftovers(options(api.fetch), new Set(["kept"]))).toBe(1);
-		expect([...api.pods.keys()].sort()).toEqual(["kantel-browser-kept", "kantel-browser-theirs"]);
-		expect([...api.secrets.keys()].sort()).toEqual(["kantel-browser-kept", "kantel-browser-theirs"]);
+		expect([...api.pods.keys()].sort()).toEqual(["harbour-browser-kept", "harbour-browser-theirs"]);
+		expect([...api.secrets.keys()].sort()).toEqual(["harbour-browser-kept", "harbour-browser-theirs"]);
 	});
 });

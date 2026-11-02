@@ -102,10 +102,7 @@ describe("the members page on the API", () => {
 		flow.openInvite();
 		await flow.invite({ email: "linus@kantel.test", role: "operator" });
 		flow.closeInvite();
-		expect(flow.getState().invites?.map((invite) => invite.email)).toEqual([
-			"grace@kantel.test",
-			"linus@kantel.test",
-		]);
+		expect(flow.getState().invites?.map((invite) => invite.email)).toEqual(["grace@kantel.test", "linus@kantel.test"]);
 
 		flow.openInvite();
 		await flow.invite({ email: "Grace@kantel.test", role: "admin" });

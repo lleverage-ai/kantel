@@ -14,6 +14,8 @@
 import { timingSafeEqual } from "node:crypto";
 
 export const AGENT_TOKEN_HEADER = "x-kantel-agent-token";
+/** Its name before the rename, which a Durable Object built before it sends. */
+export const LEGACY_AGENT_TOKEN_HEADER = "x-harbour-agent-token"; // before the rename
 
 /**
  * Whether a request may use the agent. `token` is the container's
@@ -23,7 +25,7 @@ export const AGENT_TOKEN_HEADER = "x-kantel-agent-token";
 export function agentAllowed(method, pathname, headers, token) {
   if (method === "GET" && pathname === "/health") return true;
   if (!token) return false;
-  const got = headers[AGENT_TOKEN_HEADER];
+  const got = headers[AGENT_TOKEN_HEADER] ?? headers[LEGACY_AGENT_TOKEN_HEADER];
   if (typeof got !== "string") return false;
   const a = Buffer.from(got);
   const b = Buffer.from(token);

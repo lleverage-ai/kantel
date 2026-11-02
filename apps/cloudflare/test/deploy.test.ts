@@ -80,7 +80,7 @@ describe("deploy config", () => {
 	it("adds the account, zone route, Access vars and the models VPC service to wrangler.jsonc", () => {
 		const config = deployConfig(rawConfig, deployValues(configured, "deploy"));
 		expect(config).toMatchObject({
-			name: "kantel",
+			name: "harbour",
 			account_id: configured.CLOUDFLARE_ACCOUNT_ID,
 			workers_dev: false,
 			preview_urls: false,

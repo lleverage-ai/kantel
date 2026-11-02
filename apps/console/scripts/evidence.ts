@@ -49,8 +49,7 @@ async function open(browser: Browser, width: number, height: number, query: stri
 	);
 	await page.waitForFunction(
 		() =>
-			(window as Win).__kantel?.client?.getState().cursor !== undefined &&
-			(window as Win).__kantel?.host !== undefined,
+			(window as Win).__kantel?.client?.getState().cursor !== undefined && (window as Win).__kantel?.host !== undefined,
 		undefined,
 		{
 			timeout: 30_000,

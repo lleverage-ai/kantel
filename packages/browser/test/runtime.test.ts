@@ -501,9 +501,11 @@ describe("kantel browser provider", () => {
 		await expect(provider.release("b1")).resolves.toEqual(released);
 	});
 
-	it("is chosen only by KANTEL_BROWSER_PROVIDER=kantel", () => {
+	it("is chosen only by KANTEL_BROWSER_PROVIDER=kantel, or harbour as it was before the rename", () => {
 		expect(browserProviderName("kantel")).toBe("kantel");
+		expect(browserProviderName(" KANTEL ")).toBe("kantel");
 		expect(browserProviderName(" HARBOUR ")).toBe("kantel");
+		expect(browserProviderName("harbour")).toBe("kantel");
 		for (const value of [undefined, "", "brwsr", "harbor"]) expect(browserProviderName(value)).toBe("brwsr");
 	});
 });

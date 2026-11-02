@@ -297,7 +297,7 @@ describe("createModelGateway", () => {
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		};
 		const declare = (name: string) => ({ name, description: "A tool.", parameters: { type: "object" } });
-		const tooLong = `t${"o".repeat(50)}`;
+		const tooLong = `t${"o".repeat(51)}`;
 		const tools = [declare("browser_request"), declare("mcp__docs__search"), declare("browser.open"), declare(tooLong)];
 		const messages = [
 			{ role: "user", content: "Open a browser", timestamp: 1 },

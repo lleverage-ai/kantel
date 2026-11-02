@@ -6,9 +6,7 @@ import { createRecordedSchedules } from "./schedules.ts";
 describe("the recorded schedules", () => {
 	it("lists the fixture's schedules, and a task's runs name the recorded sessions they link to", async () => {
 		const catalogue = createCatalogue(Date.now());
-		const kantel = catalogue.sessions
-			.filter((session) => session.projectId === "kantel")
-			.map((session) => session.id);
+		const kantel = catalogue.sessions.filter((session) => session.projectId === "kantel").map((session) => session.id);
 		const schedules = await createRecordedSchedules(kantel);
 		const listed = await schedules.source.list();
 		const triage = listed.items.find((schedule) => schedule.title === "Triage new issues");

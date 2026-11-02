@@ -17,6 +17,8 @@ import {
 	DEFAULT_SESSION_TTL_MILLISECONDS,
 	type EmailOtpOptions,
 	generateOtpCode,
+	hashSessionToken,
+	isSessionToken,
 	kantelSessionProvider,
 	MemoryOtpMailer,
 	OTP_CODE_TTL_MILLISECONDS,
@@ -521,6 +523,28 @@ for (const backend of backends) {
 		}
 	});
 }
+
+describe("a session started before the rename", () => {
+	it("authenticates and ends by its hbs_ token, as a kts_ one does", async () => {
+		const h = await harness(backends[0] as Backend);
+		const legacy = "hbs_started-before-the-rename";
+		const now = h.clock.now();
+		await h.sessions.create({
+			id: "ses_legacy",
+			tokenHash: await hashSessionToken(legacy),
+			userId: h.ada.id,
+			issuer: EMAIL_OTP_ISSUER,
+			subject: "ada@example.test",
+			email: "ada@example.test",
+			createdAt: now,
+			expiresAt: now + DEFAULT_SESSION_TTL_MILLISECONDS,
+		});
+		expect(await h.whoAmI(legacy)).toMatchObject({ actor: { kind: "human", userId: h.ada.id } });
+		await h.otp.endSession(legacy);
+		await expect(h.whoAmI(legacy)).rejects.toSatisfy((error) => authenticationFailureOf(error) === "invalid");
+		expect(isSessionToken(legacy) && isSessionToken("kts_x") && !isSessionToken("hbr_x")).toBe(true);
+	});
+});
 
 describe("the authenticator with Kantel sessions", () => {
 	it("refuses a session bearer when no session provider is configured, and never hands one to a JWT provider", async () => {

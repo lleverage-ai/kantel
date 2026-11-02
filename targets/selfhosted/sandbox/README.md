@@ -16,7 +16,7 @@ await container.reapExpired();
 
 Options: `socketPath` (default `/var/run/docker.sock`), `runtime` (default `runsc-kvm`; `runsc` inside a VM without
 nested KVM, `runc` only for development), `memoryBytes`, `nanoCpus`, `network` (the vault proxy, below; absent means
-`NetworkMode: none`), `proxyCredentials` (below), `labelPrefix` (default `kantel`), `clock`, `execTimeoutMs`
+`NetworkMode: none`), `proxyCredentials` (below), `labelPrefix` (default `harbour`), `clock`, `execTimeoutMs`
 (default 120 s) and `maxOutputBytes` (default 1 MiB per stream).
 
 `network` is `{ name, proxyUrl, isolation?, proxyContainer?, subnetPool? }`:
@@ -92,7 +92,7 @@ The image needs `sh`, coreutils (`timeout`, `head`, `rm`), `python3` and user 10
 `pnpm test` runs the tar and stream tests; the Docker tests are skipped unless asked for:
 
 ```sh
-docker build -t kantel-sandbox:dev images/sandbox
+docker build -t harbour-sandbox:dev images/sandbox
 KANTEL_TEST_DOCKER=1 pnpm --filter @kantel/selfhosted-sandbox test
 ```
 
@@ -103,8 +103,8 @@ its own kernel), no import of the working copy's Python modules, head files owne
 unreadable paths skipped, and background jobs killed before the final snapshot. With per-lease networks and a stand-in
 proxy: each lease's own network holds only it and the proxy, its proxied requests carry its own token, one lease cannot
 reach another's address, and ending or reaping a lease removes its network and revokes its token (these need the host
-to resolve `.localhost` names, as systemd-resolved does, and are skipped where it does not). Optional: `KANTEL_TEST_SANDBOX_IMAGE` (default `kantel-sandbox:dev`), `KANTEL_TEST_SANDBOX_RUNTIME`
-(default `runsc-kvm`), `KANTEL_TEST_DOCKER_SOCKET` and `KANTEL_TEST_LABEL_PREFIX` (default `kantel-test`). Every case
+to resolve `.localhost` names, as systemd-resolved does, and are skipped where it does not). Optional: `KANTEL_TEST_SANDBOX_IMAGE` (default `harbour-sandbox:dev`), `KANTEL_TEST_SANDBOX_RUNTIME`
+(default `runsc-kvm`), `KANTEL_TEST_DOCKER_SOCKET` and `KANTEL_TEST_LABEL_PREFIX` (default `harbour-test`). Every case
 labels what it creates with its own `<KANTEL_TEST_LABEL_PREFIX>-<random>` prefix and removes it afterwards; CI sets a
 per-run base so it can also remove what a cancelled run left behind. None of it carries `harbour.owner`, so a Kantel
 stack's sandbox janitor on the same daemon never sees it.

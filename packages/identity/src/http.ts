@@ -65,6 +65,7 @@ import {
 	ROLES,
 	type Role,
 	type RoleBinding,
+	readHeader,
 	roleSatisfies,
 	SESSION_END_PATH,
 	SIGN_IN_METHODS,
@@ -667,7 +668,7 @@ export function createIdentityHandler(options: IdentityHandlerOptions): (request
 			return errorResponse(405, "invalid", `Use ${allowed.join(" or ")}`, { allow: allowed.join(", ") });
 		}
 
-		const requestId = request.headers.get("kantel-request-id") ?? undefined;
+		const requestId = readHeader(request.headers, "kantel-request-id") ?? undefined;
 		const context = { ...(requestId === undefined ? {} : { requestId }), signal: request.signal };
 
 		// A person in several organisations may list them without naming one, so this read asks who they are first.
@@ -677,7 +678,7 @@ export function createIdentityHandler(options: IdentityHandlerOptions): (request
 				noParameters(url.searchParams);
 				const signedIn = await readSignedIn(request);
 				if (signedIn !== undefined) {
-					const named = request.headers.get(ORGANISATION_HEADER)?.trim();
+					const named = readHeader(request.headers, ORGANISATION_HEADER)?.trim();
 					const ids = signedIn.organisationIds;
 					let current: OrganisationId | undefined;
 					if (named !== undefined && named !== "") {

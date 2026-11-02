@@ -13,9 +13,9 @@ import { PostgresWorkspaces } from "../src/workspaces.ts";
 const url = process.env.KANTEL_DATABASE_URL ?? "postgres://harbour:harbour@127.0.0.1:55432/harbour";
 const s3Options = {
 	endpoint: process.env.S3_ENDPOINT ?? "http://127.0.0.1:59000",
-	bucket: "kantel",
-	accessKeyId: "kantel",
-	secretAccessKey: "kantel-dev-secret",
+	bucket: "harbour",
+	accessKeyId: "harbour",
+	secretAccessKey: "harbour-dev-secret",
 };
 const pool = new pg.Pool({ connectionString: url });
 const s3 = new S3Client({ ...s3Options, region: "us-east-1" });

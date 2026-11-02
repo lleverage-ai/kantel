@@ -13,7 +13,9 @@ import {
 	type HostToolResult,
 	isKantelError,
 	KantelError,
+	readHeader,
 	systemClock,
+	withLegacyHeaders,
 } from "@kantel/contracts";
 import { HEADERS, json, MAX_BODY_BYTES } from "./wire.ts";
 
@@ -136,12 +138,13 @@ export function callbackHostToolHandler(options: CallbackHandlerOptions): HostTo
 				body,
 				redirect: "manual",
 				signal: AbortSignal.any([signal, timeout]),
-				headers: {
+				// Each also under its name before the rename, for a host that checks with an older @kantel/runtime.
+				headers: withLegacyHeaders({
 					"content-type": "application/json; charset=utf-8",
 					[HEADERS.signature]: await signHostToolCall(options.secret, body, clock.now()),
 					[HEADERS.hostId]: call.hostId,
 					[HEADERS.callId]: call.callId,
-				},
+				}),
 			}),
 		).catch((error: unknown) => {
 			if (signal.aborted) throw new KantelError("aborted", "The tool call was aborted");
@@ -199,7 +202,7 @@ export function createHostToolEndpoint(
 			(await verifyHostToolSignature(
 				secret,
 				body,
-				request.headers.get(HEADERS.signature),
+				readHeader(request.headers, HEADERS.signature),
 				clock.now(),
 				options.toleranceMs,
 			));

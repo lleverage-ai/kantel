@@ -21,6 +21,7 @@ import {
 	type Clock,
 	EMAIL_OTP_ISSUER,
 	type ExternalIdentity,
+	hasTokenPrefix,
 	type IdentityDirectory,
 	isKantelError,
 	KantelError,
@@ -29,6 +30,7 @@ import {
 	systemClock,
 	systemContext,
 	type Timestamp,
+	TOKEN_PREFIXES,
 	type UserId,
 } from "@kantel/contracts";
 import { hashApiKeySecret } from "./index.ts";
@@ -37,7 +39,10 @@ import type { SignInProvider } from "./jwt.ts";
 const OTP_CONTEXT = systemContext("identity.otp");
 
 /** Every Kantel session token starts with this. */
-export const SESSION_TOKEN_PREFIX = "kts_";
+export const SESSION_TOKEN_PREFIX = TOKEN_PREFIXES.session.current;
+
+/** Whether a bearer is a Kantel session token: `kts_…`, or `hbs_…` as sessions started before the rename are. */
+export const isSessionToken = (token: string): boolean => hasTokenPrefix(token, "session");
 
 export const OTP_CODE_DIGITS = 6;
 /** How long a code is valid. */
@@ -365,7 +370,7 @@ export function createEmailOtp(options: EmailOtpOptions): EmailOtp {
 		},
 
 		async endSession(token) {
-			if (typeof token !== "string" || !token.startsWith(SESSION_TOKEN_PREFIX)) return;
+			if (typeof token !== "string" || !isSessionToken(token)) return;
 			const ended = await sessions.end(await hashSessionToken(token), clock.now());
 			if (ended === undefined) return;
 			let organisationIds: readonly string[] = [];
@@ -386,12 +391,12 @@ export function createEmailOtp(options: EmailOtpOptions): EmailOtp {
 	};
 }
 
-/** The session token in `request`: an `Authorization: Bearer kts_…` header, or undefined. */
+/** The session token in `request`: an `Authorization: Bearer kts_…` (or `hbs_…`, before the rename) header, or undefined. */
 function sessionBearer(request: AuthenticatorRequest): string | undefined {
 	const header = request.headers.get("authorization");
 	if (header === null) return undefined;
-	const match = /^Bearer[ \t]+(kts_[^\s]+)[ \t]*$/i.exec(header);
-	return match?.[1];
+	const match = /^Bearer[ \t]+(\S+)[ \t]*$/i.exec(header);
+	return match?.[1] !== undefined && isSessionToken(match[1]) ? match[1] : undefined;
 }
 
 export interface KantelSessionProviderOptions {

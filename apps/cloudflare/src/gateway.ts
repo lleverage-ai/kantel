@@ -47,6 +47,7 @@ import {
 	callContextFor,
 	isKantelError,
 	type Proposal,
+	readHeader,
 } from "@kantel/contracts";
 import { authenticationFailureResponse } from "@kantel/identity/authenticator";
 import { createIdentityHandler, isIdentityPath } from "@kantel/identity/http";
@@ -226,7 +227,7 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 	const callContext = async (request: Request): Promise<CallContext> => {
 		const caller = callers.get(request);
 		if (caller === undefined) throw new Error("the gateway did not authenticate this request");
-		const requestId = request.headers.get("kantel-request-id") ?? undefined;
+		const requestId = readHeader(request.headers, "kantel-request-id") ?? undefined;
 		return callContextFor(caller, { ...(requestId === undefined ? {} : { requestId }), signal: request.signal });
 	};
 	const workspaces = createWorkspaceReadApi({ workspaces: stack.workspaces, authenticate: callContext });
