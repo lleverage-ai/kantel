@@ -21,7 +21,7 @@ const configured = {
 	KANTEL_ACCESS_TEAM_DOMAIN: "https://team.cloudflareaccess.com/",
 	KANTEL_ACCESS_AUD: "a".repeat(64),
 	KANTEL_MODELS_VPC_SERVICE_ID: "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
-	KANTEL_ADMIN_EMAIL: "admin@harbour.test",
+	KANTEL_ADMIN_EMAIL: "admin@kantel.test",
 };
 
 const wranglerJsonc = fileURLToPath(new URL("../wrangler.jsonc", import.meta.url));
@@ -49,7 +49,7 @@ describe("deploy config", () => {
 		expect(values.accountId).toBeUndefined();
 		const config = deployConfig(rawConfig, values);
 		expect(config.account_id).toBeUndefined();
-		expect(config.routes).toEqual([{ pattern: "harbour.example.com/*", zone_name: "example.com" }]);
+		expect(config.routes).toEqual([{ pattern: "kantel.example.com/*", zone_name: "example.com" }]);
 	});
 
 	it("refuses a malformed variable in either mode", () => {
@@ -62,10 +62,10 @@ describe("deploy config", () => {
 			);
 			const malformed: Record<string, readonly string[]> = {
 				CLOUDFLARE_ACCOUNT_ID: ["0123", "my-account"],
-				KANTEL_HOSTNAME: ["harbour", "harbour.example-", "harbour.myslop.app/v1", "myslop.app"],
+				KANTEL_HOSTNAME: ["kantel", "kantel.example-", "harbour.myslop.app/v1", "myslop.app"],
 				KANTEL_ACCESS_TEAM_DOMAIN: ["team", "https://team.cloudflareaccess.com/login"],
 				KANTEL_ACCESS_AUD: ["not hex", "abc"],
-				KANTEL_ADMIN_EMAIL: ["tom", "admin@harbour..test", "a b@harbour.test", "@harbour.test", "admin@harbour"],
+				KANTEL_ADMIN_EMAIL: ["tom", "admin@kantel..test", "a b@kantel.test", "@kantel.test", "admin@kantel"],
 			};
 			for (const [name, values] of Object.entries(malformed)) {
 				for (const value of values) {
@@ -89,7 +89,7 @@ describe("deploy config", () => {
 			vars: {
 				KANTEL_ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
 				KANTEL_ACCESS_AUD: configured.KANTEL_ACCESS_AUD,
-				KANTEL_ADMIN_EMAIL: "admin@harbour.test",
+				KANTEL_ADMIN_EMAIL: "admin@kantel.test",
 			},
 		});
 		// The local dev environment (its mock Access issuer and dev routes) is never deployed.
@@ -125,7 +125,7 @@ describe("deploy config", () => {
 
 	it("routes the hostname on its parent zone, never as a custom domain", () => {
 		expect(zoneOf("harbour.myslop.app")).toBe("myslop.app");
-		expect(zoneOf("harbour.example.co.uk")).toBe("example.co.uk");
+		expect(zoneOf("kantel.example.co.uk")).toBe("example.co.uk");
 		const config = deployConfig(
 			rawConfig,
 			deployValues({ ...configured, KANTEL_HOSTNAME: "Harbour.MySlop.app" }, "deploy"),
@@ -178,7 +178,7 @@ describe("deploy config", () => {
 		);
 		expect(() => deployValues({ ...configured, KANTEL_D1_DATABASE_ID: id }, "dry-run")).toThrow(/or neither/);
 		const bad = {
-			KANTEL_D1_DATABASE_ID: "harbour",
+			KANTEL_D1_DATABASE_ID: "kantel",
 			KANTEL_R2_BUCKET: "Kantel_Workspaces",
 			KANTEL_LOCATION_HINT: "ams",
 		};

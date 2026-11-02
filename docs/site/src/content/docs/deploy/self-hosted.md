@@ -31,7 +31,7 @@ The gateway itself depends only on `postgres`, `minio` and `mailpit`.
 
 ## First start
 
-On its first start the gateway creates an organisation, a project and an operator API key (`hbr_…`) on that project. It writes their IDs and the key to `/var/lib/harbour/bootstrap.json` (mode 0600) in its volume. On later starts it reads the file back and keeps the same deployment while the key still works.
+On its first start the gateway creates an organisation, a project and an operator API key (`ktk_…`) on that project. It writes their IDs and the key to `/var/lib/harbour/bootstrap.json` (mode 0600) in its volume. On later starts it reads the file back and keeps the same deployment while the key still works.
 
 ```bash
 docker compose -f deploy/compose/compose.yaml exec -T gateway cat /var/lib/harbour/bootstrap.json
@@ -53,7 +53,7 @@ Codes go out through `KANTEL_SMTP_URL` from `KANTEL_MAIL_FROM`:
 | `smtp://user:password@host:port` | STARTTLS required |
 | `smtp://host:port?starttls=off` | In the clear, for a relay on a private network |
 
-Compose sends codes to Mailpit by default. Without `KANTEL_SMTP_URL` the sign-in routes answer 503, and a malformed value stops the gateway at start. Codes last 10 minutes and a signed-in session (`hbs_…`) lasts 12 hours. The gateway allows 30 sign-in requests per client address per 15 minutes. Behind a reverse proxy every client shares one address, so limit there instead.
+Compose sends codes to Mailpit by default. Without `KANTEL_SMTP_URL` the sign-in routes answer 503, and a malformed value stops the gateway at start. Codes last 10 minutes and a signed-in session (`kts_…`) lasts 12 hours. The gateway allows 30 sign-in requests per client address per 15 minutes. Behind a reverse proxy every client shares one address, so limit there instead.
 
 Set `KANTEL_PUBLIC_URL` (an origin, such as `https://kantel.example.com`) when people reach the console through a TLS proxy. Passkeys are made for that origin, and without it the gateway uses the request's own origin, which is `http:` behind a proxy.
 
@@ -190,7 +190,7 @@ Because the isolate runs in the gateway's process, gVisor doesn't apply to it. `
 docker compose -f deploy/compose/compose.yaml -f deploy/compose/browser.yaml up -d --build --wait
 ```
 
-The gateway then uses `KANTEL_BROWSER_PROVIDER=harbour`. An agent asks before it opens any site, and a person allows or declines it in the console. The overlay's keys are development defaults: anywhere else, set `KANTEL_BROWSER_HOST_TOKEN`, `KANTEL_BROWSER_VIEW_KEY` and `KANTEL_BROWSER_SEAL_KEY` to random values of 32 characters or more (`openssl rand -hex 32`). Set `KANTEL_EMBED_ORIGINS` when another app frames the viewer.
+The gateway then uses `KANTEL_BROWSER_PROVIDER=kantel`. An agent asks before it opens any site, and a person allows or declines it in the console. The overlay's keys are development defaults: anywhere else, set `KANTEL_BROWSER_HOST_TOKEN`, `KANTEL_BROWSER_VIEW_KEY` and `KANTEL_BROWSER_SEAL_KEY` to random values of 32 characters or more (`openssl rand -hex 32`). Set `KANTEL_EMBED_ORIGINS` when another app frames the viewer.
 
 `KANTEL_BROWSER_RUNTIME` picks the browser containers' runtime: `runc` by default, or `runsc` or `runsc-kvm` to put Chromium under gVisor. Set it for the `browser-host` service. [Install gVisor](https://gvisor.dev/docs/user_guide/install/) and register it with Docker first:
 
@@ -208,7 +208,7 @@ To use brwsr.dev instead, set `KANTEL_BRWSR_API_KEY` on the gateway. Without a b
 
 To configure the gateway's model connectors on Kubernetes, see [Models on Kubernetes](#on-kubernetes).
 
-`deploy/kubernetes/browser-host` runs the browser host on Kubernetes, with a Pod per browser and no Docker socket (`KANTEL_BROWSER_DRIVER=kubernetes`). `KANTEL_BROWSER_RUNTIME_CLASS` sets a RuntimeClass, such as gVisor's. Its manifests build with `kubectl kustomize` but haven't run on a cluster yet. Point the gateway at it with `KANTEL_BROWSER_HOST_URL=http://harbour-browser-host.harbour-browsers.svc:8790` and the same host token and view key.
+`deploy/kubernetes/browser-host` runs the browser host on Kubernetes, with a Pod per browser and no Docker socket (`KANTEL_BROWSER_DRIVER=kubernetes`). `KANTEL_BROWSER_RUNTIME_CLASS` sets a RuntimeClass, such as gVisor's. Its manifests build with `kubectl kustomize` but haven't run on a cluster yet. Point the gateway at it with `KANTEL_BROWSER_HOST_URL=http://kantel-browser-host.kantel-browsers.svc:8790` and the same host token and view key.
 
 There are no Kubernetes manifests for the gateway and its stores.
 

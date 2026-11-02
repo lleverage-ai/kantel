@@ -15,7 +15,7 @@ import { type CallContext, isRedactedUse, type SessionId, systemContext } from "
 import { afterEach, describe, expect, it } from "vitest";
 import { bootstrap, createGatewayComponents, type GatewayComponents } from "../../src/gateway/components.ts";
 
-const ORIGIN = "https://harbour.example.com";
+const ORIGIN = "https://kantel.example.com";
 const opened: GatewayComponents[] = [];
 afterEach(async () => {
 	for (const components of opened.splice(0)) await components.close();

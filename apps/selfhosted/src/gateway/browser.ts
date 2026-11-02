@@ -3,9 +3,9 @@
 // Kantel's own browsers on the self-hosted browser host (`src/browser/host.ts`), so a self-hosted Kantel needs no
 // brwsr.dev. brwsr stays possible, with its key.
 //
-//   KANTEL_BROWSER_PROVIDER     `harbour` or `brwsr`. Unset: `harbour` when a browser host is set, else `brwsr` when
+//   KANTEL_BROWSER_PROVIDER     `kantel` or `brwsr`. Unset: `kantel` when a browser host is set, else `brwsr` when
 //                                brwsr's key is, else the gateway has no browser
-//   KANTEL_BROWSER_HOST_URL     the browser host, such as http://browser-host:8790 (harbour)
+//   KANTEL_BROWSER_HOST_URL     the browser host, such as http://browser-host:8790 (kantel)
 //   KANTEL_BROWSER_HOST_TOKEN   its bearer token, 32 characters or more (a secret; the host holds the same)
 //   KANTEL_BROWSER_VIEW_KEY     signs view links, 32 characters or more (a secret; the host holds the same)
 //   KANTEL_EMBED_ORIGINS        the origins (a host app's) that may frame the viewer page, besides the console
@@ -70,7 +70,7 @@ export function withBrowserTools(
 
 export type GatewayBrowserConfig =
 	| {
-			readonly provider: "harbour";
+			readonly provider: "kantel";
 			readonly hostUrl: string;
 			readonly hostToken: string;
 			readonly viewKey: string;
@@ -78,13 +78,13 @@ export type GatewayBrowserConfig =
 	  }
 	| { readonly provider: "brwsr"; readonly apiKey: string; readonly apiUrl?: string };
 
-/** The gateway's browser from its environment, or `undefined` for none. Refuses a harbour setup missing a part. */
+/** The gateway's browser from its environment, or `undefined` for none. Refuses a kantel setup missing a part. */
 export function browserConfig(env: NodeJS.ProcessEnv = process.env): GatewayBrowserConfig | undefined {
 	const read = (name: string) => env[name]?.trim() ?? "";
 	const hostUrl = read("KANTEL_BROWSER_HOST_URL").replace(/\/+$/, "");
 	const apiKey = read("KANTEL_BRWSR_API_KEY");
 	const named = read("KANTEL_BROWSER_PROVIDER");
-	const provider = named !== "" ? browserProviderName(named) : hostUrl !== "" ? "harbour" : "brwsr";
+	const provider = named !== "" ? browserProviderName(named) : hostUrl !== "" ? "kantel" : "brwsr";
 	if (provider === "brwsr") {
 		if (apiKey === "") return undefined;
 		const apiUrl = read("KANTEL_BRWSR_API_URL");
@@ -92,7 +92,7 @@ export function browserConfig(env: NodeJS.ProcessEnv = process.env): GatewayBrow
 	}
 	const hostToken = read("KANTEL_BROWSER_HOST_TOKEN");
 	const viewKey = read("KANTEL_BROWSER_VIEW_KEY");
-	if (hostUrl === "") throw new Error("KANTEL_BROWSER_PROVIDER=harbour needs KANTEL_BROWSER_HOST_URL");
+	if (hostUrl === "") throw new Error("KANTEL_BROWSER_PROVIDER=kantel needs KANTEL_BROWSER_HOST_URL");
 	if (!/^https?:\/\//.test(hostUrl)) throw new Error("KANTEL_BROWSER_HOST_URL must be an http(s) URL");
 	if (hostToken.length < 32) throw new Error("KANTEL_BROWSER_HOST_TOKEN must be 32 characters or more");
 	if (viewKey.length < 32) throw new Error("KANTEL_BROWSER_VIEW_KEY must be 32 characters or more");
@@ -103,7 +103,7 @@ export function browserConfig(env: NodeJS.ProcessEnv = process.env): GatewayBrow
 /** What `/v1/deployment` says backs the browser. */
 export function browserBinding(config: GatewayBrowserConfig | undefined): string {
 	if (config === undefined) return "none";
-	return config.provider === "harbour" ? "harbour (self-hosted browser host)" : "brwsr";
+	return config.provider === "kantel" ? "kantel (self-hosted browser host)" : "brwsr";
 }
 
 /** The broker's provider for the configuration. Kantel's links are relative (`/browser/<browser>#<token>`). */
@@ -115,7 +115,7 @@ export function gatewayBrowserProvider(
 		return createBrwsrProvider({
 			apiKey: config.apiKey,
 			apiUrl: config.apiUrl ?? BRWSR_API_URL,
-			userMetadata: { agent: "harbour" },
+			userMetadata: { agent: "kantel" },
 			...(options.fetch === undefined ? {} : { fetch: options.fetch }),
 		});
 	}
@@ -146,9 +146,9 @@ export interface BrowserViews {
 	upgrade(incoming: IncomingMessage, socket: Duplex, head: Buffer): void;
 }
 
-/** The viewers' routes, for a harbour configuration. */
+/** The viewers' routes, for a kantel configuration. */
 export function createBrowserViews(
-	config: Extract<GatewayBrowserConfig, { provider: "harbour" }>,
+	config: Extract<GatewayBrowserConfig, { provider: "kantel" }>,
 	options: { readonly fetch?: typeof fetch; readonly now?: () => number } = {},
 ): BrowserViews {
 	const signer = createBrowserViewSigner(config.viewKey);

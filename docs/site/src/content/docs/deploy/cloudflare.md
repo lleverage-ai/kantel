@@ -3,7 +3,7 @@ title: Cloudflare
 description: Deploy your own copy of Kantel to a Cloudflare account, with its Durable Objects, D1, R2, Access sign-in, secrets and deploy workflow.
 ---
 
-Kantel on Cloudflare is one Worker, `harbour`, on one hostname behind Cloudflare Access. It serves the console as static assets and the API under `/v1/`. This page covers deploying it to your own account. For how it compares with self-hosting, see the [deployment overview](/deploy/overview/).
+Kantel on Cloudflare is one Worker, `kantel`, on one hostname behind Cloudflare Access. It serves the console as static assets and the API under `/v1/`. This page covers deploying it to your own account. For how it compares with self-hosting, see the [deployment overview](/deploy/overview/).
 
 The Worker, its Durable Object classes, its database and bucket keep `harbour` in their names from before the rename. Settings named `HARBOUR_*` (GitHub variables and secrets, Worker secrets) still work when the `KANTEL_*` one isn't set.
 
@@ -18,7 +18,7 @@ The repository is set up for the maintainers' deployment at `harbour.myslop.app`
 | `ASSETS` | Static assets | The console build (`apps/console/dist`); the Worker answers a miss with the console page, or a 404 under `/assets/` |
 | `STACK` | Durable Object `KantelStack` | Every session, its history and alarm, workspace heads, the audit outbox and the scheduler. One object, named `m1` |
 | `VAULTS` | Durable Object `KantelVault` | Every vault record, in its own SQLite. One object, named `vault` |
-| `BROWSERS` | Durable Object `KantelBrowser` | Kantel's own browsers, one object per browser, used only with `KANTEL_BROWSER_PROVIDER=harbour` |
+| `BROWSERS` | Durable Object `KantelBrowser` | Kantel's own browsers, one object per browser, used only with `KANTEL_BROWSER_PROVIDER=kantel` |
 | `SANDBOXES` | Durable Object `KantelSandbox` | The container tier, one object per session |
 | `DB` | D1 | The identity directory, audit, schedules, skills, memory, prompt rules and sharing |
 | `WORKSPACES` | R2 | Workspace files under `workspaces/`, and skill files under `skills/` |
@@ -34,7 +34,7 @@ The D1 database and R2 bucket are named, not given IDs: `harbour-weur` and `harb
 The container tier and Kantel's own browsers are Cloudflare Containers. Neither is deployed unless you ask:
 
 - `KANTEL_SANDBOX_CONTAINERS=on` adds the sandbox app (`images/sandbox`, 1 vCPU, 3 GiB, 8 GB disk, at most 10 instances) and lets commands escalate to it. Without it, `python`, `npm`, `git` writes and similar commands are refused as `unavailable`.
-- `KANTEL_BROWSER_CONTAINERS=on` adds the browser app (`images/browser`, 1 vCPU, 3 GiB, 4 GB disk, at most 3 instances). Pair it with `KANTEL_BROWSER_PROVIDER=harbour`.
+- `KANTEL_BROWSER_CONTAINERS=on` adds the browser app (`images/browser`, 1 vCPU, 3 GiB, 4 GB disk, at most 3 instances). Pair it with `KANTEL_BROWSER_PROVIDER=kantel`.
 
 Both apps are held to the `WEUR` region in `scripts/deploy-config.ts` (`constraints: { regions: ["WEUR"] }`). To run them elsewhere, edit those constants.
 
@@ -66,7 +66,7 @@ Secrets are Worker secrets, never vars; the deploy step refuses them in `wrangle
 | `KANTEL_VAULT_EGRESS_GATEWAY_TOKEN` | At least 16 characters, no spaces | The egress gateway's calls to the vault are refused (403) |
 | `KANTEL_CPA_API_KEY` | CLIProxyAPI's client key, at least 16 characters | Sessions run on the echo model |
 | `KANTEL_BRWSR_API_KEY` | A brwsr.dev project key | No browser with the `brwsr` provider |
-| `KANTEL_BROWSER_VIEW_KEY`, `KANTEL_BROWSER_SEAL_KEY` | At least 32 characters each | No browser with the `harbour` provider |
+| `KANTEL_BROWSER_VIEW_KEY`, `KANTEL_BROWSER_SEAL_KEY` | At least 32 characters each | No browser with the `kantel` provider |
 
 The CLIProxyAPI key is kept as a platform item in the vault, so real models need `KANTEL_VAULT_KEY` too.
 
@@ -98,7 +98,7 @@ These vars live in `wrangler.jsonc`. The deploy step leaves them as they are, so
 | `KANTEL_SESSION_WEBSOCKET` | `on` | `off` serves session events as server-sent events only |
 | `KANTEL_USAGE` | `on` | `off` stops writing usage rows |
 | `KANTEL_LOCATION_HINT` | `weur` | Where the stack and vault objects are created. The deploy can override it |
-| `KANTEL_BROWSER_PROVIDER` | `brwsr` | `harbour` uses Kantel's own browsers. The deploy can override it |
+| `KANTEL_BROWSER_PROVIDER` | `brwsr` | `kantel` uses Kantel's own browsers. The deploy can override it |
 
 `KANTEL_LOCATION_HINT` applies only when an object is first created: an existing `m1` or `vault` object stays where it is. A D1 database's and an R2 bucket's location is fixed when you create them.
 

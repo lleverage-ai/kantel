@@ -118,27 +118,27 @@ describe("the fixture space", () => {
 	it("lists the active concepts the store kept, with the forgotten and replaced ones apart", async () => {
 		const { source, space } = await createMemoryScenario();
 		const active = await readAll<Concept>((page) => source.listConcepts(space.id, { status: "active" }, page));
-		expect(active.map((item) => item.id)).toContain("projects/harbour/merge-when-green");
-		expect(active.map((item) => item.id)).not.toContain("projects/harbour/sandbox-on-fly");
+		expect(active.map((item) => item.id)).toContain("projects/kantel/merge-when-green");
+		expect(active.map((item) => item.id)).not.toContain("projects/kantel/sandbox-on-fly");
 		const superseded = await source.listConcepts(space.id, { status: "superseded" });
 		expect(superseded.items.map((item) => [item.id, item.supersededBy])).toEqual([
-			["projects/harbour/merge-after-review", "projects/harbour/merge-when-green"],
+			["projects/kantel/merge-after-review", "projects/kantel/merge-when-green"],
 		]);
 		const forgotten = await source.listConcepts(space.id, { status: "forgotten" });
-		expect(forgotten.items.map((item) => item.id)).toEqual(["projects/harbour/sandbox-on-fly"]);
+		expect(forgotten.items.map((item) => item.id)).toEqual(["projects/kantel/sandbox-on-fly"]);
 		const stale = active.filter((item) => isStale(item, FIXTURE_NOW)).map((item) => item.id);
-		expect(stale).toEqual(["projects/harbour/staging-jobs-retry"]);
+		expect(stale).toEqual(["projects/kantel/staging-jobs-retry"]);
 	});
 
 	it("reads a concept's history from the proposals that changed it, newest first", async () => {
 		const { source, space } = await createMemoryScenario();
 		const proposals = await readAll<MemoryProposal>((page) => source.listProposals(space.id, undefined, page));
-		const history = conceptHistory(proposals, "projects/harbour/vault-binding-codes");
+		const history = conceptHistory(proposals, "projects/kantel/vault-binding-codes");
 		expect(history.map((proposal) => proposal.write.op)).toEqual(["correct", "remember"]);
-		const replaced = conceptHistory(proposals, "projects/harbour/merge-when-green");
+		const replaced = conceptHistory(proposals, "projects/kantel/merge-when-green");
 		expect(replaced.map((proposal) => proposal.write.op)).toEqual(["supersede"]);
 		// A pending correction isn't history yet.
-		expect(conceptHistory(proposals, "projects/harbour/release-notes-folder")).toHaveLength(1);
+		expect(conceptHistory(proposals, "projects/kantel/release-notes-folder")).toHaveLength(1);
 	});
 
 	it("waits on three proposals, oldest first, one nearly repeating a concept", async () => {
@@ -147,7 +147,7 @@ describe("the fixture space", () => {
 		const sorted = sortProposals(proposals);
 		expect(sorted.pending.map((proposal) => proposal.id)).toEqual(pending);
 		expect(sorted.pending.find((proposal) => proposal.duplicateOf !== undefined)?.duplicateOf).toBe(
-			"projects/harbour/vault-binding-codes",
+			"projects/kantel/vault-binding-codes",
 		);
 		expect(sorted.decided[0]!.status).toBe("rejected");
 	});
@@ -159,7 +159,7 @@ describe("the fixture space", () => {
 		const made = await source.getConcept(space.id, "projects/billing/invoice-mismatch-notes");
 		expect(made.version).toBe(1);
 		await source.decide(notes!, { outcome: "reject" });
-		const unchanged = await source.getConcept(space.id, "projects/harbour/release-notes-folder");
+		const unchanged = await source.getConcept(space.id, "projects/kantel/release-notes-folder");
 		expect(unchanged.version).toBe(1);
 		const left = await source.listProposals(space.id, { status: "pending" });
 		expect(left.items).toHaveLength(1);
@@ -167,7 +167,7 @@ describe("the fixture space", () => {
 
 	it("lets a person correct a learned concept: proposed and applied at once, theirs after, in its history", async () => {
 		const { source, space } = await createMemoryScenario();
-		const before = await source.getConcept(space.id, "projects/harbour/staging-jobs-retry");
+		const before = await source.getConcept(space.id, "projects/kantel/staging-jobs-retry");
 		const draft = {
 			title: before.title,
 			statement: "Retry stuck staging jobs from the admin console.",
@@ -221,7 +221,7 @@ describe("the fixture space", () => {
 		const { source, pending } = await createMemoryScenario();
 		const error = await source.decide(pending[1]!, { outcome: "apply" }).catch((caught: unknown) => caught);
 		expect(decisionError(error, "apply")).toBe(
-			"Refused: it nearly repeats projects/harbour/vault-binding-codes. Reject it, or correct that concept instead.",
+			"Refused: it nearly repeats projects/kantel/vault-binding-codes. Reject it, or correct that concept instead.",
 		);
 		expect(decisionError(new Error("offline"), "reject")).toMatch(/Couldn't reject it/);
 	});
@@ -236,7 +236,7 @@ describe("the fixture space", () => {
 		});
 		const reasons = new Map(recall.manifest.map((entry) => [entry.conceptId, entry.reason]));
 		expect(reasons.get("personal/plain-sentence-case")).toBe("profile");
-		expect(reasons.get("projects/harbour/vault-binding-codes")).toBe("search");
+		expect(reasons.get("projects/kantel/vault-binding-codes")).toBe("search");
 		expect(recall.text).toContain("vault approval");
 	});
 
@@ -247,7 +247,7 @@ describe("the fixture space", () => {
 			query: "merge the pull request once checks are green",
 			scopes: { projects: ["prj_platform"], jobs: ["TASK-7"] },
 		});
-		const exception = recall.manifest.find((entry) => entry.conceptId === "projects/harbour/release-freeze-exception");
+		const exception = recall.manifest.find((entry) => entry.conceptId === "projects/kantel/release-freeze-exception");
 		expect(exception?.reason).toBe("exception");
 	});
 });

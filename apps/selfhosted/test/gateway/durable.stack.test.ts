@@ -126,7 +126,7 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 	});
 
 	test("serves every API end to end, and keeps its deployment across a restart", { timeout: 120_000 }, async () => {
-		const consoleDir = await mkdtemp(join(tmpdir(), "harbour-durable-"));
+		const consoleDir = await mkdtemp(join(tmpdir(), "kantel-durable-"));
 		scratch = consoleDir;
 		await writeFile(join(consoleDir, "index.html"), '<!doctype html><div id="root"></div>');
 
@@ -378,7 +378,7 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 					ref: "m1",
 					concepts: [
 						{
-							id: "projects/harbour/gateway-port",
+							id: "projects/kantel/gateway-port",
 							title: "Kantel gateway port",
 							description: "Where the self-hosted gateway listens",
 							statement,
@@ -588,11 +588,11 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 	});
 
 	test("leaves TLS settings for node-postgres to read, as it would from the URL", () => {
-		const noVerify = new pg.Client(withSearchPath("postgres://u:p@db.example/harbour?ssl=no-verify", "harbour_m1"));
+		const noVerify = new pg.Client(withSearchPath("postgres://u:p@db.example/kantel?ssl=no-verify", "harbour_m1"));
 		expect((noVerify as unknown as { connectionParameters: { ssl: unknown } }).connectionParameters.ssl).toEqual({
 			rejectUnauthorized: false,
 		});
-		const required = new pg.Client(withSearchPath("postgres://u:p@db.example/harbour?sslmode=require", "harbour_m1"));
+		const required = new pg.Client(withSearchPath("postgres://u:p@db.example/kantel?sslmode=require", "harbour_m1"));
 		expect((required as unknown as { connectionParameters: { ssl: unknown } }).connectionParameters.ssl).toBeTruthy();
 	});
 

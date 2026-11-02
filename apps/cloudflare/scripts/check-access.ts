@@ -43,7 +43,7 @@ export function accessVerdict(status: number, location: string | null, teamDomai
 }
 
 async function checkOnce(url: string, teamDomain: string): Promise<AccessVerdict> {
-	const response = await fetch(url, { redirect: "manual", headers: { "user-agent": "harbour-deploy-check" } });
+	const response = await fetch(url, { redirect: "manual", headers: { "user-agent": "kantel-deploy-check" } });
 	await response.body?.cancel();
 	// A new route can answer 5xx (such as 522) until it has propagated: retried like a connection error.
 	if (response.status >= 500) throw new Error(`HTTP ${response.status}`);

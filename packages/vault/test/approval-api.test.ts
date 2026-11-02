@@ -31,7 +31,7 @@ const ORG = "org-a";
 const PROJECT = "proj-a";
 const OTHER_PROJECT = "proj-b";
 const HOST = "api.github.com";
-const ORIGIN = "https://harbour.test";
+const ORIGIN = "https://kantel.test";
 const systemContextFor = () => systemContext("egress-gateway");
 const SECRET = "approval-api-test-value-6f1d";
 
@@ -479,7 +479,7 @@ describe.each(shapes)("createVaultApprovalApi with passkeys: $name", ({ apiCheck
 		expect(await approver.viewer()).toMatchObject({ passkeyRequired: true });
 		const narrowing = { methods: ["GET" as const], ttlMs: 600_000 };
 		const challenge = await approver.passkeyChallenge(proposal.id, { termsHash: proposal.termsHash, narrowing });
-		expect(challenge.rpId).toBe("harbour.test");
+		expect(challenge.rpId).toBe("kantel.test");
 		// The action comes from the proposal's kind, never the caller.
 		expect(passkeys.issued).toEqual([
 			{ proposalId: proposal.id, termsHash: proposal.termsHash, action: "approve", narrowing },

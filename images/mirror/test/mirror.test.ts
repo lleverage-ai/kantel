@@ -17,7 +17,7 @@ const remotes = new Map<string, string>();
 function git(cwd: string, ...args: string[]): string {
 	return execFileSync(
 		"git",
-		["-c", "user.name=Kantel", "-c", "user.email=harbour@example.test", "-c", "commit.gpgsign=false", ...args],
+		["-c", "user.name=Kantel", "-c", "user.email=kantel@example.test", "-c", "commit.gpgsign=false", ...args],
 		{ cwd, env: { ...process.env, ...GIT_ENV }, encoding: "utf8" },
 	).trim();
 }
@@ -70,7 +70,7 @@ function cache(overrides: Partial<Parameters<typeof createGitMirrorCache>[0]> = 
 let site: ReturnType<typeof upstream>;
 
 beforeAll(() => {
-	base = mkdtempSync(join(tmpdir(), "harbour-mirror-"));
+	base = mkdtempSync(join(tmpdir(), "kantel-mirror-"));
 	site = upstream("site");
 	upstream("other");
 	upstream("third");

@@ -6,9 +6,9 @@ import { CommandBlock, OneTimeSecret } from "./one-time-secret.tsx";
 
 export default { title: "Primitives/One-time secret" } satisfies StoryDefault;
 
-const TOKEN = "hbt_Q7m2xK9vP4nR8sT3wB6yH2cJ5dE9aLf";
-const COMMAND = `npx @kantel/tunnel --harbour https://harbour.example.com --server ts_03warehouse --token ${TOKEN} -- <your stdio MCP server command>`;
-const URL_COMMAND = `npx @kantel/tunnel --harbour https://harbour.example.com --server ts_03warehouse --token ${TOKEN} --url http://127.0.0.1:8123/mcp`;
+const TOKEN = "ktt_Q7m2xK9vP4nR8sT3wB6yH2cJ5dE9aLf";
+const COMMAND = `npx @kantel/tunnel --kantel https://kantel.example.com --server ts_03warehouse --token ${TOKEN} -- <your stdio MCP server command>`;
+const URL_COMMAND = `npx @kantel/tunnel --kantel https://kantel.example.com --server ts_03warehouse --token ${TOKEN} --url http://127.0.0.1:8123/mcp`;
 
 /** A tunnel token with the commands that use it; I've stored it hides it, as the owner forgets the secret. */
 function Reveal() {

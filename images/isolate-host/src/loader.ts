@@ -21,7 +21,7 @@
 import { RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import { AwsClient } from "aws4fetch";
 // Bundled just-bash sandbox, embedded as a text module by config.capnp.
-import sandboxSource from "harbour-sandbox-bundle";
+import sandboxSource from "kantel-sandbox-bundle";
 import { type Assignment, Pool, parsePoolSize } from "./pool.ts";
 import type { ExecRequest, Manifest, default as Sandbox } from "./sandbox.ts";
 
@@ -143,9 +143,13 @@ function toVault(env: Env, request: Request, sessionId: string): Promise<Respons
 	const headers = new Headers(request.headers);
 	// The vault decides per session; the sandbox cannot forge this header,
 	// because the host sets it after the sandbox's request leaves the isolate.
-	headers.set("x-harbour-session", sessionId);
-	headers.set("x-harbour-tier", "isolate");
-	headers.set("x-harbour-host-key", env.VAULT_ISOLATE_KEY);
+	headers.set("x-kantel-session", sessionId);
+	headers.set("x-kantel-tier", "isolate");
+	headers.set("x-kantel-host-key", env.VAULT_ISOLATE_KEY);
+	// The same under their names before the rename, for a vault proxy built before it; set here, so never the sandbox's.
+	headers.set("x-harbour-session", sessionId); // before the rename
+	headers.set("x-harbour-tier", "isolate"); // before the rename
+	headers.set("x-harbour-host-key", env.VAULT_ISOLATE_KEY); // before the rename
 	return env.VAULT.fetch(new Request(request, { headers }));
 }
 
@@ -241,7 +245,7 @@ const json = (value: unknown, status = 200, isolate?: string) =>
 		headers: {
 			"content-type": "application/json",
 			// How the call found its isolate: per-session, or pool-hit, pool-miss or pool-assigned (a later call).
-			...(isolate === undefined ? {} : { "x-harbour-isolate": isolate }),
+			...(isolate === undefined ? {} : { "x-kantel-isolate": isolate }),
 		},
 	});
 

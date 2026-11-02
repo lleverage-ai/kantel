@@ -43,7 +43,7 @@ function setup() {
 		credentials: memoryCredentials(),
 		audit,
 		access: fakeAccess(["admin"]),
-		deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
+		deployment: { origin: "https://kantel.test", clientMetadataPublic: false },
 		approvals: vault,
 		fetch: async (url, init) => {
 			sent.push({ url, method: init?.method ?? "GET" });
@@ -247,7 +247,7 @@ describe("whose account a GitHub call acted as, and what it did (#464, #465)", (
 			fetch,
 			access: fakeAccess(["admin"]),
 			deployment: {
-				origin: "https://harbour.test",
+				origin: "https://kantel.test",
 				clientMetadataPublic: false,
 				platformClients: [{ templateId: "github", clientId: "Iv23-details", clientSecret: "details-secret" }],
 			},

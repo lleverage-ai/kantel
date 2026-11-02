@@ -253,12 +253,12 @@ function ListDemo() {
 			id: "a",
 			status: "working" as const,
 			title: "Migrate the billing worker to Pi Durable",
-			meta: "harbour, ui/session-components",
+			meta: "kantel, ui/session-components",
 		},
 		{ id: "b", status: "approval" as const, title: "Rotate the Linear API key", meta: "research" },
 		{ id: "c", status: "waiting" as const, title: "Which staging database should I use?", meta: "lleverage" },
 		{ id: "d", status: "error" as const, title: "Nightly bug sweep", meta: "research, schedule" },
-		{ id: "e", status: "done" as const, title: long, meta: "harbour" },
+		{ id: "e", status: "done" as const, title: long, meta: "kantel" },
 	];
 	return (
 		<Sheet title="List row">

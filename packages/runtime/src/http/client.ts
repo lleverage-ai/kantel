@@ -59,7 +59,7 @@ export interface HostCallbacks {
 }
 
 export interface SessionApiClientOptions {
-	/** The API's base URL, such as `https://harbour.example/v1`. */
+	/** The API's base URL, such as `https://kantel.example/v1`. */
 	readonly baseUrl: string;
 	/** The headers that authenticate a call, such as `bearer(apiKey)`. */
 	readonly credentials: (ctx: CallContext) => CredentialHeaders | Promise<CredentialHeaders>;

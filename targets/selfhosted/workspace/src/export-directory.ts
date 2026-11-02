@@ -58,7 +58,7 @@ export function createDirectoryExportSink(root: string): ExportSink {
 	return {
 		async write(path, content) {
 			const file = await target(path, true);
-			const temporary = `${file}.harbour-${crypto.randomUUID()}.tmp`;
+			const temporary = `${file}.kantel-${crypto.randomUUID()}.tmp`;
 			try {
 				await writeFile(temporary, content, { flag: "wx" });
 				await rename(temporary, file);

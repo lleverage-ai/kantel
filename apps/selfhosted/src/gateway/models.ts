@@ -6,7 +6,7 @@
  * `KANTEL_MODEL_CONNECTORS` (or `KANTEL_MODEL_CONNECTORS_FILE`) replaces it with connectors of any preset, such as
  * one LiteLLM key for a whole deployment (`modelConnectorsConfig`).
  *
- * - **Where it runs.** In the gateway's process, beside the runtime that calls it. The runtime's `harbour` provider
+ * - **Where it runs.** In the gateway's process, beside the runtime that calls it. The runtime's `kantel` provider
  *   reaches it through a `fetch` that calls the gateway's handler directly; the gateway's own `fetch` reaches only the
  *   configured connectors' origins (`connectorsOnly`).
  * - **Session tokens.** Minted and verified by this one gateway, so the key is 32 random bytes made at start and never

@@ -74,7 +74,7 @@ jobs:
       KANTEL_D1_DATABASE_ID: ${{ (vars.KANTEL_D1_DATABASE_ID || vars.HARBOUR_D1_DATABASE_ID) }}
       KANTEL_R2_BUCKET: ${{ (vars.KANTEL_R2_BUCKET || vars.HARBOUR_R2_BUCKET) }}
       KANTEL_LOCATION_HINT: ${{ (vars.KANTEL_LOCATION_HINT || vars.HARBOUR_LOCATION_HINT) }}
-      # Optional: Kantel's own browsers. `on` deploys their container app; the provider is `brwsr` unless set to `harbour`.
+      # Optional: Kantel's own browsers. `on` deploys their container app; the provider is `brwsr` unless set to `kantel`.
       KANTEL_BROWSER_CONTAINERS: ${{ (vars.KANTEL_BROWSER_CONTAINERS || vars.HARBOUR_BROWSER_CONTAINERS) }}
       KANTEL_BROWSER_PROVIDER: ${{ (vars.KANTEL_BROWSER_PROVIDER || vars.HARBOUR_BROWSER_PROVIDER) }}
       # Optional: the container tier. `on` deploys the sandbox containers' app (images/sandbox) and lets commands escalate.

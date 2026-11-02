@@ -118,7 +118,7 @@ async function setup() {
 	const handler = createAuditQueryHandler({ store, authenticator: createAuthenticator({ identity }) });
 	const client = (secret?: string) =>
 		createAuditClient({
-			baseUrl: "https://harbour.test/",
+			baseUrl: "https://kantel.test/",
 			fetch: async (input, init) => handler(new Request(input, init)),
 			...(secret === undefined ? {} : { headers: () => ({ authorization: `Bearer ${secret}` }) }),
 		});
@@ -165,19 +165,19 @@ describe("the audit query API", () => {
 		await expect(client().query()).rejects.toMatchObject({ code: "forbidden", details: { authentication: "invalid" } });
 		const auth = { authorization: `Bearer ${alphaKey.secret}` };
 
-		const missing = await handler(new Request(`https://harbour.test${AUDIT_EVENTS_PATH}`));
+		const missing = await handler(new Request(`https://kantel.test${AUDIT_EVENTS_PATH}`));
 		expect(missing.status).toBe(401);
 		expect(missing.headers.get("www-authenticate")).toContain("Bearer");
 
-		const bad = await handler(new Request(`https://harbour.test${AUDIT_EVENTS_PATH}?limit=x`, { headers: auth }));
+		const bad = await handler(new Request(`https://kantel.test${AUDIT_EVENTS_PATH}?limit=x`, { headers: auth }));
 		expect(bad.status).toBe(400);
 		expect(await bad.json()).toMatchObject({ error: { code: "invalid" } });
 
-		expect((await handler(new Request("https://harbour.test/v1/other", { headers: auth }))).status).toBe(404);
-		const nested = await handler(new Request(`https://harbour.test${AUDIT_EVENTS_PATH}/a/b`, { headers: auth }));
+		expect((await handler(new Request("https://kantel.test/v1/other", { headers: auth }))).status).toBe(404);
+		const nested = await handler(new Request(`https://kantel.test${AUDIT_EVENTS_PATH}/a/b`, { headers: auth }));
 		expect(nested.status).toBe(404);
 		const post = await handler(
-			new Request(`https://harbour.test${AUDIT_EVENTS_PATH}`, { method: "POST", headers: auth, body: "{}" }),
+			new Request(`https://kantel.test${AUDIT_EVENTS_PATH}`, { method: "POST", headers: auth, body: "{}" }),
 		);
 		expect(post.status).toBe(405);
 		expect(post.headers.get("allow")).toBe("GET");
@@ -195,9 +195,7 @@ describe("the audit query API", () => {
 		await expect(api.get("")).rejects.toMatchObject({ code: "invalid" });
 		const auth = { authorization: `Bearer ${alphaKey.secret}` };
 		for (const search of ["", "?id=", "?id=x&id=y", "?id=x&limit=1"]) {
-			const response = await handler(
-				new Request(`https://harbour.test${AUDIT_EVENT_PATH}${search}`, { headers: auth }),
-			);
+			const response = await handler(new Request(`https://kantel.test${AUDIT_EVENT_PATH}${search}`, { headers: auth }));
 			expect(response.status, search).toBe(400);
 		}
 	});
@@ -220,7 +218,7 @@ describe("the audit query API", () => {
 				},
 			});
 			const api = createAuditClient({
-				baseUrl: "https://harbour.test",
+				baseUrl: "https://kantel.test",
 				fetch: async (input, init) => handler(new Request(input, init)),
 			});
 			await expect(api.query(), code).rejects.toMatchObject({ code });
@@ -244,7 +242,7 @@ describe("the audit query API", () => {
 				},
 			},
 		});
-		const response = await handler(new Request(`https://harbour.test${AUDIT_EVENTS_PATH}`));
+		const response = await handler(new Request(`https://kantel.test${AUDIT_EVENTS_PATH}`));
 		expect(response.status).toBe(500);
 		expect(await response.text()).not.toContain("password");
 	});

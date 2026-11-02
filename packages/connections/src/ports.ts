@@ -64,7 +64,7 @@ export interface PlatformOAuthClient {
 /** What the deployment tells the connections service about itself. */
 export interface ConnectionsDeployment {
 	/**
-	 * The public origin people reach Kantel at, such as `https://harbour.example.com`, with no trailing slash. Redirect
+	 * The public origin people reach Kantel at, such as `https://kantel.example.com`, with no trailing slash. Redirect
 	 * URIs, connect URLs and the client ID metadata document's URL are built from it.
 	 */
 	readonly origin: string;

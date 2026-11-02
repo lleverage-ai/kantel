@@ -28,7 +28,7 @@ import {
 
 const base: Schedule = {
 	id: "schedule_1",
-	owner: { kind: "organisation", organisationId: "org_harbour" },
+	owner: { kind: "organisation", organisationId: "org_kantel" },
 	kind: "task",
 	title: "Draft the release notes",
 	timezone: "Europe/London",

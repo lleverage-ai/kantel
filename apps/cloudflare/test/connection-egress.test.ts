@@ -27,11 +27,11 @@ async function setUp() {
 	const upstream = conformanceUpstream();
 	const { models } = createScriptedModel();
 	const stack = await createStack({
-		config: gatewayConfig({ KANTEL_ADMIN_EMAIL: "tom@harbour.test" }),
+		config: gatewayConfig({ KANTEL_ADMIN_EMAIL: "tom@kantel.test" }),
 		models: () => ({ models }),
 		connections: {
 			credentials: memoryCredentials(),
-			deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
+			deployment: { origin: "https://kantel.test", clientMetadataPublic: false },
 			fetch: upstream.fetch,
 		},
 	});

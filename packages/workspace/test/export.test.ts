@@ -184,7 +184,7 @@ describe("the read API's export route", () => {
 			...(maxContentBytes === undefined ? {} : { maxContentBytes }),
 		});
 		const client = createWorkspaceReadClient({
-			baseUrl: "https://harbour.test/v1/workspaces",
+			baseUrl: "https://kantel.test/v1/workspaces",
 			headers: { "x-user": "alice" },
 			fetch: async (input, init) =>
 				(await api(new Request(input as string, init))) ?? new Response(null, { status: 404 }),
@@ -211,7 +211,7 @@ describe("the read API's export route", () => {
 		const { api, record, client } = await setUp(3);
 		const send = async (query: string, user = "alice") =>
 			(await api(
-				new Request(`https://harbour.test/v1/workspaces/${record.id}/export${query}`, { headers: { "x-user": user } }),
+				new Request(`https://kantel.test/v1/workspaces/${record.id}/export${query}`, { headers: { "x-user": user } }),
 			))!;
 		expect((await send("")).status).toBe(400);
 		expect((await send("?prefix=")).status).toBe(400);
@@ -233,7 +233,7 @@ describe("the read API's export route", () => {
 			},
 			authenticate: async () => ctx,
 		});
-		const response = (await bare(new Request(`https://harbour.test/v1/workspaces/${record.id}/export?prefix=notes/`)))!;
+		const response = (await bare(new Request(`https://kantel.test/v1/workspaces/${record.id}/export?prefix=notes/`)))!;
 		expect(response.status).toBe(501);
 	});
 
@@ -252,7 +252,7 @@ describe("the read API's export route", () => {
 			maxContentBytes: 3,
 		});
 		const send = async (query: string, method = "GET") =>
-			(await api(new Request(`https://harbour.test/v1/workspaces/${record.id}/export${query}`, { method })))!;
+			(await api(new Request(`https://kantel.test/v1/workspaces/${record.id}/export${query}`, { method })))!;
 		expect((await send("?prefix=notes/")).status).toBe(413);
 		expect((await send("?prefix=notes/a&prefix=notes/a.md")).status).toBe(200);
 		expect((await send("?prefix=src/&prefix=missing/")).status).toBe(200);
@@ -298,7 +298,7 @@ describe("the read API's export route", () => {
 			maxContentBytes: 16,
 		});
 		bodyReads = 0;
-		const response = (await api(new Request(`https://harbour.test/v1/workspaces/${record.id}/export?prefix=notes/`)))!;
+		const response = (await api(new Request(`https://kantel.test/v1/workspaces/${record.id}/export?prefix=notes/`)))!;
 		expect(response.status).toBe(413);
 		expect(bodyReads).toBe(0);
 	});
@@ -332,7 +332,7 @@ describe("the read API's export route", () => {
 			maxContentBytes: 1_040,
 		});
 		const status = async (query: string) =>
-			(await api(new Request(`https://harbour.test/v1/workspaces/${record.id}/export${query}`)))!.status;
+			(await api(new Request(`https://kantel.test/v1/workspaces/${record.id}/export${query}`)))!.status;
 		// 1,050 one-byte notes: only a sizing that pages past the first 1,000 sees the budget broken.
 		expect(await status("?prefix=notes/")).toBe(413);
 		expect(await status("?prefix=notes")).toBe(413);

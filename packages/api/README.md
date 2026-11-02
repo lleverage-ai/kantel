@@ -44,30 +44,30 @@ then per-call options (`signal`, `requestId`, `headers`).
 ```ts
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 
-const harbour = createKantelClient({ baseUrl: "https://harbour.example/v1", token: process.env.KANTEL_API_KEY });
-const session = await harbour.createSession({
+const kantel = createKantelClient({ baseUrl: "https://kantel.example/v1", token: process.env.KANTEL_API_KEY });
+const session = await kantel.createSession({
 	projectId: "proj-docs",
 	agentId: "assistant",
 	labels: { lleverageRunId: "run-42" },
 	message: { text: "Summarise the open invoices" },
 });
-const steer = await harbour.sendMessage(
+const steer = await kantel.sendMessage(
 	session.id,
 	{ via: "steer", text: "Only this month's" },
 	{ idempotencyKey: crypto.randomUUID() },
 );
 
 // Without a stream: poll until the run ends (202 `pending` until then), answered, failed or aborted.
-let result = await harbour.getRunResult(session.id, { submission: steer.id });
-while (result.status === "pending") result = await harbour.getRunResult(session.id, { submission: steer.id });
+let result = await kantel.getRunResult(session.id, { submission: steer.id });
+while (result.status === "pending") result = await kantel.getRunResult(session.id, { submission: steer.id });
 
 // A session's first message fixes its model: `getSessionModels` says `locked` from then on, and another model is a
 // 409 `conflict`. Its thinking level can still change, though that may cost the next call the prompt cache.
-await harbour.sendMessage(session.id, { text: "Double-check the totals", thinking: "high" });
+await kantel.sendMessage(session.id, { text: "Double-check the totals", thinking: "high" });
 
 // @kantel/protocol frames over a WebSocket; fold them with applyFrames, resume with { after: stream.cursor }.
-const stream = harbour.streamSession(session.id, { onFrames: (frames) => render(frames) });
-await harbour.abortSession(session.id, { reason: "The user stopped it" });
+const stream = kantel.streamSession(session.id, { onFrames: (frames) => render(frames) });
+await kantel.abortSession(session.id, { reason: "The user stopped it" });
 stream.close();
 ```
 
@@ -76,7 +76,7 @@ An error answer rejects with a `KantelApiError` carrying the HTTP status and Kan
 
 ## Auth
 
-Every route takes a bearer: a host app's API key (`hbr_…`, issued on the API keys page or with `POST /v1/keys`), which
+Every route takes a bearer: a host app's API key (`ktk_…`, issued on the API keys page or with `POST /v1/keys`), which
 acts as a `service` actor limited to the key's projects and role. Behind Cloudflare Access a person's browser is
 signed in by Access's cookie instead and sends no header; that is how the console calls it. There are no short-lived
 tokens scoped to a user and a session, so a host's browser can't call Kantel directly.

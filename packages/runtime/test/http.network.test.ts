@@ -107,9 +107,9 @@ registerRuntimeConformance(
 			authenticator: contextAuthenticator,
 			allowCallbackUrl: (url) => url.origin === host.url,
 		});
-		const harbour = await serve(api.fetch);
+		const kantel = await serve(api.fetch);
 		const client = createSessionApiClient({
-			baseUrl: `${harbour.url}/v1`,
+			baseUrl: `${kantel.url}/v1`,
 			credentials: (ctx) => ({ authorization: `Bearer ${tokenFor(ctx)}` }),
 			hostCallbacks: {
 				url: (hostId) => `${host.url}/tools/${hostId}`,
@@ -128,7 +128,7 @@ registerRuntimeConformance(
 			});
 		} finally {
 			await api.close();
-			await harbour.close();
+			await kantel.close();
 			await host.close();
 			await memory.close();
 		}

@@ -15,7 +15,7 @@
  */
 import type { JsonValue } from "@kantel/contracts";
 
-export const REDACTED = "[harbour:redacted]";
+export const REDACTED = "[kantel:redacted]";
 
 const escapeRegex = (text: string) => text.replace(/[.*+?^${}()|[\]\\/-]/g, "\\$&");
 

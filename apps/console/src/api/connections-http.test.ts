@@ -109,7 +109,7 @@ const PENDING: ConnectAttempt = {
 	id: "ca_1",
 	organisationId: ORG,
 	status: "pending",
-	connectUrl: "https://harbour.test/v1/connections/authorize/ca_1",
+	connectUrl: "https://kantel.test/v1/connections/authorize/ca_1",
 	owner: { kind: "user", organisationId: ORG, userId: "usr_tom" },
 	templateId: "github",
 	createdBy: { kind: "human", userId: "usr_tom" },
@@ -123,7 +123,7 @@ const CLIENT: OAuthClient = {
 	label: "Kantel's GitHub app",
 	clientId: "Iv1.abc",
 	secret: { set: true, last4: "41b0", refreshable: false },
-	redirectUri: "https://harbour.test/v1/connections/callback",
+	redirectUri: "https://kantel.test/v1/connections/callback",
 	disabled: false,
 	connections: 2,
 	createdBy: { kind: "system", component: "deploy" },
@@ -180,7 +180,7 @@ function fakeApi(
 ) {
 	const calls: string[] = [];
 	const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
-		const request = new Request(new URL(String(input), "https://harbour.test"), init);
+		const request = new Request(new URL(String(input), "https://kantel.test"), init);
 		const url = new URL(request.url);
 		const body = request.method === "GET" || request.method === "DELETE" ? "" : await request.text();
 		calls.push(`${request.method} ${url.pathname}${url.search}${body === "" ? "" : ` ${body}`}`);
@@ -344,7 +344,7 @@ describe("the Connections page over the API", () => {
 	});
 
 	it("knows the viewer: their name, projects, organisation and admin role", async () => {
-		const connections = await apiConnections(ME, { fetch: fakeApi().fetch, origin: "https://harbour.test" });
+		const connections = await apiConnections(ME, { fetch: fakeApi().fetch, origin: "https://kantel.test" });
 		expect(connections.viewer).toEqual({
 			userId: "usr_tom",
 			name: "Tom Davies",
@@ -354,7 +354,7 @@ describe("the Connections page over the API", () => {
 			host: "Kantel",
 			personal: false,
 		});
-		expect(connections.redirectUri).toBe("https://harbour.test/v1/connections/callback");
+		expect(connections.redirectUri).toBe("https://kantel.test/v1/connections/callback");
 	});
 
 	it("shares and unshares a person's connection, showing its shares by project and who shared it", async () => {
@@ -534,7 +534,7 @@ describe("the Connections page over the API", () => {
 		});
 		const api = fakeApi();
 		const pages: typeof fetch = async (input, init) => {
-			const url = new URL(String(input), "https://harbour.test");
+			const url = new URL(String(input), "https://kantel.test");
 			if (url.pathname !== "/v1/connections/uses") return api.fetch(input, init);
 			api.calls.push(`GET ${url.pathname}${url.search}`);
 			return Response.json(

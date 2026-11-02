@@ -48,7 +48,7 @@ function setup(options: { fail?: () => Error | undefined; proposalTtlMs?: number
 		credentials: memoryCredentials(),
 		audit,
 		access: fakeAccess(["admin"]),
-		deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
+		deployment: { origin: "https://kantel.test", clientMetadataPublic: false },
 		approvals: vault,
 		fetch: async (url, init) => {
 			const failure = options.fail?.();
@@ -109,7 +109,7 @@ describe("a connection request a rule asks about", () => {
 		expect(env.sent).toHaveLength(1);
 
 		const pending = await pendingOf(env.connections.send(SYSTEM, scope, connection.id, post));
-		expect(pending.link).toMatch(/^https:\/\/harbour\.test\/.*requests\//);
+		expect(pending.link).toMatch(/^https:\/\/kantel\.test\/.*requests\//);
 		expect(pending.digest).toMatch(/^[0-9a-f]{64}$/);
 		expect(env.sent).toHaveLength(1);
 		// Sending it again before a decision waits on the same approval.

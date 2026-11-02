@@ -322,7 +322,7 @@ export const ErrorState: Story = () => (
 ErrorState.storyName = "Error";
 
 const url =
-	"https://storage.harbour.dev/exports/billing/2026-10-27/invoices-all-tenants-deduplicated-with-idempotency-keys-and-retry-history-final-final-v2.jsonl?signature=8f7a6c5e4d3b2a1908f7a6c5e4d3b2a19";
+	"https://storage.kantel.dev/exports/billing/2026-10-27/invoices-all-tenants-deduplicated-with-idempotency-keys-and-retry-history-final-final-v2.jsonl?signature=8f7a6c5e4d3b2a1908f7a6c5e4d3b2a19";
 
 const longOutput = Array.from(
 	{ length: 400 },

@@ -27,6 +27,7 @@ import {
 	type HeldRole,
 	type Project,
 	protocolHistoryPage,
+	readHeader,
 	roleSatisfies,
 	type SessionHistoryPage,
 	type SessionModelState,
@@ -312,7 +313,7 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			method: "POST",
 			headers: {
 				"content-type": "application/json",
-				...(requestId === undefined ? {} : { "harbour-request-id": requestId }),
+				...(requestId === undefined ? {} : { "kantel-request-id": requestId }),
 			},
 			body: JSON.stringify(body),
 		});
@@ -502,7 +503,7 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 				const content = new Uint8Array(await response.arrayBuffer());
 				let version: number | string = "";
 				try {
-					version = JSON.parse(response.headers.get("harbour-version") ?? '""') as number | string;
+					version = JSON.parse(readHeader(response.headers, "kantel-version") ?? '""') as number | string;
 				} catch {
 					// Not the read API's header; the version is only shown.
 				}
@@ -558,7 +559,7 @@ export function createApiClient(options: ApiClientOptions = {}): ConsoleClient {
 			setAccess: (shareId, access) => send(share(shareId), "PATCH", { access }),
 			invite: (shareId, email) => send(share(shareId, "/invites"), "POST", { email }),
 			uninvite: (shareId, email) => send(share(shareId, "/invites/remove"), "POST", { email }),
-			link: (record) => new URL(`/shared/${record.token}`, globalThis.location?.href ?? "https://harbour.invalid").href,
+			link: (record) => new URL(`/shared/${record.token}`, globalThis.location?.href ?? "https://kantel.invalid").href,
 		};
 	};
 

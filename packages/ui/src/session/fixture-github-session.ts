@@ -75,7 +75,7 @@ export const GITHUB_SESSION: readonly TranscriptItem[] = [
 			method: "GET",
 			url: "https://api.github.com/search/issues?q=type:pr+author:tvdavies+created:2026-10-31&per_page=100",
 			headers: {
-				"User-Agent": "harbour-agent",
+				"User-Agent": "kantel-agent",
 				Accept: "application/vnd.github+json",
 			},
 		},
@@ -105,7 +105,7 @@ export const GITHUB_SESSION: readonly TranscriptItem[] = [
 			method: "GET",
 			url: "https://api.github.com/search/issues?q=type:pr+author:tvdavies&sort=created&order=desc&per_page=10",
 			headers: {
-				"User-Agent": "harbour-agent",
+				"User-Agent": "kantel-agent",
 				Accept: "application/vnd.github+json",
 			},
 		},
@@ -152,7 +152,7 @@ export const GITHUB_SESSION: readonly TranscriptItem[] = [
 			method: "GET",
 			url: "https://api.github.com/users/tvdavies/events?per_page=100",
 			headers: {
-				"User-Agent": "harbour-agent",
+				"User-Agent": "kantel-agent",
 				Accept: "application/vnd.github+json",
 			},
 		},
@@ -173,7 +173,7 @@ export const GITHUB_SESSION: readonly TranscriptItem[] = [
 			method: "GET",
 			url: "https://api.github.com/user/orgs",
 			headers: {
-				"User-Agent": "harbour-agent",
+				"User-Agent": "kantel-agent",
 				Accept: "application/vnd.github+json",
 			},
 		},
@@ -198,7 +198,7 @@ export const GITHUB_SESSION: readonly TranscriptItem[] = [
 		label: "Calling codemode",
 		status: "error",
 		args: {
-			code: 'const h={"User-Agent":"harbour-agent","Accept":"application/vnd.github+json"};\nconst c="conn_github_example";\nconst out=[];\nfor (const p of [1,2,3]) {\n const r=await tools.connection_request({connectionId:c,method:"GET",url:`https://api.github.com/users/tvdavies/events?per_page=100&page=${p}`,headers:h});\n const s=typeof r==="string"?r:JSON.stringify(r);\n const j=JSON.parse(s.slice(s.indexOf("\\n")+1).trim());\n if(!j.length)break;\n for(const e of j) out.push([e.created_at,e.type,e.repo.name,e.payload?.action||"",e.payload?.pull_request?.number||"",e.payload?.pull_request?.title||""].join(" | "));\n}\nconst s2=await tools.connection_request({connectionId:c,method:"GET",url:"https://api.github.com/search/issues?q=type:pr+involves:tvdavies+updated:>=2026-10-30&per_page=50",headers:h});\nconst t=typeof s2==="string"?s2:JSON.stringify(s2);\nconst j2=JSON.parse(t.slice(t.indexOf("\\n")+1).trim());\nreturn {events:out.slice(0,60), total:out.length, involved:j2.items.map(i=>[i.created_at,i.html_url,i.user.login,i.title,i.state].join(" | "))};',
+			code: 'const h={"User-Agent":"kantel-agent","Accept":"application/vnd.github+json"};\nconst c="conn_github_example";\nconst out=[];\nfor (const p of [1,2,3]) {\n const r=await tools.connection_request({connectionId:c,method:"GET",url:`https://api.github.com/users/tvdavies/events?per_page=100&page=${p}`,headers:h});\n const s=typeof r==="string"?r:JSON.stringify(r);\n const j=JSON.parse(s.slice(s.indexOf("\\n")+1).trim());\n if(!j.length)break;\n for(const e of j) out.push([e.created_at,e.type,e.repo.name,e.payload?.action||"",e.payload?.pull_request?.number||"",e.payload?.pull_request?.title||""].join(" | "));\n}\nconst s2=await tools.connection_request({connectionId:c,method:"GET",url:"https://api.github.com/search/issues?q=type:pr+involves:tvdavies+updated:>=2026-10-30&per_page=50",headers:h});\nconst t=typeof s2==="string"?s2:JSON.stringify(s2);\nconst j2=JSON.parse(t.slice(t.indexOf("\\n")+1).trim());\nreturn {events:out.slice(0,60), total:out.length, involved:j2.items.map(i=>[i.created_at,i.html_url,i.user.login,i.title,i.state].join(" | "))};',
 		},
 		output:
 			"Script failed\nWall time 1.9 seconds\nOutput:\nScript error:\nSyntaxError: Unexpected end of JSON input\n    at <input>:1:1\n    at parse (native)\n    at <anonymous> (codemode.js:7:48)\n\nTool calls made before the failure (they are not undone): connection_request (ok)",
@@ -221,7 +221,7 @@ export const GITHUB_SESSION: readonly TranscriptItem[] = [
 		label: "Calling codemode",
 		status: "done",
 		args: {
-			code: 'const r=await tools.connection_request({connectionId:"conn_github_example",method:"GET",url:"https://api.github.com/user/orgs",headers:{"User-Agent":"harbour-agent"}});\nreturn JSON.stringify(r).slice(0,500);',
+			code: 'const r=await tools.connection_request({connectionId:"conn_github_example",method:"GET",url:"https://api.github.com/user/orgs",headers:{"User-Agent":"kantel-agent"}});\nreturn JSON.stringify(r).slice(0,500);',
 		},
 		output: 'Script completed\nWall time 0.4 seconds\nOutput:\n"HTTP 200 (application/json; charset=utf-8)\\n\\n[]"',
 		endedAt: 1793459318114,
@@ -244,7 +244,7 @@ export const GITHUB_SESSION: readonly TranscriptItem[] = [
 		label: "Calling codemode",
 		status: "done",
 		args: {
-			code: 'const h={"User-Agent":"harbour-agent","Accept":"application/vnd.github+json"};\nconst c="conn_github_example";\nasync function get(url){const r=await tools.connection_request({connectionId:c,method:"GET",url,headers:h});const s=typeof r==="string"?r:JSON.stringify(r);const b=s.slice(s.indexOf("\\n\\n")+2).trim();try{return JSON.parse(b)}catch(e){return {err:s.slice(0,300),len:s.length}}}\nconst out=[];\nfor (const p of [1,2,3]) {\n const j=await get(`https://api.github.com/users/tvdavies/events?per_page=100&page=${p}`);\n if(!Array.isArray(j)){out.push("ERR "+JSON.stringify(j));break;}\n if(!j.length)break;\n for(const e of j) out.push([e.created_at,e.type,e.repo.name,e.payload?.action||"",e.payload?.pull_request?.number||e.payload?.number||"",e.payload?.pull_request?.title||""].join(" | "));\n}\nconst j2=await get("https://api.github.com/search/issues?q=type:pr+involves:tvdavies+updated:>=2026-10-30&per_page=50");\nreturn {events:out.slice(0,80), total:out.length, involved:j2.items?j2.items.map(i=>[i.created_at,i.html_url,i.user.login,i.title,i.state].join(" | ")):j2};',
+			code: 'const h={"User-Agent":"kantel-agent","Accept":"application/vnd.github+json"};\nconst c="conn_github_example";\nasync function get(url){const r=await tools.connection_request({connectionId:c,method:"GET",url,headers:h});const s=typeof r==="string"?r:JSON.stringify(r);const b=s.slice(s.indexOf("\\n\\n")+2).trim();try{return JSON.parse(b)}catch(e){return {err:s.slice(0,300),len:s.length}}}\nconst out=[];\nfor (const p of [1,2,3]) {\n const j=await get(`https://api.github.com/users/tvdavies/events?per_page=100&page=${p}`);\n if(!Array.isArray(j)){out.push("ERR "+JSON.stringify(j));break;}\n if(!j.length)break;\n for(const e of j) out.push([e.created_at,e.type,e.repo.name,e.payload?.action||"",e.payload?.pull_request?.number||e.payload?.number||"",e.payload?.pull_request?.title||""].join(" | "));\n}\nconst j2=await get("https://api.github.com/search/issues?q=type:pr+involves:tvdavies+updated:>=2026-10-30&per_page=50");\nreturn {events:out.slice(0,80), total:out.length, involved:j2.items?j2.items.map(i=>[i.created_at,i.html_url,i.user.login,i.title,i.state].join(" | ")):j2};',
 		},
 		output:
 			'Script completed\nWall time 1.9 seconds\nOutput:\n{"events":["ERR {\\"err\\":\\"HTTP 200 (application/json; charset=utf-8)\\\\n\\\\n\\",\\"len\\":44}"],"total":1,"involved":[]}',
@@ -268,7 +268,7 @@ export const GITHUB_SESSION: readonly TranscriptItem[] = [
 		label: "Calling codemode",
 		status: "done",
 		args: {
-			code: 'const h={"User-Agent":"harbour-agent","Accept":"application/vnd.github+json"};\nconst c="conn_github_example";\nasync function get(url){const r=await tools.connection_request({connectionId:c,method:"GET",url,headers:h});const s=typeof r==="string"?r:JSON.stringify(r);const b=s.slice(s.indexOf("\\n\\n")+2).trim();try{return JSON.parse(b)}catch(e){return {err:s.slice(0,300),len:s.length}}}\nconst out=[];\nfor (let p=1;p<=15;p++) {\n const j=await get(`https://api.github.com/users/tvdavies/events?per_page=10&page=${p}`);\n if(!Array.isArray(j)){out.push("ERR p"+p+" "+JSON.stringify(j));continue;}\n if(!j.length)break;\n for(const e of j) out.push([e.created_at,e.type,e.repo.name,e.payload?.action||"",e.payload?.pull_request?.number||e.payload?.number||"",e.payload?.pull_request?.title||""].join(" | "));\n if(j[j.length-1].created_at<"2026-10-30")break;\n}\nreturn out;',
+			code: 'const h={"User-Agent":"kantel-agent","Accept":"application/vnd.github+json"};\nconst c="conn_github_example";\nasync function get(url){const r=await tools.connection_request({connectionId:c,method:"GET",url,headers:h});const s=typeof r==="string"?r:JSON.stringify(r);const b=s.slice(s.indexOf("\\n\\n")+2).trim();try{return JSON.parse(b)}catch(e){return {err:s.slice(0,300),len:s.length}}}\nconst out=[];\nfor (let p=1;p<=15;p++) {\n const j=await get(`https://api.github.com/users/tvdavies/events?per_page=10&page=${p}`);\n if(!Array.isArray(j)){out.push("ERR p"+p+" "+JSON.stringify(j));continue;}\n if(!j.length)break;\n for(const e of j) out.push([e.created_at,e.type,e.repo.name,e.payload?.action||"",e.payload?.pull_request?.number||e.payload?.number||"",e.payload?.pull_request?.title||""].join(" | "));\n if(j[j.length-1].created_at<"2026-10-30")break;\n}\nreturn out;',
 		},
 		output:
 			'Script completed\nWall time 1.1 seconds\nOutput:\n["2026-10-29T20:11:28Z | CreateEvent | tvdavies/agent-toolkit |  |  | ","2026-10-29T22:44:23Z | DeleteEvent | tvdavies/agent-toolkit |  |  | ","2026-10-29T22:44:22Z | PushEvent | tvdavies/agent-toolkit |  |  | ","2026-10-29T22:44:20Z | PullRequestEvent | tvdavies/agent-toolkit | merged | 61 | ","2026-10-29T20:11:29Z | PullRequestEvent | tvdavies/agent-toolkit | opened | 61 | ","2026-10-27T19:37:50Z | PullRequestReviewEvent | lleverage-ai/agent-sdk | dismissed | 243 | ","2026-10-27T16:39:52Z | PullRequestReviewEvent | lleverage-ai/agent-sdk | dismissed | 243 | ","2026-10-23T22:48:00Z | IssueCommentEvent | lleverage-ai/agent-sdk | created |  | ","2026-10-23T22:48:30Z | PullRequestEvent | lleverage-ai/agent-sdk | closed | 244 | ","2026-10-24T03:46:54Z | PullRequestReviewEvent | lleverage-ai/agent-sdk | dismissed | 243 | "]',
@@ -292,7 +292,7 @@ export const GITHUB_SESSION: readonly TranscriptItem[] = [
 		label: "Calling codemode",
 		status: "done",
 		args: {
-			code: 'const h={"User-Agent":"harbour-agent","Accept":"application/vnd.github+json"};\nconst c="conn_github_example";\nasync function get(url){const r=await tools.connection_request({connectionId:c,method:"GET",url,headers:h});const s=typeof r==="string"?r:JSON.stringify(r);const b=s.slice(s.indexOf("\\n\\n")+2).trim();try{return JSON.parse(b)}catch(e){return {err:s.slice(0,200),len:s.length}}}\nconst owners={};let n=0;\nfor(let p=1;p<=10;p++){const j=await get(`https://api.github.com/user/repos?per_page=30&page=${p}&sort=pushed`);if(!Array.isArray(j)){owners["ERR"+p]=JSON.stringify(j);break;}if(!j.length)break;for(const r of j){owners[r.owner.login]=(owners[r.owner.login]||0)+1;n++;}}\nconst a=await get("https://api.github.com/search/issues?q=type:pr+author:tvdavies+created:2026-10-30..2026-11-01");\nconst b=await get("https://api.github.com/search/issues?q=type:pr+involves:tvdavies+updated:>=2026-10-31");\nreturn {owners,n,a:a.total_count??a,b:b.items?b.items.map(i=>i.html_url+" "+i.user.login+" "+i.created_at):b};',
+			code: 'const h={"User-Agent":"kantel-agent","Accept":"application/vnd.github+json"};\nconst c="conn_github_example";\nasync function get(url){const r=await tools.connection_request({connectionId:c,method:"GET",url,headers:h});const s=typeof r==="string"?r:JSON.stringify(r);const b=s.slice(s.indexOf("\\n\\n")+2).trim();try{return JSON.parse(b)}catch(e){return {err:s.slice(0,200),len:s.length}}}\nconst owners={};let n=0;\nfor(let p=1;p<=10;p++){const j=await get(`https://api.github.com/user/repos?per_page=30&page=${p}&sort=pushed`);if(!Array.isArray(j)){owners["ERR"+p]=JSON.stringify(j);break;}if(!j.length)break;for(const r of j){owners[r.owner.login]=(owners[r.owner.login]||0)+1;n++;}}\nconst a=await get("https://api.github.com/search/issues?q=type:pr+author:tvdavies+created:2026-10-30..2026-11-01");\nconst b=await get("https://api.github.com/search/issues?q=type:pr+involves:tvdavies+updated:>=2026-10-31");\nreturn {owners,n,a:a.total_count??a,b:b.items?b.items.map(i=>i.html_url+" "+i.user.login+" "+i.created_at):b};',
 		},
 		output:
 			'Script completed\nWall time 2.9 seconds\nOutput:\n{"owners":{"ERR1":"{\\"err\\":\\"HTTP 200 (application/json; charset=utf-8)\\\\n\\\\n\\",\\"len\\":44}"},"n":0,"a":0,"b":[]}',
@@ -316,7 +316,7 @@ export const GITHUB_SESSION: readonly TranscriptItem[] = [
 		label: "Calling codemode",
 		status: "done",
 		args: {
-			code: 'const h={"User-Agent":"harbour-agent","Accept":"application/vnd.github+json"};\nconst c="conn_github_example";\nasync function get(url){const r=await tools.connection_request({connectionId:c,method:"GET",url,headers:h});const s=typeof r==="string"?r:JSON.stringify(r);const b=s.slice(s.indexOf("\\n\\n")+2).trim();try{return JSON.parse(b)}catch(e){return {err:s.slice(0,200),len:s.length}}}\nconst owners={};let n=0;const errs=[];\nfor(let p=1;p<=40;p++){const j=await get(`https://api.github.com/user/repos?per_page=5&page=${p}&sort=pushed`);if(!Array.isArray(j)){errs.push(p);continue;}if(!j.length)break;for(const r of j){owners[r.owner.login]=(owners[r.owner.login]||0)+1;n++;}}\nreturn {owners,n,errs};',
+			code: 'const h={"User-Agent":"kantel-agent","Accept":"application/vnd.github+json"};\nconst c="conn_github_example";\nasync function get(url){const r=await tools.connection_request({connectionId:c,method:"GET",url,headers:h});const s=typeof r==="string"?r:JSON.stringify(r);const b=s.slice(s.indexOf("\\n\\n")+2).trim();try{return JSON.parse(b)}catch(e){return {err:s.slice(0,200),len:s.length}}}\nconst owners={};let n=0;const errs=[];\nfor(let p=1;p<=40;p++){const j=await get(`https://api.github.com/user/repos?per_page=5&page=${p}&sort=pushed`);if(!Array.isArray(j)){errs.push(p);continue;}if(!j.length)break;for(const r of j){owners[r.owner.login]=(owners[r.owner.login]||0)+1;n++;}}\nreturn {owners,n,errs};',
 		},
 		output:
 			'Script completed\nWall time 5.1 seconds\nOutput:\n{"owners":{"tvdavies":32,"lleverage-ai":8},"n":40,"errs":[]}',
@@ -340,7 +340,7 @@ export const GITHUB_SESSION: readonly TranscriptItem[] = [
 		label: "Calling codemode",
 		status: "error",
 		args: {
-			code: 'const h={"User-Agent":"harbour-agent","Accept":"application/vnd.github+json"};\nconst c="conn_github_example";\nconst r1=await tools.connection_request({connectionId:c,method:"GET",url:"https://api.github.com/repos/lleverage-ai/lleverage",headers:h});\nconst r2=await tools.connection_request({connectionId:c,method:"GET",url:"https://api.github.com/search/issues?q=type:pr+author:tvdavies+repo:lleverage-ai/lleverage&sort=created&order=desc&per_page=3",headers:h});\nconst s1=JSON.stringify(r1), s2=JSON.stringify(r2);\nreturn [s1.slice(0,200), s2.slice(0,200), (s2.match(/"created_at\\\\":\\\\"[^\\\\]+/g)||[]).slice(0,3)];',
+			code: 'const h={"User-Agent":"kantel-agent","Accept":"application/vnd.github+json"};\nconst c="conn_github_example";\nconst r1=await tools.connection_request({connectionId:c,method:"GET",url:"https://api.github.com/repos/lleverage-ai/lleverage",headers:h});\nconst r2=await tools.connection_request({connectionId:c,method:"GET",url:"https://api.github.com/search/issues?q=type:pr+author:tvdavies+repo:lleverage-ai/lleverage&sort=created&order=desc&per_page=3",headers:h});\nconst s1=JSON.stringify(r1), s2=JSON.stringify(r2);\nreturn [s1.slice(0,200), s2.slice(0,200), (s2.match(/"created_at\\\\":\\\\"[^\\\\]+/g)||[]).slice(0,3)];',
 		},
 		output:
 			'Script failed\nWall time 0.6 seconds\nOutput:\nScript error:\nError: HTTP 404 (application/json; charset=utf-8)\n\n{"message":"Not Found","documentation_url":"https://docs.github.com/rest/repos/repos#get-a-repository","status":"404"}\n\nTool calls made before the failure (they are not undone): connection_request (error)',
@@ -364,7 +364,7 @@ export const GITHUB_SESSION: readonly TranscriptItem[] = [
 		label: "Calling codemode",
 		status: "done",
 		args: {
-			code: 'const h={"User-Agent":"harbour-agent","Accept":"application/vnd.github+json"};\nconst c="conn_github_example";\nasync function get(url){const r=await tools.connection_request({connectionId:c,method:"GET",url,headers:h});const s=typeof r==="string"?r:JSON.stringify(r);const b=s.slice(s.indexOf("\\n\\n")+2).trim();try{return JSON.parse(b)}catch(e){return null}}\nconst repos=[];\nfor(let p=1;p<=60;p++){const j=await get(`https://api.github.com/user/repos?per_page=5&page=${p}&sort=pushed`);if(!j)continue;if(!j.length)break;for(const r of j)repos.push(r.full_name+(r.private?" (private)":"")+" pushed "+r.pushed_at);}\nreturn repos.filter(r=>r.startsWith("lleverage")||r.includes("2026-10-3"));',
+			code: 'const h={"User-Agent":"kantel-agent","Accept":"application/vnd.github+json"};\nconst c="conn_github_example";\nasync function get(url){const r=await tools.connection_request({connectionId:c,method:"GET",url,headers:h});const s=typeof r==="string"?r:JSON.stringify(r);const b=s.slice(s.indexOf("\\n\\n")+2).trim();try{return JSON.parse(b)}catch(e){return null}}\nconst repos=[];\nfor(let p=1;p<=60;p++){const j=await get(`https://api.github.com/user/repos?per_page=5&page=${p}&sort=pushed`);if(!j)continue;if(!j.length)break;for(const r of j)repos.push(r.full_name+(r.private?" (private)":"")+" pushed "+r.pushed_at);}\nreturn repos.filter(r=>r.startsWith("lleverage")||r.includes("2026-10-3"));',
 		},
 		output:
 			'Script completed\nWall time 5.3 seconds\nOutput:\n["lleverage-ai/agent-sdk pushed 2026-10-27T19:38:11Z","lleverage-ai/cliproxy-plugin-morphy pushed 2026-10-21T10:42:41Z","lleverage-ai/lleverage-dev-skills pushed 2026-01-16T13:38:27Z","lleverage-ai/lleverage-active-monitoring pushed 2025-11-04T15:44:21Z","lleverage-ai/DataPup pushed 2025-08-17T23:40:55Z","lleverage-ai/connect-react pushed 2025-05-30T14:39:12Z","lleverage-ai/ai-test pushed 2024-12-20T18:11:11Z","lleverage-ai/authkit-nextjs pushed 2024-12-06T23:33:34Z"]',

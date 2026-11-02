@@ -71,7 +71,7 @@ export function createGitHubTarballFetcher(options: GitHubTarballFetcherOptions 
 			throw new KantelError("not_found", `${source.repo} has no ref ${source.ref}`, { repo: source.repo });
 		}
 		const response = await send(`${api}/repos/${owner}/${name}/commits/${encodeURIComponent(source.ref)}`, {
-			headers: { accept: "application/vnd.github.sha", "user-agent": "harbour-workspace" },
+			headers: { accept: "application/vnd.github.sha", "user-agent": "kantel-workspace" },
 		});
 		if (response.status === 404 || response.status === 422) {
 			await response.body?.cancel();
@@ -117,7 +117,7 @@ export function createGitHubTarballFetcher(options: GitHubTarballFetcherOptions 
 			const commit = await resolve(owner, name, source);
 			const history = readHistory(source, commit);
 			const response = await send(`${codeload}/${owner}/${name}/tar.gz/${commit}`, {
-				headers: { "user-agent": "harbour-workspace" },
+				headers: { "user-agent": "kantel-workspace" },
 			});
 			if (!response.ok || response.body === null) {
 				await response.body?.cancel();

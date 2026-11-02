@@ -38,12 +38,12 @@
 	"ai": { "binding": "AI" },
 	"durable_objects": {
 		"bindings": [
-			{ "name": "STACK", "class_name": "HarbourStack" },
+			{ "name": "STACK", "class_name": "KantelStack" },
 			// The VaultDO (src/vault-object.ts): every vault record in its own SQLite. Its key and the components' shared
 			// keys are Worker secrets (src/vault.ts), never vars here.
-			{ "name": "VAULTS", "class_name": "HarbourVault" },
+			{ "name": "VAULTS", "class_name": "KantelVault" },
 			// Kantel's own browsers (src/browser-object.ts), one object per browser, used only with
-			// KANTEL_BROWSER_PROVIDER=harbour. Their container app is added by the deploy when KANTEL_BROWSER_CONTAINERS is on
+			// KANTEL_BROWSER_PROVIDER=kantel. Their container app is added by the deploy when KANTEL_BROWSER_CONTAINERS is on
 			// (scripts/deploy-config.ts), held to WEUR; without it the objects exist but no browser starts.
 			{ "name": "BROWSERS", "class_name": "HarbourBrowser" },
 			// The container tier (src/sandbox-object.ts), one object per session. Its container app is added by the deploy when
@@ -59,7 +59,16 @@
 		{ "tag": "v2", "new_sqlite_classes": ["HarbourVault"] },
 		{ "tag": "v3", "new_sqlite_classes": ["HarbourBrowser"] },
 		{ "tag": "v4", "new_sqlite_classes": ["HarbourSandbox"] },
-		{ "tag": "v5", "new_sqlite_classes": ["KantelTunnel"] }
+		{ "tag": "v5", "new_sqlite_classes": ["KantelTunnel"] },
+		// The stack and the vault, renamed after the product (TASK-4492): every object, and its storage, moves to the new
+		// class. Applied once, at the deploy that carries it; the Worker still exports the old names as aliases.
+		{
+			"tag": "v6",
+			"renamed_classes": [
+				{ "from": "HarbourStack", "to": "KantelStack" },
+				{ "from": "HarbourVault", "to": "KantelVault" }
+			]
+		}
 	],
 	// Named but not given IDs: deploys find them by name, and wrangler's automatic provisioning would create one that's
 	// missing. A dry run creates nothing. D1 holds the directory and audit; R2 the workspaces. Both were made with the
@@ -69,7 +78,7 @@
 	"d1_databases": [{ "binding": "DB", "database_name": "harbour-weur" }],
 	"r2_buckets": [{ "binding": "WORKSPACES", "bucket_name": "harbour-workspaces-weur" }],
 	"vars": {
-		// The Access team domain (such as harbour.cloudflareaccess.com) and the Access application's AUD tag. Empty means
+		// The Access team domain (such as kantel.cloudflareaccess.com) and the Access application's AUD tag. Empty means
 		// people cannot sign in; API keys still work. The deploy workflow fills both from repository variables.
 		"KANTEL_ACCESS_TEAM_DOMAIN": "",
 		"KANTEL_ACCESS_AUD": "",
@@ -113,13 +122,13 @@
 		// Only a new object takes it; one that exists stays where it was created. The deploy can override it.
 		"KANTEL_LOCATION_HINT": "weur",
 		// Which browser provider the broker uses (src/browser.ts): `brwsr` (brwsr.dev, with KANTEL_BRWSR_API_KEY) or
-		// `harbour`, Kantel's own browsers (src/browser-object.ts; needs the KANTEL_BROWSER_VIEW_KEY and
+		// `kantel`, Kantel's own browsers (src/browser-object.ts; needs the KANTEL_BROWSER_VIEW_KEY and
 		// KANTEL_BROWSER_SEAL_KEY secrets, and the container app, KANTEL_BROWSER_CONTAINERS=on at deploy).
 		"KANTEL_BROWSER_PROVIDER": "brwsr",
 		// Experimental: the platform's default for browser goal mode (`browser_run`, src/browser.ts), which each project's
 		// settings override (`PATCH /v1/projects/{id}/settings`). `on` offers it to every project that hasn't switched it off;
 		// anything else only to those that switched it on. Its decision model's default: `clef` (Workers AI) or `jev` (the
-		// KANTEL_JEV_API_KEY secret). Kantel's own browsers only (KANTEL_BROWSER_PROVIDER=harbour).
+		// KANTEL_JEV_API_KEY secret). Kantel's own browsers only (KANTEL_BROWSER_PROVIDER=kantel).
 		"KANTEL_BROWSER_GOAL_MODE": "off",
 		"KANTEL_BROWSER_DECISION_MODEL": "clef",
 		// `on` only with the sandbox containers' app (src/sandbox-object.ts): the deploy sets it with
@@ -147,8 +156,8 @@
 			"worker_loaders": [{ "binding": "LOADER" }],
 			"durable_objects": {
 				"bindings": [
-					{ "name": "STACK", "class_name": "HarbourStack" },
-					{ "name": "VAULTS", "class_name": "HarbourVault" },
+					{ "name": "STACK", "class_name": "KantelStack" },
+					{ "name": "VAULTS", "class_name": "KantelVault" },
 					{ "name": "BROWSERS", "class_name": "HarbourBrowser" },
 					{ "name": "SANDBOXES", "class_name": "HarbourSandbox" },
 					{ "name": "TUNNELS", "class_name": "KantelTunnel" }
@@ -173,20 +182,20 @@
 			"d1_databases": [{ "binding": "DB", "database_name": "harbour-dev" }],
 			"r2_buckets": [{ "binding": "WORKSPACES", "bucket_name": "harbour-dev-workspaces" }],
 			"vars": {
-				"KANTEL_ACCESS_TEAM_DOMAIN": "harbour-dev.cloudflareaccess.com",
-				"KANTEL_ACCESS_AUD": "harbour-dev-aud",
-				"KANTEL_ADMIN_EMAIL": "dev@harbour.test",
+				"KANTEL_ACCESS_TEAM_DOMAIN": "kantel-dev.cloudflareaccess.com",
+				"KANTEL_ACCESS_AUD": "kantel-dev-aud",
+				"KANTEL_ADMIN_EMAIL": "dev@kantel.test",
 				// The name the console shows for the dev admin (src/config.ts); deployed, the admin's email stands in for it.
 				"KANTEL_ADMIN_NAME": "Dev admin",
 				"KANTEL_LOCATION_HINT": "weur",
-				// Local only, and public on purpose: the dev vault's key (base64 of "harbour-local-dev-vault-key-0001") and the
+				// Local only, and public on purpose: the dev vault's key (base64 of "harbour-local-dev-vault-key-0001", named before the rename) and the
 				// model gateway's shared key for it. They seal nothing but `wrangler dev`'s own state. The deployed Worker's are
 				// secrets; scripts/deploy-config.ts refuses them as vars.
 				"KANTEL_VAULT_KEY": "aGFyYm91ci1sb2NhbC1kZXYtdmF1bHQta2V5LTAwMDE=",
-				"KANTEL_VAULT_MODEL_GATEWAY_TOKEN": "harbour-dev-model-gateway-token",
+				"KANTEL_VAULT_MODEL_GATEWAY_TOKEN": "kantel-dev-model-gateway-token",
 				// Kantel's own browsers in local Docker (src/browser-object.ts), with local-only, public keys for their view
 				// links and sealed blobs. The deployed Worker's are secrets.
-				"KANTEL_BROWSER_PROVIDER": "harbour",
+				"KANTEL_BROWSER_PROVIDER": "kantel",
 				// The container tier in local Docker (src/sandbox-object.ts).
 				"KANTEL_SANDBOX_CONTAINERS": "on",
 				"KANTEL_BROWSER_VIEW_KEY": "harbour-local-dev-browser-view-key-0001",

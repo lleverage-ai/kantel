@@ -32,6 +32,6 @@ export class KantelIsolate extends WorkerEntrypoint {
 
 export default {
 	fetch(): Response {
-		return new Response("harbour isolate\n");
+		return new Response("kantel isolate\n");
 	},
 };

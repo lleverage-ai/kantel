@@ -67,7 +67,7 @@ function world(repository: ConnectionsRepository = createMemoryConnectionsReposi
 				},
 				fetch: provider.fetch,
 				access: fakeAccess(["admin"]),
-				deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
+				deployment: { origin: "https://kantel.test", clientMetadataPublic: false },
 				clock: { now: () => now },
 				refresh: { holder, pollMs: 5, onDue: (at) => due.push(at), ...refresh },
 			}),
@@ -291,7 +291,7 @@ describe("connection_reconnect_required", () => {
 			error: "connection_reconnect_required",
 			connectionId: id,
 			retryable: false,
-			link: `https://harbour.test/connections?connection=${id}`,
+			link: `https://kantel.test/connections?connection=${id}`,
 			reason: expect.stringContaining("invalid_grant"),
 		});
 		expect(env.provider.mcpAuthorizations.length).toBe(sent);

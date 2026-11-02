@@ -52,7 +52,7 @@ const solo = contextFor(actors.human("solo-1"), ORG);
 const projectAgent = contextFor(actors.agent("agent-p", "sess-project"), ORG, PROJECT);
 const orgAgent = contextFor(actors.agent("agent-o", "sess-org"), ORG);
 const outsider = contextFor(actors.human("outsider-1"), OTHER_ORG);
-const harbour: CallContext = { ...systemContext("rules-seed"), organisationId: ORG };
+const kantel: CallContext = { ...systemContext("rules-seed"), organisationId: ORG };
 const outsiderKantel: CallContext = { ...systemContext("rules-seed"), organisationId: OTHER_ORG };
 
 const organisation: OwnerRef = { kind: "organisation", organisationId: ORG };
@@ -160,7 +160,7 @@ export function createRulesConformance(options: {
 					later(() => put(rules, admin, platform, "house")),
 					{ operation: "rules.rule.put" },
 				);
-				const rule = await put(rules, harbour, platform, "house", "Platform rule.");
+				const rule = await put(rules, kantel, platform, "house", "Platform rule.");
 				a.deepEqual(rule.owner, platform);
 				a.deepEqual(
 					(await rules.list(outsider, platform)).map((each) => each.id),
@@ -192,13 +192,13 @@ export function createRulesConformance(options: {
 		{
 			name: "forSession: platform, organisation, project then user rules, and resolvePromptLayers puts the profile before the user's",
 			run: withRules(async (rules) => {
-				await put(rules, harbour, platform, "house", "P");
+				await put(rules, kantel, platform, "house", "P");
 				await put(rules, admin, organisation, "org", "O");
 				await put(rules, admin, project, "proj", "J");
 				await put(rules, admin, otherProject, "elsewhere", "X");
 				await put(rules, solo, soloOwner, "mine", "U");
 				await put(rules, admin, { kind: "user", organisationId: ORG, userId: "someone-else" }, "theirs", "Y");
-				const forProject = await rules.forSession(harbour, { projectId: PROJECT, userId: "solo-1" });
+				const forProject = await rules.forSession(kantel, { projectId: PROJECT, userId: "solo-1" });
 				a.deepEqual(
 					forProject.map((rule) => rule.text),
 					["P", "O", "J", "U"],
@@ -212,11 +212,11 @@ export function createRulesConformance(options: {
 				]);
 				// An organisation session has no project layer.
 				a.deepEqual(
-					(await rules.forSession(harbour, { userId: "solo-1" })).map((rule) => rule.text),
+					(await rules.forSession(kantel, { userId: "solo-1" })).map((rule) => rule.text),
 					["P", "O", "U"],
 				);
 				a.deepEqual(
-					(await rules.forSession(harbour, {})).map((rule) => rule.text),
+					(await rules.forSession(kantel, {})).map((rule) => rule.text),
 					["P", "O"],
 				);
 			}),

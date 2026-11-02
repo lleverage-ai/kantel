@@ -51,9 +51,9 @@ afterEach(async () => {
 
 /** A database file in its own directory, removed after the test. */
 function databaseFile(): string {
-	const dir = mkdtempSync(join(tmpdir(), "harbour-restart-"));
+	const dir = mkdtempSync(join(tmpdir(), "kantel-restart-"));
 	cleanups.push(async () => rmSync(dir, { recursive: true, force: true }));
-	return join(dir, "harbour.db");
+	return join(dir, "kantel.db");
 }
 
 /**
@@ -406,7 +406,7 @@ describe("durable host registrations", () => {
 		cleanups.push(stop);
 		const request = (method: string, path: string, token: string, body?: unknown) =>
 			api.fetch(
-				new Request(`https://harbour.test/v1${path}`, {
+				new Request(`https://kantel.test/v1${path}`, {
 					method,
 					headers: {
 						authorization: `Bearer ${token}`,

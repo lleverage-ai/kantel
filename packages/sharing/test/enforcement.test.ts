@@ -242,7 +242,7 @@ describe("vault", () => {
 			agentId: "agent-user",
 			sessionId: "sess-user",
 			method: "GET" as const,
-			url: "https://api.github.com/repos/harbour",
+			url: "https://api.github.com/repos/kantel",
 		};
 		a.strictEqual((await env.vault.decideEgress(WORKER, request)).allow, true);
 		await env.sharing.revokeShare(ownerAdmin, share.id);

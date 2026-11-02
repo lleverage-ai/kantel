@@ -248,7 +248,7 @@ export function createProtocolConformance(options: ProtocolConformanceOptions): 
 								injectionTemplate: "Bearer {key}",
 								termsSource: "agent-proposed",
 								expiresAt: 0,
-								link: "https://harbour.example/connections/requests/prop-1",
+								link: "https://kantel.example/connections/requests/prop-1",
 							},
 						},
 					},

@@ -45,7 +45,7 @@ export function connectionsConfig(
 	const flag = (name: string) => env[name]?.trim().toLowerCase() ?? "";
 	if (flag("KANTEL_CONNECTIONS") === "off" || publicOrigin === undefined) return undefined;
 	const platform = parsePlatformClients(env.KANTEL_OAUTH_CLIENTS, (name) => env[name]);
-	for (const problem of platform.problems) console.warn(`harbour: ${problem}`);
+	for (const problem of platform.problems) console.warn(`kantel: ${problem}`);
 	return {
 		origin: publicOrigin,
 		clientMetadataPublic: flag("KANTEL_CONNECTIONS_CIMD") === "on",

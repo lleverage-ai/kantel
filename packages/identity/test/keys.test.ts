@@ -9,9 +9,9 @@ import {
 import { describe, expect, it } from "vitest";
 
 describe("generateApiKeySecret", () => {
-	it("is hbr_ followed by 32 random bytes in unpadded base64url", () => {
+	it("is ktk_ followed by 32 random bytes in unpadded base64url", () => {
 		const secret = generateApiKeySecret();
-		expect(secret).toMatch(/^hbr_[A-Za-z0-9_-]{43}$/);
+		expect(secret).toMatch(/^ktk_[A-Za-z0-9_-]{43}$/);
 		expect(Buffer.from(secret.slice(4), "base64url")).toHaveLength(32);
 	});
 

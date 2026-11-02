@@ -23,7 +23,7 @@ import { SignedInAs } from "./signed-in-as.tsx";
 import { liveFrame, signInFrame, storyCode, storyNote } from "./story-frames.ts";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "workbench" }, organisationId: "bootstrap" };
-export const LIVE_INVITED = "ada@harbour.test";
+export const LIVE_INVITED = "ada@kantel.test";
 
 /** A mailer that tells the page what it sent. */
 class InboxMailer implements OtpMailer {
@@ -57,7 +57,7 @@ export async function createLiveWorld(): Promise<LiveWorld> {
 	});
 	let session: string | undefined;
 	const client = createIdentityClient({
-		baseUrl: "https://harbour.workbench",
+		baseUrl: "https://kantel.workbench",
 		fetch: async (input, init) => {
 			const request = new Request(input, init);
 			return new URL(request.url).pathname.startsWith("/auth/") ? otpRoutes(request) : identityRoutes(request);

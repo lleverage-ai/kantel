@@ -32,7 +32,7 @@ function useShare(): {
 			onInvite: (email: string) => setShare((current) => ({ ...current, invites: [...current.invites, { email }] })),
 			onRemoveInvite: (email: string) =>
 				setShare((current) => ({ ...current, invites: current.invites.filter((each) => each.email !== email) })),
-			onCopyLink: async () => "https://harbour.example/s/7cQm2xWfZ9",
+			onCopyLink: async () => "https://kantel.example/s/7cQm2xWfZ9",
 		},
 		exports: [{ id: "download", label: "Download", hint: "The file as it is", run: () => {} }],
 	};
@@ -96,7 +96,7 @@ export const SlideIn: Story = () => {
 					onDownload={() => {}}
 					share={share}
 					reveal={{ label: "Show in the workspace", run: () => {} }}
-					widthKey="harbour.story.preview.width"
+					widthKey="kantel.story.preview.width"
 				/>
 			</div>
 		</Sheet>
@@ -182,7 +182,7 @@ export const StreamingDocument: Story = () => {
 					onClose={() => setRound((value) => value + 1)}
 					onSave={onSave}
 					share={share}
-					widthKey="harbour.story.preview.width"
+					widthKey="kantel.story.preview.width"
 				/>
 			</div>
 		</Sheet>

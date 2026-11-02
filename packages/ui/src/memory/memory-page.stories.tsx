@@ -94,22 +94,22 @@ function ScenarioPage({
 export const Default: Story = () => <ScenarioPage />;
 
 /** A learned concept, corrected once: its sources, its version and the two proposals that made it. */
-export const ConceptWithHistory: Story = () => <ScenarioPage open="projects/harbour/vault-binding-codes" />;
+export const ConceptWithHistory: Story = () => <ScenarioPage open="projects/kantel/vault-binding-codes" />;
 
 /** Read-only: a source without `propose` offers no Correct or Forget, only the record. */
-export const ReadOnlyConcept: Story = () => <ScenarioPage open="projects/harbour/vault-binding-codes" readOnly />;
+export const ReadOnlyConcept: Story = () => <ScenarioPage open="projects/kantel/vault-binding-codes" readOnly />;
 
 /** Past its date for checking: recall ranks it lower and says it is stale. Correcting it is the check. */
-export const StaleConcept: Story = () => <ScenarioPage open="projects/harbour/staging-jobs-retry" />;
+export const StaleConcept: Story = () => <ScenarioPage open="projects/kantel/staging-jobs-retry" />;
 
 /** A job's exception, with the rule it overrides a click away. */
-export const JobException: Story = () => <ScenarioPage open="projects/harbour/release-freeze-exception" />;
+export const JobException: Story = () => <ScenarioPage open="projects/kantel/release-freeze-exception" />;
 
 /** Replaced by a newer rule: recall no longer shows it. */
-export const Superseded: Story = () => <ScenarioPage status="superseded" open="projects/harbour/merge-after-review" />;
+export const Superseded: Story = () => <ScenarioPage status="superseded" open="projects/kantel/merge-after-review" />;
 
 /** Forgotten, with the reason it was forgotten. */
-export const Forgotten: Story = () => <ScenarioPage status="forgotten" open="projects/harbour/sandbox-on-fly" />;
+export const Forgotten: Story = () => <ScenarioPage status="forgotten" open="projects/kantel/sandbox-on-fly" />;
 
 /** Searching the space, best match first, with the snippet that matched. */
 export const Search: Story = () => <ScenarioPage search="vault approval" />;
@@ -120,7 +120,7 @@ export const SearchNothing: Story = () => <ScenarioPage search="kubernetes" />;
 export const Proposals: Story = () => <ScenarioPage view="proposals" />;
 
 /** Reads only, as the console's API source: no Proposals view, no Correct or Forget, and a concept shows no history. */
-export const ReadsOnly: Story = () => <ScenarioPage noProposals open="projects/harbour/vault-binding-codes" />;
+export const ReadsOnly: Story = () => <ScenarioPage noProposals open="projects/kantel/vault-binding-codes" />;
 
 /** Approving fails: nothing is written and the proposal says so. */
 export const DecisionError: Story = () => <ScenarioPage view="proposals" brokenDecisions />;
@@ -163,7 +163,7 @@ export const LoadError: Story = () => (
 );
 
 /** On a phone the open concept replaces the list, with a way back. */
-export const Mobile: Story = () => <ScenarioPage open="projects/harbour/vault-binding-codes" />;
+export const Mobile: Story = () => <ScenarioPage open="projects/kantel/vault-binding-codes" />;
 Mobile.meta = { width: 420 };
 
 export const MobileList: Story = () => <ScenarioPage />;

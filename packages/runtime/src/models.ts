@@ -1,5 +1,5 @@
 /**
- * The runtime's one model provider, `harbour`: pi-ai's own `pi-messages` client pointed at Kantel's internal model
+ * The runtime's one model provider, `kantel`: pi-ai's own `pi-messages` client pointed at Kantel's internal model
  * gateway (packages/models/CONTRACT.md). The runtime holds a short-lived session token, never a provider key; the gateway
  * decides which connector serves each call.
  *
@@ -126,7 +126,7 @@ async function loadGatewayConfig(
 	return config as RadiusGatewayConfig & { readonly models: readonly ModelGatewayModel[] };
 }
 
-/** The `harbour` provider: pi-ai's `pi-messages` client against the model gateway, its models from `/v1/config`. */
+/** The `harbour` provider (its ID from before the rename, which sessions store): pi-ai's `pi-messages` client against the model gateway, its models from `/v1/config`. */
 export function kantelProvider(options: KantelProviderOptions): Provider<typeof KANTEL_MODEL_API> {
 	const { token, fetch } = options;
 	const streams = piMessagesApi();

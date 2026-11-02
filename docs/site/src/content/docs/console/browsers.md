@@ -28,7 +28,7 @@ When the agent calls `browser_request`, a notice appears above the composer: "Th
 - **Allow** grants the sites the agent named, for 30 minutes.
 - **Decline** refuses. The agent gets the answer and carries on.
 
-Deciding needs the operator role on the session's project. The console sends your answer as `POST /v1/browser/decisions`. The grant uses a browser profile of the deployment's own, named `harbour`, which is never written back.
+Deciding needs the operator role on the session's project. The console sends your answer as `POST /v1/browser/decisions`. The grant uses a browser profile of the deployment's own, named `kantel`, which is never written back.
 
 ## Watching the browser
 
@@ -91,9 +91,9 @@ A closed browser has no live view (`expired`). A deployment without recordings h
 | Provider | Cloudflare | Self-hosted |
 | --- | --- | --- |
 | `brwsr` (brwsr.dev) | The default. Set the `KANTEL_BRWSR_API_KEY` Worker secret, a brwsr project key. No recordings. | Set `KANTEL_BRWSR_API_KEY`. |
-| `harbour` (Kantel's own browsers) | Set `KANTEL_BROWSER_PROVIDER=harbour` and `KANTEL_BROWSER_VIEW_KEY` (32 characters or more). Turn on the browser containers with `KANTEL_BROWSER_CONTAINERS=on` and set `KANTEL_BROWSER_SEAL_KEY`, or point at a self-hosted browser host with `KANTEL_BROWSER_HOST_URL` and `KANTEL_BROWSER_HOST_TOKEN`. | Run the browser host (Docker, or one Pod per browser on Kubernetes) and set `KANTEL_BROWSER_HOST_URL`, `KANTEL_BROWSER_HOST_TOKEN` and `KANTEL_BROWSER_VIEW_KEY` to match it. |
+| `kantel` (Kantel's own browsers) | Set `KANTEL_BROWSER_PROVIDER=kantel` and `KANTEL_BROWSER_VIEW_KEY` (32 characters or more). Turn on the browser containers with `KANTEL_BROWSER_CONTAINERS=on` and set `KANTEL_BROWSER_SEAL_KEY`, or point at a self-hosted browser host with `KANTEL_BROWSER_HOST_URL` and `KANTEL_BROWSER_HOST_TOKEN`. | Run the browser host (Docker, or one Pod per browser on Kubernetes) and set `KANTEL_BROWSER_HOST_URL`, `KANTEL_BROWSER_HOST_TOKEN` and `KANTEL_BROWSER_VIEW_KEY` to match it. |
 
-On a self-hosted gateway with `KANTEL_BROWSER_PROVIDER` unset, the gateway uses `harbour` when a browser host is set, otherwise `brwsr` when its key is set, otherwise no browser.
+On a self-hosted gateway with `KANTEL_BROWSER_PROVIDER` unset, the gateway uses `kantel` when a browser host is set, otherwise `brwsr` when its key is set, otherwise no browser.
 
 Kantel's own browsers seal profiles and recordings with `KANTEL_BROWSER_SEAL_KEY`. They keep recordings for 7 days by default (`KANTEL_BROWSER_RECORDING_DAYS`). They decline cookie and consent dialogs themselves, clicking the dialog's "Reject all" (never an "Accept") before a step or a read returns the page; set `KANTEL_BROWSER_CONSENT=off` to leave those dialogs to the agent. See [Cloudflare](/deploy/cloudflare/) and [Self-hosted](/deploy/self-hosted/) for setting these.
 

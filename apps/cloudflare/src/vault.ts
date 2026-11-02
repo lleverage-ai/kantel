@@ -219,7 +219,7 @@ export async function answerApprovalCall(
 		return { ok: true, value: await call(portableContext(ctx), ...args) };
 	} catch (error) {
 		if (isKantelError(error)) return { ok: false, code: error.code, message: error.message };
-		console.error("harbour: a vault approval call failed", error instanceof Error ? error.message : "unknown error");
+		console.error("kantel: a vault approval call failed", error instanceof Error ? error.message : "unknown error");
 		return { ok: false, code: "unavailable", message: "The vault call failed" };
 	}
 }
@@ -263,7 +263,7 @@ export async function answerCeilingCall(
 		return { ok: true, value: await call(portableContext(ctx), ...args) };
 	} catch (error) {
 		if (isKantelError(error)) return { ok: false, code: error.code, message: error.message };
-		console.error("harbour: a vault ceiling call failed", error instanceof Error ? error.message : "unknown error");
+		console.error("kantel: a vault ceiling call failed", error instanceof Error ? error.message : "unknown error");
 		return { ok: false, code: "unavailable", message: "The vault call failed" };
 	}
 }

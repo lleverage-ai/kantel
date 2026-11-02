@@ -197,9 +197,13 @@ const HOP = new Set([
 	"transfer-encoding",
 	"upgrade",
 	"host",
-	"x-harbour-session",
-	"x-harbour-tier",
-	"x-harbour-host-key",
+	"x-kantel-session",
+	"x-kantel-tier",
+	"x-kantel-host-key",
+	// The same before the rename, which an isolate host built before it sends.
+	"x-harbour-session", // before the rename
+	"x-harbour-tier", // before the rename
+	"x-harbour-host-key", // before the rename
 ]);
 
 interface Caller {
@@ -208,8 +212,14 @@ interface Caller {
 }
 
 async function callerOf(headers: http.IncomingHttpHeaders): Promise<Caller | undefined> {
-	if (headers["x-harbour-host-key"] === isolateKey && typeof headers["x-harbour-session"] === "string") {
-		return { sessionId: headers["x-harbour-session"], tier: String(headers["x-harbour-tier"] ?? "isolate") };
+	// Today's names, or those an isolate host built before the rename sends: the session and tier are read beside the
+	// key that matched, never mixed with the other set.
+	const prefixes = ["x-kantel-", "x-harbour-" /* before the rename */];
+	for (const prefix of prefixes) {
+		const session = headers[`${prefix}session`];
+		if (headers[`${prefix}host-key`] === isolateKey && typeof session === "string") {
+			return { sessionId: session, tier: String(headers[`${prefix}tier`] ?? "isolate") };
+		}
 	}
 	const auth = headers["proxy-authorization"];
 	if (typeof auth === "string" && auth.startsWith("Basic ")) {
@@ -278,13 +288,13 @@ async function guarded(res: http.ServerResponse, handle: () => Promise<void>) {
 	} catch (error) {
 		console.error("vault: request failed:", redact(String(error)).text);
 		if (!res.headersSent) res.writeHead(502, { "content-type": "text/plain" });
-		res.end("harbour vault: internal error\n");
+		res.end("kantel vault: internal error\n");
 	}
 }
 
 function deny(res: http.ServerResponse, reason: string) {
-	res.writeHead(403, { "content-type": "text/plain", "x-harbour-vault": "denied" });
-	res.end(`harbour vault: denied: ${reason}\n`);
+	res.writeHead(403, { "content-type": "text/plain", "x-kantel-vault": "denied", "x-harbour-vault": "denied" });
+	res.end(`kantel vault: denied: ${reason}\n`);
 }
 
 // ------------------------------------------------------------------ decisions
@@ -479,7 +489,8 @@ async function proxy(req: http.IncomingMessage, res: http.ServerResponse, target
 		res.writeHead(upstream.status, {
 			...out,
 			"content-length": String(clean.bytes.length),
-			"x-harbour-vault": route.id,
+			"x-kantel-vault": route.id,
+			"x-harbour-vault": route.id, // its name before the rename, for readers built before it
 		});
 		res.end(clean.bytes);
 		await audit(caller, "vault.allow", {
@@ -496,7 +507,7 @@ async function proxy(req: http.IncomingMessage, res: http.ServerResponse, target
 		const message = redact(error instanceof Error ? error.message : String(error)).text;
 		await audit(caller, "vault.error", { ...where, route: route.id, error: message });
 		res.writeHead(502, { "content-type": "text/plain" });
-		res.end(`harbour vault: upstream error: ${message}\n`);
+		res.end(`kantel vault: upstream error: ${message}\n`);
 	}
 }
 
@@ -565,14 +576,18 @@ async function connect(req: http.IncomingMessage, socket: net.Socket, head: Buff
 			host: String(req.url ?? "").slice(0, 200),
 			reason: "bad authority",
 		});
-		socket.end("HTTP/1.1 400 Bad Request\r\nx-harbour-vault: denied\r\ncontent-length: 0\r\n\r\n");
+		socket.end(
+			"HTTP/1.1 400 Bad Request\r\nx-kantel-vault: denied\r\nx-harbour-vault: denied\r\ncontent-length: 0\r\n\r\n",
+		);
 		return;
 	}
 	const { host, port: portNumber } = authority;
 	const where = { method: "CONNECT", host, port: portNumber };
 	if (caller === undefined) {
 		await audit(undefined, "vault.deny", { ...where, reason: "unknown caller" });
-		socket.end("HTTP/1.1 403 Forbidden\r\nx-harbour-vault: denied\r\ncontent-length: 0\r\n\r\n");
+		socket.end(
+			"HTTP/1.1 403 Forbidden\r\nx-kantel-vault: denied\r\nx-harbour-vault: denied\r\ncontent-length: 0\r\n\r\n",
+		);
 		return;
 	}
 	const raw = tunnelRoute(host, portNumber);

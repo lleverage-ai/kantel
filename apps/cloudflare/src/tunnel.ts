@@ -16,7 +16,7 @@
  *
  * Portable: the object's `ctx` comes in as `HeldSockets` and its synchronous storage, so the tests run it in Node.
  */
-import { type Clock, isKantelError, systemClock, type ToolServerTokenId } from "@kantel/contracts";
+import { type Clock, isKantelError, readHeader, systemClock, type ToolServerTokenId } from "@kantel/contracts";
 import { TunnelConnection, type TunnelConnectionState, type TunnelSocket } from "@kantel/tools/connection";
 import type { ToolServerRef } from "@kantel/tools/links";
 import { TUNNEL_CLOSE_GOING_AWAY, TUNNEL_CLOSE_REPLACED } from "@kantel/tools/protocol";
@@ -28,7 +28,7 @@ import type { SyncKvLike } from "./workspace-heads.ts";
  * The header the Worker forwards a checked upgrade with: the grant the stack gave for the token, as JSON. The Worker
  * sets it after dropping any the client sent, and only the Worker reaches a tunnel object.
  */
-export const TUNNEL_GRANT_HEADER = "harbour-tunnel-grant";
+export const TUNNEL_GRANT_HEADER = "kantel-tunnel-grant";
 
 export function tunnelGrantHeader(grant: TunnelGrant): string {
 	return JSON.stringify({
@@ -40,7 +40,7 @@ export function tunnelGrantHeader(grant: TunnelGrant): string {
 
 /** The grant a forwarded upgrade carries, or undefined when it has none or a malformed one. */
 export function tunnelGrantFrom(request: Request): TunnelGrant | undefined {
-	const header = request.headers.get(TUNNEL_GRANT_HEADER);
+	const header = readHeader(request.headers, TUNNEL_GRANT_HEADER);
 	if (header === null) return undefined;
 	let value: unknown;
 	try {
@@ -278,7 +278,7 @@ export class TunnelHolder<Socket extends TunnelSocket> {
 
 	/** Runs a report to the stack past the event that made it. The stack's outage is its own; the tunnel carries on. */
 	#report(what: string, work: () => Promise<unknown>): void {
-		const running = work().catch((error: unknown) => console.warn(`harbour: ${what} failed`, error));
+		const running = work().catch((error: unknown) => console.warn(`kantel: ${what} failed`, error));
 		this.#background?.(running);
 	}
 }

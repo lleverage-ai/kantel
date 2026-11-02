@@ -82,7 +82,7 @@ describe("the brwsr provider", () => {
 			apiKey: KEY,
 			apiUrl: "https://api.brwsr.test/",
 			fetch: api.fetch,
-			userMetadata: { agent: "harbour" },
+			userMetadata: { agent: "kantel" },
 		});
 		expect(await provider.open({ providerContextId: "ctx-1", persist: true, timeoutMs: 90_500 })).toEqual({
 			providerSessionId: "s-1",
@@ -95,7 +95,7 @@ describe("the brwsr provider", () => {
 				keepAlive: true,
 				timeout: 91,
 				browserSettings: { context: { id: "ctx-1", persist: true } },
-				userMetadata: { agent: "harbour" },
+				userMetadata: { agent: "kantel" },
 			},
 			expect.objectContaining({ timeout: 60, browserSettings: { context: { id: "ctx-1", persist: false } } }),
 			expect.objectContaining({ timeout: BRWSR_MAX_TIMEOUT_S }),
@@ -269,10 +269,10 @@ describe("the brwsr provider", () => {
 		expect(await createBrwsrProvider({ apiKey: KEY, fetch: found.fetch }).contextId("atlas")).toBe("ctx-atlas");
 
 		const made = fakeApi([
-			["GET", "/v1/contexts?name=harbour-test", 200, []],
-			["POST", "/v1/contexts", 201, { id: "ctx-new", name: "harbour-test" }],
+			["GET", "/v1/contexts?name=kantel-test", 200, []],
+			["POST", "/v1/contexts", 201, { id: "ctx-new", name: "kantel-test" }],
 		]);
-		expect(await createBrwsrProvider({ apiKey: KEY, fetch: made.fetch }).contextId("harbour-test")).toBe("ctx-new");
+		expect(await createBrwsrProvider({ apiKey: KEY, fetch: made.fetch }).contextId("kantel-test")).toBe("ctx-new");
 
 		let lookups = 0;
 		const raced = fakeApi([

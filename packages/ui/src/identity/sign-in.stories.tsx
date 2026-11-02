@@ -11,7 +11,7 @@ export default { title: "Identity/Sign in" } satisfies StoryDefault;
 
 /** The workbench's code; any other is wrong. */
 const STORY_CODE = "123456";
-const EMAIL = "ada@harbour.test";
+const EMAIL = "ada@kantel.test";
 
 /** A stand-in for the OTP routes: a short pause as a real call takes, then the answer the server would give. */
 const storyApi: SignInApi = {
@@ -113,7 +113,7 @@ export const InvalidEmail: Story = () => (
 	<Screen
 		state={() => ({
 			step: "email",
-			email: "ada at harbour",
+			email: "ada at kantel",
 			busy: false,
 			problem: { kind: "invalid-email", message: "Enter your email address." },
 		})}
@@ -125,7 +125,7 @@ export const LongContent: Story = () => (
 	<Screen
 		state={() =>
 			codeStep(1, {
-				email: "ada.augusta.king-noel.countess-of-lovelace@analytical-engine.harbour.example.org",
+				email: "ada.augusta.king-noel.countess-of-lovelace@analytical-engine.kantel.example.org",
 			})
 		}
 	/>
@@ -140,6 +140,6 @@ Mobile.meta = { width: 420 };
 
 /**
  * The screen against the real OTP handler (`@kantel/identity/otp/http`) over an in-memory directory and mailer, in
- * the page. Codes go to the inbox beside it; only ada@harbour.test is invited.
+ * the page. Codes go to the inbox beside it; only ada@kantel.test is invited.
  */
 export const Live: Story = () => <LiveSignIn />;

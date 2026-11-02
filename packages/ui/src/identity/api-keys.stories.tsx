@@ -14,7 +14,7 @@ const NOW = Date.UTC(2026, 9, 28, 14, 0, 0);
 const HOUR = 60 * MINUTE;
 
 const PROJECTS: readonly KeyProject[] = [
-	{ id: "prj_harbour", name: "Kantel" },
+	{ id: "prj_kantel", name: "Kantel" },
 	{ id: "prj_research", name: "Research" },
 	{ id: "prj_brwsr", name: "brwsr" },
 ];
@@ -24,29 +24,29 @@ const OPERATOR: readonly HeldRole[] = [{ role: "operator" }];
 
 /** Each key's first 12 characters, as a real secret's would read. */
 const PREFIXES: Readonly<Record<string, string>> = {
-	key_supervisor: "hbr_Xk3p9QaZ",
-	key_ci_runner: "hbr_m7RtV2cL",
-	key_nightly: "hbr_0dHs5WyN",
-	key_old_bot: "hbr_Fa8jT4bE",
-	key_trial: "hbr_pL6nK1uG",
-	key_github_app: "hbr_q7Vb2xN0",
-	key_lleverage: "hbr_Rz5yH8mQ",
+	key_supervisor: "ktk_Xk3p9QaZ",
+	key_ci_runner: "ktk_m7RtV2cL",
+	key_nightly: "ktk_0dHs5WyN",
+	key_old_bot: "ktk_Fa8jT4bE",
+	key_trial: "ktk_pL6nK1uG",
+	key_github_app: "ktk_q7Vb2xN0",
+	key_lleverage: "ktk_Rz5yH8mQ",
 };
 
 const key = (id: string, rest: Partial<ApiKey> & Pick<ApiKey, "name" | "createdAt">): ApiKey => ({
 	id,
 	serviceId: `svc_${id}`,
-	organisationId: "org_harbour",
-	projectIds: ["prj_harbour"],
+	organisationId: "org_kantel",
+	projectIds: ["prj_kantel"],
 	role: "operator",
-	prefix: PREFIXES[id] ?? "hbr_Q1w2E3r4",
+	prefix: PREFIXES[id] ?? "ktk_Q1w2E3r4",
 	...rest,
 });
 
 const KEYS: readonly ApiKey[] = [
 	key("key_supervisor", {
 		name: "Research supervisor",
-		projectIds: ["prj_research", "prj_harbour"],
+		projectIds: ["prj_research", "prj_kantel"],
 		createdAt: NOW - 12 * DAY,
 		lastUsedAt: NOW - 4 * MINUTE,
 	}),
@@ -78,7 +78,7 @@ const KEYS: readonly ApiKey[] = [
 
 const ISSUED: IssuedApiKey = {
 	key: key("key_github_app", { name: "GitHub app", createdAt: NOW, expiresAt: NOW + 90 * DAY }),
-	secret: "hbr_q7Vb2xN0dLk4sR9mTzE1aYpW6cJhU3fG8oKiB5nXeM",
+	secret: "ktk_q7Vb2xN0dLk4sR9mTzE1aYpW6cJhU3fG8oKiB5nXeM",
 };
 
 const pause = <T,>(value: () => T, ms = 600): Promise<T> =>
@@ -176,7 +176,7 @@ export const NewKey: Story = () => (
 				draft: {
 					name: "GitHub app",
 					scope: "projects",
-					projectId: "prj_harbour",
+					projectId: "prj_kantel",
 					role: "operator",
 					expiry: "90d",
 					createProjects: false,
@@ -197,7 +197,7 @@ export const NewOrganisationKey: Story = () => (
 				draft: {
 					name: "Lleverage",
 					scope: "organisation",
-					projectId: "prj_harbour",
+					projectId: "prj_kantel",
 					role: "operator",
 					expiry: "never",
 					createProjects: true,
@@ -211,7 +211,7 @@ NewOrganisationKey.storyName = "New organisation key";
 
 /** A project admin is offered project keys only: an organisation key needs an organisation-wide admin. */
 export const ProjectAdmin: Story = () => (
-	<Page roles={[{ projectId: "prj_harbour", role: "admin" }]} api={() => storyApi(KEYS.slice(0, 2))} />
+	<Page roles={[{ projectId: "prj_kantel", role: "admin" }]} api={() => storyApi(KEYS.slice(0, 2))} />
 );
 ProjectAdmin.storyName = "Project admin";
 
@@ -250,14 +250,14 @@ Viewer.storyName = "Error: viewer";
 
 export const CreateRefused: Story = () => (
 	<Page
-		roles={[{ projectId: "prj_harbour", role: "admin" }]}
+		roles={[{ projectId: "prj_kantel", role: "admin" }]}
 		api={() => storyApi(KEYS, { create: new KantelError("forbidden", "needs admin on the organisation") })}
 		initial={() =>
 			listed({
 				draft: {
 					name: "GitHub app",
 					scope: "projects",
-					projectId: "prj_harbour",
+					projectId: "prj_kantel",
 					role: "operator",
 					expiry: "never",
 					createProjects: false,
@@ -278,7 +278,7 @@ export const CreateInvalid: Story = () => (
 				draft: {
 					name: "",
 					scope: "projects",
-					projectId: "prj_harbour",
+					projectId: "prj_kantel",
 					role: "operator",
 					expiry: "never",
 					createProjects: false,

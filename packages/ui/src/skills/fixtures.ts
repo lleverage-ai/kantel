@@ -17,7 +17,7 @@ import {
 
 export { directory, FIXTURE_NOW };
 
-export const ORGANISATION = "org_harbour";
+export const ORGANISATION = "org_kantel";
 export const VIEWER = "usr_tom";
 
 const TOM: CallContext = { actor: { kind: "human", userId: "usr_tom" }, organisationId: ORGANISATION };

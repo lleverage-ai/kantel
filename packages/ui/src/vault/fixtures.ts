@@ -31,8 +31,8 @@ import type { RequesterLabels, VaultRequest, Viewer } from "./vault-page-model.t
 
 export { FIXTURE_NOW };
 
-export const ORGANISATION = "org_harbour";
-export const VAULT_HOST = "harbour.dev";
+export const ORGANISATION = "org_kantel";
+export const VAULT_HOST = "kantel.dev";
 
 /** The lifecycle states the fixture holds one proposal for. */
 export type FixtureState =
@@ -287,7 +287,7 @@ export async function createVaultScenario(options: ScenarioOptions = {}): Promis
 	const staging = await vault.putItem(admin, {
 		owner,
 		name: "Staging admin key",
-		hosts: ["admin.staging.harbour.dev"],
+		hosts: ["admin.staging.kantel.dev"],
 		injection: { header: "X-Admin-Key", template: "{key}" },
 		value: "stg_canary_44d0",
 	});
@@ -358,7 +358,7 @@ export async function createVaultScenario(options: ScenarioOptions = {}): Promis
 	// Approved as asked: one write to GitHub.
 	const approved = await propose("ses_release", -3 * HOUR, {
 		itemId: github.id,
-		route: route("api.github.com", ["POST"], "/repos/harbour-dev/harbour/releases"),
+		route: route("api.github.com", ["POST"], "/repos/kantel-dev/kantel/releases"),
 		lifetime: { ttlMs: 8 * HOUR, maxUses: 1 },
 		reason: "To publish the 0.4 release notes as a draft GitHub release.",
 	});
@@ -367,19 +367,19 @@ export async function createVaultScenario(options: ScenarioOptions = {}): Promis
 	// Approved, then stopped.
 	const revoked = await propose("ses_ops", -2 * HOUR, {
 		itemId: staging.id,
-		route: route("admin.staging.harbour.dev", ["GET", "POST"], "/jobs"),
+		route: route("admin.staging.kantel.dev", ["GET", "POST"], "/jobs"),
 		lifetime: { ttlMs: DAY },
 		reason: "To list the stuck invoice jobs and retry the three that failed overnight.",
 	});
 	const revokedDecision = await approve(revoked.id, -2 * HOUR + MINUTE);
-	await egress("ses_ops", "GET", "https://admin.staging.harbour.dev/jobs?state=stuck", -2 * HOUR + 2 * MINUTE);
+	await egress("ses_ops", "GET", "https://admin.staging.kantel.dev/jobs?state=stuck", -2 * HOUR + 2 * MINUTE);
 	at(-90 * MINUTE);
 	await vault.revokeGrant(admin, revokedDecision.grantId!, "Retries done");
 
 	// Denied.
 	const denied = await propose("ses_release", -70 * MINUTE, {
 		itemId: github.id,
-		route: route("api.github.com", ["DELETE"], "/repos/harbour-dev/harbour/git/refs/tags"),
+		route: route("api.github.com", ["DELETE"], "/repos/kantel-dev/kantel/git/refs/tags"),
 		lifetime: { ttlMs: HOUR, maxUses: 1 },
 		reason: "To delete the mistaken v0.4.0-rc tag before tagging the release.",
 	});
@@ -390,7 +390,7 @@ export async function createVaultScenario(options: ScenarioOptions = {}): Promis
 	// Expired: nobody decided in the fifteen minutes.
 	const expired = await propose("ses_ops", -40 * MINUTE, {
 		itemId: staging.id,
-		route: route("admin.staging.harbour.dev", ["POST"], "/jobs/retry"),
+		route: route("admin.staging.kantel.dev", ["POST"], "/jobs/retry"),
 		lifetime: { maxUses: 1 },
 		reason: "To retry the last stuck job after the deploy.",
 	});
@@ -399,7 +399,7 @@ export async function createVaultScenario(options: ScenarioOptions = {}): Promis
 	// Withdrawn by the agent.
 	const withdrawn = await propose("ses_release", -30 * MINUTE, {
 		itemId: github.id,
-		route: route("api.github.com", ["GET"], "/repos/harbour-dev/harbour/pulls"),
+		route: route("api.github.com", ["GET"], "/repos/kantel-dev/kantel/pulls"),
 		lifetime: { maxUses: 1 },
 		reason: "To list last week's merged pull requests.",
 	});
@@ -415,7 +415,7 @@ export async function createVaultScenario(options: ScenarioOptions = {}): Promis
 	});
 	const routeGrant = await propose("ses_ops", -6 * MINUTE, {
 		itemId: staging.id,
-		route: route("admin.staging.harbour.dev", ["GET", "POST"], "/jobs"),
+		route: route("admin.staging.kantel.dev", ["GET", "POST"], "/jobs"),
 		lifetime: { ttlMs: 7 * DAY },
 		reason: "To keep the staging job queue moving this week: list stuck jobs and retry them as they fail.",
 	});
@@ -426,13 +426,13 @@ export async function createVaultScenario(options: ScenarioOptions = {}): Promis
 			hosts: ["sentry.io"],
 			injection: { header: "Authorization", template: "Bearer {key}" },
 		},
-		route: route("sentry.io", ["GET"], "/api/0/projects/harbour/billing"),
+		route: route("sentry.io", ["GET"], "/api/0/projects/kantel/billing"),
 		lifetime: { ttlMs: 30 * DAY },
 		reason: "To read the billing service's new errors each morning for the sweep. There is no Sentry connection yet.",
 	});
 	const read = await propose("ses_release", -2 * MINUTE, {
 		itemId: github.id,
-		route: route("api.github.com", ["GET"], "/repos/harbour-dev/harbour/pulls"),
+		route: route("api.github.com", ["GET"], "/repos/kantel-dev/kantel/pulls"),
 		lifetime: { ttlMs: HOUR, maxUses: 1 },
 		reason: "To list last week's merged pull requests for the release notes.",
 	});
@@ -455,12 +455,12 @@ export async function createVaultScenario(options: ScenarioOptions = {}): Promis
 		},
 		request: {
 			connectionId: "conn_github",
-			connectionName: "GitHub (harbour-dev)",
+			connectionName: "GitHub (kantel-dev)",
 			connectionVersion: "fixture",
 			owner,
 			kind: "http",
 			method: "POST",
-			url: "https://api.github.com/repos/harbour-dev/harbour/issues?labels=release",
+			url: "https://api.github.com/repos/kantel-dev/kantel/issues?labels=release",
 			headers: {
 				"Content-Type": "application/json",
 				"X-GitHub-Api-Version": "2022-11-28",

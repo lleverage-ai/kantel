@@ -149,7 +149,7 @@ const longSessions: SessionSummary[] = Array.from({ length: 40 }, (_, index) => 
 			index % 3 === 0
 				? `Re-run the migration against the staging copy of the billing database for tenant ${index + 1}, then compare row counts and report any differences`
 				: `Session ${index + 1}: tidy the release notes`,
-		project: index % 4 === 0 ? "a-project-with-a-rather-long-name-for-the-sidebar" : "harbour",
+		project: index % 4 === 0 ? "a-project-with-a-rather-long-name-for-the-sidebar" : "kantel",
 		...(index % 2 === 0 ? { branch: `feature/very-long-branch-name-for-session-${index + 1}-and-its-follow-ups` } : {}),
 		...shape,
 		startedAt: base - (index + 1) * 600_000,

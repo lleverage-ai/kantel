@@ -43,7 +43,7 @@ export interface ToolServersPageProps {
 	readonly projects: readonly ToolServerProject[];
 	/** A project's page: its own servers and the organisation's, and a new one is the project's. */
 	readonly project?: ToolServerProject;
-	/** Kantel's address, as the tunnel command names it: `https://harbour.example.com`. */
+	/** Kantel's address, as the tunnel command names it: `https://kantel.example.com`. */
 	readonly origin: string;
 	/** A fixed time, for stories. */
 	readonly now?: number;

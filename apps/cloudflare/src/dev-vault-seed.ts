@@ -57,7 +57,7 @@ export async function seedDevVault(vault: KantelVault, input: DevVaultSeedInput)
 	const github = await vault.putItem(admin, {
 		owner: { kind: "project", organisationId, projectId },
 		name: "GitHub token",
-		description: "The harbour-bot fine-grained token for the acme organisation",
+		description: "The kantel-bot fine-grained token for the acme organisation",
 		hosts: ["api.github.com"],
 		injection,
 		value: "dev-github-token-not-a-real-one",
@@ -94,7 +94,7 @@ export async function seedDevVault(vault: KantelVault, input: DevVaultSeedInput)
 	});
 	await vault.decide(
 		admin,
-		approval(narrowed, { narrowing: { methods: ["GET", "POST"], pathPrefix: "/repos/acme/harbour", maxUses: 20 } }),
+		approval(narrowed, { narrowing: { methods: ["GET", "POST"], pathPrefix: "/repos/acme/kantel", maxUses: 20 } }),
 	);
 	const denied = await ask(agents.billing, {
 		itemId: stripe.id,

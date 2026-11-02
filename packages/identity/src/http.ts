@@ -65,6 +65,7 @@ import {
 	ROLES,
 	type Role,
 	type RoleBinding,
+	readHeader,
 	roleSatisfies,
 	SESSION_END_PATH,
 	SIGN_IN_METHODS,
@@ -82,7 +83,7 @@ import { type SignedIn, signedInReaderOf } from "./signed-in.ts";
 
 /**
  * `GET ORGANISATIONS_PATH`: the organisations the caller may act in, `OrganisationsResponse`. A person in several
- * needn't name one (`Harbour-Organisation`) for this call alone; when they do, or have only one, it is `current`. An
+ * needn't name one (`Kantel-Organisation`) for this call alone; when they do, or have only one, it is `current`. An
  * API key acts in its own organisation only.
  */
 export const ORGANISATIONS_PATH = "/v1/organisations";
@@ -636,7 +637,7 @@ export function createIdentityHandler(options: IdentityHandlerOptions): (request
 		const body: UnauthenticatedResponse = {
 			error: { code: "unauthenticated", message, ...(signIn === undefined ? {} : { signIn }) },
 		};
-		return json(401, body, { "www-authenticate": `Bearer realm="harbour"` });
+		return json(401, body, { "www-authenticate": `Bearer realm="kantel"` });
 	};
 
 	/** The answer to a call that didn't authenticate: 401, 403 for an organisation it may not act in, or as `failed`. */
@@ -667,7 +668,7 @@ export function createIdentityHandler(options: IdentityHandlerOptions): (request
 			return errorResponse(405, "invalid", `Use ${allowed.join(" or ")}`, { allow: allowed.join(", ") });
 		}
 
-		const requestId = request.headers.get("harbour-request-id") ?? undefined;
+		const requestId = readHeader(request.headers, "kantel-request-id") ?? undefined;
 		const context = { ...(requestId === undefined ? {} : { requestId }), signal: request.signal };
 
 		// A person in several organisations may list them without naming one, so this read asks who they are first.
@@ -677,7 +678,7 @@ export function createIdentityHandler(options: IdentityHandlerOptions): (request
 				noParameters(url.searchParams);
 				const signedIn = await readSignedIn(request);
 				if (signedIn !== undefined) {
-					const named = request.headers.get(ORGANISATION_HEADER)?.trim();
+					const named = readHeader(request.headers, ORGANISATION_HEADER)?.trim();
 					const ids = signedIn.organisationIds;
 					let current: OrganisationId | undefined;
 					if (named !== undefined && named !== "") {
@@ -834,9 +835,9 @@ export function createIdentityHandler(options: IdentityHandlerOptions): (request
 }
 
 export interface IdentityClientOptions {
-	/** Kantel's base URL, such as `https://harbour.example.com`, or `""` for the page's own origin. */
+	/** Kantel's base URL, such as `https://kantel.example.com`, or `""` for the page's own origin. */
 	readonly baseUrl: string;
-	/** Headers for every call: credentials, and `Harbour-Organisation` for a person in several organisations. */
+	/** Headers for every call: credentials, and `Kantel-Organisation` for a person in several organisations. */
 	readonly headers?: () => Readonly<Record<string, string>> | Promise<Readonly<Record<string, string>>>;
 	readonly fetch?: typeof fetch;
 }

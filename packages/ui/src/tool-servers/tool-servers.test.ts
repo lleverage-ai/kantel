@@ -45,14 +45,14 @@ describe("toolServerStatusText", () => {
 
 describe("tunnelCommand", () => {
 	it("runs a stdio server after --, with the origin, the server and the token", () => {
-		expect(tunnelCommand("https://harbour.example.com/", "ts_1", "hbt_abc", "stdio")).toBe(
-			"npx @kantel/tunnel --harbour https://harbour.example.com --server ts_1 --token hbt_abc -- <your stdio MCP server command>",
+		expect(tunnelCommand("https://kantel.example.com/", "ts_1", "ktt_abc", "stdio")).toBe(
+			"npx @kantel/tunnel --kantel https://kantel.example.com --server ts_1 --token ktt_abc -- <your stdio MCP server command>",
 		);
 	});
 
 	it("points at a loopback Streamable HTTP server with --url", () => {
-		expect(tunnelCommand("https://harbour.example.com", "ts_1", "hbt_abc", "url")).toBe(
-			`npx @kantel/tunnel --harbour https://harbour.example.com --server ts_1 --token hbt_abc --url ${TUNNEL_LOOPBACK_URL}`,
+		expect(tunnelCommand("https://kantel.example.com", "ts_1", "ktt_abc", "url")).toBe(
+			`npx @kantel/tunnel --kantel https://kantel.example.com --server ts_1 --token ktt_abc --url ${TUNNEL_LOOPBACK_URL}`,
 		);
 	});
 });
@@ -83,7 +83,7 @@ describe("tokens", () => {
 	const token = {
 		id: "tst_1",
 		toolServerId: "ts_1",
-		prefix: "hbt_abcd",
+		prefix: "ktt_abcd",
 		createdBy: { kind: "system", component: "test" },
 	} as const;
 
@@ -115,7 +115,7 @@ describe("the fixtures' tools view", () => {
 		const source = createToolServersScenario({ delay: 0 });
 		await expect(source.create({ name: "Bad Name", transport: "tunnel" })).rejects.toThrow(/lower-case/);
 		const made = await source.create({ name: "billing", transport: "tunnel", projectId: "proj_support" });
-		expect(made.token?.secret).toMatch(/^hbt_/);
+		expect(made.token?.secret).toMatch(/^ktt_/);
 		expect(made.token?.token.prefix).toBe(made.token?.secret.slice(0, 8));
 		expect((await source.list({ projectId: "proj_research" })).map((server) => server.name)).not.toContain("billing");
 

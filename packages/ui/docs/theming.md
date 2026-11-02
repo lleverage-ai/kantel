@@ -5,8 +5,8 @@ three fonts. Switching theme sets one attribute, `data-kt-theme`, on `<html>`. E
 tokens for that attribute, and every component already reads those tokens, so the whole page restyles in the next
 frame without rendering anything in React.
 
-Kantel (ID `harbour`), the dark theme, is the default, and its values are `tokens.css`'s `:root` values unchanged
-(`theme.test.ts` holds the two together). Kantel and Kantel light (`harbour-light`) follow the Lleverage brand:
+Kantel (ID `kantel`), the dark theme, is the default, and its values are `tokens.css`'s `:root` values unchanged
+(`theme.test.ts` holds the two together). Kantel and Kantel light (`kantel-light`) follow the Lleverage brand:
 midnight `#141e28` and paper `#f9f7f0` as the grounds, paper text on midnight (never pure white), orange `#ec7523` as
 the one accent, kept to primary actions, links and the focus ring, and the brand's three faces. Neutral and Neutral
 light keep the console's earlier look, after T3 Code, with the system's fonts.

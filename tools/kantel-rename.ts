@@ -64,6 +64,7 @@ const SKIP: readonly { readonly paths: RegExp; readonly reason: string }[] = [
 	},
 	{ paths: /^patches\//, reason: "Patches to dependencies: their context must match the upstream source." },
 	{ paths: /^tools\/kantel-rename\.ts$/, reason: "This codemod." },
+	{ paths: /^apps\/site\//, reason: "The marketing site: its own pull request owns it." },
 	{
 		paths: /\.(png|jpe?g|gif|webp|ico|woff2?|ttf|otf|xlsx|docx|pptx|pdf|zip|gz|wasm)$/i,
 		reason: "Binary files.",
@@ -79,37 +80,98 @@ const HISTORICAL_RULES = new Set(["@harbour/ scope", "imported contract names"])
 // New files written by hand for the compatibility layer, and their tests: they name the old spellings on purpose.
 // (Never a file that existed before the rename: KEEP would then protect its old names from the rename.)
 const COMPATIBILITY =
-	/^(packages\/contracts\/(src\/(env|legacy-env)\.ts|test\/env\.test\.ts)|packages\/ui\/src\/theme\/controller\.test\.ts)$/;
+	/^(packages\/contracts\/(src\/(env|legacy-env|legacy-names)\.ts|test\/(env|legacy-names)\.test\.ts)|packages\/ui\/src\/theme\/(controller|legacy-themes)\.test\.ts|apps\/console\/src\/legacy-storage(\.test)?\.ts|apps\/cloudflare\/test\/durable-object-rename\.test\.ts)$/;
+
+// Tests of what is still accepted under its name from before the rename (TASK-4492): they send or expect the old names.
+const COMPATIBILITY_TESTS =
+	/^(packages\/identity\/test\/(authenticator|otp)|packages\/tools\/test\/service|packages\/runtime\/test\/http|packages\/workspace\/test\/read-api|packages\/browser\/test\/runtime|apps\/cloudflare\/test\/vault)\.test\.ts$/;
 
 /** Everything kept, and why. Matched before any rule runs; a kept match is never rewritten. */
 export const KEEP: readonly Keep[] = [
-	// Cloudflare: the deployed Durable Object classes. Their names are the namespaces that hold every stack, vault,
-	// browser and sandbox object, and the container apps are named after them (`harbour-harbourbrowser`). The code's
-	// classes are Kantel*, exported under these names (`export { KantelStack as HarbourStack }`).
+	// Cloudflare: the deployed Durable Object classes with a container app each. Their names are the namespaces that
+	// hold every browser and sandbox object, and their container apps are named after them (`harbour-harbourbrowser`).
+	// The code's classes are Kantel*, exported under these names (`export { KantelBrowser as HarbourBrowser }`).
+	// HarbourStack and HarbourVault were renamed KantelStack and KantelVault by the v6 renamed_classes migration.
 	{
-		pattern: /(["'])Harbour(Stack|Vault|Browser|Sandbox)\1/g,
+		pattern: /(["'])Harbour(Browser|Sandbox)\1/g,
 		reason:
-			"Deployed Durable Object class names (wrangler class_name and migrations v1-v4): renaming one needs a renamed_classes migration and renames its container app; kept for a follow-up.",
+			"Deployed Durable Object classes with a container app each (wrangler class_name, migrations v3-v4, deploy-config.ts): a renamed_classes migration would move the objects, but the container app is named after and attached to the class, and Cloudflare doesn't document renaming one; kept until that can be tried on a non-production Worker.",
 	},
 	{
-		pattern: /\bas Harbour(Stack|Vault|Browser|Sandbox)\b/g,
-		reason: "The Worker's exports under the deployed Durable Object class names.",
-	},
-	// HTTP headers clients already send or read.
-	{
-		pattern: /\b[Xx]-Harbour-[A-Za-z][\w-]*/g,
-		reason: "x-harbour-* headers: a cross-image and proxy protocol (isolate host, vault proxy, browser agent).",
+		pattern: /\bas Harbour(Browser|Sandbox|Stack|Vault)\b/g,
+		reason:
+			"The Worker's exports under the deployed Durable Object class names, and the stack's and vault's names before the v6 rename, as aliases.",
 	},
 	{
-		pattern: /\bHarbour-(Organisation|Version)\b/g,
-		reason: "Public HTTP headers (organisation selection, workspace version) that SDKs and clients send or read.",
+		pattern: /"Harbour(Stack|Vault)"/g,
+		reason:
+			"The stack's and vault's classes before the v6 renamed_classes migration: migrations v1-v2 and the rename's sources, history Cloudflare holds.",
+		paths: /^apps\/cloudflare\/(wrangler\.jsonc|test\/)/,
+	},
+	{
+		pattern:
+			/\bharbour-(organisation|request-id|call-id|host-id|signature)\b|\bHarbour-Version\b|\bhb[rst]_[\w-]*|"harbour"/g,
+		reason:
+			"Old headers, token prefixes and the browser provider's old value, in the tests that they are still accepted.",
+		paths: COMPATIBILITY_TESTS,
+	},
+	{
+		pattern: /\bharbour\b/g,
+		reason: "The model provider ID (KANTEL_MODEL_PROVIDER), which sessions store in their model choices.",
+		paths: /^packages\/runtime\/test\/models\.test\.ts$/,
+	},
+	{
+		pattern: /harbour:\\\/\\\//g,
+		reason: "Vault placeholders (`harbour://…`) in a regular expression: agents and stored records already hold them.",
+	},
+	{
+		pattern: /\bmcp__harbour__/g,
+		reason: "The model tool namespace before the rename, where its length is explained.",
+	},
+	{
+		pattern: /\bharbour-local-dev-[\w-]+|(?<=the first ones, `)harbour(?=`)/g,
+		reason: "wrangler dev's local keys (its sealed local state) and a deleted D1 database's name.",
+		paths: /(^|\/)wrangler\.jsonc$/,
+	},
+	{
+		pattern: /(?<=^\t+name: )"harbour"(?=,$)/gm,
+		reason: "The deployed Worker's name, as the deploy config gives it.",
+		paths: /^apps\/cloudflare\/test\/deploy\.test\.ts$/,
+	},
+	{
+		pattern: /\bharbour\b/g,
+		reason:
+			"The real sal-memory repository's `projects/harbour` concepts, and the browser host's Kubernetes object names (`harbour-browser-<id>`), which running hosts' janitors find.",
+		paths: /^(examples\/sal-worker\/test\/memory-source|apps\/selfhosted\/test\/browser\/kubernetes)\.test\.ts$/,
+	},
+	{
+		pattern: /\bharbour\b/g,
+		reason:
+			"What the Sal worker writes into the sal-memory repository: its commits' author, `generated.by` and its source entries' ID, which Sal's own tools already hold.",
+		paths: /^examples\/sal-worker\/src\/(okf|memory-source)\.ts$/,
+	},
+	{
+		pattern: /^## Names\n[\s\S]*?(?=\n## )/gm,
+		reason: "The README's account of the names from before the rename: which still work, and which stay.",
+		paths: /^README\.md$/,
+	},
+	{
+		pattern: /(?<=v === )"harbour"/g,
+		reason: "The browser provider's value before the rename, which a repository variable may still hold.",
+		paths: /^apps\/cloudflare\/scripts\/deploy-config\.ts$/,
+	},
+	{
+		pattern: /^[^\n]*"(tag|from)": "[^\n]*$/gm,
+		reason:
+			"Applied Durable Object migrations, and the renamed_classes migration's old names: history Cloudflare holds.",
+		paths: /(^|\/)wrangler\.jsonc$/,
 	},
 	// No leading \b: in source the trailer follows an escaped newline (`\n\nHarbour-Space:`).
 	{ pattern: /Harbour-Space\b/g, reason: "A Git trailer in published memory repositories, read back by tooling." },
 	// Fixture hosts and addresses that test case-insensitive matching.
 	{
-		pattern: /\bHarbour(?=\.(MySlop|test|localhost)\b)/g,
-		reason: "Mixed-case test hosts and addresses (harbour.myslop.app, harbour.test): they test case-insensitivity.",
+		pattern: /\bHarbour(?=\.MySlop\b)/g,
+		reason: "A mixed-case harbour.myslop.app, the deployed hostname: it tests case-insensitivity.",
 	},
 	{ pattern: /wiki\/Harbour\b/g, reason: "A URL." },
 	{ pattern: /Tides of the Harbour/g, reason: "A fixture page's title: the word, not the product." },
@@ -145,7 +207,8 @@ export const KEEP: readonly Keep[] = [
 		paths: /^apps\/console\//,
 	},
 	{
-		pattern: /HARBOUR_\w*|(?<!@)\b[Hh]arbour\w*|--hb-[\w-]*|\bdata-hb-[\w-]+|(?<![\w-])hb-[\w-]+|\bhb[A-Z]\w*/g,
+		pattern:
+			/HARBOUR_\w*|(?<!@)\b[Hh]arbour\w*|--hb-[\w-]*|\bdata-hb-[\w-]+|(?<![\w-])hb-[\w-]+|\bhb[A-Z]\w*|\bhb[rst]_\w*/g,
 		reason: "The compatibility layer itself, which reads the old names on purpose.",
 		paths: COMPATIBILITY,
 	},
@@ -183,7 +246,139 @@ export const KEEP: readonly Keep[] = [
 		paths: /^packages\/ui\/src\/tokens\/theme\.test\.ts$/,
 	},
 	// Browser storage keys and theme cache: moved to kantel.* by hand, with the old key read as a fallback.
-	// (Lowercase, so outside the rename; listed here for the reviewer.)
+
+	// ---- PR 3: lowercase `harbour`, and the hb*_ token prefixes ------------------------------------------------------
+	// What follows is kept because something outside this checkout holds it: a deployed resource, a database, a stored
+	// record or a key derived from the name. The old names that are still read beside the new ones (headers, token
+	// prefixes, theme IDs, the browser provider, the container directive) are on lines that say "before the rename".
+	{
+		pattern:
+			/(\bharbour[\w.*/-]*|\bhb[rst]_\w*|\bHarbour-[A-Z][\w-]*)(?=[^\n]*(before the rename|TASK-4231))|(?<=(before the rename|TASK-4231)[^\n]*)(\bharbour[\w.*/-]*|\bhb[rst]_\w*|\bHarbour-[A-Z][\w-]*)/g,
+		reason: "Old names on a line about the compatibility layer (it says `before the rename` or TASK-4231).",
+		paths: /^(?!tools\/)/,
+	},
+	{ pattern: /\btvdavies\/harbour\b/gi, reason: "The GitHub repository, not renamed." },
+	{
+		pattern: /\bharbour\.myslop\.app\b/g,
+		reason: "The deployed hostname: renaming it is a DNS, route and Access change.",
+	},
+	{
+		pattern: /\bharbour-(weur|workspaces(-weur)?|dev-workspaces|browser-recordings|harbour\w+)\b/g,
+		reason:
+			"Deployed Cloudflare resources: the D1 database and R2 buckets (data), the recordings lifecycle rule and the container apps.",
+	},
+	{
+		pattern: /"name": "harbour(-dev)?"|"database_name": "harbour-dev"/g,
+		reason:
+			"The Worker names: a new name is a new script, with its own routes, secrets, Durable Object namespaces and observability.",
+		paths: /(^|\/)wrangler\.jsonc$/,
+	},
+	{
+		pattern: /(?<=\[self-hosted, )harbour\b/g,
+		reason: "The self-hosted runner's label, set on the runner, not in this repository.",
+	},
+	// Deployment files: the names on their non-comment lines are what a running deployment has (the Compose project and
+	// its volumes, Postgres roles and databases, buckets, images, networks, Kubernetes objects, paths in volumes).
+	{
+		pattern: /^(?![ \t]*(#|\/\/))[^\n]*\bharbour[^\n]*$/gm,
+		reason:
+			"A deployment's runtime names (Compose project, volumes, roles, buckets, images, networks, Kubernetes objects, paths): renaming one orphans what a running deployment holds.",
+		paths:
+			/^(deploy\/.*\.(ya?ml|sh|json)|.*Dockerfile[\w.]*|\.github\/workflows\/.*\.yml|images\/isolate-host\/config\.capnp|targets\/cloudflare\/workspace\/wrangler\.jsonc)$/,
+	},
+	// Postgres and ClickHouse: schemas, tables and databases (self-hosted).
+	{
+		pattern:
+			/\bharbour(?=\.(sessions|session_leases|audit_events|execs|workspaces|workspace_versions|ws_records|ws_versions|sandbox_tokens|usage_calls|usage_hourly)\b)/g,
+		reason: "The self-hosted Postgres schema `harbour` and ClickHouse database `harbour`: data.",
+	},
+	{
+		pattern: /\bharbour_\w+|"harbour_"|\bharbour-vault-migrate:/g,
+		reason:
+			"Stored snake-case names: SQL table prefixes and schemas (`harbour_`, `harbour_pi_archive`, `harbour_m1`, `harbour_vault`), the `harbour_session` sign-in method, model call metadata keys, the vault's migration lock.",
+	},
+	{
+		pattern: /(?<=(schema|database)( = |\s\?\? |: ))"harbour"/g,
+		reason: "The default Postgres schema and ClickHouse database: data.",
+	},
+	{
+		pattern: /postgres:\/\/harbour[^"`\s]*|(?<=S3_(BUCKET|ACCESS_KEY|SECRET_KEY)", ")harbour[\w-]*/g,
+		reason:
+			"The self-hosted defaults that match deploy/compose: its Postgres role and database, and MinIO bucket and user.",
+	},
+	{
+		pattern: /"harbour-(sandbox|browser|selfhosted|isolate-host|vault-proxy)(:dev)?"|`harbour-browser-\$\{/g,
+		reason:
+			"Self-hosted image, network and container names, as deploy/compose builds and names them; the janitor finds containers by them.",
+	},
+	{
+		pattern:
+			/\bharbour-(sandbox|browser|vault-proxy):(dev|ci|test)\b|\bharbour-(browser-host|browsers|vault-proxy|sbx|dev-secret|canary-0000|m[01]-[\w-]+|test|sandbox-test)\b|\bharbour-browser-<id>|\bx-harbour-vault\b|\b(admin|harbour)@harbour\.localhost\b/g,
+		reason:
+			"What a running self-hosted stack has, wherever it is named (docs, test defaults, comments): deploy/compose's images, networks, containers, MinIO secret, canary and admin address, the Kubernetes namespace and objects, the vault's injected header, the M0/M1 buckets and fixture format.",
+	},
+	{
+		pattern:
+			/(?<=(user|bucket|default) `)harbour(?=`)|(?<=`KANTEL_BROWSER_STACK` \| `)harbour(?=`)|(?<=(migrateWorkspaceStore\(db, |ACCESS_KEY \?\? |bucket: |accessKeyId: |user: |database: ))"harbour"|\b(org|proj)-harbour\b/g,
+		reason:
+			"deploy/compose's MinIO user and bucket, Postgres role and schema, the sandbox label prefix and the browser stack label, as the docs and test defaults give them.",
+		paths:
+			/^(deploy\/.*\.md|targets\/selfhosted\/(sandbox|workspace)\/|apps\/selfhosted\/test\/(gateway\/durable\.stack|workspaces\.conformance)\.test\.ts)/,
+	},
+	{
+		pattern: /(?<=`)harbour(?=` (provider|Worker))|(?<=stack named `)harbour(?=`)/g,
+		reason:
+			"Prose naming what is still `harbour`: the model provider ID sessions store, the deployed Worker and the Compose project.",
+	},
+	{
+		pattern: /\bharbour-m0-cf1\b/g,
+		reason: "The M0 spike's deployed Worker.",
+	},
+	// Stored records and keys.
+	{
+		pattern:
+			/\bharbour\.(context|user|memory|active-conversation|fork-skills|bootstrap|seeded-item|check|schedule|occurrence|connection|connect|browser-host|browser|stack|sandbox-owner|session|owner|tier)\b/g,
+		reason:
+			"Stored names: session entry kinds and run labels in transcripts, Durable Object storage keys, the connect page's message, and Docker labels on running containers.",
+	},
+	{
+		pattern: /\bharbour\.dev\/browser(-host)?\b|(?<=labelPrefix \?\? )"harbour"/g,
+		reason: "Labels on running Kubernetes objects and containers, which the janitor finds them by.",
+	},
+	{
+		pattern: /\b(cliproxyapi|model-gateway)\.harbour\.internal\b/g,
+		reason: "Internal hosts: a deployment's vault item for CLIProxyAPI is bound to cliproxyapi.harbour.internal.",
+	},
+	{
+		pattern:
+			/(?<![\w.-])\/(etc|opt|var\/lib|var)\/harbour[\w./-]*|(?<![\w/])etc\/harbour\b|(?<![\w.])\.harbour(?=\/|$)|(?<=\*\*\/)\.harbour\b/gm,
+		reason: "Paths in images and volumes, which running deployments mount and hold files at.",
+	},
+	{
+		pattern:
+			/\bharbour-(browser-seal|browser-view|vault|vault-key-id):|\bharbour-otp\b|\bharbour-view(-token)?\.|\bharbour-view-ended\b|\bharbour-ph-|\bharbour:\/\/|\bharbour-browser:/g,
+		reason:
+			"Derived and embedded names: key derivation and hash labels (sealed data and links stay readable), the view WebSocket protocol and its end message, vault placeholders agents already hold, browser CDP refs.",
+	},
+	{
+		pattern: /\bharbour:(platform|email-otp)\b/g,
+		reason: "Stored identities: the platform organisation's ID and the email sign-in issuer.",
+	},
+	{
+		pattern:
+			/\bharbour-(echo|dev-browser)\b|(?<=KANTEL_MODEL_PROVIDER = )"harbour"|`harbour\/\$\{|\bharbour\/(sessionId|organisationId|projectId|agentId|userId|callId|\*)/g,
+		reason:
+			"Model provider IDs stored in sessions' model choices, the model gateway's spend tag, and the `harbour/*` `_meta` keys tool servers read.",
+	},
+	{
+		pattern: /(?<=BROWSER_CONTEXT_NAME = )"harbour"/g,
+		reason: "brwsr's signed-in context, which holds a deployment's saved logins.",
+	},
+	{
+		pattern: /"harbour-tunnel"/g,
+		reason: "The tunnel CLI's old command name, kept beside `kantel-tunnel`.",
+		paths: /^packages\/tunnel\/package\.json$/,
+	},
 ];
 
 const pathOk = (paths: RegExp | undefined, file: string) => paths === undefined || paths.test(file);
@@ -258,6 +453,12 @@ export const RULES: readonly Rule[] = [
 		replace: () => "kt",
 		target: true,
 	},
+	// PR 3: lowercase `harbour` everywhere KEEP doesn't hold it, and the token prefixes (`hbr_` API keys, `hbs_` sessions,
+	// `hbt_` tunnel tokens), whose old forms the code still accepts.
+	{ id: "harbour", pattern: /(?<![A-Za-z0-9])harbour/g, replace: () => "kantel", target: true },
+	{ id: "hbr_ prefix", pattern: /(?<![A-Za-z0-9])hbr_/g, replace: () => "ktk_", target: true },
+	{ id: "hbs_ prefix", pattern: /(?<![A-Za-z0-9])hbs_/g, replace: () => "kts_", target: true },
+	{ id: "hbt_ prefix", pattern: /(?<![A-Za-z0-9])hbt_/g, replace: () => "ktt_", target: true },
 	{ id: "file name: harbour-sal.ts", pattern: /\bharbour-sal\.ts\b/g, replace: () => "kantel-sal.ts" },
 	{ id: "file name: import-to-harbour", pattern: /\bimport-to-harbour\b/g, replace: () => "import-to-kantel" },
 	{
@@ -273,6 +474,7 @@ export const MOVES: readonly (readonly [string, string])[] = [
 	["examples/sal-worker/scripts/harbour-sal.ts", "examples/sal-worker/scripts/kantel-sal.ts"],
 	["examples/sal-worker/scripts/import-to-harbour.ts", "examples/sal-worker/scripts/import-to-kantel.ts"],
 	["packages/ui/src/tokens/themes/harbour.ts", "packages/ui/src/tokens/themes/kantel.ts"],
+	["packages/tunnel/test/harbour.ts", "packages/tunnel/test/kantel.ts"],
 ];
 
 const SENTINEL = "\u0000";

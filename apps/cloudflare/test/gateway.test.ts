@@ -13,10 +13,10 @@ import { createGateway } from "../src/gateway.ts";
 import { routeRequest, STACK_NAME, WORKSPACE_BODY_LIMIT } from "../src/route.ts";
 import { createStack, DEFAULT_AGENT_ID } from "../src/stack.ts";
 
-const TEAM_DOMAIN = "harbour-test.cloudflareaccess.com";
-const AUD = "aud-harbour-test";
-const ADMIN = "tom@harbour.test";
-const BASE = "https://harbour.test";
+const TEAM_DOMAIN = "kantel-test.cloudflareaccess.com";
+const AUD = "aud-kantel-test";
+const ADMIN = "tom@kantel.test";
+const BASE = "https://kantel.test";
 
 const COMMIT = "0123456789abcdef0123456789abcdef01234567";
 
@@ -179,7 +179,7 @@ describe("the gateway", () => {
 			"another AUD": await signedIn({ aud: ["another-app"] }),
 			"another team domain": { "cf-access-jwt-assertion": await other.sign({ sub: "s", email: ADMIN }) },
 			expired: await signedIn({ exp: Math.floor(Date.now() / 1000) - 60 }),
-			uninvited: await signedIn({ sub: "access-subject-2", email: "someone@harbour.test" }),
+			uninvited: await signedIn({ sub: "access-subject-2", email: "someone@kantel.test" }),
 			"a service token": await signedIn({ email: undefined }),
 		};
 		for (const [why, headers] of Object.entries(refused)) {
@@ -345,7 +345,7 @@ describe("the gateway", () => {
 		expect(created.status).toBe(201);
 		const space = (await created.json()) as { id: string };
 		const concept = {
-			id: "projects/harbour/region",
+			id: "projects/kantel/region",
 			title: "Kantel runs in weur",
 			statement: "New D1 and R2 resources go in the weur region.",
 			scope: { kind: "global" },
@@ -400,7 +400,7 @@ describe("the gateway", () => {
 				source: { sourceId: "test", ref: "r1" },
 			});
 		const concept = {
-			id: "projects/harbour/region",
+			id: "projects/kantel/region",
 			title: "Kantel runs in weur",
 			statement: "New D1 and R2 resources go in the weur region.",
 			scope: { kind: "global" },
@@ -724,7 +724,7 @@ describe("the deployed entry point", () => {
 			// The dev entry point and the dev-only modules only it imports (dev-vault-seed.ts).
 			if (file === "dev.ts" || file.startsWith("dev-")) continue;
 			const text = readFileSync(join(src, file), "utf8");
-			expect(text, file).not.toMatch(/@harbour\/identity\/testing|\.\/dev(-[a-z-]+)?(\.ts)?["']|__dev/);
+			expect(text, file).not.toMatch(/@kantel\/identity\/testing|\.\/dev(-[a-z-]+)?(\.ts)?["']|__dev/);
 		}
 	});
 });

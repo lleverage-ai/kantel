@@ -19,7 +19,7 @@ import { apiVault } from "./vault-http.ts";
 
 const ORG = "org-a";
 const PROJECT = "proj-a";
-const ORIGIN = "https://harbour.test";
+const ORIGIN = "https://kantel.test";
 const tom: CallContext = { actor: { kind: "human", userId: "user-tom" }, organisationId: ORG };
 const agent: CallContext = {
 	actor: { kind: "agent", agentId: "agent-1", sessionId: "session-1" },
@@ -133,7 +133,7 @@ async function setUp() {
 	const open = () =>
 		apiVault({
 			baseUrl: `${ORIGIN}/v1/vault`,
-			host: "harbour.test",
+			host: "kantel.test",
 			fetch: fetchVia,
 			passkeys: createPasskeyClient({ baseUrl: ORIGIN, fetch: fetchVia }),
 			credentials: browser.credentials,
@@ -160,7 +160,7 @@ describe("passkeys in the console", () => {
 		const request = { proposalId: proposal.id, termsHash: proposal.termsHash, action: "approve" as const, narrowing };
 		expect(await tomsVault.passkey!(request)).toBe("confirmed");
 		// The browser was asked for Tom's own passkey, with user verification, on the vault's host.
-		expect(browser.state.asked.at(-1)?.publicKey).toMatchObject({ rpId: "harbour.test", userVerification: "required" });
+		expect(browser.state.asked.at(-1)?.publicKey).toMatchObject({ rpId: "kantel.test", userVerification: "required" });
 		expect(browser.state.asked.at(-1)?.publicKey?.allowCredentials).toHaveLength(1);
 
 		const decision = await tomsVault.decide({

@@ -12,7 +12,7 @@
  * for its own container and routes to `KantelBrowserDecisions` (`src/browser-decisions.ts`) with the browser's
  * decision token, so the model (Clef through Workers AI, or Jev with its key) never reaches the container.
  *
- * Who reaches it: the stack object, by the browser's ID, for the coordinator's routes (`/browsers/{id}/…`; the harbour
+ * Who reaches it: the stack object, by the browser's ID, for the coordinator's routes (`/browsers/{id}/…`; the kantel
  * provider in `src/browser.ts`), and a viewer holding a view token (`/v1/browser/view/{browser}/…`, routed here by the
  * Worker once the token checks out, and checked again here).
  */

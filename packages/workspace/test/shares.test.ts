@@ -132,7 +132,7 @@ for (const kind of [nodeSqliteDatabase, pgliteDatabase]) {
 		});
 
 		describe("the API and the link's page", () => {
-			const BASE = "https://harbour.test";
+			const BASE = "https://kantel.test";
 			const api = () =>
 				createSharesApi({
 					shares,

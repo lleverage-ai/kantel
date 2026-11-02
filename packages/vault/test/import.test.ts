@@ -19,7 +19,7 @@ const github: HostGrant = {
 	value: "imported-github-value",
 	routes: [
 		{ host: "api.github.com", methods: ["GET"], pathPrefix: "/repos" },
-		{ host: "api.github.com", methods: ["POST"], pathPrefix: "/repos/harbour/issues" },
+		{ host: "api.github.com", methods: ["POST"], pathPrefix: "/repos/kantel/issues" },
 	],
 	selector: { organisationId: "org-a", projectId: "proj-a" },
 };
@@ -67,7 +67,7 @@ describe("importHostGrants", () => {
 			organisationId: "org-a",
 			projectId: "proj-a",
 			method: "POST",
-			url: "https://api.github.com/repos/harbour/issues",
+			url: "https://api.github.com/repos/kantel/issues",
 		});
 		expect(allowed).toMatchObject({ allow: true, inject: { value: "Bearer imported-github-value" } });
 	});

@@ -69,7 +69,7 @@ async function setUp(options: { readonly fetch?: (url: string, init?: RequestIni
 	const { models, script } = createScriptedModel();
 	const fake = fakeLoader();
 	const stack = await createStack({
-		config: gatewayConfig({ KANTEL_ADMIN_EMAIL: "tom@harbour.test" }),
+		config: gatewayConfig({ KANTEL_ADMIN_EMAIL: "tom@kantel.test" }),
 		models: () => ({ models }),
 		codemode: { load: workerLoaderCodemode(fake.loader, BUNDLE, QUICKJS), bundleId: "b1" },
 		...(options.fetch === undefined
@@ -77,7 +77,7 @@ async function setUp(options: { readonly fetch?: (url: string, init?: RequestIni
 			: {
 					connections: {
 						credentials: memoryCredentials(),
-						deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
+						deployment: { origin: "https://kantel.test", clientMetadataPublic: false },
 						fetch: options.fetch,
 					},
 				}),

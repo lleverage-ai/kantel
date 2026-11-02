@@ -67,10 +67,10 @@ export const TUNNEL_TIMING: TunnelTiming = {
 
 export interface OpenTunnelOptions {
 	/** Kantel's origin, `https://…` (`http://` for a local one). */
-	readonly harbour: string;
+	readonly kantel: string;
 	/** The tool server's ID, `ts_…`. */
 	readonly serverId: string;
-	/** A tunnel token of that server, `hbt_…`. */
+	/** A tunnel token of that server, `ktt_…`. */
 	readonly token: string;
 	readonly endpoint: TunnelEndpoint;
 	/**
@@ -91,11 +91,11 @@ export interface Tunnel {
 	readonly status: TunnelStatus;
 }
 
-/** The tunnel's WebSocket URL on `harbour`: `wss://` for an `https://` origin, `ws://` for `http://`. */
-export function tunnelUrl(harbour: string, serverId: string): string {
-	const origin = new URL(harbour);
+/** The tunnel's WebSocket URL on `kantel`: `wss://` for an `https://` origin, `ws://` for `http://`. */
+export function tunnelUrl(kantel: string, serverId: string): string {
+	const origin = new URL(kantel);
 	if (origin.protocol !== "https:" && origin.protocol !== "http:") {
-		throw new Error(`Kantel's origin is an https:// URL, not ${harbour}`);
+		throw new Error(`Kantel's origin is an https:// URL, not ${kantel}`);
 	}
 	return `${origin.protocol === "https:" ? "wss:" : "ws:"}//${origin.host}${tunnelPath(serverId)}`;
 }
@@ -114,7 +114,7 @@ const CANCELLED_REASON = "Kantel's side of the tunnel disconnected";
 
 export function openTunnel(options: OpenTunnelOptions): Tunnel {
 	const timing: TunnelTiming = { ...TUNNEL_TIMING, ...options.timing };
-	const url = tunnelUrl(options.harbour, options.serverId);
+	const url = tunnelUrl(options.kantel, options.serverId);
 	const { endpoint } = options;
 	const extraHeaders = Object.fromEntries(
 		Object.entries(options.headers ?? {}).filter(([name]) => name.toLowerCase() !== "authorization"),

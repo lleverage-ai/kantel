@@ -40,7 +40,7 @@ function setup(options: { ceiling?: readonly RouteScope[] | "none" } = {}) {
 		audit: { append: async (_ctx, events) => void audited.push(...events) },
 		credentials: memoryCredentials(),
 		access: fakeAccess(["admin"]),
-		deployment: { origin: "https://harbour.test", clientMetadataPublic: false },
+		deployment: { origin: "https://kantel.test", clientMetadataPublic: false },
 		clock: { now: () => now },
 		fetch: async (url, init) => {
 			sent.push(`${init?.method ?? "GET"} ${String(url)}`);

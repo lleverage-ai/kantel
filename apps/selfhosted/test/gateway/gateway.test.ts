@@ -15,7 +15,7 @@ import { type E2eTarget, runGatewayE2e } from "./e2e.ts";
 import { runSignInE2e } from "./signin-e2e.ts";
 
 const REQUEST_TIMEOUT_MS = 1000;
-const ADMIN_EMAIL = "Admin@Harbour.localhost";
+const ADMIN_EMAIL = "Admin@Kantel.localhost";
 const mailer = new MemoryOtpMailer();
 let components: ReturnType<typeof createGatewayComponents>;
 
@@ -25,7 +25,7 @@ let scratch: string;
 let close: () => Promise<void>;
 
 beforeAll(async () => {
-	scratch = await mkdtemp(join(tmpdir(), "harbour-gateway-"));
+	scratch = await mkdtemp(join(tmpdir(), "kantel-gateway-"));
 	await writeFile(join(scratch, "index.html"), '<!doctype html><div id="root"></div>');
 	components = createGatewayComponents();
 	const seeded = await bootstrap(components, {
@@ -76,7 +76,7 @@ test("email one-time PIN sign-in starts a Kantel session every API accepts", asy
 });
 
 describe("inviting the admin", () => {
-	const email = "invited@harbour.localhost";
+	const email = "invited@kantel.localhost";
 	const asOtp = { issuer: EMAIL_OTP_ISSUER, subject: email, email, emailVerified: true } as const;
 	const names = { organisation: "Invite", project: "invite" };
 
@@ -184,7 +184,7 @@ test("sign-in requests are limited per client address, and another address is un
 });
 
 test("static paths cannot leave the console directory", async () => {
-	const outside = join(scratch, "..", `harbour-outside-${crypto.randomUUID()}.txt`);
+	const outside = join(scratch, "..", `kantel-outside-${crypto.randomUUID()}.txt`);
 	await writeFile(outside, "outside-sentinel");
 	try {
 		const name = outside.split("/").pop();
@@ -308,7 +308,7 @@ test("the bootstrap file is private even when it replaces a readable one", async
 	await writeFile(path, "old", { mode: 0o644 });
 	const { chmod } = await import("node:fs/promises");
 	await chmod(path, 0o644);
-	await writePrivateFile(path, '{"apiKey":"hbr_secret"}');
+	await writePrivateFile(path, '{"apiKey":"ktk_secret"}');
 	expect((await stat(path)).mode & 0o777).toBe(0o600);
-	expect(await readFile(path, "utf8")).toBe('{"apiKey":"hbr_secret"}');
+	expect(await readFile(path, "utf8")).toBe('{"apiKey":"ktk_secret"}');
 });

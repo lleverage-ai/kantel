@@ -55,9 +55,9 @@ function fakeLoader(): CodemodeLoaderLike {
 	};
 }
 
-const TEAM_DOMAIN = "harbour-test.cloudflareaccess.com";
-const AUD = "aud-harbour-test";
-const ADMIN = "tom@harbour.test";
+const TEAM_DOMAIN = "kantel-test.cloudflareaccess.com";
+const AUD = "aud-kantel-test";
+const ADMIN = "tom@kantel.test";
 
 async function setUp(programs = true, options: { readonly browser?: boolean } = {}) {
 	const { models, script } = createScriptedModel();
@@ -87,7 +87,7 @@ async function setUp(programs = true, options: { readonly browser?: boolean } = 
 	const decide = async (body: unknown) => {
 		const gateway = createGateway(stack);
 		return gateway.fetch(
-			new Request(`https://harbour.test${BROWSER_DECISIONS_PATH}`, {
+			new Request(`https://kantel.test${BROWSER_DECISIONS_PATH}`, {
 				method: "POST",
 				headers: {
 					"content-type": "application/json",
@@ -407,7 +407,7 @@ describe("programs", () => {
 				pathPrefix: "/v1/issues",
 				termsSource: "agent-proposed",
 				expiresAt: 99,
-				link: "https://harbour.test/connections/requests/proposal_1",
+				link: "https://kantel.test/connections/requests/proposal_1",
 				callId,
 			},
 		});
@@ -421,7 +421,7 @@ describe("programs", () => {
 					requestId: "proposal_1",
 					what: "POST api.example.com/v1/issues through Example",
 					host: "api.example.com",
-					link: "https://harbour.test/connections/requests/proposal_1",
+					link: "https://kantel.test/connections/requests/proposal_1",
 					expiresAt: 99,
 				},
 			},

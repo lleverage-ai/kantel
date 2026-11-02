@@ -11,15 +11,15 @@ network.
 
 ## Running it
 
-Make a tool server with transport `tunnel` through the API; you get its ID (`ts_…`) and a tunnel token (`hbt_…`),
+Make a tool server with transport `tunnel` through the API; you get its ID (`ts_…`) and a tunnel token (`ktt_…`),
 shown once. Then:
 
 ```sh
 # A stdio MCP server: everything after -- is its command.
-KANTEL_TUNNEL_TOKEN=hbt_… kantel-tunnel --kantel https://kantel.example.com --server ts_… -- npx my-mcp-server
+KANTEL_TUNNEL_TOKEN=ktt_… kantel-tunnel --kantel https://kantel.example.com --server ts_… -- npx my-mcp-server
 
 # A Streamable HTTP MCP server on loopback.
-KANTEL_TUNNEL_TOKEN=hbt_… kantel-tunnel --kantel https://kantel.example.com --server ts_… --url http://127.0.0.1:8123/mcp
+KANTEL_TUNNEL_TOKEN=ktt_… kantel-tunnel --kantel https://kantel.example.com --server ts_… --url http://127.0.0.1:8123/mcp
 ```
 
 Its names from before the rename still work: the `harbour-tunnel` command, `--harbour`, `HARBOUR_URL` and `HARBOUR_TUNNEL_TOKEN`.
@@ -28,7 +28,7 @@ Its names from before the rename still work: the `harbour-tunnel` command, `--ha
 | --- | --- |
 | `--kantel <origin>` | Kantel's origin. Or `KANTEL_URL`. |
 | `--server <ts_…>` | The tool server's ID. |
-| `--token <hbt_…>` | A tunnel token of that server. Better as `KANTEL_TUNNEL_TOKEN`, so it isn't in `ps`. |
+| `--token <ktt_…>` | A tunnel token of that server. Better as `KANTEL_TUNNEL_TOKEN`, so it isn't in `ps`. |
 | `-- <command…>` | Run this stdio MCP server, with its stderr on the tunnel's. |
 | `--url <url>` | Bridge this Streamable HTTP MCP server. Only `127.0.0.1`, `localhost` or `[::1]`... |
 | `--allow-remote-url` | ...unless this is given. |
@@ -47,7 +47,7 @@ answers with the server's first `initialize` answer, as a server can't be initia
 import { openTunnel, stdioEndpoint } from "@kantel/tunnel";
 
 const tunnel = openTunnel({
-	harbour: "https://kantel.example.com",
+	kantel: "https://kantel.example.com",
 	serverId: "ts_…",
 	token: process.env.KANTEL_TUNNEL_TOKEN!,
 	endpoint: stdioEndpoint(["npx", "my-mcp-server"]),

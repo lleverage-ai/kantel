@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { createApiClient } from "./http.ts";
 
-const BASE = "https://harbour.test/v1";
+const BASE = "https://kantel.test/v1";
 
 interface Recorded {
 	readonly method: string;

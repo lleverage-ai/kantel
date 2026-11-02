@@ -6,8 +6,8 @@ import { type CryptoKey, exportSPKI, importJWK, SignJWT, UnsecuredJWT } from "jo
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startHttpIdp } from "./http-idp.ts";
 
-const ISSUER = "https://idp.harbour.test";
-const AUDIENCE = "harbour-console";
+const ISSUER = "https://idp.kantel.test";
+const AUDIENCE = "kantel-console";
 
 const pathOf = (input: Parameters<typeof fetch>[0]) => new URL(input instanceof Request ? input.url : input).pathname;
 
@@ -321,9 +321,9 @@ describe("oidcProvider", () => {
 	it("reads a bearer token that is not an API key", () => {
 		const { provider } = oidcSetup();
 		const request = (authorization?: string) =>
-			new Request("https://harbour.test", authorization === undefined ? {} : { headers: { authorization } });
+			new Request("https://kantel.test", authorization === undefined ? {} : { headers: { authorization } });
 		expect(provider.token(request("Bearer eyJ.a.b"))).toBe("eyJ.a.b");
-		expect(provider.token(request("Bearer hbr_secret"))).toBeUndefined();
+		expect(provider.token(request("Bearer ktk_secret"))).toBeUndefined();
 		expect(provider.token(request())).toBeUndefined();
 	});
 });
@@ -355,7 +355,7 @@ describe("oidcProvider against a local HTTP identity provider", () => {
 });
 
 describe("cloudflareAccessProvider", () => {
-	const TEAM = "harbour.cloudflareaccess.com";
+	const TEAM = "kantel.cloudflareaccess.com";
 	const AUD = "4714c1358e65fe4b408ad6d432a5f878f08194bdb4752441fd56faefa9b2b6f2";
 
 	function accessSetup() {
@@ -388,7 +388,7 @@ describe("cloudflareAccessProvider", () => {
 
 	it("reads only the Cf-Access-Jwt-Assertion header", () => {
 		const { provider } = accessSetup();
-		const request = (headers: Record<string, string>) => new Request("https://harbour.test", { headers });
+		const request = (headers: Record<string, string>) => new Request("https://kantel.test", { headers });
 		expect(provider.token(request({ "cf-access-jwt-assertion": "a.b.c" }))).toBe("a.b.c");
 		expect(provider.token(request({ authorization: "Bearer a.b.c" }))).toBeUndefined();
 		expect(provider.token(request({ cookie: "CF_Authorization=a.b.c" }))).toBeUndefined();

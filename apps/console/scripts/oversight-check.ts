@@ -16,7 +16,7 @@ const { values, positionals } = parseArgs({
 const [out] = positionals;
 if (out === undefined) throw new Error("usage: oversight-check.ts <out-dir>");
 
-type Kantel = { __harbour?: { proposals?: Record<string, string> } };
+type Kantel = { __kantel?: { proposals?: Record<string, string> } };
 type Axe = { axe: { run(context: Document): Promise<{ violations: { id: string; nodes: unknown[] }[] }> } };
 
 const axe = readFileSync(createRequire(import.meta.url).resolve("axe-core/axe.min.js"), "utf8");
@@ -69,8 +69,8 @@ try {
 			});
 			// The recorded source: the stand-in vault and audit store in the page. The choice lasts the tab.
 			await page.goto(`${base}/vault?source=recorded`);
-			await page.waitForFunction(() => (window as Kantel).__harbour?.proposals !== undefined);
-			const proposals = await page.evaluate(() => (window as Kantel).__harbour?.proposals ?? {});
+			await page.waitForFunction(() => (window as Kantel).__kantel?.proposals !== undefined);
+			const proposals = await page.evaluate(() => (window as Kantel).__kantel?.proposals ?? {});
 			await page.evaluate((to) => {
 				history.pushState(null, "", to);
 				dispatchEvent(new PopStateEvent("popstate"));

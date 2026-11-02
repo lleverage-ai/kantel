@@ -9,7 +9,7 @@ Every call under `/v1` needs credentials. An app sends an API key. People sign i
 
 ## API keys
 
-An API key is your app's credential. Its secret starts `hbr_`, and you send it as a bearer token:
+An API key is your app's credential. Its secret starts `ktk_`, and you send it as a bearer token:
 
 ```bash
 curl -s "$KANTEL_URL/v1/me" -H "authorization: Bearer $KANTEL_API_KEY"
@@ -66,7 +66,7 @@ People sign in to the console, and their credential reaches the API in one of th
 | Deployment | How a person signs in | What the API receives |
 | --- | --- | --- |
 | Cloudflare | Cloudflare Access in front of the hostname | The `Cf-Access-Jwt-Assertion` header Access adds |
-| Self-hosted | A six-digit code by email | `Authorization: Bearer hbs_…`, a Kantel session token |
+| Self-hosted | A six-digit code by email | `Authorization: Bearer kts_…`, a Kantel session token |
 | Neither yet | An OIDC provider: the authenticator supports one, but no deployment configures it | `Authorization: Bearer <JWT>` |
 
 Self-hosted, you can get a person's token from a script. Codes last 10 minutes and the session token 12 hours:
@@ -76,18 +76,18 @@ curl -s -X POST "$KANTEL_URL/auth/otp/start" -H "content-type: application/json"
 # Read the code from the email, then:
 curl -s -X POST "$KANTEL_URL/auth/otp/verify" -H "content-type: application/json" \
   -d '{"email":"you@example.com","code":"123456"}'
-# { "token": "hbs_…", "expiresAt": …, "user": {…}, "organisationIds": [...] }
+# { "token": "kts_…", "expiresAt": …, "user": {…}, "organisationIds": [...] }
 ```
 
 `POST /auth/session/end` with the token as bearer signs it out. Only invited addresses get a code.
 
 ## The organisation header
 
-A person may belong to more than one organisation. When they do, name the one to act in with the `harbour-organisation` header; a person in one organisation needs no header. An API key acts only in its own organisation.
+A person may belong to more than one organisation. When they do, name the one to act in with the `kantel-organisation` header; a person in one organisation needs no header. An API key acts only in its own organisation.
 
 ## Request IDs
 
-Send `harbour-request-id` with a call to find it again in the audit log. The SDK sends it from `requestId` in a call's options.
+Send `kantel-request-id` with a call to find it again in the audit log. The SDK sends it from `requestId` in a call's options.
 
 ## Who you are
 

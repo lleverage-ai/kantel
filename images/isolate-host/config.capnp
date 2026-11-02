@@ -26,7 +26,7 @@ const config :Workerd.Config = (
 const hostWorker :Workerd.Worker = (
   modules = [
     (name = "loader.js", esModule = embed "dist/loader.js"),
-    (name = "harbour-sandbox-bundle", text = embed "dist/sandbox.js"),
+    (name = "kantel-sandbox-bundle", text = embed "dist/sandbox.js"),
   ],
   compatibilityDate = "2026-10-01",
   bindings = [

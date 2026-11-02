@@ -5,7 +5,7 @@
 // container (which can run anything the isolate can):
 // - any later command in a pipeline or list that names a container program
 //   (`cat x | python3 -`), which just-bash could not run either;
-// - an explicit leading `# harbour:container` line.
+// - an explicit leading `# kantel:container` line.
 
 import { DEFAULT_TIER_ROUTES, type SandboxTier } from "../../../../packages/contracts/src/sandbox.ts";
 import { routeTool } from "../../../../packages/sandbox/src/index.ts";
@@ -17,7 +17,7 @@ export const CONTAINER_PROGRAMS = new Set(
 	),
 );
 
-const CONTAINER_DIRECTIVE = /^\s*#\s*harbour:container\b/;
+const CONTAINER_DIRECTIVE = /^\s*#\s*kantel:container\b/;
 
 /** The first word of every simple command in a pipeline or list, skipping env assignments. */
 export function commandWords(command: string): string[] {

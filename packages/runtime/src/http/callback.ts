@@ -3,7 +3,7 @@
  * host registered; the host checks the signature with `createHostToolEndpoint` (or `verifyHostToolSignature`) and
  * answers with a `HostToolResult`. Aborting the call aborts the request, which aborts the host handler's signal.
  *
- * Signature: `harbour-signature: t=<epoch ms>,v1=<hex HMAC-SHA256(secret, "<t>.<body>")>`, checked in constant time
+ * Signature: `kantel-signature: t=<epoch ms>,v1=<hex HMAC-SHA256(secret, "<t>.<body>")>`, checked in constant time
  * and refused when `t` is more than five minutes away from the host's clock.
  */
 import {
@@ -13,7 +13,9 @@ import {
 	type HostToolResult,
 	isKantelError,
 	KantelError,
+	readHeader,
 	systemClock,
+	withLegacyHeaders,
 } from "@kantel/contracts";
 import { HEADERS, json, MAX_BODY_BYTES } from "./wire.ts";
 
@@ -39,7 +41,7 @@ function constantTimeEqual(left: string, right: string): boolean {
 	return diff === 0;
 }
 
-/** The `harbour-signature` header for `body` at `at`. */
+/** The `kantel-signature` header for `body` at `at`. */
 export async function signHostToolCall(secret: string, body: string, at: number): Promise<string> {
 	return `t=${at},v1=${await hmacHex(secret, `${at}.${body}`)}`;
 }
@@ -136,12 +138,13 @@ export function callbackHostToolHandler(options: CallbackHandlerOptions): HostTo
 				body,
 				redirect: "manual",
 				signal: AbortSignal.any([signal, timeout]),
-				headers: {
+				// Each also under its name before the rename, for a host that checks with an older @kantel/runtime.
+				headers: withLegacyHeaders({
 					"content-type": "application/json; charset=utf-8",
 					[HEADERS.signature]: await signHostToolCall(options.secret, body, clock.now()),
 					[HEADERS.hostId]: call.hostId,
 					[HEADERS.callId]: call.callId,
-				},
+				}),
 			}),
 		).catch((error: unknown) => {
 			if (signal.aborted) throw new KantelError("aborted", "The tool call was aborted");
@@ -199,7 +202,7 @@ export function createHostToolEndpoint(
 			(await verifyHostToolSignature(
 				secret,
 				body,
-				request.headers.get(HEADERS.signature),
+				readHeader(request.headers, HEADERS.signature),
 				clock.now(),
 				options.toleranceMs,
 			));

@@ -8,7 +8,7 @@ import tls from "node:tls";
 
 const [host, path = "/", session = "connect-probe"] = process.argv.slice(2);
 if (!host) throw new Error("usage: connect-probe.mjs <host> [path] [session]");
-const headers = { "x-harbour-host-key": process.env.VAULT_ISOLATE_KEY ?? "", "x-harbour-session": session };
+const headers = { "x-kantel-host-key": process.env.VAULT_ISOLATE_KEY ?? "", "x-kantel-session": session };
 const timer = setTimeout(() => {
 	console.log("timeout");
 	process.exit(2);

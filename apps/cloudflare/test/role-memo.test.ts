@@ -4,7 +4,7 @@ import { type Actor, type IdentityDirectory, type Role, systemContext } from "@k
 import { describe, expect, it } from "vitest";
 import { memoiseRoleOf } from "../src/role-memo.ts";
 
-const SYSTEM = systemContext("harbour.test");
+const SYSTEM = systemContext("kantel.test");
 
 function countingIdentity(answer: () => Promise<Role | undefined>) {
 	const calls: { actor: Actor; projectId: string | undefined }[] = [];

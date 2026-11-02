@@ -211,7 +211,7 @@ export type ClientRegistration = "client" | "cimd" | "dcr";
 
 export interface Concept {
 	readonly spaceId: string;
-	/** A stable path, such as `projects/harbour/binding-codes`. */
+	/** A stable path, such as `projects/kantel/binding-codes`. */
 	readonly id: string;
 	readonly title: string;
 	readonly description?: string;
@@ -1232,7 +1232,7 @@ export interface InlineToolImage {
 export interface IssuedToolServerToken {
 	/** A tunnel token as reads show it: never the token itself. */
 	readonly token: ToolServerToken;
-	/** `hbt_…`. Shown once, in this answer; Kantel keeps only its hash. */
+	/** `ktt_…`. Shown once, in this answer; Kantel keeps only its hash. */
 	readonly secret: string;
 }
 
@@ -2687,7 +2687,7 @@ export interface SkillRevisionPage {
 
 /** One concept as a host's source holds it. */
 export interface SnapshotConcept {
-	/** A stable path, such as `projects/harbour/binding-codes`. */
+	/** A stable path, such as `projects/kantel/binding-codes`. */
 	readonly id: string;
 	readonly title: string;
 	readonly description?: string;
@@ -2858,7 +2858,7 @@ export interface ToolServerToken {
 	/** The token's ID, `tst_…`. */
 	readonly id: string;
 	readonly toolServerId: string;
-	/** The token's first characters (`hbt_` and four more). */
+	/** The token's first characters (`ktt_` and four more). */
 	readonly prefix: string;
 	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
 	readonly createdBy: Actor;
@@ -3032,10 +3032,10 @@ export type Weekday = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
 // imports and of anything but `fetch`.
 
 export interface KantelClientOptions {
-	/** The API's base URL with its version, such as `https://harbour.example/v1`, or `/v1` on the same origin. */
+	/** The API's base URL with its version, such as `https://kantel.example/v1`, or `/v1` on the same origin. */
 	readonly baseUrl: string;
 	/**
-	 * The bearer for every call: a host app's API key (`hbr_…`), or a function that gives one per call. Absent when the
+	 * The bearer for every call: a host app's API key (`ktk_…`), or a function that gives one per call. Absent when the
 	 * browser is signed in another way, such as Cloudflare Access's cookie.
 	 */
 	readonly token?: string | (() => string | undefined | Promise<string | undefined>);
@@ -3078,7 +3078,7 @@ export interface StreamHandle {
 /** Per call. */
 export interface CallOptions {
 	readonly signal?: AbortSignal;
-	/** Sent as `harbour-request-id`, which correlates the call in Kantel's audit trail. */
+	/** Sent as `kantel-request-id`, which correlates the call in Kantel's audit trail. */
 	readonly requestId?: string;
 	/**
 	 * Sent as `Idempotency-Key` on the calls that take one (their docs say so): a retry with the same key gets the first
@@ -3159,7 +3159,7 @@ export async function send<T>(options: KantelClientOptions, call: ApiCall, callO
 	const token = typeof options.token === "function" ? await options.token() : options.token;
 	if (token !== undefined) headers.authorization = `Bearer ${token}`;
 	if (call.body !== undefined) headers["content-type"] = "application/json";
-	if (callOptions.requestId !== undefined) headers["harbour-request-id"] = callOptions.requestId;
+	if (callOptions.requestId !== undefined) headers["kantel-request-id"] = callOptions.requestId;
 	if (callOptions.idempotencyKey !== undefined) headers["idempotency-key"] = callOptions.idempotencyKey;
 	for (const [name, value] of Object.entries(call.headers ?? {})) if (value !== undefined) headers[name] = value;
 	Object.assign(headers, callOptions.headers ?? {});
@@ -3228,7 +3228,7 @@ export function openStream<Frame>(
 		Object.assign(headers, (await options.headers?.()) ?? {});
 		const token = typeof options.token === "function" ? await options.token() : options.token;
 		if (token !== undefined) headers.authorization = `Bearer ${token}`;
-		if (callOptions.requestId !== undefined) headers["harbour-request-id"] = callOptions.requestId;
+		if (callOptions.requestId !== undefined) headers["kantel-request-id"] = callOptions.requestId;
 		Object.assign(headers, callOptions.headers ?? {});
 		if (closed) return;
 		socket = (options.webSocket ?? defaultWebSocket)(url.href, headers);
@@ -3731,7 +3731,7 @@ export interface KantelClient {
 	): Promise<ConnectionRule>;
 	/** Remove an access rule. Takes effect on the next request through any instance. `DELETE /connections/{connectionId}/rules/{ruleId}` */
 	removeConnectionRule(connectionId: string, ruleId: string, options?: CallOptions): Promise<void>;
-	/** Create a project. Creates a project in the caller's organisation, which the `harbour-organisation` header names for a person in more than one. Needs an organisation-wide admin, or an organisation API key with the `create_projects` permission; a project key is refused, whatever its role. An organisation key holds its role on the new project at once. Audited as `identity.project.created`, with the caller as its actor. `POST /projects` */
+	/** Create a project. Creates a project in the caller's organisation, which the `kantel-organisation` header names for a person in more than one. Needs an organisation-wide admin, or an organisation API key with the `create_projects` permission; a project key is refused, whatever its role. An organisation key holds its role on the new project at once. Audited as `identity.project.created`, with the caller as its actor. `POST /projects` */
 	createProject(body: CreateProjectBody, options?: CallOptions): Promise<Project>;
 	/** List tool servers. The tool servers the caller may read, by name: the organisation's and its projects'. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`. `GET /tool-servers` */
 	listToolServers(
@@ -3773,7 +3773,7 @@ export interface KantelClient {
 	removeToolServer(toolServerId: string, options?: CallOptions): Promise<void>;
 	/** List a tool server's tunnel tokens. Each token's ID, prefix and when it was made and last used; never the token. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`. `GET /tool-servers/{toolServerId}/tokens` */
 	listToolServerTokens(toolServerId: string, options?: CallOptions): Promise<ToolServerTokenList>;
-	/** Make a tunnel token. A new tunnel token, `hbt_…`, shown in this answer only; Kantel keeps its hash. Older tokens keep working until revoked. Needs operator on the owner. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`. `POST /tool-servers/{toolServerId}/tokens` */
+	/** Make a tunnel token. A new tunnel token, `ktt_…`, shown in this answer only; Kantel keeps its hash. Older tokens keep working until revoked. Needs operator on the owner. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`. `POST /tool-servers/{toolServerId}/tokens` */
 	createToolServerToken(toolServerId: string, options?: CallOptions): Promise<IssuedToolServerToken>;
 	/** Revoke a tunnel token. Revokes the token and closes any tunnel it opened. Needs operator on the owner. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`. `DELETE /tool-servers/{toolServerId}/tokens/{tokenId}` */
 	revokeToolServerToken(toolServerId: string, tokenId: string, options?: CallOptions): Promise<void>;

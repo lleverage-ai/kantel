@@ -12,7 +12,7 @@ function setUp(caller: CallContext = alice) {
 	const api = createRulesApi({ rules, authenticate: async () => caller });
 	const call = async (method: string, path: string, body?: unknown) => {
 		const response = await api.fetch(
-			new Request(`https://harbour.test/v1${path}`, {
+			new Request(`https://kantel.test/v1${path}`, {
 				method,
 				...(body === undefined ? {} : { body: JSON.stringify(body), headers: { "content-type": "application/json" } }),
 			}),
@@ -82,6 +82,6 @@ describe("the rules API", () => {
 
 	it("leaves other paths to other APIs", async () => {
 		const { api } = setUp();
-		expect(await api.fetch(new Request("https://harbour.test/v1/skills"))).toBeUndefined();
+		expect(await api.fetch(new Request("https://kantel.test/v1/skills"))).toBeUndefined();
 	});
 });

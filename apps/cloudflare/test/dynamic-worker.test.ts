@@ -27,10 +27,10 @@ import { MEASURE_FILES, MEASURE_PATH, type Placement } from "../src/measure.ts";
 import { isolateBackendName } from "../src/sandboxes.ts";
 import { createStack, DEFAULT_AGENT_ID, type Stack } from "../src/stack.ts";
 
-const TEAM_DOMAIN = "harbour-test.cloudflareaccess.com";
-const AUD = "aud-harbour-test";
-const ADMIN = "tom@harbour.test";
-const BASE = "https://harbour.test";
+const TEAM_DOMAIN = "kantel-test.cloudflareaccess.com";
+const AUD = "aud-kantel-test";
+const ADMIN = "tom@kantel.test";
+const BASE = "https://kantel.test";
 const BUNDLE = "export class KantelIsolate {}";
 
 const opened: Stack[] = [];

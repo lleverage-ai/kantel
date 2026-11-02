@@ -75,7 +75,7 @@ function setUp(keepAliveMs = 60_000) {
 	});
 	const request = (method: string, path: string, options: { body?: unknown; upgrade?: boolean } = {}) =>
 		api.fetch(
-			new Request(`https://harbour.test/v1${path}`, {
+			new Request(`https://kantel.test/v1${path}`, {
 				method,
 				headers: {
 					authorization: "Bearer supervisor",

@@ -26,7 +26,7 @@ from the request itself. `staticTokenAuthenticator` is for tests and local devel
 A missing or invalid credential is 401 with a `WWW-Authenticate` challenge; an organisation the caller may not act in
 is 403. A `system` actor is refused with 401 too: Kantel's own components call the runtime directly. Every other
 check is the runtime's own project-access check, so deploy the API only over a runtime given `identity`.
-`harbour-request-id` becomes the call's `requestId`.
+`kantel-request-id` becomes the call's `requestId`.
 
 A call's context does not carry the request's abort signal: a run a prompt admits outlives the request that sent it.
 Only `result` (its wait stops, answering `aborted`) and `events` (its watch closes) end with their request.
@@ -115,12 +115,12 @@ once when none is given):
 
 ```json
 { "projectId": "proj-docs", "tools": [{ "name": "task_outcome", "description": "…", "inputSchema": {}, "replay": "unsafe" }],
-  "callback": { "url": "https://sal.example/harbour/tools/sal", "secret": "…" } }
+  "callback": { "url": "https://sal.example/kantel/tools/sal", "secret": "…" } }
 ```
 
 The runtime then POSTs each `HostToolCall` to the URL and reads a `HostToolResult` back. Each request carries
-`harbour-signature: t=<epoch ms>,v1=<hex HMAC-SHA256(secret, "<t>.<body>")>`, plus `harbour-host-id` and
-`harbour-call-id`; the call ID is stable across retries, so a host can make unsafe tools idempotent by it.
+`kantel-signature: t=<epoch ms>,v1=<hex HMAC-SHA256(secret, "<t>.<body>")>`, plus `kantel-host-id` and
+`kantel-call-id`; the call ID is stable across retries, so a host can make unsafe tools idempotent by it.
 `createHostToolEndpoint(handler, { secret })` is the host side: it checks the signature in constant time (and refuses
 one more than five minutes off), runs the handler with the request's abort signal and answers with its result.
 Aborting the call aborts the request, so the handler's signal aborts. Redirects are not followed, a host that answers

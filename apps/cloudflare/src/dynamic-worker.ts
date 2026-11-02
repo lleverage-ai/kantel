@@ -91,7 +91,7 @@ export function isolateId(input: {
 	readonly workspaceId: string;
 	readonly bundleId: string;
 }): string {
-	return ["harbour-isolate", input.organisationId, input.sessionId, input.workspaceId, input.bundleId].join(":");
+	return ["kantel-isolate", input.organisationId, input.sessionId, input.workspaceId, input.bundleId].join(":");
 }
 
 function requireNotCancelled(ctx: CallContext): void {

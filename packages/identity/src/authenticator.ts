@@ -18,13 +18,14 @@ import {
 	KantelError,
 	ORGANISATION_HEADER,
 	type OrganisationId,
+	readHeader,
 	type SignIn,
 	systemContext,
 } from "@kantel/contracts";
 import { decodeJwt } from "jose";
-import { API_KEY_SECRET_PREFIX } from "./index.ts";
+import { isApiKeySecret } from "./index.ts";
 import type { SignInProvider } from "./jwt.ts";
-import { SESSION_TOKEN_PREFIX } from "./otp.ts";
+import { isSessionToken } from "./otp.ts";
 import { registerSignedIn, type SignedIn } from "./signed-in.ts";
 
 /** The authenticator resolves keys and sign-ins as itself: `authenticateApiKey` and `signIn` are worker calls. */
@@ -67,7 +68,7 @@ function providerFor(providers: readonly SignInProvider[], token: string): SignI
 
 /** The organisation a signed-in person acts in: the one they name, or their only one. */
 function organisationFor(request: AuthenticatorRequest, organisationIds: readonly OrganisationId[]): OrganisationId {
-	const named = request.headers.get(ORGANISATION_HEADER)?.trim();
+	const named = readHeader(request.headers, ORGANISATION_HEADER)?.trim();
 	if (named !== undefined && named !== "") {
 		if (organisationIds.includes(named)) return named;
 		throw authenticationError("organisation", "You may not act in this organisation");
@@ -114,11 +115,11 @@ export function createAuthenticator(options: AuthenticatorOptions): Authenticato
 		// An API key comes first: a host app behind Cloudflare Access may also carry an Access service token.
 		const token = bearerToken(request);
 		// A Kantel session is a bearer of its own shape, so it never reaches a JWT provider.
-		if (token?.startsWith(SESSION_TOKEN_PREFIX)) {
+		if (token !== undefined && isSessionToken(token)) {
 			if (sessionProviders.length === 0) throw authenticationError("invalid", INVALID_MESSAGE);
 			return { person: await human(sessionProviders, token) };
 		}
-		if (token === undefined || !token.startsWith(API_KEY_SECRET_PREFIX)) {
+		if (token === undefined || !isApiKeySecret(token)) {
 			const accessToken = accessProviders[0]?.token(request);
 			if (accessToken !== undefined) return { person: await human(accessProviders, accessToken) };
 			if (token === undefined) throw authenticationError("missing", "This call needs credentials");
@@ -170,7 +171,7 @@ export function authenticationFailureResponse(error: unknown): Response | undefi
 	if (failure === undefined) return undefined;
 	const message = isKantelError(error) ? error.message : "Authentication failed";
 	const challenge: Record<string, string> =
-		failure === "organisation" ? {} : { "www-authenticate": `Bearer realm="harbour"` };
+		failure === "organisation" ? {} : { "www-authenticate": `Bearer realm="kantel"` };
 	return json(
 		STATUS[failure],
 		{ error: { code: failure === "organisation" ? "forbidden" : "unauthenticated", failure, message } },

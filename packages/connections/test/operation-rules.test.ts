@@ -38,7 +38,7 @@ async function setup() {
 		access: fakeAccess(["admin"]),
 		approvals: vault,
 		deployment: {
-			origin: "https://harbour.test",
+			origin: "https://kantel.test",
 			clientMetadataPublic: false,
 			platformClients: [{ templateId: "github", clientId: "Iv23-ops", clientSecret: "ops-secret" }],
 		},

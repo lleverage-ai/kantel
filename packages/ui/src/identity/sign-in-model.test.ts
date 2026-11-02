@@ -20,7 +20,7 @@ import {
 } from "./sign-in-model.ts";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "test" }, organisationId: "bootstrap" };
-const ADA = "ada@harbour.test";
+const ADA = "ada@kantel.test";
 
 async function world() {
 	let at = Date.UTC(2026, 9, 28, 9, 0);
@@ -40,7 +40,7 @@ async function world() {
 	});
 	const routes = createOtpHandler({ otp });
 	const client = createIdentityClient({
-		baseUrl: "https://harbour.test",
+		baseUrl: "https://kantel.test",
 		fetch: (input, init) => routes(new Request(input, init)),
 	});
 	const sessions: string[] = [];
@@ -95,12 +95,12 @@ describe("sign-in flow", () => {
 		expect(flow.getState()).toEqual({ step: "signed-in", email: ADA });
 		expect(signedIn).toHaveBeenCalledWith(ADA);
 		expect(sessions).toHaveLength(1);
-		expect(sessions[0]).toMatch(/^hbs_/);
+		expect(sessions[0]).toMatch(/^kts_/);
 	});
 
 	it("doesn't send for an email that can't be one", async () => {
 		const { flow, mailer } = await world();
-		flow.setEmail("ada at harbour");
+		flow.setEmail("ada at kantel");
 		await flow.requestCode();
 		expect(flow.getState()).toMatchObject({ step: "email", problem: { kind: "invalid-email" } });
 		expect(mailer.sent).toHaveLength(0);
@@ -110,7 +110,7 @@ describe("sign-in flow", () => {
 
 	it("shows the code step for an email no one was invited with, as the server can't say otherwise", async () => {
 		const { flow, mailer } = await world();
-		flow.setEmail("eve@harbour.test");
+		flow.setEmail("eve@kantel.test");
 		await flow.requestCode();
 		expect(flow.getState().step).toBe("code");
 		expect(mailer.sent).toHaveLength(0);
@@ -230,7 +230,7 @@ describe("sign-in flow", () => {
 			problem: { kind: "rate-limited", until: at + 90_000 },
 		});
 		// Typing doesn't clear it; asking again before then doesn't call the server.
-		flow.setEmail("ada@harbour.test");
+		flow.setEmail("ada@kantel.test");
 		const start = vi.spyOn(api, "start");
 		await flow.requestCode();
 		expect(start).not.toHaveBeenCalled();
@@ -291,9 +291,9 @@ describe("sign-in helpers", () => {
 	});
 
 	it("checks an email looks like one", () => {
-		expect(plausibleEmail(" ada@harbour.test ")).toBe(true);
+		expect(plausibleEmail(" ada@kantel.test ")).toBe(true);
 		expect(plausibleEmail("ada")).toBe(false);
-		expect(plausibleEmail("ada @harbour.test")).toBe(false);
+		expect(plausibleEmail("ada @kantel.test")).toBe(false);
 	});
 
 	it("reads a failure", () => {

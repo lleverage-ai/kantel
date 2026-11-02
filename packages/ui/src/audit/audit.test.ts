@@ -177,7 +177,7 @@ describe("rows", () => {
 		expect(line.action).toMatch(
 			/^approved (Linear API key|GitHub token|Sentry auth token|Staging admin key|Stripe test key|Slack bot token) for /,
 		);
-		expect(line.link?.href).toBe(`https://vault.harbour.dev/proposals/${approved.subject!.id}`);
+		expect(line.link?.href).toBe(`https://vault.kantel.dev/proposals/${approved.subject!.id}`);
 
 		const prompt = find("session.prompted");
 		expect(describeEvent(prompt, directory, links).link?.href).toBe(
@@ -375,7 +375,7 @@ describe("rows", () => {
 			}) as AuditEvent;
 		const call = { kind: "mcp_call", method: "POST", host: "example.test", path: "/mcp", tool: "echo" };
 		const held = { ...call, decision: "ask", approvalId: "proposal_1", approval: "pending" };
-		const approvalLink = { href: "https://vault.harbour.dev/proposals/proposal_1", label: "Connection request" };
+		const approvalLink = { href: "https://vault.kantel.dev/proposals/proposal_1", label: "Connection request" };
 
 		expect(describeEvent(use("connections.use.held", held), directory, links)).toEqual({
 			action: "was held for approval, nothing sent: call echo on example.test",

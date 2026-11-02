@@ -18,7 +18,7 @@
 //   /skills/:skillId                          one skill: its revisions and files
 //   /memory                                   the agent's memory: concepts by scope, search and recall
 //   /memory/:conceptId                        one concept: the rest of the path, slashes and all, is its ID
-//                                             (`projects/harbour/placement`). Not one encoded segment, as Workers
+//                                             (`projects/kantel/placement`). Not one encoded segment, as Workers
 //                                             static assets redirect an encoded slash to a plain one.
 //   /schedules                                the organisation's schedules
 //   /schedules/new                            the schedules page with the form for a new one open

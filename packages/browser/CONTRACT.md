@@ -121,7 +121,7 @@ brwsr.dev, holding the project key:
 
 A session brwsr no longer runs is `expired`. `test/brwsr.test.ts` covers it over a fake API; `test/brwsr.live.test.ts`
 runs the broker on real brwsr only with `KANTEL_TEST_BRWSR=1` and `BRWSR_API_KEY` (context
-`KANTEL_TEST_BRWSR_CONTEXT`, default `harbour-test`), never in CI.
+`KANTEL_TEST_BRWSR_CONTEXT`, default `kantel-test`), never in CI.
 
 ## Project access
 

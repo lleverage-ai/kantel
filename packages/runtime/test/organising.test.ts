@@ -31,9 +31,9 @@ afterEach(async () => {
 });
 
 function databaseFile(): string {
-	const dir = mkdtempSync(join(tmpdir(), "harbour-organise-"));
+	const dir = mkdtempSync(join(tmpdir(), "kantel-organise-"));
 	cleanups.push(async () => rmSync(dir, { recursive: true, force: true }));
-	return join(dir, "harbour.db");
+	return join(dir, "kantel.db");
 }
 
 /** One process on the database file: its own runtime and scripted model, archiving closed sessions when asked. */

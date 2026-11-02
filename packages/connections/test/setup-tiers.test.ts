@@ -7,7 +7,7 @@ import { fakeAccess, human, ORG } from "../src/testing.ts";
 const alice = human("alice");
 const bob = human("bob");
 const admin = human("admin");
-const ORIGIN = "https://harbour.test";
+const ORIGIN = "https://kantel.test";
 const REDIRECT = `${ORIGIN}/v1/connections/callback`;
 const DEVICE_CODE = "device-code-secret-0001";
 
@@ -27,10 +27,10 @@ function fakeGitHub() {
 			status: 201,
 			body: {
 				id: 42,
-				slug: "harbour-3f9a1c",
+				slug: "kantel-3f9a1c",
 				client_id: "Iv23-app-client",
 				client_secret: "app-client-secret-value",
-				html_url: "https://github.com/apps/harbour-3f9a1c",
+				html_url: "https://github.com/apps/kantel-3f9a1c",
 				owner: { login: "alice" },
 				pem: "-----BEGIN RSA PRIVATE KEY-----pem-secret-value",
 				webhook_secret: "webhook-secret-value",
@@ -418,20 +418,20 @@ describe("the GitHub App manifest flow", () => {
 		expect(setupNow).toMatchObject({
 			status: "created",
 			githubApp: {
-				slug: "harbour-3f9a1c",
+				slug: "kantel-3f9a1c",
 				appId: 42,
-				htmlUrl: "https://github.com/apps/harbour-3f9a1c",
-				installUrl: "https://github.com/apps/harbour-3f9a1c/installations/new",
+				htmlUrl: "https://github.com/apps/kantel-3f9a1c",
+				installUrl: "https://github.com/apps/kantel-3f9a1c/installations/new",
 			},
 		});
 		const client = await env.connections.getClient(alice, setupNow.clientId!);
 		expect(client).toMatchObject({
 			owner: { kind: "user", organisationId: ORG, userId: "alice" },
 			templateId: "github",
-			label: "GitHub App harbour-3f9a1c",
+			label: "GitHub App kantel-3f9a1c",
 			clientId: "Iv23-app-client",
 			secret: { set: true, last4: "alue" },
-			githubApp: { slug: "harbour-3f9a1c", appId: 42 },
+			githubApp: { slug: "kantel-3f9a1c", appId: 42 },
 		});
 		expect(client.public).toBeUndefined();
 		const exposed = JSON.stringify([setupNow, client, await env.connections.listClients(alice)]);

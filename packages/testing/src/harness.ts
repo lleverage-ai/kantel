@@ -409,7 +409,7 @@ export async function eventually(predicate: () => boolean | Promise<boolean>, ti
 }
 
 /** A canary credential value. Suites assert it never appears outside the egress decision. */
-export const CANARY_SECRET = "harbour-canary-6f1d2c9e-do-not-leak";
+export const CANARY_SECRET = "kantel-canary-6f1d2c9e-do-not-leak";
 
 export function containsCanary(value: unknown, canary = CANARY_SECRET): boolean {
 	return (

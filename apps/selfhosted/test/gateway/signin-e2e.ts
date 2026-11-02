@@ -33,7 +33,7 @@ export async function runSignInE2e(target: SignInTarget): Promise<E2eCheck[]> {
 			headers: { "content-type": "application/json", ...headers },
 			body: JSON.stringify(payload),
 		});
-	const stranger = `stranger-${crypto.randomUUID()}@harbour.localhost`;
+	const stranger = `stranger-${crypto.randomUUID()}@kantel.localhost`;
 	const since = Date.now();
 
 	const anonymous = await fetch(`${target.baseUrl}/v1/me`);
@@ -71,7 +71,7 @@ export async function runSignInE2e(target: SignInTarget): Promise<E2eCheck[]> {
 	check(
 		"POST /auth/otp/verify starts a Kantel session in the deployment's organisation",
 		verified.status === 200 &&
-			token.startsWith("hbs_") &&
+			token.startsWith("kts_") &&
 			(session.organisationIds ?? []).includes(target.organisationId),
 		{ status: verified.status, organisationIds: session.organisationIds, user: session.user?.email },
 	);
@@ -167,7 +167,7 @@ export async function runSignInE2e(target: SignInTarget): Promise<E2eCheck[]> {
 			ref: "1",
 			concepts: [
 				{
-					id: "e2e/harbour-port",
+					id: "e2e/kantel-port",
 					title: "Kantel's port",
 					description: "Where the gateway listens",
 					statement: "The self-hosted gateway listens on port 8080 in its container.",
@@ -189,7 +189,7 @@ export async function runSignInE2e(target: SignInTarget): Promise<E2eCheck[]> {
 	const recall = (await body(recalled)) as { concepts?: { id: string }[] };
 	check(
 		"POST /v1/memory/recall recalls the concept",
-		recalled.ok && (recall.concepts ?? []).some((concept) => concept.id === "e2e/harbour-port"),
+		recalled.ok && (recall.concepts ?? []).some((concept) => concept.id === "e2e/kantel-port"),
 		recall,
 	);
 

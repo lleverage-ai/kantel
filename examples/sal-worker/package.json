@@ -8,7 +8,7 @@
 	"scripts": {
 		"typecheck": "tsc -p tsconfig.json",
 		"test": "vitest run",
-		"harbour": "node scripts/kantel-sal.ts",
+		"kantel": "node scripts/kantel-sal.ts",
 		"parity": "node scripts/parity.ts",
 		"import": "node scripts/import-to-kantel.ts"
 	},

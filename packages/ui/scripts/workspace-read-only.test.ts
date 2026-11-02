@@ -36,11 +36,11 @@ describe("the workspace components", () => {
 
 	it.each(sources)("$name makes no requests and never touches a sandbox", ({ text }) => {
 		expect(text).not.toMatch(/\bfetch\s*\(|XMLHttpRequest|WebSocket|EventSource|\bacquire\s*\(/);
-		expect(text).not.toMatch(/@harbour\/(sandbox|workspace|contracts|runtime)/);
+		expect(text).not.toMatch(/@kantel\/(sandbox|workspace|contracts|runtime)/);
 	});
 
 	it.each(previews)("preview's $name makes no requests and never touches a sandbox", ({ text }) => {
 		expect(text).not.toMatch(/\bfetch\s*\(|XMLHttpRequest|WebSocket|EventSource|\bacquire\s*\(/);
-		expect(text).not.toMatch(/@harbour\/(sandbox|workspace|contracts|runtime)/);
+		expect(text).not.toMatch(/@kantel\/(sandbox|workspace|contracts|runtime)/);
 	});
 });

@@ -15,7 +15,7 @@ import { CODING_TOOLS } from "../src/coding-tools.ts";
 import { createConnectorsApi } from "../src/connectors.ts";
 
 /** The namespace the model gateway sends tool names under on CPA's Messages API (`@kantel/models`, #227). */
-const TOOL_NAMESPACE = "mcp__harbour__";
+const TOOL_NAMESPACE = "mcp__kantel__";
 
 import { gatewayConfig } from "../src/config.ts";
 import {
@@ -168,7 +168,7 @@ describe("sessions on the model gateway", () => {
 		// user's to configure on their profile.
 		const { tools, ...body } = call.body as { tools?: { name: string }[] };
 		// Pi's Anthropic client adds a deferred placeholder the model never sees, to keep tool changes in the cached prefix.
-		// On CPA's Messages API the gateway sends each tool under `mcp__harbour__` (#227): a name, not text for the model.
+		// On CPA's Messages API the gateway sends each tool under `mcp__kantel__` (#227): a name, not text for the model.
 		const named = tools?.map((tool) => tool.name).filter((name) => name !== "__pi_deferred_placeholder__");
 		expect(named).toEqual(CODING_TOOLS.map((name) => `${TOOL_NAMESPACE}${name}`));
 		expect(body).toEqual({
@@ -182,8 +182,8 @@ describe("sessions on the model gateway", () => {
 			thinking: { type: "adaptive", display: "summarized", block_binding: { prefix_mismatch_behavior: "drop_block" } },
 			output_config: { effort: "high" },
 		});
-		expect(JSON.stringify(body)).not.toMatch(/harbour/i);
-		expect(JSON.stringify(tools?.map(({ name: _, ...rest }) => rest))).not.toMatch(/harbour/i);
+		expect(JSON.stringify(body)).not.toMatch(/kantel/i);
+		expect(JSON.stringify(tools?.map(({ name: _, ...rest }) => rest))).not.toMatch(/kantel/i);
 	});
 
 	it("sends the prompt the user set on the profile, as the system prompt and nothing more", async () => {
@@ -205,7 +205,7 @@ describe("sessions on the model gateway", () => {
 			{ type: "text", text: "You work for Lleverage.\n\nAnswer in Dutch.", cache_control: { type: "ephemeral" } },
 		]);
 		// Tool names carry the gateway's namespace (#227); the rest is the user's and the model's.
-		expect(JSON.stringify(body)).not.toMatch(/harbour/i);
+		expect(JSON.stringify(body)).not.toMatch(/kantel/i);
 	});
 
 	it("reaches only CPA's host through the VPC service", async () => {
@@ -531,7 +531,7 @@ describe("images on the model gateway", () => {
 		const { vault } = vaultObject({ auditDb });
 		const { stack } = await gatewayStack(vault, auditDb, DEFAULT_MODEL, IMAGE_MODEL);
 		const api = createConnectorsApi({ gateway: stack.modelGateway, authenticate: async () => stack.admin });
-		const base = "https://harbour.test/v1/connectors";
+		const base = "https://kantel.test/v1/connectors";
 
 		const listed = await api(new Request(`${base}?projectId=${stack.project.id}`));
 		expect(listed.status).toBe(200);
@@ -562,7 +562,7 @@ describe("images on the model gateway", () => {
 
 	it("answers unavailable on the echo model, which has no gateway", async () => {
 		const api = createConnectorsApi({ gateway: undefined, authenticate: async () => ({}) as never });
-		const response = await api(new Request("https://harbour.test/v1/connectors?projectId=p"));
+		const response = await api(new Request("https://kantel.test/v1/connectors?projectId=p"));
 		expect(response.status).toBe(503);
 	});
 });

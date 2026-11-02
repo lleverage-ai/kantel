@@ -44,8 +44,8 @@ export function optionIdOf(model: Pick<Model<Api>, "provider" | "id">): string {
 
 /** The model an option ID names in a session's `Models`, or undefined. */
 export function modelOfOption(models: Models, id: string): Model<Api> | undefined {
-	const harbour = models.getModel(KANTEL_MODEL_PROVIDER, id);
-	if (harbour !== undefined) return harbour;
+	const kantel = models.getModel(KANTEL_MODEL_PROVIDER, id);
+	if (kantel !== undefined) return kantel;
 	const slash = id.indexOf("/");
 	if (slash <= 0) return undefined;
 	return models.getModel(id.slice(0, slash), id.slice(slash + 1));

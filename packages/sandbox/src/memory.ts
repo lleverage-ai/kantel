@@ -569,7 +569,7 @@ class MemoryShell {
 				return this.#cd(args);
 			case "git":
 				if (this.#io.tier !== "container") return failure(127, "sh: git: command not found\n");
-				if (args.length === 1 && args[0] === "--version") return success("git version 2.x (harbour-memory)\n");
+				if (args.length === 1 && args[0] === "--version") return success("git version 2.x (kantel-memory)\n");
 				return failure(1, `git: only git --version ${UNSUPPORTED}\n`);
 			default:
 				return failure(127, `sh: ${name}: command not found\n`);

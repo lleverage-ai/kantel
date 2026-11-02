@@ -21,6 +21,7 @@ import {
 	KantelError,
 	type PageRequest,
 	type PromptInput,
+	readHeader,
 	type SessionBranching,
 	type SessionDirectory,
 	type SessionHistory,
@@ -803,7 +804,7 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 				}
 				// Kantel's own components call the runtime directly, never over HTTP.
 				if (caller.actor.kind === "system") return unauthenticated();
-				const requestId = request.headers.get(HEADERS.requestId);
+				const requestId = readHeader(request.headers, HEADERS.requestId);
 				// The request's signal is not the call's: a run admitted by a prompt must outlive the request that sent
 				// it. Only the result wait and the event stream end with their request.
 				const ctx: CallContext = callContextFor(caller, requestId === null || requestId === "" ? {} : { requestId });

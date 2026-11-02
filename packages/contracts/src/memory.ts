@@ -38,7 +38,7 @@ export type ConceptScope =
 
 export interface Concept {
 	readonly spaceId: string;
-	/** A stable path, such as `projects/harbour/vault-binding-codes` or `personal/pr-review-timing`. */
+	/** A stable path, such as `projects/kantel/vault-binding-codes` or `personal/pr-review-timing`. */
 	readonly id: string;
 	readonly title: string;
 	readonly description?: string;

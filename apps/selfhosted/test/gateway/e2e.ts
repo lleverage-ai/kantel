@@ -89,7 +89,7 @@ export async function runGatewayE2e(target: E2eTarget, options: { readonly conso
 	]) {
 		const refused = await fetch(url(path));
 		check(`${path} without credentials is 401`, refused.status === 401, { status: refused.status });
-		const wrong = await fetch(url(path), { headers: { authorization: "Bearer hbr_not-a-key" } });
+		const wrong = await fetch(url(path), { headers: { authorization: "Bearer ktk_not-a-key" } });
 		check(`${path} with an unknown key is 401`, wrong.status === 401, { status: wrong.status });
 	}
 
@@ -231,7 +231,7 @@ export async function runGatewayE2e(target: E2eTarget, options: { readonly conso
 	const text = await content.text();
 	check("GET /v1/workspaces/:id/content reads README.md", content.ok && text.startsWith("# Kantel self-hosted"), {
 		status: content.status,
-		version: content.headers.get("harbour-version"),
+		version: content.headers.get("kantel-version"),
 	});
 
 	// The audit query API: the session's own rows, newest first.

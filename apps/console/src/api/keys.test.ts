@@ -12,11 +12,11 @@ import { createConsoleIdentity, memoryTokens } from "./identity.ts";
 import { apiKeys } from "./keys.ts";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "test" }, organisationId: "bootstrap" };
-const ORIGIN = "https://harbour.test";
+const ORIGIN = "https://kantel.test";
 
 async function world() {
 	const identity = createMemoryIdentity();
-	const ada = await identity.createUser(bootstrap, { name: "Ada", email: "ada@harbour.test" });
+	const ada = await identity.createUser(bootstrap, { name: "Ada", email: "ada@kantel.test" });
 	const organisation = await identity.createOrganisation(bootstrap, {
 		name: "Kantel",
 		admin: { kind: "user", userId: ada.id },
@@ -24,8 +24,8 @@ async function world() {
 	const admin: CallContext = { actor: { kind: "human", userId: ada.id }, organisationId: organisation.id };
 	const website = await identity.createProject(admin, { name: "Website" });
 	for (const [email, role] of [
-		["lin@harbour.test", "operator"],
-		["grace@harbour.test", "viewer"],
+		["lin@kantel.test", "operator"],
+		["grace@kantel.test", "viewer"],
 	] as const) {
 		const user = await identity.createUser(admin, { name: email, email });
 		await identity.grantRole(admin, { principal: { kind: "user", userId: user.id }, role, projectId: website.id });
@@ -63,7 +63,7 @@ async function world() {
 describe("the console's API keys seam", () => {
 	it("is there for an admin, who issues and revokes a key through it", async () => {
 		const { bootAs, website, fetch } = await world();
-		const ada = await bootAs("ada@harbour.test");
+		const ada = await bootAs("ada@kantel.test");
 		const keys = apiKeys(ada.client, ada.me);
 		if (keys === undefined) throw new Error("expected the keys page for an admin");
 		const flow = createApiKeysFlow({ api: keys.api, projects: () => [{ id: website.id, name: "Website" }] });
@@ -82,10 +82,10 @@ describe("the console's API keys seam", () => {
 
 	it("is there for an operator, with their roles to say they administer nothing, and not for a viewer", async () => {
 		const { bootAs, website } = await world();
-		const lin = await bootAs("lin@harbour.test");
+		const lin = await bootAs("lin@kantel.test");
 		expect(apiKeys(lin.client, lin.me)?.roles).toEqual([{ projectId: website.id, role: "operator" }]);
 		expect(await apiKeys(lin.client, lin.me)?.api.list()).toEqual([]);
-		const grace = await bootAs("grace@harbour.test");
+		const grace = await bootAs("grace@kantel.test");
 		expect(apiKeys(grace.client, grace.me)).toBeUndefined();
 	});
 });

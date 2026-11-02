@@ -61,7 +61,7 @@ async function setup(publicOrigin?: string) {
 	});
 	const embed = (body: unknown, session = "sess-1", browserSessionId = opened.id) =>
 		api.fetch(
-			new Request(`https://harbour.test/v1/sessions/${session}/browsers/${browserSessionId}/embed`, {
+			new Request(`https://kantel.test/v1/sessions/${session}/browsers/${browserSessionId}/embed`, {
 				method: "POST",
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify(body),
@@ -76,7 +76,7 @@ describe("the embed API", () => {
 		const response = await embed({ mode: "live" });
 		expect(response?.status).toBe(200);
 		expect(await response?.json()).toEqual({
-			url: "https://harbour.test/browser/b1#live-15",
+			url: "https://kantel.test/browser/b1#live-15",
 			mode: "live",
 			expiresAt: 1_015,
 			endMessage: "harbour-view-ended",
@@ -87,9 +87,9 @@ describe("the embed API", () => {
 	});
 
 	it("makes the link absolute against the console's public origin when one is set", async () => {
-		const { embed } = await setup("https://harbour.example.com");
+		const { embed } = await setup("https://kantel.example.com");
 		const response = await embed({ mode: "replay", minutes: 60 });
-		expect(await response?.json()).toMatchObject({ url: "https://harbour.example.com/browser/b1#replay-60" });
+		expect(await response?.json()).toMatchObject({ url: "https://kantel.example.com/browser/b1#replay-60" });
 	});
 
 	it("refuses a mode or length it doesn't know before the broker sees it", async () => {
@@ -112,7 +112,7 @@ describe("the embed API", () => {
 	it("leaves every other path to the gateway's other routes", async () => {
 		const { browser } = await setup();
 		const api = createBrowserApi({ browser, authenticate: async () => human });
-		expect(await api.fetch(new Request("https://harbour.test/v1/sessions/sess-1/messages"))).toBeUndefined();
-		expect(await api.fetch(new Request("https://harbour.test/v1/browser/live"))).toBeUndefined();
+		expect(await api.fetch(new Request("https://kantel.test/v1/sessions/sess-1/messages"))).toBeUndefined();
+		expect(await api.fetch(new Request("https://kantel.test/v1/browser/live"))).toBeUndefined();
 	});
 });

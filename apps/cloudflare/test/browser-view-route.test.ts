@@ -5,7 +5,7 @@ import { createBrowserViewSigner } from "@kantel/browser/runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { routeRequest } from "../src/route.ts";
 
-const BASE = "https://harbour.test";
+const BASE = "https://kantel.test";
 const VIEW_KEY = "test-browser-view-key-0123456789abcdef";
 const views = createBrowserViewSigner(VIEW_KEY);
 const token = (browser: string, expiresAt = Date.now() + 60_000) =>

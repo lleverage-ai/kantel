@@ -6,9 +6,9 @@ const MINUTE = 60_000;
 
 describe("vaultHost", () => {
 	it("reads the host from the link", () => {
-		expect(vaultHost("https://vault.harbour.dev/p/prop_7Kq2")).toBe("vault.harbour.dev");
+		expect(vaultHost("https://vault.kantel.dev/p/prop_7Kq2")).toBe("vault.kantel.dev");
 		expect(vaultHost("https://vault.example:8443/p/abc?x=1")).toBe("vault.example:8443");
-		expect(vaultHost(vaultCard().link)).toBe("harbour.dev");
+		expect(vaultHost(vaultCard().link)).toBe("kantel.dev");
 	});
 
 	it("gives up on something that is not a URL", () => {

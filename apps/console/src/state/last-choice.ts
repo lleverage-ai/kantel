@@ -24,7 +24,7 @@ export function keptChoice(
 			if (Object.keys(change).length === 0) return;
 			kept = { ...kept, ...choice };
 			save(change).catch((error: unknown) => {
-				console.info("harbour: couldn't keep the model choice:", error instanceof Error ? error.message : error);
+				console.info("kantel: couldn't keep the model choice:", error instanceof Error ? error.message : error);
 			});
 		},
 	};

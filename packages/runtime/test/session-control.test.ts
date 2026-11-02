@@ -60,7 +60,7 @@ async function serve(options: MemoryRuntimeOptions) {
 		await memory.close();
 	});
 	const fetchApi = (input: string | URL | Request, init?: RequestInit) => api.fetch(new Request(input, init));
-	const client = createKantelClient({ baseUrl: "https://harbour.test/v1", token: "host", fetch: fetchApi });
+	const client = createKantelClient({ baseUrl: "https://kantel.test/v1", token: "host", fetch: fetchApi });
 	await memory.profiles.put(asHost, profile);
 	return { client, fetchApi, memory };
 }
@@ -154,7 +154,7 @@ describe("session control: a run's result", () => {
 			submissionId: sent.id,
 		});
 		const raw = await fetchApi(
-			`https://harbour.test/v1/sessions/${session.id}/result?${new URLSearchParams({ submission: sent.id, timeoutMs: "10" })}`,
+			`https://kantel.test/v1/sessions/${session.id}/result?${new URLSearchParams({ submission: sent.id, timeoutMs: "10" })}`,
 			{ headers: { authorization: "Bearer host" } },
 		);
 		expect(raw.status).toBe(202);
@@ -341,7 +341,7 @@ describe("session control: a session's model and thinking level", () => {
 			await memory.close();
 		});
 		const client = createKantelClient({
-			baseUrl: "https://harbour.test/v1",
+			baseUrl: "https://kantel.test/v1",
 			token: "host",
 			fetch: (input, init) => api.fetch(new Request(input, init)),
 		});

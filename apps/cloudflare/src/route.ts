@@ -16,7 +16,7 @@
  *   `KANTEL_BROWSER_VIEW_KEY` for the browser the path names, then the browser's `KantelBrowser` object answers
  *   (and checks it again). Never the stack: a viewer is nobody the stack knows.
  * - A tool server's tunnel (`GET /v1/tool-servers/{id}/connect` with `Upgrade: websocket`, experimental): the stack
- *   checks its `hbt_` token first (`authenticateTunnel` over RPC), and a refusal is a plain 401, 403 or 404 before any
+ *   checks its `ktt_` token first (`authenticateTunnel` over RPC), and a refusal is a plain 401, 403 or 404 before any
  *   upgrade. Then the upgrade goes to the server's `KantelTunnel` object, named by the server the stack's grant names,
  *   with that grant in a header the Worker sets (`src/tunnel.ts`). Off (`KANTEL_TOOL_SERVERS` isn't `experimental`),
  *   every `/v1/tool-servers` path is a 404 here, and the stack is never asked.
@@ -37,7 +37,7 @@ import {
 	viewClaims,
 	viewerPageHeaders,
 } from "@kantel/browser/runtime";
-import { API_KEYS_PATH, INVITES_PATH, KantelError } from "@kantel/contracts";
+import { API_KEYS_PATH, INVITES_PATH, KantelError, legacyHeaderName } from "@kantel/contracts";
 import { API_KEY_BODY_LIMIT } from "@kantel/identity/http";
 import { isPasskeyPath, PASSKEY_BODY_LIMIT } from "@kantel/identity/passkey/http";
 import { MEMORY_BODY_LIMIT } from "@kantel/memory/http";
@@ -229,8 +229,17 @@ async function routeView(request: Request, env: RouteEnv<unknown, unknown>): Pro
 const routeRefused = (status: number, code: string, message: string, headers: { [name: string]: string } = {}) =>
 	Response.json({ error: { code, message } }, { status, headers: { "cache-control": "no-store", ...headers } });
 
-/** What a tunnel's upgrade loses on its way to the object: the client's credentials, and any grant it made up. */
-const TUNNEL_DROPPED_HEADERS = [TUNNEL_GRANT_HEADER, "authorization", "cookie", "cf-access-jwt-assertion"];
+/**
+ * What a tunnel's upgrade loses on its way to the object: the client's credentials, and any grant it made up, under
+ * either name (the object reads the grant's name from before the rename too).
+ */
+const TUNNEL_DROPPED_HEADERS = [
+	TUNNEL_GRANT_HEADER,
+	legacyHeaderName(TUNNEL_GRANT_HEADER) as string,
+	"authorization",
+	"cookie",
+	"cf-access-jwt-assertion",
+];
 
 const TUNNEL_REFUSALS: { readonly [status in 401 | 403 | 404]: readonly [code: string, message: string] } = {
 	401: ["unauthenticated", "The tunnel token is missing or not valid"],
@@ -254,7 +263,7 @@ async function routeTunnel(
 		routeRefused(
 			status,
 			...TUNNEL_REFUSALS[status],
-			status === 401 ? { "www-authenticate": `Bearer realm="harbour"` } : {},
+			status === 401 ? { "www-authenticate": `Bearer realm="kantel"` } : {},
 		);
 	if (secret === undefined) return refuse(401);
 	const tunnels = env.TUNNELS;
@@ -263,7 +272,7 @@ async function routeTunnel(
 	try {
 		checked = await stack().authenticateTunnel(serverId, secret);
 	} catch (error) {
-		console.error("harbour: checking a tunnel token failed", error);
+		console.error("kantel: checking a tunnel token failed", error);
 		return routeRefused(503, "unavailable", "The tunnel token couldn't be checked");
 	}
 	if ("refused" in checked) return refuse(checked.refused);
@@ -315,7 +324,7 @@ export async function routeRequest<StackId, VaultId>(
 		return await routeOnce(request, env);
 	} catch (error) {
 		if (!isTransientObjectError(error)) throw error;
-		console.warn("harbour: a Durable Object was reset or overloaded under a request; answered 503", error);
+		console.warn("kantel: a Durable Object was reset or overloaded under a request; answered 503", error);
 		return routeRefused(503, "unavailable", "Kantel is restarting or busy; try again shortly", {
 			"retry-after": retryAfter(error),
 		});
@@ -324,7 +333,7 @@ export async function routeRequest<StackId, VaultId>(
 
 async function routeOnce<StackId, VaultId>(request: Request, env: RouteEnv<StackId, VaultId>): Promise<Response> {
 	const path = new URL(request.url).pathname;
-	if (path === "/healthz") return Response.json({ ok: true, service: "harbour" });
+	if (path === "/healthz") return Response.json({ ok: true, service: "kantel" });
 	if (isVaultPath(path)) {
 		// The vault refuses an unknown caller before it reads the body, and workerd then reports the unread stream it was
 		// still sending the object as an uncaught error. Its bodies are small JSON, so they are read here first, up to a

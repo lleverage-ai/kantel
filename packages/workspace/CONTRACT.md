@@ -95,7 +95,7 @@ project-access checks, mount reads included. The host's `authenticate` turns the
 | `/:id` | the `WorkspaceRecord` (head, pinned mounts, seed readiness) |
 | `/:id/files?path=&recursive=&version=&cursor=&limit=` | `Page<FileEntry>`, no bodies; `path=/project` lists a mount |
 | `/:id/stat?path=&version=` | one `FileEntry` |
-| `/:id/content?path=&version=` | the bytes, `ETag` (the digest, `If-None-Match` answers 304), `Harbour-Version` (JSON) |
+| `/:id/content?path=&version=` | the bytes, `ETag` (the digest, `If-None-Match` answers 304), `Kantel-Version` (JSON) |
 | `/:id/history?cursor=&limit=` | `Page<WorkspaceVersionInfo>`, newest first |
 | `/:id/export?prefix=notes/` | `{ files }`, each file under the prefixes at head with its bytes base64 (`prefix` repeats; the total is capped at `maxContentBytes` and checked from listings before any body is read, 413 above it) |
 

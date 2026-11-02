@@ -23,12 +23,12 @@ import { createStack, DEFAULT_AGENT_ID } from "../src/stack.ts";
 import { answerApprovalCall, approvalVaultOver, createVaultCore } from "../src/vault.ts";
 import { objectStorage } from "./object-storage.ts";
 
-const TEAM_DOMAIN = "harbour-test.cloudflareaccess.com";
-const AUD = "aud-harbour-test";
-const ADMIN = "tom@harbour.test";
-const VIEWER = "riley@harbour.test";
-const OUTSIDER = "sam@harbour.test";
-const BASE = "https://harbour.test";
+const TEAM_DOMAIN = "kantel-test.cloudflareaccess.com";
+const AUD = "aud-kantel-test";
+const ADMIN = "tom@kantel.test";
+const VIEWER = "riley@kantel.test";
+const OUTSIDER = "sam@kantel.test";
+const BASE = "https://kantel.test";
 const KEY = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
 
 /**
@@ -172,7 +172,7 @@ describe.each(ROUTES)("the connection approval API on Cloudflare, by $name", (ro
 		const view = await call<ApprovalView>(ADMIN, `/proposals/${id}/approval`);
 		expect(view.status).toBe(200);
 		expect(view.body.codeRequired).toBe(true);
-		const narrowing = { methods: ["GET" as const], pathPrefix: "/repos/acme/harbour", ttlMs: 30 * 60_000, maxUses: 3 };
+		const narrowing = { methods: ["GET" as const], pathPrefix: "/repos/acme/kantel", ttlMs: 30 * 60_000, maxUses: 3 };
 		const shown = narrow(view.body.proposal.terms, narrowing);
 		const decided = await call<Decision>(ADMIN, `/proposals/${id}/decision`, {
 			outcome: "approve",

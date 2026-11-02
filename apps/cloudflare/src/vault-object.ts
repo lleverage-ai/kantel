@@ -76,7 +76,7 @@ export class KantelVault extends DurableObject<Env> {
 		try {
 			core = this.vaultCore();
 		} catch (error) {
-			console.error("harbour: the vault did not start", error instanceof Error ? error.message : "unknown error");
+			console.error("kantel: the vault did not start", error instanceof Error ? error.message : "unknown error");
 			return vaultUnavailable(error);
 		}
 		return core.fetch(request);

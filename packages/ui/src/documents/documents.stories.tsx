@@ -29,7 +29,7 @@ function useShare() {
 			})),
 		onRemoveInvite: (email: string) =>
 			setShare((current) => ({ ...current, invites: current.invites.filter((invite) => invite.email !== email) })),
-		onCopyLink: async () => "https://harbour.example/s/7cQm2xWfZ9",
+		onCopyLink: async () => "https://kantel.example/s/7cQm2xWfZ9",
 	};
 	return { sharing, exports };
 }

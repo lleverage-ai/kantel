@@ -51,7 +51,7 @@ On its first start the gateway also creates an organisation, a project and an op
 docker compose -f deploy/compose/compose.yaml exec -T gateway cat /var/lib/harbour/bootstrap.json
 ```
 
-The key (`hbr_…`) is what a host app sends as a bearer token. With `KANTEL_URL` set to `http://127.0.0.1:58090` and `KANTEL_API_KEY` set to that key, list your sessions:
+The key (`ktk_…`) is what a host app sends as a bearer token. With `KANTEL_URL` set to `http://127.0.0.1:58090` and `KANTEL_API_KEY` set to that key, list your sessions:
 
 ```sh
 curl -s "$KANTEL_URL/v1/sessions" -H "authorization: Bearer $KANTEL_API_KEY"

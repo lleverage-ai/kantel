@@ -20,7 +20,7 @@ const routeGrant = vaultCard({
 	methods: ["*"],
 	pathPrefix: "/jobs",
 	injectionTemplate: undefined,
-	link: "https://vault.harbour.dev/p/prop_R0ut",
+	link: "https://vault.kantel.dev/p/prop_R0ut",
 });
 
 export const Default: Story = () => (
@@ -49,9 +49,9 @@ export const Proposed: Story = () => (
 					why: "To list last week's merged pull requests for the release notes.",
 					host: "api.github.com",
 					methods: ["GET"],
-					pathPrefix: "/repos/harbour-dev/harbour",
+					pathPrefix: "/repos/kantel-dev/kantel",
 					injectionTemplate: "Authorization: token {{secret}}",
-					link: "https://vault.harbour.dev/p/prop_R3ad",
+					link: "https://vault.kantel.dev/p/prop_R3ad",
 					expiresAt: FIXTURE_NOW + 9 * MINUTE + 12_000,
 				})}
 				now={FIXTURE_NOW}
@@ -65,9 +65,9 @@ export const Proposed: Story = () => (
 					why: "",
 					host: "sentry.io",
 					methods: ["GET"],
-					pathPrefix: "/api/0/projects/harbour",
+					pathPrefix: "/api/0/projects/kantel",
 					injectionTemplate: "Authorization: Bearer {{secret}}",
-					link: "https://vault.harbour.dev/p/prop_L4st",
+					link: "https://vault.kantel.dev/p/prop_L4st",
 					expiresAt: FIXTURE_NOW + 95_000,
 				})}
 				now={FIXTURE_NOW}
@@ -80,20 +80,20 @@ const exactRequest = {
 	...vaultCard({
 		proposalId: "prop_Ex4ct",
 		bindingCode: "HARBOR-31",
-		what: "POST api.github.com/repos/harbour-dev/harbour/issues through GitHub (harbour-dev)",
+		what: "POST api.github.com/repos/kantel-dev/kantel/issues through GitHub (kantel-dev)",
 		why: "To open the release-notes issue for 0.4 so the captain can pick it up.",
 		host: "api.github.com",
 		methods: ["POST"],
-		pathPrefix: "/repos/harbour-dev/harbour/issues",
+		pathPrefix: "/repos/kantel-dev/kantel/issues",
 		injectionTemplate: undefined,
-		link: "https://harbour.dev/connections/requests/prop_Ex4ct",
+		link: "https://kantel.dev/connections/requests/prop_Ex4ct",
 		expiresAt: FIXTURE_NOW + 12 * MINUTE,
 		request: {
 			connectionId: "conn_github",
-			connectionName: "GitHub (harbour-dev)",
+			connectionName: "GitHub (kantel-dev)",
 			kind: "http",
 			method: "POST",
-			url: "https://api.github.com/repos/harbour-dev/harbour/issues?labels=release",
+			url: "https://api.github.com/repos/kantel-dev/kantel/issues?labels=release",
 			digest: "9c1e4f0a7b2d3e5f60718293a4b5c6d7e8f90123456789abcdef0123456789ab",
 		},
 	}),
@@ -292,8 +292,8 @@ const longCard = vaultCard({
 	methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
 	pathPrefix: "/v1/reconciliation/tenants/all/invoices/2026-09/charges/with-refunds-and-disputes/including-archived",
 	injectionTemplate:
-		"Authorization: Bearer {{secret}}; X-Reconciliation-Scope: tenants=all; X-Request-Origin: harbour-agent-billing-reconciliation",
-	link: "https://vault.harbour-self-hosted-for-a-company-with-a-long-domain.example.com/p/prop_L0ng",
+		"Authorization: Bearer {{secret}}; X-Reconciliation-Scope: tenants=all; X-Request-Origin: kantel-agent-billing-reconciliation",
+	link: "https://vault.kantel-self-hosted-for-a-company-with-a-long-domain.example.com/p/prop_L0ng",
 });
 
 export const LongContent: Story = () => (

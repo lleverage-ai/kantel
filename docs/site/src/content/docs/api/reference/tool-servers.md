@@ -125,7 +125,7 @@ Each token's ID, prefix and when it was made and last used; never the token. Exp
 
 `POST /v1/tool-servers/{toolServerId}/tokens` (SDK method `createToolServerToken`)
 
-A new tunnel token, `hbt_…`, shown in this answer only; Kantel keeps its hash. Older tokens keep working until revoked. Needs operator on the owner. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`.
+A new tunnel token, `ktt_…`, shown in this answer only; Kantel keeps its hash. Older tokens keep working until revoked. Needs operator on the owner. Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`.
 
 **Path parameters**
 

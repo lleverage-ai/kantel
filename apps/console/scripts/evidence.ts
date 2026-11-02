@@ -23,7 +23,7 @@ mkdirSync(out, { recursive: true });
 const base = values.url;
 
 type Win = Window & {
-	__harbour?: {
+	__kantel?: {
 		// Both are set once a session is open; `open` waits for that.
 		host: { finished: boolean; head: string; published: number };
 		client: { getState(): SessionState; simulateDisconnect(ms?: number): void };
@@ -45,12 +45,11 @@ async function open(browser: Browser, width: number, height: number, query: stri
 	// The 2,000-turn recording is the Kantel project's "Platform migration" session.
 	const rest = query.replace(/^session=long&?/, "");
 	await page.goto(
-		new URL(`projects/harbour/sessions/s-migration?source=recorded${rest === "" ? "" : `&${rest}`}`, base).href,
+		new URL(`projects/kantel/sessions/s-migration?source=recorded${rest === "" ? "" : `&${rest}`}`, base).href,
 	);
 	await page.waitForFunction(
 		() =>
-			(window as Win).__harbour?.client?.getState().cursor !== undefined &&
-			(window as Win).__harbour?.host !== undefined,
+			(window as Win).__kantel?.client?.getState().cursor !== undefined && (window as Win).__kantel?.host !== undefined,
 		undefined,
 		{
 			timeout: 30_000,
@@ -65,8 +64,8 @@ async function profilerRun(browser: Browser) {
 	await page.screenshot({ path: `${out}/profiler-streaming-desktop.png` });
 	await page.waitForFunction(
 		() => {
-			const harbour = (window as Win).__harbour;
-			return harbour?.host.finished === true && harbour.client.getState().status === "idle";
+			const kantel = (window as Win).__kantel;
+			return kantel?.host.finished === true && kantel.client.getState().status === "idle";
 		},
 		undefined,
 		{ timeout: 120_000, polling: 500 },
@@ -75,7 +74,7 @@ async function profilerRun(browser: Browser) {
 	await page.screenshot({ path: `${out}/profiler-done-desktop.png` });
 	const result = await page.evaluate(() => {
 		const profile = (window as Win).__kantelProfile!;
-		const state = (window as Win).__harbour!.client.getState();
+		const state = (window as Win).__kantel!.client.getState();
 		const items = state.items;
 		const updates = Object.entries(profile.updates).filter(([id]) => id !== "transcript-list");
 		const earlier = updates.filter(([id]) => profile.baseline.has(id));
@@ -85,7 +84,7 @@ async function profilerRun(browser: Browser) {
 			.sort((a, b) => a - b);
 		return {
 			commitsFromStream: state.flushes,
-			hostDeltas: (window as Win).__harbour!.host.published,
+			hostDeltas: (window as Win).__kantel!.host.published,
 			baselineRows: profile.baseline.size,
 			rowsRerendered: Object.fromEntries(
 				updates.map(([id, count]) => [id, { count, kind: items.find((item) => item.id === id)?.kind }]),
@@ -107,31 +106,31 @@ async function profilerRun(browser: Browser) {
 async function disconnectRun(browser: Browser, width: number, height: number, name: string) {
 	const page = await open(browser, width, height, "session=long&delay=500");
 	await page.waitForTimeout(7_000);
-	const before = await page.evaluate(() => (window as Win).__harbour!.client.getState().cursor);
-	await page.evaluate(() => (window as Win).__harbour!.client.simulateDisconnect(4_000));
+	const before = await page.evaluate(() => (window as Win).__kantel!.client.getState().cursor);
+	await page.evaluate(() => (window as Win).__kantel!.client.simulateDisconnect(4_000));
 	await page.waitForTimeout(1_500);
 	await page.screenshot({ path: `${out}/disconnect-offline-${name}.png` });
 	const offline = await page.evaluate(() => {
-		const state = (window as Win).__harbour!.client.getState();
+		const state = (window as Win).__kantel!.client.getState();
 		return {
 			cursor: state.cursor,
 			connection: state.connection.status,
 			freshness: state.freshness.state,
-			hostHead: (window as Win).__harbour!.host.head,
+			hostHead: (window as Win).__kantel!.host.head,
 		};
 	});
 	await page.waitForTimeout(4_000);
 	await page.screenshot({ path: `${out}/disconnect-resumed-${name}.png` });
-	await page.waitForFunction(() => (window as Win).__harbour!.host.finished, undefined, {
+	await page.waitForFunction(() => (window as Win).__kantel!.host.finished, undefined, {
 		timeout: 120_000,
 		polling: 500,
 	});
 	await page.waitForTimeout(800);
 	const after = await page.evaluate(() => {
-		const state = (window as Win).__harbour!.client.getState();
+		const state = (window as Win).__kantel!.client.getState();
 		return {
 			cursor: state.cursor,
-			hostHead: (window as Win).__harbour!.host.head,
+			hostHead: (window as Win).__kantel!.host.head,
 			resumes: state.resumes,
 			freshness: state.freshness,
 		};
@@ -142,7 +141,7 @@ async function disconnectRun(browser: Browser, width: number, height: number, na
 
 async function scrollRun(browser: Browser, width: number, height: number, name: string) {
 	const page = await open(browser, width, height, "session=long&delay=0&speed=20");
-	await page.waitForFunction(() => (window as Win).__harbour!.host.finished, undefined, {
+	await page.waitForFunction(() => (window as Win).__kantel!.host.finished, undefined, {
 		timeout: 60_000,
 		polling: 250,
 	});
@@ -167,7 +166,7 @@ async function scrollRun(browser: Browser, width: number, height: number, name: 
 		await page.mouse.wheel(0, -900);
 		await page.waitForTimeout(16);
 		const done = await page.evaluate(() => {
-			const state = (window as Win).__harbour!.client.getState();
+			const state = (window as Win).__kantel!.client.getState();
 			const viewport = document.querySelector(".kt-transcript-list") as HTMLElement;
 			return !state.hasEarlier && viewport.scrollTop < 5;
 		});
@@ -183,7 +182,7 @@ async function scrollRun(browser: Browser, width: number, height: number, name: 
 		const frames = ((window as unknown as { __frames: number[] }).__frames ?? []).slice(1).sort((a, b) => a - b);
 		const pick = (q: number) =>
 			Math.round((frames[Math.min(frames.length - 1, Math.floor(frames.length * q))] ?? 0) * 10) / 10;
-		const state = (window as Win).__harbour!.client.getState();
+		const state = (window as Win).__kantel!.client.getState();
 		return {
 			itemsLoaded: state.items.length,
 			wholeSession: !state.hasEarlier,

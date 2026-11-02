@@ -32,7 +32,7 @@ export const PROJECTS: readonly ToolServerProject[] = [
 	{ id: "proj_support", name: "Support" },
 ];
 /** Kantel's address, as the tunnel command names it. */
-export const ORIGIN = "https://harbour.example.com";
+export const ORIGIN = "https://kantel.example.com";
 
 const TOM: Actor = { kind: "human", userId: "usr_tom" };
 
@@ -176,9 +176,9 @@ const token = (
 });
 
 export const TOKENS: readonly ToolServerToken[] = [
-	token("tst_01research", SAL_SERVER.id, "hbt_7k2q", FIXTURE_NOW - 12 * DAY, FIXTURE_NOW - 3 * HOUR),
-	token("tst_02docs", DOCS_SERVER.id, "hbt_m4xa", FIXTURE_NOW - 20 * DAY, FIXTURE_NOW - 2 * HOUR),
-	token("tst_03warehouse", WAREHOUSE_SERVER.id, "hbt_c9vd", FIXTURE_NOW - DAY),
+	token("tst_01research", SAL_SERVER.id, "ktt_7k2q", FIXTURE_NOW - 12 * DAY, FIXTURE_NOW - 3 * HOUR),
+	token("tst_02docs", DOCS_SERVER.id, "ktt_m4xa", FIXTURE_NOW - 20 * DAY, FIXTURE_NOW - 2 * HOUR),
+	token("tst_03warehouse", WAREHOUSE_SERVER.id, "ktt_c9vd", FIXTURE_NOW - DAY),
 ];
 
 export const STATS: Readonly<Record<string, ToolServerStats>> = {

@@ -16,10 +16,10 @@ import { isolateBackendName } from "../src/sandboxes.ts";
 import { createStack, DEFAULT_AGENT_ID, type Stack } from "../src/stack.ts";
 import { fakePrograms, fakeSandboxContainers } from "./sandbox-container.ts";
 
-const TEAM_DOMAIN = "harbour-test.cloudflareaccess.com";
-const AUD = "aud-harbour-test";
-const ADMIN = "tom@harbour.test";
-const BASE = "https://harbour.test";
+const TEAM_DOMAIN = "kantel-test.cloudflareaccess.com";
+const AUD = "aud-kantel-test";
+const ADMIN = "tom@kantel.test";
+const BASE = "https://kantel.test";
 
 const opened: Stack[] = [];
 afterEach(async () => {
@@ -95,7 +95,7 @@ async function setup(
  * v2, stateless) and the tarball by `git archive`.
  */
 function gitOrigin() {
-	const dir = mkdtempSync(join(tmpdir(), "harbour-cf-git-"));
+	const dir = mkdtempSync(join(tmpdir(), "kantel-cf-git-"));
 	scratch.push(dir);
 	const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
 	const git = (args: readonly string[], input?: string, extra: Record<string, string> = {}) =>
@@ -123,13 +123,13 @@ function gitOrigin() {
 	}
 	const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
 		const url = String(input);
-		if (url === "https://github.com/harbour-fixtures/site.git/git-upload-pack") {
+		if (url === "https://github.com/kantel-fixtures/site.git/git-upload-pack") {
 			const reply = git(["upload-pack", "--stateless-rpc", "."], String(init?.body ?? ""), {
 				GIT_PROTOCOL: "version=2",
 			});
 			return new Response(new Uint8Array(reply));
 		}
-		const tarball = /^https:\/\/codeload\.github\.com\/harbour-fixtures\/site\/tar\.gz\/([0-9a-f]{40})$/.exec(url);
+		const tarball = /^https:\/\/codeload\.github\.com\/kantel-fixtures\/site\/tar\.gz\/([0-9a-f]{40})$/.exec(url);
 		if (tarball !== null) {
 			return new Response(
 				new Uint8Array(git(["archive", "--format=tar.gz", `--prefix=site-${tarball[1]}/`, tarball[1]!])),
@@ -240,7 +240,7 @@ describe("the stack's sandboxes", () => {
 		const { stack, session } = await setup({ gitFetch: origin.fetch });
 		const made = await stack.workspaces.create(stack.admin, {
 			owner: { kind: "project", organisationId: stack.organisation.id, projectId: stack.project.id },
-			seed: { name: "site", sources: [{ kind: "git", repo: "harbour-fixtures/site", ref: "main" }] },
+			seed: { name: "site", sources: [{ kind: "git", repo: "kantel-fixtures/site", ref: "main" }] },
 		});
 		expect(made.seedReadiness).toBe("files");
 		const { id: sessionId } = await session(made.id);

@@ -30,17 +30,17 @@ const SERVER: ToolServer = {
 const TOKEN: ToolServerToken = {
 	id: "tst_1",
 	toolServerId: "ts_1",
-	prefix: "hbt_abcd",
+	prefix: "ktt_abcd",
 	createdBy: { kind: "human", userId: "usr_tom" },
 	createdAt: 1,
 };
-const ISSUED: IssuedToolServerToken = { token: TOKEN, secret: "hbt_abcdefgh" };
+const ISSUED: IssuedToolServerToken = { token: TOKEN, secret: "ktt_abcdefgh" };
 
 /** A fetch that answers each route the page uses, and records what it was asked. */
 function fakeApi(options: { switchedOff?: boolean } = {}) {
 	const calls: string[] = [];
 	const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
-		const request = new Request(new URL(String(input), "https://harbour.test"), init);
+		const request = new Request(new URL(String(input), "https://kantel.test"), init);
 		const url = new URL(request.url);
 		const body = request.method === "GET" || request.method === "DELETE" ? "" : await request.text();
 		calls.push(`${request.method} ${url.pathname}${url.search}${body === "" ? "" : ` ${body}`}`);
@@ -74,10 +74,10 @@ describe("the Tool servers page over the API", () => {
 	});
 
 	it("names the organisation and the projects the viewer may see, and Kantel's address", async () => {
-		const toolServers = await apiToolServers(ME, { fetch: fakeApi().fetch, origin: "https://harbour.test" });
+		const toolServers = await apiToolServers(ME, { fetch: fakeApi().fetch, origin: "https://kantel.test" });
 		expect(toolServers.organisation).toBe("Acme");
 		expect(toolServers.projects).toEqual([{ id: "prj_web", name: "Website" }]);
-		expect(toolServers.origin).toBe("https://harbour.test");
+		expect(toolServers.origin).toBe("https://kantel.test");
 		expect(toolServers.source.stats).toBeUndefined();
 	});
 
@@ -95,7 +95,7 @@ describe("the Tool servers page over the API", () => {
 		const { source } = await apiToolServers(ME, { fetch: api.fetch });
 		const created = await source.create({ name: "billing", transport: "tunnel", projectId: "prj_web" });
 		expect(created.server).toMatchObject({ id: "ts_2", name: "billing", projectId: "prj_web" });
-		expect(created.token?.secret).toBe("hbt_abcdefgh");
+		expect(created.token?.secret).toBe("ktt_abcdefgh");
 		expect(api.calls).toContain('POST /v1/tool-servers {"name":"billing","transport":"tunnel","projectId":"prj_web"}');
 	});
 

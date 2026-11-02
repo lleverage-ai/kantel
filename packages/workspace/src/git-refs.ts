@@ -68,7 +68,7 @@ export function lsRefsRequest(
 ): string {
 	return [
 		pktLine("command=ls-refs\n"),
-		pktLine("agent=harbour\n"),
+		pktLine("agent=kantel\n"),
 		"0001",
 		...(options.peel === true ? [pktLine("peel\n")] : []),
 		pktLine("symrefs\n"),
@@ -152,7 +152,7 @@ export function createGitRefLister(options: GitRefListerOptions = {}): GitRefLis
 				"content-type": "application/x-git-upload-pack-request",
 				accept: "application/x-git-upload-pack-result",
 				"git-protocol": "version=2",
-				"user-agent": "harbour-workspace",
+				"user-agent": "kantel-workspace",
 			},
 			body: request,
 			...(signal === undefined ? {} : { signal }),

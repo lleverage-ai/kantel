@@ -224,7 +224,7 @@ async function pendingChanges() {
 const EGRESS_CA = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
 const SYSTEM_BUNDLE = "/etc/ssl/certs/ca-certificates.crt";
 /** Outside the workspace, and writable by the `sandbox` user. */
-const BUNDLE = `${HOME}/.harbour-ca-bundle.pem`;
+const BUNDLE = `${HOME}/.kantel-ca-bundle.pem`;
 let caInstalled = false;
 
 /**
@@ -453,4 +453,4 @@ function round(ms: number) {
 	return Math.round(ms * 10) / 10;
 }
 
-console.log(`harbour sandbox agent listening on 8080 (booted ${new Date(bootedAt).toISOString()})`);
+console.log(`kantel sandbox agent listening on 8080 (booted ${new Date(bootedAt).toISOString()})`);

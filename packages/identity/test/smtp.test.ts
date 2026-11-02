@@ -85,7 +85,7 @@ describe("parseSmtpUrl", () => {
 	});
 
 	it("needs both KANTEL_SMTP_URL and KANTEL_MAIL_FROM", () => {
-		expect(() => smtpMailerFromEnv({ KANTEL_MAIL_FROM: "harbour@example.test" })).toThrow(/KANTEL_SMTP_URL/);
+		expect(() => smtpMailerFromEnv({ KANTEL_MAIL_FROM: "kantel@example.test" })).toThrow(/KANTEL_SMTP_URL/);
 		expect(() => smtpMailerFromEnv({ KANTEL_SMTP_URL: "smtp://mailpit:1025?starttls=off" })).toThrow(
 			/KANTEL_MAIL_FROM/,
 		);
@@ -100,12 +100,12 @@ describe("createSmtpMailer", () => {
 		const { port, received } = await relay();
 		const mailer = createSmtpMailer({
 			url: `smtp://127.0.0.1:${port}?starttls=off`,
-			from: "Kantel <harbour@example.test>",
+			from: "Kantel <kantel@example.test>",
 		});
 		await mailer.send({ to: "ada@example.test", code: "012345", expiresAt: Date.UTC(2026, 9, 27, 9, 10) });
 		expect(received).toHaveLength(1);
 		const [mail] = received;
-		expect(mail?.from).toBe("harbour@example.test");
+		expect(mail?.from).toBe("kantel@example.test");
 		expect(mail?.to).toEqual(["ada@example.test"]);
 		expect(mail?.raw).toContain("Subject: Your Kantel sign-in code");
 		expect(mail?.raw).not.toMatch(/Subject:.*012345/);
@@ -115,18 +115,18 @@ describe("createSmtpMailer", () => {
 
 	it("sends an invite with the link to sign in at", async () => {
 		const { port, received } = await relay();
-		const mailer = createSmtpMailer({ url: `smtp://127.0.0.1:${port}?starttls=off`, from: "harbour@example.test" });
+		const mailer = createSmtpMailer({ url: `smtp://127.0.0.1:${port}?starttls=off`, from: "kantel@example.test" });
 		await mailer.sendInvite({
 			to: "grace@example.test",
 			organisation: "Acme",
 			invitedBy: "Ada Lovelace",
-			link: "https://harbour.example.test/",
+			link: "https://kantel.example.test/",
 			expiresAt: Date.UTC(2026, 10, 10, 9, 0),
 		});
 		const [mail] = received;
 		expect(mail?.to).toEqual(["grace@example.test"]);
 		expect(mail?.raw).toContain("Subject: Ada Lovelace invited you to Acme on Kantel");
-		expect(mail?.raw).toContain("https://harbour.example.test/");
+		expect(mail?.raw).toContain("https://kantel.example.test/");
 		expect(mail?.raw).toContain("2026-11-10");
 	});
 
@@ -141,7 +141,7 @@ describe("createSmtpMailer", () => {
 		});
 		const mailer = createSmtpMailer({
 			url: `smtp://us%40er:p%3Ass%2Fw@127.0.0.1:${port}?starttls=off`,
-			from: "harbour@example.test",
+			from: "kantel@example.test",
 		});
 		await mailer.send({ to: "ada@example.test", code: "123456", expiresAt: Date.now() });
 		expect(received[0]?.user).toBe("us@er");
@@ -149,7 +149,7 @@ describe("createSmtpMailer", () => {
 
 	it("refuses to send in the clear when the relay offers no STARTTLS, and says nothing of the code or the URL", async () => {
 		const { port, received } = await relay();
-		const mailer = createSmtpMailer({ url: `smtp://user:hunter2@127.0.0.1:${port}`, from: "harbour@example.test" });
+		const mailer = createSmtpMailer({ url: `smtp://user:hunter2@127.0.0.1:${port}`, from: "kantel@example.test" });
 		let caught: unknown;
 		try {
 			await mailer.send({ to: "ada@example.test", code: "654321", expiresAt: Date.now() });

@@ -29,7 +29,7 @@ const POLICY = {
 			ports: [443],
 			methods: ["GET"],
 			pathPrefix: "/headers",
-			inject: { header: "x-harbour-vault", template: "{secret}", secretEnv: "KANTEL_CANARY_SECRET" },
+			inject: { header: "x-kantel-vault", template: "{secret}", secretEnv: "KANTEL_CANARY_SECRET" },
 		},
 	],
 };
@@ -69,7 +69,7 @@ describe("the gateway's egress decisions", () => {
 	let gateway: Gateway;
 
 	beforeAll(async () => {
-		scratch = await mkdtemp(join(tmpdir(), "harbour-egress-"));
+		scratch = await mkdtemp(join(tmpdir(), "kantel-egress-"));
 		file = join(scratch, "vault-policy.json");
 		await writeFile(file, JSON.stringify(POLICY));
 		components = createGatewayComponents();
@@ -146,7 +146,7 @@ describe("the gateway's egress decisions", () => {
 		// The item's value, not the header it renders, is what the proxy must redact.
 		expect(decision.redact).toEqual([CANARY]);
 		const echo = await decisionOf(await decide("https://postman-echo.com/headers"));
-		expect(echo).toMatchObject({ allow: true, inject: { header: "x-harbour-vault", value: CANARY }, redact: [CANARY] });
+		expect(echo).toMatchObject({ allow: true, inject: { header: "x-kantel-vault", value: CANARY }, redact: [CANARY] });
 		const vault = components.vault;
 		if (vault === undefined) throw new Error("the in-memory components have no vault");
 		const uses = await vault.listUses(

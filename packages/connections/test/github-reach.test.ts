@@ -7,7 +7,7 @@ import { fakeAccess, human, ORG } from "../src/testing.ts";
 const alice = human("alice");
 const bob = human("bob");
 const admin = human("admin");
-const ORIGIN = "https://harbour.test";
+const ORIGIN = "https://kantel.test";
 const ACCESS_TOKEN = "ghu_reach-access-token-secret";
 const CLIENT_SECRET = "reach-client-secret-value";
 

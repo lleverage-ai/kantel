@@ -73,7 +73,7 @@ function setUp(outbound?: typeof fetch) {
 	});
 	const request = (method: string, path: string, options: { token?: string; body?: unknown; headers?: object } = {}) =>
 		api.fetch(
-			new Request(`https://harbour.test/v1${path}`, {
+			new Request(`https://kantel.test/v1${path}`, {
 				method,
 				headers: {
 					...(options.token === undefined ? {} : { authorization: `Bearer ${options.token}` }),
@@ -153,7 +153,7 @@ describe("session API over HTTP", () => {
 				},
 			},
 		});
-		const hidden = await failing.fetch(new Request("https://harbour.test/v1/sessions"));
+		const hidden = await failing.fetch(new Request("https://kantel.test/v1/sessions"));
 		expect(hidden.status).toBe(500);
 		expect(await hidden.text()).not.toContain("hunter2");
 	});
@@ -176,7 +176,7 @@ describe("session API over HTTP", () => {
 				},
 			},
 		});
-		const response = await api.fetch(new Request("https://harbour.test/v1/sessions"));
+		const response = await api.fetch(new Request("https://kantel.test/v1/sessions"));
 		expect(response.status).toBe(403);
 		expect(response.headers.get("www-authenticate")).toBeNull();
 		expect(await response.text()).not.toContain("org-secret-name");
@@ -449,7 +449,7 @@ describe("host registrations", () => {
 		const served: string[] = [];
 		const clientFor = (name: string) =>
 			createSessionApiClient({
-				baseUrl: "https://harbour.test/v1",
+				baseUrl: "https://kantel.test/v1",
 				credentials: bearer("supervisor"),
 				fetch: async (input, init) => api.fetch(new Request(input, init)),
 				hostCallbacks: {
@@ -472,7 +472,7 @@ describe("host registrations", () => {
 		const served: string[] = [];
 		let failNextDelete = true;
 		const client = createSessionApiClient({
-			baseUrl: "https://harbour.test/v1",
+			baseUrl: "https://kantel.test/v1",
 			credentials: bearer("supervisor"),
 			fetch: async (input, init) => {
 				const request = new Request(input, init);
@@ -552,7 +552,7 @@ describe("requests that go away", () => {
 		});
 		const controller = new AbortController();
 		const responding = api.fetch(
-			new Request("https://harbour.test/v1/sessions/s-1/events", {
+			new Request("https://kantel.test/v1/sessions/s-1/events", {
 				headers: { authorization: "Bearer supervisor" },
 				signal: controller.signal,
 			}),
@@ -587,7 +587,7 @@ describe("requests that go away", () => {
 		});
 		const controller = new AbortController();
 		const responding = api.fetch(
-			new Request("https://harbour.test/v1/sessions/s-1/result?submission=s-1%2F1&timeoutMs=60000", {
+			new Request("https://kantel.test/v1/sessions/s-1/result?submission=s-1%2F1&timeoutMs=60000", {
 				headers: { authorization: "Bearer supervisor" },
 				signal: controller.signal,
 			}),
@@ -614,7 +614,7 @@ describe("requests that go away", () => {
 		});
 		const controller = new AbortController();
 		const prompted = await api.fetch(
-			new Request(`https://harbour.test/v1/sessions/${sessionId}/prompt`, {
+			new Request(`https://kantel.test/v1/sessions/${sessionId}/prompt`, {
 				method: "POST",
 				headers: { authorization: "Bearer supervisor", "content-type": "application/json" },
 				body: JSON.stringify({ text: "Go" }),
@@ -682,6 +682,25 @@ describe("host-tool callbacks", () => {
 		expect(received).toEqual([call]);
 		expect(headers?.get(HEADERS.callId)).toBe("call-1");
 		expect(headers?.get(HEADERS.hostId)).toBe("atlas");
+		// Each also under its name before the rename, for a host checking with an older @kantel/runtime.
+		expect(headers?.get("harbour-call-id")).toBe("call-1");
+		expect(headers?.get("harbour-host-id")).toBe("atlas");
+		expect(headers?.get("harbour-signature")).toBe(headers?.get(HEADERS.signature));
+	});
+
+	it("takes a call signed under the signature header's name before the rename", async () => {
+		const endpoint = createHostToolEndpoint(async () => ({ output: "ok" }), { secret });
+		const body = JSON.stringify(call);
+		const signature = await signHostToolCall(secret, body, Date.now());
+		const response = await endpoint(
+			new Request("https://atlas.test/tools/atlas", {
+				method: "POST",
+				body,
+				headers: { "content-type": "application/json", "harbour-signature": signature },
+			}),
+		);
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ output: "ok" });
 	});
 
 	it("rejects an unsigned call at the endpoint, and fails the tool call when the host refuses or is down", async () => {

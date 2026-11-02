@@ -249,7 +249,7 @@ export interface CommitFilesInput {
  * at a branch no checkout has out. Returns the new commit, or `parent` when the files change nothing.
  */
 export function commitFiles(repo: string, input: CommitFilesInput): string {
-	const scratch = mkdtempSync(join(tmpdir(), "harbour-git-index-"));
+	const scratch = mkdtempSync(join(tmpdir(), "kantel-git-index-"));
 	const env = {
 		...process.env,
 		GIT_INDEX_FILE: join(scratch, "index"),

@@ -42,7 +42,7 @@ export const openPopup: OpenWindow = () => {
 	const height = 680;
 	const left = Math.max(0, window.screenX + (window.outerWidth - width) / 2);
 	const top = Math.max(0, window.screenY + (window.outerHeight - height) / 2);
-	return window.open("", "harbour-connect", `popup,width=${width},height=${height},left=${left},top=${top}`);
+	return window.open("", "kantel-connect", `popup,width=${width},height=${height},left=${left},top=${top}`);
 };
 
 /** How often the page asks whether the attempt settled. Kantel's callback page also tells the opener when it does. */
@@ -441,7 +441,7 @@ export function ConnectProgress({
 							<a
 								className={`${buttonClass("primary", "sm")} no-underline`}
 								href={state.start.url}
-								target="harbour-connect"
+								target="kantel-connect"
 								rel="opener"
 							>
 								<ExternalLinkIcon size="sm" />

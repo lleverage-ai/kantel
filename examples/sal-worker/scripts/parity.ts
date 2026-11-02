@@ -5,7 +5,7 @@
  * prompt's skill block (locations aside: Kantel mounts skills at /skills). The entries' order is reported but never
  * fails the run: Pi lists them in file system order, which no pinned tree records.
  *
- *   node examples/sal-worker/scripts/parity.ts --harbour harbour.json --sal TASK-1=sal-1.json --sal TASK-2=sal-2.json
+ *   node examples/sal-worker/scripts/parity.ts --kantel kantel.json --sal TASK-1=sal-1.json --sal TASK-2=sal-2.json
  */
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
@@ -24,10 +24,10 @@ interface Side {
 }
 
 const { values } = parseArgs({
-	options: { harbour: { type: "string" }, sal: { type: "string", multiple: true } },
+	options: { kantel: { type: "string" }, sal: { type: "string", multiple: true } },
 });
-if (values.harbour === undefined || values.sal === undefined) throw new Error("--harbour and --sal are required");
-const harbour = JSON.parse(readFileSync(values.harbour, "utf8")) as { tasks: (Side & { task: string })[] };
+if (values.kantel === undefined || values.sal === undefined) throw new Error("--kantel and --sal are required");
+const kantel = JSON.parse(readFileSync(values.kantel, "utf8")) as { tasks: (Side & { task: string })[] };
 const local = new Map(
 	values.sal.map((pair) => {
 		const [task, path] = pair.split("=") as [string, string];
@@ -55,7 +55,7 @@ const lines = [
 	"| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
 ];
 const details: string[] = [];
-for (const ours of harbour.tasks) {
+for (const ours of kantel.tasks) {
 	const theirs = local.get(ours.task);
 	if (theirs === undefined) throw new Error(`no Sal output for ${ours.task}`);
 	const same = (ok: boolean, label: string, detail: () => string) => {
@@ -68,7 +68,7 @@ for (const ours of harbour.tasks) {
 	const profile = theirs.recall.concepts.filter((concept) => concept.reason === "profile").length;
 	const matched = theirs.recall.concepts.length - profile;
 	const recalled = same(ids(ours.recall.concepts) === ids(theirs.recall.concepts), "recalled", () =>
-		JSON.stringify({ harbour: ids(ours.recall.concepts), sal: ids(theirs.recall.concepts) }),
+		JSON.stringify({ kantel: ids(ours.recall.concepts), sal: ids(theirs.recall.concepts) }),
 	);
 	const text = same(ours.recall.text === theirs.recall.text, "recall text", () => {
 		const at = [...ours.recall.text].findIndex((char, index) => char !== theirs.recall.text[index]);
@@ -78,7 +78,7 @@ for (const ours of harbour.tasks) {
 	const skipped = same(
 		ours.recall.skipped.map((item) => item.id).join(",") === theirs.recall.skipped.map((item) => item.id).join(","),
 		"skipped",
-		() => JSON.stringify({ harbour: ours.recall.skipped, sal: theirs.recall.skipped }),
+		() => JSON.stringify({ kantel: ours.recall.skipped, sal: theirs.recall.skipped }),
 	);
 	const names = (side: Side) => side.skills.map((skill) => skill.name).sort();
 	const skillSet = same(names(ours).join(",") === names(theirs).join(","), "skills", () =>

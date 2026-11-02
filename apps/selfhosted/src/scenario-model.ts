@@ -54,7 +54,7 @@ export function scenarioSteps(spec: ScenarioSpec): ScriptedStep[] {
 			tool: "bash",
 			args: {
 				command:
-					"git init -q -b main . && git add -A && git -c user.name=harbour -c user.email=spike@harbour.invalid commit -q -m 'research notes' && git log --oneline | wc -l > git-commits.txt && git rev-parse HEAD",
+					"git init -q -b main . && git add -A && git -c user.name=kantel -c user.email=spike@kantel.invalid commit -q -m 'research notes' && git log --oneline | wc -l > git-commits.txt && git rev-parse HEAD",
 			},
 		},
 		{ tool: "bash", args: { command: "cat git-commits.txt && ls .git/HEAD && cat notes/x.md | wc -l" } },

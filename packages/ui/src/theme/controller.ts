@@ -1,3 +1,4 @@
+import { currentThemeId } from "@kantel/contracts";
 import { themeCss } from "../tokens/theme-schema.ts";
 import { DEFAULT_LIGHT_THEME, DEFAULT_THEME } from "../tokens/themes/index.ts";
 import { BOOT_STYLE_ID, LEGACY_THEME_STORAGE_KEY, legacyThemeCss, THEME_STORAGE_KEY } from "./boot.ts";
@@ -105,16 +106,21 @@ export function createThemeController(options: ThemeControllerOptions = {}): The
 	const prefersLight = options.prefersLight ?? globalThis.matchMedia?.("(prefers-color-scheme: light)");
 	const listeners = new Set<() => void>();
 
-	const resolve = (preference: string): string => {
+	const resolve = (named: string): string => {
+		const preference = currentThemeId(named);
 		if (preference === SYSTEM_THEME) return prefersLight?.matches === true ? system.light : system.dark;
 		return registry.get(preference) === undefined ? DEFAULT_THEME : preference;
 	};
 	const read = readCache(storage);
 	const cached = read?.cache;
 	let remembered = cached !== undefined;
+	// A built-in theme remembered by its ID from before the rename is today's.
+	const cachedPreference = cached === undefined ? undefined : currentThemeId(cached.preference);
+	const renamed = cachedPreference !== undefined && cachedPreference !== cached?.preference;
 	let preference =
-		cached !== undefined && (cached.preference === SYSTEM_THEME || registry.get(cached.preference) !== undefined)
-			? cached.preference
+		cachedPreference !== undefined &&
+		(cachedPreference === SYSTEM_THEME || registry.get(cachedPreference) !== undefined)
+			? cachedPreference
 			: DEFAULT_THEME;
 	let state: ThemeState = { preference, applied: resolve(preference), previewing: false };
 
@@ -172,7 +178,9 @@ export function createThemeController(options: ThemeControllerOptions = {}): The
 	paint(state.applied);
 	// A choice remembered under the old key moves to the new one, with today's CSS. Only once its theme is known here:
 	// a custom theme the host hasn't registered yet stays under the old key until then, rather than become the default.
-	if (read?.legacy === true && cached !== undefined && preference === cached.preference) remember();
+	if (read?.legacy === true && cached !== undefined && preference === cachedPreference) remember();
+	// So does one remembered by a theme ID from before the rename.
+	else if (renamed && preference === cachedPreference) remember();
 	prefersLight?.addEventListener("change", () => {
 		if (state.preference === SYSTEM_THEME && !state.previewing) set({ ...state, applied: resolve(SYSTEM_THEME) });
 	});
@@ -182,14 +190,16 @@ export function createThemeController(options: ThemeControllerOptions = {}): The
 		system,
 		state: () => state,
 		remembered: () => remembered,
-		choose(next) {
+		choose(named) {
+			const next = currentThemeId(named);
 			if (next !== SYSTEM_THEME && registry.get(next) === undefined) return;
 			preference = next;
 			remembered = true;
 			set({ preference, applied: resolve(next), previewing: false });
 			remember();
 		},
-		preview(id) {
+		preview(named) {
+			const id = currentThemeId(named);
 			if (registry.get(id) === undefined) return;
 			set({ ...state, applied: id, previewing: true });
 		},

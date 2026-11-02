@@ -297,8 +297,8 @@ describe("a started session's model", () => {
 
 describe("a chosen model after a restart", () => {
 	it("stays with the session when a later runtime reopens it", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "harbour-models-"));
-		const file = join(dir, "harbour.db");
+		const dir = mkdtempSync(join(tmpdir(), "kantel-models-"));
+		const file = join(dir, "kantel.db");
 		const resolveModel = () => ({ provider: KANTEL_MODEL_PROVIDER, modelId: "default" });
 		/** One process: its own connection, store and runtime on the one database file. */
 		const processOn = async (models: ReturnType<typeof gatewayModels>["models"]) => {
@@ -370,7 +370,7 @@ describe("over HTTP", () => {
 		});
 		runtimes.push(api);
 		const client = createSessionApiClient({
-			baseUrl: "https://harbour.test/v1",
+			baseUrl: "https://kantel.test/v1",
 			credentials: bearer("operator"),
 			fetch: (input, init) => api.fetch(new Request(input, init)),
 		});
@@ -405,7 +405,7 @@ describe("over HTTP", () => {
 		runtimes.push(api);
 		const post = (body: unknown) =>
 			api.fetch(
-				new Request(`https://harbour.test/v1/sessions/${session.id}/messages`, {
+				new Request(`https://kantel.test/v1/sessions/${session.id}/messages`, {
 					method: "POST",
 					headers: { authorization: "Bearer operator", "content-type": "application/json" },
 					body: JSON.stringify(body),

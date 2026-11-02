@@ -22,7 +22,7 @@ export function createHttpArchiveFetcher(options: HttpArchiveFetcherOptions = {}
 	return {
 		async fetch(ctx, source) {
 			const response = await send(source.url, {
-				headers: { "user-agent": "harbour-workspace" },
+				headers: { "user-agent": "kantel-workspace" },
 				...(ctx.signal === undefined ? {} : { signal: ctx.signal }),
 			});
 			if (response.status === 404) {

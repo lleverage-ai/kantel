@@ -81,7 +81,7 @@ describe("the audit log over the audit query API", () => {
 	it("pages the view's query through the API, newest first, in the organisation it names", async () => {
 		const { fetcher } = await served();
 		const source = auditApiSource({
-			baseUrl: "https://harbour.test",
+			baseUrl: "https://kantel.test",
 			fetch: fetcher,
 			headers: () => ({ authorization: "Bearer tom" }),
 		});
@@ -109,9 +109,9 @@ describe("the audit log over the audit query API", () => {
 	it("replaces an organisation header the credentials carry, whatever its case", async () => {
 		const { fetcher } = await served();
 		const source = auditApiSource({
-			baseUrl: "https://harbour.test",
+			baseUrl: "https://kantel.test",
 			fetch: fetcher,
-			headers: () => ({ authorization: "Bearer tom", "Harbour-Organisation": "org_a" }),
+			headers: () => ({ authorization: "Bearer tom", "Kantel-Organisation": "org_a" }),
 		});
 		const page = await source.query(toQuery({ range: "all", kind: "all", organisationId: "org_b" }, NOW));
 		expect(page.items).toHaveLength(20);
@@ -121,7 +121,7 @@ describe("the audit log over the audit query API", () => {
 	it("is the console's audit seam on the api source: credentials from the log, rows linked to session turns", async () => {
 		const { fetcher } = await served();
 		const audit = apiAudit({
-			baseUrl: "https://harbour.test",
+			baseUrl: "https://kantel.test",
 			fetch: fetcher,
 			headers: () => ({ authorization: "Bearer tom" }),
 		});
@@ -204,7 +204,7 @@ describe("the audit log over the audit query API", () => {
 			return Response.json({ items: people[organisation ?? "org_a"] });
 		};
 		const found = await readAuditPeople({
-			baseUrl: "https://harbour.test",
+			baseUrl: "https://kantel.test",
 			fetch: fetcher,
 			headers: () => ({ authorization: "Bearer tom" }),
 		});
@@ -231,7 +231,7 @@ describe("the audit log over the audit query API", () => {
 			if (path === "/v1/organisations") return new Response("", { status: 404 });
 			return Response.json({ items: [{ userId: "usr_tom", name: "Tom Davies" }] });
 		};
-		const baseUrl = "https://harbour.test";
+		const baseUrl = "https://kantel.test";
 		expect(await readAuditPeople({ baseUrl, fetch: fetcher })).toEqual({
 			actors: [{ value: "human:usr_tom", label: "Tom Davies" }],
 		});
@@ -282,7 +282,7 @@ describe("the audit log over the audit query API", () => {
 			}
 		}) as typeof fetch;
 		const scope = await readAuditScope({
-			baseUrl: "https://harbour.test",
+			baseUrl: "https://kantel.test",
 			fetch: fetcher,
 			headers: () => ({ authorization: "Bearer tom" }),
 		});
@@ -316,9 +316,9 @@ describe("the audit log over the audit query API", () => {
 				}
 				return Response.json({ items: [] });
 			}) as typeof fetch;
-		const scope = await readAuditScope({ baseUrl: "https://harbour.test", fetch: serve("/v1/profiles") });
+		const scope = await readAuditScope({ baseUrl: "https://kantel.test", fetch: serve("/v1/profiles") });
 		expect(scope.agents).toEqual([{ value: "agt_1", label: "agt_1" }]);
-		await expect(readAuditScope({ baseUrl: "https://harbour.test", fetch: serve("/v1/sessions") })).rejects.toThrow(
+		await expect(readAuditScope({ baseUrl: "https://kantel.test", fetch: serve("/v1/sessions") })).rejects.toThrow(
 			"403",
 		);
 	});
@@ -326,7 +326,7 @@ describe("the audit log over the audit query API", () => {
 	it("passes the server's refusal through for an organisation the caller isn't in", async () => {
 		const { fetcher } = await served();
 		const source = auditApiSource({
-			baseUrl: "https://harbour.test",
+			baseUrl: "https://kantel.test",
 			fetch: fetcher,
 			headers: () => ({ authorization: "Bearer tom" }),
 		});

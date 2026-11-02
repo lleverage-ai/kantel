@@ -89,7 +89,7 @@ function setUp() {
 	const send = (method: string, path: string, body?: string, headers: Record<string, string> = {}) =>
 		router(
 			"caller",
-			new Request(`https://harbour.test${path}`, { method, headers, ...(body === undefined ? {} : { body }) }),
+			new Request(`https://kantel.test${path}`, { method, headers, ...(body === undefined ? {} : { body }) }),
 		);
 	return { calls, send };
 }
@@ -144,7 +144,7 @@ describe("router", () => {
 	it("refuses a body over the limit", async () => {
 		const router = createRouter(routes, setUpHandlers(), { maxBodyBytes: 16 });
 		const error = await refusal(
-			router("caller", new Request("https://harbour.test/v1/things", { method: "POST", body: "x".repeat(17) })),
+			router("caller", new Request("https://kantel.test/v1/things", { method: "POST", body: "x".repeat(17) })),
 		);
 		expect(error.message).toBe("The body is larger than 16 bytes");
 	});

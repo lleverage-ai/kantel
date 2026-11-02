@@ -5,7 +5,7 @@
  *
  * - **brwsr** (the default): brwsr.dev with its project key, the `KANTEL_BRWSR_API_KEY` Worker secret. Only the
  *   provider holds it.
- * - **harbour** (`KANTEL_BROWSER_PROVIDER=harbour`): Kantel's own browsers (packages/browser/CONTRACT.md), a
+ * - **kantel** (`KANTEL_BROWSER_PROVIDER=kantel`): Kantel's own browsers (packages/browser/CONTRACT.md), a
  *   `KantelBrowser` object with a Container per browser, or a self-hosted browser host at `KANTEL_BROWSER_HOST_URL`.
  */
 import { BRWSR_API_URL, createBrwsrProvider } from "@kantel/browser/brwsr";
@@ -41,12 +41,12 @@ export interface BrowserVars {
 	/** brwsr's API. Default `https://api.brwsr.dev`. */
 	readonly KANTEL_BRWSR_API_URL?: string;
 	/**
-	 * Which provider the broker uses: `brwsr` (the default: brwsr.dev, with the key above) or `harbour`, Kantel's own
+	 * Which provider the broker uses: `brwsr` (the default: brwsr.dev, with the key above) or `kantel`, Kantel's own
 	 * browsers (packages/browser/CONTRACT.md): a `KantelBrowser` object with a Container per browser, or the
 	 * self-hosted browser host at `KANTEL_BROWSER_HOST_URL` when that is set.
 	 */
 	readonly KANTEL_BROWSER_PROVIDER?: string;
-	/** Signs live-view, replay and embed links (harbour provider). A Worker secret. */
+	/** Signs live-view, replay and embed links (kantel provider). A Worker secret. */
 	readonly KANTEL_BROWSER_VIEW_KEY?: string;
 	/** A self-hosted browser host, instead of the `KantelBrowser` objects, and its bearer token (a secret). */
 	readonly KANTEL_BROWSER_HOST_URL?: string;
@@ -85,13 +85,13 @@ export function brwsrProviderFrom(
 	return createBrwsrProvider({
 		apiKey,
 		apiUrl: apiUrl === "" ? BRWSR_API_URL : apiUrl,
-		userMetadata: { agent: "harbour" },
+		userMetadata: { agent: "kantel" },
 		...(options.fetch === undefined ? {} : { fetch: options.fetch }),
 	});
 }
 
 /**
- * The harbour provider, over the `KantelBrowser` objects (created in `locationHint`, beside their containers) or a
+ * The kantel provider, over the `KantelBrowser` objects (created in `locationHint`, beside their containers) or a
  * self-hosted browser host, or `undefined` when the Worker lacks what it needs (the view key, and the objects or a
  * host). Its links are relative (`/browser/<browser>#<token>`): the gateway makes an embed's absolute for the app
  * asking.
@@ -128,7 +128,7 @@ export function browserProviderFrom(
 	vars: BrowserVars,
 	options: { readonly browsers?: BrowserObjects; readonly locationHint?: string } = {},
 ): BrowserProvider | undefined {
-	return browserProviderName(vars.KANTEL_BROWSER_PROVIDER) === "harbour"
+	return browserProviderName(vars.KANTEL_BROWSER_PROVIDER) === "kantel"
 		? kantelProviderFrom(vars, options)
 		: brwsrProviderFrom(vars);
 }

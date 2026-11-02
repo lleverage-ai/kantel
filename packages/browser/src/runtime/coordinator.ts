@@ -29,7 +29,7 @@
  *   GET  /recording/{page}/{n}   one stored chunk, opened (video/x-matroska)
  *   WS   /live, /cdp             proxied to the agent by the host, with `agentHeaders()`
  */
-import { type BrowserAction, KantelError } from "@kantel/contracts";
+import { type BrowserAction, KantelError, legacyHeaderName } from "@kantel/contracts";
 import type { Sealer } from "./seal.ts";
 
 /** The browser's container, as a host runs it. */
@@ -167,7 +167,9 @@ export function declineConsentSetting(value: string | undefined): boolean {
 
 export const SEGMENT_SECONDS = 10;
 export const DEFAULT_RECORDING_RETENTION_MS = 7 * 24 * 3_600_000;
-export const AGENT_TOKEN_HEADER = "x-harbour-agent-token";
+export const AGENT_TOKEN_HEADER = "x-kantel-agent-token";
+/** The header's name before the rename: sent too, as a browser image built before it reads only that one. */
+export const LEGACY_AGENT_TOKEN_HEADER = legacyHeaderName(AGENT_TOKEN_HEADER) as string;
 
 /** Blob keys. A context's profile, and a browser's recording (manifest and chunks). */
 export const blobKeys = {
@@ -307,6 +309,7 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 		if (agentToken === undefined) throw new KantelError("expired", "The browser is not running");
 		const headers = new Headers(init.headers);
 		headers.set(AGENT_TOKEN_HEADER, agentToken);
+		headers.set(LEGACY_AGENT_TOKEN_HEADER, agentToken); // For a browser image from before the rename.
 		if (init.body !== undefined && !headers.has("content-type")) headers.set("content-type", "application/json");
 		const timeout = AbortSignal.timeout(timeoutMs);
 		try {
@@ -749,7 +752,7 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 		async agentHeaders() {
 			const state = await readState();
 			if (state === undefined || state.status !== "running" || state.expiresAt <= now()) return undefined;
-			return { [AGENT_TOKEN_HEADER]: state.agentToken };
+			return { [AGENT_TOKEN_HEADER]: state.agentToken, [LEGACY_AGENT_TOKEN_HEADER]: state.agentToken };
 		},
 		state: readState,
 		end,

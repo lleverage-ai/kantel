@@ -112,7 +112,7 @@ async function setUp(maxContentBytes?: number): Promise<Fixture> {
 
 async function get(path: string, user = "alice", init: RequestInit = {}): Promise<Response> {
 	const response = await fixture.api(
-		new Request(`https://harbour.test${path}`, {
+		new Request(`https://kantel.test${path}`, {
 			...init,
 			headers: { ...(user === "" ? {} : { "x-user": user }), ...(init.headers as Record<string, string>) },
 		}),
@@ -171,6 +171,8 @@ describe("workspace read API", () => {
 		expect(await head.text()).toBe("# second");
 		expect(head.headers.get("Content-Type")).toBe("text/markdown; charset=utf-8");
 		expect(head.headers.get(VERSION_HEADER)).toBe("2");
+		// Also under its name before the rename, for a client built before it.
+		expect(head.headers.get("Harbour-Version")).toBe("2");
 		expect(head.headers.get("ETag")).toMatch(/^"[0-9a-f]{64}"$/);
 		expect(head.headers.get("Cache-Control")).toBe("private, no-cache");
 		const old = await get(route(fixture.record.id, "/content?path=notes/x.md&version=1"));
@@ -274,7 +276,7 @@ describe("workspace read API", () => {
 		const post = await get(route(fixture.record.id, "/files"), "alice", { method: "POST", body: "{}" });
 		expect(post.status).toBe(405);
 		expect(post.headers.get("Allow")).toBe("GET, HEAD");
-		expect(await fixture.api(new Request("https://harbour.test/v1/sessions"))).toBeNull();
+		expect(await fixture.api(new Request("https://kantel.test/v1/sessions"))).toBeNull();
 	});
 
 	it("goes through project access: an outsider is refused and audited, a viewer reads", async () => {
@@ -317,7 +319,7 @@ describe("workspace read client", () => {
 
 	function client(user = "alice") {
 		return createWorkspaceReadClient({
-			baseUrl: "https://harbour.test/v1/workspaces/",
+			baseUrl: "https://kantel.test/v1/workspaces/",
 			headers: { "x-user": user },
 			fetch: async (input, init) => {
 				const response = await fixture.api(new Request(input as string, init));

@@ -25,7 +25,7 @@ const LONG = Array.from({ length: 30 }, (_, index) =>
 function git(...args: string[]): string {
 	return execFileSync(
 		"git",
-		["-c", "user.name=Kantel", "-c", "user.email=harbour@example.test", "-c", "commit.gpgsign=false", ...args],
+		["-c", "user.name=Kantel", "-c", "user.email=kantel@example.test", "-c", "commit.gpgsign=false", ...args],
 		{
 			cwd: repo,
 			env: {
@@ -58,9 +58,9 @@ function walk(dir: string, out: ModedChange[] = []): ModedChange[] {
 }
 
 beforeAll(() => {
-	repo = mkdtempSync(join(tmpdir(), "harbour-isolate-git-"));
+	repo = mkdtempSync(join(tmpdir(), "kantel-isolate-git-"));
 	git("init", "--quiet", "--initial-branch=main");
-	git("remote", "add", "origin", "https://github.com/harbour-fixtures/site.git");
+	git("remote", "add", "origin", "https://github.com/kantel-fixtures/site.git");
 	write({
 		"README.md": "# site\n",
 		"src/index.ts": "export const a = 1;\n",
@@ -138,7 +138,7 @@ describe("git reads in the isolate tier", () => {
 		await same("git diff --name-status HEAD");
 		const head = git("rev-parse", "HEAD").trim();
 		expect((await run("git log -1")).stdout).toBe(
-			`commit ${head}\nAuthor: Kantel <harbour@example.test>\nDate:   Thu Oct 1 00:00:00 2026 +0000\n\n    second\n    \n    with a body\n`,
+			`commit ${head}\nAuthor: Kantel <kantel@example.test>\nDate:   Thu Oct 1 00:00:00 2026 +0000\n\n    second\n    \n    with a body\n`,
 		);
 		await same("git log");
 		// 06:33:59 UTC, in the author's zone.
@@ -167,7 +167,7 @@ describe("git reads in the isolate tier", () => {
 			"echo; git branch --show-current; git remote get-url origin; git config --get remote.origin.url",
 		);
 		expect(branch.stdout).toBe(
-			"\nmain\nhttps://github.com/harbour-fixtures/site.git\nhttps://github.com/harbour-fixtures/site.git\n",
+			"\nmain\nhttps://github.com/kantel-fixtures/site.git\nhttps://github.com/kantel-fixtures/site.git\n",
 		);
 	});
 

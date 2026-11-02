@@ -198,7 +198,7 @@ function DetailWith({ state }: { state: ConnectFlowState }) {
 
 const START = {
 	attemptId: "att_1",
-	url: "https://harbour.example/v1/connections/connect/att_1",
+	url: "https://kantel.example/v1/connections/connect/att_1",
 	expiresAt: FIXTURE_NOW,
 };
 

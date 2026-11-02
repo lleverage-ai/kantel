@@ -19,6 +19,7 @@ import {
 	type Clock,
 	type CreatedToolServer,
 	type CreateToolServerInput,
+	hasTokenPrefix,
 	type IssuedToolServerToken,
 	type JsonValue,
 	KantelError,
@@ -396,7 +397,7 @@ export function createToolServers(options: ToolServersOptions): ToolServersServi
 		async authenticateTunnel(serverId, secret) {
 			const stored = await repo.get(serverId);
 			if (stored === undefined) throw new KantelError("not_found", `No tool server ${serverId}`);
-			if (!secret.startsWith(TUNNEL_TOKEN_PREFIX)) return undefined;
+			if (!hasTokenPrefix(secret, "tunnel")) return undefined; // ktt_, or hbt_ from before the rename
 			const token = await repo.tokenByHash(await hashTunnelToken(secret));
 			if (token === undefined) return undefined;
 			if (token.token.toolServerId !== serverId) {

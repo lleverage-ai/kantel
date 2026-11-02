@@ -35,7 +35,7 @@ import { ManualClock, RecordingAuditSink } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const ORG = "org-a";
-const RP: RelyingParty = { id: "harbour.test", name: "Kantel", origin: "https://harbour.test" };
+const RP: RelyingParty = { id: "kantel.test", name: "Kantel", origin: "https://kantel.test" };
 const ada: CallContext = { actor: { kind: "human", userId: "user-ada" }, organisationId: ORG };
 const lin: CallContext = { actor: { kind: "human", userId: "user-lin" }, organisationId: ORG };
 const hostApp: CallContext = {

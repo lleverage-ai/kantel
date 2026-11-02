@@ -44,7 +44,7 @@ port first: `ssh -L 58090:127.0.0.1:58090 <host>`. The console runs on the gatew
 
 The components behind the gateway are the real implementations (`apps/selfhosted/src/gateway/durable.ts`): the
 runtime's SQL session store and Pi Durable tables, the SQL audit store and identity directory, all on this Postgres in
-the `harbour_m1` schema (`KANTEL_GATEWAY_SCHEMA`; the session hosts keep `harbour`), and workspaces with their trees
+the `harbour_m1` schema (`KANTEL_GATEWAY_SCHEMA`; the session hosts keep `kantel`), and workspaces with their trees
 in MinIO under `m1/workspaces/`. A session on a workspace gets the coding tools: `read`, `write`, `edit` and `ls`
 work on the workspace directly, and `bash` leases an isolate (a just-bash shell, in the gateway's process) on its
 first command only; closing or aborting the session releases it. The gateway has no container tier, so a command
@@ -70,11 +70,11 @@ already sign in with that email. To sign in as them:
 
 ```bash
 curl -s -X POST http://127.0.0.1:58090/auth/otp/start -H 'content-type: application/json' \
-  -d '{"email":"admin@harbour.localhost"}'                       # 202, whoever the email is
+  -d '{"email":"admin@harbour.localhost"}'                      # 202, whoever the email is
 # read the code at http://127.0.0.1:58025/, then:
 curl -s -X POST http://127.0.0.1:58090/auth/otp/verify -H 'content-type: application/json' \
-  -d '{"email":"admin@harbour.localhost","code":"123456"}'       # 200 {token: "hbs_…", user, organisationIds}
-curl -s http://127.0.0.1:58090/v1/audit/events -H "authorization: Bearer hbs_…"
+  -d '{"email":"admin@harbour.localhost","code":"123456"}'      # 200 {token: "kts_…", user, organisationIds}
+curl -s http://127.0.0.1:58090/v1/audit/events -H "authorization: Bearer kts_…"
 ```
 
 Codes last 10 minutes and sessions 12 hours, both on Postgres (`identity_otp_codes`, `identity_sessions`). Sign-in and
@@ -165,7 +165,7 @@ session, agent, model, provider and connector) to `usage_calls` in its schema
 One session's totals:
 
 ```bash
-docker compose -f deploy/compose/compose.yaml exec -T postgres psql -U harbour -c \
+docker compose -f deploy/compose/compose.yaml exec -T postgres psql -U kantel -c \
   "SELECT count(*), sum(input_tokens), sum(output_tokens), sum(cache_read_tokens), sum(cache_write_tokens)
    FROM harbour_m1.usage_calls WHERE session_id = '<session>'"
 ```
@@ -200,12 +200,12 @@ its own project name, ports, `control` subnet, vault container name, sandbox net
 `docker compose` command, and the scripts here, follow `COMPOSE_PROJECT_NAME`:
 
 ```bash
-export COMPOSE_PROJECT_NAME=harbour-second KANTEL_IMAGE_TAG=second \
+export COMPOSE_PROJECT_NAME=kantel-second KANTEL_IMAGE_TAG=second \
   KANTEL_PG_PORT=56432 KANTEL_S3_PORT=59100 KANTEL_ISOLATE_PORT=58180 \
   KANTEL_HOST_A_PORT=58181 KANTEL_HOST_B_PORT=58182 KANTEL_GATEWAY_PORT=58190 \
   KANTEL_MAILPIT_PORT=58225 KANTEL_SMTP_PORT=58226 \
-  KANTEL_CONTROL_PREFIX=10.250.91 KANTEL_VAULT_CONTAINER=harbour-second-vault-proxy \
-  KANTEL_SANDBOX_NETWORK=harbour-second-sbx
+  KANTEL_CONTROL_PREFIX=10.250.91 KANTEL_VAULT_CONTAINER=kantel-second-vault-proxy \
+  KANTEL_SANDBOX_NETWORK=kantel-second-sbx
 docker compose -f deploy/compose/compose.yaml up -d --build --wait
 ```
 
@@ -255,7 +255,7 @@ docker compose up -d --build --wait
 - `browser-image` builds `images/browser` (Chromium and its agent) and exits; `browser-host` starts one container of it
   per browser through the Docker socket, on the `harbour-browsers` network, and keeps profiles and recordings on its
   volume, sealed with `KANTEL_BROWSER_SEAL_KEY`.
-- The gateway gets `KANTEL_BROWSER_PROVIDER=harbour` and the host's URL and token. An agent asks before it opens any
+- The gateway gets `KANTEL_BROWSER_PROVIDER=kantel` and the host's URL and token. An agent asks before it opens any
   site; a person allows or declines it in the console, then watches it live and plays it back from the session.
 - The live view and replay stay on the gateway's origin (`/browser/<browser>#<token>`); the gateway passes them on to
   the host only with a valid view token. Set `KANTEL_PUBLIC_URL` and `KANTEL_EMBED_ORIGINS` when another app frames

@@ -100,7 +100,7 @@ export type RuntimeConformanceProvider = (
 	use: (subject: RuntimeSubject) => Promise<void>,
 ) => Promise<void>;
 
-const ORG = "org-harbour";
+const ORG = "org-kantel";
 const OTHER_ORG = "org-elsewhere";
 const PROJECT = "proj-docs";
 const OTHER_PROJECT = "proj-site";

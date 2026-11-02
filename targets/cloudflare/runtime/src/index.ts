@@ -39,7 +39,7 @@ export interface SessionRuntimeDurableObjectCoreOptions
 		SessionApiOptions,
 		"runtime" | "directory" | "profiles" | "hostTools" | "hosts" | "authenticator"
 	>;
-	/** Prefix of the store's tables. Default `harbour_`. */
+	/** Prefix of the store's tables. Default `kantel_`. */
 	readonly prefix?: string;
 	/** Told when arming the alarm failed. Default: ignored; the next wake, request or alarm arms it again. */
 	readonly onAlarmError?: (error: unknown) => void;

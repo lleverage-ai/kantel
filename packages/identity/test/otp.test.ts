@@ -17,6 +17,8 @@ import {
 	DEFAULT_SESSION_TTL_MILLISECONDS,
 	type EmailOtpOptions,
 	generateOtpCode,
+	hashSessionToken,
+	isSessionToken,
 	kantelSessionProvider,
 	MemoryOtpMailer,
 	OTP_CODE_TTL_MILLISECONDS,
@@ -93,7 +95,7 @@ function recording(driver: SqlDriver) {
 }
 
 const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
-	new Request(`https://harbour.test${path}`, {
+	new Request(`https://kantel.test${path}`, {
 		method: "POST",
 		headers: { "content-type": "application/json", ...headers },
 		body: typeof body === "string" ? body : JSON.stringify(body),
@@ -142,7 +144,7 @@ async function harness(backend: Backend, overrides: Partial<EmailOtpOptions> = {
 	const verify = (email: string, code: string) => handler(post(OTP_VERIFY_PATH, { email, code }));
 	const whoAmI = (token: string) =>
 		authenticator.authenticate(
-			new Request("https://harbour.test/v1/sessions", { headers: { authorization: `Bearer ${token}` } }),
+			new Request("https://kantel.test/v1/sessions", { headers: { authorization: `Bearer ${token}` } }),
 		);
 	return { ...opened, clock, audit, organisation, admin, ada, mailer, otp, handler, start, verify, whoAmI, settle };
 }
@@ -168,7 +170,7 @@ for (const backend of backends) {
 				expect(verified.status).toBe(200);
 				expect(verified.headers.get("cache-control")).toBe("no-store");
 				const body = (await verified.json()) as OtpVerifyResponse;
-				expect(body.token).toMatch(/^hbs_[A-Za-z0-9_-]{43}$/);
+				expect(body.token).toMatch(/^kts_[A-Za-z0-9_-]{43}$/);
 				expect(body.expiresAt).toBe(h.clock.now() + DEFAULT_SESSION_TTL_MILLISECONDS);
 				expect(body.user.id).toBe(h.ada.id);
 				expect(body.user.externalSubject).toBe(externalSubjectOf(EMAIL_OTP_ISSUER, "ada@example.test"));
@@ -405,7 +407,7 @@ for (const backend of backends) {
 				expect((await h.whoAmI(second.token)).actor).toEqual({ kind: "human", userId: h.ada.id });
 				h.clock.advance(DEFAULT_SESSION_TTL_MILLISECONDS);
 				await expect(h.whoAmI(second.token)).rejects.toSatisfy((error) => authenticationFailureOf(error) === "invalid");
-				await expect(h.whoAmI("hbs_not-a-session")).rejects.toSatisfy(
+				await expect(h.whoAmI("kts_not-a-session")).rejects.toSatisfy(
 					(error) => authenticationFailureOf(error) === "invalid",
 				);
 			} finally {
@@ -451,7 +453,7 @@ for (const backend of backends) {
 				expect((await h.handler(post(OTP_START_PATH, { email: `${"a".repeat(5000)}@b.test` }))).status).toBe(400);
 				expect((await h.handler(post(OTP_VERIFY_PATH, { email: "ada@example.test" }))).status).toBe(400);
 				expect((await h.handler(post(OTP_VERIFY_PATH, { email: "ada@example.test", code: "12345" }))).status).toBe(401);
-				expect((await h.handler(new Request(`https://harbour.test${OTP_START_PATH}`))).status).toBe(405);
+				expect((await h.handler(new Request(`https://kantel.test${OTP_START_PATH}`))).status).toBe(405);
 				expect((await h.handler(post("/auth/otp/other", {}))).status).toBe(404);
 				expect((await h.handler(post(SESSION_END_PATH, ""))).status).toBe(401);
 
@@ -463,7 +465,7 @@ for (const backend of backends) {
 				});
 				const streamed = await Promise.race([
 					h.handler(
-						new Request(`https://harbour.test${OTP_START_PATH}`, {
+						new Request(`https://kantel.test${OTP_START_PATH}`, {
 							method: "POST",
 							body: endless,
 							duplex: "half",
@@ -522,12 +524,34 @@ for (const backend of backends) {
 	});
 }
 
+describe("a session started before the rename", () => {
+	it("authenticates and ends by its hbs_ token, as a kts_ one does", async () => {
+		const h = await harness(backends[0] as Backend);
+		const legacy = "hbs_started-before-the-rename";
+		const now = h.clock.now();
+		await h.sessions.create({
+			id: "ses_legacy",
+			tokenHash: await hashSessionToken(legacy),
+			userId: h.ada.id,
+			issuer: EMAIL_OTP_ISSUER,
+			subject: "ada@example.test",
+			email: "ada@example.test",
+			createdAt: now,
+			expiresAt: now + DEFAULT_SESSION_TTL_MILLISECONDS,
+		});
+		expect(await h.whoAmI(legacy)).toMatchObject({ actor: { kind: "human", userId: h.ada.id } });
+		await h.otp.endSession(legacy);
+		await expect(h.whoAmI(legacy)).rejects.toSatisfy((error) => authenticationFailureOf(error) === "invalid");
+		expect(isSessionToken(legacy) && isSessionToken("kts_x") && !isSessionToken("hbr_x")).toBe(true);
+	});
+});
+
 describe("the authenticator with Kantel sessions", () => {
 	it("refuses a session bearer when no session provider is configured, and never hands one to a JWT provider", async () => {
 		const identity = createMemoryIdentity();
 		const authenticator = createAuthenticator({ identity });
 		await expect(
-			authenticator.authenticate(new Request("https://harbour.test/", { headers: { authorization: "Bearer hbs_x" } })),
+			authenticator.authenticate(new Request("https://kantel.test/", { headers: { authorization: "Bearer kts_x" } })),
 		).rejects.toSatisfy((error) => authenticationFailureOf(error) === "invalid");
 	});
 });

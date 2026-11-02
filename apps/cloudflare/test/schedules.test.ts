@@ -238,13 +238,13 @@ describe("the schedule routes on the gateway", () => {
 		});
 		const call = (path: string, init: RequestInit = {}) =>
 			gateway.fetch(
-				new Request(`https://harbour.test/v1${path}`, {
+				new Request(`https://kantel.test/v1${path}`, {
 					...init,
 					headers: { authorization: `Bearer ${issued.secret}`, "content-type": "application/json" },
 				}),
 			);
 
-		expect((await gateway.fetch(new Request("https://harbour.test/v1/schedules"))).status).toBe(401);
+		expect((await gateway.fetch(new Request("https://kantel.test/v1/schedules"))).status).toBe(401);
 
 		const created = await call("/schedules", {
 			method: "POST",

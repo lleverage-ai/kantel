@@ -106,7 +106,7 @@ export function devGateway(target: string, email?: string): Plugin {
 	};
 
 	return {
-		name: "harbour-dev-gateway",
+		name: "kantel-dev-gateway",
 		apply: "serve",
 		configureServer(server) {
 			server.httpServer?.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {

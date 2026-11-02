@@ -4,7 +4,7 @@
  * over both. Experimental: on only with `KANTEL_TOOL_SERVERS=experimental`, and with it off there is nothing here, no
  * routes, no tables and no upgrade path.
  *
- * A tunnel is `GET /v1/tool-servers/{id}/connect` upgraded to a WebSocket, with `Authorization: Bearer hbt_…`. The
+ * A tunnel is `GET /v1/tool-servers/{id}/connect` upgraded to a WebSocket, with `Authorization: Bearer ktt_…`. The
  * token is checked before the upgrade is accepted, and a refusal is a plain HTTP answer on the raw socket (401 for no
  * token or a wrong one, 403 for another server's, 404 for an unknown server), so the client can tell to stop.
  */

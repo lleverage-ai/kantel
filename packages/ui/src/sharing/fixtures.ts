@@ -6,7 +6,7 @@ import { DAY, HOUR } from "../primitives/format.ts";
 import type { SharingDirectory, SharingSource } from "./sharing-model.ts";
 
 export const FIXTURE_NOW = Date.UTC(2026, 9, 30, 12, 0, 0);
-const ORG = "org_harbour";
+const ORG = "org_kantel";
 const support: OwnerRef = { kind: "project", organisationId: ORG, projectId: "proj_support" };
 const billing: OwnerRef = { kind: "project", organisationId: ORG, projectId: "proj_billing" };
 const tom = { kind: "human", userId: "usr_tom" } as const;

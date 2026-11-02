@@ -13,7 +13,7 @@
  * | `/:id` | the `WorkspaceRecord` (head, pinned mounts, seed readiness, hydration, the workspace it was forked from) |
  * | `/:id/files?path=&recursive=&version=&cursor=&limit=` | a `Page<FileEntry>`, never file bodies; `path=/project` lists a mount |
  * | `/:id/stat?path=&version=` | one `FileEntry` |
- * | `/:id/content?path=&version=` | the file's bytes, with `ETag` (its digest) and `Harbour-Version` |
+ * | `/:id/content?path=&version=` | the file's bytes, with `ETag` (its digest) and `Kantel-Version` |
  * | `/:id/history?cursor=&limit=` | a `Page<WorkspaceVersionInfo>`, newest first |
  * | `/:id/export?prefix=notes/` | `{ files }`: each file under the prefixes at head, its bytes base64 (`prefix` repeats) |
  *
@@ -28,8 +28,10 @@ import {
 	isKantelError,
 	KantelError,
 	type ListOptions,
+	legacyHeaderName,
 	type Page,
 	type PageRequest,
+	readHeader,
 	type WorkspaceId,
 	type WorkspaceRecord,
 	type Workspaces,
@@ -44,7 +46,9 @@ export const WORKSPACE_READ_API_BASE = "/v1/workspaces";
 export const DEFAULT_MAX_CONTENT_BYTES = 16 * 1024 * 1024;
 
 /** The response header carrying a file's version: a workspace version number, or a mount's pinned version string. */
-export const VERSION_HEADER = "Harbour-Version";
+export const VERSION_HEADER = "Kantel-Version";
+/** The version header's name before the rename, sent too for clients built before it. */
+export const LEGACY_VERSION_HEADER = legacyHeaderName(VERSION_HEADER) as string;
 
 /**
  * The operations the read API uses. Any `Workspaces` satisfies it; nothing here can write. Without `export`, the export
@@ -241,14 +245,14 @@ export function createWorkspaceReadApi(options: WorkspaceReadApiOptions): Worksp
 		// carries the version that last changed it, not the mount's pin that read reports, so mounts always read.
 		if (!mounted && entry.digest !== undefined && matchesEtag(ifNoneMatch, `"${entry.digest}"`)) {
 			headers.ETag = `"${entry.digest}"`;
-			headers[VERSION_HEADER] = JSON.stringify(entry.version);
+			headers[VERSION_HEADER] = headers[LEGACY_VERSION_HEADER] = JSON.stringify(entry.version);
 			return new Response(null, { status: 304, headers });
 		}
 		const file = await workspaces.read(ctx, id, path, version);
 		// The file may have grown in a commit between stat and read.
 		if (file.content.byteLength > maxContentBytes) return tooLarge();
 		headers.ETag = `"${file.digest}"`;
-		headers[VERSION_HEADER] = JSON.stringify(file.version);
+		headers[VERSION_HEADER] = headers[LEGACY_VERSION_HEADER] = JSON.stringify(file.version);
 		if (matchesEtag(ifNoneMatch, headers.ETag)) return new Response(null, { status: 304, headers });
 		headers["Content-Length"] = String(file.content.byteLength);
 		return new Response(file.content as Uint8Array<ArrayBuffer>, { status: 200, headers });
@@ -383,7 +387,7 @@ export function contentTypeFor(path: string): string {
 // ---- client ---------------------------------------------------------------------------------------------------------
 
 export interface WorkspaceReadClientOptions {
-	/** The API's origin and prefix, such as `https://harbour.example/v1/workspaces` or `/v1/workspaces`. */
+	/** The API's origin and prefix, such as `https://kantel.example/v1/workspaces` or `/v1/workspaces`. */
 	readonly baseUrl: string;
 	readonly fetch?: typeof fetch;
 	/** Headers sent with every request, such as an API key for a host app. The console relies on its cookie instead. */
@@ -461,7 +465,7 @@ export function createWorkspaceReadClient(options: WorkspaceReadClientOptions): 
 		async read(id, path, at, init) {
 			const response = await call(id, "content", { path, version: at?.version }, init);
 			const content = new Uint8Array(await response.arrayBuffer());
-			const version = JSON.parse(response.headers.get(VERSION_HEADER) ?? "null") as WorkspaceVersion | string;
+			const version = JSON.parse(readHeader(response.headers, VERSION_HEADER) ?? "null") as WorkspaceVersion | string;
 			const digest = (response.headers.get("ETag") ?? "").replace(/^W\//, "").replace(/"/g, "");
 			const contentType = response.headers.get("Content-Type") ?? "application/octet-stream";
 			return { path, content, version, digest, contentType };

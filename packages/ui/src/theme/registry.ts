@@ -1,3 +1,4 @@
+import { currentThemeId } from "@kantel/contracts";
 import {
 	parseTheme,
 	type ResolvedTheme,
@@ -33,7 +34,7 @@ export type ThemeRegistry = {
 
 /** The theme a definition falls back to: the one it names, else Kantel or Kantel light by its kind. */
 const baseId = (theme: ThemeDefinition): string | undefined =>
-	theme.extends ??
+	(theme.extends === undefined ? undefined : currentThemeId(theme.extends)) ??
 	(theme.id === DEFAULT_THEME || theme.id === DEFAULT_LIGHT_THEME
 		? undefined
 		: theme.kind === "light"
@@ -69,8 +70,9 @@ export function createThemeRegistry(builtins: readonly ThemeDefinition[] = built
 	};
 	return {
 		list: () => snapshot().list,
-		get: (id) => resolved.get(id),
-		builtin: (id) => builtinIds.has(id),
+		// A built-in theme's ID from before the rename finds today's.
+		get: (id) => resolved.get(currentThemeId(id)),
+		builtin: (id) => builtinIds.has(currentThemeId(id)),
 		register(input) {
 			const { theme, problems } = parseTheme(input);
 			if (theme === undefined) return { problems };

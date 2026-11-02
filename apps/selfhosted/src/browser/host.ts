@@ -1,6 +1,6 @@
 // The self-hosted browser host (packages/browser/CONTRACT.md): Kantel's own browsers on Docker (docker.ts) or
 // Kubernetes (kubernetes.ts), one container or Pod of images/browser per browser, each run by the portable coordinator (`@kantel/browser/runtime`), the same code the
-// Cloudflare host runs in its `KantelBrowser` objects. A gateway's harbour provider reaches it over HTTP
+// Cloudflare host runs in its `KantelBrowser` objects. A gateway's kantel provider reaches it over HTTP
 // (`httpBrowserHost`); a viewer reaches it with a view link's token.
 //
 //   /browsers/{id}/…           the coordinator's routes, for the gateway: `Authorization: Bearer KANTEL_BROWSER_HOST_TOKEN`
@@ -169,7 +169,7 @@ export function createBrowserHost(options: BrowserHostOptions) {
 
 	async function fetch(request: Request, server: import("bun").Server<ViewerData>): Promise<Response | undefined> {
 		const url = new URL(request.url);
-		if (url.pathname === "/health") return json({ ok: true, service: "harbour-browser-host", browsers: browsers.size });
+		if (url.pathname === "/health") return json({ ok: true, service: "kantel-browser-host", browsers: browsers.size });
 		const match = url.pathname.match(BROWSER_PATH);
 		if (match !== null) {
 			if (!bearerMatches(request.headers.get("authorization"), options.token)) {

@@ -343,7 +343,7 @@ const longSetup: Setup = async (scenario) => {
 	const proposal = await scenario.propose("ses_ops", {
 		itemId: (await scenario.load(scenario.proposals.route)).proposal.terms.itemId!,
 		route: {
-			host: "admin.staging.harbour.dev",
+			host: "admin.staging.kantel.dev",
 			methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 			pathPrefix: "/jobs/queues/invoice-reconciliation-nightly-eu-west-1/partitions/0000000000000000000017/retry",
 		},

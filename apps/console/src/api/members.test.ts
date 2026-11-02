@@ -16,19 +16,19 @@ import { describe, expect, it } from "vitest";
 import { apiMembers } from "./members.ts";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "test" }, organisationId: "bootstrap" };
-const ORIGIN = "https://harbour.test";
-const RP: RelyingParty = { id: "harbour.test", name: "Kantel", origin: ORIGIN };
+const ORIGIN = "https://kantel.test";
+const RP: RelyingParty = { id: "kantel.test", name: "Kantel", origin: ORIGIN };
 
 async function world() {
 	const identity = createMemoryIdentity();
-	const ada = await identity.createUser(bootstrap, { name: "Ada", email: "ada@harbour.test" });
+	const ada = await identity.createUser(bootstrap, { name: "Ada", email: "ada@kantel.test" });
 	const organisation = await identity.createOrganisation(bootstrap, {
 		name: "Kantel",
 		admin: { kind: "user", userId: ada.id },
 	});
 	const asAda: CallContext = { actor: { kind: "human", userId: ada.id }, organisationId: organisation.id };
 	const website = await identity.createProject(asAda, { name: "Website" });
-	const lin = await identity.createUser(asAda, { name: "Lin", email: "lin@harbour.test" });
+	const lin = await identity.createUser(asAda, { name: "Lin", email: "lin@kantel.test" });
 	await identity.grantRole(asAda, { principal: { kind: "user", userId: lin.id }, role: "operator" });
 	const asLin: CallContext = { actor: { kind: "human", userId: lin.id }, organisationId: organisation.id };
 
@@ -68,7 +68,7 @@ async function world() {
 describe("the members page on the API", () => {
 	it("lets an organisation admin reset a member's passkeys, so they can enrol again on a sign-in", async () => {
 		const { passkeys, signIn, asLin, ada, lin } = await world();
-		const admin = await signIn("ada@harbour.test");
+		const admin = await signIn("ada@kantel.test");
 		const members = apiMembers(admin.client, admin.passkeyClient, admin.me);
 		expect(members?.viewer).toBe(ada.id);
 
@@ -88,47 +88,44 @@ describe("the members page on the API", () => {
 
 	it("lets an organisation admin invite someone, who joins with the role when they sign in, and revoke an invite", async () => {
 		const { signIn } = await world();
-		const admin = await signIn("ada@harbour.test");
+		const admin = await signIn("ada@kantel.test");
 		const flow = createMembersFlow({ api: apiMembers(admin.client, admin.passkeyClient, admin.me)!.api });
 		await flow.load();
 		expect(flow.getState().invites).toEqual([]);
 
 		flow.openInvite();
-		await flow.invite({ email: "grace@harbour.test", role: "viewer" });
+		await flow.invite({ email: "grace@kantel.test", role: "viewer" });
 		const sent = flow.getState().inviting?.sent;
-		expect(sent).toMatchObject({ invite: { email: "grace@harbour.test", role: "viewer" }, emailed: false });
+		expect(sent).toMatchObject({ invite: { email: "grace@kantel.test", role: "viewer" }, emailed: false });
 		expect(sent?.link).toBe(`${ORIGIN}/`);
 		flow.closeInvite();
 		flow.openInvite();
-		await flow.invite({ email: "linus@harbour.test", role: "operator" });
+		await flow.invite({ email: "linus@kantel.test", role: "operator" });
 		flow.closeInvite();
-		expect(flow.getState().invites?.map((invite) => invite.email)).toEqual([
-			"grace@harbour.test",
-			"linus@harbour.test",
-		]);
+		expect(flow.getState().invites?.map((invite) => invite.email)).toEqual(["grace@kantel.test", "linus@kantel.test"]);
 
 		flow.openInvite();
-		await flow.invite({ email: "Grace@harbour.test", role: "admin" });
+		await flow.invite({ email: "Grace@kantel.test", role: "admin" });
 		expect(flow.getState().inviting?.problem).toEqual({ kind: "conflict" });
 		flow.closeInvite();
 
-		const grace = await signIn("grace@harbour.test");
+		const grace = await signIn("grace@kantel.test");
 		expect(grace.me.roles).toEqual([{ role: "viewer" }]);
-		const linus = flow.getState().invites?.find((invite) => invite.email === "linus@harbour.test");
+		const linus = flow.getState().invites?.find((invite) => invite.email === "linus@kantel.test");
 		await flow.revokeInvite(linus!.id);
 		await flow.load();
 		expect(flow.getState().invites).toEqual([]);
 		expect(flow.getState().members?.map((member) => member.name)).toEqual(["Ada", "grace", "Lin"]);
-		await expect(signIn("linus@harbour.test")).rejects.toThrow();
+		await expect(signIn("linus@kantel.test")).rejects.toThrow();
 	});
 
 	it("gives anyone but an organisation admin no page, and the route refuses them", async () => {
 		const { signIn, ada } = await world();
-		const operator = await signIn("lin@harbour.test");
+		const operator = await signIn("lin@kantel.test");
 		expect(apiMembers(operator.client, operator.passkeyClient, operator.me)).toBeUndefined();
 		const refused = await operator.passkeyClient.reset(ada.id).catch((error: unknown) => error);
 		expect(isKantelError(refused, "forbidden")).toBe(true);
-		const invite = operator.client.createInvite({ email: "x@harbour.test", role: "admin" });
+		const invite = operator.client.createInvite({ email: "x@kantel.test", role: "admin" });
 		expect(isKantelError(await invite.catch((error: unknown) => error), "forbidden")).toBe(true);
 	});
 });

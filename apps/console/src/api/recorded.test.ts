@@ -43,9 +43,9 @@ describe("the recorded catalogue", () => {
 	it("puts a session in each attention group", async () => {
 		const client = createRecordedClient(createCatalogue(NOW));
 		const research = follow(client, "research");
-		const harbour = follow(client, "harbour");
+		const kantel = follow(client, "kantel");
 		await vi.advanceTimersByTimeAsync(200);
-		const all = [...(research.seen.state?.sessions ?? []), ...(harbour.seen.state?.sessions ?? [])];
+		const all = [...(research.seen.state?.sessions ?? []), ...(kantel.seen.state?.sessions ?? [])];
 		expect(groupSessions(all).map((group) => group.group)).toEqual(["needs-you", "working", "done"]);
 		expect(byId(all, "s-linear-key")).toMatchObject({ status: "waiting", needs: "approval" });
 		expect(byId(all, "s-digest")).toMatchObject({ status: "waiting", needs: "answer" });
@@ -67,26 +67,26 @@ describe("the recorded catalogue", () => {
 describe("the recorded client", () => {
 	it("moves a working session to done, unread, when it finishes while closed", async () => {
 		const client = createRecordedClient(createCatalogue(NOW), { latencyMs: 0 });
-		const harbour = follow(client, "harbour");
+		const kantel = follow(client, "kantel");
 		await vi.advanceTimersByTimeAsync(200);
-		expect(byId(harbour.seen.state?.sessions, "s-flaky")?.status).toBe("running");
+		expect(byId(kantel.seen.state?.sessions, "s-flaky")?.status).toBe("running");
 		await vi.advanceTimersByTimeAsync(5 * 60_000);
-		expect(byId(harbour.seen.state?.sessions, "s-flaky")).toMatchObject({ status: "done", unread: true });
+		expect(byId(kantel.seen.state?.sessions, "s-flaky")).toMatchObject({ status: "done", unread: true });
 		client.markRead("s-flaky");
-		expect(byId(harbour.seen.state?.sessions, "s-flaky")?.unread).toBe(false);
+		expect(byId(kantel.seen.state?.sessions, "s-flaky")?.unread).toBe(false);
 		client.dispose();
 	});
 
 	it("keeps a session read while it is shown, and not once it has been left", async () => {
 		const shown = createRecordedClient(createCatalogue(NOW), { latencyMs: 0 });
-		const a = follow(shown, "harbour");
+		const a = follow(shown, "kantel");
 		shown.markRead("s-flaky");
 		await vi.advanceTimersByTimeAsync(5 * 60_000);
 		expect(byId(a.seen.state?.sessions, "s-flaky")).toMatchObject({ status: "done", unread: false });
 		shown.dispose();
 
 		const left = createRecordedClient(createCatalogue(NOW), { latencyMs: 0 });
-		const b = follow(left, "harbour");
+		const b = follow(left, "kantel");
 		const release = left.markRead("s-flaky");
 		await vi.advanceTimersByTimeAsync(200);
 		release();
@@ -98,7 +98,7 @@ describe("the recorded client", () => {
 	it("calls nobody back and plays nothing once stopped or disposed", async () => {
 		const client = createRecordedClient(createCatalogue(NOW), { latencyMs: 0 });
 		const onChange = vi.fn();
-		client.watchSessions("harbour", onChange)();
+		client.watchSessions("kantel", onChange)();
 		const receive = vi.fn();
 		client.transport("s-none").connect(receive).close();
 		client.dispose();
@@ -111,7 +111,7 @@ describe("the recorded client", () => {
 	it("calls nobody back once disposed, even while still subscribed or connected", async () => {
 		const client = createRecordedClient(createCatalogue(NOW), { latencyMs: 0 });
 		const onChange = vi.fn();
-		client.watchSessions("harbour", onChange);
+		client.watchSessions("kantel", onChange);
 		const unknown = vi.fn();
 		client.transport("s-none").connect(unknown);
 		const known = vi.fn();
@@ -126,7 +126,7 @@ describe("the recorded client", () => {
 	it("drops frames still in flight at dispose", async () => {
 		const client = createRecordedClient(createCatalogue(NOW), { latencyMs: 50 });
 		const onChange = vi.fn();
-		client.watchSessions("harbour", onChange);
+		client.watchSessions("kantel", onChange);
 		const receive = vi.fn();
 		client.transport("s-flaky").connect(receive).send(hello("s-flaky"));
 		await vi.advanceTimersByTimeAsync(10);
@@ -151,12 +151,12 @@ describe("the recorded client", () => {
 
 	it("keeps unchanged sessions' objects, so the list re-renders only what changed", async () => {
 		const client = createRecordedClient(createCatalogue(NOW), { latencyMs: 0 });
-		const harbour = follow(client, "harbour");
+		const kantel = follow(client, "kantel");
 		await vi.advanceTimersByTimeAsync(200);
-		const before = byId(harbour.seen.state?.sessions, "s-seed");
+		const before = byId(kantel.seen.state?.sessions, "s-seed");
 		await vi.advanceTimersByTimeAsync(20_000);
-		expect(byId(harbour.seen.state?.sessions, "s-seed")).toBe(before);
-		expect(byId(harbour.seen.state?.sessions, "s-flaky")).not.toBe(undefined);
+		expect(byId(kantel.seen.state?.sessions, "s-seed")).toBe(before);
+		expect(byId(kantel.seen.state?.sessions, "s-flaky")).not.toBe(undefined);
 		client.dispose();
 	});
 
@@ -181,7 +181,7 @@ describe("the recorded client", () => {
 		await vi.advanceTimersByTimeAsync(10);
 		expect(session.getState().error).toMatch(/not_found/);
 		expect(await client.projectOf("nope")).toBeUndefined();
-		expect(await client.projectOf("s-flaky")).toBe("harbour");
+		expect(await client.projectOf("s-flaky")).toBe("kantel");
 		session.stop();
 		client.dispose();
 	});

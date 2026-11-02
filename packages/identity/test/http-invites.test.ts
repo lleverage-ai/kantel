@@ -9,7 +9,7 @@ import { ManualClock, RecordingAuditSink } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "bootstrap" }, organisationId: "bootstrap" };
-const ORIGIN = "http://harbour.test";
+const ORIGIN = "http://kantel.test";
 
 const mailed = () => new Promise((resolve) => setTimeout(resolve, 5));
 
@@ -21,13 +21,13 @@ async function world(invites: { mailer?: InviteMailer; link?: (request: Request)
 	const clock = new ManualClock();
 	const audit = new RecordingAuditSink();
 	const identity = createMemoryIdentity({ clock, audit });
-	const ada = await identity.createUser(bootstrap, { name: "Ada Lovelace", email: "ada@harbour.test" });
-	const harbour = await identity.createOrganisation(bootstrap, {
+	const ada = await identity.createUser(bootstrap, { name: "Ada Lovelace", email: "ada@kantel.test" });
+	const kantel = await identity.createOrganisation(bootstrap, {
 		name: "Kantel",
 		admin: { kind: "user", userId: ada.id },
 	});
-	const admin: CallContext = { actor: { kind: "human", userId: ada.id }, organisationId: harbour.id };
-	const linus = await identity.createUser(admin, { name: "Linus Torvalds", email: "linus@harbour.test" });
+	const admin: CallContext = { actor: { kind: "human", userId: ada.id }, organisationId: kantel.id };
+	const linus = await identity.createUser(admin, { name: "Linus Torvalds", email: "linus@kantel.test" });
 	await identity.grantRole(admin, { principal: { kind: "user", userId: linus.id }, role: "operator" });
 
 	const stores = createMemoryOtpStores();
@@ -51,7 +51,7 @@ async function world(invites: { mailer?: InviteMailer; link?: (request: Request)
 		const session = await anonymous.verifyOtp(email, code);
 		return { token: session.token, client: clientWith({ authorization: `Bearer ${session.token}` }) };
 	};
-	return { identity, audit, harbour, ada, linus, serve, signIn, admin };
+	return { identity, audit, kantel, ada, linus, serve, signIn, admin };
 }
 
 async function refusal(promise: Promise<unknown>): Promise<unknown> {
@@ -65,13 +65,13 @@ async function refusal(promise: Promise<unknown>): Promise<unknown> {
 
 describe("POST /v1/invites", () => {
 	it("invites by email with a role, answers the copyable link, and lists it as pending", async () => {
-		const { signIn, harbour, ada } = await world();
-		const { client } = await signIn("ada@harbour.test");
-		const created = await client.createInvite({ email: " grace@harbour.test ", role: "viewer" });
+		const { signIn, kantel, ada } = await world();
+		const { client } = await signIn("ada@kantel.test");
+		const created = await client.createInvite({ email: " grace@kantel.test ", role: "viewer" });
 		expect(created).toMatchObject({
 			invite: {
-				organisationId: harbour.id,
-				email: "grace@harbour.test",
+				organisationId: kantel.id,
+				email: "grace@kantel.test",
 				role: "viewer",
 				invitedBy: { kind: "human", userId: ada.id },
 			},
@@ -83,17 +83,17 @@ describe("POST /v1/invites", () => {
 
 	it("emails the invite when the deployment has mail, linking where it says", async () => {
 		const mailer = new MemoryInviteMailer();
-		const { signIn } = await world({ mailer, link: () => "https://harbour.example.com/" });
-		const { client } = await signIn("ada@harbour.test");
-		const created = await client.createInvite({ email: "grace@harbour.test", role: "operator" });
+		const { signIn } = await world({ mailer, link: () => "https://kantel.example.com/" });
+		const { client } = await signIn("ada@kantel.test");
+		const created = await client.createInvite({ email: "grace@kantel.test", role: "operator" });
 		expect(created.emailed).toBe(true);
-		expect(created.link).toBe("https://harbour.example.com/");
+		expect(created.link).toBe("https://kantel.example.com/");
 		expect(mailer.sent).toEqual([
 			{
-				to: "grace@harbour.test",
+				to: "grace@kantel.test",
 				organisation: "Kantel",
 				invitedBy: "Ada Lovelace",
-				link: "https://harbour.example.com/",
+				link: "https://kantel.example.com/",
 				expiresAt: created.invite.expiresAt,
 			},
 		]);
@@ -102,27 +102,27 @@ describe("POST /v1/invites", () => {
 	it("keeps the invite when the email fails, for the admin to send the link", async () => {
 		const failing: InviteMailer = { sendInvite: async () => Promise.reject(new Error("relay down")) };
 		const { signIn } = await world({ mailer: failing });
-		const { client } = await signIn("ada@harbour.test");
-		const created = await client.createInvite({ email: "grace@harbour.test", role: "viewer" });
+		const { client } = await signIn("ada@kantel.test");
+		const created = await client.createInvite({ email: "grace@kantel.test", role: "viewer" });
 		expect(created.emailed).toBe(false);
 		expect(await client.listInvites()).toEqual([created.invite]);
 	});
 
 	it("refuses anyone but an organisation admin", async () => {
 		const { signIn } = await world();
-		const { client } = await signIn("linus@harbour.test");
-		const invite = refusal(client.createInvite({ email: "grace@harbour.test", role: "viewer" }));
+		const { client } = await signIn("linus@kantel.test");
+		const invite = refusal(client.createInvite({ email: "grace@kantel.test", role: "viewer" }));
 		expect(await invite).toSatisfy((error) => isKantelError(error, "forbidden"));
 		expect(await refusal(client.listInvites())).toSatisfy((error) => isKantelError(error, "forbidden"));
 	});
 
 	it("is a conflict for a pending invite or a member, and refuses a malformed body", async () => {
 		const { signIn, serve, token } = await signInAda();
-		const { client } = await signIn("ada@harbour.test");
-		await client.createInvite({ email: "grace@harbour.test", role: "viewer" });
-		const again = refusal(client.createInvite({ email: "GRACE@harbour.test", role: "admin" }));
+		const { client } = await signIn("ada@kantel.test");
+		await client.createInvite({ email: "grace@kantel.test", role: "viewer" });
+		const again = refusal(client.createInvite({ email: "GRACE@kantel.test", role: "admin" }));
 		expect(await again).toSatisfy((error) => isKantelError(error, "conflict"));
-		const member = refusal(client.createInvite({ email: "linus@harbour.test", role: "viewer" }));
+		const member = refusal(client.createInvite({ email: "linus@kantel.test", role: "viewer" }));
 		expect(await member).toSatisfy((error) => isKantelError(error, "conflict"));
 
 		const post = (body: string, type = "application/json") =>
@@ -131,10 +131,10 @@ describe("POST /v1/invites", () => {
 				headers: { authorization: `Bearer ${token}`, "content-type": type },
 				body,
 			});
-		expect((await post(JSON.stringify({ email: "x@harbour.test", role: "viewer" }), "text/plain")).status).toBe(415);
+		expect((await post(JSON.stringify({ email: "x@kantel.test", role: "viewer" }), "text/plain")).status).toBe(415);
 		expect((await post(JSON.stringify({ email: "nobody", role: "viewer" }))).status).toBe(400);
-		expect((await post(JSON.stringify({ email: "x@harbour.test", role: "owner" }))).status).toBe(400);
-		expect((await post(JSON.stringify({ email: "x@harbour.test", role: "viewer", extra: 1 }))).status).toBe(400);
+		expect((await post(JSON.stringify({ email: "x@kantel.test", role: "owner" }))).status).toBe(400);
+		expect((await post(JSON.stringify({ email: "x@kantel.test", role: "viewer", extra: 1 }))).status).toBe(400);
 		expect((await post("[]")).status).toBe(400);
 		expect((await serve(`${ORIGIN}${INVITES_PATH}`, { method: "POST" })).status).toBe(401);
 		const deleted = await serve(`${ORIGIN}${INVITES_PATH}`, {
@@ -148,17 +148,17 @@ describe("POST /v1/invites", () => {
 /** A world with Ada signed in, and her bearer token. */
 async function signInAda() {
 	const found = await world();
-	const { token } = await found.signIn("ada@harbour.test");
+	const { token } = await found.signIn("ada@kantel.test");
 	return { ...found, token };
 }
 
 describe("POST /v1/invites/:id/revoke", () => {
 	it("revokes a pending invite once, for an admin only", async () => {
 		const { signIn, serve, token } = await signInAda();
-		const { client } = await signIn("ada@harbour.test");
-		const { invite } = await client.createInvite({ email: "grace@harbour.test", role: "viewer" });
+		const { client } = await signIn("ada@kantel.test");
+		const { invite } = await client.createInvite({ email: "grace@kantel.test", role: "viewer" });
 
-		const linus = await signIn("linus@harbour.test");
+		const linus = await signIn("linus@kantel.test");
 		expect(await refusal(linus.client.revokeInvite(invite.id))).toSatisfy((error) => isKantelError(error, "forbidden"));
 
 		const withBody = await serve(`${ORIGIN}${inviteRevokePath(invite.id)}`, {
@@ -176,17 +176,17 @@ describe("POST /v1/invites/:id/revoke", () => {
 
 describe("accepting an invite", () => {
 	it("lets the invited person sign in by email one-time PIN, and makes them a member with the role", async () => {
-		const { signIn, harbour } = await world();
-		const ada = await signIn("ada@harbour.test");
-		const { invite } = await ada.client.createInvite({ email: "Grace@Harbour.test", role: "operator" });
+		const { signIn, kantel } = await world();
+		const ada = await signIn("ada@kantel.test");
+		const { invite } = await ada.client.createInvite({ email: "Grace@Kantel.test", role: "operator" });
 
-		const grace = await signIn("grace@harbour.test");
+		const grace = await signIn("grace@kantel.test");
 		const me = await grace.client.me();
 		expect(me).toMatchObject({
 			name: "grace",
 			// As they signed in with it, not as the admin typed it.
-			email: "grace@harbour.test",
-			organisationId: harbour.id,
+			email: "grace@kantel.test",
+			organisationId: kantel.id,
 			roles: [{ role: "operator" }],
 		});
 		expect((await ada.client.members()).map((member) => member.name)).toContain("grace");
@@ -196,9 +196,9 @@ describe("accepting an invite", () => {
 
 	it("lets nobody in once the invite is revoked", async () => {
 		const { signIn } = await world();
-		const ada = await signIn("ada@harbour.test");
-		const { invite } = await ada.client.createInvite({ email: "grace@harbour.test", role: "operator" });
+		const ada = await signIn("ada@kantel.test");
+		const { invite } = await ada.client.createInvite({ email: "grace@kantel.test", role: "operator" });
 		await ada.client.revokeInvite(invite.id);
-		await expect(signIn("grace@harbour.test")).rejects.toThrow();
+		await expect(signIn("grace@kantel.test")).rejects.toThrow();
 	});
 });

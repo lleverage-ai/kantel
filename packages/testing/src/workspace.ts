@@ -79,9 +79,9 @@ function workspaceDeps(): { deps: WorkspaceConformanceDeps; fixture: SeedingFixt
 }
 
 export const WORKSPACE_FIXTURE = {
-	organisationId: "org-harbour",
+	organisationId: "org-kantel",
 	otherOrganisationId: "org-elsewhere",
-	projectId: "proj-harbour",
+	projectId: "proj-kantel",
 	otherProjectId: "proj-elsewhere",
 	/** The agent session the cases use, in `projectId`. */
 	sessionId: "sess-1",

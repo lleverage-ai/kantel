@@ -42,7 +42,7 @@ Before applying, push both images where the cluster pulls from, and set them:
 Then point the gateway at it, with the same host token and view key:
 
 ```
-KANTEL_BROWSER_PROVIDER=harbour
+KANTEL_BROWSER_PROVIDER=kantel
 KANTEL_BROWSER_HOST_URL=http://harbour-browser-host.harbour-browsers.svc:8790
 KANTEL_BROWSER_HOST_TOKEN=<the secret's KANTEL_BROWSER_HOST_TOKEN>
 KANTEL_BROWSER_VIEW_KEY=<the secret's KANTEL_BROWSER_VIEW_KEY>

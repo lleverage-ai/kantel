@@ -1,6 +1,6 @@
 /**
  * Kantel's own browser runtime (packages/browser/CONTRACT.md): the portable parts both hosts run. The coordinator
- * (one per browser), the harbour provider the broker uses instead of brwsr's, view tokens and links, and sealing for
+ * (one per browser), the kantel provider the broker uses instead of brwsr's, view tokens and links, and sealing for
  * what is stored. The hosts are apps/cloudflare (a Durable Object with a Container per browser, R2) and
  * apps/selfhosted (a Docker container per browser, a directory or S3).
  */
@@ -11,11 +11,15 @@ export * from "./view-token.ts";
 export * from "./views.ts";
 
 /** Which provider a deployment's broker uses: brwsr.dev (the default) or Kantel's own runtime. */
-export type BrowserProviderName = "brwsr" | "harbour";
+export type BrowserProviderName = "brwsr" | "kantel";
 
-/** `KANTEL_BROWSER_PROVIDER`, read: anything but `harbour` is brwsr, so an unset or mistyped value keeps today's. */
+/**
+ * `KANTEL_BROWSER_PROVIDER`, read: anything but `kantel` (or `harbour`, its name before the rename) is brwsr, so an
+ * unset or mistyped value keeps today's.
+ */
 export function browserProviderName(value: string | undefined): BrowserProviderName {
-	return (value ?? "").trim().toLowerCase() === "harbour" ? "harbour" : "brwsr";
+	const named = (value ?? "").trim().toLowerCase();
+	return named === "kantel" || named === "harbour" /* before the rename */ ? "kantel" : "brwsr";
 }
 
 /**

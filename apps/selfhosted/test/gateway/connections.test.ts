@@ -9,7 +9,7 @@ import { bootstrap, createGatewayComponents, ECHO_ROUTE } from "../../src/gatewa
 import { connectionsConfig, privateAddress, publicFetch, refreshSweeper } from "../../src/gateway/connections.ts";
 import { createGateway } from "../../src/gateway/gateway.ts";
 
-const ORIGIN = "https://harbour.example.com";
+const ORIGIN = "https://kantel.example.com";
 
 describe("connections on the self-hosted gateway", () => {
 	test("are on with a public URL, and off when asked", () => {
@@ -170,10 +170,10 @@ describe("people and organisation sessions on the self-hosted gateway", () => {
 		});
 		/** A person with `role` across the organisation, signed in with a Kantel session. */
 		const person = async (name: string, role: Role) => {
-			const email = `${name.toLowerCase()}@harbour.example.com`;
+			const email = `${name.toLowerCase()}@kantel.example.com`;
 			const user = await components.identity.createUser(system, { name, email });
 			await components.identity.grantRole(system, { principal: { kind: "user", userId: user.id }, role });
-			const token = `hbs_${crypto.randomUUID().replaceAll("-", "")}`;
+			const token = `kts_${crypto.randomUUID().replaceAll("-", "")}`;
 			await components.otp.sessions.create({
 				id: `s_${name}`,
 				tokenHash: await hashSessionToken(token),

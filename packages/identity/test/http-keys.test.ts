@@ -21,7 +21,7 @@ import { ManualClock, RecordingAuditSink } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "bootstrap" }, organisationId: "bootstrap" };
-const ORIGIN = "http://harbour.test";
+const ORIGIN = "http://kantel.test";
 const DAY = 86_400_000;
 
 const mailed = () => new Promise((resolve) => setTimeout(resolve, 5));
@@ -34,7 +34,7 @@ async function world() {
 	const clock = new ManualClock();
 	const audit = new RecordingAuditSink();
 	const identity = createMemoryIdentity({ clock, audit });
-	const ada = await identity.createUser(bootstrap, { name: "Ada Lovelace", email: "ada@harbour.test" });
+	const ada = await identity.createUser(bootstrap, { name: "Ada Lovelace", email: "ada@kantel.test" });
 	const organisation = await identity.createOrganisation(bootstrap, {
 		name: "Kantel",
 		admin: { kind: "user", userId: ada.id },
@@ -47,9 +47,9 @@ async function world() {
 		await identity.grantRole(admin, { principal: { kind: "user", userId: user.id }, role, projectId });
 		return user;
 	};
-	await member("Lin Operator", "lin@harbour.test", "operator", website.id);
-	await member("Grace Hopper", "grace@harbour.test", "viewer", billing.id);
-	await member("Max Admin", "max@harbour.test", "admin", website.id);
+	await member("Lin Operator", "lin@kantel.test", "operator", website.id);
+	await member("Grace Hopper", "grace@kantel.test", "viewer", billing.id);
+	await member("Max Admin", "max@kantel.test", "admin", website.id);
 	const service = await identity.createServiceIdentity(admin, { name: "Atlas" });
 	const hostKey = await identity.issueApiKey(admin, {
 		serviceId: service.id,
@@ -137,14 +137,14 @@ describe("the key routes' gate", () => {
 			await call(apiKeyRevokePath(hostKey.key.id), { method: "POST", json: {} }),
 		]) {
 			expect(response.status).toBe(401);
-			expect(response.headers.get("www-authenticate")).toBe(`Bearer realm="harbour"`);
+			expect(response.headers.get("www-authenticate")).toBe(`Bearer realm="kantel"`);
 			expect((await errorOf(response)).code).toBe("unauthenticated");
 		}
 	});
 
 	it("is 403 for a viewer, as a role refusal rather than an authentication failure", async () => {
 		const { signIn, call, hostKey } = await world();
-		const grace = await signIn("grace@harbour.test");
+		const grace = await signIn("grace@kantel.test");
 		const listed = await call(API_KEYS_PATH, { headers: grace.headers });
 		expect(listed.status).toBe(403);
 		expect(await listed.json()).toEqual({
@@ -160,7 +160,7 @@ describe("the key routes' gate", () => {
 
 	it("is 403 with the organisation failure for an organisation the person may not act in", async () => {
 		const { signIn, clientWith } = await world();
-		const ada = await signIn("ada@harbour.test");
+		const ada = await signIn("ada@kantel.test");
 		const error = await refusal(clientWith({ ...ada.headers, [ORGANISATION_HEADER]: "org_elsewhere" }).listApiKeys());
 		expect(authenticationFailureOf(error)).toBe("organisation");
 	});
@@ -175,7 +175,7 @@ describe("the key routes' gate", () => {
 describe("an operator who is not an admin", () => {
 	it("lists no keys, and is refused each create and revoke with forbidden, leaving nothing behind", async () => {
 		const { signIn, call, website, hostKey, identity, admin, services } = await world();
-		const lin = await signIn("lin@harbour.test");
+		const lin = await signIn("lin@kantel.test");
 		expect(await lin.client.listApiKeys()).toEqual([]);
 
 		const before = services();
@@ -209,7 +209,7 @@ describe("an operator who is not an admin", () => {
 describe("an admin managing keys", () => {
 	it("creates a key, sees its secret once, lists it without the secret, revokes it, and the key is refused on its next use", async () => {
 		const { signIn, call, clientWith, website, clock, audit } = await world();
-		const ada = await signIn("ada@harbour.test");
+		const ada = await signIn("ada@kantel.test");
 
 		const response = await call(API_KEYS_PATH, {
 			method: "POST",
@@ -219,7 +219,7 @@ describe("an admin managing keys", () => {
 		expect(response.status).toBe(201);
 		expect(response.headers.get("cache-control")).toBe("no-store");
 		const issued = (await response.json()) as CreateApiKeyResponse;
-		expect(issued.secret).toMatch(/^hbr_/);
+		expect(issued.secret).toMatch(/^ktk_/);
 		expect(issued.key).toMatchObject({
 			name: "GitHub app",
 			projectIds: [website.id],
@@ -258,7 +258,7 @@ describe("an admin managing keys", () => {
 
 	it("gives the client the same: a secret on create only, the list, a filtered list, and revoke", async () => {
 		const { signIn, website, billing, service, clock } = await world();
-		const ada = await signIn("ada@harbour.test");
+		const ada = await signIn("ada@kantel.test");
 		const issued = await ada.client.createApiKey({
 			name: "Nightly",
 			projectIds: [website.id, billing.id],
@@ -287,7 +287,7 @@ describe("an admin managing keys", () => {
 
 	it("a key that expires is refused from then on", async () => {
 		const { signIn, clientWith, website, clock } = await world();
-		const ada = await signIn("ada@harbour.test");
+		const ada = await signIn("ada@kantel.test");
 		const issued = await ada.client.createApiKey({
 			name: "Short",
 			projectIds: [website.id],
@@ -302,7 +302,7 @@ describe("an admin managing keys", () => {
 
 	it("lets a project admin issue keys for an existing service on its project, but not mint a new service", async () => {
 		const { signIn, website, billing, service, services } = await world();
-		const max = await signIn("max@harbour.test");
+		const max = await signIn("max@kantel.test");
 		expect((await max.client.listApiKeys()).map((key) => key.name)).toEqual(["Atlas"]);
 		const issued = await max.client.createApiKey({
 			name: "Website deploys",
@@ -331,7 +331,7 @@ describe("an admin managing keys", () => {
 
 	it("lets an organisation admin issue a key with the import permission, and no project admin", async () => {
 		const { signIn, identity, website, service, services } = await world();
-		const ada = await signIn("ada@harbour.test");
+		const ada = await signIn("ada@kantel.test");
 		const issued = await ada.client.createApiKey({
 			name: "Atlas import",
 			projectIds: [website.id],
@@ -343,7 +343,7 @@ describe("an admin managing keys", () => {
 		const { actor, organisationId } = await identity.authenticateApiKey(bootstrap, issued.secret);
 		expect(await identity.keyPermits(bootstrap, actor, organisationId, "import")).toBe(true);
 
-		const max = await signIn("max@harbour.test");
+		const max = await signIn("max@kantel.test");
 		const before = services();
 		for (const input of [
 			{ name: "Website import", projectIds: [website.id], role: "operator" as const, permissions: ["import" as const] },
@@ -362,7 +362,7 @@ describe("an admin managing keys", () => {
 
 	it("lets an organisation admin issue an organisation key, listed with its scope, and nobody else", async () => {
 		const { signIn, identity, website, services, audit, clientWith } = await world();
-		const ada = await signIn("ada@harbour.test");
+		const ada = await signIn("ada@kantel.test");
 		const issued = await ada.client.createApiKey({
 			name: "Host app",
 			scope: "organisation",
@@ -394,7 +394,7 @@ describe("an admin managing keys", () => {
 		expect(isKantelError(projectWide, "invalid")).toBe(true);
 
 		// A project admin, and any key, are refused one; the project admin doesn't see it.
-		const max = await signIn("max@harbour.test");
+		const max = await signIn("max@kantel.test");
 		const orgKey = { name: "Mine", scope: "organisation" as const, role: "viewer" as const };
 		expect(isKantelError(await refusal(max.client.createApiKey(orgKey)), "forbidden")).toBe(true);
 		const asKey = clientWith({ authorization: `Bearer ${issued.secret}` });
@@ -414,7 +414,7 @@ describe("an admin managing keys", () => {
 describe("the key routes' requests", () => {
 	it("refuses malformed creates as invalid, naming what is wrong", async () => {
 		const { signIn, call, website, clock } = await world();
-		const ada = await signIn("ada@harbour.test");
+		const ada = await signIn("ada@kantel.test");
 		const create = async (json: unknown) => {
 			const response = await call(API_KEYS_PATH, { method: "POST", headers: ada.headers, json });
 			return { status: response.status, error: await errorOf(response) };
@@ -444,14 +444,14 @@ describe("the key routes' requests", () => {
 			"projectIds must list 1 to 100 project IDs",
 		);
 		expect((await create({ ...good, permissions: "import" })).status).toBe(400);
-		expect((await create({ ...good, secret: "hbr_mine" })).error.message).toBe("Unknown field secret");
+		expect((await create({ ...good, secret: "ktk_mine" })).error.message).toBe("Unknown field secret");
 		expect((await create([good])).status).toBe(400);
 		expect((await create({ ...good, projectIds: ["prj_nowhere"] })).status).toBe(404);
 	});
 
 	it("needs JSON for a POST, refuses a body past the limit, and takes {} to revoke", async () => {
 		const { signIn, call, hostKey, website } = await world();
-		const ada = await signIn("ada@harbour.test");
+		const ada = await signIn("ada@kantel.test");
 		const form = await call(API_KEYS_PATH, {
 			method: "POST",
 			headers: { ...ada.headers, "content-type": "application/x-www-form-urlencoded" },
@@ -486,7 +486,7 @@ describe("the key routes' requests", () => {
 
 	it("is 404 for an unknown key or path, 405 for another method, and refuses an unknown list parameter", async () => {
 		const { signIn, call } = await world();
-		const ada = await signIn("ada@harbour.test");
+		const ada = await signIn("ada@kantel.test");
 		expect(
 			(await call(apiKeyRevokePath("key_nowhere"), { method: "POST", headers: ada.headers, json: {} })).status,
 		).toBe(404);

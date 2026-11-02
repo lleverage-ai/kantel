@@ -95,7 +95,7 @@ function recorder(status = 200) {
 	return { requests, fetch };
 }
 
-/** A real ClickHouse, such as `http://harbour:pw@127.0.0.1:8123`; the tests below it are skipped without one. */
+/** A real ClickHouse, such as `http://kantel:pw@127.0.0.1:8123`; the tests below it are skipped without one. */
 const CLICKHOUSE = process.env.KANTEL_TEST_CLICKHOUSE_URL?.trim() ?? "";
 
 describe.skipIf(CLICKHOUSE === "")("clickHouseUsageSink on a real ClickHouse", () => {
@@ -202,7 +202,7 @@ const clickHouseRowOf = (row: UsageRecord) => clickHouseRow(row, Date.UTC(2026, 
 describe("clickHouseUsageSink", () => {
 	it("inserts a batch as JSONEachRow, deduplicated by the batch's ID, with UTC times and nulls", async () => {
 		const { requests, fetch } = recorder();
-		const sink = clickHouseUsageSink({ url: "http://clickhouse:8123/", user: "harbour", password: "pw", fetch });
+		const sink = clickHouseUsageSink({ url: "http://clickhouse:8123/", user: "kantel", password: "pw", fetch });
 		await sink.write([record, { ...record, callId: "call-2" }], "clickhouse:0-2");
 		await sink.write([], "clickhouse:2-2");
 		expect(requests).toHaveLength(1);
@@ -210,7 +210,7 @@ describe("clickHouseUsageSink", () => {
 		expect(request?.url.searchParams.get("query")).toBe("INSERT INTO harbour.usage_calls FORMAT JSONEachRow");
 		expect(request?.url.searchParams.get("insert_deduplication_token")).toBe("clickhouse:0-2");
 		expect(request?.url.searchParams.get("deduplicate_blocks_in_dependent_materialized_views")).toBe("1");
-		expect(request?.headers.get("x-clickhouse-user")).toBe("harbour");
+		expect(request?.headers.get("x-clickhouse-user")).toBe("kantel");
 		expect(request?.headers.get("x-clickhouse-key")).toBe("pw");
 		const rows = request?.body
 			.trim()

@@ -31,7 +31,7 @@ import { AuditView } from "@kantel/ui";
   belongs to two or more.
 - `pollMs` makes the view check for newer events and offer *N newer events* above the list, instead of moving the
   rows under the reader.
-- `onExport` replaces the default download of `harbour-audit-<from>-to-<to>.jsonl`.
+- `onExport` replaces the default download of `kantel-audit-<from>-to-<to>.jsonl`.
 
 On the console's API source (`?source=api`, the gateway's `/v1/audit/events`), rows link to
 `/projects/<project>/sessions/<session>#turn=<id>`, and the *Credential* choices and item names come from the log's

@@ -22,11 +22,11 @@ export const DEFAULT_BASE_PATH = "/v1";
 /** Headers the API reads or sends. */
 export const HEADERS = {
 	/** Correlates a call; it becomes `CallContext.requestId`. */
-	requestId: "harbour-request-id",
+	requestId: "kantel-request-id",
 	/** On a host-tool callback: `t=<epoch ms>,v1=<hex HMAC-SHA256 of "<t>.<body>">`. */
-	signature: "harbour-signature",
-	hostId: "harbour-host-id",
-	callId: "harbour-call-id",
+	signature: "kantel-signature",
+	hostId: "kantel-host-id",
+	callId: "kantel-call-id",
 } as const;
 
 /** The SSE event the server sends after the first frames of a watch: hello, then a snapshot or the missed deltas. */
@@ -66,7 +66,7 @@ export function unauthenticated(): Response {
 	return json(
 		{ error: { code: "unauthenticated", message: "The request needs a valid credential" } } satisfies ApiErrorBody,
 		401,
-		{ "www-authenticate": 'Bearer realm="harbour"' },
+		{ "www-authenticate": 'Bearer realm="kantel"' },
 	);
 }
 

@@ -113,7 +113,7 @@ const longSource: AuditSource = {
 					subject: { kind: "vault.use", id: "use_7f3a" },
 					data: {
 						method: "POST",
-						host: "admin.staging.harbour.dev",
+						host: "admin.staging.kantel.dev",
 						path: "/jobs/queues/invoice-reconciliation-nightly-eu-west-1/partitions/0000000000000000000017/retry",
 						itemId: "itm_staging",
 						reason:

@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 
 const ORG = "org-rules";
 const PROJECT = "proj-rules";
-const harbour: CallContext = { actor: { kind: "system", component: "test" }, organisationId: ORG };
+const kantel: CallContext = { actor: { kind: "system", component: "test" }, organisationId: ORG };
 const alice: CallContext = { actor: { kind: "human", userId: "alice" }, organisationId: ORG };
 
 const profile: AgentProfile = {
@@ -27,8 +27,8 @@ async function setUp() {
 	const { models, script } = createScriptedModel();
 	const rules = createMemoryPromptRules();
 	const service = createMemoryRuntime({ models, rules });
-	await service.profiles.put(harbour, profile);
-	const put = (owner: OwnerRef, name: string, text: string) => rules.put(harbour, { owner, name, text });
+	await service.profiles.put(kantel, profile);
+	const put = (owner: OwnerRef, name: string, text: string) => rules.put(kantel, { owner, name, text });
 	await put({ kind: "platform" }, "house", "PLATFORM");
 	await put({ kind: "organisation", organisationId: ORG }, "org", "ORGANISATION");
 	await put({ kind: "project", organisationId: ORG, projectId: PROJECT }, "proj", "PROJECT");

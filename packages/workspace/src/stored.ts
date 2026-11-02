@@ -302,7 +302,7 @@ export function createStoredWorkspaces(options: StoredWorkspacesOptions): Stored
 		const work = hydrate(id)
 			.catch((error: unknown) => {
 				// Reads keep working from the packs; the next load of the workspace tries again.
-				console.warn(`harbour: hydrating workspace ${id} failed; it will be retried`, error);
+				console.warn(`kantel: hydrating workspace ${id} failed; it will be retried`, error);
 			})
 			.finally(() => {
 				hydrating.delete(id);

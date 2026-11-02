@@ -1,5 +1,5 @@
 // The gateway's components on the stack's own services: the real implementations the lanes merged, in place of the
-// in-memory ones. All of them share one Postgres schema (default `harbour_m1`, apart from the spike's `harbour`), and the
+// in-memory ones. All of them share one Postgres schema (default `harbour_m1`, apart from the spike's `kantel`), and the
 // workspaces keep their trees in S3 (MinIO in compose).
 //
 //   audit       SQL audit store on Postgres (@kantel/audit/sql, #70)
@@ -22,7 +22,7 @@
 //               ClickHouse too when KANTEL_CLICKHOUSE_URL is set; KANTEL_USAGE=off writes none
 //
 // Their tables do not collide: `audit_*`, `identity_*` (sign-in's `identity_otp_codes` and `identity_sessions` too),
-// `harbour_*` and `pi_<session>_*`, `workspace_heads` and `workspace_versions`, `skill_*` and `memory_*`. Sessions are
+// `kantel_*` and `pi_<session>_*`, `workspace_heads` and `workspace_versions`, `skill_*` and `memory_*`. Sessions are
 // on the echo model unless the gateway is given CPA (`modelGateway`, models.ts).
 import { createSqlAuditStore, migrateAudit } from "@kantel/audit/sql";
 import { connectionEgress } from "@kantel/connections/egress";

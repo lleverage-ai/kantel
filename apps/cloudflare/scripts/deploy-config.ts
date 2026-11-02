@@ -50,7 +50,7 @@ export const OPTIONAL_DEPLOY_VARIABLES = [
 	"KANTEL_R2_BUCKET",
 	"KANTEL_LOCATION_HINT",
 	// Kantel's own browsers (src/browser-object.ts): `on` adds their container app (images/browser, held to WEUR), and
-	// KANTEL_BROWSER_PROVIDER says which provider the broker uses (`brwsr` unless it says `harbour`).
+	// KANTEL_BROWSER_PROVIDER says which provider the broker uses (`brwsr` unless it says `kantel`).
 	"KANTEL_BROWSER_CONTAINERS",
 	"KANTEL_BROWSER_PROVIDER",
 	// The container tier (src/sandbox-object.ts): `on` adds its container app (images/sandbox, held to WEUR) and turns
@@ -110,7 +110,11 @@ const OPTIONAL_CHECKS: Readonly<
 	},
 	KANTEL_BROWSER_CONTAINERS: { test: (v) => v === "on" || v === "off", expect: "on or off" },
 	KANTEL_SANDBOX_CONTAINERS: { test: (v) => v === "on" || v === "off", expect: "on or off" },
-	KANTEL_BROWSER_PROVIDER: { test: (v) => v === "brwsr" || v === "harbour", expect: "brwsr or harbour" },
+	// `harbour` is `kantel`'s name before the rename, which a repository variable may still say.
+	KANTEL_BROWSER_PROVIDER: {
+		test: (v) => v === "brwsr" || v === "kantel" || v === "harbour",
+		expect: "brwsr or kantel (or harbour, before the rename)",
+	},
 	KANTEL_CONNECTIONS_PERSONAL: { test: (v) => v === "on" || v === "off", expect: "on or off" },
 	KANTEL_CONNECTIONS_CIMD: { test: (v) => v === "on" || v === "off", expect: "on or off" },
 	KANTEL_OAUTH_CLIENTS: {
@@ -184,7 +188,7 @@ export const MODELS_BINDING = "MODELS";
 
 /** Stand-ins for a dry run before the account is set up. Never deployed: deploy mode refuses a missing variable. */
 const PLACEHOLDERS: Readonly<Record<Exclude<DeployVariable, "CLOUDFLARE_ACCOUNT_ID">, string>> = {
-	KANTEL_HOSTNAME: "harbour.example.com",
+	KANTEL_HOSTNAME: "kantel.example.com",
 	KANTEL_ACCESS_TEAM_DOMAIN: "example.cloudflareaccess.com",
 	KANTEL_ACCESS_AUD: "0000000000000000000000000000000000000000000000000000000000000000",
 	KANTEL_MODELS_VPC_SERVICE_ID: "00000000-0000-0000-0000-000000000000",

@@ -34,8 +34,8 @@ import {
 } from "../src/tunnel.ts";
 import type { SyncKvLike } from "../src/workspace-heads.ts";
 
-const BASE = "https://harbour.test";
-const ADMIN = "tom@harbour.test";
+const BASE = "https://kantel.test";
+const ADMIN = "tom@kantel.test";
 
 const rpc = <T>(value: T): T => structuredClone(value);
 
@@ -307,7 +307,7 @@ describe("tool servers on Cloudflare", () => {
 		expect(stack.toolServers).toBeUndefined();
 		expect((await api("GET", "/v1/tool-servers")).status).toBe(404);
 		expect((await api("POST", "/v1/tool-servers", { name: "atlas", transport: "tunnel" })).status).toBe(404);
-		expect((await upgrade("ts_1", { authorization: "Bearer hbt_any" })).status).toBe(404);
+		expect((await upgrade("ts_1", { authorization: "Bearer ktt_any" })).status).toBe(404);
 		expect(stackAsked).toEqual([]);
 		expect(tunnelsAsked).toEqual([]);
 	});
@@ -438,7 +438,7 @@ describe("tool servers on Cloudflare", () => {
 		const status = async (serverId: string, headers: { [name: string]: string }) =>
 			(await upgrade(serverId, headers)).status;
 		expect(await status(atlas.server.id, {})).toBe(401);
-		expect(await status(atlas.server.id, { authorization: "Bearer hbt_wrong" })).toBe(401);
+		expect(await status(atlas.server.id, { authorization: "Bearer ktt_wrong" })).toBe(401);
 		expect(await status(atlas.server.id, { authorization: "Bearer not-a-tunnel-token" })).toBe(401);
 		expect(await status(atlas.server.id, { authorization: `Bearer ${other.token?.secret}` })).toBe(403);
 		expect(await status("ts_unknown", { authorization: `Bearer ${atlas.token?.secret}` })).toBe(404);

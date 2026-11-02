@@ -21,7 +21,7 @@ describe("McpTunnelClient", () => {
 			jsonrpc: "2.0",
 			id: 1,
 			method: "initialize",
-			params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "harbour", version: "0.0.0" } },
+			params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "kantel", version: "0.0.0" } },
 		});
 		expect(server.received[1]).toEqual({ jsonrpc: "2.0", method: "notifications/initialized" });
 		expect(client.state()).toEqual({

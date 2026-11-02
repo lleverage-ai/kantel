@@ -14,10 +14,10 @@ import { createDevBrowserModels } from "../src/dev-browser-model.ts";
 import { BROWSER_DECISIONS_PATH, BROWSER_LIVE_PATH, createGateway } from "../src/gateway.ts";
 import { createStack, DEFAULT_AGENT_ID } from "../src/stack.ts";
 
-const TEAM_DOMAIN = "harbour-test.cloudflareaccess.com";
-const AUD = "aud-harbour-test";
-const ADMIN = "tom@harbour.test";
-const BASE = "https://harbour.test";
+const TEAM_DOMAIN = "kantel-test.cloudflareaccess.com";
+const AUD = "aud-kantel-test";
+const ADMIN = "tom@kantel.test";
+const BASE = "https://kantel.test";
 
 async function setup(
 	options: {

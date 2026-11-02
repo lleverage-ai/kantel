@@ -23,6 +23,6 @@ export class KantelCodemode extends WorkerEntrypoint {
 
 export default {
 	fetch(): Response {
-		return new Response("harbour codemode\n");
+		return new Response("kantel codemode\n");
 	},
 };

@@ -116,7 +116,7 @@ describe.skipIf(smtpUrl === "" || mailpitUrl === "")("email one-time PIN through
 			const otp = createEmailOtp({
 				identity,
 				...stores,
-				mailer: createSmtpMailer({ url: smtpUrl, from: "Kantel <harbour@example.test>" }),
+				mailer: createSmtpMailer({ url: smtpUrl, from: "Kantel <kantel@example.test>" }),
 				audit,
 			});
 			const otpRoutes = createOtpHandler({ otp });

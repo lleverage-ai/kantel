@@ -14,11 +14,11 @@ import type { Narrowing } from "./vault.ts";
 
 /** Where passkeys are registered, as the relying party sees them. */
 export interface RelyingParty {
-	/** The WebAuthn relying party ID: the host the console is served on, such as `harbour.example.com`. */
+	/** The WebAuthn relying party ID: the host the console is served on, such as `kantel.example.com`. */
 	readonly id: string;
 	/** The name a browser shows when it creates a passkey. */
 	readonly name: string;
-	/** The one origin assertions must come from, such as `https://harbour.example.com`. */
+	/** The one origin assertions must come from, such as `https://kantel.example.com`. */
 	readonly origin: string;
 }
 

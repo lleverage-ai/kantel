@@ -26,7 +26,7 @@ export function tempRepo(): {
 	commit(files: Record<string, FixtureFile>): string;
 	remove(): void;
 } {
-	const dir = mkdtempSync(join(tmpdir(), "harbour-sal-worker-"));
+	const dir = mkdtempSync(join(tmpdir(), "kantel-sal-worker-"));
 	const git = (...args: string[]) =>
 		execFileSync("git", ["-C", dir, "-c", "user.name=Test", "-c", "user.email=test@example.com", ...args], {
 			encoding: "utf8",

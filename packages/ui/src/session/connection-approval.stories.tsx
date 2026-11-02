@@ -50,7 +50,7 @@ const openPr: ToolItem = {
 		connectionId: GITHUB.id,
 		method: "POST",
 		url: "https://api.github.com/repos/tvdavies/harbour/pulls",
-		headers: { "User-Agent": "harbour-agent", Accept: "application/vnd.github+json" },
+		headers: { "User-Agent": "kantel-agent", Accept: "application/vnd.github+json" },
 		body: PR_BODY,
 	},
 	status: "running",
@@ -87,7 +87,7 @@ const pending: ConnectionApprovalCard = {
 	pathPrefix: "/repos/tvdavies/harbour/pulls",
 	termsSource: "agent-proposed",
 	expiresAt: NOW + 9 * 60_000 + 42_000,
-	link: "https://harbour.example/connections/requests/prop_story_pr",
+	link: "https://kantel.example/connections/requests/prop_story_pr",
 	request: {
 		connectionId: GITHUB.id,
 		connectionName: "GitHub",
@@ -139,7 +139,7 @@ const inScript: ConnectionApprovalCard = {
 	what: "POST api.github.com/repos/tvdavies/harbour/issues/453/comments through GitHub",
 	why: "Leaving the review note you asked for on the open pull request.",
 	pathPrefix: "/repos/tvdavies/harbour/issues/453/comments",
-	link: "https://harbour.example/connections/requests/prop_story_comment",
+	link: "https://kantel.example/connections/requests/prop_story_comment",
 	request: {
 		connectionId: GITHUB.id,
 		connectionName: "GitHub",
@@ -255,7 +255,7 @@ const Run = ({ items }: { items: readonly ToolItem[] }) => (
 
 /** The transcript as the console gives it: the card whose call is on screen taken out, shown in the call. */
 const session: readonly TranscriptItem[] = [
-	{ kind: "user", id: "u1", at: NOW - 60_000, text: "Open a PR for the spacing fix on harbour.", via: "prompt" },
+	{ kind: "user", id: "u1", at: NOW - 60_000, text: "Open a PR for the spacing fix on kantel.", via: "prompt" },
 	listPrs,
 	openPr,
 	cardItem(pending),

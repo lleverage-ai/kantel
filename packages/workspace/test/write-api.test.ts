@@ -14,7 +14,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 const ORG = "org-1";
 const PROJECT = "proj-1";
 const COMMIT = "0123456789abcdef0123456789abcdef01234567";
-const BASE = "https://harbour.test/v1/workspaces";
+const BASE = "https://kantel.test/v1/workspaces";
 const encoder = new TextEncoder();
 
 const operator = contextFor(actors.human("olive"), ORG, PROJECT);
@@ -238,7 +238,7 @@ describe("POST /v1/workspaces", () => {
 		expect(await fixture.api(new Request(BASE, { method: "GET" }))).toBeNull();
 		expect(await fixture.api(new Request(`${BASE}/ws_1`, { method: "POST", body: "{}" }))).toBeNull();
 		expect(
-			await fixture.api(new Request("https://harbour.test/v1/sessions", { method: "POST", body: "{}" })),
+			await fixture.api(new Request("https://kantel.test/v1/sessions", { method: "POST", body: "{}" })),
 		).toBeNull();
 	});
 });

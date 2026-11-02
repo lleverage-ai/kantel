@@ -51,7 +51,7 @@ registerRuntimeConformance(
 			},
 		});
 		const client = createSessionApiClient({
-			baseUrl: "https://harbour.test/v1",
+			baseUrl: "https://kantel.test/v1",
 			credentials: (ctx) => ({ authorization: `Bearer ${tokenFor(ctx)}` }),
 			fetch: async (input, init) => api.fetch(new Request(input, init)),
 			hostCallbacks: {
