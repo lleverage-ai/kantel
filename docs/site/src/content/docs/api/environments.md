@@ -33,6 +33,7 @@ Each `KANTEL_*` setting is also read as `HARBOUR_*`.
 | `KANTEL_ENVIRONMENTS_PROVIDER` | `boat` with a key, else `fake` | `fake` is an in-process stand-in for local runs and tests; it runs no process. |
 | `KANTEL_BOAT_WEBHOOK_SECRET` | none | boat's webhook signing secret (`whsec_…`). With it, Kantel takes boat's signed deliveries at `POST /v1/environment-webhooks/boat`. Optional: Kantel reads a machine's state itself. |
 | `KANTEL_BOAT_API_URL` | `https://boat.dev/api/v1` | boat's API, for a test server. |
+| `KANTEL_BOAT_AUTO_STOP_MINUTES` | `240` | boat's own auto-stop, counted from each start, as a backstop for Kantel's idle stop. A boat account still on its trial allows `120` at most. |
 | `KANTEL_ENVIRONMENTS_SHARING` | `person` | `person`: one person's sessions in a project share an environment. `exclusive`: one session at a time. |
 | `KANTEL_ENVIRONMENTS_PLACEHOLDERS` | `unmanaged` | Whether connection placeholders work on machines whose network Kantel doesn't run. `unmanaged` lets them, through Kantel's proxy, and marks the environment's audit events `egress: unmanaged`; `off` refuses them. |
 | `KANTEL_ENVIRONMENTS_IDLE_MINUTES` | `15` | Minutes an environment with no session on it waits before it stops. |

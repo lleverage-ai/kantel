@@ -85,6 +85,12 @@ describe("environments on the self-hosted gateway", () => {
 		expect(() =>
 			environmentsConfig({ KANTEL_ENVIRONMENTS: "experimental", KANTEL_ENVIRONMENTS_PROVIDER: "boat" }),
 		).toThrow(/KANTEL_BOAT_API_KEY/);
+		// boat's own auto-stop backstop: two hours for an account still on boat's trial.
+		const on = { KANTEL_ENVIRONMENTS: "experimental", KANTEL_BOAT_API_KEY: "boat_x" };
+		expect(environmentsConfig({ ...on, KANTEL_BOAT_AUTO_STOP_MINUTES: "120" })).toMatchObject({
+			boatAutoStopSeconds: 7200,
+		});
+		expect(() => environmentsConfig({ ...on, KANTEL_BOAT_AUTO_STOP_MINUTES: "5" })).toThrow(/at least 30/);
 	});
 
 	it("have no routes, no binding and no env when off", async () => {

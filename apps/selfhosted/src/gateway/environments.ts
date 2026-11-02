@@ -35,6 +35,11 @@ export interface GatewayEnvironmentsConfig {
 	/** boat.dev's webhook signing secret, `whsec_…`, for `POST /v1/environment-webhooks/boat`. */
 	readonly boatWebhookSecret?: string;
 	readonly boatApiUrl?: string;
+	/**
+	 * boat's own auto-stop, a backstop for the broker's idle stop, in seconds from each start. Default four hours; a
+	 * boat account still on its trial allows two at most (`trial_auto_stop_required`).
+	 */
+	readonly boatAutoStopSeconds?: number;
 }
 
 /** Environments' configuration from the gateway's variables, or `undefined` when they are off. */
@@ -51,12 +56,18 @@ export function environmentsConfig(env: NodeJS.ProcessEnv): GatewayEnvironmentsC
 	}
 	const secret = read("KANTEL_BOAT_WEBHOOK_SECRET");
 	const apiUrl = read("KANTEL_BOAT_API_URL");
+	const autoStop = read("KANTEL_BOAT_AUTO_STOP_MINUTES");
+	const autoStopMinutes = autoStop === "" ? undefined : Number(autoStop);
+	if (autoStopMinutes !== undefined && !(Number.isInteger(autoStopMinutes) && autoStopMinutes >= 30)) {
+		throw new Error("KANTEL_BOAT_AUTO_STOP_MINUTES is a whole number of minutes, at least 30");
+	}
 	return {
 		settings,
 		provider,
 		...(boatApiKey === "" ? {} : { boatApiKey }),
 		...(secret === "" ? {} : { boatWebhookSecret: secret }),
 		...(apiUrl === "" ? {} : { boatApiUrl: apiUrl }),
+		...(autoStopMinutes === undefined ? {} : { boatAutoStopSeconds: autoStopMinutes * 60 }),
 	};
 }
 
@@ -94,6 +105,7 @@ export function gatewayEnvironments(options: {
 		providers.boat = createBoatProvider({
 			apiKey: config.boatApiKey,
 			...(config.boatApiUrl === undefined ? {} : { baseUrl: config.boatApiUrl }),
+			...(config.boatAutoStopSeconds === undefined ? {} : { backstopSeconds: config.boatAutoStopSeconds }),
 			...(options.boatFetch === undefined ? {} : { fetch: options.boatFetch }),
 		});
 	}
