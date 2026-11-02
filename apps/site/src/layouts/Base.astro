@@ -1,0 +1,77 @@
+---
+// The marketing page's shell: head, the header with the endorsed lockup, and the footer.
+import "../styles/site.css";
+import lockupEndorsed from "../assets/brand/kantel-lockup-endorsed-on-light.svg?raw";
+import { GITHUB_URL, LLEVERAGE_URL, SITE_URL } from "../site.mjs";
+
+interface Props {
+	title: string;
+	description: string;
+}
+const { title, description } = Astro.props;
+const lockup = lockupEndorsed.replace("<svg ", '<svg class="h-full w-auto" ');
+---
+
+<!doctype html>
+<html lang="en-GB">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>{title}</title>
+		<meta name="description" content={description} />
+		<link rel="canonical" href={new URL(Astro.url.pathname, SITE_URL)} />
+		<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+		<link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png" />
+		<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+		<meta name="theme-color" content="#f9f7f0" />
+		<meta property="og:title" content={title} />
+		<meta property="og:description" content={description} />
+		<meta property="og:type" content="website" />
+		<meta property="og:url" content={SITE_URL} />
+	</head>
+	<body class="min-h-screen overflow-x-clip bg-paper text-midnight">
+		<a
+			href="#main"
+			class="sr-only rounded-input bg-midnight px-4 py-2 text-paper focus:not-sr-only focus:absolute focus:top-4 focus:left-4"
+			>Skip to the content</a
+		>
+		<header class="sticky top-0 z-20 border-b border-transparent bg-paper/90 backdrop-blur-sm">
+			<nav class="mx-auto flex max-w-(--container-page) items-center justify-between gap-6 px-6 py-4 lg:px-12">
+				<a href="/" class="block h-7 text-ink sm:h-8" aria-label="Kantel, by Lleverage: home" set:html={lockup} />
+				<ul class="flex items-center gap-5 text-sm font-semibold sm:gap-8 sm:text-base">
+					<li><a class="hover:text-label" href="/docs/">Docs</a></li>
+					<li class="hidden sm:block"><a class="hover:text-label" href="/docs/api/concepts/">API</a></li>
+					<li><a class="hover:text-label" href={GITHUB_URL}>GitHub</a></li>
+				</ul>
+			</nav>
+		</header>
+
+		<main id="main" class="overflow-x-clip"><slot /></main>
+
+		<footer class="border-t border-line">
+			<div
+				class="mx-auto grid max-w-(--container-page) grid-cols-1 gap-10 px-6 py-14 text-sm text-label sm:grid-cols-2 lg:grid-cols-4 lg:px-12"
+			>
+				<div class="sm:col-span-2">
+					<div class="h-7 text-ink" set:html={lockup} />
+					<p class="mt-4 max-w-sm">
+						Kantel is made by <a class="underline underline-offset-4 hover:text-midnight" href={LLEVERAGE_URL}
+							>Lleverage</a
+						> and released under the Apache License 2.0.
+					</p>
+				</div>
+				<ul class="space-y-2">
+					<li><a class="hover:text-midnight" href="/docs/">Docs</a></li>
+					<li><a class="hover:text-midnight" href="/docs/console/getting-started/install/">Install locally</a></li>
+					<li><a class="hover:text-midnight" href="/docs/api/quick-start/">API quick start</a></li>
+					<li><a class="hover:text-midnight" href="/docs/api/reference/">API reference</a></li>
+				</ul>
+				<ul class="space-y-2">
+					<li><a class="hover:text-midnight" href={GITHUB_URL}>Source on GitHub</a></li>
+					<li><a class="hover:text-midnight" href="/install.sh">install.sh</a></li>
+					<li><a class="hover:text-midnight" href={LLEVERAGE_URL}>lleverage.ai</a></li>
+				</ul>
+			</div>
+		</footer>
+	</body>
+</html>

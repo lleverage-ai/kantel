@@ -10,11 +10,15 @@ The site isn't part of the pnpm workspace, so it adds no dependencies to the rep
 `package.json` here with `astro` and `@astrojs/starlight`, install, then run `astro build`. The pages are written in
 `dist/`.
 
+kantel.dev (`apps/site`) serves these same pages under `/docs/`: it copies `src/content/docs` and takes `sidebar.mjs`
+as it builds, so an edit here reaches it with nothing else to change. Its build fails on a broken internal link.
+
 ## Layout
 
 | Path | What |
 | --- | --- |
-| `astro.config.mjs` | Starlight's config and the sidebar |
+| `astro.config.mjs` | Starlight's config |
+| `sidebar.mjs` | The sidebar, shared with kantel.dev |
 | `src/content.config.ts` | The docs collection, with Starlight's frontmatter schema |
 | `src/content/docs/index.md` | The home page |
 | `src/content/docs/console/` | Using the console, from installing to sharing |

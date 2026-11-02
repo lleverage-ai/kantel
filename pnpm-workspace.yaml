@@ -1,5 +1,8 @@
 packages:
   - "apps/*"
+  # kantel.dev keeps its own lockfile, like docs/site, so Astro and Wrangler's dependencies don't change the
+  # workspace's: install it with `pnpm --dir apps/site install --ignore-workspace`.
+  - "!apps/site"
   - "packages/*"
   - "targets/*"
   - "targets/*/*"

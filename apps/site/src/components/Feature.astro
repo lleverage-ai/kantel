@@ -1,0 +1,39 @@
+---
+// One thing you get once Kantel is installed: what it is in the console, the API route behind it (Kantel is headless
+// first, so every screen is also a call), a link to its docs page, and a shot of the real console beside it.
+import type { ImageMetadata } from "astro";
+import Shot from "./Shot.astro";
+
+interface Props {
+	id: string;
+	title: string;
+	/** The API route or tool behind the screen, shown above the title. */
+	route: string;
+	docs: { href: string; label: string };
+	shot: ImageMetadata;
+	alt: string;
+	/** A step in a real sequence (installing, then setting up), shown as its number. */
+	step?: number;
+}
+const { id, title, route, docs, shot, alt, step } = Astro.props;
+---
+
+<article id={id} class="grid scroll-mt-24 grid-cols-1 items-start gap-8 lg:grid-cols-12 lg:gap-12">
+	<div class="lg:sticky lg:top-24 lg:col-span-4">
+		<p class="flex items-baseline gap-3 font-mono text-sm text-label">
+			{step !== undefined && <span class="font-semibold text-midnight">{step}</span>}
+			<span>{route}</span>
+		</p>
+		<h3 class="mt-3 font-display text-display-s font-semibold text-balance">{title}</h3>
+		<div class="mt-4 space-y-4 text-body text-midnight-2"><slot /></div>
+		<a
+			href={docs.href}
+			class="mt-5 inline-block border-b border-line pb-0.5 font-semibold text-midnight transition-colors hover:border-midnight"
+			>{docs.label}</a
+		>
+	</div>
+	<div class="lg:col-span-8">
+		<Shot src={shot} alt={alt} />
+		<slot name="after" />
+	</div>
+</article>
