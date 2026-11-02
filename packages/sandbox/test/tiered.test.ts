@@ -251,6 +251,28 @@ describe("tiered sandboxes: escalation and container checkpoints", () => {
 		expect(seen).toMatchObject({ tier: "isolate", stdout: "x" });
 	});
 
+	it("sends a command that names /tmp to the container, whose /tmp outlasts the command", async () => {
+		const { sandboxes } = await setUp({ router: escalatingRouter(isolatePrograms()) });
+		for (const command of [
+			"cp /tmp/compact.json output.json",
+			"cat /tmp/r.txt",
+			"ls /tmp",
+			"echo x > /tmp/a.txt",
+			"sort data.csv >/tmp/sorted.csv",
+			'cat "/tmp/my file.txt"',
+			"jq . --arg out=/tmp/x in.json",
+			"cd /tmp && ls",
+		]) {
+			expect(sandboxes.route("bash", command), command).toBe("container");
+		}
+		expect(sandboxes.route("bash", ["cat", "/tmp/r.txt"])).toBe("container");
+		for (const command of ["cat notes/tmp/a.txt", "ls ./tmp", "cat tmp/x", "echo /tmpfoo", "ls .tmp"]) {
+			expect(sandboxes.route("bash", command), command).toBe("isolate");
+		}
+		// Only shell commands: the file tools keep the isolate (and refuse a path outside the workspace).
+		expect(sandboxes.route("read", "/tmp/r.txt")).toBe("isolate");
+	});
+
 	it("leaves the table alone without a router", async () => {
 		const { sandboxes } = await setUp();
 		expect(sandboxes.route("bash", "ls && frobnicate")).toBe("isolate");

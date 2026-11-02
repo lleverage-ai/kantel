@@ -504,14 +504,27 @@ export function isolatePrograms(extra: readonly CustomCommand[] = []): ReadonlyS
  * command the table sends to the isolate goes to the container instead when it starts a program the isolate doesn't
  * have (`isolatePrograms`), anywhere in it (`make && ./run`, `cat x | python3`), so it runs once, where it can, rather
  * than failing in the isolate with `command not found`. Nothing is retried, so nothing runs twice.
+ *
+ * A command that names a path under `/tmp` goes to the container too. The isolate's `/tmp` lasts one command and isn't
+ * the container's, so a file one command leaves there (a script a container command wrote, say) is missing in the
+ * next isolate command (`cp /tmp/out.json .`), and one an isolate command leaves there is gone. The container's `/tmp`
+ * lasts as long as the container, for every command run there.
  */
 export function escalatingRouter(
 	known: ReadonlySet<string>,
 ): (tool: string, command: string | readonly string[] | undefined, tabled: SandboxTier) => SandboxTier {
 	return (tool, command, tabled) => {
 		if (tabled !== "isolate" || tool !== "bash" || command === undefined) return tabled;
+		if (namesTmp(command)) return "container";
 		return commandPrograms(command).some((program) => !known.has(program)) ? "container" : "isolate";
 	};
+}
+
+/** `/tmp` or a path under it, as a word or after a redirection, `=` or `:` (`> /tmp/x`, `--out=/tmp/x`, `PATH=/tmp`). */
+const TMP_PATH = /(?:^|[\s"'<>=:;&|(`])\/tmp(?:$|[/\s"';&|)`])/;
+
+function namesTmp(command: string | readonly string[]): boolean {
+	return typeof command === "string" ? TMP_PATH.test(command) : command.some((word) => TMP_PATH.test(word));
 }
 
 export interface InProcessIsolateOptions {
