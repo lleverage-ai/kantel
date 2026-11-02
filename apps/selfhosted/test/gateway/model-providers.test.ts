@@ -6,7 +6,6 @@
 import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import {
 	type CallContext,
 	MODEL_PROVIDER_PRESETS,
@@ -14,7 +13,8 @@ import {
 	systemContext,
 	type UsageRecord,
 } from "@kantel/contracts";
-import { syncSqliteDriver } from "@kantel/sql/sqlite";
+import type { SqlDriver } from "@kantel/sql";
+import { pgliteDatabase } from "@kantel/sql/testing";
 import { createFakeModelUpstream } from "@kantel/testing/models";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -222,7 +222,10 @@ describe("connecting a provider and choosing the default model", () => {
 			const id = input.provider;
 			const saved = await call("PUT", `/v1/model-providers/connections/${id}`, input);
 			expect(saved.status).toBe(200);
-			expect(saved.body).toMatchObject({ id, provider: input.provider, vaultItemId: expect.any(String) });
+			// No asymmetric matcher here: Bun's toMatchObject writes `expect.any` over the field it matched, and the vault
+			// item ID is read again below.
+			expect(saved.body).toMatchObject({ id, provider: input.provider });
+			expect(typeof saved.body.vaultItemId).toBe("string");
 			expect(saved.text).not.toContain(KEY);
 			// The key is in the vault, as an organisation item bound to the provider's host.
 			const item = await components.vault!.getItem(admin, saved.body.vaultItemId);
@@ -328,73 +331,83 @@ describe("the vault's key file", () => {
 });
 
 describe("the SQL store", () => {
+	// PGlite stands in for Postgres: Bun runs this file in CI's self-hosted job, and Bun has no node:sqlite.
 	it("keeps connections and defaults, and a restart puts them back in the gateway", async () => {
-		const driver = syncSqliteDriver(new DatabaseSync(":memory:"));
-		await migrateModelProviders(driver);
-		await migrateModelProviders(driver);
-		const store = createSqlModelProviderStore(driver);
-		const connection = {
-			id: "openrouter",
-			provider: "openrouter" as const,
-			baseUrl: "https://openrouter.ai/api/v1",
-			vaultItemId: "vi_1",
-			createdAt: "2026-11-02T00:00:00.000Z",
-			updatedAt: "2026-11-02T00:00:00.000Z",
-		};
-		const connector = {
-			id: "openrouter",
-			owner: { kind: "organisation" as const, organisationId: "org_1" },
-			preset: "openrouter" as const,
-			baseUrl: connection.baseUrl,
-			vaultItemId: "vi_1",
-			catalogue: { refresh: "gateway" as const },
-		};
-		await store.put({ organisationId: "org_1", connection, connector });
-		await store.putDefault("org_1", { connectionId: "openrouter", modelId: "openai/gpt-5" });
-		expect(await store.list("org_1")).toEqual([{ organisationId: "org_1", connection, connector }]);
-		expect(await store.list("org_2")).toEqual([]);
-		expect(await store.defaults()).toEqual([
-			{ organisationId: "org_1", value: { connectionId: "openrouter", modelId: "openai/gpt-5" } },
-		]);
+		const database = await pgliteDatabase.open();
+		try {
+			await keepsConnectionsAndDefaults(database.driver);
+		} finally {
+			await database.close();
+		}
+		// PGlite takes a few seconds to start, close to Bun's 5 s default.
+	}, 30_000);
+});
 
-		const put: unknown[] = [];
-		const routes: unknown[] = [];
-		const allowed: string[] = [];
-		const restarted = createModelProviders({
-			store,
-			access: () => {
+async function keepsConnectionsAndDefaults(driver: SqlDriver): Promise<void> {
+	await migrateModelProviders(driver);
+	await migrateModelProviders(driver);
+	const store = createSqlModelProviderStore(driver);
+	const connection = {
+		id: "openrouter",
+		provider: "openrouter" as const,
+		baseUrl: "https://openrouter.ai/api/v1",
+		vaultItemId: "vi_1",
+		createdAt: "2026-11-02T00:00:00.000Z",
+		updatedAt: "2026-11-02T00:00:00.000Z",
+	};
+	const connector = {
+		id: "openrouter",
+		owner: { kind: "organisation" as const, organisationId: "org_1" },
+		preset: "openrouter" as const,
+		baseUrl: connection.baseUrl,
+		vaultItemId: "vi_1",
+		catalogue: { refresh: "gateway" as const },
+	};
+	await store.put({ organisationId: "org_1", connection, connector });
+	await store.putDefault("org_1", { connectionId: "openrouter", modelId: "openai/gpt-5" });
+	expect(await store.list("org_1")).toEqual([{ organisationId: "org_1", connection, connector }]);
+	expect(await store.list("org_2")).toEqual([]);
+	expect(await store.defaults()).toEqual([
+		{ organisationId: "org_1", value: { connectionId: "openrouter", modelId: "openai/gpt-5" } },
+	]);
+
+	const put: unknown[] = [];
+	const routes: unknown[] = [];
+	const allowed: string[] = [];
+	const restarted = createModelProviders({
+		store,
+		access: () => {
+			throw new Error("unused");
+		},
+		vault: () => undefined,
+		gateway: {
+			directory: async () =>
+				({
+					putConnector: async (_ctx: unknown, input: unknown) => void put.push(input),
+					putRoute: async (_ctx: unknown, input: unknown) => void routes.push(input),
+				}) as never,
+			modelGateway: async () => {
 				throw new Error("unused");
 			},
-			vault: () => undefined,
-			gateway: {
-				directory: async () =>
-					({
-						putConnector: async (_ctx: unknown, input: unknown) => void put.push(input),
-						putRoute: async (_ctx: unknown, input: unknown) => void routes.push(input),
-					}) as never,
-				modelGateway: async () => {
-					throw new Error("unused");
-				},
-				allowOrigin: (url) => void allowed.push(url),
-			},
-		});
-		await restarted.restore();
-		expect(put).toEqual([connector]);
-		expect(routes).toEqual([
-			{
-				name: "default",
-				owner: { kind: "organisation", organisationId: "org_1" },
-				connectorId: "openrouter",
-				modelId: "openai/gpt-5",
-			},
-		]);
-		expect(allowed).toEqual([connection.baseUrl]);
-		expect(await restarted.configured("org_1")).toBe(true);
-		expect(await restarted.configured("org_2")).toBe(false);
-
-		await store.remove("org_1", "openrouter");
-		await store.removeDefault("org_1");
-		expect(await store.list()).toEqual([]);
-		expect(await store.getDefault("org_1")).toBeUndefined();
+			allowOrigin: (url) => void allowed.push(url),
+		},
 	});
-});
+	await restarted.restore();
+	expect(put).toEqual([connector]);
+	expect(routes).toEqual([
+		{
+			name: "default",
+			owner: { kind: "organisation", organisationId: "org_1" },
+			connectorId: "openrouter",
+			modelId: "openai/gpt-5",
+		},
+	]);
+	expect(allowed).toEqual([connection.baseUrl]);
+	expect(await restarted.configured("org_1")).toBe(true);
+	expect(await restarted.configured("org_2")).toBe(false);
+
+	await store.remove("org_1", "openrouter");
+	await store.removeDefault("org_1");
+	expect(await store.list()).toEqual([]);
+	expect(await store.getDefault("org_1")).toBeUndefined();
+}
