@@ -494,6 +494,157 @@ describe("program waits", () => {
 		});
 	});
 
+	it("delete a program with its runs and steps in SQL, refused with 409 while a run is going", async () => {
+		const storage = durableStorage();
+		const { stack, admin, service } = await start(storage);
+		const api = createProgramsApi({ programs: service(), authenticate: async () => admin });
+		const call = async (method: string, path: string, body?: unknown) => {
+			const response = await api.fetch(
+				new Request(`https://kantel.test/v1${path}`, {
+					method,
+					headers: { "content-type": "application/json" },
+					...(body === undefined ? {} : { body: JSON.stringify(body) }),
+				}),
+			);
+			if (response === undefined) throw new Error("not a programs route");
+			return {
+				status: response.status,
+				body: response.status === 204 ? undefined : ((await response.json()) as Record<string, unknown>),
+			};
+		};
+		const db = storage.sql;
+		if (db === undefined) throw new Error("no SQL");
+		const count = async (table: "program_runs" | "program_steps" | "program_versions", programId: string) => {
+			const query =
+				table === "program_steps"
+					? "SELECT COUNT(*) AS n FROM program_steps WHERE run_id IN (SELECT id FROM program_runs WHERE program_id = ?)"
+					: `SELECT COUNT(*) AS n FROM ${table} WHERE program_id = ?`;
+			return Number((await db.query(query, [programId]))[0]?.n);
+		};
+		const stepsOf = async (runId: string) =>
+			Number((await db.query("SELECT COUNT(*) AS n FROM program_steps WHERE run_id = ?", [runId]))[0]?.n);
+
+		// Two programs, each with an ended run that has steps.
+		const doomed = await service().create(admin, {
+			projectId: stack.project.id,
+			name: "doomed",
+			code: COUNTED,
+			tools: ["read", "write"],
+		});
+		const kept = await service().create(admin, {
+			projectId: stack.project.id,
+			name: "kept",
+			code: COUNTED,
+			tools: ["read", "write"],
+		});
+		const finish = async (programId: string) => {
+			const run = await service().run(admin, programId, { input: null });
+			const waiting = await until(service(), admin, run, (r) => r.status !== "running");
+			const wait = waiting.waitingOn?.[0];
+			if (wait === undefined || wait.kind !== "input") throw new Error("not waiting on input");
+			const resumed = await service().resume(admin, programId, run.id, {
+				waitId: wait.id,
+				value: { ok: true },
+				waitMs: 5000,
+			});
+			return until(service(), admin, resumed, (r) => r.status !== "running");
+		};
+		const doomedRun = await finish(doomed.id);
+		const keptRun = await finish(kept.id);
+		expect([doomedRun.status, keptRun.status]).toEqual(["succeeded", "succeeded"]);
+		await service().addVersion(admin, doomed.id, { code: "return 1;" });
+
+		// A run still waiting: the delete is refused, names it, and deletes nothing.
+		const live = await service().run(admin, doomed.id, { input: null, version: 1, mode: "async" });
+		await until(service(), admin, live, (r) => r.status === "waiting");
+		const before = {
+			runs: await count("program_runs", doomed.id),
+			steps: await count("program_steps", doomed.id),
+			versions: await count("program_versions", doomed.id),
+		};
+		expect(before.runs).toBe(2);
+		expect(before.steps).toBeGreaterThan(0);
+		expect(before.versions).toBe(2);
+		const refused = await call("DELETE", `/programs/${doomed.id}`);
+		expect(refused).toMatchObject({ status: 409, body: { error: { code: "conflict" } } });
+		expect(JSON.stringify(refused.body)).toContain(`${live.id} (waiting)`);
+		expect({
+			runs: await count("program_runs", doomed.id),
+			steps: await count("program_steps", doomed.id),
+			versions: await count("program_versions", doomed.id),
+		}).toEqual(before);
+		expect(await call("GET", `/programs/${doomed.id}`)).toMatchObject({ status: 200 });
+
+		// Cancelled, it goes: the program, its versions, its runs and their steps, and nothing of the other program.
+		await service().cancel(admin, doomed.id, live.id);
+		const keptSteps = await stepsOf(keptRun.id);
+		expect(keptSteps).toBeGreaterThan(0);
+		expect(await call("DELETE", `/programs/${doomed.id}`)).toMatchObject({ status: 204 });
+		expect(await count("program_runs", doomed.id)).toBe(0);
+		expect(await stepsOf(doomedRun.id)).toBe(0);
+		expect(await stepsOf(live.id)).toBe(0);
+		expect(await count("program_versions", doomed.id)).toBe(0);
+		expect(await call("GET", `/programs/${doomed.id}`)).toMatchObject({ status: 404 });
+		expect(await call("GET", `/programs/${doomed.id}/runs/${doomedRun.id}`)).toMatchObject({ status: 404 });
+		expect(await call("DELETE", `/programs/${doomed.id}`)).toMatchObject({ status: 404 });
+
+		expect(await count("program_runs", kept.id)).toBe(1);
+		expect(await stepsOf(keptRun.id)).toBe(keptSteps);
+		expect(await call("GET", `/programs/${kept.id}/runs/${keptRun.id}`)).toMatchObject({
+			status: 200,
+			body: { status: "succeeded" },
+		});
+		// The runs' sessions stay.
+		await expect(stack.runtime.directory.get(admin, doomedRun.sessionId)).resolves.toMatchObject({
+			id: doomedRun.sessionId,
+		});
+	});
+
+	it("in memory too, deleting a program takes its runs and their steps, and only its own", async () => {
+		const store = createMemoryProgramStore();
+		const actor = { kind: "human", userId: "u1" } as const;
+		const run = (id: string, programId: string, status: "running" | "waiting" | "succeeded") =>
+			store.putRun({
+				id,
+				organisationId: "o1",
+				projectId: "p1",
+				programId,
+				version: 1,
+				status,
+				input: null,
+				sessionId: `s-${id}`,
+				submissionId: "",
+				startedAt: 1,
+				startedBy: actor,
+			});
+		const step = (runId: string) =>
+			store.putStep({
+				runId,
+				tool: "read",
+				fingerprint: "f",
+				occurrence: 1,
+				kind: "call",
+				status: "done",
+				firstActivation: 1,
+				activation: 1,
+				callKey: "c1",
+				argsPreview: "{}",
+				executedAt: 1,
+				replays: 0,
+			});
+		await run("r1", "a", "succeeded");
+		await run("r2", "a", "waiting");
+		await run("r3", "b", "running");
+		for (const id of ["r1", "r2", "r3"]) await step(id);
+		expect((await store.unendedRuns("a")).map((r) => r.id)).toEqual(["r2"]);
+		await store.removeProgram("a");
+		expect(await store.runs("a", 10)).toEqual([]);
+		expect(await store.steps("r1")).toEqual([]);
+		expect(await store.steps("r2")).toEqual([]);
+		expect((await store.runs("b", 10)).map((r) => r.id)).toEqual(["r3"]);
+		expect(await store.steps("r3")).toHaveLength(1);
+	});
+
 	it("serve resume and steps over the API, and keep both off without the switch", async () => {
 		const { stack, admin, service } = await start();
 		const api = createProgramsApi({ programs: service(), authenticate: async () => admin });
