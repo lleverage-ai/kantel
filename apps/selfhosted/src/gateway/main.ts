@@ -28,6 +28,8 @@
 //                               so a person can sign in by email one-time PIN (Kantel is invite-only)
 //   KANTEL_VAULT_CIPHER_KEY    the vault's 256-bit key, base64, sealing item values in Postgres; without it a gateway on
 //                               Postgres has no vault (in memory, the vault has a random key of its own)
+//   KANTEL_VAULT_CIPHER_KEY_FILE  instead: a file holding that key, written with a random one (mode 0600) at the first
+//                               start. Compose sets it, so a fresh install has a vault for the models it connects
 //   KANTEL_EGRESS_KEY          the egress proxy's shared key (16 characters or more): mounts /v1/egress/decisions and
 //                               /v1/egress/scope for it (egress.ts). Needs a vault
 //   KANTEL_EGRESS_GRANTS_FILE  the proxy's policy file, whose credentialed routes are imported into the vault for the
@@ -57,12 +59,14 @@
 // It runs on node:http, so it needs nothing Bun-specific; the image runs it on Bun like the session hosts.
 // First: HARBOUR_* settings from before the rename still count.
 import "@kantel/contracts/legacy-env";
+import { randomBytes } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { browserBinding, browserConfig, createBrowserViews, gatewayBrowserProvider } from "./browser.ts";
 import { callbackUrlAllowed, parseCallbackOrigins } from "./callbacks.ts";
-import { type Bootstrap, bootstrap, createGatewayComponents } from "./components.ts";
+import { type Bootstrap, bootstrap, createGatewayComponents, putAssistantProfile } from "./components.ts";
 import { connectionsConfig } from "./connections.ts";
 import { createDurableGatewayComponents, type DurableConfig } from "./durable.ts";
 import { importPolicyFile } from "./egress.ts";
@@ -74,6 +78,7 @@ import {
 	CPA_CONNECTOR_ID,
 	describeConnectorProbe,
 	modelGatewaySource,
+	NO_PLATFORM_MODELS,
 	platformModels,
 	probeConnector,
 } from "./models.ts";
@@ -151,6 +156,31 @@ export function projectList(value: string | undefined): string[] {
 	return [...new Set((value ?? "").split(",").map((name) => name.trim()))].filter((name) => name !== "");
 }
 
+/**
+ * The vault's cipher key: `KANTEL_VAULT_CIPHER_KEY`, else the one in `KANTEL_VAULT_CIPHER_KEY_FILE`, which the first
+ * start writes with 32 random bytes (base64, readable by this user only) when the file isn't there. Compose keeps the
+ * file on the gateway's volume, so a fresh install has a vault, and an organisation can connect its own models
+ * (`model-providers.ts`), with nothing to set. Empty when neither is given: no vault.
+ */
+export function vaultCipherKeyOf(env: NodeJS.ProcessEnv): string {
+	const given = env.KANTEL_VAULT_CIPHER_KEY?.trim() ?? "";
+	if (given !== "") return given;
+	const file = env.KANTEL_VAULT_CIPHER_KEY_FILE?.trim() ?? "";
+	if (file === "") return "";
+	try {
+		mkdirSync(dirname(file), { recursive: true });
+		writeFileSync(file, `${randomBytes(32).toString("base64")}\n`, { flag: "wx", mode: 0o600 });
+		console.log(`[gateway] wrote a new vault cipher key to ${file}: keep it, the vault's values are sealed with it`);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+	}
+	const key = readFileSync(file, "utf8").trim();
+	if (Buffer.from(key, "base64").length !== 32) {
+		throw new Error(`KANTEL_VAULT_CIPHER_KEY_FILE (${file}) must hold a base64 256-bit key`);
+	}
+	return key;
+}
+
 /** The real components' configuration, or undefined (in memory) when KANTEL_DATABASE_URL is unset. */
 export function durableConfig(env: NodeJS.ProcessEnv = process.env): DurableConfig | undefined {
 	const databaseUrl = env.KANTEL_DATABASE_URL?.trim() ?? "";
@@ -161,7 +191,7 @@ export function durableConfig(env: NodeJS.ProcessEnv = process.env): DurableConf
 		return value;
 	};
 	const region = env.S3_REGION?.trim();
-	const vaultCipherKey = env.KANTEL_VAULT_CIPHER_KEY?.trim() ?? "";
+	const vaultCipherKey = vaultCipherKeyOf(env);
 	const usage = usageConfig(env);
 	return {
 		...(vaultCipherKey === "" ? {} : { vaultCipherKey }),
@@ -192,7 +222,15 @@ async function readBootstrap(path: string): Promise<Bootstrap | undefined> {
 }
 
 export async function serveGateway(cfg = gatewayConfig()) {
-	const modelGateway = cfg.models === undefined ? undefined : modelGatewaySource(cfg.models);
+	// With no platform connector, the gateway is still there when the vault is, so an organisation can connect its own
+	// provider at run time (`model-providers.ts`, the console's onboarding); sessions stay on the echo model until then.
+	const vaultOn = cfg.durable === undefined || cfg.durable.vaultCipherKey !== undefined;
+	const modelGateway =
+		cfg.models !== undefined
+			? modelGatewaySource(cfg.models)
+			: vaultOn
+				? modelGatewaySource(NO_PLATFORM_MODELS)
+				: undefined;
 	const browser =
 		cfg.browser === undefined
 			? {}
@@ -274,6 +312,21 @@ export async function serveGateway(cfg = gatewayConfig()) {
 			// every session.
 			const probe = await probeConnector(models, connector);
 			(probe.result === "ok" ? console.log : console.warn)(describeConnectorProbe(models, connector, probe));
+		}
+	}
+	if (modelGateway !== undefined && cfg.models === undefined) await modelGateway.seed(components.vault, {});
+	const providers = components.modelProviders;
+	if (providers !== undefined) {
+		await providers.restore();
+		// The organisation's first default model gives the bootstrap project its `assistant` profile, which New session picks.
+		const { organisationId, projectId } = seeded;
+		providers.onDefault(async (organisation) => {
+			if (organisation === organisationId) await putAssistantProfile(components, organisationId, projectId);
+		});
+		if (!(await providers.configured(organisationId))) {
+			console.log(
+				"[gateway] no model provider yet: sessions answer with the echo model until an admin connects one in the console",
+			);
 		}
 	}
 	await writePrivateFile(cfg.bootstrapFile, `${JSON.stringify(seeded, null, "\t")}\n`);

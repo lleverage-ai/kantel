@@ -41,6 +41,7 @@ export const sidebar = [
 			"api/host-tools",
 			"api/tool-servers",
 			"api/environments",
+			"api/model-providers",
 			"api/programs",
 			"api/packaging-an-agent",
 			"api/host-apps",

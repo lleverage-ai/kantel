@@ -1,4 +1,4 @@
-import type { ConnectorModels } from "@kantel/contracts";
+import type { ConnectorModels, ModelProviderConnection } from "@kantel/contracts";
 import { useState } from "react";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { type ImageTestState, ModelsPage, type ModelsPageAgent, testKey } from "./models-page.tsx";
@@ -162,3 +162,67 @@ export const LoadFailed: Story = () => (
 );
 
 export const Empty: Story = () => <ModelsPage connectors={[]} />;
+
+const CONNECTIONS: readonly ModelProviderConnection[] = [
+	{
+		id: "openrouter",
+		provider: "openrouter",
+		baseUrl: "https://openrouter.ai/api/v1",
+		vaultItemId: "vlt_openrouter",
+		createdAt: "2026-10-30T09:00:00Z",
+		updatedAt: "2026-10-30T09:00:00Z",
+	},
+	{
+		id: "cloudflare-ai-gateway",
+		provider: "cloudflare-ai-gateway",
+		baseUrl: "https://gateway.ai.cloudflare.com/v1/0123456789abcdef0123456789abcdef/default/compat",
+		accountId: "0123456789abcdef0123456789abcdef",
+		gatewayId: "default",
+		vaultItemId: "vlt_cloudflare",
+		createdAt: "2026-10-31T09:00:00Z",
+		updatedAt: "2026-10-31T09:00:00Z",
+	},
+];
+
+/** The organisation's provider connections at the top, the default model on one, with Edit and Remove for an admin. */
+export const Providers: Story = () => (
+	<ModelsPage
+		providers={{
+			connections: CONNECTIONS,
+			default: { connectionId: "openrouter", modelId: "anthropic/claude-sonnet-4.5" },
+			canManage: true,
+		}}
+		onConnectProvider={() => {}}
+		onEditProvider={() => {}}
+		onRemoveProvider={() => {}}
+		connectors={CONNECTORS}
+		agent={AGENT}
+	/>
+);
+
+export const ProvidersReadOnly: Story = () => (
+	<ModelsPage
+		providers={{
+			connections: CONNECTIONS,
+			default: { connectionId: "openrouter", modelId: "anthropic/claude-sonnet-4.5" },
+			canManage: false,
+		}}
+		connectors={CONNECTORS}
+	/>
+);
+
+export const NoProvider: Story = () => (
+	<ModelsPage providers={{ connections: [], canManage: true }} onConnectProvider={() => {}} connectors={CONNECTORS} />
+);
+
+export const NoProviderPlatformDefault: Story = () => (
+	<ModelsPage
+		providers={{
+			connections: [],
+			canManage: true,
+			platformDefault: { connectorId: "cpa", modelId: "claude-sonnet-5-5" },
+		}}
+		onConnectProvider={() => {}}
+		connectors={CONNECTORS}
+	/>
+);

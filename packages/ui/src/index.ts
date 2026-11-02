@@ -182,8 +182,16 @@ export {
 	ModelsPage,
 	type ModelsPageAgent,
 	type ModelsPageProps,
+	type ModelsPageProviders,
 	testKey,
 } from "./models/models-page.tsx";
+export {
+	ProviderSetup,
+	type ProviderSetupField,
+	type ProviderSetupFields,
+	type ProviderSetupProps,
+	type ProviderTestState,
+} from "./models/provider-setup.tsx";
 export { framedHtml, HTML_FRAME_POLICY, HTML_FRAME_SANDBOX } from "./presented/html-frame.ts";
 // Files the agent presents (`present_files`): their cards in the transcript, and the viewer they open.
 export {

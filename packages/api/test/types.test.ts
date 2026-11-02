@@ -52,6 +52,7 @@ import type { Static, TSchema } from "typebox";
 import { describe, expect, it } from "vitest";
 import type * as Conn from "../src/connections-schema.ts";
 import type * as Envs from "../src/environments-schema.ts";
+import type * as Providers from "../src/model-providers-schema.ts";
 import type * as Frames from "../src/protocol-schema.ts";
 import type { DeepReadonly } from "../src/route.ts";
 import type * as Runs from "../src/run-schema.ts";
@@ -318,6 +319,23 @@ describe("schemas match the contracts", () => {
 			same<Wire<typeof Envs.UpdateEnvironmentBody>, Sharing.UpdateEnvironmentInput>(true),
 			same<Wire<typeof Envs.GrantEnvironmentBody>, Sharing.GrantEnvironmentInput>(true),
 			same<Wire<typeof Envs.ListEnvironmentsQuery>, Sharing.EnvironmentFilter>(true),
+		];
+		expect(proofs.every(Boolean)).toBe(true);
+	});
+
+	it("matches the model providers contract", () => {
+		const proofs = [
+			same<Wire<typeof Providers.ModelProvider>, Sharing.ModelProvider>(true),
+			same<Wire<typeof Providers.ModelProviderInput>, Sharing.ModelProviderInput>(true),
+			same<
+				Wire<typeof Providers.TestModelProviderBody>,
+				Sharing.ModelProviderInput & { readonly connectionId?: string }
+			>(true),
+			same<Wire<typeof Providers.ModelProviderConnection>, Sharing.ModelProviderConnection>(true),
+			same<Wire<typeof Providers.ModelProviderModel>, Sharing.ModelProviderModel>(true),
+			same<Wire<typeof Providers.ModelProviderModels>, Sharing.ModelProviderModels>(true),
+			same<Wire<typeof Providers.ModelProviderDefault>, Sharing.ModelProviderDefault>(true),
+			same<Wire<typeof Providers.ModelProvidersState>, Sharing.ModelProvidersState>(true),
 		];
 		expect(proofs.every(Boolean)).toBe(true);
 	});

@@ -115,7 +115,10 @@ host registering again.
 
 ### Real models: CLIProxyAPI through the model gateway
 
-Without further setup, sessions answer with the echo model (`Echo: …`). With `KANTEL_CPA_URL` and
+Without further setup, sessions answer with the echo model (`Echo: …`) until an admin connects a model provider in
+the console's first-run setup (CLI Proxy API, LiteLLM, Cloudflare AI Gateway or OpenRouter), its key in the gateway's
+vault. `compose.yaml` gives the gateway a vault key of its own (`KANTEL_VAULT_CIPHER_KEY_FILE`, written at the first
+start on the `gatewaystate` volume) and `host.docker.internal` for a provider on this machine. With `KANTEL_CPA_URL` and
 `KANTEL_CPA_API_KEY`, the gateway runs `@kantel/model-gateway` in its process with one CLIProxyAPI connector and a
 `default` route to `KANTEL_DEFAULT_MODEL` (default `claude-sonnet-5-5`), as the Cloudflare target does. CPA's key is
 kept as a platform item in the gateway's vault, which records each use, so a gateway on Postgres also needs

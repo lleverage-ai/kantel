@@ -55,6 +55,7 @@ import {
 	type SessionListState,
 } from "../api/client.ts";
 import type { ConsoleMembers } from "../api/members.ts";
+import type { ConsoleModelProviders } from "../api/model-providers-http.ts";
 import type { ConsoleModels } from "../api/models-http.ts";
 import type {
 	ConsoleAgent,
@@ -75,6 +76,7 @@ import { MemoryScreen, SkillsScreen } from "./agent-screens.tsx";
 import { AuditScreen } from "./audit-screen.tsx";
 import { FilesScreen } from "./files-screen.tsx";
 import { useLineage } from "./lineage.ts";
+import { ProviderSetupScreen, useModelOnboarding } from "./model-providers-screen.tsx";
 import { ModelsScreen } from "./models-screen.tsx";
 import { NewSessionScreen } from "./new-session-screen.tsx";
 import {
@@ -486,6 +488,7 @@ export function App({
 	toolServers,
 	environments,
 	models,
+	modelProviders,
 	rules,
 	oversightPending = false,
 	onOpen,
@@ -518,6 +521,11 @@ export function App({
 	environments?: ConsoleEnvironments;
 	/** The Models page's seam (connectors and the agent's image model); without it there's no Models in the sidebar. */
 	models?: ConsoleModels;
+	/**
+	 * The model providers' seam (the organisation's own inference and its default model): the first-run onboarding and
+	 * the Models page's Providers section. Without it there's neither.
+	 */
+	modelProviders?: ConsoleModelProviders;
 	/** The Rules page's seam (prompt rules); without it there's no Rules in the sidebar. */
 	rules?: ConsoleRules;
 	onOpen?: (sessionId: string, session: SessionClient) => void;
@@ -537,6 +545,8 @@ export function App({
 	}, [pathname]);
 	const narrow = useMedia(NARROW_QUERY);
 	const { projects, error: projectsError } = useProjects(client);
+	// First run: an organisation admin with no model for sessions to call is asked to connect one.
+	const modelOnboarding = useModelOnboarding(modelProviders);
 	// Where sessions run: the organisation, when the client serves organisation sessions, then the projects. The tree,
 	// New session's picker and a route's `projectId` take the organisation as one more project (`ORGANISATION_SCOPE`).
 	const scopes = useMemo(
@@ -800,8 +810,26 @@ export function App({
 		</div>
 	) : null;
 
+	// The onboarding takes the place of the home page, a project's and New session until it's done or skipped.
+	const onboarding =
+		modelProviders !== undefined &&
+		modelOnboarding.show &&
+		(route.name === "home" || route.name === "project" || route.name === "new-session");
+
 	let main: ReactNode;
-	if (vaultRoute && vault !== undefined) {
+	if (onboarding && modelProviders !== undefined) {
+		// No page bar: its way back to the sessions would land here again, while Skip for now is the way on.
+		main = (
+			<div className={page}>
+				<ProviderSetupScreen
+					providers={modelProviders}
+					variant="onboarding"
+					onDone={modelOnboarding.done}
+					onSkip={modelOnboarding.skip}
+				/>
+			</div>
+		);
+	} else if (vaultRoute && vault !== undefined) {
 		main = (
 			<div className={page}>
 				{pageBar}
@@ -981,7 +1009,13 @@ export function App({
 			) : (
 				<div className={page}>
 					{pageBar}
-					<ModelsScreen key={route.projectId} client={client} models={models} projectId={route.projectId} />
+					<ModelsScreen
+						key={route.projectId}
+						client={client}
+						models={models}
+						{...(modelProviders === undefined ? {} : { modelProviders })}
+						projectId={route.projectId}
+					/>
 				</div>
 			);
 	} else if (route.name === "project-tool-servers") {
@@ -1070,6 +1104,7 @@ export function App({
 
 	const newSession = route.name === "new-session" && project !== undefined;
 	const pane =
+		onboarding ||
 		sessionId !== undefined ||
 		linkedSession !== undefined ||
 		newSession ||
@@ -1090,10 +1125,13 @@ export function App({
 		: { role: "complementary", "aria-label": inSettings ? "Settings" : "Projects and sessions" };
 	const classes = shellClasses({ narrow, collapsed: sidebar.collapsed, pane });
 	// The page's heading, for a screen reader, wherever the session header's isn't on screen.
-	// The vault page, the audit log and API keys bring their own headings.
+	// The vault page, the audit log, API keys and the onboarding bring their own headings.
 	const title = settingsIndex
 		? "Settings"
-		: organisationPage || organisationWaiting || (route.name === "project-tool-servers" && toolServers !== undefined)
+		: onboarding ||
+				organisationPage ||
+				organisationWaiting ||
+				(route.name === "project-tool-servers" && toolServers !== undefined)
 			? undefined
 			: missing || unknownProject
 				? "Page not found"

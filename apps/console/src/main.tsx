@@ -16,6 +16,7 @@ import { createApiClient, type TransportKind } from "./api/http.ts";
 import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } from "./api/identity.ts";
 import { apiKeys } from "./api/keys.ts";
 import { apiMembers, type ConsoleMembers } from "./api/members.ts";
+import { apiModelProviders, type ConsoleModelProviders } from "./api/model-providers-http.ts";
 import { apiModels, type ConsoleModels } from "./api/models-http.ts";
 import type {
 	ConsoleAgent,
@@ -40,6 +41,7 @@ import { createRecordedAgent, type RecordedAgent } from "./recorded/agent.ts";
 import { createCatalogue } from "./recorded/catalogue.ts";
 import { createRecordedConnections } from "./recorded/connections.ts";
 import { createRecordedEnvironments } from "./recorded/environments.ts";
+import { createRecordedModelProviders } from "./recorded/model-providers.ts";
 import { createRecordedOversight, type RecordedOversight } from "./recorded/oversight.ts";
 import { createRecordedRules } from "./recorded/rules.ts";
 import { createRecordedSchedules } from "./recorded/schedules.ts";
@@ -164,6 +166,7 @@ type Oversight = {
 	readonly environments?: ConsoleEnvironments;
 	readonly agent?: ConsoleAgent;
 	readonly models?: ConsoleModels;
+	readonly modelProviders?: ConsoleModelProviders;
 	readonly rules?: ConsoleRules;
 };
 const recordedOversight: Promise<Oversight> | undefined =
@@ -184,6 +187,9 @@ const recordedOversight: Promise<Oversight> | undefined =
 				const toolServers = createRecordedToolServers();
 				// Environments on fixtures; `source=api` reads /v1/environments.
 				const environments = createRecordedEnvironments();
+				// Model providers in memory, nothing connected yet, so the first-run onboarding shows; `source=api` reads
+				// /v1/model-providers.
+				const modelProviders = createRecordedModelProviders();
 				return {
 					vault: made.vault,
 					audit: made.audit,
@@ -193,6 +199,7 @@ const recordedOversight: Promise<Oversight> | undefined =
 					toolServers,
 					environments,
 					agent,
+					modelProviders,
 					rules,
 				};
 			})
@@ -225,6 +232,7 @@ function Console({
 		environments,
 		agent,
 		models,
+		modelProviders,
 		rules,
 	} = oversight;
 	return (
@@ -242,6 +250,7 @@ function Console({
 			{...(environments === undefined ? {} : { environments })}
 			{...(agent === undefined ? {} : { agent })}
 			{...(models === undefined ? {} : { models })}
+			{...(modelProviders === undefined ? {} : { modelProviders })}
 			{...(rules === undefined ? {} : { rules })}
 			onOpen={onOpen}
 		/>
@@ -426,6 +435,7 @@ function SignedInConsole({
 			...(state.me.actor.kind === "human" ? { viewer: state.me.actor.userId } : {}),
 		};
 		const models = apiModels({ headers: state.headers, onUnauthenticated });
+		const modelProviders = apiModelProviders({ headers: state.headers, onUnauthenticated });
 		const rules = apiRules(state.me, { headers: state.headers, onUnauthenticated });
 		return {
 			client: cacheOn && cacheStore !== undefined ? withLocalCache(api, openCache(cacheStore, owner)) : api,
@@ -433,6 +443,7 @@ function SignedInConsole({
 			ready: {
 				agent,
 				models,
+				modelProviders,
 				rules,
 				...(keys === undefined ? {} : { keys }),
 				...(members === undefined ? {} : { members }),
@@ -486,6 +497,7 @@ function SignedInConsole({
 						audit: audit(vault !== undefined),
 						agent,
 						models,
+						modelProviders,
 						rules,
 						schedules,
 						...(sharing === undefined ? {} : { sharing }),

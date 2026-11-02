@@ -257,9 +257,18 @@ services:
       # More projects beside the first, by name (comma-separated), all on
       # the bootstrap's operator key; next-to-sal.yaml names a default set.
       KANTEL_PROJECTS: ${KANTEL_PROJECTS:-${HARBOUR_PROJECTS:-}}
+      # The vault's key, made at the first start and kept on the gateway's
+      # volume, so the console's first-run setup can keep the keys of the
+      # model providers you connect (CLI Proxy API, LiteLLM, Cloudflare AI
+      # Gateway, OpenRouter). KANTEL_VAULT_CIPHER_KEY, where set, wins.
+      KANTEL_VAULT_CIPHER_KEY_FILE: /var/lib/harbour/vault-cipher.key
     ports: ["127.0.0.1:${KANTEL_GATEWAY_PORT:-${HARBOUR_GATEWAY_PORT:-58090}}:8080"]
     networks: [control]
     volumes: [gatewaystate:/var/lib/harbour]
+    # A provider on this machine, such as CLIProxyAPI on :8317 or LiteLLM on
+    # :4000, is http://host.docker.internal:<port>/v1 from the gateway.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres: { condition: service_healthy }
       minio: { condition: service_healthy }

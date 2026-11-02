@@ -187,8 +187,10 @@ On another machine over SSH, forward the ports first: ssh -L $port:127.0.0.1:$po
 Your API key and project are in the gateway's bootstrap file:
   docker compose -f $compose_file exec -T gateway sh -c 'cat /var/lib/*/bootstrap.json'
 
-Sessions answer with an echo model until the gateway has a model to call; see
-https://kantel.dev/docs/console/models/ and https://kantel.dev/docs/deploy/self-hosted/
+Once you're signed in, the console asks you to connect inference: CLI Proxy API, LiteLLM, Cloudflare AI
+Gateway or OpenRouter. Enter its address and key, test it and pick a default model. Until then sessions
+answer with an echo model. A provider on this machine is http://host.docker.internal:<port>/v1 to Kantel.
+See https://kantel.dev/docs/console/getting-started/first-steps/ and https://kantel.dev/docs/console/models/
 
 Stop it:            docker compose -f $compose_file down
 Stop and delete it: docker compose -f $compose_file down -v

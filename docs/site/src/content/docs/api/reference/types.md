@@ -1568,6 +1568,77 @@ A model a session may run with, as a model picker shows it.
 | `default` | boolean | no | The model the session runs with when no message names one. At most one. |
 | `disabledReason` | string | no | Set when the model is listed but can't be chosen now, with the reason. |
 
+### ModelProvider
+
+The upstream: CLIProxyAPI, a LiteLLM proxy, Cloudflare AI Gateway or OpenRouter. Each speaks OpenAI's API and lists its models.
+
+One of: `"cliproxyapi"` or `"litellm"` or `"cloudflare-ai-gateway"` or `"openrouter"`.
+
+### ModelProviderConnection
+
+A saved connection: never its key.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The connection's ID, which is its model connector's, such as `openrouter`. |
+| `provider` | [ModelProvider](/api/reference/types/#modelprovider) | yes |  |
+| `baseUrl` | string | yes |  |
+| `accountId` | string | no |  |
+| `gatewayId` | string | no |  |
+| `vaultItemId` | string | yes | The vault item that holds the key. Never the key. |
+| `createdAt` | string | yes | ISO 8601, UTC. |
+| `updatedAt` | string | yes | ISO 8601, UTC. |
+
+### ModelProviderDefault
+
+The organisation's default model: its `default` route, which the `assistant` profile names.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `connectionId` | string | yes |  |
+| `modelId` | string | yes |  |
+| `updatedAt` | string | no | ISO 8601, UTC. |
+
+### ModelProviderInput
+
+A connection to make or change.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `provider` | [ModelProvider](/api/reference/types/#modelprovider) | yes |  |
+| `baseUrl` | string | no | For CLI Proxy API and LiteLLM: the OpenAI-compatible base URL, such as `http://host.docker.internal:4000/v1`. `http` or `https`, with no credentials. OpenRouter's is fixed; Cloudflare's is built from the IDs. |
+| `accountId` | string | no | For Cloudflare AI Gateway: the Cloudflare account ID. |
+| `gatewayId` | string | no | For Cloudflare AI Gateway: the gateway's ID. Default `default`. |
+| `apiKey` | string | no | The provider's key. Write-only: it goes into the organisation's vault and no answer carries it. Required to make a connection; leave it out to keep a saved connection's key while its host is unchanged. |
+
+### ModelProviderModel
+
+One model the provider lists.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The provider's model ID, such as `openai/gpt-5`. |
+| `name` | string | no |  |
+| `contextWindow` | integer | no |  (minimum 1) |
+
+### ModelProviderModels
+
+The models the provider lists, by ID.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [ModelProviderModel](/api/reference/types/#modelprovidermodel)[] | yes |  |
+
+### ModelProvidersState
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `configured` | boolean | yes | Whether sessions have a model to call: the organisation's default, or one the deployment set. |
+| `canManage` | boolean | yes | Whether the caller may change connections and the default: an organisation admin. |
+| `connections` | [ModelProviderConnection](/api/reference/types/#modelproviderconnection)[] | yes | The organisation's connections; empty for a caller who isn't an organisation viewer. |
+| `default` | [ModelProviderDefault](/api/reference/types/#modelproviderdefault) | no |  |
+| `platformDefault` | object | no | A default the deployment set, which the organisation's replaces. |
+
 ### ModelSelection
 
 A model and thinking level.
@@ -2502,6 +2573,13 @@ One of: `"private"` or `"shared"`.
 | --- | --- | --- | --- |
 | `container` | `"started"` or `"running"` or `"skipped"` or `"unavailable"` | yes | The session's container: `started` now, already `running`, `skipped` (the session has never needed one, so none is started for it) or `unavailable` (this deployment runs no containers, or the session has no workspace). |
 
+### SetModelProviderDefaultBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `connectionId` | string | yes | A saved connection. |
+| `modelId` | string | yes | One of the models it lists. No `:`, which names a thinking level. |
+
 ### SetResourcePolicyBody
 
 | Field | Type | Required | Description |
@@ -2735,6 +2813,19 @@ A message the session accepted.
 | `sessionId` | string | yes |  |
 | `via` | [MessageVia](/api/reference/types/#messagevia) | yes |  |
 | `requestId` | string | no | The `Idempotency-Key` it was sent with. |
+
+### TestModelProviderBody
+
+A connection to test, before or after it is saved.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `provider` | [ModelProvider](/api/reference/types/#modelprovider) | yes |  |
+| `baseUrl` | string | no | For CLI Proxy API and LiteLLM: the OpenAI-compatible base URL, such as `http://host.docker.internal:4000/v1`. `http` or `https`, with no credentials. OpenRouter's is fixed; Cloudflare's is built from the IDs. |
+| `accountId` | string | no | For Cloudflare AI Gateway: the Cloudflare account ID. |
+| `gatewayId` | string | no | For Cloudflare AI Gateway: the gateway's ID. Default `default`. |
+| `apiKey` | string | no | The provider's key. Write-only: it goes into the organisation's vault and no answer carries it. Required to make a connection; leave it out to keep a saved connection's key while its host is unchanged. |
+| `connectionId` | string | no | A saved connection whose key to test with, when `apiKey` is left out. |
 
 ### TestRequest
 

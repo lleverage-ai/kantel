@@ -1,12 +1,16 @@
-import type { AgentProfile, ConnectorModels } from "@kantel/contracts";
+import type { AgentProfile, ConnectorModels, ModelProviderConnection, ModelProvidersState } from "@kantel/contracts";
 import { type ImageTestState, ModelsPage, type ModelsPageAgent, testKey } from "@kantel/ui";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ConsoleClient } from "../api/client.ts";
+import type { ConsoleModelProviders } from "../api/model-providers-http.ts";
 import { type ConsoleModels, choiceId, imageModelOptions } from "../api/models-http.ts";
+import { ProviderSetupScreen } from "./model-providers-screen.tsx";
 
 // A project's Models page: its connectors' models with their capabilities and a test image, and the image model of the
 // agent a new session in the project runs (`ConsoleClient.startOptions`). @kantel/ui's ModelsPage lays it out; this
-// file reads and writes through the models seam (`api/models-http.ts`) and keeps the page's state.
+// file reads and writes through the models seam (`api/models-http.ts`) and keeps the page's state. With the model
+// providers' seam (`api/model-providers-http.ts`) the page opens on the organisation's provider connections, with the
+// provider form (`ProviderSetupScreen`) to connect or edit one.
 
 const messageOf = (reason: unknown) => (reason instanceof Error ? reason.message : String(reason));
 
@@ -15,15 +19,45 @@ type ProfileState =
 	| { readonly status: "none" }
 	| { readonly status: "ready"; readonly profile: AgentProfile };
 
+/** The provider form while it is open: for a new connection, or editing a saved one. */
+type ProviderForm = { readonly editing?: ModelProviderConnection };
+
 export function ModelsScreen({
 	client,
 	models,
+	modelProviders,
 	projectId,
 }: {
 	client: ConsoleClient;
 	models: ConsoleModels;
+	/** The organisation's provider connections; without it the page has no Providers section. */
+	modelProviders?: ConsoleModelProviders;
 	projectId: string;
 }) {
+	const [providerState, setProviderState] = useState<ModelProvidersState>();
+	const [providersError, setProvidersError] = useState<string>();
+	const [providerForm, setProviderForm] = useState<ProviderForm>();
+	const [removing, setRemoving] = useState<string>();
+	// Bumped to read the providers again, after a save or a removal.
+	const [providersRead, setProvidersRead] = useState(0);
+
+	useEffect(() => {
+		if (modelProviders === undefined) return;
+		const abort = new AbortController();
+		// Read again on each bump.
+		void providersRead;
+		modelProviders.state(abort.signal).then(
+			(state) => {
+				if (abort.signal.aborted) return;
+				setProviderState(state);
+				setProvidersError(undefined);
+			},
+			(reason: unknown) => {
+				if (!abort.signal.aborted) setProvidersError(messageOf(reason));
+			},
+		);
+		return () => abort.abort();
+	}, [modelProviders, providersRead]);
 	const [connectors, setConnectors] = useState<readonly ConnectorModels[]>();
 	const [error, setError] = useState<string>();
 	const [profile, setProfile] = useState<ProfileState>({ status: "loading" });
@@ -57,6 +91,41 @@ export function ModelsScreen({
 	}, [client, models, projectId]);
 
 	const options = useMemo(() => imageModelOptions(connectors ?? []), [connectors]);
+
+	// A provider saved or removed changes the connectors the project sees: read them again, keeping the list shown.
+	const rereadConnectors = useCallback(() => {
+		models.connectors(projectId).then(
+			(found) => {
+				setConnectors(found);
+				setError(undefined);
+			},
+			(reason: unknown) => setError(messageOf(reason)),
+		);
+	}, [models, projectId]);
+
+	const providerDone = useCallback(() => {
+		setProviderForm(undefined);
+		setProvidersRead((count) => count + 1);
+		rereadConnectors();
+	}, [rereadConnectors]);
+
+	const removeProvider = useCallback(
+		async (connectionId: string) => {
+			if (modelProviders === undefined) return;
+			setRemoving(connectionId);
+			setProvidersError(undefined);
+			try {
+				await modelProviders.remove(connectionId);
+				setProvidersRead((count) => count + 1);
+				rereadConnectors();
+			} catch (reason) {
+				setProvidersError(messageOf(reason));
+			} finally {
+				setRemoving(undefined);
+			}
+		},
+		[modelProviders, rereadConnectors],
+	);
 
 	const save = useCallback(async () => {
 		const picked = draftRef.current;
@@ -124,8 +193,50 @@ export function ModelsScreen({
 					...(may.allowed ? {} : { readOnlyReason: "Changing the agent needs the operator role." }),
 				};
 
+	const editingDefault =
+		providerForm?.editing !== undefined && providerState?.default?.connectionId === providerForm.editing.id
+			? providerState.default.modelId
+			: undefined;
+	const providerSetup =
+		modelProviders === undefined || providerForm === undefined ? undefined : (
+			<ProviderSetupScreen
+				key={providerForm.editing?.id ?? "new"}
+				providers={modelProviders}
+				variant="settings"
+				{...(providerForm.editing === undefined ? {} : { editing: providerForm.editing })}
+				{...(editingDefault === undefined ? {} : { initialModel: editingDefault })}
+				onDone={providerDone}
+				onCancel={() => setProviderForm(undefined)}
+			/>
+		);
+
 	return (
 		<ModelsPage
+			{...(modelProviders === undefined
+				? {}
+				: {
+						...(providerState === undefined
+							? {}
+							: {
+									providers: {
+										connections: providerState.connections,
+										...(providerState.default === undefined ? {} : { default: providerState.default }),
+										...(providerState.platformDefault === undefined
+											? {}
+											: { platformDefault: providerState.platformDefault }),
+										canManage: providerState.canManage,
+									},
+								}),
+						...(providersError === undefined ? {} : { providersError }),
+						...(removing === undefined ? {} : { removingProvider: removing }),
+						...(providerSetup === undefined ? {} : { providerSetup }),
+						onConnectProvider: () => setProviderForm({}),
+						onEditProvider: (connectionId: string) => {
+							const editing = providerState?.connections.find((connection) => connection.id === connectionId);
+							if (editing !== undefined) setProviderForm({ editing });
+						},
+						onRemoveProvider: (connectionId: string) => void removeProvider(connectionId),
+					})}
 			connectors={connectors}
 			{...(error === undefined ? {} : { error })}
 			{...(agent === undefined ? {} : { agent })}

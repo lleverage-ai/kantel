@@ -11,6 +11,7 @@
 		"./resolution": "./src/resolution.ts",
 		"./tokens": "./src/tokens.ts",
 		"./presets": "./src/presets.ts",
+		"./providers": "./src/providers.ts",
 		"./catalogue": "./src/catalogue.ts",
 		"./redact": "./src/redact.ts",
 		"./gateway": "./src/gateway.ts",

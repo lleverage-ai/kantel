@@ -11368,6 +11368,423 @@
 					}
 				}
 			}
+		},
+		"/model-providers": {
+			"get": {
+				"operationId": "getModelProviders",
+				"summary": "Get the organisation's model providers",
+				"description": "Whether sessions have a model to call, whether the caller may change that, the organisation's connections and its default model. Anyone in the organisation may ask; only its viewers see the connections.",
+				"tags": ["model-providers"],
+				"responses": {
+					"200": {
+						"description": "The state.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ModelProvidersState"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/model-providers/test": {
+			"post": {
+				"operationId": "testModelProvider",
+				"summary": "Test a connection",
+				"description": "Reads the provider's model list with the key (or a saved connection's, with `connectionId`) and answers the models. The provider refusing the key is `refused`; one that can't be reached or answers badly is `unavailable`. Saves nothing. Needs admin on the organisation.",
+				"tags": ["model-providers"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/TestModelProviderBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The models the provider lists.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ModelProviderModels"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/model-providers/connections/{connectionId}": {
+			"put": {
+				"operationId": "putModelProviderConnection",
+				"summary": "Save a connection",
+				"description": "Makes or changes the connection: its key into the organisation's vault, bound to the provider's host, and an organisation model connector on the gateway. The answer never carries the key. Needs admin on the organisation.",
+				"tags": ["model-providers"],
+				"parameters": [
+					{
+						"name": "connectionId",
+						"in": "path",
+						"required": true,
+						"description": "The connection's ID, which is its model connector's: lowercase letters, digits and dashes.",
+						"schema": {
+							"type": "string",
+							"pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/ModelProviderInput"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The connection.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ModelProviderConnection"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "deleteModelProviderConnection",
+				"summary": "Remove a connection",
+				"description": "Removes the connection and its connector, and the default model if it was on it. The deployment's default, if any, applies again; without one, sessions on the `assistant` profile fail with `no_model` until another default is chosen. The key's vault item is kept. Needs admin on the organisation.",
+				"tags": ["model-providers"],
+				"parameters": [
+					{
+						"name": "connectionId",
+						"in": "path",
+						"required": true,
+						"description": "The connection's ID, which is its model connector's: lowercase letters, digits and dashes.",
+						"schema": {
+							"type": "string",
+							"pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+						}
+					}
+				],
+				"responses": {
+					"204": {
+						"description": "Removed."
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/model-providers/connections/{connectionId}/models": {
+			"get": {
+				"operationId": "listModelProviderModels",
+				"summary": "List a connection's models",
+				"description": "Reads the provider's model list with the saved key. Needs admin on the organisation.",
+				"tags": ["model-providers"],
+				"parameters": [
+					{
+						"name": "connectionId",
+						"in": "path",
+						"required": true,
+						"description": "The connection's ID, which is its model connector's: lowercase letters, digits and dashes.",
+						"schema": {
+							"type": "string",
+							"pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The models the provider lists.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ModelProviderModels"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/model-providers/default": {
+			"put": {
+				"operationId": "setModelProviderDefault",
+				"summary": "Choose the default model",
+				"description": "Makes the model the organisation's `default` route, which the `assistant` profile names, so a new session uses it. Needs admin on the organisation.",
+				"tags": ["model-providers"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/SetModelProviderDefaultBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The default model.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ModelProviderDefault"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	},
 	"components": {
@@ -16373,6 +16790,183 @@
 				"title": "ModelOption",
 				"description": "A model a session may run with, as a model picker shows it."
 			},
+			"ModelProvider": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "cliproxyapi"
+					},
+					{
+						"type": "string",
+						"const": "litellm"
+					},
+					{
+						"type": "string",
+						"const": "cloudflare-ai-gateway"
+					},
+					{
+						"type": "string",
+						"const": "openrouter"
+					}
+				],
+				"title": "ModelProvider",
+				"description": "The upstream: CLIProxyAPI, a LiteLLM proxy, Cloudflare AI Gateway or OpenRouter. Each speaks OpenAI's API and lists its models."
+			},
+			"ModelProviderConnection": {
+				"type": "object",
+				"required": ["id", "provider", "baseUrl", "vaultItemId", "createdAt", "updatedAt"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The connection's ID, which is its model connector's, such as `openrouter`."
+					},
+					"provider": {
+						"$ref": "#/components/schemas/ModelProvider"
+					},
+					"baseUrl": {
+						"type": "string"
+					},
+					"accountId": {
+						"type": "string"
+					},
+					"gatewayId": {
+						"type": "string"
+					},
+					"vaultItemId": {
+						"type": "string",
+						"description": "The vault item that holds the key. Never the key."
+					},
+					"createdAt": {
+						"type": "string",
+						"format": "date-time",
+						"description": "ISO 8601, UTC."
+					},
+					"updatedAt": {
+						"type": "string",
+						"format": "date-time",
+						"description": "ISO 8601, UTC."
+					}
+				},
+				"title": "ModelProviderConnection",
+				"description": "A saved connection: never its key."
+			},
+			"ModelProviderDefault": {
+				"type": "object",
+				"required": ["connectionId", "modelId"],
+				"properties": {
+					"connectionId": {
+						"type": "string"
+					},
+					"modelId": {
+						"type": "string"
+					},
+					"updatedAt": {
+						"type": "string",
+						"format": "date-time",
+						"description": "ISO 8601, UTC."
+					}
+				},
+				"title": "ModelProviderDefault",
+				"description": "The organisation's default model: its `default` route, which the `assistant` profile names."
+			},
+			"ModelProviderInput": {
+				"type": "object",
+				"required": ["provider"],
+				"properties": {
+					"provider": {
+						"$ref": "#/components/schemas/ModelProvider"
+					},
+					"baseUrl": {
+						"type": "string",
+						"description": "For CLI Proxy API and LiteLLM: the OpenAI-compatible base URL, such as `http://host.docker.internal:4000/v1`. `http` or `https`, with no credentials. OpenRouter's is fixed; Cloudflare's is built from the IDs."
+					},
+					"accountId": {
+						"type": "string",
+						"description": "For Cloudflare AI Gateway: the Cloudflare account ID."
+					},
+					"gatewayId": {
+						"type": "string",
+						"description": "For Cloudflare AI Gateway: the gateway's ID. Default `default`."
+					},
+					"apiKey": {
+						"type": "string",
+						"description": "The provider's key. Write-only: it goes into the organisation's vault and no answer carries it. Required to make a connection; leave it out to keep a saved connection's key while its host is unchanged."
+					}
+				},
+				"title": "ModelProviderInput",
+				"description": "A connection to make or change."
+			},
+			"ModelProviderModel": {
+				"type": "object",
+				"required": ["id"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The provider's model ID, such as `openai/gpt-5`."
+					},
+					"name": {
+						"type": "string"
+					},
+					"contextWindow": {
+						"type": "integer",
+						"minimum": 1
+					}
+				},
+				"title": "ModelProviderModel",
+				"description": "One model the provider lists."
+			},
+			"ModelProviderModels": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ModelProviderModel"
+						}
+					}
+				},
+				"title": "ModelProviderModels",
+				"description": "The models the provider lists, by ID."
+			},
+			"ModelProvidersState": {
+				"type": "object",
+				"required": ["configured", "canManage", "connections"],
+				"properties": {
+					"configured": {
+						"type": "boolean",
+						"description": "Whether sessions have a model to call: the organisation's default, or one the deployment set."
+					},
+					"canManage": {
+						"type": "boolean",
+						"description": "Whether the caller may change connections and the default: an organisation admin."
+					},
+					"connections": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ModelProviderConnection"
+						},
+						"description": "The organisation's connections; empty for a caller who isn't an organisation viewer."
+					},
+					"default": {
+						"$ref": "#/components/schemas/ModelProviderDefault"
+					},
+					"platformDefault": {
+						"type": "object",
+						"required": ["connectorId", "modelId"],
+						"properties": {
+							"connectorId": {
+								"type": "string"
+							},
+							"modelId": {
+								"type": "string"
+							}
+						},
+						"description": "A default the deployment set, which the organisation's replaces."
+					}
+				},
+				"title": "ModelProvidersState"
+			},
 			"ModelSelection": {
 				"type": "object",
 				"required": ["model"],
@@ -19174,6 +19768,21 @@
 				},
 				"title": "SessionWarmth"
 			},
+			"SetModelProviderDefaultBody": {
+				"type": "object",
+				"required": ["connectionId", "modelId"],
+				"properties": {
+					"connectionId": {
+						"type": "string",
+						"description": "A saved connection."
+					},
+					"modelId": {
+						"type": "string",
+						"description": "One of the models it lists. No `:`, which names a thinking level."
+					}
+				},
+				"title": "SetModelProviderDefaultBody"
+			},
 			"SetResourcePolicyBody": {
 				"type": "object",
 				"required": ["resource", "policy"],
@@ -19808,6 +20417,37 @@
 				},
 				"title": "Submission",
 				"description": "A message the session accepted."
+			},
+			"TestModelProviderBody": {
+				"type": "object",
+				"required": ["provider"],
+				"properties": {
+					"provider": {
+						"$ref": "#/components/schemas/ModelProvider"
+					},
+					"baseUrl": {
+						"type": "string",
+						"description": "For CLI Proxy API and LiteLLM: the OpenAI-compatible base URL, such as `http://host.docker.internal:4000/v1`. `http` or `https`, with no credentials. OpenRouter's is fixed; Cloudflare's is built from the IDs."
+					},
+					"accountId": {
+						"type": "string",
+						"description": "For Cloudflare AI Gateway: the Cloudflare account ID."
+					},
+					"gatewayId": {
+						"type": "string",
+						"description": "For Cloudflare AI Gateway: the gateway's ID. Default `default`."
+					},
+					"apiKey": {
+						"type": "string",
+						"description": "The provider's key. Write-only: it goes into the organisation's vault and no answer carries it. Required to make a connection; leave it out to keep a saved connection's key while its host is unchanged."
+					},
+					"connectionId": {
+						"type": "string",
+						"description": "A saved connection whose key to test with, when `apiKey` is left out."
+					}
+				},
+				"title": "TestModelProviderBody",
+				"description": "A connection to test, before or after it is saved."
 			},
 			"TestRequest": {
 				"type": "object",

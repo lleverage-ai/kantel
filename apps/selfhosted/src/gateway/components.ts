@@ -52,6 +52,12 @@ import { createMemoryWorkspaceStore, createStoredWorkspaces, type StoredWorkspac
 import { gatewaySessionBrowser, withBrowserTools } from "./browser.ts";
 import { type GatewayConnectionsConfig, gatewayConnections } from "./connections.ts";
 import { type GatewayEnvironments, type GatewayEnvironmentsConfig, gatewayEnvironments } from "./environments.ts";
+import {
+	createMemoryModelProviderStore,
+	createModelProviders,
+	type ModelProviders,
+	type ModelProvidersGateway,
+} from "./model-providers.ts";
 import { createGatewaySandboxes, SANDBOX_BINDING } from "./sandboxes.ts";
 import { sessionContextOptions, skillsMountSource, withOwnWorkspaces } from "./skills-memory.ts";
 import { type GatewayToolServers, gatewayToolServers } from "./tool-servers.ts";
@@ -104,6 +110,11 @@ export interface GatewayComponents {
 	 */
 	readonly assistantRoute?: string;
 	/**
+	 * Model providers (`model-providers.ts`): organisations' own inference, connected at run time as the console's
+	 * onboarding does. Present with the model gateway.
+	 */
+	readonly modelProviders?: ModelProviders;
+	/**
 	 * The sessions' browser (`browser.ts`): its tools in every session, a person's decisions and the console's links.
 	 * Absent without a browser provider.
 	 */
@@ -135,6 +146,8 @@ export interface GatewayComponents {
 export interface ModelGatewaySource {
 	/** The route the bootstrap's `assistant` profile names. */
 	readonly route: string;
+	/** Organisations' own connectors on the gateway (`model-providers.ts`); absent on a gateway that takes none. */
+	readonly providers?: ModelProvidersGateway;
 	build(deps: {
 		readonly vault: () => KantelVault | undefined;
 		readonly audit: AuditSink;
@@ -214,6 +227,12 @@ export function deferredAccess(): { access: ProjectAccess; set(target: ProjectAc
 		},
 	};
 }
+
+/** The model gateway sessions are on: none when they're given models of their own (a test's scripted model). */
+export const modelGatewayOf = (options: {
+	readonly models?: GatewayModels;
+	readonly modelGateway?: ModelGatewaySource;
+}): ModelGatewaySource | undefined => (options.models === undefined ? options.modelGateway : undefined);
 
 /** The sessions' models: a test's scripted model, say. Default the echo model. */
 export type GatewayModels = Pick<SessionRuntimeOptions, "models" | "resolveModel">;
@@ -338,7 +357,18 @@ export function createGatewayComponents(
 		],
 	});
 	vault = createMemoryVault({ audit, access });
+	const memoryVault = vault;
 	const connections = linked?.attach(vault, runtime.directory);
+	const providersGateway = modelGatewayOf(options)?.providers;
+	const modelProviders =
+		providersGateway === undefined
+			? undefined
+			: createModelProviders({
+					store: createMemoryModelProviderStore(),
+					access: () => access,
+					vault: () => memoryVault,
+					gateway: providersGateway,
+				});
 	// Placeholder-gated injection (#331): the isolate's curl reaches a connection's API with its placeholder.
 	const sandboxes = gatewaySandboxes.attach({
 		workspaces,
@@ -363,6 +393,7 @@ export function createGatewayComponents(
 		passkeys: createPasskeys({ ...createMemoryPasskeyStores(), identity, audit }),
 		vault,
 		...(modelGateway === undefined ? {} : { assistantRoute: modelGateway.route }),
+		...(modelProviders === undefined ? {} : { modelProviders }),
 		...(browser === undefined ? {} : { browser }),
 		...(connections === undefined ? {} : { connections }),
 		...(heldToolServers === undefined ? {} : { toolServers: heldToolServers }),
@@ -563,6 +594,56 @@ async function keyCovering(
  * them, an `echo` agent profile and a workspace with a README, so every mounted API has something to answer with. The profile and workspace are ensured every start, so they come back after a restart
  * on in-memory components too.
  */
+/**
+ * A bootstrap profile's tools: in a session on a workspace, the file tools on the workspace directly, and `bash` in an
+ * isolate leased on its first command (`sandboxes.ts`). With a browser, its tools too (`browser.ts`):
+ * `browser_request` asks a person for sites first.
+ */
+function codingProfile(components: Pick<GatewayComponents, "browser" | "connections">) {
+	return {
+		tools: [
+			...CODING_TOOLS,
+			...(components.browser === undefined ? [] : BROWSER_TOOL_NAMES),
+			...(components.connections === undefined ? [] : CONNECTION_TOOL_NAMES),
+		],
+		skills: [],
+		sandbox: { tiers: ["isolate" as const] },
+		memoryScopes: [],
+	};
+}
+
+/**
+ * The bootstrap project's `assistant` profile, on the model gateway's `default` route, as Cloudflare's default profile.
+ * Its prompt is the user's alone: one they set is kept. The start makes it, and so does the organisation's first
+ * default model (`ModelProviders.onDefault`).
+ */
+export async function putAssistantProfile(
+	components: GatewayComponents,
+	organisationId: OrganisationId,
+	projectId: ProjectId,
+): Promise<void> {
+	if (components.assistantRoute === undefined) return;
+	const inProject: CallContext = {
+		actor: { kind: "system", component: "selfhosted-bootstrap" },
+		organisationId,
+		projectId,
+	};
+	const { runtime } = components;
+	const stored = await runtime.profiles.get(inProject, ASSISTANT_PROFILE).catch((error: unknown) => {
+		if (error instanceof KantelError && error.code === "not_found") return undefined;
+		throw error;
+	});
+	await runtime.profiles.put(inProject, {
+		id: ASSISTANT_PROFILE,
+		organisationId,
+		projectId,
+		name: "Assistant",
+		model: { route: components.assistantRoute },
+		promptLayers: stored?.promptLayers ?? [],
+		...codingProfile(components),
+	});
+}
+
 export async function bootstrap(
 	components: GatewayComponents,
 	names: BootstrapNames,
@@ -589,19 +670,7 @@ export async function bootstrap(
 		organisationId,
 		projectId,
 	};
-	// In a session on a workspace: the file tools on the workspace directly, and `bash` in an isolate leased on its
-	// first command (`sandboxes.ts`).
-	// With a browser, its tools too (`browser.ts`): `browser_request` asks a person for sites first.
-	const coding = {
-		tools: [
-			...CODING_TOOLS,
-			...(components.browser === undefined ? [] : BROWSER_TOOL_NAMES),
-			...(components.connections === undefined ? [] : CONNECTION_TOOL_NAMES),
-		],
-		skills: [],
-		sandbox: { tiers: ["isolate" as const] },
-		memoryScopes: [],
-	};
+	const coding = codingProfile(components);
 	await runtime.profiles.put(inProject, {
 		id: "echo",
 		organisationId,
@@ -611,21 +680,13 @@ export async function bootstrap(
 		promptLayers: [],
 		...coding,
 	});
-	if (components.assistantRoute !== undefined) {
-		// On the model gateway, as Cloudflare's default profile. Its prompt is the user's alone: one they set is kept.
-		const stored = await runtime.profiles.get(inProject, ASSISTANT_PROFILE).catch((error: unknown) => {
-			if (error instanceof KantelError && error.code === "not_found") return undefined;
-			throw error;
-		});
-		await runtime.profiles.put(inProject, {
-			id: ASSISTANT_PROFILE,
-			organisationId,
-			projectId,
-			name: "Assistant",
-			model: { route: components.assistantRoute },
-			promptLayers: stored?.promptLayers ?? [],
-			...coding,
-		});
+	// Only once sessions have a model to call: before an organisation connects a provider (`model-providers.ts`), the
+	// `echo` profile is the one New session picks.
+	if (
+		components.assistantRoute !== undefined &&
+		(components.modelProviders === undefined || (await components.modelProviders.configured(organisationId)))
+	) {
+		await putAssistantProfile(components, organisationId, projectId);
 	}
 	const workspace = await workspaces.ensure(inProject, `bootstrap_${projectId}`, {
 		owner: { kind: "project", organisationId, projectId },

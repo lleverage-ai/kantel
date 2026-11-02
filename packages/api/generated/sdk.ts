@@ -1696,6 +1696,77 @@ export interface ModelOption {
 	readonly disabledReason?: string;
 }
 
+/** The upstream: CLIProxyAPI, a LiteLLM proxy, Cloudflare AI Gateway or OpenRouter. Each speaks OpenAI's API and lists its models. */
+export type ModelProvider = "cliproxyapi" | "litellm" | "cloudflare-ai-gateway" | "openrouter";
+
+/** A saved connection: never its key. */
+export interface ModelProviderConnection {
+	/** The connection's ID, which is its model connector's, such as `openrouter`. */
+	readonly id: string;
+	/** The upstream: CLIProxyAPI, a LiteLLM proxy, Cloudflare AI Gateway or OpenRouter. Each speaks OpenAI's API and lists its models. */
+	readonly provider: ModelProvider;
+	readonly baseUrl: string;
+	readonly accountId?: string;
+	readonly gatewayId?: string;
+	/** The vault item that holds the key. Never the key. */
+	readonly vaultItemId: string;
+	/** ISO 8601, UTC. */
+	readonly createdAt: string;
+	/** ISO 8601, UTC. */
+	readonly updatedAt: string;
+}
+
+/** The organisation's default model: its `default` route, which the `assistant` profile names. */
+export interface ModelProviderDefault {
+	readonly connectionId: string;
+	readonly modelId: string;
+	/** ISO 8601, UTC. */
+	readonly updatedAt?: string;
+}
+
+/** A connection to make or change. */
+export interface ModelProviderInput {
+	/** The upstream: CLIProxyAPI, a LiteLLM proxy, Cloudflare AI Gateway or OpenRouter. Each speaks OpenAI's API and lists its models. */
+	readonly provider: ModelProvider;
+	/** For CLI Proxy API and LiteLLM: the OpenAI-compatible base URL, such as `http://host.docker.internal:4000/v1`. `http` or `https`, with no credentials. OpenRouter's is fixed; Cloudflare's is built from the IDs. */
+	readonly baseUrl?: string;
+	/** For Cloudflare AI Gateway: the Cloudflare account ID. */
+	readonly accountId?: string;
+	/** For Cloudflare AI Gateway: the gateway's ID. Default `default`. */
+	readonly gatewayId?: string;
+	/** The provider's key. Write-only: it goes into the organisation's vault and no answer carries it. Required to make a connection; leave it out to keep a saved connection's key while its host is unchanged. */
+	readonly apiKey?: string;
+}
+
+/** One model the provider lists. */
+export interface ModelProviderModel {
+	/** The provider's model ID, such as `openai/gpt-5`. */
+	readonly id: string;
+	readonly name?: string;
+	readonly contextWindow?: number;
+}
+
+/** The models the provider lists, by ID. */
+export interface ModelProviderModels {
+	readonly items: readonly ModelProviderModel[];
+}
+
+export interface ModelProvidersState {
+	/** Whether sessions have a model to call: the organisation's default, or one the deployment set. */
+	readonly configured: boolean;
+	/** Whether the caller may change connections and the default: an organisation admin. */
+	readonly canManage: boolean;
+	/** The organisation's connections; empty for a caller who isn't an organisation viewer. */
+	readonly connections: readonly ModelProviderConnection[];
+	/** The organisation's default model: its `default` route, which the `assistant` profile names. */
+	readonly default?: ModelProviderDefault;
+	/** A default the deployment set, which the organisation's replaces. */
+	readonly platformDefault?: {
+		readonly connectorId: string;
+		readonly modelId: string;
+	};
+}
+
 /** A model and thinking level. */
 export interface ModelSelection {
 	/** A `ModelOption.id`. */
@@ -2697,6 +2768,13 @@ export interface SessionWarmth {
 	readonly container: "started" | "running" | "skipped" | "unavailable";
 }
 
+export interface SetModelProviderDefaultBody {
+	/** A saved connection. */
+	readonly connectionId: string;
+	/** One of the models it lists. No `:`, which names a thinking level. */
+	readonly modelId: string;
+}
+
 export interface SetResourcePolicyBody {
 	/** A resource: its kind and ID. */
 	readonly resource: ResourceRef;
@@ -2938,6 +3016,22 @@ export interface Submission {
 	readonly via: MessageVia;
 	/** The `Idempotency-Key` it was sent with. */
 	readonly requestId?: string;
+}
+
+/** A connection to test, before or after it is saved. */
+export interface TestModelProviderBody {
+	/** The upstream: CLIProxyAPI, a LiteLLM proxy, Cloudflare AI Gateway or OpenRouter. Each speaks OpenAI's API and lists its models. */
+	readonly provider: ModelProvider;
+	/** For CLI Proxy API and LiteLLM: the OpenAI-compatible base URL, such as `http://host.docker.internal:4000/v1`. `http` or `https`, with no credentials. OpenRouter's is fixed; Cloudflare's is built from the IDs. */
+	readonly baseUrl?: string;
+	/** For Cloudflare AI Gateway: the Cloudflare account ID. */
+	readonly accountId?: string;
+	/** For Cloudflare AI Gateway: the gateway's ID. Default `default`. */
+	readonly gatewayId?: string;
+	/** The provider's key. Write-only: it goes into the organisation's vault and no answer carries it. Required to make a connection; leave it out to keep a saved connection's key while its host is unchanged. */
+	readonly apiKey?: string;
+	/** A saved connection whose key to test with, when `apiKey` is left out. */
+	readonly connectionId?: string;
 }
 
 export interface TestRequest {
@@ -4047,6 +4141,22 @@ export interface KantelClient {
 	grantEnvironment(environmentId: string, body: GrantEnvironmentBody, options?: CallOptions): Promise<EnvironmentGrant>;
 	/** Revoke a session's grant. Ends the session's use of the environment, and its lease. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`. `DELETE /environments/{environmentId}/grants/{grantId}` */
 	revokeEnvironmentGrant(environmentId: string, grantId: string, options?: CallOptions): Promise<void>;
+	/** Get the organisation's model providers. Whether sessions have a model to call, whether the caller may change that, the organisation's connections and its default model. Anyone in the organisation may ask; only its viewers see the connections. `GET /model-providers` */
+	getModelProviders(options?: CallOptions): Promise<ModelProvidersState>;
+	/** Test a connection. Reads the provider's model list with the key (or a saved connection's, with `connectionId`) and answers the models. The provider refusing the key is `refused`; one that can't be reached or answers badly is `unavailable`. Saves nothing. Needs admin on the organisation. `POST /model-providers/test` */
+	testModelProvider(body: TestModelProviderBody, options?: CallOptions): Promise<ModelProviderModels>;
+	/** Save a connection. Makes or changes the connection: its key into the organisation's vault, bound to the provider's host, and an organisation model connector on the gateway. The answer never carries the key. Needs admin on the organisation. `PUT /model-providers/connections/{connectionId}` */
+	putModelProviderConnection(
+		connectionId: string,
+		body: ModelProviderInput,
+		options?: CallOptions,
+	): Promise<ModelProviderConnection>;
+	/** Remove a connection. Removes the connection and its connector, and the default model if it was on it. The deployment's default, if any, applies again; without one, sessions on the `assistant` profile fail with `no_model` until another default is chosen. The key's vault item is kept. Needs admin on the organisation. `DELETE /model-providers/connections/{connectionId}` */
+	deleteModelProviderConnection(connectionId: string, options?: CallOptions): Promise<void>;
+	/** List a connection's models. Reads the provider's model list with the saved key. Needs admin on the organisation. `GET /model-providers/connections/{connectionId}/models` */
+	listModelProviderModels(connectionId: string, options?: CallOptions): Promise<ModelProviderModels>;
+	/** Choose the default model. Makes the model the organisation's `default` route, which the `assistant` profile names, so a new session uses it. Needs admin on the organisation. `PUT /model-providers/default` */
+	setModelProviderDefault(body: SetModelProviderDefaultBody, options?: CallOptions): Promise<ModelProviderDefault>;
 }
 
 /** A client for Kantel's public API over `fetch`. */
@@ -4476,5 +4586,28 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 				},
 				callOptions,
 			),
+		getModelProviders: (callOptions) => send(options, { method: "GET", path: "/model-providers" }, callOptions),
+		testModelProvider: (body, callOptions) =>
+			send(options, { method: "POST", path: "/model-providers/test", body }, callOptions),
+		putModelProviderConnection: (connectionId, body, callOptions) =>
+			send(
+				options,
+				{ method: "PUT", path: `/model-providers/connections/${encodeURIComponent(connectionId)}`, body },
+				callOptions,
+			),
+		deleteModelProviderConnection: (connectionId, callOptions) =>
+			send(
+				options,
+				{ method: "DELETE", path: `/model-providers/connections/${encodeURIComponent(connectionId)}` },
+				callOptions,
+			),
+		listModelProviderModels: (connectionId, callOptions) =>
+			send(
+				options,
+				{ method: "GET", path: `/model-providers/connections/${encodeURIComponent(connectionId)}/models` },
+				callOptions,
+			),
+		setModelProviderDefault: (body, callOptions) =>
+			send(options, { method: "PUT", path: "/model-providers/default", body }, callOptions),
 	};
 }
