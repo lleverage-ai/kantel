@@ -49,7 +49,7 @@ async function main(argv: readonly string[], env: NodeJS.ProcessEnv): Promise<nu
 		return 0;
 	}
 	// --harbour, HARBOUR_URL and HARBOUR_TUNNEL_TOKEN: the names from before the rename.
-	const kantel = values.kantel ?? values.harbour ?? env.KANTEL_URL ?? env.HARBOUR_URL;
+	const kantel = values.kantel ?? values.harbour ?? env.KANTEL_URL ?? env.HARBOUR_URL; // before the rename: --harbour
 	const token = values.token ?? env.KANTEL_TUNNEL_TOKEN ?? env.HARBOUR_TUNNEL_TOKEN;
 	const serverId = values.server;
 	if (kantel === undefined || kantel.length === 0) return usageError("--kantel (or KANTEL_URL) is needed");
@@ -128,7 +128,7 @@ function parse(args: readonly string[]) {
 		args: [...args],
 		options: {
 			kantel: { type: "string" },
-			kantel: { type: "string" },
+			harbour: { type: "string" }, // --kantel's name before the rename
 			server: { type: "string" },
 			token: { type: "string" },
 			url: { type: "string" },

@@ -29,7 +29,7 @@ async function setup(
 		headers?: { readonly [name: string]: string };
 	} = {},
 ) {
-	const kantel = await startKantel({ serverId: SERVER_ID, token: TOKEN, ...options.harbour });
+	const kantel = await startKantel({ serverId: SERVER_ID, token: TOKEN, ...options.kantel });
 	cleanups.push(kantel.close);
 	const endpoint = options.endpoint ?? stdioEndpoint([process.execPath, ECHO_SERVER]);
 	const statuses: TunnelStatus[] = [];
@@ -312,7 +312,8 @@ describe("kantel-tunnel", () => {
 	it("still takes --harbour and HARBOUR_TUNNEL_TOKEN, from before the rename", async () => {
 		const kantel = await startKantel({ serverId: SERVER_ID, token: TOKEN });
 		cleanups.push(kantel.close);
-		const cli = run(["--kantel", kantel.origin, "--server", SERVER_ID, "--", process.execPath, ECHO_SERVER], {
+		const flag = "--harbour"; // --kantel's name before the rename
+		const cli = run([flag, kantel.origin, "--server", SERVER_ID, "--", process.execPath, ECHO_SERVER], {
 			HARBOUR_TUNNEL_TOKEN: TOKEN, // As named before the rename.
 		});
 		await (await kantel.side(0)).ready;

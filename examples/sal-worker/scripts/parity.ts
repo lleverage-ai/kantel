@@ -26,7 +26,7 @@ interface Side {
 const { values } = parseArgs({
 	options: { kantel: { type: "string" }, sal: { type: "string", multiple: true } },
 });
-if (values.harbour === undefined || values.sal === undefined) throw new Error("--kantel and --sal are required");
+if (values.kantel === undefined || values.sal === undefined) throw new Error("--kantel and --sal are required");
 const kantel = JSON.parse(readFileSync(values.kantel, "utf8")) as { tasks: (Side & { task: string })[] };
 const local = new Map(
 	values.sal.map((pair) => {

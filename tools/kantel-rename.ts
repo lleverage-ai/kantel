@@ -258,7 +258,7 @@ export const KEEP: readonly Keep[] = [
 		reason: "Internal hosts: a deployment's vault item for CLIProxyAPI is bound to cliproxyapi.harbour.internal.",
 	},
 	{
-		pattern: /(?<![\w.-])\/(etc|opt|var\/lib|var)\/harbour[\w./-]*|(?<![\w/])etc\/harbour\b|\.harbour(?=\/|$|[\s"'`])/gm,
+		pattern: /(?<![\w.-])\/(etc|opt|var\/lib|var)\/harbour[\w./-]*|(?<![\w/])etc\/harbour\b|(?<![\w.])\.harbour(?=\/|$)|(?<=\*\*\/)\.harbour\b/gm,
 		reason: "Paths in images and volumes, which running deployments mount and hold files at.",
 	},
 	{
