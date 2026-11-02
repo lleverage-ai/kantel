@@ -15,7 +15,8 @@ import { createCodemodeServer } from "../src/codemode/serve.ts";
 import { CODEMODE_ENTRYPOINT, type CodemodeLoaderLike, workerLoaderCodemode } from "../src/codemode.ts";
 import { gatewayConfig } from "../src/config.ts";
 import { createProgramsApi } from "../src/programs/http.ts";
-import type { ProgramRunView, ProgramsService } from "../src/programs/service.ts";
+import { createProgramsService, type ProgramRunView, type ProgramsService } from "../src/programs/service.ts";
+import { createMemoryProgramStore } from "../src/programs/store.ts";
 import {
 	createMemoryBootstrapStore,
 	createStack,
@@ -153,7 +154,107 @@ const COUNTED = [
 	"return { answer, runs: after.trim(), pick };",
 ].join("\n");
 
+/**
+ * The service over a fake session runtime whose `prompt` starts the script at once, before `prompt` returns, as a
+ * Durable Object's session can: what the deployed check (TASK-4484) caught, a resumed script reading the run before
+ * its new activation was kept, so its next wait never paused it.
+ */
+function eagerRuntime() {
+	const store = createMemoryProgramStore();
+	const seenAtPrompt: (number | undefined)[] = [];
+	const turns = new Map<string, { abort: AbortController; done: Promise<unknown> }>();
+	let service: ProgramsService | undefined;
+	let submissions = 0;
+	const script = async (runId: string, signal: AbortSignal) => {
+		const codemode = {
+			name: "codemode",
+			execute: async (_args: unknown, api: { executeTool: (...args: unknown[]) => Promise<unknown> }) => {
+				const first = (await api.executeTool(
+					"program_input",
+					{ prompt: "One?" },
+					{ abortSignal: signal },
+					{ key: "c1" },
+				)) as {
+					structuredOutput: unknown;
+				};
+				const second = (await api.executeTool(
+					"program_input",
+					{ prompt: "Two?" },
+					{ abortSignal: signal },
+					{ key: "c2" },
+				)) as {
+					structuredOutput: unknown;
+				};
+				return { output: [first.structuredOutput, second.structuredOutput] };
+			},
+		};
+		const tool = service?.codemodeFor(codemode as never, { labels: { programRun: runId } });
+		return (tool as unknown as typeof codemode).execute({}, { executeTool: async () => ({}) });
+	};
+	const runtime = {
+		create: async (_ctx: unknown, input: { labels: { programRun: string } }) => ({
+			id: `s-${input.labels.programRun}`,
+		}),
+		prompt: async (_ctx: unknown, sessionId: string) => {
+			const runId = sessionId.slice(2);
+			seenAtPrompt.push((await store.run(runId))?.activation);
+			submissions += 1;
+			const id = `sub${submissions}`;
+			const abort = new AbortController();
+			// The script starts before `prompt` returns.
+			const done = script(runId, abort.signal).then(
+				(answer) => ({ status: "answered", answer: JSON.stringify({ ok: true, output: answer.output }) }),
+				() => ({ status: "aborted" }),
+			);
+			turns.set(id, { abort, done });
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			return { id };
+		},
+		wait: async (_ctx: unknown, sessionId: string, submissionId: string) => ({
+			sessionId,
+			submissionId,
+			...((await turns.get(submissionId)?.done) as object),
+		}),
+		abort: async () => {
+			for (const turn of turns.values()) turn.abort.abort(new Error("aborted"));
+		},
+		snapshot: async () => ({ attention: "idle" }),
+	};
+	service = createProgramsService({
+		store,
+		access: () => ({ require: async () => undefined, allows: async () => true }) as never,
+		runtime: () => runtime as never,
+		profiles: () => ({ put: async () => undefined }) as never,
+		audit: { append: async () => undefined } as never,
+		now: () => Date.now(),
+		waits: true,
+	});
+	return { service, seenAtPrompt };
+}
+
 describe("program waits", () => {
+	it("keep a resumed run's activation before its script starts, so its next wait pauses it again", async () => {
+		const { service, seenAtPrompt } = eagerRuntime();
+		const ctx = { actor: { kind: "human", userId: "u1" }, organisationId: "o1", projectId: "p1" } as CallContext;
+		const program = await service.create(ctx, { projectId: "p1", name: "two", code: "(fake)" });
+		const run = await service.run(ctx, program.id, { mode: "async" });
+		const first = await until(service, ctx, run, (r) => r.status === "waiting");
+		expect(first).toMatchObject({ activation: 1, waitingOn: [expect.objectContaining({ prompt: "One?" })] });
+		await service.resume(ctx, program.id, run.id, { value: 1 });
+		const second = await until(service, ctx, first, (r) => r.status === "waiting" && r.activation === 2);
+		expect(second).toMatchObject({ activation: 2, waitingOn: [expect.objectContaining({ prompt: "Two?" })] });
+		await service.resume(ctx, program.id, run.id, { value: 2 });
+		const ended = await until(service, ctx, second, (r) => r.status === "succeeded" || r.status === "failed");
+		expect(ended).toMatchObject({ status: "succeeded", activation: 3, output: [1, 2] });
+		// Each activation's script found its own activation already kept.
+		expect(seenAtPrompt).toEqual([1, 2, 3]);
+		const steps = await service.steps(ctx, program.id, run.id);
+		expect(steps.map((step) => [step.args, step.firstActivation, step.lastActivation])).toEqual([
+			['{"prompt":"One?"}', 1, 3],
+			['{"prompt":"Two?"}', 2, 3],
+		]);
+	});
+
 	it("pause on waitForInput past the sync budget, and resume with the value without re-running finished calls", async () => {
 		const { stack, admin, service } = await start();
 		const program = await service().create(admin, {
@@ -281,7 +382,11 @@ describe("program waits", () => {
 
 	it("pause on agent() while an agent session works, and resume with its checked answer", async () => {
 		const { stack, admin, script, service } = await start();
-		script.reply({ text: 'Sure.\n```json\n{"verdict":"ship","score":9}\n```' });
+		// The agent takes longer than the pause takes to settle, so the run pauses and the answer resumes it.
+		script.reply(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 600));
+			return { text: 'Sure.\n```json\n{"verdict":"ship","score":9}\n```' };
+		});
 		const program = await service().create(admin, {
 			projectId: stack.project.id,
 			name: "review",
@@ -312,6 +417,17 @@ describe("program waits", () => {
 		const refused = await service().run(admin, program.id, { version: v2.version });
 		expect(refused.status).toBe("failed");
 		expect(refused.error).toMatch(/can't start agents/);
+
+		// An agent that answers before the run has paused hands its value to the waiting call: no pause, one activation.
+		script.reply({ text: "quick" });
+		const v3 = await service().addVersion(admin, program.id, {
+			code: "return await agent('Be quick');",
+			tools: ["agent"],
+		});
+		const quick = await service().run(admin, program.id, { version: v3.version, mode: "async" });
+		const quickEnded = await until(service(), admin, quick, (r) => r.status !== "running" && r.status !== "waiting");
+		expect(quickEnded).toMatchObject({ status: "succeeded", output: "quick" });
+		expect(quickEnded.activation).toBeLessThanOrEqual(2);
 	});
 
 	it("an agent step that the object is evicted under is picked up by the next one", async () => {
