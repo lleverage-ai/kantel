@@ -16,6 +16,7 @@ import { withKantelEnv } from "@kantel/contracts/env";
 import { KantelBrowserBase, KantelBrowserDecisionsBase } from "./browser-object.ts";
 import { routeRequest } from "./route.ts";
 import { KantelSandboxBase } from "./sandbox-object.ts";
+import { KantelSessionBase } from "./session-object.ts";
 import { type Env, KantelStackBase } from "./stack-object.ts";
 import { KantelTunnelBase } from "./tunnel-object.ts";
 import { KantelVault } from "./vault-object.ts";
@@ -50,6 +51,9 @@ class KantelSandbox extends KantelSandboxBase {}
 
 /** One tool server's tunnel (`src/tunnel-object.ts`), experimental. */
 export class KantelTunnel extends KantelTunnelBase {}
+
+/** One session's own object, with `KANTEL_SESSION_OBJECTS=on` (`src/session-object.ts`), experimental. */
+export class KantelSession extends KantelSessionBase {}
 
 export default {
 	// Vars and secrets set before the rename are named HARBOUR_*: every KANTEL_* left unset takes their value.

@@ -61,8 +61,10 @@ describe("the stack's and the vault's Durable Object rename", () => {
 			{ tag: "v1", new_sqlite_classes: ["HarbourStack"] },
 			{ tag: "v2", new_sqlite_classes: ["HarbourVault"] },
 		]);
-		expect(migrations.map((migration) => migration.tag)).toEqual(["v1", "v2", "v3", "v4", "v5", "v6"]);
-		expect(migrations.at(-1)).toEqual({
+		expect(migrations.map((migration) => migration.tag)).toEqual(["v1", "v2", "v3", "v4", "v5", "v6", "v7"]);
+		// v7 adds the session objects after the rename.
+		expect(migrations.at(-1)).toEqual({ tag: "v7", new_sqlite_classes: ["KantelSession"] });
+		expect(migrations.at(-2)).toEqual({
 			tag: "v6",
 			renamed_classes: [
 				{ from: "HarbourStack", to: "KantelStack" },
@@ -76,6 +78,7 @@ describe("the stack's and the vault's Durable Object rename", () => {
 		expect([...live].sort()).toEqual([
 			"HarbourBrowser",
 			"HarbourSandbox",
+			"KantelSession",
 			"KantelStack",
 			"KantelTunnel",
 			"KantelVault",
