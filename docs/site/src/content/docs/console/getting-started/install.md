@@ -11,7 +11,7 @@ Settings named `HARBOUR_*` from before the rename still work when the `KANTEL_*`
 
 | For | You need |
 | --- | --- |
-| Either way | Git, and a checkout of the repository (`tvdavies/harbour`) |
+| Either way | Git, and a checkout of the repository (`lleverage-ai/kantel`) |
 | The self-hosted stack | Docker with the Compose plugin. The images install everything else, the console included |
 | The Cloudflare target | Node.js 22.19.0 or later and pnpm (the repository pins pnpm 10.34.9), plus Docker, because local development runs the sandbox and browser containers in it |
 

@@ -41,10 +41,11 @@ checks for Docker with Compose, downloads the source from GitHub (its `DEFAULT_R
 and then either hands over to the installer at the source's root, when there is one, or starts the self-hosted Compose
 stack in `deploy/compose` itself. The comment at its top and `--help` say the rest.
 
-Until the public repository exists, point it at another with `--repo` (a private one downloads through `gh`):
+It downloads from `lleverage-ai/kantel` unless `--repo` names another repository, such as a fork (a private one
+downloads through `gh`):
 
 ```sh
-curl -fsSL https://kantel.dev/install.sh | sh -s -- --repo tvdavies/harbour
+curl -fsSL https://kantel.dev/install.sh | sh -s -- --repo your-name/kantel
 ```
 
 ## The console mocks

@@ -8,8 +8,8 @@ export default defineConfig({
 		starlight({
 			title: "Kantel",
 			description: "Kantel, by Lleverage: AI agents for people and for apps, on Cloudflare or your own machines.",
-			social: [{ icon: "github", label: "GitHub", href: "https://github.com/tvdavies/harbour" }],
-			editLink: { baseUrl: "https://github.com/tvdavies/harbour/edit/main/docs/site/" },
+			social: [{ icon: "github", label: "GitHub", href: "https://github.com/lleverage-ai/kantel" }],
+			editLink: { baseUrl: "https://github.com/lleverage-ai/kantel/edit/main/docs/site/" },
 			// In sidebar.mjs, which kantel.dev (apps/site) shares.
 			sidebar,
 		}),
