@@ -112,7 +112,14 @@ describe("the environment broker", () => {
 		const { broker } = setup();
 		await broker.create(as("usr_tom"), { projectId: PROJECT, name: "tom-dev", description: "Tom's stack" });
 		await broker.create(as("usr_bethan"), { projectId: PROJECT, name: "bethan-dev" });
-		await broker.create(as("usr_tom"), { projectId: PROJECT, name: "shared-ci", alias: "ci", projectWide: true });
+		const shared = await broker.create(as("usr_tom"), {
+			projectId: PROJECT,
+			name: "shared-ci",
+			alias: "ci",
+			projectWide: true,
+		});
+		// Every member's sessions share it, so no one's connection placeholders work on it.
+		expect(shared.placeholders).toBe(false);
 		expect(await broker.aliases(tomSession())).toEqual([{ alias: "dev", description: "Tom's stack" }, { alias: "ci" }]);
 		const bethan = { ...tomSession("ses_b"), userId: "usr_bethan" };
 		expect((await broker.aliases(bethan)).map((entry) => entry.alias)).toEqual(["dev", "ci"]);
