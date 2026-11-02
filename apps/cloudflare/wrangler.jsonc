@@ -145,7 +145,8 @@
 		// Experimental: `on` starts each new session in its own KantelSession object (src/session-homes.ts), so long
 		// sessions at once don't share the stack object's memory; the stack keeps the directory, profiles, schedules and the
 		// rest. Anything else: every session in the stack object. Sessions keep the object they started in either way.
-		"KANTEL_SESSION_OBJECTS": "off"
+		// On for harbour.myslop.app (TASK-4487), to be ironed out through use; `off` and a deploy turns it off.
+		"KANTEL_SESSION_OBJECTS": "on"
 	},
 	"env": {
 		// `wrangler dev --env dev` (pnpm dev): src/dev.ts adds a mock Access issuer and a dev API key for local testing.

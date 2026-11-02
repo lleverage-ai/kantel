@@ -176,7 +176,8 @@ shared. The stack records each session's home, and the Worker asks it where a se
 in the isolate once known) and sends the session's requests, and the browser API's calls that name it, straight
 there. Schedules, program recoveries, token refreshes and tool servers' tunnels stay with the stack, and so do the
 sessions they start. A session keeps its object whatever the switch says later: turning it off sends only new
-sessions back to the stack. Off by default (`wrangler.jsonc`).
+sessions back to the stack. On in `wrangler.jsonc`, so for harbour.myslop.app; set it to `off` and deploy to turn
+it off.
 
 **Workspace heads are kept in the object, in front of R2.** Every workspace call starts by reading the workspace's
 head, so `KantelStack` keeps each head's document and etag in its own storage (`ctx.storage.kv`,
