@@ -22,6 +22,8 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import {
 	type ApprovalPending,
+	type ConnectionCallDetails,
+	type ConnectionCallUse,
 	type ConnectionSessionScope,
 	type HttpMethod,
 	isKantelError,
@@ -387,9 +389,68 @@ export function sessionScope(record: SessionRecord, audience: SessionAudience): 
 	};
 }
 
-export function connectionTools(options: ConnectionToolsOptions): (record: SessionRecord) => ToolRegistration[] {
+/** The service's details a refusal carries (`details.call`), when it has them. */
+export function callUseOfError(error: unknown): ConnectionCallUse | undefined {
+	if (!isKantelError(error)) return undefined;
+	const call = (error.details as { readonly call?: unknown } | undefined)?.call;
+	return typeof call === "object" && call !== null ? (call as ConnectionCallUse) : undefined;
+}
+
+/** How many scripts' connection calls are kept for their `codemode` result, at most. */
+const SCRIPTS_KEPT = 200;
+
+/** The session tools for a record, and the connection calls each script made, for the script's result (#464). */
+export interface ConnectionToolsFactory {
+	(record: SessionRecord): ToolRegistration[];
+	/**
+	 * The connection calls a `codemode` script made (its nested calls, `<scriptCallId>/<key>`), in order, and forgotten
+	 * once taken. Empty for a script that made none, or one this process didn't run.
+	 */
+	takeScriptCalls(scriptCallId: string): ConnectionCallDetails[];
+}
+
+export function connectionTools(options: ConnectionToolsOptions): ConnectionToolsFactory {
 	const { connections } = options;
 	const pollMs = Math.max(10, options.approvalPollMs ?? 2_000);
+	/** Each running script's connection calls so far, by the script's call ID. */
+	const scriptCalls = new Map<string, ConnectionCallDetails[]>();
+	/** Notes a call's details under its script, when a script made it: its ID is `<scriptCallId>/<key>`. */
+	const noteScriptCall = (details: ConnectionCallDetails) => {
+		const slash = details.callId.lastIndexOf("/");
+		if (slash <= 0) return;
+		const script = details.callId.slice(0, slash);
+		const list = scriptCalls.get(script) ?? [];
+		const at = list.findIndex((each) => each.callId === details.callId);
+		if (at >= 0) list[at] = details;
+		else list.push(details);
+		scriptCalls.delete(script);
+		scriptCalls.set(script, list);
+		for (const oldest of scriptCalls.keys()) {
+			if (scriptCalls.size <= SCRIPTS_KEPT) break;
+			scriptCalls.delete(oldest);
+		}
+	};
+	/** A call's details from the service's use and the answer, noted under its script when a script made it. */
+	const detailsOf = (
+		callId: string,
+		call: ConnectionCallUse | undefined,
+		extra: {
+			readonly response?: ConnectionCallDetails["response"];
+			readonly card?: ConnectionApprovalDetails;
+		} = {},
+	): ConnectionCallDetails | undefined => {
+		if (call === undefined) return undefined;
+		const details: ConnectionCallDetails = {
+			callId,
+			...call,
+			...(extra.response === undefined ? {} : { response: extra.response }),
+			...(extra.card === undefined || extra.card.status !== "pending"
+				? {}
+				: { approval: { proposalId: extra.card.proposalId, status: extra.card.status } }),
+		};
+		noteScriptCall(details);
+		return details;
+	};
 
 	/**
 	 * Sends with `send`; when a rule asks, waits for the person's decision and sends the identical request once it is
@@ -466,7 +527,7 @@ export function connectionTools(options: ConnectionToolsOptions): (record: Sessi
 	const audienceOf =
 		options.audienceOf ?? ((record: SessionRecord): SessionAudience => sessionAudienceOf(record, options.personal));
 
-	return (record) => {
+	const factory = (record: SessionRecord): ToolRegistration[] => {
 		const scope = async () => {
 			const latest = (await options.current?.(record).catch(() => undefined)) ?? record;
 			return sessionScope(latest, audienceOf(latest));
@@ -541,22 +602,48 @@ export function connectionTools(options: ConnectionToolsOptions): (record: Sessi
 			}),
 			replay: "unsafe",
 			execute: async (args, api, context) => {
+				let last: ConnectionCallUse | undefined;
+				let started = Date.now();
 				try {
 					const at = await scope();
 					const sent = await sendApproved(
 						at,
-						async () =>
-							connections.callTool(CONTEXT, await scope(), args.connectionId, {
-								name: args.tool,
-								arguments: args.arguments ?? {},
-								toolCallId: api.callId,
-							}),
-						(card) => api.details({ connectionApproval: card } as never, context),
+						async () => {
+							started = Date.now();
+							try {
+								const result = await connections.callTool(CONTEXT, await scope(), args.connectionId, {
+									name: args.tool,
+									arguments: args.arguments ?? {},
+									toolCallId: api.callId,
+								});
+								last = result.call ?? last;
+								return result;
+							} catch (error) {
+								last = callUseOfError(error) ?? last;
+								throw error;
+							}
+						},
+						(card) =>
+							api.details(
+								{ connectionApproval: card, connection: detailsOf(api.callId, last, { card }) } as never,
+								context,
+							),
 						context.abortSignal,
 					);
-					const details = sent.card === undefined ? {} : { details: { connectionApproval: sent.card } as never };
-					if ("failed" in sent) return { ...failure(sent.failed), ...details };
+					if ("failed" in sent) {
+						const connection = detailsOf(api.callId, last, sent.card === undefined ? {} : { card: sent.card });
+						return { ...failure(sent.failed), ...withDetails(sent.card, connection) };
+					}
 					const result = sent.value;
+					const bytes = byteLength(JSON.stringify(result.content ?? []));
+					const connection = detailsOf(api.callId, last, {
+						response: {
+							bytes,
+							ms: Date.now() - started,
+							...(result.isError === true ? { failed: true } : {}),
+						},
+					});
+					const details = withDetails(sent.card, connection);
 					const content: Content[] = [];
 					for (const item of result.content) {
 						const part = item as { type?: unknown; text?: unknown; mimeType?: unknown; data?: unknown };
@@ -594,26 +681,52 @@ export function connectionTools(options: ConnectionToolsOptions): (record: Sessi
 			}),
 			replay: "unsafe",
 			execute: async (args, api, context) => {
+				let last: ConnectionCallUse | undefined;
+				let started = Date.now();
 				try {
 					const at = await scope();
 					const sent = await sendApproved(
 						at,
-						async () =>
-							connections.send(CONTEXT, await scope(), args.connectionId, {
-								method: args.method as HttpMethod,
-								url: args.url,
-								...(args.headers === undefined ? {} : { headers: args.headers }),
-								...(args.body === undefined ? {} : { body: args.body }),
-								kind: "http",
-								toolCallId: api.callId,
-							}),
-						(card) => api.details({ connectionApproval: card } as never, context),
+						async () => {
+							started = Date.now();
+							try {
+								const response = await connections.send(CONTEXT, await scope(), args.connectionId, {
+									method: args.method as HttpMethod,
+									url: args.url,
+									...(args.headers === undefined ? {} : { headers: args.headers }),
+									...(args.body === undefined ? {} : { body: args.body }),
+									kind: "http",
+									toolCallId: api.callId,
+								});
+								last = response.call ?? last;
+								return response;
+							} catch (error) {
+								last = callUseOfError(error) ?? last;
+								throw error;
+							}
+						},
+						(card) =>
+							api.details(
+								{ connectionApproval: card, connection: detailsOf(api.callId, last, { card }) } as never,
+								context,
+							),
 						context.abortSignal,
 					);
-					const details = sent.card === undefined ? {} : { details: { connectionApproval: sent.card } as never };
-					if ("failed" in sent) return { ...failure(sent.failed), ...details };
+					if ("failed" in sent) {
+						const connection = detailsOf(api.callId, last, sent.card === undefined ? {} : { card: sent.card });
+						return { ...failure(sent.failed), ...withDetails(sent.card, connection) };
+					}
 					const response = sent.value;
 					const type = response.headers["content-type"] ?? "";
+					const connection = detailsOf(api.callId, last, {
+						response: {
+							status: response.status,
+							...(type === "" ? {} : { contentType: type }),
+							bytes: byteLength(response.body),
+							ms: Date.now() - started,
+						},
+					});
+					const details = withDetails(sent.card, connection);
 					const text = `HTTP ${response.status}${type === "" ? "" : ` (${type})`}\n\n${bodyPreview(response.body, type)}`;
 					return {
 						output: [{ type: "text" as const, text }],
@@ -628,5 +741,26 @@ export function connectionTools(options: ConnectionToolsOptions): (record: Sessi
 		});
 
 		return [list, tools, call, request] as unknown as ToolRegistration[];
+	};
+	return Object.assign(factory, {
+		takeScriptCalls(scriptCallId: string): ConnectionCallDetails[] {
+			const list = scriptCalls.get(scriptCallId) ?? [];
+			scriptCalls.delete(scriptCallId);
+			return list;
+		},
+	});
+}
+
+/** A result's details: the approval card it waited on, and the call's connection details (#464). */
+function withDetails(
+	card: ConnectionApprovalDetails | undefined,
+	connection: ConnectionCallDetails | undefined,
+): { readonly details?: never } {
+	if (card === undefined && connection === undefined) return {};
+	return {
+		details: {
+			...(card === undefined ? {} : { connectionApproval: card }),
+			...(connection === undefined ? {} : { connection }),
+		} as never,
 	};
 }

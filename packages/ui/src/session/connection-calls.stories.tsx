@@ -1,5 +1,5 @@
 import type { ConnectionUse } from "@kantel/contracts";
-import type { ToolItem, TranscriptItem } from "@kantel/protocol";
+import type { ConnectionCallDetails, ToolItem, TranscriptItem } from "@kantel/protocol";
 import type { ReactNode } from "react";
 import { logo } from "../connections/fixture-logos.ts";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
@@ -384,6 +384,108 @@ export const WithoutHostData: Story = () => (
 	</Sheet>
 );
 WithoutHostData.storyName = "Without host data";
+
+/** A call's own details (#464), as the API gives them on its tool item: who acted, what it did, what decided it. */
+const detailsOf = (
+	item: ToolItem,
+	fields: {
+		method: string;
+		path: string;
+		query?: string;
+		operation: NonNullable<ConnectionCallDetails["request"]["operation"]>;
+		outcome: ConnectionCallDetails["outcome"];
+		decision: NonNullable<ConnectionCallDetails["decision"]>;
+		reason?: string;
+		status?: number;
+	},
+): ToolItem => ({
+	...item,
+	connection: {
+		callId: item.callId,
+		connection: {
+			id: GITHUB,
+			name: "GitHub",
+			templateId: "github",
+			account: "tvdavies",
+			owner: { kind: "project", projectId: "prj_example" },
+		},
+		request: {
+			kind: "http",
+			method: fields.method,
+			host: "api.github.com",
+			path: fields.path,
+			...(fields.query === undefined ? {} : { query: fields.query }),
+			operation: fields.operation,
+		},
+		decision: fields.decision,
+		outcome: fields.outcome,
+		...(fields.reason === undefined ? {} : { reason: fields.reason }),
+		...(fields.status === undefined
+			? {}
+			: { response: { status: fields.status, contentType: "application/json", bytes: 2_210, ms: 640 } }),
+	},
+});
+
+const listedPulls = detailsOf(
+	request("dpulls", "https://api.github.com/repos/tvdavies/harbour/pulls?state=open", {
+		output: 'HTTP 200 (application/json; charset=utf-8)\n\n[{"number":499,"title":"Connections: GitHub operations"}]',
+	}),
+	{
+		method: "GET",
+		path: "/repos/tvdavies/harbour/pulls",
+		query: "state=open",
+		operation: {
+			id: "pulls/list",
+			label: "List pull requests",
+			group: "repo",
+			access: "read",
+			resource: "tvdavies/harbour",
+		},
+		outcome: "allowed",
+		decision: { action: "allow", decidedBy: "rule", ruleId: "rule_reads" },
+		status: 200,
+	},
+);
+const refusedComment = detailsOf(
+	request("dcomment", "https://api.github.com/repos/tvdavies/harbour/issues/12/comments", {
+		method: "POST",
+		body: '{"body":"Done."}',
+		status: "error",
+		output: "refused: A rule on GitHub refuses writes to tvdavies/harbour.",
+	}),
+	{
+		method: "POST",
+		path: "/repos/tvdavies/harbour/issues/12/comments",
+		operation: {
+			id: "issues/create-comment",
+			label: "Create an issue comment",
+			group: "repo",
+			access: "write",
+			resource: "tvdavies/harbour",
+		},
+		outcome: "denied",
+		decision: { action: "deny", decidedBy: "rule", ruleId: "rule_writes" },
+		reason: "A rule on GitHub refuses writes to tvdavies/harbour.",
+	},
+);
+
+export const FromDetails: Story = () => (
+	<Sheet
+		title="From the call's own details"
+		intro="No host records: each call's details (#464) say the connection and the account it acted as, what it did as GitHub classifies it, and what decided it."
+	>
+		<ToolRenderersContext.Provider value={DEFAULT_TOOL_RENDERERS}>
+			<Column>
+				<Run items={[listedPulls, refusedComment]} open />
+				<div className={toolGroup}>
+					<ToolCallChip item={listedPulls} defaultOpen />
+					<ToolCallChip item={refusedComment} defaultOpen />
+				</div>
+			</Column>
+		</ToolRenderersContext.Provider>
+	</Sheet>
+);
+FromDetails.storyName = "From details";
 
 export const Mobile: Story = () => (
 	<Sheet

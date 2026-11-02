@@ -746,7 +746,17 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 					: [...coding, ...present, ...browser.tools(record, await goalModeFor(record)), ...linked];
 			const codemode = options.codemode;
 			const withCodemode =
-				codemode === undefined || tools.length === 0 ? tools : [...tools, sessionCodemodeTool(codemode, record)];
+				codemode === undefined || tools.length === 0
+					? tools
+					: [
+							...tools,
+							sessionCodemodeTool(
+								connectionToolsFor === undefined
+									? codemode
+									: { ...codemode, connectionCalls: (id) => connectionToolsFor.takeScriptCalls(id) },
+								record,
+							),
+						];
 			// With subagents on, a session also gets `subagent` (`src/subagent.ts`), unless it is already as deep as subagents go.
 			const subagent = options.subagents === true ? sessionSubagentTool(lateRuntime, record) : undefined;
 			const withSubagent = subagent === undefined ? withCodemode : [...withCodemode, subagent];

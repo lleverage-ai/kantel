@@ -402,6 +402,72 @@ export type ConnectionAuthType =
 	| "header_template"
 	| "none";
 
+/** Which connection a call used, as whose account, what it did, what decided it and how the service answered. Never a credential. */
+export interface ConnectionCallDetails {
+	/** The tool call: a connection tool's own `callId`, or a script's inner call (`toolu_01/c9`). `/v1/connections/uses` records it as `toolCallId`. */
+	readonly callId: string;
+	readonly connection: {
+		readonly id: string;
+		readonly name: string;
+		/** The catalogue template it was made from, such as `github`. */
+		readonly templateId?: string;
+		/** Whose identity acted, in the service's words: a login, a name or an email. */
+		readonly account?: string;
+		readonly owner:
+			| {
+					readonly kind: "organisation";
+			  }
+			| {
+					readonly kind: "project";
+					readonly projectId: string;
+			  }
+			| {
+					readonly kind: "user";
+					readonly userId: string;
+			  };
+		/** A person's connection used in a project it is shared with. */
+		readonly viaShare?: true;
+	};
+	readonly request: {
+		readonly kind: "http" | "mcp_call" | "mcp_tools";
+		readonly method: string;
+		readonly host: string;
+		readonly path: string;
+		/** The query as sent, without its `?`. */
+		readonly query?: string;
+		/** For an MCP call: the tool. */
+		readonly tool?: string;
+		/** What it did, when the connection's template classifies it. */
+		readonly operation?: {
+			readonly id?: string;
+			readonly label: string;
+			readonly group: string;
+			readonly access: "read" | "write" | "delete" | "admin";
+			readonly resource?: string;
+		};
+	};
+	readonly decision?: {
+		readonly action: "allow" | "ask" | "deny";
+		readonly decidedBy: "rule" | "unmatched" | "approval" | "usage" | "connection" | "ceiling" | "listing";
+		readonly ruleId?: string;
+		readonly approvalId?: string;
+	};
+	readonly outcome: "allowed" | "denied" | "held";
+	/** Why it was refused or held. */
+	readonly reason?: string;
+	readonly response?: {
+		readonly status?: number;
+		readonly contentType?: string;
+		readonly bytes: number;
+		readonly ms: number;
+		readonly failed?: boolean;
+	};
+	readonly approval?: {
+		readonly proposalId: string;
+		readonly status: "pending" | "approved" | "denied" | "expired" | "withdrawn";
+	};
+}
+
 /** The organisation's ceiling: no rule may allow or ask outside it. */
 export interface ConnectionCeiling {
 	/** `false`: the organisation has no ceiling, and nothing is bounded. */
@@ -471,6 +537,20 @@ export interface ConnectionHealth {
 
 /** `mcp`: a remote MCP server the agent calls tools on. `http`: an HTTP API. */
 export type ConnectionKind = "mcp" | "http";
+
+/** What a request did, as its connection's template classifies it. */
+export interface ConnectionOperation {
+	/** The template's own name for it, such as `issues/create-comment`. */
+	readonly id?: string;
+	/** In words: "Comment on tvdavies/harbour#12". */
+	readonly label: string;
+	/** The template's permission group: GitHub's `profile`, `repo` or `workflow`. */
+	readonly group: string;
+	/** `admin` changes settings, access or secrets. */
+	readonly access: "read" | "write" | "delete" | "admin";
+	/** The one repository it acts on, `owner/name`, when the request names exactly one. */
+	readonly resource?: string;
+}
 
 /** Who owns a connection: an organisation, a project or a person. */
 export type ConnectionOwner =
@@ -696,6 +776,10 @@ export interface ConnectionUse {
 	readonly host: string;
 	readonly path: string;
 	readonly tool?: string;
+	/** Whose identity acted: the connection's account in the service's words (a login, name or email). */
+	readonly account?: string;
+	/** What a request did, as its connection's template classifies it. */
+	readonly operation?: ConnectionOperation;
 	/** Who could see a session: only the person it acts for (`private`), or more people (`shared`). */
 	readonly audience: SessionAudience;
 	/** `allowed` went out, `denied` was refused, `held` waits for a person to approve the exact request and sent nothing (#333). */
@@ -2578,6 +2662,10 @@ export interface ToolItem {
 	/** The files the call presented to the person (`present_files`; `create_document` its document; `generate_image` the images it made), the most relevant first. */
 	readonly files?: readonly PresentedFile[];
 	readonly tier?: "isolate" | "container";
+	/** Which connection a call used, as whose account, what it did, what decided it and how the service answered. Never a credential. */
+	readonly connection?: ConnectionCallDetails;
+	/** For a `codemode` script: the connection calls it made, in order, under their inner call IDs. */
+	readonly connectionCalls?: readonly ConnectionCallDetails[];
 	/** Epoch milliseconds, UTC. */
 	readonly endedAt?: number;
 }

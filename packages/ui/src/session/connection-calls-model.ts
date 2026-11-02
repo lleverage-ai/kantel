@@ -1,5 +1,5 @@
 import type { ConnectionUse, ListedConnectionUse } from "@kantel/contracts";
-import type { ToolItem } from "@kantel/protocol";
+import type { ConnectionCallDetails, ToolItem } from "@kantel/protocol";
 import { type Connection, type ConnectionsViewer, canManage, ownerText } from "../connections/connections-model.ts";
 import {
 	describeOperation,
@@ -14,9 +14,10 @@ import { type HarnessNote, splitHarness } from "./tool-views-model.ts";
 // that make them (`codemode`), read for the transcript (connection-tools.tsx): which connection and request a call is,
 // how it went, and what the host's records of it (`ConnectionUse`) say decided it.
 //
-// Interim: a call carries only its arguments and its text result today. Once it carries `details.connection` (#464),
-// with its operation, decision and response, these read that instead; until then they derive what they can from the
-// arguments and the text, and from the uses the host gives.
+// A call carries its connection details (`ToolItem.connection`, a script's `connectionCalls`, #464): the connection and
+// the account it acted as, its operation, what decided it and how the service answered. The host's uses (from
+// `/v1/connections/uses`) say the same and more, such as an approval's state now; without either, a call still reads
+// from its arguments and its text result.
 
 /** The connection tools whose calls are one request each, in one run per stretch of them. */
 export const CONNECTION_TOOLS: readonly string[] = ["connection_request", "connection_call"];
@@ -80,6 +81,97 @@ export type ConnectionCalls = {
 	/** The requests a script made, by the script's call ID (`<callId>/c1` …), in the order it made them. */
 	readonly scriptUses: (callId: string) => readonly ConnectionUse[];
 };
+
+/** What the transcript reads of a use: the host's `ConnectionUse`, or one a call's details describe (#464). */
+export type CallUse = Pick<
+	ConnectionUse,
+	| "id"
+	| "connectionId"
+	| "toolCallId"
+	| "kind"
+	| "method"
+	| "host"
+	| "path"
+	| "tool"
+	| "account"
+	| "operation"
+	| "outcome"
+	| "reason"
+	| "decidedBy"
+	| "ruleId"
+	| "approvalId"
+	| "approval"
+>;
+
+/** A call's details (`ToolItem.connection`, #464) as a use, for what the host's uses don't cover. */
+export function callOfDetails(details: ConnectionCallDetails): CallUse {
+	const decidedBy = details.decision?.decidedBy;
+	const approvalId = details.decision?.approvalId;
+	const waiting = details.approval;
+	return {
+		id: `call:${details.callId}`,
+		connectionId: details.connection.id,
+		toolCallId: details.callId,
+		kind: details.request.kind,
+		method: details.request.method as ConnectionUse["method"],
+		host: details.request.host,
+		path: details.request.path,
+		...(details.request.tool === undefined ? {} : { tool: details.request.tool }),
+		...(details.connection.account === undefined ? {} : { account: details.connection.account }),
+		...(details.request.operation === undefined ? {} : { operation: details.request.operation }),
+		outcome: details.outcome,
+		...(details.reason === undefined ? {} : { reason: details.reason }),
+		...(decidedBy === undefined || decidedBy === "approval" ? {} : { decidedBy }),
+		...(details.decision?.ruleId === undefined ? {} : { ruleId: details.decision.ruleId }),
+		...(approvalId === undefined ? {} : { approvalId }),
+		...(waiting === undefined ? {} : { approval: { id: waiting.proposalId, digest: "", state: waiting.status } }),
+	};
+}
+
+/** The use a call made: the host's (`known`, `ConnectionCalls.useOf`), else its own details' (#464). */
+export function callUseOf(item: Pick<ToolItem, "connection">, known: ConnectionUse | undefined): CallUse | undefined {
+	return known ?? (item.connection === undefined ? undefined : callOfDetails(item.connection));
+}
+
+/** The requests a script made: the host's uses, else its result's details (`connectionCalls`, #464). */
+export function scriptCallUses(
+	item: Pick<ToolItem, "callId" | "connectionCalls">,
+	calls: ConnectionCalls | undefined,
+): readonly CallUse[] {
+	const uses = calls?.scriptUses(item.callId) ?? [];
+	if (uses.length > 0) return uses;
+	return (item.connectionCalls ?? []).map(callOfDetails);
+}
+
+/**
+ * The connection a call used: the host's, with the account its details say acted (the account at the time of the call,
+ * which may since have changed), or the details' own when the host doesn't know it.
+ */
+export function connectionOfCall(
+	item: Pick<ToolItem, "connection">,
+	known: ConnectionCallConnection | undefined,
+): ConnectionCallConnection | undefined {
+	const details = item.connection?.connection;
+	if (details === undefined) return known;
+	if (known !== undefined)
+		return details.account === undefined || known.id !== details.id ? known : { ...known, account: details.account };
+	return {
+		id: details.id,
+		name: details.name,
+		templateId: details.templateId,
+		account: details.account,
+		owner:
+			details.owner.kind === "organisation"
+				? "The organisation"
+				: details.owner.kind === "project"
+					? "This project"
+					: "A person",
+		shared: details.viaShare === true,
+	};
+}
+
+/** An operation's access in words, for its badge: "Reads", "Writes", "Deletes", "Admin". */
+export const ACCESS_WORDS = { read: "Reads", write: "Writes", delete: "Deletes", admin: "Admin" } as const;
 
 const isUse = (use: ListedConnectionUse): use is ConnectionUse => !("redacted" in use && use.redacted === true);
 
@@ -366,11 +458,14 @@ export function connectionCallNote(item: ToolItem): string | undefined {
 }
 
 /** A use's request in words, for a script's step: its operation, or `GET api.github.com/user/repos`. */
-export function labelOfUse(use: Pick<ConnectionUse, "kind" | "method" | "host" | "path" | "tool">): string {
+export function labelOfUse(
+	use: Pick<ConnectionUse, "kind" | "method" | "host" | "path" | "tool" | "operation">,
+): string {
 	if (use.kind === "mcp_call") return toolWords(use.tool ?? "");
 	if (use.kind === "mcp_tools") return "List its tools";
 	return (
 		describeOperation({ method: use.method, host: use.host, path: use.path, query: [] }) ??
+		use.operation?.label ??
 		`${use.method} ${use.host}${use.path}`
 	);
 }
@@ -385,7 +480,7 @@ export type UseDecision = {
 };
 
 /** What decided a request, from its use (`decision`, `decidedBy`, its approval and its reason). */
-export function decisionOfUse(use: ConnectionUse): UseDecision {
+export function decisionOfUse(use: CallUse): UseDecision {
 	if (use.outcome === "held") {
 		const state = use.approval?.state;
 		// Someone approved it: the request went out on that approval.
@@ -476,7 +571,7 @@ export function scriptNote(item: ToolItem): string | undefined {
  * withdrawn, and neither once someone approved it.
  */
 export function scriptRequests(
-	uses: readonly ConnectionUse[],
+	uses: readonly CallUse[],
 	calls: ConnectionCalls | undefined,
 ): {
 	readonly count: number;

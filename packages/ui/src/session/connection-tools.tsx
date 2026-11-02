@@ -1,5 +1,4 @@
-import type { ConnectionUse } from "@kantel/contracts";
-import type { ConnectionApprovalCard, ToolItem } from "@kantel/protocol";
+import type { ConnectionApprovalCard, ConnectionCallOperation, ToolItem } from "@kantel/protocol";
 import { createContext, type ReactNode, useContext } from "react";
 import { Code } from "../code/code.tsx";
 import { JsonViewer } from "../code/json-viewer.tsx";
@@ -11,14 +10,18 @@ import { Field, FieldList } from "../primitives/surface.tsx";
 import { formatBytes } from "../workspace/workspace-model.ts";
 import { ConnectionApproval, ConnectionApprovalsContext } from "./connection-approval.tsx";
 import {
+	ACCESS_WORDS,
 	bodyBytes,
+	type CallUse,
 	CONNECTION_TOOLS,
 	type ConnectionCallConnection,
 	type ConnectionCallRequest,
 	type ConnectionCallResult,
 	type ConnectionCalls,
+	callUseOf,
 	connectionCallLabel,
 	connectionCallNote,
+	connectionOfCall,
 	connectionRequestOf,
 	connectionResultOf,
 	decisionOfUse,
@@ -33,6 +36,7 @@ import {
 	resultCount,
 	runCounts,
 	SCRIPT_TOOL,
+	scriptCallUses,
 	scriptCode,
 	scriptNote,
 	scriptRequests,
@@ -83,7 +87,7 @@ function useCallConnection(item: ToolItem): {
 } {
 	const calls = useContext(ConnectionCallsContext);
 	const request = connectionRequestOf(item);
-	const connection = calls?.connection(request.connectionId);
+	const connection = connectionOfCall(item, calls?.connection(request.connectionId ?? item.connection?.connection.id));
 	return { request, connection, service: serviceOfCall(request, connection) ?? "the connection", calls };
 }
 
@@ -156,7 +160,7 @@ function useRunConnections(calls: readonly ToolItem[]): {
 	let first: { connection: ConnectionCallConnection | undefined; service: string } | undefined;
 	for (const call of calls) {
 		const request = connectionRequestOf(call);
-		const connection = host?.connection(request.connectionId);
+		const connection = connectionOfCall(call, host?.connection(request.connectionId));
 		const name = serviceOfCall(request, connection) ?? "a connection";
 		first ??= { connection, service: name };
 		if (!names.includes(name)) names.push(name);
@@ -359,6 +363,24 @@ function DecisionField({
 	);
 }
 
+/** What a request did, as its connection's template classifies it (#465): "Comment on tvdavies/harbour#12" [Writes]. */
+function OperationField({ operation }: { operation: ConnectionCallOperation }) {
+	return (
+		<Field label="Operation">
+			<Badged
+				badge={
+					<Badge tone={operation.access === "read" ? "neutral" : "approval"}>{ACCESS_WORDS[operation.access]}</Badge>
+				}
+			>
+				{operation.label}
+				{operation.resource === undefined || operation.label.includes(operation.resource) ? null : (
+					<span className="text-muted"> in {operation.resource}</span>
+				)}
+			</Badged>
+		</Field>
+	);
+}
+
 /** "200, application/json, 84 bytes, 1.8s", or what came instead of an answer. */
 function ResponseField({ item, result, service }: { item: ToolItem; result: ConnectionCallResult; service: string }) {
 	const took = item.endedAt === undefined ? undefined : requestTime(item.endedAt - item.at);
@@ -489,7 +511,8 @@ const sectionClass = "flex min-w-0 flex-col gap-2 px-3 py-2.5";
 function ConnectionCallDetail({ item, raw, showRaw, onShowRawChange }: ToolDetailProps) {
 	const { request, connection, service, calls } = useCallConnection(item);
 	const result = connectionResultOf(item);
-	const use = calls?.useOf(item.callId);
+	const use = callUseOf(item, calls?.useOf(item.callId));
+	const operation = item.connection?.request.operation ?? use?.operation;
 	const chips = request.kind === "http" ? (request.parts?.query ?? []) : argumentPairs(request.arguments);
 	return (
 		<ToolCard
@@ -524,6 +547,7 @@ function ConnectionCallDetail({ item, raw, showRaw, onShowRawChange }: ToolDetai
 						) : null}
 						<FieldList>
 							<ConnectionFields connection={connection} service={service} />
+							{operation === undefined ? null : <OperationField operation={operation} />}
 							{use === undefined ? null : <DecisionField decision={decisionOfUse(use)} connection={connection} />}
 							<ResponseField item={item} result={result} service={service} />
 						</FieldList>
@@ -554,7 +578,7 @@ const connectionCallRenderer: ToolRenderer = {
 /** A script's requests, from the host's uses: "9 GitHub requests", and how many were refused or are waiting. */
 function ScriptRequests({ item }: { item: ToolItem }) {
 	const calls = useContext(ConnectionCallsContext);
-	const uses = calls?.scriptUses(item.callId) ?? [];
+	const uses = scriptCallUses(item, calls);
 	if (uses.length === 0) return null;
 	const { count, services, refused, waiting } = scriptRequests(uses, calls);
 	return (
@@ -567,8 +591,8 @@ function ScriptRequests({ item }: { item: ToolItem }) {
 }
 
 /** Consecutive uses of one request, one row each: a script that pages through a list makes the same request again. */
-function sameRequests(uses: readonly ConnectionUse[]): { use: ConnectionUse; times: number }[] {
-	const rows: { use: ConnectionUse; times: number }[] = [];
+function sameRequests(uses: readonly CallUse[]): { use: CallUse; times: number }[] {
+	const rows: { use: CallUse; times: number }[] = [];
 	for (const use of uses) {
 		const last = rows.at(-1);
 		if (
@@ -587,7 +611,7 @@ function sameRequests(uses: readonly ConnectionUse[]): { use: ConnectionUse; tim
 }
 
 /** One of a script's requests, compact: the service's logo, what it did, how often, and how it was decided. */
-function ScriptRequestRow({ use, times }: { use: ConnectionUse; times: number }) {
+function ScriptRequestRow({ use, times }: { use: CallUse; times: number }) {
 	const calls = useContext(ConnectionCallsContext);
 	const connection = calls?.connection(use.connectionId);
 	const decision = decisionOfUse(use);
@@ -619,7 +643,7 @@ const scriptPre =
 /** A script, opened: the requests it made (from the host's uses), its code, and its output or error. */
 function ScriptDetail({ item, raw, showRaw, onShowRawChange }: ToolDetailProps) {
 	const calls = useContext(ConnectionCallsContext);
-	const uses = calls?.scriptUses(item.callId) ?? [];
+	const uses = scriptCallUses(item, calls);
 	const result = scriptResultOf(item);
 	const code = scriptCode(item);
 	const running = item.status === "running";

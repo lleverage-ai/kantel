@@ -123,6 +123,12 @@ export interface SessionCodemodeOptions {
 	readonly load: LoadCodemode;
 	/** Changes with the isolate's code (`bundleId` in `src/dynamic-worker.ts`); part of every loader ID. */
 	readonly bundleId: string;
+	/**
+	 * The connection calls a script made (#464), by the script's call ID, put in its result's details
+	 * (`details.connectionCalls`) so the transcript shows them once their own calls are gone. Calls made before an
+	 * eviction cut the script off are not among them.
+	 */
+	readonly connectionCalls?: (scriptCallId: string) => readonly unknown[];
 }
 
 /** A session's code mode tool: its scripts run in the session's own isolate, loaded when the first one runs. */
@@ -135,5 +141,17 @@ export function sessionCodemodeTool(options: SessionCodemodeOptions, record: Ses
 	// A script has no deadline unless its options line sets one (`timeout_ms`); aborting the session's run stops it.
 	const sandbox = new RemoteCodemodeSandbox({ remote: () => options.load(id) });
 	const tool = createCodemodeTool({ sandbox, models: false });
-	return { ...tool, description: codemodeDescription(tool.description) };
+	const described = { ...tool, description: codemodeDescription(tool.description) };
+	const taken = options.connectionCalls;
+	if (taken === undefined) return described;
+	return {
+		...described,
+		execute: async (args, api, context) => {
+			const result = await tool.execute(args, api, context);
+			const calls = taken(api.callId);
+			if (calls.length === 0) return result;
+			const details = typeof result.details === "object" && result.details !== null ? result.details : {};
+			return { ...result, details: { ...details, connectionCalls: calls } as never };
+		},
+	} as ToolRegistration;
 }

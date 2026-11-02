@@ -1,12 +1,15 @@
 import type { ConnectionUse } from "@kantel/contracts";
-import type { ToolItem } from "@kantel/protocol";
+import type { ConnectionCallDetails, ToolItem } from "@kantel/protocol";
 import { describe, expect, it } from "vitest";
 import type { Connection } from "../connections/connections-model.ts";
 import {
 	callConnectionsOf,
+	callOfDetails,
+	callUseOf,
 	connectionCallLabel,
 	connectionCallNote,
 	connectionCalls,
+	connectionOfCall,
 	connectionRequestOf,
 	connectionResultOf,
 	decisionOfUse,
@@ -14,6 +17,7 @@ import {
 	refusedCall,
 	resultCount,
 	runCounts,
+	scriptCallUses,
 	scriptRequests,
 	scriptResultOf,
 	serviceMessage,
@@ -272,5 +276,67 @@ describe("scriptResultOf", () => {
 		});
 		expect(result.ok).toBe(false);
 		expect(result.output).toContain("Error: HTTP 404");
+	});
+});
+
+describe("a call's own details (#464)", () => {
+	const details: ConnectionCallDetails = {
+		callId: "s1/c2",
+		connection: {
+			id: "conn_1",
+			name: "GitHub",
+			templateId: "github",
+			account: "tvdavies",
+			owner: { kind: "user", userId: "u_tom" },
+			viaShare: true,
+		},
+		request: {
+			kind: "http",
+			method: "POST",
+			host: "api.github.com",
+			path: "/repos/o/r/issues/1/comments",
+			operation: { label: "Create an issue comment", group: "repo", access: "write", resource: "o/r" },
+		},
+		decision: { action: "ask", decidedBy: "approval", approvalId: "prop_1" },
+		outcome: "allowed",
+		response: { status: 201, bytes: 10, ms: 5 },
+	};
+
+	it("reads as a use: the approval that sent it, its operation's label and its account", () => {
+		const read = callOfDetails(details);
+		expect(read).toMatchObject({
+			toolCallId: "s1/c2",
+			connectionId: "conn_1",
+			account: "tvdavies",
+			outcome: "allowed",
+			approvalId: "prop_1",
+		});
+		expect(read.decidedBy).toBeUndefined();
+		expect(decisionOfUse(read)).toMatchObject({ badge: "Allowed", words: "A person approved it" });
+		expect(labelOfUse({ ...read, host: "unknown.example" })).toBe("Create an issue comment");
+	});
+
+	it("prefers the host's use and connection, with the account the call acted as", () => {
+		const item = call({ id: "s9", callId: "s9", connection: { ...details, callId: "s9" } });
+		const hostUse = use({ id: "cu_9", toolCallId: "s9", decidedBy: "rule", decision: "allow" });
+		expect(callUseOf(item, connectionCalls([], [hostUse]).useOf("s9"))).toBe(hostUse);
+		expect(callUseOf(item, undefined)?.id).toBe("call:s9");
+		const known = { id: "conn_1", name: "GitHub", account: "someone-else" };
+		expect(connectionOfCall(item, known)).toEqual({ ...known, account: "tvdavies" });
+		expect(connectionOfCall(item, undefined)).toMatchObject({
+			id: "conn_1",
+			name: "GitHub",
+			account: "tvdavies",
+			owner: "A person",
+			shared: true,
+		});
+		expect(connectionOfCall(call({ id: "plain" }), known)).toBe(known);
+	});
+
+	it("lists a script's requests from its details when the host has none", () => {
+		const script = call({ id: "s1", callId: "s1", name: "codemode", connectionCalls: [details] });
+		expect(scriptCallUses(script, undefined).map((each) => each.toolCallId)).toEqual(["s1/c2"]);
+		const hostUse = use({ id: "cu_1", toolCallId: "s1/c1" });
+		expect(scriptCallUses(script, connectionCalls([], [hostUse]))).toEqual([hostUse]);
 	});
 });

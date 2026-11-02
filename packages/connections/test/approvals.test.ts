@@ -165,7 +165,9 @@ describe("a connection request a rule asks about", () => {
 		});
 		const refusal = await env.connections.send(SYSTEM, scope, connection.id, post).catch((error: unknown) => error);
 		expect(refusal).toMatchObject({ code: "refused" });
-		expect((refusal as KantelError).details).toBeUndefined();
+		// No approval to wait on: the refusal carries only the call's own details (#464).
+		expect(Object.keys((refusal as KantelError).details ?? {})).toEqual(["call"]);
+		expect((refusal as KantelError).details).toMatchObject({ call: { outcome: "denied", decision: { action: "deny" } } });
 		expect(env.sent).toHaveLength(0);
 		expect(await env.vault.listProposals(approver, { status: "pending" })).toMatchObject({ items: [] });
 	});

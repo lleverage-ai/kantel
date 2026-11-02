@@ -273,6 +273,8 @@ export interface UseRequest {
 	readonly method: HttpMethod;
 	readonly url: URL;
 	readonly tool?: string;
+	/** What it does, when the connection's template classifies it (#465). */
+	readonly operation?: RuleRequest["operation"];
 }
 
 /**
@@ -326,6 +328,7 @@ export function decideUse(
 		host,
 		path: url.pathname,
 		...(request.tool === undefined ? {} : { tool: request.tool }),
+		...(request.operation === undefined ? {} : { operation: request.operation }),
 	};
 	if (!requestWithinCeiling(ceiling, ruleRequest)) {
 		return deny(
