@@ -48,6 +48,8 @@ export class FakeSandboxContainer implements SandboxContainer {
 	acks = 0;
 	/** An agent that predates `ContainerCommand.changes`: `/exec` answers without them. */
 	legacyExec = false;
+	/** A job the commands started is still running (`ContainerPending.settled` false). */
+	background = false;
 	#version: number | null = null;
 	/** The working copy as synced (what `#version` has), and as commands left it. */
 	#base = new Map<string, File>();
@@ -118,7 +120,7 @@ export class FakeSandboxContainer implements SandboxContainer {
 			.filter(([path]) => this.#dirty(path))
 			.map(([path, file]) => ({ path, mode: file.mode, content: file.content }));
 		const remove = [...this.#base.keys()].filter((path) => !this.#files.has(path));
-		return { put, remove, stamp: 1 };
+		return { put, remove, stamp: 1, settled: !this.background };
 	}
 
 	async ack(args: { readonly leaseId: string; readonly version: number; readonly stamp: number }): Promise<void> {

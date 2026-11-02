@@ -202,7 +202,27 @@ async function scan() {
 	index = next;
 }
 
+/**
+ * True when no process group a command started still has a process in it, so nothing of the commands' changes the
+ * working copy until the next call. Exited groups are forgotten. A process that left its group (its own setsid, a
+ * daemon) isn't seen, as `quiesced` doesn't stop it either: its writes reach the workspace at the next container call
+ * or the lease's release, not before an isolate command.
+ */
+function settled(): boolean {
+	let quiet = true;
+	for (const group of groups) {
+		try {
+			process.kill(-group, 0);
+			quiet = false;
+		} catch {
+			groups.delete(group); // the whole group has exited
+		}
+	}
+	return quiet;
+}
+
 async function pendingChanges() {
+	const quiet = settled();
 	const put: Put[] = [];
 	const remove: string[] = [];
 	for (const [path, { op }] of dirty) {
@@ -218,7 +238,7 @@ async function pendingChanges() {
 		}
 		put.push({ path, mode: stat.mode & 0o777, content: (await readFile(absolute)).toString("base64") });
 	}
-	return { put, remove, stamp };
+	return { put, remove, stamp, settled: quiet };
 }
 
 const EGRESS_CA = "/etc/cloudflare/certs/cloudflare-containers-ca.crt";
