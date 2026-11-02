@@ -43,6 +43,11 @@ export class FakeSandboxContainer implements SandboxContainer {
 	putsReceived = 0;
 	stages = 0;
 	execs: string[] = [];
+	/** `changes` and `ack` calls, as round trips to the container. */
+	changesCalls = 0;
+	acks = 0;
+	/** An agent that predates `ContainerCommand.changes`: `/exec` answers without them. */
+	legacyExec = false;
 	#version: number | null = null;
 	/** The working copy as synced (what `#version` has), and as commands left it. */
 	#base = new Map<string, File>();
@@ -94,23 +99,30 @@ export class FakeSandboxContainer implements SandboxContainer {
 			stdout: result.stdout ?? "",
 			stderr: result.stderr ?? "",
 			timings,
+			...(call.request.changes === true && !this.legacyExec ? { changes: this.#pending() } : {}),
 		};
 	}
 
 	async changes(call: ContainerCall & { readonly final?: boolean }): Promise<ContainerChanges> {
+		this.changesCalls += 1;
 		if (call.final === true && !this.#fences.has(call.leaseId)) this.#fences.set(call.leaseId, "closing");
 		if (this.#owner?.leaseId !== call.leaseId || !this.running) {
 			return { kind: "changes", put: [], remove: [], stamp: 0 };
 		}
 		if (!this.#apply(call.sync)) return this.#behind();
+		return { kind: "changes", ...this.#pending() };
+	}
+
+	#pending() {
 		const put = [...this.#files]
 			.filter(([path]) => this.#dirty(path))
 			.map(([path, file]) => ({ path, mode: file.mode, content: file.content }));
 		const remove = [...this.#base.keys()].filter((path) => !this.#files.has(path));
-		return { kind: "changes", put, remove, stamp: 1 };
+		return { put, remove, stamp: 1 };
 	}
 
 	async ack(args: { readonly leaseId: string; readonly version: number; readonly stamp: number }): Promise<void> {
+		this.acks += 1;
 		if (this.#owner?.leaseId !== args.leaseId || !this.running) return;
 		this.#base = new Map(this.#files);
 		this.#version = args.version;

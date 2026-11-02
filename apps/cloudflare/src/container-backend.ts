@@ -53,6 +53,11 @@ export interface ContainerCall {
 }
 
 export interface ContainerCommand {
+	/**
+	 * Also answer with the working copy's uncommitted changes as `/changes` would right after the command (`changes` on
+	 * `ran`), so a checkpoint needs no second call. An agent that predates it answers without them.
+	 */
+	readonly changes?: boolean;
 	readonly command: string | readonly string[];
 	readonly cwd?: string;
 	readonly env?: { readonly [name: string]: string };
@@ -81,8 +86,17 @@ export type ContainerRan =
 			readonly stderr: string;
 			readonly truncated?: boolean;
 			readonly timings: Record<string, number>;
+			/** With `ContainerCommand.changes`: the working copy's uncommitted changes after the command. */
+			readonly changes?: ContainerPending;
 	  }
 	| Behind;
+
+/** A working copy's uncommitted changes relative to the version it holds, and the stamp that names them. */
+export interface ContainerPending {
+	readonly put: readonly SyncPut[];
+	readonly remove: readonly string[];
+	readonly stamp: number;
+}
 
 export type ContainerChanges =
 	| {
@@ -278,10 +292,11 @@ export function createContainerBackend(options: {
 	});
 
 	return {
-		async exec({ ctx, lease, record, request }: BackendExec): Promise<BackendOutput> {
+		async exec({ ctx, lease, record, request, pending }: BackendExec): Promise<BackendOutput> {
 			const container = containers(lease.sessionId);
+			const command = { ...commandOf(request), ...(pending === true ? { changes: true } : {}) };
 			const { result, syncMs } = await synced(ctx, targetOf(lease), record.head, true, (sync) =>
-				container.exec({ ...callOf(lease, sync), request: commandOf(request) }),
+				container.exec({ ...callOf(lease, sync), request: command }),
 			);
 			if (result.kind !== "ran") throw new KantelError("unavailable", "The sandbox container gave no result");
 			return {
@@ -290,6 +305,8 @@ export function createContainerBackend(options: {
 				stderr: result.stderr,
 				...(result.truncated === true ? { truncated: true } : {}),
 				timings: { ...result.timings, "container.read": round(syncMs) },
+				// Relative to `record.head`: the call synced the working copy to it before the command ran.
+				...(pending === true && result.changes !== undefined ? { pending: pendingOf(result.changes) } : {}),
 			};
 		},
 
@@ -299,15 +316,7 @@ export function createContainerBackend(options: {
 				container.changes({ ...callOf(lease, sync), ...(pendingOptions.final === true ? { final: true } : {}) }),
 			);
 			if (result.kind !== "changes") return { changes: [], stamp: 0 };
-			return {
-				changes: [
-					...result.put.map(
-						(file): ModedChange => ({ op: "put", path: file.path, content: fromBase64(file.content), mode: file.mode }),
-					),
-					...result.remove.map((path): ModedChange => ({ op: "delete", path })),
-				],
-				stamp: result.stamp,
-			};
+			return pendingOf(result);
 		},
 
 		async committed(lease, version, stamp) {
@@ -352,6 +361,18 @@ export function createContainerBackend(options: {
 			held.delete(sessionId);
 			return closed;
 		},
+	};
+}
+
+function pendingOf(found: ContainerPending): PendingChanges {
+	return {
+		changes: [
+			...found.put.map(
+				(file): ModedChange => ({ op: "put", path: file.path, content: fromBase64(file.content), mode: file.mode }),
+			),
+			...found.remove.map((path): ModedChange => ({ op: "delete", path })),
+		],
+		stamp: found.stamp,
 	};
 }
 

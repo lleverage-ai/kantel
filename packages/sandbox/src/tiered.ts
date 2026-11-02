@@ -76,6 +76,11 @@ export interface BackendExec {
 	/** The workspace at its current head, mounts included. */
 	readonly record: WorkspaceRecord;
 	readonly request: ExecRequest;
+	/**
+	 * Container only: also return the working copy's uncommitted changes after the command (`BackendOutput.pending`), so
+	 * the checkpoint after it needs no `pending` call. A backend may ignore it.
+	 */
+	readonly pending?: boolean;
 }
 
 export interface BackendOutput {
@@ -87,6 +92,11 @@ export interface BackendOutput {
 	readonly timings?: Record<string, number>;
 	/** Isolate only: what the command changed, relative to `record.head`, for this module to commit. */
 	readonly changes?: readonly ModedChange[];
+	/**
+	 * Container only, when asked (`BackendExec.pending`): what `pending` would have returned right after the command,
+	 * relative to `record.head`.
+	 */
+	readonly pending?: PendingChanges;
 }
 
 export interface IsolateBackend {
@@ -493,13 +503,22 @@ class Tiered implements TieredSandboxes {
 	 * every wait it re-checks the lease (`#requireCommittable`), so a lease that expired or ended meanwhile commits
 	 * nothing and the release or checkpoint rejects with `expired`.
 	 */
-	async #flush(ctx: CallContext, row: LeaseRow, final = false): Promise<number | undefined> {
+	async #flush(
+		ctx: CallContext,
+		row: LeaseRow,
+		final = false,
+		known?: { readonly head: number; readonly pending: PendingChanges },
+	): Promise<number | undefined> {
 		const { lease } = row;
 		for (let attempt = 1; ; attempt++) {
 			await this.#requireCommittable(ctx, row);
 			const record = await this.#workspaces.get(ctx, lease.workspaceId);
 			await this.#requireCommittable(ctx, row);
-			const { changes: pending, stamp } = await this.#container.pending({ ctx, lease, record }, { final });
+			// The changes the command answered with stand for `pending` while the head is still the one they are relative to.
+			const { changes: pending, stamp } =
+				attempt === 1 && known !== undefined && known.head === record.head
+					? known.pending
+					: await this.#container.pending({ ctx, lease, record }, { final });
 			await this.#requireCommittable(ctx, row);
 			if (pending.length === 0) return undefined;
 			const present = new Set(
@@ -614,8 +633,15 @@ class Tiered implements TieredSandboxes {
 		const started = performance.now();
 		const startedAt = this.#clock.now();
 		const backend = lease.tier === "isolate" ? this.#isolate : this.#container;
+		const checkpoint = lease.tier === "container" && this.#checkpointContainer;
 		try {
-			const output = await backend.exec({ ctx, lease, record, request: normalized });
+			const output = await backend.exec({
+				ctx,
+				lease,
+				record,
+				request: normalized,
+				...(checkpoint ? { pending: true } : {}),
+			});
 			// A cancelled command is not reported as a success, and its changes are not committed.
 			requireNotCancelled(ctx, lease.id);
 			const timings: Record<string, number> = { ...output.timings };
@@ -625,10 +651,11 @@ class Tiered implements TieredSandboxes {
 				const at = performance.now();
 				workspaceVersion = await this.#commitIsolate(ctx, row, record.head, output.changes);
 				timings["isolate.commit"] = round(performance.now() - at);
-			} else if (lease.tier === "container" && this.#checkpointContainer) {
+			} else if (checkpoint) {
 				// `#flush` re-checks the lease before it commits, so one that ended meanwhile commits nothing.
 				const at = performance.now();
-				workspaceVersion = (await this.#flush(ctx, this.#leases.get(lease.id) ?? row)) ?? record.head;
+				const known = output.pending === undefined ? undefined : { head: record.head, pending: output.pending };
+				workspaceVersion = (await this.#flush(ctx, this.#leases.get(lease.id) ?? row, false, known)) ?? record.head;
 				timings["container.commit"] = round(performance.now() - at);
 			}
 			timings[`${lease.tier}.total`] = round(performance.now() - started);
