@@ -11,6 +11,7 @@ import { apiAudit } from "./api/audit-http.ts";
 import { withLocalCache } from "./api/cached.ts";
 import type { ConsoleClient } from "./api/client.ts";
 import { apiConnections } from "./api/connections-http.ts";
+import { apiEnvironments } from "./api/environments-http.ts";
 import { createApiClient, type TransportKind } from "./api/http.ts";
 import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } from "./api/identity.ts";
 import { apiKeys } from "./api/keys.ts";
@@ -20,6 +21,7 @@ import type {
 	ConsoleAgent,
 	ConsoleAudit,
 	ConsoleConnections,
+	ConsoleEnvironments,
 	ConsoleKeys,
 	ConsoleSchedules,
 	ConsoleSharing,
@@ -37,6 +39,7 @@ import { parseRoute } from "./app/router.ts";
 import { createRecordedAgent, type RecordedAgent } from "./recorded/agent.ts";
 import { createCatalogue } from "./recorded/catalogue.ts";
 import { createRecordedConnections } from "./recorded/connections.ts";
+import { createRecordedEnvironments } from "./recorded/environments.ts";
 import { createRecordedOversight, type RecordedOversight } from "./recorded/oversight.ts";
 import { createRecordedRules } from "./recorded/rules.ts";
 import { createRecordedSchedules } from "./recorded/schedules.ts";
@@ -158,6 +161,7 @@ type Oversight = {
 	readonly sharing?: ConsoleSharing;
 	readonly connections?: ConsoleConnections;
 	readonly toolServers?: ConsoleToolServers;
+	readonly environments?: ConsoleEnvironments;
 	readonly agent?: ConsoleAgent;
 	readonly models?: ConsoleModels;
 	readonly rules?: ConsoleRules;
@@ -178,7 +182,19 @@ const recordedOversight: Promise<Oversight> | undefined =
 				const connections = createRecordedConnections();
 				// Tool servers on fixtures; `source=api` reads /v1/tool-servers.
 				const toolServers = createRecordedToolServers();
-				return { vault: made.vault, audit: made.audit, schedules, sharing, connections, toolServers, agent, rules };
+				// Environments on fixtures; `source=api` reads /v1/environments.
+				const environments = createRecordedEnvironments();
+				return {
+					vault: made.vault,
+					audit: made.audit,
+					schedules,
+					sharing,
+					connections,
+					toolServers,
+					environments,
+					agent,
+					rules,
+				};
 			})
 		: undefined;
 
@@ -197,7 +213,20 @@ function Console({
 	/** True while more of the organisation's pages may still come. */
 	pending?: boolean;
 }) {
-	const { vault, audit, keys, members, schedules, sharing, connections, toolServers, agent, models, rules } = oversight;
+	const {
+		vault,
+		audit,
+		keys,
+		members,
+		schedules,
+		sharing,
+		connections,
+		toolServers,
+		environments,
+		agent,
+		models,
+		rules,
+	} = oversight;
 	return (
 		<App
 			client={client}
@@ -210,6 +239,7 @@ function Console({
 			{...(sharing === undefined ? {} : { sharing })}
 			{...(connections === undefined ? {} : { connections })}
 			{...(toolServers === undefined ? {} : { toolServers })}
+			{...(environments === undefined ? {} : { environments })}
 			{...(agent === undefined ? {} : { agent })}
 			{...(models === undefined ? {} : { models })}
 			{...(rules === undefined ? {} : { rules })}
@@ -442,8 +472,16 @@ function SignedInConsole({
 							return undefined;
 						},
 					),
+					// No Environments page on a gateway that doesn't serve /v1/environments (the switch is off).
+					apiEnvironments({ headers: state.headers, onUnauthenticated }).then(
+						(environments) => environments,
+						(error: unknown) => {
+							console.info("kantel: no environments page:", error instanceof Error ? error.message : error);
+							return undefined;
+						},
+					),
 				]).then(
-					([vault, schedules, sharing, connections, toolServers]): Oversight => ({
+					([vault, schedules, sharing, connections, toolServers, environments]): Oversight => ({
 						...(vault === undefined ? {} : { vault }),
 						audit: audit(vault !== undefined),
 						agent,
@@ -453,6 +491,7 @@ function SignedInConsole({
 						...(sharing === undefined ? {} : { sharing }),
 						...(connections === undefined ? {} : { connections }),
 						...(toolServers === undefined ? {} : { toolServers }),
+						...(environments === undefined ? {} : { environments }),
 						...(keys === undefined ? {} : { keys }),
 						...(members === undefined ? {} : { members }),
 					}),

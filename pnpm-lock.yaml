@@ -291,6 +291,9 @@ importers:
       "@kantel/contracts":
         specifier: workspace:*
         version: link:../../packages/contracts
+      "@kantel/environments":
+        specifier: workspace:*
+        version: link:../../packages/environments
       "@kantel/identity":
         specifier: workspace:*
         version: link:../../packages/identity

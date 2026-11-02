@@ -42,8 +42,8 @@ export interface EnvironmentsDirectory {
 }
 
 export interface EnvironmentLinks {
-	/** Where a session opens. */
-	session(sessionId: string): string;
+	/** Where a session in the environment's project opens. */
+	session(sessionId: string, projectId: string): string;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

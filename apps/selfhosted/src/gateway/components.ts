@@ -32,6 +32,7 @@ import {
 	type Skills,
 	type WorkspaceId,
 } from "@kantel/contracts";
+import { createMemoryEnvironmentStore } from "@kantel/environments/store";
 import { createMemoryIdentity } from "@kantel/identity/memory";
 import { createMemoryOtpStores, type OtpCodeStore, type SessionStore } from "@kantel/identity/otp";
 import { createMemoryPasskeyStores, createPasskeys, type Passkeys } from "@kantel/identity/passkey";
@@ -50,6 +51,7 @@ import { createMemoryVault } from "@kantel/vault/memory";
 import { createMemoryWorkspaceStore, createStoredWorkspaces, type StoredWorkspaces } from "@kantel/workspace/stored";
 import { gatewaySessionBrowser, withBrowserTools } from "./browser.ts";
 import { type GatewayConnectionsConfig, gatewayConnections } from "./connections.ts";
+import { type GatewayEnvironments, type GatewayEnvironmentsConfig, gatewayEnvironments } from "./environments.ts";
 import { createGatewaySandboxes, SANDBOX_BINDING } from "./sandboxes.ts";
 import { sessionContextOptions, skillsMountSource, withOwnWorkspaces } from "./skills-memory.ts";
 import { type GatewayToolServers, gatewayToolServers } from "./tool-servers.ts";
@@ -116,6 +118,11 @@ export interface GatewayComponents {
 	 * this process holds. Absent unless `KANTEL_TOOL_SERVERS=experimental`.
 	 */
 	readonly toolServers?: GatewayToolServers;
+	/**
+	 * Environments (sandbox tier 3, `environments.ts`): long-lived machines sessions reach through `bash`'s `env`.
+	 * Absent unless `KANTEL_ENVIRONMENTS=experimental`.
+	 */
+	readonly environments?: GatewayEnvironments;
 	/** Which implementation backs each contract, served at `/v1/deployment` and recorded beside conformance runs. */
 	readonly bindings: { readonly [contract: string]: string };
 	close(): Promise<void>;
@@ -225,6 +232,10 @@ export function createGatewayComponents(
 		readonly connectionsFetch?: Fetch;
 		/** Tool servers (`tool-servers.ts`), in memory. Without it, there are none. */
 		readonly toolServers?: boolean;
+		/** Environments (`environments.ts`), in memory. Without it, there are none. */
+		readonly environments?: GatewayEnvironmentsConfig;
+		/** How environments reach boat.dev; a test's fake API. */
+		readonly boatFetch?: typeof fetch;
 	} = {},
 ): GatewayComponents {
 	const auditAccess = deferredAccess();
@@ -277,7 +288,22 @@ export function createGatewayComponents(
 					access: () => auditAccess.access,
 				})
 			: undefined;
-	const browserTools = withBrowserTools(gatewaySandboxes.runtimeOptions.tools, browser);
+	const environments =
+		options.environments === undefined
+			? undefined
+			: gatewayEnvironments({
+					config: options.environments,
+					store: createMemoryEnvironmentStore(),
+					storeName: "memory",
+					audit,
+					access: () => auditAccess.access,
+					...(options.boatFetch === undefined ? {} : { boatFetch: options.boatFetch }),
+				});
+	const ownTools =
+		environments === undefined
+			? gatewaySandboxes.runtimeOptions.tools
+			: environments.withTools(gatewaySandboxes.runtimeOptions.tools);
+	const browserTools = withBrowserTools(ownTools, browser);
 	const runtime = withOwnWorkspaces(
 		createMemoryRuntime({
 			...(toolServers === undefined ? {} : { toolServers: toolServers.runtimeOption }),
@@ -294,6 +320,7 @@ export function createGatewayComponents(
 	);
 	// A session's end closes its browsers and ends its grants.
 	if (browser !== undefined) runtime.sessionEnd.register("browser", browser.teardown);
+	if (environments !== undefined) runtime.sessionEnd.register("environments", environments.teardown);
 	// Given `identity`, the runtime always builds its check; the components share it.
 	const access = runtime.access;
 	if (access === undefined) throw new Error("the runtime built no project-access check");
@@ -320,6 +347,7 @@ export function createGatewayComponents(
 		...(connections === undefined ? {} : { egress: connectionEgress({ connections }) }),
 	});
 	const heldToolServers = toolServers?.attach(runtime);
+	const heldEnvironments = environments?.attach();
 	const modelGateway = options.models === undefined ? options.modelGateway : undefined;
 	return {
 		identity,
@@ -338,10 +366,12 @@ export function createGatewayComponents(
 		...(browser === undefined ? {} : { browser }),
 		...(connections === undefined ? {} : { connections }),
 		...(heldToolServers === undefined ? {} : { toolServers: heldToolServers }),
+		...(heldEnvironments === undefined ? {} : { environments: heldEnvironments }),
 		bindings: {
 			browser: options.browserBinding ?? (browser === undefined ? "none" : "given"),
 			connections: connections === undefined ? "off" : "memory",
 			...(heldToolServers === undefined ? {} : { toolServers: "memory (experimental)" }),
+			...(heldEnvironments === undefined ? {} : { environments: heldEnvironments.binding }),
 			identity: "memory",
 			audit: "memory",
 			runtime:
@@ -359,6 +389,7 @@ export function createGatewayComponents(
 		},
 		close: async () => {
 			await linked?.close();
+			await heldEnvironments?.close();
 			await runtime.close();
 		},
 	};

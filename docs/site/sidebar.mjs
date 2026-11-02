@@ -40,6 +40,7 @@ export const sidebar = [
 			"api/errors",
 			"api/host-tools",
 			"api/tool-servers",
+			"api/environments",
 			"api/programs",
 			"api/packaging-an-agent",
 			"api/host-apps",

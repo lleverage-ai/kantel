@@ -66,6 +66,7 @@ import { type Bootstrap, bootstrap, createGatewayComponents } from "./components
 import { connectionsConfig } from "./connections.ts";
 import { createDurableGatewayComponents, type DurableConfig } from "./durable.ts";
 import { importPolicyFile } from "./egress.ts";
+import { environmentsConfig } from "./environments.ts";
 import { createGateway } from "./gateway.ts";
 import { createMailer, describeMail, mailConfig, plausibleAddress } from "./mail.ts";
 import {
@@ -102,7 +103,9 @@ export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
 		throw new Error("KANTEL_PUBLIC_URL must be an origin, such as https://kantel.example.com");
 	}
 	const connections = connectionsConfig(env, publicUrl === "" ? undefined : new URL(publicUrl).origin);
+	const environments = environmentsConfig(env);
 	return {
+		...(environments === undefined ? {} : { environments }),
 		...(browser === undefined ? {} : { browser }),
 		...(connections === undefined ? {} : { connections }),
 		...(toolServersConfig(env) ? { toolServers: true } : {}),
@@ -201,6 +204,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 					...browser,
 					...(cfg.connections === undefined ? {} : { connections: cfg.connections }),
 					...(cfg.toolServers === true ? { toolServers: true } : {}),
+					...(cfg.environments === undefined ? {} : { environments: cfg.environments }),
 				})
 			: await createDurableGatewayComponents({
 					...cfg.durable,
@@ -208,6 +212,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 					...browser,
 					...(cfg.connections === undefined ? {} : { connections: cfg.connections }),
 					...(cfg.toolServers === true ? { toolServers: true } : {}),
+					...(cfg.environments === undefined ? {} : { environments: cfg.environments }),
 				});
 	const browserViews = cfg.browser?.provider === "kantel" ? createBrowserViews(cfg.browser) : undefined;
 	const previous = await readBootstrap(cfg.bootstrapFile);

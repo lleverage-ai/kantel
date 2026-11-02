@@ -28,6 +28,7 @@ import { createSqlAuditStore, migrateAudit } from "@kantel/audit/sql";
 import { connectionEgress } from "@kantel/connections/egress";
 import { createSqlConnectionsRepository, migrateConnections } from "@kantel/connections/repository";
 import { type BrowserProvider, KantelError } from "@kantel/contracts";
+import { createSqlEnvironmentStore, migrateEnvironments } from "@kantel/environments/sql";
 import { createPasskeys } from "@kantel/identity/passkey";
 import { createSqlIdentity, createSqlOtpStores, createSqlPasskeyStores, migrateIdentity } from "@kantel/identity/sql";
 import { createSqlMemory, migrateMemory } from "@kantel/memory/sql";
@@ -56,6 +57,7 @@ import { PostgresSqliteDatabase } from "../pi-postgres.ts";
 import { gatewaySessionBrowser, withBrowserTools } from "./browser.ts";
 import { createEchoModels, deferredAccess, type GatewayComponents, type ModelGatewaySource } from "./components.ts";
 import { type GatewayConnectionsConfig, gatewayConnections } from "./connections.ts";
+import { type GatewayEnvironmentsConfig, gatewayEnvironments } from "./environments.ts";
 import { createGatewaySandboxes, SANDBOX_BINDING } from "./sandboxes.ts";
 import { sessionContextOptions, skillsMountSource, withOwnWorkspaces } from "./skills-memory.ts";
 import { gatewayToolServers } from "./tool-servers.ts";
@@ -93,6 +95,8 @@ export interface DurableConfig {
 	readonly connections?: GatewayConnectionsConfig;
 	/** Tool servers (`tool-servers.ts`), the registry in Postgres. Without it, there are none and no tables. */
 	readonly toolServers?: boolean;
+	/** Environments (`environments.ts`), in Postgres. Without it, there are none and no tables. */
+	readonly environments?: GatewayEnvironmentsConfig;
 }
 
 const SCHEMA = /^[a-z_][a-z0-9_]{0,62}$/;
@@ -142,6 +146,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		const connectionsOn = config.connections !== undefined && config.vaultCipherKey !== undefined;
 		if (connectionsOn) await migrateConnections(driver);
 		if (config.toolServers === true) await migrateToolServers(driver);
+		if (config.environments !== undefined) await migrateEnvironments(driver);
 		const usage = config.usage === undefined ? undefined : await selfHostedUsage(driver, config.usage, log);
 		if (usage !== undefined) closers.push(() => usage.close());
 		const auditAccess = deferredAccess();
@@ -168,6 +173,19 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 						log,
 					})
 				: undefined;
+		// Built before the runtime so a session it resumes has `bash`'s `env`; the store is Postgres, so a restart still
+		// knows its machines and stops them when they idle.
+		const environments =
+			config.environments === undefined
+				? undefined
+				: gatewayEnvironments({
+						config: config.environments,
+						store: createSqlEnvironmentStore(driver),
+						storeName: "postgres",
+						audit,
+						access: () => auditAccess.access,
+						log,
+					});
 		// In memory, as the sandboxes' leases are; built before the runtime so a session it resumes has its tools.
 		const browser =
 			config.browserProvider === undefined
@@ -214,10 +232,15 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			createSessionRuntime({
 				...gatewaySandboxes.runtimeOptions,
 				...(toolServers === undefined ? {} : { toolServers: toolServers.runtimeOption }),
-				tools:
-					linked === undefined
-						? withBrowserTools(gatewaySandboxes.runtimeOptions.tools, browser)
-						: linked.withTools(withBrowserTools(gatewaySandboxes.runtimeOptions.tools, browser)),
+				tools: (() => {
+					const own =
+						environments === undefined
+							? gatewaySandboxes.runtimeOptions.tools
+							: environments.withTools(gatewaySandboxes.runtimeOptions.tools);
+					return linked === undefined
+						? withBrowserTools(own, browser)
+						: linked.withTools(withBrowserTools(own, browser));
+				})(),
 				store: await createSqlSessionStore(db),
 				storage: (session) => sqlPiStorage(db, session.id),
 				audit,
@@ -235,6 +258,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		);
 		closers.push(() => runtime.close());
 		if (browser !== undefined) runtime.sessionEnd.register("browser", browser.teardown);
+		if (environments !== undefined) runtime.sessionEnd.register("environments", environments.teardown);
 		const access = runtime.access;
 		if (access === undefined) throw new Error("the runtime built no project-access check");
 		auditAccess.set(access);
@@ -272,6 +296,8 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			...(connections === undefined ? {} : { egress: connectionEgress({ connections }) }),
 		});
 		const heldToolServers = toolServers?.attach(runtime);
+		const heldEnvironments = environments?.attach();
+		if (heldEnvironments !== undefined) closers.push(() => heldEnvironments.close());
 
 		const resumed = await runtime.resume();
 		if (resumed > 0) log(`[gateway] resumed ${resumed} session(s) left mid-run`);
@@ -294,10 +320,12 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			...(browser === undefined ? {} : { browser }),
 			...(connections === undefined ? {} : { connections }),
 			...(heldToolServers === undefined ? {} : { toolServers: heldToolServers }),
+			...(heldEnvironments === undefined ? {} : { environments: heldEnvironments }),
 			bindings: {
 				browser: config.browserBinding ?? (browser === undefined ? "none" : "given"),
 				connections: connections === undefined ? "off" : "postgres + vault",
 				...(heldToolServers === undefined ? {} : { toolServers: "postgres (experimental)" }),
+				...(heldEnvironments === undefined ? {} : { environments: heldEnvironments.binding }),
 				vault: vault === undefined ? "off (no KANTEL_VAULT_CIPHER_KEY)" : "postgres",
 				identity: "postgres",
 				audit: "postgres",

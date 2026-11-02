@@ -6,6 +6,7 @@ import {
 	CONNECTIONS_PATH,
 	canonicalPath,
 	connectionRequestPath,
+	ENVIRONMENTS_PATH,
 	filesPath,
 	isSettingsRoute,
 	KEYS_PATH,
@@ -147,6 +148,12 @@ describe("routes", () => {
 		expect(parseRoute("/projects/atlas/tool-servers/ts_1")).toMatchObject({ name: "not-found" });
 		// The organisation's are at /tool-servers, not under its sessions' key.
 		expect(parseRoute("/organisation/tool-servers")).toMatchObject({ name: "not-found" });
+	});
+
+	it("parses the Environments page, one of Settings' pages", () => {
+		expect(parseRoute(ENVIRONMENTS_PATH)).toEqual({ name: "environments" });
+		expect(parseRoute("/environments/env_1")).toEqual({ name: "not-found", path: "/environments/env_1" });
+		expect(isSettingsRoute({ name: "environments" })).toBe(true);
 	});
 
 	it("parses the schedules page, a new schedule and one schedule", () => {

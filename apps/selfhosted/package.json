@@ -17,6 +17,7 @@
 		"@kantel/audit": "workspace:*",
 		"@kantel/browser": "workspace:*",
 		"@kantel/contracts": "workspace:*",
+		"@kantel/environments": "workspace:*",
 		"@kantel/identity": "workspace:*",
 		"@kantel/memory": "workspace:*",
 		"@kantel/model-gateway": "workspace:*",

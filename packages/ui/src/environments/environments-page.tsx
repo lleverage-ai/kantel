@@ -474,7 +474,14 @@ function EnvironmentDetailView({
 				) : (
 					<ul className={rows} aria-label="Sessions holding it">
 						{leases.map((lease) => (
-							<LeaseRow key={lease.id} lease={lease} directory={directory} links={links} now={now} />
+							<LeaseRow
+								key={lease.id}
+								lease={lease}
+								projectId={environment.owner.projectId}
+								directory={directory}
+								links={links}
+								now={now}
+							/>
 						))}
 					</ul>
 				)}
@@ -492,7 +499,7 @@ function EnvironmentDetailView({
 						{grants.map((grant) => (
 							<li key={grant.id} className="flex min-w-0 items-center gap-3 px-3 py-2">
 								<a
-									href={links.session(grant.sessionId)}
+									href={links.session(grant.sessionId, environment.owner.projectId)}
 									className="kt-focusable min-w-0 flex-1 truncate text-fg no-underline hover:underline"
 								>
 									{directory.session(grant.sessionId) ?? grant.sessionId}
@@ -532,11 +539,13 @@ function EnvironmentDetailView({
 
 function LeaseRow({
 	lease,
+	projectId,
 	directory,
 	links,
 	now,
 }: {
 	lease: EnvironmentLease;
+	projectId: string;
 	directory: EnvironmentsDirectory;
 	links: EnvironmentLinks;
 	now: number;
@@ -547,7 +556,7 @@ function LeaseRow({
 				<span className="flex min-w-0 items-baseline gap-2 [&>.kt-status-dot]:translate-y-(--kt-on-cap)">
 					<StatusDot status="done" label="Attached" />
 					<a
-						href={links.session(lease.sessionId)}
+						href={links.session(lease.sessionId, projectId)}
 						className="kt-focusable min-w-0 truncate text-fg no-underline hover:underline"
 					>
 						{directory.session(lease.sessionId) ?? lease.sessionId}

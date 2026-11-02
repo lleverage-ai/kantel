@@ -20,6 +20,9 @@ import type {
 	Choice,
 	ConnectionsSource,
 	ConnectionsViewer,
+	EnvironmentLinks,
+	EnvironmentsDirectory,
+	EnvironmentsSource,
 	GrantSummary,
 	MemoryPageSource,
 	OwnerChoice,
@@ -191,6 +194,16 @@ export interface ConsoleToolServers {
 	readonly projects?: readonly ToolServerProject[];
 	/** Kantel's address, as the tunnel command names it. */
 	readonly origin: string;
+	/** The time the page measures from, for a fixture host. Default now. */
+	readonly now?: number;
+}
+
+/** The Environments page (experimental, sandbox tier 3): long-lived machines a project's sessions attach to. */
+export interface ConsoleEnvironments {
+	readonly source: EnvironmentsSource;
+	/** Names for the projects, people and sessions the page shows by ID. */
+	readonly directory: EnvironmentsDirectory;
+	readonly links: EnvironmentLinks;
 	/** The time the page measures from, for a fixture host. Default now. */
 	readonly now?: number;
 }
