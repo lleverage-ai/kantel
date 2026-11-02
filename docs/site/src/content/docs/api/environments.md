@@ -29,7 +29,7 @@ Each `KANTEL_*` setting is also read as `HARBOUR_*`.
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `KANTEL_ENVIRONMENTS` | off | `experimental` turns environments on. |
-| `KANTEL_BOAT_API_KEY` | none | A boat.dev API key. With it, new environments are boat sandboxes. Use a key scoped to the `ci` actions, never an account key. |
+| `KANTEL_BOAT_API_KEY` | none | A boat.dev API key. With it, new environments are boat sandboxes. Use a scoped key with only the actions under [boat.dev](#boatdev), never an account key. |
 | `KANTEL_ENVIRONMENTS_PROVIDER` | `boat` with a key, else `fake` | `fake` is an in-process stand-in for local runs and tests; it runs no process. |
 | `KANTEL_BOAT_WEBHOOK_SECRET` | none | boat's webhook signing secret (`whsec_…`). With it, Kantel takes boat's signed deliveries at `POST /v1/environment-webhooks/boat`. Optional: Kantel reads a machine's state itself. |
 | `KANTEL_BOAT_API_URL` | `https://boat.dev/api/v1` | boat's API, for a test server. |
@@ -47,8 +47,9 @@ of the boat account's logins, and Kantel refuses a machine that reports it does.
 the idle timeout, and sets boat's own auto-stop to four hours as a backstop. Destroying an environment deletes its
 sandbox and disk.
 
-A key scoped to the `ci` actions carries `sandbox.create`, `sandbox.read`, `sandbox.stop`, `sandbox.resume`, `exec`,
-`file.read`, `file.write` and `host`. Kantel doesn't register a webhook on the account itself.
+The key needs `sandbox.create`, `sandbox.read`, `sandbox.stop`, `sandbox.resume`, `sandbox.delete`, `exec`, `file.read`,
+`file.write` and `host`, plus `sandbox.fork` and `snapshot.save` for snapshots and forks. Give it nothing else: no
+account, billing, API-key or webhook actions. Kantel doesn't register a webhook on the account itself.
 
 ## Create an environment and use it
 
