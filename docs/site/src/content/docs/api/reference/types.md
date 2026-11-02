@@ -868,6 +868,21 @@ A new server, and for a tunnel its first token.
 | `server` | [ToolServer](/api/reference/types/#toolserver) | yes |  |
 | `token` | [IssuedToolServerToken](/api/reference/types/#issuedtoolservertoken) | no |  |
 
+### CreateEnvironmentBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `projectId` | string | yes |  |
+| `name` | string | yes |  (at most 63 characters) |
+| `alias` | string | no |  (at most 32 characters) |
+| `description` | string | no |  (at most 200 characters) |
+| `provider` | [EnvironmentProviderKind](/api/reference/types/#environmentproviderkind) | no |  |
+| `size` | [EnvironmentSizeName](/api/reference/types/#environmentsizename) | no |  |
+| `definition` | object | no |  |
+| `sharing` | [EnvironmentSharing](/api/reference/types/#environmentsharing) | no |  |
+| `projectWide` | boolean | no |  |
+| `idleTimeoutMs` | integer | no |  (minimum 60000) |
+
 ### CreateMemorySpaceBody
 
 | Field | Type | Required | Description |
@@ -1098,6 +1113,165 @@ One of: `"host_not_bound"` or `"raw_secret"` or `"unknown_placeholder"` or `"amb
 | `path` | string | yes | `*` matches one segment; a trailing `/**` the rest. |
 | `access` | [AccessKind](/api/reference/types/#accesskind) | yes |  |
 
+### Environment
+
+A long-lived machine owned by a project, by default by one person in it, that sessions attach to.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The environment's ID, `env_…`. |
+| `organisationId` | string | yes |  |
+| `owner` | [EnvironmentOwner](/api/reference/types/#environmentowner) | yes |  |
+| `name` | string | yes | Unique in the project: `lleverage-dev`. |
+| `alias` | string | yes | The name sessions give `bash`'s `env`: `dev`. |
+| `description` | string | no |  |
+| `provider` | [EnvironmentProviderKind](/api/reference/types/#environmentproviderkind) | yes |  |
+| `size` | [EnvironmentSize](/api/reference/types/#environmentsize) | yes |  |
+| `definition` | [EnvironmentDefinition](/api/reference/types/#environmentdefinition) | yes |  |
+| `sharing` | [EnvironmentSharing](/api/reference/types/#environmentsharing) | yes |  |
+| `egress` | [EnvironmentEgress](/api/reference/types/#environmentegress) | yes |  |
+| `placeholders` | boolean | yes | Whether connection placeholders work on it, through Kantel's proxy. |
+| `idleTimeoutMs` | integer | yes |  |
+| `state` | [EnvironmentState](/api/reference/types/#environmentstate) | yes |  |
+| `error` | string | no |  |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `createdBy` | [Actor](/api/reference/types/#actor) | yes |  |
+| `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
+| `lastStartedAt` | integer | no | Epoch milliseconds, UTC. |
+| `lastStoppedAt` | integer | no | Epoch milliseconds, UTC. |
+| `idleStopAt` | integer | no | Epoch milliseconds, UTC. |
+| `leaseCount` | integer | yes | Sessions holding it now. |
+| `resume` | [EnvironmentResumeStats](/api/reference/types/#environmentresumestats) | no |  |
+| `runningMsThisMonth` | number | yes |  |
+
+### EnvironmentDefinition
+
+What a fresh machine starts with.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `version` | integer | yes |  (minimum 1) |
+| `template` | string | no | A provider template, such as a boat saved snapshot. |
+| `repository` | string | no | A repository to keep a warm clone of: `owner/name`. |
+| `setup` | string | no | Run once after the machine is first created. |
+| `composeFile` | string | no |  |
+| `readiness` | string | no |  |
+
+### EnvironmentDetail
+
+An environment with the sessions holding it and its recent history.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `environment` | [Environment](/api/reference/types/#environment) | yes |  |
+| `leases` | [EnvironmentLease](/api/reference/types/#environmentlease)[] | yes |  |
+| `grants` | [EnvironmentGrant](/api/reference/types/#environmentgrant)[] | yes |  |
+| `events` | [EnvironmentEvent](/api/reference/types/#environmentevent)[] | yes | Newest first. |
+
+### EnvironmentEgress
+
+`unmanaged`: Kantel doesn't run the machine's network, and code on it reaches the internet directly.
+
+One of: `"managed"` or `"unmanaged"`.
+
+### EnvironmentEvent
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `at` | integer | yes | Epoch milliseconds, UTC. |
+| `kind` | `"created"` or `"starting"` or `"started"` or `"stopping"` or `"stopped"` or `"failed"` or `"destroyed"` or `"lease.acquired"` or `"lease.ended"` or `"granted"` or `"revoked"` | yes |  |
+| `actor` | [Actor](/api/reference/types/#actor) | no |  |
+| `sessionId` | string | no |  |
+| `durationMs` | number | no |  |
+| `reason` | string | no |  |
+| `message` | string | no |  |
+
+### EnvironmentGrant
+
+A session's permission to use an environment, by its alias.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The grant's ID, `eng_…`. |
+| `organisationId` | string | yes |  |
+| `environmentId` | string | yes |  |
+| `sessionId` | string | yes |  |
+| `alias` | string | yes |  |
+| `rights` | `"worktree"` or `"machine"` | yes |  |
+| `grantedBy` | [Actor](/api/reference/types/#actor) | yes |  |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `status` | `"active"` or `"revoked"` or `"ended"` | yes |  |
+
+### EnvironmentLease
+
+A session's hold on a running environment.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The lease's ID, `enl_…`. |
+| `environmentId` | string | yes |  |
+| `sessionId` | string | yes |  |
+| `grantId` | string | yes |  |
+| `worktree` | string | yes | The session's own directory on the machine. |
+| `composeProject` | string | yes | The session's own `COMPOSE_PROJECT_NAME`. |
+| `portBase` | integer | yes | The first of the session's ten ports. |
+| `acquiredAt` | integer | yes | Epoch milliseconds, UTC. |
+| `renewedAt` | integer | yes | Epoch milliseconds, UTC. |
+| `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
+| `endedAt` | integer | no | Epoch milliseconds, UTC. |
+| `endReason` | `"released"` or `"expired"` or `"session_ended"` or `"revoked"` or `"stopped"` | no |  |
+| `commands` | integer | yes |  |
+
+### EnvironmentList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [Environment](/api/reference/types/#environment)[] | yes |  |
+
+### EnvironmentOwner
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `projectId` | string | yes |  |
+| `userId` | string | no | Absent: every member's sessions in the project may attach. |
+
+### EnvironmentProviderKind
+
+Who provides the machine. Only `boat` and `fake` are built yet.
+
+One of: `"boat"` or `"firecracker"` or `"byo"` or `"fake"`.
+
+### EnvironmentResumeStats
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `lastMs` | number | yes | The last start, from the start call to the machine up, in milliseconds. |
+| `p50Ms` | number | yes | The median of the recent starts. |
+| `samples` | integer | yes |  |
+
+### EnvironmentSharing
+
+One of: `"shared"` or `"exclusive"`.
+
+### EnvironmentSize
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | [EnvironmentSizeName](/api/reference/types/#environmentsizename) | yes |  |
+| `vcpus` | integer | yes |  |
+| `memoryGb` | integer | yes |  |
+| `diskGb` | integer | yes |  |
+
+### EnvironmentSizeName
+
+One of: `"small"` or `"default"` or `"large"` or `"xlarge"`.
+
+### EnvironmentState
+
+`running`: up with at least one session's lease. `idle`: up with none, stopping at `idleStopAt`. `stopped`: no machine running; the disk is kept. `error`: the last operation failed, and Start tries again.
+
+One of: `"creating"` or `"stopped"` or `"starting"` or `"running"` or `"idle"` or `"stopping"` or `"error"` or `"destroyed"`.
+
 ### ErrorBody
 
 Every error: the KantelError's code and message.
@@ -1178,6 +1352,14 @@ A GitHub App manifest flow; GitHub requires it finished within an hour.
 | `failure` | object | no |  |
 | `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### GrantEnvironmentBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sessionId` | string | yes |  |
+| `alias` | string | no |  (at most 32 characters) |
+| `rights` | `"worktree"` or `"machine"` | no |  |
 
 ### HistoryPage
 
@@ -2734,6 +2916,14 @@ One of: `"tunnel"` or `"http"` or `"callback"`.
 ### TranscriptItem
 
 One of: [UserItem](/api/reference/types/#useritem) or [AssistantItem](/api/reference/types/#assistantitem) or [ToolItem](/api/reference/types/#toolitem) or [CardItem](/api/reference/types/#carditem) or [NoticeItem](/api/reference/types/#noticeitem).
+
+### UpdateEnvironmentBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `description` | string | no |  (at most 200 characters) |
+| `idleTimeoutMs` | integer | no |  (minimum 60000) |
+| `size` | [EnvironmentSizeName](/api/reference/types/#environmentsizename) | no |  |
 
 ### UpdateScheduleBody
 

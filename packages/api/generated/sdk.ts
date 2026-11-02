@@ -885,6 +885,26 @@ export interface CreatedToolServer {
 	readonly token?: IssuedToolServerToken;
 }
 
+export interface CreateEnvironmentBody {
+	readonly projectId: string;
+	readonly name: string;
+	readonly alias?: string;
+	readonly description?: string;
+	/** Who provides the machine. Only `boat` and `fake` are built yet. */
+	readonly provider?: EnvironmentProviderKind;
+	readonly size?: EnvironmentSizeName;
+	readonly definition?: {
+		readonly template?: string;
+		readonly repository?: string;
+		readonly setup?: string;
+		readonly composeFile?: string;
+		readonly readiness?: string;
+	};
+	readonly sharing?: EnvironmentSharing;
+	readonly projectWide?: boolean;
+	readonly idleTimeoutMs?: number;
+}
+
 export interface CreateMemorySpaceBody {
 	/** Who owns a record: an organisation, a project, a user, or the platform. */
 	readonly owner: OwnerRef;
@@ -1109,6 +1129,182 @@ export interface EndpointHint {
 	readonly access: AccessKind;
 }
 
+/** A long-lived machine owned by a project, by default by one person in it, that sessions attach to. */
+export interface Environment {
+	/** The environment's ID, `env_…`. */
+	readonly id: string;
+	readonly organisationId: string;
+	readonly owner: EnvironmentOwner;
+	/** Unique in the project: `lleverage-dev`. */
+	readonly name: string;
+	/** The name sessions give `bash`'s `env`: `dev`. */
+	readonly alias: string;
+	readonly description?: string;
+	/** Who provides the machine. Only `boat` and `fake` are built yet. */
+	readonly provider: EnvironmentProviderKind;
+	readonly size: EnvironmentSize;
+	/** What a fresh machine starts with. */
+	readonly definition: EnvironmentDefinition;
+	readonly sharing: EnvironmentSharing;
+	/** `unmanaged`: Kantel doesn't run the machine's network, and code on it reaches the internet directly. */
+	readonly egress: EnvironmentEgress;
+	/** Whether connection placeholders work on it, through Kantel's proxy. */
+	readonly placeholders: boolean;
+	readonly idleTimeoutMs: number;
+	/** `running`: up with at least one session's lease. `idle`: up with none, stopping at `idleStopAt`. `stopped`: no machine running; the disk is kept. `error`: the last operation failed, and Start tries again. */
+	readonly state: EnvironmentState;
+	readonly error?: string;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
+	readonly createdBy: Actor;
+	/** Epoch milliseconds, UTC. */
+	readonly updatedAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly lastStartedAt?: number;
+	/** Epoch milliseconds, UTC. */
+	readonly lastStoppedAt?: number;
+	/** Epoch milliseconds, UTC. */
+	readonly idleStopAt?: number;
+	/** Sessions holding it now. */
+	readonly leaseCount: number;
+	readonly resume?: EnvironmentResumeStats;
+	readonly runningMsThisMonth: number;
+}
+
+/** What a fresh machine starts with. */
+export interface EnvironmentDefinition {
+	readonly version: number;
+	/** A provider template, such as a boat saved snapshot. */
+	readonly template?: string;
+	/** A repository to keep a warm clone of: `owner/name`. */
+	readonly repository?: string;
+	/** Run once after the machine is first created. */
+	readonly setup?: string;
+	readonly composeFile?: string;
+	readonly readiness?: string;
+}
+
+/** An environment with the sessions holding it and its recent history. */
+export interface EnvironmentDetail {
+	/** A long-lived machine owned by a project, by default by one person in it, that sessions attach to. */
+	readonly environment: Environment;
+	readonly leases: readonly EnvironmentLease[];
+	readonly grants: readonly EnvironmentGrant[];
+	/** Newest first. */
+	readonly events: readonly EnvironmentEvent[];
+}
+
+/** `unmanaged`: Kantel doesn't run the machine's network, and code on it reaches the internet directly. */
+export type EnvironmentEgress = "managed" | "unmanaged";
+
+export interface EnvironmentEvent {
+	/** Epoch milliseconds, UTC. */
+	readonly at: number;
+	readonly kind:
+		| "created"
+		| "starting"
+		| "started"
+		| "stopping"
+		| "stopped"
+		| "failed"
+		| "destroyed"
+		| "lease.acquired"
+		| "lease.ended"
+		| "granted"
+		| "revoked";
+	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
+	readonly actor?: Actor;
+	readonly sessionId?: string;
+	readonly durationMs?: number;
+	readonly reason?: string;
+	readonly message?: string;
+}
+
+/** A session's permission to use an environment, by its alias. */
+export interface EnvironmentGrant {
+	/** The grant's ID, `eng_…`. */
+	readonly id: string;
+	readonly organisationId: string;
+	readonly environmentId: string;
+	readonly sessionId: string;
+	readonly alias: string;
+	readonly rights: "worktree" | "machine";
+	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
+	readonly grantedBy: Actor;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	readonly status: "active" | "revoked" | "ended";
+}
+
+/** A session's hold on a running environment. */
+export interface EnvironmentLease {
+	/** The lease's ID, `enl_…`. */
+	readonly id: string;
+	readonly environmentId: string;
+	readonly sessionId: string;
+	readonly grantId: string;
+	/** The session's own directory on the machine. */
+	readonly worktree: string;
+	/** The session's own `COMPOSE_PROJECT_NAME`. */
+	readonly composeProject: string;
+	/** The first of the session's ten ports. */
+	readonly portBase: number;
+	/** Epoch milliseconds, UTC. */
+	readonly acquiredAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly renewedAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly expiresAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly endedAt?: number;
+	readonly endReason?: "released" | "expired" | "session_ended" | "revoked" | "stopped";
+	readonly commands: number;
+}
+
+export interface EnvironmentList {
+	readonly items: readonly Environment[];
+}
+
+export interface EnvironmentOwner {
+	readonly projectId: string;
+	/** Absent: every member's sessions in the project may attach. */
+	readonly userId?: string;
+}
+
+/** Who provides the machine. Only `boat` and `fake` are built yet. */
+export type EnvironmentProviderKind = "boat" | "firecracker" | "byo" | "fake";
+
+export interface EnvironmentResumeStats {
+	/** The last start, from the start call to the machine up, in milliseconds. */
+	readonly lastMs: number;
+	/** The median of the recent starts. */
+	readonly p50Ms: number;
+	readonly samples: number;
+}
+
+export type EnvironmentSharing = "shared" | "exclusive";
+
+export interface EnvironmentSize {
+	readonly name: EnvironmentSizeName;
+	readonly vcpus: number;
+	readonly memoryGb: number;
+	readonly diskGb: number;
+}
+
+export type EnvironmentSizeName = "small" | "default" | "large" | "xlarge";
+
+/** `running`: up with at least one session's lease. `idle`: up with none, stopping at `idleStopAt`. `stopped`: no machine running; the disk is kept. `error`: the last operation failed, and Start tries again. */
+export type EnvironmentState =
+	| "creating"
+	| "stopped"
+	| "starting"
+	| "running"
+	| "idle"
+	| "stopping"
+	| "error"
+	| "destroyed";
+
 export interface FileShare {
 	/** The share's ID. */
 	readonly id: string;
@@ -1186,6 +1382,12 @@ export interface GitHubAppSetup {
 	readonly expiresAt: number;
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
+}
+
+export interface GrantEnvironmentBody {
+	readonly sessionId: string;
+	readonly alias?: string;
+	readonly rights?: "worktree" | "machine";
 }
 
 export interface HistoryPage {
@@ -2930,6 +3132,12 @@ export type ToolServerTransport = "tunnel" | "http" | "callback";
 
 export type TranscriptItem = UserItem | AssistantItem | ToolItem | CardItem | NoticeItem;
 
+export interface UpdateEnvironmentBody {
+	readonly description?: string;
+	readonly idleTimeoutMs?: number;
+	readonly size?: EnvironmentSizeName;
+}
+
 /** The fields to change; a field left out stays as it is, and `null` on `at`, `repeat`, `until` or `count` clears it. The owner and the kind are fixed at create. */
 export interface UpdateScheduleBody {
 	readonly title?: string;
@@ -3816,6 +4024,29 @@ export interface KantelClient {
 	): Promise<ProgramRun>;
 	/** List a program run's journal. Each tool call and wait the run made, in order, with how many later activations took it from the journal instead of running it again. Experimental: served only where the deployment also sets `KANTEL_PROGRAM_WAITS=on`. `GET /programs/{programId}/runs/{runId}/steps` */
 	listProgramRunSteps(programId: string, runId: string, options?: CallOptions): Promise<ProgramRunStepList>;
+	/** List environments. The environments of the projects the caller may view, by name; destroyed ones are left out. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`. `GET /environments` */
+	listEnvironments(
+		query?: {
+			readonly projectId?: string;
+		},
+		options?: CallOptions,
+	): Promise<EnvironmentList>;
+	/** Create an environment. Creates an environment and its machine; needs operator on the project. It belongs to the caller unless `projectWide`, and idles until a session uses it. The name is unique in the project (`conflict` otherwise). Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`. `POST /environments` */
+	createEnvironment(body: CreateEnvironmentBody, options?: CallOptions): Promise<Environment>;
+	/** Get an environment. The environment, the sessions holding it, its grants and its recent history. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`. `GET /environments/{environmentId}` */
+	getEnvironment(environmentId: string, options?: CallOptions): Promise<EnvironmentDetail>;
+	/** Change an environment. Changes its description, idle timeout or size; a new size applies at the next start. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`. `PATCH /environments/{environmentId}` */
+	updateEnvironment(environmentId: string, body?: UpdateEnvironmentBody, options?: CallOptions): Promise<Environment>;
+	/** Start an environment. Starts a stopped environment; answers as soon as the start is under way. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`. `POST /environments/{environmentId}/start` */
+	startEnvironment(environmentId: string, options?: CallOptions): Promise<Environment>;
+	/** Stop an environment. Stops it, keeping its disk; the sessions holding it let go. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`. `POST /environments/{environmentId}/stop` */
+	stopEnvironment(environmentId: string, options?: CallOptions): Promise<Environment>;
+	/** Destroy an environment. Removes its machine and disk, and revokes its grants; needs admin on the project. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`. `DELETE /environments/{environmentId}` */
+	destroyEnvironment(environmentId: string, options?: CallOptions): Promise<Environment>;
+	/** Grant a session an environment. Lets a session in the environment's project use it as `bash`'s `env`, by its alias; needs operator on the project. A session already granted it is answered with its grant. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`. `POST /environments/{environmentId}/grants` */
+	grantEnvironment(environmentId: string, body: GrantEnvironmentBody, options?: CallOptions): Promise<EnvironmentGrant>;
+	/** Revoke a session's grant. Ends the session's use of the environment, and its lease. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`. `DELETE /environments/{environmentId}/grants/{grantId}` */
+	revokeEnvironmentGrant(environmentId: string, grantId: string, options?: CallOptions): Promise<void>;
 }
 
 /** A client for Kantel's public API over `fetch`. */
@@ -4214,6 +4445,35 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(
 				options,
 				{ method: "GET", path: `/programs/${encodeURIComponent(programId)}/runs/${encodeURIComponent(runId)}/steps` },
+				callOptions,
+			),
+		listEnvironments: (query, callOptions) =>
+			send(options, { method: "GET", path: "/environments", query }, callOptions),
+		createEnvironment: (body, callOptions) =>
+			send(options, { method: "POST", path: "/environments", body }, callOptions),
+		getEnvironment: (environmentId, callOptions) =>
+			send(options, { method: "GET", path: `/environments/${encodeURIComponent(environmentId)}` }, callOptions),
+		updateEnvironment: (environmentId, body = {}, callOptions) =>
+			send(options, { method: "PATCH", path: `/environments/${encodeURIComponent(environmentId)}`, body }, callOptions),
+		startEnvironment: (environmentId, callOptions) =>
+			send(options, { method: "POST", path: `/environments/${encodeURIComponent(environmentId)}/start` }, callOptions),
+		stopEnvironment: (environmentId, callOptions) =>
+			send(options, { method: "POST", path: `/environments/${encodeURIComponent(environmentId)}/stop` }, callOptions),
+		destroyEnvironment: (environmentId, callOptions) =>
+			send(options, { method: "DELETE", path: `/environments/${encodeURIComponent(environmentId)}` }, callOptions),
+		grantEnvironment: (environmentId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/environments/${encodeURIComponent(environmentId)}/grants`, body },
+				callOptions,
+			),
+		revokeEnvironmentGrant: (environmentId, grantId, callOptions) =>
+			send(
+				options,
+				{
+					method: "DELETE",
+					path: `/environments/${encodeURIComponent(environmentId)}/grants/${encodeURIComponent(grantId)}`,
+				},
 				callOptions,
 			),
 	};

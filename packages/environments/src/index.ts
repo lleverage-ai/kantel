@@ -12,4 +12,11 @@ export {
 	type SessionEnvironmentAlias,
 } from "./broker.ts";
 export { createFakeProvider, type FakeProvider } from "./fake-provider.ts";
+export {
+	boatWebhookPath,
+	createEnvironmentsApi,
+	type EnvironmentsApi,
+	type EnvironmentsApiOptions,
+	isEnvironmentsPath,
+} from "./http.ts";
 export { createMemoryEnvironmentStore, type EnvironmentStore, type StoredEnvironment } from "./store.ts";

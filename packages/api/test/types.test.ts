@@ -51,6 +51,7 @@ import type * as Protocol from "@kantel/protocol";
 import type { Static, TSchema } from "typebox";
 import { describe, expect, it } from "vitest";
 import type * as Conn from "../src/connections-schema.ts";
+import type * as Envs from "../src/environments-schema.ts";
 import type * as Frames from "../src/protocol-schema.ts";
 import type { DeepReadonly } from "../src/route.ts";
 import type * as Runs from "../src/run-schema.ts";
@@ -295,6 +296,28 @@ describe("schemas match the contracts", () => {
 			),
 			same<Typed<Wire<typeof Tools.ToolServerToolView>>, Typed<Sharing.ToolServerToolView>>(true),
 			same<Typed<Wire<typeof Tools.ToolServerTools>>, Typed<Sharing.ToolServerTools>>(true),
+		];
+		expect(proofs.every(Boolean)).toBe(true);
+	});
+
+	it("matches the environments contract", () => {
+		const proofs = [
+			same<Wire<typeof Envs.EnvironmentState>, Sharing.EnvironmentState>(true),
+			same<Wire<typeof Envs.EnvironmentProviderKind>, Sharing.EnvironmentProviderKind>(true),
+			same<Wire<typeof Envs.EnvironmentSize>, Sharing.EnvironmentSize>(true),
+			same<Wire<typeof Envs.EnvironmentDefinition>, Sharing.EnvironmentDefinition>(true),
+			same<Wire<typeof Envs.EnvironmentOwner>, Sharing.EnvironmentOwner>(true),
+			same<Wire<typeof Envs.EnvironmentResumeStats>, Sharing.EnvironmentResumeStats>(true),
+			same<Wire<typeof Envs.Environment>, Sharing.Environment>(true),
+			same<Wire<typeof Envs.EnvironmentList>, { items: readonly Sharing.Environment[] }>(true),
+			same<Wire<typeof Envs.EnvironmentGrant>, Sharing.EnvironmentGrant>(true),
+			same<Wire<typeof Envs.EnvironmentLease>, Sharing.EnvironmentLease>(true),
+			same<Wire<typeof Envs.EnvironmentEvent>, Sharing.EnvironmentEvent>(true),
+			same<Wire<typeof Envs.EnvironmentDetail>, Sharing.EnvironmentDetail>(true),
+			same<Wire<typeof Envs.CreateEnvironmentBody>, Sharing.CreateEnvironmentInput>(true),
+			same<Wire<typeof Envs.UpdateEnvironmentBody>, Sharing.UpdateEnvironmentInput>(true),
+			same<Wire<typeof Envs.GrantEnvironmentBody>, Sharing.GrantEnvironmentInput>(true),
+			same<Wire<typeof Envs.ListEnvironmentsQuery>, Sharing.EnvironmentFilter>(true),
 		];
 		expect(proofs.every(Boolean)).toBe(true);
 	});

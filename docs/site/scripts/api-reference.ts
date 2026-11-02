@@ -119,6 +119,12 @@ const TAGS: {
 		about: "MCP servers Kantel calls for tools: the registry, tunnel tokens and each server's tools.",
 		note: "Experimental: served only where the deployment sets `KANTEL_TOOL_SERVERS=experimental`.",
 	},
+	environments: {
+		title: "Environments",
+		order: 14,
+		about: "Long-lived machines a project's sessions attach to: create, start, stop, grant and destroy.",
+		note: "Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`.",
+	},
 };
 
 const document = JSON.parse(readFileSync(source, "utf8")) as Document;

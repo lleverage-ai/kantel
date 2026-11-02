@@ -10574,6 +10574,790 @@
 					}
 				}
 			}
+		},
+		"/environments": {
+			"get": {
+				"operationId": "listEnvironments",
+				"summary": "List environments",
+				"description": "The environments of the projects the caller may view, by name; destroyed ones are left out. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`.",
+				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "projectId",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The environments.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/EnvironmentList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "createEnvironment",
+				"summary": "Create an environment",
+				"description": "Creates an environment and its machine; needs operator on the project. It belongs to the caller unless `projectWide`, and idles until a session uses it. The name is unique in the project (`conflict` otherwise). Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`.",
+				"tags": ["environments"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/CreateEnvironmentBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The environment.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Environment"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/environments/{environmentId}": {
+			"get": {
+				"operationId": "getEnvironment",
+				"summary": "Get an environment",
+				"description": "The environment, the sessions holding it, its grants and its recent history. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`.",
+				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "environmentId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The environment.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/EnvironmentDetail"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"patch": {
+				"operationId": "updateEnvironment",
+				"summary": "Change an environment",
+				"description": "Changes its description, idle timeout or size; a new size applies at the next start. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`.",
+				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "environmentId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/UpdateEnvironmentBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The environment.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Environment"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "destroyEnvironment",
+				"summary": "Destroy an environment",
+				"description": "Removes its machine and disk, and revokes its grants; needs admin on the project. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`.",
+				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "environmentId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The environment, destroyed.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Environment"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/environments/{environmentId}/start": {
+			"post": {
+				"operationId": "startEnvironment",
+				"summary": "Start an environment",
+				"description": "Starts a stopped environment; answers as soon as the start is under way. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`.",
+				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "environmentId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The environment, starting.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Environment"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"422": {
+						"description": "`refused`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"429": {
+						"description": "`exhausted`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/environments/{environmentId}/stop": {
+			"post": {
+				"operationId": "stopEnvironment",
+				"summary": "Stop an environment",
+				"description": "Stops it, keeping its disk; the sessions holding it let go. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`.",
+				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "environmentId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The environment, stopping.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Environment"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/environments/{environmentId}/grants": {
+			"post": {
+				"operationId": "grantEnvironment",
+				"summary": "Grant a session an environment",
+				"description": "Lets a session in the environment's project use it as `bash`'s `env`, by its alias; needs operator on the project. A session already granted it is answered with its grant. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`.",
+				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "environmentId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/GrantEnvironmentBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The grant.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/EnvironmentGrant"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/environments/{environmentId}/grants/{grantId}": {
+			"delete": {
+				"operationId": "revokeEnvironmentGrant",
+				"summary": "Revoke a session's grant",
+				"description": "Ends the session's use of the environment, and its lease. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`.",
+				"tags": ["environments"],
+				"parameters": [
+					{
+						"name": "environmentId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					{
+						"name": "grantId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string",
+							"minLength": 1
+						}
+					}
+				],
+				"responses": {
+					"204": {
+						"description": "Revoked."
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	},
 	"components": {
@@ -13443,6 +14227,67 @@
 				"title": "CreatedToolServer",
 				"description": "A new server, and for a tunnel its first token."
 			},
+			"CreateEnvironmentBody": {
+				"type": "object",
+				"required": ["projectId", "name"],
+				"properties": {
+					"projectId": {
+						"type": "string",
+						"minLength": 1
+					},
+					"name": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 63
+					},
+					"alias": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 32
+					},
+					"description": {
+						"type": "string",
+						"maxLength": 200
+					},
+					"provider": {
+						"$ref": "#/components/schemas/EnvironmentProviderKind"
+					},
+					"size": {
+						"$ref": "#/components/schemas/EnvironmentSizeName"
+					},
+					"definition": {
+						"type": "object",
+						"properties": {
+							"template": {
+								"type": "string"
+							},
+							"repository": {
+								"type": "string"
+							},
+							"setup": {
+								"type": "string"
+							},
+							"composeFile": {
+								"type": "string"
+							},
+							"readiness": {
+								"type": "string"
+							}
+						}
+					},
+					"sharing": {
+						"$ref": "#/components/schemas/EnvironmentSharing"
+					},
+					"projectWide": {
+						"type": "boolean"
+					},
+					"idleTimeoutMs": {
+						"type": "integer",
+						"minimum": 60000
+					}
+				},
+				"title": "CreateEnvironmentBody"
+			},
 			"CreateMemorySpaceBody": {
 				"type": "object",
 				"required": ["owner", "name"],
@@ -14122,6 +14967,578 @@
 				},
 				"title": "EndpointHint"
 			},
+			"Environment": {
+				"type": "object",
+				"required": [
+					"id",
+					"organisationId",
+					"owner",
+					"name",
+					"alias",
+					"provider",
+					"size",
+					"definition",
+					"sharing",
+					"egress",
+					"placeholders",
+					"idleTimeoutMs",
+					"state",
+					"createdAt",
+					"createdBy",
+					"updatedAt",
+					"leaseCount",
+					"runningMsThisMonth"
+				],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The environment's ID, `env_…`."
+					},
+					"organisationId": {
+						"type": "string"
+					},
+					"owner": {
+						"$ref": "#/components/schemas/EnvironmentOwner"
+					},
+					"name": {
+						"type": "string",
+						"description": "Unique in the project: `lleverage-dev`."
+					},
+					"alias": {
+						"type": "string",
+						"description": "The name sessions give `bash`'s `env`: `dev`."
+					},
+					"description": {
+						"type": "string"
+					},
+					"provider": {
+						"$ref": "#/components/schemas/EnvironmentProviderKind"
+					},
+					"size": {
+						"$ref": "#/components/schemas/EnvironmentSize"
+					},
+					"definition": {
+						"$ref": "#/components/schemas/EnvironmentDefinition"
+					},
+					"sharing": {
+						"$ref": "#/components/schemas/EnvironmentSharing"
+					},
+					"egress": {
+						"$ref": "#/components/schemas/EnvironmentEgress"
+					},
+					"placeholders": {
+						"type": "boolean",
+						"description": "Whether connection placeholders work on it, through Kantel's proxy."
+					},
+					"idleTimeoutMs": {
+						"type": "integer"
+					},
+					"state": {
+						"$ref": "#/components/schemas/EnvironmentState"
+					},
+					"error": {
+						"type": "string"
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"createdBy": {
+						"$ref": "#/components/schemas/Actor"
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"lastStartedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"lastStoppedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"idleStopAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"leaseCount": {
+						"type": "integer",
+						"description": "Sessions holding it now."
+					},
+					"resume": {
+						"$ref": "#/components/schemas/EnvironmentResumeStats"
+					},
+					"runningMsThisMonth": {
+						"type": "number"
+					}
+				},
+				"title": "Environment",
+				"description": "A long-lived machine owned by a project, by default by one person in it, that sessions attach to."
+			},
+			"EnvironmentDefinition": {
+				"type": "object",
+				"required": ["version"],
+				"properties": {
+					"version": {
+						"type": "integer",
+						"minimum": 1
+					},
+					"template": {
+						"type": "string",
+						"description": "A provider template, such as a boat saved snapshot."
+					},
+					"repository": {
+						"type": "string",
+						"description": "A repository to keep a warm clone of: `owner/name`."
+					},
+					"setup": {
+						"type": "string",
+						"description": "Run once after the machine is first created."
+					},
+					"composeFile": {
+						"type": "string"
+					},
+					"readiness": {
+						"type": "string"
+					}
+				},
+				"title": "EnvironmentDefinition",
+				"description": "What a fresh machine starts with."
+			},
+			"EnvironmentDetail": {
+				"type": "object",
+				"required": ["environment", "leases", "grants", "events"],
+				"properties": {
+					"environment": {
+						"$ref": "#/components/schemas/Environment"
+					},
+					"leases": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/EnvironmentLease"
+						}
+					},
+					"grants": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/EnvironmentGrant"
+						}
+					},
+					"events": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/EnvironmentEvent"
+						},
+						"description": "Newest first."
+					}
+				},
+				"title": "EnvironmentDetail",
+				"description": "An environment with the sessions holding it and its recent history."
+			},
+			"EnvironmentEgress": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "managed"
+					},
+					{
+						"type": "string",
+						"const": "unmanaged"
+					}
+				],
+				"title": "EnvironmentEgress",
+				"description": "`unmanaged`: Kantel doesn't run the machine's network, and code on it reaches the internet directly."
+			},
+			"EnvironmentEvent": {
+				"type": "object",
+				"required": ["at", "kind"],
+				"properties": {
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"kind": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "created"
+							},
+							{
+								"type": "string",
+								"const": "starting"
+							},
+							{
+								"type": "string",
+								"const": "started"
+							},
+							{
+								"type": "string",
+								"const": "stopping"
+							},
+							{
+								"type": "string",
+								"const": "stopped"
+							},
+							{
+								"type": "string",
+								"const": "failed"
+							},
+							{
+								"type": "string",
+								"const": "destroyed"
+							},
+							{
+								"type": "string",
+								"const": "lease.acquired"
+							},
+							{
+								"type": "string",
+								"const": "lease.ended"
+							},
+							{
+								"type": "string",
+								"const": "granted"
+							},
+							{
+								"type": "string",
+								"const": "revoked"
+							}
+						]
+					},
+					"actor": {
+						"$ref": "#/components/schemas/Actor"
+					},
+					"sessionId": {
+						"type": "string"
+					},
+					"durationMs": {
+						"type": "number"
+					},
+					"reason": {
+						"type": "string"
+					},
+					"message": {
+						"type": "string"
+					}
+				},
+				"title": "EnvironmentEvent"
+			},
+			"EnvironmentGrant": {
+				"type": "object",
+				"required": [
+					"id",
+					"organisationId",
+					"environmentId",
+					"sessionId",
+					"alias",
+					"rights",
+					"grantedBy",
+					"createdAt",
+					"status"
+				],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The grant's ID, `eng_…`."
+					},
+					"organisationId": {
+						"type": "string"
+					},
+					"environmentId": {
+						"type": "string"
+					},
+					"sessionId": {
+						"type": "string"
+					},
+					"alias": {
+						"type": "string"
+					},
+					"rights": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "worktree"
+							},
+							{
+								"type": "string",
+								"const": "machine"
+							}
+						]
+					},
+					"grantedBy": {
+						"$ref": "#/components/schemas/Actor"
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"status": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "active"
+							},
+							{
+								"type": "string",
+								"const": "revoked"
+							},
+							{
+								"type": "string",
+								"const": "ended"
+							}
+						]
+					}
+				},
+				"title": "EnvironmentGrant",
+				"description": "A session's permission to use an environment, by its alias."
+			},
+			"EnvironmentLease": {
+				"type": "object",
+				"required": [
+					"id",
+					"environmentId",
+					"sessionId",
+					"grantId",
+					"worktree",
+					"composeProject",
+					"portBase",
+					"acquiredAt",
+					"renewedAt",
+					"expiresAt",
+					"commands"
+				],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The lease's ID, `enl_…`."
+					},
+					"environmentId": {
+						"type": "string"
+					},
+					"sessionId": {
+						"type": "string"
+					},
+					"grantId": {
+						"type": "string"
+					},
+					"worktree": {
+						"type": "string",
+						"description": "The session's own directory on the machine."
+					},
+					"composeProject": {
+						"type": "string",
+						"description": "The session's own `COMPOSE_PROJECT_NAME`."
+					},
+					"portBase": {
+						"type": "integer",
+						"description": "The first of the session's ten ports."
+					},
+					"acquiredAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"renewedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"expiresAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"endedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"endReason": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "released"
+							},
+							{
+								"type": "string",
+								"const": "expired"
+							},
+							{
+								"type": "string",
+								"const": "session_ended"
+							},
+							{
+								"type": "string",
+								"const": "revoked"
+							},
+							{
+								"type": "string",
+								"const": "stopped"
+							}
+						]
+					},
+					"commands": {
+						"type": "integer"
+					}
+				},
+				"title": "EnvironmentLease",
+				"description": "A session's hold on a running environment."
+			},
+			"EnvironmentList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/Environment"
+						}
+					}
+				},
+				"title": "EnvironmentList"
+			},
+			"EnvironmentOwner": {
+				"type": "object",
+				"required": ["projectId"],
+				"properties": {
+					"projectId": {
+						"type": "string"
+					},
+					"userId": {
+						"type": "string",
+						"description": "Absent: every member's sessions in the project may attach."
+					}
+				},
+				"title": "EnvironmentOwner"
+			},
+			"EnvironmentProviderKind": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "boat"
+					},
+					{
+						"type": "string",
+						"const": "firecracker"
+					},
+					{
+						"type": "string",
+						"const": "byo"
+					},
+					{
+						"type": "string",
+						"const": "fake"
+					}
+				],
+				"title": "EnvironmentProviderKind",
+				"description": "Who provides the machine. Only `boat` and `fake` are built yet."
+			},
+			"EnvironmentResumeStats": {
+				"type": "object",
+				"required": ["lastMs", "p50Ms", "samples"],
+				"properties": {
+					"lastMs": {
+						"type": "number",
+						"description": "The last start, from the start call to the machine up, in milliseconds."
+					},
+					"p50Ms": {
+						"type": "number",
+						"description": "The median of the recent starts."
+					},
+					"samples": {
+						"type": "integer"
+					}
+				},
+				"title": "EnvironmentResumeStats"
+			},
+			"EnvironmentSharing": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "shared"
+					},
+					{
+						"type": "string",
+						"const": "exclusive"
+					}
+				],
+				"title": "EnvironmentSharing"
+			},
+			"EnvironmentSize": {
+				"type": "object",
+				"required": ["name", "vcpus", "memoryGb", "diskGb"],
+				"properties": {
+					"name": {
+						"$ref": "#/components/schemas/EnvironmentSizeName"
+					},
+					"vcpus": {
+						"type": "integer"
+					},
+					"memoryGb": {
+						"type": "integer"
+					},
+					"diskGb": {
+						"type": "integer"
+					}
+				},
+				"title": "EnvironmentSize"
+			},
+			"EnvironmentSizeName": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "small"
+					},
+					{
+						"type": "string",
+						"const": "default"
+					},
+					{
+						"type": "string",
+						"const": "large"
+					},
+					{
+						"type": "string",
+						"const": "xlarge"
+					}
+				],
+				"title": "EnvironmentSizeName"
+			},
+			"EnvironmentState": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "creating"
+					},
+					{
+						"type": "string",
+						"const": "stopped"
+					},
+					{
+						"type": "string",
+						"const": "starting"
+					},
+					{
+						"type": "string",
+						"const": "running"
+					},
+					{
+						"type": "string",
+						"const": "idle"
+					},
+					{
+						"type": "string",
+						"const": "stopping"
+					},
+					{
+						"type": "string",
+						"const": "error"
+					},
+					{
+						"type": "string",
+						"const": "destroyed"
+					}
+				],
+				"title": "EnvironmentState",
+				"description": "`running`: up with at least one session's lease. `idle`: up with none, stopping at `idleStopAt`. `stopped`: no machine running; the disk is kept. `error`: the last operation failed, and Start tries again."
+			},
 			"ErrorBody": {
 				"type": "object",
 				"required": ["error"],
@@ -14408,6 +15825,34 @@
 				},
 				"title": "GitHubAppSetup",
 				"description": "A GitHub App manifest flow; GitHub requires it finished within an hour."
+			},
+			"GrantEnvironmentBody": {
+				"type": "object",
+				"required": ["sessionId"],
+				"properties": {
+					"sessionId": {
+						"type": "string",
+						"minLength": 1
+					},
+					"alias": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 32
+					},
+					"rights": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "worktree"
+							},
+							{
+								"type": "string",
+								"const": "machine"
+							}
+						]
+					}
+				},
+				"title": "GrantEnvironmentBody"
 			},
 			"HistoryPage": {
 				"type": "object",
@@ -18914,6 +20359,23 @@
 					}
 				],
 				"title": "TranscriptItem"
+			},
+			"UpdateEnvironmentBody": {
+				"type": "object",
+				"properties": {
+					"description": {
+						"type": "string",
+						"maxLength": 200
+					},
+					"idleTimeoutMs": {
+						"type": "integer",
+						"minimum": 60000
+					},
+					"size": {
+						"$ref": "#/components/schemas/EnvironmentSizeName"
+					}
+				},
+				"title": "UpdateEnvironmentBody"
 			},
 			"UpdateScheduleBody": {
 				"type": "object",

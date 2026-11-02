@@ -9,8 +9,8 @@
  */
 import { Type } from "@earendil-works/pi-ai";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
-import { isKantelError } from "@kantel/contracts";
-import type { EnvironmentBroker, EnvironmentSession } from "./broker.ts";
+import { isKantelError, type SessionRecord } from "@kantel/contracts";
+import type { EnvironmentBroker, EnvironmentSession, SessionEnvironmentAlias } from "./broker.ts";
 
 /** What `env` says to the model. */
 export const ENV_ARGUMENT_DESCRIPTION =
@@ -35,6 +35,17 @@ export interface EnvironmentBashOptions {
 	/** The broker; asked at each call, so it may be built after the runtime. */
 	readonly broker: () => EnvironmentBroker;
 	readonly session: EnvironmentSession;
+	/** The environments the session may name, told to the model in the tool's description. */
+	readonly aliases?: readonly SessionEnvironmentAlias[];
+}
+
+/** The line the model reads about its environments. */
+export function aliasesText(aliases: readonly SessionEnvironmentAlias[]): string {
+	if (aliases.length === 0) return "";
+	const named = aliases.map((entry) =>
+		entry.description === undefined ? entry.alias : `${entry.alias} (${entry.description})`,
+	);
+	return ` Your environments: ${named.join("; ")}.`;
 }
 
 /** `bash` for one session, with `env`. Keeps the base tool's execution mode, so it stays a barrier in its round. */
@@ -42,7 +53,7 @@ export function environmentBashTool(options: EnvironmentBashOptions): ToolRegist
 	const { base } = options;
 	const tool = defineTool({
 		name: "bash",
-		description: `${base.description} Optionally give env to run it on one of your environments.`,
+		description: `${base.description} Optionally give env to run it on one of your environments.${aliasesText(options.aliases ?? [])}`,
 		parameters: bashWithEnvSchema,
 		structuredOutputSchema,
 		outputLimits: { retain: "tail" },
@@ -80,4 +91,39 @@ export function environmentBashTool(options: EnvironmentBashOptions): ToolRegist
 		},
 	});
 	return base.executionMode === undefined ? tool : { ...tool, executionMode: base.executionMode };
+}
+
+/** The session a record is, as the broker sees it. */
+export function environmentSessionOf(record: SessionRecord): EnvironmentSession {
+	return {
+		sessionId: record.id,
+		organisationId: record.organisationId,
+		...(record.projectId === undefined ? {} : { projectId: record.projectId }),
+		...(record.userId === undefined ? {} : { userId: record.userId }),
+	};
+}
+
+type SessionTools = (record: SessionRecord) => Promise<readonly ToolRegistration[]> | readonly ToolRegistration[];
+
+/**
+ * A runtime's `tools` with each session's `bash` given `env`. A session in no project, or one with no environment
+ * it may name, keeps its `bash` unchanged, so the model never sees an argument it can't use.
+ */
+export function withEnvironmentBash(
+	tools: SessionTools | undefined,
+	broker: () => EnvironmentBroker,
+): (record: SessionRecord) => Promise<ToolRegistration[]> {
+	return async (record) => {
+		const own = [...((await tools?.(record)) ?? [])];
+		const index = own.findIndex((tool) => tool.name === "bash");
+		const base = own[index];
+		if (base === undefined || record.projectId === undefined) return own;
+		const session = environmentSessionOf(record);
+		const aliases = await broker()
+			.aliases(session)
+			.catch(() => []);
+		if (aliases.length === 0) return own;
+		own[index] = environmentBashTool({ base, broker, session, aliases });
+		return own;
+	};
 }

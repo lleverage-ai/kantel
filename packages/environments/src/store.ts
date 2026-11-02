@@ -84,7 +84,14 @@ export function createMemoryEnvironmentStore(): EnvironmentStore {
 			grants.set(grant.id, grant);
 		},
 		async leases(environmentId) {
-			return [...leases.values()].filter((lease) => lease.environmentId === environmentId);
+			// Live ones by when they were taken, then ended ones newest first, as the SQL store reads them.
+			const all = [...leases.values()].filter((lease) => lease.environmentId === environmentId);
+			const live = all.filter((lease) => lease.endedAt === undefined).sort((a, b) => a.acquiredAt - b.acquiredAt);
+			const ended = all
+				.filter((lease) => lease.endedAt !== undefined)
+				.sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
+				.slice(0, 50);
+			return [...live, ...ended];
 		},
 		async sessionLeases(sessionId) {
 			return [...leases.values()].filter((lease) => lease.sessionId === sessionId);

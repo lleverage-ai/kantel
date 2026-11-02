@@ -9,14 +9,18 @@
 		".": "./src/index.ts",
 		"./broker": "./src/broker.ts",
 		"./store": "./src/store.ts",
+		"./sql": "./src/sql-store.ts",
 		"./fake": "./src/fake-provider.ts",
 		"./boat": "./src/boat.ts",
 		"./fake-boat": "./src/fake-boat.ts",
-		"./bash": "./src/bash.ts"
+		"./bash": "./src/bash.ts",
+		"./http": "./src/http.ts"
 	},
 	"dependencies": {
+		"@kantel/api": "workspace:*",
 		"@earendil-works/pi-ai": "1.4.0",
 		"@earendil-works/pi-durable": "1.4.0",
-		"@kantel/contracts": "workspace:*"
+		"@kantel/contracts": "workspace:*",
+		"@kantel/sql": "workspace:*"
 	}
 }
