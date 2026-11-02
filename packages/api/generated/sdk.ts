@@ -1672,9 +1672,14 @@ export interface ProgramRun {
 	readonly programId: string;
 	readonly version: number;
 	readonly projectId: string;
+	/** `waiting`: paused on `waitingOn` (`KANTEL_PROGRAM_WAITS`), with nothing running until a value resumes it. */
 	readonly status: ProgramRunStatus;
-	/** A running program waits for a person to allow a tool call. */
+	/** A running program waits for a person to allow a tool call. Also in `waitingOn`. */
 	readonly waiting?: "approval";
+	/** What the run waits on, when it waits on anything. */
+	readonly waitingOn?: readonly ProgramRunWait[];
+	/** Which run of the script this is: one more each time a paused run resumes. */
+	readonly activation?: number;
 	/** Any JSON value. */
 	readonly input: JsonValue;
 	/** Any JSON value. */
@@ -1696,7 +1701,69 @@ export interface ProgramRunList {
 	readonly items: readonly ProgramRun[];
 }
 
-export type ProgramRunStatus = "running" | "succeeded" | "failed" | "cancelled";
+/** `waiting`: paused on `waitingOn` (`KANTEL_PROGRAM_WAITS`), with nothing running until a value resumes it. */
+export type ProgramRunStatus = "running" | "waiting" | "succeeded" | "failed" | "cancelled";
+
+/** One step of a run's journal. */
+export interface ProgramRunStep {
+	readonly tool: string;
+	readonly kind: "call" | "input" | "agent";
+	/** How many calls of the same tool and arguments came before it. */
+	readonly occurrence: number;
+	readonly status: "done" | "waiting" | "resolved";
+	/** The arguments, cut short. */
+	readonly args: string;
+	readonly firstActivation: number;
+	readonly lastActivation: number;
+	/** How many later activations took it from the journal instead of running it again. */
+	readonly replays: number;
+	/** Whether its result is kept; a call whose result wasn't runs again. */
+	readonly kept: boolean;
+	readonly isError?: boolean;
+	/** Epoch milliseconds, UTC. */
+	readonly executedAt: number;
+	readonly durationMs?: number;
+	readonly waitId?: string;
+}
+
+export interface ProgramRunStepList {
+	readonly items: readonly ProgramRunStep[];
+}
+
+/** One thing a run waits on, by `kind`; more kinds may come. */
+export type ProgramRunWait =
+	| {
+			readonly kind: "input";
+			/** The wait's ID, which `resume` names as `waitId`. */
+			readonly id: string;
+			readonly key?: string;
+			readonly prompt: string;
+			/** The JSON Schema the value must match. */
+			readonly schema?: {
+				readonly [key: string]: JsonValue;
+			};
+			/** Epoch milliseconds, UTC. */
+			readonly since: number;
+	  }
+	| {
+			readonly kind: "agent";
+			readonly id: string;
+			readonly key?: string;
+			readonly prompt: string;
+			/** The JSON Schema the value must match. */
+			readonly schema?: {
+				readonly [key: string]: JsonValue;
+			};
+			readonly agentId: string;
+			/** The agent's session, once started. */
+			readonly sessionId?: string;
+			/** Epoch milliseconds, UTC. */
+			readonly since: number;
+	  }
+	| {
+			readonly kind: "approval";
+			readonly sessionId: string;
+	  };
 
 /** One saved version of a program. Versions are immutable. */
 export interface ProgramVersion {
@@ -2109,6 +2176,18 @@ export interface ResourceSharePage {
 	readonly items: readonly ResourceShare[];
 	/** Present when more items follow. */
 	readonly nextCursor?: string;
+}
+
+/** The value a waiting `waitForInput()` returns. */
+export interface ResumeProgramRunBody {
+	/** The wait to resolve; optional when the run waits on one. */
+	readonly waitId?: string;
+	/** Any JSON value. */
+	readonly value?: JsonValue;
+	/** Resolve the step with this error instead: its `await` throws. */
+	readonly error?: string;
+	/** How long to wait for the resumed run. Default 0. */
+	readonly waitMs?: number;
 }
 
 /** What a disconnect did at the provider: `revoked`, `unsupported` (the provider gives Kantel no way to revoke, or it is a key), `failed` (the provider refused or didn't answer; the connection is removed all the same) or `none` (nothing to revoke). */
@@ -3695,6 +3774,15 @@ export interface KantelClient {
 	getProgramRun(programId: string, runId: string, options?: CallOptions): Promise<ProgramRun>;
 	/** Cancel a program run. Stops a running run (its session's run is aborted); an ended run is answered as it is. Experimental: served only where the deployment sets `KANTEL_PROGRAMS=on`. `POST /programs/{programId}/runs/{runId}/cancel` */
 	cancelProgramRun(programId: string, runId: string, options?: CallOptions): Promise<ProgramRun>;
+	/** Resume a waiting program run. Supplies the value a `waitForInput()` step waits on (`waitId`, from the run's `waitingOn`), checked against the step's schema, or an `error` its `await` throws. The run resumes: its script runs again from the top, and every call an earlier activation finished comes from the run's journal. Needs operator on the project. Experimental: served only where the deployment also sets `KANTEL_PROGRAM_WAITS=on`. `POST /programs/{programId}/runs/{runId}/resume` */
+	resumeProgramRun(
+		programId: string,
+		runId: string,
+		body?: ResumeProgramRunBody,
+		options?: CallOptions,
+	): Promise<ProgramRun>;
+	/** List a program run's journal. Each tool call and wait the run made, in order, with how many later activations took it from the journal instead of running it again. Experimental: served only where the deployment also sets `KANTEL_PROGRAM_WAITS=on`. `GET /programs/{programId}/runs/{runId}/steps` */
+	listProgramRunSteps(programId: string, runId: string, options?: CallOptions): Promise<ProgramRunStepList>;
 }
 
 /** A client for Kantel's public API over `fetch`. */
@@ -4077,6 +4165,22 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(
 				options,
 				{ method: "POST", path: `/programs/${encodeURIComponent(programId)}/runs/${encodeURIComponent(runId)}/cancel` },
+				callOptions,
+			),
+		resumeProgramRun: (programId, runId, body = {}, callOptions) =>
+			send(
+				options,
+				{
+					method: "POST",
+					path: `/programs/${encodeURIComponent(programId)}/runs/${encodeURIComponent(runId)}/resume`,
+					body,
+				},
+				callOptions,
+			),
+		listProgramRunSteps: (programId, runId, callOptions) =>
+			send(
+				options,
+				{ method: "GET", path: `/programs/${encodeURIComponent(programId)}/runs/${encodeURIComponent(runId)}/steps` },
 				callOptions,
 			),
 	};

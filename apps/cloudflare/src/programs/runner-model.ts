@@ -39,6 +39,28 @@ export interface ProgramRunRequest {
 	readonly input: unknown;
 	readonly timeoutMs: number;
 	readonly maxOutputTokens: number;
+	/** With `KANTEL_PROGRAM_WAITS`: which run of the script this is, 1 at first, one more after each pause. */
+	readonly activation?: number;
+	/** With `KANTEL_PROGRAM_WAITS`: the script gets `waitForInput()` and `agent()`. */
+	readonly waits?: boolean;
+}
+
+/** The tools behind `waitForInput()` and `agent()`, which only a program's code mode calls (`./journal.ts`). */
+export const PROGRAM_INPUT_TOOL = "program_input";
+export const PROGRAM_AGENT_TOOL = "program_agent";
+
+/**
+ * What a program with waits gets before its own code: `waitForInput()` and `agent()`, and a `Math.random` seeded by the
+ * run, so each activation of the script draws the same numbers and makes the same calls.
+ */
+function waitsPrelude(runId: string): string[] {
+	let seed = 2166136261;
+	for (const char of runId) seed = Math.imul(seed ^ char.charCodeAt(0), 16777619) >>> 0;
+	return [
+		`const waitForInput = (request = {}) => tools.${PROGRAM_INPUT_TOOL}(typeof request === "string" ? { prompt: request } : request);`,
+		`const agent = (prompt, options = {}) => tools.${PROGRAM_AGENT_TOOL}({ ...options, prompt });`,
+		`Math.random = (() => { let s = ${seed}; return () => { s = (s + 0x6d2b79f5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; })();`,
+	];
 }
 
 /** What the runner answers: the session's final answer, as JSON. */
@@ -51,7 +73,11 @@ export interface ProgramOutcome {
 
 /** The run's prompt: a line a person reading the transcript understands, and the request. */
 export function programRunPrompt(request: ProgramRunRequest): string {
-	return `Run program ${request.name} v${request.version} (run ${request.runId}), with no model.\n${RUN_OPEN}\n${JSON.stringify(request)}\n${RUN_CLOSE}`;
+	const what =
+		(request.activation ?? 1) > 1
+			? `Resume program ${request.name} v${request.version} (run ${request.runId}, activation ${request.activation}): finished calls come from its journal`
+			: `Run program ${request.name} v${request.version} (run ${request.runId})`;
+	return `${what}, with no model.\n${RUN_OPEN}\n${JSON.stringify(request)}\n${RUN_CLOSE}`;
 }
 
 export function parseProgramRunPrompt(text: string): ProgramRunRequest | undefined {
@@ -75,6 +101,7 @@ export function programScript(request: ProgramRunRequest): string {
 	return [
 		`// @options: ${options}`,
 		`const input = ${JSON.stringify(request.input ?? null)};`,
+		...(request.waits === true ? waitsPrelude(request.runId) : []),
 		"const __kantelProgram = async () => {",
 		request.code,
 		"};",

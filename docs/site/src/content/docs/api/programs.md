@@ -52,6 +52,58 @@ what happened. Deleting a program or a version leaves its runs' sessions in plac
 `programs.program.created` and `removed`, `programs.version.created` and `removed`, and `programs.run.started` and
 `ended`.
 
+## Pausing for input or an agent
+
+:::caution[Experimental]
+Pauses are served only where the deployment also sets `KANTEL_PROGRAM_WAITS=on`. Without it a script has no
+`waitForInput` or `agent`, and the `resume` and `steps` routes answer 404.
+:::
+
+A program can wait for a value that doesn't come from a tool:
+
+- `await waitForInput({ prompt, key?, schema? })` (or `waitForInput(prompt)`) waits for a person, and returns the value
+  they send.
+- `await agent(prompt, { agentId?, title?, key?, schema? })` starts an agent session, of `agentId` or the project's default
+  agent, as the run's caller, and returns its answer. With `schema`, the answer is parsed as JSON (a fenced `json` block
+  counts) and checked. A version can start agents only when its `tools` include `agent`.
+
+While it waits, the run's status is `waiting` and nothing runs: the run's session has stopped its turn, so a wait can
+last hours, past any `waitMs`, and costs nothing. `waitingOn` lists what it waits on, one entry per wait, by `kind`:
+
+```json
+{
+  "status": "waiting",
+  "activation": 1,
+  "waitingOn": [
+    { "kind": "input", "id": "pwait_…", "key": "ship", "prompt": "Ship it?", "schema": { "type": "object" }, "since": 1793600000000 }
+  ]
+}
+```
+
+An `agent` entry also has `agentId` and, once started, the agent's `sessionId`. A running run whose session waits for a
+person to allow a tool call has `{ "kind": "approval", "sessionId": … }` there, besides `waiting: "approval"`. More kinds
+may come, so skip one you don't know.
+
+`POST /v1/programs/{programId}/runs/{runId}/resume` with `{ "waitId": …, "value": … }` answers an `input` wait (`waitId`
+may be left out when the run waits on one). The value is checked against the wait's `schema`. `{ "error": "…" }` instead
+makes the program's `await` throw. `waitMs` (0 by default) waits for the resumed run. An `agent` wait resumes by itself
+when its session answers.
+
+A resumed run runs its script again from the top, as its next `activation`. Every tool call an earlier activation
+finished, and every wait that has its value, returns what it returned before without running again; the first call
+that isn't in the run's journal runs as usual. A call is matched by its tool, its arguments and how many such calls came
+before it, so a program resumes correctly as long as it makes the same calls in the same order. `Math.random()` is
+seeded by the run, so it returns the same numbers each activation; `Date.now()` is not, so don't choose calls by the
+clock. A call result over 256 KB isn't kept, and runs again. A run resumes in another instance of the stack object just
+the same: the journal and the waits are kept in its storage.
+
+`GET /v1/programs/{programId}/runs/{runId}/steps` lists the journal: each call and wait, the activation that made it, and
+`replays`, how many later activations took it from the journal instead of running it again. The audit log adds
+`programs.wait.created` and `resolved`, `programs.run.waiting` and `resumed`, and `programs.step.replayed`.
+
+`timeoutMs` and the interrupt budget apply to each activation. Cancelling a waiting run ends it, and stops the sessions of
+the agent steps it waited on.
+
 ## Access
 
 Viewer on the project reads programs and runs. Operator saves, deletes, runs and cancels them. An agent counts as
@@ -59,4 +111,4 @@ operator on its own session's project, so it can save programs there.
 
 Every route, with its bodies and answers, is in the [programs reference](/api/reference/programs/).
 
-<!-- Sources: apps/cloudflare/src/programs/service.ts:1-40, packages/api/src/programs-schema.ts:1-160, packages/api/src/program-routes.ts:1-30, apps/cloudflare/wrangler.jsonc:91-94, apps/cloudflare/src/codemode/serve.ts:20-30 -->
+<!-- Sources: apps/cloudflare/src/programs/service.ts:1-40, apps/cloudflare/src/programs/journal.ts:1-20, packages/api/src/programs-schema.ts:1-160, packages/api/src/program-routes.ts:1-30, apps/cloudflare/wrangler.jsonc:91-94, apps/cloudflare/src/codemode/serve.ts:20-30 -->

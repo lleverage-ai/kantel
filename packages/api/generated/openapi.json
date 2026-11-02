@@ -10388,6 +10388,192 @@
 					}
 				}
 			}
+		},
+		"/programs/{programId}/runs/{runId}/resume": {
+			"post": {
+				"operationId": "resumeProgramRun",
+				"summary": "Resume a waiting program run",
+				"description": "Supplies the value a `waitForInput()` step waits on (`waitId`, from the run's `waitingOn`), checked against the step's schema, or an `error` its `await` throws. The run resumes: its script runs again from the top, and every call an earlier activation finished comes from the run's journal. Needs operator on the project. Experimental: served only where the deployment also sets `KANTEL_PROGRAM_WAITS=on`.",
+				"tags": ["programs"],
+				"parameters": [
+					{
+						"name": "programId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "runId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/ResumeProgramRunBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The run, ended, or waiting again.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ProgramRun"
+								}
+							}
+						}
+					},
+					"202": {
+						"description": "The run, resumed and still running.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ProgramRun"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/programs/{programId}/runs/{runId}/steps": {
+			"get": {
+				"operationId": "listProgramRunSteps",
+				"summary": "List a program run's journal",
+				"description": "Each tool call and wait the run made, in order, with how many later activations took it from the journal instead of running it again. Experimental: served only where the deployment also sets `KANTEL_PROGRAM_WAITS=on`.",
+				"tags": ["programs"],
+				"parameters": [
+					{
+						"name": "programId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "runId",
+						"in": "path",
+						"required": true,
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The steps.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ProgramRunStepList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	},
 	"components": {
@@ -15193,7 +15379,18 @@
 					"waiting": {
 						"type": "string",
 						"const": "approval",
-						"description": "A running program waits for a person to allow a tool call."
+						"description": "A running program waits for a person to allow a tool call. Also in `waitingOn`."
+					},
+					"waitingOn": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ProgramRunWait"
+						},
+						"description": "What the run waits on, when it waits on anything."
+					},
+					"activation": {
+						"type": "integer",
+						"description": "Which run of the script this is: one more each time a paused run resumes."
 					},
 					"input": {
 						"$ref": "#/components/schemas/JsonValue"
@@ -15251,6 +15448,10 @@
 					},
 					{
 						"type": "string",
+						"const": "waiting"
+					},
+					{
+						"type": "string",
 						"const": "succeeded"
 					},
 					{
@@ -15262,7 +15463,204 @@
 						"const": "cancelled"
 					}
 				],
-				"title": "ProgramRunStatus"
+				"title": "ProgramRunStatus",
+				"description": "`waiting`: paused on `waitingOn` (`KANTEL_PROGRAM_WAITS`), with nothing running until a value resumes it."
+			},
+			"ProgramRunStep": {
+				"type": "object",
+				"required": [
+					"tool",
+					"kind",
+					"occurrence",
+					"status",
+					"args",
+					"firstActivation",
+					"lastActivation",
+					"replays",
+					"kept",
+					"executedAt"
+				],
+				"properties": {
+					"tool": {
+						"type": "string"
+					},
+					"kind": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "call"
+							},
+							{
+								"type": "string",
+								"const": "input"
+							},
+							{
+								"type": "string",
+								"const": "agent"
+							}
+						]
+					},
+					"occurrence": {
+						"type": "integer",
+						"description": "How many calls of the same tool and arguments came before it."
+					},
+					"status": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "done"
+							},
+							{
+								"type": "string",
+								"const": "waiting"
+							},
+							{
+								"type": "string",
+								"const": "resolved"
+							}
+						]
+					},
+					"args": {
+						"type": "string",
+						"description": "The arguments, cut short."
+					},
+					"firstActivation": {
+						"type": "integer"
+					},
+					"lastActivation": {
+						"type": "integer"
+					},
+					"replays": {
+						"type": "integer",
+						"description": "How many later activations took it from the journal instead of running it again."
+					},
+					"kept": {
+						"type": "boolean",
+						"description": "Whether its result is kept; a call whose result wasn't runs again."
+					},
+					"isError": {
+						"type": "boolean"
+					},
+					"executedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"durationMs": {
+						"type": "integer"
+					},
+					"waitId": {
+						"type": "string"
+					}
+				},
+				"title": "ProgramRunStep",
+				"description": "One step of a run's journal."
+			},
+			"ProgramRunStepList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ProgramRunStep"
+						}
+					}
+				},
+				"title": "ProgramRunStepList"
+			},
+			"ProgramRunWait": {
+				"anyOf": [
+					{
+						"type": "object",
+						"required": ["kind", "id", "prompt", "since"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "input"
+							},
+							"id": {
+								"type": "string",
+								"description": "The wait's ID, which `resume` names as `waitId`."
+							},
+							"key": {
+								"type": "string"
+							},
+							"prompt": {
+								"type": "string"
+							},
+							"schema": {
+								"type": "object",
+								"patternProperties": {
+									"^.*$": {
+										"$ref": "#/components/schemas/JsonValue"
+									}
+								},
+								"description": "The JSON Schema the value must match."
+							},
+							"since": {
+								"type": "integer",
+								"description": "Epoch milliseconds, UTC."
+							}
+						},
+						"description": "`waitForInput()`: a person supplies the value (`POST …/resume`)."
+					},
+					{
+						"type": "object",
+						"required": ["kind", "id", "prompt", "agentId", "since"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "agent"
+							},
+							"id": {
+								"type": "string"
+							},
+							"key": {
+								"type": "string"
+							},
+							"prompt": {
+								"type": "string"
+							},
+							"schema": {
+								"type": "object",
+								"patternProperties": {
+									"^.*$": {
+										"$ref": "#/components/schemas/JsonValue"
+									}
+								},
+								"description": "The JSON Schema the value must match."
+							},
+							"agentId": {
+								"type": "string"
+							},
+							"sessionId": {
+								"type": "string",
+								"description": "The agent's session, once started."
+							},
+							"since": {
+								"type": "integer",
+								"description": "Epoch milliseconds, UTC."
+							}
+						},
+						"description": "`agent()`: the agent session's answer resumes the run."
+					},
+					{
+						"type": "object",
+						"required": ["kind", "sessionId"],
+						"properties": {
+							"kind": {
+								"type": "string",
+								"const": "approval"
+							},
+							"sessionId": {
+								"type": "string"
+							}
+						},
+						"description": "A running run's session waits for a person to allow a tool call."
+					}
+				],
+				"title": "ProgramRunWait",
+				"description": "One thing a run waits on, by `kind`; more kinds may come."
 			},
 			"ProgramVersion": {
 				"type": "object",
@@ -16427,6 +16825,31 @@
 					}
 				},
 				"title": "ResourceSharePage"
+			},
+			"ResumeProgramRunBody": {
+				"type": "object",
+				"properties": {
+					"waitId": {
+						"type": "string",
+						"description": "The wait to resolve; optional when the run waits on one."
+					},
+					"value": {
+						"$ref": "#/components/schemas/JsonValue"
+					},
+					"error": {
+						"type": "string",
+						"maxLength": 4000,
+						"description": "Resolve the step with this error instead: its `await` throws."
+					},
+					"waitMs": {
+						"type": "integer",
+						"minimum": 0,
+						"maximum": 30000,
+						"description": "How long to wait for the resumed run. Default 0."
+					}
+				},
+				"title": "ResumeProgramRunBody",
+				"description": "The value a waiting `waitForInput()` returns."
 			},
 			"RevocationOutcome": {
 				"anyOf": [
