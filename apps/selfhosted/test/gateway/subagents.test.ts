@@ -68,8 +68,9 @@ describe("subagents on the self-hosted gateway", () => {
 				},
 				"echo",
 			);
-		expect((await echo(on.components, on.seeded)).tools).toEqual([...CODING_TOOLS, SUBAGENT_TOOL]);
-		expect((await echo(off.components, off.seeded)).tools).toEqual([...CODING_TOOLS]);
+		const tools = [...CODING_TOOLS, ...on.components.sessionTools];
+		expect((await echo(on.components, on.seeded)).tools).toEqual([...tools, SUBAGENT_TOOL]);
+		expect((await echo(off.components, off.seeded)).tools).toEqual(tools);
 		expect(((await on.call("/v1/deployment")).body.bindings as Record<string, string>).subagents).toBe("on");
 		expect(((await off.call("/v1/deployment")).body.bindings as Record<string, string>).subagents).toBe("off");
 	});
