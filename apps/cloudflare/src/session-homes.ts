@@ -111,6 +111,10 @@ export async function stackStoreCall(
 		homes.record(session.record.id, home);
 		return store.createSession(session);
 	}
+	if (method === "openSessions") {
+		// A session object's open sessions are its own: it never archives or resumes another's.
+		return (await store.openSessions()).filter((session) => homes.homeOf(session.record.id) === home);
+	}
 	const call = store[method as RemoteStoreMethod] as (...callArgs: unknown[]) => Promise<unknown>;
 	return call.apply(store, [...args]);
 }

@@ -198,6 +198,13 @@ describe("a session in its own object", () => {
 		expect(piTables(object.db)).toBeGreaterThan(0);
 		expect(piTables(w.stackDb)).toBe(0);
 		expect(await w.stackStore().wakeable(Date.now() + 3_600_000)).toEqual([]);
+		// A session object's open sessions are only its own.
+		const openIn = async (home: string) =>
+			((await stackStoreCall(w.stackStore(), w.homes, home, "openSessions", [])) as { record: { id: string } }[]).map(
+				(session) => session.record.id,
+			);
+		expect(await openIn("home-1")).toEqual([id]);
+		expect(await openIn("home-other")).toEqual([]);
 
 		// The stack's directory lists it, with its status, and its default profile is the stack's.
 		const listed = await caller(w.stack, w.headers)(`/v1/sessions?projectId=${w.stack.project.id}`);
