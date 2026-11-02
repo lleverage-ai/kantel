@@ -400,7 +400,8 @@ services:
       KANTEL_BROWSER_CONSENT: ${KANTEL_BROWSER_CONSENT:-${HARBOUR_BROWSER_CONSENT:-on}}
     networks: [control, browsers]
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      # As the gateway's: KANTEL_DOCKER_SOCKET_PATH for rootless Docker.
+      - ${KANTEL_DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
       - browserdata:/var/lib/harbour-browser
     depends_on:
       browser-image: { condition: service_completed_successfully }

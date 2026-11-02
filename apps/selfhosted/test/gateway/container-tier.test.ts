@@ -169,6 +169,8 @@ describe("prepareContainerTier", () => {
 				memoryBytes: 1024,
 				nanoCpus: 1000,
 				labelPrefix: "kantel-gateway.harbour",
+				// `.git` synced, so a repository outlives its container (container-tier.docker.test.ts)
+				localOnly: ["node_modules"],
 				network: {
 					name: "harbour-sbx-gw",
 					proxyUrl: "http://vault-proxy:3128",
@@ -261,7 +263,7 @@ describe("proxyTokens", () => {
 			);
 			const tokens = proxyTokens(driver);
 			const lease = (id: string, sessionId: string) => ({ id, sessionId }) as SandboxLease;
-			const ctx = systemContext("container-tier-test");
+			const ctx: CallContext = { ...systemContext("container-tier-test"), organisationId: "org-1" };
 			const first = await tokens.issue({ ctx, lease: lease("lease-1", "sess-1") });
 			const again = await tokens.issue({ ctx, lease: lease("lease-1", "sess-1") });
 			const other = await tokens.issue({ ctx, lease: lease("lease-2", "sess-2") });

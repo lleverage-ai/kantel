@@ -19,6 +19,7 @@ const enabled = process.env.KANTEL_TEST_DOCKER === "1";
 const prefix = `kantel-gateway-test-${crypto.randomUUID().slice(0, 8)}`;
 const socketPath = process.env.KANTEL_TEST_DOCKER_SOCKET;
 const opened: GatewayComponents[] = [];
+const identity = "git -c user.email=test@kantel.localhost -c user.name=Test";
 
 afterAll(async () => {
 	for (const components of opened.splice(0)) await components.close();
@@ -64,7 +65,7 @@ describe.skipIf(!enabled)("the gateway's container tier on Docker", () => {
 			workspaceId: seeded.workspaceId,
 		});
 		const commands = [
-			"git init -q . && git status --short --branch",
+			`git init -q . && git status --short --branch && ${identity} add -A && ${identity} commit -q -m "First, from tier two"`,
 			"node -v",
 			"python3 -V",
 			'python3 -c \'open("from-python.txt", "w").write("tier two\\n")\'',
@@ -99,5 +100,30 @@ describe.skipIf(!enabled)("the gateway's container tier on Docker", () => {
 		} finally {
 			docker.close();
 		}
-	}, 180_000);
+
+		// The repository outlives the container: `.git` was committed with the rest, so a later session's isolate reads
+		// its history and its new container commits on top of it.
+		const head = await components.workspaces.read(operator, seeded.workspaceId, ".git/HEAD");
+		expect(new TextDecoder().decode(head.content)).toMatch(/^ref: refs\/heads\//);
+		const next = await runtime.create(operator, {
+			projectId: seeded.projectId,
+			agentId: "echo",
+			workspaceId: seeded.workspaceId,
+		});
+		const later = [
+			"git log --oneline",
+			`${identity} commit -q --allow-empty -m "Second, from a new container" && git log --oneline`,
+		];
+		script.reply(...later.map((command) => ({ toolCalls: [{ name: "bash", args: { command } }] })), { text: "Again" });
+		const again = await runtime.prompt(operator, next.id, { text: "Run them" });
+		expect(await runtime.wait(operator, next.id, again.id)).toMatchObject({ status: "answered", answer: "Again" });
+		const laterResults =
+			script.requests
+				.at(-1)
+				?.messages.filter((message) => message.role === "tool")
+				.map((message) => message.text) ?? [];
+		expect(laterResults[0]).toContain("First, from tier two");
+		expect(laterResults[1]).toMatch(/Second, from a new container\n.*First, from tier two/s);
+		await runtime.close(operator, next.id);
+	}, 240_000);
 });

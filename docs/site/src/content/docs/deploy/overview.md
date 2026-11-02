@@ -26,7 +26,7 @@ Packages are `@kantel/*` and settings `KANTEL_*`, such as `KANTEL_DATABASE_URL`.
 | Vault | The `KantelVault` Durable Object, values sealed with `KANTEL_VAULT_KEY` | Postgres, values sealed with `KANTEL_VAULT_CIPHER_KEY` |
 | Usage rows | `KantelStack`, then `usage_calls` in D1 | `usage_calls` in Postgres, optionally shipped to ClickHouse |
 | Command isolate | just-bash in `KantelStack` (`in-process`), or a Dynamic Worker per session (`dynamic-worker`) | just-bash in the gateway's own process |
-| Container tier | A `KantelSandbox` object and container per session, when deployed with `KANTEL_SANDBOX_CONTAINERS=on` | None yet |
+| Container tier | A `KantelSandbox` object and container per session, when deployed with `KANTEL_SANDBOX_CONTAINERS=on` | A Docker container per session from the sandbox image, through the Docker socket, on gVisor when Docker has it |
 | Browsers | brwsr.dev (`KANTEL_BRWSR_API_KEY`), or Kantel's own in `KantelBrowser` containers | Kantel's own, on a browser host running Docker (in the Compose stack by default) or Kubernetes, or brwsr.dev |
 | Models | CLIProxyAPI through a Workers VPC service (`MODELS`) and `KANTEL_CPA_API_KEY` | CLIProxyAPI at `KANTEL_CPA_URL` with `KANTEL_CPA_API_KEY`, or connectors of any preset from `KANTEL_MODEL_CONNECTORS` |
 
@@ -64,7 +64,7 @@ Self-hosted needs:
 - Optional: CLIProxyAPI, a browser host, and ClickHouse for usage.
 - `KANTEL_PUBLIC_URL` when the console is served behind a TLS proxy, since passkeys are made for that origin.
 
-The self-hosted gateway runs commands in its own process and has no container tier yet, so gVisor matters today only for browsers. The self-hosted measurements recommend `runsc-kvm` on bare metal with `/dev/kvm`, and `runsc` inside a VM. The Docker browser host takes the runtime for its browser containers as `KANTEL_BROWSER_RUNTIME` (the default is `runc`; `runsc` or `runsc-kvm` put Chromium under gVisor). On Kubernetes it is a RuntimeClass (`KANTEL_BROWSER_RUNTIME_CLASS`).
+The self-hosted gateway runs shell commands in its own process, and container commands (`git` writes, `node`, `python3`) in Docker containers. Those containers run on `runsc` (gVisor) when Docker has it registered and on `runc` when it doesn't, unless `KANTEL_SANDBOX_RUNTIME` names a runtime; their only way out is the vault proxy. The self-hosted measurements recommend `runsc-kvm` on bare metal with `/dev/kvm`, and `runsc` inside a VM. The Docker browser host takes the runtime for its browser containers as `KANTEL_BROWSER_RUNTIME` (the default is `runc`; `runsc` or `runsc-kvm` put Chromium under gVisor). On Kubernetes it is a RuntimeClass (`KANTEL_BROWSER_RUNTIME_CLASS`).
 
 `deploy/kubernetes` has manifests for the browser host only. They build with `kubectl kustomize` but haven't run on a cluster yet. There are no Kubernetes manifests for the gateway and its stores.
 
@@ -76,7 +76,7 @@ The self-hosted gateway runs commands in its own process and has no container ti
 | Workspace reads | Yes | Yes |
 | New workspace from a repository (`POST /v1/workspaces`), branch picker | Yes, public GitHub repositories | No |
 | Prompt attachments (`/v1/attachments`) | Yes | No |
-| Container tier | When deployed with it | No |
+| Container tier | When deployed with it | Yes, with Docker |
 | `codemode`, `present_files`, `create_document`, `save_program` tools | Yes, each behind its own variable | Yes, each on unless its variable is `off` |
 | Saved programs (`/v1/programs`) | Yes | Yes |
 | `subagent` tool | Yes, with `KANTEL_SUBAGENTS` | No |

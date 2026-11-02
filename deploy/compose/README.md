@@ -64,9 +64,16 @@ own). Its session gets the tools of Cloudflare's default profile:
 
 Connections need an origin for OAuth to come back to: `compose.yaml` sets `KANTEL_CONNECTIONS_ORIGIN` to
 `http://127.0.0.1:58090` (following `KANTEL_GATEWAY_PORT`); behind a TLS proxy set `KANTEL_PUBLIC_URL` instead. The
-browser's tools come with the browser overlay (below). The gateway has no container tier, so a command routed to one
-(`git`, `node`, `python`) is refused. Without a model connector (see below), sessions answer with an `echo` model.
-Without `KANTEL_DATABASE_URL` the gateway runs everything in memory instead, as its in-process tests do.
+browser's tools come with the browser overlay (below).
+
+A `bash` command routed to the container tier (`git` writes, `node`, `python3`, the rest of `DEFAULT_TIER_ROUTES`,
+or any program the isolate lacks) runs in a container of `harbour-sandbox` that the gateway starts through the Docker
+socket, one per lease, on an internal network of its own whose only other member is `vault-proxy`; its changes,
+`.git` included (only `node_modules` stays in the container), are committed to the workspace after every command. The
+runtime is `KANTEL_SANDBOX_RUNTIME`, `auto` for the gateway: `runsc` when the daemon has it, else `runc`. With
+`KANTEL_SANDBOX_CONTAINERS=off`, or a daemon the gateway can't reach, such commands are refused. Without a model
+connector (see below), sessions answer with an `echo` model. Without `KANTEL_DATABASE_URL` the gateway runs everything
+in memory instead, as its in-process tests do.
 
 On its first start the gateway creates an organisation, a project and an operator API key on the project, and writes
 their IDs and the key to `/var/lib/harbour/bootstrap.json` in the container. On later starts it reads the file back
@@ -333,7 +340,9 @@ for git over HTTPS.
 ## Runtimes: runc or gVisor
 
 `KANTEL_ISOLATE_RUNTIME` (the workerd container) and `KANTEL_SANDBOX_RUNTIME`
-(sandbox containers) both default to `runc`. workerd is not a hardened
+(sandbox containers) both default to `runc` for the session hosts. The
+gateway's container tier reads `KANTEL_SANDBOX_RUNTIME` too, but defaults to
+`auto`: `runsc` when the daemon has it registered, `runc` otherwise. workerd is not a hardened
 sandbox, so production must run it under gVisor or in a microVM. To switch,
 on the host:
 
@@ -384,7 +393,7 @@ connect" until the cache expired. Docker allocates every other address on
 
 ## Development shortcuts (not the production shape)
 
-- The session hosts mount the Docker socket to start sandboxes. Anything with
+- The gateway and the session hosts mount the Docker socket to start sandboxes. Anything with
   that socket is root on the machine. Production should put container starts
   behind a small runner with a narrow API, or use Kubernetes with a
   RuntimeClass.

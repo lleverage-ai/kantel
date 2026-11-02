@@ -57,6 +57,8 @@ export const SANDBOX_BINDING = `${ISOLATE_BINDING}; no container tier`;
 
 /** How often the janitor removes containers a previous gateway process left behind. */
 const JANITOR_INTERVAL_MS = 5 * 60_000;
+/** What stays in a session's container and is never committed to its workspace (Cloudflare's agent skips the same). */
+export const CONTAINER_LOCAL_ONLY: readonly string[] = ["node_modules"];
 /** How long a lease's proxy token is good for. A lease lives 15 minutes unless renewed; its end revokes the token. */
 const TOKEN_TTL_HOURS = 24;
 const DEFAULT_MEMORY_BYTES = 2 * 1024 * 1024 * 1024;
@@ -228,6 +230,9 @@ export async function prepareContainerTier(
 				memoryBytes: config.memoryBytes,
 				nanoCpus: config.nanoCpus,
 				labelPrefix: config.labelPrefix,
+				// `.git` is synced: a repository the session clones or makes outlives its container (which stops when
+				// its lease ends), and the isolate's git reads see it, as on Cloudflare. Dependency trees stay local.
+				localOnly: CONTAINER_LOCAL_ONLY,
 				...(network === undefined
 					? {}
 					: {

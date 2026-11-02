@@ -56,7 +56,7 @@ async function removeLabelled(prefix: string): Promise<void> {
 	for (const volume of await docker.listVolumes([`${prefix}.lease`])) await docker.removeVolume(volume.Name);
 }
 
-type Extra = Pick<DockerContainerBackendOptions, "maxOutputBytes" | "network" | "proxyCredentials">;
+type Extra = Pick<DockerContainerBackendOptions, "maxOutputBytes" | "network" | "proxyCredentials" | "localOnly">;
 
 afterAll(async () => {
 	if (!enabled) return;
@@ -183,6 +183,51 @@ describe.skipIf(!enabled)(`Docker container tier (${runtime})`, () => {
 			expect(read).toMatchObject({ exitCode: 0, stdout: "from containerfrom isolate and more" });
 		} finally {
 			await cleanup();
+		}
+	});
+
+	it("keeps .git and node_modules in the container by default, and syncs what localOnly leaves out", async () => {
+		const seed = async (workspaces: Awaited<ReturnType<typeof setUp>>["workspaces"], workspaceId: WorkspaceId) => {
+			const base = (await workspaces.get(ctx, workspaceId)).head;
+			await workspaces.commit(ctx, workspaceId, {
+				baseVersion: base,
+				changes: [
+					{ op: "put", path: ".git/HEAD", content: "ref: refs/heads/seeded\n" },
+					{ op: "put", path: "node_modules/m/index.js", content: "seeded" },
+				],
+			});
+		};
+		const run =
+			"cat .git/HEAD node_modules/m/index.js 2>&1; mkdir -p .git node_modules/n && echo made > .git/made && echo made > node_modules/n/made";
+		const paths = async (workspaces: Awaited<ReturnType<typeof setUp>>["workspaces"], workspaceId: WorkspaceId) =>
+			(await listAll(workspaces, ctx, workspaceId)).filter((entry) => entry.kind === "file").map((entry) => entry.path);
+
+		const byDefault = await setUp();
+		try {
+			await seed(byDefault.workspaces, byDefault.workspaceId);
+			const container = await byDefault.acquire("container");
+			const ran = await byDefault.sandboxes.exec(ctx, container.id, { command: run });
+			expect(ran.stdout).toMatch(/No such file/);
+			await byDefault.sandboxes.release(ctx, container.id);
+			const files = await paths(byDefault.workspaces, byDefault.workspaceId);
+			expect(files).not.toContain(".git/made");
+			expect(files).not.toContain("node_modules/n/made");
+		} finally {
+			await byDefault.cleanup();
+		}
+
+		const gitSynced = await setUp({ localOnly: ["node_modules"] });
+		try {
+			await seed(gitSynced.workspaces, gitSynced.workspaceId);
+			const container = await gitSynced.acquire("container");
+			const ran = await gitSynced.sandboxes.exec(ctx, container.id, { command: run });
+			expect(ran.stdout).toMatch(/^ref: refs\/heads\/seeded\n.*No such file/s);
+			await gitSynced.sandboxes.release(ctx, container.id);
+			const files = await paths(gitSynced.workspaces, gitSynced.workspaceId);
+			expect(files).toContain(".git/made");
+			expect(files).not.toContain("node_modules/n/made");
+		} finally {
+			await gitSynced.cleanup();
 		}
 	});
 
@@ -525,6 +570,12 @@ describe("Docker container tier options", () => {
 
 	it("refuses proxy credentials without a network to send them to", () => {
 		expect(make({ proxyCredentials: recordingCredentials().credentials })).toThrow(/needs a network/);
+	});
+
+	it("takes plain directory names as localOnly", () => {
+		for (const name of ["", ".", "..", "a/b", "nul\0"]) expect(make({ localOnly: [name] })).toThrow(/directory names/);
+		expect(make({ localOnly: [] })).not.toThrow();
+		expect(make({ localOnly: ["node_modules", ".venv"] })).not.toThrow();
 	});
 });
 
