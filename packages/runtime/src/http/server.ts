@@ -26,6 +26,7 @@ import {
 	type SessionDirectory,
 	type SessionHistory,
 	type SessionHistoryRequest,
+	type SessionId,
 	type SessionModels,
 	type SessionOrganising,
 	type SessionRecord,
@@ -134,6 +135,12 @@ export interface SessionWarmer {
 		ctx: CallContext,
 		session: SessionRecord,
 	): Promise<{ readonly container: "started" | "running" | "skipped" | "unavailable" }>;
+	/**
+	 * Told that `POST /sessions/:id/messages` accepted a message, so a command may well follow while the model writes
+	 * its first answer: the warmer may get the sandbox ready in the background. Called after the answer is decided and
+	 * never awaited; it must not throw. Without it a message warms nothing.
+	 */
+	messageAccepted?(ctx: CallContext, sessionId: SessionId): void;
 }
 
 export interface SessionApi {
@@ -722,6 +729,11 @@ export function createSessionApi(options: SessionApiOptions): SessionApi {
 				// another kind of message is the caller's mistake, not a retry.
 				if (submitted.via !== via) {
 					throw new KantelError("conflict", `This Idempotency-Key was already used for a ${submitted.via}`);
+				}
+				try {
+					options.warm?.messageAccepted?.(ctx, params.sessionId);
+				} catch {
+					// A warm-up is a hint: the message is accepted whatever it does.
 				}
 				return submitted;
 			},
