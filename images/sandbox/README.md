@@ -28,7 +28,9 @@ rest are pinned by version and checksum in the Dockerfile.
 
 Each would add more than it's worth for most sessions; a session that needs one installs it where the tier has a
 network, or a team builds its own image `FROM` this one. Without a network (Cloudflare's container tier), pip gives up
-after one retry of 10 s (`PIP_TIMEOUT`, `PIP_RETRIES`) rather than waiting out its default five retries of 15 s.
+after one retry of 10 s (`PIP_TIMEOUT`, `PIP_RETRIES`) rather than waiting out its default five retries of 15 s. The
+image's `ENV` sets them for a tier that runs its own shell; the Cloudflare tier's agent gives commands its own
+environment (`BASE_ENV` in `agent/agent.ts`), which repeats them.
 
 - **LibreOffice** (about 600 MB unpacked): Office-to-PDF conversion. `pandoc` covers Markdown/HTML to DOCX.
 - **A TeX distribution** (300 MB to several GB): PDF output from `pandoc`. HTML or DOCX output needs none.
