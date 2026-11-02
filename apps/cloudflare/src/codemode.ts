@@ -92,11 +92,6 @@ export function codemodeIsolateId(input: {
 	return ["kantel-codemode", input.organisationId, input.sessionId, input.bundleId].join(":");
 }
 
-/** The sandbox Worker's class, as the main Worker binds it (`CODEMODE_SANDBOXES`, with `script_name`). */
-export const CODEMODE_SANDBOX_CLASS = "KantelCodemodeSandbox";
-/** The sandbox Worker's name (`wrangler.codemode.jsonc`). */
-export const CODEMODE_SANDBOX_WORKER = "kantel-codemode";
-
 /**
  * What code mode needs of the sandbox objects' namespace, typed without workers-types so Node tests can stand one in:
  * an object per name, created where the hint says.
