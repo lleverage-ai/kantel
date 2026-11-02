@@ -266,6 +266,23 @@ function outputFor(
 }
 
 /**
+ * The model `modelId` stands for on `connector`: the override's `canonical`, else, when pi's catalogue doesn't know
+ * the ID itself, the model the preset reads off it (a CPA credential prefix, `evals/claude-opus-5-5`) if pi knows that
+ * one. Undefined when the ID is its own model.
+ */
+export function canonicalModelId(
+	connector: Pick<ModelConnector, "preset" | "catalogue">,
+	modelId: string,
+): string | undefined {
+	const given = connector.catalogue.overrides?.[modelId]?.canonical;
+	if (given !== undefined) return given;
+	const spec = presetSpec(connector.preset);
+	if (spec.canonical === undefined || findPiModel(modelId, spec.piProvider) !== undefined) return undefined;
+	const implied = spec.canonical(modelId);
+	return implied !== undefined && findPiModel(implied, spec.piProvider) !== undefined ? implied : undefined;
+}
+
+/**
  * Builds the upstream pi `Model` for `modelId` on `connector`, or undefined when there is no metadata for it: no pi
  * match and no override with `contextWindow` and `maxTokens`, unless it makes images (an image model needs neither).
  * Precedence: the override, then the upstream's listing, then pi's catalogue.
@@ -276,7 +293,10 @@ export function upstreamModel(
 	listed?: ListedModel,
 ): OfferedModel | undefined {
 	const spec = presetSpec(connector.preset);
-	const override: ModelOverride | undefined = connector.catalogue.overrides?.[modelId];
+	const given: ModelOverride | undefined = connector.catalogue.overrides?.[modelId];
+	const canonical = canonicalModelId(connector, modelId);
+	const override: ModelOverride | undefined =
+		canonical !== undefined && given?.canonical === undefined ? { ...given, canonical } : given;
 	const pi = findPiModel(override?.canonical ?? modelId, spec.piProvider);
 	const { output, imageApi } = outputFor(connector, modelId, override, listed);
 	const piImage = output.includes("image") ? findPiImageModel(override?.canonical ?? modelId) : undefined;

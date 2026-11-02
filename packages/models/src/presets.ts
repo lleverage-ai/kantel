@@ -89,6 +89,12 @@ export interface ConnectorPresetSpec {
 	 */
 	readonly imageOutputByName: boolean;
 	/**
+	 * The model a listed ID stands for when neither an override nor pi's catalogue knows the ID itself, if the upstream
+	 * names models in a way that hides it: CLIProxyAPI lists a credential's models under the credential's `prefix`
+	 * (`<prefix>/<model>`), and routes `<prefix>/<model>` to that credential alone when `force-model-prefix` is on.
+	 */
+	canonical?(modelId: string): string | undefined;
+	/**
 	 * Adds attribution to an image request's JSON body (`openai-images` generations); returns undefined to leave it as it
 	 * is. An edit's multipart body carries only the headers.
 	 */
@@ -319,6 +325,11 @@ export const CONNECTOR_PRESET_SPECS: { readonly [preset in ConnectorPreset]: Con
 		toolNamespace: (api) => (api === "anthropic-messages" ? KANTEL_TOOL_NAMESPACE : undefined),
 		cost: "none",
 		cataloguePath: "/v1/models",
+		// A prefixed credential's model (`evals/claude-opus-5-5`) is the model after the prefix.
+		canonical: (modelId) => {
+			const slash = modelId.indexOf("/");
+			return slash > 0 && slash < modelId.length - 1 ? modelId.slice(slash + 1) : undefined;
+		},
 		// CPA serves gpt-image models at /v1/images/generations on a Codex login.
 		imageApis: ["openai-images"],
 		imageOutputByName: true,

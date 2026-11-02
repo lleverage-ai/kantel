@@ -2,6 +2,7 @@ import type { ModelConnector } from "@kantel/contracts";
 import {
 	CATALOGUE_RETRY_MS,
 	type CatalogueKeys,
+	canonicalModelId,
 	createModelCatalogue,
 	findPiModel,
 	parseCatalogueListing,
@@ -117,6 +118,26 @@ describe("upstreamModel", () => {
 			reasoning: true,
 		});
 		expect(offered?.model.cost.input).toBe(3);
+	});
+
+	it("reads a CPA credential prefix as the model after it, for thinking, limits and the wire API", () => {
+		const prefixed = upstreamModel(connector(), "evals/claude-opus-4-6");
+		const bare = upstreamModel(connector(), "claude-opus-4-6");
+		expect(prefixed?.id).toBe("evals/claude-opus-4-6");
+		expect(prefixed?.api).toBe("anthropic-messages");
+		expect(prefixed?.model).toMatchObject({
+			id: "evals/claude-opus-4-6",
+			reasoning: bare?.model.reasoning,
+			contextWindow: bare?.model.contextWindow,
+			maxTokens: bare?.model.maxTokens,
+		});
+		expect(prefixed?.model.compat).toEqual(bare?.model.compat);
+		expect(canonicalModelId(connector(), "evals/claude-opus-4-6")).toBe("claude-opus-4-6");
+		expect(canonicalModelId(connector(), "claude-opus-4-6")).toBeUndefined();
+		expect(canonicalModelId(connector(), "evals/mystery-model")).toBeUndefined();
+		expect(upstreamModel(connector(), "evals/mystery-model")).toBeUndefined();
+		// Only CPA has credential prefixes; on OpenRouter the prefix is the maker.
+		expect(canonicalModelId(connector({ preset: "openrouter" }), "evals/claude-opus-4-6")).toBeUndefined();
 	});
 
 	it("offers a model with no pi match only when an override gives its limits", () => {
