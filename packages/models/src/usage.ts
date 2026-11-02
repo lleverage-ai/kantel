@@ -12,7 +12,7 @@ import type {
 	UsageRecord,
 	UsageWriter,
 } from "@kantel/contracts";
-import { findPiModel } from "./catalogue.ts";
+import { canonicalModelId, findPiModel } from "./catalogue.ts";
 
 /** The longest error text a record keeps. */
 export const MAX_USAGE_ERROR_LENGTH = 500;
@@ -57,7 +57,7 @@ export interface UsageDetails {
 /** The usage record of `call`. */
 export function usageRecordOf(call: ModelCallRecord, details: UsageDetails): UsageRecord {
 	const { usage, scope } = call;
-	const canonical = details.connector.catalogue.overrides?.[call.modelId]?.canonical;
+	const canonical = canonicalModelId(details.connector, call.modelId);
 	const error = details.error?.trim();
 	return {
 		callId: call.id,
