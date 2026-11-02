@@ -1,0 +1,31 @@
+---
+// A product shot: a screenshot of the real console (src/assets/shots, see its README), on a midnight frame at the card
+// radius.
+import { Picture } from "astro:assets";
+import type { ImageMetadata } from "astro";
+
+interface Props {
+	src: ImageMetadata;
+	alt: string;
+	class?: string;
+	eager?: boolean;
+}
+const { src, alt, class: className, eager = false } = Astro.props;
+---
+
+<figure
+	class:list={[
+		"overflow-hidden rounded-card border border-midnight-2 bg-midnight",
+		className,
+	]}
+>
+	<Picture
+		src={src}
+		alt={alt}
+		formats={["avif", "webp"]}
+		widths={[720, 1440, 2160]}
+		sizes="(min-width: 1024px) 60rem, 100vw"
+		loading={eager ? "eager" : "lazy"}
+		class="block h-auto w-full"
+	/>
+</figure>

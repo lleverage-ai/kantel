@@ -1,0 +1,39 @@
+{
+	"name": "@kantel/site",
+	"private": true,
+	"version": "0.0.0",
+	"type": "module",
+	"description": "kantel.dev: Kantel's marketing page, its install script and the docs, as one static site on Cloudflare Workers",
+	"license": "Apache-2.0",
+	"packageManager": "pnpm@10.34.9",
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"pnpm": {
+		"ignoredBuiltDependencies": [
+			"esbuild",
+			"workerd"
+		]
+	},
+	"scripts": {
+		"sync-docs": "node scripts/sync-docs.mjs",
+		"predev": "node scripts/sync-docs.mjs",
+		"dev": "astro dev",
+		"prebuild": "node scripts/sync-docs.mjs",
+		"build": "astro build && node scripts/check-links.mjs",
+		"preview": "wrangler dev",
+		"deploy:dry-run": "wrangler deploy --dry-run",
+		"lint:install": "sh -n public/install.sh"
+	},
+	"devDependencies": {
+		"@astrojs/starlight": "0.42.8",
+		"@fontsource-variable/public-sans": "5.3.0",
+		"@fontsource-variable/roboto-mono": "5.3.0",
+		"@fontsource/abhaya-libre": "5.3.0",
+		"@tailwindcss/vite": "4.3.3",
+		"astro": "7.4.4",
+		"sharp": "0.35.5",
+		"tailwindcss": "4.3.3",
+		"wrangler": "4.153.0"
+	}
+}

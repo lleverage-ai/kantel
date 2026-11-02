@@ -1,0 +1,66 @@
+---
+// The one-line install on a midnight plate, with a copy button. The command is plain `curl … | sh`, which pastes the
+// same into bash, zsh and fish.
+import { INSTALL_COMMAND } from "../site.mjs";
+
+interface Props {
+	id: string;
+	/** For a narrow column: small text that wraps at every width. Otherwise it wraps only on a phone. */
+	compact?: boolean;
+}
+const { id, compact = false } = Astro.props;
+---
+
+<div
+	class:list={[
+		"flex w-full max-w-(--container-hero) items-start gap-3 rounded-card bg-midnight py-3 pr-3 pl-5 text-paper",
+		!compact && "sm:items-center",
+	]}
+>
+	<span class:list={["py-2 font-mono text-sm text-faint select-none", !compact && "sm:py-0 sm:text-base"]} aria-hidden="true"
+		>$</span
+	>
+	<code
+		id={id}
+		class:list={[
+			"min-w-0 flex-1 py-2 font-mono text-sm break-all",
+			!compact && "sm:overflow-x-auto sm:py-0 sm:text-base sm:break-normal sm:whitespace-nowrap",
+		]}>{INSTALL_COMMAND}</code
+	>
+	<button
+		type="button"
+		data-copy={id}
+		class="shrink-0 cursor-pointer rounded-input border border-midnight-2 px-3 py-2 text-sm font-semibold text-paper transition-colors hover:border-faint hover:bg-midnight-2"
+	>
+		<span data-label>Copy</span>
+	</button>
+</div>
+
+<script>
+	// Copies the command. Falls back to selecting it and execCommand where the Clipboard API isn't allowed (a sandboxed
+	// preview, an old browser), and says what happened in the button's label.
+	for (const button of document.querySelectorAll<HTMLButtonElement>("button[data-copy]")) {
+		const code = document.getElementById(button.dataset.copy ?? "");
+		const label = button.querySelector("[data-label]");
+		if (code === null || label === null) continue;
+		button.addEventListener("click", async () => {
+			const text = code.textContent ?? "";
+			let copied = false;
+			try {
+				await navigator.clipboard.writeText(text);
+				copied = true;
+			} catch {
+				const range = document.createRange();
+				range.selectNodeContents(code);
+				const selection = window.getSelection();
+				selection?.removeAllRanges();
+				selection?.addRange(range);
+				copied = document.execCommand("copy");
+			}
+			label.textContent = copied ? "Copied" : "Press Ctrl+C";
+			setTimeout(() => {
+				label.textContent = "Copy";
+			}, 2000);
+		});
+	}
+</script>

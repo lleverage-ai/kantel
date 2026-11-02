@@ -1,0 +1,10 @@
+# Workers static assets read this file for response headers (it isn't served itself).
+
+# Shown as text in a browser, so people can read it before piping it to sh; curl doesn't mind.
+/install.sh
+  Content-Type: text/plain; charset=utf-8
+  Cache-Control: public, max-age=300
+
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin

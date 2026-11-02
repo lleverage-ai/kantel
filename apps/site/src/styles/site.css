@@ -1,0 +1,100 @@
+/* kantel.dev's marketing page: Tailwind v4, on the Lleverage brand's marketing tokens.
+
+   The console's tokens (@kantel/ui's tokens.css) describe a dense product UI on a midnight canvas; this page is the
+   brand's marketing venue instead: paper as the ground, white for cards, midnight for the one or two emphasis plates,
+   and orange as one element per surface. So the page keeps its own small token set here, named after the brand's
+   roles, with the same values @kantel/ui's Kantel themes use (paper #f9f7f0, midnight #141e28, orange #ec7523) and the
+   same self-hosted faces. Utilities use only these tokens and Tailwind's 4px spacing step; no arbitrary values. */
+
+@import "tailwindcss";
+
+@import "@fontsource-variable/public-sans/wght.css";
+@import "@fontsource/abhaya-libre/latin-400.css";
+@import "@fontsource/abhaya-libre/latin-600.css";
+@import "@fontsource/abhaya-libre/latin-800.css";
+@import "@fontsource-variable/roboto-mono/wght.css";
+
+@theme {
+	/* Colour, in the brand's roles. */
+	--color-paper: #f9f7f0; /* the one page ground */
+	--color-card: #ffffff; /* the only card fill */
+	--color-midnight: #141e28; /* emphasis plates, text */
+	--color-midnight-2: #2c353e; /* body copy; cards on midnight */
+	--color-ink: #252820; /* grey 900: the logo artwork's ink, and the hero's beam */
+	--color-line: #d8d8d3; /* grey 400: hairlines and structure strokes */
+	--color-card-line: #e7e7e3; /* grey 300: a white card's edge, nothing else */
+	--color-label: #656563; /* grey 700: kickers, labels, captions */
+	--color-faint: #ababa7; /* grey 500: secondary text on midnight */
+	--color-sand: #f0f0e0; /* sand accent: a section break */
+	--color-orange: #ec7523; /* one element per surface */
+	--color-orange-warm: #ff9626; /* its hover */
+
+	/* The brand's three faces. */
+	--font-display: "Abhaya Libre", Georgia, serif;
+	--font-sans: "Public Sans Variable", system-ui, sans-serif;
+	--font-mono: "Roboto Mono Variable", ui-monospace, monospace;
+
+	/* A display scale for the serif, which reads small for its size: 1.333 steps from the 18px body. */
+	--text-body: 1.125rem;
+	--text-body--line-height: 1.65;
+	--text-lead: 1.3125rem;
+	--text-lead--line-height: 1.55;
+	--text-display-s: 2.25rem;
+	--text-display-s--line-height: 1.1;
+	--text-display-m: 3rem;
+	--text-display-m--line-height: 1.04;
+	--text-display-l: 4.25rem;
+	--text-display-l--line-height: 0.98;
+
+	/* The brand's radii, each kept to its role. */
+	--radius-card: 12px;
+	--radius-tile: 8px;
+	--radius-input: 4px;
+
+	/* Widths: the page, a reading measure and the hero's text column. */
+	--container-page: 76rem;
+	--container-measure: 36rem;
+	--container-hero: 46rem;
+
+	--animate-tilt: tilt 1100ms cubic-bezier(0.2, 0.9, 0.25, 1) 250ms both;
+}
+
+/* The hero's one moment: the beam settles from level to its 30° on the fulcrum, once, as the page loads. Keyframes have
+   no utility. Reduced motion skips it. */
+@keyframes tilt {
+	from {
+		transform: rotate(30deg);
+	}
+	to {
+		transform: rotate(0deg);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.motion-tilt {
+		animation: none;
+	}
+}
+
+@layer base {
+	html {
+		background: var(--color-paper);
+		color: var(--color-midnight);
+		font-family: var(--font-sans);
+		-webkit-font-smoothing: antialiased;
+		scroll-padding-top: 5rem;
+		/* Shots bleed past the right edge on wide screens; the page itself never scrolls sideways. */
+		overflow-x: clip;
+	}
+
+	::selection {
+		background: var(--color-midnight);
+		color: var(--color-paper);
+	}
+
+	:focus-visible {
+		outline: 2px solid var(--color-orange);
+		outline-offset: 3px;
+		border-radius: var(--radius-input);
+	}
+}

@@ -1,0 +1,3 @@
+# Copied from docs/site by scripts/sync-docs.mjs on every dev and build.
+src/content/docs/docs/
+.astro/

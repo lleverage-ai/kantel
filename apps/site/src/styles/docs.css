@@ -1,0 +1,55 @@
+/* The docs (Starlight) in the Lleverage brand. Plain CSS, not Tailwind: it sets Starlight's own custom properties,
+   which no utility reaches. Light is paper with midnight text; dark is midnight with paper text (never pure white);
+   orange is the accent. The faces are the brand's three, self-hosted from Fontsource as @kantel/ui does. */
+
+@import "@fontsource-variable/public-sans/wght.css";
+@import "@fontsource/abhaya-libre/latin-400.css";
+@import "@fontsource/abhaya-libre/latin-600.css";
+@import "@fontsource-variable/roboto-mono/wght.css";
+
+:root {
+	--sl-font: "Public Sans Variable", system-ui, sans-serif;
+	--sl-font-mono: "Roboto Mono Variable", ui-monospace, monospace;
+	--sl-content-width: 48rem;
+}
+
+/* Dark: midnight ground, paper text, orange accent. */
+:root,
+::backdrop {
+	--sl-color-accent-low: #3a2414;
+	--sl-color-accent: #ec7523;
+	--sl-color-accent-high: #ffc79a;
+	--sl-color-white: #f9f7f0;
+	--sl-color-gray-1: #eeeeeb;
+	--sl-color-gray-2: #d8d8d3;
+	--sl-color-gray-3: #ababa7;
+	--sl-color-gray-4: #656563;
+	--sl-color-gray-5: #2c353e;
+	--sl-color-gray-6: #1c2631;
+	--sl-color-black: #141e28;
+}
+
+/* Light: paper ground, midnight text. */
+:root[data-theme="light"],
+[data-theme="light"] ::backdrop {
+	--sl-color-accent-low: #fbe3d1;
+	--sl-color-accent: #b5520f;
+	--sl-color-accent-high: #6b2f07;
+	--sl-color-white: #141e28;
+	--sl-color-gray-1: #252820;
+	--sl-color-gray-2: #2c353e;
+	--sl-color-gray-3: #4f4f4c;
+	--sl-color-gray-4: #656563;
+	--sl-color-gray-5: #d8d8d3;
+	--sl-color-gray-6: #eeeeeb;
+	--sl-color-gray-7: #f7f7f5;
+	--sl-color-black: #f9f7f0;
+}
+
+/* Page titles in the display face, as the marketing page's headings. */
+.sl-markdown-content :is(h1, h2),
+h1#_top {
+	font-family: "Abhaya Libre", Georgia, serif;
+	font-weight: 600;
+	letter-spacing: 0;
+}
