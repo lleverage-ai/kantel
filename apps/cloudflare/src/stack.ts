@@ -354,13 +354,13 @@ export interface StackOptions {
 	 */
 	readonly subagents?: boolean;
 	/**
-	 * Programs (`src/programs/service.ts`, experimental): saved, versioned code mode programs that run through the API
+	 * Programs (`@kantel/programs/service`, experimental): saved, versioned code mode programs that run through the API
 	 * with no model. Needs code mode. With it the gateway serves `/v1/programs/…` and the default profile has
 	 * `save_program`. Default off.
 	 */
 	readonly programs?: boolean;
 	/**
-	 * Durable pauses for programs (`KANTEL_PROGRAM_WAITS`, experimental, `src/programs/journal.ts`): a program can wait
+	 * Durable pauses for programs (`KANTEL_PROGRAM_WAITS`, experimental, `@kantel/programs/journal`): a program can wait
 	 * for input (`waitForInput()`) or an agent (`agent()`) and resume later, its finished calls kept in the run's journal.
 	 * Needs `programs`. Default off.
 	 */
@@ -589,7 +589,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		clock,
 		...(usage === undefined ? {} : { usage: usage.writer }),
 	}) ?? { models: createEchoModels() };
-	// A program's session runs on the program runner, which is no model (`src/programs/runner-model.ts`).
+	// A program's session runs on the program runner, which is no model (`@kantel/programs/runner-model`).
 	const models = programsOn ? withProgramRunner(givenModels) : givenModels;
 	// The sandboxes need the runtime's project access, and the runtime ends their leases when a session ends (its
 	// `sandbox` teardown) and sweeps them on its alarm, so each reaches the other once both are built.
@@ -824,7 +824,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 					? tools
 					: [
 							...tools,
-							// A program run's code mode also journals its calls across pauses (`src/programs/journal.ts`).
+							// A program run's code mode also journals its calls across pauses (`@kantel/programs/journal`).
 							((tool) => (programs === undefined ? tool : programs.codemodeFor(tool, record)))(
 								sessionCodemodeTool(
 									connectionToolsFor === undefined
@@ -837,7 +837,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			// With subagents on, a session also gets `subagent` (`src/subagent.ts`), unless it is already as deep as subagents go.
 			const subagent = options.subagents === true ? sessionSubagentTool(lateRuntime, record) : undefined;
 			const withSubagent = subagent === undefined ? withCodemode : [...withCodemode, subagent];
-			// With programs on, a session also gets `save_program` (`src/programs/tool.ts`), when its profile names it.
+			// With programs on, a session also gets `save_program` (`@kantel/programs/tool`), when its profile names it.
 			return programs === undefined
 				? withSubagent
 				: [...withSubagent, sessionSaveProgramTool(() => programs, record, "/v1")];

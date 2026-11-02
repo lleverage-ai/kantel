@@ -1,4 +1,4 @@
-// Durable pauses for programs (KANTEL_PROGRAM_WAITS, src/programs/journal.ts): a program waits for input or an
+// Durable pauses for programs (KANTEL_PROGRAM_WAITS, @kantel/programs/journal): a program waits for input or an
 // agent, its run pauses with nothing running, and resumes later, even in another instance of the stack object, with
 // every call an earlier activation finished taken from the run's journal instead of made again.
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";

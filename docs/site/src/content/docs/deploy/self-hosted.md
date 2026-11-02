@@ -182,9 +182,25 @@ With Helm, the JSON can also go straight into the variable, such as `value: {{ .
 
 ## Commands in sessions
 
+Every session has a workspace: one started without a repository, as the console's **New session** starts one, gets its own. A host app's profile that names no skills is the exception, so its host's own file tools aren't shadowed.
+
 A session's `read`, `write`, `edit` and `ls` work on its workspace directly. `bash` leases an isolate, a just-bash shell in the gateway's own process, on its first command. There is no container tier yet, so commands that need one (`git`, `node`, `python` and the like) are refused as `unavailable`.
 
 Because the isolate runs in the gateway's process, gVisor doesn't apply to it. `KANTEL_ISOLATE_RUNTIME` and `KANTEL_SANDBOX_RUNTIME` in `compose.yaml` set the runtime of the prototype's services only.
+
+## The default tools
+
+The bootstrap's `echo` and `assistant` profiles have the tools of Cloudflare's default profile. Each of these is on unless its variable is `off`:
+
+| Variable | Tools |
+| --- | --- |
+| `KANTEL_PRESENT_FILES` | `present_files` and `create_document`: files and documents shown as cards the console opens |
+| `KANTEL_CODEMODE` | `codemode`: a script that calls the session's other tools, in a QuickJS VM on a worker thread of the gateway, one per script, with at most 256 MiB of memory |
+| `KANTEL_PROGRAMS` | `save_program` and the programs API (`/v1/programs`): saved code mode programs that run with no model, kept in Postgres. Off when `KANTEL_CODEMODE` is |
+| `KANTEL_PROGRAM_WAITS` | Programs that pause for a person's input (`waitForInput`) or an agent's answer (`agent`), and the resume route. Off when `KANTEL_PROGRAMS` is |
+| `KANTEL_CONNECTIONS` | The connection tools (`connections_list`, `connection_tools`, `connection_call`, `connection_request`), once connections have an origin and a vault |
+
+Connections need an origin for OAuth providers to send people back to. That's `KANTEL_PUBLIC_URL` when it's set; otherwise `KANTEL_CONNECTIONS_ORIGIN`, which `compose.yaml` sets to `http://127.0.0.1:58090` (following `KANTEL_GATEWAY_PORT`). A profile whose image model, picked on the console's Models page, makes images also gets `generate_image`, and one with memory scopes gets `memory_search` and `memory_read`. The bootstrap keeps a profile's prompt layers, skills, memory scopes and image model across restarts and upgrades. `GET /v1/deployment` names what backs `codemode`, `programs`, `presentFiles` and `connections`.
 
 ## Browsers
 

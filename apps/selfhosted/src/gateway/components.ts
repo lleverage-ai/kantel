@@ -727,7 +727,7 @@ export async function bootstrap(
 		projectId,
 		name: "Echo",
 		model: { route: ECHO_ROUTE },
-		promptLayers: [],
+		promptLayers: echo?.promptLayers ?? [],
 		...codingProfile(components, echo),
 	});
 	// Only once sessions have a model to call: before an organisation connects a provider (`model-providers.ts`), the
