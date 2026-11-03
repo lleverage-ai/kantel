@@ -4,9 +4,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -193,11 +195,58 @@ type CAStore struct {
 
 	mu  sync.Mutex
 	cas map[string]*CA
+	// installed is, for each sandbox, the fingerprint of the CA its running guest was last confirmed to trust.
+	installed map[string]string
 }
 
 // NewCAStore keeps CAs under dir.
 func NewCAStore(dir string) *CAStore {
-	return &CAStore{dir: dir, cas: map[string]*CA{}}
+	return &CAStore{dir: dir, cas: map[string]*CA{}, installed: map[string]string{}}
+}
+
+// Fingerprint is the SHA-256 of the CA's certificate, in hex.
+func (c *CA) Fingerprint() string {
+	sum := sha256.Sum256(c.cert.Raw)
+	return hex.EncodeToString(sum[:])
+}
+
+// Installed says whether the sandbox's guest has been confirmed to trust its current CA. A CA made since (a new
+// intercept set) isn't, so an install that failed is tried again rather than taken as done.
+func (s *CAStore) Installed(sandboxID string) bool {
+	if !safeID(sandboxID) {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ca, err := s.getLocked(sandboxID)
+	if err != nil {
+		return false
+	}
+	have, ok := s.installed[sandboxID]
+	if !ok && s.dir != "" {
+		raw, _ := os.ReadFile(filepath.Join(s.dir, sandboxID, "installed"))
+		have = strings.TrimSpace(string(raw))
+		s.installed[sandboxID] = have
+	}
+	return have != "" && have == ca.Fingerprint()
+}
+
+// MarkInstalled records that the sandbox's guest now trusts ca, kept beside the CA so a host restart remembers.
+func (s *CAStore) MarkInstalled(sandboxID string, ca *CA) error {
+	if !safeID(sandboxID) || ca == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if have, err := s.getLocked(sandboxID); err != nil || have.Fingerprint() != ca.Fingerprint() {
+		// Replaced meanwhile: the guest trusts one the proxy no longer uses.
+		return nil
+	}
+	s.installed[sandboxID] = ca.Fingerprint()
+	if s.dir == "" {
+		return nil
+	}
+	return writeFile0600(filepath.Join(s.dir, sandboxID, "installed"), []byte(ca.Fingerprint()+"\n"))
 }
 
 // ErrNoCA is a sandbox with no CA: nothing it does is intercepted.
@@ -256,6 +305,7 @@ func (s *CAStore) Forget(sandboxID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.cas, sandboxID)
+	delete(s.installed, sandboxID)
 	if s.dir == "" {
 		return nil
 	}

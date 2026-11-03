@@ -1476,6 +1476,22 @@ var _ = strconv.Itoa
 
 // SetEgress replaces a sandbox's egress: a running one's rules, upstream and headers change at once, and so does a
 // move to or from "none" (the only mode the network itself knows about).
+// EgressOf answers a sandbox's egress as it keeps it in meta.json (CA certificate included), which a fork with none
+// of its own inherits.
+func (m *Manager) EgressOf(id string) (*proto.Egress, error) {
+	s, err := m.get(id)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.meta.Egress == nil {
+		return nil, nil
+	}
+	e := *s.meta.Egress
+	return &e, nil
+}
+
 func (m *Manager) SetEgress(id string, e *proto.Egress) error {
 	s, err := m.get(id)
 	if err != nil {

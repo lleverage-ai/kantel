@@ -74,6 +74,8 @@ type Host struct {
 	cas *egress.CAStore
 	// egressLog batches the proxy's records to Kantel.
 	egressLog *egressBatcher
+	// lifecycle is one CA-changing lifecycle call at a time per sandbox.
+	lifecycle sandboxLocks
 
 	mu sync.Mutex
 	// bySlot is each running microVM's egress, by its network slot.
@@ -430,10 +432,12 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if err != nil {
 			return nil, err
 		}
+		defer h.lifecycle.lock(p.SandboxID)()
 		if _, err := h.tierOf(p.SandboxID); err == nil {
 			// Before any CA is made: a new one would replace the CA the running sandbox of that ID trusts.
 			return nil, &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("sandbox %s already exists on this host", p.SandboxID)}
 		}
+		h.requireProtected(p.SandboxID, p.Egress)
 		e, fresh, err := h.prepareEgress(h.tierName(p.Tier), p.SandboxID, p.Egress)
 		if err != nil {
 			return nil, err
@@ -467,6 +471,7 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if err != nil {
 			return nil, err
 		}
+		defer h.lifecycle.lock(p.SandboxID)()
 		t, name, err := h.tierOfNamed(p.SandboxID)
 		if err != nil {
 			return nil, err
@@ -483,6 +488,7 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		// The placeholders stay the same, so nothing in the sandbox changes: the next request fetches the new values.
 		if h.secrets != nil {
 			h.secrets.Invalidate(p.SandboxID)
+			h.secrets.Require(p.SandboxID, p.Version)
 		}
 		return struct{}{}, nil
 	case proto.MethodResume, proto.MethodStart:
@@ -490,12 +496,14 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if err != nil {
 			return nil, err
 		}
+		defer h.lifecycle.lock(p.SandboxID)()
 		t, name, err := h.tierOfNamed(p.SandboxID)
 		if err != nil {
 			return nil, err
 		}
 		if p.Egress != nil {
 			// Without one the sandbox keeps its own, CA certificate included.
+			h.requireProtected(p.SandboxID, p.Egress)
 			if p.Egress, _, err = h.prepareEgress(name, p.SandboxID, p.Egress); err != nil {
 				return nil, err
 			}
@@ -506,6 +514,7 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if err != nil {
 			return nil, err
 		}
+		defer h.lifecycle.lock(p.SandboxID, p.NewID)()
 		t, name, err := h.tierOfNamed(p.SandboxID)
 		if err != nil {
 			return nil, err
@@ -513,6 +522,13 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if _, err := h.tierOf(p.NewID); err == nil {
 			return nil, &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("sandbox %s already exists on this host", p.NewID)}
 		}
+		if p.Egress == nil && name == microvm.Tier {
+			// Inherited, as the tier would, but resolved here so the fork's CA is made for what it inherits.
+			if p.Egress, err = h.inheritedEgress(t, p.SandboxID); err != nil {
+				return nil, err
+			}
+		}
+		h.requireProtected(p.NewID, p.Egress)
 		// The fork gets its own CA: its parent's would let one sandbox's key be used for another's traffic.
 		e, fresh, err := h.prepareEgress(name, p.NewID, p.Egress)
 		if err != nil {
@@ -532,6 +548,7 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if err != nil {
 			return nil, err
 		}
+		defer h.lifecycle.lock(p.SandboxID)()
 		t, err := h.tierOf(p.SandboxID)
 		if err != nil {
 			return nil, err

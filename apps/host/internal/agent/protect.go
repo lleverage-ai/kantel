@@ -150,6 +150,14 @@ func fetchTable(ctx context.Context, call func(ctx context.Context, method strin
 	return out, nil
 }
 
+// requireProtected passes the protected-table version an egress advertises to the store: a cached table older than
+// it is no longer used.
+func (h *Host) requireProtected(sandboxID string, e *proto.Egress) {
+	if h.secrets != nil && e != nil && e.Protected != nil {
+		h.secrets.Require(sandboxID, e.Protected.Version)
+	}
+}
+
 // forgetSecrets drops a sandbox's values (stop, delete); the next request fetches them again.
 func (h *Host) forgetSecrets(sandboxID string) {
 	if h.secrets != nil {
@@ -196,6 +204,44 @@ func joinPEM(upstream, own string) string {
 	return upstream + "\n" + own
 }
 
+// withoutPEM is bundle without own: a parent's egress CA bundle without the parent's own CA, for its fork.
+func withoutPEM(bundle, own string) string {
+	own = strings.TrimSpace(own)
+	if own == "" {
+		return bundle
+	}
+	out := strings.TrimSpace(strings.ReplaceAll(bundle, own, ""))
+	if out == "" {
+		return ""
+	}
+	return out + "\n"
+}
+
+// egressReader is a tier that answers a sandbox's egress as it keeps it (microvm, which a fork inherits from).
+type egressReader interface {
+	EgressOf(id string) (*proto.Egress, error)
+}
+
+// inheritedEgress is the egress a fork with none of its own takes from its source, without the source's own CA:
+// the fork is given one of its own.
+func (h *Host) inheritedEgress(t Tier, sourceID string) (*proto.Egress, error) {
+	r, ok := t.(egressReader)
+	if !ok {
+		return nil, nil
+	}
+	e, err := r.EgressOf(sourceID)
+	if err != nil || e == nil {
+		return nil, err
+	}
+	out := *e
+	if h.cas != nil {
+		if ca, err := h.cas.Get(sourceID); err == nil {
+			out.CACert = withoutPEM(e.CACert, ca.CertPEM())
+		}
+	}
+	return &out, nil
+}
+
 // installCA puts a new CA into a running guest's trust store, as the guest agent does with an identity's CACert.
 func installCA(ctx context.Context, t Tier, sandboxID, certPEM string) error {
 	res, err := t.Exec(ctx, proto.ExecParams{
@@ -214,32 +260,89 @@ func installCA(ctx context.Context, t Tier, sandboxID, certPEM string) error {
 	return nil
 }
 
-// setEgress is sandbox.egress: the new rules, and when they change the intercepted hosts of a running microVM, a new
-// CA installed in its guest.
+// setEgress is sandbox.egress: the new rules, and for a running microVM that intercepts, its CA installed in the
+// guest until that is confirmed. The caller holds the sandbox's lifecycle lock.
 func (h *Host) setEgress(ctx context.Context, t Tier, tier string, p proto.ResumeParams) error {
 	if p.Egress == nil && h.cas != nil {
 		// The host's default egress intercepts nothing.
 		_ = h.cas.Forget(p.SandboxID)
 	}
-	e, fresh, err := h.prepareEgress(tier, p.SandboxID, p.Egress)
+	h.requireProtected(p.SandboxID, p.Egress)
+	e, _, err := h.prepareEgress(tier, p.SandboxID, p.Egress)
 	if err != nil {
 		return err
 	}
 	if err := t.SetEgress(p.SandboxID, e); err != nil {
 		return err
 	}
-	if !fresh {
+	if e == nil || h.cas == nil || tier != microvm.Tier {
+		return nil
+	}
+	ca, err := h.cas.Get(p.SandboxID)
+	if err != nil || h.cas.Installed(p.SandboxID) {
+		// No CA (nothing intercepted), or the guest already trusts this one.
 		return nil
 	}
 	info, err := t.Get(p.SandboxID)
 	if err != nil || info.State != proto.StateRunning {
-		// A stopped sandbox gets the new certificate with its identity when it starts again.
+		// A stopped sandbox gets the certificate with its identity when it starts again.
 		return nil
 	}
+	// Not confirmed yet (new, or an install that failed): the guest agent's own install at boot isn't checked, so
+	// this one is, and a failure leaves it to be tried again by the next update.
 	if err := installCA(ctx, t, p.SandboxID, e.CACert); err != nil {
 		return fmt.Errorf("the egress changed, but the sandbox's new egress certificate couldn't be installed: %w", err)
 	}
-	return nil
+	return h.cas.MarkInstalled(p.SandboxID, ca)
+}
+
+// --- one lifecycle change at a time per sandbox ---------------------------------------------------------------------
+
+// sandboxLocks serialises the lifecycle calls that change a sandbox's CA (create, fork, egress, start, resume,
+// delete): its preparation, the tier's change, the guest's install and any clean-up happen as one, while different
+// sandboxes go on independently.
+type sandboxLocks struct {
+	mu    sync.Mutex
+	locks map[string]*sandboxLock
+}
+
+type sandboxLock struct {
+	mu    sync.Mutex
+	users int
+}
+
+// lock takes the locks of ids (in a fixed order, so two calls can't wait on each other) and answers their release.
+func (s *sandboxLocks) lock(ids ...string) func() {
+	ids = slices.Clone(ids)
+	slices.Sort(ids)
+	ids = slices.Compact(ids)
+	held := make([]*sandboxLock, 0, len(ids))
+	for _, id := range ids {
+		s.mu.Lock()
+		if s.locks == nil {
+			s.locks = map[string]*sandboxLock{}
+		}
+		l, ok := s.locks[id]
+		if !ok {
+			l = &sandboxLock{}
+			s.locks[id] = l
+		}
+		l.users++
+		s.mu.Unlock()
+		l.mu.Lock()
+		held = append(held, l)
+	}
+	return func() {
+		for i := len(held) - 1; i >= 0; i-- {
+			held[i].mu.Unlock()
+			s.mu.Lock()
+			held[i].users--
+			if held[i].users == 0 {
+				delete(s.locks, ids[i])
+			}
+			s.mu.Unlock()
+		}
+	}
 }
 
 // --- egress events --------------------------------------------------------------------------------------------------

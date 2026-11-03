@@ -442,8 +442,10 @@ func (p *Proxy) handle(conn net.Conn) {
 		conn.Close()
 		return
 	}
-	rules, ok := p.Resolve(src.Addr().Unmap())
-	p.handleWith(conn, func(*http.Request) (Rules, bool) { return rules, ok })
+	addr := src.Addr().Unmap()
+	// Asked again for each request an intercepted connection carries, so a change to the sandbox's rules applies to
+	// a connection it already has open.
+	p.handleWith(conn, func(*http.Request) (Rules, bool) { return p.Resolve(addr) })
 }
 
 func (p *Proxy) handleWith(conn net.Conn, resolve Resolver) {
@@ -455,11 +457,21 @@ func (p *Proxy) handleWith(conn net.Conn, resolve Resolver) {
 		return
 	}
 	_ = conn.SetReadDeadline(time.Time{})
+	// The request the sandbox was named by, kept as it came (the isolate worker's header included) to name it again.
+	ident := req.Clone(context.Background())
 	rules, ok := resolve(req)
 	req.Header.Del("Kantel-Isolate-Sandbox")
 	if !ok {
 		refuse(conn, http.StatusForbidden, "unknown sandbox")
 		return
+	}
+	current := func() (Rules, bool) {
+		now, ok := resolve(ident)
+		if !ok || now.SandboxID != rules.SandboxID {
+			// Another sandbox's now (its address reused), or none's: nothing more goes on this connection.
+			return Rules{}, false
+		}
+		return now, true
 	}
 	started := time.Now()
 	attribution := claimed(req.Header)
@@ -493,7 +505,7 @@ func (p *Proxy) handleWith(conn net.Conn, resolve Resolver) {
 		rec.Via = "upstream"
 	}
 	if req.Method == http.MethodConnect {
-		p.connect(conn, reader, req, rules, attribution, host, port, rec)
+		p.connect(conn, reader, req, rules, current, attribution, host, port, rec)
 		return
 	}
 	if req.URL.Scheme == "http" && normaliseHost(host) == CheckHost {
@@ -505,7 +517,7 @@ func (p *Proxy) handleWith(conn net.Conn, resolve Resolver) {
 
 // connect handles a CONNECT: intercepted when its host is one the proxy terminates TLS for, a blind tunnel
 // otherwise.
-func (p *Proxy) connect(conn net.Conn, reader *bufio.Reader, req *http.Request, rules Rules, attribution, host string, port int, rec Record) {
+func (p *Proxy) connect(conn net.Conn, reader *bufio.Reader, req *http.Request, rules Rules, current func() (Rules, bool), attribution, host string, port int, rec Record) {
 	intercept := p.CAs != nil && rules.intercepts(host, port)
 	scope := scopeTunnel
 	if intercept {
@@ -519,7 +531,7 @@ func (p *Proxy) connect(conn net.Conn, reader *bufio.Reader, req *http.Request, 
 	}
 	rec.Allowed = true
 	if intercept {
-		p.intercept(conn, reader, rules, attribution, host, port, rec)
+		p.intercept(conn, reader, rules, current, attribution, host, port, rec)
 		return
 	}
 	up, down, err := p.forward(conn, reader, req, rules, attribution, host, port, nil, nil)
@@ -544,23 +556,34 @@ func (p *Proxy) proxyForm(conn net.Conn, req *http.Request, rules Rules, attribu
 	}
 	var entries []protect.Entry
 	if rules.Protected {
+		provider, snap, err := p.snapshot(ctx, rules)
+		if err != nil {
+			p.refuseRecord(conn, rec, unavailableRefusal())
+			return
+		}
+		entries = snap
 		protect.LimitAcceptEncoding(req.Header)
-		dest := protect.Destination{Host: host, Port: port, Method: req.Method, Path: rec.Path}
-		swapped, err := protect.RewriteRequest(ctx, req, rules.SandboxID, dest, p.provider(rules))
+		swapped, err := protect.RewriteRequest(ctx, req, rules.SandboxID, secureDestination(req, host, port, rec.Path), provider)
 		if err != nil {
 			p.refuseRecord(conn, rec, rewriteRefusal(err))
 			return
 		}
 		rec.Swapped = swapped
-		if entries, err = p.values(ctx, rules); err != nil {
-			p.refuseRecord(conn, rec, unavailableRefusal())
-			return
-		}
 	}
 	status := 0
 	up, down, err := p.forward(conn, nil, req, rules, attribution, host, port, entries, &status)
 	rec.Status = status
 	p.finish(rec, up, down, err)
+}
+
+// secureDestination is a proxy-form request's destination as its bindings judge it. Only an https:// one goes over
+// TLS the proxy verifies; a plain http:// one gets no port a binding can match, whatever port it names, so a known
+// placeholder in it is refused rather than its value sent in clear text.
+func secureDestination(req *http.Request, host string, port int, path string) protect.Destination {
+	if req.URL.Scheme != "https" {
+		port = 0
+	}
+	return protect.Destination{Host: host, Port: port, Method: req.Method, Path: path}
 }
 
 func (p *Proxy) finish(rec Record, up, down int64, err error) {
@@ -592,6 +615,13 @@ func (p *Proxy) forward(conn net.Conn, reader *bufio.Reader, req *http.Request, 
 	target := net.JoinHostPort(host, strconv.Itoa(port))
 	var upstream net.Conn
 	var err error
+	if rules.Upstream != "" && rules.Protected && req.Method != http.MethodConnect && req.URL.Scheme == "https" {
+		// A protected sandbox's https:// request may carry a value: it goes through the upstream in a CONNECT
+		// tunnel, in TLS the proxy verifies with the real host, never in clear text to the upstream.
+		tr := p.interceptTransport(rules, attribution)
+		defer tr.CloseIdleConnections()
+		return p.roundTrip(conn, req, tr, entries, status)
+	}
 	if rules.Upstream != "" {
 		u, perr := url.Parse(rules.Upstream)
 		if perr != nil || u.Host == "" {
@@ -694,13 +724,18 @@ func (p *Proxy) forward(conn net.Conn, reader *bufio.Reader, req *http.Request, 
 // direct makes one proxy-form request itself (http or https) and writes the answer back, without Kantel's headers
 // (they're for an upstream).
 func (p *Proxy) direct(conn net.Conn, req *http.Request, entries []protect.Entry, status *int) (int64, int64, error) {
+	return p.roundTrip(conn, req, p.directTransport(), entries, status)
+}
+
+// roundTrip makes one proxy-form request with tr and writes the scrubbed answer back.
+func (p *Proxy) roundTrip(conn net.Conn, req *http.Request, tr http.RoundTripper, entries []protect.Entry, status *int) (int64, int64, error) {
 	req.RequestURI = ""
 	req.Close = true
 	var up int64
 	if req.ContentLength > 0 {
 		up = req.ContentLength
 	}
-	res, err := p.directTransport().RoundTrip(req)
+	res, err := tr.RoundTrip(req)
 	if err != nil {
 		var ref *protect.Refusal
 		switch {

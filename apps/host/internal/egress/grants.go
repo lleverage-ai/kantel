@@ -146,9 +146,17 @@ func (r Rules) decide(host, method, rawPath string, scope int) verdict {
 		if !g.deny() || !patternMatches(g.Host, host) {
 			continue
 		}
-		// A blind tunnel has no method or path to judge, and an intercepted host's requests are judged one by one.
-		if g.detailed() && (scope != scopeRequest || !g.matchesRequest(method, rawPath)) {
-			continue
+		if g.detailed() {
+			switch {
+			case scope == scopeTunnel:
+				// A blind tunnel has no method or path to judge, so it could carry what the grant denies: refused
+				// (a CONNECT is only intercepted, and so judged request by request, on port 443 to a host the
+				// sandbox's CA can be made for).
+				return verdict{reason: "a grant (" + g.text() + ") restricts requests to " + host + ", which can't be checked in this tunnel", rule: g.text()}
+			case scope == scopeConnect, !g.matchesRequest(method, rawPath):
+				// An intercepted host's requests are judged one by one.
+				continue
+			}
 		}
 		return verdict{reason: "denied by a grant (" + g.text() + ")", rule: g.text()}
 	}

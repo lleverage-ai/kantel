@@ -52,11 +52,22 @@ func (p *Proxy) provider(rules Rules) protect.Provider {
 	return p.Secrets
 }
 
-func (p *Proxy) values(ctx context.Context, rules Rules) ([]protect.Entry, error) {
-	if p.Secrets == nil {
-		return nil, protect.ErrUnavailable
+// snapshot is one request's view of a protected sandbox's values: the provider its placeholders are swapped with
+// (its body too, however late that is read) and the entries its response is scrubbed of are the same ones, so a
+// rotation while it is under way can't leave a value it sent out of the scrubber's reach.
+func (p *Proxy) snapshot(ctx context.Context, rules Rules) (protect.Provider, []protect.Entry, error) {
+	if !rules.Protected {
+		return noSecrets{}, nil, nil
 	}
-	return p.Secrets.Values(ctx, rules.SandboxID)
+	if p.Secrets == nil {
+		return nil, nil, protect.ErrUnavailable
+	}
+	entries, err := p.Secrets.Values(ctx, rules.SandboxID)
+	if err != nil {
+		return nil, nil, err
+	}
+	fixed := protect.NewFixed(entries)
+	return fixed, fixed.Entries(), nil
 }
 
 // rootsFor is the pool the proxy verifies a real destination with: RootCAs, or the system's with the upstream's CA
@@ -102,8 +113,9 @@ func (p *Proxy) interceptTransport(rules Rules, attribution string) *http.Transp
 }
 
 // intercept answers a CONNECT to an intercepted host itself: TLS with a leaf from the sandbox's CA, then each request
-// in turn is checked, swapped, sent on and scrubbed.
-func (p *Proxy) intercept(conn net.Conn, reader *bufio.Reader, rules Rules, attribution, host string, port int, rec Record) {
+// in turn is checked, swapped, sent on and scrubbed. current answers the sandbox's rules as they are now, for the
+// connection's authenticated source: each request is judged by them, not by those of when it connected.
+func (p *Proxy) intercept(conn net.Conn, reader *bufio.Reader, rules Rules, current func() (Rules, bool), attribution, host string, port int, rec Record) {
 	var leaf *tls.Certificate
 	ca, err := p.CAs.Get(rules.SandboxID)
 	if err == nil {
@@ -144,6 +156,19 @@ func (p *Proxy) intercept(conn net.Conn, reader *bufio.Reader, rules Rules, attr
 			return
 		}
 		_ = client.SetReadDeadline(time.Time{})
+		now, ok := current()
+		if !ok {
+			r := rec
+			r.At, r.Method, r.Path, r.Inspected = time.Now(), req.Method, req.URL.EscapedPath(), true
+			_ = p.refuseRecord(client, r, refusal{status: http.StatusForbidden, code: CodeDenied, message: "this sandbox's egress rules have gone"})
+			return
+		}
+		if now.Upstream != rules.Upstream || now.UpstreamCACert != rules.UpstreamCACert || now.Token != rules.Token {
+			// The way out changed: later requests take the new one.
+			tr.CloseIdleConnections()
+			tr = p.interceptTransport(now, attribution)
+		}
+		rules = now
 		if !p.interceptOne(ctx, client, br, req.WithContext(ctx), tr, rules, attribution, host, port, rec) {
 			return
 		}
@@ -175,6 +200,9 @@ func (p *Proxy) interceptOne(ctx context.Context, client *tls.Conn, br *bufio.Re
 	if port != 443 {
 		req.URL.Host = net.JoinHostPort(host, strconv.Itoa(port))
 	}
+	// Its Host header too: a virtual host other than the one its TLS, grants and bindings were judged for could
+	// otherwise be given the value.
+	req.Host = req.URL.Host
 	req.RequestURI = ""
 	for _, name := range []string{"Proxy-Authorization", "Proxy-Connection", "Kantel-Sandbox", "Kantel-Account", "Kantel-Attribution", "Kantel-Signature"} {
 		req.Header.Del(name)
@@ -197,15 +225,17 @@ func (p *Proxy) interceptOne(ctx context.Context, client *tls.Conn, br *bufio.Re
 	dest := protect.Destination{Host: host, Port: port, Method: req.Method, Path: rec.Path}
 	var entries []protect.Entry
 	if rules.Protected {
+		var provider protect.Provider
+		var err error
+		if provider, entries, err = p.snapshot(ctx, rules); err != nil {
+			return p.refuseRecord(client, rec, unavailableRefusal())
+		}
 		protect.LimitAcceptEncoding(req.Header)
-		swapped, err := protect.RewriteRequest(ctx, req, rules.SandboxID, dest, p.provider(rules))
+		swapped, err := protect.RewriteRequest(ctx, req, rules.SandboxID, dest, provider)
 		if err != nil {
 			return p.refuseRecord(client, rec, rewriteRefusal(err))
 		}
 		rec.Swapped = swapped
-		if entries, err = p.values(ctx, rules); err != nil {
-			return p.refuseRecord(client, rec, unavailableRefusal())
-		}
 	}
 	var up atomic.Int64
 	if req.Body != nil && req.Body != http.NoBody {
@@ -328,6 +358,10 @@ func (p *Proxy) answerCheck(ctx context.Context, w io.Writer, rules Rules, attri
 		}
 	}
 	dest := protect.Destination{Host: host, Port: port, Method: req.Method, Path: rec.Path}
+	if !verify {
+		// Plain HTTP: never swapped, whatever port it names.
+		dest.Port = 0
+	}
 	err := protect.ErrUnknown
 	if rules.Protected {
 		if prov := p.provider(rules); prov == nil {
@@ -436,7 +470,7 @@ func (p *Proxy) servePlaceholders(w io.Writer, req *http.Request, rules Rules) {
 	}
 	out := Placeholders{Variables: []PlaceholderInfo{}}
 	if rules.Protected {
-		entries, err := p.values(context.Background(), rules)
+		_, entries, err := p.snapshot(context.Background(), rules)
 		if err != nil {
 			_ = refusal{status: http.StatusServiceUnavailable, code: protect.CodeUnavailable, message: "protected environment variables can't be fetched right now"}.write(w)
 			return

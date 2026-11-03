@@ -67,6 +67,7 @@ type protectedEnv struct {
 	log    *lockedBuffer
 
 	mu      sync.Mutex
+	rules   Rules
 	ghValue string
 	fetches int
 	seen    []seenRequest
@@ -100,8 +101,13 @@ func newProtectedEnv(t *testing.T, grants ...Grant) *protectedEnv {
 	})
 
 	rules := Rules{SandboxID: testSandbox, Mode: "proxy", Protected: true, Intercept: []string{"api.example.com", "other.example.com"}, Grants: grants}
+	env.rules = rules
 	p := New(slog.New(slog.NewTextHandler(env.log, nil)))
-	p.Resolve = func(a netip.Addr) (Rules, bool) { return rules, a == loopback }
+	p.Resolve = func(a netip.Addr) (Rules, bool) {
+		env.mu.Lock()
+		defer env.mu.Unlock()
+		return env.rules, a == loopback
+	}
 	p.Secrets = env.store
 	p.CAs = NewCAStore(t.TempDir())
 	p.RootCAs = upRoots
@@ -150,6 +156,11 @@ func (env *protectedEnv) serve(w http.ResponseWriter, r *http.Request) {
 	env.mu.Unlock()
 	// An API that echoes what it was sent: the values must not come back into the sandbox.
 	w.Header().Set("X-Echo", s.auth)
+	if r.URL.Path == "/tail" {
+		// A big upload's ends only, so a test of one needn't scrub all of it twice.
+		fmt.Fprintf(w, "head=%s\ntail=%s\n", body[:min(len(body), 200)], body[max(0, len(body)-200):])
+		return
+	}
 	if r.URL.Path == "/brotli" {
 		// Whatever the request accepted: a coding the proxy can't search (the bytes stand in for real Brotli).
 		w.Header().Set("Content-Encoding", "br")
