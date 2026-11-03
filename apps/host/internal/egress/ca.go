@@ -1,6 +1,7 @@
 package egress
 
 import (
+	"container/list"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -29,6 +30,10 @@ const caValidity = 10 * 365 * 24 * time.Hour
 // leafValidity is a minted leaf's lifetime; a cached leaf is minted again once half of it has gone.
 const leafValidity = 7 * 24 * time.Hour
 
+// maxLeaves is how many leaves a CA keeps, the least recently used going first: a wildcard lets a sandbox name as
+// many hosts as it likes, and the cache is the host's memory, not the sandbox's. An evicted name is minted again.
+const maxLeaves = 256
+
 // CA is one sandbox's certificate authority, which the proxy signs the leaf certificates of the hosts it intercepts
 // with. It is name-constrained to those hosts, so even its key, were it to leak, couldn't vouch for any other name
 // to the sandbox. The key stays on the host: only the certificate goes into the guest.
@@ -41,8 +46,15 @@ type CA struct {
 	// nothing, as every leaf is the same CA's in the same process.
 	leafKey *ecdsa.PrivateKey
 
-	mu     sync.Mutex
-	leaves map[string]*tls.Certificate
+	mu sync.Mutex
+	// leaves are the cached leaves by host, each an element of recent (most recently used first).
+	leaves map[string]*list.Element
+	recent *list.List
+}
+
+type cachedLeaf struct {
+	host string
+	cert *tls.Certificate
 }
 
 // NewCA mints a CA for hosts ("api.github.com", "*.example.com"). name goes into its subject, for whoever reads the
@@ -114,7 +126,8 @@ func newCA(cert *x509.Certificate, key *ecdsa.PrivateKey) (*CA, error) {
 		key:     key,
 		hosts:   normaliseHosts(hosts),
 		leafKey: leafKey,
-		leaves:  map[string]*tls.Certificate{},
+		leaves:  map[string]*list.Element{},
+		recent:  list.New(),
 	}, nil
 }
 
@@ -141,15 +154,35 @@ func (c *CA) Leaf(host string) (*tls.Certificate, error) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if l, ok := c.leaves[host]; ok && time.Until(l.Leaf.NotAfter) > leafValidity/2 {
-		return l, nil
+	if el, ok := c.leaves[host]; ok {
+		if l := el.Value.(*cachedLeaf).cert; time.Until(l.Leaf.NotAfter) > leafValidity/2 {
+			c.recent.MoveToFront(el)
+			return l, nil
+		}
 	}
 	l, err := c.mint(host)
 	if err != nil {
 		return nil, err
 	}
-	c.leaves[host] = l
+	if el, ok := c.leaves[host]; ok {
+		el.Value.(*cachedLeaf).cert = l
+		c.recent.MoveToFront(el)
+		return l, nil
+	}
+	c.leaves[host] = c.recent.PushFront(&cachedLeaf{host: host, cert: l})
+	for c.recent.Len() > maxLeaves {
+		oldest := c.recent.Back()
+		c.recent.Remove(oldest)
+		delete(c.leaves, oldest.Value.(*cachedLeaf).host)
+	}
 	return l, nil
+}
+
+// cachedLeaves is how many leaves the CA keeps.
+func (c *CA) cachedLeaves() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.leaves)
 }
 
 // mint signs a leaf for host whether or not the CA covers it: Leaf checks first, and the tests use this to show the

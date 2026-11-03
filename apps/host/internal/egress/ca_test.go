@@ -3,6 +3,7 @@ package egress
 import (
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -97,5 +98,43 @@ func TestCAStore(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "sbx_1")); !os.IsNotExist(err) {
 		t.Fatalf("Forget left %v", err)
+	}
+}
+
+// A wildcard lets a sandbox name endless hosts: the host keeps a bounded number of their leaves, reusing the ones it
+// keeps and minting the others again.
+func TestCALeafCacheIsBounded(t *testing.T) {
+	ca, err := NewCA("sbx-1", []string{"*.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := ca.Leaf("keep.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range maxLeaves * 3 {
+		if _, err := ca.Leaf(fmt.Sprintf("n%d.example.com", i)); err != nil {
+			t.Fatal(err)
+		}
+		if i%16 == 0 {
+			// Used again now and then, so it stays among the most recent.
+			again, err := ca.Leaf("keep.example.com")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if again != first {
+				t.Fatal("a cached leaf in use was minted again")
+			}
+		}
+	}
+	if n := ca.cachedLeaves(); n > maxLeaves {
+		t.Fatalf("the CA keeps %d leaves, more than %d", n, maxLeaves)
+	}
+	evicted, err := ca.Leaf("n0.example.com")
+	if err != nil || evicted == nil || evicted.Leaf.Subject.CommonName != "n0.example.com" {
+		t.Fatalf("an evicted name wasn't minted again: %v", err)
+	}
+	if _, err := ca.Leaf("other.test"); err == nil {
+		t.Fatal("a name outside the CA's constraints was minted")
 	}
 }

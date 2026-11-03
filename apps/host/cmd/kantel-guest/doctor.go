@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -36,7 +37,50 @@ type placeholders struct {
 		Name   string   `json:"name"`
 		Prefix string   `json:"prefix"`
 		Hosts  []string `json:"hosts"`
+		// Bindings, from a host that gives them: a check is made with a method and path each allows.
+		Bindings []binding `json:"bindings"`
 	} `json:"variables"`
+}
+
+type binding struct {
+	Host         string   `json:"host"`
+	Methods      []string `json:"methods"`
+	PathPrefixes []string `json:"pathPrefixes"`
+}
+
+// probe is one check: a request a binding allows, which the proxy answers itself.
+type probe struct{ host, method, path string }
+
+// probes are the checks for a variable's bindings: for each, its first method (HEAD when any goes) at its first path
+// prefix ("/" when any goes), so the check asks about a request the variable may be sent in. A host without bindings
+// in its answer (an older one) gives hosts only, checked with HEAD /.
+func probes(bindings []binding, hosts []string) []probe {
+	var out []probe
+	add := func(p probe) {
+		if !slices.Contains(out, p) {
+			out = append(out, p)
+		}
+	}
+	if bindings == nil {
+		for _, h := range hosts {
+			add(probe{host: h, method: http.MethodHead, path: "/"})
+		}
+		return out
+	}
+	for _, b := range bindings {
+		p := probe{host: b.Host, method: http.MethodHead, path: "/"}
+		if len(b.Methods) > 0 {
+			p.method = strings.ToUpper(b.Methods[0])
+		}
+		if len(b.PathPrefixes) > 0 {
+			p.path = b.PathPrefixes[0]
+			if !strings.HasPrefix(p.path, "/") {
+				p.path = "/" + p.path
+			}
+		}
+		add(p)
+	}
+	return out
 }
 
 // doctor checks, from inside the sandbox, that protected variables will work: the proxy is set, the sandbox trusts
@@ -82,11 +126,11 @@ func doctor(out io.Writer) int {
 	}
 	for _, name := range names {
 		ph := env[name]
-		var hosts []string
+		var checks []probe
 		found := false
 		for _, v := range known.Variables {
 			if v.Name == name && v.Prefix != "" && strings.HasPrefix(ph, v.Prefix) {
-				hosts, found = v.Hosts, true
+				checks, found = probes(v.Bindings, v.Hosts), true
 				break
 			}
 		}
@@ -94,17 +138,20 @@ func doctor(out io.Writer) int {
 			report(false, name, "the proxy doesn't know this placeholder (from another sandbox, or the variable was removed), so it is never swapped")
 			continue
 		}
-		if len(hosts) == 0 {
+		if len(checks) == 0 {
 			report(false, name, "bound to no host, so it is never swapped")
 			continue
 		}
-		for _, host := range hosts {
-			check := name + " " + host
-			if strings.Contains(host, "*") {
+		for _, p := range checks {
+			check := name + " " + p.host
+			if p.method != http.MethodHead || p.path != "/" {
+				check += " " + p.method + " " + p.path
+			}
+			if strings.Contains(p.host, "*") {
 				report(true, check, "not checked: a wildcard binding has no one host to try")
 				continue
 			}
-			ok, detail := checkPlaceholder(httpsProxy, host, ph)
+			ok, detail := checkPlaceholder(httpsProxy, p, ph)
 			report(ok, check, detail)
 		}
 	}
@@ -274,14 +321,16 @@ func fetchPlaceholders(proxy string) (placeholders, error) {
 	return out, nil
 }
 
-// checkPlaceholder sends HEAD https://host/ through the proxy carrying the placeholder in the check header: the proxy
-// answers after a verified TLS handshake with host, and sends nothing on.
-func checkPlaceholder(proxy, host, placeholder string) (bool, string) {
+// checkPlaceholder sends the probe's request (HEAD https://host/, or a binding's method and path) through the proxy
+// carrying the placeholder in the check header: the proxy answers after a verified TLS handshake with host, and sends
+// nothing on.
+func checkPlaceholder(proxy string, p probe, placeholder string) (bool, string) {
+	host := p.host
 	client, err := proxyClient(proxy)
 	if err != nil {
 		return false, err.Error()
 	}
-	req, err := http.NewRequest(http.MethodHead, "https://"+host+"/", nil)
+	req, err := http.NewRequest(p.method, "https://"+host+p.path, nil)
 	if err != nil {
 		return false, err.Error()
 	}
@@ -297,6 +346,9 @@ func checkPlaceholder(proxy, host, placeholder string) (bool, string) {
 	res.Body.Close()
 	if res.StatusCode == http.StatusNoContent && res.Header.Get(checkHeader) == "ok" {
 		return true, "would be swapped"
+	}
+	if res.Header.Get(errorHeader) == "denied" {
+		return false, fmt.Sprintf("the sandbox's egress grants refuse %s %s at %s, so it is never sent there%s", p.method, p.path, host, codeOf(res))
 	}
 	if res.Header.Get(checkHeader) == "" && res.Header.Get(errorHeader) == "" {
 		return false, fmt.Sprintf("answered %d by something other than the proxy's check: is %s intercepted?", res.StatusCode, host)

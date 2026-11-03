@@ -44,3 +44,24 @@ func TestParseReadySkipsCommentsAndBlanks(t *testing.T) {
 		t.Fatal("an empty file lists nothing")
 	}
 }
+
+// An identity's Env is the sandbox's whole environment: a fork given an empty one keeps none of its source's.
+func TestWriteEnvReplacesTheWholeEnvironment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "env")
+	writeEnv(path, map[string]string{"GH_TOKEN": "kph_parent", "PLAIN": "a b"})
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), `GH_TOKEN="kph_parent"`) || !strings.Contains(string(raw), `PLAIN="a b"`) {
+		t.Fatalf("env file = %q", raw)
+	}
+	writeEnv(path, map[string]string{"GH_TOKEN": "kph_fork"})
+	raw, _ = os.ReadFile(path)
+	if strings.Contains(string(raw), "kph_parent") || strings.Contains(string(raw), "PLAIN") {
+		t.Fatalf("a replacement kept the source's variables: %q", raw)
+	}
+	writeEnv(path, map[string]string{})
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("an empty environment left the file: %v", err)
+	}
+	// Already gone: still none, no error.
+	writeEnv(path, nil)
+}

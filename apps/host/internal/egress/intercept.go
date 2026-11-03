@@ -102,7 +102,7 @@ func (p *Proxy) interceptTransport(rules Rules, attribution string) *http.Transp
 		u, err := url.Parse(rules.Upstream)
 		if err != nil || u.Host == "" {
 			// Never straight out instead: the upstream is how the account wants its traffic to leave.
-			tr.Proxy = func(*http.Request) (*url.URL, error) { return nil, errors.New("the upstream proxy's URL is invalid") }
+			tr.Proxy = func(*http.Request) (*url.URL, error) { return nil, &upstreamProxyError{} }
 		} else {
 			tr.Proxy = http.ProxyURL(u)
 			tr.GetProxyConnectHeader = func(context.Context, *url.URL, string) (http.Header, error) {
@@ -420,7 +420,7 @@ func (p *Proxy) dialTunnel(ctx context.Context, rules Rules, attribution, target
 	}
 	u, err := url.Parse(rules.Upstream)
 	if err != nil || u.Host == "" {
-		return nil, errors.New("the upstream proxy's URL is invalid")
+		return nil, &upstreamProxyError{}
 	}
 	c, err := p.Dial("tcp", u.Host)
 	if err != nil {
@@ -449,7 +449,7 @@ func (p *Proxy) dialTunnel(ctx context.Context, rules Rules, attribution, target
 	}
 	if res.StatusCode != http.StatusOK {
 		c.Close()
-		return nil, fmt.Errorf("the upstream proxy answered %d", res.StatusCode)
+		return nil, &upstreamProxyError{status: res.StatusCode}
 	}
 	_ = c.SetDeadline(time.Time{})
 	return &bufferedConn{Conn: c, r: br}, nil
@@ -466,6 +466,15 @@ type PlaceholderInfo struct {
 	Name   string   `json:"name"`
 	Prefix string   `json:"prefix"`
 	Hosts  []string `json:"hosts"`
+	// Bindings are where it may go, methods and paths too, so a check can be made with a request it may be sent in.
+	Bindings []PlaceholderBinding `json:"bindings"`
+}
+
+// PlaceholderBinding is one of a protected variable's destinations (no value: the binding is configuration).
+type PlaceholderBinding struct {
+	Host         string   `json:"host"`
+	Methods      []string `json:"methods,omitempty"`
+	PathPrefixes []string `json:"pathPrefixes,omitempty"`
 }
 
 // PlaceholderPrefixLen is how much of a placeholder the endpoint gives: "kph_" and four characters.
@@ -486,11 +495,16 @@ func (p *Proxy) servePlaceholders(w io.Writer, req *http.Request, rules Rules) {
 			return
 		}
 		for _, e := range entries {
-			v := PlaceholderInfo{Name: e.Name, Prefix: e.Placeholder[:min(PlaceholderPrefixLen, len(e.Placeholder))], Hosts: []string{}}
+			v := PlaceholderInfo{Name: e.Name, Prefix: e.Placeholder[:min(PlaceholderPrefixLen, len(e.Placeholder))], Hosts: []string{}, Bindings: []PlaceholderBinding{}}
 			for _, b := range e.Bindings {
-				if h := normaliseHost(b.Host); h != "" && !slices.Contains(v.Hosts, h) {
+				h := normaliseHost(b.Host)
+				if h == "" {
+					continue
+				}
+				if !slices.Contains(v.Hosts, h) {
 					v.Hosts = append(v.Hosts, h)
 				}
+				v.Bindings = append(v.Bindings, PlaceholderBinding{Host: h, Methods: slices.Clone(b.Methods), PathPrefixes: slices.Clone(b.PathPrefixes)})
 			}
 			out.Variables = append(out.Variables, v)
 		}

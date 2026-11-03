@@ -76,9 +76,10 @@ type Host struct {
 	egressLog *egressBatcher
 	// lifecycle is one CA-changing lifecycle call at a time per sandbox.
 	lifecycle sandboxLocks
-	// egressRevisions are the revisions of the sandboxes' latest sandbox.egress (by sandbox ID), a null egress's
-	// too, so a stale update arriving late is ignored.
-	egressRevisions sync.Map
+	// floors are the latest egress revisions the host has taken (by sandbox ID), a null egress's too, so a stale update
+	// or boot arriving late is ignored; kept on disk too (floorDir), across restarts.
+	floorMu sync.Mutex
+	floors  map[string]int64
 
 	mu sync.Mutex
 	// bySlot is each running microVM's egress, by its network slot.
@@ -462,12 +463,17 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			}
 			return nil, err
 		}
+		if p.Egress != nil {
+			h.raiseFloor(p.SandboxID, p.Egress.Revision)
+		}
 		return info, nil
 	case proto.MethodStop:
 		p, err := decode[proto.StopParams](params)
 		if err != nil {
 			return nil, err
 		}
+		// With the other lifecycle calls, so a start or resume's look at whether the sandbox runs holds while it acts.
+		defer h.lifecycle.lock(p.SandboxID)()
 		t, err := h.tierOf(p.SandboxID)
 		if err != nil {
 			return nil, err
@@ -513,6 +519,17 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if err != nil {
 			return nil, err
 		}
+		revision := revisionOf(p)
+		if p.Egress != nil {
+			if info, err := t.Get(p.SandboxID); err == nil && info.State == proto.StateRunning {
+				// Running already, the tier changes nothing, so neither does the host: not its CA, nor what it holds.
+				p.Egress = nil
+			} else if revision > 0 && h.egressRevision(t, p.SandboxID) > revision {
+				// Read before an egress the host has taken since (a sandbox.egress while it was stopped, a clear): it
+				// boots with that one.
+				p.Egress = nil
+			}
+		}
 		if p.Egress != nil {
 			// Without one the sandbox keeps its own, CA certificate included.
 			h.requireProtected(p.SandboxID, p.Egress)
@@ -520,7 +537,11 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 				return nil, err
 			}
 		}
-		return t.Resume(ctx, p, method == proto.MethodStart)
+		info, err := t.Resume(ctx, p, method == proto.MethodStart)
+		if err == nil && p.Egress != nil {
+			h.raiseFloor(p.SandboxID, revision)
+		}
+		return info, err
 	case proto.MethodFork:
 		p, err := decode[proto.ForkParams](params)
 		if err != nil {
@@ -554,6 +575,9 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			}
 			return nil, err
 		}
+		if p.Egress != nil {
+			h.raiseFloor(p.NewID, p.Egress.Revision)
+		}
 		return info, nil
 	case proto.MethodDelete:
 		p, err := decode[proto.SandboxRef](params)
@@ -572,7 +596,7 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if h.cas != nil {
 			_ = h.cas.Forget(p.SandboxID)
 		}
-		h.egressRevisions.Delete(p.SandboxID)
+		h.forgetFloor(p.SandboxID)
 		return map[string]bool{"ok": true}, nil
 	case proto.MethodGet:
 		p, err := decode[proto.SandboxRef](params)

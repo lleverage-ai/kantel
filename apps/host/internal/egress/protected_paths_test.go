@@ -5,11 +5,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -478,4 +480,78 @@ func TestInterceptedConnectionsFollowUpstreamCredentialChanges(t *testing.T) {
 		t.Fatalf("after the signing key change, a new signed tunnel: %q", got)
 	}
 	env.noValues("what the upstream got", up.got.String())
+}
+
+// A response Go can't parse is answered in the proxy's own words: a parser's error quotes the server's bytes, which a
+// server echoing the request makes the swapped value. Intercepted, proxy-form direct and proxy-form through an
+// upstream alike, in the answer, the records and the log.
+func TestParserErrorsCarryNoValue(t *testing.T) {
+	env := newProtectedEnv(t)
+	// Intercepted.
+	req := newRequest(t, http.MethodGet, "https://api.example.com/bad-length", "")
+	req.Header.Set("Authorization", ghPlaceholder)
+	res, body := env.do(req)
+	if res.StatusCode != http.StatusBadGateway || res.Header.Get(ErrorHeader) != CodeUpstream {
+		t.Fatalf("intercepted: %d %q %q", res.StatusCode, res.Header.Get(ErrorHeader), body)
+	}
+	if got, _ := env.lastSeen(); got.auth != "ghs_realValue_1" {
+		t.Fatalf("the destination got %+v", got)
+	}
+	// Proxy-form, straight out.
+	res, body = env.raw("GET https://api.example.com/bad-length HTTP/1.1\r\nHost: api.example.com\r\nAuthorization: " + ghPlaceholder + "\r\n\r\n")
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("proxy-form: %d %q", res.StatusCode, body)
+	}
+	// Proxy-form, through an upstream.
+	dial := env.proxy.Dial
+	c, err := dial("tcp", "api.example.com:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := c.RemoteAddr().String()
+	c.Close()
+	up := newConnectProxy(t, target)
+	env.proxy.Dial = func(network, address string) (net.Conn, error) {
+		if address == up.addr {
+			return net.Dial(network, address)
+		}
+		return dial(network, address)
+	}
+	env.setRules(func(r *Rules) { r.Upstream = "http://" + up.addr })
+	res, body = env.raw("GET https://api.example.com/bad-length HTTP/1.1\r\nHost: api.example.com\r\nAuthorization: " + ghPlaceholder + "\r\n\r\n")
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("through the upstream: %d %q", res.StatusCode, body)
+	}
+	// Intercepted through the upstream too.
+	res, body = env.do(req)
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("intercepted through the upstream: %d %q", res.StatusCode, body)
+	}
+	if _, n := env.lastSeen(); n < 4 {
+		t.Fatalf("the destination got %d requests, want 4", n)
+	}
+	env.noValues("the records", fmt.Sprintf("%+v", env.recordsCopy()))
+	env.noValues("the log", env.log.String())
+}
+
+// safeError never passes an error's own text on: not a URL, a parser's quote, nor an upstream proxy's address.
+func TestSafeErrorIsTheProxysWords(t *testing.T) {
+	value := "ghs_realValue_1"
+	for _, err := range []error{
+		&url.Error{Op: "Get", URL: "https://api.example.com/?t=" + value, Err: errors.New("boom " + value)},
+		fmt.Errorf("net/http: bad Content-Length %q", value),
+		fmt.Errorf("malformed HTTP response %q", value),
+		&net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Name: value + ".example.com", Err: "no such host"}},
+		fmt.Errorf("wrapped: %w (%s)", io.ErrUnexpectedEOF, value),
+	} {
+		if got := safeError(err); strings.Contains(got, value) || got == "" {
+			t.Errorf("safeError(%v) = %q", err, got)
+		}
+	}
+	if got := safeError(&upstreamProxyError{status: 407}); got != "the upstream proxy answered 407" {
+		t.Errorf("an upstream refusal: %q", got)
+	}
+	if got := safeError(&protect.Refusal{Code: protect.CodeUnbound, Message: "GITHUB_TOKEN isn't bound here"}); got != "GITHUB_TOKEN isn't bound here" {
+		t.Errorf("a refusal: %q", got)
+	}
 }

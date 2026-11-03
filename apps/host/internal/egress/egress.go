@@ -41,6 +41,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/egress/protect"
@@ -360,13 +361,63 @@ func unavailableRefusal() refusal {
 	return refusal{status: http.StatusServiceUnavailable, code: protect.CodeUnavailable, message: "protected environment variables can't be fetched right now, so what comes back can't be checked for them"}
 }
 
-// safeError is an error's text without the URL a client error carries: after a swap, its query may hold a value.
+// safeError says what went wrong with a request sent on, in words of the proxy's own, never the error's text: a
+// client error carries the URL (after a swap, its query may hold a value), and a parser's quotes what the server sent
+// (`bad Content-Length "<value>"`), which a server reflecting a request can make a value. It is what the guest is
+// answered and what the egress record says.
 func safeError(err error) string {
-	var ue *url.Error
-	if errors.As(err, &ue) && ue.Err != nil {
-		err = ue.Err
+	var (
+		ref       *protect.Refusal
+		dnsErr    *net.DNSError
+		netErr    net.Error
+		unknownCA x509.UnknownAuthorityError
+		hostname  x509.HostnameError
+		invalid   x509.CertificateInvalidError
+		verify    *tls.CertificateVerificationError
+		record    tls.RecordHeaderError
+		alert     tls.AlertError
+		upstream  *upstreamProxyError
+	)
+	switch {
+	case err == nil:
+		return ""
+	case errors.As(err, &ref):
+		return ref.Message
+	case errors.Is(err, ErrDestination):
+		return "it isn't on the public internet"
+	case errors.Is(err, context.Canceled):
+		return "the request was cancelled"
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &netErr) && netErr.Timeout():
+		return "timed out"
+	case errors.As(err, &dnsErr):
+		return "its name doesn't resolve"
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "connection refused"
+	case errors.Is(err, syscall.ECONNRESET), errors.Is(err, syscall.EPIPE):
+		return "the connection was reset"
+	case errors.Is(err, syscall.EHOSTUNREACH), errors.Is(err, syscall.ENETUNREACH):
+		return "no route to it"
+	case errors.As(err, &unknownCA), errors.As(err, &hostname), errors.As(err, &invalid), errors.As(err, &verify):
+		return "its TLS certificate isn't valid for it"
+	case errors.As(err, &record), errors.As(err, &alert):
+		return "the TLS handshake failed"
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, net.ErrClosed):
+		return "the connection closed early"
+	case errors.As(err, &upstream):
+		return upstream.Error()
 	}
-	return err.Error()
+	return "the request or its answer failed"
+}
+
+// upstreamProxyError is the account's upstream proxy refusing a connection, or its URL not being one; its text holds
+// nothing else (not the URL, whose user info may be a credential).
+type upstreamProxyError struct{ status int }
+
+func (e *upstreamProxyError) Error() string {
+	if e.status == 0 {
+		return "the upstream proxy's URL is invalid"
+	}
+	return fmt.Sprintf("the upstream proxy answered %d", e.status)
 }
 
 // claimed is the user name in a Proxy-Authorization the sandbox sent: its own label for the request.
@@ -626,7 +677,7 @@ func (p *Proxy) forward(conn net.Conn, reader *bufio.Reader, req *http.Request, 
 		u, perr := url.Parse(rules.Upstream)
 		if perr != nil || u.Host == "" {
 			refuse(conn, http.StatusBadGateway, "the upstream proxy's URL is invalid")
-			return 0, 0, fmt.Errorf("bad upstream %q", rules.Upstream)
+			return 0, 0, &upstreamProxyError{}
 		}
 		upstream, err = p.Dial("tcp", u.Host)
 		if errors.Is(err, ErrDestination) {
@@ -663,7 +714,7 @@ func (p *Proxy) forward(conn net.Conn, reader *bufio.Reader, req *http.Request, 
 				// Pass the upstream's refusal on as it is: its reason is the useful part.
 				res.Close = true
 				_ = res.Write(conn)
-				return 0, 0, fmt.Errorf("upstream answered %d", res.StatusCode)
+				return 0, 0, &upstreamProxyError{status: res.StatusCode}
 			}
 			io.WriteString(conn, "HTTP/1.1 200 Connection established\r\n\r\n")
 			return pipe(conn, reader, upstream, upReader)

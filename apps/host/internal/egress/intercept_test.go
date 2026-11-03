@@ -149,6 +149,20 @@ func (env *protectedEnv) serve(w http.ResponseWriter, r *http.Request) {
 		env.serveWebSocket(w, r)
 		return
 	}
+	if r.URL.Path == "/bad-length" {
+		// A server reflecting what it was sent into a header Go's parser quotes in its error.
+		env.mu.Lock()
+		env.seen = append(env.seen, seenRequest{host: r.Host, method: r.Method, path: r.URL.Path, auth: r.Header.Get("Authorization")})
+		env.mu.Unlock()
+		conn, rw, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		fmt.Fprintf(rw, "HTTP/1.1 200 OK\r\nContent-Length: %s\r\n\r\n", r.Header.Get("Authorization"))
+		_ = rw.Flush()
+		return
+	}
 	body, _ := io.ReadAll(r.Body)
 	s := seenRequest{host: r.Host, method: r.Method, path: r.URL.Path, query: r.URL.RawQuery, auth: r.Header.Get("Authorization"), body: string(body), check: r.Header.Get(CheckHeader)}
 	env.mu.Lock()
@@ -437,6 +451,24 @@ func TestPlaceholdersEndpoint(t *testing.T) {
 	gh := got.Variables[0]
 	if gh.Name != "GITHUB_TOKEN" || gh.Prefix != ghPlaceholder[:PlaceholderPrefixLen] || len(gh.Hosts) != 1 || gh.Hosts[0] != "api.example.com" {
 		t.Fatalf("GITHUB_TOKEN %+v", gh)
+	}
+	// The bindings come too, paths and methods, so a check can be one the variable may be sent in.
+	npm := got.Variables[1]
+	if len(npm.Bindings) != 1 || npm.Bindings[0].Host != "other.example.com" || len(npm.Bindings[0].PathPrefixes) != 1 || npm.Bindings[0].PathPrefixes[0] != "/npm" {
+		t.Fatalf("NPM_TOKEN %+v", npm)
+	}
+	// Checked where its binding allows, it would be swapped; at "/", which it doesn't, it wouldn't.
+	check := func(method, rawURL string) *http.Response {
+		req := newRequest(t, method, rawURL, "")
+		req.Header.Set(CheckHeader, npmPlaceholder)
+		res, _ := env.do(req)
+		return res
+	}
+	if res := check(http.MethodHead, "https://other.example.com"+npm.Bindings[0].PathPrefixes[0]); res.StatusCode != http.StatusNoContent {
+		t.Fatalf("in its binding: %d %v", res.StatusCode, res.Header)
+	}
+	if res := check(http.MethodHead, "https://other.example.com/"); res.StatusCode != http.StatusForbidden {
+		t.Fatalf("outside its binding: %d", res.StatusCode)
 	}
 	if res, _ := env.do(newRequest(t, http.MethodGet, "http://"+CheckHost+"/other", "")); res.StatusCode != http.StatusNotFound {
 		t.Fatalf("another path: %d", res.StatusCode)

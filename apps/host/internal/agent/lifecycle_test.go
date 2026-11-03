@@ -7,6 +7,9 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,6 +30,7 @@ type lifecycleTier struct {
 	mu      sync.Mutex
 	egress  map[string]*proto.Egress
 	running map[string]bool
+	stopped map[string]bool
 	execs   []proto.ExecParams
 	// failExecs is how many installs fail before they work.
 	failExecs int
@@ -37,7 +41,7 @@ type lifecycleTier struct {
 }
 
 func newLifecycleTier() *lifecycleTier {
-	return &lifecycleTier{egress: map[string]*proto.Egress{}, running: map[string]bool{}}
+	return &lifecycleTier{egress: map[string]*proto.Egress{}, running: map[string]bool{}, stopped: map[string]bool{}}
 }
 
 func (f *lifecycleTier) enter() func() {
@@ -93,10 +97,35 @@ func (f *lifecycleTier) EgressOf(id string) (*proto.Egress, error) {
 func (f *lifecycleTier) Get(id string) (proto.SandboxInfo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if !f.running[id] {
-		return proto.SandboxInfo{}, &proto.Error{Code: proto.ErrNotFound, Message: id}
+	switch {
+	case f.running[id]:
+		return proto.SandboxInfo{ID: id, Tier: microvm.Tier, State: proto.StateRunning}, nil
+	case f.stopped[id]:
+		return proto.SandboxInfo{ID: id, Tier: microvm.Tier, State: proto.StateStopped}, nil
 	}
-	return proto.SandboxInfo{ID: id, Tier: microvm.Tier, State: proto.StateRunning}, nil
+	return proto.SandboxInfo{}, &proto.Error{Code: proto.ErrNotFound, Message: id}
+}
+
+func (f *lifecycleTier) Stop(_ context.Context, p proto.StopParams) (proto.SnapshotInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.running, p.SandboxID)
+	f.stopped[p.SandboxID] = true
+	return proto.SnapshotInfo{}, nil
+}
+
+// Resume is as both tiers have it: nothing at all when it runs; otherwise it boots, with the egress given, if any.
+func (f *lifecycleTier) Resume(_ context.Context, p proto.ResumeParams, _ bool) (proto.SandboxInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.running[p.SandboxID] {
+		if p.Egress != nil {
+			f.egress[p.SandboxID] = p.Egress
+		}
+		delete(f.stopped, p.SandboxID)
+		f.running[p.SandboxID] = true
+	}
+	return proto.SandboxInfo{ID: p.SandboxID, Tier: microvm.Tier, State: proto.StateRunning}, nil
 }
 
 func (f *lifecycleTier) SetEgress(id string, e *proto.Egress) error {
@@ -122,6 +151,7 @@ func (f *lifecycleTier) Delete(_ context.Context, id string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.running, id)
+	delete(f.stopped, id)
 	delete(f.egress, id)
 	return nil
 }
@@ -485,5 +515,144 @@ func TestHeldEgressRequiresItsTableVersion(t *testing.T) {
 	h.attachSlot(8, "sbx_current", "acc_1", protectedEgress(4, "api.github.com"))
 	if r, err := h.secrets.Resolve(ctx, testPlaceholder, "sbx_current", gh); err != nil || r.Value != "ghs_v4" {
 		t.Fatalf("a current table: %v", err)
+	}
+}
+
+// caFiles is everything the CA store keeps for a sandbox (its key and certificate), by file name.
+func caFiles(t *testing.T, h *Host, id string) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	dir := filepath.Join(h.cfg.Root, "egress-ca", id)
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		raw, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		out[e.Name()] = string(raw)
+	}
+	return out
+}
+
+// A start or resume of a sandbox that runs already changes nothing in it, so it changes nothing of its CA either: not
+// the one the proxy signs with, its kept key, nor the egress the sandbox holds, whatever interception it carries. A
+// stopped one, which does boot, gets the CA its egress needs.
+func TestNoOpStartLeavesTheCA(t *testing.T) {
+	tier := newLifecycleTier()
+	h := newLifecycleHost(t, tier)
+	first := protectedEgress(1, "api.github.com")
+	first.Revision = 10
+	if err := call(t, h, proto.MethodCreate, proto.CreateParams{SandboxID: "sbx_1", Egress: first}); err != nil {
+		t.Fatal(err)
+	}
+	ca, _ := h.cas.Get("sbx_1")
+	files := caFiles(t, h, "sbx_1")
+	if len(files) == 0 {
+		t.Fatal("no CA was kept")
+	}
+	other := protectedEgress(1, "uploads.github.com")
+	other.Revision = 20
+	none := &proto.Egress{Mode: "proxy", Revision: 30}
+	for _, method := range []string{proto.MethodStart, proto.MethodResume} {
+		for _, e := range []*proto.Egress{other, none} {
+			if err := call(t, h, method, proto.ResumeParams{SandboxID: "sbx_1", Egress: e}); err != nil {
+				t.Fatalf("%s: %v", method, err)
+			}
+			now, err := h.cas.Get("sbx_1")
+			if err != nil || now.CertPEM() != ca.CertPEM() {
+				t.Fatalf("%s of a running sandbox changed its CA: %v", method, err)
+			}
+			if !maps.Equal(caFiles(t, h, "sbx_1"), files) {
+				t.Fatalf("%s of a running sandbox changed its kept CA", method)
+			}
+			if held, _ := tier.EgressOf("sbx_1"); held == nil || held.Revision != 10 || !strings.Contains(held.CACert, ca.CertPEM()) {
+				t.Fatalf("%s of a running sandbox changed its egress: %+v", method, held)
+			}
+		}
+	}
+	// Stopped, a start boots it with the egress it carries, and that egress's CA.
+	if err := call(t, h, proto.MethodStop, proto.StopParams{SandboxID: "sbx_1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := call(t, h, proto.MethodStart, proto.ResumeParams{SandboxID: "sbx_1", Egress: other}); err != nil {
+		t.Fatal(err)
+	}
+	now, err := h.cas.Get("sbx_1")
+	if err != nil || now.CertPEM() == ca.CertPEM() || !now.Covers("uploads.github.com") {
+		t.Fatalf("a real start didn't get its egress's CA: %v", err)
+	}
+	if held, _ := tier.EgressOf("sbx_1"); held == nil || held.Revision != 20 || !strings.Contains(held.CACert, now.CertPEM()) {
+		t.Fatalf("a real start didn't take its egress: %+v", held)
+	}
+}
+
+// Every replacement of a sandbox's egress is ordered by the latest revision the host has taken: a boot read before a
+// sandbox.egress the host took while the sandbox was stopped boots with that one, and a clear holds its revision
+// across a host restart, though it leaves no egress in meta.json to order by.
+func TestEgressOrderingHoldsAcrossBootsAndRestarts(t *testing.T) {
+	tier := newLifecycleTier()
+	h := newLifecycleHost(t, tier)
+	deny := func(rev int64, host string) *proto.Egress {
+		return &proto.Egress{Mode: "proxy", Revision: rev, Grants: []proto.Grant{{Action: "deny", Host: host, Rule: "deny " + host}}}
+	}
+	held := func() *proto.Egress { e, _ := tier.EgressOf("sbx_1"); return e }
+	if err := call(t, h, proto.MethodCreate, proto.CreateParams{SandboxID: "sbx_1", Egress: deny(5, "first.example")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := call(t, h, proto.MethodStop, proto.StopParams{SandboxID: "sbx_1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := call(t, h, proto.MethodEgress, proto.ResumeParams{SandboxID: "sbx_1", Egress: deny(20, "new.example"), Revision: 20}); err != nil {
+		t.Fatal(err)
+	}
+	// A boot read at revision 10, arriving after.
+	if err := call(t, h, proto.MethodStart, proto.ResumeParams{SandboxID: "sbx_1", Egress: deny(10, "old.example"), Revision: 10}); err != nil {
+		t.Fatal(err)
+	}
+	if e := held(); e == nil || e.Revision != 20 || e.Grants[0].Host != "new.example" {
+		t.Fatalf("a stale boot replaced a newer egress: %+v", e)
+	}
+	// A clear, then a restart: a new host over the same root, the tier's metadata as it was kept (no egress).
+	if err := call(t, h, proto.MethodEgress, proto.ResumeParams{SandboxID: "sbx_1", Revision: 30}); err != nil {
+		t.Fatal(err)
+	}
+	if e := held(); e != nil {
+		t.Fatalf("the clear: %+v", e)
+	}
+	restarted := &Host{
+		cfg: h.cfg, log: h.log, tiers: h.tiers, order: h.order, bySlot: map[int]egress.Rules{},
+		cas: egress.NewCAStore(h.cfg.Root + "/egress-ca"),
+	}
+	restarted.secrets = protect.NewStore(restarted.fetchSecrets)
+	if err := call(t, restarted, proto.MethodEgress, proto.ResumeParams{SandboxID: "sbx_1", Egress: deny(25, "old.example"), Revision: 25}); err != nil {
+		t.Fatal(err)
+	}
+	if e := held(); e != nil {
+		t.Fatalf("after a restart, a stale update replaced a newer clear: %+v", e)
+	}
+	if err := call(t, restarted, proto.MethodStop, proto.StopParams{SandboxID: "sbx_1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := call(t, restarted, proto.MethodResume, proto.ResumeParams{SandboxID: "sbx_1", Egress: deny(25, "old.example"), Revision: 25}); err != nil {
+		t.Fatal(err)
+	}
+	if e := held(); e != nil {
+		t.Fatalf("after a restart, a stale boot replaced a newer clear: %+v", e)
+	}
+	// The current revision again is taken (a retry), and a newer one, and an unordered one always.
+	for _, e := range []*proto.Egress{deny(30, "same.example"), deny(31, "newer.example"), deny(0, "any.example")} {
+		if err := call(t, restarted, proto.MethodEgress, proto.ResumeParams{SandboxID: "sbx_1", Egress: e, Revision: e.Revision}); err != nil {
+			t.Fatal(err)
+		}
+		if got := held(); got == nil || got.Grants[0].Host != e.Grants[0].Host {
+			t.Fatalf("revision %d wasn't taken: %+v", e.Revision, got)
+		}
+	}
+	// A deleted sandbox's floor goes with it.
+	if err := call(t, restarted, proto.MethodDelete, proto.SandboxRef{SandboxID: "sbx_1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(h.cfg.Root, "egress-revision", "sbx_1")); !os.IsNotExist(err) {
+		t.Fatalf("the floor outlived its sandbox: %v", err)
 	}
 }

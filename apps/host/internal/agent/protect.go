@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -217,19 +219,99 @@ func withoutPEM(bundle, own string) string {
 	return out + "\n"
 }
 
-// egressRevision is the revision of the egress a sandbox has: its latest sandbox.egress's, or what its kept egress
-// says (it came with a create or boot, or before the host restarted).
+// egressRevision is the revision of the egress a sandbox has: the latest the host has taken (kept on disk, a null
+// egress's too), or what its kept egress says (from a host before the floor was kept).
 func (h *Host) egressRevision(t Tier, sandboxID string) int64 {
-	var held int64
-	if v, ok := h.egressRevisions.Load(sandboxID); ok {
-		held = v.(int64)
-	}
+	held := h.revisionFloor(sandboxID)
 	if r, ok := t.(egressReader); ok {
 		if e, err := r.EgressOf(sandboxID); err == nil && e != nil && e.Revision > held {
 			held = e.Revision
 		}
 	}
 	return held
+}
+
+// revisionOf is the revision an egress-carrying call is ordered by: its own, else its egress's; 0 is unordered.
+func revisionOf(p proto.ResumeParams) int64 {
+	if p.Revision == 0 && p.Egress != nil {
+		return p.Egress.Revision
+	}
+	return p.Revision
+}
+
+// floorDir holds each sandbox's revision floor: a file per sandbox holding the latest egress revision the host has
+// taken for it. It outlives a null egress, which leaves nothing in meta.json to order by, and a host restart.
+func (h *Host) floorDir() string { return filepath.Join(h.cfg.Root, "egress-revision") }
+
+// floorFile is a sandbox's floor file, or "" for an ID that isn't a plain name (never one of Kantel's).
+func (h *Host) floorFile(sandboxID string) string {
+	if sandboxID == "" || h.cfg.Root == "" || strings.ContainsAny(sandboxID, `/\`) || strings.Contains(sandboxID, "..") {
+		return ""
+	}
+	return filepath.Join(h.floorDir(), sandboxID)
+}
+
+// revisionFloor is the latest egress revision the host has taken for a sandbox, 0 for none.
+func (h *Host) revisionFloor(sandboxID string) int64 {
+	h.floorMu.Lock()
+	defer h.floorMu.Unlock()
+	if v, ok := h.floors[sandboxID]; ok {
+		return v
+	}
+	var v int64
+	if path := h.floorFile(sandboxID); path != "" {
+		if raw, err := os.ReadFile(path); err == nil {
+			v, _ = strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64)
+		}
+	}
+	if h.floors == nil {
+		h.floors = map[string]int64{}
+	}
+	h.floors[sandboxID] = v
+	return v
+}
+
+// raiseFloor records that the host took a sandbox's egress at revision (it never goes down), on disk before it is
+// relied on: a write that fails leaves it in memory, as before the floor was kept.
+func (h *Host) raiseFloor(sandboxID string, revision int64) {
+	if revision <= 0 || revision <= h.revisionFloor(sandboxID) {
+		return
+	}
+	h.floorMu.Lock()
+	defer h.floorMu.Unlock()
+	h.floors[sandboxID] = revision
+	path := h.floorFile(sandboxID)
+	if path == "" {
+		return
+	}
+	if err := os.MkdirAll(h.floorDir(), 0o700); err != nil {
+		h.logf("egress revision floor for %s: %v", sandboxID, err)
+		return
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strconv.FormatInt(revision, 10)), 0o600); err != nil {
+		h.logf("egress revision floor for %s: %v", sandboxID, err)
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		h.logf("egress revision floor for %s: %v", sandboxID, err)
+	}
+}
+
+// forgetFloor drops a deleted sandbox's floor.
+func (h *Host) forgetFloor(sandboxID string) {
+	h.floorMu.Lock()
+	defer h.floorMu.Unlock()
+	delete(h.floors, sandboxID)
+	if path := h.floorFile(sandboxID); path != "" {
+		_ = os.Remove(path)
+	}
+}
+
+func (h *Host) logf(format string, args ...any) {
+	if h.log != nil {
+		h.log.Warn(fmt.Sprintf(format, args...))
+	}
 }
 
 // egressReader is a tier that answers a sandbox's egress as it keeps it (microvm, which a fork inherits from).
@@ -278,10 +360,7 @@ func installCA(ctx context.Context, t Tier, sandboxID, certPEM string) error {
 // setEgress is sandbox.egress: the new rules, and for a running microVM that intercepts, its CA installed in the
 // guest until that is confirmed. The caller holds the sandbox's lifecycle lock.
 func (h *Host) setEgress(ctx context.Context, t Tier, tier string, p proto.ResumeParams) error {
-	revision := p.Revision
-	if revision == 0 && p.Egress != nil {
-		revision = p.Egress.Revision
-	}
+	revision := revisionOf(p)
 	if revision > 0 {
 		if h.egressRevision(t, p.SandboxID) > revision {
 			// Read before a change whose own update has already come: the sandbox keeps the newer egress.
@@ -292,7 +371,6 @@ func (h *Host) setEgress(ctx context.Context, t Tier, tier string, p proto.Resum
 			e.Revision = revision
 			p.Egress = &e
 		}
-		defer func() { h.egressRevisions.Store(p.SandboxID, revision) }()
 	}
 	if p.Egress == nil && h.cas != nil {
 		// The host's default egress intercepts nothing.
@@ -306,6 +384,9 @@ func (h *Host) setEgress(ctx context.Context, t Tier, tier string, p proto.Resum
 	if err := t.SetEgress(p.SandboxID, e); err != nil {
 		return err
 	}
+	// Taken: an older one is refused from now on, a restart and a null egress notwithstanding. The same revision again
+	// still goes (it retries a CA install that failed).
+	h.raiseFloor(p.SandboxID, revision)
 	if e == nil || h.cas == nil || tier != microvm.Tier {
 		return nil
 	}
