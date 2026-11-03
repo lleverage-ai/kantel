@@ -1,5 +1,6 @@
 // First: settings this browser stored under harbour.* keys before the rename move to kantel.*.
 import "./legacy-storage.ts";
+import type { ThemePreference } from "@kantel/contracts";
 import { Button, Notice, reloadForNewBuild, SignInScreen, Spinner, themeController } from "@kantel/ui";
 import { type ReactNode, StrictMode, useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -25,9 +26,10 @@ import "./ui/styles.css";
 // `?source=recorded` (or `VITE_KANTEL_SOURCE=recorded` for a build) shows the console on @kantel/ui's sample data with
 // no backend and no sign-in, for demos and screenshots.
 
-// The theme: the page already paints in the person's theme (index.html's boot script, from this browser's memory);
-// this puts every theme's stylesheet on the page, so switching is instant. Their saved preference follows from the
-// server once `/v1/me` has answered (state/theme-sync.ts).
+// The theme, light or dark: the page already paints in the person's theme (index.html's boot script, from this
+// browser's memory); this follows the device for System and migrates a choice remembered from before the console had
+// only light and dark. Their saved preference follows from the server once `/v1/me` has answered
+// (state/theme-sync.ts), and the sidebar's switch saves a new one.
 themeController();
 
 // The compute console lived under /compute while the session console had `/`: its old links (a bookmark, an older
@@ -94,9 +96,11 @@ function ApiConsole({ first }: { first: Promise<Boot> }) {
 	const { state } = answer;
 	if (state.kind === "signed-in") {
 		const { signOut } = state.actor;
+		const save = saveTheme(state);
 		return (
 			<SignedIn state={state}>
 				<ComputeApp
+					{...(save === undefined ? {} : { onThemeChoose: save })}
 					signedInAs={{ name: state.me.name, ...(state.me.email === undefined ? {} : { email: state.me.email }) }}
 					headers={state.headers}
 					onUnauthenticated={() => {
@@ -155,18 +159,22 @@ function ApiConsole({ first }: { first: Promise<Boot> }) {
 	);
 }
 
-/** The person's saved theme, once `/v1/me` has said who they are; a host app's key has none. */
-function SignedIn({ state, children }: { state: Extract<ConsoleBoot, { kind: "signed-in" }>; children: ReactNode }) {
+type SignedInBoot = Extract<ConsoleBoot, { kind: "signed-in" }>;
+
+/** Keeps a theme for the person on the server; a host app's key has no settings, so nothing for it. */
+function saveTheme(state: SignedInBoot): ((preference: ThemePreference) => void) | undefined {
+	if (state.me.actor.kind !== "human") return undefined;
+	return (preference) => {
+		identity.client.setPreferences({ theme: preference }).catch((error: unknown) => {
+			console.info("kantel: couldn't keep the theme:", error instanceof Error ? error.message : error);
+		});
+	};
+}
+
+/** The person's saved theme, once `/v1/me` has said who they are. */
+function SignedIn({ state, children }: { state: SignedInBoot; children: ReactNode }) {
 	useEffect(() => {
-		const save =
-			state.me.actor.kind === "human"
-				? (preference: string) => {
-						identity.client.setPreferences({ theme: preference }).catch((error: unknown) => {
-							console.info("kantel: couldn't keep the theme:", error instanceof Error ? error.message : error);
-						});
-					}
-				: undefined;
-		syncTheme(themeController(), state.me.preferences, save);
+		syncTheme(themeController(), state.me.preferences, saveTheme(state));
 	}, [state]);
 	return children;
 }

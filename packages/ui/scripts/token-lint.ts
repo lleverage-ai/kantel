@@ -1,7 +1,8 @@
 // The design loop's static gates: the token lint and the copy lint. Both run in CI through `pnpm test` (see
 // token-lint.test.ts) and on their own with `node scripts/token-lint.ts`.
 //
-// Token lint: no raw colours or sizes outside src/tokens/tokens.css. A component's CSS reads custom properties;
+// Token lint: no raw colours or sizes outside src/tokens/tokens.css and the two themes' palettes (src/tokens/dark.css,
+// src/tokens/light.css). A component's CSS reads custom properties;
 // its TSX passes token names, never "#fff" or "12px", and its Tailwind classes use the token utilities that
 // src/tokens/tailwind.css maps, never an arbitrary value such as `p-[13px]` or `bg-[#fff]`.
 // Copy lint: the copy rules made mechanical. No uppercase tracked labels, no middle-dot meta strings, no arrows on
@@ -15,8 +16,8 @@ export type Finding = { file: string; line: number; rule: string; text: string }
 const TOKENS_FILE = "src/tokens/tokens.css";
 // Tailwind's @theme: only var(--kt-*) references, plus Tailwind's 4px spacing step and its breakpoints.
 const TAILWIND_THEME = "src/tokens/tailwind.css";
-const THEMES_DIR = "src/tokens/themes/";
-const THEME_SCHEMA = "src/tokens/theme-schema.ts";
+// The two themes' palettes: every colour that differs between dark and light.
+const THEME_PALETTES = new Set(["src/tokens/dark.css", "src/tokens/light.css"]);
 
 const namedColours =
 	/\b(white|black|red|green|blue|yellow|orange|purple|pink|gray|grey|silver|navy|teal|aqua|fuchsia|lime|maroon|olive)\b/i;
@@ -118,9 +119,8 @@ function files(root: string, dir: string, out: string[] = []): string[] {
 
 /** Lints one file's text. `path` is relative to the package root. */
 export function lintSource(path: string, text: string): Finding[] {
-	// Themes are tokens too: src/tokens/themes/ holds each built-in theme's colours, and the schema the derived ones.
-	const tokens =
-		path === TOKENS_FILE || path === TAILWIND_THEME || path === THEME_SCHEMA || path.startsWith(THEMES_DIR);
+	// The themes are tokens too: dark.css and light.css hold each theme's colours.
+	const tokens = path === TOKENS_FILE || path === TAILWIND_THEME || THEME_PALETTES.has(path);
 	if (tokens || path.endsWith(".test.ts") || path.endsWith(".d.ts")) return [];
 	const rules = path.endsWith(".css")
 		? cssRules

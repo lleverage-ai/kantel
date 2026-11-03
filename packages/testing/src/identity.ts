@@ -1358,11 +1358,9 @@ export function createIdentityConformance(options: {
 				const viewer = await createMember(identity, tenant, "viewer");
 				const ctx = contextFor(viewer, tenant.organisation.id);
 				a.deepEqual(await identity.userPreferences(ctx), {}, "nobody has settings at first");
-				a.deepEqual(await identity.setUserPreferences(ctx, { theme: "catppuccin-latte" }), {
-					theme: "catppuccin-latte",
-				});
-				a.deepEqual(await identity.setUserPreferences(ctx, {}), { theme: "catppuccin-latte" }, "{} changes nothing");
-				a.deepEqual(await identity.userPreferences(ctx), { theme: "catppuccin-latte" });
+				a.deepEqual(await identity.setUserPreferences(ctx, { theme: "light" }), { theme: "light" });
+				a.deepEqual(await identity.setUserPreferences(ctx, {}), { theme: "light" }, "{} changes nothing");
+				a.deepEqual(await identity.userPreferences(ctx), { theme: "light" });
 				a.deepEqual(await identity.userPreferences(tenant.admin), {}, "another person's are their own");
 
 				// They are the person's, not the organisation's: the same person in another organisation has them too.
@@ -1370,10 +1368,15 @@ export function createIdentityConformance(options: {
 				const userId = viewer.kind === "human" ? viewer.userId : "";
 				await identity.grantRole(other.admin, { principal: { kind: "user", userId }, role: "viewer" });
 				a.deepEqual(await identity.userPreferences(contextFor(viewer, other.organisation.id)), {
-					theme: "catppuccin-latte",
+					theme: "light",
 				});
 
 				a.deepEqual(await identity.setUserPreferences(ctx, { theme: "system" }), { theme: "system" });
+				a.deepEqual(await identity.setUserPreferences(ctx, { theme: "dark" }), { theme: "dark" });
+				// An older console's choice of a theme Kantel no longer has is kept as the nearer of light and dark, or system.
+				a.deepEqual(await identity.setUserPreferences(ctx, { theme: "catppuccin-latte" }), { theme: "light" });
+				a.deepEqual(await identity.setUserPreferences(ctx, { theme: "nord" }), { theme: "dark" });
+				a.deepEqual(await identity.setUserPreferences(ctx, { theme: "custom-sea" }), { theme: "system" });
 				a.deepEqual(await identity.setUserPreferences(ctx, { theme: null }), {}, "null clears the theme");
 				for (const bad of [{ theme: "Not a theme" }, { theme: 3 }, { colour: "red" }, [] as unknown, null]) {
 					await a.rejectsWithCode(
@@ -1387,7 +1390,7 @@ export function createIdentityConformance(options: {
 				const serviceCtx = contextFor(actors.service(service.id), tenant.organisation.id);
 				await a.rejectsWithCode(identity.userPreferences(serviceCtx), "forbidden", "a service has no settings");
 				await a.rejectsWithCode(identity.setUserPreferences(serviceCtx, { lastModel: "default" }), "forbidden");
-				await a.rejectsWithCode(identity.setUserPreferences(serviceCtx, { theme: "nord" }), "forbidden");
+				await a.rejectsWithCode(identity.setUserPreferences(serviceCtx, { theme: "dark" }), "forbidden");
 				const stranger = await identity.createUser(tenant.admin, { name: "no role" });
 				await a.rejectsWithCode(
 					identity.userPreferences(contextFor(actors.human(stranger.id), tenant.organisation.id)),
@@ -1453,25 +1456,25 @@ export function createIdentityConformance(options: {
 				const tenant = await createTenant(identity, "Acme");
 				const operator = await createMember(identity, tenant, "operator");
 				const ctx = contextFor(operator, tenant.organisation.id);
-				await identity.setUserPreferences(ctx, { theme: "nord" });
+				await identity.setUserPreferences(ctx, { theme: "dark" });
 				a.deepEqual(await identity.setUserPreferences(ctx, { lastModel: "default:gpt-5", lastThinking: "high" }), {
-					theme: "nord",
+					theme: "dark",
 					lastModel: "default:gpt-5",
 					lastThinking: "high",
 				});
 				a.deepEqual(
 					await identity.userPreferences(ctx),
-					{ theme: "nord", lastModel: "default:gpt-5", lastThinking: "high" },
+					{ theme: "dark", lastModel: "default:gpt-5", lastThinking: "high" },
 					"read back as kept",
 				);
 				a.deepEqual(
 					await identity.setUserPreferences(ctx, { lastThinking: "low" }),
-					{ theme: "nord", lastModel: "default:gpt-5", lastThinking: "low" },
+					{ theme: "dark", lastModel: "default:gpt-5", lastThinking: "low" },
 					"a new level keeps the model",
 				);
 				a.deepEqual(
 					await identity.setUserPreferences(ctx, { lastModel: "default", lastThinking: null }),
-					{ theme: "nord", lastModel: "default" },
+					{ theme: "dark", lastModel: "default" },
 					"null clears the level",
 				);
 				a.deepEqual(await identity.userPreferences(tenant.admin), {}, "another person's are their own");
@@ -1490,7 +1493,7 @@ export function createIdentityConformance(options: {
 				}
 				a.deepEqual(
 					await identity.userPreferences(ctx),
-					{ theme: "nord", lastModel: "default" },
+					{ theme: "dark", lastModel: "default" },
 					"a refused change keeps what was there",
 				);
 			}),

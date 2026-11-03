@@ -1,12 +1,10 @@
-// A choice remembered before the rename: under `harbour.theme`, with CSS on `--hb-*` and `data-hb-theme`.
-// The boot script and the controller read it when `kantel.theme` isn't there, in today's names, and the controller
-// moves it to the new key.
+// The theme controller and the boot script: light, dark or System, remembered in this browser, and a choice remembered
+// before Kantel had only those two (version 1: a theme's ID with its CSS, maybe under `harbour.theme` from before the
+// rename) migrated to the nearer of light and dark by its canvas, once.
 
 import { describe, expect, it } from "vitest";
-import { themeCss } from "../tokens/theme-schema.ts";
-import { LEGACY_THEME_STORAGE_KEY, legacyThemeCss, THEME_STORAGE_KEY, themeBootScript } from "./boot.ts";
-import { createThemeController } from "./controller.ts";
-import { createThemeRegistry } from "./registry.ts";
+import { LEGACY_THEME_STORAGE_KEY, THEME_STORAGE_KEY, themeBootScript } from "./boot.ts";
+import { createThemeController, readThemeCache } from "./controller.ts";
 
 const memory = (entries: Record<string, string> = {}) => {
 	const items = new Map(Object.entries(entries));
@@ -17,163 +15,192 @@ const memory = (entries: Record<string, string> = {}) => {
 	};
 };
 
-const light = (matches: boolean) => ({ matches, addEventListener: () => undefined });
-
-/** The CSS a browser remembered before the rename: today's rule, in the old names. */
-const oldCss = (id: string): string => {
-	const theme = createThemeRegistry().get(id);
-	if (theme === undefined) throw new Error(id);
-	return themeCss(theme)
-		.replace(/--kt-/g, "--hb-")
-		.replace(/data-kt-theme/g, "data-hb-theme")
-		.replace(/\.kt-theme/g, ".hb-theme");
+/** A device in light mode or not, whose setting a test can change. */
+const device = (matches: boolean) => {
+	const listeners = new Set<() => void>();
+	return {
+		matches,
+		addEventListener: (_: "change", listener: () => void) => void listeners.add(listener),
+		removeEventListener: (_: "change", listener: () => void) => void listeners.delete(listener),
+		set(next: boolean) {
+			this.matches = next;
+			for (const listener of listeners) listener();
+		},
+	};
 };
 
-const legacyCache = (preference: string, ids: string[]) =>
-	JSON.stringify({
-		v: 1,
-		preference,
-		dark: "harbour",
-		light: "harbour-light",
-		css: Object.fromEntries(ids.map((id) => [id, oldCss(id)])),
+/** <html>, as far as the controller touches it. */
+const page = () => {
+	const attributes = new Map<string, string>();
+	return {
+		attributes,
+		root: {
+			ownerDocument: undefined,
+			getAttribute: (name: string) => attributes.get(name) ?? null,
+			setAttribute: (name: string, value: string) => void attributes.set(name, value),
+			classList: { add: () => undefined, remove: () => undefined },
+		} as unknown as HTMLElement,
+	};
+};
+
+/** A theme's CSS rule as a browser remembered it in version 1. `prefix` is `hb` for one from before the rename. */
+const rule = (id: string, kind: "dark" | "light", canvas: string, prefix = "kt") =>
+	`[data-${prefix}-theme="${id}"][data-${prefix}-theme], [data-${prefix}-theme="${id}"] .${prefix}-theme{color-scheme:${kind};--${prefix}-canvas:${canvas};--${prefix}-text:#e0def4;}`;
+
+const v1 = (preference: string, css: Record<string, string> = {}) =>
+	JSON.stringify({ v: 1, preference, dark: "kantel", light: "kantel-light", css });
+
+const saved = (storage: ReturnType<typeof memory>) => JSON.parse(storage.getItem(THEME_STORAGE_KEY) ?? "null");
+
+describe("the theme controller", () => {
+	it("is dark until a person chooses, and remembers nothing until then", () => {
+		const storage = memory();
+		const { root, attributes } = page();
+		const controller = createThemeController({ root, storage, prefersLight: device(true) });
+		expect(controller.state()).toEqual({ preference: "dark", applied: "dark" });
+		expect(controller.remembered()).toBe(false);
+		expect(attributes.get("data-kt-theme")).toBe("dark");
+		expect(storage.getItem(THEME_STORAGE_KEY)).toBeNull();
 	});
 
-describe("a theme remembered before the rename", () => {
-	it("maps old CSS to today's names", () => {
-		const theme = createThemeRegistry().get("rose-pine");
-		expect(theme).toBeDefined();
-		expect(legacyThemeCss(oldCss("rose-pine"))).toBe(themeCss(theme!));
-	});
-
-	it("is chosen again and moved to the new key, with today's CSS", () => {
-		const storage = memory({ [LEGACY_THEME_STORAGE_KEY]: legacyCache("rose-pine", ["rose-pine"]) });
-		const controller = createThemeController({ storage, prefersLight: light(false) });
+	it("chooses light, dark or System, sets the attribute and remembers the choice", () => {
+		const storage = memory();
+		const { root, attributes } = page();
+		const prefersLight = device(true);
+		const controller = createThemeController({ root, storage, prefersLight });
+		let told = 0;
+		controller.subscribe(() => told++);
+		controller.choose("light");
+		expect([controller.state(), attributes.get("data-kt-theme")]).toEqual([
+			{ preference: "light", applied: "light" },
+			"light",
+		]);
+		expect(saved(storage)).toEqual({ v: 2, preference: "light" });
+		controller.choose("system");
+		expect(controller.state()).toEqual({ preference: "system", applied: "light" });
+		// System follows the device as it changes.
+		prefersLight.set(false);
+		expect([controller.state().applied, attributes.get("data-kt-theme")]).toEqual(["dark", "dark"]);
+		controller.choose("dark");
+		prefersLight.set(true);
+		expect(controller.state()).toEqual({ preference: "dark", applied: "dark" });
+		expect(told).toBe(4);
 		expect(controller.remembered()).toBe(true);
-		expect(controller.state()).toMatchObject({ preference: "rose-pine", applied: "rose-pine" });
-		const moved = JSON.parse(storage.getItem(THEME_STORAGE_KEY) ?? "null");
-		expect(moved.preference).toBe("rose-pine");
-		expect(moved.css["rose-pine"]).toContain('[data-kt-theme="rose-pine"]');
-		expect(JSON.stringify(moved)).not.toContain("--hb-");
 	});
 
-	it("keeps System and its two themes", () => {
-		const storage = memory({ [LEGACY_THEME_STORAGE_KEY]: legacyCache("system", ["harbour", "harbour-light"]) });
-		const controller = createThemeController({ storage, prefersLight: light(true) });
-		expect(controller.state()).toMatchObject({ preference: "system", applied: "kantel-light" });
-		expect(JSON.parse(storage.getItem(THEME_STORAGE_KEY) ?? "null").preference).toBe("system");
+	it("reads a retired theme's ID, as an older console kept it on the server, as the nearer of light and dark", () => {
+		const controller = createThemeController({ storage: memory(), prefersLight: device(false) });
+		controller.choose("catppuccin-latte");
+		expect(controller.state().preference).toBe("light");
+		controller.choose("tokyo-night");
+		expect(controller.state().preference).toBe("dark");
+		controller.choose("custom-sea");
+		expect(controller.state().preference).toBe("system");
 	});
 
-	it("leaves a custom theme the host hasn't registered yet under the old key", () => {
+	it("starts on what this browser remembers", () => {
+		const storage = memory({ [THEME_STORAGE_KEY]: JSON.stringify({ v: 2, preference: "system" }) });
+		const controller = createThemeController({ storage, prefersLight: device(true) });
+		expect(controller.state()).toEqual({ preference: "system", applied: "light" });
+		expect(controller.remembered()).toBe(true);
+	});
+});
+
+describe("a choice remembered before light and dark", () => {
+	it("goes to the nearer of the two by its canvas, and is written again as version 2", () => {
+		for (const [preference, css, today] of [
+			["rose-pine", { "rose-pine": rule("rose-pine", "dark", "#191724") }, "dark"],
+			["solarized-light", { "solarized-light": rule("solarized-light", "light", "#fdf6e3") }, "light"],
+			["kantel-light", {}, "light"],
+			["system", {}, "system"],
+			// A custom theme Kantel never shipped: its remembered canvas decides.
+			["custom-paper", { "custom-paper": rule("custom-paper", "light", "#fffaf0") }, "light"],
+			["custom-grey", { "custom-grey": rule("custom-grey", "dark", "#777777") }, "system"],
+			["custom-gone", {}, "system"],
+		] as const) {
+			const storage = memory({ [THEME_STORAGE_KEY]: v1(preference, css) });
+			const controller = createThemeController({ storage, prefersLight: device(false) });
+			expect([preference, controller.state().preference]).toEqual([preference, today]);
+			expect([preference, saved(storage)]).toEqual([preference, { v: 2, preference: today }]);
+		}
+	});
+
+	it("under the key from before the rename, with --hb- CSS, moves to the new key", () => {
 		const storage = memory({
-			[LEGACY_THEME_STORAGE_KEY]: JSON.stringify({
-				v: 1,
-				preference: "custom-sea",
-				dark: "harbour",
-				light: "harbour-light",
-				css: {},
+			[LEGACY_THEME_STORAGE_KEY]: v1("harbour-light", {
+				"harbour-light": rule("harbour-light", "light", "#f9f7f0", "hb"),
 			}),
 		});
-		createThemeController({ storage, prefersLight: light(false) });
-		expect(storage.getItem(THEME_STORAGE_KEY)).toBeNull();
-		expect(storage.getItem(LEGACY_THEME_STORAGE_KEY)).not.toBeNull();
+		const controller = createThemeController({ storage, prefersLight: device(false) });
+		expect(controller.state()).toEqual({ preference: "light", applied: "light" });
+		expect(saved(storage)).toEqual({ v: 2, preference: "light" });
+		const custom = memory({
+			[LEGACY_THEME_STORAGE_KEY]: v1("custom-sea", { "custom-sea": rule("custom-sea", "dark", "#0b1d2a", "hb") }),
+		});
+		expect(createThemeController({ storage: custom, prefersLight: device(true) }).state().preference).toBe("dark");
+	});
+
+	it("is migrated once: the next load reads the same and writes nothing", () => {
+		const storage = memory({ [THEME_STORAGE_KEY]: v1("nord", { nord: rule("nord", "dark", "#2a303b") }) });
+		createThemeController({ storage, prefersLight: device(false) });
+		const once = storage.getItem(THEME_STORAGE_KEY);
+		expect(readThemeCache(storage)).toEqual({ preference: "dark", rewrite: false });
+		const writes: string[] = [];
+		createThemeController({
+			storage: { getItem: storage.getItem, setItem: (key, value) => void writes.push(`${key}=${value}`) },
+			prefersLight: device(false),
+		});
+		expect(writes).toEqual([]);
+		expect(storage.getItem(THEME_STORAGE_KEY)).toBe(once);
 	});
 
 	it("loses to the new key when both are there", () => {
 		const storage = memory({
-			[LEGACY_THEME_STORAGE_KEY]: legacyCache("rose-pine", ["rose-pine"]),
-			[THEME_STORAGE_KEY]: JSON.stringify({
-				v: 1,
-				preference: "neutral",
-				dark: "harbour",
-				light: "harbour-light",
-				css: {},
-			}),
+			[LEGACY_THEME_STORAGE_KEY]: v1("solarized-light"),
+			[THEME_STORAGE_KEY]: JSON.stringify({ v: 2, preference: "dark" }),
 		});
-		expect(createThemeController({ storage, prefersLight: light(false) }).state().preference).toBe("neutral");
-	});
-});
-
-describe("a built-in theme remembered by its ID from before the rename", () => {
-	const cache = (preference: string) =>
-		JSON.stringify({ v: 1, preference, dark: "harbour", light: "harbour-light", css: {} });
-
-	it("is today's theme, and is remembered again under today's ID", () => {
-		for (const [old, today] of [
-			["harbour", "kantel"],
-			["harbour-light", "kantel-light"],
-		] as const) {
-			const storage = memory({ [THEME_STORAGE_KEY]: cache(old) });
-			const controller = createThemeController({ storage, prefersLight: light(false) });
-			expect(controller.state()).toMatchObject({ preference: today, applied: today });
-			const saved = JSON.parse(storage.getItem(THEME_STORAGE_KEY) ?? "null");
-			expect(saved).toMatchObject({ preference: today, dark: "kantel", light: "kantel-light" });
-			expect(Object.keys(saved.css)).toEqual([today]);
-		}
+		expect(createThemeController({ storage, prefersLight: device(false) }).state().preference).toBe("dark");
 	});
 
-	it("is found by the registry and the controller under either ID", () => {
-		const registry = createThemeRegistry();
-		expect(registry.get("harbour")?.id).toBe("kantel");
-		expect(registry.get("harbour-light")?.id).toBe("kantel-light");
-		expect(registry.builtin("harbour")).toBe(true);
-		const controller = createThemeController({ registry, storage: memory(), prefersLight: light(false) });
-		controller.choose("harbour-light");
-		expect(controller.state()).toMatchObject({ preference: "kantel-light", applied: "kantel-light" });
-		controller.preview("harbour");
-		expect(controller.state()).toMatchObject({ applied: "kantel", previewing: true });
-	});
-
-	it("is the base of a custom theme that extends it", () => {
-		const sea = (base: string) =>
-			createThemeRegistry().register({ id: "custom-sea", name: "Sea", kind: "dark", extends: base, tokens: {} }).theme;
-		const old = sea("harbour-light");
-		expect(old?.id).toBe("custom-sea");
-		// A dark theme on the light one: what it takes from its base shows which base it found.
-		expect(themeCss(old!)).toBe(themeCss(sea("kantel-light")!));
-		expect(themeCss(old!)).not.toBe(themeCss(sea("kantel")!));
+	it("ignores what it can't read", () => {
+		for (const raw of [
+			"not json",
+			"null",
+			JSON.stringify({ v: 3, preference: "light" }),
+			JSON.stringify({ v: 2, preference: "nord" }),
+		])
+			expect(readThemeCache(memory({ [THEME_STORAGE_KEY]: raw }))).toBeUndefined();
 	});
 });
 
 describe("the boot script", () => {
-	/** Runs the inline script against a fake page; returns the CSS it added and the theme it set. */
-	const boot = (entries: Record<string, string>) => {
-		const added: { id: string; textContent: string }[] = [];
+	/** Runs the inline script against a fake page; returns the theme it set on <html>. */
+	const boot = (entries: Record<string, string>, light = false) => {
 		const attributes = new Map<string, string>();
-		const page = {
-			localStorage: memory(entries),
-			matchMedia: () => ({ matches: false }),
-			document: {
-				createElement: () => ({ id: "", textContent: "" }),
-				head: { appendChild: (node: { id: string; textContent: string }) => void added.push(node) },
-				documentElement: { setAttribute: (name: string, value: string) => void attributes.set(name, value) },
-			},
-		};
 		new Function("localStorage", "matchMedia", "document", themeBootScript)(
-			page.localStorage,
-			page.matchMedia,
-			page.document,
+			memory(entries),
+			() => ({ matches: light }),
+			{ documentElement: { setAttribute: (name: string, value: string) => void attributes.set(name, value) } },
 		);
-		return { css: added[0]?.textContent, theme: attributes.get("data-kt-theme") };
+		return attributes.get("data-kt-theme");
 	};
 
-	it("paints a theme remembered under the old key, in today's names", () => {
-		const { css, theme } = boot({ [LEGACY_THEME_STORAGE_KEY]: legacyCache("rose-pine", ["rose-pine"]) });
-		expect(theme).toBe("rose-pine");
-		expect(css).toBe(themeCss(createThemeRegistry().get("rose-pine")!));
+	it("paints dark with nothing remembered, and what was chosen otherwise", () => {
+		expect(boot({}, true)).toBe("dark");
+		expect(boot({ [THEME_STORAGE_KEY]: JSON.stringify({ v: 2, preference: "light" }) })).toBe("light");
+		expect(boot({ [THEME_STORAGE_KEY]: JSON.stringify({ v: 2, preference: "system" }) }, true)).toBe("light");
+		expect(boot({ [THEME_STORAGE_KEY]: JSON.stringify({ v: 2, preference: "system" }) }, false)).toBe("dark");
+		expect(boot({ [THEME_STORAGE_KEY]: "not json" }, true)).toBe("dark");
 	});
 
-	it("prefers the new key and leaves its CSS as it is", () => {
-		const rule = themeCss(createThemeRegistry().get("neutral")!);
-		const { css, theme } = boot({
-			[LEGACY_THEME_STORAGE_KEY]: legacyCache("rose-pine", ["rose-pine"]),
-			[THEME_STORAGE_KEY]: JSON.stringify({
-				v: 1,
-				preference: "neutral",
-				dark: "harbour",
-				light: "harbour-light",
-				css: { neutral: rule },
-			}),
-		});
-		expect([theme, css]).toEqual(["neutral", rule]);
+	it("paints a version 1 choice as the kind of theme it was, under either key", () => {
+		const latte = v1("catppuccin-latte", { "catppuccin-latte": rule("catppuccin-latte", "light", "#eff1f5") });
+		expect(boot({ [THEME_STORAGE_KEY]: latte })).toBe("light");
+		expect(boot({ [THEME_STORAGE_KEY]: v1("dracula", { dracula: rule("dracula", "dark", "#21222c") }) }, true)).toBe(
+			"dark",
+		);
+		expect(boot({ [THEME_STORAGE_KEY]: v1("system") }, true)).toBe("light");
+		const old = v1("harbour-light", { "harbour-light": rule("harbour-light", "light", "#f9f7f0", "hb") });
+		expect(boot({ [LEGACY_THEME_STORAGE_KEY]: old })).toBe("light");
 	});
 });

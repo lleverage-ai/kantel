@@ -1,7 +1,7 @@
 /**
  * Colour arithmetic for checking themes: WCAG contrast between two colours, and how far apart two colours look
- * (OKLab distance), for telling status colours apart. Plain `#rrggbb` only. Used by the theme tests and by
- * `checkTheme`, which a custom-theme editor can show beside its fields.
+ * (OKLab distance), for telling status colours apart. Plain `#rrggbb` only. Used by the theme tests (theme.test.ts),
+ * which hold dark.css and light.css to WCAG AA.
  */
 
 type Rgb = readonly [number, number, number];
