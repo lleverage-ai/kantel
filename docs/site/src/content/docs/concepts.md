@@ -62,6 +62,8 @@ An **API key** lets a program act for an account or an organisation without sign
 
 Traffic leaving a sandbox can go through a **proxy** you configure. The proxy sees each request with the sandbox it came from, so it can allow or refuse it, log it, or add a credential on the way out. That keeps tokens out of the sandbox, where an agent could read them. Kantel has a proxy of its own, and you can point sandboxes at another, such as a credential-injecting proxy your team already runs.
 
+On a host, the proxy is a sandbox's only way out. A sandbox has no public address, nothing on the internet or your network can connect to it, and it can't reach other sandboxes, its host or your network, through the proxy or around it (a host's operator can allow named private ranges through the proxy). You reach a sandbox's shell, desktop, browser and ports through Kantel, which relays them over the connection the host keeps open to the control plane.
+
 ## Webhooks and OpenTelemetry
 
 **Webhooks** tell your systems when something happens to a sandbox, such as it becoming ready or stopping, with each delivery signed so you can check it came from Kantel. **OpenTelemetry** export sends sandbox metrics and lifecycle events to any OTLP collector.

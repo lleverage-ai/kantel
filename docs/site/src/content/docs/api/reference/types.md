@@ -782,6 +782,7 @@ One of: `"creating"` or `"ready"` or `"failed"` or `"deleting"`.
 | `port` | integer | yes |  |
 | `user` | string | yes | Names the sandbox to the gateway. |
 | `command` | string | yes | A command line that connects, such as `ssh -p 2222 sbx_4kq9x2mt@ssh.example`. |
+| `proxyUrl` | string | no | When there is no SSH gateway to dial: a WebSocket URL carrying the sandbox's SSH as binary frames, for an `ssh -o ProxyCommand=…` (`kantel ssh-proxy` is one). Anyone holding it can start a connection until `expiresAt`. |
 | `privateKey` | string | no | When Kantel made the key pair: its private key, shown once. |
 | `hostKeyFingerprint` | string | no |  |
 | `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
@@ -791,7 +792,7 @@ One of: `"creating"` or `"ready"` or `"failed"` or `"deleting"`.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `publicKey` | string | no | An OpenSSH public key to let in. Absent: Kantel makes a key pair for this access. |
-| `ttlMinutes` | integer | no | Default 60. (minimum 5, maximum 1440) |
+| `ttlMinutes` | integer | no | How long a connection can be started with this access; one started in time stays open. Default 10. (minimum 5, maximum 60) |
 
 ### StartDeviceLoginBody
 
@@ -904,7 +905,7 @@ What the collector answered to an empty export sent on save.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `viewOnly` | boolean | no | Watch only: no keyboard or mouse. Default false. |
-| `ttlMinutes` | integer | no | Default 60. (minimum 1, maximum 1440) |
+| `ttlMinutes` | integer | no | How long the URLs can be opened for; a view or connection opened in time stays open. Default 10. (minimum 1, maximum 60) |
 
 ### Webhook
 

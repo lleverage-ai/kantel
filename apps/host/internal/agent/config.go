@@ -44,10 +44,15 @@ type Config struct {
 	OvercommitMemory float64 `json:"overcommitMemory,omitempty"`
 	// Subnet sandboxes' addresses come from (default 10.231.0.0/16).
 	Subnet string `json:"subnet,omitempty"`
-	// DNS servers for sandboxes with open egress (default 1.1.1.1, 8.8.8.8).
+	// DNS is no longer used: sandboxes have no route to a DNS server (the egress proxy resolves names). Kept so old
+	// configs load.
 	DNS []string `json:"dns,omitempty"`
-	// Egress: the default for sandboxes that don't say ("open" unless set).
+	// Egress: the default for sandboxes that don't say ("open" unless set). Every mode goes out through the host's
+	// egress proxy only; "open" is the proxy with no rules, "none" not even the proxy.
 	Egress string `json:"egress,omitempty"`
+	// EgressAllowCIDRs are private ranges the egress proxy may connect to anyway, such as a LAN package mirror
+	// ("192.168.10.0/24"). Loopback, the sandbox subnet and the host's own addresses stay refused.
+	EgressAllowCIDRs []string `json:"egressAllowCIDRs,omitempty"`
 	// ProxyPort is the host's egress proxy, on each sandbox's gateway address (default 3129).
 	ProxyPort int `json:"proxyPort,omitempty"`
 	// ProxyDataPath is the switch for the egress data path: when false (the default), the control plane's egress

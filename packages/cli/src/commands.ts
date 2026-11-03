@@ -58,6 +58,7 @@ import {
 import { CliError, UsageError } from "./errors.ts";
 import { ago, bytes, duration, fields, money, table, timestamp, until } from "./format.ts";
 import { createMcpServer, serveStdio } from "./mcp.ts";
+import { pipeTunnel, proxyUrlOf, SSH_URL_ENV, tunnelSshArgs, tunnelSshCommand } from "./ssh-proxy.ts";
 import { VERSION } from "./version.ts";
 
 /** Where the CLI writes. */
@@ -395,9 +396,12 @@ function makeClient(io: Io, config: ResolvedConfig): KantelClient {
 	});
 }
 
-function runSsh(args: readonly string[], io: Io): Promise<number> {
+function runSsh(args: readonly string[], io: Io, env?: Readonly<Record<string, string>>): Promise<number> {
 	return new Promise((done) => {
-		const child = spawn("ssh", [...args], { stdio: "inherit" });
+		const child = spawn("ssh", [...args], {
+			stdio: "inherit",
+			...(env === undefined ? {} : { env: { ...process.env, ...env } }),
+		});
 		child.once("error", (error) => {
 			io.stderr.write(`kantel: couldn't run ssh: ${error.message}\n`);
 			done(127);
@@ -420,7 +424,11 @@ const GLOBAL_FLAGS: FlagSpecs = {
 const cursorFlag: FlagSpec = { type: "string", value: "<cursor>", description: "The next page, from a list's More" };
 const noWait: FlagSpec = { type: "boolean", description: "Answer at once rather than once it runs" };
 const viewOnly: FlagSpec = { type: "boolean", description: "Watch only: no keyboard or mouse" };
-const ttl: FlagSpec = { type: "string", value: "<minutes>", description: "How long the URL works (default 60)" };
+const ttl: FlagSpec = {
+	type: "string",
+	value: "<minutes>",
+	description: "How long the URL can be opened for (default 10, at most 60)",
+};
 const sizeFlag: FlagSpec = { type: "string", value: "<small|default|large|xlarge>", description: "A microVM's size" };
 
 const ID_ARG: readonly Arg[] = [{ name: "id" }];
@@ -908,7 +916,11 @@ const SECTIONS: readonly Section[] = [
 						value: "<file>",
 						description: "Let in this OpenSSH public key (default: a key pair Kantel makes, kept here)",
 					},
-					ttl: { type: "string", value: "<minutes>", description: "How long the access lasts (default 60)" },
+					ttl: {
+						type: "string",
+						value: "<minutes>",
+						description: "How long a connection can be started (default 10, at most 60)",
+					},
 				},
 				async run(ctx) {
 					const sandboxId = ctx.arg(0);
@@ -929,6 +941,26 @@ const SECTIONS: readonly Section[] = [
 						await writeFile(identityFile, privateKey, { mode: 0o600 });
 						await chmod(identityFile, 0o600);
 					}
+					if (access.proxyUrl !== undefined) {
+						// No SSH gateway: through the relay, with this CLI as ssh's ProxyCommand (ssh-proxy.ts).
+						const tunnel = { user: access.user, proxyUrl: access.proxyUrl };
+						const options = {
+							self: [process.execPath, ...process.execArgv, process.argv[1] ?? "kantel"],
+							sandboxId,
+							knownHosts: join(ctx.io.configDir, "ssh", "known_hosts"),
+							...(identityFile === undefined ? {} : { identityFile }),
+						};
+						await mkdir(join(ctx.io.configDir, "ssh"), { recursive: true, mode: 0o700 });
+						if (ctx.boolean("exec")) {
+							return runSsh(tunnelSshArgs(tunnel, options), ctx.io, { [SSH_URL_ENV]: access.proxyUrl });
+						}
+						const command = tunnelSshCommand(tunnel, { ...options, self: ["kantel"] });
+						const shown = { user: access.user, command, identityFile, hostKeyFingerprint: access.hostKeyFingerprint };
+						ctx.emit({ ...shown, expiresAt: access.expiresAt }, () =>
+							[command, `(start it by ${timestamp(access.expiresAt)}; once connected it stays open)`].join("\n"),
+						);
+						return 0;
+					}
 					const args = [
 						...(identityFile === undefined ? [] : ["-i", identityFile, "-o", "IdentitiesOnly=yes"]),
 						"-p",
@@ -948,6 +980,26 @@ const SECTIONS: readonly Section[] = [
 						expiresAt: access.expiresAt,
 					};
 					ctx.emit(shown, () => `${command}\n(it works until ${timestamp(access.expiresAt)})`);
+				},
+			},
+			{
+				name: "ssh-proxy",
+				summary: "ssh's ProxyCommand through Kantel's relay (kantel ssh runs it)",
+				flags: {
+					url: { type: "string", value: "<wss-url>", description: `The answer's proxyUrl (default ${SSH_URL_ENV})` },
+				},
+				async run(ctx) {
+					let url: string;
+					try {
+						url = proxyUrlOf(ctx.string("url"), ctx.io.env);
+					} catch (error) {
+						throw new UsageError(error instanceof Error ? error.message : String(error));
+					}
+					return pipeTunnel(url, {
+						stdin: ctx.io.stdin(),
+						stdout: ctx.io.stdout,
+						stderr: ctx.io.stderr,
+					});
 				},
 			},
 			{

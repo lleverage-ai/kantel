@@ -2,10 +2,23 @@
 // (10.231.0.0/16 by default), so the host tells every sandbox's traffic apart by the device and address it came from,
 // which nothing inside a sandbox can forge.
 //
-// Rules (iptables, in chains of their own: KANTEL-INPUT, KANTEL-FORWARD, KANTEL-NAT):
-//   - a sandbox reaches the host only on the egress proxy's port, and never another sandbox;
-//   - "open" sandboxes are NATed to the internet; "proxy" and "none" sandboxes have no route out but the proxy
-//     ("none" isn't given the proxy either).
+// A sandbox's link reaches one thing: the host's egress proxy, on its own gateway address. Nothing is routed in or out.
+// The host reaches a sandbox's services over vsock (the guest agent dials the guest's loopback), never over this
+// network, so a sandbox needs no inbound path at all and has none. Rules (iptables, in chains of their own):
+//
+//   - KANTEL-INPUT (traffic from a sandbox to the host): a packet whose source isn't the link's own guest address (a
+//     sandbox passing as another to the proxy) or whose destination isn't the link's own gateway address is dropped;
+//     then only the proxy's port, and replies; then drop.
+//     A sandbox with egress "none" doesn't get the proxy either.
+//   - KANTEL-FORWARD: anything from or to a sandbox's device is dropped, whatever its egress mode: no NAT, no route to
+//     the internet, the LAN, the host's other networks or another sandbox. The proxy is the only way out, and it
+//     refuses private, loopback and link-local destinations itself (package egress).
+//   - INPUT: the proxy's port is refused on every interface that isn't a sandbox's, so it is no open proxy for the
+//     LAN or the internet.
+//   - IPv6 is off on every sandbox device, and ip6tables drops anything from one, so a sandbox can't reach the host
+//     over a link-local address that the IPv4 rules don't see.
+//
+// Egress modes ("open", "proxy", "none") differ only at the proxy: "open" is the proxy with no rules.
 package network
 
 import (
@@ -46,9 +59,11 @@ type Manager struct {
 	// DryRun records commands instead of running them (tests).
 	DryRun   bool
 	Commands []string
+	// ipv6 is whether the host has ip6tables to back the per-device IPv6 switch.
+	ipv6 bool
 }
 
-// New prepares the host: forwarding on, Kantel's chains in place. base is a /16 or larger.
+// New prepares the host: Kantel's chains in place. base is a /22 or larger.
 func New(base string, proxyPort int, dryRun bool) (*Manager, error) {
 	prefix, err := netip.ParsePrefix(base)
 	if err != nil {
@@ -64,6 +79,9 @@ func New(base string, proxyPort int, dryRun bool) (*Manager, error) {
 	return m, nil
 }
 
+// Subnet is the range sandboxes' addresses come from.
+func (m *Manager) Subnet() netip.Prefix { return m.base }
+
 func (m *Manager) run(args ...string) error {
 	if m.DryRun {
 		m.Commands = append(m.Commands, strings.Join(args, " "))
@@ -76,15 +94,15 @@ func (m *Manager) run(args ...string) error {
 	return nil
 }
 
-// ensure adds a rule unless it is already there.
-func (m *Manager) ensure(table string, chain string, position string, rule ...string) error {
-	check := append([]string{"iptables", "-w", "-t", table, "-C", chain}, rule...)
+// ensure adds a rule unless it is already there. tool is iptables or ip6tables.
+func (m *Manager) ensure(tool, table, chain, position string, rule ...string) error {
+	check := append([]string{tool, "-w", "-t", table, "-C", chain}, rule...)
 	if !m.DryRun {
 		if exec.Command(check[0], check[1:]...).Run() == nil {
 			return nil
 		}
 	}
-	args := []string{"iptables", "-w", "-t", table}
+	args := []string{tool, "-w", "-t", table}
 	if position == "insert" {
 		args = append(args, "-I", chain, "1")
 	} else {
@@ -93,49 +111,76 @@ func (m *Manager) ensure(table string, chain string, position string, rule ...st
 	return m.run(append(args, rule...)...)
 }
 
-func (m *Manager) chain(table, name string) error {
-	if !m.DryRun && exec.Command("iptables", "-w", "-t", table, "-L", name, "-n").Run() == nil {
-		return m.run("iptables", "-w", "-t", table, "-F", name)
+// drop deletes every copy of a rule (a no-op when there is none).
+func (m *Manager) drop(tool, table, chain string, rule ...string) {
+	if m.DryRun {
+		m.Commands = append(m.Commands, strings.Join(append([]string{tool, "-w", "-t", table, "-D", chain}, rule...), " "))
+		return
 	}
-	return m.run("iptables", "-w", "-t", table, "-N", name)
+	for i := 0; i < 16; i++ {
+		args := append([]string{"-w", "-t", table, "-D", chain}, rule...)
+		if exec.Command(tool, args...).Run() != nil {
+			return
+		}
+	}
+}
+
+func (m *Manager) chain(tool, table, name string) error {
+	if !m.DryRun && exec.Command(tool, "-w", "-t", table, "-L", name, "-n").Run() == nil {
+		return m.run(tool, "-w", "-t", table, "-F", name)
+	}
+	return m.run(tool, "-w", "-t", table, "-N", name)
 }
 
 func (m *Manager) setup() error {
-	if !m.DryRun {
-		if err := os.WriteFile("/proc/sys/net/ipv4/ip_forward", []byte("1"), 0o644); err != nil {
-			return fmt.Errorf("enable IP forwarding: %w", err)
-		}
-	}
-	base := m.base.String()
-	steps := [][]string{}
-	for _, c := range [][2]string{{"filter", "KANTEL-INPUT"}, {"filter", "KANTEL-FORWARD"}, {"nat", "KANTEL-NAT"}} {
-		if err := m.chain(c[0], c[1]); err != nil {
+	for _, c := range [][2]string{{"filter", "KANTEL-INPUT"}, {"filter", "KANTEL-FORWARD"}} {
+		if err := m.chain("iptables", c[0], c[1]); err != nil {
 			return err
 		}
 	}
-	// Into the host from a sandbox: the proxy only.
-	steps = append(steps,
-		[]string{"filter", "KANTEL-INPUT", "append", "-i", "kt+", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"},
-		[]string{"filter", "KANTEL-INPUT", "append", "-i", "kt+", "-p", "tcp", "--dport", fmt.Sprint(m.proxyPort), "-j", "ACCEPT"},
-		[]string{"filter", "KANTEL-INPUT", "append", "-i", "kt+", "-j", "DROP"},
-		// Between sandboxes: never. Replies to sandboxes: yes. Out of a sandbox: per link (Add).
-		[]string{"filter", "KANTEL-FORWARD", "append", "-i", "kt+", "-o", "kt+", "-j", "DROP"},
-		[]string{"filter", "KANTEL-FORWARD", "append", "-o", "kt+", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"},
-		[]string{"nat", "KANTEL-NAT", "append", "-s", base, "!", "-d", base, "-j", "MASQUERADE"},
-		[]string{"filter", "INPUT", "insert", "-i", "kt+", "-j", "KANTEL-INPUT"},
-		[]string{"filter", "FORWARD", "insert", "-j", "KANTEL-FORWARD"},
-		[]string{"nat", "POSTROUTING", "insert", "-s", base, "-j", "KANTEL-NAT"},
-	)
+	proxy := fmt.Sprint(m.proxyPort)
+	steps := [][]string{
+		// Into the host from a sandbox: the proxy only. Each link inserts its own source check above these (Add).
+		{"filter", "KANTEL-INPUT", "append", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"},
+		{"filter", "KANTEL-INPUT", "append", "-p", "tcp", "--dport", proxy, "-j", "ACCEPT"},
+		{"filter", "KANTEL-INPUT", "append", "-j", "DROP"},
+		// Through the host, either way: never.
+		{"filter", "KANTEL-FORWARD", "append", "-i", "kt+", "-j", "DROP"},
+		{"filter", "KANTEL-FORWARD", "append", "-o", "kt+", "-j", "DROP"},
+		{"filter", "INPUT", "insert", "-i", "kt+", "-j", "KANTEL-INPUT"},
+		// The proxy's port from anywhere but a sandbox's device: refused, so it is nobody else's proxy.
+		{"filter", "INPUT", "insert", "!", "-i", "kt+", "-p", "tcp", "--dport", proxy, "-j", "DROP"},
+		{"filter", "FORWARD", "insert", "-j", "KANTEL-FORWARD"},
+	}
 	for _, s := range steps {
-		if err := m.ensure(s[0], s[1], s[2], s[3:]...); err != nil {
+		if err := m.ensure("iptables", s[0], s[1], s[2], s[3:]...); err != nil {
 			return err
 		}
 	}
-	// Docker's DOCKER-USER chain runs before its own FORWARD rules, whose policy drops: sandboxes' traffic has to be
-	// let through there too on a host that runs Docker.
-	if !m.DryRun && exec.Command("iptables", "-w", "-L", "DOCKER-USER", "-n").Run() == nil {
-		if err := m.ensure("filter", "DOCKER-USER", "insert", "-j", "KANTEL-FORWARD"); err != nil {
+	// Docker's DOCKER-USER chain runs before its own FORWARD rules: Kantel's drops go there too on a host that runs
+	// Docker, so nothing Docker accepts gets a sandbox's traffic through.
+	if m.DryRun || exec.Command("iptables", "-w", "-L", "DOCKER-USER", "-n").Run() == nil {
+		if err := m.ensure("iptables", "filter", "DOCKER-USER", "insert", "-j", "KANTEL-FORWARD"); err != nil {
 			return err
+		}
+	}
+	// Earlier versions NATed "open" sandboxes to the internet: take that out on an upgraded host.
+	m.drop("iptables", "nat", "POSTROUTING", "-s", m.base.String(), "-j", "KANTEL-NAT")
+	if !m.DryRun && exec.Command("iptables", "-w", "-t", "nat", "-L", "KANTEL-NAT", "-n").Run() == nil {
+		_ = m.run("iptables", "-w", "-t", "nat", "-F", "KANTEL-NAT")
+		_ = m.run("iptables", "-w", "-t", "nat", "-X", "KANTEL-NAT")
+	}
+	// IPv6: each device has it switched off (Add); this backs that up where the host has ip6tables.
+	if m.DryRun || exec.Command("ip6tables", "-w", "-L", "INPUT", "-n").Run() == nil {
+		m.ipv6 = true
+		for _, s := range [][]string{
+			{"filter", "INPUT", "insert", "-i", "kt+", "-j", "DROP"},
+			{"filter", "FORWARD", "insert", "-i", "kt+", "-j", "DROP"},
+			{"filter", "FORWARD", "insert", "-o", "kt+", "-j", "DROP"},
+		} {
+			if err := m.ensure("ip6tables", s[0], s[1], s[2], s[3:]...); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -153,11 +198,19 @@ func (m *Manager) slotAddrs(slot int) (netip.Addr, netip.Addr) {
 
 func (m *Manager) slots() int { return 1 << (32 - m.base.Bits() - 2) }
 
-// Reserve marks a slot as taken by a link that already exists (a sandbox adopted after a restart).
-func (m *Manager) Reserve(slot int) {
+// Adopt takes over a link that already exists (a sandbox adopted after a restart): its slot, and its rules, which the
+// restart's setup flushed.
+func (m *Manager) Adopt(link Link) error {
 	m.mu.Lock()
-	m.used[slot] = true
+	m.used[link.Slot] = true
 	m.mu.Unlock()
+	m.disableIPv6(link.Tap)
+	for _, rule := range linkRules(link) {
+		if err := m.ensure("iptables", "filter", "KANTEL-INPUT", "insert", rule...); err != nil {
+			return err
+		}
+	}
+	return m.applyEgress(link, link.Egress)
 }
 
 // LinkFor describes slot's link without creating it.
@@ -167,7 +220,32 @@ func (m *Manager) LinkFor(slot int, egress string) Link {
 	return Link{Slot: slot, Tap: fmt.Sprintf("kt%d", slot), HostIP: host, GuestIP: guest, MAC: fmt.Sprintf("06:00:%02x:%02x:%02x:%02x", b[0], b[1], b[2], b[3]), Egress: egress}
 }
 
-// Add makes a new link: the TAP device, its address and its forwarding rule.
+// linkRules hold a link's device to its own two addresses: what comes in from any address but its guest's (a sandbox
+// passing as another) or for any address but its own gateway's (the host's other addresses, another sandbox's
+// gateway) is dropped.
+func linkRules(link Link) [][]string {
+	return [][]string{
+		{"-i", link.Tap, "!", "-s", link.GuestIP.String() + "/32", "-j", "DROP"},
+		{"-i", link.Tap, "!", "-d", link.HostIP.String() + "/32", "-j", "DROP"},
+	}
+}
+
+// noneRule shuts a link with egress "none" out of the proxy too.
+func noneRule(link Link) []string {
+	return []string{"-i", link.Tap, "-j", "DROP"}
+}
+
+func (m *Manager) disableIPv6(tap string) {
+	path := "/proc/sys/net/ipv6/conf/" + tap + "/disable_ipv6"
+	if m.DryRun {
+		m.Commands = append(m.Commands, "write 1 "+path)
+		return
+	}
+	// Absent when the kernel has no IPv6, which is as good.
+	_ = os.WriteFile(path, []byte("1"), 0o644)
+}
+
+// Add makes a new link: the TAP device, its address and its rules.
 func (m *Manager) Add(egress string) (Link, error) {
 	m.mu.Lock()
 	slot := -1
@@ -184,14 +262,26 @@ func (m *Manager) Add(egress string) (Link, error) {
 	}
 	link := m.LinkFor(slot, egress)
 	_ = m.run("ip", "link", "del", link.Tap)
+	if err := m.run("ip", "tuntap", "add", "dev", link.Tap, "mode", "tap"); err != nil {
+		m.release(slot)
+		return Link{}, err
+	}
+	// Before the device is up, so it never gets an IPv6 link-local address.
+	m.disableIPv6(link.Tap)
 	steps := [][]string{
-		{"ip", "tuntap", "add", "dev", link.Tap, "mode", "tap"},
 		{"ip", "addr", "add", link.HostIP.String() + "/30", "dev", link.Tap},
 		{"ip", "link", "set", link.Tap, "up"},
 	}
 	for _, s := range steps {
 		if err := m.run(s...); err != nil {
+			_ = m.run("ip", "link", "del", link.Tap)
 			m.release(slot)
+			return Link{}, err
+		}
+	}
+	for _, rule := range linkRules(link) {
+		if err := m.ensure("iptables", "filter", "KANTEL-INPUT", "insert", rule...); err != nil {
+			m.Remove(link)
 			return Link{}, err
 		}
 	}
@@ -202,19 +292,19 @@ func (m *Manager) Add(egress string) (Link, error) {
 	return link, nil
 }
 
-// SetEgress changes a link's way out.
+// SetEgress changes a link's mode. Only "none" changes the network (no proxy either); "open" and "proxy" differ at
+// the proxy alone.
 func (m *Manager) SetEgress(link *Link, egress string) error {
-	for _, target := range []string{"ACCEPT", "DROP"} {
-		for !m.DryRun && exec.Command("iptables", "-w", "-C", "KANTEL-FORWARD", "-i", link.Tap, "-j", target).Run() == nil {
-			_ = m.run("iptables", "-w", "-D", "KANTEL-FORWARD", "-i", link.Tap, "-j", target)
-		}
-	}
-	target := "DROP"
-	if egress == EgressOpen {
-		target = "ACCEPT"
-	}
 	link.Egress = egress
-	return m.run("iptables", "-w", "-A", "KANTEL-FORWARD", "-i", link.Tap, "-j", target)
+	return m.applyEgress(*link, egress)
+}
+
+func (m *Manager) applyEgress(link Link, egress string) error {
+	if egress == EgressNone {
+		return m.ensure("iptables", "filter", "KANTEL-INPUT", "insert", noneRule(link)...)
+	}
+	m.drop("iptables", "filter", "KANTEL-INPUT", noneRule(link)...)
+	return nil
 }
 
 func (m *Manager) release(slot int) {
@@ -223,12 +313,11 @@ func (m *Manager) release(slot int) {
 	m.mu.Unlock()
 }
 
-// Remove deletes a link's device and rule and frees its slot.
+// Remove deletes a link's device and rules and frees its slot.
 func (m *Manager) Remove(link Link) {
-	for _, target := range []string{"ACCEPT", "DROP"} {
-		for !m.DryRun && exec.Command("iptables", "-w", "-C", "KANTEL-FORWARD", "-i", link.Tap, "-j", target).Run() == nil {
-			_ = m.run("iptables", "-w", "-D", "KANTEL-FORWARD", "-i", link.Tap, "-j", target)
-		}
+	m.drop("iptables", "filter", "KANTEL-INPUT", noneRule(link)...)
+	for _, rule := range linkRules(link) {
+		m.drop("iptables", "filter", "KANTEL-INPUT", rule...)
 	}
 	_ = m.run("ip", "link", "del", link.Tap)
 	m.release(link.Slot)

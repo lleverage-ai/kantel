@@ -69,7 +69,8 @@ type Config struct {
 	Network     *network.Manager
 	// ProxyPort is the host egress proxy's port on each sandbox's gateway address.
 	ProxyPort int
-	// DNS servers given to "open" sandboxes.
+	// DNS is unused: no sandbox has a route to a DNS server since the proxy became the only way out. Kept so old
+	// configs load.
 	DNS []string
 	// AutoSnapshots is how many automatic snapshots each sandbox keeps (default 5).
 	AutoSnapshots int
@@ -264,7 +265,9 @@ func (m *Manager) adopt() error {
 			machine, err := fc.Attach(s.vmDir(), s.meta.Pid)
 			if err == nil {
 				link := m.cfg.Network.LinkFor(s.meta.Slot, egressMode(s.meta.Egress))
-				m.cfg.Network.Reserve(s.meta.Slot)
+				if err := m.cfg.Network.Adopt(link); err != nil {
+					m.log.Warn("adopted sandbox's network rules", "sandbox", s.meta.ID, "error", err)
+				}
 				s.machine, s.link = machine, &link
 				s.guest = guest.NewClient(filepath.Join(s.vmDir(), fc.VsockSocket))
 				m.attach(s, link.Slot)
@@ -355,19 +358,16 @@ func (m *Manager) identity(s *sandbox, fresh bool) guest.Identity {
 	if fresh {
 		id.SSHAuthorizedKeys = append([]string{}, s.meta.SSHKeys...)
 	}
+	// The host's egress proxy is a sandbox's only way out, whatever its mode (package network): "open" is the proxy
+	// with no rules. With no route out there is no DNS to give either; the proxy resolves names.
 	mode := egressMode(s.meta.Egress)
-	if mode == network.EgressOpen {
-		id.DNS = m.cfg.DNS
-	}
 	if mode != network.EgressNone && m.cfg.ProxyPort > 0 {
 		proxy := fmt.Sprintf("http://sandbox@%s:%d", s.link.HostIP, m.cfg.ProxyPort)
 		id.ProxyEnv = map[string]string{
 			"HTTP_PROXY": proxy, "HTTPS_PROXY": proxy, "http_proxy": proxy, "https_proxy": proxy,
 			"NO_PROXY": "localhost,127.0.0.1,::1", "no_proxy": "localhost,127.0.0.1,::1",
-		}
-		if mode == network.EgressOpen && (s.meta.Egress == nil || s.meta.Egress.Upstream == "") {
-			// Open, with nothing upstream to attribute to: no need to send traffic through the host.
-			id.ProxyEnv = nil
+			// Node's fetch takes the proxy from the environment only when asked (Node 24 and later).
+			"NODE_USE_ENV_PROXY": "1",
 		}
 	}
 	if s.meta.Egress != nil {
@@ -1458,8 +1458,8 @@ func (m *Manager) TemplateTimings() map[string]json.RawMessage {
 var _ = io.EOF
 var _ = strconv.Itoa
 
-// SetEgress replaces a sandbox's egress: a running one's rules, upstream and headers change at once; a change of mode
-// (open, proxy, none), which its network was made for, takes effect when it next boots.
+// SetEgress replaces a sandbox's egress: a running one's rules, upstream and headers change at once, and so does a
+// move to or from "none" (the only mode the network itself knows about).
 func (m *Manager) SetEgress(id string, e *proto.Egress) error {
 	s, err := m.get(id)
 	if err != nil {
@@ -1471,6 +1471,12 @@ func (m *Manager) SetEgress(id string, e *proto.Egress) error {
 	err = m.writeMeta(s)
 	if running {
 		m.attach(s, slot)
+		// A move to or from "none" opens or shuts the proxy to it at once; the rest is the proxy's rules.
+		if s.link != nil {
+			if nerr := m.cfg.Network.SetEgress(s.link, egressMode(e)); nerr != nil && err == nil {
+				err = nerr
+			}
+		}
 	}
 	s.mu.Unlock()
 	return err
