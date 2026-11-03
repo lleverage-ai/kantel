@@ -10,6 +10,7 @@ The control plane is Kantel's console and API. It runs as a Docker Compose stack
 - Linux or macOS, with Docker and its Compose v2 plugin, and the Docker daemon running. On a Mac, Docker Desktop or OrbStack.
 - `curl` and `tar`.
 - A few gigabytes of disk for the images. The first build takes a few minutes.
+- Optionally, [gVisor](https://gvisor.dev/docs/user_guide/install/) registered with Docker as `runsc`. Sessions' sandbox containers run on it when Docker has it, and on `runc` otherwise. The installer says which it found.
 
 You don't need Node.js or pnpm: everything builds and runs in containers.
 
@@ -23,7 +24,7 @@ The command works the same from bash, zsh and fish, because the script always ru
 
 1. checks for Docker, Compose, `curl` and `tar`, and tells you how to get anything that's missing;
 2. downloads Kantel's source from GitHub into `~/.kantel/src`;
-3. builds and starts the stack, and waits until the console answers;
+3. builds and starts the stack, and waits until the console answers. The stack includes Kantel's own browser host and the sandbox image: sessions can open web pages, which the console shows live, and run `git`, `node`, `python3` and the like in a container of their own (tier 2), started through Docker's socket;
 4. prints where everything is, and opens the console in your browser when it can.
 
 Pass options after `sh -s --`:
@@ -94,6 +95,10 @@ The stack reads its settings from `~/.kantel/src/deploy/compose/.env`, which upg
 | `KANTEL_MAIL_FROM` | The sender of sign-in codes, such as `Kantel <kantel@example.com>` |
 | `KANTEL_PUBLIC_URL` | The console's address when people reach it through a TLS proxy, such as `https://kantel.example.com` |
 | `KANTEL_GATEWAY_PORT` | The console's port on `127.0.0.1`, instead of `58090` |
+| `KANTEL_SANDBOX_RUNTIME` | The runtime of sessions' sandbox containers, such as `runsc` or `runc`. Without it, `runsc` when Docker has gVisor, else `runc` |
+| `KANTEL_SANDBOX_CONTAINERS` | `off` runs no sandbox containers: sessions' `git`, `node`, `python3` and the like are refused |
+| `KANTEL_BROWSER_PROVIDER` | `off` gives sessions no browser. `brwsr`, with `KANTEL_BRWSR_API_KEY`, uses brwsr.dev instead of the stack's own browsers |
+| `KANTEL_SUBAGENTS` | `off` takes away the `subagent` tool, which hands a task to a child session |
 
 For example:
 
@@ -113,7 +118,7 @@ Run the installer again with `--upgrade`:
 curl -fsSL https://kantel.dev/install.sh | sh -s -- --upgrade
 ```
 
-It downloads the latest source, keeps `deploy/compose/.env`, and rebuilds and restarts the stack. Your data stays in its Docker volumes. Without `--upgrade`, running the installer again keeps the copy you have and starts it.
+It downloads the latest source, keeps `deploy/compose/.env`, and rebuilds and restarts the stack. Your data stays in its Docker volumes. An install from before the browser host, the sandbox containers or subagents gets them with its upgrade, and the installer's summary says which are on. Without `--upgrade`, running the installer again keeps the copy you have and starts it.
 
 ## Stop or remove it
 
@@ -126,4 +131,4 @@ docker compose -f ~/.kantel/src/deploy/compose/compose.yaml down -v   # stop it 
 Parts of the stack mount the Docker socket, which is root on the machine. Install it on a machine you control.
 :::
 
-<!-- Sources (e496aeb): apps/site/public/install.sh:1-25,40-95,196-290,300-370, deploy/compose/compose.yaml:250-330,415-430, apps/selfhosted/src/gateway/gateway.ts:1-30,390-400, apps/selfhosted/src/gateway/main.ts:1-40,130-160, deploy/compose/README.md:1-60 -->
+<!-- Sources (e496aeb): apps/site/public/install.sh:1-25,40-95,196-290,300-370, deploy/compose/compose.yaml:250-330,415-430, apps/selfhosted/src/gateway/gateway.ts:1-30,390-400, apps/selfhosted/src/gateway/main.ts:1-40,130-160, deploy/compose/README.md:1-60. Sandbox containers, browsers and subagents (7492f92): deploy/compose/compose.yaml:22-45,296-328, apps/site/public/install.sh:10-25,255-285 -->

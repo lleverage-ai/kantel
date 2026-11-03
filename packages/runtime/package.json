@@ -29,7 +29,6 @@
 	"devDependencies": {
 		"@kantel/browser": "workspace:*",
 		"@kantel/codemode": "workspace:*",
-		"@kantel/rules": "workspace:*",
 		"@kantel/sandbox": "workspace:*",
 		"@kantel/testing": "workspace:*",
 		"@kantel/vault": "workspace:*",

@@ -13,7 +13,7 @@
 #   3. if that source has its own installer at its root (install.sh), hands over to it with your options, so this
 #      command always installs the way the version you download expects;
 #   4. otherwise keeps the source in ~/.kantel/src and starts the self-hosted Docker Compose stack in deploy/compose,
-#      the path the docs describe (https://kantel.dev/docs/console/getting-started/install/), waits for the console
+#      the path the docs describe (https://kantel.dev/docs/self-hosting/install/), waits for the console
 #      and opens it. The stack includes Kantel's own browsers, so sessions can open web pages and the console shows
 #      them live. It also builds the sandbox image, and the gateway starts sessions' `git`, `node`, `python3` and
 #      the like in containers of it (tier 2) through Docker's socket: on gVisor (runsc) when Docker has it, else runc.
@@ -282,7 +282,7 @@ Sessions run git, node, python3 and the like in sandbox containers on $sandbox_r
 Once you're signed in, the console asks you to connect inference: CLI Proxy API, LiteLLM, Cloudflare AI
 Gateway or OpenRouter. Enter its address and key, test it and pick a default model. Until then sessions
 answer with an echo model. A provider on this machine is http://host.docker.internal:<port>/v1 to Kantel.
-See https://kantel.dev/docs/console/getting-started/first-steps/ and https://kantel.dev/docs/console/models/
+See https://kantel.dev/docs/self-hosting/install/
 
 Upgrade it:         curl -fsSL https://kantel.dev/install.sh | sh -s -- --upgrade
 Stop it:            docker compose -f $compose_file down
