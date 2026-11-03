@@ -2,6 +2,7 @@
 // super-admin), sandboxes run commands on the stub, the records live in the stack object's SQLite and outlast the
 // object, and a sandbox whose machine went with the object's memory gets a fresh one.
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import { migrateComputeStore, sqlCollection } from "@kantel/compute/sql";
 import type { Authenticator } from "@kantel/contracts";
 import { createMockAccess } from "@kantel/identity/testing";
 import type { SqlValue } from "@kantel/sql";
@@ -180,5 +181,23 @@ describe("the compute API on the gateway", () => {
 		expect((await call("GET", "/v1/sessions")).status).toBe(404);
 		expect((await call("GET", "/v1/compute/sandboxes")).status).toBe(404);
 		await close();
+	});
+});
+
+// The shared state contract's Durable Object terms (packages/compute/STATE-CONTRACT.md, §9): `update` a compare-and-set,
+// first-insertion order kept across replaces, over the object's own SQLite.
+describe("the compute records in the stack object's SQLite", () => {
+	it("ends at 20 after 20 concurrent updates, and lists in first-insertion order after a replace", async () => {
+		const driver = objectSql(new DatabaseSync(":memory:"));
+		await migrateComputeStore(driver);
+		const counters = sqlCollection<{ id: string; n: number }>(driver, "counters");
+		await counters.put({ id: "a", n: 0 });
+		await counters.put({ id: "b", n: 0 });
+		await Promise.all(
+			Array.from({ length: 20 }, () => counters.update("a", (record) => ({ ...record, n: record.n + 1 }))),
+		);
+		expect((await counters.get("a"))?.n).toBe(20);
+		await counters.put({ id: "a", n: 0 });
+		expect((await counters.list()).map((record) => record.id)).toEqual(["a", "b"]);
 	});
 });
