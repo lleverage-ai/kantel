@@ -50,6 +50,12 @@ export function computeStoreSchema(dialect: SqlDriver["dialect"]): string[] {
 			PRIMARY KEY (kind, id)
 		)`,
 		"CREATE INDEX IF NOT EXISTS compute_api_records_order ON compute_api_records (kind, seq)",
+		// One sandbox's egress log, as `list({ sandboxId })` reads it (each batch a host reports trims it), without the
+		// rest of the deployment's. On the expression `list` filters by; Postgres's only over egress rows, so no other
+		// kind's JSON is cast to `jsonb` on its writes.
+		dialect === "postgres"
+			? "CREATE INDEX IF NOT EXISTS compute_api_records_egress ON compute_api_records (((data::jsonb ->> 'sandboxId')), seq) WHERE kind = 'egress'"
+			: "CREATE INDEX IF NOT EXISTS compute_api_records_by_sandbox ON compute_api_records (kind, json_extract(data, '$.sandboxId'), seq)",
 	];
 }
 
@@ -179,6 +185,7 @@ export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 		idempotency: sqlCollection(driver, "idempotency"),
 		deviceLogins: sqlCollection(driver, "deviceLogins"),
 		environments: sqlCollection(driver, "environments"),
+		environmentNames: sqlCollection(driver, "environmentNames"),
 		egress: sqlCollection(driver, "egress"),
 	};
 }

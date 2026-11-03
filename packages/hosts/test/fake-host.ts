@@ -10,7 +10,7 @@ import {
 } from "../src/protocol.ts";
 import type { HostsService } from "../src/service.ts";
 
-export const facts = (labels: { [key: string]: string } = {}): HostFacts => ({
+export const facts = (labels: { [key: string]: string } = {}, features?: readonly string[]): HostFacts => ({
 	version: "0.1.0",
 	protocol: 1,
 	os: "linux",
@@ -26,6 +26,7 @@ export const facts = (labels: { [key: string]: string } = {}): HostFacts => ({
 	sizes: [{ name: "default", vcpus: 2, memoryMiB: 2048, diskGiB: 20 }],
 	egress: "proxy",
 	labels,
+	...(features === undefined ? {} : { features }),
 });
 
 /** A host as kantel-host behaves: it answers calls from a table of sandboxes. */
@@ -37,10 +38,14 @@ export class FakeHost {
 	connection!: AcceptedHost;
 	freeMemoryMiB = 20_000;
 	warm: { [pool: string]: number } = {};
+	/** Every call's method and params, as sent. */
+	readonly calls: { readonly method: string; readonly params: { readonly [key: string]: unknown } }[] = [];
 
 	constructor(
 		readonly service: HostsService,
 		readonly hostId: string,
+		/** What it reports doing beyond protocol 1 as first released; absent, an older host's report. */
+		readonly features?: readonly string[],
 	) {}
 
 	connect(held: HostSandbox[] = []) {
@@ -56,7 +61,7 @@ export class FakeHost {
 			type: "hello",
 			hello: {
 				hostId: this.hostId,
-				facts: facts(),
+				facts: facts({}, this.features),
 				sandboxes: [...this.sandboxes.values()],
 				capacity: {
 					freeMemoryMiB: this.freeMemoryMiB,
@@ -92,6 +97,7 @@ export class FakeHost {
 	private onText(message: HostMessage) {
 		this.sent.push(message);
 		if (message.type !== "call") return;
+		this.calls.push({ method: message.method, params: message.params as { [key: string]: unknown } });
 		const params = message.params as { sandboxId: string; tier?: string; size?: string; newId?: string };
 		const answer = (result: unknown) => this.send({ type: "result", id: message.id, result });
 		const fail = (code: string, text: string) =>
@@ -126,7 +132,10 @@ export class FakeHost {
 				this.sandboxes.delete(params.sandboxId);
 				return answer({ ok: true });
 			case "port.open":
+			case "sandbox.egress":
 				return answer({ ok: true });
+			case "sandbox.secrets":
+				return answer({});
 			default:
 				return fail("unsupported", `unknown method ${message.method}`);
 		}

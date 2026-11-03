@@ -106,6 +106,7 @@ export function hostEgress(egress: BackendEgress | undefined, attributionKey?: s
 						rule: grant.rule,
 					})),
 				}),
+		...(egress.revision === undefined ? {} : { revision: egress.revision }),
 	};
 }
 
@@ -321,6 +322,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					tiers: [...host.tiers],
 					kvm: host.kvm,
 					nestedVirtualisation: host.nestedVirtualisation,
+					features: [...host.features],
 					capacity: { ...host.capacity },
 					labels: { ...host.labels },
 					connected: host.state === "online" || host.state === "draining",
@@ -334,8 +336,12 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		start: (sandboxId, how) => boot(sandboxId, "sandbox.start", how),
 		resume: (sandboxId, how) => boot(sandboxId, "sandbox.resume", how),
 		recover: (sandboxId, how) => boot(sandboxId, "sandbox.start", how),
-		async updateEgress(sandboxId, egress) {
-			await call(sandboxId, "sandbox.egress", { egress: hostEgress(egress, options.attributionKey) ?? null });
+		async updateEgress(sandboxId, egress, revision) {
+			await call(sandboxId, "sandbox.egress", {
+				egress: hostEgress(egress, options.attributionKey) ?? null,
+				// A null egress is ordered too: the host ignores one older than the egress it has.
+				...(revision === undefined ? {} : { revision }),
+			});
 		},
 		async updateSecrets(sandboxId, version) {
 			// The host drops its copy; its next request that needs one fetches the new values.
@@ -365,6 +371,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				const { sandbox, hostId, ...known } = await hosts.sandboxes.fork(source.sandboxId, {
 					newId: target.sandboxId,
 					...egressOf(target.egress),
+					// Its own placeholders, not its source's: the host gives the guest this environment.
+					env: target.env,
 				});
 				out.push(await placed(target.sandboxId, sandbox, hostId, known));
 			}

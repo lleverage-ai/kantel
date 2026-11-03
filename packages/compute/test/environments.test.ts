@@ -10,7 +10,7 @@ import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createEphemeralSealer, createSealer, parseSecretsKey, sealedAt } from "../src/secrets.ts";
 import { MAX_EGRESS_ENTRIES, type ReportedEgress } from "../src/service.ts";
 import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
-import type { ComputeStore } from "../src/store.ts";
+import { type ComputeStore, createMemoryStore } from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 import { bytesToBase64 } from "../src/util.ts";
 
@@ -40,7 +40,11 @@ afterEach(async () => {
 interface Recorded {
 	/** Every machine made, by create or fork. */
 	readonly specs: SandboxSpec[];
-	readonly egress: { readonly sandboxId: string; readonly egress: BackendEgress | undefined }[];
+	readonly egress: {
+		readonly sandboxId: string;
+		readonly egress: BackendEgress | undefined;
+		readonly revision?: number | undefined;
+	}[];
 	readonly secrets: { readonly sandboxId: string; readonly version: number }[];
 	readonly execs: ExecRequest[];
 }
@@ -49,7 +53,10 @@ interface Recorded {
 type ExecHook = (request: ExecRequest) => ExecResult | undefined;
 
 /** The stub backend, recording the specs it is given and taking egress and secrets updates as a host's would. */
-function recordingBackend(execHook?: ExecHook): { readonly backend: SandboxBackend; readonly recorded: Recorded } {
+function recordingBackend(
+	execHook?: ExecHook,
+	beforeCreate?: (spec: SandboxSpec) => Promise<void>,
+): { readonly backend: SandboxBackend; readonly recorded: Recorded } {
 	const stub = createStubBackend();
 	const recorded: Recorded = { specs: [], egress: [], secrets: [], execs: [] };
 	const backend: SandboxBackend = {
@@ -60,14 +67,15 @@ function recordingBackend(execHook?: ExecHook): { readonly backend: SandboxBacke
 		},
 		create: async (spec) => {
 			recorded.specs.push(spec);
+			await beforeCreate?.(spec);
 			return stub.create(spec);
 		},
 		fork: async (source, targets) => {
 			recorded.specs.push(...targets);
 			return stub.fork(source, targets);
 		},
-		updateEgress: async (sandboxId, egress) => {
-			recorded.egress.push({ sandboxId, egress });
+		updateEgress: async (sandboxId, egress, revision) => {
+			recorded.egress.push({ sandboxId, egress, ...(revision === undefined ? {} : { revision }) });
 		},
 		updateSecrets: async (sandboxId, version) => {
 			recorded.secrets.push({ sandboxId, version });
@@ -77,9 +85,15 @@ function recordingBackend(execHook?: ExecHook): { readonly backend: SandboxBacke
 }
 
 function setup(
-	options: { readonly store?: ComputeStore; readonly secretsKey?: string; readonly exec?: ExecHook } = {},
+	options: {
+		readonly store?: ComputeStore;
+		readonly secretsKey?: string;
+		readonly exec?: ExecHook;
+		/** Awaited inside the backend's create, before the machine is made. */
+		readonly beforeCreate?: (spec: SandboxSpec) => Promise<void>;
+	} = {},
 ) {
-	const { backend, recorded } = recordingBackend(options.exec);
+	const { backend, recorded } = recordingBackend(options.exec, options.beforeCreate);
 	/** The bodies of the webhook requests sent. */
 	const sent: string[] = [];
 	const api = createComputeApi({
@@ -303,26 +317,29 @@ describe("environments", () => {
 		for (const name of ["KANTEL_X", "kantel_token", "https_proxy", "HTTP_PROXY", "No_Proxy", "1ST", "A-B"]) {
 			expect((await failure(tom.setEnvironmentVariable(environment.id, name, { value: "x" }))).code).toBe("invalid");
 		}
+		// Each made only when it is awaited, so none is refused before its refusal is looked for.
 		const unbound = [
-			tom.setEnvironmentVariable(environment.id, "GH_TOKEN", { protected: true, value: SECRET }),
-			tom.setEnvironmentVariable(environment.id, "GH_TOKEN", { protected: true, value: SECRET, bindings: [] }),
-			tom.setEnvironmentVariable(environment.id, "GH_TOKEN", {
-				protected: true,
-				value: SECRET,
-				bindings: [{ host: "https://api.github.com" }],
-			}),
-			tom.setEnvironmentVariable(environment.id, "GH_TOKEN", {
-				protected: true,
-				value: SECRET,
-				bindings: [{ host: "api.github.com", pathPrefixes: ["/repos?token=1"] }],
-			}),
-			tom.setEnvironmentVariable(environment.id, "GH_TOKEN", { protected: true, value: "", bindings: GITHUB }),
-			tom.setEnvironmentVariable(environment.id, "GH_TOKEN", { protected: true, bindings: GITHUB }),
-			tom.setEnvironmentVariable(environment.id, "LOG_LEVEL", { value: "debug", bindings: GITHUB }),
-			tom.setEnvironmentVariable(environment.id, "LOG_LEVEL", {}),
+			() => tom.setEnvironmentVariable(environment.id, "GH_TOKEN", { protected: true, value: SECRET }),
+			() => tom.setEnvironmentVariable(environment.id, "GH_TOKEN", { protected: true, value: SECRET, bindings: [] }),
+			() =>
+				tom.setEnvironmentVariable(environment.id, "GH_TOKEN", {
+					protected: true,
+					value: SECRET,
+					bindings: [{ host: "https://api.github.com" }],
+				}),
+			() =>
+				tom.setEnvironmentVariable(environment.id, "GH_TOKEN", {
+					protected: true,
+					value: SECRET,
+					bindings: [{ host: "api.github.com", pathPrefixes: ["/repos?token=1"] }],
+				}),
+			() => tom.setEnvironmentVariable(environment.id, "GH_TOKEN", { protected: true, value: "", bindings: GITHUB }),
+			() => tom.setEnvironmentVariable(environment.id, "GH_TOKEN", { protected: true, bindings: GITHUB }),
+			() => tom.setEnvironmentVariable(environment.id, "LOG_LEVEL", { value: "debug", bindings: GITHUB }),
+			() => tom.setEnvironmentVariable(environment.id, "LOG_LEVEL", {}),
 		];
 		for (const call of unbound) {
-			const refused = await failure(call);
+			const refused = await failure(call());
 			expect(refused.code).toBe("invalid");
 			expect(refused.message).not.toContain(SECRET);
 		}
@@ -373,6 +390,7 @@ describe("sandboxes made from an environment", () => {
 			deny: [],
 			attribution: false,
 			protected: { version: expect.any(Number), intercept: ["api.github.com"] },
+			revision: expect.any(Number),
 		});
 		// A command sees the placeholder.
 		const echoed = await tom.runCommand(byId.id, { command: "echo $GH_TOKEN" });
@@ -568,17 +586,23 @@ describe("no protected value leaves Kantel but to its sandbox's host", () => {
 
 		const messages: string[] = [];
 		for (const call of [
-			tom.setEnvironmentVariable(environment.id, "OTHER", { protected: true, value: SECRET }),
-			tom.setEnvironmentVariable(environment.id, "KANTEL_TOKEN", { protected: true, value: SECRET, bindings: GITHUB }),
-			tom.setEnvironmentVariable(environment.id, "GH_TOKEN", {
-				protected: true,
-				value: SECRET,
-				bindings: [{ host: SECRET }],
-			}),
-			tom.setEnvironmentVariable(environment.id, "GH_TOKEN", { protected: false, bindings: GITHUB }),
-			tom.createSandbox({ environment: "backend", env: { GH_TOKEN: SECRET } }),
+			() => tom.setEnvironmentVariable(environment.id, "OTHER", { protected: true, value: SECRET }),
+			() =>
+				tom.setEnvironmentVariable(environment.id, "KANTEL_TOKEN", {
+					protected: true,
+					value: SECRET,
+					bindings: GITHUB,
+				}),
+			() =>
+				tom.setEnvironmentVariable(environment.id, "GH_TOKEN", {
+					protected: true,
+					value: SECRET,
+					bindings: [{ host: SECRET }],
+				}),
+			() => tom.setEnvironmentVariable(environment.id, "GH_TOKEN", { protected: false, bindings: GITHUB }),
+			() => tom.createSandbox({ environment: "backend", env: { GH_TOKEN: SECRET } }),
 		]) {
-			messages.push((await failure(call)).message);
+			messages.push((await failure(call())).message);
 		}
 		await api.service.idle();
 
@@ -749,7 +773,7 @@ describe("grants", () => {
 			{ id: expect.stringMatching(/^grt_[a-z0-9]+$/), action: "allow", host: "registry.npmjs.org" },
 		]);
 		const npm = { action: "allow", host: "registry.npmjs.org", rule: "allow registry.npmjs.org" };
-		const open = { defaultAction: "allow", allow: [], deny: [], attribution: false };
+		const open = { defaultAction: "allow", allow: [], deny: [], attribution: false, revision: expect.any(Number) };
 
 		const sandbox = await tom.createSandbox({ environment: environment.id, wait: true });
 		// Made with the environment's grants; with no protected variable, nothing to intercept for them.
@@ -776,12 +800,20 @@ describe("grants", () => {
 			paths: ["/repos/*"],
 			rule: "deny DELETE api.github.com /repos/*",
 		};
-		expect(last(recorded.egress)).toEqual({ sandboxId: sandbox.id, egress: { ...open, grants: [npm, deleteRepos] } });
+		expect(last(recorded.egress)).toEqual({
+			sandboxId: sandbox.id,
+			egress: { ...open, grants: [npm, deleteRepos] },
+			revision: expect.any(Number),
+		});
 
 		// The environment's grants changed reach its running sandboxes.
 		await tom.putEnvironmentGrants(environment.id, { grants: [] });
 		await api.service.idle();
-		expect(last(recorded.egress)).toEqual({ sandboxId: sandbox.id, egress: { ...open, grants: [deleteRepos] } });
+		expect(last(recorded.egress)).toEqual({
+			sandboxId: sandbox.id,
+			egress: { ...open, grants: [deleteRepos] },
+			revision: expect.any(Number),
+		});
 
 		// An edit keeps its grants' IDs; the sandbox answers them too.
 		const kept = await tom.putSandboxGrants(sandbox.id, { grants: egress.grants });
@@ -794,6 +826,375 @@ describe("grants", () => {
 		// Every grant off, the sandbox's egress is nothing again.
 		await tom.putSandboxGrants(sandbox.id, { grants: [] });
 		await api.service.idle();
-		expect(last(recorded.egress)).toEqual({ sandboxId: sandbox.id, egress: undefined });
+		expect(last(recorded.egress)).toEqual({ sandboxId: sandbox.id, egress: undefined, revision: expect.any(Number) });
+	});
+});
+
+/** A promise and the function that settles it. */
+function gate(): { readonly wait: Promise<void>; readonly open: () => void } {
+	let open = () => {};
+	const wait = new Promise<void>((resolve) => {
+		open = resolve;
+	});
+	return { wait, open };
+}
+
+/** `store`, with the first `environments.get` after `armed()` held until its gate opens. */
+function holdingFirstRead(store: ComputeStore) {
+	let held: { readonly wait: Promise<void>; readonly reached: () => void } | undefined;
+	const wrapped: ComputeStore = {
+		...store,
+		environments: {
+			...store.environments,
+			get: async (id) => {
+				const read = await store.environments.get(id);
+				const holding = held;
+				held = undefined;
+				if (holding !== undefined) {
+					holding.reached();
+					await holding.wait;
+				}
+				return read;
+			},
+		},
+	};
+	return {
+		store: wrapped,
+		/** Holds the next read; answers when it has been made, and the gate that lets it go on. */
+		arm() {
+			const release = gate();
+			const reached = gate();
+			held = { wait: release.wait, reached: reached.open };
+			return { reached: reached.wait, release: release.open };
+		},
+	};
+}
+
+describe("a repository's clone", () => {
+	it("needs a caller who may run commands: its env would choose the commands", async () => {
+		const { api, tom, recorded } = setup({ exec: () => ({ exitCode: 0, stdout: "", stderr: "", timedOut: false }) });
+		const environment = await githubEnvironment(tom, "repos");
+		await tom.setEnvironmentFile(environment.id, { path: ".npmrc", content: "//registry/:_authToken=secret" });
+		await tom.putEnvironmentRepos(environment.id, { repos: [{ url: "https://github.com/acme/app" }] });
+		const keyed = (secret: string) =>
+			createKantelClient({
+				baseUrl: BASE_URL,
+				token: secret,
+				fetch: (input, init) =>
+					api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+			});
+		const writer = keyed(
+			(await tom.createApiKey({ name: "writer", scopes: ["sandboxes:read", "sandboxes:write"] })).secret,
+		);
+		// An exported function named for git would run in its place, with the secret file already written.
+		const payload = { "BASH_FUNC_git%%": "() { /bin/cat /home/user/.npmrc >&2; return 1; }" };
+		const refused = await failure(writer.createSandbox({ environment: "repos", env: payload, wait: true }));
+		expect(refused.code).toBe("forbidden");
+		expect(recorded.specs).toEqual([]);
+		expect(recorded.execs).toEqual([]);
+		expect((await tom.listSandboxes()).items).toEqual([]);
+
+		// One with exec may: the clone runs.
+		const runner = keyed(
+			(await tom.createApiKey({ name: "runner", scopes: ["sandboxes:read", "sandboxes:write", "exec"] })).secret,
+		);
+		await runner.createSandbox({ environment: "repos", wait: true });
+		expect(recorded.execs.filter((request) => request.command.includes(" clone "))).toHaveLength(1);
+		// An environment with no repositories runs nothing, so needs nothing more.
+		const plain = await tom.createEnvironment({ name: "plain-env" });
+		await tom.setEnvironmentVariable(plain.id, "LOG_LEVEL", { value: "debug" });
+		expect((await writer.createSandbox({ environment: plain.id, wait: true })).state).toBe("running");
+	});
+
+	it("clones the repositories authorised at the create, not ones added before it booted", async () => {
+		let release = () => {};
+		const booting = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { api, tom, recorded } = setup({
+			exec: () => ({ exitCode: 0, stdout: "", stderr: "", timedOut: false }),
+			beforeCreate: () => booting,
+		});
+		const environment = await githubEnvironment(tom, "repos");
+		await tom.putEnvironmentRepos(environment.id, { repos: [{ url: "https://github.com/acme/app" }] });
+		await tom.createSandbox({ environment: "repos" });
+		await tom.putEnvironmentRepos(environment.id, {
+			repos: [{ url: "https://github.com/acme/app" }, { url: "https://github.com/acme/later" }],
+		});
+		release();
+		await api.service.idle();
+		const clones = recorded.execs.filter((request) => request.command.includes(" clone "));
+		expect(clones.map((request) => request.command.split(" -- ")[1])).toEqual([
+			"'https://github.com/acme/app' '/home/user/app'",
+		]);
+	});
+
+	it("gives Git the placeholder of the protected variable bound to the repository, through a helper Git runs", async () => {
+		const { tom, recorded } = setup({ exec: () => ({ exitCode: 0, stdout: "", stderr: "", timedOut: false }) });
+		const environment = await tom.createEnvironment({ name: "git" });
+		await tom.setEnvironmentVariable(environment.id, "GIT_TOKEN", {
+			protected: true,
+			value: SECRET,
+			bindings: [{ host: "github.com", pathPrefixes: ["/acme/"], methods: ["GET", "POST"] }],
+		});
+		await tom.putEnvironmentRepos(environment.id, {
+			repos: [{ url: "https://github.com/acme/private" }, { url: "https://github.com/other/public" }],
+		});
+		await tom.createSandbox({ environment: "git", wait: true });
+		const [bound, other] = recorded.execs.filter((request) => request.command.includes(" clone "));
+		const placeholder = bound?.env?.GIT_TOKEN ?? "";
+		expect(placeholder).toMatch(PLACEHOLDER);
+		expect(bound?.command).toContain("credential.helper=!f()");
+		expect(bound?.command).toContain("password=$GIT_TOKEN");
+		expect(JSON.stringify(bound)).not.toContain(SECRET);
+		// Outside the binding's paths: anonymous.
+		expect(other?.command).not.toContain("credential.helper=!f()");
+
+		// Git itself, given the same configuration, answers the placeholder for the repository's host.
+		const { execFileSync } = await import("node:child_process");
+		const gitConfig = (bound?.command ?? "").split(" clone ")[0]?.replace(/^git /, "") ?? "";
+		let answered = "";
+		try {
+			answered = execFileSync("/bin/sh", ["-c", `git ${gitConfig} credential fill`], {
+				input: "protocol=https\nhost=github.com\npath=acme/private\n\n",
+				env: {
+					PATH: process.env.PATH ?? "/usr/bin:/bin",
+					HOME: "/nonexistent",
+					GIT_TOKEN: placeholder,
+					GIT_TERMINAL_PROMPT: "0",
+				},
+			}).toString();
+		} catch (error) {
+			if ((error as { code?: string }).code === "ENOENT") return;
+			throw error;
+		}
+		expect(answered).toContain("username=x-access-token");
+		expect(answered).toContain(`password=${placeholder}`);
+	});
+});
+
+describe("an environment's items, changed at once", () => {
+	const cases = [
+		["in memory", async () => createMemoryStore()],
+		["in SQL", async () => createSqlComputeStore(await sqlDriver())],
+	] as const;
+
+	async function sqlDriver() {
+		const database = await pgliteDatabase.open();
+		cleanups.push(() => database.close());
+		await migrateComputeStore(database.driver);
+		return database.driver;
+	}
+
+	for (const [where, makeStore] of cases) {
+		it(
+			`keep what the other changed: a bindings edit a rotation, a mode edit new contents (${where})`,
+			sqlTimeout,
+			async () => {
+				const holding = holdingFirstRead(await makeStore());
+				const { api, tom } = setup({ store: holding.store, secretsKey: KEY });
+				const environment = await githubEnvironment(tom);
+				const sandbox = await tom.createSandbox({ environment: environment.id, wait: true });
+				const rotated = "ghp_ROTATEDVALUE456";
+				const narrower = [{ host: "api.github.com", pathPrefixes: ["/repos/acme/"], methods: ["GET"] }];
+
+				// The bindings edit reads the environment, then waits while the rotation lands.
+				let held = holding.arm();
+				const bindingsEdit = tom.setEnvironmentVariable(environment.id, "GH_TOKEN", { bindings: narrower });
+				await held.reached;
+				await tom.setEnvironmentVariable(environment.id, "GH_TOKEN", { value: rotated });
+				held.release();
+				await bindingsEdit;
+				const table = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
+				expect(table?.entries.map((entry) => [entry.value, entry.bindings])).toEqual([[rotated, narrower]]);
+
+				// And the other way round: the rotation waits while the bindings edit lands.
+				held = holding.arm();
+				const rotation = tom.setEnvironmentVariable(environment.id, "GH_TOKEN", { value: SECRET });
+				await held.reached;
+				await tom.setEnvironmentVariable(environment.id, "GH_TOKEN", { bindings: GITHUB });
+				held.release();
+				await rotation;
+				const after = await api.service.protectedTable(STUB_HOST_ID, sandbox.id);
+				expect(after?.entries.map((entry) => [entry.value, entry.bindings])).toEqual([[SECRET, GITHUB]]);
+
+				// A mode-only edit doesn't put old contents back over new ones, nor new contents the old mode.
+				await tom.setEnvironmentFile(environment.id, { path: ".npmrc", content: "v1", mode: 0o600 });
+				held = holding.arm();
+				const modeEdit = tom.setEnvironmentFile(environment.id, { path: ".npmrc", mode: 0o640 });
+				await held.reached;
+				await tom.setEnvironmentFile(environment.id, { path: ".npmrc", content: "version two" });
+				const replaced = (await api.store.environments.get(environment.id))?.files[0];
+				held.release();
+				await modeEdit;
+				const file = (await api.store.environments.get(environment.id))?.files[0];
+				expect(file?.mode).toBe(0o640);
+				expect(file?.sizeBytes).toBe("version two".length);
+				expect(file?.sealed).toEqual(replaced?.sealed);
+
+				held = holding.arm();
+				const contentEdit = tom.setEnvironmentFile(environment.id, { path: ".npmrc", content: "three" });
+				await held.reached;
+				await tom.setEnvironmentFile(environment.id, { path: ".npmrc", mode: 0o400 });
+				held.release();
+				await contentEdit;
+				const latest = (await api.store.environments.get(environment.id))?.files[0];
+				expect([latest?.mode, latest?.sizeBytes]).toEqual([0o400, "three".length]);
+				// Other names and paths still merge.
+				await Promise.all([
+					tom.setEnvironmentVariable(environment.id, "A", { value: "1" }),
+					tom.setEnvironmentVariable(environment.id, "B", { value: "2" }),
+					tom.setEnvironmentFile(environment.id, { path: ".a", content: "a" }),
+					tom.setEnvironmentFile(environment.id, { path: ".b", content: "b" }),
+				]);
+				const merged = await tom.getEnvironment(environment.id);
+				expect(merged.variables.map((variable) => variable.name).sort()).toEqual(["A", "B", "GH_TOKEN", "LOG_LEVEL"]);
+				expect(merged.files.map((each) => each.path).sort()).toEqual([
+					"/home/user/.a",
+					"/home/user/.b",
+					"/home/user/.npmrc",
+				]);
+			},
+		);
+	}
+});
+
+describe("an environment's name", () => {
+	async function sqlStores() {
+		const database = await pgliteDatabase.open();
+		cleanups.push(() => database.close());
+		await migrateComputeStore(database.driver);
+		return [createSqlComputeStore(database.driver), createSqlComputeStore(database.driver)] as const;
+	}
+
+	it("is one environment's, in memory, whatever the order of creates and renames", async () => {
+		const { tom, ann } = setup();
+		// Tom has signed in before (his first call makes his account).
+		await tom.listEnvironments();
+		const outcomes = await Promise.allSettled([
+			tom.createEnvironment({ name: "dup" }),
+			tom.createEnvironment({ name: "dup" }),
+		]);
+		expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+		const other = await tom.createEnvironment({ name: "other" });
+		const third = await tom.createEnvironment({ name: "third" });
+		const raced = await Promise.allSettled([
+			tom.updateEnvironment(other.id, { name: "target" }),
+			tom.updateEnvironment(third.id, { name: "target" }),
+			tom.createEnvironment({ name: "target" }),
+		]);
+		expect(raced.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+		const names = (await tom.listEnvironments()).items.map((environment) => environment.name);
+		expect(names.filter((name) => name === "target")).toHaveLength(1);
+		expect(names.filter((name) => name === "dup")).toHaveLength(1);
+		// Renaming to its own name is fine, a released name is free again, and another account has its own names.
+		const kept = (await tom.listEnvironments()).items.find((environment) => environment.name === "target");
+		expect((await tom.updateEnvironment(kept?.id ?? "", { name: "target" })).name).toBe("target");
+		await tom.updateEnvironment(kept?.id ?? "", { name: "renamed" });
+		expect((await tom.createEnvironment({ name: "target" })).name).toBe("target");
+		expect((await ann.createEnvironment({ name: "target" })).name).toBe("target");
+		// A failed rename keeps the old name.
+		const renamed = (await tom.listEnvironments()).items.find((environment) => environment.name === "renamed");
+		expect((await failure(tom.updateEnvironment(renamed?.id ?? "", { name: "target" }))).code).toBe("conflict");
+		expect((await tom.getEnvironment(renamed?.id ?? "")).name).toBe("renamed");
+		// A deleted environment's name can be taken again.
+		await tom.deleteEnvironment(renamed?.id ?? "");
+		const again = await tom.createEnvironment({ name: "renamed" });
+		// A sandbox made by name finds exactly that one.
+		const sandbox = await tom.createSandbox({ environment: "renamed", wait: true });
+		expect(sandbox.environmentId).toBe(again.id);
+	});
+
+	it("is one environment's across two gateways on one SQL database", sqlTimeout, async () => {
+		const [first, second] = await sqlStores();
+		const one = setup({ store: first, secretsKey: KEY });
+		const two = setup({ store: second, secretsKey: KEY });
+		// Each gateway has seen Tom before.
+		await one.tom.listEnvironments();
+		await two.tom.listEnvironments();
+		const created = await Promise.allSettled([
+			one.tom.createEnvironment({ name: "dup" }),
+			two.tom.createEnvironment({ name: "dup" }),
+		]);
+		expect(created.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+		const a = await one.tom.createEnvironment({ name: "a" });
+		const b = await two.tom.createEnvironment({ name: "b" });
+		const raced = await Promise.allSettled([
+			one.tom.updateEnvironment(a.id, { name: "target" }),
+			two.tom.updateEnvironment(b.id, { name: "target" }),
+			two.tom.createEnvironment({ name: "target" }),
+		]);
+		expect(raced.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+		const names = (await one.tom.listEnvironments()).items.map((environment) => environment.name);
+		expect(names.filter((name) => name === "target")).toHaveLength(1);
+		expect(names.filter((name) => name === "dup")).toHaveLength(1);
+	});
+});
+
+describe("a policy changed while a sandbox starts", () => {
+	it("reaches its backend once it runs: its grants, its environment's", async () => {
+		let release = () => {};
+		const booting = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { api, tom, recorded } = setup({ beforeCreate: () => booting });
+		const environment = await tom.createEnvironment({ name: "slow" });
+		const sandbox = await tom.createSandbox({ environment: environment.id });
+		expect(sandbox.state).toBe("starting");
+		await tom.putSandboxGrants(sandbox.id, { grants: [{ action: "deny", host: "evil.example" }] });
+		await tom.putEnvironmentGrants(environment.id, { grants: [{ action: "allow", host: "registry.npmjs.org" }] });
+		// Nothing is sent while it starts: its host has no sandbox yet.
+		expect(recorded.egress).toEqual([]);
+		release();
+		await api.service.idle();
+		const sent = last(recorded.egress.filter((each) => each.sandboxId === sandbox.id));
+		expect(sent?.egress?.grants?.map((grant) => grant.rule)).toEqual(["allow registry.npmjs.org", "deny evil.example"]);
+		expect(sent?.revision).toBe((await api.store.sandboxes.get(sandbox.id))?.egressRevision);
+	});
+
+	it("is not sent again when nothing changed while it started", async () => {
+		const { api, tom, recorded } = setup();
+		const environment = await tom.createEnvironment({ name: "quiet" });
+		await tom.putEnvironmentGrants(environment.id, { grants: [{ action: "deny", host: "evil.example" }] });
+		const sandbox = await tom.createSandbox({ environment: environment.id, wait: true });
+		await api.service.idle();
+		expect(recorded.egress.filter((each) => each.sandboxId === sandbox.id)).toEqual([]);
+		// The boot carried them, with its revision.
+		expect(specOf(recorded, sandbox.id).egress?.revision).toBe(
+			(await api.store.sandboxes.get(sandbox.id))?.egressRevision,
+		);
+	});
+});
+
+describe("egress updates", () => {
+	it("carry a revision that moves on with each change, the latest with the latest grants", async () => {
+		const { api, tom, recorded } = setup();
+		const sandbox = await tom.createSandbox({ wait: true });
+		const hosts = ["one.example", "two.example", "three.example"];
+		await Promise.all(hosts.map((host) => tom.putSandboxGrants(sandbox.id, { grants: [{ action: "deny", host }] })));
+		await api.service.idle();
+		const stored = await api.store.sandboxes.get(sandbox.id);
+		const pushes = recorded.egress.filter((each) => each.sandboxId === sandbox.id);
+		const revisions = pushes.map((each) => each.revision ?? 0);
+		const newest = pushes.find((each) => each.revision === Math.max(...revisions));
+		// Whatever order they were sent in, the newest revision is the stored one, with the stored grants.
+		expect(newest?.revision).toBe(stored?.egressRevision);
+		expect(newest?.egress?.grants?.map((grant) => grant.host)).toEqual(stored?.grants?.map((grant) => grant.host));
+		// One revision, one egress: two sent with the same revision were read from the same state.
+		const byRevision = new Map<number, string>();
+		for (const push of pushes) {
+			const grants = JSON.stringify(push.egress?.grants);
+			expect(byRevision.get(push.revision ?? 0) ?? grants).toBe(grants);
+			byRevision.set(push.revision ?? 0, grants);
+		}
+		// Each change moved it on past the create's.
+		expect(Math.min(...revisions)).toBeGreaterThan(specOf(recorded, sandbox.id).egress?.revision ?? 0);
+		expect(stored?.egressRevision).toBeGreaterThanOrEqual((specOf(recorded, sandbox.id).egress?.revision ?? 0) + 3);
+		// Turning them all off is ordered too: a null egress with its revision.
+		await tom.putSandboxGrants(sandbox.id, { grants: [] });
+		await api.service.idle();
+		const cleared = last(recorded.egress);
+		expect(cleared?.egress).toBeUndefined();
+		expect(cleared?.revision).toBeGreaterThan(stored?.egressRevision ?? 0);
 	});
 });

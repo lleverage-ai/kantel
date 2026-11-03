@@ -30,6 +30,11 @@ export interface BackendHost {
 	readonly tiers: readonly computeSchema.SandboxType[];
 	readonly kvm: boolean;
 	readonly nestedVirtualisation: boolean;
+	/**
+	 * What it does beyond what every host does; `egress-policy`: it enforces egress grants and protected variables.
+	 * Absent: what the backend's sandboxes get is enforced however they run (the stub).
+	 */
+	readonly features?: readonly string[];
 	readonly capacity: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number };
 	readonly labels: { readonly [key: string]: string };
 	/** Whether it is connected now; absent, it always is (the stub). A host that isn't is `unreachable`. */
@@ -86,6 +91,11 @@ export interface BackendEgress {
 	readonly protected?: { readonly version: number; readonly intercept: readonly string[] };
 	/** The environment's grants, then the sandbox's own, on top of `allow` and `deny`; deny wins. */
 	readonly grants?: readonly BackendEgressGrant[];
+	/**
+	 * The sandbox's `egressRevision` when this was read: a backend that orders updates ignores one older than the egress
+	 * the sandbox has.
+	 */
+	readonly revision?: number;
 }
 
 /** An egress grant as the host's proxy applies it; one with methods or paths makes its host intercepted too. */
@@ -254,7 +264,7 @@ export interface SandboxBackend {
 	 * The account's proxy settings changed: apply them to this running sandbox (undefined when they were turned off).
 	 * Absent, sandboxes get them when they next boot.
 	 */
-	updateEgress?(sandboxId: string, egress: BackendEgress | undefined): Promise<void>;
+	updateEgress?(sandboxId: string, egress: BackendEgress | undefined, revision?: number): Promise<void>;
 	/**
 	 * The sandbox's protected values changed (a rotation, a binding edit, a variable added or removed): the host drops
 	 * what it holds of them, and fetches them again on the sandbox's next request. Absent, nothing holds them.

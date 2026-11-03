@@ -1,0 +1,139 @@
+// Grants and protected variables go only to hosts that enforce them (`egress-policy` in their facts), and a fork is
+// given its own environment: its own placeholders, never its source's.
+import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
+import { createComputeApi, joinTokenSpender } from "@kantel/compute";
+import { afterEach, describe, expect, it } from "vitest";
+import { createHostBackend } from "../src/backend.ts";
+import { HOST_FEATURES } from "../src/protocol.ts";
+import { createMemoryRelayStore } from "../src/relay-store.ts";
+import { createHostsService } from "../src/service.ts";
+import { createMemoryHostStore } from "../src/store.ts";
+import { createTunnelTickets } from "../src/tunnel.ts";
+import { FakeHost } from "./fake-host.ts";
+
+const ROOT = { userId: "usr_root", name: "Root", superAdmin: true };
+const SECRET = "ghp_TESTSECRETVALUE123";
+const PLACEHOLDER = /^kph_[0-9A-Za-z]{40}$/;
+const closers: (() => Promise<void> | void)[] = [];
+afterEach(async () => {
+	for (const close of closers.splice(0).reverse()) await close();
+});
+
+async function setup(features?: readonly string[]) {
+	const service = createHostsService({ store: createMemoryHostStore(), publicUrl: "https://kantel.test" });
+	const api = createComputeApi({
+		backend: createHostBackend({
+			hosts: service,
+			publicUrl: "https://kantel.test",
+			tickets: createTunnelTickets(createMemoryRelayStore()),
+		}),
+		authenticatePerson: async (request) => (request.headers.get("authorization") === "Bearer root" ? ROOT : undefined),
+		fetch: async () => new Response(null, { status: 204 }),
+		publicUrl: "https://kantel.test",
+	});
+	service.useJoinTokens(joinTokenSpender(api.store));
+	closers.push(
+		() => service.close(),
+		() => api.close(),
+	);
+	const root = createKantelClient({
+		baseUrl: "https://kantel.test/v1",
+		token: "root",
+		fetch: (input, init) =>
+			api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+	});
+	const token = await root.createHostJoinToken({ name: "box" });
+	const { hostId } = await service.register({ token: token.token });
+	const host = new FakeHost(service, hostId, features);
+	host.connect();
+	return { api, root, host };
+}
+
+async function failure(call: Promise<unknown>): Promise<KantelApiError> {
+	try {
+		await call;
+	} catch (error) {
+		if (error instanceof KantelApiError) return error;
+		throw error;
+	}
+	throw new Error("Expected the call to fail");
+}
+
+async function protectedEnvironment(root: Awaited<ReturnType<typeof setup>>["root"]) {
+	const environment = await root.createEnvironment({ name: "backend" });
+	await root.setEnvironmentVariable(environment.id, "GH_TOKEN", {
+		protected: true,
+		value: SECRET,
+		bindings: [{ host: "api.github.com", methods: ["GET"] }],
+	});
+	return environment;
+}
+
+describe("a host that doesn't report enforcing egress policy", () => {
+	it("is given no sandbox with protected variables or grants, nor grants later; a plain one still runs", async () => {
+		const { root, host } = await setup();
+		const environment = await protectedEnvironment(root);
+		// It fails to start, saying why, and nothing reaches the host.
+		const refused = await root.createSandbox({ environment: environment.id, wait: true });
+		expect(refused.state).toBe("error");
+		expect(refused.reason).toMatch(/enforces egress grants or protected variables/);
+		expect(JSON.stringify(refused)).not.toContain(SECRET);
+		expect(host.calls.filter((call) => call.method === "sandbox.create")).toEqual([]);
+
+		// Grants alone need it too, at the create and when they are added to a running sandbox.
+		const grants = [{ action: "deny" as const, host: "evil.example" }];
+		const granted = await root.createEnvironment({ name: "granted" });
+		await root.putEnvironmentGrants(granted.id, { grants });
+		expect((await root.createSandbox({ environment: granted.id, wait: true })).state).toBe("error");
+		const plain = await root.createSandbox({ type: "microvm", wait: true });
+		expect(plain.state).toBe("running");
+		expect((await failure(root.putSandboxGrants(plain.id, { grants }))).code).toBe("not_supported");
+		// Refused, not kept: the sandbox doesn't claim grants its host isn't enforcing.
+		expect((await root.getSandbox(plain.id)).grants).toEqual([]);
+		expect(host.calls.filter((call) => call.method === "sandbox.egress")).toEqual([]);
+
+		// Nor through an environment one of its sandboxes runs from: the edit is refused, and nothing is kept.
+		const open = await root.createEnvironment({ name: "open" });
+		await root.setEnvironmentVariable(open.id, "LOG_LEVEL", { value: "debug" });
+		const running = await root.createSandbox({ environment: open.id, wait: true });
+		expect(running.state).toBe("running");
+		expect((await failure(root.putEnvironmentGrants(open.id, { grants }))).code).toBe("not_supported");
+		const bound = { protected: true, value: SECRET, bindings: [{ host: "api.github.com" }] };
+		const secret = await failure(root.setEnvironmentVariable(open.id, "GH_TOKEN", bound));
+		expect(secret.code).toBe("not_supported");
+		expect(JSON.stringify(secret)).not.toContain(SECRET);
+		const kept = await root.getEnvironment(open.id);
+		expect([kept.grants, kept.variables.map((variable) => variable.name)]).toEqual([[], ["LOG_LEVEL"]]);
+		// A plain variable needs nothing of the host.
+		await root.setEnvironmentVariable(open.id, "MODE", { value: "dev" });
+	});
+});
+
+describe("a host that enforces egress policy", () => {
+	it("takes protected variables, each sandbox's and each fork's own placeholder, and grants as they change", async () => {
+		const { root, host } = await setup([HOST_FEATURES.egressPolicy]);
+		const environment = await protectedEnvironment(root);
+		const sandbox = await root.createSandbox({ environment: environment.id, wait: true });
+		expect(sandbox.state).toBe("running");
+		const created = host.calls.find((call) => call.method === "sandbox.create");
+		const env = (created?.params.env ?? {}) as { [name: string]: string };
+		expect(env.GH_TOKEN).toMatch(PLACEHOLDER);
+		expect(JSON.stringify(host.calls)).not.toContain(SECRET);
+
+		const forks = await root.forkSandbox(sandbox.id, { wait: true });
+		const forked = host.calls.find((call) => call.method === "sandbox.fork");
+		const forkEnv = (forked?.params.env ?? {}) as { [name: string]: string };
+		expect(forkEnv.GH_TOKEN).toMatch(PLACEHOLDER);
+		expect(forkEnv.GH_TOKEN).not.toBe(env.GH_TOKEN);
+		expect(forked?.params.newId).toBe(forks.items[0]?.id);
+		expect((forked?.params.egress as { protected?: unknown } | undefined)?.protected).toBeDefined();
+
+		await root.putSandboxGrants(sandbox.id, { grants: [{ action: "deny", host: "evil.example" }] });
+		const pushed = host.calls.filter((call) => call.method === "sandbox.egress");
+		expect(pushed.at(-1)?.params).toMatchObject({
+			sandboxId: sandbox.id,
+			egress: { revision: expect.any(Number), grants: [expect.objectContaining({ host: "evil.example" })] },
+		});
+		expect(JSON.stringify(host.calls)).not.toContain(SECRET);
+	});
+});

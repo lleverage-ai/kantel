@@ -97,8 +97,8 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		openDesktop: async (id, how) => (await on(id)).openDesktop(id, how),
 		openBrowser: async (id, how) => (await on(id)).openBrowser(id, how),
 		usage: async (id) => (await on(id)).usage(id),
-		async updateEgress(id, egress) {
-			await (await on(id)).updateEgress?.(id, egress);
+		async updateEgress(id, egress, revision) {
+			await (await on(id)).updateEgress?.(id, egress, revision);
 		},
 		async revokeHost(hostId) {
 			await primary.revokeHost?.(hostId);

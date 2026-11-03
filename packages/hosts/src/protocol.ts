@@ -70,6 +70,27 @@ export interface HostFacts {
 	readonly labels?: { readonly [key: string]: string };
 	/** `open` (NAT), `proxy` (only through the host's egress proxy) or `none`. */
 	readonly egress: string;
+	/**
+	 * What the host can do beyond protocol 1 as first released (`HOST_FEATURES`). An addition a host must enforce, not
+	 * merely accept, is gated on one: a host that predates it would ignore the field and report success.
+	 */
+	readonly features?: readonly string[];
+}
+
+/** Features a host may report in its facts. */
+export const HOST_FEATURES = {
+	/**
+	 * Egress `grants` and `protected` variables: the proxy enforces the grants (methods and paths too), swaps placeholders
+	 * only where bound, refuses older `revision`s, and a fork takes its `env`.
+	 */
+	egressPolicy: "egress-policy",
+} as const;
+
+/** Whether an egress needs the `egress-policy` feature to be enforced: it has grants or protected variables. */
+export function needsEgressPolicy(egress: HostEgress | null | undefined): boolean {
+	return (
+		egress !== undefined && egress !== null && (egress.protected !== undefined || (egress.grants?.length ?? 0) > 0)
+	);
 }
 
 /** What is free on a host now. */
@@ -134,6 +155,11 @@ export interface HostEgress {
 	readonly protected?: HostEgressProtected;
 	/** The environment's grants, then the sandbox's own, on top of `allow` and `deny`; deny wins. */
 	readonly grants?: readonly HostEgressGrant[];
+	/**
+	 * Orders the control plane's egress for a sandbox (its `egressRevision`): the host ignores a `sandbox.egress` older
+	 * than the egress it has, which was read before a later change. Absent: unordered, always taken.
+	 */
+	readonly revision?: number;
 }
 
 export interface HostEgressProtected {

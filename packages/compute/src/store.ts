@@ -99,6 +99,12 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	readonly ownerUserId: string;
 	/** What every command sees: its environment's plain variables and placeholders, then the create's own. */
 	readonly env: { readonly [name: string]: string };
+	/**
+	 * Moves on (`Math.max(now, previous + 1)`) with every change to what its egress is made of (its grants, its
+	 * environment's, the account's proxy settings) while it runs or starts, and rides each egress sent for it, so its
+	 * host ignores one read before a later change. Absent: none sent yet.
+	 */
+	readonly egressRevision?: number;
 	/** Its own egress grants. Absent on a sandbox made before there were any: none. */
 	readonly grants?: readonly computeSchema.EgressGrant[];
 	/**
@@ -198,6 +204,17 @@ export interface StoredEnvironment {
 	readonly updatedAt: number;
 }
 
+/**
+ * An account's claim on an environment's name, ID `<accountId>/<name>`: inserted (`Collection.insert`) before the
+ * environment takes the name, so of two creates or renames to one name, on any gateway, one wins.
+ */
+export interface StoredEnvironmentName {
+	readonly id: string;
+	readonly accountId: string;
+	readonly environmentId: string;
+	readonly claimedAt: number;
+}
+
 /** One entry of a sandbox's egress log, as its host reported it; the newest `MAX_EGRESS_ENTRIES` are kept per sandbox. */
 export type StoredEgressEntry = computeSchema.EgressEntry & {
 	readonly sandboxId: string;
@@ -287,6 +304,7 @@ export interface ComputeStore {
 	readonly idempotency: Collection<StoredIdempotency>;
 	readonly deviceLogins: Collection<StoredDeviceLogin>;
 	readonly environments: Collection<StoredEnvironment>;
+	readonly environmentNames: Collection<StoredEnvironmentName>;
 	readonly egress: Collection<StoredEgressEntry>;
 }
 
@@ -354,6 +372,7 @@ export function createMemoryStore(): ComputeStore {
 		idempotency: memoryCollection(),
 		deviceLogins: memoryCollection(),
 		environments: memoryCollection(),
+		environmentNames: memoryCollection(),
 		egress: memoryCollection(),
 	};
 }

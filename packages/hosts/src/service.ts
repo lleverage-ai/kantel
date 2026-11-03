@@ -11,6 +11,7 @@ import { parseHostCapacity, parseHostFacts, storedCapacity, storedFacts } from "
 import { type CallOptions, createHostHub, HostCallError, type HostHub, type PortSink, type PortStream } from "./hub.ts";
 import {
 	HOST_CLOSE_REVOKED,
+	HOST_FEATURES,
 	type HostEgress,
 	type HostEgressRecord,
 	type HostFacts,
@@ -20,10 +21,15 @@ import {
 	type HostSecrets,
 	type HostSize,
 	type HostWelcome,
+	needsEgressPolicy,
 	type SandboxTier,
 } from "./protocol.ts";
 import { type Candidate, isRefusal, place, sizeOn } from "./scheduler.ts";
 import type { HostRecord, HostStore, PlacementRecord } from "./store.ts";
+
+/** Whether a host reports enforcing egress grants and protected variables. */
+export const enforcesPolicy = (host: HostRecord): boolean =>
+	storedFacts(host.facts)?.features?.includes(HOST_FEATURES.egressPolicy) === true;
 
 export const JOIN_TOKEN_PREFIX = "kth_";
 export const HOST_CREDENTIAL_PREFIX = "khc_";
@@ -42,6 +48,8 @@ export interface HostView {
 	readonly sizes: readonly HostSize[];
 	readonly kvm: boolean;
 	readonly nestedVirtualisation: boolean;
+	/** What it does beyond protocol 1 as first released (`HOST_FEATURES`). */
+	readonly features: readonly string[];
 	readonly capacity: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number };
 	readonly allocated: {
 		readonly sandboxes: number;
@@ -191,7 +199,12 @@ export interface HostsService {
 		create(input: CreateSandboxInput): Promise<SandboxPlacement>;
 		fork(
 			sandboxId: string,
-			input?: { readonly newId?: string; readonly egress?: HostEgress },
+			input?: {
+				readonly newId?: string;
+				readonly egress?: HostEgress;
+				/** The fork's own environment (its own protected placeholders); absent, its source's. */
+				readonly env?: { readonly [key: string]: string };
+			},
 		): Promise<SandboxPlacement>;
 		/** Any other method of a sandbox, on its host: stop, resume, exec, files, snapshots. */
 		call<T = unknown>(sandboxId: string, method: string, params?: object, options?: CallOptions): Promise<T>;
@@ -412,6 +425,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			sizes: facts?.sizes ?? [],
 			kvm: facts?.kvm ?? false,
 			nestedVirtualisation: facts?.nested ?? false,
+			features: [...(facts?.features ?? [])],
 			capacity: { vcpus: facts?.cpus ?? 0, memoryMb: facts?.memoryMiB ?? 0, diskGb: facts?.diskGiB ?? 0 },
 			allocated: {
 				sandboxes: placements.filter((placement) => placement.state !== "lost").length,
@@ -465,6 +479,20 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		return { ...params, egress: unsigned };
 	};
 
+	/**
+	 * Refuses an egress with grants or protected variables for a host that doesn't report enforcing them: a host that
+	 * predates them would drop the fields and answer as if it had applied them.
+	 */
+	const requireEnforced = async (hostId: string, params: object, known?: HostRecord): Promise<void> => {
+		if (!needsEgressPolicy((params as { egress?: HostEgress | null }).egress)) return;
+		const host = known ?? (await store.getHost(hostId));
+		if (host !== undefined && enforcesPolicy(host)) return;
+		throw new KantelError(
+			"not_supported",
+			`The host ${host?.name ?? hostId} doesn't enforce egress grants or protected variables; upgrade its kantel-host`,
+		);
+	};
+
 	const onHost = async <T>(
 		hostId: string,
 		method: string,
@@ -472,6 +500,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		callOptions?: CallOptions,
 		known?: HostRecord,
 	): Promise<T> => {
+		await requireEnforced(hostId, params, known);
 		try {
 			return await hub.call<T>(hostId, method, await trusted(hostId, params, known), callOptions);
 		} catch (error) {
@@ -603,11 +632,19 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				// Two reads that don't depend on each other: one round trip.
 				const [existing, listed] = await Promise.all([store.getPlacement(sandboxId), store.listHosts()]);
 				if (existing !== undefined) throw new KantelError("conflict", "A sandbox with that ID exists");
-				const hosts = listed
+				const usable = listed
 					.map(sane)
 					.filter((host) => only === undefined || only.has(host.id))
 					// An account's own host takes only that account's sandboxes, whatever the caller named.
 					.filter((host) => host.accountId === undefined || host.accountId === input.owner);
+				// Grants and protected variables go only where they are enforced.
+				const hosts = needsEgressPolicy(input.egress) ? usable.filter(enforcesPolicy) : usable;
+				if (hosts.length === 0 && usable.length > 0) {
+					throw new KantelError(
+						"not_supported",
+						"No host that could take it enforces egress grants or protected variables; upgrade kantel-host",
+					);
+				}
 				const candidates: Candidate[] = await Promise.all(
 					hosts.map(async (host) => {
 						const placements = tier === "isolate" ? await store.placementsOn(host.id) : [];
@@ -702,6 +739,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						newId,
 						snapshotId: shortId("snap"),
 						...(input.egress === undefined ? {} : { egress: input.egress }),
+						...(input.env === undefined ? {} : { env: input.env }),
 					});
 					return { sandbox, hostId: source.hostId, placement: await settle(placement, sandbox) };
 				} catch (error) {
