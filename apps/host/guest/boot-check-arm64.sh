@@ -63,7 +63,8 @@ check() {
 		echo "BOOTCHECK $name FAIL $(echo "$out" | tail -n 3 | tr "\n" " " | cut -c1-300)"
 	fi
 }
-wait_for() { i=0; while [ $i -lt "$1" ]; do sh -c "$2" >/dev/null 2>&1 && return 0; sleep 2; i=$((i + 2)); done; sh -c "$2"; }
+# wait_for <seconds> <command>: runs the command until it succeeds, then once more for its output.
+wait_for() { i=0; while [ $i -lt "$1" ]; do sh -c "$2" >/dev/null 2>&1 && break; sleep 2; i=$((i + 2)); done; sh -c "$2"; }
 # QEMU user networking (what kantel-guest sets from the host on a real host), on the one NIC whatever udev named it:
 # the interface with a device behind it (docker0 and dummy0 have none).
 nic=$(for n in /sys/class/net/*; do [ -e "$n/device" ] && basename "$n"; done | head -n 1)
@@ -81,8 +82,8 @@ check desktop wait_for 300 "systemctl is-active kantel-desktop.service && test -
 check cdp wait_for 600 "curl -fsS -m 5 http://127.0.0.1:9222/json/version | grep -o \"\\\"Browser\\\": *\\\"[^\\\"]*\\\"\""
 check stream wait_for 600 "curl -fsS -m 5 -o /dev/null -w \"selkies http %{http_code}\" http://127.0.0.1:6080/"
 check kvm sh -c "if [ -e /dev/kvm ]; then echo /dev/kvm present; else echo no /dev/kvm, as expected on arm64; fi"
-sleep 20
-check screenshot sh -c "runuser -u user -- env DISPLAY=:1 import -window root /var/tmp/boot-check.png && cp /var/tmp/boot-check.png /disk/boot-check.png && identify /disk/boot-check.png"
+# The desktop as drawn: X is up before XFCE paints it (black, two colours), so wait for a picture with more in it.
+check screenshot wait_for 300 "runuser -u user -- env DISPLAY=:1 import -window root /var/tmp/boot-check.png && test \$(identify -format %k /var/tmp/boot-check.png) -gt 64 && cp /var/tmp/boot-check.png /disk/boot-check.png && identify -format \"%wx%h, %k colours\" /disk/boot-check.png"
 check failed-units sh -c "n=\$(systemctl --failed --no-legend | grep -v kantel-boot-check | wc -l); systemctl --failed --no-legend; test \$n = 0 && echo none"
 echo "BOOTCHECK done fails=$fails uptime=$(cut -d" " -f1 /proc/uptime)s"
 sync
