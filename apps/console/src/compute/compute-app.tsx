@@ -1,4 +1,4 @@
-import { ComputeConsole, type HostingMode } from "@kantel/ui";
+import { ComputeConsole, type ComputeSource, type HostingMode } from "@kantel/ui";
 import { createComputeFixtures } from "@kantel/ui/compute/fixtures";
 import { useMemo } from "react";
 import { navigate, searchWithout, usePathname } from "../app/router.ts";
@@ -43,6 +43,27 @@ function go(path: string): void {
 	navigate(path);
 }
 
+/**
+ * The sample data, with the person signed in as its viewer and their personal account named after them, so the console
+ * doesn't greet them as someone else.
+ */
+function sampleFor(hosting: HostingMode, person: { readonly name?: string; readonly email?: string } | undefined) {
+	const sample = createComputeFixtures({ hosting, now: Date.now() });
+	if (person?.name === undefined) return sample;
+	const { name } = person;
+	const accounts: ComputeSource["accounts"] = {
+		...sample.accounts,
+		viewer: async () => ({
+			...(await sample.accounts.viewer()),
+			name,
+			...(person.email === undefined ? {} : { email: person.email }),
+		}),
+		list: async () =>
+			(await sample.accounts.list()).map((account) => (account.kind === "personal" ? { ...account, name } : account)),
+	};
+	return { ...sample, accounts };
+}
+
 export function ComputeApp({
 	signedInAs,
 	onSignOut,
@@ -54,7 +75,8 @@ export function ComputeApp({
 	const pathname = usePathname();
 	const narrow = useMedia(NARROW_QUERY);
 	// One source for the tab's life: what a person does on one page (a new sandbox, a revoked key) shows on the next.
-	const source = useMemo(() => createComputeFixtures({ hosting: hostingMode(), now: Date.now() }), []);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: made once; who is signed in doesn't change under it.
+	const source = useMemo(() => sampleFor(hostingMode(), signedInAs), []);
 	return (
 		<ComputeConsole
 			source={source}
