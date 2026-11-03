@@ -150,10 +150,15 @@ across gateways.
   rather than in a lost or duplicated sandbox. A shared reservation isn't required for correctness, and this contract
   leaves it open.
 
-  **Open on main:** `reserved` is cleared by the host's hello and heartbeats, which reach only the replica holding
-  its socket. A replica that places on a host held elsewhere never clears what it reserved, so after enough placements
-  it sees the host as full until it restarts. Reservations must expire on their own, for example by ignoring those
-  older than the host's `lastSeenAt` in the shared registry.
+  **Reservations expire with the host's next report (#PR_RESERVE).** Each reservation is stamped with when it was
+  made. The replica holding the host's socket clears its own on each hello and heartbeat, as before. Every replica
+  also counts a reservation only while it is newer than the host's `lastSeenAt` in the shared registry, which the
+  owning replica writes on each hello and heartbeat. So a replica that places on a host held elsewhere stops counting
+  its placements once the host reports again (every 15 s by default), and never sees the host as full for longer.
+  Before this, such a replica refused creates as `full` until it restarted. The stamp and `lastSeenAt` come from
+  different replicas' clocks, so clock skew between replicas moves the expiry by that much. A backend that keeps
+  reservations shared (or in one Durable Object per host) may expire them however it likes, as long as one host's
+  report ends them.
 - **Join tokens** are spent once by one conditional update (`spendJoinToken`). Two hosts racing with the same token
   can't both join.
 - **Webhook deliveries** are leased. A dispatcher claims a due delivery by moving `nextAttemptAt` past its request
@@ -250,7 +255,7 @@ A Worker backend is equivalent if:
 - Gateway-local state that isn't shared and isn't covered here:
   - the abort switches of detached commands (a `kill` that lands on another gateway marks the command killed but
     doesn't abort it)
-  - the per-process placement reservations (§5)
+  - the per-process placement reservations (§5), which now expire with the host's next report
   - the usage samples the telemetry exporter batches
 - Event delivery order across gateways: `events` are ordered by insertion. Two gateways emitting for one sandbox at once
   may interleave, and nothing orders them by sandbox.
