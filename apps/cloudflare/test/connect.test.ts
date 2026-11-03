@@ -511,10 +511,11 @@ describe("Kantel Connect on the Worker", () => {
 		);
 		if (registered === undefined) throw new Error("Registration wasn't served");
 		const { hostId, credential } = (await registered.json()) as { hostId: string; credential: string };
-		const attach = async (compute: StackCompute) => {
+		const attach = async (compute: StackCompute, running: readonly string[] = []) => {
 			const hosts = compute.hosts;
 			if (hosts === undefined) throw new Error("Connect is on");
 			const host = fakeHost();
+			for (const id of running) host.sandboxes.add(id);
 			const held = await hosts.connect(credential, host.socket);
 			if (held === undefined) throw new Error("The host's credential was refused");
 			host.attach(held, hostId);
@@ -532,13 +533,14 @@ describe("Kantel Connect on the Worker", () => {
 		});
 		await first.close();
 
-		// The object starts again (as after an eviction) and its host reconnects; nothing calls the compute API, so the
-		// request-driven timers (the webhook dispatcher's among them) never start. Past its stop time it is stopped all
-		// the same (it is used over SSH alone, say), and its `sandbox.stopped` is sent.
+		// The object starts again (as after an eviction); nothing calls the compute API, so the request-driven timers
+		// (the webhook dispatcher's among them) never start. Its stop time passes while its host is away, and sweeps run
+		// meanwhile: it is kept running, not written off. Once the host reconnects it is stopped (it is used over SSH
+		// alone, say), and its `sandbox.stopped` is sent.
 		const second = await open();
-		const host = await attach(second);
-		for (const id of [String(timed.id), String(kept.id)]) host.sandboxes.add(id);
 		clock += 2 * 60_000;
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		const host = await attach(second, [String(timed.id), String(kept.id)]);
 		await expect.poll(() => host.calls.filter((method) => method === "sandbox.stop").length).toBe(1);
 		await expect
 			.poll(() => delivered.map((body) => JSON.parse(body) as { type: string; sandboxId?: string }), {

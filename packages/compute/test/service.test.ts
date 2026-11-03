@@ -446,6 +446,65 @@ describe("organisations", () => {
 		expect((await tom.getSandbox(fork?.id ?? "")).state).toBe("error");
 	});
 
+	it("keeps an overdue sandbox whose host is away running, and auto-stops it once its host is back", async () => {
+		let clock = 1_000_000;
+		const stub = createStubBackend();
+		let connected = true;
+		let dropOnStop = false;
+		const stops: string[] = [];
+		const away = () => new KantelError("unavailable", "Host host_stub is not connected");
+		const backend: SandboxBackend = {
+			...stub,
+			async capabilities() {
+				const known = await stub.capabilities();
+				return { ...known, hosts: known.hosts.map((host) => ({ ...host, connected })) };
+			},
+			async stop(sandboxId, how) {
+				// The host drops just as the stop is sent: it never reaches it.
+				if (dropOnStop) [connected, dropOnStop] = [false, false];
+				if (!connected) throw away();
+				stops.push(sandboxId);
+				return stub.stop(sandboxId, how);
+			},
+		};
+		const api = createComputeApi({
+			backend,
+			now: () => clock,
+			authenticatePerson: async (request) => PEOPLE[request.headers.get("authorization")?.slice(7) ?? ""],
+			fetch: async () => new Response(null, { status: 204 }),
+		});
+		opened.push(api);
+		const tom = createKantelClient({
+			baseUrl: BASE_URL,
+			token: "tom-token",
+			fetch: (input, init) =>
+				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+		const sandbox = await tom.createSandbox({ type: "microvm", autoStopMinutes: 1, wait: true });
+		const sweep = async () => {
+			await api.service.sweep();
+			await api.service.idle();
+		};
+		clock += 2 * 60_000;
+
+		// Away across its stop time: it isn't stopped, nor written off as `error`, but kept running, its time kept.
+		connected = false;
+		await sweep();
+		expect(await tom.getSandbox(sandbox.id)).toMatchObject({ state: "running", stopsAt: sandbox.stopsAt });
+		// Back, and dropping again as the stop goes out: the stop never reached it, so it is running as it was.
+		[connected, dropOnStop] = [true, true];
+		await sweep();
+		const handedBack = await tom.getSandbox(sandbox.id);
+		expect(handedBack).toMatchObject({ state: "running", stopsAt: sandbox.stopsAt });
+		expect(handedBack.reason).toBeUndefined();
+		expect(stops).toEqual([]);
+		// Back for good: the next sweep (the one on its reconnection) stops it.
+		connected = true;
+		await sweep();
+		expect(stops).toEqual([sandbox.id]);
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("stopped");
+	});
+
 	it("keeps a fork that was made when a later one in its batch fails, rather than taking it for never made", async () => {
 		const stub = createStubBackend();
 		// Room for one more machine: as a host's backend does, it makes a batch's targets one by one, so the first is made

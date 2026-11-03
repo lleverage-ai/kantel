@@ -994,6 +994,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		reason: string | undefined,
 		actor: Principal | undefined,
 		still?: (current: StoredSandbox) => boolean,
+		handBack = false,
 	): Promise<{ readonly work: Promise<void> }> {
 		const began = await transition(sandbox.id, sandbox.state, (current) => withState(current, "stopping"), still);
 		if (!("moved" in began)) throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
@@ -1035,11 +1036,34 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					},
 				});
 			} catch (error) {
+				if (handBack && !(await reachable(sandbox.hostId))) {
+					// Its host went away before the stop reached it, so the machine is still running there: it is running again
+					// as it was (its stop time and run unchanged), for the sweep to stop once the host is back.
+					await transition(sandbox.id, "stopping", (current) => ({
+						...current,
+						state: "running",
+						runs: sandbox.runs,
+						stopsAt: sandbox.stopsAt,
+						reason: undefined,
+					}));
+					return;
+				}
 				await fail(sandbox.id, error, "stopping");
 				throw error;
 			}
 		});
 		return { work };
+	}
+
+	/** The backend's connected hosts now: the stub's always are. */
+	async function connectedHosts(): Promise<Set<string>> {
+		const { hosts } = await backend.capabilities();
+		return new Set(hosts.filter((host) => host.connected !== false).map((host) => host.id));
+	}
+
+	async function reachable(hostId: string | undefined): Promise<boolean> {
+		if (hostId === undefined) return false;
+		return (await connectedHosts().catch(() => new Set<string>())).has(hostId);
 	}
 
 	/** The snapshot `from` names in an account: a snapshot's ID, or a saved snapshot's name. */
@@ -2953,12 +2977,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		async sweep() {
 			const at = now();
+			// The sweep alone stops a sandbox past its time, and only where its host can be reached: one on a host that is
+			// away (or whose stop it couldn't reach, `beginStop`) stays running, and a later sweep, as on its host's
+			// reconnection, stops it.
+			let connected: Set<string> | undefined;
 			for (const sandbox of await store.sandboxes.list({ state: "running" })) {
 				if (sandbox.stopsAt === undefined || sandbox.stopsAt > at || pending.has(sandbox.id)) continue;
+				connected ??= await connectedHosts();
+				if (sandbox.hostId === undefined || !connected.has(sandbox.hostId)) continue;
 				// Every gateway sweeps: `beginStop` moves it only while it is still running, so one of them stops it and the
 				// rest skip it.
 				const due = (current: StoredSandbox) => current.stopsAt !== undefined && current.stopsAt <= at;
-				const began = await beginStop(sandbox, false, "auto-stop", undefined, due).catch(() => undefined);
+				const began = await beginStop(sandbox, false, "auto-stop", undefined, due, true).catch(() => undefined);
 				if (began !== undefined) keepGoing(began.work);
 			}
 		},
