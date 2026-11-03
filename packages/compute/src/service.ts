@@ -287,8 +287,10 @@ export const MAX_ENVIRONMENT_FILES = 20;
 export const MAX_ENVIRONMENT_FILE_BYTES = 1024 * 1024;
 /** How long a repository's clone may take when a sandbox starts. */
 const CLONE_TIMEOUT_MS = 10 * 60_000;
-/** How many times a boot sends egress changed while it started, before it leaves the rest to the sweep. */
+/** How many times a boot sends egress changed while it started (or tries again), before it is stopped instead. */
 const BOOT_RECONCILE_ROUNDS = 5;
+/** Why a sandbox whose host can't enforce its egress grants or protected variables is stopped. */
+const UNENFORCED = "Its host doesn't enforce egress grants or protected variables";
 /** What a host reports when it enforces egress grants and protected variables (`HOST_FEATURES` in @kantel/hosts). */
 const EGRESS_POLICY_FEATURE = "egress-policy";
 /**
@@ -1018,7 +1020,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * off, a sandbox with protected variables or grants still goes through it, open but for the grants, so its
 	 * placeholders are swapped. With neither, nothing.
 	 */
-	const egressFor = async (accountId: string, subject?: EgressSubject): Promise<{ egress?: BackendEgress }> => {
+	const egressFor = async (
+		accountId: string,
+		subject?: EgressSubject,
+	): Promise<{ egress?: BackendEgress; egressRevision?: number }> => {
+		// The revision goes with no egress too: a boot states its egress, none being the host's default, and an update
+		// read before it (an empty egress included) is then older and refused.
+		const revision = subject?.egressRevision === undefined ? {} : { egressRevision: subject.egressRevision };
 		const [proxy, environment] = await Promise.all([
 			store.proxies.get(accountId),
 			subject?.environmentId === undefined ? undefined : store.environments.get(subject.environmentId),
@@ -1029,7 +1037,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		);
 		const grants = [...(environment?.grants ?? []), ...(subject?.grants ?? [])];
 		const on = proxy?.enabled;
-		if (!on && bound.length === 0 && grants.length === 0) return {};
+		if (!on && bound.length === 0 && grants.length === 0) return revision;
 		const base: BackendEgress = proxy?.enabled
 			? {
 					defaultAction: proxy.defaultAction,
@@ -1055,6 +1063,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				...(grants.length === 0 ? {} : { grants: grants.map(backendGrant) }),
 				...(subject?.egressRevision === undefined ? {} : { revision: subject.egressRevision }),
 			},
+			...revision,
 		};
 	};
 
@@ -1067,6 +1076,29 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/** A refusal by a host that can't enforce egress grants or protected variables. */
 	const unenforceable = (error: unknown) => error instanceof KantelError && error.code === "not_supported";
+
+	/**
+	 * Takes a starting or running sandbox out of service because its egress, as stored, isn't what its host enforces
+	 * (its host lacks the feature, or a boot couldn't get its egress there). It is first made due to stop now, durably
+	 * (`stopsAt`, with `stopFor` the reason), so that whatever happens next it is stopped: then it is stopped as the
+	 * sweep stops a sandbox past its time, and a stop that doesn't reach its host (its link lost) leaves it running and
+	 * due, for the sweep to stop once its host is connected. `wait` awaits the stop (never from inside the sandbox's own
+	 * queued work, which the stop queues behind).
+	 */
+	async function enforceStop(sandboxId: string, reason: string, wait: boolean): Promise<void> {
+		const at = now();
+		const due = await patchSandbox(sandboxId, (current) =>
+			current.state === "running" || current.state === "starting"
+				? { ...current, stopsAt: at, stopFor: reason }
+				: undefined,
+		);
+		if (due === undefined) return;
+		const still = (current: StoredSandbox) => current.stopFor === reason;
+		const began = await beginStop(due, false, reason, undefined, still, true).catch(() => undefined);
+		if (began === undefined) return;
+		if (wait) await began.work.catch(() => undefined);
+		else keepGoing(began.work);
+	}
 
 	/** Records that a sandbox's backend took its egress at `revision`: `egressApplied` only moves on. */
 	const markApplied = (sandboxId: string, revision: number | undefined) =>
@@ -1112,14 +1144,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					if (!unenforceable(error)) throw error;
 					// Its host can't enforce what its egress now holds (a grant written as it was placed on a host without the
 					// feature): it doesn't run on without it. Stopped, its disk kept; it starts again only where it is enforced.
-					const began = await beginStop(
-						current,
-						false,
-						"Its host doesn't enforce egress grants or protected variables",
-						undefined,
-						(latest) => latest.egressRevision === current.egressRevision,
-					).catch(() => undefined);
-					if (began !== undefined) await began.work;
+					await enforceStop(current.id, UNENFORCED, true);
 				}
 			})();
 			keepGoing(
@@ -1513,6 +1538,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			startedAt: running && !wasRunning ? at : sandbox.startedAt,
 			stoppedAt: state === "stopped" || state === "paused" ? at : sandbox.stoppedAt,
 			reason: extra.reason,
+			// A stop it was due for is done with once it boots again.
+			...(state === "starting" ? { stopFor: undefined } : {}),
 		};
 	}
 
@@ -1668,29 +1695,31 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					: { egressApplied: applied }),
 			});
 		const reconciles = sent !== undefined && backend.updateEgress !== undefined;
-		// Running only if its egress is what its backend has (what the boot sent, at first): the usual case, in one write.
-		const upToDate = (sandbox: StoredSandbox) => sandbox.egressRevision === applied;
-		let result = await transition(sandboxId, "starting", toRunning, reconciles ? upToDate : undefined, written);
+		// Running only if its egress is what its backend has (what the boot sent, at first), on every move to running:
+		// the usual case, in one write.
+		const upToDate = (sandbox: StoredSandbox) => !reconciles || sandbox.egressRevision === applied;
+		let result = await transition(sandboxId, "starting", toRunning, upToDate, written);
 		// What its egress is made of changed while it started (a grant, its environment, the proxy settings): a change
 		// skips a starting sandbox, so it is sent now, before it is running, and again for each change made while that
-		// was sent. A host that can't enforce it (a grant added once it was placed on one without the feature) can't run
-		// it: its machine goes and it fails, rather than run without what it shows. Any other failure, or changes that
-		// don't let up, leave it running behind (`egressApplied`), for the sweep.
-		for (let round = 0; reconciles && "lost" in result && result.lost.state === "starting"; round++) {
-			let delivered = round < BOOT_RECONCILE_ROUNDS;
-			if (delivered) {
-				try {
-					await deliverEgress(result.lost);
-					applied = result.lost.egressRevision;
-				} catch (error) {
-					if (unenforceable(error)) {
-						await backend.destroy(sandboxId).catch(() => undefined);
-						return fail(sandboxId, error, "starting");
-					}
-					delivered = false;
-				}
+		// was sent. One whose egress can't be got there (its host can't enforce it, or it fails or keeps changing for
+		// every round) never runs: it is stopped, as `enforceStop` does, never given up on.
+		for (let round = 0; "lost" in result && result.lost.state === "starting"; round++) {
+			if (round >= BOOT_RECONCILE_ROUNDS) {
+				await enforceStop(sandboxId, "Its egress couldn't be applied to it while it started", false);
+				return undefined;
 			}
-			result = await transition(sandboxId, "starting", toRunning, delivered ? upToDate : undefined);
+			try {
+				await deliverEgress(result.lost);
+				applied = result.lost.egressRevision;
+			} catch (error) {
+				if (unenforceable(error)) {
+					await enforceStop(sandboxId, UNENFORCED, false);
+					return undefined;
+				}
+				// A call that didn't get through: tried again, a moment on.
+				await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** round));
+			}
+			result = await transition(sandboxId, "starting", toRunning, upToDate);
 		}
 		if (!("moved" in result)) return undefined;
 		const next = result.moved;
@@ -4076,7 +4105,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// Every gateway sweeps: `beginStop` moves it only while it is still running, so one of them stops it and the
 				// rest skip it.
 				const due = (current: StoredSandbox) => current.stopsAt !== undefined && current.stopsAt <= at;
-				const began = await beginStop(sandbox, false, "auto-stop", undefined, due, true).catch(() => undefined);
+				const reason = sandbox.stopFor ?? "auto-stop";
+				const began = await beginStop(sandbox, false, reason, undefined, due, true).catch(() => undefined);
 				if (began !== undefined) keepGoing(began.work);
 			}
 		},

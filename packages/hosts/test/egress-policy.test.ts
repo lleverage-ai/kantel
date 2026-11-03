@@ -49,6 +49,19 @@ async function setup(features?: readonly string[]) {
 	return { api, root, host };
 }
 
+const UNENFORCED = "Its host doesn't enforce egress grants or protected variables";
+
+/** A sandbox's events, oldest first: each type, and a stop's reason after it. */
+async function historyOf(root: Awaited<ReturnType<typeof setup>>["root"], sandboxId: string) {
+	const { items } = await root.listEvents({ sandboxId });
+	return items
+		.map((event) => {
+			const reason = (event.data as { reason?: string } | undefined)?.reason;
+			return event.type === "sandbox.stopped" && reason !== undefined ? `${event.type}: ${reason}` : event.type;
+		})
+		.reverse();
+}
+
 async function failure(call: Promise<unknown>): Promise<KantelApiError> {
 	try {
 		await call;
@@ -210,11 +223,10 @@ describe("a sandbox given a grant while it starts", () => {
 		await root.putSandboxGrants(sandbox.id, { grants: [{ action: "deny", host: "evil.example" }] });
 		release();
 		await api.service.idle();
-		const after = await root.getSandbox(sandbox.id);
-		expect(after.state).toBe("error");
-		expect(after.reason).toMatch(/enforce egress grants/);
-		// Its machine went.
-		expect(host.calls.some((call) => call.method === "sandbox.delete")).toBe(true);
+		// It never ran: stopped, saying why.
+		expect((await root.getSandbox(sandbox.id)).state).toBe("stopped");
+		expect(await historyOf(root, sandbox.id)).toEqual(["sandbox.created", `sandbox.stopped: ${UNENFORCED}`]);
+		expect(host.calls.some((call) => call.method === "sandbox.stop")).toBe(true);
 	});
 
 	it("runs only once its host has the latest, though it changes again while that is sent", async () => {
@@ -256,7 +268,7 @@ describe("a sandbox given a grant while it starts", () => {
 
 describe("a sandbox on a host that can't enforce grants, given one while its boot reconciles", () => {
 	for (const where of ["sandbox", "environment"] as const) {
-		it(`fails, its machine gone, rather than run without it (a ${where} grant)`, async () => {
+		it(`is stopped rather than run without it (a ${where} grant)`, async () => {
 			const { api, root, host } = await setup();
 			const environment = await root.createEnvironment({ name: "plain" });
 			const gates = new Map<string, () => void>();
@@ -278,16 +290,67 @@ describe("a sandbox on a host that can't enforce grants, given one while its boo
 			else await root.putEnvironmentGrants(environment.id, { grants });
 			gates.get("sandbox.egress")?.();
 			await api.service.idle();
-			const after = await root.getSandbox(sandbox.id);
-			expect(after.state).toBe("error");
-			expect(after.reason).toMatch(/enforce egress grants/);
-			expect(host.calls.some((call) => call.method === "sandbox.delete")).toBe(true);
+			expect((await root.getSandbox(sandbox.id)).state).toBe("stopped");
+			expect(await historyOf(root, sandbox.id)).toEqual(["sandbox.created", `sandbox.stopped: ${UNENFORCED}`]);
+			expect(host.calls.some((call) => call.method === "sandbox.stop")).toBe(true);
 			// The one update it was sent carried no grant.
 			const sent = host.calls.filter((call) => call.method === "sandbox.egress");
 			expect(sent).toHaveLength(1);
 			expect(JSON.stringify(sent)).not.toContain("evil.example");
 		});
 	}
+});
+
+describe("a boot whose egress keeps changing as it is sent", () => {
+	it("never runs behind: it is stopped once its rounds are spent", async () => {
+		const { api, root, host } = await setup([HOST_FEATURES.egressPolicy]);
+		let changes = 0;
+		let started = false;
+		let sandboxId = "";
+		host.hold = (method) => {
+			if (method === "sandbox.create") {
+				// A first change before the create is answered, so the boot reconciles at all.
+				sandboxId = host.calls.at(-1)?.params.sandboxId as string;
+				return root.putSandboxGrants(sandboxId, { grants: [{ action: "deny", host: "0.example" }] }).then(() => {
+					started = true;
+				});
+			}
+			if (method !== "sandbox.egress" || !started) return undefined;
+			// Each send is answered only once the next change is in.
+			changes++;
+			const grants = [{ action: "deny" as const, host: `${changes}.example` }];
+			return root.putSandboxGrants(sandboxId, { grants }).then(() => undefined);
+		};
+		await root.createSandbox({ type: "microvm" });
+		await vi.waitFor(async () => {
+			await api.service.idle();
+			expect((await root.getSandbox(sandboxId)).state).toBe("stopped");
+		});
+		expect(changes).toBeGreaterThanOrEqual(5);
+		const history = await historyOf(root, sandboxId);
+		expect(history).not.toContain("sandbox.running");
+		expect(history.at(-1)).toBe("sandbox.stopped: Its egress couldn't be applied to it while it started");
+	});
+});
+
+describe("a boot", () => {
+	it("states its egress with its revision, none included, so an update read before it loses", async () => {
+		const { api, root, host } = await setup([HOST_FEATURES.egressPolicy]);
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		await root.putSandboxGrants(sandbox.id, { grants: [{ action: "deny", host: "old.example" }] });
+		await api.service.idle();
+		const pushed = host.calls.filter((call) => call.method === "sandbox.egress").at(-1)?.params;
+		await root.stopSandbox(sandbox.id, { wait: true });
+		// Its grants all go while it is stopped: its boot has no egress, but its revision, past the last push's.
+		await root.putSandboxGrants(sandbox.id, { grants: [] });
+		await root.startSandbox(sandbox.id, { wait: true });
+		const started = host.calls.filter((call) => call.method === "sandbox.start").at(-1)?.params;
+		const stored = await api.store.sandboxes.get(sandbox.id);
+		expect(started?.egress).toBeUndefined();
+		expect(started?.revision).toBe(stored?.egressRevision);
+		expect(started?.revision).toBeGreaterThan((pushed?.revision as number | undefined) ?? Number.POSITIVE_INFINITY);
+		expect(stored?.state).toBe("running");
+	});
 });
 
 describe("a running sandbox whose host turns out not to enforce its egress", () => {
@@ -308,5 +371,42 @@ describe("a running sandbox whose host turns out not to enforce its egress", () 
 		expect(after.state).toBe("stopped");
 		expect(host.calls.filter((call) => call.method === "sandbox.egress")).toEqual([]);
 		expect(host.calls.some((call) => call.method === "sandbox.stop")).toBe(true);
+		expect((await historyOf(root, sandbox.id)).at(-1)).toBe(`sandbox.stopped: ${UNENFORCED}`);
+	});
+
+	it("is stopped once its host is back, when the stop didn't reach it", async () => {
+		const { api, root, host } = await setup();
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		// The host drops its link as the stop is sent: the stop isn't answered.
+		host.hold = (method) => {
+			if (method !== "sandbox.stop") return undefined;
+			host.connection.closed(1006, "gone");
+			return new Promise<void>(() => {});
+		};
+		await api.store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			grants: [{ id: "grt_1", action: "deny", host: "evil.example", createdAt: 1 }],
+			egressRevision: (current.egressRevision ?? 0) + 1,
+		}));
+		await api.service.sweep();
+		await api.service.idle();
+		// Not given up on (no `error` that nothing retries): running as its machine may be, and due to stop.
+		const away = await api.store.sandboxes.get(sandbox.id);
+		expect(away?.state).toBe("running");
+		expect(away?.stopFor).toBe(UNENFORCED);
+		expect(away?.stopsAt).toBeLessThanOrEqual(Date.now());
+		// While it is away, sweeps leave it be; once it is back, a sweep stops it.
+		await api.service.sweep();
+		await api.service.idle();
+		expect((await root.getSandbox(sandbox.id)).state).toBe("running");
+		host.hold = undefined;
+		host.connect();
+		await vi.waitFor(async () => {
+			await api.service.sweep();
+			await api.service.idle();
+			expect((await root.getSandbox(sandbox.id)).state).toBe("stopped");
+		});
+		expect((await historyOf(root, sandbox.id)).at(-1)).toBe(`sandbox.stopped: ${UNENFORCED}`);
+		expect(host.calls.filter((call) => call.method === "sandbox.egress")).toEqual([]);
 	});
 });
