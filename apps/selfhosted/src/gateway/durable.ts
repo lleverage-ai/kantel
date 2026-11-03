@@ -71,7 +71,10 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		} finally {
 			await setup.end();
 		}
-		const pool = new pg.Pool({ ...withSearchPath(config.databaseUrl, config.schema), max: 10 });
+		// A call sends up to three statements at once (the compute API's reads that don't depend on each other), so a few
+		// connections stay open while idle: opening one costs more than the statements it carries (about 15-25 ms here,
+		// against about 1 ms a statement), and `pg` closes idle ones after 10 s, which a call after a quiet spell paid for.
+		const pool = new pg.Pool({ ...withSearchPath(config.databaseUrl, config.schema), min: 4, max: 10 });
 		closers.push(() => pool.end());
 		pool.on("error", (error) => log(`[gateway] idle Postgres connection failed: ${error.message}`));
 

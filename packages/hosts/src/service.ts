@@ -309,6 +309,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				(async () => {
 					const placement = await store.getPlacement(sandbox.id);
 					if (placement === undefined || placement.hostId !== hostId) return;
+					// The call that caused the event usually recorded the state already (a create's `running`).
+					if (sandbox.state === placement.state) return;
 					if (sandbox.state === "deleted") await store.removePlacement(sandbox.id);
 					else await store.putPlacement({ ...placement, state: sandbox.state, updatedAt: clock.now() });
 				})(),
