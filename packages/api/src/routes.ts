@@ -7,7 +7,6 @@
 import { connectionRoutes } from "./connection-routes.ts";
 import { environmentRoutes } from "./environment-routes.ts";
 import { modelProviderRoutes } from "./model-provider-routes.ts";
-import { programRoutes } from "./program-routes.ts";
 import { HistoryQuery, ServerFrame, SessionHistoryPage, StreamQuery } from "./protocol-schema.ts";
 import { defineRoute } from "./route.ts";
 import { PendingRun, RunResult, RunResultQuery } from "./run-schema.ts";
@@ -1076,7 +1075,6 @@ export const routes = {
 	...connectionRoutes,
 	...projectRoutes,
 	...toolServerRoutes,
-	...programRoutes,
 	...environmentRoutes,
 	...modelProviderRoutes,
 } as const;

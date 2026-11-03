@@ -22,12 +22,9 @@
 //   memory      spaces, concepts and proposals on Postgres (@kantel/memory/sql, #12); recall and the memory tools
 //   usage       one row per model call in `usage_calls` on Postgres (@kantel/usage, usage.ts), shipped to
 //               ClickHouse too when KANTEL_CLICKHOUSE_URL is set; KANTEL_USAGE=off writes none
-//   programs    saved programs, their versions, runs and journals on Postgres (@kantel/programs/store,
-//               session-tools.ts), unless KANTEL_PROGRAMS (or KANTEL_CODEMODE) is `off`
 //
 // Their tables do not collide: `audit_*`, `identity_*` (sign-in's `identity_otp_codes` and `identity_sessions` too),
-// `kantel_*` and `pi_<session>_*`, `workspace_heads` and `workspace_versions`, `skill_*` and `memory_*`, `program_*`
-// and `programs`. Sessions are
+// `kantel_*` and `pi_<session>_*`, `workspace_heads` and `workspace_versions`, `skill_*` and `memory_*`. Sessions are
 // on the echo model unless the gateway is given CPA (`modelGateway`, models.ts).
 import { createSqlAuditStore, migrateAudit } from "@kantel/audit/sql";
 import { connectionEgress } from "@kantel/connections/egress";
@@ -37,7 +34,6 @@ import { createSqlEnvironmentStore, migrateEnvironments } from "@kantel/environm
 import { createPasskeys } from "@kantel/identity/passkey";
 import { createSqlIdentity, createSqlOtpStores, createSqlPasskeyStores, migrateIdentity } from "@kantel/identity/sql";
 import { createSqlMemory, migrateMemory } from "@kantel/memory/sql";
-import { createSqlProgramStore, migratePrograms } from "@kantel/programs/store";
 import { createSessionRuntime, type SessionRuntimeOptions } from "@kantel/runtime/core";
 import { callbackHostHandlers } from "@kantel/runtime/http";
 import { createSqlSessionStore, sqlPiStorage } from "@kantel/runtime/sql";
@@ -105,7 +101,7 @@ export interface DurableConfig {
 	readonly toolServers?: boolean;
 	/** Environments (`environments.ts`), in Postgres. Without it, there are none and no tables. */
 	readonly environments?: GatewayEnvironmentsConfig;
-	/** Code mode, programs and presented files (`session-tools.ts`). Default all on, as a local install has them. */
+	/** Presented files (`session-tools.ts`). Default on, as a local install has them. */
 	readonly sessionTools?: SessionToolsConfig;
 	/** The container tier (`sandboxes.ts`). Without it, a command routed to a container is refused. */
 	readonly containers?: ContainerTierConfig;
@@ -161,7 +157,6 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		if (config.toolServers === true) await migrateToolServers(driver);
 		if (config.environments !== undefined) await migrateEnvironments(driver);
 		const toolsConfig = config.sessionTools ?? ALL_SESSION_TOOLS;
-		if (toolsConfig.programs) await migratePrograms(driver);
 		const usage = config.usage === undefined ? undefined : await selfHostedUsage(driver, config.usage, log);
 		if (usage !== undefined) closers.push(() => usage.close());
 		const auditAccess = deferredAccess();
@@ -247,10 +242,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			modelGateway?.build({ vault: () => vault, audit, ...(usage === undefined ? {} : { usage: usage.writer }) }) ?? {
 				models: createEchoModels(),
 			};
-		const sessionTools = gatewaySessionTools(toolsConfig, {
-			connectionCalls: (id) => linked?.takeScriptCalls(id) ?? [],
-			programsStore: "postgres",
-		});
+		const sessionTools = gatewaySessionTools(toolsConfig);
 		const subagentsOn = config.subagents === true;
 		const sessions = lateRuntime();
 		const runtime = withOwnWorkspaces(
@@ -264,7 +256,6 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 							: environments.withTools(gatewaySandboxes.runtimeOptions.tools);
 					const served =
 						linked === undefined ? withBrowserTools(own, browser) : linked.withTools(withBrowserTools(own, browser));
-					// `subagent` after code mode's tools, as on Cloudflare: a script doesn't start subagents.
 					return withGatewaySubagents(sessionTools.withTools(served), subagentsOn, sessions.get);
 				})(),
 				store: await createSqlSessionStore(db),
@@ -272,7 +263,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 				audit,
 				identity,
 				sharing,
-				...sessionTools.models(models),
+				...models,
 				...sessionContextOptions({ skills, memory, workspaces: lateWorkspaces }),
 				// The session API's own defaults for its callbacks: the global fetch and a ten-minute call.
 				hostHandler: callbackHostHandlers(),
@@ -337,20 +328,9 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		const heldToolServers = toolServers?.attach(runtime);
 		const heldEnvironments = environments?.attach();
 		if (heldEnvironments !== undefined) closers.push(() => heldEnvironments.close());
-		const programs = sessionTools.attach({
-			store: createSqlProgramStore(driver),
-			runtime: runtime.runtime,
-			profiles: runtime.profiles,
-			access,
-			audit,
-		});
 
 		const resumed = await runtime.resume();
 		if (resumed > 0) log(`[gateway] resumed ${resumed} session(s) left mid-run`);
-		// Program runs a previous process left waiting on an agent step, or with a value and no next activation yet.
-		if (programs?.waits === true) {
-			void programs.recover().catch((error: unknown) => log(`[gateway] recovering program waits failed: ${error}`));
-		}
 
 		return {
 			identity,
@@ -371,7 +351,6 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			...(connections === undefined ? {} : { connections }),
 			...(heldToolServers === undefined ? {} : { toolServers: heldToolServers }),
 			...(heldEnvironments === undefined ? {} : { environments: heldEnvironments }),
-			...(programs === undefined ? {} : { programs }),
 			sessionTools: sessionTools.toolNames,
 			...(subagentsOn ? { subagents: true as const } : {}),
 			bindings: {

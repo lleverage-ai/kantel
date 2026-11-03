@@ -53,7 +53,6 @@ import { authenticationFailureResponse } from "@kantel/identity/authenticator";
 import { createIdentityHandler, isIdentityPath } from "@kantel/identity/http";
 import { createPasskeyHandler, isPasskeyPath } from "@kantel/identity/passkey/http";
 import { createMemoryApi } from "@kantel/memory/http";
-import { createProgramsApi, isProgramsPath } from "@kantel/programs/http";
 import { type AcceptWebSocket, createSessionApi, errorResponse, type SessionApi } from "@kantel/runtime/http";
 import { createSchedulesApi } from "@kantel/schedules/http";
 import { createSharingApi, isSharingPath } from "@kantel/sharing/http";
@@ -305,11 +304,6 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 		stack.toolServers === undefined
 			? undefined
 			: createToolServersApi({ toolServers: stack.toolServers, authenticate: callContext, basePath: API_BASE });
-	// Programs (experimental, KANTEL_PROGRAMS=on): the service's own checks decide who saves and runs what.
-	const programs =
-		stack.programs === undefined
-			? undefined
-			: createProgramsApi({ programs: stack.programs, authenticate: callContext, basePath: API_BASE });
 	const shares =
 		stack.shares === undefined
 			? undefined
@@ -575,15 +569,6 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 					return refused;
 				}
 				return (await toolServers.fetch(request)) ?? notFound();
-			}
-			if (isProgramsPath(path, API_BASE)) {
-				if (programs === undefined) return notFound();
-				const refused = await signIn(request);
-				if (refused !== undefined) {
-					await request.body?.cancel().catch(() => undefined);
-					return refused;
-				}
-				return (await programs.fetch(request)) ?? notFound();
 			}
 			if (isSharingPath(path, API_BASE)) {
 				const refused = await signIn(request);
