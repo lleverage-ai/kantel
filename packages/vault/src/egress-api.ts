@@ -1,7 +1,7 @@
 /**
- * The egress decision API: the HTTP surface the egress proxy (`apps/vault-proxy`) and the model gateway call the vault
- * through, a typed client for it, and a shared-key authenticator for those callers. Portable (fetch `Request` and
- * `Response`, Web Crypto), so the self-hosted vault and the Cloudflare VaultDO serve the same handler.
+ * The egress decision API: the HTTP surface the model gateway calls the vault through, a typed client for it, and a
+ * shared-key authenticator for its callers. Portable (fetch `Request` and `Response`, Web Crypto); the Cloudflare
+ * VaultDO serves it.
  *
  * Routes, under `basePath` (default none), both `POST` with a JSON body:
  *

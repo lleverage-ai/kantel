@@ -1,6 +1,6 @@
 /**
  * Where the vault keeps its records. `createVault` runs every rule over a `VaultStore`; a target supplies the store
- * (memory here, Postgres in `@kantel/vault-selfhosted`, Durable Object SQLite in `@kantel/vault-cloudflare`).
+ * (memory here, Durable Object SQLite in `@kantel/vault-cloudflare`).
  *
  * The store is deliberately dumb: one table per record kind, each row an ID, the owning organisation, a revision and
  * the record as JSON. The rules live in the engine. What the store guarantees is `commit`: a set of writes applied all

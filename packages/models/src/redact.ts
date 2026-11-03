@@ -7,9 +7,10 @@
  * text from the first character that could begin a spelling of a secret, so a secret split across deltas is still
  * caught, even inside a JSON escape, and flushes the rest at the block's end.
  *
- * How this relates to `apps/vault-proxy/src/redact.ts`: the vault proxy redacts whole upstream bodies at byte level
- * and matches every encoded spelling a text encoder could give a secret (JSON and HTML escapes, percent encoding),
- * since a sandbox may receive any body. Here the input is pi's already-parsed events, so the secret appears as plain
+ * How this relates to the self-hosted vault proxy's redactor (removed with the self-hosted agent plane; the
+ * `agent-plane-archive-2026-11-03` tag has it): that proxy redacted whole upstream bodies at byte level and matched
+ * every encoded spelling a text encoder could give a secret (JSON and HTML escapes, percent encoding), since a sandbox
+ * may receive any body. Here the input is pi's already-parsed events, so the secret appears as plain
  * text: the gateway matches it literally, and the JSON `\u` or `\/` escapes a JSON-in-text error echo, or a tool
  * call's raw argument JSON, can carry. It is portable (no `Buffer`) and does not import from apps.
  */
