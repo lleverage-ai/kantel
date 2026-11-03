@@ -79,7 +79,9 @@ inside each process (`pending` in `service.ts`). On one gateway that is enough. 
 cases where this goes wrong:
 
 - **Two stops at once.** Two `stop` calls on different gateways can both call `backend.stop`. The loser's error then
-  goes through `fail()` and marks a sandbox `error` that the winner stopped cleanly.
+  goes through `fail()` and marks a sandbox `error` that the winner stopped cleanly. Seen on two replicas on one
+  Postgres: 1 of 10 simultaneous double stops ended `error` ("is stopped, not running") after `sandbox.stopped`.
+  The other 9 answered one `200` and one `409 conflict`.
 - **The auto-stop sweep.** Every gateway runs `sweep()`, and it skips a sandbox only if its *own* queue holds it. So
   two gateways can both auto-stop the same expired sandbox.
 
@@ -96,7 +98,9 @@ first answer to every retry.
 process, `inflight` folds concurrent retries into one. Across gateways, a retry that lands elsewhere before the first
 call finishes finds no answer and creates a second sandbox. To close it, the store needs **insert-if-absent**: claim the
 key before doing the work, and have other gateways either wait for the claimed answer or answer `conflict` while it is
-pending. Without that, a client retry after a timeout on another gateway can duplicate a sandbox.
+pending. Without that, a client retry after a timeout on another gateway can duplicate a sandbox. Seen on two
+replicas: one key sent to both at once made two sandboxes, and later retries got the first one's answer. A retry
+sent after the first answer got the same sandbox, as it should.
 
 `stop`, `resume`, `start` and `delete` take no key. They are idempotent by state: stopping a stopped sandbox, resuming
 a running one or deleting a deleted one answers the sandbox as it is. Section 3's conditional transitions keep that true
@@ -115,6 +119,11 @@ across gateways.
   heartbeat allows, until the next heartbeat. The host then refuses what doesn't fit, and the create ends in `error`
   rather than in a lost or duplicated sandbox. A shared reservation isn't required for correctness, and this contract
   leaves it open.
+
+  **Open on main:** `reserved` is cleared by the host's hello and heartbeats, which reach only the replica holding
+  its socket. A replica that places on a host held elsewhere never clears what it reserved, so after enough placements
+  it sees the host as full until it restarts. Reservations must expire on their own, for example by ignoring those
+  older than the host's `lastSeenAt` in the shared registry.
 - **Join tokens** are spent once by one conditional update (`spendJoinToken`). Two hosts racing with the same token
   can't both join.
 - **Webhook deliveries** are leased. A dispatcher claims a due delivery by moving `nextAttemptAt` past its request
