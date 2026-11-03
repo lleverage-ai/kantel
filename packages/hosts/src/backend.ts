@@ -242,8 +242,13 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	): Promise<Placement> {
 		const { hostId } = await tierOf(sandboxId);
 		mayUse(hostId, how.eligibleHosts);
-		const egress = how.egress;
-		const sandbox = await call<HostSandbox>(sandboxId, method, egressOf(egress));
+		const revision = how.egressRevision ?? how.egress?.revision;
+		// With a revision the host takes the boot's egress as stated, none being its default (a clear); an update read
+		// before this boot, with an older revision, is refused after it.
+		const sandbox = await call<HostSandbox>(sandboxId, method, {
+			...egressOf(how.egress),
+			...(revision === undefined ? {} : { revision }),
+		});
 		return placed(sandboxId, sandbox, hostId);
 	}
 

@@ -123,6 +123,11 @@ export interface BootOptions {
 	readonly env: { readonly [name: string]: string };
 	readonly eligibleHosts: readonly string[];
 	readonly egress?: BackendEgress;
+	/**
+	 * The revision of the sandbox's egress the boot carries, with no egress too: the boot states its egress (none is the
+	 * host's default), and an update read before it is refused as older.
+	 */
+	readonly egressRevision?: number;
 }
 
 /** A snapshot the backend took: its opaque reference and how large it is. */

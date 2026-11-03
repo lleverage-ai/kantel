@@ -110,6 +110,11 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 * `egressRevision`, an update didn't get through (its host away, say), and the sweep sends the egress as it is now.
 	 */
 	readonly egressApplied?: number;
+	/**
+	 * Why it is due to stop at `stopsAt`, when that isn't its auto-stop: its host can't enforce its egress as stored. The
+	 * sweep stops it with this reason, as many times as it takes.
+	 */
+	readonly stopFor?: string;
 	/** Its own egress grants. Absent on a sandbox made before there were any: none. */
 	readonly grants?: readonly computeSchema.EgressGrant[];
 	/**

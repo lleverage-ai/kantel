@@ -135,6 +135,14 @@ export class FakeHost {
 				this.sandboxes.set(sandbox.id, stopped);
 				return answer(stopped);
 			}
+			case "sandbox.start":
+			case "sandbox.resume": {
+				const sandbox = this.sandboxes.get(params.sandboxId);
+				if (sandbox === undefined) return fail("not_found", "no such sandbox");
+				const running = { ...sandbox, state: "running" as const };
+				this.sandboxes.set(sandbox.id, running);
+				return answer(running);
+			}
 			case "sandbox.exec": {
 				this.send({ type: "event", call: message.id, event: { kind: "exec.output", stdout: btoa("hi\n"), at: 1 } });
 				return answer({ exitCode: 0, stdout: "hi\n", stderr: "", durationMs: 3 });
