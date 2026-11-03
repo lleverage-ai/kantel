@@ -4,6 +4,7 @@
  * up when they are generated (`pnpm --filter @kantel/api generate`; CI fails while they are stale).
  */
 
+import { computeRoutes } from "./compute-routes.ts";
 import { connectionRoutes } from "./connection-routes.ts";
 import { environmentRoutes } from "./environment-routes.ts";
 import { modelProviderRoutes } from "./model-provider-routes.ts";
@@ -1164,6 +1165,7 @@ export const routes = {
 	...programRoutes,
 	...environmentRoutes,
 	...modelProviderRoutes,
+	...computeRoutes,
 } as const;
 
 export type Routes = typeof routes;

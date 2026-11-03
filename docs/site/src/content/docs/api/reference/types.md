@@ -65,6 +65,52 @@ One of: `"read"` or `"write"`.
 
 One of: `"pending"` or `"granted"` or `"rejected"` or `"withdrawn"`.
 
+### Account
+
+An account the caller may act in, with the caller's role in it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The account's ID, such as `acc_7f3k2m9q`. |
+| `kind` | [AccountKind](/api/reference/types/#accountkind) | yes |  |
+| `name` | string | yes |  |
+| `role` | [MemberRole](/api/reference/types/#memberrole) | yes |  |
+| `defaultVisibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | yes |  |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### AccountKind
+
+`personal`: one person's own account, made at their first sign-in; what they create is theirs alone unless they move it. `organisation`: an account people create or join, where sandboxes and snapshots are shared.
+
+One of: `"personal"` or `"organisation"`.
+
+### AccountLimits
+
+The account's limits, where the deployment sets any.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `concurrentSandboxes` | integer | no |  |
+| `startsPerMinute` | integer | no |  |
+| `savedSnapshots` | integer | no |  |
+
+### AccountList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [Account](/api/reference/types/#account)[] | yes |  |
+
+### AccountUsage
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `accountId` | string | yes |  |
+| `since` | integer | yes | Epoch milliseconds, UTC. |
+| `running` | integer | yes | Sandboxes running now. |
+| `runningSeconds` | number | yes |  |
+| `cost` | [Cost](/api/reference/types/#cost) | yes |  |
+| `limits` | [AccountLimits](/api/reference/types/#accountlimits) | no |  |
+
 ### Actor
 
 Who acted: a person, a host app's API key, an agent or Kantel itself.
@@ -100,6 +146,42 @@ One of:
 | --- | --- | --- | --- |
 | `kind` | `"system"` | yes |  |
 | `component` | string | yes |  |
+
+### ApiKey
+
+A scoped API key. Its secret is never stored or shown after it is made.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The key's ID, such as `key_5n2p8r`. |
+| `accountId` | string | yes |  |
+| `name` | string | yes |  |
+| `prefix` | string | yes | The secret's first characters, such as `ksk_5n2p`, to tell keys apart. |
+| `scopes` | [ApiKeyScope](/api/reference/types/#apikeyscope)[] | yes |  |
+| `sandboxIds` | string[] | no | Limited to these sandboxes (and the ones it creates). |
+| `createdBy` | [CreatedBy](/api/reference/types/#createdby) | yes |  |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `expiresAt` | integer | no | Epoch milliseconds, UTC. |
+| `lastUsedAt` | integer | no | Epoch milliseconds, UTC. |
+| `revokedAt` | integer | no | Epoch milliseconds, UTC. |
+
+### ApiKeyList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [ApiKey](/api/reference/types/#apikey)[] | yes |  |
+
+### ApiKeyPreset
+
+A named set of scopes. `read-only`: the `:read` scopes. `agent`: what a coding agent needs to make and drive its own sandboxes, everything but `sandboxes:delete` and the account and host scopes. `ci`: `agent` plus `sandboxes:delete`. `admin`: every scope but `hosts:admin`.
+
+One of: `"read-only"` or `"agent"` or `"ci"` or `"admin"`.
+
+### ApiKeyScope
+
+What a key may do. `sandboxes:read`: list and inspect sandboxes, their usage and events. `sandboxes:write`: create, change, start, stop, pause, resume, fork and recover. `sandboxes:delete`: delete for good. `exec`: run commands. `files`: read and write files. `access`: SSH, desktop, browser and public ports. `snapshots:read`, `snapshots:write`: snapshots and saved snapshots. `account:read`: the account, its members and keys. `account:admin`: members, keys, webhooks, telemetry and the proxy. `hosts:admin`: the deployment's hosts, for a super-admin's key only.
+
+One of: `"sandboxes:read"` or `"sandboxes:write"` or `"sandboxes:delete"` or `"exec"` or `"files"` or `"access"` or `"snapshots:read"` or `"snapshots:write"` or `"account:read"` or `"account:admin"` or `"hosts:admin"`.
 
 ### AssistantItem
 
@@ -173,6 +255,15 @@ One of:
 | `kind` | `"group"` | yes |  |
 | `groupId` | string | yes |  |
 
+### BrowserAccess
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `url` | string | yes | Watch and drive the sandbox's Chrome in a browser. |
+| `cdpUrl` | string | yes | A Chrome DevTools Protocol WebSocket URL, for Playwright's `connectOverCDP` or Puppeteer. |
+| `viewOnly` | boolean | yes |  |
+| `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
+
 ### BrowserEmbed
 
 | Field | Type | Required | Description |
@@ -194,6 +285,37 @@ An agent's request for a browser that a code mode script made: the transcript ca
 | `status` | `"pending"` or `"granted"` or `"denied"` | yes |  |
 | `callId` | string | no | The `browser_request` call waiting on a person: for a code mode script's request, its inner call (`<scriptCallId>/<key>`). A person answers it with `POST /browser/decisions`. |
 | `sites` | string[] | no | The sites the agent asked for. |
+
+### Caller
+
+Who is calling, the accounts they may act in, and the deployment's mode.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `user` | [CallerUser](/api/reference/types/#calleruser) | no |  |
+| `apiKey` | [CallerApiKey](/api/reference/types/#callerapikey) | no |  |
+| `accountId` | string | yes | The account the call acts in when it names none. |
+| `accounts` | [Account](/api/reference/types/#account)[] | yes |  |
+| `superAdmin` | boolean | yes | Whether the caller may manage the deployment's hosts. |
+| `mode` | [DeploymentMode](/api/reference/types/#deploymentmode) | yes |  |
+
+### CallerApiKey
+
+The key the call was signed in with, when it was a key.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes |  |
+| `name` | string | yes |  |
+| `scopes` | [ApiKeyScope](/api/reference/types/#apikeyscope)[] | yes |  |
+
+### CallerUser
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes |  |
+| `name` | string | yes |  |
+| `email` | string | no |  |
 
 ### Card
 
@@ -253,6 +375,34 @@ One of: [ConnectionApprovalCard](/api/reference/types/#connectionapprovalcard) o
 How Kantel gets an OAuth client: a pre-registered `client`, the deployment's client ID metadata document (`cimd`), or dynamic registration (`dcr`).
 
 One of: `"client"` or `"cimd"` or `"dcr"`.
+
+### Command
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The command's ID, such as `cmd_9a8b7c`. |
+| `sandboxId` | string | yes |  |
+| `command` | string | yes |  |
+| `cwd` | string | no |  |
+| `state` | [CommandState](/api/reference/types/#commandstate) | yes |  |
+| `exitCode` | integer | no |  |
+| `stdout` | string | yes | Its output so far, up to 1 MiB; `truncated` says if there was more. |
+| `stderr` | string | yes |  |
+| `truncated` | boolean | yes |  |
+| `startedAt` | integer | yes | Epoch milliseconds, UTC. |
+| `endedAt` | integer | no | Epoch milliseconds, UTC. |
+| `durationMs` | integer | no |  |
+
+### CommandPage
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [Command](/api/reference/types/#command)[] | yes |  |
+| `nextCursor` | string | no | Present when more items follow. |
+
+### CommandState
+
+One of: `"running"` or `"exited"` or `"killed"` or `"timed_out"`.
 
 ### Concept
 
@@ -833,6 +983,37 @@ Which connection a session used, at which step, and who could see it.
 | `items` | [ConnectionUse](/api/reference/types/#connectionuse) or [RedactedConnectionUse](/api/reference/types/#redactedconnectionuse)[] | yes |  |
 | `nextCursor` | string | no | Present when more items follow. |
 
+### Cost
+
+What a sandbox costs at the deployment's rates. A self-hosted install's rates are 0 unless its operator sets them.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `currency` | string | yes | ISO 4217, such as `USD`. |
+| `total` | number | yes | What it has cost so far, in `currency`. |
+| `ratePerHour` | number | yes | What an hour of running costs at its size, in `currency`. |
+
+### CreateApiKeyBody
+
+Give `scopes` or a `preset` (or both, which adds them). A key can't hold a scope its maker lacks.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
+| `name` | string | yes |  (at most 100 characters) |
+| `scopes` | [ApiKeyScope](/api/reference/types/#apikeyscope)[] | no |  |
+| `preset` | [ApiKeyPreset](/api/reference/types/#apikeypreset) | no |  |
+| `sandboxIds` | string[] | no |  |
+| `expiresInDays` | integer | no | Absent: it never expires. (minimum 1, maximum 3650) |
+
+### CreatedBy
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"user"` or `"api_key"` | yes |  |
+| `id` | string | yes | The user's or the API key's ID. |
+| `name` | string | no |  |
+
 ### CreatedSession
 
 A new session, with its first message's submission when it was sent one.
@@ -883,12 +1064,35 @@ A new server, and for a tunnel its first token.
 | `projectWide` | boolean | no |  |
 | `idleTimeoutMs` | integer | no |  (minimum 60000) |
 
+### CreateHostJoinTokenBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | no |  (at most 100 characters) |
+| `labels` | Record&lt;string, string&gt; | no |  |
+| `expiresInMinutes` | integer | no | Default 60. (minimum 5, maximum 10080) |
+
+### CreateInviteBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `role` | [MemberRole](/api/reference/types/#memberrole) | no |  |
+| `email` | string | no | Only this person may use it. Absent: anyone with the code. |
+| `expiresInHours` | integer | no | Default 168 (a week). (minimum 1, maximum 720) |
+
 ### CreateMemorySpaceBody
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `owner` | [OwnerRef](/api/reference/types/#ownerref) | yes |  |
 | `name` | string | yes |  |
+
+### CreateOrganisationBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | yes |  (at most 100 characters) |
+| `defaultVisibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | no |  |
 
 ### CreateProgramBody
 
@@ -940,6 +1144,25 @@ Any other field is refused as `invalid`.
 | `parentShareId` | string | no | Required of an agent: the share it passes on. |
 | `note` | string | no |  (at most 1000 characters) |
 
+### CreateSandboxBody
+
+Every field is optional: `{}` makes a running isolate in the caller's account.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
+| `name` | string | no | Default: a generated name, such as `brave-otter`. (at most 63 characters) |
+| `type` | [SandboxType](/api/reference/types/#sandboxtype) | no |  |
+| `size` | [SandboxSizeName](/api/reference/types/#sandboxsizename) | no |  |
+| `image` | string | no | A microVM's base image. Default: the deployment's. |
+| `from` | string | no | Start from this snapshot: a snapshot's ID or a saved snapshot's name in the account. |
+| `autoStopMinutes` | integer or null | no | Default 60. `null`: never stop by itself. |
+| `visibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | no |  |
+| `labels` | Record&lt;string, string&gt; | no |  |
+| `env` | Record&lt;string, string&gt; | no | Environment variables every command sees. Not secrets: they are shown to anyone who may exec. |
+| `hostLabels` | Record&lt;string, string&gt; | no | Place it only on a host with each label, such as `{ site: "home" }`. |
+| `wait` | boolean | no | Answer once it is `running` (or `error`) rather than as soon as it is placed. |
+
 ### CreateScheduleBody
 
 A new schedule. Needs the operator role on a project-owned schedule's project.
@@ -974,6 +1197,15 @@ Put the host's own reference for the session in `labels`, such as `{ lleverageRu
 | `visibility` | [SessionVisibility](/api/reference/types/#sessionvisibility) | no |  |
 | `unattended` | [SessionUnattended](/api/reference/types/#sessionunattended) | no |  |
 | `message` | [FirstMessage](/api/reference/types/#firstmessage) | no |  |
+
+### CreateWebhookBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
+| `name` | string | yes |  (at most 100 characters) |
+| `url` | string | yes | HTTPS; a self-hosted install may allow `http://` to a private address. |
+| `events` | [EventType](/api/reference/types/#eventtype)[] | yes |  |
 
 ### CredentialState
 
@@ -1065,6 +1297,21 @@ One of:
 | --- | --- | --- | --- |
 | `op` | `"usage"` | yes |  |
 | `usage` | [Usage](/api/reference/types/#usage) | yes |  |
+
+### DeploymentMode
+
+`selfhosted`: an install someone runs for themselves. `hosted`: a hosted service with plans.
+
+One of: `"selfhosted"` or `"hosted"`.
+
+### DesktopAccess
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `url` | string | yes | Opens the desktop in a browser. Anyone holding it may use it until it expires. |
+| `embedUrl` | string | yes | The same, for an iframe. |
+| `viewOnly` | boolean | yes |  |
+| `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
 
 ### DraftDocument
 
@@ -1284,6 +1531,98 @@ Every error: the KantelError's code and message.
 
 One of: `"invalid"` or `"not_found"` or `"forbidden"` or `"conflict"` or `"expired"` or `"refused"` or `"exhausted"` or `"aborted"` or `"not_supported"` or `"unavailable"` or `"unauthenticated"`.
 
+### Event
+
+Something that happened in an account: what webhooks deliver and the history shows.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The event's ID, such as `evt_8x7w6v`: a webhook's delivery ID, so deduplicate on it. |
+| `type` | [EventType](/api/reference/types/#eventtype) | yes |  |
+| `accountId` | string | yes |  |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `sandboxId` | string | no |  |
+| `snapshotId` | string | no |  |
+| `data` | [EventData](/api/reference/types/#eventdata) | yes |  |
+
+### EventData
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | no |  |
+| `state` | [SandboxState](/api/reference/types/#sandboxstate) | no |  |
+| `previousState` | [SandboxState](/api/reference/types/#sandboxstate) | no |  |
+| `reason` | string | no |  |
+| `actor` | [CreatedBy](/api/reference/types/#createdby) | no |  |
+
+### EventPage
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [Event](/api/reference/types/#event)[] | yes |  |
+| `nextCursor` | string | no | Present when more items follow. |
+
+### EventType
+
+`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call or its auto-stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
+
+One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"sandbox.paused"` or `"sandbox.error"` or `"sandbox.degraded"` or `"sandbox.recovered"` or `"sandbox.deleted"` or `"snapshot.saved"` or `"snapshot.deleted"`.
+
+### ExposedPort
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `port` | integer | yes |  |
+| `url` | string | yes | Its HTTPS URL. Unless `public`, it carries a token anyone holding it may use. |
+| `public` | boolean | yes |  |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### ExposedPortList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [ExposedPort](/api/reference/types/#exposedport)[] | yes |  |
+
+### ExposePortBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `port` | integer | yes |  (minimum 1, maximum 65535) |
+| `public` | boolean | no | Anyone with the URL may open it, with no token. Default false. |
+
+### FileContent
+
+A file of at most 1 MiB; for larger, run a command or use SSH.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes |  |
+| `encoding` | [FileEncoding](/api/reference/types/#fileencoding) | yes |  |
+| `content` | string | yes |  |
+| `size` | integer | yes |  |
+
+### FileEncoding
+
+One of: `"utf8"` or `"base64"`.
+
+### FileEntry
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | yes |  |
+| `path` | string | yes |  |
+| `kind` | `"file"` or `"directory"` or `"symlink"` | yes |  |
+| `size` | integer | yes |  |
+| `modifiedAt` | integer | no | Epoch milliseconds, UTC. |
+
+### FileList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes |  |
+| `items` | [FileEntry](/api/reference/types/#fileentry)[] | yes |  |
+| `nextCursor` | string | no | Present when more items follow. |
+
 ### FileShare
 
 | Field | Type | Required | Description |
@@ -1317,6 +1656,24 @@ The session's first prompt, sent as soon as it exists.
 | `attachments` | [PromptAttachment](/api/reference/types/#promptattachment)[] | no | Files for this message, in the order they were attached. A deployment that stores no uploads refuses them (`invalid`), as it does a file from another project. (at most 20 items) |
 | `model` | string | no | A model ID the session may use, for this run and the session's later runs. Absent keeps the session's model. Only a session's first message may choose its model: once the session has started, naming another is a `conflict` (naming its own is fine). |
 | `thinking` | [ThinkingLevel](/api/reference/types/#thinkinglevel) | no |  |
+
+### ForkedSandboxes
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [Sandbox](/api/reference/types/#sandbox)[] | yes |  |
+
+### ForkSandboxBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | no |  (at most 63 characters) |
+| `snapshotId` | string | no | Fork from this snapshot of the sandbox. Default: its newest, or its live state. |
+| `size` | [SandboxSizeName](/api/reference/types/#sandboxsizename) | no |  |
+| `count` | integer | no | How many copies; default 1. (minimum 1, maximum 50) |
+| `visibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | no |  |
+| `labels` | Record&lt;string, string&gt; | no |  |
+| `wait` | boolean | no |  |
 
 ### ForkSessionBody
 
@@ -1369,6 +1726,66 @@ A GitHub App manifest flow; GitHub requires it finished within an hour.
 | `items` | [TranscriptItem](/api/reference/types/#transcriptitem)[] | yes | Oldest first. |
 | `hasEarlier` | boolean | yes |  |
 
+### Host
+
+A machine that runs sandboxes. It dials out to the control plane; it takes no inbound ports.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The host's ID, such as `host_6t5r4e`. |
+| `name` | string | yes |  |
+| `state` | [HostState](/api/reference/types/#hoststate) | yes |  |
+| `version` | string | no | Its host agent's version. |
+| `latestVersion` | string | no | The newest version the control plane offers. |
+| `os` | string | no |  |
+| `arch` | `"x86_64"` or `"aarch64"` | no |  |
+| `tiers` | [SandboxType](/api/reference/types/#sandboxtype)[] | yes | The sandbox types it runs. |
+| `kvm` | boolean | yes |  |
+| `nestedVirtualisation` | boolean | yes |  |
+| `capacity` | [HostCapacity](/api/reference/types/#hostcapacity) | yes |  |
+| `allocated` | [HostAllocated](/api/reference/types/#hostallocated) | yes |  |
+| `labels` | Record&lt;string, string&gt; | yes |  |
+| `joinedAt` | integer | yes | Epoch milliseconds, UTC. |
+| `lastSeenAt` | integer | no | Epoch milliseconds, UTC. |
+
+### HostAllocated
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sandboxes` | integer | yes |  |
+| `vcpus` | integer | yes |  |
+| `memoryMb` | integer | yes |  |
+| `diskGb` | integer | yes |  |
+
+### HostCapacity
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `vcpus` | integer | yes |  |
+| `memoryMb` | integer | yes |  |
+| `diskGb` | integer | yes |  |
+
+### HostJoinToken
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The token's ID. |
+| `token` | string | yes | `kth_…`, shown once. It joins one host. |
+| `command` | string | yes | The one-line command that installs and registers a host with it. |
+| `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### HostList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [Host](/api/reference/types/#host)[] | yes |  |
+
+### HostState
+
+`online`: connected and taking sandboxes. `unreachable`: its connection dropped; its sandboxes can't be reached until it is back. `draining`: connected, but takes no new sandboxes. `revoked`: its credential is revoked.
+
+One of: `"online"` or `"unreachable"` or `"draining"` or `"revoked"`.
+
 ### HttpMethod
 
 One of: `"GET"` or `"HEAD"` or `"POST"` or `"PUT"` or `"PATCH"` or `"DELETE"` or `"OPTIONS"`.
@@ -1391,6 +1808,33 @@ One of: `"GET"` or `"HEAD"` or `"POST"` or `"PUT"` or `"PATCH"` or `"DELETE"` or
 | `mimeType` | [ToolImageType](/api/reference/types/#toolimagetype) | yes |  |
 | `data` | string | yes | The image as base64. |
 
+### Invite
+
+A way into an organisation: whoever joins with its code becomes a member.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The invite's ID. |
+| `accountId` | string | yes |  |
+| `role` | [MemberRole](/api/reference/types/#memberrole) | yes |  |
+| `email` | string | no |  |
+| `code` | string | no | The join code, such as `kji_…`. Shown once, when the invite is made. |
+| `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### InviteList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [Invite](/api/reference/types/#invite)[] | yes |  |
+
+### IssuedApiKey
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `key` | [ApiKey](/api/reference/types/#apikey) | yes |  |
+| `secret` | string | yes | The key itself, `ksk_…`. Shown once: store it now. |
+
 ### IssuedToolServerToken
 
 A tunnel token just made: the only time its secret is given.
@@ -1399,6 +1843,12 @@ A tunnel token just made: the only time its secret is given.
 | --- | --- | --- | --- |
 | `token` | [ToolServerToken](/api/reference/types/#toolservertoken) | yes |  |
 | `secret` | string | yes | `ktt_…`. Shown once, in this answer; Kantel keeps only its hash. |
+
+### JoinOrganisationBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `code` | string | yes | An invite's join code. |
 
 ### JsonValue
 
@@ -1474,6 +1924,28 @@ What Kantel learnt about a remote MCP server from its URL.
 | `registration` | [ClientRegistration](/api/reference/types/#clientregistration)[] | yes |  |
 | `scopes` | string[] | no |  |
 | `templateId` | string | no |  |
+
+### Member
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `userId` | string | yes |  |
+| `name` | string | yes |  |
+| `email` | string | no |  |
+| `role` | [MemberRole](/api/reference/types/#memberrole) | yes |  |
+| `joinedAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### MemberList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [Member](/api/reference/types/#member)[] | yes |  |
+
+### MemberRole
+
+`member`: uses the organisation's shared sandboxes and snapshots and makes their own. `admin`: also manages members, API keys, webhooks, telemetry and the proxy. `owner`: also renames or deletes the organisation. A personal account's person is its `owner`.
+
+One of: `"member"` or `"admin"` or `"owner"`.
 
 ### MemorySearchBody
 
@@ -2032,6 +2504,28 @@ A catalogue entry: how a service authenticates and where it is reached.
 | `guide` | `"github_app_manifest"` or `"google"` | no | Which built-in guide to registering an app applies. |
 | `manageAccessUrl` | string | no | The provider's own page where a person removes an app's access. |
 
+### ProxySettings
+
+Where sandboxes' outbound traffic may go, and through what, for one account. Experimental.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `accountId` | string | yes |  |
+| `enabled` | boolean | yes | Send sandboxes' outbound traffic through the proxy. |
+| `defaultAction` | `"allow"` or `"deny"` | yes | What happens to a host no rule names. |
+| `allow` | string[] | yes | Hosts always let through: `api.github.com`, `*.npmjs.org`. |
+| `deny` | string[] | yes | Hosts always refused; deny wins over allow. |
+| `upstream` | [ProxyUpstream](/api/reference/types/#proxyupstream) | no |  |
+| `attribution` | boolean | yes | Tell the upstream which sandbox and account each request came from, in signed `Kantel-Sandbox` and `Kantel-Account` headers. |
+| `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### ProxyUpstream
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `url` | string | yes | Another proxy every allowed request goes on to, such as a Mehen. |
+| `headerNames` | string[] | yes | The names of the headers Kantel sends it; their values are never shown. |
+
 ### PutPromptRuleBody
 
 | Field | Type | Required | Description |
@@ -2040,6 +2534,27 @@ A catalogue entry: how a service authenticates and where it is reached.
 | `name` | string | yes | 1 to 100 letters, digits, `.`, `_` and `-`. A rule of this name replaces the owner's rule. |
 | `text` | string | yes |  (at most 32768 characters) |
 | `order` | integer | no | Default 0. (minimum -1000000, maximum 1000000) |
+
+### PutProxySettingsBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
+| `enabled` | boolean | yes |  |
+| `defaultAction` | `"allow"` or `"deny"` | no |  |
+| `allow` | string[] | no |  |
+| `deny` | string[] | no |  |
+| `upstream` | object or null | no |  |
+| `attribution` | boolean | no |  |
+
+### PutTelemetryBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
+| `endpoint` | string | yes |  |
+| `headers` | Record&lt;string, string&gt; | no |  |
+| `signals` | `"metrics"` or `"logs"`[] | no |  |
 
 ### QuestionCard
 
@@ -2281,6 +2796,13 @@ The value a waiting `waitForInput()` returns.
 | `error` | string | no | Resolve the step with this error instead: its `await` throws. (at most 4000 characters) |
 | `waitMs` | integer | no | How long to wait for the resumed run. Default 0. (minimum 0, maximum 30000) |
 
+### ResumeSandboxBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `size` | [SandboxSizeName](/api/reference/types/#sandboxsizename) | no |  |
+| `wait` | boolean | no | Answer once it is `running` (or `error`). |
+
 ### RevocationOutcome
 
 What a disconnect did at the provider: `revoked`, `unsupported` (the provider gives Kantel no way to revoke, or it is a key), `failed` (the provider refused or didn't answer; the connection is removed all the same) or `none` (nothing to revoke).
@@ -2307,6 +2829,17 @@ One of: `"rfc7009"` or `"github_grant"`.
 | `methods` | [HttpMethod](/api/reference/types/#httpmethod)[] | yes |  |
 | `pathPrefix` | string | yes | Whole segments: `/repos` covers `/repos/x`, never `/repositories`. |
 
+### RunCommandBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `command` | string | yes | A shell command line, run with `bash -lc` (or the isolate's shell). |
+| `cwd` | string | no | Default: the sandbox user's home. |
+| `env` | Record&lt;string, string&gt; | no |  |
+| `stdin` | string | no |  |
+| `timeoutMs` | integer | no | Default 30 000; at most 600 000 (10 minutes). (minimum 1, maximum 600000) |
+| `detached` | boolean | no | Start it and answer at once, with no time limit; read it back by its ID. |
+
 ### RunProgramBody
 
 | Field | Type | Required | Description |
@@ -2328,6 +2861,135 @@ How the run a message started or joined ended.
 | `answer` | string | no | The final answer's text, when it was answered. |
 | `error` | string | no |  |
 | `usage` | [Usage](/api/reference/types/#usage) | no |  |
+
+### Sandbox
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The sandbox's ID, such as `sbx_4kq9x2mt`. |
+| `accountId` | string | yes |  |
+| `name` | string | yes |  |
+| `subdomain` | string | yes | Its name under the deployment's sandbox domain, which its public port URLs start with. |
+| `type` | [SandboxType](/api/reference/types/#sandboxtype) | yes |  |
+| `size` | [SandboxSizeName](/api/reference/types/#sandboxsizename) | no |  |
+| `resources` | [SandboxResources](/api/reference/types/#sandboxresources) | no |  |
+| `image` | string | no | The base image a microVM was made from, such as `ubuntu-24.04`. |
+| `state` | [SandboxState](/api/reference/types/#sandboxstate) | yes |  |
+| `health` | [SandboxHealth](/api/reference/types/#sandboxhealth) | no |  |
+| `reason` | string | no | Why it is in `error` or `degraded`, in words. |
+| `visibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | yes |  |
+| `capabilities` | [SandboxCapabilities](/api/reference/types/#sandboxcapabilities) | yes |  |
+| `labels` | Record&lt;string, string&gt; | yes | The caller's own labels. |
+| `autoStopMinutes` | integer or null | yes | How long after a start or resume it stops by itself; `null` never. |
+| `stopsAt` | integer | no | When it will stop by itself, while running; the console's stops-in. |
+| `latestSnapshotId` | string | no | The snapshot a resume or fork would use. |
+| `source` | [SandboxSource](/api/reference/types/#sandboxsource) | no |  |
+| `createdBy` | [CreatedBy](/api/reference/types/#createdby) | yes |  |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `startedAt` | integer | no | Epoch milliseconds, UTC. |
+| `stoppedAt` | integer | no | Epoch milliseconds, UTC. |
+| `cost` | [Cost](/api/reference/types/#cost) | yes |  |
+| `usage` | [UsageSummary](/api/reference/types/#usagesummary) | yes |  |
+| `hostId` | string | no | The host it runs on; only a super-admin is shown it. |
+
+### SandboxCapabilities
+
+What this sandbox can do, from its type and its host.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `exec` | boolean | yes |  |
+| `files` | boolean | yes |  |
+| `ssh` | boolean | yes |  |
+| `desktop` | boolean | yes |  |
+| `browser` | boolean | yes |  |
+| `ports` | boolean | yes |  |
+| `docker` | boolean | yes |  |
+| `kvm` | boolean | yes | `/dev/kvm` inside, for nested virtualisation. |
+| `pause` | boolean | yes | Whether it can be paused with its memory kept. |
+
+### SandboxHealth
+
+`degraded`: the machine is up but its host can't fully reach it; it keeps running.
+
+One of: `"ok"` or `"degraded"`.
+
+### SandboxPage
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [Sandbox](/api/reference/types/#sandbox)[] | yes |  |
+| `nextCursor` | string | no | Present when more items follow. |
+
+### SandboxResources
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `vcpus` | integer | yes |  |
+| `memoryMb` | integer | yes |  |
+| `diskGb` | integer | yes |  |
+
+### SandboxSizeName
+
+A microVM's size; a deployment may offer fewer. Isolates have none.
+
+One of: `"small"` or `"default"` or `"large"` or `"xlarge"`.
+
+### SandboxSource
+
+What it was made from.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `snapshotId` | string | no |  |
+| `sandboxId` | string | no | Set when it was forked from another sandbox. |
+
+### SandboxState
+
+`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots.
+
+One of: `"starting"` or `"running"` or `"stopping"` or `"stopped"` or `"paused"` or `"error"` or `"deleting"` or `"deleted"`.
+
+### SandboxType
+
+`isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH.
+
+One of: `"isolate"` or `"microvm"`.
+
+### SandboxUsage
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sandboxId` | string | yes |  |
+| `intervalSeconds` | integer | yes |  |
+| `points` | [SandboxUsagePoint](/api/reference/types/#sandboxusagepoint)[] | yes |  |
+| `totals` | object | yes |  |
+
+### SandboxUsagePoint
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `at` | integer | yes | Epoch milliseconds, UTC. |
+| `cpu` | number | yes | CPU utilisation over the interval. (minimum 0, maximum 1) |
+| `memoryMb` | number | yes |  |
+| `runningSeconds` | number | yes |  |
+| `cost` | number | yes |  |
+
+### SandboxVisibility
+
+`private`: only the person who made it (and API keys of theirs) may see or use it. `organisation`: every member of its organisation may. A personal account's sandboxes are always `private`.
+
+One of: `"private"` or `"organisation"`.
+
+### SaveSnapshotBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | yes |  (at most 63 characters) |
+| `sandboxId` | string | yes | The sandbox to save, running or stopped. |
+| `snapshotId` | string | no | Save this snapshot of the sandbox's history. Default: its state now. |
+| `description` | string | no |  (at most 500 characters) |
+| `replace` | boolean | no | Replace a saved snapshot of the same name. |
 
 ### Schedule
 
@@ -2773,6 +3435,24 @@ What a session is shown of a skill: enough to decide whether to read it.
 | `items` | [SkillRevision](/api/reference/types/#skillrevision)[] | yes |  |
 | `nextCursor` | string | no | Present when more items follow. |
 
+### Snapshot
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The snapshot's ID, such as `snap_2h8d6f`. |
+| `accountId` | string | yes |  |
+| `kind` | [SnapshotKind](/api/reference/types/#snapshotkind) | yes |  |
+| `name` | string | no | A saved snapshot's name, unique in its account. |
+| `description` | string | no |  |
+| `sandboxId` | string | no | The sandbox it was taken of; absent once that is deleted. |
+| `sandboxType` | [SandboxType](/api/reference/types/#sandboxtype) | yes |  |
+| `state` | [SnapshotState](/api/reference/types/#snapshotstate) | yes |  |
+| `trigger` | `"periodic"` or `"stop"` or `"manual"` or `"save"` | no | What took it. |
+| `memory` | boolean | yes | Whether it holds the sandbox's memory as well as its disk (a pause). |
+| `sizeBytes` | integer | no |  |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `expiresAt` | integer | no | Epoch milliseconds, UTC. |
+
 ### SnapshotConcept
 
 One concept as a host's source holds it.
@@ -2794,6 +3474,23 @@ One concept as a host's source holds it.
 | `supersededBy` | string | no |  |
 | `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
 
+### SnapshotKind
+
+`automatic`: one of a sandbox's own history, taken as it runs and at each stop; the newest is what a resume or fork uses, and older ones expire. `saved`: kept under a name until deleted, and usable as a template for new sandboxes, even after its sandbox is deleted.
+
+One of: `"automatic"` or `"saved"`.
+
+### SnapshotPage
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [Snapshot](/api/reference/types/#snapshot)[] | yes |  |
+| `nextCursor` | string | no | Present when more items follow. |
+
+### SnapshotState
+
+One of: `"creating"` or `"ready"` or `"failed"` or `"deleting"`.
+
 ### SourceRef
 
 Where a host's adapter imported something from.
@@ -2802,6 +3499,32 @@ Where a host's adapter imported something from.
 | --- | --- | --- | --- |
 | `sourceId` | string | yes | The host's skill or memory source, such as `team-skills`. |
 | `ref` | string | yes | Its ref: a commit or a version. |
+
+### SshAccess
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `host` | string | yes | The SSH gateway's host name. |
+| `port` | integer | yes |  |
+| `user` | string | yes | Names the sandbox to the gateway. |
+| `command` | string | yes | A command line that connects, such as `ssh -p 2222 sbx_4kq9x2mt@ssh.example`. |
+| `privateKey` | string | no | When Kantel made the key pair: its private key, shown once. |
+| `hostKeyFingerprint` | string | no |  |
+| `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### SshAccessBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `publicKey` | string | no | An OpenSSH public key to let in. Absent: Kantel makes a key pair for this access. |
+| `ttlMinutes` | integer | no | Default 60. (minimum 5, maximum 1440) |
+
+### StopSandboxBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `keepMemory` | boolean | no | Pause instead: keep its memory as well as its disk (`paused`). microVMs only. Default false. |
+| `wait` | boolean | no | Answer once it is `stopped` or `paused`. |
 
 ### Submission
 
@@ -2813,6 +3536,51 @@ A message the session accepted.
 | `sessionId` | string | yes |  |
 | `via` | [MessageVia](/api/reference/types/#messagevia) | yes |  |
 | `requestId` | string | no | The `Idempotency-Key` it was sent with. |
+
+### TakeSnapshotBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `description` | string | no |  (at most 500 characters) |
+
+### TelemetryExport
+
+Where an account's telemetry goes: sandbox metrics (`kantel.sandbox.running`, `kantel.sandbox.cpu.seconds`, `kantel.sandbox.cost`, …) every 60 seconds, and each lifecycle event as an OTLP log record when it happens.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `accountId` | string | yes |  |
+| `endpoint` | string | yes | An OTLP/HTTP collector's base URL; `/v1/metrics` and `/v1/logs` are added. |
+| `headerNames` | string[] | yes | The headers sent with each export; values never shown. |
+| `signals` | `"metrics"` or `"logs"`[] | yes |  |
+| `lastExport` | [TelemetryLastExport](/api/reference/types/#telemetrylastexport) | no |  |
+| `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### TelemetryLastExport
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `at` | integer | yes | Epoch milliseconds, UTC. |
+| `ok` | boolean | yes |  |
+| `status` | integer | no |  |
+| `error` | string | no |  |
+
+### TelemetryTest
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `telemetry` | [TelemetryExport](/api/reference/types/#telemetryexport) | yes |  |
+| `test` | [TelemetryTestResult](/api/reference/types/#telemetrytestresult) | yes |  |
+
+### TelemetryTestResult
+
+What the collector answered to an empty export sent on save.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `ok` | boolean | yes |  |
+| `status` | integer | no |  |
+| `error` | string | no |  |
 
 ### TestModelProviderBody
 
@@ -3008,6 +3776,13 @@ One of: `"tunnel"` or `"http"` or `"callback"`.
 
 One of: [UserItem](/api/reference/types/#useritem) or [AssistantItem](/api/reference/types/#assistantitem) or [ToolItem](/api/reference/types/#toolitem) or [CardItem](/api/reference/types/#carditem) or [NoticeItem](/api/reference/types/#noticeitem).
 
+### UpdateAccountBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | no |  (at most 100 characters) |
+| `defaultVisibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | no |  |
+
 ### UpdateEnvironmentBody
 
 | Field | Type | Required | Description |
@@ -3015,6 +3790,30 @@ One of: [UserItem](/api/reference/types/#useritem) or [AssistantItem](/api/refer
 | `description` | string | no |  (at most 200 characters) |
 | `idleTimeoutMs` | integer | no |  (minimum 60000) |
 | `size` | [EnvironmentSizeName](/api/reference/types/#environmentsizename) | no |  |
+
+### UpdateHostBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | no |  (at most 100 characters) |
+| `labels` | Record&lt;string, string&gt; | no |  |
+| `draining` | boolean | no | Stop placing new sandboxes on it. |
+
+### UpdateMemberBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `role` | [MemberRole](/api/reference/types/#memberrole) | yes |  |
+
+### UpdateSandboxBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | no |  (at most 63 characters) |
+| `autoStopMinutes` | integer or null | no |  |
+| `extendMinutes` | integer | no | Move `stopsAt` to this long from now. (minimum 1, maximum 43200) |
+| `visibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | no |  |
+| `labels` | Record&lt;string, string&gt; | no | Replaces its labels. |
 
 ### UpdateScheduleBody
 
@@ -3039,6 +3838,15 @@ The fields to change; one left out stays as it is.
 | --- | --- | --- | --- |
 | `access` | [ShareAccess](/api/reference/types/#shareaccess) | no |  |
 | `title` | string | no |  (at most 200 characters) |
+
+### UpdateWebhookBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | no |  (at most 100 characters) |
+| `url` | string | no |  |
+| `events` | [EventType](/api/reference/types/#eventtype)[] | no |  |
+| `enabled` | boolean | no |  |
 
 ### UsableConnection
 
@@ -3068,6 +3876,14 @@ Model token usage and cost: the session's running total on a snapshot and in a `
 | `cacheReadTokens` | integer | no |  |
 | `cacheWriteTokens` | integer | no |  |
 | `costUsd` | number | no |  |
+
+### UsageSummary
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `runningSeconds` | number | yes |  |
+| `cpuSeconds` | number | yes |  |
+| `recentCpu` | number[] | yes | CPU utilisation, 0 to 1, over the last 24 intervals of 5 minutes, oldest first: a sparkline. |
 
 ### UserAttachment
 
@@ -3115,6 +3931,81 @@ A `ConnectionApprovalCard` under its old type, `vault.approval`, as transcripts 
 | `request` | [ConnectionApprovalRequest](/api/reference/types/#connectionapprovalrequest) | no |  |
 | `callId` | string | no | The tool call waiting on this approval: a connection call's `callId`, or for a request a `codemode` script made, the script's inner call (`<scriptCallId>/<key>`, such as `toolu_01/c9`). A client that renders that call may show the approval in it and leave this card out; one that doesn't still has the card. Absent on cards written before it. |
 
+### ViewAccessBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `viewOnly` | boolean | no | Watch only: no keyboard or mouse. Default false. |
+| `ttlMinutes` | integer | no | Default 60. (minimum 1, maximum 1440) |
+
+### Webhook
+
+An HTTPS endpoint that gets an account's events, signed as Standard Webhooks are: `webhook-id`, `webhook-timestamp` and `webhook-signature` (`v1,` and the base64 HMAC-SHA256 of `id.timestamp.body`, keyed by the secret after its `whsec_`). Failed deliveries are retried with backoff, up to 8 attempts.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The webhook's ID, such as `whk_3m4n5b`. |
+| `accountId` | string | yes |  |
+| `name` | string | yes |  |
+| `url` | string | yes |  |
+| `events` | [EventType](/api/reference/types/#eventtype)[] | yes |  |
+| `enabled` | boolean | yes |  |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `lastDelivery` | [WebhookLastDelivery](/api/reference/types/#webhooklastdelivery) | no |  |
+
+### WebhookDelivery
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The delivery's ID. |
+| `webhookId` | string | yes |  |
+| `eventId` | string | yes |  |
+| `eventType` | [EventType](/api/reference/types/#eventtype) | yes |  |
+| `state` | `"pending"` or `"delivered"` or `"failed"` | yes |  |
+| `attempts` | integer | yes |  |
+| `lastStatus` | integer | no |  |
+| `lastError` | string | no |  |
+| `nextAttemptAt` | integer | no | Epoch milliseconds, UTC. |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `deliveredAt` | integer | no | Epoch milliseconds, UTC. |
+
+### WebhookDeliveryPage
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [WebhookDelivery](/api/reference/types/#webhookdelivery)[] | yes |  |
+| `nextCursor` | string | no | Present when more items follow. |
+
+### WebhookLastDelivery
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `at` | integer | yes | Epoch milliseconds, UTC. |
+| `ok` | boolean | yes |  |
+| `status` | integer | no |  |
+
+### WebhookList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [Webhook](/api/reference/types/#webhook)[] | yes |  |
+
+### WebhookWithSecret
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `webhook` | [Webhook](/api/reference/types/#webhook) | yes |  |
+| `secret` | string | yes | The signing secret, `whsec_…`. Shown once. |
+
 ### Weekday
 
 One of: `"mon"` or `"tue"` or `"wed"` or `"thu"` or `"fri"` or `"sat"` or `"sun"`.
+
+### WriteFileBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes |  |
+| `content` | string | yes |  |
+| `encoding` | [FileEncoding](/api/reference/types/#fileencoding) | no |  |
+| `mode` | string | no | Octal permissions, such as `0755`. |

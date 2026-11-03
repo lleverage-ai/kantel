@@ -3,6 +3,8 @@
  * router (`router.ts`), and the generators for the OpenAPI document (`openapi.ts`) and the TS SDK (`sdk.ts`). The
  * generated files are `@kantel/api/openapi.json` and `@kantel/api/sdk`.
  */
+export * from "./compute-routes.ts";
+export * as computeSchema from "./compute-schema.ts";
 export * from "./connection-routes.ts";
 export * as connectionSchema from "./connections-schema.ts";
 export * from "./environment-routes.ts";
