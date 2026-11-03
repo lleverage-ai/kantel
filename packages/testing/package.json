@@ -10,8 +10,6 @@
 		"./*": "./src/*.ts"
 	},
 	"dependencies": {
-		"@earendil-works/pi-ai": "1.4.0",
-		"@kantel/contracts": "workspace:*",
-		"@kantel/protocol": "workspace:*"
+		"@kantel/contracts": "workspace:*"
 	}
 }
