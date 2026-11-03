@@ -220,6 +220,11 @@ const DEFAULT_AUTO_STOP_MINUTES = 60;
 export const HOST_SEEN_PRECISION_MS = 60_000;
 
 /** Whether a host record needs writing: anything but `lastSeenAt` changed, or that is `HOST_SEEN_PRECISION_MS` stale. */
+/** "a" or "an" before a sandbox type: an isolate, a microvm. */
+function article(type: string): string {
+	return /^[aeiou]/i.test(type) ? "an" : "a";
+}
+
 function hostChanged(known: StoredHost, next: StoredHost): boolean {
 	const { lastSeenAt: knownSeen, ...knownRest } = known;
 	const { lastSeenAt: nextSeen, ...nextRest } = next;
@@ -510,8 +515,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			throw new KantelError(
 				"unavailable",
 				shared
-					? `No host can run a ${type} sandbox now`
-					: `No host of this account's own can run a ${type} sandbox now. Add one with kantel hosts add, or under Hosts in the console`,
+					? `No host can run ${article(type)} ${type} sandbox now`
+					: `No host of this account's own can run ${article(type)} ${type} sandbox now. Add one with kantel hosts add, or under Hosts in the console`,
 			);
 		}
 		return eligible;
