@@ -59,6 +59,8 @@ export interface OrganisationInvite {
 	readonly email: string;
 	readonly role: AccountRole;
 	readonly sentAt: number;
+	/** The join code (`kji_…`), only on the invite just made: Kantel shows it once and sends no email. */
+	readonly code?: string;
 }
 
 export interface AccountsSource {
@@ -244,8 +246,8 @@ export interface SnapshotsSource {
 	list(snapshotId: string, path: string): Promise<readonly SnapshotEntry[]>;
 	/** A text file's content; undefined for a binary or a file too big to show. */
 	read(snapshotId: string, path: string): Promise<string | undefined>;
-	/** A link to download a file or folder (as a tarball). */
-	downloadUrl(snapshotId: string, path: string): string;
+	/** A link to download a file or folder (as a tarball), or undefined where there is none: no Download then. */
+	downloadUrl(snapshotId: string, path: string): string | undefined;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

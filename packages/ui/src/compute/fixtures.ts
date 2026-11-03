@@ -941,7 +941,8 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 				gate(() => {
 					const invite: OrganisationInvite = { id: nextId("inv"), email: input.email, role: input.role, sentAt: now() };
 					invites.set(accountId, [...(invites.get(accountId) ?? []), invite]);
-					return invite;
+					// The code comes back once, with the invite just made, and is never listed.
+					return { ...invite, code: fakeSecret("kji_") };
 				}),
 			revokeInvite: (accountId, inviteId) =>
 				gate(() => {

@@ -185,6 +185,9 @@ importers:
         specifier: 19.3.1
         version: 19.3.1(react@19.3.1)
     devDependencies:
+      "@kantel/compute":
+        specifier: workspace:*
+        version: link:../../packages/compute
       "@kantel/memory":
         specifier: workspace:*
         version: link:../../packages/memory
