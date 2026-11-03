@@ -70,7 +70,7 @@ A scoped API key. Its secret is never stored or shown after it is made.
 | `createdBy` | [CreatedBy](/api/reference/types/#createdby) | yes |  |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 | `expiresAt` | integer | no | Epoch milliseconds, UTC. |
-| `lastUsedAt` | integer | no | Epoch milliseconds, UTC. |
+| `lastUsedAt` | integer | no | When the key last signed a call in, to within a minute. Absent until its first use. |
 | `revokedAt` | integer | no | Epoch milliseconds, UTC. |
 
 ### ApiKeyList

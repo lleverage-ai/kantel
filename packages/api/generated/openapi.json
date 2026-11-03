@@ -7385,7 +7385,7 @@
 					},
 					"lastUsedAt": {
 						"type": "integer",
-						"description": "Epoch milliseconds, UTC."
+						"description": "When the key last signed a call in, to within a minute. Absent until its first use."
 					},
 					"revokedAt": {
 						"type": "integer",
