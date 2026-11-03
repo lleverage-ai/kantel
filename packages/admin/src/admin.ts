@@ -657,7 +657,7 @@ function mainHelp(): string {
 		"",
 		`Flags on every command:\n${flagLines(GLOBAL_FLAGS)}`,
 		"",
-		"Sandboxes themselves are the kantel command's: npx kantel help.",
+		"Sandboxes themselves are the kantel command's: kantel help.",
 	].join("\n");
 }
 

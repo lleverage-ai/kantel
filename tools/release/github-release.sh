@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # github-release.sh [--dry-run] <version> [out]: makes Kantel's GitHub Release v<version>, at this checkout's commit,
 # with the files pack.sh wrote to out/github (default dist/release/github): kantel-host for Linux x86_64 and arm64,
-# kantel-admin.js, install.sh and SHA256SUMS.
+# kantel.js, kantel-admin.js, install.sh, install-cli.sh and SHA256SUMS.
 #
 # A version without a prerelease part (0.1.0) is marked the latest release, so
 # https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh, the host join command Kantel prints,
-# serves it. A prerelease (0.2.0-rc.1) is marked a prerelease and never the latest; install it with
+# and releases/latest/download/install-cli.sh, the commands' installer, serve it. A prerelease (0.2.0-rc.1) is marked a prerelease and never the latest; install it with
 # `install.sh --version 0.2.0-rc.1`. If the release exists already with every file, nothing changes; if it exists
 # without some of them (a run that stopped part way), the files are uploaded again, replacing those there.
 #
@@ -24,7 +24,7 @@ out=${2:-$root/dist/release}
 repo=${GITHUB_REPOSITORY:-lleverage-ai/kantel}
 tag="v$version"
 commit=$(git -C "$root" rev-parse HEAD)
-files=(kantel-host-linux-amd64 kantel-host-linux-arm64 kantel-admin.js install.sh SHA256SUMS)
+files=(kantel-host-linux-amd64 kantel-host-linux-arm64 kantel.js kantel-admin.js install.sh install-cli.sh SHA256SUMS)
 
 for file in "${files[@]}"; do
 	[[ -f "$out/github/$file" ]] || {
@@ -32,10 +32,12 @@ for file in "${files[@]}"; do
 		exit 1
 	}
 done
-grep -q "^KANTEL_RELEASE_VERSION=\"$version\"$" "$out/github/install.sh" || {
-	echo "github-release.sh: $out/github/install.sh isn't $version's; run pack.sh $version" >&2
-	exit 1
-}
+for file in install.sh install-cli.sh; do
+	grep -q "^KANTEL_RELEASE_VERSION=\"$version\"$" "$out/github/$file" || {
+		echo "github-release.sh: $out/github/$file isn't $version's; run pack.sh $version" >&2
+		exit 1
+	}
+done
 
 flags=(--latest)
 [[ "$version" == *-* ]] && flags=(--prerelease --latest=false)
@@ -45,7 +47,12 @@ notes=$(
 	cat <<EOF
 Kantel $version.
 
-**Use sandboxes**: the \`kantel\` command is on npm: \`npx kantel@$version help\`.
+**Use sandboxes**: install the \`kantel\` command, and the operator's \`kantel-admin\`, for yourself (Linux or macOS, with
+Node.js 22 or later; no sudo). This installs this release; \`releases/latest/download/install-cli.sh\` installs the latest:
+
+\`\`\`sh
+curl -fsSL $base/install-cli.sh | sh
+\`\`\`
 
 **Add a host** (Linux, x86_64 or arm64, with /dev/kvm for microVMs): make a join token on the console's Hosts page or
 with \`kantel-admin host add\`, then run the command it prints on the machine. To install this release in particular:
@@ -54,7 +61,7 @@ with \`kantel-admin host add\`, then run the command it prints on the machine. T
 curl -fsSL $base/install.sh | sudo sh -s -- --url https://kantel.example.com --token kth_...
 \`\`\`
 
-**Operate a self-hosted Kantel**: \`kantel-admin.js\` needs Node.js 22 or later.
+**Operate a self-hosted Kantel**: \`kantel-admin\` comes with the command above. For it alone, system-wide:
 
 \`\`\`sh
 sudo curl -fsSLo /usr/local/bin/kantel-admin $base/kantel-admin.js

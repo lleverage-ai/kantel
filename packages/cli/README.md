@@ -14,7 +14,15 @@ npx kantel stop sbx_4kq9x2mt
 Operating a self-hosted Kantel (install, upgrade, hosts) is `kantel-admin`, in `packages/admin`, which each of
 Kantel's GitHub Releases carries as one file.
 
-It needs Node 22 or later. In this repository the package is `@kantel/cli`; it is published to npm as `kantel`.
+It needs Node 22 or later. Each of Kantel's GitHub Releases carries it as one file, `kantel.js`, with an installer
+(`install-cli.sh`, here) that puts it in `~/.local/bin` without sudo, and works pasted into bash, zsh or fish:
+
+```sh
+curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install-cli.sh | sh
+```
+
+In this repository the package is `@kantel/cli`. It is built as the npm package `kantel` too, but isn't on npm yet,
+so until it is, run `kantel` where this page says `npx kantel`.
 
 ## Signing in
 

@@ -17,14 +17,16 @@ Running a self-hosted install, and its hosts, is a separate command for operator
 
 ## Install it
 
-It needs Node.js 22 or later. It is the `kantel` package on npm, published from Kantel's release workflow with npm provenance:
+It needs Node.js 22 or later, on Linux or macOS. Each of Kantel's [GitHub Releases](https://github.com/lleverage-ai/kantel/releases) carries it as one file, `kantel.js`, and an installer for it that needs no sudo. This line works in bash, zsh and fish:
 
 ```sh
-npm install -g kantel
+curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install-cli.sh | sh
 kantel version
 ```
 
-Or run it with nothing to install: `npx kantel <command>`. To build it yourself instead, run `pnpm install --frozen-lockfile --filter '@kantel/cli...'` and `pnpm --filter @kantel/cli build` in a clone of the repository, which writes one file, `packages/cli/dist/kantel.js`, and `npm install -g ./packages/cli/dist` to put it on your `PATH`.
+It checks the files against the release's `SHA256SUMS`, puts them in `~/.local/share/kantel`, and links `~/.local/bin/kantel` and `~/.local/bin/kantel-admin` (the [operator's command](/self-hosting/admin-cli/)) to them. If `~/.local/bin` isn't on your `PATH`, it says how to put it there (`fish_add_path ~/.local/bin` in fish). Run the same line again to update. After `| sh -s --`, `--dir DIR` links the commands in another directory, `--no-admin` installs `kantel` alone, and `--version 0.1.0` installs that release. `gh attestation verify ~/.local/share/kantel/kantel.mjs --repo lleverage-ai/kantel` checks that Kantel's release workflow built it.
+
+It isn't on npm yet, so `npx kantel` doesn't work: where these pages say `npx kantel`, run `kantel`. To build it yourself instead, run `pnpm install --frozen-lockfile --filter '@kantel/cli...'` and `pnpm --filter @kantel/cli build` in a clone of the repository, which writes one file, `packages/cli/dist/kantel.js`, and `npm install -g ./packages/cli/dist` to put it on your `PATH`.
 
 ## Sign in
 

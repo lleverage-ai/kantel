@@ -1,22 +1,24 @@
 name: Release
 
-# Releases Kantel, everything at one version:
-#   - on npm, only the user CLI, `kantel` (packages/cli);
-#   - on a GitHub Release, tagged v<version>, what self-hosting needs: `kantel-host` for Linux x86_64 and arm64
-#     (apps/host), the operator CLI `kantel-admin.js` (packages/admin), the host installer `install.sh`
-#     (apps/host/install.sh) and `SHA256SUMS`, each with a build provenance attestation.
-# tools/release/README.md says why the split, and how to check a release.
+# Releases Kantel, everything at one version, on a GitHub Release tagged v<version>, each file with a build
+# provenance attestation: `kantel-host` for Linux x86_64 and arm64 (apps/host), the user CLI `kantel.js`
+# (packages/cli), the operator CLI `kantel-admin.js` (packages/admin), the host installer `install.sh`
+# (apps/host/install.sh), the CLIs' installer `install-cli.sh` (packages/cli/install-cli.sh) and `SHA256SUMS`.
+# npm publishing of `kantel` is built in but off: on hold until Kantel is ready for it, `publish_npm` turns it on.
+# tools/release/README.md says why, and how to check a release.
 #
 # - A release is a run by hand on main: `gh workflow run release.yml --ref main -f version=0.1.0 -f publish=true`.
 #   A version without a prerelease part becomes the latest GitHub Release, which the host join command
-#   (releases/latest/download/install.sh) installs, and npm's `latest`. A prerelease (0.2.0-rc.1) is a GitHub
-#   prerelease and npm's `next`. A run that stopped part way can be run again with the same version: what is out
-#   already is skipped.
+#   (releases/latest/download/install.sh) and the CLIs' installer (releases/latest/download/install-cli.sh) install.
+#   A prerelease (0.2.0-rc.1) is a GitHub prerelease, never the latest. A run that stopped part way can be run again
+#   with the same version: what is out already is skipped.
 # - Without `publish`, and on a pull request that touches what it releases, it builds and smoke-tests everything,
 #   prints the GitHub Release it would make and runs `npm publish --dry-run`, uploading nothing.
-# - npm: trusted publishing (OIDC), so there is no npm token and npm adds provenance. `kantel`'s trusted publisher
-#   names this file and the `npm` environment, which only main may use. npm only lets a trusted publisher be added
-#   to a package that exists, so `kantel`'s first version was a placeholder published by hand (TASK-4740's runbook).
+# - npm, with `-f publish_npm=true` as well: `kantel` too, after the GitHub Release, as npm's `latest` (a prerelease
+#   as `next`). Trusted publishing (OIDC), so there is no npm token and npm adds provenance. `kantel`'s trusted
+#   publisher names this file and the `npm` environment, which only main may use. npm only lets a trusted publisher be
+#   added to a package that exists, so `kantel`'s first version is a placeholder published by hand first. Without
+#   publish_npm nothing here needs npm, its credentials or the `npm` environment.
 # - GitHub-hosted runners, unlike the rest of Kantel's CI: trusted publishing doesn't support self-hosted runners.
 #   The repository is public, so they cost no Actions minutes.
 on:
@@ -36,7 +38,11 @@ on:
         required: true
         type: string
       publish:
-        description: Make the GitHub Release and publish to npm (off, it builds, checks and dry-runs)
+        description: Make the GitHub Release (off, it builds, checks and dry-runs)
+        type: boolean
+        default: false
+      publish_npm:
+        description: With publish, publish kantel to npm as well (on hold; needs kantel's trusted publisher on npm)
         type: boolean
         default: false
 
@@ -152,13 +158,15 @@ jobs:
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: tools/release/github-release.sh "$VERSION" "$RUNNER_TEMP/release"
+        run: |
+          tools/release/github-release.sh "$VERSION" "$RUNNER_TEMP/release"
+          echo "Released https://github.com/$GITHUB_REPOSITORY/releases/tag/v$VERSION" >>"$GITHUB_STEP_SUMMARY"
 
   publish:
     name: Publish to npm
     # After the GitHub Release, so `kantel`'s version is never out before the hosts' files.
     needs: [pack, github-release]
-    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && inputs.publish_npm && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # kantel's trusted publisher requires this environment, and it only allows main.
@@ -186,9 +194,4 @@ jobs:
         run: tools/release/publish.sh "$RUNNER_TEMP/release"
 
       - name: Summary
-        run: |
-          {
-            echo "Released $VERSION:"
-            echo "- https://www.npmjs.com/package/kantel/v/$VERSION"
-            echo "- https://github.com/$GITHUB_REPOSITORY/releases/tag/v$VERSION"
-          } >>"$GITHUB_STEP_SUMMARY"
+        run: echo "Published https://www.npmjs.com/package/kantel/v/$VERSION" >>"$GITHUB_STEP_SUMMARY"
