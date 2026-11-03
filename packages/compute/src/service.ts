@@ -1020,20 +1020,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			(variable) => variable.protected && variable.sealed !== undefined && names.includes(variable.name),
 		);
 		const grants = [...(environment?.grants ?? []), ...(subject?.grants ?? [])];
-		const on = proxy !== undefined && proxy.enabled;
+		const on = proxy?.enabled;
 		if (!on && bound.length === 0 && grants.length === 0) return {};
-		const base: BackendEgress =
-			proxy !== undefined && proxy.enabled
-				? {
-						defaultAction: proxy.defaultAction,
-						allow: [...proxy.allow],
-						deny: [...proxy.deny],
-						...(proxy.upstream === undefined
-							? {}
-							: { upstream: { url: proxy.upstream.url, headers: { ...proxy.upstreamHeaders } } }),
-						attribution: proxy.attribution,
-					}
-				: { defaultAction: "allow", allow: [], deny: [], attribution: false };
+		const base: BackendEgress = proxy?.enabled
+			? {
+					defaultAction: proxy.defaultAction,
+					allow: [...proxy.allow],
+					deny: [...proxy.deny],
+					...(proxy.upstream === undefined
+						? {}
+						: { upstream: { url: proxy.upstream.url, headers: { ...proxy.upstreamHeaders } } }),
+					attribution: proxy.attribution,
+				}
+			: { defaultAction: "allow", allow: [], deny: [], attribution: false };
 		return {
 			egress: {
 				...base,

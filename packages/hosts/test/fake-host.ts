@@ -97,7 +97,7 @@ export class FakeHost {
 	private onText(message: HostMessage) {
 		this.sent.push(message);
 		if (message.type !== "call") return;
-		this.calls.push({ method: message.method, params: message.params as { [key: string]: unknown } });
+		this.calls.push({ method: message.method ?? "", params: message.params as { [key: string]: unknown } });
 		const params = message.params as { sandboxId: string; tier?: string; size?: string; newId?: string };
 		const answer = (result: unknown) => this.send({ type: "result", id: message.id, result });
 		const fail = (code: string, text: string) =>
