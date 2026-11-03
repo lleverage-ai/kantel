@@ -36,6 +36,7 @@ import { apiToolServers } from "./api/tool-servers-http.ts";
 import { apiVault } from "./api/vault-http.ts";
 import { App, ShellPlaceholder } from "./app/app.tsx";
 import { parseRoute } from "./app/router.ts";
+import { ComputeApp, isComputePath } from "./compute/compute-app.tsx";
 import { createRecordedAgent, type RecordedAgent } from "./recorded/agent.ts";
 import { createCatalogue } from "./recorded/catalogue.ts";
 import { createRecordedConnections } from "./recorded/connections.ts";
@@ -320,6 +321,16 @@ function ApiConsole({ first }: { first: Promise<Boot> }) {
 	}, [booting]);
 	if (answer?.for !== booting) return <ShellPlaceholder />;
 	const { state } = answer;
+	// The compute console (experimental) under /compute: signed in the same way, on sample data for now.
+	if (state.kind === "signed-in" && isComputePath(location.pathname)) {
+		const { signOut } = state.actor;
+		return (
+			<ComputeApp
+				signedInAs={{ name: state.me.name, ...(state.me.email === undefined ? {} : { email: state.me.email }) }}
+				{...(signOut === undefined ? {} : { onSignOut: () => void signOut().finally(reboot) })}
+			/>
+		);
+	}
 	if (state.kind === "signed-in") return <SignedInConsole state={state} onSignedOut={reboot} />;
 	if (state.kind === "sign-in") {
 		return (
@@ -539,6 +550,8 @@ createRoot(document.getElementById("root")!).render(
 		>
 			{viewing !== undefined ? (
 				<BrowserViewerPage view={viewing} />
+			) : source === "recorded" && isComputePath(location.pathname) ? (
+				<ComputeApp />
 			) : client !== undefined && recordedOversight !== undefined ? (
 				<OversightConsole client={client} oversight={recordedOversight} />
 			) : firstBoot !== undefined ? (

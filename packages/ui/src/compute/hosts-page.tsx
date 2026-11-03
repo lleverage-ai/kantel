@@ -186,10 +186,7 @@ export function HostsPage({ source, now: fixedNow, hosting, adding = false }: Ho
 										State
 									</th>
 									<th className={th} scope="col">
-										Platform
-									</th>
-									<th className={th} scope="col">
-										Version
+										Machine
 									</th>
 									<th className={th} scope="col">
 										CPU
@@ -202,9 +199,6 @@ export function HostsPage({ source, now: fixedNow, hosting, adding = false }: Ho
 									</th>
 									<th className={th} scope="col">
 										Sandboxes
-									</th>
-									<th className={th} scope="col">
-										Virtualisation
 									</th>
 									<th className={th} scope="col">
 										Last seen
@@ -332,13 +326,15 @@ function HostRow({
 			<td className={td}>
 				<StatusLabel status={HOST_STATE_STATUS[host.state]}>{HOST_STATE_LABELS[host.state]}</StatusLabel>
 			</td>
+			{/* The machine: its OS, then its architecture and the host agent's version, then what it can run. */}
 			<td className={td}>
-				<span className="text-fg">{host.os}</span>
-				<span className={cellSub}>{host.arch}</span>
-			</td>
-			<td className={td}>
-				<span className="flex flex-col items-start gap-1">
-					<span className="font-mono text-code text-fg">{host.version}</span>
+				<span className="block whitespace-nowrap text-fg">{host.os}</span>
+				<span className={`${cellSub} whitespace-nowrap`}>
+					{host.arch}, agent <span className="font-mono text-code">{host.version}</span>
+				</span>
+				<span className="mt-1 flex flex-wrap items-center gap-1">
+					{host.kvm ? <Badge>KVM</Badge> : <span className="text-xs text-muted">No KVM: isolates only</span>}
+					{host.kvm && host.nestedVirtualisation ? <Badge tone="accent">Nested</Badge> : null}
 					{host.updateAvailable === undefined ? null : (
 						<Badge tone="approval">{`Update to ${host.updateAvailable}`}</Badge>
 					)}
@@ -367,16 +363,6 @@ function HostRow({
 						<span className="text-fg">{count(host.sandboxes.isolates, "isolate", "isolates")}</span>
 						<span className={cellSub}>{count(host.sandboxes.microvms, "microVM", "microVMs")}</span>
 					</span>
-				)}
-			</td>
-			<td className={td}>
-				{host.kvm ? (
-					<span className="flex items-center gap-1">
-						<Badge>KVM</Badge>
-						{host.nestedVirtualisation ? <Badge tone="accent">Nested</Badge> : null}
-					</span>
-				) : (
-					<span className="text-xs text-muted">No KVM: isolates only</span>
 				)}
 			</td>
 			<td className={td}>

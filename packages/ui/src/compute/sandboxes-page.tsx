@@ -76,8 +76,7 @@ const FILTERS: readonly { value: SandboxFilter; label: string }[] = [
 ];
 
 const matches = (box: Sandbox, filter: SandboxFilter): boolean =>
-	filter === "all" ||
-	(filter === "stopped") === (box.state === "stopped" || box.state === "error");
+	filter === "all" || (filter === "stopped") === (box.state === "stopped" || box.state === "error");
 
 /** Re-renders every `ms` while `on`, so countdowns keep up. */
 function useTick(on: boolean, ms: number): void {
