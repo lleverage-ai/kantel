@@ -20,7 +20,7 @@ import { Sidebar, SidebarBrand, SidebarItem, SidebarSection, SidebarToggle } fro
 import { Spinner } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { Notice } from "../primitives/surface.tsx";
-import { ThemeSwitch } from "../theme/theme-switch.tsx";
+import { ThemeMenu, ThemeSwitch } from "../theme/theme-switch.tsx";
 import { AccountSwitcher, CreateOrganisationDialog, JoinOrganisationDialog } from "./account-switcher.tsx";
 import { ComputeApiKeysPage } from "./api-keys-page.tsx";
 import { BillingPage } from "./billing-page.tsx";
@@ -595,7 +595,12 @@ function Foot({
 					{sample ? <Badge tone="waiting">Sample data</Badge> : null}
 				</div>
 			)}
-			{collapsed ? null : (
+			{collapsed ? (
+				// The rail (and a phone, whose sidebar is always one): the same choices behind an icon.
+				<div className="flex justify-center">
+					<ThemeMenu {...(onThemeChoose === undefined ? {} : { onChoose: onThemeChoose })} />
+				</div>
+			) : (
 				<div className="flex items-center justify-between gap-2 px-2.5">
 					<span className="text-xs text-faint" aria-hidden="true">
 						Theme

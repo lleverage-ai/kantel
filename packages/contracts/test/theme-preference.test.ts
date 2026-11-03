@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	isThemePreference,
+	opaqueHex,
 	RETIRED_THEME_CANVAS,
 	THEME_PREFERENCES,
 	themeForCanvas,
@@ -67,5 +68,26 @@ describe("themeForCanvas", () => {
 		expect(themeForCanvas("#777777")).toBe("system");
 		expect(themeForCanvas("#5a5a5a")).toBe("dark");
 		expect(themeForCanvas("red")).toBe("system");
+	});
+
+	it("reads a canvas the same in any opaque notation a custom theme could have saved", () => {
+		for (const white of [
+			"#fff",
+			"#FFFFFF",
+			"#ffff",
+			"#ffffffff",
+			"rgb(255 255 255)",
+			"rgb(255, 255, 255)",
+			"rgba(255,255,255,1)",
+			"rgb(255 255 255 / 100%)",
+		])
+			expect([white, themeForCanvas(white)]).toEqual([white, "light"]);
+		for (const black of ["#000", "rgb(0 0 0)", " #0b1d2a ", "rgb(11, 29, 42)"])
+			expect([black, themeForCanvas(black)]).toEqual([black, "dark"]);
+		expect(opaqueHex("rgb(11, 29, 42)")).toBe("#0b1d2a");
+		expect(opaqueHex("#abc")).toBe("#aabbcc");
+		// Translucent, out of range or not a colour: unknown, so system.
+		for (const unknown of ["rgb(255 255 255 / 0.5)", "#fff8", "#ffffff80", "rgb(300 0 0)", "#ggg", "hsl(0 0% 100%)"])
+			expect([unknown, themeForCanvas(unknown)]).toEqual([unknown, "system"]);
 	});
 });

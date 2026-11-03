@@ -1,6 +1,8 @@
 import type { ThemePreference } from "@kantel/contracts";
 import { useSyncExternalStore } from "react";
 import { SegmentedControl, type SegmentOption } from "../primitives/controls.tsx";
+import { PaletteIcon } from "../primitives/lucide.tsx";
+import { Menu } from "../primitives/menu.tsx";
 import { type ThemeController, type ThemeState, themeController } from "./controller.ts";
 
 // The theme switch: System, Light or Dark, as a segmented control (a radio group: Tab reaches the chosen one, arrows
@@ -24,19 +26,43 @@ export type ThemeSwitchProps = {
 	controller?: ThemeController;
 };
 
+const chooser =
+	(controller: ThemeController, onChoose: ThemeSwitchProps["onChoose"]) =>
+	(next: ThemePreference): void => {
+		if (next === controller.state().preference) return;
+		controller.choose(next);
+		onChoose?.(next);
+	};
+
 /** Follow the device, or light or dark. */
 export function ThemeSwitch({ onChoose, controller = themeController() }: ThemeSwitchProps) {
 	const { preference } = useThemeState(controller);
 	return (
-		<SegmentedControl
+		<SegmentedControl label="Theme" options={OPTIONS} value={preference} onChange={chooser(controller, onChoose)} />
+	);
+}
+
+/** The same three choices behind an icon button, where there is no room for the switch: a sidebar's rail. */
+export function ThemeMenu({
+	onChoose,
+	controller = themeController(),
+	align = "start",
+}: ThemeSwitchProps & { readonly align?: "start" | "end" }) {
+	const { preference } = useThemeState(controller);
+	const choose = chooser(controller, onChoose);
+	return (
+		<Menu
 			label="Theme"
-			options={OPTIONS}
-			value={preference}
-			onChange={(next) => {
-				if (next === controller.state().preference) return;
-				controller.choose(next);
-				onChoose?.(next);
-			}}
+			icon={<PaletteIcon />}
+			size="sm"
+			align={align}
+			entries={OPTIONS.map((option) => ({
+				kind: "item" as const,
+				id: option.value,
+				label: option.label,
+				checked: option.value === preference,
+				onSelect: () => choose(option.value),
+			}))}
 		/>
 	);
 }

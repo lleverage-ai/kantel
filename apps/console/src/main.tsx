@@ -13,7 +13,7 @@ import {
 	storageTokens,
 } from "./api/identity.ts";
 import { ComputeApp, legacyComputePath } from "./compute/compute-app.tsx";
-import { syncTheme } from "./state/theme-sync.ts";
+import { orderedSaves, syncTheme } from "./state/theme-sync.ts";
 import { BOOT } from "./ui/shell-styles.ts";
 import "./ui/styles.css";
 
@@ -161,14 +161,21 @@ function ApiConsole({ first }: { first: Promise<Boot> }) {
 
 type SignedInBoot = Extract<ConsoleBoot, { kind: "signed-in" }>;
 
+/** Each sign-in's one queue of theme saves: the first sync's and every choice in the sidebar, in order. */
+const themeSaves = new WeakMap<SignedInBoot, (preference: ThemePreference) => void>();
+
 /** Keeps a theme for the person on the server; a host app's key has no settings, so nothing for it. */
 function saveTheme(state: SignedInBoot): ((preference: ThemePreference) => void) | undefined {
 	if (state.me.actor.kind !== "human") return undefined;
-	return (preference) => {
-		identity.client.setPreferences({ theme: preference }).catch((error: unknown) => {
-			console.info("kantel: couldn't keep the theme:", error instanceof Error ? error.message : error);
-		});
-	};
+	let save = themeSaves.get(state);
+	if (save === undefined) {
+		save = orderedSaves(
+			(preference) => identity.client.setPreferences({ theme: preference }),
+			(error) => console.info("kantel: couldn't keep the theme:", error instanceof Error ? error.message : error),
+		);
+		themeSaves.set(state, save);
+	}
+	return save;
 }
 
 /** The person's saved theme, once `/v1/me` has said who they are. */

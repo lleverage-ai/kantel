@@ -55,9 +55,33 @@ const channel = (hex: string, at: number): number => {
 	return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
 };
 
-/** WCAG 2 relative luminance of a `#rrggbb` colour; undefined for anything else. */
-function luminance(hex: string): number | undefined {
-	if (!/^#[0-9a-f]{6}$/i.test(hex)) return undefined;
+/**
+ * An opaque colour as `#rrggbb`, from the notations a custom theme's canvas could be saved in: `#rgb`, `#rrggbb`, and
+ * `rgb()`/`rgba()` with 0-255 channels, commas or spaces, and an alpha of 1 if any (`#rgba`/`#rrggbbaa` with `f`/`ff`
+ * too). Undefined for anything else, such as a translucent colour or a `var()`.
+ */
+export function opaqueHex(value: string): string | undefined {
+	const colour = value.trim().toLowerCase();
+	const hex = /^#([0-9a-f]{3,8})$/.exec(colour)?.[1];
+	if (hex !== undefined) {
+		if (hex.length === 3 || (hex.length === 4 && hex[3] === "f"))
+			return `#${[...hex.slice(0, 3)].map((digit) => digit + digit).join("")}`;
+		if (hex.length === 6 || (hex.length === 8 && hex.endsWith("ff"))) return `#${hex.slice(0, 6)}`;
+		return undefined;
+	}
+	const rgb = /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)\s*(?:[,/]\s*([\d.]+%?)\s*)?\)$/.exec(colour);
+	if (rgb === null) return undefined;
+	const alpha = rgb[4];
+	if (alpha !== undefined && alpha !== "1" && alpha !== "100%" && Number(alpha) !== 1) return undefined;
+	const channels = rgb.slice(1, 4).map(Number);
+	if (channels.some((each) => !Number.isFinite(each) || each < 0 || each > 255)) return undefined;
+	return `#${channels.map((each) => Math.round(each).toString(16).padStart(2, "0")).join("")}`;
+}
+
+/** WCAG 2 relative luminance of an opaque colour (`opaqueHex`); undefined for anything else. */
+function luminance(colour: string): number | undefined {
+	const hex = opaqueHex(colour);
+	if (hex === undefined) return undefined;
 	return 0.2126 * channel(hex, 1) + 0.7152 * channel(hex, 3) + 0.0722 * channel(hex, 5);
 }
 
@@ -65,7 +89,7 @@ const ratio = (a: number, b: number): number => (Math.max(a, b) + 0.05) / (Math.
 
 /**
  * The nearer of light and dark to a theme with this canvas, by luminance: the one it has the lower contrast with, when
- * that is at least `CLEAR_MATCH` times lower than with the other. Otherwise (or for a canvas that isn't `#rrggbb`)
+ * that is at least `CLEAR_MATCH` times lower than with the other. Otherwise (or for a canvas `opaqueHex` can't read)
  * `system`.
  */
 export function themeForCanvas(canvas: string): ThemePreference {

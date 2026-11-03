@@ -10,6 +10,36 @@ import { type ThemePreference, themePreference, type UserPreferences } from "@ka
 import type { ThemeController } from "@kantel/ui";
 
 /**
+ * Saves one after another, in the order they were asked for, so an earlier save that answers late can't overwrite a
+ * later choice on the server. Only the latest choice still waiting is sent: one made while a save is in flight replaces
+ * any queued before it. A failed save is reported and the next goes ahead.
+ */
+export function orderedSaves(
+	write: (preference: ThemePreference) => Promise<unknown>,
+	onError: (error: unknown) => void = () => undefined,
+): (preference: ThemePreference) => void {
+	let inFlight = false;
+	let next: ThemePreference | undefined;
+	const drain = async () => {
+		inFlight = true;
+		while (next !== undefined) {
+			const preference = next;
+			next = undefined;
+			try {
+				await write(preference);
+			} catch (error) {
+				onError(error);
+			}
+		}
+		inFlight = false;
+	};
+	return (preference) => {
+		next = preference;
+		if (!inFlight) void drain();
+	};
+}
+
+/**
  * Applies the person's saved theme. When they have none but this browser remembers a choice (made before themes were
  * kept on the server, or while saving failed), `save` keeps it for them.
  */

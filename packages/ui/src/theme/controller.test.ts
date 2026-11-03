@@ -116,6 +116,11 @@ describe("a choice remembered before light and dark", () => {
 			// A custom theme Kantel never shipped: its remembered canvas decides.
 			["custom-paper", { "custom-paper": rule("custom-paper", "light", "#fffaf0") }, "light"],
 			["custom-grey", { "custom-grey": rule("custom-grey", "dark", "#777777") }, "system"],
+			// Any opaque notation the old theme API accepted.
+			["custom-white", { "custom-white": rule("custom-white", "light", "#fff") }, "light"],
+			["custom-rgb", { "custom-rgb": rule("custom-rgb", "light", "rgb(255 255 255)") }, "light"],
+			["custom-ink", { "custom-ink": rule("custom-ink", "dark", "rgb(11, 29, 42)") }, "dark"],
+			["custom-glass", { "custom-glass": rule("custom-glass", "light", "rgb(255 255 255 / 0.4)") }, "system"],
 			["custom-gone", {}, "system"],
 		] as const) {
 			const storage = memory({ [THEME_STORAGE_KEY]: v1(preference, css) });

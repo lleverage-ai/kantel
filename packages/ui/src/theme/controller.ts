@@ -68,9 +68,12 @@ export type ThemeControllerOptions = {
 	prefersLight?: MediaQuery;
 };
 
-/** A theme's canvas in its remembered CSS rule, `--kt-canvas:#141e28;` (`--hb-canvas` before the rename). */
+/**
+ * A theme's canvas in its remembered CSS rule, `--kt-canvas:#141e28;` (`--hb-canvas` before the rename), as written:
+ * `themePreference` reads any opaque hex or rgb colour (`opaqueHex`) and treats anything else as unknown.
+ */
 const canvasIn = (css: unknown): string | undefined =>
-	typeof css === "string" ? /--(?:kt|hb)-canvas:\s*(#[0-9a-f]{6})\b/i.exec(css)?.[1] : undefined;
+	typeof css === "string" ? /--(?:kt|hb)-canvas:\s*([^;}]+)/i.exec(css)?.[1]?.trim() : undefined;
 
 /**
  * What this browser remembers, as today's preference, and whether it must be written again: it was under the key from

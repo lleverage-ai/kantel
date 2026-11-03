@@ -1,6 +1,6 @@
 import type { ThemePreference } from "@kantel/contracts";
 import { describe, expect, it, vi } from "vitest";
-import { syncTheme } from "./theme-sync.ts";
+import { orderedSaves, syncTheme } from "./theme-sync.ts";
 
 const controller = (preference: ThemePreference, remembered: boolean) => {
 	let current = preference;
@@ -12,6 +12,62 @@ const controller = (preference: ThemePreference, remembered: boolean) => {
 		}),
 	};
 };
+
+describe("orderedSaves", () => {
+	/** A server whose writes answer only when the test says, and which keeps the last one to land. */
+	const server = () => {
+		const pending: { preference: ThemePreference; settle: (ok: boolean) => void }[] = [];
+		const state = { kept: undefined as ThemePreference | undefined, sent: [] as ThemePreference[] };
+		const write = (preference: ThemePreference) =>
+			new Promise<void>((resolve, reject) => {
+				state.sent.push(preference);
+				pending.push({
+					preference,
+					settle: (ok) => {
+						if (ok) {
+							state.kept = preference;
+							resolve();
+						} else reject(new Error("offline"));
+					},
+				});
+			});
+		const answer = async (ok = true) => {
+			pending.shift()?.settle(ok);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		};
+		return { state, write, answer, pending };
+	};
+
+	it("sends one save at a time, so the latest choice is what the server keeps", async () => {
+		const { state, write, answer, pending } = server();
+		const save = orderedSaves(write);
+		save("system");
+		save("light");
+		save("dark");
+		// Only the first is in flight; light was replaced by dark while it waited.
+		expect(pending.map((each) => each.preference)).toEqual(["system"]);
+		await answer();
+		await answer();
+		expect(state.sent).toEqual(["system", "dark"]);
+		expect(state.kept).toBe("dark");
+	});
+
+	it("goes on after a save fails", async () => {
+		const { state, write, answer } = server();
+		const failed = vi.fn();
+		const save = orderedSaves(write, failed);
+		save("light");
+		save("dark");
+		await answer(false);
+		expect(failed).toHaveBeenCalledOnce();
+		await answer();
+		expect(state.kept).toBe("dark");
+		save("system");
+		await answer();
+		expect(state.sent).toEqual(["light", "dark", "system"]);
+		expect(state.kept).toBe("system");
+	});
+});
 
 describe("syncTheme", () => {
 	it("takes the server's theme when it differs from this browser's", () => {

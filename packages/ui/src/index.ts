@@ -152,6 +152,6 @@ export {
 	type ThemeState,
 	themeController,
 } from "./theme/controller.ts";
-export { ThemeSwitch, type ThemeSwitchProps, useThemeState } from "./theme/theme-switch.tsx";
+export { ThemeMenu, ThemeSwitch, type ThemeSwitchProps, useThemeState } from "./theme/theme-switch.tsx";
 export { contrast, distance } from "./tokens/colour.ts";
 export { type Status, statusLabel, token } from "./tokens/tokens.ts";
