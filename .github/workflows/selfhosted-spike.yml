@@ -166,7 +166,7 @@ jobs:
       - name: Conformance (--target=selfhosted)
         run: bun spike/conformance/run.ts --target=selfhosted --base "http://$STACK:58081"
 
-      # The gateway in the stack: sessions, workspace reads, audit queries and
+      # The gateway in the stack: identity, the compute plane, audit queries and
       # the console, over HTTP behind the API-key authenticator; then mail: a
       # message sent through the gateway's KANTEL_SMTP_URL reaches Mailpit,
       # where the email one-time PIN test will read its codes (#15).
@@ -189,7 +189,7 @@ jobs:
           --mailpit-url "http://$STACK:58025"
 
       # The gateway runs on those bindings: restarted, it must keep its
-      # deployment (the bootstrap key still works), sessions and workspace.
+      # deployment (the bootstrap key and the compute plane's key still work).
       - name: Gateway after a restart
         run: |
           compose="docker compose"

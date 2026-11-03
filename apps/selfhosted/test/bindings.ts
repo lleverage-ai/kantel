@@ -77,10 +77,10 @@ const BINDINGS: readonly Binding[] = [
 	},
 	{
 		contract: "gateway",
-		implementation: "the gateway on all of the above, across a restart (durable.ts)",
+		implementation: "the gateway on identity, sign-in, audit and hosts, across a restart (durable.ts)",
 		cwd: "apps/selfhosted",
 		files: ["test/gateway/durable.stack.test.ts"],
-		blocks: /^the gateway on Postgres and S3$/,
+		blocks: /^the gateway on Postgres$/,
 	},
 	{
 		contract: "vault",
