@@ -90,6 +90,7 @@ import {
 	probeConnector,
 } from "./models.ts";
 import { listen } from "./node-http.ts";
+import { containerTierConfig, prepareContainerTier } from "./sandboxes.ts";
 import { sessionToolsConfig } from "./session-tools.ts";
 import { toolServersConfig, toolServerUpgrades, withToolServerUpgrades } from "./tool-servers.ts";
 import { usageConfig } from "./usage.ts";
@@ -117,9 +118,11 @@ export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
 	}
 	const connections = connectionsConfig(env, publicUrl === "" ? undefined : new URL(publicUrl).origin);
 	const environments = environmentsConfig(env);
+	const containers = containerTierConfig(env);
 	return {
 		sessionTools: sessionToolsConfig(env),
 		...(environments === undefined ? {} : { environments }),
+		...(containers === undefined ? {} : { containers }),
 		...(browser === undefined ? {} : { browser }),
 		...(connections === undefined ? {} : { connections }),
 		...(toolServersConfig(env) ? { toolServers: true } : {}),
@@ -253,6 +256,8 @@ export async function serveGateway(cfg = gatewayConfig()) {
 					...(cfg.connections === undefined ? {} : { connections: cfg.connections }),
 					...(cfg.toolServers === true ? { toolServers: true } : {}),
 					...(cfg.environments === undefined ? {} : { environments: cfg.environments }),
+					// In memory there is no token table: containers reach the vault proxy with no session token.
+					...(cfg.containers === undefined ? {} : { containers: await prepareContainerTier(cfg.containers) }),
 				})
 			: await createDurableGatewayComponents({
 					...cfg.durable,
@@ -262,6 +267,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 					...(cfg.connections === undefined ? {} : { connections: cfg.connections }),
 					...(cfg.toolServers === true ? { toolServers: true } : {}),
 					...(cfg.environments === undefined ? {} : { environments: cfg.environments }),
+					...(cfg.containers === undefined ? {} : { containers: cfg.containers }),
 				});
 	const browserViews = cfg.browser?.provider === "kantel" ? createBrowserViews(cfg.browser) : undefined;
 	const previous = await readBootstrap(cfg.bootstrapFile);

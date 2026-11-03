@@ -29,6 +29,12 @@
 # `gateway` serves the APIs (sessions, workspace reads, audit queries)
 # behind the API-key authenticator, and the console, on KANTEL_GATEWAY_PORT
 # (default 58090). The spike's session hosts and their API are unchanged.
+# Its sessions' `bash` runs in an in-process isolate, and `git`, `node`,
+# `python3` and anything else the isolate doesn't have in a container of the
+# sandbox image (tier 2): one per session, on an internal network of its own
+# whose only other member is the vault proxy, as the hosts' are. Its runtime
+# is KANTEL_SANDBOX_RUNTIME when set, else runsc when the daemon has gVisor
+# registered, else runc.
 #
 # Sessions get Kantel's own browsers (packages/browser/CONTRACT.md):
 # `browser-host` runs one Chromium container of `browser-image` per browser,
@@ -60,7 +66,7 @@ x-host: &host
     # The container runner starts sandboxes through the Docker API. Anything
     # holding this socket is root on the machine: a spike-only shortcut, see
     # README.md for the production shape.
-    - /var/run/docker.sock:/var/run/docker.sock
+    - ${KANTEL_DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
   healthcheck:
     test: ["CMD", "bun", "-e", "const r = await fetch('http://127.0.0.1:8080/healthz'); process.exit(r.ok ? 0 : 1)"]
     interval: 2s
@@ -165,7 +171,8 @@ services:
       context: ../..
       dockerfile: apps/vault-proxy/Dockerfile
     image: harbour-vault-proxy:${KANTEL_IMAGE_TAG:-${HARBOUR_IMAGE_TAG:-dev}}
-    # Fixed, because session hosts connect it to each sandbox network by name.
+    # Fixed, because session hosts and the gateway connect it to each sandbox
+    # network by name.
     container_name: ${KANTEL_VAULT_CONTAINER:-${HARBOUR_VAULT_CONTAINER:-harbour-vault-proxy}}
     restart: unless-stopped
     environment:
@@ -209,7 +216,8 @@ services:
       - ../../spike/fixtures/research-site/server.ts:/srv/server.ts:ro
     networks: [upstream]
 
-  # Builds the sandbox image, then exits. Session hosts start containers from it.
+  # Builds the sandbox image, then exits. Session hosts and the gateway start
+  # containers from it.
   sandbox-image:
     build:
       context: ../../images/sandbox
@@ -296,9 +304,32 @@ services:
       KANTEL_BRWSR_API_KEY: ${KANTEL_BRWSR_API_KEY:-${HARBOUR_BRWSR_API_KEY:-}}
       # (KANTEL_PUBLIC_URL, above, also makes an embed link absolute.)
       KANTEL_EMBED_ORIGINS: ${KANTEL_EMBED_ORIGINS:-${HARBOUR_EMBED_ORIGINS:-}}
+      # The container tier (tier 2): sessions' `git`, `node`, `python3` and
+      # the rest run in containers of the sandbox image, started through the
+      # Docker socket below. `auto`: runsc (gVisor) when the daemon has it
+      # registered, runc otherwise; KANTEL_SANDBOX_RUNTIME picks one outright
+      # (runsc-kvm on bare metal). KANTEL_SANDBOX_CONTAINERS=off turns the
+      # tier off: such commands are then refused.
+      KANTEL_SANDBOX_CONTAINERS: ${KANTEL_SANDBOX_CONTAINERS:-docker}
+      KANTEL_SANDBOX_IMAGE: harbour-sandbox:${KANTEL_IMAGE_TAG:-${HARBOUR_IMAGE_TAG:-dev}}
+      KANTEL_SANDBOX_RUNTIME: ${KANTEL_SANDBOX_RUNTIME:-${HARBOUR_SANDBOX_RUNTIME:-auto}}
+      # Each session's container gets an internal network of its own, named
+      # from this prefix, whose only other member is the vault proxy: its only
+      # way out, as the hosts' sandboxes'.
+      KANTEL_SANDBOX_NETWORK: ${KANTEL_SANDBOX_NETWORK:-${HARBOUR_SANDBOX_NETWORK:-harbour-sbx}}-gw
+      KANTEL_VAULT_CONTAINER: ${KANTEL_VAULT_CONTAINER:-${HARBOUR_VAULT_CONTAINER:-harbour-vault-proxy}}
+      KANTEL_VAULT_PROXY_URL: http://vault-proxy:3128
+      # Its containers' labels, which its janitor removes leftovers by: one
+      # prefix per stack, so stacks sharing a daemon leave each other's alone.
+      KANTEL_SANDBOX_LABEL_PREFIX: kantel-gateway.${COMPOSE_PROJECT_NAME}
     ports: ["127.0.0.1:${KANTEL_GATEWAY_PORT:-${HARBOUR_GATEWAY_PORT:-58090}}:8080"]
     networks: [control]
-    volumes: [gatewaystate:/var/lib/harbour]
+    volumes:
+      - gatewaystate:/var/lib/harbour
+      # The container tier starts sandboxes through the Docker API: anything
+      # holding this socket is root on the machine (see README.md). The
+      # installer sets KANTEL_DOCKER_SOCKET_PATH for rootless Docker.
+      - ${KANTEL_DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
     # A provider on this machine, such as CLIProxyAPI on :8317 or LiteLLM on
     # :4000, is http://host.docker.internal:<port>/v1 from the gateway.
     extra_hosts:
@@ -308,6 +339,12 @@ services:
       minio: { condition: service_healthy }
       mailpit: { condition: service_healthy }
       browser-host: { condition: service_healthy }
+      # The container tier's image, and the table of the tokens the vault
+      # proxy knows each container by. Not the proxy itself: a container
+      # reaches it only when a command runs, and egress-vault.yaml has the
+      # proxy wait for the gateway.
+      host-migrate: { condition: service_completed_successfully }
+      sandbox-image: { condition: service_completed_successfully }
     healthcheck:
       test: ["CMD", "bun", "-e", "const r = await fetch('http://127.0.0.1:8080/healthz'); process.exit(r.ok ? 0 : 1)"]
       interval: 2s
@@ -363,7 +400,8 @@ services:
       KANTEL_BROWSER_CONSENT: ${KANTEL_BROWSER_CONSENT:-${HARBOUR_BROWSER_CONSENT:-on}}
     networks: [control, browsers]
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      # As the gateway's: KANTEL_DOCKER_SOCKET_PATH for rootless Docker.
+      - ${KANTEL_DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
       - browserdata:/var/lib/harbour-browser
     depends_on:
       browser-image: { condition: service_completed_successfully }

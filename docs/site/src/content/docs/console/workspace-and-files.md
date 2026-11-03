@@ -31,11 +31,11 @@ Every session has `read`, `write`, `edit`, `ls` and `bash` (its agent profile pi
 | Tier | What runs there |
 | --- | --- |
 | Isolate (the default `in-process` backend) | Shell commands, `node script.js` in QuickJS (plain JavaScript, no `require`, `fs`, network or timers), and `git` reads such as `status`, `log`, `diff` and `show` |
-| Container, with `KANTEL_SANDBOX_CONTAINERS=on` | `python`, `npm`, `git` writes and any program the isolate doesn't have, such as `make` or `./run.sh` |
+| Container, with `KANTEL_SANDBOX_CONTAINERS=on` on Cloudflare, and by default on the self-hosted Compose stack | `python`, `npm`, `git` writes and any program the isolate doesn't have, such as `make` or `./run.sh` |
 
 The router chooses the tier before a command runs: a command goes to the container whole if any program in it needs one. Without containers, those commands are refused as `unavailable`.
 
-A session's container starts on its first command that needs it and stops after 10 minutes without calls. It has no network, so `pip install` and `npm install` from a registry don't work yet. The workspace is checkpointed after every command, so the file tools see what a command wrote. When you type in the composer, the console's warm-up call (`POST /v1/sessions/{id}/warm`) starts the container of a session that has used one before.
+A session's container starts on its first command that needs it and stops after 10 minutes without calls. On Cloudflare it has no network, so `pip install` and `npm install` from a registry don't work yet. Self-hosted, the container stops when the session closes or 15 minutes after its last command, and reaches the network only through the vault proxy, under the vault's egress policy. The workspace is checkpointed after every command, so the file tools see what a command wrote. When you type in the composer, the console's warm-up call (`POST /v1/sessions/{id}/warm`) starts the container of a session that has used one before.
 
 ### Code mode
 
@@ -92,7 +92,7 @@ The self-hosted gateway serves the workspace read API, so the files page works. 
 - It has no workspace write API (`POST /v1/workspaces`) and no branch listing, so sessions can't start from a repository.
 - It has no shares API and no `/shared/<token>` links.
 - It doesn't offer `present_files`, `create_document`, `generate_image` or code mode.
-- `bash` runs in an in-process isolate. There is no container tier yet, so commands that need one are refused as `unavailable`.
+- `bash` runs in an in-process isolate, and container commands run in a Docker container per session (see [Commands in sessions](/deploy/self-hosted/#commands-in-sessions)). With `KANTEL_SANDBOX_CONTAINERS=off`, or when the gateway can't reach Docker, they are refused as `unavailable`.
 - A session gets a workspace only when it is created on one, or when its profile names skills (for the `/skills` mount).
 
 <!-- Sources (8584d5b): apps/cloudflare/README.md:1-30,50-150, apps/cloudflare/src/coding-tools.ts:1-120, apps/cloudflare/src/stack.ts:545-590, apps/cloudflare/src/skills-mount.ts:1-40, apps/cloudflare/src/gateway.ts:1-30,214-270, apps/cloudflare/src/stack-object.ts:200-235, apps/console/src/api/http.ts:15-25,380-475,735-770,915-925, apps/console/src/api/client.ts:130-205, apps/console/src/app/files-screen.tsx:1-290, apps/console/src/app/router.ts:28-35,170-175, apps/console/src/ui/session-view.tsx:320-326,460-490, apps/console/src/ui/document-view.tsx:20-170, apps/console/src/ui/presented-panel.tsx:90-115, packages/ui/src/documents/share-popover.tsx:1-70,190-260,360-370, packages/ui/docs/workspace.md:1-150, packages/workspace/CONTRACT.md:55-130,200-240, packages/workspace/src/write-api.ts:40-120, packages/sandbox/src/present-files.ts:1-40, packages/sandbox/src/documents.ts:1-80, packages/runtime/src/images.ts:1-30, packages/contracts/src/session.ts:508-520, packages/api/generated/sdk.ts:614-640,1649-1656,2296-2305, apps/selfhosted/src/gateway/gateway.ts:1-30,195-210, apps/selfhosted/src/gateway/sandboxes.ts:1-25, apps/selfhosted/src/gateway/skills-memory.ts:1-20 -->

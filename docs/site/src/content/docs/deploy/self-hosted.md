@@ -24,10 +24,12 @@ docker compose -f deploy/compose/compose.yaml down -v
 ```
 
 :::caution
-`deploy/compose` is the repository's development and test stack. Its Postgres and MinIO passwords are fixed development values in `compose.yaml`, and it also starts services from an earlier prototype (`host-a`, `host-b`, `isolate-host`, `vault-proxy`, `research-site`) that the gateway doesn't use. Two of them, and the browser host, mount the Docker socket, which is root on the machine. There is no production compose file yet.
+`deploy/compose` is the repository's development and test stack. Its Postgres and MinIO passwords are fixed development values in `compose.yaml`, and it also starts services from an earlier prototype (`host-a`, `host-b`, `isolate-host`, `research-site`) that the gateway doesn't use. The gateway, two of those services and the browser host mount the Docker socket, which is root on the machine. There is no production compose file yet.
 :::
 
-The gateway itself depends only on `postgres`, `minio`, `mailpit` and `browser-host`.
+The gateway depends on `postgres`, `minio`, `mailpit` and `browser-host`, and on two one-off services: `host-migrate`, which makes the table of the vault proxy's tokens, and `sandbox-image`, which builds the container tier's image. It reaches `vault-proxy` only when a sandbox container makes a request.
+
+The installer at `https://kantel.dev/install.sh` runs the same stack from `~/.kantel/src`. With `--upgrade` it replaces that source, keeps `deploy/compose/.env`, and rebuilds and restarts the stack. Postgres, MinIO and the gateway's volume keep their data.
 
 ## First start
 
@@ -184,9 +186,29 @@ With Helm, the JSON can also go straight into the variable, such as `value: {{ .
 
 Every session has a workspace: one started without a repository, as the console's **New session** starts one, gets its own. A host app's profile that names no skills is the exception, so its host's own file tools aren't shadowed.
 
-A session's `read`, `write`, `edit` and `ls` work on its workspace directly. `bash` leases an isolate, a just-bash shell in the gateway's own process, on its first command. There is no container tier yet, so commands that need one (`git`, `node`, `python` and the like) are refused as `unavailable`.
+A session's `read`, `write`, `edit` and `ls` work on its workspace directly. `bash` leases an isolate, a just-bash shell in the gateway's own process, on its first command. The isolate runs shell commands and `git` reads. `git` writes, `node`, `python3`, the rest of the container commands and any program the isolate doesn't have go to the container tier (tier 2): one container per session from the sandbox image (`images/sandbox`, with git, Node.js, Python, Bun, pnpm and gh), started through the Docker socket. The workspace is committed after every container command, so the file tools and the console's files page see what it wrote. That includes `.git`: a repository a session makes or clones outlives its container, and a later session on the workspace sees it. Only `node_modules` stays in the container.
 
-Because the isolate runs in the gateway's process, gVisor doesn't apply to it. `KANTEL_ISOLATE_RUNTIME` and `KANTEL_SANDBOX_RUNTIME` in `compose.yaml` set the runtime of the prototype's services only.
+Each container gets an internal Docker network of its own whose only other member is `vault-proxy`. Its requests go out through the proxy, under the vault's egress policy, with a token that names the session. A direct connection fails. The container's end, when the session closes or its lease lapses after 15 minutes without a command, revokes the token. Every 5 minutes the gateway removes containers and networks it left behind, such as after a restart.
+
+| Variable (gateway) | Default in `compose.yaml` | What it does |
+| --- | --- | --- |
+| `KANTEL_SANDBOX_CONTAINERS` | `docker` | `off` turns the tier off; container commands are then refused as `unavailable` |
+| `KANTEL_SANDBOX_IMAGE` | `harbour-sandbox:dev` | The image, which the `sandbox-image` service builds |
+| `KANTEL_SANDBOX_RUNTIME` | `auto` | `auto` is `runsc` (gVisor) when Docker has it registered and `runc` otherwise; or name one, such as `runsc-kvm` |
+| `KANTEL_SANDBOX_MEMORY_BYTES`, `KANTEL_SANDBOX_NANO_CPUS` | 2 GiB, 2 CPUs | Each container's limits |
+| `KANTEL_SANDBOX_NETWORK` | `harbour-sbx-gw` | The prefix of the per-container networks |
+| `KANTEL_VAULT_PROXY_URL`, `KANTEL_VAULT_CONTAINER` | `http://vault-proxy:3128`, `harbour-vault-proxy` | The proxy, and its container, which joins each network. Without a proxy URL, containers have no network at all |
+| `KANTEL_DOCKER_SOCKET_PATH` | `/var/run/docker.sock` | The host's Docker socket that Compose mounts into the gateway. The installer sets it in `deploy/compose/.env` for rootless Docker |
+
+If the gateway can't reach Docker when it starts, it starts anyway without the container tier, and container commands are refused as `unavailable` with Docker's error. `/v1/deployment` and the gateway's log say which tier and runtime it has:
+
+```text
+[gateway] container tier: in-process isolate (just-bash), leased on first bash; Docker container tier (runsc, auto), one container per lease from harbour-sandbox:dev, egress through the vault proxy (harbour-vault-proxy)
+```
+
+To put the containers under gVisor, [install gVisor](https://gvisor.dev/docs/user_guide/install/) and register it with Docker (the commands are under [Browsers](#browsers)), then restart the stack. Because the isolate runs in the gateway's process, gVisor doesn't apply to it. `KANTEL_ISOLATE_RUNTIME` in `compose.yaml` sets the runtime of the prototype's isolate host only.
+
+With rootless Docker, `runsc` needs its own setup, and the installer's detection of the rootless socket hasn't been tested end to end.
 
 ## The default tools
 
@@ -259,7 +281,7 @@ Pass the same `-f` files to every later `docker compose` command, or compose rec
 
 ## Check it
 
-`/healthz` needs no credentials. `/v1/deployment` lists what backs each part (Postgres, S3, the vault, the model gateway, the sandboxes) and where mail goes, never the credentials. It is self-hosted only and not in the OpenAPI document (see [Unlisted routes](/api/reference/unlisted/)):
+`/healthz` needs no credentials. `/v1/deployment` lists what backs each part (Postgres, S3, the vault, the model gateway, the sandboxes) and where mail goes, never the credentials. Its `bindings.sandboxes` names the isolate and the container tier, with the container runtime, the image and the vault proxy. With `KANTEL_SANDBOX_CONTAINERS=off` it ends `no container tier`, and when Docker didn't answer at the start, `container tier unavailable:` and the reason. It is self-hosted only and not in the OpenAPI document (see [Unlisted routes](/api/reference/unlisted/)):
 
 ```bash
 curl -s "$KANTEL_URL/healthz"

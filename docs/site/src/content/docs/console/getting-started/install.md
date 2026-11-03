@@ -31,7 +31,9 @@ This builds the images and starts the stack: among others, Postgres, MinIO, the 
 
 A session started from the console has the same tools as one on Cloudflare: the file tools and `bash` on a workspace of its own, `present_files` and `create_document`, `codemode`, `save_program` (with the programs API at `/v1/programs`), the connection tools, and `generate_image` once you pick an image model. `GET /v1/deployment` lists them under `codemode`, `programs`, `presentFiles` and `connections`. To take one away, start the stack with `KANTEL_CODEMODE=off`, `KANTEL_PROGRAMS=off`, `KANTEL_PROGRAM_WAITS=off`, `KANTEL_PRESENT_FILES=off` or `KANTEL_CONNECTIONS=off`.
 
-A session behind this gateway runs its commands in an isolate. The gateway has no container tier yet, so a command that needs one (`git`, `node`, `python`) is refused.
+Shell commands and `git` reads run in an isolate inside the gateway. `git` writes, `node`, `python3` and any program the isolate lacks run in a sandbox container, which the gateway starts through Docker's socket. The stack builds the container image (`harbour-sandbox`), and each session's container stops when the session ends or 15 minutes after its last command. What a container writes, a repository's `.git` included, is committed to the session's workspace. Containers run on gVisor (`runsc`) when Docker has it registered, and on `runc` when it doesn't. See [Commands in sessions](/deploy/self-hosted/#commands-in-sessions).
+
+The one-line installer, `curl -fsSL https://kantel.dev/install.sh | sh`, does all of this for you. It downloads the source to `~/.kantel/src`, starts this stack and reports which runtime the containers use. With rootless Docker, it points the gateway at your user's Docker socket. To update an installed copy, run the installer again with `--upgrade` (`curl -fsSL https://kantel.dev/install.sh | sh -s -- --upgrade`). It replaces the source, keeps your settings in `deploy/compose/.env`, and rebuilds and restarts the stack. Your data stays.
 
 Connections send a person back from an OAuth sign-in to `http://127.0.0.1:58090` (`KANTEL_CONNECTIONS_ORIGIN`, which follows `KANTEL_GATEWAY_PORT`). Behind a TLS proxy, set `KANTEL_PUBLIC_URL` to the console's address instead.
 
@@ -82,7 +84,7 @@ An install from before browsers were part of the stack gets them when you run th
 The browser keys in `compose.yaml` are development defaults. Anywhere but your own machine, set `KANTEL_BROWSER_HOST_TOKEN`, `KANTEL_BROWSER_VIEW_KEY` and `KANTEL_BROWSER_SEAL_KEY` to random values of 32 characters or more, and keep the seal key: profiles sealed with one key don't open with another. To start the stack without browsers, set `KANTEL_BROWSER_PROVIDER=off`. `deploy/compose/browser.yaml`, the overlay that used to add them, is now empty and can be left out.
 
 :::caution
-The session hosts and the browser host mount the Docker socket, which is root on the machine. Keep this stack on a machine you control.
+The gateway, the session hosts and the browser host mount the Docker socket, which is root on the machine. Keep this stack on a machine you control.
 :::
 
 ### Stop it

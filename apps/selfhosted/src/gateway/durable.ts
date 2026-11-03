@@ -12,7 +12,9 @@
 //               app's tools, such as its worker's, still answer after a restart without it registering again
 //   workspaces  Postgres heads and versions, S3 trees, keyed (@kantel/selfhosted-workspace, #72)
 //   sandboxes   a session's coding tools (#196, sandboxes.ts): the file tools on those workspaces directly, `bash`
-//               in an in-process isolate leased on its first command
+//               in an in-process isolate leased on its first command, and with `containers` (compose) `git`, `node`,
+//               `python3` and the rest of the container tier's commands in a Docker container per session, its
+//               vault proxy tokens in the session hosts' `harbour.sandbox_tokens`
 //   vault       the vault engine over the Postgres vault store (@kantel/vault-selfhosted, #75), in its own schema
 //               (`<schema>_vault`), values sealed with KANTEL_VAULT_CIPHER_KEY; no vault without that key
 //   skills      packages, revisions and session pins on Postgres, each file's body in S3 by its SHA-256 under their own
@@ -63,7 +65,7 @@ import { createEchoModels, deferredAccess, type GatewayComponents, type ModelGat
 import { type GatewayConnectionsConfig, gatewayConnections } from "./connections.ts";
 import { type GatewayEnvironmentsConfig, gatewayEnvironments } from "./environments.ts";
 import { createModelProviders, createSqlModelProviderStore, migrateModelProviders } from "./model-providers.ts";
-import { createGatewaySandboxes, SANDBOX_BINDING } from "./sandboxes.ts";
+import { type ContainerTierConfig, createGatewaySandboxes, prepareContainerTier } from "./sandboxes.ts";
 import { ALL_SESSION_TOOLS, gatewaySessionTools, type SessionToolsConfig } from "./session-tools.ts";
 import { sessionContextOptions, skillsMountSource, withOwnWorkspaces } from "./skills-memory.ts";
 import { gatewayToolServers } from "./tool-servers.ts";
@@ -105,6 +107,8 @@ export interface DurableConfig {
 	readonly environments?: GatewayEnvironmentsConfig;
 	/** Code mode, programs and presented files (`session-tools.ts`). Default all on, as a local install has them. */
 	readonly sessionTools?: SessionToolsConfig;
+	/** The container tier (`sandboxes.ts`). Without it, a command routed to a container is refused. */
+	readonly containers?: ContainerTierConfig;
 }
 
 const SCHEMA = /^[a-z_][a-z0-9_]{0,62}$/;
@@ -230,7 +234,12 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 
 		const db = await PostgresSqliteDatabase.open({ connectionString: config.databaseUrl, schema: config.schema });
 		closers.push(() => db.close());
-		const gatewaySandboxes = createGatewaySandboxes();
+		const containers =
+			config.containers === undefined
+				? undefined
+				: await prepareContainerTier(config.containers, { tokens: driver, log });
+		const gatewaySandboxes = createGatewaySandboxes(containers === undefined ? {} : { containers });
+		closers.push(() => gatewaySandboxes.close());
 		// The vault needs the runtime's access check; the model gateway reads it only at its first call.
 		let vault: KantelVault | undefined;
 		const modelGateway = config.models === undefined ? config.modelGateway : undefined;
@@ -380,7 +389,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 				memory: "postgres",
 				rules: "postgres",
 				usage: usage?.binding ?? "off",
-				sandboxes: SANDBOX_BINDING,
+				sandboxes: gatewaySandboxes.binding,
 				signIn: "postgres",
 			},
 			close,

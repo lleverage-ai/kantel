@@ -327,6 +327,9 @@ importers:
       "@kantel/sandbox":
         specifier: workspace:*
         version: link:../../packages/sandbox
+      "@kantel/selfhosted-sandbox":
+        specifier: workspace:*
+        version: link:../../targets/selfhosted/sandbox
       "@kantel/selfhosted-workspace":
         specifier: workspace:*
         version: link:../../targets/selfhosted/workspace

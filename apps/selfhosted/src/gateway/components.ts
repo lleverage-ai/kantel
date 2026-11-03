@@ -61,7 +61,7 @@ import {
 	type ModelProviders,
 	type ModelProvidersGateway,
 } from "./model-providers.ts";
-import { createGatewaySandboxes, SANDBOX_BINDING } from "./sandboxes.ts";
+import { createGatewaySandboxes, type GatewayContainers } from "./sandboxes.ts";
 import { ALL_SESSION_TOOLS, gatewaySessionTools, type SessionToolsConfig } from "./session-tools.ts";
 import { sessionContextOptions, skillsMountSource, withOwnWorkspaces } from "./skills-memory.ts";
 import { type GatewayToolServers, gatewayToolServers } from "./tool-servers.ts";
@@ -274,6 +274,8 @@ export function createGatewayComponents(
 		readonly boatFetch?: typeof fetch;
 		/** Code mode, programs and presented files (`session-tools.ts`). Default all on, as a local install has them. */
 		readonly sessionTools?: SessionToolsConfig;
+		/** The container tier (`sandboxes.ts`). Without it, a command routed to a container is refused. */
+		readonly containers?: GatewayContainers;
 	} = {},
 ): GatewayComponents {
 	const auditAccess = deferredAccess();
@@ -284,7 +286,9 @@ export function createGatewayComponents(
 			? undefined
 			: gatewaySessionBrowser({ provider: options.browserProvider, audit, access: auditAccess.access });
 	const identity = createMemoryIdentity({ audit });
-	const gatewaySandboxes = createGatewaySandboxes();
+	const gatewaySandboxes = createGatewaySandboxes(
+		options.containers === undefined ? {} : { containers: options.containers },
+	);
 	// The vault needs the runtime's access check; the model gateway reads it only at its first call.
 	let vault: KantelVault | undefined;
 	const models = options.models ??
@@ -447,7 +451,7 @@ export function createGatewayComponents(
 			workspaces: "memory",
 			skills: "memory",
 			memory: "memory",
-			sandboxes: SANDBOX_BINDING,
+			sandboxes: gatewaySandboxes.binding,
 			signIn: "memory",
 			vault: "memory",
 		},
@@ -455,6 +459,7 @@ export function createGatewayComponents(
 			await linked?.close();
 			await heldEnvironments?.close();
 			await runtime.close();
+			await gatewaySandboxes.close();
 		},
 	};
 }

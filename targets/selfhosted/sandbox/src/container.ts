@@ -63,6 +63,12 @@ export interface DockerContainerBackendOptions {
 	readonly execTimeoutMs?: number;
 	/** Bytes kept of each of stdout and stderr; beyond it the output is cut and `truncated` set. Default 1 MiB. */
 	readonly maxOutputBytes?: number;
+	/**
+	 * Directory names that stay local to the container in both directions: neither synced in from the head nor collected
+	 * from the container, at any depth. Default `.git` and `node_modules` (`LOCAL_ONLY`). The gateway leaves `.git` out,
+	 * so a repository outlives its container and the isolate's git reads see it, as Cloudflare's container agent does.
+	 */
+	readonly localOnly?: readonly string[];
 }
 
 /**
@@ -422,6 +428,7 @@ class DockerContainerTier implements DockerContainerBackend {
 	readonly #clock: Clock;
 	readonly #execTimeoutMs: number;
 	readonly #maxOutputBytes: number;
+	readonly #localOnly: readonly string[];
 	readonly #states = new Map<string, LeaseState>();
 	/** Leases whose container is being created: served, though not in `#states` yet, so the janitor leaves them alone. */
 	readonly #creating = new Set<string>();
@@ -452,6 +459,7 @@ class DockerContainerTier implements DockerContainerBackend {
 		this.#clock = options.clock ?? systemClock;
 		this.#execTimeoutMs = positive(options.execTimeoutMs, DEFAULT_EXEC_TIMEOUT_MS, "execTimeoutMs");
 		this.#maxOutputBytes = positive(options.maxOutputBytes, DEFAULT_MAX_OUTPUT_BYTES, "maxOutputBytes");
+		this.#localOnly = checkLocalOnly(options.localOnly ?? LOCAL_ONLY);
 	}
 
 	// ---- ContainerBackend ----------------------------------------------------------------------------------------------
@@ -1010,7 +1018,7 @@ class DockerContainerTier implements DockerContainerBackend {
 	async #files(ctx: CallContext, workspaceId: string, version: number): Promise<Map<string, FileState>> {
 		const files = new Map<string, FileState>();
 		for (const entry of await listAll(this.#workspaces, ctx, workspaceId, { version })) {
-			if (entry.kind !== "file" || entry.digest === undefined || isLocalOnly(entry.path)) continue;
+			if (entry.kind !== "file" || entry.digest === undefined || isLocalOnly(entry.path, this.#localOnly)) continue;
 			files.set(entry.path, { digest: entry.digest, mode: (entry.mode ?? 0o644) & 0o777 });
 		}
 		return files;
@@ -1129,7 +1137,7 @@ class DockerContainerTier implements DockerContainerBackend {
 	/** Scans /workspace (see SCAN_SCRIPT) and marks what changed since the last scan or re-base as dirty. */
 	async #scan(state: LeaseState): Promise<void> {
 		const result = await this.#docker.exec(state.containerId, {
-			cmd: [...PYTHON, SCAN_SCRIPT, JSON.stringify(LOCAL_ONLY)],
+			cmd: [...PYTHON, SCAN_SCRIPT, JSON.stringify(this.#localOnly)],
 			user: SANDBOX_USER,
 			workingDir: MAINTENANCE_CWD,
 			timeoutMs: this.#execTimeoutMs,
@@ -1346,8 +1354,18 @@ function overlaps(left: string, right: string): boolean {
 	return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
 }
 
-function isLocalOnly(path: string): boolean {
-	return path.split("/").some((segment) => LOCAL_ONLY.includes(segment));
+function isLocalOnly(path: string, localOnly: readonly string[]): boolean {
+	return path.split("/").some((segment) => localOnly.includes(segment));
+}
+
+/** Plain directory names only: the scan compares them with each path segment. */
+function checkLocalOnly(names: readonly string[]): readonly string[] {
+	for (const name of names) {
+		if (name === "" || name === "." || name === ".." || name.includes("/") || name.includes("\0")) {
+			throw new KantelError("invalid", `localOnly takes directory names, not ${JSON.stringify(name)}`);
+		}
+	}
+	return [...names];
 }
 
 /** Whether a path the container has can be a workspace path; one that cannot is left alone, never collected. */

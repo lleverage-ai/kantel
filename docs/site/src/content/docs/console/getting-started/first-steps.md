@@ -61,6 +61,8 @@ curl -s -X POST "$KANTEL_URL/v1/sessions" \
 
 `GET /v1/projects` lists your project IDs. On Cloudflare the default agent profile is `assistant`. Self-hosted, the bootstrap makes an `echo` profile, plus `assistant` when real models are configured. Both have the tools of Cloudflare's default profile: the file tools and `bash` on a workspace of the session's own, `present_files`, `create_document`, `codemode`, `save_program` and the connection tools, with `generate_image` once you set an image model. See [Quick start](/api/quick-start/) for following the session's answer.
 
+On the self-hosted Compose stack, a session's `git` writes, `node` and `python3` run in a sandbox container (the [container tier](/console/workspace-and-files/#what-runs-where)), and its other commands in the isolate. Ask the first session to run `git init`, `node -v` or `python3 -V` to see it.
+
 ## 4. Let the agent browse
 
 A session's agent can use a web browser when the deployment has one. The self-hosted Docker Compose stack has one from the start; on Cloudflare it needs a browser provider (see [Browsers](/console/browsers/#what-a-deployment-needs)). Ask for something on the web, such as "Open example.com and tell me what it says":
