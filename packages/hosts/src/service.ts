@@ -223,8 +223,24 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	const log = options.log ?? ((message: string) => console.error(message));
 	const pools = options.pools ?? { "microvm/default": 1 };
 	let joinTokens: ExternalJoinTokens = store;
-	/** Placed on a host since its last report, by host. */
-	const reserved = new Map<string, { memoryMiB: number; diskGiB: number }>();
+	/**
+	 * What this replica placed on each host, each stamped with when, until the host's next report. A report clears it here
+	 * when it comes in on this replica's connection; for a host whose connection another replica holds, a placement
+	 * counts only while it is newer than the host's `lastSeenAt` in the shared registry, which that replica writes on
+	 * every hello and heartbeat. So no replica goes on seeing a host as full after the host has reported again.
+	 */
+	const reserved = new Map<string, { at: number; memoryMiB: number; diskGiB: number }[]>();
+	/** What this replica placed on `host` since its last report. */
+	const reservedOn = (host: HostRecord) => {
+		const since = host.lastSeenAt ?? Number.NEGATIVE_INFINITY;
+		const live = (reserved.get(host.id) ?? []).filter((entry) => entry.at > since);
+		if (live.length === 0) reserved.delete(host.id);
+		else reserved.set(host.id, live);
+		return {
+			memoryMiB: live.reduce((sum, entry) => sum + entry.memoryMiB, 0),
+			diskGiB: live.reduce((sum, entry) => sum + entry.diskGiB, 0),
+		};
+	};
 	const report = (work: Promise<unknown>) => {
 		void work.catch((error) => log(`[hosts] ${error instanceof Error ? error.message : String(error)}`));
 	};
@@ -370,8 +386,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	};
 
 	const reserve = (hostId: string, memoryMiB: number, diskGiB: number) => {
-		const current = reserved.get(hostId) ?? { memoryMiB: 0, diskGiB: 0 };
-		reserved.set(hostId, { memoryMiB: current.memoryMiB + memoryMiB, diskGiB: current.diskGiB + diskGiB });
+		reserved.set(hostId, [...(reserved.get(hostId) ?? []), { at: clock.now(), memoryMiB, diskGiB }]);
 	};
 
 	return {
@@ -483,12 +498,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				const candidates: Candidate[] = await Promise.all(
 					hosts.map(async (host) => {
 						const placements = tier === "isolate" ? await store.placementsOn(host.id) : [];
-						const held = reserved.get(host.id);
+						const held = reservedOn(host);
 						return {
 							host,
 							connected: hub.connected(host.id),
-							reservedMemoryMiB: held?.memoryMiB ?? 0,
-							reservedDiskGiB: held?.diskGiB ?? 0,
+							reservedMemoryMiB: held.memoryMiB,
+							reservedDiskGiB: held.diskGiB,
 							owners: new Set(
 								placements
 									.filter((placement) => placement.tier === "isolate" && placement.owner !== undefined)

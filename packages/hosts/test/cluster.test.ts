@@ -124,6 +124,40 @@ describe("gateway replicas", () => {
 		expect(forwarded).toHaveLength(3);
 	});
 
+	it("stop counting what they placed on a host held elsewhere once it reports again, so it isn't full for ever", async () => {
+		let clock = 1_000_000;
+		const { replica, join } = cluster({ now: () => clock });
+		const a = await replica("rep_a");
+		const b = await replica("rep_b");
+		const hostId = await join(a.service);
+		const host = new FakeHost(a.service, hostId);
+		// Room for one `default` (2 GiB) at a time.
+		host.freeMemoryMiB = 3_000;
+		host.connect();
+		await tick();
+		await b.node.tick();
+		const report = () =>
+			host.send({
+				type: "heartbeat",
+				heartbeat: { capacity: { freeMemoryMiB: 3_000, freeDiskGiB: 400, running: 0, stopped: 0, load1: 0, warm: {} } },
+			});
+
+		for (let round = 1; round <= 3; round++) {
+			clock += 1_000;
+			// B places on the host, through A; until the host reports again, B counts it.
+			expect((await b.service.sandboxes.create({ tier: "microvm", sandboxId: `sbx-b${round}` })).hostId).toBe(hostId);
+			await expect(b.service.sandboxes.create({ tier: "microvm" })).rejects.toSatisfy((error) =>
+				isKantelError(error, "exhausted"),
+			);
+			await b.service.sandboxes.call(`sbx-b${round}`, "sandbox.delete");
+			// The host's heartbeat reaches only A, which records it in the shared registry; B stops counting what it placed.
+			clock += 1_000;
+			report();
+			await tick();
+		}
+		expect((await b.service.sandboxes.create({ tier: "microvm" })).hostId).toBe(hostId);
+	});
+
 	it("drain and revoke a host from any replica", async () => {
 		const { replica, join } = cluster();
 		const a = await replica("rep_a");
