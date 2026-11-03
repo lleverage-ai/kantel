@@ -30,7 +30,7 @@ opaque JSON document.
 | `telemetry`, `proxies` | OTLP export and egress proxy settings per account | as configured |
 | `hosts`, `joinTokens` | the API's view of hosts (name, labels, drain, revoke) and join tokens | SHA-256 only |
 | `events` | the event log | none |
-| `idempotency` | the first answer to an idempotent call, by caller, operation and key | none |
+| `idempotency` | an idempotent call's claim on its key while it works, then its first answer, by caller, operation and key | none |
 | `deviceLogins` | device sign-in (RFC 8628 style) | a key secret, until collected (at most 15 minutes) |
 
 `HostStore` keeps hosts (credential as SHA-256), join tokens (as SHA-256) and placements: which host each sandbox is
@@ -44,6 +44,9 @@ These hold for every collection (`Collection<T>` in `store.ts`), and the memory 
 
 - **Copies in and out.** `get` and `list` answer copies. A caller changes a record only by writing it back.
 - **`put` is an upsert.** It replaces the whole record and is last-writer-wins. It doesn't compare versions.
+- **`insert` is insert-if-absent.** It writes the record only when no record has its ID and answers whether it did. Of
+  several writers inserting one ID at once, on any gateway, exactly one gets `true`. A deleted record's ID can be
+  inserted again. The SQL store does it in one statement (`INSERT … ON CONFLICT DO NOTHING RETURNING id`).
 - **`update(id, change)` is a compare-and-set.** It reads the record, calls `change`, and writes the result only if
   nothing else wrote the record in between. If something did, it reads again and calls `change` again, so `change` must
   be pure and may run more than once. `change` answering `undefined` writes nothing. A missing record is never
@@ -94,13 +97,27 @@ that, so it needs no new store method.
 create **at most one** sandbox (or fork set, or command), whichever gateway each attempt lands on, and must answer the
 first answer to every retry.
 
-**Open on main.** `once()` in `service.ts` reads `idempotency`, does the work, then `put`s the answer. Within a
-process, `inflight` folds concurrent retries into one. Across gateways, a retry that lands elsewhere before the first
-call finishes finds no answer and creates a second sandbox. To close it, the store needs **insert-if-absent**: claim the
-key before doing the work, and have other gateways either wait for the claimed answer or answer `conflict` while it is
-pending. Without that, a client retry after a timeout on another gateway can duplicate a sandbox. Seen on two
-replicas: one key sent to both at once made two sandboxes, and later retries got the first one's answer. A retry
-sent after the first answer got the same sandbox, as it should.
+**How (#596).** `once()` in `service.ts` **claims the key before it does the work**, with `insert`
+(§2): a record `{id, createdAt, claim, claimExpiresAt}` with no `body`. Then:
+
+- The call that wins the insert does the work and `put`s the answer as `body`. That is the same two round trips as
+  before (the claim replaces the read that looked for an answer).
+- A call that loses reads the record. With a `body`, it answers that body. While the claim is pending, it answers
+  **`409 conflict`** ("still in progress; retry it once that call has answered"), and does nothing. On the gateway
+  that holds the claim, a concurrent call with the same key instead waits for the answer (`inflight`, in memory), as
+  before.
+- **A claim lapses 60 s** (`IDEMPOTENCY_CLAIM_MS`) after it was taken or last renewed. The holder renews it every
+  20 s while the work runs, so a long `wait: true` create or command keeps it. A gateway that dies mid-call stops
+  renewing, and once the claim has lapsed the next call with the key takes it over with `update` (conditional on the
+  claim still being lapsed and unanswered) and does the work. So a crashed claim holds a key for at most 60 s.
+- A call that **fails** (throws) deletes its claim, so a retry does the work again, as before.
+
+The one way two calls can still both do the work is a holder that stalls for over 60 s without renewing (for example a
+frozen process) while another call takes over. Whichever answers last is stored.
+
+Seen on two replicas before the fix: one key sent to both at once made two sandboxes. The two-replica test in
+`packages/compute/test/sql-store.test.ts` holds the first create in the backend and checks that the other replica
+answers `conflict`, then the same sandbox, with one backend create.
 
 `stop`, `resume`, `start` and `delete` take no key. They are idempotent by state: stopping a stopped sandbox, resuming
 a running one or deleting a deleted one answers the sandbox as it is. Section 3's conditional transitions keep that true
@@ -207,13 +224,14 @@ A Worker backend is equivalent if:
 7. **Host connections** (§8): a Durable Object per host holding the host's (hibernatable) WebSocket gives each host one
    owner, and every Worker request can reach it by the host's ID. That meets §8 without anything forwarding between
    gateways.
-8. Sections 3 and 4 are service behaviour, not store behaviour. They hold on any backend once the service writes
-   lifecycle moves with `update` and claims idempotency keys before doing the work.
+8. **`insert` is atomic** (§2): of concurrent inserts of one ID, exactly one wins. In a Durable Object, check and
+   write in one request with nothing awaited between. The conformance suite inserts one ID 20 times at once.
+9. Sections 3 and 4 are service behaviour, not store behaviour. They hold on any backend whose `update` and `insert`
+   meet §2.
 
 ## 10. Open questions
 
 - Conditional lifecycle transitions, and auto-stop on one gateway only (§3).
-- Insert-if-absent for idempotency keys (§4).
 - Gateway-local state that isn't shared and isn't covered here:
   - the abort switches of detached commands (a `kill` that lands on another gateway marks the command killed but
     doesn't abort it)

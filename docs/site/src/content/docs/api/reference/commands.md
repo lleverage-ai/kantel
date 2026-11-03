@@ -50,7 +50,7 @@ Runs a command line in a running sandbox and answers when it ends, with its exit
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `Idempotency-Key` | string | no | A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. (at most 255 characters) |
+| `Idempotency-Key` | string | no | A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry may be `conflict`: retry it later. (at most 255 characters) |
 
 **Body**: [RunCommandBody](/api/reference/types/#runcommandbody)
 
