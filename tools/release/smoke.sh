@@ -3,7 +3,8 @@
 #   - SHA256SUMS matches the release's files, and lists each of them;
 #   - kantel-host (this machine's architecture), kantel-admin.js and the npm package's kantel all print <version>;
 #   - install.sh, pointed at out/github, downloads this machine's kantel-host, checks it against SHA256SUMS and installs
-#     it (--no-join), refuses a binary whose SHA-256 doesn't match, and refuses to join without root.
+#     it (--no-join), refuses a binary whose SHA-256 doesn't match, hands its options on to `kantel-host install`
+#     (with a stand-in binary), and refuses to join without root.
 # Runs on Linux x86_64 or arm64, such as the release workflow's runner, as a user other than root.
 set -euo pipefail
 
@@ -57,6 +58,24 @@ fi
 grep -q "SHA256SUMS says" "$work/err" || fail "install.sh failed, but not on the checksum: $(cat "$work/err")"
 [[ ! -e "$work/bad-bin/kantel-host" ]] || fail "install.sh left a binary that doesn't match"
 echo "ok      install.sh refuses a binary that doesn't match SHA256SUMS"
+
+# Joining hands every option on to `kantel-host install`. Run with a stand-in kantel-host that records its arguments,
+# and an `id` that says root, so nothing is installed for real.
+mkdir "$work/fake" "$work/shim"
+cat >"$work/fake/kantel-host-linux-$arch" <<EOF
+#!/bin/sh
+[ "\$1" = version ] && { echo fake; exit 0; }
+printf '%s\n' "\$@" >"$work/args"
+EOF
+(cd "$work/fake" && sha256sum "kantel-host-linux-$arch" >SHA256SUMS)
+printf '#!/bin/sh\necho 0\n' >"$work/shim/id"
+chmod 755 "$work/shim/id"
+PATH="$work/shim:$PATH" KANTEL_RELEASE_URL="file://$work/fake" KANTEL_BIN_DIR="$work/join-bin" \
+	sh "$github/install.sh" --url https://kantel.invalid --token kth_smoke --label zone=x >/dev/null 2>&1 ||
+	fail "install.sh failed to join with a stand-in kantel-host"
+[[ "$(tr '\n' ' ' <"$work/args")" == "install --url https://kantel.invalid --token kth_smoke --label zone=x " ]] ||
+	fail "install.sh ran kantel-host with: $(tr '\n' ' ' <"$work/args")"
+echo "ok      install.sh runs kantel-host install with its options"
 
 # Joining installs a service, so it needs root; as anyone else it stops before running kantel-host install.
 if [[ "$(id -u)" != 0 ]]; then

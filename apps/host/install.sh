@@ -6,8 +6,8 @@
 # The same line works in bash, zsh and fish: the script runs under sh whatever your shell is. It
 #   1. picks the binary for this machine (Linux x86_64 or arm64);
 #   2. downloads it and SHA256SUMS from the release this script came from, and checks the binary's SHA-256;
-#   3. runs `kantel-host install` with your options, which checks /dev/kvm, copies the binary to
-#      /usr/local/bin/kantel-host, fetches Firecracker and the images, registers with Kantel and starts the service.
+#   3. puts it at /usr/local/bin/kantel-host, and runs its `install` with your options, which checks /dev/kvm,
+#      fetches Firecracker and the images, registers with Kantel and starts the service.
 #
 # Every option goes on to `kantel-host install` (`kantel-host install -h` lists them), except these, which come first:
 #   --version V   install release V (such as 0.1.0) rather than this script's own
@@ -67,6 +67,8 @@ main() {
 	*) die "kantel-host runs on x86_64 or arm64, not $(uname -m)" ;;
 	esac
 	command -v curl >/dev/null 2>&1 || die "needs curl"
+	command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 ||
+		die "needs sha256sum (coreutils) or shasum to check the download"
 
 	if [ -n "${KANTEL_RELEASE_URL:-}" ]; then
 		base=${KANTEL_RELEASE_URL%/}
@@ -77,8 +79,14 @@ main() {
 	fi
 	asset="kantel-host-linux-$arch"
 
+	if [ "$join" = 1 ] && [ "$(id -u)" != 0 ]; then
+		die "joining installs a system service, so it needs root: put sudo before sh, as in: curl -fsSL $base/install.sh | sudo sh -s -- --url ... --token ..."
+	fi
+
 	work=$(mktemp -d)
-	trap 'rm -rf "$work"' EXIT INT TERM
+	trap 'rm -rf "$work"' EXIT
+	trap 'rm -rf "$work"; exit 130' INT
+	trap 'rm -rf "$work"; exit 143' TERM
 	say "Downloading $asset from $base"
 	curl -fsSL --retry 3 -o "$work/$asset" "$base/$asset" || die "couldn't download $base/$asset"
 	curl -fsSL --retry 3 -o "$work/SHA256SUMS" "$base/SHA256SUMS" || die "couldn't download $base/SHA256SUMS"
@@ -86,19 +94,22 @@ main() {
 	[ -n "$want" ] || die "SHA256SUMS has no line for $asset"
 	got=$(sha256 "$work/$asset")
 	[ "$got" = "$want" ] || die "$asset's SHA-256 is $got, but SHA256SUMS says $want; not installing it"
-	chmod 0755 "$work/$asset"
-	say "Checked $asset ($("$work/$asset" version))"
+	say "Checked $asset against SHA256SUMS"
+
+	# Into place first, and run from there: /tmp may be mounted noexec. A rename, so a running kantel-host keeps its
+	# file; `kantel-host install` doesn't copy a binary that is already at /usr/local/bin/kantel-host.
+	dir=${KANTEL_BIN_DIR:-/usr/local/bin}
+	mkdir -p "$dir"
+	cp "$work/$asset" "$dir/kantel-host.new"
+	chmod 0755 "$dir/kantel-host.new"
+	mv -f "$dir/kantel-host.new" "$dir/kantel-host"
+	say "Installed $dir/kantel-host $("$dir/kantel-host" version)"
 
 	if [ "$join" = 0 ]; then
-		dir=${KANTEL_BIN_DIR:-/usr/local/bin}
-		mkdir -p "$dir"
-		cp "$work/$asset" "$dir/kantel-host.new"
-		mv "$dir/kantel-host.new" "$dir/kantel-host"
-		say "Installed $dir/kantel-host. Join with: sudo kantel-host install --url <kantel> --token <kth_...>"
+		say "Join with: sudo kantel-host install --url <kantel> --token <kth_...>"
 		return 0
 	fi
-	[ "$(id -u)" = 0 ] || die "joining installs a system service, so it needs root: put sudo before sh, as in: curl -fsSL $base/install.sh | sudo sh -s -- --url ... --token ..."
-	"$work/$asset" install "$@"
+	"$dir/kantel-host" install "$@"
 }
 
 main "$@"
