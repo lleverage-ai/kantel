@@ -45,6 +45,8 @@ import type {
 	ComputeViewer,
 	DeviceLogin,
 	DeviceLoginsSource,
+	EgressSource,
+	EnvironmentsSource,
 	HostingMode,
 	HostsSource,
 	ProxySource,
@@ -620,6 +622,36 @@ function deliveryOf(delivery: WebhookDelivery): UiWebhookDelivery {
 	};
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// Environments and egress (TASK-4826). The compute API has no environment or egress routes yet: the list is empty, so
+// the page offers New environment, and every other call says the API can't do it yet. The sample data has the lot.
+
+function environmentsSource(): EnvironmentsSource {
+	const missing = async (): Promise<never> => {
+		throw notYet("Kantel's API doesn't keep environments yet.");
+	};
+	return {
+		list: async () => [],
+		get: missing,
+		create: missing,
+		update: missing,
+		remove: missing,
+		setVariable: missing,
+		removeVariable: missing,
+		setFile: missing,
+		removeFile: missing,
+		setRepos: missing,
+		setGrants: missing,
+	};
+}
+
+function egressSource(): EgressSource {
+	const missing = async (): Promise<never> => {
+		throw notYet("Kantel's API doesn't keep a sandbox's egress log or grants yet.");
+	};
+	return { get: missing, setGrants: missing };
+}
+
 /** The start of a signing secret, to tell webhooks apart: `whsec_9c1e`. */
 const secretPrefixOf = (secret: string): string => secret.slice(0, "whsec_".length + 4);
 
@@ -911,6 +943,8 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		snapshots: snapshotsSource(context),
 		keys: keysSource(context),
 		proxy: proxySource(context),
+		environments: environmentsSource(),
+		egress: egressSource(),
 		webhooks: webhooksSource(context),
 		telemetry: telemetrySource(context),
 		...(caller.superAdmin ? { hosts: hostsSource(context) } : {}),
