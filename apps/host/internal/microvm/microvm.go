@@ -52,10 +52,12 @@ import (
 // Tier is the microVM tier's name.
 const Tier = "microvm"
 
-// DefaultSizes are the shapes a host offers unless configured otherwise.
+// DefaultSizes are the shapes a host offers unless configured otherwise. Every microVM runs the desktop, whose
+// stream (Selkies, H.264 on the CPU) takes about a core while the screen changes and saturates 2 vCPUs at 1080p, so
+// the default has 4. vCPUs aren't reserved (the scheduler counts memory and disk), so this costs no density.
 var DefaultSizes = []proto.Size{
 	{Name: "small", VCPUs: 1, MemoryMiB: 1024, DiskGiB: 10},
-	{Name: "default", VCPUs: 2, MemoryMiB: 2048, DiskGiB: 20},
+	{Name: "default", VCPUs: 4, MemoryMiB: 2048, DiskGiB: 20},
 	{Name: "large", VCPUs: 4, MemoryMiB: 8192, DiskGiB: 50},
 }
 
@@ -442,13 +444,16 @@ func (m *Manager) template(ctx context.Context, size proto.Size) (string, timing
 	lock.Lock()
 	defer lock.Unlock()
 	dir := filepath.Join(m.cfg.Root, "templates", size.Name)
-	fingerprint := fc.Fingerprint(m.cfg.Firecracker, m.cfg.Kernel, m.cfg.Rootfs)
+	// The size's shape too: a snapshot restores the vCPUs and memory it was made with, so a size that changes (a new
+	// default, or the host's settings) needs a new template.
+	fingerprint := fc.Fingerprint(m.cfg.Firecracker, m.cfg.Kernel, m.cfg.Rootfs) +
+		fmt.Sprintf(" size=%d/%d/%d", size.VCPUs, size.MemoryMiB, size.DiskGiB)
 	if _, err := os.Stat(filepath.Join(dir, "ready")); err == nil {
 		if made, _ := os.ReadFile(filepath.Join(dir, "images")); string(made) == fingerprint {
 			return dir, nil, nil
 		}
-		// Made with other images (an update): running sandboxes keep their mapping of the old memory file.
-		m.log.Info("template is for other images; rebuilding", "size", size.Name)
+		// Made with other images (an update) or another shape: running sandboxes keep their mapping of the old memory file.
+		m.log.Info("template is for other images or another shape; rebuilding", "size", size.Name)
 	}
 	t := timings{}
 	start := time.Now()

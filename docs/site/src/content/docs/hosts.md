@@ -183,7 +183,7 @@ A host offers three microVM sizes unless its settings say otherwise:
 | Size | vCPUs | Memory | Disk |
 | --- | --- | --- | --- |
 | `small` | 1 | 1 GiB | 10 GiB |
-| `default` | 2 | 2 GiB | 20 GiB |
+| `default` | 4 | 2 GiB | 20 GiB |
 | `large` | 4 | 8 GiB | 50 GiB |
 
 Each host keeps one warm `default` microVM ready. `KANTEL_COMPUTE_POOLS` on the control plane changes that for every host, as JSON such as `{"microvm/default": 2, "microvm/large": 1}`.
