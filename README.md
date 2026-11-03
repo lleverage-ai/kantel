@@ -19,7 +19,6 @@ Each package, app and target has a README, and each component package has a `CON
 | `apps/selfhosted` | The self-hosted gateway: the console, the compute plane's API, identity and audit |
 | `apps/console` | The console, the web app people use |
 | `apps/model-gateway` | The model gateway, which serves every model call |
-| `apps/vault-proxy` | The egress proxy that injects credentials for sandboxes |
 | `packages/contracts` | The TypeScript interfaces every component and target implements |
 | `packages/*` | The components (runtime, workspace, sandbox, vault, connections, browser, skills, memory, rules, schedules, audit, identity, models and more), the public API and SDK (`packages/api`), the component library (`packages/ui`) and the conformance suites (`packages/testing`) |
 | `targets/cloudflare/*`, `targets/selfhosted/*` | Each target's implementations of the contracts |

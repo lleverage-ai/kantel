@@ -139,9 +139,7 @@ only the organisation (and "not an agent"); with `sessionEnd` it registers `endS
   organisation (`null` for platform items), a revision and the record as JSON, listed in insertion order. The store
   holds no rules. Its one guarantee is `commit(writes)`: every write or none, each insert only for a new ID and each
   update only while the row still has the revision the engine read (compare-and-set). Targets:
-  `createMemoryVaultStore` (maps), `createPostgresVaultStore` (`@kantel/vault-selfhosted`: `pg.Pool` or PGlite, one
-  transaction per multi-write commit, `UPDATE … WHERE revision = $n`, `migrate()` creating the schema
-  `harbour_vault` by default) and `createSqliteVaultStore` (`@kantel/vault-cloudflare`: a Durable Object's
+  `createMemoryVaultStore` (maps) and `createSqliteVaultStore` (`@kantel/vault-cloudflare`: a Durable Object's
   `ctx.storage.sql`, each commit checked and applied in one synchronous step, inside `transactionSync`).
 - **Races across processes.** Every decision reads the store, and every change that races is one conditional commit,
   so two vault instances over one store behave as one. A decision, a withdrawal, a session-end withdrawal and an expiry
@@ -173,7 +171,8 @@ with a random key that lives as long as the vault. It leaves out value rotation.
 ## Egress decision API
 
 `createEgressDecisionApi({ vault, authenticate, basePath? })` (`@kantel/vault/egress-api`) is the fetch-style handler
-the egress proxy (`apps/vault-proxy`) and the model gateway call; the self-hosted vault and the VaultDO serve it.
+the model gateway calls; the VaultDO serves it. (The self-hosted vault and its egress proxy, `apps/vault-proxy`, were
+removed with the self-hosted agent plane; the `agent-plane-archive-2026-11-03` tag has them.)
 Routes, under `basePath` (default none), both `POST` with a JSON body:
 
 | Route | Body | Returns |
