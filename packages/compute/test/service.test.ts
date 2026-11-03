@@ -451,6 +451,7 @@ describe("organisations", () => {
 		const stub = createStubBackend();
 		let connected = true;
 		let dropOnStop = false;
+		let refuseStop = false;
 		const stops: string[] = [];
 		const away = () => new KantelError("unavailable", "Host host_stub is not connected");
 		const backend: SandboxBackend = {
@@ -460,8 +461,13 @@ describe("organisations", () => {
 				return { ...known, hosts: known.hosts.map((host) => ({ ...host, connected })) };
 			},
 			async stop(sandboxId, how) {
-				// The host drops just as the stop is sent: it never reaches it.
-				if (dropOnStop) [connected, dropOnStop] = [false, false];
+				// The connection drops with the stop pending, and the host is connected again (a new connection) by the
+				// time the failure is handled: the stop never reached the machine.
+				if (dropOnStop) {
+					dropOnStop = false;
+					throw new KantelError("unavailable", "The host disconnected: replaced by a newer connection");
+				}
+				if (refuseStop) throw new KantelError("conflict", "The host refused the stop");
 				if (!connected) throw away();
 				stops.push(sandboxId);
 				return stub.stop(sandboxId, how);
@@ -491,18 +497,25 @@ describe("organisations", () => {
 		connected = false;
 		await sweep();
 		expect(await tom.getSandbox(sandbox.id)).toMatchObject({ state: "running", stopsAt: sandbox.stopsAt });
-		// Back, and dropping again as the stop goes out: the stop never reached it, so it is running as it was.
+		// Back, but its connection is lost (and replaced) as the stop goes out: the stop never got through, so it is
+		// running as it was, though the host is connected again by then.
 		[connected, dropOnStop] = [true, true];
 		await sweep();
 		const handedBack = await tom.getSandbox(sandbox.id);
 		expect(handedBack).toMatchObject({ state: "running", stopsAt: sandbox.stopsAt });
 		expect(handedBack.reason).toBeUndefined();
 		expect(stops).toEqual([]);
-		// Back for good: the next sweep (the one on its reconnection) stops it.
-		connected = true;
+		// The next sweep stops it.
 		await sweep();
 		expect(stops).toEqual([sandbox.id]);
 		expect((await tom.getSandbox(sandbox.id)).state).toBe("stopped");
+
+		// A stop the host refuses outright is an error, as before, not retried on every sweep.
+		const refused = await tom.createSandbox({ type: "microvm", autoStopMinutes: 1, wait: true });
+		clock += 2 * 60_000;
+		refuseStop = true;
+		await sweep();
+		expect((await tom.getSandbox(refused.id)).state).toBe("error");
 	});
 
 	it("keeps a fork that was made when a later one in its batch fails, rather than taking it for never made", async () => {

@@ -1036,9 +1036,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					},
 				});
 			} catch (error) {
-				if (handBack && !(await reachable(sandbox.hostId))) {
-					// Its host went away before the stop reached it, so the machine is still running there: it is running again
-					// as it was (its stop time and run unchanged), for the sweep to stop once the host is back.
+				if (handBack && error instanceof KantelError && error.code === "unavailable") {
+					// The stop wasn't carried out (its host away, its connection lost or replaced on the way, a replica's view of
+					// it stale, no answer in time), so the machine may still be running there: it is running again as it was
+					// (its stop time and run unchanged), for a later sweep to stop. What the host refused outright (`conflict`,
+					// `not_found`, ...) is an error as before. It is decided by the failure, not by whether the host is connected
+					// by now, which a reconnection or a stale view could answer either way.
 					await transition(sandbox.id, "stopping", (current) => ({
 						...current,
 						state: "running",
@@ -1059,11 +1062,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	async function connectedHosts(): Promise<Set<string>> {
 		const { hosts } = await backend.capabilities();
 		return new Set(hosts.filter((host) => host.connected !== false).map((host) => host.id));
-	}
-
-	async function reachable(hostId: string | undefined): Promise<boolean> {
-		if (hostId === undefined) return false;
-		return (await connectedHosts().catch(() => new Set<string>())).has(hostId);
 	}
 
 	/** The snapshot `from` names in an account: a snapshot's ID, or a saved snapshot's name. */
@@ -2977,8 +2975,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		async sweep() {
 			const at = now();
-			// The sweep alone stops a sandbox past its time, and only where its host can be reached: one on a host that is
-			// away (or whose stop it couldn't reach, `beginStop`) stays running, and a later sweep, as on its host's
+			// The sweep alone stops a sandbox past its time, and only where its host is connected: one on a host that is
+			// away (or whose stop didn't get through, `beginStop`) stays running, and a later sweep, as on its host's
 			// reconnection, stops it.
 			let connected: Set<string> | undefined;
 			for (const sandbox of await store.sandboxes.list({ state: "running" })) {
