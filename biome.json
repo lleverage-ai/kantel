@@ -45,7 +45,7 @@
 			}
 		},
 		{
-			"includes": ["packages/tunnel/src/**"],
+			"includes": ["packages/tunnel/src/**", "packages/compute/src/serve.ts"],
 			"linter": {
 				"rules": {
 					"correctness": { "noNodejsModules": "off" }
