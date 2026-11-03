@@ -20,6 +20,7 @@ import {
 	actingAccount,
 	decodeGrantee,
 	encodeGrantee,
+	keyPrincipal,
 	liveKeyPrincipal,
 	memberId,
 	newApiKeySecret,
@@ -129,6 +130,10 @@ export interface ComputeServiceOptions {
 /** What someone kept off the shared hosts is told about a sandbox on one. */
 export const SHARED_HOSTS_REFUSED =
 	"This sandbox is on the deployment's shared hosts, which are for its own organisation; use a host of your own";
+
+/** What someone kept off the shared hosts is told when they rotate a key that isn't. */
+export const SHARED_KEY_REFUSED =
+	"This key may use the deployment's shared hosts, which you may not, so you can't take its secret; revoke it instead";
 
 export interface ComputeService {
 	/** A handler for every compute route that signs the caller in, given the signed-in caller. */
@@ -2514,6 +2519,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			grantableSandboxes(principal, key.sandboxIds);
 			if (principal.kind === "key" && principal.limits.sandboxIds !== undefined && key.sandboxIds === undefined) {
 				throw new KantelError("forbidden", "A limited key can't rotate a key without limits");
+			}
+			// A key acts as its owner, shared hosts included (`mayShare`), so someone kept off them can't take one that
+			// isn't, as another of the account's admins' key would be.
+			if (!(await mayShare(principal)) && (await mayShare(keyPrincipal(key)))) {
+				throw new KantelError("forbidden", SHARED_KEY_REFUSED);
 			}
 			const { secret, prefix, hash } = await newApiKeySecret();
 			const rotated = await store.apiKeys.update(key.id, (current) =>

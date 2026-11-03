@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
 import type { SandboxBackend } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
-import { SHARED_HOSTS_REFUSED } from "../src/service.ts";
+import { SHARED_HOSTS_REFUSED, SHARED_KEY_REFUSED } from "../src/service.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 
 const BASE_URL = "http://compute.test/v1";
@@ -410,6 +410,26 @@ describe("organisations", () => {
 		expect((await tom.runCommand(shared.id, { command: "echo hi" })).stdout).toBe("hi\n");
 		const roots = await root.createSandbox({ wait: true });
 		expect((await root.runCommand(roots.id, { command: "echo hi" })).stdout).toBe("hi\n");
+	});
+
+	it("won't rotate a key that may use the shared hosts for an admin who may not", async () => {
+		const { tom, ann, client } = setup(createStubBackend(), { sharedHosts: async (userId) => userId === "usr_tom" });
+		const org = await tom.createOrganisation({ name: "Acme" });
+		await ann.joinOrganisation({ code: (await tom.createInvite(org.id, { role: "admin" })).code ?? "" });
+		const scopes = ["sandboxes:read", "sandboxes:write", "exec"] as const;
+		const toms = await tom.createApiKey({ account: org.id, name: "tom's", scopes: [...scopes] });
+		const anns = await ann.createApiKey({ account: org.id, name: "ann's", scopes: [...scopes] });
+
+		// Ann, an admin of the account but kept off the shared hosts, can't take Tom's key; it still works, unchanged.
+		const refused = await failure(ann.rotateApiKey(toms.key.id));
+		expect(refused).toMatchObject({ code: "forbidden", message: SHARED_KEY_REFUSED });
+		expect((await client(toms.secret).createSandbox({ wait: true })).state).toBe("running");
+		// Her own she may rotate, and it stays off them; Tom may rotate either.
+		const hers = await ann.rotateApiKey(anns.key.id);
+		expect((await failure(client(hers.secret).createSandbox({ wait: true }))).code).toBe("unavailable");
+		expect((await tom.rotateApiKey(anns.key.id)).key.id).toBe(anns.key.id);
+		const his = await tom.rotateApiKey(toms.key.id);
+		expect((await client(his.secret).createSandbox({ wait: true })).state).toBe("running");
 	});
 
 	it("checks again once a sandbox is placed, so a call queued while it starts can't reach a shared host", async () => {
