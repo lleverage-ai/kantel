@@ -13,21 +13,19 @@
 		"./sql": "./src/sql.ts",
 		"./sessions": "./src/sessions.ts",
 		"./principal": "./src/principal.ts",
-		"./otp": "./src/otp.ts",
-		"./otp/http": "./src/otp-http.ts",
+		"./sign-in-links": "./src/sign-in-links.ts",
+		"./oauth": "./src/oauth.ts",
+		"./sign-in/http": "./src/sign-in-http.ts",
 		"./http": "./src/http.ts",
-		"./invites": "./src/invites.ts",
-		"./smtp": "./src/smtp.ts",
-		"./testing": "./src/testing.ts"
+		"./testing": "./src/testing.ts",
+		"./testing/github": "./src/github-testing.ts"
 	},
 	"dependencies": {
 		"@kantel/contracts": "workspace:*",
 		"@kantel/sql": "workspace:*",
-		"jose": "6.2.13",
-		"nodemailer": "10.1.7"
+		"jose": "6.2.13"
 	},
 	"devDependencies": {
-		"@kantel/testing": "workspace:*",
-		"smtp-server": "3.20.2"
+		"@kantel/testing": "workspace:*"
 	}
 }

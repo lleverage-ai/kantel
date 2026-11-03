@@ -1,7 +1,7 @@
 /**
  * Kantel sessions: what every sign-in (a provider's, such as GitHub's, or a one-time sign-in link) starts, and what the
  * authenticator then accepts on every call. Portable: WebCrypto and globals only. The store is an interface, so a
- * deployment keeps sessions in its database (`./otp-sql.ts`'s `identity_sessions`) and tests keep them in memory.
+ * deployment keeps sessions in its database (`./sessions-sql.ts`'s `identity_sessions`) and tests keep them in memory.
  *
  * - A session is a `kts_` bearer token (`hbs_` before the rename); only its SHA-256 is stored.
  * - `kantelSessionProvider` lets `createAuthenticator` accept them. The person is resolved through `signIn` on every

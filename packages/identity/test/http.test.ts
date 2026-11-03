@@ -15,21 +15,20 @@ import {
 	signInMethodsOf,
 } from "@kantel/identity/http";
 import { createMemoryIdentity } from "@kantel/identity/memory";
-import { createEmailOtp, createMemoryOtpStores, kantelSessionProvider, MemoryOtpMailer } from "@kantel/identity/otp";
-import { createOtpHandler } from "@kantel/identity/otp/http";
+import { githubProvider } from "@kantel/identity/oauth";
+import { createMemorySessionStore, createSessions, kantelSessionProvider } from "@kantel/identity/sessions";
+import { createSignInHandler } from "@kantel/identity/sign-in/http";
+import { createFakeGitHub, signInWithGitHub } from "@kantel/identity/testing/github";
 import { ManualClock } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "bootstrap" }, organisationId: "bootstrap" };
 const ORIGIN = "http://kantel.test";
 
-/** Lets the mail, sent on a later task, go out. */
-const mailed = () => new Promise((resolve) => setTimeout(resolve, 5));
-
 /**
  * One organisation with two projects: Ada administers it, Grace views Billing only, and a host app's key operates on
- * Website only. The identity routes and the OTP routes are served in-process, and every client calls them through a
- * fetch that hands the request straight to the handler.
+ * Website only. The identity routes and the sign-in routes (against a fake GitHub) are served in-process, and every
+ * client calls them through a fetch that hands the request straight to the handler.
  */
 async function world(options: { signIn?: readonly SignInMethod[] } = {}) {
 	const clock = new ManualClock();
@@ -51,11 +50,20 @@ async function world(options: { signIn?: readonly SignInMethod[] } = {}) {
 	const service = await identity.createServiceIdentity(admin, { name: "Atlas" });
 	const key = await identity.issueApiKey(admin, { serviceId: service.id, projectIds: [website.id], role: "operator" });
 
-	const stores = createMemoryOtpStores();
-	const mailer = new MemoryOtpMailer();
-	const otp = createEmailOtp({ identity, ...stores, mailer, clock });
-	const authenticator = createAuthenticator({ identity, providers: [kantelSessionProvider({ ...stores, clock })] });
-	const otpHandler = createOtpHandler({ otp });
+	const store = createMemorySessionStore();
+	const github = createFakeGitHub();
+	github.account({ id: 1, login: "ada", name: "Ada", emails: [{ email: "ada@kantel.test", verified: true }] });
+	github.account({ id: 2, login: "grace", emails: [{ email: "grace@kantel.test", verified: true, primary: true }] });
+	const authenticator = createAuthenticator({
+		identity,
+		providers: [kantelSessionProvider({ sessions: store, clock })],
+	});
+	const signInHandler = createSignInHandler({
+		identity,
+		sessions: createSessions({ identity, sessions: store, clock }),
+		providers: [githubProvider(github)],
+		clock,
+	});
 	const identityHandler = createIdentityHandler({
 		identity,
 		authenticator,
@@ -63,23 +71,20 @@ async function world(options: { signIn?: readonly SignInMethod[] } = {}) {
 	});
 	const serve = async (input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
 		const request = new Request(input, init);
-		return new URL(request.url).pathname.startsWith("/auth/") ? otpHandler(request) : identityHandler(request);
+		return new URL(request.url).pathname.startsWith("/api/auth/") ? signInHandler(request) : identityHandler(request);
 	};
 	const clientWith = (headers: Record<string, string> = {}): IdentityClient =>
 		createIdentityClient({ baseUrl: ORIGIN, fetch: serve, headers: () => headers });
 
-	/** Signs `email` in through the OTP routes with the code the mailer got, and a client that sends the session. */
+	/** Signs `email`'s GitHub account in through the sign-in routes, and a client that sends the session. */
 	const signIn = async (email: string) => {
-		const anonymous = clientWith();
-		await anonymous.startOtp(email);
-		await mailed();
-		const code = mailer.lastCodeFor(email);
-		if (code === undefined) throw new Error(`no code was sent to ${email}`);
-		const session = await anonymous.verifyOtp(email, code);
+		const signedIn = await signInWithGitHub(serve, github, email.split("@")[0] ?? "");
+		if (!signedIn.ok) throw new Error(`${email} could not sign in: ${signedIn.error}`);
+		const session = { token: signedIn.token, expiresAt: signedIn.expiresAt };
 		return { session, client: clientWith({ authorization: `Bearer ${session.token}` }) };
 	};
 
-	return { identity, admin, organisation, website, billing, ada, service, key, mailer, serve, clientWith, signIn };
+	return { identity, admin, organisation, website, billing, ada, service, key, github, serve, clientWith, signIn };
 }
 
 async function refusal(promise: Promise<unknown>): Promise<unknown> {
@@ -92,7 +97,7 @@ async function refusal(promise: Promise<unknown>): Promise<unknown> {
 }
 
 describe("GET /v1/me", () => {
-	it("names a person signed in with an email code, their organisation-wide role and how they signed in", async () => {
+	it("names a person signed in with GitHub, their organisation-wide role and how they signed in", async () => {
 		const { signIn, organisation, ada } = await world();
 		const { client } = await signIn("ada@kantel.test");
 		expect(await client.me()).toEqual({
@@ -125,17 +130,17 @@ describe("GET /v1/me", () => {
 	});
 
 	it("is 401 with the deployment's sign-in methods when there are no credentials", async () => {
-		const { clientWith, serve } = await world({ signIn: ["email_otp"] });
+		const { clientWith, serve } = await world({ signIn: ["kantel"] });
 		const error = await refusal(clientWith().me());
 		expect(authenticationFailureOf(error)).toBe("invalid");
-		expect(signInMethodsOf(error)).toEqual(["email_otp"]);
+		expect(signInMethodsOf(error)).toEqual(["kantel"]);
 
 		const response = await serve(`${ORIGIN}${ME_PATH}`);
 		expect(response.status).toBe(401);
 		expect(response.headers.get("www-authenticate")).toBe(`Bearer realm="kantel"`);
 		expect(response.headers.get("cache-control")).toBe("no-store");
 		expect(await response.json()).toEqual({
-			error: { code: "unauthenticated", message: "This call needs credentials", signIn: ["email_otp"] },
+			error: { code: "unauthenticated", message: "This call needs credentials", signIn: ["kantel"] },
 		});
 	});
 
@@ -379,53 +384,5 @@ describe("POST /v1/projects", () => {
 			body: '{"name":"A"}',
 		});
 		expect(query.status).toBe(400);
-	});
-});
-
-describe("the client's email one-time PIN calls", () => {
-	it("signs in with the mailed code, and refuses a wrong one as invalid credentials", async () => {
-		const { clientWith, mailer, ada } = await world();
-		const client = clientWith();
-		await client.startOtp("Ada@Kantel.test ");
-		await mailed();
-		const code = mailer.lastCodeFor("ada@kantel.test") ?? "";
-		expect(code).toMatch(/^[0-9]{6}$/);
-		const wrong = code === "000000" ? "111111" : "000000";
-		expect(authenticationFailureOf(await refusal(client.verifyOtp("ada@kantel.test", wrong)))).toBe("invalid");
-		const session = await client.verifyOtp("ada@kantel.test", code);
-		expect(session.token).toMatch(/^kts_/);
-		expect(session.user.id).toBe(ada.id);
-	});
-
-	it("starts the same for a stranger, who gets no mail", async () => {
-		const { clientWith, mailer } = await world();
-		await clientWith().startOtp("stranger@elsewhere.test");
-		await mailed();
-		expect(mailer.sent).toEqual([]);
-	});
-
-	it("reads a 429 as exhausted with the seconds to wait, a bad email as invalid and no answer as unavailable", async () => {
-		const limited = createIdentityClient({
-			baseUrl: ORIGIN,
-			fetch: async () =>
-				Response.json(
-					{ error: { code: "exhausted", message: "Too many sign-in requests" } },
-					{ status: 429, headers: { "retry-after": "120" } },
-				),
-		});
-		const exhausted = await refusal(limited.startOtp("ada@kantel.test"));
-		expect(isKantelError(exhausted, "exhausted")).toBe(true);
-		expect((exhausted as { details?: unknown }).details).toEqual({ retryAfterSeconds: 120 });
-
-		const { clientWith } = await world();
-		expect(isKantelError(await refusal(clientWith().startOtp("not an email")), "invalid")).toBe(true);
-
-		const offline = createIdentityClient({
-			baseUrl: ORIGIN,
-			fetch: async () => {
-				throw new TypeError("fetch failed");
-			},
-		});
-		expect(isKantelError(await refusal(offline.me()), "unavailable")).toBe(true);
 	});
 });

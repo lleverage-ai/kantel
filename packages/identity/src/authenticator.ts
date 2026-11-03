@@ -4,7 +4,7 @@
  *
  * Host apps authenticate with API keys. People sign in through the `SignInProvider`s a deployment configures
  * (`@kantel/identity/jwt`): a Cloudflare Access token, an OIDC token, or both; self-hosted, a Kantel session from
- * email one-time PIN sign-in (`@kantel/identity/otp`).
+ * Kantel's own sessions (`@kantel/identity/sessions`).
  */
 import {
 	type AuthenticatedCaller,

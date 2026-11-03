@@ -21,6 +21,7 @@ import {
 	type AuditEventType,
 	type Authentication,
 	type CallContext,
+	EMAIL_OTP_ISSUER,
 	type ExternalIdentity,
 	externalSubjectOf,
 	type IdentityDirectory,
@@ -45,6 +46,7 @@ import {
 	roleSatisfies,
 	type ServiceId,
 	type ServiceIdentity,
+	SIGN_IN_LINK_ISSUER,
 	type SignIn,
 	systemClock,
 	systemContext,
@@ -83,9 +85,9 @@ import {
 	strongestRole,
 } from "./index.ts";
 import type { MemoryIdentityOptions } from "./memory.ts";
-import { otpSchema } from "./otp-sql.ts";
+import { sessionsSchema } from "./sessions-sql.ts";
 
-export { createSqlOtpStores, otpSchema } from "./otp-sql.ts";
+export { createSqlSessionStores, sessionsSchema } from "./sessions-sql.ts";
 
 /** Identity appends its audit events as itself. */
 const AUDIT_CONTEXT = systemContext("identity");
@@ -225,7 +227,7 @@ export function identitySchema(dialect: SqlDialect): readonly string[] {
 		)`,
 		"CREATE INDEX IF NOT EXISTS identity_invites_by_email ON identity_invites (email_normalised)",
 		"CREATE INDEX IF NOT EXISTS identity_invites_by_organisation ON identity_invites (organisation_id, seq)",
-		...otpSchema(dialect),
+		...sessionsSchema(dialect),
 		// The agent plane's passkey tables (`identity_passkeys`, `identity_passkey_challenges`), created before
 		// TASK-4721, are no longer made here; where they exist they stay, unread.
 	];
@@ -741,13 +743,19 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 	 * Links the one invited user an email matched to `externalSubject`, or, when a concurrent sign-in linked them first,
 	 * finds whoever now holds the subject. Audits `identity.user.linked` once, from the sign-in that linked.
 	 */
-	async function linkInvited(only: StoredUser, externalSubject: string, issuer: string): Promise<StoredUser> {
+	async function linkInvited(
+		only: StoredUser,
+		externalSubject: string,
+		issuer: string,
+		retired: string,
+	): Promise<StoredUser> {
 		let linked: boolean;
 		try {
-			// Links only a user still unlinked; the UNIQUE subject refuses a second user taking this subject.
+			// Links only a user still unlinked (or linked to their email's retired one-time PIN subject); the UNIQUE subject
+			// refuses a second user taking this subject.
 			const updated = await driver.query<{ id: unknown }>(
-				"UPDATE identity_users SET external_subject = ? WHERE id = ? AND external_subject IS NULL RETURNING id",
-				[externalSubject, only.user.id],
+				"UPDATE identity_users SET external_subject = ? WHERE id = ? AND (external_subject IS NULL OR external_subject = ?) RETURNING id",
+				[externalSubject, only.user.id, retired],
 			);
 			linked = updated.length > 0;
 		} catch (error) {
@@ -1556,22 +1564,30 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 				throw new KantelError("invalid", "a sign-in needs an issuer and a subject");
 			}
 			const externalSubject = externalSubjectOf(identity.issuer, identity.subject);
+			// A sign-in link's session names its user by ID, and links or accepts nothing.
+			const viaLink = identity.issuer === SIGN_IN_LINK_ISSUER;
 			const email =
-				identity.emailVerified === true && typeof identity.email === "string"
+				!viaLink && identity.emailVerified === true && typeof identity.email === "string"
 					? normaliseEmail(identity.email)
 					: undefined;
 			// Every pending invite to the verified email is accepted below, so it is one indexed read on each sign-in. It and
 			// the user's read go out together: every API call signs in, and on D1 each read is a round trip (TASK-4486).
 			// `external_subject` is UNIQUE, so at most one user matches.
-			const [pending, found] = await Promise.all([pendingInvitesTo(email), userBySubject(externalSubject)]);
+			const [pending, found] = await Promise.all([
+				pendingInvitesTo(email),
+				viaLink ? userById(identity.subject) : userBySubject(externalSubject),
+			]);
 			let stored = found;
+			if (stored === undefined && viaLink) throw forbidden("no user matches this sign-in");
+			// Someone who signed in by email one-time PIN, retired, is linked again by a provider that verified that email.
+			const retired = externalSubjectOf(EMAIL_OTP_ISSUER, email ?? "");
 			if (stored === undefined) {
 				const invited =
 					email === undefined || email === ""
 						? []
 						: await driver.query<UserRow>(
-								`SELECT ${USER_COLUMNS} FROM identity_users WHERE external_subject IS NULL AND email_normalised = ? LIMIT 2`,
-								[email],
+								`SELECT ${USER_COLUMNS} FROM identity_users WHERE (external_subject IS NULL OR external_subject = ?) AND email_normalised = ? LIMIT 2`,
+								[retired, email],
 							);
 				const only = invited.length === 1 && invited[0] !== undefined ? storedUserOf(invited[0]) : undefined;
 				// A concurrent first sign-in may have linked the invited user since the subject lookup, taking them out of
@@ -1585,7 +1601,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 					}
 					if (stored === undefined) throw forbidden("no user matches this sign-in");
 				} else {
-					stored = await linkInvited(only, externalSubject, identity.issuer);
+					stored = await linkInvited(only, externalSubject, identity.issuer, retired);
 				}
 			}
 			const userId = stored.user.id;
@@ -1611,6 +1627,8 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 				identity.issuer !== "" &&
 				typeof identity.subject === "string" &&
 				identity.subject !== "";
+			if (wellFormed && identity.issuer === SIGN_IN_LINK_ISSUER)
+				return (await userById(identity.subject)) !== undefined;
 			const externalSubject = wellFormed ? externalSubjectOf(identity.issuer, identity.subject) : "";
 			const email =
 				wellFormed && identity.emailVerified === true && typeof identity.email === "string"
@@ -1623,7 +1641,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 					(SELECT COUNT(*) FROM identity_users WHERE external_subject = ?) AS by_subject,
 					(SELECT COUNT(*) FROM (
 						SELECT 1 AS one FROM identity_users
-						WHERE external_subject IS NULL AND email_normalised = ? AND email_normalised <> ''
+						WHERE (external_subject IS NULL OR external_subject = ?) AND email_normalised = ? AND email_normalised <> ''
 						LIMIT 2
 					) AS candidates) AS invited,
 					(SELECT COUNT(*) FROM (
@@ -1631,7 +1649,7 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 						WHERE email_normalised = ? AND email_normalised <> '' AND ${INVITE_PENDING}
 						LIMIT 1
 					) AS pending) AS invites`,
-				[externalSubject, email, email, clock.now()],
+				[externalSubject, externalSubjectOf(EMAIL_OTP_ISSUER, email), email, email, clock.now()],
 			);
 			if (!wellFormed || row === undefined) return false;
 			const bySubject = sqlNumber(row.by_subject);

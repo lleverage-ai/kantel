@@ -1,23 +1,22 @@
 import { type CallContext, INVITES_PATH, inviteRevokePath, isKantelError } from "@kantel/contracts";
 import { createAuthenticator } from "@kantel/identity/authenticator";
 import { createIdentityClient, createIdentityHandler, type IdentityClient } from "@kantel/identity/http";
-import { type InviteMailer, MemoryInviteMailer } from "@kantel/identity/invites";
 import { createMemoryIdentity } from "@kantel/identity/memory";
-import { createEmailOtp, createMemoryOtpStores, kantelSessionProvider, MemoryOtpMailer } from "@kantel/identity/otp";
-import { createOtpHandler } from "@kantel/identity/otp/http";
+import { githubProvider } from "@kantel/identity/oauth";
+import { createMemorySessionStore, createSessions, kantelSessionProvider } from "@kantel/identity/sessions";
+import { createSignInHandler } from "@kantel/identity/sign-in/http";
+import { createFakeGitHub, signInWithGitHub } from "@kantel/identity/testing/github";
 import { ManualClock, RecordingAuditSink } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "bootstrap" }, organisationId: "bootstrap" };
 const ORIGIN = "http://kantel.test";
 
-const mailed = () => new Promise((resolve) => setTimeout(resolve, 5));
-
 /**
- * Kantel: Ada administers it and Linus operates it. Sign-in is by email one-time PIN, served in-process; `invites`
- * configures the handler's invite mail.
+ * Kantel: Ada administers it and Linus operates it. Sign-in is by GitHub (a fake), served in-process; every email
+ * signed in with is a GitHub account whose verified email it is. `invites` configures the handler's invite links.
  */
-async function world(invites: { mailer?: InviteMailer; link?: (request: Request) => string } = {}) {
+async function world(invites: { link?: (request: Request) => string } = {}) {
 	const clock = new ManualClock();
 	const audit = new RecordingAuditSink();
 	const identity = createMemoryIdentity({ clock, audit });
@@ -30,26 +29,33 @@ async function world(invites: { mailer?: InviteMailer; link?: (request: Request)
 	const linus = await identity.createUser(admin, { name: "Linus Torvalds", email: "linus@kantel.test" });
 	await identity.grantRole(admin, { principal: { kind: "user", userId: linus.id }, role: "operator" });
 
-	const stores = createMemoryOtpStores();
-	const codes = new MemoryOtpMailer();
-	const otp = createEmailOtp({ identity, ...stores, mailer: codes, clock });
-	const authenticator = createAuthenticator({ identity, providers: [kantelSessionProvider({ ...stores, clock })] });
-	const otpHandler = createOtpHandler({ otp });
+	const store = createMemorySessionStore();
+	const github = createFakeGitHub();
+	const authenticator = createAuthenticator({
+		identity,
+		providers: [kantelSessionProvider({ sessions: store, clock })],
+	});
+	const signInHandler = createSignInHandler({
+		identity,
+		sessions: createSessions({ identity, sessions: store, clock }),
+		providers: [githubProvider(github)],
+		clock,
+	});
 	const identityHandler = createIdentityHandler({ identity, authenticator, invites });
 	const serve = async (input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
 		const request = new Request(input, init);
-		return new URL(request.url).pathname.startsWith("/auth/") ? otpHandler(request) : identityHandler(request);
+		return new URL(request.url).pathname.startsWith("/api/auth/") ? signInHandler(request) : identityHandler(request);
 	};
 	const clientWith = (headers: Record<string, string> = {}): IdentityClient =>
 		createIdentityClient({ baseUrl: ORIGIN, fetch: serve, headers: () => headers });
+	const ids = new Map<string, number>();
 	const signIn = async (email: string) => {
-		const anonymous = clientWith();
-		await anonymous.startOtp(email);
-		await mailed();
-		const code = codes.lastCodeFor(email);
-		if (code === undefined) throw new Error(`no code was sent to ${email}`);
-		const session = await anonymous.verifyOtp(email, code);
-		return { token: session.token, client: clientWith({ authorization: `Bearer ${session.token}` }) };
+		const login = email.split("@")[0] ?? "";
+		if (!ids.has(login)) ids.set(login, ids.size + 1);
+		github.account({ id: ids.get(login) ?? 0, login, emails: [{ email, verified: true, primary: true }] });
+		const signedIn = await signInWithGitHub(serve, github, login);
+		if (!signedIn.ok) throw new Error(`${email} could not sign in: ${signedIn.error}`);
+		return { token: signedIn.token, client: clientWith({ authorization: `Bearer ${signedIn.token}` }) };
 	};
 	return { identity, audit, kantel, ada, linus, serve, signIn, admin };
 }
@@ -76,36 +82,15 @@ describe("POST /v1/invites", () => {
 				invitedBy: { kind: "human", userId: ada.id },
 			},
 			link: `${ORIGIN}/`,
-			emailed: false,
 		});
 		expect(await client.listInvites()).toEqual([created.invite]);
 	});
 
-	it("emails the invite when the deployment has mail, linking where it says", async () => {
-		const mailer = new MemoryInviteMailer();
-		const { signIn } = await world({ mailer, link: () => "https://kantel.example.com/" });
+	it("links where the deployment says", async () => {
+		const { signIn } = await world({ link: () => "https://kantel.example.com/" });
 		const { client } = await signIn("ada@kantel.test");
 		const created = await client.createInvite({ email: "grace@kantel.test", role: "operator" });
-		expect(created.emailed).toBe(true);
 		expect(created.link).toBe("https://kantel.example.com/");
-		expect(mailer.sent).toEqual([
-			{
-				to: "grace@kantel.test",
-				organisation: "Kantel",
-				invitedBy: "Ada Lovelace",
-				link: "https://kantel.example.com/",
-				expiresAt: created.invite.expiresAt,
-			},
-		]);
-	});
-
-	it("keeps the invite when the email fails, for the admin to send the link", async () => {
-		const failing: InviteMailer = { sendInvite: async () => Promise.reject(new Error("relay down")) };
-		const { signIn } = await world({ mailer: failing });
-		const { client } = await signIn("ada@kantel.test");
-		const created = await client.createInvite({ email: "grace@kantel.test", role: "viewer" });
-		expect(created.emailed).toBe(false);
-		expect(await client.listInvites()).toEqual([created.invite]);
 	});
 
 	it("refuses anyone but an organisation admin", async () => {
@@ -175,7 +160,7 @@ describe("POST /v1/invites/:id/revoke", () => {
 });
 
 describe("accepting an invite", () => {
-	it("lets the invited person sign in by email one-time PIN, and makes them a member with the role", async () => {
+	it("lets the invited person sign in with GitHub, and makes them a member with the role", async () => {
 		const { signIn, kantel } = await world();
 		const ada = await signIn("ada@kantel.test");
 		const { invite } = await ada.client.createInvite({ email: "Grace@Kantel.test", role: "operator" });

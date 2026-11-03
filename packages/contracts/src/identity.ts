@@ -206,8 +206,9 @@ export function normaliseEmail(email: string): string {
 }
 
 /**
- * The `ExternalIdentity.issuer` of Kantel's own email one-time PIN sign-in (self-hosted). Its subject is the normalised
- * email, and the email counts as verified: the person read the code from that inbox.
+ * The `ExternalIdentity.issuer` of Kantel's email one-time PIN sign-in, retired for GitHub sign-in. Its subject was the
+ * normalised email. A user still linked to that subject is linked again by the first provider sign-in that verified
+ * the same email (`IdentityDirectory.signIn`).
  */
 export const EMAIL_OTP_ISSUER = "harbour:email-otp";
 
@@ -416,9 +417,12 @@ export interface IdentityDirectory {
 	 * the user first, and sign-in never creates one.
 	 * - A user whose `externalSubject` is `externalSubjectOf(issuer, subject)` is that person. Issuer and subject compare
 	 *   exactly, case included: OIDC subjects are opaque. `createUser` refuses a subject another user has (`conflict`).
-	 * - Otherwise, when the provider verified the email, the one user with that email and no `externalSubject` is linked
-	 *   to the subject, once, and audited as `identity.user.linked`. Emails compare trimmed and lower-cased
-	 *   (`normaliseEmail`), on both sides, before deciding there is exactly one.
+	 * - Otherwise, when the provider verified the email, the one user with that email and no `externalSubject` (or the
+	 *   retired `externalSubjectOf(EMAIL_OTP_ISSUER, <that email>)`) is linked to the subject, once, and audited as
+	 *   `identity.user.linked`. Emails compare trimmed and lower-cased (`normaliseEmail`), on both sides, before deciding
+	 *   there is exactly one.
+	 * - A sign-in link's session (`issuer` `SIGN_IN_LINK_ISSUER`, `./sign-in.ts`) names its user by ID: that user, with
+	 *   nothing linked or accepted.
 	 * - A provider-verified email accepts every pending invite to it: a person no user matches gets one (named by the
 	 *   identity's name, or the email's local part, and linked to the subject), and each invite's organisation-wide role
 	 *   is granted unless they hold a role in that organisation already. Each invite is accepted once, audited as
@@ -430,8 +434,7 @@ export interface IdentityDirectory {
 
 	/**
 	 * Whether `signIn` would accept `identity` now, without linking anyone or auditing: a pending invite to its verified
-	 * email counts. Email one-time PIN sign-in asks it before sending a code, so only an invited person's inbox ever
-	 * gets one. It does the same lookups whoever the
+	 * email counts. It does the same lookups whoever the
 	 * identity names, but that is no constant-time promise: a public route that asks it must keep its own response
 	 * independent of the answer. Malformed identities are `false`. A worker call: any actor but `system` is `forbidden`.
 	 */
@@ -469,50 +472,7 @@ export interface IdentityDirectory {
 	authorize(ctx: CallContext, needed: Role): Promise<void>;
 }
 
-/*
- * Email one-time PIN sign-in over HTTP (self-hosted). Cloudflare puts Access's own one-time PIN in front of
- * Kantel instead, so a Cloudflare deployment does not serve these routes.
- *
- * `POST OTP_START_PATH` with `OtpStartRequest` always answers 202 with `OtpStartResponse`, the same body whoever the
- * email names: only an invited user's inbox gets a code, so the route cannot be used to probe for accounts. Codes are
- * 6 digits, single use, valid 10 minutes and stored hashed; 5 wrong tries burn a code; an email gets at most 5 codes an
- * hour.
- *
- * `POST OTP_VERIFY_PATH` with `OtpVerifyRequest` signs the person in (`signIn` with `EMAIL_OTP_ISSUER`) and answers 200
- * with `OtpVerifyResponse`: a Kantel session token the authenticator accepts as `Authorization: Bearer kts_…`. A
- * wrong, expired, used or burned code, or an email with no code, is 401 with the same body.
- *
- * `POST SESSION_END_PATH` with the session as bearer ends it (204), whatever state it was in.
- *
- * Failures answer `IdentityErrorResponse`: 400 `invalid` (a malformed body), 401 `unauthenticated`, 503 `unavailable`.
- */
-export const OTP_START_PATH = "/auth/otp/start";
-export const OTP_VERIFY_PATH = "/auth/otp/verify";
-export const SESSION_END_PATH = "/auth/session/end";
-
-export interface OtpStartRequest {
-	readonly email: string;
-}
-
-export interface OtpStartResponse {
-	readonly status: "accepted";
-}
-
-export interface OtpVerifyRequest {
-	readonly email: string;
-	/** The 6-digit code from the email. */
-	readonly code: string;
-}
-
-export interface OtpVerifyResponse {
-	/** The session token, shown once. Send it as `Authorization: Bearer <token>`. */
-	readonly token: string;
-	/** When the session ends, in milliseconds since the epoch. */
-	readonly expiresAt: Timestamp;
-	readonly user: User;
-	/** The organisations the user may act in; name one with `ORGANISATION_HEADER` when there is more than one. */
-	readonly organisationIds: readonly OrganisationId[];
-}
+/* Kantel's own sign-in routes (GitHub, one-time sign-in links, signing out) are in `./sign-in.ts`. */
 
 export interface IdentityErrorResponse {
 	readonly error: { readonly code: string; readonly message: string };
@@ -530,16 +490,19 @@ export interface IdentityErrorResponse {
  * 400 `invalid`.
  *
  * A missing or invalid credential is 401 with `UnauthenticatedResponse`, whose `signIn` names how a person signs in to
- * this deployment, so a console knows whether to show its own sign-in screen (`email_otp`) or reload the page for the
+ * this deployment, so a console knows whether to show its own sign-in screen (`kantel`) or reload the page for the
  * edge to sign them in (`cloudflare_access`). An organisation the caller may not act in is 403; a malformed `limit` or
  * `cursor` is 400 `invalid`.
  */
 export const ME_PATH = "/v1/me";
 export const PROJECTS_PATH = "/v1/projects";
 
-/** How a person signs in to a deployment: Kantel's email one-time PIN (self-hosted) or Cloudflare Access at the edge. */
-export type SignInMethod = "email_otp" | "cloudflare_access";
-export const SIGN_IN_METHODS: readonly SignInMethod[] = ["email_otp", "cloudflare_access"];
+/**
+ * How a person signs in to a deployment: Kantel's own sign-in page (`kantel`: a provider such as GitHub, or a one-time
+ * sign-in link; `sign-in.ts`), or Cloudflare Access at the edge.
+ */
+export type SignInMethod = "kantel" | "cloudflare_access";
+export const SIGN_IN_METHODS: readonly SignInMethod[] = ["kantel", "cloudflare_access"];
 
 /** A role the caller holds: across the organisation when `projectId` is absent, else on that project. */
 export interface HeldRole {
@@ -719,7 +682,8 @@ export type CreateApiKeyResponse = IssuedApiKey;
  *
  * - `GET INVITES_PATH` answers 200 with `InvitesResponse`.
  * - `POST INVITES_PATH` with `CreateInviteRequest` answers 201 with `CreateInviteResponse`: the invite, the link to
- *   send the person, and whether Kantel emailed it to them. A duplicate is 409 `conflict`, a malformed body 400.
+ *   send the person. Kantel sends no mail: the admin sends the link. A duplicate is 409 `conflict`, a malformed body
+ *   400.
  * - `POST inviteRevokePath(id)` with `{}` revokes it and answers 204; one that is not pending is 404 `not_found`.
  *
  * Both POSTs need `Content-Type: application/json` (else 415), as the key routes do. The person accepts by signing in
@@ -744,6 +708,4 @@ export interface CreateInviteResponse {
 	readonly invite: Invite;
 	/** Where the person signs in to accept: the console. It holds no secret, so anyone may be sent it. */
 	readonly link: string;
-	/** Whether Kantel emailed the person the link; false where the deployment sends no mail, or the send failed. */
-	readonly emailed: boolean;
 }

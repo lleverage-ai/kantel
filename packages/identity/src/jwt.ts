@@ -22,7 +22,7 @@ import { isApiKeySecret } from "./index.ts";
 
 /** A configured sign-in provider: where it finds its token in a request, and how it verifies one. */
 export interface SignInProvider {
-	/** `harbour_session` for Kantel's own sessions (`kantelSessionProvider` in `./otp.ts`). */
+	/** `harbour_session` for Kantel's own sessions (`kantelSessionProvider` in `./sessions.ts`). */
 	readonly method: "cloudflare_access" | "oidc" | "harbour_session";
 	/** The issuer its tokens must name in `iss`. The authenticator picks between providers of one method by it. */
 	readonly issuer: string;

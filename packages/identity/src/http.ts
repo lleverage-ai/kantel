@@ -4,8 +4,8 @@
  * `GET /v1/members` (`ORGANISATIONS_PATH` and `MEMBERS_PATH`, bodies below); an admin's invites: `GET` and `POST /v1/invites`,
  * `POST /v1/invites/:id/revoke` (`INVITES_PATH`); and a host app's API keys: `GET` and `POST /v1/keys`, `POST /v1/keys/:id/revoke` (`API_KEYS_PATH`;
  * the bodies are in `packages/contracts/src/identity.ts`). A Fetch-style handler behind the authenticator, so it
- * mounts in any Node, Bun or Worker router, and a client for these routes and for email one-time PIN sign-in
- * (`./otp-http.ts`), which the console and host apps call. Portable: Workers, Bun, Node and the browser.
+ * mounts in any Node, Bun or Worker router, and a client for these routes and for Kantel's own sign-in routes
+ * (`./sign-in-http.ts`), which the console and host apps call. Portable: Workers, Bun, Node and the browser.
  */
 import {
 	type Actor,
@@ -17,8 +17,12 @@ import {
 	type ApiKeyPermission,
 	type ApiKeyScope,
 	type ApiKeysResponse,
+	AUTH_LINK_PATH,
+	AUTH_PROVIDERS_PATH,
+	AUTH_SESSION_END_PATH,
 	type AuthenticatedCaller,
 	type Authenticator,
+	type AuthProvidersResponse,
 	apiKeyRevokePath,
 	authenticationFailureOf,
 	type CallContext,
@@ -49,9 +53,6 @@ import {
 	ORGANISATION_HEADER,
 	ORGANISATION_KEY_MAX_ROLE,
 	type OrganisationId,
-	OTP_START_PATH,
-	OTP_VERIFY_PATH,
-	type OtpVerifyResponse,
 	type Page,
 	type PageRequest,
 	PROJECT_NAME_MAX_LENGTH,
@@ -67,7 +68,7 @@ import {
 	type RoleBinding,
 	readHeader,
 	roleSatisfies,
-	SESSION_END_PATH,
+	type SessionResponse,
 	SIGN_IN_METHODS,
 	type SignInMethod,
 	systemClock,
@@ -78,7 +79,6 @@ import {
 	type UserPreferencesChange,
 } from "@kantel/contracts";
 import { inviteEmail, inviteRole } from "./index.ts";
-import type { InviteMailer } from "./invites.ts";
 import { type SignedIn, signedInReaderOf } from "./signed-in.ts";
 
 /**
@@ -201,24 +201,24 @@ export interface IdentityHandlerOptions {
 	readonly authenticator: Authenticator;
 	/** What a project gets for each setting it didn't set (the deployment's config). Default goal mode off, on Clef. */
 	readonly projectDefaults?: Required<ProjectSettings>;
-	/** How an invite reaches the person. Default: no email, and a link to the origin the request came to. */
+	/** Where an invite sends the person. Default a link to the origin the request came to. */
 	readonly invites?: InviteOptions;
 	/** The clock a new key's expiry is checked against. Default the system's. */
 	readonly clock?: Clock;
 	/**
-	 * How a person signs in to this deployment, named in every 401 so a console knows what to show: `email_otp` when
-	 * the deployment serves `/auth/otp/*`, `cloudflare_access` when Access signs people in at the edge.
+	 * How a person signs in to this deployment, named in every 401 so a console knows what to show: `kantel` when
+	 * the deployment serves Kantel's own sign-in (`/api/auth/…`), `cloudflare_access` when Access signs people in at
+	 * the edge.
 	 */
 	readonly signIn?: readonly SignInMethod[];
 }
 
 export interface InviteOptions {
-	/** Emails each invite; without one the admin sends the link themselves (`CreateInviteResponse.emailed` is false). */
-	readonly mailer?: InviteMailer;
-	/** Where an invited person signs in: the console. Default the origin the request came to, as `/`. */
+	/**
+	 * Where an invited person signs in: the console. Default the origin the request came to, as `/`. Kantel sends no
+	 * mail: the admin sends the person the link.
+	 */
 	readonly link?: (request: Request) => string;
-	/** A send that failed; the invite stands, and the admin gets the link to copy. Never given the link. */
-	readonly onMailError?: (error: unknown, to: string) => void;
 }
 
 /** A positive integer from a query parameter, or an `invalid` error. */
@@ -605,34 +605,6 @@ export function createIdentityHandler(options: IdentityHandlerOptions): (request
 	const signIn = options.signIn?.filter((method) => SIGN_IN_METHODS.includes(method));
 	const inviteLink = options.invites?.link ?? ((request: Request) => new URL("/", request.url).toString());
 
-	/** Emails the invite when the deployment has mail; whether it went. A failed send leaves the invite standing. */
-	const mailInvite = async (
-		caller: AuthenticatedCaller,
-		ctx: CallContext,
-		invite: Invite,
-		link: string,
-	): Promise<boolean> => {
-		const mailer = options.invites?.mailer;
-		if (mailer === undefined) return false;
-		try {
-			const [organisation, inviter] = await Promise.all([
-				identity.getOrganisation(ctx, ctx.organisationId),
-				describe(identity, caller, ctx),
-			]);
-			await mailer.sendInvite({
-				to: invite.email,
-				organisation: organisation.name,
-				invitedBy: inviter.name,
-				link,
-				expiresAt: invite.expiresAt,
-			});
-			return true;
-		} catch (error) {
-			options.invites?.onMailError?.(error, invite.email);
-			return false;
-		}
-	};
-
 	const unauthenticated = (message: string): Response => {
 		const body: UnauthenticatedResponse = {
 			error: { code: "unauthenticated", message, ...(signIn === undefined ? {} : { signIn }) },
@@ -734,12 +706,7 @@ export function createIdentityHandler(options: IdentityHandlerOptions): (request
 					return new Response(null, { status: 204, headers: NO_STORE });
 				}
 				const invite = await identity.createInvite(ctx, createInviteRequestOf(body));
-				const link = inviteLink(request);
-				const created: CreateInviteResponse = {
-					invite,
-					link,
-					emailed: await mailInvite(caller, ctx, invite, link),
-				};
+				const created: CreateInviteResponse = { invite, link: inviteLink(request) };
 				return json(201, created);
 			}
 			if (route.name === "keys" || route.name === "revoke") {
@@ -860,10 +827,10 @@ export interface IdentityClient {
 	createInvite(input: CreateInviteRequest, signal?: AbortSignal): Promise<CreateInviteResponse>;
 	/** Revokes a pending invite (`POST /v1/invites/:id/revoke`). */
 	revokeInvite(inviteId: string, signal?: AbortSignal): Promise<void>;
-	/** Asks for a sign-in code. Resolves the same whoever `email` names. */
-	startOtp(email: string, signal?: AbortSignal): Promise<void>;
-	/** Signs in with a code and starts a Kantel session. */
-	verifyOtp(email: string, code: string, signal?: AbortSignal): Promise<OtpVerifyResponse>;
+	/** The sign-in providers this deployment offers, configured or not (`GET /api/auth/providers`). */
+	signInProviders(signal?: AbortSignal): Promise<AuthProvidersResponse>;
+	/** Redeems a one-time sign-in link's token for a Kantel session (`POST /api/auth/link`). */
+	redeemSignInLink(token: string, signal?: AbortSignal): Promise<SessionResponse>;
 	/** Ends a Kantel session. */
 	endSession(token: string, signal?: AbortSignal): Promise<void>;
 	/** The keys the caller administers, revoked ones included. Never a secret. */
@@ -894,9 +861,9 @@ function retryAfterSeconds(header: string | null, now: number): number | undefin
 }
 
 /**
- * A client for the identity routes and email one-time PIN sign-in. Failures reject with a `KantelError`:
+ * A client for the identity routes and Kantel's own sign-in routes. Failures reject with a `KantelError`:
  * - 401 is `forbidden` with `details.authentication: "invalid"` and, when the deployment named them,
- *   `details.signIn`, its sign-in methods; a wrong, expired or used code is this too.
+ *   `details.signIn`, its sign-in methods; an unknown, used or expired sign-in link is this too.
  * - 403 is `forbidden` with `details.authentication: "organisation"` when the caller may not act in the organisation,
  *   and a plain `forbidden` when its role is not enough: a viewer on the key routes, or an operator issuing or revoking
  *   a key for a project it is not an admin of.
@@ -1004,16 +971,14 @@ export function createIdentityClient(options: IdentityClientOptions): IdentityCl
 			await post(inviteRevokePath(inviteId), {}, signal);
 		},
 
-		async startOtp(email, signal) {
-			await post(OTP_START_PATH, { email }, signal);
-		},
+		signInProviders: (signal) => getJson<AuthProvidersResponse>(AUTH_PROVIDERS_PATH, signal),
 
-		async verifyOtp(email, code, signal) {
-			return (await (await post(OTP_VERIFY_PATH, { email, code }, signal)).json()) as OtpVerifyResponse;
+		async redeemSignInLink(token, signal) {
+			return (await (await post(AUTH_LINK_PATH, { token }, signal)).json()) as SessionResponse;
 		},
 
 		async endSession(token, signal) {
-			await post(SESSION_END_PATH, {}, signal, { authorization: `Bearer ${token}` });
+			await post(AUTH_SESSION_END_PATH, {}, signal, { authorization: `Bearer ${token}` });
 		},
 
 		async listApiKeys(input = {}, signal) {

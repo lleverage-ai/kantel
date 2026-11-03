@@ -8,19 +8,16 @@ import {
 	ORGANISATIONS_PATH,
 } from "@kantel/identity/http";
 import { createMemoryIdentity } from "@kantel/identity/memory";
-import { createEmailOtp, createMemoryOtpStores, kantelSessionProvider, MemoryOtpMailer } from "@kantel/identity/otp";
-import { createOtpHandler } from "@kantel/identity/otp/http";
+import { createTestSignIn } from "@kantel/identity/testing/github";
 import { ManualClock } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "bootstrap" }, organisationId: "bootstrap" };
 const ORIGIN = "http://kantel.test";
 
-const mailed = () => new Promise((resolve) => setTimeout(resolve, 5));
-
 /**
  * Two organisations. Kantel: Ada administers it, Grace views Billing only, Linus operates Website only, and a host
- * app's key operates on Website. Lighthouse: Ada administers it too, alone. The identity and OTP routes are served
+ * app's key operates on Website. Lighthouse: Ada administers it too, alone. The identity and sign-in routes are served
  * in-process.
  */
 async function world() {
@@ -53,25 +50,19 @@ async function world() {
 	const service = await identity.createServiceIdentity(admin, { name: "Atlas" });
 	const key = await identity.issueApiKey(admin, { serviceId: service.id, projectIds: [website.id], role: "operator" });
 
-	const stores = createMemoryOtpStores();
-	const mailer = new MemoryOtpMailer();
-	const otp = createEmailOtp({ identity, ...stores, mailer, clock });
-	const authenticator = createAuthenticator({ identity, providers: [kantelSessionProvider({ ...stores, clock })] });
-	const otpHandler = createOtpHandler({ otp });
+	const signInRoutes = createTestSignIn({ identity, clock });
+	const authenticator = createAuthenticator({ identity, providers: [signInRoutes.sessionProvider] });
 	const identityHandler = createIdentityHandler({ identity, authenticator });
 	const serve = async (input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
 		const request = new Request(input, init);
-		return new URL(request.url).pathname.startsWith("/auth/") ? otpHandler(request) : identityHandler(request);
+		return new URL(request.url).pathname.startsWith("/api/auth/")
+			? signInRoutes.handler(request)
+			: identityHandler(request);
 	};
 	const clientWith = (headers: Record<string, string> = {}): IdentityClient =>
 		createIdentityClient({ baseUrl: ORIGIN, fetch: serve, headers: () => headers });
 	const signIn = async (email: string, headers: Record<string, string> = {}) => {
-		const anonymous = clientWith();
-		await anonymous.startOtp(email);
-		await mailed();
-		const code = mailer.lastCodeFor(email);
-		if (code === undefined) throw new Error(`no code was sent to ${email}`);
-		const session = await anonymous.verifyOtp(email, code);
+		const session = { token: await signInRoutes.tokenFor(email) };
 		return { token: session.token, client: clientWith({ authorization: `Bearer ${session.token}`, ...headers }) };
 	};
 	return { identity, kantel, lighthouse, ada, grace, linus, key, serve, clientWith, signIn };

@@ -15,6 +15,7 @@ import {
 	type ProjectId,
 	type Role,
 	type ServiceIdentity,
+	SIGN_IN_LINK_ISSUER,
 	type SystemContext,
 	type User,
 } from "@kantel/contracts";
@@ -1296,6 +1297,53 @@ export function createIdentityConformance(options: {
 					"identity.canSignIn",
 					(ctx) => identity.canSignIn(ctx, otp("ada@example.test")),
 					tenant.organisation.id,
+				);
+			}),
+		},
+		{
+			name: "a provider that verified the email links a user who signed in by the retired email one-time PIN",
+			run: withSubject(async ({ identity }, deps) => {
+				const tenant = await createTenant(identity, "Acme");
+				const github = "https://github.com";
+				const old = await identity.createUser(tenant.admin, {
+					name: "Ada",
+					email: "ada@example.test",
+					externalSubject: externalSubjectOf(EMAIL_OTP_ISSUER, "ada@example.test"),
+				});
+				const gh = { issuer: github, subject: "42", email: "Ada@Example.test", emailVerified: true };
+				a.strictEqual(
+					await identity.canSignIn(WORKER, { ...gh, emailVerified: false }),
+					false,
+					"not by an unverified email",
+				);
+				a.strictEqual(await identity.canSignIn(WORKER, gh), true);
+				a.strictEqual((await identity.signIn(WORKER, gh)).user.id, old.id);
+				a.strictEqual((await identity.getUser(tenant.admin, old.id)).externalSubject, externalSubjectOf(github, "42"));
+				a.strictEqual(deps.audit.events.filter((event) => event.type === "identity.user.linked").length, 1);
+				// A second provider subject for the same email no longer matches: the user is linked to GitHub's.
+				await a.rejectsWithCode(identity.signIn(WORKER, { ...gh, subject: "43" }), "forbidden", "another subject");
+			}),
+		},
+		{
+			name: "a sign-in link's identity names its user by ID, linking and accepting nothing",
+			run: withSubject(async ({ identity }, deps) => {
+				const tenant = await createTenant(identity, "Acme");
+				const ada = await identity.createUser(tenant.admin, { name: "Ada", email: "ada@example.test" });
+				await identity.createInvite(tenant.admin, { email: "ada@example.test", role: "operator" });
+				const auditedBefore = deps.audit.events.length;
+				const link = { issuer: SIGN_IN_LINK_ISSUER, subject: ada.id };
+				a.strictEqual(await identity.canSignIn(WORKER, link), true);
+				const signedIn = await identity.signIn(WORKER, link);
+				a.strictEqual(signedIn.user.id, ada.id);
+				a.deepEqual(signedIn.organisationIds, [tenant.organisation.id]);
+				a.strictEqual((await identity.getUser(tenant.admin, ada.id)).externalSubject, undefined, "nobody was linked");
+				a.strictEqual((await identity.listInvites(tenant.admin)).length, 1, "the invite still stands");
+				a.strictEqual(deps.audit.events.length, auditedBefore, "nothing was audited");
+				a.strictEqual(await identity.canSignIn(WORKER, { ...link, subject: "usr_nobody" }), false);
+				await a.rejectsWithCode(
+					identity.signIn(WORKER, { ...link, subject: "usr_nobody" }),
+					"forbidden",
+					"an unknown user",
 				);
 			}),
 		},

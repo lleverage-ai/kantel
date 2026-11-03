@@ -11,6 +11,7 @@ import {
 	type Authentication,
 	type CallContext,
 	type Clock,
+	EMAIL_OTP_ISSUER,
 	type ExternalIdentity,
 	externalSubjectOf,
 	type IdentityDirectory,
@@ -36,6 +37,7 @@ import {
 	roleSatisfies,
 	type ServiceId,
 	type ServiceIdentity,
+	SIGN_IN_LINK_ISSUER,
 	type SignIn,
 	systemClock,
 	systemContext,
@@ -140,8 +142,9 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 			: [...invites.values()].filter((stored) => stored.emailNormalised === email && isPending(stored));
 
 	/** The sign-in's email, normalised, when its provider verified it. */
+	// A sign-in link's session names its user by ID: it accepts no invite.
 	const verifiedEmail = (identity: ExternalIdentity): string | undefined =>
-		identity?.emailVerified === true && typeof identity.email === "string"
+		identity?.issuer !== SIGN_IN_LINK_ISSUER && identity?.emailVerified === true && typeof identity.email === "string"
 			? normalisedEmail(identity.email)
 			: undefined;
 
@@ -267,18 +270,22 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 		) {
 			return undefined;
 		}
+		if (identity.issuer === SIGN_IN_LINK_ISSUER) {
+			// A sign-in link's session names its user by ID, and links nothing.
+			const byId = users.get(identity.subject);
+			return byId === undefined ? undefined : { stored: byId, link: false };
+		}
 		const externalSubject = externalSubjectOf(identity.issuer, identity.subject);
-		const email =
-			identity.emailVerified === true && typeof identity.email === "string"
-				? normalisedEmail(identity.email)
-				: undefined;
+		const email = verifiedEmail(identity);
+		// Someone who signed in by email one-time PIN, retired, is linked again by a provider that verified that email.
+		const retired = externalSubjectOf(EMAIL_OTP_ISSUER, email ?? "");
 		// One pass collects both candidate sets whoever the identity names; the subject's match wins.
 		const bySubject: StoredUser[] = [];
 		const invited: StoredUser[] = [];
 		for (const candidate of users.values()) {
 			if (candidate.user.externalSubject === externalSubject) bySubject.push(candidate);
 			else if (
-				candidate.user.externalSubject === undefined &&
+				(candidate.user.externalSubject === undefined || candidate.user.externalSubject === retired) &&
 				email !== undefined &&
 				email !== "" &&
 				normalisedEmail(candidate.user.email) === email

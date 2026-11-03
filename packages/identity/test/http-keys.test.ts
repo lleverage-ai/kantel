@@ -15,16 +15,13 @@ import {
 	type IdentityClient,
 } from "@kantel/identity/http";
 import { createMemoryIdentity } from "@kantel/identity/memory";
-import { createEmailOtp, createMemoryOtpStores, kantelSessionProvider, MemoryOtpMailer } from "@kantel/identity/otp";
-import { createOtpHandler } from "@kantel/identity/otp/http";
+import { createTestSignIn } from "@kantel/identity/testing/github";
 import { ManualClock, RecordingAuditSink } from "@kantel/testing/harness";
 import { describe, expect, it } from "vitest";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "bootstrap" }, organisationId: "bootstrap" };
 const ORIGIN = "http://kantel.test";
 const DAY = 86_400_000;
-
-const mailed = () => new Promise((resolve) => setTimeout(resolve, 5));
 
 /**
  * One organisation with two projects. Ada administers the organisation; Lin operates on Website and administers
@@ -58,27 +55,21 @@ async function world() {
 		name: "Atlas",
 	});
 
-	const stores = createMemoryOtpStores();
-	const mailer = new MemoryOtpMailer();
-	const otp = createEmailOtp({ identity, ...stores, mailer, clock });
-	const authenticator = createAuthenticator({ identity, providers: [kantelSessionProvider({ ...stores, clock })] });
-	const otpHandler = createOtpHandler({ otp });
+	const signInRoutes = createTestSignIn({ identity, clock });
+	const authenticator = createAuthenticator({ identity, providers: [signInRoutes.sessionProvider] });
 	const identityHandler = createIdentityHandler({ identity, authenticator, clock });
 	const serve = async (input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> => {
 		const request = new Request(input, init);
-		return new URL(request.url).pathname.startsWith("/auth/") ? otpHandler(request) : identityHandler(request);
+		return new URL(request.url).pathname.startsWith("/api/auth/")
+			? signInRoutes.handler(request)
+			: identityHandler(request);
 	};
 	const clientWith = (headers: Record<string, string> = {}): IdentityClient =>
 		createIdentityClient({ baseUrl: ORIGIN, fetch: serve, headers: () => headers });
 
 	/** A signed-in person's bearer header and client. */
 	const signIn = async (email: string) => {
-		const anonymous = clientWith();
-		await anonymous.startOtp(email);
-		await mailed();
-		const code = mailer.lastCodeFor(email);
-		if (code === undefined) throw new Error(`no code was sent to ${email}`);
-		const { token } = await anonymous.verifyOtp(email, code);
+		const token = await signInRoutes.tokenFor(email);
 		const headers = { authorization: `Bearer ${token}` };
 		return { headers, client: clientWith(headers) };
 	};

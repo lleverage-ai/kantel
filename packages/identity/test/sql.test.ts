@@ -9,7 +9,9 @@ import {
 	systemContext,
 } from "@kantel/contracts";
 import { createAuthenticator } from "@kantel/identity/authenticator";
-import { createSqlIdentity, migrateIdentity } from "@kantel/identity/sql";
+import { createSessions, hashSessionToken, kantelSessionProvider } from "@kantel/identity/sessions";
+import { createSignInLink, hashSignInLink } from "@kantel/identity/sign-in-links";
+import { createSqlIdentity, createSqlSessionStores, migrateIdentity } from "@kantel/identity/sql";
 import type { SqlDriver } from "@kantel/sql";
 import { type TestDatabaseKind, testDatabaseKinds } from "@kantel/sql/testing";
 import { ManualClock, RecordingAuditSink } from "@kantel/testing/harness";
@@ -367,6 +369,50 @@ for (const kind of testDatabaseKinds()) {
 			});
 		});
 
+		it("keeps sessions and one-time sign-in links by hash: a session ends once, a link redeems once", async () => {
+			await withDatabase(kind, async (driver) => {
+				const clock = new ManualClock();
+				const directory = createSqlIdentity({ driver, clock });
+				const { admin } = await tenant(directory);
+				const ada = await directory.createUser(admin, { name: "Ada", email: "ada@example.test" });
+				const stores = createSqlSessionStores(driver);
+				const sessions = createSessions({ identity: directory, sessions: stores.sessions, clock });
+				const external = { issuer, subject: "ada-sub", email: "ada@example.test", emailVerified: true };
+				const started = await sessions.start(external, await directory.signIn(WORKER, external));
+				expect(started.token).toMatch(/^kts_/);
+				const rows = await driver.query<{ token_hash: unknown }>("SELECT token_hash FROM identity_sessions");
+				expect(rows.map((row) => String(row.token_hash))).toEqual([await hashSessionToken(started.token)]);
+				const authenticator = createAuthenticator({
+					identity: directory,
+					providers: [kantelSessionProvider({ sessions: stores.sessions, clock })],
+				});
+				expect((await authenticator.authenticate(request({ authorization: `Bearer ${started.token}` }))).actor).toEqual(
+					{
+						kind: "human",
+						userId: ada.id,
+					},
+				);
+				const hashed = await hashSessionToken(started.token);
+				const ends = await Promise.all([
+					stores.sessions.end(hashed, clock.now()),
+					stores.sessions.end(hashed, clock.now()),
+				]);
+				expect(ends.filter((ended) => ended?.userId === ada.id)).toHaveLength(1);
+				expect(await stores.sessions.find(hashed, clock.now())).toBeUndefined();
+
+				const link = await createSignInLink(stores.links, ada.id, { clock });
+				const hash = await hashSignInLink(link.token);
+				const redeemed = await Promise.all([
+					stores.links.redeem(hash, clock.now()),
+					stores.links.redeem(hash, clock.now()),
+				]);
+				expect(redeemed.filter((record) => record?.userId === ada.id)).toHaveLength(1);
+				const late = await createSignInLink(stores.links, ada.id, { clock });
+				clock.advance(15 * 60 * 1000);
+				expect(await stores.links.redeem(await hashSignInLink(late.token), clock.now())).toBeUndefined();
+			});
+		});
+
 		it("two first sign-ins at once both resolve to the invited user, and the link is audited once", async () => {
 			await withDatabase(kind, async (driver) => {
 				const clock = new ManualClock();
@@ -377,7 +423,9 @@ for (const kind of testDatabaseKinds()) {
 				const signInAs = { issuer, subject: "ada-sub", email: "ada@example.test", emailVerified: true };
 
 				// The first sign-in misses the subject, then waits before looking up the email while the second links.
-				const paused = pausing(driver, (sql) => sql.includes("external_subject IS NULL AND email_normalised"));
+				const paused = pausing(driver, (sql) =>
+					sql.includes("(external_subject IS NULL OR external_subject = ?) AND email_normalised = ? LIMIT 2"),
+				);
 				const first = createSqlIdentity({ driver: paused.driver, clock, audit }).signIn(WORKER, signInAs);
 				await paused.reached;
 				const second = await directory.signIn(WORKER, signInAs);
