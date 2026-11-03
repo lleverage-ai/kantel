@@ -105,6 +105,11 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 * host ignores one read before a later change. Absent: none sent yet.
 	 */
 	readonly egressRevision?: number;
+	/**
+	 * The latest `egressRevision` its backend has taken (at its boot, or acknowledging an update). Behind
+	 * `egressRevision`, an update didn't get through (its host away, say), and the sweep sends the egress as it is now.
+	 */
+	readonly egressApplied?: number;
 	/** Its own egress grants. Absent on a sandbox made before there were any: none. */
 	readonly grants?: readonly computeSchema.EgressGrant[];
 	/**

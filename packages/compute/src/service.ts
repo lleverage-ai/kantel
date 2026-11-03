@@ -623,9 +623,10 @@ function coversHost(pattern: string, host: string): boolean {
 }
 
 /**
- * The protected variable a repository's clone authenticates with: the environment's first one with a binding that lets
- * its value go to the repository (its host; its path, if the binding names prefixes; GET and POST, if it names
- * methods), which this sandbox has a placeholder for. None: the clone is anonymous.
+ * The protected variable a repository's clone authenticates with: the environment's first one, which this sandbox has a
+ * placeholder for, whose bindings between them let its value go with each request a smart-HTTP clone makes (`GET
+ * <repo>/info/refs`, then `POST <repo>/git-upload-pack`), one binding or two. None: the clone is anonymous. The proxy
+ * still judges every request itself; this only decides whether Git is given the placeholder.
  */
 export function repoCredential(
 	environment: Pick<StoredEnvironment, "variables">,
@@ -634,17 +635,24 @@ export function repoCredential(
 ): string | undefined {
 	const url = new URL(repo.url);
 	if (url.port !== "" && url.port !== "443") return undefined;
-	const path = url.pathname;
-	const lets = (binding: computeSchema.DestinationBinding) =>
+	const base = url.pathname.replace(/\/+$/, "");
+	const requests = [
+		{ method: "GET", path: `${base}/info/refs` },
+		{ method: "POST", path: `${base}/git-upload-pack` },
+	];
+	const lets = (binding: computeSchema.DestinationBinding, request: { method: string; path: string }) =>
 		coversHost(binding.host, url.hostname) &&
 		(binding.pathPrefixes === undefined ||
 			binding.pathPrefixes.length === 0 ||
-			binding.pathPrefixes.some((prefix) => path.startsWith(prefix))) &&
+			binding.pathPrefixes.some((prefix) => request.path.startsWith(prefix))) &&
 		(binding.methods === undefined ||
 			binding.methods.length === 0 ||
-			(binding.methods.includes("GET") && binding.methods.includes("POST")));
+			binding.methods.some((method) => method.toUpperCase() === request.method));
 	return environment.variables.find(
-		(variable) => variable.protected && placeholders[variable.name] !== undefined && variable.bindings.some(lets),
+		(variable) =>
+			variable.protected &&
+			placeholders[variable.name] !== undefined &&
+			requests.every((request) => variable.bindings.some((binding) => lets(binding, request))),
 	)?.name;
 }
 
@@ -1057,22 +1065,52 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const bumpEgress = (sandboxId: string) =>
 		patchSandbox(sandboxId, (current) => ({ ...current, egressRevision: later(current.egressRevision) }));
 
+	/** Records that a sandbox's backend took its egress at `revision`: `egressApplied` only moves on. */
+	const markApplied = (sandboxId: string, revision: number | undefined) =>
+		revision === undefined
+			? Promise.resolve(undefined)
+			: patchSandbox(sandboxId, (current) =>
+					(current.egressApplied ?? Number.NEGATIVE_INFINITY) >= revision
+						? undefined
+						: { ...current, egressApplied: revision },
+				);
+
 	/**
-	 * Sends each running sandbox its egress as it is now, to the backend, where it can take it while the sandbox runs:
-	 * the sandbox is read again first, then what its egress is made of, so the revision sent is never later than what
-	 * was read with it. A starting one is left to its boot, which reconciles once it runs.
+	 * Sends a sandbox (as just read) its egress as it is now, and records the revision once its backend has taken it.
+	 * What its egress is made of is read after the sandbox, so the revision sent is never later than what was read with
+	 * it. A failure leaves `egressApplied` behind, for the sweep to send again.
 	 */
-	const pushEgress = (sandboxes: readonly StoredSandbox[]) => {
+	async function deliverEgress(sandbox: StoredSandbox): Promise<void> {
 		const update = backend.updateEgress?.bind(backend);
 		if (update === undefined) return;
+		const { egress } = await egressFor(sandbox.accountId, sandbox);
+		await update(sandbox.id, egress, sandbox.egressRevision);
+		await markApplied(sandbox.id, sandbox.egressRevision);
+	}
+
+	/** How many sends of each sandbox's egress are under way, by ID: the sweep leaves those sandboxes be. */
+	const delivering = new Map<string, number>();
+
+	/**
+	 * Sends each running sandbox its egress as it is now, to the backend, where it can take it while the sandbox runs:
+	 * the sandbox is read again first. A starting one is left to its boot, which reconciles before it runs; one whose
+	 * update fails (its host away) is sent again by the sweep, as it is then.
+	 */
+	const pushEgress = (sandboxes: readonly StoredSandbox[]) => {
+		if (backend.updateEgress === undefined) return;
 		for (const sandbox of sandboxes) {
+			delivering.set(sandbox.id, (delivering.get(sandbox.id) ?? 0) + 1);
+			const work = (async () => {
+				const current = await store.sandboxes.get(sandbox.id);
+				if (current === undefined || current.state !== "running") return;
+				await deliverEgress(current);
+			})();
 			keepGoing(
-				(async () => {
-					const current = await store.sandboxes.get(sandbox.id);
-					if (current === undefined || current.state !== "running") return;
-					const { egress } = await egressFor(current.accountId, current);
-					await update(current.id, egress, current.egressRevision);
-				})(),
+				work.finally(() => {
+					const left = (delivering.get(sandbox.id) ?? 1) - 1;
+					if (left > 0) delivering.set(sandbox.id, left);
+					else delivering.delete(sandbox.id);
+				}),
 			);
 		}
 	};
@@ -1237,38 +1275,65 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	const nameClaimId = (accountId: string, name: string) => `${accountId}/${name}`;
 
+	const nameTaken = (name: string) => new KantelError("conflict", `The account has an environment named ${name}`);
+
 	/**
 	 * Claims an account's environment name for `environmentId`, or refuses it with `conflict`: the claim is one insert,
 	 * so of two creates or renames to one name at once, on any gateway, exactly one gets it, before the environment
-	 * takes the name. A claim whose environment is gone (deleted, or a create that died after claiming) is taken over once
-	 * it is a minute old (a younger one may be a create about to write its environment), conditionally, so two takers
-	 * can't both win. A rename releases its old name's claim once the environment has the new one.
+	 * takes the name.
+	 *
+	 * A claim no environment is using is taken over once it is a minute old (a younger one may be a create or rename
+	 * about to write its environment), conditionally, so two takers can't both win: its environment gone (deleted, or a
+	 * create that died after claiming), or named otherwise (a rename that died before taking the name, or after taking
+	 * the new one but before letting this one go). A rename that slow finds its claim gone when it checks, and undoes
+	 * itself (`updateEnvironment`).
+	 *
+	 * Then, the claim held, an environment already named so (one whose claim a release let go as a rename gave it the
+	 * name back) keeps the name: the claim becomes its own, and this one is refused.
 	 */
 	async function claimName(accountId: string, name: string, environmentId: string): Promise<void> {
 		const id = nameClaimId(accountId, name);
-		const taken = () => new KantelError("conflict", `The account has an environment named ${name}`);
 		const mine: StoredEnvironmentName = { id, accountId, environmentId, claimedAt: now() };
-		if (await store.environmentNames.insert(mine)) return;
-		const claim = await store.environmentNames.get(id);
-		if (claim === undefined) {
-			// Released meanwhile.
-			if (await store.environmentNames.insert(mine)) return;
-			throw taken();
+		if (!(await store.environmentNames.insert(mine))) {
+			const claim = await store.environmentNames.get(id);
+			if (claim === undefined) {
+				// Released meanwhile.
+				if (!(await store.environmentNames.insert(mine))) throw nameTaken(name);
+			} else if (claim.environmentId !== environmentId) {
+				if (claim.claimedAt > now() - NAME_CLAIM_GRACE_MS) throw nameTaken(name);
+				const holder = await store.environments.get(claim.environmentId);
+				if (holder !== undefined && holder.name === name) throw nameTaken(name);
+				const moved = await store.environmentNames.update(id, (current) =>
+					current.environmentId === claim.environmentId && current.claimedAt === claim.claimedAt ? mine : undefined,
+				);
+				if (moved?.environmentId !== environmentId) throw nameTaken(name);
+			}
 		}
-		if (claim.environmentId === environmentId) return;
-		if (claim.claimedAt > now() - NAME_CLAIM_GRACE_MS) throw taken();
-		if ((await store.environments.get(claim.environmentId)) !== undefined) throw taken();
-		const moved = await store.environmentNames.update(id, (current) =>
-			current.environmentId === claim.environmentId && current.claimedAt === claim.claimedAt ? mine : undefined,
-		);
-		if (moved?.environmentId !== environmentId) throw taken();
+		const other = (await store.environments.list({ accountId, name })).find((each) => each.id !== environmentId);
+		if (other !== undefined) {
+			await store.environmentNames
+				.update(id, (current) =>
+					current.environmentId === environmentId
+						? { ...current, environmentId: other.id, claimedAt: now() }
+						: undefined,
+				)
+				.catch(() => undefined);
+			throw nameTaken(name);
+		}
 	}
 
-	/** Lets a name go, if `environmentId` still holds its claim. */
+	/**
+	 * Lets a name go, if `environmentId` still holds its claim and isn't named so (again: a rename back to it may have
+	 * landed since this call's rename read it).
+	 */
 	async function releaseName(accountId: string, name: string, environmentId: string): Promise<void> {
 		const id = nameClaimId(accountId, name);
-		const claim = await store.environmentNames.get(id);
-		if (claim?.environmentId === environmentId) await store.environmentNames.delete(id);
+		const [claim, environment] = await Promise.all([
+			store.environmentNames.get(id),
+			store.environments.get(environmentId),
+		]);
+		if (claim?.environmentId !== environmentId || environment?.name === name) return;
+		await store.environmentNames.delete(id);
 	}
 
 	/** Changes an environment with `update`, answering it as written; `not_found` when it went meanwhile. */
@@ -1619,24 +1684,47 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		} catch (error) {
 			return fail(sandboxId, error, "starting");
 		}
-		const result = await transition(
+		// The revision its backend has: what the boot sent, or what reconciling sent since.
+		let applied = sent?.egressRevision;
+		const toRunning = (sandbox: StoredSandbox) =>
+			withState(sandbox, "running", {
+				hostId: placement.hostId,
+				resources: placement.resources ?? sandbox.resources,
+				capabilities: placement.capabilities,
+				health: "ok",
+				...(applied === undefined || (sandbox.egressApplied ?? Number.NEGATIVE_INFINITY) >= applied
+					? {}
+					: { egressApplied: applied }),
+			});
+		const reconciles = sent !== undefined && backend.updateEgress !== undefined;
+		// Running only if its egress is what the boot sent; the usual case, in one write.
+		let result = await transition(
 			sandboxId,
 			"starting",
-			(sandbox) =>
-				withState(sandbox, "running", {
-					hostId: placement.hostId,
-					resources: placement.resources ?? sandbox.resources,
-					capabilities: placement.capabilities,
-					health: "ok",
-				}),
-			undefined,
+			toRunning,
+			reconciles ? (current) => current.egressRevision === sent?.egressRevision : undefined,
 			written,
 		);
+		if (reconciles && "lost" in result && result.lost.state === "starting") {
+			// What its egress is made of changed while it started (a grant, its environment, the proxy settings): a change
+			// skips a starting sandbox, so it is sent now, before it is running. A host that can't enforce it (a grant added
+			// once it was placed on one without the feature) can't run it: its machine goes and it fails, rather than run
+			// without what it shows. Any other failure leaves it to the sweep.
+			try {
+				await deliverEgress(result.lost);
+				applied = result.lost.egressRevision;
+			} catch (error) {
+				if (error instanceof KantelError && error.code === "not_supported") {
+					await backend.destroy(sandboxId).catch(() => undefined);
+					return fail(sandboxId, error, "starting");
+				}
+			}
+			result = await transition(sandboxId, "starting", toRunning);
+		}
 		if (!("moved" in result)) return undefined;
 		const next = result.moved;
-		// What its egress is made of changed while it started (a grant, its environment, the proxy settings): a change
-		// skips a starting sandbox, so it is sent now, as it is now.
-		if (sent !== undefined && next.egressRevision !== sent.egressRevision) pushEgress([next]);
+		// Changed again while that was sent: now it runs, an ordinary update.
+		if (sent !== undefined && next.egressRevision !== applied) pushEgress([next]);
 		await emit("sandbox.running", next.accountId, { sandbox: next, data: { previousState: "starting" } });
 		return next;
 	}
@@ -3479,6 +3567,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					await releaseName(environment.accountId, body.name as string, environment.id).catch(() => undefined);
 				throw error;
 			}
+			if (renaming) {
+				// A rename slow enough to have lost its claim (taken over as abandoned) undoes itself, so two environments are
+				// never named alike: the old name's claim is still its own, as it is let go only after this.
+				const claim = await store.environmentNames.get(nameClaimId(changed.accountId, changed.name));
+				if (claim?.environmentId !== changed.id) {
+					const lost = changed.name;
+					await store.environments
+						.update(changed.id, (current) =>
+							current.name === lost ? { ...current, name: previous, updatedAt: later(current.updatedAt) } : undefined,
+						)
+						.catch(() => undefined);
+					throw nameTaken(lost);
+				}
+			}
 			if (previous !== changed.name) await releaseName(changed.accountId, previous, changed.id);
 			return environmentView(changed);
 		},
@@ -4010,6 +4112,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// reconnection, stops it.
 			let connected: Set<string> | undefined;
 			for (const sandbox of await store.sandboxes.list({ state: "running" })) {
+				// An egress update that didn't get through (its host away, a call that failed) is sent again, as it is now,
+				// once its host is there: a later revision the host has taken already makes this one moot.
+				if (
+					backend.updateEgress !== undefined &&
+					sandbox.egressRevision !== undefined &&
+					(sandbox.egressApplied ?? Number.NEGATIVE_INFINITY) < sandbox.egressRevision &&
+					!delivering.has(sandbox.id)
+				) {
+					connected ??= await connectedHosts();
+					if (sandbox.hostId !== undefined && connected.has(sandbox.hostId)) pushEgress([sandbox]);
+				}
 				if (sandbox.stopsAt === undefined || sandbox.stopsAt > at || pending.has(sandbox.id)) continue;
 				connected ??= await connectedHosts();
 				if (sandbox.hostId === undefined || !connected.has(sandbox.hostId)) continue;

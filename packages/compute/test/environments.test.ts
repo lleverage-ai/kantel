@@ -1,6 +1,7 @@
 // Environments and their protected variables: sealing, the routes, what a sandbox made from one is given (a placeholder
 // of its own for each protected value, never the value), rotation, forks, grants, the host-facing `protectedTable` and
 // `recordEgress`, and that no answer, event, webhook payload or error ever carries a protected value.
+import type { computeSchema } from "@kantel/api";
 import { createKantelClient, KantelApiError, type KantelClient } from "@kantel/api/sdk";
 import { pgliteDatabase } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,9 +9,9 @@ import type { PersonIdentity } from "../src/auth.ts";
 import type { BackendEgress, ExecRequest, ExecResult, SandboxBackend, SandboxSpec } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createEphemeralSealer, createSealer, parseSecretsKey, sealedAt } from "../src/secrets.ts";
-import { MAX_EGRESS_ENTRIES, type ReportedEgress } from "../src/service.ts";
+import { MAX_EGRESS_ENTRIES, type ReportedEgress, repoCredential } from "../src/service.ts";
 import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
-import { type ComputeStore, createMemoryStore } from "../src/store.ts";
+import { type ComputeStore, createMemoryStore, type StoredEnvironment } from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 import { bytesToBase64 } from "../src/util.ts";
 
@@ -91,6 +92,7 @@ function setup(
 		readonly exec?: ExecHook;
 		/** Awaited inside the backend's create, before the machine is made. */
 		readonly beforeCreate?: (spec: SandboxSpec) => Promise<void>;
+		readonly now?: () => number;
 	} = {},
 ) {
 	const { backend, recorded } = recordingBackend(options.exec, options.beforeCreate);
@@ -100,6 +102,7 @@ function setup(
 		backend,
 		...(options.store === undefined ? {} : { store: options.store }),
 		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
+		...(options.now === undefined ? {} : { now: options.now }),
 		authenticatePerson: async (request) => {
 			const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
 			return token === undefined ? undefined : PEOPLE[token];
@@ -1196,5 +1199,164 @@ describe("egress updates", () => {
 		const cleared = last(recorded.egress);
 		expect(cleared?.egress).toBeUndefined();
 		expect(cleared?.revision).toBeGreaterThan(stored?.egressRevision ?? 0);
+	});
+});
+
+describe("an interrupted rename", () => {
+	async function sqlStore() {
+		const database = await pgliteDatabase.open();
+		cleanups.push(() => database.close());
+		await migrateComputeStore(database.driver);
+		return createSqlComputeStore(database.driver);
+	}
+	const stores = [
+		["in memory", async () => createMemoryStore()],
+		["in SQL", sqlStore],
+	] as const;
+
+	/** `store`, with the next `environments.update` after `arm()` held, once it has read, until released. */
+	function holdingUpdate(store: ComputeStore) {
+		let held: { readonly wait: Promise<void>; readonly reached: () => void } | undefined;
+		const wrapped: ComputeStore = {
+			...store,
+			environments: {
+				...store.environments,
+				update: async (id, change, expected) => {
+					const holding = held;
+					held = undefined;
+					if (holding !== undefined) {
+						holding.reached();
+						await holding.wait;
+					}
+					return store.environments.update(id, change, expected);
+				},
+			},
+		};
+		return {
+			store: wrapped,
+			arm() {
+				const release = gate();
+				const reached = gate();
+				held = { wait: release.wait, reached: reached.open };
+				return { reached: reached.wait, release: release.open };
+			},
+		};
+	}
+
+	for (const [where, makeStore] of stores) {
+		it(`leaves no name it didn't take held for good, and none it took free (${where})`, sqlTimeout, async () => {
+			const store = await makeStore();
+			let at = Date.now();
+			const clock = () => at;
+			const first = setup({ store, secretsKey: KEY, now: clock });
+			const x = await first.tom.createEnvironment({ name: "a" });
+			const accountId = (await store.environments.get(x.id))?.accountId ?? "";
+			const claim = (name: string, environmentId: string) =>
+				store.environmentNames.insert({ id: `${accountId}/${name}`, accountId, environmentId, claimedAt: at });
+
+			// Died after claiming "b", before taking it: "b" is held a minute, then free.
+			await claim("b", x.id);
+			expect((await failure(first.tom.createEnvironment({ name: "b" }))).code).toBe("conflict");
+			// Died after taking "c", before letting "a" go.
+			await claim("c", x.id);
+			await store.environments.update(x.id, (current) => ({ ...current, name: "c" }));
+			expect((await failure(first.tom.createEnvironment({ name: "a" }))).code).toBe("conflict");
+
+			// A minute on, on a gateway started since: the names it isn't using are free; the one it is, isn't.
+			at += 61_000;
+			const second = setup({ store, secretsKey: KEY, now: clock });
+			expect((await second.tom.createEnvironment({ name: "b" })).name).toBe("b");
+			expect((await second.tom.createEnvironment({ name: "a" })).name).toBe("a");
+			expect((await failure(second.tom.createEnvironment({ name: "c" }))).code).toBe("conflict");
+			const names = (await second.tom.listEnvironments()).items.map((each) => each.name).sort();
+			expect(names).toEqual(["a", "b", "c"]);
+		});
+
+		it(`undoes a rename that lost its claim while it was slow (${where})`, sqlTimeout, async () => {
+			const holding = holdingUpdate(await makeStore());
+			let at = Date.now();
+			const clock = () => at;
+			const { tom } = setup({ store: holding.store, secretsKey: KEY, now: clock });
+			const x = await tom.createEnvironment({ name: "a" });
+			const held = holding.arm();
+			const rename = tom.updateEnvironment(x.id, { name: "d" }).then(
+				() => undefined,
+				(error: unknown) => error,
+			);
+			await held.reached;
+			// It has claimed "d" but not taken it; a minute on, another environment takes "d" over.
+			at += 61_000;
+			const y = await tom.createEnvironment({ name: "d" });
+			held.release();
+			const error = await rename;
+			expect(error instanceof KantelApiError ? error.code : error).toBe("conflict");
+			expect((await tom.getEnvironment(x.id)).name).toBe("a");
+			expect((await tom.getEnvironment(y.id)).name).toBe("d");
+			// Both names are still held by the environments using them.
+			expect((await failure(tom.createEnvironment({ name: "a" }))).code).toBe("conflict");
+			expect((await failure(tom.createEnvironment({ name: "d" }))).code).toBe("conflict");
+		});
+	}
+
+	it("keeps a name an environment took back while its old claim was being let go", async () => {
+		const store = createMemoryStore();
+		const { tom } = setup({ store });
+		const x = await tom.createEnvironment({ name: "a" });
+		const accountId = (await store.environments.get(x.id))?.accountId ?? "";
+		// A rename to "b" let "a" go just as a rename back to "a" landed: "a" is X's, with no claim.
+		await store.environments.update(x.id, (current) => ({ ...current, name: "a" }));
+		await store.environmentNames.delete(`${accountId}/a`);
+		expect((await failure(tom.createEnvironment({ name: "a" }))).code).toBe("conflict");
+		const y = await tom.createEnvironment({ name: "y" });
+		expect((await failure(tom.updateEnvironment(y.id, { name: "a" }))).code).toBe("conflict");
+		// The claim is X's again.
+		expect((await store.environmentNames.get(`${accountId}/a`))?.environmentId).toBe(x.id);
+	});
+});
+
+describe("repoCredential", () => {
+	const placeholders = { TOKEN: "kph_x", OTHER: "kph_y" };
+	const environmentWith = (bindings: computeSchema.DestinationBinding[]) => ({
+		variables: [
+			{ name: "TOKEN", protected: true, bindings, createdAt: 1, updatedAt: 1 },
+		] as unknown as StoredEnvironment["variables"],
+	});
+	const repo = (url: string) => ({ url, path: "/home/user/r" });
+
+	it("picks a variable whose bindings cover the requests a clone makes, one binding or two", () => {
+		const cases: [computeSchema.DestinationBinding[], string, string | undefined][] = [
+			[
+				[{ host: "github.com", pathPrefixes: ["/acme/"], methods: ["GET", "POST"] }],
+				"https://github.com/acme/app",
+				"TOKEN",
+			],
+			[[{ host: "github.com", pathPrefixes: ["/acme/private.git/"] }], "https://github.com/acme/private.git", "TOKEN"],
+			[[{ host: "github.com", pathPrefixes: ["/acme/private/"] }], "https://github.com/acme/private/", "TOKEN"],
+			[
+				[
+					{ host: "github.com", pathPrefixes: ["/acme/app/info/refs"], methods: ["GET"] },
+					{ host: "github.com", pathPrefixes: ["/acme/app/git-upload-pack"], methods: ["POST"] },
+				],
+				"https://github.com/acme/app",
+				"TOKEN",
+			],
+			[[{ host: "*.example.com" }], "https://git.example.com/x/y", "TOKEN"],
+			// Not enough: one request isn't covered, another repository, another host, another port.
+			[[{ host: "github.com", methods: ["GET"] }], "https://github.com/acme/app", undefined],
+			[[{ host: "github.com", pathPrefixes: ["/acme/private.git/"] }], "https://github.com/acme/other", undefined],
+			[[{ host: "github.com", pathPrefixes: ["/acme/"] }], "https://github.com/other/app", undefined],
+			[[{ host: "api.github.com" }], "https://github.com/acme/app", undefined],
+			[[{ host: "github.com" }], "https://github.com:8443/acme/app", undefined],
+		];
+		for (const [bindings, url, want] of cases) {
+			expect(
+				repoCredential(environmentWith(bindings), repo(url), placeholders),
+				`${url} ${JSON.stringify(bindings)}`,
+			).toBe(want);
+		}
+		// Only a variable this sandbox has a placeholder for.
+		expect(
+			repoCredential(environmentWith([{ host: "github.com" }]), repo("https://github.com/a/b"), {}),
+		).toBeUndefined();
 	});
 });
