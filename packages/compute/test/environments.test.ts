@@ -5,7 +5,7 @@ import { createKantelClient, KantelApiError, type KantelClient } from "@kantel/a
 import { pgliteDatabase } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
-import type { BackendEgress, SandboxBackend, SandboxSpec } from "../src/backend.ts";
+import type { BackendEgress, ExecRequest, ExecResult, SandboxBackend, SandboxSpec } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createEphemeralSealer, createSealer, parseSecretsKey, sealedAt } from "../src/secrets.ts";
 import { MAX_EGRESS_ENTRIES, type ReportedEgress } from "../src/service.ts";
@@ -42,14 +42,22 @@ interface Recorded {
 	readonly specs: SandboxSpec[];
 	readonly egress: { readonly sandboxId: string; readonly egress: BackendEgress | undefined }[];
 	readonly secrets: { readonly sandboxId: string; readonly version: number }[];
+	readonly execs: ExecRequest[];
 }
 
+/** Answers a command in place of the stub's shell, or `undefined` to let the stub run it. */
+type ExecHook = (request: ExecRequest) => ExecResult | undefined;
+
 /** The stub backend, recording the specs it is given and taking egress and secrets updates as a host's would. */
-function recordingBackend(): { readonly backend: SandboxBackend; readonly recorded: Recorded } {
+function recordingBackend(execHook?: ExecHook): { readonly backend: SandboxBackend; readonly recorded: Recorded } {
 	const stub = createStubBackend();
-	const recorded: Recorded = { specs: [], egress: [], secrets: [] };
+	const recorded: Recorded = { specs: [], egress: [], secrets: [], execs: [] };
 	const backend: SandboxBackend = {
 		...stub,
+		exec: async (sandboxId, request) => {
+			recorded.execs.push(request);
+			return execHook?.(request) ?? stub.exec(sandboxId, request);
+		},
 		create: async (spec) => {
 			recorded.specs.push(spec);
 			return stub.create(spec);
@@ -68,8 +76,10 @@ function recordingBackend(): { readonly backend: SandboxBackend; readonly record
 	return { backend, recorded };
 }
 
-function setup(options: { readonly store?: ComputeStore; readonly secretsKey?: string } = {}) {
-	const { backend, recorded } = recordingBackend();
+function setup(
+	options: { readonly store?: ComputeStore; readonly secretsKey?: string; readonly exec?: ExecHook } = {},
+) {
+	const { backend, recorded } = recordingBackend(options.exec);
 	/** The bodies of the webhook requests sent. */
 	const sent: string[] = [];
 	const api = createComputeApi({
@@ -400,6 +410,43 @@ describe("sandboxes made from an environment", () => {
 		expect(JSON.stringify(saved)).not.toContain("npm_FILESECRET789");
 		const sandbox = await tom.createSandbox({ environment: "files", wait: true });
 		expect((await tom.readFile(sandbox.id, { path: ".npmrc" })).content).toBe(npmrc);
+	});
+
+	it("clone the environment's repositories once running, never waiting on a prompt, and a failure is an event", async () => {
+		const { tom, recorded } = setup({
+			exec: (request) =>
+				request.command.startsWith("git clone")
+					? request.command.includes("private")
+						? { exitCode: 128, stdout: "", stderr: "fatal: could not read Username", timedOut: false }
+						: { exitCode: 0, stdout: "", stderr: "", timedOut: false }
+					: undefined,
+		});
+		const environment = await githubEnvironment(tom, "repos");
+		await tom.putEnvironmentRepos(environment.id, {
+			repos: [
+				{ url: "https://github.com/acme/app", ref: "main" },
+				{ url: "https://github.com/acme/private", path: "/home/user/p" },
+			],
+		});
+		const sandbox = await tom.createSandbox({ environment: "repos", wait: true });
+		const clones = recorded.execs.filter((request) => request.command.startsWith("git clone"));
+		expect(clones.map((request) => request.command)).toEqual([
+			"git clone --depth 1 --branch 'main' -- 'https://github.com/acme/app' '/home/user/app'",
+			"git clone --depth 1 -- 'https://github.com/acme/private' '/home/user/p'",
+		]);
+		for (const request of clones) {
+			expect(request.env?.GIT_TERMINAL_PROMPT).toBe("0");
+			// The placeholder, for the proxy to swap: never the value.
+			expect(request.env?.GH_TOKEN).toMatch(PLACEHOLDER);
+			expect(JSON.stringify(request)).not.toContain(SECRET);
+		}
+		const degraded = (await tom.listEvents({ sandboxId: sandbox.id })).items.filter(
+			(event) => event.type === "sandbox.degraded",
+		);
+		expect(degraded.map((event) => (event.data as { reason?: string }).reason)).toEqual([
+			"The environment's repository https://github.com/acme/private wasn't cloned into /home/user/p: fatal: could not read Username",
+		]);
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("running");
 	});
 
 	it("keep their placeholder through a rotation, which their host is told of", async () => {
