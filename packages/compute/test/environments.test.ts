@@ -11,7 +11,7 @@ import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createEphemeralSealer, createSealer, parseSecretsKey, sealedAt } from "../src/secrets.ts";
 import { MAX_EGRESS_ENTRIES, type ReportedEgress, repoCredential } from "../src/service.ts";
 import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
-import { type ComputeStore, createMemoryStore, type StoredEnvironment } from "../src/store.ts";
+import { type ComputeStore, createMemoryStore, type StoredEnvironment, UniqueViolation } from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 import { bytesToBase64 } from "../src/util.ts";
 
@@ -1202,7 +1202,7 @@ describe("egress updates", () => {
 	});
 });
 
-describe("an interrupted rename", () => {
+describe("a name write that is held up", () => {
 	async function sqlStore() {
 		const database = await pgliteDatabase.open();
 		cleanups.push(() => database.close());
@@ -1214,21 +1214,31 @@ describe("an interrupted rename", () => {
 		["in SQL", sqlStore],
 	] as const;
 
-	/** `store`, with the next `environments.update` after `arm()` held, once it has read, until released. */
-	function holdingUpdate(store: ComputeStore) {
+	/**
+	 * `store`, with the next environment write after `arm()` (an `update` or an `insert`) held until released: a
+	 * gateway that read, then stalled (a pause, a slow network) before it wrote.
+	 */
+	function holdingWrites(store: ComputeStore) {
 		let held: { readonly wait: Promise<void>; readonly reached: () => void } | undefined;
+		const hold = async () => {
+			const holding = held;
+			held = undefined;
+			if (holding !== undefined) {
+				holding.reached();
+				await holding.wait;
+			}
+		};
 		const wrapped: ComputeStore = {
 			...store,
 			environments: {
 				...store.environments,
 				update: async (id, change, expected) => {
-					const holding = held;
-					held = undefined;
-					if (holding !== undefined) {
-						holding.reached();
-						await holding.wait;
-					}
+					await hold();
 					return store.environments.update(id, change, expected);
+				},
+				insert: async (record) => {
+					await hold();
+					return store.environments.insert(record);
 				},
 			},
 		};
@@ -1243,74 +1253,110 @@ describe("an interrupted rename", () => {
 		};
 	}
 
+	/** The call's error code, once it settles (`undefined` if it worked). */
+	const settled = (call: Promise<unknown>) =>
+		call.then(
+			() => undefined,
+			(error: unknown) => (error instanceof KantelApiError ? error.code : String(error)),
+		);
+
 	for (const [where, makeStore] of stores) {
-		it(`leaves no name it didn't take held for good, and none it took free (${where})`, sqlTimeout, async () => {
-			const store = await makeStore();
-			let at = Date.now();
-			const clock = () => at;
-			const first = setup({ store, secretsKey: KEY, now: clock });
-			const x = await first.tom.createEnvironment({ name: "a" });
-			const accountId = (await store.environments.get(x.id))?.accountId ?? "";
-			const claim = (name: string, environmentId: string) =>
-				store.environmentNames.insert({ id: `${accountId}/${name}`, accountId, environmentId, claimedAt: at });
-
-			// Died after claiming "b", before taking it: "b" is held a minute, then free.
-			await claim("b", x.id);
-			expect((await failure(first.tom.createEnvironment({ name: "b" }))).code).toBe("conflict");
-			// Died after taking "c", before letting "a" go.
-			await claim("c", x.id);
-			await store.environments.update(x.id, (current) => ({ ...current, name: "c" }));
-			expect((await failure(first.tom.createEnvironment({ name: "a" }))).code).toBe("conflict");
-
-			// A minute on, on a gateway started since: the names it isn't using are free; the one it is, isn't.
-			at += 61_000;
-			const second = setup({ store, secretsKey: KEY, now: clock });
-			expect((await second.tom.createEnvironment({ name: "b" })).name).toBe("b");
-			expect((await second.tom.createEnvironment({ name: "a" })).name).toBe("a");
-			expect((await failure(second.tom.createEnvironment({ name: "c" }))).code).toBe("conflict");
-			const names = (await second.tom.listEnvironments()).items.map((each) => each.name).sort();
-			expect(names).toEqual(["a", "b", "c"]);
+		it(`never commits a name another environment took meanwhile: a create (${where})`, sqlTimeout, async () => {
+			const holding = holdingWrites(await makeStore());
+			const slow = setup({ store: holding.store, secretsKey: KEY });
+			const fast = setup({ store: holding.store, secretsKey: KEY });
+			await slow.tom.listEnvironments();
+			const held = holding.arm();
+			const create = settled(slow.tom.createEnvironment({ name: "a" }));
+			await held.reached;
+			// However long it is held (no grace period to wait out), another gateway's create of the name goes first.
+			const first = await fast.tom.createEnvironment({ name: "a" });
+			held.release();
+			expect(await create).toBe("conflict");
+			const named = (await fast.tom.listEnvironments()).items.filter((each) => each.name === "a");
+			expect(named.map((each) => each.id)).toEqual([first.id]);
 		});
 
-		it(`undoes a rename that lost its claim while it was slow (${where})`, sqlTimeout, async () => {
-			const holding = holdingUpdate(await makeStore());
-			let at = Date.now();
-			const clock = () => at;
-			const { tom } = setup({ store: holding.store, secretsKey: KEY, now: clock });
-			const x = await tom.createEnvironment({ name: "a" });
+		it(`never commits a name another environment took meanwhile: a rename (${where})`, sqlTimeout, async () => {
+			const holding = holdingWrites(await makeStore());
+			const { tom } = setup({ store: holding.store, secretsKey: KEY });
+			const x = await tom.createEnvironment({ name: "x" });
 			const held = holding.arm();
-			const rename = tom.updateEnvironment(x.id, { name: "d" }).then(
-				() => undefined,
-				(error: unknown) => error,
-			);
+			const rename = settled(tom.updateEnvironment(x.id, { name: "d" }));
 			await held.reached;
-			// It has claimed "d" but not taken it; a minute on, another environment takes "d" over.
-			at += 61_000;
 			const y = await tom.createEnvironment({ name: "d" });
 			held.release();
-			const error = await rename;
-			expect(error instanceof KantelApiError ? error.code : error).toBe("conflict");
-			expect((await tom.getEnvironment(x.id)).name).toBe("a");
+			expect(await rename).toBe("conflict");
+			expect((await tom.getEnvironment(x.id)).name).toBe("x");
 			expect((await tom.getEnvironment(y.id)).name).toBe("d");
-			// Both names are still held by the environments using them.
-			expect((await failure(tom.createEnvironment({ name: "a" }))).code).toBe("conflict");
-			expect((await failure(tom.createEnvironment({ name: "d" }))).code).toBe("conflict");
+		});
+
+		it(
+			`never commits a name another environment took meanwhile: a same-name update (${where})`,
+			sqlTimeout,
+			async () => {
+				const holding = holdingWrites(await makeStore());
+				const { tom } = setup({ store: holding.store, secretsKey: KEY });
+				const a = await tom.createEnvironment({ name: "a" });
+				// An update naming the environment as it was read ("a"), held after that read.
+				const held = holding.arm();
+				const update = settled(tom.updateEnvironment(a.id, { name: "a", description: "late" }));
+				await held.reached;
+				// Meanwhile A is renamed "b" and B takes "a".
+				await tom.updateEnvironment(a.id, { name: "b" });
+				const b = await tom.createEnvironment({ name: "a" });
+				held.release();
+				expect(await update).toBe("conflict");
+				expect((await tom.getEnvironment(a.id)).name).toBe("b");
+				expect((await tom.getEnvironment(b.id)).name).toBe("a");
+			},
+		);
+
+		it(`leaves nothing to recover when a write dies (${where})`, sqlTimeout, async () => {
+			const store = await makeStore();
+			const first = setup({ store, secretsKey: KEY });
+			const x = await first.tom.createEnvironment({ name: "a" });
+			// A create or rename that failed (here, refused) leaves its name as free as it found it, at once, on a
+			// gateway started since too: there is no claim apart from the environment itself.
+			const y = await first.tom.createEnvironment({ name: "y" });
+			expect((await failure(first.tom.updateEnvironment(y.id, { name: "a" }))).code).toBe("conflict");
+			await first.tom.updateEnvironment(x.id, { name: "c" });
+			const second = setup({ store, secretsKey: KEY });
+			expect((await second.tom.createEnvironment({ name: "a" })).name).toBe("a");
+			expect((await failure(second.tom.createEnvironment({ name: "c" }))).code).toBe("conflict");
+			await second.tom.deleteEnvironment(x.id);
+			expect((await second.tom.createEnvironment({ name: "c" })).name).toBe("c");
+			const names = (await second.tom.listEnvironments()).items.map((each) => each.name).sort();
+			expect(names).toEqual(["a", "c", "y"]);
 		});
 	}
 
-	it("keeps a name an environment took back while its old claim was being let go", async () => {
-		const store = createMemoryStore();
-		const { tom } = setup({ store });
-		const x = await tom.createEnvironment({ name: "a" });
-		const accountId = (await store.environments.get(x.id))?.accountId ?? "";
-		// A rename to "b" let "a" go just as a rename back to "a" landed: "a" is X's, with no claim.
-		await store.environments.update(x.id, (current) => ({ ...current, name: "a" }));
-		await store.environmentNames.delete(`${accountId}/a`);
-		expect((await failure(tom.createEnvironment({ name: "a" }))).code).toBe("conflict");
-		const y = await tom.createEnvironment({ name: "y" });
-		expect((await failure(tom.updateEnvironment(y.id, { name: "a" }))).code).toBe("conflict");
-		// The claim is X's again.
-		expect((await store.environmentNames.get(`${accountId}/a`))?.environmentId).toBe(x.id);
+	it("is refused by the SQL store itself, whoever writes", sqlTimeout, async () => {
+		const store = await sqlStore();
+		const at = Date.now();
+		const record = (id: string, accountId: string, name: string): StoredEnvironment => ({
+			id,
+			accountId,
+			name,
+			variables: [],
+			files: [],
+			repos: [],
+			grants: [],
+			secretsVersion: 1,
+			createdAt: at,
+			updatedAt: at,
+		});
+		await store.environments.put(record("env_1", "acc_1", "a"));
+		await expect(store.environments.put(record("env_2", "acc_1", "a"))).rejects.toBeInstanceOf(UniqueViolation);
+		await expect(store.environments.insert(record("env_2", "acc_1", "a"))).rejects.toBeInstanceOf(UniqueViolation);
+		await store.environments.put(record("env_2", "acc_1", "b"));
+		await expect(store.environments.update("env_2", (current) => ({ ...current, name: "a" }))).rejects.toBeInstanceOf(
+			UniqueViolation,
+		);
+		// Another account's, and the same environment written again, are fine.
+		await store.environments.put(record("env_3", "acc_2", "a"));
+		await store.environments.put(record("env_1", "acc_1", "a"));
+		expect((await store.environments.list({ accountId: "acc_1" })).map((each) => each.name).sort()).toEqual(["a", "b"]);
 	});
 });
 

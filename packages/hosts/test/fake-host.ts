@@ -40,6 +40,8 @@ export class FakeHost {
 	warm: { [pool: string]: number } = {};
 	/** Every call's method and params, as sent. */
 	readonly calls: { readonly method: string; readonly params: { readonly [key: string]: unknown } }[] = [];
+	/** For a test: a call of a method it answers a promise for is answered once that settles (a slow host). */
+	hold?: (method: string) => Promise<void> | undefined;
 
 	constructor(
 		readonly service: HostsService,
@@ -98,6 +100,15 @@ export class FakeHost {
 		this.sent.push(message);
 		if (message.type !== "call") return;
 		this.calls.push({ method: message.method ?? "", params: message.params as { [key: string]: unknown } });
+		const wait = this.hold?.(message.method ?? "");
+		if (wait !== undefined) {
+			void wait.then(() => this.answerCall(message));
+			return;
+		}
+		this.answerCall(message);
+	}
+
+	private answerCall(message: HostMessage) {
 		const params = message.params as { sandboxId: string; tier?: string; size?: string; newId?: string };
 		const answer = (result: unknown) => this.send({ type: "result", id: message.id, result });
 		const fail = (code: string, text: string) =>

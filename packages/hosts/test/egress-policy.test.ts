@@ -216,4 +216,61 @@ describe("a sandbox given a grant while it starts", () => {
 		// Its machine went.
 		expect(host.calls.some((call) => call.method === "sandbox.delete")).toBe(true);
 	});
+
+	it("runs only once its host has the latest, though it changes again while that is sent", async () => {
+		const { api, root, host } = await setup([HOST_FEATURES.egressPolicy]);
+		const gates = new Map<string, () => void>();
+		const holding = new Set(["sandbox.create", "sandbox.egress"]);
+		host.hold = (method) => {
+			if (!holding.has(method)) return undefined;
+			holding.delete(method);
+			return new Promise<void>((resolve) => gates.set(method, resolve));
+		};
+		const egressCalls = () => host.calls.filter((call) => call.method === "sandbox.egress");
+		const sandbox = await root.createSandbox({ type: "microvm" });
+		await vi.waitFor(() => expect(gates.has("sandbox.create")).toBe(true));
+		await root.putSandboxGrants(sandbox.id, { grants: [{ action: "deny", host: "first.example" }] });
+		gates.get("sandbox.create")?.();
+		// The boot sends the first change, and the host is slow to take it; a second lands meanwhile.
+		await vi.waitFor(() => expect(gates.has("sandbox.egress")).toBe(true));
+		expect((await root.getSandbox(sandbox.id)).state).toBe("starting");
+		await root.putSandboxGrants(sandbox.id, { grants: [{ action: "deny", host: "second.example" }] });
+		expect((await root.getSandbox(sandbox.id)).state).toBe("starting");
+		gates.get("sandbox.egress")?.();
+		await api.service.idle();
+
+		// It runs with the second sent too, the last thing its host was told, at its revision.
+		expect((await root.getSandbox(sandbox.id)).state).toBe("running");
+		const stored = await api.store.sandboxes.get(sandbox.id);
+		const last = egressCalls().at(-1)?.params;
+		expect(last).toMatchObject({
+			egress: { revision: stored?.egressRevision, grants: [expect.objectContaining({ host: "second.example" })] },
+		});
+		expect(stored?.egressApplied).toBe(stored?.egressRevision);
+		// Revisions only go up, in the order sent.
+		const revisions = egressCalls().map((call) => (call.params.egress as { revision: number }).revision);
+		expect([...revisions].sort((a, b) => a - b)).toEqual(revisions);
+		expect(new Set(revisions).size).toBe(revisions.length);
+	});
+});
+
+describe("a running sandbox whose host turns out not to enforce its egress", () => {
+	it("is stopped, not left running without it", async () => {
+		const { api, root, host } = await setup();
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		expect(sandbox.state).toBe("running");
+		// A grant written past the up-front check (another gateway, as the sandbox was placed): the store has it, and
+		// the sweep sends it.
+		await api.store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			grants: [{ id: "grt_1", action: "deny", host: "evil.example", createdAt: 1 }],
+			egressRevision: (current.egressRevision ?? 0) + 1,
+		}));
+		await api.service.sweep();
+		await api.service.idle();
+		const after = await root.getSandbox(sandbox.id);
+		expect(after.state).toBe("stopped");
+		expect(host.calls.filter((call) => call.method === "sandbox.egress")).toEqual([]);
+		expect(host.calls.some((call) => call.method === "sandbox.stop")).toBe(true);
+	});
 });

@@ -55,7 +55,6 @@ import type {
 	StoredEgressEntry,
 	StoredEnvironment,
 	StoredEnvironmentFile,
-	StoredEnvironmentName,
 	StoredEnvironmentVariable,
 	StoredHost,
 	StoredInvite,
@@ -65,6 +64,7 @@ import type {
 	StoredTelemetry,
 	StoredWebhook,
 } from "./store.ts";
+import { UniqueViolation } from "./store.ts";
 import type { TelemetryExporter, TelemetryUsageSample } from "./telemetry.ts";
 import {
 	base64ToBytes,
@@ -287,8 +287,8 @@ export const MAX_ENVIRONMENT_FILES = 20;
 export const MAX_ENVIRONMENT_FILE_BYTES = 1024 * 1024;
 /** How long a repository's clone may take when a sandbox starts. */
 const CLONE_TIMEOUT_MS = 10 * 60_000;
-/** How old a claim on an environment's name whose environment is gone must be before another may take it. */
-const NAME_CLAIM_GRACE_MS = 60_000;
+/** How many times a boot sends egress changed while it started, before it leaves the rest to the sweep. */
+const BOOT_RECONCILE_ROUNDS = 5;
 /** What a host reports when it enforces egress grants and protected variables (`HOST_FEATURES` in @kantel/hosts). */
 const EGRESS_POLICY_FEATURE = "egress-policy";
 /**
@@ -1065,6 +1065,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const bumpEgress = (sandboxId: string) =>
 		patchSandbox(sandboxId, (current) => ({ ...current, egressRevision: later(current.egressRevision) }));
 
+	/** A refusal by a host that can't enforce egress grants or protected variables. */
+	const unenforceable = (error: unknown) => error instanceof KantelError && error.code === "not_supported";
+
 	/** Records that a sandbox's backend took its egress at `revision`: `egressApplied` only moves on. */
 	const markApplied = (sandboxId: string, revision: number | undefined) =>
 		revision === undefined
@@ -1103,7 +1106,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const work = (async () => {
 				const current = await store.sandboxes.get(sandbox.id);
 				if (current === undefined || current.state !== "running") return;
-				await deliverEgress(current);
+				try {
+					await deliverEgress(current);
+				} catch (error) {
+					if (!unenforceable(error)) throw error;
+					// Its host can't enforce what its egress now holds (a grant written as it was placed on a host without the
+					// feature): it doesn't run on without it. Stopped, its disk kept; it starts again only where it is enforced.
+					const began = await beginStop(
+						current,
+						false,
+						"Its host doesn't enforce egress grants or protected variables",
+						undefined,
+						(latest) => latest.egressRevision === current.egressRevision,
+					).catch(() => undefined);
+					if (began !== undefined) await began.work;
+				}
 			})();
 			keepGoing(
 				work.finally(() => {
@@ -1273,67 +1290,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return byName;
 	}
 
-	const nameClaimId = (accountId: string, name: string) => `${accountId}/${name}`;
-
 	const nameTaken = (name: string) => new KantelError("conflict", `The account has an environment named ${name}`);
 
 	/**
-	 * Claims an account's environment name for `environmentId`, or refuses it with `conflict`: the claim is one insert,
-	 * so of two creates or renames to one name at once, on any gateway, exactly one gets it, before the environment
-	 * takes the name.
-	 *
-	 * A claim no environment is using is taken over once it is a minute old (a younger one may be a create or rename
-	 * about to write its environment), conditionally, so two takers can't both win: its environment gone (deleted, or a
-	 * create that died after claiming), or named otherwise (a rename that died before taking the name, or after taking
-	 * the new one but before letting this one go). A rename that slow finds its claim gone when it checks, and undoes
-	 * itself (`updateEnvironment`).
-	 *
-	 * Then, the claim held, an environment already named so (one whose claim a release let go as a rename gave it the
-	 * name back) keeps the name: the claim becomes its own, and this one is refused.
+	 * Makes a write that may give an environment `name`. The store refuses one that would give a second environment of
+	 * the account a name (`UniqueViolation`, a unique index in SQL), in the write itself: a create or rename, on any
+	 * gateway, however long after it read, never commits a name another holds, and nothing is left to recover if it
+	 * dies part-way. The refusal is `conflict`.
 	 */
-	async function claimName(accountId: string, name: string, environmentId: string): Promise<void> {
-		const id = nameClaimId(accountId, name);
-		const mine: StoredEnvironmentName = { id, accountId, environmentId, claimedAt: now() };
-		if (!(await store.environmentNames.insert(mine))) {
-			const claim = await store.environmentNames.get(id);
-			if (claim === undefined) {
-				// Released meanwhile.
-				if (!(await store.environmentNames.insert(mine))) throw nameTaken(name);
-			} else if (claim.environmentId !== environmentId) {
-				if (claim.claimedAt > now() - NAME_CLAIM_GRACE_MS) throw nameTaken(name);
-				const holder = await store.environments.get(claim.environmentId);
-				if (holder !== undefined && holder.name === name) throw nameTaken(name);
-				const moved = await store.environmentNames.update(id, (current) =>
-					current.environmentId === claim.environmentId && current.claimedAt === claim.claimedAt ? mine : undefined,
-				);
-				if (moved?.environmentId !== environmentId) throw nameTaken(name);
-			}
+	async function naming<T>(name: string, write: () => Promise<T>): Promise<T> {
+		try {
+			return await write();
+		} catch (error) {
+			if (error instanceof UniqueViolation) throw nameTaken(name);
+			throw error;
 		}
-		const other = (await store.environments.list({ accountId, name })).find((each) => each.id !== environmentId);
-		if (other !== undefined) {
-			await store.environmentNames
-				.update(id, (current) =>
-					current.environmentId === environmentId
-						? { ...current, environmentId: other.id, claimedAt: now() }
-						: undefined,
-				)
-				.catch(() => undefined);
-			throw nameTaken(name);
-		}
-	}
-
-	/**
-	 * Lets a name go, if `environmentId` still holds its claim and isn't named so (again: a rename back to it may have
-	 * landed since this call's rename read it).
-	 */
-	async function releaseName(accountId: string, name: string, environmentId: string): Promise<void> {
-		const id = nameClaimId(accountId, name);
-		const [claim, environment] = await Promise.all([
-			store.environmentNames.get(id),
-			store.environments.get(environmentId),
-		]);
-		if (claim?.environmentId !== environmentId || environment?.name === name) return;
-		await store.environmentNames.delete(id);
 	}
 
 	/** Changes an environment with `update`, answering it as written; `not_found` when it went meanwhile. */
@@ -1697,29 +1668,29 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					: { egressApplied: applied }),
 			});
 		const reconciles = sent !== undefined && backend.updateEgress !== undefined;
-		// Running only if its egress is what the boot sent; the usual case, in one write.
-		let result = await transition(
-			sandboxId,
-			"starting",
-			toRunning,
-			reconciles ? (current) => current.egressRevision === sent?.egressRevision : undefined,
-			written,
-		);
-		if (reconciles && "lost" in result && result.lost.state === "starting") {
-			// What its egress is made of changed while it started (a grant, its environment, the proxy settings): a change
-			// skips a starting sandbox, so it is sent now, before it is running. A host that can't enforce it (a grant added
-			// once it was placed on one without the feature) can't run it: its machine goes and it fails, rather than run
-			// without what it shows. Any other failure leaves it to the sweep.
-			try {
-				await deliverEgress(result.lost);
-				applied = result.lost.egressRevision;
-			} catch (error) {
-				if (error instanceof KantelError && error.code === "not_supported") {
-					await backend.destroy(sandboxId).catch(() => undefined);
-					return fail(sandboxId, error, "starting");
+		// Running only if its egress is what its backend has (what the boot sent, at first): the usual case, in one write.
+		const upToDate = (sandbox: StoredSandbox) => sandbox.egressRevision === applied;
+		let result = await transition(sandboxId, "starting", toRunning, reconciles ? upToDate : undefined, written);
+		// What its egress is made of changed while it started (a grant, its environment, the proxy settings): a change
+		// skips a starting sandbox, so it is sent now, before it is running, and again for each change made while that
+		// was sent. A host that can't enforce it (a grant added once it was placed on one without the feature) can't run
+		// it: its machine goes and it fails, rather than run without what it shows. Any other failure, or changes that
+		// don't let up, leave it running behind (`egressApplied`), for the sweep.
+		for (let round = 0; reconciles && "lost" in result && result.lost.state === "starting"; round++) {
+			let delivered = round < BOOT_RECONCILE_ROUNDS;
+			if (delivered) {
+				try {
+					await deliverEgress(result.lost);
+					applied = result.lost.egressRevision;
+				} catch (error) {
+					if (unenforceable(error)) {
+						await backend.destroy(sandboxId).catch(() => undefined);
+						return fail(sandboxId, error, "starting");
+					}
+					delivered = false;
 				}
 			}
-			result = await transition(sandboxId, "starting", toRunning);
+			result = await transition(sandboxId, "starting", toRunning, delivered ? upToDate : undefined);
 		}
 		if (!("moved" in result)) return undefined;
 		const next = result.moved;
@@ -2863,8 +2834,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				await mayShare(principal),
 			);
 			const fromSnapshot = await latestRef(current);
+			// A boot's egress is read afresh, so it gets a revision of its own: an update read before (from when it last ran,
+			// say, still being retried) never equals it, and loses.
 			const began = await transition(current.id, current.state, (latest) =>
-				withState(latest, "starting", { ports: [] }),
+				withState(latest, "starting", { ports: [], egressRevision: later(latest.egressRevision) }),
 			);
 			if (!("moved" in began)) throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
 			const starting = began.moved;
@@ -3516,7 +3489,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { account, role } = await actingAccount(store, principal, body.account);
 			requireScope(principal, "account:admin", role);
 			const environmentId = randomId("env", 8);
-			await claimName(account.id, body.name, environmentId);
 			const at = now();
 			const environment: StoredEnvironment = {
 				id: environmentId,
@@ -3531,12 +3503,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				createdAt: at,
 				updatedAt: at,
 			};
-			try {
-				await store.environments.put(environment);
-			} catch (error) {
-				await releaseName(account.id, body.name, environmentId).catch(() => undefined);
-				throw error;
-			}
+			// An insert: its ID is new, so it never overwrites; the name is the store's to refuse.
+			await naming(body.name, () => store.environments.insert(environment));
 			return environmentView(environment);
 		},
 
@@ -3545,14 +3513,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		updateEnvironment: async (principal, { params, body }) => {
 			const environment = await environmentFor(principal, params.environmentId, "account:admin");
-			const renaming = body.name !== undefined && body.name !== environment.name;
-			// The new name is claimed before the environment takes it, and the old one let go only after.
-			if (renaming) await claimName(environment.accountId, body.name as string, environment.id);
-			let previous = environment.name;
-			let changed: StoredEnvironment;
-			try {
-				changed = await changeEnvironment(environment.id, (current) => {
-					previous = current.name;
+			// Whatever name it writes (a new one, or the one it read, which it may no longer have), the store refuses it if
+			// another environment holds it by then.
+			const changed = await naming(body.name ?? environment.name, () =>
+				changeEnvironment(environment.id, (current) => {
 					const { description: _kept, ...rest } = current;
 					const description = body.description === undefined ? current.description : body.description;
 					return {
@@ -3561,34 +3525,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						...(description === undefined || description === "" ? {} : { description }),
 						updatedAt: later(current.updatedAt),
 					};
-				});
-			} catch (error) {
-				if (renaming)
-					await releaseName(environment.accountId, body.name as string, environment.id).catch(() => undefined);
-				throw error;
-			}
-			if (renaming) {
-				// A rename slow enough to have lost its claim (taken over as abandoned) undoes itself, so two environments are
-				// never named alike: the old name's claim is still its own, as it is let go only after this.
-				const claim = await store.environmentNames.get(nameClaimId(changed.accountId, changed.name));
-				if (claim?.environmentId !== changed.id) {
-					const lost = changed.name;
-					await store.environments
-						.update(changed.id, (current) =>
-							current.name === lost ? { ...current, name: previous, updatedAt: later(current.updatedAt) } : undefined,
-						)
-						.catch(() => undefined);
-					throw nameTaken(lost);
-				}
-			}
-			if (previous !== changed.name) await releaseName(changed.accountId, previous, changed.id);
+				}),
+			);
 			return environmentView(changed);
 		},
 
 		deleteEnvironment: async (principal, { params }) => {
 			const environment = await environmentFor(principal, params.environmentId, "account:admin");
 			await store.environments.delete(environment.id);
-			await releaseName(environment.accountId, environment.name, environment.id);
 			// Its sandboxes keep their env and files; their placeholders stop resolving at once, and its grants go.
 			await pushEnvironment(environment.id, nextSecretsVersion(environment.secretsVersion, now()));
 			return undefined;
@@ -4037,6 +3981,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			withState(latest, "starting", {
 				size: body.size ?? latest.size,
 				pausedSnapshotId: how === "resume" ? latest.pausedSnapshotId : undefined,
+				// Its egress is read afresh for the boot: a revision of its own, so an update read before (from when it last
+				// ran, still being retried) never equals it, and loses.
+				egressRevision: later(latest.egressRevision),
 			}),
 		);
 		if (!("moved" in began)) {

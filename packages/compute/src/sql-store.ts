@@ -17,7 +17,17 @@
  * It is `persistent`: the service seals nothing without the deployment's own secrets key.
  */
 import { type SqlDriver, type SqlValue, sqlNumber } from "@kantel/sql";
-import { type Collection, type ComputeStore, matches } from "./store.ts";
+import { type Collection, type ComputeStore, matches, UniqueViolation } from "./store.ts";
+
+/** Whether `error` is a unique-constraint violation: Postgres's SQLSTATE 23505, or SQLite's (and D1's) message. */
+function isUniqueViolation(error: unknown): boolean {
+	if (typeof error !== "object" || error === null) return false;
+	const { code, message } = error as { code?: unknown; message?: unknown };
+	return (
+		code === "23505" ||
+		(typeof message === "string" && /UNIQUE constraint failed|duplicate key value violates unique/i.test(message))
+	);
+}
 
 /** Writes an `update` retries after losing to another writer, before it gives up. */
 const UPDATE_ATTEMPTS = 50;
@@ -56,6 +66,11 @@ export function computeStoreSchema(dialect: SqlDriver["dialect"]): string[] {
 		dialect === "postgres"
 			? "CREATE INDEX IF NOT EXISTS compute_api_records_egress ON compute_api_records (((data::jsonb ->> 'sandboxId')), seq) WHERE kind = 'egress'"
 			: "CREATE INDEX IF NOT EXISTS compute_api_records_by_sandbox ON compute_api_records (kind, json_extract(data, '$.sandboxId'), seq)",
+		// No two environments of an account share a name (`environmentNameKey`): the write that would make two fails, in
+		// the database, whichever gateway makes it and however long after it read.
+		dialect === "postgres"
+			? "CREATE UNIQUE INDEX IF NOT EXISTS compute_api_records_environment_name ON compute_api_records (((data::jsonb ->> 'accountId')), ((data::jsonb ->> 'name'))) WHERE kind = 'environments'"
+			: "CREATE UNIQUE INDEX IF NOT EXISTS compute_api_records_environment_name ON compute_api_records (json_extract(data, '$.accountId'), json_extract(data, '$.name')) WHERE kind = 'environments'",
 	];
 }
 
@@ -98,6 +113,15 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 	};
 	const select = (clauses: readonly string[], params: readonly SqlValue[]) =>
 		driver.query(`SELECT data FROM compute_api_records WHERE ${clauses.join(" AND ")} ORDER BY seq`, params);
+	/** A write, its refusal by a unique index (an environment's name) answered as `UniqueViolation`. */
+	const write = async (sql: string, params: readonly SqlValue[]) => {
+		try {
+			return await driver.query(sql, params);
+		} catch (error) {
+			if (isUniqueViolation(error)) throw new UniqueViolation(kind);
+			throw error;
+		}
+	};
 	return {
 		async get(id) {
 			const [row] = await driver.query(SELECT_DATA, [kind, id]);
@@ -105,11 +129,11 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 		},
 		async put(record) {
 			const data = JSON.stringify(record);
-			await driver.query(insert, postgres ? [kind, record.id, data] : [kind, record.id, kind, data]);
+			await write(insert, postgres ? [kind, record.id, data] : [kind, record.id, kind, data]);
 		},
 		async insert(record) {
 			const data = JSON.stringify(record);
-			const rows = await driver.query(insertNew, postgres ? [kind, record.id, data] : [kind, record.id, kind, data]);
+			const rows = await write(insertNew, postgres ? [kind, record.id, data] : [kind, record.id, kind, data]);
 			return rows.length > 0;
 		},
 		async update(id, change, expected) {
@@ -119,7 +143,7 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 				const next = change(JSON.parse(JSON.stringify(expected)) as T);
 				if (next !== undefined) {
 					const data = JSON.stringify(next);
-					const written = await driver.query(UPDATE_IF_SAME, [data, kind, id, JSON.stringify(expected)]);
+					const written = await write(UPDATE_IF_SAME, [data, kind, id, JSON.stringify(expected)]);
 					if (written.length > 0) return JSON.parse(data) as T;
 				}
 			}
@@ -129,7 +153,7 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 				const next = change(parse<T>(row));
 				if (next === undefined) return undefined;
 				const data = JSON.stringify(next);
-				const written = await driver.query(UPDATE_VERSIONED, [data, kind, id, sqlNumber(row.version)]);
+				const written = await write(UPDATE_VERSIONED, [data, kind, id, sqlNumber(row.version)]);
 				// Answered as a later `get` would read it.
 				if (written.length > 0) return JSON.parse(data) as T;
 			}
@@ -185,7 +209,6 @@ export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 		idempotency: sqlCollection(driver, "idempotency"),
 		deviceLogins: sqlCollection(driver, "deviceLogins"),
 		environments: sqlCollection(driver, "environments"),
-		environmentNames: sqlCollection(driver, "environmentNames"),
 		egress: sqlCollection(driver, "egress"),
 	};
 }

@@ -113,6 +113,8 @@ const WEBHOOK_INTERVAL_MS = 1000;
 const TELEMETRY_INTERVAL_MS = 60_000;
 /** How often expired tunnel tickets' rows are removed. */
 const TICKET_SWEEP_MS = 10 * 60_000;
+/** How often the compute sweep runs without requests: auto-stops, and egress a host missed while it was away. */
+const COMPUTE_SWEEP_MS = 5_000;
 
 /** The `hosts` backend's settings. */
 export interface ComputeHostsConfig {
@@ -438,6 +440,10 @@ export async function gatewayCompute(options: {
 		TICKET_SWEEP_MS,
 	);
 	sweepTickets.unref();
+	// The compute sweep runs on a timer too, not only as requests come: a host back after a drop gets the egress
+	// updates it missed (and sandboxes due to stop are stopped) though nobody calls the API meanwhile.
+	const sweepCompute = setInterval(() => void api.service.sweep().catch(() => undefined), COMPUTE_SWEEP_MS);
+	sweepCompute.unref();
 	let hostRoutes: GatewayCompute["hostRoutes"];
 	if (hosts !== undefined) {
 		// Registration only: the API serves the operator's routes, so the registry's own admin routes refuse everyone.
@@ -474,6 +480,7 @@ export async function gatewayCompute(options: {
 		...(hosts?.ports === undefined ? {} : { portRoutes: hosts.ports.fetch }),
 		async close() {
 			clearInterval(sweepTickets);
+			clearInterval(sweepCompute);
 			hosts?.access.stop();
 			await api.close();
 		},
