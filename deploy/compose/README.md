@@ -183,6 +183,14 @@ prompt stays the profile's own. A session created without a workspace whose prof
 its own with them mounted read-only at `/skills`, so `read /skills/<name>/SKILL.md` works. A session whose profile
 names no skills gets no workspace, so a host's own `read`, `write`, `edit` and `ls` stay the host's.
 
+### Subagents
+
+The gateway's sessions have the `subagent` tool (`@kantel/subagents`, the same as Cloudflare's): a session hands one
+self-contained task to a child session of the same agent, on the same workspace, and gets the child's final answer
+back. The console shows each call as a card that opens the child, and subagents can start their own, down to four
+levels. `compose.yaml` turns it on (`KANTEL_SUBAGENTS=on`, also the gateway's default); start the stack with
+`KANTEL_SUBAGENTS=off` to take it away. `/v1/deployment` says which (`bindings.subagents`).
+
 ### Usage: one row per model call
 
 The gateway on Postgres writes one row per model call (tokens with the cache split, reasoning, cost, status, the

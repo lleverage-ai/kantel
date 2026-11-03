@@ -91,6 +91,12 @@ export interface AccessCheck {
 	 */
 	readonly userId?: UserId;
 	readonly needed: Role;
+	/**
+	 * Workspace checks only: an agent may also act in a session above its own, up to `MAX_SESSION_ANCESTRY` parents up
+	 * in the same project, as the session records' `parentSessionId` say. A subagent works in the workspace its parent
+	 * (or a session further up) is bound to. Every other session action stays its own session or its children's.
+	 */
+	readonly throughAncestors?: boolean;
 	/** The operation, dotted, such as `vault.propose` or `workspace.commit`. Audited on a refusal. */
 	readonly operation: string;
 	/** The record acted on, audited on a refusal. Its ID only, never its contents. */
@@ -162,6 +168,15 @@ export type ScopeAccess = ProjectAccess;
 
 /** The role an agent counts as holding on its own session's project. */
 export const AGENT_ROLE: Role = "operator";
+
+/**
+ * How many parents up a `throughAncestors` check looks: as deep as subagents nest (`@kantel/subagents`'
+ * `MAX_SUBAGENT_DEPTH`), so the deepest subagent still reaches the workspace of the session a person started.
+ */
+export const MAX_SESSION_ANCESTRY = 4;
+
+/** The audit type of a check that passed only through `throughAncestors`, naming the ancestor it went through. */
+export const ACCESS_ANCESTOR_ALLOWED = "access.ancestor.allowed";
 
 export interface ProjectAccessOptions {
 	/** Role bindings and API keys. */
@@ -282,10 +297,35 @@ export function createProjectAccess(options: ProjectAccessOptions): ProjectAcces
 		}
 	};
 
+	/**
+	 * How many parents up from `own` the session `ancestorId` is, reading only the directory's own records: within
+	 * `MAX_SESSION_ANCESTRY`, in `own`'s project, and stopping at a missing or repeated parent. Undefined when it isn't one.
+	 */
+	const ancestry = async (ctx: CallContext, own: SessionRecord, ancestorId: SessionId): Promise<number | undefined> => {
+		const seen = new Set<SessionId>([own.id]);
+		let current = own;
+		for (let depth = 1; depth <= MAX_SESSION_ANCESTRY; depth++) {
+			const parentId = current.parentSessionId;
+			if (parentId === undefined || seen.has(parentId)) return undefined;
+			seen.add(parentId);
+			const parent = await sessionOf(ctx, parentId);
+			if (parent === undefined || parent.organisationId !== own.organisationId || parent.projectId !== own.projectId) {
+				return undefined;
+			}
+			if (parent.id === ancestorId) return depth;
+			current = parent;
+		}
+		return undefined;
+	};
+
 	const decide = async (
 		ctx: CallContext,
 		check: Omit<AccessCheck, "operation" | "subject">,
-	): Promise<{ readonly allowed: boolean; readonly projectId?: ProjectId }> => {
+	): Promise<{
+		readonly allowed: boolean;
+		readonly projectId?: ProjectId;
+		readonly ancestor?: { readonly sessionId: SessionId; readonly depth: number };
+	}> => {
 		const actor = ctx.actor;
 		const result = (allowed: boolean, projectId: ProjectId | undefined) =>
 			projectId === undefined ? { allowed } : { allowed, projectId };
@@ -316,6 +356,14 @@ export function createProjectAccess(options: ProjectAccessOptions): ProjectAcces
 			if ((!userOwned || scoped) && own.projectId !== projectId) return result(false, projectId);
 			// An agent acts in its own session, or as the supervisor of a child session.
 			if (target !== undefined && target.id !== own.id && target.parentSessionId !== own.id) {
+				// A workspace check may also pass in a session above its own (a subagent in its parent's workspace): upward
+				// only, through the records' own parents, never a sibling's or a cousin's.
+				if (check.throughAncestors === true) {
+					const depth = await ancestry(ctx, own, target.id);
+					if (depth !== undefined) {
+						return { ...result(true, projectId), ancestor: { sessionId: target.id, depth } };
+					}
+				}
 				return result(false, projectId);
 			}
 			return result(true, projectId);
@@ -593,7 +641,30 @@ export function createProjectAccess(options: ProjectAccessOptions): ProjectAcces
 			return decideResource(ctx, check);
 		},
 		async require(ctx, check) {
-			const { allowed, projectId } = await decide(ctx, check);
+			const { allowed, projectId, ancestor } = await decide(ctx, check);
+			if (allowed && ancestor !== undefined && options.audit !== undefined && ctx.actor.kind === "agent") {
+				// Passed only through the session's ancestry: say which ancestor, so the use can be traced.
+				const event: AuditEventInput = {
+					id: `access:ancestor:${crypto.randomUUID()}`,
+					at: clock.now(),
+					source: "access",
+					type: ACCESS_ANCESTOR_ALLOWED,
+					actor: ctx.actor,
+					organisationId: ctx.organisationId,
+					...(projectId === undefined ? {} : { projectId }),
+					sessionId: ctx.actor.sessionId,
+					agentId: ctx.actor.agentId,
+					...(check.subject === undefined ? {} : { subject: { kind: check.subject.kind, id: check.subject.id } }),
+					data: {
+						operation: check.operation,
+						needed: check.needed,
+						via: "ancestor",
+						ancestorSessionId: ancestor.sessionId,
+						ancestorDepth: ancestor.depth,
+					},
+				};
+				await options.audit.append(ACCESS_CONTEXT, [event]);
+			}
 			if (allowed) return { ...(projectId === undefined ? {} : { projectId }), scope: scopeOf({ projectId }) };
 			if (options.audit !== undefined) {
 				const event: AuditEventInput = {

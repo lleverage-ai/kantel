@@ -36,6 +36,7 @@ import type { AcceptWebSocket } from "@kantel/runtime/http";
 import type { SessionStore } from "@kantel/runtime/store";
 import { r2ObjectBucket } from "@kantel/skills/sql";
 import { d1Driver } from "@kantel/sql/sqlite";
+import { type SubagentVars, subagentsEnabled } from "@kantel/subagents";
 import type { ToolServerRef } from "@kantel/tools/links";
 import type { TunnelConnected, TunnelGrant } from "@kantel/tools/service";
 import CODEMODE_BUNDLE from "../generated/codemode.bundle.txt";
@@ -74,7 +75,6 @@ import {
 import { sessionIdleFrom } from "./session-idle.ts";
 import { type BootstrapRecord, createStack, type Stack, type StackOptions, type StackStorage } from "./stack.ts";
 import { startOnce } from "./start.ts";
-import { type SubagentVars, subagentsEnabled } from "./subagent.ts";
 import {
 	stackTunnelRpc,
 	type ToolServersVars,
@@ -346,7 +346,7 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 					locationHint: locationHint(env),
 				}),
 			),
-			// Subagents, when KANTEL_SUBAGENTS is `on` (experimental, `src/subagent.ts`).
+			// Subagents, when KANTEL_SUBAGENTS is `on` (experimental, `@kantel/subagents`).
 			...(subagentsEnabled(env) ? { subagents: true } : {}),
 			// Saved programs, when KANTEL_PROGRAMS is `on` (experimental, `@kantel/programs/service`).
 			...((env.KANTEL_PROGRAMS ?? "").trim() === "on" ? { programs: true } : {}),

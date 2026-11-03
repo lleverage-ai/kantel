@@ -83,10 +83,12 @@ async function withComponents<T>(
 	schema: string,
 	work: (components: GatewayComponents) => Promise<T>,
 	models?: DurableConfig["models"],
+	extra: Partial<DurableConfig> = {},
 ): Promise<T> {
 	schemas.push(schema);
 	const components = await createDurableGatewayComponents({
 		...config,
+		...extra,
 		schema,
 		...(models === undefined ? {} : { models }),
 	});
@@ -578,6 +580,50 @@ describe.skipIf(databaseUrl === "" || s3Endpoint === "")("the gateway on Postgre
 				expect(await live()).toEqual([]);
 			},
 			{ models },
+		);
+	});
+
+	test("a session's subagent runs in a child session on Postgres, on the same S3 workspace", {
+		timeout: 60_000,
+	}, async () => {
+		const { models, script } = createScriptedModel();
+		await withComponents(
+			`${config.schema}_subagents`,
+			async (components) => {
+				expect(components.bindings.subagents).toBe("on");
+				const deployment = await bootstrap(components, names);
+				const system = { ...systemContext("durable-test"), organisationId: deployment.organisationId };
+				const key = await components.identity.authenticateApiKey(system, deployment.apiKey);
+				const ctx: CallContext = {
+					actor: key.actor,
+					organisationId: deployment.organisationId,
+					projectId: deployment.projectId,
+				};
+				const { runtime, directory } = components.runtime;
+				expect((await components.runtime.profiles.get(ctx, "echo")).tools).toContain("subagent");
+				const parent = await runtime.create(ctx, {
+					projectId: deployment.projectId,
+					agentId: "echo",
+					workspaceId: deployment.workspaceId,
+				});
+				script.reply(
+					{ toolCalls: [{ name: "subagent", args: { task: "Write notes/child.md", title: "Child" } }] },
+					{ toolCalls: [{ name: "write", args: { path: "notes/child.md", content: "from the subagent\n" } }] },
+					{ text: "Written by the subagent" },
+					{ text: "The subagent wrote it" },
+				);
+				const prompt = await runtime.prompt(ctx, parent.id, { text: "Have a subagent write it" });
+				expect(await runtime.wait(ctx, parent.id, prompt.id)).toMatchObject({
+					status: "answered",
+					answer: "The subagent wrote it",
+				});
+				const [child] = (await directory.list(ctx, { parentSessionId: parent.id })).items;
+				expect(child).toMatchObject({ title: "Child", workspaceId: deployment.workspaceId });
+				const read = await components.workspaces.read(ctx, deployment.workspaceId, "notes/child.md");
+				expect(new TextDecoder().decode(read.content)).toBe("from the subagent\n");
+			},
+			{ models },
+			{ subagents: true },
 		);
 	});
 

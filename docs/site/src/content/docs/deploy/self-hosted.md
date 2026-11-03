@@ -210,6 +210,8 @@ To put the containers under gVisor, [install gVisor](https://gvisor.dev/docs/use
 
 With rootless Docker, `runsc` needs its own setup, and the installer's detection of the rootless socket hasn't been tested end to end.
 
+A session also has the `subagent` tool, as on Cloudflare: it hands one self-contained task to a child session of the same agent, on the same workspace, and answers with the child's final answer. The gateway offers it unless `KANTEL_SUBAGENTS` is set to anything but `on`, and `compose.yaml` sets it to `on`; start the stack with `KANTEL_SUBAGENTS=off` to take it away. `/v1/deployment` says which, as `bindings.subagents`.
+
 ## The default tools
 
 The bootstrap's `echo` and `assistant` profiles have the tools of Cloudflare's default profile. Each of these is on unless its variable is `off`:
@@ -256,7 +258,7 @@ The gateway writes one row per model call to `usage_calls` in its schema. `KANTE
 
 ## Your own settings
 
-`compose.yaml` reads `KANTEL_ADMIN_EMAIL`, `KANTEL_SMTP_URL`, `KANTEL_MAIL_FROM` and `KANTEL_PROJECTS` from your environment. Everything else goes in an override file of your own, for example `kantel.yaml`:
+`compose.yaml` reads `KANTEL_ADMIN_EMAIL`, `KANTEL_SMTP_URL`, `KANTEL_MAIL_FROM`, `KANTEL_PROJECTS` and `KANTEL_SUBAGENTS` from your environment. Everything else goes in an override file of your own, for example `kantel.yaml`:
 
 ```yaml
 services:
@@ -281,7 +283,7 @@ Pass the same `-f` files to every later `docker compose` command, or compose rec
 
 ## Check it
 
-`/healthz` needs no credentials. `/v1/deployment` lists what backs each part (Postgres, S3, the vault, the model gateway, the sandboxes) and where mail goes, never the credentials. Its `bindings.sandboxes` names the isolate and the container tier, with the container runtime, the image and the vault proxy. With `KANTEL_SANDBOX_CONTAINERS=off` it ends `no container tier`, and when Docker didn't answer at the start, `container tier unavailable:` and the reason. It is self-hosted only and not in the OpenAPI document (see [Unlisted routes](/api/reference/unlisted/)):
+`/healthz` needs no credentials. `/v1/deployment` lists what backs each part (Postgres, S3, the vault, the model gateway, the sandboxes), whether subagents are on, and where mail goes, never the credentials. Its `bindings.sandboxes` names the isolate and the container tier, with the container runtime, the image and the vault proxy. With `KANTEL_SANDBOX_CONTAINERS=off` it ends `no container tier`, and when Docker didn't answer at the start, `container tier unavailable:` and the reason. It is self-hosted only and not in the OpenAPI document (see [Unlisted routes](/api/reference/unlisted/)):
 
 ```bash
 curl -s "$KANTEL_URL/healthz"

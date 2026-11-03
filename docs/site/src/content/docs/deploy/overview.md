@@ -79,7 +79,7 @@ The self-hosted gateway runs shell commands in its own process, and container co
 | Container tier | When deployed with it | Yes, with Docker |
 | `codemode`, `present_files`, `create_document`, `save_program` tools | Yes, each behind its own variable | Yes, each on unless its variable is `off` |
 | Saved programs (`/v1/programs`) | Yes | Yes |
-| `subagent` tool | Yes, with `KANTEL_SUBAGENTS` | No |
+| `subagent` tool | Yes, with `KANTEL_SUBAGENTS=on` | Yes, unless `KANTEL_SUBAGENTS` is set to anything but `on` |
 | Browsers | Yes | Yes |
 | Vault and approvals | Yes, with `KANTEL_VAULT_KEY` | Yes, with `KANTEL_VAULT_CIPHER_KEY` |
 | Model connectors API (`/v1/connectors`) | Yes | No |

@@ -34,6 +34,7 @@
 		"@kantel/sharing": "workspace:*",
 		"@kantel/skills": "workspace:*",
 		"@kantel/sql": "workspace:*",
+		"@kantel/subagents": "workspace:*",
 		"@kantel/usage": "workspace:*",
 		"@kantel/vault": "workspace:*",
 		"@kantel/vault-selfhosted": "workspace:*",

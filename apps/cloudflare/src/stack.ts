@@ -113,6 +113,7 @@ import { createMemorySkills } from "@kantel/skills/memory";
 import { renderSkillListings } from "@kantel/skills/sources";
 import { createMemoryObjectBucket, createSqlSkills, migrateSkills, type ObjectBucket } from "@kantel/skills/sql";
 import type { SqlDriver } from "@kantel/sql";
+import { SUBAGENT_TOOL, sessionSubagentTool } from "@kantel/subagents";
 import type { TunnelLinks } from "@kantel/tools/links";
 import {
 	createMemoryToolServerRepository,
@@ -156,7 +157,6 @@ import { isolateCheckExecutor } from "./schedule-checks.ts";
 import { type CloudflareScheduler, createCloudflareScheduler } from "./schedules.ts";
 import { sessionMemory } from "./session-memory.ts";
 import { SKILLS_MOUNT_ROOT, sessionSkillsMount } from "./skills-mount.ts";
-import { SUBAGENT_TOOL, sessionSubagentTool } from "./subagent.ts";
 import { objectTunnelLinks, type TunnelObjectRpc } from "./tool-servers.ts";
 import { objectUsage } from "./usage.ts";
 
@@ -348,7 +348,7 @@ export interface StackOptions {
 	 */
 	readonly sessionIdleMs?: number;
 	/**
-	 * Subagents (`src/subagent.ts`, experimental): with it the default profile has the `subagent` tool, offered to every
+	 * Subagents (`@kantel/subagents`, experimental): with it the default profile has the `subagent` tool, offered to every
 	 * session down to `MAX_SUBAGENT_DEPTH` levels of subagents, which hands a task to a child session of the same agent.
 	 * Default off.
 	 */
@@ -834,7 +834,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 								),
 							),
 						];
-			// With subagents on, a session also gets `subagent` (`src/subagent.ts`), unless it is already as deep as subagents go.
+			// With subagents on, a session also gets `subagent` (`@kantel/subagents`), unless it is already as deep as subagents go.
 			const subagent = options.subagents === true ? sessionSubagentTool(lateRuntime, record) : undefined;
 			const withSubagent = subagent === undefined ? withCodemode : [...withCodemode, subagent];
 			// With programs on, a session also gets `save_program` (`@kantel/programs/tool`), when its profile names it.

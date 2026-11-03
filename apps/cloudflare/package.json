@@ -38,6 +38,7 @@
 		"@kantel/connections": "workspace:*",
 		"@kantel/sharing": "workspace:*",
 		"@kantel/skills": "workspace:*",
+		"@kantel/subagents": "workspace:*",
 		"@kantel/tools": "workspace:*",
 		"@kantel/sql": "workspace:*",
 		"@kantel/usage": "workspace:*",
