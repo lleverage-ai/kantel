@@ -344,12 +344,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// (looked up once, when the host is first seen). Once private, never shared again.
 				const accountId =
 					known?.accountId ?? host.accountId ?? (known === undefined ? await enrolledInto(host.id) : undefined);
-				if (known !== undefined) {
-					const held = known.state === "revoked" || known.state === "draining";
-					await store.hosts.put({
-						...known,
-						...(accountId === undefined ? {} : { accountId }),
-						state: held ? known.state : reachable ? "online" : "unreachable",
+				// Applied to the record as it is when written, not as read above: a revocation or drain that lands meanwhile
+				// (another request, another gateway) is kept.
+				const refresh = (current: StoredHost): StoredHost => {
+					const held = current.state === "revoked" || current.state === "draining";
+					const owner = current.accountId ?? accountId;
+					return {
+						...current,
+						...(owner === undefined ? {} : { accountId: owner }),
+						state: held ? current.state : reachable ? "online" : "unreachable",
 						version: host.version,
 						os: host.os,
 						arch: host.arch,
@@ -357,11 +360,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						kvm: host.kvm,
 						nestedVirtualisation: host.nestedVirtualisation,
 						capacity: { ...host.capacity },
-						lastSeenAt: host.lastSeenAt ?? (reachable ? now() : known.lastSeenAt),
-					});
+						lastSeenAt: host.lastSeenAt ?? (reachable ? now() : current.lastSeenAt),
+					};
+				};
+				if (known !== undefined) {
+					await store.hosts.update(host.id, refresh);
 					continue;
 				}
-				await store.hosts.put({
+				const inserted = await store.hosts.insert({
 					id: host.id,
 					name: host.name,
 					state: reachable ? "online" : "unreachable",
@@ -379,6 +385,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					joinedAt: now(),
 					lastSeenAt: now(),
 				});
+				// Another gateway saw it first: refresh what that one wrote.
+				if (!inserted) await store.hosts.update(host.id, refresh);
 			}
 		})().finally(() => {
 			hostsReady = undefined;
@@ -398,9 +406,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * hosts. Another account's hosts never qualify.
 	 *
 	 * `affine`: for a machine or snapshot that already has a disk somewhere (start, resume, recover, fork, a create from
-	 * a snapshot), every qualifying host the account may use, its own and shared alike. Its backend keeps it where its
-	 * disk is, and narrows the list to its own hosts; preferring the account's hosts there would leave a disk on a
-	 * shared host with nowhere eligible to boot.
+	 * a snapshot), every qualifying host the account may use, its own and shared alike, draining ones too (a drain stops
+	 * new sandboxes, not what a host already holds). The backend boots it where its disk is, only if that host is in the
+	 * list; preferring the account's hosts there would leave a disk on a shared host with nowhere eligible to boot.
 	 */
 	async function eligibleHosts(
 		accountId: string,
@@ -409,7 +417,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		affine = false,
 	): Promise<string[]> {
 		await ensureHosts();
-		const hosts = (await store.hosts.list({ state: "online" }))
+		const hosts = (await store.hosts.list())
+			.filter((host) => host.state === "online" || (affine && host.state === "draining"))
 			.filter((host) => host.tiers.includes(type))
 			.filter((host) => Object.entries(labels).every(([key, value]) => host.labels[key] === value));
 		const own = hosts.filter((host) => host.accountId === accountId);
@@ -1005,29 +1014,35 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		},
 	): Promise<computeSchema.Host> {
 		if (host.state === "revoked") throw new KantelError("conflict", "The host is revoked");
-		let state = host.state;
-		if (body.draining === true) state = "draining";
-		if (body.draining === false && host.state === "draining") state = "online";
-		const updated: StoredHost = {
-			...host,
-			name: body.name ?? host.name,
-			labels: body.labels === undefined ? host.labels : { ...body.labels },
-			state,
-		};
 		await backend.updateHost?.(host.id, {
 			...(body.name === undefined ? {} : { name: body.name }),
 			...(body.labels === undefined ? {} : { labels: { ...body.labels } }),
 			...(body.draining === undefined ? {} : { draining: body.draining }),
 		});
-		await store.hosts.put(updated);
+		// On the record as it is now: a revocation that landed meanwhile stays (and the change is refused).
+		let revoked = false;
+		const updated = await store.hosts.update(host.id, (current) => {
+			revoked = current.state === "revoked";
+			if (revoked) return undefined;
+			let state = current.state;
+			if (body.draining === true) state = "draining";
+			if (body.draining === false && current.state === "draining") state = "online";
+			return {
+				...current,
+				name: body.name ?? current.name,
+				labels: body.labels === undefined ? current.labels : { ...body.labels },
+				state,
+			};
+		});
+		if (revoked) throw new KantelError("conflict", "The host is revoked");
+		if (updated === undefined) throw new KantelError("not_found", "No such host");
 		return hostView(updated);
 	}
 
 	async function revokeStoredHost(host: StoredHost): Promise<computeSchema.Host> {
 		await backend.revokeHost?.(host.id);
-		const revoked: StoredHost = { ...host, state: "revoked" };
-		await store.hosts.put(revoked);
-		return hostView(revoked);
+		const revoked = await store.hosts.update(host.id, (current) => ({ ...current, state: "revoked" }));
+		return hostView(revoked ?? { ...host, state: "revoked" });
 	}
 
 	/**

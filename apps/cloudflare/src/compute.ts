@@ -132,6 +132,36 @@ export interface TunnelClient {
 }
 
 /** What `onMessages` needs of an accepted WebSocket. */
+/** What a tunnel's client may send before its port is open (SSH sends a line and its key exchange: a few KiB). */
+export const TUNNEL_PENDING_LIMIT = 256 * 1024;
+
+/**
+ * What a tunnel's client sends before the host has opened its port, held to be written once it has. The one stack
+ * object holds every tunnel, so it holds at most `limit` bytes: `hold` answers false (and lets go of everything) past
+ * that, and the tunnel is closed rather than kept in memory while its host never answers.
+ */
+export function preOpenBuffer(limit = TUNNEL_PENDING_LIMIT) {
+	let chunks: Uint8Array[] = [];
+	let bytes = 0;
+	return {
+		hold(chunk: Uint8Array): boolean {
+			bytes += chunk.byteLength;
+			if (bytes > limit) {
+				chunks = [];
+				return false;
+			}
+			chunks.push(chunk);
+			return true;
+		},
+		/** Everything held, in order, and nothing held after. */
+		take(): Uint8Array[] {
+			const out = chunks;
+			chunks = [];
+			return out;
+		},
+	};
+}
+
 export interface MessageSocket {
 	binaryType?: string;
 	addEventListener(type: "message", listener: (event: { readonly data: unknown }) => void): void;
@@ -246,8 +276,7 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 						primary: connect.backend,
 						fallback: stub,
 						holds: async (sandboxId) => (await connect.service.sandboxes.placement(sandboxId)) !== undefined,
-						// A host's snapshot is `{hostId}/{snapshotId}`; the stub's are `ref_…`.
-						holdsSnapshot: (ref) => ref.startsWith("host_") && ref.includes("/"),
+						holdsSnapshot: isHostSnapshotRef,
 					}),
 		authenticatePerson: (request) => personOf(options.authenticator, options.identity, request),
 		mode: "hosted",
@@ -332,6 +361,8 @@ async function connectHosts(
 			async fetch(request) {
 				const path = new URL(request.url).pathname;
 				if (path === HOSTS_REGISTER_PATH) {
+					// Any other method has no body to bound: the handler answers it 405.
+					if (request.method !== "POST") return register.fetch(request);
 					// Anyone can reach it (past Access), so its body is counted as it comes, before any of it is parsed.
 					const bounded = await buffered(request, HOST_REGISTER_BODY_LIMIT);
 					return bounded instanceof Response ? bounded : register.fetch(bounded);
@@ -471,6 +502,9 @@ function whileBusy(api: ComputeApi, now: () => number): { touch(): void; stop():
 	};
 }
 
+/** A Connect host's snapshot reference is `{hostId}/{snapshotId}`; the stub's are `ref_…`. */
+export const isHostSnapshotRef = (ref: string): boolean => ref.startsWith("host_") && ref.includes("/");
+
 const lost = (error: unknown, prefix: string): error is KantelError =>
 	isKantelError(error) && error.code === "not_found" && error.message.startsWith(prefix);
 /** The stub's refusal for a sandbox it has no machine for (`stub-backend.ts`). */
@@ -485,9 +519,23 @@ const NO_SNAPSHOT = "The stub has no snapshot ";
  * fails as the stub does.
  */
 export function revivingStub(stub: SandboxBackend, sandboxes: Collection<StoredSandbox>): SandboxBackend {
+	/**
+	 * A sandbox or snapshot a Connect host holds is never the stub's to revive: with Connect off (or its host's placement
+	 * gone) it's refused, so its disk and its host stay as they are for when the host is back.
+	 */
+	const onHost = () =>
+		new KantelError("unavailable", "It is on a Kantel Connect host, which this deployment can't reach now");
+	const hostBacked = async (sandboxId: string) => {
+		const hostId = (await sandboxes.get(sandboxId))?.hostId;
+		return hostId !== undefined && hostId !== STUB_HOST_ID;
+	};
+	const refuseHostSnapshot = (ref: string | undefined) => {
+		if (ref !== undefined && isHostSnapshotRef(ref)) throw onHost();
+	};
 	const revive = async (sandboxId: string, cause: KantelError): Promise<void> => {
 		const record = await sandboxes.get(sandboxId);
 		if (record === undefined || record.state === "deleted") throw cause;
+		if (record.hostId !== undefined && record.hostId !== STUB_HOST_ID) throw onHost();
 		const made = stub.create({
 			sandboxId,
 			accountId: record.accountId,
@@ -517,6 +565,7 @@ export function revivingStub(stub: SandboxBackend, sandboxes: Collection<StoredS
 		options: O,
 		call: (options: O) => Promise<T>,
 	): Promise<T> => {
+		refuseHostSnapshot(options.fromSnapshot);
 		try {
 			return await call(options);
 		} catch (error) {
@@ -532,10 +581,29 @@ export function revivingStub(stub: SandboxBackend, sandboxes: Collection<StoredS
 		stop: (id, options) => onMachine(id, () => stub.stop(id, options)),
 		resume: (id, options) => onMachine(id, () => fromAny(options, (given) => stub.resume(id, given))),
 		recover: (id, options) => onMachine(id, () => fromAny(options, (given) => stub.recover(id, given))),
-		fork: (source, targets) =>
-			source.snapshot === undefined
+		fork: async (source, targets) => {
+			refuseHostSnapshot(source.snapshot);
+			return source.snapshot === undefined
 				? onMachine(source.sandboxId, () => stub.fork(source, targets))
-				: stub.fork(source, targets),
+				: stub.fork(source, targets);
+		},
+		async destroy(id) {
+			// The stub would answer that it has nothing to delete, and the host's machine would be left running.
+			if (await hostBacked(id)) throw onHost();
+			return stub.destroy(id);
+		},
+		listSnapshotFiles: async (ref, path) => {
+			refuseHostSnapshot(ref);
+			return stub.listSnapshotFiles(ref, path);
+		},
+		readSnapshotFile: async (ref, path) => {
+			refuseHostSnapshot(ref);
+			return stub.readSnapshotFile(ref, path);
+		},
+		deleteSnapshot: async (ref) => {
+			refuseHostSnapshot(ref);
+			return stub.deleteSnapshot(ref);
+		},
 		exec: (id, request) => onMachine(id, () => stub.exec(id, request)),
 		readFile: (id, path, range) => onMachine(id, () => stub.readFile(id, path, range)),
 		writeFile: (id, path, content, mode) => onMachine(id, () => stub.writeFile(id, path, content, mode)),

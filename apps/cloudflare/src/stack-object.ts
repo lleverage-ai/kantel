@@ -19,7 +19,14 @@ import { DurableObject } from "cloudflare:workers";
 import { withKantelEnv } from "@kantel/contracts/env";
 import { d1Driver } from "@kantel/sql/sqlite";
 import { objectSqlDriver } from "./audit-outbox.ts";
-import { HOSTS_CONNECT_PATH, hostCredential, onMessages, type StackHosts, tunnelTicket } from "./compute.ts";
+import {
+	HOSTS_CONNECT_PATH,
+	hostCredential,
+	onMessages,
+	preOpenBuffer,
+	type StackHosts,
+	tunnelTicket,
+} from "./compute.ts";
 import type { GatewayVars } from "./config.ts";
 import { gatewayConfig } from "./config.ts";
 import { createGateway, type Gateway } from "./gateway.ts";
@@ -148,14 +155,23 @@ async function rawTunnel(hosts: StackHosts, ticket: string, request: Request): P
 	}
 	const { 0: client, 1: server } = new WebSocketPair();
 	server.accept();
-	// What the client sends before the port is open waits here.
-	const pending: Uint8Array[] = [];
+	// What the client sends before the port is open waits here, up to TUNNEL_PENDING_LIMIT: the one stack object holds
+	// every tunnel, so a client that floods a tunnel whose host never answers is closed rather than kept in memory.
+	const pending = preOpenBuffer();
 	let stream: { write(bytes: Uint8Array): void; close(): void } | undefined;
 	let done = false;
 	onMessages(server, (frame) => {
+		if (done) return;
 		const bytes = typeof frame === "string" ? new TextEncoder().encode(frame) : frame;
-		if (stream === undefined) pending.push(bytes);
-		else stream.write(bytes);
+		if (stream !== undefined) return stream.write(bytes);
+		if (!pending.hold(bytes)) {
+			end();
+			try {
+				server.close(1009, "Too much sent before the tunnel opened");
+			} catch {
+				// Already closed.
+			}
+		}
 	});
 	const end = () => {
 		done = true;
@@ -186,7 +202,7 @@ async function rawTunnel(hosts: StackHosts, ticket: string, request: Request): P
 			if (opened === undefined) return;
 			stream = opened;
 			if (done) return opened.close();
-			for (const chunk of pending.splice(0)) opened.write(chunk);
+			for (const chunk of pending.take()) opened.write(chunk);
 		})
 		.catch((error: unknown) => {
 			console.error("kantel: a tunnel failed", error);

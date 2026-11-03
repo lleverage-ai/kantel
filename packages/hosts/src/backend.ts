@@ -14,6 +14,7 @@ import type {
 	BackendFileEntry,
 	BackendHost,
 	BackendSize,
+	BootOptions,
 	ExecResult,
 	Placement,
 	SandboxBackend,
@@ -191,12 +192,24 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		return out === undefined ? {} : { egress: out };
 	};
 
+	/**
+	 * A disk is where it is: a sandbox or snapshot runs again only on its own host, and only when that host is one the
+	 * service named eligible (online or draining, the account's own or shared, the type and labels).
+	 */
+	const mayUse = (hostId: string, eligible: readonly string[]) => {
+		if (!eligible.includes(hostId)) {
+			throw new KantelError("unavailable", `The host its disk is on (${hostId}) can't take it now`);
+		}
+	};
+
 	async function boot(
 		sandboxId: string,
 		method: "sandbox.start" | "sandbox.resume",
-		egress?: BackendEgress,
+		how: BootOptions,
 	): Promise<Placement> {
 		const { hostId } = await tierOf(sandboxId);
+		mayUse(hostId, how.eligibleHosts);
+		const egress = how.egress;
 		const sandbox = await call<HostSandbox>(sandboxId, method, egressOf(egress));
 		return placed(sandboxId, sandbox, hostId);
 	}
@@ -235,6 +248,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 
 	async function createOne(spec: SandboxSpec): Promise<Placement> {
 		const from = spec.fromSnapshot === undefined ? undefined : parseRef(spec.fromSnapshot);
+		if (from !== undefined) mayUse(from.hostId, spec.eligibleHosts);
 		const { sandbox, hostId } = await hosts.sandboxes.create({
 			sandboxId: spec.sandboxId,
 			tier: spec.type,
@@ -284,9 +298,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			return { types: [...types], sizes: [...sizes.values()], hosts: backendHosts };
 		},
 		create: createOne,
-		start: (sandboxId, { egress }) => boot(sandboxId, "sandbox.start", egress),
-		resume: (sandboxId, { egress }) => boot(sandboxId, "sandbox.resume", egress),
-		recover: (sandboxId, { egress }) => boot(sandboxId, "sandbox.start", egress),
+		start: (sandboxId, how) => boot(sandboxId, "sandbox.start", how),
+		resume: (sandboxId, how) => boot(sandboxId, "sandbox.resume", how),
+		recover: (sandboxId, how) => boot(sandboxId, "sandbox.start", how),
 		async updateEgress(sandboxId, egress) {
 			await call(sandboxId, "sandbox.egress", { egress: hostEgress(egress, options.attributionKey) ?? null });
 		},
@@ -308,6 +322,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				return out;
 			}
 			// A live fork pauses the source for its snapshot only; forks stay on the source's host.
+			const { hostId: sourceHost } = await tierOf(source.sandboxId);
+			for (const target of targets) mayUse(sourceHost, target.eligibleHosts);
 			for (const target of targets) {
 				const { sandbox, hostId } = await hosts.sandboxes.fork(source.sandboxId, {
 					newId: target.sandboxId,

@@ -107,7 +107,9 @@ export function createMemoryHostStore(): HostStore {
 			return [...hosts.values()].sort((a, b) => a.joinedAt - b.joinedAt).map(copy);
 		},
 		async putHost(host) {
-			hosts.set(host.id, copy(host));
+			// Revocation sticks: a write that read the host before it was revoked doesn't bring its credential back.
+			const revoked = hosts.get(host.id)?.revoked === true;
+			hosts.set(host.id, copy(revoked ? { ...host, revoked: true } : host));
 		},
 		async putPlacement(placement) {
 			placements.set(placement.sandboxId, copy(placement));
@@ -162,6 +164,12 @@ export async function migrateHosts(driver: SqlDriver): Promise<void> {
 
 const parse = <T>(row: Record<string, unknown>): T => JSON.parse(String(row.data)) as T;
 
+/**
+ * A revoked host's row, as `JSON.stringify` writes it (no spaces). Nothing else in a host record can match: its labels'
+ * and facts' values are strings, so a `"revoked"` inside one is escaped.
+ */
+const REVOKED_PATTERN = '%"revoked":true%';
+
 /** Records in SQL. Run `migrateHosts` first. */
 export function createSqlHostStore(driver: SqlDriver): HostStore {
 	const upsert = (table: string, key: string, columns: string[], values: SqlValue[]) => {
@@ -209,12 +217,22 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 			return rows.map((row) => parse<HostRecord>(row));
 		},
 		async putHost(host) {
-			await upsert(
-				"compute_hosts",
-				"id",
-				["id", "credential_hash", "joined_at", "data"],
-				[host.id, host.credentialHash, host.joinedAt, JSON.stringify(host)],
+			// Revocation sticks: a report or change that read the host before it was revoked (on any replica) can't write
+			// `revoked: false` back. A revoked row takes the new record only with `revoked` kept true, each statement atomic.
+			await driver.query(
+				`INSERT INTO compute_hosts (id, credential_hash, joined_at, data) VALUES (?, ?, ?, ?)
+				ON CONFLICT (id) DO UPDATE SET credential_hash = excluded.credential_hash, joined_at = excluded.joined_at,
+					data = excluded.data
+				WHERE compute_hosts.data NOT LIKE ?`,
+				[host.id, host.credentialHash, host.joinedAt, JSON.stringify(host), REVOKED_PATTERN],
 			);
+			if (!host.revoked) {
+				await driver.query("UPDATE compute_hosts SET data = ? WHERE id = ? AND data LIKE ?", [
+					JSON.stringify({ ...host, revoked: true }),
+					host.id,
+					REVOKED_PATTERN,
+				]);
+			}
 		},
 		async putPlacement(placement) {
 			await upsert(

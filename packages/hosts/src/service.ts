@@ -324,7 +324,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		},
 		onEvent(hostId, event) {
 			const sandbox = event.sandbox;
-			if (sandbox === undefined) return;
+			if (typeof sandbox !== "object" || sandbox === null) return;
+			if (typeof sandbox.id !== "string" || typeof sandbox.state !== "string") return;
 			report(
 				(async () => {
 					const placement = await store.getPlacement(sandbox.id);

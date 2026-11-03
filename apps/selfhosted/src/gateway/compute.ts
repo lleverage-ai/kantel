@@ -608,9 +608,16 @@ export function withHostUpgrades(
 							sendBinary: (bytes) => accepted.send(bytes, { binary: true }),
 							close: (code, reason) => accepted.close(code, reason),
 						});
+						// The hub's receive closes a connection whose frame it can't handle; this catch is the last line, so
+						// nothing a host sends (anyone's, with Kantel Connect) escapes into the gateway process.
 						accepted.on("message", (data, binary) => {
-							if (binary) held.receive(bytesOf(data));
-							else held.receive(data.toString());
+							try {
+								if (binary) held.receive(bytesOf(data));
+								else held.receive(data.toString());
+							} catch (error) {
+								console.error(`[hosts] host ${host.id}: a message couldn't be handled`, error);
+								accepted.terminate();
+							}
 						});
 						accepted.on("close", (code, reason) => held.closed(code, reason.toString()));
 						accepted.on("error", () => accepted.terminate());

@@ -1,0 +1,62 @@
+// A host's frames are untrusted (with Kantel Connect, anyone who can enrol a machine into their own account has a host
+// credential): after a valid hello, frames with null or malformed payloads go through the gateway's real WebSocket
+// listener and hub. None of them may throw out of the socket callback into the gateway process; another host's
+// connection and the gateway's routes carry on, and valid heartbeats and events still count.
+import { createSqlHostStore } from "@kantel/hosts/store";
+import { afterEach, describe, expect, it } from "vitest";
+import { type Cleanup, connectHost, joinHost, sharedDatabase, startReplica } from "./cluster-harness.ts";
+
+const cleanups: Cleanup[] = [];
+afterEach(async () => {
+	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+});
+
+describe("a host's malformed frames", () => {
+	it("are contained: the gateway, its other hosts and valid frames carry on", async () => {
+		const driver = await sharedDatabase(cleanups);
+		const replica = await startReplica(driver, cleanups);
+		const service = replica.relay.service;
+		const mine = await joinHost(replica);
+		const theirs = await joinHost(replica);
+		const host = await connectHost(replica, mine.hostId, mine.credential, cleanups);
+		const other = await connectHost(replica, theirs.hostId, theirs.credential, cleanups);
+
+		const send = (frame: unknown) => host.socket.send(typeof frame === "string" ? frame : JSON.stringify(frame));
+		for (const frame of [
+			{ type: "heartbeat", heartbeat: null },
+			{ type: "heartbeat", heartbeat: 7 },
+			{ type: "heartbeat", heartbeat: { capacity: null } },
+			{ type: "event", event: null },
+			{ type: "event", event: { kind: "sandbox.state", sandbox: null, at: 1 } },
+			{ type: "event", event: { kind: "sandbox.state", sandbox: { id: 7 }, at: 1 } },
+			{ type: "event", call: 9, event: { kind: "exec.output", at: 1 } },
+			{ type: "result", id: "nothing-pending", error: null },
+			{ type: "stream.close", stream: 99, reason: null },
+			"not json",
+			"null",
+		]) {
+			send(frame);
+		}
+		send(new Uint8Array([0, 0]));
+
+		// A valid heartbeat after all of that still counts: the connection is alive and heard.
+		send({
+			type: "heartbeat",
+			heartbeat: {
+				capacity: { freeMemoryMiB: 1234, freeDiskGiB: 56, running: 0, stopped: 0, load1: 0.5, warm: {} },
+			},
+		});
+		const registry = createSqlHostStore(driver);
+		await expect
+			.poll(async () => (await registry.getHost(mine.hostId))?.capacity?.freeMemoryMiB, { timeout: 5000 })
+			.toBe(1234);
+		expect(service.hub.connected(mine.hostId)).toBe(true);
+		expect(service.hub.connected(theirs.hostId)).toBe(true);
+		// The gateway still answers.
+		expect((await fetch(`${replica.url}/nothing-here`)).status).toBe(404);
+		// And the other host's calls still go through.
+		const before = other.calls.length;
+		await service.hub.call(theirs.hostId, "sandbox.exec", { sandboxId: "sbx_x", command: "true" });
+		expect(other.calls.length).toBe(before + 1);
+	});
+});

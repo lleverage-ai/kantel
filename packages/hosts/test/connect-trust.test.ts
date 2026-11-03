@@ -2,6 +2,7 @@
 // never gets the deployment's attribution key, and nothing it says about itself can break another account's
 // placement or the host's own revocation.
 import type { BackendEgress } from "@kantel/compute";
+import { testDatabaseKinds } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHostBackend } from "../src/backend.ts";
 import { parseHostFacts } from "../src/facts.ts";
@@ -9,7 +10,7 @@ import { createHostsApi } from "../src/http.ts";
 import type { HostMessage } from "../src/protocol.ts";
 import { createMemoryRelayStore } from "../src/relay-store.ts";
 import { createHostsService } from "../src/service.ts";
-import { createMemoryHostStore } from "../src/store.ts";
+import { createMemoryHostStore, createSqlHostStore, type HostRecord, migrateHosts } from "../src/store.ts";
 import { createTunnelTickets } from "../src/tunnel.ts";
 import { FakeHost, facts } from "./fake-host.ts";
 
@@ -71,10 +72,14 @@ describe("an account's own host", () => {
 		await backend.create(spec("sbx_own", "acc_a", [own.hostId]));
 		await backend.create(spec("sbx_shared", "acc_b", [shared.hostId]));
 		// Start, resume and recover: the fake host refuses them, but what it was sent is what counts.
-		for (const id of ["sbx_own", "sbx_shared"]) {
-			await backend.start(id, { env: {}, eligibleHosts: [], egress: EGRESS }).catch(() => undefined);
-			await backend.resume(id, { env: {}, eligibleHosts: [], egress: EGRESS }).catch(() => undefined);
-			await backend.recover(id, { env: {}, eligibleHosts: [], egress: EGRESS }).catch(() => undefined);
+		for (const [id, on] of [
+			["sbx_own", own.hostId],
+			["sbx_shared", shared.hostId],
+		] as const) {
+			const how = { env: {}, eligibleHosts: [on], egress: EGRESS };
+			await backend.start(id, how).catch(() => undefined);
+			await backend.resume(id, how).catch(() => undefined);
+			await backend.recover(id, how).catch(() => undefined);
 			await backend.updateEgress?.(id, EGRESS).catch(() => undefined);
 		}
 		await backend.fork({ sandboxId: "sbx_own" }, [spec("sbx_own_fork", "acc_a", [own.hostId])]);
@@ -160,4 +165,65 @@ describe("an account's own host", () => {
 		expect((await service.get(own.hostId)).tiers).toEqual([]);
 		expect((await service.revoke(own.hostId)).state).toBe("revoked");
 	});
+
+	it("boots a disk only on its own host, and only when the service named that host eligible", async () => {
+		const { backend, own, shared } = await setup();
+		await backend.create(spec("sbx_on_shared", "acc_a", [shared.hostId]));
+		const how = (eligibleHosts: string[]) => ({ env: {}, eligibleHosts, egress: EGRESS });
+		const sentStarts = () => egressSent(shared, "sandbox.start").length;
+		// Its host isn't in the list (only the account's own is): refused, and the shared host is never asked.
+		for (const boot of [backend.start, backend.resume, backend.recover]) {
+			await expect(boot("sbx_on_shared", how([own.hostId]))).rejects.toMatchObject({ code: "unavailable" });
+		}
+		expect(sentStarts()).toBe(0);
+		await expect(
+			backend.fork({ sandboxId: "sbx_on_shared" }, [spec("sbx_fork", "acc_a", [own.hostId])]),
+		).rejects.toMatchObject({ code: "unavailable" });
+		await expect(
+			backend.create({ ...spec("sbx_from", "acc_a", [own.hostId]), fromSnapshot: `${shared.hostId}/snap_1` }),
+		).rejects.toMatchObject({ code: "unavailable" });
+		// Named (the account may use shared hosts): it is asked, where the disk is.
+		await backend.start("sbx_on_shared", how([own.hostId, shared.hostId])).catch(() => undefined);
+		expect(sentStarts()).toBe(1);
+	});
+});
+
+describe("a host's revocation", () => {
+	it("isn't undone by a heartbeat that read the host before it was revoked", async () => {
+		const { service, store, own } = await setup();
+		const stale = await store.getHost(own.hostId);
+		if (stale === undefined) throw new Error("no host");
+		await service.revoke(own.hostId);
+		// The heartbeat's write lands after the revocation, over the record it read before.
+		await store.putHost({ ...stale, lastSeenAt: (stale.lastSeenAt ?? 0) + 1 });
+		expect((await store.getHost(own.hostId))?.revoked).toBe(true);
+		expect((await service.get(own.hostId)).state).toBe("revoked");
+	});
+
+	for (const kind of testDatabaseKinds()) {
+		it(`sticks in SQL (${kind.name}) when an older record is written over it`, async () => {
+			const db = await kind.open();
+			closers.push(() => void db.close());
+			await migrateHosts(db.driver);
+			const store = createSqlHostStore(db.driver);
+			const host: HostRecord = {
+				id: "host_1",
+				name: "box",
+				credentialHash: "hash_1",
+				labels: { note: '"revoked":true' },
+				joinedAt: 1,
+				lastSeenAt: 1,
+				revoked: false,
+				draining: false,
+			};
+			await store.insertHost(host);
+			// A label that reads like the flag doesn't make a live host count as revoked.
+			await store.putHost({ ...host, name: "renamed" });
+			expect(await store.getHost("host_1")).toMatchObject({ name: "renamed", revoked: false });
+			await store.putHost({ ...host, revoked: true });
+			await store.putHost({ ...host, lastSeenAt: 2 });
+			expect(await store.getHost("host_1")).toMatchObject({ lastSeenAt: 2, revoked: true });
+			expect((await store.hostByCredential("hash_1"))?.revoked).toBe(true);
+		});
+	}
 });

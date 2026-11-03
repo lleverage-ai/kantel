@@ -1,6 +1,7 @@
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
+import type { SandboxBackend } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 
@@ -19,9 +20,9 @@ afterEach(async () => {
 	for (const api of opened.splice(0)) await api.close();
 });
 
-function setup() {
+function setup(backend: SandboxBackend = createStubBackend()) {
 	const api = createComputeApi({
-		backend: createStubBackend(),
+		backend,
 		authenticatePerson: async (request) => {
 			const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
 			return token === undefined ? undefined : PEOPLE[token];
@@ -408,5 +409,27 @@ describe("hosts", () => {
 
 		expect(await api.fetch(new Request("http://compute.test/v1/sessions"))).toBeUndefined();
 		expect(await api.fetch(new Request("http://compute.test/elsewhere"))).toBeUndefined();
+	});
+
+	it("keeps a revocation that lands while a drain is in flight", async () => {
+		const stub = createStubBackend();
+		let revokeMeanwhile: (() => Promise<unknown>) | undefined;
+		const { client, root } = setup({
+			...stub,
+			// Between the drain reading the host and writing it, another call revokes it.
+			async updateHost(hostId, change) {
+				const revoke = revokeMeanwhile;
+				revokeMeanwhile = undefined;
+				await revoke?.();
+				return stub.updateHost?.(hostId, change);
+			},
+		});
+		const ops = client((await root.createApiKey({ name: "ops", scopes: ["hosts:admin"] })).secret);
+		revokeMeanwhile = () => ops.revokeHost(STUB_HOST_ID);
+		expect((await failure(ops.updateHost(STUB_HOST_ID, { draining: true }))).code).toBe("conflict");
+		const listed = await ops.listHosts();
+		expect(listed.items.find((host) => host.id === STUB_HOST_ID)?.state).toBe("revoked");
+		// And the next capabilities refresh doesn't bring it back.
+		expect((await ops.listHosts()).items.find((host) => host.id === STUB_HOST_ID)?.state).toBe("revoked");
 	});
 });
