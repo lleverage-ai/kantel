@@ -4,7 +4,9 @@
  * - the identity directory and the audit store in D1 (`DB`);
  * - audit events queued in this object's own SQLite before they drain to D1 (`src/audit-outbox.ts`);
  * - what the bootstrap made, in this object's storage, so a restart finds the same organisation;
- * - the compute API's records (`src/compute.ts`), in this object's own SQLite, table `compute_api_records`.
+ * - the compute API's records (`src/compute.ts`), in this object's own SQLite, table `compute_api_records`;
+ * - with email-code sign-in on (KANTEL_PUBLIC_URL), each UTC day's count of mail sent (`src/mail.ts`), in its storage,
+ *   so the daily cap holds across restarts. Codes and sessions are in D1 with the directory.
  *
  * With Kantel Connect on (KANTEL_CONNECT=experimental), it also holds each enrolled host's WebSocket
  * (`GET /v1/hosts/connect`), accepted here and handed to the hub `src/compute.ts` keeps, so the compute API's calls reach
@@ -30,7 +32,9 @@ import {
 import type { GatewayVars } from "./config.ts";
 import { gatewayConfig } from "./config.ts";
 import { createGateway, type Gateway } from "./gateway.ts";
+import type { MailCounts, SendEmailBinding } from "./mail.ts";
 import type { PlacementVars } from "./route.ts";
+import type { SignUpRecord } from "./sign-up.ts";
 import { type BootstrapRecord, createStack, type Stack, type StackOptions, type StackStorage } from "./stack.ts";
 import { startOnce } from "./start.ts";
 
@@ -40,10 +44,16 @@ export interface Env extends GatewayVars, PlacementVars {
 	readonly STACK: DurableObjectNamespace;
 	readonly ASSETS: Fetcher;
 	readonly DB: D1Database;
+	/** The `send_email` binding sign-in codes and invites go through, limited to KANTEL_SIGN_IN_FROM. */
+	readonly SIGN_IN_MAIL?: SendEmailBinding;
 }
 
 /** The key the bootstrap record is kept under in this object's storage. */
 const BOOTSTRAP_KEY = "harbour.bootstrap";
+/** Each UTC day's mail count is kept under this prefix and the day. */
+const MAIL_COUNT_PREFIX = "kantel.mail.";
+/** Each open sign-up's record is kept under this prefix and the user's ID. */
+const SIGN_UP_PREFIX = "kantel.sign-up.";
 
 export abstract class KantelStackBase extends DurableObject<Env> {
 	// A deployment's HARBOUR_* vars and secrets from before the rename still count: every KANTEL_* left unset takes its
@@ -70,7 +80,24 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 
 	/** How the stack is built beyond its config and storage; the dev entry point adds a mock Access issuer. */
 	protected stackOptions(): Omit<StackOptions, "config" | "storage"> {
-		return {};
+		const binding = this.env.SIGN_IN_MAIL;
+		return binding === undefined
+			? {}
+			: { mail: { binding, counts: this.mailCounts(), defer: (work) => this.ctx.waitUntil(work) } };
+	}
+
+	/** Each day's mail count, in this object's storage. */
+	protected mailCounts(): MailCounts {
+		const storage = this.ctx.storage;
+		return {
+			get: (day) => storage.get<number>(`${MAIL_COUNT_PREFIX}${day}`),
+			put: (day, count) => storage.put(`${MAIL_COUNT_PREFIX}${day}`, count),
+			async prune(day) {
+				const kept = await storage.list<number>({ prefix: MAIL_COUNT_PREFIX });
+				const old = [...kept.keys()].filter((key) => key < `${MAIL_COUNT_PREFIX}${day}`);
+				if (old.length > 0) await storage.delete(old);
+			},
+		};
 	}
 
 	/** The stack's storage over this object's bindings and its own SQLite. */
@@ -89,6 +116,10 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 				save: (record) => storage.put(BOOTSTRAP_KEY, record),
 			},
 			compute: own,
+			signUps: {
+				load: (userId) => storage.get<SignUpRecord>(`${SIGN_UP_PREFIX}${userId}`),
+				save: (userId, record) => storage.put(`${SIGN_UP_PREFIX}${userId}`, record),
+			},
 		};
 	}
 

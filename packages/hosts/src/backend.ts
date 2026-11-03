@@ -25,7 +25,7 @@ import { KantelError } from "@kantel/contracts";
 import { DESKTOP_PORT, desktopPath } from "./desktop.ts";
 import type { PortRouter } from "./ports.ts";
 import type { HostEgress, HostSandbox, SandboxTier } from "./protocol.ts";
-import type { HostsService, HostView } from "./service.ts";
+import type { HostsService, SandboxPlacement } from "./service.ts";
 import { type DesktopMode, HOSTS_TUNNEL_PATH, MAX_TUNNEL_MINUTES, type TunnelTickets } from "./tunnel.ts";
 
 export { DESKTOP_PORT } from "./desktop.ts";
@@ -135,7 +135,7 @@ function fileEntry(entry: HostFileEntry): BackendFileEntry {
 	};
 }
 
-function capabilitiesOf(tier: SandboxTier, host: HostView | undefined, ports: boolean) {
+function capabilitiesOf(tier: SandboxTier, nested: boolean, ports: boolean) {
 	const vm = tier === "microvm";
 	return {
 		exec: true,
@@ -145,7 +145,7 @@ function capabilitiesOf(tier: SandboxTier, host: HostView | undefined, ports: bo
 		browser: vm,
 		ports: vm && ports,
 		docker: vm,
-		kvm: vm && host?.nestedVirtualisation === true,
+		kvm: vm && nested,
 		pause: vm,
 	};
 }
@@ -168,9 +168,25 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		return { tier: placement.tier, hostId: placement.hostId };
 	}
 
-	async function placed(sandboxId: string, sandbox: HostSandbox, hostId: string): Promise<Placement> {
-		const placement = await hosts.sandboxes.placement(sandboxId);
-		const host = await hosts.get(hostId).catch(() => undefined);
+	/**
+	 * The placement the compute API records. What the registry answered with the sandbox (its placement as written, and
+	 * whether the host nests virtualisation) is taken as it is, so neither is read back; what it didn't answer is read,
+	 * both at once.
+	 */
+	async function placed(
+		sandboxId: string,
+		sandbox: HostSandbox,
+		hostId: string,
+		known: Omit<SandboxPlacement, "sandbox" | "hostId"> = {},
+	): Promise<Placement> {
+		const [placement, nested] = await Promise.all([
+			known.placement ?? hosts.sandboxes.placement(sandboxId),
+			known.nestedVirtualisation ??
+				hosts
+					.get(hostId)
+					.then((host) => host.nestedVirtualisation)
+					.catch(() => undefined),
+		]);
 		const tier = placement?.tier ?? (sandbox.tier as SandboxTier);
 		return {
 			hostId,
@@ -183,7 +199,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 							diskGb: placement.diskGiB,
 						},
 					}),
-			capabilities: capabilitiesOf(tier, host, options.ports !== undefined),
+			capabilities: capabilitiesOf(tier, nested === true, options.ports !== undefined),
 		};
 	}
 
@@ -249,7 +265,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	async function createOne(spec: SandboxSpec): Promise<Placement> {
 		const from = spec.fromSnapshot === undefined ? undefined : parseRef(spec.fromSnapshot);
 		if (from !== undefined) mayUse(from.hostId, spec.eligibleHosts);
-		const { sandbox, hostId } = await hosts.sandboxes.create({
+		const { sandbox, hostId, ...known } = await hosts.sandboxes.create({
 			sandboxId: spec.sandboxId,
 			tier: spec.type,
 			...(spec.type === "microvm" && spec.size !== undefined ? { size: spec.size } : {}),
@@ -259,12 +275,13 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			...(from === undefined ? {} : { from: from.snapshotId }),
 			...egressOf(spec.egress),
 		});
-		return placed(spec.sandboxId, sandbox, hostId);
+		return placed(spec.sandboxId, sandbox, hostId, known);
 	}
 
 	return {
 		async capabilities(): Promise<BackendCapabilities> {
-			const views = (await hosts.list()).filter((host) => host.state !== "revoked");
+			// What the hosts are, not what they hold: no placements are read.
+			const views = (await hosts.list({ allocations: false })).filter((host) => host.state !== "revoked");
 			const types = new Set<SandboxTier>();
 			const sizes = new Map<string, BackendSize>();
 			const backendHosts: BackendHost[] = [];
@@ -325,11 +342,11 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			const { hostId: sourceHost } = await tierOf(source.sandboxId);
 			for (const target of targets) mayUse(sourceHost, target.eligibleHosts);
 			for (const target of targets) {
-				const { sandbox, hostId } = await hosts.sandboxes.fork(source.sandboxId, {
+				const { sandbox, hostId, ...known } = await hosts.sandboxes.fork(source.sandboxId, {
 					newId: target.sandboxId,
 					...egressOf(target.egress),
 				});
-				out.push(await placed(target.sandboxId, sandbox, hostId));
+				out.push(await placed(target.sandboxId, sandbox, hostId, known));
 			}
 			return out;
 		},

@@ -17,6 +17,9 @@
  *   names and hint stand, so the deploy binds exactly what it did before. They exist so data made in another region
  *   can be swapped in without a code change; the database and bucket must exist first, or wrangler's automatic
  *   provisioning creates a bucket of that name wherever it likes (the database is bound by ID, so a wrong one fails).
+ * - optionally, email-code sign-in and open sign-up on a public origin (`KANTEL_PUBLIC_URL` with `KANTEL_SIGN_IN_FROM`,
+ *   and `KANTEL_SIGN_IN_DAILY_CAP`), as vars of the same names, plus the `SIGN_IN_MAIL` send_email binding limited to
+ *   that one sender.
  *
  * `--mode deploy` needs every variable and refuses to write a config without them. `--mode dry-run` fills a missing
  * one with a placeholder, so `wrangler deploy --dry-run` still checks the whole config's shape before the account is
@@ -71,6 +74,13 @@ export const OPTIONAL_DEPLOY_VARIABLES = [
 	// The domain sandboxes' port URLs are under (src/config.ts). Unset, the Worker's default, ports.kantel.dev, Kantel's
 	// hosted ports domain; a deployment on another domain sets its own.
 	"KANTEL_COMPUTE_PORTS_DOMAIN",
+	// The public origin (such as https://app.kantel.dev): a custom domain on the Worker with no Access in front, where
+	// people sign in with an email code and anyone may sign up into a personal space (src/sign-up.ts). It needs
+	// KANTEL_SIGN_IN_FROM, an address on a domain onboarded for Cloudflare Email Sending, which adds the `SIGN_IN_MAIL`
+	// send_email binding limited to that one sender. KANTEL_SIGN_IN_DAILY_CAP caps the mail a day (default 100).
+	"KANTEL_PUBLIC_URL",
+	"KANTEL_SIGN_IN_FROM",
+	"KANTEL_SIGN_IN_DAILY_CAP",
 ] as const;
 export type OptionalDeployVariable = (typeof OPTIONAL_DEPLOY_VARIABLES)[number];
 
@@ -138,6 +148,12 @@ const OPTIONAL_CHECKS: Readonly<
 		test: (v) => /^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(v),
 		expect: "a lower-case DNS name such as ports.example.com",
 	},
+	KANTEL_PUBLIC_URL: {
+		test: (v) => /^https:\/\/[^/?#\s:]+\/?$/i.test(v) && HOST.test(new URL(v).hostname),
+		expect: "an https:// origin with no path or port, such as https://app.kantel.dev",
+	},
+	KANTEL_SIGN_IN_FROM: { test: (v) => isEmail(v), expect: "an email address" },
+	KANTEL_SIGN_IN_DAILY_CAP: { test: (v) => /^\d{1,6}$/.test(v), expect: "a whole number" },
 };
 
 /**
@@ -192,6 +208,8 @@ export type DeployMode = "deploy" | "dry-run";
 
 /** The binding name the model gateway will use for CLIProxyAPI (step 2 of #17). */
 export const MODELS_BINDING = "MODELS";
+/** The send_email binding sign-in mail goes through (`src/stack-object.ts`). */
+export const SIGN_IN_MAIL_BINDING = "SIGN_IN_MAIL";
 
 /** Stand-ins for a dry run before the account is set up. Never deployed: deploy mode refuses a missing variable. */
 const PLACEHOLDERS: Readonly<Record<Exclude<DeployVariable, "CLOUDFLARE_ACCOUNT_ID">, string>> = {
@@ -281,6 +299,8 @@ export interface DeployValues {
 	readonly oauthClients?: string;
 	/** The domain port URLs are under, when set. */
 	readonly portsDomain?: string;
+	/** Email-code sign-in on the public origin, when set: its origin, the sender and the daily cap if given. */
+	readonly emailSignIn?: { readonly publicUrl: string; readonly from: string; readonly dailyCap?: string };
 	/** The variables a dry run filled with placeholders. Always empty in deploy mode. */
 	readonly placeholders: readonly DeployVariable[];
 }
@@ -318,6 +338,19 @@ export function deployValues(env: Readonly<Record<string, string | undefined>>, 
 	if ((d1Name === undefined) !== (d1Id === undefined)) {
 		invalid.push("Set both KANTEL_D1_DATABASE_NAME and KANTEL_D1_DATABASE_ID, or neither");
 	}
+	const publicUrl = optional("KANTEL_PUBLIC_URL");
+	const signInFrom = optional("KANTEL_SIGN_IN_FROM");
+	if ((publicUrl === undefined) !== (signInFrom === undefined)) {
+		invalid.push("Set both KANTEL_PUBLIC_URL and KANTEL_SIGN_IN_FROM, or neither");
+	}
+	const dailyCap = optional("KANTEL_SIGN_IN_DAILY_CAP");
+	if (
+		publicUrl !== undefined &&
+		OPTIONAL_CHECKS.KANTEL_PUBLIC_URL.test(publicUrl) &&
+		new URL(publicUrl).hostname.toLowerCase() === (env.KANTEL_HOSTNAME ?? "").trim().toLowerCase()
+	) {
+		invalid.push("KANTEL_PUBLIC_URL must be another hostname than KANTEL_HOSTNAME, which Access guards");
+	}
 	if (invalid.length > 0) throw new Error(invalid.join("; "));
 	const r2Bucket = optional("KANTEL_R2_BUCKET");
 	const hint = optional("KANTEL_LOCATION_HINT");
@@ -347,6 +380,15 @@ export function deployValues(env: Readonly<Record<string, string | undefined>>, 
 		...(optional("KANTEL_COMPUTE_PORTS_DOMAIN") === undefined
 			? {}
 			: { portsDomain: optional("KANTEL_COMPUTE_PORTS_DOMAIN") }),
+		...(publicUrl === undefined || signInFrom === undefined
+			? {}
+			: {
+					emailSignIn: {
+						publicUrl: new URL(publicUrl).origin,
+						from: signInFrom,
+						...(dailyCap === undefined ? {} : { dailyCap }),
+					},
+				}),
 		placeholders: missing,
 	};
 }
@@ -368,7 +410,7 @@ type RawConfig = Readonly<Record<string, unknown>>;
  * would bypass Access.
  */
 export function deployConfig(raw: RawConfig, values: DeployValues): Record<string, unknown> {
-	for (const key of ["account_id", "routes", "route", "vpc_services"]) {
+	for (const key of ["account_id", "routes", "route", "vpc_services", "send_email"]) {
 		if (key in raw) throw new Error(`wrangler.jsonc must not set ${key}: the deploy fills it in`);
 	}
 	if (raw.workers_dev !== false || raw.preview_urls !== false) {
@@ -404,7 +446,17 @@ export function deployConfig(raw: RawConfig, values: DeployValues): Record<strin
 		...(values.accountId === undefined ? {} : { account_id: values.accountId }),
 		// A zone route, not a custom domain: the zone's `*.myslop.app/*` route to `myslop-apps` would take precedence over
 		// a custom domain on the same hostname, while between routes the most specific pattern wins (#17, Route).
+		//
+		// The public origin (KANTEL_PUBLIC_URL) is a Workers custom domain attached once outside the deploy (README,
+		// "The public origin"): the deploy's token edits routes on KANTEL_HOSTNAME's zone only, and a deploy that names no
+		// custom domain leaves the Worker's custom domains as they are.
 		routes: [{ pattern: `${values.hostname}/*`, zone_name: zoneOf(values.hostname) }],
+		// Sign-in codes and invites, sent only from the one address (Cloudflare Email Sending).
+		...(values.emailSignIn === undefined
+			? {}
+			: {
+					send_email: [{ name: SIGN_IN_MAIL_BINDING, allowed_sender_addresses: [values.emailSignIn.from] }],
+				}),
 		vars: {
 			...vars,
 			KANTEL_ACCESS_TEAM_DOMAIN: values.accessTeamDomain,
@@ -420,6 +472,15 @@ export function deployConfig(raw: RawConfig, values: DeployValues): Record<strin
 			...(values.connectionsCimd === true ? { KANTEL_CONNECTIONS_CIMD: "on" } : {}),
 			...(values.oauthClients === undefined ? {} : { KANTEL_OAUTH_CLIENTS: values.oauthClients }),
 			...(values.portsDomain === undefined ? {} : { KANTEL_COMPUTE_PORTS_DOMAIN: values.portsDomain }),
+			...(values.emailSignIn === undefined
+				? {}
+				: {
+						KANTEL_PUBLIC_URL: values.emailSignIn.publicUrl,
+						KANTEL_SIGN_IN_FROM: values.emailSignIn.from,
+						...(values.emailSignIn.dailyCap === undefined
+							? {}
+							: { KANTEL_SIGN_IN_DAILY_CAP: values.emailSignIn.dailyCap }),
+					}),
 		},
 		...(values.browserContainers === true || values.sandboxContainers === true
 			? {

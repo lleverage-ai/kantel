@@ -25,8 +25,13 @@ export interface Collection<T extends { readonly id: string }> {
 	 * Changes the record as it is now, with nothing else written between the read and the write (the SQL store writes
 	 * only over the version it read, and reads again when another writer got there first), and answers what was written.
 	 * `change` answers `undefined` to write nothing; a missing record is never written. `change` may run more than once.
+	 *
+	 * `expected` is the record as the caller last wrote or read it, when it has it: a store may try `change` on it first
+	 * and write only if the record is still exactly that (the SQL store compares the stored JSON), which saves the read.
+	 * When the record is no longer `expected`, or `change` answers `undefined` for it, the store reads it as usual, so
+	 * the answer is the same as without it.
 	 */
-	update(id: string, change: (current: T) => T | undefined): Promise<T | undefined>;
+	update(id: string, change: (current: T) => T | undefined, expected?: T): Promise<T | undefined>;
 	/** Whether there was one to delete. */
 	delete(id: string): Promise<boolean>;
 	/** The records whose fields equal each defined field of `where`, oldest first. */

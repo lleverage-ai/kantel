@@ -140,6 +140,46 @@ describe("deploy config", () => {
 		expect(JSON.stringify(rawConfig)).not.toContain("KANTEL_COMPUTE_PORTS_DOMAIN");
 	});
 
+	it("turns email-code sign-in on with the public origin and its sender, binding mail to that sender only", () => {
+		const config = (env: Record<string, string>) =>
+			deployConfig(rawConfig, deployValues({ ...configured, ...env }, "deploy"));
+		const off = config({});
+		expect(off.send_email).toBeUndefined();
+		expect((off.vars as Record<string, string>).KANTEL_PUBLIC_URL).toBeUndefined();
+		const on = config({ KANTEL_PUBLIC_URL: "https://app.kantel.dev/", KANTEL_SIGN_IN_FROM: "sign-in@kantel.dev" });
+		expect(on.send_email).toEqual([{ name: "SIGN_IN_MAIL", allowed_sender_addresses: ["sign-in@kantel.dev"] }]);
+		expect(on.vars).toMatchObject({
+			KANTEL_PUBLIC_URL: "https://app.kantel.dev",
+			KANTEL_SIGN_IN_FROM: "sign-in@kantel.dev",
+		});
+		expect((on.vars as Record<string, string>).KANTEL_SIGN_IN_DAILY_CAP).toBeUndefined();
+		// The public origin's custom domain is attached outside the deploy: only the Access hostname's route is here.
+		expect(on.routes).toEqual([{ pattern: "harbour.myslop.app/*", zone_name: "myslop.app" }]);
+		const capped = config({
+			KANTEL_PUBLIC_URL: "https://app.kantel.dev",
+			KANTEL_SIGN_IN_FROM: "sign-in@kantel.dev",
+			KANTEL_SIGN_IN_DAILY_CAP: "50",
+		});
+		expect((capped.vars as Record<string, string>).KANTEL_SIGN_IN_DAILY_CAP).toBe("50");
+		for (const [env, message] of [
+			[{ KANTEL_PUBLIC_URL: "https://app.kantel.dev" }, "Set both KANTEL_PUBLIC_URL and KANTEL_SIGN_IN_FROM"],
+			[{ KANTEL_SIGN_IN_FROM: "sign-in@kantel.dev" }, "Set both KANTEL_PUBLIC_URL and KANTEL_SIGN_IN_FROM"],
+			[
+				{ KANTEL_PUBLIC_URL: "http://app.kantel.dev", KANTEL_SIGN_IN_FROM: "sign-in@kantel.dev" },
+				"KANTEL_PUBLIC_URL must be an https:// origin",
+			],
+			[
+				{ KANTEL_PUBLIC_URL: "https://harbour.myslop.app", KANTEL_SIGN_IN_FROM: "sign-in@kantel.dev" },
+				"another hostname than KANTEL_HOSTNAME",
+			],
+		] as const) {
+			expect(() => deployValues({ ...configured, ...env }, "deploy")).toThrow(message);
+		}
+		expect(() => deployConfig({ ...rawConfig, send_email: [] }, deployValues(configured, "deploy"))).toThrow(
+			"must not set send_email",
+		);
+	});
+
 	it("routes the hostname on its parent zone, never as a custom domain", () => {
 		expect(zoneOf("harbour.myslop.app")).toBe("myslop.app");
 		expect(zoneOf("kantel.example.co.uk")).toBe("example.co.uk");

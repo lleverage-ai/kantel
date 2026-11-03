@@ -27,6 +27,9 @@ const SELECT_VERSIONED = "SELECT data, version FROM compute_api_records WHERE ki
 /** Writes only over the version that was read, and answers a row only when it did. */
 const UPDATE_VERSIONED =
 	"UPDATE compute_api_records SET data = ?, version = version + 1 WHERE kind = ? AND id = ? AND version = ? RETURNING id";
+/** Writes only over the record exactly as the caller expected it, and answers a row only when it did. */
+const UPDATE_IF_SAME =
+	"UPDATE compute_api_records SET data = ?, version = version + 1 WHERE kind = ? AND id = ? AND data = ? RETURNING id";
 const DELETE_ONE = "DELETE FROM compute_api_records WHERE kind = ? AND id = ? RETURNING id";
 
 /** The store's table, sequence and index. Every statement is `IF NOT EXISTS`, so migrating again is harmless. */
@@ -99,7 +102,17 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 			const rows = await driver.query(insertNew, postgres ? [kind, record.id, data] : [kind, record.id, kind, data]);
 			return rows.length > 0;
 		},
-		async update(id, change) {
+		async update(id, change, expected) {
+			// The caller's copy first: one statement, written only if the stored JSON is still exactly that copy's (every
+			// write stores `JSON.stringify` of the record, so an unchanged record compares equal).
+			if (expected !== undefined && expected.id === id) {
+				const next = change(JSON.parse(JSON.stringify(expected)) as T);
+				if (next !== undefined) {
+					const data = JSON.stringify(next);
+					const written = await driver.query(UPDATE_IF_SAME, [data, kind, id, JSON.stringify(expected)]);
+					if (written.length > 0) return JSON.parse(data) as T;
+				}
+			}
 			for (let attempt = 0; attempt < UPDATE_ATTEMPTS; attempt++) {
 				const [row] = await driver.query(SELECT_VERSIONED, [kind, id]);
 				if (row === undefined) return undefined;

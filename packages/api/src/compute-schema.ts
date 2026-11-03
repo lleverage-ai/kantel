@@ -842,7 +842,11 @@ export const ApiKey = Type.Object(
 		createdBy: CreatedBy,
 		createdAt: Timestamp,
 		expiresAt: Type.Optional(Timestamp),
-		lastUsedAt: Type.Optional(Timestamp),
+		lastUsedAt: Type.Optional(
+			Type.Integer({
+				description: "When the key last signed a call in, to within a minute. Absent until its first use.",
+			}),
+		),
 		revokedAt: Type.Optional(Timestamp),
 	},
 	{ title: "ApiKey", description: "A scoped API key. Its secret is never stored or shown after it is made." },

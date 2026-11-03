@@ -52,12 +52,30 @@ These hold for every collection (`Collection<T>` in `store.ts`), and the memory 
   be pure and may run more than once. `change` answering `undefined` writes nothing. A missing record is never
   written (`update` answers `undefined`). The SQL store retries 50 times and then throws. A backend may retry fewer or
   more times, but it must never write over a version it didn't read.
+- **`update(id, change, expected)`** takes the caller's copy of the record when it has one, such as the record it has
+  just written. A backend **may** call `change` on that copy first and write only if the stored record is still
+  exactly that copy, which saves the read. The SQL store does it in one statement (`UPDATE … WHERE data = ?`, the JSON
+  it would have read). If the record is no longer the copy, or `change` answers `undefined` for it, the backend reads
+  it as usual and calls `change` again. So the answer is the same as without `expected`. A backend may ignore
+  `expected` (the memory store does).
 - **`delete`** answers whether there was a record.
 - **`list(where)`** answers the records whose top-level fields are `===` to each defined field of `where` (`matches`
   in `store.ts`), **oldest first by first insertion**. A replace (`put` over an existing ID) keeps the record's place.
   A backend may narrow the query in its own query language, but it must answer exactly what `matches` would.
 - **Reads after writes.** A write that has resolved is visible to every later read on every gateway. No backend may
-  answer reads from a replica that lags or from a cache.
+  answer reads from a replica that lags or from a cache. The service caches no record either: every call reads the
+  key, membership and account it acts on.
+- **Fields that are kept loosely.** Two fields are written at most once a minute rather than on every call, so a
+  busy key or host doesn't cost a write each time:
+  - an API key's `lastUsedAt` is recorded only when the recorded one is 60 s old or more
+    (`API_KEY_LAST_USED_PRECISION_MS`), and off the call's path: the call doesn't wait for it, and a write that fails
+    is dropped. The `update` checks the age again against the stored record, so of many calls that saw it stale, on
+    any gateway, one writes, and an older use never overwrites a newer one, a revoke or a rotation. It is a hint for
+    people, and nothing decides access by it.
+  - the API's host record's `lastSeenAt` is written when anything else about the host changed, or once it is 60 s
+    stale (`HOST_SEEN_PRECISION_MS`). The host list and host reads answer it fresh from the host registry, and
+    placement reads `lastSeenAt` from the registry's own record (§5), which the owning replica writes on every
+    heartbeat.
 
 The SQL store keeps one row per record in `compute_api_records(kind, id, seq, version, data)`. `seq` gives the order
 and `version` the compare-and-set. `seq` comes from a sequence on Postgres, and from `MAX(seq)+1` per kind on SQLite,
@@ -98,6 +116,17 @@ writes only while the sandbox is still in the state the call read it in:
 
 The queue inside each process (`pending`) still orders one gateway's own work on a sandbox. It no longer has to
 protect anything across gateways.
+
+**Round trips (TASK-4754).** A `wait: true` create, called with an API key, makes 16 statements in 10 rounds
+(statements sent together share a round), where it made 28, each its own round. Reads that don't depend on each other
+go together: the membership and the account; the host registry, the API's host records and the proxy settings; an
+event and its webhook lookup. Writes another record depends on don't: the sandbox is stored before its
+`sandbox.created` event (who may see an event is decided by its sandbox, so an event must never be visible before it),
+and an event before its webhook deliveries (`enqueue(event, written)` queues nothing if the event's write fails). The backend's hosts are read once per create, not
+twice, and without their placements. Nothing written is read back: the host registry answers the placement it wrote,
+`boot()` moves the sandbox to `running` from the record as written (`update` with `expected`, §2), and the call
+answers the record `boot()` wrote. `packages/hosts/test/create-statements.test.ts` fails if the create needs more.
+Revocation is unchanged (§7), as nothing is cached.
 
 Seen on two replicas before the fix: 1 of 10 simultaneous double stops ended `error` ("is stopped, not running")
 after `sandbox.stopped`. `packages/compute/test/replica-lifecycle.test.ts` runs two compute APIs over one database
@@ -226,7 +255,8 @@ A Worker can meet this differently (§9.7).
 A Worker backend is equivalent if:
 
 1. **It passes the conformance suites** that the memory and SQL stores pass: `packages/compute/test/sql-store.test.ts`
-   (order, `update` with 20 concurrent writers ending at 20, copies, NUL and lone surrogates), and in
+   (order, `update` with 20 concurrent writers ending at 20, `update` from a stale copy, copies, NUL and lone
+   surrogates), and in
    `packages/hosts/test` the `HostStore` (`store.test.ts`), tickets (`tunnel.test.ts`), exposures (`ports.test.ts`)
    and revocation (`relay-access.test.ts`) tests. `createSqlComputeStore` already runs on D1 (Miniflare) in that suite, so
    **D1 can use the SQL store as it is**.

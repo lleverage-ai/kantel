@@ -87,7 +87,7 @@ export interface ApiKey {
 	readonly createdAt: number;
 	/** Epoch milliseconds, UTC. */
 	readonly expiresAt?: number;
-	/** Epoch milliseconds, UTC. */
+	/** When the key last signed a call in, to within a minute. Absent until its first use. */
 	readonly lastUsedAt?: number;
 	/** Epoch milliseconds, UTC. */
 	readonly revokedAt?: number;

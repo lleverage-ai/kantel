@@ -142,6 +142,38 @@ function behaves(open: () => Promise<Opened>, sql: boolean) {
 		expect(await items.get("a")).toEqual({ ...item("a"), done: true, tags: ["x"] });
 	});
 
+	it("updates from the caller's copy only while the record is still that copy, else as it is now", async () => {
+		const { items } = await open();
+		const written = item("a", "a", false, 1);
+		await items.put(written);
+		// The copy is the record: the change applies to it.
+		expect(await items.update("a", (current) => ({ ...current, count: current.count + 1 }), written)).toEqual(
+			item("a", "a", false, 2),
+		);
+		// The copy is stale (another writer moved it on): the change applies to the record as it is, not over it.
+		await items.put(item("a", "a", true, 10));
+		const seen: Item[] = [];
+		const moved = await items.update(
+			"a",
+			(current) => {
+				seen.push(current);
+				return { ...current, count: current.count + 1 };
+			},
+			written,
+		);
+		expect(moved).toEqual(item("a", "a", true, 11));
+		expect(seen.at(-1)).toEqual(item("a", "a", true, 10));
+		expect(await items.get("a")).toEqual(item("a", "a", true, 11));
+		// A change that says no to the copy is asked again about the record as it is.
+		const stale = item("a", "a", false, 0);
+		expect(await items.update("a", (current) => (current.done ? { ...current, count: 0 } : undefined), stale)).toEqual(
+			item("a", "a", true, 0),
+		);
+		// A missing record is never written, copy or not.
+		expect(await items.update("nope", (current) => current, item("nope"))).toBeUndefined();
+		expect(await items.get("nope")).toBeUndefined();
+	});
+
 	it("applies concurrent updates of one record each over the last", async () => {
 		const { items } = await open();
 		await items.put(item("counter"));

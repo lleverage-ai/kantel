@@ -1,4 +1,5 @@
-import { ComputeConsole, type ComputeSource, type HostingMode } from "@kantel/ui";
+import { KantelApiError } from "@kantel/api/sdk";
+import { Button, ComputeConsole, type ComputeSource, type HostingMode, Notice } from "@kantel/ui";
 import { createComputeFixtures } from "@kantel/ui/compute/fixtures";
 import { useEffect, useState } from "react";
 import { navigate, searchWithout, usePathname } from "../app/router.ts";
@@ -86,9 +87,15 @@ function namedFor(
 	return Object.defineProperties({ ...source, accounts }, { domain: { get: () => source.domain, enumerable: true } });
 }
 
-type Sourced = { readonly source: ComputeSource; readonly sample: boolean };
+type Sourced =
+	| { readonly source: ComputeSource; readonly sample: boolean }
+	/** The gateway serves compute, but not to this person (403): say so, never the sample data in its place. */
+	| { readonly refused: string };
 
-/** The compute API when this gateway serves it and the tab wants it, else the sample data. */
+/**
+ * The compute API when this gateway serves it and the tab wants it, else the sample data. A refusal is not "not
+ * served": someone signed in who may not use compute here sees why, rather than a demo that looks like theirs.
+ */
 async function sourceFor(
 	hosting: HostingMode,
 	signedInAs: { readonly name?: string; readonly email?: string } | undefined,
@@ -99,6 +106,7 @@ async function sourceFor(
 		try {
 			return { source: namedFor(await apiCompute({ ...api, hosting }), signedInAs), sample: false };
 		} catch (error) {
+			if (error instanceof KantelApiError && error.status === 403) return { refused: error.message };
 			console.info("kantel: the compute API isn't served here, so the console shows sample data:", error);
 		}
 	}
@@ -139,6 +147,29 @@ export function ComputeApp({
 	}, []);
 	// The app's ground while the console asks the gateway, which takes one call: no spinner, and not the session shell.
 	if (sourced === undefined) return <div className="kt-app h-dvh" aria-busy="true" />;
+	if ("refused" in sourced) {
+		return (
+			<div className="kt-app flex h-dvh items-center justify-center p-6">
+				<div className="flex w-full max-w-md flex-col gap-3">
+					<Notice
+						level="info"
+						{...(onSignOut === undefined
+							? {}
+							: {
+									action: (
+										<Button size="sm" onClick={onSignOut}>
+											Sign out
+										</Button>
+									),
+								})}
+					>
+						{signedInAs?.email === undefined ? "You're signed in. " : `You're signed in as ${signedInAs.email}. `}
+						{sourced.refused}.
+					</Notice>
+				</div>
+			</div>
+		);
+	}
 	return (
 		<ComputeConsole
 			source={sourced.source}

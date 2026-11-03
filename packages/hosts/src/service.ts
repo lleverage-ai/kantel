@@ -131,6 +131,10 @@ export interface HostsServiceOptions {
 export interface SandboxPlacement {
 	readonly sandbox: HostSandbox;
 	readonly hostId: string;
+	/** The placement as written once the host answered, so the caller needn't read it back. */
+	readonly placement?: PlacementRecord;
+	/** Whether the host offers nested virtualisation, so the caller needn't read the host for it. */
+	readonly nestedVirtualisation?: boolean;
 }
 
 export interface HostsService {
@@ -151,7 +155,11 @@ export interface HostsService {
 	}): Promise<{ readonly hostId: string; readonly credential: string }>;
 	/** The host a credential is for, unless it is unknown or revoked. */
 	authenticate(credential: string): Promise<HostRecord | undefined>;
-	list(): Promise<HostView[]>;
+	/**
+	 * Every host. With `allocations: false` no placements are read and `allocated` is all zero: for a caller that needs
+	 * only what the hosts are (the compute backend's capabilities), at one statement rather than one per host.
+	 */
+	list(options?: { readonly allocations?: boolean }): Promise<HostView[]>;
 	get(hostId: string): Promise<HostView>;
 	update(
 		hostId: string,
@@ -330,6 +338,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				(async () => {
 					const placement = await store.getPlacement(sandbox.id);
 					if (placement === undefined || placement.hostId !== hostId) return;
+					// The call that caused the event usually recorded the state already (a create's `running`).
+					if (sandbox.state === placement.state) return;
 					if (sandbox.state === "deleted") await store.removePlacement(sandbox.id);
 					else await store.putPlacement({ ...placement, state: sandbox.state, updatedAt: clock.now() });
 				})(),
@@ -349,8 +359,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	});
 	const hub = cluster === undefined ? local : cluster.route(local);
 
-	const view = async (host: HostRecord): Promise<HostView> => {
-		const placements = await store.placementsOn(host.id);
+	const view = async (host: HostRecord, allocations = true): Promise<HostView> => {
+		const placements = allocations ? await store.placementsOn(host.id) : [];
 		const live = placements.filter((placement) => LIVE.has(placement.state));
 		const facts = storedFacts(host.facts);
 		const arch =
@@ -444,8 +454,10 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		}
 	};
 
-	const settle = async (placement: PlacementRecord, sandbox: HostSandbox) => {
-		await store.putPlacement({ ...placement, state: sandbox.state, updatedAt: clock.now() });
+	const settle = async (placement: PlacementRecord, sandbox: HostSandbox): Promise<PlacementRecord> => {
+		const settled = { ...placement, state: sandbox.state, updatedAt: clock.now() };
+		await store.putPlacement(settled);
+		return settled;
 	};
 
 	const reserve = (hostId: string, memoryMiB: number, diskGiB: number) => {
@@ -516,8 +528,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			const host = await store.hostByCredential(await hashSecret(credential));
 			return host === undefined || host.revoked ? undefined : host;
 		},
-		async list() {
-			return Promise.all((await store.listHosts()).map(view));
+		async list(listOptions) {
+			const allocations = listOptions?.allocations !== false;
+			return Promise.all((await store.listHosts()).map((host) => view(host, allocations)));
 		},
 		async get(hostId) {
 			return view(await hostOf(hostId));
@@ -554,15 +567,15 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				if (tier !== "microvm" && tier !== "isolate") throw new KantelError("invalid", "tier is microvm or isolate");
 				const sandboxId = input.sandboxId ?? shortId("sbx");
 				if (!SANDBOX_ID.test(sandboxId)) throw new KantelError("invalid", "Not a valid sandbox ID");
-				if ((await store.getPlacement(sandboxId)) !== undefined) {
-					throw new KantelError("conflict", "A sandbox with that ID exists");
-				}
 				const sizeName = tier === "isolate" ? "isolate" : (input.size ?? "default");
 				const only = input.hostIds === undefined ? undefined : new Set(input.hostIds);
 				if (input.from !== undefined && only?.size !== 1) {
 					throw new KantelError("invalid", "A sandbox made from a snapshot goes on the snapshot's host");
 				}
-				const hosts = (await store.listHosts())
+				// Two reads that don't depend on each other: one round trip.
+				const [existing, listed] = await Promise.all([store.getPlacement(sandboxId), store.listHosts()]);
+				if (existing !== undefined) throw new KantelError("conflict", "A sandbox with that ID exists");
+				const hosts = listed
 					.map(sane)
 					.filter((host) => only === undefined || only.has(host.id))
 					// An account's own host takes only that account's sandboxes, whatever the caller named.
@@ -627,8 +640,13 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						undefined,
 						chosen.host,
 					);
-					await settle(placement, sandbox);
-					return { sandbox, hostId: chosen.host.id };
+					const settled = await settle(placement, sandbox);
+					return {
+						sandbox,
+						hostId: chosen.host.id,
+						placement: settled,
+						nestedVirtualisation: chosen.host.facts?.nested ?? false,
+					};
 				} catch (error) {
 					await store.removePlacement(sandboxId);
 					throw error;
@@ -657,8 +675,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						snapshotId: shortId("snap"),
 						...(input.egress === undefined ? {} : { egress: input.egress }),
 					});
-					await settle(placement, sandbox);
-					return { sandbox, hostId: source.hostId };
+					return { sandbox, hostId: source.hostId, placement: await settle(placement, sandbox) };
 				} catch (error) {
 					await store.removePlacement(newId);
 					throw error;

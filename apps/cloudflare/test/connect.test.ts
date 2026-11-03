@@ -459,6 +459,23 @@ describe("Kantel Connect on the Worker", () => {
 		);
 	});
 
+	it("shares KANTEL_PUBLIC_URL with email sign-in: alone it is Connect's, and sign-in stays off", () => {
+		const access = { KANTEL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN, KANTEL_ACCESS_AUD: AUD };
+		const alone = gatewayConfig({ ...access, KANTEL_CONNECT: "experimental", KANTEL_PUBLIC_URL: BASE });
+		expect(alone.connect).toEqual({ publicUrl: BASE });
+		expect(alone.emailSignIn).toBeUndefined();
+		// Connect off: the public origin without its sender is refused, as before.
+		expect(() => gatewayConfig({ ...access, KANTEL_PUBLIC_URL: BASE })).toThrow(/KANTEL_SIGN_IN_FROM/);
+		const both = gatewayConfig({
+			...access,
+			KANTEL_CONNECT: "experimental",
+			KANTEL_PUBLIC_URL: BASE,
+			KANTEL_SIGN_IN_FROM: "sign-in@example.com",
+		});
+		expect(both.connect).toEqual({ publicUrl: BASE });
+		expect(both.emailSignIn).toMatchObject({ publicUrl: BASE, from: "sign-in@example.com" });
+	});
+
 	it("enrols a host into the person's account and runs that account's sandboxes on it, others' on the stub", async () => {
 		const db = new DatabaseSync(":memory:");
 		const on = { KANTEL_CONNECT: "experimental", KANTEL_PUBLIC_URL: BASE };

@@ -18,8 +18,10 @@
  *   SQLite. Sandboxes of an account with a host of its own go there (`createRoutedBackend`); everyone else's stay on
  *   the stub. SSH to those sandboxes is served (`GET /v1/hosts/tunnel/{ticket}`, over the host's connection); their
  *   desktops, browsers' CDP and exposed ports aren't yet.
- * - **People:** whoever the stack's authenticator signs in (Cloudflare Access) is a compute person under their user ID,
- *   and an admin of the deployment's organisation is the compute plane's super-admin, as self-hosted. An identity
+ * - **People:** whoever the stack's authenticator signs in (Cloudflare Access, or an email code on the public origin)
+ *   is a compute person under their user ID, and an admin of the deployment's own organisation (the bootstrap's) is the
+ *   compute plane's super-admin, as self-hosted. With open sign-up everyone administers a personal space of their own;
+ *   that makes nobody a super-admin. An identity
  *   `ktk_` key is not a compute caller; the compute API's own `ksk_` keys are.
  *
  * Its timers (webhook deliveries every second, the OpenTelemetry export every minute) run only while requests keep
@@ -227,6 +229,11 @@ export interface StackComputeOptions {
 	readonly authenticator: Authenticator;
 	/** Who holds which role: an organisation admin who signs in is the compute plane's super-admin. */
 	readonly identity: Pick<IdentityDirectory, "authorize">;
+	/**
+	 * The deployment's own organisation: only its admins are super-admins, and only its members may use compute here.
+	 * Absent, any organisation's admin is a super-admin and anyone signed in may use it (tests with one organisation).
+	 */
+	readonly adminOrganisationId?: string;
 	/** Where the records are: the stack object's SQLite. Absent, in memory (tests). */
 	readonly sql?: SqlDriver;
 	readonly now?: () => number;
@@ -241,15 +248,24 @@ export interface StackComputeOptions {
 	readonly connect?: { readonly publicUrl: string };
 }
 
+/** What someone outside the deployment's organisation is told: compute here is the stub's memory, not a host of theirs. */
+export const COMPUTE_MEMBERS_ONLY =
+	"Sandboxes here are for the deployment's own organisation until hosts you add can run them";
+
 /**
  * The person a sign-in is, or undefined for a key or no sign-in. As the self-hosted gateway does
  * (`apps/selfhosted/src/gateway/compute.ts`): a person's sign-in carries no role of its own, so `identity` says
  * whether they administer the organisation.
+ *
+ * Someone acting in another organisation (anyone who signed up on the public origin) is refused: the stub backend
+ * keeps files and snapshots in this object's memory, which a stranger mustn't be able to fill. Refusing the person
+ * refuses every way in, a compute key or a device sign-in included, since only a person can make either.
  */
 async function personOf(
 	authenticator: Authenticator,
 	identity: Pick<IdentityDirectory, "authorize">,
 	request: Request,
+	adminOrganisationId: string | undefined,
 ): Promise<PersonIdentity | undefined> {
 	let caller: Awaited<ReturnType<Authenticator["authenticate"]>>;
 	try {
@@ -258,6 +274,10 @@ async function personOf(
 		return undefined;
 	}
 	if (caller.actor.kind !== "human") return undefined;
+	if (adminOrganisationId !== undefined && caller.organisationId !== adminOrganisationId) {
+		throw new KantelError("forbidden", COMPUTE_MEMBERS_ONLY);
+	}
+	// Only an admin of the deployment's organisation, never one of a personal space.
 	const superAdmin = await identity.authorize(callContextFor(caller), "admin").then(
 		() => true,
 		() => false,
@@ -290,7 +310,8 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 						holds: async (sandboxId) => (await connect.service.sandboxes.placement(sandboxId)) !== undefined,
 						holdsSnapshot: isHostSnapshotRef,
 					}),
-		authenticatePerson: (request) => personOf(options.authenticator, options.identity, request),
+		authenticatePerson: (request) =>
+			personOf(options.authenticator, options.identity, request, options.adminOrganisationId),
 		mode: "hosted",
 		now,
 		...(options.fetch === undefined ? {} : { fetch: options.fetch }),
