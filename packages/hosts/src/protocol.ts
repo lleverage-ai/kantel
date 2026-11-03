@@ -8,6 +8,10 @@
  *
  * Text frames are JSON `HostMessage`s. Binary frames carry port streams: 4 bytes of stream ID (big-endian), then the
  * payload; an empty payload closes that direction.
+ *
+ * Calls go both ways. Kantel calls the host (`HostMethods`); the host calls Kantel only for `secrets.fetch`, with IDs
+ * starting `h` so they never clash with Kantel's, and Kantel answers for a sandbox on that host alone. Every addition
+ * since version 1 is optional, so the version stays 1.
  */
 
 /** Bumped on any incompatible change; Kantel refuses a host whose version it doesn't speak. */
@@ -122,6 +126,73 @@ export interface HostEgress {
 	readonly allow?: readonly string[];
 	readonly deny?: readonly string[];
 	readonly defaultDeny?: boolean;
+	/**
+	 * Present only when the sandbox has protected variables: the hosts their bindings name (patterns, never a value),
+	 * which the host intercepts with a CA of the sandbox's own, and the version of its protected values, which the host
+	 * fetches with `secrets.fetch`.
+	 */
+	readonly protected?: HostEgressProtected;
+	/** The environment's grants, then the sandbox's own, on top of `allow` and `deny`; deny wins. */
+	readonly grants?: readonly HostEgressGrant[];
+}
+
+export interface HostEgressProtected {
+	readonly version: number;
+	readonly intercept: readonly string[];
+}
+
+/** An egress grant; one naming methods or paths makes its host intercepted. */
+export interface HostEgressGrant {
+	readonly action: "allow" | "deny";
+	readonly host: string;
+	readonly methods?: readonly string[];
+	/** Glob patterns: `*` one segment, `**` the rest. */
+	readonly paths?: readonly string[];
+	/** The rule as the egress log names it, such as `deny DELETE api.github.com /repos/*`. */
+	readonly rule: string;
+}
+
+/** Where a protected value may go: port 443 of `host`, under these path prefixes, by these methods (empty: any). */
+export interface HostSecretBinding {
+	readonly host: string;
+	readonly pathPrefixes?: readonly string[];
+	readonly methods?: readonly string[];
+}
+
+export interface HostSecretEntry {
+	readonly placeholder: string;
+	readonly name: string;
+	readonly value: string;
+	readonly bindings: readonly HostSecretBinding[];
+}
+
+/** The result of a host's `secrets.fetch` `{ sandboxId }`: the sandbox's protected values, in host memory only. */
+export interface HostSecrets {
+	readonly version: number;
+	readonly entries: readonly HostSecretEntry[];
+}
+
+/** One request or connection a host's egress proxy handled, in an `egress` event. Never a value or a query string. */
+export interface HostEgressRecord {
+	/** Milliseconds since the epoch. */
+	readonly at: number;
+	readonly sandboxId: string;
+	/** `CONNECT` for a tunnel the proxy didn't look inside. */
+	readonly method: string;
+	readonly host: string;
+	readonly port: number;
+	readonly path?: string;
+	readonly allowed: boolean;
+	readonly reason?: string;
+	readonly rule?: string;
+	/** The `X-Kantel-Proxy-Error` code of a refusal. */
+	readonly code?: string;
+	/** The protected variables swapped in, by name. */
+	readonly swapped: readonly string[];
+	readonly inspected: boolean;
+	readonly status?: number;
+	readonly bytesUp: number;
+	readonly bytesDown: number;
 }
 
 export interface HostHello {
@@ -149,6 +220,8 @@ export interface HostEvent {
 	readonly stdout?: string;
 	readonly stderr?: string;
 	readonly at: number;
+	/** For `egress`: a batch, at most 100 records or 2 seconds' worth. */
+	readonly egress?: readonly HostEgressRecord[];
 }
 
 export interface HostMessage {
@@ -192,6 +265,10 @@ export const HostMethods = {
 	portOpen: "port.open",
 	hostUpdate: "host.update",
 	hostPools: "host.pools",
+	/** Kantel to host: a sandbox's protected values changed, `{ sandboxId, version }`; it drops its copy. Result `{}`. */
+	secrets: "sandbox.secrets",
+	/** Host to Kantel: `{ sandboxId }`, answered with `HostSecrets`, or `not_found` for a sandbox not on that host. */
+	secretsFetch: "secrets.fetch",
 } as const;
 
 export type HostMethod = (typeof HostMethods)[keyof typeof HostMethods];

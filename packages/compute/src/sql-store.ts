@@ -10,7 +10,11 @@
  * changes it, and writes it only if the version is still the one it read, else reads again and retries.
  *
  * It keeps exactly what the memory store keeps: secrets as their SHA-256 hex, except a webhook's signing secret and a
- * device sign-in's key secret until it is collected. Nothing here logs a record.
+ * device sign-in's key secret until it is collected, and environments' protected values and secret files sealed with
+ * the deployment's key. Nothing here logs a record. A new collection is a new kind in the same table, so it needs no
+ * migration.
+ *
+ * It is `persistent`: the service seals nothing without the deployment's own secrets key.
  */
 import { type SqlDriver, type SqlValue, sqlNumber } from "@kantel/sql";
 import { type Collection, type ComputeStore, matches } from "./store.ts";
@@ -156,6 +160,7 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 /** A `ComputeStore` in SQL. Run `migrateComputeStore` first. */
 export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 	return {
+		persistent: true,
 		users: sqlCollection(driver, "users"),
 		accounts: sqlCollection(driver, "accounts"),
 		members: sqlCollection(driver, "members"),
@@ -173,5 +178,7 @@ export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 		events: sqlCollection(driver, "events"),
 		idempotency: sqlCollection(driver, "idempotency"),
 		deviceLogins: sqlCollection(driver, "deviceLogins"),
+		environments: sqlCollection(driver, "environments"),
+		egress: sqlCollection(driver, "egress"),
 	};
 }

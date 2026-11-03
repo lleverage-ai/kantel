@@ -5,7 +5,9 @@
  */
 export * from "./compute-routes.ts";
 export * as computeSchema from "./compute-schema.ts";
-export * from "./environment-routes.ts";
+// Only the dormant agent plane's route group, for @kantel/environments: its route consts share names with the compute
+// plane's environment routes.
+export { environmentRoutes } from "./environment-routes.ts";
 export * as environmentSchema from "./environments-schema.ts";
 export * from "./openapi.ts";
 export * from "./route.ts";

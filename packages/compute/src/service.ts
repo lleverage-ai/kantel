@@ -11,6 +11,11 @@
  *
  * Cost uses a per-type and per-size rate table; the default, `PLACEHOLDER_RATES`, is a placeholder until real pricing
  * exists. CPU seconds are estimated from the usage readings taken while a sandbox runs.
+ *
+ * An environment is what a sandbox starts with: plain variables, protected ones, secret files, repositories and egress
+ * grants. A protected variable's value is sealed (`secrets.ts`) and never answered: the sandbox gets a placeholder of
+ * its own, and only the sandbox's host is given the value (`protectedTable`, over its link), for its egress proxy to
+ * swap in on requests to the variable's bindings.
  */
 import { computeSchema, type PublicComputeRoutes, type RouteHandlers, type SignedInComputeRoutes } from "@kantel/api";
 import { KantelError } from "@kantel/contracts";
@@ -33,11 +38,13 @@ import {
 import type {
 	BackendCapabilities,
 	BackendEgress,
+	BackendEgressGrant,
 	BackendFileEntry,
 	BootOptions,
 	Placement,
 	SandboxBackend,
 } from "./backend.ts";
+import { createEphemeralSealer, createSealer, type Sealer, sealedAt } from "./secrets.ts";
 import type {
 	ComputeStore,
 	RunPeriod,
@@ -45,6 +52,10 @@ import type {
 	StoredApiKey,
 	StoredCommand,
 	StoredDeviceLogin,
+	StoredEgressEntry,
+	StoredEnvironment,
+	StoredEnvironmentFile,
+	StoredEnvironmentVariable,
 	StoredHost,
 	StoredInvite,
 	StoredProxy,
@@ -74,6 +85,8 @@ type SandboxType = computeSchema.SandboxType;
 type MemberRole = computeSchema.MemberRole;
 type EventType = computeSchema.EventType;
 type EventData = computeSchema.Event["data"];
+/** What decides a sandbox's egress besides its account's proxy settings. */
+type EgressSubject = Pick<StoredSandbox, "environmentId" | "placeholders" | "grants">;
 
 /** What an hour of running costs, per type and microVM size. */
 export interface RateTable {
@@ -132,6 +145,52 @@ export interface ComputeServiceOptions {
 	 * everyone may. The hosted gateway keeps its stub, in the stack object's memory, to the deployment's organisation.
 	 */
 	readonly sharedHosts?: (userId: string) => Promise<boolean>;
+	/**
+	 * The deployment's `KANTEL_SECRETS_KEY` (32 bytes, base64), which seals protected variable values and secret files.
+	 * Absent: a memory store seals with a key made at random for the process; a persistent store refuses them
+	 * (`not_supported`), and plain variables still work. Not a key: the service refuses to start.
+	 */
+	readonly secretsKey?: string;
+}
+
+/** A destination a protected value may go to, as the host's proxy is given it: every list present, empty for any. */
+export interface ProtectedBinding {
+	readonly host: string;
+	readonly pathPrefixes: readonly string[];
+	readonly methods: readonly string[];
+}
+
+/** One protected variable as a sandbox's host is given it: the sandbox's placeholder and the value it stands for. */
+export interface ProtectedEntry {
+	readonly placeholder: string;
+	readonly name: string;
+	readonly value: string;
+	readonly bindings: readonly ProtectedBinding[];
+}
+
+/** A sandbox's protected values, the answer to its host's `secrets.fetch`. */
+export interface ProtectedTable {
+	readonly version: number;
+	readonly entries: readonly ProtectedEntry[];
+}
+
+/** One request or connection a host's egress proxy reports for a sandbox: never a value nor a query string. */
+export interface ReportedEgress {
+	readonly at: number;
+	readonly sandboxId: string;
+	readonly method: string;
+	readonly host: string;
+	readonly port: number;
+	readonly path?: string;
+	readonly allowed: boolean;
+	readonly reason?: string;
+	readonly rule?: string;
+	readonly code?: string;
+	readonly swapped: readonly string[];
+	readonly inspected: boolean;
+	readonly status?: number;
+	readonly bytesUp: number;
+	readonly bytesDown: number;
 }
 
 /** What someone kept off the shared hosts is told about a sandbox on one. */
@@ -165,6 +224,17 @@ export interface ComputeService {
 	stillAllowed(grantee: string | undefined, sandboxId: string): Promise<boolean>;
 	/** Reads every running sandbox's usage, keeps it, and answers it for the metrics export. */
 	sampleUsage(): Promise<TelemetryUsageSample[]>;
+	/**
+	 * A sandbox's protected values, opened, for the host that asked over its link (`secrets.fetch`): `undefined` unless
+	 * the sandbox's recorded host is `hostId`, so a host learns only its own sandboxes' values. `unavailable` when a value
+	 * doesn't open.
+	 */
+	protectedTable(hostId: string, sandboxId: string): Promise<ProtectedTable | undefined>;
+	/**
+	 * Keeps what a host's egress proxy reported, in each sandbox's log (the newest `MAX_EGRESS_ENTRIES`). Records for a
+	 * sandbox not on `hostId` are dropped, and a path's query string is never kept.
+	 */
+	recordEgress(hostId: string, records: readonly ReportedEgress[]): Promise<void>;
 	/** Resolves once every lifecycle operation and detached command started so far has ended. */
 	idle(): Promise<void>;
 	/** Kills the detached commands and waits for the work under way. */
@@ -206,6 +276,16 @@ export const DEFAULT_TIMEOUT_MS = 30_000;
 export const AUTOMATIC_SNAPSHOT_TTL_MS = 7 * 24 * 3_600_000;
 /** The usage readings kept per sandbox: a day at one every 5 minutes. */
 export const MAX_SAMPLES = 288;
+/** The egress log entries kept per sandbox, newest first. */
+export const MAX_EGRESS_ENTRIES = 1000;
+/** How many of a placeholder's characters the API shows: `kph_` and 4 more, to tell it apart, never to use it. */
+export const PLACEHOLDER_PREFIX_CHARS = 8;
+/** An environment's limits: its variables, its secret files, and their bytes in all (one record must hold them). */
+export const MAX_ENVIRONMENT_VARIABLES = 200;
+export const MAX_ENVIRONMENT_FILES = 20;
+export const MAX_ENVIRONMENT_FILE_BYTES = 1024 * 1024;
+/** How long a repository's clone may take when a sandbox starts. */
+const CLONE_TIMEOUT_MS = 10 * 60_000;
 /**
  * How long an idempotency key's claim lasts without a renewal: a gateway that dies mid-call frees its key within this,
  * and a retry then does the work. The holder renews it every `IDEMPOTENCY_RENEW_MS` while the work runs.
@@ -340,12 +420,232 @@ const truncate = (text: string): { text: string; truncated: boolean } =>
 		? { text: text.slice(0, MAX_OUTPUT_CHARS), truncated: true }
 		: { text, truncated: false };
 
+// Environments: names, destinations and grants, checked and kept in one form.
+
+const RESERVED_VARIABLES = new Set(["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"]);
+
+/** Whether Kantel keeps a variable's name for itself: `KANTEL_*` and the proxy's, in any case. */
+export function isReservedVariable(name: string): boolean {
+	const upper = name.toUpperCase();
+	return upper.startsWith("KANTEL_") || RESERVED_VARIABLES.has(upper);
+}
+
+function refuseReserved(name: string): void {
+	if (isReservedVariable(name)) {
+		throw new KantelError(
+			"invalid",
+			`${name} is Kantel's own (KANTEL_*, HTTP_PROXY, HTTPS_PROXY and NO_PROXY are); choose another name`,
+		);
+	}
+}
+
+const VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,254}$/;
+
+function checkVariableName(name: string): void {
+	if (!VARIABLE_NAME.test(name)) {
+		throw new KantelError("invalid", "A variable's name is letters, digits and underscores, not starting with a digit");
+	}
+	refuseReserved(name);
+}
+
+const HOST_LABEL = "[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?";
+const HOST_NAME = new RegExp(`^(\\*\\.)?(${HOST_LABEL}\\.)*${HOST_LABEL}$`);
+
+/** A host or a `*.` pattern, in lower case; `invalid` when it is neither. */
+function checkHost(host: string, what: string): string {
+	const lower = host.trim().toLowerCase();
+	if (lower.length > 253 || !HOST_NAME.test(lower)) {
+		throw new KantelError(
+			"invalid",
+			`${what} must be a host, such as api.github.com, or *.example.com for its subdomains`,
+		);
+	}
+	return lower;
+}
+
+function checkPaths(paths: readonly string[] | undefined, what: string): string[] {
+	const checked = unique(paths ?? []);
+	for (const path of checked) {
+		// Never a query: the proxy matches paths only, and a query could carry what shouldn't be kept.
+		if (!path.startsWith("/") || /[?#\s]/.test(path)) {
+			throw new KantelError("invalid", `${what} must start with / and have no query, fragment or spaces`);
+		}
+	}
+	return checked;
+}
+
+const methodsOf = (methods: readonly string[] | undefined): string[] =>
+	unique((methods ?? []).map((method) => method.toUpperCase()));
+
+/** A request body's binding (readonly) or a stored one. */
+type BindingInput = {
+	readonly host: string;
+	readonly pathPrefixes?: readonly string[];
+	readonly methods?: readonly string[];
+};
+
+function normaliseBinding(binding: BindingInput): computeSchema.DestinationBinding {
+	const pathPrefixes = checkPaths(binding.pathPrefixes, "A binding's path prefix");
+	const methods = methodsOf(binding.methods);
+	return {
+		host: checkHost(binding.host, "A binding's host"),
+		...(pathPrefixes.length === 0 ? {} : { pathPrefixes }),
+		...(methods.length === 0 ? {} : { methods }),
+	};
+}
+
+const copyBinding = (binding: computeSchema.DestinationBinding): computeSchema.DestinationBinding => ({
+	host: binding.host,
+	...(binding.pathPrefixes === undefined ? {} : { pathPrefixes: [...binding.pathPrefixes] }),
+	...(binding.methods === undefined ? {} : { methods: [...binding.methods] }),
+});
+
+const GRANT_ID = /^grt_[a-z0-9]{1,32}$/;
+
+/** Grants as given, checked: a well-formed ID is kept (so an edit keeps its grants'), anything else gets a new one. */
+function normaliseGrants(
+	inputs: readonly {
+		readonly id?: string;
+		readonly action: "allow" | "deny";
+		readonly host: string;
+		readonly methods?: readonly string[];
+		readonly paths?: readonly string[];
+	}[],
+): computeSchema.EgressGrant[] {
+	const ids = new Set<string>();
+	return inputs.map((input) => {
+		const id = input.id !== undefined && GRANT_ID.test(input.id) && !ids.has(input.id) ? input.id : randomId("grt", 8);
+		ids.add(id);
+		const methods = methodsOf(input.methods);
+		const paths = checkPaths(input.paths, "A grant's path");
+		return {
+			id,
+			action: input.action,
+			host: checkHost(input.host, "A grant's host"),
+			...(methods.length === 0 ? {} : { methods }),
+			...(paths.length === 0 ? {} : { paths }),
+		};
+	});
+}
+
+const copyGrant = (grant: computeSchema.EgressGrant): computeSchema.EgressGrant => ({
+	id: grant.id,
+	action: grant.action,
+	host: grant.host,
+	...(grant.methods === undefined ? {} : { methods: [...grant.methods] }),
+	...(grant.paths === undefined ? {} : { paths: [...grant.paths] }),
+});
+
+/** A grant as the egress log names it, such as `deny DELETE api.github.com /repos/*`. */
+export function grantRule(grant: computeSchema.EgressGrant): string {
+	return [
+		grant.action,
+		...(grant.methods === undefined || grant.methods.length === 0 ? [] : [grant.methods.join(",")]),
+		grant.host,
+		...(grant.paths === undefined || grant.paths.length === 0 ? [] : [grant.paths.join(",")]),
+	].join(" ");
+}
+
+const backendGrant = (grant: computeSchema.EgressGrant): BackendEgressGrant => ({
+	action: grant.action,
+	host: grant.host,
+	...(grant.methods === undefined || grant.methods.length === 0 ? {} : { methods: [...grant.methods] }),
+	...(grant.paths === undefined || grant.paths.length === 0 ? {} : { paths: [...grant.paths] }),
+	rule: grantRule(grant),
+});
+
+/** A path in the sandbox: absolute, or from its user's home (`~/` or relative). */
+const sandboxPath = (path: string): string => resolvePath(path.startsWith("~/") ? path.slice(2) : path);
+
+const REPO_REF = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$/;
+
+function normaliseRepo(repo: computeSchema.EnvironmentRepo): computeSchema.EnvironmentRepo {
+	let url: URL;
+	try {
+		url = new URL(repo.url);
+	} catch {
+		throw new KantelError("invalid", "A repository's URL is not a URL");
+	}
+	if (url.protocol !== "https:") throw new KantelError("invalid", "A repository's URL must be HTTPS");
+	if (url.username !== "" || url.password !== "") {
+		throw new KantelError(
+			"invalid",
+			"A repository's URL may not carry credentials; keep them in a protected variable bound to its host",
+		);
+	}
+	if (url.search !== "" || url.hash !== "") {
+		throw new KantelError("invalid", "A repository's URL has no query or fragment");
+	}
+	// Starting with a letter or digit, a ref is never taken for one of git's options.
+	if (repo.ref !== undefined && !REPO_REF.test(repo.ref)) {
+		throw new KantelError("invalid", "A repository's ref must be a branch or tag name");
+	}
+	const path = repo.path === undefined ? undefined : sandboxPath(repo.path);
+	if (path === "/") throw new KantelError("invalid", "A repository can't be cloned into /");
+	return {
+		url: url.toString(),
+		...(path === undefined ? {} : { path }),
+		...(repo.ref === undefined ? {} : { ref: repo.ref }),
+	};
+}
+
+const copyRepo = (repo: computeSchema.EnvironmentRepo): computeSchema.EnvironmentRepo => ({
+	url: repo.url,
+	...(repo.path === undefined ? {} : { path: repo.path }),
+	...(repo.ref === undefined ? {} : { ref: repo.ref }),
+});
+
+/** Where a repository is cloned: its path, or `~/<name>` after the URL's last segment. */
+function clonePath(repo: computeSchema.EnvironmentRepo): string {
+	if (repo.path !== undefined) return repo.path;
+	const last =
+		new URL(repo.url).pathname
+			.split("/")
+			.filter((part) => part !== "")
+			.pop() ?? "";
+	const name = last.replace(/\.git$/, "").replace(/[^A-Za-z0-9._-]/g, "-");
+	return `${HOME}/${name === "" || name.startsWith(".") ? "repo" : name}`;
+}
+
+/** One word for `sh`, quoted. */
+const shellWord = (word: string): string => `'${word.replaceAll("'", `'\\''`)}'`;
+
+/** A protected variable's placeholder in one sandbox: `kph_` and 40 characters from the CSPRNG. */
+const newPlaceholder = (): string => randomSecret("kph_", 40);
+
+const variableAad = (environmentId: string, name: string) =>
+	sealedAt("environments", environmentId, `variables.${name}`);
+const fileAad = (environmentId: string, path: string) => sealedAt("environments", environmentId, `files.${path}`);
+
+/** An environment's protected values' next version: it only moves on, and a time keeps it so across a deletion. */
+const nextSecretsVersion = (previous: number, at: number) => Math.max(previous + 1, at);
+
+const clip = (text: string, length: number) => (text.length > length ? text.slice(0, length) : text);
+const whole = (value: unknown): number =>
+	typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+
 /** The compute plane's handlers over a store and a backend. */
 export function createComputeService(options: ComputeServiceOptions): ComputeService {
 	const { store, backend, dispatcher, exporter, now } = options;
 	const rates = options.rates ?? PLACEHOLDER_RATES;
 	const limits = options.limits ?? {};
 	const mode = options.mode ?? "selfhosted";
+	// A key that isn't one throws here, so the deployment fails to start rather than on its first protected value.
+	const sealer: Sealer | undefined =
+		options.secretsKey !== undefined
+			? createSealer(options.secretsKey)
+			: store.persistent === true
+				? undefined
+				: createEphemeralSealer();
+	const requireSealer = (): Sealer => {
+		if (sealer === undefined) {
+			throw new KantelError(
+				"not_supported",
+				"Protected variables and secret files need the deployment's secrets key: set KANTEL_SECRETS_KEY",
+			);
+		}
+		return sealer;
+	};
 
 	/** Each sandbox's queue of lifecycle work; settled promises, so a failure doesn't stop the next. */
 	const pending = new Map<string, Promise<void>>();
@@ -558,6 +858,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			stopsAt: sandbox.state === "running" ? sandbox.stopsAt : undefined,
 			latestSnapshotId: sandbox.latestSnapshotId,
 			source: sandbox.source,
+			environmentId: sandbox.environmentId,
+			grants: (sandbox.grants ?? []).map(copyGrant),
 			createdBy: sandbox.createdBy,
 			createdAt: sandbox.createdAt,
 			startedAt: sandbox.startedAt,
@@ -651,22 +953,252 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		updatedAt: proxy.updatedAt,
 	});
 
-	/** The account's proxy settings for the backend, when they're on: `{ egress }` to spread into a spec. */
-	const egressFor = async (accountId: string): Promise<{ egress?: BackendEgress }> => {
-		const proxy = await store.proxies.get(accountId);
-		if (proxy === undefined || !proxy.enabled) return {};
+	/**
+	 * A sandbox's egress for the backend, `{ egress }` to spread into a spec: the account's proxy settings when they're
+	 * on, with its protected variables' hosts (never a value) and its environment's and its own grants. With the proxy
+	 * off, a sandbox with protected variables or grants still goes through it, open but for the grants, so its
+	 * placeholders are swapped. With neither, nothing.
+	 */
+	const egressFor = async (accountId: string, subject?: EgressSubject): Promise<{ egress?: BackendEgress }> => {
+		const [proxy, environment] = await Promise.all([
+			store.proxies.get(accountId),
+			subject?.environmentId === undefined ? undefined : store.environments.get(subject.environmentId),
+		]);
+		const names = Object.keys(subject?.placeholders ?? {});
+		const bound = (environment?.variables ?? []).filter(
+			(variable) => variable.protected && variable.sealed !== undefined && names.includes(variable.name),
+		);
+		const grants = [...(environment?.grants ?? []), ...(subject?.grants ?? [])];
+		const on = proxy !== undefined && proxy.enabled;
+		if (!on && bound.length === 0 && grants.length === 0) return {};
+		const base: BackendEgress =
+			proxy !== undefined && proxy.enabled
+				? {
+						defaultAction: proxy.defaultAction,
+						allow: [...proxy.allow],
+						deny: [...proxy.deny],
+						...(proxy.upstream === undefined
+							? {}
+							: { upstream: { url: proxy.upstream.url, headers: { ...proxy.upstreamHeaders } } }),
+						attribution: proxy.attribution,
+					}
+				: { defaultAction: "allow", allow: [], deny: [], attribution: false };
 		return {
 			egress: {
-				defaultAction: proxy.defaultAction,
-				allow: [...proxy.allow],
-				deny: [...proxy.deny],
-				...(proxy.upstream === undefined
+				...base,
+				...(environment === undefined || bound.length === 0
 					? {}
-					: { upstream: { url: proxy.upstream.url, headers: { ...proxy.upstreamHeaders } } }),
-				attribution: proxy.attribution,
+					: {
+							protected: {
+								version: environment.secretsVersion,
+								intercept: unique(bound.flatMap((variable) => variable.bindings.map((binding) => binding.host))),
+							},
+						}),
+				...(grants.length === 0 ? {} : { grants: grants.map(backendGrant) }),
 			},
 		};
 	};
+
+	/** Pushes each sandbox's egress, as it is now, to the backend, where it can take it while the sandbox runs. */
+	const pushEgress = (sandboxes: readonly StoredSandbox[]) => {
+		const update = backend.updateEgress?.bind(backend);
+		if (update === undefined) return;
+		for (const sandbox of sandboxes) {
+			keepGoing(egressFor(sandbox.accountId, sandbox).then(({ egress }) => update(sandbox.id, egress)));
+		}
+	};
+
+	/** The running sandboxes made from an environment. */
+	const runningFrom = async (environmentId: string) =>
+		(await store.sandboxes.list({ environmentId })).filter((sandbox) => sandbox.state === "running");
+
+	/**
+	 * Tells the hosts of an environment's running sandboxes that its protected values changed, so they drop what they
+	 * hold and fetch them again, and gives them its egress as it is now (the hosts to intercept, the grants).
+	 */
+	async function pushEnvironment(environmentId: string, version: number | undefined): Promise<void> {
+		const running = await runningFrom(environmentId);
+		const updateSecrets = backend.updateSecrets?.bind(backend);
+		if (version !== undefined && updateSecrets !== undefined) {
+			for (const sandbox of running) keepGoing(updateSecrets(sandbox.id, version));
+		}
+		pushEgress(running);
+	}
+
+	const variableView = (variable: StoredEnvironmentVariable): computeSchema.EnvironmentVariable => ({
+		name: variable.name,
+		protected: variable.protected,
+		// Never a protected one's: it is kept sealed, and only its sandboxes' hosts are given it.
+		...(variable.protected || variable.value === undefined ? {} : { value: variable.value }),
+		bindings: variable.protected ? variable.bindings.map(copyBinding) : [],
+		updatedAt: variable.updatedAt,
+	});
+
+	const fileView = (file: StoredEnvironmentFile): computeSchema.EnvironmentFile => ({
+		path: file.path,
+		mode: file.mode,
+		sizeBytes: file.sizeBytes,
+		updatedAt: file.updatedAt,
+	});
+
+	async function environmentView(environment: StoredEnvironment): Promise<computeSchema.Environment> {
+		const made = await store.sandboxes.list({ environmentId: environment.id });
+		return {
+			id: environment.id,
+			accountId: environment.accountId,
+			name: environment.name,
+			...(environment.description === undefined ? {} : { description: environment.description }),
+			variables: environment.variables.map(variableView),
+			files: environment.files.map(fileView),
+			repos: environment.repos.map(copyRepo),
+			grants: environment.grants.map(copyGrant),
+			sandboxCount: made.filter((sandbox) => sandbox.state !== "deleted").length,
+			createdAt: environment.createdAt,
+			updatedAt: environment.updatedAt,
+		};
+	}
+
+	const egressEntryView = (entry: StoredEgressEntry): computeSchema.EgressEntry => ({
+		id: entry.id,
+		at: entry.at,
+		method: entry.method,
+		host: entry.host,
+		port: entry.port,
+		...(entry.path === undefined ? {} : { path: entry.path }),
+		decision: entry.decision,
+		...(entry.reason === undefined ? {} : { reason: entry.reason }),
+		...(entry.rule === undefined ? {} : { rule: entry.rule }),
+		...(entry.code === undefined ? {} : { code: entry.code }),
+		swapped: [...entry.swapped],
+		inspected: entry.inspected,
+		...(entry.status === undefined ? {} : { status: entry.status }),
+		bytesUp: entry.bytesUp,
+		bytesDown: entry.bytesDown,
+	});
+
+	/** A sandbox's egress log, newest first. */
+	async function egressLog(sandboxId: string): Promise<StoredEgressEntry[]> {
+		const entries = await store.egress.list({ sandboxId });
+		// Oldest first by arrival from the store; newest first by time, and the later arrival first of two at one time.
+		return entries
+			.map((entry, index) => ({ entry, index }))
+			.sort((a, b) => b.entry.at - a.entry.at || b.index - a.index)
+			.map(({ entry }) => entry);
+	}
+
+	async function sandboxEgressView(sandbox: StoredSandbox, limit: number): Promise<computeSchema.SandboxEgress> {
+		const [environment, log] = await Promise.all([
+			sandbox.environmentId === undefined ? undefined : store.environments.get(sandbox.environmentId),
+			egressLog(sandbox.id),
+		]);
+		const protectedVariables: computeSchema.SandboxProtectedVariable[] = [];
+		for (const [name, placeholder] of Object.entries(sandbox.placeholders ?? {})) {
+			const variable = environment?.variables.find((each) => each.name === name && each.protected);
+			// One whose variable is gone, or plain now, no longer resolves: it isn't protected any more.
+			if (variable === undefined) continue;
+			protectedVariables.push({
+				name,
+				placeholderPrefix: placeholder.slice(0, PLACEHOLDER_PREFIX_CHARS),
+				bindings: variable.bindings.map(copyBinding),
+			});
+		}
+		return {
+			sandboxId: sandbox.id,
+			sandboxName: sandbox.name,
+			accountId: sandbox.accountId,
+			...(environment === undefined ? {} : { environment: { id: environment.id, name: environment.name } }),
+			protectedVariables,
+			environmentGrants: (environment?.grants ?? []).map(copyGrant),
+			grants: (sandbox.grants ?? []).map(copyGrant),
+			entries: log.slice(0, limit).map(egressEntryView),
+		};
+	}
+
+	/** An environment the caller may act on with `scope`; `not_found` when it doesn't exist or isn't in their accounts. */
+	async function environmentFor(
+		principal: Principal,
+		environmentId: string,
+		scope: computeSchema.ApiKeyScope,
+	): Promise<StoredEnvironment> {
+		const environment = await store.environments.get(environmentId);
+		if (environment === undefined) throw notFound("environment");
+		const role = await roleIn(store, principal, environment.accountId);
+		if (role === undefined) throw notFound("environment");
+		requireScope(principal, scope, role);
+		return environment;
+	}
+
+	/** The environment a create names in an account: an environment's ID, or its name. */
+	async function environmentIn(accountId: string, ref: string): Promise<StoredEnvironment> {
+		const byId = await store.environments.get(ref);
+		if (byId !== undefined && byId.accountId === accountId) return byId;
+		const [byName] = await store.environments.list({ accountId, name: ref });
+		if (byName === undefined) throw notFound(`environment ${ref}`);
+		return byName;
+	}
+
+	/** Refuses a name another of the account's environments has. */
+	async function requireFreeName(accountId: string, name: string, except?: string): Promise<void> {
+		const taken = await store.environments.list({ accountId, name });
+		if (taken.some((environment) => environment.id !== except)) {
+			throw new KantelError("conflict", `The account has an environment named ${name}`);
+		}
+	}
+
+	/** Changes an environment with `update`, answering it as written; `not_found` when it went meanwhile. */
+	async function changeEnvironment(
+		environmentId: string,
+		change: (current: StoredEnvironment) => StoredEnvironment,
+	): Promise<StoredEnvironment> {
+		const changed = await store.environments.update(environmentId, change);
+		if (changed === undefined) throw notFound("environment");
+		return changed;
+	}
+
+	/**
+	 * Writes an environment's secret files into a sandbox that has just started, then clones its repositories (through
+	 * the sandbox's egress proxy, so a protected token bound to the repository's host is swapped in). A failure is an
+	 * event on the sandbox, which keeps running: what failed is named, never a file's contents.
+	 */
+	async function provision(sandbox: StoredSandbox, environmentId: string): Promise<void> {
+		const environment = await store.environments.get(environmentId);
+		if (environment === undefined) return;
+		const degraded = (reason: string) =>
+			emit("sandbox.degraded", sandbox.accountId, { sandbox, data: { reason } }).catch(() => undefined);
+		for (const file of environment.files) {
+			try {
+				const bytes = await requireSealer().open(file.sealed, fileAad(environment.id, file.path));
+				await backend.writeFile(sandbox.id, file.path, bytes, file.mode);
+			} catch (error) {
+				await degraded(`The environment's secret file ${file.path} wasn't written: ${messageOf(error)}`);
+			}
+		}
+		for (const repo of environment.repos) {
+			const path = clonePath(repo);
+			const command = [
+				"git clone --depth 1",
+				...(repo.ref === undefined ? [] : [`--branch ${shellWord(repo.ref)}`]),
+				"--",
+				shellWord(repo.url),
+				shellWord(path),
+			].join(" ");
+			try {
+				const result = await backend.exec(sandbox.id, {
+					command,
+					env: { ...sandbox.env },
+					timeoutMs: CLONE_TIMEOUT_MS,
+				});
+				if (result.exitCode !== 0 || result.timedOut) {
+					const why = result.timedOut
+						? "it took too long"
+						: clip(result.stderr.trim(), 500) || `exit ${result.exitCode}`;
+					await degraded(`The environment's repository ${repo.url} wasn't cloned into ${path}: ${why}`);
+				}
+			} catch (error) {
+				await degraded(`The environment's repository ${repo.url} wasn't cloned into ${path}: ${messageOf(error)}`);
+			}
+		}
+	}
 
 	const inviteView = (invite: StoredInvite, code?: string): computeSchema.Invite => ({
 		id: invite.id,
@@ -1776,11 +2308,36 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return once(principal, "createSandbox", idempotencyKey, async () => {
 				const from = body.from === undefined ? undefined : await snapshotFrom(principal, account.id, body.from);
 				const type = body.type ?? from?.sandboxType ?? "isolate";
+				const environment =
+					body.environment === undefined ? undefined : await environmentIn(account.id, body.environment);
+				const protectedNames = new Set(
+					(environment?.variables ?? []).filter((variable) => variable.protected).map((variable) => variable.name),
+				);
+				for (const name of Object.keys(body.env ?? {})) {
+					refuseReserved(name);
+					if (protectedNames.has(name)) {
+						throw new KantelError("invalid", `${name} is a protected variable of the environment; leave it out of env`);
+					}
+				}
+				// The sandbox's own placeholder for each protected variable, minted now and never changed (a rotation changes
+				// the value it stands for). Its env: the environment's plain variables, then the placeholders, then its own.
+				const placeholders: { [name: string]: string } = {};
+				for (const name of protectedNames) placeholders[name] = newPlaceholder();
+				const env: { [name: string]: string } = {};
+				for (const variable of environment?.variables ?? []) {
+					if (!variable.protected && variable.value !== undefined) env[variable.name] = variable.value;
+				}
+				Object.assign(env, placeholders, body.env);
+				const subject: EgressSubject = {
+					...(environment === undefined ? {} : { environmentId: environment.id }),
+					placeholders,
+					grants: [],
+				};
 				// The backend's hosts, the host records and the account's proxy settings, read at once: one round trip, not
 				// one each. The backend's hosts are read once, for the checks below and the host records alike.
 				const read = backend.capabilities();
 				const known = ensureHosts(read);
-				const egressRead = egressFor(account.id);
+				const egressRead = egressFor(account.id, subject);
 				// A check below may refuse the call before these are awaited.
 				known.catch(() => undefined);
 				egressRead.catch(() => undefined);
@@ -1821,7 +2378,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					createdBy: actorOf(principal),
 					createdAt: now(),
 					ownerUserId: principal.userId,
-					env: { ...body.env },
+					env,
+					...(environment === undefined ? {} : { environmentId: environment.id }),
+					grants: [],
+					placeholders,
 					hostLabels,
 					runs: [],
 					samples: [],
@@ -1831,8 +2391,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// (or delivered) before the sandbox is.
 				const [, egress] = await Promise.all([store.sandboxes.put(sandbox), egressRead]);
 				await emit("sandbox.created", account.id, { sandbox, data: { actor: actorOf(principal) } });
-				const work = track([sandbox.id], () =>
-					boot(
+				const work = track([sandbox.id], async () => {
+					const booted = await boot(
 						sandbox.id,
 						() =>
 							backend.create({
@@ -1848,8 +2408,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								...egress,
 							}),
 						sandbox,
-					),
-				);
+					);
+					// Queued with the boot, so a call after the create (an exec, a stop) finds the files and repositories there.
+					if (booted?.state === "running" && environment !== undefined) {
+						await provision(booted, environment.id).catch(() => undefined);
+					}
+					return booted;
+				});
 				if (body.wait !== true) {
 					keepGoing(work);
 					// As written: it is starting.
@@ -1951,6 +2516,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				);
 				const forks: StoredSandbox[] = [];
 				for (let index = 0; index < count; index++) {
+					// Fresh placeholders: the parent's may be on the copied disk, and they stand for nothing in the fork.
+					const placeholders: { [name: string]: string } = {};
+					const env: { [name: string]: string } = { ...current.env };
+					for (const [variable, parent] of Object.entries(current.placeholders ?? {})) {
+						const own = newPlaceholder();
+						placeholders[variable] = own;
+						if (env[variable] === parent) env[variable] = own;
+					}
 					const name =
 						body.name === undefined
 							? `${current.name}-fork-${randomSlug(4)}`
@@ -1974,7 +2547,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						createdBy: actorOf(principal),
 						createdAt: now(),
 						ownerUserId: principal.userId,
-						env: { ...current.env },
+						env,
+						...(current.environmentId === undefined ? {} : { environmentId: current.environmentId }),
+						grants: (current.grants ?? []).map(copyGrant),
+						placeholders,
 						hostLabels: { ...current.hostLabels },
 						runs: [],
 						samples: [],
@@ -1985,8 +2561,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					await store.sandboxes.put(fork);
 					await emit("sandbox.created", fork.accountId, { sandbox: fork, data: { actor: actorOf(principal) } });
 				}
-				// Queued behind the source too, so it isn't stopped while its live disk is copied.
-				const egress = await egressFor(current.accountId);
+				// Queued behind the source too, so it isn't stopped while its live disk is copied. The forks' egress is alike:
+				// their placeholders differ, but not the variables they stand for.
+				const egress = await egressFor(current.accountId, forks[0] ?? current);
 				// One target at a time, each placement recorded as it lands: a backend makes a batch's targets one by one, so
 				// a failure part-way leaves the earlier ones made, and they must keep their host (a start or recovery uses that
 				// machine) rather than be taken for never made (`neverPlaced`).
@@ -2042,7 +2619,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			);
 			if (!("moved" in began)) throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
 			const starting = began.moved;
-			const egress = await egressFor(current.accountId);
+			const egress = await egressFor(current.accountId, current);
 			keepGoing(
 				track([current.id], () =>
 					boot(current.id, () =>
@@ -2657,16 +3234,238 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				updatedAt: now(),
 			};
 			await store.proxies.put(settings);
-			// Running sandboxes take them now where the backend can; the rest when they next boot.
-			const update = backend.updateEgress?.bind(backend);
-			if (update !== undefined) {
-				const { egress } = await egressFor(account.id);
-				const running = (await store.sandboxes.list({ accountId: account.id })).filter(
-					(sandbox) => sandbox.state === "running",
+			// Running sandboxes take them now where the backend can; the rest when they next boot. Each with its own
+			// protected hosts and grants.
+			if (backend.updateEgress !== undefined) {
+				pushEgress(
+					(await store.sandboxes.list({ accountId: account.id })).filter((sandbox) => sandbox.state === "running"),
 				);
-				for (const sandbox of running) keepGoing(update(sandbox.id, egress));
 			}
 			return proxyView(settings);
+		},
+
+		// Environments, and sandboxes' egress.
+
+		listEnvironments: async (principal, { query }) => {
+			const { account, role } = await actingAccount(store, principal, query.account);
+			requireScope(principal, "account:read", role);
+			const environments = await store.environments.list({ accountId: account.id });
+			return { items: await Promise.all(environments.map(environmentView)) };
+		},
+
+		createEnvironment: async (principal, { body }) => {
+			const { account, role } = await actingAccount(store, principal, body.account);
+			requireScope(principal, "account:admin", role);
+			await requireFreeName(account.id, body.name);
+			const at = now();
+			const environment: StoredEnvironment = {
+				id: randomId("env", 8),
+				accountId: account.id,
+				name: body.name,
+				...(body.description === undefined || body.description === "" ? {} : { description: body.description }),
+				variables: [],
+				files: [],
+				repos: [],
+				grants: [],
+				secretsVersion: 1,
+				createdAt: at,
+				updatedAt: at,
+			};
+			await store.environments.put(environment);
+			return environmentView(environment);
+		},
+
+		getEnvironment: async (principal, { params }) =>
+			environmentView(await environmentFor(principal, params.environmentId, "account:read")),
+
+		updateEnvironment: async (principal, { params, body }) => {
+			const environment = await environmentFor(principal, params.environmentId, "account:admin");
+			if (body.name !== undefined && body.name !== environment.name) {
+				await requireFreeName(environment.accountId, body.name, environment.id);
+			}
+			const changed = await changeEnvironment(environment.id, (current) => {
+				const { description: _kept, ...rest } = current;
+				const description = body.description === undefined ? current.description : body.description;
+				return {
+					...rest,
+					name: body.name ?? current.name,
+					...(description === undefined || description === "" ? {} : { description }),
+					updatedAt: now(),
+				};
+			});
+			return environmentView(changed);
+		},
+
+		deleteEnvironment: async (principal, { params }) => {
+			const environment = await environmentFor(principal, params.environmentId, "account:admin");
+			await store.environments.delete(environment.id);
+			// Its sandboxes keep their env and files; their placeholders stop resolving at once, and its grants go.
+			await pushEnvironment(environment.id, nextSecretsVersion(environment.secretsVersion, now()));
+			return undefined;
+		},
+
+		setEnvironmentVariable: async (principal, { params, body }) => {
+			const environment = await environmentFor(principal, params.environmentId, "account:admin");
+			const name = params.name;
+			checkVariableName(name);
+			const existing = environment.variables.find((variable) => variable.name === name);
+			if (existing === undefined && environment.variables.length >= MAX_ENVIRONMENT_VARIABLES) {
+				throw new KantelError("invalid", `An environment has at most ${MAX_ENVIRONMENT_VARIABLES} variables`);
+			}
+			// Left out, a variable stays as protected as it is; a new one is plain.
+			const wantProtected = body.protected ?? existing?.protected ?? false;
+			const switching = existing !== undefined && existing.protected !== wantProtected;
+			if (body.value === undefined && (existing === undefined || switching)) {
+				throw new KantelError("invalid", "A new variable, or one turning protected or plain, needs a value");
+			}
+			const at = now();
+			let next: StoredEnvironmentVariable;
+			if (wantProtected) {
+				const bindings =
+					body.bindings === undefined
+						? existing?.protected === true
+							? existing.bindings.map(copyBinding)
+							: []
+						: body.bindings.map(normaliseBinding);
+				if (bindings.length === 0) {
+					throw new KantelError("invalid", "A protected variable needs at least one binding: where its value may go");
+				}
+				if (body.value === "") throw new KantelError("invalid", "A protected variable's value can't be empty");
+				const sealed =
+					body.value === undefined
+						? existing?.sealed
+						: await requireSealer().seal(body.value, variableAad(environment.id, name));
+				if (sealed === undefined) throw new KantelError("invalid", "The variable needs a value");
+				next = { name, protected: true, sealed, bindings, updatedAt: at };
+			} else {
+				if (body.bindings !== undefined && body.bindings.length > 0) {
+					throw new KantelError("invalid", "Only a protected variable has bindings");
+				}
+				next = { name, protected: false, value: body.value ?? existing?.value ?? "", bindings: [], updatedAt: at };
+			}
+			const touchesSecrets = wantProtected || existing?.protected === true;
+			const changed = await changeEnvironment(environment.id, (current) => {
+				const others = current.variables.filter((variable) => variable.name !== name);
+				const kept = current.variables.some((variable) => variable.name === name);
+				return {
+					...current,
+					// In its place, or last when it is new.
+					variables: kept
+						? current.variables.map((variable) => (variable.name === name ? next : variable))
+						: [...others, next],
+					secretsVersion: touchesSecrets ? nextSecretsVersion(current.secretsVersion, at) : current.secretsVersion,
+					updatedAt: at,
+				};
+			});
+			if (touchesSecrets) await pushEnvironment(changed.id, changed.secretsVersion);
+			return environmentView(changed);
+		},
+
+		deleteEnvironmentVariable: async (principal, { params }) => {
+			const environment = await environmentFor(principal, params.environmentId, "account:admin");
+			const existing = environment.variables.find((variable) => variable.name === params.name);
+			if (existing === undefined) throw notFound("variable");
+			const at = now();
+			const changed = await changeEnvironment(environment.id, (current) => ({
+				...current,
+				variables: current.variables.filter((variable) => variable.name !== params.name),
+				secretsVersion: existing.protected ? nextSecretsVersion(current.secretsVersion, at) : current.secretsVersion,
+				updatedAt: at,
+			}));
+			if (existing.protected) await pushEnvironment(changed.id, changed.secretsVersion);
+			return environmentView(changed);
+		},
+
+		setEnvironmentFile: async (principal, { params, body }) => {
+			const environment = await environmentFor(principal, params.environmentId, "account:admin");
+			const path = sandboxPath(body.path);
+			if (path === "/") throw new KantelError("invalid", "A secret file needs a file's path");
+			const existing = environment.files.find((file) => file.path === path);
+			if (existing === undefined && environment.files.length >= MAX_ENVIRONMENT_FILES) {
+				throw new KantelError("invalid", `An environment has at most ${MAX_ENVIRONMENT_FILES} secret files`);
+			}
+			let sealed = existing?.sealed;
+			let sizeBytes = existing?.sizeBytes ?? 0;
+			if (body.content !== undefined) {
+				const bytes = body.encoding === "base64" ? base64ToBytes(body.content) : new TextEncoder().encode(body.content);
+				const others = environment.files
+					.filter((file) => file.path !== path)
+					.reduce((total, file) => total + file.sizeBytes, 0);
+				if (others + bytes.byteLength > MAX_ENVIRONMENT_FILE_BYTES) {
+					throw new KantelError("invalid", "An environment's secret files are at most 1 MiB in all");
+				}
+				sealed = await requireSealer().seal(bytes, fileAad(environment.id, path));
+				sizeBytes = bytes.byteLength;
+			}
+			if (sealed === undefined) throw new KantelError("invalid", "A new secret file needs its contents");
+			const file: StoredEnvironmentFile = {
+				path,
+				mode: body.mode ?? existing?.mode ?? 0o600,
+				sizeBytes,
+				sealed,
+				updatedAt: now(),
+			};
+			const changed = await changeEnvironment(environment.id, (current) => ({
+				...current,
+				files: current.files.some((each) => each.path === path)
+					? current.files.map((each) => (each.path === path ? file : each))
+					: [...current.files, file],
+				updatedAt: file.updatedAt,
+			}));
+			return environmentView(changed);
+		},
+
+		deleteEnvironmentFile: async (principal, { params, query }) => {
+			const environment = await environmentFor(principal, params.environmentId, "account:admin");
+			const path = sandboxPath(query.path);
+			if (!environment.files.some((file) => file.path === path)) throw notFound("secret file");
+			const changed = await changeEnvironment(environment.id, (current) => ({
+				...current,
+				files: current.files.filter((file) => file.path !== path),
+				updatedAt: now(),
+			}));
+			return environmentView(changed);
+		},
+
+		putEnvironmentRepos: async (principal, { params, body }) => {
+			const environment = await environmentFor(principal, params.environmentId, "account:admin");
+			const repos = body.repos.map(normaliseRepo);
+			const paths = repos.map(clonePath);
+			if (new Set(paths).size !== paths.length) {
+				throw new KantelError("invalid", "Two repositories would be cloned into one path; give one a path");
+			}
+			const changed = await changeEnvironment(environment.id, (current) => ({
+				...current,
+				repos,
+				updatedAt: now(),
+			}));
+			return environmentView(changed);
+		},
+
+		putEnvironmentGrants: async (principal, { params, body }) => {
+			const environment = await environmentFor(principal, params.environmentId, "account:admin");
+			const grants = normaliseGrants(body.grants);
+			const changed = await changeEnvironment(environment.id, (current) => ({
+				...current,
+				grants,
+				updatedAt: now(),
+			}));
+			await pushEnvironment(changed.id, undefined);
+			return environmentView(changed);
+		},
+
+		getSandboxEgress: async (principal, { params, query }) => {
+			const { sandbox } = await sandboxFor(principal, params.sandboxId, "account:read", true);
+			return sandboxEgressView(sandbox, query.limit ?? 100);
+		},
+
+		putSandboxGrants: async (principal, { params, body }) => {
+			const { sandbox } = await sandboxFor(principal, params.sandboxId, "account:admin");
+			const grants = normaliseGrants(body.grants);
+			const changed = await patchSandbox(sandbox.id, (current) => ({ ...current, grants }));
+			if (changed === undefined) throw notFound("sandbox");
+			if (changed.state === "running") pushEgress([changed]);
+			return sandboxEgressView(changed, 100);
 		},
 
 		// Events, webhooks and telemetry.
@@ -2923,7 +3722,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			size: starting.size,
 			env: current.env,
 			eligibleHosts: hosts,
-			...(await egressFor(current.accountId)),
+			...(await egressFor(current.accountId, current)),
 		};
 		const work = track([current.id], () =>
 			boot(current.id, () =>
@@ -3000,11 +3799,90 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return samples;
 		},
 
+		async protectedTable(hostId, sandboxId) {
+			const sandbox = await store.sandboxes.get(sandboxId);
+			// Only the host the sandbox is on: another host asking learns nothing, not even that it exists.
+			if (sandbox === undefined || sandbox.state === "deleted" || sandbox.hostId !== hostId) return undefined;
+			const environment =
+				sandbox.environmentId === undefined ? undefined : await store.environments.get(sandbox.environmentId);
+			// Its environment deleted: nothing resolves, at a version past any it was given.
+			if (environment === undefined) return { version: now(), entries: [] };
+			const entries: ProtectedEntry[] = [];
+			for (const [name, placeholder] of Object.entries(sandbox.placeholders ?? {})) {
+				const variable = environment.variables.find((each) => each.name === name);
+				if (variable === undefined || !variable.protected || variable.sealed === undefined) continue;
+				const value = await requireSealer().openText(variable.sealed, variableAad(environment.id, name));
+				entries.push({
+					placeholder,
+					name,
+					value,
+					bindings: variable.bindings.map((binding) => ({
+						host: binding.host,
+						pathPrefixes: [...(binding.pathPrefixes ?? [])],
+						methods: [...(binding.methods ?? [])],
+					})),
+				});
+			}
+			return { version: environment.secretsVersion, entries };
+		},
+
+		async recordEgress(hostId, records) {
+			const bySandbox = new Map<string, ReportedEgress[]>();
+			for (const record of records) {
+				if (typeof record?.sandboxId !== "string") continue;
+				const batch = bySandbox.get(record.sandboxId) ?? [];
+				batch.push(record);
+				bySandbox.set(record.sandboxId, batch);
+			}
+			for (const [sandboxId, batch] of bySandbox) {
+				const sandbox = await store.sandboxes.get(sandboxId);
+				// A host reports only its own sandboxes; anything else is dropped.
+				if (sandbox === undefined || sandbox.hostId !== hostId) continue;
+				for (const record of batch.slice(-MAX_EGRESS_ENTRIES)) {
+					await store.egress.put(egressEntryFrom(record, sandbox, now()));
+				}
+				const log = await egressLog(sandboxId);
+				for (const stale of log.slice(MAX_EGRESS_ENTRIES)) await store.egress.delete(stale.id);
+			}
+		},
+
 		async close() {
 			for (const controller of runningCommands.values()) controller.abort();
 			await idle();
 		},
 
 		idle,
+	};
+}
+
+/** A host's report as a log entry: checked field by field, as a host is trusted with no more than its own sandboxes. */
+function egressEntryFrom(record: ReportedEgress, sandbox: StoredSandbox, at: number): StoredEgressEntry {
+	const text = (value: unknown, length: number): string | undefined =>
+		typeof value === "string" && value !== "" ? clip(value, length) : undefined;
+	// Never a query string or a fragment, even when a host sends one.
+	const path = text(record.path, 2048)?.split(/[?#]/, 1)[0];
+	const reason = text(record.reason, 500);
+	const rule = text(record.rule, 500);
+	const code = text(record.code, 64);
+	const status = whole(record.status);
+	const swapped: unknown[] = Array.isArray(record.swapped) ? [...record.swapped] : [];
+	return {
+		id: randomId("egr", 12),
+		sandboxId: sandbox.id,
+		accountId: sandbox.accountId,
+		at: typeof record.at === "number" && Number.isFinite(record.at) ? record.at : at,
+		method: text(record.method, 16)?.toUpperCase() ?? "CONNECT",
+		host: text(record.host, 253) ?? "",
+		port: whole(record.port),
+		...(path === undefined || path === "" ? {} : { path }),
+		decision: record.allowed === true ? "allowed" : "denied",
+		...(reason === undefined ? {} : { reason }),
+		...(rule === undefined ? {} : { rule }),
+		...(code === undefined ? {} : { code }),
+		swapped: swapped.filter((name): name is string => typeof name === "string").map((name) => clip(name, 255)),
+		inspected: record.inspected === true,
+		...(status === 0 ? {} : { status }),
+		bytesUp: whole(record.bytesUp),
+		bytesDown: whole(record.bytesDown),
 	};
 }

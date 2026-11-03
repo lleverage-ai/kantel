@@ -67,8 +67,8 @@ export interface SandboxSpec {
 }
 
 /**
- * Where a sandbox's outbound traffic may go, from its account's proxy settings, as the backend applies them when it
- * boots the machine (create, start, resume, fork): a change reaches running sandboxes when they next boot.
+ * Where a sandbox's outbound traffic may go, from its account's proxy settings and its environment's and its own grants,
+ * as the backend applies them when it boots the machine (create, start, resume, fork), and on `updateEgress`.
  */
 export interface BackendEgress {
 	readonly defaultAction: "allow" | "deny";
@@ -78,6 +78,24 @@ export interface BackendEgress {
 	readonly upstream?: { readonly url: string; readonly headers: { readonly [name: string]: string } };
 	/** Tell the upstream which sandbox and account each request came from, signed. */
 	readonly attribution: boolean;
+	/**
+	 * Present only when the sandbox has protected variables: the hosts their bindings name (patterns, never a value),
+	 * which the host's proxy intercepts with a CA of the sandbox's own, and the version of the sandbox's protected values,
+	 * which the host fetches over its link to Kantel (`secrets.fetch`).
+	 */
+	readonly protected?: { readonly version: number; readonly intercept: readonly string[] };
+	/** The environment's grants, then the sandbox's own, on top of `allow` and `deny`; deny wins. */
+	readonly grants?: readonly BackendEgressGrant[];
+}
+
+/** An egress grant as the host's proxy applies it; one with methods or paths makes its host intercepted too. */
+export interface BackendEgressGrant {
+	readonly action: "allow" | "deny";
+	readonly host: string;
+	readonly methods?: readonly string[];
+	readonly paths?: readonly string[];
+	/** The rule as the egress log names it, such as `deny DELETE api.github.com /repos/*`. */
+	readonly rule: string;
 }
 
 /** Where a machine was placed, and what it can do. */
@@ -237,6 +255,11 @@ export interface SandboxBackend {
 	 * Absent, sandboxes get them when they next boot.
 	 */
 	updateEgress?(sandboxId: string, egress: BackendEgress | undefined): Promise<void>;
+	/**
+	 * The sandbox's protected values changed (a rotation, a binding edit, a variable added or removed): the host drops
+	 * what it holds of them, and fetches them again on the sandbox's next request. Absent, nothing holds them.
+	 */
+	updateSecrets?(sandboxId: string, version: number): Promise<void>;
 	/** The super-admin revoked a host: refuse its credential and drop its connection. Absent, nothing to do. */
 	revokeHost?(hostId: string): Promise<void>;
 	/** The super-admin renamed, relabelled or drained a host. Absent, nothing to do. */

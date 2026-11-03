@@ -7,9 +7,11 @@
  * No secret is kept in the clear except a webhook's signing secret, which signing needs, and an approved device
  * sign-in's key secret until the device collects it (at most 15 minutes): API keys, invite codes, device codes and
  * host join tokens are kept as the SHA-256 hex of the secret, and header values (the proxy's upstream, the telemetry
- * endpoint's) are kept but never answered.
+ * endpoint's) are kept but never answered. An environment's protected variable values and secret files are kept sealed
+ * (AES-256-GCM, `secrets.ts`), and opened only to send them to a sandbox's host.
  */
 import type { computeSchema } from "@kantel/api";
+import type { SealedValue } from "./secrets.ts";
 
 /** One kind of record. */
 export interface Collection<T extends { readonly id: string }> {
@@ -92,10 +94,18 @@ export interface StoredSample {
 }
 
 /** A sandbox: its wire shape (but its cost and usage, worked out when answered) and what the service keeps besides. */
-export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage"> & {
+export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "grants"> & {
 	/** The person it belongs to: its maker, or the person whose key made it. */
 	readonly ownerUserId: string;
+	/** What every command sees: its environment's plain variables and placeholders, then the create's own. */
 	readonly env: { readonly [name: string]: string };
+	/** Its own egress grants. Absent on a sandbox made before there were any: none. */
+	readonly grants?: readonly computeSchema.EgressGrant[];
+	/**
+	 * Each protected variable's placeholder in this sandbox, `kph_…`, by name: minted at create (fresh for a fork) and
+	 * never changed. Not a secret: the sandbox sees it. Absent: none.
+	 */
+	readonly placeholders?: { readonly [name: string]: string };
 	readonly hostLabels: { readonly [key: string]: string };
 	readonly runs: readonly RunPeriod[];
 	/** The newest readings, at most `MAX_SAMPLES`. */
@@ -150,6 +160,48 @@ export type StoredProxy = computeSchema.ProxySettings & {
 	readonly id: string;
 	/** The upstream's header values. Never answered. */
 	readonly upstreamHeaders?: { readonly [name: string]: string };
+};
+
+/** An environment's variable: a plain one's value, or a protected one's sealed. */
+export interface StoredEnvironmentVariable {
+	readonly name: string;
+	readonly protected: boolean;
+	/** A plain variable's value. */
+	readonly value?: string;
+	/** A protected variable's value, sealed with `environmentAad(id, "variables", name)`. Never answered. */
+	readonly sealed?: SealedValue;
+	readonly bindings: readonly computeSchema.DestinationBinding[];
+	readonly updatedAt: number;
+}
+
+/** An environment's secret file; its contents sealed with `environmentAad(id, "files", path)`. */
+export interface StoredEnvironmentFile {
+	readonly path: string;
+	readonly mode: number;
+	readonly sizeBytes: number;
+	readonly sealed: SealedValue;
+	readonly updatedAt: number;
+}
+
+export interface StoredEnvironment {
+	readonly id: string;
+	readonly accountId: string;
+	readonly name: string;
+	readonly description?: string;
+	readonly variables: readonly StoredEnvironmentVariable[];
+	readonly files: readonly StoredEnvironmentFile[];
+	readonly repos: readonly computeSchema.EnvironmentRepo[];
+	readonly grants: readonly computeSchema.EgressGrant[];
+	/** Moves on with every change to its protected variables, so a host knows its copy of them is stale. */
+	readonly secretsVersion: number;
+	readonly createdAt: number;
+	readonly updatedAt: number;
+}
+
+/** One entry of a sandbox's egress log, as its host reported it; the newest `MAX_EGRESS_ENTRIES` are kept per sandbox. */
+export type StoredEgressEntry = computeSchema.EgressEntry & {
+	readonly sandboxId: string;
+	readonly accountId: string;
 };
 
 export type StoredHost = computeSchema.Host;
@@ -212,6 +264,11 @@ export interface StoredIdempotency {
 
 /** Every record the compute plane keeps. */
 export interface ComputeStore {
+	/**
+	 * The records outlast the process (SQL). Sealed values then need the deployment's own key: a key made at random for
+	 * one process would leave them unreadable after a restart.
+	 */
+	readonly persistent?: boolean;
 	readonly users: Collection<StoredUser>;
 	readonly accounts: Collection<StoredAccount>;
 	readonly members: Collection<StoredMember>;
@@ -229,6 +286,8 @@ export interface ComputeStore {
 	readonly events: Collection<StoredEvent>;
 	readonly idempotency: Collection<StoredIdempotency>;
 	readonly deviceLogins: Collection<StoredDeviceLogin>;
+	readonly environments: Collection<StoredEnvironment>;
+	readonly egress: Collection<StoredEgressEntry>;
 }
 
 /**
@@ -294,6 +353,8 @@ export function createMemoryStore(): ComputeStore {
 		events: memoryCollection(),
 		idempotency: memoryCollection(),
 		deviceLogins: memoryCollection(),
+		environments: memoryCollection(),
+		egress: memoryCollection(),
 	};
 }
 

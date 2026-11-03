@@ -24,7 +24,7 @@ import type {
 import { KantelError } from "@kantel/contracts";
 import { DESKTOP_PORT, desktopPath } from "./desktop.ts";
 import type { PortRouter } from "./ports.ts";
-import type { HostEgress, HostSandbox, SandboxTier } from "./protocol.ts";
+import { type HostEgress, HostMethods, type HostSandbox, type SandboxTier } from "./protocol.ts";
 import type { HostsService, SandboxPlacement } from "./service.ts";
 import { type DesktopMode, HOSTS_TUNNEL_PATH, MAX_TUNNEL_MINUTES, type TunnelTickets } from "./tunnel.ts";
 
@@ -90,6 +90,22 @@ export function hostEgress(egress: BackendEgress | undefined, attributionKey?: s
 			? {}
 			: { upstream: egress.upstream.url, headers: { ...egress.upstream.headers } }),
 		...(egress.attribution && attributionKey !== undefined ? { attributionKey } : {}),
+		// The hosts to intercept and the version only: the host fetches the values itself (secrets.fetch), so they never
+		// ride a create's params, which the host keeps on disk.
+		...(egress.protected === undefined
+			? {}
+			: { protected: { version: egress.protected.version, intercept: [...egress.protected.intercept] } }),
+		...(egress.grants === undefined || egress.grants.length === 0
+			? {}
+			: {
+					grants: egress.grants.map((grant) => ({
+						action: grant.action,
+						host: grant.host,
+						...(grant.methods === undefined ? {} : { methods: [...grant.methods] }),
+						...(grant.paths === undefined ? {} : { paths: [...grant.paths] }),
+						rule: grant.rule,
+					})),
+				}),
 	};
 }
 
@@ -320,6 +336,10 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		recover: (sandboxId, how) => boot(sandboxId, "sandbox.start", how),
 		async updateEgress(sandboxId, egress) {
 			await call(sandboxId, "sandbox.egress", { egress: hostEgress(egress, options.attributionKey) ?? null });
+		},
+		async updateSecrets(sandboxId, version) {
+			// The host drops its copy; its next request that needs one fetches the new values.
+			await call(sandboxId, HostMethods.secrets, { sandboxId, version });
 		},
 		async stop(sandboxId, { keepMemory }): Promise<TakenSnapshot> {
 			const { tier, hostId } = await tierOf(sandboxId);

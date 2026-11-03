@@ -12,10 +12,12 @@ import { type CallOptions, createHostHub, HostCallError, type HostHub, type Port
 import {
 	HOST_CLOSE_REVOKED,
 	type HostEgress,
+	type HostEgressRecord,
 	type HostFacts,
 	type HostHello,
 	HostMethods,
 	type HostSandbox,
+	type HostSecrets,
 	type HostSize,
 	type HostWelcome,
 	type SandboxTier,
@@ -103,6 +105,16 @@ export interface ExternalJoinTokens {
 	>;
 }
 
+/**
+ * What hosts ask of the compute plane over their link, which owns the sandboxes' records: their protected values, and
+ * keeping their egress logs. Each is given the host the connection was checked against.
+ */
+export interface HostComputeLink {
+	/** A sandbox's protected values, or `undefined` unless the sandbox is on `hostId`. */
+	secrets(hostId: string, sandboxId: string): Promise<HostSecrets | undefined>;
+	recordEgress(hostId: string, records: readonly HostEgressRecord[]): Promise<void>;
+}
+
 export interface HostsServiceOptions {
 	readonly store: HostStore;
 	readonly clock?: Clock;
@@ -141,6 +153,11 @@ export interface HostsService {
 	readonly hub: HostHub;
 	/** Registration spends join tokens from here from now on, not the registry's own. */
 	useJoinTokens(tokens: ExternalJoinTokens): void;
+	/**
+	 * Hosts' `secrets.fetch` and egress reports go to the compute plane from now on: it is made after this service, over
+	 * a backend made from it. Before, a fetch is answered `unavailable` and a report is dropped.
+	 */
+	useCompute(link: HostComputeLink): void;
 	createJoinToken(input: {
 		readonly name?: string;
 		readonly labels?: { readonly [key: string]: string };
@@ -246,6 +263,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	const log = options.log ?? ((message: string) => console.error(message));
 	const pools = options.pools ?? { "microvm/default": 1 };
 	let joinTokens: ExternalJoinTokens = store;
+	let compute: HostComputeLink | undefined;
 	/**
 	 * What this replica placed on each host, each stamped with when, until the host's next report. A report clears it here
 	 * when it comes in on this replica's connection; for a host whose connection another replica holds, a placement
@@ -344,6 +362,13 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					else await store.putPlacement({ ...placement, state: sandbox.state, updatedAt: clock.now() });
 				})(),
 			);
+		},
+		async secrets(hostId, sandboxId) {
+			if (compute === undefined) throw new Error("The compute plane isn't linked yet");
+			return compute.secrets(hostId, sandboxId);
+		},
+		onEgress(hostId, records) {
+			if (compute !== undefined) report(compute.recordEgress(hostId, records));
 		},
 		onDisconnected(hostId) {
 			log(`[hosts] host ${hostId} disconnected`);
@@ -493,6 +518,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		},
 		useJoinTokens(tokens) {
 			joinTokens = tokens;
+		},
+		useCompute(link) {
+			compute = link;
 		},
 		async register(input) {
 			if (typeof input.token !== "string" || !input.token.startsWith(JOIN_TOKEN_PREFIX)) {

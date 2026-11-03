@@ -2,7 +2,8 @@
  * A dev server for the compute plane: `node packages/compute/src/serve.ts [--port 58190] [--host 127.0.0.1]` serves
  * `createComputeApi` over the stub backend with node:http, and `GET /healthz`. On start it makes a super-admin,
  * `admin@localhost`, with their personal account and an API key holding every scope (`hosts:admin` too), and prints
- * `KANTEL_URL=…` and `KANTEL_API_KEY=ksk_…`; `KANTEL_COMPUTE_BOOTSTRAP_KEY` fixes the key's secret. It runs the webhook
+ * `KANTEL_URL=…` and `KANTEL_API_KEY=ksk_…`; `KANTEL_COMPUTE_BOOTSTRAP_KEY` fixes the key's secret, and
+ * `KANTEL_SECRETS_KEY` the key protected values are sealed with (else one for the process). It runs the webhook
  * dispatcher, the telemetry exporter and the auto-stop sweep on timers. For local runs and tests, not production.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -12,6 +13,7 @@ import { computeSchema } from "@kantel/api";
 import { API_KEY_PREFIX, type AuthenticatePerson, ensurePerson, keyForSecret, newApiKeySecret } from "./auth.ts";
 import type { SandboxBackend } from "./backend.ts";
 import { type ComputeApi, createComputeApi } from "./http.ts";
+import { parseSecretsKey } from "./secrets.ts";
 import { type ComputeStore, createMemoryStore, type StoredApiKey } from "./store.ts";
 import { createStubBackend } from "./stub-backend.ts";
 import { randomId, sha256Hex } from "./util.ts";
@@ -41,6 +43,8 @@ export interface ComputeServerOptions {
 	readonly webhookIntervalMs?: number;
 	/** How often telemetry is exported. Default 60 000 ms. */
 	readonly telemetryIntervalMs?: number;
+	/** Seals protected values and secret files: 32 bytes, base64. Default `KANTEL_SECRETS_KEY`, else one per process. */
+	readonly secretsKey?: string;
 }
 
 export interface ComputeServer {
@@ -134,6 +138,10 @@ const jsonResponse = (body: unknown, status: number) =>
 export async function startComputeServer(options: ComputeServerOptions = {}): Promise<ComputeServer> {
 	const host = options.host ?? DEFAULT_HOST;
 	const store = options.store ?? createMemoryStore();
+	const fromEnv = process.env.KANTEL_SECRETS_KEY;
+	const secretsKey = options.secretsKey ?? (fromEnv === undefined || fromEnv === "" ? undefined : fromEnv);
+	// Checked before listening, so a key that isn't one leaves no server behind.
+	if (secretsKey !== undefined) parseSecretsKey(secretsKey);
 	const server = createServer();
 	await new Promise<void>((resolve, reject) => {
 		server.once("error", reject);
@@ -150,6 +158,7 @@ export async function startComputeServer(options: ComputeServerOptions = {}): Pr
 		publicUrl: options.publicUrl ?? url,
 		...(options.authenticatePerson === undefined ? {} : { authenticatePerson: options.authenticatePerson }),
 		...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+		...(secretsKey === undefined ? {} : { secretsKey }),
 	});
 	const apiKey = await bootstrapSuperAdmin(
 		store,
