@@ -526,6 +526,16 @@ importers:
         specifier: workspace:*
         version: link:../testing
 
+  packages/cli:
+    dependencies:
+      "@kantel/api":
+        specifier: workspace:*
+        version: link:../api
+    devDependencies:
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
+
   packages/codemode:
     dependencies:
       "@kantel/contracts":
