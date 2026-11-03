@@ -197,7 +197,7 @@ func (p *Proxy) interceptOne(ctx context.Context, client *tls.Conn, br *bufio.Re
 	dest := protect.Destination{Host: host, Port: port, Method: req.Method, Path: rec.Path}
 	var entries []protect.Entry
 	if rules.Protected {
-		limitAcceptEncoding(req.Header)
+		protect.LimitAcceptEncoding(req.Header)
 		swapped, err := protect.RewriteRequest(ctx, req, rules.SandboxID, dest, p.provider(rules))
 		if err != nil {
 			return p.refuseRecord(client, rec, rewriteRefusal(err))
@@ -221,7 +221,11 @@ func (p *Proxy) interceptOne(ctx context.Context, client *tls.Conn, br *bufio.Re
 	}
 	defer resp.Body.Close()
 	if entries != nil {
-		_ = protect.ScrubResponse(resp, entries)
+		// A body protect can't read could carry a value back: refused, never passed on.
+		if err := protect.ScrubResponse(resp, entries); err != nil {
+			rec.BytesUp = up.Load()
+			return p.refuseRecord(client, rec, rewriteRefusal(err))
+		}
 	}
 	rec.Status = resp.StatusCode
 	closing := req.Close || resp.Close
@@ -254,7 +258,10 @@ func (p *Proxy) webSocket(ctx context.Context, client *tls.Conn, br *bufio.Reade
 		// Not upgraded: an ordinary answer, scrubbed like any other, and the end of the connection.
 		defer resp.Body.Close()
 		if entries != nil {
-			_ = protect.ScrubResponse(resp, entries)
+			if err := protect.ScrubResponse(resp, entries); err != nil {
+				_ = p.refuseRecord(client, rec, rewriteRefusal(err))
+				return false
+			}
 		}
 		resp.Close = true
 		down := &countWriter{w: client}
@@ -465,29 +472,6 @@ func isWebSocket(h http.Header) bool {
 		}
 	}
 	return false
-}
-
-// limitAcceptEncoding keeps a protected sandbox's Accept-Encoding to the codings protect can see through (gzip,
-// deflate, identity), so what comes back can be scrubbed rather than passing through unread.
-func limitAcceptEncoding(h http.Header) {
-	values := h.Values("Accept-Encoding")
-	if len(values) == 0 {
-		return
-	}
-	var keep []string
-	for _, v := range values {
-		for _, part := range strings.Split(v, ",") {
-			name, _, _ := strings.Cut(part, ";")
-			switch strings.ToLower(strings.TrimSpace(name)) {
-			case "gzip", "deflate", "identity":
-				keep = append(keep, strings.TrimSpace(part))
-			}
-		}
-	}
-	if len(keep) == 0 {
-		keep = []string{"identity"}
-	}
-	h.Set("Accept-Encoding", strings.Join(keep, ", "))
 }
 
 // countReader counts a request body as it goes up; the transport reads it from another goroutine.

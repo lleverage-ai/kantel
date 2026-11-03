@@ -348,6 +348,8 @@ func rewriteRefusal(err error) refusal {
 			return refusal{status: http.StatusForbidden, code: ref.Code, variable: ref.Variable, message: ref.Message}
 		case protect.CodeTooLarge:
 			return refusal{status: http.StatusForbidden, code: ref.Code, message: ref.Message}
+		case protect.CodeUnreadableResponse:
+			return refusal{status: http.StatusBadGateway, code: ref.Code, message: ref.Message}
 		}
 		return refusal{status: http.StatusServiceUnavailable, code: protect.CodeUnavailable, message: "protected environment variables can't be fetched right now"}
 	}
@@ -542,7 +544,7 @@ func (p *Proxy) proxyForm(conn net.Conn, req *http.Request, rules Rules, attribu
 	}
 	var entries []protect.Entry
 	if rules.Protected {
-		limitAcceptEncoding(req.Header)
+		protect.LimitAcceptEncoding(req.Header)
 		dest := protect.Destination{Host: host, Port: port, Method: req.Method, Path: rec.Path}
 		swapped, err := protect.RewriteRequest(ctx, req, rules.SandboxID, dest, p.provider(rules))
 		if err != nil {
@@ -658,7 +660,11 @@ func (p *Proxy) forward(conn net.Conn, reader *bufio.Reader, req *http.Request, 
 		}
 		defer res.Body.Close()
 		if entries != nil {
-			_ = protect.ScrubResponse(res, entries)
+			// A body protect can't read could carry a value back: refused, never passed on.
+			if err := protect.ScrubResponse(res, entries); err != nil {
+				_ = rewriteRefusal(err).write(conn)
+				return counted.n, 0, err
+			}
 		}
 		if status != nil {
 			*status = res.StatusCode
@@ -709,7 +715,10 @@ func (p *Proxy) direct(conn net.Conn, req *http.Request, entries []protect.Entry
 	}
 	defer res.Body.Close()
 	if entries != nil {
-		_ = protect.ScrubResponse(res, entries)
+		if err := protect.ScrubResponse(res, entries); err != nil {
+			_ = rewriteRefusal(err).write(conn)
+			return up, 0, err
+		}
 	}
 	if status != nil {
 		*status = res.StatusCode

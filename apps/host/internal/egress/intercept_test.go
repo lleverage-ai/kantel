@@ -150,6 +150,10 @@ func (env *protectedEnv) serve(w http.ResponseWriter, r *http.Request) {
 	env.mu.Unlock()
 	// An API that echoes what it was sent: the values must not come back into the sandbox.
 	w.Header().Set("X-Echo", s.auth)
+	if r.URL.Path == "/brotli" {
+		// Whatever the request accepted: a coding the proxy can't search (the bytes stand in for real Brotli).
+		w.Header().Set("Content-Encoding", "br")
+	}
 	fmt.Fprintf(w, "auth=%s\nquery=%s\nbody=%s\n", s.auth, s.query, s.body)
 }
 
@@ -269,6 +273,26 @@ func TestInterceptSwapsAndScrubs(t *testing.T) {
 	env.noValues("the log", env.log.String())
 	if strings.Contains(env.log.String(), "token=") {
 		t.Errorf("the log holds a query: %s", env.log.String())
+	}
+}
+
+// A response the proxy can't search could carry a value back, so it is refused rather than passed on.
+func TestInterceptRefusesAnUnreadableResponse(t *testing.T) {
+	env := newProtectedEnv(t)
+	req := newRequest(t, http.MethodGet, "https://api.example.com/brotli", "")
+	req.Header.Set("Authorization", "Bearer "+ghPlaceholder)
+	req.Header.Set("Accept-Encoding", "br")
+	res, body := env.do(req)
+	if res.StatusCode != http.StatusBadGateway || res.Header.Get(ErrorHeader) != protect.CodeUnreadableResponse {
+		t.Fatalf("status %d, %s %q: %s", res.StatusCode, ErrorHeader, res.Header.Get(ErrorHeader), body)
+	}
+	env.noValues("the refusal", body)
+	if got, _ := env.lastSeen(); got.auth != "Bearer ghs_realValue_1" {
+		t.Fatalf("the destination got %+v", got)
+	}
+	recs := env.recordsCopy()
+	if len(recs) == 0 || recs[len(recs)-1].Allowed || recs[len(recs)-1].Code != protect.CodeUnreadableResponse {
+		t.Fatalf("records %+v", recs)
 	}
 }
 
