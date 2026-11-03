@@ -8,7 +8,8 @@
  *
  * Making a space is three commits (the organisation, its project, the record), and the object may stop between any
  * two. A sign-up record is saved before the first and after each, so the next sign-in finishes what an earlier one
- * started rather than leaving a space with no project or making a second space.
+ * started rather than leaving a space with no project or making a second space. One person's sign-ins provision one
+ * at a time, so two that overlap can't both start from the same unfinished record.
  */
 import {
 	type CallContext,
@@ -57,6 +58,17 @@ export function createMemorySignUpStore(): SignUpStore {
 	};
 }
 
+/** Only a refusal or a miss means "not this one": any other failure is thrown, so a failed read never makes a space. */
+const notThisOne = (error: unknown): false => {
+	if (isKantelError(error, "forbidden") || isKantelError(error, "not_found")) return false;
+	throw error;
+};
+
+const withSpace = (signedIn: SignIn, organisationId: string): SignIn =>
+	signedIn.organisationIds.includes(organisationId)
+		? signedIn
+		: { user: signedIn.user, organisationIds: [...signedIn.organisationIds, organisationId] };
+
 export function openSignUp(
 	identity: IdentityDirectory,
 	options: {
@@ -70,18 +82,55 @@ export function openSignUp(
 	async function unrecordedSpace(userId: string, organisationIds: readonly string[]): Promise<string | undefined> {
 		for (const organisationId of organisationIds) {
 			const ctx: CallContext = { actor: { kind: "human", userId }, organisationId };
-			const found = await identity.getOrganisation(ctx, organisationId).then(
-				(organisation) => organisation.name === PERSONAL_SPACE_NAME,
-				() => false,
-			);
-			if (!found) continue;
-			const admin = await identity.authorize(ctx, "admin").then(
-				() => true,
-				() => false,
-			);
-			if (admin) return organisationId;
+			const named = await identity
+				.getOrganisation(ctx, organisationId)
+				.then((organisation) => organisation.name === PERSONAL_SPACE_NAME, notThisOne);
+			if (named && (await identity.authorize(ctx, "admin").then(() => true, notThisOne))) return organisationId;
 		}
 		return undefined;
+	}
+
+	/** One provisioning at a time for each person. The stack is one object, so a lock in its memory covers them all. */
+	const busy = new Map<string, Promise<void>>();
+	async function oneAtATime<T>(userId: string, work: () => Promise<T>): Promise<T> {
+		const before = busy.get(userId) ?? Promise.resolve();
+		const mine = before.then(work);
+		const settled = mine.then(
+			() => {},
+			() => {},
+		);
+		busy.set(userId, settled);
+		try {
+			return await mine;
+		} finally {
+			if (busy.get(userId) === settled) busy.delete(userId);
+		}
+	}
+
+	/** Makes `signedIn`'s space, or finishes one an earlier sign-in started, from their record. */
+	async function provision(signedIn: SignIn): Promise<SignIn> {
+		const userId = signedIn.user.id;
+		let record = await records.load(userId);
+		if (record === undefined) {
+			// Someone already in an organisation (invited) who never signed up has no space to make.
+			if (signedIn.organisationIds.length > 0) return signedIn;
+			record = {};
+			await records.save(userId, record);
+		}
+		if (record.organisationId !== undefined && record.projectId !== undefined) {
+			return withSpace(signedIn, record.organisationId);
+		}
+		const organisationId =
+			record.organisationId ??
+			(await unrecordedSpace(userId, signedIn.organisationIds)) ??
+			(await identity.createOrganisation(SIGN_UP, { name: PERSONAL_SPACE_NAME, admin: { kind: "user", userId } })).id;
+		await records.save(userId, { organisationId });
+		const inSpace: CallContext = { actor: { kind: "human", userId }, organisationId };
+		const [existing] = (await identity.listProjects(inSpace, { limit: 1 })).items;
+		const projectId = existing?.id ?? (await identity.createProject(inSpace, { name: "Default" })).id;
+		await records.save(userId, { organisationId, projectId });
+		options.onSignUp?.(userId, organisationId);
+		return withSpace(signedIn, organisationId);
 	}
 
 	/** A user for this proven address, linked to the code's subject. A concurrent first sign-in may have made it. */
@@ -114,30 +163,7 @@ export function openSignUp(
 				await makeUser(external);
 				signedIn = await identity.signIn(ctx, external);
 			}
-			const userId = signedIn.user.id;
-			let record = await records.load(userId);
-			if (record === undefined) {
-				// Someone already in an organisation (invited) who never signed up has no space to make.
-				if (signedIn.organisationIds.length > 0) return signedIn;
-				record = {};
-				await records.save(userId, record);
-			}
-			if (record.organisationId !== undefined && record.projectId !== undefined) return signedIn;
-			// Someone new, or one whose earlier sign-up stopped part-way: finish it.
-			const organisationId =
-				record.organisationId ??
-				(await unrecordedSpace(userId, signedIn.organisationIds)) ??
-				(await identity.createOrganisation(SIGN_UP, { name: PERSONAL_SPACE_NAME, admin: { kind: "user", userId } })).id;
-			await records.save(userId, { organisationId });
-			const inSpace: CallContext = { actor: { kind: "human", userId }, organisationId };
-			const [existing] = (await identity.listProjects(inSpace, { limit: 1 })).items;
-			const projectId = existing?.id ?? (await identity.createProject(inSpace, { name: "Default" })).id;
-			await records.save(userId, { organisationId, projectId });
-			options.onSignUp?.(userId, organisationId);
-			const organisationIds = signedIn.organisationIds.includes(organisationId)
-				? signedIn.organisationIds
-				: [...signedIn.organisationIds, organisationId];
-			return { user: signedIn.user, organisationIds };
+			return oneAtATime(signedIn.user.id, () => provision(signedIn));
 		},
 	};
 }

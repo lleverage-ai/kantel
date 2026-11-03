@@ -3,7 +3,7 @@
 // Access hostname answers as before; the daily mail cap holds.
 import { DatabaseSync } from "node:sqlite";
 import { EMAIL_OTP_ISSUER, type IdentityDirectory } from "@kantel/contracts";
-import { createMemoryIdentity } from "@kantel/identity/memory";
+import { createSqlIdentity, migrateIdentity } from "@kantel/identity/sql";
 import { createMockAccess } from "@kantel/identity/testing";
 import { syncSqliteDriver } from "@kantel/sql/sqlite";
 import { describe, expect, it } from "vitest";
@@ -240,7 +240,7 @@ describe("email-code sign-in on the public origin", () => {
 
 describe("a sign-up that stopped part-way", () => {
 	it("is finished on the next sign-in, with one space and one Default project", async () => {
-		const identity = createMemoryIdentity();
+		const identity = await sqlDirectory();
 		const records = createMemorySignUpStore();
 		const external = {
 			issuer: EMAIL_OTP_ISSUER,
@@ -251,12 +251,11 @@ describe("a sign-up that stopped part-way", () => {
 		const ctx = { actor: { kind: "system" as const, component: "test" }, organisationId: "test" };
 		// The first attempt made the space, then failed before its project.
 		let failProject = true;
-		const flaky: IdentityDirectory = Object.assign(Object.create(identity) as IdentityDirectory, {
-			createProject: (...args: Parameters<IdentityDirectory["createProject"]>) => {
-				if (failProject) return Promise.reject(new Error("D1 went away"));
-				return identity.createProject(...args);
-			},
-		});
+		const flaky: IdentityDirectory = {
+			...identity,
+			createProject: (...args) =>
+				failProject ? Promise.reject(new Error("D1 went away")) : identity.createProject(...args),
+		};
 		const signUp = openSignUp(flaky, { records });
 		await expect(signUp.signIn(ctx, external)).rejects.toThrow("D1 went away");
 		failProject = false;
@@ -272,7 +271,7 @@ describe("a sign-up that stopped part-way", () => {
 	});
 
 	it("also finishes when the space was made but never recorded", async () => {
-		const identity = createMemoryIdentity();
+		const identity = await sqlDirectory();
 		const saved: SignUpRecord[] = [];
 		const inner = createMemorySignUpStore();
 		let dropSpace = true;
@@ -294,10 +293,11 @@ describe("a sign-up that stopped part-way", () => {
 		expect(signedIn.organisationIds).toHaveLength(1);
 		expect(saved.at(-1)).toMatchObject({ organisationId: signedIn.organisationIds[0] });
 		expect(saved.at(-1)?.projectId).toBeDefined();
+		expect(await organisationsNamed(identity, signedIn.user.id, signedIn.organisationIds)).toEqual(["Personal"]);
 	});
 
 	it("makes no space for someone who was only invited", async () => {
-		const identity = createMemoryIdentity();
+		const identity = await sqlDirectory();
 		const records = createMemorySignUpStore();
 		const system = { actor: { kind: "system" as const, component: "test" }, organisationId: "test" };
 		const owner = await identity.createUser(system, { name: "Owner", email: "o@x.test" });
@@ -315,6 +315,56 @@ describe("a sign-up that stopped part-way", () => {
 		expect(await records.load(signedIn.user.id)).toBeUndefined();
 	});
 
+	it("doesn't make a second space when the look for an unrecorded one fails", async () => {
+		const identity = await sqlDirectory();
+		const inner = createMemorySignUpStore();
+		let dropSpace = true;
+		const records: SignUpStore = {
+			load: (userId) => inner.load(userId),
+			async save(userId, record) {
+				if (record.organisationId !== undefined && dropSpace) throw new Error("reset");
+				await inner.save(userId, record);
+			},
+		};
+		let readFails = false;
+		const flaky: IdentityDirectory = {
+			...identity,
+			getOrganisation: (...args) =>
+				readFails ? Promise.reject(new Error("D1 went away")) : identity.getOrganisation(...args),
+		};
+		const external = { issuer: EMAIL_OTP_ISSUER, subject: "d@x.test", email: "d@x.test", emailVerified: true };
+		const ctx = { actor: { kind: "system" as const, component: "test" }, organisationId: "test" };
+		const signUp = openSignUp(flaky, { records });
+		await expect(signUp.signIn(ctx, external)).rejects.toThrow("reset");
+		dropSpace = false;
+		readFails = true;
+		await expect(signUp.signIn(ctx, external)).rejects.toThrow("D1 went away");
+		readFails = false;
+		const signedIn = await signUp.signIn(ctx, external);
+		expect(signedIn.organisationIds).toHaveLength(1);
+		expect(await organisationsNamed(identity, signedIn.user.id, signedIn.organisationIds)).toEqual(["Personal"]);
+	});
+
+	it("makes one space when two sign-ins overlap", async () => {
+		const identity = await sqlDirectory();
+		const records = createMemorySignUpStore();
+		const external = { issuer: EMAIL_OTP_ISSUER, subject: "e@x.test", email: "e@x.test", emailVerified: true };
+		const ctx = { actor: { kind: "system" as const, component: "test" }, organisationId: "test" };
+		const signUp = openSignUp(identity, { records });
+		const [one, two] = await Promise.all([signUp.signIn(ctx, external), signUp.signIn(ctx, external)]);
+		expect(one?.organisationIds).toHaveLength(1);
+		expect(two?.organisationIds).toEqual(one?.organisationIds);
+		const after = await identity.signIn(ctx, external);
+		expect(after.organisationIds).toEqual(one?.organisationIds);
+		const as = {
+			actor: { kind: "human" as const, userId: after.user.id },
+			organisationId: after.organisationIds[0] ?? "",
+		};
+		expect((await identity.listProjects(as)).items.map((project) => project.name)).toEqual(["Default"]);
+	});
+});
+
+describe("the daily mail cap", () => {
 	it("refuses a start once the day's mail cap is reached", async () => {
 		const { call, signIn, sent, close } = await start({ KANTEL_SIGN_IN_DAILY_CAP: "2" });
 		await signIn("ada@example.test");
@@ -325,6 +375,27 @@ describe("a sign-up that stopped part-way", () => {
 		await close();
 	});
 });
+
+/** The SQL directory the deployment uses, over node:sqlite. */
+async function sqlDirectory(): Promise<IdentityDirectory> {
+	const driver = syncSqliteDriver(new DatabaseSync(":memory:"));
+	await migrateIdentity(driver);
+	return createSqlIdentity({ driver });
+}
+
+/** The names of `organisationIds`, as `userId` sees them. */
+async function organisationsNamed(
+	identity: IdentityDirectory,
+	userId: string,
+	organisationIds: readonly string[],
+): Promise<string[]> {
+	return Promise.all(
+		organisationIds.map(
+			async (organisationId) =>
+				(await identity.getOrganisation({ actor: { kind: "human", userId }, organisationId }, organisationId)).name,
+		),
+	);
+}
 
 describe("the daily mail budget", () => {
 	it("counts per UTC day, and starts again the next day", async () => {
