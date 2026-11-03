@@ -8,8 +8,8 @@
  * the stand-in it had.
  *
  * A sandbox or snapshot stays on the backend that holds it: enrolling a host changes where new sandboxes go, not where
- * existing disks are. The service's eligible hosts are for a fresh placement (an account's own hosts when it has
- * any), so a call `fallback` answers for something it already holds gets `fallback`'s shared hosts instead.
+ * existing disks are. For those calls the service passes every qualifying host the account may use (online, the
+ * type, the labels), and the backend that answers gets the ones among them that are its own.
  */
 import type { BackendCapabilities, BackendSize, Placement, SandboxBackend, SandboxSpec } from "./backend.ts";
 
@@ -28,16 +28,13 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		(await options.holds(sandboxId)) ? primary : fallback;
 	const forRef = (ref: string): SandboxBackend => (options.holdsSnapshot(ref) ? primary : fallback);
 
-	/** `fallback`'s hosts any account may use: where what it already holds can run again. */
-	const fallbackHosts = async (): Promise<string[]> =>
-		(await fallback.capabilities()).hosts.filter((host) => host.accountId === undefined).map((host) => host.id);
-
-	/** Eligibility for the backend that must answer: `fallback`'s own hosts there, the service's on `primary`. */
+	/** The service's eligible hosts narrowed to `backend`'s own: the constraints kept, the disk's backend respected. */
 	async function affine<T extends { readonly eligibleHosts: readonly string[] }>(
 		backend: SandboxBackend,
 		input: T,
 	): Promise<T> {
-		return backend === fallback ? { ...input, eligibleHosts: await fallbackHosts() } : input;
+		const own = new Set((await backend.capabilities()).hosts.map((host) => host.id));
+		return { ...input, eligibleHosts: input.eligibleHosts.filter((id) => own.has(id)) };
 	}
 
 	/** Where a new sandbox goes: the backend its snapshot is on, else `primary` for any of its hosts. */

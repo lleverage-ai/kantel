@@ -396,26 +396,34 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * The hosts an account's sandbox of `type` may go on: online, running the type and carrying every label. An
 	 * account with hosts of its own (Kantel Connect) that qualify uses only those; otherwise the deployment's shared
 	 * hosts. Another account's hosts never qualify.
+	 *
+	 * `affine`: for a machine or snapshot that already has a disk somewhere (start, resume, recover, fork, a create from
+	 * a snapshot), every qualifying host the account may use, its own and shared alike. Its backend keeps it where its
+	 * disk is, and narrows the list to its own hosts; preferring the account's hosts there would leave a disk on a
+	 * shared host with nowhere eligible to boot.
 	 */
 	async function eligibleHosts(
 		accountId: string,
 		type: SandboxType,
 		labels: { readonly [key: string]: string },
+		affine = false,
 	): Promise<string[]> {
 		await ensureHosts();
 		const hosts = (await store.hosts.list({ state: "online" }))
 			.filter((host) => host.tiers.includes(type))
 			.filter((host) => Object.entries(labels).every(([key, value]) => host.labels[key] === value));
 		const own = hosts.filter((host) => host.accountId === accountId);
-		return (own.length > 0 ? own : hosts.filter((host) => host.accountId === undefined)).map((host) => host.id);
+		const shared = hosts.filter((host) => host.accountId === undefined);
+		return (affine ? [...own, ...shared] : own.length > 0 ? own : shared).map((host) => host.id);
 	}
 
 	async function requireHosts(
 		accountId: string,
 		type: SandboxType,
 		labels: { readonly [key: string]: string },
+		affine = false,
 	): Promise<string[]> {
-		const hosts = await eligibleHosts(accountId, type, labels);
+		const hosts = await eligibleHosts(accountId, type, labels, affine);
 		if (hosts.length === 0) throw new KantelError("unavailable", `No host can run a ${type} sandbox now`);
 		return hosts;
 	}
@@ -1580,7 +1588,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 				await requireCapacity(account.id, 1);
 				const hostLabels = { ...body.hostLabels };
-				const hosts = await requireHosts(account.id, type, hostLabels);
+				const hosts = await requireHosts(account.id, type, hostLabels, from !== undefined);
 				const name = body.name ?? generatedName();
 				const sandbox: StoredSandbox = {
 					id: randomId("sbx"),
@@ -1713,7 +1721,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError("invalid", "A personal account's sandboxes are always private");
 				}
 				await requireCapacity(current.accountId, count);
-				const hosts = await requireHosts(current.accountId, current.type, current.hostLabels);
+				const hosts = await requireHosts(current.accountId, current.type, current.hostLabels, true);
 				const forks: StoredSandbox[] = [];
 				for (let index = 0; index < count; index++) {
 					const name =
@@ -1796,7 +1804,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (current.state !== "running" && current.state !== "error") {
 				throw new KantelError("conflict", `A ${current.state} sandbox is started or resumed, not recovered`);
 			}
-			const hosts = await requireHosts(current.accountId, current.type, current.hostLabels);
+			const hosts = await requireHosts(current.accountId, current.type, current.hostLabels, true);
 			const fromSnapshot = await latestRef(current);
 			const began = await transition(current.id, current.state, (latest) =>
 				withState(latest, "starting", { ports: [] }),
@@ -2659,7 +2667,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (current.type === "isolate" && body.size !== undefined)
 			throw new KantelError("invalid", "Isolates have no size");
 		await requireCapacity(current.accountId, 1);
-		const hosts = await requireHosts(current.accountId, current.type, current.hostLabels);
+		const hosts = await requireHosts(current.accountId, current.type, current.hostLabels, true);
 		const fromSnapshot = await latestRef(current);
 		const began = await transition(current.id, current.state, (latest) =>
 			withState(latest, "starting", {
