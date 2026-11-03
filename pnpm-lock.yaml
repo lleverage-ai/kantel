@@ -543,6 +543,18 @@ importers:
         specifier: workspace:*
         version: link:../testing
 
+  packages/compute:
+    dependencies:
+      "@kantel/api":
+        specifier: workspace:*
+        version: link:../api
+      "@kantel/contracts":
+        specifier: workspace:*
+        version: link:../contracts
+      just-bash:
+        specifier: 3.6.0
+        version: 3.6.0
+
   packages/connections:
     dependencies:
       "@earendil-works/pi-ai":

@@ -1,0 +1,18 @@
+{
+	"name": "@kantel/compute",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "The compute plane's control-plane API: accounts, sandboxes, snapshots, scoped keys, webhooks and OpenTelemetry export, over a sandbox backend (a stub until the host scheduler lands)",
+	"license": "Apache-2.0",
+	"exports": {
+		".": "./src/index.ts",
+		"./stub": "./src/stub-backend.ts",
+		"./serve": "./src/serve.ts"
+	},
+	"dependencies": {
+		"@kantel/api": "workspace:*",
+		"@kantel/contracts": "workspace:*",
+		"just-bash": "3.6.0"
+	}
+}
