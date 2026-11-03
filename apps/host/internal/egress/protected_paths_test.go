@@ -416,3 +416,66 @@ func TestRotationDuringARequestCantLeakAValue(t *testing.T) {
 		t.Fatalf("the upload's ends were given different values: %q, %q", head, tail)
 	}
 }
+
+// A connection kept open across a change to what the upstream is told (its extra headers, the signing key) sends its
+// next request through a tunnel opened with the new ones, never one opened with the old.
+func TestInterceptedConnectionsFollowUpstreamCredentialChanges(t *testing.T) {
+	env := newProtectedEnv(t)
+	dial := env.proxy.Dial
+	c, err := dial("tcp", "api.example.com:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := c.RemoteAddr().String()
+	c.Close()
+	up := newConnectProxy(t, target)
+	env.proxy.Dial = func(network, address string) (net.Conn, error) {
+		if address == up.addr {
+			return net.Dial(network, address)
+		}
+		return dial(network, address)
+	}
+	env.setRules(func(r *Rules) {
+		r.Upstream = "http://" + up.addr
+		r.Headers = map[string]string{"X-Upstream-Key": "old-key"}
+	})
+	ic := env.openIntercepted("api.example.com")
+	get := "GET /echo HTTP/1.1\r\nHost: api.example.com\r\nAuthorization: Bearer " + ghPlaceholder + "\r\n\r\n"
+	connects := func() []string {
+		var out []string
+		for _, line := range strings.Split(up.got.String(), "\r\n\r\n") {
+			if i := strings.Index(line, "CONNECT "); i >= 0 {
+				out = append(out, line[i:])
+			}
+		}
+		return out
+	}
+	if res, body := ic.send(get); res.StatusCode != 200 {
+		t.Fatalf("first request: %d %s", res.StatusCode, body)
+	}
+	if res, _ := ic.send(get); res.StatusCode != 200 {
+		t.Fatalf("second request, nothing changed: %d", res.StatusCode)
+	}
+	if got := connects(); len(got) != 1 || !strings.Contains(got[0], "X-Upstream-Key: old-key") {
+		t.Fatalf("before the change, one tunnel with the old key: %q", got)
+	}
+
+	env.setRules(func(r *Rules) { r.Headers = map[string]string{"X-Upstream-Key": "new-key"} })
+	if res, body := ic.send(get); res.StatusCode != 200 {
+		t.Fatalf("after the header change: %d %s", res.StatusCode, body)
+	}
+	got := connects()
+	if len(got) != 2 || !strings.Contains(got[1], "X-Upstream-Key: new-key") || strings.Contains(got[1], "old-key") {
+		t.Fatalf("after the header change, a new tunnel with the new key: %q", got)
+	}
+
+	env.setRules(func(r *Rules) { r.AttributionKey = "signing-key-2" })
+	if res, body := ic.send(get); res.StatusCode != 200 {
+		t.Fatalf("after the signing key change: %d %s", res.StatusCode, body)
+	}
+	got = connects()
+	if len(got) != 3 || !strings.Contains(got[2], "Kantel-Signature: ") {
+		t.Fatalf("after the signing key change, a new signed tunnel: %q", got)
+	}
+	env.noValues("what the upstream got", up.got.String())
+}

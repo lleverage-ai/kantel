@@ -448,3 +448,42 @@ func TestFactsReportEgressPolicy(t *testing.T) {
 		t.Fatalf("features %v", f.Features)
 	}
 }
+
+// An egress the host already holds (kept in meta.json across a stop, adopted at a restart, inherited by a fork)
+// still sets the oldest table its traffic may use: when the tier attaches it, or an isolate's request reads it, a
+// table older than the version it advertises is refused.
+func TestHeldEgressRequiresItsTableVersion(t *testing.T) {
+	tier := newLifecycleTier()
+	h := newLifecycleHost(t, tier)
+	l := newFakeLink(func(m proto.Message) *proto.Message {
+		// Kantel, behind: it still answers version 4.
+		raw, _ := json.Marshal(proto.SecretsTable{Version: 4, Entries: []proto.SecretEntry{{
+			Placeholder: testPlaceholder, Name: "GITHUB_TOKEN", Value: "ghs_v4", Bindings: []proto.DestinationBinding{{Host: "api.github.com"}},
+		}}})
+		return &proto.Message{Type: "result", ID: m.ID, Result: raw}
+	})
+	h.link = l.c
+	ctx := context.Background()
+	gh := protect.Destination{Host: "api.github.com", Port: 443, Method: "GET", Path: "/"}
+	held := protectedEgress(5, "api.github.com")
+	for _, attach := range []struct {
+		name string
+		do   func(id string)
+	}{
+		{"a microVM's slot", func(id string) { h.attachSlot(7, id, "acc_1", held) }},
+		{"an isolate's request", func(id string) { _ = h.liveRules(id, "acc_1", held) }},
+	} {
+		id := "sbx_" + strings.ReplaceAll(attach.name, " ", "_")
+		// Nothing sent the version: the stop forgot what the create required, and the egress comes back from meta.json.
+		h.forgetSecrets(id)
+		attach.do(id)
+		if _, err := h.secrets.Resolve(ctx, testPlaceholder, id, gh); !errors.Is(err, protect.ErrUnavailable) {
+			t.Fatalf("%s: a table older than its egress was used: %v", attach.name, err)
+		}
+	}
+	// One that advertises no newer version uses what Kantel answers.
+	h.attachSlot(8, "sbx_current", "acc_1", protectedEgress(4, "api.github.com"))
+	if r, err := h.secrets.Resolve(ctx, testPlaceholder, "sbx_current", gh); err != nil || r.Value != "ghs_v4" {
+		t.Fatalf("a current table: %v", err)
+	}
+}

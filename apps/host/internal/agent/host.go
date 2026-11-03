@@ -161,7 +161,7 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 		iso, err := isolate.New(isolate.Config{
 			Root: cfg.Root + "/isolate", Runtime: cfg.IsolateRuntime, Firecracker: cfg.Firecracker, Kernel: cfg.Kernel,
 			Rootfs: cfg.IsolateImage, Workerd: cfg.Workerd, Bundle: cfg.IsolateBundle, Egress: h.proxy,
-			Rules: h.egressRules, Log: log, Events: h.sandboxEvent,
+			Rules: h.liveRules, Log: log, Events: h.sandboxEvent,
 		})
 		if err != nil {
 			return nil, err
@@ -341,8 +341,16 @@ func destinations(cfg Config) (egress.Destinations, error) {
 	return d, nil
 }
 
+// liveRules are the rules a sandbox's traffic is judged by now, with the protected-table version its egress
+// advertises required first: whichever way the egress came (sent, kept in meta.json, adopted at a restart, inherited
+// by a fork), a table older than it is never used for that traffic.
+func (h *Host) liveRules(sandboxID, owner string, e *proto.Egress) egress.Rules {
+	h.requireProtected(sandboxID, e)
+	return h.egressRules(sandboxID, owner, e)
+}
+
 func (h *Host) attachSlot(slot int, sandboxID, owner string, e *proto.Egress) {
-	r := h.egressRules(sandboxID, owner, e)
+	r := h.liveRules(sandboxID, owner, e)
 	h.mu.Lock()
 	h.bySlot[slot] = r
 	h.mu.Unlock()

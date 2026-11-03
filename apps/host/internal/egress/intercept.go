@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -112,6 +113,14 @@ func (p *Proxy) interceptTransport(rules Rules, attribution string) *http.Transp
 	return tr
 }
 
+// sameWayOut answers whether two rules make the same transport: everything interceptTransport reads of them, the
+// upstream, its CA, and what its CONNECT carries (the token, the extra headers, the sandbox, account and signing key).
+func sameWayOut(a, b Rules) bool {
+	return a.Upstream == b.Upstream && a.UpstreamCACert == b.UpstreamCACert && a.Token == b.Token &&
+		a.AttributionKey == b.AttributionKey && a.Account == b.Account && a.SandboxID == b.SandboxID &&
+		maps.Equal(a.Headers, b.Headers)
+}
+
 // intercept answers a CONNECT to an intercepted host itself: TLS with a leaf from the sandbox's CA, then each request
 // in turn is checked, swapped, sent on and scrubbed. current answers the sandbox's rules as they are now, for the
 // connection's authenticated source: each request is judged by them, not by those of when it connected.
@@ -163,8 +172,9 @@ func (p *Proxy) intercept(conn net.Conn, reader *bufio.Reader, rules Rules, curr
 			_ = p.refuseRecord(client, r, refusal{status: http.StatusForbidden, code: CodeDenied, message: "this sandbox's egress rules have gone"})
 			return
 		}
-		if now.Upstream != rules.Upstream || now.UpstreamCACert != rules.UpstreamCACert || now.Token != rules.Token {
-			// The way out changed: later requests take the new one.
+		if !sameWayOut(now, rules) {
+			// The way out changed, or what it is told: later requests take the new one, and no tunnel opened with the
+			// old credentials is used again.
 			tr.CloseIdleConnections()
 			tr = p.interceptTransport(now, attribution)
 		}
