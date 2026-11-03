@@ -24,6 +24,8 @@ An environment is a named set of things a new sandbox starts with. Make one for 
 
 Changes apply to sandboxes made after them. The exceptions are a protected variable's value and bindings, and grants, which running sandboxes pick up within seconds.
 
+An [isolate](/sandboxes/types/) sandbox gets the variables, protected ones included, and the grants. Secret files and repositories need a microVM: an isolate keeps files only under `/workspace` and has no `git`. Kantel doesn't skip them silently. Each one that can't be written or cloned is a `sandbox.degraded` event saying why, and the sandbox keeps running.
+
 Names are lower-case letters, digits and hyphens, unique in the account. Each environment has an ID too, such as `env_3k8m2xq9pa`, and every command takes either.
 
 ## Make one and use it
@@ -193,7 +195,7 @@ ok egress certificate: in /etc/ssl/certs/ca-certificates.crt
 ok GH_TOKEN api.github.com: would be swapped
 ```
 
-It comes with the sandbox images from the release after `host-images-20261103.1`.
+It comes with the sandbox images from the release after `host-images-20261103.1`. An isolate sandbox has no `kantel-doctor`; `kantel egress <sandbox>` shows what its requests did.
 
 For each placeholder it sends a `HEAD` request to a bound host through the proxy, marked with an `X-Kantel-Proxy-Check` header. The proxy completes a real TLS handshake with that host, then answers the check itself, with `ok` or an error code, so the value goes nowhere.
 
