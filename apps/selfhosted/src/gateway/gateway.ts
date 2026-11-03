@@ -114,6 +114,11 @@ export interface GatewayOptions {
 	 * authority, and the public host images. `undefined` for every other path.
 	 */
 	readonly computeHosts?: (request: Request) => Promise<Response | undefined>;
+	/**
+	 * Exposed sandbox ports (`compute.ts`'s `portRoutes`): a request to a port's own name goes there before any other
+	 * route, and nothing else answers that name. `undefined` for every other name.
+	 */
+	readonly computePorts?: (request: Request, client?: ClientInfo) => Promise<Response | undefined>;
 }
 
 /** Who sent a request, as the HTTP server saw it: never from a header the client could set. */
@@ -379,6 +384,10 @@ export function createGateway(options: GatewayOptions): Gateway {
 		async fetch(request, client = {}) {
 			const path = new URL(request.url).pathname;
 			try {
+				if (options.computePorts !== undefined) {
+					const answer = await options.computePorts(request, client);
+					if (answer !== undefined) return answer;
+				}
 				if (path === "/healthz") return json({ ok: true });
 				if (SIGN_IN_PATHS.has(path)) {
 					if (signIn === undefined) {

@@ -28,6 +28,10 @@
  *                                directory this gateway serves (with manifest.json from `kantel-host manifest <dir>`), or
  *                                an http(s) URL it redirects to. The images are public (a Debian root file system, the
  *                                guest agent, a kernel), so the route asks no credential.
+ *   KANTEL_COMPUTE_PORTS_DOMAIN  with `hosts`: the name exposed ports are served under, `{port}-{subdomain}.{domain}`;
+ *                                point a wildcard DNS name and certificate (`*.{domain}`) at this gateway. Use a
+ *                                registrable domain of its own (not under the gateway's), so a sandbox's page can't set
+ *                                cookies for the console. Unset, sandboxes expose no ports
  *   KANTEL_EGRESS_ATTRIBUTION_KEY
  *                                signs the Kantel-Sandbox and Kantel-Account headers hosts send an account's proxy
  *                                upstream when its settings ask for attribution (share it with the upstream); unset,
@@ -64,6 +68,7 @@ import { type Authenticator, KantelError } from "@kantel/contracts";
 import { createHostBackend, DESKTOP_PORT } from "@kantel/hosts/backend";
 import { createHostsApi, HOSTS_CONNECT_PATH, HOSTS_REGISTER_PATH } from "@kantel/hosts/http";
 import { openPortWebSocket } from "@kantel/hosts/port-websocket";
+import { createPortRouter, type PortRouter } from "@kantel/hosts/ports";
 import { HOST_CLOSE_REVOKED, HOST_MAX_MESSAGE_BYTES } from "@kantel/hosts/protocol";
 import { createHostsService, type HostsService } from "@kantel/hosts/service";
 import type { HostStore } from "@kantel/hosts/store";
@@ -91,6 +96,8 @@ export interface ComputeHostsConfig {
 	readonly updateUrl?: string;
 	readonly images?: string;
 	readonly attributionKey?: string;
+	/** Exposed ports' wildcard name's parent, such as `kantel-ports.example`. */
+	readonly portsDomain?: string;
 }
 
 /** The compute plane's settings: `hosts` is set when sandboxes run on joined hosts, not the stub. */
@@ -130,9 +137,23 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig | undefined
 	const images = env.KANTEL_COMPUTE_IMAGES?.trim() ?? "";
 	const joinCommand = env.KANTEL_COMPUTE_JOIN_COMMAND?.trim() ?? "";
 	const attributionKey = env.KANTEL_EGRESS_ATTRIBUTION_KEY?.trim() ?? "";
+	const portsDomain =
+		env.KANTEL_COMPUTE_PORTS_DOMAIN?.trim()
+			.toLowerCase()
+			.replace(/^\*?\.+|\.+$/g, "") ?? "";
+	if (portsDomain !== "") {
+		if (!/^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(portsDomain)) {
+			throw new Error("KANTEL_COMPUTE_PORTS_DOMAIN is a DNS name such as kantel-ports.example");
+		}
+		const gateway = new URL(publicUrl).hostname;
+		if (gateway === portsDomain || gateway.endsWith(`.${portsDomain}`)) {
+			throw new Error("KANTEL_COMPUTE_PORTS_DOMAIN can't be the gateway's own name or a parent of it");
+		}
+	}
 	return {
 		hosts: {
 			publicUrl: new URL(publicUrl).origin,
+			...(portsDomain === "" ? {} : { portsDomain }),
 			...(attributionKey === "" ? {} : { attributionKey }),
 			...(images === "" ? {} : { images }),
 			...(pools === undefined ? {} : { pools }),
@@ -196,6 +217,18 @@ export interface GatewayHostsBackend {
 	readonly config: ComputeHostsConfig;
 	/** 32 random bytes; a new one each start, so tunnel URLs end with the process. */
 	readonly tunnelSecret: Uint8Array;
+	/** Exposed ports, when the config names a domain for them (`portRouterFor`). */
+	readonly ports?: PortRouter;
+}
+
+/** The exposed ports' router for `config`, over `service`'s port streams; undefined without a ports domain. */
+export function portRouterFor(config: ComputeHostsConfig, service: HostsService): PortRouter | undefined {
+	if (config.portsDomain === undefined) return undefined;
+	return createPortRouter({
+		domain: config.portsDomain,
+		scheme: new URL(config.publicUrl).protocol === "http:" ? "http" : "https",
+		openPort: (sandboxId, port, sink) => service.sandboxes.openPort(sandboxId, port, sink),
+	});
 }
 
 export interface GatewayCompute {
@@ -209,6 +242,8 @@ export interface GatewayCompute {
 	 * images; undefined for any other path. Absent on the stub.
 	 */
 	readonly hostRoutes?: (request: Request) => Promise<Response | undefined>;
+	/** Requests to an exposed port's name, before any other route; undefined for any other name. */
+	readonly portRoutes?: (request: Request, client?: { readonly address?: string }) => Promise<Response | undefined>;
 	close(): Promise<void>;
 }
 
@@ -242,6 +277,7 @@ export async function gatewayCompute(options: {
 					publicUrl: hosts.config.publicUrl,
 					tunnelSecret: hosts.tunnelSecret,
 					...(hosts.config.attributionKey === undefined ? {} : { attributionKey: hosts.config.attributionKey }),
+					...(hosts.ports === undefined ? {} : { ports: hosts.ports }),
 					...(options.now === undefined ? {} : { now: options.now }),
 				});
 	// The API mints and keeps join tokens; the registry spends them when a host registers.
@@ -298,6 +334,7 @@ export async function gatewayCompute(options: {
 		superAdminKey,
 		binding: hosts === undefined ? "memory, stub backend (experimental)" : "memory, kantel-host hosts (experimental)",
 		...(hostRoutes === undefined ? {} : { hostRoutes }),
+		...(hosts?.ports === undefined ? {} : { portRoutes: hosts.ports.fetch }),
 		async close() {
 			await api.close();
 		},
@@ -331,6 +368,15 @@ export function withHostUpgrades(
 		const path = new URL(incoming.url ?? "/", "http://gateway").pathname;
 		const refuse = (code: number, reason: string) =>
 			sockets.handleUpgrade(incoming, socket, head, (accepted) => accepted.close(code, reason));
+		// An exposed port's name (a dev server's hot reload, an app's own WebSocket): only with its token, as its pages.
+		const port = hosts.ports?.upgrade(incoming.headers.host ?? "", incoming.url ?? "/", incoming.headers.cookie);
+		if (port !== undefined) {
+			if (!port.ok) {
+				socket.end(`HTTP/1.1 ${port.status} ${port.reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+				return;
+			}
+			return passThrough(port.sandboxId, port.port, port.path, port.host);
+		}
 		const tunnel = TUNNEL_PATH.exec(path);
 		if (tunnel?.[1] !== undefined) {
 			const ticket = tunnel[1];
@@ -411,8 +457,9 @@ export function withHostUpgrades(
 		 * as a client on 127.0.0.1 (Chrome refuses DevTools to any other Host). Not raw bytes: Bun drops what is written
 		 * to an upgrade's socket, so the client's side has to be `ws`'s.
 		 */
-		function passThrough(sandboxId: string, port: number, rest: string) {
-			const query = new URL(incoming.url ?? "/", "http://gateway").search;
+		function passThrough(sandboxId: string, port: number, rest: string, host?: string) {
+			// An exposed port's path comes with its query (less the token); a tunnel's takes the request's.
+			const query = host === undefined ? new URL(incoming.url ?? "/", "http://gateway").search : "";
 			sockets.handleUpgrade(incoming, socket, head, (accepted) => {
 				const inner = openPortWebSocket(
 					(sink) => compute.sandboxes.openPort(sandboxId, port, sink),
@@ -426,6 +473,7 @@ export function withHostUpgrades(
 								reason.slice(0, 120),
 							),
 					},
+					...(host === undefined ? [] : [host]),
 				);
 				accepted.on("message", (data, binary) => inner.send(binary ? bytesOf(data) : data.toString(), binary));
 				accepted.on("close", () => inner.close());

@@ -5,6 +5,7 @@ import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { type ComputeApi, createComputeApi, joinTokenSpender } from "@kantel/compute";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHostBackend } from "../src/backend.ts";
+import { createPortRouter } from "../src/ports.ts";
 import type { HostFacts, HostMessage, HostSandbox } from "../src/protocol.ts";
 import { createHostsService, type HostsService } from "../src/service.ts";
 import { createMemoryHostStore } from "../src/store.ts";
@@ -169,15 +170,23 @@ afterEach(async () => {
 	for (const close of closers.splice(0).reverse()) await close();
 });
 
-function setup() {
+function setup(options: { ports?: boolean } = {}) {
 	const service = createHostsService({ store: createMemoryHostStore(), publicUrl: "https://kantel.test" });
 	const secret = crypto.getRandomValues(new Uint8Array(32));
+	const ports =
+		options.ports === true
+			? createPortRouter({
+					domain: "kantel-ports.test",
+					openPort: (sandboxId, port, sink) => service.sandboxes.openPort(sandboxId, port, sink),
+				})
+			: undefined;
 	const api: ComputeApi = createComputeApi({
 		backend: createHostBackend({
 			hosts: service,
 			publicUrl: "https://kantel.test",
 			tunnelSecret: secret,
 			attributionKey: "attr-key",
+			...(ports === undefined ? {} : { ports }),
 		}),
 		authenticatePerson: async (request) => (request.headers.get("authorization") === "Bearer root" ? ROOT : undefined),
 		fetch: async () => new Response(null, { status: 204 }),
@@ -194,7 +203,7 @@ function setup() {
 		fetch: (input, init) =>
 			api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
 	});
-	return { service, api, root, secret };
+	return { service, api, root, secret, ports };
 }
 
 async function failure(call: Promise<unknown>): Promise<KantelApiError> {
@@ -342,6 +351,37 @@ describe("the compute API on kantel-host hosts", () => {
 		// Signed elsewhere, a ticket names any sandbox and port: only the secret makes one.
 		const forged = await signTunnel(secret, { sandboxId: "sbx_other", port: 22, expiresAt: Date.now() + 60_000 });
 		expect((await verifyTunnel(secret, forged, Date.now()))?.sandboxId).toBe("sbx_other");
+	});
+
+	it("exposes a microVM's ports only with a name for them, token-gated unless public, and forgets them on stop", async () => {
+		const without = setup();
+		const lone = await without.root.createHostJoinToken({});
+		new FakeHost(without.service, (await without.service.register({ token: lone.token, facts })).hostId).connect();
+		const plain = await without.root.createSandbox({ type: "microvm", wait: true });
+		expect(plain.capabilities.ports).toBe(false);
+		expect((await failure(without.root.exposePort(plain.id, { port: 3000 }))).code).toBe("not_supported");
+
+		const { service, root, ports } = setup({ ports: true });
+		const token = await root.createHostJoinToken({});
+		new FakeHost(service, (await service.register({ token: token.token, facts })).hostId).connect();
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		expect(sandbox.capabilities.ports).toBe(true);
+		const gated = await root.exposePort(sandbox.id, { port: 3000 });
+		expect(gated.public).toBe(false);
+		expect(gated.url).toBe(
+			`https://3000-${sandbox.subdomain}.kantel-ports.test/?_token=${new URL(gated.url).searchParams.get("_token")}`,
+		);
+		expect(new URL(gated.url).searchParams.get("_token")).toMatch(/^[A-Za-z0-9_-]{43}$/);
+		const open = await root.exposePort(sandbox.id, { port: 8080, public: true });
+		expect(open.url).toBe(`https://8080-${sandbox.subdomain}.kantel-ports.test/`);
+		const bare = new Request(`https://3000-${sandbox.subdomain}.kantel-ports.test/`);
+		expect((await ports?.fetch(bare))?.status).toBe(401);
+
+		const isolate = await root.createSandbox({ type: "isolate", wait: true });
+		expect(isolate.capabilities.ports).toBe(false);
+
+		await root.stopSandbox(sandbox.id, { wait: true });
+		expect((await ports?.fetch(new Request(open.url)))?.status).toBe(404);
 	});
 
 	it("revokes and drains a host through the API, and the registry follows", async () => {

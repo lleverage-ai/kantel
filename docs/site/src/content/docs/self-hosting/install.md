@@ -138,7 +138,15 @@ curl -s -X POST "$KANTEL_URL/v1/admin/hosts/join-tokens" \
 sudo npx -y @kantel/host@latest install --url https://kantel.example.com --token kth_...
 ```
 
-The host shows up in `GET /v1/admin/hosts` once it connects, and new sandboxes go on it. Its desktop, browser and SSH are reached through short-lived signed URLs on the control plane, which `openDesktop`, `openBrowser` and `openSsh` answer: the desktop link opens it in a browser tab, and `cdpUrl` works with Playwright's `connectOverCDP`. Exposed ports aren't offered on your own hosts yet.
+The host shows up in `GET /v1/admin/hosts` once it connects, and new sandboxes go on it. Its desktop, browser and SSH are reached through short-lived signed URLs on the control plane, which `openDesktop`, `openBrowser` and `openSsh` answer: the desktop link opens it in a browser tab, and `cdpUrl` works with Playwright's `connectOverCDP`. Sandboxes have no address of their own: nothing on the internet, your network or another sandbox can reach one except through these URLs.
+
+To let sandboxes [expose ports](/sandboxes/public-ports/), give them a domain of their own and point a wildcard DNS name and TLS certificate for it at the control plane, the same way as `KANTEL_PUBLIC_URL`:
+
+```sh
+echo 'KANTEL_COMPUTE_PORTS_DOMAIN=kantel-ports.example' >> ~/.kantel/src/deploy/compose/.env
+```
+
+A port is then at `https://3000-<subdomain>.kantel-ports.example`. Use a registrable domain that isn't the console's or a parent of it, so a page a sandbox serves can't set cookies the console reads; the control plane refuses the console's own name and its parents. Without the setting, sandboxes expose no ports.
 
 An account's proxy settings (`PUT /v1/proxy`) reach its sandboxes on hosts, including running ones: allow and deny rules always, and the upstream proxy only on hosts installed with `--proxy-data-path`. The host adds the upstream's headers and token itself, so they never enter a sandbox. To have the host sign the `Kantel-Sandbox` and `Kantel-Account` headers it sends upstream, set `KANTEL_EGRESS_ATTRIBUTION_KEY` to a shared secret your proxy checks.
 

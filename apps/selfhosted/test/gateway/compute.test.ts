@@ -111,6 +111,23 @@ describe("the compute plane on the gateway", () => {
 		).toEqual({ hosts: { publicUrl: "https://kantel.example.com", pools: { "microvm/default": 2 } } });
 	});
 
+	it("takes a domain for exposed ports that isn't the gateway's own name or a parent of it", () => {
+		const env = {
+			KANTEL_COMPUTE: "experimental",
+			KANTEL_COMPUTE_BACKEND: "hosts",
+			KANTEL_PUBLIC_URL: "https://kantel.example.com",
+		};
+		expect(computeConfig({ ...env, KANTEL_COMPUTE_PORTS_DOMAIN: "*.Kantel-Ports.example." })?.hosts?.portsDomain).toBe(
+			"kantel-ports.example",
+		);
+		for (const domain of ["kantel.example.com", "example.com", "not a domain", "-x.example"]) {
+			expect(() => computeConfig({ ...env, KANTEL_COMPUTE_PORTS_DOMAIN: domain })).toThrow(
+				/KANTEL_COMPUTE_PORTS_DOMAIN/,
+			);
+		}
+		expect(computeConfig(env)?.hosts?.portsDomain).toBeUndefined();
+	});
+
 	it("lets a host register with a join token the API minted, through the gateway, with no sign-in", async () => {
 		const components = createGatewayComponents();
 		cleanups.push(() => components.close());

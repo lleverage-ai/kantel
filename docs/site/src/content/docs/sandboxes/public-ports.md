@@ -11,7 +11,7 @@ sidebar:
 These routes are part of Kantel's API, and a control plane serves them only when it runs with `KANTEL_COMPUTE=experimental`. Their shapes may still change.
 :::
 
-An app listening on a port inside a sandbox can get an HTTPS URL, so you, a reviewer or a test runner can open it from anywhere. The request reaches the sandbox through its host's tunnel, so the host needs no open ports of its own.
+An app listening on a port inside a sandbox can get an HTTPS URL, so you, a reviewer or a test runner can open it from anywhere. The sandbox has no address of its own: the control plane answers the URL and passes each request, WebSockets included, to the port through its host's tunnel, so neither the sandbox nor the host needs an open port. On your own hosts this needs a [domain for ports](/self-hosting/install/#run-sandboxes-on-your-own-linux-hosts).
 
 The examples use `KANTEL_URL`, `KANTEL_API_KEY` and the `kantel` client set up in [Create and manage sandboxes](/sandboxes/lifecycle/#before-you-start). The key needs `access`. A sandbox can expose ports when its `capabilities.ports` is `true`.
 
@@ -35,7 +35,11 @@ The answer is an [ExposedPort](/api/reference/types/#exposedport) with the URL. 
 
 ## Tokens and public URLs
 
-By default the URL carries a token, and anyone holding the whole URL can open it. Treat it like a password: share it only with people who should see the app.
+By default the URL carries a token (`?_token=...`), and anyone holding the whole URL can open it. Treat it like a password: share it only with people who should see the app. A request without the token is refused with `401` and never reaches the sandbox.
+
+Opening the URL in a browser trades the token for a cookie on that one host name and takes it out of the address bar, so the app's own links and requests work. A script or test runner can send the token in the query each time, or as the `_kantel_port` cookie. Kantel takes the token and its cookie off before the request reaches the app.
+
+To end a token, hide the port: exposing it afterwards gives it a new one. Stopping or deleting the sandbox ends its ports too.
 
 To let anyone open it with no token, such as a preview you want to post in a pull request, expose it with `public`:
 

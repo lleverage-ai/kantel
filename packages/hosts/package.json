@@ -8,7 +8,9 @@
 	"exports": {
 		".": "./src/index.ts",
 		"./backend": "./src/backend.ts",
+		"./port-http": "./src/port-http.ts",
 		"./port-websocket": "./src/port-websocket.ts",
+		"./ports": "./src/ports.ts",
 		"./viewer": "./src/viewer.ts",
 		"./tunnel": "./src/tunnel.ts",
 		"./http": "./src/http.ts",
