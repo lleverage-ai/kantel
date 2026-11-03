@@ -1,6 +1,6 @@
 ---
 title: Hosts
-description: Add Linux machines that run your sandboxes with kantel-host, check a machine first, choose which host a sandbox goes on with labels, and update, drain, revoke or remove a host later.
+description: Add your own Linux machines as the hosts that run your sandboxes, on app.kantel.dev or a self-hosted control plane. Check a machine first, link it directly or over a private network such as Tailscale, choose which host a sandbox goes on with labels, and update, drain, revoke or remove a host later.
 sidebar:
   badge:
     text: Experimental
@@ -13,7 +13,18 @@ sidebar:
 
 A host is a Linux machine that runs sandboxes. It runs `kantel-host`, which boots microVMs with Firecracker, and isolates with workerd inside a microVM. The host dials out to the control plane over a WebSocket and keeps that connection open, so it needs no inbound port and can sit behind NAT. A sandbox stays on the host it started on, since its disk and memory are there.
 
-[Quickstart](/quickstart/) joins one host on the control plane's own machine. This page covers each step in full, for any number of machines.
+You bring the hosts, whether you use the hosted control plane at app.kantel.dev or run your own. [Quick start](/quickstart/) adds one host to app.kantel.dev, and [Self-host quick start](/self-hosting/quickstart/) joins one on the control plane's own machine. This page covers each step in full, for any number of machines.
+
+## How a host reaches Kantel
+
+A host only ever connects out, to the control plane's URL. That URL decides the link:
+
+| Link | How | Use it for |
+| --- | --- | --- |
+| Direct | The control plane's public HTTPS URL, such as `https://app.kantel.dev` | app.kantel.dev, or a self-hosted control plane with a public address. The host needs outbound HTTPS only |
+| Private network | The control plane's address on a network the host shares with it, such as a Tailscale tailnet | A self-hosted control plane that shouldn't be on the internet. See [Over a private network](#over-a-private-network) |
+
+Kantel Connect, a link through kantel.dev for hosts and self-hosted control planes that can't reach each other directly, is coming.
 
 ## What a host needs
 
@@ -92,6 +103,18 @@ apps/host/dist/kantel-host manifest ~/kantel-images
 
 ## Add a host
 
+### On app.kantel.dev
+
+On the console's **Hosts** page, select **Add a host**. It makes a one-time token for the space you're in, your personal space or an organisation you're an admin of, and shows the command to run on the machine:
+
+```sh
+curl -fsSL https://kantel.dev/host.sh | sudo sh -s -- --url https://app.kantel.dev --token kth_…
+```
+
+`https://kantel.dev/host.sh` is the host installer on Kantel's latest GitHub Release, below. The host belongs to that space: only its members' sandboxes run on it. Add any of the [installer's flags](#what-the-installer-does) after the token.
+
+### On a self-hosted control plane
+
 A self-hosted control plane runs sandboxes on hosts unless `KANTEL_COMPUTE_BACKEND=stub` says otherwise. Hosts reach it at its local address, `http://127.0.0.1:58090`, which only a host on the same machine can use. For hosts on other machines, tell it the URL where hosts and people reach it:
 
 ```sh
@@ -111,6 +134,18 @@ A token works once, and for an hour unless `--expires-minutes` says otherwise. T
 ```sh
 curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url https://kantel.example.com --token kth_…
 ```
+
+### Over a private network
+
+A self-hosted control plane can stay off the internet and reach its hosts over a private network, such as a Tailscale tailnet that the control plane's machine, the hosts and your own computer are all on. Use its address on that network as the public URL:
+
+```sh
+kantel-admin compute enable --public-url http://kantel.your-tailnet.ts.net:58090 --apply
+```
+
+Join commands then carry that address, and hosts connect to it over the tailnet. Your browser needs to reach it too, for desktop, browser and SSH links. To keep the console on another address and give only hosts the tailnet one, set `KANTEL_COMPUTE_PUBLIC_URL` to it instead.
+
+### What the installer does
 
 The installer hands its options to `kantel-host install`, which:
 
