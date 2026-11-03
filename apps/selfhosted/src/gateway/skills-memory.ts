@@ -14,7 +14,7 @@
 //
 // Where `/skills` is: a session created without a workspace gets one of its own, made as the session is created
 // (`withOwnWorkspaces`), as every Cloudflare session has one (its `session_<id>`): so a session started from the
-// console with no repository has its coding tools, `present_files` and `codemode`. When its profile names skills the
+// console with no repository has its coding tools and `present_files`. When its profile names skills the
 // workspace has the `/skills` mount, so its `read` and `ls` see `/skills/<name>/SKILL.md`. The exception is a host
 // app's profile (one with a `hostId`) that names no skills: it keeps having no workspace, because the host app's worker
 // may serve its own `read`, `write`, `edit` and `ls` as host tools, and the runtime's coding tools of those names would
