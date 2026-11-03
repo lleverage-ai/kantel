@@ -79,6 +79,34 @@ describe("sandboxes", () => {
 		expect((await failure(tom.readFile(sandbox.id, { path: "notes/todo.md" }))).code).toBe("not_found");
 	});
 
+	it("reads a file over 1 MiB in parts with offset and length", async () => {
+		const { tom } = setup();
+		const sandbox = await tom.createSandbox({ wait: true });
+		const half = 768 * 1024;
+		await tom.writeFile(sandbox.id, { path: "a.txt", content: "a".repeat(half) });
+		await tom.writeFile(sandbox.id, { path: "b.txt", content: "b".repeat(half) });
+		await tom.runCommand(sandbox.id, { command: "cat a.txt b.txt > big.txt" });
+
+		const whole = await failure(tom.readFile(sandbox.id, { path: "big.txt" }));
+		expect(whole.code).toBe("invalid");
+		expect(whole.message).toContain("read it in parts with offset and length");
+
+		const first = await tom.readFile(sandbox.id, { path: "big.txt", offset: 0 });
+		expect(first).toMatchObject({ size: 2 * half, offset: 0 });
+		expect(first.content).toBe("a".repeat(half) + "b".repeat(1024 * 1024 - half));
+		const rest = await tom.readFile(sandbox.id, { path: "big.txt", offset: 1024 * 1024, length: 1024 * 1024 });
+		expect(rest).toMatchObject({ size: 2 * half, offset: 1024 * 1024 });
+		expect(rest.content).toBe("b".repeat(2 * half - 1024 * 1024));
+		const some = await tom.readFile(sandbox.id, { path: "big.txt", offset: half - 2, length: 4, encoding: "base64" });
+		expect(atob(some.content)).toBe("aabb");
+		const past = await tom.readFile(sandbox.id, { path: "big.txt", offset: 5 * half, length: 10 });
+		expect(past).toMatchObject({ content: "", size: 2 * half, offset: 2 * half });
+		// A small file read with a range says where its part starts; without one, it answers no offset.
+		expect(await tom.readFile(sandbox.id, { path: "a.txt", length: 3 })).toMatchObject({ content: "aaa", offset: 0 });
+		expect(await tom.readFile(sandbox.id, { path: "a.txt" })).not.toHaveProperty("offset");
+		expect((await failure(tom.readFile(sandbox.id, { path: "a.txt", length: 1024 * 1024 + 1 }))).code).toBe("invalid");
+	});
+
 	it("runs a detached command in the background and records how it ended", async () => {
 		const { api, tom } = setup();
 		const sandbox = await tom.createSandbox({ wait: true });

@@ -35,7 +35,8 @@ type Tier interface {
 	Get(id string) (proto.SandboxInfo, error)
 	List() []proto.SandboxInfo
 	Exec(ctx context.Context, p proto.ExecParams, onOutput func(stdout, stderr string)) (proto.ExecResult, error)
-	ReadFile(ctx context.Context, p proto.FileParams) ([]byte, uint32, error)
+	// ReadFile answers the file (or with p.Length, at most that many bytes from p.Offset), its mode and its whole size.
+	ReadFile(ctx context.Context, p proto.FileParams) ([]byte, uint32, int64, error)
 	WriteFile(ctx context.Context, p proto.FileParams, data []byte) error
 	DeleteFile(ctx context.Context, p proto.FileParams) error
 	ListFiles(ctx context.Context, p proto.FileParams) ([]proto.FileEntry, error)
@@ -475,11 +476,18 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if err != nil {
 			return nil, err
 		}
-		data, mode, err := t.ReadFile(ctx, p)
+		if p.Offset < 0 || p.Length < 0 {
+			return nil, invalid("offset and length can't be negative")
+		}
+		data, mode, size, err := t.ReadFile(ctx, p)
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"data": base64.StdEncoding.EncodeToString(data), "mode": mode, "size": len(data)}, nil
+		// fileSize, the whole file's, also tells the control plane this host reads ranges: one from before them answers
+		// the whole file whatever it was asked.
+		return map[string]any{
+			"data": base64.StdEncoding.EncodeToString(data), "mode": mode, "size": len(data), "fileSize": size,
+		}, nil
 	case proto.MethodFileWrite:
 		p, err := decode[proto.FileParams](params)
 		if err != nil {

@@ -763,7 +763,57 @@ describe("copying files", () => {
 		expect(await readFile(join(configDir, "out", "a.txt"), "utf8")).toBe("out/a.txt!");
 	});
 
-	it("scp reads a file over 1 MiB in parts with commands", async () => {
+	it("scp reads a file over 1 MiB in ranged reads, with no command in the sandbox", async () => {
+		const big = Buffer.alloc(2 * 1024 * 1024 + 300);
+		for (let i = 0; i < big.length; i++) big[i] = i % 251;
+		const result = await kantel(["scp", "sbx_test1:/srv/big.bin", "got.bin"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1/files/list": () => ({
+					path: "/srv",
+					items: [{ name: "big.bin", path: "/srv/big.bin", kind: "file", size: big.length }],
+				}),
+				"GET /v1/sandboxes/sbx_test1/files": (call) => {
+					const offset = Number(call.query.get("offset"));
+					const part = big.subarray(offset, offset + Number(call.query.get("length")));
+					return {
+						path: "/srv/big.bin",
+						encoding: "base64",
+						content: part.toString("base64"),
+						size: big.length,
+						offset,
+					};
+				},
+			},
+		});
+		expect(result.code).toBe(0);
+		expect((await readFile(join(configDir, "got.bin"))).equals(big)).toBe(true);
+		const reads = result.calls.filter((call) => call.path.endsWith("/files"));
+		expect(reads.map((call) => [call.query.get("offset"), call.query.get("length")])).toEqual([
+			["0", "1048576"],
+			["1048576", "1048576"],
+			["2097152", "1048576"],
+		]);
+		expect(result.calls.filter((call) => call.path.endsWith("/commands"))).toEqual([]);
+	});
+
+	it("files get stops when a file changes size while it is read in parts", async () => {
+		let size = 1024 * 1024 + 10;
+		const result = await kantel(["files", "get", "sbx_test1", "/srv/log", "log"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1/files": (call) => {
+					const offset = Number(call.query.get("offset"));
+					const part = Buffer.alloc(Math.min(1024 * 1024, size - offset), 1);
+					const answer = { path: "/srv/log", encoding: "base64", content: part.toString("base64"), size, offset };
+					size += 5;
+					return answer;
+				},
+			},
+		});
+		expect(result.code).toBe(1);
+		expect(result.stderr).toContain("changed size");
+	});
+
+	it("scp reads a file over 1 MiB in parts with commands from a control plane before ranged reads", async () => {
 		const big = Buffer.alloc(1024 * 1024 + 300);
 		for (let i = 0; i < big.length; i++) big[i] = i % 251;
 		const result = await kantel(["scp", "sbx_test1:/srv/big.bin", "got.bin"], {

@@ -16,7 +16,6 @@ import {
 	createKantelClient,
 	type EventType,
 	type ExposedPort,
-	type FileContent,
 	type FileList,
 	type IssuedApiKey,
 	KantelApiError,
@@ -67,6 +66,7 @@ import { pipeTunnel, proxyUrlOf, SSH_URL_ENV, tunnelSshArgs, tunnelSshCommand } 
 import {
 	downloadTree,
 	getBytes,
+	getFile,
 	gitFiles,
 	parseRemote,
 	remoteIsDirectory,
@@ -275,9 +275,6 @@ function utf8(content: Uint8Array): string | undefined {
 		return undefined;
 	}
 }
-
-const bytesOf = (file: FileContent): Uint8Array =>
-	Buffer.from(file.content, file.encoding === "base64" ? "base64" : "utf8");
 
 async function isDirectory(path: string): Promise<boolean> {
 	try {
@@ -1049,8 +1046,7 @@ const SECTIONS: readonly Section[] = [
 						ctx.out(JSON.stringify(await client.readFile(ctx.arg(0), { path: ctx.arg(1) }), null, 2));
 						return;
 					}
-					const file = await client.readFile(ctx.arg(0), { path: ctx.arg(1), encoding: "base64" });
-					ctx.io.stdout.write(bytesOf(file));
+					ctx.io.stdout.write(await getBytes(client, ctx.arg(0), ctx.arg(1)));
 				},
 			},
 			{
@@ -1082,14 +1078,14 @@ const SECTIONS: readonly Section[] = [
 			},
 			{
 				name: "files get",
-				summary: "Copy a file (up to 1 MiB) out of a sandbox",
+				summary: "Copy a file out of a sandbox",
 				args: [{ name: "id" }, { name: "remote" }, { name: "local", optional: true }],
 				details: "The local path defaults to the file's name here; - writes it to stdout.",
 				async run(ctx) {
 					const remote = ctx.arg(1);
 					const local = ctx.optional(2);
-					const file = await (await ctx.client()).readFile(ctx.arg(0), { path: remote, encoding: "base64" });
-					const content = bytesOf(file);
+					const file = await getFile(await ctx.client(), ctx.arg(0), remote);
+					const content = file.content;
 					if (local === "-") {
 						ctx.io.stdout.write(content);
 						return;
@@ -1123,8 +1119,8 @@ const SECTIONS: readonly Section[] = [
 					"  kantel scp ./report.txt sbx_123:/home/user/      upload a file into a directory\n" +
 					"  kantel scp sbx_123:out.zip .                      download one (relative paths are under /home/user)\n" +
 					"  kantel scp -r ./site sbx_123:/srv/site            upload a directory\n" +
-					"It goes through Kantel's files API, so it works on isolates too. A file over 1 MiB goes in parts and\n" +
-					"needs a microVM.",
+					"It goes through Kantel's files API, so it works on isolates too. A file over 1 MiB comes down in parts;\n" +
+					"one going up goes in parts that a command joins, which needs a microVM.",
 				async run(ctx) {
 					const from = ctx.arg(0);
 					const to = ctx.arg(1);

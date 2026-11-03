@@ -120,6 +120,18 @@ export interface ExecResult {
 	readonly timedOut: boolean;
 }
 
+/** A part of a file: at most `length` bytes from `offset`. */
+export interface FileRange {
+	readonly offset: number;
+	readonly length: number;
+}
+
+/** What a read answers: the bytes read, and the whole file's size. */
+export interface FileRead {
+	readonly bytes: Uint8Array;
+	readonly size: number;
+}
+
 /** One entry of a directory. */
 export interface BackendFileEntry {
 	readonly name: string;
@@ -181,7 +193,8 @@ export interface SandboxBackend {
 	destroy(sandboxId: string): Promise<void>;
 	/** Runs a command line and answers when it ends, or at its timeout. */
 	exec(sandboxId: string, request: ExecRequest): Promise<ExecResult>;
-	readFile(sandboxId: string, path: string): Promise<Uint8Array>;
+	/** Reads a file, or with a range, at most `range.length` bytes of it from `range.offset`. */
+	readFile(sandboxId: string, path: string, range?: FileRange): Promise<FileRead>;
 	/** Writes a file, making its directories, replacing what was there. */
 	writeFile(sandboxId: string, path: string, content: Uint8Array, mode?: number): Promise<BackendFileEntry>;
 	/** Deletes a file, or a directory and everything in it. */

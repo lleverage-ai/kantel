@@ -567,18 +567,47 @@ export const ReadFileQuery = Type.Object(
 	{
 		path: Type.String({ minLength: 1 }),
 		encoding: Type.Optional(FileEncoding),
+		offset: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"Read from this byte (default 0). With `offset` or `length`, a file of any size is read a part at a time.",
+			}),
+		),
+		length: Type.Optional(
+			Type.Integer({
+				minimum: 1,
+				maximum: 1024 * 1024,
+				description: "Read at most this many bytes: default, and at most, 1 MiB (1048576).",
+			}),
+		),
 	},
 	{ title: "ReadFileQuery" },
+);
+
+export const ReadSnapshotFileQuery = Type.Object(
+	{
+		path: Type.String({ minLength: 1 }),
+		encoding: Type.Optional(FileEncoding),
+	},
+	{ title: "ReadSnapshotFileQuery" },
 );
 
 export const FileContent = Type.Object(
 	{
 		path: Type.String(),
 		encoding: FileEncoding,
-		content: Type.String(),
-		size: Type.Integer(),
+		content: Type.String({ description: "The file, or with `offset` or `length`, the part read." }),
+		size: Type.Integer({ description: "The whole file's size in bytes." }),
+		offset: Type.Optional(
+			Type.Integer({ description: "With `offset` or `length`: the byte `content` starts at. At `size`, it's empty." }),
+		),
 	},
-	{ title: "FileContent", description: "A file of at most 1 MiB; for larger, run a command or use SSH." },
+	{
+		title: "FileContent",
+		description:
+			"A file of at most 1 MiB, or a part of at most 1 MiB of a larger one, read with `offset` and `length`.",
+	},
 );
 
 export const WriteFileBody = Type.Object(

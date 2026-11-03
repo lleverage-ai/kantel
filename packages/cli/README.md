@@ -72,8 +72,8 @@ its arguments, quoted for the shell. Its stdout and stderr come out on kantel's,
 (124 when it timed out). `--timeout 0` runs it detached and follows its output with no time limit. A Kantel error
 prints `kantel: <code>: <message>` on stderr and exits 1.
 
-`scp` and `push` use the files API, which moves 1 MiB a call; a bigger file goes in 768 KiB parts joined by a command
-in the sandbox (and comes out in 512 KiB parts read by one), so those need a microVM.
+`scp` and `push` use the files API, which moves 1 MiB a call. A bigger file comes out in 1 MiB ranged reads, on any
+sandbox; one going in goes in 768 KiB parts joined by a command in the sandbox, so that needs a microVM.
 
 ## Coding agents
 

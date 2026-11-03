@@ -1,0 +1,104 @@
+package guest
+
+import (
+	"bytes"
+	"context"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
+	"testing"
+)
+
+// clientFor is a Client that reaches handler over TCP rather than a VM's vsock.
+func clientFor(t *testing.T, handler http.Handler) *Client {
+	t.Helper()
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	dial := func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", srv.Listener.Addr().String())
+	}
+	return &Client{http: &http.Client{Transport: &http.Transport{DialContext: dial}}}
+}
+
+func testFile(t *testing.T, size int) (string, []byte) {
+	t.Helper()
+	content := make([]byte, size)
+	for i := range content {
+		content[i] = byte(i * 7)
+	}
+	path := filepath.Join(t.TempDir(), "big.bin")
+	if err := os.WriteFile(path, content, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o640); err != nil { // whatever the umask
+		t.Fatal(err)
+	}
+	return path, content
+}
+
+func TestReadFileRanges(t *testing.T) {
+	path, content := testFile(t, 3000)
+	client := clientFor(t, (&Server{}).Handler())
+	ctx := context.Background()
+
+	whole, mode, size, err := client.ReadFile(ctx, path, 0, 0)
+	if err != nil || !bytes.Equal(whole, content) || size != 3000 || mode != 0o640 {
+		t.Fatalf("whole file: %d bytes, mode %o, size %d, %v", len(whole), mode, size, err)
+	}
+	for _, c := range []struct{ offset, length, want int64 }{
+		{0, 1024, 1024},
+		{1024, 1024, 1024},
+		{2048, 1024, 952}, // the last part is short
+		{3000, 1024, 0},   // at the end
+		{5000, 1024, 0},   // past it
+	} {
+		part, _, size, err := client.ReadFile(ctx, path, c.offset, c.length)
+		if err != nil {
+			t.Fatalf("offset %d: %v", c.offset, err)
+		}
+		start := min(c.offset, 3000)
+		if size != 3000 || int64(len(part)) != c.want || !bytes.Equal(part, content[start:start+c.want]) {
+			t.Fatalf("offset %d length %d: %d bytes of a %d-byte file, want %d", c.offset, c.length, len(part), size, c.want)
+		}
+	}
+	if _, _, _, err := client.ReadFile(ctx, filepath.Join(filepath.Dir(path), "missing"), 0, 10); !IsNotFound(err) {
+		t.Fatalf("a missing file: %v", err)
+	}
+}
+
+// A guest agent from before ranged reads ignores offset and length and sends the whole file; the client still answers
+// only the range, and the file's size from content-length.
+func TestReadFileRangeFromAnOlderAgent(t *testing.T) {
+	path, content := testFile(t, 3000)
+	older := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("content-length", strconv.Itoa(len(content)))
+		w.Header().Set("x-file-mode", "640")
+		_, _ = w.Write(content)
+	})
+	client := clientFor(t, older)
+	part, mode, size, err := client.ReadFile(context.Background(), path, 1000, 500)
+	if err != nil || size != 3000 || mode != 0o640 || !bytes.Equal(part, content[1000:1500]) {
+		t.Fatalf("%d bytes, mode %o, size %d, %v", len(part), mode, size, err)
+	}
+	tail, _, size, err := client.ReadFile(context.Background(), path, 2900, 500)
+	if err != nil || size != 3000 || !bytes.Equal(tail, content[2900:]) {
+		t.Fatalf("the tail: %d bytes, size %d, %v", len(tail), size, err)
+	}
+}
+
+func TestReadFileRefusesABadRange(t *testing.T) {
+	path, _ := testFile(t, 10)
+	srv := httptest.NewServer((&Server{}).Handler())
+	defer srv.Close()
+	res, err := http.Get(srv.URL + "/files?path=" + path + "&offset=-1&length=5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Body.Close()
+	if res.StatusCode != 400 {
+		t.Fatalf("a negative offset: %d", res.StatusCode)
+	}
+}

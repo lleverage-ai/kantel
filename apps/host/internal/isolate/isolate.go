@@ -1234,7 +1234,7 @@ func (m *Manager) readFrom(account string, man Manifest, p string) ([]byte, uint
 	return data, e.Mode, err
 }
 
-func (m *Manager) ReadFile(_ context.Context, p proto.FileParams) ([]byte, uint32, error) {
+func (m *Manager) ReadFile(_ context.Context, p proto.FileParams) ([]byte, uint32, int64, error) {
 	var data []byte
 	var mode uint32
 	err := m.withManifest(p.SandboxID, false, func(s *sandbox, man Manifest) error {
@@ -1242,7 +1242,16 @@ func (m *Manager) ReadFile(_ context.Context, p proto.FileParams) ([]byte, uint3
 		data, mode, err = m.readFrom(s.meta.Owner, man, p.Path)
 		return err
 	})
-	return data, mode, err
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	size := int64(len(data))
+	if p.Length > 0 {
+		// An isolate's files are blobs it keeps whole: the range is cut from one.
+		start := min(p.Offset, size)
+		data = data[start:min(start+p.Length, size)]
+	}
+	return data, mode, size, nil
 }
 
 func (m *Manager) WriteFile(_ context.Context, p proto.FileParams, data []byte) error {

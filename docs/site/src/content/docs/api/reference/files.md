@@ -13,7 +13,7 @@ Read, write, delete and list a sandbox's files.
 
 `GET /v1/sandboxes/{sandboxId}/files` (SDK method `readFile`)
 
-A file of up to 1 MiB, as UTF-8 text unless `encoding` asks for base64. A key needs `files`.
+A file of up to 1 MiB, as UTF-8 text unless `encoding` asks for base64. A larger file is read in parts of up to 1 MiB with `offset` and `length`; `size` in the answer is the whole file's. Use base64 for a part of a binary file, or of a text file cut mid-character. A key needs `files`.
 
 **Path parameters**
 
@@ -27,6 +27,8 @@ A file of up to 1 MiB, as UTF-8 text unless `encoding` asks for base64. A key ne
 | --- | --- | --- | --- |
 | `path` | string | yes |  |
 | `encoding` | [FileEncoding](/api/reference/types/#fileencoding) | no |  |
+| `offset` | integer | no | Read from this byte (default 0). With `offset` or `length`, a file of any size is read a part at a time. (minimum 0) |
+| `length` | integer | no | Read at most this many bytes: default, and at most, 1 MiB (1048576). (minimum 1, maximum 1048576) |
 
 **Answers**
 
