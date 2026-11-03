@@ -51,12 +51,6 @@ jobs:
       - name: Typecheck
         run: pnpm --filter @kantel/selfhosted typecheck
 
-      # The gateway's in-process tests on Bun, the runtime its image runs it on (ci.yml runs them on Node). Postgres
-      # tests skip here: "Bindings against the stack" runs them on the stack's.
-      - name: Gateway tests on Bun
-        working-directory: apps/selfhosted
-        run: bun test ./test/gateway/
-
       # The runner shares the host's Docker with other Kantel stacks, so this run's stack gets a Docker daemon of its
       # own, a throwaway docker:dind container (privileged, on the default bridge, never the host network), and every
       # docker and compose command below talks to it over TLS. The stack keeps compose.yaml's defaults inside it:
@@ -144,6 +138,14 @@ jobs:
             exit 1
           fi
           bun apps/selfhosted/test/gateway/stack.ts --base-url "http://$STACK:58090" --mailpit-url "http://$STACK:58025"
+
+      # The gateway's in-process tests on Bun, the runtime its image runs it on (ci.yml runs them on Node). Postgres
+      # tests skip here: "Bindings against the stack" runs them on the stack's. After the stack's checks, so those
+      # report whatever this finds.
+      - name: Gateway tests on Bun
+        if: success() || failure()
+        working-directory: apps/selfhosted
+        run: bun test ./test/gateway/
 
       # Only once this run's daemon is up: before that, compose would read the host's default `kantel` stack.
       - name: Logs on failure
