@@ -1,20 +1,16 @@
 /**
- * Builds the npm package `@kantel/admin` in `dist/`: one bundled file, `kantel-admin.js` (with the SDK and the parts
- * of `@kantel/cli` it uses, for Node 22 and later), its package.json, and the README. `@kantel/host` stays out of it:
- * `host join` uses it when it is installed beside this package, and otherwise runs it with npx.
- * Publishing is a separate step: `npm publish dist`.
+ * Builds `kantel-admin` in `dist/`: one bundled file, `kantel-admin.js`, with the SDK and the parts of `@kantel/cli`
+ * it uses, for Node 22 and later. It isn't on npm: each release attaches it to Kantel's GitHub Release
+ * (tools/release/pack.sh), where `curl -fsSLo kantel-admin <release>/kantel-admin.js` fetches it.
  */
-import { chmod, copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const dist = join(root, "dist");
-const source = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as {
-	readonly version: string;
-	readonly description?: string;
-};
+const source = JSON.parse(await readFile(join(root, "package.json"), "utf8")) as { readonly version: string };
 
 await rm(dist, { recursive: true, force: true });
 await mkdir(dist, { recursive: true });
@@ -27,7 +23,6 @@ const result = await build({
 	format: "esm",
 	target: "node22",
 	banner: { js: SHEBANG },
-	external: ["@kantel/host"],
 	legalComments: "none",
 	write: false,
 	outfile: join(dist, "kantel-admin.js"),
@@ -41,19 +36,4 @@ const bundle = join(dist, "kantel-admin.js");
 await writeFile(bundle, `${SHEBANG}\n${body}`);
 await chmod(bundle, 0o755);
 
-const manifest = {
-	name: "@kantel/admin",
-	version: source.version,
-	description: source.description,
-	license: "Apache-2.0",
-	// npm's trusted publishing and provenance check this against the repository the release workflow runs in.
-	repository: { type: "git", url: "git+https://github.com/lleverage-ai/kantel.git", directory: "packages/admin" },
-	type: "module",
-	bin: { "kantel-admin": "kantel-admin.js" },
-	files: ["kantel-admin.js", "README.md"],
-	engines: { node: ">=22" },
-};
-await writeFile(join(dist, "package.json"), `${JSON.stringify(manifest, null, "\t")}\n`);
-await copyFile(join(root, "README.md"), join(dist, "README.md"));
-
-process.stdout.write(`Built @kantel/admin ${source.version} in ${dist}\n`);
+process.stdout.write(`Built kantel-admin ${source.version} in ${bundle}\n`);

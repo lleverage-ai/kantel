@@ -250,10 +250,10 @@ describe("parsing", () => {
 		expect((await kantel(["sandbox", "resume", "sbx_test1"], { routes })).stdout).toBe("sbx_test1 running\n");
 	});
 
-	it("sends operators' commands to @kantel/admin", async () => {
+	it("sends operators' commands to kantel-admin", async () => {
 		const moved = await kantel(["host", "join-token"]);
 		expect(moved.code).toBe(2);
-		expect(moved.stderr).toContain("npx @kantel/admin host add");
+		expect(moved.stderr).toContain("kantel-admin host add");
 		expect(moved.calls).toEqual([]);
 	});
 

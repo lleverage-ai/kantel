@@ -1931,10 +1931,10 @@ const ALIASES: { readonly [alias: string]: string } = {
 	"sandbox extend": "extend",
 	"sandbox usage": "usage",
 };
-/** Commands that moved to the operators' CLI. */
+/** Commands that moved to the operators' CLI, kantel-admin (a file on each of Kantel's GitHub Releases). */
 const MOVED: { readonly [name: string]: string } = {
-	"host list": "npx @kantel/admin host list",
-	"host join-token": "npx @kantel/admin host add",
+	"host list": "kantel-admin host list",
+	"host join-token": "kantel-admin host add",
 };
 const SUBCOMMAND_ALIASES: { readonly [alias: string]: string } = {
 	ls: "list",
@@ -1992,7 +1992,7 @@ function mainHelp(): string {
 		`Flags on every command:\n${indented(fields(flagRows(GLOBAL_FLAGS)))}`,
 		"",
 		'Aliases: ls for list, rm for delete. "kantel help <command>" shows a command\'s flags.',
-		"Operators of a self-hosted Kantel (install, upgrade, hosts): npx @kantel/admin help.",
+		"Operators of a self-hosted Kantel (install, upgrade, hosts): kantel-admin help, from Kantel's GitHub Releases.",
 	].join("\n");
 }
 

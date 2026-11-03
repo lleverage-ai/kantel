@@ -24,10 +24,12 @@
  *                                deploy/compose/compose.yaml sets it to the gateway's local address by default
  *   KANTEL_COMPUTE_POOLS         warm sandboxes per host, as JSON such as {"microvm/default": 2}; default one
  *                                default-size microVM
- *   KANTEL_COMPUTE_JOIN_COMMAND  the join command shown with a token, with {url} and {token}; default the npm package's
+ *   KANTEL_COMPUTE_JOIN_COMMAND  the join command shown with a token, with {url} and {token}; default the host
+ *                                installer from Kantel's latest GitHub Release (DEFAULT_HOST_JOIN_COMMAND)
  *   KANTEL_HOST_VERSION, KANTEL_HOST_UPDATE_URL
  *                                the kantel-host version hosts should run and where they fetch it ({version}, {os},
- *                                {arch}); unset, hosts aren't asked to update
+ *                                {arch}; default that version's GitHub Release, DEFAULT_HOST_UPDATE_URL); without a
+ *                                version, hosts aren't asked to update
  *   KANTEL_COMPUTE_IMAGES        where `kantel-host install` gets the kernel and images (GET /v1/hosts/images/...): a
  *                                directory this gateway serves (with manifest.json from `kantel-host manifest <dir>`), or
  *                                an http(s) URL it redirects to; `off` serves none. Default: Kantel's published images,
@@ -135,7 +137,7 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 		pools = parsed as { [pool: string]: number };
 	}
 	const version = env.KANTEL_HOST_VERSION?.trim() ?? "";
-	const updateUrl = env.KANTEL_HOST_UPDATE_URL?.trim() ?? "";
+	const updateUrl = env.KANTEL_HOST_UPDATE_URL?.trim() || DEFAULT_HOST_UPDATE_URL;
 	const rawImages = env.KANTEL_COMPUTE_IMAGES?.trim() || DEFAULT_HOST_IMAGES;
 	const images = rawImages.toLowerCase() === "off" ? "" : rawImages;
 	const joinCommand = env.KANTEL_COMPUTE_JOIN_COMMAND?.trim() ?? "";
@@ -192,6 +194,10 @@ export const HOST_IMAGES_PATH = "/v1/hosts/images";
  * when this changes (or KANTEL_COMPUTE_IMAGES points elsewhere).
  */
 export const DEFAULT_HOST_IMAGES = "https://github.com/lleverage-ai/kantel/releases/download/host-images-20261103";
+
+/** Where a host fetches the kantel-host that KANTEL_HOST_VERSION names: that version's GitHub Release. */
+export const DEFAULT_HOST_UPDATE_URL =
+	"https://github.com/lleverage-ai/kantel/releases/download/v{version}/kantel-host-{os}-{arch}";
 
 /**
  * Serves the host images from a directory, or redirects to where they are; undefined for any other path. A file name

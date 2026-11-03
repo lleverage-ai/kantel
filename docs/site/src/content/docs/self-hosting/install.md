@@ -128,10 +128,10 @@ curl -s -X POST "$KANTEL_URL/v1/admin/hosts/join-tokens" \
 ```
 
 ```text
-sudo npx -y @kantel/host@latest install --url https://kantel.example.com --token kth_...
+curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url https://kantel.example.com --token kth_...
 ```
 
-The `@kantel/host` package isn't on npm yet. Until it is, build `kantel-host` from the repository and run the binary in place of the `npx` command, as [Hosts](/hosts/#get-kantel-host-and-the-images) shows. The kernel and sandbox images are published, and the installer fetches them on its own.
+That downloads `kantel-host` from Kantel's latest GitHub Release, checks it against the release's `SHA256SUMS` and runs its `install`, as [Hosts](/hosts/#get-kantel-host-and-the-images) explains. The kernel and sandbox images are published, and the installer fetches them on its own.
 
 Or with [`kantel-admin`](/self-hosting/admin-cli/#add-hosts): `kantel-admin host add --name box-1`, which prints that command. `kantel-admin host list`, `drain` and `revoke` look after hosts later.
 

@@ -399,7 +399,7 @@ describe("hosts", () => {
 		const token = await ops.createHostJoinToken({ name: "box" });
 		expect(token.token).toMatch(/^kth_/);
 		expect(token.command).toBe(
-			`sudo npx -y @kantel/host@latest install --url http://compute.test --token ${token.token}`,
+			`curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url http://compute.test --token ${token.token}`,
 		);
 
 		const drained = await ops.updateHost(STUB_HOST_ID, { draining: true });

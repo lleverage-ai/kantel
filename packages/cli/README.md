@@ -11,7 +11,8 @@ npx kantel exec sbx_4kq9x2mt -- 'cd my-app && npm test'
 npx kantel stop sbx_4kq9x2mt
 ```
 
-Operating a self-hosted Kantel (install, upgrade, hosts) is `npx @kantel/admin`, in `packages/admin`.
+Operating a self-hosted Kantel (install, upgrade, hosts) is `kantel-admin`, in `packages/admin`, which each of
+Kantel's GitHub Releases carries as one file.
 
 It needs Node 22 or later. In this repository the package is `@kantel/cli`; it is published to npm as `kantel`.
 
@@ -65,7 +66,7 @@ flags. Every command takes `--json` to print Kantel's answer as it is, for scrip
 | `agents [claude\|codex\|pi\|cursor\|all] [--write]` | MCP setup for coding agents |
 
 `ls` is short for `list` and `rm` for `delete`, and the first CLI's `sandbox …` spellings (`sandbox create`,
-`sandbox get`, `sb ls`) still work. `host list` and `host join-token` moved to `@kantel/admin`.
+`sandbox get`, `sb ls`) still work. `host list` and `host join-token` moved to `kantel-admin`.
 
 With `exec`, one word is a shell command line (`kantel exec <id> 'make && make test'`); several are a command and
 its arguments, quoted for the shell. Its stdout and stderr come out on kantel's, and kantel exits with its exit code

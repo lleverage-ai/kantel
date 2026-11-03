@@ -228,7 +228,7 @@ describe("the compute API on kantel-host hosts", () => {
 		// No host yet: nothing to place a sandbox on.
 		const token = await root.createHostJoinToken({ name: "box-1", labels: { region: "eu" } });
 		expect(token.command).toBe(
-			`sudo npx -y @kantel/host@latest install --url https://kantel.test --token ${token.token}`,
+			`curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url https://kantel.test --token ${token.token}`,
 		);
 		const { hostId } = await service.register({ token: token.token, facts });
 		await expect(service.register({ token: token.token, facts })).rejects.toThrow(/unknown, used or expired/);

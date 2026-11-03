@@ -4,7 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Host } from "@kantel/api/sdk";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type AdminOptions, parseEnvFile, type Ran, runAdmin, updateEnvFile } from "../src/admin.ts";
+import {
+	type AdminOptions,
+	HOST_INSTALLER_URL,
+	parseEnvFile,
+	type Ran,
+	runAdmin,
+	updateEnvFile,
+} from "../src/admin.ts";
 
 interface Call {
 	readonly method: string;
@@ -92,7 +99,6 @@ async function admin(
 		configDir,
 		platform: "linux",
 		isRoot: false,
-		hostLauncher: () => undefined,
 		fetch: fakeFetch({}).fetch,
 		...options,
 		stdout,
@@ -310,7 +316,7 @@ describe("hosts", () => {
 		const token = {
 			id: "hjt_1",
 			token: "kth_secret",
-			command: "sudo npx -y @kantel/host@latest install --url https://kantel.test --token kth_secret",
+			command: `curl -fsSL ${HOST_INSTALLER_URL} | sudo sh -s -- --url https://kantel.test --token kth_secret`,
 			expiresAt: Date.UTC(2026, 10, 3, 12),
 		};
 		const { fetch, calls } = fakeFetch({ "POST /v1/admin/hosts/join-tokens": () => token });
@@ -322,7 +328,7 @@ describe("hosts", () => {
 	});
 
 	it("host add --ssh runs the command on the machine without echoing the token", async () => {
-		const token = { id: "hjt_1", token: "kth_secret", command: "sudo npx install --token kth_secret", expiresAt: 0 };
+		const token = { id: "hjt_1", token: "kth_secret", command: "sudo sh install --token kth_secret", expiresAt: 0 };
 		const { fetch } = fakeFetch({ "POST /v1/admin/hosts/join-tokens": () => token });
 		const { code, err, spawned } = await admin(["host", "add", "--ssh", "root@b2"], { fetch });
 		expect(code).toBe(0);
@@ -330,39 +336,29 @@ describe("hosts", () => {
 		expect(err).not.toContain("kth_secret");
 	});
 
-	it("host join runs kantel-host install as root, through npx or the installed launcher", async () => {
+	it("host join runs the release's host installer as root, and host run the installed kantel-host", async () => {
 		const notRoot = await admin(["host", "join", "--url", "kantel.test", "--token", "kth_x"]);
 		expect(notRoot.code).toBe(1);
 		expect(notRoot.err).toContain("needs root");
 
-		const viaNpx = await admin(
+		const { fetch, calls } = fakeFetch({ [`GET ${HOST_INSTALLER_URL}`]: () => new Response("echo install.sh\n") });
+		const joined = await admin(
 			["host", "join", "--url", "kantel.test", "--token", "kth_x", "--", "--tiers", "isolate"],
-			{
-				isRoot: true,
-			},
+			{ isRoot: true, fetch },
 		);
-		expect(viaNpx.spawned).toEqual([
+		expect(joined.code).toBe(0);
+		expect(calls.map((call) => call.path)).toEqual([new URL(HOST_INSTALLER_URL).pathname]);
+		expect(joined.spawned).toEqual([
 			{
-				command: "npx",
-				args: [
-					"-y",
-					"@kantel/host@latest",
-					"install",
-					"--url",
-					"https://kantel.test",
-					"--token",
-					"kth_x",
-					"--tiers",
-					"isolate",
-				],
-				input: undefined,
+				command: "sh",
+				args: ["-s", "--", "--url", "https://kantel.test", "--token", "kth_x", "--tiers", "isolate"],
+				input: "echo install.sh\n",
 			},
 		]);
+		expect(joined.err).not.toContain("kth_x");
 
-		const launcher = await admin(["host", "run", "--", "doctor"], {
-			hostLauncher: () => "/opt/host/bin/kantel-host.js",
-		});
-		expect(launcher.spawned[0]?.args).toEqual(["/opt/host/bin/kantel-host.js", "doctor"]);
+		const run = await admin(["host", "run", "--", "doctor"]);
+		expect(run.spawned).toEqual([{ command: "kantel-host", args: ["doctor"], input: undefined }]);
 
 		const mac = await admin(["host", "run", "--", "status"], { platform: "darwin" });
 		expect(mac.code).toBe(1);

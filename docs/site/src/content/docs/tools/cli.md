@@ -13,22 +13,18 @@ The `kantel` command calls Kantel's compute API, which every control plane serve
 
 `kantel` does from a terminal what the [API](/api/reference/) does over HTTP: make a sandbox, run commands in it, copy files in and out, give its ports URLs, open its SSH, desktop and browser, take snapshots, and manage keys, webhooks and organisations. Every command can print Kantel's JSON answer instead of a table, for scripts and agents. The same program is Kantel's [MCP server](/tools/mcp-server/), and `kantel init` teaches a project's [coding agents](/coding-agents/) to use it.
 
-Running a self-hosted install, and its hosts, is a separate command for operators: [`@kantel/admin`](/self-hosting/admin-cli/).
+Running a self-hosted install, and its hosts, is a separate command for operators: [`kantel-admin`](/self-hosting/admin-cli/).
 
 ## Install it
 
-It needs Node.js 22 or later, and [pnpm](https://pnpm.io/) 10 to build it (`npm install -g pnpm@10` if you don't have it). The command isn't on npm yet, so build it from Kantel's repository and install the result:
+It needs Node.js 22 or later. It is the `kantel` package on npm, published from Kantel's release workflow with npm provenance:
 
 ```sh
-git clone https://github.com/lleverage-ai/kantel.git
-cd kantel
-pnpm install --frozen-lockfile --filter '@kantel/cli...'
-pnpm --filter @kantel/cli build
-npm install -g ./packages/cli/dist
+npm install -g kantel
 kantel version
 ```
 
-The build writes one file, `packages/cli/dist/kantel.js`, with everything it needs inside it. `npm install -g` links that folder onto your `PATH` as `kantel`, so keep the clone. To update it, run `git pull` and the build again. Once it is on npm, `npx kantel` will run it with nothing to install.
+Or run it with nothing to install: `npx kantel <command>`. To build it yourself instead, run `pnpm install --frozen-lockfile --filter '@kantel/cli...'` and `pnpm --filter @kantel/cli build` in a clone of the repository, which writes one file, `packages/cli/dist/kantel.js`, and `npm install -g ./packages/cli/dist` to put it on your `PATH`.
 
 ## Sign in
 

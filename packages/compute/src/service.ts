@@ -122,8 +122,13 @@ export interface ComputeService {
 }
 
 /** The largest file the files routes read or write. */
-/** The join command shown with a host join token: kantel-host from npm (`apps/host/npm`). */
-export const DEFAULT_HOST_JOIN_COMMAND = "sudo npx -y @kantel/host@latest install --url {url} --token {token}";
+/**
+ * The join command shown with a host join token: the host installer from Kantel's latest GitHub Release
+ * (`apps/host/install.sh`), which downloads kantel-host, checks its SHA-256 and runs its `install`. It pastes into
+ * bash, zsh and fish alike.
+ */
+export const DEFAULT_HOST_JOIN_COMMAND =
+	"curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url {url} --token {token}";
 /** The console's page where a person approves a device sign-in. */
 export const DEFAULT_DEVICE_LOGIN_URL = "{url}/device";
 /** How long a device sign-in waits for a person, and how often its device may poll. */
