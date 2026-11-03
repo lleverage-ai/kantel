@@ -2,6 +2,11 @@
 	// Kantel on Cloudflare (issue #17). One hostname serves the console (static assets) and the gateway (/v1/*),
 	// behind Cloudflare Access. The deploy workflow (scripts/deploy-config.ts) adds the account, the zone route, the
 	// Access vars and the models VPC service at deploy time; nothing here names an account, a zone or a hostname.
+	//
+	// The agent plane was removed (branch agent-plane-archive, tag agent-plane-archive-2026-11-03, commit e496aeb2). The
+	// Worker now uses only ASSETS, STACK, DB and the Access, admin and location vars. Every other binding, var, rule and
+	// container app below is the agent plane's, left as it was deployed so that no object, table or bucket is deleted:
+	// its Durable Object classes are inert (src/retired.ts), and the src/ files its comments name are in that archive.
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "harbour",
 	"main": "src/index.ts",

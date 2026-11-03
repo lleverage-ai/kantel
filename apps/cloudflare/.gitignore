@@ -2,7 +2,5 @@ node_modules/
 dist/
 .wrangler/
 .dev.vars
-# The dynamic-worker isolate's bundle, written by scripts/build-isolate.ts.
-generated/
 # Written by scripts/deploy-config.ts in the deploy workflow.
 wrangler.deploy.json

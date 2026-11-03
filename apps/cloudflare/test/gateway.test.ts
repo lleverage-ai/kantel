@@ -1,46 +1,21 @@
 // The gateway over the in-memory stack, in Node: who gets in (Access tokens for the team domain and AUD, API keys),
-// and that the session, workspace read and audit APIs are each mounted where the console and host apps call them.
+// that the identity and audit APIs are mounted where the console and host apps call them, and that the agent plane's
+// routes are gone.
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { isKantelError } from "@kantel/contracts";
 import { API_KEY_BODY_LIMIT } from "@kantel/identity/http";
 import { createMockAccess } from "@kantel/identity/testing";
-import { MEMORY_BODY_LIMIT } from "@kantel/memory/http";
-import { SKILL_IMPORT_BODY_LIMIT } from "@kantel/skills/http";
 import { describe, expect, it } from "vitest";
 import { gatewayConfig } from "../src/config.ts";
 import { createGateway } from "../src/gateway.ts";
-import { routeRequest, STACK_NAME, WORKSPACE_BODY_LIMIT } from "../src/route.ts";
-import { createStack, DEFAULT_AGENT_ID } from "../src/stack.ts";
+import { routeRequest, STACK_NAME } from "../src/route.ts";
+import { createStack } from "../src/stack.ts";
 
 const TEAM_DOMAIN = "kantel-test.cloudflareaccess.com";
 const AUD = "aud-kantel-test";
 const ADMIN = "tom@kantel.test";
 const BASE = "https://kantel.test";
-
-const COMMIT = "0123456789abcdef0123456789abcdef01234567";
-
-/** One pkt-line, as git's smart HTTP protocol frames it. */
-const pkt = (text: string) => `${(new TextEncoder().encode(text).length + 4).toString(16).padStart(4, "0")}${text}`;
-
-/**
- * Stands in for GitHub: every ref `ls-refs` is asked about is COMMIT, and its tarball is an empty archive. Records
- * what was asked.
- */
-function fakeGitHub() {
-	const calls: string[] = [];
-	const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-		const url = String(input);
-		calls.push(url);
-		if (url.endsWith(".git/git-upload-pack")) {
-			const prefixes = [...String(init?.body ?? "").matchAll(/ref-prefix (\S+)\n/g)].map((match) => match[1]!);
-			return new Response(`${prefixes.map((ref) => pkt(`${COMMIT} ${ref}\n`)).join("")}0000`);
-		}
-		const empty = new Blob([new Uint8Array(1024)]).stream().pipeThrough(new CompressionStream("gzip"));
-		return new Response(empty);
-	}) as typeof globalThis.fetch;
-	return { calls, fetch };
-}
 
 async function setup(options: { access?: boolean; adminName?: string } = {}) {
 	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
@@ -49,8 +24,7 @@ async function setup(options: { access?: boolean; adminName?: string } = {}) {
 		KANTEL_ADMIN_EMAIL: ADMIN,
 		...(options.adminName === undefined ? {} : { KANTEL_ADMIN_NAME: options.adminName }),
 	});
-	const github = fakeGitHub();
-	const stack = await createStack({ config, accessFetch: mock.fetch, gitFetch: github.fetch });
+	const stack = await createStack({ config, accessFetch: mock.fetch });
 	const gateway = createGateway(stack);
 	const service = await stack.identity.createServiceIdentity(stack.admin, { name: "host" });
 	const key = await stack.identity.issueApiKey(stack.admin, {
@@ -64,7 +38,7 @@ async function setup(options: { access?: boolean; adminName?: string } = {}) {
 		"cf-access-jwt-assertion": await mock.sign({ sub: "access-subject-1", email: ADMIN, ...claims }),
 	});
 	const withKey = { authorization: `Bearer ${key.secret}` };
-	return { mock, stack, gateway, call, signedIn, withKey, github, key };
+	return { mock, stack, gateway, call, signedIn, withKey, key };
 }
 
 describe("gateway config", () => {
@@ -91,90 +65,19 @@ describe("gateway config", () => {
 });
 
 describe("the gateway", () => {
-	it("answers an anonymous call to any API with 401 and a challenge", async () => {
+	it("answers an anonymous call to the identity and audit APIs with 401 and a challenge", async () => {
 		const { call, stack } = await setup();
-		for (const path of [
-			`/v1/sessions?projectId=${stack.project.id}`,
-			"/v1/workspaces/ws-1/files",
-			"/v1/audit/events",
-			"/v1/me",
-			"/v1/projects",
-			"/v1/keys",
-		]) {
+		for (const path of [`/v1/audit/events?projectId=${stack.project.id}`, "/v1/me", "/v1/projects", "/v1/keys"]) {
 			const response = await call(path);
 			expect(response.status, path).toBe(401);
 			expect(response.headers.get("www-authenticate"), path).toMatch(/^Bearer/);
 		}
 	});
 
-	it("signs in the invited person with an Access token for the team domain and AUD, and runs a session", async () => {
-		const { call, signedIn, stack } = await setup();
-		const headers = { ...(await signedIn()), "content-type": "application/json" };
-		const created = await call("/v1/sessions", headers, {
-			method: "POST",
-			body: JSON.stringify({ projectId: stack.project.id, agentId: DEFAULT_AGENT_ID, title: "Hello" }),
-		});
-		expect(created.status).toBe(201);
-		const session = (await created.json()) as { id: string; createdBy: { kind: string } };
-		expect(session.createdBy.kind).toBe("human");
-
-		const prompted = await call(`/v1/sessions/${session.id}/prompt`, headers, {
-			method: "POST",
-			body: JSON.stringify({ text: "ping" }),
-		});
-		expect(prompted.status).toBe(202);
-		const submission = (await prompted.json()) as { id: string };
-		const result = await call(
-			`/v1/sessions/${session.id}/result?submission=${encodeURIComponent(submission.id)}&timeoutMs=5000`,
-			headers,
-		);
-		expect(result.status).toBe(200);
-		expect(await result.json()).toMatchObject({ status: "answered", answer: "Echo: ping" });
-
-		const listed = await call(`/v1/sessions?projectId=${stack.project.id}`, headers);
-		expect(listed.status).toBe(200);
-		expect(((await listed.json()) as { items: { id: string }[] }).items.map((item) => item.id)).toEqual([session.id]);
-	});
-
-	it("mounts a session's history: the latest turns first, and a cursor pages back", async () => {
-		const { call, signedIn, stack, withKey } = await setup();
-		const headers = { ...(await signedIn()), "content-type": "application/json" };
-		const created = await call("/v1/sessions", headers, {
-			method: "POST",
-			body: JSON.stringify({ projectId: stack.project.id, agentId: DEFAULT_AGENT_ID }),
-		});
-		const session = (await created.json()) as { id: string };
-		for (const text of ["one", "two", "three"]) {
-			const prompted = await call(`/v1/sessions/${session.id}/prompt`, headers, {
-				method: "POST",
-				body: JSON.stringify({ text }),
-			});
-			const submission = (await prompted.json()) as { id: string };
-			await call(
-				`/v1/sessions/${session.id}/result?submission=${encodeURIComponent(submission.id)}&timeoutMs=5000`,
-				headers,
-			);
-		}
-		type Page = { items: { text: string }[]; nextCursor?: string };
-		const latest = await call(`/v1/sessions/${session.id}/history?limit=2`, headers);
-		expect(latest.status).toBe(200);
-		const first = (await latest.json()) as Page;
-		expect(first.items.map((item) => item.text)).toEqual(["Echo: three", "three"]);
-		const older = await call(
-			`/v1/sessions/${session.id}/history?limit=10&cursor=${encodeURIComponent(first.nextCursor ?? "")}`,
-			withKey,
-		);
-		const rest = (await older.json()) as Page;
-		expect(rest.items.map((item) => item.text)).toEqual(["Echo: two", "two", "Echo: one", "one"]);
-		expect(rest.nextCursor).toBeUndefined();
-		expect((await call(`/v1/sessions/${session.id}/history`)).status).toBe(401);
-		expect((await call(`/v1/sessions/${session.id}/history?limit=0`, headers)).status).toBe(400);
-	});
-
 	it("refuses Access tokens for another AUD, another team domain, an expired one and an uninvited email", async () => {
-		const { call, signedIn, stack } = await setup();
+		const { call, signedIn } = await setup();
 		const other = createMockAccess({ teamDomain: "someone-else.cloudflareaccess.com", audience: AUD });
-		const path = `/v1/sessions?projectId=${stack.project.id}`;
+		expect((await call("/v1/me", await signedIn())).status).toBe(200);
 		const refused = {
 			"another AUD": await signedIn({ aud: ["another-app"] }),
 			"another team domain": { "cf-access-jwt-assertion": await other.sign({ sub: "s", email: ADMIN }) },
@@ -183,279 +86,21 @@ describe("the gateway", () => {
 			"a service token": await signedIn({ email: undefined }),
 		};
 		for (const [why, headers] of Object.entries(refused)) {
-			expect((await call(path, headers)).status, why).toBe(401);
+			expect((await call("/v1/me", headers)).status, why).toBe(401);
 		}
 	});
 
 	it("ignores the Access header when Access is not configured, and still takes API keys", async () => {
-		const { call, signedIn, stack, withKey } = await setup({ access: false });
-		const path = `/v1/sessions?projectId=${stack.project.id}`;
-		expect((await call(path, await signedIn())).status).toBe(401);
-		expect((await call(path, withKey)).status).toBe(200);
+		const { call, signedIn, withKey } = await setup({ access: false });
+		expect((await call("/v1/projects", await signedIn())).status).toBe(401);
+		expect((await call("/v1/projects", withKey)).status).toBe(200);
 	});
 
-	it("takes a host app's API key on every API, limited to its project", async () => {
+	it("takes a host app's API key on the identity and audit APIs", async () => {
 		const { call, withKey, stack } = await setup();
-		expect((await call(`/v1/sessions?projectId=${stack.project.id}`, withKey)).status).toBe(200);
-		expect((await call("/v1/profiles", withKey)).status).toBe(200);
-		// Authenticated, so the read API answers for the workspace itself: there is none by that ID.
-		expect((await call("/v1/workspaces/ws-missing", withKey)).status).toBe(404);
+		expect((await call("/v1/me", withKey)).status).toBe(200);
+		expect((await call("/v1/projects", withKey)).status).toBe(200);
 		expect((await call(`/v1/audit/events?projectId=${stack.project.id}`, withKey)).status).toBe(200);
-	});
-
-	it("mounts the workspace read API, reading through project access", async () => {
-		const { call, signedIn, stack } = await setup();
-		const workspace = await stack.workspaces.create(stack.admin, {
-			owner: { kind: "project", organisationId: stack.organisation.id, projectId: stack.project.id },
-		});
-		await stack.workspaces.commit(stack.admin, workspace.id, {
-			baseVersion: workspace.head,
-			changes: [{ op: "put", path: "notes/hello.md", content: "# Hello" }],
-		});
-		const headers = await signedIn();
-		const files = await call(`/v1/workspaces/${workspace.id}/files?path=notes`, headers);
-		expect(files.status).toBe(200);
-		expect(((await files.json()) as { items: { path: string }[] }).items.map((entry) => entry.path)).toEqual([
-			"notes/hello.md",
-		]);
-		const content = await call(`/v1/workspaces/${workspace.id}/content?path=notes/hello.md`, headers);
-		expect(await content.text()).toBe("# Hello");
-	});
-
-	it("mounts POST /v1/workspaces: a host seeds a workspace from a git ref and files, then runs a session on it", async () => {
-		const { call, withKey, stack, github } = await setup();
-		const json = { ...withKey, "content-type": "application/json" };
-		const created = await call("/v1/workspaces", json, {
-			method: "POST",
-			body: JSON.stringify({
-				projectId: stack.project.id,
-				seed: {
-					name: "hello",
-					sources: [
-						{ kind: "git", repo: "octocat/Hello-World", ref: "master", into: "repo" },
-						{ kind: "files", files: { "notes/plan.md": "# Plan" } },
-					],
-				},
-			}),
-		});
-		expect(created.status).toBe(201);
-		const workspace = (await created.json()) as { id: string; seedReadiness: string; seedReport?: unknown };
-		expect(workspace.seedReadiness).toBe("files");
-		expect(workspace.seedReport).toMatchObject({ sources: [{ kind: "git", commit: COMMIT }, { kind: "files" }] });
-		// Resolving the ref, then the history (a fetch, and which branch the ref is) alongside the tarball. This GitHub
-		// sends no pack, so the workspace is seeded without `.git`.
-		expect(github.calls).toEqual([
-			...Array(4).fill("https://github.com/octocat/Hello-World.git/git-upload-pack"),
-			`https://codeload.github.com/octocat/Hello-World/tar.gz/${COMMIT}`,
-		]);
-
-		const session = await call("/v1/sessions", json, {
-			method: "POST",
-			body: JSON.stringify({ projectId: stack.project.id, agentId: DEFAULT_AGENT_ID, workspaceId: workspace.id }),
-		});
-		expect(session.status).toBe(201);
-		expect(await session.json()).toMatchObject({ workspaceId: workspace.id });
-
-		const note = await call(`/v1/workspaces/${workspace.id}/content?path=notes/plan.md`, withKey);
-		expect(await note.text()).toBe("# Plan");
-		const audit = await call(`/v1/audit/events?projectId=${stack.project.id}`, withKey);
-		const types = ((await audit.json()) as { items: { type: string }[] }).items.map((event) => event.type);
-		expect(types.filter((type) => type.startsWith("sandbox."))).toEqual([]);
-	});
-
-	it("refuses POST /v1/workspaces without operator rights", async () => {
-		const { call, stack, github } = await setup();
-		const service = await stack.identity.createServiceIdentity(stack.admin, { name: "reader" });
-		const viewer = await stack.identity.issueApiKey(stack.admin, {
-			serviceId: service.id,
-			projectIds: [stack.project.id],
-			role: "viewer",
-		});
-		const body = JSON.stringify({
-			projectId: stack.project.id,
-			seed: { name: "x", sources: [{ kind: "git", repo: "octocat/Hello-World", ref: "master" }] },
-		});
-		const asViewer = await call(
-			"/v1/workspaces",
-			{ authorization: `Bearer ${viewer.secret}` },
-			{ method: "POST", body },
-		);
-		expect(asViewer.status).toBe(403);
-		expect(await asViewer.json()).toMatchObject({ error: { code: "forbidden" } });
-		const anonymous = await call("/v1/workspaces", {}, { method: "POST", body });
-		expect(anonymous.status).toBe(401);
-		expect(github.calls).toEqual([]);
-	});
-
-	it("mounts the skills API: the admin imports a skill, and a host's key reads it but cannot import", async () => {
-		const { call, signedIn, withKey, stack } = await setup();
-		const admin = { ...(await signedIn()), "content-type": "application/json" };
-		const body = JSON.stringify({
-			owner: { kind: "organisation", organisationId: stack.organisation.id },
-			name: "hello",
-			description: "Say hello.",
-			files: [{ path: "SKILL.md", content: "---\nname: hello\ndescription: Say hello.\n---\n\nHello.\n" }],
-			source: { sourceId: "test", ref: "r1" },
-		});
-		const imported = await call("/v1/skills/import", admin, { method: "POST", body });
-		expect(imported.status).toBe(200);
-		const revision = (await imported.json()) as { skillId: string; revision: number };
-		expect(revision.revision).toBe(1);
-
-		const listed = await call("/v1/skills", withKey);
-		expect(((await listed.json()) as { items: { name: string }[] }).items.map((item) => item.name)).toEqual(["hello"]);
-		const file = await call(`/v1/skills/${revision.skillId}/revisions/1/file?path=SKILL.md`, withKey);
-		expect(((await file.json()) as { content: string }).content).toContain("Hello.");
-		const json = { ...withKey, "content-type": "application/json" };
-		expect((await call("/v1/skills/import", json, { method: "POST", body })).status).toBe(403);
-		const anonymous = await call("/v1/skills");
-		expect(anonymous.status).toBe(401);
-		expect(anonymous.headers.get("www-authenticate")).toContain("Bearer");
-	});
-
-	it("mounts the sharing API: the admin registers and shares a resource, and a host's key reads but can't share", async () => {
-		const { call, signedIn, withKey, stack } = await setup();
-		const admin = { ...(await signedIn()), "content-type": "application/json" };
-		const resource = { kind: "brand.guideline", id: "guide-1" };
-		const owner = { kind: "project", organisationId: stack.organisation.id, projectId: stack.project.id };
-		const registered = await call("/v1/sharing/resources", admin, {
-			method: "POST",
-			body: JSON.stringify({ resource, owner }),
-		});
-		expect(registered.status).toBe(200);
-		const share = JSON.stringify({ resource, grantee: { kind: "agent", agentId: "reviewer" }, permission: "use" });
-		const created = await call("/v1/sharing/shares", admin, { method: "POST", body: share });
-		expect(created.status).toBe(201);
-
-		const listed = await call(`/v1/sharing/shares?resourceKind=${resource.kind}&resourceId=${resource.id}`, withKey);
-		expect(listed.status).toBe(200);
-		expect(((await listed.json()) as { items: unknown[] }).items).toHaveLength(1);
-		const json = { ...withKey, "content-type": "application/json" };
-		expect((await call("/v1/sharing/shares", json, { method: "POST", body: share })).status).toBe(403);
-		expect((await call("/v1/sharing/shares")).status).toBe(401);
-	});
-
-	it("mounts the memory API: the admin loads a snapshot, then a host's key lists, searches and recalls it", async () => {
-		const { call, signedIn, withKey, stack } = await setup();
-		const admin = { ...(await signedIn()), "content-type": "application/json" };
-		const created = await call("/v1/memory/spaces", admin, {
-			method: "POST",
-			body: JSON.stringify({ owner: { kind: "organisation", organisationId: stack.organisation.id }, name: "Team" }),
-		});
-		expect(created.status).toBe(201);
-		const space = (await created.json()) as { id: string };
-		const concept = {
-			id: "projects/kantel/region",
-			title: "Kantel runs in weur",
-			statement: "New D1 and R2 resources go in the weur region.",
-			scope: { kind: "global" },
-			sources: ["tvdavies/harbour#12"],
-			setBy: "owner",
-			status: "active",
-			updatedAt: 1,
-		};
-		const snapshot = JSON.stringify({ sourceId: "test", ref: "r1", concepts: [concept] });
-		const loaded = await call(`/v1/memory/spaces/${space.id}/snapshot`, admin, { method: "POST", body: snapshot });
-		expect(loaded.status).toBe(200);
-
-		const spaces = await call("/v1/memory/spaces", withKey);
-		expect(((await spaces.json()) as { items: { name: string }[] }).items.map((item) => item.name)).toEqual(["Team"]);
-		const one = await call(`/v1/memory/spaces/${space.id}/concepts/${encodeURIComponent(concept.id)}`, withKey);
-		expect(await one.json()).toMatchObject({ id: concept.id, title: concept.title });
-		const json = { ...withKey, "content-type": "application/json" };
-		const query = JSON.stringify({ spaceIds: [space.id], query: "which region for D1" });
-		const search = await call("/v1/memory/search", json, { method: "POST", body: query });
-		expect(((await search.json()) as { hits: { concept: { id: string } }[] }).hits[0]?.concept.id).toBe(concept.id);
-		const recall = await call("/v1/memory/recall", json, { method: "POST", body: query });
-		expect(((await recall.json()) as { text: string }).text).toContain("weur");
-		const refused = await call(`/v1/memory/spaces/${space.id}/snapshot`, json, { method: "POST", body: snapshot });
-		expect(refused.status).toBe(403);
-	});
-
-	it("lets a key with the import permission import skills and snapshots, and reach no other admin route", async () => {
-		const { call, signedIn, stack, key } = await setup();
-		const admin = { ...(await signedIn()), "content-type": "application/json" };
-		const organisation = { kind: "organisation", organisationId: stack.organisation.id };
-		// The space is made once by the admin; the key loads it from then on.
-		const created = await call("/v1/memory/spaces", admin, {
-			method: "POST",
-			body: JSON.stringify({ owner: organisation, name: "Team" }),
-		});
-		const space = (await created.json()) as { id: string };
-		const importer = await stack.identity.issueApiKey(stack.admin, {
-			serviceId: (await stack.identity.createServiceIdentity(stack.admin, { name: "importer" })).id,
-			projectIds: [stack.project.id],
-			role: "operator",
-			permissions: ["import"],
-		});
-		const asImporter = { authorization: `Bearer ${importer.secret}`, "content-type": "application/json" };
-		const asPlainKey = { authorization: `Bearer ${key.secret}`, "content-type": "application/json" };
-
-		const skill = (owner: unknown) =>
-			JSON.stringify({
-				owner,
-				name: "hello",
-				description: "Say hello.",
-				files: [{ path: "SKILL.md", content: "---\nname: hello\ndescription: Say hello.\n---\n\nHello.\n" }],
-				source: { sourceId: "test", ref: "r1" },
-			});
-		const concept = {
-			id: "projects/kantel/region",
-			title: "Kantel runs in weur",
-			statement: "New D1 and R2 resources go in the weur region.",
-			scope: { kind: "global" },
-			sources: ["tvdavies/harbour#12"],
-			setBy: "owner",
-			status: "active",
-			updatedAt: 1,
-		};
-		const snapshot = JSON.stringify({ sourceId: "test", ref: "r1", concepts: [concept] });
-		const snapshotPath = `/v1/memory/spaces/${space.id}/snapshot`;
-
-		// A key without the permission is refused both imports, as before.
-		expect((await call("/v1/skills/import", asPlainKey, { method: "POST", body: skill(organisation) })).status).toBe(
-			403,
-		);
-		expect((await call(snapshotPath, asPlainKey, { method: "POST", body: snapshot })).status).toBe(403);
-
-		const imported = await call("/v1/skills/import", asImporter, { method: "POST", body: skill(organisation) });
-		expect(imported.status).toBe(200);
-		expect(await imported.json()).toMatchObject({ revision: 1 });
-		const loaded = await call(snapshotPath, asImporter, { method: "POST", body: snapshot });
-		expect(loaded.status).toBe(200);
-		const one = await call(`/v1/memory/spaces/${space.id}/concepts/${encodeURIComponent(concept.id)}`, asImporter);
-		expect(await one.json()).toMatchObject({ id: concept.id });
-		// Audited as the key that imported, not as an admin.
-		const published = await stack.audit.query(stack.admin, { type: "skills.revision.published" });
-		expect(published.items.map((event) => event.actor)).toEqual([
-			{ kind: "service", serviceId: importer.key.serviceId, keyId: importer.key.id },
-		]);
-
-		// Every other admin route is still the admin's.
-		const refusals: [string, RequestInit][] = [
-			["/v1/memory/spaces", { method: "POST", body: JSON.stringify({ owner: organisation, name: "Other" }) }],
-			[
-				"/v1/keys",
-				{
-					method: "POST",
-					body: JSON.stringify({
-						name: "More",
-						projectIds: [stack.project.id],
-						role: "admin",
-						permissions: ["import"],
-					}),
-				},
-			],
-			[`/v1/keys/${encodeURIComponent(key.key.id)}/revoke`, { method: "POST", body: "{}" }],
-		];
-		for (const [path, init] of refusals) {
-			const response = await call(path, asImporter, init);
-			expect(response.status, path).toBe(403);
-		}
-		const platform = await call("/v1/skills/import", asImporter, { method: "POST", body: skill({ kind: "platform" }) });
-		expect(platform.status).toBe(403);
-		const keys = await stack.identity.listApiKeys(stack.admin);
-		expect(keys.find((listed) => listed.id === key.key.id)?.revokedAt).toBeUndefined();
 	});
 
 	it("mounts the audit query API, showing the admin the bootstrap's own events", async () => {
@@ -514,7 +159,7 @@ describe("the gateway", () => {
 		const issued = (await created.json()) as { key: { id: string; name: string }; secret: string };
 		expect(issued.key.name).toBe("GitHub app");
 		const asApp = { authorization: `Bearer ${issued.secret}` };
-		expect((await call(`/v1/sessions?projectId=${stack.project.id}`, asApp)).status).toBe(200);
+		expect((await call("/v1/projects", asApp)).status).toBe(200);
 
 		const listed = await call("/v1/keys", headers);
 		const text = await listed.text();
@@ -525,7 +170,7 @@ describe("the gateway", () => {
 
 		const revoked = await call(`/v1/keys/${issued.key.id}/revoke`, headers, { method: "POST", body: "{}" });
 		expect(revoked.status).toBe(204);
-		const after = await call(`/v1/sessions?projectId=${stack.project.id}`, asApp);
+		const after = await call("/v1/projects", asApp);
 		expect(after.status).toBe(401);
 		expect(after.headers.get("www-authenticate")).toMatch(/^Bearer/);
 	});
@@ -568,30 +213,7 @@ describe("the gateway", () => {
 		).toBeUndefined();
 	});
 
-	it("starts a session with an operator's API key, and refuses a viewer's with 403", async () => {
-		const { call, stack, withKey } = await setup();
-		const json = { "content-type": "application/json" };
-		const body = JSON.stringify({ projectId: stack.project.id, agentId: DEFAULT_AGENT_ID, title: "From a key" });
-		const created = await call("/v1/sessions", { ...withKey, ...json }, { method: "POST", body });
-		expect(created.status).toBe(201);
-		expect(await created.json()).toMatchObject({ title: "From a key", createdBy: { kind: "service" } });
-
-		const service = await stack.identity.createServiceIdentity(stack.admin, { name: "watcher" });
-		const viewer = await stack.identity.issueApiKey(stack.admin, {
-			serviceId: service.id,
-			projectIds: [stack.project.id],
-			role: "viewer",
-		});
-		const asViewer = { authorization: `Bearer ${viewer.secret}`, ...json };
-		const refused = await call("/v1/sessions", asViewer, { method: "POST", body });
-		expect(refused.status).toBe(403);
-		expect(await refused.json()).toMatchObject({ error: { code: "forbidden" } });
-		// The viewer still watches: the operator's session is listed for them.
-		const listed = await call(`/v1/sessions?projectId=${stack.project.id}`, asViewer);
-		expect(((await listed.json()) as { items: unknown[] }).items).toHaveLength(1);
-	});
-
-	it("lets the admin mint an organisation key that creates projects and runs sessions in them, in its organisation only", async () => {
+	it("lets the admin mint an organisation key that creates projects, in its organisation only", async () => {
 		const { call, signedIn, stack, withKey } = await setup();
 		const json = { "content-type": "application/json" };
 		const admin = { ...(await signedIn()), ...json };
@@ -621,17 +243,6 @@ describe("the gateway", () => {
 		const listed = (await (await call("/v1/projects", asHost)).json()) as { items: { id: string }[] };
 		expect(listed.items.map((item) => item.id).sort()).toEqual([stack.project.id, project.id].sort());
 
-		const session = await call("/v1/sessions", asHost, {
-			method: "POST",
-			body: JSON.stringify({ projectId: project.id, agentId: DEFAULT_AGENT_ID, title: "In the new project" }),
-		});
-		expect(session.status).toBe(201);
-		const orgSession = await call("/v1/sessions", asHost, {
-			method: "POST",
-			body: JSON.stringify({ scope: "organisation", agentId: DEFAULT_AGENT_ID, title: "Organisation-wide" }),
-		});
-		expect(orgSession.status).toBe(201);
-
 		// Audited as the key that made it.
 		const audited = await stack.audit.query(stack.admin, { type: "identity.project.created" });
 		expect(audited.items.at(-1)?.actor).toEqual({
@@ -652,32 +263,27 @@ describe("the gateway", () => {
 		expect(late.status).toBe(401);
 	});
 
-	it("answers 404 for a path under no API", async () => {
-		const { call, withKey } = await setup();
-		expect((await call("/v2/sessions", withKey)).status).toBe(404);
-	});
-});
-
-describe("routing POST /v1/workspaces", () => {
-	it("reads the seed before the stack sees it, and refuses one past the limit", async () => {
-		const seen: string[] = [];
-		const stack = {
-			idFromName: (name: string) => name,
-			get: (name: string) => ({
-				fetch: async (request: Request) => {
-					seen.push(`${name} ${request.method} ${new URL(request.url).pathname} ${await request.text()}`);
-					return new Response(null, { status: 204 });
-				},
-			}),
-		};
-		const unused = { idFromName: (name: string) => name, get: () => ({ fetch: async () => new Response(null) }) };
-		const env = { STACK: stack, VAULTS: unused, ASSETS: { fetch: async () => new Response(null) } };
-		const post = (body: string) => routeRequest(new Request(`${BASE}/v1/workspaces`, { method: "POST", body }), env);
-		expect((await post('{"projectId":"p"}')).status).toBe(204);
-		expect(seen).toEqual([`${STACK_NAME} POST /v1/workspaces {"projectId":"p"}`]);
-		const refused = await post("x".repeat(WORKSPACE_BODY_LIMIT + 1));
-		expect(refused.status).toBe(413);
-		expect(seen).toHaveLength(1);
+	it("answers 404 for the agent plane's routes and any path under no API, signed in or not", async () => {
+		const { call, signedIn, stack, withKey } = await setup();
+		const headers = await signedIn();
+		for (const path of [
+			`/v1/sessions?projectId=${stack.project.id}`,
+			"/v1/profiles",
+			"/v1/workspaces/ws-1/files",
+			"/v1/connections",
+			"/v1/approvals",
+			"/v1/skills",
+			"/v1/memory/spaces",
+			"/v1/schedules",
+			"/v1/shares",
+			"/v1/tool-servers",
+			"/v1/passkeys",
+			"/v1/compute/sandboxes",
+			"/v2/sessions",
+		]) {
+			expect((await call(path, withKey)).status, path).toBe(404);
+			expect((await call(path, headers)).status, path).toBe(404);
+		}
 	});
 });
 
@@ -693,8 +299,7 @@ describe("routing POST /v1/keys", () => {
 				},
 			}),
 		};
-		const unused = { idFromName: (name: string) => name, get: () => ({ fetch: async () => new Response(null) }) };
-		const env = { STACK: stack, VAULTS: unused, ASSETS: { fetch: async () => new Response(null) } };
+		const env = { STACK: stack, ASSETS: { fetch: async () => new Response(null) } };
 		const post = (path: string, body: string) =>
 			routeRequest(new Request(`${BASE}${path}`, { method: "POST", body }), env);
 		expect((await post("/v1/keys", '{"name":"a"}')).status).toBe(204);
@@ -702,17 +307,24 @@ describe("routing POST /v1/keys", () => {
 		expect(seen).toEqual([`${STACK_NAME} POST /v1/keys {"name":"a"}`, `${STACK_NAME} POST /v1/keys/key_1/revoke {}`]);
 		expect((await post("/v1/keys", "x".repeat(API_KEY_BODY_LIMIT + 1))).status).toBe(413);
 		expect(seen).toHaveLength(2);
+	});
 
-		// And a skill import or a memory snapshot, each up to its own limit.
-		expect((await post("/v1/skills/import", "{}")).status).toBe(204);
-		expect((await post("/v1/memory/spaces/s/snapshot", "{}")).status).toBe(204);
-		expect(seen.slice(2)).toEqual([
-			`${STACK_NAME} POST /v1/skills/import {}`,
-			`${STACK_NAME} POST /v1/memory/spaces/s/snapshot {}`,
-		]);
-		expect((await post("/v1/skills/import", "x".repeat(SKILL_IMPORT_BODY_LIMIT + 1))).status).toBe(413);
-		expect((await post("/v1/memory/recall", "x".repeat(MEMORY_BODY_LIMIT + 1))).status).toBe(413);
-		expect(seen).toHaveLength(4);
+	it("answers /healthz itself and sends every other /v1 path to the stack object", async () => {
+		const seen: string[] = [];
+		const stack = {
+			idFromName: (name: string) => name,
+			get: (name: string) => ({
+				fetch: async (request: Request) => {
+					seen.push(`${name} ${new URL(request.url).pathname}`);
+					return new Response(null, { status: 404 });
+				},
+			}),
+		};
+		const env = { STACK: stack, ASSETS: { fetch: async () => new Response("page") } };
+		const health = await routeRequest(new Request(`${BASE}/healthz`), env);
+		expect(await health.json()).toEqual({ ok: true, service: "kantel" });
+		expect((await routeRequest(new Request(`${BASE}/v1/sessions`), env)).status).toBe(404);
+		expect(seen).toEqual([`${STACK_NAME} /v1/sessions`]);
 	});
 });
 
@@ -721,8 +333,7 @@ describe("the deployed entry point", () => {
 		const src = join(import.meta.dirname, "../src");
 		for (const file of readdirSync(src, { recursive: true, encoding: "utf8" })) {
 			if (!file.endsWith(".ts")) continue;
-			// The dev entry point and the dev-only modules only it imports (dev-vault-seed.ts).
-			if (file === "dev.ts" || file.startsWith("dev-")) continue;
+			if (file === "dev.ts") continue;
 			const text = readFileSync(join(src, file), "utf8");
 			expect(text, file).not.toMatch(/@kantel\/identity\/testing|\.\/dev(-[a-z-]+)?(\.ts)?["']|__dev/);
 		}

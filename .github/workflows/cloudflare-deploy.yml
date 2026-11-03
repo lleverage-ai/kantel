@@ -139,11 +139,6 @@ jobs:
       - name: Build the console
         run: pnpm --filter @kantel/cloudflare build:console
 
-      # The isolate's code, which the Worker imports for the Worker Loader: the dynamic-worker isolate
-      # (src/dynamic-worker.ts).
-      - name: Build the isolates
-        run: pnpm --filter @kantel/cloudflare build:isolate
-
       # Placeholders stand in for unset variables in a dry run; deploy mode refuses to write a config without them.
       - name: Write the deploy config
         working-directory: apps/cloudflare
