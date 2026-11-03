@@ -10,7 +10,17 @@ export interface GatewayVars {
 	readonly KANTEL_ADMIN_EMAIL?: string;
 	/** The first admin's name, as the console shows it. Default their email. */
 	readonly KANTEL_ADMIN_NAME?: string;
+	/** The domain sandboxes' port URLs are under, `{port}-{subdomain}.{domain}`. Default `HOSTED_PORTS_DOMAIN`. */
+	readonly KANTEL_COMPUTE_PORTS_DOMAIN?: string;
 }
+
+/**
+ * Kantel's hosted ports domain (decided 3 Nov 2026), its own registrable-domain subtree apart from the console's, so a
+ * sandbox's page can't set cookies the console reads. It isn't on the Public Suffix List yet (deferred until hosted
+ * ports are served and used), so until it is, port names under it are one site to browsers: cookies aren't private
+ * between sandboxes. A deployment of this Worker on another domain sets KANTEL_COMPUTE_PORTS_DOMAIN to its own.
+ */
+export const HOSTED_PORTS_DOMAIN = "ports.kantel.dev";
 
 export interface GatewayConfig {
 	/** Cloudflare Access, when people may sign in. Without it only API keys authenticate. */
@@ -19,7 +29,11 @@ export interface GatewayConfig {
 	readonly adminEmail?: string;
 	/** The first admin's name; only used when the bootstrap invites them. */
 	readonly adminName?: string;
+	/** The domain port URLs are under, from KANTEL_COMPUTE_PORTS_DOMAIN. Absent, `HOSTED_PORTS_DOMAIN`. */
+	readonly portsDomain?: string;
 }
+
+const DNS_NAME = /^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
 
 const trimmed = (value: string | undefined): string => (value ?? "").trim();
 
@@ -38,7 +52,15 @@ export function gatewayConfig(vars: GatewayVars): GatewayConfig {
 		throw new KantelError("invalid", "KANTEL_ADMIN_EMAIL must be an email address");
 	}
 	const adminName = trimmed(vars.KANTEL_ADMIN_NAME);
+	// As the self-hosted gateway reads its own: `*.` and trailing dots taken off, lower case.
+	const portsDomain = trimmed(vars.KANTEL_COMPUTE_PORTS_DOMAIN)
+		.toLowerCase()
+		.replace(/^\*?\.+|\.+$/g, "");
+	if (portsDomain !== "" && !DNS_NAME.test(portsDomain)) {
+		throw new KantelError("invalid", "KANTEL_COMPUTE_PORTS_DOMAIN is a DNS name such as ports.example.com");
+	}
 	return {
+		...(portsDomain === "" ? {} : { portsDomain }),
 		...(teamDomain === "" ? {} : { access: { teamDomain, audience } }),
 		...(adminEmail === "" ? {} : { adminEmail }),
 		...(adminName === "" ? {} : { adminName }),

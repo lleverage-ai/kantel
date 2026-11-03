@@ -41,6 +41,7 @@ import {
 	type KantelError,
 } from "@kantel/contracts";
 import type { SqlDriver } from "@kantel/sql";
+import { HOSTED_PORTS_DOMAIN } from "./config.ts";
 
 /** Where Cloudflare Access puts the signed-in person's token on each request it lets through. */
 const ACCESS_ASSERTION = "cf-access-jwt-assertion";
@@ -86,6 +87,11 @@ export interface StackComputeOptions {
 	readonly now?: () => number;
 	/** For webhook deliveries and telemetry exports. Default the global `fetch`. */
 	readonly fetch?: typeof fetch;
+	/**
+	 * The domain port URLs are under, `{port}-{subdomain}.{domain}`. Default `HOSTED_PORTS_DOMAIN` (`ports.kantel.dev`).
+	 * The stub backend only names the URLs: nothing serves them until hosts join this deployment.
+	 */
+	readonly portsDomain?: string;
 }
 
 /**
@@ -123,7 +129,10 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 	const now = options.now ?? Date.now;
 	const api = createComputeApi({
 		store,
-		backend: revivingStub(createStubBackend(), store.sandboxes),
+		backend: revivingStub(
+			createStubBackend({ sandboxDomain: options.portsDomain ?? HOSTED_PORTS_DOMAIN }),
+			store.sandboxes,
+		),
 		authenticatePerson: (request) => personOf(options.authenticator, options.identity, request),
 		mode: "hosted",
 		now,
