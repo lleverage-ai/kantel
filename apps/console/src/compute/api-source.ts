@@ -144,8 +144,7 @@ function accountOf(account: Account): ComputeAccount {
 		id: account.id,
 		kind: account.kind,
 		name: account.name,
-		// The API has no slug: the account's ID stands in, as it is what names the account in calls.
-		slug: account.id,
+		// No slug: the API has none, and a sandbox's address doesn't carry its account.
 		role: account.role,
 		// The API doesn't count members on an account; the viewer is one.
 		members: 1,
@@ -689,6 +688,9 @@ const signalsOf = (metrics: boolean, logs: boolean): ("metrics" | "logs")[] => [
 
 function telemetrySource({ api }: Context): TelemetrySource {
 	return {
+		// The API exports over OTLP/HTTP and adds no resource attributes, so the page offers neither choice.
+		protocols: ["http/protobuf"],
+		attributes: false,
 		get: async (accountId) => telemetryOf(accountId, await readTelemetry(api, accountId)),
 		update: async (accountId, change) => {
 			if (change.protocol === "grpc") throw notYet("Kantel's API exports over OTLP/HTTP only, not gRPC.");

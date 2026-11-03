@@ -28,8 +28,11 @@ export interface ComputeAccount {
 	readonly id: string;
 	readonly kind: AccountKind;
 	readonly name: string;
-	/** The account's short name, in sandbox addresses: `<sandbox>.<slug>.<domain>`. */
-	readonly slug: string;
+	/**
+	 * The account's short name, in sandbox addresses: `<sandbox>.<slug>.<domain>`. Absent where addresses don't carry
+	 * the account, as with the compute API, which names a sandbox `<subdomain>.<domain>`.
+	 */
+	readonly slug?: string;
 	readonly role: AccountRole;
 	/** People in an organisation; 1 for a personal account. */
 	readonly members: number;
@@ -525,6 +528,10 @@ export type TelemetryChange = Partial<Omit<TelemetrySettings, "accountId" | "hea
 };
 
 export interface TelemetrySource {
+	/** The protocols this Kantel exports over; both when left out. With one, the page offers no choice. */
+	readonly protocols?: readonly TelemetryProtocol[];
+	/** False where exports can't carry extra resource attributes: the page leaves that section out. */
+	readonly attributes?: boolean;
 	get(accountId: string): Promise<TelemetrySettings>;
 	update(accountId: string, change: TelemetryChange): Promise<TelemetrySettings>;
 	/** Sends one test metric and event, and says how it went. */

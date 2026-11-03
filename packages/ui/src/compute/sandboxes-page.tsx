@@ -671,7 +671,9 @@ function NewSandboxDialog({
 			<div className="flex w-(--kt-card-width) max-w-full flex-col gap-4 pt-2">
 				<TextField
 					label="Name"
-					hint={`Lowercase letters, digits and dashes. Its address is <name>.${account.slug}. Leave it empty for one Kantel picks.`}
+					hint={`Lowercase letters, digits and dashes. ${
+						account.slug === undefined ? "Its address starts with it." : `Its address is <name>.${account.slug}.`
+					} Leave it empty for one Kantel picks.`}
 					value={name}
 					onChange={(event) => setName(event.currentTarget.value)}
 					placeholder="api-server"

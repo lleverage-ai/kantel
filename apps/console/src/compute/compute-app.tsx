@@ -66,6 +66,15 @@ function namedFor(
 		}),
 		list: async () =>
 			(await source.accounts.list()).map((account) => (account.kind === "personal" ? { ...account, name } : account)),
+		// Their own row in an organisation's members too.
+		members: async (accountId) => {
+			const [viewer, members] = await Promise.all([source.accounts.viewer(), source.accounts.members(accountId)]);
+			return members.map((member) =>
+				member.id === viewer.id
+					? { ...member, name, ...(member.email === "" && person.email !== undefined ? { email: person.email } : {}) }
+					: member,
+			);
+		},
 	};
 	// Not a spread, which would fix the live source's `domain` at what it is now: it learns the domain later.
 	return Object.defineProperties({ ...source, accounts }, { domain: { get: () => source.domain, enumerable: true } });

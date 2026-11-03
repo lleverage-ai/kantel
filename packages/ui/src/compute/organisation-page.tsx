@@ -191,10 +191,16 @@ function OrganisationDetails({
 			<PageHeader
 				title={account.name}
 				lede={
-					<>
-						Its slug is <span className="font-mono text-code text-fg">{account.slug}</span>, and it has {people}.{" "}
-						{YOUR_ROLE[account.role]}
-					</>
+					account.slug === undefined ? (
+						<>
+							It has {people}. {YOUR_ROLE[account.role]}
+						</>
+					) : (
+						<>
+							Its slug is <span className="font-mono text-code text-fg">{account.slug}</span>, and it has {people}.{" "}
+							{YOUR_ROLE[account.role]}
+						</>
+					)
 				}
 				actions={
 					manager ? (
