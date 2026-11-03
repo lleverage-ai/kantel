@@ -209,7 +209,7 @@ export const HOST_IMAGES_PATH = "/v1/hosts/images";
  * lleverage-ai/kantel, made by apps/host/guest/release.sh. Pinned to one release, so a new image reaches hosts only
  * when this changes (or KANTEL_COMPUTE_IMAGES points elsewhere).
  */
-export const DEFAULT_HOST_IMAGES = "https://github.com/lleverage-ai/kantel/releases/download/host-images-20261103";
+export const DEFAULT_HOST_IMAGES = "https://github.com/lleverage-ai/kantel/releases/download/host-images-20261103.1";
 
 /** Where a host fetches the kantel-host that KANTEL_HOST_VERSION names: that version's GitHub Release. */
 export const DEFAULT_HOST_UPDATE_URL =
