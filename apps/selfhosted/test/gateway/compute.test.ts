@@ -1,10 +1,11 @@
 // The compute plane on the self-hosted gateway, through its fetch handler: the super-admin's key drives a sandbox
 // through the SDK, makes a scoped key that works, and the gateway's own routes and keys are as they were.
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
+import { type CallContext, EMAIL_OTP_ISSUER, type Role } from "@kantel/contracts";
 import { createMemoryHostStore } from "@kantel/hosts/store";
 import { signTunnel } from "@kantel/hosts/tunnel";
 import { createAuthenticator } from "@kantel/identity/authenticator";
-import { kantelSessionProvider } from "@kantel/identity/otp";
+import { hashSessionToken, kantelSessionProvider } from "@kantel/identity/otp";
 import { afterEach, describe, expect, it } from "vitest";
 import { bootstrap, createGatewayComponents } from "../../src/gateway/components.ts";
 import { computeConfig, gatewayCompute, gatewayHosts, hostImages } from "../../src/gateway/compute.ts";
@@ -24,7 +25,11 @@ async function serve(on: boolean, superAdminKey?: string) {
 		providers: [kantelSessionProvider({ sessions: components.otp.sessions })],
 	});
 	const compute = on
-		? await gatewayCompute({ authenticator, ...(superAdminKey === undefined ? {} : { superAdminKey }) })
+		? await gatewayCompute({
+				authenticator,
+				identity: components.identity,
+				...(superAdminKey === undefined ? {} : { superAdminKey }),
+			})
 		: undefined;
 	if (compute !== undefined) cleanups.push(() => compute.close());
 	const gateway = createGateway({
@@ -39,7 +44,26 @@ async function serve(on: boolean, superAdminKey?: string) {
 			token,
 			fetch: (input, init) => gateway.fetch(new Request(input, init)),
 		});
-	return { gateway, seeded, compute, client };
+	/** A person with `role` across the organisation, signed in with a Kantel session: their bearer token. */
+	const person = async (name: string, role: Role) => {
+		const system: CallContext = { actor: { kind: "system", component: "test" }, organisationId: seeded.organisationId };
+		const email = `${name}@kantel.example.com`;
+		const user = await components.identity.createUser(system, { name, email });
+		await components.identity.grantRole(system, { principal: { kind: "user", userId: user.id }, role });
+		const token = `kts_${crypto.randomUUID().replaceAll("-", "")}`;
+		await components.otp.sessions.create({
+			id: `s_${name}`,
+			tokenHash: await hashSessionToken(token),
+			userId: user.id,
+			issuer: EMAIL_OTP_ISSUER,
+			subject: email,
+			email,
+			createdAt: Date.now(),
+			expiresAt: Date.now() + 3_600_000,
+		});
+		return token;
+	};
+	return { gateway, seeded, compute, client, person };
 }
 
 async function failure(call: Promise<unknown>): Promise<KantelApiError> {
@@ -85,6 +109,17 @@ describe("the compute plane on the gateway", () => {
 			new Request("http://gateway.test/v1/me", { headers: { authorization: `Bearer ${seeded.apiKey}` } }),
 		);
 		expect(me.status).toBe(200);
+	});
+
+	it("makes an organisation admin who signs in the super-admin, who sees the hosts, and nobody else", async () => {
+		const { client, person } = await serve(true);
+		const admin = client(await person("ada", "admin"));
+		expect((await admin.getCaller()).superAdmin).toBe(true);
+		expect((await admin.listHosts()).items.length).toBe(1);
+
+		const operator = client(await person("otto", "operator"));
+		expect((await operator.getCaller()).superAdmin).toBe(false);
+		expect((await failure(operator.listHosts())).code).toBe("forbidden");
 	});
 
 	it("is always on: on joined hosts wherever it knows where hosts reach it, else on the stub", () => {

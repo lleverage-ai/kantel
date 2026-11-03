@@ -391,6 +391,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		});
 		compute = await gatewayCompute({
 			authenticator,
+			identity: components.identity,
 			...(previous?.computeKey === undefined ? {} : { superAdminKey: previous.computeKey }),
 			...(cfg.publicOrigin === undefined ? {} : { publicUrl: cfg.publicOrigin }),
 			...(hosts === undefined ? {} : { hosts }),
