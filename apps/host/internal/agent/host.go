@@ -80,6 +80,11 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 		return nil, err
 	}
 	h.proxy = egress.New(log.With("part", "egress"))
+	dest, err := destinations(cfg)
+	if err != nil {
+		return nil, err
+	}
+	h.proxy.Destinations = dest
 	want := map[string]bool{}
 	for _, t := range cfg.Tiers {
 		want[t] = true
@@ -277,6 +282,25 @@ func (h *Host) egressRules(sandboxID, account string, e *proto.Egress) egress.Ru
 	}
 	r.Upstream, r.Token, r.AttributionKey, r.Headers = e.Upstream, e.Token, e.AttributionKey, e.Headers
 	return r
+}
+
+// destinations is where the egress proxy may connect: public addresses, and the private ranges the operator allows;
+// never the sandbox subnet.
+func destinations(cfg Config) (egress.Destinations, error) {
+	var d egress.Destinations
+	subnet, err := netip.ParsePrefix(cfg.Subnet)
+	if err != nil {
+		return d, fmt.Errorf("sandbox subnet: %w", err)
+	}
+	d.Deny = []netip.Prefix{subnet.Masked()}
+	for _, raw := range cfg.EgressAllowCIDRs {
+		p, err := netip.ParsePrefix(strings.TrimSpace(raw))
+		if err != nil {
+			return d, fmt.Errorf("egressAllowCIDRs: %w", err)
+		}
+		d.Allow = append(d.Allow, p.Masked())
+	}
+	return d, nil
 }
 
 func (h *Host) attachSlot(slot int, sandboxID, owner string, e *proto.Egress) {

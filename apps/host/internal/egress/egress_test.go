@@ -82,6 +82,8 @@ func (u *upstream) count() int {
 
 func startProxy(t *testing.T, rules map[netip.Addr]Rules) *Proxy {
 	p := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	// The stand-in upstream listens on loopback, which the proxy refuses unless an operator allows it.
+	p.Destinations.Allow = []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}
 	p.Resolve = func(a netip.Addr) (Rules, bool) {
 		r, ok := rules[a]
 		return r, ok
