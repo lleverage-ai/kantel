@@ -6,6 +6,11 @@
 // WebSocket upgrades under /v1 (a session's events, a browser's live view) never reach a middleware: Node hands them
 // to the server's `upgrade` listeners, and Vite's own (HMR) leaves any other one hanging, so the browser's socket
 // stays CONNECTING and the session page on Connecting. The plugin forwards those upgrades too, signed in the same way.
+//
+// The gateway takes a browser's writes only from its own origin (`@kantel/identity/csrf`), and the page here is on the
+// dev server's. Deployed, the console and the API are one origin; this stands in for that too: a call from the dev
+// server's own page goes on with the gateway's origin in `Origin`. A call from any other page keeps its own, and the
+// gateway refuses it as it would deployed.
 
 import { request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -19,6 +24,12 @@ const DROP = new Set(["connection", "keep-alive", "transfer-encoding", "host", "
 /** The headers a refused upgrade's answer loses, as it is sent on with `connection: close` and no length. */
 const REFUSAL_DROP = new Set(["connection", "keep-alive", "transfer-encoding", "content-length"]);
 const isApi = (path: string) => path === "/v1" || path.startsWith("/v1/") || path.startsWith("/v1?");
+
+/** The `Origin` to send on: the gateway's, when the browser's is this dev server's own page. */
+export function forwardedOrigin(origin: string | undefined, devHost: string | undefined, target: string) {
+	if (origin === undefined || devHost === undefined) return origin;
+	return origin === `http://${devHost}` || origin === `https://${devHost}` ? new URL(target).origin : origin;
+}
 export function devGateway(target: string, email?: string): Plugin {
 	// `KANTEL_DEV_EMAIL` (vite.config.ts) signs in as someone other than the dev admin, such as the viewer
 	// `POST /__dev/vault-seed` invites, to see a forwarded vault request as they do.
@@ -38,6 +49,8 @@ export function devGateway(target: string, email?: string): Plugin {
 			if (value === undefined || DROP.has(name)) continue;
 			headers.set(name, Array.isArray(value) ? value.join(", ") : value);
 		}
+		const origin = forwardedOrigin(headers.get("origin") ?? undefined, req.headers.host, target);
+		if (origin !== undefined) headers.set("origin", origin);
 		const controller = new AbortController();
 		res.on("close", () => controller.abort());
 		headers.set(ACCESS_HEADER, await accessToken());
