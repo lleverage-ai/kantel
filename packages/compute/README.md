@@ -40,6 +40,6 @@ and prints `KANTEL_URL=…` and `KANTEL_API_KEY=ksk_…` (`KANTEL_COMPUTE_BOOTST
 (`packages/cli`) and its MCP server work against it:
 
 ```sh
-npx kantel login --url http://127.0.0.1:58190 --key ksk_…
-npx kantel sandbox create
+kantel login --url http://127.0.0.1:58190 --key ksk_…
+kantel sandbox create
 ```

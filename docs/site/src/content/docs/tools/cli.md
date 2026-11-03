@@ -26,7 +26,7 @@ kantel version
 
 It checks the files against the release's `SHA256SUMS`, puts them in `~/.local/share/kantel`, and links `~/.local/bin/kantel` and `~/.local/bin/kantel-admin` (the [operator's command](/self-hosting/admin-cli/)) to them. If `~/.local/bin` isn't on your `PATH`, it says how to put it there (`fish_add_path ~/.local/bin` in fish). Run the same line again to update. After `| sh -s --`, `--dir DIR` links the commands in another directory, `--no-admin` installs `kantel` alone, and `--version 0.1.0` installs that release. `gh attestation verify ~/.local/share/kantel/kantel.mjs --repo lleverage-ai/kantel` checks that Kantel's release workflow built it.
 
-It isn't on npm yet, so `npx kantel` doesn't work: where these pages say `npx kantel`, run `kantel`. To build it yourself instead, run `pnpm install --frozen-lockfile --filter '@kantel/cli...'` and `pnpm --filter @kantel/cli build` in a clone of the repository, which writes one file, `packages/cli/dist/kantel.js`, and `npm install -g ./packages/cli/dist` to put it on your `PATH`.
+It isn't on npm (publishing is on hold), so `npx kantel` doesn't work: install it as above and run `kantel`. To build it yourself instead, run `pnpm install --frozen-lockfile --filter '@kantel/cli...'` and `pnpm --filter @kantel/cli build` in a clone of the repository, which writes one file, `packages/cli/dist/kantel.js`, and `npm install -g ./packages/cli/dist` to put it on your `PATH`.
 
 ## Sign in
 

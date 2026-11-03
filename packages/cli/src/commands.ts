@@ -4,9 +4,10 @@
  * directory as options, so tests drive it with no globals.
  */
 import { spawn } from "node:child_process";
-import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
-import { basename, dirname, join, posix, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, posix, resolve } from "node:path";
 import {
 	type ApiKey,
 	type ApiKeyPreset,
@@ -31,6 +32,8 @@ import {
 	codexSetup,
 	codexToml,
 	HARNESSES,
+	type McpLaunch,
+	mcpLaunch,
 	mcpServersJson,
 	SKILL_MD,
 	SKILL_PATHS,
@@ -107,6 +110,11 @@ export interface RunOptions {
 	readonly sleep?: (ms: number) => Promise<void>;
 	/** The home directory, for `init --global`; default the user's. */
 	readonly home?: string;
+	/**
+	 * How to start this CLI by absolute paths (Node, its flags and the script), for the MCP setups `agents` prints when
+	 * `kantel` isn't on the PATH; default this process's.
+	 */
+	readonly self?: readonly string[];
 }
 
 interface Io {
@@ -120,6 +128,38 @@ interface Io {
 	readonly openUrl: (url: string) => void;
 	readonly sleep: (ms: number) => Promise<void>;
 	readonly home: string;
+	readonly self: readonly string[] | undefined;
+}
+
+/** Whether an executable `name` is in one of the PATH's directories. */
+export async function onPath(name: string, env: Env): Promise<boolean> {
+	for (const directory of (env.PATH ?? "").split(delimiter)) {
+		if (directory === "" || !isAbsolute(directory)) continue;
+		try {
+			await access(join(directory, name), constants.X_OK);
+			return true;
+		} catch {
+			// Not here.
+		}
+	}
+	return false;
+}
+
+/**
+ * This process as a command, when it is the kantel CLI: the installed `kantel` (a link to kantel.mjs), the bundle, or
+ * src/main.ts from a checkout. Undefined when another program called `run`.
+ */
+function thisCli(): readonly string[] | undefined {
+	const script = process.argv[1];
+	if (script === undefined) return undefined;
+	const name = basename(script);
+	if (!name.startsWith("kantel") && name !== "main.ts") return undefined;
+	return [process.execPath, ...process.execArgv, resolve(script)];
+}
+
+/** How the MCP setups `agents` prints start `kantel mcp`: `kantel` from the PATH, or this CLI by its full path. */
+async function mcpLaunchFor(io: Io): Promise<McpLaunch> {
+	return mcpLaunch(await onPath("kantel", io.env), io.self);
 }
 
 /** What a command's `run` is given. */
@@ -624,7 +664,7 @@ const SECTIONS: readonly Section[] = [
 					"and exits; run kantel login --wait to wait for the approval. Running it again shows the same code.\n" +
 					"\n" +
 					"An existing key comes from --key-stdin, which keeps it out of your shell history and process list:\n" +
-					'  printf %s "$KANTEL_API_KEY" | npx kantel login --key-stdin --url https://kantel.example\n' +
+					'  printf %s "$KANTEL_API_KEY" | kantel login --key-stdin --url https://kantel.example\n' +
 					"It is saved, readable by you only, in ~/.config/kantel/config.json (or under XDG_CONFIG_HOME).",
 				async run(ctx) {
 					const stored = await readStoredConfig(ctx.io.configDir);
@@ -1819,13 +1859,22 @@ const SECTIONS: readonly Section[] = [
 					if (claude) await put(join(base, SKILL_PATHS.claude), SKILL_MD);
 					if (others) await put(join(base, SKILL_PATHS.agents), SKILL_MD);
 					const signedIn = (await ctx.config()).apiKey !== undefined;
-					ctx.emit({ written }, () =>
+					// What it writes tells agents to run `kantel` by name, so say so when that would fail.
+					const found = await onPath("kantel", ctx.io.env);
+					ctx.emit({ written, kantelOnPath: found }, () =>
 						[
 							...written.map((path) => `Wrote ${path}`),
 							"",
 							signedIn
 								? "Your agents use the same sign-in as you (or set KANTEL_API_KEY to a key of their own)."
 								: "Sign in with kantel login, or give the agents a key: kantel key create agent --preset agent.",
+							...(found
+								? []
+								: [
+										"",
+										"kantel isn't on your PATH, and your agents run it by name: put the directory it's in on your PATH",
+										"(install-cli.sh links it in ~/.local/bin).",
+									]),
 						].join("\n"),
 					);
 				},
@@ -1862,15 +1911,17 @@ const SECTIONS: readonly Section[] = [
 					}
 					const harness = choice(ctx.optional(0) ?? "all", [...HARNESSES, "all" as const], "the agent") ?? "all";
 					const url = originOf((await ctx.config()).url);
+					const launch = await mcpLaunchFor(ctx.io);
 					const snippets = {
 						url,
-						claude: claudeSetup(url),
-						codex: codexSetup(url),
-						codexToml: codexToml(url),
-						mcpServers: JSON.parse(mcpServersJson(url)) as unknown,
+						mcp: launch,
+						claude: claudeSetup(url, launch),
+						codex: codexSetup(url, launch),
+						codexToml: codexToml(url, launch),
+						mcpServers: JSON.parse(mcpServersJson(url, launch)) as unknown,
 						agentsMd: AGENTS_BLOCK,
 					};
-					ctx.emit(snippets, () => agentsGuide(url, harness));
+					ctx.emit(snippets, () => agentsGuide(url, harness, launch));
 				},
 			},
 		],
@@ -2154,7 +2205,7 @@ async function execute(command: CommandSpec, argv: readonly string[], io: Io): P
 function report(error: unknown, io: Io): number {
 	if (error instanceof KantelApiError) {
 		io.stderr.write(`kantel: ${error.code}: ${error.message}\n`);
-		if (error.code === "unauthenticated") io.stderr.write("Sign in with: npx kantel login (or set KANTEL_API_KEY)\n");
+		if (error.code === "unauthenticated") io.stderr.write("Sign in with: kantel login (or set KANTEL_API_KEY)\n");
 		return 1;
 	}
 	if (error instanceof CliError) {
@@ -2223,6 +2274,7 @@ export async function run(argv: readonly string[], options: RunOptions = {}): Pr
 		openUrl: options.openUrl ?? openInBrowser,
 		sleep: options.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms))),
 		home: options.home ?? homedir(),
+		self: options.self ?? thisCli(),
 	};
 	try {
 		return await dispatch(argv, io);
