@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import { EnvironmentPage, EnvironmentsPage } from "./environments-page.tsx";
-import { type ComputeFixtureOptions, createComputeFixtures, FIXTURE_NOW, LLEVERAGE } from "./fixtures.ts";
+import { type ComputeFixtureOptions, createComputeFixtures, FIXTURE_NOW, LLEVERAGE, PERSONAL } from "./fixtures.ts";
 
 export default { title: "Compute/Environments page" } satisfies StoryDefault;
 
@@ -22,15 +22,18 @@ function List({ options, creating }: { options?: ComputeFixtureOptions; creating
 function One({
 	environmentId = "env_backend",
 	addingProtected,
+	accountId = LLEVERAGE.id,
 }: {
 	environmentId?: string;
 	addingProtected?: boolean;
+	accountId?: string;
 }) {
 	const [source] = useState(() => createComputeFixtures());
 	return (
 		<EnvironmentPage
 			source={source.environments}
 			environmentId={environmentId}
+			accountId={accountId}
 			listHref="#environments"
 			now={FIXTURE_NOW}
 			{...(addingProtected === undefined ? {} : { addingProtected })}
@@ -58,6 +61,9 @@ export const Environment: Story = () => <One />;
 
 /** Add protected variable open: a value, and the hosts it's swapped in for. */
 export const AddProtected: Story = () => <One addingProtected />;
+
+/** An environment of another account than the one selected (Back after switching): nothing to change. */
+export const AnotherAccount: Story = () => <One accountId={PERSONAL.id} />;
 
 /** On a phone: the tables scroll sideways. */
 export const Mobile: Story = () => <One />;

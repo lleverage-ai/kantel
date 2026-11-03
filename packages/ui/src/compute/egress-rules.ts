@@ -47,14 +47,31 @@ export function variableNameProblem(name: string): string | undefined {
 export function repoUrlProblem(url: string, taken: readonly string[]): string | undefined {
 	const value = url.trim();
 	if (!/^https:\/\/[^\s/]+\/\S+$/.test(value)) return "Give its https address, such as https://github.com/owner/name.";
-	const key = (each: string) =>
-		each
-			.trim()
-			.replace(/\.git$/, "")
-			.replace(/\/$/, "")
-			.toLowerCase();
-	if (taken.some((each) => key(each) === key(value))) return "The environment already has this repository.";
+	if (taken.some((each) => repoKey(each) === repoKey(value))) return "The environment already has this repository.";
 	return undefined;
+}
+
+/** Hosts whose repository paths ignore case, so `Owner/Repo` and `owner/repo` are one repository there. */
+const CASELESS_GIT_HOSTS = new Set(["github.com", "gitlab.com"]);
+
+/**
+ * A repository address as one repository: the host's case and a `.git` or trailing slash don't matter, and the path's
+ * case matters except on a host known to ignore it (another Git server may keep `Service` and `service` apart).
+ */
+function repoKey(url: string): string {
+	const trimmed = url
+		.trim()
+		.replace(/\/+$/, "")
+		.replace(/\.git$/, "");
+	let parsed: URL;
+	try {
+		parsed = new URL(trimmed);
+	} catch {
+		return trimmed;
+	}
+	const host = parsed.host.toLowerCase();
+	const path = parsed.pathname.replace(/\/+$/, "");
+	return `${host}${CASELESS_GIT_HOSTS.has(host) ? path.toLowerCase() : path}`;
 }
 
 export const isMethod = (value: string): value is HttpMethod => (HTTP_METHODS as readonly string[]).includes(value);

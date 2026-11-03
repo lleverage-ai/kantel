@@ -39,6 +39,10 @@ describe("what a binding, a grant and a repository may be", () => {
 		expect(repoUrlProblem("https://github.com/lleverage-ai/kantel", taken)).toMatch(/already/);
 		expect(repoUrlProblem("https://github.com/Lleverage-AI/kantel.git", taken)).toMatch(/already/);
 		expect(repoUrlProblem("git@github.com:lleverage-ai/kantel", taken)).toMatch(/https/);
+		// Another Git server may keep two repositories apart by case alone.
+		const own = ["https://git.example.com/team/Service.git"];
+		expect(repoUrlProblem("https://git.example.com/team/service.git", own)).toBeUndefined();
+		expect(repoUrlProblem("https://GIT.example.com/team/Service/", own)).toMatch(/already/);
 	});
 
 	it("says which hosts the proxy looks inside", () => {

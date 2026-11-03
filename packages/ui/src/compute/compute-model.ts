@@ -595,6 +595,8 @@ export interface SandboxProtectedVariable {
 export interface SandboxEgress {
 	readonly sandboxId: string;
 	readonly sandboxName: string;
+	/** The account the sandbox is in. */
+	readonly accountId: string;
 	readonly environment?: { readonly id: string; readonly name: string };
 	readonly protectedVariables: readonly SandboxProtectedVariable[];
 	/** The environment's grants, which this sandbox has too. */

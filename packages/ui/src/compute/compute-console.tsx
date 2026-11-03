@@ -495,6 +495,7 @@ function PageFor({
 				<EnvironmentPage
 					source={source.environments}
 					environmentId={route.environmentId}
+					accountId={account.id}
 					listHref={computePath("environments", base)}
 					navigate={navigate}
 					{...timing}
@@ -505,6 +506,7 @@ function PageFor({
 				<EgressPage
 					source={source.egress}
 					sandboxId={route.sandboxId}
+					accountId={account.id}
 					sandboxesHref={computePath("sandboxes", base)}
 					environmentHref={(id) => computePath("environments", base, id)}
 					navigate={navigate}

@@ -34,6 +34,11 @@ const timeText = (at: number): string =>
 export interface EgressPageProps {
 	readonly source: EgressSource;
 	readonly sandboxId: string;
+	/**
+	 * The account the console has selected. A sandbox of another account (a link, or Back after switching) is shown as
+	 * not this account's, with nothing to change.
+	 */
+	readonly accountId?: string;
 	/** The Sandboxes page, for the way back. */
 	readonly sandboxesHref: string;
 	/** An environment's page, from the sandbox's environment. */
@@ -46,6 +51,7 @@ export interface EgressPageProps {
 export function EgressPage({
 	source,
 	sandboxId,
+	accountId,
 	sandboxesHref,
 	environmentHref,
 	navigate,
@@ -87,6 +93,16 @@ export function EgressPage({
 				) : (
 					<Skeleton lines={4} />
 				)}
+			</div>
+		);
+	}
+	if (accountId !== undefined && egress.accountId !== accountId) {
+		return (
+			<div className={computePage}>
+				{back}
+				<Notice level="error">
+					This sandbox belongs to another account. Switch to that account to see its egress or change its grants.
+				</Notice>
 			</div>
 		);
 	}

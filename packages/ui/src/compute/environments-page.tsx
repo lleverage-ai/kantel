@@ -282,6 +282,11 @@ function DetailsDialog({
 export interface EnvironmentPageProps {
 	readonly source: EnvironmentsSource;
 	readonly environmentId: string;
+	/**
+	 * The account the console has selected. An environment of another account (a link, or Back after switching) is
+	 * shown as not this account's, with nothing to change.
+	 */
+	readonly accountId?: string;
 	/** The list, for the way back and after a delete. */
 	readonly listHref: string;
 	readonly navigate?: (path: string) => void;
@@ -302,6 +307,7 @@ type Editing =
 export function EnvironmentPage({
 	source,
 	environmentId,
+	accountId,
 	listHref,
 	navigate,
 	now: fixedNow,
@@ -367,6 +373,17 @@ export function EnvironmentPage({
 				) : (
 					<ListSkeleton />
 				)}
+			</div>
+		);
+	}
+
+	if (accountId !== undefined && env.accountId !== accountId) {
+		return (
+			<div className={computePage}>
+				{back}
+				<Notice level="error">
+					This environment belongs to another account. Switch to that account to see or change it.
+				</Notice>
 			</div>
 		);
 	}

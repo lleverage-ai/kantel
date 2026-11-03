@@ -1130,6 +1130,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 		return {
 			sandboxId: box.id,
 			sandboxName: box.name,
+			accountId: box.accountId,
 			...(box.environment === undefined ? {} : { environment: box.environment }),
 			protectedVariables: (env?.variables ?? [])
 				.filter((variable) => variable.protected)
