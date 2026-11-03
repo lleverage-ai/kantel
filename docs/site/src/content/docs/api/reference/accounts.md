@@ -9,15 +9,11 @@ sidebar:
 
 Who is calling, personal accounts and organisations, members, invites and usage.
 
-:::caution
-Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
-:::
-
 ## Who is calling
 
 `GET /v1/whoami` (SDK method `getCaller`)
 
-The person or key calling, the accounts they may act in (their personal account first), and the deployment's mode. Any key may call it. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+The person or key calling, the accounts they may act in (their personal account first), and the deployment's mode. Any key may call it.
 
 **Answers**
 
@@ -29,7 +25,7 @@ The person or key calling, the accounts they may act in (their personal account 
 
 `GET /v1/accounts` (SDK method `listAccounts`)
 
-The caller's personal account and every organisation they belong to; for a key, its own account. A key needs `account:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+The caller's personal account and every organisation they belong to; for a key, its own account. A key needs `account:read`.
 
 **Answers**
 
@@ -41,7 +37,7 @@ The caller's personal account and every organisation they belong to; for a key, 
 
 `POST /v1/accounts` (SDK method `createOrganisation`)
 
-Makes an organisation account with the caller as its owner. People only: a key is refused. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Makes an organisation account with the caller as its owner. People only: a key is refused.
 
 **Body**: [CreateOrganisationBody](/api/reference/types/#createorganisationbody)
 
@@ -55,7 +51,7 @@ Makes an organisation account with the caller as its owner. People only: a key i
 
 `POST /v1/accounts/join` (SDK method `joinOrganisation`)
 
-Joins the organisation an invite's code is for, with the invite's role. People only. An expired or used code is `expired`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Joins the organisation an invite's code is for, with the invite's role. People only. An expired or used code is `expired`.
 
 **Body**: [JoinOrganisationBody](/api/reference/types/#joinorganisationbody)
 
@@ -69,7 +65,7 @@ Joins the organisation an invite's code is for, with the invite's role. People o
 
 `GET /v1/accounts/{accountId}` (SDK method `getAccount`)
 
-A key needs `account:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+A key needs `account:read`.
 
 **Path parameters**
 
@@ -87,7 +83,7 @@ A key needs `account:read`. Experimental: served only where the deployment sets 
 
 `PATCH /v1/accounts/{accountId}` (SDK method `updateAccount`)
 
-Renames it or sets new sandboxes' default visibility; needs admin. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Renames it or sets new sandboxes' default visibility; needs admin. A key needs `account:admin`.
 
 **Path parameters**
 
@@ -107,7 +103,7 @@ Renames it or sets new sandboxes' default visibility; needs admin. A key needs `
 
 `DELETE /v1/accounts/{accountId}` (SDK method `deleteOrganisation`)
 
-Deletes an organisation with no sandboxes or saved snapshots left (`conflict` otherwise); needs its owner. A personal account can't be deleted here. People only. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Deletes an organisation with no sandboxes or saved snapshots left (`conflict` otherwise); needs its owner. A personal account can't be deleted here. People only.
 
 **Path parameters**
 
@@ -125,7 +121,7 @@ Deletes an organisation with no sandboxes or saved snapshots left (`conflict` ot
 
 `GET /v1/accounts/{accountId}/usage` (SDK method `getAccountUsage`)
 
-Running time and cost since `since`, and the account's limits. A key needs `account:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Running time and cost since `since`, and the account's limits. A key needs `account:read`.
 
 **Path parameters**
 
@@ -150,7 +146,7 @@ Running time and cost since `since`, and the account's limits. A key needs `acco
 
 `GET /v1/accounts/{accountId}/members` (SDK method `listMembers`)
 
-A key needs `account:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+A key needs `account:read`.
 
 **Path parameters**
 
@@ -168,7 +164,7 @@ A key needs `account:read`. Experimental: served only where the deployment sets 
 
 `PATCH /v1/accounts/{accountId}/members/{userId}` (SDK method `updateMember`)
 
-Needs admin; only an owner makes or unmakes an owner, and the last owner stays. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Needs admin; only an owner makes or unmakes an owner, and the last owner stays. A key needs `account:admin`.
 
 **Path parameters**
 
@@ -189,7 +185,7 @@ Needs admin; only an owner makes or unmakes an owner, and the last owner stays. 
 
 `DELETE /v1/accounts/{accountId}/members/{userId}` (SDK method `removeMember`)
 
-Removes a member, or lets a member leave. Their private sandboxes in the organisation stay, stopped, for an admin to delete or share. The last owner can't leave. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Removes a member, or lets a member leave. Their private sandboxes in the organisation stay, stopped, for an admin to delete or share. The last owner can't leave. A key needs `account:admin`.
 
 **Path parameters**
 
@@ -208,7 +204,7 @@ Removes a member, or lets a member leave. Their private sandboxes in the organis
 
 `GET /v1/accounts/{accountId}/invites` (SDK method `listInvites`)
 
-Codes are not shown again. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Codes are not shown again. A key needs `account:admin`.
 
 **Path parameters**
 
@@ -226,7 +222,7 @@ Codes are not shown again. A key needs `account:admin`. Experimental: served onl
 
 `POST /v1/accounts/{accountId}/invites` (SDK method `createInvite`)
 
-Makes a join code, shown once, for one person or for anyone holding it; needs admin. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Makes a join code, shown once, for one person or for anyone holding it; needs admin. A key needs `account:admin`.
 
 **Path parameters**
 
@@ -246,7 +242,7 @@ Makes a join code, shown once, for one person or for anyone holding it; needs ad
 
 `DELETE /v1/accounts/{accountId}/invites/{inviteId}` (SDK method `revokeInvite`)
 
-A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+A key needs `account:admin`.
 
 **Path parameters**
 

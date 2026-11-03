@@ -33,7 +33,7 @@ npx kantel logout
 ```
 
 The browser sign-in is RFC 8628's device flow (`POST /v1/auth/device`): it prints a code, opens
-`/compute/device?code=…` in the console, and polls until a signed-in person approves it there, which hands the CLI a
+`/device?code=…` in the console, and polls until a signed-in person approves it there, which hands the CLI a
 new 90-day API key named `kantel on <host>`. A code waiting for approval is kept in `login-pending.json` beside the
 config, so running `kantel login` again shows the same one; with no terminal it prints the code and stops, and
 `kantel login --wait` waits for it. `kantel login` checks the key before it saves it.

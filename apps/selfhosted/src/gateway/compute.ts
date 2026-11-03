@@ -1,23 +1,25 @@
 /**
- * The compute plane on the self-hosted gateway. Experimental: on only with `KANTEL_COMPUTE=experimental`; with it off
- * there is nothing here, none of its routes answer and there is no upgrade path.
+ * The compute plane on the self-hosted gateway, always on: the console is its console.
  *
  * `@kantel/compute` serves the API (accounts, sandboxes, snapshots, scoped `ksk_` keys, webhooks, OpenTelemetry export
  * and hosts under `/v1`) over a `SandboxBackend`:
  *
- *   - `stub` (the default): a just-bash shell over files in memory, to try the API with no machine of your own.
- *   - `hosts`: machines running `kantel-host` (`@kantel/hosts`, apps/host). A host joins with a token the API mints
+ *   - `hosts` (the default wherever the gateway knows the address hosts reach it at, as the Compose stack does):
+ *     machines running `kantel-host` (`@kantel/hosts`, apps/host). A host joins with a token the API mints
  *     (`POST /v1/admin/hosts/join-tokens`), registers at `POST /v1/hosts/register`, dials out to `GET /v1/hosts/connect`
  *     and runs the sandboxes the scheduler places on it: Firecracker microVMs and workerd isolates. The registry of
  *     hosts and placements is in Postgres with a database, in memory otherwise.
+ *   - `stub` (the default with no such address, as under `pnpm dev`): a just-bash shell over files in memory, to try
+ *     the API with no machine of your own. `KANTEL_COMPUTE_BACKEND=stub` picks it anywhere.
  *
  * The API's records are in memory either way, so they are gone after a restart. The super-admin's key is the
  * exception: the gateway keeps its secret in the bootstrap file and makes it again on each start.
  *
- *   KANTEL_COMPUTE               `experimental` turns it on
- *   KANTEL_COMPUTE_BACKEND       `hosts` runs sandboxes on joined hosts; default `stub`
+ *   KANTEL_COMPUTE_BACKEND       `hosts` runs sandboxes on joined hosts, `stub` on the stand-in; default `hosts` when
+ *                                one of the URLs below is set, else `stub`
  *   KANTEL_COMPUTE_PUBLIC_URL    with `hosts`: where hosts and clients reach this gateway (join commands, desktop,
- *                                browser and SSH tunnels); default KANTEL_PUBLIC_URL, one of which must be set
+ *                                browser and SSH tunnels); default KANTEL_PUBLIC_URL, one of which `hosts` needs.
+ *                                deploy/compose/compose.yaml sets it to the gateway's local address by default
  *   KANTEL_COMPUTE_POOLS         warm sandboxes per host, as JSON such as {"microvm/default": 2}; default one
  *                                default-size microVM
  *   KANTEL_COMPUTE_JOIN_COMMAND  the join command shown with a token, with {url} and {token}; default the npm package's
@@ -64,7 +66,7 @@ import {
 } from "@kantel/compute";
 import { bootstrapSuperAdmin } from "@kantel/compute/serve";
 import { createStubBackend } from "@kantel/compute/stub";
-import { type Authenticator, KantelError } from "@kantel/contracts";
+import { type Authenticator, callContextFor, type IdentityDirectory, KantelError } from "@kantel/contracts";
 import { createHostBackend, DESKTOP_PORT } from "@kantel/hosts/backend";
 import { createHostsApi, HOSTS_CONNECT_PATH, HOSTS_REGISTER_PATH } from "@kantel/hosts/http";
 import { openPortWebSocket } from "@kantel/hosts/port-websocket";
@@ -81,11 +83,6 @@ import type { UpgradeHandler } from "./node-http.ts";
 const WEBHOOK_INTERVAL_MS = 1000;
 /** How often telemetry is exported. */
 const TELEMETRY_INTERVAL_MS = 60_000;
-
-/** Whether the compute plane is on: `KANTEL_COMPUTE=experimental`. */
-export function computeEnabled(env: NodeJS.ProcessEnv): boolean {
-	return env.KANTEL_COMPUTE?.trim().toLowerCase() === "experimental";
-}
 
 /** The `hosts` backend's settings. */
 export interface ComputeHostsConfig {
@@ -105,13 +102,15 @@ export interface ComputeConfig {
 	readonly hosts?: ComputeHostsConfig;
 }
 
-/** The compute plane's settings, or undefined when it is off. */
-export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig | undefined {
-	if (!computeEnabled(env)) return undefined;
-	const backend = env.KANTEL_COMPUTE_BACKEND?.trim().toLowerCase() || "stub";
+/**
+ * The compute plane's settings. (`KANTEL_COMPUTE`, which once had to be `experimental` to turn it on, is no longer
+ * read.)
+ */
+export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
+	const publicUrl = (env.KANTEL_COMPUTE_PUBLIC_URL?.trim() || env.KANTEL_PUBLIC_URL?.trim()) ?? "";
+	const backend = env.KANTEL_COMPUTE_BACKEND?.trim().toLowerCase() || (publicUrl === "" ? "stub" : "hosts");
 	if (backend === "stub") return {};
 	if (backend !== "hosts") throw new Error("KANTEL_COMPUTE_BACKEND is `stub` or `hosts`");
-	const publicUrl = (env.KANTEL_COMPUTE_PUBLIC_URL ?? env.KANTEL_PUBLIC_URL ?? "").trim();
 	if (!/^https?:\/\/[^/]+\/?$/.test(publicUrl)) {
 		throw new Error(
 			"KANTEL_COMPUTE_BACKEND=hosts needs KANTEL_COMPUTE_PUBLIC_URL or KANTEL_PUBLIC_URL: where hosts reach this gateway",
@@ -247,20 +246,39 @@ export interface GatewayCompute {
 	close(): Promise<void>;
 }
 
-/** The person a gateway sign-in is, or undefined for a key or no sign-in (a `ksk_` key is the compute API's own). */
-async function personOf(authenticator: Authenticator, request: Request): Promise<PersonIdentity | undefined> {
+/**
+ * The person a gateway sign-in is, or undefined for a key or no sign-in (a `ksk_` key is the compute API's own). A
+ * person who is admin across the deployment's organisation is the compute plane's super-admin, who sees and adds
+ * hosts. (A person's sign-in carries no role of its own: roles are held per project or organisation, so it asks
+ * `identity`.)
+ */
+async function personOf(
+	authenticator: Authenticator,
+	identity: Pick<IdentityDirectory, "authorize"> | undefined,
+	request: Request,
+): Promise<PersonIdentity | undefined> {
+	let caller: Awaited<ReturnType<Authenticator["authenticate"]>>;
 	try {
-		const caller = await authenticator.authenticate(request);
-		if (caller.actor.kind !== "human") return undefined;
-		return { userId: caller.actor.userId, name: caller.actor.userId, superAdmin: caller.role === "admin" };
+		caller = await authenticator.authenticate(request);
 	} catch {
 		return undefined;
 	}
+	if (caller.actor.kind !== "human") return undefined;
+	const superAdmin =
+		identity === undefined
+			? false
+			: await identity.authorize(callContextFor(caller), "admin").then(
+					() => true,
+					() => false,
+				);
+	return { userId: caller.actor.userId, name: caller.actor.userId, superAdmin };
 }
 
 /** The compute API over the stub, or over joined hosts with `hosts`, signed in with the gateway's `authenticator`. */
 export async function gatewayCompute(options: {
 	readonly authenticator: Authenticator;
+	/** Who holds which role: an organisation admin who signs in is the compute plane's super-admin. */
+	readonly identity?: Pick<IdentityDirectory, "authorize">;
 	/** The super-admin key's secret from an earlier start, if any. */
 	readonly superAdminKey?: string;
 	readonly publicUrl?: string;
@@ -286,7 +304,7 @@ export async function gatewayCompute(options: {
 	const api = createComputeApi({
 		store,
 		backend,
-		authenticatePerson: (request) => personOf(options.authenticator, request),
+		authenticatePerson: (request) => personOf(options.authenticator, options.identity, request),
 		...(publicUrl === undefined ? {} : { publicUrl }),
 		...(hosts?.config.joinCommand === undefined ? {} : { hostJoinCommand: hosts.config.joinCommand }),
 		...(options.now === undefined ? {} : { now: options.now }),

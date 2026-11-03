@@ -1,5 +1,5 @@
 // The device sign-in page (compute console, experimental): where a person approves `kantel login` from a terminal.
-// The command line shows a code and opens `/compute/device?code=…`; the page shows what is asking to sign in and the
+// The command line shows a code and opens `/device?code=…`; the page shows what is asking to sign in and the
 // account its key will act in, the one the account switcher has open, and Approve makes the key, which the terminal
 // collects on its next poll. Without a code in the address the person types the one their terminal shows. Every call
 // goes through the `DeviceLoginsSource` the host binds; stories bind it to fixtures.

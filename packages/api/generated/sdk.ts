@@ -4869,163 +4869,163 @@ export interface KantelClient {
 	listModelProviderModels(connectionId: string, options?: CallOptions): Promise<ModelProviderModels>;
 	/** Choose the default model. Makes the model the organisation's `default` route, which the `assistant` profile names, so a new session uses it. Needs admin on the organisation. `PUT /model-providers/default` */
 	setModelProviderDefault(body: SetModelProviderDefaultBody, options?: CallOptions): Promise<ModelProviderDefault>;
-	/** Who is calling. The person or key calling, the accounts they may act in (their personal account first), and the deployment's mode. Any key may call it. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /whoami` */
+	/** Who is calling. The person or key calling, the accounts they may act in (their personal account first), and the deployment's mode. Any key may call it. `GET /whoami` */
 	getCaller(options?: CallOptions): Promise<Caller>;
-	/** List accounts. The caller's personal account and every organisation they belong to; for a key, its own account. A key needs `account:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /accounts` */
+	/** List accounts. The caller's personal account and every organisation they belong to; for a key, its own account. A key needs `account:read`. `GET /accounts` */
 	listAccounts(options?: CallOptions): Promise<AccountList>;
-	/** Create an organisation. Makes an organisation account with the caller as its owner. People only: a key is refused. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /accounts` */
+	/** Create an organisation. Makes an organisation account with the caller as its owner. People only: a key is refused. `POST /accounts` */
 	createOrganisation(body: CreateOrganisationBody, options?: CallOptions): Promise<Account>;
-	/** Join an organisation. Joins the organisation an invite's code is for, with the invite's role. People only. An expired or used code is `expired`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /accounts/join` */
+	/** Join an organisation. Joins the organisation an invite's code is for, with the invite's role. People only. An expired or used code is `expired`. `POST /accounts/join` */
 	joinOrganisation(body: JoinOrganisationBody, options?: CallOptions): Promise<Account>;
-	/** Get an account. A key needs `account:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /accounts/{accountId}` */
+	/** Get an account. A key needs `account:read`. `GET /accounts/{accountId}` */
 	getAccount(accountId: string, options?: CallOptions): Promise<Account>;
-	/** Change an account. Renames it or sets new sandboxes' default visibility; needs admin. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `PATCH /accounts/{accountId}` */
+	/** Change an account. Renames it or sets new sandboxes' default visibility; needs admin. A key needs `account:admin`. `PATCH /accounts/{accountId}` */
 	updateAccount(accountId: string, body?: UpdateAccountBody, options?: CallOptions): Promise<Account>;
-	/** Delete an organisation. Deletes an organisation with no sandboxes or saved snapshots left (`conflict` otherwise); needs its owner. A personal account can't be deleted here. People only. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `DELETE /accounts/{accountId}` */
+	/** Delete an organisation. Deletes an organisation with no sandboxes or saved snapshots left (`conflict` otherwise); needs its owner. A personal account can't be deleted here. People only. `DELETE /accounts/{accountId}` */
 	deleteOrganisation(accountId: string, options?: CallOptions): Promise<void>;
-	/** Get an account's usage. Running time and cost since `since`, and the account's limits. A key needs `account:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /accounts/{accountId}/usage` */
+	/** Get an account's usage. Running time and cost since `since`, and the account's limits. A key needs `account:read`. `GET /accounts/{accountId}/usage` */
 	getAccountUsage(accountId: string, query?: UsageQuery, options?: CallOptions): Promise<AccountUsage>;
-	/** List an organisation's members. A key needs `account:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /accounts/{accountId}/members` */
+	/** List an organisation's members. A key needs `account:read`. `GET /accounts/{accountId}/members` */
 	listMembers(accountId: string, options?: CallOptions): Promise<MemberList>;
-	/** Change a member's role. Needs admin; only an owner makes or unmakes an owner, and the last owner stays. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `PATCH /accounts/{accountId}/members/{userId}` */
+	/** Change a member's role. Needs admin; only an owner makes or unmakes an owner, and the last owner stays. A key needs `account:admin`. `PATCH /accounts/{accountId}/members/{userId}` */
 	updateMember(accountId: string, userId: string, body: UpdateMemberBody, options?: CallOptions): Promise<Member>;
-	/** Remove a member. Removes a member, or lets a member leave. Their private sandboxes in the organisation stay, stopped, for an admin to delete or share. The last owner can't leave. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `DELETE /accounts/{accountId}/members/{userId}` */
+	/** Remove a member. Removes a member, or lets a member leave. Their private sandboxes in the organisation stay, stopped, for an admin to delete or share. The last owner can't leave. A key needs `account:admin`. `DELETE /accounts/{accountId}/members/{userId}` */
 	removeMember(accountId: string, userId: string, options?: CallOptions): Promise<void>;
-	/** List an organisation's open invites. Codes are not shown again. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /accounts/{accountId}/invites` */
+	/** List an organisation's open invites. Codes are not shown again. A key needs `account:admin`. `GET /accounts/{accountId}/invites` */
 	listInvites(accountId: string, options?: CallOptions): Promise<InviteList>;
-	/** Invite someone to an organisation. Makes a join code, shown once, for one person or for anyone holding it; needs admin. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /accounts/{accountId}/invites` */
+	/** Invite someone to an organisation. Makes a join code, shown once, for one person or for anyone holding it; needs admin. A key needs `account:admin`. `POST /accounts/{accountId}/invites` */
 	createInvite(accountId: string, body?: CreateInviteBody, options?: CallOptions): Promise<Invite>;
-	/** Revoke an invite. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `DELETE /accounts/{accountId}/invites/{inviteId}` */
+	/** Revoke an invite. A key needs `account:admin`. `DELETE /accounts/{accountId}/invites/{inviteId}` */
 	revokeInvite(accountId: string, inviteId: string, options?: CallOptions): Promise<void>;
-	/** List sandboxes. The account's sandboxes the caller may see, newest first: by default the ones starting, running or stopping; `all` adds stopped, paused and errored ones. Deleted ones are left out. A key needs `sandboxes:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /sandboxes` */
+	/** List sandboxes. The account's sandboxes the caller may see, newest first: by default the ones starting, running or stopping; `all` adds stopped, paused and errored ones. Deleted ones are left out. A key needs `sandboxes:read`. `GET /sandboxes` */
 	listSandboxes(query?: ListSandboxesQuery, options?: CallOptions): Promise<SandboxPage>;
-	/** Create a sandbox. Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. A key needs `sandboxes:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. Idempotent with `options.idempotencyKey`. `POST /sandboxes` */
+	/** Create a sandbox. Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes` */
 	createSandbox(body?: CreateSandboxBody, options?: CallOptions): Promise<Sandbox>;
-	/** Get a sandbox. A key needs `sandboxes:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /sandboxes/{sandboxId}` */
+	/** Get a sandbox. A key needs `sandboxes:read`. `GET /sandboxes/{sandboxId}` */
 	getSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
-	/** Change a sandbox. Renames it, changes its auto-stop or moves its stop time (`extendMinutes`), shares it with its organisation or makes it private again, or replaces its labels. A key needs `sandboxes:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `PATCH /sandboxes/{sandboxId}` */
+	/** Change a sandbox. Renames it, changes its auto-stop or moves its stop time (`extendMinutes`), shares it with its organisation or makes it private again, or replaces its labels. A key needs `sandboxes:write`. `PATCH /sandboxes/{sandboxId}` */
 	updateSandbox(sandboxId: string, body?: UpdateSandboxBody, options?: CallOptions): Promise<Sandbox>;
-	/** Start a sandbox. Boots a stopped, paused or errored sandbox fresh from its newest disk snapshot: programs start again, and a paused sandbox's memory is let go. To carry on where a paused sandbox left off, `resume` it instead. A running sandbox is answered as it is. A key needs `sandboxes:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /sandboxes/{sandboxId}/start` */
+	/** Start a sandbox. Boots a stopped, paused or errored sandbox fresh from its newest disk snapshot: programs start again, and a paused sandbox's memory is let go. To carry on where a paused sandbox left off, `resume` it instead. A running sandbox is answered as it is. A key needs `sandboxes:write`. `POST /sandboxes/{sandboxId}/start` */
 	startSandbox(sandboxId: string, body?: ResumeSandboxBody, options?: CallOptions): Promise<Sandbox>;
-	/** Stop or pause a sandbox. Saves its disk as a snapshot and lets the machine go; running programs end. With `keepMemory`, pauses it instead, keeping its memory too (microVMs only; `not_supported` on an isolate). A stopped sandbox costs nothing to run. A key needs `sandboxes:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /sandboxes/{sandboxId}/stop` */
+	/** Stop or pause a sandbox. Saves its disk as a snapshot and lets the machine go; running programs end. With `keepMemory`, pauses it instead, keeping its memory too (microVMs only; `not_supported` on an isolate). A stopped sandbox costs nothing to run. A key needs `sandboxes:write`. `POST /sandboxes/{sandboxId}/stop` */
 	stopSandbox(sandboxId: string, body?: StopSandboxBody, options?: CallOptions): Promise<Sandbox>;
-	/** Resume a sandbox. Carries on a paused sandbox from its memory, or starts a stopped one from its newest snapshot, on the same size or the one given. Same ID; a new machine. A key needs `sandboxes:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /sandboxes/{sandboxId}/resume` */
+	/** Resume a sandbox. Carries on a paused sandbox from its memory, or starts a stopped one from its newest snapshot, on the same size or the one given. Same ID; a new machine. A key needs `sandboxes:write`. `POST /sandboxes/{sandboxId}/resume` */
 	resumeSandbox(sandboxId: string, body?: ResumeSandboxBody, options?: CallOptions): Promise<Sandbox>;
-	/** Fork a sandbox. Makes `count` new sandboxes, each a copy of this one's newest snapshot (or `snapshotId`); a running microVM on a host that can fork live is copied with its memory. The source doesn't change. A key needs `sandboxes:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/fork` */
+	/** Fork a sandbox. Makes `count` new sandboxes, each a copy of this one's newest snapshot (or `snapshotId`); a running microVM on a host that can fork live is copied with its memory. The source doesn't change. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/fork` */
 	forkSandbox(sandboxId: string, body?: ForkSandboxBody, options?: CallOptions): Promise<ForkedSandboxes>;
-	/** Recover a sandbox. Restarts the machine of a sandbox that doesn't answer or is in `error`, on its disk as it is. Memory is lost. A key needs `sandboxes:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /sandboxes/{sandboxId}/recover` */
+	/** Recover a sandbox. Restarts the machine of a sandbox that doesn't answer or is in `error`, on its disk as it is. Memory is lost. A key needs `sandboxes:write`. `POST /sandboxes/{sandboxId}/recover` */
 	recoverSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
-	/** Delete a sandbox permanently. Erases it and its automatic snapshots for good; saved snapshots of it stay. It can't be undone. A key needs `sandboxes:delete`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `DELETE /sandboxes/{sandboxId}` */
+	/** Delete a sandbox permanently. Erases it and its automatic snapshots for good; saved snapshots of it stay. It can't be undone. A key needs `sandboxes:delete`. `DELETE /sandboxes/{sandboxId}` */
 	deleteSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
-	/** Get a sandbox's usage. CPU, memory, running time and cost per interval. A key needs `sandboxes:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /sandboxes/{sandboxId}/usage` */
+	/** Get a sandbox's usage. CPU, memory, running time and cost per interval. A key needs `sandboxes:read`. `GET /sandboxes/{sandboxId}/usage` */
 	getSandboxUsage(sandboxId: string, query?: UsageQuery, options?: CallOptions): Promise<SandboxUsage>;
-	/** Run a command. Runs a command line in a running sandbox and answers when it ends, with its exit code and output, or at `timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit. A stopped sandbox is `conflict`: resume it first. A key needs `exec`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/commands` */
+	/** Run a command. Runs a command line in a running sandbox and answers when it ends, with its exit code and output, or at `timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit. A stopped sandbox is `conflict`: resume it first. A key needs `exec`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/commands` */
 	runCommand(sandboxId: string, body: RunCommandBody, options?: CallOptions): Promise<Command>;
-	/** List a sandbox's commands. Its commands, newest first, also while it is stopped. A key needs `exec`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /sandboxes/{sandboxId}/commands` */
+	/** List a sandbox's commands. Its commands, newest first, also while it is stopped. A key needs `exec`. `GET /sandboxes/{sandboxId}/commands` */
 	listCommands(sandboxId: string, query?: ComputePageQuery, options?: CallOptions): Promise<CommandPage>;
-	/** Get a command. Its state and its output so far. A key needs `exec`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /sandboxes/{sandboxId}/commands/{commandId}` */
+	/** Get a command. Its state and its output so far. A key needs `exec`. `GET /sandboxes/{sandboxId}/commands/{commandId}` */
 	getCommand(sandboxId: string, commandId: string, options?: CallOptions): Promise<Command>;
-	/** Kill a command. Ends a running command; one that has ended is answered as it is. A key needs `exec`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `DELETE /sandboxes/{sandboxId}/commands/{commandId}` */
+	/** Kill a command. Ends a running command; one that has ended is answered as it is. A key needs `exec`. `DELETE /sandboxes/{sandboxId}/commands/{commandId}` */
 	killCommand(sandboxId: string, commandId: string, options?: CallOptions): Promise<Command>;
-	/** Read a file. A file of up to 1 MiB, as UTF-8 text unless `encoding` asks for base64. A key needs `files`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /sandboxes/{sandboxId}/files` */
+	/** Read a file. A file of up to 1 MiB, as UTF-8 text unless `encoding` asks for base64. A key needs `files`. `GET /sandboxes/{sandboxId}/files` */
 	readFile(sandboxId: string, query: ReadFileQuery, options?: CallOptions): Promise<FileContent>;
-	/** Write a file. Writes a file, making its directories, replacing what was there. A key needs `files`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `PUT /sandboxes/{sandboxId}/files` */
+	/** Write a file. Writes a file, making its directories, replacing what was there. A key needs `files`. `PUT /sandboxes/{sandboxId}/files` */
 	writeFile(sandboxId: string, body: WriteFileBody, options?: CallOptions): Promise<FileEntry>;
-	/** Delete a file. Deletes a file, or a directory and everything in it. A key needs `files`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `DELETE /sandboxes/{sandboxId}/files` */
+	/** Delete a file. Deletes a file, or a directory and everything in it. A key needs `files`. `DELETE /sandboxes/{sandboxId}/files` */
 	deleteFile(sandboxId: string, query: FilePathQuery, options?: CallOptions): Promise<void>;
-	/** List a directory. A key needs `files`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /sandboxes/{sandboxId}/files/list` */
+	/** List a directory. A key needs `files`. `GET /sandboxes/{sandboxId}/files/list` */
 	listFiles(sandboxId: string, query?: ListFilesQuery, options?: CallOptions): Promise<FileList>;
-	/** List a sandbox's public ports. A key needs `access`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /sandboxes/{sandboxId}/ports` */
+	/** List a sandbox's public ports. A key needs `access`. `GET /sandboxes/{sandboxId}/ports` */
 	listPorts(sandboxId: string, options?: CallOptions): Promise<ExposedPortList>;
-	/** Expose a port. Gives a port in the sandbox an HTTPS URL through its host's tunnel. The app must listen on the port; on `0.0.0.0` or `localhost` both work. Exposing it again answers its URL. A key needs `access`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /sandboxes/{sandboxId}/ports` */
+	/** Expose a port. Gives a port in the sandbox an HTTPS URL through its host's tunnel. The app must listen on the port; on `0.0.0.0` or `localhost` both work. Exposing it again answers its URL. A key needs `access`. `POST /sandboxes/{sandboxId}/ports` */
 	exposePort(sandboxId: string, body: ExposePortBody, options?: CallOptions): Promise<ExposedPort>;
-	/** Hide a port. Its URL stops working at once. A key needs `access`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `DELETE /sandboxes/{sandboxId}/ports/{port}` */
+	/** Hide a port. Its URL stops working at once. A key needs `access`. `DELETE /sandboxes/{sandboxId}/ports/{port}` */
 	hidePort(sandboxId: string, port: string, options?: CallOptions): Promise<void>;
-	/** Get SSH access. Lets a key in to the sandbox's SSH gateway for a while, and answers the command that connects. microVMs only. A key needs `access`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /sandboxes/{sandboxId}/ssh` */
+	/** Get SSH access. Lets a key in to the sandbox's SSH gateway for a while, and answers the command that connects. microVMs only. A key needs `access`. `POST /sandboxes/{sandboxId}/ssh` */
 	openSsh(sandboxId: string, body?: SshAccessBody, options?: CallOptions): Promise<SshAccess>;
-	/** Open the desktop. A short-lived URL that streams the sandbox's Linux desktop to a browser, to watch or drive. microVMs only. A key needs `access`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /sandboxes/{sandboxId}/desktop` */
+	/** Open the desktop. A short-lived URL that streams the sandbox's Linux desktop to a browser, to watch or drive. microVMs only. A key needs `access`. `POST /sandboxes/{sandboxId}/desktop` */
 	openDesktop(sandboxId: string, body?: ViewAccessBody, options?: CallOptions): Promise<DesktopAccess>;
-	/** Open the browser. Starts the sandbox's Chrome if it isn't running, and answers a live view URL and a CDP URL for Playwright or Puppeteer. microVMs only. A key needs `access`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /sandboxes/{sandboxId}/browser` */
+	/** Open the browser. Starts the sandbox's Chrome if it isn't running, and answers a live view URL and a CDP URL for Playwright or Puppeteer. microVMs only. A key needs `access`. `POST /sandboxes/{sandboxId}/browser` */
 	openBrowser(sandboxId: string, body?: ViewAccessBody, options?: CallOptions): Promise<BrowserAccess>;
-	/** List snapshots. The account's snapshots, newest first: saved ones, one sandbox's history (`sandboxId`), or both. A key needs `snapshots:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /snapshots` */
+	/** List snapshots. The account's snapshots, newest first: saved ones, one sandbox's history (`sandboxId`), or both. A key needs `snapshots:read`. `GET /snapshots` */
 	listSnapshots(query?: ListSnapshotsQuery, options?: CallOptions): Promise<SnapshotPage>;
-	/** Take a snapshot now. Adds a snapshot of the sandbox's disk to its history now, without stopping it. Kantel also takes them by itself. A key needs `snapshots:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /sandboxes/{sandboxId}/snapshots` */
+	/** Take a snapshot now. Adds a snapshot of the sandbox's disk to its history now, without stopping it. Kantel also takes them by itself. A key needs `snapshots:write`. `POST /sandboxes/{sandboxId}/snapshots` */
 	takeSnapshot(sandboxId: string, body?: TakeSnapshotBody, options?: CallOptions): Promise<Snapshot>;
-	/** Save a snapshot. Keeps a sandbox's state now, or one snapshot of its history, under a name until it is deleted. New sandboxes start from it with `from: <name>`. A name in use is `conflict` unless `replace`. A key needs `snapshots:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /snapshots` */
+	/** Save a snapshot. Keeps a sandbox's state now, or one snapshot of its history, under a name until it is deleted. New sandboxes start from it with `from: <name>`. A name in use is `conflict` unless `replace`. A key needs `snapshots:write`. `POST /snapshots` */
 	saveSnapshot(body: SaveSnapshotBody, options?: CallOptions): Promise<Snapshot>;
-	/** Get a snapshot. A key needs `snapshots:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /snapshots/{snapshotId}` */
+	/** Get a snapshot. A key needs `snapshots:read`. `GET /snapshots/{snapshotId}` */
 	getSnapshot(snapshotId: string, options?: CallOptions): Promise<Snapshot>;
-	/** List a snapshot's files. One directory of the snapshot's disk, for a file browser. A key needs `snapshots:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /snapshots/{snapshotId}/files` */
+	/** List a snapshot's files. One directory of the snapshot's disk, for a file browser. A key needs `snapshots:read`. `GET /snapshots/{snapshotId}/files` */
 	listSnapshotFiles(snapshotId: string, query?: SnapshotFilesQuery, options?: CallOptions): Promise<FileList>;
-	/** Read a file from a snapshot. A file of up to 1 MiB from the snapshot's disk. A key needs `snapshots:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /snapshots/{snapshotId}/file` */
+	/** Read a file from a snapshot. A file of up to 1 MiB from the snapshot's disk. A key needs `snapshots:read`. `GET /snapshots/{snapshotId}/file` */
 	readSnapshotFile(snapshotId: string, query: ReadFileQuery, options?: CallOptions): Promise<FileContent>;
-	/** Delete a snapshot. Deletes a saved snapshot, or one of a sandbox's history. A sandbox's newest snapshot, which a resume needs, is `conflict` while the sandbox is stopped. A key needs `snapshots:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `DELETE /snapshots/{snapshotId}` */
+	/** Delete a snapshot. Deletes a saved snapshot, or one of a sandbox's history. A sandbox's newest snapshot, which a resume needs, is `conflict` while the sandbox is stopped. A key needs `snapshots:write`. `DELETE /snapshots/{snapshotId}` */
 	deleteSnapshot(snapshotId: string, options?: CallOptions): Promise<void>;
-	/** List API keys. The account's keys, revoked ones included. A key needs `account:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /api-keys` */
+	/** List API keys. The account's keys, revoked ones included. A key needs `account:read`. `GET /api-keys` */
 	listApiKeys(query?: AccountScopedQuery, options?: CallOptions): Promise<ApiKeyList>;
-	/** Create an API key. Makes a scoped key in the account. Its secret is answered once. A key can only make keys with scopes it holds itself. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /api-keys` */
+	/** Create an API key. Makes a scoped key in the account. Its secret is answered once. A key can only make keys with scopes it holds itself. A key needs `account:admin`. `POST /api-keys` */
 	createApiKey(body: CreateApiKeyBody, options?: CallOptions): Promise<IssuedApiKey>;
-	/** Get an API key. A key needs `account:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /api-keys/{apiKeyId}` */
+	/** Get an API key. A key needs `account:read`. `GET /api-keys/{apiKeyId}` */
 	getApiKey(apiKeyId: string, options?: CallOptions): Promise<ApiKey>;
-	/** Rotate an API key. Replaces its secret; the old one stops working at once. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /api-keys/{apiKeyId}/rotate` */
+	/** Rotate an API key. Replaces its secret; the old one stops working at once. A key needs `account:admin`. `POST /api-keys/{apiKeyId}/rotate` */
 	rotateApiKey(apiKeyId: string, options?: CallOptions): Promise<IssuedApiKey>;
-	/** Revoke an API key. It stops working at once. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `DELETE /api-keys/{apiKeyId}` */
+	/** Revoke an API key. It stops working at once. A key needs `account:admin`. `DELETE /api-keys/{apiKeyId}` */
 	revokeApiKey(apiKeyId: string, options?: CallOptions): Promise<ApiKey>;
-	/** Start a device sign-in. Answers a code to show the person and the console page to open, where a signed-in person approves it. Then poll `pollDeviceLogin` with the `deviceCode`. Takes no credential. A code lasts 15 minutes. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /auth/device` */
+	/** Start a device sign-in. Answers a code to show the person and the console page to open, where a signed-in person approves it. Then poll `pollDeviceLogin` with the `deviceCode`. Takes no credential. A code lasts 15 minutes. `POST /auth/device` */
 	startDeviceLogin(body?: StartDeviceLoginBody, options?: CallOptions): Promise<DeviceLogin>;
-	/** Poll a device sign-in. Its state, and once approved the new key's secret, answered to the first poll that sees it. Takes no credential: the `deviceCode` is the secret. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /auth/device/token` */
+	/** Poll a device sign-in. Its state, and once approved the new key's secret, answered to the first poll that sees it. Takes no credential: the `deviceCode` is the secret. `POST /auth/device/token` */
 	pollDeviceLogin(body: PollDeviceLoginBody, options?: CallOptions): Promise<DeviceLoginResult>;
-	/** Get a device sign-in. What is asking to sign in with this code, for the approval page. A person only. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /auth/device/{userCode}` */
+	/** Get a device sign-in. What is asking to sign in with this code, for the approval page. A person only. `GET /auth/device/{userCode}` */
 	getDeviceLogin(userCode: string, options?: CallOptions): Promise<DeviceLoginRequest>;
-	/** Approve a device sign-in. Makes an API key for the person, named after the device, and hands it to the device's next poll. A person only, who needs admin or owner in the account (`account:admin`), as for `createApiKey`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /auth/device/{userCode}/approve` */
+	/** Approve a device sign-in. Makes an API key for the person, named after the device, and hands it to the device's next poll. A person only, who needs admin or owner in the account (`account:admin`), as for `createApiKey`. `POST /auth/device/{userCode}/approve` */
 	approveDeviceLogin(
 		userCode: string,
 		body?: ApproveDeviceLoginBody,
 		options?: CallOptions,
 	): Promise<DeviceLoginRequest>;
-	/** Deny a device sign-in. The device's next poll is `denied`. A person only. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /auth/device/{userCode}/deny` */
+	/** Deny a device sign-in. The device's next poll is `denied`. A person only. `POST /auth/device/{userCode}/deny` */
 	denyDeviceLogin(userCode: string, options?: CallOptions): Promise<DeviceLoginRequest>;
-	/** Get the proxy settings. Where the account's sandboxes' outbound traffic may go. A key needs `account:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /proxy` */
+	/** Get the proxy settings. Where the account's sandboxes' outbound traffic may go. A key needs `account:read`. `GET /proxy` */
 	getProxySettings(query?: AccountScopedQuery, options?: CallOptions): Promise<ProxySettings>;
-	/** Set the proxy settings. Replaces them. Running sandboxes pick them up within a minute. An upstream's header values are kept encrypted and never shown again; leave `upstream.headers` out to keep the ones it has. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `PUT /proxy` */
+	/** Set the proxy settings. Replaces them. Running sandboxes pick them up within a minute. An upstream's header values are kept encrypted and never shown again; leave `upstream.headers` out to keep the ones it has. A key needs `account:admin`. `PUT /proxy` */
 	putProxySettings(body: PutProxySettingsBody, options?: CallOptions): Promise<ProxySettings>;
-	/** List events. The account's events, newest first: what webhooks deliver, and a sandbox's history with `sandboxId`. A key needs `sandboxes:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /events` */
+	/** List events. The account's events, newest first: what webhooks deliver, and a sandbox's history with `sandboxId`. A key needs `sandboxes:read`. `GET /events` */
 	listEvents(query?: ListEventsQuery, options?: CallOptions): Promise<EventPage>;
-	/** List webhooks. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /webhooks` */
+	/** List webhooks. A key needs `account:admin`. `GET /webhooks` */
 	listWebhooks(query?: AccountScopedQuery, options?: CallOptions): Promise<WebhookList>;
-	/** Create a webhook. Its signing secret is answered once. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /webhooks` */
+	/** Create a webhook. Its signing secret is answered once. A key needs `account:admin`. `POST /webhooks` */
 	createWebhook(body: CreateWebhookBody, options?: CallOptions): Promise<WebhookWithSecret>;
-	/** Get a webhook. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /webhooks/{webhookId}` */
+	/** Get a webhook. A key needs `account:admin`. `GET /webhooks/{webhookId}` */
 	getWebhook(webhookId: string, options?: CallOptions): Promise<Webhook>;
-	/** Change a webhook. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `PATCH /webhooks/{webhookId}` */
+	/** Change a webhook. A key needs `account:admin`. `PATCH /webhooks/{webhookId}` */
 	updateWebhook(webhookId: string, body?: UpdateWebhookBody, options?: CallOptions): Promise<Webhook>;
-	/** Delete a webhook. Its queued deliveries are dropped. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `DELETE /webhooks/{webhookId}` */
+	/** Delete a webhook. Its queued deliveries are dropped. A key needs `account:admin`. `DELETE /webhooks/{webhookId}` */
 	deleteWebhook(webhookId: string, options?: CallOptions): Promise<void>;
-	/** Rotate a webhook's signing secret. Deliveries are signed with the new secret from now; one already under way may carry the old signature. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /webhooks/{webhookId}/rotate` */
+	/** Rotate a webhook's signing secret. Deliveries are signed with the new secret from now; one already under way may carry the old signature. A key needs `account:admin`. `POST /webhooks/{webhookId}/rotate` */
 	rotateWebhookSecret(webhookId: string, options?: CallOptions): Promise<WebhookWithSecret>;
-	/** Send a test delivery. Sends a signed `sandbox.created` event for a made-up sandbox now. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /webhooks/{webhookId}/test` */
+	/** Send a test delivery. Sends a signed `sandbox.created` event for a made-up sandbox now. A key needs `account:admin`. `POST /webhooks/{webhookId}/test` */
 	testWebhook(webhookId: string, options?: CallOptions): Promise<WebhookDelivery>;
-	/** List a webhook's deliveries. The last 30 days, newest first. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /webhooks/{webhookId}/deliveries` */
+	/** List a webhook's deliveries. The last 30 days, newest first. A key needs `account:admin`. `GET /webhooks/{webhookId}/deliveries` */
 	listWebhookDeliveries(
 		webhookId: string,
 		query?: ComputePageQuery,
 		options?: CallOptions,
 	): Promise<WebhookDeliveryPage>;
-	/** Get the OpenTelemetry export. Absent: `not_found`. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /telemetry` */
+	/** Get the OpenTelemetry export. Absent: `not_found`. A key needs `account:admin`. `GET /telemetry` */
 	getTelemetry(query?: AccountScopedQuery, options?: CallOptions): Promise<TelemetryExport>;
-	/** Set the OpenTelemetry export. Sets or replaces the account's one OTLP/HTTP endpoint, sends an empty export to test it, and answers what the collector said. Header values are kept encrypted and never shown again. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `PUT /telemetry` */
+	/** Set the OpenTelemetry export. Sets or replaces the account's one OTLP/HTTP endpoint, sends an empty export to test it, and answers what the collector said. Header values are kept encrypted and never shown again. A key needs `account:admin`. `PUT /telemetry` */
 	putTelemetry(body: PutTelemetryBody, options?: CallOptions): Promise<TelemetryTest>;
-	/** Remove the OpenTelemetry export. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `DELETE /telemetry` */
+	/** Remove the OpenTelemetry export. A key needs `account:admin`. `DELETE /telemetry` */
 	deleteTelemetry(query?: AccountScopedQuery, options?: CallOptions): Promise<void>;
-	/** List hosts. Every host that has joined, revoked ones included. A deployment super-admin only (a key needs `hosts:admin`). Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /admin/hosts` */
+	/** List hosts. Every host that has joined, revoked ones included. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/hosts` */
 	listHosts(options?: CallOptions): Promise<HostList>;
-	/** Make a host join token. A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it with the token. A deployment super-admin only (a key needs `hosts:admin`). Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /admin/hosts/join-tokens` */
+	/** Make a host join token. A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it with the token. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/join-tokens` */
 	createHostJoinToken(body?: CreateHostJoinTokenBody, options?: CallOptions): Promise<HostJoinToken>;
-	/** Get a host. A deployment super-admin only (a key needs `hosts:admin`). Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /admin/hosts/{hostId}` */
+	/** Get a host. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/hosts/{hostId}` */
 	getHost(hostId: string, options?: CallOptions): Promise<Host>;
-	/** Change a host. Renames it, replaces its labels, or drains it. A deployment super-admin only (a key needs `hosts:admin`). Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `PATCH /admin/hosts/{hostId}` */
+	/** Change a host. Renames it, replaces its labels, or drains it. A deployment super-admin only (a key needs `hosts:admin`). `PATCH /admin/hosts/{hostId}` */
 	updateHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
-	/** Revoke a host. Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. A deployment super-admin only (a key needs `hosts:admin`). Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `DELETE /admin/hosts/{hostId}` */
+	/** Revoke a host. Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. A deployment super-admin only (a key needs `hosts:admin`). `DELETE /admin/hosts/{hostId}` */
 	revokeHost(hostId: string, options?: CallOptions): Promise<Host>;
 }
 

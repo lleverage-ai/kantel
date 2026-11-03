@@ -33,9 +33,9 @@ import { TelemetryPage } from "./telemetry-page.tsx";
 import { WebhooksPage } from "./webhooks-page.tsx";
 
 // The compute console: the shell around the compute plane's pages, with the account switcher at the top of its
-// sidebar, the account's pages under it, and Hosts for a super-admin. It routes on the path under `base` (`/compute`
-// in the console app) and leaves where the data comes from to its `source`: the sample data in fixtures.ts until the
-// public API lands, then the API.
+// sidebar, the account's pages under it, and Hosts for a super-admin. It routes on the path under `base` (the root of
+// the console app, `""`) and leaves where the data comes from to its `source`: the sample data in fixtures.ts, or the
+// API. A super-admin on a deployment with no host yet is shown the way to add one first.
 
 export type ComputePage =
 	| "sandboxes"
@@ -175,6 +175,13 @@ export function ComputeConsole({
 	const route = parseComputePath(pathname, base) ?? { page: "sandboxes" as const };
 	const me = viewer.state.status === "ready" ? viewer.state.value : undefined;
 	const hostsShown = me?.superAdmin === true && source.hosts !== undefined;
+	// Whether the deployment has a host yet, for a super-admin: with none, Sandboxes leads to adding one. Read again on
+	// every page change, so a host added on Hosts counts once the person goes back.
+	const hosts = useLoad(
+		() => (hostsShown && source.hosts !== undefined ? source.hosts.list() : Promise.resolve(undefined)),
+		[source, hostsShown, pathname],
+	);
+	const noHosts = hosts.state.status === "ready" && hosts.state.value?.length === 0;
 	const billingShown = source.hosting === "hosted" && source.billing !== undefined;
 	// A page this person can't open goes to Sandboxes rather than showing nothing. Device sign-in has no sidebar item:
 	// a terminal running `kantel login` opens it.
@@ -337,6 +344,7 @@ export function ComputeConsole({
 							base={base}
 							search={search}
 							navigate={navigate}
+							noHosts={noHosts}
 							onCreate={() => setDialog("create")}
 							onJoin={() => setDialog("join")}
 							onLeft={() => {
@@ -382,6 +390,7 @@ function PageFor({
 	base,
 	search,
 	navigate,
+	noHosts,
 	onCreate,
 	onJoin,
 	onLeft,
@@ -395,6 +404,8 @@ function PageFor({
 	base: string;
 	search: string;
 	navigate: (path: string) => void;
+	/** A super-admin's deployment has no host yet. */
+	noHosts: boolean;
 	onCreate: () => void;
 	onJoin: () => void;
 	onLeft: () => void;
@@ -410,6 +421,7 @@ function PageFor({
 					hosting={source.hosting}
 					snapshotsHref={(sandboxId) => computePath("snapshots", base, sandboxId)}
 					creating={new URLSearchParams(search).has("new")}
+					{...(noHosts ? { addHostHref: `${computePath("hosts", base)}?add` } : {})}
 					{...timing}
 				/>
 			);
@@ -452,7 +464,12 @@ function PageFor({
 			);
 		case "hosts":
 			return source.hosts === undefined ? null : (
-				<HostsPage source={source.hosts} hosting={source.hosting} {...timing} />
+				<HostsPage
+					source={source.hosts}
+					hosting={source.hosting}
+					adding={new URLSearchParams(search).has("add")}
+					{...timing}
+				/>
 			);
 		case "device": {
 			const code = new URLSearchParams(search).get("code") ?? undefined;

@@ -22,12 +22,6 @@ describe("compute routes", () => {
 		}
 	});
 
-	it("say they are experimental", () => {
-		for (const route of Object.values(computeRoutes)) {
-			expect(route.description).toContain("KANTEL_COMPUTE=experimental");
-		}
-	});
-
 	it("name a real scope, or who may call them", () => {
 		for (const [id, route] of Object.entries(computeRoutes)) {
 			if (PEOPLE_OR_ANY.has(id)) continue;

@@ -9,15 +9,11 @@ sidebar:
 
 Scoped API keys: create, rotate and revoke.
 
-:::caution
-Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
-:::
-
 ## List API keys
 
 `GET /v1/api-keys` (SDK method `listApiKeys`)
 
-The account's keys, revoked ones included. A key needs `account:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+The account's keys, revoked ones included. A key needs `account:read`.
 
 **Query parameters**
 
@@ -35,7 +31,7 @@ The account's keys, revoked ones included. A key needs `account:read`. Experimen
 
 `POST /v1/api-keys` (SDK method `createApiKey`)
 
-Makes a scoped key in the account. Its secret is answered once. A key can only make keys with scopes it holds itself. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Makes a scoped key in the account. Its secret is answered once. A key can only make keys with scopes it holds itself. A key needs `account:admin`.
 
 **Body**: [CreateApiKeyBody](/api/reference/types/#createapikeybody)
 
@@ -49,7 +45,7 @@ Makes a scoped key in the account. Its secret is answered once. A key can only m
 
 `GET /v1/api-keys/{apiKeyId}` (SDK method `getApiKey`)
 
-A key needs `account:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+A key needs `account:read`.
 
 **Path parameters**
 
@@ -67,7 +63,7 @@ A key needs `account:read`. Experimental: served only where the deployment sets 
 
 `DELETE /v1/api-keys/{apiKeyId}` (SDK method `revokeApiKey`)
 
-It stops working at once. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+It stops working at once. A key needs `account:admin`.
 
 **Path parameters**
 
@@ -85,7 +81,7 @@ It stops working at once. A key needs `account:admin`. Experimental: served only
 
 `POST /v1/api-keys/{apiKeyId}/rotate` (SDK method `rotateApiKey`)
 
-Replaces its secret; the old one stops working at once. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Replaces its secret; the old one stops working at once. A key needs `account:admin`.
 
 **Path parameters**
 

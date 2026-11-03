@@ -1,14 +1,14 @@
-// The compute plane on the self-hosted gateway, through its fetch handler: off without KANTEL_COMPUTE=experimental;
-// with it, the super-admin's key drives a sandbox through the SDK, makes a scoped key that works, and the gateway's own
-// routes and keys are as they were.
+// The compute plane on the self-hosted gateway, through its fetch handler: the super-admin's key drives a sandbox
+// through the SDK, makes a scoped key that works, and the gateway's own routes and keys are as they were.
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
+import { type CallContext, EMAIL_OTP_ISSUER, type Role } from "@kantel/contracts";
 import { createMemoryHostStore } from "@kantel/hosts/store";
 import { signTunnel } from "@kantel/hosts/tunnel";
 import { createAuthenticator } from "@kantel/identity/authenticator";
-import { kantelSessionProvider } from "@kantel/identity/otp";
+import { hashSessionToken, kantelSessionProvider } from "@kantel/identity/otp";
 import { afterEach, describe, expect, it } from "vitest";
 import { bootstrap, createGatewayComponents } from "../../src/gateway/components.ts";
-import { computeConfig, computeEnabled, gatewayCompute, gatewayHosts, hostImages } from "../../src/gateway/compute.ts";
+import { computeConfig, gatewayCompute, gatewayHosts, hostImages } from "../../src/gateway/compute.ts";
 import { createGateway } from "../../src/gateway/gateway.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -25,7 +25,11 @@ async function serve(on: boolean, superAdminKey?: string) {
 		providers: [kantelSessionProvider({ sessions: components.otp.sessions })],
 	});
 	const compute = on
-		? await gatewayCompute({ authenticator, ...(superAdminKey === undefined ? {} : { superAdminKey }) })
+		? await gatewayCompute({
+				authenticator,
+				identity: components.identity,
+				...(superAdminKey === undefined ? {} : { superAdminKey }),
+			})
 		: undefined;
 	if (compute !== undefined) cleanups.push(() => compute.close());
 	const gateway = createGateway({
@@ -40,7 +44,26 @@ async function serve(on: boolean, superAdminKey?: string) {
 			token,
 			fetch: (input, init) => gateway.fetch(new Request(input, init)),
 		});
-	return { gateway, seeded, compute, client };
+	/** A person with `role` across the organisation, signed in with a Kantel session: their bearer token. */
+	const person = async (name: string, role: Role) => {
+		const system: CallContext = { actor: { kind: "system", component: "test" }, organisationId: seeded.organisationId };
+		const email = `${name}@kantel.example.com`;
+		const user = await components.identity.createUser(system, { name, email });
+		await components.identity.grantRole(system, { principal: { kind: "user", userId: user.id }, role });
+		const token = `kts_${crypto.randomUUID().replaceAll("-", "")}`;
+		await components.otp.sessions.create({
+			id: `s_${name}`,
+			tokenHash: await hashSessionToken(token),
+			userId: user.id,
+			issuer: EMAIL_OTP_ISSUER,
+			subject: email,
+			email,
+			createdAt: Date.now(),
+			expiresAt: Date.now() + 3_600_000,
+		});
+		return token;
+	};
+	return { gateway, seeded, compute, client, person };
 }
 
 async function failure(call: Promise<unknown>): Promise<KantelApiError> {
@@ -54,13 +77,7 @@ async function failure(call: Promise<unknown>): Promise<KantelApiError> {
 }
 
 describe("the compute plane on the gateway", () => {
-	it("is on only with KANTEL_COMPUTE=experimental", () => {
-		expect(computeEnabled({})).toBe(false);
-		expect(computeEnabled({ KANTEL_COMPUTE: "on" })).toBe(false);
-		expect(computeEnabled({ KANTEL_COMPUTE: " Experimental " })).toBe(true);
-	});
-
-	it("answers none of its routes when off", async () => {
+	it("answers none of its routes on a gateway made without it", async () => {
 		const { gateway, seeded } = await serve(false);
 		const response = await gateway.fetch(
 			new Request("http://gateway.test/v1/sandboxes", { headers: { authorization: `Bearer ${seeded.apiKey}` } }),
@@ -94,16 +111,36 @@ describe("the compute plane on the gateway", () => {
 		expect(me.status).toBe(200);
 	});
 
-	it("runs on the stub unless KANTEL_COMPUTE_BACKEND=hosts, which needs a public URL", () => {
-		expect(computeConfig({})).toBeUndefined();
+	it("makes an organisation admin who signs in the super-admin, who sees the hosts, and nobody else", async () => {
+		const { client, person } = await serve(true);
+		const admin = client(await person("ada", "admin"));
+		expect((await admin.getCaller()).superAdmin).toBe(true);
+		expect((await admin.listHosts()).items.length).toBe(1);
+
+		const operator = client(await person("otto", "operator"));
+		expect((await operator.getCaller()).superAdmin).toBe(false);
+		expect((await failure(operator.listHosts())).code).toBe("forbidden");
+	});
+
+	it("is always on: on joined hosts wherever it knows where hosts reach it, else on the stub", () => {
+		expect(computeConfig({})).toEqual({});
+		// The old switch is no longer read: off or on, the same.
 		expect(computeConfig({ KANTEL_COMPUTE: "experimental" })).toEqual({});
-		expect(() => computeConfig({ KANTEL_COMPUTE: "experimental", KANTEL_COMPUTE_BACKEND: "hosts" })).toThrow(
-			/KANTEL_PUBLIC_URL/,
+		expect(computeConfig({ KANTEL_COMPUTE: "", KANTEL_PUBLIC_URL: "", KANTEL_COMPUTE_PUBLIC_URL: "" })).toEqual({});
+		expect(computeConfig({ KANTEL_COMPUTE_PUBLIC_URL: "http://127.0.0.1:58090" })).toEqual({
+			hosts: { publicUrl: "http://127.0.0.1:58090" },
+		});
+		expect(computeConfig({ KANTEL_COMPUTE_PUBLIC_URL: "", KANTEL_PUBLIC_URL: "https://kantel.example.com" })).toEqual({
+			hosts: { publicUrl: "https://kantel.example.com" },
+		});
+		// The stand-in on request, with an address or without.
+		expect(computeConfig({ KANTEL_COMPUTE_BACKEND: "stub", KANTEL_PUBLIC_URL: "https://kantel.example.com" })).toEqual(
+			{},
 		);
-		expect(() => computeConfig({ KANTEL_COMPUTE: "experimental", KANTEL_COMPUTE_BACKEND: "cloud" })).toThrow();
+		expect(() => computeConfig({ KANTEL_COMPUTE_BACKEND: "hosts" })).toThrow(/KANTEL_PUBLIC_URL/);
+		expect(() => computeConfig({ KANTEL_COMPUTE_BACKEND: "cloud" })).toThrow();
 		expect(
 			computeConfig({
-				KANTEL_COMPUTE: "experimental",
 				KANTEL_COMPUTE_BACKEND: "hosts",
 				KANTEL_PUBLIC_URL: "https://kantel.example.com/",
 				KANTEL_COMPUTE_POOLS: '{"microvm/default": 2}',
@@ -113,7 +150,6 @@ describe("the compute plane on the gateway", () => {
 
 	it("takes a domain for exposed ports that isn't the gateway's own name or a parent of it", () => {
 		const env = {
-			KANTEL_COMPUTE: "experimental",
 			KANTEL_COMPUTE_BACKEND: "hosts",
 			KANTEL_PUBLIC_URL: "https://kantel.example.com",
 		};

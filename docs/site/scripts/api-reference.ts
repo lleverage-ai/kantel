@@ -93,8 +93,6 @@ const NOT_DOCUMENTED = new Set([
 	"programs",
 ]);
 
-const COMPUTE_NOTE = "Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.";
-
 /**
  * Each tag's page: its title, its place in the sidebar and a line about it. A note, when set, says something the
  * OpenAPI document can't, such as routes defined but not yet served; keep it short and remove it once it's untrue.
@@ -112,64 +110,54 @@ const TAGS: {
 		title: "Accounts",
 		order: 1,
 		about: "Who is calling, personal accounts and organisations, members, invites and usage.",
-		note: COMPUTE_NOTE,
 	},
 	sandboxes: {
 		title: "Sandboxes",
 		order: 2,
 		about: "Create, start, stop, pause, resume, fork, recover and delete isolates and microVMs.",
-		note: COMPUTE_NOTE,
 	},
 	commands: {
 		title: "Commands",
 		order: 3,
 		about: "Run commands in a sandbox, read their output and kill them.",
-		note: COMPUTE_NOTE,
 	},
-	files: { title: "Files", order: 4, about: "Read, write, delete and list a sandbox's files.", note: COMPUTE_NOTE },
+	files: { title: "Files", order: 4, about: "Read, write, delete and list a sandbox's files." },
 	access: {
 		title: "Ports, SSH, desktop and browser",
 		order: 5,
 		about: "Public port URLs, SSH, the Linux desktop and the browser's live view and CDP URL.",
-		note: COMPUTE_NOTE,
 	},
 	snapshots: {
 		title: "Snapshots",
 		order: 6,
 		about: "A sandbox's automatic history and named saved snapshots, and the files in them.",
-		note: COMPUTE_NOTE,
 	},
-	"api-keys": { title: "API keys", order: 7, about: "Scoped API keys: create, rotate and revoke.", note: COMPUTE_NOTE },
+	"api-keys": { title: "API keys", order: 7, about: "Scoped API keys: create, rotate and revoke." },
 	auth: {
 		title: "Device sign-in",
 		order: 7.5,
 		about: "Signing the command line in through the browser: `kantel login`'s device code, its poll and its approval.",
-		note: COMPUTE_NOTE,
 	},
 	proxy: {
 		title: "Proxy",
 		order: 8,
 		about: "Where sandboxes' outbound traffic may go, and through what.",
-		note: COMPUTE_NOTE,
 	},
-	events: { title: "Events", order: 9, about: "The account's events, as webhooks deliver them.", note: COMPUTE_NOTE },
+	events: { title: "Events", order: 9, about: "The account's events, as webhooks deliver them." },
 	webhooks: {
 		title: "Webhooks",
 		order: 10,
 		about: "Signed event deliveries to your endpoints, with retries.",
-		note: COMPUTE_NOTE,
 	},
 	telemetry: {
 		title: "OpenTelemetry",
 		order: 11,
 		about: "Exporting sandbox lifecycle spans and usage metrics to an OTLP endpoint.",
-		note: COMPUTE_NOTE,
 	},
 	hosts: {
 		title: "Hosts",
 		order: 12,
 		about: "The machines that run sandboxes: join tokens, labels, drain and revoke. Super-admins only.",
-		note: COMPUTE_NOTE,
 	},
 };
 

@@ -8,7 +8,7 @@ sidebar:
 ---
 
 :::caution[Experimental]
-The `kantel` command calls routes a control plane serves only when it runs with `KANTEL_COMPUTE=experimental`. Its commands and their output may still change.
+The `kantel` command calls Kantel's compute API, which every control plane serves. Its commands and their output may still change.
 :::
 
 `kantel` does from a terminal what the [API](/api/reference/) does over HTTP: make a sandbox, run commands in it, copy files in and out, give its ports URLs, open its SSH, desktop and browser, take snapshots, and manage keys, webhooks and organisations. Every command can print Kantel's JSON answer instead of a table, for scripts and agents. The same program is Kantel's [MCP server](/tools/mcp-server/), and `kantel init` teaches a project's [coding agents](/coding-agents/) to use it.
@@ -38,7 +38,7 @@ kantel login --url https://kantel.example.com
 
 ```
 Open this page and check the code matches: BCDF-GHJK
-  https://kantel.example.com/compute/device?code=BCDF-GHJK
+  https://kantel.example.com/device?code=BCDF-GHJK
 Waiting for you to approve it in the browser…
 Signed in to https://kantel.example.com as Ada <ada@example.com>, in acc_8w3zkfuz4d.
 Saved to /home/ada/.config/kantel/config.json.

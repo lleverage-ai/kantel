@@ -665,7 +665,7 @@ export interface ComputeSource {
 	readonly hosts?: HostsSource;
 	/** Only when hosted. */
 	readonly billing?: BillingSource;
-	/** Approving a command line's sign-in, at `/compute/device`. Absent where nothing can sign in that way. */
+	/** Approving a command line's sign-in, at `/device`. Absent where nothing can sign in that way. */
 	readonly devices?: DeviceLoginsSource;
 }
 

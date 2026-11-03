@@ -9,15 +9,11 @@ sidebar:
 
 Signed event deliveries to your endpoints, with retries.
 
-:::caution
-Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
-:::
-
 ## List webhooks
 
 `GET /v1/webhooks` (SDK method `listWebhooks`)
 
-A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+A key needs `account:admin`.
 
 **Query parameters**
 
@@ -35,7 +31,7 @@ A key needs `account:admin`. Experimental: served only where the deployment sets
 
 `POST /v1/webhooks` (SDK method `createWebhook`)
 
-Its signing secret is answered once. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Its signing secret is answered once. A key needs `account:admin`.
 
 **Body**: [CreateWebhookBody](/api/reference/types/#createwebhookbody)
 
@@ -49,7 +45,7 @@ Its signing secret is answered once. A key needs `account:admin`. Experimental: 
 
 `GET /v1/webhooks/{webhookId}` (SDK method `getWebhook`)
 
-A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+A key needs `account:admin`.
 
 **Path parameters**
 
@@ -67,7 +63,7 @@ A key needs `account:admin`. Experimental: served only where the deployment sets
 
 `PATCH /v1/webhooks/{webhookId}` (SDK method `updateWebhook`)
 
-A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+A key needs `account:admin`.
 
 **Path parameters**
 
@@ -87,7 +83,7 @@ A key needs `account:admin`. Experimental: served only where the deployment sets
 
 `DELETE /v1/webhooks/{webhookId}` (SDK method `deleteWebhook`)
 
-Its queued deliveries are dropped. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Its queued deliveries are dropped. A key needs `account:admin`.
 
 **Path parameters**
 
@@ -105,7 +101,7 @@ Its queued deliveries are dropped. A key needs `account:admin`. Experimental: se
 
 `POST /v1/webhooks/{webhookId}/rotate` (SDK method `rotateWebhookSecret`)
 
-Deliveries are signed with the new secret from now; one already under way may carry the old signature. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Deliveries are signed with the new secret from now; one already under way may carry the old signature. A key needs `account:admin`.
 
 **Path parameters**
 
@@ -123,7 +119,7 @@ Deliveries are signed with the new secret from now; one already under way may ca
 
 `POST /v1/webhooks/{webhookId}/test` (SDK method `testWebhook`)
 
-Sends a signed `sandbox.created` event for a made-up sandbox now. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Sends a signed `sandbox.created` event for a made-up sandbox now. A key needs `account:admin`.
 
 **Path parameters**
 
@@ -141,7 +137,7 @@ Sends a signed `sandbox.created` event for a made-up sandbox now. A key needs `a
 
 `GET /v1/webhooks/{webhookId}/deliveries` (SDK method `listWebhookDeliveries`)
 
-The last 30 days, newest first. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+The last 30 days, newest first. A key needs `account:admin`.
 
 **Path parameters**
 

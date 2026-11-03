@@ -43,7 +43,7 @@ export interface ComputeApiOptions {
 	readonly mode?: "selfhosted" | "hosted";
 	/** The join command shown with a host join token, with `{url}` and `{token}`. */
 	readonly hostJoinCommand?: string;
-	/** The console page where a person approves a device sign-in, with `{url}`. Default `{url}/compute/device`. */
+	/** The console page where a person approves a device sign-in, with `{url}`. Default `{url}/device`. */
 	readonly deviceLoginUrl?: string;
 	readonly rates?: RateTable;
 	readonly limits?: ComputeLimits;

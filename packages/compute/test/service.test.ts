@@ -283,8 +283,8 @@ describe("device sign-in", () => {
 		const started = await device.startDeviceLogin({ clientName: "kantel on build-01" });
 		expect(started.deviceCode).toMatch(/^kdc_/);
 		expect(started.userCode).toMatch(/^[B-Z]{4}-[B-Z]{4}$/);
-		expect(started.verificationUrl).toBe("http://compute.test/compute/device");
-		expect(started.verificationUrlComplete).toBe(`http://compute.test/compute/device?code=${started.userCode}`);
+		expect(started.verificationUrl).toBe("http://compute.test/device");
+		expect(started.verificationUrlComplete).toBe(`http://compute.test/device?code=${started.userCode}`);
 
 		expect(await device.pollDeviceLogin({ deviceCode: started.deviceCode })).toEqual({ state: "pending" });
 

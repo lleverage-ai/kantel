@@ -17,7 +17,7 @@ curl -s "$KANTEL_URL/v1/me" -H "authorization: Bearer $KANTEL_API_KEY"
 Each route on these pages names the SDK method that calls it.
 
 :::caution[Experimental]
-The compute plane's routes, for sandboxes, snapshots, accounts and organisations, API keys, the proxy, webhooks, OpenTelemetry and hosts, are in the document and on these pages. A deployment serves them only with `KANTEL_COMPUTE=experimental`, and their shapes may still change.
+The compute plane's routes, for sandboxes, snapshots, accounts and organisations, API keys, the proxy, webhooks, OpenTelemetry and hosts, are in the document and on these pages. Every control plane serves them, and their shapes may still change.
 :::
 
 ## Errors

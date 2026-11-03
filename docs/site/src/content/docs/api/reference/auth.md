@@ -9,15 +9,11 @@ sidebar:
 
 Signing the command line in through the browser: `kantel login`'s device code, its poll and its approval.
 
-:::caution
-Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
-:::
-
 ## Start a device sign-in
 
 `POST /v1/auth/device` (SDK method `startDeviceLogin`)
 
-Answers a code to show the person and the console page to open, where a signed-in person approves it. Then poll `pollDeviceLogin` with the `deviceCode`. Takes no credential. A code lasts 15 minutes. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Answers a code to show the person and the console page to open, where a signed-in person approves it. Then poll `pollDeviceLogin` with the `deviceCode`. Takes no credential. A code lasts 15 minutes.
 
 **Body**: [StartDeviceLoginBody](/api/reference/types/#startdeviceloginbody)
 
@@ -31,7 +27,7 @@ Answers a code to show the person and the console page to open, where a signed-i
 
 `POST /v1/auth/device/token` (SDK method `pollDeviceLogin`)
 
-Its state, and once approved the new key's secret, answered to the first poll that sees it. Takes no credential: the `deviceCode` is the secret. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Its state, and once approved the new key's secret, answered to the first poll that sees it. Takes no credential: the `deviceCode` is the secret.
 
 **Body**: [PollDeviceLoginBody](/api/reference/types/#polldeviceloginbody)
 
@@ -45,7 +41,7 @@ Its state, and once approved the new key's secret, answered to the first poll th
 
 `GET /v1/auth/device/{userCode}` (SDK method `getDeviceLogin`)
 
-What is asking to sign in with this code, for the approval page. A person only. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+What is asking to sign in with this code, for the approval page. A person only.
 
 **Path parameters**
 
@@ -63,7 +59,7 @@ What is asking to sign in with this code, for the approval page. A person only. 
 
 `POST /v1/auth/device/{userCode}/approve` (SDK method `approveDeviceLogin`)
 
-Makes an API key for the person, named after the device, and hands it to the device's next poll. A person only, who needs admin or owner in the account (`account:admin`), as for `createApiKey`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Makes an API key for the person, named after the device, and hands it to the device's next poll. A person only, who needs admin or owner in the account (`account:admin`), as for `createApiKey`.
 
 **Path parameters**
 
@@ -83,7 +79,7 @@ Makes an API key for the person, named after the device, and hands it to the dev
 
 `POST /v1/auth/device/{userCode}/deny` (SDK method `denyDeviceLogin`)
 
-The device's next poll is `denied`. A person only. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+The device's next poll is `denied`. A person only.
 
 **Path parameters**
 

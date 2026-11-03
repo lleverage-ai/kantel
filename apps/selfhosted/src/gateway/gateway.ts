@@ -105,7 +105,7 @@ export interface GatewayOptions {
 	 */
 	readonly publicOrigin?: string;
 	/**
-	 * The compute plane's API (`compute.ts`, KANTEL_COMPUTE=experimental): it answers its own routes under `/v1`, signing
+	 * The compute plane's API (`compute.ts`, always on under `serveGateway`): it answers its own routes under `/v1`, signing
 	 * callers in itself, and `undefined` for every other path.
 	 */
 	readonly compute?: { fetch(request: Request): Promise<Response | undefined> };

@@ -134,7 +134,7 @@ export interface GatewayComponents {
 	readonly toolServers?: GatewayToolServers;
 	/**
 	 * The compute plane's hosts (`compute.ts`, @kantel/hosts): machines running `kantel-host` and the sandboxes placed
-	 * on them. Absent unless `KANTEL_COMPUTE=experimental` with `KANTEL_COMPUTE_BACKEND=hosts`.
+	 * on them. Absent on the stub backend (`KANTEL_COMPUTE_BACKEND=stub`, or no public URL).
 	 */
 	readonly computeHosts?: HostsService;
 	/**
@@ -506,8 +506,8 @@ export interface Bootstrap {
 	 */
 	readonly projects?: { readonly [name: string]: ProjectId };
 	/**
-	 * The compute plane's super-admin key (`ksk_…`, every scope), when KANTEL_COMPUTE=experimental: made on the first
-	 * start with it on, and made again from here on each start after, as the compute plane keeps its records in memory.
+	 * The compute plane's super-admin key (`ksk_…`, every scope): made on the first start with the
+	 * compute plane, and made again from here on each start after, as the compute plane keeps its records in memory.
 	 */
 	readonly computeKey?: string;
 }

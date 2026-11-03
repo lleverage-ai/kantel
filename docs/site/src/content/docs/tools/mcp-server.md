@@ -8,7 +8,7 @@ sidebar:
 ---
 
 :::caution[Experimental]
-The MCP server calls routes a control plane serves only when it runs with `KANTEL_COMPUTE=experimental`. Its tools may still change.
+The MCP server calls Kantel's compute API, which every control plane serves. Its tools may still change.
 :::
 
 `kantel mcp` is an [MCP](https://modelcontextprotocol.io/) server that gives a coding agent tools to make sandboxes, run commands and move files in them, open their ports and browsers, and save snapshots. It's part of the [`kantel` command](/tools/cli/): the agent's client starts it and talks to it over stdin and stdout, and it calls your control plane with the key in its environment.

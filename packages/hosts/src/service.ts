@@ -2,9 +2,8 @@
  * The host registry and the compute plane's dispatch: join tokens, registration, the hosts' connections (through the
  * hub), the operator's view and changes, and sandboxes placed on hosts and reached through them.
  *
- * Experimental: a deployment turns it on with `KANTEL_COMPUTE=experimental` (`computeEnabled`). The public sandbox
- * API (docs/site/src/content/docs/api/reference/sandboxes.md) is built over `sandboxes` here; this package doesn't
- * decide who may use which sandbox, only where it runs and how it is reached.
+ * The public sandbox API (docs/site/src/content/docs/api/reference/sandboxes.md) is built over `sandboxes` here; this
+ * package doesn't decide who may use which sandbox, only where it runs and how it is reached.
  */
 import { type Clock, KantelError, systemClock } from "@kantel/contracts";
 import { type CallOptions, createHostHub, HostCallError, type HostHub, type PortSink, type PortStream } from "./hub.ts";
@@ -21,14 +20,6 @@ import {
 } from "./protocol.ts";
 import { type Candidate, isRefusal, place, sizeOn } from "./scheduler.ts";
 import type { HostRecord, HostStore, PlacementRecord } from "./store.ts";
-
-/** The deployment switch. */
-export const COMPUTE_SWITCH = "KANTEL_COMPUTE";
-
-/** Whether the switch's value turns the compute plane on: only `experimental` does, while it is. */
-export function computeEnabled(value: string | undefined): boolean {
-	return value?.trim().toLowerCase() === "experimental";
-}
 
 export const JOIN_TOKEN_PREFIX = "kth_";
 export const HOST_CREDENTIAL_PREFIX = "khc_";

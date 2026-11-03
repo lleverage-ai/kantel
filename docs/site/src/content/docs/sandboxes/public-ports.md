@@ -8,7 +8,7 @@ sidebar:
 ---
 
 :::caution[Experimental]
-These routes are part of Kantel's API, and a control plane serves them only when it runs with `KANTEL_COMPUTE=experimental`. Their shapes may still change.
+These routes are part of Kantel's API, which every control plane serves. Their shapes may still change.
 :::
 
 An app listening on a port inside a sandbox can get an HTTPS URL, so you, a reviewer or a test runner can open it from anywhere. The sandbox has no address of its own: the control plane answers the URL and passes each request, WebSockets included, to the port through its host's tunnel, so neither the sandbox nor the host needs an open port. On your own hosts this needs a [domain for ports](/self-hosting/install/#run-sandboxes-on-your-own-linux-hosts).

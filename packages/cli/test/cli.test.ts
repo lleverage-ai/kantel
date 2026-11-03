@@ -605,8 +605,8 @@ describe("login in the browser", () => {
 	const STARTED = {
 		deviceCode: "kdc_secret",
 		userCode: "BCDF-GHJK",
-		verificationUrl: "https://kantel.test/compute/device",
-		verificationUrlComplete: "https://kantel.test/compute/device?code=BCDF-GHJK",
+		verificationUrl: "https://kantel.test/device",
+		verificationUrlComplete: "https://kantel.test/device?code=BCDF-GHJK",
 		intervalSeconds: 2,
 		expiresAt: Date.now() + 15 * 60_000,
 	};

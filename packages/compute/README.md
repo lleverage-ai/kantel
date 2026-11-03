@@ -2,8 +2,8 @@
 
 The compute plane's control-plane API: every route in `@kantel/api`'s `computeRoutes` (accounts and organisations,
 sandboxes and their commands, files, ports, SSH, desktop and browser, snapshots, scoped API keys, the proxy's settings,
-events, webhooks, OpenTelemetry export and the super-admin's hosts), served over a `SandboxBackend`. Experimental: a
-gateway serves it only with `KANTEL_COMPUTE=experimental`.
+events, webhooks, OpenTelemetry export and the super-admin's hosts), served over a `SandboxBackend`. The self-hosted
+gateway always serves it, and its console runs on it.
 
 - `createComputeApi({ backend, store?, authenticatePerson?, fetch?, now?, basePath?, publicUrl? })` (`.`): answers a
   compute route, or resolves `undefined` for any other path so a gateway can chain it. It holds the webhook dispatcher
