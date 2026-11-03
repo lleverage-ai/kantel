@@ -845,8 +845,13 @@ export interface ComputeSource {
 	readonly egress: EgressSource;
 	readonly webhooks: WebhooksSource;
 	readonly telemetry: TelemetrySource;
-	/** Only for a super-admin. */
+	/** The deployment's hosts: only for a super-admin. */
 	readonly hosts?: HostsSource;
+	/**
+	 * An account's own hosts, which run only its sandboxes: for everyone else, where the deployment lets accounts add
+	 * machines of their own (experimental). Absent, it doesn't.
+	 */
+	readonly ownHosts?: (accountId: string) => HostsSource;
 	/** Only when hosted. */
 	readonly billing?: BillingSource;
 	/** Approving a command line's sign-in, at `/device`. Absent where nothing can sign in that way. */

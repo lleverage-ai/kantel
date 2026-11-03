@@ -291,7 +291,7 @@ export function createHostHub(options: HostHubOptions): HostHub {
 					);
 					return;
 				}
-				// Anyone's machine can be a host (Kantel Connect): a payload is read only once it is an object.
+				// Anyone's machine can be a host (account hosts): a payload is read only once it is an object.
 				switch (message.type) {
 					case "heartbeat":
 						if (isObject(message.heartbeat)) options.onHeartbeat?.(hostId, message.heartbeat.capacity);

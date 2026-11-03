@@ -213,7 +213,7 @@ In fish, use `set id (kantel new --type microvm --json | jq -r .id)`.
 | [Snapshots](/snapshots/history/) | `snapshot list`, `take`, `save <sandboxId> <name>`, `files`, `rm` |
 | [API keys](/accounts/api-keys/) and [organisations](/accounts/organisations/) | `key list`, `key create`, `key rotate`, `key revoke`, `org list`, `org create`, `org join` |
 | [Webhooks](/monitoring/webhooks/), events and [OpenTelemetry](/monitoring/opentelemetry/) | `webhook list`, `webhook create`, `webhook rm`, `webhook test`, `events`, `telemetry get`, `telemetry set`, `telemetry rm` |
-| [Kantel Connect](/connect/) (experimental): machines of your own | `connect enrol [name]`, `connect list`, `connect info`, `connect drain [--off]`, `connect rm` |
+| [Your own hosts](/own-hosts/) (experimental): machines of your own | `hosts add [name]`, `hosts list`, `hosts info`, `hosts drain [--off]`, `hosts rm` |
 | [Coding agents](/coding-agents/) | `init`, `mcp`, `agents` |
 
 `kantel key create agent --preset agent` makes a key for a coding agent and prints its secret once. The other presets are `ci`, `read-only` and `admin`; `--scope` picks scopes one by one, `--sandbox` limits the key to one sandbox and `--expires-days` sets when it stops working.

@@ -23,7 +23,7 @@ export interface HostRecord {
 	/** As it last said in a hello or heartbeat. */
 	readonly capacity?: HostCapacity;
 	/**
-	 * The account it was enrolled into with Kantel Connect: only that account's sandboxes go on it. Absent for a host
+	 * The account whose own host it is: only that account's sandboxes go on it. Absent for a host
 	 * the operator joined, which every account shares.
 	 */
 	readonly accountId?: string;

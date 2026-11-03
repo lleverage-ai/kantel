@@ -20,6 +20,8 @@
  * - optionally, email-code sign-in and open sign-up on a public origin (`KANTEL_PUBLIC_URL` with `KANTEL_SIGN_IN_FROM`,
  *   and `KANTEL_SIGN_IN_DAILY_CAP`), as vars of the same names, plus the `SIGN_IN_MAIL` send_email binding limited to
  *   that one sender.
+ * - optionally, accounts' own hosts (`KANTEL_ACCOUNT_HOSTS=experimental`, experimental), which dial out to
+ *   KANTEL_PUBLIC_URL, as a var of the same name.
  *
  * `--mode deploy` needs every variable and refuses to write a config without them. `--mode dry-run` fills a missing
  * one with a placeholder, so `wrangler deploy --dry-run` still checks the whole config's shape before the account is
@@ -81,6 +83,9 @@ export const OPTIONAL_DEPLOY_VARIABLES = [
 	"KANTEL_PUBLIC_URL",
 	"KANTEL_SIGN_IN_FROM",
 	"KANTEL_SIGN_IN_DAILY_CAP",
+	// Experimental: `experimental` lets anyone signed in add machines of their own, which dial out to KANTEL_PUBLIC_URL
+	// (so it needs that) and run only their account's sandboxes (src/compute.ts). Unset or `off`, it stays off.
+	"KANTEL_ACCOUNT_HOSTS",
 ] as const;
 export type OptionalDeployVariable = (typeof OPTIONAL_DEPLOY_VARIABLES)[number];
 
@@ -154,6 +159,7 @@ const OPTIONAL_CHECKS: Readonly<
 	},
 	KANTEL_SIGN_IN_FROM: { test: (v) => isEmail(v), expect: "an email address" },
 	KANTEL_SIGN_IN_DAILY_CAP: { test: (v) => /^\d{1,6}$/.test(v), expect: "a whole number" },
+	KANTEL_ACCOUNT_HOSTS: { test: (v) => v === "experimental" || v === "off", expect: "experimental or off" },
 };
 
 /**
@@ -300,7 +306,14 @@ export interface DeployValues {
 	/** The domain port URLs are under, when set. */
 	readonly portsDomain?: string;
 	/** Email-code sign-in on the public origin, when set: its origin, the sender and the daily cap if given. */
-	readonly emailSignIn?: { readonly publicUrl: string; readonly from: string; readonly dailyCap?: string };
+	readonly emailSignIn?: { readonly from: string; readonly dailyCap?: string };
+	/** The public origin, when set: where people sign in by email code, and where account hosts dial. */
+	readonly publicUrl?: string;
+	/**
+	 * The account hosts switch, when set (`KANTEL_ACCOUNT_HOSTS`): `experimental` lets accounts add hosts of their own,
+	 * which dial the public origin; `off` keeps them off but, like `experimental`, lets the origin go without sign-in.
+	 */
+	readonly accountHosts?: "experimental" | "off";
 	/** The variables a dry run filled with placeholders. Always empty in deploy mode. */
 	readonly placeholders: readonly DeployVariable[];
 }
@@ -340,7 +353,13 @@ export function deployValues(env: Readonly<Record<string, string | undefined>>, 
 	}
 	const publicUrl = optional("KANTEL_PUBLIC_URL");
 	const signInFrom = optional("KANTEL_SIGN_IN_FROM");
-	if ((publicUrl === undefined) !== (signInFrom === undefined)) {
+	// The account hosts switch, on or off, says the public origin may be the hosts' alone, with email sign-in off (as
+	// src/config.ts takes it); with no switch, the origin is sign-in's and needs its sender.
+	const accountHostsSwitch = optional("KANTEL_ACCOUNT_HOSTS");
+	if (
+		(signInFrom !== undefined && publicUrl === undefined) ||
+		(publicUrl !== undefined && signInFrom === undefined && accountHostsSwitch === undefined)
+	) {
 		invalid.push("Set both KANTEL_PUBLIC_URL and KANTEL_SIGN_IN_FROM, or neither");
 	}
 	const dailyCap = optional("KANTEL_SIGN_IN_DAILY_CAP");
@@ -350,6 +369,9 @@ export function deployValues(env: Readonly<Record<string, string | undefined>>, 
 		new URL(publicUrl).hostname.toLowerCase() === (env.KANTEL_HOSTNAME ?? "").trim().toLowerCase()
 	) {
 		invalid.push("KANTEL_PUBLIC_URL must be another hostname than KANTEL_HOSTNAME, which Access guards");
+	}
+	if (accountHostsSwitch === "experimental" && publicUrl === undefined) {
+		invalid.push("KANTEL_ACCOUNT_HOSTS needs KANTEL_PUBLIC_URL: the origin hosts dial, with no Access in front");
 	}
 	if (invalid.length > 0) throw new Error(invalid.join("; "));
 	const r2Bucket = optional("KANTEL_R2_BUCKET");
@@ -380,15 +402,13 @@ export function deployValues(env: Readonly<Record<string, string | undefined>>, 
 		...(optional("KANTEL_COMPUTE_PORTS_DOMAIN") === undefined
 			? {}
 			: { portsDomain: optional("KANTEL_COMPUTE_PORTS_DOMAIN") }),
-		...(publicUrl === undefined || signInFrom === undefined
+		...(publicUrl === undefined ? {} : { publicUrl: new URL(publicUrl).origin }),
+		...(signInFrom === undefined
 			? {}
-			: {
-					emailSignIn: {
-						publicUrl: new URL(publicUrl).origin,
-						from: signInFrom,
-						...(dailyCap === undefined ? {} : { dailyCap }),
-					},
-				}),
+			: { emailSignIn: { from: signInFrom, ...(dailyCap === undefined ? {} : { dailyCap }) } }),
+		...(accountHostsSwitch === "experimental" || accountHostsSwitch === "off"
+			? { accountHosts: accountHostsSwitch }
+			: {}),
 		placeholders: missing,
 	};
 }
@@ -472,15 +492,16 @@ export function deployConfig(raw: RawConfig, values: DeployValues): Record<strin
 			...(values.connectionsCimd === true ? { KANTEL_CONNECTIONS_CIMD: "on" } : {}),
 			...(values.oauthClients === undefined ? {} : { KANTEL_OAUTH_CLIENTS: values.oauthClients }),
 			...(values.portsDomain === undefined ? {} : { KANTEL_COMPUTE_PORTS_DOMAIN: values.portsDomain }),
+			...(values.publicUrl === undefined ? {} : { KANTEL_PUBLIC_URL: values.publicUrl }),
 			...(values.emailSignIn === undefined
 				? {}
 				: {
-						KANTEL_PUBLIC_URL: values.emailSignIn.publicUrl,
 						KANTEL_SIGN_IN_FROM: values.emailSignIn.from,
 						...(values.emailSignIn.dailyCap === undefined
 							? {}
 							: { KANTEL_SIGN_IN_DAILY_CAP: values.emailSignIn.dailyCap }),
 					}),
+			...(values.accountHosts === undefined ? {} : { KANTEL_ACCOUNT_HOSTS: values.accountHosts }),
 		},
 		...(values.browserContainers === true || values.sandboxContainers === true
 			? {

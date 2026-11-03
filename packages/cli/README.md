@@ -69,7 +69,7 @@ flags. Every command takes `--json` to print Kantel's answer as it is, for scrip
 | `snapshot list\|take\|save\|files\|rm …` | Snapshots, and saved snapshots to start sandboxes from |
 | `key list\|create\|rotate\|revoke …` | Scoped API keys; a new key's secret is shown once |
 | `org list\|create\|join …`, `webhook …`, `events`, `telemetry …` | Accounts, webhooks, events and OpenTelemetry |
-| `connect enrol\|list\|info\|drain\|rm …` | Kantel Connect (experimental): machines of your own that run only your account's sandboxes |
+| `hosts add\|list\|info\|drain\|rm …` | Your own hosts (experimental): machines of your own that run only your account's sandboxes |
 | `init [--global] [--for claude\|codex\|pi]` | AGENTS.md, CLAUDE.md and the kantel skill for coding agents |
 | `mcp` | The MCP server on stdio |
 | `agents [claude\|codex\|pi\|cursor\|all] [--write]` | MCP setup for coding agents |

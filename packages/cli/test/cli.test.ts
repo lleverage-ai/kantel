@@ -433,7 +433,7 @@ describe("sandboxes", () => {
 	});
 });
 
-describe("connect", () => {
+describe("hosts", () => {
 	const HOST: Host = {
 		id: "host_own1",
 		name: "tom-box",
@@ -452,9 +452,9 @@ describe("connect", () => {
 		lastSeenAt: Date.now(),
 	};
 
-	it("enrols a host into the account it acts in and prints the command to run on the machine", async () => {
+	it("makes a join token for the account it acts in and prints the command to run on the machine", async () => {
 		const routes = {
-			"POST /v1/connect/enrolments": (call: Call) => ({
+			"POST /v1/hosts/join-tokens": (call: Call) => ({
 				id: "enr_1",
 				accountId: (call.body as { account: string }).account,
 				token: "kth_secret",
@@ -463,7 +463,7 @@ describe("connect", () => {
 			}),
 		};
 		const enrolled = await kantel(
-			["connect", "enrol", "tom-box", "--label", "site=home", "--expires", "30", "--account", "acc_org"],
+			["hosts", "add", "tom-box", "--label", "site=home", "--expires", "30", "--account", "acc_org"],
 			{ routes },
 		);
 		expect(enrolled.code).toBe(0);
@@ -476,47 +476,54 @@ describe("connect", () => {
 		expect(enrolled.stdout).toContain("--token kth_secret");
 		expect(enrolled.stdout).toContain("It joins account acc_org");
 		// Too short a token's life is refused before calling Kantel.
-		const short = await kantel(["connect", "enrol", "--expires", "1"], { routes });
+		const short = await kantel(["hosts", "add", "--expires", "1"], { routes });
 		expect(short.code).toBe(2);
 		expect(short.calls).toEqual([]);
 	});
 
 	it("lists, shows, drains and removes the account's hosts", async () => {
 		const routes = {
-			"GET /v1/connect/hosts": () => ({ items: [HOST] }),
-			"GET /v1/connect/hosts/host_own1": () => HOST,
-			"PATCH /v1/connect/hosts/host_own1": (call: Call) => ({
+			"GET /v1/hosts": () => ({ items: [HOST] }),
+			"GET /v1/hosts/host_own1": () => HOST,
+			"PATCH /v1/hosts/host_own1": (call: Call) => ({
 				...HOST,
 				state: (call.body as { draining: boolean }).draining ? "draining" : "online",
 			}),
-			"DELETE /v1/connect/hosts/host_own1": () => ({ ...HOST, state: "revoked" }),
+			"DELETE /v1/hosts/host_own1": () => ({ ...HOST, state: "revoked" }),
 		};
-		const listed = await kantel(["connect", "ls"], { routes });
+		const listed = await kantel(["hosts", "ls"], { routes });
 		expect(listed.stdout).toMatch(/^ID\s+NAME\s+STATE\s+TIERS\s+SANDBOXES/);
 		expect(listed.stdout).toContain("host_own1");
-		const shown = await kantel(["connect", "info", "host_own1"], { routes });
+		const shown = await kantel(["hosts", "info", "host_own1"], { routes });
 		expect(shown.stdout).toContain("acc_org");
 		expect(shown.stdout).toContain("site=home");
-		const drained = await kantel(["connect", "drain", "host_own1"], { routes });
+		const drained = await kantel(["hosts", "drain", "host_own1"], { routes });
 		expect(drained.calls[0]?.body).toEqual({ draining: true });
 		expect(drained.stdout).toContain("draining");
-		const undrained = await kantel(["connect", "drain", "host_own1", "--off"], { routes });
+		const undrained = await kantel(["hosts", "drain", "host_own1", "--off"], { routes });
 		expect(undrained.calls[0]?.body).toEqual({ draining: false });
-		const removed = await kantel(["connect", "rm", "host_own1"], { routes });
-		expect(removed.calls.map((call) => `${call.method} ${call.path}`)).toEqual(["DELETE /v1/connect/hosts/host_own1"]);
+		const removed = await kantel(["hosts", "rm", "host_own1"], { routes });
+		expect(removed.calls.map((call) => `${call.method} ${call.path}`)).toEqual(["DELETE /v1/hosts/host_own1"]);
 		expect(removed.stdout).toContain("revoked");
-		const empty = await kantel(["connect", "list"], { routes: { "GET /v1/connect/hosts": () => ({ items: [] }) } });
-		expect(empty.stdout).toContain("kantel connect enrol");
+		const empty = await kantel(["hosts", "list"], { routes: { "GET /v1/hosts": () => ({ items: [] }) } });
+		expect(empty.stdout).toContain("kantel hosts add");
 	});
 
-	it("passes on a deployment's refusal while Kantel Connect is off", async () => {
+	it("passes on a deployment's refusal while account hosts are off", async () => {
 		const routes = {
-			"GET /v1/connect/hosts": () =>
-				kantelError(501, "not_supported", "Kantel Connect is off on this deployment (KANTEL_CONNECT)"),
+			"GET /v1/hosts": () =>
+				kantelError(501, "not_supported", "Account hosts are off on this deployment (KANTEL_ACCOUNT_HOSTS)"),
 		};
-		const result = await kantel(["connect", "list"], { routes });
+		const result = await kantel(["hosts", "list"], { routes });
 		expect(result.code).toBe(1);
-		expect(result.stderr).toContain("not_supported: Kantel Connect is off");
+		expect(result.stderr).toContain("not_supported: Account hosts are off");
+	});
+
+	it("keeps `host` for a sandbox's port and points the operators' host commands at kantel-admin", async () => {
+		const moved = await kantel(["host", "list"], { routes: {} });
+		expect(moved.code).toBe(2);
+		expect(moved.stderr).toContain("kantel-admin host list (your own hosts: kantel hosts list)");
+		expect(moved.calls).toEqual([]);
 	});
 });
 

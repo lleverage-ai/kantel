@@ -69,6 +69,11 @@ export interface SandboxesPageProps {
 	 * and links here (the Hosts page's Add a host) rather than offering New sandbox.
 	 */
 	readonly addHostHref?: string;
+	/**
+	 * The person's account has no host of its own yet, and may add one. The deployment may still have shared hosts the
+	 * account can use, so with no sandboxes New sandbox stays the action, with a link here to add a host beside it.
+	 */
+	readonly ownHostHref?: string;
 }
 
 const AUTO_STOP_CHOICES = [
@@ -110,6 +115,7 @@ export function SandboxesPage({
 	pollMs = 1000,
 	creating = false,
 	addHostHref,
+	ownHostHref,
 }: SandboxesPageProps) {
 	const { state, reload } = useLoad(() => source.list(account.id), [source, account.id]);
 	// Sandboxes made or changed here, ahead of the next read: a new one shows the moment New sandbox is pressed.
@@ -261,13 +267,23 @@ export function SandboxesPage({
 				<EmptyState
 					title="No sandboxes yet"
 					action={
-						<Button variant="primary" icon={<PlusIcon size="sm" />} onClick={() => setNewOpen(true)}>
-							New sandbox
-						</Button>
+						<div className="flex flex-wrap items-center justify-center gap-2">
+							<Button variant="primary" icon={<PlusIcon size="sm" />} onClick={() => setNewOpen(true)}>
+								New sandbox
+							</Button>
+							{ownHostHref === undefined ? null : (
+								<a className={`${buttonClass("secondary", "sm")} no-underline`} href={ownHostHref}>
+									Add a host of your own
+								</a>
+							)}
+						</div>
 					}
 				>
 					A sandbox is a Linux machine for an agent: an isolate that starts in milliseconds, or a microVM with root,
 					Docker and its own kernel. Make one here, or from the CLI with kantel new.
+					{ownHostHref === undefined
+						? null
+						: " If there's no host here for your account, add a Linux machine of your own: one command on it, and only your account's sandboxes run there."}
 				</EmptyState>
 			) : (
 				<>

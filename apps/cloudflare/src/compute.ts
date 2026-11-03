@@ -11,8 +11,8 @@
  *   self-hosted gateway runs with no hosts. The object's memory goes when Cloudflare evicts it or a deploy replaces
  *   it, while the records stay: `revivingStub` then gives a sandbox the records still have a fresh, empty machine on
  *   its next call, rather than failing every call on it.
- * - **Kantel Connect** (experimental, `connect`, off by default): an account's own machines. A person enrols one
- *   (`POST /v1/connect/enrolments`); it registers at `POST /v1/hosts/register` with no sign-in, dials out to
+ * - **Account hosts** (experimental, `accountHosts`, off by default): an account's own machines. A person adds one
+ *   (`POST /v1/hosts/join-tokens`); it registers at `POST /v1/hosts/register` with no sign-in, dials out to
  *   `GET /v1/hosts/connect` and keeps that WebSocket open to the stack object (`src/stack-object.ts`), which holds the
  *   one hub (`@kantel/hosts`), as a self-hosted gateway does. The registry of hosts and placements is in the object's
  *   SQLite. Sandboxes of an account with a host of its own go there (`createRoutedBackend`); everyone else's stay on
@@ -104,12 +104,12 @@ export interface StackCompute {
 	readonly api: ComputeApi;
 	/** What `GET /v1/deployment`-style logs say about it. */
 	readonly binding: string;
-	/** Kantel Connect's host side, when it is on. */
+	/** Account hosts' host side, when it is on. */
 	readonly hosts?: StackHosts;
 	close(): Promise<void>;
 }
 
-/** What a host reaches with no sign-in, with Kantel Connect on. */
+/** What a host reaches with no sign-in, with account hosts on. */
 export interface StackHosts {
 	readonly service: HostsService;
 	/** Registration (`POST /v1/hosts/register`) and the images `kantel-host install` fetches; undefined for others. */
@@ -236,7 +236,7 @@ export interface StackComputeOptions {
 	readonly identity: Pick<IdentityDirectory, "authorize" | "getUser">;
 	/**
 	 * The deployment's own organisation: only its admins are super-admins, and only its members may use the stub here.
-	 * Others are refused, or with Kantel Connect on, may use only hosts of their own. Absent, any organisation's admin
+	 * Others are refused, or with account hosts on, may use only hosts of their own. Absent, any organisation's admin
 	 * is a super-admin and anyone signed in may use it (tests with one organisation).
 	 */
 	readonly adminOrganisationId?: string;
@@ -252,21 +252,22 @@ export interface StackComputeOptions {
 	readonly fetch?: typeof fetch;
 	/**
 	 * The domain port URLs are under, `{port}-{subdomain}.{domain}`. Default `HOSTED_PORTS_DOMAIN` (`ports.kantel.dev`).
-	 * The stub backend only names the URLs; Connect hosts' public ports aren't served here yet either.
+	 * The stub backend only names the URLs; account hosts' public ports aren't served here yet either.
 	 */
 	readonly portsDomain?: string;
-	/** Kantel Connect (KANTEL_CONNECT=experimental): where hosts reach this Worker. Absent, off. */
-	readonly connect?: { readonly publicUrl: string };
-	/** With Connect on, how often sandboxes past their auto-stop time are stopped. Default `CONNECT_SWEEP_MS`. */
-	readonly connectSweepMs?: number;
+	/** Account hosts (KANTEL_ACCOUNT_HOSTS=experimental): where hosts reach this Worker. Absent, off. */
+	readonly accountHosts?: { readonly publicUrl: string };
+	/** With account hosts on, how often sandboxes past their auto-stop time are stopped. Default `HOST_SWEEP_MS`. */
+	readonly hostSweepMs?: number;
 }
 
 /**
- * With Connect on, how often sandboxes past their auto-stop time are stopped, and due webhook deliveries sent, compute
- * requests or not: a Connect sandbox is a real machine of someone's, which may be used over SSH alone. A connected host keeps the object up (its
- * socket isn't hibernated), so this runs while there's a host to stop anything on, and once more as each connects.
+ * With account hosts on, how often sandboxes past their auto-stop time are stopped, and due webhook deliveries sent,
+ * compute requests or not: a sandbox on an account's host is a real machine of someone's, which may be used over SSH
+ * alone. A connected host keeps the object up (its socket isn't hibernated), so this runs while there's a host to stop
+ * anything on, and once more as each connects.
  */
-export const CONNECT_SWEEP_MS = 30_000;
+export const HOST_SWEEP_MS = 30_000;
 /** How long after a host connects its overdue sandboxes are swept: time for its hello to land. */
 const SWEEP_AFTER_CONNECT_MS = 2000;
 
@@ -281,16 +282,16 @@ export const COMPUTE_MEMBERS_ONLY =
  *
  * Someone acting in another organisation (anyone who signed up on the public origin) is refused: the stub backend
  * keeps files and snapshots in this object's memory, which a stranger mustn't be able to fill. Refusing the person
- * refuses every way in, a compute key or a device sign-in included, since only a person can make either. With Kantel
- * Connect on (`connect`) they are let in, never as a super-admin, to enrol and use hosts of their own: `sharedHosts`
- * (`membersOf`) keeps them, and their keys, off the stub, with Connect on or off.
+ * refuses every way in, a compute key or a device sign-in included, since only a person can make either. With account
+ * hosts on (`accountHosts`) they are let in, never as a super-admin, to add and use hosts of their own: `sharedHosts`
+ * (`membersOf`) keeps them, and their keys, off the stub, with account hosts on or off.
  */
 async function personOf(
 	authenticator: Authenticator,
 	identity: Pick<IdentityDirectory, "authorize">,
 	request: Request,
 	adminOrganisationId: string | undefined,
-	connect: boolean,
+	accountHosts: boolean,
 ): Promise<PersonIdentity | undefined> {
 	let caller: Awaited<ReturnType<Authenticator["authenticate"]>>;
 	try {
@@ -300,7 +301,7 @@ async function personOf(
 	}
 	if (caller.actor.kind !== "human") return undefined;
 	const outside = adminOrganisationId !== undefined && caller.organisationId !== adminOrganisationId;
-	if (outside && !connect) throw new KantelError("forbidden", COMPUTE_MEMBERS_ONLY);
+	if (outside && !accountHosts) throw new KantelError("forbidden", COMPUTE_MEMBERS_ONLY);
 	// Only an admin of the deployment's organisation, never one of a personal space.
 	const superAdmin =
 		!outside &&
@@ -360,35 +361,36 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		createStubBackend({ sandboxDomain: options.portsDomain ?? HOSTED_PORTS_DOMAIN }),
 		store.sandboxes,
 	);
-	const connect = options.connect === undefined ? undefined : await connectHosts(options.connect, options.sql, now);
+	const own =
+		options.accountHosts === undefined ? undefined : await accountHostsSide(options.accountHosts, options.sql, now);
 	const deploymentOrganisation = options.adminOrganisationId;
 	const api = createComputeApi({
 		store,
 		backend:
-			connect === undefined
+			own === undefined
 				? stub
 				: createRoutedBackend({
-						primary: connect.backend,
+						primary: own.backend,
 						fallback: stub,
-						holds: async (sandboxId) => (await connect.service.sandboxes.placement(sandboxId)) !== undefined,
+						holds: async (sandboxId) => (await own.service.sandboxes.placement(sandboxId)) !== undefined,
 						holdsSnapshot: isHostSnapshotRef,
 					}),
 		authenticatePerson: (request) =>
-			personOf(options.authenticator, options.identity, request, options.adminOrganisationId, connect !== undefined),
+			personOf(options.authenticator, options.identity, request, options.adminOrganisationId, own !== undefined),
 		...(options.sessionLive === undefined ? {} : { sessionLive: options.sessionLive }),
-		// The stub is its members', Connect on or off: with it on, people outside get in for hosts of their own, and a
-		// key one of them made then must stay off the stub once it is off.
+		// The stub is its members', account hosts on or off: with them on, people outside get in for hosts of their own,
+		// and a key one of them made then must stay off the stub once they are off.
 		...(deploymentOrganisation === undefined
 			? {}
 			: { sharedHosts: membersOf(options.identity, deploymentOrganisation, now) }),
 		mode: "hosted",
 		now,
 		...(options.fetch === undefined ? {} : { fetch: options.fetch }),
-		// Enrolment commands name the address hosts dial, as tunnel URLs do, not the caller's origin.
-		...(connect === undefined ? {} : { connect: true, publicUrl: connect.publicUrl }),
+		// Join commands name the address hosts dial, as tunnel URLs do, not the caller's origin.
+		...(own === undefined ? {} : { accountHosts: true, publicUrl: own.publicUrl }),
 	});
-	connect?.service.useJoinTokens(joinTokenSpender(store));
-	connect?.bind((grantee, sandboxId) => api.service.stillAllowed(grantee, sandboxId));
+	own?.service.useJoinTokens(joinTokenSpender(store));
+	own?.bind((grantee, sandboxId) => api.service.stillAllowed(grantee, sandboxId));
 	const timers = whileBusy(api, now);
 	// The dispatcher runs only while compute requests come (`whileBusy`), so the sweep sends what it queued itself: a
 	// stop's `sandbox.stopped`, on the tick after, and any delivery whose retry has come due.
@@ -396,15 +398,15 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		void api.service.sweep().catch(() => undefined);
 		void api.dispatcher.drain().catch(() => undefined);
 	};
-	const sweeper = connect === undefined ? undefined : setInterval(sweep, options.connectSweepMs ?? CONNECT_SWEEP_MS);
+	const sweeper = own === undefined ? undefined : setInterval(sweep, options.hostSweepMs ?? HOST_SWEEP_MS);
 	const afterConnect = new Set<ReturnType<typeof setTimeout>>();
 	const hosts: StackHosts | undefined =
-		connect === undefined
+		own === undefined
 			? undefined
 			: {
-					...connect.hosts,
+					...own.hosts,
 					async connect(credential, socket) {
-						const held = await connect.hosts.connect(credential, socket);
+						const held = await own.hosts.connect(credential, socket);
 						if (held !== undefined) {
 							const timer = setTimeout(() => {
 								afterConnect.delete(timer);
@@ -418,7 +420,7 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 	const records = options.sql === undefined ? "memory" : "the stack object's SQLite";
 	return {
 		api,
-		binding: `${records}, stub backend${connect === undefined ? "" : " and Kantel Connect hosts"} (experimental)`,
+		binding: `${records}, stub backend${own === undefined ? "" : " and account hosts"} (experimental)`,
 		...(hosts === undefined ? {} : { hosts }),
 		async fetch(request) {
 			const answer = await api.fetch(request);
@@ -429,19 +431,19 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 			timers.stop();
 			if (sweeper !== undefined) clearInterval(sweeper);
 			for (const timer of afterConnect) clearTimeout(timer);
-			connect?.access.stop();
-			connect?.service.close();
+			own?.access.stop();
+			own?.service.close();
 			await api.close();
 		},
 	};
 }
 
 /**
- * Kantel Connect's host side: the registry (in `sql`, else memory), the backend over it, and what hosts and tunnel
+ * Account hosts' host side: the registry (in `sql`, else memory), the backend over it, and what hosts and tunnel
  * clients reach. Of the tunnels the backend issues tickets for, raw ones (SSH) are served; desktops, a browser's CDP
  * and exposed ports aren't yet.
  */
-async function connectHosts(
+async function accountHostsSide(
 	config: { readonly publicUrl: string },
 	sql: SqlDriver | undefined,
 	now: () => number,
@@ -632,7 +634,7 @@ function whileBusy(api: ComputeApi, now: () => number): { touch(): void; stop():
 	};
 }
 
-/** A Connect host's snapshot reference is `{hostId}/{snapshotId}`; the stub's are `ref_…`. */
+/** An account's host's snapshot reference is `{hostId}/{snapshotId}`; the stub's are `ref_…`. */
 export const isHostSnapshotRef = (ref: string): boolean => ref.startsWith("host_") && ref.includes("/");
 
 const lost = (error: unknown, prefix: string): error is KantelError =>
@@ -650,11 +652,11 @@ const NO_SNAPSHOT = "The stub has no snapshot ";
  */
 export function revivingStub(stub: SandboxBackend, sandboxes: Collection<StoredSandbox>): SandboxBackend {
 	/**
-	 * A sandbox or snapshot a Connect host holds is never the stub's to revive: with Connect off (or its host's placement
-	 * gone) it's refused, so its disk and its host stay as they are for when the host is back.
+	 * A sandbox or snapshot an account's host holds is never the stub's to revive: with account hosts off (or its host's
+	 * placement gone) it's refused, so its disk and its host stay as they are for when the host is back.
 	 */
 	const onHost = () =>
-		new KantelError("unavailable", "It is on a Kantel Connect host, which this deployment can't reach now");
+		new KantelError("unavailable", "It is on one of an account's own hosts, which this deployment can't reach now");
 	const hostBacked = async (sandboxId: string) => {
 		const hostId = (await sandboxes.get(sandboxId))?.hostId;
 		return hostId !== undefined && hostId !== STUB_HOST_ID;

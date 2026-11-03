@@ -22,6 +22,16 @@ An account the caller may act in, with the caller's role in it.
 | `defaultVisibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | yes |  |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 
+### AccountJoinToken
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The token's ID. |
+| `accountId` | string | yes | The account the host joins: only its sandboxes will run there. |
+| `token` | string | yes | `kth_…`, shown once. It joins one host, once, before `expiresAt`. |
+| `command` | string | yes | The one-line command that installs the host agent on a Linux machine and joins it with the token. The host dials out to this deployment and keeps that connection open, so it needs no inbound port. |
+| `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
+
 ### AccountKind
 
 `personal`: one person's own account, made at their first sign-in; what they create is theirs alone unless they move it. `organisation`: an account people create or join, where sandboxes and snapshots are shared.
@@ -169,16 +179,6 @@ The key the call was signed in with, when it was a key.
 
 One of: `"running"` or `"exited"` or `"killed"` or `"timed_out"`.
 
-### ConnectEnrolment
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `id` | string | yes | The enrolment's ID. |
-| `accountId` | string | yes | The account the host joins: only its sandboxes will run there. |
-| `token` | string | yes | `kth_…`, shown once. It enrols one host, once, before `expiresAt`. |
-| `command` | string | yes | The one-line command that installs the host agent on a Linux machine and enrols it with the token. The host dials out to this deployment and keeps that connection open, so it needs no inbound port. |
-| `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
-
 ### Cost
 
 What a sandbox costs at the deployment's rates. A self-hosted install's rates are 0 unless its operator sets them.
@@ -188,6 +188,15 @@ What a sandbox costs at the deployment's rates. A self-hosted install's rates ar
 | `currency` | string | yes | ISO 4217, such as `USD`. |
 | `total` | number | yes | What it has cost so far, in `currency`. |
 | `ratePerHour` | number | yes | What an hour of running costs at its size, in `currency`. |
+
+### CreateAccountJoinTokenBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
+| `name` | string | no | The host's name. Default: the machine's hostname. (at most 100 characters) |
+| `labels` | Record&lt;string, string&gt; | no |  |
+| `expiresInMinutes` | integer | no | Default 60. (minimum 5, maximum 10080) |
 
 ### CreateApiKeyBody
 
@@ -201,15 +210,6 @@ Give `scopes` or a `preset` (or both, which adds them). A key can't hold a scope
 | `preset` | [ApiKeyPreset](/api/reference/types/#apikeypreset) | no |  |
 | `sandboxIds` | string[] | no |  |
 | `expiresInDays` | integer | no | Absent: it never expires. (minimum 1, maximum 3650) |
-
-### CreateConnectEnrolmentBody
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
-| `name` | string | no | The host's name. Default: the machine's hostname. (at most 100 characters) |
-| `labels` | Record&lt;string, string&gt; | no |  |
-| `expiresInMinutes` | integer | no | Default 60. (minimum 5, maximum 10080) |
 
 ### CreatedBy
 
@@ -467,7 +467,7 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | `capacity` | [HostCapacity](/api/reference/types/#hostcapacity) | yes |  |
 | `allocated` | [HostAllocated](/api/reference/types/#hostallocated) | yes |  |
 | `labels` | Record&lt;string, string&gt; | yes |  |
-| `accountId` | string | no | The account the host belongs to, when it was enrolled into one with Kantel Connect: only that account's sandboxes run on it. Absent for a host the deployment's super-admin joined, which any account's sandboxes may use. |
+| `accountId` | string | no | The account the host belongs to, when it was added to one by its people: only that account's sandboxes run on it. Absent for a host the deployment's super-admin joined, which any account's sandboxes may use. |
 | `joinedAt` | integer | yes | Epoch milliseconds, UTC. |
 | `lastSeenAt` | integer | no | Epoch milliseconds, UTC. |
 

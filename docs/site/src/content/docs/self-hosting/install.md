@@ -162,7 +162,7 @@ The stack reads its settings from `~/.kantel/src/deploy/compose/.env`, which upg
 | `KANTEL_MAIL_FROM` | The sender of sign-in codes, such as `Kantel <kantel@example.com>` |
 | `KANTEL_PUBLIC_URL` | The console's address when people reach it through a TLS proxy, such as `https://kantel.example.com` |
 | `KANTEL_GATEWAY_PORT` | The console's port on `127.0.0.1`, instead of `58090` |
-| `KANTEL_CONNECT` | `experimental` lets people enrol machines of their own into their account or organisation. See [Kantel Connect](/connect/) |
+| `KANTEL_ACCOUNT_HOSTS` | `experimental` lets people add machines of their own to their account or organisation. See [Your own hosts](/own-hosts/) |
 | `KANTEL_COMPUTE_BACKEND` | `stub` runs sandboxes on a built-in stand-in instead of your hosts. See [Add a host](#add-a-host) |
 | `KANTEL_COMPUTE_IMAGES` | An http(s) URL with the kernel and images hosts install from, instead of Kantel's published ones, or `off`. See [Hosts](/hosts/#get-kantel-host-and-the-images) |
 | `KANTEL_COMPUTE_PORTS_DOMAIN` | The domain sandboxes' [public ports](/sandboxes/public-ports/) are served under |

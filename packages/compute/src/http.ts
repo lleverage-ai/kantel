@@ -25,6 +25,11 @@ import { createWebhookDispatcher, type WebhookDispatcher } from "./webhooks.ts";
 export const COMPUTE_BODY_LIMIT = 2 * 1024 * 1024;
 /** How often, at most, a request sweeps for sandboxes past their stop time. */
 const SWEEP_EVERY_MS = 1000;
+/**
+ * The host agent's own paths beside the account hosts' `/hosts/{hostId}` (`@kantel/hosts/http`): never the compute API's,
+ * so a gateway with no host routes answers them 404 rather than asking for a sign-in. A host's ID starts `host_`.
+ */
+const HOST_AGENT_PATH = /^\/hosts\/(?:register|connect)$/;
 
 export interface ComputeApiOptions {
 	/** Default an in-memory store. */
@@ -43,8 +48,8 @@ export interface ComputeApiOptions {
 	readonly mode?: "selfhosted" | "hosted";
 	/** The join command shown with a host join token, with `{url}` and `{token}`. */
 	readonly hostJoinCommand?: string;
-	/** Kantel Connect's routes (`/v1/connect/*`, experimental): accounts enrol hosts of their own. Default off. */
-	readonly connect?: boolean;
+	/** Account hosts' routes (`/v1/hosts`, experimental): accounts add hosts of their own. Default off. */
+	readonly accountHosts?: boolean;
 	/** The console page where a person approves a device sign-in, with `{url}`. Default `{url}/device`. */
 	readonly deviceLoginUrl?: string;
 	readonly rates?: RateTable;
@@ -111,7 +116,7 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 		...(options.publicUrl === undefined ? {} : { publicUrl: options.publicUrl }),
 		...(options.mode === undefined ? {} : { mode: options.mode }),
 		...(options.hostJoinCommand === undefined ? {} : { hostJoinCommand: options.hostJoinCommand }),
-		...(options.connect === undefined ? {} : { connect: options.connect }),
+		...(options.accountHosts === undefined ? {} : { accountHosts: options.accountHosts }),
 		...(options.deviceLoginUrl === undefined ? {} : { deviceLoginUrl: options.deviceLoginUrl }),
 		...(options.rates === undefined ? {} : { rates: options.rates }),
 		...(options.limits === undefined ? {} : { limits: options.limits }),
@@ -135,7 +140,7 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 			const url = new URL(request.url);
 			if (url.pathname !== basePath && !url.pathname.startsWith(`${basePath}/`)) return undefined;
 			const path = url.pathname.slice(basePath.length) || "/";
-			if (!patterns.some((pattern) => pattern.test(path))) return undefined;
+			if (HOST_AGENT_PATH.test(path) || !patterns.some((pattern) => pattern.test(path))) return undefined;
 			try {
 				if (now() - lastSweep >= SWEEP_EVERY_MS) {
 					lastSweep = now();

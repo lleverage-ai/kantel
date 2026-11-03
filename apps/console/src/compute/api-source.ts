@@ -887,6 +887,37 @@ function hostsSource({ api }: Context): HostsSource {
 	};
 }
 
+/** An account's own hosts (`/v1/hosts`, experimental): the same page, scoped to the account. */
+function ownHostsSource({ api }: Context, accountId: string): HostsSource {
+	return {
+		list: async () =>
+			(await api.listAccountHosts({ account: accountId })).items.filter((host) => host.state !== "revoked").map(hostOf),
+		join: async (input) => {
+			const made = await api.createAccountJoinToken({
+				account: accountId,
+				...(input.name === undefined || input.name === "" ? {} : { name: input.name }),
+				...(input.labels === undefined ? {} : { labels: input.labels }),
+			});
+			return { token: made.token, expiresAt: made.expiresAt, command: made.command };
+		},
+		drain: async (id) => hostOf(await api.updateAccountHost(id, { draining: true })),
+		undrain: async (id) => hostOf(await api.updateAccountHost(id, { draining: false })),
+		remove: async (id) => {
+			await api.removeAccountHost(id);
+		},
+	};
+}
+
+/** Whether the deployment lets accounts add hosts of their own: it answers `not_supported` when it doesn't. */
+async function offersOwnHosts({ api }: Context): Promise<boolean> {
+	try {
+		await api.listAccountHosts({});
+		return true;
+	} catch (caught) {
+		return !(caught instanceof KantelApiError && caught.code === "not_supported");
+	}
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Everything
 
@@ -948,6 +979,10 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		webhooks: webhooksSource(context),
 		telemetry: telemetrySource(context),
 		...(caller.superAdmin ? { hosts: hostsSource(context) } : {}),
+		// Anyone else manages their accounts' own hosts, where the deployment allows it.
+		...(!caller.superAdmin && (await offersOwnHosts(context))
+			? { ownHosts: (accountId: string) => ownHostsSource(context, accountId) }
+			: {}),
 		// Only a person approves a device; a console signed in with a key has nothing to approve with.
 		...(caller.apiKey === undefined ? { devices: devicesSource(context) } : {}),
 	};

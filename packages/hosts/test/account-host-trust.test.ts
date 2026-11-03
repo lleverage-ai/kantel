@@ -1,4 +1,4 @@
-// What an account's own host (Kantel Connect) is trusted with, and what it may report: anyone can enrol one, so it
+// What an account's own host is trusted with, and what it may report: anyone can add one, so it
 // never gets the deployment's attribution key, and nothing it says about itself can break another account's
 // placement or the host's own revocation.
 import type { BackendEgress } from "@kantel/compute";
@@ -29,14 +29,14 @@ afterEach(() => {
 	for (const close of closers.splice(0)) close();
 });
 
-/** A shared host the operator joined, and one enrolled into `acc_a`, both connected. */
+/** A shared host the operator joined, and one added to `acc_a`, both connected. */
 async function setup() {
 	const store = createMemoryHostStore();
 	const service = createHostsService({ store, publicUrl: "https://kantel.test" });
 	closers.push(() => service.close());
 	const sharedToken = await service.createJoinToken({ name: "shared" });
 	const shared = new FakeHost(service, (await service.register({ token: sharedToken.token, facts: facts() })).hostId);
-	// Enrolments come from the compute API's join tokens; this one joins account acc_a.
+	// An account's join tokens come from the compute API; this one joins account acc_a.
 	service.useJoinTokens({ spendJoinToken: async () => ({ id: "enr_a", labels: {}, accountId: "acc_a" }) });
 	const own = new FakeHost(service, (await service.register({ token: "kth_enrolment", facts: facts() })).hostId);
 	shared.connect();

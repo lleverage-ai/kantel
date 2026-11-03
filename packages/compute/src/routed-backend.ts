@@ -1,5 +1,5 @@
 /**
- * Two backends as one: sandboxes on `primary` (the hosts that joined, such as an account's own with Kantel Connect) and
+ * Two backends as one: sandboxes on `primary` (the hosts that joined, such as an account's own hosts) and
  * on `fallback` (such as the stub) side by side, each sandbox and snapshot answered by the backend that holds it.
  *
  * The compute service places a sandbox by choosing its eligible hosts from `capabilities()`, which lists both
@@ -7,7 +7,7 @@
  * hosted deployment uses it to run an account's sandboxes on the account's own hosts while every other account keeps
  * the stand-in it had.
  *
- * A sandbox or snapshot stays on the backend that holds it: enrolling a host changes where new sandboxes go, not where
+ * A sandbox or snapshot stays on the backend that holds it: adding a host changes where new sandboxes go, not where
  * existing disks are. For those calls the service passes every qualifying host the account may use (online, the
  * type, the labels), and the backend that answers gets the ones among them that are its own.
  */

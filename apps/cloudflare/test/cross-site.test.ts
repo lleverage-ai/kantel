@@ -196,9 +196,9 @@ describe("a browser's write must come from the console's own origin", () => {
 		await close();
 	});
 
-	it("refuses a page's write to Kantel Connect's host routes, and a host's own registration still goes through", async () => {
-		const { call, fromConsole, close } = await start({ KANTEL_CONNECT: "experimental" });
-		const enrolled = await call(ACCESS_HOST, "POST", "/v1/connect/enrolments", {
+	it("refuses a page's write to the account hosts' routes, and a host's own registration still goes through", async () => {
+		const { call, fromConsole, close } = await start({ KANTEL_ACCOUNT_HOSTS: "experimental" });
+		const enrolled = await call(ACCESS_HOST, "POST", "/v1/hosts/join-tokens", {
 			body: {},
 			access: true,
 			...fromConsole(ACCESS_HOST),

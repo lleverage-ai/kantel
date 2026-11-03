@@ -111,11 +111,11 @@ export interface ComputeServiceOptions {
 	/** The join command shown with a host join token, with `{url}` and `{token}`. Default the npm package's. */
 	readonly hostJoinCommand?: string;
 	/**
-	 * Kantel Connect (experimental): an account's people enrol hosts of its own (`/v1/connect/*`), which only its
+	 * Account hosts (experimental): an account's people add hosts of its own (`/v1/hosts`), which only its
 	 * sandboxes use. Off, those routes answer `not_supported`. Default off; the gateways turn it on with
-	 * `KANTEL_CONNECT=experimental`, and only where sandboxes run on hosts.
+	 * `KANTEL_ACCOUNT_HOSTS=experimental`, and only where sandboxes run on hosts.
 	 */
-	readonly connect?: boolean;
+	readonly accountHosts?: boolean;
 	/** The console page where a person approves a device sign-in, with `{url}` for the public URL. */
 	readonly deviceLoginUrl?: string;
 	/** Default `PLACEHOLDER_RATES`. */
@@ -128,7 +128,7 @@ export interface ComputeServiceOptions {
 	readonly sessionLive?: (session: string) => Promise<boolean>;
 	/**
 	 * Whether a user (a person, or the person a key acts for) may use the deployment's shared hosts: have sandboxes
-	 * placed on them, or use one already there. Without, only their accounts' own hosts (Kantel Connect). Absent,
+	 * placed on them, or use one already there. Without, only their accounts' own hosts (account hosts). Absent,
 	 * everyone may. The hosted gateway keeps its stub, in the stack object's memory, to the deployment's organisation.
 	 */
 	readonly sharedHosts?: (userId: string) => Promise<boolean>;
@@ -142,9 +142,9 @@ export const SHARED_HOSTS_REFUSED =
 export const NEVER_MADE =
 	"This sandbox was never made from its source, and there's no snapshot left to make it from; fork or create it again";
 
-/** A host whose credential no running backend holds (Kantel Connect's, with it switched off) can't be revoked. */
+/** A host whose credential no running backend holds (an account's own, account hosts off) can't be revoked. */
 export const HOST_NOT_REVOCABLE =
-	"This host's credential is kept by a part of the deployment that is off (Kantel Connect); turn it on to revoke the host";
+	"This host's credential is kept by a part of the deployment that is off (account hosts); turn it on to revoke the host";
 
 /** What someone kept off the shared hosts is told when they rotate a key that isn't. */
 export const SHARED_KEY_REFUSED =
@@ -450,7 +450,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						.then(async (inserted) => (inserted ? undefined : kept(await store.hosts.update(host.id, refresh)))),
 				);
 			}
-			// A host the backend no longer has (Kantel Connect switched off, say) can't take sandboxes: it is unreachable,
+			// A host the backend no longer has (account hosts switched off, say) can't take sandboxes: it is unreachable,
 			// so placement passes it over, its record (owner, revocation, sandboxes) kept for when the backend has it again.
 			const advertised = new Set(capabilities.hosts.map((host) => host.id));
 			for (const record of records) {
@@ -480,7 +480,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/**
 	 * The hosts of `hosts` (`ensureHosts`'s answer) an account's sandbox of `type` may go on: online, running the type
-	 * and carrying every label; `unavailable` when none does. An account with hosts of its own (Kantel Connect) that
+	 * and carrying every label; `unavailable` when none does. An account with hosts of its own (account hosts) that
 	 * qualify uses only those; otherwise the deployment's shared hosts. Another account's hosts never qualify.
 	 *
 	 * `affine`: for a machine or snapshot that already has a disk somewhere (start, resume, recover, fork, a create from
@@ -511,7 +511,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				"unavailable",
 				shared
 					? `No host can run a ${type} sandbox now`
-					: `No host of this account's own can run a ${type} sandbox now`,
+					: `No host of this account's own can run a ${type} sandbox now. Add one with kantel hosts add, or under Hosts in the console`,
 			);
 		}
 		return eligible;
@@ -881,7 +881,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * The snapshot a start or recovery makes the sandbox from: its newest, or, when it was never placed (its create or
 	 * fork failed), the one it was to be made from. A sandbox made from another that has no such snapshot (a running
 	 * sandbox's fork) can't be made again here, so it is refused rather than started empty under its source's name; the
-	 * same keeps a Kantel Connect host's snapshot with the host (routed there, or refused while it is unreachable).
+	 * same keeps an account's own host's snapshot with the host (routed there, or refused while it is unreachable).
 	 */
 	async function latestRef(sandbox: StoredSandbox): Promise<string | undefined> {
 		if (sandbox.latestSnapshotId !== undefined) return (await store.snapshots.get(sandbox.latestSnapshotId))?.ref;
@@ -1126,9 +1126,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return host;
 	}
 
-	const requireConnect = () => {
-		if (options.connect !== true) {
-			throw new KantelError("not_supported", "Kantel Connect is off on this deployment (KANTEL_CONNECT)");
+	const requireAccountHosts = () => {
+		if (options.accountHosts !== true) {
+			throw new KantelError("not_supported", "Account hosts are off on this deployment (KANTEL_ACCOUNT_HOSTS)");
 		}
 	};
 
@@ -1141,7 +1141,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		hostId: string,
 		scope: "account:read" | "account:admin",
 	): Promise<{ host: StoredHost; acting: Acting }> {
-		requireConnect();
+		requireAccountHosts();
 		const host = (await ensureHosts()).find((known) => known.id === hostId);
 		if (host?.accountId === undefined) throw notFound("host");
 		const acting = await accountById(store, principal, host.accountId).catch(() => {
@@ -1151,7 +1151,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return { host, acting };
 	}
 
-	/** A join token, shown once, and its command; an enrolment's joins the host to `owner.accountId`. */
+	/** A join token, shown once, and its command; an account's joins the host to `owner.accountId`. */
 	async function mintJoinToken(
 		body: {
 			readonly name?: string;
@@ -1221,7 +1221,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	async function revokeStoredHost(host: StoredHost): Promise<computeSchema.Host> {
 		if (backend.revokeHost !== undefined) await backend.revokeHost(host.id);
 		else if (!(await backend.capabilities()).hosts.some((known) => known.id === host.id)) {
-			// Its credential is with a backend that isn't running here now (Kantel Connect, switched off): marked revoked,
+			// Its credential is with a backend that isn't running here now (account hosts, switched off): marked revoked,
 			// it would still sign in once that backend is back.
 			throw new KantelError("unavailable", HOST_NOT_REVOCABLE);
 		}
@@ -2837,18 +2837,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		revokeHost: async (principal, { params }) => revokeStoredHost(await hostFor(principal, params.hostId)),
 
-		// Kantel Connect: an account's own hosts.
+		// An account's own hosts.
 
-		createConnectEnrolment: async (principal, { body }, request) => {
-			requireConnect();
+		createAccountJoinToken: async (principal, { body }, request) => {
+			requireAccountHosts();
 			const { account, role } = await actingAccount(store, principal, body.account);
 			requireScope(principal, "account:admin", role);
 			const made = await mintJoinToken(body, request, { accountId: account.id, createdBy: principal.userId });
 			return { ...made, accountId: account.id };
 		},
 
-		listConnectHosts: async (principal, { query }) => {
-			requireConnect();
+		listAccountHosts: async (principal, { query }) => {
+			requireAccountHosts();
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "account:read", role);
 			const items: computeSchema.Host[] = [];
@@ -2858,13 +2858,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return { items };
 		},
 
-		getConnectHost: async (principal, { params }) =>
+		getAccountHost: async (principal, { params }) =>
 			hostView((await accountHostFor(principal, params.hostId, "account:read")).host),
 
-		updateConnectHost: async (principal, { params, body }) =>
+		updateAccountHost: async (principal, { params, body }) =>
 			changeHost((await accountHostFor(principal, params.hostId, "account:admin")).host, body),
 
-		removeConnectHost: async (principal, { params }) =>
+		removeAccountHost: async (principal, { params }) =>
 			revokeStoredHost((await accountHostFor(principal, params.hostId, "account:admin")).host),
 	};
 

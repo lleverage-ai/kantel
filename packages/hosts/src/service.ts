@@ -48,7 +48,7 @@ export interface HostView {
 		readonly diskGb: number;
 	};
 	readonly labels: { readonly [key: string]: string };
-	/** The account it was enrolled into (Kantel Connect), which alone may use it; absent for a shared host. */
+	/** The account whose own host it is, which alone may use it; absent for a shared host. */
 	readonly accountId?: string;
 	readonly joinedAt: number;
 	readonly lastSeenAt?: number;
@@ -68,8 +68,8 @@ export interface CreateSandboxInput {
 	/** Default `default` (microVMs); isolates have one size. */
 	readonly size?: string;
 	/**
-	 * The organisation or account; isolates of one owner share a VM. A host enrolled into an account (Kantel Connect)
-	 * takes only that owner's sandboxes, so a sandbox with no owner never goes on one.
+	 * The organisation or account; isolates of one owner share a VM. An account's own host takes only that
+	 * owner's sandboxes, so a sandbox with no owner never goes on one.
 	 */
 	readonly owner?: string;
 	readonly labels?: { readonly [key: string]: string };
@@ -85,7 +85,7 @@ export interface CreateSandboxInput {
 /** Join tokens kept elsewhere, such as by the compute API, which mints them (`createHostJoinToken`). */
 export interface ExternalJoinTokens {
 	/**
-	 * Spends the token with this SHA-256 hex once: its name and labels, and the account a Kantel Connect enrolment joins
+	 * Spends the token with this SHA-256 hex once: its name and labels, and the account an account's join token joins
 	 * the host to; or undefined if unknown, used or expired.
 	 */
 	spendJoinToken(
@@ -427,7 +427,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 
 	/**
 	 * The deployment's attribution key signs headers any account's upstream trusts, so only the operator's own (shared)
-	 * hosts get it. A host enrolled into an account (Kantel Connect) is that account's machine: it gets the account's
+	 * hosts get it. An account's own host is that account's machine: it gets the account's
 	 * rules and upstream headers, unsigned. Every egress a host receives (create, fork, start, resume, a live update)
 	 * passes here.
 	 */

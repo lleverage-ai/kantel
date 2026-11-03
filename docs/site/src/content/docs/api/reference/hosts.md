@@ -77,7 +77,7 @@ Renames it, replaces its labels, or drains it. A deployment super-admin only (a 
 
 `DELETE /v1/admin/hosts/{hostId}` (SDK method `revokeHost`)
 
-Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. `unavailable`, and not revoked, when its credential is kept by a part of the deployment that is off (a Kantel Connect host, with Connect switched off). A deployment super-admin only (a key needs `hosts:admin`).
+Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. `unavailable`, and not revoked, when its credential is kept by a part of the deployment that is off (an account's own host, with account hosts switched off). A deployment super-admin only (a key needs `hosts:admin`).
 
 **Path parameters**
 

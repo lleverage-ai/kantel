@@ -24,7 +24,7 @@ import { ThemeMenu, ThemeSwitch } from "../theme/theme-switch.tsx";
 import { AccountSwitcher, CreateOrganisationDialog, JoinOrganisationDialog } from "./account-switcher.tsx";
 import { ComputeApiKeysPage } from "./api-keys-page.tsx";
 import { BillingPage } from "./billing-page.tsx";
-import type { ComputeAccount, ComputeSource, ComputeViewer } from "./compute-model.ts";
+import type { ComputeAccount, ComputeSource, ComputeViewer, HostsSource } from "./compute-model.ts";
 import { DeviceLoginPage } from "./device-page.tsx";
 import { EgressPage } from "./egress-page.tsx";
 import { EnvironmentPage, EnvironmentsPage } from "./environments-page.tsx";
@@ -214,13 +214,27 @@ export function ComputeConsole({
 
 	const route = parseComputePath(pathname, base) ?? { page: "sandboxes" as const };
 	const me = viewer.state.status === "ready" ? viewer.state.value : undefined;
-	const hostsShown = me?.superAdmin === true && source.hosts !== undefined;
-	// Whether the deployment has a host yet, for a super-admin: with none, Sandboxes leads to adding one. Read again on
-	// every page change, so a host added on Hosts counts once the person goes back.
-	const hosts = useLoad(
-		() => (hostsShown && source.hosts !== undefined ? source.hosts.list() : Promise.resolve(undefined)),
-		[source, hostsShown, pathname],
+	// A super-admin manages the deployment's hosts; anyone else, where the deployment allows it, their account's own.
+	const superAdmin = me?.superAdmin === true;
+	const accountKey = account?.id;
+	const hostsSource = useMemo(
+		() =>
+			superAdmin
+				? source.hosts
+				: me !== undefined && accountKey !== undefined
+					? source.ownHosts?.(accountKey)
+					: undefined,
+		[source, superAdmin, me, accountKey],
 	);
+	const hostsShown = hostsSource !== undefined;
+	// Whether there's a host yet: with none, Sandboxes leads to adding one. Read again on every page change, so a host
+	// added on Hosts counts once the person goes back.
+	const hosts = useLoad(
+		() => (hostsSource !== undefined ? hostsSource.list() : Promise.resolve(undefined)),
+		[hostsSource, pathname],
+	);
+	// The deployment's hosts (a super-admin's) tell whether there's any; an account's own don't, since it may still use
+	// shared hosts, so none of its own only adds a link to Add a host beside New sandbox (PageFor).
 	const noHosts = hosts.state.status === "ready" && hosts.state.value?.length === 0;
 	const billingShown = source.hosting === "hosted" && source.billing !== undefined;
 	// A page this person can't open goes to Sandboxes rather than showing nothing. Device sign-in has no sidebar item:
@@ -333,6 +347,14 @@ export function ComputeConsole({
 						href={computePath("organisation", base)}
 						selected={page === "organisation"}
 					/>
+					{hostsShown && !superAdmin ? (
+						<SidebarItem
+							icon={<ServerIcon />}
+							label="Hosts"
+							href={computePath("hosts", base)}
+							selected={page === "hosts"}
+						/>
+					) : null}
 					{billingShown ? (
 						<SidebarItem
 							icon={<BillingIcon />}
@@ -342,7 +364,7 @@ export function ComputeConsole({
 						/>
 					) : null}
 				</SidebarSection>
-				{hostsShown ? (
+				{hostsShown && superAdmin ? (
 					<SidebarSection label="Super-admin">
 						<SidebarItem
 							icon={<ServerIcon />}
@@ -392,6 +414,8 @@ export function ComputeConsole({
 							search={search}
 							navigate={navigate}
 							noHosts={noHosts}
+							hosts={hostsSource}
+							ownHosts={!superAdmin}
 							onCreate={() => setDialog("create")}
 							onJoin={() => setDialog("join")}
 							onLeft={() => {
@@ -438,6 +462,8 @@ function PageFor({
 	search,
 	navigate,
 	noHosts,
+	hosts,
+	ownHosts,
 	onCreate,
 	onJoin,
 	onLeft,
@@ -451,8 +477,12 @@ function PageFor({
 	base: string;
 	search: string;
 	navigate: (path: string) => void;
-	/** A super-admin's deployment has no host yet. */
+	/** There's no host yet: the deployment's, for a super-admin, or the account's own. */
 	noHosts: boolean;
+	/** The hosts this person manages, when there are any to manage. */
+	hosts: HostsSource | undefined;
+	/** They are the account's own, not the deployment's. */
+	ownHosts: boolean;
 	onCreate: () => void;
 	onJoin: () => void;
 	onLeft: () => void;
@@ -470,7 +500,7 @@ function PageFor({
 					environments={(accountId) => source.environments.list(accountId)}
 					onEgress={(sandboxId) => navigate(computePath("egress", base, sandboxId))}
 					creating={new URLSearchParams(search).has("new")}
-					{...(noHosts ? { addHostHref: `${computePath("hosts", base)}?add` } : {})}
+					{...(noHosts ? { [ownHosts ? "ownHostHref" : "addHostHref"]: `${computePath("hosts", base)}?add` } : {})}
 					{...timing}
 				/>
 			);
@@ -543,10 +573,11 @@ function PageFor({
 				<BillingPage source={source.billing} account={account} {...timing} />
 			);
 		case "hosts":
-			return source.hosts === undefined ? null : (
+			return hosts === undefined ? null : (
 				<HostsPage
-					source={source.hosts}
+					source={hosts}
 					hosting={source.hosting}
+					{...(ownHosts ? { owner: account } : {})}
 					adding={new URLSearchParams(search).has("add")}
 					{...timing}
 				/>
