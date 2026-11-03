@@ -1,5 +1,6 @@
 /**
- * The stack the Cloudflare gateway serves: the identity directory and the audit store, behind one authenticator.
+ * The stack the Cloudflare gateway serves: the identity directory, the audit store and the compute API
+ * (`src/compute.ts`), behind one authenticator.
  *
  * Kantel is a compute plane now. The agent plane this stack used to host (sessions, workspaces, models, connections,
  * rules and approvals, the vault, skills, memory, schedules, sharing, tool servers and browsers) was removed; it is
@@ -11,7 +12,8 @@
  * - `sql`: the identity directory and the audit store (D1 on Cloudflare);
  * - `auditOutbox`: where audit events queue before a background drain takes them to that store (the stack object's own
  *   SQLite, `src/audit-outbox.ts`), so no request waits on an audit write;
- * - `bootstrap`: which organisation, project and admin this deployment made, so a restart finds them, not new ones.
+ * - `bootstrap`: which organisation, project and admin this deployment made, so a restart finds them, not new ones;
+ * - `compute`: the compute API's records (the stack object's own SQLite, `@kantel/compute/sql`).
  *
  * Portable: no Cloudflare APIs, so the tests run it in Node over `node:sqlite`, and `KantelStack` hosts it in one
  * Durable Object over the real bindings.
@@ -39,6 +41,7 @@ import { createSqlIdentity, migrateIdentity } from "@kantel/identity/sql";
 import type { SqlDriver } from "@kantel/sql";
 import { migrateObjectAuditOutbox, type OutboxedAudit, outboxedAudit } from "./audit-outbox.ts";
 import { BOOTSTRAP_ORGANISATION, sqlBootstrapFinder } from "./bootstrap-sql.ts";
+import { createStackCompute, type StackCompute } from "./compute.ts";
 import type { GatewayConfig } from "./config.ts";
 
 /** The context bootstrap runs in. Identity lets only a system actor create the first organisation and user. */
@@ -113,6 +116,8 @@ export interface StackStorage {
 	 * the background, kept alive by `background` (`ctx.waitUntil`). Left out, they go straight to the store.
 	 */
 	readonly auditOutbox?: { readonly driver: SqlDriver; readonly background: (work: Promise<unknown>) => void };
+	/** The compute API's records (`src/compute.ts`). Migrated on every start; idempotent. */
+	readonly compute?: SqlDriver;
 }
 
 export interface StackOptions {
@@ -135,6 +140,8 @@ export interface Stack {
 	readonly project: Project;
 	/** The organisation's first admin: the invited person, or a placeholder no one can sign in as. */
 	readonly admin: CallContext;
+	/** The compute API (`src/compute.ts`), signed in with `authenticator`. */
+	readonly compute: StackCompute;
 	/** How long each part of the start took, in ms, for the object's start log. */
 	readonly startedIn: Readonly<Record<string, number>>;
 }
@@ -219,6 +226,14 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	});
 	phase("bootstrap");
 
+	const compute = await createStackCompute({
+		authenticator,
+		identity,
+		...(storage.compute === undefined ? {} : { sql: storage.compute }),
+		now: () => clock.now(),
+	});
+	phase("compute");
+
 	return {
 		identity,
 		access: builtAccess,
@@ -228,6 +243,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		organisation,
 		project,
 		admin,
+		compute,
 		startedIn,
 	};
 }

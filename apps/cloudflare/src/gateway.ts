@@ -3,21 +3,26 @@
  *
  * | Prefix | Served by |
  * | --- | --- |
+ * | `/v1/whoami`, `/v1/sandboxes`, `/v1/snapshots` and the rest of the compute API | the compute plane (`src/compute.ts`, `@kantel/compute`) |
  * | `/v1/me`, `/v1/projects`, `/v1/keys`, members and invites | who is signed in, their projects and keys (`@kantel/identity/http`) |
  * | `/v1/audit/…` | the audit query API (`@kantel/audit/http`) |
  * | every other `/v1/…` | 404 |
  *
+ * In that order, as the self-hosted gateway has them (`apps/selfhosted/src/gateway/gateway.ts`): the compute API
+ * answers only its own routes and passes on the rest.
+ *
  * The agent plane's routes (sessions, workspaces, skills, memory, schedules, sharing, connections, tool servers,
  * approvals, the vault, passkeys, attachments and browsers) were removed with it; they are kept in git history on the
- * `agent-plane-archive` branch and the `agent-plane-archive-2026-11-03` tag (`e496aeb2`). This Worker doesn't serve the
- * compute API either: the console it serves finds no `/v1/whoami` here and shows its sample data, as the hosted demo
- * does.
+ * `agent-plane-archive` branch and the `agent-plane-archive-2026-11-03` tag (`e496aeb2`).
  *
- * Every route authenticates with the stack's authenticator: an `ktk_` API key as a bearer (host apps), or the Access
- * token Cloudflare Access puts in `Cf-Access-Jwt-Assertion` (people). The console's static assets never reach here.
+ * Every route authenticates with the stack's authenticator: the Access token Cloudflare Access puts in
+ * `Cf-Access-Jwt-Assertion` (people), or an API key as a bearer: identity's `ktk_` keys for the identity and audit
+ * routes, the compute API's own `ksk_` keys for its routes. The compute API asks for a bearer, so a request with only
+ * Access's token gets it as its bearer too (`withAccessBearer`). The console's static assets never reach here.
  */
 import { createAuditQueryHandler } from "@kantel/audit/http";
 import { createIdentityHandler, isIdentityPath } from "@kantel/identity/http";
+import { withAccessBearer } from "./compute.ts";
 import type { Stack } from "./stack.ts";
 
 export const API_BASE = "/v1";
@@ -42,8 +47,11 @@ export function createGateway(stack: Stack): Gateway {
 		signIn: stack.signIn,
 	});
 	return {
-		async fetch(request) {
+		async fetch(incoming) {
+			const request = withAccessBearer(incoming);
 			const path = new URL(request.url).pathname;
+			const computed = await stack.compute.fetch(request);
+			if (computed !== undefined) return computed;
 			if (path.startsWith(AUDIT_PREFIX)) return audit(request);
 			if (isIdentityPath(path)) return identity(request);
 			return notFound();

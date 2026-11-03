@@ -3,7 +3,8 @@
  *
  * - the identity directory and the audit store in D1 (`DB`);
  * - audit events queued in this object's own SQLite before they drain to D1 (`src/audit-outbox.ts`);
- * - what the bootstrap made, in this object's storage, so a restart finds the same organisation.
+ * - what the bootstrap made, in this object's storage, so a restart finds the same organisation;
+ * - the compute API's records (`src/compute.ts`), in this object's own SQLite, table `compute_api_records`.
  *
  * Its SQLite still holds what the agent plane kept there (the session runtime's directory, profiles and each session's
  * Pi storage, the session homes table); nothing reads it now, and nothing deletes it. The alarm the runtime used to arm
@@ -62,17 +63,19 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 	/** The stack's storage over this object's bindings and its own SQLite. */
 	protected stackStorage(): StackStorage {
 		const storage = this.ctx.storage;
+		const own = objectSqlDriver(storage.sql, (work) => storage.transactionSync(work));
 		return {
 			sql: d1Driver(this.env.DB),
 			// Audit events queue in this object's SQLite and drain to D1 after the answer (src/audit-outbox.ts).
 			auditOutbox: {
-				driver: objectSqlDriver(storage.sql, (work) => storage.transactionSync(work)),
+				driver: own,
 				background: (work) => this.ctx.waitUntil(work),
 			},
 			bootstrap: {
 				load: async () => (await storage.get<BootstrapRecord>(BOOTSTRAP_KEY)) ?? {},
 				save: (record) => storage.put(BOOTSTRAP_KEY, record),
 			},
+			compute: own,
 		};
 	}
 
