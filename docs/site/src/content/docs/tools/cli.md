@@ -146,4 +146,4 @@ A few that are worth knowing:
 - `kantel key create agent --preset agent` makes a key for a coding agent and prints its secret once. The other presets are `ci`, `read-only` and `admin`; `--scope` picks scopes one by one, `--sandbox` limits the key to one sandbox and `--expires-days` sets when it stops working.
 - `kantel files` moves files of up to 1 MiB each. For bigger ones, run `git clone`, `curl` or `scp` in or against the sandbox.
 
-<!-- Sources (compute-plane/cli-mcp 36507c4c): packages/cli/README.md:1-80, packages/cli/src/commands.ts, packages/cli/src/main.ts, packages/cli/src/config.ts, packages/cli/scripts/build.ts:1-60; run against packages/compute/src/serve.ts -->
+<!-- Sources (99a1829a): packages/cli/README.md, packages/cli/src/commands.ts, packages/cli/src/main.ts, packages/cli/src/config.ts, packages/cli/scripts/build.ts; every command above run against packages/compute/src/serve.ts -->

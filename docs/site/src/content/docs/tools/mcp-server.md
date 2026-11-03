@@ -102,4 +102,4 @@ printf '%s\n' \
 
 It prints the tool names above. A wrong key shows up only when a tool runs: the tool answers `unauthenticated`.
 
-<!-- Sources (compute-plane/cli-mcp 36507c4c): packages/cli/src/mcp.ts, packages/cli/src/agents.ts, packages/cli/README.md:60-120; run against packages/compute/src/serve.ts -->
+<!-- Sources (99a1829a): packages/cli/src/mcp.ts, packages/cli/src/agents.ts, packages/cli/README.md; tools/list and tools/call run against packages/compute/src/serve.ts -->
