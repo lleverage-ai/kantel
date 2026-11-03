@@ -105,7 +105,7 @@ const ReadyFile = "/etc/kantel/ready"
 const (
 	PortSSH     = 22
 	PortDesktop = 5901 // VNC (RFB) on display :1
-	PortBrowser = 9222 // Chrome's DevTools (CDP)
+	PortBrowser = 9222 // Chromium's DevTools (CDP)
 	PortStream  = 6080 // the desktop in a browser: Selkies' web client and its WebSocket stream
 	PortIsolate = 8080
 )

@@ -4367,7 +4367,7 @@
 			"post": {
 				"operationId": "openBrowser",
 				"summary": "Open the browser",
-				"description": "Starts the sandbox's Chrome if it isn't running, and answers a live view URL and a CDP URL for Playwright or Puppeteer. microVMs only. A key needs `access`.",
+				"description": "Starts the sandbox's Chromium if it isn't running, and answers a live view URL and a CDP URL for Playwright or Puppeteer. microVMs only. A key needs `access`.",
 				"tags": ["access"],
 				"parameters": [
 					{
@@ -7506,7 +7506,7 @@
 				"properties": {
 					"url": {
 						"type": "string",
-						"description": "Watch and drive the sandbox's Chrome in a browser."
+						"description": "Watch and drive the sandbox's Chromium in a browser."
 					},
 					"cdpUrl": {
 						"type": "string",

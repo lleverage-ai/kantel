@@ -713,7 +713,7 @@ export const openBrowser = defineRoute({
 	tag: "access",
 	summary: "Open the browser",
 	description: describe(
-		"Starts the sandbox's Chrome if it isn't running, and answers a live view URL and a CDP URL for Playwright or",
+		"Starts the sandbox's Chromium if it isn't running, and answers a live view URL and a CDP URL for Playwright or",
 		"Puppeteer. microVMs only.",
 		scope("access"),
 	),

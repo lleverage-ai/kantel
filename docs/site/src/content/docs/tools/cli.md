@@ -166,7 +166,7 @@ kantel host sbx_g2yy5jhyqr 3000 --public # one anyone can open
 kantel ssh sbx_g2yy5jhyqr                # a shell (microVMs)
 kantel ssh sbx_g2yy5jhyqr -- uname -a    # one command over SSH, with its exit code
 kantel desktop sbx_g2yy5jhyqr            # opens its desktop in your browser
-kantel browser sbx_g2yy5jhyqr            # starts Chrome: opens its live view, prints its CDP URL
+kantel browser sbx_g2yy5jhyqr            # starts Chromium: opens its live view, prints its CDP URL
 ```
 
 - `host` prints the port's [URL](/sandboxes/public-ports/). Unless `--public`, it carries a token: anyone with the whole URL can open it. `kantel port list <id>` shows a sandbox's ports and `kantel port hide <id> <port>` stops one working.

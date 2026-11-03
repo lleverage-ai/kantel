@@ -9,7 +9,7 @@ import (
 
 // LocalProxyAddr is a fixed address inside every sandbox that forwards to the host's egress proxy, whichever it is.
 // The host's proxy is on each sandbox's own gateway address, which a fork (and any restore onto another network
-// slot) changes; a program that read the proxy once at start (Chrome, dockerd) points here instead, so it keeps
+// slot) changes; a program that read the proxy once at start (Chromium, dockerd) points here instead, so it keeps
 // working without a restart, and a restart doesn't drop its tabs or containers. With no proxy (egress "none"), a
 // connection here is closed at once.
 const LocalProxyAddr = "127.0.0.1:3128"

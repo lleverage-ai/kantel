@@ -381,7 +381,7 @@ function bytesOf(data: unknown): Uint8Array {
  *
  * A tunnel is `/v1/hosts/tunnel/{ticket}`, a WebSocket of binary frames carrying the port's raw TCP (VNC for noVNC,
  * SSH through a ProxyCommand), or `/v1/hosts/tunnel/{ticket}/{path}`, an HTTP upgrade passed through to the port with
- * that path (Chrome's DevTools WebSocket, for Playwright's `connectOverCDP`).
+ * that path (Chromium's DevTools WebSocket, for Playwright's `connectOverCDP`).
  */
 export function withHostUpgrades(
 	hosts: GatewayHostsBackend | undefined,
@@ -481,7 +481,7 @@ export function withHostUpgrades(
 
 		/**
 		 * The client's WebSocket, passed message by message to a WebSocket at `path` on the port, which the gateway opens
-		 * as a client on 127.0.0.1 (Chrome refuses DevTools to any other Host). Not raw bytes: Bun drops what is written
+		 * as a client on 127.0.0.1 (Chromium refuses DevTools to any other Host). Not raw bytes: Bun drops what is written
 		 * to an upgrade's socket, so the client's side has to be `ws`'s.
 		 */
 		function passThrough(sandboxId: string, port: number, rest: string, host?: string) {

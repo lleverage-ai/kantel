@@ -1395,7 +1395,7 @@ const SECTIONS: readonly Section[] = [
 			},
 			{
 				name: "browser",
-				summary: "Start a microVM's Chrome: open its live view, and print that URL and its CDP URL",
+				summary: "Start a microVM's Chromium: open its live view, and print that URL and its CDP URL",
 				args: ID_ARG,
 				flags: { "view-only": viewOnly, ttl, print: printOnly },
 				details: "Drive it with Playwright: chromium.connectOverCDP(<cdp URL>). Both URLs carry short-lived tokens.",

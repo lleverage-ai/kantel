@@ -4,7 +4,7 @@
  *
  * A snapshot's `ref` is `{hostId}/{snapshotId}`: a snapshot lives on its host's disk, so a sandbox made or forked from
  * it goes on that host. Desktops, browsers and SSH are reached through signed tunnel URLs (`tunnel.ts`): the desktop's
- * VNC as raw TCP over a WebSocket of binary frames, opened by a noVNC page on the gateway (`viewer.ts`), Chrome's
+ * VNC as raw TCP over a WebSocket of binary frames, opened by a noVNC page on the gateway (`viewer.ts`), Chromium's
  * DevTools WebSocket passed through for `connectOverCDP`, and sshd as raw TCP for an `ssh -o ProxyCommand=…`. Exposed ports
  * are offered when the gateway has a wildcard name for them (`ports.ts`), token-gated unless exposed `public`.
  */
@@ -433,7 +433,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		async openBrowser(sandboxId, { ttlMinutes, viewOnly }) {
 			const { tier } = await tierOf(sandboxId);
 			if (tier !== "microvm") throw new KantelError("not_supported", "An isolate has no browser");
-			// Chrome's browser-wide DevTools target, passed through the tunnel with its path.
+			// Chromium's browser-wide DevTools target, passed through the tunnel with its path.
 			const version = await call<{ exitCode: number; stdout: string }>(sandboxId, "sandbox.exec", {
 				command: "curl -fsS --max-time 5 http://127.0.0.1:9222/json/version",
 			});
@@ -448,7 +448,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				throw new KantelError("unavailable", "The sandbox's browser isn't up yet");
 			}
 			const cdpUrl = `${await tunnel(sandboxId, BROWSER_PORT, ttlMinutes)}${target}`;
-			// People watch and drive Chrome where it runs: on the desktop.
+			// People watch and drive Chromium where it runs: on the desktop.
 			return { url: await desktopPage(sandboxId, ttlMinutes, viewOnly), cdpUrl };
 		},
 		async revokeHost(hostId) {
