@@ -18,6 +18,7 @@ import (
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/egress"
 	"github.com/lleverage-ai/kantel/apps/host/internal/egress/protect"
+	"github.com/lleverage-ai/kantel/apps/host/internal/isolate"
 	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
@@ -767,6 +768,36 @@ func TestAStaleCreateOrForkMakesNothing(t *testing.T) {
 		}
 		if e, _ := tier.EgressOf(c.id); e == nil || e.Grants[0].Host != "new.example" {
 			t.Fatalf("%s: the retry's egress: %+v", c.name, e)
+		}
+	}
+}
+
+// A fork that inherits its parent's egress is ordered by the inherited revision, in either tier: after a newer
+// attempt for its ID saved its floor and failed, an inheriting fork read before it makes nothing.
+func TestAnInheritingForkIsOrderedInEveryTier(t *testing.T) {
+	for _, name := range []string{microvm.Tier, isolate.Tier} {
+		tier := newLifecycleTier()
+		h := newLifecycleHost(t, tier)
+		h.tiers, h.order = map[string]Tier{name: tier}, []string{name}
+		deny := func(rev int64, host string) *proto.Egress {
+			return &proto.Egress{Mode: "proxy", Revision: rev, Grants: []proto.Grant{{Action: "deny", Host: host, Rule: "deny " + host}}}
+		}
+		if err := call(t, h, proto.MethodCreate, proto.CreateParams{SandboxID: "sbx_p", Egress: deny(25, "parent.example")}); err != nil {
+			t.Fatal(err)
+		}
+		tier.mu.Lock()
+		tier.failCreate = 1
+		tier.mu.Unlock()
+		if err := call(t, h, proto.MethodFork, proto.ForkParams{SandboxID: "sbx_p", NewID: "sbx_2", Egress: deny(30, "new.example")}); err == nil {
+			t.Fatalf("%s: the failing fork succeeded", name)
+		}
+		err := call(t, h, proto.MethodFork, proto.ForkParams{SandboxID: "sbx_p", NewID: "sbx_2"})
+		var perr *proto.Error
+		if !errors.As(err, &perr) || perr.Code != proto.ErrConflict {
+			t.Fatalf("%s: a stale inheriting fork wasn't refused: %v", name, err)
+		}
+		if _, err := tier.Get("sbx_2"); err == nil {
+			t.Fatalf("%s: a stale inheriting fork made the sandbox", name)
 		}
 	}
 }

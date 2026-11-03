@@ -571,8 +571,9 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if _, err := h.tierOf(p.NewID); err == nil {
 			return nil, &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("sandbox %s already exists on this host", p.NewID)}
 		}
-		if p.Egress == nil && name == microvm.Tier {
-			// Inherited, as the tier would, but resolved here so the fork's CA is made for what it inherits.
+		if p.Egress == nil {
+			// Inherited, as the tier would, but resolved here, in every tier, so the fork's CA is made for what it
+			// inherits and its revision is ordered like a given one.
 			if p.Egress, err = h.inheritedEgress(t, p.SandboxID); err != nil {
 				return nil, err
 			}
