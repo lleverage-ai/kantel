@@ -65,7 +65,6 @@ import {
 	type ProjectAccess,
 	type ProjectSettings,
 	type PromptLayer,
-	type PromptRules,
 	type RecallRenderer,
 	type Schedule,
 	type Schedules,
@@ -86,12 +85,6 @@ import { createSqlIdentity, createSqlPasskeyStores, migrateIdentity } from "@kan
 import { defaultRecallRenderer } from "@kantel/memory";
 import { createMemoryMemory } from "@kantel/memory/memory";
 import { createSqlMemory, migrateMemory } from "@kantel/memory/sql";
-import { withProgramRunner } from "@kantel/programs/runner-model";
-import { createProgramsService, type ProgramsService } from "@kantel/programs/service";
-import { createMemoryProgramStore, createSqlProgramStore, migratePrograms } from "@kantel/programs/store";
-import { SAVE_PROGRAM_TOOL, sessionSaveProgramTool } from "@kantel/programs/tool";
-import { createMemoryPromptRules } from "@kantel/rules/memory";
-import { createSqlPromptRules, migrateRules } from "@kantel/rules/sql";
 import type { DurableHosts, SessionRuntimeService } from "@kantel/runtime/core";
 import { createMemoryRuntime } from "@kantel/runtime/memory";
 import {
@@ -137,7 +130,6 @@ import { type AttachmentStore, browserScreenshots, createAttachmentStore } from 
 import { migrateObjectAuditOutbox, type OutboxedAudit, outboxedAudit } from "./audit-outbox.ts";
 import { BOOTSTRAP_ORGANISATION, sqlBootstrapFinder } from "./bootstrap-sql.ts";
 import { BROWSER_TOOL_NAMES, type BrowserGoalMode, createStackBrowser, type StackBrowser } from "./browser.ts";
-import { CODEMODE_TOOL, type SessionCodemodeOptions, sessionCodemodeTool } from "./codemode.ts";
 import { CODING_TOOLS, sessionCodingTools, sessionEnvironments, sessionWorkspaceId } from "./coding-tools.ts";
 import type { GatewayConfig } from "./config.ts";
 import type { SandboxContainers } from "./container-backend.ts";
@@ -328,12 +320,6 @@ export interface StackOptions {
 	 */
 	readonly browserProvider?: BrowserProvider;
 	/**
-	 * Code mode (`src/codemode.ts`): where scripts run, the Worker Loader's isolates or, with `KANTEL_CODEMODE_OFFLOAD=on`,
-	 * the sandbox Worker's objects. With it the default profile
-	 * has the `codemode` tool, offered to every session that has other tools; without it sessions have none.
-	 */
-	readonly codemode?: SessionCodemodeOptions;
-	/**
 	 * Offers the experimental `present_files` tool (`@kantel/sandbox/present-files`) to every session with a workspace:
 	 * the files it presents show in the transcript as cards that open a viewer. With it comes `create_document`
 	 * (`@kantel/sandbox/documents`), a document the person edits, presented the same way. Default off; the Worker turns
@@ -353,18 +339,6 @@ export interface StackOptions {
 	 * Default off.
 	 */
 	readonly subagents?: boolean;
-	/**
-	 * Programs (`@kantel/programs/service`, experimental): saved, versioned code mode programs that run through the API
-	 * with no model. Needs code mode. With it the gateway serves `/v1/programs/…` and the default profile has
-	 * `save_program`. Default off.
-	 */
-	readonly programs?: boolean;
-	/**
-	 * Durable pauses for programs (`KANTEL_PROGRAM_WAITS`, experimental, `@kantel/programs/journal`): a program can wait
-	 * for input (`waitForInput()`) or an agent (`agent()`) and resume later, its finished calls kept in the run's journal.
-	 * Needs `programs`. Default off.
-	 */
-	readonly programWaits?: boolean;
 	/**
 	 * Browser goal mode (`browser_run`, Reflex's goal loop; experimental): the platform's defaults, which each project's
 	 * settings override (`IdentityDirectory.projectSettings`). A session of a project with goal mode on gets `browser_run`
@@ -393,7 +367,7 @@ export interface StackOptions {
 	/**
 	 * This stack is a session object's (`KANTEL_SESSION_OBJECTS=on`, `src/session-object.ts`), not the stack object's: it
 	 * runs its own sessions' agent loops and serves their API, and leaves the deployment's concerns to the stack. It runs
-	 * no migrations (the stack has), writes no default profile, and runs no schedules, program recoveries or token
+	 * no migrations (the stack has), writes no default profile, and runs no schedules or token
 	 * refreshes; its alarm only resumes its own sessions. Default off.
 	 */
 	readonly home?: boolean;
@@ -450,10 +424,6 @@ export interface Stack {
 	readonly connections?: ConnectionsService;
 	/** The tool servers registry, when the stack has them (`StackOptions.toolServers`). */
 	readonly toolServers?: ToolServersService;
-	/** Saved programs, when the stack has them (`StackOptions.programs` with code mode). */
-	readonly programs?: ProgramsService;
-	/** Prompt rules, layered around a session's profile when it starts. */
-	readonly rules: PromptRules;
 	readonly authenticator: Authenticator;
 	/** How people sign in here: Cloudflare Access when it is configured, else nobody does (API keys only). */
 	readonly signIn: readonly SignInMethod[];
@@ -503,8 +473,6 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	const clock = options.clock ?? systemClock;
 	const storage = options.storage ?? {};
 	const driver = storage.sql;
-	// Programs run on code mode, so they are on only with it.
-	const programsOn = options.programs === true && options.codemode !== undefined;
 	const home = options.home === true;
 	const startedIn: Record<string, number> = {};
 	let phaseStart = performance.now();
@@ -518,13 +486,11 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		await migrateAudit(driver);
 		await migrateSkills(driver);
 		await migrateMemory(driver);
-		await migrateRules(driver);
 		await migrateSchedules(driver);
 		await migrateFileShares(driver);
 		await migrateSharing(driver);
 		if (options.connections !== undefined) await migrateConnections(driver);
 		if (options.toolServers !== undefined) await migrateToolServers(driver);
-		if (programsOn) await migratePrograms(driver);
 	}
 	phase("migrations");
 
@@ -584,13 +550,11 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 				})
 			: undefined;
 	phase("audit and usage");
-	const { gateway: modelGateway, ...givenModels }: StackModels = options.models?.({
+	const { gateway: modelGateway, ...models }: StackModels = options.models?.({
 		audit,
 		clock,
 		...(usage === undefined ? {} : { usage: usage.writer }),
 	}) ?? { models: createEchoModels() };
-	// A program's session runs on the program runner, which is no model (`@kantel/programs/runner-model`).
-	const models = programsOn ? withProgramRunner(givenModels) : givenModels;
 	// The sandboxes need the runtime's project access, and the runtime ends their leases when a session ends (its
 	// `sandbox` teardown) and sweeps them on its alarm, so each reaches the other once both are built.
 	let built: StackSandboxes | undefined;
@@ -741,10 +705,6 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		driver === undefined
 			? createMemoryMemory({ clock, audit, access: storeAccess, renderer })
 			: createSqlMemory({ driver, clock, audit, access: storeAccess, renderer });
-	const rules =
-		driver === undefined
-			? createMemoryPromptRules({ clock, audit, access: auditAccess })
-			: createSqlPromptRules({ driver, clock, audit, access: auditAccess });
 	// The `skills` mount source: `/skills` on a session's workspace shows the revisions the session pinned. A mount asked
 	// for without a version pins the session's skills as its own project sees them, as the runtime does.
 	let builtDirectory: SessionRuntimeService["directory"] | undefined;
@@ -755,20 +715,6 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		if (builtRuntime === undefined) throw new Error("the session runtime is not ready");
 		return builtRuntime;
 	};
-	const programs: ProgramsService | undefined = programsOn
-		? createProgramsService({
-				store: driver === undefined ? createMemoryProgramStore() : createSqlProgramStore(driver),
-				access: lateAccess,
-				runtime: lateRuntime,
-				profiles: () => {
-					if (builtProfiles === undefined) throw new Error("the session runtime is not ready");
-					return builtProfiles;
-				},
-				audit,
-				now: () => clock.now(),
-				...(options.programWaits === true ? { waits: true, defaultAgentId: DEFAULT_AGENT_ID } : {}),
-			})
-		: undefined;
 	const skillsSource = createSkillsMountSource({
 		skills,
 		visibility: (ctx, sessionId) => {
@@ -804,8 +750,6 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		// A session on a workspace gets the coding tools its profile names (`src/coding-tools.ts`): the file tools work on
 		// the workspace directly, and `bash` leases an isolate on its first command, not before.
 		// With a browser provider, every session also gets the browser's tools, bound to it (`src/browser.ts`).
-		// With code mode, a session that has any of those gets `codemode` too, whose scripts call them; its isolate is loaded
-		// by the first script, not before (`src/codemode.ts`).
 		// With `presentFiles`, a session on a workspace gets `present_files` and `create_document` for it too.
 		tools: async (record: SessionRecord) => {
 			const coding = codingToolsFor(record);
@@ -818,29 +762,9 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 				browser === undefined
 					? [...coding, ...present, ...linked]
 					: [...coding, ...present, ...browser.tools(record, await goalModeFor(record)), ...linked];
-			const codemode = options.codemode;
-			const withCodemode =
-				codemode === undefined || tools.length === 0
-					? tools
-					: [
-							...tools,
-							// A program run's code mode also journals its calls across pauses (`@kantel/programs/journal`).
-							((tool) => (programs === undefined ? tool : programs.codemodeFor(tool, record)))(
-								sessionCodemodeTool(
-									connectionToolsFor === undefined
-										? codemode
-										: { ...codemode, connectionCalls: (id) => connectionToolsFor.takeScriptCalls(id) },
-									record,
-								),
-							),
-						];
 			// With subagents on, a session also gets `subagent` (`@kantel/subagents`), unless it is already as deep as subagents go.
 			const subagent = options.subagents === true ? sessionSubagentTool(lateRuntime, record) : undefined;
-			const withSubagent = subagent === undefined ? withCodemode : [...withCodemode, subagent];
-			// With programs on, a session also gets `save_program` (`@kantel/programs/tool`), when its profile names it.
-			return programs === undefined
-				? withSubagent
-				: [...withSubagent, sessionSaveProgramTool(() => programs, record, "/v1")];
+			return subagent === undefined ? tools : [...tools, subagent];
 		},
 		environment,
 		// A session started without a workspace (no repository) gets its own, which its first file tool or command
@@ -862,8 +786,6 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		},
 		// A session whose profile names memory spaces is given their recall on its first prompt, and the memory tools.
 		memory: sessionMemory(memory),
-		// Its prompt rules, fixed when it starts: platform, organisation, project, profile, then its user's.
-		rules,
 		// A prompt's attachments: what the model reads of each file uploaded to the session's project.
 		attachments: attachments.reader,
 		// A server's tools, for a session whose profile names them (`<server>/<tool>`, `<server>/*`).
@@ -963,15 +885,13 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 				// The prompt is the user's alone: what they set on this profile, kept across starts. Kantel adds none.
 				promptLayers: userPromptLayers(stored),
 				// The coding tools are offered in every session (each has a workspace, its own when it has no repository); the
-				// browser's only when the stack has a provider; `codemode` when the stack has code mode. Tools describe themselves
+				// browser's only when the stack has a provider. Tools describe themselves
 				// through their schemas; Kantel adds no prompt about them.
 				tools: [
 					...CODING_TOOLS,
 					...(options.presentFiles === true ? [PRESENT_FILES_TOOL, CREATE_DOCUMENT_TOOL] : []),
 					...(browser === undefined ? [] : BROWSER_TOOL_NAMES),
-					...(options.codemode === undefined ? [] : [CODEMODE_TOOL]),
 					...(options.subagents === true ? [SUBAGENT_TOOL] : []),
-					...(programs === undefined ? [] : [SAVE_PROGRAM_TOOL]),
 					...(connections === undefined ? [] : CONNECTION_TOOL_NAMES),
 				],
 				// The skills the session lists and the memory spaces it recalls from are the user's too, kept across starts: none
@@ -1043,18 +963,12 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			if (next !== undefined) await armAt(next);
 		};
 		// A deploy or an eviction keeps the alarm, but a schedule made while it was lost would otherwise wait for one. A
-		// session object runs no schedules, program recoveries or token refreshes: the stack does.
+		// session object runs no schedules or token refreshes: the stack does.
 		if (!home) {
 			await scheduler
 				.nextWakeAt()
 				.then(armScheduler)
 				.catch((error: unknown) => console.error("kantel: arming the scheduler at start failed", error));
-		}
-		// Program runs an earlier instance left waiting on an agent step, or with a value and no next activation yet.
-		if (programs?.waits === true && !home) {
-			void programs
-				.recover()
-				.catch((error: unknown) => console.error("kantel: recovering program waits failed", error));
 		}
 		// Token refresh (#328): the alarm for the next connection due, now and whenever a refresh moves it.
 		armRefresh = (at) => {
@@ -1089,8 +1003,6 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			sharing,
 			...(connections === undefined ? {} : { connections }),
 			...(toolServers === undefined ? {} : { toolServers }),
-			...(programs === undefined ? {} : { programs }),
-			rules,
 			authenticator,
 			signIn: options.config.access === undefined ? [] : ["cloudflare_access"],
 			projectDefaults,

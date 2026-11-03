@@ -39,13 +39,10 @@ import { d1Driver } from "@kantel/sql/sqlite";
 import { type SubagentVars, subagentsEnabled } from "@kantel/subagents";
 import type { ToolServerRef } from "@kantel/tools/links";
 import type { TunnelConnected, TunnelGrant } from "@kantel/tools/service";
-import CODEMODE_BUNDLE from "../generated/codemode.bundle.txt";
 import ISOLATE_BUNDLE from "../generated/isolate.bundle.txt";
-import QUICKJS_WASM from "../generated/quickjs.wasm.bin";
 import QUICKJS_NODE from "../generated/quickjs-node.wasm";
 import { objectSqlDriver } from "./audit-outbox.ts";
 import { type BrowserObjects, type BrowserVars, browserProviderFrom, projectDefaultsFrom } from "./browser.ts";
-import { type CodemodeSandboxObjects, type CodemodeVars, codemodeLoad, workerLoaderCodemode } from "./codemode.ts";
 import type { GatewayVars } from "./config.ts";
 import { gatewayConfig } from "./config.ts";
 import { type ConnectionsVars, stackConnectionsFrom } from "./connections.ts";
@@ -95,7 +92,6 @@ export interface Env
 		SandboxVars,
 		PlacementVars,
 		BrowserVars,
-		CodemodeVars,
 		SubagentVars,
 		RecallVars,
 		ConnectionsVars,
@@ -122,17 +118,6 @@ export interface Env
 	 */
 	readonly KANTEL_SESSION_IDLE_SECONDS?: string;
 	/**
-	 * `on` turns on saved programs (experimental, `@kantel/programs/service`): code mode programs run through
-	 * `/v1/programs/…` with no model, and the default agent's `save_program`. Needs code mode. Off by default.
-	 */
-	readonly KANTEL_PROGRAMS?: string;
-	/**
-	 * `on` lets program runs pause (experimental, `@kantel/programs/journal`): `waitForInput()` and `agent()` in a program,
-	 * `POST /v1/programs/{id}/runs/{runId}/resume`, and each run's journal, so a resumed run doesn't repeat finished
-	 * calls. Needs `KANTEL_PROGRAMS`. Off by default.
-	 */
-	readonly KANTEL_PROGRAM_WAITS?: string;
-	/**
 	 * `off` stops writing a usage row per model call (`src/usage.ts`,
 	 * docs/site/src/content/docs/api/results-and-usage.md). Anything else (the default) writes them to the object's
 	 * ledger and ships them to `usage_calls` in D1.
@@ -150,13 +135,8 @@ export interface Env
 	readonly BROWSERS?: DurableObjectNamespace;
 	readonly KANTEL_BROWSER_SEAL_KEY?: string;
 	readonly KANTEL_BROWSER_RECORDING_DAYS?: string;
-	/** The Worker Loader, for the `dynamic-worker` isolate backend and code mode's isolates. */
+	/** The Worker Loader, for the `dynamic-worker` isolate backend. */
 	readonly LOADER?: WorkerLoader;
-	/**
-	 * Code mode's sandbox objects (`KantelCodemodeSandbox` of the separately deployed `kantel-codemode` Worker,
-	 * `src/codemode/worker.ts`): with `KANTEL_CODEMODE_OFFLOAD=on`, each script runs in one of them, off this object.
-	 */
-	readonly CODEMODE_SANDBOXES?: DurableObjectNamespace;
 	/** The sessions' container tier (`KantelSandbox`, `src/sandbox-object.ts`), one object per session. */
 	readonly SANDBOXES?: DurableObjectNamespace;
 	/**
@@ -209,8 +189,6 @@ class IsolatePortTarget extends RpcTarget implements IsolatePort {
 
 /** The isolate code's digest, part of every isolate's loader ID. */
 const ISOLATE_BUNDLE_ID = bundleId(ISOLATE_BUNDLE);
-/** The code mode isolate's digest: its code and QuickJS's size, part of every code mode isolate's loader ID. */
-const CODEMODE_BUNDLE_ID = `${bundleId(CODEMODE_BUNDLE)}${QUICKJS_WASM.byteLength.toString(36)}`;
 /** `SELECT 1` queries (and R2 `head`s) the placement probe times. */
 const PLACEMENT_QUERIES = 5;
 /** The key the R2 probe heads: outside the workspace prefix, and never written. */
@@ -332,26 +310,8 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 							namedObject(sandboxObjects, `sandbox:${sessionId}`, env) as unknown as SandboxContainer,
 					}
 				: {}),
-			// Code mode, unless KANTEL_CODEMODE is `off` (`src/codemode.ts`): each session's scripts run in its own isolate, with
-			// no bindings and no network, loaded by its first script through the Worker Loader; or, with
-			// KANTEL_CODEMODE_OFFLOAD=on, each script in a new object of the sandbox Worker, off this object's thread.
-			...((load) => (load === undefined ? {} : { codemode: { load, bundleId: CODEMODE_BUNDLE_ID } }))(
-				codemodeLoad(env, {
-					...(loader === undefined
-						? {}
-						: { loader: () => workerLoaderCodemode(loader, CODEMODE_BUNDLE, QUICKJS_WASM) }),
-					...(env.CODEMODE_SANDBOXES === undefined
-						? {}
-						: { sandboxes: env.CODEMODE_SANDBOXES as unknown as CodemodeSandboxObjects }),
-					locationHint: locationHint(env),
-				}),
-			),
 			// Subagents, when KANTEL_SUBAGENTS is `on` (experimental, `@kantel/subagents`).
 			...(subagentsEnabled(env) ? { subagents: true } : {}),
-			// Saved programs, when KANTEL_PROGRAMS is `on` (experimental, `@kantel/programs/service`).
-			...((env.KANTEL_PROGRAMS ?? "").trim() === "on" ? { programs: true } : {}),
-			// Durable pauses for programs, when KANTEL_PROGRAM_WAITS is `on` (experimental, `@kantel/programs/journal`).
-			...((env.KANTEL_PROGRAM_WAITS ?? "").trim() === "on" ? { programWaits: true } : {}),
 			// Browser goal mode's platform defaults (src/browser.ts); each project's settings override them.
 			projectDefaults: projectDefaultsFrom(env),
 			// QuickJS, compiled by wrangler's CompiledWasm rule: `node` runs plain JavaScript in the in-process isolate.

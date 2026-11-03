@@ -128,47 +128,6 @@ Under `wrangler dev --env dev`, put `KANTEL_BRWSR_API_KEY` in `apps/cloudflare/.
 model gateway, a message `browse <url>` makes the dev model ask for a browser, open the URL once you allow it and
 take a screenshot (`src/dev-browser-model.ts`).
 
-## Code mode
-
-Every session that has tools also has `codemode` (`src/codemode.ts`): the model writes a JavaScript script that calls
-the session's other tools (`await tools.read({ path })`, `await tools.bash({ command })`), and the script runs in the
-isolate tier, a Dynamic Worker per session loaded through `LOADER`. `KANTEL_CODEMODE=off` takes it away.
-
-- **The tool** is Pi Durable's code mode (`createCodemodeTool`). Each tool call a script makes is a nested call of the
-  session's own tool, as its agent, with the same checks, audit, approvals and lazy leases as one the model makes. A
-  script's start and every result it got are journalled in the session's storage, so a script an eviction cut off
-  resumes without running finished calls again.
-- **Where it runs.** The isolate (`src/codemode/entry.ts`, bundled into `generated/codemode.bundle.txt`, with QuickJS's
-  WebAssembly beside it as its own module) runs the script in a QuickJS VM, through pi-codemode's
-  `RemoteCodemodeSandbox`. The stack object keeps the tools, the journal and the abort; each tool call comes back to it
-  over RPC through the `exchange` function passed with the script.
-- **Only the tool bindings cross.** The isolate has `env: {}` and `globalOutbound: null`, so no bindings, secrets or
-  network, and the VM has no `fetch`, timers, modules or I/O. A script reaches the world only through a session tool.
-- **Loaded when used.** The first script a session runs loads its isolate (one loader ID per organisation, session and
-  code digest); later scripts reuse it while it's warm. A session that never runs a script never has one.
-- **No prompt of Kantel's.** Pi Durable's code mode extension would add a system prompt section listing the tools, so
-  Kantel uses the tool alone, and its description says the script's `tools` are the tools the model is offered.
-- **It shares the object's thread.** A Dynamic Worker loaded by a Durable Object runs on that object's thread, so a
-  script that computes without calling a tool holds `KantelStack`, and every session on it, until it calls one, ends or
-  uses up its interrupt budget (`CODEMODE_INTERRUPT_BUDGET`), when it fails with a timeout. The budget covers the whole
-  script, not each stretch between tool calls, and is counted in interrupt polls, not time: an empty loop is stopped
-  after about 4 s, but a loop doing real arithmetic computed for about 19 s without reaching it. The VM's heap is capped
-  at 32 MiB.
-- **Off the stack (experimental, `KANTEL_CODEMODE_OFFLOAD=on`).** Each script runs instead in a new
-  `KantelCodemodeSandbox` object of `kantel-codemode`, a Worker of its own (`wrangler.codemode.jsonc`,
-  `src/codemode/worker.ts`) that the deploy uploads before the main Worker, which binds its class as
-  `CODEMODE_SANDBOXES` with `script_name`. Only the VM moves: the object runs the same server with the same budget and
-  heap, and the calling object keeps the tools, the journal, approvals, audit, the deadline and the abort, so each tool
-  call still comes back to it as the session's agent. A script that computes then holds only its own object: the stack
-  and other sessions keep answering. It has to be another Worker's object, because a class of this Worker could share
-  the stack object's isolate, and so its thread; pi-codemode measured a 10 s computation delaying its caller by about
-  50 ms this way. The sandbox Worker has a 120 s CPU limit, above anything the budget lets a script compute. The
-  switch on without the binding warns and keeps the Worker Loader. Locally, run `pnpm dev:codemode` beside
-  `pnpm dev --var KANTEL_CODEMODE_OFFLOAD:on`.
-
-Under `wrangler dev --env dev` with no model gateway, a message `codemode <script>` makes the dev model run the script
-with the tool (`src/dev-browser-model.ts`).
-
 ## Design
 
 **One Durable Object runs every session.** `KantelStack` runs every session in its one SQLite, with its alarm,

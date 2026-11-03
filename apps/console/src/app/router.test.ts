@@ -19,7 +19,6 @@ import {
 	ORGANISATION_SCOPE,
 	parseRoute,
 	projectPath,
-	RULES_PATH,
 	SETTINGS_PATH,
 	SHARING_PATH,
 	schedulesPath,
@@ -164,12 +163,8 @@ describe("routes", () => {
 		expect(parseRoute("/schedules/sch_1/runs")).toMatchObject({ name: "not-found" });
 	});
 
-	it("parses the rules page, and nothing under it", () => {
-		expect(RULES_PATH).toBe("/rules");
-		expect(parseRoute(RULES_PATH)).toEqual({ name: "rules" });
-		expect(parseRoute("/rules/")).toEqual({ name: "rules" });
-		expect(parseRoute("/rules/rul_1")).toEqual({ name: "not-found", path: "/rules/rul_1" });
-		expect(parseRoute("/projects/atlas/rules")).toMatchObject({ name: "not-found" });
+	it("has no rules page: prompt rules went with the agent plane", () => {
+		expect(parseRoute("/rules")).toEqual({ name: "not-found", path: "/rules" });
 	});
 
 	it("parses Settings, and tells its pages from work's", () => {
@@ -185,7 +180,6 @@ describe("routes", () => {
 			skillsPath(),
 			skillsPath("s_1"),
 			memoryPath("a/b"),
-			RULES_PATH,
 			modelsPath("p"),
 			MEMBERS_PATH,
 			KEYS_PATH,
