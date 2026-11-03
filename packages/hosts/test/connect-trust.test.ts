@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHostBackend } from "../src/backend.ts";
 import { parseHostFacts } from "../src/facts.ts";
 import { createHostsApi } from "../src/http.ts";
+import { closeReason } from "../src/hub.ts";
 import type { HostMessage } from "../src/protocol.ts";
 import { createMemoryRelayStore } from "../src/relay-store.ts";
 import { createHostsService } from "../src/service.ts";
@@ -185,6 +186,69 @@ describe("an account's own host", () => {
 		// Named (the account may use shared hosts): it is asked, where the disk is.
 		await backend.start("sbx_on_shared", how([own.hostId, shared.hostId])).catch(() => undefined);
 		expect(sentStarts()).toBe(1);
+	});
+});
+
+describe("a host's frames", () => {
+	/** A connection to the hub, as a host's socket the way ws behaves: `close` throws on a reason past 123 bytes. */
+	async function connection(service: Awaited<ReturnType<typeof setup>>["service"]) {
+		const { hostId } = await service.register({ token: "kth_enrolment", facts: facts() });
+		const sent: HostMessage[] = [];
+		let closed: { code: number; reason: string } | undefined;
+		const held = service.hub.accept(hostId, {
+			sendText: (text) => sent.push(JSON.parse(text) as HostMessage),
+			sendBinary: () => undefined,
+			close: (code, reason) => {
+				if (new TextEncoder().encode(reason).byteLength > 123)
+					throw new SyntaxError("The message must not exceed 123 bytes");
+				closed = { code, reason };
+			},
+		});
+		const hello = (protocol: unknown = 1) =>
+			held.receive(
+				JSON.stringify({
+					type: "hello",
+					hello: {
+						hostId,
+						facts: { ...facts(), protocol },
+						sandboxes: [],
+						capacity: { freeMemoryMiB: 1, freeDiskGiB: 1, running: 0, stopped: 0, load1: 0, warm: {} },
+					},
+				}),
+			);
+		return { hostId, held, sent, hello, closed: () => closed };
+	}
+
+	it("settles a call whose result has a malformed error, and keeps a valid error's code and message", async () => {
+		const { service } = await setup();
+		const host = await connection(service);
+		host.hello();
+		await vi.waitFor(() => expect(service.hub.connected(host.hostId)).toBe(true));
+		const callId = () => host.sent.filter((message) => message.type === "call").at(-1)?.id;
+
+		const malformed = service.hub.call(host.hostId, "sandbox.exec", {});
+		host.held.receive(JSON.stringify({ type: "result", id: callId(), error: { message: { toString: null } } }));
+		await expect(malformed).rejects.toMatchObject({ code: "internal", message: "The host's call failed" });
+
+		const refused = service.hub.call(host.hostId, "sandbox.exec", {});
+		host.held.receive(JSON.stringify({ type: "result", id: callId(), error: { code: "not_found", message: "gone" } }));
+		await expect(refused).rejects.toMatchObject({ code: "not_found", message: "gone" });
+
+		const answered = service.hub.call(host.hostId, "sandbox.exec", {});
+		host.held.receive(JSON.stringify({ type: "result", id: callId(), result: { exitCode: 0 } }));
+		await expect(answered).resolves.toEqual({ exitCode: 0 });
+		expect(service.hub.connected(host.hostId)).toBe(true);
+	});
+
+	it("refuses a hello whose refusal is long multibyte text with a close that fits, and nothing unhandled", async () => {
+		const { service } = await setup();
+		const host = await connection(service);
+		host.hello("é".repeat(200));
+		await vi.waitFor(() => expect(host.closed()?.code).toBe(4002));
+		expect(new TextEncoder().encode(host.closed()?.reason).byteLength).toBeLessThanOrEqual(123);
+		expect(service.hub.connected(host.hostId)).toBe(false);
+		expect(closeReason("é".repeat(100))).toBe("é".repeat(61));
+		expect(closeReason("short")).toBe("short");
 	});
 });
 

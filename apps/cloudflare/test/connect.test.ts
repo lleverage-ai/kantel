@@ -22,6 +22,7 @@ import {
 	revivingStub,
 	sweptAsUsed,
 	TUNNEL_PENDING_LIMIT,
+	TUNNEL_PENDING_MESSAGES,
 	tunnelTicket,
 } from "../src/compute.ts";
 import { gatewayConfig } from "../src/config.ts";
@@ -304,6 +305,19 @@ describe("Kantel Connect on the Worker", () => {
 		expect(held * 64 * 1024).toBeLessThanOrEqual(TUNNEL_PENDING_LIMIT);
 		// Past the limit nothing is kept: the tunnel is closed, not written.
 		expect(flooded.take()).toEqual([]);
+		// Empty messages count too.
+		const empties = preOpenBuffer();
+		let kept = 0;
+		while (empties.hold(new Uint8Array(0))) kept++;
+		expect(kept).toBe(TUNNEL_PENDING_MESSAGES);
+		expect(empties.held()).toEqual({ messages: 0, bytes: 0 });
+		// A tunnel that ends before its port opens lets go of what it held, and holds nothing after.
+		const ended = preOpenBuffer();
+		ended.hold(new TextEncoder().encode("SSH-2.0-client\r\n"));
+		ended.clear();
+		expect(ended.held()).toEqual({ messages: 0, bytes: 0 });
+		expect(ended.hold(new Uint8Array(1))).toBe(false);
+		expect(ended.take()).toEqual([]);
 	});
 
 	it("answers a registration GET or HEAD with the host handler's 405", async () => {
@@ -387,6 +401,10 @@ describe("Kantel Connect on the Worker", () => {
 		expect(kept.body).toMatchObject({ id: onHost, hostId });
 		const revived = await off.call("POST", `/v1/sandboxes/${stubbed}/commands`, { command: "echo on the stub" });
 		expect(revived.body).toMatchObject({ exitCode: 0, stdout: "on the stub\n" });
+		// A new sandbox of the same type goes on the stub: the account's host, which the backend no longer has, is
+		// passed over (unreachable), not preferred.
+		const fresh = await off.call("POST", "/v1/sandboxes", { type: "microvm", wait: true });
+		expect(fresh.body).toMatchObject({ state: "running", hostId: STUB_HOST_ID });
 		await off.compute.close();
 
 		// On again: the host is back, and its sandbox runs there.
@@ -404,6 +422,10 @@ describe("Kantel Connect on the Worker", () => {
 		const ran = await again.call("POST", `/v1/sandboxes/${onHost}/commands`, { command: "echo back" });
 		expect(ran.body).toMatchObject({ exitCode: 0, stdout: "back from my own machine\n" });
 		expect((await again.call("GET", `/v1/sandboxes/${onHost}`)).body.hostId).toBe(hostId);
+		// And it's preferred for new sandboxes again, still the account's.
+		const next = await again.call("POST", "/v1/sandboxes", { type: "microvm", wait: true });
+		expect(next.body).toMatchObject({ state: "running", hostId });
+		expect((await again.call("GET", "/v1/connect/hosts")).body.items).toMatchObject([{ id: hostId, state: "online" }]);
 	});
 
 	it("refuses a host's snapshot on the stub rather than booting an empty disk in its place", async () => {

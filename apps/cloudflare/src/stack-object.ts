@@ -155,28 +155,35 @@ async function rawTunnel(hosts: StackHosts, ticket: string, request: Request): P
 	}
 	const { 0: client, 1: server } = new WebSocketPair();
 	server.accept();
-	// What the client sends before the port is open waits here, up to TUNNEL_PENDING_LIMIT: the one stack object holds
-	// every tunnel, so a client that floods a tunnel whose host never answers is closed rather than kept in memory.
+	// What the client sends before the port is open waits here, bounded (preOpenBuffer): the one stack object holds
+	// every tunnel, so a client that floods a tunnel whose host never answers is closed rather than kept in memory. It
+	// is let go of however the tunnel ends.
 	const pending = preOpenBuffer();
 	let stream: { write(bytes: Uint8Array): void; close(): void } | undefined;
 	let done = false;
+	const end = () => {
+		done = true;
+		pending.clear();
+		stream?.close();
+	};
+	const shut = (code: number, reason: string) => {
+		done = true;
+		pending.clear();
+		try {
+			server.close(code, reason);
+		} catch {
+			// Already closed.
+		}
+	};
 	onMessages(server, (frame) => {
 		if (done) return;
 		const bytes = typeof frame === "string" ? new TextEncoder().encode(frame) : frame;
 		if (stream !== undefined) return stream.write(bytes);
 		if (!pending.hold(bytes)) {
 			end();
-			try {
-				server.close(1009, "Too much sent before the tunnel opened");
-			} catch {
-				// Already closed.
-			}
+			shut(1009, "Too much sent before the tunnel opened");
 		}
 	});
-	const end = () => {
-		done = true;
-		stream?.close();
-	};
 	server.addEventListener("close", end);
 	server.addEventListener("error", end);
 	void hosts
@@ -190,23 +197,18 @@ async function rawTunnel(hosts: StackHosts, ticket: string, request: Request): P
 					end();
 				}
 			},
-			close: (code, reason) => {
-				try {
-					server.close(code, reason);
-				} catch {
-					// Already closed.
-				}
-			},
+			close: (code, reason) => shut(code, reason),
 		})
 		.then((opened) => {
-			if (opened === undefined) return;
+			// Refused (the ticket, its grant): closed already, with nothing to write.
+			if (opened === undefined) return pending.clear();
 			stream = opened;
 			if (done) return opened.close();
 			for (const chunk of pending.take()) opened.write(chunk);
 		})
 		.catch((error: unknown) => {
 			console.error("kantel: a tunnel failed", error);
-			server.close(1011, "The gateway could not open the tunnel");
+			shut(1011, "The gateway could not open the tunnel");
 		});
 	return new Response(null, { status: 101, webSocket: client });
 }

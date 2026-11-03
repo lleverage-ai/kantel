@@ -134,31 +134,43 @@ export interface TunnelClient {
 /** What `onMessages` needs of an accepted WebSocket. */
 /** What a tunnel's client may send before its port is open (SSH sends a line and its key exchange: a few KiB). */
 export const TUNNEL_PENDING_LIMIT = 256 * 1024;
+/** And at most this many messages (an empty one is still an entry to keep). */
+export const TUNNEL_PENDING_MESSAGES = 256;
 
 /**
  * What a tunnel's client sends before the host has opened its port, held to be written once it has. The one stack
- * object holds every tunnel, so it holds at most `limit` bytes: `hold` answers false (and lets go of everything) past
- * that, and the tunnel is closed rather than kept in memory while its host never answers.
+ * object holds every tunnel, so it holds at most `limit` bytes in at most `messages` messages: `hold` answers false
+ * (and lets go of everything) past either, and the tunnel is closed rather than kept in memory while its host never
+ * answers. `clear` lets go of it when the tunnel ends any other way; nothing is held after either.
  */
-export function preOpenBuffer(limit = TUNNEL_PENDING_LIMIT) {
+export function preOpenBuffer(limit = TUNNEL_PENDING_LIMIT, messages = TUNNEL_PENDING_MESSAGES) {
 	let chunks: Uint8Array[] = [];
 	let bytes = 0;
+	let open = true;
+	const clear = () => {
+		open = false;
+		chunks = [];
+	};
 	return {
 		hold(chunk: Uint8Array): boolean {
+			if (!open) return false;
 			bytes += chunk.byteLength;
-			if (bytes > limit) {
-				chunks = [];
+			if (bytes > limit || chunks.length >= messages) {
+				clear();
 				return false;
 			}
 			chunks.push(chunk);
 			return true;
 		},
-		/** Everything held, in order, and nothing held after. */
+		/** Everything held, in order; nothing is held after. */
 		take(): Uint8Array[] {
 			const out = chunks;
-			chunks = [];
+			clear();
 			return out;
 		},
+		clear,
+		/** What it holds now, for tests. */
+		held: () => ({ messages: chunks.length, bytes: chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0) }),
 	};
 }
 

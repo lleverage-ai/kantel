@@ -388,6 +388,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// Another gateway saw it first: refresh what that one wrote.
 				if (!inserted) await store.hosts.update(host.id, refresh);
 			}
+			// A host the backend no longer has (Kantel Connect switched off, say) can't take sandboxes: it is unreachable,
+			// so placement passes it over, its record (owner, revocation, sandboxes) kept for when the backend has it again.
+			const advertised = new Set(capabilities.hosts.map((host) => host.id));
+			for (const stored of await store.hosts.list({ state: "online" })) {
+				if (advertised.has(stored.id)) continue;
+				await store.hosts.update(stored.id, (current) =>
+					current.state === "online" ? { ...current, state: "unreachable" } : undefined,
+				);
+			}
 		})().finally(() => {
 			hostsReady = undefined;
 		});

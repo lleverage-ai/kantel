@@ -123,6 +123,34 @@ const DEFAULT_HELLO_TIMEOUT_MS = 30_000;
 /** A payload a host sent that is an object, which is all its type claims until it's checked further. */
 const isObject = <T>(value: T): value is NonNullable<T> & object => typeof value === "object" && value !== null;
 
+/** A WebSocket close reason is at most 123 bytes of UTF-8 (RFC 6455); a longer one makes `close` throw. */
+const CLOSE_REASON_BYTES = 123;
+
+/** `reason`, cut at a character boundary to fit a close frame. */
+export function closeReason(reason: string): string {
+	const encoder = new TextEncoder();
+	if (encoder.encode(reason).byteLength <= CLOSE_REASON_BYTES) return reason;
+	let out = "";
+	let bytes = 0;
+	for (const character of reason) {
+		const size = encoder.encode(character).byteLength;
+		if (bytes + size > CLOSE_REASON_BYTES) break;
+		out += character;
+		bytes += size;
+	}
+	return out;
+}
+
+/** A host error as it came, made safe to throw: its code and message strings, or plain ones in their place. */
+function hostError(error: unknown): HostError {
+	if (!isObject(error)) return { code: "internal", message: `The host's call failed: ${typeof error}` };
+	const { code, message } = error as { code?: unknown; message?: unknown };
+	return {
+		code: typeof code === "string" ? code : "internal",
+		message: typeof message === "string" ? message : "The host's call failed",
+	};
+}
+
 export function createHostHub(options: HostHubOptions): HostHub {
 	const held = new Map<string, Connection>();
 	let nextCall = 0;
@@ -131,6 +159,16 @@ export function createHostHub(options: HostHubOptions): HostHub {
 
 	const send = (connection: Connection, message: object) => {
 		if (!connection.closed) connection.socket.sendText(JSON.stringify(message));
+	};
+
+	/** Closes the socket and forgets the connection; a socket that is already gone (`close` throws) is the same. */
+	const shut = (connection: Connection, code: number, reason: string) => {
+		try {
+			connection.socket.close(code, closeReason(reason));
+		} catch {
+			// Already closed.
+		}
+		teardown(connection, reason);
 	};
 
 	const teardown = (connection: Connection, reason: string) => {
@@ -175,9 +213,7 @@ export function createHostHub(options: HostHubOptions): HostHub {
 			connection.welcomed = true;
 			send(connection, { type: "welcome", welcome });
 		} catch (error) {
-			const reason = error instanceof Error ? error.message : String(error);
-			connection.socket.close(HOST_CLOSE_PROTOCOL, reason.slice(0, 120));
-			teardown(connection, reason);
+			shut(connection, HOST_CLOSE_PROTOCOL, error instanceof Error ? error.message : "The hello was refused");
 		}
 	};
 
@@ -194,14 +230,12 @@ export function createHostHub(options: HostHubOptions): HostHub {
 			const older = held.get(hostId);
 			held.set(hostId, connection);
 			if (older !== undefined) {
-				older.socket.close(HOST_CLOSE_REPLACED, "A newer connection for the host took over");
-				teardown(older, "replaced");
+				shut(older, HOST_CLOSE_REPLACED, "A newer connection for the host took over");
 			}
 			let greeted = false;
 			const helloTimer = setTimeout(() => {
 				if (greeted || connection.closed) return;
-				socket.close(HOST_CLOSE_PROTOCOL, "No hello");
-				teardown(connection, "no hello");
+				shut(connection, HOST_CLOSE_PROTOCOL, "No hello");
 			}, options.helloTimeoutMs ?? DEFAULT_HELLO_TIMEOUT_MS);
 			/** One port stream's sink failing (its client went away) ends that stream, not the host's connection. */
 			const toSink = (stream: number, sink: PortSink, deliver: (sink: PortSink) => void) => {
@@ -230,7 +264,10 @@ export function createHostHub(options: HostHubOptions): HostHub {
 				if (!greeted) {
 					greeted = true;
 					clearTimeout(helloTimer);
-					void hello(connection, message.type === "hello" ? message.hello : undefined);
+					// It settles on its own (refusals close the connection); this catch is the last line.
+					hello(connection, message.type === "hello" ? message.hello : undefined).catch(() =>
+						teardown(connection, "the hello failed"),
+					);
 					return;
 				}
 				// Anyone's machine can be a host (Kantel Connect): a payload is read only once it is an object.
@@ -239,17 +276,18 @@ export function createHostHub(options: HostHubOptions): HostHub {
 						if (isObject(message.heartbeat)) options.onHeartbeat?.(hostId, message.heartbeat.capacity);
 						return;
 					case "result": {
-						const pending = message.id === undefined ? undefined : connection.pending.get(message.id);
-						if (pending === undefined || message.id === undefined) return;
-						connection.pending.delete(message.id);
+						const id = typeof message.id === "string" ? message.id : undefined;
+						const pending = id === undefined ? undefined : connection.pending.get(id);
+						if (pending === undefined || id === undefined) return;
+						// What settles it is made first: only then is the call forgotten, so it can't be left unsettled.
+						const failed =
+							message.error === undefined || message.error === null
+								? undefined
+								: new HostCallError(hostError(message.error));
+						connection.pending.delete(id);
 						clearTimeout(pending.timer);
-						if (message.error !== undefined && message.error !== null) {
-							pending.reject(
-								new HostCallError(
-									isObject(message.error) ? message.error : { code: "internal", message: String(message.error) },
-								),
-							);
-						} else pending.resolve(message.result);
+						if (failed !== undefined) pending.reject(failed);
+						else pending.resolve(message.result);
 						return;
 					}
 					case "event": {
@@ -283,9 +321,8 @@ export function createHostHub(options: HostHubOptions): HostHub {
 					try {
 						handle(frame);
 					} catch (error) {
-						const reason = `A message from the host couldn't be handled: ${error instanceof Error ? error.message : String(error)}`;
-						connection.socket.close(HOST_CLOSE_PROTOCOL, reason.slice(0, 120));
-						teardown(connection, reason);
+						const why = error instanceof Error ? error.message : typeof error;
+						shut(connection, HOST_CLOSE_PROTOCOL, `A message from the host couldn't be handled: ${why}`);
 					}
 				},
 				closed(_code, reason) {
@@ -365,14 +402,10 @@ export function createHostHub(options: HostHubOptions): HostHub {
 		disconnect(hostId, code, reason) {
 			const connection = held.get(hostId);
 			if (connection === undefined) return;
-			connection.socket.close(code, reason);
-			teardown(connection, reason);
+			shut(connection, code, reason);
 		},
 		closeAll(code, reason) {
-			for (const connection of [...held.values()]) {
-				connection.socket.close(code, reason);
-				teardown(connection, reason);
-			}
+			for (const connection of [...held.values()]) shut(connection, code, reason);
 		},
 	};
 }

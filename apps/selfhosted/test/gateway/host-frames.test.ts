@@ -2,9 +2,11 @@
 // credential): after a valid hello, frames with null or malformed payloads go through the gateway's real WebSocket
 // listener and hub. None of them may throw out of the socket callback into the gateway process; another host's
 // connection and the gateway's routes carry on, and valid heartbeats and events still count.
+import { HOSTS_CONNECT_PATH } from "@kantel/hosts/http";
 import { createSqlHostStore } from "@kantel/hosts/store";
 import { afterEach, describe, expect, it } from "vitest";
-import { type Cleanup, connectHost, joinHost, sharedDatabase, startReplica } from "./cluster-harness.ts";
+import WebSocket from "ws";
+import { type Cleanup, connectHost, joinHost, sharedDatabase, startReplica, wsUrl } from "./cluster-harness.ts";
 
 const cleanups: Cleanup[] = [];
 afterEach(async () => {
@@ -58,5 +60,33 @@ describe("a host's malformed frames", () => {
 		const before = other.calls.length;
 		await service.hub.call(theirs.hostId, "sandbox.exec", { sandboxId: "sbx_x", command: "true" });
 		expect(other.calls.length).toBe(before + 1);
+	});
+
+	it("refuse a hello whose refusal is long multibyte text with a close ws accepts", async () => {
+		const driver = await sharedDatabase(cleanups);
+		const replica = await startReplica(driver, cleanups);
+		const odd = await joinHost(replica);
+		const socket = new WebSocket(wsUrl(replica, HOSTS_CONNECT_PATH), {
+			headers: { authorization: `Bearer ${odd.credential}` },
+		});
+		cleanups.push(() => socket.terminate());
+		const closed = new Promise<{ code: number; reason: string }>((resolve) =>
+			socket.on("close", (code, reason) => resolve({ code, reason: reason.toString() })),
+		);
+		await new Promise<void>((resolve, reject) => {
+			socket.on("open", () => resolve());
+			socket.on("error", reject);
+		});
+		socket.send(
+			JSON.stringify({
+				type: "hello",
+				hello: { hostId: odd.hostId, facts: { protocol: "é".repeat(200) }, sandboxes: [], capacity: {} },
+			}),
+		);
+		const { code, reason } = await closed;
+		expect(code).toBe(4002);
+		expect(reason).toMatch(/^This control plane speaks host protocol 1/);
+		// The gateway still answers.
+		expect((await fetch(`${replica.url}/nothing-here`)).status).toBe(404);
 	});
 });
