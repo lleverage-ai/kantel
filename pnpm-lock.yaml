@@ -476,6 +476,19 @@ importers:
         specifier: 4.1.12
         version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@7.0.2))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
 
+  packages/admin:
+    dependencies:
+      "@kantel/api":
+        specifier: workspace:*
+        version: link:../api
+      "@kantel/cli":
+        specifier: workspace:*
+        version: link:../cli
+    devDependencies:
+      esbuild:
+        specifier: 0.28.2
+        version: 0.28.2
+
   packages/api:
     dependencies:
       "@kantel/contracts":

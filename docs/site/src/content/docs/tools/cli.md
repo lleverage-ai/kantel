@@ -13,7 +13,7 @@ The `kantel` command calls routes a control plane serves only when it runs with 
 
 `kantel` does from a terminal what the [API](/api/reference/) does over HTTP: make a sandbox, run commands in it, copy files in and out, give its ports URLs, open its SSH, desktop and browser, take snapshots, and manage keys, webhooks and organisations. Every command can print Kantel's JSON answer instead of a table, for scripts and agents. The same program is Kantel's [MCP server](/tools/mcp-server/), and `kantel init` teaches a project's [coding agents](/coding-agents/) to use it.
 
-Running a self-hosted install, and its hosts, is a separate command for operators: `@kantel/admin` (see [Install Kantel](/self-hosting/install/)).
+Running a self-hosted install, and its hosts, is a separate command for operators: [`@kantel/admin`](/self-hosting/admin-cli/).
 
 ## Install it
 

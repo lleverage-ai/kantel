@@ -110,6 +110,8 @@ export KANTEL_API_KEY=ksk_...
 curl -s "$KANTEL_URL/v1/whoami" -H "authorization: Bearer $KANTEL_API_KEY"
 ```
 
+[`kantel-admin`](/self-hosting/admin-cli/) does both steps: `npx @kantel/admin compute enable --apply`, then `npx @kantel/admin bootstrap-key --save`, which saves the key for `kantel` too.
+
 That key can manage the deployment's hosts too, so keep it to yourself: give scripts and agents [keys of their own](/accounts/api-keys/#create-a-key) with only the scopes they need.
 
 Unless you add hosts, a self-hosted install runs every sandbox on a built-in stand-in: a shell over files held in memory, with no isolation between sandboxes. Commands and files work, but the microVM features (SSH, desktop, browser and pausing) answer with addresses that lead nowhere. The compute API keeps its records in memory as well, so sandboxes, snapshots, organisations and the keys you make are gone when the control plane restarts; only `computeKey` stays the same. Use it to try the API, not to run work.
@@ -137,6 +139,8 @@ curl -s -X POST "$KANTEL_URL/v1/admin/hosts/join-tokens" \
 ```text
 sudo npx -y @kantel/host@latest install --url https://kantel.example.com --token kth_...
 ```
+
+Or with [`kantel-admin`](/self-hosting/admin-cli/#add-hosts): `npx @kantel/admin compute enable --hosts --public-url https://kantel.example.com --apply`, then `npx @kantel/admin host add --name box-1`, which prints that command (or runs it over SSH with `--ssh root@box-1`). `kantel-admin host list`, `drain` and `revoke` look after them later.
 
 The host shows up in `GET /v1/admin/hosts` once it connects, and new sandboxes go on it. Its desktop, browser and SSH are reached through short-lived signed URLs on the control plane, which `openDesktop`, `openBrowser` and `openSsh` answer: the desktop link opens it in a browser tab, and `cdpUrl` works with Playwright's `connectOverCDP`. Sandboxes have no address of their own: nothing on the internet, your network or another sandbox can reach one except through these URLs.
 

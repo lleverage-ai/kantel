@@ -14,8 +14,30 @@ export {
 	mcpServersJson,
 	upsertAgentsBlock,
 } from "./agents.ts";
+export {
+	booleanFlag,
+	type FlagSpec,
+	type FlagSpecs,
+	listFlag,
+	type ParsedArgs,
+	parseArgs,
+	stringFlag,
+} from "./args.ts";
 export { commandLine, type Input, type Output, type RunOptions, run, shellQuote } from "./commands.ts";
-export { DEFAULT_URL, normaliseUrl, type ResolvedConfig, resolveConfig } from "./config.ts";
+export {
+	configDirectory,
+	DEFAULT_URL,
+	type Env,
+	loadConfig,
+	normaliseUrl,
+	originOf,
+	type ResolvedConfig,
+	readStoredConfig,
+	resolveConfig,
+	writeStoredConfig,
+} from "./config.ts";
+export { CliError, UsageError } from "./errors.ts";
+export { ago, fields, table, timestamp, until } from "./format.ts";
 export {
 	clipOutput,
 	createMcpServer,
