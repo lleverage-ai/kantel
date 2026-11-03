@@ -1,8 +1,8 @@
 ---
-// kantel.dev's home: what Kantel is and why you'd want it in one screen, then the fastest way to a first sandbox
-// (sign in with GitHub, add a host with one command, create a sandbox from the CLI), then self-hosting, in brief.
-// Claims follow the usage docs (docs/site); the pictures are mocks of the console in its default theme
-// (src/components/mocks), not screenshots.
+// kantel.dev's home: what Kantel is and why you'd want it in one screen, then the fastest way to a first sandbox on
+// the hosted service (sign in, add a host with one command, create a sandbox from the CLI). Self-hosting lives in the
+// docs, with one quiet link here. Claims follow the usage docs (docs/site); the pictures are mocks of the console in
+// its default theme (src/components/mocks), not screenshots.
 import InstallCommand from "../components/InstallCommand.astro";
 import AddHost from "../components/mocks/AddHost.astro";
 import SignIn from "../components/mocks/SignIn.astro";
@@ -11,20 +11,15 @@ import PixelField from "../components/PixelField.astro";
 import Base from "../layouts/Base.astro";
 import { CLI_INSTALL_COMMAND, SIGN_IN_URL } from "../site.mjs";
 
-const GITHUB =
-	"M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z";
-
 const link = "underline underline-offset-4 hover:text-midnight";
 // A step: a column of its own on a phone, and on a wide screen a subgrid over the list's four rows.
 const step =
 	"flex min-w-0 flex-col border-t border-midnight pt-5 lg:row-span-4 lg:grid lg:grid-rows-subgrid lg:gap-y-0";
-const more =
-	"inline-block border-b border-line pb-0.5 font-semibold text-midnight transition-colors hover:border-midnight";
 ---
 
 <Base
 	title="Kantel, by Lleverage: sandboxes for your agents, on your own machines"
-	description="Kantel gives Claude Code, Codex or your own app isolates and microVMs to work in, on Linux machines you already have. Sign in with GitHub, add a host with one command, and create sandboxes from the CLI. Open source, and fully self-hostable."
+	description="Kantel gives Claude Code, Codex or your own app isolates and microVMs to work in, on Linux machines you already have. Sign in, add a host with one command, and create sandboxes from the CLI."
 >
 	<!-- Hero: what Kantel is and why, and the way in, over the pixel field. Its height is CSS only (--hero-height), so
 	     nothing moves when the field starts drawing. -->
@@ -39,17 +34,16 @@ const more =
 					Give Claude Code, Codex or your own app isolates and microVMs to work in, on Linux machines you already
 					have. Kantel runs the control plane, and your machines connect out to it, with no ports to open.
 				</p>
-				<div class="mt-9 flex flex-wrap items-center gap-x-6 gap-y-4">
+				<div class="mt-9">
 					<a
 						href={SIGN_IN_URL}
 						class="inline-flex items-center gap-3 rounded-card bg-midnight px-6 py-4 font-semibold text-paper transition-colors hover:bg-midnight-2"
 					>
-						<svg class="size-5" viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d={GITHUB}></path></svg>
-						Sign in with GitHub
+						Get started
+						<span aria-hidden="true">→</span>
 					</a>
-					<a class={more} href="#self-host">Or run it all yourself</a>
 				</div>
-				<p class="mt-4 text-sm text-label">Open source under the Apache License 2.0.</p>
+				<p class="mt-4 text-sm text-label">Sign in with your email. Kantel is open source under the Apache License 2.0.</p>
 			</div>
 		</div>
 	</section>
@@ -65,10 +59,10 @@ const more =
 			<ol class="mt-14 grid grid-cols-1 gap-x-8 gap-y-16 lg:grid-cols-3 lg:gap-y-0">
 				<li class={step}>
 					<p class="font-mono text-sm font-semibold">1</p>
-					<h3 class="mt-3 font-display text-display-s font-semibold text-balance">Sign in with GitHub</h3>
+					<h3 class="mt-3 font-display text-display-s font-semibold text-balance">Sign in</h3>
 					<p class="mt-3 text-body text-midnight-2">
-						You get a personal space straight away. Make an organisation when you want to share hosts and sandboxes
-						with a team.
+						With a code we email you. You get a personal space straight away, and can make an organisation to share
+						hosts and sandboxes with a team.
 					</p>
 					<SignIn class="mt-8" />
 				</li>
@@ -76,8 +70,8 @@ const more =
 					<p class="font-mono text-sm font-semibold">2</p>
 					<h3 class="mt-3 font-display text-display-s font-semibold text-balance">Add a host</h3>
 					<p class="mt-3 text-body text-midnight-2">
-						Run one command on any Linux machine. It links to Kantel through Connect, so it can sit behind NAT. Direct
-						and Tailscale links work too.
+						Run one command on any Linux machine with KVM. It connects out to Kantel, so it needs no open ports and
+						can sit behind NAT.
 					</p>
 					<AddHost class="mt-8" />
 				</li>
@@ -100,30 +94,11 @@ const more =
 					<a class={link} href="/docs/quickstart/">The quick start</a> takes you from here to a running sandbox.
 				</p>
 			</div>
-		</div>
-	</section>
 
-	<!-- Self-hosting: everything on kantel.dev, Connect included, on your own machines. -->
-	<section id="self-host" class="scroll-mt-20 border-t border-line" aria-labelledby="self-host-heading">
-		<div class="mx-auto grid max-w-(--container-page) grid-cols-1 gap-10 px-6 py-20 lg:grid-cols-12 lg:px-12 lg:py-24">
-			<div class="lg:col-span-5">
-				<h2 id="self-host-heading" class="font-display text-display-m font-semibold text-balance">
-					Or run all of it yourself
-				</h2>
-			</div>
-			<div class="min-w-0 lg:col-span-7">
-				<p class="max-w-(--container-measure) text-lead text-midnight-2">
-					Everything kantel.dev runs, Connect included, installs on your own machine with one command and works
-					without us. Sign in with the one-time admin link it prints, then add your own GitHub app.
-				</p>
-				<div class="mt-8">
-					<InstallCommand id="install-self-host" />
-					<p class="mt-3 text-sm text-label">
-						Needs Docker. <a class={link} href="/install.sh">Read the script</a> first if you like.
-					</p>
-				</div>
-				<a href="/docs/self-hosting/install/" class:list={[more, "mt-8"]}>Self-host Kantel</a>
-			</div>
+			<p class="mt-16 text-sm text-label">
+				Self-hosting? Kantel runs on your own machines too:{" "}
+				<a class={link} href="/docs/self-hosting/quickstart/">read the docs</a>.
+			</p>
 		</div>
 	</section>
 </Base>

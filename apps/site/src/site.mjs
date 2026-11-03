@@ -7,25 +7,18 @@ export const GITHUB_URL = "https://github.com/lleverage-ai/kantel";
 export const SITE_URL = "https://kantel.dev";
 
 /**
- * The hosted console: where you sign in with GitHub, and the API the CLI talks to. The one line to change if the
- * hosted console moves.
+ * The hosted console: where you sign in, and the API the CLI talks to. The one line to change if the hosted console
+ * moves.
  */
 export const CONSOLE_URL = "https://app.kantel.dev";
 
-/** Sign in with GitHub on the hosted console. */
+/** Signing in to the hosted console. */
 export const SIGN_IN_URL = CONSOLE_URL;
 
 /** The CLI, from the latest GitHub Release (public/_redirects sends /cli.sh there). Pastes the same into bash, zsh and fish. */
 export const CLI_INSTALL_COMMAND = `curl -fsSL ${SITE_URL}/cli.sh | sh`;
 
-/**
- * The shape of the command that adds a Linux machine as a host. The console's Hosts page shows it with a one-time
- * token for your personal space or organisation; public/_redirects sends /host.sh to the host installer on the latest
- * GitHub Release.
- */
-export const HOST_ADD_COMMAND = `curl -fsSL ${SITE_URL}/host.sh | sudo sh -s -- --token <token from the console>`;
-
-/** Self-hosting the whole of Kantel, Connect included: public/install.sh. */
+/** Self-hosting the control plane: public/install.sh. */
 export const INSTALL_COMMAND = `curl -fsSL ${SITE_URL}/install.sh | sh`;
 
 export const LLEVERAGE_URL = "https://lleverage.ai";
