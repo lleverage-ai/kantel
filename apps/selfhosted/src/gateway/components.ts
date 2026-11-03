@@ -29,7 +29,6 @@ import {
 	type Project,
 	type ProjectAccess,
 	type ProjectId,
-	type PromptRules,
 	type Skills,
 	type WorkspaceId,
 } from "@kantel/contracts";
@@ -38,9 +37,6 @@ import { createMemoryIdentity } from "@kantel/identity/memory";
 import { createMemoryOtpStores, type OtpCodeStore, type SessionStore } from "@kantel/identity/otp";
 import { createMemoryPasskeyStores, createPasskeys, type Passkeys } from "@kantel/identity/passkey";
 import { createMemoryMemory } from "@kantel/memory/memory";
-import type { ProgramsService } from "@kantel/programs/service";
-import { createMemoryProgramStore } from "@kantel/programs/store";
-import { createMemoryPromptRules } from "@kantel/rules/memory";
 import type { DurableHosts, SessionRuntimeOptions } from "@kantel/runtime/core";
 import { createMemoryRuntime, type MemoryRuntime } from "@kantel/runtime/memory";
 import { CODING_TOOLS } from "@kantel/sandbox/coding-tools";
@@ -88,8 +84,6 @@ export interface GatewayComponents {
 	readonly memory: Memory;
 	/** Sharing resources across projects, read by the runtime's access for every resource check. */
 	readonly sharing: SharingStore;
-	/** Prompt rules, layered around a session's profile when it starts. */
-	readonly rules: PromptRules;
 	/** The sandboxes sessions' `bash` runs in, leased on first use (`sandboxes.ts`). */
 	readonly sandboxes: Sandboxes;
 	/**
@@ -141,13 +135,8 @@ export interface GatewayComponents {
 	 */
 	readonly environments?: GatewayEnvironments;
 	/**
-	 * Saved programs (`session-tools.ts`, @kantel/programs): served at `/v1/programs`, and `save_program` in sessions.
-	 * Absent with `KANTEL_PROGRAMS=off` or `KANTEL_CODEMODE=off`.
-	 */
-	readonly programs?: ProgramsService;
-	/**
 	 * The tools the bootstrap's profiles list beside the coding, browser and connection tools (`session-tools.ts`):
-	 * `present_files`, `create_document`, `codemode` and `save_program`, those that are on.
+	 * `present_files` and `create_document`, when they are on.
 	 */
 	readonly sessionTools: readonly string[];
 	/**
@@ -279,7 +268,7 @@ export function createGatewayComponents(
 		readonly environments?: GatewayEnvironmentsConfig;
 		/** How environments reach boat.dev; a test's fake API. */
 		readonly boatFetch?: typeof fetch;
-		/** Code mode, programs and presented files (`session-tools.ts`). Default all on, as a local install has them. */
+		/** Presented files (`session-tools.ts`). Default on, as a local install has them. */
 		readonly sessionTools?: SessionToolsConfig;
 		/** The container tier (`sandboxes.ts`). Without it, a command routed to a container is refused. */
 		readonly containers?: GatewayContainers;
@@ -304,14 +293,11 @@ export function createGatewayComponents(
 	let vault: KantelVault | undefined;
 	const models = options.models ??
 		options.modelGateway?.build({ vault: () => vault, audit }) ?? { models: createEchoModels() };
-	// Built before the runtime too: it gives sessions their tools, and program sessions the program runner as their model.
-	const sessionTools = gatewaySessionTools(options.sessionTools ?? ALL_SESSION_TOOLS, {
-		connectionCalls: (id) => linked?.takeScriptCalls(id) ?? [],
-	});
+	// Built before the runtime too: it gives sessions their tools.
+	const sessionTools = gatewaySessionTools(options.sessionTools ?? ALL_SESSION_TOOLS);
 	// Skills and memory check project access with the runtime's check, which they reach only when called.
 	const skills = createMemorySkills({ audit, access: auditAccess.access });
 	const memory = createMemoryMemory({ audit, access: auditAccess.access });
-	const rules = createMemoryPromptRules({ audit, access: auditAccess.access });
 	let workspaces: StoredWorkspaces | undefined;
 	const sharing = createMemorySharing({
 		audit,
@@ -367,16 +353,14 @@ export function createGatewayComponents(
 			audit,
 			identity,
 			sharing,
-			...sessionTools.models(models),
+			...models,
 			...gatewaySandboxes.runtimeOptions,
-			// `subagent` after code mode's tools, as on Cloudflare: a script doesn't start subagents.
 			tools: withGatewaySubagents(
 				sessionTools.withTools(linked === undefined ? browserTools : linked.withTools(browserTools)),
 				subagentsOn,
 				sessions.get,
 			),
 			...sessionContextOptions({ skills, memory, workspaces: lateWorkspaces }),
-			rules,
 		}),
 		lateWorkspaces,
 	);
@@ -423,13 +407,6 @@ export function createGatewayComponents(
 	});
 	const heldToolServers = toolServers?.attach(runtime);
 	const heldEnvironments = environments?.attach();
-	const programs = sessionTools.attach({
-		store: createMemoryProgramStore(),
-		runtime: runtime.runtime,
-		profiles: runtime.profiles,
-		access,
-		audit,
-	});
 	const modelGateway = options.models === undefined ? options.modelGateway : undefined;
 	return {
 		identity,
@@ -439,7 +416,6 @@ export function createGatewayComponents(
 		skills,
 		memory,
 		sharing,
-		rules,
 		sandboxes,
 		otp: createMemoryOtpStores(),
 		passkeys: createPasskeys({ ...createMemoryPasskeyStores(), identity, audit }),
@@ -450,7 +426,6 @@ export function createGatewayComponents(
 		...(connections === undefined ? {} : { connections }),
 		...(heldToolServers === undefined ? {} : { toolServers: heldToolServers }),
 		...(heldEnvironments === undefined ? {} : { environments: heldEnvironments }),
-		...(programs === undefined ? {} : { programs }),
 		sessionTools: sessionTools.toolNames,
 		...(subagentsOn ? { subagents: true as const } : {}),
 		bindings: {
@@ -660,8 +635,8 @@ async function keyCovering(
 /**
  * A bootstrap profile's tools, as Cloudflare's default profile's (apps/cloudflare/src/stack.ts): in a session on a
  * workspace (every session has one, `withOwnWorkspaces`), the file tools on the workspace directly, and `bash` in an
- * isolate leased on its first command (`sandboxes.ts`); `present_files`, `create_document`, `codemode` and
- * `save_program` (`session-tools.ts`). With a browser, its tools too (`browser.ts`): `browser_request` asks a person
+ * isolate leased on its first command (`sandboxes.ts`); `present_files` and `create_document`
+ * (`session-tools.ts`). With a browser, its tools too (`browser.ts`): `browser_request` asks a person
  * for sites first. With subagents, `subagent` (`subagents.ts`). With connections, theirs. The skills, memory scopes
  * and image model are the user's, kept across starts from `stored`: none until they set some.
  */

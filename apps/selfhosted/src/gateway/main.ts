@@ -56,9 +56,7 @@
 //                               KANTEL_CONNECTIONS_ORIGIN, the origin OAuth redirects come back to, which compose.yaml
 //                               sets to the console's local address) and a vault unless KANTEL_CONNECTIONS is `off`;
 //                               CIMD `on` once the client metadata document is public
-//   KANTEL_CODEMODE, KANTEL_PROGRAMS, KANTEL_PROGRAM_WAITS, KANTEL_PRESENT_FILES
-//                               `off` takes away `codemode`, saved programs (`save_program` and /v1/programs), their
-//                               pauses, or `present_files` and `create_document` (session-tools.ts). Each is on
+//   KANTEL_PRESENT_FILES        `off` takes away `present_files` and `create_document` (session-tools.ts). On
 //                               otherwise, as on Cloudflare's deployment
 //   KANTEL_TOOL_SERVERS        `experimental` turns on tool servers (tool-servers.ts): MCP servers sessions call for
 //                               tools over a tunnel each dials to /v1/tool-servers/{id}/connect. Unset, there are none

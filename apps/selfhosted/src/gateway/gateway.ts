@@ -12,7 +12,6 @@
 //   /v1/workspaces/...          workspace read API (@kantel/workspace/read-api)
 //   /v1/audit/events, /event    audit query API (@kantel/audit/http)
 //   /v1/skills/...              skills API (@kantel/skills/http, #12): reads, and imports for the organisation's admin
-//   /v1/rules/...               prompt rules API (@kantel/rules/http): the platform's, organisation's, projects', users'
 //   /v1/memory/...              memory API (@kantel/memory/http, #12): reads and recall, and new spaces and snapshot
 //                               imports for the organisation's admin
 //   /v1/sharing/...             sharing API (@kantel/sharing/http): resource shares, access requests, bindings,
@@ -53,8 +52,6 @@ import { createEmailOtp, kantelSessionProvider, type OtpMailer } from "@kantel/i
 import { createOtpHandler } from "@kantel/identity/otp/http";
 import { createPasskeyHandler, isPasskeyPath } from "@kantel/identity/passkey/http";
 import { createMemoryApi } from "@kantel/memory/http";
-import { createProgramsApi, isProgramsPath } from "@kantel/programs/http";
-import { createRulesApi } from "@kantel/rules/http";
 import { createSessionApi, type SessionApi } from "@kantel/runtime/http";
 import { createSharingApi, isSharingPath } from "@kantel/sharing/http";
 import { createSkillsApi } from "@kantel/skills/http";
@@ -138,7 +135,6 @@ const BROWSER_ROUTES: ReadonlySet<string> = new Set([
 ]);
 const BROWSER_EMBED = /^\/v1\/sessions\/[^/]+\/browsers\/[^/]+\/embed$/;
 const SKILLS_BASE = "/v1/skills";
-const RULES_BASE = "/v1/rules";
 const MEMORY_BASE = "/v1/memory";
 
 /** Whether `path` is `base` or under it. */
@@ -285,13 +281,7 @@ export function createGateway(options: GatewayOptions): Gateway {
 		authenticate: signedIn,
 		authorizeWrite: organisationAdmin,
 	});
-	// Prompt rules: the store's own rules decide who writes what (an admin of the owner, a user's own), never an agent.
-	const rulesApi = createRulesApi({ rules: components.rules, authenticate: signedIn });
 	const notFound = () => json({ error: { code: "not_found", message: "No such route" } }, 404);
-	const rules = withAuthentication(authenticator, async (request, caller) => {
-		callers.set(request, callContextFor(caller));
-		return (await rulesApi.fetch(request)) ?? notFound();
-	});
 	const skills = withAuthentication(authenticator, async (request, caller) => {
 		callers.set(request, callContextFor(caller));
 		return (await skillsApi.fetch(request)) ?? notFound();
@@ -338,19 +328,6 @@ export function createGateway(options: GatewayOptions): Gateway {
 			: withAuthentication(authenticator, async (request, caller) => {
 					callers.set(request, callContextFor(caller));
 					return (await toolServersApi.fetch(request)) ?? notFound();
-				});
-
-	// Programs (`session-tools.ts`): the service's own checks decide who saves and runs what, as on Cloudflare.
-	const programsApi =
-		components.programs === undefined
-			? undefined
-			: createProgramsApi({ programs: components.programs, authenticate: signedIn, basePath: "/v1" });
-	const programs =
-		programsApi === undefined
-			? undefined
-			: withAuthentication(authenticator, async (request, caller) => {
-					callers.set(request, callContextFor(caller));
-					return (await programsApi.fetch(request)) ?? notFound();
 				});
 
 	// Environments: their routes need a sign-in; boat's webhook is checked by its signature, so it needs none.
@@ -431,13 +408,11 @@ export function createGateway(options: GatewayOptions): Gateway {
 					return await connections(request);
 				}
 				if (toolServers !== undefined && isToolServersPath(path)) return await toolServers(request);
-				if (isProgramsPath(path)) return programs === undefined ? notFound() : await programs(request);
 				if (modelProviders !== undefined && isModelProvidersPath(path)) return await modelProviders(request);
 				if (environmentsApi !== undefined && path === boatWebhookPath()) {
 					return (await environmentsApi.fetch(request)) ?? notFound();
 				}
 				if (environments !== undefined && isEnvironmentsPath(path)) return await environments(request);
-				if (under(path, RULES_BASE)) return await rules(request);
 				if (approval !== undefined && isApprovalApiPath(path)) {
 					return await approval(request);
 				}
