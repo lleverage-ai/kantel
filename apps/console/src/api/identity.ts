@@ -13,7 +13,7 @@
 // (`GET /v1/organisations`), keeps the one they choose in localStorage beside the session, and sends it as
 // `Kantel-Organisation` on every call. Signing out forgets it.
 
-import type { MeResponse, SignInMethod } from "@kantel/contracts";
+import type { MeResponse, SignInMethod, UserPreferences, UserPreferencesChange } from "@kantel/contracts";
 import { authenticationFailureOf, ORGANISATION_HEADER } from "@kantel/contracts";
 import {
 	createIdentityClient,
@@ -133,6 +133,12 @@ export type ConsoleBoot =
 			readonly actor: ConsoleActor;
 			/** Headers every API call sends: the session's bearer when signed in with a code, else none. */
 			readonly headers: () => Record<string, string>;
+			/**
+			 * Changes this person's settings (`PATCH /v1/me/preferences`), as this sign-in: with the credentials it booted
+			 * with, and only while it lasts. Once the console signs out, forgets the session or boots again, a call is
+			 * refused without being sent, so a write queued for one person can never go out as the next.
+			 */
+			readonly setPreferences: (change: UserPreferencesChange) => Promise<UserPreferences>;
 	  }
 	/** Signed in to several organisations and none chosen: ask which, then boot again. */
 	| {
@@ -180,9 +186,17 @@ export function createConsoleIdentity(options: ConsoleIdentityOptions): ConsoleI
 		},
 	};
 
+	// The sign-in the last boot found. Signing out, forgetting the session or booting again ends it.
+	let current: { ended: boolean } | undefined;
+	const end = () => {
+		if (current !== undefined) current.ended = true;
+		current = undefined;
+	};
+
 	const identity: ConsoleIdentity = {
 		client,
 		async boot(signal) {
+			end();
 			let me: MeResponse;
 			try {
 				me = await client.me(signal);
@@ -210,15 +224,27 @@ export function createConsoleIdentity(options: ConsoleIdentityOptions): ConsoleI
 				stubbed: false,
 				...(ownSession ? { signOut: () => identity.signOut() } : {}),
 			};
-			return { kind: "signed-in", me, actor, headers };
+			const sign = { ended: false };
+			current = sign;
+			const signedIn = headers();
+			const own = createIdentityClient({
+				baseUrl: options.baseUrl ?? "",
+				headers: () => signedIn,
+				...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+			});
+			const setPreferences = (change: UserPreferencesChange) =>
+				sign.ended ? Promise.reject(new Error("that sign-in has ended")) : own.setPreferences(change);
+			return { kind: "signed-in", me, actor, headers, setPreferences };
 		},
 		async signOut() {
+			end();
 			const token = tokens.get();
 			tokens.clear();
 			choice.clear();
 			if (token !== undefined) await client.endSession(token).catch(() => {});
 		},
 		forget: () => {
+			end();
 			tokens.clear();
 			choice.clear();
 		},

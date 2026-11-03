@@ -10,5 +10,6 @@ export * from "./models.ts";
 export * from "./sandbox.ts";
 export * from "./session.ts";
 export * from "./sharing.ts";
+export * from "./theme-preference.ts";
 export * from "./usage.ts";
 export * from "./workspace.ts";

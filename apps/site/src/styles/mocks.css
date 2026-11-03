@@ -1,5 +1,5 @@
-/* The mocked console: small recreations of Kantel's screens, in its default theme (`kantel`, @kantel/ui's
-   tokens.css, imported by site.css). Every value here is one of the console's --kt-* tokens, so a mock looks like the
+/* The mocked console: small recreations of Kantel's screens, in its default theme (dark, @kantel/ui's
+   tokens.css and dark.css, imported by site.css). Every value here is one of the console's --kt-* tokens, so a mock looks like the
    product and follows it when a token changes. The classes copy what @kantel/ui's primitives draw (a card, a badge, a
    button, a field list), not their code: the console's React components aren't worth bundling into a static page for
    a picture of them.

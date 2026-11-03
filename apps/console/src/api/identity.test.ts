@@ -9,6 +9,7 @@ import { createEmailOtp, createMemoryOtpStores, kantelSessionProvider, MemoryOtp
 import { createOtpHandler } from "@kantel/identity/otp/http";
 import { createSignInFlow } from "@kantel/ui";
 import { describe, expect, it } from "vitest";
+import { orderedSaves } from "../state/theme-sync.ts";
 import { type ConsoleBoot, createConsoleIdentity, memoryChoice, memoryTokens, storageTokens } from "./identity.ts";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "test" }, organisationId: "bootstrap" };
@@ -168,6 +169,83 @@ describe("the console's sign-in", () => {
 
 		await consoleIdentity.signOut();
 		expect(choice.get()).toBeUndefined();
+	});
+
+	it("sends a sign-in's preference writes as that sign-in only: one queued past sign-out is never sent as the next person", async () => {
+		const identity = createMemoryIdentity();
+		const GRACE = "grace@kantel.test";
+		for (const [name, email] of [
+			["Ada Lovelace", ADA],
+			["Grace Hopper", GRACE],
+		] as const) {
+			const user = await identity.createUser(bootstrap, { name, email });
+			await identity.createOrganisation(bootstrap, { name, admin: { kind: "user", userId: user.id } });
+		}
+		const stores = createMemoryOtpStores();
+		const mailer = new MemoryOtpMailer();
+		const sending: Promise<unknown>[] = [];
+		const otp = createEmailOtp({ identity, ...stores, mailer, defer: (work) => sending.push(work) });
+		const otpRoutes = createOtpHandler({ otp });
+		const identityRoutes = createIdentityHandler({
+			identity,
+			authenticator: createAuthenticator({ identity, providers: [kantelSessionProvider(stores)] }),
+			signIn: ["email_otp"],
+		});
+		// Preference writes wait until the test lets each one through, as a slow network would hold them.
+		const patches: { bearer: string | null; body: string }[] = [];
+		const held: (() => void)[] = [];
+		const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+			const request = new Request(input, init);
+			if (new URL(request.url).pathname.startsWith("/auth/")) return otpRoutes(request);
+			if (request.method === "PATCH") {
+				patches.push({ bearer: request.headers.get("authorization"), body: await request.clone().text() });
+				await new Promise<void>((release) => held.push(release));
+			}
+			return identityRoutes(request);
+		};
+		const tokens = memoryTokens();
+		const consoleIdentity = createConsoleIdentity({ baseUrl: ORIGIN, fetch, tokens });
+		const signInAs = async (email: string) => {
+			const signIn = expectKind(await consoleIdentity.boot(), "sign-in");
+			await signIn.api.start(email);
+			await Promise.all(sending.splice(0));
+			await signIn.api.verify(email, mailer.lastCodeFor(email) ?? "");
+			return { boot: expectKind(await consoleIdentity.boot(), "signed-in"), bearer: `Bearer ${tokens.get()}` };
+		};
+		const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+		const ada = await signInAs(ADA);
+		const failed: unknown[] = [];
+		const save = orderedSaves(
+			(theme) => ada.boot.setPreferences({ theme }),
+			(error) => failed.push(error),
+		);
+		save("light"); // in flight, held
+		save("dark"); // queued behind it
+		await settle();
+		expect(patches).toEqual([{ bearer: ada.bearer, body: JSON.stringify({ theme: "light" }) }]);
+
+		// Ada signs out and Grace signs in before Ada's first write answers.
+		await ada.boot.actor.signOut?.();
+		const grace = await signInAs(GRACE);
+		held.shift()?.();
+		await settle();
+		await settle();
+		// Ada's queued choice was dropped, not sent with Grace's session.
+		expect(patches.map((patch) => patch.bearer)).toEqual([ada.bearer]);
+		expect(failed).toHaveLength(2);
+		expect(expectKind(await consoleIdentity.boot(), "signed-in").me.preferences).toEqual({});
+
+		// Grace's own writes go out as her.
+		const now = expectKind(await consoleIdentity.boot(), "signed-in");
+		const saving = now.setPreferences({ theme: "light" });
+		await settle();
+		held.shift()?.();
+		expect(await saving).toEqual({ theme: "light" });
+		expect(patches.at(-1)?.bearer).toBe(grace.bearer);
+		// And an ended boot refuses without sending.
+		await expect(grace.boot.setPreferences({ theme: "dark" })).rejects.toThrow("ended");
+		expect(patches).toHaveLength(2);
 	});
 
 	it("fails the boot, rather than asking to sign in, when Kantel can't be reached", async () => {

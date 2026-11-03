@@ -141,9 +141,10 @@ export {
 } from "./primitives/surface.tsx";
 export { Switch, type SwitchProps } from "./primitives/switch.tsx";
 export { ClockTime, Elapsed, RelativeTime } from "./primitives/time.tsx";
-export { THEME_STORAGE_KEY, themeBootScript } from "./theme/boot.ts";
+export { DEFAULT_THEME_PREFERENCE, THEME_STORAGE_KEY, themeBootScript } from "./theme/boot.ts";
 export {
 	createThemeController,
+	readThemeCache,
 	SYSTEM_THEME,
 	type ThemeCache,
 	type ThemeController,
@@ -151,32 +152,6 @@ export {
 	type ThemeState,
 	themeController,
 } from "./theme/controller.ts";
-export { createThemeRegistry, type ThemeRegistry } from "./theme/registry.ts";
-export {
-	ThemePicker,
-	type ThemePickerProps,
-	themeShortcut,
-	useThemeShortcut,
-	useThemeState,
-} from "./theme/theme-picker.tsx";
+export { ThemeMenu, ThemeSwitch, type ThemeSwitchProps, useThemeState } from "./theme/theme-switch.tsx";
 export { contrast, distance } from "./tokens/colour.ts";
-export {
-	isSafeValue,
-	PALETTE_TOKENS,
-	parseTheme,
-	type ResolvedTheme,
-	resolveTheme,
-	THEME_ID,
-	THEME_TOKENS,
-	type ThemeDefinition,
-	type ThemeKind,
-	type ThemeProblem,
-	type ThemeSource,
-	type TokenGroup,
-	type TokenSpec,
-	themeCss,
-	themeSelector,
-	tokenSpec,
-} from "./tokens/theme-schema.ts";
-export { builtinThemes, DEFAULT_LIGHT_THEME, DEFAULT_THEME } from "./tokens/themes/index.ts";
 export { type Status, statusLabel, token } from "./tokens/tokens.ts";

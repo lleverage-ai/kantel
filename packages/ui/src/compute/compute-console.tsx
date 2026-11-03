@@ -1,3 +1,4 @@
+import type { ThemePreference } from "@kantel/contracts";
 import { type MouseEvent, type ReactNode, useCallback, useMemo, useState } from "react";
 import { KantelLockup } from "../brand/kantel.tsx";
 import { SignedInAs } from "../identity/signed-in-as.tsx";
@@ -19,6 +20,7 @@ import { Sidebar, SidebarBrand, SidebarItem, SidebarSection, SidebarToggle } fro
 import { Spinner } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { Notice } from "../primitives/surface.tsx";
+import { ThemeMenu, ThemeSwitch } from "../theme/theme-switch.tsx";
 import { AccountSwitcher, CreateOrganisationDialog, JoinOrganisationDialog } from "./account-switcher.tsx";
 import { ComputeApiKeysPage } from "./api-keys-page.tsx";
 import { BillingPage } from "./billing-page.tsx";
@@ -152,6 +154,8 @@ export interface ComputeConsoleProps {
 	readonly onSignOut?: () => void;
 	/** The sign-in's name and email, when the app knows them better than the source. */
 	readonly signedInAs?: { readonly name?: string; readonly email?: string };
+	/** The person chose a theme in the sidebar's switch, which has applied it: the app keeps it for them. */
+	readonly onThemeChoose?: (preference: ThemePreference) => void;
 }
 
 const SHELL = "kt-app grid h-dvh";
@@ -170,6 +174,7 @@ export function ComputeConsole({
 	initialAccountId,
 	onSignOut,
 	signedInAs,
+	onThemeChoose,
 }: ComputeConsoleProps) {
 	const viewer = useLoad(() => source.accounts.viewer(), [source]);
 	const accounts = useLoad(() => source.accounts.list(), [source]);
@@ -259,6 +264,7 @@ export function ComputeConsole({
 						viewer={me}
 						signedInAs={signedInAs}
 						onSignOut={onSignOut}
+						onThemeChoose={onThemeChoose}
 					/>
 				}
 			>
@@ -559,7 +565,7 @@ function PageFor({
 	}
 }
 
-/** The sidebar's foot: which Kantel this is, and who is signed in. */
+/** The sidebar's foot: which Kantel this is, the theme switch, and who is signed in. */
 function Foot({
 	collapsed,
 	hosting,
@@ -567,6 +573,7 @@ function Foot({
 	viewer,
 	signedInAs,
 	onSignOut,
+	onThemeChoose,
 }: {
 	collapsed: boolean;
 	hosting: ComputeSource["hosting"];
@@ -574,6 +581,7 @@ function Foot({
 	viewer: ComputeViewer | undefined;
 	signedInAs: { readonly name?: string; readonly email?: string } | undefined;
 	onSignOut: (() => void) | undefined;
+	onThemeChoose: ((preference: ThemePreference) => void) | undefined;
 }) {
 	const name = signedInAs?.name ?? viewer?.name;
 	const email = signedInAs?.email ?? viewer?.email;
@@ -585,6 +593,19 @@ function Foot({
 						{hosting === "hosted" ? "Hosted demo" : "Self-hosted"}
 					</Badge>
 					{sample ? <Badge tone="waiting">Sample data</Badge> : null}
+				</div>
+			)}
+			{collapsed ? (
+				// The rail (and a phone, whose sidebar is always one): the same choices behind an icon.
+				<div className="flex justify-center">
+					<ThemeMenu {...(onThemeChoose === undefined ? {} : { onChoose: onThemeChoose })} />
+				</div>
+			) : (
+				<div className="flex items-center justify-between gap-2 px-2.5">
+					<span className="text-xs text-faint" aria-hidden="true">
+						Theme
+					</span>
+					<ThemeSwitch {...(onThemeChoose === undefined ? {} : { onChoose: onThemeChoose })} />
 				</div>
 			)}
 			<SignedInAs

@@ -1,5 +1,5 @@
 /* Highlighted code: highlight.js's classes onto the theme's syntax tokens. Nothing here has a colour of its own, so a
-   theme switch restyles every block on the page at once. A theme sets the tokens (src/tokens/theme-schema.ts). */
+   theme switch restyles every block on the page at once. The themes set the tokens (src/tokens/dark.css, light.css). */
 
 .kt-syntax {
 	color: var(--kt-syntax-text);

@@ -88,7 +88,7 @@ centred on their text within 1px, and a story for every required state; `--only`
 | `OneTimeSecret`, `CommandBlock` | A secret shown once when it is made (a host's join token, an API key) with Copy, the commands that use it and an "I've stored it"; a command to run, with its own Copy | Anything Kantel can show again (use `Code` or `FieldList`) |
 | `Spinner`, `Skeleton` | Loading, when the shape is known (skeleton) or not (spinner) | Loads under about 300ms |
 | `Kbd` | A key or chord in text | |
-| `ThemePicker` | Choosing the page's theme, with a live preview ([docs/theming.md](docs/theming.md)) | Per-component colours (themes are tokens) |
+| `ThemeSwitch` | Choosing System, Light or Dark ([docs/theming.md](docs/theming.md)) | Per-component colours (themes are tokens) |
 | `Code` | Code in the theme's syntax colours: a command, a snapshot's file, a webhook's payload | Editing code |
 | `RelativeTime`, `Elapsed` | Times, on one shared clock | |
 | `ClockTime` | A moment in a timeline, by the clock ("16:38") | Ages that should read "4m" (use `RelativeTime`) |
@@ -98,7 +98,7 @@ The compute console (`ComputeConsole` and its pages: sandboxes, snapshots, keys,
 OpenTelemetry, the organisation, billing, hosts and the device page) is in `src/compute/`. It calls a `ComputeSource`
 the host binds; `@kantel/ui/compute/fixtures` serves stories and the console's recorded mode.
 `SignInScreen` and `SignedInAs` are in `src/identity/`; they take the identity client's calls.
-Themes (the colour tokens, the built-in themes, the picker, and how to add one or load a custom one) are in
+The two themes (the colour tokens, the dark and light palettes, the switch, and how to change a palette) are in
 [docs/theming.md](docs/theming.md).
 
 Each primitive's purpose, when not to use it, its states and its cost are in [docs/components.md](docs/components.md).

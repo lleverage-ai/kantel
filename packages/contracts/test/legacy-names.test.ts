@@ -1,8 +1,7 @@
-// The names from before the rename that Kantel still accepts: headers, token prefixes and theme IDs.
+// The names from before the rename that Kantel still accepts: headers and token prefixes.
 
 import { describe, expect, it } from "vitest";
 import {
-	currentThemeId,
 	hasTokenPrefix,
 	legacyHeaderName,
 	readHeader,
@@ -73,16 +72,5 @@ describe("token prefixes", () => {
 		expect(hasTokenPrefix("ktt_a", "tunnel")).toBe(true);
 		expect(hasTokenPrefix("hbt_a", "tunnel")).toBe(true);
 		expect(hasTokenPrefix("HBT_a", "tunnel")).toBe(false);
-	});
-});
-
-describe("currentThemeId", () => {
-	it("reads the built-in themes' IDs from before the rename as today's, and keeps every other", () => {
-		expect(currentThemeId("harbour")).toBe("kantel");
-		expect(currentThemeId("harbour-light")).toBe("kantel-light");
-		expect(currentThemeId("kantel")).toBe("kantel");
-		expect(currentThemeId("system")).toBe("system");
-		expect(currentThemeId("rose-pine")).toBe("rose-pine");
-		expect(currentThemeId("toString")).toBe("toString");
 	});
 });

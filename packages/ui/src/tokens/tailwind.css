@@ -1,7 +1,7 @@
 /* Tailwind v4 for @kantel/ui: the utilities a component uses in its className, resolved to Kantel's tokens.
 
-   Map, don't move. tokens.css still defines every --kt-* token and the themes (src/tokens/themes/) still set them on
-   [data-kt-theme]. The @theme block below only names them for Tailwind, `inline`, so a utility compiles to the token
+   Map, don't move. tokens.css and the two themes' palettes (dark.css, light.css, which light sets on
+   [data-kt-theme="light"]) define every --kt-* token. The @theme block below only names them for Tailwind, `inline`, so a utility compiles to the token
    itself (`bg-canvas` is `background-color: var(--kt-canvas)`) and follows a theme switch at runtime with nothing
    rebuilt. A new token goes in tokens.css first, then here if a utility should reach it.
 
@@ -126,7 +126,7 @@
 	--color-drop-fill: var(--kt-drop-fill);
 	--color-drop-line: var(--kt-drop-line);
 
-	/* Type: `font-sans`, `font-display`, `font-mono` (each the theme's: theme-schema.ts); `text-2xs` to `text-lg`,
+	/* Type: `font-sans`, `font-display`, `font-mono` (tokens.css); `text-2xs` to `text-lg`,
 	   `text-code`, `text-title` and the document sizes; `font-regular`, `font-medium`, `font-strong`; `leading-tight`,
 	   `leading-normal`, `leading-prose`. A size sets only the font-size: line height is its own utility, as in the CSS
 	   it replaces. */
@@ -189,7 +189,6 @@
 	--container-rail: var(--kt-rail-width);
 	--container-popover: var(--kt-popover-width);
 	--container-menu: var(--kt-menu-width);
-	--container-palette: var(--kt-palette-width);
 	--container-share: var(--kt-share-width);
 	--container-doc: var(--kt-doc-width);
 

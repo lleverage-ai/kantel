@@ -1,4 +1,5 @@
 import { KantelApiError } from "@kantel/api/sdk";
+import type { ThemePreference } from "@kantel/contracts";
 import { Button, ComputeConsole, type ComputeSource, type HostingMode, Notice } from "@kantel/ui";
 import { createComputeFixtures } from "@kantel/ui/compute/fixtures";
 import { useEffect, useState } from "react";
@@ -118,6 +119,7 @@ export function ComputeApp({
 	onSignOut,
 	headers,
 	onUnauthenticated,
+	onThemeChoose,
 }: {
 	/** Who `GET /v1/me` says is signed in; the sample data's person without it. */
 	signedInAs?: { readonly name?: string; readonly email?: string };
@@ -126,6 +128,8 @@ export function ComputeApp({
 	headers?: () => Record<string, string>;
 	/** A 401 from the compute API: the sign-in has ended. */
 	onUnauthenticated?: () => void;
+	/** The person chose a theme in the sidebar: keep it for them. Without it (a recording) it is kept in this browser. */
+	onThemeChoose?: (preference: ThemePreference) => void;
 }) {
 	const pathname = usePathname();
 	const narrow = useMedia(NARROW_QUERY);
@@ -181,6 +185,7 @@ export function ComputeApp({
 			sample={sourced.sample}
 			{...(signedInAs === undefined ? {} : { signedInAs })}
 			{...(onSignOut === undefined ? {} : { onSignOut })}
+			{...(onThemeChoose === undefined ? {} : { onThemeChoose })}
 		/>
 	);
 }
