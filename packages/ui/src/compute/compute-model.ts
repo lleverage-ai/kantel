@@ -178,6 +178,8 @@ export interface SandboxAccess {
 	readonly ssh: string;
 	/** Its desktop in the browser. */
 	readonly desktopUrl: string;
+	/** The same desktop to watch only: Kantel drops the viewer's keyboard and mouse. */
+	readonly desktopViewUrl: string;
 	/** Only its browser, without the desktop. */
 	readonly browserUrl: string;
 }

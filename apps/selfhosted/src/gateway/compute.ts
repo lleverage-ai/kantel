@@ -68,7 +68,8 @@ import {
 import { bootstrapSuperAdmin } from "@kantel/compute/serve";
 import { createStubBackend } from "@kantel/compute/stub";
 import { type Authenticator, callContextFor, type IdentityDirectory, KantelError } from "@kantel/contracts";
-import { createHostBackend, DESKTOP_PORT } from "@kantel/hosts/backend";
+import { createHostBackend } from "@kantel/hosts/backend";
+import { createDesktopRoutes, type DesktopSocket, HOSTS_DESKTOP_PATH } from "@kantel/hosts/desktop";
 import { createHostsApi, HOSTS_CONNECT_PATH, HOSTS_REGISTER_PATH } from "@kantel/hosts/http";
 import { openPortWebSocket } from "@kantel/hosts/port-websocket";
 import { createPortRouter, type PortRouter } from "@kantel/hosts/ports";
@@ -76,7 +77,6 @@ import { HOST_CLOSE_REVOKED, HOST_MAX_MESSAGE_BYTES } from "@kantel/hosts/protoc
 import { createHostsService, type HostsService } from "@kantel/hosts/service";
 import type { HostStore } from "@kantel/hosts/store";
 import { HOSTS_TUNNEL_PATH, verifyTunnel } from "@kantel/hosts/tunnel";
-import { desktopViewerHtml, HOSTS_VIEW_PATH, VIEWER_CSP } from "@kantel/hosts/viewer";
 import { WebSocketServer } from "ws";
 import type { UpgradeHandler } from "./node-http.ts";
 
@@ -329,30 +329,19 @@ export async function gatewayCompute(options: {
 			authorizeAdmin: () => Promise.reject(new KantelError("not_found", "Not found")),
 		});
 		const images = hosts.config.images === undefined ? undefined : hostImages(hosts.config.images);
+		const desktops = createDesktopRoutes({
+			secret: hosts.tunnelSecret,
+			openPort: (sandboxId, port, sink) => hosts.service.sandboxes.openPort(sandboxId, port, sink),
+			...(options.now === undefined ? {} : { now: options.now }),
+		});
 		hostRoutes = async (request) => {
 			const path = new URL(request.url).pathname;
 			if (path === HOSTS_REGISTER_PATH) return register.fetch(request);
 			if (path.startsWith(`${HOST_IMAGES_PATH}/`)) {
 				return (await images?.(request)) ?? new Response("Not found", { status: 404 });
 			}
-			if (path.startsWith(`${HOSTS_VIEW_PATH}/`) && request.method === "GET") {
-				// A desktop's page: only for a live desktop ticket, which the page then opens as its tunnel.
-				const ticket = path.slice(HOSTS_VIEW_PATH.length + 1);
-				const grant = ticket.includes("/")
-					? undefined
-					: await verifyTunnel(hosts.tunnelSecret, ticket, (options.now ?? Date.now)());
-				if (grant === undefined || grant.port !== DESKTOP_PORT) {
-					return new Response("This desktop link has expired or isn't valid.", { status: 404 });
-				}
-				return new Response(desktopViewerHtml(), {
-					headers: {
-						"content-type": "text/html; charset=utf-8",
-						"content-security-policy": VIEWER_CSP,
-						"cache-control": "no-store",
-						"referrer-policy": "no-referrer",
-					},
-				});
-			}
+			// A desktop's page and Selkies' files, for a live desktop ticket.
+			if (path.startsWith(`${HOSTS_DESKTOP_PATH}/`)) return desktops.fetch(request);
 			return undefined;
 		};
 	}
@@ -379,9 +368,10 @@ function bytesOf(data: unknown): Uint8Array {
 /**
  * Hosts' connections and sandboxes' tunnels, then whatever served upgrades before.
  *
- * A tunnel is `/v1/hosts/tunnel/{ticket}`, a WebSocket of binary frames carrying the port's raw TCP (VNC for noVNC,
- * SSH through a ProxyCommand), or `/v1/hosts/tunnel/{ticket}/{path}`, an HTTP upgrade passed through to the port with
- * that path (Chromium's DevTools WebSocket, for Playwright's `connectOverCDP`).
+ * A tunnel is `/v1/hosts/tunnel/{ticket}`, a WebSocket of binary frames carrying the port's raw TCP (SSH through a
+ * ProxyCommand), or `/v1/hosts/tunnel/{ticket}/{path}`, an HTTP upgrade passed through to the port with that path
+ * (Chromium's DevTools WebSocket, for Playwright's `connectOverCDP`). A desktop's stream is
+ * `/v1/hosts/desktop/{ticket}/api/websockets` (`@kantel/hosts/desktop`), which filters a view-only ticket's messages.
  */
 export function withHostUpgrades(
 	hosts: GatewayHostsBackend | undefined,
@@ -391,6 +381,11 @@ export function withHostUpgrades(
 	if (hosts === undefined) return next;
 	const compute = hosts.service;
 	const sockets = new WebSocketServer({ noServer: true, maxPayload: HOST_MAX_MESSAGE_BYTES });
+	const desktops = createDesktopRoutes({
+		secret: hosts.tunnelSecret,
+		openPort: (sandboxId, port, sink) => compute.sandboxes.openPort(sandboxId, port, sink),
+		now,
+	});
 	return (incoming: IncomingMessage, socket: Duplex, head: Buffer) => {
 		const path = new URL(incoming.url ?? "/", "http://gateway").pathname;
 		const refuse = (code: number, reason: string) =>
@@ -404,13 +399,28 @@ export function withHostUpgrades(
 			}
 			return passThrough(port.sandboxId, port.port, port.path, port.host);
 		}
+		if (path.startsWith(`${HOSTS_DESKTOP_PATH}/`)) {
+			void desktops.socket(incoming.url ?? "/").then(
+				(target) => {
+					if (target === undefined || target === "refused") {
+						return refuse(HOST_CLOSE_REVOKED, "The desktop URL is wrong or has expired");
+					}
+					return passThrough(target.sandboxId, target.port, target.path, undefined, target);
+				},
+				() => refuse(1011, "The gateway could not check the desktop URL"),
+			);
+			return;
+		}
 		const tunnel = TUNNEL_PATH.exec(path);
 		if (tunnel?.[1] !== undefined) {
 			const ticket = tunnel[1];
 			const rest = tunnel[2];
 			void verifyTunnel(hosts.tunnelSecret, ticket, now()).then(
 				(grant) => {
-					if (grant === undefined) return refuse(HOST_CLOSE_REVOKED, "The tunnel URL is wrong or has expired");
+					// A desktop's ticket opens only the desktop's route, where its mode is enforced.
+					if (grant === undefined || grant.desktop !== undefined) {
+						return refuse(HOST_CLOSE_REVOKED, "The tunnel URL is wrong or has expired");
+					}
 					if (rest === undefined) return rawTunnel(grant.sandboxId, grant.port);
 					return passThrough(grant.sandboxId, grant.port, rest);
 				},
@@ -482,11 +492,14 @@ export function withHostUpgrades(
 		/**
 		 * The client's WebSocket, passed message by message to a WebSocket at `path` on the port, which the gateway opens
 		 * as a client on 127.0.0.1 (Chromium refuses DevTools to any other Host). Not raw bytes: Bun drops what is written
-		 * to an upgrade's socket, so the client's side has to be `ws`'s.
+		 * to an upgrade's socket, so the client's side has to be `ws`'s. A desktop's `path` comes with its query, and its
+		 * `accept` drops what a view-only client sends.
 		 */
-		function passThrough(sandboxId: string, port: number, rest: string, host?: string) {
+		function passThrough(sandboxId: string, port: number, rest: string, host?: string, desktop?: DesktopSocket) {
 			// An exposed port's path comes with its query (less the token); a tunnel's takes the request's.
-			const query = host === undefined ? new URL(incoming.url ?? "/", "http://gateway").search : "";
+			const query =
+				host === undefined && desktop === undefined ? new URL(incoming.url ?? "/", "http://gateway").search : "";
+			const accept = desktop?.accept;
 			sockets.handleUpgrade(incoming, socket, head, (accepted) => {
 				const inner = openPortWebSocket(
 					(sink) => compute.sandboxes.openPort(sandboxId, port, sink),
@@ -502,7 +515,10 @@ export function withHostUpgrades(
 					},
 					...(host === undefined ? [] : [host]),
 				);
-				accepted.on("message", (data, binary) => inner.send(binary ? bytesOf(data) : data.toString(), binary));
+				accepted.on("message", (data, binary) => {
+					const message = binary ? bytesOf(data) : data.toString();
+					if (accept === undefined || accept(message, binary)) inner.send(message, binary);
+				});
 				accepted.on("close", () => inner.close());
 				accepted.on("error", () => accepted.terminate());
 			});

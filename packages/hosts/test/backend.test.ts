@@ -338,16 +338,20 @@ describe("the compute API on kantel-host hosts", () => {
 		new FakeHost(service, hostId).connect();
 		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
 
-		// The desktop is a page that opens the tunnel with the same ticket.
+		// The desktop is Selkies' page on the gateway, whose stream goes through it with the same ticket.
 		const desktop = await root.openDesktop(sandbox.id, { ttlMinutes: 5 });
-		const page = "https://kantel.test/v1/hosts/view/";
-		expect(desktop.url.startsWith(page)).toBe(true);
+		const page = "https://kantel.test/v1/hosts/desktop/";
+		const ticketOf = (url: string) => url.slice(page.length).split("/")[0] ?? "";
+		expect(desktop.url).toMatch(new RegExp(`^${page}[^/]+/$`));
 		expect(desktop.embedUrl).toBe(desktop.url);
-		const ticket = desktop.url.slice(page.length);
-		expect((await root.openDesktop(sandbox.id, { viewOnly: true })).url).toMatch(/\?viewOnly=1$/);
+		const ticket = ticketOf(desktop.url);
 		const prefix = `wss://kantel.test${HOSTS_TUNNEL_PATH}/`;
 		const grant = await verifyTunnel(secret, ticket, Date.now());
-		expect(grant).toMatchObject({ sandboxId: sandbox.id, port: 5901 });
+		expect(grant).toMatchObject({ sandboxId: sandbox.id, port: 6080, desktop: "control" });
+		// View-only is signed into the ticket, so the gateway enforces it; the fragment is for Selkies' viewer page.
+		const watch = await root.openDesktop(sandbox.id, { viewOnly: true });
+		expect(watch.url).toMatch(new RegExp(`^${page}[^/]+/#shared$`));
+		expect(await verifyTunnel(secret, ticketOf(watch.url), Date.now())).toMatchObject({ port: 6080, desktop: "view" });
 		expect(await verifyTunnel(crypto.getRandomValues(new Uint8Array(32)), ticket, Date.now())).toBeUndefined();
 		expect(await verifyTunnel(secret, ticket, Date.now() + 6 * 60_000)).toBeUndefined();
 		expect(await verifyTunnel(secret, `${ticket.slice(0, -2)}xx`, Date.now())).toBeUndefined();
@@ -362,7 +366,7 @@ describe("the compute API on kantel-host hosts", () => {
 		expect(cdpGrant?.expiresAt).toBeLessThanOrEqual(Date.now() + 10 * 60_000);
 		expect(browser.expiresAt).toBeLessThanOrEqual(Date.now() + 10 * 60_000);
 		const longest = await root.openDesktop(sandbox.id, { ttlMinutes: 60 });
-		expect(await verifyTunnel(secret, longest.url.slice(page.length), Date.now() + 59 * 60_000)).toBeDefined();
+		expect(await verifyTunnel(secret, ticketOf(longest.url), Date.now() + 59 * 60_000)).toBeDefined();
 		expect((await failure(root.openDesktop(sandbox.id, { ttlMinutes: 61 }))).code).toBe("invalid");
 		expect((await failure(root.openSsh(sandbox.id, { ttlMinutes: 24 * 60 }))).code).toBe("invalid");
 

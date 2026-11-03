@@ -4,7 +4,7 @@
  *
  * A snapshot's `ref` is `{hostId}/{snapshotId}`: a snapshot lives on its host's disk, so a sandbox made or forked from
  * it goes on that host. Desktops, browsers and SSH are reached through signed tunnel URLs (`tunnel.ts`): the desktop's
- * VNC as raw TCP over a WebSocket of binary frames, opened by a noVNC page on the gateway (`viewer.ts`), Chromium's
+ * Selkies stream at a page on the gateway (`desktop.ts`), view-only enforced there when the ticket says so, Chromium's
  * DevTools WebSocket passed through for `connectOverCDP`, and sshd as raw TCP for an `ssh -o ProxyCommand=…`. Exposed ports
  * are offered when the gateway has a wildcard name for them (`ports.ts`), token-gated unless exposed `public`.
  */
@@ -21,14 +21,14 @@ import type {
 	TakenSnapshot,
 } from "@kantel/compute";
 import { KantelError } from "@kantel/contracts";
+import { DESKTOP_PORT, desktopPath } from "./desktop.ts";
 import type { PortRouter } from "./ports.ts";
 import type { HostEgress, HostSandbox, SandboxTier } from "./protocol.ts";
 import type { HostsService, HostView } from "./service.ts";
-import { HOSTS_TUNNEL_PATH, MAX_TUNNEL_MINUTES, signTunnel } from "./tunnel.ts";
-import { HOSTS_VIEW_PATH } from "./viewer.ts";
+import { type DesktopMode, HOSTS_TUNNEL_PATH, MAX_TUNNEL_MINUTES, signTunnel } from "./tunnel.ts";
 
-/** Where the guest image's desktop (VNC, loopback), Chromium (CDP) and sshd listen. */
-export const DESKTOP_PORT = 5901;
+export { DESKTOP_PORT } from "./desktop.ts";
+/** Where the guest image's Chromium (CDP) and sshd listen; its desktop stream is `DESKTOP_PORT`. */
 export const BROWSER_PORT = 9222;
 export const SSH_PORT = 22;
 
@@ -201,19 +201,25 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		return placed(sandboxId, sandbox, hostId);
 	}
 
-	async function ticketFor(sandboxId: string, port: number, ttlMinutes: number): Promise<string> {
+	async function ticketFor(
+		sandboxId: string,
+		port: number,
+		ttlMinutes: number,
+		desktop?: DesktopMode,
+	): Promise<string> {
 		await tierOf(sandboxId);
 		return signTunnel(options.tunnelSecret, {
 			sandboxId,
 			port,
 			expiresAt: now() + Math.max(1, Math.min(ttlMinutes, MAX_TUNNEL_MINUTES)) * 60_000,
+			...(desktop === undefined ? {} : { desktop }),
 		});
 	}
 
-	/** The desktop's noVNC page (viewer.ts), which opens the tunnel with the same ticket. */
+	/** The desktop's Selkies page (desktop.ts); view-only is the ticket's, signed, so the gateway enforces it. */
 	async function desktopPage(sandboxId: string, ttlMinutes: number, viewOnly: boolean): Promise<string> {
-		const ticket = await ticketFor(sandboxId, DESKTOP_PORT, ttlMinutes);
-		return `${httpBase}${HOSTS_VIEW_PATH}/${ticket}${viewOnly ? "?viewOnly=1" : ""}`;
+		const mode: DesktopMode = viewOnly ? "view" : "control";
+		return `${httpBase}${desktopPath(await ticketFor(sandboxId, DESKTOP_PORT, ttlMinutes, mode), mode)}`;
 	}
 
 	async function tunnel(sandboxId: string, port: number, ttlMinutes: number): Promise<string> {
@@ -426,7 +432,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		async openDesktop(sandboxId, { ttlMinutes, viewOnly }) {
 			const { tier } = await tierOf(sandboxId);
 			if (tier !== "microvm") throw new KantelError("not_supported", "An isolate has no desktop");
-			// A noVNC page (viewer.ts) that opens the tunnel with the same ticket.
+			// Selkies' page (desktop.ts), whose stream goes through the gateway with the same ticket.
 			const url = await desktopPage(sandboxId, ttlMinutes, viewOnly);
 			return { url, embedUrl: url };
 		},

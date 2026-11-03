@@ -234,23 +234,29 @@ describe("the compute plane on the gateway", () => {
 		const images = await gateway.fetch(new Request("http://gateway.test/v1/hosts/images/manifest.json"));
 		expect(images.status).toBe(404);
 
-		// A desktop's page answers only a live desktop ticket signed with the gateway's secret.
+		// A desktop's page answers only a live desktop ticket signed with the gateway's secret, with no sign-in.
 		const secret = new Uint8Array(32);
-		const ticket = (port: number, expiresAt = Date.now() + 60_000) =>
-			signTunnel(secret, { sandboxId: "sbx_1", port, expiresAt });
-		const view = (path: string) => gateway.fetch(new Request(`http://gateway.test/v1/hosts/view/${path}`));
-		const page = await view(await ticket(5901));
-		expect(page.status).toBe(200);
-		expect(page.headers.get("content-security-policy")).toContain("default-src 'none'");
-		expect(await page.text()).toContain("@novnc/novnc@");
-		expect((await view(await ticket(22))).status).toBe(404);
-		expect((await view(await ticket(5901, Date.now() - 1))).status).toBe(404);
+		const ticket = (port: number, desktop?: "control" | "view", expiresAt = Date.now() + 60_000) =>
+			signTunnel(secret, { sandboxId: "sbx_1", port, expiresAt, ...(desktop === undefined ? {} : { desktop }) });
+		const view = (path: string) => gateway.fetch(new Request(`http://gateway.test/v1/hosts/desktop/${path}`));
+		const bare = await view(await ticket(6080, "view"));
+		expect(bare.status).toBe(308);
+		// No such sandbox on any host: the ticket is good, but there is no page to check and serve.
+		expect((await view(`${await ticket(6080, "control")}/`)).status).toBe(502);
+		expect((await view(`${await ticket(6080)}/`)).status).toBe(404);
+		expect((await view(`${await ticket(22, "control")}/`)).status).toBe(404);
+		expect((await view(`${await ticket(6080, "control", Date.now() - 1)}/`)).status).toBe(404);
 		const forged = await signTunnel(new Uint8Array(32).fill(1), {
 			sandboxId: "sbx_1",
-			port: 5901,
+			port: 6080,
 			expiresAt: Date.now() + 60_000,
+			desktop: "control",
 		});
-		expect((await view(forged)).status).toBe(404);
+		expect((await view(`${forged}/`)).status).toBe(404);
+		// noVNC's page is gone with its route.
+		expect(
+			(await gateway.fetch(new Request(`http://gateway.test/v1/hosts/view/${await ticket(5901)}`))).status,
+		).not.toBe(200);
 	});
 
 	it("serves host images by plain file name only", async () => {

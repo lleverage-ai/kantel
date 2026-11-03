@@ -11,7 +11,7 @@
 		"./port-http": "./src/port-http.ts",
 		"./port-websocket": "./src/port-websocket.ts",
 		"./ports": "./src/ports.ts",
-		"./viewer": "./src/viewer.ts",
+		"./desktop": "./src/desktop.ts",
 		"./tunnel": "./src/tunnel.ts",
 		"./http": "./src/http.ts",
 		"./hub": "./src/hub.ts",

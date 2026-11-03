@@ -320,9 +320,14 @@ function sandboxesSource(context: Context): SandboxesSource {
 		access: async (id) => {
 			// microVMs only: an isolate's `not_supported` rejects the lot. SSH's private key, when Kantel makes one, has no
 			// place in the UI's access and is dropped.
-			const [ssh, desktop, browser] = await Promise.all([api.openSsh(id), api.openDesktop(id), api.openBrowser(id)]);
+			const [ssh, desktop, watch, browser] = await Promise.all([
+				api.openSsh(id),
+				api.openDesktop(id),
+				api.openDesktop(id, { viewOnly: true }),
+				api.openBrowser(id),
+			]);
 			context.learnHost(ssh.host);
-			return { ssh: ssh.command, desktopUrl: desktop.url, browserUrl: browser.url };
+			return { ssh: ssh.command, desktopUrl: desktop.url, desktopViewUrl: watch.url, browserUrl: browser.url };
 		},
 		history: async (id) => (await allPages((cursor) => api.listCommands(id, after(cursor)))).map(commandOf),
 	};

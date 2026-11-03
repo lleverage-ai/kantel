@@ -52,11 +52,30 @@ The answer is a [DesktopAccess](/api/reference/types/#desktopaccess):
 
 The body takes two optional fields: `ttlMinutes`, how long the URL can be opened for (default 10, at most 60), and `viewOnly`, to give a URL whose viewer only watches. A desktop opened in time stays open after the URL expires; open it again, after a reload for instance, and you need a new URL, so ask for one each time you show it.
 
-Anyone holding the URL can open the desktop until it expires, so share it like a password. To show someone an agent at work in a viewer with no keyboard or mouse, give them a `viewOnly` one. On your own hosts the viewer is what holds back the input, not the desktop: someone who takes the URL apart can still type, so give a `viewOnly` URL only to people you'd trust with the other kind.
+Anyone holding the URL can open the desktop until it expires, so share it like a password. To show someone an agent at work without letting them touch it, give them a `viewOnly` one.
+
+### View-only
+
+On [your own hosts](/hosts/), view-only is enforced by the control plane, not by the page. The mode is part of the URL's signed ticket, so changing the URL to drive the desktop breaks the signature and the control plane refuses it. For a view-only URL, the control plane opens the desktop stream as a viewer and passes on only the messages a viewer needs to watch: start and stop the video, ask for a keyframe and send display settings. It drops everything else before it reaches the sandbox: keys, the mouse, the clipboard, file uploads, resizes and commands. That holds whatever the page or a modified client sends.
+
+A view-only viewer still sees everything on the screen, so share it only with people who may see the sandbox.
 
 ### Through the relay
 
-On [your own hosts](/hosts/), the URL is a viewer page on the control plane's public address, such as `https://kantel.example.com/v1/hosts/view/<ticket>`, and `embedUrl` is the same page. The page opens a WebSocket back to the control plane with the same ticket, and the control plane relays the desktop over the connection the sandbox's host keeps open. The host and the sandbox need no open port, but the person opening the URL must be able to reach the control plane's public URL.
+On your own hosts, the desktop is [Selkies](https://github.com/selkies-project/selkies), which streams the screen as H.264 over a WebSocket. The URL is a page on the control plane's public address:
+
+```text
+https://kantel.example.com/v1/hosts/desktop/<ticket>/          drive the desktop
+https://kantel.example.com/v1/hosts/desktop/<ticket>/#shared   view-only
+```
+
+The `#shared` fragment only tells Selkies' page to show its viewer layout. View-only comes from the ticket, so taking the fragment off a view-only URL lets nobody drive the desktop.
+
+`embedUrl` is the same page. The page opens a WebSocket back to the control plane at `/v1/hosts/desktop/<ticket>/api/websockets`, and the control plane relays it over the connection the sandbox's host keeps open to the sandbox's port 6080. The host and the sandbox need no open port, but the person opening the URL must be able to reach the control plane's public URL.
+
+The page and its scripts are Selkies' own web client, from the version in Kantel's sandbox image. The control plane serves only those files, and checks each one against the hash it knows before serving it, so a sandbox can't change the page you are shown. Nothing else on port 6080, such as Selkies' file transfer, is reachable through the URL.
+
+The stream is CPU-encoded H.264 at about 30 frames a second at 1080p, with about 100 ms from a key press to the screen. It uses about one core while the screen changes.
 
 ```sh
 curl -s -X POST "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/desktop" \
@@ -78,7 +97,7 @@ curl -s -X POST "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/browser" \
 
 It takes the same `viewOnly` and `ttlMinutes` as the desktop, and its [BrowserAccess](/api/reference/types/#browseraccess) answer has `url`, `cdpUrl`, `viewOnly` and `expiresAt`.
 
-On your own hosts Chromium runs on the sandbox's desktop from the start, so `url` is the desktop viewer, showing that Chromium. `cdpUrl` goes through the relay too: `wss://kantel.example.com/v1/hosts/tunnel/<ticket>/devtools/browser/<id>`, or `ws://` when the public URL is `http://`. While Chromium is still starting, the route answers `503` with `unavailable` (`The sandbox's browser isn't up yet`); try again a moment later.
+On your own hosts Chromium runs on the sandbox's desktop from the start, so `url` is the desktop page, showing that Chromium. `cdpUrl` goes through the relay too: `wss://kantel.example.com/v1/hosts/tunnel/<ticket>/devtools/browser/<id>`, or `ws://` when the public URL is `http://`. While Chromium is still starting, the route answers `503` with `unavailable` (`The sandbox's browser isn't up yet`); try again a moment later.
 
 ## Drive it with Playwright
 
@@ -108,4 +127,4 @@ The CDP URL is as powerful as the browser itself: anyone holding it can read eve
 
 The sandbox's Chromium runs inside the sandbox, so it reaches a dev server there at `http://localhost:<port>` with no [public port](/sandboxes/public-ports/). Start the server as a detached command, then point Playwright at `localhost`.
 
-<!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:681-712, packages/api/src/compute-schema.ts:671-699. The relay and the CLI (5be456c): packages/hosts/src/backend.ts:204-222,414-441, packages/cli/src/commands.ts:1360-1395, apps/host/guest/README.md; run through a local host for TASK-4706 -->
+<!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:681-712, packages/api/src/compute-schema.ts:671-699. The relay and the CLI (5be456c): packages/hosts/src/backend.ts:204-222,414-441, packages/cli/src/commands.ts:1360-1395, apps/host/guest/README.md; run through a local host for TASK-4706. Selkies through the relay and view-only (TASK-4738): packages/hosts/src/desktop.ts, packages/hosts/src/tunnel.ts -->
