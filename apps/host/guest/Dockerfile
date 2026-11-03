@@ -31,9 +31,14 @@ ENV DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
 # Ubuntu's own packages, from the archive as it was at UBUNTU_SNAPSHOT (the snapshot service is HTTPS only, so CA
-# certificates come first, and again from the snapshot).
+# certificates come first, and again from the snapshot). apt knows the snapshot of archive.ubuntu.com by its host, but
+# arm64's ports.ubuntu.com only by the Origin of a Release file it already holds, so after the lists are cleared an
+# update would read the live archive and then look for the packages under the snapshot. The host's mapping fixes that:
+# snapshot.ubuntu.com/ubuntu carries every architecture.
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
 	&& echo "APT::Snapshot \"$UBUNTU_SNAPSHOT\";" > /etc/apt/apt.conf.d/50kantel-snapshot \
+	&& echo 'Acquire::Snapshots::URI::Host::ports.ubuntu.com "https://snapshot.ubuntu.com/ubuntu/@SNAPSHOTID@/";' \
+		>> /etc/apt/apt.conf.d/50kantel-snapshot \
 	&& apt-get update \
 	&& apt-get install -y --no-install-recommends \
 		systemd systemd-sysv dbus dbus-user-session udev kmod util-linux-extra iproute2 iptables nftables iputils-ping procps psmisc \
