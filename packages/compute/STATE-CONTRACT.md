@@ -97,7 +97,7 @@ that, so it needs no new store method.
 create **at most one** sandbox (or fork set, or command), whichever gateway each attempt lands on, and must answer the
 first answer to every retry.
 
-**How (on main since #595).** `once()` in `service.ts` **claims the key before it does the work**, with `insert`
+**How (#596).** `once()` in `service.ts` **claims the key before it does the work**, with `insert`
 (§2): a record `{id, createdAt, claim, claimExpiresAt}` with no `body`. Then:
 
 - The call that wins the insert does the work and `put`s the answer as `body`. That is the same two round trips as
