@@ -1,0 +1,4 @@
+# Short install links, so the page's commands stay one line. Each goes to the installer on Kantel's latest GitHub
+# Release, which checks what it downloads against the release's SHA256SUMS.
+/cli.sh https://github.com/lleverage-ai/kantel/releases/latest/download/install-cli.sh 302
+/host.sh https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh 302

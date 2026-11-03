@@ -1,0 +1,27 @@
+---
+// The CLI in a terminal, in the console's code colours: signing in, a microVM on your own host, a command in it.
+import Icon from "./Icon.astro";
+import Mock from "./Mock.astro";
+
+interface Props {
+	class?: string;
+}
+const { class: className } = Astro.props;
+
+const lines = [
+	'<span class="c">$</span> kantel login',
+	'<span class="c">Signed in as ada (personal)</span>',
+	'<span class="c">$</span> kantel new --type microvm',
+	'<span class="s">sbx_7f3k2m9qa1</span> running on home-server',
+	'<span class="c">$</span> kantel exec sbx_7f3k2m9qa1 -- npm test',
+	'<span class="n">42</span> passing',
+].join("\n");
+---
+
+<Mock class:list={["flex flex-col p-0", className]} label="A terminal: kantel login signs in, kantel new starts a microVM on home-server, and kantel exec runs npm test in it.">
+	<div class="flex items-center gap-2 border-b m-line px-4 py-2.5 m-sm m-muted">
+		<Icon name="terminal" class="m-faint" />
+		<span>Terminal</span>
+	</div>
+	<div class="m-code flex-1 px-4 py-4 whitespace-pre-wrap break-words" set:html={lines} />
+</Mock>

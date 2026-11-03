@@ -1,14 +1,16 @@
 ---
-// The one-line install on a midnight plate, with a copy button. The command is plain `curl … | sh`, which pastes the
+// A one-line install on a midnight plate, with a copy button. The commands are plain `curl … | sh`, which paste the
 // same into bash, zsh and fish.
 import { INSTALL_COMMAND } from "../site.mjs";
 
 interface Props {
 	id: string;
+	/** The command to show and copy. Default: the self-hosted install. */
+	command?: string;
 	/** For a narrow column: small text that wraps at every width. Otherwise it wraps only on a phone. */
 	compact?: boolean;
 }
-const { id, compact = false } = Astro.props;
+const { id, command = INSTALL_COMMAND, compact = false } = Astro.props;
 ---
 
 <div
@@ -25,7 +27,7 @@ const { id, compact = false } = Astro.props;
 		class:list={[
 			"min-w-0 flex-1 py-2 font-mono text-sm break-all",
 			!compact && "sm:overflow-x-auto sm:py-0 sm:text-base sm:break-normal sm:whitespace-nowrap",
-		]}>{INSTALL_COMMAND}</code
+		]}>{command}</code
 	>
 	<button
 		type="button"

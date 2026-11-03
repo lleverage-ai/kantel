@@ -6,7 +6,8 @@ served from Cloudflare Workers static assets.
 | Path | What |
 | --- | --- |
 | `/` | The marketing page, `src/pages/index.astro` |
-| `/install.sh` | The installer, `public/install.sh`, served as is |
+| `/install.sh` | The self-hosted installer, `public/install.sh`, served as is |
+| `/cli.sh`, `/host.sh` | Redirects (`public/_redirects`) to the CLI's and the host's installers on the latest GitHub Release |
 | `/docs/` | The usage docs in `docs/site`, copied in at build time (see below) |
 
 ## Building it
