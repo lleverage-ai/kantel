@@ -15,7 +15,7 @@ A coding agent on your machine can do its risky or heavy work in a Kantel sandbo
 
 ## 1. Give the agent a key
 
-Make a key with the `agent` preset, which can make, drive, stop and snapshot sandboxes but can't delete them or change your account. Make it from the console, or with a key of yours that holds `account:admin` (see [API keys](/accounts/api-keys/#create-a-key)):
+Make a key with the `agent` preset, which can make, drive, stop and snapshot sandboxes but can't delete them or change your account. Make it with a key of yours that holds `account:admin`, such as your install's [first key](/accounts/api-keys/#make-your-first-key):
 
 ```sh
 curl -s "$KANTEL_URL/v1/api-keys" \

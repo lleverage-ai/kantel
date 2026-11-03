@@ -36,7 +36,7 @@ curl -s "$KANTEL_URL/v1/whoami" -H "authorization: Bearer $KANTEL_API_KEY"
 }
 ```
 
-An API key always acts in the account it was made in. A person acts in their personal account unless a call names an organisation they belong to, with `account` in its body or query. That's how the console switches between your accounts. `superAdmin` says whether the caller may manage the deployment's hosts, and `mode` whether this is a self-hosted install (`selfhosted`) or a hosted service (`hosted`).
+An API key always acts in the account it was made in. A person acts in their personal account unless a call names an organisation they belong to, with `account` in its body or query. `superAdmin` says whether the caller may manage the deployment's hosts, and `mode` whether this is a self-hosted install (`selfhosted`) or a hosted service (`hosted`).
 
 To list the accounts with their kind and your role in each, call `GET /v1/accounts` (`listAccounts`), which needs `account:read`.
 
@@ -79,7 +79,7 @@ The same call renames the organisation, with `name`. It needs `account:admin` an
 
 ## Create an organisation
 
-Creating, joining and deleting an organisation are things a person does, signed in, from the console: an API key is refused. The call is `POST /v1/accounts` (`createOrganisation`) with a `name` and, optionally, a `defaultVisibility`. You become its owner.
+Creating, joining and deleting an organisation need a person's sign-in, the bearer token you sign in to the console with: an API key is refused. The call is `POST /v1/accounts` (`createOrganisation`) with a `name` and, optionally, a `defaultVisibility`. You become its owner.
 
 ## Invite people
 
@@ -103,7 +103,7 @@ console.log(invite.code); // kji_...
 | `email` | Only this person may use the code. Leave it out to make a code anyone holding it can use |
 | `expiresInHours` | How long the code works. Default 168 (a week), at most 720 (30 days) |
 
-The person joins with the code from the console (`POST /v1/accounts/join`, `joinOrganisation`). A code that has expired or has been used answers `410` with `expired`.
+The person joins with the code, signed in as themselves (`POST /v1/accounts/join`, `joinOrganisation`). A code that has expired or has been used answers `410` with `expired`.
 
 To see open invites, call `GET /v1/accounts/{accountId}/invites` (`listInvites`); their codes aren't shown again. To withdraw one, revoke it:
 
@@ -136,7 +136,7 @@ Remove a member with `DELETE /v1/accounts/{accountId}/members/{userId}` (`remove
 
 ## Delete an organisation
 
-Its owner can delete an organisation from the console once it has no sandboxes and no saved snapshots left; until then it answers `409` with `conflict`. A personal account can't be deleted this way.
+Its owner can delete an organisation (`DELETE /v1/accounts/{accountId}`, `deleteOrganisation`), signed in, once it has no sandboxes and no saved snapshots left; until then it answers `409` with `conflict`. A personal account can't be deleted this way.
 
 ## Usage and limits
 
