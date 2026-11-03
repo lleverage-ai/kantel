@@ -6,8 +6,9 @@
 //   KANTEL_CONSOLE_DIR          the console's build; default apps/console/dist in this checkout
 //   KANTEL_BOOTSTRAP_FILE       where the bootstrap's IDs and keys are written (mode 0600), and read back on the next
 //                               start; default .harbour/bootstrap.json under the working directory
-//   KANTEL_DATABASE_URL         Postgres for identity, sign-in, audit and the registry of hosts (durable.ts); unset,
-//                               everything is in memory
+//   KANTEL_DATABASE_URL         Postgres for identity, sign-in, audit, the compute API's records and the registry of
+//                               hosts (durable.ts), so they outlast a restart and gateways over one database share
+//                               them; unset, everything is in memory
 //   KANTEL_GATEWAY_SCHEMA       the schema their tables go in; default harbour_m1
 //   KANTEL_ORGANISATION_NAME    default "Kantel"
 //   KANTEL_PROJECT_NAME         default "default"
@@ -157,6 +158,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		...(previous?.computeKey === undefined ? {} : { superAdminKey: previous.computeKey }),
 		...(cfg.publicOrigin === undefined ? {} : { publicUrl: cfg.publicOrigin }),
 		...(hosts === undefined ? {} : { hosts }),
+		...(components.computeStore === undefined ? {} : { store: components.computeStore }),
 	});
 	seeded = { ...seeded, computeKey: compute.superAdminKey };
 	console.log(

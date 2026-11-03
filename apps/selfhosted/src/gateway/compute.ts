@@ -12,8 +12,10 @@
  *   - `stub` (the default with no such address, as under `pnpm dev`): a just-bash shell over files in memory, to try
  *     the API with no machine of your own. `KANTEL_COMPUTE_BACKEND=stub` picks it anywhere.
  *
- * The API's records are in memory either way, so they are gone after a restart. The super-admin's key is the
- * exception: the gateway keeps its secret in the bootstrap file and makes it again on each start.
+ * The API's records (accounts, sandboxes, keys, webhooks and the rest) are in Postgres with a database (durable.ts),
+ * so they outlast a restart and gateways over one database share them; in memory otherwise, gone after a restart. The
+ * super-admin's key is kept either way: the gateway keeps its secret in the bootstrap file and makes it again on a start
+ * that doesn't find it.
  *
  *   KANTEL_COMPUTE_BACKEND       `hosts` runs sandboxes on joined hosts, `stub` on the stand-in; default `hosts` when
  *                                one of the URLs below is set, else `stub`
@@ -293,8 +295,11 @@ export async function gatewayCompute(options: {
 	readonly publicUrl?: string;
 	readonly now?: () => number;
 	readonly hosts?: GatewayHostsBackend;
+	/** Where the API's records are kept: Postgres with a database. Default in memory. */
+	readonly store?: ComputeStore;
 }): Promise<GatewayCompute> {
-	const store: ComputeStore = createMemoryStore();
+	const store: ComputeStore = options.store ?? createMemoryStore();
+	const records = options.store === undefined ? "memory" : "postgres";
 	const hosts = options.hosts;
 	const backend: SandboxBackend =
 		hosts === undefined
@@ -359,7 +364,7 @@ export async function gatewayCompute(options: {
 	return {
 		api,
 		superAdminKey,
-		binding: hosts === undefined ? "memory, stub backend (experimental)" : "memory, kantel-host hosts (experimental)",
+		binding: `${records}, ${hosts === undefined ? "stub backend" : "kantel-host hosts"} (experimental)`,
 		...(hostRoutes === undefined ? {} : { hostRoutes }),
 		...(hosts?.ports === undefined ? {} : { portRoutes: hosts.ports.fetch }),
 		async close() {

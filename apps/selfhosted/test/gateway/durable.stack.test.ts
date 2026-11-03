@@ -61,7 +61,11 @@ async function withGateway<T>(
 		identity: components.identity,
 		providers: [kantelSessionProvider({ sessions: components.otp.sessions })],
 	});
-	const compute = await gatewayCompute({ authenticator, identity: components.identity });
+	const compute = await gatewayCompute({
+		authenticator,
+		identity: components.identity,
+		...(components.computeStore === undefined ? {} : { store: components.computeStore }),
+	});
 	const gateway = createGateway({ components, authenticator, compute: compute.api, consoleDir });
 	try {
 		const server = await listen(gateway.fetch, 0, { host: "127.0.0.1" });
@@ -100,7 +104,12 @@ describe.skipIf(databaseUrl === "")("the gateway on Postgres", () => {
 		});
 
 		await withComponents(config.schema, async (first) => {
-			expect(first.bindings).toEqual({ identity: "postgres", audit: "postgres", signIn: "postgres" });
+			expect(first.bindings).toEqual({
+				identity: "postgres",
+				audit: "postgres",
+				signIn: "postgres",
+				computeStore: "postgres",
+			});
 			const deployment = await bootstrap(first, names);
 			seeded = deployment;
 			await withGateway(first, deployment, consoleDir, async (target) => {
@@ -117,6 +126,8 @@ describe.skipIf(databaseUrl === "")("the gateway on Postgres", () => {
 		await withComponents(config.schema, async (second) => {
 			const again = await bootstrap(second, names, previous);
 			expect(again).toEqual(previous);
+			// The compute API's records outlast the restart: its super-admin from the first start is still there.
+			expect(await second.computeStore?.users.get("usr_admin")).toMatchObject({ superAdmin: true });
 			const audit = await second.audit.query(inProject(again), {}, { limit: 500 });
 			expect(audit.items.length).toBeGreaterThanOrEqual(auditBefore);
 			await withGateway(second, again, consoleDir, async (target) => {
