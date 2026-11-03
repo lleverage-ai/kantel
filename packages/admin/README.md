@@ -2,7 +2,7 @@
 
 `kantel-admin` is for whoever runs a self-hosted Kantel: it installs and upgrades the control plane, changes its
 settings, and adds, drains and revokes the Linux machines that run sandboxes. Using sandboxes is the `kantel`
-command's job (`npx kantel help`).
+command's job (`kantel help`).
 
 It isn't on npm. Each of Kantel's [GitHub Releases](https://github.com/lleverage-ai/kantel/releases) carries it as one
 file, `kantel-admin.js`, which needs Node.js 22 or later. These lines work in bash, zsh and fish:
@@ -13,6 +13,8 @@ sudo chmod 755 /usr/local/bin/kantel-admin
 kantel-admin version
 ```
 
+`curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install-cli.sh | sh` installs it with
+`kantel`, for you alone in `~/.local/bin` (which `sudo` doesn't search, so use the lines above for `sudo kantel-admin`).
 `SHA256SUMS` in the same release has its SHA-256, and the release's attestations say which workflow run built it
 (`gh attestation verify /usr/local/bin/kantel-admin --repo lleverage-ai/kantel`).
 

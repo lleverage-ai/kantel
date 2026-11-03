@@ -15,7 +15,7 @@ sudo chmod 755 /usr/local/bin/kantel-admin
 kantel-admin version
 ```
 
-Run the same lines again to update it. The release's `SHA256SUMS` has the file's SHA-256, and `gh attestation verify /usr/local/bin/kantel-admin --repo lleverage-ai/kantel` checks that Kantel's release workflow built it. To build it yourself instead, run `pnpm install --frozen-lockfile --filter '@kantel/admin...'` and `pnpm --filter @kantel/admin build` in a clone of the repository, which writes `packages/admin/dist/kantel-admin.js`.
+Run the same lines again to update it. The [`kantel` command's installer](/tools/cli/#install-it) installs `kantel-admin` too, for you alone in `~/.local/bin`; `sudo` doesn't look there, so for `sudo kantel-admin host join` use the lines above. The release's `SHA256SUMS` has the file's SHA-256, and `gh attestation verify /usr/local/bin/kantel-admin --repo lleverage-ai/kantel` checks that Kantel's release workflow built it. To build it yourself instead, run `pnpm install --frozen-lockfile --filter '@kantel/admin...'` and `pnpm --filter @kantel/admin build` in a clone of the repository, which writes `packages/admin/dist/kantel-admin.js`.
 
 ## Set up a control plane
 
