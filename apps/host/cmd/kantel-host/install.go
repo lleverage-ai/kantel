@@ -269,7 +269,7 @@ func httpGet(u string) (io.ReadCloser, error) {
 // fetch writes one file, checking its digest; a file already there with the right digest is kept.
 func fetch(base string, f ImageFile, dst string, mode os.FileMode) error {
 	if f.SHA256 != "" {
-		if sum, err := fileSHA256(dst + ".sha256-source"); err == nil && sum == f.SHA256 {
+		if sum, err := recordedSHA256(dst); err == nil && sum == f.SHA256 {
 			if _, err := os.Stat(dst); err == nil {
 				fmt.Printf("  %s: up to date\n", filepath.Base(dst))
 				return nil
@@ -321,9 +321,24 @@ func fetch(base string, f ImageFile, dst string, mode os.FileMode) error {
 	return nil
 }
 
-func fileSHA256(p string) (string, error) {
-	raw, err := os.ReadFile(p)
+// recordedSHA256 is the digest fetch recorded beside dst when it downloaded it.
+func recordedSHA256(dst string) (string, error) {
+	raw, err := os.ReadFile(dst + ".sha256-source")
 	return strings.TrimSpace(string(raw)), err
+}
+
+// fileSHA256 hashes a file as it is on disk.
+func fileSHA256(p string) (string, error) {
+	f, err := os.Open(p)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func fetchImages(cfg agent.Config, source string, kvm bool) error {
@@ -494,7 +509,11 @@ func register(cfg agent.Config, token string) (string, string, error) {
 	if name == "" {
 		name, _ = os.Hostname()
 	}
-	body, _ := json.Marshal(map[string]any{"token": token, "name": name, "labels": cfg.Labels, "facts": facts})
+	req := map[string]any{"token": token, "name": name, "facts": facts}
+	if len(cfg.Labels) > 0 {
+		req["labels"] = cfg.Labels // a nil map would be null, which Kantel refuses
+	}
+	body, _ := json.Marshal(req)
 	res, err := http.Post(cfg.ControlPlane+"/v1/hosts/register", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return "", "", err

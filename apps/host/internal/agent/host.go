@@ -548,7 +548,7 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 
 // List is every sandbox on the host.
 func (h *Host) List() []proto.SandboxInfo {
-	var out []proto.SandboxInfo
+	out := []proto.SandboxInfo{} // [], not null, on a host with none
 	for _, name := range h.order {
 		out = append(out, h.tiers[name].List()...)
 	}

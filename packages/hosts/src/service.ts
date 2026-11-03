@@ -247,7 +247,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		await store.putHost({ ...host, facts: message.facts, capacity: message.capacity, lastSeenAt: now });
 		reserved.delete(hostId);
 		// Reconcile: what the host holds is the truth about state; a placement the host no longer has is lost.
-		const held = new Map(message.sandboxes.map((sandbox) => [sandbox.id, sandbox]));
+		// Go marshals an empty list as null (kantel-host 0.1.0-dev on a host with no sandboxes).
+		const sandboxes = message.sandboxes ?? [];
+		const held = new Map(sandboxes.map((sandbox) => [sandbox.id, sandbox]));
 		for (const placement of await store.placementsOn(hostId)) {
 			const sandbox = held.get(placement.sandboxId);
 			const state = sandbox?.state ?? "lost";
@@ -257,7 +259,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		if (held.size > 0) {
 			log(`[hosts] host ${hostId} holds sandboxes Kantel didn't place: ${[...held.keys()].slice(0, 10).join(", ")}`);
 		}
-		log(`[hosts] host ${hostId} connected (${message.facts.version}, ${message.sandboxes.length} sandboxes)`);
+		log(`[hosts] host ${hostId} connected (${message.facts.version}, ${sandboxes.length} sandboxes)`);
 		return welcomeFor({ ...host, facts: message.facts });
 	};
 

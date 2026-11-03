@@ -184,7 +184,8 @@ export function createHostsApi(options: HostsApiOptions) {
 					const input = await body(request);
 					if (typeof input.token !== "string") throw new KantelError("invalid", "token is required");
 					const name = optional(input.name, isString, "name");
-					const labels = optional(input.labels, isRecord, "labels");
+					// Go marshals a host's empty labels as null.
+					const labels = optional(input.labels ?? undefined, isRecord, "labels");
 					const facts = optional(input.facts, isObject, "facts");
 					return json(
 						await hosts.register({

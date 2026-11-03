@@ -143,7 +143,8 @@ describe("the compute plane on the gateway", () => {
 				new Request("http://gateway.test/v1/hosts/register", {
 					method: "POST",
 					headers: { "content-type": "application/json" },
-					body: JSON.stringify({ token: token.token }),
+					// As kantel-host 0.1.0-dev sends it: Go's nil map is null.
+					body: JSON.stringify({ token: token.token, labels: null }),
 				}),
 			);
 		const first = await register();
