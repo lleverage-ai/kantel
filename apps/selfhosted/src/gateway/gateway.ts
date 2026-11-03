@@ -107,6 +107,11 @@ export interface GatewayOptions {
 	 * made for and checked against. Default: the request's origin, which behind a TLS proxy is `http:`, so set it there.
 	 */
 	readonly publicOrigin?: string;
+	/**
+	 * The compute plane's API (`compute.ts`, KANTEL_COMPUTE=experimental): it answers its own routes under `/v1`, signing
+	 * callers in itself, and `undefined` for every other path.
+	 */
+	readonly compute?: { fetch(request: Request): Promise<Response | undefined> };
 }
 
 /** Who sent a request, as the HTTP server saw it: never from a header the client could set. */
@@ -409,6 +414,10 @@ export function createGateway(options: GatewayOptions): Gateway {
 					return await signIn(request);
 				}
 				if (path === "/v1/deployment") return await deployment(request);
+				if (options.compute !== undefined && path.startsWith("/v1/")) {
+					const answer = await options.compute.fetch(request);
+					if (answer !== undefined) return answer;
+				}
 				if (path === WORKSPACE_READ_API_BASE || path.startsWith(`${WORKSPACE_READ_API_BASE}/`)) {
 					return await workspaces(request);
 				}

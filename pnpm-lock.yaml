@@ -297,6 +297,9 @@ importers:
       "@kantel/browser":
         specifier: workspace:*
         version: link:../../packages/browser
+      "@kantel/compute":
+        specifier: workspace:*
+        version: link:../../packages/compute
       "@kantel/connections":
         specifier: workspace:*
         version: link:../../packages/connections

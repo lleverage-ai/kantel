@@ -516,6 +516,11 @@ export interface Bootstrap {
 	 * again on later starts, and every one on the operator key. `GET /v1/projects` lists them with the key.
 	 */
 	readonly projects?: { readonly [name: string]: ProjectId };
+	/**
+	 * The compute plane's super-admin key (`ksk_…`, every scope), when KANTEL_COMPUTE=experimental: made on the first
+	 * start with it on, and made again from here on each start after, as the compute plane keeps its records in memory.
+	 */
+	readonly computeKey?: string;
 }
 
 /** What the bootstrap names: the organisation, its first project, the admin it invites and the other projects. */
