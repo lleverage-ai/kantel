@@ -1,5 +1,5 @@
 # The microVM sandbox's default image: Ubuntu 26.04 LTS with systemd, SSH, Docker and containerd, git, curl, jq,
-# build tools, Node, Python and Go, an XFCE desktop on a TigerVNC display, Google Chrome with its DevTools port, and
+# build tools, Node, Python and Go, an XFCE desktop on a TigerVNC display, Chromium with its DevTools port, and
 # Selkies streaming that desktop to a browser, plus Kantel's guest agent. apps/host/guest/rootfs.sh turns it into a
 # read-only ext4 image that every sandbox on a host shares; each sandbox writes to its own disk through an overlay
 # (kantel-init). apps/host/guest/README.md says what listens where and how custom images layer on top.
@@ -7,9 +7,12 @@
 # Build context: apps/host, with the guest agent already built at dist/kantel-guest-<arch> (rootfs.sh does both).
 #
 # Reproducible: the base image is pinned by digest, Ubuntu's packages come from snapshot.ubuntu.com at
-# UBUNTU_SNAPSHOT, and Node, Go and Selkies are pinned releases checked against their SHA-256. Docker's and Google's
-# apt repositories keep no snapshots, so Docker is pinned by version and Chrome is the stable channel at build time;
+# UBUNTU_SNAPSHOT, Chromium comes from snapshot.debian.org at the same date, and Node, Go and Selkies are pinned
+# releases checked against their SHA-256. Docker's apt repository keeps no snapshots, so Docker is pinned by version;
 # /etc/kantel/image.json records every version that went in.
+#
+# Everything in the image may be redistributed: /usr/share/kantel/THIRD-PARTY-NOTICES.md (from guest/rootfs/, and
+# published beside the image) lists what it bundles, under which licences, and where each one's source is.
 FROM ubuntu:26.04@sha256:6a06111c3b0a8600feadb270aec771dc239bf407b25625f93f44ab00e11f4d3c
 ARG TARGETARCH
 ARG UBUNTU_SNAPSHOT=20261103T000000Z
@@ -51,15 +54,21 @@ RUN install -d -m 0755 /etc/apt/keyrings \
 		"containerd.io=$CONTAINERD_VERSION" docker-buildx-plugin docker-compose-plugin \
 	&& apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Google Chrome (stable). Google ships no arm64 Linux build: an arm64 image has no browser yet.
-RUN if [ "$TARGETARCH" = amd64 ]; then \
-		curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /etc/apt/keyrings/google.gpg \
-		&& echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
-			> /etc/apt/sources.list.d/google-chrome.list \
-		&& apt-get update && apt-get install -y --no-install-recommends google-chrome-stable \
-		&& rm -f /etc/cron.daily/google-chrome \
-		&& apt-get clean && rm -rf /var/lib/apt/lists/*; \
-	fi
+# Chromium, as Debian 13 (trixie) builds it: open source and redistributable (Google Chrome isn't), on amd64 and arm64,
+# and without snapd (Ubuntu's chromium is a snap). Debian's security archive carries the current stable Chromium. The
+# pin lets apt take only these packages from Debian; everything else stays Ubuntu's. APT::Snapshot applies here too,
+# so the build gets Debian's archive as it was at UBUNTU_SNAPSHOT. Debian's archive keys come from Ubuntu's own
+# debian-archive-keyring.
+RUN apt-get update && apt-get install -y --no-install-recommends debian-archive-keyring \
+	&& printf '%s\n' 'Types: deb' 'URIs: http://deb.debian.org/debian-security' 'Suites: trixie-security' \
+		'Components: main' 'Signed-By: /usr/share/keyrings/debian-archive-trixie-security-automatic.gpg' '' \
+		'Types: deb' 'URIs: http://deb.debian.org/debian' 'Suites: trixie' 'Components: main' \
+		'Signed-By: /usr/share/keyrings/debian-archive-trixie-automatic.gpg' > /etc/apt/sources.list.d/debian-chromium.sources \
+	&& printf '%s\n' 'Package: *' 'Pin: release o=Debian' 'Pin-Priority: -1' '' \
+		'Package: chromium chromium-common chromium-sandbox libjpeg62-turbo' 'Pin: release o=Debian' 'Pin-Priority: 500' \
+		> /etc/apt/preferences.d/debian-chromium \
+	&& apt-get update && apt-get install -y --no-install-recommends chromium \
+	&& apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Node, Go and Selkies: pinned releases, checked.
 RUN case "$TARGETARCH" in \
@@ -70,6 +79,8 @@ RUN case "$TARGETARCH" in \
 	&& echo "$node_sum  /tmp/node.tar.xz" | sha256sum -c - \
 	&& tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --exclude=CHANGELOG.md --exclude=LICENSE \
 		--exclude=README.md \
+	&& install -d /usr/share/doc/node && tar -xJf /tmp/node.tar.xz -O "node-v$NODE_VERSION-linux-$node_arch/LICENSE" \
+		> /usr/share/doc/node/LICENSE \
 	&& curl -fsSL "https://go.dev/dl/go$GO_VERSION.linux-$TARGETARCH.tar.gz" -o /tmp/go.tar.gz \
 	&& echo "$go_sum  /tmp/go.tar.gz" | sha256sum -c - \
 	&& tar -xzf /tmp/go.tar.gz -C /usr/local \
@@ -111,4 +122,6 @@ RUN systemctl disable ssh.socket && rm -f /etc/systemd/system/ssh.service.requir
 	&& chmod 0755 /usr/sbin/kantel-init \
 	&& mkdir -p /newroot /disk \
 	&& echo kantel > /etc/hostname \
-	&& kantel-image-info > /etc/kantel/image.json
+	&& kantel-image-info > /etc/kantel/image.json \
+	&& dpkg-query -W -f '${Package}\t${Version}\t${source:Package}\t${source:Version}\n' | sort \
+		> /usr/share/kantel/packages.tsv

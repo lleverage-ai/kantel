@@ -1,8 +1,9 @@
 #!/bin/sh
-# The sandbox's browser: Google Chrome on the desktop, with its DevTools port (CDP) on loopback port 9222 for
+# The sandbox's browser: Chromium (Debian's build) on the desktop, with its DevTools port (CDP) on loopback port 9222 for
 # connectOverCDP through the host. Closing its window brings it back (the unit restarts it), so CDP stays reachable.
 # Its proxy is the guest agent's local forwarder, which follows the sandbox's egress proxy through forks and restores
-# (Chrome reads its proxy once, at start).
+# (Chromium reads its proxy once, at start). Chrome is looked for first only so that a custom image which installs it
+# gets it; the default image has Chromium alone.
 export DISPLAY=:1
 for _ in $(seq 200); do [ -e /tmp/.X11-unix/X1 ] && break; sleep 0.05; done
 browser=$(command -v google-chrome-stable || command -v chromium || command -v chromium-browser) || {

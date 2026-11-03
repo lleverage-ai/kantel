@@ -13,6 +13,7 @@ cat <<EOF
   "python": "$(v python3 --version)",
   "go": "$(v go version)",
   "git": "$(v git --version)",
+  "chromium": "$(pkg chromium)",
   "chrome": "$(pkg google-chrome-stable)",
   "selkies": "$(pkg selkies)",
   "tigervnc": "$(pkg tigervnc-standalone-server)",

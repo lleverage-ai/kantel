@@ -12,11 +12,17 @@ Ubuntu 26.04 LTS (pinned by digest, packages from `snapshot.ubuntu.com` at `UBUN
 - Docker CE and containerd (pinned versions), with Buildx and Compose
 - git, curl, wget, jq, build-essential, pkg-config, Python 3 with pip and venv, Node and Go (pinned releases,
   checked against their SHA-256)
-- an XFCE session on a TigerVNC X server (display `:1`, 1920x1080), Google Chrome (stable) on that display
+- an XFCE session on a TigerVNC X server (display `:1`, 1920x1080), Chromium on that display (Debian 13's build,
+  from `snapshot.debian.org` at the same date; Ubuntu's own Chromium is a snap, and Google Chrome can't be
+  redistributed)
 - Selkies, streaming the desktop to a browser
 - OpenSSH, the guest agent (`kantel-guest`) and `kantel-init`
 
-`/etc/kantel/image.json` records every version that went in (`kantel-image-info` writes it at build time).
+`/etc/kantel/image.json` records every version that went in (`kantel-image-info` writes it at build time), and
+`/usr/share/kantel/packages.tsv` every package with its source package. What the image bundles, under which licences,
+and where each part's source is: [`rootfs/usr/share/kantel/THIRD-PARTY-NOTICES.md`](rootfs/usr/share/kantel/THIRD-PARTY-NOTICES.md),
+at the same path in the image and published beside it. Everything in it may be redistributed; keep it that way (no
+Google Chrome, nothing from Ubuntu's `restricted` or `multiverse`), and update the notices when a component is added.
 
 The sandbox user is `user` (uid 1000): passwordless sudo, and in the `docker` and `kvm` groups, so it runs
 containers and nested VMs without root.
@@ -30,13 +36,13 @@ nothing in the guest listens on the sandbox's network except SSH.
 | --- | --- | --- | --- |
 | 22 | OpenSSH (keys only, host key made per sandbox) | `ssh.service` | `ssh` |
 | 5901 | VNC (RFB) of display `:1` | `kantel-desktop.service` | `desktop` |
-| 9222 | Chrome's DevTools (CDP) | `kantel-browser.service` | `browser` |
+| 9222 | Chromium's DevTools (CDP) | `kantel-browser.service` | `browser` |
 | 6080 | Selkies: its web client and the WebSocket stream (H.264 on the CPU) | `kantel-stream.service` | `stream` |
 | (socket) | Docker | `docker.service` | `docker` |
-| 3128 | The guest agent's forwarder to the host's egress proxy (Chrome's and dockerd's proxy) | `kantel-guest.service` | |
+| 3128 | The guest agent's forwarder to the host's egress proxy (Chromium's and dockerd's proxy) | `kantel-guest.service` | |
 
 The host's egress proxy sits on each sandbox's own gateway address, which a fork changes. Shells and `exec` get it
-from `/etc/kantel/proxy.env`; Chrome and dockerd, which read a proxy once at start, use the forwarder on 3128, which
+from `/etc/kantel/proxy.env`; Chromium and dockerd, which read a proxy once at start, use the forwarder on 3128, which
 follows the sandbox's current proxy, so a fork or resume never restarts them (no lost tabs or containers).
 
 Selkies needs no GPU, no UDP and no TURN: it serves one HTTP port, so a relay that carries a TCP stream carries the
@@ -94,5 +100,19 @@ nested virtualisation on (`kvm_amd nested=1` or `kvm_intel nested=1`), `/dev/kvm
 `kantel-host install` reads `<images>/manifest.json` (`kantel-host manifest <dir>` writes it) and fetches
 `vmlinux-<arch>` and `sandbox-<arch>.ext4` from it, checking each file's SHA-256; a `.gz` file is unpacked as it
 downloads. `<images>` is the control plane's `GET /v1/hosts/images/...`, served from `KANTEL_COMPUTE_IMAGES`: a
-directory, or an http(s) URL it redirects to. So to publish: build the kernel and image, gzip the image, run
-`kantel-host manifest` on the directory, and put the directory where `KANTEL_COMPUTE_IMAGES` points.
+directory, or an http(s) URL it redirects to (`off` serves none). It defaults to Kantel's published images, a public
+GitHub Release on lleverage-ai/kantel pinned by tag (`DEFAULT_HOST_IMAGES` in
+`apps/selfhosted/src/gateway/compute.ts`), so a host installed from any control plane gets them with no setting.
+
+`release.sh` builds and publishes one:
+
+```sh
+apps/host/guest/release.sh out host-images-20261103            # build: kernel, sandbox and isolate images, manifest
+apps/host/guest/release.sh out host-images-20261103 --publish  # and make the GitHub Release (needs push access)
+```
+
+A release is never replaced: a new image gets a new tag (`host-images-<yyyymmdd>[.<n>]`), and a pull request moves
+`DEFAULT_HOST_IMAGES` to it. Running `kantel-host install` again on a host fetches only the files whose digest has
+changed, and the host rebuilds its templates for the new image. To serve your own images (a custom image, say), build the
+same directory with your image in it and point `KANTEL_COMPUTE_IMAGES` at it, or install a host with
+`--images <url-or-dir>`.

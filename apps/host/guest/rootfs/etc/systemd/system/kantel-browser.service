@@ -1,5 +1,5 @@
 [Unit]
-Description=Kantel browser: Chrome on the desktop, DevTools (CDP) on 127.0.0.1:9222
+Description=Kantel browser: Chromium on the desktop, DevTools (CDP) on 127.0.0.1:9222
 After=kantel-desktop.service
 Wants=kantel-desktop.service
 

@@ -8,7 +8,13 @@ import { createAuthenticator } from "@kantel/identity/authenticator";
 import { hashSessionToken, kantelSessionProvider } from "@kantel/identity/otp";
 import { afterEach, describe, expect, it } from "vitest";
 import { bootstrap, createGatewayComponents } from "../../src/gateway/components.ts";
-import { computeConfig, gatewayCompute, gatewayHosts, hostImages } from "../../src/gateway/compute.ts";
+import {
+	computeConfig,
+	DEFAULT_HOST_IMAGES,
+	gatewayCompute,
+	gatewayHosts,
+	hostImages,
+} from "../../src/gateway/compute.ts";
 import { createGateway } from "../../src/gateway/gateway.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -128,10 +134,10 @@ describe("the compute plane on the gateway", () => {
 		expect(computeConfig({ KANTEL_COMPUTE: "experimental" })).toEqual({});
 		expect(computeConfig({ KANTEL_COMPUTE: "", KANTEL_PUBLIC_URL: "", KANTEL_COMPUTE_PUBLIC_URL: "" })).toEqual({});
 		expect(computeConfig({ KANTEL_COMPUTE_PUBLIC_URL: "http://127.0.0.1:58090" })).toEqual({
-			hosts: { publicUrl: "http://127.0.0.1:58090" },
+			hosts: { publicUrl: "http://127.0.0.1:58090", images: DEFAULT_HOST_IMAGES },
 		});
 		expect(computeConfig({ KANTEL_COMPUTE_PUBLIC_URL: "", KANTEL_PUBLIC_URL: "https://kantel.example.com" })).toEqual({
-			hosts: { publicUrl: "https://kantel.example.com" },
+			hosts: { publicUrl: "https://kantel.example.com", images: DEFAULT_HOST_IMAGES },
 		});
 		// The stand-in on request, with an address or without.
 		expect(computeConfig({ KANTEL_COMPUTE_BACKEND: "stub", KANTEL_PUBLIC_URL: "https://kantel.example.com" })).toEqual(
@@ -145,7 +151,20 @@ describe("the compute plane on the gateway", () => {
 				KANTEL_PUBLIC_URL: "https://kantel.example.com/",
 				KANTEL_COMPUTE_POOLS: '{"microvm/default": 2}',
 			}),
-		).toEqual({ hosts: { publicUrl: "https://kantel.example.com", pools: { "microvm/default": 2 } } });
+		).toEqual({
+			hosts: { publicUrl: "https://kantel.example.com", images: DEFAULT_HOST_IMAGES, pools: { "microvm/default": 2 } },
+		});
+	});
+
+	it("points hosts at Kantel's published images unless KANTEL_COMPUTE_IMAGES says otherwise", () => {
+		const env = {
+			KANTEL_COMPUTE_BACKEND: "hosts",
+			KANTEL_PUBLIC_URL: "https://kantel.example.com",
+		};
+		expect(DEFAULT_HOST_IMAGES).toMatch(/^https:\/\/github\.com\/lleverage-ai\/kantel\/releases\/download\/host-images-/);
+		expect(computeConfig(env)?.hosts?.images).toBe(DEFAULT_HOST_IMAGES);
+		expect(computeConfig({ ...env, KANTEL_COMPUTE_IMAGES: "/srv/images" })?.hosts?.images).toBe("/srv/images");
+		expect(computeConfig({ ...env, KANTEL_COMPUTE_IMAGES: "off" })?.hosts?.images).toBeUndefined();
 	});
 
 	it("takes a domain for exposed ports that isn't the gateway's own name or a parent of it", () => {
