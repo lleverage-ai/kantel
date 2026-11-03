@@ -1,15 +1,17 @@
 // The gateway in process, over a real socket, with no stack: the same end-to-end pass the compose test makes, plus
-// the HTTP adapter's limits and the bootstrap file's permissions.
+// the HTTP adapter's limits, the bootstrap file's permissions and an older version's bootstrap file.
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EMAIL_OTP_ISSUER, systemContext } from "@kantel/contracts";
-import { MemoryOtpMailer } from "@kantel/identity/otp";
+import { createAuthenticator } from "@kantel/identity/authenticator";
+import { kantelSessionProvider, MemoryOtpMailer } from "@kantel/identity/otp";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { type Bootstrap, bootstrap, createGatewayComponents, inviteAdmin } from "../../src/gateway/components.ts";
+import { type GatewayCompute, gatewayCompute } from "../../src/gateway/compute.ts";
 import { createGateway } from "../../src/gateway/gateway.ts";
-import { writePrivateFile } from "../../src/gateway/main.ts";
+import { readBootstrap, writePrivateFile } from "../../src/gateway/main.ts";
 import { type Listening, listen } from "../../src/gateway/node-http.ts";
 import { type E2eTarget, runGatewayE2e } from "./e2e.ts";
 import { runSignInE2e } from "./signin-e2e.ts";
@@ -18,6 +20,7 @@ const REQUEST_TIMEOUT_MS = 1000;
 const ADMIN_EMAIL = "Admin@Kantel.localhost";
 const mailer = new MemoryOtpMailer();
 let components: ReturnType<typeof createGatewayComponents>;
+let compute: GatewayCompute;
 
 let server: Listening;
 let target: E2eTarget & Bootstrap;
@@ -34,11 +37,18 @@ beforeAll(async () => {
 		adminEmail: ADMIN_EMAIL,
 		projects: ["atlas", "dev"],
 	});
-	const gateway = createGateway({ components, consoleDir: scratch, mailer });
+	// As `serveGateway` mounts it, on the stub: the compute plane and the gateway share one authenticator.
+	const authenticator = createAuthenticator({
+		identity: components.identity,
+		providers: [kantelSessionProvider({ sessions: components.otp.sessions })],
+	});
+	compute = await gatewayCompute({ authenticator, identity: components.identity });
+	const gateway = createGateway({ components, authenticator, compute: compute.api, consoleDir: scratch, mailer });
 	server = await listen(gateway.fetch, 0, { host: "127.0.0.1", requestTimeoutMs: REQUEST_TIMEOUT_MS });
-	target = { baseUrl: server.url, ...seeded };
+	target = { baseUrl: server.url, ...seeded, computeKey: compute.superAdminKey };
 	close = async () => {
 		await gateway.close();
+		await compute.close();
 		await server.close();
 		await components.close();
 	};
@@ -51,7 +61,7 @@ afterAll(async () => {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-test("the gateway serves every mounted API end to end", async () => {
+test("the gateway serves the compute plane and identity end to end, and none of the agent plane", async () => {
 	const checks = await runGatewayE2e(target);
 	expect(checks.filter((check) => !check.ok)).toEqual([]);
 	expect(checks.length).toBeGreaterThan(15);
@@ -68,7 +78,7 @@ async function memoryCode(email: string, _since: number, timeoutMs: number): Pro
 	}
 }
 
-test("email one-time PIN sign-in starts a Kantel session every API accepts", async () => {
+test("email one-time PIN sign-in starts a Kantel session the compute plane accepts", async () => {
 	// As configured, mixed case and all: sign-in and /v1/me both compare it normalised.
 	const checks = await runSignInE2e({ ...target, adminEmail: ADMIN_EMAIL, readCode: memoryCode });
 	expect(checks.filter((check) => !check.ok)).toEqual([]);
@@ -197,7 +207,7 @@ test("static paths cannot leave the console directory", async () => {
 	}
 });
 
-test("an organisation key creates a project with POST /v1/projects and runs a session in it", async () => {
+test("an organisation key creates a project with POST /v1/projects", async () => {
 	const inOrganisation = {
 		actor: { kind: "system", component: "test" },
 		organisationId: target.organisationId,
@@ -208,18 +218,6 @@ test("an organisation key creates a project with POST /v1/projects and runs a se
 		scope: "organisation",
 		role: "operator",
 		permissions: ["create_projects"],
-	});
-	// An organisation-wide profile, which an organisation-wide operator runs in any project.
-	await components.runtime.profiles.put(inOrganisation, {
-		id: "org-echo",
-		organisationId: target.organisationId,
-		name: "Echo",
-		model: { route: "echo" },
-		promptLayers: [],
-		tools: [],
-		skills: [],
-		sandbox: { tiers: ["isolate"] },
-		memoryScopes: [],
 	});
 	const call = (path: string, init: RequestInit = {}, secret = issued.secret) =>
 		fetch(`${target.baseUrl}${path}`, {
@@ -232,11 +230,6 @@ test("an organisation key creates a project with POST /v1/projects and runs a se
 	expect(project.organisationId).toBe(target.organisationId);
 	const listed = (await (await call("/v1/projects?limit=1000")).json()) as { items: { id: string }[] };
 	expect(listed.items.map((item) => item.id)).toContain(project.id);
-	const session = await call("/v1/sessions", {
-		method: "POST",
-		body: JSON.stringify({ projectId: project.id, agentId: "org-echo" }),
-	});
-	expect(session.status).toBe(201);
 	// The bootstrap's project key makes none.
 	const refused = await call("/v1/projects", { method: "POST", body: '{"name":"No"}' }, target.apiKey);
 	expect(refused.status).toBe(403);
@@ -251,7 +244,7 @@ test("HEAD answers with headers and no body", async () => {
 });
 
 test("a body over the limit is refused with 413", async () => {
-	const response = await fetch(`${target.baseUrl}/v1/sessions`, {
+	const response = await fetch(`${target.baseUrl}/v1/projects`, {
 		method: "POST",
 		headers: { authorization: `Bearer ${target.apiKey}`, "content-type": "application/json" },
 		body: "x".repeat(5 * 1024 * 1024),
@@ -259,14 +252,14 @@ test("a body over the limit is refused with 413", async () => {
 	expect(response.status).toBe(413);
 });
 
-test("a request whose body never finishes is cut off, but an event stream outlives the request timeout", async () => {
+test("a request whose body never finishes is cut off", async () => {
 	// A client that sends half a body and stalls.
 	const port = new URL(server.url).port;
 	const closedAfter = await new Promise<number>((resolve, reject) => {
 		const started = Date.now();
 		const socket = connect(Number(port), "127.0.0.1", () => {
 			socket.write(
-				`POST /v1/sessions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{"pro`,
+				`POST /v1/projects HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{"pro`,
 			);
 		});
 		const watchdog = setTimeout(() => {
@@ -281,26 +274,42 @@ test("a request whose body never finishes is cut off, but an event stream outliv
 		socket.on("error", () => {});
 	});
 	expect(closedAfter).toBeLessThan(REQUEST_TIMEOUT_MS * 10);
-
-	// An event stream stays open well past the request timeout.
-	const created = await fetch(`${target.baseUrl}/v1/sessions`, {
-		method: "POST",
-		headers: { authorization: `Bearer ${target.apiKey}`, "content-type": "application/json" },
-		body: JSON.stringify({ projectId: target.projectId, agentId: "echo" }),
-	});
-	const { id } = (await created.json()) as { id: string };
-	const events = await fetch(`${target.baseUrl}/v1/sessions/${id}/events`, {
-		headers: { authorization: `Bearer ${target.apiKey}` },
-	});
-	expect(events.ok).toBe(true);
-	const reader = events.body?.getReader();
-	if (reader === undefined) throw new Error("no event stream");
-	await reader.read();
-	await sleep(REQUEST_TIMEOUT_MS * 2.5);
-	const next = await Promise.race([reader.read(), sleep(300).then(() => "open" as const)]);
-	expect(next === "open" || next.done === false).toBe(true);
-	await reader.cancel();
 }, 20_000);
+
+test("an older version's bootstrap file is read, and its agent-plane fields kept for a rollback", async () => {
+	const parts = createGatewayComponents();
+	const names = { organisation: "Upgrade", project: "upgrade" };
+	const first = await bootstrap(parts, names);
+	// What a version with the agent plane wrote: its workspace, vault items and egress grants beside the deployment.
+	const path = join(scratch, "state", "older-bootstrap.json");
+	const older = {
+		...first,
+		workspaceId: "w_older",
+		cpaItem: { name: "cpa", id: "vi_1" },
+		modelItems: { cpa: { name: "cpa", id: "vi_1" } },
+		egressGrants: "sha256:abc",
+	};
+	await writePrivateFile(path, JSON.stringify(older));
+	const previous = await readBootstrap(path);
+	expect(previous?.organisationId).toBe(first.organisationId);
+	const again = await bootstrap(parts, names, previous);
+	expect(again).toMatchObject({
+		organisationId: first.organisationId,
+		projectId: first.projectId,
+		apiKey: first.apiKey,
+		workspaceId: "w_older",
+		cpaItem: { name: "cpa", id: "vi_1" },
+		modelItems: { cpa: { name: "cpa", id: "vi_1" } },
+		egressGrants: "sha256:abc",
+	});
+	// A new deployment (a fresh database) keeps none of them.
+	const elsewhere = createGatewayComponents();
+	const fresh = await bootstrap(elsewhere, names, previous);
+	expect(fresh.organisationId).not.toBe(first.organisationId);
+	expect(fresh).not.toHaveProperty("workspaceId");
+	await parts.close();
+	await elsewhere.close();
+});
 
 test("the bootstrap file is private even when it replaces a readable one", async () => {
 	const path = join(scratch, "state", "bootstrap.json");
