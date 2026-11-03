@@ -44,7 +44,6 @@ describe("the console's files", () => {
 		const { ASSETS, asked } = assets();
 		const response = await routeRequest(new Request(`${BASE}/assets/image-body-CKnoALoU.js`), {
 			STACK: unused,
-			VAULTS: unused,
 			ASSETS,
 		});
 		expect(response.status).toBe(404);
@@ -56,8 +55,8 @@ describe("the console's files", () => {
 
 	it("gives any other path the console's page, which routes in the browser", async () => {
 		const { ASSETS } = assets();
-		for (const path of ["/projects/p1/sessions/s1", "/settings"]) {
-			const response = await routeRequest(new Request(`${BASE}${path}`), { STACK: unused, VAULTS: unused, ASSETS });
+		for (const path of ["/projects/p1/compute", "/settings"]) {
+			const response = await routeRequest(new Request(`${BASE}${path}`), { STACK: unused, ASSETS });
 			expect(response.status).toBe(200);
 			expect(await response.text()).toBe(PAGE);
 		}
