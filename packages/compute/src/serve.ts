@@ -52,8 +52,15 @@ export interface ComputeServer {
 	close(): Promise<void>;
 }
 
-/** The bootstrap super-admin, their personal account, and their every-scope key (made unless it exists). */
-async function bootstrap(store: ComputeStore, secret: string | undefined, now: number): Promise<string> {
+/**
+ * The bootstrap super-admin (`admin@localhost`), their personal account, and their every-scope key, made unless it
+ * exists; answers the key's secret. A gateway calls it on each start with the secret it kept, as the store is in memory.
+ */
+export async function bootstrapSuperAdmin(
+	store: ComputeStore,
+	secret: string | undefined,
+	now: number,
+): Promise<string> {
 	const user = await ensurePerson(
 		store,
 		{ userId: "usr_admin", email: "admin@localhost", name: "Admin", superAdmin: true },
@@ -144,7 +151,11 @@ export async function startComputeServer(options: ComputeServerOptions = {}): Pr
 		...(options.authenticatePerson === undefined ? {} : { authenticatePerson: options.authenticatePerson }),
 		...(options.fetch === undefined ? {} : { fetch: options.fetch }),
 	});
-	const apiKey = await bootstrap(store, options.bootstrapKey ?? process.env.KANTEL_COMPUTE_BOOTSTRAP_KEY, Date.now());
+	const apiKey = await bootstrapSuperAdmin(
+		store,
+		options.bootstrapKey ?? process.env.KANTEL_COMPUTE_BOOTSTRAP_KEY,
+		Date.now(),
+	);
 
 	server.on("request", (incoming: IncomingMessage, outgoing: ServerResponse) => {
 		void (async () => {
