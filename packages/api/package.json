@@ -16,7 +16,6 @@
 	},
 	"dependencies": {
 		"@kantel/contracts": "workspace:*",
-		"@kantel/protocol": "workspace:*",
 		"typebox": "1.3.27"
 	}
 }

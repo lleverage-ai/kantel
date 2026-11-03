@@ -5,17 +5,11 @@
  */
 export * from "./compute-routes.ts";
 export * as computeSchema from "./compute-schema.ts";
-export * from "./connection-routes.ts";
-export * as connectionSchema from "./connections-schema.ts";
 export * from "./environment-routes.ts";
 export * as environmentSchema from "./environments-schema.ts";
-export * from "./model-provider-routes.ts";
-export * as modelProviderSchema from "./model-providers-schema.ts";
 export * from "./openapi.ts";
 export * from "./route.ts";
 export * from "./router.ts";
 export * from "./routes.ts";
 export * as schema from "./schema.ts";
 export * from "./sdk.ts";
-export * from "./tool-server-routes.ts";
-export * as toolServerSchema from "./tool-servers-schema.ts";
