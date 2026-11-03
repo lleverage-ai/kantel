@@ -736,7 +736,7 @@ export const DesktopAccess = Type.Object(
 
 export const BrowserAccess = Type.Object(
 	{
-		url: Type.String({ description: "Watch and drive the sandbox's Chrome in a browser." }),
+		url: Type.String({ description: "Watch and drive the sandbox's Chromium in a browser." }),
 		cdpUrl: Type.String({
 			description: "A Chrome DevTools Protocol WebSocket URL, for Playwright's `connectOverCDP` or Puppeteer.",
 		}),

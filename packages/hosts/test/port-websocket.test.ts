@@ -1,4 +1,4 @@
-// The WebSocket client the gateway opens over a sandbox's port stream (for Chrome's DevTools): its handshake, masked
+// The WebSocket client the gateway opens over a sandbox's port stream (for Chromium's DevTools): its handshake, masked
 // frames out, and unmasked, fragmented, extended-length and control frames in.
 import { describe, expect, it } from "vitest";
 import type { PortSink } from "../src/hub.ts";

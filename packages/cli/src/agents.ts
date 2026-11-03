@@ -72,7 +72,7 @@ ${AGENTS_END}`;
 /** The skill Claude Code (`.claude/skills`), Codex and pi (`.agents/skills`) load when a task needs a sandbox. */
 export const SKILL_MD = `---
 name: kantel
-description: Run code in a Kantel sandbox (an isolate, or a microVM with root, Docker, SSH, a desktop and Chrome) instead of on this computer. Use for builds, tests, untrusted code, Docker, servers that need a public URL, browser automation and long jobs.
+description: Run code in a Kantel sandbox (an isolate, or a microVM with root, Docker, SSH, a desktop and Chromium) instead of on this computer. Use for builds, tests, untrusted code, Docker, servers that need a public URL, browser automation and long jobs.
 ---
 
 # Kantel sandboxes
@@ -86,7 +86,7 @@ ${CHEAT_SHEET}
 
 - Start from a saved snapshot: \`npx kantel new --from <name>\`; save one with \`npx kantel snapshot save "$id" <name>\`.
 - Copies of a sandbox: \`npx kantel fork "$id" --count 3\`.
-- A microVM's desktop or Chrome: \`npx kantel desktop "$id"\`, \`npx kantel browser "$id"\` (prints a live view URL and a
+- A microVM's desktop or Chromium: \`npx kantel desktop "$id"\`, \`npx kantel browser "$id"\` (prints a live view URL and a
   CDP URL for Playwright's \`connectOverCDP\`).
 - SSH (microVMs): \`npx kantel ssh "$id"\` connects; \`-- <command>\` runs one there and \`--print\` prints the ssh
   command instead. Prefer \`exec\` for commands.

@@ -125,7 +125,7 @@ export interface ApproveDeviceLoginBody {
 }
 
 export interface BrowserAccess {
-	/** Watch and drive the sandbox's Chrome in a browser. */
+	/** Watch and drive the sandbox's Chromium in a browser. */
 	readonly url: string;
 	/** A Chrome DevTools Protocol WebSocket URL, for Playwright's `connectOverCDP` or Puppeteer. */
 	readonly cdpUrl: string;
@@ -1681,7 +1681,7 @@ export interface KantelClient {
 	openSsh(sandboxId: string, body?: SshAccessBody, options?: CallOptions): Promise<SshAccess>;
 	/** Open the desktop. A short-lived URL that streams the sandbox's Linux desktop to a browser, to watch or drive. microVMs only. A key needs `access`. `POST /sandboxes/{sandboxId}/desktop` */
 	openDesktop(sandboxId: string, body?: ViewAccessBody, options?: CallOptions): Promise<DesktopAccess>;
-	/** Open the browser. Starts the sandbox's Chrome if it isn't running, and answers a live view URL and a CDP URL for Playwright or Puppeteer. microVMs only. A key needs `access`. `POST /sandboxes/{sandboxId}/browser` */
+	/** Open the browser. Starts the sandbox's Chromium if it isn't running, and answers a live view URL and a CDP URL for Playwright or Puppeteer. microVMs only. A key needs `access`. `POST /sandboxes/{sandboxId}/browser` */
 	openBrowser(sandboxId: string, body?: ViewAccessBody, options?: CallOptions): Promise<BrowserAccess>;
 	/** List snapshots. The account's snapshots, newest first: saved ones, one sandbox's history (`sandboxId`), or both. A key needs `snapshots:read`. `GET /snapshots` */
 	listSnapshots(query?: ListSnapshotsQuery, options?: CallOptions): Promise<SnapshotPage>;

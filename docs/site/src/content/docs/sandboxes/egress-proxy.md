@@ -25,7 +25,7 @@ HTTPS_PROXY=http://sandbox@10.231.0.9:3129
 NO_PROXY=localhost,127.0.0.1,::1
 ```
 
-`curl`, `git` over HTTPS, `pip`, `npm` and Node (`NODE_USE_ENV_PROXY=1`) follow them. Chrome and Docker use a forwarder on `127.0.0.1:3128` inside the sandbox, which keeps working after a fork or resume changes the proxy's address. A program that ignores the proxy variables can't connect, and a name it looks up itself doesn't resolve: the proxy resolves names. Plain TCP and UDP don't get out. The proxy takes `CONNECT` to any port, though, so a client that can use an HTTP proxy for other protocols gets through.
+`curl`, `git` over HTTPS, `pip`, `npm` and Node (`NODE_USE_ENV_PROXY=1`) follow them. Chromium and Docker use a forwarder on `127.0.0.1:3128` inside the sandbox, which keeps working after a fork or resume changes the proxy's address. A program that ignores the proxy variables can't connect, and a name it looks up itself doesn't resolve: the proxy resolves names. Plain TCP and UDP don't get out. The proxy takes `CONNECT` to any port, though, so a client that can use an HTTP proxy for other protocols gets through.
 
 Whatever the account's rules say, the proxy refuses private, loopback and link-local addresses, checked after it resolves the name. That covers your network, the host itself and the cloud metadata address `169.254.169.254`. A host's operator can let named private ranges through with `egressAllowCIDRs` in the [host's settings](/hosts/#the-settings-file).
 

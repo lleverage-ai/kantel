@@ -110,7 +110,7 @@ A short-lived URL that streams the sandbox's Linux desktop to a browser, to watc
 
 `POST /v1/sandboxes/{sandboxId}/browser` (SDK method `openBrowser`)
 
-Starts the sandbox's Chrome if it isn't running, and answers a live view URL and a CDP URL for Playwright or Puppeteer. microVMs only. A key needs `access`.
+Starts the sandbox's Chromium if it isn't running, and answers a live view URL and a CDP URL for Playwright or Puppeteer. microVMs only. A key needs `access`.
 
 **Path parameters**
 

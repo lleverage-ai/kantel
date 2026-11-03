@@ -2,7 +2,7 @@
  * A WebSocket client over a sandbox's port stream (`HostsService.sandboxes.openPort`): the handshake and RFC 6455
  * framing written out, because the gateway runs on Bun, whose `node:http` ignores `createConnection`, so `ws`'s client
  * can't be handed a stream that isn't a socket. The gateway uses it to pass a WebSocket through to a server in the
- * sandbox (Chrome's DevTools) message by message.
+ * sandbox (Chromium's DevTools) message by message.
  */
 import type { PortSink, PortStream } from "./hub.ts";
 

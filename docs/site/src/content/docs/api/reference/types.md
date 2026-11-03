@@ -105,7 +105,7 @@ The key the device gets, in the approver's personal account unless `account` nam
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `url` | string | yes | Watch and drive the sandbox's Chrome in a browser. |
+| `url` | string | yes | Watch and drive the sandbox's Chromium in a browser. |
 | `cdpUrl` | string | yes | A Chrome DevTools Protocol WebSocket URL, for Playwright's `connectOverCDP` or Puppeteer. |
 | `viewOnly` | boolean | yes |  |
 | `expiresAt` | integer | yes | Epoch milliseconds, UTC. |

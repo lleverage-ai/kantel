@@ -234,7 +234,7 @@ func applyIdentity(id *Identity) error {
 		}
 		_ = os.WriteFile("/etc/kantel/env", []byte(b.String()), 0o644)
 	}
-	// dockerd and Chrome use LocalProxyAddr, which follows the identity's proxy, so nothing restarts here: a restart
+	// dockerd and Chromium use LocalProxyAddr, which follows the identity's proxy, so nothing restarts here: a restart
 	// would stop a resumed or forked sandbox's containers and close its tabs (and, as a restored sandbox's monotonic
 	// clock carries on from its template's, soon trips systemd's start limit).
 	return nil

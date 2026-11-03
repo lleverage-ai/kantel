@@ -1,6 +1,6 @@
 ---
 title: Desktop and browser
-description: Open a microVM's Linux desktop or its Chrome in your browser to watch or drive it, embed the live view in an iframe, and connect Playwright or Puppeteer to the sandbox's browser over CDP.
+description: Open a microVM's Linux desktop or its Chromium in your browser to watch or drive it, embed the live view in an iframe, and connect Playwright or Puppeteer to the sandbox's browser over CDP.
 sidebar:
   badge:
     text: Experimental
@@ -11,7 +11,7 @@ sidebar:
 These routes are part of Kantel's API, which every control plane serves. Their shapes may still change.
 :::
 
-A microVM has a Linux desktop and a Chrome. You can open either in your own browser to watch an agent work or take over from it, and an agent can drive the sandbox's Chrome with Playwright or Puppeteer. Isolates have neither: the calls on this page answer `501` with `not_supported` for them.
+A microVM has a Linux desktop and a Chromium browser. You can open either in your own browser to watch an agent work or take over from it, and an agent can drive the sandbox's Chromium with Playwright or Puppeteer. Isolates have neither: the calls on this page answer `501` with `not_supported` for them.
 
 The examples use `KANTEL_URL`, `KANTEL_API_KEY` and the `kantel` client set up in [Create and manage sandboxes](/sandboxes/lifecycle/#before-you-start). The key needs `access`.
 
@@ -67,7 +67,7 @@ curl -s -X POST "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/desktop" \
 
 ## Open the browser
 
-The browser route starts the sandbox's Chrome if it isn't running, and answers two URLs: a live view, to watch and drive that Chrome from your own browser, and a Chrome DevTools Protocol (CDP) WebSocket URL for automation.
+The browser route starts the sandbox's Chromium if it isn't running, and answers two URLs: a live view, to watch and drive that Chromium from your own browser, and a Chrome DevTools Protocol (CDP) WebSocket URL for automation.
 
 ```sh
 curl -s -X POST "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/browser" \
@@ -78,11 +78,11 @@ curl -s -X POST "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/browser" \
 
 It takes the same `viewOnly` and `ttlMinutes` as the desktop, and its [BrowserAccess](/api/reference/types/#browseraccess) answer has `url`, `cdpUrl`, `viewOnly` and `expiresAt`.
 
-On your own hosts Chrome runs on the sandbox's desktop from the start, so `url` is the desktop viewer, showing that Chrome. `cdpUrl` goes through the relay too: `wss://kantel.example.com/v1/hosts/tunnel/<ticket>/devtools/browser/<id>`, or `ws://` when the public URL is `http://`. While Chrome is still starting, the route answers `503` with `unavailable` (`The sandbox's browser isn't up yet`); try again a moment later.
+On your own hosts Chromium runs on the sandbox's desktop from the start, so `url` is the desktop viewer, showing that Chromium. `cdpUrl` goes through the relay too: `wss://kantel.example.com/v1/hosts/tunnel/<ticket>/devtools/browser/<id>`, or `ws://` when the public URL is `http://`. While Chromium is still starting, the route answers `503` with `unavailable` (`The sandbox's browser isn't up yet`); try again a moment later.
 
 ## Drive it with Playwright
 
-Connect Playwright to `cdpUrl`. The sandbox's Chrome already has a browser context, so use it rather than making a new one, and the live view shows what your script does:
+Connect Playwright to `cdpUrl`. The sandbox's Chromium already has a browser context, so use it rather than making a new one, and the live view shows what your script does:
 
 ```ts
 import { chromium } from "playwright";
@@ -100,12 +100,12 @@ console.log(await page.title());
 await browser.close();
 ```
 
-`browser.close()` disconnects Playwright and leaves the sandbox's Chrome running. Puppeteer connects the same way, with `puppeteer.connect({ browserWSEndpoint: access.cdpUrl })`.
+`browser.close()` disconnects Playwright and leaves the sandbox's Chromium running. Puppeteer connects the same way, with `puppeteer.connect({ browserWSEndpoint: access.cdpUrl })`.
 
-The CDP URL is as powerful as the browser itself: anyone holding it can read every page and cookie in that Chrome until it expires. Keep it inside the program that uses it.
+The CDP URL is as powerful as the browser itself: anyone holding it can read every page and cookie in that Chromium until it expires. Keep it inside the program that uses it.
 
 ## Apps in the sandbox
 
-The sandbox's Chrome runs inside the sandbox, so it reaches a dev server there at `http://localhost:<port>` with no [public port](/sandboxes/public-ports/). Start the server as a detached command, then point Playwright at `localhost`.
+The sandbox's Chromium runs inside the sandbox, so it reaches a dev server there at `http://localhost:<port>` with no [public port](/sandboxes/public-ports/). Start the server as a detached command, then point Playwright at `localhost`.
 
 <!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:681-712, packages/api/src/compute-schema.ts:671-699. The relay and the CLI (5be456c): packages/hosts/src/backend.ts:204-222,414-441, packages/cli/src/commands.ts:1360-1395, apps/host/guest/README.md; run through a local host for TASK-4706 -->
