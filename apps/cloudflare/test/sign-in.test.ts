@@ -2,12 +2,16 @@
 // gets a personal space of their own, sees nothing of anyone else's, and is not the compute plane's super-admin; the
 // Access hostname answers as before; the daily mail cap holds.
 import { DatabaseSync } from "node:sqlite";
+import { EMAIL_OTP_ISSUER, type IdentityDirectory } from "@kantel/contracts";
+import { createMemoryIdentity } from "@kantel/identity/memory";
 import { createMockAccess } from "@kantel/identity/testing";
 import { syncSqliteDriver } from "@kantel/sql/sqlite";
 import { describe, expect, it } from "vitest";
+import { COMPUTE_MEMBERS_ONLY } from "../src/compute.ts";
 import { DEFAULT_DAILY_MAIL_CAP, type GatewayVars, gatewayConfig } from "../src/config.ts";
 import { createGateway } from "../src/gateway.ts";
 import { dailyMailBudget, memoryMailCounts, type SendEmailBinding } from "../src/mail.ts";
+import { createMemorySignUpStore, openSignUp, type SignUpRecord, type SignUpStore } from "../src/sign-up.ts";
 import { createStack } from "../src/stack.ts";
 
 const TEAM_DOMAIN = "kantel-test.cloudflareaccess.com";
@@ -151,7 +155,7 @@ describe("email-code sign-in on the public origin", () => {
 		await close();
 	});
 
-	it("keeps each space apart, and makes nobody who signs up a super-admin", async () => {
+	it("keeps each space apart, and lets nobody who signs up use the stub's compute or be its super-admin", async () => {
 		const { call, signIn, close } = await start();
 		const ada = await signIn("ada@example.test");
 		const bob = await signIn("bob@example.test");
@@ -166,20 +170,25 @@ describe("email-code sign-in on the public origin", () => {
 			headers: { "kantel-organisation": String(adaMe.body.organisationId) },
 		});
 		expect(intoAda.status).toBe(403);
-		// Administering their own space doesn't make them the deployment's super-admin.
-		const whoami = await call(PUBLIC, "GET", "/v1/whoami", { token: ada });
-		expect(whoami.status).toBe(200);
-		expect(whoami.body).toMatchObject({ superAdmin: false });
-		expect((await call(PUBLIC, "GET", "/v1/admin/hosts", { token: ada })).status).toBe(403);
-		// Their sandboxes are their own.
-		const made = await call(PUBLIC, "POST", "/v1/sandboxes", { token: ada, body: { name: "adas", wait: true } });
-		expect(made.status).toBe(201);
-		const bobsList = await call(PUBLIC, "GET", "/v1/sandboxes", { token: bob });
-		expect(bobsList.body.items).toEqual([]);
-		expect((await call(PUBLIC, "GET", `/v1/sandboxes/${made.body.id}`, { token: bob })).status).toBe(404);
-		// The Access admin is still the super-admin.
+		// The stub keeps sandboxes in the object's memory: someone who signed up may not fill it, by any way in.
+		for (const [method, path, body] of [
+			["GET", "/v1/whoami", undefined],
+			["POST", "/v1/sandboxes", { name: "adas", wait: true }],
+			["GET", "/v1/sandboxes", undefined],
+			["POST", "/v1/api-keys", { name: "cli" }],
+			["GET", "/v1/admin/hosts", undefined],
+		] as const) {
+			const refused = await call(PUBLIC, method, path, { token: ada, ...(body === undefined ? {} : { body }) });
+			expect(refused.status, `${method} ${path}`).toBe(403);
+			expect(refused.body.error).toMatchObject({ code: "forbidden", message: COMPUTE_MEMBERS_ONLY });
+		}
+		// Their own identity still answers.
+		expect((await call(PUBLIC, "GET", "/v1/projects", { token: ada })).status).toBe(200);
+		// The Access admin is still the super-admin, and still uses compute.
 		const admin = await call(ACCESS_HOST, "GET", "/v1/whoami", { access: true });
 		expect(admin.body).toMatchObject({ superAdmin: true });
+		const made = await call(ACCESS_HOST, "POST", "/v1/sandboxes", { access: true, body: { name: "toms", wait: true } });
+		expect(made.status).toBe(201);
 		await close();
 	});
 
@@ -189,8 +198,121 @@ describe("email-code sign-in on the public origin", () => {
 		const carol = await signIn("carol@example.test");
 		const me = await call(PUBLIC, "GET", "/v1/me", { token: carol });
 		expect(me.body.organisationId).toBe(stack.organisation.id);
-		expect((await call(PUBLIC, "GET", "/v1/whoami", { token: carol })).body).toMatchObject({ superAdmin: false });
+		const whoami = await call(PUBLIC, "GET", "/v1/whoami", { token: carol });
+		expect(whoami.status).toBe(200);
+		expect(whoami.body).toMatchObject({ superAdmin: false });
+		expect((await call(PUBLIC, "GET", "/v1/organisations", { token: carol })).body.items).toHaveLength(1);
 		await close();
+	});
+
+	it("lets someone with a space who is invited elsewhere list both and act in each they name", async () => {
+		const { stack, call, signIn, close } = await start();
+		const ada = await signIn("ada@example.test");
+		const bob = await signIn("bob@example.test");
+		const personal = String((await call(PUBLIC, "GET", "/v1/me", { token: ada })).body.organisationId);
+		const bobs = String((await call(PUBLIC, "GET", "/v1/me", { token: bob })).body.organisationId);
+		await stack.identity.createInvite(stack.admin, { email: "ada@example.test", role: "viewer" });
+		const again = await signIn("ada@example.test");
+		// Naming none, she's asked to (the console then lists hers).
+		const unnamed = await call(PUBLIC, "GET", "/v1/me", { token: again });
+		expect(unnamed.status).toBe(403);
+		expect(unnamed.body.error).toMatchObject({ failure: "organisation" });
+		const listed = await call(PUBLIC, "GET", "/v1/organisations", { token: again });
+		expect(listed.status).toBe(200);
+		expect((listed.body.items as { id: string }[]).map((item) => item.id).sort()).toEqual(
+			[personal, stack.organisation.id].sort(),
+		);
+		const as = (organisationId: string) => ({ token: again, headers: { "kantel-organisation": organisationId } });
+		expect((await call(PUBLIC, "GET", "/v1/me", as(personal))).body.organisationId).toBe(personal);
+		expect((await call(PUBLIC, "GET", "/v1/me", as(stack.organisation.id))).body.organisationId).toBe(
+			stack.organisation.id,
+		);
+		// In the deployment's organisation she may use compute, though not as its super-admin.
+		expect((await call(PUBLIC, "GET", "/v1/whoami", as(stack.organisation.id))).body).toMatchObject({
+			superAdmin: false,
+		});
+		expect((await call(PUBLIC, "GET", "/v1/whoami", as(personal))).status).toBe(403);
+		// Bob's is still not hers.
+		expect((await call(PUBLIC, "GET", "/v1/me", as(bobs))).status).toBe(403);
+		await close();
+	});
+});
+
+describe("a sign-up that stopped part-way", () => {
+	it("is finished on the next sign-in, with one space and one Default project", async () => {
+		const identity = createMemoryIdentity();
+		const records = createMemorySignUpStore();
+		const external = {
+			issuer: EMAIL_OTP_ISSUER,
+			subject: "ada@example.test",
+			email: "ada@example.test",
+			emailVerified: true,
+		};
+		const ctx = { actor: { kind: "system" as const, component: "test" }, organisationId: "test" };
+		// The first attempt made the space, then failed before its project.
+		let failProject = true;
+		const flaky: IdentityDirectory = Object.assign(Object.create(identity) as IdentityDirectory, {
+			createProject: (...args: Parameters<IdentityDirectory["createProject"]>) => {
+				if (failProject) return Promise.reject(new Error("D1 went away"));
+				return identity.createProject(...args);
+			},
+		});
+		const signUp = openSignUp(flaky, { records });
+		await expect(signUp.signIn(ctx, external)).rejects.toThrow("D1 went away");
+		failProject = false;
+		const signedIn = await signUp.signIn(ctx, external);
+		expect(signedIn.organisationIds).toHaveLength(1);
+		const [organisationId] = signedIn.organisationIds;
+		const as = { actor: { kind: "human" as const, userId: signedIn.user.id }, organisationId: organisationId ?? "" };
+		expect((await identity.listProjects(as)).items.map((project) => project.name)).toEqual(["Default"]);
+		// And again: nothing more is made.
+		const third = await signUp.signIn(ctx, external);
+		expect(third.organisationIds).toEqual(signedIn.organisationIds);
+		expect((await identity.listProjects(as)).items).toHaveLength(1);
+	});
+
+	it("also finishes when the space was made but never recorded", async () => {
+		const identity = createMemoryIdentity();
+		const saved: SignUpRecord[] = [];
+		const inner = createMemorySignUpStore();
+		let dropSpace = true;
+		const records: SignUpStore = {
+			load: (userId) => inner.load(userId),
+			async save(userId, record) {
+				saved.push(record);
+				// The object stopped after the organisation committed, before its record did.
+				if (record.organisationId !== undefined && dropSpace) throw new Error("reset");
+				await inner.save(userId, record);
+			},
+		};
+		const external = { issuer: EMAIL_OTP_ISSUER, subject: "b@x.test", email: "b@x.test", emailVerified: true };
+		const ctx = { actor: { kind: "system" as const, component: "test" }, organisationId: "test" };
+		const signUp = openSignUp(identity, { records });
+		await expect(signUp.signIn(ctx, external)).rejects.toThrow("reset");
+		dropSpace = false;
+		const signedIn = await signUp.signIn(ctx, external);
+		expect(signedIn.organisationIds).toHaveLength(1);
+		expect(saved.at(-1)).toMatchObject({ organisationId: signedIn.organisationIds[0] });
+		expect(saved.at(-1)?.projectId).toBeDefined();
+	});
+
+	it("makes no space for someone who was only invited", async () => {
+		const identity = createMemoryIdentity();
+		const records = createMemorySignUpStore();
+		const system = { actor: { kind: "system" as const, component: "test" }, organisationId: "test" };
+		const owner = await identity.createUser(system, { name: "Owner", email: "o@x.test" });
+		const team = await identity.createOrganisation(system, {
+			name: "Team",
+			admin: { kind: "user", userId: owner.id },
+		});
+		await identity.createInvite(
+			{ actor: { kind: "human", userId: owner.id }, organisationId: team.id },
+			{ email: "c@x.test", role: "viewer" },
+		);
+		const external = { issuer: EMAIL_OTP_ISSUER, subject: "c@x.test", email: "c@x.test", emailVerified: true };
+		const signedIn = await openSignUp(identity, { records }).signIn(system, external);
+		expect(signedIn.organisationIds).toEqual([team.id]);
+		expect(await records.load(signedIn.user.id)).toBeUndefined();
 	});
 
 	it("refuses a start once the day's mail cap is reached", async () => {

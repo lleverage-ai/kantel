@@ -40,7 +40,7 @@ import {
 	callContextFor,
 	type IdentityDirectory,
 	isKantelError,
-	type KantelError,
+	KantelError,
 } from "@kantel/contracts";
 import type { SqlDriver } from "@kantel/sql";
 import { HOSTED_PORTS_DOMAIN } from "./config.ts";
@@ -85,8 +85,8 @@ export interface StackComputeOptions {
 	/** Who holds which role: an organisation admin who signs in is the compute plane's super-admin. */
 	readonly identity: Pick<IdentityDirectory, "authorize">;
 	/**
-	 * The deployment's own organisation: only its admins are super-admins. Absent, any organisation's admin is (tests
-	 * with one organisation).
+	 * The deployment's own organisation: only its admins are super-admins, and only its members may use compute here.
+	 * Absent, any organisation's admin is a super-admin and anyone signed in may use it (tests with one organisation).
 	 */
 	readonly adminOrganisationId?: string;
 	/** Where the records are: the stack object's SQLite. Absent, in memory (tests). */
@@ -101,10 +101,18 @@ export interface StackComputeOptions {
 	readonly portsDomain?: string;
 }
 
+/** What someone outside the deployment's organisation is told: compute here is the stub's memory, not a host of theirs. */
+export const COMPUTE_MEMBERS_ONLY =
+	"Sandboxes here are for the deployment's own organisation until hosts you add can run them";
+
 /**
  * The person a sign-in is, or undefined for a key or no sign-in. As the self-hosted gateway does
  * (`apps/selfhosted/src/gateway/compute.ts`): a person's sign-in carries no role of its own, so `identity` says
  * whether they administer the organisation.
+ *
+ * Someone acting in another organisation (anyone who signed up on the public origin) is refused: the stub backend
+ * keeps files and snapshots in this object's memory, which a stranger mustn't be able to fill. Refusing the person
+ * refuses every way in, a compute key or a device sign-in included, since only a person can make either.
  */
 async function personOf(
 	authenticator: Authenticator,
@@ -119,13 +127,14 @@ async function personOf(
 		return undefined;
 	}
 	if (caller.actor.kind !== "human") return undefined;
-	// An admin of a personal space (anyone who signed up) or of another organisation is not the deployment's.
-	const superAdmin =
-		(adminOrganisationId === undefined || caller.organisationId === adminOrganisationId) &&
-		(await identity.authorize(callContextFor(caller), "admin").then(
-			() => true,
-			() => false,
-		));
+	if (adminOrganisationId !== undefined && caller.organisationId !== adminOrganisationId) {
+		throw new KantelError("forbidden", COMPUTE_MEMBERS_ONLY);
+	}
+	// Only an admin of the deployment's organisation, never one of a personal space.
+	const superAdmin = await identity.authorize(callContextFor(caller), "admin").then(
+		() => true,
+		() => false,
+	);
 	return { userId: caller.actor.userId, name: caller.actor.userId, superAdmin };
 }
 

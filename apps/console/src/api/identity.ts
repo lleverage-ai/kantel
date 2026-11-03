@@ -7,10 +7,20 @@
 // - `email_otp` (self-hosted): the console signs in with `POST /auth/otp/start` and `/auth/otp/verify` and sends the
 //   session it gets back as a bearer token. The token is kept in localStorage, so a reload or another tab stays signed
 //   in, until it expires (12 hours) or the person signs out.
+//
+// Someone in more than one organisation (on the public origin, someone with a personal space who was invited to
+// another) must name one: `/v1/me` answers 403 `organisation` until they do. The console then lists theirs
+// (`GET /v1/organisations`), keeps the one they choose in localStorage beside the session, and sends it as
+// `Kantel-Organisation` on every call. Signing out forgets it.
 
 import type { MeResponse, SignInMethod } from "@kantel/contracts";
-import { authenticationFailureOf } from "@kantel/contracts";
-import { createIdentityClient, type IdentityClient, signInMethodsOf } from "@kantel/identity/http";
+import { authenticationFailureOf, ORGANISATION_HEADER } from "@kantel/contracts";
+import {
+	createIdentityClient,
+	type IdentityClient,
+	type OrganisationSummary,
+	signInMethodsOf,
+} from "@kantel/identity/http";
 import type { SignInApi } from "@kantel/ui";
 
 /** Who is signed in to the console. */
@@ -25,6 +35,37 @@ export type ConsoleActor = {
 };
 
 const SESSION_KEY = "kantel.console.session";
+const ORGANISATION_KEY = "kantel.console.organisation";
+
+/** Where the organisation a person chose to act in is kept between page loads. */
+export interface ChoiceStore {
+	get(): string | undefined;
+	set(organisationId: string): void;
+	clear(): void;
+}
+
+/** The chosen organisation in `storage` (the page's localStorage). */
+export function storageChoice(storage: Storage): ChoiceStore {
+	return {
+		get: () => storage.getItem(ORGANISATION_KEY) ?? undefined,
+		set: (organisationId) => storage.setItem(ORGANISATION_KEY, organisationId),
+		clear: () => storage.removeItem(ORGANISATION_KEY),
+	};
+}
+
+/** An in-memory choice, for tests and a page without storage. */
+export function memoryChoice(): ChoiceStore {
+	let chosen: string | undefined;
+	return {
+		get: () => chosen,
+		set: (organisationId) => {
+			chosen = organisationId;
+		},
+		clear: () => {
+			chosen = undefined;
+		},
+	};
+}
 
 /** Where a Kantel session token is kept between page loads. */
 export interface TokenStore {
@@ -80,6 +121,8 @@ export type ConsoleIdentityOptions = {
 	readonly baseUrl?: string;
 	readonly fetch?: typeof fetch;
 	readonly tokens: TokenStore;
+	/** The organisation chosen, for someone in several. Default in memory. */
+	readonly choice?: ChoiceStore;
 };
 
 /** What the console should show first. */
@@ -90,6 +133,12 @@ export type ConsoleBoot =
 			readonly actor: ConsoleActor;
 			/** Headers every API call sends: the session's bearer when signed in with a code, else none. */
 			readonly headers: () => Record<string, string>;
+	  }
+	/** Signed in to several organisations and none chosen: ask which, then boot again. */
+	| {
+			readonly kind: "choose-organisation";
+			readonly organisations: readonly OrganisationSummary[];
+			readonly choose: (organisationId: string) => void;
 	  }
 	/** Signed out, and the deployment signs people in with an email code: show the sign-in screen. */
 	| { readonly kind: "sign-in"; readonly api: SignInApi }
@@ -108,9 +157,14 @@ export interface ConsoleIdentity {
 
 export function createConsoleIdentity(options: ConsoleIdentityOptions): ConsoleIdentity {
 	const { tokens } = options;
+	const choice = options.choice ?? memoryChoice();
 	const headers = (): Record<string, string> => {
 		const token = tokens.get();
-		return token === undefined ? {} : { authorization: `Bearer ${token}` };
+		const chosen = choice.get();
+		return {
+			...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
+			...(chosen === undefined ? {} : { [ORGANISATION_HEADER]: chosen }),
+		};
 	};
 	const client = createIdentityClient({
 		baseUrl: options.baseUrl ?? "",
@@ -133,9 +187,18 @@ export function createConsoleIdentity(options: ConsoleIdentityOptions): ConsoleI
 			try {
 				me = await client.me(signal);
 			} catch (error) {
-				if (authenticationFailureOf(error) !== "invalid") throw error;
+				const failure = authenticationFailureOf(error);
+				if (failure === "organisation") {
+					// In several organisations and none chosen, or the one chosen is no longer theirs: ask which.
+					choice.clear();
+					const { items } = await client.organisations(signal);
+					if (items.length === 0) throw error;
+					return { kind: "choose-organisation", organisations: items, choose: (id) => choice.set(id) };
+				}
+				if (failure !== "invalid") throw error;
 				// The session we had (if any) is over.
 				tokens.clear();
+				choice.clear();
 				const methods = signInMethodsOf(error) ?? [];
 				return methods.includes("email_otp") ? { kind: "sign-in", api: signInApi } : { kind: "signed-out", methods };
 			}
@@ -152,9 +215,13 @@ export function createConsoleIdentity(options: ConsoleIdentityOptions): ConsoleI
 		async signOut() {
 			const token = tokens.get();
 			tokens.clear();
+			choice.clear();
 			if (token !== undefined) await client.endSession(token).catch(() => {});
 		},
-		forget: () => tokens.clear(),
+		forget: () => {
+			tokens.clear();
+			choice.clear();
+		},
 	};
 	return identity;
 }

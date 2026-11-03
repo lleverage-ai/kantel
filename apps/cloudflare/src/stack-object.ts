@@ -21,6 +21,7 @@ import { gatewayConfig } from "./config.ts";
 import { createGateway, type Gateway } from "./gateway.ts";
 import type { MailCounts, SendEmailBinding } from "./mail.ts";
 import type { PlacementVars } from "./route.ts";
+import type { SignUpRecord } from "./sign-up.ts";
 import { type BootstrapRecord, createStack, type Stack, type StackOptions, type StackStorage } from "./stack.ts";
 import { startOnce } from "./start.ts";
 
@@ -38,6 +39,8 @@ export interface Env extends GatewayVars, PlacementVars {
 const BOOTSTRAP_KEY = "harbour.bootstrap";
 /** Each UTC day's mail count is kept under this prefix and the day. */
 const MAIL_COUNT_PREFIX = "kantel.mail.";
+/** Each open sign-up's record is kept under this prefix and the user's ID. */
+const SIGN_UP_PREFIX = "kantel.sign-up.";
 
 export abstract class KantelStackBase extends DurableObject<Env> {
 	// A deployment's HARBOUR_* vars and secrets from before the rename still count: every KANTEL_* left unset takes its
@@ -100,6 +103,10 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 				save: (record) => storage.put(BOOTSTRAP_KEY, record),
 			},
 			compute: own,
+			signUps: {
+				load: (userId) => storage.get<SignUpRecord>(`${SIGN_UP_PREFIX}${userId}`),
+				save: (userId, record) => storage.put(`${SIGN_UP_PREFIX}${userId}`, record),
+			},
 		};
 	}
 

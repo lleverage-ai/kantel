@@ -47,7 +47,7 @@ import { BOOTSTRAP_ORGANISATION, sqlBootstrapFinder } from "./bootstrap-sql.ts";
 import { createStackCompute, type StackCompute } from "./compute.ts";
 import type { GatewayConfig } from "./config.ts";
 import { cloudflareMailer, dailyMailBudget, type MailBudget, type MailCounts, type SendEmailBinding } from "./mail.ts";
-import { openSignUp } from "./sign-up.ts";
+import { openSignUp, type SignUpStore } from "./sign-up.ts";
 
 /** The context bootstrap runs in. Identity lets only a system actor create the first organisation and user. */
 const BOOTSTRAP: CallContext = {
@@ -58,13 +58,18 @@ const BOOTSTRAP: CallContext = {
 /** A sign-in this slow is logged: a new isolate's first one fetches what later ones have cached. */
 const SLOW_SIGN_IN_MS = 150;
 
-/** `authenticator`, logging each sign-in that takes `SLOW_SIGN_IN_MS` or longer, with the path it was for. */
+/**
+ * `authenticator`, logging each sign-in that takes `SLOW_SIGN_IN_MS` or longer, with the path it was for. The same
+ * object, its `authenticate` wrapped: `createAuthenticator` registers it for `GET /v1/organisations` by identity, and a
+ * new object would lose that, so someone in several organisations couldn't list them.
+ */
 function timedSignIn(authenticator: Authenticator): Authenticator {
-	return {
-		async authenticate(request) {
+	const authenticate = authenticator.authenticate.bind(authenticator);
+	return Object.assign(authenticator, {
+		async authenticate(request: Parameters<Authenticator["authenticate"]>[0]) {
 			const started = performance.now();
 			try {
-				return await authenticator.authenticate(request);
+				return await authenticate(request);
 			} finally {
 				const ms = Math.round(performance.now() - started);
 				if (ms >= SLOW_SIGN_IN_MS) {
@@ -73,7 +78,7 @@ function timedSignIn(authenticator: Authenticator): Authenticator {
 				}
 			}
 		},
-	};
+	});
 }
 
 /** What the bootstrap made, saved after each step so a restart (or a retry after a failed start) reuses it. */
@@ -123,6 +128,8 @@ export interface StackStorage {
 	readonly auditOutbox?: { readonly driver: SqlDriver; readonly background: (work: Promise<unknown>) => void };
 	/** The compute API's records (`src/compute.ts`). Migrated on every start; idempotent. */
 	readonly compute?: SqlDriver;
+	/** How far each open sign-up has got (`src/sign-up.ts`). */
+	readonly signUps?: SignUpStore;
 }
 
 export interface StackOptions {
@@ -283,6 +290,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		const mailer = cloudflareMailer({ binding: options.mail.binding, from: emailConfig.from, budget });
 		const otp = createEmailOtp({
 			identity: openSignUp(identity, {
+				...(storage.signUps === undefined ? {} : { records: storage.signUps }),
 				onSignUp: (userId, organisationId) => console.log("kantel: signed up", userId, organisationId),
 			}),
 			codes: otpStores.codes,
