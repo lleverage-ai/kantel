@@ -37,6 +37,8 @@ class FakeHost {
 	readonly snapshots = new Map<string, Map<string, string>>();
 	readonly calls: string[] = [];
 	readonly params: { method: string; params: { [key: string]: unknown } }[] = [];
+	/** Off: a kantel-host from before ranged reads, which answers a read's whole file and no fileSize. */
+	rangedReads = true;
 	receive!: (text: string) => void;
 
 	constructor(
@@ -140,7 +142,11 @@ class FakeHost {
 				return answer({ ok: true });
 			case "sandbox.files.read": {
 				const data = sandbox?.files.get(String(p.path));
-				return data === undefined ? fail("not_found", "no such file") : answer({ data: b64(data) });
+				if (data === undefined) return fail("not_found", "no such file");
+				if (!this.rangedReads) return answer({ data: b64(data) });
+				const offset = Number(p.offset ?? 0);
+				const part = p.length === undefined ? data : data.slice(offset, offset + Number(p.length));
+				return answer({ data: b64(part), size: part.length, fileSize: data.length });
 			}
 			case "sandbox.files.list":
 				return answer({
@@ -242,6 +248,16 @@ describe("the compute API on kantel-host hosts", () => {
 		expect(run.stdout).toBe("on a host\n");
 		await root.writeFile(sandbox.id, { path: "/home/user/app.txt", content: "v1" });
 		expect((await root.readFile(sandbox.id, { path: "/home/user/app.txt" })).content).toBe("v1");
+		// A ranged read asks the host for the range; a read without one asks for one byte past 1 MiB, to refuse more.
+		const reads = () => host.params.filter((call) => call.method === "sandbox.files.read").map((call) => call.params);
+		expect(reads().at(-1)).toMatchObject({ offset: 0, length: 1024 * 1024 + 1 });
+		const ranged = { path: "/home/user/app.txt", offset: 1, length: 5 };
+		expect(await root.readFile(sandbox.id, ranged)).toMatchObject({ content: "1", size: 2, offset: 1 });
+		expect(reads().at(-1)).toMatchObject({ offset: 1, length: 5 });
+		// One from before ranged reads sends the whole file, which the backend cuts.
+		host.rangedReads = false;
+		expect(await root.readFile(sandbox.id, ranged)).toMatchObject({ content: "1", size: 2, offset: 1 });
+		host.rangedReads = true;
 
 		// A stop takes a snapshot on the host; its files are readable there, and a resume runs again.
 		const stopped = await root.stopSandbox(sandbox.id, { wait: true });

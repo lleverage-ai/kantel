@@ -1737,16 +1737,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "files");
 			await requireRunning(sandbox.id);
 			const path = resolvePath(query.path);
-			const bytes = await backend.readFile(sandbox.id, path);
-			if (bytes.byteLength > MAX_FILE_BYTES) {
-				throw new KantelError("invalid", `${path} is larger than 1 MiB; read it with a command or SSH`);
+			const ranged = query.offset !== undefined || query.length !== undefined;
+			const offset = query.offset ?? 0;
+			// Without a range, a file over 1 MiB is refused: one more byte is enough to tell, and the host sends no more.
+			const length = ranged ? Math.min(query.length ?? MAX_FILE_BYTES, MAX_FILE_BYTES) : MAX_FILE_BYTES + 1;
+			const { bytes, size } = await backend.readFile(sandbox.id, path, { offset, length });
+			if (!ranged && size > MAX_FILE_BYTES) {
+				throw new KantelError("invalid", `${path} is larger than 1 MiB; read it in parts with offset and length`);
 			}
 			const encoding = query.encoding ?? "utf8";
 			return {
 				path,
 				encoding,
 				content: encoding === "base64" ? bytesToBase64(bytes) : decodeUtf8(bytes, path),
-				size: bytes.byteLength,
+				size,
+				...(ranged ? { offset: Math.min(offset, size) } : {}),
 			};
 		},
 

@@ -83,6 +83,13 @@ export function resolvePath(path: string, base = HOME): string {
 	return `/${parts.join("/")}`;
 }
 
+/** At most `length` bytes of `bytes` from `offset`; empty from the end on. */
+export const sliceRange = (
+	bytes: Uint8Array,
+	range: { readonly offset: number; readonly length: number },
+): Uint8Array =>
+	bytes.subarray(Math.min(range.offset, bytes.byteLength), Math.min(range.offset + range.length, bytes.byteLength));
+
 /** The last segment of an absolute path. */
 export const baseName = (path: string): string => path.slice(path.lastIndexOf("/") + 1) || "/";
 

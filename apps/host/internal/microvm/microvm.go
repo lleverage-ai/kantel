@@ -1357,16 +1357,16 @@ func sanitizeUser(s string) string {
 	return s
 }
 
-func (m *Manager) ReadFile(ctx context.Context, p proto.FileParams) ([]byte, uint32, error) {
+func (m *Manager) ReadFile(ctx context.Context, p proto.FileParams) ([]byte, uint32, int64, error) {
 	client, err := m.running(p.SandboxID)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
-	data, mode, err := client.ReadFile(ctx, p.Path)
+	data, mode, size, err := client.ReadFile(ctx, p.Path, p.Offset, p.Length)
 	if guest.IsNotFound(err) {
-		return nil, 0, &proto.Error{Code: proto.ErrNotFound, Message: err.Error()}
+		return nil, 0, 0, &proto.Error{Code: proto.ErrNotFound, Message: err.Error()}
 	}
-	return data, mode, err
+	return data, mode, size, err
 }
 
 func (m *Manager) WriteFile(ctx context.Context, p proto.FileParams, data []byte) error {

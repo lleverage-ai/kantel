@@ -15,6 +15,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/user"
@@ -540,9 +541,49 @@ func (s *Server) readFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("content-type", "application/octet-stream")
-	w.Header().Set("content-length", strconv.FormatInt(info.Size(), 10))
 	w.Header().Set("x-file-mode", strconv.FormatUint(uint64(info.Mode().Perm()), 8))
-	_, _ = io.Copy(w, f)
+	// A ranged read (?offset=&length=): at most length bytes from offset, with the whole file's size in x-file-size,
+	// which also tells the host this agent reads ranges (an older one sends the whole file and no x-file-size).
+	offset, length, err := fileRange(r.URL.Query())
+	if err != nil {
+		fail(w, 400, err)
+		return
+	}
+	if length == 0 {
+		w.Header().Set("content-length", strconv.FormatInt(info.Size(), 10))
+		_, _ = io.Copy(w, f)
+		return
+	}
+	size := info.Size()
+	offset = min(offset, size)
+	n := min(length, size-offset)
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		fail(w, 500, err)
+		return
+	}
+	w.Header().Set("x-file-size", strconv.FormatInt(size, 10))
+	w.Header().Set("content-length", strconv.FormatInt(n, 10))
+	_, _ = io.CopyN(w, f, n)
+}
+
+// fileRange is a read's offset and length; a length of 0 is the whole file.
+func fileRange(q url.Values) (offset, length int64, err error) {
+	parse := func(name string) (int64, error) {
+		raw := q.Get(name)
+		if raw == "" {
+			return 0, nil
+		}
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || n < 0 {
+			return 0, fmt.Errorf("%s must be a whole number of bytes, not %q", name, raw)
+		}
+		return n, nil
+	}
+	if offset, err = parse("offset"); err != nil {
+		return 0, 0, err
+	}
+	length, err = parse("length")
+	return offset, length, err
 }
 
 func (s *Server) writeFile(w http.ResponseWriter, r *http.Request) {

@@ -196,15 +196,51 @@ func (c *Client) ExecStream(ctx context.Context, req ExecRequest, onEvent func(E
 	return errors.New("command stream ended without an exit")
 }
 
-func (c *Client) ReadFile(ctx context.Context, path string) ([]byte, uint32, error) {
-	res, err := c.do(ctx, http.MethodGet, "/files?path="+url.QueryEscape(path), nil, nil)
+// ReadFile reads the file at path, or with a length, at most length bytes of it from offset. It answers the bytes,
+// the file's mode and the whole file's size.
+func (c *Client) ReadFile(ctx context.Context, path string, offset, length int64) ([]byte, uint32, int64, error) {
+	q := url.Values{"path": {path}}
+	if length > 0 {
+		q.Set("offset", strconv.FormatInt(offset, 10))
+		q.Set("length", strconv.FormatInt(length, 10))
+	}
+	res, err := c.do(ctx, http.MethodGet, "/files?"+q.Encode(), nil, nil)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	defer res.Body.Close()
-	raw, err := io.ReadAll(res.Body)
 	mode, _ := strconv.ParseUint(res.Header.Get("x-file-mode"), 8, 32)
-	return raw, uint32(mode), err
+	if length <= 0 {
+		raw, err := io.ReadAll(res.Body)
+		return raw, uint32(mode), int64(len(raw)), err
+	}
+	if header := res.Header.Get("x-file-size"); header != "" {
+		size, err := strconv.ParseInt(header, 10, 64)
+		if err != nil {
+			return nil, 0, 0, fmt.Errorf("guest agent: x-file-size %q", header)
+		}
+		raw, err := io.ReadAll(io.LimitReader(res.Body, length))
+		return raw, uint32(mode), size, err
+	}
+	// A guest agent from before ranged reads (in an older image) sends the whole file: skip to offset and keep length,
+	// without holding the rest.
+	skipped, err := io.CopyN(io.Discard, res.Body, offset)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, 0, 0, err
+	}
+	raw, err := io.ReadAll(io.LimitReader(res.Body, length))
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	size := res.ContentLength
+	if size < 0 {
+		rest, err := io.Copy(io.Discard, res.Body)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		size = skipped + int64(len(raw)) + rest
+	}
+	return raw, uint32(mode), size, nil
 }
 
 func (c *Client) WriteFile(ctx context.Context, path string, data []byte, mode uint32) error {

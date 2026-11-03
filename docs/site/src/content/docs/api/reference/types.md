@@ -379,14 +379,15 @@ One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"s
 
 ### FileContent
 
-A file of at most 1 MiB; for larger, run a command or use SSH.
+A file of at most 1 MiB, or a part of at most 1 MiB of a larger one, read with `offset` and `length`.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `path` | string | yes |  |
 | `encoding` | [FileEncoding](/api/reference/types/#fileencoding) | yes |  |
-| `content` | string | yes |  |
-| `size` | integer | yes |  |
+| `content` | string | yes | The file, or with `offset` or `length`, the part read. |
+| `size` | integer | yes | The whole file's size in bytes. |
+| `offset` | integer | no | With `offset` or `length`: the byte `content` starts at. At `size`, it's empty. |
 
 ### FileEncoding
 

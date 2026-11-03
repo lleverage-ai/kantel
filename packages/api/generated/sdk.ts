@@ -623,12 +623,16 @@ export interface ExposePortBody {
 	readonly public?: boolean;
 }
 
-/** A file of at most 1 MiB; for larger, run a command or use SSH. */
+/** A file of at most 1 MiB, or a part of at most 1 MiB of a larger one, read with `offset` and `length`. */
 export interface FileContent {
 	readonly path: string;
 	readonly encoding: FileEncoding;
+	/** The file, or with `offset` or `length`, the part read. */
 	readonly content: string;
+	/** The whole file's size in bytes. */
 	readonly size: number;
+	/** With `offset` or `length`: the byte `content` starts at. At `size`, it's empty. */
+	readonly offset?: number;
 }
 
 export type FileEncoding = "utf8" | "base64";
@@ -906,6 +910,15 @@ export interface PutTelemetryBody {
 }
 
 export interface ReadFileQuery {
+	readonly path: string;
+	readonly encoding?: FileEncoding;
+	/** Read from this byte (default 0). With `offset` or `length`, a file of any size is read a part at a time. */
+	readonly offset?: number;
+	/** Read at most this many bytes: default, and at most, 1 MiB (1048576). */
+	readonly length?: number;
+}
+
+export interface ReadSnapshotFileQuery {
 	readonly path: string;
 	readonly encoding?: FileEncoding;
 }
@@ -1650,7 +1663,7 @@ export interface KantelClient {
 	getCommand(sandboxId: string, commandId: string, options?: CallOptions): Promise<Command>;
 	/** Kill a command. Ends a running command; one that has ended is answered as it is. A key needs `exec`. `DELETE /sandboxes/{sandboxId}/commands/{commandId}` */
 	killCommand(sandboxId: string, commandId: string, options?: CallOptions): Promise<Command>;
-	/** Read a file. A file of up to 1 MiB, as UTF-8 text unless `encoding` asks for base64. A key needs `files`. `GET /sandboxes/{sandboxId}/files` */
+	/** Read a file. A file of up to 1 MiB, as UTF-8 text unless `encoding` asks for base64. A larger file is read in parts of up to 1 MiB with `offset` and `length`; `size` in the answer is the whole file's. Use base64 for a part of a binary file, or of a text file cut mid-character. A key needs `files`. `GET /sandboxes/{sandboxId}/files` */
 	readFile(sandboxId: string, query: ReadFileQuery, options?: CallOptions): Promise<FileContent>;
 	/** Write a file. Writes a file, making its directories, replacing what was there. A key needs `files`. `PUT /sandboxes/{sandboxId}/files` */
 	writeFile(sandboxId: string, body: WriteFileBody, options?: CallOptions): Promise<FileEntry>;
@@ -1681,7 +1694,7 @@ export interface KantelClient {
 	/** List a snapshot's files. One directory of the snapshot's disk, for a file browser. A key needs `snapshots:read`. `GET /snapshots/{snapshotId}/files` */
 	listSnapshotFiles(snapshotId: string, query?: SnapshotFilesQuery, options?: CallOptions): Promise<FileList>;
 	/** Read a file from a snapshot. A file of up to 1 MiB from the snapshot's disk. A key needs `snapshots:read`. `GET /snapshots/{snapshotId}/file` */
-	readSnapshotFile(snapshotId: string, query: ReadFileQuery, options?: CallOptions): Promise<FileContent>;
+	readSnapshotFile(snapshotId: string, query: ReadSnapshotFileQuery, options?: CallOptions): Promise<FileContent>;
 	/** Delete a snapshot. Deletes a saved snapshot, or one of a sandbox's history. A sandbox's newest snapshot, which a resume needs, is `conflict` while the sandbox is stopped. A key needs `snapshots:write`. `DELETE /snapshots/{snapshotId}` */
 	deleteSnapshot(snapshotId: string, options?: CallOptions): Promise<void>;
 	/** List API keys. The account's keys, revoked ones included. A key needs `account:read`. `GET /api-keys` */

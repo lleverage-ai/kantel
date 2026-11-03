@@ -95,9 +95,9 @@ scp -P 2222 ./data.csv sbx_4kq9x2mt@ssh.kantel.example:data.csv
 scp -P 2222 -r sbx_4kq9x2mt@ssh.kantel.example:app/dist ./dist
 ```
 
-This is the way to move files bigger than the [file routes'](/sandboxes/commands-and-files/) 1 MiB.
+This is one way to move files bigger than the [file routes'](/sandboxes/commands-and-files/) 1 MiB a call.
 
-Through the relay, `kantel scp` is simpler: it copies through the file routes, in parts for a file over 1 MiB on a microVM. To use `scp` itself, reuse the options `kantel ssh` prints:
+Through the relay, `kantel scp` is simpler: it copies through the file routes, reading a file over 1 MiB in parts, and writing one in parts on a microVM. To use `scp` itself, reuse the options `kantel ssh` prints:
 
 ```sh
 opts=$(kantel ssh sbx_4kq9x2mt --json | jq -r .command | sed 's/^ssh //; s/ [^ ]*$//')

@@ -265,13 +265,16 @@ type ExecResult struct {
 	Pid        int    `json:"pid,omitempty"`
 }
 
-// FileParams is sandbox.files.read/write/delete/list. Data is base64.
+// FileParams is sandbox.files.read/write/delete/list. Data is base64. A read with a Length reads at most that many
+// bytes from Offset (a ranged read); its answer's fileSize is the whole file's size.
 type FileParams struct {
 	SandboxID string `json:"sandboxId"`
 	Path      string `json:"path"`
 	Data      string `json:"data,omitempty"`
 	Mode      uint32 `json:"mode,omitempty"`
 	Recursive bool   `json:"recursive,omitempty"`
+	Offset    int64  `json:"offset,omitempty"`
+	Length    int64  `json:"length,omitempty"`
 }
 
 type FileEntry struct {

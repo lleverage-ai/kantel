@@ -24,7 +24,7 @@ import type {
 	TakenSnapshot,
 	UsageSample,
 } from "./backend.ts";
-import { baseName, HOME, randomId, randomSecret } from "./util.ts";
+import { baseName, HOME, randomId, randomSecret, sliceRange } from "./util.ts";
 
 /** The stub's one host. */
 export const STUB_HOST_ID = "host_stub";
@@ -382,13 +382,16 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			}
 		},
 
-		async readFile(sandboxId, path) {
+		async readFile(sandboxId, path, range) {
 			const { fs } = running(sandboxId);
+			let bytes: Uint8Array;
 			try {
-				return new Uint8Array(await fs.readFileBuffer(path));
+				bytes = new Uint8Array(await fs.readFileBuffer(path));
 			} catch (error) {
 				return fsError(error, path);
 			}
+			const size = bytes.byteLength;
+			return range === undefined ? { bytes, size } : { bytes: sliceRange(bytes, range), size };
 		},
 
 		async writeFile(sandboxId, path, content, mode): Promise<BackendFileEntry> {

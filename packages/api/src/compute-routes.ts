@@ -67,6 +67,7 @@ import {
 	PutProxySettingsBody,
 	PutTelemetryBody,
 	ReadFileQuery,
+	ReadSnapshotFileQuery,
 	ResumeSandboxBody,
 	RunCommandBody,
 	Sandbox,
@@ -576,7 +577,12 @@ export const readFile = defineRoute({
 	path: "/sandboxes/{sandboxId}/files",
 	tag: "files",
 	summary: "Read a file",
-	description: describe("A file of up to 1 MiB, as UTF-8 text unless `encoding` asks for base64.", scope("files")),
+	description: describe(
+		"A file of up to 1 MiB, as UTF-8 text unless `encoding` asks for base64. A larger file is read in parts of up " +
+			"to 1 MiB with `offset` and `length`; `size` in the answer is the whole file's. Use base64 for a part of a " +
+			"binary file, or of a text file cut mid-character.",
+		scope("files"),
+	),
 	params: SandboxPath,
 	query: ReadFileQuery,
 	answer: { status: 200, description: "The file.", schema: FileContent },
@@ -801,7 +807,7 @@ export const readSnapshotFile = defineRoute({
 	summary: "Read a file from a snapshot",
 	description: describe("A file of up to 1 MiB from the snapshot's disk.", scope("snapshots:read")),
 	params: SnapshotPath,
-	query: ReadFileQuery,
+	query: ReadSnapshotFileQuery,
 	answer: { status: 200, description: "The file.", schema: FileContent },
 	errors: [...readErrors, "not_supported"],
 });

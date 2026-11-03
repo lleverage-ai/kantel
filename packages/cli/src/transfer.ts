@@ -1,7 +1,7 @@
 /**
  * Copying files between this computer and a sandbox for `kantel scp` and `kantel push`, over the files API only (no
- * SSH, so it works on isolates as well as microVMs). The API reads and writes at most 1 MiB a call; a larger file goes
- * up in 768 KiB parts that one command joins, and comes down in parts a command reads, so those need a microVM's shell.
+ * SSH, so it works on isolates as well as microVMs). The API reads and writes at most 1 MiB a call. A larger file comes
+ * down in 1 MiB ranged reads, and goes up in 768 KiB parts that one command joins, which needs a microVM's shell.
  * A directory is copied file by file, a few at a time.
  */
 import { spawn } from "node:child_process";
@@ -14,7 +14,10 @@ import { CliError } from "./errors.ts";
 export const MAX_FILE = 1024 * 1024;
 /** A part of a larger file: 768 KiB, which is 1 MiB in base64. */
 export const PART = 768 * 1024;
-/** A part of a larger file coming down: 512 KiB, whose base64 fits well inside a command's 1 MiB of output. */
+/**
+ * A part of a larger file coming down through a command, from a control plane before ranged reads: 512 KiB, whose
+ * base64 fits well inside a command's 1 MiB of output.
+ */
 export const DOWNLOAD_PART = 512 * 1024;
 /** How many files go at once. */
 const CONCURRENCY = 6;
@@ -109,15 +112,46 @@ export async function putBytes(
 	await run(client, sandboxId, `cat ${joined} > ${target} && rm -f ${joined}${chmod}`);
 }
 
-/** The bytes of `path` in the sandbox, in parts when it is over 1 MiB. */
+/** The bytes of `path` in the sandbox, in 1 MiB ranged reads when it is larger. */
 export async function getBytes(client: KantelClient, sandboxId: string, path: string): Promise<Uint8Array> {
+	return (await getFile(client, sandboxId, path)).content;
+}
+
+/** The file at `path` in the sandbox: its absolute path, as the API answers it, and its bytes. */
+export async function getFile(
+	client: KantelClient,
+	sandboxId: string,
+	path: string,
+): Promise<{ readonly path: string; readonly content: Uint8Array }> {
+	const read = (offset: number) => client.readFile(sandboxId, { path, encoding: "base64", offset, length: MAX_FILE });
+	let first: Awaited<ReturnType<typeof read>>;
 	try {
-		const file = await client.readFile(sandboxId, { path, encoding: "base64" });
-		return Buffer.from(file.content, "base64");
+		first = await read(0);
 	} catch (error) {
 		if (!(error instanceof KantelApiError) || error.code !== "invalid" || !/larger than/.test(error.message))
 			throw error;
+		// A control plane from before ranged reads refuses a file over 1 MiB: read it with commands.
+		return { path, content: await getBytesWithCommands(client, sandboxId, path) };
 	}
+	const head = Buffer.from(first.content, "base64");
+	// One from before ranged reads answers the whole file, with no offset.
+	if (first.offset === undefined || head.length >= first.size) return { path: first.path, content: head };
+	const size = first.size;
+	const out = new Uint8Array(size);
+	out.set(head);
+	for (let offset = head.length; offset < size; ) {
+		const part = await read(offset);
+		const bytes = Buffer.from(part.content, "base64");
+		if (part.size !== size) throw new CliError(`${path} changed size while it was copied`);
+		if (bytes.length === 0) throw new CliError(`${path} came back short at byte ${offset}`);
+		out.set(bytes.subarray(0, size - offset), offset);
+		offset += bytes.length;
+	}
+	return { path: first.path, content: out };
+}
+
+/** The bytes of a file over 1 MiB, read in parts by commands: needs a microVM, with tail, head and base64. */
+async function getBytesWithCommands(client: KantelClient, sandboxId: string, path: string): Promise<Uint8Array> {
 	const size = Number((await run(client, sandboxId, `stat -c %s ${shellPath(path)}`)).trim());
 	if (!Number.isSafeInteger(size)) throw new CliError(`couldn't read the size of ${path}`);
 	const out = new Uint8Array(size);

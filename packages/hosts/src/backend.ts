@@ -333,9 +333,21 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				timedOut: result.timedOut === true,
 			};
 		},
-		async readFile(sandboxId, path) {
-			const { data } = await call<{ data: string }>(sandboxId, "sandbox.files.read", { path });
-			return fromBase64(data);
+		async readFile(sandboxId, path, range) {
+			const answer = await call<{ data: string; fileSize?: number }>(
+				sandboxId,
+				"sandbox.files.read",
+				range === undefined ? { path } : { path, offset: range.offset, length: range.length },
+			);
+			const bytes = fromBase64(answer.data);
+			// A kantel-host from before ranged reads answers the whole file, without its fileSize.
+			if (answer.fileSize === undefined) {
+				const size = bytes.byteLength;
+				if (range === undefined) return { bytes, size };
+				const start = Math.min(range.offset, size);
+				return { bytes: bytes.subarray(start, Math.min(start + range.length, size)), size };
+			}
+			return { bytes, size: answer.fileSize };
 		},
 		async writeFile(sandboxId, path, content, mode) {
 			await call(sandboxId, "sandbox.files.write", {

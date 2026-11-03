@@ -3521,7 +3521,7 @@
 			"get": {
 				"operationId": "readFile",
 				"summary": "Read a file",
-				"description": "A file of up to 1 MiB, as UTF-8 text unless `encoding` asks for base64. A key needs `files`.",
+				"description": "A file of up to 1 MiB, as UTF-8 text unless `encoding` asks for base64. A larger file is read in parts of up to 1 MiB with `offset` and `length`; `size` in the answer is the whole file's. Use base64 for a part of a binary file, or of a text file cut mid-character. A key needs `files`.",
 				"tags": ["files"],
 				"parameters": [
 					{
@@ -3548,6 +3548,27 @@
 						"required": false,
 						"schema": {
 							"$ref": "#/components/schemas/FileEncoding"
+						}
+					},
+					{
+						"name": "offset",
+						"in": "query",
+						"required": false,
+						"description": "Read from this byte (default 0). With `offset` or `length`, a file of any size is read a part at a time.",
+						"schema": {
+							"type": "integer",
+							"minimum": 0
+						}
+					},
+					{
+						"name": "length",
+						"in": "query",
+						"required": false,
+						"description": "Read at most this many bytes: default, and at most, 1 MiB (1048576).",
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 1048576
 						}
 					}
 				],
@@ -8990,14 +9011,20 @@
 						"$ref": "#/components/schemas/FileEncoding"
 					},
 					"content": {
-						"type": "string"
+						"type": "string",
+						"description": "The file, or with `offset` or `length`, the part read."
 					},
 					"size": {
-						"type": "integer"
+						"type": "integer",
+						"description": "The whole file's size in bytes."
+					},
+					"offset": {
+						"type": "integer",
+						"description": "With `offset` or `length`: the byte `content` starts at. At `size`, it's empty."
 					}
 				},
 				"title": "FileContent",
-				"description": "A file of at most 1 MiB; for larger, run a command or use SSH."
+				"description": "A file of at most 1 MiB, or a part of at most 1 MiB of a larger one, read with `offset` and `length`."
 			},
 			"FileEncoding": {
 				"anyOf": [
