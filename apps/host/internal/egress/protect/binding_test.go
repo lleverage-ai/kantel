@@ -1,6 +1,10 @@
 package protect
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+)
 
 func TestMatches(t *testing.T) {
 	api := Binding{Host: "api.github.com"}
@@ -51,11 +55,63 @@ func TestMatches(t *testing.T) {
 		{"segment prefix", segment, to("api.github.com", 443, "GET", "/repos/acme"), true},
 		{"segment prefix, below", segment, to("api.github.com", 443, "GET", "/repos/acme/x"), true},
 		{"segment prefix, a longer name", segment, to("api.github.com", 443, "GET", "/repos/acmecorp/x"), false},
+		{"segment prefix, one letter longer", segment, to("api.github.com", 443, "GET", "/repos/acmeX"), false},
+		{"double-encoded dot-dot", scoped, to("api.github.com", 443, "GET", "/repos/acme/%252e%252e/other"), false},
+		{"double-encoded dot-dot, upper case", scoped, to("api.github.com", 443, "GET", "/repos/acme/%252E%252E/other"), false},
+		{"single and double encoding mixed", scoped, to("api.github.com", 443, "GET", "/repos/acme/%2e%252e/other"), false},
+		{"double-encoded slash at the prefix", segment, to("api.github.com", 443, "GET", "/repos/acme%252fx"), false},
+		{"a double-encoded letter", scoped, to("api.github.com", 443, "GET", "/repos/acme/%2541"), false},
+		{"an encoded space", scoped, to("api.github.com", 443, "GET", "/repos/acme/a%20b"), true},
+		{"an encoded e-acute", scoped, to("api.github.com", 443, "GET", "/repos/acme/caf%C3%A9"), true},
+		{"an encoded percent not followed by hex", scoped, to("api.github.com", 443, "GET", "/repos/acme/100%25"), true},
+		{"double encoding without a prefix", api, to("api.github.com", 443, "GET", "/a/%252e%252e/b"), true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := tt.b.Matches(tt.d); got != tt.want {
 				t.Fatalf("Matches(%+v) = %v, want %v", tt.d, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestStoreResolvesPathBindings checks the path rules hold where they matter, in what the Store answers: a scoped
+// variable is refused for a path a second decoding would move, and a host-only one isn't.
+func TestStoreResolvesPathBindings(t *testing.T) {
+	s := NewStore(func(context.Context, string) (Table, error) {
+		return Table{Version: 1, Entries: []Entry{
+			{Placeholder: phGitHub, Name: "SCOPED", Value: "scoped-value", Bindings: []Binding{{Host: "api.github.com", PathPrefixes: []string{"/repos/acme"}}}},
+			{Placeholder: phNPM, Name: "HOST_ONLY", Value: "host-value", Bindings: []Binding{{Host: "api.github.com"}}},
+		}}, nil
+	})
+	tests := []struct {
+		path   string
+		scoped bool
+	}{
+		{"/repos/acme/%252e%252e/other", false},
+		{"/repos/acme/%252fx", false},
+		{"/repos/acme/%2e%252e/other", false},
+		{"/repos/acmeX", false},
+		{"/repos/acme", true},
+		{"/repos/acme/a%20b", true},
+		{"/repos/acme/caf%C3%A9", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			dest := Destination{Host: "api.github.com", Port: 443, Method: "GET", Path: tt.path}
+			r, err := s.Resolve(context.Background(), phGitHub, "sbx-1", dest)
+			if tt.scoped {
+				if err != nil || r.Value != "scoped-value" {
+					t.Fatalf("the scoped variable wasn't resolved: %v", err)
+				}
+			} else {
+				var unbound *UnboundError
+				if !errors.As(err, &unbound) || unbound.Name != "SCOPED" {
+					t.Fatalf("got %v, want the scoped variable unbound", err)
+				}
+			}
+			if r, err := s.Resolve(context.Background(), phNPM, "sbx-1", dest); err != nil || r.Value != "host-value" {
+				t.Fatalf("the host-only variable wasn't resolved: %v", err)
 			}
 		})
 	}

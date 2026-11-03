@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -55,9 +56,11 @@ const closeGrace = 5 * time.Second
 // Each message is held whole (up to 16 MiB; a larger one is closed with 1009), since a placeholder can be split
 // across fragments and compressed. From the client, placeholders are swapped for their values through p; an unbound
 // placeholder, or values that can't be fetched, closes the client with 1008, closes the server, and Relay answers the
-// *Refusal. From the server, entries' values are scrubbed back to placeholders. Every message is forwarded as one
-// unfragmented, uncompressed frame (RFC 7692 lets an endpoint send any message uncompressed), keeping its opcode;
-// control frames pass through at once, between fragments too.
+// *Refusal. From the server, entries' values are scrubbed back to placeholders, and so is every value the client's
+// messages have been given since, a rotated one included (it is covered before the message carrying it goes on, and
+// the old one stays covered for a late echo). Every message is forwarded as one unfragmented, uncompressed frame
+// (RFC 7692 lets an endpoint send any message uncompressed), keeping its opcode; control frames pass through at
+// once, between fragments too.
 //
 // Relay returns when either side closes (after giving the other up to closeGrace to finish the closing handshake),
 // or ctx ends; it answers the first Refusal if there was one. It closes the server after a refusal or a broken frame,
@@ -71,10 +74,10 @@ func Relay(ctx context.Context, client, server io.ReadWriter, ext Extensions, sa
 		sandboxID: sandboxID,
 		dest:      dest,
 		p:         p,
-		scrub:     newScrubber(entries),
 		toClient:  &wsWriter{w: client},
 		toServer:  &wsWriter{w: server, mask: true},
 	}
+	r.cover(entries)
 	errc := make(chan error, 2)
 	go func() { errc <- r.up() }()
 	go func() { errc <- r.down() }()
@@ -111,9 +114,16 @@ type relay struct {
 	sandboxID string
 	dest      Destination
 	p         Provider
-	scrub     *scrubber
 	toClient  *wsWriter
 	toServer  *wsWriter
+
+	// scrub is the scrubber for what the server sends, nil while there is nothing to scrub: a snapshot never changed
+	// once stored, which the downlink and its control frames read without a lock. cover replaces it, under coverMu,
+	// when the uplink sends a value it doesn't hold yet.
+	scrub   atomic.Pointer[scrubber]
+	coverMu sync.Mutex
+	covered []Entry
+	values  map[string]bool
 
 	mu         sync.Mutex
 	refusal    *Refusal
@@ -138,11 +148,13 @@ func (r *relay) up() error {
 			}
 			continue
 		}
-		out, ref := r.swap(payload)
+		out, sent, ref := r.swap(payload)
 		if ref != nil {
 			r.refuse(ref, closePolicy)
 			return ref
 		}
+		// The server can only echo a value once it has it, so covering it first leaves no gap.
+		r.cover(sent)
 		if err := r.toServer.write(op, out); err != nil {
 			return err
 		}
@@ -166,7 +178,7 @@ func (r *relay) down() error {
 			}
 			continue
 		}
-		out, _ := r.scrub.replace(payload)
+		out, _ := r.scrub.Load().replace(payload)
 		if err := r.toClient.write(op, out); err != nil {
 			return err
 		}
@@ -174,25 +186,54 @@ func (r *relay) down() error {
 }
 
 // swap resolves every placeholder in a client's message before any is swapped, so a refused message sends nothing.
-func (r *relay) swap(msg []byte) ([]byte, *Refusal) {
+// It answers the message and the values it was given. Each message resolves afresh, so a value rotated (and the
+// Provider's cache invalidated) since the last one is the new value.
+func (r *relay) swap(msg []byte) ([]byte, []Entry, *Refusal) {
 	matches := Find(msg)
 	if len(matches) == 0 {
-		return msg, nil
+		return msg, nil, nil
 	}
 	s := newSwapper(r.ctx, r.p, r.sandboxID, r.dest)
 	for _, m := range matches {
 		if ref := s.resolve(string(msg[m[0]:m[1]])); ref != nil {
-			return nil, ref
+			return nil, nil, ref
 		}
 	}
 	out, _ := s.apply(msg, matches, nil)
-	return out, nil
+	var sent []Entry
+	for ph, res := range s.resolved {
+		sent = append(sent, Entry{Placeholder: ph, Name: res.Name, Value: res.Value})
+	}
+	return out, sent, nil
+}
+
+// cover makes the downlink scrub entries' values too, keeping every value it covers already: an echo of an old value
+// can arrive after a rotation. A new snapshot is built only when a value is new, so a message carrying values already
+// covered costs a map lookup each.
+func (r *relay) cover(entries []Entry) {
+	r.coverMu.Lock()
+	defer r.coverMu.Unlock()
+	if r.values == nil {
+		r.values = map[string]bool{}
+	}
+	grew := false
+	for _, e := range entries {
+		if e.Value == "" || r.values[e.Value] {
+			continue
+		}
+		r.values[e.Value] = true
+		r.covered = append(r.covered, Entry{Placeholder: e.Placeholder, Name: e.Name, Value: e.Value})
+		grew = true
+	}
+	if grew {
+		r.scrub.Store(newScrubber(r.covered))
+	}
 }
 
 // scrubControl scrubs a control frame from the server; one that would outgrow a control frame loses its payload
 // (a close frame keeps its code).
 func (r *relay) scrubControl(op byte, payload []byte) []byte {
-	out, changed := r.scrub.replace(payload)
+	out, changed := r.scrub.Load().replace(payload)
 	if !changed || len(out) <= 125 {
 		return out
 	}

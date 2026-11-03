@@ -3,28 +3,39 @@ package protect
 import (
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 )
 
 // ScrubResponse turns every protected value in resp back into its placeholder, so a bound API that echoes a value
-// (a gist's body, a reflected header, an error quoting the request) never puts the real value into the sandbox. It
-// rewrites the header values now and the body (and trailers) as it is read, in constant memory: only the longest
-// value less one byte is held back between reads.
+// (a gist's body, a reflected header, an error quoting the request) never puts the real value into the sandbox. A
+// value is found as it was sent and as JSON, a query or a path would escape it. It rewrites the header values now and
+// the body (and trailers) as it is read, in constant memory: only the longest form of a value less one byte is held
+// back between reads.
 //
 // The body is read as Go gives it (de-chunked). A gzip or deflate body is decoded and sent on uncompressed, so
 // Content-Encoding and Content-Length go and the length is unknown (chunked); an identity body's length changes too.
-// A body in any other Content-Encoding (br, zstd, a chain) passes through untouched: this package can't see into it.
-// Empty values are ignored.
+// A body in any other Content-Encoding (br, zstd, a chain) can't be searched, so it is refused with a *Refusal
+// (CodeUnreadableResponse) and resp is left as it came: the caller closes its body and answers 502 instead of passing
+// it on. LimitAcceptEncoding, on the request, makes that rare. Empty values are ignored, and with none to scrub resp
+// passes through unchanged.
 func ScrubResponse(resp *http.Response, entries []Entry) error {
 	sc := newScrubber(entries)
 	if resp == nil || sc == nil {
 		return nil
 	}
-	sc.header(resp.Header)
-	if resp.Body == nil || resp.Body == http.NoBody {
-		return nil
-	}
+	hasBody := resp.Body != nil && resp.Body != http.NoBody
 	coding, ok := contentCoding(resp.Header)
-	if !ok {
+	if hasBody && !ok {
+		// The coding's name is the server's text: scrubbed too, in case it echoes a value even there.
+		named, _ := sc.replace([]byte(strings.Join(resp.Header.Values("Content-Encoding"), ", ")))
+		return &Refusal{
+			Code:    CodeUnreadableResponse,
+			Message: "a response in Content-Encoding " + strconv.Quote(string(named)) + " can't be searched for protected values, so it wasn't passed on",
+		}
+	}
+	sc.header(resp.Header)
+	if !hasBody {
 		return nil
 	}
 	orig := resp.Body

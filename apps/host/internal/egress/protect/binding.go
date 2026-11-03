@@ -70,8 +70,8 @@ func hostMatches(pattern, host string) bool {
 }
 
 // cleanPath answers the decoded, cleaned path a server will act on, or false for a path whose meaning depends on
-// the server: a ".." segment, an encoded slash or a backslash could reach outside a prefix on one server and not on
-// another, so a prefix-restricted binding never matches one.
+// the server: a ".." segment, an encoded slash, a backslash or an escape left after decoding once could reach
+// outside a prefix on one server and not on another, so a prefix-restricted binding never matches one.
 func cleanPath(raw string) (string, bool) {
 	raw, _, _ = strings.Cut(raw, "?")
 	raw, _, _ = strings.Cut(raw, "#")
@@ -83,6 +83,11 @@ func cleanPath(raw string) (string, bool) {
 	}
 	decoded, err := url.PathUnescape(raw)
 	if err != nil || !strings.HasPrefix(decoded, "/") || hasEncodedSeparator(decoded) || strings.ContainsRune(decoded, 0) {
+		return "", false
+	}
+	// A server that decodes twice reads "%252e%252e" (or "%2e%252e") as "..": what one decoding leaves escaped
+	// can't be judged against a prefix, and a real path rarely needs it.
+	if hasEscape(decoded) {
 		return "", false
 	}
 	for _, seg := range strings.Split(decoded, "/") {
@@ -101,6 +106,20 @@ func cleanPath(raw string) (string, bool) {
 func hasEncodedSeparator(s string) bool {
 	lower := strings.ToLower(s)
 	return strings.Contains(s, `\`) || strings.Contains(lower, "%2f") || strings.Contains(lower, "%5c")
+}
+
+// hasEscape says whether s holds a percent-escape: '%' and two hex digits.
+func hasEscape(s string) bool {
+	for i := 0; i+2 < len(s); i++ {
+		if s[i] == '%' && isHex(s[i+1]) && isHex(s[i+2]) {
+			return true
+		}
+	}
+	return false
+}
+
+func isHex(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
 }
 
 func underPrefix(p, prefix string) bool {

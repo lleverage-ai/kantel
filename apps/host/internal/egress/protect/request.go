@@ -23,9 +23,13 @@ const (
 	CodeUnbound     = "placeholder-unbound"
 	CodeUnavailable = "secret-unavailable"
 	CodeTooLarge    = "body-too-large"
+
+	// CodeUnreadableResponse is a response whose body is in a Content-Encoding ScrubResponse can't decode, so an
+	// echoed value in it can't be found: the proxy answers 502 rather than pass it on.
+	CodeUnreadableResponse = "response-unreadable"
 )
 
-// Refusal is a request the proxy must not pass on. Variable is the variable's name (empty when unknown); neither it
+// Refusal is a request (or a response) the proxy must not pass on. Variable is the variable's name (empty when unknown); neither it
 // nor Message ever holds a value.
 type Refusal struct {
 	Code     string

@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -100,6 +101,12 @@ type wsHarness struct {
 
 func startRelay(t *testing.T, ext Extensions) *wsHarness {
 	t.Helper()
+	return startRelayWith(t, ext, testStore(), testEntries())
+}
+
+// startRelayWith is startRelay with its own Provider and the entries Relay starts with.
+func startRelayWith(t *testing.T, ext Extensions, p Provider, entries []Entry) *wsHarness {
+	t.Helper()
 	clientApp, clientProxy := net.Pipe()
 	serverProxy, serverApp := net.Pipe()
 	h := &wsHarness{client: clientApp, server: serverApp, atClient: make(chan wsFrame, 16), atServer: make(chan wsFrame, 16), done: make(chan error, 1)}
@@ -107,7 +114,7 @@ func startRelay(t *testing.T, ext Extensions) *wsHarness {
 	go collectFrames(serverApp, true, h.atServer)
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		h.done <- Relay(ctx, clientProxy, serverProxy, ext, "sbx-1", wsDest, testStore(), testEntries())
+		h.done <- Relay(ctx, clientProxy, serverProxy, ext, "sbx-1", wsDest, p, entries)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -311,6 +318,67 @@ func TestRelayScrubsServerMessages(t *testing.T) {
 		checkFrame(t, recvFrame(t, h.atClient), wantFrame{opText, scrubbed + "!"})
 		h.finish(t)
 	})
+}
+
+// TestRelayScrubsARotatedValue rotates a value while a connection is open: the client's next message carries the new
+// value, and the server's echoes of both the new one and (late) the old one come back as the placeholder, in
+// compressed messages and control frames too.
+func TestRelayScrubsARotatedValue(t *testing.T) {
+	const first, second = "first-secret-value", "second-secret-value"
+	for _, startWithEntries := range []bool{true, false} {
+		name := "started with the entries"
+		if !startWithEntries {
+			name = "started with none"
+		}
+		t.Run(name, func(t *testing.T) {
+			var mu sync.Mutex
+			value := first
+			store := NewStore(func(context.Context, string) (Table, error) {
+				mu.Lock()
+				defer mu.Unlock()
+				return Table{Version: 1, Entries: []Entry{{Placeholder: phGitHub, Name: "GITHUB_TOKEN", Value: value, Bindings: []Binding{{Host: "api.github.com"}}}}}, nil
+			})
+			var entries []Entry
+			if startWithEntries {
+				var err error
+				if entries, err = store.Values(context.Background(), "sbx-1"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			h := startRelayWith(t, Extensions{Deflate: true}, store, entries)
+
+			h.fromClient(t, encodeFrame(true, false, opText, []byte("auth "+phGitHub), true))
+			checkFrame(t, recvFrame(t, h.atServer), wantFrame{opText, "auth " + first})
+
+			mu.Lock()
+			value = second
+			mu.Unlock()
+			store.Invalidate("sbx-1")
+			h.fromClient(t, encodeFrame(true, false, opText, []byte("auth "+phGitHub), true))
+			checkFrame(t, recvFrame(t, h.atServer), wantFrame{opText, "auth " + second})
+
+			c := newCompressor(t)
+			h.fromServer(t,
+				encodeFrame(true, false, opText, []byte("new "+second), false),
+				encodeFrame(true, true, opText, c.message(t, "new "+second), false),
+				encodeFrame(true, true, opText, c.message(t, "old "+first), false),
+				encodeFrame(true, false, opText, []byte("old "+first), false),
+				encodeFrame(true, false, opPing, []byte("ping "+second), false),
+				encodeFrame(true, false, opPong, []byte("pong "+first), false),
+			)
+			for _, want := range []wantFrame{
+				{opText, "new " + phGitHub},
+				{opText, "new " + phGitHub},
+				{opText, "old " + phGitHub},
+				{opText, "old " + phGitHub},
+				{opPing, "ping " + phGitHub},
+				{opPong, "pong " + phGitHub},
+			} {
+				checkFrame(t, recvFrame(t, h.atClient), want)
+			}
+			h.finish(t)
+		})
+	}
 }
 
 func TestRelayRefusesAnUnboundPlaceholder(t *testing.T) {

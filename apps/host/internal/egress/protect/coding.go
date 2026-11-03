@@ -9,11 +9,13 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
 // contentCoding answers a message's one Content-Encoding this package can see through: "" for identity, "gzip" or
-// "deflate". False is anything else (br, zstd, or a chain of several), which passes through untouched.
+// "deflate". False is anything else (br, zstd, or a chain of several): a request's body passes through untouched,
+// and ScrubResponse refuses a response's.
 func contentCoding(h http.Header) (string, bool) {
 	var codings []string
 	for _, v := range h.Values("Content-Encoding") {
@@ -37,6 +39,61 @@ func contentCoding(h http.Header) (string, bool) {
 		return "deflate", true
 	}
 	return "", false
+}
+
+// LimitAcceptEncoding narrows a request's Accept-Encoding to the codings ScrubResponse can read, gzip and deflate,
+// keeping only those the client accepts, and removes it when the client accepts neither. A server then rarely answers
+// in a coding (br, zstd) whose body ScrubResponse would have to refuse. Call it on a request whose response will be
+// scrubbed; a request without Accept-Encoding is left without one.
+func LimitAcceptEncoding(h http.Header) {
+	values := h.Values("Accept-Encoding")
+	if len(values) == 0 {
+		return
+	}
+	accepts := map[string]bool{}
+	for _, v := range values {
+		for _, item := range strings.Split(v, ",") {
+			name, params, _ := strings.Cut(item, ";")
+			name = strings.ToLower(strings.TrimSpace(name))
+			if name == "" {
+				continue
+			}
+			if name == "x-gzip" {
+				name = "gzip"
+			}
+			accepts[name] = accepts[name] || acceptable(params)
+		}
+	}
+	var keep []string
+	for _, c := range []string{"gzip", "deflate"} {
+		ok, listed := accepts[c]
+		if !listed {
+			// "*" stands for every coding not named.
+			ok = accepts["*"]
+		}
+		if ok {
+			keep = append(keep, c)
+		}
+	}
+	if len(keep) == 0 {
+		h.Del("Accept-Encoding")
+		return
+	}
+	h.Set("Accept-Encoding", strings.Join(keep, ", "))
+}
+
+// acceptable reads an Accept-Encoding item's parameters: only a weight of zero (or one that can't be read) refuses
+// the coding.
+func acceptable(params string) bool {
+	for _, p := range strings.Split(params, ";") {
+		key, value, found := strings.Cut(p, "=")
+		if !found || !strings.EqualFold(strings.TrimSpace(key), "q") {
+			continue
+		}
+		q, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		return err == nil && q > 0
+	}
+	return true
 }
 
 // HTTP's "deflate" is zlib (RFC 9110), but some clients send raw deflate under the name; the first two bytes tell
