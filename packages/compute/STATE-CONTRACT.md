@@ -77,19 +77,32 @@ that won the transition may call the backend for it. The background step that fi
 must also be conditional on the passing state still being the one it set. Otherwise a `delete` that landed meanwhile
 would be overwritten.
 
-**Open on main.** The service checks the state and then writes with `put`. Calls are put in order only by a queue
-inside each process (`pending` in `service.ts`). On one gateway that is enough. On two, both can pass the check. Two
-cases where this goes wrong:
+**How (#PR_LIFECYCLE).** Every lifecycle write in `service.ts` goes through `transition()`, an `update` (§2) that
+writes only while the sandbox is still in the state the call read it in:
 
-- **Two stops at once.** Two `stop` calls on different gateways can both call `backend.stop`. The loser's error then
-  goes through `fail()` and marks a sandbox `error` that the winner stopped cleanly. Seen on two replicas on one
-  Postgres: 1 of 10 simultaneous double stops ended `error` ("is stopped, not running") after `sandbox.stopped`.
-  The other 9 answered one `200` and one `409 conflict`.
-- **The auto-stop sweep.** Every gateway runs `sweep()`, and it skips a sandbox only if its *own* queue holds it. So
-  two gateways can both auto-stop the same expired sandbox.
+- **Into a passing state.** `stop` (and pause), `start`, `resume` and `recover` move from the state they read. A
+  call that loses answers `409 conflict` ("The sandbox is stopping") and calls nothing on the backend. A `start` or
+  `resume` that finds the sandbox already `starting` or `running` answers it as it is. `delete` moves from any state
+  but `deleted`, and answers a deleted sandbox as it is. A delete already under way (on another gateway, or one that
+  died) is done again: destroying is idempotent, and only one of them writes `deleted`.
+- **Out of it.** `boot()` writes `running` only from `starting`, the stop's background step writes `stopped` or
+  `paused` only from `stopping`, and the delete's writes `deleted` only from `deleting`. A step that finds the sandbox
+  moved on writes nothing and emits no event.
+- **`fail()`** writes `error` only from the passing state its own work set (`starting`, `stopping` or `deleting`), so
+  a stale step never writes `error` over a state another call left.
+- **The auto-stop sweep** still runs on every gateway. Its move to `stopping` is conditional on the sandbox being
+  `running` *and* still past its `stopsAt`, so exactly one gateway stops an expired sandbox, and one that another
+  gateway extended meanwhile isn't stopped.
+- **Writes of other fields** (`updateSandbox`, port exposures, usage samples, `latestSnapshotId`) are `update`s too,
+  so they never put back a state they read before a transition.
 
-The fix is to make these writes `update` calls with a state precondition. The `Collection` interface already allows
-that, so it needs no new store method.
+The queue inside each process (`pending`) still orders one gateway's own work on a sandbox. It no longer has to
+protect anything across gateways.
+
+Seen on two replicas before the fix: 1 of 10 simultaneous double stops ended `error` ("is stopped, not running")
+after `sandbox.stopped`. `packages/compute/test/replica-lifecycle.test.ts` runs two compute APIs over one database
+and one backend: a stop, a resume and a sweep that read the sandbox before the other replica moved it, ten double
+stops at once (one `backend.stop` each, none `error`), and two sweeps of one expired sandbox (one stop).
 
 ## 4. Idempotency
 
@@ -231,7 +244,9 @@ A Worker backend is equivalent if:
 
 ## 10. Open questions
 
-- Conditional lifecycle transitions, and auto-stop on one gateway only (§3).
+- A sandbox left in `starting` or `stopping` by a gateway that died mid-operation stays there: nothing leases a
+  transition, so another gateway's `stop` or `start` on it is `conflict`. It can still be deleted. This was so before
+  the conditional transitions too.
 - Gateway-local state that isn't shared and isn't covered here:
   - the abort switches of detached commands (a `kill` that lands on another gateway marks the command killed but
     doesn't abort it)
