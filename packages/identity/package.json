@@ -9,6 +9,8 @@
 		".": "./src/index.ts",
 		"./memory": "./src/memory.ts",
 		"./authenticator": "./src/authenticator.ts",
+		"./cookies": "./src/cookies.ts",
+		"./csrf": "./src/csrf.ts",
 		"./jwt": "./src/jwt.ts",
 		"./sql": "./src/sql.ts",
 		"./otp": "./src/otp.ts",
@@ -16,10 +18,6 @@
 		"./http": "./src/http.ts",
 		"./invites": "./src/invites.ts",
 		"./smtp": "./src/smtp.ts",
-		"./passkey": "./src/passkey.ts",
-		"./passkey/http": "./src/passkey-http.ts",
-		"./passkey/testing": "./src/passkey-testing.ts",
-		"./webauthn": "./src/webauthn.ts",
 		"./testing": "./src/testing.ts"
 	},
 	"dependencies": {
@@ -29,7 +27,6 @@
 		"nodemailer": "10.1.7"
 	},
 	"devDependencies": {
-		"@kantel/runtime": "workspace:*",
 		"@kantel/testing": "workspace:*",
 		"smtp-server": "3.20.2"
 	}

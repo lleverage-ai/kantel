@@ -67,7 +67,7 @@ async function jsonBody(request: Request): Promise<Record<string, unknown>> {
 	}
 	let body: unknown;
 	try {
-		body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+		body = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes));
 	} catch {
 		throw new KantelError("invalid", "The body must be JSON");
 	}

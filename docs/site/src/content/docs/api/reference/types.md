@@ -22,6 +22,16 @@ An account the caller may act in, with the caller's role in it.
 | `defaultVisibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | yes |  |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 
+### AccountJoinToken
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The token's ID. |
+| `accountId` | string | yes | The account the host joins: only its sandboxes will run there. |
+| `token` | string | yes | `kth_…`, shown once. It joins one host, once, before `expiresAt`. |
+| `command` | string | yes | The one-line command that installs the host agent on a Linux machine and joins it with the token. The host dials out to this deployment and keeps that connection open, so it needs no inbound port. |
+| `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
+
 ### AccountKind
 
 `personal`: one person's own account, made at their first sign-in; what they create is theirs alone unless they move it. `organisation`: an account people create or join, where sandboxes and snapshots are shared.
@@ -70,7 +80,7 @@ A scoped API key. Its secret is never stored or shown after it is made.
 | `createdBy` | [CreatedBy](/api/reference/types/#createdby) | yes |  |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 | `expiresAt` | integer | no | Epoch milliseconds, UTC. |
-| `lastUsedAt` | integer | no | Epoch milliseconds, UTC. |
+| `lastUsedAt` | integer | no | When the key last signed a call in, to within a minute. Absent until its first use. |
 | `revokedAt` | integer | no | Epoch milliseconds, UTC. |
 
 ### ApiKeyList
@@ -91,11 +101,21 @@ What a key may do. `sandboxes:read`: list and inspect sandboxes, their usage and
 
 One of: `"sandboxes:read"` or `"sandboxes:write"` or `"sandboxes:delete"` or `"exec"` or `"files"` or `"access"` or `"snapshots:read"` or `"snapshots:write"` or `"account:read"` or `"account:admin"` or `"hosts:admin"`.
 
+### ApproveDeviceLoginBody
+
+The key the device gets, in the approver's personal account unless `account` names an organisation. Without `preset`, every scope the approver may grant there, `hosts:admin` included for a super-admin.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
+| `preset` | [ApiKeyPreset](/api/reference/types/#apikeypreset) | no |  |
+| `expiresInDays` | integer | no | Default 90. The key stops working after it. (minimum 1, maximum 3650) |
+
 ### BrowserAccess
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `url` | string | yes | Watch and drive the sandbox's Chrome in a browser. |
+| `url` | string | yes | Watch and drive the sandbox's Chromium in a browser. |
 | `cdpUrl` | string | yes | A Chrome DevTools Protocol WebSocket URL, for Playwright's `connectOverCDP` or Puppeteer. |
 | `viewOnly` | boolean | yes |  |
 | `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
@@ -168,6 +188,15 @@ What a sandbox costs at the deployment's rates. A self-hosted install's rates ar
 | `currency` | string | yes | ISO 4217, such as `USD`. |
 | `total` | number | yes | What it has cost so far, in `currency`. |
 | `ratePerHour` | number | yes | What an hour of running costs at its size, in `currency`. |
+
+### CreateAccountJoinTokenBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
+| `name` | string | no | The host's name. Default: the machine's hostname. (at most 100 characters) |
+| `labels` | Record&lt;string, string&gt; | no |  |
+| `expiresInMinutes` | integer | no | Default 60. (minimum 5, maximum 10080) |
 
 ### CreateApiKeyBody
 
@@ -256,6 +285,46 @@ One of: `"selfhosted"` or `"hosted"`.
 | `viewOnly` | boolean | yes |  |
 | `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
 
+### DeviceLogin
+
+A sign-in in the browser under way, as RFC 8628's device authorisation grant.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `deviceCode` | string | yes | `kdc_…`: the device's secret, which it polls with. Never show it. |
+| `userCode` | string | yes | `ABCD-EFGH`: the code the person checks in the browser. |
+| `verificationUrl` | string | yes | The console's page where a signed-in person approves it. |
+| `verificationUrlComplete` | string | yes | The same page with the code filled in. |
+| `intervalSeconds` | integer | yes | Poll no more often than this. |
+| `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### DeviceLoginRequest
+
+A device waiting for a person to approve it, as the approval page shows it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `userCode` | string | yes |  |
+| `clientName` | string | yes |  |
+| `state` | [DeviceLoginState](/api/reference/types/#deviceloginstate) | yes |  |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### DeviceLoginResult
+
+With `approved`, the new key and its secret, shown this once.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `state` | [DeviceLoginState](/api/reference/types/#deviceloginstate) | yes |  |
+| `issued` | [IssuedApiKey](/api/reference/types/#issuedapikey) | no |  |
+
+### DeviceLoginState
+
+`pending`: no one has approved it yet. `approved`: the poll that sees it first gets the key; later polls are `expired`. `denied`: the person refused it. `expired`: too late, or already collected.
+
+One of: `"pending"` or `"approved"` or `"denied"` or `"expired"`.
+
 ### ErrorBody
 
 Every error: the KantelError's code and message.
@@ -310,7 +379,7 @@ One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"s
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `port` | integer | yes |  |
-| `url` | string | yes | Its HTTPS URL. Unless `public`, it carries a token anyone holding it may use. |
+| `url` | string | yes | Its HTTPS URL. Unless `public`, the answer to exposing it carries a token anyone holding it may use, shown only then (Kantel keeps its hash); listed, the URL has none. Exposing the port again gives a new token and ends the old. Access through it ends when the key or sign-in that exposed it loses access to the sandbox. |
 | `public` | boolean | yes |  |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 
@@ -329,14 +398,15 @@ One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"s
 
 ### FileContent
 
-A file of at most 1 MiB; for larger, run a command or use SSH.
+A file of at most 1 MiB, or a part of at most 1 MiB of a larger one, read with `offset` and `length`.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `path` | string | yes |  |
 | `encoding` | [FileEncoding](/api/reference/types/#fileencoding) | yes |  |
-| `content` | string | yes |  |
-| `size` | integer | yes |  |
+| `content` | string | yes | The file, or with `offset` or `length`, the part read. |
+| `size` | integer | yes | The whole file's size in bytes. |
+| `offset` | integer | no | With `offset` or `length`: the byte `content` starts at. At `size`, it's empty. |
 
 ### FileEncoding
 
@@ -397,6 +467,7 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | `capacity` | [HostCapacity](/api/reference/types/#hostcapacity) | yes |  |
 | `allocated` | [HostAllocated](/api/reference/types/#hostallocated) | yes |  |
 | `labels` | Record&lt;string, string&gt; | yes |  |
+| `accountId` | string | no | The account the host belongs to, when it was added to one by its people: only that account's sandboxes run on it. Absent for a host the deployment's super-admin joined, which any account's sandboxes may use. |
 | `joinedAt` | integer | yes | Epoch milliseconds, UTC. |
 | `lastSeenAt` | integer | no | Epoch milliseconds, UTC. |
 
@@ -492,6 +563,12 @@ A way into an organisation: whoever joins with its code becomes a member.
 `member`: uses the organisation's shared sandboxes and snapshots and makes their own. `admin`: also manages members, API keys, webhooks, telemetry and the proxy. `owner`: also renames or deletes the organisation. A personal account's person is its `owner`.
 
 One of: `"member"` or `"admin"` or `"owner"`.
+
+### PollDeviceLoginBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `deviceCode` | string | yes |  |
 
 ### ProxySettings
 
@@ -726,6 +803,7 @@ One of: `"creating"` or `"ready"` or `"failed"` or `"deleting"`.
 | `port` | integer | yes |  |
 | `user` | string | yes | Names the sandbox to the gateway. |
 | `command` | string | yes | A command line that connects, such as `ssh -p 2222 sbx_4kq9x2mt@ssh.example`. |
+| `proxyUrl` | string | no | When there is no SSH gateway to dial: a WebSocket URL carrying the sandbox's SSH as binary frames, for an `ssh -o ProxyCommand=…` (`kantel ssh-proxy` is one). Anyone holding it can start a connection until `expiresAt`. |
 | `privateKey` | string | no | When Kantel made the key pair: its private key, shown once. |
 | `hostKeyFingerprint` | string | no |  |
 | `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
@@ -735,7 +813,13 @@ One of: `"creating"` or `"ready"` or `"failed"` or `"deleting"`.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `publicKey` | string | no | An OpenSSH public key to let in. Absent: Kantel makes a key pair for this access. |
-| `ttlMinutes` | integer | no | Default 60. (minimum 5, maximum 1440) |
+| `ttlMinutes` | integer | no | How long a connection can be started with this access; one started in time stays open. Default 10. (minimum 5, maximum 60) |
+
+### StartDeviceLoginBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `clientName` | string | no | What is signing in, shown to the person who approves it and given to its key: `kantel on build-01`. (at most 100 characters) |
 
 ### StopSandboxBody
 
@@ -842,7 +926,7 @@ What the collector answered to an empty export sent on save.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `viewOnly` | boolean | no | Watch only: no keyboard or mouse. Default false. |
-| `ttlMinutes` | integer | no | Default 60. (minimum 1, maximum 1440) |
+| `ttlMinutes` | integer | no | How long the URLs can be opened for; a view or connection opened in time stays open. Default 10. (minimum 1, maximum 60) |
 
 ### Webhook
 

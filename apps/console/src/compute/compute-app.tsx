@@ -1,26 +1,33 @@
-import { ComputeConsole, type ComputeSource, type HostingMode } from "@kantel/ui";
+import { KantelApiError } from "@kantel/api/sdk";
+import type { ThemePreference } from "@kantel/contracts";
+import { Button, ComputeConsole, type ComputeSource, type HostingMode, Notice } from "@kantel/ui";
 import { createComputeFixtures } from "@kantel/ui/compute/fixtures";
 import { useEffect, useState } from "react";
 import { navigate, searchWithout, usePathname } from "../app/router.ts";
 import { NARROW_QUERY, useMedia } from "../app/use-media.ts";
 import { apiCompute } from "./api-source.ts";
 
-// The compute console (experimental): the compute plane's pages under /compute, beside the session console, which
-// stays as it is until the agent plane is retired.
+// The console: the compute plane's pages at the root of the app (`/sandboxes`, `/hosts` and the rest; `/` is
+// Sandboxes).
 //
-// Where its data comes from: the gateway's compute API (api-source.ts) when it serves one, which a self-hosted install
-// does with KANTEL_COMPUTE=experimental. Otherwise, and in the hosted demo, which has plans and billing the API
-// doesn't, @kantel/ui's sample data, and the sidebar says so. `?data=sample` asks for the sample data anyway.
+// Where its data comes from: the gateway's compute API (api-source.ts), which a self-hosted install serves. Otherwise,
+// and in the hosted demo, which has plans and billing the API doesn't, @kantel/ui's sample data, and the sidebar says
+// so. `?data=sample` asks for the sample data anyway.
 //
 // Which Kantel it shows: self-hosted by default, or the hosted service's demo (plans and billing, a cost column) with
 // `?hosting=hosted`, kept for the tab; `?hosting=self-hosted` goes back. `VITE_KANTEL_HOSTING` sets a build's default.
 
-/** Where the compute console lives in the app. */
-export const COMPUTE_BASE = "/compute";
+/** Where the compute console lives in the app: its root. */
+export const COMPUTE_BASE = "";
 
-/** Whether `pathname` is one of the compute console's pages. */
-export const isComputePath = (pathname: string): boolean =>
-	pathname === COMPUTE_BASE || pathname.startsWith(`${COMPUTE_BASE}/`);
+/** Where it lived while the session console had the root. */
+const LEGACY_BASE = "/compute";
+
+/** The page an old `/compute/...` path is now, or undefined for any other path. */
+export function legacyComputePath(pathname: string): string | undefined {
+	if (pathname !== LEGACY_BASE && !pathname.startsWith(`${LEGACY_BASE}/`)) return undefined;
+	return pathname.slice(LEGACY_BASE.length) || "/";
+}
 
 const HOSTING_KEY = "kantel.compute.hosting";
 
@@ -38,11 +45,12 @@ function hostingMode(): HostingMode {
 
 /**
  * Goes to a page of the compute console. The app's `navigate` keeps the query, which carries `?hosting`; `?new` (open
- * New sandbox) is for the one page it was given to, so it is dropped first.
+ * New sandbox) and `?add` (open Add a host) are for the one page they were given to, so they are dropped first.
  */
 function go(path: string): void {
-	if (!path.includes("?") && new URLSearchParams(location.search).has("new")) {
-		history.replaceState(null, "", `${location.pathname}${searchWithout(location.search, ["new"])}`);
+	const search = new URLSearchParams(location.search);
+	if (!path.includes("?") && (search.has("new") || search.has("add"))) {
+		history.replaceState(null, "", `${location.pathname}${searchWithout(location.search, ["new", "add"])}`);
 	}
 	navigate(path);
 }
@@ -80,9 +88,15 @@ function namedFor(
 	return Object.defineProperties({ ...source, accounts }, { domain: { get: () => source.domain, enumerable: true } });
 }
 
-type Sourced = { readonly source: ComputeSource; readonly sample: boolean };
+type Sourced =
+	| { readonly source: ComputeSource; readonly sample: boolean }
+	/** The gateway serves compute, but not to this person (403): say so, never the sample data in its place. */
+	| { readonly refused: string };
 
-/** The compute API when this gateway serves it and the tab wants it, else the sample data. */
+/**
+ * The compute API when this gateway serves it and the tab wants it, else the sample data. A refusal is not "not
+ * served": someone signed in who may not use compute here sees why, rather than a demo that looks like theirs.
+ */
 async function sourceFor(
 	hosting: HostingMode,
 	signedInAs: { readonly name?: string; readonly email?: string } | undefined,
@@ -93,7 +107,8 @@ async function sourceFor(
 		try {
 			return { source: namedFor(await apiCompute({ ...api, hosting }), signedInAs), sample: false };
 		} catch (error) {
-			console.info("kantel: the compute API isn't served here, so /compute shows sample data:", error);
+			if (error instanceof KantelApiError && error.status === 403) return { refused: error.message };
+			console.info("kantel: the compute API isn't served here, so the console shows sample data:", error);
 		}
 	}
 	return { source: namedFor(createComputeFixtures({ hosting, now: Date.now() }), signedInAs), sample: true };
@@ -104,6 +119,7 @@ export function ComputeApp({
 	onSignOut,
 	headers,
 	onUnauthenticated,
+	onThemeChoose,
 }: {
 	/** Who `GET /v1/me` says is signed in; the sample data's person without it. */
 	signedInAs?: { readonly name?: string; readonly email?: string };
@@ -112,6 +128,8 @@ export function ComputeApp({
 	headers?: () => Record<string, string>;
 	/** A 401 from the compute API: the sign-in has ended. */
 	onUnauthenticated?: () => void;
+	/** The person chose a theme in the sidebar: keep it for them. Without it (a recording) it is kept in this browser. */
+	onThemeChoose?: (preference: ThemePreference) => void;
 }) {
 	const pathname = usePathname();
 	const narrow = useMedia(NARROW_QUERY);
@@ -133,6 +151,29 @@ export function ComputeApp({
 	}, []);
 	// The app's ground while the console asks the gateway, which takes one call: no spinner, and not the session shell.
 	if (sourced === undefined) return <div className="kt-app h-dvh" aria-busy="true" />;
+	if ("refused" in sourced) {
+		return (
+			<div className="kt-app flex h-dvh items-center justify-center p-6">
+				<div className="flex w-full max-w-md flex-col gap-3">
+					<Notice
+						level="info"
+						{...(onSignOut === undefined
+							? {}
+							: {
+									action: (
+										<Button size="sm" onClick={onSignOut}>
+											Sign out
+										</Button>
+									),
+								})}
+					>
+						{signedInAs?.email === undefined ? "You're signed in. " : `You're signed in as ${signedInAs.email}. `}
+						{sourced.refused}.
+					</Notice>
+				</div>
+			</div>
+		);
+	}
 	return (
 		<ComputeConsole
 			source={sourced.source}
@@ -144,6 +185,7 @@ export function ComputeApp({
 			sample={sourced.sample}
 			{...(signedInAs === undefined ? {} : { signedInAs })}
 			{...(onSignOut === undefined ? {} : { onSignOut })}
+			{...(onThemeChoose === undefined ? {} : { onThemeChoose })}
 		/>
 	);
 }

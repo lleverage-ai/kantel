@@ -2,16 +2,12 @@
 import "@kantel/contracts/legacy-env";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import { themeBootScript } from "@kantel/ui/theme-boot";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import type { Plugin } from "vite";
 import { defineConfig } from "vitest/config";
 import { devGateway } from "./scripts/dev-gateway.ts";
-
-// Recorded sessions, as protocol frames, live at the repo root in fixtures/sessions, outside this app.
-const fixtures = fileURLToPath(new URL("../../fixtures/sessions", import.meta.url));
 
 // The default theme's font files (@kantel/ui's src/tokens/fonts.css), which the dev server serves from their packages,
 // outside this app. A build copies them into its assets.
@@ -29,7 +25,7 @@ const themeBoot = (): Plugin => ({
 	transformIndexHtml: () => [{ tag: "script", children: themeBootScript, injectTo: "head" }],
 });
 
-export default defineConfig(({ mode }) => ({
+export default defineConfig(() => ({
 	// `pnpm dev` forwards /v1 to a local gateway; KANTEL_GATEWAY points it elsewhere, and KANTEL_DEV_EMAIL signs in as
 	// another invited person than the dev admin.
 	plugins: [
@@ -39,14 +35,10 @@ export default defineConfig(({ mode }) => ({
 		react(),
 		devGateway(process.env.KANTEL_GATEWAY ?? "http://127.0.0.1:8787", process.env.KANTEL_DEV_EMAIL || undefined),
 	],
-	resolve: {
-		// `vite build --mode profiling` keeps React's Profiler timings in a production bundle.
-		alias: mode === "profiling" ? [{ find: /^react-dom\/client$/, replacement: "react-dom/profiling" }] : [],
-	},
 	server: {
 		host: "127.0.0.1",
 		port: 5173,
-		fs: { allow: [".", fixtures, ...fonts] },
+		fs: { allow: [".", ...fonts] },
 	},
 	preview: { host: "127.0.0.1", port: 4173 },
 	test: {

@@ -34,10 +34,11 @@ const notFound = (): Response =>
 	});
 
 /** A fresh API, and a `fetch` that hands each call to it. */
-function setup() {
+function setup(options: { accountHosts?: boolean } = {}) {
 	const api = createComputeApi({
 		backend: createStubBackend(),
 		authenticatePerson,
+		...options,
 		// Webhook deliveries and telemetry exports: every endpoint takes them.
 		fetch: async () => new Response(null, { status: 204 }),
 	});
@@ -332,7 +333,7 @@ describe("hosts", () => {
 
 		const join = await source.hosts.join({ name: "rack-1" });
 		expect(join.token).toMatch(/^kth_/);
-		expect(join.command).toContain("install-host.sh");
+		expect(join.command).toContain("/releases/latest/download/install.sh");
 		expect(join.command).toContain(join.token);
 
 		const hosts = await source.hosts.list();
@@ -344,5 +345,27 @@ describe("hosts", () => {
 		const { fetchApi } = setup();
 		const source = await open(fetchApi, "person-bob");
 		expect(source.hosts).toBeUndefined();
+		// Nor hosts of their own, where the deployment has account hosts off.
+		expect(source.ownHosts).toBeUndefined();
+	});
+
+	it("gives anyone else their account's own hosts where the deployment has account hosts on", async () => {
+		const { fetchApi } = setup({ accountHosts: true });
+		const bob = await open(fetchApi, "person-bob");
+		expect(bob.hosts).toBeUndefined();
+		if (bob.ownHosts === undefined) throw new Error("No own hosts with account hosts on");
+		const account = await personalAccount(bob);
+		const own = bob.ownHosts(account);
+		expect(await own.list()).toEqual([]);
+		const join = await own.join({ name: "bob-laptop" });
+		expect(join.token).toMatch(/^kth_/);
+		expect(join.command).toContain(join.token);
+		// Not another account's: Ada's personal account isn't Bob's to add hosts to.
+		const ada = await open(fetchApi);
+		const adas = bob.ownHosts(await personalAccount(ada));
+		await expect(adas.join({})).rejects.toMatchObject({ code: "forbidden" });
+		await expect(adas.list()).rejects.toMatchObject({ code: "forbidden" });
+		// A super-admin manages the deployment's hosts instead.
+		expect(ada.ownHosts).toBeUndefined();
 	});
 });

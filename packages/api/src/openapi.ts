@@ -108,7 +108,7 @@ function parameters(route: RouteDefinition, registry: SchemaRegistry): JsonSchem
 			required: false,
 			description:
 				"A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer " +
-				"and does nothing again.",
+				"and does nothing again. While the first call is still working, a retry may be `conflict`: retry it later.",
 			schema: { type: "string", minLength: 1, maxLength: MAX_IDEMPOTENCY_KEY_LENGTH },
 		});
 	}
@@ -174,6 +174,8 @@ function operation(route: RouteDefinition, registry: SchemaRegistry): JsonSchema
 		summary: route.summary,
 		...(description === "" ? {} : { description }),
 		tags: [route.tag],
+		// A route that takes no credential overrides the document's bearer requirement.
+		...(route.public === true ? { security: [] } : {}),
 		...(params.length === 0 ? {} : { parameters: params }),
 		...(route.body === undefined
 			? {}

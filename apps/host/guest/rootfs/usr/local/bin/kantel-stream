@@ -1,0 +1,13 @@
+#!/bin/sh
+# The desktop in a browser: Selkies on loopback port 6080, one HTTP port serving its web client and the stream
+# (H.264 encoded on the CPU, over a WebSocket), so it needs no GPU, no UDP and no TURN: the host's relay carries it
+# as it carries SSH. It has no login of its own: only the host reaches the port (over vsock), and the relay in front
+# of it checks the signed URL.
+export DISPLAY=:1
+for _ in $(seq 200); do [ -e /tmp/.X11-unix/X1 ] && break; sleep 0.05; done
+exec selkies --addr=127.0.0.1 --port="${KANTEL_STREAM_PORT:-6080}" --enable-https=false --enable-basic-auth=false \
+	--mode=websockets --encoder="${KANTEL_STREAM_ENCODER:-h264enc}" --use-cpu=true \
+	--framerate="${KANTEL_STREAM_FPS:-60}" --enable-resize=false \
+	--audio-enabled=false --microphone-enabled=false --gamepad-enabled=false --webcam-enabled=false \
+	--printing-enabled=false --enable-player2=false --enable-player3=false --enable-player4=false \
+	${KANTEL_STREAM_FLAGS:-}

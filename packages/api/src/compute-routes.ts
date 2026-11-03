@@ -1,15 +1,16 @@
 /**
  * The compute plane's routes: sandboxes (isolates and microVMs) behind one API, with their commands, files, ports,
  * desktop, browser and SSH, their snapshots, and the accounts, scoped API keys, proxy, webhooks, OpenTelemetry export
- * and hosts around them. Experimental: a deployment serves them only with `KANTEL_COMPUTE=experimental`, and answers
- * 404 without it.
+ * and hosts around them. A self-hosted gateway always serves them.
  *
- * Every route takes a bearer: a scoped API key (`ksk_…`), or a person's sign-in. A key acts in its own account; a person
+ * Every route but a device sign-in's start and poll (`public`) takes a bearer: a scoped API key (`ksk_…`), or a person's
+ * sign-in. A key acts in its own account; a person
  * acts in their personal account unless a route's `account` names an organisation they belong to. Each route names the
  * scope a key needs in its description, and a key without it is `forbidden`.
  */
 import {
 	Account,
+	AccountJoinToken,
 	AccountList,
 	AccountPath,
 	AccountScopedQuery,
@@ -17,11 +18,13 @@ import {
 	ApiKey,
 	ApiKeyList,
 	ApiKeyPath,
+	ApproveDeviceLoginBody,
 	BrowserAccess,
 	Caller,
 	Command,
 	CommandPage,
 	CommandPath,
+	CreateAccountJoinTokenBody,
 	CreateApiKeyBody,
 	CreateHostJoinTokenBody,
 	CreateInviteBody,
@@ -29,6 +32,10 @@ import {
 	CreateSandboxBody,
 	CreateWebhookBody,
 	DesktopAccess,
+	DeviceLogin,
+	DeviceLoginPath,
+	DeviceLoginRequest,
+	DeviceLoginResult,
 	EventPage,
 	ExposedPort,
 	ExposedPortList,
@@ -56,11 +63,13 @@ import {
 	MemberList,
 	MemberPath,
 	PageQueryCompute,
+	PollDeviceLoginBody,
 	PortPath,
 	ProxySettings,
 	PutProxySettingsBody,
 	PutTelemetryBody,
 	ReadFileQuery,
+	ReadSnapshotFileQuery,
 	ResumeSandboxBody,
 	RunCommandBody,
 	Sandbox,
@@ -74,6 +83,7 @@ import {
 	SnapshotPath,
 	SshAccess,
 	SshAccessBody,
+	StartDeviceLoginBody,
 	StopSandboxBody,
 	TakeSnapshotBody,
 	TelemetryExport,
@@ -95,9 +105,8 @@ import {
 } from "./compute-schema.ts";
 import { defineRoute } from "./route.ts";
 
-const EXPERIMENTAL = "Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.";
 const scope = (needed: string) => `A key needs \`${needed}\`.`;
-const describe = (...parts: string[]) => [...parts, EXPERIMENTAL].join(" ");
+const describe = (...parts: string[]) => parts.join(" ");
 const readErrors = ["invalid", "forbidden", "not_found"] as const;
 const changeErrors = ["invalid", "forbidden", "not_found", "conflict"] as const;
 const lifecycleErrors = ["invalid", "forbidden", "not_found", "conflict", "not_supported", "unavailable"] as const;
@@ -570,7 +579,12 @@ export const readFile = defineRoute({
 	path: "/sandboxes/{sandboxId}/files",
 	tag: "files",
 	summary: "Read a file",
-	description: describe("A file of up to 1 MiB, as UTF-8 text unless `encoding` asks for base64.", scope("files")),
+	description: describe(
+		"A file of up to 1 MiB, as UTF-8 text unless `encoding` asks for base64. A larger file is read in parts of up " +
+			"to 1 MiB with `offset` and `length`; `size` in the answer is the whole file's. Use base64 for a part of a " +
+			"binary file, or of a text file cut mid-character.",
+		scope("files"),
+	),
 	params: SandboxPath,
 	query: ReadFileQuery,
 	answer: { status: 200, description: "The file.", schema: FileContent },
@@ -701,7 +715,7 @@ export const openBrowser = defineRoute({
 	tag: "access",
 	summary: "Open the browser",
 	description: describe(
-		"Starts the sandbox's Chrome if it isn't running, and answers a live view URL and a CDP URL for Playwright or",
+		"Starts the sandbox's Chromium if it isn't running, and answers a live view URL and a CDP URL for Playwright or",
 		"Puppeteer. microVMs only.",
 		scope("access"),
 	),
@@ -795,7 +809,7 @@ export const readSnapshotFile = defineRoute({
 	summary: "Read a file from a snapshot",
 	description: describe("A file of up to 1 MiB from the snapshot's disk.", scope("snapshots:read")),
 	params: SnapshotPath,
-	query: ReadFileQuery,
+	query: ReadSnapshotFileQuery,
 	answer: { status: 200, description: "The file.", schema: FileContent },
 	errors: [...readErrors, "not_supported"],
 });
@@ -893,6 +907,90 @@ export const revokeApiKey = defineRoute({
 });
 
 export const apiKeyRoutes = { listApiKeys, createApiKey, getApiKey, rotateApiKey, revokeApiKey } as const;
+
+// Signing in a device in a browser: the command line's `kantel login`, as RFC 8628's device authorisation grant. The
+// device starts it and polls with no credential; a signed-in person approves it on the console's page, and the device's
+// next poll gets a new API key made for that person.
+
+export const startDeviceLogin = defineRoute({
+	operationId: "startDeviceLogin",
+	method: "POST",
+	path: "/auth/device",
+	tag: "auth",
+	summary: "Start a device sign-in",
+	description: describe(
+		"Answers a code to show the person and the console page to open, where a signed-in person approves it. Then poll",
+		"`pollDeviceLogin` with the `deviceCode`. Takes no credential. A code lasts 15 minutes.",
+	),
+	body: StartDeviceLoginBody,
+	public: true,
+	answer: { status: 201, description: "The sign-in, pending.", schema: DeviceLogin },
+	errors: ["invalid", "exhausted"],
+});
+
+export const pollDeviceLogin = defineRoute({
+	operationId: "pollDeviceLogin",
+	method: "POST",
+	path: "/auth/device/token",
+	tag: "auth",
+	summary: "Poll a device sign-in",
+	description: describe(
+		"Its state, and once approved the new key's secret, answered to the first poll that sees it. Takes no credential:",
+		"the `deviceCode` is the secret.",
+	),
+	body: PollDeviceLoginBody,
+	public: true,
+	answer: { status: 200, description: "Its state, with the key once approved.", schema: DeviceLoginResult },
+	errors: ["invalid", "not_found"],
+});
+
+export const getDeviceLogin = defineRoute({
+	operationId: "getDeviceLogin",
+	method: "GET",
+	path: "/auth/device/{userCode}",
+	tag: "auth",
+	summary: "Get a device sign-in",
+	description: describe("What is asking to sign in with this code, for the approval page.", "A person only."),
+	params: DeviceLoginPath,
+	answer: { status: 200, description: "The sign-in.", schema: DeviceLoginRequest },
+	errors: readErrors,
+});
+
+export const approveDeviceLogin = defineRoute({
+	operationId: "approveDeviceLogin",
+	method: "POST",
+	path: "/auth/device/{userCode}/approve",
+	tag: "auth",
+	summary: "Approve a device sign-in",
+	description: describe(
+		"Makes an API key for the person, named after the device, and hands it to the device's next poll. A person only,",
+		"who needs admin or owner in the account (`account:admin`), as for `createApiKey`.",
+	),
+	params: DeviceLoginPath,
+	body: ApproveDeviceLoginBody,
+	answer: { status: 200, description: "The sign-in, approved.", schema: DeviceLoginRequest },
+	errors: changeErrors,
+});
+
+export const denyDeviceLogin = defineRoute({
+	operationId: "denyDeviceLogin",
+	method: "POST",
+	path: "/auth/device/{userCode}/deny",
+	tag: "auth",
+	summary: "Deny a device sign-in",
+	description: describe("The device's next poll is `denied`. A person only."),
+	params: DeviceLoginPath,
+	answer: { status: 200, description: "The sign-in, denied.", schema: DeviceLoginRequest },
+	errors: changeErrors,
+});
+
+export const deviceLoginRoutes = {
+	startDeviceLogin,
+	pollDeviceLogin,
+	getDeviceLogin,
+	approveDeviceLogin,
+	denyDeviceLogin,
+} as const;
 
 // The proxy.
 
@@ -1145,12 +1243,13 @@ export const revokeHost = defineRoute({
 	summary: "Revoke a host",
 	description: describe(
 		"Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it",
-		"joins again.",
+		"joins again. `unavailable`, and not revoked, when its credential is kept by a part of the deployment that is",
+		"off (an account's own host, with account hosts switched off).",
 		SUPER_ADMIN,
 	),
 	params: HostPath,
 	answer: { status: 200, description: "The host, revoked.", schema: Host },
-	errors: readErrors,
+	errors: [...readErrors, "unavailable"],
 });
 
 export const createHostJoinToken = defineRoute({
@@ -1171,6 +1270,98 @@ export const createHostJoinToken = defineRoute({
 
 export const hostRoutes = { listHosts, createHostJoinToken, getHost, updateHost, revokeHost } as const;
 
+// An account's own hosts, added by its people rather than by the deployment's super-admin. Only that account's
+// sandboxes run on them. Experimental: a deployment serves these only with KANTEL_ACCOUNT_HOSTS=experimental, and
+// answers `not_supported` otherwise.
+
+const ACCOUNT_HOSTS =
+	"Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).";
+
+export const createAccountJoinToken = defineRoute({
+	operationId: "createAccountJoinToken",
+	method: "POST",
+	path: "/hosts/join-tokens",
+	tag: "account-hosts",
+	summary: "Make a join token for one of your own hosts",
+	description: describe(
+		"A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins",
+		"it to the account (the caller's personal account unless `account` names an organisation). The host dials out",
+		"to this deployment and keeps the connection open, so it needs no inbound port. Once it has joined, the account's",
+		"new sandboxes go on its own hosts, and no other account's sandboxes ever do.",
+		scope("account:admin"),
+		ACCOUNT_HOSTS,
+	),
+	body: CreateAccountJoinTokenBody,
+	answer: { status: 201, description: "The token and its command.", schema: AccountJoinToken },
+	errors: ["invalid", "forbidden", "not_supported"],
+});
+
+export const listAccountHosts = defineRoute({
+	operationId: "listAccountHosts",
+	method: "GET",
+	path: "/hosts",
+	tag: "account-hosts",
+	summary: "List an account's hosts",
+	description: describe(
+		"The hosts joined to the account, revoked ones included. The deployment's shared hosts aren't listed.",
+		scope("account:read"),
+		ACCOUNT_HOSTS,
+	),
+	query: AccountScopedQuery,
+	answer: { status: 200, description: "The hosts.", schema: HostList },
+	errors: ["invalid", "forbidden", "not_supported"],
+});
+
+export const getAccountHost = defineRoute({
+	operationId: "getAccountHost",
+	method: "GET",
+	path: "/hosts/{hostId}",
+	tag: "account-hosts",
+	summary: "Get one of an account's hosts",
+	description: describe(scope("account:read"), ACCOUNT_HOSTS),
+	params: HostPath,
+	answer: { status: 200, description: "The host.", schema: Host },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const updateAccountHost = defineRoute({
+	operationId: "updateAccountHost",
+	method: "PATCH",
+	path: "/hosts/{hostId}",
+	tag: "account-hosts",
+	summary: "Change one of an account's hosts",
+	description: describe("Renames it, replaces its labels, or drains it.", scope("account:admin"), ACCOUNT_HOSTS),
+	params: HostPath,
+	body: UpdateHostBody,
+	answer: { status: 200, description: "The host.", schema: Host },
+	errors: [...changeErrors, "not_supported"],
+});
+
+export const removeAccountHost = defineRoute({
+	operationId: "removeAccountHost",
+	method: "DELETE",
+	path: "/hosts/{hostId}",
+	tag: "account-hosts",
+	summary: "Remove one of an account's hosts",
+	description: describe(
+		"Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it",
+		"joins again. Run `sudo kantel-host uninstall` on the machine to take the agent off it.",
+		scope("account:admin"),
+		ACCOUNT_HOSTS,
+	),
+	params: HostPath,
+	answer: { status: 200, description: "The host, revoked.", schema: Host },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const accountHostRoutes = {
+	createAccountJoinToken,
+	listAccountHosts,
+	getAccountHost,
+	updateAccountHost,
+	removeAccountHost,
+} as const;
+
 /** Every compute-plane route, in the order the document and the SDK list them. */
 export const computeRoutes = {
 	...accountRoutes,
@@ -1180,11 +1371,19 @@ export const computeRoutes = {
 	...accessRoutes,
 	...snapshotRoutes,
 	...apiKeyRoutes,
+	...deviceLoginRoutes,
 	...proxyRoutes,
 	...eventRoutes,
 	...webhookRoutes,
 	...telemetryRoutes,
 	...hostRoutes,
+	...accountHostRoutes,
 } as const;
 
 export type ComputeRoutes = typeof computeRoutes;
+
+/** The compute routes that take no credential: a server answers them without signing the caller in. */
+export const publicComputeRoutes = { startDeviceLogin, pollDeviceLogin } as const;
+export type PublicComputeRoutes = typeof publicComputeRoutes;
+/** The compute routes that sign the caller in first. */
+export type SignedInComputeRoutes = Omit<ComputeRoutes, keyof PublicComputeRoutes>;

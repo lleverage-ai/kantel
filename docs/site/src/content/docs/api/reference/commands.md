@@ -9,15 +9,11 @@ sidebar:
 
 Run commands in a sandbox, read their output and kill them.
 
-:::caution
-Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
-:::
-
 ## List a sandbox's commands
 
 `GET /v1/sandboxes/{sandboxId}/commands` (SDK method `listCommands`)
 
-Its commands, newest first, also while it is stopped. A key needs `exec`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Its commands, newest first, also while it is stopped. A key needs `exec`.
 
 **Path parameters**
 
@@ -42,7 +38,7 @@ Its commands, newest first, also while it is stopped. A key needs `exec`. Experi
 
 `POST /v1/sandboxes/{sandboxId}/commands` (SDK method `runCommand`)
 
-Runs a command line in a running sandbox and answers when it ends, with its exit code and output, or at `timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit. A stopped sandbox is `conflict`: resume it first. A key needs `exec`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Runs a command line in a running sandbox and answers when it ends, with its exit code and output, or at `timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit. A stopped sandbox is `conflict`: resume it first. A key needs `exec`.
 
 **Path parameters**
 
@@ -54,7 +50,7 @@ Runs a command line in a running sandbox and answers when it ends, with its exit
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `Idempotency-Key` | string | no | A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. (at most 255 characters) |
+| `Idempotency-Key` | string | no | A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry may be `conflict`: retry it later. (at most 255 characters) |
 
 **Body**: [RunCommandBody](/api/reference/types/#runcommandbody)
 
@@ -68,7 +64,7 @@ Runs a command line in a running sandbox and answers when it ends, with its exit
 
 `GET /v1/sandboxes/{sandboxId}/commands/{commandId}` (SDK method `getCommand`)
 
-Its state and its output so far. A key needs `exec`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Its state and its output so far. A key needs `exec`.
 
 **Path parameters**
 
@@ -87,7 +83,7 @@ Its state and its output so far. A key needs `exec`. Experimental: served only w
 
 `DELETE /v1/sandboxes/{sandboxId}/commands/{commandId}` (SDK method `killCommand`)
 
-Ends a running command; one that has ended is answered as it is. A key needs `exec`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Ends a running command; one that has ended is answered as it is. A key needs `exec`.
 
 **Path parameters**
 

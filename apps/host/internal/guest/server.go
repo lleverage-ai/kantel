@@ -15,6 +15,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/user"
@@ -23,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -35,6 +37,8 @@ type Server struct {
 
 	mu       sync.Mutex
 	identity *Identity
+	// upstream is the host proxy LocalProxyAddr forwards to (a string, host:port or "").
+	upstream atomic.Value
 }
 
 func (s *Server) Handler() http.Handler {
@@ -66,8 +70,8 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	uptimeRaw, _ := os.ReadFile("/proc/uptime")
 	uptime, _ := strconv.ParseFloat(strings.Fields(string(uptimeRaw) + " 0")[0], 64)
 	var ready []string
-	for name, addr := range map[string]string{"ssh": "127.0.0.1:22", "desktop": "127.0.0.1:5901", "browser": "127.0.0.1:9222", "isolate": "127.0.0.1:8080"} {
-		if conn, err := net.DialTimeout("tcp", addr, 50*time.Millisecond); err == nil {
+	for name, port := range map[string]int{"ssh": PortSSH, "desktop": PortDesktop, "browser": PortBrowser, "stream": PortStream, "isolate": PortIsolate} {
+		if conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 50*time.Millisecond); err == nil {
 			conn.Close()
 			ready = append(ready, name)
 		}
@@ -76,13 +80,26 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 		ready = append(ready, "docker")
 	}
 	sort.Strings(ready)
+	raw, _ := os.ReadFile(ReadyFile)
+	expect := parseReady(string(raw))
 	s.mu.Lock()
 	id := ""
 	if s.identity != nil {
 		id = s.identity.SandboxID
 	}
 	s.mu.Unlock()
-	writeJSON(w, 200, Health{OK: true, BootID: strings.TrimSpace(string(boot)), Uptime: uptime, Identity: id, Version: s.Version, Ready: ready})
+	writeJSON(w, 200, Health{OK: true, BootID: strings.TrimSpace(string(boot)), Uptime: uptime, Identity: id, Version: s.Version, Ready: ready, Expect: expect})
+}
+
+// parseReady reads a ReadyFile: one service per line; blank lines and # comments are skipped.
+func parseReady(raw string) []string {
+	var names []string
+	for _, line := range strings.Split(raw, "\n") {
+		if name := strings.TrimSpace(line); name != "" && !strings.HasPrefix(name, "#") {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // writeHostKey makes an ed25519 SSH host key in OpenSSH's format, without a process for ssh-keygen.
@@ -127,6 +144,7 @@ func (s *Server) setIdentity(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.identity = &id
 	s.mu.Unlock()
+	s.upstream.Store(proxyUpstream(id.ProxyEnv))
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
@@ -216,12 +234,9 @@ func applyIdentity(id *Identity) error {
 		}
 		_ = os.WriteFile("/etc/kantel/env", []byte(b.String()), 0o644)
 	}
-	if len(id.ProxyEnv) > 0 || id.Fresh {
-		// Services that read the proxy at start.
-		go func() {
-			_ = run("systemctl", "try-restart", "docker.service")
-		}()
-	}
+	// dockerd and Chromium use LocalProxyAddr, which follows the identity's proxy, so nothing restarts here: a restart
+	// would stop a resumed or forked sandbox's containers and close its tabs (and, as a restored sandbox's monotonic
+	// clock carries on from its template's, soon trips systemd's start limit).
 	return nil
 }
 
@@ -526,9 +541,49 @@ func (s *Server) readFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("content-type", "application/octet-stream")
-	w.Header().Set("content-length", strconv.FormatInt(info.Size(), 10))
 	w.Header().Set("x-file-mode", strconv.FormatUint(uint64(info.Mode().Perm()), 8))
-	_, _ = io.Copy(w, f)
+	// A ranged read (?offset=&length=): at most length bytes from offset, with the whole file's size in x-file-size,
+	// which also tells the host this agent reads ranges (an older one sends the whole file and no x-file-size).
+	offset, length, err := fileRange(r.URL.Query())
+	if err != nil {
+		fail(w, 400, err)
+		return
+	}
+	if length == 0 {
+		w.Header().Set("content-length", strconv.FormatInt(info.Size(), 10))
+		_, _ = io.Copy(w, f)
+		return
+	}
+	size := info.Size()
+	offset = min(offset, size)
+	n := min(length, size-offset)
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		fail(w, 500, err)
+		return
+	}
+	w.Header().Set("x-file-size", strconv.FormatInt(size, 10))
+	w.Header().Set("content-length", strconv.FormatInt(n, 10))
+	_, _ = io.CopyN(w, f, n)
+}
+
+// fileRange is a read's offset and length; a length of 0 is the whole file.
+func fileRange(q url.Values) (offset, length int64, err error) {
+	parse := func(name string) (int64, error) {
+		raw := q.Get(name)
+		if raw == "" {
+			return 0, nil
+		}
+		n, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || n < 0 {
+			return 0, fmt.Errorf("%s must be a whole number of bytes, not %q", name, raw)
+		}
+		return n, nil
+	}
+	if offset, err = parse("offset"); err != nil {
+		return 0, 0, err
+	}
+	length, err = parse("length")
+	return offset, length, err
 }
 
 func (s *Server) writeFile(w http.ResponseWriter, r *http.Request) {

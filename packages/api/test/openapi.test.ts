@@ -48,8 +48,8 @@ describe("OpenAPI document", () => {
 			expect(responses[String(route.answer.status)]).toBeDefined();
 			expect(responses["401"]).toBeDefined();
 		}
-		const abort = paths["/sessions/{sessionId}/abort"]?.post as Json;
-		expect(Object.keys(abort.responses as Json).sort()).toEqual(["204", "400", "401", "403", "404", "409"]);
+		const remove = paths["/sandboxes/{sandboxId}"]?.delete as Json;
+		expect(Object.keys(remove.responses as Json).sort()).toEqual(["200", "400", "401", "403", "404", "409"]);
 	});
 
 	it("documents the Idempotency-Key header on idempotent routes only", () => {
@@ -59,7 +59,7 @@ describe("OpenAPI document", () => {
 			const headers = ((op.parameters as Json[] | undefined) ?? []).filter((param) => param.in === "header");
 			expect(headers.map((param) => param.name)).toEqual("idempotent" in route ? ["Idempotency-Key"] : []);
 		}
-		expect("idempotent" in routes.sendMessage).toBe(true);
+		expect("idempotent" in routes.createSandbox).toBe(true);
 	});
 
 	it("resolves every reference to a component", () => {

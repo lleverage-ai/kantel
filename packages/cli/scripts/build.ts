@@ -43,6 +43,8 @@ const manifest = {
 	version: source.version,
 	description: source.description,
 	license: "Apache-2.0",
+	// npm's trusted publishing and provenance check this against the repository the release workflow runs in.
+	repository: { type: "git", url: "git+https://github.com/lleverage-ai/kantel.git", directory: "packages/cli" },
 	type: "module",
 	bin: { kantel: "kantel.js" },
 	files: ["kantel.js", "README.md"],

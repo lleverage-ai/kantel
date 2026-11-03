@@ -1,3 +1,4 @@
+import type { ThemePreference } from "@kantel/contracts";
 import { type MouseEvent, type ReactNode, useCallback, useMemo, useState } from "react";
 import { KantelLockup } from "../brand/kantel.tsx";
 import { SignedInAs } from "../identity/signed-in-as.tsx";
@@ -6,6 +7,7 @@ import { KeyIcon } from "../primitives/icons.tsx";
 import { useLoad } from "../primitives/load.ts";
 import {
 	BillingIcon,
+	EnvironmentIcon,
 	OrganisationIcon,
 	ProxyIcon,
 	SandboxIcon,
@@ -18,10 +20,14 @@ import { Sidebar, SidebarBrand, SidebarItem, SidebarSection, SidebarToggle } fro
 import { Spinner } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { Notice } from "../primitives/surface.tsx";
+import { ThemeMenu, ThemeSwitch } from "../theme/theme-switch.tsx";
 import { AccountSwitcher, CreateOrganisationDialog, JoinOrganisationDialog } from "./account-switcher.tsx";
 import { ComputeApiKeysPage } from "./api-keys-page.tsx";
 import { BillingPage } from "./billing-page.tsx";
-import type { ComputeAccount, ComputeSource, ComputeViewer } from "./compute-model.ts";
+import type { ComputeAccount, ComputeSource, ComputeViewer, HostsSource } from "./compute-model.ts";
+import { DeviceLoginPage } from "./device-page.tsx";
+import { EgressPage } from "./egress-page.tsx";
+import { EnvironmentPage, EnvironmentsPage } from "./environments-page.tsx";
 import { HostsPage } from "./hosts-page.tsx";
 import { OrganisationPage } from "./organisation-page.tsx";
 import { messageOf } from "./parts.tsx";
@@ -32,24 +38,29 @@ import { TelemetryPage } from "./telemetry-page.tsx";
 import { WebhooksPage } from "./webhooks-page.tsx";
 
 // The compute console: the shell around the compute plane's pages, with the account switcher at the top of its
-// sidebar, the account's pages under it, and Hosts for a super-admin. It routes on the path under `base` (`/compute`
-// in the console app) and leaves where the data comes from to its `source`: the sample data in fixtures.ts until the
-// public API lands, then the API.
+// sidebar, the account's pages under it, and Hosts for a super-admin. It routes on the path under `base` (the root of
+// the console app, `""`) and leaves where the data comes from to its `source`: the sample data in fixtures.ts, or the
+// API. A super-admin on a deployment with no host yet is shown the way to add one first.
 
 export type ComputePage =
 	| "sandboxes"
 	| "snapshots"
+	| "environments"
+	| "egress"
 	| "keys"
 	| "proxy"
 	| "webhooks"
 	| "telemetry"
 	| "organisation"
 	| "billing"
-	| "hosts";
+	| "hosts"
+	| "device";
 
 export const COMPUTE_PAGES: readonly ComputePage[] = [
 	"sandboxes",
 	"snapshots",
+	"environments",
+	"egress",
 	"keys",
 	"proxy",
 	"webhooks",
@@ -57,10 +68,18 @@ export const COMPUTE_PAGES: readonly ComputePage[] = [
 	"organisation",
 	"billing",
 	"hosts",
+	"device",
 ];
 
-/** What a path under the console's base shows: a page, and for Snapshots the sandbox whose history is open. */
-export type ComputeRoute = { readonly page: ComputePage; readonly sandboxId?: string };
+/**
+ * What a path under the console's base shows: a page, for Snapshots and Egress the sandbox it's about, and for
+ * Environments the environment that's open.
+ */
+export type ComputeRoute = {
+	readonly page: ComputePage;
+	readonly sandboxId?: string;
+	readonly environmentId?: string;
+};
 
 /** The route for `pathname`, or undefined when it isn't under `base` or names no page. `base` itself is Sandboxes. */
 export function parseComputePath(pathname: string, base = "/compute"): ComputeRoute | undefined {
@@ -70,13 +89,29 @@ export function parseComputePath(pathname: string, base = "/compute"): ComputeRo
 	if (first === undefined) return { page: "sandboxes" };
 	if (!(COMPUTE_PAGES as readonly string[]).includes(first)) return undefined;
 	const page = first as ComputePage;
+	if (parts.length > 2) return undefined;
 	if (page === "snapshots" && second !== undefined) return { page, sandboxId: decodeURIComponent(second) };
+	if (page === "environments" && second !== undefined) return { page, environmentId: decodeURIComponent(second) };
+	// Egress is always one sandbox's.
+	if (page === "egress") return second === undefined ? undefined : { page, sandboxId: decodeURIComponent(second) };
 	return parts.length === 1 ? { page } : undefined;
 }
 
-/** The path of a page under `base`. */
-export function computePath(page: ComputePage, base = "/compute", sandboxId?: string): string {
-	return sandboxId === undefined ? `${base}/${page}` : `${base}/${page}/${encodeURIComponent(sandboxId)}`;
+/**
+ * Where switching accounts goes from `pathname`, or undefined to stay. An environment, or a sandbox's egress, belongs to
+ * the account it was opened in: another account goes back to its list rather than showing (and editing) the last
+ * one's under the new name.
+ */
+export function pathAfterAccountSwitch(pathname: string, base = "/compute"): string | undefined {
+	const open = parseComputePath(pathname, base);
+	if (open?.page === "environments" && open.environmentId !== undefined) return computePath("environments", base);
+	if (open?.page === "egress") return computePath("sandboxes", base);
+	return undefined;
+}
+
+/** The path of a page under `base`, and of one sandbox's or environment's when `id` is given. */
+export function computePath(page: ComputePage, base = "/compute", id?: string): string {
+	return id === undefined ? `${base}/${page}` : `${base}/${page}/${encodeURIComponent(id)}`;
 }
 
 const ACCOUNT_KEY = "kantel.compute.account";
@@ -119,6 +154,8 @@ export interface ComputeConsoleProps {
 	readonly onSignOut?: () => void;
 	/** The sign-in's name and email, when the app knows them better than the source. */
 	readonly signedInAs?: { readonly name?: string; readonly email?: string };
+	/** The person chose a theme in the sidebar's switch, which has applied it: the app keeps it for them. */
+	readonly onThemeChoose?: (preference: ThemePreference) => void;
 }
 
 const SHELL = "kt-app grid h-dvh";
@@ -137,6 +174,7 @@ export function ComputeConsole({
 	initialAccountId,
 	onSignOut,
 	signedInAs,
+	onThemeChoose,
 }: ComputeConsoleProps) {
 	const viewer = useLoad(() => source.accounts.viewer(), [source]);
 	const accounts = useLoad(() => source.accounts.list(), [source]);
@@ -150,10 +188,15 @@ export function ComputeConsole({
 		() => list?.find((each) => each.id === accountId) ?? list?.find((each) => each.kind === "personal") ?? list?.[0],
 		[list, accountId],
 	);
-	const switchTo = useCallback((next: ComputeAccount) => {
-		setAccountId(next.id);
-		keepAccount(next.id);
-	}, []);
+	const switchTo = useCallback(
+		(next: ComputeAccount) => {
+			setAccountId(next.id);
+			keepAccount(next.id);
+			const away = pathAfterAccountSwitch(pathname, base);
+			if (away !== undefined) navigate(away);
+		},
+		[pathname, base, navigate],
+	);
 
 	// Links under the console move without reloading the page; others, and modified clicks, are left alone.
 	const onClick = useCallback(
@@ -171,11 +214,35 @@ export function ComputeConsole({
 
 	const route = parseComputePath(pathname, base) ?? { page: "sandboxes" as const };
 	const me = viewer.state.status === "ready" ? viewer.state.value : undefined;
-	const hostsShown = me?.superAdmin === true && source.hosts !== undefined;
+	// A super-admin manages the deployment's hosts; anyone else, where the deployment allows it, their account's own.
+	const superAdmin = me?.superAdmin === true;
+	const accountKey = account?.id;
+	const hostsSource = useMemo(
+		() =>
+			superAdmin
+				? source.hosts
+				: me !== undefined && accountKey !== undefined
+					? source.ownHosts?.(accountKey)
+					: undefined,
+		[source, superAdmin, me, accountKey],
+	);
+	const hostsShown = hostsSource !== undefined;
+	// Whether there's a host yet: with none, Sandboxes leads to adding one. Read again on every page change, so a host
+	// added on Hosts counts once the person goes back.
+	const hosts = useLoad(
+		() => (hostsSource !== undefined ? hostsSource.list() : Promise.resolve(undefined)),
+		[hostsSource, pathname],
+	);
+	// The deployment's hosts (a super-admin's) tell whether there's any; an account's own don't, since it may still use
+	// shared hosts, so none of its own only adds a link to Add a host beside New sandbox (PageFor).
+	const noHosts = hosts.state.status === "ready" && hosts.state.value?.length === 0;
 	const billingShown = source.hosting === "hosted" && source.billing !== undefined;
-	// A page this person can't open goes to Sandboxes rather than showing nothing.
+	// A page this person can't open goes to Sandboxes rather than showing nothing. Device sign-in has no sidebar item:
+	// a terminal running `kantel login` opens it.
 	const page =
-		(route.page === "hosts" && me !== undefined && !hostsShown) || (route.page === "billing" && !billingShown)
+		(route.page === "hosts" && me !== undefined && !hostsShown) ||
+		(route.page === "billing" && !billingShown) ||
+		(route.page === "device" && source.devices === undefined)
 			? "sandboxes"
 			: route.page;
 
@@ -211,6 +278,7 @@ export function ComputeConsole({
 						viewer={me}
 						signedInAs={signedInAs}
 						onSignOut={onSignOut}
+						onThemeChoose={onThemeChoose}
 					/>
 				}
 			>
@@ -231,13 +299,19 @@ export function ComputeConsole({
 						icon={<SandboxIcon />}
 						label="Sandboxes"
 						href={computePath("sandboxes", base)}
-						selected={page === "sandboxes"}
+						selected={page === "sandboxes" || page === "egress"}
 					/>
 					<SidebarItem
 						icon={<SnapshotIcon />}
 						label="Snapshots"
 						href={computePath("snapshots", base)}
 						selected={page === "snapshots"}
+					/>
+					<SidebarItem
+						icon={<EnvironmentIcon />}
+						label="Environments"
+						href={computePath("environments", base)}
+						selected={page === "environments"}
 					/>
 				</SidebarSection>
 				<SidebarSection label="Settings">
@@ -273,6 +347,14 @@ export function ComputeConsole({
 						href={computePath("organisation", base)}
 						selected={page === "organisation"}
 					/>
+					{hostsShown && !superAdmin ? (
+						<SidebarItem
+							icon={<ServerIcon />}
+							label="Hosts"
+							href={computePath("hosts", base)}
+							selected={page === "hosts"}
+						/>
+					) : null}
 					{billingShown ? (
 						<SidebarItem
 							icon={<BillingIcon />}
@@ -282,7 +364,7 @@ export function ComputeConsole({
 						/>
 					) : null}
 				</SidebarSection>
-				{hostsShown ? (
+				{hostsShown && superAdmin ? (
 					<SidebarSection label="Super-admin">
 						<SidebarItem
 							icon={<ServerIcon />}
@@ -321,7 +403,7 @@ export function ComputeConsole({
 					<div className={narrow ? "p-gutter-narrow" : "p-gutter"}>
 						<PageFor
 							// A new account or page starts afresh: nothing of the last one's dialogs or filters carries over.
-							key={`${account.id}/${page}/${route.sandboxId ?? ""}`}
+							key={`${account.id}/${page}/${route.sandboxId ?? route.environmentId ?? ""}`}
 							page={page}
 							route={route}
 							source={source}
@@ -331,6 +413,9 @@ export function ComputeConsole({
 							base={base}
 							search={search}
 							navigate={navigate}
+							noHosts={noHosts}
+							hosts={hostsSource}
+							ownHosts={!superAdmin}
 							onCreate={() => setDialog("create")}
 							onJoin={() => setDialog("join")}
 							onLeft={() => {
@@ -376,6 +461,9 @@ function PageFor({
 	base,
 	search,
 	navigate,
+	noHosts,
+	hosts,
+	ownHosts,
 	onCreate,
 	onJoin,
 	onLeft,
@@ -389,6 +477,12 @@ function PageFor({
 	base: string;
 	search: string;
 	navigate: (path: string) => void;
+	/** There's no host yet: the deployment's, for a super-admin, or the account's own. */
+	noHosts: boolean;
+	/** The hosts this person manages, when there are any to manage. */
+	hosts: HostsSource | undefined;
+	/** They are the account's own, not the deployment's. */
+	ownHosts: boolean;
 	onCreate: () => void;
 	onJoin: () => void;
 	onLeft: () => void;
@@ -403,7 +497,10 @@ function PageFor({
 					account={account}
 					hosting={source.hosting}
 					snapshotsHref={(sandboxId) => computePath("snapshots", base, sandboxId)}
+					environments={(accountId) => source.environments.list(accountId)}
+					onEgress={(sandboxId) => navigate(computePath("egress", base, sandboxId))}
 					creating={new URLSearchParams(search).has("new")}
+					{...(noHosts ? { [ownHosts ? "ownHostHref" : "addHostHref"]: `${computePath("hosts", base)}?add` } : {})}
 					{...timing}
 				/>
 			);
@@ -418,6 +515,37 @@ function PageFor({
 					}
 					onStartFrom={() => navigate(`${computePath("sandboxes", base)}?new`)}
 					{...timing}
+				/>
+			);
+		case "environments":
+			return route.environmentId === undefined ? (
+				<EnvironmentsPage
+					source={source.environments}
+					account={account}
+					environmentHref={(id) => computePath("environments", base, id)}
+					navigate={navigate}
+					creating={new URLSearchParams(search).has("new")}
+					{...timing}
+				/>
+			) : (
+				<EnvironmentPage
+					source={source.environments}
+					environmentId={route.environmentId}
+					accountId={account.id}
+					listHref={computePath("environments", base)}
+					navigate={navigate}
+					{...timing}
+				/>
+			);
+		case "egress":
+			return route.sandboxId === undefined ? null : (
+				<EgressPage
+					source={source.egress}
+					sandboxId={route.sandboxId}
+					accountId={account.id}
+					sandboxesHref={computePath("sandboxes", base)}
+					environmentHref={(id) => computePath("environments", base, id)}
+					navigate={navigate}
 				/>
 			);
 		case "keys":
@@ -445,13 +573,30 @@ function PageFor({
 				<BillingPage source={source.billing} account={account} {...timing} />
 			);
 		case "hosts":
-			return source.hosts === undefined ? null : (
-				<HostsPage source={source.hosts} hosting={source.hosting} {...timing} />
+			return hosts === undefined ? null : (
+				<HostsPage
+					source={hosts}
+					hosting={source.hosting}
+					{...(ownHosts ? { owner: account } : {})}
+					adding={new URLSearchParams(search).has("add")}
+					{...timing}
+				/>
 			);
+		case "device": {
+			const code = new URLSearchParams(search).get("code") ?? undefined;
+			return source.devices === undefined ? null : (
+				<DeviceLoginPage
+					source={source.devices}
+					account={account}
+					{...(code === undefined ? {} : { code })}
+					{...timing}
+				/>
+			);
+		}
 	}
 }
 
-/** The sidebar's foot: which Kantel this is, and who is signed in. */
+/** The sidebar's foot: which Kantel this is, the theme switch, and who is signed in. */
 function Foot({
 	collapsed,
 	hosting,
@@ -459,6 +604,7 @@ function Foot({
 	viewer,
 	signedInAs,
 	onSignOut,
+	onThemeChoose,
 }: {
 	collapsed: boolean;
 	hosting: ComputeSource["hosting"];
@@ -466,6 +612,7 @@ function Foot({
 	viewer: ComputeViewer | undefined;
 	signedInAs: { readonly name?: string; readonly email?: string } | undefined;
 	onSignOut: (() => void) | undefined;
+	onThemeChoose: ((preference: ThemePreference) => void) | undefined;
 }) {
 	const name = signedInAs?.name ?? viewer?.name;
 	const email = signedInAs?.email ?? viewer?.email;
@@ -477,6 +624,19 @@ function Foot({
 						{hosting === "hosted" ? "Hosted demo" : "Self-hosted"}
 					</Badge>
 					{sample ? <Badge tone="waiting">Sample data</Badge> : null}
+				</div>
+			)}
+			{collapsed ? (
+				// The rail (and a phone, whose sidebar is always one): the same choices behind an icon.
+				<div className="flex justify-center">
+					<ThemeMenu {...(onThemeChoose === undefined ? {} : { onChoose: onThemeChoose })} />
+				</div>
+			) : (
+				<div className="flex items-center justify-between gap-2 px-2.5">
+					<span className="text-xs text-faint" aria-hidden="true">
+						Theme
+					</span>
+					<ThemeSwitch {...(onThemeChoose === undefined ? {} : { onChoose: onThemeChoose })} />
 				</div>
 			)}
 			<SignedInAs

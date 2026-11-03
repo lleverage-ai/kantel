@@ -1,10 +1,9 @@
 /* kantel.dev's marketing page: Tailwind v4, on the Lleverage brand's marketing tokens.
 
-   The console's tokens (@kantel/ui's tokens.css) describe a dense product UI on a midnight canvas; this page is the
+   The console's tokens (@kantel/ui's tokens.css) describe a dense product UI on a dark canvas; this page is the
    brand's marketing venue instead: paper as the ground, white for cards, midnight for the one or two emphasis plates,
    and orange as one element per surface. So the page keeps its own small token set here, named after the brand's
-   roles, with the same values @kantel/ui's Kantel themes use (paper #f9f7f0, midnight #141e28, orange #ec7523) and the
-   same self-hosted faces. Utilities use only these tokens and Tailwind's 4px spacing step; no arbitrary values.
+   roles, with the brand's values (paper #f9f7f0, midnight #141e28, orange #ec7523) and the same self-hosted faces. Utilities use only these tokens and Tailwind's 4px spacing step; no arbitrary values.
 
    The mocked console (src/components/mocks, src/styles/mocks.css) is the exception: it paints in the console's own
    default theme, so it reads @kantel/ui's tokens directly. Those are custom properties only (--kt-*), on :root and

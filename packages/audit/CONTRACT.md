@@ -17,11 +17,12 @@ project, session, subject, vault item, vault grant and time; agents cannot.
 
 ## The encrypted store's events under the Connections name
 
-The vault engine (`@kantel/vault`) used to write its events as `vault.*`. It now writes them under `connections.*`,
-the prefix the connections package uses (`connections.use.allowed`, `connections.connection.created`). Its
-`source` stays `vault`, its event IDs (`vault:decision:<id>`) stay as they were, and so does every subject kind
-(`vault.item`, `vault.proposal`, `vault.grant`): those are internal names, and an ID is how a retry stays idempotent.
-The table is `RENAMED_VAULT_AUDIT_TYPES` in `@kantel/contracts`:
+The vault and connections were removed with the agent plane (TASK-4721; they are on the `agent-plane-archive`
+branch), but their stored events remain, so this still describes what an audit query can return. The vault engine
+(`@kantel/vault`) first wrote its events as `vault.*`, then under `connections.*`, the prefix the connections package
+used (`connections.use.allowed`, `connections.connection.created`). Its `source` stayed `vault`, its event IDs
+(`vault:decision:<id>`) stayed as they were, and so did every subject kind (`vault.item`, `vault.proposal`,
+`vault.grant`). The table is `RENAMED_VAULT_AUDIT_TYPES` in `@kantel/contracts`:
 
 | Old type | Current type |
 | --- | --- |

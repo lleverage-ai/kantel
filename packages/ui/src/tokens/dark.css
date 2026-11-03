@@ -1,0 +1,87 @@
+/* The dark theme's palette: every colour the dark theme sets, and the one place to change it. Swapping the dark palette
+   is editing this file alone; `pnpm --filter @kantel/ui test` (src/tokens/theme.test.ts) then checks it for WCAG AA
+   body text, status colours that can be told apart and code that reads, and that light.css sets the same tokens.
+
+   Dark is the default: these are on :root, so a page paints in it before any script runs, and on
+   [data-kt-theme="dark"] (src/theme/controller.ts sets it), where the doubled attribute outweighs light.css's
+   portal rule. The formulas built on these (soft tints, the terminal, the derived syntax colours) are in tokens.css and
+   follow whichever palette is on the page.
+
+   Interim, 3 Nov 2026: the earlier midnight (#141e28) with its blue tint taken down toward neutral greys, about a fifth
+   of its chroma kept, at the same lightness: the surfaces, the disabled text and code comments. Paper text and borders,
+   the orange accent and the status and syntax colours are unchanged. To be replaced by the "less blue" dark of the
+   lleverage-mobile-prototype-v2 prototype.
+
+   Outside CSS, only the browser's chrome repeats the canvas: the dark theme-color in apps/console/index.html and the
+   colours in apps/console/public/manifest.webmanifest. Change them with --kt-canvas. */
+
+:root,
+.kt-theme,
+[data-kt-theme="dark"][data-kt-theme],
+[data-kt-theme="dark"] .kt-theme {
+	color-scheme: dark;
+
+	/* Surfaces: a near-neutral dark grey, a panel and a raised card a step lighter, and a well a step darker. */
+	--kt-canvas: #1b1d1f;
+	--kt-panel: #202224;
+	--kt-raised: #27292b;
+	--kt-sunken: #151618;
+	--kt-hover: rgb(249 247 240 / 0.05);
+	--kt-active: rgb(249 247 240 / 0.08);
+	--kt-selected: rgb(249 247 240 / 0.07);
+	--kt-user-message: #323436; /* cards on dark surfaces */
+	--kt-code: #17181a;
+	--kt-scrim: rgb(10 11 12 / 0.6);
+
+	/* Lines: paper, faint. */
+	--kt-border: rgb(249 247 240 / 0.07);
+	--kt-border-strong: rgb(249 247 240 / 0.12);
+	--kt-border-input: rgb(249 247 240 / 0.13);
+
+	/* Text: paper, never pure white. All pass WCAG AA (4.5:1) on --kt-raised and darker. */
+	--kt-text: #f9f7f0;
+	--kt-text-muted: #bdbbb3;
+	--kt-text-faint: #9d9b94;
+	--kt-text-disabled: #636465;
+
+	/* The accent: the brand's orange, with the canvas on it, its warmer shade for hover. A host app rebrands by setting
+	   --kt-accent, --kt-accent-hover, --kt-accent-text and --kt-accent-fg on any ancestor. */
+	--kt-accent: #ec7523;
+	--kt-accent-hover: #ff9626;
+	--kt-accent-fg: #1b1d1f;
+	--kt-accent-text: #f08a47;
+
+	/* Status: the brand's product set (info, success, warning, destructive) lifted to pass AA on the canvas, plus indigo.
+	   Their soft fills are formulas in tokens.css. */
+	--kt-status-working: #6aa6dc; /* blue: working */
+	--kt-status-waiting: #a9a6f0; /* indigo: waiting on an answer from you */
+	--kt-status-approval: #d9b84a; /* ochre: waiting on your approval */
+	--kt-status-done: #5cbf8a; /* green: done */
+	--kt-status-error: #f07c74; /* red: failed */
+	--kt-status-idle: #9d9b94; /* neutral: nothing happening */
+
+	/* Syntax: highlighted code (src/code/syntax.css). Each passes AA on --kt-code. */
+	--kt-syntax-comment: #909193;
+	--kt-syntax-keyword: #c3a6ff;
+	--kt-syntax-string: #a5d6a7;
+	--kt-syntax-number: #f5b97a;
+	--kt-syntax-function: #8fb4f5;
+	--kt-syntax-type: #6fd3e3;
+	--kt-syntax-property: #f0a6c8;
+	--kt-syntax-operator: #bdbbb3;
+	--kt-syntax-tag: #f28b82;
+
+	/* Effects: shadows for things that float, the composer's glass, and service logos on a dark page. */
+	--kt-shadow-float: 0 12px 32px -12px rgb(0 0 0 / 0.75), 0 0 0 1px var(--kt-border-strong);
+	--kt-shadow-composer: 0 14px 32px -18px rgb(0 0 0 / 0.75);
+	--kt-glass-outline: rgb(249 247 240 / 0.08);
+	--kt-glass-highlight: inset 0 1px 0 0 rgb(255 255 255 / 0.03);
+	/* A service's logo, drawn with no tile: a hairline in the text's colour around it, so a dark logo keeps an edge. */
+	--kt-logo-edge: 0 0 1px color-mix(in srgb, var(--kt-text) 45%, transparent);
+	/* A logo drawn on nothing in dark ink is shown with its lightness flipped and its hue kept (provider-logo.tsx). */
+	--kt-logo-dark-mark: invert(1) hue-rotate(180deg);
+	--kt-logo-light-mark: none;
+
+	/* The Kantel mark's tile and the wordmark's letters (src/brand/): the approved artwork's white on a dark page. */
+	--kt-brand-ink: #ffffff;
+}

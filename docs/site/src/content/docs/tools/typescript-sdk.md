@@ -8,7 +8,7 @@ sidebar:
 ---
 
 :::caution[Experimental]
-The SDK's compute methods call routes a control plane serves only when it runs with `KANTEL_COMPUTE=experimental`. Their shapes may still change.
+The SDK's compute methods call Kantel's compute API, which every control plane serves. Their shapes may still change.
 :::
 
 The TypeScript SDK is generated from the same route definitions as the API, so it has one method for each route, named as the [API reference](/api/reference/) names it, and types for every request and answer. It's one file with no imports of its own, built on `fetch`, so it runs in Node.js 22.18 or later, Bun, Deno, Cloudflare Workers and browsers.

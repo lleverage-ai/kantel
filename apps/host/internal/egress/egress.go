@@ -1,5 +1,6 @@
-// Package egress is the host's egress proxy: the one way out of a sandbox whose egress is "proxy", and an optional
-// one for "open" sandboxes with an upstream to report to.
+// Package egress is the host's egress proxy: the one way out of every sandbox (package network routes nothing else),
+// whatever its egress mode; "open" is the proxy with no rules. It connects only to public addresses, or to private
+// ranges an operator allows (Destinations), so a sandbox can't use it to reach the host, the LAN or another sandbox.
 //
 // Attribution is by where a connection comes from, not by anything the sandbox says: each microVM has its own TAP
 // device and /30, so the source address names the sandbox (and the isolate tier's worker sets its sandbox on
@@ -18,6 +19,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -76,8 +78,11 @@ type Proxy struct {
 	Resolve func(netip.Addr) (Rules, bool)
 	// OnRecord sees every decision.
 	OnRecord func(Record)
-	// Dial is how connections leave (tests replace it).
+	// Dial is how connections leave (tests replace it). The default checks every address it connects to against
+	// Destinations, after DNS, so a name that resolves to a private address is refused too.
 	Dial func(network, address string) (net.Conn, error)
+	// Destinations says which addresses the proxy may connect to for a sandbox, its upstream included.
+	Destinations Destinations
 
 	listener  net.Listener
 	served    atomic.Int64
@@ -85,8 +90,9 @@ type Proxy struct {
 }
 
 func New(log *slog.Logger) *Proxy {
-	d := &net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}
-	p := &Proxy{log: log, Dial: d.Dial}
+	p := &Proxy{log: log}
+	d := &net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second, Control: p.control}
+	p.Dial = d.Dial
 	p.transport = &http.Transport{
 		Dial:                func(network, addr string) (net.Conn, error) { return p.Dial(network, addr) },
 		TLSHandshakeTimeout: 15 * time.Second,
@@ -322,6 +328,9 @@ func (p *Proxy) handleWith(conn net.Conn, resolve Resolver) {
 	if err != nil {
 		rec.Reason = err.Error()
 	}
+	if errors.Is(err, ErrDestination) {
+		rec.Allowed = false
+	}
 	p.record(rec)
 }
 
@@ -342,6 +351,10 @@ func (p *Proxy) forward(conn net.Conn, reader *bufio.Reader, req *http.Request, 
 			return 0, 0, fmt.Errorf("bad upstream %q", rules.Upstream)
 		}
 		upstream, err = p.Dial("tcp", u.Host)
+		if errors.Is(err, ErrDestination) {
+			refuse(conn, http.StatusForbidden, "the upstream proxy's address isn't one this host may reach (its egressAllowCIDRs)")
+			return 0, 0, err
+		}
 		if err != nil {
 			refuse(conn, http.StatusBadGateway, "the upstream proxy can't be reached")
 			return 0, 0, err
@@ -403,6 +416,10 @@ func (p *Proxy) forward(conn net.Conn, reader *bufio.Reader, req *http.Request, 
 		return p.direct(conn, req)
 	}
 	upstream, err = p.Dial("tcp", target)
+	if errors.Is(err, ErrDestination) {
+		refuse(conn, http.StatusForbidden, target+" isn't on the public internet")
+		return 0, 0, err
+	}
 	if err != nil {
 		refuse(conn, http.StatusBadGateway, "can't connect to "+target)
 		return 0, 0, err
@@ -422,6 +439,10 @@ func (p *Proxy) direct(conn net.Conn, req *http.Request) (int64, int64, error) {
 		up = req.ContentLength
 	}
 	res, err := p.transport.RoundTrip(req)
+	if errors.Is(err, ErrDestination) {
+		refuse(conn, http.StatusForbidden, req.URL.Host+" isn't on the public internet")
+		return up, 0, err
+	}
 	if err != nil {
 		refuse(conn, http.StatusBadGateway, "can't reach "+req.URL.Host+": "+err.Error())
 		return up, 0, err

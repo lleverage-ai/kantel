@@ -3,6 +3,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Duplex } from "node:stream";
+import { refuseUpgrade } from "./upgrade-refusal.ts";
 
 /** A WebSocket upgrade's handler: it takes the socket over, or refuses it. */
 export type UpgradeHandler = (incoming: IncomingMessage, socket: Duplex, head: Buffer) => void;
@@ -30,6 +31,12 @@ const REQUEST_TIMEOUT_MS = 60_000;
  * is pushed, so a reader that never drains would otherwise hold its frames in memory.
  */
 const DRAIN_TIMEOUT_MS = 30_000;
+
+/**
+ * How long `close` lets upgraded sockets finish a close handshake already under way (the 1001 a host is sent when the
+ * gateway stops) before dropping them. A round trip, not a drain: well inside a container's stop grace period.
+ */
+const CLOSE_GRACE_MS = 1000;
 
 /** Resolves true once `outgoing` drains, false if it closes or `timeoutMs` passes first. */
 function drained(outgoing: ServerResponse, timeoutMs: number): Promise<boolean> {
@@ -161,12 +168,15 @@ export async function listen(handler: FetchHandler, port: number, options: Liste
 		});
 	});
 	const onUpgrade = options.onUpgrade;
+	// Upgraded sockets, so `close` can let them finish the close frames already sent (a host's 1001) before dropping
+	// them: on Bun, `closeAllConnections` destroys upgraded sockets too, where Node leaves them alone.
+	const upgraded = new Set<Duplex>();
 	server.on("upgrade", (incoming: IncomingMessage, socket: Duplex, head: Buffer) => {
 		socket.on("error", () => socket.destroy());
-		if (onUpgrade === undefined) {
-			socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
-			return;
-		}
+		upgraded.add(socket);
+		socket.on("close", () => upgraded.delete(socket));
+		// No HTTP status on an upgrade: Bun drops it (upgrade-refusal.ts).
+		if (onUpgrade === undefined) return refuseUpgrade(incoming, socket, head, 404, "Nothing upgrades here");
 		onUpgrade(incoming, socket, head);
 	});
 	await new Promise<void>((resolve) => server.listen(port, host, resolve));
@@ -174,10 +184,23 @@ export async function listen(handler: FetchHandler, port: number, options: Liste
 	return {
 		port: address.port,
 		url: `http://127.0.0.1:${address.port}`,
-		close: () =>
-			new Promise<void>((resolve) => {
+		close: async () => {
+			const open = [...upgraded].filter((socket) => !socket.destroyed);
+			if (open.length > 0) {
+				let timer: ReturnType<typeof setTimeout> | undefined;
+				await Promise.race([
+					Promise.all(open.map((socket) => new Promise((done) => socket.once("close", done)))),
+					new Promise((done) => {
+						timer = setTimeout(done, Math.min(drainTimeoutMs, CLOSE_GRACE_MS));
+					}),
+				]);
+				clearTimeout(timer);
+			}
+			for (const socket of upgraded) socket.destroy();
+			await new Promise<void>((resolve) => {
 				server.closeAllConnections();
 				server.close(() => resolve());
-			}),
+			});
+		},
 	};
 }

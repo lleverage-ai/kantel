@@ -5,7 +5,14 @@
  * answer `{ error: { code, message } }` with `STATUS_BY_CODE`'s status, and 401 `unauthenticated` for a missing or
  * bad credential.
  */
-import { computeRoutes, createRouter, pathPattern, STATUS_BY_CODE } from "@kantel/api";
+import {
+	computeRoutes,
+	createRouter,
+	pathPattern,
+	publicComputeRoutes,
+	type SignedInComputeRoutes,
+	STATUS_BY_CODE,
+} from "@kantel/api";
 import { isKantelError } from "@kantel/contracts";
 import { type AuthenticatePerson, authenticate, UnauthenticatedError } from "./auth.ts";
 import type { SandboxBackend } from "./backend.ts";
@@ -18,6 +25,11 @@ import { createWebhookDispatcher, type WebhookDispatcher } from "./webhooks.ts";
 export const COMPUTE_BODY_LIMIT = 2 * 1024 * 1024;
 /** How often, at most, a request sweeps for sandboxes past their stop time. */
 const SWEEP_EVERY_MS = 1000;
+/**
+ * The host agent's own paths beside the account hosts' `/hosts/{hostId}` (`@kantel/hosts/http`): never the compute API's,
+ * so a gateway with no host routes answers them 404 rather than asking for a sign-in. A host's ID starts `host_`.
+ */
+const HOST_AGENT_PATH = /^\/hosts\/(?:register|connect)$/;
 
 export interface ComputeApiOptions {
 	/** Default an in-memory store. */
@@ -36,8 +48,16 @@ export interface ComputeApiOptions {
 	readonly mode?: "selfhosted" | "hosted";
 	/** The join command shown with a host join token, with `{url}` and `{token}`. */
 	readonly hostJoinCommand?: string;
+	/** Account hosts' routes (`/v1/hosts`, experimental): accounts add hosts of their own. Default off. */
+	readonly accountHosts?: boolean;
+	/** The console page where a person approves a device sign-in, with `{url}`. Default `{url}/device`. */
+	readonly deviceLoginUrl?: string;
 	readonly rates?: RateTable;
 	readonly limits?: ComputeLimits;
+	/** Whether a person's sign-in (`PersonIdentity.session`) is still live; absent, sign-ins are taken to last. */
+	readonly sessionLive?: (session: string) => Promise<boolean>;
+	/** Whether a user may use the deployment's shared hosts (`ComputeServiceOptions.sharedHosts`); absent, everyone. */
+	readonly sharedHosts?: (userId: string) => Promise<boolean>;
 }
 
 export interface ComputeApi {
@@ -96,11 +116,22 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 		...(options.publicUrl === undefined ? {} : { publicUrl: options.publicUrl }),
 		...(options.mode === undefined ? {} : { mode: options.mode }),
 		...(options.hostJoinCommand === undefined ? {} : { hostJoinCommand: options.hostJoinCommand }),
+		...(options.accountHosts === undefined ? {} : { accountHosts: options.accountHosts }),
+		...(options.deviceLoginUrl === undefined ? {} : { deviceLoginUrl: options.deviceLoginUrl }),
 		...(options.rates === undefined ? {} : { rates: options.rates }),
 		...(options.limits === undefined ? {} : { limits: options.limits }),
+		...(options.sessionLive === undefined ? {} : { sessionLive: options.sessionLive }),
+		...(options.sharedHosts === undefined ? {} : { sharedHosts: options.sharedHosts }),
 	});
 	service = created;
-	const router = createRouter(computeRoutes, created.handlers, { basePath, maxBodyBytes: COMPUTE_BODY_LIMIT });
+	const publicIds = new Set<string>(Object.keys(publicComputeRoutes));
+	const signedInRoutes = Object.fromEntries(
+		Object.entries(computeRoutes).filter(([id]) => !publicIds.has(id)),
+	) as unknown as SignedInComputeRoutes;
+	const routerOptions = { basePath, maxBodyBytes: COMPUTE_BODY_LIMIT };
+	const router = createRouter(signedInRoutes, created.handlers, routerOptions);
+	// The routes that take no credential are answered before anyone is signed in.
+	const publicRouter = createRouter(publicComputeRoutes, created.publicHandlers, routerOptions);
 	const patterns = Object.values(computeRoutes).map((route) => pathPattern(route.path));
 	let lastSweep = Number.NEGATIVE_INFINITY;
 
@@ -109,12 +140,14 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 			const url = new URL(request.url);
 			if (url.pathname !== basePath && !url.pathname.startsWith(`${basePath}/`)) return undefined;
 			const path = url.pathname.slice(basePath.length) || "/";
-			if (!patterns.some((pattern) => pattern.test(path))) return undefined;
+			if (HOST_AGENT_PATH.test(path) || !patterns.some((pattern) => pattern.test(path))) return undefined;
 			try {
 				if (now() - lastSweep >= SWEEP_EVERY_MS) {
 					lastSweep = now();
 					await created.sweep();
 				}
+				const open = await publicRouter(undefined, request);
+				if (open !== undefined) return open;
 				const principal = await authenticate(request, {
 					store,
 					now: now(),

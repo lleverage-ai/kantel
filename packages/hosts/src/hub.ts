@@ -120,6 +120,58 @@ interface Connection {
 const DEFAULT_CALL_TIMEOUT_MS = 120_000;
 const DEFAULT_HELLO_TIMEOUT_MS = 30_000;
 
+/** A payload a host sent that is an object, which is all its type claims until it's checked further. */
+const isObject = <T>(value: T): value is NonNullable<T> & object => typeof value === "object" && value !== null;
+
+/** A WebSocket close reason is at most 123 bytes of UTF-8 (RFC 6455); a longer one makes `close` throw. */
+const CLOSE_REASON_BYTES = 123;
+
+/** `reason`, cut at a character boundary to fit a close frame. */
+export function closeReason(reason: string): string {
+	const encoder = new TextEncoder();
+	if (encoder.encode(reason).byteLength <= CLOSE_REASON_BYTES) return reason;
+	let out = "";
+	let bytes = 0;
+	for (const character of reason) {
+		const size = encoder.encode(character).byteLength;
+		if (bytes + size > CLOSE_REASON_BYTES) break;
+		out += character;
+		bytes += size;
+	}
+	return out;
+}
+
+/**
+ * Closes `socket` with `reason` cut to fit (`closeReason`), and never throws: a socket that is already gone, or a code
+ * or reason it won't take, is the same as closed. For a client's socket closed with what a host said (a port's end,
+ * a refused open), which an untrusted host can make anything.
+ */
+export function closeQuietly(
+	socket: { close(code?: number, reason?: string): void },
+	code: number,
+	reason: string,
+): void {
+	try {
+		socket.close(code, closeReason(reason));
+	} catch {
+		try {
+			socket.close(1011);
+		} catch {
+			// Already closed.
+		}
+	}
+}
+
+/** A host error as it came, made safe to throw: its code and message strings, or plain ones in their place. */
+function hostError(error: unknown): HostError {
+	if (!isObject(error)) return { code: "internal", message: `The host's call failed: ${typeof error}` };
+	const { code, message } = error as { code?: unknown; message?: unknown };
+	return {
+		code: typeof code === "string" ? code : "internal",
+		message: typeof message === "string" ? message : "The host's call failed",
+	};
+}
+
 export function createHostHub(options: HostHubOptions): HostHub {
 	const held = new Map<string, Connection>();
 	let nextCall = 0;
@@ -128,6 +180,16 @@ export function createHostHub(options: HostHubOptions): HostHub {
 
 	const send = (connection: Connection, message: object) => {
 		if (!connection.closed) connection.socket.sendText(JSON.stringify(message));
+	};
+
+	/** Closes the socket and forgets the connection; a socket that is already gone (`close` throws) is the same. */
+	const shut = (connection: Connection, code: number, reason: string) => {
+		try {
+			connection.socket.close(code, closeReason(reason));
+		} catch {
+			// Already closed.
+		}
+		teardown(connection, reason);
 	};
 
 	const teardown = (connection: Connection, reason: string) => {
@@ -172,9 +234,7 @@ export function createHostHub(options: HostHubOptions): HostHub {
 			connection.welcomed = true;
 			send(connection, { type: "welcome", welcome });
 		} catch (error) {
-			const reason = error instanceof Error ? error.message : String(error);
-			connection.socket.close(HOST_CLOSE_PROTOCOL, reason.slice(0, 120));
-			teardown(connection, reason);
+			shut(connection, HOST_CLOSE_PROTOCOL, error instanceof Error ? error.message : "The hello was refused");
 		}
 	};
 
@@ -191,71 +251,99 @@ export function createHostHub(options: HostHubOptions): HostHub {
 			const older = held.get(hostId);
 			held.set(hostId, connection);
 			if (older !== undefined) {
-				older.socket.close(HOST_CLOSE_REPLACED, "A newer connection for the host took over");
-				teardown(older, "replaced");
+				shut(older, HOST_CLOSE_REPLACED, "A newer connection for the host took over");
 			}
 			let greeted = false;
 			const helloTimer = setTimeout(() => {
 				if (greeted || connection.closed) return;
-				socket.close(HOST_CLOSE_PROTOCOL, "No hello");
-				teardown(connection, "no hello");
+				shut(connection, HOST_CLOSE_PROTOCOL, "No hello");
 			}, options.helloTimeoutMs ?? DEFAULT_HELLO_TIMEOUT_MS);
+			/** One port stream's sink failing (its client went away) ends that stream, not the host's connection. */
+			const toSink = (stream: number, sink: PortSink, deliver: (sink: PortSink) => void) => {
+				try {
+					deliver(sink);
+				} catch {
+					if (connection.streams.get(stream) === sink) connection.streams.delete(stream);
+				}
+			};
+			const handle = (frame: string | Uint8Array) => {
+				if (typeof frame !== "string") {
+					const decoded = decodeStreamFrame(frame);
+					if (decoded === undefined) return;
+					const sink = connection.streams.get(decoded.stream);
+					if (sink === undefined) return;
+					if (decoded.payload.byteLength === 0) {
+						connection.streams.delete(decoded.stream);
+						toSink(decoded.stream, sink, (s) => s.end("closed by the sandbox"));
+					} else {
+						toSink(decoded.stream, sink, (s) => s.data(decoded.payload));
+					}
+					return;
+				}
+				const message = parseHostMessage(frame);
+				if (message === undefined) return;
+				if (!greeted) {
+					greeted = true;
+					clearTimeout(helloTimer);
+					// It settles on its own (refusals close the connection); this catch is the last line.
+					hello(connection, message.type === "hello" ? message.hello : undefined).catch(() =>
+						teardown(connection, "the hello failed"),
+					);
+					return;
+				}
+				// Anyone's machine can be a host (account hosts): a payload is read only once it is an object.
+				switch (message.type) {
+					case "heartbeat":
+						if (isObject(message.heartbeat)) options.onHeartbeat?.(hostId, message.heartbeat.capacity);
+						return;
+					case "result": {
+						const id = typeof message.id === "string" ? message.id : undefined;
+						const pending = id === undefined ? undefined : connection.pending.get(id);
+						if (pending === undefined || id === undefined) return;
+						// What settles it is made first: only then is the call forgotten, so it can't be left unsettled.
+						const failed =
+							message.error === undefined || message.error === null
+								? undefined
+								: new HostCallError(hostError(message.error));
+						connection.pending.delete(id);
+						clearTimeout(pending.timer);
+						if (failed !== undefined) pending.reject(failed);
+						else pending.resolve(message.result);
+						return;
+					}
+					case "event": {
+						if (!isObject(message.event)) return;
+						if (typeof message.call === "string" && message.call !== "") {
+							connection.pending.get(message.call)?.onEvent?.(message.event);
+							return;
+						}
+						options.onEvent?.(hostId, message.event);
+						return;
+					}
+					case "stream.close": {
+						const stream = message.stream ?? 0;
+						const sink = connection.streams.get(stream);
+						if (sink === undefined) return;
+						connection.streams.delete(stream);
+						toSink(stream, sink, (s) => s.end(typeof message.reason === "string" ? message.reason : "closed"));
+						return;
+					}
+					default:
+						return;
+				}
+			};
 			return {
+				/**
+				 * Never throws: a frame that can't be handled closes this host's connection (4002), so nothing a host sends
+				 * escapes into the gateway's socket callback, and the host reconnects.
+				 */
 				receive(frame) {
 					if (connection.closed) return;
-					if (typeof frame !== "string") {
-						const decoded = decodeStreamFrame(frame);
-						if (decoded === undefined) return;
-						const sink = connection.streams.get(decoded.stream);
-						if (sink === undefined) return;
-						if (decoded.payload.byteLength === 0) {
-							connection.streams.delete(decoded.stream);
-							sink.end("closed by the sandbox");
-						} else {
-							sink.data(decoded.payload);
-						}
-						return;
-					}
-					const message = parseHostMessage(frame);
-					if (message === undefined) return;
-					if (!greeted) {
-						greeted = true;
-						clearTimeout(helloTimer);
-						void hello(connection, message.type === "hello" ? message.hello : undefined);
-						return;
-					}
-					switch (message.type) {
-						case "heartbeat":
-							if (message.heartbeat !== undefined) options.onHeartbeat?.(hostId, message.heartbeat.capacity);
-							return;
-						case "result": {
-							const pending = message.id === undefined ? undefined : connection.pending.get(message.id);
-							if (pending === undefined || message.id === undefined) return;
-							connection.pending.delete(message.id);
-							clearTimeout(pending.timer);
-							if (message.error !== undefined) pending.reject(new HostCallError(message.error));
-							else pending.resolve(message.result);
-							return;
-						}
-						case "event": {
-							if (message.event === undefined) return;
-							if (message.call !== undefined && message.call !== "") {
-								connection.pending.get(message.call)?.onEvent?.(message.event);
-								return;
-							}
-							options.onEvent?.(hostId, message.event);
-							return;
-						}
-						case "stream.close": {
-							const stream = message.stream ?? 0;
-							const sink = connection.streams.get(stream);
-							if (sink === undefined) return;
-							connection.streams.delete(stream);
-							sink.end(message.reason ?? "closed");
-							return;
-						}
-						default:
-							return;
+					try {
+						handle(frame);
+					} catch (error) {
+						const why = error instanceof Error ? error.message : typeof error;
+						shut(connection, HOST_CLOSE_PROTOCOL, `A message from the host couldn't be handled: ${why}`);
 					}
 				},
 				closed(_code, reason) {
@@ -335,14 +423,10 @@ export function createHostHub(options: HostHubOptions): HostHub {
 		disconnect(hostId, code, reason) {
 			const connection = held.get(hostId);
 			if (connection === undefined) return;
-			connection.socket.close(code, reason);
-			teardown(connection, reason);
+			shut(connection, code, reason);
 		},
 		closeAll(code, reason) {
-			for (const connection of [...held.values()]) {
-				connection.socket.close(code, reason);
-				teardown(connection, reason);
-			}
+			for (const connection of [...held.values()]) shut(connection, code, reason);
 		},
 	};
 }

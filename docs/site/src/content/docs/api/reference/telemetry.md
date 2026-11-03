@@ -9,15 +9,11 @@ sidebar:
 
 Exporting sandbox lifecycle spans and usage metrics to an OTLP endpoint.
 
-:::caution
-Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
-:::
-
 ## Get the OpenTelemetry export
 
 `GET /v1/telemetry` (SDK method `getTelemetry`)
 
-Absent: `not_found`. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Absent: `not_found`. A key needs `account:admin`.
 
 **Query parameters**
 
@@ -35,7 +31,7 @@ Absent: `not_found`. A key needs `account:admin`. Experimental: served only wher
 
 `PUT /v1/telemetry` (SDK method `putTelemetry`)
 
-Sets or replaces the account's one OTLP/HTTP endpoint, sends an empty export to test it, and answers what the collector said. Header values are kept encrypted and never shown again. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Sets or replaces the account's one OTLP/HTTP endpoint, sends an empty export to test it, and answers what the collector said. Header values are kept encrypted and never shown again. A key needs `account:admin`.
 
 **Body**: [PutTelemetryBody](/api/reference/types/#puttelemetrybody)
 
@@ -49,7 +45,7 @@ Sets or replaces the account's one OTLP/HTTP endpoint, sends an empty export to 
 
 `DELETE /v1/telemetry` (SDK method `deleteTelemetry`)
 
-A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+A key needs `account:admin`.
 
 **Query parameters**
 

@@ -8,7 +8,7 @@ sidebar:
 ---
 
 :::caution[Experimental]
-These routes are part of Kantel's API, and a control plane serves them only when it runs with `KANTEL_COMPUTE=experimental`. Their shapes may still change.
+These routes are part of Kantel's API, which every control plane serves. Their shapes may still change.
 :::
 
 The examples use `KANTEL_URL`, `KANTEL_API_KEY` and the `kantel` client set up in [Create and manage sandboxes](/sandboxes/lifecycle/#before-you-start). Running commands needs a key with `exec`, and files need `files`. The sandbox must be running: a call to a stopped one answers `409` with `conflict`, so resume it first.
@@ -110,7 +110,14 @@ const image = await kantel.readFile("sbx_4kq9x2mt", { path: "app/screenshot.png"
 const bytes = Buffer.from(image.content, "base64");
 ```
 
-Files are read up to 1 MiB. For a bigger one, compress or split it with a command, or copy it over [SSH](/sandboxes/ssh/).
+One read answers at most 1 MiB. Read a bigger file in parts with `offset` (the byte to start at) and `length` (at most 1048576): `size` in the answer is the whole file's, and `offset` where the part starts, so read again from `offset` plus the part's length until you reach `size`. Use `encoding=base64` for parts, as a cut can fall inside a UTF-8 character:
+
+```sh
+curl -s "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/files?path=out.tar.gz&encoding=base64&offset=1048576&length=1048576" \
+  -H "Authorization: Bearer $KANTEL_API_KEY"
+```
+
+`kantel scp` and `kantel files get` read a big file this way for you.
 
 ## Write a file
 

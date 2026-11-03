@@ -1,10 +1,18 @@
 // The kantel command line, through `run`, with a fake Kantel behind an injected fetch and a temporary config directory.
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Caller, Command, Sandbox, SandboxPage } from "@kantel/api/sdk";
+import type { Caller, Command, Host, Sandbox, SandboxPage } from "@kantel/api/sdk";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { AGENTS_END, AGENTS_START, claudeSetup, upsertAgentsBlock } from "../src/agents.ts";
+import {
+	AGENTS_END,
+	AGENTS_START,
+	claudeSetup,
+	codexSetup,
+	codexToml,
+	mcpServersJson,
+	upsertAgentsBlock,
+} from "../src/agents.ts";
 import { parseArgs } from "../src/args.ts";
 import { commandLine, type Input, run } from "../src/commands.ts";
 import { DEFAULT_URL, normaliseUrl, resolveConfig } from "../src/config.ts";
@@ -45,10 +53,11 @@ function fakeKantel(routes: { readonly [route: string]: Route }) {
 	return { fetch, calls };
 }
 
-function capture() {
+function capture(isTTY = false) {
 	const chunks: string[] = [];
 	const decoder = new TextDecoder();
 	return {
+		isTTY,
 		write(chunk: string | Uint8Array) {
 			chunks.push(typeof chunk === "string" ? chunk : decoder.decode(chunk));
 			return true;
@@ -130,12 +139,22 @@ interface KantelOptions {
 	readonly routes?: { readonly [route: string]: Route };
 	readonly env?: { readonly [name: string]: string };
 	readonly stdin?: Input;
+	/** stdout is a terminal, as when a person runs it. */
+	readonly tty?: boolean;
+	readonly cwd?: string;
+	/** This CLI by its full paths, for `agents` when `kantel` isn't on the PATH. */
+	readonly self?: readonly string[];
 }
+
+/** The `self` every run gets unless it says otherwise: Node and the installed CLI's link. */
+const SELF = ["/usr/local/bin/node", "/home/me/.local/bin/kantel"];
 
 async function kantel(argv: readonly string[], options: KantelOptions = {}) {
 	const api = fakeKantel(options.routes ?? {});
-	const stdout = capture();
+	const stdout = capture(options.tty);
 	const stderr = capture();
+	const opened: string[] = [];
+	const slept: number[] = [];
 	const code = await run(argv, {
 		fetch: api.fetch,
 		env: options.env ?? ENV,
@@ -143,9 +162,15 @@ async function kantel(argv: readonly string[], options: KantelOptions = {}) {
 		stderr,
 		stdin: options.stdin ?? input(undefined, true),
 		configDir,
-		cwd: configDir,
+		cwd: options.cwd ?? configDir,
+		home: join(configDir, "home"),
+		self: options.self ?? SELF,
+		openUrl: (url) => opened.push(url),
+		sleep: async (ms) => {
+			slept.push(ms);
+		},
 	});
-	return { code, stdout: stdout.text(), stderr: stderr.text(), calls: api.calls };
+	return { code, stdout: stdout.text(), stderr: stderr.text(), calls: api.calls, opened, slept };
 }
 
 describe("parsing", () => {
@@ -196,13 +221,15 @@ describe("parsing", () => {
 	it("generates help from the command table", async () => {
 		const help = await kantel(["help"]);
 		expect(help.code).toBe(0);
-		expect(help.stdout).toContain("sandbox create");
-		expect(help.stdout).toContain("exec <id> -- <command…>");
+		expect(help.stdout).toMatch(/^ {2}new {2,}Create a sandbox/m);
+		expect(help.stdout).toContain("exec <id> [command…] -- <command…>");
+		expect(help.stdout).not.toContain("port expose");
 		const create = await kantel(["sandbox", "create", "--help"]);
+		expect(create.stdout).toContain("Usage: kantel new");
 		expect(create.stdout).toContain("--no-wait");
 		expect(create.stdout).toContain("--label <k=v>…");
 		const group = await kantel(["sandbox"]);
-		expect(group.stdout).toContain("sandbox delete <id>");
+		expect(group.stdout).toContain("delete <id>");
 	});
 
 	it("exits 2 on an unknown command or a missing argument, without calling Kantel", async () => {
@@ -212,8 +239,36 @@ describe("parsing", () => {
 		const missing = await kantel(["sandbox", "get"]);
 		expect(missing.code).toBe(2);
 		expect(missing.stderr).toContain("needs <id>");
-		expect(missing.stderr).toContain("Usage: kantel sandbox get <id>");
+		expect(missing.stderr).toContain("Usage: kantel info <id>");
 		expect(missing.calls).toEqual([]);
+	});
+
+	it("takes boat-style verbs, and the first CLI's sandbox … spellings", async () => {
+		const stopped = { ...SANDBOX, state: "stopped" };
+		const routes = {
+			"GET /v1/sandboxes/sbx_test1": () => SANDBOX,
+			"POST /v1/sandboxes/sbx_test1/stop": () => stopped,
+			"POST /v1/sandboxes/sbx_test1/resume": () => SANDBOX,
+		};
+		for (const argv of [
+			["info", "sbx_test1"],
+			["get", "sbx_test1"],
+			["sandbox", "get", "sbx_test1"],
+			["sb", "info", "sbx_test1"],
+		]) {
+			const result = await kantel(argv, { routes });
+			expect(result.code, argv.join(" ")).toBe(0);
+			expect(result.calls.map((call) => `${call.method} ${call.path}`)).toEqual(["GET /v1/sandboxes/sbx_test1"]);
+		}
+		expect((await kantel(["stop", "sbx_test1"], { routes })).stdout).toBe("sbx_test1 stopped\n");
+		expect((await kantel(["sandbox", "resume", "sbx_test1"], { routes })).stdout).toBe("sbx_test1 running\n");
+	});
+
+	it("sends operators' commands to kantel-admin", async () => {
+		const moved = await kantel(["host", "join-token"]);
+		expect(moved.code).toBe(2);
+		expect(moved.stderr).toContain("kantel-admin host add");
+		expect(moved.calls).toEqual([]);
 	});
 
 	it("prints the version", async () => {
@@ -226,7 +281,7 @@ describe("parsing", () => {
 describe("exec", () => {
 	it("routes stdout and stderr to the matching streams and exits with the command's exit code", async () => {
 		const result = await kantel(
-			["exec", "sbx_test1", "--cwd", "/app", "--env", "A=1", "--timeout", "5000", "--", "sh", "-c", "echo hi; exit 3"],
+			["exec", "sbx_test1", "--cwd", "/app", "--env", "A=1", "--timeout", "5", "--", "sh", "-c", "echo hi; exit 3"],
 			{
 				routes: {
 					"POST /v1/sandboxes/sbx_test1/commands": () => command({ exitCode: 3, stdout: "out\n", stderr: "err\n" }),
@@ -257,7 +312,8 @@ describe("exec", () => {
 			},
 		});
 		expect(slow.code).toBe(124);
-		expect(slow.stderr).toContain("timed out after 10 ms");
+		expect(slow.stderr).toContain("timed out after 10 s");
+		expect(slow.calls[0]?.body).toEqual({ command: "sleep 5", timeoutMs: 10_000 });
 	});
 
 	it("prints the command as JSON with --json, still exiting with its code", async () => {
@@ -269,14 +325,65 @@ describe("exec", () => {
 		expect(JSON.parse(result.stdout)).toEqual(answer);
 	});
 
-	it("needs the command after --", async () => {
+	it("needs a command, which may come without --", async () => {
 		const none = await kantel(["exec", "sbx_test1"]);
 		expect(none.code).toBe(2);
-		expect(none.stderr).toContain("give the command after --");
-		const unseparated = await kantel(["exec", "sbx_test1", "ls"]);
-		expect(unseparated.code).toBe(2);
-		expect(unseparated.stderr).toContain("after --");
-		expect(unseparated.calls).toEqual([]);
+		expect(none.stderr).toContain("give the command");
+		expect(none.calls).toEqual([]);
+		const routes = { "POST /v1/sandboxes/sbx_test1/commands": () => command({}) };
+		const unseparated = await kantel(["exec", "sbx_test1", "make && make test"], { routes });
+		expect(unseparated.code).toBe(0);
+		expect(unseparated.calls[0]?.body).toEqual({ command: "make && make test" });
+	});
+
+	it("detaches, printing the command's ID, and attach follows it to its exit code", async () => {
+		const started = await kantel(["exec", "sbx_test1", "-d", "--", "npm", "run", "dev"], {
+			routes: {
+				"POST /v1/sandboxes/sbx_test1/commands": () => command({ state: "running", exitCode: undefined }),
+			},
+		});
+		expect(started.code).toBe(0);
+		expect(started.stdout).toBe("cmd_1\n");
+		expect(started.stderr).toContain("kantel attach sbx_test1 cmd_1");
+		expect(started.calls[0]?.body).toEqual({ command: "npm run dev", detached: true });
+
+		const views = [
+			command({ state: "running", exitCode: undefined, stdout: "one\n" }),
+			command({ state: "running", exitCode: undefined, stdout: "one\ntwo\n", stderr: "warn\n" }),
+			command({ state: "exited", exitCode: 4, stdout: "one\ntwo\nthree\n", stderr: "warn\n" }),
+		];
+		const attached = await kantel(["attach", "sbx_test1", "cmd_1"], {
+			routes: { "GET /v1/sandboxes/sbx_test1/commands/cmd_1": () => views.shift() },
+		});
+		expect(attached.code).toBe(4);
+		expect(attached.stdout).toBe("one\ntwo\nthree\n");
+		expect(attached.stderr).toBe("warn\n");
+	});
+
+	it("with --timeout 0 runs it detached and follows it", async () => {
+		const views = [command({ state: "exited", exitCode: 0, stdout: "built\n" })];
+		const result = await kantel(["exec", "sbx_test1", "--timeout", "0", "--", "make"], {
+			routes: {
+				"POST /v1/sandboxes/sbx_test1/commands": () => command({ state: "running", exitCode: undefined }),
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_1": () => views.shift(),
+			},
+		});
+		expect(result.code).toBe(0);
+		expect(result.stdout).toBe("built\n");
+		expect(result.calls[0]?.body).toEqual({ command: "make", detached: true });
+	});
+
+	it("lists a sandbox's commands and kills one", async () => {
+		const routes = {
+			"GET /v1/sandboxes/sbx_test1/commands": () => ({ items: [command({ command: "npm run dev" })] }),
+			"DELETE /v1/sandboxes/sbx_test1/commands/cmd_1": () => command({ state: "killed", exitCode: undefined }),
+		};
+		const listed = await kantel(["ps", "sbx_test1"], { routes });
+		expect(listed.stdout).toMatch(/cmd_1\s+exited 0/);
+		expect(listed.stdout).toContain("npm run dev");
+		const killed = await kantel(["kill", "sbx_test1", "cmd_1"], { routes });
+		expect(killed.code).toBe(0);
+		expect(killed.stdout).toBe("cmd_1 killed\n");
 	});
 });
 
@@ -314,7 +421,7 @@ describe("sandboxes", () => {
 		expect(JSON.parse(asJson.stdout)).toEqual(page);
 		const asText = await kantel(["sandbox", "list"], { routes });
 		expect(asText.stdout).toMatch(/^ID\s+NAME\s+TYPE\s+STATE/);
-		expect(asText.stdout).toContain("kantel sandbox list --cursor c2");
+		expect(asText.stdout).toContain("kantel list --cursor c2");
 	});
 
 	it("pauses with stop --pause", async () => {
@@ -323,6 +430,100 @@ describe("sandboxes", () => {
 		expect(paused.code).toBe(0);
 		expect(paused.calls[0]?.body).toEqual({ keepMemory: true });
 		expect(paused.stdout).toBe("sbx_test1 paused\n");
+	});
+});
+
+describe("hosts", () => {
+	const HOST: Host = {
+		id: "host_own1",
+		name: "tom-box",
+		state: "online",
+		version: "0.4.0",
+		os: "linux",
+		arch: "x86_64",
+		tiers: ["microvm", "isolate"],
+		kvm: true,
+		nestedVirtualisation: false,
+		capacity: { vcpus: 8, memoryMb: 16_384, diskGb: 200 },
+		allocated: { sandboxes: 2, vcpus: 4, memoryMb: 4096, diskGb: 40 },
+		labels: { site: "home" },
+		accountId: "acc_org",
+		joinedAt: Date.now(),
+		lastSeenAt: Date.now(),
+	};
+
+	it("makes a join token for the account it acts in and prints the command to run on the machine", async () => {
+		const routes = {
+			"POST /v1/hosts/join-tokens": (call: Call) => ({
+				id: "enr_1",
+				accountId: (call.body as { account: string }).account,
+				token: "kth_secret",
+				command: "curl -fsSL https://x/install.sh | sudo sh -s -- --url https://kantel.test --token kth_secret",
+				expiresAt: Date.now() + 3_600_000,
+			}),
+		};
+		const enrolled = await kantel(
+			["hosts", "add", "tom-box", "--label", "site=home", "--expires", "30", "--account", "acc_org"],
+			{ routes },
+		);
+		expect(enrolled.code).toBe(0);
+		expect(enrolled.calls[0]?.body).toEqual({
+			account: "acc_org",
+			name: "tom-box",
+			labels: { site: "home" },
+			expiresInMinutes: 30,
+		});
+		expect(enrolled.stdout).toContain("--token kth_secret");
+		expect(enrolled.stdout).toContain("It joins account acc_org");
+		// Too short a token's life is refused before calling Kantel.
+		const short = await kantel(["hosts", "add", "--expires", "1"], { routes });
+		expect(short.code).toBe(2);
+		expect(short.calls).toEqual([]);
+	});
+
+	it("lists, shows, drains and removes the account's hosts", async () => {
+		const routes = {
+			"GET /v1/hosts": () => ({ items: [HOST] }),
+			"GET /v1/hosts/host_own1": () => HOST,
+			"PATCH /v1/hosts/host_own1": (call: Call) => ({
+				...HOST,
+				state: (call.body as { draining: boolean }).draining ? "draining" : "online",
+			}),
+			"DELETE /v1/hosts/host_own1": () => ({ ...HOST, state: "revoked" }),
+		};
+		const listed = await kantel(["hosts", "ls"], { routes });
+		expect(listed.stdout).toMatch(/^ID\s+NAME\s+STATE\s+TIERS\s+SANDBOXES/);
+		expect(listed.stdout).toContain("host_own1");
+		const shown = await kantel(["hosts", "info", "host_own1"], { routes });
+		expect(shown.stdout).toContain("acc_org");
+		expect(shown.stdout).toContain("site=home");
+		const drained = await kantel(["hosts", "drain", "host_own1"], { routes });
+		expect(drained.calls[0]?.body).toEqual({ draining: true });
+		expect(drained.stdout).toContain("draining");
+		const undrained = await kantel(["hosts", "drain", "host_own1", "--off"], { routes });
+		expect(undrained.calls[0]?.body).toEqual({ draining: false });
+		const removed = await kantel(["hosts", "rm", "host_own1"], { routes });
+		expect(removed.calls.map((call) => `${call.method} ${call.path}`)).toEqual(["DELETE /v1/hosts/host_own1"]);
+		expect(removed.stdout).toContain("revoked");
+		const empty = await kantel(["hosts", "list"], { routes: { "GET /v1/hosts": () => ({ items: [] }) } });
+		expect(empty.stdout).toContain("kantel hosts add");
+	});
+
+	it("passes on a deployment's refusal while account hosts are off", async () => {
+		const routes = {
+			"GET /v1/hosts": () =>
+				kantelError(501, "not_supported", "Account hosts are off on this deployment (KANTEL_ACCOUNT_HOSTS)"),
+		};
+		const result = await kantel(["hosts", "list"], { routes });
+		expect(result.code).toBe(1);
+		expect(result.stderr).toContain("not_supported: Account hosts are off");
+	});
+
+	it("keeps `host` for a sandbox's port and points the operators' host commands at kantel-admin", async () => {
+		const moved = await kantel(["host", "list"], { routes: {} });
+		expect(moved.code).toBe(2);
+		expect(moved.stderr).toContain("kantel-admin host list (your own hosts: kantel hosts list)");
+		expect(moved.calls).toEqual([]);
 	});
 });
 
@@ -340,7 +541,8 @@ describe("errors", () => {
 		const result = await kantel(["whoami"], { routes, env: { KANTEL_URL: "https://kantel.test" } });
 		expect(result.code).toBe(1);
 		expect(result.stderr).toContain("kantel: unauthenticated: A bearer is needed");
-		expect(result.stderr).toContain("npx kantel login");
+		expect(result.stderr).toContain("Sign in with: kantel login");
+		expect(result.stderr).not.toContain("npx");
 	});
 
 	it("says which Kantel it couldn't reach", async () => {
@@ -406,7 +608,7 @@ describe("config", () => {
 	});
 
 	it("logs in with a key from stdin, checks it, and saves it readable by its owner only", async () => {
-		const result = await kantel(["login", "--url", "https://kantel.test"], {
+		const result = await kantel(["login", "--key-stdin", "--url", "https://kantel.test"], {
 			env: {},
 			stdin: input("ksk_piped\n"),
 			routes: { "GET /v1/whoami": () => CALLER },
@@ -423,17 +625,31 @@ describe("config", () => {
 		expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ url: "https://kantel.test/v1" });
 	});
 
-	it("won't log in with no key when stdin is a terminal", async () => {
-		const result = await kantel(["login"], { env: {}, stdin: input(undefined, true) });
+	it("won't log in with --key-stdin and nothing on stdin", async () => {
+		const result = await kantel(["login", "--key-stdin"], { env: {}, stdin: input("") });
 		expect(result.code).toBe(2);
-		expect(result.stderr).toContain("--key");
+		expect(result.stderr).toContain("no key on stdin");
 		expect(result.calls).toEqual([]);
 	});
 });
 
 describe("agents", () => {
 	const SECRET = "ksk_supersecret_5n2p8r";
-	const env = { KANTEL_URL: "https://kantel.example/v1", KANTEL_API_KEY: SECRET };
+	/** Kantel's URL and key, with a PATH that has an installed `kantel` on it. */
+	let env: { readonly [name: string]: string } = {};
+	/** The same with nothing on the PATH. */
+	let bare: { readonly [name: string]: string } = {};
+
+	beforeEach(async () => {
+		const bin = join(configDir, "bin");
+		await mkdir(bin);
+		await writeFile(join(bin, "kantel"), "#!/bin/sh\n");
+		await chmod(join(bin, "kantel"), 0o755);
+		const empty = join(configDir, "empty");
+		await mkdir(empty);
+		bare = { KANTEL_URL: "https://kantel.example/v1", KANTEL_API_KEY: SECRET, PATH: empty };
+		env = { ...bare, PATH: [empty, bin].join(":") };
+	});
 
 	it("never prints the real key, only the placeholder, with the resolved URL", async () => {
 		for (const argv of [["agents"], ["agents", "claude"], ["agents", "all", "--json"], ["agents", "--key", SECRET]]) {
@@ -445,15 +661,62 @@ describe("agents", () => {
 		}
 		const claude = await kantel(["agents", "claude"], { env });
 		expect(claude.stdout).toContain(claudeSetup("https://kantel.example"));
-		expect(claude.stdout).toContain("npx kantel key create agent --preset agent");
+		expect(claude.stdout).toContain("kantel key create agent --preset agent");
 		expect(claude.stdout).not.toContain("codex mcp add");
 	});
 
-	it("gives each harness its one line", () => {
-		expect(claudeSetup("https://kantel.example")).toBe(
-			"claude mcp add kantel -e KANTEL_URL=https://kantel.example -e KANTEL_API_KEY=$KANTEL_API_KEY " +
-				"-- npx -y kantel mcp",
+	it("gives each harness its one line, running the installed kantel rather than npx", () => {
+		const url = "https://kantel.example";
+		expect(claudeSetup(url)).toBe(
+			"claude mcp add kantel -e KANTEL_URL=https://kantel.example -e KANTEL_API_KEY=$KANTEL_API_KEY -- kantel mcp",
 		);
+		expect(codexSetup(url)).toBe(
+			"codex mcp add kantel --env KANTEL_URL=https://kantel.example --env KANTEL_API_KEY=$KANTEL_API_KEY -- kantel mcp",
+		);
+		expect(codexToml(url)).toContain('command = "kantel"\nargs = ["mcp"]\n');
+		expect(JSON.parse(mcpServersJson(url))).toMatchObject({
+			mcpServers: { kantel: { command: "kantel", args: ["mcp"] } },
+		});
+	});
+
+	it("prints no npx anywhere, and kantel mcp when kantel is on the PATH", async () => {
+		const text = await kantel(["agents"], { env });
+		expect(text.stdout).not.toContain("npx");
+		expect(text.stdout).toContain("-- kantel mcp");
+		expect(text.stdout).not.toContain("isn't on your PATH");
+		const json = JSON.parse((await kantel(["agents", "--json"], { env })).stdout) as {
+			readonly mcp: unknown;
+			readonly mcpServers: unknown;
+			readonly codexToml: string;
+		};
+		expect(json.mcp).toEqual({ command: "kantel", args: ["mcp"] });
+		expect(json.mcpServers).toMatchObject({ mcpServers: { kantel: { command: "kantel", args: ["mcp"] } } });
+		expect(JSON.stringify(json)).not.toContain("npx");
+	});
+
+	it("starts this kantel by its full path when kantel isn't on the PATH, and says so", async () => {
+		const text = await kantel(["agents"], { env: bare });
+		expect(text.code).toBe(0);
+		expect(text.stdout).toContain("-- /usr/local/bin/node /home/me/.local/bin/kantel mcp");
+		expect(text.stdout).toContain("kantel isn't on your PATH");
+		const json = JSON.parse((await kantel(["agents", "--json"], { env: bare })).stdout) as {
+			readonly mcp: unknown;
+			readonly mcpServers: unknown;
+			readonly codexToml: string;
+		};
+		const launch = { command: "/usr/local/bin/node", args: ["/home/me/.local/bin/kantel", "mcp"] };
+		expect(json.mcp).toEqual(launch);
+		expect(json.mcpServers).toMatchObject({ mcpServers: { kantel: launch } });
+		expect(json.codexToml).toContain('command = "/usr/local/bin/node"\nargs = ["/home/me/.local/bin/kantel", "mcp"]');
+		// A path with a space is quoted for the shell in the one-liners.
+		const spaced = await kantel(["agents", "claude"], {
+			env: bare,
+			self: ["/opt/my node/node", "/Users/me/Kantel CLI/kantel"],
+		});
+		expect(spaced.stdout).toContain("-- '/opt/my node/node' '/Users/me/Kantel CLI/kantel' mcp");
+		// Not knowing where this CLI is, it stays with the name.
+		const unknown = await kantel(["agents", "claude"], { env: bare, self: [] });
+		expect(unknown.stdout).toContain("-- kantel mcp");
 	});
 
 	it("writes the AGENTS.md block, replacing an old one", async () => {
@@ -466,7 +729,8 @@ describe("agents", () => {
 		expect(written.endsWith(`${AGENTS_END}\n\nAfter.\n`)).toBe(true);
 		expect(written).not.toContain("\nold\n");
 		expect(written.split(AGENTS_START)).toHaveLength(2);
-		expect(written).toContain("npx kantel exec <id> -- <cmd>");
+		expect(written).toContain('`kantel exec "$id" -- npm test`');
+		expect(written).not.toContain("npx");
 		expect(written).not.toContain(SECRET);
 	});
 
@@ -476,5 +740,320 @@ describe("agents", () => {
 		expect(upsertAgentsBlock(`x\n${AGENTS_START}\na\n${AGENTS_END}\ny\n`, `${AGENTS_START}\nb\n${AGENTS_END}`)).toBe(
 			`x\n${AGENTS_START}\nb\n${AGENTS_END}\ny\n`,
 		);
+	});
+
+	it("init writes AGENTS.md, CLAUDE.md and the kantel skill for Claude Code, Codex and pi, with no key", async () => {
+		const project = join(configDir, "project");
+		await mkdir(project);
+		await writeFile(join(project, "CLAUDE.md"), "# Claude\n");
+		const result = await kantel(["init"], { env, cwd: project });
+		expect(result.code).toBe(0);
+		expect(result.stdout).not.toContain("isn't on your PATH");
+		const claude = await readFile(join(project, "CLAUDE.md"), "utf8");
+		expect(claude.startsWith("# Claude\n\n<!-- kantel:start -->")).toBe(true);
+		const agents = await readFile(join(project, "AGENTS.md"), "utf8");
+		expect(agents).toContain("`id=$(kantel new --type microvm --json | jq -r .id)`");
+		expect(agents).toContain("releases/latest/download/install-cli.sh | sh");
+		expect(agents + claude).not.toContain("npx");
+		for (const skill of [".claude/skills/kantel/SKILL.md", ".agents/skills/kantel/SKILL.md"]) {
+			const text = await readFile(join(project, skill), "utf8");
+			expect(text).toMatch(/^---\nname: kantel\ndescription: /);
+			expect(text).not.toContain(SECRET);
+			expect(text).not.toContain("npx");
+		}
+		expect(agents + claude).not.toContain(SECRET);
+		// Again: the block is replaced, not added twice.
+		await kantel(["init"], { env, cwd: project });
+		expect((await readFile(join(project, "AGENTS.md"), "utf8")).split(AGENTS_START)).toHaveLength(2);
+	});
+
+	it("init says when kantel isn't on the PATH, since what it writes runs kantel by name", async () => {
+		const result = await kantel(["init"], { env: bare });
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain("kantel isn't on your PATH");
+	});
+
+	it("init --global installs only the skill, under the home", async () => {
+		const result = await kantel(["init", "--global", "--for", "claude"], { env });
+		expect(result.code).toBe(0);
+		await expect(stat(join(configDir, "home", ".claude/skills/kantel/SKILL.md"))).resolves.toBeTruthy();
+		await expect(stat(join(configDir, "home", ".agents/skills/kantel/SKILL.md"))).rejects.toThrow();
+		await expect(stat(join(configDir, "home", "CLAUDE.md"))).rejects.toThrow();
+	});
+});
+
+describe("login in the browser", () => {
+	const STARTED = {
+		deviceCode: "kdc_secret",
+		userCode: "BCDF-GHJK",
+		verificationUrl: "https://kantel.test/device",
+		verificationUrlComplete: "https://kantel.test/device?code=BCDF-GHJK",
+		intervalSeconds: 2,
+		expiresAt: Date.now() + 15 * 60_000,
+	};
+	const ISSUED = { key: { id: "key_9", name: "kantel on box" }, secret: "ksk_fromdevice" };
+
+	it("shows the code, opens the page, waits for the approval and saves the new key", async () => {
+		const polls = [{ state: "pending" }, { state: "approved", issued: ISSUED }];
+		const result = await kantel(["login", "--url", "https://kantel.test", "--name", "kantel on box"], {
+			env: {},
+			tty: true,
+			routes: {
+				"POST /v1/auth/device": () => STARTED,
+				"POST /v1/auth/device/token": () => polls.shift(),
+				"GET /v1/whoami": () => CALLER,
+			},
+		});
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain("BCDF-GHJK");
+		expect(result.stdout).not.toContain("kdc_secret");
+		expect(result.stdout).not.toContain("ksk_fromdevice");
+		expect(result.opened).toEqual([STARTED.verificationUrlComplete]);
+		expect(result.slept).toEqual([2000]);
+		expect(result.calls.map((call) => `${call.method} ${call.path}`)).toEqual([
+			"POST /v1/auth/device",
+			"POST /v1/auth/device/token",
+			"POST /v1/auth/device/token",
+			"GET /v1/whoami",
+		]);
+		expect(result.calls[0]?.authorization).toBeNull();
+		expect(result.calls[0]?.body).toEqual({ clientName: "kantel on box" });
+		expect(result.calls[1]?.body).toEqual({ deviceCode: "kdc_secret" });
+		expect(result.calls[3]?.authorization).toBe("Bearer ksk_fromdevice");
+		const saved = JSON.parse(await readFile(join(configDir, "config.json"), "utf8")) as { apiKey?: string };
+		expect(saved.apiKey).toBe("ksk_fromdevice");
+		await expect(stat(join(configDir, "login-pending.json"))).rejects.toThrow();
+	});
+
+	it("with no terminal prints the code and stops; login --wait carries on with the same code", async () => {
+		const routes = {
+			"POST /v1/auth/device": () => STARTED,
+			"POST /v1/auth/device/token": () => ({ state: "denied" }),
+		};
+		const first = await kantel(["login", "--url", "https://kantel.test"], { env: {}, routes });
+		expect(first.code).toBe(0);
+		expect(first.stderr).toContain(STARTED.verificationUrlComplete);
+		// With the --url it was given: --wait alone would ask the saved or default URL, which doesn't know the code.
+		expect(first.stderr).toContain("Then run: kantel login --wait --url https://kantel.test");
+		expect(first.opened).toEqual([]);
+		const pending = join(configDir, "login-pending.json");
+		expect((await stat(pending)).mode & 0o777).toBe(0o600);
+		const waited = await kantel(["login", "--wait", "--url", "https://kantel.test"], { env: {}, routes });
+		expect(waited.calls.map((call) => `${call.method} ${call.path}`)).toEqual(["POST /v1/auth/device/token"]);
+		expect(waited.code).toBe(1);
+		expect(waited.stderr).toContain("the sign-in was denied in the browser");
+		await expect(stat(pending)).rejects.toThrow();
+	});
+
+	it("with --json prints the code as JSON for an agent", async () => {
+		const result = await kantel(["login", "--json", "--url", "https://kantel.test"], {
+			env: {},
+			routes: { "POST /v1/auth/device": () => STARTED },
+		});
+		expect(JSON.parse(result.stdout)).toEqual({
+			event: "login_pending",
+			url: STARTED.verificationUrlComplete,
+			code: "BCDF-GHJK",
+			expiresAt: STARTED.expiresAt,
+		});
+	});
+});
+
+describe("copying files", () => {
+	type Written = { path: string; content: string; encoding?: string; mode?: string };
+
+	it("push sends a directory's files (not .git), as text or base64, keeping the executable bit", async () => {
+		const dir = join(configDir, "app");
+		await mkdir(join(dir, "src"), { recursive: true });
+		await mkdir(join(dir, ".git"));
+		await writeFile(join(dir, ".git", "HEAD"), "ref");
+		await writeFile(join(dir, "src", "a.ts"), "export {};\n");
+		await writeFile(join(dir, "logo.bin"), Buffer.from([0xff, 0x00, 0xfe]));
+		await writeFile(join(dir, "run.sh"), "#!/bin/sh\n");
+		await chmod(join(dir, "run.sh"), 0o755);
+		const written: Written[] = [];
+		const result = await kantel(["push", "sbx_test1", "app"], {
+			routes: {
+				"PUT /v1/sandboxes/sbx_test1/files": (call) => {
+					written.push(call.body as Written);
+					return { path: (call.body as Written).path, size: 1 };
+				},
+			},
+		});
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain("Pushed 3 files");
+		expect(result.stdout).toContain("/home/user/app");
+		const byPath = Object.fromEntries(written.map((file) => [file.path, file]));
+		expect(Object.keys(byPath).sort()).toEqual(["app/logo.bin", "app/run.sh", "app/src/a.ts"]);
+		expect(byPath["app/src/a.ts"]).toEqual({ path: "app/src/a.ts", content: "export {};\n", encoding: "utf8" });
+		expect(byPath["app/logo.bin"]).toMatchObject({ encoding: "base64", content: "/wD+" });
+		expect(byPath["app/run.sh"]?.mode).toBe("0755");
+	});
+
+	it("scp sends a file over 1 MiB in parts and joins them with one command", async () => {
+		const big = Buffer.alloc(1024 * 1024 + 10, 7);
+		await writeFile(join(configDir, "big.bin"), big);
+		const written: Written[] = [];
+		const result = await kantel(["scp", "big.bin", "sbx_test1:/srv/big.bin"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1/files/list": () => ({ path: "/srv", items: [] }),
+				"PUT /v1/sandboxes/sbx_test1/files": (call) => {
+					written.push(call.body as Written);
+					return { path: "x", size: 1 };
+				},
+				"POST /v1/sandboxes/sbx_test1/commands": () => command({}),
+			},
+		});
+		expect(result.code).toBe(0);
+		expect(written.map((file) => file.path)).toEqual(["/srv/big.bin.kantel-part-0", "/srv/big.bin.kantel-part-1"]);
+		const joined = Buffer.concat(written.map((file) => Buffer.from(file.content, "base64")));
+		expect(joined.equals(big)).toBe(true);
+		const joining = result.calls.find((call) => call.path.endsWith("/commands"));
+		expect((joining?.body as { command?: string } | undefined)?.command).toBe(
+			"cat /srv/big.bin.kantel-part-0 /srv/big.bin.kantel-part-1 > /srv/big.bin && " +
+				"rm -f /srv/big.bin.kantel-part-0 /srv/big.bin.kantel-part-1",
+		);
+	});
+
+	it("scp downloads a file into a local directory, and a directory with -r", async () => {
+		const routes = {
+			"GET /v1/sandboxes/sbx_test1/files/list": (call: Call) =>
+				call.query.get("path") === "out"
+					? { path: "/home/user/out", items: [{ name: "a.txt", path: "/home/user/out/a.txt", kind: "file", size: 2 }] }
+					: {
+							path: "/home/user",
+							items: [
+								{ name: "out", path: "/home/user/out", kind: "directory", size: 0 },
+								{ name: "note.txt", path: "/home/user/note.txt", kind: "file", size: 2 },
+							],
+						},
+			"GET /v1/sandboxes/sbx_test1/files": (call: Call) => ({
+				path: call.query.get("path"),
+				content: Buffer.from(`${call.query.get("path")}!`).toString("base64"),
+				encoding: "base64",
+				size: 2,
+			}),
+		};
+		const one = await kantel(["scp", "sbx_test1:note.txt", "."], { routes });
+		expect(one.code).toBe(0);
+		expect(await readFile(join(configDir, "note.txt"), "utf8")).toBe("note.txt!");
+		const refused = await kantel(["scp", "sbx_test1:out", "."], { routes });
+		expect(refused.code).toBe(2);
+		expect(refused.stderr).toContain("add -r");
+		const tree = await kantel(["scp", "-r", "sbx_test1:out", "."], { routes });
+		expect(tree.code).toBe(0);
+		expect(await readFile(join(configDir, "out", "a.txt"), "utf8")).toBe("out/a.txt!");
+	});
+
+	it("scp reads a file over 1 MiB in ranged reads, with no command in the sandbox", async () => {
+		const big = Buffer.alloc(2 * 1024 * 1024 + 300);
+		for (let i = 0; i < big.length; i++) big[i] = i % 251;
+		const result = await kantel(["scp", "sbx_test1:/srv/big.bin", "got.bin"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1/files/list": () => ({
+					path: "/srv",
+					items: [{ name: "big.bin", path: "/srv/big.bin", kind: "file", size: big.length }],
+				}),
+				"GET /v1/sandboxes/sbx_test1/files": (call) => {
+					const offset = Number(call.query.get("offset"));
+					const part = big.subarray(offset, offset + Number(call.query.get("length")));
+					return {
+						path: "/srv/big.bin",
+						encoding: "base64",
+						content: part.toString("base64"),
+						size: big.length,
+						offset,
+					};
+				},
+			},
+		});
+		expect(result.code).toBe(0);
+		expect((await readFile(join(configDir, "got.bin"))).equals(big)).toBe(true);
+		const reads = result.calls.filter((call) => call.path.endsWith("/files"));
+		expect(reads.map((call) => [call.query.get("offset"), call.query.get("length")])).toEqual([
+			["0", "1048576"],
+			["1048576", "1048576"],
+			["2097152", "1048576"],
+		]);
+		expect(result.calls.filter((call) => call.path.endsWith("/commands"))).toEqual([]);
+	});
+
+	it("files get stops when a file changes size while it is read in parts", async () => {
+		let size = 1024 * 1024 + 10;
+		const result = await kantel(["files", "get", "sbx_test1", "/srv/log", "log"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1/files": (call) => {
+					const offset = Number(call.query.get("offset"));
+					const part = Buffer.alloc(Math.min(1024 * 1024, size - offset), 1);
+					const answer = { path: "/srv/log", encoding: "base64", content: part.toString("base64"), size, offset };
+					size += 5;
+					return answer;
+				},
+			},
+		});
+		expect(result.code).toBe(1);
+		expect(result.stderr).toContain("changed size");
+	});
+
+	it("scp reads a file over 1 MiB in parts with commands from a control plane before ranged reads", async () => {
+		const big = Buffer.alloc(1024 * 1024 + 300);
+		for (let i = 0; i < big.length; i++) big[i] = i % 251;
+		const result = await kantel(["scp", "sbx_test1:/srv/big.bin", "got.bin"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1/files/list": () => ({
+					path: "/srv",
+					items: [{ name: "big.bin", path: "/srv/big.bin", kind: "file", size: big.length }],
+				}),
+				"GET /v1/sandboxes/sbx_test1/files": () => kantelError(400, "invalid", "/srv/big.bin is larger than 1 MiB"),
+				"POST /v1/sandboxes/sbx_test1/commands": (call) => {
+					const line = (call.body as { command: string }).command;
+					if (line.startsWith("stat ")) return command({ stdout: `${big.length}\n` });
+					const match = /tail -c \+(\d+) .* head -c (\d+)/.exec(line);
+					const from = Number(match?.[1]) - 1;
+					const part = big.subarray(from, from + Number(match?.[2]));
+					return command({ stdout: part.toString("base64") });
+				},
+			},
+		});
+		expect(result.code).toBe(0);
+		expect((await readFile(join(configDir, "got.bin"))).equals(big)).toBe(true);
+		expect(result.calls.filter((call) => call.path.endsWith("/commands"))).toHaveLength(4);
+	});
+
+	it("scp needs the sandbox on one side only", async () => {
+		const neither = await kantel(["scp", "a", "b"]);
+		expect(neither.code).toBe(2);
+		const both = await kantel(["scp", "sbx_1:a", "sbx_2:b"]);
+		expect(both.code).toBe(2);
+		expect(both.calls).toEqual([]);
+	});
+});
+
+describe("ports and live views", () => {
+	it("host prints a port's URL", async () => {
+		const result = await kantel(["host", "sbx_test1", "3000", "--public"], {
+			routes: {
+				"POST /v1/sandboxes/sbx_test1/ports": () => ({
+					port: 3000,
+					url: "https://p3000-brave-otter.kantel.test",
+					public: true,
+					createdAt: 1,
+				}),
+			},
+		});
+		expect(result.code).toBe(0);
+		expect(result.stdout).toBe("https://p3000-brave-otter.kantel.test\n");
+		expect(result.calls[0]?.body).toEqual({ port: 3000, public: true });
+	});
+
+	it("desktop opens the live view for a person, and only prints it for a script", async () => {
+		const routes = {
+			"POST /v1/sandboxes/sbx_test1/desktop": () => ({ url: "https://desk.kantel.test/#t", expiresAt: 1 }),
+		};
+		const person = await kantel(["desktop", "sbx_test1"], { routes, tty: true });
+		expect(person.opened).toEqual(["https://desk.kantel.test/#t"]);
+		const script = await kantel(["desktop", "sbx_test1"], { routes });
+		expect(script.opened).toEqual([]);
+		expect(script.stdout).toContain("https://desk.kantel.test/#t");
 	});
 });

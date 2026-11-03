@@ -5,11 +5,11 @@
 export const sidebar = [
 	{
 		label: "Get started",
-		items: [{ label: "What Kantel is", link: "/" }, "concepts", "hosted-or-self-hosted", "coding-agents"],
+		items: [{ label: "What Kantel is", link: "/" }, "quickstart", "concepts", "hosted-or-self-hosted", "coding-agents"],
 	},
 	{
 		label: "Run Kantel yourself",
-		items: ["self-hosting/install"],
+		items: ["self-hosting/install", "self-hosting/admin-cli", "hosts", "own-hosts", "self-hosting/security"],
 	},
 	{
 		label: "Sandboxes",
@@ -20,6 +20,7 @@ export const sidebar = [
 			"sandboxes/public-ports",
 			"sandboxes/desktop-and-browser",
 			"sandboxes/ssh",
+			"sandboxes/egress-proxy",
 		],
 	},
 	{

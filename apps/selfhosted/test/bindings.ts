@@ -1,12 +1,11 @@
 // Which real implementations pass their contract's conformance suite against the compose stack's services:
 //
-//   bun apps/selfhosted/test/bindings.ts [--postgres-url …] [--s3-endpoint …] [--smtp-url …] [--mailpit-url …]
+//   bun apps/selfhosted/test/bindings.ts [--postgres-url …] [--smtp-url …] [--mailpit-url …]
 //                                        [--json report.json] [--markdown summary.md]
 //
-// Each binding is a suite its lane registered (or, for the runtime, the self-hosted Postgres registration in
-// test/gateway), run with vitest and the environment that points it at the stack. Only the describe blocks that run on
-// the stack's services count: the same files also register PGlite, SQLite and D1 variants, which CI's check job
-// covers. A binding passes when those blocks ran at least one test and none failed or were skipped, so a suite that
+// Each binding is a suite its lane registered, run with vitest and the environment that points it at the stack. Only
+// the describe blocks that run on the stack's services count: the same files also register PGlite variants, which
+// CI's check job covers. A binding passes when those blocks ran at least one test and none failed or were skipped, so a suite that
 // quietly skipped for want of its environment fails here. Defaults are the compose stack's ports. Exits 1 if any failed.
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -17,7 +16,6 @@ import { parseArgs } from "node:util";
 const { values } = parseArgs({
 	options: {
 		"postgres-url": { type: "string", default: "postgres://harbour:harbour@127.0.0.1:55432/harbour" },
-		"s3-endpoint": { type: "string", default: "http://127.0.0.1:59000" },
 		"smtp-url": { type: "string", default: "smtp://127.0.0.1:58125?starttls=off" },
 		"mailpit-url": { type: "string", default: "http://127.0.0.1:58025" },
 		json: { type: "string" },
@@ -38,13 +36,6 @@ interface Binding {
 }
 
 const BINDINGS: readonly Binding[] = [
-	{
-		contract: "session runtime",
-		implementation: "SQL session store and Pi Durable tables on Postgres (#69)",
-		cwd: "apps/selfhosted",
-		files: ["test/gateway/runtime-postgres.conformance.test.ts"],
-		blocks: /^session runtime on Postgres/,
-	},
 	{
 		contract: "audit",
 		implementation: "SQL audit store and outbox on Postgres (#70)",
@@ -69,25 +60,11 @@ const BINDINGS: readonly Binding[] = [
 		blocks: /^email one-time PIN through Mailpit/,
 	},
 	{
-		contract: "workspaces",
-		implementation: "self-hosted workspaces on Postgres and S3 (MinIO), keyed (#72)",
-		cwd: "targets/selfhosted/workspace",
-		files: ["test/conformance.stack.test.ts"],
-		blocks: /^self-hosted workspaces on Postgres \+ S3/,
-	},
-	{
 		contract: "gateway",
-		implementation: "the gateway on all of the above, across a restart (durable.ts)",
+		implementation: "the gateway on identity, sign-in, audit and hosts, across a restart (durable.ts)",
 		cwd: "apps/selfhosted",
 		files: ["test/gateway/durable.stack.test.ts"],
-		blocks: /^the gateway on Postgres and S3$/,
-	},
-	{
-		contract: "vault",
-		implementation: "vault engine on the Postgres vault store (#75)",
-		cwd: "targets/selfhosted/vault",
-		files: ["test/postgres.conformance.test.ts"],
-		blocks: /^Postgres vault store \(pg\)/,
+		blocks: /^the gateway on Postgres$/,
 	},
 ];
 
@@ -95,7 +72,6 @@ const env = {
 	...process.env,
 	KANTEL_TEST_POSTGRES_URL: values["postgres-url"],
 	KANTEL_TEST_DATABASE_URL: values["postgres-url"],
-	KANTEL_TEST_S3_ENDPOINT: values["s3-endpoint"],
 	KANTEL_TEST_SMTP_URL: values["smtp-url"],
 	KANTEL_TEST_MAILPIT_URL: values["mailpit-url"],
 };

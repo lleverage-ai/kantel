@@ -88,9 +88,27 @@ type Health struct {
 	Uptime   float64 `json:"uptimeSeconds"`
 	Identity string  `json:"sandboxId,omitempty"`
 	Version  string  `json:"version"`
-	// Ready lists the services that are up: ssh, docker, desktop, browser.
+	// Ready lists the services that are up: ssh, docker, desktop (VNC), browser (CDP), stream (the desktop's web
+	// stream), isolate.
 	Ready []string `json:"ready"`
+	// Expect lists the services the image says it runs (ReadyFile), which a template waits for before its
+	// snapshot; empty when the image doesn't say.
+	Expect []string `json:"expect,omitempty"`
 }
+
+// ReadyFile, in an image, lists the services (one per line, from Ready's names) its template waits for before the
+// host snapshots it. A custom image with no desktop leaves desktop, browser and stream out, so its template doesn't
+// wait for them.
+const ReadyFile = "/etc/kantel/ready"
+
+// Service ports on the guest's loopback, which the host reaches over vsock (GET /ports/{port}).
+const (
+	PortSSH     = 22
+	PortDesktop = 5901 // VNC (RFB) on display :1
+	PortBrowser = 9222 // Chromium's DevTools (CDP)
+	PortStream  = 6080 // the desktop in a browser: Selkies' web client and its WebSocket stream
+	PortIsolate = 8080
+)
 
 // PortUpgrade is the Upgrade token for GET /ports/{port}: after 101 the connection is a byte stream to that port
 // on the guest's loopback.

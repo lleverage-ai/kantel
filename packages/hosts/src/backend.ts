@@ -3,10 +3,10 @@
  * sandbox's host over its WebSocket. The compute API keeps every record; this keeps only placements (the registry's).
  *
  * A snapshot's `ref` is `{hostId}/{snapshotId}`: a snapshot lives on its host's disk, so a sandbox made or forked from
- * it goes on that host. Desktops, browsers and SSH are reached through signed tunnel URLs (`tunnel.ts`): the desktop's
- * VNC as raw TCP over a WebSocket of binary frames, opened by a noVNC page on the gateway (`viewer.ts`), Chrome's
- * DevTools WebSocket passed through for `connectOverCDP`, and sshd as raw TCP for an `ssh -o ProxyCommand=…`. Exposed ports aren't offered yet:
- * the contract's HTTPS URL per port wants a wildcard name for the gateway.
+ * it goes on that host. Desktops, browsers and SSH are reached through tunnel URLs with tickets (`tunnel.ts`): the
+ * desktop's Selkies stream at a page on the gateway (`desktop.ts`), view-only enforced there when the ticket says so, Chromium's
+ * DevTools WebSocket passed through for `connectOverCDP`, and sshd as raw TCP for an `ssh -o ProxyCommand=…`. Exposed ports
+ * are offered when the gateway has a wildcard name for them (`ports.ts`), token-gated unless exposed `public`.
  */
 import type {
 	BackendCapabilities,
@@ -14,6 +14,7 @@ import type {
 	BackendFileEntry,
 	BackendHost,
 	BackendSize,
+	BootOptions,
 	ExecResult,
 	Placement,
 	SandboxBackend,
@@ -21,13 +22,14 @@ import type {
 	TakenSnapshot,
 } from "@kantel/compute";
 import { KantelError } from "@kantel/contracts";
+import { DESKTOP_PORT, desktopPath } from "./desktop.ts";
+import type { PortRouter } from "./ports.ts";
 import type { HostEgress, HostSandbox, SandboxTier } from "./protocol.ts";
-import type { HostsService, HostView } from "./service.ts";
-import { HOSTS_TUNNEL_PATH, signTunnel } from "./tunnel.ts";
-import { HOSTS_VIEW_PATH } from "./viewer.ts";
+import type { HostsService, SandboxPlacement } from "./service.ts";
+import { type DesktopMode, HOSTS_TUNNEL_PATH, MAX_TUNNEL_MINUTES, type TunnelTickets } from "./tunnel.ts";
 
-/** Where the guest image's desktop (VNC, loopback), Chromium (CDP) and sshd listen. */
-export const DESKTOP_PORT = 5901;
+export { DESKTOP_PORT } from "./desktop.ts";
+/** Where the guest image's Chromium (CDP) and sshd listen; its desktop stream is `DESKTOP_PORT`. */
 export const BROWSER_PORT = 9222;
 export const SSH_PORT = 22;
 
@@ -47,7 +49,8 @@ const SSH_ACCESS_SCRIPT = [
 	'  cat "$d/key"',
 	'  rm -rf "$d"',
 	"else",
-	'  printf "%s\\n" "$KANTEL_PUBLIC_KEY" >> ~/.ssh/authorized_keys',
+	// Once: a ProxyCommand asks again for each connection with the same key.
+	'  grep -qxF "$KANTEL_PUBLIC_KEY" ~/.ssh/authorized_keys 2>/dev/null || printf "%s\\n" "$KANTEL_PUBLIC_KEY" >> ~/.ssh/authorized_keys',
 	"fi",
 	`echo ${FINGERPRINT_MARK}`,
 	"ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub | cut -d' ' -f2",
@@ -59,13 +62,15 @@ export interface HostBackendOptions {
 	readonly hosts: HostsService;
 	/** Where clients reach the gateway, for tunnel URLs: `https://kantel.example.com`. */
 	readonly publicUrl: string;
-	/** Signs tunnel tickets; the gateway's upgrade handler checks them with the same bytes. */
-	readonly tunnelSecret: Uint8Array;
+	/** Issues tunnel tickets, kept where every gateway replica's upgrade handler checks them (`createTunnelTickets`). */
+	readonly tickets: TunnelTickets;
 	/**
 	 * Signs the Kantel-Sandbox and Kantel-Account headers hosts add for an account whose proxy settings ask for
 	 * attribution, so its upstream can trust them. Absent, they go unsigned.
 	 */
 	readonly attributionKey?: string;
+	/** Serves exposed ports on the gateway's wildcard name; without it, microVMs expose none. */
+	readonly ports?: PortRouter;
 	readonly now?: () => number;
 }
 
@@ -130,7 +135,7 @@ function fileEntry(entry: HostFileEntry): BackendFileEntry {
 	};
 }
 
-function capabilitiesOf(tier: SandboxTier, host: HostView | undefined) {
+function capabilitiesOf(tier: SandboxTier, nested: boolean, ports: boolean) {
 	const vm = tier === "microvm";
 	return {
 		exec: true,
@@ -138,9 +143,9 @@ function capabilitiesOf(tier: SandboxTier, host: HostView | undefined) {
 		ssh: vm,
 		desktop: vm,
 		browser: vm,
-		ports: false,
+		ports: vm && ports,
 		docker: vm,
-		kvm: vm && host?.nestedVirtualisation === true,
+		kvm: vm && nested,
 		pause: vm,
 	};
 }
@@ -163,9 +168,25 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		return { tier: placement.tier, hostId: placement.hostId };
 	}
 
-	async function placed(sandboxId: string, sandbox: HostSandbox, hostId: string): Promise<Placement> {
-		const placement = await hosts.sandboxes.placement(sandboxId);
-		const host = await hosts.get(hostId).catch(() => undefined);
+	/**
+	 * The placement the compute API records. What the registry answered with the sandbox (its placement as written, and
+	 * whether the host nests virtualisation) is taken as it is, so neither is read back; what it didn't answer is read,
+	 * both at once.
+	 */
+	async function placed(
+		sandboxId: string,
+		sandbox: HostSandbox,
+		hostId: string,
+		known: Omit<SandboxPlacement, "sandbox" | "hostId"> = {},
+	): Promise<Placement> {
+		const [placement, nested] = await Promise.all([
+			known.placement ?? hosts.sandboxes.placement(sandboxId),
+			known.nestedVirtualisation ??
+				hosts
+					.get(hostId)
+					.then((host) => host.nestedVirtualisation)
+					.catch(() => undefined),
+		]);
 		const tier = placement?.tier ?? (sandbox.tier as SandboxTier);
 		return {
 			hostId,
@@ -178,7 +199,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 							diskGb: placement.diskGiB,
 						},
 					}),
-			capabilities: capabilitiesOf(tier, host),
+			capabilities: capabilitiesOf(tier, nested === true, options.ports !== undefined),
 		};
 	}
 
@@ -187,38 +208,64 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		return out === undefined ? {} : { egress: out };
 	};
 
+	/**
+	 * A disk is where it is: a sandbox or snapshot runs again only on its own host, and only when that host is one the
+	 * service named eligible (online or draining, the account's own or shared, the type and labels).
+	 */
+	const mayUse = (hostId: string, eligible: readonly string[]) => {
+		if (!eligible.includes(hostId)) {
+			throw new KantelError("unavailable", `The host its disk is on (${hostId}) can't take it now`);
+		}
+	};
+
 	async function boot(
 		sandboxId: string,
 		method: "sandbox.start" | "sandbox.resume",
-		egress?: BackendEgress,
+		how: BootOptions,
 	): Promise<Placement> {
 		const { hostId } = await tierOf(sandboxId);
+		mayUse(hostId, how.eligibleHosts);
+		const egress = how.egress;
 		const sandbox = await call<HostSandbox>(sandboxId, method, egressOf(egress));
 		return placed(sandboxId, sandbox, hostId);
 	}
 
-	async function ticketFor(sandboxId: string, port: number, ttlMinutes: number): Promise<string> {
+	async function ticketFor(
+		sandboxId: string,
+		port: number,
+		ttlMinutes: number,
+		grantee?: string,
+		desktop?: DesktopMode,
+	): Promise<string> {
 		await tierOf(sandboxId);
-		return signTunnel(options.tunnelSecret, {
+		return options.tickets.issue({
 			sandboxId,
 			port,
-			expiresAt: now() + Math.max(1, Math.min(ttlMinutes, 24 * 60)) * 60_000,
+			expiresAt: now() + Math.max(1, Math.min(ttlMinutes, MAX_TUNNEL_MINUTES)) * 60_000,
+			...(grantee === undefined ? {} : { grantee }),
+			...(desktop === undefined ? {} : { desktop }),
 		});
 	}
 
-	/** The desktop's noVNC page (viewer.ts), which opens the tunnel with the same ticket. */
-	async function desktopPage(sandboxId: string, ttlMinutes: number, viewOnly: boolean): Promise<string> {
-		const ticket = await ticketFor(sandboxId, DESKTOP_PORT, ttlMinutes);
-		return `${httpBase}${HOSTS_VIEW_PATH}/${ticket}${viewOnly ? "?viewOnly=1" : ""}`;
+	/** The desktop's Selkies page (desktop.ts); view-only is the ticket's, kept in its row, so the gateway enforces it. */
+	async function desktopPage(
+		sandboxId: string,
+		ttlMinutes: number,
+		viewOnly: boolean,
+		grantee: string | undefined,
+	): Promise<string> {
+		const mode: DesktopMode = viewOnly ? "view" : "control";
+		return `${httpBase}${desktopPath(await ticketFor(sandboxId, DESKTOP_PORT, ttlMinutes, grantee, mode), mode)}`;
 	}
 
-	async function tunnel(sandboxId: string, port: number, ttlMinutes: number): Promise<string> {
-		return `${wsBase}${HOSTS_TUNNEL_PATH}/${await ticketFor(sandboxId, port, ttlMinutes)}`;
+	async function tunnel(sandboxId: string, port: number, ttlMinutes: number, grantee: string | undefined) {
+		return `${wsBase}${HOSTS_TUNNEL_PATH}/${await ticketFor(sandboxId, port, ttlMinutes, grantee)}`;
 	}
 
 	async function createOne(spec: SandboxSpec): Promise<Placement> {
 		const from = spec.fromSnapshot === undefined ? undefined : parseRef(spec.fromSnapshot);
-		const { sandbox, hostId } = await hosts.sandboxes.create({
+		if (from !== undefined) mayUse(from.hostId, spec.eligibleHosts);
+		const { sandbox, hostId, ...known } = await hosts.sandboxes.create({
 			sandboxId: spec.sandboxId,
 			tier: spec.type,
 			...(spec.type === "microvm" && spec.size !== undefined ? { size: spec.size } : {}),
@@ -228,12 +275,13 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			...(from === undefined ? {} : { from: from.snapshotId }),
 			...egressOf(spec.egress),
 		});
-		return placed(spec.sandboxId, sandbox, hostId);
+		return placed(spec.sandboxId, sandbox, hostId, known);
 	}
 
 	return {
 		async capabilities(): Promise<BackendCapabilities> {
-			const views = (await hosts.list()).filter((host) => host.state !== "revoked");
+			// What the hosts are, not what they hold: no placements are read.
+			const views = (await hosts.list({ allocations: false })).filter((host) => host.state !== "revoked");
 			const types = new Set<SandboxTier>();
 			const sizes = new Map<string, BackendSize>();
 			const backendHosts: BackendHost[] = [];
@@ -261,20 +309,23 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					labels: { ...host.labels },
 					connected: host.state === "online" || host.state === "draining",
 					...(host.lastSeenAt === undefined ? {} : { lastSeenAt: host.lastSeenAt }),
+					...(host.accountId === undefined ? {} : { accountId: host.accountId }),
 				});
 			}
 			return { types: [...types], sizes: [...sizes.values()], hosts: backendHosts };
 		},
 		create: createOne,
-		start: (sandboxId, { egress }) => boot(sandboxId, "sandbox.start", egress),
-		resume: (sandboxId, { egress }) => boot(sandboxId, "sandbox.resume", egress),
-		recover: (sandboxId, { egress }) => boot(sandboxId, "sandbox.start", egress),
+		start: (sandboxId, how) => boot(sandboxId, "sandbox.start", how),
+		resume: (sandboxId, how) => boot(sandboxId, "sandbox.resume", how),
+		recover: (sandboxId, how) => boot(sandboxId, "sandbox.start", how),
 		async updateEgress(sandboxId, egress) {
 			await call(sandboxId, "sandbox.egress", { egress: hostEgress(egress, options.attributionKey) ?? null });
 		},
 		async stop(sandboxId, { keepMemory }): Promise<TakenSnapshot> {
 			const { tier, hostId } = await tierOf(sandboxId);
 			if (keepMemory && tier !== "microvm") throw new KantelError("not_supported", "An isolate can't pause");
+			// A stopped sandbox's ports end with it (the compute API forgets them when it starts again).
+			await options.ports?.forget(sandboxId);
 			const snap = await call<HostSnapshot>(sandboxId, "sandbox.stop", {
 				snapshotId: snapshotId(),
 				memory: keepMemory,
@@ -288,16 +339,19 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				return out;
 			}
 			// A live fork pauses the source for its snapshot only; forks stay on the source's host.
+			const { hostId: sourceHost } = await tierOf(source.sandboxId);
+			for (const target of targets) mayUse(sourceHost, target.eligibleHosts);
 			for (const target of targets) {
-				const { sandbox, hostId } = await hosts.sandboxes.fork(source.sandboxId, {
+				const { sandbox, hostId, ...known } = await hosts.sandboxes.fork(source.sandboxId, {
 					newId: target.sandboxId,
 					...egressOf(target.egress),
 				});
-				out.push(await placed(target.sandboxId, sandbox, hostId));
+				out.push(await placed(target.sandboxId, sandbox, hostId, known));
 			}
 			return out;
 		},
 		async destroy(sandboxId) {
+			await options.ports?.forget(sandboxId);
 			try {
 				await hosts.sandboxes.delete(sandboxId);
 			} catch (error) {
@@ -326,9 +380,21 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				timedOut: result.timedOut === true,
 			};
 		},
-		async readFile(sandboxId, path) {
-			const { data } = await call<{ data: string }>(sandboxId, "sandbox.files.read", { path });
-			return fromBase64(data);
+		async readFile(sandboxId, path, range) {
+			const answer = await call<{ data: string; fileSize?: number }>(
+				sandboxId,
+				"sandbox.files.read",
+				range === undefined ? { path } : { path, offset: range.offset, length: range.length },
+			);
+			const bytes = fromBase64(answer.data);
+			// A kantel-host from before ranged reads answers the whole file, without its fileSize.
+			if (answer.fileSize === undefined) {
+				const size = bytes.byteLength;
+				if (range === undefined) return { bytes, size };
+				const start = Math.min(range.offset, size);
+				return { bytes: bytes.subarray(start, Math.min(start + range.length, size)), size };
+			}
+			return { bytes, size: answer.fileSize };
 		},
 		async writeFile(sandboxId, path, content, mode) {
 			await call(sandboxId, "sandbox.files.write", {
@@ -367,13 +433,21 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			const { hostId, snapshotId: id } = parseRef(ref);
 			await hosts.hub.call(hostId, "snapshot.delete", { snapshotId: id });
 		},
-		async exposePort() {
-			throw new KantelError("not_supported", "Exposed ports aren't offered on Kantel's own hosts yet");
+		async exposePort(sandboxId, port, { public: isPublic, subdomain, grantee }) {
+			const { tier } = await tierOf(sandboxId);
+			if (options.ports === undefined || tier !== "microvm") {
+				throw new KantelError("not_supported", "This control plane has no name for exposed ports");
+			}
+			return options.ports.expose(sandboxId, port, {
+				public: isPublic,
+				subdomain,
+				...(grantee === undefined ? {} : { grantee }),
+			});
 		},
-		async hidePort() {
-			throw new KantelError("not_supported", "Exposed ports aren't offered on Kantel's own hosts yet");
+		async hidePort(sandboxId, port) {
+			await options.ports?.hide(sandboxId, port);
 		},
-		async openSsh(sandboxId, { publicKey, ttlMinutes }) {
+		async openSsh(sandboxId, { publicKey, ttlMinutes, grantee }) {
 			const { tier } = await tierOf(sandboxId);
 			if (tier !== "microvm") throw new KantelError("not_supported", "An isolate has no SSH");
 			const key = publicKey?.trim();
@@ -386,7 +460,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			if (run.exitCode !== 0)
 				throw new KantelError("unavailable", `The sandbox could not let the key in: ${run.stderr}`);
 			const [privateKey = "", fingerprint = ""] = run.stdout.split(`${FINGERPRINT_MARK}\n`);
-			const url = await tunnel(sandboxId, SSH_PORT, ttlMinutes);
+			const url = await tunnel(sandboxId, SSH_PORT, ttlMinutes, grantee);
 			const gateway = new URL(options.publicUrl);
 			const port = Number(gateway.port || (gateway.protocol === "https:" ? 443 : 80));
 			return {
@@ -395,21 +469,22 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				user: "user",
 				// Any WebSocket client that pipes stdin and stdout as binary frames does; websocat is one.
 				command: `ssh -o ProxyCommand='websocat --binary ${url}' user@${sandboxId}`,
+				proxyUrl: url,
 				...(key === undefined && privateKey.trim() !== "" ? { privateKey: `${privateKey.trim()}\n` } : {}),
 				...(fingerprint.trim() === "" ? {} : { hostKeyFingerprint: fingerprint.trim() }),
 			};
 		},
-		async openDesktop(sandboxId, { ttlMinutes, viewOnly }) {
+		async openDesktop(sandboxId, { ttlMinutes, viewOnly, grantee }) {
 			const { tier } = await tierOf(sandboxId);
 			if (tier !== "microvm") throw new KantelError("not_supported", "An isolate has no desktop");
-			// A noVNC page (viewer.ts) that opens the tunnel with the same ticket.
-			const url = await desktopPage(sandboxId, ttlMinutes, viewOnly);
+			// Selkies' page (desktop.ts), whose stream goes through the gateway with the same ticket.
+			const url = await desktopPage(sandboxId, ttlMinutes, viewOnly, grantee);
 			return { url, embedUrl: url };
 		},
-		async openBrowser(sandboxId, { ttlMinutes, viewOnly }) {
+		async openBrowser(sandboxId, { ttlMinutes, viewOnly, grantee }) {
 			const { tier } = await tierOf(sandboxId);
 			if (tier !== "microvm") throw new KantelError("not_supported", "An isolate has no browser");
-			// Chrome's browser-wide DevTools target, passed through the tunnel with its path.
+			// Chromium's browser-wide DevTools target, passed through the tunnel with its path.
 			const version = await call<{ exitCode: number; stdout: string }>(sandboxId, "sandbox.exec", {
 				command: "curl -fsS --max-time 5 http://127.0.0.1:9222/json/version",
 			});
@@ -423,9 +498,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			if (version.exitCode !== 0 || target === undefined || !target.startsWith("/devtools/browser/")) {
 				throw new KantelError("unavailable", "The sandbox's browser isn't up yet");
 			}
-			const cdpUrl = `${await tunnel(sandboxId, BROWSER_PORT, ttlMinutes)}${target}`;
-			// People watch and drive Chrome where it runs: on the desktop.
-			return { url: await desktopPage(sandboxId, ttlMinutes, viewOnly), cdpUrl };
+			const cdpUrl = `${await tunnel(sandboxId, BROWSER_PORT, ttlMinutes, grantee)}${target}`;
+			// People watch and drive Chromium where it runs: on the desktop.
+			return { url: await desktopPage(sandboxId, ttlMinutes, viewOnly, grantee), cdpUrl };
 		},
 		async revokeHost(hostId) {
 			await hosts.revoke(hostId).catch((error: unknown) => {

@@ -9,15 +9,11 @@ sidebar:
 
 The machines that run sandboxes: join tokens, labels, drain and revoke. Super-admins only.
 
-:::caution
-Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
-:::
-
 ## List hosts
 
 `GET /v1/admin/hosts` (SDK method `listHosts`)
 
-Every host that has joined, revoked ones included. A deployment super-admin only (a key needs `hosts:admin`). Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Every host that has joined, revoked ones included. A deployment super-admin only (a key needs `hosts:admin`).
 
 **Answers**
 
@@ -29,7 +25,7 @@ Every host that has joined, revoked ones included. A deployment super-admin only
 
 `POST /v1/admin/hosts/join-tokens` (SDK method `createHostJoinToken`)
 
-A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it with the token. A deployment super-admin only (a key needs `hosts:admin`). Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it with the token. A deployment super-admin only (a key needs `hosts:admin`).
 
 **Body**: [CreateHostJoinTokenBody](/api/reference/types/#createhostjointokenbody)
 
@@ -43,7 +39,7 @@ A one-use token, shown once, and the one-line command that installs the host age
 
 `GET /v1/admin/hosts/{hostId}` (SDK method `getHost`)
 
-A deployment super-admin only (a key needs `hosts:admin`). Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+A deployment super-admin only (a key needs `hosts:admin`).
 
 **Path parameters**
 
@@ -61,7 +57,7 @@ A deployment super-admin only (a key needs `hosts:admin`). Experimental: served 
 
 `PATCH /v1/admin/hosts/{hostId}` (SDK method `updateHost`)
 
-Renames it, replaces its labels, or drains it. A deployment super-admin only (a key needs `hosts:admin`). Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Renames it, replaces its labels, or drains it. A deployment super-admin only (a key needs `hosts:admin`).
 
 **Path parameters**
 
@@ -81,7 +77,7 @@ Renames it, replaces its labels, or drains it. A deployment super-admin only (a 
 
 `DELETE /v1/admin/hosts/{hostId}` (SDK method `revokeHost`)
 
-Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. A deployment super-admin only (a key needs `hosts:admin`). Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. `unavailable`, and not revoked, when its credential is kept by a part of the deployment that is off (an account's own host, with account hosts switched off). A deployment super-admin only (a key needs `hosts:admin`).
 
 **Path parameters**
 
@@ -93,4 +89,4 @@ Revokes its credential and closes its connection. Its sandboxes keep their disks
 
 - `200`: [Host](/api/reference/types/#host) (`application/json`). The host, revoked.
 
-**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found. Each is an [ErrorBody](/api/reference/types/#errorbody).
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).

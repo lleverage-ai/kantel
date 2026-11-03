@@ -28,6 +28,15 @@ export const randomId = (prefix: string, length = 10): string => `${prefix}_${ra
 /** A secret such as `ksk_` and 32 base62 characters. */
 export const randomSecret = (prefix: string, length = 32): string => `${prefix}${randomFrom(BASE62, length)}`;
 
+/**
+ * A code for a person to read and type, such as `BCDF-GHJK`: eight upper-case consonants (no vowels, so no words; none
+ * that look like digits), in two groups of four, as RFC 8628 suggests for a device sign-in's user code.
+ */
+export const randomUserCode = (): string => {
+	const code = randomFrom("BCDFGHJKLMNPQRSTVWXZ", 8);
+	return `${code.slice(0, 4)}-${code.slice(4)}`;
+};
+
 /** Lower-case letters and digits, for subdomains. */
 export const randomSlug = (length: number): string => randomFrom(BASE36, length);
 
@@ -73,6 +82,13 @@ export function resolvePath(path: string, base = HOME): string {
 	}
 	return `/${parts.join("/")}`;
 }
+
+/** At most `length` bytes of `bytes` from `offset`; empty from the end on. */
+export const sliceRange = (
+	bytes: Uint8Array,
+	range: { readonly offset: number; readonly length: number },
+): Uint8Array =>
+	bytes.subarray(Math.min(range.offset, bytes.byteLength), Math.min(range.offset + range.length, bytes.byteLength));
 
 /** The last segment of an absolute path. */
 export const baseName = (path: string): string => path.slice(path.lastIndexOf("/") + 1) || "/";

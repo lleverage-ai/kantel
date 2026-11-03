@@ -7,7 +7,7 @@
  * super-admin has `hosts:admin`.
  */
 import type { computeSchema } from "@kantel/api";
-import { KantelError } from "@kantel/contracts";
+import { API_KEY_LAST_USED_PRECISION_MS, KantelError } from "@kantel/contracts";
 import type { ComputeStore, StoredAccount, StoredApiKey, StoredUser } from "./store.ts";
 import { randomId, randomSecret, sha256Hex } from "./util.ts";
 
@@ -17,6 +17,11 @@ export interface PersonIdentity {
 	readonly email?: string;
 	readonly name: string;
 	readonly superAdmin?: boolean;
+	/**
+	 * The sign-in itself, when the deployment can end it (a Kantel session's token hash): access relayed for this
+	 * sign-in ends when it does, as `sessionLive` reports.
+	 */
+	readonly session?: string;
 }
 
 /** Checks a request's sign-in (any bearer but an API key); `undefined` when it is not one. */
@@ -44,9 +49,69 @@ export interface PersonPrincipal {
 	readonly name: string;
 	readonly superAdmin: boolean;
 	readonly personalAccountId: string;
+	/** The sign-in, when it can be ended (`PersonIdentity.session`). */
+	readonly session?: string;
 }
 
 export type Principal = KeyPrincipal | PersonPrincipal;
+
+/**
+ * Who was given access a relay carries on with after the call (a tunnel ticket, an exposed port's URL): a key, or a
+ * person and their sign-in. The relay asks `ComputeService.stillAllowed` while the access lasts, so revoking the key,
+ * signing out or leaving the account ends it.
+ */
+export type Grantee =
+	| { readonly kind: "key"; readonly keyId: string }
+	| { readonly kind: "person"; readonly userId: string; readonly session?: string };
+
+/** The grantee a principal is, as the relay keeps it. */
+export function encodeGrantee(principal: Principal): string {
+	const grantee: Grantee =
+		principal.kind === "key"
+			? { kind: "key", keyId: principal.keyId }
+			: {
+					kind: "person",
+					userId: principal.userId,
+					...(principal.session === undefined ? {} : { session: principal.session }),
+				};
+	return JSON.stringify(grantee);
+}
+
+/** A grantee `encodeGrantee` wrote, or undefined for anything else. */
+export function decodeGrantee(text: string): Grantee | undefined {
+	let value: unknown;
+	try {
+		value = JSON.parse(text);
+	} catch {
+		return undefined;
+	}
+	if (typeof value !== "object" || value === null) return undefined;
+	const record = value as { kind?: unknown; keyId?: unknown; userId?: unknown; session?: unknown };
+	if (record.kind === "key" && typeof record.keyId === "string") return { kind: "key", keyId: record.keyId };
+	if (record.kind === "person" && typeof record.userId === "string") {
+		if (record.session !== undefined && typeof record.session !== "string") return undefined;
+		return {
+			kind: "person",
+			userId: record.userId,
+			...(record.session === undefined ? {} : { session: record.session }),
+		};
+	}
+	return undefined;
+}
+
+/** The principal a key is now, as `authenticate` would make it. */
+export function keyPrincipal(key: StoredApiKey): KeyPrincipal {
+	return {
+		kind: "key",
+		keyId: key.id,
+		keyName: key.name,
+		accountId: key.accountId,
+		scopes: key.scopes,
+		limits: key.sandboxIds === undefined ? {} : { sandboxIds: key.sandboxIds },
+		userId: key.ownerUserId,
+		superAdmin: key.scopes.includes("hosts:admin"),
+	};
+}
 
 /** The call has no valid credential: answered 401 `unauthenticated`. */
 export class UnauthenticatedError extends Error {
@@ -138,6 +203,18 @@ export async function keyForSecret(
 	return key;
 }
 
+/** The principal the key with `keyId` is, while it is neither revoked nor expired. */
+export async function liveKeyPrincipal(
+	store: ComputeStore,
+	keyId: string,
+	now: number,
+): Promise<KeyPrincipal | undefined> {
+	const key = await store.apiKeys.get(keyId);
+	if (key === undefined || key.revokedAt !== undefined) return undefined;
+	if (key.expiresAt !== undefined && key.expiresAt <= now) return undefined;
+	return keyPrincipal(key);
+}
+
 /** Who is calling; rejects with `UnauthenticatedError` for no bearer or one that is not valid. */
 export async function authenticate(request: Request, options: AuthenticateOptions): Promise<Principal> {
 	const { store, now } = options;
@@ -146,23 +223,23 @@ export async function authenticate(request: Request, options: AuthenticateOption
 	if (token.startsWith(API_KEY_PREFIX)) {
 		const key = await keyForSecret(store, token, now);
 		if (key === undefined) throw new UnauthenticatedError("The API key is not valid");
-		// Only the use is written, and only while the key is still this secret and unrevoked, so a revoke or a rotation
-		// that lands meanwhile is never undone.
-		await store.apiKeys.update(key.id, (current) =>
-			current.revokedAt === undefined && current.secretHash === key.secretHash
-				? { ...current, lastUsedAt: now }
-				: undefined,
-		);
-		return {
-			kind: "key",
-			keyId: key.id,
-			keyName: key.name,
-			accountId: key.accountId,
-			scopes: key.scopes,
-			limits: key.sandboxIds === undefined ? {} : { sandboxIds: key.sandboxIds },
-			userId: key.ownerUserId,
-			superAdmin: key.scopes.includes("hosts:admin"),
-		};
+		// The use is recorded at most once a minute (`API_KEY_LAST_USED_PRECISION_MS`), off the call's path: a busy key
+		// costs one write a minute, and no call waits for it. It is written only while the key is still this secret and
+		// unrevoked, so a revoke or a rotation that lands meanwhile is never undone, and only while the stored use is still
+		// a minute old, so of many calls that saw it stale one writes; a write that fails is dropped, as the next use
+		// records it.
+		const stale = (lastUsedAt: number | undefined) =>
+			lastUsedAt === undefined || now - lastUsedAt >= API_KEY_LAST_USED_PRECISION_MS;
+		if (stale(key.lastUsedAt)) {
+			void store.apiKeys
+				.update(key.id, (current) =>
+					current.revokedAt === undefined && current.secretHash === key.secretHash && stale(current.lastUsedAt)
+						? { ...current, lastUsedAt: now }
+						: undefined,
+				)
+				.catch(() => undefined);
+		}
+		return keyPrincipal(key);
 	}
 	const identity = await options.authenticatePerson?.(request);
 	if (identity === undefined) throw new UnauthenticatedError("The credentials are not valid");
@@ -174,6 +251,7 @@ export async function authenticate(request: Request, options: AuthenticateOption
 		superAdmin: user.superAdmin,
 		personalAccountId: user.personalAccountId,
 		...(user.email === undefined ? {} : { email: user.email }),
+		...(identity.session === undefined ? {} : { session: identity.session }),
 	};
 }
 
@@ -212,8 +290,8 @@ export async function actingAccount(
 		throw new KantelError("forbidden", "An API key acts in its own account only");
 	}
 	const accountId = requested ?? own;
-	const role = await roleIn(store, principal, accountId);
-	const account = await store.accounts.get(accountId);
+	// Two reads that don't depend on each other: one round trip.
+	const [role, account] = await Promise.all([roleIn(store, principal, accountId), store.accounts.get(accountId)]);
 	if (role === undefined || account === undefined) {
 		throw new KantelError("forbidden", "You are not a member of that account");
 	}
@@ -225,8 +303,7 @@ export async function actingAccount(
  * in it, so its existence isn't given away.
  */
 export async function accountById(store: ComputeStore, principal: Principal, accountId: string): Promise<Acting> {
-	const role = await roleIn(store, principal, accountId);
-	const account = await store.accounts.get(accountId);
+	const [role, account] = await Promise.all([roleIn(store, principal, accountId), store.accounts.get(accountId)]);
 	if (role === undefined || account === undefined) throw new KantelError("not_found", "No such account");
 	return { account, role };
 }

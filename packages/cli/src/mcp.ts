@@ -228,8 +228,8 @@ export function clipOutput(output: string): string {
 
 const HINTS: { readonly [code: string]: string } = {
 	unauthenticated:
-		"Kantel needs an API key: set KANTEL_API_KEY in this MCP server's environment (make one with npx kantel key " +
-		"create agent --preset agent).",
+		"Kantel needs an API key: set KANTEL_API_KEY in this MCP server's environment (make one with kantel key create " +
+		"agent --preset agent).",
 	forbidden: "The API key lacks the scope this needs.",
 	conflict: "If the sandbox is stopped or paused, resume it with sandbox_resume first.",
 };
@@ -533,7 +533,7 @@ const TOOLS: readonly Tool[] = [
 	{
 		name: "browser_open",
 		description:
-			"Start a microVM sandbox's Chrome; answers a URL a person can watch and drive it at, and a CDP URL for " +
+			"Start a microVM sandbox's Chromium; answers a URL a person can watch and drive it at, and a CDP URL for " +
 			"Playwright's connectOverCDP or Puppeteer.",
 		inputSchema: schema(
 			{ sandboxId, viewOnly: { type: "boolean", description: "Watch only: no keyboard or mouse." } },

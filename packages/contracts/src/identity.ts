@@ -565,9 +565,10 @@ export interface MeResponse {
 }
 
 /**
- * A person's own settings. `theme` is the console's theme: a theme's ID, such as `kantel` or `catppuccin-latte`, or
- * `system` to follow the device's light or dark setting. Kantel keeps it as given; the console decides what an ID it
- * doesn't know means (its default theme).
+ * A person's own settings. `theme` is the console's theme: `light`, `dark`, or `system` to follow the device's light or
+ * dark setting (`ThemePreference`). A theme's ID from before the console had only those two (`nord`,
+ * `catppuccin-latte`, a custom theme's) is still accepted, and Kantel keeps and answers it as the nearer of light and
+ * dark, or `system` (`themePreference`).
  *
  * `lastModel` and `lastThinking` are the model (a `ModelOption.id`) and thinking level the person last chose for a
  * session, which the console's New session offers first. Kantel keeps them as given and applies neither itself: a
@@ -622,7 +623,10 @@ export interface ProjectSettingsResponse {
 	readonly defaults: Required<ProjectSettings>;
 }
 
-/** A theme preference: a theme's ID (lower-case letters, digits and dashes, at most 64) or `system`. */
+/**
+ * What a theme preference may be when written: `light`, `dark` or `system`, or, from an older console, a theme's ID
+ * (lower-case letters, digits and dashes, at most 64), which is kept as the nearer of light and dark.
+ */
 export const THEME_PREFERENCE_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 /** The longest `UserPreferences.lastModel` kept, in characters. */

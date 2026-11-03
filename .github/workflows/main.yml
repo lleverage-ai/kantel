@@ -150,7 +150,8 @@ jobs:
     uses: ./.github/workflows/sandbox-image.yml
 
   # No `if:`, so the default success() applies: a check that failed, was skipped or was cancelled skips the deploy.
-  # Never `always()` or `!cancelled()` here.
+  # Never `always()` or `!cancelled()` here. (#571 held this to runs by hand while the Worker had no compute API; it
+  # serves it since #588, TASK-4755.)
   deploy:
     name: Cloudflare deploy
     needs: [ci, selfhosted, sandbox-image]

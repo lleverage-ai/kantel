@@ -8,7 +8,7 @@ sidebar:
 ---
 
 :::caution[Experimental]
-These routes are part of Kantel's API, and a control plane serves them only when it runs with `KANTEL_COMPUTE=experimental`. Their shapes may still change.
+These routes are part of Kantel's API, which every control plane serves. Their shapes may still change.
 :::
 
 A saved snapshot is a sandbox's state kept under a name until you delete it. It outlives the sandbox it came from, and any number of new sandboxes can start from it. That makes it a template: set a sandbox up once, with your repository cloned, your tools installed and your caches warm, save it, and start each new sandbox from there in the state you left it.

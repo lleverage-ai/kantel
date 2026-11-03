@@ -13,6 +13,7 @@ import {
 	SANDBOX_CONTAINERS,
 	zoneOf,
 } from "../scripts/deploy-config.ts";
+import { gatewayConfig } from "../src/config.ts";
 import { DEFAULT_LOCATION_HINT, LOCATION_HINTS as ROUTE_LOCATION_HINTS } from "../src/route.ts";
 
 const configured = {
@@ -121,6 +122,108 @@ describe("deploy config", () => {
 		);
 		// Not in wrangler.jsonc: the document must be public first, which only the deployment knows.
 		expect(JSON.stringify(rawConfig)).not.toContain("KANTEL_CONNECTIONS_CIMD");
+	});
+
+	it("sets the ports domain only for a deployment whose variable names its own, and routes nothing for it", () => {
+		const config = (env: Record<string, string>) =>
+			deployConfig(rawConfig, deployValues({ ...configured, ...env }, "deploy"));
+		// Unset, the Worker's own default (ports.kantel.dev, src/config.ts) stands.
+		expect((config({}).vars as Record<string, string>).KANTEL_COMPUTE_PORTS_DOMAIN).toBeUndefined();
+		const own = config({ KANTEL_COMPUTE_PORTS_DOMAIN: "ports.example.com" });
+		expect((own.vars as Record<string, string>).KANTEL_COMPUTE_PORTS_DOMAIN).toBe("ports.example.com");
+		// Serving port names needs a wildcard route and DNS the deploy doesn't add: only the console's route is there.
+		expect(own.routes).toEqual([{ pattern: "harbour.myslop.app/*", zone_name: "myslop.app" }]);
+		for (const bad of ["*.ports.example.com", "https://ports.example.com", "ports"]) {
+			expect(() => deployValues({ ...configured, KANTEL_COMPUTE_PORTS_DOMAIN: bad }, "deploy")).toThrow(
+				"KANTEL_COMPUTE_PORTS_DOMAIN must be a lower-case DNS name",
+			);
+		}
+		expect(JSON.stringify(rawConfig)).not.toContain("KANTEL_COMPUTE_PORTS_DOMAIN");
+	});
+
+	it("turns email-code sign-in on with the public origin and its sender, binding mail to that sender only", () => {
+		const config = (env: Record<string, string>) =>
+			deployConfig(rawConfig, deployValues({ ...configured, ...env }, "deploy"));
+		const off = config({});
+		expect(off.send_email).toBeUndefined();
+		expect((off.vars as Record<string, string>).KANTEL_PUBLIC_URL).toBeUndefined();
+		const on = config({ KANTEL_PUBLIC_URL: "https://app.kantel.dev/", KANTEL_SIGN_IN_FROM: "sign-in@kantel.dev" });
+		expect(on.send_email).toEqual([{ name: "SIGN_IN_MAIL", allowed_sender_addresses: ["sign-in@kantel.dev"] }]);
+		expect(on.vars).toMatchObject({
+			KANTEL_PUBLIC_URL: "https://app.kantel.dev",
+			KANTEL_SIGN_IN_FROM: "sign-in@kantel.dev",
+		});
+		expect((on.vars as Record<string, string>).KANTEL_SIGN_IN_DAILY_CAP).toBeUndefined();
+		// The public origin's custom domain is attached outside the deploy: only the Access hostname's route is here.
+		expect(on.routes).toEqual([{ pattern: "harbour.myslop.app/*", zone_name: "myslop.app" }]);
+		const capped = config({
+			KANTEL_PUBLIC_URL: "https://app.kantel.dev",
+			KANTEL_SIGN_IN_FROM: "sign-in@kantel.dev",
+			KANTEL_SIGN_IN_DAILY_CAP: "50",
+		});
+		expect((capped.vars as Record<string, string>).KANTEL_SIGN_IN_DAILY_CAP).toBe("50");
+		for (const [env, message] of [
+			[{ KANTEL_PUBLIC_URL: "https://app.kantel.dev" }, "Set both KANTEL_PUBLIC_URL and KANTEL_SIGN_IN_FROM"],
+			[{ KANTEL_SIGN_IN_FROM: "sign-in@kantel.dev" }, "Set both KANTEL_PUBLIC_URL and KANTEL_SIGN_IN_FROM"],
+			[
+				{ KANTEL_PUBLIC_URL: "http://app.kantel.dev", KANTEL_SIGN_IN_FROM: "sign-in@kantel.dev" },
+				"KANTEL_PUBLIC_URL must be an https:// origin",
+			],
+			[
+				{ KANTEL_PUBLIC_URL: "https://harbour.myslop.app", KANTEL_SIGN_IN_FROM: "sign-in@kantel.dev" },
+				"another hostname than KANTEL_HOSTNAME",
+			],
+		] as const) {
+			expect(() => deployValues({ ...configured, ...env }, "deploy")).toThrow(message);
+		}
+		expect(() => deployConfig({ ...rawConfig, send_email: [] }, deployValues(configured, "deploy"))).toThrow(
+			"must not set send_email",
+		);
+	});
+
+	it("turns accounts' own hosts on only when asked, and only with the public origin they dial", () => {
+		const config = (env: Record<string, string>) =>
+			deployConfig(rawConfig, deployValues({ ...configured, ...env }, "deploy"));
+		const publicOrigin = { KANTEL_PUBLIC_URL: "https://app.kantel.dev", KANTEL_SIGN_IN_FROM: "sign-in@kantel.dev" };
+		// Unset, the Worker's own `""` (off) stands; `off` is passed on as it is.
+		expect((config(publicOrigin).vars as Record<string, string>).KANTEL_ACCOUNT_HOSTS).toBe("");
+		expect(
+			(config({ ...publicOrigin, KANTEL_ACCOUNT_HOSTS: "off" }).vars as Record<string, string>).KANTEL_ACCOUNT_HOSTS,
+		).toBe("off");
+		const on = config({ ...publicOrigin, KANTEL_ACCOUNT_HOSTS: "experimental" });
+		expect(on.vars).toMatchObject({
+			KANTEL_ACCOUNT_HOSTS: "experimental",
+			KANTEL_PUBLIC_URL: "https://app.kantel.dev",
+		});
+		// Nothing more is routed for it: hosts dial the public origin's custom domain.
+		expect(on.routes).toEqual([{ pattern: "harbour.myslop.app/*", zone_name: "myslop.app" }]);
+		expect(() => deployValues({ ...configured, KANTEL_ACCOUNT_HOSTS: "experimental" }, "deploy")).toThrow(
+			"KANTEL_ACCOUNT_HOSTS needs KANTEL_PUBLIC_URL",
+		);
+		// The origin may be the hosts' alone, with no sender: email sign-in and its mail binding stay off, and the Worker
+		// takes the vars. Switched off again (a rollback), the origin alone stays valid.
+		for (const value of ["experimental", "off"]) {
+			const hostsOnly = config({ KANTEL_PUBLIC_URL: "https://hosts.example.com", KANTEL_ACCOUNT_HOSTS: value });
+			const vars = hostsOnly.vars as Record<string, string>;
+			expect(vars).toMatchObject({ KANTEL_PUBLIC_URL: "https://hosts.example.com", KANTEL_ACCOUNT_HOSTS: value });
+			expect(vars.KANTEL_SIGN_IN_FROM).toBeUndefined();
+			expect(hostsOnly.send_email).toBeUndefined();
+			const runtime = gatewayConfig({
+				KANTEL_ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
+				KANTEL_ACCESS_AUD: "aud",
+				KANTEL_PUBLIC_URL: vars.KANTEL_PUBLIC_URL,
+				KANTEL_ACCOUNT_HOSTS: vars.KANTEL_ACCOUNT_HOSTS,
+			});
+			expect(runtime.emailSignIn).toBeUndefined();
+			expect(runtime.accountHosts !== undefined).toBe(value === "experimental");
+		}
+		// With no switch, the origin is sign-in's and needs its sender.
+		expect(() => deployValues({ ...configured, KANTEL_PUBLIC_URL: "https://hosts.example.com" }, "deploy")).toThrow(
+			"Set both KANTEL_PUBLIC_URL and KANTEL_SIGN_IN_FROM",
+		);
+		expect(() => deployValues({ ...configured, ...publicOrigin, KANTEL_ACCOUNT_HOSTS: "on" }, "deploy")).toThrow(
+			"KANTEL_ACCOUNT_HOSTS must be experimental or off",
+		);
 	});
 
 	it("routes the hostname on its parent zone, never as a custom domain", () => {

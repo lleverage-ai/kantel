@@ -567,18 +567,47 @@ export const ReadFileQuery = Type.Object(
 	{
 		path: Type.String({ minLength: 1 }),
 		encoding: Type.Optional(FileEncoding),
+		offset: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				description:
+					"Read from this byte (default 0). With `offset` or `length`, a file of any size is read a part at a time.",
+			}),
+		),
+		length: Type.Optional(
+			Type.Integer({
+				minimum: 1,
+				maximum: 1024 * 1024,
+				description: "Read at most this many bytes: default, and at most, 1 MiB (1048576).",
+			}),
+		),
 	},
 	{ title: "ReadFileQuery" },
+);
+
+export const ReadSnapshotFileQuery = Type.Object(
+	{
+		path: Type.String({ minLength: 1 }),
+		encoding: Type.Optional(FileEncoding),
+	},
+	{ title: "ReadSnapshotFileQuery" },
 );
 
 export const FileContent = Type.Object(
 	{
 		path: Type.String(),
 		encoding: FileEncoding,
-		content: Type.String(),
-		size: Type.Integer(),
+		content: Type.String({ description: "The file, or with `offset` or `length`, the part read." }),
+		size: Type.Integer({ description: "The whole file's size in bytes." }),
+		offset: Type.Optional(
+			Type.Integer({ description: "With `offset` or `length`: the byte `content` starts at. At `size`, it's empty." }),
+		),
 	},
-	{ title: "FileContent", description: "A file of at most 1 MiB; for larger, run a command or use SSH." },
+	{
+		title: "FileContent",
+		description:
+			"A file of at most 1 MiB, or a part of at most 1 MiB of a larger one, read with `offset` and `length`.",
+	},
 );
 
 export const WriteFileBody = Type.Object(
@@ -627,7 +656,12 @@ export const ExposePortBody = Type.Object(
 export const ExposedPort = Type.Object(
 	{
 		port: Type.Integer(),
-		url: Type.String({ description: "Its HTTPS URL. Unless `public`, it carries a token anyone holding it may use." }),
+		url: Type.String({
+			description:
+				"Its HTTPS URL. Unless `public`, the answer to exposing it carries a token anyone holding it may use, shown " +
+				"only then (Kantel keeps its hash); listed, the URL has none. Exposing the port again gives a new token and " +
+				"ends the old. Access through it ends when the key or sign-in that exposed it loses access to the sandbox.",
+		}),
 		public: Type.Boolean(),
 		createdAt: Timestamp,
 	},
@@ -646,7 +680,14 @@ export const SshAccessBody = Type.Object(
 		publicKey: Type.Optional(
 			Type.String({ description: "An OpenSSH public key to let in. Absent: Kantel makes a key pair for this access." }),
 		),
-		ttlMinutes: Type.Optional(Type.Integer({ minimum: 5, maximum: 1440, description: "Default 60." })),
+		ttlMinutes: Type.Optional(
+			Type.Integer({
+				minimum: 5,
+				maximum: 60,
+				description:
+					"How long a connection can be started with this access; one started in time stays open. Default 10.",
+			}),
+		),
 	},
 	{ title: "SshAccessBody" },
 );
@@ -659,6 +700,12 @@ export const SshAccess = Type.Object(
 		command: Type.String({
 			description: "A command line that connects, such as `ssh -p 2222 sbx_4kq9x2mt@ssh.example`.",
 		}),
+		proxyUrl: Type.Optional(
+			Type.String({
+				description:
+					"When there is no SSH gateway to dial: a WebSocket URL carrying the sandbox's SSH as binary frames, for an `ssh -o ProxyCommand=…` (`kantel ssh-proxy` is one). Anyone holding it can start a connection until `expiresAt`.",
+			}),
+		),
 		privateKey: Type.Optional(
 			Type.String({ description: "When Kantel made the key pair: its private key, shown once." }),
 		),
@@ -671,7 +718,13 @@ export const SshAccess = Type.Object(
 export const ViewAccessBody = Type.Object(
 	{
 		viewOnly: Type.Optional(Type.Boolean({ description: "Watch only: no keyboard or mouse. Default false." })),
-		ttlMinutes: Type.Optional(Type.Integer({ minimum: 1, maximum: 1440, description: "Default 60." })),
+		ttlMinutes: Type.Optional(
+			Type.Integer({
+				minimum: 1,
+				maximum: 60,
+				description: "How long the URLs can be opened for; a view or connection opened in time stays open. Default 10.",
+			}),
+		),
 	},
 	{ title: "ViewAccessBody" },
 );
@@ -688,7 +741,7 @@ export const DesktopAccess = Type.Object(
 
 export const BrowserAccess = Type.Object(
 	{
-		url: Type.String({ description: "Watch and drive the sandbox's Chrome in a browser." }),
+		url: Type.String({ description: "Watch and drive the sandbox's Chromium in a browser." }),
 		cdpUrl: Type.String({
 			description: "A Chrome DevTools Protocol WebSocket URL, for Playwright's `connectOverCDP` or Puppeteer.",
 		}),
@@ -789,7 +842,11 @@ export const ApiKey = Type.Object(
 		createdBy: CreatedBy,
 		createdAt: Timestamp,
 		expiresAt: Type.Optional(Timestamp),
-		lastUsedAt: Type.Optional(Timestamp),
+		lastUsedAt: Type.Optional(
+			Type.Integer({
+				description: "When the key last signed a call in, to within a minute. Absent until its first use.",
+			}),
+		),
 		revokedAt: Type.Optional(Timestamp),
 	},
 	{ title: "ApiKey", description: "A scoped API key. Its secret is never stored or shown after it is made." },
@@ -828,6 +885,95 @@ export const CreateApiKeyBody = Type.Object(
 export const IssuedApiKey = Type.Object(
 	{ key: ApiKey, secret: Type.String({ description: "The key itself, `ksk_…`. Shown once: store it now." }) },
 	{ title: "IssuedApiKey" },
+);
+
+// Signing in a device (the command line) in a browser.
+
+export const StartDeviceLoginBody = Type.Object(
+	{
+		clientName: Type.Optional(
+			Type.String({
+				minLength: 1,
+				maxLength: 100,
+				description:
+					"What is signing in, shown to the person who approves it and given to its key: `kantel on build-01`.",
+			}),
+		),
+	},
+	{ title: "StartDeviceLoginBody" },
+);
+
+export const DeviceLogin = Type.Object(
+	{
+		deviceCode: Type.String({ description: "`kdc_…`: the device's secret, which it polls with. Never show it." }),
+		userCode: Type.String({ description: "`ABCD-EFGH`: the code the person checks in the browser." }),
+		verificationUrl: Type.String({ description: "The console's page where a signed-in person approves it." }),
+		verificationUrlComplete: Type.String({ description: "The same page with the code filled in." }),
+		intervalSeconds: Type.Integer({ description: "Poll no more often than this." }),
+		expiresAt: Timestamp,
+	},
+	{
+		title: "DeviceLogin",
+		description: "A sign-in in the browser under way, as RFC 8628's device authorisation grant.",
+	},
+);
+
+export const PollDeviceLoginBody = Type.Object(
+	{ deviceCode: Type.String({ minLength: 1 }) },
+	{ title: "PollDeviceLoginBody" },
+);
+
+export const DeviceLoginState = Type.Union(
+	[Type.Literal("pending"), Type.Literal("approved"), Type.Literal("denied"), Type.Literal("expired")],
+	{
+		title: "DeviceLoginState",
+		description:
+			"`pending`: no one has approved it yet. `approved`: the poll that sees it first gets the key; later polls are " +
+			"`expired`. `denied`: the person refused it. `expired`: too late, or already collected.",
+	},
+);
+
+export const DeviceLoginResult = Type.Object(
+	{
+		state: DeviceLoginState,
+		issued: Type.Optional(IssuedApiKey),
+	},
+	{ title: "DeviceLoginResult", description: "With `approved`, the new key and its secret, shown this once." },
+);
+
+export const DeviceLoginPath = Type.Object(
+	{ userCode: Type.String({ minLength: 1, description: "The code the device showed, such as `ABCD-EFGH`." }) },
+	{ title: "DeviceLoginPath" },
+);
+
+export const DeviceLoginRequest = Type.Object(
+	{
+		userCode: Type.String(),
+		clientName: Type.String(),
+		state: DeviceLoginState,
+		createdAt: Timestamp,
+		expiresAt: Timestamp,
+	},
+	{
+		title: "DeviceLoginRequest",
+		description: "A device waiting for a person to approve it, as the approval page shows it.",
+	},
+);
+
+export const ApproveDeviceLoginBody = Type.Object(
+	{
+		account: accountQuery,
+		preset: Type.Optional(ApiKeyPreset),
+		expiresInDays: Type.Optional(
+			Type.Integer({ minimum: 1, maximum: 3650, description: "Default 90. The key stops working after it." }),
+		),
+	},
+	{
+		title: "ApproveDeviceLoginBody",
+		description:
+			"The key the device gets, in the approver's personal account unless `account` names an organisation. Without " +
+			"`preset`, every scope the approver may grant there, `hosts:admin` included for a super-admin.",
+	},
 );
 
 // The egress proxy.
@@ -1124,6 +1270,13 @@ export const Host = Type.Object(
 			{ title: "HostAllocated" },
 		),
 		labels: Type.Record(Type.String(), Type.String()),
+		accountId: Type.Optional(
+			id(
+				"The account the host belongs to, when it was added to one by its people: only that account's " +
+					"sandboxes run on it. Absent for a host the deployment's super-admin joined, which any account's sandboxes " +
+					"may use.",
+			),
+		),
 		joinedAt: Timestamp,
 		lastSeenAt: Type.Optional(Timestamp),
 	},
@@ -1165,6 +1318,35 @@ export const HostJoinToken = Type.Object(
 	{ title: "HostJoinToken" },
 );
 
+// An account's own hosts (experimental, behind the deployment's KANTEL_ACCOUNT_HOSTS switch).
+
+export const CreateAccountJoinTokenBody = Type.Object(
+	{
+		account: accountQuery,
+		name: Type.Optional(
+			Type.String({ maxLength: 100, description: "The host's name. Default: the machine's hostname." }),
+		),
+		labels: Type.Optional(Type.Record(Type.String(), Type.String())),
+		expiresInMinutes: Type.Optional(Type.Integer({ minimum: 5, maximum: 10080, description: "Default 60." })),
+	},
+	{ title: "CreateAccountJoinTokenBody" },
+);
+
+export const AccountJoinToken = Type.Object(
+	{
+		id: id("The token's ID."),
+		accountId: id("The account the host joins: only its sandboxes will run there."),
+		token: Type.String({ description: "`kth_…`, shown once. It joins one host, once, before `expiresAt`." }),
+		command: Type.String({
+			description:
+				"The one-line command that installs the host agent on a Linux machine and joins it with the token. The host " +
+				"dials out to this deployment and keeps that connection open, so it needs no inbound port.",
+		}),
+		expiresAt: Timestamp,
+	},
+	{ title: "AccountJoinToken" },
+);
+
 export type Account = Static<typeof Account>;
 export type AccountKind = Static<typeof AccountKind>;
 export type MemberRole = Static<typeof MemberRole>;
@@ -1194,6 +1376,12 @@ export type WebhookDelivery = Static<typeof WebhookDelivery>;
 export type TelemetryExport = Static<typeof TelemetryExport>;
 export type Host = Static<typeof Host>;
 export type HostState = Static<typeof HostState>;
+export type HostJoinToken = Static<typeof HostJoinToken>;
+export type AccountJoinToken = Static<typeof AccountJoinToken>;
+export type DeviceLogin = Static<typeof DeviceLogin>;
+export type DeviceLoginState = Static<typeof DeviceLoginState>;
+export type DeviceLoginResult = Static<typeof DeviceLoginResult>;
+export type DeviceLoginRequest = Static<typeof DeviceLoginRequest>;
 
 /** Every scope, in the order the docs list them. */
 export const API_KEY_SCOPES: readonly ApiKeyScope[] = [

@@ -7,8 +7,8 @@ way, with no JavaScript config: everything is in [src/tokens/tailwind.css](../sr
 ## How it fits together
 
 - **Tokens stay in tokens.css.** The `--kt-*` custom properties in [src/tokens/tokens.css](../src/tokens/tokens.css)
-  are still the only place a value is written, and the themes (src/tokens/themes/, see [theming.md](theming.md))
-  still set the colour tokens on `[data-kt-theme]`.
+  are still the only place a value is written, and the two themes' palettes (src/tokens/dark.css and light.css, see
+  [theming.md](theming.md)) still set the colour tokens.
 - **tailwind.css maps them, it doesn't copy them.** Its `@theme inline` block names each token for Tailwind with a
   `var(--kt-*)` reference, so `bg-canvas` compiles to `background-color: var(--kt-canvas)` and follows a theme
   switch at runtime. A new token goes in tokens.css first, then in tailwind.css if a utility should reach it.
@@ -108,7 +108,7 @@ utilities that means `transition-opacity` or `transition-transform`, not `transi
 2. Delete the .css file and its import.
 3. Shoot its stories before and after (`pnpm build:workbench && node scripts/shoot.ts --only <story ids>`) and
    compare them; they should match.
-4. Check it follows a theme switch, such as in the console with the theme picker (`Ctrl+K T`): a utility that
+4. Check it follows a theme switch, such as in the console with the sidebar's theme switch: a utility that
    doesn't change with the theme is reading a copied value, not a token.
 
 The first component converted is `SignedInAs` (src/identity/signed-in-as.tsx). The identity, theme, sharing,

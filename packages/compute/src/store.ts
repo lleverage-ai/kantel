@@ -1,10 +1,11 @@
 /**
  * The compute plane's records behind one interface, `ComputeStore`: a collection per kind, each found by ID or by equal
- * fields. `createMemoryStore` keeps them in memory, for tests and local runs; a SQL store (one table per collection, a
- * JSON document beside the columns `list` filters on, as `@kantel/environments`' `sql-store.ts` does) can replace it
- * without the service changing. Records are copied in and out, so a caller changes one only by putting it back.
+ * fields. `createMemoryStore` keeps them in memory, for tests and local runs; `createSqlComputeStore` (`./sql`,
+ * `sql-store.ts`) keeps them in SQL, so a gateway keeps them across restarts and its replicas share them, and the
+ * service doesn't change. Records are copied in and out, so a caller changes one only by putting it back.
  *
- * No secret is kept in the clear except a webhook's signing secret, which signing needs: API keys, invite codes and
+ * No secret is kept in the clear except a webhook's signing secret, which signing needs, and an approved device
+ * sign-in's key secret until the device collects it (at most 15 minutes): API keys, invite codes, device codes and
  * host join tokens are kept as the SHA-256 hex of the secret, and header values (the proxy's upstream, the telemetry
  * endpoint's) are kept but never answered.
  */
@@ -16,11 +17,21 @@ export interface Collection<T extends { readonly id: string }> {
 	/** Inserts or replaces the record with its ID. */
 	put(record: T): Promise<void>;
 	/**
-	 * Changes the record as it is now, with nothing else written between the read and the write (a SQL store does it in
-	 * one statement or transaction), and answers what was written. `change` answers `undefined` to write nothing; a
-	 * missing record is never written.
+	 * Inserts the record only when none has its ID, and answers whether it did. Of several writers inserting one ID at
+	 * once, on any gateway, exactly one wins: a claim, such as an idempotency key's.
 	 */
-	update(id: string, change: (current: T) => T | undefined): Promise<T | undefined>;
+	insert(record: T): Promise<boolean>;
+	/**
+	 * Changes the record as it is now, with nothing else written between the read and the write (the SQL store writes
+	 * only over the version it read, and reads again when another writer got there first), and answers what was written.
+	 * `change` answers `undefined` to write nothing; a missing record is never written. `change` may run more than once.
+	 *
+	 * `expected` is the record as the caller last wrote or read it, when it has it: a store may try `change` on it first
+	 * and write only if the record is still exactly that (the SQL store compares the stored JSON), which saves the read.
+	 * When the record is no longer `expected`, or `change` answers `undefined` for it, the store reads it as usual, so
+	 * the answer is the same as without it.
+	 */
+	update(id: string, change: (current: T) => T | undefined, expected?: T): Promise<T | undefined>;
 	/** Whether there was one to delete. */
 	delete(id: string): Promise<boolean>;
 	/** The records whose fields equal each defined field of `where`, oldest first. */
@@ -152,16 +163,51 @@ export interface StoredJoinToken {
 	readonly expiresAt: number;
 	readonly createdAt: number;
 	readonly usedAt?: number;
+	/**
+	 * The account an account's join token joins the host to: only its sandboxes run there. Absent for a super-admin's
+	 * join token, whose host is shared by every account.
+	 */
+	readonly accountId?: string;
+	/** Who made it, for an account's join token. */
+	readonly createdBy?: string;
+	/** The host that spent it. */
+	readonly hostId?: string;
 }
 
 export type StoredEvent = computeSchema.Event;
 
-/** The first answer to an idempotent call; its ID is `<caller>:<operation>:<key>`. */
+/** A device sign-in (`kantel login` in a browser); its ID is the SHA-256 hex of its device code. */
+export interface StoredDeviceLogin {
+	readonly id: string;
+	/** `ABCD-EFGH`, as the device shows it. */
+	readonly userCode: string;
+	readonly clientName: string;
+	readonly state: computeSchema.DeviceLoginState;
+	readonly createdAt: number;
+	readonly expiresAt: number;
+	/** The key made when it was approved, and its secret until the device collects it. */
+	readonly apiKeyId?: string;
+	readonly secret?: string;
+	readonly decidedBy?: string;
+	readonly collectedAt?: number;
+}
+
+/**
+ * An idempotent call's key, claimed (`insert`) before the call does its work, and then its first answer; its ID is
+ * `<caller>:<operation>:<key>`.
+ */
 export interface StoredIdempotency {
 	readonly id: string;
-	/** The answer's JSON. */
-	readonly body: string;
+	/** The answer's JSON, once the first call has answered; absent while it is still working. */
+	readonly body?: string;
 	readonly createdAt: number;
+	/** While it is working: who holds the claim (a random ID), so only the holder renews it. */
+	readonly claim?: string;
+	/**
+	 * While it is working: when the claim lapses unless the holder renews it, so a gateway that died mid-call doesn't
+	 * hold the key for ever; another call may then take the claim over.
+	 */
+	readonly claimExpiresAt?: number;
 }
 
 /** Every record the compute plane keeps. */
@@ -182,9 +228,14 @@ export interface ComputeStore {
 	readonly joinTokens: Collection<StoredJoinToken>;
 	readonly events: Collection<StoredEvent>;
 	readonly idempotency: Collection<StoredIdempotency>;
+	readonly deviceLogins: Collection<StoredDeviceLogin>;
 }
 
-function matches<T>(record: T, where: Partial<T> | undefined): boolean {
+/**
+ * Whether each defined field of `where` is `===` the record's top-level field of that name: what `list` answers by. The
+ * SQL store (`sql-store.ts`) checks every row with it too, so both answer the same.
+ */
+export function matches<T>(record: T, where: Partial<T> | undefined): boolean {
 	if (where === undefined) return true;
 	const fields = record as { readonly [key: string]: unknown };
 	return Object.entries(where).every(([key, value]) => value === undefined || fields[key] === value);
@@ -200,6 +251,11 @@ export function memoryCollection<T extends { readonly id: string }>(): Collectio
 		},
 		async put(record) {
 			records.set(record.id, structuredClone(record));
+		},
+		async insert(record) {
+			if (records.has(record.id)) return false;
+			records.set(record.id, structuredClone(record));
+			return true;
 		},
 		async update(id, change) {
 			const current = records.get(id);
@@ -237,6 +293,7 @@ export function createMemoryStore(): ComputeStore {
 		joinTokens: memoryCollection(),
 		events: memoryCollection(),
 		idempotency: memoryCollection(),
+		deviceLogins: memoryCollection(),
 	};
 }
 
@@ -246,14 +303,19 @@ export function createMemoryStore(): ComputeStore {
  */
 export function joinTokenSpender(store: ComputeStore) {
 	return {
-		async spendJoinToken(hash: string, _hostId: string, now: number) {
+		async spendJoinToken(hash: string, hostId: string, now: number) {
 			const [token] = await store.joinTokens.list({ tokenHash: hash });
 			if (token === undefined) return undefined;
 			const spent = await store.joinTokens.update(token.id, (current) =>
-				current.usedAt !== undefined || current.expiresAt <= now ? undefined : { ...current, usedAt: now },
+				current.usedAt !== undefined || current.expiresAt <= now ? undefined : { ...current, usedAt: now, hostId },
 			);
 			if (spent === undefined) return undefined;
-			return { id: spent.id, labels: { ...spent.labels }, ...(spent.name === undefined ? {} : { name: spent.name }) };
+			return {
+				id: spent.id,
+				labels: { ...spent.labels },
+				...(spent.name === undefined ? {} : { name: spent.name }),
+				...(spent.accountId === undefined ? {} : { accountId: spent.accountId }),
+			};
 		},
 	};
 }

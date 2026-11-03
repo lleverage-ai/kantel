@@ -3,8 +3,8 @@
 // fixtures. Same-origin under /v1, like the Environments page: behind Cloudflare Access the browser's cookie signs each
 // call in; signed in another way, `headers` adds the bearer.
 //
-// The routes are experimental: a gateway without `KANTEL_COMPUTE=experimental` answers 404 to the first call, and
-// `apiCompute` throws. The UI's records are shaped for its pages, not the API, so each source maps the API's records
+// A gateway that doesn't serve the routes (an older one, or one built without compute) answers 404 to the first call,
+// and `apiCompute` throws. The UI's records are shaped for its pages, not the API, so each source maps the API's records
 // field by field. Where the UI has a field the API lacks, a neutral value stands in, with a comment saying so; where
 // the UI asks for something no route does, the call rejects with a sentence saying Kantel's API can't do it yet.
 // Timestamps need no conversion: both sides use epoch milliseconds. The account goes in the query of a read and in
@@ -17,6 +17,7 @@ import {
 	type Command,
 	type CreatedBy,
 	createKantelClient,
+	type DeviceLoginRequest,
 	type FileEntry,
 	type Host,
 	type Invite,
@@ -42,6 +43,10 @@ import type {
 	ComputeAccount,
 	ComputeSource,
 	ComputeViewer,
+	DeviceLogin,
+	DeviceLoginsSource,
+	EgressSource,
+	EnvironmentsSource,
 	HostingMode,
 	HostsSource,
 	ProxySource,
@@ -317,9 +322,14 @@ function sandboxesSource(context: Context): SandboxesSource {
 		access: async (id) => {
 			// microVMs only: an isolate's `not_supported` rejects the lot. SSH's private key, when Kantel makes one, has no
 			// place in the UI's access and is dropped.
-			const [ssh, desktop, browser] = await Promise.all([api.openSsh(id), api.openDesktop(id), api.openBrowser(id)]);
+			const [ssh, desktop, watch, browser] = await Promise.all([
+				api.openSsh(id),
+				api.openDesktop(id),
+				api.openDesktop(id, { viewOnly: true }),
+				api.openBrowser(id),
+			]);
 			context.learnHost(ssh.host);
-			return { ssh: ssh.command, desktopUrl: desktop.url, browserUrl: browser.url };
+			return { ssh: ssh.command, desktopUrl: desktop.url, desktopViewUrl: watch.url, browserUrl: browser.url };
 		},
 		history: async (id) => (await allPages((cursor) => api.listCommands(id, after(cursor)))).map(commandOf),
 	};
@@ -465,6 +475,26 @@ function keysSource({ api }: Context): ApiKeysSource {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// Device sign-ins
+
+const deviceLoginOf = (login: DeviceLoginRequest): DeviceLogin => ({
+	userCode: login.userCode,
+	clientName: login.clientName,
+	state: login.state,
+	createdAt: login.createdAt,
+	expiresAt: login.expiresAt,
+});
+
+function devicesSource({ api }: Context): DeviceLoginsSource {
+	return {
+		get: async (userCode) => deviceLoginOf(await api.getDeviceLogin(userCode)),
+		approve: async (userCode, input) =>
+			deviceLoginOf(await api.approveDeviceLogin(userCode, { account: input.accountId })),
+		deny: async (userCode) => deviceLoginOf(await api.denyDeviceLogin(userCode)),
+	};
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // Egress proxy
 
 /** The API's default action and allow list as the UI's policy: deny with nothing allowed is closed. */
@@ -590,6 +620,36 @@ function deliveryOf(delivery: WebhookDelivery): UiWebhookDelivery {
 		attempt: delivery.attempts,
 		ok: delivery.state === "delivered",
 	};
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Environments and egress (TASK-4826). The compute API has no environment or egress routes yet: the list is empty, so
+// the page offers New environment, and every other call says the API can't do it yet. The sample data has the lot.
+
+function environmentsSource(): EnvironmentsSource {
+	const missing = async (): Promise<never> => {
+		throw notYet("Kantel's API doesn't keep environments yet.");
+	};
+	return {
+		list: async () => [],
+		get: missing,
+		create: missing,
+		update: missing,
+		remove: missing,
+		setVariable: missing,
+		removeVariable: missing,
+		setFile: missing,
+		removeFile: missing,
+		setRepos: missing,
+		setGrants: missing,
+	};
+}
+
+function egressSource(): EgressSource {
+	const missing = async (): Promise<never> => {
+		throw notYet("Kantel's API doesn't keep a sandbox's egress log or grants yet.");
+	};
+	return { get: missing, setGrants: missing };
 }
 
 /** The start of a signing secret, to tell webhooks apart: `whsec_9c1e`. */
@@ -827,6 +887,37 @@ function hostsSource({ api }: Context): HostsSource {
 	};
 }
 
+/** An account's own hosts (`/v1/hosts`, experimental): the same page, scoped to the account. */
+function ownHostsSource({ api }: Context, accountId: string): HostsSource {
+	return {
+		list: async () =>
+			(await api.listAccountHosts({ account: accountId })).items.filter((host) => host.state !== "revoked").map(hostOf),
+		join: async (input) => {
+			const made = await api.createAccountJoinToken({
+				account: accountId,
+				...(input.name === undefined || input.name === "" ? {} : { name: input.name }),
+				...(input.labels === undefined ? {} : { labels: input.labels }),
+			});
+			return { token: made.token, expiresAt: made.expiresAt, command: made.command };
+		},
+		drain: async (id) => hostOf(await api.updateAccountHost(id, { draining: true })),
+		undrain: async (id) => hostOf(await api.updateAccountHost(id, { draining: false })),
+		remove: async (id) => {
+			await api.removeAccountHost(id);
+		},
+	};
+}
+
+/** Whether the deployment lets accounts add hosts of their own: it answers `not_supported` when it doesn't. */
+async function offersOwnHosts({ api }: Context): Promise<boolean> {
+	try {
+		await api.listAccountHosts({});
+		return true;
+	} catch (caught) {
+		return !(caught instanceof KantelApiError && caught.code === "not_supported");
+	}
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Everything
 
@@ -838,7 +929,7 @@ const pageHost = (): string | undefined => {
 
 /**
  * The compute console on the gateway this console is served by. Asks who is calling first: a gateway that doesn't
- * serve the compute routes (the switch is off) answers 404, this throws, and the console shows no compute pages. The
+ * serve the compute routes answers 404, this throws, and the console shows no compute pages. The
  * hosts source is there only for a deployment super-admin; billing isn't, as the API has no plans.
  */
 export async function apiCompute(options: ComputeApiOptions = {}): Promise<ComputeSource> {
@@ -883,8 +974,16 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		snapshots: snapshotsSource(context),
 		keys: keysSource(context),
 		proxy: proxySource(context),
+		environments: environmentsSource(),
+		egress: egressSource(),
 		webhooks: webhooksSource(context),
 		telemetry: telemetrySource(context),
 		...(caller.superAdmin ? { hosts: hostsSource(context) } : {}),
+		// Anyone else manages their accounts' own hosts, where the deployment allows it.
+		...(!caller.superAdmin && (await offersOwnHosts(context))
+			? { ownHosts: (accountId: string) => ownHostsSource(context, accountId) }
+			: {}),
+		// Only a person approves a device; a console signed in with a key has nothing to approve with.
+		...(caller.apiKey === undefined ? { devices: devicesSource(context) } : {}),
 	};
 }

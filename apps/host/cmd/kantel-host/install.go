@@ -84,7 +84,7 @@ func install(args []string) error {
 	noStart := fs.Bool("no-start", false, "install and register, but don't start the service")
 	_ = fs.Parse(args)
 	if os.Geteuid() != 0 {
-		return errors.New("install needs root: run it with sudo (sudo npx @kantel/host install …)")
+		return errors.New("install needs root: run it with sudo (sudo kantel-host install …)")
 	}
 	if *controlPlane == "" {
 		return errors.New("--url is required: Kantel's URL, such as https://kantel.example.com")
@@ -353,6 +353,11 @@ func fetchImages(cfg agent.Config, source string, kvm bool) error {
 	if err != nil {
 		return fmt.Errorf("images manifest: %w", err)
 	}
+	if kvm {
+		if err := checkArch(manifest, arch); err != nil {
+			return fmt.Errorf("images at %s: %w", source, err)
+		}
+	}
 	get := func(name, dst string, mode os.FileMode, required bool) error {
 		f, ok := manifest.Files[name]
 		if !ok {
@@ -393,6 +398,32 @@ func fetchImages(cfg agent.Config, source string, kvm bool) error {
 		}
 	}
 	return nil
+}
+
+// checkArch says, before anything is downloaded, when the images are for other architectures only: one release holds
+// each architecture's kernel and sandbox image side by side (vmlinux-<arch>, sandbox-<arch>.ext4), and a host takes
+// its own.
+func checkArch(manifest ImageManifest, arch string) error {
+	var missing []string
+	for _, name := range []string{"vmlinux-" + arch, "sandbox-" + arch + ".ext4"} {
+		if _, ok := manifest.Files[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	var others []string
+	for _, other := range []string{"amd64", "arm64"} {
+		if _, ok := manifest.Files["sandbox-"+other+".ext4"]; ok && other != arch {
+			others = append(others, other)
+		}
+	}
+	if len(others) > 0 {
+		return fmt.Errorf("no %s images (%s), only %s: use a release with %s images, or --images with your own build (ARCHES=%s apps/host/guest/release.sh)",
+			arch, strings.Join(missing, ", "), strings.Join(others, ", "), arch, arch)
+	}
+	return fmt.Errorf("the images manifest has no %s", strings.Join(missing, " or "))
 }
 
 // fetchFirecracker gets Firecracker's release from GitHub and checks it against the release's SHA256SUMS.
@@ -546,7 +577,16 @@ func register(cfg agent.Config, token string) (string, string, error) {
 func selfUpdater(log *slog.Logger) agent.Updater {
 	return func(ctx context.Context, p proto.UpdateParams) error {
 		u := strings.NewReplacer("{version}", p.Version, "{os}", runtime.GOOS, "{arch}", archName()).Replace(p.URL)
-		if err := downloadBinary(ctx, u, p.SHA256); err != nil {
+		want := p.SHA256
+		// A binary from one of Kantel's GitHub Releases is checked against the release's SHA256SUMS.
+		if i := strings.LastIndex(u, "/"); want == "" && strings.HasPrefix(u, releaseRepo+"/") && i > 0 {
+			sum, err := releaseSum(ctx, u[:i], u[i+1:])
+			if err != nil {
+				return err
+			}
+			want = sum
+		}
+		if err := downloadBinary(ctx, u, want); err != nil {
 			return err
 		}
 		log.Info("updated; restarting", "version", p.Version)
@@ -556,6 +596,53 @@ func selfUpdater(log *slog.Logger) agent.Updater {
 		}()
 		return nil
 	}
+}
+
+// releaseRepo is where Kantel's releases are: each carries kantel-host-linux-{amd64,arm64} and SHA256SUMS.
+const releaseRepo = "https://github.com/lleverage-ai/kantel/releases"
+
+// releaseBase is the download URL of a release's files: "latest" or a version such as 0.2.0.
+func releaseBase(version string) string {
+	if version == "" || version == "latest" {
+		return releaseRepo + "/latest/download"
+	}
+	return releaseRepo + "/download/v" + strings.TrimPrefix(version, "v")
+}
+
+// releaseSum reads asset's SHA-256 from the release's SHA256SUMS.
+func releaseSum(ctx context.Context, base, asset string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/SHA256SUMS", nil)
+	if err != nil {
+		return "", err
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		return "", fmt.Errorf("GET %s/SHA256SUMS: %s", base, res.Status)
+	}
+	raw, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	if err != nil {
+		return "", err
+	}
+	if sum := parseSums(string(raw))[asset]; sum != "" {
+		return sum, nil
+	}
+	return "", fmt.Errorf("%s/SHA256SUMS has no line for %s", base, asset)
+}
+
+// parseSums reads sha256sum's output: "<hex>  <name>" a line ("*<name>" in binary mode).
+func parseSums(text string) map[string]string {
+	sums := map[string]string{}
+	for _, line := range strings.Split(text, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && len(fields[0]) == 64 {
+			sums[strings.TrimPrefix(fields[1], "*")] = strings.ToLower(fields[0])
+		}
+	}
+	return sums
 }
 
 func downloadBinary(ctx context.Context, u, want string) error {
@@ -602,25 +689,25 @@ func downloadBinary(ctx context.Context, u, want string) error {
 
 func updateCmd(args []string) error {
 	fs := flag.NewFlagSet("update", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath, "config file")
-	from := fs.String("url", "", "the binary's URL (default: the control plane's for --version)")
-	ver := fs.String("version", "latest", "the version")
+	_ = fs.String("config", defaultConfigPath, "config file (unused: kept so older scripts still parse)")
+	from := fs.String("url", "", "the binary's URL (default: Kantel's GitHub Release for --version, checked against its SHA256SUMS)")
+	ver := fs.String("version", "latest", "the release, such as 0.2.0, or latest")
 	_ = fs.Parse(args)
 	if os.Geteuid() != 0 {
 		return errors.New("update needs root")
 	}
-	cfg, err := agent.LoadConfig(*configPath)
-	if err != nil {
-		return err
-	}
-	u := *from
+	ctx := context.Background()
+	u, want := *from, ""
 	if u == "" {
-		if cfg.ControlPlane == "" {
-			return errors.New("not registered: give --url")
+		base := releaseBase(*ver)
+		asset := "kantel-host-linux-" + archName()
+		sum, err := releaseSum(ctx, base, asset)
+		if err != nil {
+			return err
 		}
-		u = cfg.ControlPlane + "/v1/hosts/releases/" + *ver + "/kantel-host-linux-" + archName()
+		u, want = base+"/"+asset, sum
 	}
-	if err := downloadBinary(context.Background(), u, ""); err != nil {
+	if err := downloadBinary(ctx, u, want); err != nil {
 		return err
 	}
 	if out, err := runOutput("systemctl", "restart", "kantel-host"); err != nil {

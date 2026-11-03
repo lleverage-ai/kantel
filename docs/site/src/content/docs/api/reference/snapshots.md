@@ -9,15 +9,11 @@ sidebar:
 
 A sandbox's automatic history and named saved snapshots, and the files in them.
 
-:::caution
-Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
-:::
-
 ## List snapshots
 
 `GET /v1/snapshots` (SDK method `listSnapshots`)
 
-The account's snapshots, newest first: saved ones, one sandbox's history (`sandboxId`), or both. A key needs `snapshots:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+The account's snapshots, newest first: saved ones, one sandbox's history (`sandboxId`), or both. A key needs `snapshots:read`.
 
 **Query parameters**
 
@@ -39,7 +35,7 @@ The account's snapshots, newest first: saved ones, one sandbox's history (`sandb
 
 `POST /v1/snapshots` (SDK method `saveSnapshot`)
 
-Keeps a sandbox's state now, or one snapshot of its history, under a name until it is deleted. New sandboxes start from it with `from: <name>`. A name in use is `conflict` unless `replace`. A key needs `snapshots:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Keeps a sandbox's state now, or one snapshot of its history, under a name until it is deleted. New sandboxes start from it with `from: <name>`. A name in use is `conflict` unless `replace`. A key needs `snapshots:write`.
 
 **Body**: [SaveSnapshotBody](/api/reference/types/#savesnapshotbody)
 
@@ -53,7 +49,7 @@ Keeps a sandbox's state now, or one snapshot of its history, under a name until 
 
 `POST /v1/sandboxes/{sandboxId}/snapshots` (SDK method `takeSnapshot`)
 
-Adds a snapshot of the sandbox's disk to its history now, without stopping it. Kantel also takes them by itself. A key needs `snapshots:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Adds a snapshot of the sandbox's disk to its history now, without stopping it. Kantel also takes them by itself. A key needs `snapshots:write`.
 
 **Path parameters**
 
@@ -73,7 +69,7 @@ Adds a snapshot of the sandbox's disk to its history now, without stopping it. K
 
 `GET /v1/snapshots/{snapshotId}` (SDK method `getSnapshot`)
 
-A key needs `snapshots:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+A key needs `snapshots:read`.
 
 **Path parameters**
 
@@ -91,7 +87,7 @@ A key needs `snapshots:read`. Experimental: served only where the deployment set
 
 `DELETE /v1/snapshots/{snapshotId}` (SDK method `deleteSnapshot`)
 
-Deletes a saved snapshot, or one of a sandbox's history. A sandbox's newest snapshot, which a resume needs, is `conflict` while the sandbox is stopped. A key needs `snapshots:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Deletes a saved snapshot, or one of a sandbox's history. A sandbox's newest snapshot, which a resume needs, is `conflict` while the sandbox is stopped. A key needs `snapshots:write`.
 
 **Path parameters**
 
@@ -109,7 +105,7 @@ Deletes a saved snapshot, or one of a sandbox's history. A sandbox's newest snap
 
 `GET /v1/snapshots/{snapshotId}/files` (SDK method `listSnapshotFiles`)
 
-One directory of the snapshot's disk, for a file browser. A key needs `snapshots:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+One directory of the snapshot's disk, for a file browser. A key needs `snapshots:read`.
 
 **Path parameters**
 
@@ -135,7 +131,7 @@ One directory of the snapshot's disk, for a file browser. A key needs `snapshots
 
 `GET /v1/snapshots/{snapshotId}/file` (SDK method `readSnapshotFile`)
 
-A file of up to 1 MiB from the snapshot's disk. A key needs `snapshots:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+A file of up to 1 MiB from the snapshot's disk. A key needs `snapshots:read`.
 
 **Path parameters**
 

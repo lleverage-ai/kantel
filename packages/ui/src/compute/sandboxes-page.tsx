@@ -5,14 +5,14 @@
 // it's running. Every call goes through the `SandboxesSource` the host binds; stories bind it to fixtures.
 
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Button } from "../primitives/button.tsx";
+import { Button, buttonClass } from "../primitives/button.tsx";
 import { SegmentedControl, SelectField, TextField } from "../primitives/controls.tsx";
 import { Dialog } from "../primitives/dialog.tsx";
 import { PageHeader } from "../primitives/form-layout.tsx";
 import { compactAge, duration } from "../primitives/format.ts";
 import { ForkIcon, GlobeIcon, PlusIcon, StopIcon, TerminalIcon } from "../primitives/icons.tsx";
 import { useLoad } from "../primitives/load.ts";
-import { AppWindowIcon, EllipsisIcon, PlayIcon, ReconnectIcon, TrashIcon } from "../primitives/lucide.tsx";
+import { AppWindowIcon, EllipsisIcon, PlayIcon, ProxyIcon, ReconnectIcon, TrashIcon } from "../primitives/lucide.tsx";
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { Badge, StatusLabel } from "../primitives/status.tsx";
@@ -21,6 +21,7 @@ import {
 	type ComputeAccount,
 	type CreateSandboxInput,
 	costText,
+	type Environment,
 	type HostingMode,
 	SANDBOX_KIND_LABELS,
 	SANDBOX_SIZES,
@@ -53,12 +54,26 @@ export interface SandboxesPageProps {
 	};
 	/** A sandbox's snapshots on the Snapshots page. */
 	readonly snapshotsHref?: (sandboxId: string) => string;
+	/** The account's environments, which New sandbox offers to start from. */
+	readonly environments?: (accountId: string) => Promise<readonly Environment[]>;
+	/** Opens a sandbox's egress page: its log, placeholders and grants. */
+	readonly onEgress?: (sandboxId: string) => void;
 	/** A fixed time, for stories. */
 	readonly now?: number;
 	/** How often the list is read again while a sandbox is starting or stopping, in milliseconds. Default 1000. */
 	readonly pollMs?: number;
 	/** Open New sandbox when the page opens, for a story or a `?new` link. */
 	readonly creating?: boolean;
+	/**
+	 * The deployment has no host yet, and the person may add one: with no sandboxes, the page says sandboxes need a host
+	 * and links here (the Hosts page's Add a host) rather than offering New sandbox.
+	 */
+	readonly addHostHref?: string;
+	/**
+	 * The person's account has no host of its own yet, and may add one. The deployment may still have shared hosts the
+	 * account can use, so with no sandboxes New sandbox stays the action, with a link here to add a host beside it.
+	 */
+	readonly ownHostHref?: string;
 }
 
 const AUTO_STOP_CHOICES = [
@@ -94,9 +109,13 @@ export function SandboxesPage({
 	hosting,
 	snapshots,
 	snapshotsHref,
+	environments,
+	onEgress,
 	now: fixedNow,
 	pollMs = 1000,
 	creating = false,
+	addHostHref,
+	ownHostHref,
 }: SandboxesPageProps) {
 	const { state, reload } = useLoad(() => source.list(account.id), [source, account.id]);
 	// Sandboxes made or changed here, ahead of the next read: a new one shows the moment New sandbox is pressed.
@@ -231,17 +250,40 @@ export function SandboxesPage({
 				</Notice>
 			) : sandboxes === undefined ? (
 				<SandboxesSkeleton />
+			) : sandboxes.length === 0 && addHostHref !== undefined ? (
+				<EmptyState
+					title="Add a host to run sandboxes on"
+					action={
+						<a className={`${buttonClass("primary", "sm")} no-underline`} href={addHostHref}>
+							<PlusIcon size="sm" />
+							Add a host
+						</a>
+					}
+				>
+					Sandboxes run on hosts: Linux machines running the Kantel host agent. This install has none yet. Adding one
+					takes one command on the machine, which then dials out to this console, so it needs no inbound ports.
+				</EmptyState>
 			) : sandboxes.length === 0 ? (
 				<EmptyState
 					title="No sandboxes yet"
 					action={
-						<Button variant="primary" icon={<PlusIcon size="sm" />} onClick={() => setNewOpen(true)}>
-							New sandbox
-						</Button>
+						<div className="flex flex-wrap items-center justify-center gap-2">
+							<Button variant="primary" icon={<PlusIcon size="sm" />} onClick={() => setNewOpen(true)}>
+								New sandbox
+							</Button>
+							{ownHostHref === undefined ? null : (
+								<a className={`${buttonClass("secondary", "sm")} no-underline`} href={ownHostHref}>
+									Add a host of your own
+								</a>
+							)}
+						</div>
 					}
 				>
 					A sandbox is a Linux machine for an agent: an isolate that starts in milliseconds, or a microVM with root,
 					Docker and its own kernel. Make one here, or from the CLI with kantel new.
+					{ownHostHref === undefined
+						? null
+						: " If there's no host here for your account, add a Linux machine of your own: one command on it, and only your account's sandboxes run there."}
 				</EmptyState>
 			) : (
 				<>
@@ -260,6 +302,7 @@ export function SandboxesPage({
 						source={source}
 						{...(snapshots === undefined ? {} : { save: snapshots.save })}
 						{...(snapshotsHref === undefined ? {} : { snapshotsHref })}
+						{...(onEgress === undefined ? {} : { onEgress })}
 						onChange={change}
 						onNotice={setNotice}
 					/>
@@ -271,6 +314,7 @@ export function SandboxesPage({
 				hosting={hosting}
 				sizeFigures={source.sizeFigures ?? true}
 				{...(snapshots === undefined ? {} : { savedSnapshots: () => snapshots.saved(account.id) })}
+				{...(environments === undefined ? {} : { environments: () => environments(account.id) })}
 				onClose={() => setNewOpen(false)}
 				onCreate={(input) => void create(input)}
 			/>
@@ -299,6 +343,7 @@ function SandboxTable({
 	source,
 	save,
 	snapshotsHref,
+	onEgress,
 	onChange,
 	onNotice,
 }: {
@@ -308,6 +353,7 @@ function SandboxTable({
 	source: SandboxesSource;
 	save?: (sandboxId: string, name: string) => Promise<SavedSnapshot>;
 	snapshotsHref?: (sandboxId: string) => string;
+	onEgress?: (sandboxId: string) => void;
 	onChange: (box: Sandbox | null, id: string) => void;
 	onNotice: NoticeSetter;
 }) {
@@ -367,6 +413,7 @@ function SandboxTable({
 								source={source}
 								canSave={save !== undefined}
 								{...(snapshotsHref === undefined ? {} : { snapshotsHref })}
+								{...(onEgress === undefined ? {} : { onEgress })}
 								onChange={onChange}
 								onNotice={onNotice}
 								onHistory={setHistory}
@@ -408,6 +455,7 @@ function SandboxRow({
 	source,
 	canSave,
 	snapshotsHref,
+	onEgress,
 	onChange,
 	onNotice,
 	onHistory,
@@ -420,6 +468,7 @@ function SandboxRow({
 	source: SandboxesSource;
 	canSave: boolean;
 	snapshotsHref?: (sandboxId: string) => string;
+	onEgress?: (sandboxId: string) => void;
 	onChange: (box: Sandbox | null, id: string) => void;
 	onNotice: NoticeSetter;
 	onHistory: (box: Sandbox) => void;
@@ -439,14 +488,15 @@ function SandboxRow({
 			onNotice({ level: "error", text: messageOf(caught, `Kantel couldn't ${what} ${sandbox.name}. Try again.`) });
 		}
 	};
-	const openAccess = async (which: "ssh" | "desktop" | "browser") => {
+	const openAccess = async (which: "ssh" | "desktop" | "watch" | "browser") => {
 		try {
 			const access = await source.access(sandbox.id);
 			if (which === "ssh") {
 				await navigator.clipboard?.writeText(access.ssh);
 				onNotice({ level: "info", text: `Copied: ${access.ssh}` });
 			} else {
-				window.open(which === "desktop" ? access.desktopUrl : access.browserUrl, "_blank", "noopener");
+				const url = { desktop: access.desktopUrl, watch: access.desktopViewUrl, browser: access.browserUrl }[which];
+				window.open(url, "_blank", "noopener");
 			}
 		} catch (caught) {
 			onNotice({ level: "error", text: messageOf(caught, "Kantel couldn't reach the sandbox. Try again.") });
@@ -472,6 +522,14 @@ function SandboxRow({
 		},
 		{
 			kind: "item",
+			id: "watch",
+			label: "Watch desktop",
+			icon: <AppWindowIcon />,
+			disabled: !can.connect || sandbox.kind === "isolate",
+			onSelect: () => void openAccess("watch"),
+		},
+		{
+			kind: "item",
 			id: "browser",
 			label: "Open browser",
 			icon: <GlobeIcon size="sm" />,
@@ -479,6 +537,17 @@ function SandboxRow({
 			onSelect: () => void openAccess("browser"),
 		},
 		{ kind: "item", id: "history", label: "Command history", onSelect: () => onHistory(sandbox) },
+		...(onEgress === undefined || pending
+			? []
+			: [
+					{
+						kind: "item" as const,
+						id: "egress",
+						label: "Egress log and grants",
+						icon: <ProxyIcon />,
+						onSelect: () => onEgress(sandbox.id),
+					},
+				]),
 		{ kind: "separator", id: "sep-power" },
 		can.stop
 			? {
@@ -545,6 +614,9 @@ function SandboxRow({
 			<td className={td}>
 				<span className="block max-w-(--kt-card-width) truncate font-medium text-fg">{sandbox.name}</span>
 				{sandbox.hostname === "" ? null : <span className={`${cellSub} truncate`}>{sandbox.hostname}</span>}
+				{sandbox.environment === undefined ? null : (
+					<span className={`${cellSub} truncate`}>Environment {sandbox.environment.name}</span>
+				)}
 			</td>
 			<td className={td}>
 				<span className={cellMono} title={sandbox.id}>
@@ -615,6 +687,7 @@ function NewSandboxDialog({
 	hosting,
 	sizeFigures,
 	savedSnapshots,
+	environments,
 	onClose,
 	onCreate,
 }: {
@@ -623,6 +696,7 @@ function NewSandboxDialog({
 	hosting: HostingMode;
 	sizeFigures: boolean;
 	savedSnapshots?: () => Promise<readonly SavedSnapshot[]>;
+	environments?: () => Promise<readonly Environment[]>;
 	onClose: () => void;
 	onCreate: (input: CreateSandboxInput) => void;
 }) {
@@ -631,13 +705,16 @@ function NewSandboxDialog({
 	const [size, setSize] = useState<SandboxSize>("medium");
 	const [autoStop, setAutoStop] = useState("60");
 	const [from, setFrom] = useState("");
+	const [environment, setEnvironment] = useState("");
 	const [saved, setSaved] = useState<readonly SavedSnapshot[]>([]);
+	const [envs, setEnvs] = useState<readonly Environment[]>([]);
 	const asked = useRef(false);
 	useEffect(() => {
-		if (!open || asked.current || savedSnapshots === undefined) return;
+		if (!open || asked.current) return;
 		asked.current = true;
-		savedSnapshots().then(setSaved, () => setSaved([]));
-	}, [open, savedSnapshots]);
+		savedSnapshots?.().then(setSaved, () => setSaved([]));
+		environments?.().then(setEnvs, () => setEnvs([]));
+	}, [open, savedSnapshots, environments]);
 	const valid = name === "" || /^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/.test(name);
 	const fromOptions = saved.filter((entry) => entry.kind === kind);
 	const submit = () => {
@@ -648,10 +725,12 @@ function NewSandboxDialog({
 			kind,
 			size: kind === "isolate" ? "small" : size,
 			...(from === "" ? {} : { fromSnapshot: from }),
+			...(environment === "" ? {} : { environmentId: environment }),
 			...(autoStop === "never" ? {} : { autoStopMinutes: Number(autoStop) }),
 		});
 		setName("");
 		setFrom("");
+		setEnvironment("");
 	};
 	return (
 		<Dialog
@@ -714,6 +793,15 @@ function NewSandboxDialog({
 						}))}
 					/>
 				) : null}
+				{envs.length === 0 ? null : (
+					<SelectField
+						label="Environment"
+						hint="Its variables, secret files, repositories and egress grants. A protected variable is a placeholder in the sandbox."
+						value={environment}
+						onChange={(event) => setEnvironment(event.currentTarget.value)}
+						options={[{ value: "", label: "None" }, ...envs.map((env) => ({ value: env.id, label: env.name }))]}
+					/>
+				)}
 				<SelectField
 					label="Stop after"
 					hint="It keeps its disk as a snapshot when it stops, so you can resume it."

@@ -1,10 +1,10 @@
 import { defineConfig } from "vitest/config";
 
-// The gateway's and the browser host's in-process tests run on Node in CI's check job. Everything else in test/ needs
-// the compose stack and runs with `bun test` (spike/conformance/run.ts --target=selfhosted).
+// The gateway's in-process tests run on Node in CI's check job. durable.stack.test.ts needs a Postgres
+// (KANTEL_TEST_POSTGRES_URL) and skips without one; test/bindings.ts runs it against the compose stack's.
 export default defineConfig({
 	test: {
-		include: ["test/gateway/**/*.test.ts", "test/browser/**/*.test.ts"],
+		include: ["test/gateway/**/*.test.ts"],
 		environment: "node",
 		testTimeout: 20_000,
 	},

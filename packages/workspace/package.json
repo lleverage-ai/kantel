@@ -9,30 +9,23 @@
 		".": "./src/index.ts",
 		"./memory": "./src/memory.ts",
 		"./read-api": "./src/read-api.ts",
-		"./write-api": "./src/write-api.ts",
 		"./mounts": "./src/mounts.ts",
 		"./stored": "./src/stored.ts",
 		"./hydration": "./src/hydration.ts",
 		"./tree": "./src/tree.ts",
 		"./seed": "./src/seed.ts",
-		"./seed-spec": "./src/seed-spec.ts",
 		"./archive": "./src/archive.ts",
 		"./git-tarball": "./src/git-tarball.ts",
 		"./export": "./src/export.ts",
 		"./dependency-layers": "./src/dependency-layers.ts",
 		"./git-refs": "./src/git-refs.ts",
-		"./git-history": "./src/git-history.ts",
-		"./shares": "./src/shares.ts",
-		"./shares-api": "./src/shares-api.ts"
+		"./git-history": "./src/git-history.ts"
 	},
 	"dependencies": {
-		"@kantel/api": "workspace:*",
 		"@kantel/contracts": "workspace:*",
-		"@kantel/sql": "workspace:*",
 		"isomorphic-git": "1.44.8"
 	},
 	"devDependencies": {
-		"@kantel/testing": "workspace:*",
-		"@kantel/skills": "workspace:*"
+		"@kantel/testing": "workspace:*"
 	}
 }

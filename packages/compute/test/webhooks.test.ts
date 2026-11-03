@@ -99,7 +99,7 @@ async function dispatcherWith(statuses: readonly number[]) {
 		return new Response("", { status: statuses[sent.length - 1] ?? statuses[statuses.length - 1] ?? 200 });
 	};
 	const dispatcher = createWebhookDispatcher({ store, fetch: fakeFetch, now: () => clock.now });
-	return { store, clock, secret, sent, dispatcher };
+	return { store, clock, secret, sent, dispatcher, fetch: fakeFetch };
 }
 
 const event: computeSchema.Event = {
@@ -152,6 +152,34 @@ describe("the dispatcher", () => {
 		const webhook = await store.webhooks.get("whk_1");
 		expect(webhook?.lastDelivery).toEqual({ at: clock.now, ok: true, status: 200 });
 		expect(webhook?.consecutiveFailures).toBe(0);
+	});
+
+	it("sends a delivery once when two dispatchers (two gateways) share the store", async () => {
+		const { store, clock, sent, dispatcher, fetch } = await dispatcherWith([200]);
+		const other = createWebhookDispatcher({ store, fetch, now: () => clock.now });
+		const [queued] = await dispatcher.enqueue(event);
+		await Promise.all([dispatcher.drain(), other.drain()]);
+		expect(sent).toHaveLength(1);
+		expect(await store.deliveries.get(queued?.id ?? "")).toMatchObject({ state: "delivered", attempts: 1 });
+		await Promise.all([dispatcher.drain(), other.drain()]);
+		expect(sent).toHaveLength(1);
+	});
+
+	it("queues a delivery only once its event is stored, and none if storing it fails", async () => {
+		const { store, dispatcher } = await dispatcherWith([200]);
+		let store_!: () => void;
+		const written = new Promise<void>((resolve) => {
+			store_ = resolve;
+		});
+		const queuing = dispatcher.enqueue(event, written);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		expect(await store.deliveries.list()).toEqual([]);
+		store_();
+		expect(await queuing).toHaveLength(1);
+
+		const failed = Promise.reject(new Error("the event wasn't stored"));
+		await expect(dispatcher.enqueue({ ...event, id: "evt_2" }, failed)).rejects.toThrow("wasn't stored");
+		expect(await store.deliveries.list({ eventId: "evt_2" })).toEqual([]);
 	});
 
 	it("queues nothing for an event type the webhook doesn't take", async () => {

@@ -8,10 +8,10 @@ sidebar:
 ---
 
 :::caution[Experimental]
-These routes are part of Kantel's API, and a control plane serves them only when it runs with `KANTEL_COMPUTE=experimental`. Their shapes may still change.
+These routes are part of Kantel's API, which every control plane serves. Their shapes may still change.
 :::
 
-An app listening on a port inside a sandbox can get an HTTPS URL, so you, a reviewer or a test runner can open it from anywhere. The request reaches the sandbox through its host's tunnel, so the host needs no open ports of its own.
+An app listening on a port inside a sandbox can get an HTTPS URL, so you, a reviewer or a test runner can open it from anywhere. The sandbox has no address of its own: the control plane answers the URL and passes each request, WebSockets included, to the port through its host's tunnel, so neither the sandbox nor the host needs an open port. On your own hosts this needs a [domain for ports](/self-hosting/install/#run-sandboxes-on-your-own-linux-hosts).
 
 The examples use `KANTEL_URL`, `KANTEL_API_KEY` and the `kantel` client set up in [Create and manage sandboxes](/sandboxes/lifecycle/#before-you-start). The key needs `access`. A sandbox can expose ports when its `capabilities.ports` is `true`.
 
@@ -31,11 +31,19 @@ const { url } = await kantel.exposePort("sbx_4kq9x2mt", { port: 3000 });
 console.log(url);
 ```
 
-The answer is an [ExposedPort](/api/reference/types/#exposedport) with the URL. Its host name starts with the sandbox's `subdomain`, under your deployment's sandbox domain. Exposing a port that's already exposed answers the URL it has.
+The answer is an [ExposedPort](/api/reference/types/#exposedport) with the URL. Its host name is the port and the sandbox's `subdomain` under the deployment's ports domain: `ports.kantel.dev` on Kantel's hosted service, as in `https://3000-brave-otter-ab12cd.ports.kantel.dev`, or the domain you set on your own install. Exposing a port that's already exposed answers the URL it has.
+
+Every port name under one ports domain is the same site to browsers until the domain is on the Public Suffix List, and `ports.kantel.dev` isn't yet. So a page one sandbox serves can set cookies another sandbox's pages receive: don't rely on cookies being private between sandboxes. [Security model](/self-hosting/security/#the-ports-domain) has the details.
+
+The same goes for a console under the same registrable domain, such as `app.kantel.dev`: a port's page is the same site to it. The console doesn't depend on cookies or `SameSite` to stay safe from that. Its session is never a cookie, and it refuses a browser's changes from any origin but its own ([the console and the ports domain](/self-hosting/security/#the-console-and-the-ports-domain)). Listing `ports.kantel.dev` on the Public Suffix List, or giving hosted ports a domain of their own, is still to come.
 
 ## Tokens and public URLs
 
-By default the URL carries a token, and anyone holding the whole URL can open it. Treat it like a password: share it only with people who should see the app.
+By default the URL carries a token (`?_token=...`), and anyone holding the whole URL can open it. Treat it like a password: share it only with people who should see the app. A request without the token is refused with `401` and never reaches the sandbox.
+
+Opening the URL in a browser trades the token for a cookie on that one host name and takes it out of the address bar, so the app's own links and requests work. A script or test runner can send the token in the query each time, or as the `_kantel_port` cookie. Kantel takes the token and its cookie off before the request reaches the app.
+
+To end a token, hide the port: exposing it afterwards gives it a new one. Stopping or deleting the sandbox ends its ports too.
 
 To let anyone open it with no token, such as a preview you want to post in a pull request, expose it with `public`:
 

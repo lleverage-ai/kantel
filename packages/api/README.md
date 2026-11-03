@@ -6,20 +6,24 @@ schemas). Everything else is made from those definitions:
 
 | What | Where | Made by |
 | --- | --- | --- |
-| The server's routing and request checks | `createRouter(routes, handlers)` (`src/router.ts`) | `@kantel/runtime/http`'s `createSessionApi` serves `sessionRoutes`; `@kantel/schedules/http`'s `createSchedulesApi` serves `scheduleRoutes` |
+| The server's routing and request checks | `createRouter(routes, handlers)` (`src/router.ts`) | `@kantel/compute/http` serves `computeRoutes`; the dormant `@kantel/browser/http` and `@kantel/environments/http` serve `browserRoutes` and `environmentRoutes` |
 | The OpenAPI 3.1 document | `generated/openapi.json` (`@kantel/api/openapi.json`) | `pnpm --filter @kantel/api generate` |
 | The TypeScript SDK | `generated/sdk.ts` (`@kantel/api/sdk`) | the same |
 
 The console uses the public API like any other client, so anything it can do a host app can do too.
 
-## The compute plane (experimental)
+`routes` holds the compute plane's routes, the projects list, and the browser and environment routes of the dormant
+libraries. The agent plane's routes (sessions, skills, memory, schedules, sharing, connections, tool servers and model
+providers) were removed in TASK-4721; they are on the `agent-plane-archive` branch.
+
+## The compute plane
 
 The compute plane's routes are in `src/compute-routes.ts` over `src/compute-schema.ts`, and in `routes` like every
 other: accounts and organisations (`/whoami`, `/accounts`), sandboxes (`/sandboxes`, isolates and microVMs behind one
 API) with their commands, files, ports, SSH, desktop and browser, snapshots (`/snapshots`, a sandbox's automatic history
 and named saved ones), scoped API keys (`/api-keys`), the egress proxy's settings (`/proxy`), events, webhooks and
-OpenTelemetry export (`/events`, `/webhooks`, `/telemetry`), and the super-admin's hosts (`/admin/hosts`). A deployment
-serves them only with `KANTEL_COMPUTE=experimental`. The schemas are the source of the types (`Static`), so these have
+OpenTelemetry export (`/events`, `/webhooks`, `/telemetry`), and the super-admin's hosts (`/admin/hosts`). A self-hosted
+gateway always serves them. The schemas are the source of the types (`Static`), so these have
 no twin in `@kantel/contracts`; `computeSchema.API_KEY_SCOPES`, `API_KEY_PRESETS` and `EVENT_TYPES` list the values a
 server checks.
 
@@ -45,8 +49,8 @@ await kantel.stopSandbox(sandbox.id);
 ## The router
 
 `createRouter(routes, handlers, { basePath })` returns `(ctx, request) => Promise<Response | undefined>`. It matches by
-method and path (`/sessions/{sessionId}`), checks path parameters, query and body against the route's schemas and
-answers a mismatch with an `invalid` `KantelError` naming the field (`body agentId: must be string`). Body properties
+method and path (`/sandboxes/{sandboxId}`), checks path parameters, query and body against the route's schemas and
+answers a mismatch with an `invalid` `KantelError` naming the field (`body command: must be string`). Body properties
 the schema doesn't name are dropped before the handler sees them, so a caller can't slip a field past the contract.
 Query values are converted by the schema (`limit=20` is a number), and `<name>.<key>=<value>` is gathered into a record
 when the schema has a `name` property (`label.ref=a`). A handler returns the route's output, which is sent as JSON with
@@ -64,30 +68,20 @@ then per-call options (`signal`, `requestId`, `headers`).
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 
 const kantel = createKantelClient({ baseUrl: "https://kantel.example/v1", token: process.env.KANTEL_API_KEY });
-const session = await kantel.createSession({
-	projectId: "proj-docs",
-	agentId: "assistant",
-	labels: { lleverageRunId: "run-42" },
-	message: { text: "Summarise the open invoices" },
-});
-const steer = await kantel.sendMessage(
-	session.id,
-	{ via: "steer", text: "Only this month's" },
-	{ idempotencyKey: crypto.randomUUID() },
-);
+const sandbox = await kantel.createSandbox({ type: "isolate", wait: true });
+// Paths are relative to the sandbox user's home unless they start with `/`.
+await kantel.writeFile(sandbox.id, { path: "bin/hello.sh", content: "#!/bin/sh\necho hello\n", mode: "0755" });
+const run = await kantel.runCommand(sandbox.id, { command: "bin/hello.sh" });
+console.log(run.stdout);
 
-// Without a stream: poll until the run ends (202 `pending` until then), answered, failed or aborted.
-let result = await kantel.getRunResult(session.id, { submission: steer.id });
-while (result.status === "pending") result = await kantel.getRunResult(session.id, { submission: steer.id });
+// Three copies of its state, for three agents to try different things from.
+const { items: forks } = await kantel.forkSandbox(sandbox.id, { count: 3 });
 
-// A session's first message fixes its model: `getSessionModels` says `locked` from then on, and another model is a
-// 409 `conflict`. Its thinking level can still change, though that may cost the next call the prompt cache.
-await kantel.sendMessage(session.id, { text: "Double-check the totals", thinking: "high" });
-
-// @kantel/protocol frames over a WebSocket; fold them with applyFrames, resume with { after: stream.cursor }.
-const stream = kantel.streamSession(session.id, { onFrames: (frames) => render(frames) });
-await kantel.abortSession(session.id, { reason: "The user stopped it" });
-stream.close();
+try {
+	await kantel.readFile(sandbox.id, { path: "missing.txt" });
+} catch (error) {
+	if (!(error instanceof KantelApiError) || error.code !== "not_found") throw error;
+}
 ```
 
 An error answer rejects with a `KantelApiError` carrying the HTTP status and Kantel's error code (`not_found`,

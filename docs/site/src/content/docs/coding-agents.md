@@ -8,7 +8,7 @@ sidebar:
 ---
 
 :::caution[Experimental]
-The agent drives Kantel through the compute API, which a control plane serves only when it runs with `KANTEL_COMPUTE=experimental`. Its shapes may still change.
+The agent drives Kantel through the compute API, which every control plane serves. Its shapes may still change.
 :::
 
 A coding agent on your machine can do its risky or heavy work in a Kantel sandbox instead of on your laptop: run a test suite on a clean Linux, try a migration, start Docker, open a browser, or fork five copies to try five fixes. The agent stays where it is and reaches Kantel in one of two ways:
@@ -17,6 +17,16 @@ A coding agent on your machine can do its risky or heavy work in a Kantel sandbo
 - with a skill that teaches it Kantel's API over `curl`, which works in any agent that runs shell commands, pi included.
 
 You set it up once: a key for the agent, the MCP server or the skill, and a few lines in `AGENTS.md`.
+
+## The quick way: kantel init
+
+With the [`kantel` command](/tools/cli/) installed and signed in (`kantel login`), run this in your project:
+
+```sh
+kantel init
+```
+
+It adds Kantel's block to `AGENTS.md` and `CLAUDE.md` and installs a `kantel` skill in `.agents/skills/` (Codex and pi) and `.claude/skills/` (Claude Code). The agent then makes sandboxes, runs commands, pushes your code and follows servers with the same `kantel` commands you use. `kantel init --global` puts the skill under your home for every project instead. The agent uses your sign-in unless you give it a key of its own, as in step 1, which is safer: the `agent` preset can't delete sandboxes or change your account. The steps below set up MCP or a `curl`-only skill instead.
 
 ## 1. Give the agent a key
 
@@ -65,7 +75,7 @@ The agent then has tools such as `sandbox_create`, `sandbox_exec` and `file_writ
 
 ### pi and the kantel command
 
-pi doesn't take MCP servers. It runs the `kantel` command through its shell instead: install the command, start pi with `KANTEL_URL` and `KANTEL_API_KEY` set as in step 1, and either add the skill below or run `kantel agents --write` in your repository. That adds a block to `AGENTS.md` that tells pi how to make a sandbox, run commands in it, move files and stop it with the command.
+pi doesn't take MCP servers. It runs the `kantel` command through its shell instead: install the command, start pi with `KANTEL_URL` and `KANTEL_API_KEY` set as in step 1, and run `kantel init` in your repository, which adds the `kantel` skill and a block in `AGENTS.md` that tells pi how to make a sandbox, run commands in it, move files and stop it with the command. Or add the `curl` skill below.
 
 ## 3. Or add the skill
 

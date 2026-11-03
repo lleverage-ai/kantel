@@ -1,0 +1,23 @@
+#!/bin/sh
+# Prints the image's components and their versions as JSON (the build writes it to /etc/kantel/image.json).
+v() { "$@" 2>/dev/null | head -n1 | tr -d '"\\' ; }
+pkg() { dpkg-query -W -f '${Version}' "$1" 2>/dev/null; }
+. /etc/os-release
+cat <<EOF
+{
+  "os": "$PRETTY_NAME",
+  "aptSnapshot": "$(sed -n 's/^APT::Snapshot "\(.*\)";/\1/p' /etc/apt/apt.conf.d/50kantel-snapshot 2>/dev/null)",
+  "docker": "$(pkg docker-ce)",
+  "containerd": "$(pkg containerd.io)",
+  "node": "$(v node --version)",
+  "python": "$(v python3 --version)",
+  "go": "$(v go version)",
+  "git": "$(v git --version)",
+  "chromium": "$(pkg chromium)",
+  "chrome": "$(pkg google-chrome-stable)",
+  "selkies": "$(pkg selkies)",
+  "tigervnc": "$(pkg tigervnc-standalone-server)",
+  "xfce": "$(pkg xfce4-session)",
+  "openssh": "$(pkg openssh-server)"
+}
+EOF

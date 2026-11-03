@@ -2,7 +2,7 @@
  * A WebSocket client over a sandbox's port stream (`HostsService.sandboxes.openPort`): the handshake and RFC 6455
  * framing written out, because the gateway runs on Bun, whose `node:http` ignores `createConnection`, so `ws`'s client
  * can't be handed a stream that isn't a socket. The gateway uses it to pass a WebSocket through to a server in the
- * sandbox (Chrome's DevTools) message by message.
+ * sandbox (Chromium's DevTools) message by message.
  */
 import type { PortSink, PortStream } from "./hub.ts";
 
@@ -52,12 +52,16 @@ export function encodeClientFrame(opcode: number, payload: Uint8Array): Uint8Arr
 	return frame;
 }
 
-/** Opens a WebSocket to `path` on the port `open` connects to, as a client on `127.0.0.1:{port}`. */
+/**
+ * Opens a WebSocket to `path` on the port `open` connects to, as a client on `127.0.0.1:{port}`, or with `host` as its
+ * Host (an exposed port's public name).
+ */
 export function openPortWebSocket(
 	open: (sink: PortSink) => Promise<PortStream>,
 	port: number,
 	path: string,
 	handlers: PortWebSocketHandlers,
+	host = `127.0.0.1:${port}`,
 ): PortWebSocket {
 	let stream: PortStream | undefined;
 	let closed = false;
@@ -82,7 +86,7 @@ export function openPortWebSocket(
 
 	const key = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))));
 	const request =
-		`GET ${path} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
+		`GET ${path} HTTP/1.1\r\nHost: ${host.replace(/[\r\n]/g, "")}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
 		`Sec-WebSocket-Key: ${key}\r\nSec-WebSocket-Version: 13\r\n\r\n`;
 
 	const frames = () => {

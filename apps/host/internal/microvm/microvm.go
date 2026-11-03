@@ -52,10 +52,12 @@ import (
 // Tier is the microVM tier's name.
 const Tier = "microvm"
 
-// DefaultSizes are the shapes a host offers unless configured otherwise.
+// DefaultSizes are the shapes a host offers unless configured otherwise. Every microVM runs the desktop, whose
+// stream (Selkies, H.264 on the CPU) takes about a core while the screen changes and saturates 2 vCPUs at 1080p, so
+// the default has 4. vCPUs aren't reserved (the scheduler counts memory and disk), so this costs no density.
 var DefaultSizes = []proto.Size{
 	{Name: "small", VCPUs: 1, MemoryMiB: 1024, DiskGiB: 10},
-	{Name: "default", VCPUs: 2, MemoryMiB: 2048, DiskGiB: 20},
+	{Name: "default", VCPUs: 4, MemoryMiB: 2048, DiskGiB: 20},
 	{Name: "large", VCPUs: 4, MemoryMiB: 8192, DiskGiB: 50},
 }
 
@@ -69,7 +71,8 @@ type Config struct {
 	Network     *network.Manager
 	// ProxyPort is the host egress proxy's port on each sandbox's gateway address.
 	ProxyPort int
-	// DNS servers given to "open" sandboxes.
+	// DNS is unused: no sandbox has a route to a DNS server since the proxy became the only way out. Kept so old
+	// configs load.
 	DNS []string
 	// AutoSnapshots is how many automatic snapshots each sandbox keeps (default 5).
 	AutoSnapshots int
@@ -264,7 +267,9 @@ func (m *Manager) adopt() error {
 			machine, err := fc.Attach(s.vmDir(), s.meta.Pid)
 			if err == nil {
 				link := m.cfg.Network.LinkFor(s.meta.Slot, egressMode(s.meta.Egress))
-				m.cfg.Network.Reserve(s.meta.Slot)
+				if err := m.cfg.Network.Adopt(link); err != nil {
+					m.log.Warn("adopted sandbox's network rules", "sandbox", s.meta.ID, "error", err)
+				}
 				s.machine, s.link = machine, &link
 				s.guest = guest.NewClient(filepath.Join(s.vmDir(), fc.VsockSocket))
 				m.attach(s, link.Slot)
@@ -355,19 +360,16 @@ func (m *Manager) identity(s *sandbox, fresh bool) guest.Identity {
 	if fresh {
 		id.SSHAuthorizedKeys = append([]string{}, s.meta.SSHKeys...)
 	}
+	// The host's egress proxy is a sandbox's only way out, whatever its mode (package network): "open" is the proxy
+	// with no rules. With no route out there is no DNS to give either; the proxy resolves names.
 	mode := egressMode(s.meta.Egress)
-	if mode == network.EgressOpen {
-		id.DNS = m.cfg.DNS
-	}
 	if mode != network.EgressNone && m.cfg.ProxyPort > 0 {
 		proxy := fmt.Sprintf("http://sandbox@%s:%d", s.link.HostIP, m.cfg.ProxyPort)
 		id.ProxyEnv = map[string]string{
 			"HTTP_PROXY": proxy, "HTTPS_PROXY": proxy, "http_proxy": proxy, "https_proxy": proxy,
 			"NO_PROXY": "localhost,127.0.0.1,::1", "no_proxy": "localhost,127.0.0.1,::1",
-		}
-		if mode == network.EgressOpen && (s.meta.Egress == nil || s.meta.Egress.Upstream == "") {
-			// Open, with nothing upstream to attribute to: no need to send traffic through the host.
-			id.ProxyEnv = nil
+			// Node's fetch takes the proxy from the environment only when asked (Node 24 and later).
+			"NODE_USE_ENV_PROXY": "1",
 		}
 	}
 	if s.meta.Egress != nil {
@@ -442,13 +444,16 @@ func (m *Manager) template(ctx context.Context, size proto.Size) (string, timing
 	lock.Lock()
 	defer lock.Unlock()
 	dir := filepath.Join(m.cfg.Root, "templates", size.Name)
-	fingerprint := fc.Fingerprint(m.cfg.Firecracker, m.cfg.Kernel, m.cfg.Rootfs)
+	// The size's shape too: a snapshot restores the vCPUs and memory it was made with, so a size that changes (a new
+	// default, or the host's settings) needs a new template.
+	fingerprint := fc.Fingerprint(m.cfg.Firecracker, m.cfg.Kernel, m.cfg.Rootfs) +
+		fmt.Sprintf(" size=%d/%d/%d", size.VCPUs, size.MemoryMiB, size.DiskGiB)
 	if _, err := os.Stat(filepath.Join(dir, "ready")); err == nil {
 		if made, _ := os.ReadFile(filepath.Join(dir, "images")); string(made) == fingerprint {
 			return dir, nil, nil
 		}
-		// Made with other images (an update): running sandboxes keep their mapping of the old memory file.
-		m.log.Info("template is for other images; rebuilding", "size", size.Name)
+		// Made with other images (an update) or another shape: running sandboxes keep their mapping of the old memory file.
+		m.log.Info("template is for other images or another shape; rebuilding", "size", size.Name)
 	}
 	t := timings{}
 	start := time.Now()
@@ -488,8 +493,9 @@ func (m *Manager) template(ctx context.Context, size proto.Size) (string, timing
 		return "", nil, fmt.Errorf("template boot: %w (firecracker log: %s)", err, tail(filepath.Join(vm, fc.LogFile)))
 	}
 	t.step("agent", &start)
-	// Not SSH: the image has no host keys, so sshd starts only once a sandbox has its identity.
-	if _, err := client.WaitFor(bootCtx, "desktop", "browser", "docker"); err != nil {
+	// What the image says it runs (/etc/kantel/ready), else the desktop, browser and Docker. Not SSH: the image has
+	// no host keys, so sshd starts only once a sandbox has its identity.
+	if _, err := client.WaitExpected(bootCtx, "desktop", "browser", "docker"); err != nil {
 		m.log.Warn("template services not all ready; snapshotting anyway", "size", size.Name, "error", err)
 	}
 	t.step("services", &start)
@@ -1356,16 +1362,16 @@ func sanitizeUser(s string) string {
 	return s
 }
 
-func (m *Manager) ReadFile(ctx context.Context, p proto.FileParams) ([]byte, uint32, error) {
+func (m *Manager) ReadFile(ctx context.Context, p proto.FileParams) ([]byte, uint32, int64, error) {
 	client, err := m.running(p.SandboxID)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
-	data, mode, err := client.ReadFile(ctx, p.Path)
+	data, mode, size, err := client.ReadFile(ctx, p.Path, p.Offset, p.Length)
 	if guest.IsNotFound(err) {
-		return nil, 0, &proto.Error{Code: proto.ErrNotFound, Message: err.Error()}
+		return nil, 0, 0, &proto.Error{Code: proto.ErrNotFound, Message: err.Error()}
 	}
-	return data, mode, err
+	return data, mode, size, err
 }
 
 func (m *Manager) WriteFile(ctx context.Context, p proto.FileParams, data []byte) error {
@@ -1458,8 +1464,8 @@ func (m *Manager) TemplateTimings() map[string]json.RawMessage {
 var _ = io.EOF
 var _ = strconv.Itoa
 
-// SetEgress replaces a sandbox's egress: a running one's rules, upstream and headers change at once; a change of mode
-// (open, proxy, none), which its network was made for, takes effect when it next boots.
+// SetEgress replaces a sandbox's egress: a running one's rules, upstream and headers change at once, and so does a
+// move to or from "none" (the only mode the network itself knows about).
 func (m *Manager) SetEgress(id string, e *proto.Egress) error {
 	s, err := m.get(id)
 	if err != nil {
@@ -1471,6 +1477,12 @@ func (m *Manager) SetEgress(id string, e *proto.Egress) error {
 	err = m.writeMeta(s)
 	if running {
 		m.attach(s, slot)
+		// A move to or from "none" opens or shuts the proxy to it at once; the rest is the proxy's rules.
+		if s.link != nil {
+			if nerr := m.cfg.Network.SetEgress(s.link, egressMode(e)); nerr != nil && err == nil {
+				err = nerr
+			}
+		}
 	}
 	s.mu.Unlock()
 	return err

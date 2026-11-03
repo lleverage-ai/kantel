@@ -84,10 +84,8 @@ import {
 } from "./index.ts";
 import type { MemoryIdentityOptions } from "./memory.ts";
 import { otpSchema } from "./otp-sql.ts";
-import { passkeySchema } from "./passkey-sql.ts";
 
 export { createSqlOtpStores, otpSchema } from "./otp-sql.ts";
-export { createSqlPasskeyStores, passkeySchema } from "./passkey-sql.ts";
 
 /** Identity appends its audit events as itself. */
 const AUDIT_CONTEXT = systemContext("identity");
@@ -228,7 +226,8 @@ export function identitySchema(dialect: SqlDialect): readonly string[] {
 		"CREATE INDEX IF NOT EXISTS identity_invites_by_email ON identity_invites (email_normalised)",
 		"CREATE INDEX IF NOT EXISTS identity_invites_by_organisation ON identity_invites (organisation_id, seq)",
 		...otpSchema(dialect),
-		...passkeySchema(dialect),
+		// The agent plane's passkey tables (`identity_passkeys`, `identity_passkey_challenges`), created before
+		// TASK-4721, are no longer made here; where they exist they stay, unread.
 	];
 }
 

@@ -9,15 +9,11 @@ sidebar:
 
 Where sandboxes' outbound traffic may go, and through what.
 
-:::caution
-Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
-:::
-
 ## Get the proxy settings
 
 `GET /v1/proxy` (SDK method `getProxySettings`)
 
-Where the account's sandboxes' outbound traffic may go. A key needs `account:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Where the account's sandboxes' outbound traffic may go. A key needs `account:read`.
 
 **Query parameters**
 
@@ -35,7 +31,7 @@ Where the account's sandboxes' outbound traffic may go. A key needs `account:rea
 
 `PUT /v1/proxy` (SDK method `putProxySettings`)
 
-Replaces them. Running sandboxes pick them up within a minute. An upstream's header values are kept encrypted and never shown again; leave `upstream.headers` out to keep the ones it has. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Replaces them. Running sandboxes pick them up within a minute. An upstream's header values are kept encrypted and never shown again; leave `upstream.headers` out to keep the ones it has. A key needs `account:admin`.
 
 **Body**: [PutProxySettingsBody](/api/reference/types/#putproxysettingsbody)
 

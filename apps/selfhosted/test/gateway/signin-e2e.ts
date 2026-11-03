@@ -1,8 +1,8 @@
 // One pass over email one-time PIN sign-in on the gateway, shared by the in-process test (codes from a memory mailer)
 // and the compose test (codes read from Mailpit): an invited admin and a stranger get the same answer to start, only
-// the admin gets a code, a wrong code is refused, the right one starts a Kantel session that every mounted API
-// accepts, the code works only once, sign-in is audited, the person can see who they are and issue, use and revoke an
-// API key, and an ended session is refused.
+// the admin gets a code, a wrong code is refused, the right one starts a Kantel session that the compute plane and the
+// gateway's own APIs accept, the code works only once, sign-in is audited, the person can see who they are and issue,
+// use and revoke an API key, and an ended session is refused.
 import { normaliseEmail, ORGANISATION_HEADER } from "@kantel/contracts";
 import type { E2eCheck, E2eTarget } from "./e2e.ts";
 
@@ -84,13 +84,9 @@ export async function runSignInE2e(target: SignInTarget): Promise<E2eCheck[]> {
 		[ORGANISATION_HEADER]: target.organisationId,
 	};
 	const get = (path: string) => fetch(`${target.baseUrl}${path}`, { headers: asPerson });
-	for (const path of [
-		`/v1/sessions?projectId=${encodeURIComponent(target.projectId)}`,
-		`/v1/workspaces/${target.workspaceId}/files`,
-		"/v1/deployment",
-	]) {
+	for (const path of ["/v1/whoami", "/v1/sandboxes", "/v1/deployment"]) {
 		const response = await get(path);
-		check(`the session reads GET ${path.replace(/\?.*$/, "")}`, response.ok, {
+		check(`the session reads GET ${path}`, response.ok, {
 			status: response.status,
 			body: response.ok ? undefined : await body(response),
 		});
@@ -127,72 +123,6 @@ export async function runSignInE2e(target: SignInTarget): Promise<E2eCheck[]> {
 		projectsBody,
 	);
 
-	// Loading skills and memory, as a host adapter does, is the organisation admin's (#12): a skill imported for the
-	// project is listed and read back; a project space takes a snapshot and recalls from it.
-	const owner = { kind: "project", organisationId: target.organisationId, projectId: target.projectId };
-	const skillMd = "---\nname: e2e-signin\ndescription: Checks sign-in end to end\n---\n\n# e2e-signin\n";
-	const imported = await post(
-		"/v1/skills/import",
-		{
-			owner,
-			name: "e2e-signin",
-			description: "Checks sign-in end to end",
-			files: [{ path: "SKILL.md", content: skillMd }],
-			source: { sourceId: "e2e", ref: "1" },
-		},
-		asPerson,
-	);
-	const revision = (await body(imported)) as { skillId?: string; revision?: number };
-	check("POST /v1/skills/import publishes the admin's skill", imported.ok && typeof revision.skillId === "string", {
-		status: imported.status,
-		body: revision,
-	});
-	const file = await get(
-		`/v1/skills/${encodeURIComponent(revision.skillId ?? "")}/revisions/${revision.revision ?? 0}/file?path=SKILL.md`,
-	);
-	const fileBody = (await body(file)) as { content?: string };
-	check("GET /v1/skills/:id/revisions/:n/file reads its SKILL.md", file.ok && fileBody.content === skillMd, {
-		status: file.status,
-	});
-	const created = await post("/v1/memory/spaces", { owner, name: `e2e ${crypto.randomUUID().slice(0, 8)}` }, asPerson);
-	const space = (await body(created)) as { id?: string };
-	check("POST /v1/memory/spaces creates the admin's space", created.status === 201 && typeof space.id === "string", {
-		status: created.status,
-		body: space,
-	});
-	const snapshot = await post(
-		`/v1/memory/spaces/${encodeURIComponent(space.id ?? "")}/snapshot`,
-		{
-			sourceId: "e2e",
-			ref: "1",
-			concepts: [
-				{
-					id: "e2e/kantel-port",
-					title: "Kantel's port",
-					description: "Where the gateway listens",
-					statement: "The self-hosted gateway listens on port 8080 in its container.",
-					scope: { kind: "global" },
-					sources: ["e2e:1"],
-					setBy: "owner",
-					status: "active",
-					updatedAt: 1,
-				},
-			],
-		},
-		asPerson,
-	);
-	check("POST /v1/memory/spaces/:id/snapshot loads the admin's snapshot", snapshot.ok, {
-		status: snapshot.status,
-		body: snapshot.ok ? undefined : await body(snapshot),
-	});
-	const recalled = await post("/v1/memory/recall", { spaceIds: [space.id ?? ""], query: "gateway port" }, asPerson);
-	const recall = (await body(recalled)) as { concepts?: { id: string }[] };
-	check(
-		"POST /v1/memory/recall recalls the concept",
-		recalled.ok && (recall.concepts ?? []).some((concept) => concept.id === "e2e/kantel-port"),
-		recall,
-	);
-
 	// A host app's key, from issue to revocation: the secret is shown once, the key works, then it doesn't.
 	const issued = await post(
 		"/v1/keys",
@@ -214,17 +144,16 @@ export async function runSignInE2e(target: SignInTarget): Promise<E2eCheck[]> {
 		{ status: listed.status },
 	);
 	const asKey = (path: string) => fetch(`${target.baseUrl}${path}`, { headers: { authorization: `Bearer ${secret}` } });
-	const sessionsPath = `/v1/sessions?projectId=${encodeURIComponent(target.projectId)}`;
-	const used = await asKey(sessionsPath);
-	check("the new key reads GET /v1/sessions", used.ok, { status: used.status });
+	const used = await asKey("/v1/me");
+	check("the new key reads GET /v1/me", used.ok, { status: used.status });
 	const revoked = await post(`/v1/keys/${encodeURIComponent(keyId)}/revoke`, {}, asPerson);
 	check("POST /v1/keys/:id/revoke is 204", revoked.status === 204, { status: revoked.status });
-	const afterRevoke = await asKey(sessionsPath);
+	const afterRevoke = await asKey("/v1/me");
 	check("a revoked key is 401", afterRevoke.status === 401, { status: afterRevoke.status });
 
 	const ended = await post("/auth/session/end", {}, { authorization: `Bearer ${token}` });
 	check("POST /auth/session/end is 204", ended.status === 204, { status: ended.status });
-	const afterEnd = await get(`/v1/sessions?projectId=${encodeURIComponent(target.projectId)}`);
+	const afterEnd = await get("/v1/whoami");
 	check("an ended session is 401", afterEnd.status === 401, { status: afterEnd.status });
 
 	return checks;

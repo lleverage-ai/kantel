@@ -2,6 +2,11 @@
 	// Kantel on Cloudflare (issue #17). One hostname serves the console (static assets) and the gateway (/v1/*),
 	// behind Cloudflare Access. The deploy workflow (scripts/deploy-config.ts) adds the account, the zone route, the
 	// Access vars and the models VPC service at deploy time; nothing here names an account, a zone or a hostname.
+	//
+	// The agent plane was removed (branch agent-plane-archive, tag agent-plane-archive-2026-11-03, commit e496aeb2). The
+	// Worker now uses only ASSETS, STACK, DB and the Access, admin and location vars. Every other binding, var, rule and
+	// container app below is the agent plane's, left as it was deployed so that no object, table or bucket is deleted:
+	// its Durable Object classes are inert (src/retired.ts), and the src/ files its comments name are in that archive.
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "harbour",
 	"main": "src/index.ts",
@@ -24,9 +29,9 @@
 		// A miss goes to the Worker (src/route.ts `consoleAsset`): a missing /assets/ file is a 404, not the console's page
 		// with a 200, so a tab opened before a deploy can't load the page as a script; any other path gets the page.
 		"not_found_handling": "none",
-		// The API, the health check, the browser viewer page (for its framing headers) and share links' pages always reach
-		// the Worker; every other path is the console.
-		"run_worker_first": ["/v1/*", "/healthz", "/browser/*", "/shared/*"]
+		// The API, email-code sign-in, the health check, the browser viewer page (for its framing headers) and share links'
+		// pages always reach the Worker; every other path is the console.
+		"run_worker_first": ["/v1/*", "/auth/*", "/healthz", "/browser/*", "/shared/*"]
 	},
 	// The Worker Loader: the dynamic-worker isolate backend loads one Dynamic Worker per session through it
 	// (src/dynamic-worker.ts). Sessions use it only when KANTEL_ISOLATE_BACKEND says so.
@@ -86,6 +91,14 @@
 		"KANTEL_ACCESS_AUD": "",
 		// The first admin, invited by email: Access's verified email links them on first sign-in. Empty: nobody is invited.
 		"KANTEL_ADMIN_EMAIL": "",
+		// Experimental, off by default: `experimental` turns on account hosts (src/compute.ts): accounts add machines of
+		// their own, which register at /v1/hosts/register and keep a WebSocket to /v1/hosts/connect on the stack object, and
+		// run only that account's sandboxes. It needs KANTEL_PUBLIC_URL, the origin hosts dial: the public origin, with no
+		// Access in front, or a hostname with an Access bypass for /v1/hosts/register, /v1/hosts/connect,
+		// /v1/hosts/images/* and /v1/hosts/tunnel/* (each checks its own token, credential or ticket). Anything else: no
+		// host routes, the stub for everyone. The deploy sets it from the repository variable of the same name
+		// (scripts/deploy-config.ts); unset there, a deploy leaves account hosts off.
+		"KANTEL_ACCOUNT_HOSTS": "",
 		// The CLIProxyAPI model the `default` route serves (src/models.ts). Its key is the KANTEL_CPA_API_KEY secret.
 		"KANTEL_DEFAULT_MODEL": "claude-sonnet-5-5",
 		// Which isolate backend sessions run on (src/sandboxes.ts): in-process, #94's just-bash in the stack object, or
@@ -152,7 +165,7 @@
 				"directory": "../console/dist",
 				"binding": "ASSETS",
 				"not_found_handling": "none",
-				"run_worker_first": ["/v1/*", "/healthz", "/__dev/*", "/browser/*", "/shared/*"]
+				"run_worker_first": ["/v1/*", "/auth/*", "/healthz", "/__dev/*", "/browser/*", "/shared/*"]
 			},
 			"worker_loaders": [{ "binding": "LOADER" }],
 			"durable_objects": {

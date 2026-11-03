@@ -8,7 +8,7 @@ sidebar:
 ---
 
 :::caution[Experimental]
-The MCP server calls routes a control plane serves only when it runs with `KANTEL_COMPUTE=experimental`. Its tools may still change.
+The MCP server calls Kantel's compute API, which every control plane serves. Its tools may still change.
 :::
 
 `kantel mcp` is an [MCP](https://modelcontextprotocol.io/) server that gives a coding agent tools to make sandboxes, run commands and move files in them, open their ports and browsers, and save snapshots. It's part of the [`kantel` command](/tools/cli/): the agent's client starts it and talks to it over stdin and stdout, and it calls your control plane with the key in its environment.
@@ -28,7 +28,7 @@ The MCP server calls routes a control plane serves only when it runs with `KANTE
    export KANTEL_API_KEY=ksk_...
    ```
 
-In the commands below, put your control plane's address in place of `http://127.0.0.1:58090`. `kantel agents` prints the same setup with the address you're signed in to filled in, and never with a key in it.
+In the commands below, put your control plane's address in place of `http://127.0.0.1:58090`. `kantel agents` prints the same setup with the address you're signed in to filled in, and never with a key in it. Each starts `kantel` by name, so it needs `kantel` on the `PATH` the client starts it with, not `npx kantel`: the command isn't on npm. If `kantel` isn't on your `PATH`, `kantel agents` says so and prints the setup with its full path instead.
 
 ## Claude Code
 

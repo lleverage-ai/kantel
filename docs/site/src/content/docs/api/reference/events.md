@@ -9,15 +9,11 @@ sidebar:
 
 The account's events, as webhooks deliver them.
 
-:::caution
-Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
-:::
-
 ## List events
 
 `GET /v1/events` (SDK method `listEvents`)
 
-The account's events, newest first: what webhooks deliver, and a sandbox's history with `sandboxId`. A key needs `sandboxes:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+The account's events, newest first: what webhooks deliver, and a sandbox's history with `sandboxId`. A key needs `sandboxes:read`.
 
 **Query parameters**
 

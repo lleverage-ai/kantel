@@ -1,43 +1,17 @@
-# The gateway next to a host app: on the host's own network, listening on 127.0.0.1 only, so it can call the host
-# app's Kantel worker back on the loopback port the worker picked (`http://127.0.0.1:<port>/hosts/<id>`), where it
-# serves its tools. Inside compose's bridge network 127.0.0.1 would be the gateway's own container.
+# The gateway on the host's own network, listening on 127.0.0.1 only. It was for a host app's worker serving the agent
+# plane's sessions their host tools on a loopback port; the agent plane was removed, and with it host tools, models
+# and the vault, so this now only moves the gateway onto the host's network:
 #
 #   docker compose -f deploy/compose/compose.yaml -f deploy/compose/next-to-sal.yaml up -d --build --wait
 #
-# The host app's Kantel URL is then `http://127.0.0.1:58090/v1` (KANTEL_GATEWAY_PORT), and its worker's callback
-# host and bind address are 127.0.0.1.
+# The console and the compute API are then at http://127.0.0.1:58090 (KANTEL_GATEWAY_PORT). The gateway reaches
+# Postgres and Mailpit through the ports compose.yaml publishes on 127.0.0.1.
 #
-# KANTEL_CALLBACK_ORIGINS=http://127.0.0.1:* lets any operator key on this gateway make it POST signed tool calls to
-# any loopback port on the host. Run it only where the keys are the host app's own, and keep it off the network: it
-# listens on 127.0.0.1, and nothing else is published beyond what compose.yaml already publishes there.
-#
-# The gateway reaches Postgres, MinIO and Mailpit through the ports compose.yaml publishes on 127.0.0.1.
-#
-# Real models: with KANTEL_CPA_URL and KANTEL_CPA_API_KEY set, sessions go to CLIProxyAPI through the model
-# gateway (apps/selfhosted/src/gateway/models.ts), its key kept in the vault, so KANTEL_VAULT_CIPHER_KEY (a base64
-# 256-bit key, `openssl rand -base64 32`) is needed too. Keep the cipher key: the vault's items are sealed with it.
-# Where CPA listens on a private network address rather than on 127.0.0.1, name that address:
-#
-#   KANTEL_CPA_URL=http://<cpa-address>:8317/v1 KANTEL_CPA_API_KEY=... KANTEL_VAULT_CIPHER_KEY=... \
-#     docker compose -f deploy/compose/compose.yaml -f deploy/compose/next-to-sal.yaml up -d --build --wait
-#
-# Unset, sessions stay on the echo model. The bootstrap's `assistant` profile is on the `default` route, to
-# KANTEL_DEFAULT_MODEL (default claude-sonnet-5-5); a host app's worker can name that route itself.
-#
-# Projects: a host app can put each of its tasks in a Kantel project. The bootstrap makes one project per name in
-# KANTEL_PROJECTS (comma-separated, such as `KANTEL_PROJECTS=research,support`; none by default), once, and puts
-# every one on its operator key. The bootstrap file names their IDs, which Kantel generates (`prj_…`), with the
-# organisation's (`org_…`):
+# Projects: the bootstrap makes one project per name in KANTEL_PROJECTS (comma-separated; none by default), once, and
+# puts every one on its operator key. The bootstrap file names their IDs with the organisation's:
 #
 #   docker compose -f deploy/compose/compose.yaml -f deploy/compose/next-to-sal.yaml exec -T gateway \
 #     cat /var/lib/harbour/bootstrap.json | jq '{organisationId, projects}'
-#
-# Naming another project later makes it on the next start and issues a new operator key over them all, revoking the
-# old one: write the new key where the host app reads it.
-#
-# Skills and memory are on the same Postgres and MinIO. A session whose profile names skills gets a workspace of its
-# own with them mounted read-only at /skills; one that names none gets no workspace, so its host's `read`, `write`,
-# `edit` and `ls` stay the host app's.
 
 services:
   gateway:
@@ -47,14 +21,8 @@ services:
     environment:
       HOST: 127.0.0.1
       PORT: ${KANTEL_GATEWAY_PORT:-${HARBOUR_GATEWAY_PORT:-58090}}
-      KANTEL_CALLBACK_ORIGINS: http://127.0.0.1:*
       KANTEL_DATABASE_URL: postgres://harbour:harbour@127.0.0.1:${KANTEL_PG_PORT:-${HARBOUR_PG_PORT:-55432}}/harbour
-      S3_ENDPOINT: http://127.0.0.1:${KANTEL_S3_PORT:-${HARBOUR_S3_PORT:-59000}}
       KANTEL_SMTP_URL: ${KANTEL_SMTP_URL:-${HARBOUR_SMTP_URL:-smtp://127.0.0.1:${KANTEL_SMTP_PORT:-58125}}?starttls=off}
-      KANTEL_CPA_URL: ${KANTEL_CPA_URL:-${HARBOUR_CPA_URL:-}}
-      KANTEL_CPA_API_KEY: ${KANTEL_CPA_API_KEY:-${HARBOUR_CPA_API_KEY:-}}
-      KANTEL_DEFAULT_MODEL: ${KANTEL_DEFAULT_MODEL:-${HARBOUR_DEFAULT_MODEL:-}}
-      KANTEL_VAULT_CIPHER_KEY: ${KANTEL_VAULT_CIPHER_KEY:-${HARBOUR_VAULT_CIPHER_KEY:-}}
       KANTEL_PROJECTS: ${KANTEL_PROJECTS:-${HARBOUR_PROJECTS:-}}
     healthcheck:
       test:

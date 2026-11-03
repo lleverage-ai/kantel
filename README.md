@@ -1,8 +1,13 @@
 # Kantel, by Lleverage
 
-Kantel runs AI agents for people and for apps: sessions, sandboxes (isolate and container), a workspace, browsers,
-connections and the vault behind them, skills, memory, prompt rules, schedules and an audit log. It runs on Cloudflare
-or on your own machines. People use it through the console; apps use it through the public API.
+Kantel is a compute plane for AI agents that you can run yourself. It gives agents sandboxes to work in (isolates and
+microVMs, with a desktop, a browser and SSH), on Linux machines you add with one command. Kantel doesn't run the agent:
+Claude Code, Codex, pi or your own loop reaches it through the console, the public API, the TypeScript SDK, the
+`kantel` CLI or its MCP server.
+
+Until November 2026 Kantel also ran the agents themselves (sessions, models, connections, the vault, skills, memory and
+schedules). That agent plane is kept, as it was, on the `agent-plane-archive` branch and the
+`agent-plane-archive-2026-11-03` tag (commit `e496aeb2817595f5fae5b0cdb919dbc94a5505f5`).
 
 ## Documentation
 
@@ -15,18 +20,20 @@ Each package, app and target has a README, and each component package has a `CON
 
 | Path | What |
 | --- | --- |
-| `apps/cloudflare` | The Cloudflare deployment: one Worker, its Durable Objects, D1 and R2 |
-| `apps/selfhosted` | The self-hosted gateway and session hosts |
+| `apps/selfhosted` | The self-hosted gateway: the console, the compute plane's API, identity and audit |
+| `apps/cloudflare` | The Cloudflare Worker: the console, identity and audit. Its Durable Objects, D1 and R2 stay, and the agent plane's objects are inert |
 | `apps/console` | The console, the web app people use |
-| `apps/model-gateway` | The model gateway, which serves every model call |
-| `apps/vault-proxy` | The egress proxy that injects credentials for sandboxes |
-| `packages/contracts` | The TypeScript interfaces every component and target implements |
-| `packages/*` | The components (runtime, workspace, sandbox, vault, connections, browser, skills, memory, rules, schedules, audit, identity, models and more), the public API and SDK (`packages/api`), the component library (`packages/ui`) and the conformance suites (`packages/testing`) |
-| `targets/cloudflare/*`, `targets/selfhosted/*` | Each target's implementations of the contracts |
-| `deploy/compose`, `deploy/kubernetes` | Running the self-hosted stack with Docker Compose or on Kubernetes |
-| `images/*` | Container images: the sandbox, the browser, the isolate host and the Git mirror |
-| `examples/*` | Example host apps |
-| `spike`, `spikes/*` | The scripted scenario and conformance runs the self-hosted CI uses |
+| `apps/host` | `kantel-host`, which runs sandboxes on a Linux machine, and the guest image's agent (Go) |
+| `apps/site` | kantel.dev: the marketing page, the install script and the docs |
+| `packages/compute`, `packages/hosts` | The compute plane's API, and its host registry, placement and dispatch to `kantel-host` |
+| `packages/api`, `packages/cli`, `packages/admin` | The public API with its OpenAPI document and SDK, the `kantel` CLI and MCP server, and `kantel-admin` |
+| `packages/identity`, `packages/audit`, `packages/sql` | Organisations, projects, people, roles and API keys; the audit log; the SQL seam under both |
+| `packages/contracts`, `packages/testing` | The TypeScript interfaces the components implement, and their conformance suites |
+| `packages/ui` | The component library and the compute console |
+| `packages/sandbox`, `packages/workspace`, `packages/browser`, `packages/environments`, `packages/usage` | Libraries from the agent plane, kept dormant: the sandbox facade and its tiers, the versioned workspace, the browser broker, long-lived environments and the usage ledger |
+| `targets/selfhosted/sandbox` | The self-hosted container tier: a gVisor container per lease |
+| `deploy/compose` | Running the self-hosted stack with Docker Compose |
+| `images/*` | Container images: the sandbox, the browser and the isolate host |
 | `docs/site` | The documentation site |
 
 ## Development
@@ -57,17 +64,14 @@ in (a manual clock, a recording audit sink and a project access fixture), then c
 itself in one file:
 
 ```ts
-import { registerVaultConformance } from "@kantel/testing/vault";
+import { createMemoryIdentity } from "@kantel/identity/memory";
+import { registerIdentityConformance } from "@kantel/testing/identity";
 import { describe, expect, it } from "vitest";
-import { createD1Vault } from "../src/d1.ts";
 
-registerVaultConformance({ describe, expect, it }, "D1 vault", async (deps, use) => {
-	const vault = await createD1Vault({ clock: deps.clock, audit: deps.audit, database: await freshDatabase() });
-	await use({ vault });
-}, { projectAccess: true });
+registerIdentityConformance({ describe, expect, it }, "in-memory identity", async (deps, use) => {
+	await use({ identity: createMemoryIdentity({ clock: deps.clock, audit: deps.audit }) });
+});
 ```
-
-`{ projectAccess: true }` adds the suite's project access, worker call, mount read and existence cases.
 
 Rules every contract shares:
 
@@ -80,38 +84,28 @@ Rules every contract shares:
   People and services pass by role; an API key is limited to its projects and its role. An agent passes only through
   its own open session, as an operator and never an admin. A refusal is `forbidden` and audited once as
   `access.denied`.
-- **Calls Kantel makes on its own behalf** (scheduler ticks, audit drains, egress decisions, sweeps) take a
-  `SystemContext` and refuse any other actor.
+- **Calls Kantel makes on its own behalf** (audit drains, sweeps) take a `SystemContext` and refuse any other actor.
 - **Every change is audited** through an `AuditSink`, with its actor. Components append to an `AuditOutbox` that a
   relay drains to the `AuditStore`, idempotently by organisation and event ID. No audit event holds a secret value;
   each suite plants a canary secret and checks for it.
-- **One session-end hook.** Closing or aborting a session runs every registered teardown (sandbox leases, browsers,
-  capability grants, vault grants) as `system`, in order; one that fails doesn't stop the others.
 
 | Contract | Interface | Reference implementation | Suite | Details |
 | --- | --- | --- | --- | --- |
 | Identity and tenancy | `IdentityDirectory`, `ProjectAccess` | `@kantel/identity/memory` | `registerIdentityConformance` | [identity](packages/identity/CONTRACT.md) |
-| Session runtime | `SessionRuntime`, `SessionDirectory`, `AgentProfiles`, `HostToolBridge`, `SessionEndHook` | `@kantel/runtime/memory` | `registerRuntimeConformance` | [runtime](packages/runtime/CONTRACT.md), [HTTP API](packages/runtime/HTTP.md) |
-| Client wire protocol | `SessionStream`, frames, `applyDelta` | `@kantel/protocol/memory` | `registerProtocolConformance` | [protocol](packages/protocol/src) |
-| Workspace | `Workspaces`, `MountSource` | `@kantel/workspace/memory` | `registerWorkspaceConformance` | [workspace](packages/workspace/CONTRACT.md) |
-| Sandbox | `Sandboxes`, `routeTool` | `@kantel/sandbox/memory` | `registerSandboxConformance` | [sandbox](packages/sandbox/CONTRACT.md) |
-| Vault (the encrypted store behind connections) | `Vault` | `@kantel/vault/memory` | `registerVaultConformance` | [vault](packages/vault/CONTRACT.md) |
-| Capability registry and host tools | `CapabilityRegistry` | `@kantel/codemode/memory` | `registerCapabilityConformance` | [codemode](packages/codemode/CONTRACT.md) |
-| Browser | `Browser`, `BrowserProvider` | `@kantel/browser/memory` | `registerBrowserConformance` | [browser](packages/browser/CONTRACT.md) |
-| Skills | `Skills`, `SkillSource` | `@kantel/skills/memory` | `registerSkillsConformance` | [skills](packages/skills/CONTRACT.md) |
-| Memory | `Memory`, `MemorySource` | `@kantel/memory/memory` | `registerMemoryConformance` | [memory](packages/memory/CONTRACT.md) |
-| Prompt rules | `PromptRules` | `@kantel/rules/memory` | `registerRulesConformance` | [rules](packages/rules/CONTRACT.md) |
-| Schedules | `Schedules` | `@kantel/schedules/memory` | `registerSchedulesConformance` | [schedules](packages/schedules/CONTRACT.md) |
 | Audit | `AuditStore`, `AuditOutbox`, `AuditSink` | `@kantel/audit/memory` | `registerAuditConformance` | [audit](packages/audit/CONTRACT.md) |
-| Models | `ModelGateway`, connectors and routes | `@kantel/models` | `registerModelGatewayConformance`, `registerModelConnectorConformance` | [models](packages/models/CONTRACT.md) |
-| Sharing | shares, access requests and policies | `@kantel/sharing` | `registerSharingConformance` | [sharing](packages/sharing/src) |
+| Workspace (dormant) | `Workspaces`, `MountSource` | `@kantel/workspace/memory` | `registerWorkspaceConformance` | [workspace](packages/workspace/CONTRACT.md) |
+| Sandbox (dormant) | `Sandboxes`, `routeTool` | `@kantel/sandbox/memory` | `registerSandboxConformance` | [sandbox](packages/sandbox/CONTRACT.md) |
+| Browser (dormant) | `Browser`, `BrowserProvider` | `@kantel/browser/memory` | `registerBrowserConformance` | [browser](packages/browser/CONTRACT.md) |
+
+The compute plane's own API (`@kantel/compute`, `@kantel/hosts`) is tested in its packages rather than through a
+suite.
 
 ## Names
 
 The product was called Harbour, and for a day Partan, before it was renamed Kantel. Packages are `@kantel/*`, settings
-`KANTEL_*`, headers `kantel-*`, new API keys `ktk_…`, sign-in sessions `kts_…` and tunnel tokens `ktt_…`. What was
+`KANTEL_*`, headers `kantel-*`, new API keys `ktk_…`, sign-in sessions `kts_…` and host join tokens `kth_…`. What was
 named before the rename still works: a `HARBOUR_*` setting when its `KANTEL_*` one isn't set, a `harbour-*` header,
-an `hbr_`, `hbs_` or `hbt_` token, the `harbour` browser provider and the `harbour` and `harbour-light` theme IDs.
+an `hbr_` or `hbs_` token, the `harbour` browser provider and the `harbour` and `harbour-light` theme IDs.
 The repository moved from `tvdavies/harbour` to `lleverage-ai/kantel`; GitHub redirects the old name. Some names stay
 as they are, because something outside the code holds them: the deployed Workers (`harbour`, `harbour-dev`) and hostname (`harbour.myslop.app`), the D1 databases and R2 buckets,
 the browser and sandbox Durable Object classes (`HarbourBrowser`, `HarbourSandbox`) and their container apps, stored

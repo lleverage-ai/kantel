@@ -9,15 +9,11 @@ sidebar:
 
 Public port URLs, SSH, the Linux desktop and the browser's live view and CDP URL.
 
-:::caution
-Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
-:::
-
 ## List a sandbox's public ports
 
 `GET /v1/sandboxes/{sandboxId}/ports` (SDK method `listPorts`)
 
-A key needs `access`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+A key needs `access`.
 
 **Path parameters**
 
@@ -35,7 +31,7 @@ A key needs `access`. Experimental: served only where the deployment sets `KANTE
 
 `POST /v1/sandboxes/{sandboxId}/ports` (SDK method `exposePort`)
 
-Gives a port in the sandbox an HTTPS URL through its host's tunnel. The app must listen on the port; on `0.0.0.0` or `localhost` both work. Exposing it again answers its URL. A key needs `access`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Gives a port in the sandbox an HTTPS URL through its host's tunnel. The app must listen on the port; on `0.0.0.0` or `localhost` both work. Exposing it again answers its URL. A key needs `access`.
 
 **Path parameters**
 
@@ -55,7 +51,7 @@ Gives a port in the sandbox an HTTPS URL through its host's tunnel. The app must
 
 `DELETE /v1/sandboxes/{sandboxId}/ports/{port}` (SDK method `hidePort`)
 
-Its URL stops working at once. A key needs `access`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Its URL stops working at once. A key needs `access`.
 
 **Path parameters**
 
@@ -74,7 +70,7 @@ Its URL stops working at once. A key needs `access`. Experimental: served only w
 
 `POST /v1/sandboxes/{sandboxId}/ssh` (SDK method `openSsh`)
 
-Lets a key in to the sandbox's SSH gateway for a while, and answers the command that connects. microVMs only. A key needs `access`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Lets a key in to the sandbox's SSH gateway for a while, and answers the command that connects. microVMs only. A key needs `access`.
 
 **Path parameters**
 
@@ -94,7 +90,7 @@ Lets a key in to the sandbox's SSH gateway for a while, and answers the command 
 
 `POST /v1/sandboxes/{sandboxId}/desktop` (SDK method `openDesktop`)
 
-A short-lived URL that streams the sandbox's Linux desktop to a browser, to watch or drive. microVMs only. A key needs `access`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+A short-lived URL that streams the sandbox's Linux desktop to a browser, to watch or drive. microVMs only. A key needs `access`.
 
 **Path parameters**
 
@@ -114,7 +110,7 @@ A short-lived URL that streams the sandbox's Linux desktop to a browser, to watc
 
 `POST /v1/sandboxes/{sandboxId}/browser` (SDK method `openBrowser`)
 
-Starts the sandbox's Chrome if it isn't running, and answers a live view URL and a CDP URL for Playwright or Puppeteer. microVMs only. A key needs `access`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Starts the sandbox's Chromium if it isn't running, and answers a live view URL and a CDP URL for Playwright or Puppeteer. microVMs only. A key needs `access`.
 
 **Path parameters**
 
