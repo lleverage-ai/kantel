@@ -18,11 +18,16 @@ import { FakeHost } from "./fake-host.ts";
 /** A driver that records each statement, and how many rounds they took. */
 function counting(inner: SqlDriver) {
 	const statements: string[] = [];
+	// Each statement's first parameter (the record's kind, for the compute store's) and the round it started in.
+	const kinds: unknown[] = [];
+	const roundOf: number[] = [];
 	let inFlight = 0;
 	let rounds = 0;
-	const begin = (sql: string) => {
+	const begin = (sql: string, first?: unknown) => {
 		statements.push(sql.replace(/\s+/g, " ").trim());
+		kinds.push(first);
 		if (inFlight === 0) rounds++;
+		roundOf.push(rounds);
 		inFlight++;
 	};
 	const end = () => {
@@ -31,7 +36,7 @@ function counting(inner: SqlDriver) {
 	const driver: SqlDriver = {
 		dialect: inner.dialect,
 		query<Row extends SqlRow = SqlRow>(sql: string, params?: readonly SqlValue[]) {
-			begin(sql);
+			begin(sql, params?.[0]);
 			return inner.query<Row>(sql, params).finally(end);
 		},
 		batch(batch) {
@@ -43,6 +48,8 @@ function counting(inner: SqlDriver) {
 		driver,
 		reset() {
 			statements.length = 0;
+			kinds.length = 0;
+			roundOf.length = 0;
 			rounds = 0;
 		},
 		get statements() {
@@ -50,6 +57,12 @@ function counting(inner: SqlDriver) {
 		},
 		get rounds() {
 			return rounds;
+		},
+		get kinds() {
+			return [...kinds];
+		},
+		get roundOf() {
+			return [...roundOf];
 		},
 	};
 }
@@ -62,7 +75,9 @@ afterEach(async () => {
 
 describe("a create on a gateway with shared state", () => {
 	// 28 statements, each its own round, before TASK-4754 cut them.
-	it("answers a wait: true create in 16 statements and 9 rounds", async () => {
+	// The sandbox's record is written before its `sandbox.created` event (who may see an event is decided by its sandbox),
+	// so they take two rounds, not one.
+	it("answers a wait: true create in 16 statements and 10 rounds", async () => {
 		const database = await nodeSqliteDatabase.open();
 		closers.push(async () => {
 			// The host's disconnect is recorded after the service closes: let it land first.
@@ -115,7 +130,19 @@ describe("a create on a gateway with shared state", () => {
 		// The trace, when the budget is broken.
 		const trace = statements.map((statement, index) => `${index + 1}. ${statement.slice(0, 140)}`).join("\n");
 		expect(statements.length, trace).toBeLessThanOrEqual(16);
-		expect(rounds, trace).toBeLessThanOrEqual(9);
+		expect(rounds, trace).toBeLessThanOrEqual(10);
+		// The record, then its event: the event's write starts only once the record's has finished.
+		const kinds = sql.kinds;
+		const roundOf = sql.roundOf;
+		const written = (kind: string) =>
+			statements.findIndex(
+				(statement, index) => statement.startsWith("INSERT INTO compute_api_records") && kinds[index] === kind,
+			);
+		const record = written("sandboxes");
+		const event = written("events");
+		expect(record, trace).toBeGreaterThanOrEqual(0);
+		expect(event, trace).toBeGreaterThanOrEqual(0);
+		expect(roundOf[event], trace).toBeGreaterThan(roundOf[record] ?? Number.POSITIVE_INFINITY);
 		// Nothing written is read straight back.
 		expect(
 			statements.filter((statement) => statement.includes("FROM compute_placements WHERE sandbox_id")),

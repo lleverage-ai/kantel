@@ -165,6 +165,23 @@ describe("the dispatcher", () => {
 		expect(sent).toHaveLength(1);
 	});
 
+	it("queues a delivery only once its event is stored, and none if storing it fails", async () => {
+		const { store, dispatcher } = await dispatcherWith([200]);
+		let store_!: () => void;
+		const written = new Promise<void>((resolve) => {
+			store_ = resolve;
+		});
+		const queuing = dispatcher.enqueue(event, written);
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		expect(await store.deliveries.list()).toEqual([]);
+		store_();
+		expect(await queuing).toHaveLength(1);
+
+		const failed = Promise.reject(new Error("the event wasn't stored"));
+		await expect(dispatcher.enqueue({ ...event, id: "evt_2" }, failed)).rejects.toThrow("wasn't stored");
+		expect(await store.deliveries.list({ eventId: "evt_2" })).toEqual([]);
+	});
+
 	it("queues nothing for an event type the webhook doesn't take", async () => {
 		const { dispatcher } = await dispatcherWith([200]);
 		expect(await dispatcher.enqueue({ ...event, type: "sandbox.stopped" })).toEqual([]);

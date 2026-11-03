@@ -69,7 +69,9 @@ These hold for every collection (`Collection<T>` in `store.ts`), and the memory 
   busy key or host doesn't cost a write each time:
   - an API key's `lastUsedAt` is recorded only when the recorded one is 60 s old or more
     (`API_KEY_LAST_USED_PRECISION_MS`), and off the call's path: the call doesn't wait for it, and a write that fails
-    is dropped. It is a hint for people, and nothing decides access by it.
+    is dropped. The `update` checks the age again against the stored record, so of many calls that saw it stale, on
+    any gateway, one writes, and an older use never overwrites a newer one, a revoke or a rotation. It is a hint for
+    people, and nothing decides access by it.
   - the API's host record's `lastSeenAt` is written when anything else about the host changed, or once it is 60 s
     stale (`HOST_SEEN_PRECISION_MS`). The host list and host reads answer it fresh from the host registry, and
     placement reads `lastSeenAt` from the registry's own record (§5), which the owning replica writes on every
@@ -115,10 +117,12 @@ writes only while the sandbox is still in the state the call read it in:
 The queue inside each process (`pending`) still orders one gateway's own work on a sandbox. It no longer has to
 protect anything across gateways.
 
-**Round trips (TASK-4754).** A `wait: true` create, called with an API key, makes 16 statements in 9 rounds (statements
-sent together share a round), where it made 28, each its own round. Reads that don't depend on each other go
-together: the membership and the account; the host registry, the API's host records and the proxy settings; the
-sandbox record, its `sandbox.created` event and the webhook lookup. The backend's hosts are read once per create, not
+**Round trips (TASK-4754).** A `wait: true` create, called with an API key, makes 16 statements in 10 rounds
+(statements sent together share a round), where it made 28, each its own round. Reads that don't depend on each other
+go together: the membership and the account; the host registry, the API's host records and the proxy settings; an
+event and its webhook lookup. Writes another record depends on don't: the sandbox is stored before its
+`sandbox.created` event (who may see an event is decided by its sandbox, so an event must never be visible before it),
+and an event before its webhook deliveries (`enqueue(event, written)` queues nothing if the event's write fails). The backend's hosts are read once per create, not
 twice, and without their placements. Nothing written is read back: the host registry answers the placement it wrote,
 `boot()` moves the sandbox to `running` from the record as written (`update` with `expected`, §2), and the call
 answers the record `boot()` wrote. `packages/hosts/test/create-statements.test.ts` fails if the create needs more.

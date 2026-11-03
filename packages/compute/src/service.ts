@@ -628,8 +628,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				...fields.data,
 			},
 		};
-		// The event and its webhook deliveries don't depend on each other: one round trip.
-		await Promise.all([store.events.put(event), dispatcher.enqueue(event).catch(() => undefined)]);
+		// The webhooks are looked up while the event is written, but a delivery is queued only once the event is stored.
+		const written = store.events.put(event);
+		await Promise.all([written, dispatcher.enqueue(event, written).catch(() => undefined)]);
 		exporter.record({ event, sandboxType: sandbox?.type });
 	}
 
@@ -1532,12 +1533,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					samples: [],
 					ports: [],
 				};
-				// The record and its event are written together: one round trip.
-				const [, , egress] = await Promise.all([
-					store.sandboxes.put(sandbox),
-					emit("sandbox.created", account.id, { sandbox, data: { actor: actorOf(principal) } }),
-					egressRead,
-				]);
+				// The record before its event: who may see an event is decided by its sandbox, so the event is never stored
+				// (or delivered) before the sandbox is.
+				const [, egress] = await Promise.all([store.sandboxes.put(sandbox), egressRead]);
+				await emit("sandbox.created", account.id, { sandbox, data: { actor: actorOf(principal) } });
 				const work = track([sandbox.id], () =>
 					boot(
 						sandbox.id,

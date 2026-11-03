@@ -225,14 +225,15 @@ export async function authenticate(request: Request, options: AuthenticateOption
 		if (key === undefined) throw new UnauthenticatedError("The API key is not valid");
 		// The use is recorded at most once a minute (`API_KEY_LAST_USED_PRECISION_MS`), off the call's path: a busy key
 		// costs one write a minute, and no call waits for it. It is written only while the key is still this secret and
-		// unrevoked, so a revoke or a rotation that lands meanwhile is never undone; a write that fails is dropped, as the
-		// next use records it.
-		if (key.lastUsedAt === undefined || now - key.lastUsedAt >= API_KEY_LAST_USED_PRECISION_MS) {
+		// unrevoked, so a revoke or a rotation that lands meanwhile is never undone, and only while the stored use is still
+		// a minute old, so of many calls that saw it stale one writes; a write that fails is dropped, as the next use
+		// records it.
+		const stale = (lastUsedAt: number | undefined) =>
+			lastUsedAt === undefined || now - lastUsedAt >= API_KEY_LAST_USED_PRECISION_MS;
+		if (stale(key.lastUsedAt)) {
 			void store.apiKeys
 				.update(key.id, (current) =>
-					current.revokedAt === undefined &&
-					current.secretHash === key.secretHash &&
-					(current.lastUsedAt === undefined || current.lastUsedAt < now)
+					current.revokedAt === undefined && current.secretHash === key.secretHash && stale(current.lastUsedAt)
 						? { ...current, lastUsedAt: now }
 						: undefined,
 				)

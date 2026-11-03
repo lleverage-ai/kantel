@@ -119,7 +119,12 @@ export interface WebhookDispatcherOptions {
 
 export interface WebhookDispatcher {
 	/** Queues a delivery of the event to each enabled webhook of its account subscribed to its type. */
-	enqueue(event: computeSchema.Event): Promise<StoredDelivery[]>;
+	/**
+	 * Queues a delivery of `event` to each of its account's webhooks that wants it. With `written` (the event's own
+	 * write), it looks the webhooks up meanwhile but queues nothing until that write has resolved, and nothing if it
+	 * fails: a delivery never outlives an event that wasn't stored.
+	 */
+	enqueue(event: computeSchema.Event, written?: Promise<unknown>): Promise<StoredDelivery[]>;
 	/** Sends a signed `sandbox.created` event for a made-up sandbox to the webhook now, and answers the delivery. */
 	test(webhookId: string): Promise<StoredDelivery>;
 	/** Attempts every delivery that is due by `now()`. */
@@ -243,8 +248,11 @@ export function createWebhookDispatcher(options: WebhookDispatcherOptions): Webh
 	}
 
 	const dispatcher: WebhookDispatcher = {
-		async enqueue(event) {
-			const webhooks = await store.webhooks.list({ accountId: event.accountId, enabled: true });
+		async enqueue(event, written) {
+			const [webhooks] = await Promise.all([
+				store.webhooks.list({ accountId: event.accountId, enabled: true }),
+				written,
+			]);
 			const made: StoredDelivery[] = [];
 			for (const webhook of webhooks) {
 				if (!webhook.events.includes(event.type)) continue;
