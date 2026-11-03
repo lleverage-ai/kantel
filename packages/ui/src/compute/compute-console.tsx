@@ -233,6 +233,8 @@ export function ComputeConsole({
 		() => (hostsSource !== undefined ? hostsSource.list() : Promise.resolve(undefined)),
 		[hostsSource, pathname],
 	);
+	// The deployment's hosts (a super-admin's) tell whether there's any; an account's own don't, since it may still use
+	// shared hosts, so none of its own only adds a link to Add a host beside New sandbox (PageFor).
 	const noHosts = hosts.state.status === "ready" && hosts.state.value?.length === 0;
 	const billingShown = source.hosting === "hosted" && source.billing !== undefined;
 	// A page this person can't open goes to Sandboxes rather than showing nothing. Device sign-in has no sidebar item:
@@ -498,7 +500,7 @@ function PageFor({
 					environments={(accountId) => source.environments.list(accountId)}
 					onEgress={(sandboxId) => navigate(computePath("egress", base, sandboxId))}
 					creating={new URLSearchParams(search).has("new")}
-					{...(noHosts ? { addHostHref: `${computePath("hosts", base)}?add` } : {})}
+					{...(noHosts ? { [ownHosts ? "ownHostHref" : "addHostHref"]: `${computePath("hosts", base)}?add` } : {})}
 					{...timing}
 				/>
 			);
