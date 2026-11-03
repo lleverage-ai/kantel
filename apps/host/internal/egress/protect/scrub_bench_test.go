@@ -1,9 +1,48 @@
 package protect
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
+
+// pemValue is a long multiline value, a private key's shape: 3 KiB of base64 in 64-character lines.
+var pemValue = func() string {
+	var b strings.Builder
+	b.WriteString("-----BEGIN PRIVATE KEY-----\n")
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	for i := range 3072 {
+		b.WriteByte(alphabet[(i*37+11)%len(alphabet)])
+		if i%64 == 63 {
+			b.WriteByte('\n')
+		}
+	}
+	b.WriteString("-----END PRIVATE KEY-----\n")
+	return b.String()
+}()
+
+// pemEchoes is pemValue echoed as a JSON string, and as JSON inside a JSON string: an escape at every line's end.
+func pemEchoes(tb testing.TB) string {
+	once, err := json.Marshal(pemValue)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	twice, err := json.Marshal(string(once))
+	if err != nil {
+		tb.Fatal(err)
+	}
+	return `{"key":` + string(once) + `,"wrapped":` + string(twice) + `}`
+}
+
+// BenchmarkScrubLongEscapedValue is a long value echoed escaped: the matcher walks it state by state.
+func BenchmarkScrubLongEscapedValue(b *testing.B) {
+	sc := newScrubber([]Entry{{Placeholder: phGitHub, Value: pemValue}})
+	body := []byte(strings.Repeat(pemEchoes(b), 64))
+	b.SetBytes(int64(len(body)))
+	for b.Loop() {
+		sc.replace(body)
+	}
+}
 
 // BenchmarkScrubJSON is the worst case: JSON dense with escapes that begin as an escaped value could.
 func BenchmarkScrubJSON(b *testing.B) {

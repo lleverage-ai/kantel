@@ -134,6 +134,37 @@ func TestScrubResponseCatchesEscapedEchoes(t *testing.T) {
 	})
 }
 
+// TestScrubberCatchesALongEscapedValue checks a long multiline value, escaped once and twice, comes back whole.
+func TestScrubberCatchesALongEscapedValue(t *testing.T) {
+	sc := newScrubber([]Entry{{Placeholder: phGitHub, Value: pemValue}})
+	out, _ := sc.replace([]byte(pemEchoes(t)))
+	if want := `{"key":"` + phGitHub + `","wrapped":"\"` + phGitHub + `\""}`; string(out) != want {
+		t.Fatalf("got %.200q, want %q", out, want)
+	}
+}
+
+// TestDecoderKeepsOneCandidatesReadings checks the decoder's readings are kept for the candidate being matched only:
+// a message of escaped near-misses (each "%67" reads as a value's first 'g', then fails) leaves none from earlier
+// starts behind, so what it keeps doesn't grow with the message.
+func TestDecoderKeepsOneCandidatesReadings(t *testing.T) {
+	sc := newScrubber([]Entry{{Placeholder: phGitHub, Value: githubValue}, {Placeholder: phNPM, Value: npmValue}})
+	buf := []byte(strings.Repeat("%2567", 4096))
+	d := decoder{buf: buf, eof: true}
+	most := 0
+	for s := 0; s < len(buf); s += 5 {
+		if end, _, _ := sc.matchAt(&d, s); end >= 0 {
+			t.Fatalf("a match at %d", s)
+		}
+		most = max(most, len(d.memo))
+	}
+	if most == 0 || most > 16 {
+		t.Fatalf("the decoder kept up to %d readings at once, want a few", most)
+	}
+	if out, changed := sc.replace(buf); changed || !bytes.Equal(out, buf) {
+		t.Fatal("near-misses were changed")
+	}
+}
+
 // TestScrubberPrefersAValuesOwnText checks a value's own text keeps its placeholder where it is another value's
 // escaped form, and that an escaped form still finds its own value.
 func TestScrubberPrefersAValuesOwnText(t *testing.T) {

@@ -236,6 +236,11 @@ func (sc *scrubber) step(dst, buf []byte, eof bool) ([]byte, int, error) {
 func (sc *scrubber) matchAt(d *decoder, s int) (end, which int, short bool) {
 	end, which = -1, -1
 	d.short = false
+	// The readings are shared between values and depths at s, never between starts: what is kept is bounded by one
+	// candidate, not by how many a message has (a message of near-misses would otherwise keep a reading at each).
+	if len(d.memo) > 0 {
+		clear(d.memo)
+	}
 	var tied []int
 	for i, v := range sc.values {
 		e := d.match(v, s, scrubDepth)
@@ -278,7 +283,8 @@ type decoder struct {
 	eof bool
 	// short is set when a read needed a byte past the end of buf before eof.
 	short bool
-	// memo holds every reading made at an offset and depth: the same for every value, so each is made once.
+	// memo holds every reading made at an offset and depth from the current candidate's start: the same for every
+	// value, so each is made once. matchAt empties it.
 	memo map[int]memoed
 }
 
@@ -339,25 +345,44 @@ func (d *decoder) match(v []byte, s, depth int) int {
 		return s + k
 	}
 
+	// Only an escape-start byte has more than one reading, so only there do walks branch and meet: the states kept
+	// (each expanded once) are those at escape starts, and a byte between them is walked like the fast path's.
 	type state struct{ off, k int }
 	best := -1
 	frontier := []state{{s + k, k}}
-	var seen []state
+	seen := map[state]struct{}{}
+walks:
 	for len(frontier) > 0 {
 		st := frontier[len(frontier)-1]
 		frontier = frontier[:len(frontier)-1]
+		for st.k < len(v) {
+			if st.off >= len(d.buf) {
+				if !d.eof {
+					d.short = true
+				}
+				continue walks
+			}
+			c := d.buf[st.off]
+			if escapeStart[c] {
+				break
+			}
+			if c != v[st.k] {
+				continue walks
+			}
+			st.off++
+			st.k++
+		}
+		if st.k == len(v) {
+			best = max(best, st.off)
+			continue
+		}
+		if _, ok := seen[st]; ok {
+			continue
+		}
+		seen[st] = struct{}{}
 		for _, u := range d.units(st.off, depth) {
-			if !bytes.HasPrefix(v[st.k:], u.b[:u.n]) {
-				continue
-			}
-			next := state{u.end, st.k + u.n}
-			if next.k == len(v) {
-				best = max(best, next.off)
-				continue
-			}
-			if !slices.Contains(seen, next) {
-				seen = append(seen, next)
-				frontier = append(frontier, next)
+			if bytes.HasPrefix(v[st.k:], u.b[:u.n]) {
+				frontier = append(frontier, state{u.end, st.k + u.n})
 			}
 		}
 	}
