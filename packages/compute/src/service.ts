@@ -177,6 +177,15 @@ export const MAX_SAMPLES = 288;
 export const IDEMPOTENCY_CLAIM_MS = 60_000;
 export const IDEMPOTENCY_RENEW_MS = 20_000;
 const DEFAULT_AUTO_STOP_MINUTES = 60;
+const NOT_DELETED: readonly computeSchema.SandboxState[] = [
+	"starting",
+	"running",
+	"stopping",
+	"stopped",
+	"paused",
+	"error",
+	"deleting",
+];
 /**
  * How long SSH, desktop and browser access can be opened for, unless the call says: a bearer URL that leaks is good for
  * minutes, as boat.dev's are. A connection opened in time stays open; the schema caps a request at an hour.
@@ -604,6 +613,33 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return sandbox;
 	}
 
+	/**
+	 * Moves a sandbox on with `update`, only while it is still in one of the states `from`: so of two calls racing on
+	 * different gateways (or a stale background step and a newer call) only the first wins, and the other loses cleanly.
+	 * Answers the sandbox as written, or `lost` with the sandbox as it is when it had already moved on (or `still` says
+	 * no).
+	 */
+	async function transition(
+		sandboxId: string,
+		from: SandboxState | readonly SandboxState[],
+		next: (current: StoredSandbox) => StoredSandbox,
+		still: (current: StoredSandbox) => boolean = () => true,
+	): Promise<{ readonly moved: StoredSandbox } | { readonly lost: StoredSandbox }> {
+		const allowed: readonly SandboxState[] = typeof from === "string" ? [from] : from;
+		let seen: StoredSandbox | undefined;
+		const moved = await store.sandboxes.update(sandboxId, (current) => {
+			seen = current;
+			return allowed.includes(current.state) && still(current) ? next(current) : undefined;
+		});
+		if (moved !== undefined) return { moved };
+		if (seen === undefined) throw notFound("sandbox");
+		return { lost: seen };
+	}
+
+	/** Changes a sandbox's fields other than its state with `update`, so it never writes over a newer state. */
+	const patchSandbox = (sandboxId: string, change: (current: StoredSandbox) => StoredSandbox | undefined) =>
+		store.sandboxes.update(sandboxId, change);
+
 	/** The sandbox in a new state, with its run periods, stop time and timestamps kept in step. */
 	function withState(sandbox: StoredSandbox, state: SandboxState, extra: Partial<StoredSandbox> = {}): StoredSandbox {
 		const at = now();
@@ -700,49 +736,60 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 	}
 
-	/** Boots a sandbox in `starting` with `run`, and records `running`, or `error` when it fails. */
+	/**
+	 * Boots a sandbox in `starting` with `run`, and records `running`, or `error` when it fails; either only while it is
+	 * still `starting`, so a delete that landed meanwhile (on any gateway) is kept.
+	 */
 	async function boot(sandboxId: string, run: () => Promise<Placement>): Promise<void> {
 		let placement: Placement;
 		try {
 			placement = await run();
 		} catch (error) {
-			await fail(sandboxId, error);
+			await fail(sandboxId, error, "starting");
 			return;
 		}
-		const sandbox = await mustGetSandbox(sandboxId);
-		if (sandbox.state === "deleting" || sandbox.state === "deleted") return;
-		const next = withState(sandbox, "running", {
-			hostId: placement.hostId,
-			resources: placement.resources ?? sandbox.resources,
-			capabilities: placement.capabilities,
-			health: "ok",
-		});
-		await store.sandboxes.put(next);
-		await emit("sandbox.running", next.accountId, { sandbox: next, data: { previousState: sandbox.state } });
+		const result = await transition(sandboxId, "starting", (sandbox) =>
+			withState(sandbox, "running", {
+				hostId: placement.hostId,
+				resources: placement.resources ?? sandbox.resources,
+				capabilities: placement.capabilities,
+				health: "ok",
+			}),
+		);
+		if (!("moved" in result)) return;
+		const next = result.moved;
+		await emit("sandbox.running", next.accountId, { sandbox: next, data: { previousState: "starting" } });
 	}
 
-	async function fail(sandboxId: string, error: unknown): Promise<void> {
-		const sandbox = await mustGetSandbox(sandboxId);
-		const next = withState(sandbox, "error", { reason: messageOf(error) });
-		await store.sandboxes.put(next);
-		await emit("sandbox.error", next.accountId, {
-			sandbox: next,
-			data: { previousState: sandbox.state, reason: next.reason },
-		});
+	/**
+	 * Records `error` for work that failed, only while the sandbox is still in `from`, the passing state that work set: a
+	 * stale step that lost to another call (a second stop, a delete) never writes `error` over the state that call left.
+	 */
+	async function fail(sandboxId: string, error: unknown, from: SandboxState): Promise<void> {
+		const reason = messageOf(error);
+		const result = await transition(sandboxId, from, (sandbox) => withState(sandbox, "error", { reason })).catch(
+			() => undefined,
+		);
+		if (result === undefined || !("moved" in result)) return;
+		const next = result.moved;
+		await emit("sandbox.error", next.accountId, { sandbox: next, data: { previousState: from, reason } });
 	}
 
 	/**
 	 * Puts a running (or paused) sandbox in `stopping` and stops or pauses it in the background; answers once it is
-	 * `stopping`, with the work (wrapped, so awaiting the answer doesn't await the work).
+	 * `stopping`, with the work (wrapped, so awaiting the answer doesn't await the work). The move is conditional on the
+	 * state `sandbox` was read in: when another call (on any gateway) moved it first, it is `conflict` and nothing is
+	 * stopped.
 	 */
 	async function beginStop(
 		sandbox: StoredSandbox,
 		keepMemory: boolean,
 		reason: string | undefined,
 		actor: Principal | undefined,
+		still?: (current: StoredSandbox) => boolean,
 	): Promise<{ readonly work: Promise<void> }> {
-		const stopping = withState(sandbox, "stopping");
-		await store.sandboxes.put(stopping);
+		const began = await transition(sandbox.id, sandbox.state, (current) => withState(current, "stopping"), still);
+		if (!("moved" in began)) throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
 		const work = track([sandbox.id], async () => {
 			try {
 				await killCommandsOf(sandbox.id);
@@ -763,13 +810,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					ref: taken.ref,
 				};
 				await store.snapshots.put(snapshot);
-				const current = await mustGetSandbox(sandbox.id);
-				const next = withState(current, keepMemory ? "paused" : "stopped", {
-					latestSnapshotId: snapshot.id,
-					ports: [],
-					pausedSnapshotId: keepMemory ? snapshot.id : undefined,
-				});
-				await store.sandboxes.put(next);
+				const result = await transition(sandbox.id, "stopping", (current) =>
+					withState(current, keepMemory ? "paused" : "stopped", {
+						latestSnapshotId: snapshot.id,
+						ports: [],
+						pausedSnapshotId: keepMemory ? snapshot.id : undefined,
+					}),
+				);
+				if (!("moved" in result)) return;
+				const next = result.moved;
 				await emit(keepMemory ? "sandbox.paused" : "sandbox.stopped", next.accountId, {
 					sandbox: next,
 					data: {
@@ -779,7 +828,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					},
 				});
 			} catch (error) {
-				await fail(sandbox.id, error);
+				await fail(sandbox.id, error, "stopping");
 				throw error;
 			}
 		});
@@ -935,13 +984,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const reading = await backend.usage(sandboxId).catch(() => undefined);
 		if (reading === undefined) return undefined;
 		const at = now();
-		const latest = (await store.sandboxes.get(sandboxId)) ?? sandbox;
-		await store.sandboxes.put({
-			...latest,
-			samples: [...latest.samples, { at, cpu: reading.cpu, memoryMb: reading.memoryBytes / (1024 * 1024) }].slice(
-				-MAX_SAMPLES,
-			),
-		});
+		const written = await patchSandbox(sandboxId, (latest) =>
+			latest.state !== "running"
+				? undefined
+				: {
+						...latest,
+						samples: [...latest.samples, { at, cpu: reading.cpu, memoryMb: reading.memoryBytes / (1024 * 1024) }].slice(
+							-MAX_SAMPLES,
+						),
+					},
+		);
+		if (written === undefined) return undefined;
 		return {
 			accountId: sandbox.accountId,
 			sandboxId,
@@ -1466,23 +1519,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (body.visibility === "organisation" && account?.kind === "personal") {
 				throw new KantelError("invalid", "A personal account's sandboxes are always private");
 			}
-			let stopsAt = current.stopsAt;
-			if (body.autoStopMinutes !== undefined && current.state === "running") {
-				stopsAt = body.autoStopMinutes === null ? undefined : now() + body.autoStopMinutes * 60_000;
-			}
-			if (body.extendMinutes !== undefined) {
-				if (current.state !== "running") throw new KantelError("conflict", "Only a running sandbox has a stop time");
-				stopsAt = now() + body.extendMinutes * 60_000;
-			}
-			const updated: StoredSandbox = {
-				...current,
-				name: body.name ?? current.name,
-				autoStopMinutes: body.autoStopMinutes === undefined ? current.autoStopMinutes : body.autoStopMinutes,
-				visibility: body.visibility ?? current.visibility,
-				labels: body.labels === undefined ? current.labels : { ...body.labels },
-				stopsAt,
-			};
-			await store.sandboxes.put(updated);
+			const updated = await patchSandbox(current.id, (latest) => {
+				let stopsAt = latest.stopsAt;
+				if (body.autoStopMinutes !== undefined && latest.state === "running") {
+					stopsAt = body.autoStopMinutes === null ? undefined : now() + body.autoStopMinutes * 60_000;
+				}
+				if (body.extendMinutes !== undefined) {
+					if (latest.state !== "running") throw new KantelError("conflict", "Only a running sandbox has a stop time");
+					stopsAt = now() + body.extendMinutes * 60_000;
+				}
+				return {
+					...latest,
+					name: body.name ?? latest.name,
+					autoStopMinutes: body.autoStopMinutes === undefined ? latest.autoStopMinutes : body.autoStopMinutes,
+					visibility: body.visibility ?? latest.visibility,
+					labels: body.labels === undefined ? latest.labels : { ...body.labels },
+					stopsAt,
+				};
+			});
+			if (updated === undefined) throw notFound("sandbox");
 			return sandboxView(updated, principal);
 		},
 
@@ -1591,7 +1646,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							})),
 						);
 					} catch (error) {
-						for (const fork of forks) await fail(fork.id, error);
+						for (const fork of forks) await fail(fork.id, error, "starting");
 						return;
 					}
 					for (const [index, fork] of forks.entries()) {
@@ -1619,8 +1674,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			const hosts = await requireHosts(current.type, current.hostLabels);
 			const fromSnapshot = await latestRef(current);
-			const starting = withState(current, "starting", { ports: [] });
-			await store.sandboxes.put(starting);
+			const began = await transition(current.id, current.state, (latest) =>
+				withState(latest, "starting", { ports: [] }),
+			);
+			if (!("moved" in began)) throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
+			const starting = began.moved;
 			const egress = await egressFor(current.accountId);
 			keepGoing(
 				track([current.id], () =>
@@ -1643,8 +1701,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			await settledOn(sandbox.id);
 			const current = await mustGetSandbox(sandbox.id);
 			if (current.state === "deleted") return sandboxView(current, principal);
-			const deleting = withState(current, "deleting");
-			await store.sandboxes.put(deleting);
+			// A sandbox is deleted from any state, so the move is refused only once another call has deleted it. A delete
+			// already under way (on another gateway, or one that died) is done again: destroying is idempotent, and only one
+			// of them writes `deleted`.
+			const began = await transition(current.id, NOT_DELETED, (latest) => withState(latest, "deleting"));
+			if (!("moved" in began)) return sandboxView(began.lost, principal);
 			await track([current.id], async () => {
 				try {
 					await killCommandsOf(current.id);
@@ -1657,19 +1718,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							await store.snapshots.put({ ...snapshot, sandboxId: undefined });
 						}
 					}
-					const latest = await mustGetSandbox(current.id);
-					const deleted = withState(latest, "deleted", {
-						ports: [],
-						latestSnapshotId: undefined,
-						pausedSnapshotId: undefined,
-					});
-					await store.sandboxes.put(deleted);
+					const result = await transition(current.id, "deleting", (latest) =>
+						withState(latest, "deleted", { ports: [], latestSnapshotId: undefined, pausedSnapshotId: undefined }),
+					);
+					if (!("moved" in result)) return;
+					const deleted = result.moved;
 					await emit("sandbox.deleted", deleted.accountId, {
 						sandbox: deleted,
 						data: { previousState: current.state, actor: actorOf(principal) },
 					});
 				} catch (error) {
-					await fail(current.id, error);
+					await fail(current.id, error, "deleting");
 					throw error;
 				}
 			});
@@ -1898,13 +1957,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				public: isPublic,
 				createdAt: existing?.createdAt ?? now(),
 			};
-			await store.sandboxes.put({
-				...current,
+			await patchSandbox(current.id, (latest) => ({
+				...latest,
 				ports: [
-					...current.ports.filter((entry) => entry.port !== body.port),
+					...latest.ports.filter((entry) => entry.port !== body.port),
 					{ ...exposed, url: withoutPortToken(url) },
 				],
-			});
+			}));
 			return exposed;
 		},
 
@@ -1915,7 +1974,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const port = Number(params.port);
 			if (!current.ports.some((entry) => entry.port === port)) throw notFound("exposed port");
 			await backend.hidePort(current.id, port);
-			await store.sandboxes.put({ ...current, ports: current.ports.filter((entry) => entry.port !== port) });
+			await patchSandbox(current.id, (latest) => ({
+				...latest,
+				ports: latest.ports.filter((entry) => entry.port !== port),
+			}));
 			return undefined;
 		},
 
@@ -2002,8 +2064,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				ref: taken.ref,
 			};
 			await store.snapshots.put(snapshot);
-			const latest = await mustGetSandbox(current.id);
-			await store.sandboxes.put({ ...latest, latestSnapshotId: snapshot.id });
+			await patchSandbox(current.id, (latest) => ({ ...latest, latestSnapshotId: snapshot.id }));
 			return snapshotView(snapshot);
 		},
 
@@ -2112,7 +2173,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						(entry) => entry.state === "ready",
 					),
 				);
-				await store.sandboxes.put({ ...current, latestSnapshotId: newest?.id });
+				await patchSandbox(current.id, (latest) =>
+					latest.latestSnapshotId === snapshot.id ? { ...latest, latestSnapshotId: newest?.id } : undefined,
+				);
 			}
 			if (snapshot.kind === "saved") {
 				await emit("snapshot.deleted", snapshot.accountId, {
@@ -2489,11 +2552,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		await requireCapacity(current.accountId, 1);
 		const hosts = await requireHosts(current.type, current.hostLabels);
 		const fromSnapshot = await latestRef(current);
-		const starting = withState(current, "starting", {
-			size: body.size ?? current.size,
-			pausedSnapshotId: how === "resume" ? current.pausedSnapshotId : undefined,
-		});
-		await store.sandboxes.put(starting);
+		const began = await transition(current.id, current.state, (latest) =>
+			withState(latest, "starting", {
+				size: body.size ?? latest.size,
+				pausedSnapshotId: how === "resume" ? latest.pausedSnapshotId : undefined,
+			}),
+		);
+		if (!("moved" in began)) {
+			// Another call (on another gateway) got there first: a sandbox it has started is answered as it is.
+			if (began.lost.state === "running" || began.lost.state === "starting") return sandboxView(began.lost, principal);
+			throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
+		}
+		const starting = began.moved;
 		const bootOptions = {
 			fromSnapshot,
 			size: starting.size,
@@ -2551,7 +2621,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const at = now();
 			for (const sandbox of await store.sandboxes.list({ state: "running" })) {
 				if (sandbox.stopsAt === undefined || sandbox.stopsAt > at || pending.has(sandbox.id)) continue;
-				keepGoing((await beginStop(sandbox, false, "auto-stop", undefined)).work);
+				// Every gateway sweeps: `beginStop` moves it only while it is still running, so one of them stops it and the
+				// rest skip it.
+				const due = (current: StoredSandbox) => current.stopsAt !== undefined && current.stopsAt <= at;
+				const began = await beginStop(sandbox, false, "auto-stop", undefined, due).catch(() => undefined);
+				if (began !== undefined) keepGoing(began.work);
 			}
 		},
 
