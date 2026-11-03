@@ -77,6 +77,34 @@ Every API call authenticates with `createAuthenticator` from `@kantel/identity`:
 
 The team domain and AUD come as a pair; one without the other is refused (503) rather than served with sign-in off.
 
+### The public origin
+
+With `KANTEL_PUBLIC_URL` and `KANTEL_SIGN_IN_FROM` set (repository variables, written into the Worker's vars by the
+deploy), the Worker also answers on a public origin with no Access in front, such as `https://app.kantel.dev`:
+
+- People sign in there with an email code (`POST /auth/otp/start`, `/auth/otp/verify`, `/auth/session/end`), which the
+  console asks for when `GET /v1/me`'s 401 names `email_otp`. The session (`kts_…`, 12 hours) is a bearer.
+- Sign-up is open (`src/sign-up.ts`): someone new gets a user of their own and a personal space, an organisation named
+  Personal that they administer, with a Default project. Someone with a pending invite joins the inviting organisation
+  instead, as self-hosted. Administering a personal space doesn't make anyone the compute plane's super-admin: only an
+  admin of the deployment's own organisation (the bootstrap's) is.
+- Codes and invites go out from `KANTEL_SIGN_IN_FROM` through the `SIGN_IN_MAIL` binding (Cloudflare Email Sending, a
+  `send_email` binding limited to that sender). At most `KANTEL_SIGN_IN_DAILY_CAP` (default 100) a UTC day, counted in
+  the stack object's storage; past it a start is 503 until the next day. Each client address may make 30 sign-in
+  requests per 15 minutes, and each email gets at most 5 codes an hour.
+- The sign-in routes are 404 on any other hostname, and a 401 anywhere else still names Access.
+
+The sender's domain must be onboarded for Email Sending first. The origin itself is a Workers custom domain attached
+once outside the deploy (the deploy's token edits routes on `myslop.app` only), for example:
+
+```sh
+curl -X PUT "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/domains" \
+  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H 'content-type: application/json' \
+  -d '{"hostname":"app.kantel.dev","service":"harbour","environment":"production","zone_id":"<kantel.dev zone>"}'
+```
+
+A deploy that names no custom domain leaves it in place. No Access application covers it, and none should.
+
 Static assets are served before the Worker runs, so only Access guards the console's files. `workers_dev` and
 `preview_urls` are off, because those URLs would bypass Access.
 

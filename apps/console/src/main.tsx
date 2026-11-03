@@ -3,7 +3,14 @@ import "./legacy-storage.ts";
 import { Button, Notice, reloadForNewBuild, SignInScreen, Spinner, themeController } from "@kantel/ui";
 import { type ReactNode, StrictMode, useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } from "./api/identity.ts";
+import {
+	type ConsoleBoot,
+	createConsoleIdentity,
+	memoryChoice,
+	memoryTokens,
+	storageChoice,
+	storageTokens,
+} from "./api/identity.ts";
 import { ComputeApp, legacyComputePath } from "./compute/compute-app.tsx";
 import { syncTheme } from "./state/theme-sync.ts";
 import { BOOT } from "./ui/shell-styles.ts";
@@ -38,7 +45,11 @@ const source =
 	import.meta.env.VITE_HARBOUR_SOURCE ??
 	"api";
 
-const identity = createConsoleIdentity({ tokens: hasStorage() ? storageTokens(localStorage) : memoryTokens() });
+const identity = createConsoleIdentity(
+	hasStorage()
+		? { tokens: storageTokens(localStorage), choice: storageChoice(localStorage) }
+		: { tokens: memoryTokens(), choice: memoryChoice() },
+);
 
 function hasStorage(): boolean {
 	try {
@@ -95,6 +106,28 @@ function ApiConsole({ first }: { first: Promise<Boot> }) {
 					{...(signOut === undefined ? {} : { onSignOut: () => void signOut().finally(reboot) })}
 				/>
 			</SignedIn>
+		);
+	}
+	if (state.kind === "choose-organisation") {
+		return (
+			<div className={BOOT}>
+				<div className="flex w-full max-w-sm flex-col gap-3">
+					<h1 className="text-lg font-medium">Choose an organisation</h1>
+					<p className="text-sm opacity-70">You belong to more than one. Sign out to choose another.</p>
+					{state.organisations.map((organisation) => (
+						<Button
+							key={organisation.id}
+							variant="secondary"
+							onClick={() => {
+								state.choose(organisation.id);
+								reboot();
+							}}
+						>
+							{organisation.name}
+						</Button>
+					))}
+				</div>
+			</div>
 		);
 	}
 	if (state.kind === "sign-in") {

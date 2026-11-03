@@ -9,7 +9,7 @@ import { createEmailOtp, createMemoryOtpStores, kantelSessionProvider, MemoryOtp
 import { createOtpHandler } from "@kantel/identity/otp/http";
 import { createSignInFlow } from "@kantel/ui";
 import { describe, expect, it } from "vitest";
-import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } from "./identity.ts";
+import { type ConsoleBoot, createConsoleIdentity, memoryChoice, memoryTokens, storageTokens } from "./identity.ts";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "test" }, organisationId: "bootstrap" };
 const ORIGIN = "https://kantel.test";
@@ -108,6 +108,66 @@ describe("the console's sign-in", () => {
 	it("doesn't offer an email code where the deployment named no way in", async () => {
 		const { consoleIdentity } = await world([]);
 		expect(await consoleIdentity.boot()).toEqual({ kind: "signed-out", methods: [] });
+	});
+
+	it("asks someone in two organisations which to act in, sends it, and forgets it on sign-out", async () => {
+		const identity = createMemoryIdentity();
+		const ada = await identity.createUser(bootstrap, { name: "Ada Lovelace", email: ADA });
+		const bob = await identity.createUser(bootstrap, { name: "Bob", email: "bob@kantel.test" });
+		const personal = await identity.createOrganisation(bootstrap, {
+			name: "Personal",
+			admin: { kind: "user", userId: ada.id },
+		});
+		const team = await identity.createOrganisation(bootstrap, {
+			name: "Team",
+			admin: { kind: "user", userId: bob.id },
+		});
+		const foreign = await identity.createOrganisation(bootstrap, {
+			name: "Foreign",
+			admin: { kind: "user", userId: bob.id },
+		});
+		await identity.grantRole(
+			{ actor: { kind: "human", userId: bob.id }, organisationId: team.id },
+			{ principal: { kind: "user", userId: ada.id }, role: "viewer" },
+		);
+		const stores = createMemoryOtpStores();
+		const mailer = new MemoryOtpMailer();
+		const sending: Promise<unknown>[] = [];
+		const otp = createEmailOtp({ identity, ...stores, mailer, defer: (work) => sending.push(work) });
+		const otpRoutes = createOtpHandler({ otp });
+		const identityRoutes = createIdentityHandler({
+			identity,
+			authenticator: createAuthenticator({ identity, providers: [kantelSessionProvider(stores)] }),
+			signIn: ["email_otp"],
+		});
+		const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+			const request = new Request(input, init);
+			return new URL(request.url).pathname.startsWith("/auth/") ? otpRoutes(request) : identityRoutes(request);
+		};
+		const tokens = memoryTokens();
+		const choice = memoryChoice();
+		const consoleIdentity = createConsoleIdentity({ baseUrl: ORIGIN, fetch, tokens, choice });
+		const signIn = expectKind(await consoleIdentity.boot(), "sign-in");
+		await signIn.api.start(ADA);
+		await Promise.all(sending.splice(0));
+		await signIn.api.verify(ADA, mailer.lastCodeFor(ADA) ?? "");
+
+		const asked = expectKind(await consoleIdentity.boot(), "choose-organisation");
+		expect(asked.organisations.map((organisation) => organisation.name)).toEqual(["Personal", "Team"]);
+		asked.choose(team.id);
+		const booted = expectKind(await consoleIdentity.boot(), "signed-in");
+		expect(booted.me.organisationId).toBe(team.id);
+		expect(booted.headers()).toEqual({ authorization: `Bearer ${tokens.get()}`, "kantel-organisation": team.id });
+
+		// One that isn't theirs (or no longer is) is dropped, and they're asked again.
+		choice.set(foreign.id);
+		expectKind(await consoleIdentity.boot(), "choose-organisation");
+		expect(choice.get()).toBeUndefined();
+		choice.set(personal.id);
+		expect(expectKind(await consoleIdentity.boot(), "signed-in").me.organisationId).toBe(personal.id);
+
+		await consoleIdentity.signOut();
+		expect(choice.get()).toBeUndefined();
 	});
 
 	it("fails the boot, rather than asking to sign in, when Kantel can't be reached", async () => {
