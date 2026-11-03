@@ -1346,6 +1346,8 @@ const SECTIONS: readonly Section[] = [
 			{
 				name: "ssh-proxy",
 				summary: "ssh's ProxyCommand through Kantel's relay (kantel ssh runs it)",
+				// Plumbing for the ssh command kantel ssh prints: `kantel help ssh-proxy` still shows it.
+				hidden: true,
 				flags: {
 					url: { type: "string", value: "<wss-url>", description: `The answer's proxyUrl (default ${SSH_URL_ENV})` },
 				},
