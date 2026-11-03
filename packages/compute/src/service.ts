@@ -815,18 +815,32 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const role = await roleIn(store, principal, sandbox.accountId);
 		if (role === undefined || !(await canSee(principal, sandbox, role))) throw notFound("sandbox");
 		requireScope(principal, scope, role);
-		// Someone kept off the shared hosts can't use a sandbox on one either, though a member shared its account.
-		if (sandbox.hostId !== undefined && !(await mayShare(principal))) {
-			const host = (await ensureHosts()).find((known) => known.id === sandbox.hostId);
-			if (host?.accountId === undefined) throw new KantelError("forbidden", SHARED_HOSTS_REFUSED);
-		}
+		await refuseShared(principal, sandbox);
 		return { sandbox, role };
 	}
 
-	/** The sandbox once its queued operations end, refused with `conflict` unless it is running. */
-	async function requireRunning(sandboxId: string): Promise<StoredSandbox> {
+	/**
+	 * Refuses someone kept off the shared hosts (`mayShare`) a sandbox on one, though a member shared its account. A
+	 * sandbox with no host yet passes, so whatever then waits on it checks again once it is placed (`settledFor`): a
+	 * create or start under way may put it on a shared host before the caller's call reaches it.
+	 */
+	async function refuseShared(principal: Principal, sandbox: StoredSandbox): Promise<void> {
+		if (sandbox.hostId === undefined || (await mayShare(principal))) return;
+		const host = (await ensureHosts()).find((known) => known.id === sandbox.hostId);
+		if (host?.accountId === undefined) throw new KantelError("forbidden", SHARED_HOSTS_REFUSED);
+	}
+
+	/** The sandbox once its queued operations end (a placement among them), checked again with `refuseShared`. */
+	async function settledFor(principal: Principal, sandboxId: string): Promise<StoredSandbox> {
 		await settledOn(sandboxId);
 		const sandbox = await mustGetSandbox(sandboxId);
+		await refuseShared(principal, sandbox);
+		return sandbox;
+	}
+
+	/** `settledFor`, refused with `conflict` unless the sandbox is running. */
+	async function requireRunning(principal: Principal, sandboxId: string): Promise<StoredSandbox> {
+		const sandbox = await settledFor(principal, sandboxId);
 		if (sandbox.state !== "running") {
 			throw new KantelError("conflict", `The sandbox is ${sandbox.state}; it must be running (resume it first)`);
 		}
@@ -1773,8 +1787,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		updateSandbox: async (principal, { params, body }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
-			await settledOn(sandbox.id);
-			const current = await mustGetSandbox(sandbox.id);
+			const current = await settledFor(principal, sandbox.id);
 			const account = await store.accounts.get(current.accountId);
 			if (body.visibility === "organisation" && account?.kind === "personal") {
 				throw new KantelError("invalid", "A personal account's sandboxes are always private");
@@ -1805,8 +1818,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		stopSandbox: async (principal, { params, body }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
-			await settledOn(sandbox.id);
-			const current = await mustGetSandbox(sandbox.id);
+			const current = await settledFor(principal, sandbox.id);
 			const keepMemory = body.keepMemory === true;
 			if (keepMemory && !current.capabilities.pause) {
 				throw new KantelError("not_supported", "Pausing with memory needs a microVM; stop an isolate instead");
@@ -1828,8 +1840,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		forkSandbox: async (principal, { params, body, idempotencyKey }) => {
 			const { sandbox: source } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
 			return once(principal, "forkSandbox", idempotencyKey, async () => {
-				await settledOn(source.id);
-				const current = await mustGetSandbox(source.id);
+				const current = await settledFor(principal, source.id);
 				const count = body.count ?? 1;
 				let snapshot: StoredSnapshot | undefined;
 				if (body.snapshotId !== undefined) {
@@ -1934,8 +1945,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		recoverSandbox: async (principal, { params }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
-			await settledOn(sandbox.id);
-			const current = await mustGetSandbox(sandbox.id);
+			const current = await settledFor(principal, sandbox.id);
 			if (current.state !== "running" && current.state !== "error") {
 				throw new KantelError("conflict", `A ${current.state} sandbox is started or resumed, not recovered`);
 			}
@@ -1972,8 +1982,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		deleteSandbox: async (principal, { params }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:delete");
-			await settledOn(sandbox.id);
-			const current = await mustGetSandbox(sandbox.id);
+			const current = await settledFor(principal, sandbox.id);
 			if (current.state === "deleted") return sandboxView(current, principal);
 			// A sandbox is deleted from any state, so the move is refused only once another call has deleted it. A delete
 			// already under way (on another gateway, or one that died) is done again: destroying is idempotent, and only one
@@ -2051,7 +2060,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		runCommand: async (principal, { params, body, idempotencyKey }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "exec");
 			return once(principal, "runCommand", idempotencyKey, async () => {
-				const current = await requireRunning(sandbox.id);
+				const current = await requireRunning(principal, sandbox.id);
 				if (!current.capabilities.exec) throw new KantelError("not_supported", "This sandbox runs no commands");
 				const detached = body.detached === true;
 				const command: StoredCommand = {
@@ -2155,7 +2164,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		readFile: async (principal, { params, query }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "files");
-			await requireRunning(sandbox.id);
+			await requireRunning(principal, sandbox.id);
 			const path = resolvePath(query.path);
 			const ranged = query.offset !== undefined || query.length !== undefined;
 			const offset = query.offset ?? 0;
@@ -2177,7 +2186,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		writeFile: async (principal, { params, body }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "files");
-			await requireRunning(sandbox.id);
+			await requireRunning(principal, sandbox.id);
 			const path = resolvePath(body.path);
 			const bytes = body.encoding === "base64" ? base64ToBytes(body.content) : new TextEncoder().encode(body.content);
 			if (bytes.byteLength > MAX_FILE_BYTES) throw new KantelError("invalid", "A file written here is at most 1 MiB");
@@ -2191,14 +2200,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		deleteFile: async (principal, { params, query }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "files");
-			await requireRunning(sandbox.id);
+			await requireRunning(principal, sandbox.id);
 			await backend.deleteFile(sandbox.id, resolvePath(query.path));
 			return undefined;
 		},
 
 		listFiles: async (principal, { params, query }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "files");
-			await requireRunning(sandbox.id);
+			await requireRunning(principal, sandbox.id);
 			const path = resolvePath(query.path ?? HOME);
 			const page = paginate(await backend.listFiles(sandbox.id, path), query.limit, query.cursor);
 			return { path, items: page.items.map(fileEntry), nextCursor: page.nextCursor };
@@ -2214,7 +2223,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		exposePort: async (principal, { params, body }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "access");
 			if (!sandbox.capabilities.ports) throw new KantelError("not_supported", "This sandbox can't expose ports");
-			const current = await requireRunning(sandbox.id);
+			const current = await requireRunning(principal, sandbox.id);
 			const isPublic = body.public === true;
 			const existing = current.ports.find((entry) => entry.port === body.port);
 			// A public port's URL holds no secret, so exposing it again answers it as it is. A gated port's token is shown
@@ -2243,8 +2252,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		hidePort: async (principal, { params }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "access");
-			await settledOn(sandbox.id);
-			const current = await mustGetSandbox(sandbox.id);
+			const current = await settledFor(principal, sandbox.id);
 			const port = Number(params.port);
 			if (!current.ports.some((entry) => entry.port === port)) throw notFound("exposed port");
 			await backend.hidePort(current.id, port);
@@ -2258,7 +2266,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		openSsh: async (principal, { params, body }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "access");
 			if (!sandbox.capabilities.ssh) throw new KantelError("not_supported", "SSH needs a microVM; this is an isolate");
-			const current = await requireRunning(sandbox.id);
+			const current = await requireRunning(principal, sandbox.id);
 			const ttlMinutes = body.ttlMinutes ?? ACCESS_TTL_MINUTES;
 			const grant = await backend.openSsh(current.id, {
 				ttlMinutes,
@@ -2282,7 +2290,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (!sandbox.capabilities.desktop) {
 				throw new KantelError("not_supported", "The desktop needs a microVM; this is an isolate");
 			}
-			const current = await requireRunning(sandbox.id);
+			const current = await requireRunning(principal, sandbox.id);
 			const ttlMinutes = body.ttlMinutes ?? ACCESS_TTL_MINUTES;
 			const viewOnly = body.viewOnly === true;
 			const access = await backend.openDesktop(current.id, { viewOnly, ttlMinutes, grantee: encodeGrantee(principal) });
@@ -2294,7 +2302,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (!sandbox.capabilities.browser) {
 				throw new KantelError("not_supported", "The browser needs a microVM; this is an isolate");
 			}
-			const current = await requireRunning(sandbox.id);
+			const current = await requireRunning(principal, sandbox.id);
 			const ttlMinutes = body.ttlMinutes ?? ACCESS_TTL_MINUTES;
 			const viewOnly = body.viewOnly === true;
 			const access = await backend.openBrowser(current.id, { viewOnly, ttlMinutes, grantee: encodeGrantee(principal) });
@@ -2319,7 +2327,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		takeSnapshot: async (principal, { params, body }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "snapshots:write");
-			const current = await requireRunning(sandbox.id);
+			const current = await requireRunning(principal, sandbox.id);
 			const taken = await backend.takeSnapshot(current.id);
 			const at = now();
 			const snapshot: StoredSnapshot = {
@@ -2344,8 +2352,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		saveSnapshot: async (principal, { body }) => {
 			const { sandbox } = await sandboxFor(principal, body.sandboxId, "snapshots:write");
-			await settledOn(sandbox.id);
-			const current = await mustGetSandbox(sandbox.id);
+			const current = await settledFor(principal, sandbox.id);
 			const [existing] = await store.snapshots.list({ accountId: current.accountId, kind: "saved", name: body.name });
 			if (existing !== undefined && body.replace !== true) {
 				throw new KantelError("conflict", `A saved snapshot is already named ${body.name}`);
@@ -2800,8 +2807,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		how: "start" | "resume",
 	): Promise<Sandbox> {
 		const { sandbox } = await sandboxFor(principal, sandboxId, "sandboxes:write");
-		await settledOn(sandbox.id);
-		const current = await mustGetSandbox(sandbox.id);
+		const current = await settledFor(principal, sandbox.id);
 		if (current.state === "running") return sandboxView(current, principal);
 		if (current.state !== "stopped" && current.state !== "paused" && current.state !== "error") {
 			throw new KantelError("conflict", `The sandbox is ${current.state}`);

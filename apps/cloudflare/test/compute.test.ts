@@ -150,7 +150,7 @@ describe("the compute API on the gateway", () => {
 		const open = async () => {
 			const compute = await createStackCompute({
 				authenticator,
-				identity: { authorize: async () => undefined },
+				identity: { authorize: async () => undefined, getUser: () => Promise.reject(new Error("no users here")) },
 				sql: objectSql(db),
 			});
 			const call = async (method: string, path: string, body?: unknown) => {

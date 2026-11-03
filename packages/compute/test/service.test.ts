@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
 import type { SandboxBackend } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
+import { SHARED_HOSTS_REFUSED } from "../src/service.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 
 const BASE_URL = "http://compute.test/v1";
@@ -409,6 +410,41 @@ describe("organisations", () => {
 		expect((await tom.runCommand(shared.id, { command: "echo hi" })).stdout).toBe("hi\n");
 		const roots = await root.createSandbox({ wait: true });
 		expect((await root.runCommand(roots.id, { command: "echo hi" })).stdout).toBe("hi\n");
+	});
+
+	it("checks again once a sandbox is placed, so a call queued while it starts can't reach a shared host", async () => {
+		// The host's reply to the first create is held until `release`, so calls queue behind the placement.
+		const stub = createStubBackend();
+		let release = () => {};
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const backend: SandboxBackend = { ...stub, create: async (input) => held.then(() => stub.create(input)) };
+		const { tom, ann } = setup(backend, { sharedHosts: async (userId) => userId === "usr_tom" });
+		const org = await tom.createOrganisation({ name: "Acme" });
+		await ann.joinOrganisation({ code: (await tom.createInvite(org.id, { role: "member" })).code ?? "" });
+
+		const starting = await tom.createSandbox({ account: org.id });
+		expect(starting.state).toBe("starting");
+		// Ann finds it while it has no host yet, and queues calls on it; so does Tom.
+		expect((await ann.listSandboxes({ account: org.id })).items.map((item) => item.id)).toEqual([starting.id]);
+		const annRuns = failure(ann.runCommand(starting.id, { command: "echo hi" }));
+		const annWrites = failure(ann.writeFile(starting.id, { path: "/tmp/x", content: "x" }));
+		const annStops = failure(ann.stopSandbox(starting.id, {}));
+		const tomRuns = tom.runCommand(starting.id, { command: "echo hi" });
+		// Long enough for each to be let in (no host yet) and wait on the placement; nothing here takes a millisecond.
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect((await tom.getSandbox(starting.id)).state).toBe("starting");
+		release();
+
+		// Once it is on the shared host, hers are refused there and none of them reached it; Tom's ran.
+		for (const refused of await Promise.all([annRuns, annWrites, annStops])) {
+			expect(refused).toMatchObject({ code: "forbidden", message: SHARED_HOSTS_REFUSED });
+		}
+		expect((await tomRuns).stdout).toBe("hi\n");
+		const after = await tom.getSandbox(starting.id);
+		expect(after.state).toBe("running");
+		await expect(tom.readFile(starting.id, { path: "/tmp/x" })).rejects.toMatchObject({ code: "not_found" });
 	});
 });
 

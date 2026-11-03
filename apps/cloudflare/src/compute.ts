@@ -233,7 +233,7 @@ export interface StackComputeOptions {
 	 * Who holds which role: an organisation admin who signs in is the compute plane's super-admin, and a member of the
 	 * deployment's organisation may use the stub.
 	 */
-	readonly identity: Pick<IdentityDirectory, "authorize" | "roleOf">;
+	readonly identity: Pick<IdentityDirectory, "authorize" | "getUser">;
 	/**
 	 * The deployment's own organisation: only its admins are super-admins, and only its members may use the stub here.
 	 * Others are refused, or with Kantel Connect on, may use only hosts of their own. Absent, any organisation's admin
@@ -272,7 +272,7 @@ export const COMPUTE_MEMBERS_ONLY =
  * keeps files and snapshots in this object's memory, which a stranger mustn't be able to fill. Refusing the person
  * refuses every way in, a compute key or a device sign-in included, since only a person can make either. With Kantel
  * Connect on (`connect`) they are let in, never as a super-admin, to enrol and use hosts of their own: `sharedHosts`
- * (`memberOf`) keeps them, and their keys, off the stub.
+ * (`membersOf`) keeps them, and their keys, off the stub, with Connect on or off.
  */
 async function personOf(
 	authenticator: Authenticator,
@@ -308,16 +308,32 @@ async function personOf(
 	};
 }
 
-/** Whether `userId` is a member of the deployment's organisation, with any role: who may use the stub. */
-async function memberOf(
-	identity: Pick<IdentityDirectory, "roleOf">,
+/** How long `membersOf` reuses an answer: a person who leaves the organisation loses the stub within this. */
+export const MEMBERSHIP_CACHE_MS = 5000;
+
+/**
+ * Whether a user is a member of the deployment's organisation, who may use the stub: as sign-in has it (the
+ * organisation they were created in, or any role there, a project's included), which `getUser` asked as Kantel
+ * answers. Anything else, an error included, is no. Answers are reused for `MEMBERSHIP_CACHE_MS`, since every
+ * sandbox call on the stub asks.
+ */
+function membersOf(
+	identity: Pick<IdentityDirectory, "getUser">,
 	organisationId: string,
-	userId: string,
-): Promise<boolean> {
-	const role = await identity
-		.roleOf(systemContext("compute"), { kind: "human", userId }, organisationId)
-		.catch(() => undefined);
-	return role !== undefined;
+	now: () => number,
+): (userId: string) => Promise<boolean> {
+	const answers = new Map<string, { at: number; member: boolean }>();
+	return async (userId) => {
+		const cached = answers.get(userId);
+		if (cached !== undefined && now() - cached.at < MEMBERSHIP_CACHE_MS) return cached.member;
+		const member = await identity.getUser({ ...systemContext("compute"), organisationId }, userId).then(
+			() => true,
+			() => false,
+		);
+		if (answers.size >= 1000) answers.clear();
+		answers.set(userId, { at: now(), member });
+		return member;
+	};
 }
 
 /** The compute API over the stub backend, its records in `sql` (or memory), signed in with `authenticator`. */
@@ -349,10 +365,11 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		authenticatePerson: (request) =>
 			personOf(options.authenticator, options.identity, request, options.adminOrganisationId, connect !== undefined),
 		...(options.sessionLive === undefined ? {} : { sessionLive: options.sessionLive }),
-		// With Connect on, people outside the deployment's organisation get in; the stub stays its members'.
-		...(connect === undefined || deploymentOrganisation === undefined
+		// The stub is its members', Connect on or off: with it on, people outside get in for hosts of their own, and a
+		// key one of them made then must stay off the stub once it is off.
+		...(deploymentOrganisation === undefined
 			? {}
-			: { sharedHosts: (userId: string) => memberOf(options.identity, deploymentOrganisation, userId) }),
+			: { sharedHosts: membersOf(options.identity, deploymentOrganisation, now) }),
 		mode: "hosted",
 		now,
 		...(options.fetch === undefined ? {} : { fetch: options.fetch }),

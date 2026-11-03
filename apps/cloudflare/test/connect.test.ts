@@ -6,6 +6,7 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { createMemoryStore } from "@kantel/compute";
 import { createStubBackend, STUB_HOST_ID } from "@kantel/compute/stub";
 import type { Authenticator } from "@kantel/contracts";
+import { ORGANISATION_HEADER } from "@kantel/contracts/identity";
 import type { HostSocket } from "@kantel/hosts/hub";
 import { decodeStreamFrame, encodeStreamFrame, type HostMessage } from "@kantel/hosts/protocol";
 import { createMockAccess } from "@kantel/identity/testing";
@@ -347,7 +348,7 @@ describe("Kantel Connect on the Worker", () => {
 		const open = async (connect: boolean) => {
 			const compute = await createStackCompute({
 				authenticator,
-				identity: { authorize: async () => undefined },
+				identity: { authorize: async () => undefined, getUser: () => Promise.reject(new Error("no users here")) },
 				sql: objectSql(db),
 				...(connect ? { connect: { publicUrl: BASE } } : {}),
 			});
@@ -652,6 +653,56 @@ describe("Kantel Connect on the Worker", () => {
 		open?.close();
 	});
 
+	it("keeps the stub its organisation's, a project's members too, Connect on or off, and outsiders' keys off it", async () => {
+		const databases = { identity: new DatabaseSync(":memory:"), compute: new DatabaseSync(":memory:") };
+		const on = await startPublic({}, databases);
+		const ada = await on.signIn("ada@example.test");
+		const bob = await on.signIn("bob@example.test");
+		// Bob, who signed up too, is given a role on one of the deployment's projects only.
+		const bobId = ((await on.call("GET", "/v1/whoami", { token: bob })).body.user as { id: string }).id;
+		const website = await on.stack.identity.createProject(on.stack.admin, { name: "Website" });
+		await on.stack.identity.grantRole(on.stack.admin, {
+			principal: { kind: "user", userId: bobId },
+			role: "viewer",
+			projectId: website.id,
+		});
+		const deployment = on.stack.admin.organisationId;
+		const asBob = { token: bob, organisation: deployment };
+		const scopes = ["sandboxes:read", "sandboxes:write", "exec"];
+		const keyOf = async (options: { token: string; organisation?: string }) => {
+			const made = await on.call("POST", "/v1/api-keys", { ...options, body: { name: "cli", scopes } });
+			expect(made.status).toBe(201);
+			return made.body.secret as string;
+		};
+		const adaKey = await keyOf({ token: ada });
+		const bobKey = await keyOf(asBob);
+		const isolate = { type: "isolate", wait: true };
+
+		// Connect on: Bob is a member, so he and his key use the stub; Ada and hers, with no host of their own, don't.
+		const bobs = await on.call("POST", "/v1/sandboxes", { ...asBob, body: isolate });
+		expect(bobs.status).toBe(201);
+		expect((await on.call("POST", "/v1/sandboxes", { token: bobKey, body: isolate })).status).toBe(201);
+		expect((await on.call("POST", "/v1/sandboxes", { token: adaKey, body: isolate })).status).toBe(503);
+
+		// Connect off, over the same records: Ada's key, made while it was on, still can't; Bob and his key still can.
+		await on.stack.compute.close();
+		const off = await startPublic({ KANTEL_CONNECT: "off" }, databases);
+		const refused = await off.call("POST", "/v1/sandboxes", { token: adaKey, body: isolate });
+		expect(refused.status).toBe(503);
+		expect(refused.body.error).toMatchObject({ code: "unavailable", message: /host of this account's own/ });
+		expect((await off.call("POST", "/v1/sandboxes", { token: bobKey, body: isolate })).status).toBe(201);
+		const bobAgain = await off.signIn("bob@example.test");
+		const inOrg = { token: bobAgain, organisation: deployment };
+		expect((await off.call("POST", "/v1/sandboxes", { ...inOrg, body: isolate })).status).toBe(201);
+		// The sandbox he made with Connect on is back after the restart, and runs his command.
+		const ran = await off.call("POST", `/v1/sandboxes/${bobs.body.id}/commands`, {
+			...inOrg,
+			body: { command: "echo hi" },
+		});
+		expect(ran.status).toBe(200);
+		expect(ran.body.stdout).toBe("hi\n");
+	});
+
 	it("keeps a public sign-up off the stub with Connect off, as before", async () => {
 		const { call, signIn } = await startPublic({ KANTEL_CONNECT: "off" });
 		const ada = await signIn("ada@example.test");
@@ -666,7 +717,10 @@ describe("Kantel Connect on the Worker", () => {
  * The Worker with email-code sign-in and open sign-up on its public origin, and Kantel Connect on (`vars` to change
  * that): a call there with a session or key, and someone's sign-in, as `test/sign-in.test.ts` has them.
  */
-async function startPublic(vars: GatewayVars = {}) {
+async function startPublic(
+	vars: GatewayVars = {},
+	databases: { identity: DatabaseSync; compute?: DatabaseSync } = { identity: new DatabaseSync(":memory:") },
+) {
 	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
 	const sent: { to: string; text?: string }[] = [];
 	const pending: Promise<unknown>[] = [];
@@ -681,7 +735,10 @@ async function startPublic(vars: GatewayVars = {}) {
 			...vars,
 		}),
 		accessFetch: mock.fetch,
-		storage: { sql: syncSqliteDriver(new DatabaseSync(":memory:")) },
+		storage: {
+			sql: syncSqliteDriver(databases.identity),
+			...(databases.compute === undefined ? {} : { compute: objectSql(databases.compute) }),
+		},
 		mail: {
 			binding: {
 				send: async (message) => {
@@ -697,10 +754,15 @@ async function startPublic(vars: GatewayVars = {}) {
 	});
 	closers.push(() => stack.compute.close());
 	const gateway = createGateway(stack);
-	const call = async (method: string, path: string, options: { body?: unknown; token?: string } = {}) => {
+	const call = async (
+		method: string,
+		path: string,
+		options: { body?: unknown; token?: string; organisation?: string } = {},
+	) => {
 		const headers: Record<string, string> = {};
 		if (options.body !== undefined) headers["content-type"] = "application/json";
 		if (options.token !== undefined) headers.authorization = `Bearer ${options.token}`;
+		if (options.organisation !== undefined) headers[ORGANISATION_HEADER] = options.organisation;
 		const response = await gateway.fetch(
 			new Request(`${BASE}${path}`, {
 				method,
@@ -724,6 +786,7 @@ async function startPublic(vars: GatewayVars = {}) {
 	};
 	const hosts = stack.compute.hosts;
 	return {
+		stack,
 		call,
 		signIn,
 		get hosts() {
