@@ -353,6 +353,11 @@ func fetchImages(cfg agent.Config, source string, kvm bool) error {
 	if err != nil {
 		return fmt.Errorf("images manifest: %w", err)
 	}
+	if kvm {
+		if err := checkArch(manifest, arch); err != nil {
+			return fmt.Errorf("images at %s: %w", source, err)
+		}
+	}
 	get := func(name, dst string, mode os.FileMode, required bool) error {
 		f, ok := manifest.Files[name]
 		if !ok {
@@ -393,6 +398,32 @@ func fetchImages(cfg agent.Config, source string, kvm bool) error {
 		}
 	}
 	return nil
+}
+
+// checkArch says, before anything is downloaded, when the images are for other architectures only: one release holds
+// each architecture's kernel and sandbox image side by side (vmlinux-<arch>, sandbox-<arch>.ext4), and a host takes
+// its own.
+func checkArch(manifest ImageManifest, arch string) error {
+	var missing []string
+	for _, name := range []string{"vmlinux-" + arch, "sandbox-" + arch + ".ext4"} {
+		if _, ok := manifest.Files[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	var others []string
+	for _, other := range []string{"amd64", "arm64"} {
+		if _, ok := manifest.Files["sandbox-"+other+".ext4"]; ok && other != arch {
+			others = append(others, other)
+		}
+	}
+	if len(others) > 0 {
+		return fmt.Errorf("no %s images (%s), only %s: use a release with %s images, or --images with your own build (ARCHES=%s apps/host/guest/release.sh)",
+			arch, strings.Join(missing, ", "), strings.Join(others, ", "), arch, arch)
+	}
+	return fmt.Errorf("the images manifest has no %s", strings.Join(missing, " or "))
 }
 
 // fetchFirecracker gets Firecracker's release from GitHub and checks it against the release's SHA256SUMS.
