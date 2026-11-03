@@ -12,7 +12,8 @@ import "./tokens/tailwind.css";
 // The audit view.
 // The brand: Kantel's mark, wordmark and lockups, in the theme's ink.
 export { KantelLockup, KantelMark, KantelWordmark } from "./brand/kantel.tsx";
-// The compute console (experimental, the compute plane): sandboxes, snapshots, keys, the egress proxy, webhooks,
+// The compute console (experimental, the compute plane): sandboxes, snapshots, environments and their protected
+// variables, each sandbox's egress log and grants, keys, the egress proxy, webhooks,
 // OpenTelemetry, organisations, billing on hosted Kantel and a super-admin's hosts, through one `ComputeSource`. Its
 // sample data is `@kantel/ui/compute/fixtures` until the public API lands.
 export {
@@ -31,11 +32,19 @@ export type {
 	ComputeAccount,
 	ComputeSource,
 	ComputeViewer,
+	DestinationBinding,
 	DeviceLogin,
 	DeviceLoginsSource,
+	EgressEntry,
+	EgressGrant,
+	EgressSource,
+	Environment,
+	EnvironmentsSource,
+	EnvironmentVariable,
 	HostingMode,
 	HostsSource,
 	ProxySource,
+	SandboxEgress,
 	SandboxesSource,
 	SnapshotsSource,
 	TelemetrySource,

@@ -148,6 +148,8 @@ export interface Sandbox {
 	readonly shared?: boolean;
 	/** The sandbox it was forked from. */
 	readonly forkedFrom?: string;
+	/** The environment it was made from. */
+	readonly environment?: { readonly id: string; readonly name: string };
 }
 
 export interface CreateSandboxInput {
@@ -159,6 +161,8 @@ export interface CreateSandboxInput {
 	readonly fromSnapshot?: string;
 	/** Minutes until auto-stop; undefined is always on. */
 	readonly autoStopMinutes?: number;
+	/** The environment it starts with. */
+	readonly environmentId?: string;
 }
 
 /** A command that ran in a sandbox, for its history. */
@@ -434,6 +438,180 @@ export interface ProxySource {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// Environments
+
+/** The HTTP methods a binding or a grant can name. */
+export const HTTP_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] as const;
+export type HttpMethod = (typeof HTTP_METHODS)[number];
+
+/**
+ * Where a protected variable's value may go: a host (`api.github.com`, `*.example.com`), and optionally only paths
+ * under these prefixes and only these methods. The host's egress proxy swaps the sandbox's placeholder for the value
+ * only on a request that matches.
+ */
+export interface DestinationBinding {
+	readonly host: string;
+	/** Empty: any path. */
+	readonly pathPrefixes: readonly string[];
+	/** Empty: any method. */
+	readonly methods: readonly HttpMethod[];
+}
+
+/**
+ * A variable every new sandbox made from the environment starts with. A plain one is its value in the sandbox. A
+ * protected one is a `kph_` placeholder in the sandbox, its own per sandbox, that the host's egress proxy swaps for the
+ * value on requests to its bindings: the value never enters the sandbox.
+ */
+export interface EnvironmentVariable {
+	readonly name: string;
+	readonly protected: boolean;
+	/** A plain variable's value. Absent for a protected one: its value is write-only. */
+	readonly value?: string;
+	/** A protected variable's destinations, at least one. Empty for a plain one. */
+	readonly bindings: readonly DestinationBinding[];
+	readonly updatedAt: number;
+}
+
+/** A file every new sandbox starts with, written to its disk. Its contents are write-only. */
+export interface EnvironmentFile {
+	/** Absolute: `/home/user/.npmrc`. */
+	readonly path: string;
+	/** Its permissions, such as `0o600`. */
+	readonly mode: number;
+	readonly sizeBytes: number;
+	readonly updatedAt: number;
+}
+
+/** A repository every new sandbox starts with, cloned through the egress proxy. */
+export interface EnvironmentRepo {
+	/** `https://github.com/lleverage-ai/kantel`. */
+	readonly url: string;
+	/** Where it's cloned; default `~/<name>`. */
+	readonly path?: string;
+	/** A branch, tag or commit; default the repository's default branch. */
+	readonly ref?: string;
+}
+
+/**
+ * An egress rule: let a sandbox reach a host, or refuse it, with no one asked. Deny wins. A rule that names methods
+ * or paths makes the proxy look inside that host's HTTPS, as it does for a protected variable's host.
+ */
+export interface EgressGrant {
+	readonly id: string;
+	readonly action: "allow" | "deny";
+	readonly host: string;
+	/** Empty: every method. */
+	readonly methods: readonly HttpMethod[];
+	/** Path patterns (`/repos/lleverage-ai/*`). Empty: every path. */
+	readonly paths: readonly string[];
+}
+
+/** What a sandbox starts with: variables, secret files and repositories, and its egress grants. */
+export interface Environment {
+	readonly id: string;
+	readonly accountId: string;
+	readonly name: string;
+	readonly description?: string;
+	readonly variables: readonly EnvironmentVariable[];
+	readonly files: readonly EnvironmentFile[];
+	readonly repos: readonly EnvironmentRepo[];
+	readonly grants: readonly EgressGrant[];
+	/** How many sandboxes were made from it and still exist. */
+	readonly sandboxCount: number;
+	readonly createdAt: number;
+	readonly updatedAt: number;
+}
+
+/** Add or change a variable. */
+export interface VariableInput {
+	readonly name: string;
+	readonly protected: boolean;
+	/** The value. Absent on an edit of a protected variable: it keeps its value (a rotation sends one). */
+	readonly value?: string;
+	readonly bindings: readonly DestinationBinding[];
+}
+
+/** Add or replace a secret file. */
+export interface FileInput {
+	readonly path: string;
+	readonly mode: number;
+	/** Absent on an edit: the file keeps its contents. */
+	readonly content?: string;
+}
+
+export interface EnvironmentsSource {
+	list(accountId: string): Promise<readonly Environment[]>;
+	get(id: string): Promise<Environment>;
+	create(input: { accountId: string; name: string; description?: string }): Promise<Environment>;
+	update(id: string, change: { name?: string; description?: string }): Promise<Environment>;
+	/** Deletes it. Sandboxes made from it keep what they started with; their protected variables stop resolving. */
+	remove(id: string): Promise<void>;
+	/** Adds or changes a variable by name. A new value for a protected one reaches its running sandboxes at once. */
+	setVariable(id: string, input: VariableInput): Promise<Environment>;
+	removeVariable(id: string, name: string): Promise<Environment>;
+	setFile(id: string, input: FileInput): Promise<Environment>;
+	removeFile(id: string, path: string): Promise<Environment>;
+	setRepos(id: string, repos: readonly EnvironmentRepo[]): Promise<Environment>;
+	setGrants(id: string, grants: readonly EgressGrant[]): Promise<Environment>;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// A sandbox's egress
+
+/** One request or connection a sandbox made through its host's egress proxy. Never a credential's value. */
+export interface EgressEntry {
+	readonly id: string;
+	readonly at: number;
+	/** `CONNECT` for a tunnel the proxy didn't look inside. */
+	readonly method: string;
+	readonly host: string;
+	readonly port: number;
+	/** The path, when the proxy saw it (plain HTTP, or HTTPS it inspected); never the query. */
+	readonly path?: string;
+	readonly decision: "allowed" | "denied";
+	/** Why it was denied, or what failed, in words. */
+	readonly reason?: string;
+	/** The rule that decided it, such as `deny *.example-tracker.io`. */
+	readonly rule?: string;
+	/** The protected variables whose values the proxy put in, by name. Empty: none. */
+	readonly swapped: readonly string[];
+	/** Whether the proxy looked inside the HTTPS (a protected variable's host or a method or path grant). */
+	readonly inspected: boolean;
+	/** The answer's status, when the proxy saw one. */
+	readonly status?: number;
+	readonly bytesUp: number;
+	readonly bytesDown: number;
+}
+
+/** A protected variable as one sandbox has it: the placeholder it sees, never the value. */
+export interface SandboxProtectedVariable {
+	readonly name: string;
+	/** The first characters of its placeholder, `kph_7Qx2`, to tell it apart in a log or a command's output. */
+	readonly placeholderPrefix: string;
+	readonly bindings: readonly DestinationBinding[];
+}
+
+/** A sandbox's egress: what it was made with, its own grants and its log. */
+export interface SandboxEgress {
+	readonly sandboxId: string;
+	readonly sandboxName: string;
+	readonly environment?: { readonly id: string; readonly name: string };
+	readonly protectedVariables: readonly SandboxProtectedVariable[];
+	/** The environment's grants, which this sandbox has too. */
+	readonly environmentGrants: readonly EgressGrant[];
+	/** This sandbox's own grants, on top of its environment's. */
+	readonly grants: readonly EgressGrant[];
+	/** Newest first. */
+	readonly entries: readonly EgressEntry[];
+}
+
+export interface EgressSource {
+	get(sandboxId: string): Promise<SandboxEgress>;
+	/** Replaces the sandbox's own grants; they apply to its next request. */
+	setGrants(sandboxId: string, grants: readonly EgressGrant[]): Promise<SandboxEgress>;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // Webhooks and OpenTelemetry
 
 /** The public API's `EventType` (#541). */
@@ -661,6 +839,8 @@ export interface ComputeSource {
 	readonly snapshots: SnapshotsSource;
 	readonly keys: ApiKeysSource;
 	readonly proxy: ProxySource;
+	readonly environments: EnvironmentsSource;
+	readonly egress: EgressSource;
 	readonly webhooks: WebhooksSource;
 	readonly telemetry: TelemetrySource;
 	/** Only for a super-admin. */

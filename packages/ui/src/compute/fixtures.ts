@@ -12,7 +12,11 @@ import type {
 	ComputeSource,
 	ComputeViewer,
 	CreateSandboxInput,
+	DestinationBinding,
 	DeviceLogin,
+	EgressEntry,
+	EgressGrant,
+	Environment,
 	Host,
 	HostingMode,
 	OrganisationInvite,
@@ -22,6 +26,7 @@ import type {
 	ProxySettings,
 	Sandbox,
 	SandboxCommand,
+	SandboxEgress,
 	SandboxSnapshot,
 	SavedSnapshot,
 	SnapshotEntry,
@@ -118,6 +123,7 @@ export const API_SERVER = sandbox({
 	hostId: "hst_hetzner_1",
 	shared: true,
 	createdBy: "Alex Kemp",
+	environment: { id: "env_backend", name: "backend-dev" },
 });
 
 export const DEV_STACK = sandbox({
@@ -134,6 +140,7 @@ export const DEV_STACK = sandbox({
 	usage: usageSeries(9, 0.6),
 	hostId: "hst_hetzner_1",
 	shared: true,
+	environment: { id: "env_backend", name: "backend-dev" },
 });
 
 export const SCRATCH = sandbox({
@@ -197,6 +204,7 @@ export const EVAL_RUNNER = sandbox({
 	hostId: "hst_home",
 	error: "The machine stopped answering. Its disk is safe: recover it, or resume it on another host.",
 	forkedFrom: DEV_STACK.id,
+	environment: { id: "env_evals", name: "evals" },
 });
 
 export const NEW_ONE = sandbox({
@@ -521,6 +529,200 @@ export const PROXY_REQUESTS: readonly ProxyRequest[] = [
 	proxyRequest("req_4", 75_000, DEV_STACK, "GET", "pypi.org", "/simple/httpx/", 200, "allowed", 9_871),
 	proxyRequest("req_5", 2 * MINUTE, API_SERVER, "GET", "169.254.169.254", "/latest/meta-data/", 403, "denied", 0),
 ];
+
+const GITHUB: DestinationBinding = { host: "api.github.com", pathPrefixes: [], methods: [] };
+
+/** The organisation's environments: one for backend work, one for evals. */
+export const ENVIRONMENTS: readonly Environment[] = [
+	{
+		id: "env_backend",
+		accountId: LLEVERAGE.id,
+		name: "backend-dev",
+		description: "The API and its workers, with GitHub, npm and OpenAI.",
+		variables: [
+			{ name: "NODE_ENV", protected: false, value: "development", bindings: [], updatedAt: FIXTURE_NOW - 6 * DAY },
+			{
+				name: "DATABASE_URL",
+				protected: false,
+				value: "postgres://app:app@localhost:5432/app",
+				bindings: [],
+				updatedAt: FIXTURE_NOW - 6 * DAY,
+			},
+			{
+				name: "GH_TOKEN",
+				protected: true,
+				bindings: [GITHUB, { host: "github.com", pathPrefixes: ["/lleverage-ai/"], methods: [] }],
+				updatedAt: FIXTURE_NOW - 2 * HOUR,
+			},
+			{
+				name: "NPM_TOKEN",
+				protected: true,
+				bindings: [{ host: "registry.npmjs.org", pathPrefixes: [], methods: ["GET", "PUT"] }],
+				updatedAt: FIXTURE_NOW - 3 * DAY,
+			},
+			{
+				name: "OPENAI_API_KEY",
+				protected: true,
+				bindings: [{ host: "api.openai.com", pathPrefixes: ["/v1/"], methods: ["POST", "GET"] }],
+				updatedAt: FIXTURE_NOW - 5 * DAY,
+			},
+		],
+		files: [
+			{ path: "/home/user/.npmrc", mode: 0o600, sizeBytes: 112, updatedAt: FIXTURE_NOW - 3 * DAY },
+			{ path: "/home/user/.config/app/dev.env", mode: 0o600, sizeBytes: 486, updatedAt: FIXTURE_NOW - 6 * DAY },
+		],
+		repos: [
+			{ url: "https://github.com/lleverage-ai/kantel", ref: "main" },
+			{ url: "https://github.com/lleverage-ai/agent-sdk", path: "/home/user/src/agent-sdk" },
+		],
+		grants: [
+			{ id: "grt_gh", action: "allow", host: "api.github.com", methods: [], paths: [] },
+			{ id: "grt_gh_delete", action: "deny", host: "api.github.com", methods: ["DELETE"], paths: ["/repos/*"] },
+			{ id: "grt_npm", action: "allow", host: "registry.npmjs.org", methods: [], paths: [] },
+			{ id: "grt_tracker", action: "deny", host: "*.example-tracker.io", methods: [], paths: [] },
+		],
+		sandboxCount: 2,
+		createdAt: FIXTURE_NOW - 6 * DAY,
+		updatedAt: FIXTURE_NOW - 2 * HOUR,
+	},
+	{
+		id: "env_evals",
+		accountId: LLEVERAGE.id,
+		name: "evals",
+		description: "The nightly eval runners.",
+		variables: [
+			{ name: "EVAL_SUITE", protected: false, value: "nightly", bindings: [], updatedAt: FIXTURE_NOW - 2 * DAY },
+			{
+				name: "ANTHROPIC_API_KEY",
+				protected: true,
+				bindings: [{ host: "api.anthropic.com", pathPrefixes: ["/v1/messages"], methods: ["POST"] }],
+				updatedAt: FIXTURE_NOW - 2 * DAY,
+			},
+		],
+		files: [],
+		repos: [{ url: "https://github.com/lleverage-ai/evals" }],
+		grants: [{ id: "grt_anthropic", action: "allow", host: "api.anthropic.com", methods: [], paths: [] }],
+		sandboxCount: 1,
+		createdAt: FIXTURE_NOW - 2 * DAY,
+		updatedAt: FIXTURE_NOW - 2 * DAY,
+	},
+];
+
+const egressEntry = (
+	id: string,
+	ago: number,
+	fields: Omit<EgressEntry, "id" | "at" | "port" | "swapped" | "inspected" | "bytesUp" | "bytesDown"> &
+		Partial<Pick<EgressEntry, "port" | "swapped" | "inspected" | "bytesUp" | "bytesDown">>,
+): EgressEntry => ({
+	id,
+	at: FIXTURE_NOW - ago,
+	port: 443,
+	swapped: [],
+	inspected: false,
+	bytesUp: 0,
+	bytesDown: 0,
+	...fields,
+});
+
+/** dev-stack's recent egress: swaps, a tunnel, a placeholder sent to the wrong host and two refusals. */
+export const EGRESS_LOG: readonly EgressEntry[] = [
+	egressEntry("egr_9", 3_000, {
+		method: "GET",
+		host: "api.github.com",
+		path: "/user",
+		decision: "allowed",
+		swapped: ["GH_TOKEN"],
+		inspected: true,
+		status: 200,
+		bytesUp: 412,
+		bytesDown: 1_380,
+	}),
+	egressEntry("egr_8", 8_000, {
+		method: "POST",
+		host: "webhook.site",
+		path: "/3f9a1c",
+		decision: "denied",
+		reason: "GH_TOKEN's placeholder was sent to webhook.site, which it isn't bound to. Kantel didn't swap it.",
+		rule: "placeholder-unbound",
+		inspected: true,
+		status: 403,
+		bytesUp: 220,
+	}),
+	egressEntry("egr_7", 14_000, {
+		method: "DELETE",
+		host: "api.github.com",
+		path: "/repos/lleverage-ai/kantel/branches/old",
+		decision: "denied",
+		reason: "Denied by the environment's grant.",
+		rule: "deny DELETE api.github.com /repos/*",
+		inspected: true,
+		status: 403,
+		bytesUp: 380,
+	}),
+	egressEntry("egr_6", 40_000, {
+		method: "POST",
+		host: "api.openai.com",
+		path: "/v1/responses",
+		decision: "allowed",
+		swapped: ["OPENAI_API_KEY"],
+		inspected: true,
+		status: 200,
+		bytesUp: 2_904,
+		bytesDown: 18_220,
+	}),
+	egressEntry("egr_5", 55_000, {
+		method: "CONNECT",
+		host: "pypi.org",
+		decision: "allowed",
+		bytesUp: 1_840,
+		bytesDown: 92_610,
+	}),
+	egressEntry("egr_4", 70_000, {
+		method: "CONNECT",
+		host: "collect.example-tracker.io",
+		decision: "denied",
+		reason: "Denied by the environment's grant.",
+		rule: "deny *.example-tracker.io",
+	}),
+	egressEntry("egr_3", 2 * MINUTE, {
+		method: "GET",
+		host: "registry.npmjs.org",
+		path: "/@lleverage-ai%2fagent-sdk",
+		decision: "allowed",
+		swapped: ["NPM_TOKEN"],
+		inspected: true,
+		status: 200,
+		bytesUp: 380,
+		bytesDown: 24_100,
+	}),
+	egressEntry("egr_2", 3 * MINUTE, {
+		method: "GET",
+		host: "api.github.com",
+		path: "/repos/lleverage-ai/kantel/pulls",
+		decision: "allowed",
+		inspected: true,
+		status: 200,
+		bytesUp: 300,
+		bytesDown: 41_280,
+	}),
+	egressEntry("egr_1", 4 * MINUTE, {
+		method: "GET",
+		host: "169.254.169.254",
+		port: 80,
+		path: "/latest/meta-data/",
+		decision: "denied",
+		reason: "169.254.169.254 isn't on the public internet.",
+		status: 403,
+	}),
+];
+
+/** Placeholders as each of the environment's sandboxes has them: sample text, not real ones. */
+const placeholderOf = (sandboxId: string, name: string): string => {
+	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+	let seed = 0;
+	for (const char of `${sandboxId}/${name}`) seed = (seed * 31 + char.charCodeAt(0)) % 1_000_003;
+	return `kph_${Array.from({ length: 4 }, (_, at) => alphabet[(seed * (at + 7)) % alphabet.length]).join("")}`;
+};
 
 const delivery = (
 	id: string,
@@ -854,6 +1056,19 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 		(empty ? [] : HOSTS).map((host) => [host.id, moved(host, ["lastSeenAt", "joinedAt"])]),
 	);
 	const proxies = new Map<string, ProxySettings>();
+	const environments = new Map<string, Environment>(
+		(empty ? [] : ENVIRONMENTS).map((env) => [
+			env.id,
+			{
+				...moved(env, ["createdAt", "updatedAt"]),
+				variables: env.variables.map((variable) => moved(variable, ["updatedAt"])),
+				files: env.files.map((file) => moved(file, ["updatedAt"])),
+			},
+		]),
+	);
+	const sandboxGrants = new Map<string, readonly EgressGrant[]>(
+		empty ? [] : [[DEV_STACK.id, [{ id: "grt_dev_pypi", action: "allow", host: "pypi.org", methods: [], paths: [] }]]],
+	);
 	const telemetry = new Map<string, TelemetrySettings>();
 	const accounts: ComputeAccount[] = [PERSONAL, LLEVERAGE, EVALS];
 	const members = new Map<string, OrganisationMember[]>([
@@ -903,6 +1118,30 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 	const put = (box: Sandbox): Sandbox => {
 		sandboxes.set(box.id, box);
 		return box;
+	};
+	const putEnvironment = (env: Environment): Environment => {
+		const next = { ...env, updatedAt: now() };
+		environments.set(env.id, next);
+		return next;
+	};
+	const egressOf = (sandboxId: string): SandboxEgress => {
+		const box = find(sandboxes, sandboxId, "sandbox");
+		const env = box.environment === undefined ? undefined : environments.get(box.environment.id);
+		return {
+			sandboxId: box.id,
+			sandboxName: box.name,
+			...(box.environment === undefined ? {} : { environment: box.environment }),
+			protectedVariables: (env?.variables ?? [])
+				.filter((variable) => variable.protected)
+				.map((variable) => ({
+					name: variable.name,
+					placeholderPrefix: placeholderOf(box.id, variable.name),
+					bindings: variable.bindings,
+				})),
+			environmentGrants: env?.grants ?? [],
+			grants: sandboxGrants.get(box.id) ?? [],
+			entries: box.id === DEV_STACK.id ? EGRESS_LOG.map((entry) => moved(entry, ["at"])) : [],
+		};
 	};
 	/** Moves a sandbox to `to` after `settleMs`, as a host would report. */
 	const settle = (id: string, to: (box: Sandbox) => Sandbox) => {
@@ -1018,6 +1257,14 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						...(hosting === "hosted" ? { costCents: 0 } : {}),
 						hostId: input.kind === "isolate" ? "hst_home" : "hst_hetzner_1",
 						shared: input.accountId !== PERSONAL.id,
+						...(input.environmentId === undefined
+							? {}
+							: {
+									environment: {
+										id: input.environmentId,
+										name: find(environments, input.environmentId, "environment").name,
+									},
+								}),
 					};
 					put(box);
 					history.set(id, []);
@@ -1222,6 +1469,120 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 				}),
 			recent: (accountId) =>
 				gate(() => (accountId === LLEVERAGE.id && !empty ? PROXY_REQUESTS.map((entry) => moved(entry, ["at"])) : [])),
+		},
+		environments: {
+			list: (accountId) =>
+				gate(() =>
+					[...environments.values()]
+						.filter((env) => env.accountId === accountId)
+						.sort((a, b) => a.name.localeCompare(b.name)),
+				),
+			get: (id) => gate(() => find(environments, id, "environment")),
+			create: (input) =>
+				gate(() => {
+					const name = input.name.trim();
+					if ([...environments.values()].some((env) => env.accountId === input.accountId && env.name === name)) {
+						throw new Error(`There's already an environment called ${name}.`);
+					}
+					const env: Environment = {
+						id: nextId("env"),
+						accountId: input.accountId,
+						name,
+						...(input.description === undefined || input.description === "" ? {} : { description: input.description }),
+						variables: [],
+						files: [],
+						repos: [],
+						grants: [],
+						sandboxCount: 0,
+						createdAt: now(),
+						updatedAt: now(),
+					};
+					environments.set(env.id, env);
+					return env;
+				}),
+			update: (id, change) =>
+				gate(() => {
+					const env = find(environments, id, "environment");
+					const { description: _, ...rest } = env;
+					const description = change.description ?? env.description;
+					return putEnvironment({
+						...rest,
+						name: change.name?.trim() || env.name,
+						...(description === undefined || description === "" ? {} : { description }),
+					});
+				}),
+			remove: (id) =>
+				gate(() => {
+					find(environments, id, "environment");
+					environments.delete(id);
+				}),
+			setVariable: (id, input) =>
+				gate(() => {
+					const env = find(environments, id, "environment");
+					const existing = env.variables.find((variable) => variable.name === input.name);
+					if (input.protected && input.bindings.length === 0) {
+						throw new Error("A protected variable needs at least one host it's bound to.");
+					}
+					if (input.value === undefined && (existing === undefined || existing.protected !== input.protected)) {
+						throw new Error(`Give ${input.name} a value.`);
+					}
+					const value = input.value ?? existing?.value;
+					const variable = {
+						name: input.name,
+						protected: input.protected,
+						...(input.protected || value === undefined ? {} : { value }),
+						bindings: input.protected ? input.bindings : [],
+						updatedAt: now(),
+					};
+					return putEnvironment({
+						...env,
+						variables:
+							existing === undefined
+								? [...env.variables, variable]
+								: env.variables.map((each) => (each.name === input.name ? variable : each)),
+					});
+				}),
+			removeVariable: (id, name) =>
+				gate(() => {
+					const env = find(environments, id, "environment");
+					return putEnvironment({ ...env, variables: env.variables.filter((variable) => variable.name !== name) });
+				}),
+			setFile: (id, input) =>
+				gate(() => {
+					const env = find(environments, id, "environment");
+					const existing = env.files.find((file) => file.path === input.path);
+					if (input.content === undefined && existing === undefined)
+						throw new Error(`Give ${input.path} its contents.`);
+					const file = {
+						path: input.path,
+						mode: input.mode,
+						sizeBytes: input.content === undefined ? (existing?.sizeBytes ?? 0) : new Blob([input.content]).size,
+						updatedAt: now(),
+					};
+					return putEnvironment({
+						...env,
+						files:
+							existing === undefined
+								? [...env.files, file]
+								: env.files.map((each) => (each.path === input.path ? file : each)),
+					});
+				}),
+			removeFile: (id, path) =>
+				gate(() => {
+					const env = find(environments, id, "environment");
+					return putEnvironment({ ...env, files: env.files.filter((file) => file.path !== path) });
+				}),
+			setRepos: (id, repos) => gate(() => putEnvironment({ ...find(environments, id, "environment"), repos })),
+			setGrants: (id, grants) => gate(() => putEnvironment({ ...find(environments, id, "environment"), grants })),
+		},
+		egress: {
+			get: (sandboxId) => gate(() => egressOf(sandboxId)),
+			setGrants: (sandboxId, grants) =>
+				gate(() => {
+					find(sandboxes, sandboxId, "sandbox");
+					sandboxGrants.set(sandboxId, grants);
+					return egressOf(sandboxId);
+				}),
 		},
 		webhooks: {
 			list: (accountId) => gate(() => [...webhooks.values()].filter((hook) => hook.accountId === accountId)),

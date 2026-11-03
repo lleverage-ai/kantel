@@ -8,7 +8,22 @@ describe("the compute console's paths", () => {
 	});
 
 	it("reads back every page it makes a path for", () => {
-		for (const page of COMPUTE_PAGES) expect(parseComputePath(computePath(page))).toEqual({ page });
+		for (const page of COMPUTE_PAGES) {
+			// Egress is always one sandbox's: it has no page of its own.
+			if (page === "egress") expect(parseComputePath(computePath(page))).toBeUndefined();
+			else expect(parseComputePath(computePath(page))).toEqual({ page });
+		}
+	});
+
+	it("carries the environment that's open, and the sandbox whose egress is", () => {
+		const env = computePath("environments", "/compute", "env_backend");
+		expect(env).toBe("/compute/environments/env_backend");
+		expect(parseComputePath(env)).toEqual({ page: "environments", environmentId: "env_backend" });
+		expect(parseComputePath(computePath("egress", "/compute", "sbx_4d8n"))).toEqual({
+			page: "egress",
+			sandboxId: "sbx_4d8n",
+		});
+		expect(parseComputePath("/compute/environments/env_backend/extra")).toBeUndefined();
 	});
 
 	it("carries the sandbox whose snapshots are open", () => {
