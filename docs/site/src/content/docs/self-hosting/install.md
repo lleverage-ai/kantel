@@ -138,7 +138,9 @@ curl -s -X POST "$KANTEL_URL/v1/admin/hosts/join-tokens" \
 sudo npx -y @kantel/host@latest install --url https://kantel.example.com --token kth_...
 ```
 
-The host shows up in `GET /v1/admin/hosts` once it connects, and new sandboxes go on it. Its desktop, browser and SSH are reached through short-lived signed URLs on the control plane, which `openDesktop`, `openBrowser` and `openSsh` answer. Exposed ports aren't offered on your own hosts yet.
+The host shows up in `GET /v1/admin/hosts` once it connects, and new sandboxes go on it. Its desktop, browser and SSH are reached through short-lived signed URLs on the control plane, which `openDesktop`, `openBrowser` and `openSsh` answer: the desktop link opens it in a browser tab, and `cdpUrl` works with Playwright's `connectOverCDP`. Exposed ports aren't offered on your own hosts yet.
+
+An account's proxy settings (`PUT /v1/proxy`) reach its sandboxes on hosts, including running ones: allow and deny rules always, and the upstream proxy only on hosts installed with `--proxy-data-path`. The host adds the upstream's headers and token itself, so they never enter a sandbox. To have the host sign the `Kantel-Sandbox` and `Kantel-Account` headers it sends upstream, set `KANTEL_EGRESS_ATTRIBUTION_KEY` to a shared secret your proxy checks.
 
 ## Your own settings
 
