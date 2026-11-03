@@ -10,7 +10,12 @@ browser=$(command -v google-chrome-stable || command -v chromium || command -v c
 	echo "no browser in this image" >&2
 	exec sleep infinity
 }
+# This unit is the profile's only browser, so a lock left in it is from a boot that's over: the template's (host name
+# localhost) or the one before a stop. Chromium won't take a lock from another host name, and waits on a dialog
+# instead, so a sandbox resumed without its memory would have no browser and no CDP.
+profile=/home/user/.config/kantel-chrome
+rm -f "$profile/SingletonLock" "$profile/SingletonSocket" "$profile/SingletonCookie"
 exec "$browser" --no-first-run --no-default-browser-check --disable-dev-shm-usage --password-store=basic \
 	--disable-features=Translate,MediaRouter --disable-background-networking --disable-component-update \
 	--remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --proxy-server=http://127.0.0.1:3128 \
-	--user-data-dir=/home/user/.config/kantel-chrome --start-maximized ${KANTEL_BROWSER_FLAGS:-} about:blank
+	--user-data-dir="$profile" --start-maximized ${KANTEL_BROWSER_FLAGS:-} about:blank
