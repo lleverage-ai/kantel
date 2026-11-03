@@ -7,6 +7,4 @@ packages:
   - "targets/*"
   - "targets/*/*"
   - "deploy/*"
-  - "spikes/*"
-  - "examples/*"
   - "images/*"

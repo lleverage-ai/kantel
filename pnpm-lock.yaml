@@ -108,37 +108,6 @@ importers:
         specifier: 5.0.5
         version: 5.0.5(@types/node@26.6.5)(msw@2.15.0(@types/node@26.6.5)(typescript@7.0.2))(vite@8.3.5(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
 
-  apps/model-gateway:
-    dependencies:
-      "@kantel/audit":
-        specifier: workspace:*
-        version: link:../../packages/audit
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../../packages/contracts
-      "@kantel/models":
-        specifier: workspace:*
-        version: link:../../packages/models
-      "@kantel/vault":
-        specifier: workspace:*
-        version: link:../../packages/vault
-    devDependencies:
-      "@earendil-works/pi-ai":
-        specifier: 1.4.0
-        version: 1.4.0(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../../packages/testing
-      "@types/node":
-        specifier: 24.19.2
-        version: 24.19.2
-      typescript:
-        specifier: 7.0.2
-        version: 7.0.2
-      vitest:
-        specifier: 4.1.12
-        version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@7.0.2))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
-
   apps/selfhosted:
     dependencies:
       "@kantel/audit":
@@ -188,43 +157,6 @@ importers:
         specifier: 4.1.12
         version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@5.9.3))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
 
-  examples/sal-worker:
-    dependencies:
-      "@kantel/api":
-        specifier: workspace:*
-        version: link:../../packages/api
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../../packages/contracts
-      "@kantel/memory":
-        specifier: workspace:*
-        version: link:../../packages/memory
-      "@kantel/skills":
-        specifier: workspace:*
-        version: link:../../packages/skills
-      "@kantel/sql":
-        specifier: workspace:*
-        version: link:../../packages/sql
-      "@kantel/workspace":
-        specifier: workspace:*
-        version: link:../../packages/workspace
-      ignore:
-        specifier: 7.0.14
-        version: 7.0.14
-      yaml:
-        specifier: 2.9.1
-        version: 2.9.1
-    devDependencies:
-      "@types/node":
-        specifier: 24.19.2
-        version: 24.19.2
-      typescript:
-        specifier: 7.0.2
-        version: 7.0.2
-      vitest:
-        specifier: 4.1.12
-        version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@7.0.2))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
-
   images/isolate-host:
     dependencies:
       aws4fetch:
@@ -236,28 +168,6 @@ importers:
       workerd:
         specifier: 1.20261027.1
         version: 1.20261027.1
-
-  images/mirror:
-    dependencies:
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../../packages/contracts
-      "@kantel/workspace":
-        specifier: workspace:*
-        version: link:../../packages/workspace
-    devDependencies:
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../../packages/testing
-      "@types/node":
-        specifier: 24.19.2
-        version: 24.19.2
-      typescript:
-        specifier: 7.0.2
-        version: 7.0.2
-      vitest:
-        specifier: 4.1.12
-        version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@7.0.2))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
 
   packages/admin:
     dependencies:
@@ -318,12 +228,6 @@ importers:
         specifier: workspace:*
         version: link:../contracts
     devDependencies:
-      "@kantel/codemode":
-        specifier: workspace:*
-        version: link:../codemode
-      "@kantel/runtime":
-        specifier: workspace:*
-        version: link:../runtime
       "@kantel/testing":
         specifier: workspace:*
         version: link:../testing
@@ -338,16 +242,6 @@ importers:
         specifier: 0.28.2
         version: 0.28.2
 
-  packages/codemode:
-    dependencies:
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../contracts
-    devDependencies:
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../testing
-
   packages/compute:
     dependencies:
       "@kantel/api":
@@ -359,37 +253,6 @@ importers:
       just-bash:
         specifier: 3.6.0
         version: 3.6.0
-
-  packages/connections:
-    dependencies:
-      "@earendil-works/pi-ai":
-        specifier: 1.4.0
-        version: 1.4.0(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@earendil-works/pi-durable":
-        specifier: 1.4.0
-        version: 1.4.0(patch_hash=2d9842a7bc2d76edf461a7ddbb962303fa33a27e000e11ed5c08a10f1c104dcf)(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@kantel/api":
-        specifier: workspace:*
-        version: link:../api
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../contracts
-      "@kantel/sql":
-        specifier: workspace:*
-        version: link:../sql
-    devDependencies:
-      "@electric-sql/pglite":
-        specifier: 0.5.12
-        version: 0.5.12
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../testing
-      "@kantel/vault":
-        specifier: workspace:*
-        version: link:../vault
-      miniflare:
-        specifier: 5.20261023.0-beta
-        version: 5.20261023.0-beta(@types/node@24.19.2)
 
   packages/contracts:
     dependencies:
@@ -446,9 +309,6 @@ importers:
         specifier: 10.1.7
         version: 10.1.7
     devDependencies:
-      "@kantel/runtime":
-        specifier: workspace:*
-        version: link:../runtime
       "@kantel/testing":
         specifier: workspace:*
         version: link:../testing
@@ -456,91 +316,7 @@ importers:
         specifier: 3.20.2
         version: 3.20.2
 
-  packages/memory:
-    dependencies:
-      "@kantel/api":
-        specifier: workspace:*
-        version: link:../api
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../contracts
-      "@kantel/sql":
-        specifier: workspace:*
-        version: link:../sql
-    devDependencies:
-      "@electric-sql/pglite":
-        specifier: 0.5.12
-        version: 0.5.12
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../testing
-
-  packages/models:
-    dependencies:
-      "@earendil-works/pi-ai":
-        specifier: 1.4.0
-        version: 1.4.0(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../contracts
-    devDependencies:
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../testing
-      "@kantel/vault":
-        specifier: workspace:*
-        version: link:../vault
-
   packages/protocol: {}
-
-  packages/runtime:
-    dependencies:
-      "@earendil-works/chord":
-        specifier: 1.4.0
-        version: 1.4.0
-      "@earendil-works/pi-ai":
-        specifier: 1.4.0
-        version: 1.4.0(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@earendil-works/pi-durable":
-        specifier: 1.4.0
-        version: 1.4.0(patch_hash=2d9842a7bc2d76edf461a7ddbb962303fa33a27e000e11ed5c08a10f1c104dcf)(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@kantel/api":
-        specifier: workspace:*
-        version: link:../api
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../contracts
-      "@kantel/memory":
-        specifier: workspace:*
-        version: link:../memory
-      "@kantel/protocol":
-        specifier: workspace:*
-        version: link:../protocol
-      "@kantel/skills":
-        specifier: workspace:*
-        version: link:../skills
-      jpeg-js:
-        specifier: 0.4.4
-        version: 0.4.4
-    devDependencies:
-      "@kantel/browser":
-        specifier: workspace:*
-        version: link:../browser
-      "@kantel/codemode":
-        specifier: workspace:*
-        version: link:../codemode
-      "@kantel/sandbox":
-        specifier: workspace:*
-        version: link:../sandbox
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../testing
-      "@kantel/vault":
-        specifier: workspace:*
-        version: link:../vault
-      "@kantel/workspace":
-        specifier: workspace:*
-        version: link:../workspace
 
   packages/sandbox:
     dependencies:
@@ -579,87 +355,6 @@ importers:
         specifier: workspace:*
         version: link:../testing
 
-  packages/schedules:
-    dependencies:
-      "@kantel/api":
-        specifier: workspace:*
-        version: link:../api
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../contracts
-      "@kantel/sql":
-        specifier: workspace:*
-        version: link:../sql
-    devDependencies:
-      "@electric-sql/pglite":
-        specifier: 0.5.12
-        version: 0.5.12
-      "@kantel/runtime":
-        specifier: workspace:*
-        version: link:../runtime
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../testing
-      miniflare:
-        specifier: 5.20261023.0-beta
-        version: 5.20261023.0-beta(@types/node@24.19.2)
-
-  packages/sharing:
-    dependencies:
-      "@kantel/api":
-        specifier: workspace:*
-        version: link:../api
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../contracts
-      "@kantel/sql":
-        specifier: workspace:*
-        version: link:../sql
-    devDependencies:
-      "@electric-sql/pglite":
-        specifier: 0.5.12
-        version: 0.5.12
-      "@kantel/memory":
-        specifier: workspace:*
-        version: link:../memory
-      "@kantel/skills":
-        specifier: workspace:*
-        version: link:../skills
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../testing
-      "@kantel/vault":
-        specifier: workspace:*
-        version: link:../vault
-      "@kantel/workspace":
-        specifier: workspace:*
-        version: link:../workspace
-      miniflare:
-        specifier: 5.20261023.0-beta
-        version: 5.20261023.0-beta(@types/node@24.19.2)
-
-  packages/skills:
-    dependencies:
-      "@kantel/api":
-        specifier: workspace:*
-        version: link:../api
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../contracts
-      "@kantel/sql":
-        specifier: workspace:*
-        version: link:../sql
-    devDependencies:
-      "@electric-sql/pglite":
-        specifier: 0.5.12
-        version: 0.5.12
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../testing
-      miniflare:
-        specifier: 5.20261023.0-beta
-        version: 5.20261023.0-beta(@types/node@24.19.2)
-
   packages/sql:
     devDependencies:
       "@electric-sql/pglite":
@@ -675,22 +370,6 @@ importers:
         specifier: 8.16.3
         version: 8.16.3
 
-  packages/subagents:
-    dependencies:
-      "@earendil-works/pi-ai":
-        specifier: 1.4.0
-        version: 1.4.0(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@earendil-works/pi-durable":
-        specifier: 1.4.0
-        version: 1.4.0(patch_hash=2d9842a7bc2d76edf461a7ddbb962303fa33a27e000e11ed5c08a10f1c104dcf)(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../contracts
-    devDependencies:
-      "@kantel/runtime":
-        specifier: workspace:*
-        version: link:../runtime
-
   packages/testing:
     dependencies:
       "@earendil-works/pi-ai":
@@ -702,34 +381,6 @@ importers:
       "@kantel/protocol":
         specifier: workspace:*
         version: link:../protocol
-
-  packages/tools:
-    dependencies:
-      "@kantel/api":
-        specifier: workspace:*
-        version: link:../api
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../contracts
-      "@kantel/sql":
-        specifier: workspace:*
-        version: link:../sql
-
-  packages/tunnel:
-    dependencies:
-      "@kantel/tools":
-        specifier: workspace:*
-        version: link:../tools
-      ws:
-        specifier: 8.22.0
-        version: 8.22.0
-    devDependencies:
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../contracts
-      "@types/ws":
-        specifier: 8.18.2
-        version: 8.18.2
 
   packages/ui:
     dependencies:
@@ -817,192 +468,18 @@ importers:
         specifier: 5.20261023.0-beta
         version: 5.20261023.0-beta(@types/node@24.19.2)
 
-  packages/vault:
-    dependencies:
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../contracts
-    devDependencies:
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../testing
-
   packages/workspace:
     dependencies:
-      "@kantel/api":
-        specifier: workspace:*
-        version: link:../api
       "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
-      "@kantel/sql":
-        specifier: workspace:*
-        version: link:../sql
       isomorphic-git:
         specifier: 1.44.8
         version: 1.44.8
     devDependencies:
-      "@kantel/skills":
-        specifier: workspace:*
-        version: link:../skills
       "@kantel/testing":
         specifier: workspace:*
         version: link:../testing
-
-  spikes/cloudflare:
-    dependencies:
-      "@earendil-works/chord":
-        specifier: 1.4.0
-        version: 1.4.0
-      "@earendil-works/pi-ai":
-        specifier: 1.4.0
-        version: 1.4.0(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@earendil-works/pi-durable":
-        specifier: 1.4.0
-        version: 1.4.0(patch_hash=2d9842a7bc2d76edf461a7ddbb962303fa33a27e000e11ed5c08a10f1c104dcf)(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../../packages/contracts
-      "@kantel/sandbox":
-        specifier: workspace:*
-        version: link:../../packages/sandbox
-      "@kantel/vault":
-        specifier: workspace:*
-        version: link:../../packages/vault
-      "@kantel/workspace":
-        specifier: workspace:*
-        version: link:../../packages/workspace
-      just-bash:
-        specifier: 3.6.0
-        version: 3.6.0
-    devDependencies:
-      "@cloudflare/workers-types":
-        specifier: 5.20261027.1
-        version: 5.20261027.1
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../../packages/testing
-      "@types/node":
-        specifier: 24.19.2
-        version: 24.19.2
-      esbuild:
-        specifier: 0.28.2
-        version: 0.28.2
-      typescript:
-        specifier: 7.0.2
-        version: 7.0.2
-      vitest:
-        specifier: 4.1.12
-        version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@7.0.2))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
-      wrangler:
-        specifier: 4.153.0
-        version: 4.153.0(@cloudflare/workers-types@5.20261027.1)(@types/node@24.19.2)
-
-  spikes/ready-preload:
-    dependencies:
-      "@earendil-works/chord":
-        specifier: 1.4.0
-        version: 1.4.0
-      "@earendil-works/pi-ai":
-        specifier: 1.4.0
-        version: 1.4.0(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@earendil-works/pi-durable":
-        specifier: 1.4.0
-        version: 1.4.0(patch_hash=2d9842a7bc2d76edf461a7ddbb962303fa33a27e000e11ed5c08a10f1c104dcf)(@aws-sdk/credential-provider-node@3.972.89)(@smithy/signature-v4@5.7.4)(undici@7.30.1)(ws@8.22.0)
-      "@kantel/isolate-host":
-        specifier: workspace:*
-        version: link:../../images/isolate-host
-    devDependencies:
-      "@cloudflare/workers-types":
-        specifier: 5.20261027.1
-        version: 5.20261027.1
-      esbuild:
-        specifier: 0.28.2
-        version: 0.28.2
-      typescript:
-        specifier: 7.0.2
-        version: 7.0.2
-      wrangler:
-        specifier: 4.153.0
-        version: 4.153.0(@cloudflare/workers-types@5.20261027.1)(@types/node@24.19.2)
-
-  targets/cloudflare/runtime:
-    dependencies:
-      "@earendil-works/chord":
-        specifier: 1.4.0
-        version: 1.4.0
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../../../packages/contracts
-      "@kantel/runtime":
-        specifier: workspace:*
-        version: link:../../../packages/runtime
-    devDependencies:
-      "@cloudflare/workers-types":
-        specifier: 5.20261027.1
-        version: 5.20261027.1
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../../../packages/testing
-      "@types/node":
-        specifier: 24.19.2
-        version: 24.19.2
-      typescript:
-        specifier: 7.0.2
-        version: 7.0.2
-      vitest:
-        specifier: 4.1.12
-        version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@7.0.2))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
-
-  targets/cloudflare/vault:
-    dependencies:
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../../../packages/contracts
-      "@kantel/vault":
-        specifier: workspace:*
-        version: link:../../../packages/vault
-    devDependencies:
-      "@cloudflare/workers-types":
-        specifier: 5.20261027.1
-        version: 5.20261027.1
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../../../packages/testing
-      "@types/node":
-        specifier: 24.19.2
-        version: 24.19.2
-      typescript:
-        specifier: 7.0.2
-        version: 7.0.2
-      vitest:
-        specifier: 4.1.12
-        version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@7.0.2))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
-
-  targets/cloudflare/workspace:
-    dependencies:
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../../../packages/contracts
-      "@kantel/workspace":
-        specifier: workspace:*
-        version: link:../../../packages/workspace
-    devDependencies:
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../../../packages/testing
-      "@types/node":
-        specifier: 24.19.2
-        version: 24.19.2
-      typescript:
-        specifier: 7.0.2
-        version: 7.0.2
-      vitest:
-        specifier: 4.1.12
-        version: 4.1.12(@types/node@24.19.2)(msw@2.15.0(@types/node@24.19.2)(typescript@7.0.2))(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
-      wrangler:
-        specifier: 4.153.0
-        version: 4.153.0(@cloudflare/workers-types@5.20261027.1)(@types/node@24.19.2)
 
   targets/selfhosted/sandbox:
     dependencies:
@@ -4175,10 +3652,6 @@ packages:
   jose@6.2.13:
     resolution:
       { integrity: sha512-7TIg10ZE1x82YediN+lcrPNvGMKge9yFHQD+Qho/b8y2adfugU3AsvvHfxV0fzyFllT6l9xCjf4RWY9g/Z9PJQ== }
-
-  jpeg-js@0.4.4:
-    resolution:
-      { integrity: sha512-WZzeDOEtTOBK4Mdsar0IqEU5sMr3vSV2RqkAIzUEV2BHnUfKGyswWFPFwK5EeDo93K3FohSHbLAjj0s1Wzd+dg== }
 
   js-tokens@4.0.0:
     resolution:
@@ -8493,8 +7966,6 @@ snapshots:
   jiti@2.7.0: {}
 
   jose@6.2.13: {}
-
-  jpeg-js@0.4.4: {}
 
   js-tokens@4.0.0: {}
 

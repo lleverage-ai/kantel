@@ -21,8 +21,6 @@
 		"@kantel/contracts": "workspace:*"
 	},
 	"devDependencies": {
-		"@kantel/codemode": "workspace:*",
-		"@kantel/runtime": "workspace:*",
 		"@kantel/testing": "workspace:*"
 	}
 }
