@@ -370,6 +370,11 @@ func (m *Manager) identity(s *sandbox, fresh bool) guest.Identity {
 			"NO_PROXY": "localhost,127.0.0.1,::1", "no_proxy": "localhost,127.0.0.1,::1",
 			// Node's fetch takes the proxy from the environment only when asked (Node 24 and later).
 			"NODE_USE_ENV_PROXY": "1",
+			// Node (and Bun) and Python's requests trust bundles of their own, not the system's: pointed at the system's,
+			// they trust the egress proxy's CA too (installed there, and replaced there when the intercepted hosts
+			// change), so a protected variable's bound host works from them as from curl or git.
+			"NODE_EXTRA_CA_CERTS": systemCABundle,
+			"REQUESTS_CA_BUNDLE":  systemCABundle,
 		}
 	}
 	if s.meta.Egress != nil {
@@ -377,6 +382,9 @@ func (m *Manager) identity(s *sandbox, fresh bool) guest.Identity {
 	}
 	return id
 }
+
+// systemCABundle is the guest's system trust store, as update-ca-certificates writes it.
+const systemCABundle = "/etc/ssl/certs/ca-certificates.crt"
 
 func hostname(id string) string {
 	name := strings.ToLower(id)
