@@ -15,6 +15,12 @@ export interface Collection<T extends { readonly id: string }> {
 	get(id: string): Promise<T | undefined>;
 	/** Inserts or replaces the record with its ID. */
 	put(record: T): Promise<void>;
+	/**
+	 * Changes the record as it is now, with nothing else written between the read and the write (a SQL store does it in
+	 * one statement or transaction), and answers what was written. `change` answers `undefined` to write nothing; a
+	 * missing record is never written.
+	 */
+	update(id: string, change: (current: T) => T | undefined): Promise<T | undefined>;
 	/** Whether there was one to delete. */
 	delete(id: string): Promise<boolean>;
 	/** The records whose fields equal each defined field of `where`, oldest first. */
@@ -194,6 +200,14 @@ export function memoryCollection<T extends { readonly id: string }>(): Collectio
 		},
 		async put(record) {
 			records.set(record.id, structuredClone(record));
+		},
+		async update(id, change) {
+			const current = records.get(id);
+			if (current === undefined) return undefined;
+			const next = change(structuredClone(current));
+			if (next === undefined) return undefined;
+			records.set(id, structuredClone(next));
+			return structuredClone(next);
 		},
 		async delete(id) {
 			return records.delete(id);

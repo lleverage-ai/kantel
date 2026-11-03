@@ -146,7 +146,13 @@ export async function authenticate(request: Request, options: AuthenticateOption
 	if (token.startsWith(API_KEY_PREFIX)) {
 		const key = await keyForSecret(store, token, now);
 		if (key === undefined) throw new UnauthenticatedError("The API key is not valid");
-		await store.apiKeys.put({ ...key, lastUsedAt: now });
+		// Only the use is written, and only while the key is still this secret and unrevoked, so a revoke or a rotation
+		// that lands meanwhile is never undone.
+		await store.apiKeys.update(key.id, (current) =>
+			current.revokedAt === undefined && current.secretHash === key.secretHash
+				? { ...current, lastUsedAt: now }
+				: undefined,
+		);
 		return {
 			kind: "key",
 			keyId: key.id,

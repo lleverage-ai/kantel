@@ -210,12 +210,16 @@ export function createWebhookDispatcher(options: WebhookDispatcherOptions): Webh
 			],
 		};
 		await store.deliveries.put(updated);
-		const failures = ok ? 0 : state === "failed" ? webhook.consecutiveFailures + 1 : webhook.consecutiveFailures;
-		await store.webhooks.put({
-			...webhook,
-			lastDelivery: { at, ok, ...(status === undefined ? {} : { status }) },
-			consecutiveFailures: failures,
-			enabled: webhook.enabled && failures < DISABLE_AFTER_FAILURES,
+		// Only the bookkeeping is written, onto the webhook as it is now: a change or a secret rotation made while the
+		// request was out stays.
+		await store.webhooks.update(webhook.id, (current) => {
+			const failures = ok ? 0 : state === "failed" ? current.consecutiveFailures + 1 : current.consecutiveFailures;
+			return {
+				...current,
+				lastDelivery: { at, ok, ...(status === undefined ? {} : { status }) },
+				consecutiveFailures: failures,
+				enabled: current.enabled && failures < DISABLE_AFTER_FAILURES,
+			};
 		});
 		return updated;
 	}

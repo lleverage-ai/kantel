@@ -158,6 +158,22 @@ const messageOf = (error: unknown): string => (error instanceof Error ? error.me
 const notFound = (what: string) => new KantelError("not_found", `No such ${what}`);
 const round = (value: number) => Math.round(value * 1_000_000) / 1_000_000;
 const unique = <T>(items: readonly T[]): T[] => [...new Set(items)];
+
+/**
+ * The sandbox limit a key made or rotated by `principal` may carry: a limited key grants only sandboxes in its own list,
+ * and a key it makes with none named gets its list.
+ */
+function grantableSandboxes(principal: Principal, wanted: readonly string[] | undefined): string[] | undefined {
+	if (principal.kind !== "key" || principal.limits.sandboxIds === undefined) {
+		return wanted === undefined ? undefined : [...wanted];
+	}
+	const allowed = principal.limits.sandboxIds;
+	if (wanted === undefined) return [...allowed];
+	if (!wanted.every((id) => allowed.includes(id))) {
+		throw new KantelError("forbidden", "A limited key can't grant sandboxes beyond its own");
+	}
+	return [...wanted];
+}
 const newestFirst = <T extends { readonly createdAt: number }>(items: readonly T[]): T[] =>
 	[...items].sort((a, b) => b.createdAt - a.createdAt);
 
@@ -1828,14 +1844,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			]);
 			if (scopes.length === 0) throw new KantelError("invalid", "Give scopes or a preset");
 			requireGrantable(principal, scopes);
-			let sandboxIds = body.sandboxIds === undefined ? undefined : [...body.sandboxIds];
-			if (principal.kind === "key" && principal.limits.sandboxIds !== undefined) {
-				const allowed = principal.limits.sandboxIds;
-				if (sandboxIds === undefined) sandboxIds = [...allowed];
-				else if (!sandboxIds.every((id) => allowed.includes(id))) {
-					throw new KantelError("forbidden", "A limited key can't grant sandboxes beyond its own");
-				}
-			}
+			const sandboxIds = grantableSandboxes(principal, body.sandboxIds);
 			const { secret, prefix, hash } = await newApiKeySecret();
 			const key: StoredApiKey = {
 				id: randomId("key"),
@@ -1859,9 +1868,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		rotateApiKey: async (principal, { params }) => {
 			const key = await apiKeyFor(principal, params.apiKeyId, "account:admin");
 			if (key.revokedAt !== undefined) throw new KantelError("conflict", "The key is revoked");
+			// Rotating answers the key's new secret, so it is as much as making the key: the caller must be able to grant
+			// everything it holds.
+			requireGrantable(principal, key.scopes);
+			grantableSandboxes(principal, key.sandboxIds);
+			if (principal.kind === "key" && principal.limits.sandboxIds !== undefined && key.sandboxIds === undefined) {
+				throw new KantelError("forbidden", "A limited key can't rotate a key without limits");
+			}
 			const { secret, prefix, hash } = await newApiKeySecret();
-			const rotated: StoredApiKey = { ...key, prefix, secretHash: hash };
-			await store.apiKeys.put(rotated);
+			const rotated = await store.apiKeys.update(key.id, (current) =>
+				current.revokedAt === undefined ? { ...current, prefix, secretHash: hash } : undefined,
+			);
+			if (rotated === undefined) throw new KantelError("conflict", "The key is revoked");
 			return { key: apiKeyView(rotated), secret };
 		},
 
@@ -1925,12 +1943,33 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		listEvents: async (principal, { query }) => {
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "sandboxes:read", role);
-			const events = (await store.events.list({ accountId: account.id })).filter(
+			const matching = (await store.events.list({ accountId: account.id })).filter(
 				(event) =>
 					(query.sandboxId === undefined || event.sandboxId === query.sandboxId) &&
 					(query.type === undefined || event.type === query.type) &&
 					(query.since === undefined || event.createdAt >= query.since),
 			);
+			// A sandbox's events are seen only by who may see the sandbox (a private one, a limited key's list); one whose
+			// sandbox is gone stays with the account's admins and unlimited keys.
+			const seen = new Map<string, boolean>();
+			const events = [];
+			for (const event of matching) {
+				if (event.sandboxId === undefined) {
+					events.push(event);
+					continue;
+				}
+				let visible = seen.get(event.sandboxId);
+				if (visible === undefined) {
+					const sandbox = await store.sandboxes.get(event.sandboxId);
+					const limited = principal.kind === "key" && principal.limits.sandboxIds !== undefined;
+					visible =
+						sandbox === undefined
+							? !limited && (role === "owner" || role === "admin")
+							: await canSee(principal, sandbox, role);
+					seen.set(event.sandboxId, visible);
+				}
+				if (visible) events.push(event);
+			}
 			const page = paginate([...events].reverse(), query.limit, query.cursor);
 			return { items: page.items, nextCursor: page.nextCursor };
 		},

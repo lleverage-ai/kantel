@@ -253,6 +253,15 @@ describe("keys and scopes", () => {
 		expect((await client(rotated.secret).getCaller()).apiKey?.id).toBe(issued.key.id);
 	});
 
+	it("won't let a key rotate a key holding scopes it lacks, which would hand it their secret", async () => {
+		const { client, root } = setup();
+		const admin = await root.createApiKey({ name: "admin", preset: "admin" });
+		const wide = await root.createApiKey({ name: "hosts", scopes: ["account:read", "hosts:admin"] });
+		const refused = await failure(client(admin.secret).rotateApiKey(wide.key.id));
+		expect(refused.code).toBe("forbidden");
+		expect((await client(wide.secret).getCaller()).apiKey?.id).toBe(wide.key.id);
+	});
+
 	it("never answers the proxy's upstream header values", async () => {
 		const { tom } = setup();
 		const settings = await tom.putProxySettings({
@@ -290,6 +299,11 @@ describe("organisations", () => {
 		const seen = await ann.listSandboxes({ account: org.id });
 		expect(seen.items.map((item) => item.id)).toEqual([shared.id]);
 		expect((await failure(ann.getSandbox(mine.id))).code).toBe("not_found");
+		const annEvents = await ann.listEvents({ account: org.id });
+		expect(annEvents.items.some((event) => event.sandboxId === shared.id)).toBe(true);
+		expect(annEvents.items.some((event) => event.sandboxId === mine.id)).toBe(false);
+		const tomEvents = await tom.listEvents({ account: org.id });
+		expect(tomEvents.items.some((event) => event.sandboxId === mine.id)).toBe(true);
 		expect((await failure(ann.listSandboxes({ account: "acc_elsewhere" }))).code).toBe("forbidden");
 
 		expect((await failure(tom.removeMember(org.id, "usr_tom"))).code).toBe("conflict");
