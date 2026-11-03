@@ -92,7 +92,7 @@ Rules every contract shares:
 | --- | --- | --- | --- | --- |
 | Identity and tenancy | `IdentityDirectory`, `ProjectAccess` | `@kantel/identity/memory` | `registerIdentityConformance` | [identity](packages/identity/CONTRACT.md) |
 | Session runtime | `SessionRuntime`, `SessionDirectory`, `AgentProfiles`, `HostToolBridge`, `SessionEndHook` | `@kantel/runtime/memory` | `registerRuntimeConformance` | [runtime](packages/runtime/CONTRACT.md), [HTTP API](packages/runtime/HTTP.md) |
-| Client wire protocol | `SessionStream`, frames, `applyDelta` | `@kantel/protocol/memory` | `registerProtocolConformance` | [streaming](docs/site/src/content/docs/api/streaming.md) |
+| Client wire protocol | `SessionStream`, frames, `applyDelta` | `@kantel/protocol/memory` | `registerProtocolConformance` | [protocol](packages/protocol/src) |
 | Workspace | `Workspaces`, `MountSource` | `@kantel/workspace/memory` | `registerWorkspaceConformance` | [workspace](packages/workspace/CONTRACT.md) |
 | Sandbox | `Sandboxes`, `routeTool` | `@kantel/sandbox/memory` | `registerSandboxConformance` | [sandbox](packages/sandbox/CONTRACT.md) |
 | Vault (the encrypted store behind connections) | `Vault` | `@kantel/vault/memory` | `registerVaultConformance` | [vault](packages/vault/CONTRACT.md) |
@@ -104,7 +104,7 @@ Rules every contract shares:
 | Schedules | `Schedules` | `@kantel/schedules/memory` | `registerSchedulesConformance` | [schedules](packages/schedules/CONTRACT.md) |
 | Audit | `AuditStore`, `AuditOutbox`, `AuditSink` | `@kantel/audit/memory` | `registerAuditConformance` | [audit](packages/audit/CONTRACT.md) |
 | Models | `ModelGateway`, connectors and routes | `@kantel/models` | `registerModelGatewayConformance`, `registerModelConnectorConformance` | [models](packages/models/CONTRACT.md) |
-| Sharing | shares, access requests and policies | `@kantel/sharing` | `registerSharingConformance` | [projects and sharing](docs/site/src/content/docs/console/projects-and-sharing.md) |
+| Sharing | shares, access requests and policies | `@kantel/sharing` | `registerSharingConformance` | [sharing](packages/sharing/src) |
 
 ## Names
 

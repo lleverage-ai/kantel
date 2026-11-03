@@ -285,13 +285,9 @@ services:
       KANTEL_PUBLIC_URL: ${KANTEL_PUBLIC_URL:-}
       KANTEL_CONNECTIONS: ${KANTEL_CONNECTIONS:-}
       KANTEL_CONNECTIONS_ORIGIN: ${KANTEL_CONNECTIONS_ORIGIN:-http://127.0.0.1:${KANTEL_GATEWAY_PORT:-${HARBOUR_GATEWAY_PORT:-58090}}}
-      # Each `off` takes a default tool away (apps/selfhosted/src/gateway/session-tools.ts):
-      # `codemode`, saved programs (`save_program`, /v1/programs) and their
-      # pauses, `present_files` and `create_document`. On otherwise, as on
+      # `off` takes `present_files` and `create_document` away
+      # (apps/selfhosted/src/gateway/session-tools.ts). On otherwise, as on
       # Cloudflare's deployment.
-      KANTEL_CODEMODE: ${KANTEL_CODEMODE:-}
-      KANTEL_PROGRAMS: ${KANTEL_PROGRAMS:-}
-      KANTEL_PROGRAM_WAITS: ${KANTEL_PROGRAM_WAITS:-}
       KANTEL_PRESENT_FILES: ${KANTEL_PRESENT_FILES:-}
       # The sessions' browsers, on `browser-host` (src/gateway/browser.ts). The
       # gateway calls the host with its token, and passes a viewer's live view
@@ -322,6 +318,14 @@ services:
       # Its containers' labels, which its janitor removes leftovers by: one
       # prefix per stack, so stacks sharing a daemon leave each other's alone.
       KANTEL_SANDBOX_LABEL_PREFIX: kantel-gateway.${COMPOSE_PROJECT_NAME}
+      # The `subagent` tool (@kantel/subagents): a session hands a task to a
+      # child session of the same agent, on the same workspace, and gets its
+      # answer back. On here; KANTEL_SUBAGENTS=off takes it away.
+      KANTEL_SUBAGENTS: ${KANTEL_SUBAGENTS:-${HARBOUR_SUBAGENTS:-on}}
+      # The compute plane's API (@kantel/compute): sandboxes, snapshots,
+      # scoped keys, webhooks and hosts under /v1, on a stub backend and in
+      # memory for now. Off unless KANTEL_COMPUTE=experimental.
+      KANTEL_COMPUTE: ${KANTEL_COMPUTE:-}
     ports: ["127.0.0.1:${KANTEL_GATEWAY_PORT:-${HARBOUR_GATEWAY_PORT:-58090}}:8080"]
     networks: [control]
     volumes:

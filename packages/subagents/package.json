@@ -1,0 +1,19 @@
+{
+	"name": "@kantel/subagents",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "Subagents: the `subagent` tool, which hands a task to a child session of the same agent and answers with its final answer, on any deployment's session runtime",
+	"license": "Apache-2.0",
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"dependencies": {
+		"@earendil-works/pi-ai": "1.4.0",
+		"@earendil-works/pi-durable": "1.4.0",
+		"@kantel/contracts": "workspace:*"
+	},
+	"devDependencies": {
+		"@kantel/runtime": "workspace:*"
+	}
+}

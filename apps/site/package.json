@@ -20,7 +20,7 @@
 		"predev": "node scripts/sync-docs.mjs",
 		"dev": "astro dev",
 		"prebuild": "node scripts/sync-docs.mjs",
-		"build": "astro build && node scripts/check-links.mjs",
+		"build": "astro build && node scripts/check-links.mjs && node scripts/llms-txt.mjs",
 		"preview": "wrangler dev",
 		"deploy:dry-run": "wrangler deploy --dry-run",
 		"lint:install": "sh -n public/install.sh"

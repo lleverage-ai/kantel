@@ -141,6 +141,142 @@ describe("createProjectAccess", () => {
 		expect(await allows(as(owner), { sessionId: "sess-shared", needed: "admin" })).toBe(true);
 	});
 
+	describe("throughAncestors, for a session's workspace", () => {
+		/** root > d1 > d2 > d3 > d4 > d5, a sibling of d1 with its own child, and a root in another project. */
+		function chain() {
+			const base = setUp();
+			const { deps } = base;
+			const at = (id: string, parentSessionId?: string, projectId = "proj-a") =>
+				deps.tenancy.session({
+					id,
+					organisationId: ORG,
+					projectId,
+					agentId: "a",
+					visibility: "private",
+					userId: "alice",
+					...(parentSessionId === undefined ? {} : { parentSessionId }),
+				});
+			const root = at("root");
+			const d1 = at("d1", "root");
+			const d2 = at("d2", "d1");
+			const d3 = at("d3", "d2");
+			const d4 = at("d4", "d3");
+			const d5 = at("d5", "d4");
+			const sibling = at("sibling", "root");
+			const cousin = at("cousin", "sibling");
+			const other = at("other-root", undefined, "proj-b");
+			const otherChild = at("other-child", "other-root", "proj-b");
+			const workspace = (sessionId: string) => ({
+				sessionId,
+				needed: "operator" as const,
+				throughAncestors: true,
+			});
+			return { ...base, root, d1, d2, d3, d4, d5, sibling, cousin, other, otherChild, workspace };
+		}
+
+		it("lets a child and a grandchild use the root's workspace, to the subagent depth limit and no further", async () => {
+			const { d1, d2, d4, d5, as, allows, workspace } = chain();
+			expect(await allows(as(d1), workspace("root"))).toBe(true);
+			expect(await allows(as(d2), workspace("root"))).toBe(true);
+			expect(await allows(as(d2), workspace("d1"))).toBe(true);
+			expect(await allows(as(d4), workspace("root"))).toBe(true);
+			// Five parents up is past MAX_SESSION_ANCESTRY.
+			expect(await allows(as(d5), workspace("root"))).toBe(false);
+			expect(await allows(as(d5), workspace("d1"))).toBe(true);
+		});
+
+		it("goes upward only: no sibling, cousin, descendant's own beyond decide's, or other project", async () => {
+			const { root, d1, sibling, other, otherChild, as, allows, workspace } = chain();
+			expect(await allows(as(d1), workspace("sibling"))).toBe(false);
+			expect(await allows(as(d1), workspace("cousin"))).toBe(false);
+			expect(await allows(as(sibling), workspace("d1"))).toBe(false);
+			expect(await allows(as(sibling), workspace("d2"))).toBe(false);
+			// A parent reaches its child as before, and nothing further down.
+			expect(await allows(as(root), workspace("d1"))).toBe(true);
+			expect(await allows(as(root), workspace("d2"))).toBe(false);
+			expect(await allows(as(d1), workspace("other-root"))).toBe(false);
+			expect(await allows(as(otherChild), workspace("root"))).toBe(false);
+			expect(await allows(as(otherChild), workspace("other-root"))).toBe(true);
+			expect(await allows(as(other), workspace("root"))).toBe(false);
+		});
+
+		it("leaves every other check as it was: without the flag a child still can't act on its parent", async () => {
+			const { deps, d1, as, allows } = chain();
+			expect(await allows(as(d1), { sessionId: "root", needed: "operator" })).toBe(false);
+			const prompt = deps.access.require(as(d1), {
+				sessionId: "root",
+				needed: "operator",
+				operation: "session.prompt",
+				subject: { kind: "session", id: "root" },
+			});
+			await expect(prompt).rejects.toMatchObject({ code: "forbidden" });
+			expect(deps.audit.ofType("access.denied")).toHaveLength(1);
+			expect(deps.audit.ofType("access.ancestor.allowed")).toHaveLength(0);
+		});
+
+		it("stops on a missing or cyclic parent, and on a closed session", async () => {
+			const { deps, as, allows, workspace } = chain();
+			const orphan = deps.tenancy.session({
+				id: "orphan",
+				organisationId: ORG,
+				projectId: "proj-a",
+				agentId: "a",
+				parentSessionId: "gone",
+			});
+			expect(await allows(as(orphan), workspace("root"))).toBe(false);
+			const loopA = deps.tenancy.session({
+				id: "loop-a",
+				organisationId: ORG,
+				projectId: "proj-a",
+				agentId: "a",
+				parentSessionId: "loop-b",
+			});
+			deps.tenancy.session({
+				id: "loop-b",
+				organisationId: ORG,
+				projectId: "proj-a",
+				agentId: "a",
+				parentSessionId: "loop-a",
+			});
+			expect(await allows(as(loopA), workspace("root"))).toBe(false);
+			const d2 = { kind: "agent", agentId: "a", sessionId: "d2" } as const;
+			deps.tenancy.close("d2");
+			expect(await allows(as(d2), workspace("root"))).toBe(false);
+		});
+
+		it("audits a use through the chain with the ancestor it went through, and a refusal as before", async () => {
+			const { deps, d2, d5, as } = chain();
+			const subject = { kind: "workspace", id: "ws-root" };
+			await deps.access.require(as(d2), {
+				sessionId: "root",
+				needed: "viewer",
+				throughAncestors: true,
+				operation: "workspace.read",
+				subject,
+			});
+			const allowed = deps.audit.ofType("access.ancestor.allowed");
+			expect(allowed).toHaveLength(1);
+			expect(allowed[0]).toMatchObject({
+				source: "access",
+				actor: d2,
+				sessionId: "d2",
+				projectId: "proj-a",
+				subject,
+				data: { operation: "workspace.read", via: "ancestor", ancestorSessionId: "root", ancestorDepth: 2 },
+			});
+			const refused = deps.access.require(as(d5), {
+				sessionId: "root",
+				needed: "viewer",
+				throughAncestors: true,
+				operation: "workspace.read",
+				subject,
+			});
+			await expect(refused).rejects.toMatchObject({ code: "forbidden" });
+			expect(deps.audit.ofType("access.denied")).toHaveLength(1);
+			expect(deps.audit.ofType("access.ancestor.allowed")).toHaveLength(1);
+		});
+	});
+
 	it("refuses with one generic forbidden and audits it once, with no secret", async () => {
 		const { deps, reader, as } = setUp();
 		const refusal = deps.access.require(as(reader), {

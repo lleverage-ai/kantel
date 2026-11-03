@@ -34,6 +34,33 @@ export { KantelLockup, KantelMark, KantelWordmark } from "./brand/kantel.tsx";
 // Themes: the model, the built-in themes, the registry, applying one to the page, and the picker (docs/theming.md).
 export { Code, HIGHLIGHT_LIMIT, highlightCode, languageForPath, loadHighlighter } from "./code/code.tsx";
 export { JSON_PAGE, JsonViewer, type JsonViewerProps, jsonSummary } from "./code/json-viewer.tsx";
+// The compute console (experimental, the compute plane): sandboxes, snapshots, keys, the egress proxy, webhooks,
+// OpenTelemetry, organisations, billing on hosted Kantel and a super-admin's hosts, through one `ComputeSource`. Its
+// sample data is `@kantel/ui/compute/fixtures` until the public API lands.
+export {
+	COMPUTE_PAGES,
+	ComputeConsole,
+	type ComputeConsoleProps,
+	type ComputePage,
+	type ComputeRoute,
+	computePath,
+	parseComputePath,
+} from "./compute/compute-console.tsx";
+export type {
+	AccountsSource,
+	ApiKeysSource,
+	BillingSource,
+	ComputeAccount,
+	ComputeSource,
+	ComputeViewer,
+	HostingMode,
+	HostsSource,
+	ProxySource,
+	SandboxesSource,
+	SnapshotsSource,
+	TelemetrySource,
+	WebhooksSource,
+} from "./compute/compute-model.ts";
 // The Connections page (#339): the connector catalogue, connecting, what's connected and OAuth clients, through the
 // source the host binds to the public API.
 export type { PeopleNames } from "./connections/connection-list.tsx";

@@ -15,6 +15,7 @@
 		"./tokens": "./src/tokens/tokens.ts",
 		"./theme-boot": "./src/theme/boot.ts",
 		"./vault/fixtures": "./src/vault/fixtures.ts",
+		"./compute/fixtures": "./src/compute/fixtures.ts",
 		"./audit/fixtures": "./src/audit/fixtures.ts",
 		"./schedules/fixtures": "./src/schedules/fixtures.ts",
 		"./sharing/fixtures": "./src/sharing/fixtures.ts",

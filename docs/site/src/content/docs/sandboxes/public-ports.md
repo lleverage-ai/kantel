@@ -1,0 +1,75 @@
+---
+title: Public ports
+description: Give a port in a sandbox an HTTPS URL, to open a dev server, preview or API running inside it, with or without a token, and hide it again.
+sidebar:
+  badge:
+    text: Experimental
+    variant: caution
+---
+
+:::caution[Experimental]
+These routes are part of Kantel's API, and a control plane serves them only when it runs with `KANTEL_COMPUTE=experimental`. Their shapes may still change.
+:::
+
+An app listening on a port inside a sandbox can get an HTTPS URL, so you, a reviewer or a test runner can open it from anywhere. The request reaches the sandbox through its host's tunnel, so the host needs no open ports of its own.
+
+The examples use `KANTEL_URL`, `KANTEL_API_KEY` and the `kantel` client set up in [Create and manage sandboxes](/sandboxes/lifecycle/#before-you-start). The key needs `access`. A sandbox can expose ports when its `capabilities.ports` is `true`.
+
+## Expose a port
+
+Start the app first, listening on the port. Both `0.0.0.0` and `localhost` work. A dev server is best run as a [detached command](/sandboxes/commands-and-files/#long-commands-and-servers). Then expose the port:
+
+```sh
+curl -s "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/ports" \
+  -H "authorization: Bearer $KANTEL_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"port": 3000}' | jq -r .url
+```
+
+```ts
+const { url } = await kantel.exposePort("sbx_4kq9x2mt", { port: 3000 });
+console.log(url);
+```
+
+The answer is an [ExposedPort](/api/reference/types/#exposedport) with the URL. Its host name starts with the sandbox's `subdomain`, under your deployment's sandbox domain. Exposing a port that's already exposed answers the URL it has.
+
+## Tokens and public URLs
+
+By default the URL carries a token, and anyone holding the whole URL can open it. Treat it like a password: share it only with people who should see the app.
+
+To let anyone open it with no token, such as a preview you want to post in a pull request, expose it with `public`:
+
+```sh
+curl -s "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/ports" \
+  -H "authorization: Bearer $KANTEL_API_KEY" \
+  -H "content-type: application/json" \
+  -d '{"port": 3000, "public": true}'
+```
+
+## List and hide ports
+
+```sh
+curl -s "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/ports" \
+  -H "authorization: Bearer $KANTEL_API_KEY" | jq '.items[] | {port, url, public}'
+```
+
+Hiding a port stops its URL working at once:
+
+```sh
+curl -s -X DELETE "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/ports/3000" \
+  -H "authorization: Bearer $KANTEL_API_KEY"
+```
+
+```ts
+await kantel.hidePort("sbx_4kq9x2mt", "3000");
+```
+
+## Dev servers that check the host name
+
+Some dev servers refuse a request whose `Host` header isn't one they know, and show an error such as "host not allowed" at the URL. Tell the server to accept the sandbox's domain, or any host. With Vite, set `server.allowedHosts` in `vite.config.ts`:
+
+```ts
+export default { server: { host: "0.0.0.0", allowedHosts: true } };
+```
+
+<!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:622-663, packages/api/src/compute-schema.ts:298-311, packages/api/src/compute-schema.ts:615-642 -->

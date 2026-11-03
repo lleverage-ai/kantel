@@ -1,0 +1,242 @@
+---
+// The console's Sandboxes page (@kantel/ui's compute/sandboxes-page.tsx, with compute/parts.tsx's table and
+// Sparkline): the header with New sandbox, the filter, and the table, each row with its name and hostname, its state,
+// an Isolate or MicroVM badge, when auto-stop stops it, its CPU over the last hour and the actions menu.
+import Icon from "./Icon.astro";
+import Mock from "./Mock.astro";
+
+type State = "Running" | "Starting" | "Paused" | "Stopped";
+// The status colour each state shows in, as SANDBOX_STATE_STATUS has it.
+const tone: Record<State, string> = { Running: "done", Starting: "working", Paused: "waiting", Stopped: "idle" };
+
+const rows: { name: string; state: State; type: "MicroVM" | "Isolate"; stopsIn: string; cpu: number[] }[] = [
+	{
+		name: "api-server",
+		state: "Running",
+		type: "MicroVM",
+		stopsIn: "52m",
+		cpu: [0.2, 0.3, 0.25, 0.5, 0.45, 0.7, 0.6, 0.8, 0.55, 0.4, 0.6, 0.5, 0.35, 0.45, 0.41],
+	},
+	{
+		name: "dev-stack",
+		state: "Running",
+		type: "MicroVM",
+		stopsIn: "Always on",
+		cpu: [0.1, 0.15, 0.2, 0.18, 0.3, 0.25, 0.2, 0.22, 0.35, 0.3, 0.2, 0.25, 0.28, 0.2, 0.23],
+	},
+	{
+		name: "scratch",
+		state: "Running",
+		type: "Isolate",
+		stopsIn: "12m",
+		cpu: [0, 0.02, 0.1, 0.04, 0, 0.05, 0.3, 0.06, 0.02, 0, 0.08, 0.03, 0, 0.02, 0.04],
+	},
+	{ name: "eval-runner-12", state: "Starting", type: "MicroVM", stopsIn: "1h", cpu: [] },
+	{ name: "browser-agent", state: "Paused", type: "MicroVM", stopsIn: "–", cpu: [] },
+	{ name: "preview-pr-412", state: "Stopped", type: "Isolate", stopsIn: "–", cpu: [] },
+];
+
+// The same line Sparkline draws: a 64 by 16 box, a flat line for no use.
+function sparkline(values: number[]): string {
+	const width = 64;
+	const height = 16;
+	const series = values.length === 0 ? [0, 0] : values;
+	const max = Math.max(1, ...series);
+	return series
+		.map((value, at) => {
+			const x = (at / (series.length - 1)) * width;
+			const y = height - 1 - (value / max) * (height - 2);
+			return `${x.toFixed(1)},${y.toFixed(1)}`;
+		})
+		.join(" ");
+}
+---
+
+<Mock
+	label="The Sandboxes page in Kantel's console: six sandboxes, each with its name and hostname, state, type and when it stops. api-server, dev-stack and scratch are running, with their CPU over the last hour; eval-runner-12 is starting, browser-agent is paused and preview-pr-412 is stopped. api-server, dev-stack, eval-runner-12 and browser-agent are microVMs; scratch and preview-pr-412 are isolates."
+>
+	<div class="flex items-start justify-between gap-4">
+		<div>
+			<p class="m-title">Sandboxes</p>
+			<p class="mt-1 m-sm m-muted">Sandboxes in Acme. Everyone in the organisation can see and use them.</p>
+		</div>
+		<span class="m-button m-primary"><Icon name="plus" class="m-icon-sm" />New sandbox</span>
+	</div>
+
+	<div class="segmented mt-5 m-sm">
+		<span class="on">All <span class="m-faint">6</span></span>
+		<span>Running <span class="m-faint">5</span></span>
+		<span>Stopped <span class="m-faint">1</span></span>
+	</div>
+
+	<div class="m-card mt-3 overflow-hidden">
+		<table class="m-sm">
+			<thead>
+				<tr>
+					<th>Name</th>
+					<th>State</th>
+					<th>Type</th>
+					<th class="m-hide-narrow">Stops in</th>
+					<th class="m-hide-narrow">Usage</th>
+					<th></th>
+				</tr>
+			</thead>
+			<tbody>
+				{
+					rows.map((row) => (
+						<tr>
+							<td class="name">
+								<span class="block truncate m-strong">{row.name}</span>
+								<span class="block truncate m-xs m-muted">{row.name}.acme.kantel.example.com</span>
+							</td>
+							<td>
+								<span class={`flex items-center gap-1.5 tone-${tone[row.state]}`}>
+									<span class="m-dot" />
+									<span class="m-fg">{row.state}</span>
+								</span>
+							</td>
+							<td>
+								<span class:list={["m-badge", row.type === "MicroVM" ? "m-accent" : "neutral"]}>{row.type}</span>
+							</td>
+							<td class:list={["m-hide-narrow", row.stopsIn === "Always on" || row.stopsIn === "–" ? "m-muted" : "m-fg"]}>
+								{row.stopsIn}
+							</td>
+							<td class="m-hide-narrow">
+								<span class="flex items-center gap-2">
+									<svg
+										class:list={["spark", row.state === "Running" ? "tone-done" : "m-faint"]}
+										viewBox="0 0 64 16"
+										preserveAspectRatio="none"
+										aria-hidden="true"
+									>
+										<polyline
+											points={sparkline(row.cpu)}
+											fill="none"
+											stroke="currentColor"
+											stroke-width="1.25"
+											stroke-linejoin="round"
+											vector-effect="non-scaling-stroke"
+										/>
+									</svg>
+									<span class="pct m-xs m-muted">
+										{row.state === "Running" ? `${Math.round((row.cpu.at(-1) ?? 0) * 100)}%` : ""}
+									</span>
+								</span>
+							</td>
+							<td class="actions m-muted">
+								<Icon name="ellipsis" />
+							</td>
+						</tr>
+					))
+				}
+			</tbody>
+		</table>
+	</div>
+</Mock>
+
+<style>
+	table {
+		width: 100%;
+		border-collapse: collapse;
+		text-align: left;
+		table-layout: auto;
+	}
+
+	th {
+		height: var(--kt-control-md);
+		padding: 0 var(--kt-step-3);
+		font-size: var(--kt-text-xs);
+		font-weight: var(--kt-weight-medium);
+		color: var(--kt-text-muted);
+		white-space: nowrap;
+		border-bottom: var(--kt-hairline) solid var(--kt-border);
+	}
+
+	td {
+		padding: var(--kt-step-2) var(--kt-step-3);
+		vertical-align: middle;
+		white-space: nowrap;
+	}
+
+	tbody tr:not(:last-child) > td {
+		border-bottom: var(--kt-hairline) solid var(--kt-border);
+	}
+
+	/* The name takes what's left and truncates its hostname, as the console's does at its card width. */
+	.name {
+		max-width: 0;
+		width: 100%;
+	}
+
+	.actions {
+		width: 0;
+		text-align: right;
+	}
+
+	.actions :global(.m-icon) {
+		display: inline-block;
+	}
+
+	/* Sparkline's box: h-4 w-16. */
+	.spark {
+		display: block;
+		width: calc(var(--kt-spacing) * 16);
+		height: var(--kt-step-4);
+	}
+
+	.pct {
+		width: var(--kt-step-8);
+		text-align: right;
+		font-variant-numeric: tabular-nums;
+	}
+
+	.neutral {
+		color: var(--kt-text-muted);
+		background: var(--kt-active);
+	}
+
+	.tone-done {
+		color: var(--kt-status-done);
+	}
+
+	.tone-working {
+		color: var(--kt-status-working);
+	}
+
+	.tone-waiting {
+		color: var(--kt-status-waiting);
+	}
+
+	.tone-idle {
+		color: var(--kt-status-idle);
+	}
+
+	/* The console's SegmentedControl: one track, the chosen option raised on it. */
+	.segmented {
+		display: inline-flex;
+		gap: var(--kt-step-0_5);
+		padding: var(--kt-step-0_5);
+		border-radius: var(--kt-radius-control);
+		background: var(--kt-sunken);
+		border: var(--kt-hairline) solid var(--kt-border);
+	}
+
+	.segmented > span {
+		padding: var(--kt-step-1) var(--kt-step-2_5);
+		border-radius: var(--kt-radius-sm);
+		color: var(--kt-text-muted);
+	}
+
+	.segmented > .on {
+		background: var(--kt-raised);
+		color: var(--kt-text);
+	}
+
+	@container (max-width: 30rem) {
+		th,
+		td {
+			padding-left: var(--kt-step-2);
+			padding-right: var(--kt-step-2);
+		}
+	}
+</style>

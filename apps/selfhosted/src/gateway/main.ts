@@ -56,12 +56,16 @@
 //                               KANTEL_CONNECTIONS_ORIGIN, the origin OAuth redirects come back to, which compose.yaml
 //                               sets to the console's local address) and a vault unless KANTEL_CONNECTIONS is `off`;
 //                               CIMD `on` once the client metadata document is public
-//   KANTEL_CODEMODE, KANTEL_PROGRAMS, KANTEL_PROGRAM_WAITS, KANTEL_PRESENT_FILES
-//                               `off` takes away `codemode`, saved programs (`save_program` and /v1/programs), their
-//                               pauses, or `present_files` and `create_document` (session-tools.ts). Each is on
+//   KANTEL_PRESENT_FILES        `off` takes away `present_files` and `create_document` (session-tools.ts). On
 //                               otherwise, as on Cloudflare's deployment
 //   KANTEL_TOOL_SERVERS        `experimental` turns on tool servers (tool-servers.ts): MCP servers sessions call for
 //                               tools over a tunnel each dials to /v1/tool-servers/{id}/connect. Unset, there are none
+//   KANTEL_SUBAGENTS           the `subagent` tool (subagents.ts, @kantel/subagents): a session hands a task to a child
+//                               session of the same agent and gets its answer. On unless set to anything but `on`
+//                               (`off`, say)
+//   KANTEL_COMPUTE             `experimental` turns on the compute plane's API (compute.ts, @kantel/compute): accounts,
+//                               sandboxes on the stub backend, snapshots, `ksk_` keys, webhooks, OpenTelemetry and
+//                               hosts, all in memory; its super-admin key is `computeKey` in the bootstrap file
 //
 // It runs on node:http, so it needs nothing Bun-specific; the image runs it on Bun like the session hosts.
 // First: HARBOUR_* settings from before the rename still count.
@@ -71,9 +75,13 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Authenticator } from "@kantel/contracts";
+import { createAuthenticator } from "@kantel/identity/authenticator";
+import { kantelSessionProvider } from "@kantel/identity/otp";
 import { browserBinding, browserConfig, createBrowserViews, gatewayBrowserProvider } from "./browser.ts";
 import { callbackUrlAllowed, parseCallbackOrigins } from "./callbacks.ts";
 import { type Bootstrap, bootstrap, createGatewayComponents, putAssistantProfile } from "./components.ts";
+import { computeEnabled, type GatewayCompute, gatewayCompute } from "./compute.ts";
 import { connectionsConfig } from "./connections.ts";
 import { createDurableGatewayComponents, type DurableConfig } from "./durable.ts";
 import { importPolicyFile } from "./egress.ts";
@@ -92,6 +100,7 @@ import {
 import { listen } from "./node-http.ts";
 import { containerTierConfig, prepareContainerTier } from "./sandboxes.ts";
 import { sessionToolsConfig } from "./session-tools.ts";
+import { subagentsConfig } from "./subagents.ts";
 import { toolServersConfig, toolServerUpgrades, withToolServerUpgrades } from "./tool-servers.ts";
 import { usageConfig } from "./usage.ts";
 
@@ -121,11 +130,13 @@ export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
 	const containers = containerTierConfig(env);
 	return {
 		sessionTools: sessionToolsConfig(env),
+		...(computeEnabled(env) ? { compute: true } : {}),
 		...(environments === undefined ? {} : { environments }),
 		...(containers === undefined ? {} : { containers }),
 		...(browser === undefined ? {} : { browser }),
 		...(connections === undefined ? {} : { connections }),
 		...(toolServersConfig(env) ? { toolServers: true } : {}),
+		subagents: subagentsConfig(env),
 		...(publicUrl === "" ? {} : { publicOrigin: new URL(publicUrl).origin }),
 		port: Number(env.PORT ?? "8080"),
 		host: env.HOST?.trim() || "0.0.0.0",
@@ -258,6 +269,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 					...(cfg.environments === undefined ? {} : { environments: cfg.environments }),
 					// In memory there is no token table: containers reach the vault proxy with no session token.
 					...(cfg.containers === undefined ? {} : { containers: await prepareContainerTier(cfg.containers) }),
+					subagents: cfg.subagents,
 				})
 			: await createDurableGatewayComponents({
 					...cfg.durable,
@@ -268,6 +280,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 					...(cfg.toolServers === true ? { toolServers: true } : {}),
 					...(cfg.environments === undefined ? {} : { environments: cfg.environments }),
 					...(cfg.containers === undefined ? {} : { containers: cfg.containers }),
+					subagents: cfg.subagents,
 				});
 	const browserViews = cfg.browser?.provider === "kantel" ? createBrowserViews(cfg.browser) : undefined;
 	const previous = await readBootstrap(cfg.bootstrapFile);
@@ -346,10 +359,31 @@ export async function serveGateway(cfg = gatewayConfig()) {
 			);
 		}
 	}
+	// The compute plane signs people in as the gateway does, so it and the gateway share one authenticator.
+	let compute: GatewayCompute | undefined;
+	let authenticator: Authenticator | undefined;
+	if (cfg.compute === true) {
+		authenticator = createAuthenticator({
+			identity: components.identity,
+			providers: [kantelSessionProvider({ sessions: components.otp.sessions })],
+		});
+		compute = await gatewayCompute({
+			authenticator,
+			...(previous?.computeKey === undefined ? {} : { superAdminKey: previous.computeKey }),
+			...(cfg.publicOrigin === undefined ? {} : { publicUrl: cfg.publicOrigin }),
+		});
+		seeded = { ...seeded, computeKey: compute.superAdminKey };
+		console.log(
+			`[gateway] compute plane on (KANTEL_COMPUTE=experimental): ${compute.binding}; the super-admin's key is ` +
+				`computeKey in ${cfg.bootstrapFile}`,
+		);
+	}
 	await writePrivateFile(cfg.bootstrapFile, `${JSON.stringify(seeded, null, "\t")}\n`);
 
 	const gateway = createGateway({
 		components,
+		...(authenticator === undefined ? {} : { authenticator }),
+		...(compute === undefined ? {} : { compute: compute.api }),
 		consoleDir: cfg.consoleDir,
 		...(cfg.mail === undefined ? {} : { mail: describeMail(cfg.mail), mailer: createMailer(cfg.mail) }),
 		...(cfg.callbackOrigins.length === 0 ? {} : { allowCallbackUrl: callbackUrlAllowed(cfg.callbackOrigins) }),
@@ -378,6 +412,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 
 	const shutdown = async () => {
 		tunnels?.close();
+		await compute?.close();
 		await gateway.close();
 		await server.close();
 		await components.close();

@@ -16,7 +16,6 @@
 	// compiled, all copied there by the same script.
 	"rules": [
 		{ "type": "Text", "globs": ["**/*.bundle.txt"], "fallthrough": true },
-		{ "type": "Data", "globs": ["**/*.wasm.bin"], "fallthrough": true },
 		{ "type": "CompiledWasm", "globs": ["**/quickjs-node.wasm"], "fallthrough": true }
 	],
 	"assets": {
@@ -30,8 +29,7 @@
 		"run_worker_first": ["/v1/*", "/healthz", "/browser/*", "/shared/*"]
 	},
 	// The Worker Loader: the dynamic-worker isolate backend loads one Dynamic Worker per session through it
-	// (src/dynamic-worker.ts). Sessions use it only when KANTEL_ISOLATE_BACKEND says so. Code mode loads one per session
-	// that runs a script (src/codemode.ts), unless KANTEL_CODEMODE is `off`.
+	// (src/dynamic-worker.ts). Sessions use it only when KANTEL_ISOLATE_BACKEND says so.
 	"worker_loaders": [{ "binding": "LOADER" }],
 	// Workers AI: Clef, the decision model browser goal mode uses by default (src/browser-decisions.ts). Deployed only:
 	// `wrangler dev` has none, so a goal run there on Clef is refused.
@@ -54,12 +52,7 @@
 			{ "name": "TUNNELS", "class_name": "KantelTunnel" },
 			// Session objects (src/session-object.ts), one per session and its subagents, each with its own SQLite. Used only
 			// with KANTEL_SESSION_OBJECTS=on; without it no object is ever made.
-			{ "name": "SESSIONS", "class_name": "KantelSession" },
-			// Code mode's sandbox objects, a class of the separately deployed `kantel-codemode` Worker (wrangler.codemode.jsonc,
-			// src/codemode/worker.ts), which the deploy uploads first. Used only with KANTEL_CODEMODE_OFFLOAD=on: one object per
-			// script, so a script that computes holds its own thread, not the stack's. Another Worker's, not this one's: a class
-			// of this Worker could share the stack object's isolate, and so its thread.
-			{ "name": "CODEMODE_SANDBOXES", "class_name": "KantelCodemodeSandbox", "script_name": "kantel-codemode" }
+			{ "name": "SESSIONS", "class_name": "KantelSession" }
 		]
 	},
 	"migrations": [
@@ -98,32 +91,15 @@
 		// Which isolate backend sessions run on (src/sandboxes.ts): in-process, #94's just-bash in the stack object, or
 		// dynamic-worker, the same shell in a Dynamic Worker per session. The measurement can run on either.
 		"KANTEL_ISOLATE_BACKEND": "in-process",
-		// `off` takes the `codemode` tool away (src/codemode.ts). Anything else offers it to sessions with tools.
-		"KANTEL_CODEMODE": "on",
-		// Experimental: `on` runs each code mode script (a session's `codemode` call, a program run's) in a new object of the
-		// `kantel-codemode` Worker (CODEMODE_SANDBOXES, src/codemode/worker.ts) instead of a Dynamic Worker on the stack (or
-		// session) object's thread, so a script that computes doesn't hold every other call. Tools, approvals, audit and the
-		// journal stay with the calling object. Anything else: the Worker Loader, as before.
-		// On for harbour.myslop.app (TASK-4580): a ~1M-number Collatz program held the stack for 30 s until Cloudflare reset
-		// it with the switch off. `off` and a deploy turns it off.
-		"KANTEL_CODEMODE_OFFLOAD": "on",
 		// Experimental: `off` takes the `present_files` tool away (@kantel/sandbox/present-files). Anything else offers it,
 		// and the console shows the files it presents as cards that open a viewer.
 		"KANTEL_PRESENT_FILES": "on",
 		// How many seconds a session may sit open with nothing to do (no work, no sleep, nobody watching) before the stack puts
 		// it away and frees its memory (src/session-idle.ts); the next call opens it again from SQLite. `off` keeps it open.
 		"KANTEL_SESSION_IDLE_SECONDS": "120",
-		// `on` offers the experimental `subagent` tool (src/subagent.ts): a session hands a task to a child session, which the
+		// `on` offers the experimental `subagent` tool (@kantel/subagents): a session hands a task to a child session, which the
 		// console shows as a card in the thread that opens it. Anything else (the default) offers none.
 		"KANTEL_SUBAGENTS": "on",
-		// Experimental: `on` serves saved programs (src/programs/service.ts, docs/site/.../api/programs.md), code mode programs
-		// run through /v1/programs/{id}/runs with no model, and gives the default agent `save_program`. Needs code mode.
-		// Anything else: no routes, no tool, no tables.
-		"KANTEL_PROGRAMS": "on",
-		// Experimental: `on` lets program runs pause (src/programs/journal.ts): `waitForInput()` and `agent()` in a program,
-		// POST /v1/programs/{id}/runs/{runId}/resume, and each run's journal, so a resumed run doesn't repeat finished calls.
-		// Needs KANTEL_PROGRAMS. Anything else: no waits, no resume route.
-		"KANTEL_PROGRAM_WAITS": "on",
 		// How recall is rendered, and so what fits its byte budgets (src/recall-renderer.ts): default, Kantel's own, or sal,
 		// a Sal worker's, for a deployment that serves Sal's memory and should recall what a local Sal worker does.
 		"KANTEL_RECALL_RENDERER": "default",
@@ -186,10 +162,7 @@
 					{ "name": "BROWSERS", "class_name": "HarbourBrowser" },
 					{ "name": "SANDBOXES", "class_name": "HarbourSandbox" },
 					{ "name": "TUNNELS", "class_name": "KantelTunnel" },
-					{ "name": "SESSIONS", "class_name": "KantelSession" },
-					// Connected when `pnpm dev:codemode` runs the sandbox Worker beside `pnpm dev` (wrangler's dev registry). Used only
-					// with KANTEL_CODEMODE_OFFLOAD=on, such as `pnpm dev --var KANTEL_CODEMODE_OFFLOAD:on`.
-					{ "name": "CODEMODE_SANDBOXES", "class_name": "KantelCodemodeSandbox", "script_name": "kantel-codemode" }
+					{ "name": "SESSIONS", "class_name": "KantelSession" }
 				]
 			},
 			// Local only: wrangler dev builds images/browser and images/sandbox and runs their containers in local Docker.
@@ -230,9 +203,7 @@
 				"KANTEL_BROWSER_VIEW_KEY": "harbour-local-dev-browser-view-key-0001",
 				"KANTEL_BROWSER_SEAL_KEY": "harbour-local-dev-browser-seal-key-0001",
 				// Subagents, as deployed: the dev model's `delegate a > b > c` errand (src/dev-browser-model.ts) nests them.
-				"KANTEL_SUBAGENTS": "on",
-				"KANTEL_PROGRAMS": "on",
-				"KANTEL_PROGRAM_WAITS": "on"
+				"KANTEL_SUBAGENTS": "on"
 			}
 		}
 	}
