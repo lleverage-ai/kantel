@@ -26,8 +26,12 @@ FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae
 
 # Same version as Debian's chromium, so a context saved by one engine opens in
 # the other (Chrome won't open a profile from a newer version).
-ARG HEADLESS_SHELL_VERSION=155.0.8059.79
-ARG HEADLESS_SHELL_SHA256=4cea4c32b501aa43cc2b81eb45734af991a6a82feded48380d6dfaf96642a1c1
+ARG HEADLESS_SHELL_VERSION=156.0.8078.73
+ARG HEADLESS_SHELL_SHA256=77eb8d52798efc7a857ab61abcc62a456d8ea9635b02341d06dffee2761768c8
+# LLE-17270: Chrome before 156.0.8078.73 has 4 critical bugs a page can reach
+# (CVE-2026-118306, -118331, -118344, -118348), and both engines run with
+# --no-sandbox. The build fails if Debian's chromium is older than this.
+ARG CHROMIUM_MIN_VERSION=156.0.8078.73
 
 # Fonts: Liberation for the metric-compatible Latin faces, Noto core for the
 # other scripts (Arabic, Hebrew, Devanagari, Thai, Greek, ...; ~43 MB), Noto
@@ -40,6 +44,7 @@ RUN apt-get update \
       fonts-noto-core \
       fonts-liberation fonts-noto-color-emoji fonts-noto-cjk \
       ca-certificates curl tar gzip zip unzip dumb-init \
+ && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' chromium)" ge "${CHROMIUM_MIN_VERSION}" \
  && curl -fsSLo /tmp/hs.zip "https://storage.googleapis.com/chrome-for-testing-public/${HEADLESS_SHELL_VERSION}/linux64/chrome-headless-shell-linux64.zip" \
  && echo "${HEADLESS_SHELL_SHA256}  /tmp/hs.zip" | sha256sum -c - \
  && unzip -q /tmp/hs.zip -d /opt && rm /tmp/hs.zip \
