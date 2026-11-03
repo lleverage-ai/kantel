@@ -56,7 +56,7 @@ flags. Every command takes `--json` to print Kantel's answer as it is, for scrip
 | `scp [-r] <from> <to>`, `push <id> [dir]` | Copy files; `<id>:<path>` is the sandbox's side, and push sends what git would commit |
 | `files ls\|cat\|put\|get\|rm …` | A sandbox's files, up to 1 MiB each |
 | `host <id> <port> [--public]`, `port list\|hide …` | HTTPS URLs for a sandbox's ports |
-| `ssh <id> [--exec]`, `desktop <id>`, `browser <id>` | SSH, desktop and browser access to a microVM |
+| `ssh <id> [--print] [-- <command…>]`, `desktop <id>`, `browser <id>` | SSH (a shell, one command, or the ssh command printed), desktop and browser access to a microVM |
 | `snapshot list\|take\|save\|files\|rm …` | Snapshots, and saved snapshots to start sandboxes from |
 | `key list\|create\|rotate\|revoke …` | Scoped API keys; a new key's secret is shown once |
 | `org list\|create\|join …`, `webhook …`, `events`, `telemetry …` | Accounts, webhooks, events and OpenTelemetry |

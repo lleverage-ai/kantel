@@ -1,5 +1,5 @@
 // `kantel ssh` through Kantel's relay: ssh's arguments, `kantel ssh-proxy`'s piping, and its refusals.
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -198,18 +198,67 @@ describe("the commands", () => {
 		return { code, stdout: out.join(""), stderr: err.join("") };
 	};
 
-	it("kantel ssh prints a ProxyCommand through the relay when the answer has a proxyUrl", async () => {
-		const answer = {
-			host: "kantel.test",
-			port: 443,
-			user: "user",
-			command: `ssh -o ProxyCommand='websocat --binary ${URL_}' user@sbx_4kq9x2mt`,
-			proxyUrl: URL_,
-			privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n",
-			hostKeyFingerprint: "SHA256:hostkey",
-			expiresAt: Date.now() + 10 * 60_000,
-		};
-		const { code, stdout } = await kantel(["ssh", "sbx_4kq9x2mt"], answer);
+	const answer = {
+		host: "kantel.test",
+		port: 443,
+		user: "user",
+		command: `ssh -o ProxyCommand='websocat --binary ${URL_}' user@sbx_4kq9x2mt`,
+		proxyUrl: URL_,
+		privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n",
+		hostKeyFingerprint: "SHA256:hostkey",
+		expiresAt: Date.now() + 10 * 60_000,
+	};
+
+	/** Runs `kantel` with an `ssh` on PATH that writes its arguments, one a line, and its relay URL, and exits 7. */
+	const withFakeSsh = async (argv: string[]) => {
+		const bin = join(configDir, "bin");
+		const log = join(configDir, "ssh.log");
+		await rm(bin, { recursive: true, force: true });
+		await mkdir(bin);
+		await writeFile(
+			join(bin, "ssh"),
+			`#!/bin/sh\nfor a in "$@"; do printf '%s\\n' "$a"; done > '${log}'\necho "url=$${SSH_URL_ENV}" >> '${log}'\nexit 7\n`,
+		);
+		await chmod(join(bin, "ssh"), 0o755);
+		const path = process.env.PATH;
+		process.env.PATH = `${bin}:${path ?? ""}`;
+		try {
+			const result = await kantel(argv, answer);
+			return { ...result, args: (await readFile(log, "utf8")).trimEnd().split("\n") };
+		} finally {
+			process.env.PATH = path;
+		}
+	};
+
+	it("kantel ssh connects by default, through the relay, and exits with ssh's code", async () => {
+		const { code, args } = await withFakeSsh(["ssh", "sbx_4kq9x2mt"]);
+		expect(code).toBe(7);
+		expect(args).toContain("HostKeyAlias=sbx_4kq9x2mt");
+		expect(args.at(-2)).toBe("user@sbx_4kq9x2mt");
+		// The URL goes to ssh-proxy in the environment, not in ssh's arguments.
+		expect(args.at(-1)).toBe(`url=${URL_}`);
+		expect(args.slice(0, -1).join(" ")).not.toContain(URL_);
+	});
+
+	it("kantel ssh <id> -- <command> runs that command over SSH, quoted as exec quotes it", async () => {
+		const { code, args } = await withFakeSsh(["ssh", "sbx_4kq9x2mt", "--", "ls", "-la", "my dir"]);
+		expect(code).toBe(7);
+		expect(args.slice(-4, -1)).toEqual(["user@sbx_4kq9x2mt", "--", "ls -la 'my dir'"]);
+		const line = await withFakeSsh(["ssh", "sbx_4kq9x2mt", "--", "make && make test"]);
+		expect(line.args.at(-2)).toBe("make && make test");
+	});
+
+	it("kantel ssh wants its command after --, and --print takes none", async () => {
+		const extra = await kantel(["ssh", "sbx_4kq9x2mt", "uname"], answer);
+		expect(extra.code).toBe(2);
+		expect(extra.stderr).toContain("after --");
+		const both = await kantel(["ssh", "sbx_4kq9x2mt", "--print", "--", "uname"], answer);
+		expect(both.code).toBe(2);
+		expect(both.stderr).toContain("--print");
+	});
+
+	it("kantel ssh --print prints a ProxyCommand through the relay when the answer has a proxyUrl", async () => {
+		const { code, stdout } = await kantel(["ssh", "sbx_4kq9x2mt", "--print"], answer);
 		expect(code).toBe(0);
 		expect(stdout).toContain(`ProxyCommand=kantel ssh-proxy --url ${URL_}`);
 		expect(stdout).toContain(`-i ${join(configDir, "ssh", "sbx_4kq9x2mt")}`);
