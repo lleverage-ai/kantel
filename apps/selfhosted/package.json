@@ -29,7 +29,6 @@
 		"@kantel/sandbox": "workspace:*",
 		"@kantel/selfhosted-sandbox": "workspace:*",
 		"@kantel/selfhosted-workspace": "workspace:*",
-		"@kantel/rules": "workspace:*",
 		"@kantel/connections": "workspace:*",
 		"@kantel/sharing": "workspace:*",
 		"@kantel/skills": "workspace:*",

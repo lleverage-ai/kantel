@@ -8,7 +8,7 @@
  *   (#216) and its agent loop's memory is this object's, not the stack's;
  * - their records, profiles, submissions and host registrations in the stack object's store, over RPC
  *   (`sessionStoreCall`), so the stack's directory lists them and its profiles apply;
- * - identity, audit, skills, memory, rules, sharing and connections in D1 and workspaces in R2, as the stack has them.
+ * - identity, audit, skills, memory, sharing and connections in D1 and workspaces in R2, as the stack has them.
  *   It keeps no workspace heads (`src/workspace-heads.ts`): with more than one object writing, each reads R2's;
  * - the browser broker for its sessions' browsers, in this object's memory, as the stack's is in the stack's;
  * - its own audit queue and usage ledger, each drained to D1;

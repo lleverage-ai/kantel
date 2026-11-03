@@ -30,8 +30,6 @@
 //   /projects/:projectId/tool-servers         a project's tool servers: its own and the organisation's
 //   /environments                             environments (experimental, sandbox tier 3): long-lived machines a
 //                                             project's sessions attach to through bash's env
-//   /rules                                    prompt rules: the platform's, the organisation's, a project's and yours,
-//                                             and what a new session would get
 //   /settings                                 Settings' own list of pages: on a phone, the page; wider, its first page
 //   /sessions/:sessionId                      a session whose project the link doesn't know (a schedule's run):
 //                                             replaced by its /projects/... path once the session's project is read
@@ -68,7 +66,6 @@ export type Route =
 	| { readonly name: "tool-servers" }
 	| { readonly name: "project-tool-servers"; readonly projectId: string }
 	| { readonly name: "environments" }
-	| { readonly name: "rules" }
 	| { readonly name: "settings" }
 	| { readonly name: "session-link"; readonly sessionId: string }
 	| { readonly name: "files"; readonly projectId: string; readonly sessionId: string; readonly path?: string }
@@ -105,7 +102,6 @@ export function parseRoute(pathname: string): Route {
 	if (parts[0] === "connections" && parts.length === 1) return { name: "connections" };
 	if (parts[0] === "tool-servers" && parts.length === 1) return { name: "tool-servers" };
 	if (parts[0] === "environments" && parts.length === 1) return { name: "environments" };
-	if (parts[0] === "rules" && parts.length === 1) return { name: "rules" };
 	if (parts[0] === "settings" && parts.length === 1) return { name: "settings" };
 	if (parts[0] === "skills") {
 		if (parts.length === 1) return { name: "skills" };
@@ -206,8 +202,6 @@ export function canonicalPath(pathname: string): string | undefined {
 export const AUDIT_PATH = "/audit";
 export const KEYS_PATH = "/keys";
 export const MEMBERS_PATH = "/members";
-/** Prompt rules, and what a new session would get. */
-export const RULES_PATH = "/rules";
 /** Settings: on a phone its list of pages, wider its first page. */
 export const SETTINGS_PATH = "/settings";
 
@@ -226,7 +220,6 @@ export function isSettingsRoute(route: Route): boolean {
 		case "environments":
 		case "skills":
 		case "memory":
-		case "rules":
 		case "models":
 		case "members":
 		case "keys":

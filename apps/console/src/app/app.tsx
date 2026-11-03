@@ -13,7 +13,6 @@ import {
 	EmptyState,
 	EnvironmentIcon,
 	EnvironmentsPage,
-	FileTextIcon,
 	IconButton,
 	ImageIcon,
 	KantelLockup,
@@ -68,7 +67,6 @@ import type {
 	ConsoleToolServers,
 	ConsoleVault,
 } from "../api/oversight.ts";
-import type { ConsoleRules } from "../api/rules-http.ts";
 import { type LiveSummary, withLive } from "../state/live-summary.ts";
 import type { SessionClient } from "../state/session-client.ts";
 import { BOOT, SHELL_EMPTY, SHELL_PAGE_BAR, shellClasses, shellPage } from "../ui/shell-styles.ts";
@@ -99,7 +97,6 @@ import {
 	parseRoute,
 	projectPath,
 	type Route,
-	RULES_PATH,
 	SETTINGS_PATH,
 	SHARING_PATH,
 	schedulesPath,
@@ -108,7 +105,6 @@ import {
 	toolServersPath,
 	usePathname,
 } from "./router.ts";
-import { RulesScreen } from "./rules-screen.tsx";
 import { SchedulesScreen } from "./schedules-screen.tsx";
 import { SessionScreen } from "./session-screen.tsx";
 import { ThemeButton, ThemeSwitcher } from "./theme.tsx";
@@ -278,7 +274,6 @@ type SettingsPages = {
 	/** Environments (experimental): long-lived machines sessions attach to. */
 	readonly environments: boolean;
 	readonly agent: boolean;
-	readonly rules: boolean;
 	/** The Models page's path (the open project's, or the first's), when the console has the models seam. */
 	readonly modelsHref: string | undefined;
 	readonly members: boolean;
@@ -294,7 +289,6 @@ function firstSettingsPage(pages: SettingsPages): string | undefined {
 	if (pages.toolServers) return toolServersPath();
 	if (pages.environments) return ENVIRONMENTS_PATH;
 	if (pages.agent) return skillsPath();
-	if (pages.rules) return RULES_PATH;
 	if (pages.modelsHref !== undefined) return pages.modelsHref;
 	if (pages.members) return MEMBERS_PATH;
 	if (pages.keys) return KEYS_PATH;
@@ -335,12 +329,7 @@ function WorkNav({ route, schedules, settings }: { route: Route; schedules: bool
  */
 function SettingsNav({ route, pages, backHref }: { route: Route; pages: SettingsPages; backHref: string }) {
 	const agent =
-		pages.connections ||
-		pages.toolServers ||
-		pages.environments ||
-		pages.agent ||
-		pages.rules ||
-		pages.modelsHref !== undefined;
+		pages.connections || pages.toolServers || pages.environments || pages.agent || pages.modelsHref !== undefined;
 	const organisation = pages.members || pages.keys || pages.sharing || pages.audit;
 	return (
 		<>
@@ -383,9 +372,6 @@ function SettingsNav({ route, pages, backHref }: { route: Route; pages: Settings
 								selected={route.name === "memory"}
 							/>
 						</>
-					) : null}
-					{pages.rules ? (
-						<SidebarItem icon={<FileTextIcon />} label="Rules" href={RULES_PATH} selected={route.name === "rules"} />
 					) : null}
 					{pages.modelsHref === undefined ? null : (
 						<SidebarItem
@@ -489,7 +475,6 @@ export function App({
 	environments,
 	models,
 	modelProviders,
-	rules,
 	oversightPending = false,
 	onOpen,
 }: {
@@ -526,8 +511,6 @@ export function App({
 	 * the Models page's Providers section. Without it there's neither.
 	 */
 	modelProviders?: ConsoleModelProviders;
-	/** The Rules page's seam (prompt rules); without it there's no Rules in the sidebar. */
-	rules?: ConsoleRules;
 	onOpen?: (sessionId: string, session: SessionClient) => void;
 }) {
 	const pathname = usePathname();
@@ -588,7 +571,6 @@ export function App({
 		toolServers: toolServers !== undefined,
 		environments: environments !== undefined,
 		agent: agent !== undefined,
-		rules: rules !== undefined,
 		modelsHref: models === undefined || modelsProject === undefined ? undefined : modelsPath(modelsProject.id),
 		members: members !== undefined,
 		keys: keys !== undefined,
@@ -738,7 +720,6 @@ export function App({
 	const keysRoute = keys !== undefined && route.name === "keys";
 	const membersRoute = members !== undefined && route.name === "members";
 	const schedulesRoute = schedules !== undefined && route.name === "schedules";
-	const rulesRoute = rules !== undefined && route.name === "rules";
 	const agentRoute = agent !== undefined && (route.name === "skills" || route.name === "memory");
 	const sharingRoute = sharing !== undefined && route.name === "sharing";
 	const connectionsRoute = connections !== undefined && route.name === "connections";
@@ -757,10 +738,8 @@ export function App({
 		sharingRoute ||
 		connectionsRoute ||
 		toolServersRoute ||
-		rulesRoute ||
 		agentRoute;
 	const organisationRoute =
-		route.name === "rules" ||
 		route.name === "connection-requests" ||
 		route.name === "connection-request" ||
 		route.name === "audit" ||
@@ -960,13 +939,6 @@ export function App({
 					links={environments.links}
 					{...(environments.now === undefined ? {} : { now: environments.now })}
 				/>
-			</div>
-		);
-	} else if (rulesRoute && rules !== undefined) {
-		main = (
-			<div className={page}>
-				{pageBar}
-				<RulesScreen rules={rules} projects={projectList} />
 			</div>
 		);
 	} else if (

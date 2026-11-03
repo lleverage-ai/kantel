@@ -1521,15 +1521,6 @@ export interface ListProgramsQuery {
 	readonly projectId?: string;
 }
 
-export interface ListPromptRulesQuery {
-	/** Whose rules: the platform's, the organisation's, a project's or a user's. */
-	readonly owner: "platform" | "organisation" | "project" | "user";
-	/** The project, for `owner=project`. */
-	readonly projectId?: string;
-	/** The user, for `owner=user`. Default the calling person. */
-	readonly userId?: string;
-}
-
 export interface ListResourceSharesQuery {
 	/** Kantel's `skills.skill`, `memory.space`, `workspace`, `models.connector` or `vault.item` (a secret in the encrypted store behind connections, under its stored name), or a kind a host registered, such as `workflows.workflow`. */
 	readonly resourceKind?: string;
@@ -2124,28 +2115,6 @@ export interface PromptAttachment {
 	readonly kind: "image" | "file" | "text";
 }
 
-export interface PromptRule {
-	/** The rule's ID. */
-	readonly id: string;
-	/** Who owns a record: an organisation, a project, a user, or the platform. */
-	readonly owner: OwnerRef;
-	/** Unique among its owner's rules. */
-	readonly name: string;
-	/** The prompt text. */
-	readonly text: string;
-	/** Its place among its owner's rules, lowest first; ties go by name. */
-	readonly order: number;
-	/** Epoch milliseconds, UTC. */
-	readonly createdAt: number;
-	/** Epoch milliseconds, UTC. */
-	readonly updatedAt: number;
-}
-
-export interface PromptRuleList {
-	/** In layer order: platform, organisation, project, user. */
-	readonly items: readonly PromptRule[];
-}
-
 export type ProviderCategory =
 	| "developer"
 	| "productivity"
@@ -2219,16 +2188,6 @@ export interface ProviderTemplate {
 	readonly guide?: "github_app_manifest" | "google";
 	/** The provider's own page where a person removes an app's access. */
 	readonly manageAccessUrl?: string;
-}
-
-export interface PutPromptRuleBody {
-	/** Who owns a record: an organisation, a project, a user, or the platform. */
-	readonly owner: OwnerRef;
-	/** 1 to 100 letters, digits, `.`, `_` and `-`. A rule of this name replaces the owner's rule. */
-	readonly name: string;
-	readonly text: string;
-	/** Default 0. */
-	readonly order?: number;
 }
 
 export interface QuestionCard {
@@ -2387,13 +2346,6 @@ export interface ResolvedClientInfo {
 	readonly public: boolean;
 	/** A GitHub App GitHub created from Kantel's manifest. */
 	readonly githubApp?: GitHubAppInfo;
-}
-
-export interface ResolvedPromptRulesQuery {
-	/** A project session's project. Absent: an organisation session. */
-	readonly projectId?: string;
-	/** The session's user. Default the calling person. */
-	readonly userId?: string;
 }
 
 export interface ResourceBinding {
@@ -3618,16 +3570,6 @@ export interface KantelClient {
 	): Promise<SkillFileContent>;
 	/** Import a skill from a host's source. A host adapter's publish path: creates the skill if needed and publishes the files as its next revision, once per `source` (`sourceId` and `ref`); files identical to the latest revision publish nothing. People and API keys only, never an agent; a deployment may ask for more, such as the organisation's admin role. `POST /skills/import` */
 	importSkill(body: ImportSkillBody, options?: CallOptions): Promise<SkillRevision>;
-	/** List an owner's prompt rules. The platform's, the organisation's, a project's or a user's rules, in order. A project's need the viewer role on it; the others are open to the organisation. `GET /rules` */
-	listPromptRules(query: ListPromptRulesQuery, options?: CallOptions): Promise<PromptRuleList>;
-	/** The rules a new session would get. Platform, organisation, project (for a project session) and user rules, in the order they wrap the profile's own prompt: platform, organisation, project, profile, user. A session keeps the rules it started with. `GET /rules/resolved` */
-	resolvePromptRules(query?: ResolvedPromptRulesQuery, options?: CallOptions): Promise<PromptRuleList>;
-	/** Get a prompt rule. `GET /rules/{ruleId}` */
-	getPromptRule(ruleId: string, options?: CallOptions): Promise<PromptRule>;
-	/** Create or replace a prompt rule. Creates the owner's rule of that name, or replaces its text and order. The organisation's rules need an organisation-wide admin, a project's an admin on it, a user's that user or an organisation-wide admin; agents never write rules. Audited as `rules.rule.put`, without the text. `PUT /rules` */
-	putPromptRule(body: PutPromptRuleBody, options?: CallOptions): Promise<PromptRule>;
-	/** Remove a prompt rule. Needs what writing it needs. New sessions stop getting it; running ones keep theirs. `DELETE /rules/{ruleId}` */
-	removePromptRule(ruleId: string, options?: CallOptions): Promise<PromptRule>;
 	/** List memory spaces. The spaces the caller may read, oldest first: the organisation's, a project's to those who may view it, and a person's own. A person never sees another person's space. `GET /memory/spaces` */
 	listMemorySpaces(query?: PageQuery, options?: CallOptions): Promise<MemorySpacePage>;
 	/** Create a memory space. People and API keys only, never an agent; a deployment may ask for more, such as the organisation's admin role. `POST /memory/spaces` */
@@ -4223,14 +4165,6 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 				callOptions,
 			),
 		importSkill: (body, callOptions) => send(options, { method: "POST", path: "/skills/import", body }, callOptions),
-		listPromptRules: (query, callOptions) => send(options, { method: "GET", path: "/rules", query }, callOptions),
-		resolvePromptRules: (query, callOptions) =>
-			send(options, { method: "GET", path: "/rules/resolved", query }, callOptions),
-		getPromptRule: (ruleId, callOptions) =>
-			send(options, { method: "GET", path: `/rules/${encodeURIComponent(ruleId)}` }, callOptions),
-		putPromptRule: (body, callOptions) => send(options, { method: "PUT", path: "/rules", body }, callOptions),
-		removePromptRule: (ruleId, callOptions) =>
-			send(options, { method: "DELETE", path: `/rules/${encodeURIComponent(ruleId)}` }, callOptions),
 		listMemorySpaces: (query, callOptions) =>
 			send(options, { method: "GET", path: "/memory/spaces", query }, callOptions),
 		createMemorySpace: (body, callOptions) =>

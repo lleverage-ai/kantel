@@ -38,7 +38,6 @@ import { createPasskeys } from "@kantel/identity/passkey";
 import { createSqlIdentity, createSqlOtpStores, createSqlPasskeyStores, migrateIdentity } from "@kantel/identity/sql";
 import { createSqlMemory, migrateMemory } from "@kantel/memory/sql";
 import { createSqlProgramStore, migratePrograms } from "@kantel/programs/store";
-import { createSqlPromptRules, migrateRules } from "@kantel/rules/sql";
 import { createSessionRuntime, type SessionRuntimeOptions } from "@kantel/runtime/core";
 import { callbackHostHandlers } from "@kantel/runtime/http";
 import { createSqlSessionStore, sqlPiStorage } from "@kantel/runtime/sql";
@@ -156,7 +155,6 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		await migrateSkills(driver);
 		await migrateMemory(driver);
 		await migrateSharing(driver);
-		await migrateRules(driver);
 		// Connections need the vault, so none without its key.
 		const connectionsOn = config.connections !== undefined && config.vaultCipherKey !== undefined;
 		if (connectionsOn) await migrateConnections(driver);
@@ -215,7 +213,6 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		await skillObjects.ensureBucket();
 		const skills = createSqlSkills({ driver, objects: skillObjects, audit, access: auditAccess.access });
 		const memory = createSqlMemory({ driver, audit, access: auditAccess.access });
-		const rules = createSqlPromptRules({ driver, audit, access: auditAccess.access });
 		let workspaces: StoredWorkspaces | undefined;
 		// The vault is built after the runtime (it needs its access), so it is asked for per call.
 		let sharedVault: KantelVault | undefined;
@@ -277,7 +274,6 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 				sharing,
 				...sessionTools.models(models),
 				...sessionContextOptions({ skills, memory, workspaces: lateWorkspaces }),
-				rules,
 				// The session API's own defaults for its callbacks: the global fetch and a ten-minute call.
 				hostHandler: callbackHostHandlers(),
 				onResumeError: (sessionId, error) => log(`[gateway] session ${sessionId} did not resume: ${error}`),
@@ -364,7 +360,6 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			skills,
 			memory,
 			sharing,
-			rules,
 			sandboxes,
 			hosts: runtime.hosts,
 			otp: createSqlOtpStores(driver),
@@ -395,7 +390,6 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 				workspaces: "postgres + s3",
 				skills: "postgres + s3",
 				memory: "postgres",
-				rules: "postgres",
 				usage: usage?.binding ?? "off",
 				sandboxes: gatewaySandboxes.binding,
 				signIn: "postgres",
