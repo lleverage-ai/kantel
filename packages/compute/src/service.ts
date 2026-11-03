@@ -236,7 +236,8 @@ function checkUrl(url: string, what: string): void {
 
 function decodeUtf8(bytes: Uint8Array, path: string): string {
 	try {
-		return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+		// `ignoreBOM` is the default, given because workers-types requires it (apps/cloudflare serves this API).
+		return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
 	} catch {
 		throw new KantelError("invalid", `${path} is not UTF-8 text; read it with encoding base64`);
 	}

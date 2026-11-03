@@ -30,6 +30,9 @@ importers:
       "@kantel/audit":
         specifier: workspace:*
         version: link:../../packages/audit
+      "@kantel/compute":
+        specifier: workspace:*
+        version: link:../../packages/compute
       "@kantel/contracts":
         specifier: workspace:*
         version: link:../../packages/contracts

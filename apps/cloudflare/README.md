@@ -1,11 +1,12 @@
 # @kantel/cloudflare
 
 Kantel on Cloudflare. One Worker, `kantel`, on one hostname behind Cloudflare Access. It serves the console and the
-identity and audit APIs. The maintainers' deployment is `harbour.myslop.app`, signed in with One-time PIN.
+compute, identity and audit APIs. The maintainers' deployment is `harbour.myslop.app`, signed in with One-time PIN.
 
 ```
 browser ── Access (OTP) ── Worker kantel ─┬─ /v1/*      ─► KantelStack DO ─► gateway (src/gateway.ts)
 host app ── API key ────────┘              │                                     ├─ /v1/me, /v1/projects, /v1/keys, members, invites
+                                           │                                     ├─ compute API (src/compute.ts): sandboxes, commands, files, ksk_ keys…
                                            │                                     ├─ /v1/audit/…   audit query API
                                            │                                     └─ any other /v1/…  404
                                            ├─ /healthz
@@ -17,8 +18,20 @@ connections, rules and approvals, skills, memory, schedules, sharing, tool serve
 the sandbox tiers. That code was removed and is kept in git history on the `agent-plane-archive` branch and the
 `agent-plane-archive-2026-11-03` tag (commit `e496aeb2817595f5fae5b0cdb919dbc94a5505f5`).
 
-The Worker doesn't serve the compute API. The hosted console shows its compute pages (`/compute`) with sample data, as
-it does whenever the compute API isn't there; a self-hosted gateway (`apps/selfhosted`) serves the real one.
+The compute API is `@kantel/compute`'s, as a self-hosted gateway (`apps/selfhosted`) serves it, so the console at `/`
+works here as it does there (`src/compute.ts`):
+
+- Its records (accounts, sandboxes, commands, snapshots, keys, webhooks) are the compute store over SQL
+  (`@kantel/compute/sql`, the same store the self-hosted gateway keeps in Postgres), in `KantelStack`'s own SQLite,
+  table `compute_api_records`. One object answers every request, so there is one writer.
+- Sandboxes run on the stub backend (`@kantel/compute/stub`, a just-bash shell over in-memory files), as a self-hosted
+  gateway with no hosts does: Kantel's hosts don't join this deployment yet. When the object is evicted or a deploy
+  replaces it, the records stay and each sandbox gets a fresh, empty machine on its next call.
+- The person Access signs in is a compute person under their Kantel user ID; an admin of the deployment's organisation
+  is the compute super-admin. The console sends no credential behind Access, so the gateway gives the compute API
+  Access's token as the bearer it asks for. The compute API's own `ksk_` keys work as on self-hosted; an identity
+  `ktk_` key is not a compute caller.
+- The webhook and telemetry timers run only while requests come, so they never keep the object awake.
 
 `src/route.ts` decides which part answers. It reads a `POST /v1/keys` or `/v1/invites` body (up to its small limit)
 before the stack object sees it.
@@ -139,6 +152,8 @@ own: the zone's proxied wildcard record (`*.myslop.app`) already resolves the ho
 `pnpm --filter @kantel/cloudflare test` runs the gateway over the in-memory stack in Node: Access tokens for the right
 team domain and AUD sign the invited person in; another AUD, another team domain, an expired token, a service token or
 an uninvited email are 401; API keys work on the identity and audit APIs; and the agent plane's routes are 404.
+`test/compute.test.ts` runs the compute API on the gateway: the Access person signs in (the organisation's admin as
+the super-admin), creates a sandbox and runs a command, uses a `ksk_` key, and finds the records after a restart.
 `test/audit-outbox.test.ts` runs the audit outbox over SQLite. `test/deploy.test.ts` checks the deploy config and the
 Access sign-in check, and `test/durable-object-rename.test.ts` that every class the migrations leave live is bound and
 exported.

@@ -3,7 +3,7 @@
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
-	"description": "Kantel on Cloudflare. The gateway Worker (the console, and the identity and audit APIs behind Access) and its Durable Objects",
+	"description": "Kantel on Cloudflare. The gateway Worker (the console, and the compute, identity and audit APIs behind Access) and its Durable Objects",
 	"license": "Apache-2.0",
 	"scripts": {
 		"build:console": "pnpm --filter @kantel/console build",
@@ -16,6 +16,7 @@
 	},
 	"dependencies": {
 		"@kantel/audit": "workspace:*",
+		"@kantel/compute": "workspace:*",
 		"@kantel/contracts": "workspace:*",
 		"@kantel/identity": "workspace:*",
 		"@kantel/sql": "workspace:*"
