@@ -1,8 +1,0 @@
-/* A run of calls is styled with Tailwind utilities in tool-run.tsx. What stays here is what utilities can't carry. */
-
-/* Stays CSS: a view under the line (a BrowserLiveView) is another file's element, and browser-live-view.css sets its
-   whole margin, unlayered, so a utility from here (a child variant on .kt-run) would lose to it. This rule's two
-   classes win over its one. */
-.kt-run > .kt-browser-live {
-	margin-left: var(--kt-step-4);
-}

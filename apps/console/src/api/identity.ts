@@ -12,7 +12,17 @@ import type { MeResponse, SignInMethod } from "@kantel/contracts";
 import { authenticationFailureOf } from "@kantel/contracts";
 import { createIdentityClient, type IdentityClient, signInMethodsOf } from "@kantel/identity/http";
 import type { SignInApi } from "@kantel/ui";
-import type { ConsoleActor } from "./client.ts";
+
+/** Who is signed in to the console. */
+export type ConsoleActor = {
+	readonly id: string;
+	readonly name: string;
+	readonly email?: string;
+	/** True while sign-in is a stand-in, so the shell can say so. */
+	readonly stubbed: boolean;
+	/** Ends the session, when the console signed in itself (an email code). Access ends its own at the edge. */
+	readonly signOut?: () => Promise<void>;
+};
 
 const SESSION_KEY = "kantel.console.session";
 

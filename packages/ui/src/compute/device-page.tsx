@@ -111,7 +111,7 @@ export function DeviceLoginPage({ source, account, code, now: fixedNow }: Device
 				</form>
 			) : looked.status === "loading" ? (
 				<div className="flex max-w-md flex-col gap-2" aria-busy="true">
-					<Skeleton width="18rem" lines={3} />
+					<Skeleton width="60%" lines={3} />
 				</div>
 			) : (
 				<Decision
