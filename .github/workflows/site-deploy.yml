@@ -1,0 +1,109 @@
+name: kantel.dev deploy
+
+# Deploys apps/site (kantel.dev: the marketing page, install.sh and the docs from docs/site) to its `kantel-site`
+# Worker, a static-assets Worker on the kantel.dev custom domain (apps/site/wrangler.jsonc). It runs on every push to
+# main that changes the site, the docs or the design tokens the site paints with.
+#
+# Not called from main.yml: main.yml skips pushes that only change Markdown, and most docs changes are only Markdown.
+# The site's own build is its check: it fails on a broken internal link or a sidebar entry with no page, and nothing
+# deploys. ci.yml builds the same site on every pull request.
+#
+# It only deploys once its token exists; until then, and on any other ref (`gh workflow run site-deploy.yml --ref
+# <branch>`), it builds the site and runs `wrangler deploy --dry-run`, which never contacts Cloudflare.
+#
+# Read from the repository:
+#   secret   KANTEL_SITE_CLOUDFLARE_API_TOKEN  a token for this Worker only, apart from cloudflare-deploy.yml's
+#   var      CLOUDFLARE_ACCOUNT_ID             the account that holds the kantel.dev zone and the Worker
+#
+# The token's permissions (https://developers.cloudflare.com/workers/authorization/workers/):
+#   Account  Workers Scripts: Edit                upload and deploy the `kantel-site` Worker and its static assets
+#   Zone     Workers Routes: Edit (kantel.dev)    the kantel.dev custom domain in wrangler.jsonc, which every deploy
+#                                                 sends again
+#   Zone     Zone: Read (kantel.dev)              find the zone the custom domain is in
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/site/**"
+      - "docs/site/**"
+      - "packages/ui/src/tokens/**"
+      - ".github/workflows/site-deploy.yml"
+  workflow_dispatch: {}
+
+# One run at a time, never cancelled half way: a newer one waits, and replaces any that is still pending, so the last
+# push to main is the one that ends up live.
+concurrency:
+  group: site-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Build, dry run, and deploy when set up
+    # Kantel's own self-hosted runners: GitHub-hosted runners stopped at the Actions budget.
+    runs-on: [self-hosted, harbour]
+    timeout-minutes: 15
+    env:
+      WRANGLER_SEND_METRICS: "false"
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Deploy only on main, and only once the token and the account exist. The token itself reaches only the deploy
+      # step; this step learns whether it is set, nothing more.
+      - name: Deploy or dry run
+        id: mode
+        env:
+          REF: ${{ github.ref }}
+          HAS_TOKEN: ${{ secrets.KANTEL_SITE_CLOUDFLARE_API_TOKEN != '' }}
+        run: |
+          missing=()
+          [ "$HAS_TOKEN" = "true" ] || missing+=("KANTEL_SITE_CLOUDFLARE_API_TOKEN (secret)")
+          [ -n "${CLOUDFLARE_ACCOUNT_ID//[[:space:]]/}" ] || missing+=("CLOUDFLARE_ACCOUNT_ID (variable)")
+          if [ "$REF" != "refs/heads/main" ]; then
+            mode=dry-run; why="only main deploys"
+          elif [ "${#missing[@]}" -gt 0 ]; then
+            mode=dry-run; why="not set up yet, missing: ${missing[*]}"
+          else
+            mode=deploy; why="the token and the account are set"
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "Mode: $mode ($why)"
+          echo "**kantel.dev deploy:** $mode ($why)" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # pnpm comes from corepack at the version pinned in package.json's packageManager field, as in ci.yml.
+      - name: Enable corepack
+        run: |
+          npm install --global corepack@0.36.0
+          corepack enable
+          pnpm --version
+
+      # The site has a lockfile of its own, outside the workspace (apps/site/README.md).
+      - name: Install
+        run: pnpm --dir apps/site install --frozen-lockfile --ignore-workspace
+
+      # Syncs the docs in, builds, checks every internal link and writes llms.txt.
+      - name: Build
+        run: |
+          sh -n apps/site/public/install.sh
+          pnpm --dir apps/site build
+
+      # Always, before a real deploy too: checks the config and the assets without contacting Cloudflare.
+      - name: wrangler deploy --dry-run
+        working-directory: apps/site
+        run: pnpm exec wrangler deploy --dry-run
+
+      - name: wrangler deploy
+        if: steps.mode.outputs.mode == 'deploy'
+        working-directory: apps/site
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.KANTEL_SITE_CLOUDFLARE_API_TOKEN }}
+          SHA: ${{ github.sha }}
+        run: pnpm exec wrangler deploy --message "main ${SHA::8}"
