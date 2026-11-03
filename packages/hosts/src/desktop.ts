@@ -8,14 +8,14 @@
  *   what a sandbox could have changed. Each file is fetched from the sandbox once, checked against its SHA-256 and kept.
  * - The stream is Selkies' one WebSocket, `api/websockets`, passed through message by message. Nothing else on the
  *   port (its HTTP API: file transfers, commands, settings) is reachable.
- * - The ticket's signed mode decides what reaches Selkies. A view-only ticket's socket is opened as Selkies' viewer
+ * - The ticket's mode, kept in its row (`tunnel.ts`), decides what reaches Selkies. A view-only ticket's socket is opened as Selkies' viewer
  *   role, whatever the client asks for, and the gateway drops every message from it but the few a viewer needs to
  *   watch (`viewerMessage`), so no client, modified or not, can type, click, paste or change the desktop through it.
  */
 import type { PortSink, PortStream } from "./hub.ts";
 import { proxyHttp } from "./port-http.ts";
 import { SELKIES_WEB } from "./selkies-web.ts";
-import { type DesktopMode, type TunnelGrant, verifyTunnel } from "./tunnel.ts";
+import type { DesktopMode, IssuedGrant, TunnelTickets } from "./tunnel.ts";
 
 export const HOSTS_DESKTOP_PATH = "/v1/hosts/desktop";
 /** Where the guest image's desktop stream (Selkies: its web client and its WebSocket) listens, on loopback. */
@@ -58,11 +58,15 @@ export interface DesktopSocket {
 	readonly path: string;
 	/** Whether a client message may pass; absent, all do. */
 	readonly accept?: (data: string | Uint8Array, binary: boolean) => boolean;
+	/** The ticket's grant, so the gateway can end the socket when its holder's access ends. */
+	readonly grant: IssuedGrant;
 }
 
 export interface DesktopRoutesOptions {
-	/** The secret tunnel tickets are signed with. */
-	readonly secret: Uint8Array;
+	/** The relay's tickets, shared by every gateway replica. */
+	readonly tickets: Pick<TunnelTickets, "verify">;
+	/** Whether whoever was given the ticket may still use the sandbox (`relay-access.ts`); absent, everyone may. */
+	readonly allowed?: (grant: IssuedGrant) => Promise<boolean>;
 	readonly openPort: (sandboxId: string, port: number, sink: PortSink) => Promise<PortStream>;
 	readonly now?: () => number;
 	/** The web client's files (default `SELKIES_WEB`, the version the image ships). */
@@ -111,9 +115,10 @@ export function createDesktopRoutes(options: DesktopRoutesOptions): DesktopRoute
 	/** Checked files, by SHA-256: the same in every sandbox on the same Selkies, so fetched once per gateway. */
 	const verified = new Map<string, Promise<Uint8Array | undefined>>();
 
-	async function grantOf(ticket: string): Promise<TunnelGrant | undefined> {
-		const grant = await verifyTunnel(options.secret, ticket, now());
-		return grant?.desktop !== undefined && grant.port === DESKTOP_PORT ? grant : undefined;
+	async function grantOf(ticket: string): Promise<IssuedGrant | undefined> {
+		const grant = await options.tickets.verify(ticket, now());
+		if (grant?.desktop === undefined || grant.port !== DESKTOP_PORT) return undefined;
+		return options.allowed === undefined || (await options.allowed(grant)) ? grant : undefined;
 	}
 
 	/** A file of the client from the sandbox, if it is byte for byte the one Kantel knows. */
@@ -191,9 +196,10 @@ export function createDesktopRoutes(options: DesktopRoutesOptions): DesktopRoute
 					port: DESKTOP_PORT,
 					path: `${DESKTOP_SOCKET}?role=viewer`,
 					accept: viewerMessage,
+					grant,
 				};
 			}
-			return { sandboxId: grant.sandboxId, port: DESKTOP_PORT, path: `${DESKTOP_SOCKET}${url.search}` };
+			return { sandboxId: grant.sandboxId, port: DESKTOP_PORT, path: `${DESKTOP_SOCKET}${url.search}`, grant };
 		},
 	};
 }

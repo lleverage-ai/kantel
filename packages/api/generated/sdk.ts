@@ -606,7 +606,7 @@ export type EventType =
 
 export interface ExposedPort {
 	readonly port: number;
-	/** Its HTTPS URL. Unless `public`, it carries a token anyone holding it may use. */
+	/** Its HTTPS URL. Unless `public`, the answer to exposing it carries a token anyone holding it may use, shown only then (Kantel keeps its hash); listed, the URL has none. Exposing the port again gives a new token and ends the old. Access through it ends when the key or sign-in that exposed it loses access to the sandbox. */
 	readonly url: string;
 	readonly public: boolean;
 	/** Epoch milliseconds, UTC. */

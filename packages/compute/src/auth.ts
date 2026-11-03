@@ -17,6 +17,11 @@ export interface PersonIdentity {
 	readonly email?: string;
 	readonly name: string;
 	readonly superAdmin?: boolean;
+	/**
+	 * The sign-in itself, when the deployment can end it (a Kantel session's token hash): access relayed for this
+	 * sign-in ends when it does, as `sessionLive` reports.
+	 */
+	readonly session?: string;
 }
 
 /** Checks a request's sign-in (any bearer but an API key); `undefined` when it is not one. */
@@ -44,9 +49,69 @@ export interface PersonPrincipal {
 	readonly name: string;
 	readonly superAdmin: boolean;
 	readonly personalAccountId: string;
+	/** The sign-in, when it can be ended (`PersonIdentity.session`). */
+	readonly session?: string;
 }
 
 export type Principal = KeyPrincipal | PersonPrincipal;
+
+/**
+ * Who was given access a relay carries on with after the call (a tunnel ticket, an exposed port's URL): a key, or a
+ * person and their sign-in. The relay asks `ComputeService.stillAllowed` while the access lasts, so revoking the key,
+ * signing out or leaving the account ends it.
+ */
+export type Grantee =
+	| { readonly kind: "key"; readonly keyId: string }
+	| { readonly kind: "person"; readonly userId: string; readonly session?: string };
+
+/** The grantee a principal is, as the relay keeps it. */
+export function encodeGrantee(principal: Principal): string {
+	const grantee: Grantee =
+		principal.kind === "key"
+			? { kind: "key", keyId: principal.keyId }
+			: {
+					kind: "person",
+					userId: principal.userId,
+					...(principal.session === undefined ? {} : { session: principal.session }),
+				};
+	return JSON.stringify(grantee);
+}
+
+/** A grantee `encodeGrantee` wrote, or undefined for anything else. */
+export function decodeGrantee(text: string): Grantee | undefined {
+	let value: unknown;
+	try {
+		value = JSON.parse(text);
+	} catch {
+		return undefined;
+	}
+	if (typeof value !== "object" || value === null) return undefined;
+	const record = value as { kind?: unknown; keyId?: unknown; userId?: unknown; session?: unknown };
+	if (record.kind === "key" && typeof record.keyId === "string") return { kind: "key", keyId: record.keyId };
+	if (record.kind === "person" && typeof record.userId === "string") {
+		if (record.session !== undefined && typeof record.session !== "string") return undefined;
+		return {
+			kind: "person",
+			userId: record.userId,
+			...(record.session === undefined ? {} : { session: record.session }),
+		};
+	}
+	return undefined;
+}
+
+/** The principal a key is now, as `authenticate` would make it. */
+export function keyPrincipal(key: StoredApiKey): KeyPrincipal {
+	return {
+		kind: "key",
+		keyId: key.id,
+		keyName: key.name,
+		accountId: key.accountId,
+		scopes: key.scopes,
+		limits: key.sandboxIds === undefined ? {} : { sandboxIds: key.sandboxIds },
+		userId: key.ownerUserId,
+		superAdmin: key.scopes.includes("hosts:admin"),
+	};
+}
 
 /** The call has no valid credential: answered 401 `unauthenticated`. */
 export class UnauthenticatedError extends Error {
@@ -138,6 +203,18 @@ export async function keyForSecret(
 	return key;
 }
 
+/** The principal the key with `keyId` is, while it is neither revoked nor expired. */
+export async function liveKeyPrincipal(
+	store: ComputeStore,
+	keyId: string,
+	now: number,
+): Promise<KeyPrincipal | undefined> {
+	const key = await store.apiKeys.get(keyId);
+	if (key === undefined || key.revokedAt !== undefined) return undefined;
+	if (key.expiresAt !== undefined && key.expiresAt <= now) return undefined;
+	return keyPrincipal(key);
+}
+
 /** Who is calling; rejects with `UnauthenticatedError` for no bearer or one that is not valid. */
 export async function authenticate(request: Request, options: AuthenticateOptions): Promise<Principal> {
 	const { store, now } = options;
@@ -153,16 +230,7 @@ export async function authenticate(request: Request, options: AuthenticateOption
 				? { ...current, lastUsedAt: now }
 				: undefined,
 		);
-		return {
-			kind: "key",
-			keyId: key.id,
-			keyName: key.name,
-			accountId: key.accountId,
-			scopes: key.scopes,
-			limits: key.sandboxIds === undefined ? {} : { sandboxIds: key.sandboxIds },
-			userId: key.ownerUserId,
-			superAdmin: key.scopes.includes("hosts:admin"),
-		};
+		return keyPrincipal(key);
 	}
 	const identity = await options.authenticatePerson?.(request);
 	if (identity === undefined) throw new UnauthenticatedError("The credentials are not valid");
@@ -174,6 +242,7 @@ export async function authenticate(request: Request, options: AuthenticateOption
 		superAdmin: user.superAdmin,
 		personalAccountId: user.personalAccountId,
 		...(user.email === undefined ? {} : { email: user.email }),
+		...(identity.session === undefined ? {} : { session: identity.session }),
 	};
 }
 

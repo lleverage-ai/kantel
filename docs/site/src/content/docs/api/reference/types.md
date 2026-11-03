@@ -360,7 +360,7 @@ One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"s
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `port` | integer | yes |  |
-| `url` | string | yes | Its HTTPS URL. Unless `public`, it carries a token anyone holding it may use. |
+| `url` | string | yes | Its HTTPS URL. Unless `public`, the answer to exposing it carries a token anyone holding it may use, shown only then (Kantel keeps its hash); listed, the URL has none. Exposing the port again gives a new token and ends the old. Access through it ends when the key or sign-in that exposed it loses access to the sandbox. |
 | `public` | boolean | yes |  |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 

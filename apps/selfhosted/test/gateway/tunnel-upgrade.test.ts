@@ -1,23 +1,24 @@
-// The gateway's tunnel endpoint, over a real HTTP server and WebSocket clients: a ticket the gateway's secret signed
-// reaches its sandbox's port; anything else (forged, altered, expired, too long-lived, malformed) is closed with 4003
-// before any sandbox is touched.
+// The gateway's tunnel endpoint, over a real HTTP server and WebSocket clients: a ticket the relay issued reaches its
+// sandbox's port, on any gateway over the same relay store; anything else (guessed, altered, expired, too long-lived,
+// malformed) is closed with 4003 before any sandbox is touched.
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { createMemoryRelayStore, type RelayStore } from "@kantel/hosts/relay-store";
 import type { HostsService } from "@kantel/hosts/service";
-import { MAX_TUNNEL_MINUTES, signTunnel } from "@kantel/hosts/tunnel";
+import { createTunnelTickets, MAX_TUNNEL_MINUTES } from "@kantel/hosts/tunnel";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
-import { type GatewayHostsBackend, withHostUpgrades } from "../../src/gateway/compute.ts";
+import { gatewayRelay, withHostUpgrades } from "../../src/gateway/compute.ts";
 
 const servers: Server[] = [];
 afterEach(async () => {
 	for (const server of servers.splice(0)) await new Promise((resolve) => server.close(resolve));
 });
 
-const secret = crypto.getRandomValues(new Uint8Array(32));
+const relay = createMemoryRelayStore();
 
 /** A gateway's upgrades over a fake registry whose sandbox port echoes what it is sent. */
-async function gateway() {
+async function gateway(store: RelayStore = relay) {
 	const opened: { sandboxId: string; port: number }[] = [];
 	const service = {
 		authenticate: async () => undefined,
@@ -32,7 +33,8 @@ async function gateway() {
 			},
 		},
 	} as unknown as HostsService;
-	const hosts = { service, config: {}, tunnelSecret: secret } as unknown as GatewayHostsBackend;
+	const hosts = gatewayRelay({ publicUrl: "http://gateway.test" }, service, store);
+	hosts.bind(async () => true);
 	const upgrades = withHostUpgrades(hosts, undefined);
 	const server = createServer((_, response) => response.writeHead(404).end());
 	server.on("upgrade", (incoming, socket, head) => upgrades?.(incoming, socket, head));
@@ -57,8 +59,8 @@ function connect(url: string): Promise<{ echoed: string; code: number; reason: s
 	});
 }
 
-const ticket = (overrides: { sandboxId?: string; port?: number; expiresAt?: number; key?: Uint8Array } = {}) =>
-	signTunnel(overrides.key ?? secret, {
+const ticket = (overrides: { sandboxId?: string; port?: number; expiresAt?: number; store?: RelayStore } = {}) =>
+	createTunnelTickets(overrides.store ?? relay).issue({
 		sandboxId: overrides.sandboxId ?? "sbx_4kq9x2mt",
 		port: overrides.port ?? 22,
 		expiresAt: overrides.expiresAt ?? Date.now() + 10 * 60_000,
@@ -72,15 +74,27 @@ describe("the gateway's tunnel endpoint", () => {
 		expect(opened).toEqual([{ sandboxId: "sbx_4kq9x2mt", port: 22 }]);
 	});
 
+	it("relays a ticket another gateway over the same store issued, as after a restart or on another replica", async () => {
+		const shared = createMemoryRelayStore();
+		const issued = await ticket({ store: shared });
+		const other = await gateway(shared);
+		expect((await connect(`${other.base}/${issued}`)).echoed).toBe("hello");
+		// A gateway over another store never issued it.
+		const stranger = await gateway(createMemoryRelayStore());
+		expect((await connect(`${stranger.base}/${issued}`)).code).toBe(4003);
+		expect(stranger.opened).toEqual([]);
+	});
+
 	it("refuses forged, altered, expired, too long-lived and malformed tickets before touching a sandbox", async () => {
 		const { base, opened } = await gateway();
 		const valid = await ticket();
-		const [payload, signature] = valid.split(".") as [string, string];
+		const [id, secret] = valid.split(".") as [string, string];
 		const other = (await ticket({ sandboxId: "sbx_someone" })).split(".")[0];
 		const refused = {
-			"signed with another secret": await ticket({ key: crypto.getRandomValues(new Uint8Array(32)) }),
-			"another sandbox's grant under this signature": `${other}.${signature}`,
-			"a changed signature": `${payload}.${signature.slice(0, -2)}AA`,
+			"issued by a relay over another store": await ticket({ store: createMemoryRelayStore() }),
+			"another sandbox's ticket ID with this secret": `${other}.${secret}`,
+			"a changed secret": `${id}.${secret.slice(0, -2)}AA`,
+			"a guessed ticket": `${"A".repeat(16)}.${"B".repeat(43)}`,
 			expired: await ticket({ expiresAt: Date.now() - 1 }),
 			"good for longer than the gateway gives": await ticket({
 				expiresAt: Date.now() + (MAX_TUNNEL_MINUTES + 1) * 60_000,

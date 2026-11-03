@@ -1,116 +1,131 @@
-// Tunnel tickets: only the gateway's secret signs one, for one sandbox's port, until it expires and for an hour at
-// most; anything else, forged, altered, expired or malformed, is refused.
-import { describe, expect, it } from "vitest";
-import { MAX_TUNNEL_MINUTES, signTunnel, verifyTunnel } from "../src/tunnel.ts";
+// Tunnel tickets: only one the relay issued, for one sandbox's port, until it expires and for an hour at most;
+// anything else, guessed, altered, expired or malformed, is refused. The store keeps the secret half's hash, never the
+// secret, and every gateway over the same store (or the same one after a restart) accepts the ticket.
+import { testDatabaseKinds } from "@kantel/sql/testing";
+import { afterEach, describe, expect, it } from "vitest";
+import { createMemoryRelayStore, createSqlRelayStore, migrateRelay, type RelayStore } from "../src/relay-store.ts";
+import { createTunnelTickets, MAX_TUNNEL_MINUTES, sha256Hex } from "../src/tunnel.ts";
 
-const secret = crypto.getRandomValues(new Uint8Array(32));
 const now = 1_800_000_000_000;
 const grant = { sandboxId: "sbx_4kq9x2mt", port: 22, expiresAt: now + 10 * 60_000 };
 
-const encoder = new TextEncoder();
-function base64url(bytes: Uint8Array): string {
-	let binary = "";
-	for (const byte of bytes) binary += String.fromCharCode(byte);
-	return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
-}
-const payloadOf = (value: unknown) => base64url(encoder.encode(JSON.stringify(value)));
-async function hmac(key: Uint8Array, text: string): Promise<string> {
-	const imported = await crypto.subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-	return base64url(new Uint8Array(await crypto.subtle.sign("HMAC", imported, encoder.encode(text))));
-}
-/** Signed as the gateway signs, whatever the payload: what's refused is then the payload's, not the signature's. */
-const signed = async (value: unknown) => {
-	const payload = payloadOf(value);
-	return `${payload}.${await hmac(secret, `kantel-tunnel/v1.${payload}`)}`;
-};
+const cleanups: (() => Promise<void>)[] = [];
+afterEach(async () => {
+	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+});
 
-describe("tunnel tickets", () => {
+function behaves(open: () => Promise<RelayStore>) {
 	it("carry their grant until it expires", async () => {
-		const ticket = await signTunnel(secret, grant);
-		expect(await verifyTunnel(secret, ticket, now)).toEqual(grant);
-		expect(await verifyTunnel(secret, ticket, grant.expiresAt - 1)).toEqual(grant);
-		expect(await verifyTunnel(secret, ticket, grant.expiresAt)).toBeUndefined();
-		expect(await verifyTunnel(secret, ticket, grant.expiresAt + 60_000)).toBeUndefined();
+		const tickets = createTunnelTickets(await open(), () => now);
+		const ticket = await tickets.issue(grant);
+		const expected = { ...grant, ticketId: ticket.split(".")[0] };
+		expect(await tickets.verify(ticket, now)).toEqual(expected);
+		expect(await tickets.verify(ticket, grant.expiresAt - 1)).toEqual(expected);
+		expect(await tickets.verify(ticket, grant.expiresAt)).toBeUndefined();
+		expect(await tickets.verify(ticket, grant.expiresAt + 60_000)).toBeUndefined();
 	});
 
-	it("refuse a ticket another secret signed", async () => {
-		const forged = await signTunnel(crypto.getRandomValues(new Uint8Array(32)), grant);
-		expect(await verifyTunnel(secret, forged, now)).toBeUndefined();
-		expect(await verifyTunnel(secret, await signTunnel(new Uint8Array(32), grant), now)).toBeUndefined();
+	it("carry who they were given to", async () => {
+		const tickets = createTunnelTickets(await open(), () => now);
+		const grantee = JSON.stringify({ kind: "key", keyId: "key_1" });
+		const ticket = await tickets.issue({ ...grant, grantee });
+		expect((await tickets.verify(ticket, now))?.grantee).toBe(grantee);
 	});
 
-	it("refuse a ticket whose grant was changed under its signature", async () => {
-		const ticket = await signTunnel(secret, grant);
-		const signature = ticket.split(".")[1];
-		for (const changed of [
-			{ ...grant, sandboxId: "sbx_someone" },
-			{ ...grant, port: 2375 },
-			{ ...grant, expiresAt: grant.expiresAt + 60_000 },
-		]) {
-			const altered = `${payloadOf([changed.sandboxId, changed.port, changed.expiresAt])}.${signature}`;
-			expect(await verifyTunnel(secret, altered, now)).toBeUndefined();
-		}
-		expect(await verifyTunnel(secret, `${ticket.slice(0, -2)}AA`, now)).toBeUndefined();
-		expect(await verifyTunnel(secret, `${ticket.split(".")[0]}.`, now)).toBeUndefined();
+	it("keep only the secret half's hash", async () => {
+		const store = await open();
+		const tickets = createTunnelTickets(store, () => now);
+		const ticket = await tickets.issue(grant);
+		const [id = "", secret = ""] = ticket.split(".");
+		const row = await store.getTicket(id);
+		expect(row?.secretHash).toBe(await sha256Hex(secret));
+		expect(JSON.stringify(row)).not.toContain(secret);
 	});
 
-	it("sign a desktop ticket's mode with it, so a view-only ticket can't be made into one that drives", async () => {
+	it("keep a desktop ticket's mode in its row, so a view-only ticket can't be made into one that drives", async () => {
+		const store = await open();
+		const tickets = createTunnelTickets(store, () => now);
 		const view = { ...grant, port: 6080, desktop: "view" as const };
-		const ticket = await signTunnel(secret, view);
-		expect(await verifyTunnel(secret, ticket, now)).toEqual(view);
+		const ticket = await tickets.issue(view);
+		expect(await tickets.verify(ticket, now)).toMatchObject(view);
 		const control = { ...view, desktop: "control" as const };
-		expect(await verifyTunnel(secret, await signTunnel(secret, control), now)).toEqual(control);
-		const signature = ticket.split(".")[1];
-		for (const changed of [
-			[view.sandboxId, view.port, view.expiresAt, "control"],
-			// Without its mode: a tunnel's ticket, for raw TCP to the desktop's port.
-			[view.sandboxId, view.port, view.expiresAt],
-		]) {
-			expect(await verifyTunnel(secret, `${payloadOf(changed)}.${signature}`, now)).toBeUndefined();
-		}
-		// A mode that isn't one is refused even under a good signature.
-		for (const mode of ["admin", true, 1, null]) {
-			expect(
-				await verifyTunnel(secret, await signed([view.sandboxId, view.port, view.expiresAt, mode]), now),
-			).toBeUndefined();
+		expect(await tickets.verify(await tickets.issue(control), now)).toMatchObject(control);
+		// Nothing in the URL says which: only the row does.
+		const [id = ""] = ticket.split(".");
+		expect(ticket).not.toContain("view");
+		expect((await store.getTicket(id))?.desktop).toBe("view");
+		// A mode that isn't one, in a row however it got there, is refused.
+		const row = await store.getTicket(id);
+		if (row === undefined) throw new Error("no row");
+		for (const [i, desktop] of ["admin", "", "VIEW"].entries()) {
+			const forgedId = `forged_mode_row_${i}`;
+			await store.putTicket({ ...row, id: forgedId, desktop });
+			expect(await tickets.verify(`${forgedId}.${ticket.split(".")[1]}`, now)).toBeUndefined();
 		}
 	});
 
-	it("refuse a ticket signed without the tunnel's domain, as one signed for something else would be", async () => {
-		const payload = payloadOf([grant.sandboxId, grant.port, grant.expiresAt]);
-		expect(await verifyTunnel(secret, `${payload}.${await hmac(secret, payload)}`, now)).toBeUndefined();
+	it("are accepted by another relay over the same store, as after a restart", async () => {
+		const store = await open();
+		const ticket = await createTunnelTickets(store, () => now).issue(grant);
+		expect((await createTunnelTickets(store, () => now).verify(ticket, now))?.sandboxId).toBe(grant.sandboxId);
 	});
 
-	it(`refuse a ticket good for more than ${MAX_TUNNEL_MINUTES} minutes, even one the gateway signed`, async () => {
-		const longest = await signTunnel(secret, { ...grant, expiresAt: now + MAX_TUNNEL_MINUTES * 60_000 });
-		expect(await verifyTunnel(secret, longest, now)).toBeDefined();
-		const longer = await signTunnel(secret, { ...grant, expiresAt: now + MAX_TUNNEL_MINUTES * 60_000 + 1 });
-		expect(await verifyTunnel(secret, longer, now)).toBeUndefined();
-		const day = await signTunnel(secret, { ...grant, expiresAt: now + 24 * 3_600_000 });
-		expect(await verifyTunnel(secret, day, now)).toBeUndefined();
+	it("refuse a ticket with another secret half, or another ticket's ID", async () => {
+		const tickets = createTunnelTickets(await open(), () => now);
+		const ticket = await tickets.issue(grant);
+		const other = await tickets.issue({ ...grant, sandboxId: "sbx_someone" });
+		const [id = "", secret = ""] = ticket.split(".");
+		const [otherId = "", otherSecret = ""] = other.split(".");
+		expect(await tickets.verify(`${id}.${otherSecret}`, now)).toBeUndefined();
+		expect(await tickets.verify(`${otherId}.${secret}`, now)).toBeUndefined();
+		expect(await tickets.verify(`${id}.${secret.slice(0, -2)}AA`, now)).toBeUndefined();
+		expect(await tickets.verify(`${id}.${"A".repeat(43)}`, now)).toBeUndefined();
+		// A ticket nobody issued, of the right shape.
+		expect(await tickets.verify(`${"B".repeat(16)}.${"A".repeat(43)}`, now)).toBeUndefined();
+	});
+
+	it(`refuse a ticket good for more than ${MAX_TUNNEL_MINUTES} minutes, even one the relay issued`, async () => {
+		const tickets = createTunnelTickets(await open(), () => now);
+		const longest = await tickets.issue({ ...grant, expiresAt: now + MAX_TUNNEL_MINUTES * 60_000 });
+		expect(await tickets.verify(longest, now)).toBeDefined();
+		const longer = await tickets.issue({ ...grant, expiresAt: now + MAX_TUNNEL_MINUTES * 60_000 + 1 });
+		expect(await tickets.verify(longer, now)).toBeUndefined();
 	});
 
 	it("refuse malformed tickets", async () => {
-		const valid = await signTunnel(secret, grant);
-		for (const ticket of ["", ".", "abc", `${valid}.extra`, "!!!.???", `${valid.split(".")[0]}`]) {
-			expect(await verifyTunnel(secret, ticket, now)).toBeUndefined();
+		const tickets = createTunnelTickets(await open(), () => now);
+		const valid = await tickets.issue(grant);
+		for (const ticket of ["", ".", "abc", `${valid}.extra`, "!!!.???", `${valid.split(".")[0]}`, `${valid}x`]) {
+			expect(await tickets.verify(ticket, now)).toBeUndefined();
 		}
-		for (const value of [
-			"not an array",
-			[grant.sandboxId, grant.port],
-			[grant.sandboxId, grant.port, grant.expiresAt, "extra"],
-			[42, grant.port, grant.expiresAt],
-			[grant.sandboxId, "22", grant.expiresAt],
-			[grant.sandboxId, 0, grant.expiresAt],
-			[grant.sandboxId, 65_536, grant.expiresAt],
-			[grant.sandboxId, 22.5, grant.expiresAt],
-			[grant.sandboxId, grant.port, String(grant.expiresAt)],
-		]) {
-			expect(await verifyTunnel(secret, await signed(value), now)).toBeUndefined();
-		}
-		const notJson = base64url(encoder.encode("{nope"));
-		expect(await verifyTunnel(secret, `${notJson}.${await hmac(secret, `kantel-tunnel/v1.${notJson}`)}`, now)).toBe(
-			undefined,
-		);
 	});
+
+	it("are swept an hour after they expire", async () => {
+		const store = await open();
+		const tickets = createTunnelTickets(store, () => now);
+		const ticket = await tickets.issue(grant);
+		const id = ticket.split(".")[0] ?? "";
+		await tickets.sweep(grant.expiresAt + 59 * 60_000);
+		expect(await store.getTicket(id)).toBeDefined();
+		await tickets.sweep(grant.expiresAt + 61 * 60_000);
+		expect(await store.getTicket(id)).toBeUndefined();
+	});
+}
+
+describe("tunnel tickets in memory", () => {
+	behaves(async () => createMemoryRelayStore());
 });
+
+for (const kind of testDatabaseKinds()) {
+	describe(`tunnel tickets on ${kind.name}`, {
+		...(kind.testTimeoutMs === undefined ? {} : { timeout: kind.testTimeoutMs }),
+	}, () => {
+		behaves(async () => {
+			const database = await kind.open();
+			cleanups.push(() => database.close());
+			await migrateRelay(database.driver);
+			await migrateRelay(database.driver);
+			return createSqlRelayStore(database.driver);
+		});
+	});
+}

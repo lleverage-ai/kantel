@@ -13,6 +13,7 @@
 // and beside it: they are left as they are, never read, written or dropped.
 import { createSqlAuditStore, migrateAudit } from "@kantel/audit/sql";
 import { createSqlComputeStore, migrateComputeStore } from "@kantel/compute/sql";
+import { createSqlRelayStore, migrateRelay } from "@kantel/hosts/relay-store";
 import { createSqlHostStore, migrateHosts } from "@kantel/hosts/store";
 import { createSqlIdentity, createSqlOtpStores, migrateIdentity } from "@kantel/identity/sql";
 import { postgresPoolDriver } from "@kantel/sql/postgres";
@@ -71,7 +72,10 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		await migrateIdentity(driver);
 		await migrateComputeStore(driver);
 		const computeStore = createSqlComputeStore(driver);
-		if (config.computeHosts !== undefined) await migrateHosts(driver);
+		if (config.computeHosts !== undefined) {
+			await migrateHosts(driver);
+			await migrateRelay(driver);
+		}
 		const computeHosts =
 			config.computeHosts === undefined
 				? undefined
@@ -88,13 +92,13 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			audit,
 			otp: createSqlOtpStores(driver),
 			computeStore,
-			...(computeHosts === undefined ? {} : { computeHosts }),
+			...(computeHosts === undefined ? {} : { computeHosts, relayStore: createSqlRelayStore(driver) }),
 			bindings: {
 				identity: "postgres",
 				audit: "postgres",
 				signIn: "postgres",
 				computeStore: "postgres",
-				...(computeHosts === undefined ? {} : { computeHosts: "postgres" }),
+				...(computeHosts === undefined ? {} : { computeHosts: "postgres", computeRelay: "postgres" }),
 			},
 			close,
 		};

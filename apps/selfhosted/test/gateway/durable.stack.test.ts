@@ -13,7 +13,7 @@ import { kantelSessionProvider } from "@kantel/identity/otp";
 import pg from "pg";
 import { afterAll, describe, expect, test } from "vitest";
 import { type Bootstrap, bootstrap, type GatewayComponents } from "../../src/gateway/components.ts";
-import { gatewayCompute } from "../../src/gateway/compute.ts";
+import { gatewayCompute, gatewayRelay } from "../../src/gateway/compute.ts";
 import { createDurableGatewayComponents, type DurableConfig, withSearchPath } from "../../src/gateway/durable.ts";
 import { createGateway } from "../../src/gateway/gateway.ts";
 import { listen } from "../../src/gateway/node-http.ts";
@@ -174,14 +174,38 @@ describe.skipIf(databaseUrl === "")("the gateway on Postgres", () => {
 		expect((await sql(`SELECT id FROM ${schema}.vault_items`)).rows).toEqual([{ id: "vi_older" }]);
 	});
 
-	test("the registry of hosts goes in Postgres when sandboxes run on hosts", { timeout: 60_000 }, async () => {
-		await withComponents(
-			`${config.schema}_hosts`,
+	test("the registry of hosts and the relay go in Postgres when sandboxes run on hosts, and outlast a restart", {
+		timeout: 60_000,
+	}, async () => {
+		const computeHosts = { publicUrl: "http://127.0.0.1:58090", portsDomain: "kantel-ports.test" };
+		const schema = `${config.schema}_hosts`;
+		const issued = await withComponents(
+			schema,
 			async (components) => {
 				expect(components.bindings.computeHosts).toBe("postgres");
-				expect(components.computeHosts).toBeDefined();
+				expect(components.bindings.computeRelay).toBe("postgres");
+				if (components.computeHosts === undefined || components.relayStore === undefined) throw new Error("no hosts");
+				const relay = gatewayRelay(computeHosts, components.computeHosts, components.relayStore);
+				const ticket = await relay.tickets.issue({ sandboxId: "sbx_1", port: 22, expiresAt: Date.now() + 60_000 });
+				const port = await relay.ports?.expose("sbx_1", 3000, { public: false, subdomain: "brave-otter-ab12cd" });
+				return { ticket, url: port?.url ?? "" };
 			},
-			{ computeHosts: { publicUrl: "http://127.0.0.1:58090" } },
+			{ computeHosts },
+		);
+		// Started again over the same schema, the gateway still honours the URLs it gave out.
+		await withComponents(
+			schema,
+			async (components) => {
+				if (components.computeHosts === undefined || components.relayStore === undefined) throw new Error("no hosts");
+				const relay = gatewayRelay(computeHosts, components.computeHosts, components.relayStore);
+				relay.bind(async () => true);
+				expect((await relay.tickets.verify(issued.ticket, Date.now()))?.sandboxId).toBe("sbx_1");
+				expect((await relay.ports?.fetch(new Request(issued.url)))?.status).toBe(303);
+				const bare = new URL(issued.url);
+				bare.search = "";
+				expect((await relay.ports?.fetch(new Request(bare)))?.status).toBe(401);
+			},
+			{ computeHosts },
 		);
 	});
 

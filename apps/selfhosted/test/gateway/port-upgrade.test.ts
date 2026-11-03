@@ -5,19 +5,17 @@ import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { PortSink } from "@kantel/hosts/hub";
-import { createPortRouter, PORT_COOKIE } from "@kantel/hosts/ports";
+import { PORT_COOKIE } from "@kantel/hosts/ports";
+import { createMemoryRelayStore } from "@kantel/hosts/relay-store";
 import type { HostsService } from "@kantel/hosts/service";
-import { signTunnel } from "@kantel/hosts/tunnel";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
-import { type GatewayHostsBackend, withHostUpgrades } from "../../src/gateway/compute.ts";
+import { gatewayRelay, withHostUpgrades } from "../../src/gateway/compute.ts";
 
 const servers: Server[] = [];
 afterEach(async () => {
 	for (const server of servers.splice(0)) await new Promise((resolve) => server.close(resolve));
 });
-
-const secret = crypto.getRandomValues(new Uint8Array(32));
 
 /** A gateway whose sandbox port is a WebSocket server that says "hi" and records the handshake it was sent. */
 async function gateway() {
@@ -39,16 +37,22 @@ async function gateway() {
 		},
 		close() {},
 	});
-	const ports = createPortRouter({ domain: "kantel-ports.test", scheme: "http", openPort });
 	const service = { authenticate: async () => undefined, sandboxes: { openPort } } as unknown as HostsService;
-	const hosts = { service, config: {}, tunnelSecret: secret, ports } as unknown as GatewayHostsBackend;
+	const hosts = gatewayRelay(
+		{ publicUrl: "http://gateway.test", portsDomain: "kantel-ports.test" },
+		service,
+		createMemoryRelayStore(),
+	);
+	hosts.bind(async () => true);
+	const ports = hosts.ports;
+	if (ports === undefined) throw new Error("no ports");
 	const upgrades = withHostUpgrades(hosts, undefined);
 	const server = createServer((_, response) => response.writeHead(404).end());
 	server.on("upgrade", (incoming, socket, head) => upgrades?.(incoming, socket, head));
 	servers.push(server);
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 	const { port } = server.address() as AddressInfo;
-	return { address: `ws://127.0.0.1:${port}`, ports, handshakes };
+	return { address: `ws://127.0.0.1:${port}`, ports, handshakes, hosts };
 }
 
 function connect(url: string, headers: Record<string, string>): Promise<string> {
@@ -64,15 +68,15 @@ function connect(url: string, headers: Record<string, string>): Promise<string> 
 
 describe("upgrades on an exposed port's name", () => {
 	it("are refused without the token, and passed through with it", async () => {
-		const { address, ports, handshakes } = await gateway();
-		const { url } = ports.expose("sbx_1", 5173, { public: false, subdomain: "brave-otter-ab12cd" });
+		const { address, ports, handshakes, hosts } = await gateway();
+		const { url } = await ports.expose("sbx_1", 5173, { public: false, subdomain: "brave-otter-ab12cd" });
 		const token = new URL(url).searchParams.get("_token") ?? "";
 		const host = "5173-brave-otter-ab12cd.kantel-ports.test";
 
 		await expect(connect(`${address}/hmr`, { host })).rejects.toThrow(/401/);
 		await expect(connect(`${address}/hmr`, { host, cookie: `${PORT_COOKIE}=wrong` })).rejects.toThrow(/401/);
 		// On a port's name, a tunnel's path is the sandbox's, behind its token, not a tunnel.
-		const ticket = await signTunnel(secret, { sandboxId: "sbx_1", port: 22, expiresAt: Date.now() + 60_000 });
+		const ticket = await hosts.tickets.issue({ sandboxId: "sbx_1", port: 22, expiresAt: Date.now() + 60_000 });
 		await expect(connect(`${address}/v1/hosts/tunnel/${ticket}`, { host })).rejects.toThrow(/401/);
 		await expect(connect(`${address}/hmr`, { host: "5174-brave-otter-ab12cd.kantel-ports.test" })).rejects.toThrow(
 			/404/,

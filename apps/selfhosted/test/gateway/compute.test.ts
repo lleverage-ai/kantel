@@ -2,8 +2,9 @@
 // through the SDK, makes a scoped key that works, and the gateway's own routes and keys are as they were.
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { type CallContext, EMAIL_OTP_ISSUER, type Role } from "@kantel/contracts";
+import { createMemoryRelayStore } from "@kantel/hosts/relay-store";
 import { createMemoryHostStore } from "@kantel/hosts/store";
-import { signTunnel } from "@kantel/hosts/tunnel";
+import { createTunnelTickets } from "@kantel/hosts/tunnel";
 import { createAuthenticator } from "@kantel/identity/authenticator";
 import { hashSessionToken, kantelSessionProvider } from "@kantel/identity/otp";
 import { afterEach, describe, expect, it } from "vitest";
@@ -13,6 +14,7 @@ import {
 	DEFAULT_HOST_IMAGES,
 	gatewayCompute,
 	gatewayHosts,
+	gatewayRelay,
 	hostImages,
 } from "../../src/gateway/compute.ts";
 import { createGateway } from "../../src/gateway/gateway.ts";
@@ -195,9 +197,10 @@ describe("the compute plane on the gateway", () => {
 		const config = { publicUrl: "https://kantel.example.com" };
 		const service = gatewayHosts(config, createMemoryHostStore(), () => undefined);
 		cleanups.push(async () => service.close());
+		const relay = createMemoryRelayStore();
 		const compute = await gatewayCompute({
 			authenticator,
-			hosts: { service, config, tunnelSecret: new Uint8Array(32) },
+			hosts: gatewayRelay(config, service, relay),
 		});
 		cleanups.push(() => compute.close());
 		const gateway = createGateway({
@@ -234,10 +237,16 @@ describe("the compute plane on the gateway", () => {
 		const images = await gateway.fetch(new Request("http://gateway.test/v1/hosts/images/manifest.json"));
 		expect(images.status).toBe(404);
 
-		// A desktop's page answers only a live desktop ticket signed with the gateway's secret, with no sign-in.
-		const secret = new Uint8Array(32);
-		const ticket = (port: number, desktop?: "control" | "view", expiresAt = Date.now() + 60_000) =>
-			signTunnel(secret, { sandboxId: "sbx_1", port, expiresAt, ...(desktop === undefined ? {} : { desktop }) });
+		// A desktop's page answers only a live desktop ticket the relay issued, with no sign-in.
+		const tickets = createTunnelTickets(relay);
+		const ticket = (port: number, desktop?: "control" | "view", expiresAt = Date.now() + 60_000, grantee?: string) =>
+			tickets.issue({
+				sandboxId: "sbx_1",
+				port,
+				expiresAt,
+				...(desktop === undefined ? {} : { desktop }),
+				...(grantee === undefined ? {} : { grantee }),
+			});
 		const view = (path: string) => gateway.fetch(new Request(`http://gateway.test/v1/hosts/desktop/${path}`));
 		const bare = await view(await ticket(6080, "view"));
 		expect(bare.status).toBe(308);
@@ -246,13 +255,16 @@ describe("the compute plane on the gateway", () => {
 		expect((await view(`${await ticket(6080)}/`)).status).toBe(404);
 		expect((await view(`${await ticket(22, "control")}/`)).status).toBe(404);
 		expect((await view(`${await ticket(6080, "control", Date.now() - 1)}/`)).status).toBe(404);
-		const forged = await signTunnel(new Uint8Array(32).fill(1), {
+		const elsewhere = await createTunnelTickets(createMemoryRelayStore()).issue({
 			sandboxId: "sbx_1",
 			port: 6080,
 			expiresAt: Date.now() + 60_000,
 			desktop: "control",
 		});
-		expect((await view(`${forged}/`)).status).toBe(404);
+		expect((await view(`${elsewhere}/`)).status).toBe(404);
+		// Given to a key since revoked: no page.
+		const gone = JSON.stringify({ kind: "key", keyId: "key_gone" });
+		expect((await view(`${await ticket(6080, "control", undefined, gone)}/`)).status).toBe(404);
 		// noVNC's page is gone with its route.
 		expect(
 			(await gateway.fetch(new Request(`http://gateway.test/v1/hosts/view/${await ticket(5901)}`))).status,

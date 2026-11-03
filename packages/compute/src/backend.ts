@@ -205,21 +205,28 @@ export interface SandboxBackend {
 	listSnapshotFiles(ref: string, path: string): Promise<BackendFileEntry[]>;
 	readSnapshotFile(ref: string, path: string): Promise<Uint8Array>;
 	deleteSnapshot(ref: string): Promise<void>;
-	/** Gives a port its URL through the host's tunnel. */
+	/**
+	 * Gives a port its URL through the host's tunnel. Unless public, the URL carries a token, shown only in this answer.
+	 * `grantee` (in this and the `open*` calls) names who asked, as `encodeGrantee` writes it, so a relay can end the
+	 * access once theirs ends (`ComputeService.stillAllowed`).
+	 */
 	exposePort(
 		sandboxId: string,
 		port: number,
-		options: { readonly public: boolean; readonly subdomain: string },
+		options: { readonly public: boolean; readonly subdomain: string; readonly grantee?: string },
 	): Promise<{ readonly url: string }>;
 	hidePort(sandboxId: string, port: number): Promise<void>;
-	openSsh(sandboxId: string, options: { readonly publicKey?: string; readonly ttlMinutes: number }): Promise<SshGrant>;
+	openSsh(
+		sandboxId: string,
+		options: { readonly publicKey?: string; readonly ttlMinutes: number; readonly grantee?: string },
+	): Promise<SshGrant>;
 	openDesktop(
 		sandboxId: string,
-		options: { readonly viewOnly: boolean; readonly ttlMinutes: number },
+		options: { readonly viewOnly: boolean; readonly ttlMinutes: number; readonly grantee?: string },
 	): Promise<{ readonly url: string; readonly embedUrl: string }>;
 	openBrowser(
 		sandboxId: string,
-		options: { readonly viewOnly: boolean; readonly ttlMinutes: number },
+		options: { readonly viewOnly: boolean; readonly ttlMinutes: number; readonly grantee?: string },
 	): Promise<{ readonly url: string; readonly cdpUrl: string }>;
 	/** A CPU and memory reading of a running sandbox. */
 	usage(sandboxId: string): Promise<UsageSample>;

@@ -36,14 +36,13 @@
 // It runs on node:http, so it needs nothing Bun-specific; the image runs it on Bun.
 // First: HARBOUR_* settings from before the rename still count.
 import "@kantel/contracts/legacy-env";
-import { randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAuthenticator } from "@kantel/identity/authenticator";
 import { kantelSessionProvider } from "@kantel/identity/otp";
 import { type Bootstrap, bootstrap, createGatewayComponents } from "./components.ts";
-import { computeConfig, gatewayCompute, portRouterFor, withHostUpgrades } from "./compute.ts";
+import { computeConfig, gatewayCompute, gatewayRelay, withHostUpgrades } from "./compute.ts";
 import { createDurableGatewayComponents, type DurableConfig } from "./durable.ts";
 import { createGateway } from "./gateway.ts";
 import { createMailer, describeMail, mailConfig, plausibleAddress } from "./mail.ts";
@@ -138,23 +137,16 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		identity: components.identity,
 		providers: [kantelSessionProvider({ sessions: components.otp.sessions })],
 	});
-	// With hosts: the registry of hosts, and a fresh secret for this process's tunnel URLs.
+	// With hosts: the registry of hosts, and the relay's tickets and exposed ports, kept with the gateway's records.
 	const hosts =
-		components.computeHosts === undefined || computeHosts === undefined
+		components.computeHosts === undefined || computeHosts === undefined || components.relayStore === undefined
 			? undefined
-			: (() => {
-					const service = components.computeHosts;
-					const ports = portRouterFor(computeHosts, service);
-					return {
-						service,
-						config: computeHosts,
-						tunnelSecret: new Uint8Array(randomBytes(32)),
-						...(ports === undefined ? {} : { ports }),
-					};
-				})();
+			: gatewayRelay(computeHosts, components.computeHosts, components.relayStore);
+	const sessions = components.otp.sessions;
 	const compute = await gatewayCompute({
 		authenticator,
 		identity: components.identity,
+		sessionLive: async (session) => (await sessions.find(session, Date.now())) !== undefined,
 		...(previous?.computeKey === undefined ? {} : { superAdminKey: previous.computeKey }),
 		...(cfg.publicOrigin === undefined ? {} : { publicUrl: cfg.publicOrigin }),
 		...(hosts === undefined ? {} : { hosts }),

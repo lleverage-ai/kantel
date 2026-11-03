@@ -24,6 +24,7 @@ import {
 	type ProjectAccess,
 	type ProjectId,
 } from "@kantel/contracts";
+import { createMemoryRelayStore, type RelayStore } from "@kantel/hosts/relay-store";
 import type { HostsService } from "@kantel/hosts/service";
 import { createMemoryHostStore } from "@kantel/hosts/store";
 import { createMemoryIdentity } from "@kantel/identity/memory";
@@ -50,6 +51,11 @@ export interface GatewayComponents {
 	 * gateways over one database share them. Absent in memory, where the API makes its own.
 	 */
 	readonly computeStore?: ComputeStore;
+	/**
+	 * Tunnel tickets and exposed ports (`@kantel/hosts/relay-store`), with `computeHosts`: Postgres with a database, so
+	 * desktop, browser, SSH and port URLs outlast a restart and work on every gateway over the database.
+	 */
+	readonly relayStore?: RelayStore;
 	/** Which implementation backs each contract, served at `/v1/deployment` and recorded beside conformance runs. */
 	readonly bindings: { readonly [contract: string]: string };
 	close(): Promise<void>;
@@ -110,12 +116,12 @@ export function createGatewayComponents(
 		identity,
 		audit,
 		otp: createMemoryOtpStores(),
-		...(computeHosts === undefined ? {} : { computeHosts }),
+		...(computeHosts === undefined ? {} : { computeHosts, relayStore: createMemoryRelayStore() }),
 		bindings: {
 			identity: "memory",
 			audit: "memory",
 			signIn: "memory",
-			...(computeHosts === undefined ? {} : { computeHosts: "memory" }),
+			...(computeHosts === undefined ? {} : { computeHosts: "memory", computeRelay: "memory" }),
 		},
 		close: async () => {
 			computeHosts?.close();
