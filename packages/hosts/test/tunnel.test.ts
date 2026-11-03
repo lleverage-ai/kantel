@@ -54,6 +54,28 @@ describe("tunnel tickets", () => {
 		expect(await verifyTunnel(secret, `${ticket.split(".")[0]}.`, now)).toBeUndefined();
 	});
 
+	it("sign a desktop ticket's mode with it, so a view-only ticket can't be made into one that drives", async () => {
+		const view = { ...grant, port: 6080, desktop: "view" as const };
+		const ticket = await signTunnel(secret, view);
+		expect(await verifyTunnel(secret, ticket, now)).toEqual(view);
+		const control = { ...view, desktop: "control" as const };
+		expect(await verifyTunnel(secret, await signTunnel(secret, control), now)).toEqual(control);
+		const signature = ticket.split(".")[1];
+		for (const changed of [
+			[view.sandboxId, view.port, view.expiresAt, "control"],
+			// Without its mode: a tunnel's ticket, for raw TCP to the desktop's port.
+			[view.sandboxId, view.port, view.expiresAt],
+		]) {
+			expect(await verifyTunnel(secret, `${payloadOf(changed)}.${signature}`, now)).toBeUndefined();
+		}
+		// A mode that isn't one is refused even under a good signature.
+		for (const mode of ["admin", true, 1, null]) {
+			expect(
+				await verifyTunnel(secret, await signed([view.sandboxId, view.port, view.expiresAt, mode]), now),
+			).toBeUndefined();
+		}
+	});
+
 	it("refuse a ticket signed without the tunnel's domain, as one signed for something else would be", async () => {
 		const payload = payloadOf([grant.sandboxId, grant.port, grant.expiresAt]);
 		expect(await verifyTunnel(secret, `${payload}.${await hmac(secret, payload)}`, now)).toBeUndefined();

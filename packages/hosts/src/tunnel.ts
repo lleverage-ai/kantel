@@ -6,6 +6,10 @@
  *
  * Expiry bounds when a connection may start, not how long it lasts: a desktop, CDP session or SSH connection opened in
  * time stays open, as boat.dev's do. A ticket can't be good for more than `MAX_TUNNEL_MINUTES`, whoever signed it.
+ *
+ * A desktop ticket (`desktop.ts`) also carries its mode, drive or watch, under the same signature, so nobody can turn a
+ * view-only ticket into one that drives. It opens only the desktop's route, and a ticket without a mode only the
+ * tunnels, so a view-only ticket can't reach the desktop's port as raw TCP either.
  */
 
 export const HOSTS_TUNNEL_PATH = "/v1/hosts/tunnel";
@@ -16,11 +20,16 @@ export const MAX_TUNNEL_MINUTES = 60;
 /** What the HMAC covers besides the payload, so the gateway's secret signs nothing else that could pass for a ticket. */
 const DOMAIN = "kantel-tunnel/v1";
 
+/** What a desktop ticket's holder may do: drive the desktop (keyboard, mouse, clipboard), or only watch it. */
+export type DesktopMode = "control" | "view";
+
 export interface TunnelGrant {
 	readonly sandboxId: string;
 	readonly port: number;
 	/** Epoch milliseconds. */
 	readonly expiresAt: number;
+	/** Set on a desktop ticket only. */
+	readonly desktop?: DesktopMode;
 }
 
 const encoder = new TextEncoder();
@@ -43,7 +52,9 @@ async function hmac(secret: Uint8Array, payload: string): Promise<Uint8Array> {
 
 /** A ticket for `grant`, signed with `secret` (32 random bytes the gateway holds). */
 export async function signTunnel(secret: Uint8Array, grant: TunnelGrant): Promise<string> {
-	const payload = base64url(encoder.encode(JSON.stringify([grant.sandboxId, grant.port, grant.expiresAt])));
+	const fields: unknown[] = [grant.sandboxId, grant.port, grant.expiresAt];
+	if (grant.desktop !== undefined) fields.push(grant.desktop);
+	const payload = base64url(encoder.encode(JSON.stringify(fields)));
 	return `${payload}.${base64url(await hmac(secret, `${DOMAIN}.${payload}`))}`;
 }
 
@@ -62,12 +73,14 @@ export async function verifyTunnel(secret: Uint8Array, ticket: string, now: numb
 		for (let i = 0; i < given.length; i++) diff |= (given[i] ?? 0) ^ (expected[i] ?? 0);
 		if (diff !== 0) return undefined;
 		const parsed: unknown = JSON.parse(new TextDecoder().decode(fromBase64url(payload)));
-		if (!Array.isArray(parsed) || parsed.length !== 3) return undefined;
-		const [sandboxId, port, expiresAt] = parsed as [unknown, unknown, unknown];
+		if (!Array.isArray(parsed) || (parsed.length !== 3 && parsed.length !== 4)) return undefined;
+		const [sandboxId, port, expiresAt, desktop] = parsed as [unknown, unknown, unknown, unknown];
 		if (typeof sandboxId !== "string" || typeof port !== "number" || typeof expiresAt !== "number") return undefined;
 		if (!Number.isInteger(port) || port < 1 || port > 65_535) return undefined;
 		if (expiresAt <= now || expiresAt - now > MAX_TUNNEL_MINUTES * 60_000) return undefined;
-		return { sandboxId, port, expiresAt };
+		if (parsed.length === 3) return { sandboxId, port, expiresAt };
+		if (desktop !== "control" && desktop !== "view") return undefined;
+		return { sandboxId, port, expiresAt, desktop };
 	} catch {
 		return undefined;
 	}

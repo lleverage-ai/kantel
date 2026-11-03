@@ -458,14 +458,15 @@ function SandboxRow({
 			onNotice({ level: "error", text: messageOf(caught, `Kantel couldn't ${what} ${sandbox.name}. Try again.`) });
 		}
 	};
-	const openAccess = async (which: "ssh" | "desktop" | "browser") => {
+	const openAccess = async (which: "ssh" | "desktop" | "watch" | "browser") => {
 		try {
 			const access = await source.access(sandbox.id);
 			if (which === "ssh") {
 				await navigator.clipboard?.writeText(access.ssh);
 				onNotice({ level: "info", text: `Copied: ${access.ssh}` });
 			} else {
-				window.open(which === "desktop" ? access.desktopUrl : access.browserUrl, "_blank", "noopener");
+				const url = { desktop: access.desktopUrl, watch: access.desktopViewUrl, browser: access.browserUrl }[which];
+				window.open(url, "_blank", "noopener");
 			}
 		} catch (caught) {
 			onNotice({ level: "error", text: messageOf(caught, "Kantel couldn't reach the sandbox. Try again.") });
@@ -488,6 +489,14 @@ function SandboxRow({
 			icon: <AppWindowIcon />,
 			disabled: !can.connect || sandbox.kind === "isolate",
 			onSelect: () => void openAccess("desktop"),
+		},
+		{
+			kind: "item",
+			id: "watch",
+			label: "Watch desktop",
+			icon: <AppWindowIcon />,
+			disabled: !can.connect || sandbox.kind === "isolate",
+			onSelect: () => void openAccess("watch"),
 		},
 		{
 			kind: "item",

@@ -1085,6 +1085,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					return {
 						ssh: `ssh ${box.id}@ssh.kantel.example.com`,
 						desktopUrl: `https://${box.hostname}/desktop?token=${token}`,
+						desktopViewUrl: `https://${box.hostname}/desktop?token=${token}#shared`,
 						browserUrl: `https://${box.hostname}/browser?token=${token}`,
 					};
 				}),
