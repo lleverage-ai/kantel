@@ -269,6 +269,7 @@ export function SandboxesPage({
 				open={newOpen}
 				account={account}
 				hosting={hosting}
+				sizeFigures={source.sizeFigures ?? true}
 				{...(snapshots === undefined ? {} : { savedSnapshots: () => snapshots.saved(account.id) })}
 				onClose={() => setNewOpen(false)}
 				onCreate={(input) => void create(input)}
@@ -563,7 +564,7 @@ function SandboxRow({
 			<td className={td}>
 				<span className="flex items-center gap-2">
 					<Badge tone={sandbox.kind === "microvm" ? "accent" : "neutral"}>{SANDBOX_KIND_LABELS[sandbox.kind]}</Badge>
-					<span className="text-xs text-muted">{sizeText(sandbox.size)}</span>
+					<span className="text-xs text-muted">{sizeText(sandbox.resources ?? sandbox.size)}</span>
 				</span>
 			</td>
 			<td className={td}>
@@ -612,6 +613,7 @@ function NewSandboxDialog({
 	open,
 	account,
 	hosting,
+	sizeFigures,
 	savedSnapshots,
 	onClose,
 	onCreate,
@@ -619,6 +621,7 @@ function NewSandboxDialog({
 	open: boolean;
 	account: ComputeAccount;
 	hosting: HostingMode;
+	sizeFigures: boolean;
 	savedSnapshots?: () => Promise<readonly SavedSnapshot[]>;
 	onClose: () => void;
 	onCreate: (input: CreateSandboxInput) => void;
@@ -699,11 +702,13 @@ function NewSandboxDialog({
 						onChange={(event) => setSize(event.currentTarget.value as SandboxSize)}
 						options={SANDBOX_SIZES.map((spec) => ({
 							value: spec.size,
-							label: `${spec.label}: ${spec.vcpus} vCPU, ${spec.memoryGb} GB, ${spec.diskGb} GB disk${
-								hosting === "hosted" && spec.centsPerHour !== undefined
-									? `, ${costText(spec.centsPerHour)} an hour`
-									: ""
-							}`,
+							label: sizeFigures
+								? `${spec.label}: ${spec.vcpus} vCPU, ${spec.memoryGb} GB, ${spec.diskGb} GB disk${
+										hosting === "hosted" && spec.centsPerHour !== undefined
+											? `, ${costText(spec.centsPerHour)} an hour`
+											: ""
+									}`
+								: spec.label,
 						}))}
 					/>
 				) : null}

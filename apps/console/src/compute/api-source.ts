@@ -238,6 +238,16 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 		kind: sandbox.type,
 		// Isolates have no size in the API; the smallest stands in.
 		size: sandbox.size === undefined ? "small" : UI_SIZES[sandbox.size],
+		// What the host gave it, which the backend decides: the page shows this rather than the sample's figures.
+		...(sandbox.resources === undefined
+			? {}
+			: {
+					resources: {
+						vcpus: sandbox.resources.vcpus,
+						memoryGb: Math.round(sandbox.resources.memoryMb / 1024),
+						diskGb: sandbox.resources.diskGb,
+					},
+				}),
 		state: UI_STATES[sandbox.state],
 		createdAt: sandbox.createdAt,
 		createdBy: actorName(sandbox.createdBy),
@@ -277,6 +287,8 @@ function sandboxesSource(context: Context): SandboxesSource {
 	const { api } = context;
 	const view = (sandbox: Sandbox) => sandboxOf(sandbox, context);
 	return {
+		// The backend decides what each size is, and the API doesn't list them.
+		sizeFigures: false,
 		list: async (accountId) =>
 			(await allPages((cursor) => api.listSandboxes({ account: accountId, all: true, ...after(cursor) }))).map(view),
 		create: async (input) =>

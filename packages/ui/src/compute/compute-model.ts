@@ -124,6 +124,8 @@ export interface Sandbox {
 	readonly accountId: string;
 	readonly kind: SandboxKind;
 	readonly size: SandboxSize;
+	/** What its host gave it, where that's known: the page shows this rather than its size's usual figures. */
+	readonly resources?: { readonly vcpus: number; readonly memoryGb: number; readonly diskGb: number };
 	readonly state: SandboxState;
 	readonly createdAt: number;
 	/** Who made it. */
@@ -178,6 +180,11 @@ export interface SandboxAccess {
 }
 
 export interface SandboxesSource {
+	/**
+	 * Whether New sandbox can say what each size is. A deployment's hosts decide that, and the API has no list of them,
+	 * so a live source names the sizes without figures. True when left out.
+	 */
+	readonly sizeFigures?: boolean;
 	list(accountId: string): Promise<readonly Sandbox[]>;
 	create(input: CreateSandboxInput): Promise<Sandbox>;
 	stop(id: string): Promise<Sandbox>;
@@ -659,9 +666,9 @@ export const SANDBOX_KIND_LABELS: Readonly<Record<SandboxKind, string>> = {
 export const sizeSpec = (size: SandboxSize): SandboxSizeSpec =>
 	SANDBOX_SIZES.find((spec) => spec.size === size) ?? (SANDBOX_SIZES[1] as SandboxSizeSpec);
 
-/** "4 vCPU, 8 GB": a size in a line. */
-export const sizeText = (size: SandboxSize): string => {
-	const spec = sizeSpec(size);
+/** "4 vCPU, 8 GB": a size, or what a sandbox was given, in a line. */
+export const sizeText = (size: SandboxSize | { readonly vcpus: number; readonly memoryGb: number }): string => {
+	const spec = typeof size === "string" ? sizeSpec(size) : size;
 	return `${spec.vcpus} vCPU, ${spec.memoryGb} GB`;
 };
 

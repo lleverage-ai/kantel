@@ -149,6 +149,18 @@ describe("sandboxes", () => {
 		await api.service.idle();
 		expect((await source.sandboxes.list(accountId)).map((sandbox) => sandbox.id)).toEqual([made.id]);
 	});
+
+	it("shows what the host gave a microVM, and names sizes without figures", async () => {
+		const { api, fetchApi } = setup();
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		expect(source.sandboxes.sizeFigures).toBe(false);
+		const made = await source.sandboxes.create({ accountId, kind: "microvm", size: "medium" });
+		await api.service.idle();
+		const [listed] = await source.sandboxes.list(accountId);
+		// The stub backend's "default" is 2 vCPU and 4 GB, not the sample catalogue's 4 and 8.
+		expect(listed).toMatchObject({ id: made.id, size: "medium", resources: { vcpus: 2, memoryGb: 4, diskGb: 20 } });
+	});
 });
 
 describe("snapshots", () => {
