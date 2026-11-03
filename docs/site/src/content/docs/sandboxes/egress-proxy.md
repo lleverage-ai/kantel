@@ -116,7 +116,7 @@ X-Kantel-Proxy-Rule: deny DELETE api.github.com /repos/**
 
 To match a method or a path in an HTTPS request, the proxy has to read it. It does that only for the hosts that need it: a host with a grant that names methods or paths, and a host a protected variable is bound to. For those, it ends TLS with a certificate from a certificate authority of the sandbox's own, which can sign only for those hosts and whose certificate is in the sandbox's trust store, and opens its own verified TLS connection to the real host.
 
-HTTPS to every other host stays a tunnel the proxy passes on without reading. A grant with only a host decides on the tunnel as a whole, as a rule does. A client that pins certificates refuses the proxy's certificate for an intercepted host, so give method and path grants only to hosts where that is acceptable.
+HTTPS to every other host stays a tunnel the proxy passes on without reading. A grant with only a host decides on the tunnel as a whole, as a rule does. The proxy reads only port 443, so a tunnel to another port of a host that a method or path deny grant covers is refused: the proxy couldn't check what goes through it. The same applies to a deny grant with methods or paths on `*`, which no certificate can be made for. Every request on a connection the proxy reads is checked against the sandbox's grants at the time it is sent, so a grant changed while a connection is open applies to that connection's next request. A client that pins certificates refuses the proxy's certificate for an intercepted host, so give method and path grants only to hosts where that is acceptable.
 
 ## What a refusal looks like
 
