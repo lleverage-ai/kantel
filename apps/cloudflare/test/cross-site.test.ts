@@ -37,7 +37,7 @@ type CallOptions = {
 	headers?: Record<string, string>;
 };
 
-async function start() {
+async function start(vars: Record<string, string> = {}) {
 	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
 	const sent: Sent[] = [];
 	const pending: Promise<unknown>[] = [];
@@ -48,6 +48,7 @@ async function start() {
 			KANTEL_ADMIN_EMAIL: ADMIN,
 			KANTEL_PUBLIC_URL: PUBLIC,
 			KANTEL_SIGN_IN_FROM: "sign-in@kantel.test",
+			...vars,
 		}),
 		accessFetch: mock.fetch,
 		storage: { sql: syncSqliteDriver(new DatabaseSync(":memory:")) },
@@ -192,6 +193,30 @@ describe("a browser's write must come from the console's own origin", () => {
 			refused(await call(ACCESS_HOST, method, "/v1/sandboxes/sbx_any", { access: true, origin: PORT_PAGE }));
 		}
 		expect(await sandboxNames()).not.toContain("planted");
+		await close();
+	});
+
+	it("refuses a page's write to Kantel Connect's host routes, and a host's own registration still goes through", async () => {
+		const { call, fromConsole, close } = await start({ KANTEL_CONNECT: "experimental" });
+		const enrolled = await call(ACCESS_HOST, "POST", "/v1/connect/enrolments", {
+			body: {},
+			access: true,
+			...fromConsole(ACCESS_HOST),
+		});
+		expect(enrolled.status).toBe(201);
+		const token = String(enrolled.body.token);
+		// A port's page or another site, with Access's cookie or without: refused before the token is looked at.
+		for (const [origin, site] of [
+			[PORT_PAGE, "same-site"],
+			[ELSEWHERE, "cross-site"],
+		]) {
+			refused(await call(PUBLIC, "POST", "/v1/hosts/register", { body: { token }, access: true, origin, site }));
+			refused(await call(PUBLIC, "POST", "/v1/hosts/register", { body: { token }, origin, site }));
+		}
+		// kantel-host sends neither an Origin nor a cookie: it registers with the token, which is still unused.
+		const registered = await call(PUBLIC, "POST", "/v1/hosts/register", { body: { token } });
+		expect(registered.status).toBe(201);
+		expect(String(registered.body.hostId)).toMatch(/^host_/);
 		await close();
 	});
 

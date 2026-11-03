@@ -95,15 +95,16 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 
 	return {
 		async fetch(incoming) {
+			// The console and its API share an origin, on the Access hostname and the public one alike. A host's own
+			// requests (no `Origin`, no cookie) pass: they authenticate with what they carry.
+			const crossSite = crossSiteRefusal(incoming);
+			if (crossSite !== undefined) return crossSite;
 			// A host has no sign-in: its join token or credential is its own (the stack object takes its WebSocket).
 			const forHosts = await stack.compute.hosts?.fetch(incoming);
 			if (forHosts !== undefined) return forHosts;
 			const url = new URL(incoming.url);
 			const path = url.pathname;
 			const onPublic = publicHost !== undefined && url.host === publicHost;
-			// The console and its API share an origin, on the Access hostname and the public one alike.
-			const crossSite = crossSiteRefusal(incoming);
-			if (crossSite !== undefined) return crossSite;
 			if (SIGN_IN_PATHS.has(path)) {
 				if (email === undefined || !onPublic) return notFound();
 				return signIn(incoming, email);
