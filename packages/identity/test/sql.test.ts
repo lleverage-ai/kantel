@@ -1,6 +1,7 @@
 import {
 	type CallContext,
 	callContextFor,
+	createProjectAccess,
 	externalSubjectOf,
 	type IdentityDirectory,
 	isKantelError,
@@ -9,8 +10,6 @@ import {
 } from "@kantel/contracts";
 import { createAuthenticator } from "@kantel/identity/authenticator";
 import { createSqlIdentity, migrateIdentity } from "@kantel/identity/sql";
-import { createMemoryRuntime } from "@kantel/runtime/memory";
-import { createScriptedModel } from "@kantel/runtime/testing";
 import type { SqlDriver } from "@kantel/sql";
 import { type TestDatabaseKind, testDatabaseKinds } from "@kantel/sql/testing";
 import { ManualClock, RecordingAuditSink } from "@kantel/testing/harness";
@@ -248,62 +247,35 @@ for (const kind of testDatabaseKinds()) {
 			});
 		});
 
-		it("a host key scoped to alpha cannot reach beta's sessions, though its service could", async () => {
+		it("a host key scoped to alpha cannot act in beta, though its service could", async () => {
 			await withDatabase(kind, async (driver) => {
 				const identity = createSqlIdentity({ driver, clock: new ManualClock() });
-				const { organisation, admin, alpha, beta, service } = await tenant(identity);
-				const { models } = createScriptedModel();
-				// A second directory instance on the same database serves the runtime, as another worker would.
-				const memory = createMemoryRuntime({
-					models,
+				const { admin, alpha, beta, service } = await tenant(identity);
+				// A second directory instance on the same database checks access, as another worker would.
+				const access = createProjectAccess({
 					identity: createSqlIdentity({ driver, clock: new ManualClock() }),
+					sessions: { get: () => Promise.reject(new Error("no sessions")) },
 				});
+				// The service holds operator across the whole organisation; its key is still limited to alpha.
+				await identity.grantRole(admin, { principal: { kind: "service", serviceId: service.id }, role: "operator" });
+				const issued = await identity.issueApiKey(admin, {
+					serviceId: service.id,
+					projectIds: [alpha.id],
+					role: "operator",
+				});
+				const caller = await createAuthenticator({ identity }).authenticate(
+					request({ authorization: `Bearer ${issued.secret}` }),
+				);
+				const ctx = callContextFor(caller);
+				expect(await access.allows(ctx, { projectId: alpha.id, needed: "operator" })).toBe(true);
+				expect(await access.allows(ctx, { projectId: beta.id, needed: "viewer" })).toBe(false);
+				let refused: unknown;
 				try {
-					// The service holds operator across the whole organisation; its key is still limited to alpha.
-					await identity.grantRole(admin, { principal: { kind: "service", serviceId: service.id }, role: "operator" });
-					const issued = await identity.issueApiKey(admin, {
-						serviceId: service.id,
-						projectIds: [alpha.id],
-						role: "operator",
-					});
-					const system = { ...systemContext("test"), organisationId: organisation.id };
-					await memory.profiles.put(system, {
-						id: "worker",
-						organisationId: organisation.id,
-						name: "Worker",
-						model: { route: "default" },
-						promptLayers: [],
-						tools: [],
-						skills: [],
-						sandbox: { tiers: ["isolate"] },
-						memoryScopes: [],
-					});
-					const inAlpha = await memory.runtime.create(system, { projectId: alpha.id, agentId: "worker" });
-					const inBeta = await memory.runtime.create(system, { projectId: beta.id, agentId: "worker" });
-
-					const caller = await createAuthenticator({ identity }).authenticate(
-						request({ authorization: `Bearer ${issued.secret}` }),
-					);
-					const ctx = callContextFor(caller);
-
-					expect((await memory.directory.get(callContextFor(caller, { projectId: alpha.id }), inAlpha.id)).id).toBe(
-						inAlpha.id,
-					);
-					let refused: unknown;
-					try {
-						await memory.directory.get(callContextFor(caller, { projectId: beta.id }), inBeta.id);
-					} catch (error) {
-						refused = error;
-					}
-					expect(isKantelError(refused, "forbidden")).toBe(true);
-					const listed = await memory.directory.list(ctx);
-					expect(listed.items.map((session) => session.id)).toEqual([inAlpha.id]);
-					await expect(memory.runtime.create(ctx, { projectId: beta.id, agentId: "worker" })).rejects.toMatchObject({
-						code: "forbidden",
-					});
-				} finally {
-					await memory.close();
+					await access.require(ctx, { projectId: beta.id, needed: "operator", operation: "test.act" });
+				} catch (error) {
+					refused = error;
 				}
+				expect(isKantelError(refused, "forbidden")).toBe(true);
 			});
 		});
 

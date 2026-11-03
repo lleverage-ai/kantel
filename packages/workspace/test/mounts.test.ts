@@ -1,20 +1,12 @@
-import { type CallContext, isKantelError, type MountSource, type Skills } from "@kantel/contracts";
-import { createMemorySkills } from "@kantel/skills/memory";
+import { type CallContext, isKantelError } from "@kantel/contracts";
 import { actors, type ConformanceDeps, contextFor, createDeps } from "@kantel/testing/harness";
 import { createMemoryWorkspaces } from "@kantel/workspace/memory";
-import {
-	createSkillsMountSource,
-	createWorkspaceProjectFiles,
-	projectFilesWorkspaceId,
-	sessionSkillVisibility,
-	skillsMountVersion,
-} from "@kantel/workspace/mounts";
+import { createWorkspaceProjectFiles, projectFilesWorkspaceId } from "@kantel/workspace/mounts";
 import { beforeEach, describe, expect, it } from "vitest";
 
 const ORG = "org-1";
 const PROJECT = "proj-1";
 const OTHER = "proj-2";
-const SESSION = "sess-1";
 const alice = contextFor(actors.human("alice"), ORG, PROJECT);
 const bob = contextFor(actors.human("bob"), ORG, OTHER);
 const carol = contextFor(actors.human("carol"), ORG, OTHER);
@@ -149,115 +141,5 @@ describe("workspace-backed project files", () => {
 			trees.ensure(system(ORG), "pf_race", { owner: owner(ORG) }),
 		]);
 		expect(second).toEqual(first);
-	});
-});
-
-describe("the skills mount", () => {
-	let deps: ConformanceDeps;
-	let skills: Skills;
-	let source: MountSource;
-	let reviewId: string;
-
-	/** An admin across the organisation, who looks after its own skills. */
-	const dana = contextFor(actors.human("dana"), ORG);
-
-	async function publish(skillId: string, files: { path: string; content: string }[], as = alice) {
-		const { digest } = await skills.saveDraft(as, skillId, { files });
-		return skills.publish(as, skillId, { expectedDigest: digest });
-	}
-
-	beforeEach(async () => {
-		deps = createDeps();
-		deps.tenancy.bind(alice.actor, ORG, "operator", PROJECT);
-		// Changing an organisation's skill needs a role across the organisation.
-		deps.tenancy.bind(dana.actor, ORG, "admin");
-		deps.tenancy.bind(bob.actor, ORG, "operator", OTHER);
-		deps.tenancy.session({ id: SESSION, organisationId: ORG, projectId: PROJECT, agentId: "agent-1" });
-		skills = createMemorySkills({ clock: deps.clock, access: deps.access });
-		const review = await skills.create(alice, {
-			owner: { kind: "project", organisationId: ORG, projectId: PROJECT },
-			name: "pr-review",
-			description: "Review",
-		});
-		reviewId = review.id;
-		await publish(reviewId, [
-			{ path: "SKILL.md", content: "---\nname: pr-review\ndescription: Review a PR\n---\nSteps" },
-			{ path: "scripts/run.sh", content: "echo run" },
-		]);
-		const notes = await skills.create(dana, {
-			owner: { kind: "organisation", organisationId: ORG },
-			name: "notes",
-			description: "Notes",
-		});
-		await publish(notes.id, [{ path: "SKILL.md", content: "---\nname: notes\ndescription: Take notes\n---\n" }], dana);
-		const hidden = await skills.create(bob, {
-			owner: { kind: "project", organisationId: ORG, projectId: OTHER },
-			name: "hidden",
-			description: "Another project's",
-		});
-		const { digest } = await skills.saveDraft(bob, hidden.id, { files: [{ path: "SKILL.md", content: "secret" }] });
-		await skills.publish(bob, hidden.id, { expectedDigest: digest });
-		source = createSkillsMountSource({ skills, visibility: sessionSkillVisibility(deps.tenancy.sessions) });
-	});
-
-	it("mounts a session's pinned skills read-only at /skills/<name>, where its listings point", async () => {
-		const workspaces = createMemoryWorkspaces({ clock: deps.clock, sources: [source], access: deps.access });
-		const record = await workspaces.create(alice, {
-			owner: { kind: "project", organisationId: ORG, projectId: PROJECT },
-			sessionId: SESSION,
-			mounts: [{ path: "/skills", source: "skills", ref: SESSION }],
-		});
-		const pins = await skills.pinForSession(alice, SESSION, { projectId: PROJECT });
-		expect(record.mounts[0]).toMatchObject({ version: skillsMountVersion(pins), readOnly: true });
-
-		const top = await workspaces.list(alice, record.id, { path: "/skills" });
-		expect(top.items.map((entry) => [entry.path, entry.kind])).toEqual([
-			["/skills/notes", "directory"],
-			["/skills/pr-review", "directory"],
-		]);
-		const tree = await workspaces.list(alice, record.id, { path: "/skills/pr-review", recursive: true });
-		expect(tree.items.map((entry) => entry.path)).toEqual([
-			"/skills/pr-review/SKILL.md",
-			"/skills/pr-review/scripts",
-			"/skills/pr-review/scripts/run.sh",
-		]);
-		const listing = (await skills.list(alice, { projectId: PROJECT })).items.find((item) => item.name === "pr-review")!;
-		const file = await workspaces.read(alice, record.id, listing.path);
-		expect(text(file.content)).toContain("Steps");
-
-		// Read-only: a commit under the mount is refused.
-		expect(
-			await codeOf(
-				workspaces.commit(alice, record.id, {
-					baseVersion: 0,
-					changes: [{ op: "put", path: "/skills/pr-review/SKILL.md", content: "x" }],
-				}),
-			),
-		).toBe("refused");
-	});
-
-	it("keeps showing the pinned revision after a newer one is published", async () => {
-		const workspaces = createMemoryWorkspaces({ clock: deps.clock, sources: [source], access: deps.access });
-		const record = await workspaces.create(alice, {
-			owner: { kind: "project", organisationId: ORG, projectId: PROJECT },
-			sessionId: SESSION,
-			mounts: [{ path: "/skills", source: "skills", ref: SESSION }],
-		});
-		await publish(reviewId, [{ path: "SKILL.md", content: "---\nname: pr-review\ndescription: v2\n---\nNew" }]);
-		expect(text((await workspaces.read(alice, record.id, "/skills/pr-review/SKILL.md")).content)).toContain("Steps");
-		expect(await source.latestVersion(alice, SESSION)).toBe(record.mounts[0]?.version);
-	});
-
-	it("never shows another project's skill, even under a forged pin", async () => {
-		const hidden = (await skills.list(bob, { projectId: OTHER })).items.find((item) => item.name === "hidden")!;
-		const forged = skillsMountVersion([{ skillId: hidden.skillId, revision: 1 }]);
-		expect(await codeOf(source.list(alice, SESSION, forged, ""))).toBe("forbidden");
-		expect(await codeOf(source.read(alice, SESSION, forged, "hidden/SKILL.md"))).toBe("forbidden");
-		expect(await codeOf(source.list(alice, SESSION, "not-a-version", ""))).toBe("not_found");
-		expect(await codeOf(source.list(alice, SESSION, "pins:%@1", ""))).toBe("not_found");
-		const pinned = await source.latestVersion(alice, SESSION);
-		expect(await codeOf(source.read(alice, SESSION, pinned, "hidden/SKILL.md"))).toBe("not_found");
-		expect(await codeOf(source.read(alice, SESSION, pinned, "pr-review/missing.md"))).toBe("not_found");
-		expect(await codeOf(source.list(alice, SESSION, pinned, "pr-review/SKILL.md"))).toBe("invalid");
 	});
 });

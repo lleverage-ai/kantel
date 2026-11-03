@@ -29,7 +29,6 @@
 		"nodemailer": "10.1.7"
 	},
 	"devDependencies": {
-		"@kantel/runtime": "workspace:*",
 		"@kantel/testing": "workspace:*",
 		"smtp-server": "3.20.2"
 	}
