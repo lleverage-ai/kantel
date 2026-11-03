@@ -1,5 +1,4 @@
 /** What the generated files hold, so the script and the tests make them the same way. */
-import { EgressRefusal } from "./connections-schema.ts";
 import { type JsonSchema, openApiDocument } from "./openapi.ts";
 import { API_VERSION_BASE, routes } from "./routes.ts";
 import { renderSdk } from "./sdk.ts";
@@ -17,8 +16,6 @@ export const openApi = (): JsonSchema =>
 		description:
 			"Kantel's public API for host apps, such as Lleverage, and for Kantel's own console, which uses it like any other client.",
 		basePath: API_VERSION_BASE,
-		// The 403 body a sandbox's own request gets from the egress gate (#331): no route answers with it.
-		extraSchemas: [EgressRefusal],
 	});
 
 /** The v1 SDK's source, before formatting. */
