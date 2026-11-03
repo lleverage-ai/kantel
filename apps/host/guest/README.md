@@ -33,6 +33,11 @@ nothing in the guest listens on the sandbox's network except SSH.
 | 9222 | Chrome's DevTools (CDP) | `kantel-browser.service` | `browser` |
 | 6080 | Selkies: its web client and the WebSocket stream (H.264 on the CPU) | `kantel-stream.service` | `stream` |
 | (socket) | Docker | `docker.service` | `docker` |
+| 3128 | The guest agent's forwarder to the host's egress proxy (Chrome's and dockerd's proxy) | `kantel-guest.service` | |
+
+The host's egress proxy sits on each sandbox's own gateway address, which a fork changes. Shells and `exec` get it
+from `/etc/kantel/proxy.env`; Chrome and dockerd, which read a proxy once at start, use the forwarder on 3128, which
+follows the sandbox's current proxy, so a fork or resume never restarts them (no lost tabs or containers).
 
 Selkies needs no GPU, no UDP and no TURN: it serves one HTTP port, so a relay that carries a TCP stream carries the
 desktop. It has no login of its own; whatever fronts it (the gateway's signed URLs) does access control.

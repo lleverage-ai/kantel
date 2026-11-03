@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -35,6 +36,8 @@ type Server struct {
 
 	mu       sync.Mutex
 	identity *Identity
+	// upstream is the host proxy LocalProxyAddr forwards to (a string, host:port or "").
+	upstream atomic.Value
 }
 
 func (s *Server) Handler() http.Handler {
@@ -140,6 +143,7 @@ func (s *Server) setIdentity(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.identity = &id
 	s.mu.Unlock()
+	s.upstream.Store(proxyUpstream(id.ProxyEnv))
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
@@ -229,12 +233,9 @@ func applyIdentity(id *Identity) error {
 		}
 		_ = os.WriteFile("/etc/kantel/env", []byte(b.String()), 0o644)
 	}
-	if len(id.ProxyEnv) > 0 || id.Fresh {
-		// Services that read the proxy at start.
-		go func() {
-			_ = run("systemctl", "try-restart", "docker.service")
-		}()
-	}
+	// dockerd and Chrome use LocalProxyAddr, which follows the identity's proxy, so nothing restarts here: a restart
+	// would stop a resumed or forked sandbox's containers and close its tabs (and, as a restored sandbox's monotonic
+	// clock carries on from its template's, soon trips systemd's start limit).
 	return nil
 }
 
