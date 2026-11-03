@@ -53,6 +53,8 @@ export type {
 	ComputeAccount,
 	ComputeSource,
 	ComputeViewer,
+	DeviceLogin,
+	DeviceLoginsSource,
 	HostingMode,
 	HostsSource,
 	ProxySource,

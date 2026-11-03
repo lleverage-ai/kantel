@@ -140,6 +140,12 @@ const TAGS: {
 		note: COMPUTE_NOTE,
 	},
 	"api-keys": { title: "API keys", order: 7, about: "Scoped API keys: create, rotate and revoke.", note: COMPUTE_NOTE },
+	auth: {
+		title: "Device sign-in",
+		order: 7.5,
+		about: "Signing the command line in through the browser: `kantel login`'s device code, its poll and its approval.",
+		note: COMPUTE_NOTE,
+	},
 	proxy: {
 		title: "Proxy",
 		order: 8,

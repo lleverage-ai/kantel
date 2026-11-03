@@ -171,6 +171,16 @@ export type ApiKeyScope =
 	| "account:admin"
 	| "hosts:admin";
 
+/** The key the device gets, in the approver's personal account unless `account` names an organisation. Without `preset`, every scope the approver may grant there, `hosts:admin` included for a super-admin. */
+export interface ApproveDeviceLoginBody {
+	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
+	readonly account?: string;
+	/** A named set of scopes. `read-only`: the `:read` scopes. `agent`: what a coding agent needs to make and drive its own sandboxes, everything but `sandboxes:delete` and the account and host scopes. `ci`: `agent` plus `sandboxes:delete`. `admin`: every scope but `hosts:admin`. */
+	readonly preset?: ApiKeyPreset;
+	/** Default 90. The key stops working after it. */
+	readonly expiresInDays?: number;
+}
+
 export interface AssistantItem {
 	readonly kind: "assistant";
 	readonly id: string;
@@ -1317,6 +1327,44 @@ export interface DesktopAccess {
 	readonly expiresAt: number;
 }
 
+/** A sign-in in the browser under way, as RFC 8628's device authorisation grant. */
+export interface DeviceLogin {
+	/** `kdc_…`: the device's secret, which it polls with. Never show it. */
+	readonly deviceCode: string;
+	/** `ABCD-EFGH`: the code the person checks in the browser. */
+	readonly userCode: string;
+	/** The console's page where a signed-in person approves it. */
+	readonly verificationUrl: string;
+	/** The same page with the code filled in. */
+	readonly verificationUrlComplete: string;
+	/** Poll no more often than this. */
+	readonly intervalSeconds: number;
+	/** Epoch milliseconds, UTC. */
+	readonly expiresAt: number;
+}
+
+/** A device waiting for a person to approve it, as the approval page shows it. */
+export interface DeviceLoginRequest {
+	readonly userCode: string;
+	readonly clientName: string;
+	/** `pending`: no one has approved it yet. `approved`: the poll that sees it first gets the key; later polls are `expired`. `denied`: the person refused it. `expired`: too late, or already collected. */
+	readonly state: DeviceLoginState;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+	/** Epoch milliseconds, UTC. */
+	readonly expiresAt: number;
+}
+
+/** With `approved`, the new key and its secret, shown this once. */
+export interface DeviceLoginResult {
+	/** `pending`: no one has approved it yet. `approved`: the poll that sees it first gets the key; later polls are `expired`. `denied`: the person refused it. `expired`: too late, or already collected. */
+	readonly state: DeviceLoginState;
+	readonly issued?: IssuedApiKey;
+}
+
+/** `pending`: no one has approved it yet. `approved`: the poll that sees it first gets the key; later polls are `expired`. `denied`: the person refused it. `expired`: too late, or already collected. */
+export type DeviceLoginState = "pending" | "approved" | "denied" | "expired";
+
 /** The document the model is writing in a `create_document` call, while the answer streams. Gone once the answer is done. */
 export interface DraftDocument {
 	/** The tool call writing it. */
@@ -2375,6 +2423,10 @@ export interface PendingRun {
 	readonly status: "pending";
 	readonly sessionId: string;
 	readonly submissionId: string;
+}
+
+export interface PollDeviceLoginBody {
+	readonly deviceCode: string;
 }
 
 /** A file the agent presented to the person (`present_files`). Read its bytes through the workspace read API with your own credentials. */
@@ -3528,6 +3580,11 @@ export interface SshAccessBody {
 	readonly publicKey?: string;
 	/** Default 60. */
 	readonly ttlMinutes?: number;
+}
+
+export interface StartDeviceLoginBody {
+	/** What is signing in, shown to the person who approves it and given to its key: `kantel on build-01`. */
+	readonly clientName?: string;
 }
 
 export interface StopSandboxBody {
@@ -4912,6 +4969,20 @@ export interface KantelClient {
 	rotateApiKey(apiKeyId: string, options?: CallOptions): Promise<IssuedApiKey>;
 	/** Revoke an API key. It stops working at once. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `DELETE /api-keys/{apiKeyId}` */
 	revokeApiKey(apiKeyId: string, options?: CallOptions): Promise<ApiKey>;
+	/** Start a device sign-in. Answers a code to show the person and the console page to open, where a signed-in person approves it. Then poll `pollDeviceLogin` with the `deviceCode`. Takes no credential. A code lasts 15 minutes. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /auth/device` */
+	startDeviceLogin(body?: StartDeviceLoginBody, options?: CallOptions): Promise<DeviceLogin>;
+	/** Poll a device sign-in. Its state, and once approved the new key's secret, answered to the first poll that sees it. Takes no credential: the `deviceCode` is the secret. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /auth/device/token` */
+	pollDeviceLogin(body: PollDeviceLoginBody, options?: CallOptions): Promise<DeviceLoginResult>;
+	/** Get a device sign-in. What is asking to sign in with this code, for the approval page. A person only. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /auth/device/{userCode}` */
+	getDeviceLogin(userCode: string, options?: CallOptions): Promise<DeviceLoginRequest>;
+	/** Approve a device sign-in. Makes an API key for the person, named after the device, and hands it to the device's next poll. A person only, who needs admin or owner in the account (`account:admin`), as for `createApiKey`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /auth/device/{userCode}/approve` */
+	approveDeviceLogin(
+		userCode: string,
+		body?: ApproveDeviceLoginBody,
+		options?: CallOptions,
+	): Promise<DeviceLoginRequest>;
+	/** Deny a device sign-in. The device's next poll is `denied`. A person only. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `POST /auth/device/{userCode}/deny` */
+	denyDeviceLogin(userCode: string, options?: CallOptions): Promise<DeviceLoginRequest>;
 	/** Get the proxy settings. Where the account's sandboxes' outbound traffic may go. A key needs `account:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `GET /proxy` */
 	getProxySettings(query?: AccountScopedQuery, options?: CallOptions): Promise<ProxySettings>;
 	/** Set the proxy settings. Replaces them. Running sandboxes pick them up within a minute. An upstream's header values are kept encrypted and never shown again; leave `upstream.headers` out to keep the ones it has. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`. `PUT /proxy` */
@@ -5491,6 +5562,20 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "POST", path: `/api-keys/${encodeURIComponent(apiKeyId)}/rotate` }, callOptions),
 		revokeApiKey: (apiKeyId, callOptions) =>
 			send(options, { method: "DELETE", path: `/api-keys/${encodeURIComponent(apiKeyId)}` }, callOptions),
+		startDeviceLogin: (body = {}, callOptions) =>
+			send(options, { method: "POST", path: "/auth/device", body }, callOptions),
+		pollDeviceLogin: (body, callOptions) =>
+			send(options, { method: "POST", path: "/auth/device/token", body }, callOptions),
+		getDeviceLogin: (userCode, callOptions) =>
+			send(options, { method: "GET", path: `/auth/device/${encodeURIComponent(userCode)}` }, callOptions),
+		approveDeviceLogin: (userCode, body = {}, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/auth/device/${encodeURIComponent(userCode)}/approve`, body },
+				callOptions,
+			),
+		denyDeviceLogin: (userCode, callOptions) =>
+			send(options, { method: "POST", path: `/auth/device/${encodeURIComponent(userCode)}/deny` }, callOptions),
 		getProxySettings: (query, callOptions) => send(options, { method: "GET", path: "/proxy", query }, callOptions),
 		putProxySettings: (body, callOptions) => send(options, { method: "PUT", path: "/proxy", body }, callOptions),
 		listEvents: (query, callOptions) => send(options, { method: "GET", path: "/events", query }, callOptions),

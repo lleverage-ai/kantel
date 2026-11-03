@@ -12,7 +12,7 @@
  * Cost uses a per-type and per-size rate table; the default, `PLACEHOLDER_RATES`, is a placeholder until real pricing
  * exists. CPU seconds are estimated from the usage readings taken while a sandbox runs.
  */
-import { type ComputeRoutes, computeSchema, type RouteHandlers } from "@kantel/api";
+import { computeSchema, type PublicComputeRoutes, type RouteHandlers, type SignedInComputeRoutes } from "@kantel/api";
 import { KantelError } from "@kantel/contracts";
 import {
 	type Acting,
@@ -33,6 +33,7 @@ import type {
 	StoredAccount,
 	StoredApiKey,
 	StoredCommand,
+	StoredDeviceLogin,
 	StoredHost,
 	StoredInvite,
 	StoredProxy,
@@ -50,6 +51,7 @@ import {
 	randomId,
 	randomSecret,
 	randomSlug,
+	randomUserCode,
 	resolvePath,
 	sha256Hex,
 } from "./util.ts";
@@ -97,14 +99,18 @@ export interface ComputeServiceOptions {
 	readonly mode?: "selfhosted" | "hosted";
 	/** The join command shown with a host join token, with `{url}` and `{token}`. Default the npm package's. */
 	readonly hostJoinCommand?: string;
+	/** The console page where a person approves a device sign-in, with `{url}` for the public URL. */
+	readonly deviceLoginUrl?: string;
 	/** Default `PLACEHOLDER_RATES`. */
 	readonly rates?: RateTable;
 	readonly limits?: ComputeLimits;
 }
 
 export interface ComputeService {
-	/** A handler for every compute route, given the signed-in caller. */
-	readonly handlers: RouteHandlers<ComputeRoutes, Principal>;
+	/** A handler for every compute route that signs the caller in, given the signed-in caller. */
+	readonly handlers: RouteHandlers<SignedInComputeRoutes, Principal>;
+	/** A handler for each route that takes no credential (`publicComputeRoutes`), given no caller. */
+	readonly publicHandlers: RouteHandlers<PublicComputeRoutes, undefined>;
 	/** Stops every running sandbox whose `stopsAt` has passed. */
 	sweep(): Promise<void>;
 	/** Reads every running sandbox's usage, keeps it, and answers it for the metrics export. */
@@ -118,6 +124,15 @@ export interface ComputeService {
 /** The largest file the files routes read or write. */
 /** The join command shown with a host join token: kantel-host from npm (`apps/host/npm`). */
 export const DEFAULT_HOST_JOIN_COMMAND = "sudo npx -y @kantel/host@latest install --url {url} --token {token}";
+/** The console's page where a person approves a device sign-in. */
+export const DEFAULT_DEVICE_LOGIN_URL = "{url}/compute/device";
+/** How long a device sign-in waits for a person, and how often its device may poll. */
+export const DEVICE_LOGIN_TTL_MS = 15 * 60_000;
+export const DEVICE_LOGIN_INTERVAL_SECONDS = 2;
+/** A device sign-in's key works this long unless its approver says otherwise. */
+export const DEVICE_LOGIN_KEY_DAYS = 90;
+/** At most this many device sign-ins wait at once, as their start takes no credential. */
+export const MAX_PENDING_DEVICE_LOGINS = 1000;
 
 export const MAX_FILE_BYTES = 1024 * 1024;
 /** The most output a command keeps per stream. */
@@ -911,7 +926,133 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	const ownerCount = async (accountId: string) => (await store.members.list({ accountId, role: "owner" })).length;
 
-	const handlers: RouteHandlers<ComputeRoutes, Principal> = {
+	// Device sign-ins.
+
+	const deviceLoginView = (login: StoredDeviceLogin): computeSchema.DeviceLoginRequest => ({
+		userCode: login.userCode,
+		clientName: login.clientName,
+		state: login.state === "pending" && login.expiresAt <= now() ? "expired" : login.state,
+		createdAt: login.createdAt,
+		expiresAt: login.expiresAt,
+	});
+
+	/** The pending sign-in a person typed or followed the code of; `not_found` for an unknown or finished one. */
+	async function pendingDeviceLogin(userCode: string): Promise<StoredDeviceLogin> {
+		const typed = userCode.toUpperCase().replace(/[^A-Z]/g, "");
+		const code = typed.length === 8 ? `${typed.slice(0, 4)}-${typed.slice(4)}` : userCode;
+		const [login] = await store.deviceLogins.list({ userCode: code });
+		if (login === undefined || login.expiresAt <= now()) throw new KantelError("not_found", "No such sign-in code");
+		return login;
+	}
+
+	const publicHandlers: RouteHandlers<PublicComputeRoutes, undefined> = {
+		startDeviceLogin: async (_none, { body }, request) => {
+			const at = now();
+			let waiting = 0;
+			for (const login of await store.deviceLogins.list()) {
+				if (login.expiresAt <= at) await store.deviceLogins.delete(login.id);
+				else if (login.state === "pending") waiting++;
+			}
+			if (waiting >= MAX_PENDING_DEVICE_LOGINS) {
+				throw new KantelError("exhausted", "Too many sign-ins are waiting; try again in a few minutes");
+			}
+			const deviceCode = randomSecret("kdc_", 40);
+			let userCode = randomUserCode();
+			while ((await store.deviceLogins.list({ userCode })).length > 0) userCode = randomUserCode();
+			const login: StoredDeviceLogin = {
+				id: await sha256Hex(deviceCode),
+				userCode,
+				clientName: body.clientName ?? "kantel",
+				state: "pending",
+				createdAt: at,
+				expiresAt: at + DEVICE_LOGIN_TTL_MS,
+			};
+			await store.deviceLogins.put(login);
+			const publicUrl = (options.publicUrl ?? new URL(request.url).origin).replace(/\/+$/, "");
+			const verificationUrl = (options.deviceLoginUrl ?? DEFAULT_DEVICE_LOGIN_URL).replaceAll("{url}", publicUrl);
+			const complete = new URL(verificationUrl);
+			complete.searchParams.set("code", userCode);
+			return {
+				deviceCode,
+				userCode,
+				verificationUrl,
+				verificationUrlComplete: complete.toString(),
+				intervalSeconds: DEVICE_LOGIN_INTERVAL_SECONDS,
+				expiresAt: login.expiresAt,
+			};
+		},
+
+		pollDeviceLogin: async (_none, { body }) => {
+			const id = await sha256Hex(body.deviceCode);
+			const login = await store.deviceLogins.get(id);
+			if (login === undefined) throw new KantelError("not_found", "No such sign-in");
+			if (login.state === "approved" && login.secret !== undefined && login.apiKeyId !== undefined) {
+				// Only the first poll that sees it gets the secret, which is then dropped.
+				const collected = await store.deviceLogins.update(id, (current) =>
+					current.secret === undefined ? undefined : { ...current, secret: undefined, collectedAt: now() },
+				);
+				const key = await store.apiKeys.get(login.apiKeyId);
+				if (collected === undefined || key === undefined) return { state: "expired" };
+				return { state: "approved", issued: { key: apiKeyView(key), secret: login.secret } };
+			}
+			if (login.state === "approved") return { state: "expired" };
+			return { state: deviceLoginView(login).state };
+		},
+	};
+
+	const handlers: RouteHandlers<SignedInComputeRoutes, Principal> = {
+		// Device sign-ins, which a person approves on the console's page.
+
+		getDeviceLogin: async (principal, { params }) => {
+			requirePerson(principal);
+			return deviceLoginView(await pendingDeviceLogin(params.userCode));
+		},
+
+		approveDeviceLogin: async (principal, { params, body }) => {
+			const person = requirePerson(principal);
+			const login = await pendingDeviceLogin(params.userCode);
+			if (login.state !== "pending") throw new KantelError("conflict", `The sign-in is already ${login.state}`);
+			const { account, role } = await actingAccount(store, person, body.account);
+			requireScope(person, "account:admin", role);
+			const scopes =
+				body.preset === undefined
+					? computeSchema.API_KEY_SCOPES.filter((scope) => scope !== "hosts:admin" || person.superAdmin)
+					: [...computeSchema.API_KEY_PRESETS[body.preset]];
+			requireGrantable(person, scopes);
+			const { secret, prefix, hash } = await newApiKeySecret();
+			const key: StoredApiKey = {
+				id: randomId("key"),
+				accountId: account.id,
+				name: login.clientName,
+				prefix,
+				scopes,
+				createdBy: actorOf(person),
+				createdAt: now(),
+				expiresAt: now() + (body.expiresInDays ?? DEVICE_LOGIN_KEY_DAYS) * DAY_MS,
+				secretHash: hash,
+				ownerUserId: person.userId,
+			};
+			const approved = await store.deviceLogins.update(login.id, (current) =>
+				current.state === "pending"
+					? { ...current, state: "approved", apiKeyId: key.id, secret, decidedBy: person.userId }
+					: undefined,
+			);
+			if (approved === undefined) throw new KantelError("conflict", "The sign-in was decided meanwhile");
+			await store.apiKeys.put(key);
+			return deviceLoginView(approved);
+		},
+
+		denyDeviceLogin: async (principal, { params }) => {
+			const person = requirePerson(principal);
+			const login = await pendingDeviceLogin(params.userCode);
+			if (login.state !== "pending") throw new KantelError("conflict", `The sign-in is already ${login.state}`);
+			const denied = await store.deviceLogins.update(login.id, (current) =>
+				current.state === "pending" ? { ...current, state: "denied", decidedBy: person.userId } : undefined,
+			);
+			if (denied === undefined) throw new KantelError("conflict", "The sign-in was decided meanwhile");
+			return deviceLoginView(denied);
+		},
+
 		// Who is calling, accounts and organisations.
 
 		getCaller: async (principal) => {
@@ -2267,6 +2408,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	return {
 		handlers,
+		publicHandlers,
 
 		async sweep() {
 			const at = now();

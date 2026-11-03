@@ -5,7 +5,14 @@
  * answer `{ error: { code, message } }` with `STATUS_BY_CODE`'s status, and 401 `unauthenticated` for a missing or
  * bad credential.
  */
-import { computeRoutes, createRouter, pathPattern, STATUS_BY_CODE } from "@kantel/api";
+import {
+	computeRoutes,
+	createRouter,
+	pathPattern,
+	publicComputeRoutes,
+	type SignedInComputeRoutes,
+	STATUS_BY_CODE,
+} from "@kantel/api";
 import { isKantelError } from "@kantel/contracts";
 import { type AuthenticatePerson, authenticate, UnauthenticatedError } from "./auth.ts";
 import type { SandboxBackend } from "./backend.ts";
@@ -36,6 +43,8 @@ export interface ComputeApiOptions {
 	readonly mode?: "selfhosted" | "hosted";
 	/** The join command shown with a host join token, with `{url}` and `{token}`. */
 	readonly hostJoinCommand?: string;
+	/** The console page where a person approves a device sign-in, with `{url}`. Default `{url}/compute/device`. */
+	readonly deviceLoginUrl?: string;
 	readonly rates?: RateTable;
 	readonly limits?: ComputeLimits;
 }
@@ -96,11 +105,19 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 		...(options.publicUrl === undefined ? {} : { publicUrl: options.publicUrl }),
 		...(options.mode === undefined ? {} : { mode: options.mode }),
 		...(options.hostJoinCommand === undefined ? {} : { hostJoinCommand: options.hostJoinCommand }),
+		...(options.deviceLoginUrl === undefined ? {} : { deviceLoginUrl: options.deviceLoginUrl }),
 		...(options.rates === undefined ? {} : { rates: options.rates }),
 		...(options.limits === undefined ? {} : { limits: options.limits }),
 	});
 	service = created;
-	const router = createRouter(computeRoutes, created.handlers, { basePath, maxBodyBytes: COMPUTE_BODY_LIMIT });
+	const publicIds = new Set<string>(Object.keys(publicComputeRoutes));
+	const signedInRoutes = Object.fromEntries(
+		Object.entries(computeRoutes).filter(([id]) => !publicIds.has(id)),
+	) as unknown as SignedInComputeRoutes;
+	const routerOptions = { basePath, maxBodyBytes: COMPUTE_BODY_LIMIT };
+	const router = createRouter(signedInRoutes, created.handlers, routerOptions);
+	// The routes that take no credential are answered before anyone is signed in.
+	const publicRouter = createRouter(publicComputeRoutes, created.publicHandlers, routerOptions);
 	const patterns = Object.values(computeRoutes).map((route) => pathPattern(route.path));
 	let lastSweep = Number.NEGATIVE_INFINITY;
 
@@ -115,6 +132,8 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 					lastSweep = now();
 					await created.sweep();
 				}
+				const open = await publicRouter(undefined, request);
+				if (open !== undefined) return open;
 				const principal = await authenticate(request, {
 					store,
 					now: now(),
