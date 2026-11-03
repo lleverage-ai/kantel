@@ -9,4 +9,11 @@ export const SITE_URL = "https://kantel.dev";
 /** The one-line install. Plain `curl … | sh`, so it pastes the same into bash, zsh and fish. */
 export const INSTALL_COMMAND = `curl -fsSL ${SITE_URL}/install.sh | sh`;
 
+/**
+ * The shape of the command that adds a Linux machine as a host, as the control plane makes it (packages/compute,
+ * createHostJoinToken): it serves the host installer itself, and the console shows the command with a one-time token.
+ */
+export const HOST_JOIN_COMMAND =
+	"curl -fsSL <your Kantel URL>/install-host.sh | sh -s -- --join <token from the console>";
+
 export const LLEVERAGE_URL = "https://lleverage.ai";
