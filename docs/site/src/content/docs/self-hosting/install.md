@@ -145,7 +145,9 @@ To let sandboxes [expose ports](/sandboxes/public-ports/), give them a domain of
 echo 'KANTEL_COMPUTE_PORTS_DOMAIN=kantel-ports.example' >> ~/.kantel/src/deploy/compose/.env
 ```
 
-A port is then at `https://3000-<subdomain>.kantel-ports.example`. Use a registrable domain that isn't the console's or a parent of it, so a page a sandbox serves can't set cookies the console reads; the control plane refuses the console's own name and its parents. Without the setting, sandboxes expose no ports.
+A port is then at `https://3000-<subdomain>.kantel-ports.example`. Use a registrable domain that isn't the console's or a parent of it, so a page a sandbox serves can't set cookies the console reads; the control plane refuses the console's own name and its parents. To keep sandboxes' pages apart from each other too, add the domain to the Public Suffix List, as [Security model](/self-hosting/security/#the-ports-domain) explains. Without the setting, sandboxes expose no ports.
+
+Desktop, browser, SSH and port URLs, and who may still use them, are kept in the database, so they keep working when the control plane restarts. With the database, you can run several gateways behind one load balancer: give each the same settings, and `KANTEL_REPLICA_URL`, the address on your private network where the others reach it (by default its first IPv4 address and port). A host connects to whichever gateway the balancer picks, and the others pass its sandboxes' requests on to that one. [Security model](/self-hosting/security/#several-gateways) says what they trust in each other.
 
 An account's [proxy settings](/sandboxes/egress-proxy/) (`PUT /v1/proxy`) reach its sandboxes on hosts, including running ones: allow and deny rules always, and the upstream proxy only on hosts installed with `--proxy-data-path`. The host adds the upstream's headers itself, so they never enter a sandbox. To have the host sign the `Kantel-Sandbox` and `Kantel-Account` headers it sends upstream, set `KANTEL_EGRESS_ATTRIBUTION_KEY` to a shared secret your proxy checks.
 
@@ -165,6 +167,7 @@ The stack reads its settings from `~/.kantel/src/deploy/compose/.env`, which upg
 | `KANTEL_COMPUTE_PORTS_DOMAIN` | The domain sandboxes' [public ports](/sandboxes/public-ports/) are served under |
 | `KANTEL_COMPUTE_POOLS` | Warm sandboxes each host keeps ready, as JSON such as `{"microvm/default": 2}` |
 | `KANTEL_EGRESS_ATTRIBUTION_KEY` | The secret hosts sign the [`Kantel-Sandbox` and `Kantel-Account` headers](/sandboxes/egress-proxy/#send-traffic-through-your-own-proxy) with |
+| `KANTEL_REPLICA_URL` | With several gateways, where the others reach this one on your private network, such as `http://10.0.3.7:8080` |
 | `KANTEL_HOST_VERSION`, `KANTEL_HOST_UPDATE_URL` | The `kantel-host` version hosts should run, and where they get it. See [Update a host](/hosts/#update-a-host) |
 
 For example:
