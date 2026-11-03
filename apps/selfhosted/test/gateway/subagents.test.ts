@@ -133,6 +133,55 @@ describe("subagents on the self-hosted gateway", () => {
 		expect(found.map((session) => session.id)).toEqual([child?.id]);
 	});
 
+	it("work in the workspace of their own of a session created without one, as the console's are", async () => {
+		const { seeded, script, call } = await serve(true);
+		// No workspace: the session gets its own, bound to it (`withOwnWorkspaces`), and its child works in it through
+		// the ancestor rule (`throughAncestors`), reading and writing what the parent sees.
+		const created = await call("/v1/sessions", {
+			method: "POST",
+			body: JSON.stringify({ projectId: seeded.projectId, agentId: "echo" }),
+		});
+		expect(created.status).toBe(201);
+		const parentId = created.body.id as string;
+		const workspaceId = created.body.workspaceId as string;
+		expect(workspaceId).toMatch(/^session_/);
+		script.reply(
+			{ toolCalls: [{ name: SUBAGENT_TOOL, args: { task: "Write notes/child.md and read it back." } }] },
+			{ toolCalls: [{ name: "write", args: { path: "notes/child.md", content: "from the subagent\n" } }] },
+			{ toolCalls: [{ name: "read", args: { path: "notes/child.md" } }] },
+			{ text: "Written and read back" },
+			{ toolCalls: [{ name: "read", args: { path: "notes/child.md" } }] },
+			{ text: "The subagent wrote notes/child.md" },
+		);
+		const prompted = await call(`/v1/sessions/${parentId}/prompt`, {
+			method: "POST",
+			body: JSON.stringify({ text: "Have a subagent write a note." }),
+		});
+		const submission = prompted.body.id as string;
+		let result = await call(`/v1/sessions/${parentId}/result?submission=${submission}&timeoutMs=5000`);
+		for (let attempt = 0; result.status === 202 && attempt < 10; attempt++) {
+			result = await call(`/v1/sessions/${parentId}/result?submission=${submission}&timeoutMs=5000`);
+		}
+		expect(result.body).toMatchObject({ status: "answered", answer: "The subagent wrote notes/child.md" });
+		const [child] = (await call(`/v1/sessions?parentSessionId=${parentId}`)).body.items as {
+			id: string;
+			workspaceId?: string;
+		}[];
+		expect(child?.workspaceId).toBe(workspaceId);
+		const tools = (await call(`/v1/sessions/${child?.id}/snapshot`)).body.items as {
+			kind: string;
+			name?: string;
+			status?: string;
+		}[];
+		expect(tools.filter((item) => item.kind === "tool").map((item) => [item.name, item.status])).toEqual([
+			["write", "done"],
+			["read", "done"],
+		]);
+		// The child read back what it wrote, and the parent then read the child's file in its own workspace.
+		expect(script.requests[3]?.messages.some((message) => message.text.includes("from the subagent"))).toBe(true);
+		expect(script.requests[5]?.messages.some((message) => message.text.includes("from the subagent"))).toBe(true);
+	});
+
 	it("aren't offered to a session when off", async () => {
 		const { seeded, script, call } = await serve(false);
 		const created = await call("/v1/sessions", {
