@@ -165,7 +165,15 @@ async function rawTunnel(hosts: StackHosts, ticket: string, request: Request): P
 	server.addEventListener("error", end);
 	void hosts
 		.tunnel(ticket, {
-			send: (bytes) => server.send(bytes),
+			// The host can send before its port.open reply (SSH's banner), even after the client has gone: dropped then.
+			send: (bytes) => {
+				if (done) return;
+				try {
+					server.send(bytes);
+				} catch {
+					end();
+				}
+			},
 			close: (code, reason) => {
 				try {
 					server.close(code, reason);

@@ -63,9 +63,10 @@ import { createRelayAccess, RELAY_CLOSE_REVOKED, RELAY_REVOKED_REASON } from "@k
 import { createMemoryRelayStore, createSqlRelayStore, migrateRelay } from "@kantel/hosts/relay-store";
 import { createHostsService, type HostsService } from "@kantel/hosts/service";
 import { createMemoryHostStore, createSqlHostStore, migrateHosts } from "@kantel/hosts/store";
-import { createTunnelTickets, HOSTS_TUNNEL_PATH } from "@kantel/hosts/tunnel";
+import { createTunnelTickets, HOSTS_TUNNEL_PATH, type TunnelTickets } from "@kantel/hosts/tunnel";
 import type { SqlDriver } from "@kantel/sql";
 import { HOSTED_PORTS_DOMAIN } from "./config.ts";
+import { buffered } from "./route.ts";
 
 /** Where Cloudflare Access puts the signed-in person's token on each request it lets through. */
 const ACCESS_ASSERTION = "cf-access-jwt-assertion";
@@ -139,23 +140,31 @@ export interface MessageSocket {
 /**
  * Hands an accepted socket's messages to `handle` in order, binary ones as bytes. Workers deliver binary messages as a
  * `Blob` unless asked for an `ArrayBuffer` (and the hub drops anything else), so the socket is asked; a `Blob` that
- * comes anyway is read without letting a later message overtake it.
+ * comes anyway is read without letting a later message overtake it. A frame whose handling fails is logged and
+ * skipped, so one bad frame never leaves a host's connection open but deaf.
  */
-export function onMessages(socket: MessageSocket, handle: (frame: string | Uint8Array) => void): void {
+export function onMessages(
+	socket: MessageSocket,
+	handle: (frame: string | Uint8Array) => void,
+	log: (message: string, error: unknown) => void = (message, error) => console.error(message, error),
+): void {
 	try {
 		socket.binaryType = "arraybuffer";
 	} catch {
 		// A runtime that won't: Blobs, read below.
 	}
 	let queue: Promise<void> = Promise.resolve();
+	const failed = (error: unknown) => log("kantel: a WebSocket frame could not be handled", error);
 	socket.addEventListener("message", (event) => {
 		const data = event.data;
 		if (typeof data === "string" || data instanceof ArrayBuffer) {
 			const frame = typeof data === "string" ? data : new Uint8Array(data);
-			queue = queue.then(() => handle(frame));
+			queue = queue.then(() => handle(frame)).catch(failed);
 		} else if (data instanceof Blob) {
 			const read = data.arrayBuffer();
-			queue = queue.then(async () => handle(new Uint8Array(await read)));
+			// Read now, handled in turn; a read that fails is caught there, not left unhandled meanwhile.
+			read.catch(() => undefined);
+			queue = queue.then(async () => handle(new Uint8Array(await read))).catch(failed);
 		}
 	});
 }
@@ -244,7 +253,8 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		mode: "hosted",
 		now,
 		...(options.fetch === undefined ? {} : { fetch: options.fetch }),
-		...(connect === undefined ? {} : { connect: true }),
+		// Enrolment commands name the address hosts dial, as tunnel URLs do, not the caller's origin.
+		...(connect === undefined ? {} : { connect: true, publicUrl: connect.publicUrl }),
 	});
 	connect?.service.useJoinTokens(joinTokenSpender(store));
 	connect?.bind((grantee, sandboxId) => api.service.stillAllowed(grantee, sandboxId));
@@ -280,6 +290,7 @@ async function connectHosts(
 ): Promise<{
 	service: HostsService;
 	backend: SandboxBackend;
+	publicUrl: string;
 	hosts: StackHosts;
 	access: ReturnType<typeof createRelayAccess>;
 	bind(stillAllowed: (grantee: string | undefined, sandboxId: string) => Promise<boolean>): void;
@@ -292,7 +303,10 @@ async function connectHosts(
 		store: sql === undefined ? createMemoryHostStore() : createSqlHostStore(sql),
 		publicUrl: config.publicUrl,
 	});
-	const tickets = createTunnelTickets(sql === undefined ? createMemoryRelayStore() : createSqlRelayStore(sql), now);
+	const tickets = sweptAsUsed(
+		createTunnelTickets(sql === undefined ? createMemoryRelayStore() : createSqlRelayStore(sql), now),
+		now,
+	);
 	const backend = createHostBackend({ hosts: service, publicUrl: config.publicUrl, tickets, now });
 	let check: ((grantee: string | undefined, sandboxId: string) => Promise<boolean>) | undefined;
 	// Its timer runs only while a session is held, so it never keeps the object awake on its own.
@@ -309,6 +323,7 @@ async function connectHosts(
 		service,
 		backend,
 		access,
+		publicUrl: config.publicUrl,
 		bind(stillAllowed) {
 			check = stillAllowed;
 		},
@@ -316,7 +331,11 @@ async function connectHosts(
 			service,
 			async fetch(request) {
 				const path = new URL(request.url).pathname;
-				if (path === HOSTS_REGISTER_PATH) return register.fetch(request);
+				if (path === HOSTS_REGISTER_PATH) {
+					// Anyone can reach it (past Access), so its body is counted as it comes, before any of it is parsed.
+					const bounded = await buffered(request, HOST_REGISTER_BODY_LIMIT);
+					return bounded instanceof Response ? bounded : register.fetch(bounded);
+				}
 				if (path.startsWith(`${HOSTS_IMAGES_PATH}/`)) return hostImage(request, path);
 				return undefined;
 			},
@@ -356,7 +375,15 @@ async function connectHosts(
 				};
 				try {
 					stream = await service.sandboxes.openPort(grant.sandboxId, grant.port, {
-						data: (bytes) => client.send(bytes),
+						// Never throws into the host's connection: a client that can't take bytes is closed instead.
+						data: (bytes) => {
+							try {
+								client.send(bytes);
+							} catch {
+								client.close(1011, "The tunnel's client is gone");
+								stream?.close();
+							}
+						},
 						end: (reason) => {
 							done();
 							client.close(1000, reason.slice(0, 120));
@@ -379,6 +406,32 @@ async function connectHosts(
 		},
 	};
 }
+
+/** How often issuing a ticket also forgets long-expired ones. */
+const TICKET_SWEEP_MS = 10 * 60_000;
+
+/**
+ * Tickets that forget long-expired ones as new ones are issued, at most every `TICKET_SWEEP_MS`. A self-hosted gateway
+ * sweeps on a timer; here a timer would keep the object awake, so the sweep rides on use instead.
+ */
+export function sweptAsUsed(tickets: TunnelTickets, now: () => number): TunnelTickets {
+	let last = Number.NEGATIVE_INFINITY;
+	return {
+		issue(grant) {
+			const at = now();
+			if (at - last >= TICKET_SWEEP_MS) {
+				last = at;
+				void tickets.sweep(at).catch((error: unknown) => console.error("kantel: sweeping tunnel tickets", error));
+			}
+			return tickets.issue(grant);
+		},
+		verify: (ticket, at) => tickets.verify(ticket, at),
+		sweep: (at) => tickets.sweep(at),
+	};
+}
+
+/** A registration is a token, a name, labels and facts: a few kilobytes. */
+export const HOST_REGISTER_BODY_LIMIT = 64 * 1024;
 
 /** `GET /v1/hosts/images/{file}`: Kantel's published images, as a self-hosted gateway serves them by default. */
 function hostImage(request: Request, path: string): Response {

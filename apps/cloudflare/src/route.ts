@@ -85,7 +85,7 @@ const tooLarge = (limit: number) =>
 	);
 
 /** The request with its body read here, up to `limit`, or a 413. */
-async function buffered(request: Request, limit: number): Promise<Request | Response> {
+export async function buffered(request: Request, limit: number): Promise<Request | Response> {
 	const body = await readLimited(request, limit);
 	if (body === undefined) return tooLarge(limit);
 	return new Request(request.url, { method: request.method, headers: request.headers, body });

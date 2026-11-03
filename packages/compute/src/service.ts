@@ -340,9 +340,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			for (const host of capabilities.hosts) {
 				const known = await store.hosts.get(host.id);
 				const reachable = host.connected !== false;
-				// A host enrolled into an account stays that account's: the registry says so, or the enrolment it spent does.
-				// Once private, never shared again.
-				const accountId = known?.accountId ?? host.accountId ?? (await enrolledInto(host.id));
+				// A host enrolled into an account stays that account's: the registry says so, or the enrolment it spent does
+				// (looked up once, when the host is first seen). Once private, never shared again.
+				const accountId =
+					known?.accountId ?? host.accountId ?? (known === undefined ? await enrolledInto(host.id) : undefined);
 				if (known !== undefined) {
 					const held = known.state === "revoked" || known.state === "draining";
 					await store.hosts.put({

@@ -9,7 +9,14 @@ import { createMockAccess } from "@kantel/identity/testing";
 import type { SqlValue } from "@kantel/sql";
 import { afterEach, describe, expect, it } from "vitest";
 import { type ObjectSqlLike, objectSqlDriver } from "../src/audit-outbox.ts";
-import { hostCredential, type MessageSocket, onMessages, tunnelTicket } from "../src/compute.ts";
+import {
+	HOST_REGISTER_BODY_LIMIT,
+	hostCredential,
+	type MessageSocket,
+	onMessages,
+	sweptAsUsed,
+	tunnelTicket,
+} from "../src/compute.ts";
 import { gatewayConfig } from "../src/config.ts";
 import { createGateway } from "../src/gateway.ts";
 import { createStack } from "../src/stack.ts";
@@ -175,6 +182,104 @@ describe("Kantel Connect on the Worker", () => {
 		listener?.({ data: new Uint8Array([3]).buffer });
 		await expect.poll(() => frames.length).toBe(3);
 		expect(frames).toEqual([[1, 2], "text", [3]]);
+	});
+
+	it("goes on reading a socket after a frame's handling fails", async () => {
+		let listener: ((event: { readonly data: unknown }) => void) | undefined;
+		const socket: MessageSocket = { addEventListener: (_type, handle) => (listener = handle) };
+		const frames: string[] = [];
+		const failures: unknown[] = [];
+		onMessages(
+			socket,
+			(frame) => {
+				if (frame === "bad") throw new Error("the tunnel's client is gone");
+				frames.push(String(frame));
+			},
+			(_message, error) => failures.push(error),
+		);
+		listener?.({ data: "one" });
+		listener?.({ data: "bad" });
+		listener?.({ data: "two" });
+		await expect.poll(() => frames).toEqual(["one", "two"]);
+		expect(failures).toHaveLength(1);
+	});
+
+	it("sweeps expired tunnel tickets as new ones are issued, at most every ten minutes", async () => {
+		let at = 0;
+		const swept: number[] = [];
+		const tickets = sweptAsUsed(
+			{
+				issue: async () => "ticket",
+				verify: async () => undefined,
+				sweep: async (now) => {
+					swept.push(now);
+				},
+			},
+			() => at,
+		);
+		const grant = { sandboxId: "sbx_1", port: 22, expiresAt: 1 };
+		await tickets.issue(grant);
+		at = 60_000;
+		await tickets.issue(grant);
+		at = 10 * 60_000;
+		await tickets.issue(grant);
+		expect(swept).toEqual([0, 10 * 60_000]);
+	});
+
+	it("keeps an account's stub sandboxes usable once it enrols a host, and bounds registration", async () => {
+		// Hosts dial another address than the one the person calls: the command names that one.
+		const publicUrl = "https://hosts.kantel.test";
+		const { stack, call } = await start(new DatabaseSync(":memory:"), {
+			KANTEL_CONNECT: "experimental",
+			KANTEL_PUBLIC_URL: publicUrl,
+		});
+		const hosts = stack.compute.hosts;
+		if (hosts === undefined) throw new Error("Connect is on");
+
+		// Before any host: a microVM on the stub, stopped.
+		const before = await call("POST", "/v1/sandboxes", { type: "microvm", wait: true });
+		const old = before.body.id as string;
+		expect((await call("POST", `/v1/sandboxes/${old}/stop`, { wait: true })).status).toBe(200);
+
+		const enrolment = await call("POST", "/v1/connect/enrolments", {});
+		const token = enrolment.body.token as string;
+		expect(enrolment.body.command).toContain(`--url ${publicUrl} --token ${token}`);
+
+		// Registration is public: a body past its limit is refused before any of it is parsed.
+		const huge = await call("POST", "/v1/hosts/register", { token, name: "x".repeat(HOST_REGISTER_BODY_LIMIT) }, {});
+		expect(huge.status).toBe(413);
+		const chunked = await stack.compute.hosts?.fetch(
+			new Request(`${BASE}/v1/hosts/register`, {
+				method: "POST",
+				body: new ReadableStream({
+					start(controller) {
+						for (let i = 0; i < 80; i++) controller.enqueue(new Uint8Array(1024));
+						controller.close();
+					},
+				}),
+				duplex: "half",
+			} as RequestInit),
+		);
+		expect(chunked?.status).toBe(413);
+		const registered = await call("POST", "/v1/hosts/register", { token }, {});
+		expect(registered.status).toBe(201);
+		const { hostId, credential } = registered.body as { hostId: string; credential: string };
+		const host = fakeHost();
+		const held = await hosts.connect(credential, host.socket);
+		if (held === undefined) throw new Error("The host's credential was refused");
+		host.attach(held, hostId);
+		await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
+
+		// New sandboxes go on the host; the old one starts again on the stub, where its disk is, and forks there.
+		const fresh = await call("POST", "/v1/sandboxes", { type: "microvm", wait: true });
+		expect(host.sandboxes.has(fresh.body.id as string)).toBe(true);
+		const started = await call("POST", `/v1/sandboxes/${old}/start`, { wait: true });
+		expect(started.body).toMatchObject({ id: old, state: "running" });
+		const fork = await call("POST", `/v1/sandboxes/${old}/fork`, {});
+		expect(fork.status).toBe(201);
+		const forkId = ((fork.body.items as { id: string }[] | undefined)?.[0]?.id ?? fork.body.id) as string;
+		await expect.poll(async () => (await call("GET", `/v1/sandboxes/${forkId}`)).body.state).toBe("running");
+		expect(host.sandboxes.has(forkId)).toBe(false);
 	});
 
 	it("needs KANTEL_PUBLIC_URL with the switch on, and refuses a switch it doesn't know", () => {
