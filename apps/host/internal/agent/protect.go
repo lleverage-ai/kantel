@@ -16,6 +16,7 @@ import (
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/egress"
 	"github.com/lleverage-ai/kantel/apps/host/internal/egress/protect"
+	"github.com/lleverage-ai/kantel/apps/host/internal/fsutil"
 	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
@@ -231,6 +232,16 @@ func (h *Host) egressRevision(t Tier, sandboxID string) int64 {
 	return held
 }
 
+// withRevision is e (a copy) carrying revision, which the tier keeps with it; e itself when unordered or nil.
+func withRevision(e *proto.Egress, revision int64) *proto.Egress {
+	if e == nil || revision <= 0 {
+		return e
+	}
+	out := *e
+	out.Revision = revision
+	return &out
+}
+
 // revisionOf is the revision an egress-carrying call is ordered by: its own, else its egress's; 0 is unordered.
 func revisionOf(p proto.ResumeParams) int64 {
 	if p.Revision == 0 && p.Egress != nil {
@@ -285,8 +296,25 @@ const floorWriteAttempts = 3
 // call fails and is retried (the same revision is taken again, and its floor written again).
 var errFloorUnsaved = &proto.Error{Code: proto.ErrUnavailable, Message: "the host couldn't save the sandbox's egress revision"}
 
-// raiseFloor records that the host took a sandbox's egress at revision (it never goes down) and writes it to disk,
-// fsynced, unless it is there already: the same revision again (a retry) writes it again if an earlier write failed.
+// orderEgress is where every call that replaces a sandbox's egress (create, fork, start, resume, sandbox.egress) is
+// ordered, before it changes anything: false is a stale call (older than the egress the host has), which keeps the
+// egress it has. Otherwise the call's revision is first saved, durably, as the sandbox's floor (write-ahead): from
+// then on an older call is refused, whatever happens next (the egress failing to apply, a crash, a restart, a null
+// egress that leaves nothing in meta.json to order by). The call then applies the egress, which the tier keeps
+// durably too, and answers only after: what it acknowledges is on disk. A failure is answered as one, and Kantel
+// sends the same revision again, which is taken (and saves the floor, if that was what failed). 0 is unordered.
+func (h *Host) orderEgress(t Tier, sandboxID string, revision int64) (bool, error) {
+	if revision <= 0 {
+		return true, nil
+	}
+	if h.egressRevision(t, sandboxID) > revision {
+		return false, nil
+	}
+	return true, h.raiseFloor(sandboxID, revision)
+}
+
+// raiseFloor records that the host takes a sandbox's egress at revision (it never goes down) and writes it to disk,
+// synced, unless it is there already: the same revision again (a retry) writes it again if an earlier write failed.
 // An error means it is held in memory only.
 func (h *Host) raiseFloor(sandboxID string, revision int64) error {
 	if revision <= 0 {
@@ -307,42 +335,16 @@ func (h *Host) raiseFloor(sandboxID string, revision int64) error {
 	}
 	var err error
 	for attempt := 0; attempt < floorWriteAttempts; attempt++ {
-		if err = writeDurably(h.floorDir(), path, []byte(strconv.FormatInt(want, 10))); err == nil {
+		if err = os.MkdirAll(h.floorDir(), 0o700); err == nil {
+			err = fsutil.WriteFileDurably(path, []byte(strconv.FormatInt(want, 10)), 0o600)
+		}
+		if err == nil {
 			h.durable[sandboxID] = want
 			return nil
 		}
 	}
 	h.logf("egress revision floor for %s: %v", sandboxID, err)
 	return errFloorUnsaved
-}
-
-// writeDurably replaces path with data atomically: a synced temporary file renamed over it, then its directory synced.
-func writeDurably(dir, path string, data []byte) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
-	}
-	_, werr := f.Write(data)
-	serr := f.Sync()
-	cerr := f.Close()
-	if err := errors.Join(werr, serr, cerr); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer d.Close()
-	return d.Sync()
 }
 
 // forgetFloor drops a deleted sandbox's floor.
@@ -409,17 +411,11 @@ func installCA(ctx context.Context, t Tier, sandboxID, certPEM string) error {
 // guest until that is confirmed. The caller holds the sandbox's lifecycle lock.
 func (h *Host) setEgress(ctx context.Context, t Tier, tier string, p proto.ResumeParams) error {
 	revision := revisionOf(p)
-	if revision > 0 {
-		if h.egressRevision(t, p.SandboxID) > revision {
-			// Read before a change whose own update has already come: the sandbox keeps the newer egress.
-			return nil
-		}
-		if p.Egress != nil {
-			e := *p.Egress
-			e.Revision = revision
-			p.Egress = &e
-		}
+	if ok, err := h.orderEgress(t, p.SandboxID, revision); err != nil || !ok {
+		// Stale (read before a change whose own update has already come): the sandbox keeps the newer egress.
+		return err
 	}
+	p.Egress = withRevision(p.Egress, revision)
 	if p.Egress == nil && h.cas != nil {
 		// The host's default egress intercepts nothing.
 		_ = h.cas.Forget(p.SandboxID)
@@ -432,12 +428,7 @@ func (h *Host) setEgress(ctx context.Context, t Tier, tier string, p proto.Resum
 	if err := t.SetEgress(p.SandboxID, e); err != nil {
 		return err
 	}
-	// Taken: an older one is refused from now on, a restart and a null egress notwithstanding. The same revision again
-	// still goes (it retries a CA install that failed, or a floor write). Not durable, the call fails, so Kantel sends it
-	// again rather than count on an ordering a restart would forget.
-	if err := h.raiseFloor(p.SandboxID, revision); err != nil {
-		return err
-	}
+	// The same revision again still goes (it retries a CA install that failed).
 	if e == nil || h.cas == nil || tier != microvm.Tier {
 		return nil
 	}

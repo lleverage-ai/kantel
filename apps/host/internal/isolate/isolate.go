@@ -39,6 +39,7 @@ import (
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/egress"
 	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
+	"github.com/lleverage-ai/kantel/apps/host/internal/fsutil"
 	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
@@ -208,11 +209,8 @@ func writeJSONFile(path string, v any) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	// Durably: a sandbox's meta.json (its egress, and that egress's revision) is what the host has acknowledged.
+	return fsutil.WriteFileDurably(path, raw, 0o600)
 }
 
 func readManifest(path string) (Manifest, error) {

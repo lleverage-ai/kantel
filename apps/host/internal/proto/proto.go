@@ -315,8 +315,9 @@ type StopParams struct {
 type ResumeParams struct {
 	SandboxID string  `json:"sandboxId"`
 	Egress    *Egress `json:"egress,omitempty"`
-	// Revision (sandbox.egress) orders the update, as Egress.Revision does, null egress too: one older than the
-	// sandbox's is ignored.
+	// Revision orders the call's egress, as Egress.Revision does, null egress too: one older than the sandbox's is
+	// ignored. A call with a Revision states the sandbox's egress: on sandbox.start and sandbox.resume, no Egress
+	// with a Revision is the host's default (a clear), while no Egress without one keeps the egress it has.
 	Revision int64 `json:"revision,omitempty"`
 }
 

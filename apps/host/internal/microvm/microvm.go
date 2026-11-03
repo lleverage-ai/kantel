@@ -44,6 +44,7 @@ import (
 	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
+	"github.com/lleverage-ai/kantel/apps/host/internal/fsutil"
 	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
 	"github.com/lleverage-ai/kantel/apps/host/internal/network"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
@@ -225,11 +226,8 @@ func (m *Manager) writeMeta(s *sandbox) error {
 	if err != nil {
 		return err
 	}
-	tmp := filepath.Join(s.dir, "meta.json.tmp")
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, filepath.Join(s.dir, "meta.json"))
+	// Durably: what it holds (its egress, and that egress's revision) is what the host has acknowledged.
+	return fsutil.WriteFileDurably(filepath.Join(s.dir, "meta.json"), raw, 0o600)
 }
 
 func (m *Manager) info(s *sandbox) proto.SandboxInfo {

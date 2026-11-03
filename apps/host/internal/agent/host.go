@@ -452,6 +452,11 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			// Before any CA is made: a new one would replace the CA the running sandbox of that ID trusts.
 			return nil, &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("sandbox %s already exists on this host", p.SandboxID)}
 		}
+		if p.Egress != nil {
+			if _, err := h.orderEgress(t, p.SandboxID, p.Egress.Revision); err != nil {
+				return nil, err
+			}
+		}
 		h.requireProtected(p.SandboxID, p.Egress)
 		e, fresh, err := h.prepareEgress(h.tierName(p.Tier), p.SandboxID, p.Egress)
 		if err != nil {
@@ -464,10 +469,6 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 				_ = h.cas.Forget(p.SandboxID)
 			}
 			return nil, err
-		}
-		if p.Egress != nil {
-			// The tier keeps the egress with its revision, so its ordering is durable whatever the floor write does.
-			_ = h.raiseFloor(p.SandboxID, p.Egress.Revision)
 		}
 		return info, nil
 	case proto.MethodStop:
@@ -523,34 +524,40 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			return nil, err
 		}
 		revision := revisionOf(p)
-		if p.Egress != nil {
-			if info, err := t.Get(p.SandboxID); err == nil && info.State == proto.StateRunning {
-				// Running already, the tier changes nothing, so neither does the host: not its CA, nor what it holds.
-				p.Egress = nil
-			} else if revision > 0 && h.egressRevision(t, p.SandboxID) > revision {
-				// Read before an egress the host has taken since (a sandbox.egress while it was stopped, a clear): it
-				// boots with that one.
-				p.Egress = nil
-			}
+		// A boot with a revision states the sandbox's egress, none being the host's default; one without an egress
+		// and without a revision keeps the egress it has, CA certificate included.
+		states := p.Egress != nil || revision > 0
+		if info, err := t.Get(p.SandboxID); err == nil && info.State == proto.StateRunning {
+			// Running already, the tier changes nothing, so neither does the host: not its CA, nor what it holds.
+			states = false
 		}
-		if p.Egress != nil {
-			if revision > 0 {
-				// Kept with the egress by the tier, so the order holds across a restart, whatever the floor write does.
-				e := *p.Egress
-				e.Revision = revision
-				p.Egress = &e
+		if states {
+			ok, err := h.orderEgress(t, p.SandboxID, revision)
+			if err != nil {
+				return nil, err
 			}
-			// Without one the sandbox keeps its own, CA certificate included.
+			// Stale (read before an egress the host has taken since: a sandbox.egress while it was stopped, a clear):
+			// it boots with that one.
+			states = ok
+		}
+		p.Egress = withRevision(p.Egress, revision)
+		if !states {
+			p.Egress = nil
+		} else if p.Egress == nil {
+			// The host's default from now: the egress it had goes, as a sandbox.egress clear does, before it boots.
+			if h.cas != nil {
+				_ = h.cas.Forget(p.SandboxID)
+			}
+			if err := t.SetEgress(p.SandboxID, nil); err != nil {
+				return nil, err
+			}
+		} else {
 			h.requireProtected(p.SandboxID, p.Egress)
 			if p.Egress, _, err = h.prepareEgress(name, p.SandboxID, p.Egress); err != nil {
 				return nil, err
 			}
 		}
-		info, err := t.Resume(ctx, p, method == proto.MethodStart)
-		if err == nil && p.Egress != nil {
-			_ = h.raiseFloor(p.SandboxID, revision)
-		}
-		return info, err
+		return t.Resume(ctx, p, method == proto.MethodStart)
 	case proto.MethodFork:
 		p, err := decode[proto.ForkParams](params)
 		if err != nil {
@@ -570,6 +577,11 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 				return nil, err
 			}
 		}
+		if p.Egress != nil {
+			if _, err := h.orderEgress(t, p.NewID, p.Egress.Revision); err != nil {
+				return nil, err
+			}
+		}
 		h.requireProtected(p.NewID, p.Egress)
 		// The fork gets its own CA: its parent's would let one sandbox's key be used for another's traffic.
 		e, fresh, err := h.prepareEgress(name, p.NewID, p.Egress)
@@ -583,9 +595,6 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 				_ = h.cas.Forget(p.NewID)
 			}
 			return nil, err
-		}
-		if p.Egress != nil {
-			_ = h.raiseFloor(p.NewID, p.Egress.Revision)
 		}
 		return info, nil
 	case proto.MethodDelete:

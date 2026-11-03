@@ -34,6 +34,8 @@ type lifecycleTier struct {
 	execs   []proto.ExecParams
 	// failExecs is how many installs fail before they work.
 	failExecs int
+	// failSetEgress is how many SetEgress calls fail (a meta.json that can't be written).
+	failSetEgress int
 	// hold, when set, is waited on inside Create and SetEgress (once each call has started).
 	hold    chan struct{}
 	inside  atomic.Int32
@@ -132,6 +134,10 @@ func (f *lifecycleTier) SetEgress(id string, e *proto.Egress) error {
 	defer f.enter()()
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.failSetEgress > 0 {
+		f.failSetEgress--
+		return &proto.Error{Code: proto.ErrUnavailable, Message: "meta.json: no space left"}
+	}
 	f.egress[id] = e
 	return nil
 }
@@ -657,8 +663,98 @@ func TestEgressOrderingHoldsAcrossBootsAndRestarts(t *testing.T) {
 	}
 }
 
-// A clear whose floor can't be written fails, though it was applied, so Kantel sends it again; the retry (the same
-// revision) writes the floor, and only then is it acknowledged: a restart after that still refuses an older update.
+// A boot with a revision states the egress, none being the host's default: an update read before it (a push from
+// before the stop, still on its way) is refused after, a restart notwithstanding. One without a revision keeps it.
+func TestARevisionedBootStatesTheEgress(t *testing.T) {
+	tier := newLifecycleTier()
+	h := newLifecycleHost(t, tier)
+	deny := func(rev int64, host string) *proto.Egress {
+		return &proto.Egress{Mode: "proxy", Revision: rev, Grants: []proto.Grant{{Action: "deny", Host: host, Rule: "deny " + host}}}
+	}
+	held := func() *proto.Egress { e, _ := tier.EgressOf("sbx_1"); return e }
+	if err := call(t, h, proto.MethodCreate, proto.CreateParams{SandboxID: "sbx_1", Egress: deny(5, "first.example")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := call(t, h, proto.MethodStop, proto.StopParams{SandboxID: "sbx_1"}); err != nil {
+		t.Fatal(err)
+	}
+	// Its grants were all removed while it was stopped: the boot says so with its revision alone.
+	if err := call(t, h, proto.MethodStart, proto.ResumeParams{SandboxID: "sbx_1", Revision: 40}); err != nil {
+		t.Fatal(err)
+	}
+	if e := held(); e != nil {
+		t.Fatalf("a revisioned boot without egress kept the old one: %+v", e)
+	}
+	if err := call(t, h, proto.MethodEgress, proto.ResumeParams{SandboxID: "sbx_1", Egress: deny(20, "old.example"), Revision: 20}); err != nil {
+		t.Fatal(err)
+	}
+	if e := held(); e != nil {
+		t.Fatalf("a push from before the boot replaced its egress: %+v", e)
+	}
+	restarted := &Host{
+		cfg: h.cfg, log: h.log, tiers: h.tiers, order: h.order, bySlot: map[int]egress.Rules{},
+		cas: egress.NewCAStore(h.cfg.Root + "/egress-ca"),
+	}
+	restarted.secrets = protect.NewStore(restarted.fetchSecrets)
+	if err := call(t, restarted, proto.MethodEgress, proto.ResumeParams{SandboxID: "sbx_1", Egress: deny(30, "old.example"), Revision: 30}); err != nil {
+		t.Fatal(err)
+	}
+	if e := held(); e != nil {
+		t.Fatalf("after a restart, a push from before the boot replaced its egress: %+v", e)
+	}
+	// Unrevisioned (an older control plane), a boot without egress keeps what it has.
+	if err := call(t, restarted, proto.MethodEgress, proto.ResumeParams{SandboxID: "sbx_1", Egress: deny(41, "kept.example"), Revision: 41}); err != nil {
+		t.Fatal(err)
+	}
+	if err := call(t, restarted, proto.MethodStop, proto.StopParams{SandboxID: "sbx_1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := call(t, restarted, proto.MethodResume, proto.ResumeParams{SandboxID: "sbx_1"}); err != nil {
+		t.Fatal(err)
+	}
+	if e := held(); e == nil || e.Grants[0].Host != "kept.example" {
+		t.Fatalf("an unrevisioned boot without egress didn't keep it: %+v", e)
+	}
+}
+
+// The floor is saved before the egress is applied: an update that fails to apply has already refused everything
+// older, and the same revision again applies it.
+func TestTheFloorIsSavedBeforeTheEgressIsApplied(t *testing.T) {
+	tier := newLifecycleTier()
+	h := newLifecycleHost(t, tier)
+	deny := func(rev int64, host string) *proto.Egress {
+		return &proto.Egress{Mode: "proxy", Revision: rev, Grants: []proto.Grant{{Action: "deny", Host: host, Rule: "deny " + host}}}
+	}
+	held := func() *proto.Egress { e, _ := tier.EgressOf("sbx_1"); return e }
+	if err := call(t, h, proto.MethodCreate, proto.CreateParams{SandboxID: "sbx_1", Egress: deny(5, "first.example")}); err != nil {
+		t.Fatal(err)
+	}
+	tier.mu.Lock()
+	tier.failSetEgress = 1
+	tier.mu.Unlock()
+	if err := call(t, h, proto.MethodEgress, proto.ResumeParams{SandboxID: "sbx_1", Revision: 30}); err == nil {
+		t.Fatal("an update that wasn't applied was acknowledged")
+	}
+	if raw, err := os.ReadFile(filepath.Join(h.cfg.Root, "egress-revision", "sbx_1")); err != nil || strings.TrimSpace(string(raw)) != "30" {
+		t.Fatalf("the floor wasn't saved first: %q %v", raw, err)
+	}
+	if err := call(t, h, proto.MethodEgress, proto.ResumeParams{SandboxID: "sbx_1", Egress: deny(25, "old.example"), Revision: 25}); err != nil {
+		t.Fatal(err)
+	}
+	if e := held(); e == nil || e.Grants[0].Host != "first.example" {
+		t.Fatalf("an older update was applied after a newer one failed: %+v", e)
+	}
+	if err := call(t, h, proto.MethodEgress, proto.ResumeParams{SandboxID: "sbx_1", Revision: 30}); err != nil {
+		t.Fatal(err)
+	}
+	if e := held(); e != nil {
+		t.Fatalf("the retry: %+v", e)
+	}
+}
+
+// A clear whose floor can't be written fails before it is applied, so Kantel sends it again; the retry (the same
+// revision) writes the floor and applies it, and only then is it acknowledged: a restart after that still refuses an
+// older update.
 func TestAFloorThatIsNotSavedFailsTheCallUntilARetrySavesIt(t *testing.T) {
 	tier := newLifecycleTier()
 	h := newLifecycleHost(t, tier)
@@ -682,15 +778,15 @@ func TestAFloorThatIsNotSavedFailsTheCallUntilARetrySavesIt(t *testing.T) {
 	if !errors.As(err, &perr) || perr.Code != proto.ErrUnavailable {
 		t.Fatalf("a clear whose floor wasn't saved was acknowledged: %v", err)
 	}
-	// Applied all the same (the old policy isn't kept running), and ordered in memory meanwhile.
-	if e := held(); e != nil {
-		t.Fatalf("the clear: %+v", e)
+	// Not applied (the floor goes first), and ordered in memory meanwhile: an older update is refused.
+	if e := held(); e == nil || e.Grants[0].Host != "first.example" {
+		t.Fatalf("a clear whose floor wasn't saved was applied: %+v", e)
 	}
 	if err := call(t, h, proto.MethodEgress, proto.ResumeParams{SandboxID: "sbx_1", Egress: deny(25, "old.example"), Revision: 25}); err != nil {
 		t.Fatal(err)
 	}
-	if e := held(); e != nil {
-		t.Fatalf("a stale update replaced a newer clear: %+v", e)
+	if e := held(); e == nil || e.Grants[0].Host != "first.example" {
+		t.Fatalf("a stale update was applied after a newer one: %+v", e)
 	}
 	// The same clear again, once the disk is fine, saves it and is acknowledged.
 	if err := os.Remove(dir); err != nil {
