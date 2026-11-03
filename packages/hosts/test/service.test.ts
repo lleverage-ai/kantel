@@ -170,7 +170,7 @@ describe("hosts service", () => {
 		const { hostId, credential, token } = await join("box-1", { region: "eu" });
 		expect(token.token).toMatch(/^kth_/);
 		expect(token.command).toBe(
-			`sudo npx -y @kantel/host@latest install --url https://kantel.example.com --token ${token.token}`,
+			`curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url https://kantel.example.com --token ${token.token}`,
 		);
 		expect(credential).toMatch(/^khc_/);
 		await expect(service.register({ token: token.token })).rejects.toSatisfy((error) =>

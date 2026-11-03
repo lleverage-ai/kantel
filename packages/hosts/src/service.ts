@@ -93,8 +93,8 @@ export interface HostsServiceOptions {
 	/** Where hosts reach this deployment, for the join command: `https://kantel.example.com`. */
 	readonly publicUrl: string;
 	/**
-	 * The join command, with `{url}` and `{token}`. Default: the npm package's,
-	 * `sudo npx -y @kantel/host@latest install --url {url} --token {token}`.
+	 * The join command, with `{url}` and `{token}`. Default: the host installer from Kantel's latest GitHub Release,
+	 * `curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url {url} --token {token}`.
 	 */
 	readonly joinCommand?: string;
 	/** Warm sandboxes wanted on every host, by `<tier>/<size>`. Default `{"microvm/default": 1}`. */
@@ -174,7 +174,8 @@ export async function hashSecret(value: string): Promise<string> {
 	return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-const DEFAULT_JOIN_COMMAND = "sudo npx -y @kantel/host@latest install --url {url} --token {token}";
+const DEFAULT_JOIN_COMMAND =
+	"curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url {url} --token {token}";
 const LABEL_KEY = /^[a-z0-9][a-z0-9._/-]{0,62}$/i;
 /** States that hold the sandbox's vCPUs and memory on its host; a stopped one holds only its disk. */
 const LIVE = new Set(["starting", "running", "stopping"]);

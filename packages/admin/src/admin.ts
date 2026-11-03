@@ -1,16 +1,15 @@
 /**
- * `kantel-admin` (`npx @kantel/admin`): the command for whoever runs a self-hosted Kantel. It installs and upgrades the
- * control plane (by running kantel.dev's install.sh, never a copy of it), changes the stack's settings in
- * `~/.kantel/src/deploy/compose/.env`, reads the first compute key, and adds, lists, drains and revokes the Linux hosts
- * that run sandboxes. `host join`, run as root on a new machine, launches the Go `kantel-host` from `@kantel/host` and
- * its per-platform packages: npm only distributes it.
+ * `kantel-admin`: the command for whoever runs a self-hosted Kantel, a single file attached to each of Kantel's GitHub
+ * Releases. It installs and upgrades the control plane (by running kantel.dev's install.sh, never a copy of it),
+ * changes the stack's settings in `~/.kantel/src/deploy/compose/.env`, reads the first compute key, and adds, lists,
+ * drains and revokes the Linux hosts that run sandboxes. `host join`, run as root on a new machine, runs the release's
+ * host installer (install.sh), which downloads the Go `kantel-host`, checks its SHA-256 and runs its `install`.
  *
  * The API commands use the same settings as `kantel`: `--url`/`--key`, `KANTEL_URL`/`KANTEL_API_KEY`, or the file
  * `kantel login` writes. They need a key with `hosts:admin`, which a deployment's first compute key has.
  */
 import { spawn as nodeSpawn } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { createKantelClient, type Host, KantelApiError, type KantelClient } from "@kantel/api/sdk";
@@ -39,6 +38,8 @@ import packageJson from "../package.json" with { type: "json" };
 export const VERSION: string = packageJson.version;
 /** Where the installer comes from; `KANTEL_INSTALLER_URL` changes it. */
 export const INSTALLER_URL = "https://kantel.dev/install.sh";
+/** The host installer `host join` runs, from Kantel's latest GitHub Release; `KANTEL_HOST_INSTALLER_URL` changes it. */
+export const HOST_INSTALLER_URL = "https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh";
 /** The control plane's port on 127.0.0.1 unless `KANTEL_GATEWAY_PORT` says otherwise. */
 const DEFAULT_PORT = "58090";
 
@@ -69,8 +70,6 @@ export interface AdminOptions {
 	/** The user's home, for `~/.kantel`. */
 	readonly home?: string;
 	readonly spawn?: Spawn;
-	/** The path of `@kantel/host`'s launcher, when npm installed it beside this package. */
-	readonly hostLauncher?: () => string | undefined;
 	readonly platform?: NodeJS.Platform;
 	/** Whether this process is root, for `host join`. */
 	readonly isRoot?: boolean;
@@ -84,7 +83,6 @@ interface Io {
 	readonly configDir: string;
 	readonly home: string;
 	readonly spawn: Spawn;
-	readonly hostLauncher: () => string | undefined;
 	readonly platform: NodeJS.Platform;
 	readonly isRoot: boolean;
 }
@@ -106,14 +104,6 @@ const defaultSpawn: Spawn = (command, args, options = {}) =>
 		);
 		if (options.input !== undefined) child.stdin?.end(options.input);
 	});
-
-function defaultHostLauncher(): string | undefined {
-	try {
-		return createRequire(import.meta.url).resolve("@kantel/host/bin/kantel-host.js");
-	} catch {
-		return undefined;
-	}
-}
 
 // The stack's settings file.
 
@@ -213,17 +203,18 @@ async function runInstaller(ctx: Context, upgrade: boolean): Promise<number> {
 	if (upgrade) args.push("--upgrade");
 	args.push(...ctx.rest);
 	const url = ctx.io.env.KANTEL_INSTALLER_URL || INSTALLER_URL;
-	let script: string;
-	if (url.startsWith("/") || url.startsWith("file:")) {
-		script = await readFile(url.replace(/^file:\/\//, ""), "utf8");
-	} else {
-		const response = await ctx.io.fetch(url);
-		if (!response.ok) throw new CliError(`couldn't download the installer from ${url}: HTTP ${response.status}`);
-		script = await response.text();
-	}
+	const script = await fetchScript(ctx, url, "the installer");
 	ctx.note(`kantel-admin: running ${url} ${args.join(" ")}`.trimEnd());
 	const ran = await ctx.io.spawn("sh", ["-s", "--", ...args], { input: script });
 	return ran.code;
+}
+
+/** A script to run: a path or file: URL is read, anything else downloaded. */
+async function fetchScript(ctx: Context, url: string, what: string): Promise<string> {
+	if (url.startsWith("/") || url.startsWith("file:")) return await readFile(url.replace(/^file:\/\//, ""), "utf8");
+	const response = await ctx.io.fetch(url);
+	if (!response.ok) throw new CliError(`couldn't download ${what} from ${url}: HTTP ${response.status}`);
+	return await response.text();
 }
 
 async function envPath(ctx: Context): Promise<string> {
@@ -515,9 +506,9 @@ const COMMANDS: readonly CommandSpec[] = [
 			},
 		},
 		details:
-			"The machine needs Linux with /dev/kvm for microVMs, Node.js for npx, and root. It dials out to the control\n" +
-			"plane, so it needs no open port. The command it prints is:\n" +
-			"  sudo npx -y @kantel/host@latest install --url <kantel> --token kth_…\n" +
+			"The machine needs Linux with /dev/kvm for microVMs, curl and root. It dials out to the control plane, so it\n" +
+			"needs no open port. The command it prints runs the host installer from Kantel's latest release:\n" +
+			`  curl -fsSL ${HOST_INSTALLER_URL} | sudo sh -s -- --url <kantel> --token kth_…\n` +
 			"which kantel-admin host join runs too.",
 		async run(ctx) {
 			const labels: { [key: string]: string } = {};
@@ -552,10 +543,11 @@ const COMMANDS: readonly CommandSpec[] = [
 			token: { type: "string", value: "<kth_…>", description: "The join token from kantel-admin host add" },
 		},
 		details:
-			"  sudo npx -y @kantel/admin host join --url https://kantel.example.com --token kth_…\n" +
-			"It runs @kantel/host's kantel-host install, which checks /dev/kvm, copies the binary to /usr/local/bin,\n" +
-			"fetches Firecracker and the images and starts the kantel-host service. Anything after -- goes to it, such\n" +
-			"as -- --tiers isolate --isolate-runtime native on a machine without KVM.",
+			"  sudo kantel-admin host join --url https://kantel.example.com --token kth_…\n" +
+			"It runs the host installer from Kantel's latest release (KANTEL_HOST_INSTALLER_URL runs another), which\n" +
+			"downloads kantel-host, checks its SHA-256 and runs kantel-host install: that checks /dev/kvm, copies the\n" +
+			"binary to /usr/local/bin, fetches Firecracker and the images and starts the kantel-host service. Anything\n" +
+			"after -- goes to it, such as -- --tiers isolate --isolate-runtime native on a machine without KVM.",
 		async run(ctx) {
 			const url = ctx.string("url");
 			const token = ctx.string("token");
@@ -563,11 +555,14 @@ const COMMANDS: readonly CommandSpec[] = [
 				throw new UsageError("give both: kantel-admin host join --url <kantel> --token <kth_…>");
 			}
 			if (!ctx.io.isRoot) {
-				throw new CliError(
-					"joining installs a system service, so it needs root: sudo npx -y @kantel/admin host join …",
-				);
+				throw new CliError("joining installs a system service, so it needs root: sudo kantel-admin host join …");
 			}
-			return kantelHost(ctx, ["install", "--url", originOf(normaliseUrl(url)), "--token", token, ...ctx.rest]);
+			linuxOnly(ctx);
+			const installer = ctx.io.env.KANTEL_HOST_INSTALLER_URL || HOST_INSTALLER_URL;
+			const script = await fetchScript(ctx, installer, "the host installer");
+			const args = ["--url", originOf(normaliseUrl(url)), "--token", token, ...ctx.rest];
+			ctx.note(`kantel-admin: running ${installer} ${args.join(" ").replace(/kth_\S+/, "kth_…")}`);
+			return (await ctx.io.spawn("sh", ["-s", "--", ...args], { input: script })).code;
 		},
 	},
 	{
@@ -613,19 +608,25 @@ const COMMANDS: readonly CommandSpec[] = [
 	},
 ];
 
-/** Runs `kantel-host` on this machine: from `@kantel/host` beside us, else through npx. */
-async function kantelHost(ctx: Context, args: readonly string[]): Promise<number> {
+function linuxOnly(ctx: Context): void {
 	if (ctx.io.platform !== "linux") {
 		throw new CliError(
 			`kantel-host runs on Linux (x64 or arm64), not ${ctx.io.platform}: run this on the machine to add`,
 		);
 	}
-	const launcher = ctx.io.hostLauncher();
-	const ran =
-		launcher === undefined
-			? await ctx.io.spawn("npx", ["-y", "@kantel/host@latest", ...args])
-			: await ctx.io.spawn(process.execPath, [launcher, ...args]);
-	return ran.code;
+}
+
+/** Runs the `kantel-host` that `host join` installed on this machine. */
+async function kantelHost(ctx: Context, args: readonly string[]): Promise<number> {
+	linuxOnly(ctx);
+	try {
+		return (await ctx.io.spawn("kantel-host", args)).code;
+	} catch (error) {
+		if (error instanceof CliError && /ENOENT/.test(error.message)) {
+			throw new CliError("kantel-host isn't installed on this machine: join it first, with kantel-admin host join");
+		}
+		throw error;
+	}
 }
 
 // Help.
@@ -650,7 +651,7 @@ function mainHelp(): string {
 	return [
 		`kantel-admin ${VERSION}: run a self-hosted Kantel and its hosts.`,
 		"",
-		"Usage: npx @kantel/admin <command> [flags]   (kantel-admin once installed)",
+		"Usage: kantel-admin <command> [flags]",
 		"",
 		...COMMANDS.map((command) => `  ${usage(command).padEnd(width)}  ${command.summary}`),
 		"",
@@ -705,7 +706,6 @@ export async function runAdmin(argv: readonly string[], options: AdminOptions = 
 		configDir: configDirectory(env, options.configDir),
 		home: options.home ?? homedir(),
 		spawn: options.spawn ?? defaultSpawn,
-		hostLauncher: options.hostLauncher ?? defaultHostLauncher,
 		platform: options.platform ?? process.platform,
 		isRoot: options.isRoot ?? process.getuid?.() === 0,
 	};

@@ -3,7 +3,7 @@
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
-	"description": "kantel-admin: install and upgrade a self-hosted Kantel, turn on its compute plane, and add, drain and revoke the Linux hosts that run its sandboxes (npx @kantel/admin …)",
+	"description": "kantel-admin: install and upgrade a self-hosted Kantel, turn on its compute plane, and add, drain and revoke the Linux hosts that run its sandboxes. Released as one file, kantel-admin.js, on Kantel's GitHub Releases",
 	"license": "Apache-2.0",
 	"bin": {
 		"kantel-admin": "./src/main.ts"

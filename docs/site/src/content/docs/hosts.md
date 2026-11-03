@@ -8,7 +8,7 @@ sidebar:
 ---
 
 :::caution[Experimental]
-`kantel-host`, its settings and the hosts API may still change, and `kantel-host` isn't published yet, so this page builds it from the repository.
+`kantel-host`, its settings and the hosts API may still change.
 :::
 
 A host is a Linux machine that runs sandboxes. It runs `kantel-host`, which boots microVMs with Firecracker, and isolates with workerd inside a microVM. The host dials out to the control plane over a WebSocket and keeps that connection open, so it needs no inbound port and can sit behind NAT. A sandbox stays on the host it started on, since its disk and memory are there.
@@ -25,11 +25,14 @@ A host is a Linux machine that runs sandboxes. It runs `kantel-host`, which boot
 | Root | `kantel-host` makes TAP devices and iptables rules |
 | Tools | `ip`, `iptables`, `mkfs.ext4`, `cp`, and `/dev/net/tun` (`modprobe tun`) |
 | Disk and memory | 20 GiB free under `/var/lib/kantel-host` and 4 GiB of memory, or more |
-| Network | Outbound to the control plane's public URL. When installing, also to GitHub, for Firecracker |
+| Network | Outbound to the control plane's public URL. When installing, also to GitHub, for `kantel-host`, Firecracker and the images |
 
 ## Check a machine
 
+To check a machine before it joins, install only the binary, then run its checks:
+
 ```sh
+curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --no-join
 sudo kantel-host doctor
 ```
 
@@ -52,7 +55,15 @@ This machine can run both tiers: microVMs (Firecracker) and isolates (workerd, i
 
 ## Get kantel-host and the images
 
-The join command Kantel prints runs `npx -y @kantel/host@latest`, but that package isn't on npm yet. Until it is, build the binary from Kantel's repository with Go 1.26 or later:
+Each of Kantel's [GitHub Releases](https://github.com/lleverage-ai/kantel/releases) carries `kantel-host` for Linux on x86_64 and arm64 (`kantel-host-linux-amd64`, `kantel-host-linux-arm64`), the host installer `install.sh`, and `SHA256SUMS`. The join command Kantel prints runs that installer from the latest release:
+
+```sh
+curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url https://kantel.example.com --token kth_…
+```
+
+The line works the same in bash, zsh and fish, since the script runs under `sh`. It picks the binary for the machine's architecture, downloads it with `SHA256SUMS` from the same release, refuses it if its SHA-256 doesn't match, and then runs `kantel-host install` with the options after `--`. Two options of its own come first: `--version 0.2.0` installs that release rather than the latest, and `--no-join` only puts the binary in `/usr/local/bin`. Every release file has a build provenance attestation too, which `gh attestation verify kantel-host-linux-amd64 --repo lleverage-ai/kantel` checks.
+
+To build `kantel-host` yourself instead, with Go 1.26 or later:
 
 ```sh
 git clone https://github.com/lleverage-ai/kantel.git
@@ -60,7 +71,7 @@ cd kantel
 (cd apps/host && CGO_ENABLED=0 go build -trimpath -o dist/kantel-host ./cmd/kantel-host)
 ```
 
-Add `GOARCH=arm64` to build it for an aarch64 host on an x86_64 machine. Copy `apps/host/dist/kantel-host` to each host.
+Add `GOARCH=arm64` to build it for an aarch64 host on an x86_64 machine, copy `apps/host/dist/kantel-host` to the host, and run `sudo ./kantel-host install --url … --token …` there in place of the join command.
 
 A host also needs a guest kernel and a sandbox image. Kantel publishes them for x86_64 as a public [GitHub Release](https://github.com/lleverage-ai/kantel/releases), and the installer fetches them from there by default, so there's nothing to build. The sandbox image is Ubuntu 26.04 with Docker, an XFCE desktop, Chromium and SSH, and the release also has the isolate image. `manifest.json` lists each file with its SHA-256. The installer reads it, and refuses a file whose digest doesn't match. `THIRD-PARTY-NOTICES.md`, in the release and in the image, says what the images contain and under which licences. The release also carries the exact source of the GPL and LGPL libraries the sandbox image bundles outside a distro package (libx264, x265 and libde265, in Selkies' screen encoder), listed in `SOURCES.md` with their SHA-256.
 
@@ -95,13 +106,13 @@ Then make a join token, with [`kantel-admin`](/self-hosting/admin-cli/), on the 
 kantel-admin host add --name builder-1 --label zone=ams
 ```
 
-A token works once, and for an hour unless `--expires-minutes` says otherwise. The host takes its name and labels from it. On the machine, run the printed command with the binary you built in place of `npx -y @kantel/host@latest`:
+A token works once, and for an hour unless `--expires-minutes` says otherwise. The host takes its name and labels from it. On the machine, run the printed command:
 
 ```sh
-sudo ./kantel-host install --url https://kantel.example.com --token kth_…
+curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url https://kantel.example.com --token kth_…
 ```
 
-Install:
+The installer hands its options to `kantel-host install`, which:
 
 1. checks for `/dev/kvm` and nested virtualisation;
 2. copies itself to `/usr/local/bin/kantel-host`;
@@ -125,14 +136,14 @@ Without systemd, such as in a container, install stops after step 4: run `kantel
 | `--config FILE` | The settings file. Default `/etc/kantel-host/config.json` |
 | `--no-start` | Install and register, but don't start the service |
 
-`kantel-admin host join --url … --token …`, and `host add --ssh root@builder-1`, run the same install through `npx @kantel/host`, so they work only once that package is published.
+Put any of these after the token in the join command. `sudo kantel-admin host join --url … --token …` on the machine runs the same installer, and `kantel-admin host add --ssh root@builder-1` runs the printed command on the machine over SSH.
 
 ### Without KVM
 
 A machine with no usable `/dev/kvm` can still run isolates, with workerd straight on the host rather than inside a microVM:
 
 ```sh
-sudo ./kantel-host install --url https://kantel.example.com --token kth_… --tiers isolate --isolate-runtime native --images …
+curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url https://kantel.example.com --token kth_… --tiers isolate --isolate-runtime native --images …
 ```
 
 workerd isn't a hardened sandbox, so give such a host only code you trust. Its images need `workerd-amd64` (or `workerd-arm64`) in the manifest, and the repository has no script yet that puts it there.
@@ -191,19 +202,19 @@ Each host keeps one warm `default` microVM ready. `KANTEL_COMPUTE_POOLS` on the 
 ## Update a host
 
 ```sh
-sudo kantel-host update --url https://downloads.example.com/kantel-host-linux-amd64
+sudo kantel-host update                  # the latest release
+sudo kantel-host update --version 0.2.0  # or a given one
 ```
 
-`update` downloads the binary, checks that it runs, replaces `/usr/local/bin/kantel-host` and restarts the service. A URL ending `.gz` is unpacked. The control plane doesn't serve `kantel-host` binaries itself, so give `--url`. Running sandboxes keep running through the restart, and the new agent takes them over.
+`update` downloads the release's binary for the machine, checks it against the release's `SHA256SUMS`, replaces `/usr/local/bin/kantel-host` and restarts the service. `--url` takes a binary from elsewhere instead, unchecked, and one ending `.gz` is unpacked. Running sandboxes keep running through the restart, and the new agent takes them over.
 
-To have hosts update themselves, set the version you want and where to get it on the control plane:
+To have hosts update themselves, set the version you want on the control plane:
 
 ```sh
-kantel-admin config set KANTEL_HOST_VERSION=0.2.0 \
-  'KANTEL_HOST_UPDATE_URL=https://downloads.example.com/{version}/kantel-host-{os}-{arch}' --apply
+kantel-admin config set KANTEL_HOST_VERSION=0.2.0 --apply
 ```
 
-A host on another version then fetches that URL, with `{os}` as `linux` and `{arch}` as `amd64` or `arm64`, and restarts into it. `kantel-admin host list` shows the newer version beside each host that hasn't moved yet. To keep a host where it is, set `"autoUpdate": false` in its settings file.
+A host on another version then fetches that version from Kantel's GitHub Release, checks it against the release's `SHA256SUMS`, and restarts into it. To serve the binaries yourself, also set `'KANTEL_HOST_UPDATE_URL=https://downloads.example.com/{version}/kantel-host-{os}-{arch}'`. A host fetches that URL, with `{os}` as `linux` and `{arch}` as `amd64` or `arm64`, and restarts into it. `kantel-admin host list` shows the newer version beside each host that hasn't moved yet. To keep a host where it is, set `"autoUpdate": false` in its settings file.
 
 ## Drain, revoke and remove
 

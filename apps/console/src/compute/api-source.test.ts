@@ -332,7 +332,7 @@ describe("hosts", () => {
 
 		const join = await source.hosts.join({ name: "rack-1" });
 		expect(join.token).toMatch(/^kth_/);
-		expect(join.command).toContain("@kantel/host");
+		expect(join.command).toContain("/releases/latest/download/install.sh");
 		expect(join.command).toContain(join.token);
 
 		const hosts = await source.hosts.list();

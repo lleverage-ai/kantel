@@ -7,18 +7,15 @@ description: kantel-admin installs and upgrades a self-hosted Kantel, changes it
 
 ## Install it
 
-It needs Node.js 22 or later, and [pnpm](https://pnpm.io/) 10 to build it. `@kantel/admin` isn't on npm yet, so build it from Kantel's repository, as for [`kantel`](/tools/cli/#install-it):
+It needs Node.js 22 or later. It isn't on npm: each of Kantel's [GitHub Releases](https://github.com/lleverage-ai/kantel/releases) carries it as one file, `kantel-admin.js`. These lines work in bash, zsh and fish:
 
 ```sh
-git clone https://github.com/lleverage-ai/kantel.git
-cd kantel
-pnpm install --frozen-lockfile --filter '@kantel/admin...'
-pnpm --filter @kantel/admin build
-npm install -g ./packages/admin/dist
+sudo curl -fsSLo /usr/local/bin/kantel-admin https://github.com/lleverage-ai/kantel/releases/latest/download/kantel-admin.js
+sudo chmod 755 /usr/local/bin/kantel-admin
 kantel-admin version
 ```
 
-The build writes one file, `packages/admin/dist/kantel-admin.js`. Keep the clone, and run `git pull` and the build again to update it. Once the package is on npm, `npx @kantel/admin <command>` will run it with nothing to install.
+Run the same lines again to update it. The release's `SHA256SUMS` has the file's SHA-256, and `gh attestation verify /usr/local/bin/kantel-admin --repo lleverage-ai/kantel` checks that Kantel's release workflow built it. To build it yourself instead, run `pnpm install --frozen-lockfile --filter '@kantel/admin...'` and `pnpm --filter @kantel/admin build` in a clone of the repository, which writes `packages/admin/dist/kantel-admin.js`.
 
 ## Set up a control plane
 
@@ -67,16 +64,14 @@ The console's **Hosts** page does the same: **Add a host** makes the join comman
 `host add` makes a one-use join token (an hour unless `--expires-minutes` says otherwise) and prints the command to run on the machine as root:
 
 ```text
-sudo npx -y @kantel/host@latest install --url https://kantel.example.com --token kth_...
+curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url https://kantel.example.com --token kth_...
 ```
 
-:::note
-That command, `host join`, `host add --ssh` and `host run` all fetch `@kantel/host` with `npx`, and the package isn't on npm yet. Until it is, build `kantel-host` from the repository and run it on the machine with the same `--url` and `--token`, as [Hosts](/hosts/#add-a-host) shows.
-:::
+That runs the host installer from Kantel's latest release, which downloads `kantel-host` for the machine, checks it against the release's `SHA256SUMS` and runs `kantel-host install`. It pastes into bash, zsh and fish alike.
 
-`kantel-admin host join --url https://kantel.example.com --token kth_...`, run as root on the machine, does the same as the printed command. With `--ssh root@builder-1`, `host add` runs the command on the machine for you over SSH. Arguments after `--` go to `kantel-host install`, such as `-- --tiers isolate --isolate-runtime native` on a machine without KVM (for trusted code only).
+`sudo kantel-admin host join --url https://kantel.example.com --token kth_...`, on the machine, does the same as the printed command (`KANTEL_HOST_INSTALLER_URL` runs another copy of the installer). With `--ssh root@builder-1`, `host add` runs the command on the machine for you over SSH. Arguments after `--` go to `kantel-host install`, such as `-- --tiers isolate --isolate-runtime native` on a machine without KVM (for trusted code only).
 
-`host run -- <command>` runs any other `kantel-host` command on the machine you're on: `doctor`, `status`, `update`, `uninstall`.
+`host run -- <command>` runs any other command of the `kantel-host` installed on the machine you're on: `doctor`, `status`, `update`, `uninstall`.
 
 ## Look after hosts
 

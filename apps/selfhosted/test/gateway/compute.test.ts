@@ -156,6 +156,19 @@ describe("the compute plane on the gateway", () => {
 		});
 	});
 
+	it("asks hosts to update only for KANTEL_HOST_VERSION, from its GitHub Release by default", () => {
+		const env = { KANTEL_COMPUTE_BACKEND: "hosts", KANTEL_PUBLIC_URL: "https://kantel.example.com" };
+		expect(computeConfig(env)?.hosts?.desiredVersion).toBeUndefined();
+		expect(computeConfig({ ...env, KANTEL_HOST_VERSION: "0.2.0" })?.hosts).toMatchObject({
+			desiredVersion: "0.2.0",
+			updateUrl: "https://github.com/lleverage-ai/kantel/releases/download/v{version}/kantel-host-{os}-{arch}",
+		});
+		expect(
+			computeConfig({ ...env, KANTEL_HOST_VERSION: "0.2.0", KANTEL_HOST_UPDATE_URL: "https://dl.example/{version}" })
+				?.hosts?.updateUrl,
+		).toBe("https://dl.example/{version}");
+	});
+
 	it("points hosts at Kantel's published images unless KANTEL_COMPUTE_IMAGES says otherwise", () => {
 		const env = {
 			KANTEL_COMPUTE_BACKEND: "hosts",
