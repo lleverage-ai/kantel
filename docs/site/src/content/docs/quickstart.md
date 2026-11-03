@@ -8,7 +8,7 @@ sidebar:
 ---
 
 :::caution[Experimental]
-Hosts, the compute API and its commands may still change. Kantel's commands aren't on npm yet and there is no published set of sandbox images, so this page builds both from the repository. Expect the steps to get shorter.
+Hosts, the compute API and its commands may still change. Kantel's commands aren't on npm yet, so this page builds them from the repository; the sandbox images are published for x86_64. Expect the steps to get shorter.
 :::
 
 This page goes from nothing to a running microVM on a Linux machine of your own. It puts the control plane and the host on one machine, which is the quickest way to try it. To use separate machines, see [Hosts](/hosts/).
@@ -17,7 +17,7 @@ This page goes from nothing to a running microVM on a Linux machine of your own.
 
 - A Linux machine on x86_64 or aarch64, with `/dev/kvm` and root. Bare metal works, and so does a cloud VM that has nested virtualisation turned on. Plan for at least 20 GiB of free disk and 4 GiB of memory.
 - Docker with the Compose v2 plugin, for the control plane. See [Install Kantel](/self-hosting/install/#what-you-need).
-- To build the commands and images: `git`, Node.js 22 or later, [pnpm](https://pnpm.io/) 10 (`npm install -g pnpm@10`) and Go 1.26 or later.
+- To build the commands: `git`, Node.js 22 or later, [pnpm](https://pnpm.io/) 10 (`npm install -g pnpm@10`) and Go 1.26 or later.
 
 ## 1. Install the control plane
 
@@ -42,7 +42,7 @@ kantel version
 kantel-admin version
 ```
 
-Keep the clone: you build the host agent and the images from it next.
+Keep the clone: you build the host agent from it next.
 
 ## 3. Save the first API key
 
@@ -62,18 +62,15 @@ public URL  none: hosts on this machine join at http://127.0.0.1:58090
 
 That address is where the host connects to, and where your desktop, browser and SSH links point, so both the host and your browser need to reach it. On one machine, the console's own address does. For hosts on other machines, set a public URL: see [Hosts](/hosts/#add-a-host).
 
-## 4. Build the host agent and its images
+## 4. Build the host agent
 
 A host runs `kantel-host`, which boots every sandbox from a kernel and a disk image. From the root of the clone:
 
 ```sh
 (cd apps/host && CGO_ENABLED=0 go build -trimpath -o dist/kantel-host ./cmd/kantel-host)
-apps/host/guest/kernel/build.sh ~/kantel-images x86_64
-apps/host/guest/rootfs.sh ~/kantel-images sandbox amd64
-apps/host/dist/kantel-host manifest ~/kantel-images
 ```
 
-Both image scripts run in Docker. The kernel build compiles Linux. The image is the default sandbox: Ubuntu 26.04 with Docker, an XFCE desktop, Chrome and SSH. `manifest` writes `~/kantel-images/manifest.json`, which lists each file with its SHA-256 so the host can check what it fetches. On an aarch64 machine, use `aarch64` for the kernel and `arm64` for the image.
+The kernel and images are published: the installer fetches them in the next step and checks each one's SHA-256. The default sandbox is Ubuntu 26.04 with Docker, an XFCE desktop, Chromium and SSH. The published set is for x86_64; on an aarch64 machine, build your own, as [Hosts](/hosts/#get-kantel-host-and-the-images) shows, and add `--images ~/kantel-images` to the install.
 
 Check that the machine can run sandboxes:
 
@@ -97,13 +94,13 @@ Run this on the machine as root, before 2026-11-03 10:37 UTC:
   sudo npx -y @kantel/host@latest install --url http://127.0.0.1:58090 --token kth_…
 ```
 
-The `@kantel/host` package isn't on npm yet, so run the binary you built in its place, with the same URL and token, and point it at your images:
+The `@kantel/host` package isn't on npm yet, so run the binary you built in its place, with the same URL and token:
 
 ```sh
-sudo apps/host/dist/kantel-host install --url http://127.0.0.1:58090 --token kth_… --images ~/kantel-images
+sudo apps/host/dist/kantel-host install --url http://127.0.0.1:58090 --token kth_…
 ```
 
-It copies itself to `/usr/local/bin/kantel-host`, downloads Firecracker, copies the images, registers with the control plane and starts the `kantel-host` systemd service. The token works once. Then:
+It copies itself to `/usr/local/bin/kantel-host`, downloads Firecracker and the images (about 1 GB), registers with the control plane and starts the `kantel-host` systemd service. The token works once. Then:
 
 ```sh
 kantel-admin host list

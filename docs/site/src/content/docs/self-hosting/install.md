@@ -130,7 +130,7 @@ curl -s -X POST "$KANTEL_URL/v1/admin/hosts/join-tokens" \
 sudo npx -y @kantel/host@latest install --url https://kantel.example.com --token kth_...
 ```
 
-The `@kantel/host` package isn't on npm yet, and there is no published set of sandbox images. Until there is, build `kantel-host`, a kernel and an image from the repository, and run the binary with `--images` in place of the `npx` command, as [Hosts](/hosts/#get-kantel-host-and-the-images) shows.
+The `@kantel/host` package isn't on npm yet. Until it is, build `kantel-host` from the repository and run the binary in place of the `npx` command, as [Hosts](/hosts/#get-kantel-host-and-the-images) shows. The kernel and sandbox images are published, and the installer fetches them on its own.
 
 Or with [`kantel-admin`](/self-hosting/admin-cli/#add-hosts): `kantel-admin host add --name box-1`, which prints that command. `kantel-admin host list`, `drain` and `revoke` look after hosts later.
 
@@ -164,7 +164,7 @@ The stack reads its settings from `~/.kantel/src/deploy/compose/.env`, which upg
 | `KANTEL_BROWSER_PROVIDER` | `off` gives sessions no browser. `brwsr`, with `KANTEL_BRWSR_API_KEY`, uses brwsr.dev instead of the stack's own browsers |
 | `KANTEL_SUBAGENTS` | `off` takes away the `subagent` tool, which hands a task to a child session |
 | `KANTEL_COMPUTE_BACKEND` | `stub` runs sandboxes on a built-in stand-in instead of your hosts. See [Add a host](#add-a-host) |
-| `KANTEL_COMPUTE_IMAGES` | An http(s) URL with the kernel and images hosts install from. See [Hosts](/hosts/#get-kantel-host-and-the-images) |
+| `KANTEL_COMPUTE_IMAGES` | An http(s) URL with the kernel and images hosts install from, instead of Kantel's published ones, or `off`. See [Hosts](/hosts/#get-kantel-host-and-the-images) |
 | `KANTEL_COMPUTE_PORTS_DOMAIN` | The domain sandboxes' [public ports](/sandboxes/public-ports/) are served under |
 | `KANTEL_COMPUTE_POOLS` | Warm sandboxes each host keeps ready, as JSON such as `{"microvm/default": 2}` |
 | `KANTEL_EGRESS_ATTRIBUTION_KEY` | The secret hosts sign the [`Kantel-Sandbox` and `Kantel-Account` headers](/sandboxes/egress-proxy/#send-traffic-through-your-own-proxy) with |

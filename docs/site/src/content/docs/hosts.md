@@ -62,7 +62,14 @@ cd kantel
 
 Add `GOARCH=arm64` to build it for an aarch64 host on an x86_64 machine. Copy `apps/host/dist/kantel-host` to each host.
 
-A host also needs a guest kernel and a sandbox image. No public set is published yet, so build them on a machine with Docker and Go:
+A host also needs a guest kernel and a sandbox image. Kantel publishes them for x86_64 as a public [GitHub Release](https://github.com/lleverage-ai/kantel/releases), and the installer fetches them from there by default, so there's nothing to build. The sandbox image is Ubuntu 26.04 with Docker, an XFCE desktop, Chromium and SSH, and the release also has the isolate image. `manifest.json` lists each file with its SHA-256. The installer reads it, and refuses a file whose digest doesn't match. `THIRD-PARTY-NOTICES.md`, in the release and in the image, says what the images contain and under which licences.
+
+The installer gets the images from one of two places:
+
+- `--images` on `kantel-host install`: a directory on the host, or an http(s) URL that serves the directory.
+- The control plane, at `GET /v1/hosts/images/…`, which redirects to Kantel's published release unless `KANTEL_COMPUTE_IMAGES` says otherwise. That setting is a directory the gateway can read, an http(s) URL it redirects to, or `off`. On the Docker Compose stack, use a URL: the gateway runs in a container, so it can't see a directory on the machine.
+
+To use your own images, such as a custom image or an arm64 host, build them on a machine with Docker and Go, and point `--images` or `KANTEL_COMPUTE_IMAGES` at the directory:
 
 ```sh
 apps/host/guest/kernel/build.sh ~/kantel-images x86_64      # or aarch64
@@ -70,12 +77,7 @@ apps/host/guest/rootfs.sh ~/kantel-images sandbox amd64      # or arm64
 apps/host/dist/kantel-host manifest ~/kantel-images
 ```
 
-The image is Ubuntu 26.04 with Docker, an XFCE desktop, Chrome and SSH. `apps/host/guest/README.md` lists what's in it, and shows how to build a custom image on top of it. For isolates, also run `apps/host/guest/rootfs.sh ~/kantel-images isolate amd64`, which needs Bun as well. `manifest` writes `manifest.json`, which lists each file with its SHA-256. The installer reads it, and refuses a file whose digest doesn't match. You can gzip the sandbox image first (`sandbox-amd64.ext4.gz`), and the host unpacks it as it downloads.
-
-The installer gets the images from one of two places:
-
-- `--images` on `kantel-host install`: a directory on the host, or an http(s) URL that serves the directory.
-- The control plane, at `GET /v1/hosts/images/…`, when you set `KANTEL_COMPUTE_IMAGES`. That is a directory the gateway can read, or an http(s) URL it redirects to. On the Docker Compose stack, use a URL: the gateway runs in a container, so it can't see a directory on the machine. Without the setting, the route answers 404, and an install without `--images` stops.
+`apps/host/guest/README.md` lists what's in the image, and shows how to build a custom image on top of it. For isolates, also run `apps/host/guest/rootfs.sh ~/kantel-images isolate amd64`, which needs Bun as well. You can gzip an image first (`sandbox-amd64.ext4.gz`), and the host unpacks it as it downloads.
 
 ## Add a host
 
@@ -96,7 +98,7 @@ kantel-admin host add --name builder-1 --label zone=ams
 A token works once, and for an hour unless `--expires-minutes` says otherwise. The host takes its name and labels from it. On the machine, run the printed command with the binary you built in place of `npx -y @kantel/host@latest`:
 
 ```sh
-sudo ./kantel-host install --url https://kantel.example.com --token kth_… --images ~/kantel-images
+sudo ./kantel-host install --url https://kantel.example.com --token kth_…
 ```
 
 Install:
