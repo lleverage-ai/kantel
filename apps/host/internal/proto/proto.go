@@ -185,6 +185,9 @@ type Egress struct {
 	// AttributionKey signs the Kantel-Sandbox and Kantel-Account headers the host adds (Kantel-Signature); empty
 	// sends them unsigned.
 	AttributionKey string `json:"attributionKey,omitempty"`
+	// Headers go on every request the host passes to the upstream (an account's upstream settings, such as a
+	// Mehen's key). The host holds them; the sandbox never sees them. Kantel-* names are the host's own and ignored.
+	Headers map[string]string `json:"headers,omitempty"`
 	// Allow and Deny are host patterns (`example.com`, `*.example.com`); deny wins. DefaultDeny refuses a host no
 	// rule names. They apply on the host's proxy, so to "proxy" sandboxes (an "open" one has its own way out).
 	Allow       []string `json:"allow,omitempty"`
@@ -336,4 +339,6 @@ const (
 	MethodPortOpen     = "port.open"
 	MethodHostUpdate   = "host.update"
 	MethodHostPools    = "host.pools"
+	// MethodEgress replaces a sandbox's egress (ResumeParams: sandboxId, egress; null egress is the host's default).
+	MethodEgress = "sandbox.egress"
 )

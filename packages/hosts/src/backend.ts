@@ -10,6 +10,7 @@
  */
 import type {
 	BackendCapabilities,
+	BackendEgress,
 	BackendFileEntry,
 	BackendHost,
 	BackendSize,
@@ -20,7 +21,7 @@ import type {
 	TakenSnapshot,
 } from "@kantel/compute";
 import { KantelError } from "@kantel/contracts";
-import type { HostSandbox, SandboxTier } from "./protocol.ts";
+import type { HostEgress, HostSandbox, SandboxTier } from "./protocol.ts";
 import type { HostsService, HostView } from "./service.ts";
 import { HOSTS_TUNNEL_PATH, signTunnel } from "./tunnel.ts";
 
@@ -59,7 +60,31 @@ export interface HostBackendOptions {
 	readonly publicUrl: string;
 	/** Signs tunnel tickets; the gateway's upgrade handler checks them with the same bytes. */
 	readonly tunnelSecret: Uint8Array;
+	/**
+	 * Signs the Kantel-Sandbox and Kantel-Account headers hosts add for an account whose proxy settings ask for
+	 * attribution, so its upstream can trust them. Absent, they go unsigned.
+	 */
+	readonly attributionKey?: string;
 	readonly now?: () => number;
+}
+
+/**
+ * An account's proxy settings as a host's egress: its traffic goes through the host's proxy, which applies the rules,
+ * then on to the upstream with the account's headers (held by the host, never the sandbox). Hosts pass traffic to the
+ * upstream only with their data-path switch on (`--proxy-data-path`); the rules apply either way.
+ */
+export function hostEgress(egress: BackendEgress | undefined, attributionKey?: string): HostEgress | undefined {
+	if (egress === undefined) return undefined;
+	return {
+		mode: "proxy",
+		allow: [...egress.allow],
+		deny: [...egress.deny],
+		defaultDeny: egress.defaultAction === "deny",
+		...(egress.upstream === undefined
+			? {}
+			: { upstream: egress.upstream.url, headers: { ...egress.upstream.headers } }),
+		...(egress.attribution && attributionKey !== undefined ? { attributionKey } : {}),
+	};
 }
 
 interface HostSnapshot {
@@ -155,9 +180,18 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		};
 	}
 
-	async function boot(sandboxId: string, method: "sandbox.start" | "sandbox.resume"): Promise<Placement> {
+	const egressOf = (egress: BackendEgress | undefined) => {
+		const out = hostEgress(egress, options.attributionKey);
+		return out === undefined ? {} : { egress: out };
+	};
+
+	async function boot(
+		sandboxId: string,
+		method: "sandbox.start" | "sandbox.resume",
+		egress?: BackendEgress,
+	): Promise<Placement> {
 		const { hostId } = await tierOf(sandboxId);
-		const sandbox = await call<HostSandbox>(sandboxId, method);
+		const sandbox = await call<HostSandbox>(sandboxId, method, egressOf(egress));
 		return placed(sandboxId, sandbox, hostId);
 	}
 
@@ -181,6 +215,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			env: spec.env,
 			hostIds: from === undefined ? spec.eligibleHosts : [from.hostId],
 			...(from === undefined ? {} : { from: from.snapshotId }),
+			...egressOf(spec.egress),
 		});
 		return placed(spec.sandboxId, sandbox, hostId);
 	}
@@ -220,9 +255,12 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			return { types: [...types], sizes: [...sizes.values()], hosts: backendHosts };
 		},
 		create: createOne,
-		start: (sandboxId) => boot(sandboxId, "sandbox.start"),
-		resume: (sandboxId) => boot(sandboxId, "sandbox.resume"),
-		recover: (sandboxId) => boot(sandboxId, "sandbox.start"),
+		start: (sandboxId, { egress }) => boot(sandboxId, "sandbox.start", egress),
+		resume: (sandboxId, { egress }) => boot(sandboxId, "sandbox.resume", egress),
+		recover: (sandboxId, { egress }) => boot(sandboxId, "sandbox.start", egress),
+		async updateEgress(sandboxId, egress) {
+			await call(sandboxId, "sandbox.egress", { egress: hostEgress(egress, options.attributionKey) ?? null });
+		},
 		async stop(sandboxId, { keepMemory }): Promise<TakenSnapshot> {
 			const { tier, hostId } = await tierOf(sandboxId);
 			if (keepMemory && tier !== "microvm") throw new KantelError("not_supported", "An isolate can't pause");
@@ -240,7 +278,10 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			}
 			// A live fork pauses the source for its snapshot only; forks stay on the source's host.
 			for (const target of targets) {
-				const { sandbox, hostId } = await hosts.sandboxes.fork(source.sandboxId, { newId: target.sandboxId });
+				const { sandbox, hostId } = await hosts.sandboxes.fork(source.sandboxId, {
+					newId: target.sandboxId,
+					...egressOf(target.egress),
+				});
 				out.push(await placed(target.sandboxId, sandbox, hostId));
 			}
 			return out;

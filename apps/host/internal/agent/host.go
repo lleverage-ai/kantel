@@ -49,6 +49,7 @@ type Tier interface {
 	SetPools(want map[string]int)
 	Warm() map[string]int
 	ResetTemplates()
+	SetEgress(id string, e *proto.Egress) error
 	Usage() (memoryMiB int64, running int, stopped int)
 	Close()
 }
@@ -274,7 +275,7 @@ func (h *Host) egressRules(sandboxID, account string, e *proto.Egress) egress.Ru
 	if !h.cfg.ProxyDataPath {
 		return r
 	}
-	r.Upstream, r.Token, r.AttributionKey = e.Upstream, e.Token, e.AttributionKey
+	r.Upstream, r.Token, r.AttributionKey, r.Headers = e.Upstream, e.Token, e.AttributionKey, e.Headers
 	return r
 }
 
@@ -370,6 +371,16 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			return nil, err
 		}
 		return t.Stop(ctx, p)
+	case proto.MethodEgress:
+		p, err := decode[proto.ResumeParams](params)
+		if err != nil {
+			return nil, err
+		}
+		t, err := h.tierOf(p.SandboxID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]bool{"ok": true}, t.SetEgress(p.SandboxID, p.Egress)
 	case proto.MethodResume, proto.MethodStart:
 		p, err := decode[proto.ResumeParams](params)
 		if err != nil {

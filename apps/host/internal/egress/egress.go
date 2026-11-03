@@ -43,6 +43,8 @@ type Rules struct {
 	Token string
 	// AttributionKey signs the Kantel-Sandbox/Kantel-Account headers (HMAC-SHA256); empty sends them unsigned.
 	AttributionKey string
+	// Headers go to the upstream on every request (never Kantel-* ones, which are the host's).
+	Headers map[string]string
 	// Allow and Deny are host patterns ("example.com", "*.example.com"); Deny wins. DefaultDeny refuses hosts no
 	// rule names.
 	Allow       []string
@@ -204,6 +206,11 @@ func claimed(h http.Header) string {
 // Headers are what the host adds to a request it passes on.
 func Headers(r Rules, attribution string, now time.Time) http.Header {
 	h := http.Header{}
+	for name, value := range r.Headers {
+		if !strings.HasPrefix(strings.ToLower(name), "kantel-") {
+			h.Set(name, value)
+		}
+	}
 	if r.Token != "" {
 		h.Set("Proxy-Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("sbx:"+r.Token)))
 	}

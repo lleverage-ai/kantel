@@ -1457,3 +1457,21 @@ func (m *Manager) TemplateTimings() map[string]json.RawMessage {
 
 var _ = io.EOF
 var _ = strconv.Itoa
+
+// SetEgress replaces a sandbox's egress: a running one's rules, upstream and headers change at once; a change of mode
+// (open, proxy, none), which its network was made for, takes effect when it next boots.
+func (m *Manager) SetEgress(id string, e *proto.Egress) error {
+	s, err := m.get(id)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.meta.Egress = e
+	running, slot := s.meta.State == proto.StateRunning, s.meta.Slot
+	err = m.writeMeta(s)
+	if running {
+		m.attach(s, slot)
+	}
+	s.mu.Unlock()
+	return err
+}

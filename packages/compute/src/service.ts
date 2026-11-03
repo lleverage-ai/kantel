@@ -26,7 +26,7 @@ import {
 	requireScope,
 	roleIn,
 } from "./auth.ts";
-import type { BackendFileEntry, Placement, SandboxBackend } from "./backend.ts";
+import type { BackendEgress, BackendFileEntry, Placement, SandboxBackend } from "./backend.ts";
 import type {
 	ComputeStore,
 	RunPeriod,
@@ -450,6 +450,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		attribution: proxy.attribution,
 		updatedAt: proxy.updatedAt,
 	});
+
+	/** The account's proxy settings for the backend, when they're on: `{ egress }` to spread into a spec. */
+	const egressFor = async (accountId: string): Promise<{ egress?: BackendEgress }> => {
+		const proxy = await store.proxies.get(accountId);
+		if (proxy === undefined || !proxy.enabled) return {};
+		return {
+			egress: {
+				defaultAction: proxy.defaultAction,
+				allow: [...proxy.allow],
+				deny: [...proxy.deny],
+				...(proxy.upstream === undefined
+					? {}
+					: { upstream: { url: proxy.upstream.url, headers: { ...proxy.upstreamHeaders } } }),
+				attribution: proxy.attribution,
+			},
+		};
+	};
 
 	const inviteView = (invite: StoredInvite, code?: string): computeSchema.Invite => ({
 		id: invite.id,
@@ -1180,6 +1197,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				};
 				await store.sandboxes.put(sandbox);
 				await emit("sandbox.created", account.id, { sandbox, data: { actor: actorOf(principal) } });
+				const egress = await egressFor(account.id);
 				const work = track([sandbox.id], () =>
 					boot(sandbox.id, () =>
 						backend.create({
@@ -1192,6 +1210,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							env: sandbox.env,
 							eligibleHosts: hosts,
 							fromSnapshot: from?.ref,
+							...egress,
 						}),
 					),
 				);
@@ -1320,6 +1339,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					await emit("sandbox.created", fork.accountId, { sandbox: fork, data: { actor: actorOf(principal) } });
 				}
 				// Queued behind the source too, so it isn't stopped while its live disk is copied.
+				const egress = await egressFor(current.accountId);
 				const work = track([current.id, ...forks.map((fork) => fork.id)], async () => {
 					let placements: Placement[];
 					try {
@@ -1334,6 +1354,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								image: fork.image,
 								env: fork.env,
 								eligibleHosts: hosts,
+								...egress,
 							})),
 						);
 					} catch (error) {
@@ -1367,10 +1388,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const fromSnapshot = await latestRef(current);
 			const starting = withState(current, "starting", { ports: [] });
 			await store.sandboxes.put(starting);
+			const egress = await egressFor(current.accountId);
 			keepGoing(
 				track([current.id], () =>
 					boot(current.id, () =>
-						backend.recover(current.id, { fromSnapshot, env: current.env, eligibleHosts: hosts, size: current.size }),
+						backend.recover(current.id, {
+							fromSnapshot,
+							env: current.env,
+							eligibleHosts: hosts,
+							size: current.size,
+							...egress,
+						}),
 					),
 				),
 			);
@@ -1957,6 +1985,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				updatedAt: now(),
 			};
 			await store.proxies.put(settings);
+			// Running sandboxes take them now where the backend can; the rest when they next boot.
+			const update = backend.updateEgress?.bind(backend);
+			if (update !== undefined) {
+				const { egress } = await egressFor(account.id);
+				const running = (await store.sandboxes.list({ accountId: account.id })).filter(
+					(sandbox) => sandbox.state === "running",
+				);
+				for (const sandbox of running) keepGoing(update(sandbox.id, egress));
+			}
 			return proxyView(settings);
 		},
 
@@ -2211,7 +2248,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			pausedSnapshotId: how === "resume" ? current.pausedSnapshotId : undefined,
 		});
 		await store.sandboxes.put(starting);
-		const bootOptions = { fromSnapshot, size: starting.size, env: current.env, eligibleHosts: hosts };
+		const bootOptions = {
+			fromSnapshot,
+			size: starting.size,
+			env: current.env,
+			eligibleHosts: hosts,
+			...(await egressFor(current.accountId)),
+		};
 		const work = track([current.id], () =>
 			boot(current.id, () =>
 				how === "start" ? backend.start(current.id, bootOptions) : backend.resume(current.id, bootOptions),

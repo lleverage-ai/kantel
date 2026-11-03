@@ -60,6 +60,22 @@ export interface SandboxSpec {
 	readonly eligibleHosts: readonly string[];
 	/** Start from this snapshot's disk (a `ref` the backend answered); absent, from an empty disk. */
 	readonly fromSnapshot?: string;
+	/** The account's egress proxy settings when they're on; a backend that can't enforce them ignores them. */
+	readonly egress?: BackendEgress;
+}
+
+/**
+ * Where a sandbox's outbound traffic may go, from its account's proxy settings, as the backend applies them when it
+ * boots the machine (create, start, resume, fork): a change reaches running sandboxes when they next boot.
+ */
+export interface BackendEgress {
+	readonly defaultAction: "allow" | "deny";
+	readonly allow: readonly string[];
+	readonly deny: readonly string[];
+	/** Another proxy allowed requests go on to, with the headers (secret values) it's sent. */
+	readonly upstream?: { readonly url: string; readonly headers: { readonly [name: string]: string } };
+	/** Tell the upstream which sandbox and account each request came from, signed. */
+	readonly attribution: boolean;
 }
 
 /** Where a machine was placed, and what it can do. */
@@ -76,6 +92,7 @@ export interface BootOptions {
 	readonly size?: computeSchema.SandboxSizeName;
 	readonly env: { readonly [name: string]: string };
 	readonly eligibleHosts: readonly string[];
+	readonly egress?: BackendEgress;
 }
 
 /** A snapshot the backend took: its opaque reference and how large it is. */
@@ -191,6 +208,11 @@ export interface SandboxBackend {
 	): Promise<{ readonly url: string; readonly cdpUrl: string }>;
 	/** A CPU and memory reading of a running sandbox. */
 	usage(sandboxId: string): Promise<UsageSample>;
+	/**
+	 * The account's proxy settings changed: apply them to this running sandbox (undefined when they were turned off).
+	 * Absent, sandboxes get them when they next boot.
+	 */
+	updateEgress?(sandboxId: string, egress: BackendEgress | undefined): Promise<void>;
 	/** The super-admin revoked a host: refuse its credential and drop its connection. Absent, nothing to do. */
 	revokeHost?(hostId: string): Promise<void>;
 	/** The super-admin renamed, relabelled or drained a host. Absent, nothing to do. */

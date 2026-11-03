@@ -28,6 +28,14 @@
  *                                directory this gateway serves (with manifest.json from `kantel-host manifest <dir>`), or
  *                                an http(s) URL it redirects to. The images are public (a Debian root file system, the
  *                                guest agent, a kernel), so the route asks no credential.
+ *   KANTEL_EGRESS_ATTRIBUTION_KEY
+ *                                signs the Kantel-Sandbox and Kantel-Account headers hosts send an account's proxy
+ *                                upstream when its settings ask for attribution (share it with the upstream); unset,
+ *                                they go unsigned
+ *
+ * An account's proxy settings (PUT /v1/proxy) reach its sandboxes as they boot (create, start, resume, fork): the host's
+ * egress proxy applies the allow and deny rules, and with the host's --proxy-data-path switch on passes allowed
+ * requests to the upstream with the account's headers, which the host holds and the sandbox never sees.
  *
  * A host's WebSocket is checked before it is used: no credential or a wrong or revoked one is accepted and closed at
  * once with 4003, which kantel-host reads as "stop, don't retry". (Bun's node:http drops a plain 401 written to an
@@ -81,6 +89,7 @@ export interface ComputeHostsConfig {
 	readonly desiredVersion?: string;
 	readonly updateUrl?: string;
 	readonly images?: string;
+	readonly attributionKey?: string;
 }
 
 /** The compute plane's settings: `hosts` is set when sandboxes run on joined hosts, not the stub. */
@@ -119,9 +128,11 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig | undefined
 	const updateUrl = env.KANTEL_HOST_UPDATE_URL?.trim() ?? "";
 	const images = env.KANTEL_COMPUTE_IMAGES?.trim() ?? "";
 	const joinCommand = env.KANTEL_COMPUTE_JOIN_COMMAND?.trim() ?? "";
+	const attributionKey = env.KANTEL_EGRESS_ATTRIBUTION_KEY?.trim() ?? "";
 	return {
 		hosts: {
 			publicUrl: new URL(publicUrl).origin,
+			...(attributionKey === "" ? {} : { attributionKey }),
 			...(images === "" ? {} : { images }),
 			...(pools === undefined ? {} : { pools }),
 			...(joinCommand === "" ? {} : { joinCommand }),
@@ -229,6 +240,7 @@ export async function gatewayCompute(options: {
 					hosts: hosts.service,
 					publicUrl: hosts.config.publicUrl,
 					tunnelSecret: hosts.tunnelSecret,
+					...(hosts.config.attributionKey === undefined ? {} : { attributionKey: hosts.config.attributionKey }),
 					...(options.now === undefined ? {} : { now: options.now }),
 				});
 	// The API mints and keeps join tokens; the registry spends them when a host registers.

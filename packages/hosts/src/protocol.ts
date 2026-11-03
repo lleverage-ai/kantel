@@ -117,6 +117,8 @@ export interface HostEgress {
 	readonly token?: string;
 	readonly caCert?: string;
 	readonly attributionKey?: string;
+	/** Headers for the upstream on every request (an account's upstream settings). Kantel-* ones are the host's. */
+	readonly headers?: { readonly [name: string]: string };
 	readonly allow?: readonly string[];
 	readonly deny?: readonly string[];
 	readonly defaultDeny?: boolean;
@@ -172,6 +174,8 @@ export const HostMethods = {
 	resume: "sandbox.resume",
 	start: "sandbox.start",
 	fork: "sandbox.fork",
+	/** Replaces a sandbox's egress: `{ sandboxId, egress }` (null for the host's default). */
+	egress: "sandbox.egress",
 	delete: "sandbox.delete",
 	get: "sandbox.get",
 	list: "sandbox.list",

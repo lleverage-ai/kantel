@@ -35,6 +35,7 @@ class FakeHost {
 	readonly sandboxes = new Map<string, Omit<HostSandbox, "state"> & { state: string; files: Map<string, string> }>();
 	readonly snapshots = new Map<string, Map<string, string>>();
 	readonly calls: string[] = [];
+	readonly params: { method: string; params: { [key: string]: unknown } }[] = [];
 	receive!: (text: string) => void;
 
 	constructor(
@@ -66,6 +67,7 @@ class FakeHost {
 		if (message.type !== "call") return;
 		this.calls.push(message.method ?? "");
 		const p = message.params as { [key: string]: unknown };
+		this.params.push({ method: message.method ?? "", params: p });
 		const answer = (result: unknown) => this.receive(JSON.stringify({ type: "result", id: message.id, result }));
 		const fail = (code: string, text: string) =>
 			this.receive(JSON.stringify({ type: "result", id: message.id, error: { code, message: text } }));
@@ -113,6 +115,8 @@ class FakeHost {
 			case "sandbox.delete":
 				this.sandboxes.delete(String(p.sandboxId));
 				return answer({ ok: true });
+			case "sandbox.egress":
+				return sandbox === undefined ? fail("not_found", "no such sandbox") : answer({ ok: true });
 			case "sandbox.exec": {
 				const command = String(p.command);
 				if (command.startsWith("curl") && command.includes("9222/json/version")) {
@@ -169,7 +173,12 @@ function setup() {
 	const service = createHostsService({ store: createMemoryHostStore(), publicUrl: "https://kantel.test" });
 	const secret = crypto.getRandomValues(new Uint8Array(32));
 	const api: ComputeApi = createComputeApi({
-		backend: createHostBackend({ hosts: service, publicUrl: "https://kantel.test", tunnelSecret: secret }),
+		backend: createHostBackend({
+			hosts: service,
+			publicUrl: "https://kantel.test",
+			tunnelSecret: secret,
+			attributionKey: "attr-key",
+		}),
 		authenticatePerson: async (request) => (request.headers.get("authorization") === "Bearer root" ? ROOT : undefined),
 		fetch: async () => new Response(null, { status: 204 }),
 		publicUrl: "https://kantel.test",
@@ -245,6 +254,56 @@ describe("the compute API on kantel-host hosts", () => {
 
 		await root.deleteSandbox(fork?.id ?? "");
 		expect(host.sandboxes.has(fork?.id ?? "")).toBe(false);
+	});
+
+	it("sends the account's proxy settings to the host as each sandbox boots, and to running ones when they change", async () => {
+		const { service, root } = setup();
+		const token = await root.createHostJoinToken({ name: "box-1" });
+		const { hostId } = await service.register({ token: token.token, facts });
+		const host = new FakeHost(service, hostId);
+		host.connect();
+		const egressOf = (method: string) => host.params.filter((call) => call.method === method).at(-1)?.params.egress;
+
+		// Off: the host's own default.
+		const open = await root.createSandbox({ type: "microvm", wait: true });
+		expect(egressOf("sandbox.create")).toBeUndefined();
+
+		await root.putProxySettings({
+			enabled: true,
+			defaultAction: "deny",
+			allow: ["*.npmjs.org"],
+			deny: ["evil.example"],
+			upstream: { url: "http://mehen.internal:3128", headers: { "X-Mehen-Key": "secret" } },
+			attribution: true,
+		});
+		const want = {
+			mode: "proxy",
+			allow: ["*.npmjs.org"],
+			deny: ["evil.example"],
+			defaultDeny: true,
+			upstream: "http://mehen.internal:3128",
+			headers: { "X-Mehen-Key": "secret" },
+			attributionKey: "attr-key",
+		};
+		// The running sandbox gets them at once.
+		await expect.poll(() => egressOf("sandbox.egress")).toEqual(want);
+		expect(host.params.find((call) => call.method === "sandbox.egress")?.params.sandboxId).toBe(open.id);
+
+		const proxied = await root.createSandbox({ type: "microvm", wait: true });
+		expect(egressOf("sandbox.create")).toEqual(want);
+		await root.forkSandbox(proxied.id, { wait: true });
+		expect(egressOf("sandbox.fork")).toEqual(want);
+		await root.stopSandbox(proxied.id, { wait: true });
+		await root.resumeSandbox(proxied.id, { wait: true });
+		expect(egressOf("sandbox.resume")).toEqual(want);
+
+		// Turned off: running sandboxes go back to the host's default.
+		const before = host.params.length;
+		await root.putProxySettings({ enabled: false });
+		await expect
+			.poll(() => host.params.slice(before).filter((call) => call.method === "sandbox.egress").length)
+			.toBeGreaterThanOrEqual(2);
+		expect(egressOf("sandbox.egress")).toBeNull();
 	});
 
 	it("answers desktop, browser and SSH access as tunnel URLs only the gateway's secret signs", async () => {

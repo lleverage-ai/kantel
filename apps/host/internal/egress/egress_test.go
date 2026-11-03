@@ -206,3 +206,14 @@ func TestKeepAliveCantSlipPastTheRules(t *testing.T) {
 		t.Fatalf("upstream saw %d requests, want 1", n)
 	}
 }
+
+// An account's upstream headers go on, but never over the host's own Kantel-* identity.
+func TestUpstreamHeadersCantSpoofIdentity(t *testing.T) {
+	h := Headers(Rules{SandboxID: "sbx_1", Account: "acct_1", Headers: map[string]string{"X-Mehen-Key": "k", "kantel-sandbox": "sbx_evil"}}, "", time.Unix(0, 0))
+	if h.Get("X-Mehen-Key") != "k" {
+		t.Errorf("X-Mehen-Key = %q", h.Get("X-Mehen-Key"))
+	}
+	if h.Get("Kantel-Sandbox") != "sbx_1" || len(h.Values("Kantel-Sandbox")) != 1 {
+		t.Errorf("Kantel-Sandbox = %v", h.Values("Kantel-Sandbox"))
+	}
+}

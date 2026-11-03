@@ -1484,3 +1484,15 @@ func (m *Manager) Close() {
 		r.close()
 	}
 }
+
+// SetEgress replaces a sandbox's egress; the worker's next request sees it.
+func (m *Manager) SetEgress(id string, e *proto.Egress) error {
+	s, err := m.get(id)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.meta.Egress = e
+	return writeJSONFile(filepath.Join(s.dir, "meta.json"), s.meta)
+}
