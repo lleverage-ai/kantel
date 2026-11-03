@@ -364,7 +364,9 @@ func (m *Manager) identity(s *sandbox, fresh bool) guest.Identity {
 	// with no rules. With no route out there is no DNS to give either; the proxy resolves names.
 	mode := egressMode(s.meta.Egress)
 	if mode != network.EgressNone && m.cfg.ProxyPort > 0 {
-		proxy := fmt.Sprintf("http://sandbox@%s:%d", s.link.HostIP, m.cfg.ProxyPort)
+		// The user is the sandbox's label for its requests ("sandbox" is none). Its password is empty, and given: with
+		// none, git asks for one, and with no terminal (an exec, a clone at start) fails rather than connecting.
+		proxy := fmt.Sprintf("http://sandbox:@%s:%d", s.link.HostIP, m.cfg.ProxyPort)
 		id.ProxyEnv = map[string]string{
 			"HTTP_PROXY": proxy, "HTTPS_PROXY": proxy, "http_proxy": proxy, "https_proxy": proxy,
 			"NO_PROXY": "localhost,127.0.0.1,::1", "no_proxy": "localhost,127.0.0.1,::1",

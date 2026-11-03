@@ -9,10 +9,11 @@ import (
 
 func TestProxyUpstreamIsHTTPProxysHost(t *testing.T) {
 	for env, want := range map[string]string{
-		"http://sandbox@10.231.0.5:3129": "10.231.0.5:3129",
-		"http://10.231.0.9:3129":         "10.231.0.9:3129",
-		"":                               "",
-		"::not a url":                    "",
+		"http://sandbox@10.231.0.5:3129":  "10.231.0.5:3129",
+		"http://sandbox:@10.231.0.5:3129": "10.231.0.5:3129",
+		"http://10.231.0.9:3129":          "10.231.0.9:3129",
+		"":                                "",
+		"::not a url":                     "",
 	} {
 		if got := proxyUpstream(map[string]string{"HTTP_PROXY": env}); got != want {
 			t.Errorf("proxyUpstream(%q) = %q, want %q", env, got, want)
