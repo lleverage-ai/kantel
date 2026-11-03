@@ -26,7 +26,7 @@ import {
 	requireScope,
 	roleIn,
 } from "./auth.ts";
-import type { BackendFileEntry, Placement, SandboxBackend } from "./backend.ts";
+import type { BackendEgress, BackendFileEntry, Placement, SandboxBackend } from "./backend.ts";
 import type {
 	ComputeStore,
 	RunPeriod,
@@ -95,6 +95,8 @@ export interface ComputeServiceOptions {
 	readonly publicUrl?: string;
 	/** Default `selfhosted`. */
 	readonly mode?: "selfhosted" | "hosted";
+	/** The join command shown with a host join token, with `{url}` and `{token}`. Default the npm package's. */
+	readonly hostJoinCommand?: string;
 	/** Default `PLACEHOLDER_RATES`. */
 	readonly rates?: RateTable;
 	readonly limits?: ComputeLimits;
@@ -114,6 +116,9 @@ export interface ComputeService {
 }
 
 /** The largest file the files routes read or write. */
+/** The join command shown with a host join token: kantel-host from npm (`apps/host/npm`). */
+export const DEFAULT_HOST_JOIN_COMMAND = "sudo npx -y @kantel/host@latest install --url {url} --token {token}";
+
 export const MAX_FILE_BYTES = 1024 * 1024;
 /** The most output a command keeps per stream. */
 export const MAX_OUTPUT_CHARS = 1024 * 1024;
@@ -257,17 +262,35 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		await pending.get(id);
 	};
 
-	// Hosts: the backend's, recorded the first time they are needed.
+	// Hosts: the backend's, refreshed whenever they are needed (hosts join, connect and drop off at any time). The
+	// super-admin's name, labels, drain and revocation are kept; what the host is and whether it's connected follow it.
 	let hostsReady: Promise<void> | undefined;
 	const ensureHosts = (): Promise<void> => {
 		hostsReady ??= (async () => {
 			const capabilities = await backend.capabilities();
 			for (const host of capabilities.hosts) {
-				if ((await store.hosts.get(host.id)) !== undefined) continue;
+				const known = await store.hosts.get(host.id);
+				const reachable = host.connected !== false;
+				if (known !== undefined) {
+					const held = known.state === "revoked" || known.state === "draining";
+					await store.hosts.put({
+						...known,
+						state: held ? known.state : reachable ? "online" : "unreachable",
+						version: host.version,
+						os: host.os,
+						arch: host.arch,
+						tiers: [...host.tiers],
+						kvm: host.kvm,
+						nestedVirtualisation: host.nestedVirtualisation,
+						capacity: { ...host.capacity },
+						lastSeenAt: host.lastSeenAt ?? (reachable ? now() : known.lastSeenAt),
+					});
+					continue;
+				}
 				await store.hosts.put({
 					id: host.id,
 					name: host.name,
-					state: "online",
+					state: reachable ? "online" : "unreachable",
 					version: host.version,
 					latestVersion: host.version,
 					os: host.os,
@@ -282,9 +305,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					lastSeenAt: now(),
 				});
 			}
-		})().catch((error: unknown) => {
+		})().finally(() => {
 			hostsReady = undefined;
-			throw error;
 		});
 		return hostsReady;
 	};
@@ -428,6 +450,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		attribution: proxy.attribution,
 		updatedAt: proxy.updatedAt,
 	});
+
+	/** The account's proxy settings for the backend, when they're on: `{ egress }` to spread into a spec. */
+	const egressFor = async (accountId: string): Promise<{ egress?: BackendEgress }> => {
+		const proxy = await store.proxies.get(accountId);
+		if (proxy === undefined || !proxy.enabled) return {};
+		return {
+			egress: {
+				defaultAction: proxy.defaultAction,
+				allow: [...proxy.allow],
+				deny: [...proxy.deny],
+				...(proxy.upstream === undefined
+					? {}
+					: { upstream: { url: proxy.upstream.url, headers: { ...proxy.upstreamHeaders } } }),
+				attribution: proxy.attribution,
+			},
+		};
+	};
 
 	const inviteView = (invite: StoredInvite, code?: string): computeSchema.Invite => ({
 		id: invite.id,
@@ -1158,6 +1197,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				};
 				await store.sandboxes.put(sandbox);
 				await emit("sandbox.created", account.id, { sandbox, data: { actor: actorOf(principal) } });
+				const egress = await egressFor(account.id);
 				const work = track([sandbox.id], () =>
 					boot(sandbox.id, () =>
 						backend.create({
@@ -1170,6 +1210,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							env: sandbox.env,
 							eligibleHosts: hosts,
 							fromSnapshot: from?.ref,
+							...egress,
 						}),
 					),
 				);
@@ -1298,6 +1339,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					await emit("sandbox.created", fork.accountId, { sandbox: fork, data: { actor: actorOf(principal) } });
 				}
 				// Queued behind the source too, so it isn't stopped while its live disk is copied.
+				const egress = await egressFor(current.accountId);
 				const work = track([current.id, ...forks.map((fork) => fork.id)], async () => {
 					let placements: Placement[];
 					try {
@@ -1312,6 +1354,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								image: fork.image,
 								env: fork.env,
 								eligibleHosts: hosts,
+								...egress,
 							})),
 						);
 					} catch (error) {
@@ -1345,10 +1388,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const fromSnapshot = await latestRef(current);
 			const starting = withState(current, "starting", { ports: [] });
 			await store.sandboxes.put(starting);
+			const egress = await egressFor(current.accountId);
 			keepGoing(
 				track([current.id], () =>
 					boot(current.id, () =>
-						backend.recover(current.id, { fromSnapshot, env: current.env, eligibleHosts: hosts, size: current.size }),
+						backend.recover(current.id, {
+							fromSnapshot,
+							env: current.env,
+							eligibleHosts: hosts,
+							size: current.size,
+							...egress,
+						}),
 					),
 				),
 			);
@@ -1638,7 +1688,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				host: grant.host,
 				port: grant.port,
 				user: grant.user,
-				command: `ssh -p ${grant.port} ${grant.user}@${grant.host}`,
+				command: grant.command ?? `ssh -p ${grant.port} ${grant.user}@${grant.host}`,
 				privateKey: grant.privateKey,
 				hostKeyFingerprint: grant.hostKeyFingerprint,
 				expiresAt: now() + ttlMinutes * 60_000,
@@ -1935,6 +1985,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				updatedAt: now(),
 			};
 			await store.proxies.put(settings);
+			// Running sandboxes take them now where the backend can; the rest when they next boot.
+			const update = backend.updateEgress?.bind(backend);
+			if (update !== undefined) {
+				const { egress } = await egressFor(account.id);
+				const running = (await store.sandboxes.list({ accountId: account.id })).filter(
+					(sandbox) => sandbox.state === "running",
+				);
+				for (const sandbox of running) keepGoing(update(sandbox.id, egress));
+			}
 			return proxyView(settings);
 		},
 
@@ -2113,7 +2172,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return {
 				id,
 				token,
-				command: `curl -fsSL ${publicUrl}/install-host.sh | sh -s -- --join ${token}`,
+				command: (options.hostJoinCommand ?? DEFAULT_HOST_JOIN_COMMAND)
+					.replaceAll("{url}", publicUrl)
+					.replaceAll("{token}", token),
 				expiresAt,
 			};
 		},
@@ -2132,12 +2193,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				labels: body.labels === undefined ? host.labels : { ...body.labels },
 				state,
 			};
+			await backend.updateHost?.(host.id, {
+				...(body.name === undefined ? {} : { name: body.name }),
+				...(body.labels === undefined ? {} : { labels: { ...body.labels } }),
+				...(body.draining === undefined ? {} : { draining: body.draining }),
+			});
 			await store.hosts.put(updated);
 			return hostView(updated);
 		},
 
 		revokeHost: async (principal, { params }) => {
 			const host = await hostFor(principal, params.hostId);
+			await backend.revokeHost?.(host.id);
 			const revoked: StoredHost = { ...host, state: "revoked" };
 			await store.hosts.put(revoked);
 			return hostView(revoked);
@@ -2181,7 +2248,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			pausedSnapshotId: how === "resume" ? current.pausedSnapshotId : undefined,
 		});
 		await store.sandboxes.put(starting);
-		const bootOptions = { fromSnapshot, size: starting.size, env: current.env, eligibleHosts: hosts };
+		const bootOptions = {
+			fromSnapshot,
+			size: starting.size,
+			env: current.env,
+			eligibleHosts: hosts,
+			...(await egressFor(current.accountId)),
+		};
 		const work = track([current.id], () =>
 			boot(current.id, () =>
 				how === "start" ? backend.start(current.id, bootOptions) : backend.resume(current.id, bootOptions),

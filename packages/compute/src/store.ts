@@ -239,3 +239,21 @@ export function createMemoryStore(): ComputeStore {
 		idempotency: memoryCollection(),
 	};
 }
+
+/**
+ * Spends a host join token the compute API minted, once: for the host registry (`@kantel/hosts`), which registers the
+ * host. Answers its name and labels, or undefined when it is unknown, used or expired.
+ */
+export function joinTokenSpender(store: ComputeStore) {
+	return {
+		async spendJoinToken(hash: string, _hostId: string, now: number) {
+			const [token] = await store.joinTokens.list({ tokenHash: hash });
+			if (token === undefined) return undefined;
+			const spent = await store.joinTokens.update(token.id, (current) =>
+				current.usedAt !== undefined || current.expiresAt <= now ? undefined : { ...current, usedAt: now },
+			);
+			if (spent === undefined) return undefined;
+			return { id: spent.id, labels: { ...spent.labels }, ...(spent.name === undefined ? {} : { name: spent.name }) };
+		},
+	};
+}

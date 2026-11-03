@@ -323,9 +323,17 @@ services:
       # answer back. On here; KANTEL_SUBAGENTS=off takes it away.
       KANTEL_SUBAGENTS: ${KANTEL_SUBAGENTS:-${HARBOUR_SUBAGENTS:-on}}
       # The compute plane's API (@kantel/compute): sandboxes, snapshots,
-      # scoped keys, webhooks and hosts under /v1, on a stub backend and in
-      # memory for now. Off unless KANTEL_COMPUTE=experimental.
+      # scoped keys, webhooks and hosts under /v1, its records in memory for
+      # now. Off unless KANTEL_COMPUTE=experimental. Sandboxes run on a stub
+      # unless KANTEL_COMPUTE_BACKEND=hosts, which runs them on machines
+      # running kantel-host (needs KANTEL_PUBLIC_URL; see compute.ts).
       KANTEL_COMPUTE: ${KANTEL_COMPUTE:-}
+      KANTEL_COMPUTE_BACKEND: ${KANTEL_COMPUTE_BACKEND:-}
+      KANTEL_COMPUTE_POOLS: ${KANTEL_COMPUTE_POOLS:-}
+      KANTEL_COMPUTE_IMAGES: ${KANTEL_COMPUTE_IMAGES:-}
+      KANTEL_HOST_VERSION: ${KANTEL_HOST_VERSION:-}
+      KANTEL_HOST_UPDATE_URL: ${KANTEL_HOST_UPDATE_URL:-}
+      KANTEL_EGRESS_ATTRIBUTION_KEY: ${KANTEL_EGRESS_ATTRIBUTION_KEY:-}
     ports: ["127.0.0.1:${KANTEL_GATEWAY_PORT:-${HARBOUR_GATEWAY_PORT:-58090}}:8080"]
     networks: [control]
     volumes:

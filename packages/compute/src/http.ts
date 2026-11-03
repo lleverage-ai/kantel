@@ -34,6 +34,8 @@ export interface ComputeApiOptions {
 	/** The control plane's public URL, for host join commands. Default each request's origin. */
 	readonly publicUrl?: string;
 	readonly mode?: "selfhosted" | "hosted";
+	/** The join command shown with a host join token, with `{url}` and `{token}`. */
+	readonly hostJoinCommand?: string;
 	readonly rates?: RateTable;
 	readonly limits?: ComputeLimits;
 }
@@ -93,6 +95,7 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 		now,
 		...(options.publicUrl === undefined ? {} : { publicUrl: options.publicUrl }),
 		...(options.mode === undefined ? {} : { mode: options.mode }),
+		...(options.hostJoinCommand === undefined ? {} : { hostJoinCommand: options.hostJoinCommand }),
 		...(options.rates === undefined ? {} : { rates: options.rates }),
 		...(options.limits === undefined ? {} : { limits: options.limits }),
 	});

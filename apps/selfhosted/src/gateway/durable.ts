@@ -31,6 +31,7 @@ import { connectionEgress } from "@kantel/connections/egress";
 import { createSqlConnectionsRepository, migrateConnections } from "@kantel/connections/repository";
 import { type BrowserProvider, KantelError } from "@kantel/contracts";
 import { createSqlEnvironmentStore, migrateEnvironments } from "@kantel/environments/sql";
+import { createSqlHostStore, migrateHosts } from "@kantel/hosts/store";
 import { createPasskeys } from "@kantel/identity/passkey";
 import { createSqlIdentity, createSqlOtpStores, createSqlPasskeyStores, migrateIdentity } from "@kantel/identity/sql";
 import { createSqlMemory, migrateMemory } from "@kantel/memory/sql";
@@ -57,6 +58,7 @@ import { parse } from "pg-connection-string";
 import { PostgresSqliteDatabase } from "../pi-postgres.ts";
 import { gatewaySessionBrowser, withBrowserTools } from "./browser.ts";
 import { createEchoModels, deferredAccess, type GatewayComponents, type ModelGatewaySource } from "./components.ts";
+import { type ComputeHostsConfig, gatewayHosts } from "./compute.ts";
 import { type GatewayConnectionsConfig, gatewayConnections } from "./connections.ts";
 import { type GatewayEnvironmentsConfig, gatewayEnvironments } from "./environments.ts";
 import { createModelProviders, createSqlModelProviderStore, migrateModelProviders } from "./model-providers.ts";
@@ -99,6 +101,8 @@ export interface DurableConfig {
 	readonly connections?: GatewayConnectionsConfig;
 	/** Tool servers (`tool-servers.ts`), the registry in Postgres. Without it, there are none and no tables. */
 	readonly toolServers?: boolean;
+	/** The compute plane's hosts (`compute.ts`), their registry in Postgres. Without it, there are none and no tables. */
+	readonly computeHosts?: ComputeHostsConfig;
 	/** Environments (`environments.ts`), in Postgres. Without it, there are none and no tables. */
 	readonly environments?: GatewayEnvironmentsConfig;
 	/** Presented files (`session-tools.ts`). Default on, as a local install has them. */
@@ -155,6 +159,12 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		const connectionsOn = config.connections !== undefined && config.vaultCipherKey !== undefined;
 		if (connectionsOn) await migrateConnections(driver);
 		if (config.toolServers === true) await migrateToolServers(driver);
+		if (config.computeHosts !== undefined) await migrateHosts(driver);
+		const computeHosts =
+			config.computeHosts === undefined
+				? undefined
+				: gatewayHosts(config.computeHosts, createSqlHostStore(driver), log);
+		if (computeHosts !== undefined) closers.push(async () => computeHosts.close());
 		if (config.environments !== undefined) await migrateEnvironments(driver);
 		const toolsConfig = config.sessionTools ?? ALL_SESSION_TOOLS;
 		const usage = config.usage === undefined ? undefined : await selfHostedUsage(driver, config.usage, log);
@@ -350,6 +360,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			...(browser === undefined ? {} : { browser }),
 			...(connections === undefined ? {} : { connections }),
 			...(heldToolServers === undefined ? {} : { toolServers: heldToolServers }),
+			...(computeHosts === undefined ? {} : { computeHosts }),
 			...(heldEnvironments === undefined ? {} : { environments: heldEnvironments }),
 			sessionTools: sessionTools.toolNames,
 			...(subagentsOn ? { subagents: true as const } : {}),
@@ -359,6 +370,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 				subagents: subagentsBinding(subagentsOn),
 				connections: connections === undefined ? "off" : "postgres + vault",
 				...(heldToolServers === undefined ? {} : { toolServers: "postgres (experimental)" }),
+				...(computeHosts === undefined ? {} : { computeHosts: "postgres (experimental)" }),
 				...(heldEnvironments === undefined ? {} : { environments: heldEnvironments.binding }),
 				vault: vault === undefined ? "off (no KANTEL_VAULT_CIPHER_KEY)" : "postgres",
 				identity: "postgres",

@@ -33,6 +33,8 @@ import {
 	type WorkspaceId,
 } from "@kantel/contracts";
 import { createMemoryEnvironmentStore } from "@kantel/environments/store";
+import type { HostsService } from "@kantel/hosts/service";
+import { createMemoryHostStore } from "@kantel/hosts/store";
 import { createMemoryIdentity } from "@kantel/identity/memory";
 import { createMemoryOtpStores, type OtpCodeStore, type SessionStore } from "@kantel/identity/otp";
 import { createMemoryPasskeyStores, createPasskeys, type Passkeys } from "@kantel/identity/passkey";
@@ -50,6 +52,7 @@ import type { KantelVault } from "@kantel/vault/engine";
 import { createMemoryVault } from "@kantel/vault/memory";
 import { createMemoryWorkspaceStore, createStoredWorkspaces, type StoredWorkspaces } from "@kantel/workspace/stored";
 import { gatewaySessionBrowser, withBrowserTools } from "./browser.ts";
+import { type ComputeHostsConfig, gatewayHosts } from "./compute.ts";
 import { type GatewayConnectionsConfig, gatewayConnections } from "./connections.ts";
 import { type GatewayEnvironments, type GatewayEnvironmentsConfig, gatewayEnvironments } from "./environments.ts";
 import {
@@ -129,6 +132,11 @@ export interface GatewayComponents {
 	 * this process holds. Absent unless `KANTEL_TOOL_SERVERS=experimental`.
 	 */
 	readonly toolServers?: GatewayToolServers;
+	/**
+	 * The compute plane's hosts (`compute.ts`, @kantel/hosts): machines running `kantel-host` and the sandboxes placed
+	 * on them. Absent unless `KANTEL_COMPUTE=experimental` with `KANTEL_COMPUTE_BACKEND=hosts`.
+	 */
+	readonly computeHosts?: HostsService;
 	/**
 	 * Environments (sandbox tier 3, `environments.ts`): long-lived machines sessions reach through `bash`'s `env`.
 	 * Absent unless `KANTEL_ENVIRONMENTS=experimental`.
@@ -264,6 +272,8 @@ export function createGatewayComponents(
 		readonly connectionsFetch?: Fetch;
 		/** Tool servers (`tool-servers.ts`), in memory. Without it, there are none. */
 		readonly toolServers?: boolean;
+		/** The compute plane's hosts (`compute.ts`), their registry in memory. Without it, there are none. */
+		readonly computeHosts?: ComputeHostsConfig;
 		/** Environments (`environments.ts`), in memory. Without it, there are none. */
 		readonly environments?: GatewayEnvironmentsConfig;
 		/** How environments reach boat.dev; a test's fake API. */
@@ -425,6 +435,9 @@ export function createGatewayComponents(
 		...(browser === undefined ? {} : { browser }),
 		...(connections === undefined ? {} : { connections }),
 		...(heldToolServers === undefined ? {} : { toolServers: heldToolServers }),
+		...(options.computeHosts === undefined
+			? {}
+			: { computeHosts: gatewayHosts(options.computeHosts, createMemoryHostStore()) }),
 		...(heldEnvironments === undefined ? {} : { environments: heldEnvironments }),
 		sessionTools: sessionTools.toolNames,
 		...(subagentsOn ? { subagents: true as const } : {}),
@@ -434,6 +447,7 @@ export function createGatewayComponents(
 			subagents: subagentsBinding(subagentsOn),
 			connections: connections === undefined ? "off" : "memory",
 			...(heldToolServers === undefined ? {} : { toolServers: "memory (experimental)" }),
+			...(options.computeHosts === undefined ? {} : { computeHosts: "memory (experimental)" }),
 			...(heldEnvironments === undefined ? {} : { environments: heldEnvironments.binding }),
 			identity: "memory",
 			audit: "memory",

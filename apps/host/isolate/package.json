@@ -1,0 +1,13 @@
+{
+	"name": "@kantel/host-isolate",
+	"private": true,
+	"type": "module",
+	"description": "The isolate tier's workerd worker, run inside kantel-host's isolate VM. Built with `bun run build.ts`.",
+	"scripts": {
+		"build": "bun run build.ts"
+	},
+	"dependencies": {
+		"just-bash": "3.6.0",
+		"workerd": "1.20261027.1"
+	}
+}

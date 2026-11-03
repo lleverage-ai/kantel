@@ -1,0 +1,14 @@
+[Unit]
+Description=Kantel desktop: TigerVNC display :1, Openbox and Chromium with its DevTools port
+After=network.target
+
+[Service]
+User=user
+Environment=HOME=/home/user
+EnvironmentFile=-/etc/kantel/proxy.env
+ExecStart=/usr/local/bin/kantel-desktop
+Restart=always
+RestartSec=1s
+
+[Install]
+WantedBy=multi-user.target

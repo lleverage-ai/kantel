@@ -1,0 +1,14 @@
+[Unit]
+Description=Kantel guest agent (commands, files and ports for the host, over vsock)
+DefaultDependencies=no
+After=local-fs.target
+Before=sysinit.target
+
+[Service]
+ExecStart=/usr/local/bin/kantel-guest serve
+Restart=always
+RestartSec=200ms
+OOMScoreAdjust=-1000
+
+[Install]
+WantedBy=sysinit.target
