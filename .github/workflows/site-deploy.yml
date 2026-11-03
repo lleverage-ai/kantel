@@ -71,8 +71,10 @@ jobs:
             mode=deploy; why="the token and the account are set"
           fi
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          # The log and the job summary carry the same line, so a check on either finds "Mode: deploy".
           echo "Mode: $mode ($why)"
-          echo "**kantel.dev deploy:** $mode ($why)" >> "$GITHUB_STEP_SUMMARY"
+          echo "### kantel.dev deploy" >> "$GITHUB_STEP_SUMMARY"
+          echo "Mode: $mode ($why)" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/setup-node@v4
         with:
@@ -98,7 +100,13 @@ jobs:
       # Always, before a real deploy too: checks the config and the assets without contacting Cloudflare.
       - name: wrangler deploy --dry-run
         working-directory: apps/site
-        run: pnpm exec wrangler deploy --dry-run
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+        run: |
+          pnpm exec wrangler deploy --dry-run
+          if [ "$MODE" != "deploy" ]; then
+            echo "Dry run only: nothing was deployed." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: wrangler deploy
         if: steps.mode.outputs.mode == 'deploy'
@@ -106,4 +114,10 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.KANTEL_SITE_CLOUDFLARE_API_TOKEN }}
           SHA: ${{ github.sha }}
-        run: pnpm exec wrangler deploy --message "main ${SHA::8}"
+        # Says in the summary which version went live, the one `wrangler deployments list` shows as "main <sha>".
+        run: |
+          set -o pipefail
+          pnpm exec wrangler deploy --message "main ${SHA::8}" | tee wrangler-deploy.log
+          version=$(sed -n 's/.*Current Version ID: *\([0-9a-f-]*\).*/\1/p' wrangler-deploy.log | tail -n 1)
+          echo "Deployed main ${SHA::8} to kantel.dev as version ${version:-unknown}." >> "$GITHUB_STEP_SUMMARY"
+          rm -f wrangler-deploy.log
