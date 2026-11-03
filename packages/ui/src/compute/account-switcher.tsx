@@ -1,8 +1,8 @@
 // The account switcher (compute console, experimental): at the top of the console's sidebar, the account whose
 // sandboxes the console shows, and a menu of the others to switch to. The personal account comes first, then the
 // organisations with the viewer's role in each, the current one ticked, then making or joining an organisation. On the
-// collapsed rail it is the account's initials alone. CreateOrganisationDialog and JoinOrganisationDialog are what its
-// last two rows open; the host opens them, so a page can open them too.
+// CreateOrganisationDialog and JoinOrganisationDialog are what its
+// last two rows open; the host opens them, so a page can open them too. On a phone it is in the top bar, the same row.
 
 import { useState } from "react";
 import { initials } from "../identity/signed-in-as.tsx";
@@ -64,17 +64,13 @@ export interface AccountSwitcherProps {
 	readonly onSwitch: (account: ComputeAccount) => void;
 	readonly onCreate: () => void;
 	readonly onJoin: () => void;
-	/** On the sidebar's collapsed rail: the initials alone. */
-	readonly collapsed?: boolean;
 	/** Open the menu on mount, for a story. */
 	readonly defaultOpen?: boolean;
 }
 
-/** The trigger: fills the sidebar's width, or is a square on the rail. */
-const triggerExpanded =
-	"kt-account-switcher flex w-full max-w-sidebar min-w-0 cursor-pointer items-center gap-2 rounded-control border-0 bg-transparent px-1.5 py-1 text-left [font-family:inherit] text-fg hover:bg-hover aria-expanded:bg-hover";
-const triggerCollapsed =
-	"kt-account-switcher inline-grid size-control-lg flex-none cursor-pointer place-items-center rounded-control border-0 bg-transparent p-0 hover:bg-hover aria-expanded:bg-hover";
+/** The trigger: the account's mark and name, filling the room it is given. */
+const trigger =
+	"kt-account-switcher flex w-full min-w-0 cursor-pointer items-center gap-2 rounded-control border-0 bg-transparent px-1.5 py-1 text-left [font-family:inherit] text-fg hover:bg-hover aria-expanded:bg-hover";
 
 /** The account the console shows, and a menu to switch to another, make an organisation or join one. */
 export function AccountSwitcher({
@@ -83,7 +79,6 @@ export function AccountSwitcher({
 	onSwitch,
 	onCreate,
 	onJoin,
-	collapsed = false,
 	defaultOpen = false,
 }: AccountSwitcherProps) {
 	const ordered = [
@@ -119,28 +114,14 @@ export function AccountSwitcher({
 			label="Switch account"
 			entries={entries}
 			defaultOpen={defaultOpen}
-			triggerClassName={collapsed ? triggerCollapsed : triggerExpanded}
+			triggerClassName={trigger}
 			trigger={
-				collapsed ? (
-					<span className="inline-grid place-items-center" title={`${current.name}, ${kind}`}>
-						<AccountMark account={current} />
-						<span className="kt-sr-only">
-							{current.name}, {kind}
-						</span>
-					</span>
-				) : (
-					<>
-						<AccountMark account={current} />
-						<span className="flex min-w-0 flex-1 flex-col gap-0.5 leading-tight">
-							<span className="truncate text-sm font-medium text-fg">{current.name}</span>
-							<span className="flex min-w-0 items-center gap-1 text-xs text-faint">
-								<KindIcon kind={current.kind} />
-								<span className="truncate">{kind}</span>
-							</span>
-						</span>
-						<ExpandIcon className="flex-none text-faint" />
-					</>
-				)
+				<>
+					<AccountMark account={current} />
+					<span className="min-w-0 flex-1 truncate text-sm font-medium text-fg">{current.name}</span>
+					<span className="kt-sr-only">, {kind}</span>
+					<ExpandIcon className="flex-none text-faint" />
+				</>
 			}
 		/>
 	);

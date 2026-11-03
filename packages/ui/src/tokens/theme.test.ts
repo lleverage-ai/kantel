@@ -111,6 +111,8 @@ describe("the two themes", () => {
 		check("accent-text", "canvas", 4.5);
 		check("accent-text", "panel", 4.5);
 		check("accent-fg", "accent", 4.5);
+		check("primary-fg", "primary", 4.5);
+		check("primary-fg", "primary-hover", 4.5);
 		for (const status of [...STATUSES, "idle"]) {
 			check(`status-${status}`, "canvas", 4.5);
 			check(`status-${status}`, "panel", 4.5);

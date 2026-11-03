@@ -1,26 +1,21 @@
 import type { ThemePreference } from "@kantel/contracts";
 import { type MouseEvent, type ReactNode, useCallback, useMemo, useState } from "react";
-import { KantelLockup } from "../brand/kantel.tsx";
-import { SignedInAs } from "../identity/signed-in-as.tsx";
+import { KantelLockup, KantelMark } from "../brand/kantel.tsx";
 import { Button } from "../primitives/button.tsx";
-import { KeyIcon } from "../primitives/icons.tsx";
 import { useLoad } from "../primitives/load.ts";
 import {
-	BillingIcon,
+	BackIcon,
 	EnvironmentIcon,
-	OrganisationIcon,
 	ProxyIcon,
 	SandboxIcon,
 	ServerIcon,
+	SettingsIcon,
 	SnapshotIcon,
-	TelemetryIcon,
-	WebhookIcon,
 } from "../primitives/lucide.tsx";
-import { Sidebar, SidebarBrand, SidebarItem, SidebarSection, SidebarToggle } from "../primitives/sidebar.tsx";
+import { Sidebar, SidebarBrand, SidebarItem, SidebarSection } from "../primitives/sidebar.tsx";
 import { Spinner } from "../primitives/spinner.tsx";
-import { Badge } from "../primitives/status.tsx";
 import { Notice } from "../primitives/surface.tsx";
-import { ThemeMenu, ThemeSwitch } from "../theme/theme-switch.tsx";
+import { TabBar } from "../primitives/tab-bar.tsx";
 import { AccountSwitcher, CreateOrganisationDialog, JoinOrganisationDialog } from "./account-switcher.tsx";
 import { ComputeApiKeysPage } from "./api-keys-page.tsx";
 import { BillingPage } from "./billing-page.tsx";
@@ -33,14 +28,19 @@ import { OrganisationPage } from "./organisation-page.tsx";
 import { messageOf } from "./parts.tsx";
 import { ProxyPage } from "./proxy-page.tsx";
 import { SandboxesPage } from "./sandboxes-page.tsx";
+import { SettingsFrame, type SettingsNavItem } from "./settings-nav.tsx";
 import { SnapshotsPage } from "./snapshots-page.tsx";
 import { TelemetryPage } from "./telemetry-page.tsx";
+import { UserMenu } from "./user-menu.tsx";
 import { WebhooksPage } from "./webhooks-page.tsx";
 
-// The compute console: the shell around the compute plane's pages, with the account switcher at the top of its
-// sidebar, the account's pages under it, and Hosts for a super-admin. It routes on the path under `base` (the root of
-// the console app, `""`) and leaves where the data comes from to its `source`: the sample data in fixtures.ts, or the
-// API. A super-admin on a deployment with no host yet is shown the way to add one first.
+// The compute console: the shell around the compute plane's pages. On a wide screen, a sidebar with the account
+// switcher, the account's five pages (Sandboxes, Snapshots, Environments, Egress, Settings), Admin for a super-admin
+// and your menu at its foot; on a phone, a top bar with the switcher and your initials, and the five pages in a tab bar
+// along the bottom. Admin is its own area, outside the accounts: a super-admin's Hosts, with its own sidebar and a way
+// back. It routes on the path under `base` (the root of the console app, `""`) and leaves where the data comes from to
+// its `source`: the sample data in fixtures.ts, or the API. A super-admin on a deployment with no host yet is shown the
+// way to add one first.
 
 export type ComputePage =
 	| "sandboxes"
@@ -144,7 +144,7 @@ export interface ComputeConsoleProps {
 	readonly base?: string;
 	/** A fixed time, for stories. */
 	readonly now?: number;
-	/** A phone: the sidebar is a rail. */
+	/** A phone: a top bar and a tab bar instead of the sidebar. */
 	readonly narrow?: boolean;
 	/** The pages run on sample data: the sidebar says so. */
 	readonly sample?: boolean;
@@ -154,12 +154,18 @@ export interface ComputeConsoleProps {
 	readonly onSignOut?: () => void;
 	/** The sign-in's name and email, when the app knows them better than the source. */
 	readonly signedInAs?: { readonly name?: string; readonly email?: string };
-	/** The person chose a theme in the sidebar's switch, which has applied it: the app keeps it for them. */
+	/** The person chose a theme in their menu, which has applied it: the app keeps it for them. */
 	readonly onThemeChoose?: (preference: ThemePreference) => void;
 }
 
+/** A wide screen: the sidebar beside the page. A phone: the top bar, the page, and the tab bar under it. */
 const SHELL = "kt-app grid h-dvh";
+const SHELL_WIDE = "grid-cols-[var(--kt-nav-width)_minmax(0,1fr)]";
+const SHELL_NARROW = "grid-rows-[auto_minmax(0,1fr)_auto]";
 const MAIN = "min-h-0 min-w-0 overflow-y-auto";
+
+/** The pages under Settings: the account's own settings, each at the address it had before. */
+const SETTINGS_PAGES: ReadonlySet<ComputePage> = new Set(["organisation", "keys", "webhooks", "telemetry", "billing"]);
 
 /** The compute console: the sidebar with the account switcher and its pages, and the page the path names. */
 export function ComputeConsole({
@@ -180,8 +186,6 @@ export function ComputeConsole({
 	const accounts = useLoad(() => source.accounts.list(), [source]);
 	const [accountId, setAccountId] = useState<string | undefined>(() => initialAccountId ?? keptAccount());
 	const [dialog, setDialog] = useState<"create" | "join">();
-	const [railChoice, setRailChoice] = useState(false);
-	const collapsed = narrow || railChoice;
 
 	const list = accounts.state.status === "ready" ? accounts.state.value : undefined;
 	const account = useMemo(
@@ -249,133 +253,166 @@ export function ComputeConsole({
 	const failed =
 		viewer.state.status === "error" ? viewer.state : accounts.state.status === "error" ? accounts.state : undefined;
 
+	// Admin is the deployment's, not an account's: a super-admin's Hosts, outside the switcher, with a way back.
+	const adminShown = hostsShown && superAdmin;
+	const inAdmin = adminShown && page === "hosts";
+	const adminHref = computePath("hosts", base);
+	// An account's own hosts, where the deployment lets it add them, are one of its settings.
+	const ownHostsShown = hostsShown && !superAdmin;
+	const inSettings = SETTINGS_PAGES.has(page) || (ownHostsShown && page === "hosts");
+	const settingsItems: SettingsNavItem[] = [
+		{ id: "organisation", label: account?.kind === "personal" ? "Organisations" : "General" },
+		{ id: "keys", label: "API keys" },
+		{ id: "webhooks", label: "Webhooks" },
+		{ id: "telemetry", label: "OpenTelemetry" },
+		...(ownHostsShown ? [{ id: "hosts", label: "Hosts" }] : []),
+		...(billingShown ? [{ id: "billing", label: "Plan and billing" }] : []),
+	].map((item) => ({ ...item, href: computePath(item.id as ComputePage, base), selected: page === item.id }));
+
+	// The five pages: the sidebar's on a wide screen, the tab bar's on a phone. Egress is the account's egress proxy
+	// until its own page comes; a sandbox's egress log is still one of the sandbox's.
+	const pages = [
+		{
+			id: "sandboxes",
+			label: "Sandboxes",
+			short: "Sandboxes",
+			icon: <SandboxIcon />,
+			on: page === "sandboxes" || page === "egress",
+		},
+		{ id: "snapshots", label: "Snapshots", short: "Snapshots", icon: <SnapshotIcon />, on: page === "snapshots" },
+		{
+			id: "environments",
+			label: "Environments",
+			short: "Envs",
+			icon: <EnvironmentIcon />,
+			on: page === "environments",
+		},
+		{ id: "proxy", label: "Egress", short: "Egress", icon: <ProxyIcon />, on: page === "proxy" },
+		{ id: "organisation", label: "Settings", short: "Settings", icon: <SettingsIcon />, on: inSettings },
+	] as const;
+	const href = (id: string) => computePath(id as ComputePage, base);
+
+	const name = signedInAs?.name ?? me?.name;
+	const email = signedInAs?.email ?? me?.email;
+	const userMenu = (compact: boolean) => (
+		<UserMenu
+			compact={compact}
+			{...(name === undefined ? {} : { name })}
+			{...(email === undefined ? {} : { email })}
+			{...(compact && adminShown && !inAdmin ? { onAdmin: () => navigate(adminHref) } : {})}
+			{...(onSignOut === undefined ? {} : { onSignOut })}
+			{...(onThemeChoose === undefined ? {} : { onThemeChoose })}
+		/>
+	);
+	const switcher =
+		list !== undefined && account !== undefined ? (
+			<AccountSwitcher
+				accounts={list}
+				current={account}
+				onSwitch={switchTo}
+				onCreate={() => setDialog("create")}
+				onJoin={() => setDialog("join")}
+			/>
+		) : (
+			<span className="block h-control-md" />
+		);
+	const backToConsole = (
+		<a
+			className="kt-focusable inline-flex items-center gap-1 rounded-control px-1.5 py-1 text-sm text-muted no-underline hover:bg-hover hover:text-fg"
+			href={computePath("sandboxes", base)}
+		>
+			<BackIcon size="sm" />
+			Console
+		</a>
+	);
+
 	return (
 		// biome-ignore lint/a11y/noStaticElementInteractions: delegates clicks on the links inside; each link is focusable.
 		// biome-ignore lint/a11y/useKeyWithClickEvents: a link's Enter is a click, so the keyboard takes the same path.
-		<div
-			className={`${SHELL} ${collapsed ? "grid-cols-[var(--kt-rail-width)_minmax(0,1fr)]" : "grid-cols-[var(--kt-sidebar-width)_minmax(0,1fr)]"}`}
-			data-sidebar={collapsed ? "collapsed" : undefined}
-			onClick={onClick}
-		>
-			<Sidebar
-				collapsed={collapsed}
-				role="complementary"
-				aria-label="Compute console"
-				className="min-h-0"
-				head={
-					<>
+		<div className={`${SHELL} ${narrow ? SHELL_NARROW : SHELL_WIDE}`} onClick={onClick}>
+			{narrow ? (
+				<header className="kt-console-top flex h-(--kt-topbar-height) min-w-0 items-center gap-2 border-b border-border bg-panel px-gutter-narrow">
+					<KantelMark className="h-(--kt-brand-sm)" title="Kantel" />
+					<div className="flex min-w-0 flex-1 items-center gap-2">
+						{inAdmin ? (
+							<>
+								{backToConsole}
+								<span className="truncate text-sm font-strong">Admin</span>
+							</>
+						) : (
+							switcher
+						)}
+					</div>
+					{userMenu(true)}
+				</header>
+			) : (
+				<Sidebar
+					role="complementary"
+					aria-label={inAdmin ? "Admin" : "Compute console"}
+					className="min-h-0"
+					head={
 						<SidebarBrand>
 							<KantelLockup className="h-(--kt-brand-sm)" title="Kantel" />
 						</SidebarBrand>
-						{narrow ? null : <SidebarToggle collapsed={collapsed} onToggle={() => setRailChoice((on) => !on)} />}
-					</>
-				}
-				foot={
-					<Foot
-						collapsed={collapsed}
-						hosting={source.hosting}
-						sample={sample}
-						viewer={me}
-						signedInAs={signedInAs}
-						onSignOut={onSignOut}
-						onThemeChoose={onThemeChoose}
-					/>
-				}
-			>
-				<div className={collapsed ? "flex justify-center" : ""}>
-					{list !== undefined && account !== undefined ? (
-						<AccountSwitcher
-							accounts={list}
-							current={account}
-							onSwitch={switchTo}
-							onCreate={() => setDialog("create")}
-							onJoin={() => setDialog("join")}
-							collapsed={collapsed}
-						/>
-					) : null}
-				</div>
-				<SidebarSection label="Compute" heading={false}>
-					<SidebarItem
-						icon={<SandboxIcon />}
-						label="Sandboxes"
-						href={computePath("sandboxes", base)}
-						selected={page === "sandboxes" || page === "egress"}
-					/>
-					<SidebarItem
-						icon={<SnapshotIcon />}
-						label="Snapshots"
-						href={computePath("snapshots", base)}
-						selected={page === "snapshots"}
-					/>
-					<SidebarItem
-						icon={<EnvironmentIcon />}
-						label="Environments"
-						href={computePath("environments", base)}
-						selected={page === "environments"}
-					/>
-				</SidebarSection>
-				<SidebarSection label="Settings">
-					<SidebarItem
-						icon={<KeyIcon />}
-						label="API keys"
-						href={computePath("keys", base)}
-						selected={page === "keys"}
-					/>
-					<SidebarItem
-						icon={<ProxyIcon />}
-						label="Egress proxy"
-						href={computePath("proxy", base)}
-						selected={page === "proxy"}
-					/>
-					<SidebarItem
-						icon={<WebhookIcon />}
-						label="Webhooks"
-						href={computePath("webhooks", base)}
-						selected={page === "webhooks"}
-					/>
-					<SidebarItem
-						icon={<TelemetryIcon />}
-						label="OpenTelemetry"
-						href={computePath("telemetry", base)}
-						selected={page === "telemetry"}
-					/>
-				</SidebarSection>
-				<SidebarSection label="Account">
-					<SidebarItem
-						icon={<OrganisationIcon />}
-						label={account?.kind === "organisation" ? "Organisation" : "Organisations"}
-						href={computePath("organisation", base)}
-						selected={page === "organisation"}
-					/>
-					{hostsShown && !superAdmin ? (
-						<SidebarItem
-							icon={<ServerIcon />}
-							label="Hosts"
-							href={computePath("hosts", base)}
-							selected={page === "hosts"}
-						/>
-					) : null}
-					{billingShown ? (
-						<SidebarItem
-							icon={<BillingIcon />}
-							label="Plan and billing"
-							href={computePath("billing", base)}
-							selected={page === "billing"}
-						/>
-					) : null}
-				</SidebarSection>
-				{hostsShown && superAdmin ? (
-					<SidebarSection label="Super-admin">
-						<SidebarItem
-							icon={<ServerIcon />}
-							label="Hosts"
-							href={computePath("hosts", base)}
-							selected={page === "hosts"}
-						/>
-					</SidebarSection>
-				) : null}
-			</Sidebar>
+					}
+					foot={
+						<>
+							{adminShown && !inAdmin ? (
+								<SidebarSection label="Admin" heading={false}>
+									<SidebarItem icon={<ServerIcon />} label="Admin" href={adminHref} />
+								</SidebarSection>
+							) : null}
+							{userMenu(false)}
+						</>
+					}
+				>
+					{inAdmin ? (
+						<>
+							<div className="flex flex-col items-start gap-2">
+								{backToConsole}
+								<span className="flex flex-col gap-0.5 px-2.5 leading-tight">
+									<span className="text-sm font-strong">Admin</span>
+									<span className="text-xs text-faint">This whole install</span>
+								</span>
+							</div>
+							<SidebarSection label="Admin" heading={false}>
+								<SidebarItem icon={<ServerIcon />} label="Hosts" href={adminHref} selected />
+							</SidebarSection>
+						</>
+					) : (
+						<>
+							{switcher}
+							<SidebarSection label="Pages" heading={false}>
+								{pages.slice(0, 4).map((each) => (
+									<SidebarItem
+										key={each.id}
+										icon={each.icon}
+										label={each.label}
+										href={href(each.id)}
+										selected={each.on}
+									/>
+								))}
+							</SidebarSection>
+							<SidebarSection label="Settings" heading={false}>
+								<SidebarItem
+									icon={<SettingsIcon />}
+									label="Settings"
+									href={href("organisation")}
+									selected={inSettings}
+								/>
+							</SidebarSection>
+						</>
+					)}
+				</Sidebar>
+			)}
 			<main className={MAIN}>
+				{sample ? (
+					<p
+						className={`kt-sample-banner m-0 border-b border-border bg-status-waiting-soft py-1.5 text-xs text-status-waiting ${narrow ? "px-gutter-narrow" : "px-gutter"}`}
+					>
+						{source.hosting === "hosted" ? "Hosted demo on sample data." : "Sample data."} Nothing here is real.
+					</p>
+				) : null}
 				{failed !== undefined ? (
 					<div className={`grid h-full place-items-center ${narrow ? "p-gutter-narrow" : "p-gutter"}`}>
 						<Notice
@@ -401,32 +438,47 @@ export function ComputeConsole({
 					</div>
 				) : (
 					<div className={narrow ? "p-gutter-narrow" : "p-gutter"}>
-						<PageFor
-							// A new account or page starts afresh: nothing of the last one's dialogs or filters carries over.
-							key={`${account.id}/${page}/${route.sandboxId ?? route.environmentId ?? ""}`}
-							page={page}
-							route={route}
-							source={source}
-							account={account}
-							viewer={me}
-							now={now}
-							base={base}
-							search={search}
-							navigate={navigate}
-							noHosts={noHosts}
-							hosts={hostsSource}
-							ownHosts={!superAdmin}
-							onCreate={() => setDialog("create")}
-							onJoin={() => setDialog("join")}
-							onLeft={() => {
-								const personal = list?.find((each) => each.kind === "personal");
-								if (personal !== undefined) switchTo(personal);
-								accounts.reload();
-							}}
-						/>
+						<SettingsFrameFor shown={inSettings} items={settingsItems} narrow={narrow}>
+							<PageFor
+								// A new account or page starts afresh: nothing of the last one's dialogs or filters carries over.
+								key={`${account.id}/${page}/${route.sandboxId ?? route.environmentId ?? ""}`}
+								page={page}
+								route={route}
+								source={source}
+								account={account}
+								viewer={me}
+								now={now}
+								base={base}
+								search={search}
+								navigate={navigate}
+								noHosts={noHosts}
+								narrow={narrow}
+								hosts={hostsSource}
+								ownHosts={!superAdmin}
+								onCreate={() => setDialog("create")}
+								onJoin={() => setDialog("join")}
+								onLeft={() => {
+									const personal = list?.find((each) => each.kind === "personal");
+									if (personal !== undefined) switchTo(personal);
+									accounts.reload();
+								}}
+							/>
+						</SettingsFrameFor>
 					</div>
 				)}
 			</main>
+			{narrow && !inAdmin ? (
+				<TabBar
+					label="Pages"
+					items={pages.map((each) => ({
+						id: each.id,
+						label: each.short,
+						icon: each.icon,
+						href: href(each.id),
+						selected: each.on,
+					}))}
+				/>
+			) : null}
 			<CreateOrganisationDialog
 				open={dialog === "create"}
 				onClose={() => setDialog(undefined)}
@@ -462,6 +514,7 @@ function PageFor({
 	search,
 	navigate,
 	noHosts,
+	narrow,
 	hosts,
 	ownHosts,
 	onCreate,
@@ -479,6 +532,8 @@ function PageFor({
 	navigate: (path: string) => void;
 	/** There's no host yet: the deployment's, for a super-admin, or the account's own. */
 	noHosts: boolean;
+	/** A phone. */
+	narrow: boolean;
 	/** The hosts this person manages, when there are any to manage. */
 	hosts: HostsSource | undefined;
 	/** They are the account's own, not the deployment's. */
@@ -496,10 +551,11 @@ function PageFor({
 					snapshots={source.snapshots}
 					account={account}
 					hosting={source.hosting}
-					snapshotsHref={(sandboxId) => computePath("snapshots", base, sandboxId)}
+					onSnapshots={(sandboxId) => navigate(computePath("snapshots", base, sandboxId))}
 					environments={(accountId) => source.environments.list(accountId)}
 					onEgress={(sandboxId) => navigate(computePath("egress", base, sandboxId))}
 					creating={new URLSearchParams(search).has("new")}
+					narrow={narrow}
 					{...(noHosts ? { [ownHosts ? "ownHostHref" : "addHostHref"]: `${computePath("hosts", base)}?add` } : {})}
 					{...timing}
 				/>
@@ -596,54 +652,23 @@ function PageFor({
 	}
 }
 
-/** The sidebar's foot: which Kantel this is, the theme switch, and who is signed in. */
-function Foot({
-	collapsed,
-	hosting,
-	sample,
-	viewer,
-	signedInAs,
-	onSignOut,
-	onThemeChoose,
+/** Settings' navigation around a settings page; any other page as it is. */
+function SettingsFrameFor({
+	shown,
+	items,
+	narrow,
+	children,
 }: {
-	collapsed: boolean;
-	hosting: ComputeSource["hosting"];
-	sample: boolean;
-	viewer: ComputeViewer | undefined;
-	signedInAs: { readonly name?: string; readonly email?: string } | undefined;
-	onSignOut: (() => void) | undefined;
-	onThemeChoose: ((preference: ThemePreference) => void) | undefined;
-}) {
-	const name = signedInAs?.name ?? viewer?.name;
-	const email = signedInAs?.email ?? viewer?.email;
-	return (
-		<>
-			{collapsed ? null : (
-				<div className="flex flex-wrap items-center gap-1.5 px-2.5">
-					<Badge tone={hosting === "hosted" ? "accent" : "neutral"}>
-						{hosting === "hosted" ? "Hosted demo" : "Self-hosted"}
-					</Badge>
-					{sample ? <Badge tone="waiting">Sample data</Badge> : null}
-				</div>
-			)}
-			{collapsed ? (
-				// The rail (and a phone, whose sidebar is always one): the same choices behind an icon.
-				<div className="flex justify-center">
-					<ThemeMenu {...(onThemeChoose === undefined ? {} : { onChoose: onThemeChoose })} />
-				</div>
-			) : (
-				<div className="flex items-center justify-between gap-2 px-2.5">
-					<span className="text-xs text-faint" aria-hidden="true">
-						Theme
-					</span>
-					<ThemeSwitch {...(onThemeChoose === undefined ? {} : { onChoose: onThemeChoose })} />
-				</div>
-			)}
-			<SignedInAs
-				{...(name === undefined ? {} : { name })}
-				{...(email === undefined ? {} : { email })}
-				{...(onSignOut === undefined ? {} : { onSignOut })}
-			/>
-		</>
+	shown: boolean;
+	items: readonly SettingsNavItem[];
+	narrow: boolean;
+	children: ReactNode;
+}): ReactNode {
+	return shown ? (
+		<SettingsFrame items={items} narrow={narrow}>
+			{children}
+		</SettingsFrame>
+	) : (
+		children
 	);
 }

@@ -99,6 +99,9 @@
 	--color-accent-text: var(--kt-accent-text);
 	--color-accent-soft: var(--kt-accent-soft);
 	--color-focus: var(--kt-focus);
+	--color-primary: var(--kt-primary);
+	--color-primary-hover: var(--kt-primary-hover);
+	--color-primary-fg: var(--kt-primary-fg);
 
 	--color-status-working: var(--kt-status-working);
 	--color-status-waiting: var(--kt-status-waiting);
