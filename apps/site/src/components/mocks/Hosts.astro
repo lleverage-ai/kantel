@@ -1,0 +1,233 @@
+---
+// The console's Hosts page (compute console, with compute/parts.tsx's table and CapacityBar): Add a host, with the
+// one-line join command and its token's expiry, and the hosts table, each host with its state and what of its CPU,
+// memory and disk is in use.
+import Icon from "./Icon.astro";
+import Mock from "./Mock.astro";
+
+type State = "Online" | "Draining" | "Joining";
+// The status colour each state shows in, as HOST_STATE_STATUS has it.
+const tone: Record<State, string> = { Online: "done", Draining: "waiting", Joining: "working" };
+
+type Use = [used: number, total: number];
+const hosts: {
+	name: string;
+	system: string;
+	state: State;
+	cpu?: Use;
+	memory?: Use;
+	disk?: Use;
+}[] = [
+	{
+		name: "hetzner-fsn1-01",
+		system: "Ubuntu 24.04, x86_64",
+		state: "Online",
+		cpu: [38, 64],
+		memory: [141, 256],
+		disk: [1210, 3840],
+	},
+	{
+		name: "build-01",
+		system: "Ubuntu 24.04, x86_64",
+		state: "Online",
+		cpu: [58, 64],
+		memory: [220, 256],
+		disk: [1900, 3840],
+	},
+	{
+		name: "hetzner-fsn1-02",
+		system: "Ubuntu 24.04, x86_64",
+		state: "Draining",
+		cpu: [12, 64],
+		memory: [40, 256],
+		disk: [2960, 3840],
+	},
+	{
+		name: "home-server",
+		system: "Debian 13, x86_64",
+		state: "Online",
+		cpu: [6, 16],
+		memory: [21, 64],
+		disk: [310, 1000],
+	},
+	{ name: "office-nuc", system: "Ubuntu 24.04, x86_64", state: "Joining" },
+];
+
+// CapacityBar's colours: amber past 75%, red past 90%.
+const barTone = ([used, total]: Use): string => {
+	const share = used / total;
+	return share >= 0.9 ? "bar-error" : share >= 0.75 ? "bar-approval" : "bar-done";
+};
+const percent = ([used, total]: Use): string => `${Math.round((used / total) * 100)}%`;
+const gb = (value: number): string => (value >= 1000 ? `${(value / 1000).toFixed(1)} TB` : `${value} GB`);
+const capacity = {
+	cpu: ([used, total]: Use) => `${used} of ${total} vCPU`,
+	memory: ([used, total]: Use) => `${used} of ${total} GB`,
+	disk: ([used, total]: Use) => `${gb(used)} of ${gb(total)}`,
+};
+---
+
+<Mock
+	label="The Hosts page in Kantel's console. Add a host shows the one-line command to run on a new Linux machine, with a token that expires in 59 minutes. Below, five hosts with how much of their CPU, memory and disk is in use: hetzner-fsn1-01, build-01 and home-server are online, hetzner-fsn1-02 is draining and office-nuc is joining. build-01 is using 58 of its 64 vCPUs."
+>
+	<div class="flex items-start justify-between gap-4">
+		<div>
+			<p class="m-title">Hosts</p>
+			<p class="mt-1 m-sm m-muted">Machines that run sandboxes. Each one connects out to Kantel, so it needs no open ports.</p>
+		</div>
+		<span class="m-hide-narrow m-button"><Icon name="plus" class="m-icon-sm" />Add a host</span>
+	</div>
+
+	<div class="m-card mt-5 flex flex-col gap-3 p-4">
+		<div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+			<p class="m-strong">Add a host</p>
+			<span class="m-xs m-faint">Token expires in 59m</span>
+		</div>
+		<p class="m-sm m-muted">Run this on the new Linux machine. It shows up below when it has joined.</p>
+		<div class="m-well flex items-start gap-3 px-3 py-2.5">
+			<code class="min-w-0 flex-1 m-mono break-words whitespace-normal"
+				>curl -fsSL https://kantel.acme.dev/install-host.sh | sh -s -- --join kth_8Hq2vX4mP0cR7tLw</code
+			>
+			<span class="m-hide-narrow m-button"><Icon name="copy" class="m-icon-sm" />Copy</span>
+		</div>
+	</div>
+
+	<div class="m-card mt-4 overflow-hidden">
+		<table class="m-sm">
+			<thead>
+				<tr>
+					<th>Name</th>
+					<th>State</th>
+					<th>CPU</th>
+					<th class="m-hide-narrow">Memory</th>
+					<th class="disk">Disk</th>
+				</tr>
+			</thead>
+			<tbody>
+				{
+					hosts.map((host) => (
+						<tr>
+							<td class="name">
+								<span class="block truncate m-strong">{host.name}</span>
+								<span class="block truncate m-xs m-muted">{host.system}</span>
+							</td>
+							<td>
+								<span class={`flex items-center gap-1.5 tone-${tone[host.state]}`}>
+									<span class="m-dot" />
+									<span class="m-fg">{host.state}</span>
+								</span>
+							</td>
+							{(["cpu", "memory", "disk"] as const).map((part) => {
+								const use = host[part];
+								return (
+									<td class:list={[part === "memory" && "m-hide-narrow", part === "disk" && "disk"]}>
+										{use === undefined ? (
+											<span class="m-faint">–</span>
+										) : (
+											<span class="flex flex-col gap-1">
+												<span class="m-xs m-muted">{capacity[part](use)}</span>
+												<span class="track">
+													<span class={`fill ${barTone(use)}`} style={`width: ${percent(use)}`} />
+												</span>
+											</span>
+										)}
+									</td>
+								);
+							})}
+						</tr>
+					))
+				}
+			</tbody>
+		</table>
+	</div>
+</Mock>
+
+<style>
+	table {
+		width: 100%;
+		border-collapse: collapse;
+		text-align: left;
+	}
+
+	th {
+		height: var(--kt-control-md);
+		padding: 0 var(--kt-step-3);
+		font-size: var(--kt-text-xs);
+		font-weight: var(--kt-weight-medium);
+		color: var(--kt-text-muted);
+		white-space: nowrap;
+		border-bottom: var(--kt-hairline) solid var(--kt-border);
+	}
+
+	td {
+		padding: var(--kt-step-2) var(--kt-step-3);
+		vertical-align: middle;
+		white-space: nowrap;
+	}
+
+	tbody tr:not(:last-child) > td {
+		border-bottom: var(--kt-hairline) solid var(--kt-border);
+	}
+
+	/* The name takes what's left, never less than its longest name, and truncates the system under it. */
+	.name {
+		max-width: 0;
+		width: 100%;
+		min-width: calc(var(--kt-spacing) * 32);
+	}
+
+	/* CapacityBar: a thin track, w-24, filled in its status colour. */
+	.track {
+		display: block;
+		width: calc(var(--kt-spacing) * 24);
+		height: var(--kt-step-1);
+		overflow: hidden;
+		border-radius: var(--kt-radius-full);
+		background: var(--kt-active);
+	}
+
+	.fill {
+		display: block;
+		height: 100%;
+		border-radius: var(--kt-radius-full);
+	}
+
+	.bar-done {
+		background: var(--kt-status-done);
+	}
+
+	.bar-approval {
+		background: var(--kt-status-approval);
+	}
+
+	.bar-error {
+		background: var(--kt-status-error);
+	}
+
+	.tone-done {
+		color: var(--kt-status-done);
+	}
+
+	.tone-waiting {
+		color: var(--kt-status-waiting);
+	}
+
+	.tone-working {
+		color: var(--kt-status-working);
+	}
+
+	/* Disk only where the mock is wide enough for it beside the name. */
+	@container (max-width: 34rem) {
+		.disk {
+			display: none;
+		}
+	}
+
+	@container (max-width: 30rem) {
+		th,
+		td {
+			padding-left: var(--kt-step-2);
+			padding-right: var(--kt-step-2);
+		}
+	}
+</style>

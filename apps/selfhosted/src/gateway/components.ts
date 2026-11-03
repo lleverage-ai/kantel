@@ -29,7 +29,6 @@ import {
 	type Project,
 	type ProjectAccess,
 	type ProjectId,
-	type PromptRules,
 	type Skills,
 	type WorkspaceId,
 } from "@kantel/contracts";
@@ -40,9 +39,6 @@ import { createMemoryIdentity } from "@kantel/identity/memory";
 import { createMemoryOtpStores, type OtpCodeStore, type SessionStore } from "@kantel/identity/otp";
 import { createMemoryPasskeyStores, createPasskeys, type Passkeys } from "@kantel/identity/passkey";
 import { createMemoryMemory } from "@kantel/memory/memory";
-import type { ProgramsService } from "@kantel/programs/service";
-import { createMemoryProgramStore } from "@kantel/programs/store";
-import { createMemoryPromptRules } from "@kantel/rules/memory";
 import type { DurableHosts, SessionRuntimeOptions } from "@kantel/runtime/core";
 import { createMemoryRuntime, type MemoryRuntime } from "@kantel/runtime/memory";
 import { CODING_TOOLS } from "@kantel/sandbox/coding-tools";
@@ -56,7 +52,7 @@ import type { KantelVault } from "@kantel/vault/engine";
 import { createMemoryVault } from "@kantel/vault/memory";
 import { createMemoryWorkspaceStore, createStoredWorkspaces, type StoredWorkspaces } from "@kantel/workspace/stored";
 import { gatewaySessionBrowser, withBrowserTools } from "./browser.ts";
-import { type ComputeConfig, gatewayCompute } from "./compute.ts";
+import { type ComputeHostsConfig, gatewayHosts } from "./compute.ts";
 import { type GatewayConnectionsConfig, gatewayConnections } from "./connections.ts";
 import { type GatewayEnvironments, type GatewayEnvironmentsConfig, gatewayEnvironments } from "./environments.ts";
 import {
@@ -91,8 +87,6 @@ export interface GatewayComponents {
 	readonly memory: Memory;
 	/** Sharing resources across projects, read by the runtime's access for every resource check. */
 	readonly sharing: SharingStore;
-	/** Prompt rules, layered around a session's profile when it starts. */
-	readonly rules: PromptRules;
 	/** The sandboxes sessions' `bash` runs in, leased on first use (`sandboxes.ts`). */
 	readonly sandboxes: Sandboxes;
 	/**
@@ -139,23 +133,18 @@ export interface GatewayComponents {
 	 */
 	readonly toolServers?: GatewayToolServers;
 	/**
-	 * The compute plane (`compute.ts`, @kantel/hosts): hosts running `kantel-host` and the sandboxes placed on them.
-	 * Absent unless `KANTEL_COMPUTE=experimental`.
+	 * The compute plane's hosts (`compute.ts`, @kantel/hosts): machines running `kantel-host` and the sandboxes placed
+	 * on them. Absent unless `KANTEL_COMPUTE=experimental` with `KANTEL_COMPUTE_BACKEND=hosts`.
 	 */
-	readonly compute?: HostsService;
+	readonly computeHosts?: HostsService;
 	/**
 	 * Environments (sandbox tier 3, `environments.ts`): long-lived machines sessions reach through `bash`'s `env`.
 	 * Absent unless `KANTEL_ENVIRONMENTS=experimental`.
 	 */
 	readonly environments?: GatewayEnvironments;
 	/**
-	 * Saved programs (`session-tools.ts`, @kantel/programs): served at `/v1/programs`, and `save_program` in sessions.
-	 * Absent with `KANTEL_PROGRAMS=off` or `KANTEL_CODEMODE=off`.
-	 */
-	readonly programs?: ProgramsService;
-	/**
 	 * The tools the bootstrap's profiles list beside the coding, browser and connection tools (`session-tools.ts`):
-	 * `present_files`, `create_document`, `codemode` and `save_program`, those that are on.
+	 * `present_files` and `create_document`, when they are on.
 	 */
 	readonly sessionTools: readonly string[];
 	/**
@@ -283,13 +272,13 @@ export function createGatewayComponents(
 		readonly connectionsFetch?: Fetch;
 		/** Tool servers (`tool-servers.ts`), in memory. Without it, there are none. */
 		readonly toolServers?: boolean;
-		/** The compute plane (`compute.ts`), its registry in memory. Without it, there is none. */
-		readonly compute?: ComputeConfig;
+		/** The compute plane's hosts (`compute.ts`), their registry in memory. Without it, there are none. */
+		readonly computeHosts?: ComputeHostsConfig;
 		/** Environments (`environments.ts`), in memory. Without it, there are none. */
 		readonly environments?: GatewayEnvironmentsConfig;
 		/** How environments reach boat.dev; a test's fake API. */
 		readonly boatFetch?: typeof fetch;
-		/** Code mode, programs and presented files (`session-tools.ts`). Default all on, as a local install has them. */
+		/** Presented files (`session-tools.ts`). Default on, as a local install has them. */
 		readonly sessionTools?: SessionToolsConfig;
 		/** The container tier (`sandboxes.ts`). Without it, a command routed to a container is refused. */
 		readonly containers?: GatewayContainers;
@@ -314,14 +303,11 @@ export function createGatewayComponents(
 	let vault: KantelVault | undefined;
 	const models = options.models ??
 		options.modelGateway?.build({ vault: () => vault, audit }) ?? { models: createEchoModels() };
-	// Built before the runtime too: it gives sessions their tools, and program sessions the program runner as their model.
-	const sessionTools = gatewaySessionTools(options.sessionTools ?? ALL_SESSION_TOOLS, {
-		connectionCalls: (id) => linked?.takeScriptCalls(id) ?? [],
-	});
+	// Built before the runtime too: it gives sessions their tools.
+	const sessionTools = gatewaySessionTools(options.sessionTools ?? ALL_SESSION_TOOLS);
 	// Skills and memory check project access with the runtime's check, which they reach only when called.
 	const skills = createMemorySkills({ audit, access: auditAccess.access });
 	const memory = createMemoryMemory({ audit, access: auditAccess.access });
-	const rules = createMemoryPromptRules({ audit, access: auditAccess.access });
 	let workspaces: StoredWorkspaces | undefined;
 	const sharing = createMemorySharing({
 		audit,
@@ -377,16 +363,14 @@ export function createGatewayComponents(
 			audit,
 			identity,
 			sharing,
-			...sessionTools.models(models),
+			...models,
 			...gatewaySandboxes.runtimeOptions,
-			// `subagent` after code mode's tools, as on Cloudflare: a script doesn't start subagents.
 			tools: withGatewaySubagents(
 				sessionTools.withTools(linked === undefined ? browserTools : linked.withTools(browserTools)),
 				subagentsOn,
 				sessions.get,
 			),
 			...sessionContextOptions({ skills, memory, workspaces: lateWorkspaces }),
-			rules,
 		}),
 		lateWorkspaces,
 	);
@@ -433,13 +417,6 @@ export function createGatewayComponents(
 	});
 	const heldToolServers = toolServers?.attach(runtime);
 	const heldEnvironments = environments?.attach();
-	const programs = sessionTools.attach({
-		store: createMemoryProgramStore(),
-		runtime: runtime.runtime,
-		profiles: runtime.profiles,
-		access,
-		audit,
-	});
 	const modelGateway = options.models === undefined ? options.modelGateway : undefined;
 	return {
 		identity,
@@ -449,7 +426,6 @@ export function createGatewayComponents(
 		skills,
 		memory,
 		sharing,
-		rules,
 		sandboxes,
 		otp: createMemoryOtpStores(),
 		passkeys: createPasskeys({ ...createMemoryPasskeyStores(), identity, audit }),
@@ -459,9 +435,10 @@ export function createGatewayComponents(
 		...(browser === undefined ? {} : { browser }),
 		...(connections === undefined ? {} : { connections }),
 		...(heldToolServers === undefined ? {} : { toolServers: heldToolServers }),
-		...(options.compute === undefined ? {} : { compute: gatewayCompute(options.compute, createMemoryHostStore()) }),
+		...(options.computeHosts === undefined
+			? {}
+			: { computeHosts: gatewayHosts(options.computeHosts, createMemoryHostStore()) }),
 		...(heldEnvironments === undefined ? {} : { environments: heldEnvironments }),
-		...(programs === undefined ? {} : { programs }),
 		sessionTools: sessionTools.toolNames,
 		...(subagentsOn ? { subagents: true as const } : {}),
 		bindings: {
@@ -470,7 +447,7 @@ export function createGatewayComponents(
 			subagents: subagentsBinding(subagentsOn),
 			connections: connections === undefined ? "off" : "memory",
 			...(heldToolServers === undefined ? {} : { toolServers: "memory (experimental)" }),
-			...(options.compute === undefined ? {} : { compute: "memory (experimental)" }),
+			...(options.computeHosts === undefined ? {} : { computeHosts: "memory (experimental)" }),
 			...(heldEnvironments === undefined ? {} : { environments: heldEnvironments.binding }),
 			identity: "memory",
 			audit: "memory",
@@ -528,6 +505,11 @@ export interface Bootstrap {
 	 * again on later starts, and every one on the operator key. `GET /v1/projects` lists them with the key.
 	 */
 	readonly projects?: { readonly [name: string]: ProjectId };
+	/**
+	 * The compute plane's super-admin key (`ksk_…`, every scope), when KANTEL_COMPUTE=experimental: made on the first
+	 * start with it on, and made again from here on each start after, as the compute plane keeps its records in memory.
+	 */
+	readonly computeKey?: string;
 }
 
 /** What the bootstrap names: the organisation, its first project, the admin it invites and the other projects. */
@@ -667,8 +649,8 @@ async function keyCovering(
 /**
  * A bootstrap profile's tools, as Cloudflare's default profile's (apps/cloudflare/src/stack.ts): in a session on a
  * workspace (every session has one, `withOwnWorkspaces`), the file tools on the workspace directly, and `bash` in an
- * isolate leased on its first command (`sandboxes.ts`); `present_files`, `create_document`, `codemode` and
- * `save_program` (`session-tools.ts`). With a browser, its tools too (`browser.ts`): `browser_request` asks a person
+ * isolate leased on its first command (`sandboxes.ts`); `present_files` and `create_document`
+ * (`session-tools.ts`). With a browser, its tools too (`browser.ts`): `browser_request` asks a person
  * for sites first. With subagents, `subagent` (`subagents.ts`). With connections, theirs. The skills, memory scopes
  * and image model are the user's, kept across starts from `stored`: none until they set some.
  */

@@ -1,261 +1,578 @@
 ---
-// kantel.dev's home. Above the fold only the headline, the install command and the pixel field behind them; then what you get
-// once Kantel is running, the API, and the way to the docs and the source. Every claim here is in the usage docs
-// (docs/site); the pictures are mocks of the console in its default theme (src/components/mocks), not screenshots.
+// kantel.dev's home, for the compute plane. Above the fold only the headline, the install command, the shape of the
+// host join command and the pixel field behind them; then the three steps to a first sandbox, the two types, the
+// lifecycle, the ways in from a harness, hosts and the proxy, the rest in brief, self-hosted or hosted, and the way to
+// the docs and the source. Claims follow the usage docs (docs/site); the pictures are mocks of the console in its
+// default theme (src/components/mocks), not screenshots. The CLI, SDK and MCP server are experimental, and the page
+// says so.
 import Feature from "../components/Feature.astro";
 import InstallCommand from "../components/InstallCommand.astro";
-import Browser from "../components/mocks/Browser.astro";
-import CodeMode from "../components/mocks/CodeMode.astro";
-import Connection from "../components/mocks/Connection.astro";
-import Onboarding from "../components/mocks/Onboarding.astro";
-import Question from "../components/mocks/Question.astro";
-import Session from "../components/mocks/Session.astro";
-import SignIn from "../components/mocks/SignIn.astro";
-import Vault from "../components/mocks/Vault.astro";
+import Hosts from "../components/mocks/Hosts.astro";
+import Sandboxes from "../components/mocks/Sandboxes.astro";
 import PixelField from "../components/PixelField.astro";
 import Base from "../layouts/Base.astro";
-import { GITHUB_URL } from "../site.mjs";
+import { GITHUB_URL, HOST_JOIN_COMMAND, INSTALL_COMMAND } from "../site.mjs";
 
 const repo = GITHUB_URL.replace("https://github.com/", "");
 
-const docSections = [
-	{ href: "/docs/console/getting-started/install/", title: "Getting started", text: "Install, sign in, first steps" },
-	{ href: "/docs/console/sessions/", title: "Using the console", text: "Sessions, browsers, connections, schedules" },
-	{ href: "/docs/api/concepts/", title: "Building apps", text: "Concepts, keys, streaming, approvals" },
-	{ href: "/docs/api/reference/", title: "API reference", text: "Every route, generated from the OpenAPI document" },
-	{ href: "/docs/deploy/overview/", title: "Deploying", text: "Your own servers, or Cloudflare" },
+// A command in words and placeholders, so a placeholder can be set apart from what you type as it is, and each word
+// keeps together: a narrow screen wraps between words, never inside `--token` at its dashes.
+const commandParts = (command: string): string[] => command.split(/(<[^>]+>| )/).filter((part) => part !== "");
+
+const steps = [
+	{
+		title: "Install the control plane",
+		text: "On any machine with Docker. It serves the console and the API, and decides where each sandbox runs.",
+		command: INSTALL_COMMAND,
+	},
+	{
+		title: "Add a host",
+		text: "Run one command on each Linux machine, with a token from the console. The host connects out, so it needs no open ports.",
+		command: HOST_JOIN_COMMAND,
+	},
+	{
+		title: "Make a sandbox",
+		text: "From the console, or from your agent. A microVM is up in about a second.",
+		command: "npx kantel sandbox create --type microvm",
+	},
 ];
+
+// The two types, row by row, in the same order in both columns.
+const types = [
+	{
+		name: "Isolate",
+		type: "isolate",
+		rows: [
+			["Starts in", "Milliseconds"],
+			["Runs on", "A V8 isolate on workerd, Cloudflare's open-source Workers runtime"],
+			["Inside", "A shell and JavaScript"],
+			["Costs", "Almost nothing to run, so you can start one for every task"],
+			["Use it for", "Quick scripts, file work and tool calls that don't need a Linux kernel"],
+		],
+	},
+	{
+		name: "MicroVM",
+		type: "microvm",
+		rows: [
+			["Starts in", "About a second, from a snapshot"],
+			["Runs on", "A Firecracker virtual machine with its own Linux kernel"],
+			["Inside", "Root, packages, Docker, systemd, and /dev/kvm for virtual machines of its own"],
+			["Costs", "The vCPUs, memory and disk you size it with, while it runs"],
+			["Use it for", "Builds, test suites, services, desktops and browsers: anything a Linux machine does"],
+		],
+	},
+];
+
+// The harness samples, one tab each, as packages/cli's README and the docs' TypeScript SDK page show them.
+const samples = [
+	{
+		id: "cli",
+		tab: "CLI",
+		file: "Terminal",
+		lines: [
+			{ comment: "# A microVM, up in about a second" },
+			{ code: "npx kantel sandbox create --type microvm" },
+			{ comment: "# Run the tests in it" },
+			{ code: "npx kantel exec sbx_7f3k2m9qa1 -- npm test" },
+			{ comment: "# Copy it, to try something else from the same state" },
+			{ code: "npx kantel sandbox fork sbx_7f3k2m9qa1" },
+		],
+	},
+	{
+		id: "sdk",
+		tab: "TypeScript",
+		file: "agent.ts",
+		lines: [
+			{ code: 'import { createKantelClient } from "./kantel-sdk.ts";' },
+			{ code: "" },
+			{ code: "const kantel = createKantelClient({" },
+			{ code: '  baseUrl: "https://kantel.example.com/v1",' },
+			{ code: "  token: process.env.KANTEL_API_KEY," },
+			{ code: "});" },
+			{ code: "" },
+			{ code: 'const sandbox = await kantel.createSandbox({ type: "microvm", wait: true });' },
+			{ code: 'await kantel.runCommand(sandbox.id, { command: "npm test" });' },
+		],
+	},
+	{
+		id: "http",
+		tab: "HTTP",
+		file: "Terminal",
+		lines: [
+			{ code: 'curl -X POST "$KANTEL_URL/v1/sandboxes" \\' },
+			{ code: '  -H "authorization: Bearer $KANTEL_API_KEY" \\' },
+			{ code: '  -H "content-type: application/json" \\' },
+			{ code: '  -d \'{ "type": "microvm" }\'' },
+		],
+	},
+	{
+		id: "mcp",
+		tab: "MCP",
+		file: ".mcp.json, for Claude Code",
+		lines: [
+			{ code: "{" },
+			{ code: '  "mcpServers": {' },
+			{ code: '    "kantel": {' },
+			{ code: '      "command": "npx",' },
+			{ code: '      "args": ["-y", "kantel", "mcp"],' },
+			{ code: '      "env": {' },
+			// Claude Code fills in ${VAR} from the environment itself, so these stay literal.
+			{ code: `        "KANTEL_URL": "\${KANTEL_URL}",` },
+			{ code: `        "KANTEL_API_KEY": "\${KANTEL_API_KEY}"` },
+			{ code: "      }" },
+			{ code: "    }" },
+			{ code: "  }" },
+			{ code: "}" },
+		],
+	},
+];
+
+const interfaces = [
+	{ name: "The CLI", text: "npx kantel, for you and for any agent with a shell" },
+	{ name: "The TypeScript SDK", text: "one generated file with no dependencies, for your own app or agent loop" },
+	{ name: "The HTTP API", text: "every route under /v1, from any language" },
+	{ name: "An MCP server", text: "sandboxes as tools in Claude Code or any MCP client" },
+	{ name: "An AGENTS.md snippet or skill", text: "tells an agent when to reach for a sandbox, and how" },
+];
+
+const allowList = [
+	{ host: "api.github.com", outcome: "Allowed, with your GitHub token added" },
+	{ host: "registry.npmjs.org", outcome: "Allowed" },
+	{ host: "pypi.org", outcome: "Allowed" },
+	{ host: "Anything else", outcome: "Refused" },
+];
+
+const extras = [
+	{
+		title: "Scoped API keys",
+		text: "Give a CI job a key that can create and run sandboxes and nothing else. Kantel shows a key's secret once and keeps only its hash.",
+	},
+	{
+		title: "Webhooks",
+		text: "Hear when a sandbox is ready, stops, fails or is deleted, and when a snapshot is saved. Every delivery is signed.",
+	},
+	{
+		title: "OpenTelemetry",
+		text: "Send sandbox metrics and lifecycle events to any OTLP collector, next to the rest of your telemetry.",
+	},
+	{
+		title: "Organisations",
+		text: "Everyone has a personal account. Share sandboxes, snapshots and keys through an organisation, and switch between them in the console.",
+	},
+];
+
+const docSections = [
+	{ href: "/docs/", title: "What Kantel is", text: "A compute plane for agents, and where to start" },
+	{ href: "/docs/concepts/", title: "Concepts", text: "Hosts, sandboxes, snapshots, organisations, keys" },
+	{
+		href: "/docs/self-hosting/install/",
+		title: "Install Kantel",
+		text: "The control plane, signing in, your first API key",
+	},
+	{ href: "/docs/hosted-or-self-hosted/", title: "Hosted or self-hosted", text: "Your own machines, or ours" },
+	{ href: "/docs/api/reference/", title: "API reference", text: "Every route, generated from the OpenAPI document" },
+];
+
+const link = "underline underline-offset-4 hover:text-midnight";
+const linkOnMidnight = "underline decoration-midnight-2 underline-offset-4 hover:decoration-paper";
 ---
 
 <Base
-	title="Kantel, by Lleverage: run AI agents on your own machines"
-	description="Kantel runs AI agents for people and for apps: sessions, a sandbox, browsers, connections, approvals and an audit trail, on your own machine or Cloudflare. Install it with one command."
+	title="Kantel, by Lleverage: sandboxes for your agents, on your own machines"
+	description="Kantel is a compute plane for AI agents that you run yourself: isolates that start in milliseconds and Firecracker microVMs that start in about a second, behind one API, for Claude Code, Codex, pi or your own app. Install it with one command, and add Linux hosts with one more."
 >
-	<!-- Hero: the headline and the install command over the pixel field, which fills the first screen. Everything else
-	     waits below the fold. The hero's height comes from CSS alone (--hero-height), so nothing moves when the field
-	     starts drawing. -->
+	<!-- Hero: the headline, the install command and the shape of the join command over the pixel field, which fills the
+	     first screen. Everything else waits below the fold. The hero's height comes from CSS alone (--hero-height), so
+	     nothing moves when the field starts drawing. -->
 	<section aria-labelledby="hero" class="relative isolate flex min-h-(--hero-height) items-start sm:items-center">
 		<PixelField class="absolute inset-0 -z-10 h-full" quiet="hero-copy" />
 		<div class="mx-auto w-full max-w-(--container-page) px-6 pt-12 pb-40 sm:py-24 lg:px-12">
 			<div id="hero-copy" class="max-w-(--container-hero)">
 				<h1 id="hero" class="font-display text-display-m font-semibold tracking-tight text-balance sm:text-display-l">
-					Run AI agents on your own machine
+					Sandboxes for your agents, on your own machines
 				</h1>
 				<p class="mt-5 max-w-(--container-measure) text-lead text-midnight-2">
-					Drive them from your apps or from the console, with a say over every tool they touch.
+					Isolates start in milliseconds and microVMs in about a second. Your agents drive them over one API, from
+					Claude Code, Codex, pi or your own app.
 				</p>
 				<div class="mt-9">
 					<InstallCommand id="install-hero" />
 					<p class="mt-3 text-sm text-label">
-						Needs Docker. <a class="underline underline-offset-4 hover:text-midnight" href="/install.sh"
-							>Read the script</a
-						> first if you like.
+						Needs Docker. <a class={link} href="/install.sh">Read the script</a> first if you like.
+					</p>
+				</div>
+				<div class="mt-7 max-w-(--container-hero) border-l-2 border-midnight pl-4">
+					<p class="text-sm font-semibold">Then add each Linux machine that should run sandboxes:</p>
+					<p class="mt-1.5 font-mono text-sm break-words text-midnight-2">
+						{
+							commandParts(HOST_JOIN_COMMAND).map((part) =>
+								part.startsWith("<") ? (
+									<span class="text-label italic">{part}</span>
+								) : part === " " ? (
+									" "
+								) : (
+									<span class="whitespace-nowrap">{part}</span>
+								),
+							)
+						}
 					</p>
 				</div>
 			</div>
 		</div>
 	</section>
 
-	<!-- After the installer: a real sequence, so numbered. -->
-	<section class="border-t border-line bg-card" aria-labelledby="after-install">
+	<!-- From nothing to a sandbox: a real sequence, so numbered. -->
+	<section class="border-t border-line bg-card" aria-labelledby="first-sandbox">
 		<div class="mx-auto max-w-(--container-page) px-6 py-20 lg:px-12 lg:py-28">
 			<div class="max-w-(--container-hero)">
-				<h2 id="after-install" class="font-display text-display-m font-semibold text-balance">
-					One command, then you're in the console
+				<h2 id="first-sandbox" class="font-display text-display-m font-semibold text-balance">
+					Three commands to your first sandbox
 				</h2>
 				<p class="mt-5 max-w-(--container-measure) text-lead text-midnight-2">
-					Kantel runs the model loop, the sandbox, browsers, connections and approvals, and keeps an audit trail of
-					all of it. The installer builds it and starts it in Docker on this machine: the gateway, which serves the
-					API and the console, with Postgres, object storage and a local mailbox for sign-in codes. Everything
-					listens on 127.0.0.1 only.
-				</p>
-				<p class="mt-4 text-body text-midnight-2">
-					Rather do it yourself? <a
-						class="underline underline-offset-4 hover:text-midnight"
-						href="/docs/console/getting-started/install/">Install it by hand</a
-					>.
+					The control plane serves the console and the API, and never runs a sandbox itself. Hosts are the Linux
+					machines that do, and you can add as many as you have.
 				</p>
 			</div>
 
-			<div class="mt-20 space-y-28 lg:space-y-36">
-				<Feature
-					id="console"
-					step={1}
-					title="Sign in to your own console"
-					route="GET /v1/me"
-					docs={{ href: "/docs/console/getting-started/tour/", label: "A tour of the console" }}
-				>
-					<p>
-						Kantel is invite-only, even on your laptop. The installer invites you as the organisation's admin; sign
-						in with the six-digit code from the local mailbox.
-					</p>
-					<p>The sidebar holds your projects, each with its sessions grouped by what they need from you.</p>
-					<SignIn slot="mock" />
-				</Feature>
+			<ol class="mt-14 grid grid-cols-1 gap-x-10 gap-y-12 lg:grid-cols-3">
+				{
+					steps.map((step, at) => (
+						<li class="flex min-w-0 flex-col border-t border-midnight pt-5">
+							<p class="font-mono text-sm font-semibold">{at + 1}</p>
+							<h3 class="mt-3 font-display text-display-s font-semibold text-balance">{step.title}</h3>
+							<p class="mt-3 text-body text-midnight-2">{step.text}</p>
+							<div class="mt-auto pt-6">
+								<pre class="rounded-tile bg-midnight px-4 py-3 font-mono text-sm leading-relaxed whitespace-pre-wrap break-words text-paper"><code>{commandParts(step.command).map((part) =>
+									part.startsWith("<") ? (
+										<span class="text-faint italic">{part}</span>
+									) : part === " " ? (
+										" "
+									) : (
+										<span class="whitespace-nowrap">{part}</span>
+									),
+								)}</code></pre>
+							</div>
+						</li>
+					))
+				}
+			</ol>
+			<p class="mt-12 text-body text-midnight-2">
+				<a class={link} href="/docs/self-hosting/install/">Install Kantel</a> has the installer's options, signing in,
+				upgrading and removing it.
+			</p>
+		</div>
+	</section>
 
-				<Feature
-					id="onboarding"
-					step={2}
-					title="Connect a model and your first tools"
-					route="GET /v1/onboarding"
-					docs={{ href: "/docs/console/models/", label: "Models and providers" }}
-				>
-					<p>
-						The first visit runs a short setup. Sign in with a Claude or ChatGPT subscription, or add an API key for
-						Anthropic, OpenAI, OpenRouter or any OpenAI-compatible server. Then pick the first services your agents
-						may use, such as GitHub or Linear.
-					</p>
-					<p>Each step is an API call, so a script can do the same setup without the console.</p>
-					<Onboarding slot="mock" />
-				</Feature>
+	<!-- The two types, side by side, row for row. -->
+	<section class="border-t border-line" aria-labelledby="types">
+		<div class="mx-auto max-w-(--container-page) px-6 py-20 lg:px-12 lg:py-28">
+			<div class="max-w-(--container-hero)">
+				<h2 id="types" class="font-display text-display-m font-semibold text-balance">
+					Two kinds of sandbox under one API
+				</h2>
+				<p class="mt-5 max-w-(--container-measure) text-lead text-midnight-2">
+					Pick the type when you create a sandbox. Both take the same calls, so moving work from one to the other
+					doesn't change your code.
+				</p>
+			</div>
 
-				<Feature
-					id="first-session"
-					step={3}
-					title="Hand an agent its first task"
-					route="POST /v1/sessions"
-					docs={{ href: "/docs/console/getting-started/first-steps/", label: "First steps" }}
-				>
-					<p>
-						A session is one conversation with an agent, with its own workspace of files and a sandbox for its
-						commands. You watch it work: files as they're written, commands as they run.
-					</p>
-					<Session slot="mock" />
-				</Feature>
+			<div
+				class="mt-14 grid grid-cols-1 overflow-hidden rounded-card border border-card-line bg-card md:grid-cols-2"
+			>
+				{
+					types.map((kind, at) => (
+						<div
+							class:list={[
+								"grid min-w-0 gap-y-0 p-6 sm:p-8 md:row-span-6 md:grid-rows-subgrid",
+								at > 0 && "border-t border-card-line md:border-t-0 md:border-l",
+							]}
+						>
+							<div class="pb-6">
+								<h3 class="font-display text-display-s font-semibold">{kind.name}</h3>
+								<p class="mt-2 font-mono text-sm text-label">type: "{kind.type}"</p>
+							</div>
+							<dl class="grid divide-y divide-card-line border-t border-card-line md:row-span-5 md:grid-rows-subgrid">
+								{kind.rows.map(([term, value]) => (
+									<div class="grid grid-cols-1 gap-1 py-4 sm:grid-cols-3 sm:gap-4">
+										<dt class="text-sm text-label sm:pt-0.5">{term}</dt>
+										<dd class="text-body sm:col-span-2">{value}</dd>
+									</div>
+								))}
+							</dl>
+						</div>
+					))
+				}
 			</div>
 		</div>
 	</section>
 
-	<!-- What you have once it's running. Not a sequence, so no numbers. -->
-	<section class="border-t border-line" aria-labelledby="running">
+	<!-- What a sandbox keeps between runs: the lifecycle, beside the Sandboxes page; then snapshots and the ways in. -->
+	<section class="border-t border-line bg-card" aria-labelledby="lifecycle-heading">
 		<div class="mx-auto max-w-(--container-page) px-6 py-20 lg:px-12 lg:py-28">
 			<div class="max-w-(--container-hero)">
-				<h2 id="running" class="font-display text-display-m font-semibold text-balance">
-					What your agents get, and what you keep
+				<h2 id="lifecycle-heading" class="font-display text-display-m font-semibold text-balance">
+					Sandboxes that keep their state
 				</h2>
 				<p class="mt-5 max-w-(--container-measure) text-lead text-midnight-2">
-					Agents get real tools: a sandbox, browsers and your services. You keep the say over each of them, and a
-					record of every call.
+					A stopped sandbox uses no CPU and keeps its disk. Resume it later, or fork it to start several agents from
+					the same place.
 				</p>
 			</div>
 
-			<div class="mt-20 space-y-28 lg:space-y-36">
+			<div class="mt-20">
 				<Feature
-					id="sessions"
-					title="Sessions you can follow, steer and fork"
-					route="GET /v1/sessions/{id}/stream"
-					docs={{ href: "/docs/console/sessions/", label: "Sessions" }}
+					id="lifecycle"
+					title="Stop, resume and fork"
+					route="npx kantel sandbox fork <id>"
+					docs={{ href: "/docs/concepts/#lifecycle", label: "The lifecycle" }}
 				>
 					<p>
-						Stream a session's transcript as it happens. Steer it mid-run, queue a follow-up, or fork it from any
-						message. When an agent needs an answer it asks, and the session waits under Needs you.
+						Stop keeps the disk as a snapshot, and resume starts the sandbox from it. Fork copies the latest snapshot
+						into a new sandbox, so you can set one up and start many agents from it.
 					</p>
-					<Question slot="mock" />
+					<p>
+						Pause a microVM and it keeps its memory too, so it carries on where it was. Recover brings back a sandbox
+						that has gone into an error state, and delete removes it with its snapshots.
+					</p>
+					<Sandboxes slot="mock" />
 				</Feature>
+			</div>
 
-				<Feature
-					id="browsers"
-					title="Browsers you can watch"
-					route="POST /v1/sessions/{id}/browsers/{browser}/embed"
-					docs={{ href: "/docs/console/browsers/", label: "Browsers" }}
-				>
-					<p>
-						An agent asks for a browser and names the sites it needs; a person decides. Watch it live from the
-						session, or replay it afterwards. A step towards a site outside the grant is refused before the browser
-						moves.
+			<div class="mt-24 grid grid-cols-1 gap-x-12 gap-y-14 lg:grid-cols-2">
+				<div class="border-t border-midnight pt-5">
+					<h3 class="font-display text-display-s font-semibold text-balance">A snapshot history for every sandbox</h3>
+					<p class="mt-4 max-w-(--container-measure) text-body text-midnight-2">
+						Kantel takes snapshots as a sandbox runs and when it stops, so each one has a history you can browse and
+						restore files from. Save one under a name and it outlives its sandbox: install your tools once, then start
+						every new sandbox from there.
 					</p>
-					<p>Your app can embed the same live view in its own pages.</p>
-					<Browser slot="mock" />
-				</Feature>
-
-				<Feature
-					id="connections"
-					title="Connections, with rules and approvals"
-					route="PATCH /v1/connections/{id}/rules"
-					docs={{ href: "/docs/console/connectors/", label: "Connections" }}
-				>
-					<p>
-						Connect GitHub, Linear, Notion, Stripe or any remote MCP server once. Agents use them through tools that
-						run on Kantel's side, so the token never reaches the agent.
+					<a
+						href="/docs/concepts/#snapshots"
+						class="mt-5 inline-block border-b border-line pb-0.5 font-semibold text-midnight transition-colors hover:border-midnight"
+						>Snapshots</a
+					>
+				</div>
+				<div class="border-t border-midnight pt-5">
+					<h3 class="font-display text-display-s font-semibold text-balance">A desktop, a browser, SSH and ports</h3>
+					<p class="mt-4 max-w-(--container-measure) text-body text-midnight-2">
+						Stream a microVM's desktop or browser to watch an agent work, or step in. SSH into any sandbox, and give
+						each port its own public URL to show someone what it built.
 					</p>
-					<p>
-						Rules say what agents may do with each connection: reads allowed, writes ask. A call that asks waits for
-						a person in the session.
-					</p>
-					<Connection slot="mock" />
-				</Feature>
-
-				<Feature
-					id="vault"
-					title="A vault the agent can't read"
-					route="GET /v1/connection-approvals/requests"
-					docs={{ href: "/docs/console/connection-requests/", label: "Connection requests" }}
-				>
-					<p>
-						Credentials sit in Kantel's encrypted store. An agent that needs one asks with its terms: the host,
-						methods, path, lifetime and number of uses. You narrow them, check the binding code against the
-						session's card, and approve with a passkey.
-					</p>
-					<p>Kantel adds the credential to matching requests on the way out. The agent never sees the value.</p>
-					<Vault slot="mock" />
-				</Feature>
-
-				<Feature
-					id="code-mode"
-					title="Code mode: one script, many tool calls"
-					route="POST /v1/programs/{id}/runs"
-					docs={{ href: "/docs/api/programs/", label: "Code mode and programs" }}
-				>
-					<p>
-						Every session with tools also gets <code class="font-mono text-base">codemode</code>. The model writes a
-						JavaScript script that calls the session's other tools, in an isolate with no secrets and no network.
-						Each call gets the same rules, approvals and audit as a direct one.
-					</p>
-					<p>Save a script as a program, and your app can run it through the API with no model at all.</p>
-					<CodeMode slot="mock" />
-				</Feature>
+				</div>
 			</div>
 		</div>
 	</section>
 
-	<!-- Headless first: the one midnight plate. -->
-	<section class="bg-midnight text-paper" aria-labelledby="api">
+	<!-- From any harness: the one midnight plate. -->
+	<section class="bg-midnight text-paper" aria-labelledby="harnesses">
 		<div class="mx-auto grid max-w-(--container-page) grid-cols-1 gap-12 px-6 py-20 lg:grid-cols-12 lg:px-12 lg:py-28">
 			<div class="lg:col-span-5">
-				<p class="font-mono text-sm text-faint">/v1</p>
-				<h2 id="api" class="mt-3 font-display text-display-m font-semibold text-balance">
-					The API is the way in. The console is one client of it.
+				<h2 id="harnesses" class="font-display text-display-m font-semibold text-balance">
+					Use it from any harness
 				</h2>
 				<p class="mt-5 text-lead text-faint">
-					Everything the console does, your app can do through the same public API: create a session, stream what
-					the agent does, answer its requests and read the result. The TypeScript SDK is generated from the routes,
-					one file with no dependencies.
+					Kantel doesn't run your agent. Claude Code, Codex, pi or your own loop stays where it is, and creates and
+					drives sandboxes from there.
 				</p>
-				<ul class="mt-8 space-y-3 text-body">
-					<li><a class="underline decoration-midnight-2 underline-offset-4 hover:decoration-paper" href="/docs/api/quick-start/">Quick start</a></li>
-					<li><a class="underline decoration-midnight-2 underline-offset-4 hover:decoration-paper" href="/docs/api/streaming/">Streaming a session</a></li>
-					<li><a class="underline decoration-midnight-2 underline-offset-4 hover:decoration-paper" href="/docs/api/host-apps/">Building a host app</a></li>
+				<ul class="mt-8 divide-y divide-midnight-2 border-y border-midnight-2">
+					{
+						interfaces.map((entry) => (
+							<li class="py-3">
+								<span class="font-semibold">{entry.name}</span>
+								<span class="block text-sm text-faint">{entry.text}</span>
+							</li>
+						))
+					}
 				</ul>
+				<p class="mt-6 text-sm text-faint">
+					The CLI, the SDK and the MCP server are experimental, so their commands and methods may still change.
+				</p>
+				<p class="mt-6 text-body">
+					<a class={linkOnMidnight} href="/docs/api/reference/">API reference</a>
+				</p>
+				<p class="mt-2 text-body">
+					<a class={linkOnMidnight} href="/docs/coding-agents/">Set up a coding agent</a>
+				</p>
 			</div>
-			<div class="min-w-0 lg:col-span-7">
-				<pre
-					class="overflow-x-auto rounded-card bg-midnight-2 p-6 font-mono text-sm leading-relaxed text-paper"><code>{`import { createKantelClient } from "@kantel/api/sdk";
+			<div class="min-w-0 lg:col-span-7" data-tabs>
+				<div role="tablist" aria-label="Ways to call Kantel" class="flex flex-wrap gap-x-6 gap-y-2 border-b border-midnight-2">
+					{
+						samples.map((sample, at) => (
+							<button
+								type="button"
+								role="tab"
+								id={`tab-${sample.id}`}
+								aria-controls={`panel-${sample.id}`}
+								aria-selected={at === 0 ? "true" : "false"}
+								tabindex={at === 0 ? 0 : -1}
+								class="-mb-px cursor-pointer border-b-2 border-transparent pt-1 pb-3 text-sm font-semibold text-faint transition-colors hover:text-paper aria-selected:border-orange aria-selected:text-paper"
+							>
+								{sample.tab}
+							</button>
+						))
+					}
+				</div>
+				{
+					samples.map((sample, at) => (
+						<div
+							role="tabpanel"
+							id={`panel-${sample.id}`}
+							aria-labelledby={`tab-${sample.id}`}
+							tabindex="0"
+							hidden={at !== 0}
+							class="mt-6 overflow-hidden rounded-card bg-midnight-2"
+						>
+							<p class="border-b border-midnight px-6 py-3 text-sm text-faint">{sample.file}</p>
+							<pre class="overflow-x-auto p-6 font-mono text-sm leading-relaxed text-paper"><code>{sample.lines.map((line, index) => (
+								<>{index > 0 && "\n"}{"comment" in line ? <span class="text-faint">{line.comment}</span> : line.code}</>
+							))}</code></pre>
+						</div>
+					))
+				}
+			</div>
+		</div>
+	</section>
 
-const kantel = createKantelClient({
-  baseUrl: \`\${process.env.KANTEL_URL}/v1\`,
-  token: process.env.KANTEL_API_KEY,
-});
+	<!-- Hosts and what leaves them. -->
+	<section aria-labelledby="hosts-heading">
+		<div class="mx-auto max-w-(--container-page) px-6 py-20 lg:px-12 lg:py-28">
+			<div class="max-w-(--container-hero)">
+				<h2 id="hosts-heading" class="font-display text-display-m font-semibold text-balance">
+					Your machines, one console
+				</h2>
+				<p class="mt-5 max-w-(--container-measure) text-lead text-midnight-2">
+					Mix a server under your desk, a few cloud machines and a spare laptop running Linux. The control plane puts
+					each new sandbox on a host with room for it.
+				</p>
+			</div>
 
-const session = await kantel.createSession({
-  projectId: "PROJECT_ID",
-  agentId: "assistant",
-  title: "Summarise the README",
-  message: { text: "Summarise README.md in three bullet points." },
-});`}</code></pre>
-				<pre
-					class="mt-4 overflow-x-auto rounded-card border border-midnight-2 p-6 font-mono text-sm leading-relaxed text-paper"><code>{`curl -s -G "$KANTEL_URL/v1/sessions/SESSION_ID/result" \\
-  -H "authorization: Bearer $KANTEL_API_KEY" \\
-  --data-urlencode "submission=SUBMISSION_ID"`}</code></pre>
+			<div class="mt-20 space-y-28 lg:space-y-36">
+				<Feature
+					id="hosts"
+					title="Hosts dial out, and the console shows them"
+					docs={{ href: "/docs/concepts/#the-control-plane-and-hosts", label: "The control plane and hosts" }}
+				>
+					<p>
+						A host connects out to the control plane and keeps that connection open, so it needs no inbound ports and
+						can sit behind NAT or a home router. It holds no credential but its own, which you can revoke at any time.
+					</p>
+					<p>
+						The console lists every host with the CPU, memory and disk in use and the sandboxes on it. Drain one to
+						stop new sandboxes landing there. Hosts are Linux machines with KVM for now; macOS comes later.
+					</p>
+					<Hosts slot="mock" />
+				</Feature>
+
+				<article id="proxy" class="grid scroll-mt-24 grid-cols-1 items-start gap-8 lg:grid-cols-12 lg:gap-12">
+					<div class="lg:col-span-5">
+						<h3 class="font-display text-display-s font-semibold text-balance">An egress proxy on every host</h3>
+						<div class="mt-4 space-y-4 text-body text-midnight-2">
+							<p>
+								Each host runs a proxy that decides what its sandboxes may reach: anywhere, only the hosts on an allow
+								list, or nowhere.
+							</p>
+							<p>
+								It can add a credential to matching requests on the way out, so the token never sits in a sandbox
+								where an agent could read it. Or it can forward the traffic to a gateway you already run.
+							</p>
+						</div>
+						<a
+							href="/docs/concepts/#the-proxy"
+							class="mt-5 inline-block border-b border-line pb-0.5 font-semibold text-midnight transition-colors hover:border-midnight"
+							>The proxy</a
+						>
+					</div>
+					<figure class="min-w-0 lg:col-span-7">
+						<ul class="divide-y divide-card-line rounded-card border border-card-line bg-card">
+							{
+								allowList.map((rule) => (
+									<li class="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1 px-5 py-4">
+										<span class:list={[rule.host === "Anything else" ? "font-semibold" : "font-mono text-sm"]}>
+											{rule.host}
+										</span>
+										<span class:list={["text-sm", rule.outcome === "Refused" ? "text-midnight" : "text-label"]}>
+											{rule.outcome}
+										</span>
+									</li>
+								))
+							}
+						</ul>
+						<figcaption class="mt-3 text-sm text-label">
+							An allow list for an agent that works on code: GitHub, npm and PyPI, and nothing else.
+						</figcaption>
+					</figure>
+				</article>
+			</div>
+		</div>
+	</section>
+
+	<!-- The rest, in brief. Not a sequence, so no numbers. -->
+	<section class="border-t border-line bg-card" aria-labelledby="around">
+		<div class="mx-auto max-w-(--container-page) px-6 py-20 lg:px-12 lg:py-24">
+			<h2 id="around" class="max-w-(--container-hero) font-display text-display-m font-semibold text-balance">
+				For teams, and the systems around them
+			</h2>
+			<ul class="mt-14 grid grid-cols-1 gap-x-10 gap-y-10 sm:grid-cols-2 lg:grid-cols-4">
+				{
+					extras.map((extra) => (
+						<li class="border-t border-midnight pt-5">
+							<h3 class="text-lead font-semibold">{extra.title}</h3>
+							<p class="mt-2 text-body text-midnight-2">{extra.text}</p>
+						</li>
+					))
+				}
+			</ul>
+			<p class="mt-12 text-body text-midnight-2">
+				<a class={link} href="/docs/concepts/">Concepts</a> defines each of these once.
+			</p>
+		</div>
+	</section>
+
+	<!-- Where it runs: two ways, the same API. -->
+	<section class="border-t border-line" aria-labelledby="where">
+		<div class="mx-auto max-w-(--container-page) px-6 py-20 lg:px-12 lg:py-28">
+			<div class="max-w-(--container-hero)">
+				<h2 id="where" class="font-display text-display-m font-semibold text-balance">
+					Run it yourself, or use ours
+				</h2>
+				<p class="mt-5 max-w-(--container-measure) text-lead text-midnight-2">
+					The console, the API, the SDK, the CLI and the MCP server are the same in both. Code you write against one
+					works against the other with a different address and key.
+				</p>
+			</div>
+			<div class="mt-14 grid grid-cols-1 gap-6 lg:grid-cols-2">
+				<div class="flex min-w-0 flex-col rounded-card border border-card-line bg-card p-6 sm:p-8">
+					<h3 class="font-display text-display-s font-semibold">Self-hosted</h3>
+					<p class="mt-4 text-body text-midnight-2">
+						The control plane, the hosts and the sandboxes run on machines you choose, and so do their disks,
+						snapshots and the records of who did what. There's no billing: the limits are your machines'.
+					</p>
+					<div class="mt-8 lg:mt-auto lg:pt-8">
+						<InstallCommand id="install-foot" compact />
+						<a
+							href="/docs/self-hosting/install/"
+							class="mt-5 inline-block border-b border-line pb-0.5 font-semibold text-midnight transition-colors hover:border-midnight"
+							>Install Kantel</a
+						>
+					</div>
+				</div>
+				<div class="flex min-w-0 flex-col rounded-card border border-card-line bg-card p-6 sm:p-8">
+					<h3 class="font-display text-display-s font-semibold">Hosted</h3>
+					<p class="mt-4 text-body text-midnight-2">
+						Lleverage runs the control plane and the hosts. You sign in and start sandboxes, with nothing to install.
+					</p>
+					<p class="mt-4 text-body text-midnight-2">
+						For now it's a small demo for trying Kantel before you install it: plans are shown, and no payment is
+						taken.
+					</p>
+					<div class="mt-8 lg:mt-auto lg:pt-8">
+						<a
+							href="/docs/hosted-or-self-hosted/"
+							class="inline-block border-b border-line pb-0.5 font-semibold text-midnight transition-colors hover:border-midnight"
+							>Hosted or self-hosted</a
+						>
+					</div>
+				</div>
 			</div>
 		</div>
 	</section>
@@ -288,11 +605,43 @@ const session = await kantel.createSession({
 					class="mt-6 inline-flex items-center gap-3 rounded-input border border-midnight px-4 py-3 font-mono text-sm transition-colors hover:bg-midnight hover:text-paper"
 					>github.com/{repo}</a
 				>
-				<div class="mt-12">
-					<p class="mb-3 text-sm font-semibold">Install it</p>
-					<InstallCommand id="install-foot" compact />
-				</div>
 			</div>
 		</div>
 	</section>
 </Base>
+
+<script>
+	// The harness samples' tabs: a click or the arrow keys pick one, and only its panel shows. Without the script the
+	// first sample still shows.
+	for (const group of document.querySelectorAll<HTMLElement>("[data-tabs]")) {
+		const tabs = [...group.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+		const select = (chosen: HTMLButtonElement) => {
+			for (const tab of tabs) {
+				const on = tab === chosen;
+				tab.setAttribute("aria-selected", on ? "true" : "false");
+				tab.tabIndex = on ? 0 : -1;
+				const panel = document.getElementById(tab.getAttribute("aria-controls") ?? "");
+				if (panel !== null) panel.hidden = !on;
+			}
+		};
+		for (const [at, tab] of tabs.entries()) {
+			tab.addEventListener("click", () => select(tab));
+			tab.addEventListener("keydown", (event) => {
+				const next =
+					event.key === "ArrowRight"
+						? tabs[(at + 1) % tabs.length]
+						: event.key === "ArrowLeft"
+							? tabs[(at - 1 + tabs.length) % tabs.length]
+							: event.key === "Home"
+								? tabs[0]
+								: event.key === "End"
+									? tabs[tabs.length - 1]
+									: undefined;
+				if (next === undefined) return;
+				event.preventDefault();
+				select(next);
+				next.focus();
+			});
+		}
+	}
+</script>

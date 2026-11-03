@@ -1,11 +1,14 @@
 import {
+	Activity,
 	AppWindow,
 	Archive,
 	ArchiveRestore,
 	Blocks,
 	Bot,
+	Box,
 	Braces,
 	Building2,
+	Camera,
 	Check,
 	ChevronLeft,
 	ChevronRight,
@@ -13,6 +16,7 @@ import {
 	ChevronsUpDown,
 	CircleAlert,
 	Container,
+	CreditCard,
 	Ellipsis,
 	ExternalLink,
 	Eye,
@@ -28,6 +32,7 @@ import {
 	KeyRound,
 	ListFilter,
 	type LucideIcon,
+	Network,
 	Palette,
 	Pause,
 	Pencil,
@@ -52,6 +57,7 @@ import {
 	UserPlus,
 	UserX,
 	WandSparkles,
+	Webhook,
 	Zap,
 } from "lucide-react";
 import type { IconProps } from "./icons.tsx";
@@ -145,3 +151,10 @@ export const SettingsIcon = lucide(Settings, "SettingsIcon");
 export const BackIcon = lucide(ChevronLeft, "BackIcon");
 /** A step in a collapsed section of work failed: T3 Code's failure mark (CircleAlertIcon) on its line. */
 export const StepFailedIcon = lucide(CircleAlert, "StepFailedIcon");
+/** The compute console's pages (src/compute/): sandboxes, snapshots, the egress proxy, webhooks, OpenTelemetry, billing. */
+export const SandboxIcon = lucide(Box, "SandboxIcon");
+export const SnapshotIcon = lucide(Camera, "SnapshotIcon");
+export const ProxyIcon = lucide(Network, "ProxyIcon");
+export const WebhookIcon = lucide(Webhook, "WebhookIcon");
+export const TelemetryIcon = lucide(Activity, "TelemetryIcon");
+export const BillingIcon = lucide(CreditCard, "BillingIcon");

@@ -15,6 +15,7 @@ import {
 	type HostHello,
 	HostMethods,
 	type HostSandbox,
+	type HostSize,
 	type HostWelcome,
 	type SandboxTier,
 } from "./protocol.ts";
@@ -42,6 +43,8 @@ export interface HostView {
 	readonly os?: string;
 	readonly arch?: "x86_64" | "aarch64";
 	readonly tiers: readonly SandboxTier[];
+	/** The microVM sizes it offers. */
+	readonly sizes: readonly HostSize[];
 	readonly kvm: boolean;
 	readonly nestedVirtualisation: boolean;
 	readonly capacity: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number };
@@ -75,6 +78,22 @@ export interface CreateSandboxInput {
 	readonly env?: { readonly [key: string]: string };
 	readonly sshAuthorizedKeys?: readonly string[];
 	readonly egress?: HostEgress;
+	/** Only these hosts may take it (the control plane's eligible hosts: online, not draining, labelled). */
+	readonly hostIds?: readonly string[];
+	/** Start from this snapshot, which is on the one host `hostIds` names. */
+	readonly from?: string;
+}
+
+/** Join tokens kept elsewhere, such as by the compute API, which mints them (`createHostJoinToken`). */
+export interface ExternalJoinTokens {
+	/** Spends the token with this SHA-256 hex once: its name and labels, or undefined if unknown, used or expired. */
+	spendJoinToken(
+		hash: string,
+		hostId: string,
+		now: number,
+	): Promise<
+		{ readonly id: string; readonly name?: string; readonly labels: { readonly [key: string]: string } } | undefined
+	>;
 }
 
 export interface HostsServiceOptions {
@@ -104,6 +123,8 @@ export interface SandboxPlacement {
 
 export interface HostsService {
 	readonly hub: HostHub;
+	/** Registration spends join tokens from here from now on, not the registry's own. */
+	useJoinTokens(tokens: ExternalJoinTokens): void;
 	createJoinToken(input: {
 		readonly name?: string;
 		readonly labels?: { readonly [key: string]: string };
@@ -203,6 +224,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	const clock = options.clock ?? systemClock;
 	const log = options.log ?? ((message: string) => console.error(message));
 	const pools = options.pools ?? { "microvm/default": 1 };
+	let joinTokens: ExternalJoinTokens = store;
 	/** Placed on a host since its last report, by host. */
 	const reserved = new Map<string, { memoryMiB: number; diskGiB: number }>();
 	const report = (work: Promise<unknown>) => {
@@ -299,6 +321,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			...(options.desiredVersion === undefined ? {} : { latestVersion: options.desiredVersion }),
 			...(arch === undefined ? {} : { arch }),
 			tiers: facts?.tiers ?? [],
+			sizes: facts?.sizes ?? [],
 			kvm: facts?.kvm ?? false,
 			nestedVirtualisation: facts?.nested ?? false,
 			capacity: { vcpus: facts?.cpus ?? 0, memoryMb: facts?.memoryMiB ?? 0, diskGb: facts?.diskGiB ?? 0 },
@@ -370,13 +393,16 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				.replaceAll("{token}", token);
 			return { id: record.id, token, command, expiresAt: record.expiresAt };
 		},
+		useJoinTokens(tokens) {
+			joinTokens = tokens;
+		},
 		async register(input) {
 			if (typeof input.token !== "string" || !input.token.startsWith(JOIN_TOKEN_PREFIX)) {
 				throw new KantelError("forbidden", "That isn't a host join token");
 			}
 			const hostId = shortId("host");
 			const now = clock.now();
-			const token = await store.spendJoinToken(await hashSecret(input.token), hostId, now);
+			const token = await joinTokens.spendJoinToken(await hashSecret(input.token), hostId, now);
 			if (token === undefined) throw new KantelError("forbidden", "The join token is unknown, used or expired");
 			const credential = secret(HOST_CREDENTIAL_PREFIX);
 			const name =
@@ -441,7 +467,11 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					throw new KantelError("conflict", "A sandbox with that ID exists");
 				}
 				const sizeName = tier === "isolate" ? "isolate" : (input.size ?? "default");
-				const hosts = await store.listHosts();
+				const only = input.hostIds === undefined ? undefined : new Set(input.hostIds);
+				if (input.from !== undefined && only?.size !== 1) {
+					throw new KantelError("invalid", "A sandbox made from a snapshot goes on the snapshot's host");
+				}
+				const hosts = (await store.listHosts()).filter((host) => only === undefined || only.has(host.id));
 				const candidates: Candidate[] = await Promise.all(
 					hosts.map(async (host) => {
 						const placements = tier === "isolate" ? await store.placementsOn(host.id) : [];
@@ -490,6 +520,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						sandboxId,
 						tier,
 						size: tier === "isolate" ? "" : chosen.size.name,
+						...(input.from === undefined ? {} : { from: input.from }),
 						...(input.owner === undefined ? {} : { owner: input.owner }),
 						...(input.env === undefined ? {} : { env: input.env }),
 						...(input.sshAuthorizedKeys === undefined ? {} : { sshAuthorizedKeys: input.sshAuthorizedKeys }),
@@ -540,8 +571,11 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				const placement = await placementOf(sandboxId);
 				const extra = method === HostMethods.stop && !("snapshotId" in params) ? { snapshotId: shortId("snap") } : {};
 				const result = await onHost<T>(placement.hostId, method, { ...params, ...extra, sandboxId }, callOptions);
-				const state = (result as { state?: unknown } | undefined)?.state;
-				if (typeof state === "string" && (result as { id?: unknown }).id === sandboxId) {
+				const state = method === HostMethods.stop ? "stopped" : (result as { state?: unknown } | undefined)?.state;
+				if (
+					typeof state === "string" &&
+					(method === HostMethods.stop || (result as { id?: unknown }).id === sandboxId)
+				) {
 					await store.putPlacement({ ...placement, state, updatedAt: clock.now() });
 				}
 				return result;

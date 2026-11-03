@@ -1,0 +1,402 @@
+/**
+ * The compute API's `SandboxBackend` over the hosts that joined: each call is placed by the scheduler or relayed to the
+ * sandbox's host over its WebSocket. The compute API keeps every record; this keeps only placements (the registry's).
+ *
+ * A snapshot's `ref` is `{hostId}/{snapshotId}`: a snapshot lives on its host's disk, so a sandbox made or forked from
+ * it goes on that host. Desktops, browsers and SSH are reached through signed tunnel URLs (`tunnel.ts`): the desktop's
+ * VNC as raw TCP over a WebSocket of binary frames (what noVNC's RFB client speaks), Chrome's DevTools WebSocket passed
+ * through for `connectOverCDP`, and sshd as raw TCP for an `ssh -o ProxyCommand=…`. Exposed ports aren't offered yet:
+ * the contract's HTTPS URL per port wants a wildcard name for the gateway.
+ */
+import type {
+	BackendCapabilities,
+	BackendFileEntry,
+	BackendHost,
+	BackendSize,
+	ExecResult,
+	Placement,
+	SandboxBackend,
+	SandboxSpec,
+	TakenSnapshot,
+} from "@kantel/compute";
+import { KantelError } from "@kantel/contracts";
+import type { HostSandbox, SandboxTier } from "./protocol.ts";
+import type { HostsService, HostView } from "./service.ts";
+import { HOSTS_TUNNEL_PATH, signTunnel } from "./tunnel.ts";
+
+/** Where the guest image's desktop (VNC, loopback), Chromium (CDP) and sshd listen. */
+export const DESKTOP_PORT = 5901;
+export const BROWSER_PORT = 9222;
+export const SSH_PORT = 22;
+
+const PUBLIC_KEY =
+	/^(ssh-(ed25519|rsa|dss)|ecdsa-sha2-nistp(256|384|521)|sk-(ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com) [A-Za-z0-9+/=]+( [^\r\n]*)?$/;
+const FINGERPRINT_MARK = "--kantel-host-key--";
+
+/** Lets a key in for `user` (making a pair when none is given), and prints the private key and the host key's SHA256. */
+const SSH_ACCESS_SCRIPT = [
+	"set -e",
+	"umask 077",
+	"mkdir -p ~/.ssh",
+	'if [ -z "$KANTEL_PUBLIC_KEY" ]; then',
+	"  d=$(mktemp -d)",
+	'  ssh-keygen -q -t ed25519 -N "" -C kantel-access -f "$d/key"',
+	'  cat "$d/key.pub" >> ~/.ssh/authorized_keys',
+	'  cat "$d/key"',
+	'  rm -rf "$d"',
+	"else",
+	'  printf "%s\\n" "$KANTEL_PUBLIC_KEY" >> ~/.ssh/authorized_keys',
+	"fi",
+	`echo ${FINGERPRINT_MARK}`,
+	"ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub | cut -d' ' -f2",
+].join("\n");
+
+const SIZE_NAMES = new Set(["small", "default", "large", "xlarge"]);
+
+export interface HostBackendOptions {
+	readonly hosts: HostsService;
+	/** Where clients reach the gateway, for tunnel URLs: `https://kantel.example.com`. */
+	readonly publicUrl: string;
+	/** Signs tunnel tickets; the gateway's upgrade handler checks them with the same bytes. */
+	readonly tunnelSecret: Uint8Array;
+	readonly now?: () => number;
+}
+
+interface HostSnapshot {
+	readonly id: string;
+	readonly sizeBytes: number;
+}
+
+interface HostFileEntry {
+	readonly name: string;
+	readonly path: string;
+	readonly type: string;
+	readonly size: number;
+	readonly modTimeMs?: number;
+}
+
+const snapshotId = () =>
+	`snap_${[...crypto.getRandomValues(new Uint8Array(8))].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+
+function parseRef(ref: string): { hostId: string; snapshotId: string } {
+	const [hostId, id, extra] = ref.split("/");
+	if (hostId === undefined || id === undefined || extra !== undefined || hostId === "" || id === "") {
+		throw new KantelError("not_found", "No such snapshot");
+	}
+	return { hostId, snapshotId: id };
+}
+
+const fromBase64 = (data: string) => Uint8Array.from(atob(data), (char) => char.charCodeAt(0));
+
+function toBase64(bytes: Uint8Array): string {
+	let binary = "";
+	for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+	return btoa(binary);
+}
+
+function fileEntry(entry: HostFileEntry): BackendFileEntry {
+	return {
+		name: entry.name,
+		path: entry.path,
+		kind: entry.type === "dir" ? "directory" : entry.type === "symlink" ? "symlink" : "file",
+		size: entry.size,
+		...(entry.modTimeMs === undefined ? {} : { modifiedAt: entry.modTimeMs }),
+	};
+}
+
+function capabilitiesOf(tier: SandboxTier, host: HostView | undefined) {
+	const vm = tier === "microvm";
+	return {
+		exec: true,
+		files: true,
+		ssh: vm,
+		desktop: vm,
+		browser: vm,
+		ports: false,
+		docker: vm,
+		kvm: vm && host?.nestedVirtualisation === true,
+		pause: vm,
+	};
+}
+
+export function createHostBackend(options: HostBackendOptions): SandboxBackend {
+	const { hosts } = options;
+	const now = options.now ?? Date.now;
+	const wsBase = options.publicUrl.replace(/^http/, "ws").replace(/\/+$/, "");
+
+	const call = <T>(sandboxId: string, method: string, params: object = {}, signal?: AbortSignal, timeoutMs?: number) =>
+		hosts.sandboxes.call<T>(sandboxId, method, params, {
+			...(signal === undefined ? {} : { signal }),
+			...(timeoutMs === undefined ? {} : { timeoutMs }),
+		});
+
+	async function tierOf(sandboxId: string): Promise<{ tier: SandboxTier; hostId: string }> {
+		const placement = await hosts.sandboxes.placement(sandboxId);
+		if (placement === undefined) throw new KantelError("not_found", "No such sandbox on any host");
+		return { tier: placement.tier, hostId: placement.hostId };
+	}
+
+	async function placed(sandboxId: string, sandbox: HostSandbox, hostId: string): Promise<Placement> {
+		const placement = await hosts.sandboxes.placement(sandboxId);
+		const host = await hosts.get(hostId).catch(() => undefined);
+		const tier = placement?.tier ?? (sandbox.tier as SandboxTier);
+		return {
+			hostId,
+			...(placement === undefined || tier === "isolate"
+				? {}
+				: {
+						resources: {
+							vcpus: placement.vcpus,
+							memoryMb: placement.memoryMiB,
+							diskGb: placement.diskGiB,
+						},
+					}),
+			capabilities: capabilitiesOf(tier, host),
+		};
+	}
+
+	async function boot(sandboxId: string, method: "sandbox.start" | "sandbox.resume"): Promise<Placement> {
+		const { hostId } = await tierOf(sandboxId);
+		const sandbox = await call<HostSandbox>(sandboxId, method);
+		return placed(sandboxId, sandbox, hostId);
+	}
+
+	async function tunnel(sandboxId: string, port: number, ttlMinutes: number): Promise<string> {
+		await tierOf(sandboxId);
+		const ticket = await signTunnel(options.tunnelSecret, {
+			sandboxId,
+			port,
+			expiresAt: now() + Math.max(1, Math.min(ttlMinutes, 24 * 60)) * 60_000,
+		});
+		return `${wsBase}${HOSTS_TUNNEL_PATH}/${ticket}`;
+	}
+
+	async function createOne(spec: SandboxSpec): Promise<Placement> {
+		const from = spec.fromSnapshot === undefined ? undefined : parseRef(spec.fromSnapshot);
+		const { sandbox, hostId } = await hosts.sandboxes.create({
+			sandboxId: spec.sandboxId,
+			tier: spec.type,
+			...(spec.type === "microvm" && spec.size !== undefined ? { size: spec.size } : {}),
+			owner: spec.accountId,
+			env: spec.env,
+			hostIds: from === undefined ? spec.eligibleHosts : [from.hostId],
+			...(from === undefined ? {} : { from: from.snapshotId }),
+		});
+		return placed(spec.sandboxId, sandbox, hostId);
+	}
+
+	return {
+		async capabilities(): Promise<BackendCapabilities> {
+			const views = (await hosts.list()).filter((host) => host.state !== "revoked");
+			const types = new Set<SandboxTier>();
+			const sizes = new Map<string, BackendSize>();
+			const backendHosts: BackendHost[] = [];
+			for (const host of views) {
+				for (const tier of host.tiers) types.add(tier);
+				for (const size of host.sizes ?? []) {
+					if (!SIZE_NAMES.has(size.name) || sizes.has(size.name)) continue;
+					sizes.set(size.name, {
+						name: size.name as BackendSize["name"],
+						vcpus: size.vcpus,
+						memoryMb: size.memoryMiB,
+						diskGb: size.diskGiB,
+					});
+				}
+				backendHosts.push({
+					id: host.id,
+					name: host.name,
+					...(host.version === undefined ? {} : { version: host.version }),
+					...(host.os === undefined ? {} : { os: host.os }),
+					...(host.arch === undefined ? {} : { arch: host.arch }),
+					tiers: [...host.tiers],
+					kvm: host.kvm,
+					nestedVirtualisation: host.nestedVirtualisation,
+					capacity: { ...host.capacity },
+					labels: { ...host.labels },
+					connected: host.state === "online" || host.state === "draining",
+					...(host.lastSeenAt === undefined ? {} : { lastSeenAt: host.lastSeenAt }),
+				});
+			}
+			return { types: [...types], sizes: [...sizes.values()], hosts: backendHosts };
+		},
+		create: createOne,
+		start: (sandboxId) => boot(sandboxId, "sandbox.start"),
+		resume: (sandboxId) => boot(sandboxId, "sandbox.resume"),
+		recover: (sandboxId) => boot(sandboxId, "sandbox.start"),
+		async stop(sandboxId, { keepMemory }): Promise<TakenSnapshot> {
+			const { tier, hostId } = await tierOf(sandboxId);
+			if (keepMemory && tier !== "microvm") throw new KantelError("not_supported", "An isolate can't pause");
+			const snap = await call<HostSnapshot>(sandboxId, "sandbox.stop", {
+				snapshotId: snapshotId(),
+				memory: keepMemory,
+			});
+			return { ref: `${hostId}/${snap.id}`, sizeBytes: snap.sizeBytes };
+		},
+		async fork(source, targets: readonly SandboxSpec[]): Promise<Placement[]> {
+			const out: Placement[] = [];
+			if (source.snapshot !== undefined) {
+				for (const target of targets) out.push(await createOne({ ...target, fromSnapshot: source.snapshot }));
+				return out;
+			}
+			// A live fork pauses the source for its snapshot only; forks stay on the source's host.
+			for (const target of targets) {
+				const { sandbox, hostId } = await hosts.sandboxes.fork(source.sandboxId, { newId: target.sandboxId });
+				out.push(await placed(target.sandboxId, sandbox, hostId));
+			}
+			return out;
+		},
+		async destroy(sandboxId) {
+			try {
+				await hosts.sandboxes.delete(sandboxId);
+			} catch (error) {
+				if (!(error instanceof KantelError && error.code === "not_found")) throw error;
+			}
+		},
+		async exec(sandboxId, request): Promise<ExecResult> {
+			const result = await call<{ exitCode: number; stdout: string; stderr: string; timedOut?: boolean }>(
+				sandboxId,
+				"sandbox.exec",
+				{
+					command: request.command,
+					...(request.cwd === undefined ? {} : { cwd: request.cwd }),
+					...(request.env === undefined ? {} : { env: request.env }),
+					...(request.stdin === undefined ? {} : { stdin: toBase64(new TextEncoder().encode(request.stdin)) }),
+					...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
+				},
+				request.signal,
+				// The command's own limit, and some for the answer to come back; with none, an hour.
+				request.timeoutMs === undefined ? 3_600_000 : request.timeoutMs + 10_000,
+			);
+			return {
+				exitCode: result.exitCode,
+				stdout: result.stdout,
+				stderr: result.stderr,
+				timedOut: result.timedOut === true,
+			};
+		},
+		async readFile(sandboxId, path) {
+			const { data } = await call<{ data: string }>(sandboxId, "sandbox.files.read", { path });
+			return fromBase64(data);
+		},
+		async writeFile(sandboxId, path, content, mode) {
+			await call(sandboxId, "sandbox.files.write", {
+				path,
+				data: toBase64(content),
+				...(mode === undefined ? {} : { mode }),
+			});
+			return { name: path.split("/").pop() ?? path, path, kind: "file", size: content.length, modifiedAt: now() };
+		},
+		async deleteFile(sandboxId, path) {
+			await call(sandboxId, "sandbox.files.delete", { path, recursive: true });
+		},
+		async listFiles(sandboxId, path) {
+			const { entries } = await call<{ entries: HostFileEntry[] | null }>(sandboxId, "sandbox.files.list", { path });
+			return (entries ?? []).map(fileEntry);
+		},
+		async takeSnapshot(sandboxId): Promise<TakenSnapshot> {
+			const { hostId } = await tierOf(sandboxId);
+			const snap = await call<HostSnapshot>(sandboxId, "snapshot.save", { snapshotId: snapshotId() });
+			return { ref: `${hostId}/${snap.id}`, sizeBytes: snap.sizeBytes };
+		},
+		async listSnapshotFiles(ref, path) {
+			const { hostId, snapshotId: id } = parseRef(ref);
+			const { entries } = await hosts.hub.call<{ entries: HostFileEntry[] | null }>(hostId, "snapshot.tree", {
+				snapshotId: id,
+				path,
+			});
+			return (entries ?? []).map(fileEntry);
+		},
+		async readSnapshotFile(ref, path) {
+			const { hostId, snapshotId: id } = parseRef(ref);
+			const { data } = await hosts.hub.call<{ data: string }>(hostId, "snapshot.read", { snapshotId: id, path });
+			return fromBase64(data);
+		},
+		async deleteSnapshot(ref) {
+			const { hostId, snapshotId: id } = parseRef(ref);
+			await hosts.hub.call(hostId, "snapshot.delete", { snapshotId: id });
+		},
+		async exposePort() {
+			throw new KantelError("not_supported", "Exposed ports aren't offered on Kantel's own hosts yet");
+		},
+		async hidePort() {
+			throw new KantelError("not_supported", "Exposed ports aren't offered on Kantel's own hosts yet");
+		},
+		async openSsh(sandboxId, { publicKey, ttlMinutes }) {
+			const { tier } = await tierOf(sandboxId);
+			if (tier !== "microvm") throw new KantelError("not_supported", "An isolate has no SSH");
+			const key = publicKey?.trim();
+			if (key !== undefined && !PUBLIC_KEY.test(key))
+				throw new KantelError("invalid", "publicKey is one OpenSSH public key");
+			const run = await call<{ exitCode: number; stdout: string; stderr: string }>(sandboxId, "sandbox.exec", {
+				command: SSH_ACCESS_SCRIPT,
+				env: { KANTEL_PUBLIC_KEY: key ?? "" },
+			});
+			if (run.exitCode !== 0)
+				throw new KantelError("unavailable", `The sandbox could not let the key in: ${run.stderr}`);
+			const [privateKey = "", fingerprint = ""] = run.stdout.split(`${FINGERPRINT_MARK}\n`);
+			const url = await tunnel(sandboxId, SSH_PORT, ttlMinutes);
+			const gateway = new URL(options.publicUrl);
+			const port = Number(gateway.port || (gateway.protocol === "https:" ? 443 : 80));
+			return {
+				host: gateway.hostname,
+				port,
+				user: "user",
+				// Any WebSocket client that pipes stdin and stdout as binary frames does; websocat is one.
+				command: `ssh -o ProxyCommand='websocat --binary ${url}' user@${sandboxId}`,
+				...(key === undefined && privateKey.trim() !== "" ? { privateKey: `${privateKey.trim()}\n` } : {}),
+				...(fingerprint.trim() === "" ? {} : { hostKeyFingerprint: fingerprint.trim() }),
+			};
+		},
+		async openDesktop(sandboxId, { ttlMinutes }) {
+			const { tier } = await tierOf(sandboxId);
+			if (tier !== "microvm") throw new KantelError("not_supported", "An isolate has no desktop");
+			const url = await tunnel(sandboxId, DESKTOP_PORT, ttlMinutes);
+			return { url, embedUrl: url };
+		},
+		async openBrowser(sandboxId, { ttlMinutes }) {
+			const { tier } = await tierOf(sandboxId);
+			if (tier !== "microvm") throw new KantelError("not_supported", "An isolate has no browser");
+			// Chrome's browser-wide DevTools target, passed through the tunnel with its path.
+			const version = await call<{ exitCode: number; stdout: string }>(sandboxId, "sandbox.exec", {
+				command: "curl -fsS --max-time 5 http://127.0.0.1:9222/json/version",
+			});
+			let target: string | undefined;
+			try {
+				const parsed = JSON.parse(version.stdout) as { webSocketDebuggerUrl?: unknown };
+				if (typeof parsed.webSocketDebuggerUrl === "string") target = new URL(parsed.webSocketDebuggerUrl).pathname;
+			} catch {
+				target = undefined;
+			}
+			if (version.exitCode !== 0 || target === undefined || !target.startsWith("/devtools/browser/")) {
+				throw new KantelError("unavailable", "The sandbox's browser isn't up yet");
+			}
+			const cdpUrl = `${await tunnel(sandboxId, BROWSER_PORT, ttlMinutes)}${target}`;
+			return { url: cdpUrl, cdpUrl };
+		},
+		async revokeHost(hostId) {
+			await hosts.revoke(hostId).catch((error: unknown) => {
+				if (!(error instanceof KantelError && error.code === "not_found")) throw error;
+			});
+		},
+		async updateHost(hostId, change) {
+			await hosts.update(hostId, change).catch((error: unknown) => {
+				if (!(error instanceof KantelError && error.code === "not_found")) throw error;
+			});
+		},
+		async usage(sandboxId) {
+			const { tier } = await tierOf(sandboxId);
+			if (tier !== "microvm") throw new KantelError("not_supported", "An isolate reports no usage");
+			const { stdout } = await call<{ stdout: string }>(sandboxId, "sandbox.exec", {
+				command: "cat /proc/loadavg; nproc; grep -E '^(MemTotal|MemAvailable):' /proc/meminfo",
+			});
+			const lines = stdout.trim().split("\n");
+			const load = Number(lines[0]?.split(" ")[0] ?? 0);
+			const cpus = Math.max(1, Number(lines[1] ?? 1));
+			const kb = (name: string) => Number(/(\d+)/.exec(lines.find((line) => line.startsWith(name)) ?? "")?.[1] ?? 0);
+			return {
+				cpu: Math.min(1, Math.max(0, load / cpus)),
+				memoryBytes: Math.max(0, kb("MemTotal") - kb("MemAvailable")) * 1024,
+			};
+		},
+	};
+}

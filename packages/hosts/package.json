@@ -7,6 +7,9 @@
 	"license": "Apache-2.0",
 	"exports": {
 		".": "./src/index.ts",
+		"./backend": "./src/backend.ts",
+		"./port-websocket": "./src/port-websocket.ts",
+		"./tunnel": "./src/tunnel.ts",
 		"./http": "./src/http.ts",
 		"./hub": "./src/hub.ts",
 		"./protocol": "./src/protocol.ts",
@@ -15,7 +18,11 @@
 		"./store": "./src/store.ts"
 	},
 	"dependencies": {
+		"@kantel/compute": "workspace:*",
 		"@kantel/contracts": "workspace:*",
 		"@kantel/sql": "workspace:*"
+	},
+	"devDependencies": {
+		"@kantel/api": "workspace:*"
 	}
 }

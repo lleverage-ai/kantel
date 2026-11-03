@@ -12,7 +12,6 @@
 //   /v1/workspaces/...          workspace read API (@kantel/workspace/read-api)
 //   /v1/audit/events, /event    audit query API (@kantel/audit/http)
 //   /v1/skills/...              skills API (@kantel/skills/http, #12): reads, and imports for the organisation's admin
-//   /v1/rules/...               prompt rules API (@kantel/rules/http): the platform's, organisation's, projects', users'
 //   /v1/memory/...              memory API (@kantel/memory/http, #12): reads and recall, and new spaces and snapshot
 //                               imports for the organisation's admin
 //   /v1/sharing/...             sharing API (@kantel/sharing/http): resource shares, access requests, bindings,
@@ -40,14 +39,12 @@ import {
 	type Authenticator,
 	type CallContext,
 	callContextFor,
-	KantelError,
 	OTP_START_PATH,
 	OTP_VERIFY_PATH,
 	relyingPartyFor,
 	SESSION_END_PATH,
 } from "@kantel/contracts";
 import { boatWebhookPath, isEnvironmentsPath } from "@kantel/environments/http";
-import { createHostsApi, HOSTS_REGISTER_PATH, isHostsPath } from "@kantel/hosts/http";
 import { createAuthenticator, withAuthentication } from "@kantel/identity/authenticator";
 import { createIdentityHandler, isIdentityPath } from "@kantel/identity/http";
 import { type InviteMailer, isInviteMailer } from "@kantel/identity/invites";
@@ -55,8 +52,6 @@ import { createEmailOtp, kantelSessionProvider, type OtpMailer } from "@kantel/i
 import { createOtpHandler } from "@kantel/identity/otp/http";
 import { createPasskeyHandler, isPasskeyPath } from "@kantel/identity/passkey/http";
 import { createMemoryApi } from "@kantel/memory/http";
-import { createProgramsApi, isProgramsPath } from "@kantel/programs/http";
-import { createRulesApi } from "@kantel/rules/http";
 import { createSessionApi, type SessionApi } from "@kantel/runtime/http";
 import { createSharingApi, isSharingPath } from "@kantel/sharing/http";
 import { createSkillsApi } from "@kantel/skills/http";
@@ -110,12 +105,15 @@ export interface GatewayOptions {
 	 */
 	readonly publicOrigin?: string;
 	/**
-	 * Who operates the compute plane's hosts (`/v1/admin/hosts`, `/v1/admin/compute/...`): admins of the deployment's
-	 * own organisation, and the bootstrap's service (its key). Without it, those routes refuse everyone.
+	 * The compute plane's API (`compute.ts`, KANTEL_COMPUTE=experimental): it answers its own routes under `/v1`, signing
+	 * callers in itself, and `undefined` for every other path.
 	 */
-	readonly computeOperator?: { readonly organisationId: string; readonly key?: string };
-	/** The host images `kantel-host install` fetches (`GET /v1/hosts/images/...`, `compute.ts`'s `hostImages`). */
-	readonly computeImages?: (request: Request) => Promise<Response | undefined>;
+	readonly compute?: { fetch(request: Request): Promise<Response | undefined> };
+	/**
+	 * What `kantel-host` calls with no sign-in (`compute.ts`'s `hostRoutes`): registration, whose join token is its
+	 * authority, and the public host images. `undefined` for every other path.
+	 */
+	readonly computeHosts?: (request: Request) => Promise<Response | undefined>;
 }
 
 /** Who sent a request, as the HTTP server saw it: never from a header the client could set. */
@@ -125,11 +123,6 @@ export interface ClientInfo {
 
 export interface Gateway {
 	fetch(request: Request, client?: ClientInfo): Promise<Response>;
-	/**
-	 * Whether a request comes from the compute plane's operator, for its upgrades (a sandbox's port over a WebSocket).
-	 * Undefined without the compute plane.
-	 */
-	computeOperator?(request: Request): Promise<boolean>;
 	close(): Promise<void>;
 }
 
@@ -147,7 +140,6 @@ const BROWSER_ROUTES: ReadonlySet<string> = new Set([
 ]);
 const BROWSER_EMBED = /^\/v1\/sessions\/[^/]+\/browsers\/[^/]+\/embed$/;
 const SKILLS_BASE = "/v1/skills";
-const RULES_BASE = "/v1/rules";
 const MEMORY_BASE = "/v1/memory";
 
 /** Whether `path` is `base` or under it. */
@@ -294,13 +286,7 @@ export function createGateway(options: GatewayOptions): Gateway {
 		authenticate: signedIn,
 		authorizeWrite: organisationAdmin,
 	});
-	// Prompt rules: the store's own rules decide who writes what (an admin of the owner, a user's own), never an agent.
-	const rulesApi = createRulesApi({ rules: components.rules, authenticate: signedIn });
 	const notFound = () => json({ error: { code: "not_found", message: "No such route" } }, 404);
-	const rules = withAuthentication(authenticator, async (request, caller) => {
-		callers.set(request, callContextFor(caller));
-		return (await rulesApi.fetch(request)) ?? notFound();
-	});
 	const skills = withAuthentication(authenticator, async (request, caller) => {
 		callers.set(request, callContextFor(caller));
 		return (await skillsApi.fetch(request)) ?? notFound();
@@ -347,58 +333,6 @@ export function createGateway(options: GatewayOptions): Gateway {
 			: withAuthentication(authenticator, async (request, caller) => {
 					callers.set(request, callContextFor(caller));
 					return (await toolServersApi.fetch(request)) ?? notFound();
-				});
-
-	// The compute plane (`compute.ts`): a host registers with its join token alone; the rest is the operator's (on
-	// Cloudflare, a super-admin), never an agent: an admin of the deployment's own organisation, or the bootstrap's
-	// service, whose key the bootstrap file holds.
-	const compute = components.compute;
-	const operator = options.computeOperator;
-	let operatorService: Promise<string | undefined> | undefined;
-	const bootstrapService = () => {
-		operatorService ??= (async () => {
-			if (operator?.key === undefined) return undefined;
-			const caller = await authenticator
-				.authenticate(new Request("http://gateway/", { headers: { authorization: `Bearer ${operator.key}` } }))
-				.catch(() => undefined);
-			return caller?.actor.kind === "service" ? caller.actor.serviceId : undefined;
-		})();
-		return operatorService;
-	};
-	const computeAuthorize =
-		compute === undefined
-			? undefined
-			: async (request: Request) => {
-					const ctx = await signedIn(request);
-					if (operator === undefined || ctx.organisationId !== operator.organisationId || ctx.actor.kind === "agent") {
-						throw new KantelError("forbidden", "Only the deployment's operators manage hosts");
-					}
-					if (ctx.actor.kind === "service" && ctx.actor.serviceId === (await bootstrapService())) return;
-					await organisationAdmin(ctx);
-				};
-	const computeApi =
-		compute === undefined || computeAuthorize === undefined
-			? undefined
-			: createHostsApi({ hosts: compute, authorizeAdmin: computeAuthorize });
-	const computeAdmin =
-		computeApi === undefined
-			? undefined
-			: withAuthentication(authenticator, async (request, caller) => {
-					callers.set(request, callContextFor(caller));
-					return (await computeApi.fetch(request)) ?? notFound();
-				});
-
-	// Programs (`session-tools.ts`): the service's own checks decide who saves and runs what, as on Cloudflare.
-	const programsApi =
-		components.programs === undefined
-			? undefined
-			: createProgramsApi({ programs: components.programs, authenticate: signedIn, basePath: "/v1" });
-	const programs =
-		programsApi === undefined
-			? undefined
-			: withAuthentication(authenticator, async (request, caller) => {
-					callers.set(request, callContextFor(caller));
-					return (await programsApi.fetch(request)) ?? notFound();
 				});
 
 	// Environments: their routes need a sign-in; boat's webhook is checked by its signature, so it needs none.
@@ -462,6 +396,14 @@ export function createGateway(options: GatewayOptions): Gateway {
 					return await signIn(request);
 				}
 				if (path === "/v1/deployment") return await deployment(request);
+				if (options.computeHosts !== undefined && path.startsWith("/v1/hosts/")) {
+					const answer = await options.computeHosts(request);
+					if (answer !== undefined) return answer;
+				}
+				if (options.compute !== undefined && path.startsWith("/v1/")) {
+					const answer = await options.compute.fetch(request);
+					if (answer !== undefined) return answer;
+				}
 				if (path === WORKSPACE_READ_API_BASE || path.startsWith(`${WORKSPACE_READ_API_BASE}/`)) {
 					return await workspaces(request);
 				}
@@ -475,21 +417,11 @@ export function createGateway(options: GatewayOptions): Gateway {
 					return await connections(request);
 				}
 				if (toolServers !== undefined && isToolServersPath(path)) return await toolServers(request);
-				if (computeApi !== undefined && computeAdmin !== undefined && isHostsPath(path)) {
-					// Registration carries its own authority, the join token.
-					if (path === HOSTS_REGISTER_PATH) return (await computeApi.fetch(request)) ?? notFound();
-					return await computeAdmin(request);
-				}
-				if (computeApi !== undefined && path.startsWith("/v1/hosts/images/")) {
-					return (await options.computeImages?.(request)) ?? notFound();
-				}
-				if (isProgramsPath(path)) return programs === undefined ? notFound() : await programs(request);
 				if (modelProviders !== undefined && isModelProvidersPath(path)) return await modelProviders(request);
 				if (environmentsApi !== undefined && path === boatWebhookPath()) {
 					return (await environmentsApi.fetch(request)) ?? notFound();
 				}
 				if (environments !== undefined && isEnvironmentsPath(path)) return await environments(request);
-				if (under(path, RULES_BASE)) return await rules(request);
 				if (approval !== undefined && isApprovalApiPath(path)) {
 					return await approval(request);
 				}
@@ -522,19 +454,6 @@ export function createGateway(options: GatewayOptions): Gateway {
 				return json({ error: { code: "unavailable", message: "The gateway could not answer" } }, 500);
 			}
 		},
-		...(computeAuthorize === undefined
-			? {}
-			: {
-					async computeOperator(request: Request) {
-						try {
-							callers.set(request, callContextFor(await authenticator.authenticate(request)));
-							await computeAuthorize(request);
-							return true;
-						} catch {
-							return false;
-						}
-					},
-				}),
 		async close() {
 			await sessions.close();
 		},

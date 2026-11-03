@@ -5,6 +5,15 @@
   Content-Type: text/plain; charset=utf-8
   Cache-Control: public, max-age=300
 
+# The docs for language models (scripts/llms-txt.mjs), as UTF-8 text.
+/docs/llms.txt
+  Content-Type: text/plain; charset=utf-8
+  Cache-Control: public, max-age=300
+
+/docs/llms-full.txt
+  Content-Type: text/plain; charset=utf-8
+  Cache-Control: public, max-age=300
+
 /*
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin

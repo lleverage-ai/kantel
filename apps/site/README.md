@@ -33,6 +33,10 @@ Only usage docs are copied: design and planning docs elsewhere in `docs/` aren't
 `scripts/check-links.mjs` runs after the build and fails it when an internal link, on the marketing page or in the
 docs, doesn't resolve to a built page or asset.
 
+`scripts/llms-txt.mjs` runs last and writes the docs for language models: `/docs/llms.txt`, an index of every page
+in sidebar order, `/docs/<page>.md` for each page as plain Markdown, and `/docs/llms-full.txt` with every page in one
+file. See [docs/site/README.md](../../docs/site/README.md#for-agents-llmstxt).
+
 ## The installer
 
 `public/install.sh` is POSIX sh, so `curl -fsSL https://kantel.dev/install.sh | sh` works from bash, zsh and fish. It
@@ -69,5 +73,13 @@ frame under `prefers-reduced-motion`. The comment at its top says how it's tuned
 ## Deploying
 
 `wrangler.jsonc` serves `dist/` as static assets on the `kantel.dev` custom domain, with `_headers` for caching and the
-installer's content type. Nothing deploys it yet: `pnpm --dir apps/site deploy:dry-run` checks the config, and
-`wrangler deploy` from `apps/site`, with an account that holds the `kantel.dev` zone, publishes it.
+installer's content type.
+
+`.github/workflows/site-deploy.yml` builds and deploys it on every push to main that changes `apps/site`, `docs/site`
+or the design tokens. It isn't part of main.yml, which skips pushes that only change Markdown. It deploys once the
+repository has the `KANTEL_SITE_CLOUDFLARE_API_TOKEN` secret (the comment at its top lists the token's permissions);
+without it, it builds and runs `wrangler deploy --dry-run` only. `gh workflow run site-deploy.yml --ref main`
+redeploys main by hand.
+
+By hand, from a clean checkout of main: `pnpm --dir apps/site build`, then `wrangler deploy` from `apps/site` with an
+account that holds the `kantel.dev` zone. `pnpm --dir apps/site deploy:dry-run` checks the config without deploying.

@@ -56,19 +56,18 @@
 //                               KANTEL_CONNECTIONS_ORIGIN, the origin OAuth redirects come back to, which compose.yaml
 //                               sets to the console's local address) and a vault unless KANTEL_CONNECTIONS is `off`;
 //                               CIMD `on` once the client metadata document is public
-//   KANTEL_CODEMODE, KANTEL_PROGRAMS, KANTEL_PROGRAM_WAITS, KANTEL_PRESENT_FILES
-//                               `off` takes away `codemode`, saved programs (`save_program` and /v1/programs), their
-//                               pauses, or `present_files` and `create_document` (session-tools.ts). Each is on
+//   KANTEL_PRESENT_FILES        `off` takes away `present_files` and `create_document` (session-tools.ts). On
 //                               otherwise, as on Cloudflare's deployment
 //   KANTEL_TOOL_SERVERS        `experimental` turns on tool servers (tool-servers.ts): MCP servers sessions call for
 //                               tools over a tunnel each dials to /v1/tool-servers/{id}/connect. Unset, there are none
-//   KANTEL_COMPUTE             `experimental` turns on the compute plane (compute.ts, @kantel/hosts): machines running
-//                               kantel-host join with a token and dial out to /v1/hosts/connect; the operator's routes are
-//                               /v1/admin/hosts and /v1/admin/compute/sandboxes. Needs KANTEL_PUBLIC_URL (or
-//                               KANTEL_COMPUTE_PUBLIC_URL). Unset, there is none
 //   KANTEL_SUBAGENTS           the `subagent` tool (subagents.ts, @kantel/subagents): a session hands a task to a child
 //                               session of the same agent and gets its answer. On unless set to anything but `on`
 //                               (`off`, say)
+//   KANTEL_COMPUTE             `experimental` turns on the compute plane's API (compute.ts, @kantel/compute): accounts,
+//                               sandboxes, snapshots, `ksk_` keys, webhooks, OpenTelemetry and hosts, in memory; its
+//                               super-admin key is `computeKey` in the bootstrap file. Sandboxes run on the stub unless
+//                               KANTEL_COMPUTE_BACKEND=hosts, which runs them on machines running kantel-host (@kantel/hosts;
+//                               needs KANTEL_PUBLIC_URL or KANTEL_COMPUTE_PUBLIC_URL; the other settings are in compute.ts)
 //
 // It runs on node:http, so it needs nothing Bun-specific; the image runs it on Bun like the session hosts.
 // First: HARBOUR_* settings from before the rename still count.
@@ -78,10 +77,13 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Authenticator } from "@kantel/contracts";
+import { createAuthenticator } from "@kantel/identity/authenticator";
+import { kantelSessionProvider } from "@kantel/identity/otp";
 import { browserBinding, browserConfig, createBrowserViews, gatewayBrowserProvider } from "./browser.ts";
 import { callbackUrlAllowed, parseCallbackOrigins } from "./callbacks.ts";
 import { type Bootstrap, bootstrap, createGatewayComponents, putAssistantProfile } from "./components.ts";
-import { computeConfig, hostImages, withHostUpgrades } from "./compute.ts";
+import { computeConfig, type GatewayCompute, gatewayCompute, withHostUpgrades } from "./compute.ts";
 import { connectionsConfig } from "./connections.ts";
 import { createDurableGatewayComponents, type DurableConfig } from "./durable.ts";
 import { importPolicyFile } from "./egress.ts";
@@ -267,7 +269,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 					...browser,
 					...(cfg.connections === undefined ? {} : { connections: cfg.connections }),
 					...(cfg.toolServers === true ? { toolServers: true } : {}),
-					...(cfg.compute === undefined ? {} : { compute: cfg.compute }),
+					...(cfg.compute?.hosts === undefined ? {} : { computeHosts: cfg.compute.hosts }),
 					...(cfg.environments === undefined ? {} : { environments: cfg.environments }),
 					// In memory there is no token table: containers reach the vault proxy with no session token.
 					...(cfg.containers === undefined ? {} : { containers: await prepareContainerTier(cfg.containers) }),
@@ -280,7 +282,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 					...browser,
 					...(cfg.connections === undefined ? {} : { connections: cfg.connections }),
 					...(cfg.toolServers === true ? { toolServers: true } : {}),
-					...(cfg.compute === undefined ? {} : { compute: cfg.compute }),
+					...(cfg.compute?.hosts === undefined ? {} : { computeHosts: cfg.compute.hosts }),
 					...(cfg.environments === undefined ? {} : { environments: cfg.environments }),
 					...(cfg.containers === undefined ? {} : { containers: cfg.containers }),
 					subagents: cfg.subagents,
@@ -362,10 +364,38 @@ export async function serveGateway(cfg = gatewayConfig()) {
 			);
 		}
 	}
+	// The compute plane signs people in as the gateway does, so it and the gateway share one authenticator.
+	let compute: GatewayCompute | undefined;
+	let authenticator: Authenticator | undefined;
+	// With KANTEL_COMPUTE_BACKEND=hosts: the registry of hosts, and a fresh secret for this process's tunnel URLs.
+	const hosts =
+		components.computeHosts === undefined || cfg.compute?.hosts === undefined
+			? undefined
+			: { service: components.computeHosts, config: cfg.compute.hosts, tunnelSecret: new Uint8Array(randomBytes(32)) };
+	if (cfg.compute !== undefined) {
+		authenticator = createAuthenticator({
+			identity: components.identity,
+			providers: [kantelSessionProvider({ sessions: components.otp.sessions })],
+		});
+		compute = await gatewayCompute({
+			authenticator,
+			...(previous?.computeKey === undefined ? {} : { superAdminKey: previous.computeKey }),
+			...(cfg.publicOrigin === undefined ? {} : { publicUrl: cfg.publicOrigin }),
+			...(hosts === undefined ? {} : { hosts }),
+		});
+		seeded = { ...seeded, computeKey: compute.superAdminKey };
+		console.log(
+			`[gateway] compute plane on (KANTEL_COMPUTE=experimental): ${compute.binding}; the super-admin's key is ` +
+				`computeKey in ${cfg.bootstrapFile}`,
+		);
+	}
 	await writePrivateFile(cfg.bootstrapFile, `${JSON.stringify(seeded, null, "\t")}\n`);
 
 	const gateway = createGateway({
 		components,
+		...(authenticator === undefined ? {} : { authenticator }),
+		...(compute === undefined ? {} : { compute: compute.api }),
+		...(compute?.hostRoutes === undefined ? {} : { computeHosts: compute.hostRoutes }),
 		consoleDir: cfg.consoleDir,
 		...(cfg.mail === undefined ? {} : { mail: describeMail(cfg.mail), mailer: createMailer(cfg.mail) }),
 		...(cfg.callbackOrigins.length === 0 ? {} : { allowCallbackUrl: callbackUrlAllowed(cfg.callbackOrigins) }),
@@ -375,20 +405,10 @@ export async function serveGateway(cfg = gatewayConfig()) {
 			? { embedOrigins: cfg.browser.embedOrigins }
 			: {}),
 		...(cfg.publicOrigin === undefined ? {} : { publicOrigin: cfg.publicOrigin }),
-		// The hosts' operators: admins of the deployment's own organisation, and the bootstrap's service.
-		...(components.compute === undefined
-			? {}
-			: { computeOperator: { organisationId: seeded.organisationId, key: seeded.apiKey } }),
-		...(components.compute === undefined || cfg.compute?.images === undefined
-			? {}
-			: { computeImages: hostImages(cfg.compute.images) }),
 	});
 	const tunnels = components.toolServers === undefined ? undefined : toolServerUpgrades(components.toolServers);
 	const onUpgrade = withHostUpgrades(
-		components.compute,
-		gateway.computeOperator === undefined
-			? undefined
-			: (request) => gateway.computeOperator?.(request) ?? Promise.resolve(false),
+		hosts,
 		withToolServerUpgrades(
 			tunnels,
 			browserViews === undefined ? undefined : (incoming, socket, head) => browserViews.upgrade(incoming, socket, head),
@@ -407,7 +427,8 @@ export async function serveGateway(cfg = gatewayConfig()) {
 
 	const shutdown = async () => {
 		tunnels?.close();
-		components.compute?.close();
+		await compute?.close();
+		components.computeHosts?.close();
 		await gateway.close();
 		await server.close();
 		await components.close();

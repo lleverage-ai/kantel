@@ -1,0 +1,23 @@
+{
+	"name": "@kantel/cli",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "Kantel's command line and MCP server: sandboxes, commands, files, snapshots and keys from a terminal or a coding agent (npx kantel …)",
+	"license": "Apache-2.0",
+	"bin": {
+		"kantel": "./src/main.ts"
+	},
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"scripts": {
+		"build": "node scripts/build.ts"
+	},
+	"dependencies": {
+		"@kantel/api": "workspace:*"
+	},
+	"devDependencies": {
+		"esbuild": "0.28.2"
+	}
+}
