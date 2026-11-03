@@ -32,6 +32,7 @@ import {
 	KeyRound,
 	ListFilter,
 	type LucideIcon,
+	Menu,
 	Network,
 	Palette,
 	Pause,
@@ -158,3 +159,5 @@ export const ProxyIcon = lucide(Network, "ProxyIcon");
 export const WebhookIcon = lucide(Webhook, "WebhookIcon");
 export const TelemetryIcon = lucide(Activity, "TelemetryIcon");
 export const BillingIcon = lucide(CreditCard, "BillingIcon");
+/** The phone's top bar: opens the console's nav as a drawer. */
+export const NavMenuIcon = lucide(Menu, "NavMenuIcon");

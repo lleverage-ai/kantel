@@ -53,13 +53,16 @@ const v1 = (preference: string, css: Record<string, string> = {}) =>
 const saved = (storage: ReturnType<typeof memory>) => JSON.parse(storage.getItem(THEME_STORAGE_KEY) ?? "null");
 
 describe("the theme controller", () => {
-	it("is dark until a person chooses, and remembers nothing until then", () => {
+	it("follows the device until a person chooses, and remembers nothing until then", () => {
 		const storage = memory();
 		const { root, attributes } = page();
-		const controller = createThemeController({ root, storage, prefersLight: device(true) });
-		expect(controller.state()).toEqual({ preference: "dark", applied: "dark" });
+		const prefersLight = device(true);
+		const controller = createThemeController({ root, storage, prefersLight });
+		expect(controller.state()).toEqual({ preference: "system", applied: "light" });
 		expect(controller.remembered()).toBe(false);
-		expect(attributes.get("data-kt-theme")).toBe("dark");
+		expect(attributes.get("data-kt-theme")).toBe("light");
+		prefersLight.set(false);
+		expect([controller.state().applied, attributes.get("data-kt-theme")]).toEqual(["dark", "dark"]);
 		expect(storage.getItem(THEME_STORAGE_KEY)).toBeNull();
 	});
 
@@ -190,12 +193,14 @@ describe("the boot script", () => {
 		return attributes.get("data-kt-theme");
 	};
 
-	it("paints dark with nothing remembered, and what was chosen otherwise", () => {
-		expect(boot({}, true)).toBe("dark");
+	it("paints the device's theme with nothing remembered, and what was chosen otherwise", () => {
+		expect(boot({}, true)).toBe("light");
+		expect(boot({}, false)).toBe("dark");
 		expect(boot({ [THEME_STORAGE_KEY]: JSON.stringify({ v: 2, preference: "light" }) })).toBe("light");
 		expect(boot({ [THEME_STORAGE_KEY]: JSON.stringify({ v: 2, preference: "system" }) }, true)).toBe("light");
 		expect(boot({ [THEME_STORAGE_KEY]: JSON.stringify({ v: 2, preference: "system" }) }, false)).toBe("dark");
-		expect(boot({ [THEME_STORAGE_KEY]: "not json" }, true)).toBe("dark");
+		expect(boot({ [THEME_STORAGE_KEY]: "not json" }, true)).toBe("light");
+		expect(boot({ [THEME_STORAGE_KEY]: JSON.stringify({ v: 2, preference: "dark" }) }, true)).toBe("dark");
 	});
 
 	it("paints a version 1 choice as the kind of theme it was, under either key", () => {

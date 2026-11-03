@@ -4,7 +4,7 @@
 // a snapshot or delete it for good. New sandbox shows the new row at once, starting, and the page follows it until
 // it's running. Every call goes through the `SandboxesSource` the host binds; stories bind it to fixtures.
 
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Button, buttonClass } from "../primitives/button.tsx";
 import { SegmentedControl, SelectField, TextField } from "../primitives/controls.tsx";
 import { Dialog } from "../primitives/dialog.tsx";
@@ -39,7 +39,19 @@ import {
 	sizeText,
 	stopsInText,
 } from "./compute-model.ts";
-import { cellMono, cellSub, computePage, messageOf, rowHover, Sparkline, table, tableFrame, td, th } from "./parts.tsx";
+import {
+	cellMono,
+	cellSub,
+	computePage,
+	messageOf,
+	rowHover,
+	Sparkline,
+	TableFrame,
+	table,
+	tableFrame,
+	td,
+	th,
+} from "./parts.tsx";
 
 export type SandboxFilter = "all" | "running" | "stopped";
 
@@ -93,6 +105,15 @@ const FILTERS: readonly { value: SandboxFilter; label: string }[] = [
 const matches = (box: Sandbox, filter: SandboxFilter): boolean =>
 	filter === "all" || (filter === "stopped") === (box.state === "stopped" || box.state === "error");
 
+/** A search finds a sandbox by its name, hostname, ID or environment, ignoring case. */
+const found = (box: Sandbox, query: string): boolean => {
+	const words = query.trim().toLowerCase();
+	if (words === "") return true;
+	return [box.name, box.hostname, box.id, box.environment?.name ?? ""].some((text) =>
+		text.toLowerCase().includes(words),
+	);
+};
+
 /** Re-renders every `ms` while `on`, so countdowns keep up. */
 function useTick(on: boolean, ms: number): void {
 	const [, setTick] = useState(0);
@@ -121,6 +142,7 @@ export function SandboxesPage({
 	// Sandboxes made or changed here, ahead of the next read: a new one shows the moment New sandbox is pressed.
 	const [local, setLocal] = useState<ReadonlyMap<string, Sandbox | null>>(new Map());
 	const [filter, setFilter] = useState<SandboxFilter>("all");
+	const [query, setQuery] = useState("");
 	const [newOpen, setNewOpen] = useState(creating);
 	const [notice, setNotice] = useState<{ level: "info" | "error"; text: string }>();
 	useTick(fixedNow === undefined, 30_000);
@@ -208,7 +230,7 @@ export function SandboxesPage({
 			stopped: all.filter((box) => matches(box, "stopped")).length,
 		};
 	}, [sandboxes]);
-	const shown = sandboxes?.filter((box) => matches(box, filter));
+	const shown = sandboxes?.filter((box) => matches(box, filter) && found(box, query));
 
 	return (
 		<div className={computePage}>
@@ -287,7 +309,18 @@ export function SandboxesPage({
 				</EmptyState>
 			) : (
 				<>
-					<div className="flex flex-wrap items-center justify-between gap-2">
+					{/* The search takes the row, and the filter sits after it; on a phone the search is the row's whole width
+					    and the filter wraps under it. */}
+					<div className="flex flex-wrap items-center gap-2">
+						<TextField
+							label="Search sandboxes"
+							hideLabel
+							type="search"
+							placeholder="Search by name, hostname or ID"
+							className="min-w-0 flex-[1_1_var(--kt-popover-width)]"
+							value={query}
+							onChange={(event) => setQuery(event.target.value)}
+						/>
 						<SegmentedControl
 							label="Show sandboxes"
 							options={FILTERS.map((option) => ({ ...option, count: counts[option.value] }))}
@@ -358,17 +391,71 @@ function SandboxTable({
 	onNotice: NoticeSetter;
 }) {
 	const [history, setHistory] = useState<Sandbox>();
-	const [deleting, setDeleting] = useState<Sandbox>();
+	const [deleting, setDeleting] = useState<readonly Sandbox[]>();
 	const [saving, setSaving] = useState<Sandbox>();
+	// The sandboxes ticked, by ID; only those still shown count, so a filter or a delete drops the rest.
+	const [ticked, setTicked] = useState<ReadonlySet<string>>(new Set());
+	const selectable = sandboxes.filter((box) => !box.id.startsWith("pending_"));
+	const selected = selectable.filter((box) => ticked.has(box.id));
+	const allTicked = selectable.length > 0 && selected.length === selectable.length;
+	const someTicked = selected.length > 0 && !allTicked;
+	const tickAll = (on: boolean) => setTicked(on ? new Set(selectable.map((box) => box.id)) : new Set());
+	const tick = (id: string, on: boolean) =>
+		setTicked((current) => {
+			const next = new Set(current);
+			if (on) next.add(id);
+			else next.delete(id);
+			return next;
+		});
+	const stoppable = selected.filter((box) => sandboxActions(box.state).stop);
+	const stopSelected = async () => {
+		const results = await Promise.allSettled(stoppable.map((box) => source.stop(box.id)));
+		for (const result of results) if (result.status === "fulfilled") onChange(result.value, result.value.id);
+		const failed = results.filter((result) => result.status === "rejected").length;
+		if (failed > 0) onNotice({ level: "error", text: `Kantel couldn't stop ${failed} of them. Try again.` });
+	};
 	if (sandboxes.length === 0) {
 		return <p className="m-0 text-sm text-muted">No sandboxes match.</p>;
 	}
 	return (
 		<>
-			<div className={tableFrame}>
+			<TableFrame
+				bar={
+					<SelectionBar
+						count={selected.length}
+						all={allTicked}
+						some={someTicked}
+						onAll={tickAll}
+						actions={
+							<>
+								<Button
+									size="sm"
+									icon={<StopIcon size="sm" />}
+									disabled={stoppable.length === 0}
+									onClick={() => void stopSelected()}
+								>
+									Stop
+								</Button>
+								<Button size="sm" variant="danger" icon={<TrashIcon />} onClick={() => setDeleting(selected)}>
+									Delete
+								</Button>
+							</>
+						}
+					/>
+				}
+			>
 				<table className={table}>
 					<thead>
 						<tr>
+							<th className={`${th} w-0 pr-0`} scope="col">
+								<TickBox
+									label="Select all sandboxes"
+									checked={allTicked}
+									indeterminate={someTicked}
+									disabled={selectable.length === 0}
+									onChange={tickAll}
+								/>
+							</th>
 							<th className={th} scope="col">
 								Name
 							</th>
@@ -417,21 +504,33 @@ function SandboxTable({
 								onChange={onChange}
 								onNotice={onNotice}
 								onHistory={setHistory}
-								onDelete={setDeleting}
+								onDelete={(box) => setDeleting([box])}
 								onSave={setSaving}
+								ticked={ticked.has(box.id)}
+								onTick={(on) => tick(box.id, on)}
 							/>
 						))}
 					</tbody>
 				</table>
-			</div>
+			</TableFrame>
 			<HistoryDialog sandbox={history} source={source} now={now} onClose={() => setHistory(undefined)} />
 			<DeleteDialog
-				sandbox={deleting}
+				sandboxes={deleting}
 				onClose={() => setDeleting(undefined)}
-				onDelete={async (box) => {
-					await source.remove(box.id);
-					onChange(null, box.id);
-					onNotice({ level: "info", text: `Deleted ${box.name} and its snapshots.` });
+				onDelete={async (boxes) => {
+					const results = await Promise.allSettled(boxes.map((box) => source.remove(box.id)));
+					const gone = boxes.filter((_, at) => results[at]?.status === "fulfilled");
+					for (const box of gone) onChange(null, box.id);
+					setTicked(new Set());
+					const failure = results.find((result) => result.status === "rejected");
+					if (failure !== undefined) throw failure.reason;
+					onNotice({
+						level: "info",
+						text:
+							gone.length === 1
+								? `Deleted ${gone[0]?.name} and its snapshots.`
+								: `Deleted ${gone.length} sandboxes and their snapshots.`,
+					});
 				}}
 			/>
 			{save === undefined ? null : (
@@ -461,6 +560,8 @@ function SandboxRow({
 	onHistory,
 	onDelete,
 	onSave,
+	ticked,
+	onTick,
 }: {
 	sandbox: Sandbox;
 	hosting: HostingMode;
@@ -474,6 +575,8 @@ function SandboxRow({
 	onHistory: (box: Sandbox) => void;
 	onDelete: (box: Sandbox) => void;
 	onSave: (box: Sandbox) => void;
+	ticked: boolean;
+	onTick: (on: boolean) => void;
 }) {
 	const pending = sandbox.id.startsWith("pending_");
 	const can = sandboxActions(sandbox.state);
@@ -611,6 +714,9 @@ function SandboxRow({
 	const status = SANDBOX_STATE_STATUS[sandbox.state];
 	return (
 		<tr className={`kt-sandbox-row ${rowHover}`} data-sandbox={sandbox.id}>
+			<td className={`${td} w-0 pr-0`}>
+				<TickBox label={`Select ${sandbox.name}`} checked={ticked} disabled={pending} onChange={onTick} />
+			</td>
 			<td className={td}>
 				<span className="block max-w-(--kt-card-width) truncate font-medium text-fg">{sandbox.name}</span>
 				{sandbox.hostname === "" ? null : <span className={`${cellSub} truncate`}>{sandbox.hostname}</span>}
@@ -880,15 +986,96 @@ function HistoryDialog({
 	);
 }
 
+/** A row's checkbox, or the header's for all of them: `indeterminate` when some are ticked. */
+function TickBox({
+	id,
+	label,
+	checked,
+	indeterminate = false,
+	disabled = false,
+	onChange,
+}: {
+	id?: string;
+	label: string;
+	checked: boolean;
+	indeterminate?: boolean;
+	disabled?: boolean;
+	onChange: (on: boolean) => void;
+}) {
+	const ref = useRef<HTMLInputElement>(null);
+	useEffect(() => {
+		if (ref.current !== null) ref.current.indeterminate = indeterminate;
+	}, [indeterminate]);
+	return (
+		<input
+			ref={ref}
+			id={id}
+			type="checkbox"
+			className="kt-checkbox kt-focusable m-0 block size-3.5 cursor-pointer accent-accent disabled:cursor-default"
+			aria-label={label}
+			checked={checked}
+			disabled={disabled}
+			onChange={(event) => onChange(event.target.checked)}
+		/>
+	);
+}
+
+/**
+ * Over the table: what acts on the ticked sandboxes, once any are, and on a phone's cards Select all, which the table's
+ * header has everywhere else.
+ */
+function SelectionBar({
+	count,
+	all,
+	some,
+	onAll,
+	actions,
+}: {
+	count: number;
+	all: boolean;
+	some: boolean;
+	onAll: (on: boolean) => void;
+	actions: ReactNode;
+}) {
+	const allId = useId();
+	return (
+		<div
+			className={`kt-selection-bar min-h-control-sm flex-wrap items-center gap-x-3 gap-y-2 ${count === 0 ? "kt-table-cards-only" : "flex"}`}
+		>
+			{/* Shown only on the cards: the table's header has its own. */}
+			<span className="kt-table-cards-only items-center gap-2 px-4 text-sm text-muted">
+				<TickBox id={allId} label="Select all" checked={all} indeterminate={some} onChange={onAll} />
+				<label htmlFor={allId} className="cursor-pointer">
+					Select all
+				</label>
+			</span>
+			{count === 0 ? null : (
+				<>
+					<span className="text-sm text-fg tabular-nums" aria-live="polite">
+						{count} selected
+					</span>
+					<span className="ml-auto flex flex-wrap items-center gap-2">
+						{actions}
+						<Button size="sm" variant="ghost" onClick={() => onAll(false)}>
+							Clear
+						</Button>
+					</span>
+				</>
+			)}
+		</div>
+	);
+}
+
 function DeleteDialog({
-	sandbox,
+	sandboxes,
 	onClose,
 	onDelete,
 }: {
-	sandbox: Sandbox | undefined;
+	sandboxes: readonly Sandbox[] | undefined;
 	onClose: () => void;
-	onDelete: (box: Sandbox) => Promise<void>;
+	onDelete: (boxes: readonly Sandbox[]) => Promise<void>;
 }) {
+	const sandbox = sandboxes?.length === 1 ? sandboxes[0] : undefined;
 	const [busy, setBusy] = useState(false);
 	const [failure, setFailure] = useState<string>();
 	const close = () => {
@@ -897,7 +1084,7 @@ function DeleteDialog({
 	};
 	return (
 		<Dialog
-			open={sandbox !== undefined}
+			open={sandboxes !== undefined && sandboxes.length > 0}
 			title="Delete permanently?"
 			onClose={close}
 			actions={
@@ -907,9 +1094,9 @@ function DeleteDialog({
 						variant="danger"
 						busy={busy}
 						onClick={() => {
-							if (sandbox === undefined) return;
+							if (sandboxes === undefined) return;
 							setBusy(true);
-							onDelete(sandbox).then(
+							onDelete(sandboxes).then(
 								() => {
 									setBusy(false);
 									close();
@@ -926,9 +1113,16 @@ function DeleteDialog({
 				</>
 			}
 		>
-			<p>
-				<strong>{sandbox?.name}</strong> and every snapshot of it go for good. Saved snapshots made from it stay.
-			</p>
+			{sandbox !== undefined || sandboxes === undefined ? (
+				<p>
+					<strong>{sandbox?.name}</strong> and every snapshot of it go for good. Saved snapshots made from it stay.
+				</p>
+			) : (
+				<p>
+					<strong>{sandboxes.length} sandboxes</strong> and every snapshot of them go for good. Saved snapshots made
+					from them stay.
+				</p>
+			)}
 			{failure === undefined ? null : <p className="kt-dialog-error">{failure}</p>}
 		</Dialog>
 	);

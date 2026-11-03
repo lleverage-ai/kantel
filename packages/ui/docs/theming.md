@@ -1,16 +1,16 @@
 # Theming
 
 Kantel has two themes, dark and light, and a person chooses System, Light or Dark. System follows the device's
-`prefers-color-scheme` and changes with it. Dark is the default until they choose.
+`prefers-color-scheme` and changes with it. System is the default until they choose.
 
 Each theme is one palette in one file: `src/tokens/dark.css` and `src/tokens/light.css`. Switching sets one attribute,
 `data-kt-theme="dark"` or `"light"`, on `<html>`; both palettes are already in the page's stylesheet and every
 component reads the `--kt-*` tokens, so the page restyles in the next frame without rendering anything in React.
 
-Both follow the Lleverage brand: paper `#f9f7f0` as the light ground, paper text on the dark one (never pure white),
-orange `#ec7523` as the one accent, kept to primary actions, links and the focus ring, and the brand's three faces.
-The dark palette is interim: the earlier midnight with its blue taken down toward neutral greys, until the "less blue"
-dark of the mobile prototype replaces it (see the comment at the top of `dark.css`).
+The palettes are Tom's (3 Nov 2026), from the Lleverage web themes: light is "Crisp" (a warm off-white ground, white
+cards, deep navy for the primary and the brand's orange as the highlight), dark is "Bold" with the blue taken out of
+its surfaces (near-neutral greys, the orange as the primary). Each palette notes beside every token the name of his
+token it carries. Radii are his scale too, and buttons, pills and tags are fully round.
 
 ## The pieces
 
@@ -34,18 +34,23 @@ Tailwind utilities theme the same way: `src/tokens/tailwind.css` maps each token
 `var(--kt-*)` reference, so `bg-canvas` or `text-muted` reads the token and follows the theme with nothing rebuilt
 (see [tailwind.md](tailwind.md)).
 
-- **Surfaces**: `canvas`, `panel`, `raised`, `sunken`, `user-message`, `code`, `hover`, `active`, `selected` and
-  `scrim`.
+- **Surfaces**: `canvas`, `panel`, `raised`, `sunken`, `user-message`, `code`, `hover`, `active`, `selected`,
+  `scrim` and `backdrop` (a frosted bar over scrolling content), and `secondary` and `secondary-hover` for a filled
+  control that isn't the primary.
 - **Lines**: `border`, `border-strong` and `border-input`.
 - **Text**: `text` and `text-muted` (at least 4.5:1 on every surface), `text-faint` (4.5:1 on canvas and panel),
   and `text-disabled`.
 - **Accent**: `accent`, `accent-hover`, `accent-fg` (text on the accent), `accent-text` (the accent as link text),
-  and, in `tokens.css`, `accent-soft` and `focus`.
+  and, in `tokens.css`, `accent-soft` and `focus`. `highlight` and `highlight-hover` are the brand's orange where
+  something is pointed out rather than pressed (on light it is under AA as small text, so never text on its own).
+- **Solid fills**: `destructive` (a destructive button, with `on-solid` on it), `warning`, `success` and
+  `success-hover`, for fills, bars and dots that aren't text; the status colours are their text forms.
 - **Status**: `status-working`, `status-waiting`, `status-approval`, `status-done`, `status-error` and
   `status-idle`, each at least 4.5:1 on canvas and panel, and no two closer than 0.08 apart in OKLab, so they stay
   distinguishable. Their soft fills and lines are in `tokens.css`.
 - **Diff and effects**: `diff-add` and `diff-del` (the done and error colours) and their soft tints in `tokens.css`;
-  the shadows and the composer's glass in each palette.
+  the shadows (`shadow-raised` for a card lifted off the page, `shadow-float` for what floats) and the composer's
+  glass in each palette.
 - **Syntax**: `syntax-comment`, `syntax-keyword`, `syntax-string`, `syntax-number`, `syntax-function`,
   `syntax-type`, `syntax-property` and the rest, each at least 4.5:1 on `code`.
 - **Terminal**: `terminal`, `terminal-text`, `terminal-prompt`, `terminal-stderr` and the 16 ANSI colours

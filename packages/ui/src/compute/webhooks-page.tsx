@@ -27,7 +27,7 @@ import {
 	type WebhookEvent,
 	type WebhooksSource,
 } from "./compute-model.ts";
-import { cellMono, cellSub, computePage, messageOf, table, tableFrame, td, th } from "./parts.tsx";
+import { cellMono, cellSub, computePage, messageOf, TableFrame, table, tableFrame, td, th } from "./parts.tsx";
 
 export interface WebhooksPageProps {
 	readonly source: WebhooksSource;
@@ -164,7 +164,7 @@ export function WebhooksPage({ source, account, now: fixedNow, initialOpen }: We
 					Add an endpoint to hear when a sandbox starts, stops, fails or is deleted, or when a snapshot is saved.
 				</EmptyState>
 			) : (
-				<div className={tableFrame}>
+				<TableFrame>
 					<table className={table}>
 						<thead>
 							<tr>
@@ -210,7 +210,7 @@ export function WebhooksPage({ source, account, now: fixedNow, initialOpen }: We
 							))}
 						</tbody>
 					</table>
-				</div>
+				</TableFrame>
 			)}
 			{editing === undefined ? null : (
 				<WebhookDialog
@@ -331,7 +331,7 @@ function WebhookRow({
 			<td className={td}>
 				<button
 					type="button"
-					className="kt-focusable -ml-1 flex min-w-0 cursor-pointer items-start gap-1 rounded-sm border-0 bg-transparent p-1 text-left"
+					className="kt-focusable -ml-1 flex min-w-0 max-w-full cursor-pointer items-start gap-1 rounded-sm border-0 bg-transparent p-1 text-left"
 					aria-expanded={open}
 					aria-controls={open ? `deliveries-${webhook.id}` : undefined}
 					onClick={onToggle}
@@ -420,7 +420,7 @@ function Deliveries({ webhook, source, now }: { webhook: Webhook; source: Webhoo
 	return (
 		<div className="flex min-w-0 flex-col gap-2 py-1">
 			<span className="text-xs font-medium text-muted">Recent deliveries</span>
-			<div className={tableFrame}>
+			<TableFrame>
 				<table className={table}>
 					<thead>
 						<tr>
@@ -463,7 +463,7 @@ function Deliveries({ webhook, source, now }: { webhook: Webhook; source: Webhoo
 						))}
 					</tbody>
 				</table>
-			</div>
+			</TableFrame>
 		</div>
 	);
 }

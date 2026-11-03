@@ -14,7 +14,7 @@ import { useLoad } from "../primitives/load.ts";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import { bytesText, type SnapshotEntry, type SnapshotsSource } from "./compute-model.ts";
-import { cellSub, messageOf, rowHover, table, tableFrame, td, th } from "./parts.tsx";
+import { cellSub, messageOf, rowHover, TableFrame, table, tableFrame, td, th } from "./parts.tsx";
 
 export interface SnapshotFilesProps {
 	readonly source: Pick<SnapshotsSource, "list" | "read" | "downloadUrl">;
@@ -145,7 +145,7 @@ function EntryTable({
 	onOpen: (entry: SnapshotEntry) => void;
 }) {
 	return (
-		<div className={tableFrame}>
+		<TableFrame>
 			<table className={table}>
 				<thead>
 					<tr>
@@ -189,7 +189,7 @@ function EntryTable({
 					})}
 				</tbody>
 			</table>
-		</div>
+		</TableFrame>
 	);
 }
 

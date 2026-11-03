@@ -27,7 +27,7 @@ import {
 	expiresText,
 	SCOPE_PRESETS,
 } from "./compute-model.ts";
-import { cellMono, cellSub, computePage, messageOf, table, tableFrame, td, th } from "./parts.tsx";
+import { cellMono, cellSub, computePage, messageOf, TableFrame, table, tableFrame, td, th } from "./parts.tsx";
 
 export interface ComputeApiKeysPageProps {
 	readonly source: ApiKeysSource;
@@ -209,7 +209,7 @@ function KeysSkeleton() {
 
 function KeyTable({ keys, now, onRevoke }: { keys: readonly ApiKey[]; now: number; onRevoke: (key: ApiKey) => void }) {
 	return (
-		<div className={tableFrame}>
+		<TableFrame>
 			<table className={table}>
 				<thead>
 					<tr>
@@ -245,7 +245,7 @@ function KeyTable({ keys, now, onRevoke }: { keys: readonly ApiKey[]; now: numbe
 					))}
 				</tbody>
 			</table>
-		</div>
+		</TableFrame>
 	);
 }
 

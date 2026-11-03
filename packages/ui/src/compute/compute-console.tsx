@@ -1,13 +1,14 @@
 import type { ThemePreference } from "@kantel/contracts";
-import { type MouseEvent, type ReactNode, useCallback, useMemo, useState } from "react";
+import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { KantelLockup } from "../brand/kantel.tsx";
 import { SignedInAs } from "../identity/signed-in-as.tsx";
-import { Button } from "../primitives/button.tsx";
-import { KeyIcon } from "../primitives/icons.tsx";
+import { Button, IconButton } from "../primitives/button.tsx";
+import { KeyIcon, XIcon } from "../primitives/icons.tsx";
 import { useLoad } from "../primitives/load.ts";
 import {
 	BillingIcon,
 	EnvironmentIcon,
+	NavMenuIcon,
 	OrganisationIcon,
 	ProxyIcon,
 	SandboxIcon,
@@ -144,7 +145,7 @@ export interface ComputeConsoleProps {
 	readonly base?: string;
 	/** A fixed time, for stories. */
 	readonly now?: number;
-	/** A phone: the sidebar is a rail. */
+	/** A phone: no sidebar, but a top bar with the logo, the account and a menu that opens the nav as a drawer. */
 	readonly narrow?: boolean;
 	/** The pages run on sample data: the sidebar says so. */
 	readonly sample?: boolean;
@@ -160,6 +161,15 @@ export interface ComputeConsoleProps {
 
 const SHELL = "kt-app grid h-dvh";
 const MAIN = "min-h-0 min-w-0 overflow-y-auto";
+
+/** The phone's top bar, in the sidebar's place: the menu, the logo, and the account on the right. */
+const TOP_BAR =
+	"kt-top-bar flex h-topbar min-w-0 items-center gap-2 border-b border-border bg-panel px-2 [&_.kt-account-switcher]:max-w-full";
+
+/** The nav's drawer on a phone: the sidebar, from the left edge, over a scrim. */
+const DRAWER = "kt-nav-drawer fixed inset-0 z-(--kt-z-overlay) flex";
+const DRAWER_PANEL = "relative h-full w-sidebar max-w-[85%] shadow-float";
+const DRAWER_SCRIM = "absolute inset-0 cursor-default border-0 bg-scrim p-0";
 
 /** The compute console: the sidebar with the account switcher and its pages, and the page the path names. */
 export function ComputeConsole({
@@ -181,7 +191,25 @@ export function ComputeConsole({
 	const [accountId, setAccountId] = useState<string | undefined>(() => initialAccountId ?? keptAccount());
 	const [dialog, setDialog] = useState<"create" | "join">();
 	const [railChoice, setRailChoice] = useState(false);
-	const collapsed = narrow || railChoice;
+	// A phone has no rail: the whole sidebar opens as a drawer from the top bar's menu.
+	const collapsed = !narrow && railChoice;
+	const [drawer, setDrawer] = useState(false);
+	const drawerRef = useRef<HTMLDivElement>(null);
+	const menuRef = useRef<HTMLButtonElement>(null);
+	// The drawer closes on a page change, on a wider window, and on Escape, which hands focus back to the menu button.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: a new path closes it.
+	useEffect(() => setDrawer(false), [pathname, narrow]);
+	useEffect(() => {
+		if (!drawer) return;
+		drawerRef.current?.querySelector<HTMLElement>("a, button")?.focus();
+		const onKey = (event: KeyboardEvent) => {
+			if (event.key !== "Escape") return;
+			setDrawer(false);
+			menuRef.current?.focus();
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [drawer]);
 
 	const list = accounts.state.status === "ready" ? accounts.state.value : undefined;
 	const account = useMemo(
@@ -249,132 +277,181 @@ export function ComputeConsole({
 	const failed =
 		viewer.state.status === "error" ? viewer.state : accounts.state.status === "error" ? accounts.state : undefined;
 
+	const switcher =
+		list !== undefined && account !== undefined ? (
+			<AccountSwitcher
+				accounts={list}
+				current={account}
+				onSwitch={switchTo}
+				onCreate={() => setDialog("create")}
+				onJoin={() => setDialog("join")}
+				collapsed={collapsed}
+			/>
+		) : null;
+
+	const sidebar = (
+		<Sidebar
+			collapsed={collapsed}
+			role="complementary"
+			aria-label="Compute console"
+			className="min-h-0"
+			head={
+				<>
+					<SidebarBrand>
+						<KantelLockup className="h-(--kt-brand-sm)" title="Kantel" />
+					</SidebarBrand>
+					{narrow ? (
+						<IconButton
+							variant="ghost"
+							label="Close the menu"
+							icon={<XIcon />}
+							onClick={() => {
+								setDrawer(false);
+								menuRef.current?.focus();
+							}}
+						/>
+					) : (
+						<SidebarToggle collapsed={collapsed} onToggle={() => setRailChoice((on) => !on)} />
+					)}
+				</>
+			}
+			foot={
+				<Foot
+					collapsed={collapsed}
+					hosting={source.hosting}
+					sample={sample}
+					viewer={me}
+					signedInAs={signedInAs}
+					onSignOut={onSignOut}
+					onThemeChoose={onThemeChoose}
+				/>
+			}
+		>
+			{/* On a phone the account is in the top bar, not repeated in the drawer. */}
+			{narrow ? null : <div className={collapsed ? "flex justify-center" : ""}>{switcher}</div>}
+			<SidebarSection label="Compute" heading={false}>
+				<SidebarItem
+					icon={<SandboxIcon />}
+					label="Sandboxes"
+					href={computePath("sandboxes", base)}
+					selected={page === "sandboxes" || page === "egress"}
+				/>
+				<SidebarItem
+					icon={<SnapshotIcon />}
+					label="Snapshots"
+					href={computePath("snapshots", base)}
+					selected={page === "snapshots"}
+				/>
+				<SidebarItem
+					icon={<EnvironmentIcon />}
+					label="Environments"
+					href={computePath("environments", base)}
+					selected={page === "environments"}
+				/>
+			</SidebarSection>
+			<SidebarSection label="Settings">
+				<SidebarItem icon={<KeyIcon />} label="API keys" href={computePath("keys", base)} selected={page === "keys"} />
+				<SidebarItem
+					icon={<ProxyIcon />}
+					label="Egress proxy"
+					href={computePath("proxy", base)}
+					selected={page === "proxy"}
+				/>
+				<SidebarItem
+					icon={<WebhookIcon />}
+					label="Webhooks"
+					href={computePath("webhooks", base)}
+					selected={page === "webhooks"}
+				/>
+				<SidebarItem
+					icon={<TelemetryIcon />}
+					label="OpenTelemetry"
+					href={computePath("telemetry", base)}
+					selected={page === "telemetry"}
+				/>
+			</SidebarSection>
+			<SidebarSection label="Account">
+				<SidebarItem
+					icon={<OrganisationIcon />}
+					label={account?.kind === "organisation" ? "Organisation" : "Organisations"}
+					href={computePath("organisation", base)}
+					selected={page === "organisation"}
+				/>
+				{hostsShown && !superAdmin ? (
+					<SidebarItem
+						icon={<ServerIcon />}
+						label="Hosts"
+						href={computePath("hosts", base)}
+						selected={page === "hosts"}
+					/>
+				) : null}
+				{billingShown ? (
+					<SidebarItem
+						icon={<BillingIcon />}
+						label="Plan and billing"
+						href={computePath("billing", base)}
+						selected={page === "billing"}
+					/>
+				) : null}
+			</SidebarSection>
+			{hostsShown && superAdmin ? (
+				<SidebarSection label="Super-admin">
+					<SidebarItem
+						icon={<ServerIcon />}
+						label="Hosts"
+						href={computePath("hosts", base)}
+						selected={page === "hosts"}
+					/>
+				</SidebarSection>
+			) : null}
+		</Sidebar>
+	);
+
 	return (
 		// biome-ignore lint/a11y/noStaticElementInteractions: delegates clicks on the links inside; each link is focusable.
 		// biome-ignore lint/a11y/useKeyWithClickEvents: a link's Enter is a click, so the keyboard takes the same path.
 		<div
-			className={`${SHELL} ${collapsed ? "grid-cols-[var(--kt-rail-width)_minmax(0,1fr)]" : "grid-cols-[var(--kt-sidebar-width)_minmax(0,1fr)]"}`}
-			data-sidebar={collapsed ? "collapsed" : undefined}
+			className={`${SHELL} ${
+				narrow
+					? "grid-cols-[minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)]"
+					: collapsed
+						? "grid-cols-[var(--kt-rail-width)_minmax(0,1fr)]"
+						: "grid-cols-[var(--kt-sidebar-width)_minmax(0,1fr)]"
+			}`}
+			data-sidebar={narrow ? "drawer" : collapsed ? "collapsed" : undefined}
 			onClick={onClick}
 		>
-			<Sidebar
-				collapsed={collapsed}
-				role="complementary"
-				aria-label="Compute console"
-				className="min-h-0"
-				head={
-					<>
-						<SidebarBrand>
-							<KantelLockup className="h-(--kt-brand-sm)" title="Kantel" />
-						</SidebarBrand>
-						{narrow ? null : <SidebarToggle collapsed={collapsed} onToggle={() => setRailChoice((on) => !on)} />}
-					</>
-				}
-				foot={
-					<Foot
-						collapsed={collapsed}
-						hosting={source.hosting}
-						sample={sample}
-						viewer={me}
-						signedInAs={signedInAs}
-						onSignOut={onSignOut}
-						onThemeChoose={onThemeChoose}
+			{narrow ? (
+				<header className={TOP_BAR}>
+					<IconButton
+						ref={menuRef}
+						variant="ghost"
+						label="Open the menu"
+						icon={<NavMenuIcon />}
+						aria-expanded={drawer}
+						aria-controls="kt-nav-drawer"
+						onClick={() => setDrawer(true)}
 					/>
-				}
-			>
-				<div className={collapsed ? "flex justify-center" : ""}>
-					{list !== undefined && account !== undefined ? (
-						<AccountSwitcher
-							accounts={list}
-							current={account}
-							onSwitch={switchTo}
-							onCreate={() => setDialog("create")}
-							onJoin={() => setDialog("join")}
-							collapsed={collapsed}
-						/>
-					) : null}
+					<KantelLockup className="h-(--kt-brand-sm) flex-none" title="Kantel" />
+					<div className="ml-auto flex min-w-0 max-w-[60%] justify-end">{switcher}</div>
+				</header>
+			) : (
+				sidebar
+			)}
+			{narrow && drawer ? (
+				<div id="kt-nav-drawer" className={DRAWER} role="dialog" aria-modal="true" aria-label="Menu">
+					<button
+						type="button"
+						className={DRAWER_SCRIM}
+						aria-label="Close the menu"
+						tabIndex={-1}
+						onClick={() => setDrawer(false)}
+					/>
+					<div ref={drawerRef} className={DRAWER_PANEL}>
+						{sidebar}
+					</div>
 				</div>
-				<SidebarSection label="Compute" heading={false}>
-					<SidebarItem
-						icon={<SandboxIcon />}
-						label="Sandboxes"
-						href={computePath("sandboxes", base)}
-						selected={page === "sandboxes" || page === "egress"}
-					/>
-					<SidebarItem
-						icon={<SnapshotIcon />}
-						label="Snapshots"
-						href={computePath("snapshots", base)}
-						selected={page === "snapshots"}
-					/>
-					<SidebarItem
-						icon={<EnvironmentIcon />}
-						label="Environments"
-						href={computePath("environments", base)}
-						selected={page === "environments"}
-					/>
-				</SidebarSection>
-				<SidebarSection label="Settings">
-					<SidebarItem
-						icon={<KeyIcon />}
-						label="API keys"
-						href={computePath("keys", base)}
-						selected={page === "keys"}
-					/>
-					<SidebarItem
-						icon={<ProxyIcon />}
-						label="Egress proxy"
-						href={computePath("proxy", base)}
-						selected={page === "proxy"}
-					/>
-					<SidebarItem
-						icon={<WebhookIcon />}
-						label="Webhooks"
-						href={computePath("webhooks", base)}
-						selected={page === "webhooks"}
-					/>
-					<SidebarItem
-						icon={<TelemetryIcon />}
-						label="OpenTelemetry"
-						href={computePath("telemetry", base)}
-						selected={page === "telemetry"}
-					/>
-				</SidebarSection>
-				<SidebarSection label="Account">
-					<SidebarItem
-						icon={<OrganisationIcon />}
-						label={account?.kind === "organisation" ? "Organisation" : "Organisations"}
-						href={computePath("organisation", base)}
-						selected={page === "organisation"}
-					/>
-					{hostsShown && !superAdmin ? (
-						<SidebarItem
-							icon={<ServerIcon />}
-							label="Hosts"
-							href={computePath("hosts", base)}
-							selected={page === "hosts"}
-						/>
-					) : null}
-					{billingShown ? (
-						<SidebarItem
-							icon={<BillingIcon />}
-							label="Plan and billing"
-							href={computePath("billing", base)}
-							selected={page === "billing"}
-						/>
-					) : null}
-				</SidebarSection>
-				{hostsShown && superAdmin ? (
-					<SidebarSection label="Super-admin">
-						<SidebarItem
-							icon={<ServerIcon />}
-							label="Hosts"
-							href={computePath("hosts", base)}
-							selected={page === "hosts"}
-						/>
-					</SidebarSection>
-				) : null}
-			</Sidebar>
+			) : null}
 			<main className={MAIN}>
 				{failed !== undefined ? (
 					<div className={`grid h-full place-items-center ${narrow ? "p-gutter-narrow" : "p-gutter"}`}>

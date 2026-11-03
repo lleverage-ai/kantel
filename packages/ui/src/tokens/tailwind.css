@@ -83,6 +83,9 @@
 	--color-user-message: var(--kt-user-message);
 	--color-code-surface: var(--kt-code); /* not `code`: `text-code` is the code font size */
 	--color-scrim: var(--kt-scrim);
+	--color-backdrop: var(--kt-backdrop);
+	--color-secondary: var(--kt-secondary);
+	--color-secondary-hover: var(--kt-secondary-hover);
 
 	--color-border: var(--kt-border);
 	--color-border-strong: var(--kt-border-strong);
@@ -99,6 +102,13 @@
 	--color-accent-text: var(--kt-accent-text);
 	--color-accent-soft: var(--kt-accent-soft);
 	--color-focus: var(--kt-focus);
+	--color-highlight: var(--kt-highlight);
+	--color-highlight-hover: var(--kt-highlight-hover);
+
+	--color-destructive: var(--kt-destructive);
+	--color-warning: var(--kt-warning);
+	--color-success: var(--kt-success);
+	--color-success-hover: var(--kt-success-hover);
 
 	--color-status-working: var(--kt-status-working);
 	--color-status-waiting: var(--kt-status-waiting);
@@ -158,16 +168,19 @@
 	--leading-normal: var(--kt-leading);
 	--leading-prose: var(--kt-leading-prose);
 
-	/* Radius: `rounded-panel` (10px), `rounded-control` (8px), `rounded-sm`, `rounded-xs`, `rounded-bubble`,
-	   `rounded-full`. */
+	/* Radius: `rounded-panel` (14px), `rounded-control` (10px), `rounded-sm`, `rounded-xs`, `rounded-bubble`,
+	   `rounded-dialog`, `rounded-full`. */
 	--radius-panel: var(--kt-radius);
+	--radius-dialog: var(--kt-radius-dialog);
 	--radius-control: var(--kt-radius-control);
 	--radius-sm: var(--kt-radius-sm);
 	--radius-xs: var(--kt-radius-xs);
 	--radius-bubble: var(--kt-radius-bubble);
 	--radius-full: var(--kt-radius-full);
 
-	/* Elevation: `shadow-float`, `shadow-composer`; `drop-shadow-logo`, the hairline around a service's logo. */
+	/* Elevation: `shadow-raised`, `shadow-float`, `shadow-composer`; `drop-shadow-logo`, the hairline around a service's
+	   logo. */
+	--shadow-raised: var(--kt-shadow-raised);
 	--shadow-float: var(--kt-shadow-float);
 	--shadow-composer: var(--kt-shadow-composer);
 	--drop-shadow-logo: var(--kt-logo-edge);
@@ -181,11 +194,13 @@
 	--spacing-icon-md: var(--kt-icon-md);
 	--spacing-dot: var(--kt-dot);
 	--spacing-thumb: var(--kt-thumb);
+	--spacing-topbar: var(--kt-topbar-height);
 
 	/* Measures, for `max-w-*` and `w-*`: `max-w-content`, `w-sidebar`, `w-popover`. */
 	--container-content: var(--kt-content-width);
 	--container-card: var(--kt-card-width);
 	--container-sidebar: var(--kt-sidebar-width);
+	--container-page: var(--kt-page-width);
 	--container-rail: var(--kt-rail-width);
 	--container-popover: var(--kt-popover-width);
 	--container-menu: var(--kt-menu-width);

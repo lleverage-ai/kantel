@@ -1,13 +1,22 @@
-// Pieces every compute page shares: the page frame, a table's classes, the usage sparkline and a capacity bar. Pages
-// lay out their own tables from these, so the sandboxes, snapshots, keys and hosts tables line up and read alike.
+// Pieces every compute page shares: the page's column, a table's frame and classes, the usage sparkline and a capacity
+// bar. Pages lay out their own tables from these, so the sandboxes, snapshots, keys and hosts tables line up and read
+// alike, and turn into the same stacked cards on a phone.
 
-import type { ReactNode } from "react";
+import { type ComponentProps, type ReactNode, useLayoutEffect, useRef } from "react";
+import "./table.css";
 
-/** A compute page: its header, notices and sections one under another, as wide as the main area allows. */
+/**
+ * A compute page: its header, notices and sections one under another, in one column at most --kt-page-width wide,
+ * centred in the room beside the sidebar. The header's title and actions sit on its edges, and its tables fill it.
+ */
 export const computePage =
-	"kt-compute-page flex w-full max-w-[calc(var(--kt-content-width)_+_var(--kt-sidebar-width)_*_2)] min-w-0 flex-col gap-5 text-sm leading-normal text-fg";
+	"kt-compute-page mx-auto flex w-full max-w-page min-w-0 flex-col gap-5 text-sm leading-normal text-fg";
 
-/** A table's frame: a hairline round it, scrolling sideways on a narrow screen rather than squeezing its columns. */
+/**
+ * A table's frame: a hairline round it. Where it's too narrow for its columns it scrolls sideways; in a phone's
+ * column (table.css) TableFrame's rows become stacked cards instead. For a placeholder in a table's place (a skeleton);
+ * a real table goes in TableFrame.
+ */
 export const tableFrame = "kt-compute-table min-w-0 overflow-x-auto rounded-panel border border-border bg-panel";
 export const table = "w-full border-collapse text-left text-sm";
 /** A header cell: muted, small, on one line. */
@@ -21,6 +30,89 @@ export const rowHover = "hover:bg-hover";
 export const cellSub = "block text-xs text-muted";
 /** An id or a command in a cell. */
 export const cellMono = "font-mono text-code text-muted";
+
+/** What a header cell says to a reader: its text, without what only assistive tech reads. */
+function headText(cell: Element): string {
+	let text = "";
+	for (const node of cell.childNodes) {
+		if (node.nodeType === 3) text += node.textContent ?? "";
+		else if (node instanceof Element && !node.classList.contains("kt-sr-only")) text += headText(node);
+	}
+	return text.trim();
+}
+
+/** A cell with nothing to show: no words, or only a dash for none, and no picture or control. */
+const emptyCell = (cell: Element): boolean =>
+	/^[\s\u2013\u2014-]*$/.test(cell.textContent ?? "") &&
+	cell.querySelector("svg, img, input, button, a, select") === null;
+
+const setData = (cell: HTMLElement, name: string, value: string | undefined) => {
+	if (value === undefined) {
+		if (cell.hasAttribute(`data-${name}`)) cell.removeAttribute(`data-${name}`);
+	} else if (cell.getAttribute(`data-${name}`) !== value) cell.setAttribute(`data-${name}`, value);
+};
+
+/**
+ * Marks every body cell for the phone's cards (table.css): `data-label`, its column's heading, shown beside the value;
+ * `data-cell`, `primary` for the row's name (the first column after any checkbox), `select` for a checkbox column,
+ * `actions` for one whose heading is only read (a row's menu); and `data-empty` on a cell with nothing to show, which
+ * a card leaves out rather than showing a lone dash.
+ */
+function labelCells(frame: HTMLElement): void {
+	for (const tableElement of frame.querySelectorAll("table")) {
+		const heads = [...tableElement.querySelectorAll(":scope > thead > tr:last-child > th")].flatMap((head) => {
+			const kind =
+				head.querySelector("input[type=checkbox]") !== null ? "select" : headText(head) === "" ? "actions" : undefined;
+			const entry = { label: headText(head), kind };
+			return Array.from({ length: (head as HTMLTableCellElement).colSpan || 1 }, () => entry);
+		});
+		const primary = heads.findIndex((head) => head.kind === undefined);
+		for (const row of tableElement.querySelectorAll(":scope > tbody > tr")) {
+			let at = 0;
+			for (const cell of row.children) {
+				if (!(cell instanceof HTMLTableCellElement)) continue;
+				const head = heads[at];
+				const whole = cell.colSpan > 1 && cell.colSpan >= heads.length;
+				const kind = whole ? "whole" : at === primary ? "primary" : head?.kind;
+				setData(cell, "cell", kind);
+				setData(cell, "label", kind === undefined && head !== undefined && head.label !== "" ? head.label : undefined);
+				setData(cell, "empty", kind === undefined && emptyCell(cell) ? "" : undefined);
+				at += cell.colSpan || 1;
+			}
+		}
+	}
+}
+
+/**
+ * A table's frame, for every table on a compute page: a hairline round it, the table as wide as the page's column. In
+ * a column narrower than a phone's table needs (table.css, 40rem), the header goes and each row is a card: its name
+ * on top with its menu on the right, a checkbox before it where the table has them, and every other cell under them as
+ * its heading and value, with the empty ones left out. `bar` sits over the table inside the same container, for what
+ * acts on the rows (a selection's actions, Select all for the cards).
+ *
+ * The cards read their labels from the table's own header (`labelCells`), so a page writes a plain table.
+ */
+export function TableFrame({ children, bar, className, ...rest }: ComponentProps<"div"> & { bar?: ReactNode }) {
+	const ref = useRef<HTMLDivElement>(null);
+	useLayoutEffect(() => {
+		const frame = ref.current;
+		if (frame === null) return;
+		labelCells(frame);
+		// Rows come and go, and cells change, as the page updates: label them again. Attributes aren't watched, so
+		// labelling doesn't wake itself.
+		const observer = new MutationObserver(() => labelCells(frame));
+		observer.observe(frame, { childList: true, subtree: true, characterData: true });
+		return () => observer.disconnect();
+	}, []);
+	return (
+		<div ref={ref} className="kt-table-cards flex min-w-0 flex-col gap-2">
+			{bar}
+			<div {...rest} className={className === undefined ? tableFrame : `${tableFrame} ${className}`}>
+				{children}
+			</div>
+		</div>
+	);
+}
 
 export const messageOf = (caught: unknown, fallback: string): string =>
 	caught instanceof Error ? caught.message : fallback;

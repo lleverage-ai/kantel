@@ -15,7 +15,7 @@ import { Notice } from "../primitives/surface.tsx";
 import { bytesText, type EgressEntry, type EgressSource, type SandboxEgress } from "./compute-model.ts";
 import { bindingText } from "./egress-rules.ts";
 import { GrantsSection } from "./grants-section.tsx";
-import { cellMono, cellSub, computePage, messageOf, SectionHeading, table, tableFrame, td, th } from "./parts.tsx";
+import { cellMono, cellSub, computePage, messageOf, SectionHeading, TableFrame, table, td, th } from "./parts.tsx";
 
 type LogFilter = "all" | "denied" | "swapped";
 
@@ -151,13 +151,9 @@ export function EgressPage({
 						{egress.entries.length === 0 ? "Nothing has left this sandbox yet." : "Nothing matches."}
 					</p>
 				) : (
-					// Nothing in it takes focus, so the frame does: on a phone it scrolls sideways, and the keyboard must reach it.
-					<section
-						className={`kt-focusable ${tableFrame}`}
-						// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling region must be reachable to scroll by keyboard.
-						tabIndex={0}
-						aria-label="Egress log table"
-					>
+					// Nothing in it takes focus, so the frame does: in a narrow window it scrolls sideways, and the keyboard must
+					// reach it.
+					<TableFrame className="kt-focusable" role="region" tabIndex={0} aria-label="Egress log table">
 						<table className={table}>
 							<thead>
 								<tr>
@@ -189,8 +185,13 @@ export function EgressPage({
 												{timeText(entry.at)}
 											</span>
 										</td>
-										<td className={td}>
-											<span className={`${cellMono} block max-w-(--kt-card-width) truncate`}>
+										{/* The request takes what the other columns leave, cut short with its whole in the tooltip, so the log
+										    is never wider than the page and its last column is never clipped. */}
+										<td className={`${td} w-full max-w-0`}>
+											<span
+												className={`${cellMono} block truncate`}
+												title={`${entry.method} ${entry.host}${entry.port === 443 ? "" : `:${entry.port}`}${entry.path ?? ""}`}
+											>
 												<span className="text-muted">{entry.method} </span>
 												<span className="text-fg">
 													{entry.host}
@@ -218,7 +219,7 @@ export function EgressPage({
 												)}
 											</span>
 											{entry.reason === undefined ? null : (
-												<span className={`${cellSub} max-w-(--kt-card-width) whitespace-normal`}>{entry.reason}</span>
+												<span className={`${cellSub} max-w-popover whitespace-normal`}>{entry.reason}</span>
 											)}
 											{entry.rule === undefined ? null : <span className={`${cellSub} font-mono`}>{entry.rule}</span>}
 										</td>
@@ -245,7 +246,7 @@ export function EgressPage({
 								))}
 							</tbody>
 						</table>
-					</section>
+					</TableFrame>
 				)}
 			</section>
 
@@ -263,12 +264,7 @@ export function EgressPage({
 							What this sandbox sees instead of each value. The placeholder is its own: it's no use in another sandbox,
 							and sent to any other host the request is refused.
 						</p>
-						<section
-							className={`kt-focusable ${tableFrame}`}
-							// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling region must be reachable to scroll by keyboard.
-							tabIndex={0}
-							aria-label="Protected variables table"
-						>
+						<TableFrame className="kt-focusable" role="region" tabIndex={0} aria-label="Protected variables table">
 							<table className={table}>
 								<thead>
 									<tr>
@@ -305,7 +301,7 @@ export function EgressPage({
 									))}
 								</tbody>
 							</table>
-						</section>
+						</TableFrame>
 					</>
 				)}
 			</section>

@@ -111,7 +111,9 @@ async function sourceFor(
 			console.info("kantel: the compute API isn't served here, so the console shows sample data:", error);
 		}
 	}
-	return { source: namedFor(createComputeFixtures({ hosting, now: Date.now() }), signedInAs), sample: true };
+	// `?data=empty`: the sample data with no sandboxes, snapshots, keys, webhooks or hosts, for the empty states.
+	const empty = new URLSearchParams(location.search).get("data") === "empty";
+	return { source: namedFor(createComputeFixtures({ hosting, now: Date.now(), empty }), signedInAs), sample: true };
 }
 
 export function ComputeApp({

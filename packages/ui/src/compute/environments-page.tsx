@@ -42,7 +42,18 @@ import {
 	variableNameProblem,
 } from "./egress-rules.ts";
 import { GrantsSection } from "./grants-section.tsx";
-import { cellMono, cellSub, computePage, messageOf, SectionHeading, table, tableFrame, td, th } from "./parts.tsx";
+import {
+	cellMono,
+	cellSub,
+	computePage,
+	messageOf,
+	SectionHeading,
+	TableFrame,
+	table,
+	tableFrame,
+	td,
+	th,
+} from "./parts.tsx";
 
 type NoticeState = { level: "info" | "error"; text: string } | undefined;
 
@@ -111,7 +122,7 @@ export function EnvironmentsPage({
 					sandbox can use but never read.
 				</EmptyState>
 			) : (
-				<div className={tableFrame}>
+				<TableFrame>
 					<table className={table}>
 						<thead>
 							<tr>
@@ -172,7 +183,7 @@ export function EnvironmentsPage({
 							})}
 						</tbody>
 					</table>
-				</div>
+				</TableFrame>
 			)}
 			{newOpen ? (
 				<DetailsDialog
@@ -625,7 +636,7 @@ function VariablesSection({
 					No variables. A plain one is its value in the sandbox; a protected one is a placeholder there.
 				</p>
 			) : (
-				<div className={tableFrame}>
+				<TableFrame>
 					<table className={table}>
 						<thead>
 							<tr>
@@ -722,7 +733,7 @@ function VariablesSection({
 							})}
 						</tbody>
 					</table>
-				</div>
+				</TableFrame>
 			)}
 		</section>
 	);
@@ -1054,7 +1065,7 @@ function FilesSection({
 				never shows them again.
 			</p>
 			{env.files.length === 0 ? null : (
-				<div className={tableFrame}>
+				<TableFrame>
 					<table className={table}>
 						<thead>
 							<tr>
@@ -1117,7 +1128,7 @@ function FilesSection({
 							))}
 						</tbody>
 					</table>
-				</div>
+				</TableFrame>
 			)}
 		</section>
 	);
@@ -1237,7 +1248,7 @@ function ReposSection({
 				bound to its host.
 			</p>
 			{env.repos.length === 0 ? null : (
-				<div className={tableFrame}>
+				<TableFrame>
 					<table className={table}>
 						<thead>
 							<tr>
@@ -1281,7 +1292,7 @@ function ReposSection({
 							))}
 						</tbody>
 					</table>
-				</div>
+				</TableFrame>
 			)}
 		</section>
 	);

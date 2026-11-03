@@ -29,27 +29,29 @@
 	--kt-status-approval-line: color-mix(in srgb, var(--kt-status-approval) 35%, transparent);
 	--kt-status-error-line: color-mix(in srgb, var(--kt-status-error) 35%, transparent);
 
-	/* Diff: the done and failed colours. */
-	--kt-diff-add: var(--kt-status-done);
-	--kt-diff-del: var(--kt-status-error);
+	/* Diff: the done and failed colours, an eighth of the way to the text: they sit on the code well, a shade off the
+	   canvas the status colours are fitted to. */
+	--kt-diff-add: color-mix(in srgb, var(--kt-status-done) 88%, var(--kt-text));
+	--kt-diff-del: color-mix(in srgb, var(--kt-status-error) 88%, var(--kt-text));
 	--kt-diff-add-soft: color-mix(in srgb, var(--kt-diff-add) 10%, transparent);
 	--kt-diff-del-soft: color-mix(in srgb, var(--kt-diff-del) 10%, transparent);
 
 	/* The inline terminal (a bash call): the theme's code surface and text, and the 16 ANSI colours by palette index
 	   (0-7 normal, 8-15 bright) from the theme's own status and text colours, so a
-	   command's output follows the theme as highlighted code does. A bright colour is its normal one a quarter of the
-	   way to the text. */
+	   command's output follows the theme as highlighted code does. On the code well, a shade off the canvas, a normal
+	   colour is its status one an eighth of the way to the text, so it keeps AA there; a bright one is its normal one a
+	   quarter of the way to the text. */
 	--kt-terminal: var(--kt-code);
 	--kt-terminal-text: var(--kt-syntax-text);
-	--kt-terminal-prompt: var(--kt-status-done);
-	--kt-terminal-stderr: var(--kt-status-error);
-	--kt-ansi-0: var(--kt-text-faint);
-	--kt-ansi-1: var(--kt-status-error);
-	--kt-ansi-2: var(--kt-status-done);
-	--kt-ansi-3: var(--kt-status-approval);
-	--kt-ansi-4: var(--kt-status-working);
-	--kt-ansi-5: var(--kt-status-waiting);
-	--kt-ansi-6: color-mix(in srgb, var(--kt-status-working) 50%, var(--kt-status-done));
+	--kt-terminal-prompt: var(--kt-ansi-2);
+	--kt-terminal-stderr: var(--kt-ansi-1);
+	--kt-ansi-0: color-mix(in srgb, var(--kt-text-muted) 88%, var(--kt-text));
+	--kt-ansi-1: color-mix(in srgb, var(--kt-status-error) 88%, var(--kt-text));
+	--kt-ansi-2: color-mix(in srgb, var(--kt-status-done) 88%, var(--kt-text));
+	--kt-ansi-3: color-mix(in srgb, var(--kt-status-approval) 88%, var(--kt-text));
+	--kt-ansi-4: color-mix(in srgb, var(--kt-status-working) 88%, var(--kt-text));
+	--kt-ansi-5: color-mix(in srgb, var(--kt-status-waiting) 88%, var(--kt-text));
+	--kt-ansi-6: color-mix(in srgb, var(--kt-ansi-4) 50%, var(--kt-ansi-2));
 	--kt-ansi-7: var(--kt-text-muted);
 	--kt-ansi-8: var(--kt-text-muted);
 	--kt-ansi-9: color-mix(in srgb, var(--kt-ansi-1) 75%, var(--kt-text));
@@ -161,17 +163,24 @@
 	--kt-presented-image-size: 336px; /* an image's tile in the transcript, alone: the widest it shows */
 	--kt-presented-image-size-many: 176px; /* the same, two or more side by side: four to a row in the content width */
 	--kt-sidebar-width: 300px;
+	/* A console page's column: centred in the room beside the sidebar, its title and actions on its edges, its tables
+	   as wide as it is (after boat.dev's console, Tom, 3 Nov 2026). */
+	--kt-page-width: 1200px;
+	/* The phone's top bar, in place of the sidebar: the logo, the account and the menu that opens the nav. */
+	--kt-topbar-height: 52px;
 	--kt-brand-sm: 20px; /* the Kantel lockup's height in the sidebar's head */
 	--kt-brand-md: 28px; /* the endorsed lockup's height over sign-in */
 	--kt-brand-mark: 40px; /* the mark alone, over a page's welcome */
 	--kt-rail-width: 52px; /* the sidebar collapsed to a rail of icons */
 
-	/* Radius. 10px panels, 8px controls. */
-	--kt-radius: 10px;
-	--kt-radius-control: 8px;
+	/* Radius, Tom's scale (3 Nov 2026): 6px small, 10px controls (r-md), 14px panels and cards (r-lg), 18px bubbles
+	   (r-xl), 20px dialogs (r-2xl). Buttons, pills and tags are fully round (--kt-radius-full). */
+	--kt-radius: 14px;
+	--kt-radius-control: 10px;
 	--kt-radius-sm: 6px;
 	--kt-radius-xs: 4px;
-	--kt-radius-bubble: 16px;
+	--kt-radius-bubble: 18px;
+	--kt-radius-dialog: 20px;
 	--kt-radius-full: 999px;
 
 	/* Elevation, for things that float (--kt-shadow-float, --kt-shadow-composer), and a service logo's edge and ink
