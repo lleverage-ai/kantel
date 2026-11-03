@@ -9,6 +9,20 @@ import WebSocket from "ws";
 import { type Cleanup, connectHost, joinHost, sharedDatabase, startReplica, wsUrl } from "./cluster-harness.ts";
 
 const cleanups: Cleanup[] = [];
+
+/**
+ * What `read` answers once it is `want`, or its last answer after `timeoutMs`. These tests run on Vitest (ci.yml) and
+ * Bun (selfhosted-spike.yml), so it stands in for Vitest's `expect.poll`, which Bun's `expect` doesn't have.
+ */
+async function eventually<T>(read: () => Promise<T>, want: T, timeoutMs = 5000): Promise<T> {
+	const until = Date.now() + timeoutMs;
+	for (;;) {
+		const value = await read();
+		if (value === want || Date.now() > until) return value;
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
+}
+
 afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
@@ -49,9 +63,8 @@ describe("a host's malformed frames", () => {
 			},
 		});
 		const registry = createSqlHostStore(driver);
-		await expect
-			.poll(async () => (await registry.getHost(mine.hostId))?.capacity?.freeMemoryMiB, { timeout: 5000 })
-			.toBe(1234);
+		const heard = await eventually(async () => (await registry.getHost(mine.hostId))?.capacity?.freeMemoryMiB, 1234);
+		expect(heard).toBe(1234);
 		expect(service.hub.connected(mine.hostId)).toBe(true);
 		expect(service.hub.connected(theirs.hostId)).toBe(true);
 		// The gateway still answers.
@@ -103,13 +116,14 @@ describe("a host's malformed frames", () => {
 		});
 		const client = new WebSocket(wsUrl(replica, `/v1/hosts/tunnel/${ticket}`));
 		cleanups.push(() => client.terminate());
-		const { code, reason } = await new Promise<{ code: number; reason: Buffer }>((resolve, reject) => {
-			client.on("close", (closeCode, closeReason) => resolve({ code: closeCode, reason: closeReason }));
+		// `ws` gives the reason as a Buffer on Node, Bun's as a string: its bytes are counted the same either way.
+		const { code, reason } = await new Promise<{ code: number; reason: string }>((resolve, reject) => {
+			client.on("close", (closeCode, closeReason) => resolve({ code: closeCode, reason: String(closeReason) }));
 			client.on("error", reject);
 		});
 		expect(code).toBe(1011);
-		expect(reason.byteLength).toBeLessThanOrEqual(123);
-		expect(reason.toString()).toMatch(/^é+$/);
+		expect(new TextEncoder().encode(reason).byteLength).toBeLessThanOrEqual(123);
+		expect(reason).toMatch(/^é+$/);
 		// The gateway and the host's connection carry on.
 		expect((await fetch(`${replica.url}/nothing-here`)).status).toBe(404);
 		expect(replica.relay.service.hub.connected(odd.hostId)).toBe(true);
