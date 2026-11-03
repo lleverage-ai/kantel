@@ -1,6 +1,7 @@
 name: Main
 
-# The release pipeline: Kantel has no tags or releases, so a push to main is the release and deploys to Cloudflare.
+# The release pipeline: Kantel has no tags or releases, so main is the release. For now a push to main runs the
+# checks but doesn't deploy to Cloudflare; a run by hand does (see the deploy job).
 # Pull requests are gated only on CI's install, typecheck and lint (ci.yml), so they move quickly on the two
 # self-hosted runners. The heavy checks run here once, on main's newest head: CI with the tests, the self-hosted stack
 # and the sandbox image, side by side. The Cloudflare deploy needs all three to pass on this same commit; if any fails
@@ -149,11 +150,17 @@ jobs:
       cancel-in-progress: false
     uses: ./.github/workflows/sandbox-image.yml
 
-  # No `if:`, so the default success() applies: a check that failed, was skipped or was cancelled skips the deploy.
-  # Never `always()` or `!cancelled()` here.
+  # The `if:` has no status function, so the default success() still applies: a check that failed, was skipped or was
+  # cancelled skips the deploy. Never `always()` or `!cancelled()` here.
+  #
+  # Only from a run by hand (`gh workflow run main.yml --ref main`), not on push: the console the Worker serves is now
+  # the compute console (TASK-4705), and apps/cloudflare has no compute API yet, so a deploy would ship a console
+  # whose API calls all answer 404. harbour.myslop.app stays as last deployed until the Worker serves the compute
+  # API; then drop this `if:`.
   deploy:
     name: Cloudflare deploy
     needs: [ci, selfhosted, sandbox-image]
+    if: github.event_name == 'workflow_dispatch'
     concurrency:
       group: main-deploy-${{ github.ref }}
       cancel-in-progress: false
