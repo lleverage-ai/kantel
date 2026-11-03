@@ -1,0 +1,159 @@
+name: Release
+
+# Publishes Kantel's npm packages, all at one version: the user CLI (`kantel`), the operator CLI (`@kantel/admin`),
+# the host launcher (`@kantel/host`) and its binaries (`@kantel/host-linux-x64`, `@kantel/host-linux-arm64`).
+#
+# - A release is a run by hand on main: `gh workflow run release.yml --ref main -f version=0.1.0 -f publish=true`.
+#   A version with a prerelease part (0.2.0-rc.1) goes out under the `next` dist-tag, anything else as `latest`.
+#   A version already on npm is skipped, so a run that stopped part way can be run again with the same version.
+# - Without `publish`, and on a pull request that touches the packages, it builds, packs, smoke-tests the tarballs
+#   and runs `npm publish --dry-run`, so the packaging is checked before a release needs it.
+# - It authenticates with npm trusted publishing (OIDC): there is no npm token, and npm adds provenance to every
+#   version. Each package's trusted publisher names this file and the `npm` environment, which only main may use.
+#   npm only lets a trusted publisher be added to a package that exists, so each package's first version was a
+#   placeholder published by hand (TASK-4740's runbook).
+# - GitHub-hosted runners, unlike the rest of Kantel's CI: trusted publishing doesn't support self-hosted runners.
+#   The repository is public, so they cost no Actions minutes.
+on:
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - tools/npm-release/**
+      - apps/host/**
+      - packages/admin/**
+      - packages/api/**
+      - packages/cli/**
+      - pnpm-lock.yaml
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version for every package, such as 0.1.0 or 0.2.0-rc.1
+        required: true
+        type: string
+      publish:
+        description: Publish to npm (off, it builds, packs and runs npm publish --dry-run)
+        type: boolean
+        default: false
+
+# One release at a time; a re-push cancels a pull request's older dry run.
+concurrency:
+  group: release-${{ github.event_name == 'pull_request' && github.ref || 'npm' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  # A pull request's dry run packs a version that can't be on npm.
+  VERSION: ${{ inputs.version || format('0.0.0-pr.{0}.{1}', github.event.pull_request.number, github.run_attempt) }}
+  # Trusted publishing needs npm 11.5.1 or later.
+  NPM_VERSION: 11.21.1
+
+jobs:
+  pack:
+    name: Build, pack and smoke-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # Fail now rather than build for nothing: the publish job only runs on main.
+      - name: A release runs on main
+        if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Publishing runs on main only; this run is on $GITHUB_REF. Run it with --ref main."
+          exit 1
+
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: apps/host/go.mod
+          cache-dependency-path: apps/host/go.sum
+
+      # pnpm comes from corepack at the version pinned in package.json's packageManager field. Only the CLIs and
+      # what they bundle are installed.
+      - name: Install
+        run: |
+          npm install --global corepack@0.36.0
+          corepack enable
+          pnpm install --frozen-lockfile --filter "@kantel/admin..."
+
+      - name: Build and pack
+        run: tools/npm-release/pack.sh "$VERSION" "$RUNNER_TEMP/npm-release"
+
+      - name: Smoke-test the tarballs
+        run: tools/npm-release/smoke.sh "$VERSION" "$RUNNER_TEMP/npm-release"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: npm-release
+          path: ${{ runner.temp }}/npm-release
+          if-no-files-found: error
+          retention-days: 14
+
+  dry-run:
+    name: npm publish --dry-run
+    needs: pack
+    if: github.event_name == 'pull_request' || !inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - run: npm install --global "npm@$NPM_VERSION"
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-release
+          path: ${{ runner.temp }}/npm-release
+
+      - run: tools/npm-release/publish.sh --dry-run "$RUNNER_TEMP/npm-release"
+
+  publish:
+    name: Publish to npm
+    needs: pack
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The packages' trusted publishers require this environment, and it only allows main.
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing (OIDC) and provenance
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - run: npm install --global "npm@$NPM_VERSION"
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-release
+          path: ${{ runner.temp }}/npm-release
+
+      - name: Publish
+        run: tools/npm-release/publish.sh "$RUNNER_TEMP/npm-release"
+
+      - name: Summary
+        run: |
+          {
+            echo "Published $VERSION:"
+            while read -r tarball; do
+              name=$(tar -xOzf "$RUNNER_TEMP/npm-release/$tarball" package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).name')
+              echo "- https://www.npmjs.com/package/$name/v/$VERSION"
+            done <"$RUNNER_TEMP/npm-release/publish-order.txt"
+          } >>"$GITHUB_STEP_SUMMARY"
