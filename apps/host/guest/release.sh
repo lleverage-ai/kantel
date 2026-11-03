@@ -13,12 +13,13 @@
 # ARCHES (default "amd64 arm64") picks the architectures. arm64 is cross-built on an x86_64 machine: its kernel with
 # a cross compiler, its images under QEMU user emulation, which Docker needs registered first
 # (docker run --privileged --rm tonistiigi/binfmt --install arm64); that makes the build about an hour longer.
-# boot-check-arm64.sh boots the arm64 images in QEMU before they're published.
+# boot-check-arm64.sh boots the arm64 images in QEMU, and --publish refuses arm64 until it has passed on that build.
 #
 # --publish makes the release (gh, with push access to the repo) at the current commit, which must be on origin; a
 # release is never replaced: a new image is a new tag, and DEFAULT_HOST_IMAGES moves to it in a pull request. When
 # <out-dir> already holds a build of the same tag and ARCHES from a clean apps/host at the same tree as this commit's
-# (its BUILD file says so), --publish publishes that build instead of building again: build, check, merge, publish.
+# (its BUILD file says so), --publish publishes that build instead of building again: build, check (boot-check-arm64.sh
+# too), merge, publish.
 #
 # Needs Docker, Go, bun, gzip, git, curl, jq and debugfs (e2fsprogs). About 15 minutes for amd64 on 48 cores from
 # cold; each architecture's images are about 1 GB gzipped. Each asset has to stay under GitHub's 2 GiB limit per
@@ -46,7 +47,7 @@ tree=$tree"
 if [ "$PUBLISH" = --publish ] && [ "$tree" != dirty ] && [ -f "$OUT/BUILD" ] && [ "$(cat "$OUT/BUILD")" = "$build" ]; then
 	echo "publishing the build already in $OUT (apps/host tree $tree)"
 else
-	rm -f "$OUT/BUILD" "$OUT/SHA256SUMS"
+	rm -f "$OUT/BUILD" "$OUT/SHA256SUMS" "$OUT/boot-check-arm64.log" "$OUT/boot-check-arm64.png"
 	for arch in $ARCHES; do
 		case "$arch" in amd64) karch=x86_64 ;; arm64) karch=aarch64 ;; *) echo "unknown arch $arch" >&2; exit 2 ;; esac
 		"$HERE/kernel/build.sh" "$OUT" "$karch"
@@ -87,6 +88,14 @@ set -- "$@" SHA256SUMS
 [ "$PUBLISH" = --publish ] || { echo "built in $OUT; publish with: $0 $OUT $TAG --publish"; exit 0; }
 commit=$(git -C "$MODULE" rev-parse HEAD)
 git -C "$MODULE" branch -r --contains "$commit" | grep -q . || { echo "commit $commit isn't on origin" >&2; exit 1; }
+# arm64 is published only once boot-check-arm64.sh has passed on this very build (a new build removes its log).
+case " $ARCHES " in *" arm64 "*)
+	grep -aq "^BOOTCHECK done fails=0 " "$OUT/boot-check-arm64.log" 2>/dev/null || {
+		echo "run apps/host/guest/boot-check-arm64.sh $OUT first: arm64 is published only once it passes" >&2
+		exit 1
+	}
+	;;
+esac
 arm64_note=
 case " $ARCHES " in *" arm64 "*) arm64_note="
 

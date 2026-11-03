@@ -124,7 +124,8 @@ apps/host/guest/release.sh out host-images-20261103 --publish  # make the GitHub
 
 `--publish` publishes the build already in `out` when it's of the same tag and architectures from a clean `apps/host`
 at the same tree as the commit it publishes at (`out/BUILD` records that), so a build checked on a branch is
-published from main once merged, without building again. One manifest lists every architecture's files, and
+published from main once merged, without building again. It refuses arm64 until `boot-check-arm64.sh` has passed on
+that build (a new build clears the check's log). One manifest lists every architecture's files, and
 `kantel-host install` takes its own (`vmlinux-arm64` and `sandbox-arm64.ext4` on an arm64 host). `SHA256SUMS` lists
 every asset.
 

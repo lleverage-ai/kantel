@@ -64,8 +64,11 @@ check() {
 	fi
 }
 wait_for() { i=0; while [ $i -lt "$1" ]; do sh -c "$2" >/dev/null 2>&1 && return 0; sleep 2; i=$((i + 2)); done; sh -c "$2"; }
-# QEMU user networking (what kantel-guest sets from the host on a real host).
-ip link set eth0 up && ip addr add 10.0.2.15/24 dev eth0 && ip route add default via 10.0.2.2
+# QEMU user networking (what kantel-guest sets from the host on a real host), on the one NIC whatever udev named it:
+# the interface with a device behind it (docker0 and dummy0 have none).
+nic=$(for n in /sys/class/net/*; do [ -e "$n/device" ] && basename "$n"; done | head -n 1)
+echo "BOOTCHECK nic ok ${nic:-none} of $(ls /sys/class/net | tr "\n" " ")"
+ip link set "$nic" up && ip addr add 10.0.2.15/24 dev "$nic" && ip route add default via 10.0.2.2
 rm -f /etc/resolv.conf && echo "nameserver 10.0.2.3" >/etc/resolv.conf
 echo "BOOTCHECK boot ok kernel=$(uname -r) arch=$(uname -m) uptime=$(cut -d" " -f1 /proc/uptime)s"
 check arch sh -c "test \"\$(uname -m)\" = aarch64 && file -L /usr/local/bin/kantel-guest /usr/lib/chromium/chromium | grep -c aarch64"
@@ -79,7 +82,7 @@ check cdp wait_for 600 "curl -fsS -m 5 http://127.0.0.1:9222/json/version | grep
 check stream wait_for 600 "curl -fsS -m 5 -o /dev/null -w \"selkies http %{http_code}\" http://127.0.0.1:6080/"
 check kvm sh -c "if [ -e /dev/kvm ]; then echo /dev/kvm present; else echo no /dev/kvm, as expected on arm64; fi"
 sleep 20
-check screenshot runuser -u user -- sh -c "DISPLAY=:1 import -window root /tmp/boot-check.png && cp /tmp/boot-check.png /disk/boot-check.png && identify /disk/boot-check.png"
+check screenshot sh -c "runuser -u user -- env DISPLAY=:1 import -window root /var/tmp/boot-check.png && cp /var/tmp/boot-check.png /disk/boot-check.png && identify /disk/boot-check.png"
 check failed-units sh -c "n=\$(systemctl --failed --no-legend | grep -v kantel-boot-check | wc -l); systemctl --failed --no-legend; test \$n = 0 && echo none"
 echo "BOOTCHECK done fails=$fails uptime=$(cut -d" " -f1 /proc/uptime)s"
 sync
