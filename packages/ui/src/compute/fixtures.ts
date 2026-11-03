@@ -413,7 +413,17 @@ export const KEYS: readonly ApiKey[] = [
 		name: "GitHub Actions",
 		prefix: "kt_live_4f8a",
 		accountId: LLEVERAGE.id,
-		scopes: ["sandboxes:write", "sandboxes:exec", "snapshots:read"],
+		scopes: [
+			"sandboxes:read",
+			"sandboxes:write",
+			"sandboxes:delete",
+			"exec",
+			"files",
+			"access",
+			"snapshots:read",
+			"snapshots:write",
+			"account:read",
+		],
 		createdAt: FIXTURE_NOW - 20 * DAY,
 		createdBy: "Alex Kemp",
 		lastUsedAt: FIXTURE_NOW - 4 * MINUTE,
@@ -424,7 +434,7 @@ export const KEYS: readonly ApiKey[] = [
 		name: "Claude Code on Tom's laptop",
 		prefix: "kt_live_91c2",
 		accountId: LLEVERAGE.id,
-		scopes: ["sandboxes:read", "sandboxes:write", "sandboxes:exec", "snapshots:read"],
+		scopes: ["sandboxes:read", "sandboxes:write", "exec", "files", "access", "snapshots:read"],
 		createdAt: FIXTURE_NOW - 3 * DAY,
 		createdBy: "Tom Davies",
 		lastUsedAt: FIXTURE_NOW - 40 * MINUTE,
@@ -434,7 +444,7 @@ export const KEYS: readonly ApiKey[] = [
 		name: "Usage dashboard",
 		prefix: "kt_live_0b7d",
 		accountId: LLEVERAGE.id,
-		scopes: ["sandboxes:read", "billing:read"],
+		scopes: ["sandboxes:read", "snapshots:read", "account:read"],
 		createdAt: FIXTURE_NOW - 60 * DAY,
 		createdBy: "Bethan Price",
 		lastUsedAt: FIXTURE_NOW - 2 * DAY,
@@ -527,7 +537,7 @@ const delivery = (
 export const DELIVERIES: Readonly<Record<string, readonly WebhookDelivery[]>> = {
 	whk_slack: [
 		delivery("dlv_1", "sandbox.error", 12 * MINUTE, 200),
-		delivery("dlv_2", "sandbox.started", 50 * MINUTE, 200),
+		delivery("dlv_2", "sandbox.running", 50 * MINUTE, 200),
 		delivery("dlv_3", "sandbox.stopped", 20 * HOUR, 200),
 	],
 	whk_ops: [
@@ -543,7 +553,7 @@ export const WEBHOOKS: readonly Webhook[] = [
 		accountId: LLEVERAGE.id,
 		url: "https://hooks.example.com/kantel/sandbox-alerts",
 		description: "Alerts channel",
-		events: ["sandbox.error", "sandbox.started", "sandbox.stopped"],
+		events: ["sandbox.error", "sandbox.running", "sandbox.stopped"],
 		enabled: true,
 		createdAt: FIXTURE_NOW - 14 * DAY,
 		secretPrefix: "whsec_9c1e",
@@ -1217,7 +1227,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					const hook = find(webhooks, id, "webhook");
 					const sent: WebhookDelivery = {
 						id: nextId("dlv"),
-						event: hook.events[0] ?? "sandbox.started",
+						event: hook.events[0] ?? "sandbox.running",
 						at: now(),
 						status: 200,
 						durationMs: 143,

@@ -14,7 +14,7 @@ const JUST_MADE: CreatedApiKey = {
 		name: "Eval runner",
 		prefix: "kt_live_c3e9",
 		accountId: LLEVERAGE.id,
-		scopes: ["sandboxes:read", "sandboxes:write", "sandboxes:exec", "snapshots:read"],
+		scopes: ["sandboxes:read", "sandboxes:write", "exec", "files", "access", "snapshots:read"],
 		createdAt: FIXTURE_NOW,
 		createdBy: "Tom Davies",
 		expiresAt: FIXTURE_NOW + 90 * DAY,

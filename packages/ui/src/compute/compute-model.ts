@@ -251,46 +251,79 @@ export interface SnapshotsSource {
 // ---------------------------------------------------------------------------------------------------------------------
 // API keys
 
-/** What a key may do. Each scope is a resource and an action. */
+/** What a key may do: the public API's `ApiKeyScope` (the compute API contract, #541). */
 export type ApiScope =
 	| "sandboxes:read"
 	| "sandboxes:write"
-	| "sandboxes:exec"
+	| "sandboxes:delete"
+	| "exec"
+	| "files"
+	| "access"
 	| "snapshots:read"
 	| "snapshots:write"
-	| "keys:write"
-	| "settings:write"
-	| "billing:read";
+	| "account:read"
+	| "account:admin"
+	| "hosts:admin";
 
 export const API_SCOPES: readonly { readonly scope: ApiScope; readonly label: string; readonly help: string }[] = [
 	{ scope: "sandboxes:read", label: "Read sandboxes", help: "List sandboxes and read their state and usage." },
-	{ scope: "sandboxes:write", label: "Manage sandboxes", help: "Create, stop, resume, fork and delete sandboxes." },
-	{
-		scope: "sandboxes:exec",
-		label: "Run commands",
-		help: "Run commands, move files and open SSH, desktop and browser.",
-	},
+	{ scope: "sandboxes:write", label: "Manage sandboxes", help: "Create, stop, resume and fork sandboxes." },
+	{ scope: "sandboxes:delete", label: "Delete sandboxes", help: "Delete sandboxes for good." },
+	{ scope: "exec", label: "Run commands", help: "Run commands in sandboxes." },
+	{ scope: "files", label: "Files", help: "Read and write files in sandboxes." },
+	{ scope: "access", label: "Access", help: "Open ports, SSH, desktops and browsers." },
 	{ scope: "snapshots:read", label: "Read snapshots", help: "List snapshots and read their files." },
 	{ scope: "snapshots:write", label: "Manage snapshots", help: "Save and delete snapshots." },
-	{ scope: "keys:write", label: "Manage API keys", help: "Create and revoke API keys." },
-	{ scope: "settings:write", label: "Manage settings", help: "Change the proxy, webhooks and telemetry export." },
-	{ scope: "billing:read", label: "Read billing", help: "Read the plan, limits and usage." },
+	{ scope: "account:read", label: "Read the account", help: "Read members, usage and settings." },
+	{
+		scope: "account:admin",
+		label: "Manage the account",
+		help: "Change members, keys, the proxy, webhooks and telemetry.",
+	},
+	{ scope: "hosts:admin", label: "Manage hosts", help: "Add, drain and remove hosts. Super-admins only." },
 ];
 
-/** Ready-made sets of scopes. */
+/** Ready-made sets of scopes: the public API's `API_KEY_PRESETS`. */
 export const SCOPE_PRESETS: readonly {
 	readonly id: string;
 	readonly label: string;
 	readonly scopes: readonly ApiScope[];
 }[] = [
-	{ id: "full", label: "Full access", scopes: API_SCOPES.map((entry) => entry.scope) },
 	{
 		id: "agent",
 		label: "Agent",
-		scopes: ["sandboxes:read", "sandboxes:write", "sandboxes:exec", "snapshots:read"],
+		scopes: [
+			"sandboxes:read",
+			"sandboxes:write",
+			"exec",
+			"files",
+			"access",
+			"snapshots:read",
+			"snapshots:write",
+			"account:read",
+		],
 	},
-	{ id: "ci", label: "CI", scopes: ["sandboxes:write", "sandboxes:exec", "snapshots:read"] },
-	{ id: "read", label: "Read only", scopes: ["sandboxes:read", "snapshots:read", "billing:read"] },
+	{
+		id: "ci",
+		label: "CI",
+		scopes: [
+			"sandboxes:read",
+			"sandboxes:write",
+			"sandboxes:delete",
+			"exec",
+			"files",
+			"access",
+			"snapshots:read",
+			"snapshots:write",
+			"account:read",
+		],
+	},
+	{ id: "read-only", label: "Read only", scopes: ["sandboxes:read", "snapshots:read", "account:read"] },
+	{
+		id: "admin",
+		label: "Admin",
+		scopes: API_SCOPES.map((entry) => entry.scope).filter((scope) => scope !== "hosts:admin"),
+	},
 ];
 
 export interface ApiKey {
@@ -389,23 +422,30 @@ export interface ProxySource {
 // ---------------------------------------------------------------------------------------------------------------------
 // Webhooks and OpenTelemetry
 
+/** The public API's `EventType` (#541). */
 export type WebhookEvent =
-	| "sandbox.started"
+	| "sandbox.created"
+	| "sandbox.running"
 	| "sandbox.stopped"
 	| "sandbox.paused"
 	| "sandbox.error"
+	| "sandbox.degraded"
 	| "sandbox.recovered"
 	| "sandbox.deleted"
-	| "snapshot.saved";
+	| "snapshot.saved"
+	| "snapshot.deleted";
 
 export const WEBHOOK_EVENTS: readonly { readonly event: WebhookEvent; readonly label: string }[] = [
-	{ event: "sandbox.started", label: "A sandbox is ready" },
+	{ event: "sandbox.created", label: "A sandbox was created" },
+	{ event: "sandbox.running", label: "A sandbox is running" },
 	{ event: "sandbox.stopped", label: "A sandbox stopped" },
 	{ event: "sandbox.paused", label: "A sandbox paused" },
 	{ event: "sandbox.error", label: "A sandbox failed" },
+	{ event: "sandbox.degraded", label: "A sandbox is degraded" },
 	{ event: "sandbox.recovered", label: "A sandbox recovered" },
 	{ event: "sandbox.deleted", label: "A sandbox was deleted" },
 	{ event: "snapshot.saved", label: "A snapshot was saved" },
+	{ event: "snapshot.deleted", label: "A snapshot was deleted" },
 ];
 
 export interface WebhookDelivery {

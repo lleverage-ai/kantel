@@ -126,10 +126,10 @@ export function WebhooksPage({ source, account, now: fixedNow, initialOpen }: We
 					onAcknowledge={() => setCreated(undefined)}
 				>
 					<p className="m-0 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs text-muted">
-						<Badge>Provisional</Badge>
 						<span>
-							Check each delivery's <code className="font-mono text-code text-fg">Kantel-Signature</code> header: an
-							HMAC-SHA256 of its timestamp and body, made with this secret.
+							Deliveries are signed as Standard Webhooks are: check the{" "}
+							<code className="font-mono text-code text-fg">webhook-signature</code> header with this secret, or use any
+							Standard Webhooks library.
 						</span>
 					</p>
 				</OneTimeSecret>
@@ -482,7 +482,7 @@ function WebhookDialog({
 	const [url, setUrl] = useState(webhook?.url ?? "");
 	const [description, setDescription] = useState(webhook?.description ?? "");
 	const [events, setEvents] = useState<readonly WebhookEvent[]>(
-		webhook?.events ?? ["sandbox.started", "sandbox.stopped", "sandbox.error"],
+		webhook?.events ?? ["sandbox.running", "sandbox.stopped", "sandbox.error"],
 	);
 	const [busy, setBusy] = useState(false);
 	const [failure, setFailure] = useState<string>();
