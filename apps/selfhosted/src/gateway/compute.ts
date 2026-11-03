@@ -28,8 +28,9 @@
  *                                {arch}); unset, hosts aren't asked to update
  *   KANTEL_COMPUTE_IMAGES        where `kantel-host install` gets the kernel and images (GET /v1/hosts/images/...): a
  *                                directory this gateway serves (with manifest.json from `kantel-host manifest <dir>`), or
- *                                an http(s) URL it redirects to. The images are public (a Debian root file system, the
- *                                guest agent, a kernel), so the route asks no credential.
+ *                                an http(s) URL it redirects to; `off` serves none. Default: Kantel's published images,
+ *                                DEFAULT_HOST_IMAGES. The images are public (an Ubuntu root file system with Chromium,
+ *                                Docker and a desktop, the guest agent, a kernel), so the route asks no credential.
  *   KANTEL_COMPUTE_PORTS_DOMAIN  with `hosts`: the name exposed ports are served under, `{port}-{subdomain}.{domain}`;
  *                                point a wildcard DNS name and certificate (`*.{domain}`) at this gateway. Use a
  *                                registrable domain of its own (not under the gateway's), so a sandbox's page can't set
@@ -133,7 +134,8 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 	}
 	const version = env.KANTEL_HOST_VERSION?.trim() ?? "";
 	const updateUrl = env.KANTEL_HOST_UPDATE_URL?.trim() ?? "";
-	const images = env.KANTEL_COMPUTE_IMAGES?.trim() ?? "";
+	const rawImages = env.KANTEL_COMPUTE_IMAGES?.trim() || DEFAULT_HOST_IMAGES;
+	const images = rawImages.toLowerCase() === "off" ? "" : rawImages;
 	const joinCommand = env.KANTEL_COMPUTE_JOIN_COMMAND?.trim() ?? "";
 	const attributionKey = env.KANTEL_EGRESS_ATTRIBUTION_KEY?.trim() ?? "";
 	const portsDomain =
@@ -181,6 +183,13 @@ export function gatewayHosts(
 
 /** `GET /v1/hosts/images/{file}`: the host images `kantel-host install` fetches. */
 export const HOST_IMAGES_PATH = "/v1/hosts/images";
+
+/**
+ * Kantel's published host images (kernel, sandbox and isolate images, manifest.json): a GitHub Release on
+ * lleverage-ai/kantel, made by apps/host/guest/release.sh. Pinned to one release, so a new image reaches hosts only
+ * when this changes (or KANTEL_COMPUTE_IMAGES points elsewhere).
+ */
+export const DEFAULT_HOST_IMAGES = "https://github.com/lleverage-ai/kantel/releases/download/host-images-20261103";
 
 /**
  * Serves the host images from a directory, or redirects to where they are; undefined for any other path. A file name

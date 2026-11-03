@@ -1,6 +1,6 @@
 #!/bin/sh
 # The sandbox's desktop: TigerVNC's X server on display :1 (VNC on loopback port 5901; the host reaches it over
-# vsock) running an XFCE session. Chrome (kantel-browser) and the browser stream (kantel-stream, Selkies) attach to
+# vsock) running an XFCE session. Chromium (kantel-browser) and the browser stream (kantel-stream, Selkies) attach to
 # the same display.
 export DISPLAY=:1
 size=${KANTEL_DESKTOP_SIZE:-1920x1080}
