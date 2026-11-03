@@ -161,7 +161,9 @@ describe("the compute plane on the gateway", () => {
 			KANTEL_COMPUTE_BACKEND: "hosts",
 			KANTEL_PUBLIC_URL: "https://kantel.example.com",
 		};
-		expect(DEFAULT_HOST_IMAGES).toMatch(/^https:\/\/github\.com\/lleverage-ai\/kantel\/releases\/download\/host-images-/);
+		expect(DEFAULT_HOST_IMAGES).toMatch(
+			/^https:\/\/github\.com\/lleverage-ai\/kantel\/releases\/download\/host-images-/,
+		);
 		expect(computeConfig(env)?.hosts?.images).toBe(DEFAULT_HOST_IMAGES);
 		expect(computeConfig({ ...env, KANTEL_COMPUTE_IMAGES: "/srv/images" })?.hosts?.images).toBe("/srv/images");
 		expect(computeConfig({ ...env, KANTEL_COMPUTE_IMAGES: "off" })?.hosts?.images).toBeUndefined();
