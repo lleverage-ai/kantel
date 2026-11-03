@@ -117,7 +117,9 @@ The proxy can swap a placeholder only in a request it can read. It reads:
 
 For those hosts the proxy ends TLS itself, with a certificate from a certificate authority of the sandbox's own. That authority can only sign for the bound hosts, its key never enters the sandbox, and its certificate is in the sandbox's system trust store. The proxy then opens its own TLS connection to the real host and checks that host's certificate against the usual public roots. It offers HTTP/1.1 only, and passes WebSocket upgrades through.
 
-HTTPS to every other host is a tunnel the proxy passes on without reading, as it always has. A program that brings its own list of trusted certificates, rather than using the system's, has to be pointed at the system's to reach a bound host.
+HTTPS to every other host is a tunnel the proxy passes on without reading, as it always has. A program that brings its own list of trusted certificates, rather than using the system's, has to be pointed at the system's to reach a bound host. Node, Bun and Python's `requests` already are: a microVM behind the proxy sets `NODE_EXTRA_CA_CERTS` and `REQUESTS_CA_BUNDLE` to `/etc/ssl/certs/ca-certificates.crt`.
+
+The proxy also turns a value back into its placeholder in what the host answers, so an API that echoes a request never hands the sandbox the value. It finds the value as it is and escaped up to two layers deep, as percent-escapes, JSON or HTML would write it. A value the API changes in some other way, such as base64 or a hash, gets through, so bind a value only to the hosts that should have it.
 
 ### Rotate a value
 
@@ -178,11 +180,20 @@ When the proxy refuses a request, or can't complete one, it answers the sandbox 
 
 ## Check a sandbox
 
-Inside a sandbox, `kantel doctor` checks its egress: the proxy variables, the sandbox's certificate authority in the trust store, and, for each placeholder in its environment, that the proxy accepts it for a bound host.
+Inside a sandbox, `kantel-doctor` checks its egress: the proxy variables, the sandbox's certificate authority in the trust store, and, for each placeholder in its environment, that the proxy accepts it for a bound host.
 
 ```sh
-kantel exec sbx_g2yy5jhyqr -- kantel doctor
+kantel exec sbx_g2yy5jhyqr -- kantel-doctor
 ```
+
+```text
+ok HTTP_PROXY: set (10.231.0.13:3129)
+ok HTTPS_PROXY: set (10.231.0.13:3129)
+ok egress certificate: in /etc/ssl/certs/ca-certificates.crt
+ok GH_TOKEN api.github.com: would be swapped
+```
+
+It comes with the sandbox images from the release after `host-images-20261103.1`.
 
 For each placeholder it sends a `HEAD` request to a bound host through the proxy, marked with an `X-Kantel-Proxy-Check` header. The proxy completes a real TLS handshake with that host, then answers the check itself, with `ok` or an error code, so the value goes nowhere.
 

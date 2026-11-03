@@ -22,8 +22,8 @@ A microVM's network reaches one address, its host's egress proxy on port 3129. T
 The sandbox is set up to use the proxy. Shells and commands get the usual variables:
 
 ```text
-HTTP_PROXY=http://sandbox@10.231.0.9:3129
-HTTPS_PROXY=http://sandbox@10.231.0.9:3129
+HTTP_PROXY=http://sandbox:@10.231.0.9:3129
+HTTPS_PROXY=http://sandbox:@10.231.0.9:3129
 NO_PROXY=localhost,127.0.0.1,::1
 ```
 
