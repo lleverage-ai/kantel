@@ -29,7 +29,7 @@ A call with no key, or a wrong, revoked or expired one, answers `401` with `unau
 
 ## Make your first key
 
-Sign in to the console and make a key there. After that, a key holding `account:admin` can make more keys from scripts, as below.
+A self-hosted install makes the first key itself, with every scope, when you [turn on the compute API](/self-hosting/install/#turn-on-the-compute-api). Use it to make the others, as below: any key holding `account:admin` can.
 
 ## Scopes
 

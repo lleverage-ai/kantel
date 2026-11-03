@@ -22,7 +22,7 @@ export KANTEL_URL=http://127.0.0.1:58090
 export KANTEL_API_KEY=ksk_...
 ```
 
-In fish, use `set -x KANTEL_URL http://127.0.0.1:58090` instead of `export`. The key needs `sandboxes:read` and `sandboxes:write` for most of this page, and `sandboxes:delete` to delete. The `agent` preset has everything here except deleting.
+On a self-hosted install, [turn on the compute API](/self-hosting/install/#turn-on-the-compute-api) first; it gives you a first key. In fish, use `set -x KANTEL_URL http://127.0.0.1:58090` instead of `export`. The key needs `sandboxes:read` and `sandboxes:write` for most of this page, and `sandboxes:delete` to delete. The `agent` preset has everything here except deleting.
 
 The SDK examples on these pages use this client, with the SDK's file copied into your project as [TypeScript SDK](/tools/typescript-sdk/#add-it-to-your-project) describes:
 
