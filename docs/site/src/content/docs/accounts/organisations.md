@@ -160,4 +160,4 @@ curl -s "$KANTEL_URL/v1/accounts/acc_7f3k2m9q/usage" \
 
 `limits` appears where the deployment sets any: how many sandboxes may run at once, how many may start a minute, and how many saved snapshots the account keeps. A call past a limit answers `429` with `exhausted`. A self-hosted install's rates are 0 unless its operator sets them, so its costs are 0 too.
 
-<!-- Sources (712a09ae): packages/api/src/compute-routes.ts:105-314, packages/api/src/compute-schema.ts:55-197, packages/api/src/compute-schema.ts:477-504 -->
+<!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:105-314, packages/api/src/compute-schema.ts:55-197, packages/api/src/compute-schema.ts:477-504 -->

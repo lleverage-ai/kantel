@@ -135,4 +135,4 @@ The answer is the key, with `revokedAt` set. Rotating and revoking need `account
 
 Don't pass a key into a sandbox through `env` or a file: anything that can run commands there can read it. Agents drive sandboxes from outside, with the key where the agent runs. For credentials a sandbox's own programs need, such as a token for a private registry, see the [proxy](/concepts/#the-proxy).
 
-<!-- Sources (712a09ae): packages/api/src/compute-routes.ts:829-895, packages/api/src/compute-schema.ts:27-53, packages/api/src/compute-schema.ts:777-831, packages/api/src/compute-schema.ts:1199-1239 -->
+<!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:829-895, packages/api/src/compute-schema.ts:27-53, packages/api/src/compute-schema.ts:777-831, packages/api/src/compute-schema.ts:1199-1239 -->

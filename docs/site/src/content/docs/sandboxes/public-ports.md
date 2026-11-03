@@ -72,4 +72,4 @@ Some dev servers refuse a request whose `Host` header isn't one they know, and s
 export default { server: { host: "0.0.0.0", allowedHosts: true } };
 ```
 
-<!-- Sources (712a09ae): packages/api/src/compute-routes.ts:622-663, packages/api/src/compute-schema.ts:298-311, packages/api/src/compute-schema.ts:615-642 -->
+<!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:622-663, packages/api/src/compute-schema.ts:298-311, packages/api/src/compute-schema.ts:615-642 -->

@@ -152,4 +152,4 @@ To use it in every project, put the snippet in your agent's own instructions fil
 
 Ask the agent something like: "Run this repository's tests in a Kantel sandbox and tell me what fails." It should make a sandbox, clone or copy the code in, run the tests, report, and stop the sandbox.
 
-<!-- Sources (712a09ae): packages/api/src/compute-routes.ts:318-712, packages/api/src/compute-routes.ts:843-857, packages/api/src/compute-schema.ts:365-404, packages/api/src/compute-schema.ts:506-548, packages/api/src/compute-schema.ts:802-812, packages/api/src/compute-schema.ts:1214-1239 -->
+<!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:318-712, packages/api/src/compute-routes.ts:843-857, packages/api/src/compute-schema.ts:365-404, packages/api/src/compute-schema.ts:506-548, packages/api/src/compute-schema.ts:802-812, packages/api/src/compute-schema.ts:1214-1239 -->

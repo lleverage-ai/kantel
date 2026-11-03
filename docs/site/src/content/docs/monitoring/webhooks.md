@@ -51,7 +51,7 @@ const { webhook, secret } = await kantel.createWebhook({
 
 The answer holds the webhook and its signing secret, which starts `whsec_`. The secret is shown only once, so store it where your endpoint can read it.
 
-The URL must be HTTPS. A self-hosted install may allow `http://` to a private address, for an endpoint on your own network.
+Use an HTTPS URL. A self-hosted install also accepts `http://`, for an endpoint on your own network.
 
 ## What a delivery looks like
 
@@ -162,4 +162,4 @@ curl -s -X POST "$KANTEL_URL/v1/webhooks/whk_3m4n5b/rotate" \
 
 Deliveries are signed with the new secret from then on. One already on its way may still carry the old signature, so let your endpoint accept both secrets for a few minutes after you rotate.
 
-<!-- Sources (712a09ae): packages/api/src/compute-routes.ts:929-1045, packages/api/src/compute-schema.ts:893-1031 -->
+<!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:929-1045, packages/api/src/compute-schema.ts:893-1031 -->

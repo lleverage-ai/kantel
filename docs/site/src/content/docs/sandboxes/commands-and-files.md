@@ -153,4 +153,4 @@ It answers `204` with no body.
 
 The file routes need a running sandbox. To read files from a stopped one without resuming it, read them from its newest snapshot: see [Browse a snapshot's files](/snapshots/history/#browse-a-snapshots-files).
 
-<!-- Sources (712a09ae): packages/api/src/compute-routes.ts:509-620, packages/api/src/compute-schema.ts:506-613 -->
+<!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:509-620, packages/api/src/compute-schema.ts:506-613 -->

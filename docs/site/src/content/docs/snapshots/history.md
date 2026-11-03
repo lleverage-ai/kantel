@@ -111,4 +111,4 @@ curl -s -X DELETE "$KANTEL_URL/v1/snapshots/snap_2h8d6f" \
 
 This deletes an automatic snapshot or a saved one, and answers `204`. You can't delete the newest snapshot of a stopped sandbox, because its resume needs it: that answers `409` with `conflict`. [Deleting the sandbox](/sandboxes/lifecycle/#delete-permanently) deletes its whole automatic history at once.
 
-<!-- Sources (712a09ae): packages/api/src/compute-routes.ts:716-827, packages/api/src/compute-schema.ts:701-775, packages/api/src/compute-schema.ts:298-343 -->
+<!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:716-827, packages/api/src/compute-schema.ts:701-775, packages/api/src/compute-schema.ts:298-343 -->

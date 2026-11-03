@@ -149,4 +149,4 @@ The file also has methods for the routes of Kantel's earlier agent platform, whi
 
 The SDK is made from Kantel's OpenAPI document, `packages/api/generated/openapi.json` in the repository. Any OpenAPI 3.1 generator can make a client from it in another language.
 
-<!-- Sources (712a09ae): packages/api/generated/sdk.ts:4331-4420, packages/api/generated/sdk.ts:4566-4740, packages/api/src/sdk-runtime.ts:1-130, packages/api/package.json:1-20, packages/api/README.md:44-50 -->
+<!-- Sources (9cc20eb3): packages/api/generated/sdk.ts:4031-4120, packages/api/generated/sdk.ts:4842-4956, packages/api/src/sdk-runtime.ts:1-130, packages/api/package.json:1-20, packages/api/README.md:44-50 -->

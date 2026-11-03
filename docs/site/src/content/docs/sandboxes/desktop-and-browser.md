@@ -92,4 +92,4 @@ The CDP URL is as powerful as the browser itself: anyone holding it can read eve
 
 The sandbox's Chrome runs inside the sandbox, so it reaches a dev server there at `http://localhost:<port>` with no [public port](/sandboxes/public-ports/). Start the server as a detached command, then point Playwright at `localhost`.
 
-<!-- Sources (712a09ae): packages/api/src/compute-routes.ts:681-712, packages/api/src/compute-schema.ts:671-699 -->
+<!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:681-712, packages/api/src/compute-schema.ts:671-699 -->

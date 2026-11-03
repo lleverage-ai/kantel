@@ -68,6 +68,6 @@ curl -s "$KANTEL_URL/v1/sandboxes" \
   -d '{"type": "microvm", "hostLabels": {"site": "home"}}'
 ```
 
-If no host has every label you give, the sandbox can't be placed and the create fails.
+If no host has every label you give, the sandbox can't be placed, and the create answers `503` with `unavailable`.
 
-<!-- Sources (712a09ae): packages/api/src/compute-schema.ts:201-264, packages/api/src/compute-schema.ts:365-404, packages/api/src/compute-routes.ts:334-350, packages/api/src/compute-routes.ts:417-432 -->
+<!-- Sources (9cc20eb3): packages/api/src/compute-schema.ts:201-264, packages/api/src/compute-schema.ts:365-404, packages/api/src/compute-routes.ts:334-350, packages/api/src/compute-routes.ts:417-432 -->
