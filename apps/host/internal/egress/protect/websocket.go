@@ -3,6 +3,7 @@ package protect
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -148,7 +149,7 @@ func (r *relay) up() error {
 			}
 			continue
 		}
-		out, sent, ref := r.swap(payload)
+		out, sent, ref := r.swap(op, payload)
 		if ref != nil {
 			r.refuse(ref, closePolicy)
 			return ref
@@ -188,7 +189,10 @@ func (r *relay) down() error {
 // swap resolves every placeholder in a client's message before any is swapped, so a refused message sends nothing.
 // It answers the message and the values it was given. Each message resolves afresh, so a value rotated (and the
 // Provider's cache invalidated) since the last one is the new value.
-func (r *relay) swap(msg []byte) ([]byte, []Entry, *Refusal) {
+//
+// A text message that is valid JSON gets each value JSON-escaped (a placeholder can only be inside one of its
+// strings), so the message stays valid and its string reads as the value; any other message gets the value as it is.
+func (r *relay) swap(op byte, msg []byte) ([]byte, []Entry, *Refusal) {
 	matches := Find(msg)
 	if len(matches) == 0 {
 		return msg, nil, nil
@@ -199,7 +203,11 @@ func (r *relay) swap(msg []byte) ([]byte, []Entry, *Refusal) {
 			return nil, nil, ref
 		}
 	}
-	out, _ := s.apply(msg, matches, nil)
+	var escape func(string) string
+	if op == opText && json.Valid(msg) {
+		escape = jsonEscape
+	}
+	out, _ := s.apply(msg, matches, escape)
 	var sent []Entry
 	for ph, res := range s.resolved {
 		sent = append(sent, Entry{Placeholder: ph, Name: res.Name, Value: res.Value})

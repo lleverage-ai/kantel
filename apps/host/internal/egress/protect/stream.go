@@ -1,13 +1,8 @@
 package protect
 
 import (
-	"bytes"
-	"encoding/json"
 	"io"
 	"net/http"
-	"net/url"
-	"slices"
-	"strings"
 )
 
 // streamChunk is how much a stream reads from its source at once.
@@ -154,134 +149,6 @@ func escaped(v string, escape func(string) string) string {
 		return v
 	}
 	return escape(v)
-}
-
-// scrubber turns protected values back into their placeholders: leftmost match first, the longest needle where two
-// start at the same byte. It is never changed once made, so one can be shared between goroutines.
-type scrubber struct {
-	needles [][]byte
-	repl    [][]byte
-	longest int
-}
-
-// newScrubber answers nil when there is nothing to scrub; a nil scrubber changes nothing.
-//
-// An API echoes a value in whatever form it wrote it: as it was sent, or escaped inside a JSON string, a query or a
-// path. Each form is a needle for the same placeholder, which is only ASCII letters, digits and '_' and so reads the
-// same in every one of them.
-func newScrubber(entries []Entry) *scrubber {
-	type pair struct{ needle, placeholder string }
-	seen := map[string]bool{}
-	var pairs []pair
-	add := func(needle, placeholder string) {
-		if needle == "" || seen[needle] {
-			return
-		}
-		seen[needle] = true
-		pairs = append(pairs, pair{needle, placeholder})
-	}
-	// Each value's own text goes in first: where one value's escaped form is another value's text ("a b" escapes to
-	// "a+b"), that text is taken as the other value and keeps its placeholder.
-	for _, e := range entries {
-		if e.Value != "" {
-			add(e.Value, e.Placeholder)
-		}
-	}
-	for _, e := range entries {
-		if e.Value == "" {
-			continue
-		}
-		for _, form := range escapedForms(e.Value) {
-			add(form, e.Placeholder)
-		}
-	}
-	if len(pairs) == 0 {
-		return nil
-	}
-	slices.SortStableFunc(pairs, func(a, b pair) int { return len(b.needle) - len(a.needle) })
-	sc := &scrubber{longest: len(pairs[0].needle)}
-	for _, p := range pairs {
-		sc.needles = append(sc.needles, []byte(p.needle))
-		sc.repl = append(sc.repl, []byte(p.placeholder))
-	}
-	return sc
-}
-
-// escapedForms answers the ways v is commonly written escaped: by encoding/json inside a string (with and without
-// its HTML escaping of '<', '>' and '&'), by this package's own jsonEscape (what RewriteRequest sent, which writes a
-// newline as \u000a where encoding/json writes \n), and by url.QueryEscape and url.PathEscape. Most equal v itself
-// for a plain value; newScrubber drops the repeats.
-func escapedForms(v string) []string {
-	return []string{jsonString(v, true), jsonString(v, false), jsonEscape(v), url.QueryEscape(v), url.PathEscape(v)}
-}
-
-// jsonString is v as encoding/json writes it inside a string, without the quotes; html is SetEscapeHTML.
-func jsonString(v string, html bool) string {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(html)
-	if err := enc.Encode(v); err != nil {
-		return ""
-	}
-	s := strings.TrimSuffix(buf.String(), "\n")
-	if len(s) < 2 {
-		return ""
-	}
-	return s[1 : len(s)-1]
-}
-
-// step carries the longest needle less one byte: anything longer either holds a whole match or none, and a match
-// starting before the carry ends inside buf, so the longest one there is seen whole.
-func (sc *scrubber) step(dst, buf []byte, eof bool) ([]byte, int, error) {
-	limit := len(buf)
-	if !eof {
-		limit -= sc.longest - 1
-	}
-	if limit <= 0 {
-		return dst, 0, nil
-	}
-	// next[i] is where needle i next occurs at or after the last search; len(buf) is never.
-	next := make([]int, len(sc.needles))
-	for i := range next {
-		next[i] = -1
-	}
-	pos := 0
-	for {
-		best, which := -1, -1
-		for i, n := range sc.needles {
-			if next[i] < pos {
-				if j := bytes.Index(buf[pos:], n); j < 0 {
-					next[i] = len(buf)
-				} else {
-					next[i] = pos + j
-				}
-			}
-			if next[i] < limit && (best < 0 || next[i] < best) {
-				best, which = next[i], i
-			}
-		}
-		if best < 0 {
-			break
-		}
-		dst = append(dst, buf[pos:best]...)
-		dst = append(dst, sc.repl[which]...)
-		pos = best + len(sc.needles[which])
-	}
-	end := max(pos, limit)
-	dst = append(dst, buf[pos:end]...)
-	return dst, end, nil
-}
-
-// replace scrubs a whole buffer, answering whether anything changed.
-func (sc *scrubber) replace(b []byte) ([]byte, bool) {
-	if sc == nil || len(b) == 0 {
-		return b, false
-	}
-	out, _, _ := sc.step(nil, b, true)
-	if bytes.Equal(out, b) {
-		return b, false
-	}
-	return out, true
 }
 
 // header scrubs every value of h in place.

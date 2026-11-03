@@ -9,9 +9,12 @@ import (
 
 // ScrubResponse turns every protected value in resp back into its placeholder, so a bound API that echoes a value
 // (a gist's body, a reflected header, an error quoting the request) never puts the real value into the sandbox. A
-// value is found as it was sent and as JSON, a query or a path would escape it. It rewrites the header values now and
-// the body (and trailers) as it is read, in constant memory: only the longest form of a value less one byte is held
-// back between reads.
+// value is found as it was sent and escaped, by any encoder, up to two layers deep (percent-escapes, JSON's and
+// HTML's; see scrubber). It rewrites the header values now and the body (and trailers) as it is read, in constant
+// memory: only text from where a match has begun but not yet ended is held back between reads.
+//
+// It can't see a value the API transforms otherwise (base64, a hash, its own encryption): binding a value only to the
+// hosts that should have it is the protection, and scrubbing keeps an echo from undoing it.
 //
 // The body is read as Go gives it (de-chunked). A gzip or deflate body is decoded and sent on uncompressed, so
 // Content-Encoding and Content-Length go and the length is unknown (chunked); an identity body's length changes too.

@@ -134,24 +134,102 @@ func TestScrubResponseCatchesEscapedEchoes(t *testing.T) {
 	})
 }
 
-// TestNewScrubberNeedles checks the forms are deduplicated and that a value's own text keeps its placeholder where
-// it is another value's escaped form.
-func TestNewScrubberNeedles(t *testing.T) {
-	plain := newScrubber([]Entry{{Placeholder: phGitHub, Value: githubValue}})
-	if len(plain.needles) != 1 {
-		t.Fatalf("a value needing no escaping has %d needles, want 1", len(plain.needles))
-	}
+// TestScrubberPrefersAValuesOwnText checks a value's own text keeps its placeholder where it is another value's
+// escaped form, and that an escaped form still finds its own value.
+func TestScrubberPrefersAValuesOwnText(t *testing.T) {
 	spaced := Entry{Placeholder: phGitHub, Value: "a b"}
 	plus := Entry{Placeholder: phNPM, Value: "a+b"}
-	sc := newScrubber([]Entry{spaced, plus})
-	if out, _ := sc.replace([]byte("a+b|a b|a%20b")); string(out) != phNPM+"|"+phGitHub+"|"+phGitHub {
-		t.Fatalf("got %q", out)
-	}
-	for i, n := range sc.needles {
-		if i > 0 && len(n) > len(sc.needles[i-1]) {
-			t.Fatalf("the needles aren't longest first")
+	for _, order := range [][]Entry{{spaced, plus}, {plus, spaced}} {
+		sc := newScrubber(order)
+		if out, _ := sc.replace([]byte("a+b|a b|a%20b|a%2Bb")); string(out) != phNPM+"|"+phGitHub+"|"+phGitHub+"|"+phNPM {
+			t.Fatalf("got %q", out)
 		}
 	}
+}
+
+// TestScrubberCatchesEveryEncoder checks the echoes other encoders write than Go's: each escapes its own set of
+// characters, in its own case, once or twice over. Every one must come back as the placeholder, and the text around
+// it as it was.
+func TestScrubberCatchesEveryEncoder(t *testing.T) {
+	const v = "päss \"w/rd\"&k=1+2<\\>😀\n"
+	sc := newScrubber([]Entry{{Placeholder: phGitHub, Value: v}, {Placeholder: phNPM, Value: npmValue}})
+	pyJSON := `p\u00e4ss \"w/rd\"&k=1+2<\\>\ud83d\ude00\n`
+	forms := map[string]string{
+		"as it is":                                  v,
+		"Python's json (ensure_ascii)":              pyJSON,
+		"Python's json, upper-case hex":             `p\u00E4ss \"w/rd\"&k=1+2<\\>\uD83D\uDE00\n`,
+		"PHP's json_encode (\\/ and \\uXXXX)":       `p\u00e4ss \"w\/rd\"&k=1+2<\\>\ud83d\ude00\n`,
+		"encoding/json (HTML-escaped)":              `päss \"w/rd\"\u0026k=1+2\u003c\\\u003e😀\n`,
+		"JavaScript's encodeURIComponent":           "p%C3%A4ss%20%22w%2Frd%22%26k%3D1%2B2%3C%5C%3E%F0%9F%98%80%0A",
+		"lower-case percent-escapes":                "p%c3%a4ss%20%22w%2frd%22%26k%3d1%2b2%3c%5c%3e%f0%9f%98%80%0a",
+		"Python's quote_plus":                       "p%C3%A4ss+%22w%2Frd%22%26k%3D1%2B2%3C%5C%3E%F0%9F%98%80%0A",
+		"every byte percent-escaped":                "%70%C3%A4%73%73%20%22%77%2F%72%64%22%26%6B%3D%31%2B%32%3C%5C%3E%F0%9F%98%80%0A",
+		"HTML references":                           `päss &quot;w/rd&#34;&amp;k=1+2&lt;\&gt;😀` + "\n",
+		"HTML, numeric references":                  `p&#xe4;ss &#x22;w/rd&#x22;&#38;k=1+2&#60;&#92;&#62;&#x1F600;&#10;`,
+		"Python's repr (\\x and \\')":               `päss \x22w/rd\x22&k=1+2<\x5c>😀\x0a`,
+		"JSON inside a JSON string":                 `p\\u00e4ss \\\"w/rd\\\"&k=1+2<\\\\>\\ud83d\\ude00\\n`,
+		"a percent-escaped query, quoted in JSON":   `p%C3%A4ss%20%22w%2Frd%22%26k%3D1%2B2%3C%5C%3E%F0%9F%98%80%0A`,
+		"percent-escaped twice":                     "p%25C3%25A4ss%2520%2522w%252Frd%2522%2526k%253D1%252B2%253C%255C%253E%25F0%259F%2598%2580%250A",
+		"JSON, then percent-escaped (a JSON query)": url.QueryEscape(pyJSON),
+	}
+	for name, form := range forms {
+		t.Run(name, func(t *testing.T) {
+			got, _ := sc.replace([]byte(`{"echo":"` + form + `","n":"` + npmValue + `"}`))
+			if want := `{"echo":"` + phGitHub + `","n":"` + phNPM + `"}`; string(got) != want {
+				t.Fatalf("got %q, want %q", got, want)
+			}
+		})
+	}
+
+	t.Run("a near miss is left as it was", func(t *testing.T) {
+		for _, text := range []string{v[:len(v)-1], pyJSON[:len(pyJSON)-2], "%", "\\", "&", "&amp", "%2", "\\u00", "+" + npmValue[1:]} {
+			if got, changed := sc.replace([]byte(text)); changed {
+				t.Fatalf("%q became %q", text, got)
+			}
+		}
+	})
+}
+
+// TestScrubberStreams checks an escaped echo split at every byte is still caught, and that a stream holds back only
+// what could still be a match: text with nothing like a value passes straight through.
+func TestScrubberStreams(t *testing.T) {
+	sc := newScrubber([]Entry{{Placeholder: phAwkward, Value: awkwardValue}})
+	marshalled, err := json.Marshal(map[string]string{"t": awkwardValue})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "head " + string(marshalled) + " " + url.QueryEscape(awkwardValue) + " tail"
+	want := `head {"t":"` + phAwkward + `"} ` + phAwkward + " tail"
+	for cut := 1; cut < len(body); cut++ {
+		src := io.MultiReader(strings.NewReader(body[:cut]), strings.NewReader(body[cut:]))
+		got, err := io.ReadAll(newStream(oneByteReader{src}, nil, sc.step))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != want {
+			t.Fatalf("cut at %d: got %q", cut, got)
+		}
+	}
+
+	plain := []byte("data: {\"delta\":\"hello\"}\n\n")
+	out, used, _ := sc.step(nil, plain, false)
+	if used != len(plain) || !bytes.Equal(out, plain) {
+		t.Fatalf("an event with nothing like the value was held back: used %d of %d", used, len(plain))
+	}
+	partial := []byte("data: " + awkwardValue[:4])
+	if _, used, _ := sc.step(nil, partial, false); used != len("data: ") {
+		t.Fatalf("used %d, want only what comes before a possible match (%d)", used, len("data: "))
+	}
+}
+
+// oneByteReader reads at most one byte at a time.
+type oneByteReader struct{ r io.Reader }
+
+func (o oneByteReader) Read(p []byte) (int, error) {
+	if len(p) > 1 {
+		p = p[:1]
+	}
+	return o.r.Read(p)
 }
 
 // TestRelayScrubsEscapedEchoes checks the WebSocket downlink catches the escaped forms too, compressed or not.

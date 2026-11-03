@@ -6,6 +6,7 @@ import (
 	"compress/flate"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -294,6 +295,56 @@ func TestRelayClientMessages(t *testing.T) {
 			h.finish(t)
 		})
 	}
+}
+
+// TestRelayEscapesValuesInJSONMessages checks a value that needs escaping goes into a JSON text message escaped, so
+// the message stays valid and reads as the value, compressed or not; other messages get it as it is.
+func TestRelayEscapesValuesInJSONMessages(t *testing.T) {
+	store := awkwardStore()
+	entries, err := store.Values(context.Background(), "sbx-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := `{"auth":"` + phAwkward + `","op":"subscribe"}`
+	checkJSON := func(t *testing.T, f wsFrame) {
+		t.Helper()
+		var got struct{ Auth, Op string }
+		if err := json.Unmarshal(f.payload, &got); err != nil {
+			t.Fatalf("the message sent isn't valid JSON: %v (%q)", err, f.payload)
+		}
+		if got.Auth != awkwardValue || got.Op != "subscribe" {
+			t.Fatalf("the message reads %+v", got)
+		}
+	}
+
+	t.Run("plain", func(t *testing.T) {
+		h := startRelayWith(t, Extensions{}, store, entries)
+		h.fromClient(t, encodeFrame(true, false, opText, []byte(msg), true))
+		checkJSON(t, recvFrame(t, h.atServer))
+		h.finish(t)
+	})
+
+	t.Run("permessage-deflate, fragmented", func(t *testing.T) {
+		h := startRelayWith(t, Extensions{Deflate: true}, store, entries)
+		compressed := newCompressor(t).message(t, msg)
+		h.fromClient(t,
+			encodeFrame(false, true, opText, compressed[:6], true),
+			encodeFrame(true, false, opContinuation, compressed[6:], true),
+		)
+		checkJSON(t, recvFrame(t, h.atServer))
+		h.finish(t)
+	})
+
+	t.Run("not JSON, and binary", func(t *testing.T) {
+		h := startRelayWith(t, Extensions{}, store, entries)
+		h.fromClient(t,
+			encodeFrame(true, false, opText, []byte("auth "+phAwkward), true),
+			encodeFrame(true, false, opBinary, []byte(`{"auth":"`+phAwkward+`"}`), true),
+		)
+		checkFrame(t, recvFrame(t, h.atServer), wantFrame{opText, "auth " + awkwardValue})
+		checkFrame(t, recvFrame(t, h.atServer), wantFrame{opBinary, `{"auth":"` + awkwardValue + `"}`})
+		h.finish(t)
+	})
 }
 
 func TestRelayScrubsServerMessages(t *testing.T) {
