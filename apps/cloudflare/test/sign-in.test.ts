@@ -345,6 +345,37 @@ describe("a sign-up that stopped part-way", () => {
 		expect(await organisationsNamed(identity, signedIn.user.id, signedIn.organisationIds)).toEqual(["Personal"]);
 	});
 
+	it("finishes the space an overlapping sign-in made and failed to record, rather than making another", async () => {
+		const identity = await sqlDirectory();
+		const inner = createMemorySignUpStore();
+		let drops = 1;
+		const records: SignUpStore = {
+			load: (userId) => inner.load(userId),
+			async save(userId, record) {
+				if (record.organisationId !== undefined && drops > 0) {
+					drops -= 1;
+					throw new Error("reset");
+				}
+				await inner.save(userId, record);
+			},
+		};
+		const external = { issuer: EMAIL_OTP_ISSUER, subject: "f@x.test", email: "f@x.test", emailVerified: true };
+		const ctx = { actor: { kind: "system" as const, component: "test" }, organisationId: "test" };
+		const signUp = openSignUp(identity, { records });
+		// Both read no memberships before either takes the lock.
+		const settled = await Promise.allSettled([signUp.signIn(ctx, external), signUp.signIn(ctx, external)]);
+		// Whichever took the lock first failed; the other finished its space.
+		expect(settled.map((result) => result.status).sort()).toEqual(["fulfilled", "rejected"]);
+		const after = await identity.signIn(ctx, external);
+		expect(after.organisationIds).toHaveLength(1);
+		expect(await organisationsNamed(identity, after.user.id, after.organisationIds)).toEqual(["Personal"]);
+		const as = {
+			actor: { kind: "human" as const, userId: after.user.id },
+			organisationId: after.organisationIds[0] ?? "",
+		};
+		expect((await identity.listProjects(as)).items.map((project) => project.name)).toEqual(["Default"]);
+	});
+
 	it("makes one space when two sign-ins overlap", async () => {
 		const identity = await sqlDirectory();
 		const records = createMemorySignUpStore();

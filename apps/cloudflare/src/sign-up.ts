@@ -107,23 +107,34 @@ export function openSignUp(
 		}
 	}
 
-	/** Makes `signedIn`'s space, or finishes one an earlier sign-in started, from their record. */
-	async function provision(signedIn: SignIn): Promise<SignIn> {
+	/**
+	 * Makes `signedIn`'s space, or finishes one an earlier sign-in started, from their record. Run under the person's
+	 * lock, so the record can't change underneath it. The record is saved as begun (`{}`) before an organisation is
+	 * made, so an organisation the record doesn't name can only exist when the record says begun; only then is it looked
+	 * for, among memberships read again now (`again`), not those read before the lock.
+	 */
+	async function provision(signedIn: SignIn, again: () => Promise<SignIn>): Promise<SignIn> {
 		const userId = signedIn.user.id;
 		let record = await records.load(userId);
+		let resumed = true;
 		if (record === undefined) {
 			// Someone already in an organisation (invited) who never signed up has no space to make.
 			if (signedIn.organisationIds.length > 0) return signedIn;
 			record = {};
 			await records.save(userId, record);
+			resumed = false;
 		}
 		if (record.organisationId !== undefined && record.projectId !== undefined) {
 			return withSpace(signedIn, record.organisationId);
 		}
-		const organisationId =
-			record.organisationId ??
-			(await unrecordedSpace(userId, signedIn.organisationIds)) ??
-			(await identity.createOrganisation(SIGN_UP, { name: PERSONAL_SPACE_NAME, admin: { kind: "user", userId } })).id;
+		let organisationId = record.organisationId;
+		if (organisationId === undefined && resumed) {
+			signedIn = await again();
+			organisationId = await unrecordedSpace(userId, signedIn.organisationIds);
+		}
+		organisationId ??= (
+			await identity.createOrganisation(SIGN_UP, { name: PERSONAL_SPACE_NAME, admin: { kind: "user", userId } })
+		).id;
 		await records.save(userId, { organisationId });
 		const inSpace: CallContext = { actor: { kind: "human", userId }, organisationId };
 		const [existing] = (await identity.listProjects(inSpace, { limit: 1 })).items;
@@ -163,7 +174,8 @@ export function openSignUp(
 				await makeUser(external);
 				signedIn = await identity.signIn(ctx, external);
 			}
-			return oneAtATime(signedIn.user.id, () => provision(signedIn));
+			const first = signedIn;
+			return oneAtATime(first.user.id, () => provision(first, () => identity.signIn(ctx, external)));
 		},
 	};
 }
