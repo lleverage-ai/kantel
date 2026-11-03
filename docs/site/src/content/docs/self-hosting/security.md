@@ -51,7 +51,9 @@ A plain request to an exposed port still gets the HTTP status.
 
 Each exposed port has its own name under the ports domain (`KANTEL_COMPUTE_PORTS_DOMAIN`), such as `3000-brave-otter-ab12cd.kantel-ports.example`, and its token cookie is set on that one name only. Browsers still treat every name under one registrable domain as the same site: a page one sandbox serves can set a cookie for the whole domain, which other sandboxes' pages then receive, and a sandbox's page is same-site with another's for `SameSite` cookies.
 
-To make each name its own site, as GitHub does for `github.io`, give ports a domain or subdomain nothing else uses, such as `ports.example.com`, and add it to the [Public Suffix List](https://publicsuffix.org/submit/). The list asks for a project with thousands of users and more than two years left on the domain's registration. Until a browser ships a list with it, keep apps in sandboxes from relying on cookies being private from other sandboxes.
+Give ports a domain or subdomain nothing else uses. Kantel's hosted service uses `ports.kantel.dev`, apart from its console. On your own install, set your own with `KANTEL_COMPUTE_PORTS_DOMAIN`, such as `ports.example.com`.
+
+To make each name its own site, as GitHub does for `github.io`, the ports domain must also be on the [Public Suffix List](https://publicsuffix.org/submit/). The list asks for a project with thousands of users and more than two years left on the domain's registration. `ports.kantel.dev` isn't on it yet: its listing is deferred until hosted ports are served and in use. Until a browser ships a list with your ports domain on it, `ports.kantel.dev` included, cookies aren't private between sandboxes, so keep apps in sandboxes from relying on that.
 
 ## Several gateways
 

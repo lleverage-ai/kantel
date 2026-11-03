@@ -230,6 +230,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		authenticator,
 		identity,
 		...(storage.compute === undefined ? {} : { sql: storage.compute }),
+		...(options.config.portsDomain === undefined ? {} : { portsDomain: options.config.portsDomain }),
 		now: () => clock.now(),
 	});
 	phase("compute");

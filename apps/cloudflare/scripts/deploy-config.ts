@@ -68,6 +68,9 @@ export const OPTIONAL_DEPLOY_VARIABLES = [
 	// `{ templateId?, issuer?, clientId, secretEnv?, scopes?, label? }`. Public clients need nothing else; a confidential
 	// one's secret is a Worker secret named by its `secretEnv`, never in this variable.
 	"KANTEL_OAUTH_CLIENTS",
+	// The domain sandboxes' port URLs are under (src/config.ts). Unset, the Worker's default, ports.kantel.dev, Kantel's
+	// hosted ports domain; a deployment on another domain sets its own.
+	"KANTEL_COMPUTE_PORTS_DOMAIN",
 ] as const;
 export type OptionalDeployVariable = (typeof OPTIONAL_DEPLOY_VARIABLES)[number];
 
@@ -130,6 +133,10 @@ const OPTIONAL_CHECKS: Readonly<
 	KANTEL_EMBED_ORIGINS: {
 		test: (v) => v.split(/[\s,]+/).every((origin) => /^https:\/\/[a-z0-9.-]+(?::\d{1,5})?$/.test(origin)),
 		expect: "https:// origins without a path or wildcard, separated by spaces or commas",
+	},
+	KANTEL_COMPUTE_PORTS_DOMAIN: {
+		test: (v) => /^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(v),
+		expect: "a lower-case DNS name such as ports.example.com",
 	},
 };
 
@@ -272,6 +279,8 @@ export interface DeployValues {
 	readonly connectionsCimd?: boolean;
 	/** `KANTEL_OAUTH_CLIENTS`, as given. */
 	readonly oauthClients?: string;
+	/** The domain port URLs are under, when set. */
+	readonly portsDomain?: string;
 	/** The variables a dry run filled with placeholders. Always empty in deploy mode. */
 	readonly placeholders: readonly DeployVariable[];
 }
@@ -335,6 +344,9 @@ export function deployValues(env: Readonly<Record<string, string | undefined>>, 
 		...(optional("KANTEL_CONNECTIONS_PERSONAL") === "on" ? { connectionsPersonal: true } : {}),
 		...(optional("KANTEL_CONNECTIONS_CIMD") === "on" ? { connectionsCimd: true } : {}),
 		...(optional("KANTEL_OAUTH_CLIENTS") === undefined ? {} : { oauthClients: optional("KANTEL_OAUTH_CLIENTS") }),
+		...(optional("KANTEL_COMPUTE_PORTS_DOMAIN") === undefined
+			? {}
+			: { portsDomain: optional("KANTEL_COMPUTE_PORTS_DOMAIN") }),
 		placeholders: missing,
 	};
 }
@@ -407,6 +419,7 @@ export function deployConfig(raw: RawConfig, values: DeployValues): Record<strin
 			...(values.connectionsPersonal === true ? { KANTEL_CONNECTIONS_PERSONAL: "on" } : {}),
 			...(values.connectionsCimd === true ? { KANTEL_CONNECTIONS_CIMD: "on" } : {}),
 			...(values.oauthClients === undefined ? {} : { KANTEL_OAUTH_CLIENTS: values.oauthClients }),
+			...(values.portsDomain === undefined ? {} : { KANTEL_COMPUTE_PORTS_DOMAIN: values.portsDomain }),
 		},
 		...(values.browserContainers === true || values.sandboxContainers === true
 			? {

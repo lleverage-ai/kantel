@@ -31,7 +31,9 @@ const { url } = await kantel.exposePort("sbx_4kq9x2mt", { port: 3000 });
 console.log(url);
 ```
 
-The answer is an [ExposedPort](/api/reference/types/#exposedport) with the URL. Its host name starts with the sandbox's `subdomain`, under your deployment's sandbox domain. Exposing a port that's already exposed answers the URL it has.
+The answer is an [ExposedPort](/api/reference/types/#exposedport) with the URL. Its host name is the port and the sandbox's `subdomain` under the deployment's ports domain: `ports.kantel.dev` on Kantel's hosted service, as in `https://3000-brave-otter-ab12cd.ports.kantel.dev`, or the domain you set on your own install. Exposing a port that's already exposed answers the URL it has.
+
+Every port name under one ports domain is the same site to browsers until the domain is on the Public Suffix List, and `ports.kantel.dev` isn't yet. So a page one sandbox serves can set cookies another sandbox's pages receive: don't rely on cookies being private between sandboxes. [Security model](/self-hosting/security/#the-ports-domain) has the details.
 
 ## Tokens and public URLs
 
