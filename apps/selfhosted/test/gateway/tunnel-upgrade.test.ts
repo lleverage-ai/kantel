@@ -9,10 +9,11 @@ import { createTunnelTickets, MAX_TUNNEL_MINUTES } from "@kantel/hosts/tunnel";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { gatewayRelay, withHostUpgrades } from "../../src/gateway/compute.ts";
+import { closeServer } from "./close-server.ts";
 
 const servers: Server[] = [];
 afterEach(async () => {
-	for (const server of servers.splice(0)) await new Promise((resolve) => server.close(resolve));
+	for (const server of servers.splice(0)) await closeServer(server);
 });
 
 const relay = createMemoryRelayStore();
@@ -107,7 +108,7 @@ describe("the gateway's tunnel endpoint", () => {
 			expect(result.reason).toBe("The tunnel URL is wrong or has expired");
 		}
 		// A path the pattern doesn't take isn't a tunnel at all.
-		await expect(connect(`${base}/no-dot-here`)).rejects.toThrow(/404/);
+		expect(await connect(`${base}/no-dot-here`)).toMatchObject({ code: 4404, echoed: "" });
 		expect(opened).toEqual([]);
 	});
 });

@@ -13,10 +13,11 @@ import { createTunnelTickets, type DesktopMode } from "@kantel/hosts/tunnel";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { gatewayRelay, withHostUpgrades } from "../../src/gateway/compute.ts";
+import { closeServer } from "./close-server.ts";
 
 const servers: Server[] = [];
 afterEach(async () => {
-	for (const server of servers.splice(0)) await new Promise((resolve) => server.close(resolve));
+	for (const server of servers.splice(0)) await closeServer(server);
 });
 
 const relay = createMemoryRelayStore();

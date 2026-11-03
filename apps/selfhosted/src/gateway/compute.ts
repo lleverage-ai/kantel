@@ -50,7 +50,8 @@
  *
  * A host's WebSocket is checked before it is used: no credential or a wrong or revoked one is accepted and closed at
  * once with 4003, which kantel-host reads as "stop, don't retry". (Bun's node:http drops a plain 401 written to an
- * upgrade's socket, so the host would see an empty reply and retry for ever.)
+ * upgrade's socket, so the host would see an empty reply and retry for ever.) No upgrade is refused with an HTTP
+ * status for the same reason: the other refusals close with 4000 plus the status (`upgrade-refusal.ts`).
  *
  * A person signed in to the console (or with an OIDC or Access token) is a compute person under their user ID, and a
  * super-admin when they are an admin of the deployment's organisation.
@@ -93,6 +94,7 @@ import { hashSessionToken, isSessionToken } from "@kantel/identity/otp";
 import { type WebSocket, WebSocketServer } from "ws";
 import { CLUSTER_PATH, type GatewayCluster } from "./cluster.ts";
 import type { UpgradeHandler } from "./node-http.ts";
+import { refuseUpgrade } from "./upgrade-refusal.ts";
 
 /** How often webhook deliveries that are due are sent. */
 const WEBHOOK_INTERVAL_MS = 1000;
@@ -494,13 +496,12 @@ export function withHostUpgrades(
 			void (async () => {
 				const port = await ports.upgrade(incoming.headers.host ?? "", incoming.url ?? "/", incoming.headers.cookie);
 				if (port === undefined) return gatewayUpgrade();
-				if (!port.ok) {
-					socket.end(`HTTP/1.1 ${port.status} ${port.reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
-					return;
-				}
+				if (!port.ok) return refuseUpgrade(incoming, socket, head, port.status, port.reason, sockets);
 				const held = { sandboxId: port.sandboxId, kind: `port ${port.port}`, grantee: port.grantee };
 				return passThrough(port.sandboxId, port.port, port.path, port.host, held);
-			})().catch(() => socket.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"));
+			})().catch(() =>
+				refuseUpgrade(incoming, socket, head, 502, "The gateway could not check the port's token", sockets),
+			);
 			return;
 		}
 		return gatewayUpgrade();
@@ -571,8 +572,7 @@ export function withHostUpgrades(
 			if (hosts?.cluster?.peerUpgrade(incoming, socket, head, sockets)) return;
 			if (path !== HOSTS_CONNECT_PATH) {
 				if (next !== undefined) return next(incoming, socket, head);
-				socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
-				return;
+				return refuseUpgrade(incoming, socket, head, 404, "Nothing upgrades at this path", sockets);
 			}
 			const credential = /^Bearer\s+(\S+)$/i.exec(incoming.headers.authorization ?? "")?.[1];
 			if (incoming.method !== "GET" || credential === undefined)

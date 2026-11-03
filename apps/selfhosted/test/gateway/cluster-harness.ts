@@ -131,6 +131,8 @@ export interface ConnectedHost {
 	readonly socket: WebSocket;
 	readonly calls: string[];
 	readonly closed: Promise<number>;
+	/** The reason the gateway closed with. */
+	readonly reason: Promise<string>;
 	sandboxes(): HostSandbox[];
 }
 
@@ -192,6 +194,7 @@ export async function connectHost(
 	/** Streams past their first bytes: whether they still echo. */
 	const streams = new Map<number, boolean>();
 	const closed = new Promise<number>((resolve) => socket.on("close", (code) => resolve(code)));
+	const reason = new Promise<string>((resolve) => socket.on("close", (_code, why) => resolve(why.toString())));
 	const send = (message: object) => socket.send(JSON.stringify(message));
 	const welcomed = new Promise<void>((resolve) => {
 		socket.on("message", (data, binary) => {
@@ -257,7 +260,7 @@ export async function connectHost(
 		},
 	});
 	await welcomed;
-	return { socket, calls, closed, sandboxes: () => [...held.values()] };
+	return { socket, calls, closed, reason, sandboxes: () => [...held.values()] };
 }
 
 /** Joins a host through `target`'s registry. */

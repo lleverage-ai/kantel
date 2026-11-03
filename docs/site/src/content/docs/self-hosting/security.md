@@ -33,6 +33,20 @@ Every URL records who it was given to: the API key, or the person and their sign
 
 The check reads the shared database, so revoking on any gateway ends sessions on every gateway within about 2 seconds, with no message between them. If the check can't be answered (the database is unreachable), the relay refuses: access never outlives a revocation it couldn't check.
 
+## How a WebSocket is refused
+
+The gateway never answers a WebSocket upgrade with an HTTP error status, because Bun, which the gateway's image runs on, drops one. It completes the handshake and closes at once, before reading anything the client sends, so nothing reaches a sandbox. The close code says why:
+
+| Code | Meaning |
+| --- | --- |
+| `4003` | A ticket, host credential or session that is wrong, expired or revoked |
+| `4401` | An exposed port's name without its token (as HTTP `401`) |
+| `4403` | An exposed port whose owner no longer has access (as HTTP `403`) |
+| `4404` | Nothing upgrades at this path, or an unsigned stream between gateways (as HTTP `404`) |
+| `4502` | The gateway couldn't check the request, so it refused it (as HTTP `502`) |
+
+A plain request to an exposed port still gets the HTTP status.
+
 ## The ports domain
 
 Each exposed port has its own name under the ports domain (`KANTEL_COMPUTE_PORTS_DOMAIN`), such as `3000-brave-otter-ab12cd.kantel-ports.example`, and its token cookie is set on that one name only. Browsers still treat every name under one registrable domain as the same site: a page one sandbox serves can set a cookie for the whole domain, which other sandboxes' pages then receive, and a sandbox's page is same-site with another's for `SameSite` cookies.
@@ -45,7 +59,7 @@ With a database, any number of gateways may run behind one load balancer. They s
 
 | Threat | What stops it |
 | --- | --- |
-| A forged request between gateways | Each gateway makes an Ed25519 key when it starts. Only the public half goes into the database; the private half never leaves the process. Every request between gateways is signed over the gateway it is for, the operation, the time, a fresh nonce and the body's SHA-256. Anything unsigned, signed by a key no live gateway registered, or signed for another gateway gets `404`, as an unknown path would |
+| A forged request between gateways | Each gateway makes an Ed25519 key when it starts. Only the public half goes into the database; the private half never leaves the process. Every request between gateways is signed over the gateway it is for, the operation, the time, a fresh nonce and the body's SHA-256. Anything unsigned, signed by a key no live gateway registered, or signed for another gateway gets `404` (a WebSocket, close code `4404`), as an unknown path would |
 | Replaying a captured request | A request is good for 30 seconds, once, on the gateway it was signed for |
 | A request bouncing between gateways | A gateway serves a forwarded request only for a host connected to itself |
 | A gateway that died | One not seen for 10 seconds gets nothing forwarded to it, and its hosts reconnect to another |
