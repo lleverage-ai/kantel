@@ -245,6 +245,9 @@ function TelemetryForm({
 	const [notice, setNotice] = useState<{ level: "info" | "error"; text: string }>();
 	const destinationId = useId();
 	const protocolId = useId();
+	// The protocols this Kantel exports over: no choice to make when there's one.
+	const protocols =
+		source.protocols === undefined ? PROTOCOLS : PROTOCOLS.filter((each) => source.protocols?.includes(each.value));
 	const headersId = useId();
 
 	const problems = problemsOf(draft);
@@ -368,14 +371,16 @@ function TelemetryForm({
 						mono
 						{...(problems.endpoint === undefined ? {} : { error: problems.endpoint })}
 					/>
-					<FormField id={protocolId} label="Protocol">
-						<SegmentedControl
-							label="Protocol"
-							options={PROTOCOLS}
-							value={draft.protocol}
-							onChange={(protocol) => edit({ protocol })}
-						/>
-					</FormField>
+					{protocols.length < 2 ? null : (
+						<FormField id={protocolId} label="Protocol">
+							<SegmentedControl
+								label="Protocol"
+								options={protocols}
+								value={draft.protocol}
+								onChange={(protocol) => edit({ protocol })}
+							/>
+						</FormField>
+					)}
 					<FormField
 						id={headersId}
 						label="Headers"
@@ -428,35 +433,37 @@ function TelemetryForm({
 						onChange={(event) => edit({ events: event.currentTarget.checked })}
 					/>
 				</FormSection>
-				<FormSection
-					title="Resource attributes"
-					description="Added to everything Kantel sends, such as deployment.environment=production."
-				>
-					<div className="flex min-w-0 flex-col gap-2">
-						{draft.attributes.map((row) => (
-							<PairRow
-								key={row.id}
-								what="attribute"
-								name={row.name}
-								value={row.value}
-								problems={problems.rows.get(row.id)}
-								onName={(name) => setAttribute(row.id, { name })}
-								onValue={(value) => setAttribute(row.id, { value })}
-								onRemove={() => edit({ attributes: draft.attributes.filter((each) => each.id !== row.id) })}
-							/>
-						))}
-						<div className="-ml-2">
-							<Button
-								size="xs"
-								variant="ghost"
-								icon={<PlusIcon size="sm" />}
-								onClick={() => edit({ attributes: [...draft.attributes, { id: rowId(), name: "", value: "" }] })}
-							>
-								Add attribute
-							</Button>
+				{source.attributes === false ? null : (
+					<FormSection
+						title="Resource attributes"
+						description="Added to everything Kantel sends, such as deployment.environment=production."
+					>
+						<div className="flex min-w-0 flex-col gap-2">
+							{draft.attributes.map((row) => (
+								<PairRow
+									key={row.id}
+									what="attribute"
+									name={row.name}
+									value={row.value}
+									problems={problems.rows.get(row.id)}
+									onName={(name) => setAttribute(row.id, { name })}
+									onValue={(value) => setAttribute(row.id, { value })}
+									onRemove={() => edit({ attributes: draft.attributes.filter((each) => each.id !== row.id) })}
+								/>
+							))}
+							<div className="-ml-2">
+								<Button
+									size="xs"
+									variant="ghost"
+									icon={<PlusIcon size="sm" />}
+									onClick={() => edit({ attributes: [...draft.attributes, { id: rowId(), name: "", value: "" }] })}
+								>
+									Add attribute
+								</Button>
+							</div>
 						</div>
-					</div>
-				</FormSection>
+					</FormSection>
+				)}
 				{notice === undefined ? null : (
 					<Notice
 						level={notice.level}

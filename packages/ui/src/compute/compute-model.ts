@@ -28,8 +28,11 @@ export interface ComputeAccount {
 	readonly id: string;
 	readonly kind: AccountKind;
 	readonly name: string;
-	/** The account's short name, in sandbox addresses: `<sandbox>.<slug>.<domain>`. */
-	readonly slug: string;
+	/**
+	 * The account's short name, in sandbox addresses: `<sandbox>.<slug>.<domain>`. Absent where addresses don't carry
+	 * the account, as with the compute API, which names a sandbox `<subdomain>.<domain>`.
+	 */
+	readonly slug?: string;
 	readonly role: AccountRole;
 	/** People in an organisation; 1 for a personal account. */
 	readonly members: number;
@@ -59,6 +62,8 @@ export interface OrganisationInvite {
 	readonly email: string;
 	readonly role: AccountRole;
 	readonly sentAt: number;
+	/** The join code (`kji_…`), only on the invite just made: Kantel shows it once and sends no email. */
+	readonly code?: string;
 }
 
 export interface AccountsSource {
@@ -122,6 +127,8 @@ export interface Sandbox {
 	readonly accountId: string;
 	readonly kind: SandboxKind;
 	readonly size: SandboxSize;
+	/** What its host gave it, where that's known: the page shows this rather than its size's usual figures. */
+	readonly resources?: { readonly vcpus: number; readonly memoryGb: number; readonly diskGb: number };
 	readonly state: SandboxState;
 	readonly createdAt: number;
 	/** Who made it. */
@@ -176,6 +183,11 @@ export interface SandboxAccess {
 }
 
 export interface SandboxesSource {
+	/**
+	 * Whether New sandbox can say what each size is. A deployment's hosts decide that, and the API has no list of them,
+	 * so a live source names the sizes without figures. True when left out.
+	 */
+	readonly sizeFigures?: boolean;
 	list(accountId: string): Promise<readonly Sandbox[]>;
 	create(input: CreateSandboxInput): Promise<Sandbox>;
 	stop(id: string): Promise<Sandbox>;
@@ -244,8 +256,8 @@ export interface SnapshotsSource {
 	list(snapshotId: string, path: string): Promise<readonly SnapshotEntry[]>;
 	/** A text file's content; undefined for a binary or a file too big to show. */
 	read(snapshotId: string, path: string): Promise<string | undefined>;
-	/** A link to download a file or folder (as a tarball). */
-	downloadUrl(snapshotId: string, path: string): string;
+	/** A link to download a file or folder (as a tarball), or undefined where there is none: no Download then. */
+	downloadUrl(snapshotId: string, path: string): string | undefined;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -516,6 +528,10 @@ export type TelemetryChange = Partial<Omit<TelemetrySettings, "accountId" | "hea
 };
 
 export interface TelemetrySource {
+	/** The protocols this Kantel exports over; both when left out. With one, the page offers no choice. */
+	readonly protocols?: readonly TelemetryProtocol[];
+	/** False where exports can't carry extra resource attributes: the page leaves that section out. */
+	readonly attributes?: boolean;
 	get(accountId: string): Promise<TelemetrySettings>;
 	update(accountId: string, change: TelemetryChange): Promise<TelemetrySettings>;
 	/** Sends one test metric and event, and says how it went. */
@@ -657,9 +673,9 @@ export const SANDBOX_KIND_LABELS: Readonly<Record<SandboxKind, string>> = {
 export const sizeSpec = (size: SandboxSize): SandboxSizeSpec =>
 	SANDBOX_SIZES.find((spec) => spec.size === size) ?? (SANDBOX_SIZES[1] as SandboxSizeSpec);
 
-/** "4 vCPU, 8 GB": a size in a line. */
-export const sizeText = (size: SandboxSize): string => {
-	const spec = sizeSpec(size);
+/** "4 vCPU, 8 GB": a size, or what a sandbox was given, in a line. */
+export const sizeText = (size: SandboxSize | { readonly vcpus: number; readonly memoryGb: number }): string => {
+	const spec = typeof size === "string" ? sizeSpec(size) : size;
 	return `${spec.vcpus} vCPU, ${spec.memoryGb} GB`;
 };
 

@@ -34,6 +34,7 @@
 		"react-dom": "19.3.1"
 	},
 	"devDependencies": {
+		"@kantel/compute": "workspace:*",
 		"@kantel/memory": "workspace:*",
 		"@kantel/runtime": "workspace:*",
 		"@kantel/sandbox": "workspace:*",

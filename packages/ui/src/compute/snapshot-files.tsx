@@ -57,6 +57,7 @@ export function SnapshotFiles({
 			? [...state.value].sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "folder" ? -1 : 1))
 			: undefined;
 	const openEntry = entries?.find((entry) => entry.path === open);
+	const folderHref = source.downloadUrl(snapshotId, path);
 
 	const segments = path === "" ? [] : path.split("/");
 	const parents: Crumb[] =
@@ -84,14 +85,11 @@ export function SnapshotFiles({
 			<PageHeader title={label} lede="The files as they were when this snapshot was taken." />
 			<div className="flex min-w-0 items-center gap-3">
 				<Breadcrumbs label="Folder" parents={parents} current={<span>{segments.at(-1) ?? "Root"}</span>} />
-				<a
-					className={downloadLink}
-					href={source.downloadUrl(snapshotId, path)}
-					download
-					title="Download this folder as a tarball"
-				>
-					<span className={buttonLabelClass}>Download folder</span>
-				</a>
+				{folderHref === undefined ? null : (
+					<a className={downloadLink} href={folderHref} download title="Download this folder as a tarball">
+						<span className={buttonLabelClass}>Download folder</span>
+					</a>
+				)}
 			</div>
 			{state.status === "error" ? (
 				<Notice
@@ -223,9 +221,11 @@ function FileView({
 					<span className="block truncate font-medium text-fg">{entry.name}</span>
 					{facts.length === 0 ? null : <span className={cellSub}>{facts.join(", ")}</span>}
 				</div>
-				<a className={downloadLink} href={href} download>
-					<span className={buttonLabelClass}>Download</span>
-				</a>
+				{href === undefined ? null : (
+					<a className={downloadLink} href={href} download>
+						<span className={buttonLabelClass}>Download</span>
+					</a>
+				)}
 			</div>
 			{state.status === "error" ? (
 				<div className="p-3">

@@ -40,6 +40,9 @@ export interface ComputeApiKeysPageProps {
 	readonly created?: CreatedApiKey;
 }
 
+/** Where this console is, which is the control plane the CLI signs in to; a placeholder outside a browser. */
+const consoleOrigin = (): string => globalThis.location?.origin ?? "https://kantel.example.com";
+
 const EXPIRY_CHOICES = [
 	{ value: "30", label: "30 days" },
 	{ value: "90", label: "90 days" },
@@ -126,10 +129,10 @@ export function ComputeApiKeysPage({
 					copyLabel="Copy key"
 					commands={[
 						{ label: "Use it in this shell", text: `export KANTEL_API_KEY=${created.secret}` },
-						// The CLI's name is provisional.
+						// `kantel login` reads a key piped in, which keeps it out of the shell's history (packages/cli).
 						{
 							label: "Or sign the CLI in with it",
-							text: `printf '%s' '${created.secret}' | npx kantel login --key-stdin`,
+							text: `printf '%s' '${created.secret}' | npx kantel login --url ${consoleOrigin()}`,
 						},
 					]}
 					warning="Kantel shows this key only once and keeps just a hash of it. If it's lost, make a new key and revoke this one."

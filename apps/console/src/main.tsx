@@ -321,12 +321,18 @@ function ApiConsole({ first }: { first: Promise<Boot> }) {
 	}, [booting]);
 	if (answer?.for !== booting) return <ShellPlaceholder />;
 	const { state } = answer;
-	// The compute console (experimental) under /compute: signed in the same way, on sample data for now.
+	// The compute console (experimental) under /compute: signed in the same way, on the gateway's compute API when it
+	// serves one, else on sample data.
 	if (state.kind === "signed-in" && isComputePath(location.pathname)) {
 		const { signOut } = state.actor;
 		return (
 			<ComputeApp
 				signedInAs={{ name: state.me.name, ...(state.me.email === undefined ? {} : { email: state.me.email }) }}
+				headers={state.headers}
+				onUnauthenticated={() => {
+					identity.forget();
+					void forgetCache().finally(reboot);
+				}}
 				{...(signOut === undefined ? {} : { onSignOut: () => void signOut().finally(reboot) })}
 			/>
 		);
