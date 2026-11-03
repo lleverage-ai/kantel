@@ -48,24 +48,27 @@ function go(path: string): void {
 }
 
 /**
- * The sample data, with the person signed in as its viewer and their personal account named after them, so the console
- * doesn't greet them as someone else.
+ * `source` with the person signed in as its viewer and their personal account named after them. The sample data would
+ * otherwise greet them as someone else, and the compute API names a person by their user ID, as it has no profile.
  */
-function sampleFor(hosting: HostingMode, person: { readonly name?: string; readonly email?: string } | undefined) {
-	const sample = createComputeFixtures({ hosting, now: Date.now() });
-	if (person?.name === undefined) return sample;
+function namedFor(
+	source: ComputeSource,
+	person: { readonly name?: string; readonly email?: string } | undefined,
+): ComputeSource {
+	if (person?.name === undefined) return source;
 	const { name } = person;
 	const accounts: ComputeSource["accounts"] = {
-		...sample.accounts,
+		...source.accounts,
 		viewer: async () => ({
-			...(await sample.accounts.viewer()),
+			...(await source.accounts.viewer()),
 			name,
 			...(person.email === undefined ? {} : { email: person.email }),
 		}),
 		list: async () =>
-			(await sample.accounts.list()).map((account) => (account.kind === "personal" ? { ...account, name } : account)),
+			(await source.accounts.list()).map((account) => (account.kind === "personal" ? { ...account, name } : account)),
 	};
-	return { ...sample, accounts };
+	// Not a spread, which would fix the live source's `domain` at what it is now: it learns the domain later.
+	return Object.defineProperties({ ...source, accounts }, { domain: { get: () => source.domain, enumerable: true } });
 }
 
 type Sourced = { readonly source: ComputeSource; readonly sample: boolean };
@@ -79,12 +82,12 @@ async function sourceFor(
 	const wantsSample = hosting === "hosted" || new URLSearchParams(location.search).get("data") === "sample";
 	if (api !== undefined && !wantsSample) {
 		try {
-			return { source: await apiCompute({ ...api, hosting }), sample: false };
+			return { source: namedFor(await apiCompute({ ...api, hosting }), signedInAs), sample: false };
 		} catch (error) {
 			console.info("kantel: the compute API isn't served here, so /compute shows sample data:", error);
 		}
 	}
-	return { source: sampleFor(hosting, signedInAs), sample: true };
+	return { source: namedFor(createComputeFixtures({ hosting, now: Date.now() }), signedInAs), sample: true };
 }
 
 export function ComputeApp({
