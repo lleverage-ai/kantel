@@ -83,7 +83,7 @@ import { kantelSessionProvider } from "@kantel/identity/otp";
 import { browserBinding, browserConfig, createBrowserViews, gatewayBrowserProvider } from "./browser.ts";
 import { callbackUrlAllowed, parseCallbackOrigins } from "./callbacks.ts";
 import { type Bootstrap, bootstrap, createGatewayComponents, putAssistantProfile } from "./components.ts";
-import { computeConfig, type GatewayCompute, gatewayCompute, withHostUpgrades } from "./compute.ts";
+import { computeConfig, type GatewayCompute, gatewayCompute, portRouterFor, withHostUpgrades } from "./compute.ts";
 import { connectionsConfig } from "./connections.ts";
 import { createDurableGatewayComponents, type DurableConfig } from "./durable.ts";
 import { importPolicyFile } from "./egress.ts";
@@ -371,7 +371,17 @@ export async function serveGateway(cfg = gatewayConfig()) {
 	const hosts =
 		components.computeHosts === undefined || cfg.compute?.hosts === undefined
 			? undefined
-			: { service: components.computeHosts, config: cfg.compute.hosts, tunnelSecret: new Uint8Array(randomBytes(32)) };
+			: (() => {
+					const service = components.computeHosts;
+					const config = cfg.compute.hosts;
+					const ports = portRouterFor(config, service);
+					return {
+						service,
+						config,
+						tunnelSecret: new Uint8Array(randomBytes(32)),
+						...(ports === undefined ? {} : { ports }),
+					};
+				})();
 	if (cfg.compute !== undefined) {
 		authenticator = createAuthenticator({
 			identity: components.identity,
@@ -396,6 +406,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		...(authenticator === undefined ? {} : { authenticator }),
 		...(compute === undefined ? {} : { compute: compute.api }),
 		...(compute?.hostRoutes === undefined ? {} : { computeHosts: compute.hostRoutes }),
+		...(compute?.portRoutes === undefined ? {} : { computePorts: compute.portRoutes }),
 		consoleDir: cfg.consoleDir,
 		...(cfg.mail === undefined ? {} : { mail: describeMail(cfg.mail), mailer: createMailer(cfg.mail) }),
 		...(cfg.callbackOrigins.length === 0 ? {} : { allowCallbackUrl: callbackUrlAllowed(cfg.callbackOrigins) }),

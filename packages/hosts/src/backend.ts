@@ -5,8 +5,8 @@
  * A snapshot's `ref` is `{hostId}/{snapshotId}`: a snapshot lives on its host's disk, so a sandbox made or forked from
  * it goes on that host. Desktops, browsers and SSH are reached through signed tunnel URLs (`tunnel.ts`): the desktop's
  * VNC as raw TCP over a WebSocket of binary frames, opened by a noVNC page on the gateway (`viewer.ts`), Chrome's
- * DevTools WebSocket passed through for `connectOverCDP`, and sshd as raw TCP for an `ssh -o ProxyCommand=…`. Exposed ports aren't offered yet:
- * the contract's HTTPS URL per port wants a wildcard name for the gateway.
+ * DevTools WebSocket passed through for `connectOverCDP`, and sshd as raw TCP for an `ssh -o ProxyCommand=…`. Exposed ports
+ * are offered when the gateway has a wildcard name for them (`ports.ts`), token-gated unless exposed `public`.
  */
 import type {
 	BackendCapabilities,
@@ -21,6 +21,7 @@ import type {
 	TakenSnapshot,
 } from "@kantel/compute";
 import { KantelError } from "@kantel/contracts";
+import type { PortRouter } from "./ports.ts";
 import type { HostEgress, HostSandbox, SandboxTier } from "./protocol.ts";
 import type { HostsService, HostView } from "./service.ts";
 import { HOSTS_TUNNEL_PATH, MAX_TUNNEL_MINUTES, signTunnel } from "./tunnel.ts";
@@ -67,6 +68,8 @@ export interface HostBackendOptions {
 	 * attribution, so its upstream can trust them. Absent, they go unsigned.
 	 */
 	readonly attributionKey?: string;
+	/** Serves exposed ports on the gateway's wildcard name; without it, microVMs expose none. */
+	readonly ports?: PortRouter;
 	readonly now?: () => number;
 }
 
@@ -131,7 +134,7 @@ function fileEntry(entry: HostFileEntry): BackendFileEntry {
 	};
 }
 
-function capabilitiesOf(tier: SandboxTier, host: HostView | undefined) {
+function capabilitiesOf(tier: SandboxTier, host: HostView | undefined, ports: boolean) {
 	const vm = tier === "microvm";
 	return {
 		exec: true,
@@ -139,7 +142,7 @@ function capabilitiesOf(tier: SandboxTier, host: HostView | undefined) {
 		ssh: vm,
 		desktop: vm,
 		browser: vm,
-		ports: false,
+		ports: vm && ports,
 		docker: vm,
 		kvm: vm && host?.nestedVirtualisation === true,
 		pause: vm,
@@ -179,7 +182,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 							diskGb: placement.diskGiB,
 						},
 					}),
-			capabilities: capabilitiesOf(tier, host),
+			capabilities: capabilitiesOf(tier, host, options.ports !== undefined),
 		};
 	}
 
@@ -276,6 +279,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		async stop(sandboxId, { keepMemory }): Promise<TakenSnapshot> {
 			const { tier, hostId } = await tierOf(sandboxId);
 			if (keepMemory && tier !== "microvm") throw new KantelError("not_supported", "An isolate can't pause");
+			// A stopped sandbox's ports end with it (the compute API forgets them when it starts again).
+			options.ports?.forget(sandboxId);
 			const snap = await call<HostSnapshot>(sandboxId, "sandbox.stop", {
 				snapshotId: snapshotId(),
 				memory: keepMemory,
@@ -299,6 +304,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			return out;
 		},
 		async destroy(sandboxId) {
+			options.ports?.forget(sandboxId);
 			try {
 				await hosts.sandboxes.delete(sandboxId);
 			} catch (error) {
@@ -368,11 +374,15 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			const { hostId, snapshotId: id } = parseRef(ref);
 			await hosts.hub.call(hostId, "snapshot.delete", { snapshotId: id });
 		},
-		async exposePort() {
-			throw new KantelError("not_supported", "Exposed ports aren't offered on Kantel's own hosts yet");
+		async exposePort(sandboxId, port, { public: isPublic, subdomain }) {
+			const { tier } = await tierOf(sandboxId);
+			if (options.ports === undefined || tier !== "microvm") {
+				throw new KantelError("not_supported", "This control plane has no name for exposed ports");
+			}
+			return options.ports.expose(sandboxId, port, { public: isPublic, subdomain });
 		},
-		async hidePort() {
-			throw new KantelError("not_supported", "Exposed ports aren't offered on Kantel's own hosts yet");
+		async hidePort(sandboxId, port) {
+			options.ports?.hide(sandboxId, port);
 		},
 		async openSsh(sandboxId, { publicKey, ttlMinutes }) {
 			const { tier } = await tierOf(sandboxId);
