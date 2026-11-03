@@ -4,11 +4,11 @@ Kantel's command line and MCP server: make sandboxes, run commands in them, move
 and manage API keys from a terminal, a script or a coding agent.
 
 ```sh
-npx kantel login --url https://kantel.example     # approve it in the browser
-npx kantel new --type microvm
-npx kantel push sbx_4kq9x2mt .
-npx kantel exec sbx_4kq9x2mt -- 'cd my-app && npm test'
-npx kantel stop sbx_4kq9x2mt
+kantel login --url https://kantel.example     # approve it in the browser
+kantel new --type microvm
+kantel push sbx_4kq9x2mt .
+kantel exec sbx_4kq9x2mt -- 'cd my-app && npm test'
+kantel stop sbx_4kq9x2mt
 ```
 
 Operating a self-hosted Kantel (install, upgrade, hosts) is `kantel-admin`, in `packages/admin`, which each of
@@ -21,8 +21,8 @@ It needs Node 22 or later. Each of Kantel's GitHub Releases carries it as one fi
 curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install-cli.sh | sh
 ```
 
-In this repository the package is `@kantel/cli`. It is built as the npm package `kantel` too, but isn't on npm yet,
-so until it is, run `kantel` where this page says `npx kantel`.
+Run it again to update. In this repository the package is `@kantel/cli`. It is built as the npm package `kantel` too,
+but npm publishing is on hold, so `npx kantel` doesn't work: install it as above and run `kantel`.
 
 ## Signing in
 
@@ -35,10 +35,10 @@ The CLI needs Kantel's URL and an API key (`ksk_…`). It takes each from the fi
 The URL may be given with or without `/v1`; it defaults to `http://127.0.0.1:58090`, a local install.
 
 ```sh
-npx kantel login --url https://kantel.example                     # the browser sign-in
-printf %s "$KEY" | npx kantel login --key-stdin --url https://…  # or a key you have
-npx kantel whoami
-npx kantel logout
+kantel login --url https://kantel.example                     # the browser sign-in
+printf %s "$KEY" | kantel login --key-stdin --url https://…  # or a key you have
+kantel whoami
+kantel logout
 ```
 
 The browser sign-in is RFC 8628's device flow (`POST /v1/auth/device`): it prints a code, opens
@@ -49,7 +49,7 @@ config, so running `kantel login` again shows the same one; with no terminal it 
 
 ## Commands
 
-`npx kantel help` lists them all, and `npx kantel help <command>` (or `--help` on any command) shows a command's
+`kantel help` lists them all, and `kantel help <command>` (or `--help` on any command) shows a command's
 flags. Every command takes `--json` to print Kantel's answer as it is, for scripts.
 
 | Command | What it does |
@@ -90,30 +90,32 @@ Give the agent its own scoped key, which can make and drive sandboxes but not de
 put its secret in `KANTEL_API_KEY`:
 
 ```sh
-npx kantel key create agent --preset agent
+kantel key create agent --preset agent
 export KANTEL_API_KEY=<the secret>
 ```
 
-Then, with your Kantel's URL in place of `https://kantel.example` (`npx kantel agents` prints these with it filled in):
+Then, with your Kantel's URL in place of `https://kantel.example` (`kantel agents` prints these with it filled in).
+Each starts the installed `kantel`, so it must be on the PATH the agent starts it with; if it isn't on yours,
+`kantel agents` prints them with this `kantel`'s full path instead (Node's and the script's), and says so.
 
 Claude Code:
 
 ```sh
-claude mcp add kantel -e KANTEL_URL=https://kantel.example -e KANTEL_API_KEY=$KANTEL_API_KEY -- npx -y kantel mcp
+claude mcp add kantel -e KANTEL_URL=https://kantel.example -e KANTEL_API_KEY=$KANTEL_API_KEY -- kantel mcp
 ```
 
 Codex:
 
 ```sh
-codex mcp add kantel --env KANTEL_URL=https://kantel.example --env KANTEL_API_KEY=$KANTEL_API_KEY -- npx -y kantel mcp
+codex mcp add kantel --env KANTEL_URL=https://kantel.example --env KANTEL_API_KEY=$KANTEL_API_KEY -- kantel mcp
 ```
 
 or in `~/.codex/config.toml`, with the key in place of `$KANTEL_API_KEY`:
 
 ```toml
 [mcp_servers.kantel]
-command = "npx"
-args = ["-y", "kantel", "mcp"]
+command = "kantel"
+args = ["mcp"]
 env = { KANTEL_URL = "https://kantel.example", KANTEL_API_KEY = "$KANTEL_API_KEY" }
 ```
 
@@ -123,19 +125,20 @@ Cursor (`.cursor/mcp.json`) and other MCP clients, with the key in place of `$KA
 {
   "mcpServers": {
     "kantel": {
-      "command": "npx",
-      "args": ["-y", "kantel", "mcp"],
+      "command": "kantel",
+      "args": ["mcp"],
       "env": { "KANTEL_URL": "https://kantel.example", "KANTEL_API_KEY": "$KANTEL_API_KEY" }
     }
   }
 }
 ```
 
-pi has no MCP: it uses the CLI. `npx kantel init` puts a block in `./AGENTS.md` and `./CLAUDE.md` (between
+pi has no MCP: it uses the CLI. `kantel init` puts a block in `./AGENTS.md` and `./CLAUDE.md` (between
 `<!-- kantel:start -->` and `<!-- kantel:end -->`, replacing an old one) and a `kantel` skill in
 `.agents/skills/kantel/` and `.claude/skills/kantel/`, which tell an agent to create a sandbox with
-`npx kantel new --json`, run commands with `npx kantel exec <id> -- <cmd>`, push code and stop it.
-(`npx kantel agents --write` writes the AGENTS.md block alone.)
+`kantel new --json`, run commands with `kantel exec <id> -- <cmd>`, push code and stop it, and to ask for
+`install-cli.sh` if `kantel` isn't installed. It says so if `kantel` isn't on your PATH.
+(`kantel agents --write` writes the AGENTS.md block alone.)
 
 `kantel agents` never prints a key you have: every snippet carries the `$KANTEL_API_KEY` placeholder.
 

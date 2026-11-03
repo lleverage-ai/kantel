@@ -228,8 +228,8 @@ export function clipOutput(output: string): string {
 
 const HINTS: { readonly [code: string]: string } = {
 	unauthenticated:
-		"Kantel needs an API key: set KANTEL_API_KEY in this MCP server's environment (make one with npx kantel key " +
-		"create agent --preset agent).",
+		"Kantel needs an API key: set KANTEL_API_KEY in this MCP server's environment (make one with kantel key create " +
+		"agent --preset agent).",
 	forbidden: "The API key lacks the scope this needs.",
 	conflict: "If the sandbox is stopped or paused, resume it with sandbox_resume first.",
 };

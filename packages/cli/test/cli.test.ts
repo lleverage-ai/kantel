@@ -4,7 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Caller, Command, Sandbox, SandboxPage } from "@kantel/api/sdk";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { AGENTS_END, AGENTS_START, claudeSetup, upsertAgentsBlock } from "../src/agents.ts";
+import {
+	AGENTS_END,
+	AGENTS_START,
+	claudeSetup,
+	codexSetup,
+	codexToml,
+	mcpServersJson,
+	upsertAgentsBlock,
+} from "../src/agents.ts";
 import { parseArgs } from "../src/args.ts";
 import { commandLine, type Input, run } from "../src/commands.ts";
 import { DEFAULT_URL, normaliseUrl, resolveConfig } from "../src/config.ts";
@@ -134,7 +142,12 @@ interface KantelOptions {
 	/** stdout is a terminal, as when a person runs it. */
 	readonly tty?: boolean;
 	readonly cwd?: string;
+	/** This CLI by its full paths, for `agents` when `kantel` isn't on the PATH. */
+	readonly self?: readonly string[];
 }
+
+/** The `self` every run gets unless it says otherwise: Node and the installed CLI's link. */
+const SELF = ["/usr/local/bin/node", "/home/me/.local/bin/kantel"];
 
 async function kantel(argv: readonly string[], options: KantelOptions = {}) {
 	const api = fakeKantel(options.routes ?? {});
@@ -151,6 +164,7 @@ async function kantel(argv: readonly string[], options: KantelOptions = {}) {
 		configDir,
 		cwd: options.cwd ?? configDir,
 		home: join(configDir, "home"),
+		self: options.self ?? SELF,
 		openUrl: (url) => opened.push(url),
 		sleep: async (ms) => {
 			slept.push(ms);
@@ -433,7 +447,8 @@ describe("errors", () => {
 		const result = await kantel(["whoami"], { routes, env: { KANTEL_URL: "https://kantel.test" } });
 		expect(result.code).toBe(1);
 		expect(result.stderr).toContain("kantel: unauthenticated: A bearer is needed");
-		expect(result.stderr).toContain("npx kantel login");
+		expect(result.stderr).toContain("Sign in with: kantel login");
+		expect(result.stderr).not.toContain("npx");
 	});
 
 	it("says which Kantel it couldn't reach", async () => {
@@ -526,7 +541,21 @@ describe("config", () => {
 
 describe("agents", () => {
 	const SECRET = "ksk_supersecret_5n2p8r";
-	const env = { KANTEL_URL: "https://kantel.example/v1", KANTEL_API_KEY: SECRET };
+	/** Kantel's URL and key, with a PATH that has an installed `kantel` on it. */
+	let env: { readonly [name: string]: string } = {};
+	/** The same with nothing on the PATH. */
+	let bare: { readonly [name: string]: string } = {};
+
+	beforeEach(async () => {
+		const bin = join(configDir, "bin");
+		await mkdir(bin);
+		await writeFile(join(bin, "kantel"), "#!/bin/sh\n");
+		await chmod(join(bin, "kantel"), 0o755);
+		const empty = join(configDir, "empty");
+		await mkdir(empty);
+		bare = { KANTEL_URL: "https://kantel.example/v1", KANTEL_API_KEY: SECRET, PATH: empty };
+		env = { ...bare, PATH: [empty, bin].join(":") };
+	});
 
 	it("never prints the real key, only the placeholder, with the resolved URL", async () => {
 		for (const argv of [["agents"], ["agents", "claude"], ["agents", "all", "--json"], ["agents", "--key", SECRET]]) {
@@ -538,15 +567,62 @@ describe("agents", () => {
 		}
 		const claude = await kantel(["agents", "claude"], { env });
 		expect(claude.stdout).toContain(claudeSetup("https://kantel.example"));
-		expect(claude.stdout).toContain("npx kantel key create agent --preset agent");
+		expect(claude.stdout).toContain("kantel key create agent --preset agent");
 		expect(claude.stdout).not.toContain("codex mcp add");
 	});
 
-	it("gives each harness its one line", () => {
-		expect(claudeSetup("https://kantel.example")).toBe(
-			"claude mcp add kantel -e KANTEL_URL=https://kantel.example -e KANTEL_API_KEY=$KANTEL_API_KEY " +
-				"-- npx -y kantel mcp",
+	it("gives each harness its one line, running the installed kantel rather than npx", () => {
+		const url = "https://kantel.example";
+		expect(claudeSetup(url)).toBe(
+			"claude mcp add kantel -e KANTEL_URL=https://kantel.example -e KANTEL_API_KEY=$KANTEL_API_KEY -- kantel mcp",
 		);
+		expect(codexSetup(url)).toBe(
+			"codex mcp add kantel --env KANTEL_URL=https://kantel.example --env KANTEL_API_KEY=$KANTEL_API_KEY -- kantel mcp",
+		);
+		expect(codexToml(url)).toContain('command = "kantel"\nargs = ["mcp"]\n');
+		expect(JSON.parse(mcpServersJson(url))).toMatchObject({
+			mcpServers: { kantel: { command: "kantel", args: ["mcp"] } },
+		});
+	});
+
+	it("prints no npx anywhere, and kantel mcp when kantel is on the PATH", async () => {
+		const text = await kantel(["agents"], { env });
+		expect(text.stdout).not.toContain("npx");
+		expect(text.stdout).toContain("-- kantel mcp");
+		expect(text.stdout).not.toContain("isn't on your PATH");
+		const json = JSON.parse((await kantel(["agents", "--json"], { env })).stdout) as {
+			readonly mcp: unknown;
+			readonly mcpServers: unknown;
+			readonly codexToml: string;
+		};
+		expect(json.mcp).toEqual({ command: "kantel", args: ["mcp"] });
+		expect(json.mcpServers).toMatchObject({ mcpServers: { kantel: { command: "kantel", args: ["mcp"] } } });
+		expect(JSON.stringify(json)).not.toContain("npx");
+	});
+
+	it("starts this kantel by its full path when kantel isn't on the PATH, and says so", async () => {
+		const text = await kantel(["agents"], { env: bare });
+		expect(text.code).toBe(0);
+		expect(text.stdout).toContain("-- /usr/local/bin/node /home/me/.local/bin/kantel mcp");
+		expect(text.stdout).toContain("kantel isn't on your PATH");
+		const json = JSON.parse((await kantel(["agents", "--json"], { env: bare })).stdout) as {
+			readonly mcp: unknown;
+			readonly mcpServers: unknown;
+			readonly codexToml: string;
+		};
+		const launch = { command: "/usr/local/bin/node", args: ["/home/me/.local/bin/kantel", "mcp"] };
+		expect(json.mcp).toEqual(launch);
+		expect(json.mcpServers).toMatchObject({ mcpServers: { kantel: launch } });
+		expect(json.codexToml).toContain('command = "/usr/local/bin/node"\nargs = ["/home/me/.local/bin/kantel", "mcp"]');
+		// A path with a space is quoted for the shell in the one-liners.
+		const spaced = await kantel(["agents", "claude"], {
+			env: bare,
+			self: ["/opt/my node/node", "/Users/me/Kantel CLI/kantel"],
+		});
+		expect(spaced.stdout).toContain("-- '/opt/my node/node' '/Users/me/Kantel CLI/kantel' mcp");
+		// Not knowing where this CLI is, it stays with the name.
+		const unknown = await kantel(["agents", "claude"], { env: bare, self: [] });
+		expect(unknown.stdout).toContain("-- kantel mcp");
 	});
 
 	it("writes the AGENTS.md block, replacing an old one", async () => {
@@ -559,7 +635,8 @@ describe("agents", () => {
 		expect(written.endsWith(`${AGENTS_END}\n\nAfter.\n`)).toBe(true);
 		expect(written).not.toContain("\nold\n");
 		expect(written.split(AGENTS_START)).toHaveLength(2);
-		expect(written).toContain('npx kantel exec "$id" -- npm test');
+		expect(written).toContain('`kantel exec "$id" -- npm test`');
+		expect(written).not.toContain("npx");
 		expect(written).not.toContain(SECRET);
 	});
 
@@ -577,19 +654,29 @@ describe("agents", () => {
 		await writeFile(join(project, "CLAUDE.md"), "# Claude\n");
 		const result = await kantel(["init"], { env, cwd: project });
 		expect(result.code).toBe(0);
+		expect(result.stdout).not.toContain("isn't on your PATH");
 		const claude = await readFile(join(project, "CLAUDE.md"), "utf8");
 		expect(claude.startsWith("# Claude\n\n<!-- kantel:start -->")).toBe(true);
 		const agents = await readFile(join(project, "AGENTS.md"), "utf8");
-		expect(agents).toContain("npx kantel new --type microvm");
+		expect(agents).toContain("`id=$(kantel new --type microvm --json | jq -r .id)`");
+		expect(agents).toContain("releases/latest/download/install-cli.sh | sh");
+		expect(agents + claude).not.toContain("npx");
 		for (const skill of [".claude/skills/kantel/SKILL.md", ".agents/skills/kantel/SKILL.md"]) {
 			const text = await readFile(join(project, skill), "utf8");
 			expect(text).toMatch(/^---\nname: kantel\ndescription: /);
 			expect(text).not.toContain(SECRET);
+			expect(text).not.toContain("npx");
 		}
 		expect(agents + claude).not.toContain(SECRET);
 		// Again: the block is replaced, not added twice.
 		await kantel(["init"], { env, cwd: project });
 		expect((await readFile(join(project, "AGENTS.md"), "utf8")).split(AGENTS_START)).toHaveLength(2);
+	});
+
+	it("init says when kantel isn't on the PATH, since what it writes runs kantel by name", async () => {
+		const result = await kantel(["init"], { env: bare });
+		expect(result.code).toBe(0);
+		expect(result.stdout).toContain("kantel isn't on your PATH");
 	});
 
 	it("init --global installs only the skill, under the home", async () => {

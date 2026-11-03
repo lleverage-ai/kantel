@@ -3,7 +3,7 @@
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
-	"description": "Kantel's command line and MCP server: sandboxes, commands, files, snapshots and keys from a terminal or a coding agent (npx kantel …)",
+	"description": "Kantel's command line and MCP server: sandboxes, commands, files, snapshots and keys from a terminal or a coding agent (kantel …)",
 	"license": "Apache-2.0",
 	"bin": {
 		"kantel": "./src/main.ts"
