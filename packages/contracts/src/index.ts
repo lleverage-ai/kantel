@@ -12,7 +12,6 @@ export * from "./memory.ts";
 export * from "./model-providers.ts";
 export * from "./models.ts";
 export * from "./passkey.ts";
-export * from "./rules.ts";
 export * from "./sandbox.ts";
 export * from "./schedules.ts";
 export * from "./session.ts";

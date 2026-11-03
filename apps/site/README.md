@@ -73,5 +73,13 @@ frame under `prefers-reduced-motion`. The comment at its top says how it's tuned
 ## Deploying
 
 `wrangler.jsonc` serves `dist/` as static assets on the `kantel.dev` custom domain, with `_headers` for caching and the
-installer's content type. Nothing deploys it yet: `pnpm --dir apps/site deploy:dry-run` checks the config, and
-`wrangler deploy` from `apps/site`, with an account that holds the `kantel.dev` zone, publishes it.
+installer's content type.
+
+`.github/workflows/site-deploy.yml` builds and deploys it on every push to main that changes `apps/site`, `docs/site`
+or the design tokens. It isn't part of main.yml, which skips pushes that only change Markdown. It deploys once the
+repository has the `KANTEL_SITE_CLOUDFLARE_API_TOKEN` secret (the comment at its top lists the token's permissions);
+without it, it builds and runs `wrangler deploy --dry-run` only. `gh workflow run site-deploy.yml --ref main`
+redeploys main by hand.
+
+By hand, from a clean checkout of main: `pnpm --dir apps/site build`, then `wrangler deploy` from `apps/site` with an
+account that holds the `kantel.dev` zone. `pnpm --dir apps/site deploy:dry-run` checks the config without deploying.
