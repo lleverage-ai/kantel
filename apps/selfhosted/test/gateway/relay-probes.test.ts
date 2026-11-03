@@ -249,9 +249,11 @@ describe("negative probes: two replicas", { timeout: 60_000 }, () => {
 		expect((await peerPost(w.a, "call", body, forB)).status).toBe(404);
 		expect(w.host.calls.length).toBe(before);
 	});
-	it("M7 an unsigned port stream between replicas is a 404", async () => {
+	it("M7 an unsigned port stream between replicas is a 404 (close 4404)", async () => {
 		const url = wsUrl(w.a, `${CLUSTER_PATH}/port?host=${w.hostId}&sandbox=${sandboxId}&port=22`);
-		expect(await attempt(url, cleanups)).toBe("http 404");
+		const before = w.host.calls.length;
+		expect(await attempt(url, cleanups)).toBe("close 4404");
+		expect(w.host.calls.length).toBe(before);
 	});
 	it("M8 a replica serves only hosts connected to itself: a call never bounces on", async () => {
 		const signing = await intruder(w.driver);
@@ -338,7 +340,7 @@ describe("negative probes: revoking access across replicas", { timeout: 60_000 }
 		});
 		it("V6 refuses a new connection with a URL it was given", async () => {
 			expect(await attempt(desktopUrl(w.b, s.desktopTicket), cleanups)).toBe(REVOKED);
-			expect(await attempt(wsUrl(w.b, "/hmr"), cleanups, s.portHeaders)).toBe("http 403");
+			expect(await attempt(wsUrl(w.b, "/hmr"), cleanups, s.portHeaders)).toBe("close 4403");
 		});
 	});
 

@@ -80,7 +80,10 @@ describe("gateway replicas behind a load balancer", { timeout: 30_000 }, () => {
 
 		// A stops: the host is told to go (1001), and reconnects through the balancer to B.
 		await a.stop();
-		expect(await first.closed).toBe(1001);
+		// The gateway sends 1001 on Bun and Node alike (kantel-host reads it so), but Bun's WebSocket client reports a
+		// 1001 it receives as 1000. The reason shows it is the stop's close, not a dropped socket (1006).
+		expect(await first.closed).toBe("Bun" in globalThis ? 1000 : 1001);
+		expect(await first.reason).toBe("The control plane is stopping");
 		const second = await connectHost(b, hostId, credential, cleanups, first.sandboxes());
 		// A new replica takes A's place, and reaches the host on B.
 		const c = await startReplica(driver, cleanups);

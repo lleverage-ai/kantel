@@ -20,6 +20,7 @@ import { pgliteDatabase } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { type GatewayHostsBackend, gatewayRelay, withHostUpgrades } from "../../src/gateway/compute.ts";
+import { closeServer } from "./close-server.ts";
 
 const cleanups: (() => Promise<void> | void)[] = [];
 const clients: WebSocket[] = [];
@@ -101,13 +102,7 @@ async function cluster() {
 		const server: Server = createServer((_, response) => response.writeHead(404).end());
 		server.on("upgrade", (incoming, socket, head) => upgrades?.(incoming, socket, head));
 		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-		cleanups.push(
-			() =>
-				new Promise<void>((resolve) => {
-					server.close(() => resolve());
-					server.closeAllConnections();
-				}),
-		);
+		cleanups.push(() => closeServer(server));
 		const { port } = server.address() as AddressInfo;
 		const client = (token: string) =>
 			createKantelClient({
@@ -174,7 +169,7 @@ async function sessions(b: Awaited<ReturnType<typeof cluster>>["b"], sandboxId: 
 	};
 }
 
-/** How a new connection is refused: its close code, or its HTTP status. */
+/** How a new connection is refused: its close code (an HTTP status would mean the gateway answered one, which it never does on an upgrade). */
 function refusedWith(url: string, headers: Record<string, string> = {}): Promise<string> {
 	return new Promise((resolve) => {
 		const socket = new WebSocket(url, { headers });
@@ -217,7 +212,7 @@ describe("revoking access across gateway replicas", { timeout: 30_000 }, () => {
 
 		await tom.revokeApiKey(issued.key.id);
 		await expectAllCut(opened);
-		expect(await again()).toEqual({ desktop: `close ${RELAY_CLOSE_REVOKED}`, port: "http 403" });
+		expect(await again()).toEqual({ desktop: `close ${RELAY_CLOSE_REVOKED}`, port: "close 4403" });
 		await new Promise((resolve) => setTimeout(resolve, 1100));
 		expect((await httpPort())?.status).toBe(403);
 	});
@@ -263,6 +258,6 @@ describe("revoking access across gateway replicas", { timeout: 30_000 }, () => {
 
 		await a.client("tom").removeMember(org.id, ANN.userId);
 		await expectAllCut(opened);
-		expect(await again()).toEqual({ desktop: `close ${RELAY_CLOSE_REVOKED}`, port: "http 403" });
+		expect(await again()).toEqual({ desktop: `close ${RELAY_CLOSE_REVOKED}`, port: "close 4403" });
 	});
 });

@@ -27,6 +27,7 @@ import {
 import { HostCallError } from "@kantel/hosts/hub";
 import { HOST_MAX_MESSAGE_BYTES, type HostEvent, type HostWelcome } from "@kantel/hosts/protocol";
 import WebSocket, { type WebSocketServer } from "ws";
+import { refusalCode, refuseUpgrade } from "./upgrade-refusal.ts";
 
 export const CLUSTER_PATH = "/v1/hosts/cluster";
 
@@ -175,6 +176,8 @@ export function createPeerTransport(options: {
 				socket.on("close", (code, reason) => {
 					const text = reason.toString();
 					if (!opened && code === 4004) reject(new HostCallError({ code: "not_found", message: text }));
+					else if (!opened && code === refusalCode(404))
+						fail(`Gateway replica ${peer.id} refused the port stream (${text || "not signed"})`);
 					else fail(text || `closed by gateway replica ${peer.id}`);
 				});
 				socket.on("unexpected-response", (_request, response) => {
@@ -295,8 +298,7 @@ export async function createGatewayCluster(options: {
 			const query = url.search.slice(1);
 			void (async () => {
 				if (incoming.method !== "GET" || !(await signedBy(incoming.headers, "port", query))) {
-					socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
-					return;
+					return refuseUpgrade(incoming, socket, head, 404, "No such replica stream", sockets);
 				}
 				const hostId = url.searchParams.get("host") ?? "";
 				const sandboxId = url.searchParams.get("sandbox") ?? "";
@@ -331,7 +333,7 @@ export async function createGatewayCluster(options: {
 							},
 						);
 				});
-			})().catch(() => socket.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"));
+			})().catch(() => refuseUpgrade(incoming, socket, head, 502, "The replica could not check the stream", sockets));
 			return true;
 		},
 	};

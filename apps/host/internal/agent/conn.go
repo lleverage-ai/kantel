@@ -20,6 +20,17 @@ import (
 // ErrRevoked stops the daemon: the control plane refused the host's credential for good.
 var ErrRevoked = errors.New("the control plane revoked this host's credential")
 
+// revokedClose reports whether err is the control plane closing the connection because it refused the credential:
+// 4003, or 4401 and 4403, the close codes the gateway gives for an upgrade it would once have refused with 401 or 403
+// (Bun drops an HTTP status written to an upgrade, so the gateway completes the handshake and closes instead).
+func revokedClose(err error) (websocket.CloseError, bool) {
+	var ce websocket.CloseError
+	if !errors.As(err, &ce) {
+		return ce, false
+	}
+	return ce, ce.Code == 4003 || ce.Code == 4401 || ce.Code == 4403
+}
+
 // Updater moves the host to another version (download, check, swap the binary, restart).
 type Updater func(ctx context.Context, p proto.UpdateParams) error
 
@@ -124,8 +135,7 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 	}
 	kind, raw, err := ws.Read(ctx)
 	if err != nil {
-		var ce websocket.CloseError
-		if errors.As(err, &ce) && ce.Code == 4003 {
+		if ce, revoked := revokedClose(err); revoked {
 			return fmt.Errorf("%w: %s", ErrRevoked, ce.Reason)
 		}
 		return err
@@ -164,8 +174,7 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 	for {
 		kind, raw, err := ws.Read(ctx)
 		if err != nil {
-			var ce websocket.CloseError
-			if errors.As(err, &ce) && ce.Code == 4003 {
+			if ce, revoked := revokedClose(err); revoked {
 				return fmt.Errorf("%w: %s", ErrRevoked, ce.Reason)
 			}
 			return err

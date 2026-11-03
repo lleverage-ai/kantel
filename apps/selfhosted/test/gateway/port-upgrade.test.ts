@@ -11,10 +11,11 @@ import type { HostsService } from "@kantel/hosts/service";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { gatewayRelay, withHostUpgrades } from "../../src/gateway/compute.ts";
+import { closeServer } from "./close-server.ts";
 
 const servers: Server[] = [];
 afterEach(async () => {
-	for (const server of servers.splice(0)) await new Promise((resolve) => server.close(resolve));
+	for (const server of servers.splice(0)) await closeServer(server);
 });
 
 /** A gateway whose sandbox port is a WebSocket server that says "hi" and records the handshake it was sent. */
@@ -55,12 +56,23 @@ async function gateway() {
 	return { address: `ws://127.0.0.1:${port}`, ports, handshakes, hosts };
 }
 
+/**
+ * Resolves the first message from the sandbox's side. A refusal rejects with its close code: the gateway completes the
+ * handshake and closes (4401 for no token, 4404 for no port exposed there), as Bun drops an HTTP status on an upgrade.
+ */
 function connect(url: string, headers: Record<string, string>): Promise<string> {
 	return new Promise((resolve, reject) => {
 		const socket = new WebSocket(url, { headers });
+		let answered = false;
+		// Sent before the close arrives too: it must never reach the sandbox.
+		socket.on("open", () => socket.send("from the client"));
 		socket.on("message", (data: Buffer) => {
+			answered = true;
 			resolve(data.toString());
 			socket.close();
+		});
+		socket.on("close", (code) => {
+			if (!answered) reject(new Error(`closed ${code}`));
 		});
 		socket.on("error", reject);
 	});
@@ -73,13 +85,13 @@ describe("upgrades on an exposed port's name", () => {
 		const token = new URL(url).searchParams.get("_token") ?? "";
 		const host = "5173-brave-otter-ab12cd.kantel-ports.test";
 
-		await expect(connect(`${address}/hmr`, { host })).rejects.toThrow(/401/);
-		await expect(connect(`${address}/hmr`, { host, cookie: `${PORT_COOKIE}=wrong` })).rejects.toThrow(/401/);
+		await expect(connect(`${address}/hmr`, { host })).rejects.toThrow(/closed 4401/);
+		await expect(connect(`${address}/hmr`, { host, cookie: `${PORT_COOKIE}=wrong` })).rejects.toThrow(/closed 4401/);
 		// On a port's name, a tunnel's path is the sandbox's, behind its token, not a tunnel.
 		const ticket = await hosts.tickets.issue({ sandboxId: "sbx_1", port: 22, expiresAt: Date.now() + 60_000 });
-		await expect(connect(`${address}/v1/hosts/tunnel/${ticket}`, { host })).rejects.toThrow(/401/);
+		await expect(connect(`${address}/v1/hosts/tunnel/${ticket}`, { host })).rejects.toThrow(/closed 4401/);
 		await expect(connect(`${address}/hmr`, { host: "5174-brave-otter-ab12cd.kantel-ports.test" })).rejects.toThrow(
-			/404/,
+			/closed 4404/,
 		);
 		expect(handshakes).toEqual([]);
 
