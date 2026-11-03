@@ -77,7 +77,7 @@ that won the transition may call the backend for it. The background step that fi
 must also be conditional on the passing state still being the one it set. Otherwise a `delete` that landed meanwhile
 would be overwritten.
 
-**How (#PR_LIFECYCLE).** Every lifecycle write in `service.ts` goes through `transition()`, an `update` (§2) that
+**How (#597).** Every lifecycle write in `service.ts` goes through `transition()`, an `update` (§2) that
 writes only while the sandbox is still in the state the call read it in:
 
 - **Into a passing state.** `stop` (and pause), `start`, `resume` and `recover` move from the state they read. A
