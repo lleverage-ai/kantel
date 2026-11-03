@@ -109,11 +109,27 @@ func (c *Client) WaitReady(ctx context.Context) (Health, error) {
 
 // WaitFor polls Health until every service in want is ready.
 func (c *Client) WaitFor(ctx context.Context, want ...string) (Health, error) {
+	return c.waitFor(ctx, func(Health) []string { return want })
+}
+
+// WaitExpected polls Health until every service the image lists in its ReadyFile is ready, or every one in
+// fallback when the image lists none.
+func (c *Client) WaitExpected(ctx context.Context, fallback ...string) (Health, error) {
+	return c.waitFor(ctx, func(h Health) []string {
+		if len(h.Expect) > 0 {
+			return h.Expect
+		}
+		return fallback
+	})
+}
+
+func (c *Client) waitFor(ctx context.Context, wanted func(Health) []string) (Health, error) {
 	for {
 		h, err := c.WaitReady(ctx)
 		if err != nil {
 			return h, err
 		}
+		want := wanted(h)
 		have := map[string]bool{}
 		for _, r := range h.Ready {
 			have[r] = true

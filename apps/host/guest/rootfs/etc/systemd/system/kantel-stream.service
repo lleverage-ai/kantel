@@ -1,0 +1,15 @@
+[Unit]
+Description=Kantel desktop stream: Selkies (web client and WebSocket stream) on 127.0.0.1:6080
+After=kantel-desktop.service
+Wants=kantel-desktop.service
+
+[Service]
+User=user
+Environment=HOME=/home/user XDG_RUNTIME_DIR=/run/user/1000
+EnvironmentFile=-/etc/kantel/desktop.env
+ExecStart=/usr/local/bin/kantel-stream
+Restart=always
+RestartSec=1s
+
+[Install]
+WantedBy=multi-user.target

@@ -51,6 +51,11 @@ func main() {
 		log.Fatal(err)
 	}
 	server := &guest.Server{Version: version}
+	if l, err := net.Listen("tcp", guest.LocalProxyAddr); err == nil {
+		go func() { log.Print(server.ServeLocalProxy(l)) }()
+	} else {
+		log.Printf("local proxy %s: %v", guest.LocalProxyAddr, err)
+	}
 	log.Printf("kantel-guest %s listening on vsock:%d", version, vsock.AgentPort)
 	log.Fatal((&http.Server{Handler: server.Handler()}).Serve(listener))
 }

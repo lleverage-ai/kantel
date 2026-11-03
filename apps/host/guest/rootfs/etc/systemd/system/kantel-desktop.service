@@ -1,10 +1,11 @@
 [Unit]
-Description=Kantel desktop: TigerVNC display :1, Openbox and Chromium with its DevTools port
+Description=Kantel desktop: TigerVNC display :1 (VNC on 127.0.0.1:5901) with an XFCE session
 After=network.target
 
 [Service]
 User=user
-Environment=HOME=/home/user
+Environment=HOME=/home/user XDG_RUNTIME_DIR=/run/user/1000
+EnvironmentFile=-/etc/kantel/desktop.env
 EnvironmentFile=-/etc/kantel/proxy.env
 ExecStart=/usr/local/bin/kantel-desktop
 Restart=always

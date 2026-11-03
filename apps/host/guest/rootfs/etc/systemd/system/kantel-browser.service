@@ -1,0 +1,16 @@
+[Unit]
+Description=Kantel browser: Chrome on the desktop, DevTools (CDP) on 127.0.0.1:9222
+After=kantel-desktop.service
+Wants=kantel-desktop.service
+
+[Service]
+User=user
+Environment=HOME=/home/user XDG_RUNTIME_DIR=/run/user/1000
+EnvironmentFile=-/etc/kantel/desktop.env
+EnvironmentFile=-/etc/kantel/proxy.env
+ExecStart=/usr/local/bin/kantel-browser
+Restart=always
+RestartSec=1s
+
+[Install]
+WantedBy=multi-user.target

@@ -1,21 +1,27 @@
 #!/bin/sh
 # PID 1 for a cold boot, before systemd: the root filesystem (/dev/vda) is the host's shared read-only image, and
-# the sandbox's own disk (/dev/vdb) holds everything it writes. This puts an overlay of the two at /, gives Docker a
-# real ext4 directory (overlay2 can't sit on an overlay), and hands over to systemd.
+# the sandbox's own disk (/dev/vdb) holds everything it writes. This puts an overlay of the two at /, gives Docker and
+# containerd real ext4 directories (an overlay's upperdir can't sit on an overlay, and Docker 29 keeps images in
+# containerd's overlayfs snapshotter), and hands over to systemd.
 #
 # A sandbox made from a snapshot never runs this: it resumes with systemd already up.
 set -e
+# The kernel starts PID 1 with no PATH; where chroot and pivot_root live differs between images (Ubuntu 26.04 has
+# them in /usr/bin).
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 mount -t proc proc /proc
-mount -t devtmpfs devtmpfs /dev
+# The kernel mounts devtmpfs itself (CONFIG_DEVTMPFS_MOUNT); newer util-linux refuses to mount it twice.
+mountpoint -q /dev || mount -t devtmpfs devtmpfs /dev
 mount -t ext4 -o noatime,discard /dev/vdb /disk
-mkdir -p /disk/root /disk/work /disk/docker
+mkdir -p /disk/root /disk/work /disk/docker /disk/containerd
 mount -t overlay overlay -o lowerdir=/,upperdir=/disk/root,workdir=/disk/work /newroot
-mkdir -p /newroot/var/lib/docker /newroot/disk
+mkdir -p /newroot/var/lib/docker /newroot/var/lib/containerd /newroot/disk
 mount --bind /disk/docker /newroot/var/lib/docker
+mount --bind /disk/containerd /newroot/var/lib/containerd
 mount --move /disk /newroot/disk
 mount --move /dev /newroot/dev
 umount /proc
 cd /newroot
 mkdir -p .oldroot
 pivot_root . .oldroot
-exec /usr/sbin/chroot . /bin/sh -c 'umount -l /.oldroot 2>/dev/null; rmdir /.oldroot 2>/dev/null; exec /sbin/init'
+exec chroot . /bin/sh -c 'umount -l /.oldroot 2>/dev/null; rmdir /.oldroot 2>/dev/null; exec /sbin/init'
