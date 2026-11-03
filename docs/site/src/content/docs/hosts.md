@@ -62,7 +62,7 @@ cd kantel
 
 Add `GOARCH=arm64` to build it for an aarch64 host on an x86_64 machine. Copy `apps/host/dist/kantel-host` to each host.
 
-A host also needs a guest kernel and a sandbox image. Kantel publishes them for x86_64 as a public [GitHub Release](https://github.com/lleverage-ai/kantel/releases), and the installer fetches them from there by default, so there's nothing to build. The sandbox image is Ubuntu 26.04 with Docker, an XFCE desktop, Chromium and SSH, and the release also has the isolate image. `manifest.json` lists each file with its SHA-256. The installer reads it, and refuses a file whose digest doesn't match. `THIRD-PARTY-NOTICES.md`, in the release and in the image, says what the images contain and under which licences.
+A host also needs a guest kernel and a sandbox image. Kantel publishes them for x86_64 as a public [GitHub Release](https://github.com/lleverage-ai/kantel/releases), and the installer fetches them from there by default, so there's nothing to build. The sandbox image is Ubuntu 26.04 with Docker, an XFCE desktop, Chromium and SSH, and the release also has the isolate image. `manifest.json` lists each file with its SHA-256. The installer reads it, and refuses a file whose digest doesn't match. `THIRD-PARTY-NOTICES.md`, in the release and in the image, says what the images contain and under which licences. The release also carries the exact source of the GPL and LGPL libraries the sandbox image bundles outside a distro package (libx264, x265 and libde265, in Selkies' screen encoder), listed in `SOURCES.md` with their SHA-256.
 
 The installer gets the images from one of two places:
 

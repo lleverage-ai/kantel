@@ -111,6 +111,14 @@ apps/host/guest/release.sh out host-images-20261103            # build: kernel, 
 apps/host/guest/release.sh out host-images-20261103 --publish  # and make the GitHub Release (needs push access)
 ```
 
+Every release also carries the exact source of the GPL and LGPL libraries the sandbox image bundles outside a distro
+package: Selkies' pixelflux wheel links libx264 and x265 (GPL-2.0-or-later) and libde265 (LGPL-3.0-or-later).
+`gpl-sources.sh`, which `release.sh` runs on each built sandbox image, checks that the image's pixelflux is the wheel
+pixelflux published, reads the commit of each library from pixelflux's build recipe at that release, checks it against
+the libraries' versions in the image, and writes `source-<name>-<version>.tar.gz` (`git archive` of that commit), with
+`SOURCES.md` and `SOURCES.sha256`. It also takes a published `sandbox-<arch>.ext4`, to add the sources to a release
+that lacks them (`gh release upload <tag> out/SOURCES.* out/source-*`, without `--clobber`).
+
 A release is never replaced: a new image gets a new tag (`host-images-<yyyymmdd>[.<n>]`), and a pull request moves
 `DEFAULT_HOST_IMAGES` to it. Running `kantel-host install` again on a host fetches only the files whose digest has
 changed, and the host rebuilds its templates for the new image. To serve your own images (a custom image, say), build the

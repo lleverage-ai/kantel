@@ -73,12 +73,18 @@ at the release tag. It carries its own Python environment; each package's licenc
   https://github.com/selkies-project/pcmflux. Their `licenses/LICENSES.md` inventories every native library they
   contain.
 - pixelflux's published build links **libx264** and **x265**, which are **GPL-2.0-or-later**, so that extension as
-  distributed is under the GPL. Their sources: https://code.videolan.org/videolan/x264 and
-  https://bitbucket.org/multicoreware/x265_git, at the versions bundled in `pixelflux.libs/`. pixelflux's own source
-  and build scripts (above) say how the bundled copies were built. Selkies' other encoders (libvpx BSD-3-Clause,
-  SVT-AV1 BSD-3-Clause-Clear, OpenH264 BSD-2-Clause, libjpeg-turbo) are permissive.
+  distributed is under the GPL, and **libde265** (its virtual camera's HEVC decoder), **LGPL-3.0-or-later**. All
+  three are in `pixelflux.libs/`. Their exact corresponding source is attached to the same GitHub Release as the
+  image (https://github.com/lleverage-ai/kantel/releases, the `host-images-*` tag in the images' `manifest.json`):
+  `source-x264-*.tar.gz`, `source-x265-*.tar.gz` and `source-libde265-*.tar.gz`, each the upstream commit that
+  pixelflux's build recipe checks out, with `source-pixelflux-*.tar.gz`, pixelflux's own source at the same release,
+  whose `pyproject.toml` is that recipe. `SOURCES.md` there names each commit and upstream
+  (https://code.videolan.org/videolan/x264, https://bitbucket.org/multicoreware/x265_git,
+  https://github.com/strukturag/libde265) and `SOURCES.sha256` their checksums; `apps/host/guest/gpl-sources.sh`
+  makes them from the built image. Selkies' other encoders (libvpx BSD-3-Clause, SVT-AV1 BSD-3-Clause-Clear,
+  OpenH264 BSD-2-Clause, libjpeg-turbo) are permissive.
 - The other bundled shared libraries (in `*.libs/`: libpulse, libsndfile, libdbus, libsystemd, libgcrypt and
-  others under LGPL-2.1-or-later; libde265 under LGPL-3.0-or-later; libwebp, libpng, freetype, harfbuzz, zstd and
+  others under LGPL-2.1-or-later; libwebp, libpng, freetype, harfbuzz, zstd and
   others under permissive licences) are unmodified builds of those libraries and may be replaced.
 - The remaining Python packages (aiohttp, cryptography, pillow, psutil, uvloop and others) are under Apache-2.0,
   MIT, BSD, ISC or PSF-2.0, as each `*.dist-info` says.
@@ -106,5 +112,6 @@ their use needs.
 ## Getting the source
 
 Everything above is published source at the stated locations, pinned by version: the Ubuntu and Debian snapshots
-keep every package version permanently. If you need a copy of the source of any GPL or LGPL component of a published
+keep every package version permanently, and each image release carries the source of the GPL and LGPL libraries
+bundled in Selkies' pixelflux (above). If you need a copy of the source of any GPL or LGPL component of a published
 image and can't get it from those locations, open an issue at https://github.com/lleverage-ai/kantel/issues.
