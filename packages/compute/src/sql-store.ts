@@ -1,7 +1,8 @@
 /**
  * The compute plane's records in SQL (Postgres self-hosted, SQLite on D1 or `node:sqlite`), so a gateway keeps them
  * across restarts and several gateways over one database share them. It behaves as the memory store does
- * (`store.ts`): records copied in and out, `list` oldest first by first insertion, and `update` atomic.
+ * (`store.ts`): records copied in and out, `list` oldest first by first insertion, and `update` and `insert`
+ * atomic.
  *
  * Every collection is rows of one table, `compute_api_records`: its kind (the collection's name), its ID, `seq` (when
  * it was first put, which a replace keeps), `version` (bumped on every write) and the record as JSON. The `SqlDriver`
@@ -69,6 +70,15 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 		: `INSERT INTO compute_api_records (kind, id, seq, version, data)
 			VALUES (?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM compute_api_records WHERE kind = ?), 1, ?)
 			ON CONFLICT (kind, id) DO UPDATE SET data = excluded.data, version = compute_api_records.version + 1`;
+	// The same insert, but a row already there is left alone and no row comes back: one statement, so of two writers at
+	// once exactly one gets its row back.
+	const insertNew = postgres
+		? `INSERT INTO compute_api_records (kind, id, seq, version, data)
+			VALUES (?, ?, nextval('compute_api_records_seq'), 1, ?)
+			ON CONFLICT (kind, id) DO NOTHING RETURNING id`
+		: `INSERT INTO compute_api_records (kind, id, seq, version, data)
+			VALUES (?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM compute_api_records WHERE kind = ?), 1, ?)
+			ON CONFLICT (kind, id) DO NOTHING RETURNING id`;
 	const field = (name: string) => {
 		if (!FIELD_NAME.test(name)) throw new Error(`A compute record has no field ${JSON.stringify(name)} to list by`);
 		return postgres ? `(data::jsonb ->> '${name}')` : `json_extract(data, '$.${name}')`;
@@ -83,6 +93,11 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 		async put(record) {
 			const data = JSON.stringify(record);
 			await driver.query(insert, postgres ? [kind, record.id, data] : [kind, record.id, kind, data]);
+		},
+		async insert(record) {
+			const data = JSON.stringify(record);
+			const rows = await driver.query(insertNew, postgres ? [kind, record.id, data] : [kind, record.id, kind, data]);
+			return rows.length > 0;
 		},
 		async update(id, change) {
 			for (let attempt = 0; attempt < UPDATE_ATTEMPTS; attempt++) {

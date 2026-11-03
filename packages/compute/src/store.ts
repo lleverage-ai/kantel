@@ -17,6 +17,11 @@ export interface Collection<T extends { readonly id: string }> {
 	/** Inserts or replaces the record with its ID. */
 	put(record: T): Promise<void>;
 	/**
+	 * Inserts the record only when none has its ID, and answers whether it did. Of several writers inserting one ID at
+	 * once, on any gateway, exactly one wins: a claim, such as an idempotency key's.
+	 */
+	insert(record: T): Promise<boolean>;
+	/**
 	 * Changes the record as it is now, with nothing else written between the read and the write (the SQL store writes
 	 * only over the version it read, and reads again when another writer got there first), and answers what was written.
 	 * `change` answers `undefined` to write nothing; a missing record is never written. `change` may run more than once.
@@ -173,12 +178,22 @@ export interface StoredDeviceLogin {
 	readonly collectedAt?: number;
 }
 
-/** The first answer to an idempotent call; its ID is `<caller>:<operation>:<key>`. */
+/**
+ * An idempotent call's key, claimed (`insert`) before the call does its work, and then its first answer; its ID is
+ * `<caller>:<operation>:<key>`.
+ */
 export interface StoredIdempotency {
 	readonly id: string;
-	/** The answer's JSON. */
-	readonly body: string;
+	/** The answer's JSON, once the first call has answered; absent while it is still working. */
+	readonly body?: string;
 	readonly createdAt: number;
+	/** While it is working: who holds the claim (a random ID), so only the holder renews it. */
+	readonly claim?: string;
+	/**
+	 * While it is working: when the claim lapses unless the holder renews it, so a gateway that died mid-call doesn't
+	 * hold the key for ever; another call may then take the claim over.
+	 */
+	readonly claimExpiresAt?: number;
 }
 
 /** Every record the compute plane keeps. */
@@ -222,6 +237,11 @@ export function memoryCollection<T extends { readonly id: string }>(): Collectio
 		},
 		async put(record) {
 			records.set(record.id, structuredClone(record));
+		},
+		async insert(record) {
+			if (records.has(record.id)) return false;
+			records.set(record.id, structuredClone(record));
+			return true;
 		},
 		async update(id, change) {
 			const current = records.get(id);

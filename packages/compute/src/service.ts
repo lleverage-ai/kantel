@@ -170,6 +170,12 @@ export const DEFAULT_TIMEOUT_MS = 30_000;
 export const AUTOMATIC_SNAPSHOT_TTL_MS = 7 * 24 * 3_600_000;
 /** The usage readings kept per sandbox: a day at one every 5 minutes. */
 export const MAX_SAMPLES = 288;
+/**
+ * How long an idempotency key's claim lasts without a renewal: a gateway that dies mid-call frees its key within this,
+ * and a retry then does the work. The holder renews it every `IDEMPOTENCY_RENEW_MS` while the work runs.
+ */
+export const IDEMPOTENCY_CLAIM_MS = 60_000;
+export const IDEMPOTENCY_RENEW_MS = 20_000;
 const DEFAULT_AUTO_STOP_MINUTES = 60;
 /**
  * How long SSH, desktop and browser access can be opened for, unless the call says: a bearer URL that leaks is good for
@@ -843,7 +849,41 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return host;
 	}
 
-	/** Answers an idempotent call's first answer again for the same caller, operation and key. */
+	/**
+	 * Takes the key's claim for `claim`: inserts it, or takes over one whose holder stopped renewing it. Answers the first
+	 * call's answer when there is one, `true` when the claim is now `claim`'s, and refuses with `conflict` while another
+	 * call holds it.
+	 */
+	async function claimKey(id: string, claim: string): Promise<{ readonly body: string } | true> {
+		const claimed = () => ({ id, createdAt: now(), claim, claimExpiresAt: now() + IDEMPOTENCY_CLAIM_MS });
+		// Twice at most: the claim may be released (its call failed) between the insert and the read.
+		for (let attempt = 0; attempt < 2; attempt++) {
+			if (await store.idempotency.insert(claimed())) return true;
+			let answered: string | undefined;
+			let seen = false;
+			const taken = await store.idempotency.update(id, (current) => {
+				seen = true;
+				answered = current.body;
+				if (current.body !== undefined || (current.claimExpiresAt ?? 0) > now()) return undefined;
+				return claimed();
+			});
+			if (answered !== undefined) return { body: answered };
+			if (taken !== undefined) return true;
+			if (seen) break;
+		}
+		throw new KantelError(
+			"conflict",
+			"A call with this Idempotency-Key is still in progress; retry it once that call has answered",
+		);
+	}
+
+	/**
+	 * Answers an idempotent call's first answer again for the same caller, operation and key, on every gateway. The key is
+	 * claimed before the work starts, so only one call does it: a call with the same key while it works waits for it on
+	 * this gateway, and is `conflict` on another. The claim is renewed while the work runs and lapses
+	 * `IDEMPOTENCY_CLAIM_MS` after the last renewal, so a gateway that died mid-call frees the key within that. A call that
+	 * fails releases the key, so a retry does the work again.
+	 */
 	async function once<T>(
 		principal: Principal,
 		operation: string,
@@ -853,12 +893,31 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (key === undefined) return work();
 		const caller = principal.kind === "key" ? `key:${principal.keyId}` : `user:${principal.userId}`;
 		const id = `${caller}:${operation}:${key}`;
-		const stored = await store.idempotency.get(id);
-		if (stored !== undefined) return JSON.parse(stored.body) as T;
 		const running = inflight.get(id);
 		if (running !== undefined) return running as Promise<T>;
 		const promise = (async () => {
-			const answer = await work();
+			const claim = randomId("claim");
+			const held = await claimKey(id, claim);
+			if (held !== true) return JSON.parse(held.body) as T;
+			const renew = setInterval(() => {
+				void store.idempotency
+					.update(id, (current) =>
+						current.claim === claim && current.body === undefined
+							? { ...current, claimExpiresAt: now() + IDEMPOTENCY_CLAIM_MS }
+							: undefined,
+					)
+					.catch(() => undefined);
+			}, IDEMPOTENCY_RENEW_MS);
+			(renew as { unref?: () => void }).unref?.();
+			let answer: T;
+			try {
+				answer = await work();
+			} catch (error) {
+				clearInterval(renew);
+				await store.idempotency.delete(id).catch(() => undefined);
+				throw error;
+			}
+			clearInterval(renew);
 			await store.idempotency.put({ id, body: JSON.stringify(answer), createdAt: now() });
 			return answer;
 		})();

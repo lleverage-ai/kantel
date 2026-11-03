@@ -2130,7 +2130,7 @@
 						"name": "Idempotency-Key",
 						"in": "header",
 						"required": false,
-						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again.",
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry may be `conflict`: retry it later.",
 						"schema": {
 							"type": "string",
 							"minLength": 1,
@@ -2854,7 +2854,7 @@
 						"name": "Idempotency-Key",
 						"in": "header",
 						"required": false,
-						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again.",
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry may be `conflict`: retry it later.",
 						"schema": {
 							"type": "string",
 							"minLength": 1,
@@ -3178,7 +3178,7 @@
 						"name": "Idempotency-Key",
 						"in": "header",
 						"required": false,
-						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again.",
+						"description": "A key of your choosing, unique per call, such as a UUID. A retry with the same key gets the first call's answer and does nothing again. While the first call is still working, a retry may be `conflict`: retry it later.",
 						"schema": {
 							"type": "string",
 							"minLength": 1,
