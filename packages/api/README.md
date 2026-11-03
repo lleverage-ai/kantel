@@ -12,6 +12,25 @@ schemas). Everything else is made from those definitions:
 
 The console uses the public API like any other client, so anything it can do a host app can do too.
 
+## The compute plane (experimental)
+
+The compute plane's routes are in `src/compute-routes.ts` over `src/compute-schema.ts`, and in `routes` like every
+other: accounts and organisations (`/whoami`, `/accounts`), sandboxes (`/sandboxes`, isolates and microVMs behind one
+API) with their commands, files, ports, SSH, desktop and browser, snapshots (`/snapshots`, a sandbox's automatic history
+and named saved ones), scoped API keys (`/api-keys`), the egress proxy's settings (`/proxy`), events, webhooks and
+OpenTelemetry export (`/events`, `/webhooks`, `/telemetry`), and the super-admin's hosts (`/admin/hosts`). A deployment
+serves them only with `KANTEL_COMPUTE=experimental`. The schemas are the source of the types (`Static`), so these have
+no twin in `@kantel/contracts`; `computeSchema.API_KEY_SCOPES`, `API_KEY_PRESETS` and `EVENT_TYPES` list the values a
+server checks.
+
+```ts
+const kantel = createKantelClient({ baseUrl: "https://kantel.example/v1", token: process.env.KANTEL_API_KEY });
+const sandbox = await kantel.createSandbox({ type: "microvm", wait: true });
+const run = await kantel.runCommand(sandbox.id, { command: "uname -a" });
+console.log(run.exitCode, run.stdout);
+await kantel.stopSandbox(sandbox.id);
+```
+
 ## Adding a route
 
 1. Add its schemas to `src/schema.ts`, each named with a `title`, and a type check in `test/types.test.ts` against its
