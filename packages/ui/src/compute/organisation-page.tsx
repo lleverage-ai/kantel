@@ -13,6 +13,7 @@ import { PlusIcon } from "../primitives/icons.tsx";
 import { useLoad } from "../primitives/load.ts";
 import { EllipsisIcon, InviteIcon, RevokeInviteIcon, TrashIcon } from "../primitives/lucide.tsx";
 import { Menu } from "../primitives/menu.tsx";
+import { OneTimeSecret } from "../primitives/one-time-secret.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
@@ -39,6 +40,8 @@ export interface OrganisationPageProps {
 	readonly onJoin?: () => void;
 	/** The viewer left the organisation: the host switches to another account. */
 	readonly onLeft?: () => void;
+	/** An invite just made, with its join code showing: for a story. */
+	readonly invited?: OrganisationInvite;
 }
 
 /** The roles an invite can give: the owner is whoever made the organisation. */
@@ -57,7 +60,16 @@ const canManage = (role: AccountRole): boolean => role === "owner" || role === "
 
 type NoticeState = { level: "info" | "error"; text: string };
 
-export function OrganisationPage({ source, account, viewerId, now, onCreate, onJoin, onLeft }: OrganisationPageProps) {
+export function OrganisationPage({
+	source,
+	account,
+	viewerId,
+	now,
+	onCreate,
+	onJoin,
+	onLeft,
+	invited,
+}: OrganisationPageProps) {
 	if (account.kind === "personal") {
 		return (
 			<div className={computePage}>
@@ -94,6 +106,7 @@ export function OrganisationPage({ source, account, viewerId, now, onCreate, onJ
 			viewerId={viewerId}
 			now={now}
 			{...(onLeft === undefined ? {} : { onLeft })}
+			{...(invited === undefined ? {} : { invited })}
 		/>
 	);
 }
@@ -104,12 +117,14 @@ function OrganisationDetails({
 	viewerId,
 	now: fixedNow,
 	onLeft,
+	invited: firstInvited,
 }: {
 	source: AccountsSource;
 	account: ComputeAccount;
 	viewerId: string;
 	now: number | undefined;
 	onLeft?: () => void;
+	invited?: OrganisationInvite;
 }) {
 	const members = useLoad(() => source.members(account.id), [source, account.id]);
 	const invites = useLoad(() => source.invites(account.id), [source, account.id]);
@@ -120,6 +135,8 @@ function OrganisationDetails({
 	const [notice, setNotice] = useState<NoticeState>();
 	const [inviting, setInviting] = useState(false);
 	const [leaving, setLeaving] = useState(false);
+	// The invite just made, while its join code shows.
+	const [invited, setInvited] = useState(firstInvited);
 	const now = fixedNow ?? Date.now();
 	const manager = canManage(account.role);
 
@@ -174,10 +191,16 @@ function OrganisationDetails({
 			<PageHeader
 				title={account.name}
 				lede={
-					<>
-						Its slug is <span className="font-mono text-code text-fg">{account.slug}</span>, and it has {people}.{" "}
-						{YOUR_ROLE[account.role]}
-					</>
+					account.slug === undefined ? (
+						<>
+							It has {people}. {YOUR_ROLE[account.role]}
+						</>
+					) : (
+						<>
+							Its slug is <span className="font-mono text-code text-fg">{account.slug}</span>, and it has {people}.{" "}
+							{YOUR_ROLE[account.role]}
+						</>
+					)
 				}
 				actions={
 					manager ? (
@@ -187,6 +210,17 @@ function OrganisationDetails({
 					) : undefined
 				}
 			/>
+			{invited?.code === undefined ? null : (
+				<OneTimeSecret
+					title={`Send ${invited.email} this code now`}
+					secret={invited.code}
+					secretLabel="Join code"
+					copyLabel="Copy code"
+					warning={`Kantel sends no email and shows this code only once. ${invited.email} joins as ${ACCOUNT_ROLE_LABELS[invited.role].toLowerCase()} with it: in the account menu, Join with an invite code. It works once.`}
+					acknowledgeLabel="Done"
+					onAcknowledge={() => setInvited(undefined)}
+				/>
+			)}
 			{notice === undefined ? null : (
 				<Notice
 					level={notice.level}
@@ -277,9 +311,16 @@ function OrganisationDetails({
 					account={account}
 					onClose={() => setInviting(false)}
 					onInvite={async (input) => {
-						const invite = await source.invite(account.id, input);
+						const made = await source.invite(account.id, input);
+						// The code shows once, in its own panel; the list never holds it.
+						const { code, ...invite } = made;
 						setSent((current) => [...current, invite]);
-						setNotice({ level: "info", text: `Invited ${invite.email} as ${ACCOUNT_ROLE_LABELS[invite.role]}.` });
+						if (code === undefined) {
+							setNotice({ level: "info", text: `Invited ${invite.email} as ${ACCOUNT_ROLE_LABELS[invite.role]}.` });
+						} else {
+							setNotice(undefined);
+							setInvited(made);
+						}
 						invites.reload();
 					}}
 				/>
@@ -510,7 +551,7 @@ function InviteDialog({
 			},
 			(caught: unknown) => {
 				setBusy(false);
-				setFailure(messageOf(caught, "Kantel couldn't send the invite. Try again."));
+				setFailure(messageOf(caught, "Kantel couldn't make the invite. Try again."));
 			},
 		);
 	};
@@ -524,13 +565,13 @@ function InviteDialog({
 				<>
 					<Button onClick={close}>Cancel</Button>
 					<Button type="submit" variant="primary" busy={busy} disabled={!valid}>
-						Send invite
+						Make invite
 					</Button>
 				</>
 			}
 		>
 			<p>
-				They get an email with a code to join <strong>{account.name}</strong> and use its sandboxes.
+				Kantel makes a code for them to join <strong>{account.name}</strong> and use its sandboxes. You send it to them.
 			</p>
 			<div className="flex w-(--kt-card-width) max-w-full flex-col gap-4 pt-2">
 				<TextField
