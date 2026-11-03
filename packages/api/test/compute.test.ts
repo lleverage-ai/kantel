@@ -4,7 +4,16 @@ import { describe, expect, it } from "vitest";
 import { API_KEY_PRESETS, API_KEY_SCOPES } from "../src/compute-schema.ts";
 import { computeRoutes, routes } from "../src/index.ts";
 
-const PEOPLE_OR_ANY = new Set(["getCaller", "createOrganisation", "joinOrganisation", "deleteOrganisation"]);
+const PEOPLE_OR_ANY = new Set([
+	"getCaller",
+	"createOrganisation",
+	"joinOrganisation",
+	"deleteOrganisation",
+	"startDeviceLogin",
+	"pollDeviceLogin",
+	"getDeviceLogin",
+	"denyDeviceLogin",
+]);
 
 describe("compute routes", () => {
 	it("are all v1 routes", () => {
@@ -27,6 +36,13 @@ describe("compute routes", () => {
 				.filter((name) => (API_KEY_SCOPES as readonly string[]).includes(name as string));
 			expect(named.length, id).toBeGreaterThan(0);
 		}
+	});
+
+	it("takes no credential only on a device sign-in's start and poll", () => {
+		const open = Object.entries(computeRoutes)
+			.filter(([, route]) => (route as { public?: true }).public === true)
+			.map(([id]) => id);
+		expect(open.sort()).toEqual(["pollDeviceLogin", "startDeviceLogin"]);
 	});
 
 	it("keeps hosts under /admin and super-admins only", () => {

@@ -17,6 +17,7 @@ import {
 	type Command,
 	type CreatedBy,
 	createKantelClient,
+	type DeviceLoginRequest,
 	type FileEntry,
 	type Host,
 	type Invite,
@@ -42,6 +43,8 @@ import type {
 	ComputeAccount,
 	ComputeSource,
 	ComputeViewer,
+	DeviceLogin,
+	DeviceLoginsSource,
 	HostingMode,
 	HostsSource,
 	ProxySource,
@@ -461,6 +464,26 @@ function keysSource({ api }: Context): ApiKeysSource {
 			return { key: apiKeyOf(issued.key), secret: issued.secret };
 		},
 		revoke: async (id) => apiKeyOf(await api.revokeApiKey(id)),
+	};
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Device sign-ins
+
+const deviceLoginOf = (login: DeviceLoginRequest): DeviceLogin => ({
+	userCode: login.userCode,
+	clientName: login.clientName,
+	state: login.state,
+	createdAt: login.createdAt,
+	expiresAt: login.expiresAt,
+});
+
+function devicesSource({ api }: Context): DeviceLoginsSource {
+	return {
+		get: async (userCode) => deviceLoginOf(await api.getDeviceLogin(userCode)),
+		approve: async (userCode, input) =>
+			deviceLoginOf(await api.approveDeviceLogin(userCode, { account: input.accountId })),
+		deny: async (userCode) => deviceLoginOf(await api.denyDeviceLogin(userCode)),
 	};
 }
 
@@ -886,5 +909,7 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		webhooks: webhooksSource(context),
 		telemetry: telemetrySource(context),
 		...(caller.superAdmin ? { hosts: hostsSource(context) } : {}),
+		// Only a person approves a device; a console signed in with a key has nothing to approve with.
+		...(caller.apiKey === undefined ? { devices: devicesSource(context) } : {}),
 	};
 }

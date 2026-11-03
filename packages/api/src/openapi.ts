@@ -174,6 +174,8 @@ function operation(route: RouteDefinition, registry: SchemaRegistry): JsonSchema
 		summary: route.summary,
 		...(description === "" ? {} : { description }),
 		tags: [route.tag],
+		// A route that takes no credential overrides the document's bearer requirement.
+		...(route.public === true ? { security: [] } : {}),
 		...(params.length === 0 ? {} : { parameters: params }),
 		...(route.body === undefined
 			? {}

@@ -91,6 +91,16 @@ What a key may do. `sandboxes:read`: list and inspect sandboxes, their usage and
 
 One of: `"sandboxes:read"` or `"sandboxes:write"` or `"sandboxes:delete"` or `"exec"` or `"files"` or `"access"` or `"snapshots:read"` or `"snapshots:write"` or `"account:read"` or `"account:admin"` or `"hosts:admin"`.
 
+### ApproveDeviceLoginBody
+
+The key the device gets, in the approver's personal account unless `account` names an organisation. Without `preset`, every scope the approver may grant there, `hosts:admin` included for a super-admin.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
+| `preset` | [ApiKeyPreset](/api/reference/types/#apikeypreset) | no |  |
+| `expiresInDays` | integer | no | Default 90. The key stops working after it. (minimum 1, maximum 3650) |
+
 ### BrowserAccess
 
 | Field | Type | Required | Description |
@@ -255,6 +265,46 @@ One of: `"selfhosted"` or `"hosted"`.
 | `embedUrl` | string | yes | The same, for an iframe. |
 | `viewOnly` | boolean | yes |  |
 | `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### DeviceLogin
+
+A sign-in in the browser under way, as RFC 8628's device authorisation grant.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `deviceCode` | string | yes | `kdc_…`: the device's secret, which it polls with. Never show it. |
+| `userCode` | string | yes | `ABCD-EFGH`: the code the person checks in the browser. |
+| `verificationUrl` | string | yes | The console's page where a signed-in person approves it. |
+| `verificationUrlComplete` | string | yes | The same page with the code filled in. |
+| `intervalSeconds` | integer | yes | Poll no more often than this. |
+| `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### DeviceLoginRequest
+
+A device waiting for a person to approve it, as the approval page shows it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `userCode` | string | yes |  |
+| `clientName` | string | yes |  |
+| `state` | [DeviceLoginState](/api/reference/types/#deviceloginstate) | yes |  |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### DeviceLoginResult
+
+With `approved`, the new key and its secret, shown this once.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `state` | [DeviceLoginState](/api/reference/types/#deviceloginstate) | yes |  |
+| `issued` | [IssuedApiKey](/api/reference/types/#issuedapikey) | no |  |
+
+### DeviceLoginState
+
+`pending`: no one has approved it yet. `approved`: the poll that sees it first gets the key; later polls are `expired`. `denied`: the person refused it. `expired`: too late, or already collected.
+
+One of: `"pending"` or `"approved"` or `"denied"` or `"expired"`.
 
 ### ErrorBody
 
@@ -492,6 +542,12 @@ A way into an organisation: whoever joins with its code becomes a member.
 `member`: uses the organisation's shared sandboxes and snapshots and makes their own. `admin`: also manages members, API keys, webhooks, telemetry and the proxy. `owner`: also renames or deletes the organisation. A personal account's person is its `owner`.
 
 One of: `"member"` or `"admin"` or `"owner"`.
+
+### PollDeviceLoginBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `deviceCode` | string | yes |  |
 
 ### ProxySettings
 
@@ -736,6 +792,12 @@ One of: `"creating"` or `"ready"` or `"failed"` or `"deleting"`.
 | --- | --- | --- | --- |
 | `publicKey` | string | no | An OpenSSH public key to let in. Absent: Kantel makes a key pair for this access. |
 | `ttlMinutes` | integer | no | Default 60. (minimum 5, maximum 1440) |
+
+### StartDeviceLoginBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `clientName` | string | no | What is signing in, shown to the person who approves it and given to its key: `kantel on build-01`. (at most 100 characters) |
 
 ### StopSandboxBody
 

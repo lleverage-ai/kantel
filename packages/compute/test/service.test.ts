@@ -276,6 +276,52 @@ describe("keys and scopes", () => {
 	});
 });
 
+describe("device sign-in", () => {
+	it("signs a device in once a person approves its code, and hands its key over once", async () => {
+		const { client, tom } = setup();
+		const device = client(undefined);
+		const started = await device.startDeviceLogin({ clientName: "kantel on build-01" });
+		expect(started.deviceCode).toMatch(/^kdc_/);
+		expect(started.userCode).toMatch(/^[B-Z]{4}-[B-Z]{4}$/);
+		expect(started.verificationUrl).toBe("http://compute.test/compute/device");
+		expect(started.verificationUrlComplete).toBe(`http://compute.test/compute/device?code=${started.userCode}`);
+
+		expect(await device.pollDeviceLogin({ deviceCode: started.deviceCode })).toEqual({ state: "pending" });
+
+		// The person may type it in lower case and without the dash.
+		const typed = started.userCode.toLowerCase().replace("-", "");
+		expect(await tom.getDeviceLogin(typed)).toMatchObject({ clientName: "kantel on build-01", state: "pending" });
+		expect(await tom.approveDeviceLogin(typed, { preset: "agent" })).toMatchObject({ state: "approved" });
+
+		const approved = await device.pollDeviceLogin({ deviceCode: started.deviceCode });
+		expect(approved.state).toBe("approved");
+		expect(approved.issued?.secret).toMatch(/^ksk_/);
+		expect(approved.issued?.key.name).toBe("kantel on build-01");
+		expect(approved.issued?.key.expiresAt).toBeTypeOf("number");
+		const caller = await client(approved.issued?.secret).getCaller();
+		expect(caller.apiKey?.scopes).not.toContain("account:admin");
+		expect(caller.apiKey?.id).toBe(approved.issued?.key.id);
+		expect(approved.issued?.key.createdBy).toMatchObject({ kind: "user", id: "usr_tom" });
+
+		// The secret is handed over once.
+		expect(await device.pollDeviceLogin({ deviceCode: started.deviceCode })).toEqual({ state: "expired" });
+		expect((await failure(tom.approveDeviceLogin(started.userCode, {}))).code).toBe("conflict");
+	});
+
+	it("tells the device when the person denies it, and needs a person to approve", async () => {
+		const { client, tom } = setup();
+		const device = client(undefined);
+		const started = await device.startDeviceLogin({});
+		const key = await tom.createApiKey({ name: "admin", preset: "admin" });
+		expect((await failure(client(key.secret).approveDeviceLogin(started.userCode, {}))).code).toBe("forbidden");
+		expect((await failure(device.approveDeviceLogin(started.userCode, {}))).status).toBe(401);
+		await tom.denyDeviceLogin(started.userCode);
+		expect(await device.pollDeviceLogin({ deviceCode: started.deviceCode })).toEqual({ state: "denied" });
+		expect((await failure(device.pollDeviceLogin({ deviceCode: "kdc_nope" }))).code).toBe("not_found");
+		expect((await failure(tom.getDeviceLogin("BBBB-BBBB"))).code).toBe("not_found");
+	});
+});
+
 describe("organisations", () => {
 	it("creates an organisation, invites someone and lets them join", async () => {
 		const { tom, ann } = setup();

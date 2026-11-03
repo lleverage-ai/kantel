@@ -588,6 +588,30 @@ export interface HostsSource {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// Device sign-ins (`kantel login` in a browser)
+
+export type DeviceLoginState = "pending" | "approved" | "denied" | "expired";
+
+/** A command line waiting for a person to approve the code it showed. */
+export interface DeviceLogin {
+	/** `BCDF-GHJK`. */
+	readonly userCode: string;
+	/** What is signing in, as it named itself: `kantel on build-01`. */
+	readonly clientName: string;
+	readonly state: DeviceLoginState;
+	readonly createdAt: number;
+	readonly expiresAt: number;
+}
+
+export interface DeviceLoginsSource {
+	/** The sign-in with this code; rejects when no sign-in has it. */
+	get(userCode: string): Promise<DeviceLogin>;
+	/** Makes the device a key in the account, which its next poll collects. */
+	approve(userCode: string, input: { readonly accountId: string }): Promise<DeviceLogin>;
+	deny(userCode: string): Promise<DeviceLogin>;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // Plans and usage (hosted)
 
 export interface Plan {
@@ -641,6 +665,8 @@ export interface ComputeSource {
 	readonly hosts?: HostsSource;
 	/** Only when hosted. */
 	readonly billing?: BillingSource;
+	/** Approving a command line's sign-in, at `/compute/device`. Absent where nothing can sign in that way. */
+	readonly devices?: DeviceLoginsSource;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

@@ -4,7 +4,8 @@
  * and hosts around them. Experimental: a deployment serves them only with `KANTEL_COMPUTE=experimental`, and answers
  * 404 without it.
  *
- * Every route takes a bearer: a scoped API key (`ksk_…`), or a person's sign-in. A key acts in its own account; a person
+ * Every route but a device sign-in's start and poll (`public`) takes a bearer: a scoped API key (`ksk_…`), or a person's
+ * sign-in. A key acts in its own account; a person
  * acts in their personal account unless a route's `account` names an organisation they belong to. Each route names the
  * scope a key needs in its description, and a key without it is `forbidden`.
  */
@@ -17,6 +18,7 @@ import {
 	ApiKey,
 	ApiKeyList,
 	ApiKeyPath,
+	ApproveDeviceLoginBody,
 	BrowserAccess,
 	Caller,
 	Command,
@@ -29,6 +31,10 @@ import {
 	CreateSandboxBody,
 	CreateWebhookBody,
 	DesktopAccess,
+	DeviceLogin,
+	DeviceLoginPath,
+	DeviceLoginRequest,
+	DeviceLoginResult,
 	EventPage,
 	ExposedPort,
 	ExposedPortList,
@@ -56,6 +62,7 @@ import {
 	MemberList,
 	MemberPath,
 	PageQueryCompute,
+	PollDeviceLoginBody,
 	PortPath,
 	ProxySettings,
 	PutProxySettingsBody,
@@ -74,6 +81,7 @@ import {
 	SnapshotPath,
 	SshAccess,
 	SshAccessBody,
+	StartDeviceLoginBody,
 	StopSandboxBody,
 	TakeSnapshotBody,
 	TelemetryExport,
@@ -894,6 +902,90 @@ export const revokeApiKey = defineRoute({
 
 export const apiKeyRoutes = { listApiKeys, createApiKey, getApiKey, rotateApiKey, revokeApiKey } as const;
 
+// Signing in a device in a browser: the command line's `kantel login`, as RFC 8628's device authorisation grant. The
+// device starts it and polls with no credential; a signed-in person approves it on the console's page, and the device's
+// next poll gets a new API key made for that person.
+
+export const startDeviceLogin = defineRoute({
+	operationId: "startDeviceLogin",
+	method: "POST",
+	path: "/auth/device",
+	tag: "auth",
+	summary: "Start a device sign-in",
+	description: describe(
+		"Answers a code to show the person and the console page to open, where a signed-in person approves it. Then poll",
+		"`pollDeviceLogin` with the `deviceCode`. Takes no credential. A code lasts 15 minutes.",
+	),
+	body: StartDeviceLoginBody,
+	public: true,
+	answer: { status: 201, description: "The sign-in, pending.", schema: DeviceLogin },
+	errors: ["invalid", "exhausted"],
+});
+
+export const pollDeviceLogin = defineRoute({
+	operationId: "pollDeviceLogin",
+	method: "POST",
+	path: "/auth/device/token",
+	tag: "auth",
+	summary: "Poll a device sign-in",
+	description: describe(
+		"Its state, and once approved the new key's secret, answered to the first poll that sees it. Takes no credential:",
+		"the `deviceCode` is the secret.",
+	),
+	body: PollDeviceLoginBody,
+	public: true,
+	answer: { status: 200, description: "Its state, with the key once approved.", schema: DeviceLoginResult },
+	errors: ["invalid", "not_found"],
+});
+
+export const getDeviceLogin = defineRoute({
+	operationId: "getDeviceLogin",
+	method: "GET",
+	path: "/auth/device/{userCode}",
+	tag: "auth",
+	summary: "Get a device sign-in",
+	description: describe("What is asking to sign in with this code, for the approval page.", "A person only."),
+	params: DeviceLoginPath,
+	answer: { status: 200, description: "The sign-in.", schema: DeviceLoginRequest },
+	errors: readErrors,
+});
+
+export const approveDeviceLogin = defineRoute({
+	operationId: "approveDeviceLogin",
+	method: "POST",
+	path: "/auth/device/{userCode}/approve",
+	tag: "auth",
+	summary: "Approve a device sign-in",
+	description: describe(
+		"Makes an API key for the person, named after the device, and hands it to the device's next poll. A person only,",
+		"who needs admin or owner in the account (`account:admin`), as for `createApiKey`.",
+	),
+	params: DeviceLoginPath,
+	body: ApproveDeviceLoginBody,
+	answer: { status: 200, description: "The sign-in, approved.", schema: DeviceLoginRequest },
+	errors: changeErrors,
+});
+
+export const denyDeviceLogin = defineRoute({
+	operationId: "denyDeviceLogin",
+	method: "POST",
+	path: "/auth/device/{userCode}/deny",
+	tag: "auth",
+	summary: "Deny a device sign-in",
+	description: describe("The device's next poll is `denied`. A person only."),
+	params: DeviceLoginPath,
+	answer: { status: 200, description: "The sign-in, denied.", schema: DeviceLoginRequest },
+	errors: changeErrors,
+});
+
+export const deviceLoginRoutes = {
+	startDeviceLogin,
+	pollDeviceLogin,
+	getDeviceLogin,
+	approveDeviceLogin,
+	denyDeviceLogin,
+} as const;
+
 // The proxy.
 
 export const getProxySettings = defineRoute({
@@ -1180,6 +1272,7 @@ export const computeRoutes = {
 	...accessRoutes,
 	...snapshotRoutes,
 	...apiKeyRoutes,
+	...deviceLoginRoutes,
 	...proxyRoutes,
 	...eventRoutes,
 	...webhookRoutes,
@@ -1188,3 +1281,9 @@ export const computeRoutes = {
 } as const;
 
 export type ComputeRoutes = typeof computeRoutes;
+
+/** The compute routes that take no credential: a server answers them without signing the caller in. */
+export const publicComputeRoutes = { startDeviceLogin, pollDeviceLogin } as const;
+export type PublicComputeRoutes = typeof publicComputeRoutes;
+/** The compute routes that sign the caller in first. */
+export type SignedInComputeRoutes = Omit<ComputeRoutes, keyof PublicComputeRoutes>;

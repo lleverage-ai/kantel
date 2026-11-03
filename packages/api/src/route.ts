@@ -48,6 +48,12 @@ export interface RouteDefinition {
 	 */
 	readonly idempotent?: true;
 	/**
+	 * Takes no credential: the server answers it without signing the caller in, and the OpenAPI document says so
+	 * (`security: []`). Its handler is given no principal. Only for a route whose body carries its own secret, such as a
+	 * device sign-in's poll.
+	 */
+	readonly public?: true;
+	/**
 	 * Answers a stream of frames instead of one JSON body: over a WebSocket (101) when the request upgrades, each message
 	 * a JSON array of frames, and as server-sent events otherwise, one frame per event. The handler returns the
 	 * `Response` itself, and the SDK's method opens the WebSocket.

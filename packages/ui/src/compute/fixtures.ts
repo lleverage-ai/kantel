@@ -12,6 +12,7 @@ import type {
 	ComputeSource,
 	ComputeViewer,
 	CreateSandboxInput,
+	DeviceLogin,
 	Host,
 	HostingMode,
 	OrganisationInvite,
@@ -29,6 +30,9 @@ import type {
 	WebhookDelivery,
 } from "./compute-model.ts";
 import { sizeSpec } from "./compute-model.ts";
+
+/** The code the fixtures' waiting command line showed. */
+export const FIXTURE_DEVICE_CODE = "BCDF-GHJK";
 
 /** The moment the fixtures are at: Tuesday 3 November 2026, 10:00 UTC. */
 export const FIXTURE_NOW = Date.UTC(2026, 10, 3, 10, 0, 0);
@@ -860,6 +864,30 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 		[LLEVERAGE.id, INVITES.map((invite) => moved(invite, ["sentAt"]))],
 	]);
 	let planOf = new Map<string, string>(accounts.map((account) => [account.id, account.planId ?? "plan_starter"]));
+	// One command line waiting to sign in, as `kantel login` on a build machine shows its code.
+	const deviceLogins = new Map<string, DeviceLogin>([
+		[
+			FIXTURE_DEVICE_CODE,
+			{
+				userCode: FIXTURE_DEVICE_CODE,
+				clientName: "kantel on build-01",
+				state: "pending",
+				createdAt: at(base - MINUTE),
+				expiresAt: at(base + 14 * MINUTE),
+			},
+		],
+	]);
+	const deviceLogin = (userCode: string): DeviceLogin => {
+		const typed = userCode.toUpperCase().replace(/[^A-Z]/g, "");
+		return find(deviceLogins, `${typed.slice(0, 4)}-${typed.slice(4)}`, "sign-in with the code");
+	};
+	const decide = (userCode: string, state: "approved" | "denied"): DeviceLogin => {
+		const login = deviceLogin(userCode);
+		if (login.state !== "pending") throw new Error(`That sign-in is already ${login.state}.`);
+		const decided = { ...login, state };
+		deviceLogins.set(login.userCode, decided);
+		return decided;
+	};
 
 	const gate = async <T>(make: () => T | Promise<T>): Promise<T> => {
 		if (options.hang === true) return new Promise<T>(() => {});
@@ -1312,6 +1340,11 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 							}),
 					},
 				}),
+		devices: {
+			get: (userCode) => gate(() => deviceLogin(userCode)),
+			approve: (userCode) => gate(() => decide(userCode, "approved")),
+			deny: (userCode) => gate(() => decide(userCode, "denied")),
+		},
 		...(hosting !== "hosted"
 			? {}
 			: {

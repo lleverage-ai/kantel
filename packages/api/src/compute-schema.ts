@@ -830,6 +830,95 @@ export const IssuedApiKey = Type.Object(
 	{ title: "IssuedApiKey" },
 );
 
+// Signing in a device (the command line) in a browser.
+
+export const StartDeviceLoginBody = Type.Object(
+	{
+		clientName: Type.Optional(
+			Type.String({
+				minLength: 1,
+				maxLength: 100,
+				description:
+					"What is signing in, shown to the person who approves it and given to its key: `kantel on build-01`.",
+			}),
+		),
+	},
+	{ title: "StartDeviceLoginBody" },
+);
+
+export const DeviceLogin = Type.Object(
+	{
+		deviceCode: Type.String({ description: "`kdc_…`: the device's secret, which it polls with. Never show it." }),
+		userCode: Type.String({ description: "`ABCD-EFGH`: the code the person checks in the browser." }),
+		verificationUrl: Type.String({ description: "The console's page where a signed-in person approves it." }),
+		verificationUrlComplete: Type.String({ description: "The same page with the code filled in." }),
+		intervalSeconds: Type.Integer({ description: "Poll no more often than this." }),
+		expiresAt: Timestamp,
+	},
+	{
+		title: "DeviceLogin",
+		description: "A sign-in in the browser under way, as RFC 8628's device authorisation grant.",
+	},
+);
+
+export const PollDeviceLoginBody = Type.Object(
+	{ deviceCode: Type.String({ minLength: 1 }) },
+	{ title: "PollDeviceLoginBody" },
+);
+
+export const DeviceLoginState = Type.Union(
+	[Type.Literal("pending"), Type.Literal("approved"), Type.Literal("denied"), Type.Literal("expired")],
+	{
+		title: "DeviceLoginState",
+		description:
+			"`pending`: no one has approved it yet. `approved`: the poll that sees it first gets the key; later polls are " +
+			"`expired`. `denied`: the person refused it. `expired`: too late, or already collected.",
+	},
+);
+
+export const DeviceLoginResult = Type.Object(
+	{
+		state: DeviceLoginState,
+		issued: Type.Optional(IssuedApiKey),
+	},
+	{ title: "DeviceLoginResult", description: "With `approved`, the new key and its secret, shown this once." },
+);
+
+export const DeviceLoginPath = Type.Object(
+	{ userCode: Type.String({ minLength: 1, description: "The code the device showed, such as `ABCD-EFGH`." }) },
+	{ title: "DeviceLoginPath" },
+);
+
+export const DeviceLoginRequest = Type.Object(
+	{
+		userCode: Type.String(),
+		clientName: Type.String(),
+		state: DeviceLoginState,
+		createdAt: Timestamp,
+		expiresAt: Timestamp,
+	},
+	{
+		title: "DeviceLoginRequest",
+		description: "A device waiting for a person to approve it, as the approval page shows it.",
+	},
+);
+
+export const ApproveDeviceLoginBody = Type.Object(
+	{
+		account: accountQuery,
+		preset: Type.Optional(ApiKeyPreset),
+		expiresInDays: Type.Optional(
+			Type.Integer({ minimum: 1, maximum: 3650, description: "Default 90. The key stops working after it." }),
+		),
+	},
+	{
+		title: "ApproveDeviceLoginBody",
+		description:
+			"The key the device gets, in the approver's personal account unless `account` names an organisation. Without " +
+			"`preset`, every scope the approver may grant there, `hosts:admin` included for a super-admin.",
+	},
+);
+
 // The egress proxy.
 
 export const ProxySettings = Type.Object(
@@ -1194,6 +1283,10 @@ export type WebhookDelivery = Static<typeof WebhookDelivery>;
 export type TelemetryExport = Static<typeof TelemetryExport>;
 export type Host = Static<typeof Host>;
 export type HostState = Static<typeof HostState>;
+export type DeviceLogin = Static<typeof DeviceLogin>;
+export type DeviceLoginState = Static<typeof DeviceLoginState>;
+export type DeviceLoginResult = Static<typeof DeviceLoginResult>;
+export type DeviceLoginRequest = Static<typeof DeviceLoginRequest>;
 
 /** Every scope, in the order the docs list them. */
 export const API_KEY_SCOPES: readonly ApiKeyScope[] = [

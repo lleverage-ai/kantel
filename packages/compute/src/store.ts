@@ -4,7 +4,8 @@
  * JSON document beside the columns `list` filters on, as `@kantel/environments`' `sql-store.ts` does) can replace it
  * without the service changing. Records are copied in and out, so a caller changes one only by putting it back.
  *
- * No secret is kept in the clear except a webhook's signing secret, which signing needs: API keys, invite codes and
+ * No secret is kept in the clear except a webhook's signing secret, which signing needs, and an approved device
+ * sign-in's key secret until the device collects it (at most 15 minutes): API keys, invite codes, device codes and
  * host join tokens are kept as the SHA-256 hex of the secret, and header values (the proxy's upstream, the telemetry
  * endpoint's) are kept but never answered.
  */
@@ -156,6 +157,22 @@ export interface StoredJoinToken {
 
 export type StoredEvent = computeSchema.Event;
 
+/** A device sign-in (`kantel login` in a browser); its ID is the SHA-256 hex of its device code. */
+export interface StoredDeviceLogin {
+	readonly id: string;
+	/** `ABCD-EFGH`, as the device shows it. */
+	readonly userCode: string;
+	readonly clientName: string;
+	readonly state: computeSchema.DeviceLoginState;
+	readonly createdAt: number;
+	readonly expiresAt: number;
+	/** The key made when it was approved, and its secret until the device collects it. */
+	readonly apiKeyId?: string;
+	readonly secret?: string;
+	readonly decidedBy?: string;
+	readonly collectedAt?: number;
+}
+
 /** The first answer to an idempotent call; its ID is `<caller>:<operation>:<key>`. */
 export interface StoredIdempotency {
 	readonly id: string;
@@ -182,6 +199,7 @@ export interface ComputeStore {
 	readonly joinTokens: Collection<StoredJoinToken>;
 	readonly events: Collection<StoredEvent>;
 	readonly idempotency: Collection<StoredIdempotency>;
+	readonly deviceLogins: Collection<StoredDeviceLogin>;
 }
 
 function matches<T>(record: T, where: Partial<T> | undefined): boolean {
@@ -237,6 +255,7 @@ export function createMemoryStore(): ComputeStore {
 		joinTokens: memoryCollection(),
 		events: memoryCollection(),
 		idempotency: memoryCollection(),
+		deviceLogins: memoryCollection(),
 	};
 }
 

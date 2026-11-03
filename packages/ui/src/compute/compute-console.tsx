@@ -22,6 +22,7 @@ import { AccountSwitcher, CreateOrganisationDialog, JoinOrganisationDialog } fro
 import { ComputeApiKeysPage } from "./api-keys-page.tsx";
 import { BillingPage } from "./billing-page.tsx";
 import type { ComputeAccount, ComputeSource, ComputeViewer } from "./compute-model.ts";
+import { DeviceLoginPage } from "./device-page.tsx";
 import { HostsPage } from "./hosts-page.tsx";
 import { OrganisationPage } from "./organisation-page.tsx";
 import { messageOf } from "./parts.tsx";
@@ -45,7 +46,8 @@ export type ComputePage =
 	| "telemetry"
 	| "organisation"
 	| "billing"
-	| "hosts";
+	| "hosts"
+	| "device";
 
 export const COMPUTE_PAGES: readonly ComputePage[] = [
 	"sandboxes",
@@ -57,6 +59,7 @@ export const COMPUTE_PAGES: readonly ComputePage[] = [
 	"organisation",
 	"billing",
 	"hosts",
+	"device",
 ];
 
 /** What a path under the console's base shows: a page, and for Snapshots the sandbox whose history is open. */
@@ -173,9 +176,12 @@ export function ComputeConsole({
 	const me = viewer.state.status === "ready" ? viewer.state.value : undefined;
 	const hostsShown = me?.superAdmin === true && source.hosts !== undefined;
 	const billingShown = source.hosting === "hosted" && source.billing !== undefined;
-	// A page this person can't open goes to Sandboxes rather than showing nothing.
+	// A page this person can't open goes to Sandboxes rather than showing nothing. Device sign-in has no sidebar item:
+	// a terminal running `kantel login` opens it.
 	const page =
-		(route.page === "hosts" && me !== undefined && !hostsShown) || (route.page === "billing" && !billingShown)
+		(route.page === "hosts" && me !== undefined && !hostsShown) ||
+		(route.page === "billing" && !billingShown) ||
+		(route.page === "device" && source.devices === undefined)
 			? "sandboxes"
 			: route.page;
 
@@ -448,6 +454,17 @@ function PageFor({
 			return source.hosts === undefined ? null : (
 				<HostsPage source={source.hosts} hosting={source.hosting} {...timing} />
 			);
+		case "device": {
+			const code = new URLSearchParams(search).get("code") ?? undefined;
+			return source.devices === undefined ? null : (
+				<DeviceLoginPage
+					source={source.devices}
+					account={account}
+					{...(code === undefined ? {} : { code })}
+					{...timing}
+				/>
+			);
+		}
 	}
 }
 
