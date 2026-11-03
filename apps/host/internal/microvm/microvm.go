@@ -113,6 +113,9 @@ type sandbox struct {
 	machine *fc.Machine
 	guest   *guest.Client
 	link    *network.Link
+	// unsaved: meta differs from meta.json (a write failed). A call that would otherwise change nothing, a retried
+	// start, writes it before it answers.
+	unsaved bool
 }
 
 func (s *sandbox) vmDir() string { return filepath.Join(s.dir, "vm") }
@@ -227,7 +230,9 @@ func (m *Manager) writeMeta(s *sandbox) error {
 		return err
 	}
 	// Durably: what it holds (its egress, and that egress's revision) is what the host has acknowledged.
-	return fsutil.WriteFileDurably(filepath.Join(s.dir, "meta.json"), raw, 0o600)
+	err = fsutil.WriteFileDurably(filepath.Join(s.dir, "meta.json"), raw, 0o600)
+	s.unsaved = err != nil
+	return err
 }
 
 func (m *Manager) info(s *sandbox) proto.SandboxInfo {
@@ -947,6 +952,13 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.meta.State == proto.StateRunning {
+		// Running already (a retry, say). What it holds is on disk before it says so: an earlier boot that couldn't
+		// write it failed, and a restart mustn't bring back the egress before it.
+		if s.unsaved {
+			if err := m.writeMeta(s); err != nil {
+				return proto.SandboxInfo{}, err
+			}
+		}
 		return m.info(s), nil
 	}
 	if s.meta.State != proto.StateStopped {
@@ -958,6 +970,7 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 	}
 	if p.Egress != nil {
 		s.meta.Egress = p.Egress
+		s.unsaved = true
 	}
 	t := timings{}
 	start := time.Now()

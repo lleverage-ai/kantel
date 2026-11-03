@@ -313,6 +313,20 @@ func (h *Host) orderEgress(t Tier, sandboxID string, revision int64) (bool, erro
 	return true, h.raiseFloor(sandboxID, revision)
 }
 
+// orderNew orders a create or fork's egress: one read before an egress the host has taken for that ID (a newer
+// attempt that saved its floor, then failed) makes nothing, before anything is prepared or applied, rather than
+// make the sandbox with the older egress.
+func (h *Host) orderNew(t Tier, sandboxID string, revision int64) error {
+	ok, err := h.orderEgress(t, sandboxID, revision)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("sandbox %s: a newer egress was taken for it", sandboxID)}
+	}
+	return nil
+}
+
 // raiseFloor records that the host takes a sandbox's egress at revision (it never goes down) and writes it to disk,
 // synced, unless it is there already: the same revision again (a retry) writes it again if an earlier write failed.
 // An error means it is held in memory only.

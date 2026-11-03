@@ -104,6 +104,27 @@ func TestPlainHTTPNeverCarriesAValue(t *testing.T) {
 	env.noValues("what the proxy sent out in clear", sent.String())
 }
 
+// A proxy-form request (the isolate tier's) refused while it is forwarded, its answer unreadable, is recorded as
+// refused with the refusal's status, as one refused before forwarding is; a successful one keeps its status.
+func TestAProxyFormRefusalWhileForwardingIsRecordedAsRefused(t *testing.T) {
+	env := newProtectedEnv(t)
+	res, body := env.raw("GET https://api.example.com/brotli HTTP/1.1\r\nHost: api.example.com\r\nAccept-Encoding: br\r\nAuthorization: Bearer " + ghPlaceholder + "\r\n\r\n")
+	if res.StatusCode != http.StatusBadGateway || res.Header.Get(ErrorHeader) != protect.CodeUnreadableResponse {
+		t.Fatalf("%d %s %q", res.StatusCode, res.Header.Get(ErrorHeader), body)
+	}
+	recs := env.recordsCopy()
+	last := recs[len(recs)-1]
+	if last.Allowed || last.Code != protect.CodeUnreadableResponse || last.Status != http.StatusBadGateway {
+		t.Fatalf("the refusal was recorded as %+v", last)
+	}
+	res, _ = env.raw("GET https://api.example.com/echo HTTP/1.1\r\nHost: api.example.com\r\nAuthorization: Bearer " + ghPlaceholder + "\r\n\r\n")
+	recs = env.recordsCopy()
+	last = recs[len(recs)-1]
+	if res.StatusCode != 200 || !last.Allowed || last.Status != 200 || last.Code != "" {
+		t.Fatalf("a success was recorded as %+v", last)
+	}
+}
+
 // connectProxy is an upstream proxy that answers CONNECT by tunnelling to target, and keeps everything it is sent.
 type connectProxy struct {
 	addr string

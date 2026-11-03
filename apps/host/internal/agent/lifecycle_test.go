@@ -36,6 +36,8 @@ type lifecycleTier struct {
 	failExecs int
 	// failSetEgress is how many SetEgress calls fail (a meta.json that can't be written).
 	failSetEgress int
+	// failCreate is how many creates (forks included) fail, leaving nothing.
+	failCreate int
 	// hold, when set, is waited on inside Create and SetEgress (once each call has started).
 	hold    chan struct{}
 	inside  atomic.Int32
@@ -69,6 +71,10 @@ func (f *lifecycleTier) Create(_ context.Context, p proto.CreateParams) (proto.S
 	defer f.mu.Unlock()
 	if f.running[p.SandboxID] {
 		return proto.SandboxInfo{}, &proto.Error{Code: proto.ErrConflict, Message: p.SandboxID}
+	}
+	if f.failCreate > 0 {
+		f.failCreate--
+		return proto.SandboxInfo{}, &proto.Error{Code: proto.ErrUnavailable, Message: "no room"}
 	}
 	f.egress[p.SandboxID] = p.Egress
 	f.running[p.SandboxID] = true
@@ -714,6 +720,54 @@ func TestARevisionedBootStatesTheEgress(t *testing.T) {
 	}
 	if e := held(); e == nil || e.Grants[0].Host != "kept.example" {
 		t.Fatalf("an unrevisioned boot without egress didn't keep it: %+v", e)
+	}
+}
+
+// A create or fork that saved its floor and then failed leaves that floor: a delayed older attempt for the same ID
+// makes nothing, rather than a sandbox with the older egress; the newer one again does.
+func TestAStaleCreateOrForkMakesNothing(t *testing.T) {
+	tier := newLifecycleTier()
+	h := newLifecycleHost(t, tier)
+	deny := func(rev int64, host string) *proto.Egress {
+		return &proto.Egress{Mode: "proxy", Revision: rev, Grants: []proto.Grant{{Action: "deny", Host: host, Rule: "deny " + host}}}
+	}
+	stale := func(err error) bool {
+		var perr *proto.Error
+		return errors.As(err, &perr) && perr.Code == proto.ErrConflict
+	}
+	if err := call(t, h, proto.MethodCreate, proto.CreateParams{SandboxID: "sbx_p", Egress: deny(1, "parent.example")}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name string
+		make func(e *proto.Egress) error
+		id   string
+	}{
+		{"create", func(e *proto.Egress) error {
+			return call(t, h, proto.MethodCreate, proto.CreateParams{SandboxID: "sbx_1", Egress: e})
+		}, "sbx_1"},
+		{"fork", func(e *proto.Egress) error {
+			return call(t, h, proto.MethodFork, proto.ForkParams{SandboxID: "sbx_p", NewID: "sbx_2", Egress: e})
+		}, "sbx_2"},
+	} {
+		tier.mu.Lock()
+		tier.failCreate = 1
+		tier.mu.Unlock()
+		if err := c.make(deny(30, "new.example")); err == nil {
+			t.Fatalf("%s: the failing attempt succeeded", c.name)
+		}
+		if err := c.make(deny(25, "old.example")); !stale(err) {
+			t.Fatalf("%s: a stale attempt after a newer one wasn't refused: %v", c.name, err)
+		}
+		if _, err := tier.Get(c.id); err == nil {
+			t.Fatalf("%s: a stale attempt made the sandbox", c.name)
+		}
+		if err := c.make(deny(30, "new.example")); err != nil {
+			t.Fatalf("%s: the retry: %v", c.name, err)
+		}
+		if e, _ := tier.EgressOf(c.id); e == nil || e.Grants[0].Host != "new.example" {
+			t.Fatalf("%s: the retry's egress: %+v", c.name, e)
+		}
 	}
 }
 

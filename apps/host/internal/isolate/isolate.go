@@ -110,6 +110,16 @@ type sandbox struct {
 	// exec runs one command at a time (each takes the manifest the last one left). Held without mu, so the
 	// command's egress can look the sandbox up meanwhile.
 	exec sync.Mutex
+	// unsaved: meta differs from meta.json (a write failed). A call that would otherwise change nothing, a retried
+	// start, writes it before it answers.
+	unsaved bool
+}
+
+// saveMeta writes the sandbox's meta.json, noting whether it is behind meta. Held under mu.
+func (s *sandbox) saveMeta() error {
+	err := writeJSONFile(filepath.Join(s.dir, "meta.json"), s.meta)
+	s.unsaved = err != nil
+	return err
 }
 
 // Manager runs the tier.
@@ -947,7 +957,7 @@ func (m *Manager) Stop(ctx context.Context, p proto.StopParams) (proto.SnapshotI
 		return proto.SnapshotInfo{}, conflict("sandbox %s is %s, not running", s.meta.ID, s.meta.State)
 	}
 	s.meta.State = proto.StateStopped
-	if err := writeJSONFile(filepath.Join(s.dir, "meta.json"), s.meta); err != nil {
+	if err := s.saveMeta(); err != nil {
 		return proto.SnapshotInfo{}, err
 	}
 	m.emit(s)
@@ -969,12 +979,20 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, _ bool) (pro
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.meta.State == proto.StateRunning {
+		// Running already (a retry, say). What it holds is on disk before it says so: an earlier boot that couldn't
+		// write it failed, and a restart mustn't bring back the egress before it.
+		if s.unsaved {
+			if err := s.saveMeta(); err != nil {
+				return proto.SandboxInfo{}, err
+			}
+		}
 		return m.info(s), nil
 	}
 	t := timings{}
 	began := time.Now()
 	if p.Egress != nil {
 		s.meta.Egress = p.Egress
+		s.unsaved = true
 	}
 	source, err := m.load(ctx, s, t)
 	if err != nil {
@@ -982,7 +1000,7 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, _ bool) (pro
 	}
 	s.meta.State = proto.StateRunning
 	s.meta.Error = ""
-	if err := writeJSONFile(filepath.Join(s.dir, "meta.json"), s.meta); err != nil {
+	if err := s.saveMeta(); err != nil {
 		return proto.SandboxInfo{}, err
 	}
 	t["total"] = float64(time.Since(began).Microseconds()) / 1000
@@ -1520,5 +1538,5 @@ func (m *Manager) SetEgress(id string, e *proto.Egress) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.meta.Egress = e
-	return writeJSONFile(filepath.Join(s.dir, "meta.json"), s.meta)
+	return s.saveMeta()
 }

@@ -453,7 +453,7 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			return nil, &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("sandbox %s already exists on this host", p.SandboxID)}
 		}
 		if p.Egress != nil {
-			if _, err := h.orderEgress(t, p.SandboxID, p.Egress.Revision); err != nil {
+			if err := h.orderNew(t, p.SandboxID, p.Egress.Revision); err != nil {
 				return nil, err
 			}
 		}
@@ -578,7 +578,7 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			}
 		}
 		if p.Egress != nil {
-			if _, err := h.orderEgress(t, p.NewID, p.Egress.Revision); err != nil {
+			if err := h.orderNew(t, p.NewID, p.Egress.Revision); err != nil {
 				return nil, err
 			}
 		}

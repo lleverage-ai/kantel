@@ -644,7 +644,14 @@ func (p *Proxy) finish(rec Record, up, down int64, err error) {
 		rec.Reason = safeError(err)
 		var ref *protect.Refusal
 		if errors.As(err, &ref) {
-			rec.Code, rec.Reason = ref.Code, ref.Message
+			// Recorded as refuseRecord records a refusal found before forwarding: refused, with the status of the
+			// refusal sent (unless the destination's answer had begun, whose status it keeps).
+			f := rewriteRefusal(ref)
+			rec.Allowed = f.code == CodeUpstream
+			rec.Code, rec.Reason = f.code, f.message
+			if rec.Status == 0 {
+				rec.Status = f.status
+			}
 		}
 	}
 	if errors.Is(err, ErrDestination) {
