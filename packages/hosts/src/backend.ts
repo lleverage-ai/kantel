@@ -23,7 +23,7 @@ import type {
 import { KantelError } from "@kantel/contracts";
 import type { HostEgress, HostSandbox, SandboxTier } from "./protocol.ts";
 import type { HostsService, HostView } from "./service.ts";
-import { HOSTS_TUNNEL_PATH, signTunnel } from "./tunnel.ts";
+import { HOSTS_TUNNEL_PATH, MAX_TUNNEL_MINUTES, signTunnel } from "./tunnel.ts";
 import { HOSTS_VIEW_PATH } from "./viewer.ts";
 
 /** Where the guest image's desktop (VNC, loopback), Chromium (CDP) and sshd listen. */
@@ -47,7 +47,8 @@ const SSH_ACCESS_SCRIPT = [
 	'  cat "$d/key"',
 	'  rm -rf "$d"',
 	"else",
-	'  printf "%s\\n" "$KANTEL_PUBLIC_KEY" >> ~/.ssh/authorized_keys',
+	// Once: a ProxyCommand asks again for each connection with the same key.
+	'  grep -qxF "$KANTEL_PUBLIC_KEY" ~/.ssh/authorized_keys 2>/dev/null || printf "%s\\n" "$KANTEL_PUBLIC_KEY" >> ~/.ssh/authorized_keys',
 	"fi",
 	`echo ${FINGERPRINT_MARK}`,
 	"ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub | cut -d' ' -f2",
@@ -202,7 +203,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		return signTunnel(options.tunnelSecret, {
 			sandboxId,
 			port,
-			expiresAt: now() + Math.max(1, Math.min(ttlMinutes, 24 * 60)) * 60_000,
+			expiresAt: now() + Math.max(1, Math.min(ttlMinutes, MAX_TUNNEL_MINUTES)) * 60_000,
 		});
 	}
 
@@ -395,6 +396,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				user: "user",
 				// Any WebSocket client that pipes stdin and stdout as binary frames does; websocat is one.
 				command: `ssh -o ProxyCommand='websocat --binary ${url}' user@${sandboxId}`,
+				proxyUrl: url,
 				...(key === undefined && privateKey.trim() !== "" ? { privateKey: `${privateKey.trim()}\n` } : {}),
 				...(fingerprint.trim() === "" ? {} : { hostKeyFingerprint: fingerprint.trim() }),
 			};

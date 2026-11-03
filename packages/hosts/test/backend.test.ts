@@ -330,11 +330,24 @@ describe("the compute API on kantel-host hosts", () => {
 		const browser = await root.openBrowser(sandbox.id, {});
 		expect(browser.cdpUrl).toMatch(new RegExp(`^${prefix}[^/]+/devtools/browser/abc-123$`));
 		expect(browser.url.startsWith(page)).toBe(true);
+		// Unless asked, a URL can be opened for 10 minutes; and never for more than an hour.
+		const cdpTicket = browser.cdpUrl.slice(prefix.length).split("/")[0] ?? "";
+		const cdpGrant = await verifyTunnel(secret, cdpTicket, Date.now());
+		expect(cdpGrant?.expiresAt).toBeGreaterThan(Date.now() + 9 * 60_000);
+		expect(cdpGrant?.expiresAt).toBeLessThanOrEqual(Date.now() + 10 * 60_000);
+		expect(browser.expiresAt).toBeLessThanOrEqual(Date.now() + 10 * 60_000);
+		const longest = await root.openDesktop(sandbox.id, { ttlMinutes: 60 });
+		expect(await verifyTunnel(secret, longest.url.slice(page.length), Date.now() + 59 * 60_000)).toBeDefined();
+		expect((await failure(root.openDesktop(sandbox.id, { ttlMinutes: 61 }))).code).toBe("invalid");
+		expect((await failure(root.openSsh(sandbox.id, { ttlMinutes: 24 * 60 }))).code).toBe("invalid");
 
 		const made = await root.openSsh(sandbox.id, {});
 		expect(made.privateKey).toContain("OPENSSH PRIVATE KEY");
 		expect(made.hostKeyFingerprint).toBe("SHA256:hostkey");
 		expect(made.command).toMatch(/^ssh -o ProxyCommand='websocat --binary wss:\/\/kantel\.test\/v1\/hosts\/tunnel\//);
+		expect(made.proxyUrl).toMatch(new RegExp(`^${prefix}[^/]+$`));
+		expect((await verifyTunnel(secret, made.proxyUrl?.slice(prefix.length) ?? "", Date.now()))?.port).toBe(22);
+		expect(made.command).toContain(made.proxyUrl);
 		const own = await root.openSsh(sandbox.id, { publicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM me@laptop" });
 		expect(own.privateKey).toBeUndefined();
 		expect((await failure(root.openSsh(sandbox.id, { publicKey: "ssh-ed25519 AAAA\nrm -rf /" }))).code).toBe("invalid");
