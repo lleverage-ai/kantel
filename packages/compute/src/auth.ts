@@ -7,7 +7,7 @@
  * super-admin has `hosts:admin`.
  */
 import type { computeSchema } from "@kantel/api";
-import { KantelError } from "@kantel/contracts";
+import { API_KEY_LAST_USED_PRECISION_MS, KantelError } from "@kantel/contracts";
 import type { ComputeStore, StoredAccount, StoredApiKey, StoredUser } from "./store.ts";
 import { randomId, randomSecret, sha256Hex } from "./util.ts";
 
@@ -223,13 +223,21 @@ export async function authenticate(request: Request, options: AuthenticateOption
 	if (token.startsWith(API_KEY_PREFIX)) {
 		const key = await keyForSecret(store, token, now);
 		if (key === undefined) throw new UnauthenticatedError("The API key is not valid");
-		// Only the use is written, and only while the key is still this secret and unrevoked, so a revoke or a rotation
-		// that lands meanwhile is never undone.
-		await store.apiKeys.update(key.id, (current) =>
-			current.revokedAt === undefined && current.secretHash === key.secretHash
-				? { ...current, lastUsedAt: now }
-				: undefined,
-		);
+		// The use is recorded at most once a minute (`API_KEY_LAST_USED_PRECISION_MS`), off the call's path: a busy key
+		// costs one write a minute, and no call waits for it. It is written only while the key is still this secret and
+		// unrevoked, so a revoke or a rotation that lands meanwhile is never undone; a write that fails is dropped, as the
+		// next use records it.
+		if (key.lastUsedAt === undefined || now - key.lastUsedAt >= API_KEY_LAST_USED_PRECISION_MS) {
+			void store.apiKeys
+				.update(key.id, (current) =>
+					current.revokedAt === undefined &&
+					current.secretHash === key.secretHash &&
+					(current.lastUsedAt === undefined || current.lastUsedAt < now)
+						? { ...current, lastUsedAt: now }
+						: undefined,
+				)
+				.catch(() => undefined);
+		}
 		return keyPrincipal(key);
 	}
 	const identity = await options.authenticatePerson?.(request);
@@ -281,8 +289,8 @@ export async function actingAccount(
 		throw new KantelError("forbidden", "An API key acts in its own account only");
 	}
 	const accountId = requested ?? own;
-	const role = await roleIn(store, principal, accountId);
-	const account = await store.accounts.get(accountId);
+	// Two reads that don't depend on each other: one round trip.
+	const [role, account] = await Promise.all([roleIn(store, principal, accountId), store.accounts.get(accountId)]);
 	if (role === undefined || account === undefined) {
 		throw new KantelError("forbidden", "You are not a member of that account");
 	}
@@ -294,8 +302,7 @@ export async function actingAccount(
  * in it, so its existence isn't given away.
  */
 export async function accountById(store: ComputeStore, principal: Principal, accountId: string): Promise<Acting> {
-	const role = await roleIn(store, principal, accountId);
-	const account = await store.accounts.get(accountId);
+	const [role, account] = await Promise.all([roleIn(store, principal, accountId), store.accounts.get(accountId)]);
 	if (role === undefined || account === undefined) throw new KantelError("not_found", "No such account");
 	return { account, role };
 }
