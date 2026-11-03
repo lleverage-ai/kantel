@@ -2,7 +2,7 @@
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Caller, Command, Sandbox, SandboxPage } from "@kantel/api/sdk";
+import type { Caller, Command, Host, Sandbox, SandboxPage } from "@kantel/api/sdk";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	AGENTS_END,
@@ -430,6 +430,93 @@ describe("sandboxes", () => {
 		expect(paused.code).toBe(0);
 		expect(paused.calls[0]?.body).toEqual({ keepMemory: true });
 		expect(paused.stdout).toBe("sbx_test1 paused\n");
+	});
+});
+
+describe("connect", () => {
+	const HOST: Host = {
+		id: "host_own1",
+		name: "tom-box",
+		state: "online",
+		version: "0.4.0",
+		os: "linux",
+		arch: "x86_64",
+		tiers: ["microvm", "isolate"],
+		kvm: true,
+		nestedVirtualisation: false,
+		capacity: { vcpus: 8, memoryMb: 16_384, diskGb: 200 },
+		allocated: { sandboxes: 2, vcpus: 4, memoryMb: 4096, diskGb: 40 },
+		labels: { site: "home" },
+		accountId: "acc_org",
+		joinedAt: Date.now(),
+		lastSeenAt: Date.now(),
+	};
+
+	it("enrols a host into the account it acts in and prints the command to run on the machine", async () => {
+		const routes = {
+			"POST /v1/connect/enrolments": (call: Call) => ({
+				id: "enr_1",
+				accountId: (call.body as { account: string }).account,
+				token: "kth_secret",
+				command: "curl -fsSL https://x/install.sh | sudo sh -s -- --url https://kantel.test --token kth_secret",
+				expiresAt: Date.now() + 3_600_000,
+			}),
+		};
+		const enrolled = await kantel(
+			["connect", "enrol", "tom-box", "--label", "site=home", "--expires", "30", "--account", "acc_org"],
+			{ routes },
+		);
+		expect(enrolled.code).toBe(0);
+		expect(enrolled.calls[0]?.body).toEqual({
+			account: "acc_org",
+			name: "tom-box",
+			labels: { site: "home" },
+			expiresInMinutes: 30,
+		});
+		expect(enrolled.stdout).toContain("--token kth_secret");
+		expect(enrolled.stdout).toContain("It joins account acc_org");
+		// Too short a token's life is refused before calling Kantel.
+		const short = await kantel(["connect", "enrol", "--expires", "1"], { routes });
+		expect(short.code).toBe(2);
+		expect(short.calls).toEqual([]);
+	});
+
+	it("lists, shows, drains and removes the account's hosts", async () => {
+		const routes = {
+			"GET /v1/connect/hosts": () => ({ items: [HOST] }),
+			"GET /v1/connect/hosts/host_own1": () => HOST,
+			"PATCH /v1/connect/hosts/host_own1": (call: Call) => ({
+				...HOST,
+				state: (call.body as { draining: boolean }).draining ? "draining" : "online",
+			}),
+			"DELETE /v1/connect/hosts/host_own1": () => ({ ...HOST, state: "revoked" }),
+		};
+		const listed = await kantel(["connect", "ls"], { routes });
+		expect(listed.stdout).toMatch(/^ID\s+NAME\s+STATE\s+TIERS\s+SANDBOXES/);
+		expect(listed.stdout).toContain("host_own1");
+		const shown = await kantel(["connect", "info", "host_own1"], { routes });
+		expect(shown.stdout).toContain("acc_org");
+		expect(shown.stdout).toContain("site=home");
+		const drained = await kantel(["connect", "drain", "host_own1"], { routes });
+		expect(drained.calls[0]?.body).toEqual({ draining: true });
+		expect(drained.stdout).toContain("draining");
+		const undrained = await kantel(["connect", "drain", "host_own1", "--off"], { routes });
+		expect(undrained.calls[0]?.body).toEqual({ draining: false });
+		const removed = await kantel(["connect", "rm", "host_own1"], { routes });
+		expect(removed.calls.map((call) => `${call.method} ${call.path}`)).toEqual(["DELETE /v1/connect/hosts/host_own1"]);
+		expect(removed.stdout).toContain("revoked");
+		const empty = await kantel(["connect", "list"], { routes: { "GET /v1/connect/hosts": () => ({ items: [] }) } });
+		expect(empty.stdout).toContain("kantel connect enrol");
+	});
+
+	it("passes on a deployment's refusal while Kantel Connect is off", async () => {
+		const routes = {
+			"GET /v1/connect/hosts": () =>
+				kantelError(501, "not_supported", "Kantel Connect is off on this deployment (KANTEL_CONNECT)"),
+		};
+		const result = await kantel(["connect", "list"], { routes });
+		expect(result.code).toBe(1);
+		expect(result.stderr).toContain("not_supported: Kantel Connect is off");
 	});
 });
 

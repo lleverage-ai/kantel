@@ -23,7 +23,9 @@ import {
 	Command,
 	CommandPage,
 	CommandPath,
+	ConnectEnrolment,
 	CreateApiKeyBody,
+	CreateConnectEnrolmentBody,
 	CreateHostJoinTokenBody,
 	CreateInviteBody,
 	CreateOrganisationBody,
@@ -1267,6 +1269,97 @@ export const createHostJoinToken = defineRoute({
 
 export const hostRoutes = { listHosts, createHostJoinToken, getHost, updateHost, revokeHost } as const;
 
+// Kantel Connect: an account's own hosts, enrolled by its people rather than by the deployment's super-admin. Only that
+// account's sandboxes run on them. Experimental: a deployment serves these only with KANTEL_CONNECT=experimental, and
+// answers `not_supported` otherwise.
+
+const CONNECT = "Experimental: `not_supported` unless the deployment has turned Kantel Connect on.";
+
+export const createConnectEnrolment = defineRoute({
+	operationId: "createConnectEnrolment",
+	method: "POST",
+	path: "/connect/enrolments",
+	tag: "connect",
+	summary: "Enrol a host into an account",
+	description: describe(
+		"A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and enrols",
+		"it into the account (the caller's personal account unless `account` names an organisation). The host dials out",
+		"to this deployment and keeps the connection open, so it needs no inbound port. Once it has joined, the account's",
+		"new sandboxes go on its own hosts, and no other account's sandboxes ever do.",
+		scope("account:admin"),
+		CONNECT,
+	),
+	body: CreateConnectEnrolmentBody,
+	answer: { status: 201, description: "The token and its command.", schema: ConnectEnrolment },
+	errors: ["invalid", "forbidden", "not_supported"],
+});
+
+export const listConnectHosts = defineRoute({
+	operationId: "listConnectHosts",
+	method: "GET",
+	path: "/connect/hosts",
+	tag: "connect",
+	summary: "List an account's hosts",
+	description: describe(
+		"The hosts enrolled into the account, revoked ones included. The deployment's shared hosts aren't listed.",
+		scope("account:read"),
+		CONNECT,
+	),
+	query: AccountScopedQuery,
+	answer: { status: 200, description: "The hosts.", schema: HostList },
+	errors: ["invalid", "forbidden", "not_supported"],
+});
+
+export const getConnectHost = defineRoute({
+	operationId: "getConnectHost",
+	method: "GET",
+	path: "/connect/hosts/{hostId}",
+	tag: "connect",
+	summary: "Get one of an account's hosts",
+	description: describe(scope("account:read"), CONNECT),
+	params: HostPath,
+	answer: { status: 200, description: "The host.", schema: Host },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const updateConnectHost = defineRoute({
+	operationId: "updateConnectHost",
+	method: "PATCH",
+	path: "/connect/hosts/{hostId}",
+	tag: "connect",
+	summary: "Change one of an account's hosts",
+	description: describe("Renames it, replaces its labels, or drains it.", scope("account:admin"), CONNECT),
+	params: HostPath,
+	body: UpdateHostBody,
+	answer: { status: 200, description: "The host.", schema: Host },
+	errors: [...changeErrors, "not_supported"],
+});
+
+export const removeConnectHost = defineRoute({
+	operationId: "removeConnectHost",
+	method: "DELETE",
+	path: "/connect/hosts/{hostId}",
+	tag: "connect",
+	summary: "Remove one of an account's hosts",
+	description: describe(
+		"Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it",
+		"is enrolled again. Run `sudo kantel-host uninstall` on the machine to take the agent off it.",
+		scope("account:admin"),
+		CONNECT,
+	),
+	params: HostPath,
+	answer: { status: 200, description: "The host, revoked.", schema: Host },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const connectRoutes = {
+	createConnectEnrolment,
+	listConnectHosts,
+	getConnectHost,
+	updateConnectHost,
+	removeConnectHost,
+} as const;
+
 /** Every compute-plane route, in the order the document and the SDK list them. */
 export const computeRoutes = {
 	...accountRoutes,
@@ -1282,6 +1375,7 @@ export const computeRoutes = {
 	...webhookRoutes,
 	...telemetryRoutes,
 	...hostRoutes,
+	...connectRoutes,
 } as const;
 
 export type ComputeRoutes = typeof computeRoutes;

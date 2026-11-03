@@ -102,7 +102,8 @@ nested virtualisation on (`kvm_amd nested=1` or `kvm_intel nested=1`), `/dev/kvm
 downloads. `<images>` is the control plane's `GET /v1/hosts/images/...`, served from `KANTEL_COMPUTE_IMAGES`: a
 directory, or an http(s) URL it redirects to (`off` serves none). It defaults to Kantel's published images, a public
 GitHub Release on lleverage-ai/kantel pinned by tag (`DEFAULT_HOST_IMAGES` in
-`apps/selfhosted/src/gateway/compute.ts`), so a host installed from any control plane gets them with no setting.
+`packages/hosts/src/http.ts`), so a host installed from any control plane, hosted or self-hosted, gets them with no
+setting.
 
 `release.sh` builds and publishes one:
 

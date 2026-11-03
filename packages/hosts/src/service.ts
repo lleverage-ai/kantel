@@ -47,6 +47,8 @@ export interface HostView {
 		readonly diskGb: number;
 	};
 	readonly labels: { readonly [key: string]: string };
+	/** The account it was enrolled into (Kantel Connect), which alone may use it; absent for a shared host. */
+	readonly accountId?: string;
 	readonly joinedAt: number;
 	readonly lastSeenAt?: number;
 }
@@ -64,7 +66,10 @@ export interface CreateSandboxInput {
 	readonly tier: SandboxTier;
 	/** Default `default` (microVMs); isolates have one size. */
 	readonly size?: string;
-	/** The organisation or account; isolates of one owner share a VM. */
+	/**
+	 * The organisation or account; isolates of one owner share a VM. A host enrolled into an account (Kantel Connect)
+	 * takes only that owner's sandboxes, so a sandbox with no owner never goes on one.
+	 */
 	readonly owner?: string;
 	readonly labels?: { readonly [key: string]: string };
 	readonly env?: { readonly [key: string]: string };
@@ -78,13 +83,22 @@ export interface CreateSandboxInput {
 
 /** Join tokens kept elsewhere, such as by the compute API, which mints them (`createHostJoinToken`). */
 export interface ExternalJoinTokens {
-	/** Spends the token with this SHA-256 hex once: its name and labels, or undefined if unknown, used or expired. */
+	/**
+	 * Spends the token with this SHA-256 hex once: its name and labels, and the account a Kantel Connect enrolment joins
+	 * the host to; or undefined if unknown, used or expired.
+	 */
 	spendJoinToken(
 		hash: string,
 		hostId: string,
 		now: number,
 	): Promise<
-		{ readonly id: string; readonly name?: string; readonly labels: { readonly [key: string]: string } } | undefined
+		| {
+				readonly id: string;
+				readonly name?: string;
+				readonly labels: { readonly [key: string]: string };
+				readonly accountId?: string;
+		  }
+		| undefined
 	>;
 }
 
@@ -356,6 +370,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				diskGb: placements.reduce((sum, placement) => sum + placement.diskGiB, 0),
 			},
 			labels: { ...facts?.labels, ...host.labels },
+			...(host.accountId === undefined ? {} : { accountId: host.accountId }),
 			joinedAt: host.joinedAt,
 			...(host.lastSeenAt === undefined ? {} : { lastSeenAt: host.lastSeenAt }),
 		};
@@ -437,10 +452,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				credentialHash: await hashSecret(credential),
 				revoked: false,
 				draining: false,
+				...(token.accountId === undefined ? {} : { accountId: token.accountId }),
 				joinedAt: now,
 				...(input.facts === undefined ? {} : { facts: input.facts }),
 			});
-			log(`[hosts] host ${hostId} (${name}) joined with token ${token.id}`);
+			const into = token.accountId === undefined ? "" : ` into account ${token.accountId}`;
+			log(`[hosts] host ${hostId} (${name}) joined with token ${token.id}${into}`);
 			return { hostId, credential };
 		},
 		async authenticate(credential) {
@@ -494,7 +511,10 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				if (input.from !== undefined && only?.size !== 1) {
 					throw new KantelError("invalid", "A sandbox made from a snapshot goes on the snapshot's host");
 				}
-				const hosts = (await store.listHosts()).filter((host) => only === undefined || only.has(host.id));
+				const hosts = (await store.listHosts())
+					.filter((host) => only === undefined || only.has(host.id))
+					// An account's own host takes only that account's sandboxes, whatever the caller named.
+					.filter((host) => host.accountId === undefined || host.accountId === input.owner);
 				const candidates: Candidate[] = await Promise.all(
 					hosts.map(async (host) => {
 						const placements = tier === "isolate" ? await store.placementsOn(host.id) : [];

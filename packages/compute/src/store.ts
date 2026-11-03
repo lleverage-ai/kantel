@@ -158,6 +158,15 @@ export interface StoredJoinToken {
 	readonly expiresAt: number;
 	readonly createdAt: number;
 	readonly usedAt?: number;
+	/**
+	 * The account a Kantel Connect enrolment joins the host to: only its sandboxes run there. Absent for a super-admin's
+	 * join token, whose host is shared by every account.
+	 */
+	readonly accountId?: string;
+	/** Who made it, for an enrolment. */
+	readonly createdBy?: string;
+	/** The host that spent it. */
+	readonly hostId?: string;
 }
 
 export type StoredEvent = computeSchema.Event;
@@ -289,14 +298,19 @@ export function createMemoryStore(): ComputeStore {
  */
 export function joinTokenSpender(store: ComputeStore) {
 	return {
-		async spendJoinToken(hash: string, _hostId: string, now: number) {
+		async spendJoinToken(hash: string, hostId: string, now: number) {
 			const [token] = await store.joinTokens.list({ tokenHash: hash });
 			if (token === undefined) return undefined;
 			const spent = await store.joinTokens.update(token.id, (current) =>
-				current.usedAt !== undefined || current.expiresAt <= now ? undefined : { ...current, usedAt: now },
+				current.usedAt !== undefined || current.expiresAt <= now ? undefined : { ...current, usedAt: now, hostId },
 			);
 			if (spent === undefined) return undefined;
-			return { id: spent.id, labels: { ...spent.labels }, ...(spent.name === undefined ? {} : { name: spent.name }) };
+			return {
+				id: spent.id,
+				labels: { ...spent.labels },
+				...(spent.name === undefined ? {} : { name: spent.name }),
+				...(spent.accountId === undefined ? {} : { accountId: spent.accountId }),
+			};
 		},
 	};
 }

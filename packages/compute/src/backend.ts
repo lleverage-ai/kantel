@@ -34,6 +34,8 @@ export interface BackendHost {
 	readonly labels: { readonly [key: string]: string };
 	/** Whether it is connected now; absent, it always is (the stub). A host that isn't is `unreachable`. */
 	readonly connected?: boolean;
+	/** The account it was enrolled into with Kantel Connect, which alone may use it; absent for a shared host. */
+	readonly accountId?: string;
 	readonly lastSeenAt?: number;
 }
 

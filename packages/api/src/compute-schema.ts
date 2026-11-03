@@ -1266,6 +1266,13 @@ export const Host = Type.Object(
 			{ title: "HostAllocated" },
 		),
 		labels: Type.Record(Type.String(), Type.String()),
+		accountId: Type.Optional(
+			id(
+				"The account the host belongs to, when it was enrolled into one with Kantel Connect: only that account's " +
+					"sandboxes run on it. Absent for a host the deployment's super-admin joined, which any account's sandboxes " +
+					"may use.",
+			),
+		),
 		joinedAt: Timestamp,
 		lastSeenAt: Type.Optional(Timestamp),
 	},
@@ -1307,6 +1314,35 @@ export const HostJoinToken = Type.Object(
 	{ title: "HostJoinToken" },
 );
 
+// Kantel Connect: an account's own hosts (experimental, behind the deployment's KANTEL_CONNECT switch).
+
+export const CreateConnectEnrolmentBody = Type.Object(
+	{
+		account: accountQuery,
+		name: Type.Optional(
+			Type.String({ maxLength: 100, description: "The host's name. Default: the machine's hostname." }),
+		),
+		labels: Type.Optional(Type.Record(Type.String(), Type.String())),
+		expiresInMinutes: Type.Optional(Type.Integer({ minimum: 5, maximum: 10080, description: "Default 60." })),
+	},
+	{ title: "CreateConnectEnrolmentBody" },
+);
+
+export const ConnectEnrolment = Type.Object(
+	{
+		id: id("The enrolment's ID."),
+		accountId: id("The account the host joins: only its sandboxes will run there."),
+		token: Type.String({ description: "`kth_…`, shown once. It enrols one host, once, before `expiresAt`." }),
+		command: Type.String({
+			description:
+				"The one-line command that installs the host agent on a Linux machine and enrols it with the token. The host " +
+				"dials out to this deployment and keeps that connection open, so it needs no inbound port.",
+		}),
+		expiresAt: Timestamp,
+	},
+	{ title: "ConnectEnrolment" },
+);
+
 export type Account = Static<typeof Account>;
 export type AccountKind = Static<typeof AccountKind>;
 export type MemberRole = Static<typeof MemberRole>;
@@ -1336,6 +1372,8 @@ export type WebhookDelivery = Static<typeof WebhookDelivery>;
 export type TelemetryExport = Static<typeof TelemetryExport>;
 export type Host = Static<typeof Host>;
 export type HostState = Static<typeof HostState>;
+export type HostJoinToken = Static<typeof HostJoinToken>;
+export type ConnectEnrolment = Static<typeof ConnectEnrolment>;
 export type DeviceLogin = Static<typeof DeviceLogin>;
 export type DeviceLoginState = Static<typeof DeviceLoginState>;
 export type DeviceLoginResult = Static<typeof DeviceLoginResult>;

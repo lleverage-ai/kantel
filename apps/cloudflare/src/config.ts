@@ -12,6 +12,13 @@ export interface GatewayVars {
 	readonly KANTEL_ADMIN_NAME?: string;
 	/** The domain sandboxes' port URLs are under, `{port}-{subdomain}.{domain}`. Default `HOSTED_PORTS_DOMAIN`. */
 	readonly KANTEL_COMPUTE_PORTS_DOMAIN?: string;
+	/**
+	 * Kantel Connect (experimental): `experimental` lets accounts enrol machines of their own, which dial out to this
+	 * Worker and run only that account's sandboxes. Unset, empty or `off`: off, and nothing about the Worker changes.
+	 */
+	readonly KANTEL_CONNECT?: string;
+	/** With KANTEL_CONNECT: the origin hosts and clients reach this Worker at, such as `https://kantel.example.com`. */
+	readonly KANTEL_PUBLIC_URL?: string;
 }
 
 /**
@@ -33,6 +40,8 @@ export interface GatewayConfig {
 	readonly adminName?: string;
 	/** The domain port URLs are under, from KANTEL_COMPUTE_PORTS_DOMAIN. Absent, `HOSTED_PORTS_DOMAIN`. */
 	readonly portsDomain?: string;
+	/** Kantel Connect, when on: where hosts reach this Worker. */
+	readonly connect?: { readonly publicUrl: string };
 }
 
 const DNS_NAME = /^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
@@ -61,10 +70,30 @@ export function gatewayConfig(vars: GatewayVars): GatewayConfig {
 	if (portsDomain !== "" && !DNS_NAME.test(portsDomain)) {
 		throw new KantelError("invalid", "KANTEL_COMPUTE_PORTS_DOMAIN is a DNS name such as ports.example.com");
 	}
+	const connect = connectConfig(vars);
 	return {
 		...(portsDomain === "" ? {} : { portsDomain }),
 		...(teamDomain === "" ? {} : { access: { teamDomain, audience } }),
 		...(adminEmail === "" ? {} : { adminEmail }),
 		...(adminName === "" ? {} : { adminName }),
+		...(connect === undefined ? {} : { connect }),
 	};
+}
+
+/**
+ * KANTEL_CONNECT and KANTEL_PUBLIC_URL. Off unless the switch says `experimental`; on, it needs the origin hosts dial,
+ * and a typo in either is refused rather than leaving Connect silently off.
+ */
+function connectConfig(vars: GatewayVars): GatewayConfig["connect"] {
+	const value = trimmed(vars.KANTEL_CONNECT).toLowerCase();
+	if (value === "" || value === "off") return undefined;
+	if (value !== "experimental") throw new KantelError("invalid", "KANTEL_CONNECT must be `experimental` or `off`");
+	const publicUrl = trimmed(vars.KANTEL_PUBLIC_URL);
+	if (!/^https?:\/\/[^/]+\/?$/.test(publicUrl)) {
+		throw new KantelError(
+			"invalid",
+			"KANTEL_CONNECT needs KANTEL_PUBLIC_URL: the origin hosts reach this Worker at, such as https://kantel.example.com",
+		);
+	}
+	return { publicUrl: new URL(publicUrl).origin };
 }

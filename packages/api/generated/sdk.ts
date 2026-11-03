@@ -205,6 +205,19 @@ export interface ComputePageQuery {
 	readonly cursor?: string;
 }
 
+export interface ConnectEnrolment {
+	/** The enrolment's ID. */
+	readonly id: string;
+	/** The account the host joins: only its sandboxes will run there. */
+	readonly accountId: string;
+	/** `kth_…`, shown once. It enrols one host, once, before `expiresAt`. */
+	readonly token: string;
+	/** The one-line command that installs the host agent on a Linux machine and enrols it with the token. The host dials out to this deployment and keeps that connection open, so it needs no inbound port. */
+	readonly command: string;
+	/** Epoch milliseconds, UTC. */
+	readonly expiresAt: number;
+}
+
 /** What a sandbox costs at the deployment's rates. A self-hosted install's rates are 0 unless its operator sets them. */
 export interface Cost {
 	/** ISO 4217, such as `USD`. */
@@ -226,6 +239,18 @@ export interface CreateApiKeyBody {
 	readonly sandboxIds?: readonly string[];
 	/** Absent: it never expires. */
 	readonly expiresInDays?: number;
+}
+
+export interface CreateConnectEnrolmentBody {
+	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
+	readonly account?: string;
+	/** The host's name. Default: the machine's hostname. */
+	readonly name?: string;
+	readonly labels?: {
+		readonly [key: string]: string;
+	};
+	/** Default 60. */
+	readonly expiresInMinutes?: number;
 }
 
 export interface CreatedBy {
@@ -706,6 +731,8 @@ export interface Host {
 	readonly labels: {
 		readonly [key: string]: string;
 	};
+	/** The account the host belongs to, when it was enrolled into one with Kantel Connect: only that account's sandboxes run on it. Absent for a host the deployment's super-admin joined, which any account's sandboxes may use. */
+	readonly accountId?: string;
 	/** Epoch milliseconds, UTC. */
 	readonly joinedAt: number;
 	/** Epoch milliseconds, UTC. */
@@ -1764,6 +1791,16 @@ export interface KantelClient {
 	updateHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
 	/** Revoke a host. Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. A deployment super-admin only (a key needs `hosts:admin`). `DELETE /admin/hosts/{hostId}` */
 	revokeHost(hostId: string, options?: CallOptions): Promise<Host>;
+	/** Enrol a host into an account. A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and enrols it into the account (the caller's personal account unless `account` names an organisation). The host dials out to this deployment and keeps the connection open, so it needs no inbound port. Once it has joined, the account's new sandboxes go on its own hosts, and no other account's sandboxes ever do. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned Kantel Connect on. `POST /connect/enrolments` */
+	createConnectEnrolment(body?: CreateConnectEnrolmentBody, options?: CallOptions): Promise<ConnectEnrolment>;
+	/** List an account's hosts. The hosts enrolled into the account, revoked ones included. The deployment's shared hosts aren't listed. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned Kantel Connect on. `GET /connect/hosts` */
+	listConnectHosts(query?: AccountScopedQuery, options?: CallOptions): Promise<HostList>;
+	/** Get one of an account's hosts. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned Kantel Connect on. `GET /connect/hosts/{hostId}` */
+	getConnectHost(hostId: string, options?: CallOptions): Promise<Host>;
+	/** Change one of an account's hosts. Renames it, replaces its labels, or drains it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned Kantel Connect on. `PATCH /connect/hosts/{hostId}` */
+	updateConnectHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
+	/** Remove one of an account's hosts. Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it is enrolled again. Run `sudo kantel-host uninstall` on the machine to take the agent off it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned Kantel Connect on. `DELETE /connect/hosts/{hostId}` */
+	removeConnectHost(hostId: string, options?: CallOptions): Promise<Host>;
 }
 
 /** A client for Kantel's public API over `fetch`. */
@@ -2007,5 +2044,15 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "PATCH", path: `/admin/hosts/${encodeURIComponent(hostId)}`, body }, callOptions),
 		revokeHost: (hostId, callOptions) =>
 			send(options, { method: "DELETE", path: `/admin/hosts/${encodeURIComponent(hostId)}` }, callOptions),
+		createConnectEnrolment: (body = {}, callOptions) =>
+			send(options, { method: "POST", path: "/connect/enrolments", body }, callOptions),
+		listConnectHosts: (query, callOptions) =>
+			send(options, { method: "GET", path: "/connect/hosts", query }, callOptions),
+		getConnectHost: (hostId, callOptions) =>
+			send(options, { method: "GET", path: `/connect/hosts/${encodeURIComponent(hostId)}` }, callOptions),
+		updateConnectHost: (hostId, body = {}, callOptions) =>
+			send(options, { method: "PATCH", path: `/connect/hosts/${encodeURIComponent(hostId)}`, body }, callOptions),
+		removeConnectHost: (hostId, callOptions) =>
+			send(options, { method: "DELETE", path: `/connect/hosts/${encodeURIComponent(hostId)}` }, callOptions),
 	};
 }

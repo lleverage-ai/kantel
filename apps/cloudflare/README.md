@@ -25,12 +25,21 @@ works here as it does there (`src/compute.ts`):
   (`@kantel/compute/sql`, the same store the self-hosted gateway keeps in Postgres), in `KantelStack`'s own SQLite,
   table `compute_api_records`. One object answers every request, so there is one writer.
 - Sandboxes run on the stub backend (`@kantel/compute/stub`, a just-bash shell over in-memory files), as a self-hosted
-  gateway with no hosts does: Kantel's hosts don't join this deployment yet. When the object is evicted or a deploy
-  replaces it, the records stay and each sandbox gets a fresh, empty machine on its next call.
+  gateway with no hosts does. When the object is evicted or a deploy replaces it, the records stay and each sandbox
+  gets a fresh, empty machine on its next call.
 - Port URLs are named under `ports.kantel.dev`, Kantel's hosted ports domain (`HOSTED_PORTS_DOMAIN` in
   `src/config.ts`), or the deployment's own with the `KANTEL_COMPUTE_PORTS_DOMAIN` variable. Nothing serves them yet:
   the stub only names them, and the deploy adds no route or DNS for the domain. It isn't on the Public Suffix List
   yet, so once served, port names under it are one site to browsers and cookies aren't private between sandboxes.
+- Kantel Connect (experimental, `KANTEL_CONNECT=experimental` with `KANTEL_PUBLIC_URL`; off by default and off as
+  deployed): people enrol machines of their own (`POST /v1/connect/enrolments`). A host registers at
+  `POST /v1/hosts/register` and keeps a WebSocket to `GET /v1/hosts/connect` open on `KantelStack`, which holds the
+  hub (`@kantel/hosts`), and its registry is in the object's SQLite. An account with an online host of its own gets
+  its sandboxes there (`createRoutedBackend`); everyone else keeps the stub. SSH to them is served
+  (`/v1/hosts/tunnel/{ticket}`); desktops, browsers and public ports aren't yet. Hosts can't sign in to Access, so
+  turning it on needs an Access bypass for `/v1/hosts/register`, `/v1/hosts/connect`, `/v1/hosts/images/*` and
+  `/v1/hosts/tunnel/*`, each of which checks its own token, credential or ticket. See
+  `docs/site/src/content/docs/connect.md`.
 - The person Access signs in is a compute person under their Kantel user ID; an admin of the deployment's organisation
   is the compute super-admin. The console sends no credential behind Access, so the gateway gives the compute API
   Access's token as the bearer it asks for. The compute API's own `ksk_` keys work as on self-hosted; an identity

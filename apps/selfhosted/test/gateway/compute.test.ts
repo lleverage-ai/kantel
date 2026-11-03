@@ -284,6 +284,92 @@ describe("the compute plane on the gateway", () => {
 		).not.toBe(200);
 	});
 
+	it("turns Kantel Connect on only for KANTEL_CONNECT=experimental, with hosts", () => {
+		const env = { KANTEL_COMPUTE_BACKEND: "hosts", KANTEL_PUBLIC_URL: "https://kantel.example.com" };
+		expect(computeConfig(env)?.hosts?.connect).toBeUndefined();
+		expect(computeConfig({ ...env, KANTEL_CONNECT: "off" })?.hosts?.connect).toBeUndefined();
+		expect(computeConfig({ ...env, KANTEL_CONNECT: " Experimental " })?.hosts?.connect).toBe(true);
+		expect(() => computeConfig({ ...env, KANTEL_CONNECT: "on" })).toThrow(/KANTEL_CONNECT/);
+		// On the stub there are no hosts to enrol: nothing to turn on.
+		expect(computeConfig({ KANTEL_CONNECT: "experimental" })).toEqual({});
+	});
+
+	it("lets a signed-in person who isn't a super-admin enrol a host of their own, with Kantel Connect on", async () => {
+		const components = createGatewayComponents();
+		cleanups.push(() => components.close());
+		const seeded = await bootstrap(components, { organisation: "Compute", project: "compute" });
+		const authenticator = createAuthenticator({
+			identity: components.identity,
+			providers: [kantelSessionProvider({ sessions: components.otp.sessions })],
+		});
+		const serveWith = async (connect: boolean) => {
+			const config = { publicUrl: "https://kantel.example.com", ...(connect ? { connect } : {}) };
+			const service = gatewayHosts(config, createMemoryHostStore(), () => undefined);
+			cleanups.push(async () => service.close());
+			const compute = await gatewayCompute({
+				authenticator,
+				identity: components.identity,
+				hosts: gatewayRelay(config, service, createMemoryRelayStore()),
+			});
+			cleanups.push(() => compute.close());
+			const gateway = createGateway({
+				components,
+				authenticator,
+				compute: compute.api,
+				...(compute.hostRoutes === undefined ? {} : { computeHosts: compute.hostRoutes }),
+			});
+			cleanups.push(() => gateway.close());
+			return { gateway, service };
+		};
+		const system: CallContext = { actor: { kind: "system", component: "test" }, organisationId: seeded.organisationId };
+		const user = await components.identity.createUser(system, { name: "otto", email: "otto@kantel.example.com" });
+		await components.identity.grantRole(system, { principal: { kind: "user", userId: user.id }, role: "operator" });
+		const session = `kts_${crypto.randomUUID().replaceAll("-", "")}`;
+		await components.otp.sessions.create({
+			id: "s_otto",
+			tokenHash: await hashSessionToken(session),
+			userId: user.id,
+			issuer: EMAIL_OTP_ISSUER,
+			subject: "otto@kantel.example.com",
+			email: "otto@kantel.example.com",
+			createdAt: Date.now(),
+			expiresAt: Date.now() + 3_600_000,
+		});
+		const as = (gateway: { fetch(request: Request): Promise<Response> }) =>
+			createKantelClient({
+				baseUrl: "http://gateway.test/v1",
+				token: session,
+				fetch: (input, init) => gateway.fetch(new Request(input, init)),
+			});
+
+		// Off (the default): 501.
+		const off = as((await serveWith(false)).gateway);
+		const refused = await failure(off.createConnectEnrolment({}));
+		expect([refused.status, refused.code]).toEqual([501, "not_supported"]);
+
+		const { gateway, service } = await serveWith(true);
+		const otto = as(gateway);
+		expect((await otto.getCaller()).superAdmin).toBe(false);
+		const enrolment = await otto.createConnectEnrolment({ name: "otto-box" });
+		expect(enrolment.command).toContain("--url https://kantel.example.com --token kth_");
+		const registered = await gateway.fetch(
+			new Request("http://gateway.test/v1/hosts/register", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ token: enrolment.token }),
+			}),
+		);
+		expect(registered.status).toBe(201);
+		const { hostId } = (await registered.json()) as { hostId: string };
+		expect((await service.get(hostId)).accountId).toBe(enrolment.accountId);
+		const listed = (await otto.listConnectHosts()).items;
+		expect(listed.map((host) => [host.id, host.name, host.accountId])).toEqual([
+			[hostId, "otto-box", enrolment.accountId],
+		]);
+		// Not a super-admin: the deployment's host routes stay closed to them.
+		expect((await failure(otto.listHosts())).code).toBe("forbidden");
+	});
+
 	it("serves host images by plain file name only", async () => {
 		const serve = hostImages("https://images.example.com/v1/");
 		const moved = await serve(new Request("http://gateway.test/v1/hosts/images/manifest.json"));

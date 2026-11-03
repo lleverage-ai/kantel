@@ -8,9 +8,16 @@
  *   self-hosted gateway keeps in Postgres. Here it is the stack object's own SQLite (`objectSqlDriver`): one object
  *   answers every request, so there is one writer, and the records outlast a restart or a deploy.
  * - **Sandboxes:** the stub backend (`@kantel/compute/stub`), a just-bash shell over files in the object's memory, as a
- *   self-hosted gateway runs with no hosts. Kantel's hosts don't join this deployment yet. The object's memory goes
- *   when Cloudflare evicts it or a deploy replaces it, while the records stay: `revivingStub` then gives a sandbox the
- *   records still have a fresh, empty machine on its next call, rather than failing every call on it.
+ *   self-hosted gateway runs with no hosts. The object's memory goes when Cloudflare evicts it or a deploy replaces
+ *   it, while the records stay: `revivingStub` then gives a sandbox the records still have a fresh, empty machine on
+ *   its next call, rather than failing every call on it.
+ * - **Kantel Connect** (experimental, `connect`, off by default): an account's own machines. A person enrols one
+ *   (`POST /v1/connect/enrolments`); it registers at `POST /v1/hosts/register` with no sign-in, dials out to
+ *   `GET /v1/hosts/connect` and keeps that WebSocket open to the stack object (`src/stack-object.ts`), which holds the
+ *   one hub (`@kantel/hosts`), as a self-hosted gateway does. The registry of hosts and placements is in the object's
+ *   SQLite. Sandboxes of an account with a host of its own go there (`createRoutedBackend`); everyone else's stay on
+ *   the stub. SSH to those sandboxes is served (`GET /v1/hosts/tunnel/{ticket}`, over the host's connection); their
+ *   desktops, browsers' CDP and exposed ports aren't yet.
  * - **People:** whoever the stack's authenticator signs in (Cloudflare Access) is a compute person under their user ID,
  *   and an admin of the deployment's organisation is the compute plane's super-admin, as self-hosted. An identity
  *   `ktk_` key is not a compute caller; the compute API's own `ksk_` keys are.
@@ -27,6 +34,8 @@ import {
 	type ComputeStore,
 	createComputeApi,
 	createMemoryStore,
+	createRoutedBackend,
+	joinTokenSpender,
 	type PersonIdentity,
 	type SandboxBackend,
 	type StoredSandbox,
@@ -38,8 +47,23 @@ import {
 	callContextFor,
 	type IdentityDirectory,
 	isKantelError,
-	type KantelError,
+	KantelError,
 } from "@kantel/contracts";
+import { createHostBackend } from "@kantel/hosts/backend";
+import {
+	createHostsApi,
+	DEFAULT_HOST_IMAGES,
+	HOSTS_CONNECT_PATH,
+	HOSTS_IMAGES_PATH,
+	HOSTS_REGISTER_PATH,
+} from "@kantel/hosts/http";
+import type { AcceptedHost, HostSocket } from "@kantel/hosts/hub";
+import { HOST_CLOSE_REVOKED } from "@kantel/hosts/protocol";
+import { createRelayAccess, RELAY_CLOSE_REVOKED, RELAY_REVOKED_REASON } from "@kantel/hosts/relay-access";
+import { createMemoryRelayStore, createSqlRelayStore, migrateRelay } from "@kantel/hosts/relay-store";
+import { createHostsService, type HostsService } from "@kantel/hosts/service";
+import { createMemoryHostStore, createSqlHostStore, migrateHosts } from "@kantel/hosts/store";
+import { createTunnelTickets, HOSTS_TUNNEL_PATH } from "@kantel/hosts/tunnel";
 import type { SqlDriver } from "@kantel/sql";
 import { HOSTED_PORTS_DOMAIN } from "./config.ts";
 
@@ -75,8 +99,78 @@ export interface StackCompute {
 	readonly api: ComputeApi;
 	/** What `GET /v1/deployment`-style logs say about it. */
 	readonly binding: string;
+	/** Kantel Connect's host side, when it is on. */
+	readonly hosts?: StackHosts;
 	close(): Promise<void>;
 }
+
+/** What a host reaches with no sign-in, with Kantel Connect on. */
+export interface StackHosts {
+	readonly service: HostsService;
+	/** Registration (`POST /v1/hosts/register`) and the images `kantel-host install` fetches; undefined for others. */
+	fetch(request: Request): Promise<Response | undefined>;
+	/**
+	 * A host's connection (`GET /v1/hosts/connect`), once the server has accepted its WebSocket: checks the credential
+	 * and hands the socket to the hub, or closes it with 4003 (kantel-host's "stop, don't retry") for a wrong or revoked
+	 * one. Undefined when it was refused.
+	 */
+	connect(credential: string | undefined, socket: HostSocket): Promise<AcceptedHost | undefined>;
+	/**
+	 * A raw tunnel (`GET /v1/hosts/tunnel/{ticket}`: a sandbox's port as binary WebSocket frames, for SSH's
+	 * ProxyCommand), once the server has accepted the client's WebSocket. Checks the ticket and that its grantee may still
+	 * open the sandbox, then opens the port over the host's connection; the session is closed with 4003 once they lose
+	 * access. Undefined, with the socket closed, when it was refused.
+	 */
+	tunnel(ticket: string, client: TunnelClient): Promise<{ write(bytes: Uint8Array): void; close(): void } | undefined>;
+}
+
+/** The client's side of a raw tunnel. */
+export interface TunnelClient {
+	send(bytes: Uint8Array): void;
+	close(code: number, reason: string): void;
+}
+
+/** What `onMessages` needs of an accepted WebSocket. */
+export interface MessageSocket {
+	binaryType?: string;
+	addEventListener(type: "message", listener: (event: { readonly data: unknown }) => void): void;
+}
+
+/**
+ * Hands an accepted socket's messages to `handle` in order, binary ones as bytes. Workers deliver binary messages as a
+ * `Blob` unless asked for an `ArrayBuffer` (and the hub drops anything else), so the socket is asked; a `Blob` that
+ * comes anyway is read without letting a later message overtake it.
+ */
+export function onMessages(socket: MessageSocket, handle: (frame: string | Uint8Array) => void): void {
+	try {
+		socket.binaryType = "arraybuffer";
+	} catch {
+		// A runtime that won't: Blobs, read below.
+	}
+	let queue: Promise<void> = Promise.resolve();
+	socket.addEventListener("message", (event) => {
+		const data = event.data;
+		if (typeof data === "string" || data instanceof ArrayBuffer) {
+			const frame = typeof data === "string" ? data : new Uint8Array(data);
+			queue = queue.then(() => handle(frame));
+		} else if (data instanceof Blob) {
+			const read = data.arrayBuffer();
+			queue = queue.then(async () => handle(new Uint8Array(await read)));
+		}
+	});
+}
+
+/** `/v1/hosts/tunnel/{ticket}`'s ticket, or undefined for any other path (a path after it is not served here). */
+export function tunnelTicket(path: string): string | undefined {
+	return new RegExp(`^${HOSTS_TUNNEL_PATH}/([A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+)$`).exec(path)?.[1];
+}
+
+/** The host credential on a host's connection request, if it carries one. */
+export function hostCredential(request: Request): string | undefined {
+	return /^Bearer\s+(\S+)$/i.exec(request.headers.get("authorization") ?? "")?.[1];
+}
+
+export { HOSTS_CONNECT_PATH };
 
 export interface StackComputeOptions {
 	readonly authenticator: Authenticator;
@@ -89,9 +183,11 @@ export interface StackComputeOptions {
 	readonly fetch?: typeof fetch;
 	/**
 	 * The domain port URLs are under, `{port}-{subdomain}.{domain}`. Default `HOSTED_PORTS_DOMAIN` (`ports.kantel.dev`).
-	 * The stub backend only names the URLs: nothing serves them until hosts join this deployment.
+	 * The stub backend only names the URLs; Connect hosts' public ports aren't served here yet either.
 	 */
 	readonly portsDomain?: string;
+	/** Kantel Connect (KANTEL_CONNECT=experimental): where hosts reach this Worker. Absent, off. */
+	readonly connect?: { readonly publicUrl: string };
 }
 
 /**
@@ -127,21 +223,37 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		store = createSqlComputeStore(options.sql);
 	}
 	const now = options.now ?? Date.now;
+	const stub = revivingStub(
+		createStubBackend({ sandboxDomain: options.portsDomain ?? HOSTED_PORTS_DOMAIN }),
+		store.sandboxes,
+	);
+	const connect = options.connect === undefined ? undefined : await connectHosts(options.connect, options.sql, now);
 	const api = createComputeApi({
 		store,
-		backend: revivingStub(
-			createStubBackend({ sandboxDomain: options.portsDomain ?? HOSTED_PORTS_DOMAIN }),
-			store.sandboxes,
-		),
+		backend:
+			connect === undefined
+				? stub
+				: createRoutedBackend({
+						primary: connect.backend,
+						fallback: stub,
+						holds: async (sandboxId) => (await connect.service.sandboxes.placement(sandboxId)) !== undefined,
+						// A host's snapshot is `{hostId}/{snapshotId}`; the stub's are `ref_…`.
+						holdsSnapshot: (ref) => ref.startsWith("host_") && ref.includes("/"),
+					}),
 		authenticatePerson: (request) => personOf(options.authenticator, options.identity, request),
 		mode: "hosted",
 		now,
 		...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+		...(connect === undefined ? {} : { connect: true }),
 	});
+	connect?.service.useJoinTokens(joinTokenSpender(store));
+	connect?.bind((grantee, sandboxId) => api.service.stillAllowed(grantee, sandboxId));
 	const timers = whileBusy(api, now);
+	const records = options.sql === undefined ? "memory" : "the stack object's SQLite";
 	return {
 		api,
-		binding: `${options.sql === undefined ? "memory" : "the stack object's SQLite"}, stub backend (experimental)`,
+		binding: `${records}, stub backend${connect === undefined ? "" : " and Kantel Connect hosts"} (experimental)`,
+		...(connect === undefined ? {} : { hosts: connect.hosts }),
 		async fetch(request) {
 			const answer = await api.fetch(request);
 			if (answer !== undefined) timers.touch();
@@ -149,9 +261,131 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		},
 		async close() {
 			timers.stop();
+			connect?.access.stop();
+			connect?.service.close();
 			await api.close();
 		},
 	};
+}
+
+/**
+ * Kantel Connect's host side: the registry (in `sql`, else memory), the backend over it, and what hosts and tunnel
+ * clients reach. Of the tunnels the backend issues tickets for, raw ones (SSH) are served; desktops, a browser's CDP
+ * and exposed ports aren't yet.
+ */
+async function connectHosts(
+	config: { readonly publicUrl: string },
+	sql: SqlDriver | undefined,
+	now: () => number,
+): Promise<{
+	service: HostsService;
+	backend: SandboxBackend;
+	hosts: StackHosts;
+	access: ReturnType<typeof createRelayAccess>;
+	bind(stillAllowed: (grantee: string | undefined, sandboxId: string) => Promise<boolean>): void;
+}> {
+	if (sql !== undefined) {
+		await migrateHosts(sql);
+		await migrateRelay(sql);
+	}
+	const service = createHostsService({
+		store: sql === undefined ? createMemoryHostStore() : createSqlHostStore(sql),
+		publicUrl: config.publicUrl,
+	});
+	const tickets = createTunnelTickets(sql === undefined ? createMemoryRelayStore() : createSqlRelayStore(sql), now);
+	const backend = createHostBackend({ hosts: service, publicUrl: config.publicUrl, tickets, now });
+	let check: ((grantee: string | undefined, sandboxId: string) => Promise<boolean>) | undefined;
+	// Its timer runs only while a session is held, so it never keeps the object awake on its own.
+	const access = createRelayAccess({
+		stillAllowed: (grantee, sandboxId) => check?.(grantee, sandboxId) ?? Promise.resolve(false),
+		now,
+	});
+	// Registration only: the compute API serves hosts' management, so the registry's own admin routes refuse everyone.
+	const register = createHostsApi({
+		hosts: service,
+		authorizeAdmin: () => Promise.reject(new KantelError("not_found", "Not found")),
+	});
+	return {
+		service,
+		backend,
+		access,
+		bind(stillAllowed) {
+			check = stillAllowed;
+		},
+		hosts: {
+			service,
+			async fetch(request) {
+				const path = new URL(request.url).pathname;
+				if (path === HOSTS_REGISTER_PATH) return register.fetch(request);
+				if (path.startsWith(`${HOSTS_IMAGES_PATH}/`)) return hostImage(request, path);
+				return undefined;
+			},
+			async connect(credential, socket) {
+				const host = credential === undefined ? undefined : await service.authenticate(credential);
+				if (host === undefined) {
+					socket.close(HOST_CLOSE_REVOKED, "The host credential is unknown or revoked");
+					return undefined;
+				}
+				return service.hub.accept(host.id, socket);
+			},
+			async tunnel(ticket, client) {
+				const grant = await tickets.verify(ticket, now());
+				// A desktop's ticket opens only the desktop's route, which isn't served here.
+				if (grant === undefined || grant.desktop !== undefined) {
+					client.close(HOST_CLOSE_REVOKED, "The tunnel URL is wrong or has expired");
+					return undefined;
+				}
+				if (!(await access.allowed(grant.grantee, grant.sandboxId))) {
+					client.close(RELAY_CLOSE_REVOKED, RELAY_REVOKED_REASON);
+					return undefined;
+				}
+				let stream: { write(bytes: Uint8Array): void; close(): void } | undefined;
+				const release = access.track({
+					sandboxId: grant.sandboxId,
+					kind: grant.port === 22 ? "ssh" : `tunnel ${grant.port}`,
+					...(grant.grantee === undefined ? {} : { grantee: grant.grantee }),
+					end: (reason) => {
+						client.close(RELAY_CLOSE_REVOKED, reason);
+						stream?.close();
+					},
+				});
+				access.start();
+				const done = () => {
+					release();
+					if (access.size === 0) access.stop();
+				};
+				try {
+					stream = await service.sandboxes.openPort(grant.sandboxId, grant.port, {
+						data: (bytes) => client.send(bytes),
+						end: (reason) => {
+							done();
+							client.close(1000, reason.slice(0, 120));
+						},
+					});
+				} catch (error) {
+					done();
+					client.close(1011, (error instanceof Error ? error.message : String(error)).slice(0, 120));
+					return undefined;
+				}
+				const opened = stream;
+				return {
+					write: (bytes) => opened.write(bytes),
+					close() {
+						done();
+						opened.close();
+					},
+				};
+			},
+		},
+	};
+}
+
+/** `GET /v1/hosts/images/{file}`: Kantel's published images, as a self-hosted gateway serves them by default. */
+function hostImage(request: Request, path: string): Response {
+	const name = path.slice(HOSTS_IMAGES_PATH.length + 1);
+	if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) return new Response("Not found", { status: 404 });
+	if (request.method !== "GET" && request.method !== "HEAD") return new Response(null, { status: 405 });
+	return new Response(null, { status: 302, headers: { location: `${DEFAULT_HOST_IMAGES}/${name}` } });
 }
 
 /** Runs the API's timers from a request until `IDLE_MS` after the last one, then sends what telemetry is queued. */

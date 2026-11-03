@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds Kantel's host images and, with --publish, publishes them as a GitHub Release on lleverage-ai/kantel, where
-# the gateway's default KANTEL_COMPUTE_IMAGES (DEFAULT_HOST_IMAGES in apps/selfhosted/src/gateway/compute.ts) points.
+# the gateway's default KANTEL_COMPUTE_IMAGES (DEFAULT_HOST_IMAGES in packages/hosts/src/http.ts) points.
 #
 #   apps/host/guest/release.sh <out-dir> <tag> [--publish]
 #

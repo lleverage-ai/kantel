@@ -102,6 +102,12 @@ export interface ComputeServiceOptions {
 	readonly mode?: "selfhosted" | "hosted";
 	/** The join command shown with a host join token, with `{url}` and `{token}`. Default the npm package's. */
 	readonly hostJoinCommand?: string;
+	/**
+	 * Kantel Connect (experimental): an account's people enrol hosts of its own (`/v1/connect/*`), which only its
+	 * sandboxes use. Off, those routes answer `not_supported`. Default off; the gateways turn it on with
+	 * `KANTEL_CONNECT=experimental`, and only where sandboxes run on hosts.
+	 */
+	readonly connect?: boolean;
 	/** The console page where a person approves a device sign-in, with `{url}` for the public URL. */
 	readonly deviceLoginUrl?: string;
 	/** Default `PLACEHOLDER_RATES`. */
@@ -334,10 +340,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			for (const host of capabilities.hosts) {
 				const known = await store.hosts.get(host.id);
 				const reachable = host.connected !== false;
+				// A host enrolled into an account stays that account's: the registry says so, or the enrolment it spent does.
+				// Once private, never shared again.
+				const accountId = known?.accountId ?? host.accountId ?? (await enrolledInto(host.id));
 				if (known !== undefined) {
 					const held = known.state === "revoked" || known.state === "draining";
 					await store.hosts.put({
 						...known,
+						...(accountId === undefined ? {} : { accountId }),
 						state: held ? known.state : reachable ? "online" : "unreachable",
 						version: host.version,
 						os: host.os,
@@ -364,6 +374,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					capacity: { ...host.capacity },
 					allocated: { sandboxes: 0, vcpus: 0, memoryMb: 0, diskGb: 0 },
 					labels: { ...host.labels },
+					...(accountId === undefined ? {} : { accountId }),
 					joinedAt: now(),
 					lastSeenAt: now(),
 				});
@@ -374,17 +385,36 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return hostsReady;
 	};
 
-	async function eligibleHosts(type: SandboxType, labels: { readonly [key: string]: string }): Promise<string[]> {
-		await ensureHosts();
-		const hosts = await store.hosts.list({ state: "online" });
-		return hosts
-			.filter((host) => host.tiers.includes(type))
-			.filter((host) => Object.entries(labels).every(([key, value]) => host.labels[key] === value))
-			.map((host) => host.id);
+	/** The account the enrolment a host spent joined it to, if it was an enrolment. */
+	async function enrolledInto(hostId: string): Promise<string | undefined> {
+		const [token] = await store.joinTokens.list({ hostId });
+		return token?.accountId;
 	}
 
-	async function requireHosts(type: SandboxType, labels: { readonly [key: string]: string }): Promise<string[]> {
-		const hosts = await eligibleHosts(type, labels);
+	/**
+	 * The hosts an account's sandbox of `type` may go on: online, running the type and carrying every label. An
+	 * account with hosts of its own (Kantel Connect) that qualify uses only those; otherwise the deployment's shared
+	 * hosts. Another account's hosts never qualify.
+	 */
+	async function eligibleHosts(
+		accountId: string,
+		type: SandboxType,
+		labels: { readonly [key: string]: string },
+	): Promise<string[]> {
+		await ensureHosts();
+		const hosts = (await store.hosts.list({ state: "online" }))
+			.filter((host) => host.tiers.includes(type))
+			.filter((host) => Object.entries(labels).every(([key, value]) => host.labels[key] === value));
+		const own = hosts.filter((host) => host.accountId === accountId);
+		return (own.length > 0 ? own : hosts.filter((host) => host.accountId === undefined)).map((host) => host.id);
+	}
+
+	async function requireHosts(
+		accountId: string,
+		type: SandboxType,
+		labels: { readonly [key: string]: string },
+	): Promise<string[]> {
+		const hosts = await eligibleHosts(accountId, type, labels);
 		if (hosts.length === 0) throw new KantelError("unavailable", `No host can run a ${type} sandbox now`);
 		return hosts;
 	}
@@ -896,6 +926,99 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const host = await store.hosts.get(hostId);
 		if (host === undefined) throw notFound("host");
 		return host;
+	}
+
+	const requireConnect = () => {
+		if (options.connect !== true) {
+			throw new KantelError("not_supported", "Kantel Connect is off on this deployment (KANTEL_CONNECT)");
+		}
+	};
+
+	/**
+	 * One of an account's own hosts, for a caller in that account with `scope`. A host of an account the caller isn't
+	 * in, and a shared host, are `not_found`, so a host's existence isn't given away.
+	 */
+	async function accountHostFor(
+		principal: Principal,
+		hostId: string,
+		scope: "account:read" | "account:admin",
+	): Promise<{ host: StoredHost; acting: Acting }> {
+		requireConnect();
+		await ensureHosts();
+		const host = await store.hosts.get(hostId);
+		if (host?.accountId === undefined) throw notFound("host");
+		const acting = await accountById(store, principal, host.accountId).catch(() => {
+			throw notFound("host");
+		});
+		requireScope(principal, scope, acting.role);
+		return { host, acting };
+	}
+
+	/** A join token, shown once, and its command; an enrolment's joins the host to `owner.accountId`. */
+	async function mintJoinToken(
+		body: {
+			readonly name?: string;
+			readonly labels?: { readonly [key: string]: string };
+			readonly expiresInMinutes?: number;
+		},
+		request: Request,
+		owner?: { readonly accountId: string; readonly createdBy: string },
+	): Promise<computeSchema.HostJoinToken> {
+		const token = randomSecret("kth_", 32);
+		const expiresAt = now() + (body.expiresInMinutes ?? 60) * 60_000;
+		const id = randomId(owner === undefined ? "hjt" : "enr");
+		await store.joinTokens.put({
+			id,
+			tokenHash: await sha256Hex(token),
+			name: body.name,
+			labels: { ...body.labels },
+			expiresAt,
+			createdAt: now(),
+			...(owner === undefined ? {} : { accountId: owner.accountId, createdBy: owner.createdBy }),
+		});
+		const publicUrl = (options.publicUrl ?? new URL(request.url).origin).replace(/\/+$/, "");
+		return {
+			id,
+			token,
+			command: (options.hostJoinCommand ?? DEFAULT_HOST_JOIN_COMMAND)
+				.replaceAll("{url}", publicUrl)
+				.replaceAll("{token}", token),
+			expiresAt,
+		};
+	}
+
+	async function changeHost(
+		host: StoredHost,
+		body: {
+			readonly name?: string;
+			readonly labels?: { readonly [key: string]: string };
+			readonly draining?: boolean;
+		},
+	): Promise<computeSchema.Host> {
+		if (host.state === "revoked") throw new KantelError("conflict", "The host is revoked");
+		let state = host.state;
+		if (body.draining === true) state = "draining";
+		if (body.draining === false && host.state === "draining") state = "online";
+		const updated: StoredHost = {
+			...host,
+			name: body.name ?? host.name,
+			labels: body.labels === undefined ? host.labels : { ...body.labels },
+			state,
+		};
+		await backend.updateHost?.(host.id, {
+			...(body.name === undefined ? {} : { name: body.name }),
+			...(body.labels === undefined ? {} : { labels: { ...body.labels } }),
+			...(body.draining === undefined ? {} : { draining: body.draining }),
+		});
+		await store.hosts.put(updated);
+		return hostView(updated);
+	}
+
+	async function revokeStoredHost(host: StoredHost): Promise<computeSchema.Host> {
+		await backend.revokeHost?.(host.id);
+		const revoked: StoredHost = { ...host, state: "revoked" };
+		await store.hosts.put(revoked);
+		return hostView(revoked);
 	}
 
 	/**
@@ -1456,7 +1579,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 				await requireCapacity(account.id, 1);
 				const hostLabels = { ...body.hostLabels };
-				const hosts = await requireHosts(type, hostLabels);
+				const hosts = await requireHosts(account.id, type, hostLabels);
 				const name = body.name ?? generatedName();
 				const sandbox: StoredSandbox = {
 					id: randomId("sbx"),
@@ -1589,7 +1712,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError("invalid", "A personal account's sandboxes are always private");
 				}
 				await requireCapacity(current.accountId, count);
-				const hosts = await requireHosts(current.type, current.hostLabels);
+				const hosts = await requireHosts(current.accountId, current.type, current.hostLabels);
 				const forks: StoredSandbox[] = [];
 				for (let index = 0; index < count; index++) {
 					const name =
@@ -1672,7 +1795,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (current.state !== "running" && current.state !== "error") {
 				throw new KantelError("conflict", `A ${current.state} sandbox is started or resumed, not recovered`);
 			}
-			const hosts = await requireHosts(current.type, current.hostLabels);
+			const hosts = await requireHosts(current.accountId, current.type, current.hostLabels);
 			const fromSnapshot = await latestRef(current);
 			const began = await transition(current.id, current.state, (latest) =>
 				withState(latest, "starting", { ports: [] }),
@@ -2466,58 +2589,43 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		createHostJoinToken: async (principal, { body }, request) => {
 			requireScope(principal, "hosts:admin");
-			const token = randomSecret("kth_", 32);
-			const expiresAt = now() + (body.expiresInMinutes ?? 60) * 60_000;
-			const id = randomId("hjt");
-			await store.joinTokens.put({
-				id,
-				tokenHash: await sha256Hex(token),
-				name: body.name,
-				labels: { ...body.labels },
-				expiresAt,
-				createdAt: now(),
-			});
-			const publicUrl = (options.publicUrl ?? new URL(request.url).origin).replace(/\/+$/, "");
-			return {
-				id,
-				token,
-				command: (options.hostJoinCommand ?? DEFAULT_HOST_JOIN_COMMAND)
-					.replaceAll("{url}", publicUrl)
-					.replaceAll("{token}", token),
-				expiresAt,
-			};
+			return mintJoinToken(body, request);
 		},
 
 		getHost: async (principal, { params }) => hostView(await hostFor(principal, params.hostId)),
 
-		updateHost: async (principal, { params, body }) => {
-			const host = await hostFor(principal, params.hostId);
-			if (host.state === "revoked") throw new KantelError("conflict", "The host is revoked");
-			let state = host.state;
-			if (body.draining === true) state = "draining";
-			if (body.draining === false && host.state === "draining") state = "online";
-			const updated: StoredHost = {
-				...host,
-				name: body.name ?? host.name,
-				labels: body.labels === undefined ? host.labels : { ...body.labels },
-				state,
-			};
-			await backend.updateHost?.(host.id, {
-				...(body.name === undefined ? {} : { name: body.name }),
-				...(body.labels === undefined ? {} : { labels: { ...body.labels } }),
-				...(body.draining === undefined ? {} : { draining: body.draining }),
-			});
-			await store.hosts.put(updated);
-			return hostView(updated);
+		updateHost: async (principal, { params, body }) => changeHost(await hostFor(principal, params.hostId), body),
+
+		revokeHost: async (principal, { params }) => revokeStoredHost(await hostFor(principal, params.hostId)),
+
+		// Kantel Connect: an account's own hosts.
+
+		createConnectEnrolment: async (principal, { body }, request) => {
+			requireConnect();
+			const { account, role } = await actingAccount(store, principal, body.account);
+			requireScope(principal, "account:admin", role);
+			const made = await mintJoinToken(body, request, { accountId: account.id, createdBy: principal.userId });
+			return { ...made, accountId: account.id };
 		},
 
-		revokeHost: async (principal, { params }) => {
-			const host = await hostFor(principal, params.hostId);
-			await backend.revokeHost?.(host.id);
-			const revoked: StoredHost = { ...host, state: "revoked" };
-			await store.hosts.put(revoked);
-			return hostView(revoked);
+		listConnectHosts: async (principal, { query }) => {
+			requireConnect();
+			const { account, role } = await actingAccount(store, principal, query.account);
+			requireScope(principal, "account:read", role);
+			await ensureHosts();
+			const items: computeSchema.Host[] = [];
+			for (const host of await store.hosts.list({ accountId: account.id })) items.push(await hostView(host));
+			return { items };
 		},
+
+		getConnectHost: async (principal, { params }) =>
+			hostView((await accountHostFor(principal, params.hostId, "account:read")).host),
+
+		updateConnectHost: async (principal, { params, body }) =>
+			changeHost((await accountHostFor(principal, params.hostId, "account:admin")).host, body),
+
+		removeConnectHost: async (principal, { params }) =>
+			revokeStoredHost((await accountHostFor(principal, params.hostId, "account:admin")).host),
 	};
 
 	async function idle(): Promise<void> {
@@ -2550,7 +2658,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (current.type === "isolate" && body.size !== undefined)
 			throw new KantelError("invalid", "Isolates have no size");
 		await requireCapacity(current.accountId, 1);
-		const hosts = await requireHosts(current.type, current.hostLabels);
+		const hosts = await requireHosts(current.accountId, current.type, current.hostLabels);
 		const fromSnapshot = await latestRef(current);
 		const began = await transition(current.id, current.state, (latest) =>
 			withState(latest, "starting", {

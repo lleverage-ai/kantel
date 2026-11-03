@@ -3,6 +3,7 @@
  *
  * | Prefix | Served by |
  * | --- | --- |
+ * | `/v1/hosts/register`, `/v1/hosts/images/…`, with Kantel Connect on | hosts, with no sign-in (`src/compute.ts`, `@kantel/hosts`) |
  * | `/v1/whoami`, `/v1/sandboxes`, `/v1/snapshots` and the rest of the compute API | the compute plane (`src/compute.ts`, `@kantel/compute`) |
  * | `/v1/me`, `/v1/projects`, `/v1/keys`, members and invites | who is signed in, their projects and keys (`@kantel/identity/http`) |
  * | `/v1/audit/…` | the audit query API (`@kantel/audit/http`) |
@@ -48,6 +49,9 @@ export function createGateway(stack: Stack): Gateway {
 	});
 	return {
 		async fetch(incoming) {
+			// A host has no sign-in: its join token or credential is its own (the stack object takes its WebSocket).
+			const forHosts = await stack.compute.hosts?.fetch(incoming);
+			if (forHosts !== undefined) return forHosts;
 			const request = withAccessBearer(incoming);
 			const path = new URL(request.url).pathname;
 			const computed = await stack.compute.fetch(request);

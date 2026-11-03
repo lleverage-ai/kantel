@@ -278,6 +278,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					labels: { ...host.labels },
 					connected: host.state === "online" || host.state === "draining",
 					...(host.lastSeenAt === undefined ? {} : { lastSeenAt: host.lastSeenAt }),
+					...(host.accountId === undefined ? {} : { accountId: host.accountId }),
 				});
 			}
 			return { types: [...types], sizes: [...sizes.values()], hosts: backendHosts };

@@ -21,6 +21,15 @@ import type { HostsService } from "./service.ts";
 
 export const HOSTS_REGISTER_PATH = "/v1/hosts/register";
 export const HOSTS_CONNECT_PATH = "/v1/hosts/connect";
+/** `GET /v1/hosts/images/{file}`: the host images `kantel-host install` fetches from the control plane. */
+export const HOSTS_IMAGES_PATH = "/v1/hosts/images";
+
+/**
+ * Kantel's published host images (kernel, sandbox and isolate images, manifest.json): a GitHub Release on
+ * lleverage-ai/kantel, made by apps/host/guest/release.sh. Pinned to one release, so a new image reaches hosts only
+ * when this changes (or a self-hosted gateway's KANTEL_COMPUTE_IMAGES points elsewhere).
+ */
+export const DEFAULT_HOST_IMAGES = "https://github.com/lleverage-ai/kantel/releases/download/host-images-20261103";
 const ADMIN_HOSTS = "/v1/admin/hosts";
 const ADMIN_SANDBOXES = "/v1/admin/compute/sandboxes";
 

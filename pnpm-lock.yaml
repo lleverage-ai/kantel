@@ -36,6 +36,9 @@ importers:
       "@kantel/contracts":
         specifier: workspace:*
         version: link:../../packages/contracts
+      "@kantel/hosts":
+        specifier: workspace:*
+        version: link:../../packages/hosts
       "@kantel/identity":
         specifier: workspace:*
         version: link:../../packages/identity

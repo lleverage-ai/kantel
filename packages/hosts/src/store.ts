@@ -22,6 +22,11 @@ export interface HostRecord {
 	readonly facts?: HostFacts;
 	/** As it last said in a hello or heartbeat. */
 	readonly capacity?: HostCapacity;
+	/**
+	 * The account it was enrolled into with Kantel Connect: only that account's sandboxes go on it. Absent for a host
+	 * the operator joined, which every account shares.
+	 */
+	readonly accountId?: string;
 }
 
 export interface JoinTokenRecord {
