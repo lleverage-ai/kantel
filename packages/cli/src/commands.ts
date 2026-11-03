@@ -5,7 +5,8 @@
  */
 import { spawn } from "node:child_process";
 import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { homedir, hostname } from "node:os";
+import { basename, dirname, join, posix, resolve } from "node:path";
 import {
 	type ApiKey,
 	type ApiKeyPreset,
@@ -14,6 +15,7 @@ import {
 	type Command,
 	createKantelClient,
 	type EventType,
+	type ExposedPort,
 	type FileContent,
 	type FileList,
 	type IssuedApiKey,
@@ -31,6 +33,8 @@ import {
 	codexToml,
 	HARNESSES,
 	mcpServersJson,
+	SKILL_MD,
+	SKILL_PATHS,
 	upsertAgentsBlock,
 } from "./agents.ts";
 import {
@@ -57,8 +61,21 @@ import {
 } from "./config.ts";
 import { CliError, UsageError } from "./errors.ts";
 import { ago, bytes, duration, fields, money, table, timestamp, until } from "./format.ts";
+import { openInBrowser, type PendingLogin, readPendingLogin, startLogin, waitForLogin } from "./login.ts";
 import { createMcpServer, serveStdio } from "./mcp.ts";
 import { pipeTunnel, proxyUrlOf, SSH_URL_ENV, tunnelSshArgs, tunnelSshCommand } from "./ssh-proxy.ts";
+import {
+	downloadTree,
+	getBytes,
+	gitFiles,
+	parseRemote,
+	remoteIsDirectory,
+	remoteJoin,
+	remotePath,
+	uploadFile,
+	uploadTree,
+	walk,
+} from "./transfer.ts";
 import { VERSION } from "./version.ts";
 
 /** Where the CLI writes. */
@@ -84,6 +101,12 @@ export interface RunOptions {
 	readonly configDir?: string;
 	/** What local paths are relative to; default the process's working directory. */
 	readonly cwd?: string;
+	/** Opens a URL in the person's browser, for `login`; default the system's opener. */
+	readonly openUrl?: (url: string) => void;
+	/** Waits between polls (`login`, `attach`); default a timer. */
+	readonly sleep?: (ms: number) => Promise<void>;
+	/** The home directory, for `init --global`; default the user's. */
+	readonly home?: string;
 }
 
 interface Io {
@@ -94,6 +117,9 @@ interface Io {
 	stdin(): Input;
 	readonly configDir: string;
 	readonly cwd: string;
+	readonly openUrl: (url: string) => void;
+	readonly sleep: (ms: number) => Promise<void>;
+	readonly home: string;
 }
 
 /** What a command's `run` is given. */
@@ -129,6 +155,8 @@ interface CommandSpec {
 	/** Its words, such as `sandbox create`. */
 	readonly name: string;
 	readonly summary: string;
+	/** Left out of `kantel help`'s list: an older spelling kept working, such as `sandbox create` for `new`. */
+	readonly hidden?: boolean;
 	readonly args?: readonly Arg[];
 	readonly flags?: FlagSpecs;
 	/** What it takes after `--`, such as exec's `command…`. */
@@ -430,6 +458,14 @@ const ttl: FlagSpec = {
 	description: "How long the URL can be opened for (default 10, at most 60)",
 };
 const sizeFlag: FlagSpec = { type: "string", value: "<small|default|large|xlarge>", description: "A microVM's size" };
+const printOnly: FlagSpec = { type: "boolean", description: "Print the URL without opening it" };
+
+/** Opens `url` in the browser when a person is at a terminal, and hasn't asked for the URL only. */
+function openIfPerson(ctx: Context, url: string): void {
+	if (ctx.boolean("print") || ctx.json || ctx.io.stdout.isTTY !== true || hasValue(ctx.io.env.KANTEL_NO_BROWSER))
+		return;
+	ctx.io.openUrl(url);
+}
 
 const ID_ARG: readonly Arg[] = [{ name: "id" }];
 
@@ -441,7 +477,7 @@ function lifecycle(
 	call: (client: KantelClient, sandboxId: string, ctx: Context) => Promise<Sandbox>,
 ): CommandSpec {
 	return {
-		name: `sandbox ${verb}`,
+		name: verb,
 		summary,
 		args: ID_ARG,
 		flags,
@@ -453,6 +489,113 @@ function lifecycle(
 	};
 }
 
+/** A finished command's output on our stdout and stderr, and what became of it on stderr. */
+function printOutput(ctx: Context, command: Command): void {
+	if (command.stdout !== "") ctx.io.stdout.write(command.stdout);
+	if (command.stderr !== "") ctx.io.stderr.write(command.stderr);
+	if (command.truncated) ctx.note("kantel: the output was cut at 1 MiB");
+	if (command.state === "killed") ctx.note("kantel: the command was killed");
+}
+
+/** `kantel exec --status`: the command as JSON, or its state and output so far. */
+function showCommand(ctx: Context, command: Command): number {
+	if (ctx.json) {
+		ctx.out(JSON.stringify(command, null, 2));
+		return 0;
+	}
+	const code = command.exitCode === undefined ? "" : ` ${command.exitCode}`;
+	ctx.note(`kantel: ${command.id} ${command.state}${code}: ${command.command}`);
+	printOutput(ctx, command);
+	return 0;
+}
+
+function killed(ctx: Context, command: Command): number {
+	ctx.emit(command, () => `${command.id} ${command.state}`);
+	return 0;
+}
+
+/**
+ * Follows a detached command: prints what it has written since the last look, every second or so, until it ends, and
+ * answers its exit code. Kantel keeps a command's first 1 MiB of each stream, so that is all it can show.
+ */
+async function follow(
+	ctx: Context,
+	client: KantelClient,
+	sandboxId: string,
+	commandId: string,
+	first?: Command,
+): Promise<number> {
+	let shown = { stdout: 0, stderr: 0 };
+	let wait = 250;
+	let command = first ?? (await client.getCommand(sandboxId, commandId));
+	if (!ctx.json && first !== undefined) ctx.note(`kantel: started ${command.id}; Ctrl-C leaves it running`);
+	for (;;) {
+		if (!ctx.json) {
+			const out = command.stdout.slice(shown.stdout);
+			const err = command.stderr.slice(shown.stderr);
+			if (out !== "") ctx.io.stdout.write(out);
+			if (err !== "") ctx.io.stderr.write(err);
+			shown = { stdout: command.stdout.length, stderr: command.stderr.length };
+		}
+		if (command.state !== "running") break;
+		await ctx.io.sleep(wait);
+		wait = Math.min(wait * 2, 1000);
+		command = await client.getCommand(sandboxId, commandId);
+	}
+	if (ctx.json) ctx.out(JSON.stringify(command, null, 2));
+	else {
+		if (command.truncated) ctx.note("kantel: the output was cut at 1 MiB");
+		if (command.state === "killed") ctx.note("kantel: the command was killed");
+		if (command.state === "timed_out") ctx.note("kantel: the command timed out and was killed");
+	}
+	return exitCodeOf(command);
+}
+
+/** `--host 3000` or `--host 8080:public`. */
+function hostedPort(value: string): { port: number; public?: true } {
+	const match = /^(\d+)(:public)?$/.exec(value);
+	if (match === null) throw new UsageError(`--host takes a port, or port:public, not "${value}"`);
+	const port = Number(match[1]);
+	if (port < 1 || port > 65535) throw new UsageError(`--host ${value} isn't a port`);
+	return match[2] === undefined ? { port } : { port, public: true };
+}
+
+/**
+ * The browser sign-in: the new key, or undefined when it only printed the code (no terminal and no `--wait`). It keeps
+ * the code until it is used, so running `login` again carries on with it.
+ */
+async function browserLogin(ctx: Context, url: string): Promise<IssuedApiKey | undefined> {
+	const client = makeClient(ctx.io, { url });
+	const now = Date.now;
+	const pending: PendingLogin =
+		(await readPendingLogin(ctx.io.configDir, url, now())) ??
+		(await startLogin(client, url, ctx.string("name") ?? `kantel on ${hostname()}`, ctx.io.configDir));
+	const interactive = ctx.io.stdout.isTTY === true && !ctx.json;
+	const waiting = interactive || ctx.boolean("wait");
+	const shown = {
+		event: "login_pending",
+		url: pending.verificationUrlComplete,
+		code: pending.userCode,
+		expiresAt: pending.expiresAt,
+	};
+	// With --json, stdout holds one document: this when it stops here, else the signed-in caller.
+	if (ctx.json) (waiting ? ctx.note : ctx.out)(JSON.stringify(shown));
+	else {
+		const say = interactive ? ctx.out : ctx.note;
+		say(`Open this page and check the code matches: ${pending.userCode}`);
+		say(`  ${pending.verificationUrlComplete}`);
+	}
+	if (!waiting) {
+		if (!ctx.json) ctx.note("Then run: kantel login --wait");
+		return undefined;
+	}
+	if (interactive && !ctx.boolean("no-browser") && !hasValue(ctx.io.env.KANTEL_NO_BROWSER)) {
+		ctx.io.openUrl(pending.verificationUrlComplete);
+	}
+	if (interactive) ctx.out("Waiting for you to approve it in the browser…");
+	return waitForLogin(client, pending, ctx.io.configDir, ctx.io.sleep, now);
+}
+
 // The commands.
 
 const SECTIONS: readonly Section[] = [
@@ -461,23 +604,41 @@ const SECTIONS: readonly Section[] = [
 		commands: [
 			{
 				name: "login",
-				summary: "Check an API key and save it for the commands after",
+				summary: "Sign in in the browser, or with an API key, and save it for the commands after",
+				flags: {
+					"key-stdin": {
+						type: "boolean",
+						description: "Read an API key from stdin rather than signing in in the browser",
+					},
+					"no-browser": { type: "boolean", description: "Print the sign-in URL but don't open it" },
+					wait: {
+						type: "boolean",
+						description: "Wait for the browser sign-in even with no terminal (agents, scripts)",
+					},
+					name: { type: "string", value: "<name>", description: "The new key's name (default kantel on <host>)" },
+				},
 				details:
-					"The key comes from --key, or from stdin when it is piped in, which keeps it out of your shell history:\n" +
-					"  npx kantel login --url https://kantel.example < key.txt\n" +
+					"With no key it prints a code and opens Kantel's console, where you approve it; the CLI gets an API key of\n" +
+					"its own (90 days), which you can revoke on the API keys page. With no terminal it prints the URL and code\n" +
+					"and exits; run kantel login --wait to wait for the approval. Running it again shows the same code.\n" +
+					"\n" +
+					"An existing key comes from --key-stdin, which keeps it out of your shell history and process list:\n" +
+					'  printf %s "$KANTEL_API_KEY" | npx kantel login --key-stdin --url https://kantel.example\n' +
 					"It is saved, readable by you only, in ~/.config/kantel/config.json (or under XDG_CONFIG_HOME).",
 				async run(ctx) {
 					const stored = await readStoredConfig(ctx.io.configDir);
 					let key = ctx.string("key") ?? ctx.string("api-key");
-					if (key === undefined) {
-						const stdin = ctx.io.stdin();
-						if (stdin.isTTY === true) {
-							throw new UsageError("give the key with --key <key>, or pipe it in: npx kantel login < key.txt");
-						}
-						key = new TextDecoder().decode(await readAll(stdin)).trim();
+					if (key === undefined && ctx.boolean("key-stdin")) {
+						key = new TextDecoder().decode(await readAll(ctx.io.stdin())).trim();
 						if (key === "") throw new UsageError("there was no key on stdin");
 					}
 					const flagAccount = ctx.string("account");
+					if (key === undefined) {
+						const url = resolveConfig({ url: ctx.string("url") }, ctx.io.env, stored).url;
+						const issued = await browserLogin(ctx, url);
+						if (issued === undefined) return 0;
+						key = issued.secret;
+					}
 					const flags = { url: ctx.string("url"), apiKey: key, account: flagAccount };
 					const config = resolveConfig(flags, ctx.io.env, stored);
 					const caller = await makeClient(ctx.io, config).getCaller();
@@ -542,7 +703,7 @@ const SECTIONS: readonly Section[] = [
 		title: "Sandboxes",
 		commands: [
 			{
-				name: "sandbox create",
+				name: "new",
 				summary: "Create a sandbox and wait until it runs",
 				flags: {
 					type: {
@@ -564,9 +725,24 @@ const SECTIONS: readonly Section[] = [
 						description: "Stop by itself this long after it starts (default 60)",
 					},
 					label: { type: "string", multiple: true, value: "<k=v>", description: "A label; repeat for more" },
+					env: {
+						type: "string",
+						short: "e",
+						multiple: true,
+						value: "<K=V>",
+						description: "An environment variable every command sees (not a secret); repeat it",
+					},
+					host: {
+						type: "string",
+						multiple: true,
+						value: "<port[:public]>",
+						description: "Give this port an HTTPS URL once it runs; repeat it",
+					},
 					"no-wait": noWait,
 				},
 				async run(ctx) {
+					const hosts = ctx.list("host").map(hostedPort);
+					if (hosts.length > 0 && ctx.boolean("no-wait")) throw new UsageError("--host needs the sandbox running");
 					const body = {
 						name: ctx.string("name"),
 						type: choice(ctx.string("type"), SANDBOX_TYPES, "--type"),
@@ -575,22 +751,29 @@ const SECTIONS: readonly Section[] = [
 						from: ctx.string("from"),
 						autoStopMinutes: autoStopOf(ctx.string("auto-stop")),
 						labels: pairs(ctx.list("label"), "--label"),
+						env: pairs(ctx.list("env"), "--env"),
 						wait: !ctx.boolean("no-wait"),
 					};
 					const config = await ctx.config();
-					const sandbox = await (await ctx.client()).createSandbox({ account: config.account, ...body });
-					ctx.emit(sandbox, () =>
+					const client = await ctx.client();
+					const sandbox = await client.createSandbox({ account: config.account, ...body });
+					const ports: ExposedPort[] = [];
+					if (sandbox.state === "running") {
+						for (const host of hosts) ports.push(await client.exposePort(sandbox.id, host));
+					}
+					ctx.emit(ports.length === 0 ? sandbox : { ...sandbox, hostedPorts: ports }, () =>
 						[
 							`Created ${sandbox.id} (${sandbox.name}): ${kindOf(sandbox)}, ${stateOf(sandbox)}.`,
+							...ports.map((port) => `  Port ${port.port}:      ${port.url}`),
 							`  Run a command:  kantel exec ${sandbox.id} -- echo hello`,
-							`  Stop it:        kantel sandbox stop ${sandbox.id}`,
+							`  Stop it:        kantel stop ${sandbox.id}`,
 						].join("\n"),
 					);
 					return sandbox.state === "error" ? 1 : 0;
 				},
 			},
 			{
-				name: "sandbox list",
+				name: "list",
 				summary: "List running sandboxes, or all of them",
 				flags: {
 					all: { type: "boolean", description: "Include stopped, paused and errored ones" },
@@ -609,12 +792,12 @@ const SECTIONS: readonly Section[] = [
 					ctx.emit(page, () => {
 						if (page.items.length === 0)
 							return all ? "No sandboxes." : "No running sandboxes; --all shows stopped ones.";
-						return `${sandboxTable(page.items)}${more(page.nextCursor, "kantel sandbox list")}`;
+						return `${sandboxTable(page.items)}${more(page.nextCursor, "kantel list")}`;
 					});
 				},
 			},
 			{
-				name: "sandbox get",
+				name: "info",
 				summary: "Show a sandbox",
 				args: ID_ARG,
 				async run(ctx) {
@@ -659,7 +842,7 @@ const SECTIONS: readonly Section[] = [
 				client.recoverSandbox(sandboxId),
 			),
 			{
-				name: "sandbox fork",
+				name: "fork",
 				summary: "Copy a sandbox into new ones",
 				args: ID_ARG,
 				flags: {
@@ -679,7 +862,7 @@ const SECTIONS: readonly Section[] = [
 				},
 			},
 			{
-				name: "sandbox delete",
+				name: "delete",
 				summary: "Delete a sandbox for good (needs --yes)",
 				args: ID_ARG,
 				flags: { yes: { type: "boolean", short: "y", description: "Yes, delete it: this can't be undone" } },
@@ -689,7 +872,7 @@ const SECTIONS: readonly Section[] = [
 					if (!ctx.boolean("yes")) {
 						throw new UsageError(
 							`deleting a sandbox is permanent: it erases ${sandboxId} and its automatic snapshots. ` +
-								`To delete it, run: kantel sandbox delete ${sandboxId} --yes`,
+								`To delete it, run: kantel delete ${sandboxId} --yes (or kantel stop ${sandboxId} keeps it)`,
 						);
 					}
 					const sandbox = await (await ctx.client()).deleteSandbox(sandboxId);
@@ -697,7 +880,7 @@ const SECTIONS: readonly Section[] = [
 				},
 			},
 			{
-				name: "sandbox extend",
+				name: "extend",
 				summary: "Move a sandbox's auto-stop to this many minutes from now",
 				args: [{ name: "id" }, { name: "minutes" }],
 				async run(ctx) {
@@ -710,7 +893,7 @@ const SECTIONS: readonly Section[] = [
 				},
 			},
 			{
-				name: "sandbox usage",
+				name: "usage",
 				summary: "A sandbox's running time, CPU and cost over the last day",
 				args: ID_ARG,
 				async run(ctx) {
@@ -733,50 +916,109 @@ const SECTIONS: readonly Section[] = [
 			{
 				name: "exec",
 				summary: "Run a command in a sandbox, with its output and exit code",
-				args: ID_ARG,
+				args: [{ name: "id" }, { name: "command", optional: true, variadic: true }],
 				rest: "command…",
 				flags: {
 					cwd: { type: "string", value: "<dir>", description: "Run it here (default the sandbox user's home)" },
 					env: { type: "string", multiple: true, value: "<K=V>", description: "An environment variable; repeat it" },
-					timeout: { type: "string", value: "<ms>", description: "Kill it after this long (default 30000)" },
-					detach: { type: "boolean", description: "Start it and answer at once, with no time limit" },
+					timeout: {
+						type: "string",
+						value: "<seconds>",
+						description: "Kill it after this long (default 30, at most 600); 0: no limit, following its output",
+					},
+					detach: { type: "boolean", short: "d", description: "Start it and print its ID at once, with no time limit" },
+					attach: { type: "string", value: "<command>", description: "Follow a detached command's output to its end" },
+					status: { type: "string", value: "<command>", description: "Show a command: its state and output so far" },
+					kill: { type: "string", value: "<command>", description: "Stop a detached command" },
 					stdin: { type: "boolean", description: "Send this terminal's stdin to the command" },
 				},
 				details:
-					"One word after -- is a shell command line: kantel exec <id> -- 'make && make test'. Several are a\n" +
-					"command and its arguments, quoted for the shell. Its stdout and stderr come out on ours, and kantel\n" +
-					"exits with its exit code (124 when it timed out).",
+					"One word is a shell command line: kantel exec <id> 'make && make test'. Several are a command and its\n" +
+					"arguments, quoted for the shell; put them after -- when they have flags of their own:\n" +
+					"kantel exec <id> -- ls -la. Its stdout and stderr come out on ours, and kantel exits with its exit\n" +
+					"code (124 when it timed out). A server or a long job: --detach, then kantel attach <id> <command>.",
 				async run(ctx) {
 					const sandboxId = ctx.arg(0);
-					const words = ctx.rest ?? [];
-					if (words.length === 0) throw new UsageError("give the command after --: kantel exec <id> -- <command…>");
-					const timeoutMs = whole(ctx.string("timeout"), "--timeout");
+					const client = await ctx.client();
+					const attach = ctx.string("attach");
+					if (attach !== undefined) return follow(ctx, client, sandboxId, attach);
+					const status = ctx.string("status");
+					if (status !== undefined) return showCommand(ctx, await client.getCommand(sandboxId, status));
+					const kill = ctx.string("kill");
+					if (kill !== undefined) return killed(ctx, await client.killCommand(sandboxId, kill));
+					const words = ctx.rest ?? ctx.positionals.slice(1);
+					if (words.length === 0) throw new UsageError("give the command: kantel exec <id> -- <command…>");
+					const seconds = whole(ctx.string("timeout"), "--timeout", 0);
+					const unlimited = seconds === 0;
+					const detached = ctx.boolean("detach") || unlimited;
+					const timeoutMs = seconds === undefined || unlimited ? undefined : seconds * 1000;
 					const body = {
 						command: commandLine(words),
 						cwd: ctx.string("cwd"),
 						env: pairs(ctx.list("env"), "--env"),
-						timeoutMs,
-						detached: ctx.boolean("detach") ? true : undefined,
+						timeoutMs: detached ? undefined : timeoutMs,
+						detached: detached ? true : undefined,
 						stdin: ctx.boolean("stdin") ? new TextDecoder().decode(await readAll(ctx.io.stdin())) : undefined,
 					};
-					const result = await (await ctx.client()).runCommand(sandboxId, body);
+					const result = await client.runCommand(sandboxId, body);
+					if (unlimited && result.state === "running") return follow(ctx, client, sandboxId, result.id, result);
 					if (ctx.json) {
 						ctx.out(JSON.stringify(result, null, 2));
 						return exitCodeOf(result);
 					}
 					if (result.state === "running") {
-						ctx.out(`Started ${result.id} in ${sandboxId}.`);
+						ctx.out(result.id);
+						ctx.note(
+							`kantel: started ${result.id}. Follow it: kantel attach ${sandboxId} ${result.id}; ` +
+								`stop it: kantel kill ${sandboxId} ${result.id}`,
+						);
 						return 0;
 					}
-					if (result.stdout !== "") ctx.io.stdout.write(result.stdout);
-					if (result.stderr !== "") ctx.io.stderr.write(result.stderr);
-					if (result.truncated) ctx.note("kantel: the output was cut at 1 MiB");
+					printOutput(ctx, result);
 					if (result.state === "timed_out") {
-						const after = timeoutMs === undefined ? "" : ` after ${timeoutMs} ms`;
+						const after = seconds === undefined ? "" : ` after ${seconds} s`;
 						ctx.note(`kantel: the command timed out${after} and was killed`);
 					}
-					if (result.state === "killed") ctx.note("kantel: the command was killed");
 					return exitCodeOf(result);
+				},
+			},
+			{
+				name: "attach",
+				summary: "Follow a detached command's output until it ends, and exit with its code",
+				args: [{ name: "id" }, { name: "command" }],
+				details: "Ctrl-C stops following; the command carries on. Its output from the start is printed first.",
+				async run(ctx) {
+					return follow(ctx, await ctx.client(), ctx.arg(0), ctx.arg(1));
+				},
+			},
+			{
+				name: "ps",
+				summary: "A sandbox's commands, newest first, running ones included",
+				args: ID_ARG,
+				flags: { cursor: cursorFlag },
+				async run(ctx) {
+					const sandboxId = ctx.arg(0);
+					const page = await (await ctx.client()).listCommands(sandboxId, { cursor: ctx.string("cursor") });
+					const rows = page.items.map((command) => [
+						command.id,
+						command.exitCode === undefined ? command.state : `${command.state} ${command.exitCode}`,
+						ago(command.startedAt),
+						command.durationMs === undefined ? "" : duration(command.durationMs / 1000),
+						command.command.length > 60 ? `${command.command.slice(0, 59)}…` : command.command,
+					]);
+					ctx.emit(page, () =>
+						rows.length === 0
+							? "No commands yet."
+							: `${table(["ID", "STATE", "STARTED", "TOOK", "COMMAND"], rows)}${more(page.nextCursor, `kantel ps ${sandboxId}`)}`,
+					);
+				},
+			},
+			{
+				name: "kill",
+				summary: "Stop a running command, and everything it started",
+				args: [{ name: "id" }, { name: "command" }],
+				async run(ctx) {
+					return killed(ctx, await (await ctx.client()).killCommand(ctx.arg(0), ctx.arg(1)));
 				},
 			},
 			{
@@ -866,13 +1108,130 @@ const SECTIONS: readonly Section[] = [
 					ctx.emit({ deleted: ctx.arg(1) }, () => `Deleted ${ctx.arg(1)}.`);
 				},
 			},
+			{
+				name: "scp",
+				summary: "Copy files to or from a sandbox: <id>:<path> names a path in it",
+				args: [{ name: "from" }, { name: "to" }],
+				flags: {
+					recursive: { type: "boolean", short: "r", description: "Copy a directory and everything in it" },
+				},
+				details:
+					"  kantel scp ./report.txt sbx_123:/home/user/      upload a file into a directory\n" +
+					"  kantel scp sbx_123:out.zip .                      download one (relative paths are under /home/user)\n" +
+					"  kantel scp -r ./site sbx_123:/srv/site            upload a directory\n" +
+					"It goes through Kantel's files API, so it works on isolates too. A file over 1 MiB goes in parts and\n" +
+					"needs a microVM.",
+				async run(ctx) {
+					const from = ctx.arg(0);
+					const to = ctx.arg(1);
+					const source = parseRemote(from);
+					const target = parseRemote(to);
+					if ((source === undefined) === (target === undefined)) {
+						throw new UsageError("name the sandbox on one side, and only one: kantel scp ./file sbx_123:/home/user/");
+					}
+					const client = await ctx.client();
+					const recursive = ctx.boolean("recursive");
+					const log = (path: string): void => {
+						if (!ctx.json) ctx.note(path);
+					};
+					if (target !== undefined) {
+						// Uploading.
+						const local = resolve(ctx.io.cwd, from);
+						const name = basename(local);
+						const into = remotePath(target.path);
+						const intoDirectory =
+							into === "" || into.endsWith("/") || (await remoteIsDirectory(client, target.sandboxId, into));
+						const remote = intoDirectory ? remoteJoin(into, name) : into;
+						if (await isDirectory(local)) {
+							if (!recursive) throw new UsageError(`${from} is a directory: add -r to copy it`);
+							const copied = await uploadTree(client, target.sandboxId, local, await walk(local), remote, log);
+							ctx.emit(
+								{ ...copied, to: remote },
+								() => `Copied ${copied.files} files (${bytes(copied.bytes)}) to ${remote}.`,
+							);
+							return;
+						}
+						const size = await uploadFile(client, target.sandboxId, local, remote);
+						ctx.emit({ files: 1, bytes: size, to: remote }, () => `Copied ${from} (${bytes(size)}) to ${remote}.`);
+						return;
+					}
+					// Downloading.
+					const remote = remotePath((source as { path: string }).path);
+					const sandboxId = (source as { sandboxId: string }).sandboxId;
+					const local = resolve(ctx.io.cwd, to);
+					const name = posix.basename(remote.replace(/\/+$/, "")) || "home";
+					const here = (await isDirectory(local)) ? join(local, name) : local;
+					if (await remoteIsDirectory(client, sandboxId, remote)) {
+						if (!recursive) throw new UsageError(`${from} is a directory: add -r to copy it`);
+						const copied = await downloadTree(client, sandboxId, remote, here, log);
+						ctx.emit(
+							{ ...copied, to: here },
+							() => `Copied ${copied.files} files (${bytes(copied.bytes)}) to ${here}.`,
+						);
+						return;
+					}
+					const content = await getBytes(client, sandboxId, remote);
+					await mkdir(dirname(here), { recursive: true });
+					await writeFile(here, content);
+					ctx.emit(
+						{ files: 1, bytes: content.length, to: here },
+						() => `Copied ${from} (${bytes(content.length)}) to ${here}.`,
+					);
+				},
+			},
+			{
+				name: "push",
+				summary: "Copy a local directory into a sandbox (in git, the files git would commit)",
+				args: [{ name: "id" }, { name: "dir", optional: true }],
+				flags: {
+					to: { type: "string", value: "<path>", description: "Where in the sandbox (default /home/user/<dir name>)" },
+				},
+				details:
+					"In a git repository it sends the files git tracks and the new ones .gitignore doesn't leave out, so\n" +
+					"node_modules, build output and .git stay here. Elsewhere it sends everything but .git. Files already\n" +
+					"there are replaced; files you deleted here stay there. Executable bits are kept.",
+				async run(ctx) {
+					const sandboxId = ctx.arg(0);
+					const root = resolve(ctx.io.cwd, ctx.optional(1) ?? ".");
+					if (!(await isDirectory(root))) throw new UsageError(`${root} isn't a directory: use kantel scp for a file`);
+					const files = (await gitFiles(root)) ?? (await walk(root));
+					const target = remotePath(ctx.string("to") ?? basename(root));
+					const copied = await uploadTree(await ctx.client(), sandboxId, root, files, target, (path) => {
+						if (!ctx.json) ctx.note(path);
+					});
+					const where = target.startsWith("/") ? target : `/home/user/${target}`;
+					ctx.emit(
+						{ ...copied, to: where },
+						() => `Pushed ${copied.files} files (${bytes(copied.bytes)}) to ${where}.`,
+					);
+				},
+			},
 		],
 	},
 	{
 		title: "Ports, SSH, desktop and browser",
 		commands: [
 			{
+				name: "host",
+				summary: "Give a port in a sandbox an HTTPS URL, and print it",
+				args: [{ name: "id" }, { name: "port" }],
+				flags: { public: { type: "boolean", description: "Anyone with the URL may open it, with no token" } },
+				details:
+					"The URL carries a token unless --public: anyone holding the whole URL can open it. Asking again for the\n" +
+					"same port gives the same URL. Start the server first, with kantel exec <id> --detach -- <command>.\n" +
+					"kantel port list shows a sandbox's ports, and kantel port hide <id> <port> stops one working.",
+				async run(ctx) {
+					const port = whole(ctx.arg(1), "port") ?? 0;
+					const exposed = await (await ctx.client()).exposePort(ctx.arg(0), {
+						port,
+						public: ctx.boolean("public") ? true : undefined,
+					});
+					ctx.emit(exposed, () => exposed.url);
+				},
+			},
+			{
 				name: "port expose",
+				hidden: true,
 				summary: "Give a port in a sandbox an HTTPS URL",
 				args: [{ name: "id" }, { name: "port" }],
 				flags: { public: { type: "boolean", description: "Anyone with the URL may open it, with no token" } },
@@ -1004,27 +1363,31 @@ const SECTIONS: readonly Section[] = [
 			},
 			{
 				name: "desktop",
-				summary: "A URL that shows a microVM's desktop in a browser",
+				summary: "Open a microVM's desktop in your browser, and print its URL",
 				args: ID_ARG,
-				flags: { "view-only": viewOnly, ttl },
+				flags: { "view-only": viewOnly, ttl, print: printOnly },
+				details: "The URL carries a short-lived token: treat it as a secret.",
 				async run(ctx) {
 					const access = await (await ctx.client()).openDesktop(ctx.arg(0), {
 						viewOnly: ctx.boolean("view-only") ? true : undefined,
 						ttlMinutes: whole(ctx.string("ttl"), "--ttl"),
 					});
+					openIfPerson(ctx, access.url);
 					ctx.emit(access, () => access.url);
 				},
 			},
 			{
 				name: "browser",
-				summary: "Start a microVM's Chrome: its live view URL and CDP URL",
+				summary: "Start a microVM's Chrome: open its live view, and print that URL and its CDP URL",
 				args: ID_ARG,
-				flags: { "view-only": viewOnly, ttl },
+				flags: { "view-only": viewOnly, ttl, print: printOnly },
+				details: "Drive it with Playwright: chromium.connectOverCDP(<cdp URL>). Both URLs carry short-lived tokens.",
 				async run(ctx) {
 					const access = await (await ctx.client()).openBrowser(ctx.arg(0), {
 						viewOnly: ctx.boolean("view-only") ? true : undefined,
 						ttlMinutes: whole(ctx.string("ttl"), "--ttl"),
 					});
+					openIfPerson(ctx, access.url);
 					ctx.emit(access, () =>
 						fields([
 							["view", access.url],
@@ -1388,50 +1751,68 @@ const SECTIONS: readonly Section[] = [
 		],
 	},
 	{
-		title: "Hosts (super-admins)",
+		title: "Coding agents",
 		commands: [
 			{
-				name: "host list",
-				summary: "The machines that run sandboxes",
-				async run(ctx) {
-					const hosts = await (await ctx.client()).listHosts();
-					const rows = hosts.items.map((host) => [
-						host.id,
-						host.name,
-						host.state,
-						host.version ?? "",
-						host.tiers.join(","),
-						String(host.allocated.sandboxes),
-						host.lastSeenAt === undefined ? "" : ago(host.lastSeenAt),
-					]);
-					const header = ["ID", "NAME", "STATE", "VERSION", "TYPES", "SANDBOXES", "SEEN"];
-					ctx.emit(hosts, () => (rows.length === 0 ? "No hosts have joined." : table(header, rows)));
-				},
-			},
-			{
-				name: "host join-token",
-				summary: "A one-use token, and the command that joins a Linux machine with it",
+				name: "init",
+				summary: "Teach this project's coding agents to use Kantel: AGENTS.md, CLAUDE.md and a kantel skill",
 				flags: {
-					name: { type: "string", value: "<name>", description: "The host's name" },
-					label: { type: "string", multiple: true, value: "<k=v>", description: "A label; repeat for more" },
-					"expires-minutes": { type: "string", value: "<n>", description: "Default 60" },
+					global: {
+						type: "boolean",
+						description:
+							"Install the skill for every project (~/.claude/skills, ~/.agents/skills) and skip the .md files",
+					},
+					for: {
+						type: "string",
+						multiple: true,
+						value: "<claude|codex|pi>",
+						description: "Only for these agents; repeat it (default all three)",
+					},
 				},
+				details:
+					"It writes Kantel's block into AGENTS.md (Codex, pi, Cursor) and CLAUDE.md (Claude Code), replacing an\n" +
+					"older one between its markers and leaving the rest, and the kantel skill into .agents/skills (Codex,\n" +
+					"pi) and .claude/skills (Claude Code). Nothing it writes holds a key. For MCP instead: kantel agents.",
 				async run(ctx) {
-					const token = await (await ctx.client()).createHostJoinToken({
-						name: ctx.string("name"),
-						labels: pairs(ctx.list("label"), "--label"),
-						expiresInMinutes: whole(ctx.string("expires-minutes"), "--expires-minutes"),
-					});
-					ctx.emit(token, () =>
-						[`Run this on the machine, before ${timestamp(token.expiresAt)}:`, "", `  ${token.command}`].join("\n"),
+					const wanted = choices(ctx.list("for"), ["claude", "codex", "pi"] as const, "--for") ?? [
+						"claude",
+						"codex",
+						"pi",
+					];
+					const global = ctx.boolean("global");
+					const base = global ? ctx.io.home : ctx.io.cwd;
+					const claude = wanted.includes("claude");
+					const others = wanted.includes("codex") || wanted.includes("pi");
+					const written: string[] = [];
+					const put = async (path: string, content: string): Promise<void> => {
+						await mkdir(dirname(path), { recursive: true });
+						await writeFile(path, content);
+						written.push(path);
+					};
+					if (!global) {
+						for (const [file, wants] of [
+							["AGENTS.md", others],
+							["CLAUDE.md", claude],
+						] as const) {
+							if (!wants) continue;
+							const path = join(base, file);
+							await put(path, upsertAgentsBlock(await readTextIfAny(path)));
+						}
+					}
+					if (claude) await put(join(base, SKILL_PATHS.claude), SKILL_MD);
+					if (others) await put(join(base, SKILL_PATHS.agents), SKILL_MD);
+					const signedIn = (await ctx.config()).apiKey !== undefined;
+					ctx.emit({ written }, () =>
+						[
+							...written.map((path) => `Wrote ${path}`),
+							"",
+							signedIn
+								? "Your agents use the same sign-in as you (or set KANTEL_API_KEY to a key of their own)."
+								: "Sign in with kantel login, or give the agents a key: kantel key create agent --preset agent.",
+						].join("\n"),
 					);
 				},
 			},
-		],
-	},
-	{
-		title: "Coding agents",
-		commands: [
 			{
 				name: "mcp",
 				summary: "Serve Kantel's MCP server on stdio, for a coding agent",
@@ -1503,7 +1884,7 @@ const COMMANDS: readonly CommandSpec[] = SECTIONS.flatMap((section) => section.c
 const BY_NAME = new Map(COMMANDS.map((command) => [command.name, command]));
 
 const GROUPS: { readonly [name: string]: string } = {
-	sandbox: "Create, inspect, stop and delete sandboxes",
+	sandbox: "Create, inspect, stop and delete sandboxes (the same as kantel new, list, info, stop…)",
 	files: "Read, write and list a sandbox's files",
 	port: "Give a sandbox's ports HTTPS URLs",
 	snapshot: "Take, save, browse and delete snapshots",
@@ -1511,9 +1892,33 @@ const GROUPS: { readonly [name: string]: string } = {
 	org: "Your organisations",
 	webhook: "Send the account's events to a URL",
 	telemetry: "Send the account's metrics and events to OpenTelemetry",
-	host: "The machines that run sandboxes (super-admins)",
 };
 const GROUP_ALIASES: { readonly [alias: string]: string } = { sb: "sandbox" };
+/** Other names for commands: short ones, and the `sandbox …` spellings of the first CLI, which keep working. */
+const ALIASES: { readonly [alias: string]: string } = {
+	ls: "list",
+	rm: "delete",
+	create: "new",
+	get: "info",
+	"sandbox create": "new",
+	"sandbox new": "new",
+	"sandbox list": "list",
+	"sandbox ls": "list",
+	"sandbox get": "info",
+	"sandbox info": "info",
+	"sandbox stop": "stop",
+	"sandbox resume": "resume",
+	"sandbox fork": "fork",
+	"sandbox delete": "delete",
+	"sandbox rm": "delete",
+	"sandbox extend": "extend",
+	"sandbox usage": "usage",
+};
+/** Commands that moved to the operators' CLI. */
+const MOVED: { readonly [name: string]: string } = {
+	"host list": "npx @kantel/admin host list",
+	"host join-token": "npx @kantel/admin host add",
+};
 const SUBCOMMAND_ALIASES: { readonly [alias: string]: string } = {
 	ls: "list",
 	list: "ls",
@@ -1555,8 +1960,9 @@ function commandList(commands: readonly CommandSpec[], width: number): string {
 }
 
 function mainHelp(): string {
-	const width = Math.max(...COMMANDS.map((command) => synopsis(command).length));
-	const sections = SECTIONS.map((section) => `${section.title}:\n${commandList(section.commands, width)}`);
+	const shown = (commands: readonly CommandSpec[]): CommandSpec[] => commands.filter((c) => c.hidden !== true);
+	const width = Math.max(...shown(COMMANDS).map((command) => synopsis(command).length));
+	const sections = SECTIONS.map((section) => `${section.title}:\n${commandList(shown(section.commands), width)}`);
 	return [
 		`kantel ${VERSION}: Kantel's sandboxes from a terminal or a coding agent.`,
 		"",
@@ -1566,12 +1972,20 @@ function mainHelp(): string {
 		"",
 		`Flags on every command:\n${indented(fields(flagRows(GLOBAL_FLAGS)))}`,
 		"",
-		'Aliases: sb for sandbox, ls for list, rm for delete. "kantel help <command>" shows a command\'s flags.',
+		'Aliases: ls for list, rm for delete. "kantel help <command>" shows a command\'s flags.',
+		"Operators of a self-hosted Kantel (install, upgrade, hosts): npx @kantel/admin help.",
 	].join("\n");
 }
 
 function groupHelp(group: string): string {
-	const commands = COMMANDS.filter((command) => command.name.startsWith(`${group} `));
+	const sandboxVerbs = new Set(
+		Object.entries(ALIASES)
+			.filter(([alias]) => alias.startsWith("sandbox "))
+			.map(([, name]) => name),
+	);
+	const commands = COMMANDS.filter((command) =>
+		group === "sandbox" ? sandboxVerbs.has(command.name) : command.name.startsWith(`${group} `),
+	);
 	const width = Math.max(...commands.map((command) => synopsis(command).length));
 	return [
 		`kantel ${group}: ${GROUPS[group] ?? ""}.`,
@@ -1596,6 +2010,7 @@ function helpFor(words: readonly string[]): string {
 	const found = resolveCommand(words);
 	if (found.kind === "command") return commandHelp(found.command);
 	if (found.kind === "group" && found.unknown === undefined) return groupHelp(found.group);
+	if (found.kind === "moved") return `${found.name} is for operators now: ${found.to}`;
 	throw new UsageError(`there is no command "${words.join(" ")}"`);
 }
 
@@ -1604,6 +2019,7 @@ function helpFor(words: readonly string[]): string {
 type Resolution =
 	| { readonly kind: "command"; readonly command: CommandSpec; readonly argv: readonly string[] }
 	| { readonly kind: "group"; readonly group: string; readonly unknown?: string }
+	| { readonly kind: "moved"; readonly name: string; readonly to: string }
 	| { readonly kind: "unknown"; readonly word?: string };
 
 /** The command `argv` names in its first one or two words (flags may come before them), and the rest of `argv`. */
@@ -1625,13 +2041,16 @@ function resolveCommand(argv: readonly string[]): Resolution {
 	const typed = argv[firstIndex] ?? "";
 	const first = GROUP_ALIASES[typed] ?? typed;
 	const without = (...indices: number[]): string[] => argv.filter((_, index) => !indices.includes(index));
-	const single = BY_NAME.get(first);
+	const second = secondIndex === undefined ? undefined : (argv[secondIndex] ?? "");
+	const pair = second === undefined ? undefined : `${first} ${second}`;
+	if (pair !== undefined && MOVED[pair] !== undefined) return { kind: "moved", name: pair, to: MOVED[pair] };
+	const single = BY_NAME.get(ALIASES[first] ?? first);
 	if (single !== undefined) return { kind: "command", command: single, argv: without(firstIndex) };
 	if (GROUPS[first] === undefined) return { kind: "unknown", word: typed };
-	if (secondIndex === undefined) return { kind: "group", group: first };
-	const second = argv[secondIndex] ?? "";
+	if (second === undefined || secondIndex === undefined) return { kind: "group", group: first };
 	const alias = SUBCOMMAND_ALIASES[second];
-	const command = BY_NAME.get(`${first} ${second}`) ?? BY_NAME.get(`${first} ${alias ?? second}`);
+	const named = (name: string): CommandSpec | undefined => BY_NAME.get(ALIASES[name] ?? name);
+	const command = named(`${first} ${second}`) ?? named(`${first} ${alias ?? second}`);
 	if (command === undefined) return { kind: "group", group: first, unknown: second };
 	return { kind: "command", command, argv: without(firstIndex, secondIndex) };
 }
@@ -1741,6 +2160,10 @@ async function dispatch(argv: readonly string[], io: Io): Promise<number> {
 		return 0;
 	}
 	const found = resolveCommand(argv);
+	if (found.kind === "moved") {
+		io.stderr.write(`kantel: ${found.name} is for operators now: ${found.to}\n`);
+		return 2;
+	}
 	if (found.kind === "unknown") {
 		const problem = found.word === undefined ? "give a command" : `there is no command "${found.word}"`;
 		io.stderr.write(`kantel: ${problem}. "kantel help" lists them.\n`);
@@ -1778,6 +2201,9 @@ export async function run(argv: readonly string[], options: RunOptions = {}): Pr
 		stdin: () => options.stdin ?? process.stdin,
 		configDir: configDirectory(env, options.configDir),
 		cwd: options.cwd ?? process.cwd(),
+		openUrl: options.openUrl ?? openInBrowser,
+		sleep: options.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms))),
+		home: options.home ?? homedir(),
 	};
 	try {
 		return await dispatch(argv, io);

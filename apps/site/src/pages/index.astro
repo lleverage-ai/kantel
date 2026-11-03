@@ -33,7 +33,7 @@ const steps = [
 	{
 		title: "Make a sandbox",
 		text: "From the console, or from your agent. A microVM is up in about a second.",
-		command: "npx kantel sandbox create --type microvm",
+		command: "npx kantel new --type microvm",
 	},
 ];
 
@@ -71,11 +71,11 @@ const samples = [
 		file: "Terminal",
 		lines: [
 			{ comment: "# A microVM, up in about a second" },
-			{ code: "npx kantel sandbox create --type microvm" },
+			{ code: "npx kantel new --type microvm" },
 			{ comment: "# Run the tests in it" },
 			{ code: "npx kantel exec sbx_7f3k2m9qa1 -- npm test" },
 			{ comment: "# Copy it, to try something else from the same state" },
-			{ code: "npx kantel sandbox fork sbx_7f3k2m9qa1" },
+			{ code: "npx kantel fork sbx_7f3k2m9qa1" },
 		],
 	},
 	{
@@ -323,7 +323,7 @@ const linkOnMidnight = "underline decoration-midnight-2 underline-offset-4 hover
 				<Feature
 					id="lifecycle"
 					title="Stop, resume and fork"
-					route="npx kantel sandbox fork <id>"
+					route="npx kantel fork <id>"
 					docs={{ href: "/docs/concepts/#lifecycle", label: "The lifecycle" }}
 				>
 					<p>
