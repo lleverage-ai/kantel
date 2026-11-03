@@ -28,6 +28,10 @@
 //                               (@kantel/hosts) wherever KANTEL_COMPUTE_PUBLIC_URL or KANTEL_PUBLIC_URL says where they
 //                               reach the gateway, else on the stub; KANTEL_COMPUTE_BACKEND=stub picks the stub. The
 //                               other settings are in compute.ts
+//   KANTEL_REPLICA_URL          with hosts and a database, where other gateway replicas over the database reach this
+//                               one (cluster.ts), such as http://10.0.3.7:8080; default this machine's first
+//                               non-loopback IPv4 address on PORT. Several replicas may run behind one load balancer:
+//                               a call for a host connected to another replica goes there
 //
 // Settings of the agent plane an older version read (S3_*, KANTEL_VAULT_CIPHER_KEY*, KANTEL_CPA_*, KANTEL_MODEL_*,
 // KANTEL_BROWSER_*, KANTEL_CONNECTIONS*, KANTEL_EGRESS_*, KANTEL_SUBAGENTS and the rest) are ignored, and what they
@@ -41,6 +45,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAuthenticator } from "@kantel/identity/authenticator";
 import { kantelSessionProvider } from "@kantel/identity/otp";
+import { replicaUrl } from "./cluster.ts";
 import { type Bootstrap, bootstrap, createGatewayComponents } from "./components.ts";
 import { computeConfig, gatewayCompute, gatewayRelay, withHostUpgrades } from "./compute.ts";
 import { createDurableGatewayComponents, type DurableConfig } from "./durable.ts";
@@ -119,7 +124,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 			? createGatewayComponents(computeHosts === undefined ? {} : { computeHosts })
 			: await createDurableGatewayComponents({
 					...cfg.durable,
-					...(computeHosts === undefined ? {} : { computeHosts }),
+					...(computeHosts === undefined ? {} : { computeHosts, replicaUrl: replicaUrl(process.env, cfg.port) }),
 				});
 	const previous = await readBootstrap(cfg.bootstrapFile);
 	let seeded = await bootstrap(
@@ -141,7 +146,12 @@ export async function serveGateway(cfg = gatewayConfig()) {
 	const hosts =
 		components.computeHosts === undefined || computeHosts === undefined || components.relayStore === undefined
 			? undefined
-			: gatewayRelay(computeHosts, components.computeHosts, components.relayStore);
+			: gatewayRelay(
+					computeHosts,
+					components.computeHosts,
+					components.relayStore,
+					components.cluster === undefined ? {} : { cluster: components.cluster },
+				);
 	const sessions = components.otp.sessions;
 	const compute = await gatewayCompute({
 		authenticator,

@@ -11,8 +11,8 @@ This file describes what the code does and marks what it leaves open. Status on 
 | --- | --- | --- | --- |
 | Records | `ComputeStore`, `Collection<T>` | `packages/compute/src/store.ts`, `sql-store.ts` | SQL store in PR #577 (open) |
 | Host registry | `HostStore` | `packages/hosts/src/store.ts` | on main (Postgres or SQLite, D1, DO) |
-| Relay state | `RelayStore`, `TunnelTickets`, `RelayAccess` | `packages/hosts/src/relay-store.ts`, `tunnel.ts`, `relay-access.ts` | in the next lane-2 PR (not open yet) |
-| Host connections | the hub (`packages/hosts/src/hub.ts`) | per gateway process | routing between replicas not settled |
+| Relay state | `RelayStore`, `TunnelTickets`, `RelayAccess` | `packages/hosts/src/relay-store.ts`, `tunnel.ts`, `relay-access.ts` | SQL store in PR #587 |
+| Host connections | the hub (`packages/hosts/src/hub.ts`), `ClusterStore` and `HostCluster` | `packages/hosts/src/cluster.ts`, `apps/selfhosted/src/gateway/cluster.ts` | forwarded to the owning replica (§8) |
 
 ## 1. Records
 
@@ -127,7 +127,9 @@ across gateways.
 These live in `RelayStore`. They are shared by every gateway and survive a restart.
 
 - **Tunnel tickets** (desktop, CDP, SSH): a ticket is `{id}.{secret}`. The store keeps the ID, the SHA-256 of the
-  secret, the sandbox, the port, `expiresAt` (at most 60 minutes ahead) and the grantee. `verify` finds the row by ID,
+  secret, the sandbox, the port, `expiresAt` (at most 60 minutes ahead), the grantee and, for a desktop ticket, its
+  mode (`control` or `view`; a row with any other mode is refused). A desktop ticket opens only the desktop's route, and
+  any other ticket never opens it. `verify` finds the row by ID,
   compares the hash in constant time and checks expiry. Expiry limits when a connection may *start*. A ticket can be
   used for several connections until it expires, and a connection that opened in time stays open until revoked (§7).
   The store has no signing key, so there is nothing to share or rotate between gateways. Expired rows are swept.
@@ -159,9 +161,19 @@ that pushes revocations (for example a Durable Object holding the sessions) may 
 
 Each host keeps one outbound WebSocket to one gateway (the hub). Calls to a host (`create`, `stop`, `fork`, a tunnel's
 bytes, a port's request) must reach the gateway that holds that socket, whichever gateway the client called. The
-contract requires that every gateway can reach every connected host. **How is not settled yet**: forwarding to the
-gateway that holds the socket, or a socket per host on every gateway. Until it is, a gateway that doesn't hold a host's
-socket sees that host as unreachable for placement and calls.
+contract requires that every gateway can reach every connected host.
+
+The self-hosted gateway **forwards to the replica that holds the socket** (`ClusterStore`, `HostCluster`):
+
+- `compute_gateway_replicas`: each live replica's address (`KANTEL_REPLICA_URL`) and Ed25519 public key, with a
+  heartbeat. A replica not seen for 10 s is gone, and nothing is routed to it.
+- `compute_host_owners`: which replica holds each host's socket, with an epoch that grows with each claim. A replica
+  releases only its own claim, so a late close of an old socket never erases a newer one. A replica that finds its host
+  claimed by another live replica closes its own socket, and the host reconnects.
+- A call for a host held elsewhere goes to the owner over HTTP (NDJSON: the call's events, then its answer), and a port
+  stream over a WebSocket. A replica serves a peer only for hosts connected to itself, so nothing bounces.
+- Every request between replicas is signed with the sender's private key (never stored) over the recipient's ID, the
+  operation, the time (±30 s), a nonce the recipient hasn't seen and the body's SHA-256. Anything else is a 404.
 
 ## 9. Implementing it on D1 or Durable Objects
 
@@ -190,7 +202,6 @@ A Worker backend is equivalent if:
 
 - Conditional lifecycle transitions, and auto-stop on one gateway only (§3).
 - Insert-if-absent for idempotency keys (§4).
-- Reaching a host from a gateway that doesn't hold its socket (§8).
 - Gateway-local state that isn't shared and isn't covered here:
   - the abort switches of detached commands (a `kill` that lands on another gateway marks the command killed but
     doesn't abort it)

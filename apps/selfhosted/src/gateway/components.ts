@@ -29,6 +29,7 @@ import type { HostsService } from "@kantel/hosts/service";
 import { createMemoryHostStore } from "@kantel/hosts/store";
 import { createMemoryIdentity } from "@kantel/identity/memory";
 import { createMemoryOtpStores, type OtpCodeStore, type SessionStore } from "@kantel/identity/otp";
+import type { GatewayCluster } from "./cluster.ts";
 import { type ComputeHostsConfig, gatewayHosts } from "./compute.ts";
 
 const BOOTSTRAP: CallContext = {
@@ -56,6 +57,11 @@ export interface GatewayComponents {
 	 * desktop, browser, SSH and port URLs outlast a restart and work on every gateway over the database.
 	 */
 	readonly relayStore?: RelayStore;
+	/**
+	 * This gateway among the replicas over one database (`cluster.ts`), with `computeHosts` and a database: a call for a
+	 * host connected to another replica goes there. Absent in memory, where there is one gateway.
+	 */
+	readonly cluster?: GatewayCluster;
 	/** Which implementation backs each contract, served at `/v1/deployment` and recorded beside conformance runs. */
 	readonly bindings: { readonly [contract: string]: string };
 	close(): Promise<void>;

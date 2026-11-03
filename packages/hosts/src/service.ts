@@ -6,6 +6,7 @@
  * package doesn't decide who may use which sandbox, only where it runs and how it is reached.
  */
 import { type Clock, KantelError, systemClock } from "@kantel/contracts";
+import type { HostCluster } from "./cluster.ts";
 import { type CallOptions, createHostHub, HostCallError, type HostHub, type PortSink, type PortStream } from "./hub.ts";
 import {
 	HOST_CLOSE_REVOKED,
@@ -105,6 +106,11 @@ export interface HostsServiceOptions {
 	readonly heartbeatSeconds?: number;
 	readonly callTimeoutMs?: number;
 	readonly log?: (message: string) => void;
+	/**
+	 * With several gateway replicas: records the hosts connected here, and sends calls for hosts connected to another
+	 * replica there (`cluster.ts`).
+	 */
+	readonly cluster?: HostCluster;
 }
 
 export interface SandboxPlacement {
@@ -255,8 +261,14 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		return welcomeFor({ ...host, facts: message.facts });
 	};
 
-	const hub = createHostHub({
-		onHello: hello,
+	const cluster = options.cluster;
+	const local = createHostHub({
+		async onHello(hostId, message) {
+			const welcome = await hello(hostId, message);
+			// Recorded before the welcome, so no replica routes elsewhere once the host takes calls here.
+			await cluster?.claim(hostId);
+			return welcome;
+		},
 		onHeartbeat(hostId, capacity) {
 			reserved.delete(hostId);
 			report(
@@ -280,6 +292,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		},
 		onDisconnected(hostId) {
 			log(`[hosts] host ${hostId} disconnected`);
+			cluster?.release(hostId);
 			report(
 				(async () => {
 					const host = await store.getHost(hostId);
@@ -289,6 +302,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		},
 		...(options.callTimeoutMs === undefined ? {} : { callTimeoutMs: options.callTimeoutMs }),
 	});
+	const hub = cluster === undefined ? local : cluster.route(local);
 
 	const view = async (host: HostRecord): Promise<HostView> => {
 		const placements = await store.placementsOn(host.id);

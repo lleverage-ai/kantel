@@ -7,18 +7,22 @@
 //   compute     the compute API's records (@kantel/compute/sql): accounts, sandboxes, keys, webhooks and the rest,
 //               so they outlast a restart and gateways over one database share them
 //   hosts       the compute plane's registry of hosts (@kantel/hosts/store), when it places sandboxes on hosts
+//   relay       tunnel tickets and exposed ports (@kantel/hosts/relay-store), hashed, with hosts
+//   cluster     the live gateway replicas and which holds each host's connection (@kantel/hosts/cluster), with hosts
 //
 // Their tables are `audit_*`, `identity_*` and `compute_*`. A database an older version used also holds the agent
 // plane's tables (sessions, workspaces, skills, memory, sharing, connections, the vault and the rest) in this schema
 // and beside it: they are left as they are, never read, written or dropped.
 import { createSqlAuditStore, migrateAudit } from "@kantel/audit/sql";
 import { createSqlComputeStore, migrateComputeStore } from "@kantel/compute/sql";
+import { createSqlClusterStore } from "@kantel/hosts/cluster";
 import { createSqlRelayStore, migrateRelay } from "@kantel/hosts/relay-store";
 import { createSqlHostStore, migrateHosts } from "@kantel/hosts/store";
 import { createSqlIdentity, createSqlOtpStores, migrateIdentity } from "@kantel/identity/sql";
 import { postgresPoolDriver } from "@kantel/sql/postgres";
 import pg from "pg";
 import { parse } from "pg-connection-string";
+import { createGatewayCluster, type GatewayCluster } from "./cluster.ts";
 import { deferredAccess, type GatewayComponents, identityAccess } from "./components.ts";
 import { type ComputeHostsConfig, gatewayHosts } from "./compute.ts";
 
@@ -29,6 +33,10 @@ export interface DurableConfig {
 	readonly log?: (message: string) => void;
 	/** The compute plane's hosts (`compute.ts`), their registry in Postgres. Without it, there are none and no tables. */
 	readonly computeHosts?: ComputeHostsConfig;
+	/** Where other gateway replicas reach this one (`cluster.ts`), with `computeHosts`. */
+	readonly replicaUrl?: string;
+	/** The replicas' heartbeat and how long one may miss it; tests shorten them. */
+	readonly cluster?: { readonly heartbeatMs?: number; readonly staleMs?: number };
 }
 
 const SCHEMA = /^[a-z_][a-z0-9_]{0,62}$/;
@@ -76,11 +84,31 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			await migrateHosts(driver);
 			await migrateRelay(driver);
 		}
+		// Replicas over this database share the hosts: each records the hosts connected to it, and sends calls for the
+		// others' to them.
+		let cluster: GatewayCluster | undefined;
+		if (config.computeHosts !== undefined) {
+			cluster = await createGatewayCluster({
+				store: createSqlClusterStore(driver),
+				url: config.replicaUrl ?? new URL(config.computeHosts.publicUrl).origin,
+				log,
+				...config.cluster,
+			});
+		}
 		const computeHosts =
 			config.computeHosts === undefined
 				? undefined
-				: gatewayHosts(config.computeHosts, createSqlHostStore(driver), log);
+				: gatewayHosts(config.computeHosts, createSqlHostStore(driver), log, cluster?.cluster);
 		if (computeHosts !== undefined) closers.push(async () => computeHosts.close());
+		if (cluster !== undefined) {
+			const started = cluster.cluster;
+			await started.start();
+			// Closed first: the other replicas stop sending calls here before the hosts' connections close.
+			closers.push(() => started.stop());
+			log(
+				`[gateway] replica ${started.replicaId}, reached by other replicas at ${config.replicaUrl ?? "its public URL"}`,
+			);
+		}
 
 		const auditAccess = deferredAccess();
 		const audit = createSqlAuditStore({ driver, access: auditAccess.access });
@@ -93,12 +121,15 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			otp: createSqlOtpStores(driver),
 			computeStore,
 			...(computeHosts === undefined ? {} : { computeHosts, relayStore: createSqlRelayStore(driver) }),
+			...(cluster === undefined ? {} : { cluster }),
 			bindings: {
 				identity: "postgres",
 				audit: "postgres",
 				signIn: "postgres",
 				computeStore: "postgres",
-				...(computeHosts === undefined ? {} : { computeHosts: "postgres", computeRelay: "postgres" }),
+				...(computeHosts === undefined
+					? {}
+					: { computeHosts: "postgres", computeRelay: "postgres", computeCluster: "postgres" }),
 			},
 			close,
 		};
