@@ -9,15 +9,11 @@ sidebar:
 
 Create, start, stop, pause, resume, fork, recover and delete isolates and microVMs.
 
-:::caution
-Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
-:::
-
 ## List sandboxes
 
 `GET /v1/sandboxes` (SDK method `listSandboxes`)
 
-The account's sandboxes the caller may see, newest first: by default the ones starting, running or stopping; `all` adds stopped, paused and errored ones. Deleted ones are left out. A key needs `sandboxes:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+The account's sandboxes the caller may see, newest first: by default the ones starting, running or stopping; `all` adds stopped, paused and errored ones. Deleted ones are left out. A key needs `sandboxes:read`.
 
 **Query parameters**
 
@@ -40,7 +36,7 @@ The account's sandboxes the caller may see, newest first: by default the ones st
 
 `POST /v1/sandboxes` (SDK method `createSandbox`)
 
-Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. A key needs `sandboxes:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. A key needs `sandboxes:write`.
 
 **Header parameters**
 
@@ -60,7 +56,7 @@ Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a s
 
 `GET /v1/sandboxes/{sandboxId}` (SDK method `getSandbox`)
 
-A key needs `sandboxes:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+A key needs `sandboxes:read`.
 
 **Path parameters**
 
@@ -78,7 +74,7 @@ A key needs `sandboxes:read`. Experimental: served only where the deployment set
 
 `PATCH /v1/sandboxes/{sandboxId}` (SDK method `updateSandbox`)
 
-Renames it, changes its auto-stop or moves its stop time (`extendMinutes`), shares it with its organisation or makes it private again, or replaces its labels. A key needs `sandboxes:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Renames it, changes its auto-stop or moves its stop time (`extendMinutes`), shares it with its organisation or makes it private again, or replaces its labels. A key needs `sandboxes:write`.
 
 **Path parameters**
 
@@ -98,7 +94,7 @@ Renames it, changes its auto-stop or moves its stop time (`extendMinutes`), shar
 
 `DELETE /v1/sandboxes/{sandboxId}` (SDK method `deleteSandbox`)
 
-Erases it and its automatic snapshots for good; saved snapshots of it stay. It can't be undone. A key needs `sandboxes:delete`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Erases it and its automatic snapshots for good; saved snapshots of it stay. It can't be undone. A key needs `sandboxes:delete`.
 
 **Path parameters**
 
@@ -116,7 +112,7 @@ Erases it and its automatic snapshots for good; saved snapshots of it stay. It c
 
 `POST /v1/sandboxes/{sandboxId}/start` (SDK method `startSandbox`)
 
-Boots a stopped, paused or errored sandbox fresh from its newest disk snapshot: programs start again, and a paused sandbox's memory is let go. To carry on where a paused sandbox left off, `resume` it instead. A running sandbox is answered as it is. A key needs `sandboxes:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Boots a stopped, paused or errored sandbox fresh from its newest disk snapshot: programs start again, and a paused sandbox's memory is let go. To carry on where a paused sandbox left off, `resume` it instead. A running sandbox is answered as it is. A key needs `sandboxes:write`.
 
 **Path parameters**
 
@@ -136,7 +132,7 @@ Boots a stopped, paused or errored sandbox fresh from its newest disk snapshot: 
 
 `POST /v1/sandboxes/{sandboxId}/stop` (SDK method `stopSandbox`)
 
-Saves its disk as a snapshot and lets the machine go; running programs end. With `keepMemory`, pauses it instead, keeping its memory too (microVMs only; `not_supported` on an isolate). A stopped sandbox costs nothing to run. A key needs `sandboxes:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Saves its disk as a snapshot and lets the machine go; running programs end. With `keepMemory`, pauses it instead, keeping its memory too (microVMs only; `not_supported` on an isolate). A stopped sandbox costs nothing to run. A key needs `sandboxes:write`.
 
 **Path parameters**
 
@@ -156,7 +152,7 @@ Saves its disk as a snapshot and lets the machine go; running programs end. With
 
 `POST /v1/sandboxes/{sandboxId}/resume` (SDK method `resumeSandbox`)
 
-Carries on a paused sandbox from its memory, or starts a stopped one from its newest snapshot, on the same size or the one given. Same ID; a new machine. A key needs `sandboxes:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Carries on a paused sandbox from its memory, or starts a stopped one from its newest snapshot, on the same size or the one given. Same ID; a new machine. A key needs `sandboxes:write`.
 
 **Path parameters**
 
@@ -176,7 +172,7 @@ Carries on a paused sandbox from its memory, or starts a stopped one from its ne
 
 `POST /v1/sandboxes/{sandboxId}/fork` (SDK method `forkSandbox`)
 
-Makes `count` new sandboxes, each a copy of this one's newest snapshot (or `snapshotId`); a running microVM on a host that can fork live is copied with its memory. The source doesn't change. A key needs `sandboxes:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Makes `count` new sandboxes, each a copy of this one's newest snapshot (or `snapshotId`); a running microVM on a host that can fork live is copied with its memory. The source doesn't change. A key needs `sandboxes:write`.
 
 **Path parameters**
 
@@ -202,7 +198,7 @@ Makes `count` new sandboxes, each a copy of this one's newest snapshot (or `snap
 
 `POST /v1/sandboxes/{sandboxId}/recover` (SDK method `recoverSandbox`)
 
-Restarts the machine of a sandbox that doesn't answer or is in `error`, on its disk as it is. Memory is lost. A key needs `sandboxes:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Restarts the machine of a sandbox that doesn't answer or is in `error`, on its disk as it is. Memory is lost. A key needs `sandboxes:write`.
 
 **Path parameters**
 
@@ -220,7 +216,7 @@ Restarts the machine of a sandbox that doesn't answer or is in `error`, on its d
 
 `GET /v1/sandboxes/{sandboxId}/usage` (SDK method `getSandboxUsage`)
 
-CPU, memory, running time and cost per interval. A key needs `sandboxes:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+CPU, memory, running time and cost per interval. A key needs `sandboxes:read`.
 
 **Path parameters**
 

@@ -185,8 +185,8 @@ describe("status and settings", () => {
 		]);
 		expect(out).toContain("http://127.0.0.1:58123 (answering)");
 		expect(out).toContain("2 of 3 running");
-		expect(out).toContain("on (experimental)");
-		expect(out).toContain("the built-in stand-in");
+		expect(out).toContain("your hosts");
+		expect(out).toContain("hosts on this machine join at http://127.0.0.1:58123");
 	});
 
 	it("status exits 1 when the console doesn't answer, and says when nothing is installed", async () => {
@@ -200,7 +200,7 @@ describe("status and settings", () => {
 			},
 		});
 		expect(down.code).toBe(1);
-		expect(JSON.parse(down.out)).toMatchObject({ healthy: false, compute: "off" });
+		expect(JSON.parse(down.out)).toMatchObject({ healthy: false, compute: "on", computeBackend: "hosts" });
 	});
 
 	it("config list hides secrets; config set and unset edit .env in place", async () => {
@@ -227,16 +227,12 @@ describe("status and settings", () => {
 		expect(bad.code).toBe(2);
 	});
 
-	it("compute enable --hosts needs a public URL, sets the backend and restarts the stack with --apply", async () => {
-		const path = await install("");
-		const refused = await admin(["compute", "enable", "--hosts"]);
-		expect(refused.code).toBe(2);
-		expect(refused.err).toContain("--public-url");
-
+	it("compute enable drops the old switch and the stand-in, sets a public URL and restarts the stack with --apply", async () => {
+		const path = await install("KANTEL_COMPUTE=experimental\nKANTEL_COMPUTE_BACKEND=stub\nKANTEL_GATEWAY_PORT=58123\n");
 		const done = await admin(["compute", "enable", "--hosts", "--public-url", "kantel.example.com/", "--apply"]);
 		expect(done.code).toBe(0);
 		expect(await readFile(path, "utf8")).toBe(
-			"KANTEL_COMPUTE=experimental\nKANTEL_PUBLIC_URL=https://kantel.example.com\nKANTEL_COMPUTE_BACKEND=hosts\n",
+			"KANTEL_GATEWAY_PORT=58123\nKANTEL_PUBLIC_URL=https://kantel.example.com\n",
 		);
 		expect(done.spawned).toHaveLength(1);
 		expect(done.spawned[0]?.command).toBe("docker");
@@ -279,11 +275,11 @@ describe("bootstrap-key", () => {
 		expect(saved).toMatchObject({ url: "http://127.0.0.1:58123/v1", apiKey: "ksk_compute" });
 	});
 
-	it("says to enable compute when there is no key", async () => {
+	it("says to upgrade when there is no key", async () => {
 		await install();
 		const { code, err } = await admin(["bootstrap-key"], { ran: () => ({ code: 0, stdout: "{}" }) });
 		expect(code).toBe(1);
-		expect(err).toContain("compute enable --apply");
+		expect(err).toContain("kantel-admin upgrade");
 	});
 });
 

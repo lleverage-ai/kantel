@@ -9,15 +9,11 @@ sidebar:
 
 Read, write, delete and list a sandbox's files.
 
-:::caution
-Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
-:::
-
 ## Read a file
 
 `GET /v1/sandboxes/{sandboxId}/files` (SDK method `readFile`)
 
-A file of up to 1 MiB, as UTF-8 text unless `encoding` asks for base64. A key needs `files`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+A file of up to 1 MiB, as UTF-8 text unless `encoding` asks for base64. A key needs `files`.
 
 **Path parameters**
 
@@ -42,7 +38,7 @@ A file of up to 1 MiB, as UTF-8 text unless `encoding` asks for base64. A key ne
 
 `PUT /v1/sandboxes/{sandboxId}/files` (SDK method `writeFile`)
 
-Writes a file, making its directories, replacing what was there. A key needs `files`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Writes a file, making its directories, replacing what was there. A key needs `files`.
 
 **Path parameters**
 
@@ -62,7 +58,7 @@ Writes a file, making its directories, replacing what was there. A key needs `fi
 
 `DELETE /v1/sandboxes/{sandboxId}/files` (SDK method `deleteFile`)
 
-Deletes a file, or a directory and everything in it. A key needs `files`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+Deletes a file, or a directory and everything in it. A key needs `files`.
 
 **Path parameters**
 
@@ -86,7 +82,7 @@ Deletes a file, or a directory and everything in it. A key needs `files`. Experi
 
 `GET /v1/sandboxes/{sandboxId}/files/list` (SDK method `listFiles`)
 
-A key needs `files`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.
+A key needs `files`.
 
 **Path parameters**
 

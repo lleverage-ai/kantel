@@ -8,7 +8,7 @@ sidebar:
 ---
 
 :::caution[Experimental]
-These routes are part of Kantel's API, and a control plane serves them only when it runs with `KANTEL_COMPUTE=experimental`. Their shapes may still change.
+These routes are part of Kantel's API, which every control plane serves. Their shapes may still change.
 :::
 
 An API key lets a program act for an account without anyone signing in. Each key has scopes, the things it may do, so you can give an agent a key that drives sandboxes but can't delete them or change your account. A key's secret starts `ksk_`. Kantel shows it once, when the key is made, and keeps only enough to check it.

@@ -348,8 +348,9 @@ const COMMANDS: readonly CommandSpec[] = [
 				url,
 				healthy,
 				services: { running, total: services.length },
-				compute: settings.get("KANTEL_COMPUTE") ?? "off",
-				computeBackend: settings.get("KANTEL_COMPUTE_BACKEND") ?? "stub",
+				// Always on since the console became the compute console; the field stays for scripts that read it.
+				compute: "on",
+				computeBackend: settings.get("KANTEL_COMPUTE_BACKEND") === "stub" ? "stub" : "hosts",
 				publicUrl: settings.get("KANTEL_PUBLIC_URL"),
 			};
 			ctx.emit(status, () =>
@@ -357,9 +358,8 @@ const COMMANDS: readonly CommandSpec[] = [
 					["home", status.home],
 					["console", `${url} (${healthy ? "answering" : "not answering"})`],
 					["services", `${running} of ${services.length} running`],
-					["compute", status.compute === "experimental" ? "on (experimental)" : "off: kantel-admin compute enable"],
 					["backend", status.computeBackend === "hosts" ? "your hosts" : "the built-in stand-in (no hosts)"],
-					["public URL", status.publicUrl],
+					["public URL", status.publicUrl ?? `none: hosts on this machine join at ${url}`],
 				]),
 			);
 			return healthy ? 0 : 1;
@@ -404,27 +404,27 @@ const COMMANDS: readonly CommandSpec[] = [
 	},
 	{
 		name: "compute enable",
-		summary: "Turn on the compute API (sandboxes), and optionally run sandboxes on your own hosts",
+		summary: "Run sandboxes on your own hosts (the default), optionally reached at a public URL",
+		details:
+			"The compute API is always on, and sandboxes run on the hosts you add. This undoes KANTEL_COMPUTE_BACKEND=stub\n" +
+			"and drops the old KANTEL_COMPUTE switch. Hosts on other machines need --public-url: without it, only a host\n" +
+			"on this machine can join, at the local address.",
 		flags: {
 			"public-url": {
 				type: "string",
 				value: "<url>",
 				description: "Where hosts and people reach the control plane, such as https://kantel.example.com",
 			},
-			hosts: { type: "boolean", description: "Run sandboxes on hosts you add, not the built-in stand-in" },
+			hosts: { type: "boolean", description: "Accepted for older scripts: hosts are the default" },
 			apply: applyFlag,
 		},
 		async run(ctx) {
-			const changes = new Map<string, string | undefined>([["KANTEL_COMPUTE", "experimental"]]);
+			const { settings } = await readSettings(ctx);
+			const changes = new Map<string, string | undefined>();
+			if (settings.has("KANTEL_COMPUTE")) changes.set("KANTEL_COMPUTE", undefined);
+			if (settings.has("KANTEL_COMPUTE_BACKEND")) changes.set("KANTEL_COMPUTE_BACKEND", undefined);
 			const publicUrl = ctx.string("public-url");
 			if (publicUrl !== undefined) changes.set("KANTEL_PUBLIC_URL", originOf(normaliseUrl(publicUrl)));
-			if (ctx.boolean("hosts")) {
-				const { settings } = await readSettings(ctx);
-				if (publicUrl === undefined && !settings.has("KANTEL_PUBLIC_URL")) {
-					throw new UsageError("hosts need to reach the control plane: add --public-url https://kantel.example.com");
-				}
-				changes.set("KANTEL_COMPUTE_BACKEND", "hosts");
-			}
 			return changeSettings(ctx, changes);
 		},
 	},
@@ -448,7 +448,7 @@ const COMMANDS: readonly CommandSpec[] = [
 				throw new CliError("the gateway's bootstrap.json isn't JSON");
 			}
 			if (typeof key !== "string") {
-				throw new CliError("there is no compute key yet: kantel-admin compute enable --apply first");
+				throw new CliError("there is no compute key yet: kantel-admin upgrade, then try again");
 			}
 			if (!ctx.boolean("save")) {
 				ctx.out(key);

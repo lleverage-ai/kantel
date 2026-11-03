@@ -8,7 +8,7 @@ sidebar:
 ---
 
 :::caution[Experimental]
-These routes are part of Kantel's API, and a control plane serves them only when it runs with `KANTEL_COMPUTE=experimental`. Their shapes may still change.
+These routes are part of Kantel's API, which every control plane serves. Their shapes may still change.
 :::
 
 A snapshot is a copy of a sandbox's disk at one moment, and, for a paused microVM, its memory too. Kantel takes them for you, so every sandbox has a history of its own. There are two kinds:

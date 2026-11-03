@@ -8,7 +8,7 @@ sidebar:
 ---
 
 :::caution[Experimental]
-These routes are part of Kantel's API, and a control plane serves them only when it runs with `KANTEL_COMPUTE=experimental`. Their shapes may still change.
+These routes are part of Kantel's API, which every control plane serves. Their shapes may still change.
 :::
 
 A webhook sends an account's events to an HTTPS endpoint of yours as they happen, so your systems hear when a sandbox is ready or has stopped without asking over and over. Each delivery is signed the way [Standard Webhooks](https://www.standardwebhooks.com/) are, so you can check it came from your Kantel.

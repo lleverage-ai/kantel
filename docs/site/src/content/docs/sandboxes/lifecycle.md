@@ -8,7 +8,7 @@ sidebar:
 ---
 
 :::caution[Experimental]
-These routes are part of Kantel's API, and a control plane serves them only when it runs with `KANTEL_COMPUTE=experimental`. Their shapes may still change.
+These routes are part of Kantel's API, which every control plane serves. Their shapes may still change.
 :::
 
 A sandbox goes through a few states in its life. You create it, it runs, and it stops by itself after an hour unless you say otherwise. You can stop it, start it again, copy it, and delete it for good when you're done.

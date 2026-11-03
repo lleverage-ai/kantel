@@ -5,7 +5,7 @@
 // it's running. Every call goes through the `SandboxesSource` the host binds; stories bind it to fixtures.
 
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Button } from "../primitives/button.tsx";
+import { Button, buttonClass } from "../primitives/button.tsx";
 import { SegmentedControl, SelectField, TextField } from "../primitives/controls.tsx";
 import { Dialog } from "../primitives/dialog.tsx";
 import { PageHeader } from "../primitives/form-layout.tsx";
@@ -59,6 +59,11 @@ export interface SandboxesPageProps {
 	readonly pollMs?: number;
 	/** Open New sandbox when the page opens, for a story or a `?new` link. */
 	readonly creating?: boolean;
+	/**
+	 * The deployment has no host yet, and the person may add one: with no sandboxes, the page says sandboxes need a host
+	 * and links here (the Hosts page's Add a host) rather than offering New sandbox.
+	 */
+	readonly addHostHref?: string;
 }
 
 const AUTO_STOP_CHOICES = [
@@ -97,6 +102,7 @@ export function SandboxesPage({
 	now: fixedNow,
 	pollMs = 1000,
 	creating = false,
+	addHostHref,
 }: SandboxesPageProps) {
 	const { state, reload } = useLoad(() => source.list(account.id), [source, account.id]);
 	// Sandboxes made or changed here, ahead of the next read: a new one shows the moment New sandbox is pressed.
@@ -231,6 +237,19 @@ export function SandboxesPage({
 				</Notice>
 			) : sandboxes === undefined ? (
 				<SandboxesSkeleton />
+			) : sandboxes.length === 0 && addHostHref !== undefined ? (
+				<EmptyState
+					title="Add a host to run sandboxes on"
+					action={
+						<a className={`${buttonClass("primary", "sm")} no-underline`} href={addHostHref}>
+							<PlusIcon size="sm" />
+							Add a host
+						</a>
+					}
+				>
+					Sandboxes run on hosts: Linux machines running the Kantel host agent. This install has none yet. Adding one
+					takes one command on the machine, which then dials out to this console, so it needs no inbound ports.
+				</EmptyState>
 			) : sandboxes.length === 0 ? (
 				<EmptyState
 					title="No sandboxes yet"

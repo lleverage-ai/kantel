@@ -1,251 +1,39 @@
 // First: settings this browser stored under harbour.* keys before the rename move to kantel.*.
 import "./legacy-storage.ts";
-import { createPasskeyClient } from "@kantel/identity/passkey/http";
 import { Button, Notice, reloadForNewBuild, SignInScreen, Spinner, themeController } from "@kantel/ui";
-import { StrictMode, Suspense, use, useCallback, useEffect, useMemo, useState } from "react";
+import { type ReactNode, StrictMode, useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import longUrl from "../../../fixtures/sessions/long-2000.jsonl?url";
-import smallUrl from "../../../fixtures/sessions/small.jsonl?url";
-import { apiAgent } from "./api/agent-http.ts";
-import { apiAudit } from "./api/audit-http.ts";
-import { withLocalCache } from "./api/cached.ts";
-import type { ConsoleClient } from "./api/client.ts";
-import { apiConnections } from "./api/connections-http.ts";
-import { apiEnvironments } from "./api/environments-http.ts";
-import { createApiClient, type TransportKind } from "./api/http.ts";
 import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } from "./api/identity.ts";
-import { apiKeys } from "./api/keys.ts";
-import { apiMembers, type ConsoleMembers } from "./api/members.ts";
-import { apiModelProviders, type ConsoleModelProviders } from "./api/model-providers-http.ts";
-import { apiModels, type ConsoleModels } from "./api/models-http.ts";
-import type {
-	ConsoleAgent,
-	ConsoleAudit,
-	ConsoleConnections,
-	ConsoleEnvironments,
-	ConsoleKeys,
-	ConsoleSchedules,
-	ConsoleSharing,
-	ConsoleToolServers,
-	ConsoleVault,
-} from "./api/oversight.ts";
-import { createRecordedClient, type RecordedClient } from "./api/recorded.ts";
-import { apiSchedules } from "./api/schedules-http.ts";
-import { apiSharing } from "./api/sharing-http.ts";
-import { apiToolServers } from "./api/tool-servers-http.ts";
-import { apiVault } from "./api/vault-http.ts";
-import { App, ShellPlaceholder } from "./app/app.tsx";
-import { parseRoute } from "./app/router.ts";
-import { ComputeApp, isComputePath } from "./compute/compute-app.tsx";
-import { createRecordedAgent, type RecordedAgent } from "./recorded/agent.ts";
-import { createCatalogue } from "./recorded/catalogue.ts";
-import { createRecordedConnections } from "./recorded/connections.ts";
-import { createRecordedEnvironments } from "./recorded/environments.ts";
-import { createRecordedModelProviders } from "./recorded/model-providers.ts";
-import { createRecordedOversight, type RecordedOversight } from "./recorded/oversight.ts";
-import { createRecordedSchedules } from "./recorded/schedules.ts";
-import { createRecordedSharing } from "./recorded/sharing.ts";
-import { createRecordedToolServers } from "./recorded/tool-servers.ts";
-import { keptChoice } from "./state/last-choice.ts";
-import { cacheSwitch, indexedDbCacheStore, openLocalCache } from "./state/local-cache.ts";
-import type { SessionClient } from "./state/session-client.ts";
+import { ComputeApp, legacyComputePath } from "./compute/compute-app.tsx";
 import { syncTheme } from "./state/theme-sync.ts";
-import { profileStore } from "./ui/profile.tsx";
 import { BOOT } from "./ui/shell-styles.ts";
 import { BrowserViewerPage, viewOf } from "./viewer/viewer.tsx";
 import "./ui/styles.css";
 
-// The console runs on one of two sources:
-// - `api` (the default): the session API on this origin under /v1, as the gateway serves it. `pnpm dev` proxies it
-//   to a local gateway (vite.config.ts).
-// - `recorded`: recorded sessions in the page, a session in every state, served by in-page stand-ins for the session
-//   host over @kantel/protocol. No backend. `?speed=2` plays them faster; `?delay=1500` waits longer before an
-//   opened session's live part plays.
-// `?source=recorded` or `?source=api` picks one for this tab; `VITE_KANTEL_SOURCE` sets the default for a build.
-// `?profile=1` adds the render profiler.
+// The console is the compute console (compute/compute-app.tsx): sandboxes, snapshots, keys, the egress proxy,
+// webhooks, OpenTelemetry, organisations and, for a super-admin, hosts, on the gateway's compute API under /v1.
 //
-// On `api` the console asks `GET /v1/me` first (api/identity.ts). Signed in, the sidebar names the person and lists
-// their projects by name. A 401, then or later, shows Kantel's email-code sign-in where the deployment signs people
-// in that way (self-hosted), and asks for a reload where Access does it at the edge.
+// It asks `GET /v1/me` first (api/identity.ts). A 401 shows Kantel's email-code sign-in where the deployment signs
+// people in that way (self-hosted), and asks for a reload where Access does it at the edge.
 //
-// The vault page and audit log follow the source. On `api` the vault page runs on the vault approval API and the audit
-// log on the audit query API, both served by the gateway on this origin; the vault page is listed once the
-// approval API has said who is signed in, and not at all on a gateway without one. The audit log's vault rows link to
-// the vault page only when it is there, and its project, agent and session filters come from the session API. On `recorded` both run on the
-// in-memory vault and audit store in the page (recorded/oversight.ts).
-//
-// On `api` the API keys page runs on the key routes (`/v1/keys`) for an operator or above; recorded has none.
-// The members page, with an admin's passkey reset (`/v1/members`), is listed only for an organisation admin.
-//
-// The skills and memory pages follow the source too: on `api` the public API's skills and memory routes (`/v1/skills`,
-// `/v1/memory`), read-only; on `recorded` @kantel/ui's fixture stores in the page, with authoring and proposals.
-//
-// The schedules page runs on @kantel/ui's schedule fixtures on `recorded`, its task runs linking to the recorded
-// sessions. On `api` it runs on the public API's schedule routes (`/v1/schedules`, api/schedules-http.ts); New
-// schedule needs a project the person may operate in and an agent profile to ask.
-//
-// On `api` the audit log's Who and Organisation filters, and the names rows and schedules give people, come from the
-// identity API (`/v1/organisations`, `/v1/members`).
+// `?source=recorded` (or `VITE_KANTEL_SOURCE=recorded` for a build) shows the console on @kantel/ui's sample data with
+// no backend and no sign-in, for demos and screenshots.
 
 // The theme: the page already paints in the person's theme (index.html's boot script, from this browser's memory);
 // this puts every theme's stylesheet on the page, so switching is instant. Their saved preference follows from the
-// server once `/v1/me` has answered (ui/theme-sync.ts).
+// server once `/v1/me` has answered (state/theme-sync.ts).
 themeController();
+
+// The compute console lived under /compute while the session console had `/`: its old links (a bookmark, an older
+// `kantel login`'s device page) go to the same page here.
+const moved = legacyComputePath(location.pathname);
+if (moved !== undefined) history.replaceState(null, "", `${moved}${location.search}${location.hash}`);
 
 const params = new URLSearchParams(location.search);
 const SOURCE_KEY = "kantel.console.source";
 const asked = params.get("source");
 if (asked === "api" || asked === "recorded") sessionStorage.setItem(SOURCE_KEY, asked);
 const source = sessionStorage.getItem(SOURCE_KEY) ?? import.meta.env.VITE_HARBOUR_SOURCE ?? "api";
-
-// How a session's events come on `api`: over a compressed WebSocket by default, or as server-sent events with
-// `?transport=sse` (kept for the tab, like the source; `?transport=websocket` goes back). The switch is for comparing
-// the two and for a network that mangles sockets; without a socket the client falls back by itself.
-const TRANSPORT_KEY = "kantel.console.transport";
-const askedTransport = params.get("transport");
-if (askedTransport === "sse" || askedTransport === "websocket") sessionStorage.setItem(TRANSPORT_KEY, askedTransport);
-const sockets = sessionStorage.getItem(TRANSPORT_KEY) !== "sse";
-/** How each session's events came, for the evidence script. */
-const transports = new Map<string, TransportKind>();
-
-// The evidence script reads the open session's client and host from the page, and the vault fixture's proposals.
-let current: { sessionId: string; session: SessionClient } | undefined;
-let proposals: Readonly<Record<string, string>> | undefined;
-let recorded: RecordedClient | undefined;
-let client: ConsoleClient | undefined;
-const catalogue = source === "recorded" ? createCatalogue(Date.now(), { long: longUrl, small: smallUrl }) : undefined;
-if (catalogue !== undefined) {
-	recorded = createRecordedClient(catalogue, {
-		speed: Number(params.get("speed") ?? "1") || 1,
-		openDelayMs: Number(params.get("delay") ?? "600"),
-		// With ?profile=1 the Profiler counts start here, with the rows already shown as the baseline.
-		onPlay: (sessionId) => {
-			if (current?.sessionId === sessionId) {
-				profileStore?.reset(current.session.getState().items.map((item) => item.id));
-			}
-		},
-	});
-	client = recorded;
-}
-
-Object.assign(window, {
-	__kantel: {
-		source,
-		get client() {
-			return current?.session;
-		},
-		get host() {
-			return current === undefined ? undefined : recorded?.hostFor(current.sessionId);
-		},
-		get proposals() {
-			return proposals;
-		},
-		get transport() {
-			return current === undefined ? undefined : transports.get(current.sessionId);
-		},
-	},
-});
-const onOpen = (sessionId: string, session: SessionClient) => {
-	current = { sessionId, session };
-};
-
-type Oversight = {
-	readonly vault?: ConsoleVault;
-	readonly audit?: ConsoleAudit;
-	readonly keys?: ConsoleKeys;
-	readonly members?: ConsoleMembers;
-	readonly schedules?: ConsoleSchedules;
-	readonly sharing?: ConsoleSharing;
-	readonly connections?: ConsoleConnections;
-	readonly toolServers?: ConsoleToolServers;
-	readonly environments?: ConsoleEnvironments;
-	readonly agent?: ConsoleAgent;
-	readonly models?: ConsoleModels;
-	readonly modelProviders?: ConsoleModelProviders;
-};
-const recordedOversight: Promise<Oversight> | undefined =
-	catalogue !== undefined
-		? Promise.all([
-				createRecordedOversight(),
-				// A schedule's task runs name the recorded Kantel project's sessions, so their links open.
-				createRecordedSchedules(
-					catalogue.sessions.filter((session) => session.projectId === "kantel").map((session) => session.id),
-				),
-				createRecordedAgent(),
-			]).then(([made, schedules, agent]: [RecordedOversight, ConsoleSchedules, RecordedAgent]): Oversight => {
-				proposals = made.proposals;
-				const sharing = createRecordedSharing(agent.skillIds["stripe-reconcile"]);
-				const connections = createRecordedConnections();
-				// Tool servers on fixtures; `source=api` reads /v1/tool-servers.
-				const toolServers = createRecordedToolServers();
-				// Environments on fixtures; `source=api` reads /v1/environments.
-				const environments = createRecordedEnvironments();
-				// Model providers in memory, nothing connected yet, so the first-run onboarding shows; `source=api` reads
-				// /v1/model-providers.
-				const modelProviders = createRecordedModelProviders();
-				return {
-					vault: made.vault,
-					audit: made.audit,
-					schedules,
-					sharing,
-					connections,
-					toolServers,
-					environments,
-					agent,
-					modelProviders,
-				};
-			})
-		: undefined;
-
-/** The console once its vault page and audit log are known: recorded ones, or the API's. */
-function OversightConsole({ client, oversight }: { client: ConsoleClient; oversight: Promise<Oversight> }) {
-	return <Console client={client} oversight={use(oversight)} />;
-}
-
-function Console({
-	client,
-	oversight,
-	pending = false,
-}: {
-	client: ConsoleClient;
-	oversight: Oversight;
-	/** True while more of the organisation's pages may still come. */
-	pending?: boolean;
-}) {
-	const {
-		vault,
-		audit,
-		keys,
-		members,
-		schedules,
-		sharing,
-		connections,
-		toolServers,
-		environments,
-		agent,
-		models,
-		modelProviders,
-	} = oversight;
-	return (
-		<App
-			client={client}
-			oversightPending={pending}
-			{...(vault === undefined ? {} : { vault })}
-			{...(audit === undefined ? {} : { audit })}
-			{...(keys === undefined ? {} : { keys })}
-			{...(members === undefined ? {} : { members })}
-			{...(schedules === undefined ? {} : { schedules })}
-			{...(sharing === undefined ? {} : { sharing })}
-			{...(connections === undefined ? {} : { connections })}
-			{...(toolServers === undefined ? {} : { toolServers })}
-			{...(environments === undefined ? {} : { environments })}
-			{...(agent === undefined ? {} : { agent })}
-			{...(models === undefined ? {} : { models })}
-			{...(modelProviders === undefined ? {} : { modelProviders })}
-			onOpen={onOpen}
-		/>
-	);
-}
 
 const identity = createConsoleIdentity({ tokens: hasStorage() ? storageTokens(localStorage) : memoryTokens() });
 
@@ -257,41 +45,10 @@ function hasStorage(): boolean {
 	}
 }
 
-// This browser's cache of what the console last showed (state/local-cache.ts), so a reload shows it at once: per
-// person, opened once `/v1/me` has said who is signed in, and cleared on signing out or a 401. `?cache=off` turns it off
-// (and clears it) for this browser; `?cache=on` turns it back on.
-const cacheOn = cacheSwitch(params, hasStorage() ? localStorage : undefined);
-const cacheStore = (() => {
-	try {
-		return indexedDbCacheStore(typeof indexedDB === "undefined" ? undefined : indexedDB);
-	} catch {
-		return undefined;
-	}
-})();
-/** Bumped by each clear, so a cache opened before it stops reading and writing. */
-let cacheGeneration = 0;
-const forgetCache = (): Promise<void> => {
-	cacheGeneration += 1;
-	return cacheStore?.clear().catch(() => {}) ?? Promise.resolve();
-};
-// Opening IndexedDB takes a while on a cold start, so it opens beside `/v1/me` rather than after it.
-if (!cacheOn) void forgetCache();
-else if (source === "api") void cacheStore?.keys().catch(() => {});
-
-/** This person's cache, for as long as it isn't cleared. */
-function openCache(store: NonNullable<typeof cacheStore>, owner: string) {
-	const generation = cacheGeneration;
-	return openLocalCache(store, owner, { open: () => generation === cacheGeneration });
-}
-
 type Boot = ConsoleBoot | { readonly kind: "failed"; readonly message: string };
 const boot = (): Promise<Boot> =>
 	identity.boot().then(
-		(state) => {
-			// Nobody is signed in: nothing anyone was shown stays behind.
-			if (state.kind !== "signed-in") void forgetCache();
-			return state;
-		},
+		(state) => state,
 		(reason: unknown) => ({
 			kind: "failed" as const,
 			message: reason instanceof Error ? reason.message : String(reason),
@@ -305,7 +62,10 @@ const boot = (): Promise<Boot> =>
 const viewing = viewOf(location.pathname, location.hash);
 const firstBoot: Promise<Boot> | undefined = source === "recorded" || viewing !== undefined ? undefined : boot();
 
-/** The console on the API: who is signed in first, then the shell, or the way to sign in. */
+/** The app's ground while the console learns who is signed in: no spinner on a reload. */
+const Ground = () => <div className="kt-app h-dvh" aria-busy="true" />;
+
+/** The console on the API: who is signed in first, then the console, or the way to sign in. */
 function ApiConsole({ first }: { first: Promise<Boot> }) {
 	const [booting, setBooting] = useState(first);
 	const reboot = useCallback(() => setBooting(boot()), []);
@@ -319,25 +79,24 @@ function ApiConsole({ first }: { first: Promise<Boot> }) {
 			live = false;
 		};
 	}, [booting]);
-	if (answer?.for !== booting) return <ShellPlaceholder />;
+	if (answer?.for !== booting) return <Ground />;
 	const { state } = answer;
-	// The compute console (experimental) under /compute: signed in the same way, on the gateway's compute API when it
-	// serves one, else on sample data.
-	if (state.kind === "signed-in" && isComputePath(location.pathname)) {
+	if (state.kind === "signed-in") {
 		const { signOut } = state.actor;
 		return (
-			<ComputeApp
-				signedInAs={{ name: state.me.name, ...(state.me.email === undefined ? {} : { email: state.me.email }) }}
-				headers={state.headers}
-				onUnauthenticated={() => {
-					identity.forget();
-					void forgetCache().finally(reboot);
-				}}
-				{...(signOut === undefined ? {} : { onSignOut: () => void signOut().finally(reboot) })}
-			/>
+			<SignedIn state={state}>
+				<ComputeApp
+					signedInAs={{ name: state.me.name, ...(state.me.email === undefined ? {} : { email: state.me.email }) }}
+					headers={state.headers}
+					onUnauthenticated={() => {
+						identity.forget();
+						reboot();
+					}}
+					{...(signOut === undefined ? {} : { onSignOut: () => void signOut().finally(reboot) })}
+				/>
+			</SignedIn>
 		);
 	}
-	if (state.kind === "signed-in") return <SignedInConsole state={state} onSignedOut={reboot} />;
 	if (state.kind === "sign-in") {
 		return (
 			<div className={BOOT}>
@@ -363,44 +122,10 @@ function ApiConsole({ first }: { first: Promise<Boot> }) {
 	);
 }
 
-/** The session a page shows, when it shows one's transcript. */
-function sessionOfPage(pathname: string): string | undefined {
-	const route = parseRoute(pathname);
-	return route.name === "session" || route.name === "session-link" ? route.sessionId : undefined;
-}
-
-function SignedInConsole({
-	state,
-	onSignedOut,
-}: {
-	state: Extract<ConsoleBoot, { kind: "signed-in" }>;
-	onSignedOut: () => void;
-}) {
-	const made = useMemo(() => {
-		let over = false;
-		const onUnauthenticated = () => {
-			if (over) return;
-			over = true;
-			identity.forget();
-			void forgetCache();
-			onSignedOut();
-		};
-		// Signing out clears this browser's cache before the session ends.
-		const { signOut } = state.actor;
-		const actor =
-			signOut === undefined
-				? state.actor
-				: {
-						...state.actor,
-						signOut: async () => {
-							await forgetCache();
-							await signOut();
-						},
-					};
-		// The cache is this person's: their organisation and who `/v1/me` says they are.
-		const owner = `${state.me.organisationId}/${JSON.stringify(state.me.actor)}`;
-		// A person's theme is kept for them on the server; a host app's key has none.
-		const saveTheme =
+/** The person's saved theme, once `/v1/me` has said who they are; a host app's key has none. */
+function SignedIn({ state, children }: { state: Extract<ConsoleBoot, { kind: "signed-in" }>; children: ReactNode }) {
+	useEffect(() => {
+		const save =
 			state.me.actor.kind === "human"
 				? (preference: string) => {
 						identity.client.setPreferences({ theme: preference }).catch((error: unknown) => {
@@ -408,129 +133,9 @@ function SignedInConsole({
 						});
 					}
 				: undefined;
-		syncTheme(themeController(), state.me.preferences, saveTheme);
-		// The model and level the person last chose, kept for them on the server, which New session preselects. A host
-		// app's key has none.
-		const lastChoice =
-			state.me.actor.kind === "human"
-				? keptChoice(state.me.preferences, (change) => identity.client.setPreferences(change))
-				: undefined;
-		const api = {
-			...createApiClient({
-				actor,
-				roles: state.me.roles,
-				headers: state.headers,
-				onUnauthenticated,
-				...(sockets ? {} : { openSocket: false }),
-				onTransport: (sessionId, how) => transports.set(sessionId, how),
-			}),
-			...(saveTheme === undefined ? {} : { saveTheme }),
-			...(lastChoice ?? {}),
-		};
-		// Loaded on a session: its stream opens now, ahead of the shell's own reads, and the reads its screen doesn't need
-		// (below) wait for its first snapshot. They all queue on one stack on the API, so they slowed the session down.
-		const opening = sessionOfPage(location.pathname);
-		if (opening !== undefined) api.preconnect?.(opening);
-		const painted = api.firstPaint?.() ?? Promise.resolve();
-		// Rows about a vault request link to its page, when the console has the vault page to open it on.
-		const audit = (vaultRequests: boolean) => apiAudit({ headers: state.headers, vaultRequests });
-		const keys = apiKeys(identity.client, state.me);
-		const members = apiMembers(identity.client, createPasskeyClient({ headers: state.headers }), state.me);
-		const agent = {
-			...apiAgent({ headers: state.headers, onUnauthenticated }),
-			...(state.me.actor.kind === "human" ? { viewer: state.me.actor.userId } : {}),
-		};
-		const models = apiModels({ headers: state.headers, onUnauthenticated });
-		const modelProviders = apiModelProviders({ headers: state.headers, onUnauthenticated });
-		return {
-			client: cacheOn && cacheStore !== undefined ? withLocalCache(api, openCache(cacheStore, owner)) : api,
-			// What needs no answer first, so the console opens without waiting for the vault and schedules to answer.
-			ready: {
-				agent,
-				models,
-				modelProviders,
-				...(keys === undefined ? {} : { keys }),
-				...(members === undefined ? {} : { members }),
-			} satisfies Oversight,
-			// The vault page is listed once the approval API has said who is signed in, and not on a gateway without one.
-			oversight: painted.then(() =>
-				Promise.all([
-					apiVault({ headers: state.headers }).then(
-						(vault) => vault,
-						(error: unknown) => {
-							console.info("kantel: no connection request page:", error instanceof Error ? error.message : error);
-							return undefined;
-						},
-					),
-					apiSchedules(state.me, { headers: state.headers, onUnauthenticated }),
-					// No sharing page on a gateway that doesn't serve /v1/sharing, or for someone who can see no project.
-					apiSharing({ headers: state.headers, onUnauthenticated }).then(
-						(sharing) => (sharing.projects.length === 0 ? undefined : sharing),
-						(error: unknown) => {
-							console.info("kantel: no sharing page:", error instanceof Error ? error.message : error);
-							return undefined;
-						},
-					),
-					// No Connections page on a gateway that doesn't serve /v1/connections yet, or for a host app's key.
-					apiConnections(state.me, { headers: state.headers, onUnauthenticated }).then(
-						(connections) => connections,
-						(error: unknown) => {
-							console.info("kantel: no connections page:", error instanceof Error ? error.message : error);
-							return undefined;
-						},
-					),
-					// No Tool servers page on a gateway that doesn't serve /v1/tool-servers (the switch is off).
-					apiToolServers(state.me, { headers: state.headers, onUnauthenticated }).then(
-						(toolServers) => toolServers,
-						(error: unknown) => {
-							console.info("kantel: no tool servers page:", error instanceof Error ? error.message : error);
-							return undefined;
-						},
-					),
-					// No Environments page on a gateway that doesn't serve /v1/environments (the switch is off).
-					apiEnvironments({ headers: state.headers, onUnauthenticated }).then(
-						(environments) => environments,
-						(error: unknown) => {
-							console.info("kantel: no environments page:", error instanceof Error ? error.message : error);
-							return undefined;
-						},
-					),
-				]).then(
-					([vault, schedules, sharing, connections, toolServers, environments]): Oversight => ({
-						...(vault === undefined ? {} : { vault }),
-						audit: audit(vault !== undefined),
-						agent,
-						models,
-						modelProviders,
-						schedules,
-						...(sharing === undefined ? {} : { sharing }),
-						...(connections === undefined ? {} : { connections }),
-						...(toolServers === undefined ? {} : { toolServers }),
-						...(environments === undefined ? {} : { environments }),
-						...(keys === undefined ? {} : { keys }),
-						...(members === undefined ? {} : { members }),
-					}),
-				),
-			),
-		};
-	}, [state, onSignedOut]);
-	// The console opens at once; the vault page, audit log and schedules join the sidebar when they have answered.
-	const [oversight, setOversight] = useState<{ for: typeof made; value: Oversight }>();
-	useEffect(() => {
-		let live = true;
-		made.oversight.then(
-			(value) => live && setOversight({ for: made, value }),
-			(reason: unknown) => {
-				console.info("kantel: no organisation pages:", reason instanceof Error ? reason.message : reason);
-				if (live) setOversight({ for: made, value: made.ready });
-			},
-		);
-		return () => {
-			live = false;
-		};
-	}, [made]);
-	const answered = oversight?.for === made ? oversight.value : undefined;
-	return <Console client={made.client} oversight={answered ?? made.ready} pending={answered === undefined} />;
+		syncTheme(themeController(), state.me.preferences, save);
+	}, [state]);
+	return children;
 }
 
 // A page's code that loads on demand failed to load: a deploy since this tab opened replaced it, or the Access sign-in
@@ -542,27 +147,16 @@ window.addEventListener("vite:preloadError", () => {
 
 createRoot(document.getElementById("root")!).render(
 	<StrictMode>
-		<Suspense
-			fallback={
-				viewing === undefined ? (
-					// The shell's frame while the console learns who is signed in: no page-wide spinner on a reload.
-					<ShellPlaceholder />
-				) : (
-					<div className={BOOT}>
-						<Spinner label="Opening the console" />
-					</div>
-				)
-			}
-		>
-			{viewing !== undefined ? (
-				<BrowserViewerPage view={viewing} />
-			) : source === "recorded" && isComputePath(location.pathname) ? (
-				<ComputeApp />
-			) : client !== undefined && recordedOversight !== undefined ? (
-				<OversightConsole client={client} oversight={recordedOversight} />
-			) : firstBoot !== undefined ? (
-				<ApiConsole first={firstBoot} />
-			) : null}
-		</Suspense>
+		{viewing !== undefined ? (
+			<BrowserViewerPage view={viewing} />
+		) : source === "recorded" ? (
+			<ComputeApp />
+		) : firstBoot !== undefined ? (
+			<ApiConsole first={firstBoot} />
+		) : (
+			<div className={BOOT}>
+				<Spinner label="Opening the console" />
+			</div>
+		)}
 	</StrictMode>,
 );

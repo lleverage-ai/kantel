@@ -5,22 +5,27 @@ import { navigate, searchWithout, usePathname } from "../app/router.ts";
 import { NARROW_QUERY, useMedia } from "../app/use-media.ts";
 import { apiCompute } from "./api-source.ts";
 
-// The compute console (experimental): the compute plane's pages under /compute, beside the session console, which
-// stays as it is until the agent plane is retired.
+// The console: the compute plane's pages at the root of the app (`/sandboxes`, `/hosts` and the rest; `/` is
+// Sandboxes).
 //
-// Where its data comes from: the gateway's compute API (api-source.ts) when it serves one, which a self-hosted install
-// does with KANTEL_COMPUTE=experimental. Otherwise, and in the hosted demo, which has plans and billing the API
-// doesn't, @kantel/ui's sample data, and the sidebar says so. `?data=sample` asks for the sample data anyway.
+// Where its data comes from: the gateway's compute API (api-source.ts), which a self-hosted install serves. Otherwise,
+// and in the hosted demo, which has plans and billing the API doesn't, @kantel/ui's sample data, and the sidebar says
+// so. `?data=sample` asks for the sample data anyway.
 //
 // Which Kantel it shows: self-hosted by default, or the hosted service's demo (plans and billing, a cost column) with
 // `?hosting=hosted`, kept for the tab; `?hosting=self-hosted` goes back. `VITE_KANTEL_HOSTING` sets a build's default.
 
-/** Where the compute console lives in the app. */
-export const COMPUTE_BASE = "/compute";
+/** Where the compute console lives in the app: its root. */
+export const COMPUTE_BASE = "";
 
-/** Whether `pathname` is one of the compute console's pages. */
-export const isComputePath = (pathname: string): boolean =>
-	pathname === COMPUTE_BASE || pathname.startsWith(`${COMPUTE_BASE}/`);
+/** Where it lived while the session console had the root. */
+const LEGACY_BASE = "/compute";
+
+/** The page an old `/compute/...` path is now, or undefined for any other path. */
+export function legacyComputePath(pathname: string): string | undefined {
+	if (pathname !== LEGACY_BASE && !pathname.startsWith(`${LEGACY_BASE}/`)) return undefined;
+	return pathname.slice(LEGACY_BASE.length) || "/";
+}
 
 const HOSTING_KEY = "kantel.compute.hosting";
 
@@ -38,11 +43,12 @@ function hostingMode(): HostingMode {
 
 /**
  * Goes to a page of the compute console. The app's `navigate` keeps the query, which carries `?hosting`; `?new` (open
- * New sandbox) is for the one page it was given to, so it is dropped first.
+ * New sandbox) and `?add` (open Add a host) are for the one page they were given to, so they are dropped first.
  */
 function go(path: string): void {
-	if (!path.includes("?") && new URLSearchParams(location.search).has("new")) {
-		history.replaceState(null, "", `${location.pathname}${searchWithout(location.search, ["new"])}`);
+	const search = new URLSearchParams(location.search);
+	if (!path.includes("?") && (search.has("new") || search.has("add"))) {
+		history.replaceState(null, "", `${location.pathname}${searchWithout(location.search, ["new", "add"])}`);
 	}
 	navigate(path);
 }
@@ -93,7 +99,7 @@ async function sourceFor(
 		try {
 			return { source: namedFor(await apiCompute({ ...api, hosting }), signedInAs), sample: false };
 		} catch (error) {
-			console.info("kantel: the compute API isn't served here, so /compute shows sample data:", error);
+			console.info("kantel: the compute API isn't served here, so the console shows sample data:", error);
 		}
 	}
 	return { source: namedFor(createComputeFixtures({ hosting, now: Date.now() }), signedInAs), sample: true };

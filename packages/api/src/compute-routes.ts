@@ -1,8 +1,7 @@
 /**
  * The compute plane's routes: sandboxes (isolates and microVMs) behind one API, with their commands, files, ports,
  * desktop, browser and SSH, their snapshots, and the accounts, scoped API keys, proxy, webhooks, OpenTelemetry export
- * and hosts around them. Experimental: a deployment serves them only with `KANTEL_COMPUTE=experimental`, and answers
- * 404 without it.
+ * and hosts around them. A self-hosted gateway always serves them.
  *
  * Every route but a device sign-in's start and poll (`public`) takes a bearer: a scoped API key (`ksk_…`), or a person's
  * sign-in. A key acts in its own account; a person
@@ -103,9 +102,8 @@ import {
 } from "./compute-schema.ts";
 import { defineRoute } from "./route.ts";
 
-const EXPERIMENTAL = "Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.";
 const scope = (needed: string) => `A key needs \`${needed}\`.`;
-const describe = (...parts: string[]) => [...parts, EXPERIMENTAL].join(" ");
+const describe = (...parts: string[]) => parts.join(" ");
 const readErrors = ["invalid", "forbidden", "not_found"] as const;
 const changeErrors = ["invalid", "forbidden", "not_found", "conflict"] as const;
 const lifecycleErrors = ["invalid", "forbidden", "not_found", "conflict", "not_supported", "unavailable"] as const;

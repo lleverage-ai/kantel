@@ -10283,7 +10283,7 @@
 			"get": {
 				"operationId": "getCaller",
 				"summary": "Who is calling",
-				"description": "The person or key calling, the accounts they may act in (their personal account first), and the deployment's mode. Any key may call it. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "The person or key calling, the accounts they may act in (their personal account first), and the deployment's mode. Any key may call it.",
 				"tags": ["accounts"],
 				"responses": {
 					"200": {
@@ -10313,7 +10313,7 @@
 			"get": {
 				"operationId": "listAccounts",
 				"summary": "List accounts",
-				"description": "The caller's personal account and every organisation they belong to; for a key, its own account. A key needs `account:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "The caller's personal account and every organisation they belong to; for a key, its own account. A key needs `account:read`.",
 				"tags": ["accounts"],
 				"responses": {
 					"200": {
@@ -10351,7 +10351,7 @@
 			"post": {
 				"operationId": "createOrganisation",
 				"summary": "Create an organisation",
-				"description": "Makes an organisation account with the caller as its owner. People only: a key is refused. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Makes an organisation account with the caller as its owner. People only: a key is refused.",
 				"tags": ["accounts"],
 				"requestBody": {
 					"required": true,
@@ -10421,7 +10421,7 @@
 			"post": {
 				"operationId": "joinOrganisation",
 				"summary": "Join an organisation",
-				"description": "Joins the organisation an invite's code is for, with the invite's role. People only. An expired or used code is `expired`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Joins the organisation an invite's code is for, with the invite's role. People only. An expired or used code is `expired`.",
 				"tags": ["accounts"],
 				"requestBody": {
 					"required": true,
@@ -10511,7 +10511,7 @@
 			"get": {
 				"operationId": "getAccount",
 				"summary": "Get an account",
-				"description": "A key needs `account:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "A key needs `account:read`.",
 				"tags": ["accounts"],
 				"parameters": [
 					{
@@ -10580,7 +10580,7 @@
 			"patch": {
 				"operationId": "updateAccount",
 				"summary": "Change an account",
-				"description": "Renames it or sets new sandboxes' default visibility; needs admin. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Renames it or sets new sandboxes' default visibility; needs admin. A key needs `account:admin`.",
 				"tags": ["accounts"],
 				"parameters": [
 					{
@@ -10669,7 +10669,7 @@
 			"delete": {
 				"operationId": "deleteOrganisation",
 				"summary": "Delete an organisation",
-				"description": "Deletes an organisation with no sandboxes or saved snapshots left (`conflict` otherwise); needs its owner. A personal account can't be deleted here. People only. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Deletes an organisation with no sandboxes or saved snapshots left (`conflict` otherwise); needs its owner. A personal account can't be deleted here. People only.",
 				"tags": ["accounts"],
 				"parameters": [
 					{
@@ -10743,7 +10743,7 @@
 			"get": {
 				"operationId": "getAccountUsage",
 				"summary": "Get an account's usage",
-				"description": "Running time and cost since `since`, and the account's limits. A key needs `account:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Running time and cost since `since`, and the account's limits. A key needs `account:read`.",
 				"tags": ["accounts"],
 				"parameters": [
 					{
@@ -10834,7 +10834,7 @@
 			"get": {
 				"operationId": "listMembers",
 				"summary": "List an organisation's members",
-				"description": "A key needs `account:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "A key needs `account:read`.",
 				"tags": ["accounts"],
 				"parameters": [
 					{
@@ -10905,7 +10905,7 @@
 			"patch": {
 				"operationId": "updateMember",
 				"summary": "Change a member's role",
-				"description": "Needs admin; only an owner makes or unmakes an owner, and the last owner stays. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Needs admin; only an owner makes or unmakes an owner, and the last owner stays. A key needs `account:admin`.",
 				"tags": ["accounts"],
 				"parameters": [
 					{
@@ -11003,7 +11003,7 @@
 			"delete": {
 				"operationId": "removeMember",
 				"summary": "Remove a member",
-				"description": "Removes a member, or lets a member leave. Their private sandboxes in the organisation stay, stopped, for an admin to delete or share. The last owner can't leave. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Removes a member, or lets a member leave. Their private sandboxes in the organisation stay, stopped, for an admin to delete or share. The last owner can't leave. A key needs `account:admin`.",
 				"tags": ["accounts"],
 				"parameters": [
 					{
@@ -11086,7 +11086,7 @@
 			"get": {
 				"operationId": "listInvites",
 				"summary": "List an organisation's open invites",
-				"description": "Codes are not shown again. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Codes are not shown again. A key needs `account:admin`.",
 				"tags": ["accounts"],
 				"parameters": [
 					{
@@ -11155,7 +11155,7 @@
 			"post": {
 				"operationId": "createInvite",
 				"summary": "Invite someone to an organisation",
-				"description": "Makes a join code, shown once, for one person or for anyone holding it; needs admin. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Makes a join code, shown once, for one person or for anyone holding it; needs admin. A key needs `account:admin`.",
 				"tags": ["accounts"],
 				"parameters": [
 					{
@@ -11246,7 +11246,7 @@
 			"delete": {
 				"operationId": "revokeInvite",
 				"summary": "Revoke an invite",
-				"description": "A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "A key needs `account:admin`.",
 				"tags": ["accounts"],
 				"parameters": [
 					{
@@ -11319,7 +11319,7 @@
 			"get": {
 				"operationId": "listSandboxes",
 				"summary": "List sandboxes",
-				"description": "The account's sandboxes the caller may see, newest first: by default the ones starting, running or stopping; `all` adds stopped, paused and errored ones. Deleted ones are left out. A key needs `sandboxes:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "The account's sandboxes the caller may see, newest first: by default the ones starting, running or stopping; `all` adds stopped, paused and errored ones. Deleted ones are left out. A key needs `sandboxes:read`.",
 				"tags": ["sandboxes"],
 				"parameters": [
 					{
@@ -11430,7 +11430,7 @@
 			"post": {
 				"operationId": "createSandbox",
 				"summary": "Create a sandbox",
-				"description": "Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. A key needs `sandboxes:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. A key needs `sandboxes:write`.",
 				"tags": ["sandboxes"],
 				"parameters": [
 					{
@@ -11553,7 +11553,7 @@
 			"get": {
 				"operationId": "getSandbox",
 				"summary": "Get a sandbox",
-				"description": "A key needs `sandboxes:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "A key needs `sandboxes:read`.",
 				"tags": ["sandboxes"],
 				"parameters": [
 					{
@@ -11622,7 +11622,7 @@
 			"patch": {
 				"operationId": "updateSandbox",
 				"summary": "Change a sandbox",
-				"description": "Renames it, changes its auto-stop or moves its stop time (`extendMinutes`), shares it with its organisation or makes it private again, or replaces its labels. A key needs `sandboxes:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Renames it, changes its auto-stop or moves its stop time (`extendMinutes`), shares it with its organisation or makes it private again, or replaces its labels. A key needs `sandboxes:write`.",
 				"tags": ["sandboxes"],
 				"parameters": [
 					{
@@ -11711,7 +11711,7 @@
 			"delete": {
 				"operationId": "deleteSandbox",
 				"summary": "Delete a sandbox permanently",
-				"description": "Erases it and its automatic snapshots for good; saved snapshots of it stay. It can't be undone. A key needs `sandboxes:delete`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Erases it and its automatic snapshots for good; saved snapshots of it stay. It can't be undone. A key needs `sandboxes:delete`.",
 				"tags": ["sandboxes"],
 				"parameters": [
 					{
@@ -11792,7 +11792,7 @@
 			"post": {
 				"operationId": "startSandbox",
 				"summary": "Start a sandbox",
-				"description": "Boots a stopped, paused or errored sandbox fresh from its newest disk snapshot: programs start again, and a paused sandbox's memory is let go. To carry on where a paused sandbox left off, `resume` it instead. A running sandbox is answered as it is. A key needs `sandboxes:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Boots a stopped, paused or errored sandbox fresh from its newest disk snapshot: programs start again, and a paused sandbox's memory is let go. To carry on where a paused sandbox left off, `resume` it instead. A running sandbox is answered as it is. A key needs `sandboxes:write`.",
 				"tags": ["sandboxes"],
 				"parameters": [
 					{
@@ -11913,7 +11913,7 @@
 			"post": {
 				"operationId": "stopSandbox",
 				"summary": "Stop or pause a sandbox",
-				"description": "Saves its disk as a snapshot and lets the machine go; running programs end. With `keepMemory`, pauses it instead, keeping its memory too (microVMs only; `not_supported` on an isolate). A stopped sandbox costs nothing to run. A key needs `sandboxes:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Saves its disk as a snapshot and lets the machine go; running programs end. With `keepMemory`, pauses it instead, keeping its memory too (microVMs only; `not_supported` on an isolate). A stopped sandbox costs nothing to run. A key needs `sandboxes:write`.",
 				"tags": ["sandboxes"],
 				"parameters": [
 					{
@@ -12024,7 +12024,7 @@
 			"post": {
 				"operationId": "resumeSandbox",
 				"summary": "Resume a sandbox",
-				"description": "Carries on a paused sandbox from its memory, or starts a stopped one from its newest snapshot, on the same size or the one given. Same ID; a new machine. A key needs `sandboxes:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Carries on a paused sandbox from its memory, or starts a stopped one from its newest snapshot, on the same size or the one given. Same ID; a new machine. A key needs `sandboxes:write`.",
 				"tags": ["sandboxes"],
 				"parameters": [
 					{
@@ -12145,7 +12145,7 @@
 			"post": {
 				"operationId": "forkSandbox",
 				"summary": "Fork a sandbox",
-				"description": "Makes `count` new sandboxes, each a copy of this one's newest snapshot (or `snapshotId`); a running microVM on a host that can fork live is copied with its memory. The source doesn't change. A key needs `sandboxes:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Makes `count` new sandboxes, each a copy of this one's newest snapshot (or `snapshotId`); a running microVM on a host that can fork live is copied with its memory. The source doesn't change. A key needs `sandboxes:write`.",
 				"tags": ["sandboxes"],
 				"parameters": [
 					{
@@ -12277,7 +12277,7 @@
 			"post": {
 				"operationId": "recoverSandbox",
 				"summary": "Recover a sandbox",
-				"description": "Restarts the machine of a sandbox that doesn't answer or is in `error`, on its disk as it is. Memory is lost. A key needs `sandboxes:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Restarts the machine of a sandbox that doesn't answer or is in `error`, on its disk as it is. Memory is lost. A key needs `sandboxes:write`.",
 				"tags": ["sandboxes"],
 				"parameters": [
 					{
@@ -12378,7 +12378,7 @@
 			"get": {
 				"operationId": "getSandboxUsage",
 				"summary": "Get a sandbox's usage",
-				"description": "CPU, memory, running time and cost per interval. A key needs `sandboxes:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "CPU, memory, running time and cost per interval. A key needs `sandboxes:read`.",
 				"tags": ["sandboxes"],
 				"parameters": [
 					{
@@ -12469,7 +12469,7 @@
 			"post": {
 				"operationId": "runCommand",
 				"summary": "Run a command",
-				"description": "Runs a command line in a running sandbox and answers when it ends, with its exit code and output, or at `timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit. A stopped sandbox is `conflict`: resume it first. A key needs `exec`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Runs a command line in a running sandbox and answers when it ends, with its exit code and output, or at `timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit. A stopped sandbox is `conflict`: resume it first. A key needs `exec`.",
 				"tags": ["commands"],
 				"parameters": [
 					{
@@ -12579,7 +12579,7 @@
 			"get": {
 				"operationId": "listCommands",
 				"summary": "List a sandbox's commands",
-				"description": "Its commands, newest first, also while it is stopped. A key needs `exec`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Its commands, newest first, also while it is stopped. A key needs `exec`.",
 				"tags": ["commands"],
 				"parameters": [
 					{
@@ -12670,7 +12670,7 @@
 			"get": {
 				"operationId": "getCommand",
 				"summary": "Get a command",
-				"description": "Its state and its output so far. A key needs `exec`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Its state and its output so far. A key needs `exec`.",
 				"tags": ["commands"],
 				"parameters": [
 					{
@@ -12748,7 +12748,7 @@
 			"delete": {
 				"operationId": "killCommand",
 				"summary": "Kill a command",
-				"description": "Ends a running command; one that has ended is answered as it is. A key needs `exec`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Ends a running command; one that has ended is answered as it is. A key needs `exec`.",
 				"tags": ["commands"],
 				"parameters": [
 					{
@@ -12828,7 +12828,7 @@
 			"get": {
 				"operationId": "readFile",
 				"summary": "Read a file",
-				"description": "A file of up to 1 MiB, as UTF-8 text unless `encoding` asks for base64. A key needs `files`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "A file of up to 1 MiB, as UTF-8 text unless `encoding` asks for base64. A key needs `files`.",
 				"tags": ["files"],
 				"parameters": [
 					{
@@ -12924,7 +12924,7 @@
 			"put": {
 				"operationId": "writeFile",
 				"summary": "Write a file",
-				"description": "Writes a file, making its directories, replacing what was there. A key needs `files`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Writes a file, making its directories, replacing what was there. A key needs `files`.",
 				"tags": ["files"],
 				"parameters": [
 					{
@@ -13013,7 +13013,7 @@
 			"delete": {
 				"operationId": "deleteFile",
 				"summary": "Delete a file",
-				"description": "Deletes a file, or a directory and everything in it. A key needs `files`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Deletes a file, or a directory and everything in it. A key needs `files`.",
 				"tags": ["files"],
 				"parameters": [
 					{
@@ -13097,7 +13097,7 @@
 			"get": {
 				"operationId": "listFiles",
 				"summary": "List a directory",
-				"description": "A key needs `files`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "A key needs `files`.",
 				"tags": ["files"],
 				"parameters": [
 					{
@@ -13207,7 +13207,7 @@
 			"get": {
 				"operationId": "listPorts",
 				"summary": "List a sandbox's public ports",
-				"description": "A key needs `access`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "A key needs `access`.",
 				"tags": ["access"],
 				"parameters": [
 					{
@@ -13276,7 +13276,7 @@
 			"post": {
 				"operationId": "exposePort",
 				"summary": "Expose a port",
-				"description": "Gives a port in the sandbox an HTTPS URL through its host's tunnel. The app must listen on the port; on `0.0.0.0` or `localhost` both work. Exposing it again answers its URL. A key needs `access`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Gives a port in the sandbox an HTTPS URL through its host's tunnel. The app must listen on the port; on `0.0.0.0` or `localhost` both work. Exposing it again answers its URL. A key needs `access`.",
 				"tags": ["access"],
 				"parameters": [
 					{
@@ -13377,7 +13377,7 @@
 			"delete": {
 				"operationId": "hidePort",
 				"summary": "Hide a port",
-				"description": "Its URL stops working at once. A key needs `access`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Its URL stops working at once. A key needs `access`.",
 				"tags": ["access"],
 				"parameters": [
 					{
@@ -13451,7 +13451,7 @@
 			"post": {
 				"operationId": "openSsh",
 				"summary": "Get SSH access",
-				"description": "Lets a key in to the sandbox's SSH gateway for a while, and answers the command that connects. microVMs only. A key needs `access`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Lets a key in to the sandbox's SSH gateway for a while, and answers the command that connects. microVMs only. A key needs `access`.",
 				"tags": ["access"],
 				"parameters": [
 					{
@@ -13552,7 +13552,7 @@
 			"post": {
 				"operationId": "openDesktop",
 				"summary": "Open the desktop",
-				"description": "A short-lived URL that streams the sandbox's Linux desktop to a browser, to watch or drive. microVMs only. A key needs `access`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "A short-lived URL that streams the sandbox's Linux desktop to a browser, to watch or drive. microVMs only. A key needs `access`.",
 				"tags": ["access"],
 				"parameters": [
 					{
@@ -13653,7 +13653,7 @@
 			"post": {
 				"operationId": "openBrowser",
 				"summary": "Open the browser",
-				"description": "Starts the sandbox's Chrome if it isn't running, and answers a live view URL and a CDP URL for Playwright or Puppeteer. microVMs only. A key needs `access`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Starts the sandbox's Chrome if it isn't running, and answers a live view URL and a CDP URL for Playwright or Puppeteer. microVMs only. A key needs `access`.",
 				"tags": ["access"],
 				"parameters": [
 					{
@@ -13754,7 +13754,7 @@
 			"get": {
 				"operationId": "listSnapshots",
 				"summary": "List snapshots",
-				"description": "The account's snapshots, newest first: saved ones, one sandbox's history (`sandboxId`), or both. A key needs `snapshots:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "The account's snapshots, newest first: saved ones, one sandbox's history (`sandboxId`), or both. A key needs `snapshots:read`.",
 				"tags": ["snapshots"],
 				"parameters": [
 					{
@@ -13850,7 +13850,7 @@
 			"post": {
 				"operationId": "saveSnapshot",
 				"summary": "Save a snapshot",
-				"description": "Keeps a sandbox's state now, or one snapshot of its history, under a name until it is deleted. New sandboxes start from it with `from: <name>`. A name in use is `conflict` unless `replace`. A key needs `snapshots:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Keeps a sandbox's state now, or one snapshot of its history, under a name until it is deleted. New sandboxes start from it with `from: <name>`. A name in use is `conflict` unless `replace`. A key needs `snapshots:write`.",
 				"tags": ["snapshots"],
 				"requestBody": {
 					"required": true,
@@ -13960,7 +13960,7 @@
 			"post": {
 				"operationId": "takeSnapshot",
 				"summary": "Take a snapshot now",
-				"description": "Adds a snapshot of the sandbox's disk to its history now, without stopping it. Kantel also takes them by itself. A key needs `snapshots:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Adds a snapshot of the sandbox's disk to its history now, without stopping it. Kantel also takes them by itself. A key needs `snapshots:write`.",
 				"tags": ["snapshots"],
 				"parameters": [
 					{
@@ -14071,7 +14071,7 @@
 			"get": {
 				"operationId": "getSnapshot",
 				"summary": "Get a snapshot",
-				"description": "A key needs `snapshots:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "A key needs `snapshots:read`.",
 				"tags": ["snapshots"],
 				"parameters": [
 					{
@@ -14140,7 +14140,7 @@
 			"delete": {
 				"operationId": "deleteSnapshot",
 				"summary": "Delete a snapshot",
-				"description": "Deletes a saved snapshot, or one of a sandbox's history. A sandbox's newest snapshot, which a resume needs, is `conflict` while the sandbox is stopped. A key needs `snapshots:write`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Deletes a saved snapshot, or one of a sandbox's history. A sandbox's newest snapshot, which a resume needs, is `conflict` while the sandbox is stopped. A key needs `snapshots:write`.",
 				"tags": ["snapshots"],
 				"parameters": [
 					{
@@ -14214,7 +14214,7 @@
 			"get": {
 				"operationId": "listSnapshotFiles",
 				"summary": "List a snapshot's files",
-				"description": "One directory of the snapshot's disk, for a file browser. A key needs `snapshots:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "One directory of the snapshot's disk, for a file browser. A key needs `snapshots:read`.",
 				"tags": ["snapshots"],
 				"parameters": [
 					{
@@ -14324,7 +14324,7 @@
 			"get": {
 				"operationId": "readSnapshotFile",
 				"summary": "Read a file from a snapshot",
-				"description": "A file of up to 1 MiB from the snapshot's disk. A key needs `snapshots:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "A file of up to 1 MiB from the snapshot's disk. A key needs `snapshots:read`.",
 				"tags": ["snapshots"],
 				"parameters": [
 					{
@@ -14422,7 +14422,7 @@
 			"get": {
 				"operationId": "listApiKeys",
 				"summary": "List API keys",
-				"description": "The account's keys, revoked ones included. A key needs `account:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "The account's keys, revoked ones included. A key needs `account:read`.",
 				"tags": ["api-keys"],
 				"parameters": [
 					{
@@ -14481,7 +14481,7 @@
 			"post": {
 				"operationId": "createApiKey",
 				"summary": "Create an API key",
-				"description": "Makes a scoped key in the account. Its secret is answered once. A key can only make keys with scopes it holds itself. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Makes a scoped key in the account. Its secret is answered once. A key can only make keys with scopes it holds itself. A key needs `account:admin`.",
 				"tags": ["api-keys"],
 				"requestBody": {
 					"required": true,
@@ -14541,7 +14541,7 @@
 			"get": {
 				"operationId": "getApiKey",
 				"summary": "Get an API key",
-				"description": "A key needs `account:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "A key needs `account:read`.",
 				"tags": ["api-keys"],
 				"parameters": [
 					{
@@ -14610,7 +14610,7 @@
 			"delete": {
 				"operationId": "revokeApiKey",
 				"summary": "Revoke an API key",
-				"description": "It stops working at once. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "It stops working at once. A key needs `account:admin`.",
 				"tags": ["api-keys"],
 				"parameters": [
 					{
@@ -14681,7 +14681,7 @@
 			"post": {
 				"operationId": "rotateApiKey",
 				"summary": "Rotate an API key",
-				"description": "Replaces its secret; the old one stops working at once. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Replaces its secret; the old one stops working at once. A key needs `account:admin`.",
 				"tags": ["api-keys"],
 				"parameters": [
 					{
@@ -14762,7 +14762,7 @@
 			"post": {
 				"operationId": "startDeviceLogin",
 				"summary": "Start a device sign-in",
-				"description": "Answers a code to show the person and the console page to open, where a signed-in person approves it. Then poll `pollDeviceLogin` with the `deviceCode`. Takes no credential. A code lasts 15 minutes. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Answers a code to show the person and the console page to open, where a signed-in person approves it. Then poll `pollDeviceLogin` with the `deviceCode`. Takes no credential. A code lasts 15 minutes.",
 				"tags": ["auth"],
 				"security": [],
 				"requestBody": {
@@ -14823,7 +14823,7 @@
 			"post": {
 				"operationId": "pollDeviceLogin",
 				"summary": "Poll a device sign-in",
-				"description": "Its state, and once approved the new key's secret, answered to the first poll that sees it. Takes no credential: the `deviceCode` is the secret. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Its state, and once approved the new key's secret, answered to the first poll that sees it. Takes no credential: the `deviceCode` is the secret.",
 				"tags": ["auth"],
 				"security": [],
 				"requestBody": {
@@ -14884,7 +14884,7 @@
 			"get": {
 				"operationId": "getDeviceLogin",
 				"summary": "Get a device sign-in",
-				"description": "What is asking to sign in with this code, for the approval page. A person only. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "What is asking to sign in with this code, for the approval page. A person only.",
 				"tags": ["auth"],
 				"parameters": [
 					{
@@ -14956,7 +14956,7 @@
 			"post": {
 				"operationId": "approveDeviceLogin",
 				"summary": "Approve a device sign-in",
-				"description": "Makes an API key for the person, named after the device, and hands it to the device's next poll. A person only, who needs admin or owner in the account (`account:admin`), as for `createApiKey`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Makes an API key for the person, named after the device, and hands it to the device's next poll. A person only, who needs admin or owner in the account (`account:admin`), as for `createApiKey`.",
 				"tags": ["auth"],
 				"parameters": [
 					{
@@ -15048,7 +15048,7 @@
 			"post": {
 				"operationId": "denyDeviceLogin",
 				"summary": "Deny a device sign-in",
-				"description": "The device's next poll is `denied`. A person only. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "The device's next poll is `denied`. A person only.",
 				"tags": ["auth"],
 				"parameters": [
 					{
@@ -15130,7 +15130,7 @@
 			"get": {
 				"operationId": "getProxySettings",
 				"summary": "Get the proxy settings",
-				"description": "Where the account's sandboxes' outbound traffic may go. A key needs `account:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Where the account's sandboxes' outbound traffic may go. A key needs `account:read`.",
 				"tags": ["proxy"],
 				"parameters": [
 					{
@@ -15189,7 +15189,7 @@
 			"put": {
 				"operationId": "putProxySettings",
 				"summary": "Set the proxy settings",
-				"description": "Replaces them. Running sandboxes pick them up within a minute. An upstream's header values are kept encrypted and never shown again; leave `upstream.headers` out to keep the ones it has. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Replaces them. Running sandboxes pick them up within a minute. An upstream's header values are kept encrypted and never shown again; leave `upstream.headers` out to keep the ones it has. A key needs `account:admin`.",
 				"tags": ["proxy"],
 				"requestBody": {
 					"required": true,
@@ -15259,7 +15259,7 @@
 			"get": {
 				"operationId": "listEvents",
 				"summary": "List events",
-				"description": "The account's events, newest first: what webhooks deliver, and a sandbox's history with `sandboxId`. A key needs `sandboxes:read`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "The account's events, newest first: what webhooks deliver, and a sandbox's history with `sandboxId`. A key needs `sandboxes:read`.",
 				"tags": ["events"],
 				"parameters": [
 					{
@@ -15365,7 +15365,7 @@
 			"get": {
 				"operationId": "listWebhooks",
 				"summary": "List webhooks",
-				"description": "A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "A key needs `account:admin`.",
 				"tags": ["webhooks"],
 				"parameters": [
 					{
@@ -15424,7 +15424,7 @@
 			"post": {
 				"operationId": "createWebhook",
 				"summary": "Create a webhook",
-				"description": "Its signing secret is answered once. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Its signing secret is answered once. A key needs `account:admin`.",
 				"tags": ["webhooks"],
 				"requestBody": {
 					"required": true,
@@ -15494,7 +15494,7 @@
 			"get": {
 				"operationId": "getWebhook",
 				"summary": "Get a webhook",
-				"description": "A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "A key needs `account:admin`.",
 				"tags": ["webhooks"],
 				"parameters": [
 					{
@@ -15563,7 +15563,7 @@
 			"patch": {
 				"operationId": "updateWebhook",
 				"summary": "Change a webhook",
-				"description": "A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "A key needs `account:admin`.",
 				"tags": ["webhooks"],
 				"parameters": [
 					{
@@ -15652,7 +15652,7 @@
 			"delete": {
 				"operationId": "deleteWebhook",
 				"summary": "Delete a webhook",
-				"description": "Its queued deliveries are dropped. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Its queued deliveries are dropped. A key needs `account:admin`.",
 				"tags": ["webhooks"],
 				"parameters": [
 					{
@@ -15716,7 +15716,7 @@
 			"post": {
 				"operationId": "rotateWebhookSecret",
 				"summary": "Rotate a webhook's signing secret",
-				"description": "Deliveries are signed with the new secret from now; one already under way may carry the old signature. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Deliveries are signed with the new secret from now; one already under way may carry the old signature. A key needs `account:admin`.",
 				"tags": ["webhooks"],
 				"parameters": [
 					{
@@ -15787,7 +15787,7 @@
 			"post": {
 				"operationId": "testWebhook",
 				"summary": "Send a test delivery",
-				"description": "Sends a signed `sandbox.created` event for a made-up sandbox now. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Sends a signed `sandbox.created` event for a made-up sandbox now. A key needs `account:admin`.",
 				"tags": ["webhooks"],
 				"parameters": [
 					{
@@ -15858,7 +15858,7 @@
 			"get": {
 				"operationId": "listWebhookDeliveries",
 				"summary": "List a webhook's deliveries",
-				"description": "The last 30 days, newest first. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "The last 30 days, newest first. A key needs `account:admin`.",
 				"tags": ["webhooks"],
 				"parameters": [
 					{
@@ -15949,7 +15949,7 @@
 			"get": {
 				"operationId": "getTelemetry",
 				"summary": "Get the OpenTelemetry export",
-				"description": "Absent: `not_found`. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Absent: `not_found`. A key needs `account:admin`.",
 				"tags": ["telemetry"],
 				"parameters": [
 					{
@@ -16018,7 +16018,7 @@
 			"put": {
 				"operationId": "putTelemetry",
 				"summary": "Set the OpenTelemetry export",
-				"description": "Sets or replaces the account's one OTLP/HTTP endpoint, sends an empty export to test it, and answers what the collector said. Header values are kept encrypted and never shown again. A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Sets or replaces the account's one OTLP/HTTP endpoint, sends an empty export to test it, and answers what the collector said. Header values are kept encrypted and never shown again. A key needs `account:admin`.",
 				"tags": ["telemetry"],
 				"requestBody": {
 					"required": true,
@@ -16076,7 +16076,7 @@
 			"delete": {
 				"operationId": "deleteTelemetry",
 				"summary": "Remove the OpenTelemetry export",
-				"description": "A key needs `account:admin`. Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "A key needs `account:admin`.",
 				"tags": ["telemetry"],
 				"parameters": [
 					{
@@ -16130,7 +16130,7 @@
 			"get": {
 				"operationId": "listHosts",
 				"summary": "List hosts",
-				"description": "Every host that has joined, revoked ones included. A deployment super-admin only (a key needs `hosts:admin`). Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Every host that has joined, revoked ones included. A deployment super-admin only (a key needs `hosts:admin`).",
 				"tags": ["hosts"],
 				"responses": {
 					"200": {
@@ -16170,7 +16170,7 @@
 			"post": {
 				"operationId": "createHostJoinToken",
 				"summary": "Make a host join token",
-				"description": "A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it with the token. A deployment super-admin only (a key needs `hosts:admin`). Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it with the token. A deployment super-admin only (a key needs `hosts:admin`).",
 				"tags": ["hosts"],
 				"requestBody": {
 					"required": false,
@@ -16230,7 +16230,7 @@
 			"get": {
 				"operationId": "getHost",
 				"summary": "Get a host",
-				"description": "A deployment super-admin only (a key needs `hosts:admin`). Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "A deployment super-admin only (a key needs `hosts:admin`).",
 				"tags": ["hosts"],
 				"parameters": [
 					{
@@ -16299,7 +16299,7 @@
 			"patch": {
 				"operationId": "updateHost",
 				"summary": "Change a host",
-				"description": "Renames it, replaces its labels, or drains it. A deployment super-admin only (a key needs `hosts:admin`). Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Renames it, replaces its labels, or drains it. A deployment super-admin only (a key needs `hosts:admin`).",
 				"tags": ["hosts"],
 				"parameters": [
 					{
@@ -16388,7 +16388,7 @@
 			"delete": {
 				"operationId": "revokeHost",
 				"summary": "Revoke a host",
-				"description": "Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. A deployment super-admin only (a key needs `hosts:admin`). Experimental: served only where the deployment sets `KANTEL_COMPUTE=experimental`.",
+				"description": "Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. A deployment super-admin only (a key needs `hosts:admin`).",
 				"tags": ["hosts"],
 				"parameters": [
 					{

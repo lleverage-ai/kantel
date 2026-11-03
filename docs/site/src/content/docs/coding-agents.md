@@ -8,7 +8,7 @@ sidebar:
 ---
 
 :::caution[Experimental]
-The agent drives Kantel through the compute API, which a control plane serves only when it runs with `KANTEL_COMPUTE=experimental`. Its shapes may still change.
+The agent drives Kantel through the compute API, which every control plane serves. Its shapes may still change.
 :::
 
 A coding agent on your machine can do its risky or heavy work in a Kantel sandbox instead of on your laptop: run a test suite on a clean Linux, try a migration, start Docker, open a browser, or fork five copies to try five fixes. The agent stays where it is and reaches Kantel in one of two ways:

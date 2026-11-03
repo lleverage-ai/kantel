@@ -1,6 +1,5 @@
-// The compute plane on the self-hosted gateway, through its fetch handler: off without KANTEL_COMPUTE=experimental;
-// with it, the super-admin's key drives a sandbox through the SDK, makes a scoped key that works, and the gateway's own
-// routes and keys are as they were.
+// The compute plane on the self-hosted gateway, through its fetch handler: the super-admin's key drives a sandbox
+// through the SDK, makes a scoped key that works, and the gateway's own routes and keys are as they were.
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { createMemoryHostStore } from "@kantel/hosts/store";
 import { signTunnel } from "@kantel/hosts/tunnel";
@@ -8,7 +7,7 @@ import { createAuthenticator } from "@kantel/identity/authenticator";
 import { kantelSessionProvider } from "@kantel/identity/otp";
 import { afterEach, describe, expect, it } from "vitest";
 import { bootstrap, createGatewayComponents } from "../../src/gateway/components.ts";
-import { computeConfig, computeEnabled, gatewayCompute, gatewayHosts, hostImages } from "../../src/gateway/compute.ts";
+import { computeConfig, gatewayCompute, gatewayHosts, hostImages } from "../../src/gateway/compute.ts";
 import { createGateway } from "../../src/gateway/gateway.ts";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -54,13 +53,7 @@ async function failure(call: Promise<unknown>): Promise<KantelApiError> {
 }
 
 describe("the compute plane on the gateway", () => {
-	it("is on only with KANTEL_COMPUTE=experimental", () => {
-		expect(computeEnabled({})).toBe(false);
-		expect(computeEnabled({ KANTEL_COMPUTE: "on" })).toBe(false);
-		expect(computeEnabled({ KANTEL_COMPUTE: " Experimental " })).toBe(true);
-	});
-
-	it("answers none of its routes when off", async () => {
+	it("answers none of its routes on a gateway made without it", async () => {
 		const { gateway, seeded } = await serve(false);
 		const response = await gateway.fetch(
 			new Request("http://gateway.test/v1/sandboxes", { headers: { authorization: `Bearer ${seeded.apiKey}` } }),
@@ -94,16 +87,25 @@ describe("the compute plane on the gateway", () => {
 		expect(me.status).toBe(200);
 	});
 
-	it("runs on the stub unless KANTEL_COMPUTE_BACKEND=hosts, which needs a public URL", () => {
-		expect(computeConfig({})).toBeUndefined();
+	it("is always on: on joined hosts wherever it knows where hosts reach it, else on the stub", () => {
+		expect(computeConfig({})).toEqual({});
+		// The old switch is no longer read: off or on, the same.
 		expect(computeConfig({ KANTEL_COMPUTE: "experimental" })).toEqual({});
-		expect(() => computeConfig({ KANTEL_COMPUTE: "experimental", KANTEL_COMPUTE_BACKEND: "hosts" })).toThrow(
-			/KANTEL_PUBLIC_URL/,
+		expect(computeConfig({ KANTEL_COMPUTE: "", KANTEL_PUBLIC_URL: "", KANTEL_COMPUTE_PUBLIC_URL: "" })).toEqual({});
+		expect(computeConfig({ KANTEL_COMPUTE_PUBLIC_URL: "http://127.0.0.1:58090" })).toEqual({
+			hosts: { publicUrl: "http://127.0.0.1:58090" },
+		});
+		expect(computeConfig({ KANTEL_COMPUTE_PUBLIC_URL: "", KANTEL_PUBLIC_URL: "https://kantel.example.com" })).toEqual({
+			hosts: { publicUrl: "https://kantel.example.com" },
+		});
+		// The stand-in on request, with an address or without.
+		expect(computeConfig({ KANTEL_COMPUTE_BACKEND: "stub", KANTEL_PUBLIC_URL: "https://kantel.example.com" })).toEqual(
+			{},
 		);
-		expect(() => computeConfig({ KANTEL_COMPUTE: "experimental", KANTEL_COMPUTE_BACKEND: "cloud" })).toThrow();
+		expect(() => computeConfig({ KANTEL_COMPUTE_BACKEND: "hosts" })).toThrow(/KANTEL_PUBLIC_URL/);
+		expect(() => computeConfig({ KANTEL_COMPUTE_BACKEND: "cloud" })).toThrow();
 		expect(
 			computeConfig({
-				KANTEL_COMPUTE: "experimental",
 				KANTEL_COMPUTE_BACKEND: "hosts",
 				KANTEL_PUBLIC_URL: "https://kantel.example.com/",
 				KANTEL_COMPUTE_POOLS: '{"microvm/default": 2}',
@@ -113,7 +115,6 @@ describe("the compute plane on the gateway", () => {
 
 	it("takes a domain for exposed ports that isn't the gateway's own name or a parent of it", () => {
 		const env = {
-			KANTEL_COMPUTE: "experimental",
 			KANTEL_COMPUTE_BACKEND: "hosts",
 			KANTEL_PUBLIC_URL: "https://kantel.example.com",
 		};

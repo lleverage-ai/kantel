@@ -3,8 +3,8 @@
 // fixtures. Same-origin under /v1, like the Environments page: behind Cloudflare Access the browser's cookie signs each
 // call in; signed in another way, `headers` adds the bearer.
 //
-// The routes are experimental: a gateway without `KANTEL_COMPUTE=experimental` answers 404 to the first call, and
-// `apiCompute` throws. The UI's records are shaped for its pages, not the API, so each source maps the API's records
+// A gateway that doesn't serve the routes (an older one, or one built without compute) answers 404 to the first call,
+// and `apiCompute` throws. The UI's records are shaped for its pages, not the API, so each source maps the API's records
 // field by field. Where the UI has a field the API lacks, a neutral value stands in, with a comment saying so; where
 // the UI asks for something no route does, the call rejects with a sentence saying Kantel's API can't do it yet.
 // Timestamps need no conversion: both sides use epoch milliseconds. The account goes in the query of a read and in
@@ -861,7 +861,7 @@ const pageHost = (): string | undefined => {
 
 /**
  * The compute console on the gateway this console is served by. Asks who is calling first: a gateway that doesn't
- * serve the compute routes (the switch is off) answers 404, this throws, and the console shows no compute pages. The
+ * serve the compute routes answers 404, this throws, and the console shows no compute pages. The
  * hosts source is there only for a deployment super-admin; billing isn't, as the API has no plans.
  */
 export async function apiCompute(options: ComputeApiOptions = {}): Promise<ComputeSource> {

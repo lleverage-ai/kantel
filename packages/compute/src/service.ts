@@ -125,7 +125,7 @@ export interface ComputeService {
 /** The join command shown with a host join token: kantel-host from npm (`apps/host/npm`). */
 export const DEFAULT_HOST_JOIN_COMMAND = "sudo npx -y @kantel/host@latest install --url {url} --token {token}";
 /** The console's page where a person approves a device sign-in. */
-export const DEFAULT_DEVICE_LOGIN_URL = "{url}/compute/device";
+export const DEFAULT_DEVICE_LOGIN_URL = "{url}/device";
 /** How long a device sign-in waits for a person, and how often its device may poll. */
 export const DEVICE_LOGIN_TTL_MS = 15 * 60_000;
 export const DEVICE_LOGIN_INTERVAL_SECONDS = 2;

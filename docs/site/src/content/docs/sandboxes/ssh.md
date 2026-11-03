@@ -8,7 +8,7 @@ sidebar:
 ---
 
 :::caution[Experimental]
-These routes are part of Kantel's API, and a control plane serves them only when it runs with `KANTEL_COMPUTE=experimental`. Their shapes may still change.
+These routes are part of Kantel's API, which every control plane serves. Their shapes may still change.
 :::
 
 A microVM has no address of its own that you can connect to. You reach its SSH through Kantel: either through your deployment's SSH gateway, or, on Kantel's own hosts, through a relay that carries SSH over a WebSocket. Kantel lets a key in and tells you the command that connects. Isolates have no SSH: the call answers `501` with `not_supported` for them.

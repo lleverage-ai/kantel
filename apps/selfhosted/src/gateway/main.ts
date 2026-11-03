@@ -63,11 +63,13 @@
 //   KANTEL_SUBAGENTS           the `subagent` tool (subagents.ts, @kantel/subagents): a session hands a task to a child
 //                               session of the same agent and gets its answer. On unless set to anything but `on`
 //                               (`off`, say)
-//   KANTEL_COMPUTE             `experimental` turns on the compute plane's API (compute.ts, @kantel/compute): accounts,
-//                               sandboxes, snapshots, `ksk_` keys, webhooks, OpenTelemetry and hosts, in memory; its
-//                               super-admin key is `computeKey` in the bootstrap file. Sandboxes run on the stub unless
-//                               KANTEL_COMPUTE_BACKEND=hosts, which runs them on machines running kantel-host (@kantel/hosts;
-//                               needs KANTEL_PUBLIC_URL or KANTEL_COMPUTE_PUBLIC_URL; the other settings are in compute.ts)
+//   KANTEL_COMPUTE_BACKEND, KANTEL_COMPUTE_PUBLIC_URL
+//                               the compute plane's API (compute.ts, @kantel/compute), always on: accounts, sandboxes,
+//                               snapshots, `ksk_` keys, webhooks, OpenTelemetry and hosts, in memory; its super-admin
+//                               key is `computeKey` in the bootstrap file. Sandboxes run on machines running kantel-host
+//                               (@kantel/hosts) wherever KANTEL_COMPUTE_PUBLIC_URL or KANTEL_PUBLIC_URL says where they
+//                               reach the gateway, else on the stub; KANTEL_COMPUTE_BACKEND=stub picks the stub. The
+//                               other settings are in compute.ts
 //
 // It runs on node:http, so it needs nothing Bun-specific; the image runs it on Bun like the session hosts.
 // First: HARBOUR_* settings from before the rename still count.
@@ -395,7 +397,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		});
 		seeded = { ...seeded, computeKey: compute.superAdminKey };
 		console.log(
-			`[gateway] compute plane on (KANTEL_COMPUTE=experimental): ${compute.binding}; the super-admin's key is ` +
+			`[gateway] compute plane on: ${compute.binding}; the super-admin's key is ` +
 				`computeKey in ${cfg.bootstrapFile}`,
 		);
 	}

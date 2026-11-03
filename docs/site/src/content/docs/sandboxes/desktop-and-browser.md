@@ -8,7 +8,7 @@ sidebar:
 ---
 
 :::caution[Experimental]
-These routes are part of Kantel's API, and a control plane serves them only when it runs with `KANTEL_COMPUTE=experimental`. Their shapes may still change.
+These routes are part of Kantel's API, which every control plane serves. Their shapes may still change.
 :::
 
 A microVM has a Linux desktop and a Chrome. You can open either in your own browser to watch an agent work or take over from it, and an agent can drive the sandbox's Chrome with Playwright or Puppeteer. Isolates have neither: the calls on this page answer `501` with `not_supported` for them.
