@@ -53,7 +53,6 @@ describe("onCreated", () => {
 		expect(Object.keys(reported[0]?.timings ?? {})).toEqual([
 			"profile",
 			"access",
-			"rules",
 			"store",
 			"open.models",
 			"open.storage",

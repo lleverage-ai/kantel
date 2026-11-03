@@ -34,7 +34,6 @@
 		"@kantel/runtime-cloudflare": "workspace:*",
 		"@kantel/sandbox": "workspace:*",
 		"@kantel/schedules": "workspace:*",
-		"@kantel/rules": "workspace:*",
 		"@kantel/connections": "workspace:*",
 		"@kantel/sharing": "workspace:*",
 		"@kantel/skills": "workspace:*",

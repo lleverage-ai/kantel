@@ -29,7 +29,6 @@ import {
 	type Project,
 	type ProjectAccess,
 	type ProjectId,
-	type PromptRules,
 	type Skills,
 	type WorkspaceId,
 } from "@kantel/contracts";
@@ -40,7 +39,6 @@ import { createMemoryPasskeyStores, createPasskeys, type Passkeys } from "@kante
 import { createMemoryMemory } from "@kantel/memory/memory";
 import type { ProgramsService } from "@kantel/programs/service";
 import { createMemoryProgramStore } from "@kantel/programs/store";
-import { createMemoryPromptRules } from "@kantel/rules/memory";
 import type { DurableHosts, SessionRuntimeOptions } from "@kantel/runtime/core";
 import { createMemoryRuntime, type MemoryRuntime } from "@kantel/runtime/memory";
 import { CODING_TOOLS } from "@kantel/sandbox/coding-tools";
@@ -88,8 +86,6 @@ export interface GatewayComponents {
 	readonly memory: Memory;
 	/** Sharing resources across projects, read by the runtime's access for every resource check. */
 	readonly sharing: SharingStore;
-	/** Prompt rules, layered around a session's profile when it starts. */
-	readonly rules: PromptRules;
 	/** The sandboxes sessions' `bash` runs in, leased on first use (`sandboxes.ts`). */
 	readonly sandboxes: Sandboxes;
 	/**
@@ -311,7 +307,6 @@ export function createGatewayComponents(
 	// Skills and memory check project access with the runtime's check, which they reach only when called.
 	const skills = createMemorySkills({ audit, access: auditAccess.access });
 	const memory = createMemoryMemory({ audit, access: auditAccess.access });
-	const rules = createMemoryPromptRules({ audit, access: auditAccess.access });
 	let workspaces: StoredWorkspaces | undefined;
 	const sharing = createMemorySharing({
 		audit,
@@ -376,7 +371,6 @@ export function createGatewayComponents(
 				sessions.get,
 			),
 			...sessionContextOptions({ skills, memory, workspaces: lateWorkspaces }),
-			rules,
 		}),
 		lateWorkspaces,
 	);
@@ -439,7 +433,6 @@ export function createGatewayComponents(
 		skills,
 		memory,
 		sharing,
-		rules,
 		sandboxes,
 		otp: createMemoryOtpStores(),
 		passkeys: createPasskeys({ ...createMemoryPasskeyStores(), identity, audit }),

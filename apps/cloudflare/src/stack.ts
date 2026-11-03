@@ -65,7 +65,6 @@ import {
 	type ProjectAccess,
 	type ProjectSettings,
 	type PromptLayer,
-	type PromptRules,
 	type RecallRenderer,
 	type Schedule,
 	type Schedules,
@@ -90,8 +89,6 @@ import { withProgramRunner } from "@kantel/programs/runner-model";
 import { createProgramsService, type ProgramsService } from "@kantel/programs/service";
 import { createMemoryProgramStore, createSqlProgramStore, migratePrograms } from "@kantel/programs/store";
 import { SAVE_PROGRAM_TOOL, sessionSaveProgramTool } from "@kantel/programs/tool";
-import { createMemoryPromptRules } from "@kantel/rules/memory";
-import { createSqlPromptRules, migrateRules } from "@kantel/rules/sql";
 import type { DurableHosts, SessionRuntimeService } from "@kantel/runtime/core";
 import { createMemoryRuntime } from "@kantel/runtime/memory";
 import {
@@ -452,8 +449,6 @@ export interface Stack {
 	readonly toolServers?: ToolServersService;
 	/** Saved programs, when the stack has them (`StackOptions.programs` with code mode). */
 	readonly programs?: ProgramsService;
-	/** Prompt rules, layered around a session's profile when it starts. */
-	readonly rules: PromptRules;
 	readonly authenticator: Authenticator;
 	/** How people sign in here: Cloudflare Access when it is configured, else nobody does (API keys only). */
 	readonly signIn: readonly SignInMethod[];
@@ -518,7 +513,6 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		await migrateAudit(driver);
 		await migrateSkills(driver);
 		await migrateMemory(driver);
-		await migrateRules(driver);
 		await migrateSchedules(driver);
 		await migrateFileShares(driver);
 		await migrateSharing(driver);
@@ -741,10 +735,6 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		driver === undefined
 			? createMemoryMemory({ clock, audit, access: storeAccess, renderer })
 			: createSqlMemory({ driver, clock, audit, access: storeAccess, renderer });
-	const rules =
-		driver === undefined
-			? createMemoryPromptRules({ clock, audit, access: auditAccess })
-			: createSqlPromptRules({ driver, clock, audit, access: auditAccess });
 	// The `skills` mount source: `/skills` on a session's workspace shows the revisions the session pinned. A mount asked
 	// for without a version pins the session's skills as its own project sees them, as the runtime does.
 	let builtDirectory: SessionRuntimeService["directory"] | undefined;
@@ -862,8 +852,6 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		},
 		// A session whose profile names memory spaces is given their recall on its first prompt, and the memory tools.
 		memory: sessionMemory(memory),
-		// Its prompt rules, fixed when it starts: platform, organisation, project, profile, then its user's.
-		rules,
 		// A prompt's attachments: what the model reads of each file uploaded to the session's project.
 		attachments: attachments.reader,
 		// A server's tools, for a session whose profile names them (`<server>/<tool>`, `<server>/*`).
@@ -1090,7 +1078,6 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			...(connections === undefined ? {} : { connections }),
 			...(toolServers === undefined ? {} : { toolServers }),
 			...(programs === undefined ? {} : { programs }),
-			rules,
 			authenticator,
 			signIn: options.config.access === undefined ? [] : ["cloudflare_access"],
 			projectDefaults,

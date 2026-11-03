@@ -30,7 +30,6 @@ import type {
 	ConsoleVault,
 } from "./api/oversight.ts";
 import { createRecordedClient, type RecordedClient } from "./api/recorded.ts";
-import { apiRules, type ConsoleRules } from "./api/rules-http.ts";
 import { apiSchedules } from "./api/schedules-http.ts";
 import { apiSharing } from "./api/sharing-http.ts";
 import { apiToolServers } from "./api/tool-servers-http.ts";
@@ -43,7 +42,6 @@ import { createRecordedConnections } from "./recorded/connections.ts";
 import { createRecordedEnvironments } from "./recorded/environments.ts";
 import { createRecordedModelProviders } from "./recorded/model-providers.ts";
 import { createRecordedOversight, type RecordedOversight } from "./recorded/oversight.ts";
-import { createRecordedRules } from "./recorded/rules.ts";
 import { createRecordedSchedules } from "./recorded/schedules.ts";
 import { createRecordedSharing } from "./recorded/sharing.ts";
 import { createRecordedToolServers } from "./recorded/tool-servers.ts";
@@ -84,10 +82,6 @@ import "./ui/styles.css";
 // The schedules page runs on @kantel/ui's schedule fixtures on `recorded`, its task runs linking to the recorded
 // sessions. On `api` it runs on the public API's schedule routes (`/v1/schedules`, api/schedules-http.ts); New
 // schedule needs a project the person may operate in and an agent profile to ask.
-//
-// The Rules page runs on the public API's rule routes (`/v1/rules`, api/rules-http.ts) on `api`, for the person
-// `/v1/me` names, and is listed at once, as it needs no answer to open; the server decides each write. On `recorded`
-// it runs on prompt rules in memory in the page (recorded/rules.ts).
 //
 // On `api` the audit log's Who and Organisation filters, and the names rows and schedules give people, come from the
 // identity API (`/v1/organisations`, `/v1/members`).
@@ -167,7 +161,6 @@ type Oversight = {
 	readonly agent?: ConsoleAgent;
 	readonly models?: ConsoleModels;
 	readonly modelProviders?: ConsoleModelProviders;
-	readonly rules?: ConsoleRules;
 };
 const recordedOversight: Promise<Oversight> | undefined =
 	catalogue !== undefined
@@ -181,7 +174,6 @@ const recordedOversight: Promise<Oversight> | undefined =
 			]).then(([made, schedules, agent]: [RecordedOversight, ConsoleSchedules, RecordedAgent]): Oversight => {
 				proposals = made.proposals;
 				const sharing = createRecordedSharing(agent.skillIds["stripe-reconcile"]);
-				const rules = createRecordedRules({ organisationId: "org_recorded", viewer: "usr_recorded" });
 				const connections = createRecordedConnections();
 				// Tool servers on fixtures; `source=api` reads /v1/tool-servers.
 				const toolServers = createRecordedToolServers();
@@ -200,7 +192,6 @@ const recordedOversight: Promise<Oversight> | undefined =
 					environments,
 					agent,
 					modelProviders,
-					rules,
 				};
 			})
 		: undefined;
@@ -233,7 +224,6 @@ function Console({
 		agent,
 		models,
 		modelProviders,
-		rules,
 	} = oversight;
 	return (
 		<App
@@ -251,7 +241,6 @@ function Console({
 			{...(agent === undefined ? {} : { agent })}
 			{...(models === undefined ? {} : { models })}
 			{...(modelProviders === undefined ? {} : { modelProviders })}
-			{...(rules === undefined ? {} : { rules })}
 			onOpen={onOpen}
 		/>
 	);
@@ -436,7 +425,6 @@ function SignedInConsole({
 		};
 		const models = apiModels({ headers: state.headers, onUnauthenticated });
 		const modelProviders = apiModelProviders({ headers: state.headers, onUnauthenticated });
-		const rules = apiRules(state.me, { headers: state.headers, onUnauthenticated });
 		return {
 			client: cacheOn && cacheStore !== undefined ? withLocalCache(api, openCache(cacheStore, owner)) : api,
 			// What needs no answer first, so the console opens without waiting for the vault and schedules to answer.
@@ -444,7 +432,6 @@ function SignedInConsole({
 				agent,
 				models,
 				modelProviders,
-				rules,
 				...(keys === undefined ? {} : { keys }),
 				...(members === undefined ? {} : { members }),
 			} satisfies Oversight,
@@ -498,7 +485,6 @@ function SignedInConsole({
 						agent,
 						models,
 						modelProviders,
-						rules,
 						schedules,
 						...(sharing === undefined ? {} : { sharing }),
 						...(connections === undefined ? {} : { connections }),

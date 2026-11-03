@@ -72,9 +72,6 @@ importers:
       "@kantel/programs":
         specifier: workspace:*
         version: link:../../packages/programs
-      "@kantel/rules":
-        specifier: workspace:*
-        version: link:../../packages/rules
       "@kantel/runtime":
         specifier: workspace:*
         version: link:../../packages/runtime
@@ -321,9 +318,6 @@ importers:
       "@kantel/programs":
         specifier: workspace:*
         version: link:../../packages/programs
-      "@kantel/rules":
-        specifier: workspace:*
-        version: link:../../packages/rules
       "@kantel/runtime":
         specifier: workspace:*
         version: link:../../packages/runtime
@@ -705,28 +699,6 @@ importers:
 
   packages/protocol: {}
 
-  packages/rules:
-    dependencies:
-      "@kantel/api":
-        specifier: workspace:*
-        version: link:../api
-      "@kantel/contracts":
-        specifier: workspace:*
-        version: link:../contracts
-      "@kantel/sql":
-        specifier: workspace:*
-        version: link:../sql
-    devDependencies:
-      "@electric-sql/pglite":
-        specifier: 0.5.12
-        version: 0.5.12
-      "@kantel/testing":
-        specifier: workspace:*
-        version: link:../testing
-      miniflare:
-        specifier: 5.20261023.0-beta
-        version: 5.20261023.0-beta(@types/node@24.19.2)
-
   packages/runtime:
     dependencies:
       "@earendil-works/chord":
@@ -763,9 +735,6 @@ importers:
       "@kantel/codemode":
         specifier: workspace:*
         version: link:../codemode
-      "@kantel/rules":
-        specifier: workspace:*
-        version: link:../rules
       "@kantel/sandbox":
         specifier: workspace:*
         version: link:../sandbox
