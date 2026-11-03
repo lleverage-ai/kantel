@@ -150,7 +150,7 @@ across gateways.
   rather than in a lost or duplicated sandbox. A shared reservation isn't required for correctness, and this contract
   leaves it open.
 
-  **Reservations expire with the host's next report (#PR_RESERVE).** Each reservation is stamped with when it was
+  **Reservations expire with the host's next report (#599).** Each reservation is stamped with when it was
   made. The replica holding the host's socket clears its own on each hello and heartbeat, as before. Every replica
   also counts a reservation only while it is newer than the host's `lastSeenAt` in the shared registry, which the
   owning replica writes on each hello and heartbeat. So a replica that places on a host held elsewhere stops counting
