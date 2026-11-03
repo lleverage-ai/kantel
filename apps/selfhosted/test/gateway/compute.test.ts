@@ -3,6 +3,7 @@
 // routes and keys are as they were.
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { createMemoryHostStore } from "@kantel/hosts/store";
+import { signTunnel } from "@kantel/hosts/tunnel";
 import { createAuthenticator } from "@kantel/identity/authenticator";
 import { kantelSessionProvider } from "@kantel/identity/otp";
 import { afterEach, describe, expect, it } from "vitest";
@@ -158,6 +159,24 @@ describe("the compute plane on the gateway", () => {
 		// The registry's own admin routes aren't served: the API's are.
 		const images = await gateway.fetch(new Request("http://gateway.test/v1/hosts/images/manifest.json"));
 		expect(images.status).toBe(404);
+
+		// A desktop's page answers only a live desktop ticket signed with the gateway's secret.
+		const secret = new Uint8Array(32);
+		const ticket = (port: number, expiresAt = Date.now() + 60_000) =>
+			signTunnel(secret, { sandboxId: "sbx_1", port, expiresAt });
+		const view = (path: string) => gateway.fetch(new Request(`http://gateway.test/v1/hosts/view/${path}`));
+		const page = await view(await ticket(5901));
+		expect(page.status).toBe(200);
+		expect(page.headers.get("content-security-policy")).toContain("default-src 'none'");
+		expect(await page.text()).toContain("@novnc/novnc@");
+		expect((await view(await ticket(22))).status).toBe(404);
+		expect((await view(await ticket(5901, Date.now() - 1))).status).toBe(404);
+		const forged = await signTunnel(new Uint8Array(32).fill(1), {
+			sandboxId: "sbx_1",
+			port: 5901,
+			expiresAt: Date.now() + 60_000,
+		});
+		expect((await view(forged)).status).toBe(404);
 	});
 
 	it("serves host images by plain file name only", async () => {

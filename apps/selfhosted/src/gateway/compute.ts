@@ -61,13 +61,14 @@ import {
 import { bootstrapSuperAdmin } from "@kantel/compute/serve";
 import { createStubBackend } from "@kantel/compute/stub";
 import { type Authenticator, KantelError } from "@kantel/contracts";
-import { createHostBackend } from "@kantel/hosts/backend";
+import { createHostBackend, DESKTOP_PORT } from "@kantel/hosts/backend";
 import { createHostsApi, HOSTS_CONNECT_PATH, HOSTS_REGISTER_PATH } from "@kantel/hosts/http";
 import { openPortWebSocket } from "@kantel/hosts/port-websocket";
 import { HOST_CLOSE_REVOKED, HOST_MAX_MESSAGE_BYTES } from "@kantel/hosts/protocol";
 import { createHostsService, type HostsService } from "@kantel/hosts/service";
 import type { HostStore } from "@kantel/hosts/store";
 import { HOSTS_TUNNEL_PATH, verifyTunnel } from "@kantel/hosts/tunnel";
+import { desktopViewerHtml, HOSTS_VIEW_PATH, VIEWER_CSP } from "@kantel/hosts/viewer";
 import { WebSocketServer } from "ws";
 import type { UpgradeHandler } from "./node-http.ts";
 
@@ -270,6 +271,24 @@ export async function gatewayCompute(options: {
 			if (path === HOSTS_REGISTER_PATH) return register.fetch(request);
 			if (path.startsWith(`${HOST_IMAGES_PATH}/`)) {
 				return (await images?.(request)) ?? new Response("Not found", { status: 404 });
+			}
+			if (path.startsWith(`${HOSTS_VIEW_PATH}/`) && request.method === "GET") {
+				// A desktop's page: only for a live desktop ticket, which the page then opens as its tunnel.
+				const ticket = path.slice(HOSTS_VIEW_PATH.length + 1);
+				const grant = ticket.includes("/")
+					? undefined
+					: await verifyTunnel(hosts.tunnelSecret, ticket, (options.now ?? Date.now)());
+				if (grant === undefined || grant.port !== DESKTOP_PORT) {
+					return new Response("This desktop link has expired or isn't valid.", { status: 404 });
+				}
+				return new Response(desktopViewerHtml(), {
+					headers: {
+						"content-type": "text/html; charset=utf-8",
+						"content-security-policy": VIEWER_CSP,
+						"cache-control": "no-store",
+						"referrer-policy": "no-referrer",
+					},
+				});
 			}
 			return undefined;
 		};

@@ -313,10 +313,14 @@ describe("the compute API on kantel-host hosts", () => {
 		new FakeHost(service, hostId).connect();
 		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
 
+		// The desktop is a page that opens the tunnel with the same ticket.
 		const desktop = await root.openDesktop(sandbox.id, { ttlMinutes: 5 });
+		const page = "https://kantel.test/v1/hosts/view/";
+		expect(desktop.url.startsWith(page)).toBe(true);
+		expect(desktop.embedUrl).toBe(desktop.url);
+		const ticket = desktop.url.slice(page.length);
+		expect((await root.openDesktop(sandbox.id, { viewOnly: true })).url).toMatch(/\?viewOnly=1$/);
 		const prefix = `wss://kantel.test${HOSTS_TUNNEL_PATH}/`;
-		expect(desktop.url.startsWith(prefix)).toBe(true);
-		const ticket = desktop.url.slice(prefix.length);
 		const grant = await verifyTunnel(secret, ticket, Date.now());
 		expect(grant).toMatchObject({ sandboxId: sandbox.id, port: 5901 });
 		expect(await verifyTunnel(crypto.getRandomValues(new Uint8Array(32)), ticket, Date.now())).toBeUndefined();
@@ -325,6 +329,7 @@ describe("the compute API on kantel-host hosts", () => {
 
 		const browser = await root.openBrowser(sandbox.id, {});
 		expect(browser.cdpUrl).toMatch(new RegExp(`^${prefix}[^/]+/devtools/browser/abc-123$`));
+		expect(browser.url.startsWith(page)).toBe(true);
 
 		const made = await root.openSsh(sandbox.id, {});
 		expect(made.privateKey).toContain("OPENSSH PRIVATE KEY");

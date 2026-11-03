@@ -9,6 +9,7 @@
 		".": "./src/index.ts",
 		"./backend": "./src/backend.ts",
 		"./port-websocket": "./src/port-websocket.ts",
+		"./viewer": "./src/viewer.ts",
 		"./tunnel": "./src/tunnel.ts",
 		"./http": "./src/http.ts",
 		"./hub": "./src/hub.ts",

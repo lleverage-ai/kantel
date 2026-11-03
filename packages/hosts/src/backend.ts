@@ -4,8 +4,8 @@
  *
  * A snapshot's `ref` is `{hostId}/{snapshotId}`: a snapshot lives on its host's disk, so a sandbox made or forked from
  * it goes on that host. Desktops, browsers and SSH are reached through signed tunnel URLs (`tunnel.ts`): the desktop's
- * VNC as raw TCP over a WebSocket of binary frames (what noVNC's RFB client speaks), Chrome's DevTools WebSocket passed
- * through for `connectOverCDP`, and sshd as raw TCP for an `ssh -o ProxyCommand=…`. Exposed ports aren't offered yet:
+ * VNC as raw TCP over a WebSocket of binary frames, opened by a noVNC page on the gateway (`viewer.ts`), Chrome's
+ * DevTools WebSocket passed through for `connectOverCDP`, and sshd as raw TCP for an `ssh -o ProxyCommand=…`. Exposed ports aren't offered yet:
  * the contract's HTTPS URL per port wants a wildcard name for the gateway.
  */
 import type {
@@ -24,6 +24,7 @@ import { KantelError } from "@kantel/contracts";
 import type { HostEgress, HostSandbox, SandboxTier } from "./protocol.ts";
 import type { HostsService, HostView } from "./service.ts";
 import { HOSTS_TUNNEL_PATH, signTunnel } from "./tunnel.ts";
+import { HOSTS_VIEW_PATH } from "./viewer.ts";
 
 /** Where the guest image's desktop (VNC, loopback), Chromium (CDP) and sshd listen. */
 export const DESKTOP_PORT = 5901;
@@ -147,7 +148,8 @@ function capabilitiesOf(tier: SandboxTier, host: HostView | undefined) {
 export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	const { hosts } = options;
 	const now = options.now ?? Date.now;
-	const wsBase = options.publicUrl.replace(/^http/, "ws").replace(/\/+$/, "");
+	const httpBase = options.publicUrl.replace(/\/+$/, "");
+	const wsBase = httpBase.replace(/^http/, "ws");
 
 	const call = <T>(sandboxId: string, method: string, params: object = {}, signal?: AbortSignal, timeoutMs?: number) =>
 		hosts.sandboxes.call<T>(sandboxId, method, params, {
@@ -195,14 +197,23 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		return placed(sandboxId, sandbox, hostId);
 	}
 
-	async function tunnel(sandboxId: string, port: number, ttlMinutes: number): Promise<string> {
+	async function ticketFor(sandboxId: string, port: number, ttlMinutes: number): Promise<string> {
 		await tierOf(sandboxId);
-		const ticket = await signTunnel(options.tunnelSecret, {
+		return signTunnel(options.tunnelSecret, {
 			sandboxId,
 			port,
 			expiresAt: now() + Math.max(1, Math.min(ttlMinutes, 24 * 60)) * 60_000,
 		});
-		return `${wsBase}${HOSTS_TUNNEL_PATH}/${ticket}`;
+	}
+
+	/** The desktop's noVNC page (viewer.ts), which opens the tunnel with the same ticket. */
+	async function desktopPage(sandboxId: string, ttlMinutes: number, viewOnly: boolean): Promise<string> {
+		const ticket = await ticketFor(sandboxId, DESKTOP_PORT, ttlMinutes);
+		return `${httpBase}${HOSTS_VIEW_PATH}/${ticket}${viewOnly ? "?viewOnly=1" : ""}`;
+	}
+
+	async function tunnel(sandboxId: string, port: number, ttlMinutes: number): Promise<string> {
+		return `${wsBase}${HOSTS_TUNNEL_PATH}/${await ticketFor(sandboxId, port, ttlMinutes)}`;
 	}
 
 	async function createOne(spec: SandboxSpec): Promise<Placement> {
@@ -388,13 +399,14 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				...(fingerprint.trim() === "" ? {} : { hostKeyFingerprint: fingerprint.trim() }),
 			};
 		},
-		async openDesktop(sandboxId, { ttlMinutes }) {
+		async openDesktop(sandboxId, { ttlMinutes, viewOnly }) {
 			const { tier } = await tierOf(sandboxId);
 			if (tier !== "microvm") throw new KantelError("not_supported", "An isolate has no desktop");
-			const url = await tunnel(sandboxId, DESKTOP_PORT, ttlMinutes);
+			// A noVNC page (viewer.ts) that opens the tunnel with the same ticket.
+			const url = await desktopPage(sandboxId, ttlMinutes, viewOnly);
 			return { url, embedUrl: url };
 		},
-		async openBrowser(sandboxId, { ttlMinutes }) {
+		async openBrowser(sandboxId, { ttlMinutes, viewOnly }) {
 			const { tier } = await tierOf(sandboxId);
 			if (tier !== "microvm") throw new KantelError("not_supported", "An isolate has no browser");
 			// Chrome's browser-wide DevTools target, passed through the tunnel with its path.
@@ -412,7 +424,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				throw new KantelError("unavailable", "The sandbox's browser isn't up yet");
 			}
 			const cdpUrl = `${await tunnel(sandboxId, BROWSER_PORT, ttlMinutes)}${target}`;
-			return { url: cdpUrl, cdpUrl };
+			// People watch and drive Chrome where it runs: on the desktop.
+			return { url: await desktopPage(sandboxId, ttlMinutes, viewOnly), cdpUrl };
 		},
 		async revokeHost(hostId) {
 			await hosts.revoke(hostId).catch((error: unknown) => {
