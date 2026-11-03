@@ -12,8 +12,6 @@ export * as environmentSchema from "./environments-schema.ts";
 export * from "./model-provider-routes.ts";
 export * as modelProviderSchema from "./model-providers-schema.ts";
 export * from "./openapi.ts";
-export * from "./program-routes.ts";
-export * as programSchema from "./programs-schema.ts";
 export * from "./route.ts";
 export * from "./router.ts";
 export * from "./routes.ts";

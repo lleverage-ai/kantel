@@ -34,7 +34,6 @@ or a Kantel session from email one-time PIN sign-in, and the console's build (`a
 | `/v1/sessions`, `/v1/profiles`, `/v1/hosts` | Session API (`@kantel/runtime/http`, see `packages/runtime/HTTP.md`) |
 | `/v1/workspaces/:id/...` | Workspace read API (`@kantel/workspace/read-api`) |
 | `/v1/audit/events`, `/v1/audit/event` | Audit query API (`@kantel/audit/http`) |
-| `/v1/programs/...` | Saved programs (`@kantel/programs/http`), unless `KANTEL_PROGRAMS=off` |
 | `/v1/connections/...` | Connections (`@kantel/connections`), unless `KANTEL_CONNECTIONS=off` |
 | `/v1/deployment` | Which implementation backs each contract |
 | `/healthz` | Liveness, no credentials |
@@ -56,8 +55,6 @@ own). Its session gets the tools of Cloudflare's default profile:
 | `read`, `write`, `edit`, `ls` | Work on the workspace directly | |
 | `bash` | Leases an isolate (a just-bash shell, in the gateway's process) on its first command only; closing or aborting the session releases it | |
 | `present_files`, `create_document` | Show files, and write documents, as cards the console opens | `KANTEL_PRESENT_FILES=off` |
-| `codemode` | Runs a script that calls the session's other tools, in a QuickJS VM on a worker thread of the gateway, one per script | `KANTEL_CODEMODE=off` |
-| `save_program` | Saves a code mode program that `/v1/programs/{id}/runs` runs with no model; programs can pause for input or an agent's answer | `KANTEL_PROGRAMS=off`, `KANTEL_PROGRAM_WAITS=off` |
 | `connections_list`, `connection_tools`, `connection_call`, `connection_request` | Call the outside services and MCP servers people connect in the console | `KANTEL_CONNECTIONS=off` |
 | `generate_image` | Makes images, for a profile whose image model (the console's Models page) a connector lists as making images | |
 | `memory_search`, `memory_read` | Recall, for a profile with memory scopes | |
