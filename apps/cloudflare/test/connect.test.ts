@@ -23,6 +23,7 @@ import {
 	onMessages,
 	preOpenBuffer,
 	revivingStub,
+	type StackCompute,
 	sweptAsUsed,
 	TUNNEL_PENDING_LIMIT,
 	TUNNEL_PENDING_MESSAGES,
@@ -465,7 +466,7 @@ describe("Kantel Connect on the Worker", () => {
 		expect(made.body).toMatchObject({ state: "running", hostId });
 	});
 
-	it("stops a host's sandbox at its auto-stop time with no compute request to prompt it", async () => {
+	it("stops a host's sandbox at its auto-stop time, and sends its webhook, with no compute request to prompt it", async () => {
 		let clock = Date.now();
 		const authenticator: Authenticator = {
 			authenticate: async () => ({
@@ -474,17 +475,27 @@ describe("Kantel Connect on the Worker", () => {
 				organisationId: "org_1",
 			}),
 		};
-		const compute = await createStackCompute({
-			authenticator,
-			identity: { authorize: async () => undefined, getUser: () => Promise.reject(new Error("no users here")) },
-			sql: objectSql(new DatabaseSync(":memory:")),
-			connect: { publicUrl: BASE },
-			now: () => clock,
-			connectSweepMs: 10,
-		});
-		closers.push(() => compute.close());
+		const db = new DatabaseSync(":memory:");
+		const delivered: string[] = [];
+		const open = async () => {
+			const opened = await createStackCompute({
+				authenticator,
+				identity: { authorize: async () => undefined, getUser: () => Promise.reject(new Error("no users here")) },
+				sql: objectSql(db),
+				connect: { publicUrl: BASE },
+				now: () => clock,
+				connectSweepMs: 10,
+				fetch: async (_url, init) => {
+					delivered.push(String(init?.body));
+					return new Response("ok");
+				},
+			});
+			closers.push(() => opened.close());
+			return opened;
+		};
+		const first = await open();
 		const call = async (method: string, path: string, body?: unknown) => {
-			const response = await compute.fetch(
+			const response = await first.fetch(
 				new Request(`${BASE}${path}`, {
 					method,
 					headers: { authorization: "Bearer person", "content-type": "application/json" },
@@ -493,28 +504,55 @@ describe("Kantel Connect on the Worker", () => {
 			);
 			return JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
 		};
-		const hosts = compute.hosts;
-		if (hosts === undefined) throw new Error("Connect is on");
+		if (first.hosts === undefined) throw new Error("Connect is on");
 		const token = String((await call("POST", "/v1/connect/enrolments", {})).token);
-		const registered = await hosts.fetch(
+		const registered = await first.hosts.fetch(
 			new Request(`${BASE}/v1/hosts/register`, { method: "POST", body: JSON.stringify({ token }) }),
 		);
 		if (registered === undefined) throw new Error("Registration wasn't served");
 		const { hostId, credential } = (await registered.json()) as { hostId: string; credential: string };
-		const host = fakeHost();
-		const held = await hosts.connect(credential, host.socket);
-		if (held === undefined) throw new Error("The host's credential was refused");
-		host.attach(held, hostId);
-		await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
+		const attach = async (compute: StackCompute) => {
+			const hosts = compute.hosts;
+			if (hosts === undefined) throw new Error("Connect is on");
+			const host = fakeHost();
+			const held = await hosts.connect(credential, host.socket);
+			if (held === undefined) throw new Error("The host's credential was refused");
+			host.attach(held, hostId);
+			await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
+			return host;
+		};
+		await attach(first);
 		const timed = await call("POST", "/v1/sandboxes", { type: "microvm", autoStopMinutes: 1, wait: true });
 		const kept = await call("POST", "/v1/sandboxes", { type: "microvm", autoStopMinutes: null, wait: true });
 		expect([timed.hostId, kept.hostId]).toEqual([hostId, hostId]);
+		await call("POST", "/v1/webhooks", {
+			name: "stops",
+			url: "https://hooks.example.test/x",
+			events: ["sandbox.stopped"],
+		});
+		await first.close();
 
-		// Past its stop time, with nothing calling the compute API (it is used over SSH alone, say): it is stopped.
+		// The object starts again (as after an eviction) and its host reconnects; nothing calls the compute API, so the
+		// request-driven timers (the webhook dispatcher's among them) never start. Past its stop time it is stopped all
+		// the same (it is used over SSH alone, say), and its `sandbox.stopped` is sent.
+		const second = await open();
+		const host = await attach(second);
+		for (const id of [String(timed.id), String(kept.id)]) host.sandboxes.add(id);
 		clock += 2 * 60_000;
 		await expect.poll(() => host.calls.filter((method) => method === "sandbox.stop").length).toBe(1);
-		expect((await call("GET", `/v1/sandboxes/${timed.id}`)).state).toBe("stopped");
-		expect((await call("GET", `/v1/sandboxes/${kept.id}`)).state).toBe("running");
+		await expect
+			.poll(() => delivered.map((body) => JSON.parse(body) as { type: string; sandboxId?: string }), {
+				timeout: 5000,
+			})
+			.toEqual([expect.objectContaining({ type: "sandbox.stopped" })]);
+		const state = async (id: unknown) => {
+			const response = await second.fetch(
+				new Request(`${BASE}/v1/sandboxes/${id}`, { headers: { authorization: "Bearer person" } }),
+			);
+			return ((await response?.json()) as { state: string } | undefined)?.state;
+		};
+		expect(await state(timed.id)).toBe("stopped");
+		expect(await state(kept.id)).toBe("running");
 	});
 
 	it("refuses a host's snapshot on the stub rather than booting an empty disk in its place", async () => {

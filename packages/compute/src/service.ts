@@ -1965,30 +1965,28 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 				// Queued behind the source too, so it isn't stopped while its live disk is copied.
 				const egress = await egressFor(current.accountId);
+				// One target at a time, each placement recorded as it lands: a backend makes a batch's targets one by one, so
+				// a failure part-way leaves the earlier ones made, and they must keep their host (a start or recovery uses that
+				// machine) rather than be taken for never made (`neverPlaced`).
 				const work = track([current.id, ...forks.map((fork) => fork.id)], async () => {
-					let placements: Placement[];
-					try {
-						placements = await backend.fork(
-							{ sandboxId: current.id, ...(ref === undefined ? {} : { snapshot: ref }) },
-							forks.map((fork) => ({
-								sandboxId: fork.id,
-								accountId: fork.accountId,
-								type: fork.type,
-								subdomain: fork.subdomain,
-								size: fork.size,
-								image: fork.image,
-								env: fork.env,
-								eligibleHosts: hosts,
-								...egress,
-							})),
-						);
-					} catch (error) {
-						for (const fork of forks) await fail(fork.id, error, "starting");
-						return;
-					}
-					for (const [index, fork] of forks.entries()) {
-						const placement = placements[index];
+					for (const fork of forks) {
 						await boot(fork.id, async () => {
+							const [placement] = await backend.fork(
+								{ sandboxId: current.id, ...(ref === undefined ? {} : { snapshot: ref }) },
+								[
+									{
+										sandboxId: fork.id,
+										accountId: fork.accountId,
+										type: fork.type,
+										subdomain: fork.subdomain,
+										size: fork.size,
+										image: fork.image,
+										env: fork.env,
+										eligibleHosts: hosts,
+										...egress,
+									},
+								],
+							);
 							if (placement === undefined) throw new KantelError("unavailable", "The fork was not placed");
 							return placement;
 						});

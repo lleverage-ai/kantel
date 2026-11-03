@@ -262,8 +262,8 @@ export interface StackComputeOptions {
 }
 
 /**
- * With Connect on, how often sandboxes past their auto-stop time are stopped, compute requests or not: a Connect
- * sandbox is a real machine of someone's, which may be used over SSH alone. A connected host keeps the object up (its
+ * With Connect on, how often sandboxes past their auto-stop time are stopped, and due webhook deliveries sent, compute
+ * requests or not: a Connect sandbox is a real machine of someone's, which may be used over SSH alone. A connected host keeps the object up (its
  * socket isn't hibernated), so this runs while there's a host to stop anything on, and once more as each connects.
  */
 export const CONNECT_SWEEP_MS = 30_000;
@@ -390,7 +390,12 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 	connect?.service.useJoinTokens(joinTokenSpender(store));
 	connect?.bind((grantee, sandboxId) => api.service.stillAllowed(grantee, sandboxId));
 	const timers = whileBusy(api, now);
-	const sweep = () => void api.service.sweep().catch(() => undefined);
+	// The dispatcher runs only while compute requests come (`whileBusy`), so the sweep sends what it queued itself: a
+	// stop's `sandbox.stopped`, on the tick after, and any delivery whose retry has come due.
+	const sweep = () => {
+		void api.service.sweep().catch(() => undefined);
+		void api.dispatcher.drain().catch(() => undefined);
+	};
 	const sweeper = connect === undefined ? undefined : setInterval(sweep, options.connectSweepMs ?? CONNECT_SWEEP_MS);
 	const afterConnect = new Set<ReturnType<typeof setTimeout>>();
 	const hosts: StackHosts | undefined =

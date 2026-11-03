@@ -446,6 +446,41 @@ describe("organisations", () => {
 		expect((await tom.getSandbox(fork?.id ?? "")).state).toBe("error");
 	});
 
+	it("keeps a fork that was made when a later one in its batch fails, rather than taking it for never made", async () => {
+		const stub = createStubBackend();
+		// Room for one more machine: as a host's backend does, it makes a batch's targets one by one, so the first is made
+		// and the second refused.
+		let room = 1;
+		const backend: SandboxBackend = {
+			...stub,
+			async fork(source, targets) {
+				const out = [];
+				for (const target of targets) {
+					if (room-- <= 0) throw new KantelError("unavailable", "The host is full");
+					out.push(...(await stub.fork(source, [target])));
+				}
+				return out;
+			},
+		};
+		const { tom } = setup(backend);
+		for (const live of [false, true]) {
+			room = 1;
+			const source = await tom.createSandbox({ type: "microvm", wait: true });
+			await tom.writeFile(source.id, { path: "/home/user/kept.txt", content: "kept" });
+			if (!live) await tom.stopSandbox(source.id, { wait: true });
+			const { items } = await tom.forkSandbox(source.id, { count: 2, wait: true });
+			const [made, refused] = await Promise.all(items.map((fork) => tom.getSandbox(fork.id)));
+			// The one made is running, its disk the source's; only the other failed.
+			expect(made?.state).toBe("running");
+			expect((await tom.readFile(made?.id ?? "", { path: "/home/user/kept.txt" })).content).toBe("kept");
+			expect(refused?.state).toBe("error");
+			// Stopped and started, the one made is its own machine again, never made anew or refused as never made.
+			await tom.stopSandbox(made?.id ?? "", { wait: true });
+			expect((await tom.startSandbox(made?.id ?? "", { wait: true })).state).toBe("running");
+			expect((await tom.readFile(made?.id ?? "", { path: "/home/user/kept.txt" })).content).toBe("kept");
+		}
+	});
+
 	it("won't rotate a key that may use the shared hosts for an admin who may not", async () => {
 		const { tom, ann, client } = setup(createStubBackend(), { sharedHosts: async (userId) => userId === "usr_tom" });
 		const org = await tom.createOrganisation({ name: "Acme" });
