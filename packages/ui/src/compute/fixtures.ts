@@ -1572,7 +1572,14 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					const env = find(environments, id, "environment");
 					return putEnvironment({ ...env, files: env.files.filter((file) => file.path !== path) });
 				}),
-			setRepos: (id, repos) => gate(() => putEnvironment({ ...find(environments, id, "environment"), repos })),
+			setRepos: (id, repos) =>
+				gate(() => {
+					const env = find(environments, id, "environment");
+					const urls = repos.map((repo) => repo.url);
+					const twice = urls.find((url, at) => urls.indexOf(url) !== at);
+					if (twice !== undefined) throw new Error(`${twice} is in the list twice.`);
+					return putEnvironment({ ...env, repos });
+				}),
 			setGrants: (id, grants) => gate(() => putEnvironment({ ...find(environments, id, "environment"), grants })),
 		},
 		egress: {

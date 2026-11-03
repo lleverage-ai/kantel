@@ -43,6 +43,20 @@ export function variableNameProblem(name: string): string | undefined {
 	return undefined;
 }
 
+/** Why `url` can't be added beside the repositories at `taken`, or undefined when it can. A repository is its address. */
+export function repoUrlProblem(url: string, taken: readonly string[]): string | undefined {
+	const value = url.trim();
+	if (!/^https:\/\/[^\s/]+\/\S+$/.test(value)) return "Give its https address, such as https://github.com/owner/name.";
+	const key = (each: string) =>
+		each
+			.trim()
+			.replace(/\.git$/, "")
+			.replace(/\/$/, "")
+			.toLowerCase();
+	if (taken.some((each) => key(each) === key(value))) return "The environment already has this repository.";
+	return undefined;
+}
+
 export const isMethod = (value: string): value is HttpMethod => (HTTP_METHODS as readonly string[]).includes(value);
 
 /** `api.github.com`, `POST api.openai.com /v1/`, `GET, PUT registry.npmjs.org`. */

@@ -37,6 +37,7 @@ import {
 	isMethod,
 	modeText,
 	pathProblem,
+	repoUrlProblem,
 	splitList,
 	variableNameProblem,
 } from "./egress-rules.ts";
@@ -313,6 +314,8 @@ export function EnvironmentPage({
 		addingProtected ? { kind: "variable", protect: true } : undefined,
 	);
 	const [notice, setNotice] = useState<NoticeState>();
+	// The repository list is saved whole, from the list it was changed from, so one change waits for the last.
+	const [savingRepos, setSavingRepos] = useState(false);
 	const now = fixedNow ?? Date.now();
 	const env = saved ?? (state.status === "ready" ? state.value : undefined);
 
@@ -320,6 +323,15 @@ export function EnvironmentPage({
 		const next = await change;
 		setSaved(next);
 		if (done !== undefined) setNotice({ level: "info", text: done });
+	};
+	const applyRepos = async (repos: readonly EnvironmentRepo[], done: string): Promise<void> => {
+		if (env === undefined || savingRepos) return;
+		setSavingRepos(true);
+		try {
+			await apply(source.setRepos(env.id, repos), done);
+		} finally {
+			setSavingRepos(false);
+		}
 	};
 
 	const back = (
@@ -437,13 +449,11 @@ export function EnvironmentPage({
 
 			<ReposSection
 				env={env}
+				saving={savingRepos}
 				onAdd={() => setEditing({ kind: "repo" })}
 				onRemove={(repo) =>
-					apply(
-						source.setRepos(
-							env.id,
-							env.repos.filter((each) => each.url !== repo.url),
-						),
+					applyRepos(
+						env.repos.filter((each) => each.url !== repo.url),
 						`Removed ${repo.url}.`,
 					).catch((caught: unknown) =>
 						setNotice({ level: "error", text: messageOf(caught, `Kantel couldn't remove ${repo.url}.`) }),
@@ -508,9 +518,10 @@ export function EnvironmentPage({
 			) : null}
 			{editing?.kind === "repo" ? (
 				<RepoDialog
+					taken={env.repos.map((repo) => repo.url)}
 					onClose={() => setEditing(undefined)}
 					onAdd={async (repo) => {
-						await apply(source.setRepos(env.id, [...env.repos, repo]), `Added ${repo.url}.`);
+						await applyRepos([...env.repos, repo], `Added ${repo.url}.`);
 						setEditing(undefined);
 					}}
 				/>
@@ -1183,10 +1194,13 @@ function FileDialog({
 
 function ReposSection({
 	env,
+	saving,
 	onAdd,
 	onRemove,
 }: {
 	env: Environment;
+	/** A change to the list is being saved: nothing else changes it until it's done. */
+	saving: boolean;
 	onAdd: () => void;
 	onRemove: (repo: EnvironmentRepo) => void;
 }) {
@@ -1196,7 +1210,7 @@ function ReposSection({
 				id="environment-repos-title"
 				title="Repositories"
 				actions={
-					<Button size="sm" icon={<PlusIcon size="sm" />} onClick={onAdd}>
+					<Button size="sm" icon={<PlusIcon size="sm" />} disabled={saving} onClick={onAdd}>
 						Add repository
 					</Button>
 				}
@@ -1242,6 +1256,7 @@ function ReposSection({
 											variant="ghost"
 											icon={<TrashIcon />}
 											label={`Remove ${repo.url}`}
+											disabled={saving}
 											onClick={() => onRemove(repo)}
 										/>
 									</td>
@@ -1262,16 +1277,23 @@ const repoName = (url: string): string =>
 		.filter(Boolean)
 		.at(-1) ?? "repo";
 
-function RepoDialog({ onClose, onAdd }: { onClose: () => void; onAdd: (repo: EnvironmentRepo) => Promise<void> }) {
+function RepoDialog({
+	taken,
+	onClose,
+	onAdd,
+}: {
+	/** The environment's repositories' addresses: a repository is known by its address, so one can't be added twice. */
+	taken: readonly string[];
+	onClose: () => void;
+	onAdd: (repo: EnvironmentRepo) => Promise<void>;
+}) {
 	const [url, setUrl] = useState("");
 	const [path, setPath] = useState("");
 	const [ref, setRef] = useState("");
 	const [tried, setTried] = useState(false);
 	const [busy, setBusy] = useState(false);
 	const [failure, setFailure] = useState<string>();
-	const urlError = /^https:\/\/[^\s/]+\/\S+$/.test(url.trim())
-		? undefined
-		: "Give its https address, such as https://github.com/owner/name.";
+	const urlError = repoUrlProblem(url, taken);
 	const pathError = path === "" || path.startsWith("/") ? undefined : "Give the whole path, starting /.";
 	const submit = () => {
 		setTried(true);

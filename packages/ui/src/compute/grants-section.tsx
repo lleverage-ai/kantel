@@ -39,7 +39,11 @@ export function GrantsSection({
 	const [adding, setAdding] = useState(false);
 	const [failure, setFailure] = useState<string>();
 	const [busy, setBusy] = useState<string>();
+	// Every change replaces the whole list from the `grants` it was made against, so one waits for the last: two at once
+	// would each write a list missing the other's change.
+	const saving = busy !== undefined;
 	const save = async (next: readonly EgressGrant[], what: string) => {
+		if (saving) throw new Error("Kantel is still saving the last change.");
 		setFailure(undefined);
 		setBusy(what);
 		try {
@@ -61,7 +65,7 @@ export function GrantsSection({
 				id={id}
 				title={title}
 				actions={
-					<Button size="sm" icon={<PlusIcon size="sm" />} onClick={() => setAdding(true)}>
+					<Button size="sm" icon={<PlusIcon size="sm" />} disabled={saving} onClick={() => setAdding(true)}>
 						Add grant
 					</Button>
 				}
@@ -124,6 +128,7 @@ export function GrantsSection({
 												icon={<TrashIcon />}
 												label={`Remove the grant for ${grant.host}`}
 												busy={busy === grant.id}
+												disabled={saving}
 												onClick={() =>
 													void save(
 														grants.filter((entry) => entry.id !== grant.id),

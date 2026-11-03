@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { COMPUTE_PAGES, computePath, parseComputePath } from "./compute-console.tsx";
+import { COMPUTE_PAGES, computePath, parseComputePath, pathAfterAccountSwitch } from "./compute-console.tsx";
 
 describe("the compute console's paths", () => {
 	it("opens on Sandboxes at its base", () => {
@@ -30,6 +30,14 @@ describe("the compute console's paths", () => {
 		const path = computePath("snapshots", "/compute", "sbx_7f3k2m9q");
 		expect(path).toBe("/compute/snapshots/sbx_7f3k2m9q");
 		expect(parseComputePath(path)).toEqual({ page: "snapshots", sandboxId: "sbx_7f3k2m9q" });
+	});
+
+	it("leaves an environment or a sandbox's egress for its list when the account changes", () => {
+		expect(pathAfterAccountSwitch("/compute/environments/env_backend")).toBe("/compute/environments");
+		expect(pathAfterAccountSwitch("/compute/egress/sbx_4d8n")).toBe("/compute/sandboxes");
+		expect(pathAfterAccountSwitch("/compute/environments")).toBeUndefined();
+		expect(pathAfterAccountSwitch("/compute/keys")).toBeUndefined();
+		expect(pathAfterAccountSwitch("/environments/env_backend", "")).toBe("/environments");
 	});
 
 	it("leaves paths that aren't its own", () => {

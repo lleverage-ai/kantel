@@ -95,6 +95,18 @@ export function parseComputePath(pathname: string, base = "/compute"): ComputeRo
 	return parts.length === 1 ? { page } : undefined;
 }
 
+/**
+ * Where switching accounts goes from `pathname`, or undefined to stay. An environment, or a sandbox's egress, belongs to
+ * the account it was opened in: another account goes back to its list rather than showing (and editing) the last
+ * one's under the new name.
+ */
+export function pathAfterAccountSwitch(pathname: string, base = "/compute"): string | undefined {
+	const open = parseComputePath(pathname, base);
+	if (open?.page === "environments" && open.environmentId !== undefined) return computePath("environments", base);
+	if (open?.page === "egress") return computePath("sandboxes", base);
+	return undefined;
+}
+
 /** The path of a page under `base`, and of one sandbox's or environment's when `id` is given. */
 export function computePath(page: ComputePage, base = "/compute", id?: string): string {
 	return id === undefined ? `${base}/${page}` : `${base}/${page}/${encodeURIComponent(id)}`;
@@ -171,10 +183,15 @@ export function ComputeConsole({
 		() => list?.find((each) => each.id === accountId) ?? list?.find((each) => each.kind === "personal") ?? list?.[0],
 		[list, accountId],
 	);
-	const switchTo = useCallback((next: ComputeAccount) => {
-		setAccountId(next.id);
-		keepAccount(next.id);
-	}, []);
+	const switchTo = useCallback(
+		(next: ComputeAccount) => {
+			setAccountId(next.id);
+			keepAccount(next.id);
+			const away = pathAfterAccountSwitch(pathname, base);
+			if (away !== undefined) navigate(away);
+		},
+		[pathname, base, navigate],
+	);
 
 	// Links under the console move without reloading the page; others, and modified clicks, are left alone.
 	const onClick = useCallback(
