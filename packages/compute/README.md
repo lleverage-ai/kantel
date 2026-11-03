@@ -15,13 +15,16 @@ gateway always serves it, and its console runs on it.
   in-memory file tree, so commands and files really work; snapshots copy the tree. microVM-only features (SSH,
   desktop, browser, pause) answer `https://stub.kantel.invalid/…` URLs that go nowhere, and `not_supported` on an
   isolate, as the real ones will. Nothing is isolated or persisted: it's for tests and local runs.
-- `createMemoryStore()` (`src/store.ts`): the records, in memory, behind `ComputeStore`; a SQL store (over
-  `@kantel/sql`, as `@kantel/environments` does) replaces it for a durable gateway.
+- `createMemoryStore()` (`src/store.ts`): the records, in memory, behind `ComputeStore`.
+  `createSqlComputeStore(driver)` (`./sql`, over `@kantel/sql`; run `migrateComputeStore(driver)` first) keeps them
+  in one SQL table instead, Postgres or SQLite, so a gateway keeps them across restarts and its replicas share them.
+  It isn't exported from `.`, so the stub's bundle stays free of it.
 - Keys: `ksk_…`; only the SHA-256 of the secret is stored. A person's bearer goes to `authenticatePerson` (the
   gateway's sign-in); a person acts in their personal account unless `account` names an organisation they're in.
 - Webhooks (`src/webhooks.ts`) are signed as [Standard Webhooks](https://www.standardwebhooks.com/)
   (`webhook-id`, `webhook-timestamp`, `webhook-signature: v1,…`); `verifyWebhook` checks one. A failed delivery is
-  retried after 5 s, 30 s, 2 min, 10 min, 1 h, 6 h and 12 h, and a webhook that keeps failing is disabled.
+  retried after 5 s, 30 s, 2 min, 10 min, 1 h, 6 h and 12 h, and a webhook that keeps failing is disabled. A
+  dispatcher claims a delivery before sending it, so two gateways sharing a store send it once.
 - OpenTelemetry (`src/telemetry.ts`): lifecycle events as OTLP logs and usage as OTLP metrics, over OTLP/HTTP JSON
   to the account's endpoint.
 - Costs come from `PLACEHOLDER_RATES` until a deployment sets its own prices.

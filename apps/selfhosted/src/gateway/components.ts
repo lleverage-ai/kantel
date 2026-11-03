@@ -7,6 +7,7 @@
 // rules and approvals, the vault, skills, memory, browsers) was removed; its tables, on a database an older version
 // used, are left as they are and never read.
 import { createMemoryAuditStore } from "@kantel/audit/memory";
+import type { ComputeStore } from "@kantel/compute";
 import {
 	type AuditStore,
 	type Authentication,
@@ -44,6 +45,11 @@ export interface GatewayComponents {
 	 * on them. Absent on the stub backend (`KANTEL_COMPUTE_BACKEND=stub`, or no address hosts can reach).
 	 */
 	readonly computeHosts?: HostsService;
+	/**
+	 * Where the compute API keeps its records (`compute.ts`): Postgres with a database, so they outlast a restart and
+	 * gateways over one database share them. Absent in memory, where the API makes its own.
+	 */
+	readonly computeStore?: ComputeStore;
 	/** Which implementation backs each contract, served at `/v1/deployment` and recorded beside conformance runs. */
 	readonly bindings: { readonly [contract: string]: string };
 	close(): Promise<void>;
@@ -134,7 +140,7 @@ export interface Bootstrap {
 	readonly projects?: { readonly [name: string]: ProjectId };
 	/**
 	 * The compute plane's super-admin key (`ksk_…`, every scope): made on the first start, and made again from here on
-	 * each start after, as the compute plane keeps its records in memory.
+	 * each start after, as without a database the compute plane keeps its records in memory.
 	 */
 	readonly computeKey?: string;
 	/**

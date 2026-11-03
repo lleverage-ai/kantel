@@ -4,12 +4,15 @@
 //   audit       SQL audit store (@kantel/audit/sql, #70)
 //   identity    SQL identity directory (@kantel/identity/sql, #83)
 //   sign-in     email one-time PIN codes and Kantel sessions (@kantel/identity/sql, #93)
+//   compute     the compute API's records (@kantel/compute/sql): accounts, sandboxes, keys, webhooks and the rest,
+//               so they outlast a restart and gateways over one database share them
 //   hosts       the compute plane's registry of hosts (@kantel/hosts/store), when it places sandboxes on hosts
 //
 // Their tables are `audit_*`, `identity_*` and `compute_*`. A database an older version used also holds the agent
 // plane's tables (sessions, workspaces, skills, memory, sharing, connections, the vault and the rest) in this schema
 // and beside it: they are left as they are, never read, written or dropped.
 import { createSqlAuditStore, migrateAudit } from "@kantel/audit/sql";
+import { createSqlComputeStore, migrateComputeStore } from "@kantel/compute/sql";
 import { createSqlHostStore, migrateHosts } from "@kantel/hosts/store";
 import { createSqlIdentity, createSqlOtpStores, migrateIdentity } from "@kantel/identity/sql";
 import { postgresPoolDriver } from "@kantel/sql/postgres";
@@ -66,6 +69,8 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		const driver = postgresPoolDriver(pool);
 		await migrateAudit(driver);
 		await migrateIdentity(driver);
+		await migrateComputeStore(driver);
+		const computeStore = createSqlComputeStore(driver);
 		if (config.computeHosts !== undefined) await migrateHosts(driver);
 		const computeHosts =
 			config.computeHosts === undefined
@@ -82,11 +87,13 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 			identity,
 			audit,
 			otp: createSqlOtpStores(driver),
+			computeStore,
 			...(computeHosts === undefined ? {} : { computeHosts }),
 			bindings: {
 				identity: "postgres",
 				audit: "postgres",
 				signIn: "postgres",
+				computeStore: "postgres",
 				...(computeHosts === undefined ? {} : { computeHosts: "postgres" }),
 			},
 			close,

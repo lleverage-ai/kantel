@@ -247,6 +247,9 @@ importers:
       "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
+      "@kantel/sql":
+        specifier: workspace:*
+        version: link:../sql
       just-bash:
         specifier: 3.6.0
         version: 3.6.0

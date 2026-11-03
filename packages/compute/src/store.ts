@@ -1,8 +1,8 @@
 /**
  * The compute plane's records behind one interface, `ComputeStore`: a collection per kind, each found by ID or by equal
- * fields. `createMemoryStore` keeps them in memory, for tests and local runs; a SQL store (one table per collection, a
- * JSON document beside the columns `list` filters on, as `@kantel/environments`' `sql-store.ts` does) can replace it
- * without the service changing. Records are copied in and out, so a caller changes one only by putting it back.
+ * fields. `createMemoryStore` keeps them in memory, for tests and local runs; `createSqlComputeStore` (`./sql`,
+ * `sql-store.ts`) keeps them in SQL, so a gateway keeps them across restarts and its replicas share them, and the
+ * service doesn't change. Records are copied in and out, so a caller changes one only by putting it back.
  *
  * No secret is kept in the clear except a webhook's signing secret, which signing needs, and an approved device
  * sign-in's key secret until the device collects it (at most 15 minutes): API keys, invite codes, device codes and
@@ -17,9 +17,9 @@ export interface Collection<T extends { readonly id: string }> {
 	/** Inserts or replaces the record with its ID. */
 	put(record: T): Promise<void>;
 	/**
-	 * Changes the record as it is now, with nothing else written between the read and the write (a SQL store does it in
-	 * one statement or transaction), and answers what was written. `change` answers `undefined` to write nothing; a
-	 * missing record is never written.
+	 * Changes the record as it is now, with nothing else written between the read and the write (the SQL store writes
+	 * only over the version it read, and reads again when another writer got there first), and answers what was written.
+	 * `change` answers `undefined` to write nothing; a missing record is never written. `change` may run more than once.
 	 */
 	update(id: string, change: (current: T) => T | undefined): Promise<T | undefined>;
 	/** Whether there was one to delete. */
@@ -202,7 +202,11 @@ export interface ComputeStore {
 	readonly deviceLogins: Collection<StoredDeviceLogin>;
 }
 
-function matches<T>(record: T, where: Partial<T> | undefined): boolean {
+/**
+ * Whether each defined field of `where` is `===` the record's top-level field of that name: what `list` answers by. The
+ * SQL store (`sql-store.ts`) checks every row with it too, so both answer the same.
+ */
+export function matches<T>(record: T, where: Partial<T> | undefined): boolean {
 	if (where === undefined) return true;
 	const fields = record as { readonly [key: string]: unknown };
 	return Object.entries(where).every(([key, value]) => value === undefined || fields[key] === value);

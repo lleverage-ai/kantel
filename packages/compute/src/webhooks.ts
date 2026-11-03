@@ -229,7 +229,17 @@ export function createWebhookDispatcher(options: WebhookDispatcherOptions): Webh
 		const due = (await store.deliveries.list({ state: "pending" })).filter(
 			(delivery) => (delivery.nextAttemptAt ?? 0) <= at,
 		);
-		for (const delivery of due) await attempt(delivery, false);
+		for (const delivery of due) {
+			// Claimed first, by moving its next attempt past the request's timeout: another dispatcher on the same store
+			// (a second gateway) then finds it not due, so it is sent once. A dispatcher that dies holding one lets it fall
+			// due again after that.
+			const claimed = await store.deliveries.update(delivery.id, (current) =>
+				current.state === "pending" && (current.nextAttemptAt ?? 0) <= at
+					? { ...current, nextAttemptAt: at + timeoutMs + 5_000 }
+					: undefined,
+			);
+			if (claimed !== undefined) await attempt(claimed, false);
+		}
 	}
 
 	const dispatcher: WebhookDispatcher = {

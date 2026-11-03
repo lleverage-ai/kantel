@@ -99,7 +99,7 @@ async function dispatcherWith(statuses: readonly number[]) {
 		return new Response("", { status: statuses[sent.length - 1] ?? statuses[statuses.length - 1] ?? 200 });
 	};
 	const dispatcher = createWebhookDispatcher({ store, fetch: fakeFetch, now: () => clock.now });
-	return { store, clock, secret, sent, dispatcher };
+	return { store, clock, secret, sent, dispatcher, fetch: fakeFetch };
 }
 
 const event: computeSchema.Event = {
@@ -152,6 +152,17 @@ describe("the dispatcher", () => {
 		const webhook = await store.webhooks.get("whk_1");
 		expect(webhook?.lastDelivery).toEqual({ at: clock.now, ok: true, status: 200 });
 		expect(webhook?.consecutiveFailures).toBe(0);
+	});
+
+	it("sends a delivery once when two dispatchers (two gateways) share the store", async () => {
+		const { store, clock, sent, dispatcher, fetch } = await dispatcherWith([200]);
+		const other = createWebhookDispatcher({ store, fetch, now: () => clock.now });
+		const [queued] = await dispatcher.enqueue(event);
+		await Promise.all([dispatcher.drain(), other.drain()]);
+		expect(sent).toHaveLength(1);
+		expect(await store.deliveries.get(queued?.id ?? "")).toMatchObject({ state: "delivered", attempts: 1 });
+		await Promise.all([dispatcher.drain(), other.drain()]);
+		expect(sent).toHaveLength(1);
 	});
 
 	it("queues nothing for an event type the webhook doesn't take", async () => {
