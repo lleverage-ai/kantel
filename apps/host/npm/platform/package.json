@@ -3,6 +3,11 @@
 	"version": "0.0.0",
 	"description": "The kantel-host binary for Linux ARCH. Install @kantel/host, which picks this package for the machine.",
 	"license": "UNLICENSED",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/lleverage-ai/kantel.git",
+		"directory": "apps/host/npm/platform"
+	},
 	"files": [
 		"bin/kantel-host"
 	],
