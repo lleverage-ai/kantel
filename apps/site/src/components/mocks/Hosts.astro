@@ -2,7 +2,6 @@
 // The console's Hosts page (compute console, with compute/parts.tsx's table and CapacityBar): Add a host, with the
 // one-line join command and its token's expiry, and the hosts table, each host with its state and what of its CPU,
 // memory and disk is in use.
-import { SITE_URL } from "../../site.mjs";
 import Icon from "./Icon.astro";
 import Mock from "./Mock.astro";
 
@@ -87,7 +86,7 @@ const capacity = {
 		<p class="m-sm m-muted">Run this on the new Linux machine. It shows up below when it has joined.</p>
 		<div class="m-well flex items-start gap-3 px-3 py-2.5">
 			<code class="min-w-0 flex-1 m-mono break-words whitespace-normal"
-				>curl -fsSL {SITE_URL}/host.sh | sudo sh -s -- join https://kantel.acme.dev --token kjt_8Hq2vX4mP0cR7tLw</code
+				>curl -fsSL https://kantel.acme.dev/install-host.sh | sh -s -- --join kth_8Hq2vX4mP0cR7tLw</code
 			>
 			<span class="m-hide-narrow m-button"><Icon name="copy" class="m-icon-sm" />Copy</span>
 		</div>

@@ -3,8 +3,8 @@
 // host join command and the pixel field behind them; then the three steps to a first sandbox, the two types, the
 // lifecycle, the ways in from a harness, hosts and the proxy, the rest in brief, self-hosted or hosted, and the way to
 // the docs and the source. Claims follow the usage docs (docs/site); the pictures are mocks of the console in its
-// default theme (src/components/mocks), not screenshots. The CLI, SDK and MCP names are still being built, and the
-// page says so.
+// default theme (src/components/mocks), not screenshots. The CLI, SDK and MCP server are experimental, and the page
+// says so.
 import Feature from "../components/Feature.astro";
 import InstallCommand from "../components/InstallCommand.astro";
 import Hosts from "../components/mocks/Hosts.astro";
@@ -33,7 +33,7 @@ const steps = [
 	{
 		title: "Make a sandbox",
 		text: "From the console, or from your agent. A microVM is up in about a second.",
-		command: "npx kantel new --type microvm",
+		command: "npx kantel sandbox create --type microvm",
 	},
 ];
 
@@ -63,7 +63,7 @@ const types = [
 	},
 ];
 
-// The harness samples, one tab each. The CLI, SDK and MCP server are still being built, so the names are provisional.
+// The harness samples, one tab each, as packages/cli's README and the docs' TypeScript SDK page show them.
 const samples = [
 	{
 		id: "cli",
@@ -71,11 +71,11 @@ const samples = [
 		file: "Terminal",
 		lines: [
 			{ comment: "# A microVM, up in about a second" },
-			{ code: "npx kantel new --type microvm" },
+			{ code: "npx kantel sandbox create --type microvm" },
 			{ comment: "# Run the tests in it" },
 			{ code: "npx kantel exec sbx_7f3k2m9qa1 -- npm test" },
 			{ comment: "# Copy it, to try something else from the same state" },
-			{ code: "npx kantel fork sbx_7f3k2m9qa1" },
+			{ code: "npx kantel sandbox fork sbx_7f3k2m9qa1" },
 		],
 	},
 	{
@@ -83,12 +83,15 @@ const samples = [
 		tab: "TypeScript",
 		file: "agent.ts",
 		lines: [
-			{ code: 'import { Kantel } from "@kantel/sdk";' },
+			{ code: 'import { createKantelClient } from "./kantel-sdk.ts";' },
 			{ code: "" },
-			{ code: "const kantel = new Kantel({ apiKey: process.env.KANTEL_API_KEY });" },
+			{ code: "const kantel = createKantelClient({" },
+			{ code: '  baseUrl: "https://kantel.example.com/v1",' },
+			{ code: "  token: process.env.KANTEL_API_KEY," },
+			{ code: "});" },
 			{ code: "" },
-			{ code: 'const sandbox = await kantel.sandboxes.create({ type: "microvm" });' },
-			{ code: 'await sandbox.exec("npm test");' },
+			{ code: 'const sandbox = await kantel.createSandbox({ type: "microvm", wait: true });' },
+			{ code: 'await kantel.runCommand(sandbox.id, { command: "npm test" });' },
 		],
 	},
 	{
@@ -111,7 +114,7 @@ const samples = [
 			{ code: '  "mcpServers": {' },
 			{ code: '    "kantel": {' },
 			{ code: '      "command": "npx",' },
-			{ code: '      "args": ["kantel", "mcp"],' },
+			{ code: '      "args": ["-y", "kantel", "mcp"],' },
 			{ code: '      "env": {' },
 			// Claude Code fills in ${VAR} from the environment itself, so these stay literal.
 			{ code: `        "KANTEL_URL": "\${KANTEL_URL}",` },
@@ -126,7 +129,7 @@ const samples = [
 
 const interfaces = [
 	{ name: "The CLI", text: "npx kantel, for you and for any agent with a shell" },
-	{ name: "The TypeScript SDK", text: "@kantel/sdk, for your own app or agent loop" },
+	{ name: "The TypeScript SDK", text: "one generated file with no dependencies, for your own app or agent loop" },
 	{ name: "The HTTP API", text: "every route under /v1, from any language" },
 	{ name: "An MCP server", text: "sandboxes as tools in Claude Code or any MCP client" },
 	{ name: "An AGENTS.md snippet or skill", text: "tells an agent when to reach for a sandbox, and how" },
@@ -320,7 +323,7 @@ const linkOnMidnight = "underline decoration-midnight-2 underline-offset-4 hover
 				<Feature
 					id="lifecycle"
 					title="Stop, resume and fork"
-					route="npx kantel fork <id>"
+					route="npx kantel sandbox fork <id>"
 					docs={{ href: "/docs/concepts/#lifecycle", label: "The lifecycle" }}
 				>
 					<p>
@@ -382,10 +385,13 @@ const linkOnMidnight = "underline decoration-midnight-2 underline-offset-4 hover
 					}
 				</ul>
 				<p class="mt-6 text-sm text-faint">
-					The CLI, the SDK and the MCP server are being built now, so the names on this page may still change.
+					The CLI, the SDK and the MCP server are experimental, so their commands and methods may still change.
 				</p>
 				<p class="mt-6 text-body">
 					<a class={linkOnMidnight} href="/docs/api/reference/">API reference</a>
+				</p>
+				<p class="mt-2 text-body">
+					<a class={linkOnMidnight} href="/docs/coding-agents/">Set up a coding agent</a>
 				</p>
 			</div>
 			<div class="min-w-0 lg:col-span-7" data-tabs>
