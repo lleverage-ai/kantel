@@ -33,6 +33,10 @@ Only usage docs are copied: design and planning docs elsewhere in `docs/` aren't
 `scripts/check-links.mjs` runs after the build and fails it when an internal link, on the marketing page or in the
 docs, doesn't resolve to a built page or asset.
 
+`scripts/llms-txt.mjs` runs last and writes the docs for language models: `/docs/llms.txt`, an index of every page
+in sidebar order, `/docs/<page>.md` for each page as plain Markdown, and `/docs/llms-full.txt` with every page in one
+file. See [docs/site/README.md](../../docs/site/README.md#for-agents-llmstxt).
+
 ## The installer
 
 `public/install.sh` is POSIX sh, so `curl -fsSL https://kantel.dev/install.sh | sh` works from bash, zsh and fish. It
