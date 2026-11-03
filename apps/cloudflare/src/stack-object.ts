@@ -8,10 +8,10 @@
  * - with email-code sign-in on (KANTEL_PUBLIC_URL), each UTC day's count of mail sent (`src/mail.ts`), in its storage,
  *   so the daily cap holds across restarts. Codes and sessions are in D1 with the directory.
  *
- * With Kantel Connect on (KANTEL_CONNECT=experimental), it also holds each enrolled host's WebSocket
+ * With account hosts on (KANTEL_ACCOUNT_HOSTS=experimental), it also holds each such host's WebSocket
  * (`GET /v1/hosts/connect`), accepted here and handed to the hub `src/compute.ts` keeps, so the compute API's calls reach
  * the host over the connection the host opened. The socket isn't hibernated (the hub's calls in flight live in
- * memory), so the object stays in memory while any host is connected; with Connect off no socket is ever taken.
+ * memory), so the object stays in memory while any host is connected; with account hosts off no socket is ever taken.
  *
  * Its SQLite still holds what the agent plane kept there (the session runtime's directory, profiles and each session's
  * Pi storage, the session homes table); nothing reads it now, and nothing deletes it. The alarm the runtime used to arm

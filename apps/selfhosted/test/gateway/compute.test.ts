@@ -284,17 +284,17 @@ describe("the compute plane on the gateway", () => {
 		).not.toBe(200);
 	});
 
-	it("turns Kantel Connect on only for KANTEL_CONNECT=experimental, with hosts", () => {
+	it("turns account hosts on only for KANTEL_ACCOUNT_HOSTS=experimental, with hosts", () => {
 		const env = { KANTEL_COMPUTE_BACKEND: "hosts", KANTEL_PUBLIC_URL: "https://kantel.example.com" };
-		expect(computeConfig(env)?.hosts?.connect).toBeUndefined();
-		expect(computeConfig({ ...env, KANTEL_CONNECT: "off" })?.hosts?.connect).toBeUndefined();
-		expect(computeConfig({ ...env, KANTEL_CONNECT: " Experimental " })?.hosts?.connect).toBe(true);
-		expect(() => computeConfig({ ...env, KANTEL_CONNECT: "on" })).toThrow(/KANTEL_CONNECT/);
-		// On the stub there are no hosts to enrol: nothing to turn on.
-		expect(computeConfig({ KANTEL_CONNECT: "experimental" })).toEqual({});
+		expect(computeConfig(env)?.hosts?.accountHosts).toBeUndefined();
+		expect(computeConfig({ ...env, KANTEL_ACCOUNT_HOSTS: "off" })?.hosts?.accountHosts).toBeUndefined();
+		expect(computeConfig({ ...env, KANTEL_ACCOUNT_HOSTS: " Experimental " })?.hosts?.accountHosts).toBe(true);
+		expect(() => computeConfig({ ...env, KANTEL_ACCOUNT_HOSTS: "on" })).toThrow(/KANTEL_ACCOUNT_HOSTS/);
+		// On the stub there are no hosts to add: nothing to turn on.
+		expect(computeConfig({ KANTEL_ACCOUNT_HOSTS: "experimental" })).toEqual({});
 	});
 
-	it("lets a signed-in person who isn't a super-admin enrol a host of their own, with Kantel Connect on", async () => {
+	it("lets a signed-in person who isn't a super-admin add a host of their own, with account hosts on", async () => {
 		const components = createGatewayComponents();
 		cleanups.push(() => components.close());
 		const seeded = await bootstrap(components, { organisation: "Compute", project: "compute" });
@@ -302,8 +302,8 @@ describe("the compute plane on the gateway", () => {
 			identity: components.identity,
 			providers: [kantelSessionProvider({ sessions: components.otp.sessions })],
 		});
-		const serveWith = async (connect: boolean) => {
-			const config = { publicUrl: "https://kantel.example.com", ...(connect ? { connect } : {}) };
+		const serveWith = async (accountHosts: boolean) => {
+			const config = { publicUrl: "https://kantel.example.com", ...(accountHosts ? { accountHosts } : {}) };
 			const service = gatewayHosts(config, createMemoryHostStore(), () => undefined);
 			cleanups.push(async () => service.close());
 			const compute = await gatewayCompute({
@@ -344,27 +344,27 @@ describe("the compute plane on the gateway", () => {
 
 		// Off (the default): 501.
 		const off = as((await serveWith(false)).gateway);
-		const refused = await failure(off.createConnectEnrolment({}));
+		const refused = await failure(off.createAccountJoinToken({}));
 		expect([refused.status, refused.code]).toEqual([501, "not_supported"]);
 
 		const { gateway, service } = await serveWith(true);
 		const otto = as(gateway);
 		expect((await otto.getCaller()).superAdmin).toBe(false);
-		const enrolment = await otto.createConnectEnrolment({ name: "otto-box" });
-		expect(enrolment.command).toContain("--url https://kantel.example.com --token kth_");
+		const joinToken = await otto.createAccountJoinToken({ name: "otto-box" });
+		expect(joinToken.command).toContain("--url https://kantel.example.com --token kth_");
 		const registered = await gateway.fetch(
 			new Request("http://gateway.test/v1/hosts/register", {
 				method: "POST",
 				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ token: enrolment.token }),
+				body: JSON.stringify({ token: joinToken.token }),
 			}),
 		);
 		expect(registered.status).toBe(201);
 		const { hostId } = (await registered.json()) as { hostId: string };
-		expect((await service.get(hostId)).accountId).toBe(enrolment.accountId);
-		const listed = (await otto.listConnectHosts()).items;
+		expect((await service.get(hostId)).accountId).toBe(joinToken.accountId);
+		const listed = (await otto.listAccountHosts()).items;
 		expect(listed.map((host) => [host.id, host.name, host.accountId])).toEqual([
-			[hostId, "otto-box", enrolment.accountId],
+			[hostId, "otto-box", joinToken.accountId],
 		]);
 		// Not a super-admin: the deployment's host routes stay closed to them.
 		expect((await failure(otto.listHosts())).code).toBe("forbidden");

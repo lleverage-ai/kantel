@@ -1,4 +1,5 @@
-// The Hosts page (compute console, experimental, super-admin): the machines that run sandboxes, each with its state,
+// The Hosts page (compute console, experimental): for a super-admin the deployment's hosts, and for anyone else, where
+// the deployment allows it, the account's own (`owner`), which run only its sandboxes. The machines that run sandboxes, each with its state,
 // platform, host agent version, CPU, memory and disk in use, the sandboxes on it and whether it can run microVMs. A
 // host can be drained, so no new sandboxes land on it, or removed, which revokes its credential. Add a host makes a
 // one-time join command to run on the new machine; the host agent dials out, so a host needs no inbound ports. Every
@@ -37,6 +38,8 @@ export interface HostsPageProps {
 	readonly hosting: HostingMode;
 	/** Open Add a host with a join command already made, for a story or an `?add` link. */
 	readonly adding?: boolean;
+	/** The account whose own hosts these are; absent, they are the deployment's, for a super-admin. */
+	readonly owner?: { readonly name: string; readonly kind: "personal" | "organisation" };
 }
 
 type NoticeState = { level: "info" | "error"; text: string };
@@ -70,7 +73,7 @@ function parseLabels(text: string): { readonly labels: Record<string, string>; r
 	return { labels };
 }
 
-export function HostsPage({ source, now: fixedNow, hosting, adding = false }: HostsPageProps) {
+export function HostsPage({ source, now: fixedNow, hosting, adding = false, owner }: HostsPageProps) {
 	const { state, reload } = useLoad(() => source.list(), [source]);
 	// Hosts changed here, ahead of the next read: a drain shows at once; null is a removed host.
 	const [local, setLocal] = useState<ReadonlyMap<string, Host | null>>(new Map());
@@ -126,10 +129,14 @@ export function HostsPage({ source, now: fixedNow, hosting, adding = false }: Ho
 		<div className={computePage}>
 			<PageHeader
 				title="Hosts"
-				lede={`These are the machines that run ${hosting === "hosted" ? "every account's sandboxes" : "sandboxes"}. Each runs the Kantel host agent, which dials out to this control plane, so a host needs no inbound ports.`}
+				lede={
+					owner === undefined
+						? `These are the machines that run ${hosting === "hosted" ? "every account's sandboxes" : "sandboxes"}. Each runs the Kantel host agent, which dials out to this control plane, so a host needs no inbound ports.`
+						: `Machines of your own that run ${owner.kind === "personal" ? "your" : `${owner.name}'s`} sandboxes, and no one else's. Each runs the Kantel host agent, which dials out to Kantel, so it needs no inbound ports: a machine at home, behind NAT or on a tailnet will do.`
+				}
 				actions={
 					<>
-						<Badge tone="accent">Super-admin</Badge>
+						{owner === undefined ? <Badge tone="accent">Super-admin</Badge> : <Badge>Experimental</Badge>}
 						<Button variant="primary" icon={<PlusIcon size="sm" />} onClick={openAdd}>
 							Add a host
 						</Button>
@@ -170,7 +177,9 @@ export function HostsPage({ source, now: fixedNow, hosting, adding = false }: Ho
 						</Button>
 					}
 				>
-					Sandboxes need at least one host to run on. Any Linux machine with outbound HTTPS will do.
+					{owner === undefined
+						? "Sandboxes need at least one host to run on. Any Linux machine with outbound HTTPS will do."
+						: "Your sandboxes run on hosts you add. Any Linux machine with outbound HTTPS will do, and /dev/kvm for microVMs."}
 				</EmptyState>
 			) : (
 				<>

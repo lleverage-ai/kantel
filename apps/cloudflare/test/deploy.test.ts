@@ -180,6 +180,30 @@ describe("deploy config", () => {
 		);
 	});
 
+	it("turns accounts' own hosts on only when asked, and only with the public origin they dial", () => {
+		const config = (env: Record<string, string>) =>
+			deployConfig(rawConfig, deployValues({ ...configured, ...env }, "deploy"));
+		const publicOrigin = { KANTEL_PUBLIC_URL: "https://app.kantel.dev", KANTEL_SIGN_IN_FROM: "sign-in@kantel.dev" };
+		// Unset or off, the Worker's own `""` (off) stands.
+		expect((config(publicOrigin).vars as Record<string, string>).KANTEL_ACCOUNT_HOSTS).toBe("");
+		expect(
+			(config({ ...publicOrigin, KANTEL_ACCOUNT_HOSTS: "off" }).vars as Record<string, string>).KANTEL_ACCOUNT_HOSTS,
+		).toBe("");
+		const on = config({ ...publicOrigin, KANTEL_ACCOUNT_HOSTS: "experimental" });
+		expect(on.vars).toMatchObject({
+			KANTEL_ACCOUNT_HOSTS: "experimental",
+			KANTEL_PUBLIC_URL: "https://app.kantel.dev",
+		});
+		// Nothing more is routed for it: hosts dial the public origin's custom domain.
+		expect(on.routes).toEqual([{ pattern: "harbour.myslop.app/*", zone_name: "myslop.app" }]);
+		expect(() => deployValues({ ...configured, KANTEL_ACCOUNT_HOSTS: "experimental" }, "deploy")).toThrow(
+			"KANTEL_ACCOUNT_HOSTS needs KANTEL_PUBLIC_URL",
+		);
+		expect(() => deployValues({ ...configured, ...publicOrigin, KANTEL_ACCOUNT_HOSTS: "on" }, "deploy")).toThrow(
+			"KANTEL_ACCOUNT_HOSTS must be experimental or off",
+		);
+	});
+
 	it("routes the hostname on its parent zone, never as a custom domain", () => {
 		expect(zoneOf("harbour.myslop.app")).toBe("myslop.app");
 		expect(zoneOf("kantel.example.co.uk")).toBe("example.co.uk");

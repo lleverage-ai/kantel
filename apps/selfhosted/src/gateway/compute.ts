@@ -43,10 +43,10 @@
  *                                signs the Kantel-Sandbox and Kantel-Account headers hosts send an account's proxy
  *                                upstream when its settings ask for attribution (share it with the upstream); unset,
  *                                they go unsigned
- *   KANTEL_CONNECT               `experimental` turns on Kantel Connect with `hosts`: an account's people enrol machines
- *                                of their own (`POST /v1/connect/enrolments`, `kantel connect enrol`), which dial out to
+ *   KANTEL_ACCOUNT_HOSTS         `experimental` turns on account hosts with `hosts`: an account's people add machines
+ *                                of their own (`POST /v1/hosts/join-tokens`, `kantel hosts add`), which dial out to
  *                                this gateway like any host and run only that account's sandboxes. Default off: the
- *                                `/v1/connect` routes answer 501 not_supported
+ *                                `/v1/hosts` routes for them answer 501 not_supported
  *
  * An account's proxy settings (PUT /v1/proxy) reach its sandboxes as they boot (create, start, resume, fork): the host's
  * egress proxy applies the allow and deny rules, and with the host's --proxy-data-path switch on passes allowed
@@ -125,8 +125,8 @@ export interface ComputeHostsConfig {
 	readonly attributionKey?: string;
 	/** Exposed ports' wildcard name's parent, such as `kantel-ports.example`. */
 	readonly portsDomain?: string;
-	/** Kantel Connect (KANTEL_CONNECT=experimental): accounts enrol hosts of their own. */
-	readonly connect?: boolean;
+	/** Account hosts (KANTEL_ACCOUNT_HOSTS=experimental): accounts add hosts of their own. */
+	readonly accountHosts?: boolean;
 }
 
 /** The compute plane's settings: `hosts` is set when sandboxes run on joined hosts, not the stub. */
@@ -168,7 +168,7 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 	const rawImages = env.KANTEL_COMPUTE_IMAGES?.trim() || DEFAULT_HOST_IMAGES;
 	const images = rawImages.toLowerCase() === "off" ? "" : rawImages;
 	const joinCommand = env.KANTEL_COMPUTE_JOIN_COMMAND?.trim() ?? "";
-	const connect = connectSwitch(env.KANTEL_CONNECT);
+	const accountHosts = accountHostsSwitch(env.KANTEL_ACCOUNT_HOSTS);
 	const attributionKey = env.KANTEL_EGRESS_ATTRIBUTION_KEY?.trim() ?? "";
 	const portsDomain =
 		env.KANTEL_COMPUTE_PORTS_DOMAIN?.trim()
@@ -186,7 +186,7 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 	return {
 		hosts: {
 			publicUrl: new URL(publicUrl).origin,
-			...(connect ? { connect } : {}),
+			...(accountHosts ? { accountHosts } : {}),
 			...(portsDomain === "" ? {} : { portsDomain }),
 			...(attributionKey === "" ? {} : { attributionKey }),
 			...(images === "" ? {} : { images }),
@@ -198,14 +198,14 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 }
 
 /**
- * KANTEL_CONNECT: `experimental` turns Kantel Connect on; unset, empty or `off` leaves it off. Anything else is a
- * mistake worth stopping for, so a typo can't leave it off unnoticed.
+ * KANTEL_ACCOUNT_HOSTS: `experimental` turns account hosts on; unset, empty or `off` leaves them off. Anything else is
+ * a mistake worth stopping for, so a typo can't leave them off unnoticed.
  */
-export function connectSwitch(raw: string | undefined): boolean {
+export function accountHostsSwitch(raw: string | undefined): boolean {
 	const value = raw?.trim().toLowerCase() ?? "";
 	if (value === "" || value === "off") return false;
 	if (value === "experimental") return true;
-	throw new Error("KANTEL_CONNECT is `experimental` or `off`");
+	throw new Error("KANTEL_ACCOUNT_HOSTS is `experimental` or `off`");
 }
 
 /** The registry of hosts (`@kantel/hosts`) the `hosts` backend places sandboxes on. */
@@ -412,7 +412,7 @@ export async function gatewayCompute(options: {
 		...(options.sessionLive === undefined ? {} : { sessionLive: options.sessionLive }),
 		...(publicUrl === undefined ? {} : { publicUrl }),
 		...(hosts?.config.joinCommand === undefined ? {} : { hostJoinCommand: hosts.config.joinCommand }),
-		...(hosts?.config.connect === true ? { connect: true } : {}),
+		...(hosts?.config.accountHosts === true ? { accountHosts: true } : {}),
 		...(options.now === undefined ? {} : { now: options.now }),
 	});
 	const superAdminKey = await bootstrapSuperAdmin(api.store, options.superAdminKey, (options.now ?? Date.now)());
@@ -610,7 +610,7 @@ export function withHostUpgrades(
 							close: (code, reason) => accepted.close(code, reason),
 						});
 						// The hub's receive closes a connection whose frame it can't handle; this catch is the last line, so
-						// nothing a host sends (anyone's, with Kantel Connect) escapes into the gateway process.
+						// nothing a host sends (anyone's, with account hosts) escapes into the gateway process.
 						accepted.on("message", (data, binary) => {
 							try {
 								if (binary) held.receive(bytesOf(data));

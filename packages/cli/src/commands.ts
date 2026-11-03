@@ -437,7 +437,7 @@ function issuedKey(issued: IssuedApiKey): string {
 }
 
 /** A command's exit code: its own, 124 when it timed out (as timeout(1) does), 137 when it was killed. */
-/** One of an account's own hosts (Kantel Connect), for `kantel connect info`. */
+/** One of an account's own hosts, for `kantel host info`. */
 function describeHost(host: Host): string {
 	const labels = Object.entries(host.labels).map(([key, value]) => `${key}=${value}`);
 	return fields([
@@ -1829,11 +1829,11 @@ const SECTIONS: readonly Section[] = [
 		],
 	},
 	{
-		title: "Kantel Connect (experimental)",
+		title: "Your own hosts (experimental)",
 		commands: [
 			{
-				name: "connect enrol",
-				summary: "Enrol a Linux machine of your own: only your account's sandboxes will run on it",
+				name: "hosts add",
+				summary: "Add a Linux machine of your own: only your account's sandboxes will run on it",
 				args: [{ name: "name", optional: true }],
 				flags: {
 					label: { type: "string", multiple: true, value: "<K=V>", description: "A label for the host; repeat it" },
@@ -1848,32 +1848,32 @@ const SECTIONS: readonly Section[] = [
 					"Kantel and keeps that connection open: the machine needs no inbound port and may sit behind NAT.\n" +
 					"The host joins the account you act in (your personal account, or --account <org>); from then on that\n" +
 					"account's new sandboxes go on its own hosts, and no other account's ever do. The deployment must\n" +
-					"have Kantel Connect turned on (KANTEL_CONNECT=experimental).",
+					"have account hosts turned on (KANTEL_ACCOUNT_HOSTS=experimental).",
 				async run(ctx) {
 					const config = await ctx.config();
-					const enrolment = await (await ctx.client()).createConnectEnrolment({
+					const joinToken = await (await ctx.client()).createAccountJoinToken({
 						account: config.account,
 						name: ctx.optional(0),
 						labels: pairs(ctx.list("label"), "--label"),
 						expiresInMinutes: whole(ctx.string("expires"), "--expires", 5),
 					});
-					ctx.emit(enrolment, () =>
+					ctx.emit(joinToken, () =>
 						[
-							`Run this on the machine, as root, before ${timestamp(enrolment.expiresAt)}:`,
+							`Run this on the machine, as root, before ${timestamp(joinToken.expiresAt)}:`,
 							"",
-							`  ${enrolment.command}`,
+							`  ${joinToken.command}`,
 							"",
-							`It joins account ${enrolment.accountId}; the token works once. Then: kantel connect list`,
+							`It joins account ${joinToken.accountId}; the token works once. Then: kantel hosts list`,
 						].join("\n"),
 					);
 				},
 			},
 			{
-				name: "connect list",
-				summary: "The hosts enrolled into your account",
+				name: "hosts list",
+				summary: "The hosts added to your account",
 				async run(ctx) {
 					const config = await ctx.config();
-					const hosts = await (await ctx.client()).listConnectHosts({ account: config.account });
+					const hosts = await (await ctx.client()).listAccountHosts({ account: config.account });
 					const rows = hosts.items.map((host) => [
 						host.id,
 						host.name,
@@ -1884,40 +1884,40 @@ const SECTIONS: readonly Section[] = [
 					]);
 					ctx.emit(hosts, () =>
 						rows.length === 0
-							? "No hosts of your own. Enrol one with: kantel connect enrol"
+							? "No hosts of your own. Add one with: kantel hosts add"
 							: table(["ID", "NAME", "STATE", "TIERS", "SANDBOXES", "LAST SEEN"], rows),
 					);
 				},
 			},
 			{
-				name: "connect info",
+				name: "hosts info",
 				summary: "One of your hosts",
 				args: ID_ARG,
 				async run(ctx) {
-					const host = await (await ctx.client()).getConnectHost(ctx.arg(0));
+					const host = await (await ctx.client()).getAccountHost(ctx.arg(0));
 					ctx.emit(host, () => describeHost(host));
 				},
 			},
 			{
-				name: "connect drain",
+				name: "hosts drain",
 				summary: "Stop placing new sandboxes on one of your hosts (--off to take them again)",
 				args: ID_ARG,
 				flags: { off: { type: "boolean", description: "Take new sandboxes again" } },
 				async run(ctx) {
 					const draining = !ctx.boolean("off");
-					const host = await (await ctx.client()).updateConnectHost(ctx.arg(0), { draining });
+					const host = await (await ctx.client()).updateAccountHost(ctx.arg(0), { draining });
 					ctx.emit(host, () => `${host.id} (${host.name}) is ${host.state}.`);
 				},
 			},
 			{
-				name: "connect rm",
+				name: "hosts rm",
 				summary: "Remove one of your hosts: revoke its credential and close its connection",
 				args: ID_ARG,
 				details:
 					"Its sandboxes keep their disks on the machine but can't be reached. To take kantel-host off the\n" +
 					"machine too, run on it: sudo kantel-host uninstall",
 				async run(ctx) {
-					const host = await (await ctx.client()).removeConnectHost(ctx.arg(0));
+					const host = await (await ctx.client()).removeAccountHost(ctx.arg(0));
 					ctx.emit(host, () => `Removed ${host.id} (${host.name}); it is ${host.state}.`);
 				},
 			},
@@ -2076,7 +2076,7 @@ const GROUPS: { readonly [name: string]: string } = {
 	org: "Your organisations",
 	webhook: "Send the account's events to a URL",
 	telemetry: "Send the account's metrics and events to OpenTelemetry",
-	connect: "Run your sandboxes on machines of your own (experimental)",
+	hosts: "Run your sandboxes on machines of your own (experimental)",
 };
 const GROUP_ALIASES: { readonly [alias: string]: string } = { sb: "sandbox" };
 /** Other names for commands: short ones, and the `sandbox …` spellings of the first CLI, which keep working. */
@@ -2101,8 +2101,8 @@ const ALIASES: { readonly [alias: string]: string } = {
 };
 /** Commands that moved to the operators' CLI, kantel-admin (a file on each of Kantel's GitHub Releases). */
 const MOVED: { readonly [name: string]: string } = {
-	"host list": "kantel-admin host list",
-	"host join-token": "kantel-admin host add",
+	"host list": "kantel-admin host list (your own hosts: kantel hosts list)",
+	"host join-token": "kantel-admin host add (a host of your own: kantel hosts add)",
 };
 const SUBCOMMAND_ALIASES: { readonly [alias: string]: string } = {
 	ls: "list",

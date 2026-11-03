@@ -3,7 +3,7 @@
  *
  * | Prefix | Served by |
  * | --- | --- |
- * | `/v1/hosts/register`, `/v1/hosts/images/…`, with Kantel Connect on | hosts, with no sign-in (`src/compute.ts`, `@kantel/hosts`) |
+ * | `/v1/hosts/register`, `/v1/hosts/images/…`, with account hosts on | hosts, with no sign-in (`src/compute.ts`, `@kantel/hosts`) |
  * | `/v1/whoami`, `/v1/sandboxes`, `/v1/snapshots` and the rest of the compute API | the compute plane (`src/compute.ts`, `@kantel/compute`) |
  * | `/v1/me`, `/v1/projects`, `/v1/keys`, members and invites | who is signed in, their projects and keys (`@kantel/identity/http`) |
  * | `/v1/audit/…` | the audit query API (`@kantel/audit/http`) |

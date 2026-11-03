@@ -1,5 +1,5 @@
 /**
- * Checks what a host says about itself before the registry keeps it. With Kantel Connect, a host can be anyone's
+ * Checks what a host says about itself before the registry keeps it. With account hosts, a host can be anyone's
  * machine, and one malformed report (`tiers: {}`) kept as it came would break every account's placement and host
  * listing, which read every host's facts. So registration and hello refuse a report that isn't shaped as kantel-host
  * sends it, and reading a stored one that isn't (kept before this check) treats it as no report at all.

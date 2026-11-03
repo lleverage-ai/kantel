@@ -164,11 +164,11 @@ export interface StoredJoinToken {
 	readonly createdAt: number;
 	readonly usedAt?: number;
 	/**
-	 * The account a Kantel Connect enrolment joins the host to: only its sandboxes run there. Absent for a super-admin's
+	 * The account an account's join token joins the host to: only its sandboxes run there. Absent for a super-admin's
 	 * join token, whose host is shared by every account.
 	 */
 	readonly accountId?: string;
-	/** Who made it, for an enrolment. */
+	/** Who made it, for an account's join token. */
 	readonly createdBy?: string;
 	/** The host that spent it. */
 	readonly hostId?: string;

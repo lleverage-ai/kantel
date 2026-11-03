@@ -27,6 +27,8 @@ name: Cloudflare deploy
 #            sign-in and open sign-up on a public origin with no Access in front, such as https://app.kantel.dev, sending
 #            from an address on a domain onboarded for Cloudflare Email Sending (the SIGN_IN_MAIL binding). The origin's
 #            custom domain is attached once outside this workflow (apps/cloudflare/README.md, "The public origin")
+#   optional var KANTEL_ACCOUNT_HOSTS: `experimental` lets people add machines of their own, which dial out to
+#            KANTEL_PUBLIC_URL and run only their account's sandboxes; unset or `off`, it stays off
 #   optional secrets, each set on the Worker as a secret of the same name when it exists (src/vault.ts):
 #            KANTEL_VAULT_KEY (without it the vault answers 503), KANTEL_VAULT_MODEL_GATEWAY_TOKEN,
 #            KANTEL_VAULT_EGRESS_GATEWAY_TOKEN, KANTEL_CPA_API_KEY, KANTEL_BRWSR_API_KEY (src/browser.ts: without it
@@ -99,6 +101,8 @@ jobs:
       KANTEL_PUBLIC_URL: ${{ vars.KANTEL_PUBLIC_URL }}
       KANTEL_SIGN_IN_FROM: ${{ vars.KANTEL_SIGN_IN_FROM }}
       KANTEL_SIGN_IN_DAILY_CAP: ${{ vars.KANTEL_SIGN_IN_DAILY_CAP }}
+      # Optional, experimental: accounts' own hosts, dialling KANTEL_PUBLIC_URL.
+      KANTEL_ACCOUNT_HOSTS: ${{ vars.KANTEL_ACCOUNT_HOSTS }}
     steps:
       - uses: actions/checkout@v4
 

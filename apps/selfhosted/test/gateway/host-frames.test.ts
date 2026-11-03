@@ -1,4 +1,4 @@
-// A host's frames are untrusted (with Kantel Connect, anyone who can enrol a machine into their own account has a host
+// A host's frames are untrusted (with account hosts, anyone who can add a machine to their own account has a host
 // credential): after a valid hello, frames with null or malformed payloads go through the gateway's real WebSocket
 // listener and hub. None of them may throw out of the socket callback into the gateway process; another host's
 // connection and the gateway's routes carry on, and valid heartbeats and events still count.

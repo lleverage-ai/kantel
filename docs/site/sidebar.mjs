@@ -9,7 +9,7 @@ export const sidebar = [
 	},
 	{
 		label: "Run Kantel yourself",
-		items: ["self-hosting/install", "self-hosting/admin-cli", "hosts", "connect", "self-hosting/security"],
+		items: ["self-hosting/install", "self-hosting/admin-cli", "hosts", "own-hosts", "self-hosting/security"],
 	},
 	{
 		label: "Sandboxes",

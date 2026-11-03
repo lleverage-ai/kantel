@@ -1,5 +1,5 @@
-// Kantel Connect on the Worker's gateway, in Node: with KANTEL_CONNECT=experimental an Access person enrols a machine
-// into their personal account, the host registers with no sign-in and connects its WebSocket to the stack object (here,
+// Account hosts on the Worker's gateway, in Node: with KANTEL_ACCOUNT_HOSTS=experimental an Access person adds a machine
+// to their personal account, the host registers with no sign-in and connects its WebSocket to the stack object (here,
 // straight to the hub the object hands sockets to), and the account's sandboxes run on it while an organisation with no
 // host of its own keeps the stub. Off, none of it is served and the Worker is as it was.
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
@@ -68,7 +68,7 @@ afterEach(async () => {
 	for (const close of closers.splice(0).reverse()) await close();
 });
 
-async function start(db: DatabaseSync, vars: { KANTEL_CONNECT?: string; KANTEL_PUBLIC_URL?: string } = {}) {
+async function start(db: DatabaseSync, vars: { KANTEL_ACCOUNT_HOSTS?: string; KANTEL_PUBLIC_URL?: string } = {}) {
 	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
 	const config = gatewayConfig({
 		KANTEL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
@@ -179,11 +179,11 @@ function fakeHost() {
 	};
 }
 
-describe("Kantel Connect on the Worker", () => {
-	it("is off by default: no host routes, no Connect routes, the stub as before", async () => {
+describe("Account hosts on the Worker", () => {
+	it("is off by default: no host routes, no account host routes, the stub as before", async () => {
 		const { stack, call } = await start(new DatabaseSync(":memory:"));
 		expect(stack.compute.hosts).toBeUndefined();
-		expect((await call("POST", "/v1/connect/enrolments", {})).body).toMatchObject({
+		expect((await call("POST", "/v1/hosts/join-tokens", {})).body).toMatchObject({
 			error: { code: "not_supported" },
 		});
 		expect((await call("POST", "/v1/hosts/register", { token: "kth_x" }, {})).status).toBe(404);
@@ -245,24 +245,24 @@ describe("Kantel Connect on the Worker", () => {
 		expect(swept).toEqual([0, 10 * 60_000]);
 	});
 
-	it("keeps an account's stub sandboxes usable once it enrols a host, and bounds registration", async () => {
+	it("keeps an account's stub sandboxes usable once it adds a host, and bounds registration", async () => {
 		// Hosts dial another address than the one the person calls: the command names that one.
 		const publicUrl = "https://hosts.kantel.test";
 		const { stack, call } = await start(new DatabaseSync(":memory:"), {
-			KANTEL_CONNECT: "experimental",
+			KANTEL_ACCOUNT_HOSTS: "experimental",
 			KANTEL_PUBLIC_URL: publicUrl,
 		});
 		const hosts = stack.compute.hosts;
-		if (hosts === undefined) throw new Error("Connect is on");
+		if (hosts === undefined) throw new Error("Account hosts are on");
 
 		// Before any host: a microVM on the stub, stopped.
 		const before = await call("POST", "/v1/sandboxes", { type: "microvm", wait: true });
 		const old = before.body.id as string;
 		expect((await call("POST", `/v1/sandboxes/${old}/stop`, { wait: true })).status).toBe(200);
 
-		const enrolment = await call("POST", "/v1/connect/enrolments", {});
-		const token = enrolment.body.token as string;
-		expect(enrolment.body.command).toContain(`--url ${publicUrl} --token ${token}`);
+		const joinToken = await call("POST", "/v1/hosts/join-tokens", {});
+		const token = joinToken.body.token as string;
+		expect(joinToken.body.command).toContain(`--url ${publicUrl} --token ${token}`);
 
 		// Registration is public: a body past its limit is refused before any of it is parsed.
 		const huge = await call("POST", "/v1/hosts/register", { token, name: "x".repeat(HOST_REGISTER_BODY_LIMIT) }, {});
@@ -330,7 +330,7 @@ describe("Kantel Connect on the Worker", () => {
 
 	it("answers a registration GET or HEAD with the host handler's 405", async () => {
 		const { stack, call } = await start(new DatabaseSync(":memory:"), {
-			KANTEL_CONNECT: "experimental",
+			KANTEL_ACCOUNT_HOSTS: "experimental",
 			KANTEL_PUBLIC_URL: BASE,
 		});
 		const get = await call("GET", "/v1/hosts/register", undefined, {});
@@ -339,7 +339,7 @@ describe("Kantel Connect on the Worker", () => {
 		expect(head?.status).toBe(405);
 	});
 
-	it("never revives a host's sandbox or snapshot on the stub while Connect is off, and gives it back once on", async () => {
+	it("never revives a host's sandbox or snapshot on the stub while account hosts are off, and gives it back once on", async () => {
 		const db = new DatabaseSync(":memory:");
 		// The same person on each start (the stack's identity is in memory in these tests; deployed, it is in D1).
 		const authenticator: Authenticator = {
@@ -349,12 +349,12 @@ describe("Kantel Connect on the Worker", () => {
 				organisationId: "org_1",
 			}),
 		};
-		const open = async (connect: boolean) => {
+		const open = async (accountHosts: boolean) => {
 			const compute = await createStackCompute({
 				authenticator,
 				identity: { authorize: async () => undefined, getUser: () => Promise.reject(new Error("no users here")) },
 				sql: objectSql(db),
-				...(connect ? { connect: { publicUrl: BASE } } : {}),
+				...(accountHosts ? { accountHosts: { publicUrl: BASE } } : {}),
 			});
 			closers.push(() => compute.close());
 			const call = async (method: string, path: string, body?: unknown) => {
@@ -382,13 +382,13 @@ describe("Kantel Connect on the Worker", () => {
 		// On: a stub sandbox (made before any host), then a host and a sandbox on it.
 		const on = await open(true);
 		const stubbed = String((await on.call("POST", "/v1/sandboxes", { type: "microvm", wait: true })).body.id);
-		const token = String((await on.call("POST", "/v1/connect/enrolments", {})).body.token);
+		const token = String((await on.call("POST", "/v1/hosts/join-tokens", {})).body.token);
 		const registered = await on.compute.hosts?.fetch(
 			new Request(`${BASE}/v1/hosts/register`, { method: "POST", body: JSON.stringify({ token }) }),
 		);
 		if (registered === undefined) throw new Error("Registration wasn't served");
 		const { hostId, credential } = (await registered.json()) as { hostId: string; credential: string };
-		if (on.compute.hosts === undefined) throw new Error("Connect is on");
+		if (on.compute.hosts === undefined) throw new Error("Account hosts are on");
 		await attachHost(on.compute.hosts, credential, hostId);
 		const onHost = String((await on.call("POST", "/v1/sandboxes", { type: "microvm", wait: true })).body.id);
 		expect((await on.call("GET", `/v1/sandboxes/${onHost}`)).body.hostId).toBe(hostId);
@@ -404,7 +404,7 @@ describe("Kantel Connect on the Worker", () => {
 		const off = await open(false);
 		const refused = await off.call("POST", `/v1/sandboxes/${onHost}/commands`, { command: "echo where" });
 		// A command's failure is its answer: nothing ran, and the stub has no machine for it.
-		expect(refused.body).toMatchObject({ exitCode: 1, stderr: expect.stringContaining("Kantel Connect host") });
+		expect(refused.body).toMatchObject({ exitCode: 1, stderr: expect.stringContaining("an account's own hosts") });
 		expect((await off.call("POST", `/v1/sandboxes/${onHost}/stop`, { wait: true })).body).toMatchObject({
 			error: { code: "unavailable" },
 		});
@@ -444,7 +444,7 @@ describe("Kantel Connect on the Worker", () => {
 
 		// On again: the host is back, and its sandbox runs there.
 		const again = await open(true);
-		if (again.compute.hosts === undefined) throw new Error("Connect is on");
+		if (again.compute.hosts === undefined) throw new Error("Account hosts are on");
 		const host = await attachHost(again.compute.hosts, credential, hostId);
 		host.sandboxes.add(onHost);
 		// The refused stop left it in `error`, its host kept: it starts again there, from its own disk.
@@ -460,7 +460,7 @@ describe("Kantel Connect on the Worker", () => {
 		// And it's preferred for new sandboxes again, still the account's.
 		const next = await again.call("POST", "/v1/sandboxes", { type: "microvm", wait: true });
 		expect(next.body).toMatchObject({ state: "running", hostId });
-		expect((await again.call("GET", "/v1/connect/hosts")).body.items).toMatchObject([{ id: hostId, state: "online" }]);
+		expect((await again.call("GET", "/v1/hosts")).body.items).toMatchObject([{ id: hostId, state: "online" }]);
 		// The one made from its snapshot while it was off is made now, there, from that snapshot.
 		const made = await again.call("POST", `/v1/sandboxes/${fromHost.body.id}/start`, { wait: true });
 		expect(made.body).toMatchObject({ state: "running", hostId });
@@ -482,9 +482,9 @@ describe("Kantel Connect on the Worker", () => {
 				authenticator,
 				identity: { authorize: async () => undefined, getUser: () => Promise.reject(new Error("no users here")) },
 				sql: objectSql(db),
-				connect: { publicUrl: BASE },
+				accountHosts: { publicUrl: BASE },
 				now: () => clock,
-				connectSweepMs: 10,
+				hostSweepMs: 10,
 				fetch: async (_url, init) => {
 					delivered.push(String(init?.body));
 					return new Response("ok");
@@ -504,8 +504,8 @@ describe("Kantel Connect on the Worker", () => {
 			);
 			return JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
 		};
-		if (first.hosts === undefined) throw new Error("Connect is on");
-		const token = String((await call("POST", "/v1/connect/enrolments", {})).token);
+		if (first.hosts === undefined) throw new Error("Account hosts are on");
+		const token = String((await call("POST", "/v1/hosts/join-tokens", {})).token);
 		const registered = await first.hosts.fetch(
 			new Request(`${BASE}/v1/hosts/register`, { method: "POST", body: JSON.stringify({ token }) }),
 		);
@@ -513,7 +513,7 @@ describe("Kantel Connect on the Worker", () => {
 		const { hostId, credential } = (await registered.json()) as { hostId: string; credential: string };
 		const attach = async (compute: StackCompute, running: readonly string[] = []) => {
 			const hosts = compute.hosts;
-			if (hosts === undefined) throw new Error("Connect is on");
+			if (hosts === undefined) throw new Error("Account hosts are on");
 			const host = fakeHost();
 			for (const id of running) host.sandboxes.add(id);
 			const held = await hosts.connect(credential, host.socket);
@@ -578,53 +578,57 @@ describe("Kantel Connect on the Worker", () => {
 
 	it("needs KANTEL_PUBLIC_URL with the switch on, and refuses a switch it doesn't know", () => {
 		const access = { KANTEL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN, KANTEL_ACCESS_AUD: AUD };
-		expect(gatewayConfig({ ...access, KANTEL_CONNECT: "off" }).connect).toBeUndefined();
-		expect(() => gatewayConfig({ ...access, KANTEL_CONNECT: "experimental" })).toThrow(/KANTEL_PUBLIC_URL/);
-		expect(() => gatewayConfig({ ...access, KANTEL_CONNECT: "yes", KANTEL_PUBLIC_URL: BASE })).toThrow(
-			/KANTEL_CONNECT/,
+		expect(gatewayConfig({ ...access, KANTEL_ACCOUNT_HOSTS: "off" }).accountHosts).toBeUndefined();
+		expect(() => gatewayConfig({ ...access, KANTEL_ACCOUNT_HOSTS: "experimental" })).toThrow(/KANTEL_PUBLIC_URL/);
+		expect(() => gatewayConfig({ ...access, KANTEL_ACCOUNT_HOSTS: "yes", KANTEL_PUBLIC_URL: BASE })).toThrow(
+			/KANTEL_ACCOUNT_HOSTS/,
 		);
-		expect(gatewayConfig({ ...access, KANTEL_CONNECT: "experimental", KANTEL_PUBLIC_URL: `${BASE}/` }).connect).toEqual(
-			{ publicUrl: BASE },
-		);
+		expect(
+			gatewayConfig({ ...access, KANTEL_ACCOUNT_HOSTS: "experimental", KANTEL_PUBLIC_URL: `${BASE}/` }).accountHosts,
+		).toEqual({ publicUrl: BASE });
 	});
 
-	it("shares KANTEL_PUBLIC_URL with email sign-in: alone it is Connect's, and sign-in stays off", () => {
+	it("shares KANTEL_PUBLIC_URL with email sign-in: alone it is the hosts', and sign-in stays off", () => {
 		const access = { KANTEL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN, KANTEL_ACCESS_AUD: AUD };
-		const alone = gatewayConfig({ ...access, KANTEL_CONNECT: "experimental", KANTEL_PUBLIC_URL: BASE });
-		expect(alone.connect).toEqual({ publicUrl: BASE });
+		const alone = gatewayConfig({ ...access, KANTEL_ACCOUNT_HOSTS: "experimental", KANTEL_PUBLIC_URL: BASE });
+		expect(alone.accountHosts).toEqual({ publicUrl: BASE });
 		expect(alone.emailSignIn).toBeUndefined();
-		// Turned off, the same configuration stays valid, with neither Connect nor sign-in.
-		const off = gatewayConfig({ ...access, KANTEL_CONNECT: "off", KANTEL_PUBLIC_URL: BASE });
-		expect(off.connect).toBeUndefined();
+		// Turned off, the same configuration stays valid, with neither account hosts nor sign-in.
+		const off = gatewayConfig({ ...access, KANTEL_ACCOUNT_HOSTS: "off", KANTEL_PUBLIC_URL: BASE });
+		expect(off.accountHosts).toBeUndefined();
 		expect(off.emailSignIn).toBeUndefined();
-		expect(() => gatewayConfig({ ...access, KANTEL_CONNECT: "off", KANTEL_PUBLIC_URL: `${BASE}/x` })).toThrow(/origin/);
+		expect(() => gatewayConfig({ ...access, KANTEL_ACCOUNT_HOSTS: "off", KANTEL_PUBLIC_URL: `${BASE}/x` })).toThrow(
+			/origin/,
+		);
 		// With no switch at all: the public origin without its sender is refused, as before.
 		expect(() => gatewayConfig({ ...access, KANTEL_PUBLIC_URL: BASE })).toThrow(/KANTEL_SIGN_IN_FROM/);
-		expect(() => gatewayConfig({ ...access, KANTEL_CONNECT: "off", KANTEL_SIGN_IN_FROM: "a@b.c" })).toThrow(/both/);
+		expect(() => gatewayConfig({ ...access, KANTEL_ACCOUNT_HOSTS: "off", KANTEL_SIGN_IN_FROM: "a@b.c" })).toThrow(
+			/both/,
+		);
 		const both = gatewayConfig({
 			...access,
-			KANTEL_CONNECT: "experimental",
+			KANTEL_ACCOUNT_HOSTS: "experimental",
 			KANTEL_PUBLIC_URL: BASE,
 			KANTEL_SIGN_IN_FROM: "sign-in@example.com",
 		});
-		expect(both.connect).toEqual({ publicUrl: BASE });
+		expect(both.accountHosts).toEqual({ publicUrl: BASE });
 		expect(both.emailSignIn).toMatchObject({ publicUrl: BASE, from: "sign-in@example.com" });
 	});
 
-	it("enrols a host into the person's account and runs that account's sandboxes on it, others' on the stub", async () => {
+	it("adds a host to the person's account and runs that account's sandboxes on it, others' on the stub", async () => {
 		const db = new DatabaseSync(":memory:");
-		const on = { KANTEL_CONNECT: "experimental", KANTEL_PUBLIC_URL: BASE };
+		const on = { KANTEL_ACCOUNT_HOSTS: "experimental", KANTEL_PUBLIC_URL: BASE };
 		const { stack, call } = await start(db, on);
 		const hosts = stack.compute.hosts;
-		if (hosts === undefined) throw new Error("Connect is on");
+		if (hosts === undefined) throw new Error("Account hosts are on");
 
 		const whoami = await call("GET", "/v1/whoami");
 		const personal = whoami.body.accountId as string;
-		const enrolment = await call("POST", "/v1/connect/enrolments", { name: "toms-box" });
-		expect(enrolment.status).toBe(201);
-		expect(enrolment.body).toMatchObject({ accountId: personal });
-		const token = enrolment.body.token as string;
-		expect(enrolment.body.command).toContain(`--url ${BASE} --token ${token}`);
+		const joinToken = await call("POST", "/v1/hosts/join-tokens", { name: "toms-box" });
+		expect(joinToken.status).toBe(201);
+		expect(joinToken.body).toMatchObject({ accountId: personal });
+		const token = joinToken.body.token as string;
+		expect(joinToken.body.command).toContain(`--url ${BASE} --token ${token}`);
 
 		// kantel-host install fetches Kantel's images through the Worker, and registers, with no sign-in.
 		const manifest = await call("GET", "/v1/hosts/images/manifest.json", undefined, {});
@@ -649,7 +653,7 @@ describe("Kantel Connect on the Worker", () => {
 		host.attach(held, hostId);
 		await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
 
-		const listed = await call("GET", "/v1/connect/hosts");
+		const listed = await call("GET", "/v1/hosts");
 		expect(listed.body.items).toMatchObject([{ id: hostId, name: "toms-box", state: "online", accountId: personal }]);
 
 		// The person's sandbox goes on their machine, and its command runs there.
@@ -692,10 +696,10 @@ describe("Kantel Connect on the Worker", () => {
 			command: "echo on the stub",
 		});
 		expect(stubbed.body).toMatchObject({ exitCode: 0, stdout: "on the stub\n" });
-		expect((await call("GET", `/v1/connect/hosts?account=${orgId}`)).body.items).toEqual([]);
+		expect((await call("GET", `/v1/hosts?account=${orgId}`)).body.items).toEqual([]);
 
 		// Removed: revoked, its connection closed.
-		const removed = await call("DELETE", `/v1/connect/hosts/${hostId}`);
+		const removed = await call("DELETE", `/v1/hosts/${hostId}`);
 		expect(removed.body).toMatchObject({ state: "revoked" });
 		expect(host.closed()?.code).toBe(4003);
 
@@ -707,7 +711,7 @@ describe("Kantel Connect on the Worker", () => {
 		expect(kept).toMatchObject({ id: hostId, accountId: personal, state: "revoked" });
 	});
 
-	it("lets someone who signs up on the public origin enrol and use a host of their own, never the stub", async () => {
+	it("lets someone who signs up on the public origin add and use a host of their own, never the stub", async () => {
 		const { call, signIn, hosts } = await startPublic();
 		const ada = await signIn("ada@example.test");
 
@@ -721,18 +725,18 @@ describe("Kantel Connect on the Worker", () => {
 		expect(early.body.error).toMatchObject({ code: "unavailable", message: /host of this account's own/ });
 		expect((await call("GET", "/v1/admin/hosts", { token: ada })).status).toBe(403);
 
-		// She enrols her machine into her personal account; it registers and connects.
-		const enrolment = await call("POST", "/v1/connect/enrolments", { token: ada, body: { name: "adas-box" } });
-		expect(enrolment.status).toBe(201);
-		expect(enrolment.body).toMatchObject({ accountId: personal });
-		const registered = await call("POST", "/v1/hosts/register", { body: { token: enrolment.body.token } });
+		// She adds her machine to her personal account; it registers and connects.
+		const joinToken = await call("POST", "/v1/hosts/join-tokens", { token: ada, body: { name: "adas-box" } });
+		expect(joinToken.status).toBe(201);
+		expect(joinToken.body).toMatchObject({ accountId: personal });
+		const registered = await call("POST", "/v1/hosts/register", { body: { token: joinToken.body.token } });
 		const { hostId, credential } = registered.body as { hostId: string; credential: string };
 		const host = fakeHost();
 		const held = await hosts.connect(credential, host.socket);
 		if (held === undefined) throw new Error("The host's credential was refused");
 		host.attach(held, hostId);
 		await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
-		const listed = await call("GET", "/v1/connect/hosts", { token: ada });
+		const listed = await call("GET", "/v1/hosts", { token: ada });
 		expect(listed.body.items).toMatchObject([{ id: hostId, state: "online", accountId: personal }]);
 
 		// Her sandbox goes on her machine, and so does one made with a key she makes.
@@ -778,7 +782,61 @@ describe("Kantel Connect on the Worker", () => {
 		open?.close();
 	});
 
-	it("keeps the stub its organisation's, a project's members too, Connect on or off, and outsiders' keys off it", async () => {
+	it("keeps one sign-up's hosts, join tokens and sandboxes out of another's sight and reach", async () => {
+		const { call, signIn, hosts } = await startPublic();
+		const ada = await signIn("ada@example.test");
+		const bob = await signIn("bob@example.test");
+		const adas = (await call("GET", "/v1/whoami", { token: ada })).body.accountId as string;
+		const bobs = (await call("GET", "/v1/whoami", { token: bob })).body.accountId as string;
+		expect(adas).not.toBe(bobs);
+
+		// Bob can't make a join token into Ada's account, nor list her hosts.
+		const foreignToken = await call("POST", "/v1/hosts/join-tokens", { token: bob, body: { account: adas } });
+		expect(foreignToken.status).toBe(403);
+		expect((await call("GET", `/v1/hosts?account=${adas}`, { token: bob })).status).toBe(403);
+
+		// Ada adds a host; her token works once, so Bob can't join a machine with it after her.
+		const joinToken = await call("POST", "/v1/hosts/join-tokens", { token: ada, body: { name: "adas-box" } });
+		expect(joinToken.status).toBe(201);
+		const registered = await call("POST", "/v1/hosts/register", { body: { token: joinToken.body.token } });
+		const { hostId, credential } = registered.body as { hostId: string; credential: string };
+		const again = await call("POST", "/v1/hosts/register", { body: { token: joinToken.body.token } });
+		expect(again.status).toBe(403);
+		const host = fakeHost();
+		const held = await hosts.connect(credential, host.socket);
+		if (held === undefined) throw new Error("The host's credential was refused");
+		host.attach(held, hostId);
+		await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
+
+		// Bob sees none of it: his list is empty, and her host is not_found to read, change or remove.
+		expect((await call("GET", "/v1/hosts", { token: bob })).body.items).toEqual([]);
+		expect((await call("GET", `/v1/hosts/${hostId}`, { token: bob })).status).toBe(404);
+		expect((await call("PATCH", `/v1/hosts/${hostId}`, { token: bob, body: { draining: true } })).status).toBe(404);
+		expect((await call("DELETE", `/v1/hosts/${hostId}`, { token: bob })).status).toBe(404);
+		expect((await call("GET", `/v1/hosts/${hostId}`, { token: ada })).body).toMatchObject({ state: "online" });
+
+		// Bob's sandbox never goes on Ada's machine: with no host of his own, nothing runs it.
+		const bobsSandbox = await call("POST", "/v1/sandboxes", { token: bob, body: { type: "microvm", wait: true } });
+		expect(bobsSandbox.status).toBe(503);
+		expect(bobsSandbox.body.error).toMatchObject({ message: /kantel hosts add/ });
+		expect(host.sandboxes.size).toBe(0);
+
+		// Ada's sandbox is on her machine, and Bob can't find or run anything in it.
+		const adasSandbox = await call("POST", "/v1/sandboxes", { token: ada, body: { type: "microvm", wait: true } });
+		expect(adasSandbox.status).toBe(201);
+		const sandboxId = adasSandbox.body.id as string;
+		expect(host.sandboxes.has(sandboxId)).toBe(true);
+		expect((await call("GET", `/v1/sandboxes/${sandboxId}`, { token: bob })).status).toBe(404);
+		const exec = await call("POST", `/v1/sandboxes/${sandboxId}/commands`, {
+			token: bob,
+			body: { command: "echo hi", wait: true },
+		});
+		expect(exec.status).toBe(404);
+		expect(host.calls).not.toContain("sandbox.exec");
+		expect((await call("GET", "/v1/sandboxes", { token: bob })).body.items).toEqual([]);
+	});
+
+	it("keeps the stub its organisation's, a project's members too, account hosts on or off, and outsiders' keys off it", async () => {
 		const databases = { identity: new DatabaseSync(":memory:"), compute: new DatabaseSync(":memory:") };
 		const on = await startPublic({}, databases);
 		const ada = await on.signIn("ada@example.test");
@@ -803,15 +861,17 @@ describe("Kantel Connect on the Worker", () => {
 		const bobKey = await keyOf(asBob);
 		const isolate = { type: "isolate", wait: true };
 
-		// Connect on: Bob is a member, so he and his key use the stub; Ada and hers, with no host of their own, don't.
+		// Account hosts on: Bob is a member, so he and his key use the stub; Ada and hers, with no host of their own,
+		// don't.
 		const bobs = await on.call("POST", "/v1/sandboxes", { ...asBob, body: isolate });
 		expect(bobs.status).toBe(201);
 		expect((await on.call("POST", "/v1/sandboxes", { token: bobKey, body: isolate })).status).toBe(201);
 		expect((await on.call("POST", "/v1/sandboxes", { token: adaKey, body: isolate })).status).toBe(503);
 
-		// Connect off, over the same records: Ada's key, made while it was on, still can't; Bob and his key still can.
+		// Account hosts off, over the same records: Ada's key, made while they were on, still can't; Bob and his key
+		// still can.
 		await on.stack.compute.close();
-		const off = await startPublic({ KANTEL_CONNECT: "off" }, databases);
+		const off = await startPublic({ KANTEL_ACCOUNT_HOSTS: "off" }, databases);
 		const refused = await off.call("POST", "/v1/sandboxes", { token: adaKey, body: isolate });
 		expect(refused.status).toBe(503);
 		expect(refused.body.error).toMatchObject({ code: "unavailable", message: /host of this account's own/ });
@@ -819,7 +879,7 @@ describe("Kantel Connect on the Worker", () => {
 		const bobAgain = await off.signIn("bob@example.test");
 		const inOrg = { token: bobAgain, organisation: deployment };
 		expect((await off.call("POST", "/v1/sandboxes", { ...inOrg, body: isolate })).status).toBe(201);
-		// The sandbox he made with Connect on is back after the restart, and runs his command.
+		// The sandbox he made with account hosts on is back after the restart, and runs his command.
 		const ran = await off.call("POST", `/v1/sandboxes/${bobs.body.id}/commands`, {
 			...inOrg,
 			body: { command: "echo hi" },
@@ -828,18 +888,18 @@ describe("Kantel Connect on the Worker", () => {
 		expect(ran.body.stdout).toBe("hi\n");
 	});
 
-	it("keeps a public sign-up off the stub with Connect off, as before", async () => {
-		const { call, signIn } = await startPublic({ KANTEL_CONNECT: "off" });
+	it("keeps a public sign-up off the stub with account hosts off, as before", async () => {
+		const { call, signIn } = await startPublic({ KANTEL_ACCOUNT_HOSTS: "off" });
 		const ada = await signIn("ada@example.test");
 		const refused = await call("POST", "/v1/sandboxes", { token: ada, body: { type: "isolate", wait: true } });
 		expect(refused.status).toBe(403);
 		expect(refused.body.error).toMatchObject({ code: "forbidden", message: COMPUTE_MEMBERS_ONLY });
-		expect((await call("POST", "/v1/connect/enrolments", { token: ada, body: {} })).status).toBe(403);
+		expect((await call("POST", "/v1/hosts/join-tokens", { token: ada, body: {} })).status).toBe(403);
 	});
 });
 
 /**
- * The Worker with email-code sign-in and open sign-up on its public origin, and Kantel Connect on (`vars` to change
+ * The Worker with email-code sign-in and open sign-up on its public origin, and account hosts on (`vars` to change
  * that): a call there with a session or key, and someone's sign-in, as `test/sign-in.test.ts` has them.
  */
 async function startPublic(
@@ -856,7 +916,7 @@ async function startPublic(
 			KANTEL_ADMIN_EMAIL: ADMIN,
 			KANTEL_PUBLIC_URL: BASE,
 			KANTEL_SIGN_IN_FROM: "sign-in@kantel.test",
-			KANTEL_CONNECT: "experimental",
+			KANTEL_ACCOUNT_HOSTS: "experimental",
 			...vars,
 		}),
 		accessFetch: mock.fetch,
@@ -915,7 +975,7 @@ async function startPublic(
 		call,
 		signIn,
 		get hosts() {
-			if (hosts === undefined) throw new Error("Connect is off");
+			if (hosts === undefined) throw new Error("Account hosts are off");
 			return hosts;
 		},
 	};
