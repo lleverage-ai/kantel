@@ -17,7 +17,7 @@ You can run all of Kantel yourself. The control plane, which serves the console 
 - **A desktop, a browser and SSH** for each sandbox, for agents that use a computer the way a person does, and for you to watch or step in.
 - **Personal accounts and organisations.** Your sandboxes are your own until you share them with an organisation.
 - **Scoped API keys**, so a script or an agent gets only the access it needs.
-- **A proxy** for traffic leaving sandboxes, where you can add credentials on the way out so they never sit inside a sandbox.
+- **A [proxy](/sandboxes/egress-proxy/)** for traffic leaving sandboxes, where you can add credentials on the way out so they never sit inside a sandbox.
 - **Webhooks and OpenTelemetry**, to follow sandboxes from your own systems.
 
 [Concepts](/concepts/) explains each of these words once.
@@ -28,7 +28,9 @@ You can run all of Kantel yourself. The control plane, which serves the console 
 | --- | --- |
 | Understand the moving parts | [Concepts](/concepts/) |
 | Decide where to run it | [Hosted or self-hosted](/hosted-or-self-hosted/) |
+| Go from nothing to a running microVM | [Quickstart](/quickstart/) |
 | Run the control plane on your machine | [Install Kantel](/self-hosting/install/) |
+| Add the machines that run sandboxes | [Hosts](/hosts/) |
 | Make and drive a sandbox | [Create and manage sandboxes](/sandboxes/lifecycle/) |
 | Let Claude Code, Codex or pi use it | [Use from your coding agent](/coding-agents/) |
 | Call it from TypeScript | [TypeScript SDK](/tools/typescript-sdk/) |

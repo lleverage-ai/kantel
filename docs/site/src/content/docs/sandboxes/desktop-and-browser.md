@@ -15,6 +15,16 @@ A microVM has a Linux desktop and a Chrome. You can open either in your own brow
 
 The examples use `KANTEL_URL`, `KANTEL_API_KEY` and the `kantel` client set up in [Create and manage sandboxes](/sandboxes/lifecycle/#before-you-start). The key needs `access`.
 
+From a terminal, the [`kantel` command](/tools/cli/) asks for the URLs and opens them:
+
+```sh
+kantel desktop sbx_4kq9x2mt                      # open the desktop in your browser
+kantel desktop sbx_4kq9x2mt --view-only --print  # print a watch-only URL instead
+kantel browser sbx_4kq9x2mt --ttl 30             # open the live view; print it and the CDP URL
+```
+
+Both take `--view-only`, `--ttl <minutes>` (default 10, at most 60) and `--print`, which prints the URL without opening it. Without a terminal, as when an agent runs them, they only print.
+
 ## Open the desktop
 
 Ask for a desktop URL, then open it in a browser:
@@ -42,7 +52,11 @@ The answer is a [DesktopAccess](/api/reference/types/#desktopaccess):
 
 The body takes two optional fields: `ttlMinutes`, how long the URL can be opened for (default 10, at most 60), and `viewOnly`, to give a URL whose viewer only watches. A desktop opened in time stays open after the URL expires; open it again, after a reload for instance, and you need a new URL, so ask for one each time you show it.
 
-Anyone holding the URL can open the desktop until it expires, so share it like a password. To show someone an agent at work in a viewer with no keyboard or mouse, give them a `viewOnly` one. On Kantel's own hosts the viewer is what holds back the input, not the desktop: someone who takes the URL apart can still type, so give a `viewOnly` URL only to people you'd trust with the other kind.
+Anyone holding the URL can open the desktop until it expires, so share it like a password. To show someone an agent at work in a viewer with no keyboard or mouse, give them a `viewOnly` one. On your own hosts the viewer is what holds back the input, not the desktop: someone who takes the URL apart can still type, so give a `viewOnly` URL only to people you'd trust with the other kind.
+
+### Through the relay
+
+On [your own hosts](/hosts/), the URL is a viewer page on the control plane's public address, such as `https://kantel.example.com/v1/hosts/view/<ticket>`, and `embedUrl` is the same page. The page opens a WebSocket back to the control plane with the same ticket, and the control plane relays the desktop over the connection the sandbox's host keeps open. The host and the sandbox need no open port, but the person opening the URL must be able to reach the control plane's public URL.
 
 ```sh
 curl -s -X POST "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/desktop" \
@@ -63,6 +77,8 @@ curl -s -X POST "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/browser" \
 ```
 
 It takes the same `viewOnly` and `ttlMinutes` as the desktop, and its [BrowserAccess](/api/reference/types/#browseraccess) answer has `url`, `cdpUrl`, `viewOnly` and `expiresAt`.
+
+On your own hosts Chrome runs on the sandbox's desktop from the start, so `url` is the desktop viewer, showing that Chrome. `cdpUrl` goes through the relay too: `wss://kantel.example.com/v1/hosts/tunnel/<ticket>/devtools/browser/<id>`, or `ws://` when the public URL is `http://`. While Chrome is still starting, the route answers `503` with `unavailable` (`The sandbox's browser isn't up yet`); try again a moment later.
 
 ## Drive it with Playwright
 
@@ -92,4 +108,4 @@ The CDP URL is as powerful as the browser itself: anyone holding it can read eve
 
 The sandbox's Chrome runs inside the sandbox, so it reaches a dev server there at `http://localhost:<port>` with no [public port](/sandboxes/public-ports/). Start the server as a detached command, then point Playwright at `localhost`.
 
-<!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:681-712, packages/api/src/compute-schema.ts:671-699 -->
+<!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:681-712, packages/api/src/compute-schema.ts:671-699. The relay and the CLI (5be456c): packages/hosts/src/backend.ts:204-222,414-441, packages/cli/src/commands.ts:1360-1395, apps/host/guest/README.md; run through a local host for TASK-4706 -->

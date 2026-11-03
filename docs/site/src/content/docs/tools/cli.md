@@ -218,6 +218,6 @@ In fish, use `set id (kantel new --type microvm --json | jq -r .id)`.
 
 `kantel key create agent --preset agent` makes a key for a coding agent and prints its secret once. The other presets are `ci`, `read-only` and `admin`; `--scope` picks scopes one by one, `--sandbox` limits the key to one sandbox and `--expires-days` sets when it stops working.
 
-Listing and joining hosts moved to the operators' command: `npx @kantel/admin host list` and `npx @kantel/admin host add`.
+Listing and joining hosts moved to the operators' command: `kantel-admin host list` and `kantel-admin host add`. See [Hosts](/hosts/).
 
 <!-- Sources: packages/cli/src/commands.ts, packages/cli/src/login.ts, packages/cli/src/transfer.ts, packages/cli/src/agents.ts, packages/cli/src/config.ts, packages/cli/scripts/build.ts; device sign-in: packages/compute/src/service.ts (startDeviceLogin, approveDeviceLogin) -->

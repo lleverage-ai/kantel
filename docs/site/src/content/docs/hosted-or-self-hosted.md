@@ -18,7 +18,7 @@ Kantel is one product with two ways to run it. The console, the API, the SDK, th
 You run the control plane and the hosts. Everything stays on machines you choose: sandboxes, their disks and snapshots, and the records of who did what.
 
 - The control plane installs with one command on any machine with Docker. See [Install Kantel](/self-hosting/install/).
-- Each Linux machine that should run sandboxes joins with one more command, and dials out to the control plane, so it needs no open ports.
+- Each Linux machine that should run sandboxes joins with one more command, and dials out to the control plane, so it needs no open ports. See [Hosts](/hosts/), or [Quickstart](/quickstart/) for both on one machine.
 - You are the super-admin: you add and remove hosts, invite people, and decide which organisations exist.
 - There is no billing. Limits are whatever your machines can carry.
 

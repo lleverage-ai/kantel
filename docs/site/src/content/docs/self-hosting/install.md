@@ -101,7 +101,7 @@ export KANTEL_API_KEY=ksk_...
 curl -s "$KANTEL_URL/v1/whoami" -H "authorization: Bearer $KANTEL_API_KEY"
 ```
 
-[`kantel-admin`](/self-hosting/admin-cli/) reads it for you: `npx @kantel/admin bootstrap-key --save` saves the key for `kantel` too.
+[`kantel-admin`](/self-hosting/admin-cli/) reads it for you: `kantel-admin bootstrap-key --save` saves the key for `kantel` too.
 
 That key can manage the deployment's hosts too, so keep it to yourself: give scripts and agents [keys of their own](/accounts/api-keys/#create-a-key) with only the scopes they need.
 
@@ -111,7 +111,7 @@ The compute API keeps its records in memory for now, so sandboxes, snapshots, or
 
 Sandboxes run on hosts you add. Until one joins, the console's **Sandboxes** page says so and its **Add a host** button opens the join command on the **Hosts** page.
 
-A host is a Linux machine with `/dev/kvm` that runs `kantel-host`: Firecracker microVMs and workerd isolates. It dials out to the control plane over a WebSocket, so it needs no open port. A host on the control plane's own machine joins at `http://127.0.0.1:58090`, which the stack uses by default. For hosts on other machines, set where they reach the control plane and upgrade:
+A host is a Linux machine with `/dev/kvm` that runs `kantel-host`: Firecracker microVMs and workerd isolates. It dials out to the control plane over a WebSocket, so it needs no open port. [Quickstart](/quickstart/) joins one on the control plane's own machine, and [Hosts](/hosts/) covers it in full. A host on the control plane's own machine joins at `http://127.0.0.1:58090`, which the stack uses by default. For hosts on other machines, set where they reach the control plane and upgrade:
 
 ```sh
 echo 'KANTEL_PUBLIC_URL=https://kantel.example.com' >> ~/.kantel/src/deploy/compose/.env
@@ -130,7 +130,9 @@ curl -s -X POST "$KANTEL_URL/v1/admin/hosts/join-tokens" \
 sudo npx -y @kantel/host@latest install --url https://kantel.example.com --token kth_...
 ```
 
-Or with [`kantel-admin`](/self-hosting/admin-cli/#add-hosts): `npx @kantel/admin host add --name box-1`, which prints that command (or runs it over SSH with `--ssh root@box-1`). `kantel-admin host list`, `drain` and `revoke` look after them later.
+The `@kantel/host` package isn't on npm yet, and there is no published set of sandbox images. Until there is, build `kantel-host`, a kernel and an image from the repository, and run the binary with `--images` in place of the `npx` command, as [Hosts](/hosts/#get-kantel-host-and-the-images) shows.
+
+Or with [`kantel-admin`](/self-hosting/admin-cli/#add-hosts): `kantel-admin host add --name box-1`, which prints that command. `kantel-admin host list`, `drain` and `revoke` look after hosts later.
 
 The host shows up in `GET /v1/admin/hosts` once it connects, and new sandboxes go on it. Its desktop, browser and SSH are reached through short-lived signed URLs on the control plane, which `openDesktop`, `openBrowser` and `openSsh` answer: the desktop link opens it in a browser tab, and `cdpUrl` works with Playwright's `connectOverCDP`. Sandboxes have no address of their own: nothing on the internet, your network or another sandbox can reach one except through these URLs.
 
@@ -144,7 +146,7 @@ echo 'KANTEL_COMPUTE_PORTS_DOMAIN=kantel-ports.example' >> ~/.kantel/src/deploy/
 
 A port is then at `https://3000-<subdomain>.kantel-ports.example`. Use a registrable domain that isn't the console's or a parent of it, so a page a sandbox serves can't set cookies the console reads; the control plane refuses the console's own name and its parents. Without the setting, sandboxes expose no ports.
 
-An account's proxy settings (`PUT /v1/proxy`) reach its sandboxes on hosts, including running ones: allow and deny rules always, and the upstream proxy only on hosts installed with `--proxy-data-path`. The host adds the upstream's headers and token itself, so they never enter a sandbox. To have the host sign the `Kantel-Sandbox` and `Kantel-Account` headers it sends upstream, set `KANTEL_EGRESS_ATTRIBUTION_KEY` to a shared secret your proxy checks.
+An account's [proxy settings](/sandboxes/egress-proxy/) (`PUT /v1/proxy`) reach its sandboxes on hosts, including running ones: allow and deny rules always, and the upstream proxy only on hosts installed with `--proxy-data-path`. The host adds the upstream's headers itself, so they never enter a sandbox. To have the host sign the `Kantel-Sandbox` and `Kantel-Account` headers it sends upstream, set `KANTEL_EGRESS_ATTRIBUTION_KEY` to a shared secret your proxy checks.
 
 ## Your own settings
 
@@ -162,6 +164,11 @@ The stack reads its settings from `~/.kantel/src/deploy/compose/.env`, which upg
 | `KANTEL_BROWSER_PROVIDER` | `off` gives sessions no browser. `brwsr`, with `KANTEL_BRWSR_API_KEY`, uses brwsr.dev instead of the stack's own browsers |
 | `KANTEL_SUBAGENTS` | `off` takes away the `subagent` tool, which hands a task to a child session |
 | `KANTEL_COMPUTE_BACKEND` | `stub` runs sandboxes on a built-in stand-in instead of your hosts. See [Add a host](#add-a-host) |
+| `KANTEL_COMPUTE_IMAGES` | An http(s) URL with the kernel and images hosts install from. See [Hosts](/hosts/#get-kantel-host-and-the-images) |
+| `KANTEL_COMPUTE_PORTS_DOMAIN` | The domain sandboxes' [public ports](/sandboxes/public-ports/) are served under |
+| `KANTEL_COMPUTE_POOLS` | Warm sandboxes each host keeps ready, as JSON such as `{"microvm/default": 2}` |
+| `KANTEL_EGRESS_ATTRIBUTION_KEY` | The secret hosts sign the [`Kantel-Sandbox` and `Kantel-Account` headers](/sandboxes/egress-proxy/#send-traffic-through-your-own-proxy) with |
+| `KANTEL_HOST_VERSION`, `KANTEL_HOST_UPDATE_URL` | The `kantel-host` version hosts should run, and where they get it. See [Update a host](/hosts/#update-a-host) |
 
 For example:
 
@@ -181,7 +188,7 @@ Run the installer again with `--upgrade`:
 curl -fsSL https://kantel.dev/install.sh | sh -s -- --upgrade
 ```
 
-It downloads the latest source, keeps `deploy/compose/.env`, and rebuilds and restarts the stack. Your data stays in its Docker volumes. An install from before the compute console opens on it at `/` after the upgrade; a `KANTEL_COMPUTE=experimental` line left in `.env` does nothing now and can go (`npx @kantel/admin config unset KANTEL_COMPUTE`), and old `/compute/...` links still work. An install from before the browser host, the sandbox containers or subagents gets them with its upgrade, and the installer's summary says which are on. Without `--upgrade`, running the installer again keeps the copy you have and starts it.
+It downloads the latest source, keeps `deploy/compose/.env`, and rebuilds and restarts the stack. Your data stays in its Docker volumes. An install from before the compute console opens on it at `/` after the upgrade; a `KANTEL_COMPUTE=experimental` line left in `.env` does nothing now and can go (`kantel-admin config unset KANTEL_COMPUTE`), and old `/compute/...` links still work. An install from before the browser host, the sandbox containers or subagents gets them with its upgrade, and the installer's summary says which are on. Without `--upgrade`, running the installer again keeps the copy you have and starts it.
 
 ## Stop or remove it
 
