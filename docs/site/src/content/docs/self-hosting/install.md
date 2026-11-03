@@ -112,7 +112,35 @@ curl -s "$KANTEL_URL/v1/whoami" -H "authorization: Bearer $KANTEL_API_KEY"
 
 That key can manage the deployment's hosts too, so keep it to yourself: give scripts and agents [keys of their own](/accounts/api-keys/#create-a-key) with only the scopes they need.
 
-For now, a self-hosted install runs every sandbox on a built-in stand-in: a shell over files held in memory, with no isolation between sandboxes. Commands and files work, but the microVM features (SSH, desktop, browser and pausing) answer with addresses that lead nowhere. The compute API keeps its records in memory as well, so sandboxes, snapshots, organisations and the keys you make are gone when the control plane restarts; only `computeKey` stays the same. Use it to try the API, not to run work.
+Unless you add hosts, a self-hosted install runs every sandbox on a built-in stand-in: a shell over files held in memory, with no isolation between sandboxes. Commands and files work, but the microVM features (SSH, desktop, browser and pausing) answer with addresses that lead nowhere. The compute API keeps its records in memory as well, so sandboxes, snapshots, organisations and the keys you make are gone when the control plane restarts; only `computeKey` stays the same. Use it to try the API, not to run work.
+
+### Run sandboxes on your own Linux hosts
+
+A host is a Linux machine with `/dev/kvm` that runs `kantel-host`: Firecracker microVMs and workerd isolates. It dials out to the control plane over a WebSocket, so it needs no open port. Set where hosts and people reach the control plane, and switch the backend to hosts:
+
+```sh
+cat >> ~/.kantel/src/deploy/compose/.env <<'EOF'
+KANTEL_PUBLIC_URL=https://kantel.example.com
+KANTEL_COMPUTE_BACKEND=hosts
+EOF
+curl -fsSL https://kantel.dev/install.sh | sh -s -- --upgrade
+```
+
+Then make a join token with the `computeKey` and run its `command` on the host as root:
+
+```sh
+curl -s -X POST "$KANTEL_URL/v1/admin/hosts/join-tokens" \
+  -H "authorization: Bearer $KANTEL_API_KEY" -H "content-type: application/json" \
+  -d '{"name": "box-1"}' | jq -r .command
+```
+
+```text
+sudo npx -y @kantel/host@latest install --url https://kantel.example.com --token kth_...
+```
+
+The host shows up in `GET /v1/admin/hosts` once it connects, and new sandboxes go on it. Its desktop, browser and SSH are reached through short-lived signed URLs on the control plane, which `openDesktop`, `openBrowser` and `openSsh` answer: the desktop link opens it in a browser tab, and `cdpUrl` works with Playwright's `connectOverCDP`. Exposed ports aren't offered on your own hosts yet.
+
+An account's proxy settings (`PUT /v1/proxy`) reach its sandboxes on hosts, including running ones: allow and deny rules always, and the upstream proxy only on hosts installed with `--proxy-data-path`. The host adds the upstream's headers and token itself, so they never enter a sandbox. To have the host sign the `Kantel-Sandbox` and `Kantel-Account` headers it sends upstream, set `KANTEL_EGRESS_ATTRIBUTION_KEY` to a shared secret your proxy checks.
 
 ## Your own settings
 

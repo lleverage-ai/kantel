@@ -1,0 +1,21 @@
+#!/bin/sh
+# PID 1 for a cold boot, before systemd: the root filesystem (/dev/vda) is the host's shared read-only image, and
+# the sandbox's own disk (/dev/vdb) holds everything it writes. This puts an overlay of the two at /, gives Docker a
+# real ext4 directory (overlay2 can't sit on an overlay), and hands over to systemd.
+#
+# A sandbox made from a snapshot never runs this: it resumes with systemd already up.
+set -e
+mount -t proc proc /proc
+mount -t devtmpfs devtmpfs /dev
+mount -t ext4 -o noatime,discard /dev/vdb /disk
+mkdir -p /disk/root /disk/work /disk/docker
+mount -t overlay overlay -o lowerdir=/,upperdir=/disk/root,workdir=/disk/work /newroot
+mkdir -p /newroot/var/lib/docker /newroot/disk
+mount --bind /disk/docker /newroot/var/lib/docker
+mount --move /disk /newroot/disk
+mount --move /dev /newroot/dev
+umount /proc
+cd /newroot
+mkdir -p .oldroot
+pivot_root . .oldroot
+exec /usr/sbin/chroot . /bin/sh -c 'umount -l /.oldroot 2>/dev/null; rmdir /.oldroot 2>/dev/null; exec /sbin/init'

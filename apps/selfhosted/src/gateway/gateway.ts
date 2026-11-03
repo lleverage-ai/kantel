@@ -109,6 +109,11 @@ export interface GatewayOptions {
 	 * callers in itself, and `undefined` for every other path.
 	 */
 	readonly compute?: { fetch(request: Request): Promise<Response | undefined> };
+	/**
+	 * What `kantel-host` calls with no sign-in (`compute.ts`'s `hostRoutes`): registration, whose join token is its
+	 * authority, and the public host images. `undefined` for every other path.
+	 */
+	readonly computeHosts?: (request: Request) => Promise<Response | undefined>;
 }
 
 /** Who sent a request, as the HTTP server saw it: never from a header the client could set. */
@@ -391,6 +396,10 @@ export function createGateway(options: GatewayOptions): Gateway {
 					return await signIn(request);
 				}
 				if (path === "/v1/deployment") return await deployment(request);
+				if (options.computeHosts !== undefined && path.startsWith("/v1/hosts/")) {
+					const answer = await options.computeHosts(request);
+					if (answer !== undefined) return answer;
+				}
 				if (options.compute !== undefined && path.startsWith("/v1/")) {
 					const answer = await options.compute.fetch(request);
 					if (answer !== undefined) return answer;

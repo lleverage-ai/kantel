@@ -324,7 +324,9 @@ describe("hosts", () => {
 		expect(hosts.items.map((host) => host.id)).toEqual([STUB_HOST_ID]);
 		const token = await ops.createHostJoinToken({ name: "box" });
 		expect(token.token).toMatch(/^kth_/);
-		expect(token.command).toBe(`curl -fsSL http://compute.test/install-host.sh | sh -s -- --join ${token.token}`);
+		expect(token.command).toBe(
+			`sudo npx -y @kantel/host@latest install --url http://compute.test --token ${token.token}`,
+		);
 
 		const drained = await ops.updateHost(STUB_HOST_ID, { draining: true });
 		expect(drained.state).toBe("draining");

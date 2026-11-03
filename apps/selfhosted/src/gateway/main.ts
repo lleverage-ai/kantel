@@ -64,8 +64,10 @@
 //                               session of the same agent and gets its answer. On unless set to anything but `on`
 //                               (`off`, say)
 //   KANTEL_COMPUTE             `experimental` turns on the compute plane's API (compute.ts, @kantel/compute): accounts,
-//                               sandboxes on the stub backend, snapshots, `ksk_` keys, webhooks, OpenTelemetry and
-//                               hosts, all in memory; its super-admin key is `computeKey` in the bootstrap file
+//                               sandboxes, snapshots, `ksk_` keys, webhooks, OpenTelemetry and hosts, in memory; its
+//                               super-admin key is `computeKey` in the bootstrap file. Sandboxes run on the stub unless
+//                               KANTEL_COMPUTE_BACKEND=hosts, which runs them on machines running kantel-host (@kantel/hosts;
+//                               needs KANTEL_PUBLIC_URL or KANTEL_COMPUTE_PUBLIC_URL; the other settings are in compute.ts)
 //
 // It runs on node:http, so it needs nothing Bun-specific; the image runs it on Bun like the session hosts.
 // First: HARBOUR_* settings from before the rename still count.
@@ -81,7 +83,7 @@ import { kantelSessionProvider } from "@kantel/identity/otp";
 import { browserBinding, browserConfig, createBrowserViews, gatewayBrowserProvider } from "./browser.ts";
 import { callbackUrlAllowed, parseCallbackOrigins } from "./callbacks.ts";
 import { type Bootstrap, bootstrap, createGatewayComponents, putAssistantProfile } from "./components.ts";
-import { computeEnabled, type GatewayCompute, gatewayCompute } from "./compute.ts";
+import { computeConfig, type GatewayCompute, gatewayCompute, withHostUpgrades } from "./compute.ts";
 import { connectionsConfig } from "./connections.ts";
 import { createDurableGatewayComponents, type DurableConfig } from "./durable.ts";
 import { importPolicyFile } from "./egress.ts";
@@ -128,9 +130,10 @@ export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
 	const connections = connectionsConfig(env, publicUrl === "" ? undefined : new URL(publicUrl).origin);
 	const environments = environmentsConfig(env);
 	const containers = containerTierConfig(env);
+	const compute = computeConfig(env);
 	return {
+		...(compute === undefined ? {} : { compute }),
 		sessionTools: sessionToolsConfig(env),
-		...(computeEnabled(env) ? { compute: true } : {}),
 		...(environments === undefined ? {} : { environments }),
 		...(containers === undefined ? {} : { containers }),
 		...(browser === undefined ? {} : { browser }),
@@ -266,6 +269,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 					...browser,
 					...(cfg.connections === undefined ? {} : { connections: cfg.connections }),
 					...(cfg.toolServers === true ? { toolServers: true } : {}),
+					...(cfg.compute?.hosts === undefined ? {} : { computeHosts: cfg.compute.hosts }),
 					...(cfg.environments === undefined ? {} : { environments: cfg.environments }),
 					// In memory there is no token table: containers reach the vault proxy with no session token.
 					...(cfg.containers === undefined ? {} : { containers: await prepareContainerTier(cfg.containers) }),
@@ -278,6 +282,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 					...browser,
 					...(cfg.connections === undefined ? {} : { connections: cfg.connections }),
 					...(cfg.toolServers === true ? { toolServers: true } : {}),
+					...(cfg.compute?.hosts === undefined ? {} : { computeHosts: cfg.compute.hosts }),
 					...(cfg.environments === undefined ? {} : { environments: cfg.environments }),
 					...(cfg.containers === undefined ? {} : { containers: cfg.containers }),
 					subagents: cfg.subagents,
@@ -362,7 +367,12 @@ export async function serveGateway(cfg = gatewayConfig()) {
 	// The compute plane signs people in as the gateway does, so it and the gateway share one authenticator.
 	let compute: GatewayCompute | undefined;
 	let authenticator: Authenticator | undefined;
-	if (cfg.compute === true) {
+	// With KANTEL_COMPUTE_BACKEND=hosts: the registry of hosts, and a fresh secret for this process's tunnel URLs.
+	const hosts =
+		components.computeHosts === undefined || cfg.compute?.hosts === undefined
+			? undefined
+			: { service: components.computeHosts, config: cfg.compute.hosts, tunnelSecret: new Uint8Array(randomBytes(32)) };
+	if (cfg.compute !== undefined) {
 		authenticator = createAuthenticator({
 			identity: components.identity,
 			providers: [kantelSessionProvider({ sessions: components.otp.sessions })],
@@ -371,6 +381,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 			authenticator,
 			...(previous?.computeKey === undefined ? {} : { superAdminKey: previous.computeKey }),
 			...(cfg.publicOrigin === undefined ? {} : { publicUrl: cfg.publicOrigin }),
+			...(hosts === undefined ? {} : { hosts }),
 		});
 		seeded = { ...seeded, computeKey: compute.superAdminKey };
 		console.log(
@@ -384,6 +395,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		components,
 		...(authenticator === undefined ? {} : { authenticator }),
 		...(compute === undefined ? {} : { compute: compute.api }),
+		...(compute?.hostRoutes === undefined ? {} : { computeHosts: compute.hostRoutes }),
 		consoleDir: cfg.consoleDir,
 		...(cfg.mail === undefined ? {} : { mail: describeMail(cfg.mail), mailer: createMailer(cfg.mail) }),
 		...(cfg.callbackOrigins.length === 0 ? {} : { allowCallbackUrl: callbackUrlAllowed(cfg.callbackOrigins) }),
@@ -395,9 +407,12 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		...(cfg.publicOrigin === undefined ? {} : { publicOrigin: cfg.publicOrigin }),
 	});
 	const tunnels = components.toolServers === undefined ? undefined : toolServerUpgrades(components.toolServers);
-	const onUpgrade = withToolServerUpgrades(
-		tunnels,
-		browserViews === undefined ? undefined : (incoming, socket, head) => browserViews.upgrade(incoming, socket, head),
+	const onUpgrade = withHostUpgrades(
+		hosts,
+		withToolServerUpgrades(
+			tunnels,
+			browserViews === undefined ? undefined : (incoming, socket, head) => browserViews.upgrade(incoming, socket, head),
+		),
 	);
 	const server = await listen(gateway.fetch, cfg.port, {
 		host: cfg.host,
@@ -413,6 +428,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 	const shutdown = async () => {
 		tunnels?.close();
 		await compute?.close();
+		components.computeHosts?.close();
 		await gateway.close();
 		await server.close();
 		await components.close();
