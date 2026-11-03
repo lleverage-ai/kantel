@@ -7102,7 +7102,7 @@
 			"delete": {
 				"operationId": "revokeHost",
 				"summary": "Revoke a host",
-				"description": "Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. A deployment super-admin only (a key needs `hosts:admin`).",
+				"description": "Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. `unavailable`, and not revoked, when its credential is kept by a part of the deployment that is off (a Kantel Connect host, with Connect switched off). A deployment super-admin only (a key needs `hosts:admin`).",
 				"tags": ["hosts"],
 				"parameters": [
 					{
@@ -7158,6 +7158,16 @@
 					},
 					"404": {
 						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
 						"content": {
 							"application/json": {
 								"schema": {

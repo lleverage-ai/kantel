@@ -1243,12 +1243,13 @@ export const revokeHost = defineRoute({
 	summary: "Revoke a host",
 	description: describe(
 		"Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it",
-		"joins again.",
+		"joins again. `unavailable`, and not revoked, when its credential is kept by a part of the deployment that is",
+		"off (a Kantel Connect host, with Connect switched off).",
 		SUPER_ADMIN,
 	),
 	params: HostPath,
 	answer: { status: 200, description: "The host, revoked.", schema: Host },
-	errors: readErrors,
+	errors: [...readErrors, "unavailable"],
 });
 
 export const createHostJoinToken = defineRoute({

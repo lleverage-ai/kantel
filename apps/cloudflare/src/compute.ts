@@ -257,7 +257,18 @@ export interface StackComputeOptions {
 	readonly portsDomain?: string;
 	/** Kantel Connect (KANTEL_CONNECT=experimental): where hosts reach this Worker. Absent, off. */
 	readonly connect?: { readonly publicUrl: string };
+	/** With Connect on, how often sandboxes past their auto-stop time are stopped. Default `CONNECT_SWEEP_MS`. */
+	readonly connectSweepMs?: number;
 }
+
+/**
+ * With Connect on, how often sandboxes past their auto-stop time are stopped, compute requests or not: a Connect
+ * sandbox is a real machine of someone's, which may be used over SSH alone. A connected host keeps the object up (its
+ * socket isn't hibernated), so this runs while there's a host to stop anything on, and once more as each connects.
+ */
+export const CONNECT_SWEEP_MS = 30_000;
+/** How long after a host connects its overdue sandboxes are swept: time for its hello to land. */
+const SWEEP_AFTER_CONNECT_MS = 2000;
 
 /** What someone outside the deployment's organisation is told: compute here is the stub's memory, not a host of theirs. */
 export const COMPUTE_MEMBERS_ONLY =
@@ -379,11 +390,31 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 	connect?.service.useJoinTokens(joinTokenSpender(store));
 	connect?.bind((grantee, sandboxId) => api.service.stillAllowed(grantee, sandboxId));
 	const timers = whileBusy(api, now);
+	const sweep = () => void api.service.sweep().catch(() => undefined);
+	const sweeper = connect === undefined ? undefined : setInterval(sweep, options.connectSweepMs ?? CONNECT_SWEEP_MS);
+	const afterConnect = new Set<ReturnType<typeof setTimeout>>();
+	const hosts: StackHosts | undefined =
+		connect === undefined
+			? undefined
+			: {
+					...connect.hosts,
+					async connect(credential, socket) {
+						const held = await connect.hosts.connect(credential, socket);
+						if (held !== undefined) {
+							const timer = setTimeout(() => {
+								afterConnect.delete(timer);
+								sweep();
+							}, SWEEP_AFTER_CONNECT_MS);
+							afterConnect.add(timer);
+						}
+						return held;
+					},
+				};
 	const records = options.sql === undefined ? "memory" : "the stack object's SQLite";
 	return {
 		api,
 		binding: `${records}, stub backend${connect === undefined ? "" : " and Kantel Connect hosts"} (experimental)`,
-		...(connect === undefined ? {} : { hosts: connect.hosts }),
+		...(hosts === undefined ? {} : { hosts }),
 		async fetch(request) {
 			const answer = await api.fetch(request);
 			if (answer !== undefined) timers.touch();
@@ -391,6 +422,8 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		},
 		async close() {
 			timers.stop();
+			if (sweeper !== undefined) clearInterval(sweeper);
+			for (const timer of afterConnect) clearTimeout(timer);
 			connect?.access.stop();
 			connect?.service.close();
 			await api.close();

@@ -30,7 +30,14 @@ import {
 	requireScope,
 	roleIn,
 } from "./auth.ts";
-import type { BackendCapabilities, BackendEgress, BackendFileEntry, Placement, SandboxBackend } from "./backend.ts";
+import type {
+	BackendCapabilities,
+	BackendEgress,
+	BackendFileEntry,
+	BootOptions,
+	Placement,
+	SandboxBackend,
+} from "./backend.ts";
 import type {
 	ComputeStore,
 	RunPeriod,
@@ -130,6 +137,14 @@ export interface ComputeServiceOptions {
 /** What someone kept off the shared hosts is told about a sandbox on one. */
 export const SHARED_HOSTS_REFUSED =
 	"This sandbox is on the deployment's shared hosts, which are for its own organisation; use a host of your own";
+
+/** A sandbox whose making from another failed, with nothing left to make it from. */
+export const NEVER_MADE =
+	"This sandbox was never made from its source, and there's no snapshot left to make it from; fork or create it again";
+
+/** A host whose credential no running backend holds (Kantel Connect's, with it switched off) can't be revoked. */
+export const HOST_NOT_REVOCABLE =
+	"This host's credential is kept by a part of the deployment that is off (Kantel Connect); turn it on to revoke the host";
 
 /** What someone kept off the shared hosts is told when they rotate a key that isn't. */
 export const SHARED_KEY_REFUSED =
@@ -862,9 +877,43 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 	}
 
+	/**
+	 * The snapshot a start or recovery makes the sandbox from: its newest, or, when it was never placed (its create or
+	 * fork failed), the one it was to be made from. A sandbox made from another that has no such snapshot (a running
+	 * sandbox's fork) can't be made again here, so it is refused rather than started empty under its source's name; the
+	 * same keeps a Kantel Connect host's snapshot with the host (routed there, or refused while it is unreachable).
+	 */
 	async function latestRef(sandbox: StoredSandbox): Promise<string | undefined> {
-		if (sandbox.latestSnapshotId === undefined) return undefined;
-		return (await store.snapshots.get(sandbox.latestSnapshotId))?.ref;
+		if (sandbox.latestSnapshotId !== undefined) return (await store.snapshots.get(sandbox.latestSnapshotId))?.ref;
+		if (!neverPlaced(sandbox)) return undefined;
+		const from = sandbox.source?.snapshotId;
+		const source = from === undefined ? undefined : await store.snapshots.get(from);
+		if (source === undefined) throw new KantelError("conflict", NEVER_MADE);
+		return readyRef(source);
+	}
+
+	/** A sandbox made from another whose making failed: no backend has it, and it has no snapshot of its own. */
+	const neverPlaced = (sandbox: StoredSandbox): boolean =>
+		sandbox.hostId === undefined && sandbox.latestSnapshotId === undefined && sandbox.source !== undefined;
+
+	/**
+	 * Boots a sandbox for a start or recovery with `boot`: `booted` where a backend has it, or, when it was never placed
+	 * (`latestRef`), made as its create would make it, from its source's snapshot, since no backend has it to start.
+	 */
+	function bootAgain(
+		sandbox: StoredSandbox,
+		boot: BootOptions,
+		booted: (boot: BootOptions) => Promise<Placement>,
+	): Promise<Placement> {
+		if (!neverPlaced(sandbox)) return booted(boot);
+		return backend.create({
+			...boot,
+			sandboxId: sandbox.id,
+			accountId: sandbox.accountId,
+			type: sandbox.type,
+			subdomain: sandbox.subdomain,
+			...(sandbox.image === undefined ? {} : { image: sandbox.image }),
+		});
 	}
 
 	/** Lets the backend drop a snapshot's bytes once no snapshot record shares them. */
@@ -1148,7 +1197,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	async function revokeStoredHost(host: StoredHost): Promise<computeSchema.Host> {
-		await backend.revokeHost?.(host.id);
+		if (backend.revokeHost !== undefined) await backend.revokeHost(host.id);
+		else if (!(await backend.capabilities()).hosts.some((known) => known.id === host.id)) {
+			// Its credential is with a backend that isn't running here now (Kantel Connect, switched off): marked revoked,
+			// it would still sign in once that backend is back.
+			throw new KantelError("unavailable", HOST_NOT_REVOCABLE);
+		}
 		const revoked = await store.hosts.update(host.id, (current) => ({ ...current, state: "revoked" }));
 		return hostView(revoked ?? { ...host, state: "revoked" });
 	}
@@ -1972,13 +2026,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			keepGoing(
 				track([current.id], () =>
 					boot(current.id, () =>
-						backend.recover(current.id, {
-							fromSnapshot,
-							env: current.env,
-							eligibleHosts: hosts,
-							size: current.size,
-							...egress,
-						}),
+						bootAgain(
+							current,
+							{ fromSnapshot, env: current.env, eligibleHosts: hosts, size: current.size, ...egress },
+							(options) => backend.recover(current.id, options),
+						),
 					),
 				),
 			);
@@ -2855,7 +2907,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		};
 		const work = track([current.id], () =>
 			boot(current.id, () =>
-				how === "start" ? backend.start(current.id, bootOptions) : backend.resume(current.id, bootOptions),
+				bootAgain(current, bootOptions, (options) =>
+					how === "start" ? backend.start(current.id, options) : backend.resume(current.id, options),
+				),
 			),
 		);
 		if (body.wait === true) await work;

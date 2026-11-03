@@ -1,9 +1,10 @@
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
+import { KantelError } from "@kantel/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
 import type { SandboxBackend } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
-import { SHARED_HOSTS_REFUSED, SHARED_KEY_REFUSED } from "../src/service.ts";
+import { NEVER_MADE, SHARED_HOSTS_REFUSED, SHARED_KEY_REFUSED } from "../src/service.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 
 const BASE_URL = "http://compute.test/v1";
@@ -410,6 +411,39 @@ describe("organisations", () => {
 		expect((await tom.runCommand(shared.id, { command: "echo hi" })).stdout).toBe("hi\n");
 		const roots = await root.createSandbox({ wait: true });
 		expect((await root.runCommand(roots.id, { command: "echo hi" })).stdout).toBe("hi\n");
+	});
+
+	it("makes a sandbox whose create or fork failed from its source again, never as an empty one", async () => {
+		const stub = createStubBackend();
+		let failing = false;
+		const refuse = () => Promise.reject(new KantelError("unavailable", "The host is away"));
+		const backend: SandboxBackend = {
+			...stub,
+			create: (spec) => (failing ? refuse() : stub.create(spec)),
+			fork: (source, targets) => (failing ? refuse() : stub.fork(source, targets)),
+		};
+		const { tom } = setup(backend);
+		const source = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.writeFile(source.id, { path: "/home/user/kept.txt", content: "kept" });
+		const stopped = await tom.stopSandbox(source.id, { wait: true });
+		const snapshotId = stopped.latestSnapshotId ?? "";
+		await tom.startSandbox(source.id, { wait: true });
+
+		// Its create from the snapshot fails, and so does a fork of the running sandbox (it has no snapshot of its own).
+		failing = true;
+		const fromSnapshot = await tom.createSandbox({ type: "microvm", from: snapshotId, wait: true });
+		expect(fromSnapshot.state).toBe("error");
+		const [fork] = (await tom.forkSandbox(source.id, { wait: true })).items;
+		expect(fork?.state).toBe("error");
+		failing = false;
+
+		// Started again, the first is made from the snapshot, its file there; the fork can't be, so it is refused.
+		expect((await tom.startSandbox(fromSnapshot.id, { wait: true })).state).toBe("running");
+		expect((await tom.readFile(fromSnapshot.id, { path: "/home/user/kept.txt" })).content).toBe("kept");
+		for (const call of [tom.startSandbox(fork?.id ?? "", { wait: true }), tom.recoverSandbox(fork?.id ?? "")]) {
+			expect(await failure(call)).toMatchObject({ code: "conflict", message: NEVER_MADE });
+		}
+		expect((await tom.getSandbox(fork?.id ?? "")).state).toBe("error");
 	});
 
 	it("won't rotate a key that may use the shared hosts for an admin who may not", async () => {

@@ -3,7 +3,7 @@
 // straight to the hub the object hands sockets to), and the account's sandboxes run on it while an organisation with no
 // host of its own keeps the stub. Off, none of it is served and the Worker is as it was.
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { createMemoryStore } from "@kantel/compute";
+import { createMemoryStore, HOST_NOT_REVOCABLE } from "@kantel/compute";
 import { createStubBackend, STUB_HOST_ID } from "@kantel/compute/stub";
 import type { Authenticator } from "@kantel/contracts";
 import { ORGANISATION_HEADER } from "@kantel/contracts/identity";
@@ -110,7 +110,7 @@ function fakeHost() {
 			const message = JSON.parse(text) as HostMessage;
 			if (message.type !== "call") return;
 			calls.push(message.method ?? "");
-			const params = message.params as { sandboxId: string; command?: string };
+			const params = message.params as { sandboxId: string; command?: string; snapshotId?: string };
 			const answer = (result: unknown) => receive(JSON.stringify({ type: "result", id: message.id, result }));
 			if (message.method === "sandbox.create") {
 				sandboxes.add(params.sandboxId);
@@ -118,6 +118,9 @@ function fakeHost() {
 			}
 			if (message.method === "sandbox.start" && sandboxes.has(params.sandboxId)) {
 				return answer({ id: params.sandboxId, tier: "microvm", size: "default", state: "running", createdAt: 1 });
+			}
+			if (message.method === "sandbox.stop" && sandboxes.has(params.sandboxId)) {
+				return answer({ id: params.snapshotId, sizeBytes: 1 });
 			}
 			if (message.method === "sandbox.exec") {
 				const echo = /^echo (.*)$/.exec(params.command ?? "");
@@ -388,6 +391,12 @@ describe("Kantel Connect on the Worker", () => {
 		await attachHost(on.compute.hosts, credential, hostId);
 		const onHost = String((await on.call("POST", "/v1/sandboxes", { type: "microvm", wait: true })).body.id);
 		expect((await on.call("GET", `/v1/sandboxes/${onHost}`)).body.hostId).toBe(hostId);
+		// And one stopped there, its disk now a snapshot on the host.
+		const parked = String((await on.call("POST", "/v1/sandboxes", { type: "microvm", wait: true })).body.id);
+		expect((await on.call("POST", `/v1/sandboxes/${parked}/stop`, { wait: true })).body).toMatchObject({
+			state: "stopped",
+		});
+		const parkedSnapshot = String((await on.call("GET", `/v1/sandboxes/${parked}`)).body.latestSnapshotId);
 		await on.compute.close();
 
 		// Off: the host's sandbox is refused, never made again on the stub; the stub's own revives as before.
@@ -409,6 +418,27 @@ describe("Kantel Connect on the Worker", () => {
 		// passed over (unreachable), not preferred.
 		const fresh = await off.call("POST", "/v1/sandboxes", { type: "microvm", wait: true });
 		expect(fresh.body).toMatchObject({ state: "running", hostId: STUB_HOST_ID });
+		// Made from the host's snapshot, or forked from its sandbox, it fails; started again, it still isn't made
+		// (empty) on the stub, and it keeps the snapshot it is to be made from.
+		const fromHost = await off.call("POST", "/v1/sandboxes", { type: "microvm", from: parkedSnapshot, wait: true });
+		expect(fromHost.body).toMatchObject({ state: "error" });
+		const forked = await off.call("POST", `/v1/sandboxes/${parked}/fork`, { wait: true });
+		const fork = (forked.body.items as { id: string; state: string }[])[0];
+		expect(fork).toMatchObject({ state: "error" });
+		for (const id of [String(fromHost.body.id), String(fork?.id)]) {
+			const started = await off.call("POST", `/v1/sandboxes/${id}/start`, { wait: true });
+			expect(started.body).not.toMatchObject({ state: "running" });
+			const recovered = await off.call("POST", `/v1/sandboxes/${id}/recover`, { wait: true });
+			expect(recovered.body).not.toMatchObject({ state: "running" });
+			const after = (await off.call("GET", `/v1/sandboxes/${id}`)).body;
+			expect(after.state).toBe("error");
+			expect(after.hostId).toBeUndefined();
+		}
+		// Its credential is the hosts registry's, which is off: revoking it is refused, not answered and left valid.
+		const revoking = await off.call("DELETE", `/v1/admin/hosts/${hostId}`);
+		expect(revoking.status).toBe(503);
+		expect(revoking.body).toMatchObject({ error: { code: "unavailable", message: HOST_NOT_REVOCABLE } });
+		expect((await off.call("GET", `/v1/admin/hosts/${hostId}`)).body.state).not.toBe("revoked");
 		await off.compute.close();
 
 		// On again: the host is back, and its sandbox runs there.
@@ -430,6 +460,61 @@ describe("Kantel Connect on the Worker", () => {
 		const next = await again.call("POST", "/v1/sandboxes", { type: "microvm", wait: true });
 		expect(next.body).toMatchObject({ state: "running", hostId });
 		expect((await again.call("GET", "/v1/connect/hosts")).body.items).toMatchObject([{ id: hostId, state: "online" }]);
+		// The one made from its snapshot while it was off is made now, there, from that snapshot.
+		const made = await again.call("POST", `/v1/sandboxes/${fromHost.body.id}/start`, { wait: true });
+		expect(made.body).toMatchObject({ state: "running", hostId });
+	});
+
+	it("stops a host's sandbox at its auto-stop time with no compute request to prompt it", async () => {
+		let clock = Date.now();
+		const authenticator: Authenticator = {
+			authenticate: async () => ({
+				method: "cloudflare_access",
+				actor: { kind: "human", userId: "usr_tom" },
+				organisationId: "org_1",
+			}),
+		};
+		const compute = await createStackCompute({
+			authenticator,
+			identity: { authorize: async () => undefined, getUser: () => Promise.reject(new Error("no users here")) },
+			sql: objectSql(new DatabaseSync(":memory:")),
+			connect: { publicUrl: BASE },
+			now: () => clock,
+			connectSweepMs: 10,
+		});
+		closers.push(() => compute.close());
+		const call = async (method: string, path: string, body?: unknown) => {
+			const response = await compute.fetch(
+				new Request(`${BASE}${path}`, {
+					method,
+					headers: { authorization: "Bearer person", "content-type": "application/json" },
+					...(body === undefined ? {} : { body: JSON.stringify(body) }),
+				}),
+			);
+			return JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;
+		};
+		const hosts = compute.hosts;
+		if (hosts === undefined) throw new Error("Connect is on");
+		const token = String((await call("POST", "/v1/connect/enrolments", {})).token);
+		const registered = await hosts.fetch(
+			new Request(`${BASE}/v1/hosts/register`, { method: "POST", body: JSON.stringify({ token }) }),
+		);
+		if (registered === undefined) throw new Error("Registration wasn't served");
+		const { hostId, credential } = (await registered.json()) as { hostId: string; credential: string };
+		const host = fakeHost();
+		const held = await hosts.connect(credential, host.socket);
+		if (held === undefined) throw new Error("The host's credential was refused");
+		host.attach(held, hostId);
+		await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
+		const timed = await call("POST", "/v1/sandboxes", { type: "microvm", autoStopMinutes: 1, wait: true });
+		const kept = await call("POST", "/v1/sandboxes", { type: "microvm", autoStopMinutes: null, wait: true });
+		expect([timed.hostId, kept.hostId]).toEqual([hostId, hostId]);
+
+		// Past its stop time, with nothing calling the compute API (it is used over SSH alone, say): it is stopped.
+		clock += 2 * 60_000;
+		await expect.poll(() => host.calls.filter((method) => method === "sandbox.stop").length).toBe(1);
+		expect((await call("GET", `/v1/sandboxes/${timed.id}`)).state).toBe("stopped");
+		expect((await call("GET", `/v1/sandboxes/${kept.id}`)).state).toBe("running");
 	});
 
 	it("refuses a host's snapshot on the stub rather than booting an empty disk in its place", async () => {

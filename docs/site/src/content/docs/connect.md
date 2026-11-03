@@ -39,7 +39,7 @@ It checks the machine, installs `kantel-host` and the sandbox images, registers 
 | an online host of its own | its own hosts, by the usual [placement](/hosts/#where-sandboxes-go) (labels, capacity) |
 | no online host of its own (none enrolled, all drained, or all offline) | the deployment's shared hosts, those the super-admin joined, if it has any |
 
-Another account's hosts never qualify. A sandbox stays on the host it started on, and so do its snapshots: starting, resuming, recovering or forking it uses that host even after the account enrols another (a drained host still takes back what it holds). When its host can't be used, the call fails with `unavailable` rather than moving the sandbox elsewhere on an empty disk. That includes switching Connect off: a host's sandboxes wait for it to come back.
+Another account's hosts never qualify. A sandbox stays on the host it started on, and so do its snapshots: starting, resuming, recovering or forking it uses that host even after the account enrols another (a drained host still takes back what it holds). When its host can't be used, the call fails with `unavailable` rather than moving the sandbox elsewhere on an empty disk. That includes switching Connect off: a host's sandboxes wait for it to come back. A sandbox made from a host's snapshot whose create failed keeps that snapshot, and starting it again makes it from that snapshot. While Connect is off, revoking one of its hosts is refused (`unavailable`), because the hosts' credentials are kept by Connect. Sandboxes on a host are stopped at their auto-stop time even if they're only being used over SSH.
 
 ## Look after your hosts
 

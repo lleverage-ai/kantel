@@ -1789,7 +1789,7 @@ export interface KantelClient {
 	getHost(hostId: string, options?: CallOptions): Promise<Host>;
 	/** Change a host. Renames it, replaces its labels, or drains it. A deployment super-admin only (a key needs `hosts:admin`). `PATCH /admin/hosts/{hostId}` */
 	updateHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
-	/** Revoke a host. Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. A deployment super-admin only (a key needs `hosts:admin`). `DELETE /admin/hosts/{hostId}` */
+	/** Revoke a host. Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. `unavailable`, and not revoked, when its credential is kept by a part of the deployment that is off (a Kantel Connect host, with Connect switched off). A deployment super-admin only (a key needs `hosts:admin`). `DELETE /admin/hosts/{hostId}` */
 	revokeHost(hostId: string, options?: CallOptions): Promise<Host>;
 	/** Enrol a host into an account. A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and enrols it into the account (the caller's personal account unless `account` names an organisation). The host dials out to this deployment and keeps the connection open, so it needs no inbound port. Once it has joined, the account's new sandboxes go on its own hosts, and no other account's sandboxes ever do. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned Kantel Connect on. `POST /connect/enrolments` */
 	createConnectEnrolment(body?: CreateConnectEnrolmentBody, options?: CallOptions): Promise<ConnectEnrolment>;
