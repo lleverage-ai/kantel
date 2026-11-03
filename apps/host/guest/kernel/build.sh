@@ -32,7 +32,10 @@ docker run --rm -v "$OUT:/out" -v "$HERE:/cfg:ro" -e KERNEL_VERSION="$KERNEL_VER
 	curl -fsSL "https://raw.githubusercontent.com/firecracker-microvm/firecracker/$FC_REF/resources/guest_configs/microvm-kernel-ci-$ARCH-6.1.config" -o .config
 	cat /cfg/kantel.config >> .config
 	make ARCH=$KARCH olddefconfig >/dev/null
-	for k in CONFIG_KVM CONFIG_OVERLAY_FS CONFIG_VIRTIO_VSOCKETS; do grep -q "^$k=y" .config || { echo "$k missing" >&2; exit 1; }; done
+	# Every option kantel.config turns on has to survive olddefconfig (it drops one whose dependencies are off).
+	for k in CONFIG_OVERLAY_FS CONFIG_VIRTIO_VSOCKETS $(sed -n "s/^\(CONFIG_[A-Z0-9_]*\)=y$/\1/p" /cfg/kantel.config); do
+		grep -q "^$k=y" .config || { echo "$k missing after olddefconfig" >&2; exit 1; }
+	done
 	make ARCH=$KARCH -j"$(nproc)" $TARGET >/dev/null
 	cp "$IMAGE" "/out/vmlinux-$ARCH"
 	cp .config "/out/vmlinux-$ARCH.config"

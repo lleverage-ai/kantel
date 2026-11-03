@@ -1,0 +1,13 @@
+#!/bin/sh
+# The sandbox's browser: Google Chrome on the desktop, with its DevTools port (CDP) on loopback port 9222 for
+# connectOverCDP through the host. Closing its window brings it back (the unit restarts it), so CDP stays reachable.
+export DISPLAY=:1
+for _ in $(seq 200); do [ -e /tmp/.X11-unix/X1 ] && break; sleep 0.05; done
+browser=$(command -v google-chrome-stable || command -v chromium || command -v chromium-browser) || {
+	echo "no browser in this image" >&2
+	exec sleep infinity
+}
+exec "$browser" --no-first-run --no-default-browser-check --disable-dev-shm-usage --password-store=basic \
+	--disable-features=Translate,MediaRouter --disable-background-networking --disable-component-update \
+	--remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 \
+	--user-data-dir=/home/user/.config/kantel-chrome --start-maximized ${KANTEL_BROWSER_FLAGS:-} about:blank

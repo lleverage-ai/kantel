@@ -6,6 +6,9 @@
 #
 # Needs Docker and Go. Writes <out-dir>/<kind>-<arch>.ext4. The image is read-only to every sandbox, so it's sized
 # to its contents plus a little room.
+#
+# KANTEL_GUEST_DOCKERFILE=<path> builds a custom image instead: a Dockerfile that starts `FROM kantel-guest-sandbox:<arch>`
+# (the default image, which this script tags) and adds to it. Build the default image first. See README.md.
 set -eu
 
 OUT=${1:?usage: rootfs.sh <out-dir> [sandbox|isolate] [amd64|arm64]}
@@ -16,7 +19,7 @@ MODULE=$(cd "$HERE/.." && pwd)
 mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
 case "$KIND" in
-sandbox) DOCKERFILE="$HERE/Dockerfile" ;;
+sandbox) DOCKERFILE=${KANTEL_GUEST_DOCKERFILE:-$HERE/Dockerfile} ;;
 isolate) DOCKERFILE="$HERE/isolate.Dockerfile" ;;
 *) echo "unknown kind $KIND" >&2; exit 2 ;;
 esac
@@ -37,10 +40,11 @@ if [ "$KIND" = isolate ]; then
 fi
 
 TAG="kantel-guest-$KIND:$ARCH"
+if [ -n "${KANTEL_GUEST_DOCKERFILE:-}" ]; then TAG="kantel-guest-custom:$ARCH"; IMAGE_NAME=custom; fi
 docker build --platform "linux/$ARCH" -f "$DOCKERFILE" -t "$TAG" "$MODULE"
 CID=$(docker create --platform "linux/$ARCH" "$TAG" /bin/true)
 trap 'docker rm -f "$CID" >/dev/null 2>&1 || true' EXIT
-IMAGE="$KIND-$ARCH.ext4"
+IMAGE="${IMAGE_NAME:-$KIND}-$ARCH.ext4"
 # Export the container's filesystem and make an ext4 image of it, as root in a helper container so ownership and
 # modes are kept. Docker leaves /etc/hosts, /etc/resolv.conf and /etc/hostname as empty files; the guest agent
 # writes them.

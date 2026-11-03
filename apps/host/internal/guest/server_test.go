@@ -34,3 +34,13 @@ func TestWriteHostKeyIsOpenSSHs(t *testing.T) {
 		}
 	}
 }
+
+func TestParseReadySkipsCommentsAndBlanks(t *testing.T) {
+	got := parseReady("# what the template waits for\ndocker\n\n  desktop \n# not ssh\nbrowser\nstream\n")
+	if strings.Join(got, ",") != "docker,desktop,browser,stream" {
+		t.Fatalf("parseReady = %q", got)
+	}
+	if parseReady("") != nil {
+		t.Fatal("an empty file lists nothing")
+	}
+}

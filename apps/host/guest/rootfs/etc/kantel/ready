@@ -1,0 +1,7 @@
+# The services this image runs, which a sandbox template waits for before the host snapshots it (see
+# apps/host/guest/README.md). A custom image built on this one rewrites this file to match what it runs. Not ssh:
+# a template has no host keys, so sshd starts only in a sandbox.
+docker
+desktop
+browser
+stream

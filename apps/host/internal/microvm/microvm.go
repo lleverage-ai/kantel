@@ -488,8 +488,9 @@ func (m *Manager) template(ctx context.Context, size proto.Size) (string, timing
 		return "", nil, fmt.Errorf("template boot: %w (firecracker log: %s)", err, tail(filepath.Join(vm, fc.LogFile)))
 	}
 	t.step("agent", &start)
-	// Not SSH: the image has no host keys, so sshd starts only once a sandbox has its identity.
-	if _, err := client.WaitFor(bootCtx, "desktop", "browser", "docker"); err != nil {
+	// What the image says it runs (/etc/kantel/ready), else the desktop, browser and Docker. Not SSH: the image has
+	// no host keys, so sshd starts only once a sandbox has its identity.
+	if _, err := client.WaitExpected(bootCtx, "desktop", "browser", "docker"); err != nil {
 		m.log.Warn("template services not all ready; snapshotting anyway", "size", size.Name, "error", err)
 	}
 	t.step("services", &start)

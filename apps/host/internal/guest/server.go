@@ -66,8 +66,8 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	uptimeRaw, _ := os.ReadFile("/proc/uptime")
 	uptime, _ := strconv.ParseFloat(strings.Fields(string(uptimeRaw) + " 0")[0], 64)
 	var ready []string
-	for name, addr := range map[string]string{"ssh": "127.0.0.1:22", "desktop": "127.0.0.1:5901", "browser": "127.0.0.1:9222", "isolate": "127.0.0.1:8080"} {
-		if conn, err := net.DialTimeout("tcp", addr, 50*time.Millisecond); err == nil {
+	for name, port := range map[string]int{"ssh": PortSSH, "desktop": PortDesktop, "browser": PortBrowser, "stream": PortStream, "isolate": PortIsolate} {
+		if conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 50*time.Millisecond); err == nil {
 			conn.Close()
 			ready = append(ready, name)
 		}
@@ -76,13 +76,26 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 		ready = append(ready, "docker")
 	}
 	sort.Strings(ready)
+	raw, _ := os.ReadFile(ReadyFile)
+	expect := parseReady(string(raw))
 	s.mu.Lock()
 	id := ""
 	if s.identity != nil {
 		id = s.identity.SandboxID
 	}
 	s.mu.Unlock()
-	writeJSON(w, 200, Health{OK: true, BootID: strings.TrimSpace(string(boot)), Uptime: uptime, Identity: id, Version: s.Version, Ready: ready})
+	writeJSON(w, 200, Health{OK: true, BootID: strings.TrimSpace(string(boot)), Uptime: uptime, Identity: id, Version: s.Version, Ready: ready, Expect: expect})
+}
+
+// parseReady reads a ReadyFile: one service per line; blank lines and # comments are skipped.
+func parseReady(raw string) []string {
+	var names []string
+	for _, line := range strings.Split(raw, "\n") {
+		if name := strings.TrimSpace(line); name != "" && !strings.HasPrefix(name, "#") {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // writeHostKey makes an ed25519 SSH host key in OpenSSH's format, without a process for ssh-keygen.
