@@ -1,0 +1,519 @@
+/**
+ * A `SandboxBackend` in memory, for tests and local runs before hosts exist. One stub host (`host_stub`, named `stub`)
+ * runs every sandbox; each sandbox is a just-bash shell over its own in-memory filesystem with `/home/user` (the
+ * working directory) and `/tmp`, so commands really run. A snapshot is a deep copy of the file tree (path to bytes),
+ * restored on start, resume, fork and create-from. microVM-only features answer stub URLs under
+ * `https://stub.kantel.invalid/` for a microVM, and `not_supported` for an isolate. Nothing here is a security
+ * boundary: it is a stand-in for lane 2's host scheduler.
+ */
+import type { computeSchema } from "@kantel/api";
+import { KantelError } from "@kantel/contracts";
+import { Bash, InMemoryFs } from "just-bash";
+import type {
+	BackendCapabilities,
+	BackendFileEntry,
+	BackendHost,
+	BackendSize,
+	BootOptions,
+	ExecRequest,
+	ExecResult,
+	Placement,
+	SandboxBackend,
+	SandboxSpec,
+	SshGrant,
+	TakenSnapshot,
+	UsageSample,
+} from "./backend.ts";
+import { baseName, HOME, randomId, randomSecret } from "./util.ts";
+
+/** The stub's one host. */
+export const STUB_HOST_ID = "host_stub";
+
+/** Where the stub's microVM-only URLs point. */
+export const STUB_ORIGIN = "https://stub.kantel.invalid";
+
+export interface StubBackendOptions {
+	/** The types it offers. Default both. */
+	readonly types?: readonly computeSchema.SandboxType[];
+	/** The domain public port URLs are under: `http://<port>-<subdomain>.<domain>`. Default `sandbox.localhost`. */
+	readonly sandboxDomain?: string;
+}
+
+const SIZES: readonly BackendSize[] = [
+	{ name: "small", vcpus: 1, memoryMb: 1024, diskGb: 10 },
+	{ name: "default", vcpus: 2, memoryMb: 4096, diskGb: 20 },
+	{ name: "large", vcpus: 4, memoryMb: 8192, diskGb: 40 },
+	{ name: "xlarge", vcpus: 8, memoryMb: 16384, diskGb: 80 },
+];
+
+const ISOLATE_CAPABILITIES: computeSchema.SandboxCapabilities = {
+	exec: true,
+	files: true,
+	ssh: false,
+	desktop: false,
+	browser: false,
+	ports: true,
+	docker: false,
+	kvm: false,
+	pause: false,
+};
+
+const MICROVM_CAPABILITIES: computeSchema.SandboxCapabilities = {
+	exec: true,
+	files: true,
+	ssh: true,
+	desktop: true,
+	browser: true,
+	ports: true,
+	docker: true,
+	kvm: true,
+	pause: true,
+};
+
+/** just-bash's own directories, which a snapshot leaves out. */
+const RESERVED = ["/bin", "/usr", "/dev", "/proc"];
+const reserved = (path: string) => RESERVED.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+
+/** A deep copy of a disk. */
+interface Tree {
+	readonly dirs: Map<string, number>;
+	readonly files: Map<string, { readonly bytes: Uint8Array; readonly mode: number; readonly mtime: number }>;
+	readonly links: Map<string, string>;
+}
+
+interface Machine {
+	readonly id: string;
+	readonly type: computeSchema.SandboxType;
+	size: computeSchema.SandboxSizeName | undefined;
+	env: { readonly [name: string]: string };
+	/** The disk while it runs or is paused (its memory); absent while stopped. */
+	fs: InMemoryFs | undefined;
+	bash: Bash | undefined;
+	state: "running" | "paused" | "stopped";
+	readonly ports: Map<number, string>;
+}
+
+interface LiveMachine extends Machine {
+	fs: InMemoryFs;
+	bash: Bash;
+}
+
+/** Turns a just-bash filesystem error into a KantelError. */
+function fsError(error: unknown, path: string): never {
+	if (error instanceof KantelError) throw error;
+	const message = error instanceof Error ? error.message : String(error);
+	if (message.includes("ENOENT")) throw new KantelError("not_found", `No such file or directory: ${path}`);
+	if (message.includes("EISDIR")) throw new KantelError("invalid", `${path} is a directory`);
+	if (message.includes("ENOTDIR")) throw new KantelError("invalid", `A part of ${path} is not a directory`);
+	if (message.includes("EEXIST")) throw new KantelError("conflict", `${path} already exists`);
+	throw new KantelError("invalid", message);
+}
+
+async function capture(fs: InMemoryFs): Promise<Tree> {
+	const tree: Tree = { dirs: new Map(), files: new Map(), links: new Map() };
+	for (const path of fs.getAllPaths()) {
+		if (path === "/" || reserved(path)) continue;
+		const stat = await fs.lstat(path).catch(() => undefined);
+		if (stat === undefined) continue;
+		if (stat.isSymbolicLink) tree.links.set(path, await fs.readlink(path));
+		else if (stat.isDirectory) tree.dirs.set(path, stat.mode);
+		else if (stat.isFile) {
+			const bytes = new Uint8Array(await fs.readFileBuffer(path));
+			tree.files.set(path, { bytes, mode: stat.mode, mtime: stat.mtime.getTime() });
+		}
+	}
+	return tree;
+}
+
+async function restore(tree: Tree | undefined): Promise<InMemoryFs> {
+	const fs = new InMemoryFs();
+	await fs.mkdir(HOME, { recursive: true });
+	await fs.mkdir("/tmp", { recursive: true });
+	if (tree === undefined) return fs;
+	for (const dir of [...tree.dirs.keys()].sort()) await fs.mkdir(dir, { recursive: true });
+	for (const [path, file] of tree.files) {
+		const parent = path.slice(0, path.lastIndexOf("/"));
+		if (parent !== "") await fs.mkdir(parent, { recursive: true });
+		await fs.writeFile(path, new Uint8Array(file.bytes));
+		await fs.chmod(path, file.mode).catch(() => undefined);
+		await fs.utimes(path, new Date(file.mtime), new Date(file.mtime)).catch(() => undefined);
+	}
+	for (const [path, target] of tree.links) await fs.symlink(target, path).catch(() => undefined);
+	return fs;
+}
+
+function treeSize(tree: Tree): number {
+	let size = 0;
+	for (const file of tree.files.values()) size += file.bytes.byteLength;
+	return size;
+}
+
+/** The entries of one directory of a snapshot. */
+function entriesOf(tree: Tree, dir: string): BackendFileEntry[] {
+	const prefix = dir === "/" ? "/" : `${dir}/`;
+	const children = new Map<string, BackendFileEntry>();
+	const add = (path: string, entry: Omit<BackendFileEntry, "name" | "path">) => {
+		if (!path.startsWith(prefix) || path === dir) return;
+		const rest = path.slice(prefix.length);
+		const slash = rest.indexOf("/");
+		const name = slash < 0 ? rest : rest.slice(0, slash);
+		const childPath = `${prefix}${name}`;
+		if (slash >= 0) {
+			if (!children.has(childPath)) children.set(childPath, { name, path: childPath, kind: "directory", size: 0 });
+			return;
+		}
+		children.set(childPath, { name, path: childPath, ...entry });
+	};
+	for (const path of tree.dirs.keys()) add(path, { kind: "directory", size: 0 });
+	for (const [path, file] of tree.files)
+		add(path, { kind: "file", size: file.bytes.byteLength, modifiedAt: file.mtime });
+	for (const path of tree.links.keys()) add(path, { kind: "symlink", size: 0 });
+	return [...children.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** A `SandboxBackend` in memory over just-bash, with one stub host. */
+export function createStubBackend(options: StubBackendOptions = {}): SandboxBackend {
+	const types: readonly computeSchema.SandboxType[] = options.types ?? ["isolate", "microvm"];
+	const domain = options.sandboxDomain ?? "sandbox.localhost";
+	const machines = new Map<string, Machine>();
+	const snapshots = new Map<string, Tree>();
+
+	const host: BackendHost = {
+		id: STUB_HOST_ID,
+		name: "stub",
+		version: "0.0.0-stub",
+		os: "just-bash",
+		arch: "x86_64",
+		tiers: types,
+		kvm: types.includes("microvm"),
+		nestedVirtualisation: false,
+		capacity: { vcpus: 64, memoryMb: 262_144, diskGb: 2048 },
+		labels: { site: "local" },
+	};
+
+	const machineOf = (sandboxId: string): Machine => {
+		const machine = machines.get(sandboxId);
+		if (machine === undefined) throw new KantelError("not_found", `The stub has no machine for ${sandboxId}`);
+		return machine;
+	};
+	const running = (sandboxId: string): LiveMachine => {
+		const machine = machineOf(sandboxId);
+		if (machine.state !== "running" || machine.fs === undefined || machine.bash === undefined) {
+			throw new KantelError("conflict", `${sandboxId} is not running`);
+		}
+		return machine as LiveMachine;
+	};
+	const microvmOnly = (machine: Machine, what: string) => {
+		if (machine.type !== "microvm")
+			throw new KantelError("not_supported", `${what} needs a microVM; this is an isolate`);
+	};
+	const placeable = (eligibleHosts: readonly string[], type: computeSchema.SandboxType) => {
+		if (!types.includes(type)) throw new KantelError("unavailable", `No host runs ${type} sandboxes`);
+		if (!eligibleHosts.includes(STUB_HOST_ID)) throw new KantelError("unavailable", "No host can take the sandbox");
+	};
+	const placement = (machine: Machine): Placement => {
+		const size =
+			machine.type === "microvm" ? SIZES.find((entry) => entry.name === (machine.size ?? "default")) : undefined;
+		return {
+			hostId: STUB_HOST_ID,
+			...(size === undefined ? {} : { resources: { vcpus: size.vcpus, memoryMb: size.memoryMb, diskGb: size.diskGb } }),
+			capabilities: machine.type === "microvm" ? MICROVM_CAPABILITIES : ISOLATE_CAPABILITIES,
+		};
+	};
+	const boot = (machine: Machine, fs: InMemoryFs) => {
+		machine.fs = fs;
+		machine.bash = new Bash({ fs, cwd: HOME, env: { HOME, USER: "user", ...machine.env } });
+		machine.state = "running";
+	};
+	const snapshotTree = (ref: string): Tree => {
+		const tree = snapshots.get(ref);
+		if (tree === undefined) throw new KantelError("not_found", `The stub has no snapshot ${ref}`);
+		return tree;
+	};
+	const keep = (tree: Tree): TakenSnapshot => {
+		const ref = randomId("ref");
+		snapshots.set(ref, tree);
+		return { ref, sizeBytes: treeSize(tree) };
+	};
+	const fromSnapshot = (ref: string | undefined) => restore(ref === undefined ? undefined : snapshotTree(ref));
+	const viewUrl = (sandboxId: string, what: string) =>
+		`${STUB_ORIGIN}/${what}/${sandboxId}?token=${randomSecret("", 24)}`;
+
+	const create = async (spec: SandboxSpec): Promise<Placement> => {
+		placeable(spec.eligibleHosts, spec.type);
+		if (machines.has(spec.sandboxId)) throw new KantelError("conflict", `${spec.sandboxId} already has a machine`);
+		const machine: Machine = {
+			id: spec.sandboxId,
+			type: spec.type,
+			size: spec.size,
+			env: { ...spec.env },
+			fs: undefined,
+			bash: undefined,
+			state: "stopped",
+			ports: new Map(),
+		};
+		boot(machine, await fromSnapshot(spec.fromSnapshot));
+		machines.set(spec.sandboxId, machine);
+		return placement(machine);
+	};
+
+	const reboot = async (sandboxId: string, options: BootOptions, keepMemory: boolean): Promise<Placement> => {
+		const machine = machineOf(sandboxId);
+		placeable(options.eligibleHosts, machine.type);
+		if (machine.state === "running") return placement(machine);
+		machine.size = options.size ?? machine.size;
+		machine.env = { ...options.env };
+		if (keepMemory && machine.state === "paused" && machine.fs !== undefined) boot(machine, machine.fs);
+		else boot(machine, await fromSnapshot(options.fromSnapshot));
+		return placement(machine);
+	};
+
+	return {
+		async capabilities(): Promise<BackendCapabilities> {
+			return { types, sizes: SIZES, defaultImage: "ubuntu-24.04", hosts: [host] };
+		},
+
+		create,
+
+		start: (sandboxId, options) => reboot(sandboxId, options, false),
+
+		async stop(sandboxId, { keepMemory }) {
+			const machine = machineOf(sandboxId);
+			if (keepMemory) microvmOnly(machine, "Pausing with memory");
+			if (machine.fs === undefined) throw new KantelError("conflict", `${sandboxId} has no machine to stop`);
+			const taken = keep(await capture(machine.fs));
+			machine.bash = undefined;
+			machine.ports.clear();
+			if (keepMemory) machine.state = "paused";
+			else {
+				machine.fs = undefined;
+				machine.state = "stopped";
+			}
+			return taken;
+		},
+
+		resume: (sandboxId, options) => reboot(sandboxId, options, true),
+
+		async fork(source, targets) {
+			const tree =
+				source.snapshot !== undefined ? snapshotTree(source.snapshot) : await capture(running(source.sandboxId).fs);
+			const placements: Placement[] = [];
+			for (const target of targets) {
+				const { ref } = keep(tree);
+				try {
+					placements.push(await create({ ...target, fromSnapshot: ref }));
+				} finally {
+					snapshots.delete(ref);
+				}
+			}
+			return placements;
+		},
+
+		async recover(sandboxId, options) {
+			const machine = machineOf(sandboxId);
+			placeable(options.eligibleHosts, machine.type);
+			machine.env = { ...options.env };
+			machine.ports.clear();
+			boot(machine, machine.fs ?? (await fromSnapshot(options.fromSnapshot)));
+			return placement(machine);
+		},
+
+		async destroy(sandboxId) {
+			machines.delete(sandboxId);
+		},
+
+		async exec(sandboxId, request: ExecRequest): Promise<ExecResult> {
+			const machine = running(sandboxId);
+			const controller = new AbortController();
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			let onAbort: (() => void) | undefined;
+			const races: Promise<ExecResult>[] = [
+				machine.bash
+					.exec(request.command, {
+						cwd: request.cwd ?? HOME,
+						signal: controller.signal,
+						...(request.env === undefined ? {} : { env: { ...request.env } }),
+						...(request.stdin === undefined ? {} : { stdin: request.stdin }),
+					})
+					.then(
+						(result): ExecResult => ({
+							exitCode: result.exitCode,
+							stdout: result.stdout,
+							stderr: result.stderr,
+							timedOut: false,
+						}),
+						(error: unknown): ExecResult => ({
+							exitCode: 1,
+							stdout: "",
+							stderr: `${error instanceof Error ? error.message : String(error)}\n`,
+							timedOut: false,
+						}),
+					),
+			];
+			const timeoutMs = request.timeoutMs;
+			if (timeoutMs !== undefined) {
+				races.push(
+					new Promise<ExecResult>((resolve) => {
+						timer = setTimeout(() => {
+							controller.abort();
+							resolve({ exitCode: 124, stdout: "", stderr: `timed out after ${timeoutMs} ms\n`, timedOut: true });
+						}, timeoutMs);
+					}),
+				);
+			}
+			const signal = request.signal;
+			if (signal !== undefined) {
+				races.push(
+					new Promise<ExecResult>((resolve) => {
+						onAbort = () => {
+							controller.abort();
+							resolve({ exitCode: 137, stdout: "", stderr: "killed\n", timedOut: false });
+						};
+						if (signal.aborted) onAbort();
+						else signal.addEventListener("abort", onAbort, { once: true });
+					}),
+				);
+			}
+			try {
+				return await Promise.race(races);
+			} finally {
+				if (timer !== undefined) clearTimeout(timer);
+				if (signal !== undefined && onAbort !== undefined) signal.removeEventListener("abort", onAbort);
+			}
+		},
+
+		async readFile(sandboxId, path) {
+			const { fs } = running(sandboxId);
+			try {
+				return new Uint8Array(await fs.readFileBuffer(path));
+			} catch (error) {
+				return fsError(error, path);
+			}
+		},
+
+		async writeFile(sandboxId, path, content, mode): Promise<BackendFileEntry> {
+			const { fs } = running(sandboxId);
+			try {
+				const parent = path.slice(0, path.lastIndexOf("/"));
+				if (parent !== "") await fs.mkdir(parent, { recursive: true });
+				await fs.writeFile(path, content);
+				if (mode !== undefined) await fs.chmod(path, mode);
+				const stat = await fs.stat(path);
+				return { name: baseName(path), path, kind: "file", size: stat.size, modifiedAt: stat.mtime.getTime() };
+			} catch (error) {
+				return fsError(error, path);
+			}
+		},
+
+		async deleteFile(sandboxId, path) {
+			const { fs } = running(sandboxId);
+			if (path === "/") throw new KantelError("invalid", "The root can't be deleted");
+			try {
+				await fs.lstat(path);
+				await fs.rm(path, { recursive: true, force: true });
+			} catch (error) {
+				fsError(error, path);
+			}
+		},
+
+		async listFiles(sandboxId, path) {
+			const { fs } = running(sandboxId);
+			try {
+				const stat = await fs.stat(path);
+				if (!stat.isDirectory) throw new KantelError("invalid", `${path} is not a directory`);
+				const entries: BackendFileEntry[] = [];
+				for (const name of (await fs.readdir(path)).sort()) {
+					const child = path === "/" ? `/${name}` : `${path}/${name}`;
+					if (reserved(child)) continue;
+					const info = await fs.lstat(child);
+					entries.push({
+						name,
+						path: child,
+						kind: info.isSymbolicLink ? "symlink" : info.isDirectory ? "directory" : "file",
+						size: info.isFile ? info.size : 0,
+						modifiedAt: info.mtime.getTime(),
+					});
+				}
+				return entries;
+			} catch (error) {
+				return fsError(error, path);
+			}
+		},
+
+		async takeSnapshot(sandboxId) {
+			return keep(await capture(running(sandboxId).fs));
+		},
+
+		async listSnapshotFiles(ref, path) {
+			const tree = snapshotTree(ref);
+			const entries = entriesOf(tree, path);
+			if (path !== "/" && !tree.dirs.has(path) && entries.length === 0) {
+				if (tree.files.has(path)) throw new KantelError("invalid", `${path} is not a directory`);
+				throw new KantelError("not_found", `No such directory in the snapshot: ${path}`);
+			}
+			return entries;
+		},
+
+		async readSnapshotFile(ref, path) {
+			const file = snapshotTree(ref).files.get(path);
+			if (file === undefined) throw new KantelError("not_found", `No such file in the snapshot: ${path}`);
+			return new Uint8Array(file.bytes);
+		},
+
+		async deleteSnapshot(ref) {
+			snapshots.delete(ref);
+		},
+
+		async exposePort(sandboxId, port, { subdomain }) {
+			const machine = running(sandboxId);
+			const url = `http://${port}-${subdomain}.${domain}`;
+			machine.ports.set(port, url);
+			return { url };
+		},
+
+		async hidePort(sandboxId, port) {
+			machines.get(sandboxId)?.ports.delete(port);
+		},
+
+		async openSsh(sandboxId, { publicKey }): Promise<SshGrant> {
+			const machine = running(sandboxId);
+			microvmOnly(machine, "SSH");
+			const privateKey =
+				publicKey === undefined
+					? `-----BEGIN OPENSSH PRIVATE KEY-----\n${randomSecret("stub", 64)}\n-----END OPENSSH PRIVATE KEY-----\n`
+					: undefined;
+			return {
+				host: "ssh.stub.kantel.invalid",
+				port: 2222,
+				user: sandboxId,
+				...(privateKey === undefined ? {} : { privateKey }),
+				hostKeyFingerprint: "SHA256:stub",
+			};
+		},
+
+		async openDesktop(sandboxId) {
+			const machine = running(sandboxId);
+			microvmOnly(machine, "The desktop");
+			const url = viewUrl(sandboxId, "desktop");
+			return { url, embedUrl: `${url}&embed=1` };
+		},
+
+		async openBrowser(sandboxId) {
+			const machine = running(sandboxId);
+			microvmOnly(machine, "The browser");
+			return { url: viewUrl(sandboxId, "browser"), cdpUrl: `wss://stub.kantel.invalid/cdp/${sandboxId}` };
+		},
+
+		async usage(sandboxId): Promise<UsageSample> {
+			const machine = machineOf(sandboxId);
+			if (machine.state !== "running" || machine.fs === undefined) return { cpu: 0, memoryBytes: 0 };
+			let bytes = 0;
+			for (const path of machine.fs.getAllPaths()) {
+				if (reserved(path)) continue;
+				const stat = await machine.fs.lstat(path).catch(() => undefined);
+				if (stat?.isFile === true) bytes += stat.size;
+			}
+			return { cpu: 0.05, memoryBytes: 64 * 1024 * 1024 + bytes };
+		},
+	};
+}
