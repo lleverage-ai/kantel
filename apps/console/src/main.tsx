@@ -161,7 +161,11 @@ function ApiConsole({ first }: { first: Promise<Boot> }) {
 
 type SignedInBoot = Extract<ConsoleBoot, { kind: "signed-in" }>;
 
-/** Each sign-in's one queue of theme saves: the first sync's and every choice in the sidebar, in order. */
+/**
+ * Each sign-in's one queue of theme saves: the first sync's and every choice in the sidebar, in order. Its writes go
+ * through the sign-in's own `setPreferences`, which sends them with that sign-in's credentials and refuses them once it
+ * has ended, so nothing queued outlives the person who chose it.
+ */
 const themeSaves = new WeakMap<SignedInBoot, (preference: ThemePreference) => void>();
 
 /** Keeps a theme for the person on the server; a host app's key has no settings, so nothing for it. */
@@ -170,7 +174,7 @@ function saveTheme(state: SignedInBoot): ((preference: ThemePreference) => void)
 	let save = themeSaves.get(state);
 	if (save === undefined) {
 		save = orderedSaves(
-			(preference) => identity.client.setPreferences({ theme: preference }),
+			(preference) => state.setPreferences({ theme: preference }),
 			(error) => console.info("kantel: couldn't keep the theme:", error instanceof Error ? error.message : error),
 		);
 		themeSaves.set(state, save);
