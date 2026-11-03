@@ -15,13 +15,19 @@ export interface GatewayVars {
 	/**
 	 * The public origin, such as `https://app.kantel.dev`: a hostname with no Cloudflare Access in front, where people
 	 * sign in with an email code (with KANTEL_SIGN_IN_FROM) and anyone may sign up into a personal space of their own.
-	 * Unset: the Worker answers only behind Access, as before.
+	 * With KANTEL_CONNECT it is also the origin hosts dial. Unset: the Worker answers only behind Access, as before.
 	 */
 	readonly KANTEL_PUBLIC_URL?: string;
 	/** The address sign-in codes and invites are sent from, through the `SIGN_IN_MAIL` binding. */
 	readonly KANTEL_SIGN_IN_FROM?: string;
 	/** How many sign-in codes and invites the Worker sends a day (UTC), at most. Default `DEFAULT_DAILY_MAIL_CAP`. */
 	readonly KANTEL_SIGN_IN_DAILY_CAP?: string;
+	/**
+	 * Kantel Connect (experimental): `experimental` lets accounts enrol machines of their own, which dial out to this
+	 * Worker at KANTEL_PUBLIC_URL and run only that account's sandboxes. Unset, empty or `off`: off, and nothing about
+	 * the Worker changes.
+	 */
+	readonly KANTEL_CONNECT?: string;
 }
 
 /**
@@ -49,6 +55,8 @@ export interface GatewayConfig {
 	readonly adminName?: string;
 	/** The domain port URLs are under, from KANTEL_COMPUTE_PORTS_DOMAIN. Absent, `HOSTED_PORTS_DOMAIN`. */
 	readonly portsDomain?: string;
+	/** Kantel Connect, when on: where hosts reach this Worker. */
+	readonly connect?: { readonly publicUrl: string };
 	/**
 	 * Email-code sign-in and open sign-up on the public origin. Absent unless KANTEL_PUBLIC_URL and KANTEL_SIGN_IN_FROM
 	 * are both set; it then also needs the `SIGN_IN_MAIL` binding to send anything.
@@ -87,28 +95,58 @@ export function gatewayConfig(vars: GatewayVars): GatewayConfig {
 	if (portsDomain !== "" && !DNS_NAME.test(portsDomain)) {
 		throw new KantelError("invalid", "KANTEL_COMPUTE_PORTS_DOMAIN is a DNS name such as ports.example.com");
 	}
-	const emailSignIn = emailSignInConfig(vars);
+	const connect = connectConfig(vars);
+	// Set either way, the switch says the public origin may be Connect's alone: turning Connect off keeps it valid.
+	const emailSignIn = emailSignInConfig(vars, trimmed(vars.KANTEL_CONNECT) !== "");
 	return {
 		...(emailSignIn === undefined ? {} : { emailSignIn }),
 		...(portsDomain === "" ? {} : { portsDomain }),
 		...(teamDomain === "" ? {} : { access: { teamDomain, audience } }),
 		...(adminEmail === "" ? {} : { adminEmail }),
 		...(adminName === "" ? {} : { adminName }),
+		...(connect === undefined ? {} : { connect }),
 	};
 }
 
 /**
- * KANTEL_PUBLIC_URL, KANTEL_SIGN_IN_FROM and KANTEL_SIGN_IN_DAILY_CAP. Both of the first two or neither: one without the
- * other is refused rather than served with sign-in silently off.
+ * KANTEL_CONNECT and KANTEL_PUBLIC_URL. Off unless the switch says `experimental`; on, it needs the origin hosts dial,
+ * and a typo in either is refused rather than leaving Connect silently off.
  */
-function emailSignInConfig(vars: GatewayVars): GatewayConfig["emailSignIn"] {
+function connectConfig(vars: GatewayVars): GatewayConfig["connect"] {
+	const value = trimmed(vars.KANTEL_CONNECT).toLowerCase();
+	if (value === "" || value === "off") return undefined;
+	if (value !== "experimental") throw new KantelError("invalid", "KANTEL_CONNECT must be `experimental` or `off`");
+	const publicUrl = trimmed(vars.KANTEL_PUBLIC_URL);
+	if (!PUBLIC_ORIGIN.test(publicUrl)) {
+		throw new KantelError(
+			"invalid",
+			"KANTEL_CONNECT needs KANTEL_PUBLIC_URL: the origin hosts reach this Worker at, such as https://kantel.example.com",
+		);
+	}
+	return { publicUrl: new URL(publicUrl).origin };
+}
+
+const PUBLIC_ORIGIN = /^https?:\/\/[^/?#\s]+\/?$/i;
+
+/**
+ * KANTEL_PUBLIC_URL, KANTEL_SIGN_IN_FROM and KANTEL_SIGN_IN_DAILY_CAP. Both of the first two or neither: one without the
+ * other is refused rather than served with sign-in silently off. With the Kantel Connect switch set (`connect`, on or
+ * off), the public origin is also where hosts dial, so it may be set alone: sign-in is then off.
+ */
+function emailSignInConfig(vars: GatewayVars, connect: boolean): GatewayConfig["emailSignIn"] {
 	const publicUrl = trimmed(vars.KANTEL_PUBLIC_URL);
 	const from = trimmed(vars.KANTEL_SIGN_IN_FROM);
 	if (publicUrl === "" && from === "") return undefined;
+	if (connect && publicUrl !== "" && from === "") {
+		if (!PUBLIC_ORIGIN.test(publicUrl)) {
+			throw new KantelError("invalid", "KANTEL_PUBLIC_URL is an origin such as https://app.kantel.dev");
+		}
+		return undefined;
+	}
 	if (publicUrl === "" || from === "") {
 		throw new KantelError("invalid", "Set both KANTEL_PUBLIC_URL and KANTEL_SIGN_IN_FROM, or neither");
 	}
-	if (!/^https?:\/\/[^/?#\s]+\/?$/i.test(publicUrl)) {
+	if (!PUBLIC_ORIGIN.test(publicUrl)) {
 		throw new KantelError("invalid", "KANTEL_PUBLIC_URL is an origin such as https://app.kantel.dev");
 	}
 	if (!/^[^\s@]+@[^\s@]+$/.test(from)) throw new KantelError("invalid", "KANTEL_SIGN_IN_FROM must be an email address");

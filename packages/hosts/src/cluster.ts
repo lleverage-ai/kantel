@@ -239,7 +239,8 @@ export async function createReplicaKey(): Promise<ReplicaKey> {
 		readonly publicKey: Key;
 		readonly privateKey: Key;
 	};
-	const raw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+	// A raw export is bytes (Workers' types allow a JWK for any format).
+	const raw = new Uint8Array((await crypto.subtle.exportKey("raw", pair.publicKey)) as ArrayBuffer);
 	return {
 		publicKey: base64url(raw),
 		async sign(message) {

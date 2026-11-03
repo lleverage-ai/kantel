@@ -20,6 +20,7 @@ import {
 	actingAccount,
 	decodeGrantee,
 	encodeGrantee,
+	keyPrincipal,
 	liveKeyPrincipal,
 	memberId,
 	newApiKeySecret,
@@ -29,7 +30,14 @@ import {
 	requireScope,
 	roleIn,
 } from "./auth.ts";
-import type { BackendCapabilities, BackendEgress, BackendFileEntry, Placement, SandboxBackend } from "./backend.ts";
+import type {
+	BackendCapabilities,
+	BackendEgress,
+	BackendFileEntry,
+	BootOptions,
+	Placement,
+	SandboxBackend,
+} from "./backend.ts";
 import type {
 	ComputeStore,
 	RunPeriod,
@@ -102,6 +110,12 @@ export interface ComputeServiceOptions {
 	readonly mode?: "selfhosted" | "hosted";
 	/** The join command shown with a host join token, with `{url}` and `{token}`. Default the npm package's. */
 	readonly hostJoinCommand?: string;
+	/**
+	 * Kantel Connect (experimental): an account's people enrol hosts of its own (`/v1/connect/*`), which only its
+	 * sandboxes use. Off, those routes answer `not_supported`. Default off; the gateways turn it on with
+	 * `KANTEL_CONNECT=experimental`, and only where sandboxes run on hosts.
+	 */
+	readonly connect?: boolean;
 	/** The console page where a person approves a device sign-in, with `{url}` for the public URL. */
 	readonly deviceLoginUrl?: string;
 	/** Default `PLACEHOLDER_RATES`. */
@@ -112,7 +126,29 @@ export interface ComputeServiceOptions {
 	 * taken to last.
 	 */
 	readonly sessionLive?: (session: string) => Promise<boolean>;
+	/**
+	 * Whether a user (a person, or the person a key acts for) may use the deployment's shared hosts: have sandboxes
+	 * placed on them, or use one already there. Without, only their accounts' own hosts (Kantel Connect). Absent,
+	 * everyone may. The hosted gateway keeps its stub, in the stack object's memory, to the deployment's organisation.
+	 */
+	readonly sharedHosts?: (userId: string) => Promise<boolean>;
 }
+
+/** What someone kept off the shared hosts is told about a sandbox on one. */
+export const SHARED_HOSTS_REFUSED =
+	"This sandbox is on the deployment's shared hosts, which are for its own organisation; use a host of your own";
+
+/** A sandbox whose making from another failed, with nothing left to make it from. */
+export const NEVER_MADE =
+	"This sandbox was never made from its source, and there's no snapshot left to make it from; fork or create it again";
+
+/** A host whose credential no running backend holds (Kantel Connect's, with it switched off) can't be revoked. */
+export const HOST_NOT_REVOCABLE =
+	"This host's credential is kept by a part of the deployment that is off (Kantel Connect); turn it on to revoke the host";
+
+/** What someone kept off the shared hosts is told when they rotate a key that isn't. */
+export const SHARED_KEY_REFUSED =
+	"This key may use the deployment's shared hosts, which you may not, so you can't take its secret; revoke it instead";
 
 export interface ComputeService {
 	/** A handler for every compute route that signs the caller in, given the signed-in caller. */
@@ -356,11 +392,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			for (const host of capabilities.hosts) {
 				const known = byId.get(host.id);
 				const reachable = host.connected !== false;
-				if (known !== undefined) {
-					const held = known.state === "revoked" || known.state === "draining";
-					const next: StoredHost = {
-						...known,
-						state: held ? known.state : reachable ? "online" : "unreachable",
+				// A host enrolled into an account stays that account's: the registry says so, or the enrolment it spent does
+				// (looked up once, when the host is first seen). Once private, never shared again.
+				const accountId =
+					known?.accountId ?? host.accountId ?? (known === undefined ? await enrolledInto(host.id) : undefined);
+				// Applied to the record as it is when written, not only as read above: a revocation or drain that lands
+				// meanwhile (another request, another gateway) is kept.
+				const refresh = (current: StoredHost): StoredHost => {
+					const held = current.state === "revoked" || current.state === "draining";
+					const owner = current.accountId ?? accountId;
+					return {
+						...current,
+						...(owner === undefined ? {} : { accountId: owner }),
+						state: held ? current.state : reachable ? "online" : "unreachable",
 						version: host.version,
 						os: host.os,
 						arch: host.arch,
@@ -368,10 +412,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						kvm: host.kvm,
 						nestedVirtualisation: host.nestedVirtualisation,
 						capacity: { ...host.capacity },
-						lastSeenAt: host.lastSeenAt ?? (reachable ? now() : known.lastSeenAt),
+						lastSeenAt: host.lastSeenAt ?? (reachable ? now() : current.lastSeenAt),
 					};
+				};
+				const kept = (written: StoredHost | undefined) => {
+					if (written !== undefined) byId.set(host.id, written);
+				};
+				if (known !== undefined) {
+					const next = refresh(known);
 					byId.set(host.id, next);
-					if (hostChanged(known, next)) writes.push(store.hosts.put(next));
+					if (hostChanged(known, next)) writes.push(store.hosts.update(host.id, refresh).then(kept));
 					continue;
 				}
 				const joined: StoredHost = {
@@ -388,11 +438,31 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					capacity: { ...host.capacity },
 					allocated: { sandboxes: 0, vcpus: 0, memoryMb: 0, diskGb: 0 },
 					labels: { ...host.labels },
+					...(accountId === undefined ? {} : { accountId }),
 					joinedAt: now(),
 					lastSeenAt: now(),
 				};
 				byId.set(host.id, joined);
-				writes.push(store.hosts.put(joined));
+				// Another gateway saw it first: refresh what that one wrote.
+				writes.push(
+					store.hosts
+						.insert(joined)
+						.then(async (inserted) => (inserted ? undefined : kept(await store.hosts.update(host.id, refresh)))),
+				);
+			}
+			// A host the backend no longer has (Kantel Connect switched off, say) can't take sandboxes: it is unreachable,
+			// so placement passes it over, its record (owner, revocation, sandboxes) kept for when the backend has it again.
+			const advertised = new Set(capabilities.hosts.map((host) => host.id));
+			for (const record of records) {
+				if (advertised.has(record.id) || record.state !== "online") continue;
+				byId.set(record.id, { ...record, state: "unreachable" });
+				writes.push(
+					store.hosts
+						.update(record.id, (current) =>
+							current.state === "online" ? { ...current, state: "unreachable" } : undefined,
+						)
+						.then(() => undefined),
+				);
 			}
 			await Promise.all(writes);
 			return [...byId.values()];
@@ -402,19 +472,58 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return hostsReady;
 	};
 
-	/** The online hosts of `hosts` that run `type` and carry `labels`; `unavailable` when none does. */
+	/** The account the enrolment a host spent joined it to, if it was an enrolment. */
+	async function enrolledInto(hostId: string): Promise<string | undefined> {
+		const [token] = await store.joinTokens.list({ hostId });
+		return token?.accountId;
+	}
+
+	/**
+	 * The hosts of `hosts` (`ensureHosts`'s answer) an account's sandbox of `type` may go on: online, running the type
+	 * and carrying every label; `unavailable` when none does. An account with hosts of its own (Kantel Connect) that
+	 * qualify uses only those; otherwise the deployment's shared hosts. Another account's hosts never qualify.
+	 *
+	 * `affine`: for a machine or snapshot that already has a disk somewhere (start, resume, recover, fork, a create from
+	 * a snapshot), every qualifying host the account may use, its own and shared alike, draining ones too (a drain stops
+	 * new sandboxes, not what a host already holds). The backend boots it where its disk is, only if that host is in the
+	 * list; preferring the account's hosts there would leave a disk on a shared host with nowhere eligible to boot.
+	 *
+	 * `shared`: whether the caller may use the shared hosts at all (`ComputeServiceOptions.sharedHosts`); without, only
+	 * the account's own.
+	 */
 	function requireHosts(
 		hosts: readonly StoredHost[],
+		accountId: string,
 		type: SandboxType,
 		labels: { readonly [key: string]: string },
+		affine: boolean,
+		shared: boolean,
 	): string[] {
-		const eligible = hosts
-			.filter((host) => host.state === "online")
+		const qualifying = hosts
+			.filter((host) => host.state === "online" || (affine && host.state === "draining"))
 			.filter((host) => host.tiers.includes(type))
-			.filter((host) => Object.entries(labels).every(([key, value]) => host.labels[key] === value))
-			.map((host) => host.id);
-		if (eligible.length === 0) throw new KantelError("unavailable", `No host can run a ${type} sandbox now`);
+			.filter((host) => Object.entries(labels).every(([key, value]) => host.labels[key] === value));
+		const own = qualifying.filter((host) => host.accountId === accountId);
+		const common = shared ? qualifying.filter((host) => host.accountId === undefined) : [];
+		const eligible = (affine ? [...own, ...common] : own.length > 0 ? own : common).map((host) => host.id);
+		if (eligible.length === 0) {
+			throw new KantelError(
+				"unavailable",
+				shared
+					? `No host can run a ${type} sandbox now`
+					: `No host of this account's own can run a ${type} sandbox now`,
+			);
+		}
 		return eligible;
+	}
+
+	/**
+	 * Whether `principal` may use the deployment's shared hosts (`ComputeServiceOptions.sharedHosts`). A super-admin
+	 * always may.
+	 */
+	async function mayShare(principal: Principal): Promise<boolean> {
+		if (options.sharedHosts === undefined || principal.superAdmin) return true;
+		return options.sharedHosts(principal.userId);
 	}
 
 	// Views: what the API answers for a record.
@@ -726,13 +835,32 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const role = await roleIn(store, principal, sandbox.accountId);
 		if (role === undefined || !(await canSee(principal, sandbox, role))) throw notFound("sandbox");
 		requireScope(principal, scope, role);
+		await refuseShared(principal, sandbox);
 		return { sandbox, role };
 	}
 
-	/** The sandbox once its queued operations end, refused with `conflict` unless it is running. */
-	async function requireRunning(sandboxId: string): Promise<StoredSandbox> {
+	/**
+	 * Refuses someone kept off the shared hosts (`mayShare`) a sandbox on one, though a member shared its account. A
+	 * sandbox with no host yet passes, so whatever then waits on it checks again once it is placed (`settledFor`): a
+	 * create or start under way may put it on a shared host before the caller's call reaches it.
+	 */
+	async function refuseShared(principal: Principal, sandbox: StoredSandbox): Promise<void> {
+		if (sandbox.hostId === undefined || (await mayShare(principal))) return;
+		const host = (await ensureHosts()).find((known) => known.id === sandbox.hostId);
+		if (host?.accountId === undefined) throw new KantelError("forbidden", SHARED_HOSTS_REFUSED);
+	}
+
+	/** The sandbox once its queued operations end (a placement among them), checked again with `refuseShared`. */
+	async function settledFor(principal: Principal, sandboxId: string): Promise<StoredSandbox> {
 		await settledOn(sandboxId);
 		const sandbox = await mustGetSandbox(sandboxId);
+		await refuseShared(principal, sandbox);
+		return sandbox;
+	}
+
+	/** `settledFor`, refused with `conflict` unless the sandbox is running. */
+	async function requireRunning(principal: Principal, sandboxId: string): Promise<StoredSandbox> {
+		const sandbox = await settledFor(principal, sandboxId);
 		if (sandbox.state !== "running") {
 			throw new KantelError("conflict", `The sandbox is ${sandbox.state}; it must be running (resume it first)`);
 		}
@@ -749,9 +877,43 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 	}
 
+	/**
+	 * The snapshot a start or recovery makes the sandbox from: its newest, or, when it was never placed (its create or
+	 * fork failed), the one it was to be made from. A sandbox made from another that has no such snapshot (a running
+	 * sandbox's fork) can't be made again here, so it is refused rather than started empty under its source's name; the
+	 * same keeps a Kantel Connect host's snapshot with the host (routed there, or refused while it is unreachable).
+	 */
 	async function latestRef(sandbox: StoredSandbox): Promise<string | undefined> {
-		if (sandbox.latestSnapshotId === undefined) return undefined;
-		return (await store.snapshots.get(sandbox.latestSnapshotId))?.ref;
+		if (sandbox.latestSnapshotId !== undefined) return (await store.snapshots.get(sandbox.latestSnapshotId))?.ref;
+		if (!neverPlaced(sandbox)) return undefined;
+		const from = sandbox.source?.snapshotId;
+		const source = from === undefined ? undefined : await store.snapshots.get(from);
+		if (source === undefined) throw new KantelError("conflict", NEVER_MADE);
+		return readyRef(source);
+	}
+
+	/** A sandbox made from another whose making failed: no backend has it, and it has no snapshot of its own. */
+	const neverPlaced = (sandbox: StoredSandbox): boolean =>
+		sandbox.hostId === undefined && sandbox.latestSnapshotId === undefined && sandbox.source !== undefined;
+
+	/**
+	 * Boots a sandbox for a start or recovery with `boot`: `booted` where a backend has it, or, when it was never placed
+	 * (`latestRef`), made as its create would make it, from its source's snapshot, since no backend has it to start.
+	 */
+	function bootAgain(
+		sandbox: StoredSandbox,
+		boot: BootOptions,
+		booted: (boot: BootOptions) => Promise<Placement>,
+	): Promise<Placement> {
+		if (!neverPlaced(sandbox)) return booted(boot);
+		return backend.create({
+			...boot,
+			sandboxId: sandbox.id,
+			accountId: sandbox.accountId,
+			type: sandbox.type,
+			subdomain: sandbox.subdomain,
+			...(sandbox.image === undefined ? {} : { image: sandbox.image }),
+		});
 	}
 
 	/** Lets the backend drop a snapshot's bytes once no snapshot record shares them. */
@@ -832,6 +994,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		reason: string | undefined,
 		actor: Principal | undefined,
 		still?: (current: StoredSandbox) => boolean,
+		handBack = false,
 	): Promise<{ readonly work: Promise<void> }> {
 		const began = await transition(sandbox.id, sandbox.state, (current) => withState(current, "stopping"), still);
 		if (!("moved" in began)) throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
@@ -873,11 +1036,32 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					},
 				});
 			} catch (error) {
+				if (handBack && error instanceof KantelError && error.code === "unavailable") {
+					// The stop wasn't carried out (its host away, its connection lost or replaced on the way, a replica's view of
+					// it stale, no answer in time), so the machine may still be running there: it is running again as it was
+					// (its stop time and run unchanged), for a later sweep to stop. What the host refused outright (`conflict`,
+					// `not_found`, ...) is an error as before. It is decided by the failure, not by whether the host is connected
+					// by now, which a reconnection or a stale view could answer either way.
+					await transition(sandbox.id, "stopping", (current) => ({
+						...current,
+						state: "running",
+						runs: sandbox.runs,
+						stopsAt: sandbox.stopsAt,
+						reason: undefined,
+					}));
+					return;
+				}
 				await fail(sandbox.id, error, "stopping");
 				throw error;
 			}
 		});
 		return { work };
+	}
+
+	/** The backend's connected hosts now: the stub's always are. */
+	async function connectedHosts(): Promise<Set<string>> {
+		const { hosts } = await backend.capabilities();
+		return new Set(hosts.filter((host) => host.connected !== false).map((host) => host.id));
 	}
 
 	/** The snapshot `from` names in an account: a snapshot's ID, or a saved snapshot's name. */
@@ -940,6 +1124,109 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const host = (await ensureHosts()).find((known) => known.id === hostId);
 		if (host === undefined) throw notFound("host");
 		return host;
+	}
+
+	const requireConnect = () => {
+		if (options.connect !== true) {
+			throw new KantelError("not_supported", "Kantel Connect is off on this deployment (KANTEL_CONNECT)");
+		}
+	};
+
+	/**
+	 * One of an account's own hosts, for a caller in that account with `scope`. A host of an account the caller isn't
+	 * in, and a shared host, are `not_found`, so a host's existence isn't given away.
+	 */
+	async function accountHostFor(
+		principal: Principal,
+		hostId: string,
+		scope: "account:read" | "account:admin",
+	): Promise<{ host: StoredHost; acting: Acting }> {
+		requireConnect();
+		const host = (await ensureHosts()).find((known) => known.id === hostId);
+		if (host?.accountId === undefined) throw notFound("host");
+		const acting = await accountById(store, principal, host.accountId).catch(() => {
+			throw notFound("host");
+		});
+		requireScope(principal, scope, acting.role);
+		return { host, acting };
+	}
+
+	/** A join token, shown once, and its command; an enrolment's joins the host to `owner.accountId`. */
+	async function mintJoinToken(
+		body: {
+			readonly name?: string;
+			readonly labels?: { readonly [key: string]: string };
+			readonly expiresInMinutes?: number;
+		},
+		request: Request,
+		owner?: { readonly accountId: string; readonly createdBy: string },
+	): Promise<computeSchema.HostJoinToken> {
+		const token = randomSecret("kth_", 32);
+		const expiresAt = now() + (body.expiresInMinutes ?? 60) * 60_000;
+		const id = randomId(owner === undefined ? "hjt" : "enr");
+		await store.joinTokens.put({
+			id,
+			tokenHash: await sha256Hex(token),
+			name: body.name,
+			labels: { ...body.labels },
+			expiresAt,
+			createdAt: now(),
+			...(owner === undefined ? {} : { accountId: owner.accountId, createdBy: owner.createdBy }),
+		});
+		const publicUrl = (options.publicUrl ?? new URL(request.url).origin).replace(/\/+$/, "");
+		return {
+			id,
+			token,
+			command: (options.hostJoinCommand ?? DEFAULT_HOST_JOIN_COMMAND)
+				.replaceAll("{url}", publicUrl)
+				.replaceAll("{token}", token),
+			expiresAt,
+		};
+	}
+
+	async function changeHost(
+		host: StoredHost,
+		body: {
+			readonly name?: string;
+			readonly labels?: { readonly [key: string]: string };
+			readonly draining?: boolean;
+		},
+	): Promise<computeSchema.Host> {
+		if (host.state === "revoked") throw new KantelError("conflict", "The host is revoked");
+		await backend.updateHost?.(host.id, {
+			...(body.name === undefined ? {} : { name: body.name }),
+			...(body.labels === undefined ? {} : { labels: { ...body.labels } }),
+			...(body.draining === undefined ? {} : { draining: body.draining }),
+		});
+		// On the record as it is now: a revocation that landed meanwhile stays (and the change is refused).
+		let revoked = false;
+		const updated = await store.hosts.update(host.id, (current) => {
+			revoked = current.state === "revoked";
+			if (revoked) return undefined;
+			let state = current.state;
+			if (body.draining === true) state = "draining";
+			if (body.draining === false && current.state === "draining") state = "online";
+			return {
+				...current,
+				name: body.name ?? current.name,
+				labels: body.labels === undefined ? current.labels : { ...body.labels },
+				state,
+			};
+		});
+		if (revoked) throw new KantelError("conflict", "The host is revoked");
+		if (updated === undefined) throw new KantelError("not_found", "No such host");
+		return hostView(updated);
+	}
+
+	async function revokeStoredHost(host: StoredHost): Promise<computeSchema.Host> {
+		if (backend.revokeHost !== undefined) await backend.revokeHost(host.id);
+		else if (!(await backend.capabilities()).hosts.some((known) => known.id === host.id)) {
+			// Its credential is with a backend that isn't running here now (Kantel Connect, switched off): marked revoked,
+			// it would still sign in once that backend is back.
+			throw new KantelError("unavailable", HOST_NOT_REVOCABLE);
+		}
+		const revoked = await store.hosts.update(host.id, (current) => ({ ...current, state: "revoked" }));
+		return hostView(revoked ?? { ...host, state: "revoked" });
 	}
 
 	/**
@@ -1508,7 +1795,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 				await requireCapacity(account.id, 1);
 				const hostLabels = { ...body.hostLabels };
-				const hosts = requireHosts(await known, type, hostLabels);
+				const hosts = requireHosts(
+					await known,
+					account.id,
+					type,
+					hostLabels,
+					from !== undefined,
+					await mayShare(principal),
+				);
 				const name = body.name ?? generatedName();
 				const sandbox: StoredSandbox = {
 					id: randomId("sbx"),
@@ -1574,8 +1868,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		updateSandbox: async (principal, { params, body }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
-			await settledOn(sandbox.id);
-			const current = await mustGetSandbox(sandbox.id);
+			const current = await settledFor(principal, sandbox.id);
 			const account = await store.accounts.get(current.accountId);
 			if (body.visibility === "organisation" && account?.kind === "personal") {
 				throw new KantelError("invalid", "A personal account's sandboxes are always private");
@@ -1606,8 +1899,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		stopSandbox: async (principal, { params, body }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
-			await settledOn(sandbox.id);
-			const current = await mustGetSandbox(sandbox.id);
+			const current = await settledFor(principal, sandbox.id);
 			const keepMemory = body.keepMemory === true;
 			if (keepMemory && !current.capabilities.pause) {
 				throw new KantelError("not_supported", "Pausing with memory needs a microVM; stop an isolate instead");
@@ -1629,8 +1921,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		forkSandbox: async (principal, { params, body, idempotencyKey }) => {
 			const { sandbox: source } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
 			return once(principal, "forkSandbox", idempotencyKey, async () => {
-				await settledOn(source.id);
-				const current = await mustGetSandbox(source.id);
+				const current = await settledFor(principal, source.id);
 				const count = body.count ?? 1;
 				let snapshot: StoredSnapshot | undefined;
 				if (body.snapshotId !== undefined) {
@@ -1650,7 +1941,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError("invalid", "A personal account's sandboxes are always private");
 				}
 				await requireCapacity(current.accountId, count);
-				const hosts = requireHosts(await ensureHosts(), current.type, current.hostLabels);
+				const hosts = requireHosts(
+					await ensureHosts(),
+					current.accountId,
+					current.type,
+					current.hostLabels,
+					true,
+					await mayShare(principal),
+				);
 				const forks: StoredSandbox[] = [];
 				for (let index = 0; index < count; index++) {
 					const name =
@@ -1689,30 +1987,28 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 				// Queued behind the source too, so it isn't stopped while its live disk is copied.
 				const egress = await egressFor(current.accountId);
+				// One target at a time, each placement recorded as it lands: a backend makes a batch's targets one by one, so
+				// a failure part-way leaves the earlier ones made, and they must keep their host (a start or recovery uses that
+				// machine) rather than be taken for never made (`neverPlaced`).
 				const work = track([current.id, ...forks.map((fork) => fork.id)], async () => {
-					let placements: Placement[];
-					try {
-						placements = await backend.fork(
-							{ sandboxId: current.id, ...(ref === undefined ? {} : { snapshot: ref }) },
-							forks.map((fork) => ({
-								sandboxId: fork.id,
-								accountId: fork.accountId,
-								type: fork.type,
-								subdomain: fork.subdomain,
-								size: fork.size,
-								image: fork.image,
-								env: fork.env,
-								eligibleHosts: hosts,
-								...egress,
-							})),
-						);
-					} catch (error) {
-						for (const fork of forks) await fail(fork.id, error, "starting");
-						return;
-					}
-					for (const [index, fork] of forks.entries()) {
-						const placement = placements[index];
+					for (const fork of forks) {
 						await boot(fork.id, async () => {
+							const [placement] = await backend.fork(
+								{ sandboxId: current.id, ...(ref === undefined ? {} : { snapshot: ref }) },
+								[
+									{
+										sandboxId: fork.id,
+										accountId: fork.accountId,
+										type: fork.type,
+										subdomain: fork.subdomain,
+										size: fork.size,
+										image: fork.image,
+										env: fork.env,
+										eligibleHosts: hosts,
+										...egress,
+									},
+								],
+							);
 							if (placement === undefined) throw new KantelError("unavailable", "The fork was not placed");
 							return placement;
 						});
@@ -1728,12 +2024,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		recoverSandbox: async (principal, { params }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
-			await settledOn(sandbox.id);
-			const current = await mustGetSandbox(sandbox.id);
+			const current = await settledFor(principal, sandbox.id);
 			if (current.state !== "running" && current.state !== "error") {
 				throw new KantelError("conflict", `A ${current.state} sandbox is started or resumed, not recovered`);
 			}
-			const hosts = requireHosts(await ensureHosts(), current.type, current.hostLabels);
+			const hosts = requireHosts(
+				await ensureHosts(),
+				current.accountId,
+				current.type,
+				current.hostLabels,
+				true,
+				await mayShare(principal),
+			);
 			const fromSnapshot = await latestRef(current);
 			const began = await transition(current.id, current.state, (latest) =>
 				withState(latest, "starting", { ports: [] }),
@@ -1744,13 +2046,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			keepGoing(
 				track([current.id], () =>
 					boot(current.id, () =>
-						backend.recover(current.id, {
-							fromSnapshot,
-							env: current.env,
-							eligibleHosts: hosts,
-							size: current.size,
-							...egress,
-						}),
+						bootAgain(
+							current,
+							{ fromSnapshot, env: current.env, eligibleHosts: hosts, size: current.size, ...egress },
+							(options) => backend.recover(current.id, options),
+						),
 					),
 				),
 			);
@@ -1759,8 +2059,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		deleteSandbox: async (principal, { params }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:delete");
-			await settledOn(sandbox.id);
-			const current = await mustGetSandbox(sandbox.id);
+			const current = await settledFor(principal, sandbox.id);
 			if (current.state === "deleted") return sandboxView(current, principal);
 			// A sandbox is deleted from any state, so the move is refused only once another call has deleted it. A delete
 			// already under way (on another gateway, or one that died) is done again: destroying is idempotent, and only one
@@ -1838,7 +2137,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		runCommand: async (principal, { params, body, idempotencyKey }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "exec");
 			return once(principal, "runCommand", idempotencyKey, async () => {
-				const current = await requireRunning(sandbox.id);
+				const current = await requireRunning(principal, sandbox.id);
 				if (!current.capabilities.exec) throw new KantelError("not_supported", "This sandbox runs no commands");
 				const detached = body.detached === true;
 				const command: StoredCommand = {
@@ -1942,7 +2241,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		readFile: async (principal, { params, query }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "files");
-			await requireRunning(sandbox.id);
+			await requireRunning(principal, sandbox.id);
 			const path = resolvePath(query.path);
 			const ranged = query.offset !== undefined || query.length !== undefined;
 			const offset = query.offset ?? 0;
@@ -1964,7 +2263,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		writeFile: async (principal, { params, body }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "files");
-			await requireRunning(sandbox.id);
+			await requireRunning(principal, sandbox.id);
 			const path = resolvePath(body.path);
 			const bytes = body.encoding === "base64" ? base64ToBytes(body.content) : new TextEncoder().encode(body.content);
 			if (bytes.byteLength > MAX_FILE_BYTES) throw new KantelError("invalid", "A file written here is at most 1 MiB");
@@ -1978,14 +2277,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		deleteFile: async (principal, { params, query }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "files");
-			await requireRunning(sandbox.id);
+			await requireRunning(principal, sandbox.id);
 			await backend.deleteFile(sandbox.id, resolvePath(query.path));
 			return undefined;
 		},
 
 		listFiles: async (principal, { params, query }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "files");
-			await requireRunning(sandbox.id);
+			await requireRunning(principal, sandbox.id);
 			const path = resolvePath(query.path ?? HOME);
 			const page = paginate(await backend.listFiles(sandbox.id, path), query.limit, query.cursor);
 			return { path, items: page.items.map(fileEntry), nextCursor: page.nextCursor };
@@ -2001,7 +2300,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		exposePort: async (principal, { params, body }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "access");
 			if (!sandbox.capabilities.ports) throw new KantelError("not_supported", "This sandbox can't expose ports");
-			const current = await requireRunning(sandbox.id);
+			const current = await requireRunning(principal, sandbox.id);
 			const isPublic = body.public === true;
 			const existing = current.ports.find((entry) => entry.port === body.port);
 			// A public port's URL holds no secret, so exposing it again answers it as it is. A gated port's token is shown
@@ -2030,8 +2329,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		hidePort: async (principal, { params }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "access");
-			await settledOn(sandbox.id);
-			const current = await mustGetSandbox(sandbox.id);
+			const current = await settledFor(principal, sandbox.id);
 			const port = Number(params.port);
 			if (!current.ports.some((entry) => entry.port === port)) throw notFound("exposed port");
 			await backend.hidePort(current.id, port);
@@ -2045,7 +2343,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		openSsh: async (principal, { params, body }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "access");
 			if (!sandbox.capabilities.ssh) throw new KantelError("not_supported", "SSH needs a microVM; this is an isolate");
-			const current = await requireRunning(sandbox.id);
+			const current = await requireRunning(principal, sandbox.id);
 			const ttlMinutes = body.ttlMinutes ?? ACCESS_TTL_MINUTES;
 			const grant = await backend.openSsh(current.id, {
 				ttlMinutes,
@@ -2069,7 +2367,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (!sandbox.capabilities.desktop) {
 				throw new KantelError("not_supported", "The desktop needs a microVM; this is an isolate");
 			}
-			const current = await requireRunning(sandbox.id);
+			const current = await requireRunning(principal, sandbox.id);
 			const ttlMinutes = body.ttlMinutes ?? ACCESS_TTL_MINUTES;
 			const viewOnly = body.viewOnly === true;
 			const access = await backend.openDesktop(current.id, { viewOnly, ttlMinutes, grantee: encodeGrantee(principal) });
@@ -2081,7 +2379,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (!sandbox.capabilities.browser) {
 				throw new KantelError("not_supported", "The browser needs a microVM; this is an isolate");
 			}
-			const current = await requireRunning(sandbox.id);
+			const current = await requireRunning(principal, sandbox.id);
 			const ttlMinutes = body.ttlMinutes ?? ACCESS_TTL_MINUTES;
 			const viewOnly = body.viewOnly === true;
 			const access = await backend.openBrowser(current.id, { viewOnly, ttlMinutes, grantee: encodeGrantee(principal) });
@@ -2106,7 +2404,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		takeSnapshot: async (principal, { params, body }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "snapshots:write");
-			const current = await requireRunning(sandbox.id);
+			const current = await requireRunning(principal, sandbox.id);
 			const taken = await backend.takeSnapshot(current.id);
 			const at = now();
 			const snapshot: StoredSnapshot = {
@@ -2131,8 +2429,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		saveSnapshot: async (principal, { body }) => {
 			const { sandbox } = await sandboxFor(principal, body.sandboxId, "snapshots:write");
-			await settledOn(sandbox.id);
-			const current = await mustGetSandbox(sandbox.id);
+			const current = await settledFor(principal, sandbox.id);
 			const [existing] = await store.snapshots.list({ accountId: current.accountId, kind: "saved", name: body.name });
 			if (existing !== undefined && body.replace !== true) {
 				throw new KantelError("conflict", `A saved snapshot is already named ${body.name}`);
@@ -2294,6 +2591,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			grantableSandboxes(principal, key.sandboxIds);
 			if (principal.kind === "key" && principal.limits.sandboxIds !== undefined && key.sandboxIds === undefined) {
 				throw new KantelError("forbidden", "A limited key can't rotate a key without limits");
+			}
+			// A key acts as its owner, shared hosts included (`mayShare`), so someone kept off them can't take one that
+			// isn't, as another of the account's admins' key would be.
+			if (!(await mayShare(principal)) && (await mayShare(keyPrincipal(key)))) {
+				throw new KantelError("forbidden", SHARED_KEY_REFUSED);
 			}
 			const { secret, prefix, hash } = await newApiKeySecret();
 			const rotated = await store.apiKeys.update(key.id, (current) =>
@@ -2526,58 +2828,44 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		createHostJoinToken: async (principal, { body }, request) => {
 			requireScope(principal, "hosts:admin");
-			const token = randomSecret("kth_", 32);
-			const expiresAt = now() + (body.expiresInMinutes ?? 60) * 60_000;
-			const id = randomId("hjt");
-			await store.joinTokens.put({
-				id,
-				tokenHash: await sha256Hex(token),
-				name: body.name,
-				labels: { ...body.labels },
-				expiresAt,
-				createdAt: now(),
-			});
-			const publicUrl = (options.publicUrl ?? new URL(request.url).origin).replace(/\/+$/, "");
-			return {
-				id,
-				token,
-				command: (options.hostJoinCommand ?? DEFAULT_HOST_JOIN_COMMAND)
-					.replaceAll("{url}", publicUrl)
-					.replaceAll("{token}", token),
-				expiresAt,
-			};
+			return mintJoinToken(body, request);
 		},
 
 		getHost: async (principal, { params }) => hostView(await hostFor(principal, params.hostId)),
 
-		updateHost: async (principal, { params, body }) => {
-			const host = await hostFor(principal, params.hostId);
-			if (host.state === "revoked") throw new KantelError("conflict", "The host is revoked");
-			let state = host.state;
-			if (body.draining === true) state = "draining";
-			if (body.draining === false && host.state === "draining") state = "online";
-			const updated: StoredHost = {
-				...host,
-				name: body.name ?? host.name,
-				labels: body.labels === undefined ? host.labels : { ...body.labels },
-				state,
-			};
-			await backend.updateHost?.(host.id, {
-				...(body.name === undefined ? {} : { name: body.name }),
-				...(body.labels === undefined ? {} : { labels: { ...body.labels } }),
-				...(body.draining === undefined ? {} : { draining: body.draining }),
-			});
-			await store.hosts.put(updated);
-			return hostView(updated);
+		updateHost: async (principal, { params, body }) => changeHost(await hostFor(principal, params.hostId), body),
+
+		revokeHost: async (principal, { params }) => revokeStoredHost(await hostFor(principal, params.hostId)),
+
+		// Kantel Connect: an account's own hosts.
+
+		createConnectEnrolment: async (principal, { body }, request) => {
+			requireConnect();
+			const { account, role } = await actingAccount(store, principal, body.account);
+			requireScope(principal, "account:admin", role);
+			const made = await mintJoinToken(body, request, { accountId: account.id, createdBy: principal.userId });
+			return { ...made, accountId: account.id };
 		},
 
-		revokeHost: async (principal, { params }) => {
-			const host = await hostFor(principal, params.hostId);
-			await backend.revokeHost?.(host.id);
-			const revoked: StoredHost = { ...host, state: "revoked" };
-			await store.hosts.put(revoked);
-			return hostView(revoked);
+		listConnectHosts: async (principal, { query }) => {
+			requireConnect();
+			const { account, role } = await actingAccount(store, principal, query.account);
+			requireScope(principal, "account:read", role);
+			const items: computeSchema.Host[] = [];
+			for (const host of await ensureHosts()) {
+				if (host.accountId === account.id) items.push(await hostView(host));
+			}
+			return { items };
 		},
+
+		getConnectHost: async (principal, { params }) =>
+			hostView((await accountHostFor(principal, params.hostId, "account:read")).host),
+
+		updateConnectHost: async (principal, { params, body }) =>
+			changeHost((await accountHostFor(principal, params.hostId, "account:admin")).host, body),
+
+		removeConnectHost: async (principal, { params }) =>
+			revokeStoredHost((await accountHostFor(principal, params.hostId, "account:admin")).host),
 	};
 
 	async function idle(): Promise<void> {
@@ -2601,8 +2889,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		how: "start" | "resume",
 	): Promise<Sandbox> {
 		const { sandbox } = await sandboxFor(principal, sandboxId, "sandboxes:write");
-		await settledOn(sandbox.id);
-		const current = await mustGetSandbox(sandbox.id);
+		const current = await settledFor(principal, sandbox.id);
 		if (current.state === "running") return sandboxView(current, principal);
 		if (current.state !== "stopped" && current.state !== "paused" && current.state !== "error") {
 			throw new KantelError("conflict", `The sandbox is ${current.state}`);
@@ -2610,7 +2897,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (current.type === "isolate" && body.size !== undefined)
 			throw new KantelError("invalid", "Isolates have no size");
 		await requireCapacity(current.accountId, 1);
-		const hosts = requireHosts(await ensureHosts(), current.type, current.hostLabels);
+		const hosts = requireHosts(
+			await ensureHosts(),
+			current.accountId,
+			current.type,
+			current.hostLabels,
+			true,
+			await mayShare(principal),
+		);
 		const fromSnapshot = await latestRef(current);
 		const began = await transition(current.id, current.state, (latest) =>
 			withState(latest, "starting", {
@@ -2633,7 +2927,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		};
 		const work = track([current.id], () =>
 			boot(current.id, () =>
-				how === "start" ? backend.start(current.id, bootOptions) : backend.resume(current.id, bootOptions),
+				bootAgain(current, bootOptions, (options) =>
+					how === "start" ? backend.start(current.id, options) : backend.resume(current.id, options),
+				),
 			),
 		);
 		if (body.wait === true) await work;
@@ -2679,12 +2975,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		async sweep() {
 			const at = now();
+			// The sweep alone stops a sandbox past its time, and only where its host is connected: one on a host that is
+			// away (or whose stop didn't get through, `beginStop`) stays running, and a later sweep, as on its host's
+			// reconnection, stops it.
+			let connected: Set<string> | undefined;
 			for (const sandbox of await store.sandboxes.list({ state: "running" })) {
 				if (sandbox.stopsAt === undefined || sandbox.stopsAt > at || pending.has(sandbox.id)) continue;
+				connected ??= await connectedHosts();
+				if (sandbox.hostId === undefined || !connected.has(sandbox.hostId)) continue;
 				// Every gateway sweeps: `beginStop` moves it only while it is still running, so one of them stops it and the
 				// rest skip it.
 				const due = (current: StoredSandbox) => current.stopsAt !== undefined && current.stopsAt <= at;
-				const began = await beginStop(sandbox, false, "auto-stop", undefined, due).catch(() => undefined);
+				const began = await beginStop(sandbox, false, "auto-stop", undefined, due, true).catch(() => undefined);
 				if (began !== undefined) keepGoing(began.work);
 			}
 		},

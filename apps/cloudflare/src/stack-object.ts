@@ -8,6 +8,11 @@
  * - with email-code sign-in on (KANTEL_PUBLIC_URL), each UTC day's count of mail sent (`src/mail.ts`), in its storage,
  *   so the daily cap holds across restarts. Codes and sessions are in D1 with the directory.
  *
+ * With Kantel Connect on (KANTEL_CONNECT=experimental), it also holds each enrolled host's WebSocket
+ * (`GET /v1/hosts/connect`), accepted here and handed to the hub `src/compute.ts` keeps, so the compute API's calls reach
+ * the host over the connection the host opened. The socket isn't hibernated (the hub's calls in flight live in
+ * memory), so the object stays in memory while any host is connected; with Connect off no socket is ever taken.
+ *
  * Its SQLite still holds what the agent plane kept there (the session runtime's directory, profiles and each session's
  * Pi storage, the session homes table); nothing reads it now, and nothing deletes it. The alarm the runtime used to arm
  * is answered and not armed again.
@@ -16,6 +21,14 @@ import { DurableObject } from "cloudflare:workers";
 import { withKantelEnv } from "@kantel/contracts/env";
 import { d1Driver } from "@kantel/sql/sqlite";
 import { objectSqlDriver } from "./audit-outbox.ts";
+import {
+	HOSTS_CONNECT_PATH,
+	hostCredential,
+	onMessages,
+	preOpenBuffer,
+	type StackHosts,
+	tunnelTicket,
+} from "./compute.ts";
 import type { GatewayVars } from "./config.ts";
 import { gatewayConfig } from "./config.ts";
 import { createGateway, type Gateway } from "./gateway.ts";
@@ -122,8 +135,9 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 
 	override async fetch(request: Request): Promise<Response> {
 		let gateway: Gateway;
+		let stack: Stack;
 		try {
-			({ gateway } = await this.ready());
+			({ gateway, stack } = await this.ready());
 		} catch (error) {
 			console.error("kantel: the stack did not start", error);
 			return Response.json(
@@ -131,6 +145,101 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 				{ status: 503 },
 			);
 		}
+		const hosts = stack.compute.hosts;
+		if (hosts !== undefined) {
+			const path = new URL(request.url).pathname;
+			if (path === HOSTS_CONNECT_PATH) return hostConnection(hosts, request);
+			const ticket = tunnelTicket(path);
+			if (ticket !== undefined) return rawTunnel(hosts, ticket, request);
+		}
 		return gateway.fetch(request);
 	}
+}
+
+/**
+ * A host's connection: the WebSocket is accepted first, so a refusal is a close with 4003, which kantel-host reads as
+ * "stop, don't retry" (a plain 401 to an upgrade looks to it like a network fault, and it would retry for ever).
+ */
+async function hostConnection(hosts: StackHosts, request: Request): Promise<Response> {
+	if (request.method !== "GET" || request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+		return Response.json({ error: { code: "invalid", message: "A host connects with a WebSocket" } }, { status: 426 });
+	}
+	const { 0: client, 1: server } = new WebSocketPair();
+	server.accept();
+	const held = await hosts.connect(hostCredential(request), {
+		sendText: (text) => server.send(text),
+		sendBinary: (bytes) => server.send(bytes),
+		close: (code, reason) => server.close(code, reason),
+	});
+	if (held !== undefined) {
+		onMessages(server, (frame) => held.receive(frame));
+		server.addEventListener("close", (event) => held.closed(event.code, event.reason));
+		server.addEventListener("error", () => held.closed(1011, "The host's connection failed"));
+	}
+	return new Response(null, { status: 101, webSocket: client });
+}
+
+/** A raw tunnel (SSH's ProxyCommand): the sandbox's port as binary frames, over the host's connection. */
+async function rawTunnel(hosts: StackHosts, ticket: string, request: Request): Promise<Response> {
+	if (request.method !== "GET" || request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+		return Response.json({ error: { code: "invalid", message: "A tunnel is a WebSocket" } }, { status: 426 });
+	}
+	const { 0: client, 1: server } = new WebSocketPair();
+	server.accept();
+	// What the client sends before the port is open waits here, bounded (preOpenBuffer): the one stack object holds
+	// every tunnel, so a client that floods a tunnel whose host never answers is closed rather than kept in memory. It
+	// is let go of however the tunnel ends.
+	const pending = preOpenBuffer();
+	let stream: { write(bytes: Uint8Array): void; close(): void } | undefined;
+	let done = false;
+	const end = () => {
+		done = true;
+		pending.clear();
+		stream?.close();
+	};
+	const shut = (code: number, reason: string) => {
+		done = true;
+		pending.clear();
+		try {
+			server.close(code, reason);
+		} catch {
+			// Already closed.
+		}
+	};
+	onMessages(server, (frame) => {
+		if (done) return;
+		const bytes = typeof frame === "string" ? new TextEncoder().encode(frame) : frame;
+		if (stream !== undefined) return stream.write(bytes);
+		if (!pending.hold(bytes)) {
+			end();
+			shut(1009, "Too much sent before the tunnel opened");
+		}
+	});
+	server.addEventListener("close", end);
+	server.addEventListener("error", end);
+	void hosts
+		.tunnel(ticket, {
+			// The host can send before its port.open reply (SSH's banner), even after the client has gone: dropped then.
+			send: (bytes) => {
+				if (done) return;
+				try {
+					server.send(bytes);
+				} catch {
+					end();
+				}
+			},
+			close: (code, reason) => shut(code, reason),
+		})
+		.then((opened) => {
+			// Refused (the ticket, its grant): closed already, with nothing to write.
+			if (opened === undefined) return pending.clear();
+			stream = opened;
+			if (done) return opened.close();
+			for (const chunk of pending.take()) opened.write(chunk);
+		})
+		.catch((error: unknown) => {
+			console.error("kantel: a tunnel failed", error);
+			shut(1011, "The gateway could not open the tunnel");
+		});
+	return new Response(null, { status: 101, webSocket: client });
 }

@@ -7,6 +7,7 @@
  */
 import { type Clock, KantelError, systemClock } from "@kantel/contracts";
 import type { HostCluster } from "./cluster.ts";
+import { parseHostCapacity, parseHostFacts, storedCapacity, storedFacts } from "./facts.ts";
 import { type CallOptions, createHostHub, HostCallError, type HostHub, type PortSink, type PortStream } from "./hub.ts";
 import {
 	HOST_CLOSE_REVOKED,
@@ -47,6 +48,8 @@ export interface HostView {
 		readonly diskGb: number;
 	};
 	readonly labels: { readonly [key: string]: string };
+	/** The account it was enrolled into (Kantel Connect), which alone may use it; absent for a shared host. */
+	readonly accountId?: string;
 	readonly joinedAt: number;
 	readonly lastSeenAt?: number;
 }
@@ -64,7 +67,10 @@ export interface CreateSandboxInput {
 	readonly tier: SandboxTier;
 	/** Default `default` (microVMs); isolates have one size. */
 	readonly size?: string;
-	/** The organisation or account; isolates of one owner share a VM. */
+	/**
+	 * The organisation or account; isolates of one owner share a VM. A host enrolled into an account (Kantel Connect)
+	 * takes only that owner's sandboxes, so a sandbox with no owner never goes on one.
+	 */
 	readonly owner?: string;
 	readonly labels?: { readonly [key: string]: string };
 	readonly env?: { readonly [key: string]: string };
@@ -78,13 +84,22 @@ export interface CreateSandboxInput {
 
 /** Join tokens kept elsewhere, such as by the compute API, which mints them (`createHostJoinToken`). */
 export interface ExternalJoinTokens {
-	/** Spends the token with this SHA-256 hex once: its name and labels, or undefined if unknown, used or expired. */
+	/**
+	 * Spends the token with this SHA-256 hex once: its name and labels, and the account a Kantel Connect enrolment joins
+	 * the host to; or undefined if unknown, used or expired.
+	 */
 	spendJoinToken(
 		hash: string,
 		hostId: string,
 		now: number,
 	): Promise<
-		{ readonly id: string; readonly name?: string; readonly labels: { readonly [key: string]: string } } | undefined
+		| {
+				readonly id: string;
+				readonly name?: string;
+				readonly labels: { readonly [key: string]: string };
+				readonly accountId?: string;
+		  }
+		| undefined
 	>;
 }
 
@@ -265,8 +280,15 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	const hello = async (hostId: string, message: HostHello): Promise<HostWelcome> => {
 		const host = await store.getHost(hostId);
 		if (host === undefined || host.revoked) throw new Error("This host is revoked");
+		const facts = parseHostFacts(message.facts);
+		if (!facts.ok) throw new Error(`The hello's facts aren't valid: ${facts.reason}`);
+		const capacity = parseHostCapacity(message.capacity);
+		if (!capacity.ok) throw new Error(`The hello's capacity isn't valid: ${capacity.reason}`);
+		if (message.sandboxes !== null && message.sandboxes !== undefined && !Array.isArray(message.sandboxes)) {
+			throw new Error("The hello's sandboxes aren't a list");
+		}
 		const now = clock.now();
-		await store.putHost({ ...host, facts: message.facts, capacity: message.capacity, lastSeenAt: now });
+		await store.putHost({ ...host, facts: facts.value, capacity: capacity.value, lastSeenAt: now });
 		reserved.delete(hostId);
 		// Reconcile: what the host holds is the truth about state; a placement the host no longer has is lost.
 		// Go marshals an empty list as null (kantel-host 0.1.0-dev on a host with no sandboxes).
@@ -281,8 +303,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		if (held.size > 0) {
 			log(`[hosts] host ${hostId} holds sandboxes Kantel didn't place: ${[...held.keys()].slice(0, 10).join(", ")}`);
 		}
-		log(`[hosts] host ${hostId} connected (${message.facts.version}, ${sandboxes.length} sandboxes)`);
-		return welcomeFor({ ...host, facts: message.facts });
+		log(`[hosts] host ${hostId} connected (${facts.value.version}, ${sandboxes.length} sandboxes)`);
+		return welcomeFor({ ...host, facts: facts.value });
 	};
 
 	const cluster = options.cluster;
@@ -293,7 +315,13 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			await cluster?.claim(hostId);
 			return welcome;
 		},
-		onHeartbeat(hostId, capacity) {
+		onHeartbeat(hostId, reported) {
+			const parsed = parseHostCapacity(reported);
+			if (!parsed.ok) {
+				log(`[hosts] host ${hostId} sent a heartbeat that isn't valid (${parsed.reason}); ignored`);
+				return;
+			}
+			const capacity = parsed.value;
 			reserved.delete(hostId);
 			report(
 				(async () => {
@@ -304,7 +332,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		},
 		onEvent(hostId, event) {
 			const sandbox = event.sandbox;
-			if (sandbox === undefined) return;
+			if (typeof sandbox !== "object" || sandbox === null) return;
+			if (typeof sandbox.id !== "string" || typeof sandbox.state !== "string") return;
 			report(
 				(async () => {
 					const placement = await store.getPlacement(sandbox.id);
@@ -333,7 +362,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	const view = async (host: HostRecord, allocations = true): Promise<HostView> => {
 		const placements = allocations ? await store.placementsOn(host.id) : [];
 		const live = placements.filter((placement) => LIVE.has(placement.state));
-		const facts = host.facts;
+		const facts = storedFacts(host.facts);
 		const arch =
 			facts?.arch === "amd64" || facts?.arch === "x86_64"
 				? "x86_64"
@@ -366,8 +395,21 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				diskGb: placements.reduce((sum, placement) => sum + placement.diskGiB, 0),
 			},
 			labels: { ...facts?.labels, ...host.labels },
+			...(host.accountId === undefined ? {} : { accountId: host.accountId }),
 			joinedAt: host.joinedAt,
 			...(host.lastSeenAt === undefined ? {} : { lastSeenAt: host.lastSeenAt }),
+		};
+	};
+
+	/** A stored host with its reports checked: one that isn't shaped as a report counts as none, so it can't break placement. */
+	const sane = (host: HostRecord): HostRecord => {
+		const { facts: _facts, capacity: _capacity, ...rest } = host;
+		const facts = storedFacts(host.facts);
+		const capacity = storedCapacity(host.capacity);
+		return {
+			...rest,
+			...(facts === undefined ? {} : { facts }),
+			...(capacity === undefined ? {} : { capacity }),
 		};
 	};
 
@@ -383,9 +425,30 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		return placement;
 	};
 
-	const onHost = async <T>(hostId: string, method: string, params: object, callOptions?: CallOptions): Promise<T> => {
+	/**
+	 * The deployment's attribution key signs headers any account's upstream trusts, so only the operator's own (shared)
+	 * hosts get it. A host enrolled into an account (Kantel Connect) is that account's machine: it gets the account's
+	 * rules and upstream headers, unsigned. Every egress a host receives (create, fork, start, resume, a live update)
+	 * passes here.
+	 */
+	const trusted = async (hostId: string, params: object, known?: HostRecord): Promise<object> => {
+		const egress = (params as { egress?: HostEgress | null }).egress;
+		if (egress === undefined || egress === null || egress.attributionKey === undefined) return params;
+		const host = known ?? (await store.getHost(hostId));
+		if (host !== undefined && host.accountId === undefined) return params;
+		const { attributionKey: _, ...unsigned } = egress;
+		return { ...params, egress: unsigned };
+	};
+
+	const onHost = async <T>(
+		hostId: string,
+		method: string,
+		params: object,
+		callOptions?: CallOptions,
+		known?: HostRecord,
+	): Promise<T> => {
 		try {
-			return await hub.call<T>(hostId, method, params, callOptions);
+			return await hub.call<T>(hostId, method, await trusted(hostId, params, known), callOptions);
 		} catch (error) {
 			throw kantelErrorFromHost(error);
 		}
@@ -435,6 +498,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			if (typeof input.token !== "string" || !input.token.startsWith(JOIN_TOKEN_PREFIX)) {
 				throw new KantelError("forbidden", "That isn't a host join token");
 			}
+			const reported = input.facts === undefined ? undefined : parseHostFacts(input.facts);
+			if (reported?.ok === false) throw new KantelError("invalid", `facts aren't valid: ${reported.reason}`);
+			const facts = reported?.value;
 			const hostId = shortId("host");
 			const now = clock.now();
 			const token = await joinTokens.spendJoinToken(await hashSecret(input.token), hostId, now);
@@ -449,10 +515,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				credentialHash: await hashSecret(credential),
 				revoked: false,
 				draining: false,
+				...(token.accountId === undefined ? {} : { accountId: token.accountId }),
 				joinedAt: now,
-				...(input.facts === undefined ? {} : { facts: input.facts }),
+				...(facts === undefined ? {} : { facts }),
 			});
-			log(`[hosts] host ${hostId} (${name}) joined with token ${token.id}`);
+			const into = token.accountId === undefined ? "" : ` into account ${token.accountId}`;
+			log(`[hosts] host ${hostId} (${name}) joined with token ${token.id}${into}`);
 			return { hostId, credential };
 		},
 		async authenticate(credential) {
@@ -507,7 +575,11 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				// Two reads that don't depend on each other: one round trip.
 				const [existing, listed] = await Promise.all([store.getPlacement(sandboxId), store.listHosts()]);
 				if (existing !== undefined) throw new KantelError("conflict", "A sandbox with that ID exists");
-				const hosts = listed.filter((host) => only === undefined || only.has(host.id));
+				const hosts = listed
+					.map(sane)
+					.filter((host) => only === undefined || only.has(host.id))
+					// An account's own host takes only that account's sandboxes, whatever the caller named.
+					.filter((host) => host.accountId === undefined || host.accountId === input.owner);
 				const candidates: Candidate[] = await Promise.all(
 					hosts.map(async (host) => {
 						const placements = tier === "isolate" ? await store.placementsOn(host.id) : [];
@@ -552,16 +624,22 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				await store.putPlacement(placement);
 				reserve(chosen.host.id, chosen.size.memoryMiB, chosen.size.diskGiB);
 				try {
-					const sandbox = await onHost<HostSandbox>(chosen.host.id, HostMethods.create, {
-						sandboxId,
-						tier,
-						size: tier === "isolate" ? "" : chosen.size.name,
-						...(input.from === undefined ? {} : { from: input.from }),
-						...(input.owner === undefined ? {} : { owner: input.owner }),
-						...(input.env === undefined ? {} : { env: input.env }),
-						...(input.sshAuthorizedKeys === undefined ? {} : { sshAuthorizedKeys: input.sshAuthorizedKeys }),
-						...(input.egress === undefined ? {} : { egress: input.egress }),
-					});
+					const sandbox = await onHost<HostSandbox>(
+						chosen.host.id,
+						HostMethods.create,
+						{
+							sandboxId,
+							tier,
+							size: tier === "isolate" ? "" : chosen.size.name,
+							...(input.from === undefined ? {} : { from: input.from }),
+							...(input.owner === undefined ? {} : { owner: input.owner }),
+							...(input.env === undefined ? {} : { env: input.env }),
+							...(input.sshAuthorizedKeys === undefined ? {} : { sshAuthorizedKeys: input.sshAuthorizedKeys }),
+							...(input.egress === undefined ? {} : { egress: input.egress }),
+						},
+						undefined,
+						chosen.host,
+					);
 					const settled = await settle(placement, sandbox);
 					return {
 						sandbox,

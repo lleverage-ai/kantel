@@ -43,6 +43,10 @@
  *                                signs the Kantel-Sandbox and Kantel-Account headers hosts send an account's proxy
  *                                upstream when its settings ask for attribution (share it with the upstream); unset,
  *                                they go unsigned
+ *   KANTEL_CONNECT               `experimental` turns on Kantel Connect with `hosts`: an account's people enrol machines
+ *                                of their own (`POST /v1/connect/enrolments`, `kantel connect enrol`), which dial out to
+ *                                this gateway like any host and run only that account's sandboxes. Default off: the
+ *                                `/v1/connect` routes answer 501 not_supported
  *
  * An account's proxy settings (PUT /v1/proxy) reach its sandboxes as they boot (create, start, resume, fork): the host's
  * egress proxy applies the allow and deny rules, and with the host's --proxy-data-path switch on passes allowed
@@ -76,7 +80,14 @@ import { type Authenticator, callContextFor, type IdentityDirectory, KantelError
 import { BROWSER_PORT, createHostBackend, SSH_PORT } from "@kantel/hosts/backend";
 import type { HostCluster } from "@kantel/hosts/cluster";
 import { createDesktopRoutes, type DesktopSocket, HOSTS_DESKTOP_PATH } from "@kantel/hosts/desktop";
-import { createHostsApi, HOSTS_CONNECT_PATH, HOSTS_REGISTER_PATH } from "@kantel/hosts/http";
+import {
+	createHostsApi,
+	DEFAULT_HOST_IMAGES,
+	HOSTS_CONNECT_PATH,
+	HOSTS_IMAGES_PATH,
+	HOSTS_REGISTER_PATH,
+} from "@kantel/hosts/http";
+import { closeQuietly } from "@kantel/hosts/hub";
 import { openPortWebSocket } from "@kantel/hosts/port-websocket";
 import { createPortRouter, type PortRouter } from "@kantel/hosts/ports";
 import { HOST_CLOSE_REVOKED, HOST_MAX_MESSAGE_BYTES } from "@kantel/hosts/protocol";
@@ -114,6 +125,8 @@ export interface ComputeHostsConfig {
 	readonly attributionKey?: string;
 	/** Exposed ports' wildcard name's parent, such as `kantel-ports.example`. */
 	readonly portsDomain?: string;
+	/** Kantel Connect (KANTEL_CONNECT=experimental): accounts enrol hosts of their own. */
+	readonly connect?: boolean;
 }
 
 /** The compute plane's settings: `hosts` is set when sandboxes run on joined hosts, not the stub. */
@@ -155,6 +168,7 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 	const rawImages = env.KANTEL_COMPUTE_IMAGES?.trim() || DEFAULT_HOST_IMAGES;
 	const images = rawImages.toLowerCase() === "off" ? "" : rawImages;
 	const joinCommand = env.KANTEL_COMPUTE_JOIN_COMMAND?.trim() ?? "";
+	const connect = connectSwitch(env.KANTEL_CONNECT);
 	const attributionKey = env.KANTEL_EGRESS_ATTRIBUTION_KEY?.trim() ?? "";
 	const portsDomain =
 		env.KANTEL_COMPUTE_PORTS_DOMAIN?.trim()
@@ -172,6 +186,7 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 	return {
 		hosts: {
 			publicUrl: new URL(publicUrl).origin,
+			...(connect ? { connect } : {}),
 			...(portsDomain === "" ? {} : { portsDomain }),
 			...(attributionKey === "" ? {} : { attributionKey }),
 			...(images === "" ? {} : { images }),
@@ -180,6 +195,17 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 			...(version === "" || updateUrl === "" ? {} : { desiredVersion: version, updateUrl }),
 		},
 	};
+}
+
+/**
+ * KANTEL_CONNECT: `experimental` turns Kantel Connect on; unset, empty or `off` leaves it off. Anything else is a
+ * mistake worth stopping for, so a typo can't leave it off unnoticed.
+ */
+export function connectSwitch(raw: string | undefined): boolean {
+	const value = raw?.trim().toLowerCase() ?? "";
+	if (value === "" || value === "off") return false;
+	if (value === "experimental") return true;
+	throw new Error("KANTEL_CONNECT is `experimental` or `off`");
 }
 
 /** The registry of hosts (`@kantel/hosts`) the `hosts` backend places sandboxes on. */
@@ -202,14 +228,10 @@ export function gatewayHosts(
 }
 
 /** `GET /v1/hosts/images/{file}`: the host images `kantel-host install` fetches. */
-export const HOST_IMAGES_PATH = "/v1/hosts/images";
+export const HOST_IMAGES_PATH = HOSTS_IMAGES_PATH;
 
-/**
- * Kantel's published host images (kernel, sandbox and isolate images, manifest.json): a GitHub Release on
- * lleverage-ai/kantel, made by apps/host/guest/release.sh. Pinned to one release, so a new image reaches hosts only
- * when this changes (or KANTEL_COMPUTE_IMAGES points elsewhere).
- */
-export const DEFAULT_HOST_IMAGES = "https://github.com/lleverage-ai/kantel/releases/download/host-images-20261103.1";
+/** Kantel's published host images (`@kantel/hosts/http`); the hosted gateway serves the same ones. */
+export { DEFAULT_HOST_IMAGES };
 
 /** Where a host fetches the kantel-host that KANTEL_HOST_VERSION names: that version's GitHub Release. */
 export const DEFAULT_HOST_UPDATE_URL =
@@ -390,6 +412,7 @@ export async function gatewayCompute(options: {
 		...(options.sessionLive === undefined ? {} : { sessionLive: options.sessionLive }),
 		...(publicUrl === undefined ? {} : { publicUrl }),
 		...(hosts?.config.joinCommand === undefined ? {} : { hostJoinCommand: hosts.config.joinCommand }),
+		...(hosts?.config.connect === true ? { connect: true } : {}),
 		...(options.now === undefined ? {} : { now: options.now }),
 	});
 	const superAdminKey = await bootstrapSuperAdmin(api.store, options.superAdminKey, (options.now ?? Date.now)());
@@ -586,9 +609,16 @@ export function withHostUpgrades(
 							sendBinary: (bytes) => accepted.send(bytes, { binary: true }),
 							close: (code, reason) => accepted.close(code, reason),
 						});
+						// The hub's receive closes a connection whose frame it can't handle; this catch is the last line, so
+						// nothing a host sends (anyone's, with Kantel Connect) escapes into the gateway process.
 						accepted.on("message", (data, binary) => {
-							if (binary) held.receive(bytesOf(data));
-							else held.receive(data.toString());
+							try {
+								if (binary) held.receive(bytesOf(data));
+								else held.receive(data.toString());
+							} catch (error) {
+								console.error(`[hosts] host ${host.id}: a message couldn't be handled`, error);
+								accepted.terminate();
+							}
 						});
 						accepted.on("close", (code, reason) => held.closed(code, reason.toString()));
 						accepted.on("error", () => accepted.terminate());
@@ -623,7 +653,8 @@ export function withHostUpgrades(
 				compute.sandboxes
 					.openPort(sandboxId, port, {
 						data: (bytes) => accepted.send(bytes, { binary: true }),
-						end: (reason) => accepted.close(1000, reason.slice(0, 120)),
+						// What the host says it ended or refused with is the host's: cut to fit and never thrown (`closeQuietly`).
+						end: (reason) => closeQuietly(accepted, 1000, reason),
 					})
 					.then(
 						(opened) => {
@@ -631,9 +662,9 @@ export function withHostUpgrades(
 							if (done) return opened.close();
 							for (const chunk of pending.splice(0)) opened.write(chunk);
 						},
-						(error: unknown) =>
-							accepted.close(1011, (error instanceof Error ? error.message : String(error)).slice(0, 120)),
-					);
+						(error: unknown) => closeQuietly(accepted, 1011, error instanceof Error ? error.message : String(error)),
+					)
+					.catch(() => closeQuietly(accepted, 1011, "The tunnel failed"));
 			});
 		}
 
@@ -668,9 +699,10 @@ export function withHostUpgrades(
 					{
 						message: (data, binary) => accepted.send(data, { binary }),
 						close: (code, reason) =>
-							accepted.close(
+							closeQuietly(
+								accepted,
 								code >= 1000 && code < 5000 && code !== 1005 && code !== 1006 ? code : 1011,
-								reason.slice(0, 120),
+								reason,
 							),
 					},
 					...(host === undefined ? [] : [host]),

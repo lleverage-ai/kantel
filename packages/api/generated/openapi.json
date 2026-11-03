@@ -7102,7 +7102,7 @@
 			"delete": {
 				"operationId": "revokeHost",
 				"summary": "Revoke a host",
-				"description": "Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. A deployment super-admin only (a key needs `hosts:admin`).",
+				"description": "Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. `unavailable`, and not revoked, when its credential is kept by a part of the deployment that is off (a Kantel Connect host, with Connect switched off). A deployment super-admin only (a key needs `hosts:admin`).",
 				"tags": ["hosts"],
 				"parameters": [
 					{
@@ -7158,6 +7158,416 @@
 					},
 					"404": {
 						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/connect/enrolments": {
+			"post": {
+				"operationId": "createConnectEnrolment",
+				"summary": "Enrol a host into an account",
+				"description": "A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and enrols it into the account (the caller's personal account unless `account` names an organisation). The host dials out to this deployment and keeps the connection open, so it needs no inbound port. Once it has joined, the account's new sandboxes go on its own hosts, and no other account's sandboxes ever do. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned Kantel Connect on.",
+				"tags": ["connect"],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/CreateConnectEnrolmentBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The token and its command.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ConnectEnrolment"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/connect/hosts": {
+			"get": {
+				"operationId": "listConnectHosts",
+				"summary": "List an account's hosts",
+				"description": "The hosts enrolled into the account, revoked ones included. The deployment's shared hosts aren't listed. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned Kantel Connect on.",
+				"tags": ["connect"],
+				"parameters": [
+					{
+						"name": "account",
+						"in": "query",
+						"required": false,
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The hosts.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/HostList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/connect/hosts/{hostId}": {
+			"get": {
+				"operationId": "getConnectHost",
+				"summary": "Get one of an account's hosts",
+				"description": "A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned Kantel Connect on.",
+				"tags": ["connect"],
+				"parameters": [
+					{
+						"name": "hostId",
+						"in": "path",
+						"required": true,
+						"description": "The host's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The host.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Host"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"patch": {
+				"operationId": "updateConnectHost",
+				"summary": "Change one of an account's hosts",
+				"description": "Renames it, replaces its labels, or drains it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned Kantel Connect on.",
+				"tags": ["connect"],
+				"parameters": [
+					{
+						"name": "hostId",
+						"in": "path",
+						"required": true,
+						"description": "The host's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/UpdateHostBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The host.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Host"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "removeConnectHost",
+				"summary": "Remove one of an account's hosts",
+				"description": "Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it is enrolled again. Run `sudo kantel-host uninstall` on the machine to take the agent off it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned Kantel Connect on.",
+				"tags": ["connect"],
+				"parameters": [
+					{
+						"name": "hostId",
+						"in": "path",
+						"required": true,
+						"description": "The host's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The host, revoked.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Host"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -7705,6 +8115,33 @@
 				],
 				"title": "CommandState"
 			},
+			"ConnectEnrolment": {
+				"type": "object",
+				"required": ["id", "accountId", "token", "command", "expiresAt"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The enrolment's ID."
+					},
+					"accountId": {
+						"type": "string",
+						"description": "The account the host joins: only its sandboxes will run there."
+					},
+					"token": {
+						"type": "string",
+						"description": "`kth_…`, shown once. It enrols one host, once, before `expiresAt`."
+					},
+					"command": {
+						"type": "string",
+						"description": "The one-line command that installs the host agent on a Linux machine and enrols it with the token. The host dials out to this deployment and keeps that connection open, so it needs no inbound port."
+					},
+					"expiresAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "ConnectEnrolment"
+			},
 			"Cost": {
 				"type": "object",
 				"required": ["currency", "total", "ratePerHour"],
@@ -7763,6 +8200,35 @@
 				},
 				"title": "CreateApiKeyBody",
 				"description": "Give `scopes` or a `preset` (or both, which adds them). A key can't hold a scope its maker lacks."
+			},
+			"CreateConnectEnrolmentBody": {
+				"type": "object",
+				"properties": {
+					"account": {
+						"type": "string",
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`."
+					},
+					"name": {
+						"type": "string",
+						"maxLength": 100,
+						"description": "The host's name. Default: the machine's hostname."
+					},
+					"labels": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"type": "string"
+							}
+						}
+					},
+					"expiresInMinutes": {
+						"type": "integer",
+						"minimum": 5,
+						"maximum": 10080,
+						"description": "Default 60."
+					}
+				},
+				"title": "CreateConnectEnrolmentBody"
 			},
 			"CreatedBy": {
 				"type": "object",
@@ -9247,6 +9713,10 @@
 								"type": "string"
 							}
 						}
+					},
+					"accountId": {
+						"type": "string",
+						"description": "The account the host belongs to, when it was enrolled into one with Kantel Connect: only that account's sandboxes run on it. Absent for a host the deployment's super-admin joined, which any account's sandboxes may use."
 					},
 					"joinedAt": {
 						"type": "integer",

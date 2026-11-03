@@ -24,7 +24,7 @@ import {
 	type ReplicaRecord,
 	signPeerRequest,
 } from "@kantel/hosts/cluster";
-import { HostCallError } from "@kantel/hosts/hub";
+import { closeQuietly, HostCallError } from "@kantel/hosts/hub";
 import { HOST_MAX_MESSAGE_BYTES, type HostEvent, type HostWelcome } from "@kantel/hosts/protocol";
 import WebSocket, { type WebSocketServer } from "ws";
 import { refusalCode, refuseUpgrade } from "./upgrade-refusal.ts";
@@ -319,7 +319,8 @@ export async function createGatewayCluster(options: {
 						.local()
 						.openPort(hostId, sandboxId, port, {
 							data: (bytes) => accepted.send(bytes, { binary: true }),
-							end: (reason) => accepted.close(1000, reason.slice(0, 120)),
+							// The host's reason: cut to fit and never thrown (`closeQuietly`).
+							end: (reason) => closeQuietly(accepted, 1000, reason),
 						})
 						.then(
 							(opened) => {
@@ -329,9 +330,10 @@ export async function createGatewayCluster(options: {
 							},
 							(error: unknown) => {
 								const notFound = error instanceof HostCallError && error.code === "not_found";
-								accepted.close(notFound ? 4004 : 1011, (error instanceof Error ? error.message : "").slice(0, 120));
+								closeQuietly(accepted, notFound ? 4004 : 1011, error instanceof Error ? error.message : "");
 							},
-						);
+						)
+						.catch(() => closeQuietly(accepted, 1011, "The stream failed"));
 				});
 			})().catch(() => refuseUpgrade(incoming, socket, head, 502, "The replica could not check the stream", sockets));
 			return true;

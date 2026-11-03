@@ -18,6 +18,7 @@ import {
 	type EventType,
 	type ExposedPort,
 	type FileList,
+	type Host,
 	type IssuedApiKey,
 	KantelApiError,
 	type KantelClient,
@@ -436,6 +437,26 @@ function issuedKey(issued: IssuedApiKey): string {
 }
 
 /** A command's exit code: its own, 124 when it timed out (as timeout(1) does), 137 when it was killed. */
+/** One of an account's own hosts (Kantel Connect), for `kantel connect info`. */
+function describeHost(host: Host): string {
+	const labels = Object.entries(host.labels).map(([key, value]) => `${key}=${value}`);
+	return fields([
+		["id", host.id],
+		["name", host.name],
+		["state", host.state],
+		["account", host.accountId],
+		["version", host.version],
+		["machine", [host.os, host.arch].filter(hasValue).join("/") || undefined],
+		["tiers", host.tiers.join(", ")],
+		["kvm", host.kvm ? "yes" : "no"],
+		["capacity", `${host.capacity.vcpus} vCPUs, ${host.capacity.memoryMb} MB memory, ${host.capacity.diskGb} GB disk`],
+		["sandboxes", String(host.allocated.sandboxes)],
+		["labels", labels.length === 0 ? undefined : labels.join(", ")],
+		["joined", timestamp(host.joinedAt)],
+		["last seen", host.lastSeenAt === undefined ? undefined : ago(host.lastSeenAt)],
+	]);
+}
+
 function exitCodeOf(command: Command): number {
 	if (command.state === "timed_out") return 124;
 	if (command.exitCode !== undefined) return command.exitCode;
@@ -1808,6 +1829,101 @@ const SECTIONS: readonly Section[] = [
 		],
 	},
 	{
+		title: "Kantel Connect (experimental)",
+		commands: [
+			{
+				name: "connect enrol",
+				summary: "Enrol a Linux machine of your own: only your account's sandboxes will run on it",
+				args: [{ name: "name", optional: true }],
+				flags: {
+					label: { type: "string", multiple: true, value: "<K=V>", description: "A label for the host; repeat it" },
+					expires: {
+						type: "string",
+						value: "<minutes>",
+						description: "How long the token lasts, 5 to 10080; default 60",
+					},
+				},
+				details:
+					"It prints a one-line command to run on the machine, as root. kantel-host installs, dials out to\n" +
+					"Kantel and keeps that connection open: the machine needs no inbound port and may sit behind NAT.\n" +
+					"The host joins the account you act in (your personal account, or --account <org>); from then on that\n" +
+					"account's new sandboxes go on its own hosts, and no other account's ever do. The deployment must\n" +
+					"have Kantel Connect turned on (KANTEL_CONNECT=experimental).",
+				async run(ctx) {
+					const config = await ctx.config();
+					const enrolment = await (await ctx.client()).createConnectEnrolment({
+						account: config.account,
+						name: ctx.optional(0),
+						labels: pairs(ctx.list("label"), "--label"),
+						expiresInMinutes: whole(ctx.string("expires"), "--expires", 5),
+					});
+					ctx.emit(enrolment, () =>
+						[
+							`Run this on the machine, as root, before ${timestamp(enrolment.expiresAt)}:`,
+							"",
+							`  ${enrolment.command}`,
+							"",
+							`It joins account ${enrolment.accountId}; the token works once. Then: kantel connect list`,
+						].join("\n"),
+					);
+				},
+			},
+			{
+				name: "connect list",
+				summary: "The hosts enrolled into your account",
+				async run(ctx) {
+					const config = await ctx.config();
+					const hosts = await (await ctx.client()).listConnectHosts({ account: config.account });
+					const rows = hosts.items.map((host) => [
+						host.id,
+						host.name,
+						host.state,
+						host.tiers.join(","),
+						String(host.allocated.sandboxes),
+						host.lastSeenAt === undefined ? "" : ago(host.lastSeenAt),
+					]);
+					ctx.emit(hosts, () =>
+						rows.length === 0
+							? "No hosts of your own. Enrol one with: kantel connect enrol"
+							: table(["ID", "NAME", "STATE", "TIERS", "SANDBOXES", "LAST SEEN"], rows),
+					);
+				},
+			},
+			{
+				name: "connect info",
+				summary: "One of your hosts",
+				args: ID_ARG,
+				async run(ctx) {
+					const host = await (await ctx.client()).getConnectHost(ctx.arg(0));
+					ctx.emit(host, () => describeHost(host));
+				},
+			},
+			{
+				name: "connect drain",
+				summary: "Stop placing new sandboxes on one of your hosts (--off to take them again)",
+				args: ID_ARG,
+				flags: { off: { type: "boolean", description: "Take new sandboxes again" } },
+				async run(ctx) {
+					const draining = !ctx.boolean("off");
+					const host = await (await ctx.client()).updateConnectHost(ctx.arg(0), { draining });
+					ctx.emit(host, () => `${host.id} (${host.name}) is ${host.state}.`);
+				},
+			},
+			{
+				name: "connect rm",
+				summary: "Remove one of your hosts: revoke its credential and close its connection",
+				args: ID_ARG,
+				details:
+					"Its sandboxes keep their disks on the machine but can't be reached. To take kantel-host off the\n" +
+					"machine too, run on it: sudo kantel-host uninstall",
+				async run(ctx) {
+					const host = await (await ctx.client()).removeConnectHost(ctx.arg(0));
+					ctx.emit(host, () => `Removed ${host.id} (${host.name}); it is ${host.state}.`);
+				},
+			},
+		],
+	},
+	{
 		title: "Coding agents",
 		commands: [
 			{
@@ -1960,6 +2076,7 @@ const GROUPS: { readonly [name: string]: string } = {
 	org: "Your organisations",
 	webhook: "Send the account's events to a URL",
 	telemetry: "Send the account's metrics and events to OpenTelemetry",
+	connect: "Run your sandboxes on machines of your own (experimental)",
 };
 const GROUP_ALIASES: { readonly [alias: string]: string } = { sb: "sandbox" };
 /** Other names for commands: short ones, and the `sandbox …` spellings of the first CLI, which keep working. */

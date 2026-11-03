@@ -43,12 +43,16 @@ export interface ComputeApiOptions {
 	readonly mode?: "selfhosted" | "hosted";
 	/** The join command shown with a host join token, with `{url}` and `{token}`. */
 	readonly hostJoinCommand?: string;
+	/** Kantel Connect's routes (`/v1/connect/*`, experimental): accounts enrol hosts of their own. Default off. */
+	readonly connect?: boolean;
 	/** The console page where a person approves a device sign-in, with `{url}`. Default `{url}/device`. */
 	readonly deviceLoginUrl?: string;
 	readonly rates?: RateTable;
 	readonly limits?: ComputeLimits;
 	/** Whether a person's sign-in (`PersonIdentity.session`) is still live; absent, sign-ins are taken to last. */
 	readonly sessionLive?: (session: string) => Promise<boolean>;
+	/** Whether a user may use the deployment's shared hosts (`ComputeServiceOptions.sharedHosts`); absent, everyone. */
+	readonly sharedHosts?: (userId: string) => Promise<boolean>;
 }
 
 export interface ComputeApi {
@@ -107,10 +111,12 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 		...(options.publicUrl === undefined ? {} : { publicUrl: options.publicUrl }),
 		...(options.mode === undefined ? {} : { mode: options.mode }),
 		...(options.hostJoinCommand === undefined ? {} : { hostJoinCommand: options.hostJoinCommand }),
+		...(options.connect === undefined ? {} : { connect: options.connect }),
 		...(options.deviceLoginUrl === undefined ? {} : { deviceLoginUrl: options.deviceLoginUrl }),
 		...(options.rates === undefined ? {} : { rates: options.rates }),
 		...(options.limits === undefined ? {} : { limits: options.limits }),
 		...(options.sessionLive === undefined ? {} : { sessionLive: options.sessionLive }),
+		...(options.sharedHosts === undefined ? {} : { sharedHosts: options.sharedHosts }),
 	});
 	service = created;
 	const publicIds = new Set<string>(Object.keys(publicComputeRoutes));

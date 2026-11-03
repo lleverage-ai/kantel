@@ -91,6 +91,13 @@
 		"KANTEL_ACCESS_AUD": "",
 		// The first admin, invited by email: Access's verified email links them on first sign-in. Empty: nobody is invited.
 		"KANTEL_ADMIN_EMAIL": "",
+		// Experimental, off by default: `experimental` turns on Kantel Connect (src/compute.ts): accounts enrol machines of
+		// their own, which register at /v1/hosts/register and keep a WebSocket to /v1/hosts/connect on the stack object, and
+		// run only that account's sandboxes. It needs KANTEL_PUBLIC_URL, the origin hosts dial: the public origin, with no
+		// Access in front, or a hostname with an Access bypass for /v1/hosts/register, /v1/hosts/connect,
+		// /v1/hosts/images/* and /v1/hosts/tunnel/* (each checks its own token, credential or ticket). Anything else: no
+		// host routes, the stub for everyone. The deploy workflow doesn't set it, so a deploy leaves Connect off.
+		"KANTEL_CONNECT": "",
 		// The CLIProxyAPI model the `default` route serves (src/models.ts). Its key is the KANTEL_CPA_API_KEY secret.
 		"KANTEL_DEFAULT_MODEL": "claude-sonnet-5-5",
 		// Which isolate backend sessions run on (src/sandboxes.ts): in-process, #94's just-bash in the stack object, or

@@ -1,7 +1,10 @@
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
+import { KantelError } from "@kantel/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
+import type { SandboxBackend } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
+import { NEVER_MADE, SHARED_HOSTS_REFUSED, SHARED_KEY_REFUSED } from "../src/service.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 
 const BASE_URL = "http://compute.test/v1";
@@ -19,9 +22,13 @@ afterEach(async () => {
 	for (const api of opened.splice(0)) await api.close();
 });
 
-function setup() {
+function setup(
+	backend: SandboxBackend = createStubBackend(),
+	extra: Pick<Parameters<typeof createComputeApi>[0], "sharedHosts"> = {},
+) {
 	const api = createComputeApi({
-		backend: createStubBackend(),
+		...extra,
+		backend,
 		authenticatePerson: async (request) => {
 			const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
 			return token === undefined ? undefined : PEOPLE[token];
@@ -384,6 +391,222 @@ describe("organisations", () => {
 		await ann.removeMember(org.id, "usr_ann");
 		expect((await failure(ann.listSandboxes({ account: org.id }))).code).toBe("forbidden");
 	});
+
+	it("keeps someone off the shared hosts (sharedHosts) out of a sandbox there, though a member shared its account", async () => {
+		const { tom, ann, root } = setup(createStubBackend(), { sharedHosts: async (userId) => userId === "usr_tom" });
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const invite = await tom.createInvite(org.id, { role: "member" });
+		await ann.joinOrganisation({ code: invite.code ?? "" });
+		// On the stub, the deployment's one shared host.
+		const shared = await tom.createSandbox({ account: org.id, wait: true });
+
+		// Ann sees it listed, but can't use it, nor put a sandbox of her own on the shared hosts.
+		expect((await ann.listSandboxes({ account: org.id })).items.map((item) => item.id)).toEqual([shared.id]);
+		expect((await failure(ann.getSandbox(shared.id))).code).toBe("forbidden");
+		expect((await failure(ann.runCommand(shared.id, { command: "true" }))).code).toBe("forbidden");
+		const placed = await failure(ann.createSandbox({ account: org.id, wait: true }));
+		expect(placed.code).toBe("unavailable");
+		expect(placed.message).toMatch(/host of this account's own/);
+		// Tom, who may, still can; and so can the super-admin with sandboxes of their own.
+		expect((await tom.runCommand(shared.id, { command: "echo hi" })).stdout).toBe("hi\n");
+		const roots = await root.createSandbox({ wait: true });
+		expect((await root.runCommand(roots.id, { command: "echo hi" })).stdout).toBe("hi\n");
+	});
+
+	it("makes a sandbox whose create or fork failed from its source again, never as an empty one", async () => {
+		const stub = createStubBackend();
+		let failing = false;
+		const refuse = () => Promise.reject(new KantelError("unavailable", "The host is away"));
+		const backend: SandboxBackend = {
+			...stub,
+			create: (spec) => (failing ? refuse() : stub.create(spec)),
+			fork: (source, targets) => (failing ? refuse() : stub.fork(source, targets)),
+		};
+		const { tom } = setup(backend);
+		const source = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.writeFile(source.id, { path: "/home/user/kept.txt", content: "kept" });
+		const stopped = await tom.stopSandbox(source.id, { wait: true });
+		const snapshotId = stopped.latestSnapshotId ?? "";
+		await tom.startSandbox(source.id, { wait: true });
+
+		// Its create from the snapshot fails, and so does a fork of the running sandbox (it has no snapshot of its own).
+		failing = true;
+		const fromSnapshot = await tom.createSandbox({ type: "microvm", from: snapshotId, wait: true });
+		expect(fromSnapshot.state).toBe("error");
+		const [fork] = (await tom.forkSandbox(source.id, { wait: true })).items;
+		expect(fork?.state).toBe("error");
+		failing = false;
+
+		// Started again, the first is made from the snapshot, its file there; the fork can't be, so it is refused.
+		expect((await tom.startSandbox(fromSnapshot.id, { wait: true })).state).toBe("running");
+		expect((await tom.readFile(fromSnapshot.id, { path: "/home/user/kept.txt" })).content).toBe("kept");
+		for (const call of [tom.startSandbox(fork?.id ?? "", { wait: true }), tom.recoverSandbox(fork?.id ?? "")]) {
+			expect(await failure(call)).toMatchObject({ code: "conflict", message: NEVER_MADE });
+		}
+		expect((await tom.getSandbox(fork?.id ?? "")).state).toBe("error");
+	});
+
+	it("keeps an overdue sandbox whose host is away running, and auto-stops it once its host is back", async () => {
+		let clock = 1_000_000;
+		const stub = createStubBackend();
+		let connected = true;
+		let dropOnStop = false;
+		let refuseStop = false;
+		const stops: string[] = [];
+		const away = () => new KantelError("unavailable", "Host host_stub is not connected");
+		const backend: SandboxBackend = {
+			...stub,
+			async capabilities() {
+				const known = await stub.capabilities();
+				return { ...known, hosts: known.hosts.map((host) => ({ ...host, connected })) };
+			},
+			async stop(sandboxId, how) {
+				// The connection drops with the stop pending, and the host is connected again (a new connection) by the
+				// time the failure is handled: the stop never reached the machine.
+				if (dropOnStop) {
+					dropOnStop = false;
+					throw new KantelError("unavailable", "The host disconnected: replaced by a newer connection");
+				}
+				if (refuseStop) throw new KantelError("conflict", "The host refused the stop");
+				if (!connected) throw away();
+				stops.push(sandboxId);
+				return stub.stop(sandboxId, how);
+			},
+		};
+		const api = createComputeApi({
+			backend,
+			now: () => clock,
+			authenticatePerson: async (request) => PEOPLE[request.headers.get("authorization")?.slice(7) ?? ""],
+			fetch: async () => new Response(null, { status: 204 }),
+		});
+		opened.push(api);
+		const tom = createKantelClient({
+			baseUrl: BASE_URL,
+			token: "tom-token",
+			fetch: (input, init) =>
+				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+		const sandbox = await tom.createSandbox({ type: "microvm", autoStopMinutes: 1, wait: true });
+		const sweep = async () => {
+			await api.service.sweep();
+			await api.service.idle();
+		};
+		clock += 2 * 60_000;
+
+		// Away across its stop time: it isn't stopped, nor written off as `error`, but kept running, its time kept.
+		connected = false;
+		await sweep();
+		expect(await tom.getSandbox(sandbox.id)).toMatchObject({ state: "running", stopsAt: sandbox.stopsAt });
+		// Back, but its connection is lost (and replaced) as the stop goes out: the stop never got through, so it is
+		// running as it was, though the host is connected again by then.
+		[connected, dropOnStop] = [true, true];
+		await sweep();
+		const handedBack = await tom.getSandbox(sandbox.id);
+		expect(handedBack).toMatchObject({ state: "running", stopsAt: sandbox.stopsAt });
+		expect(handedBack.reason).toBeUndefined();
+		expect(stops).toEqual([]);
+		// The next sweep stops it.
+		await sweep();
+		expect(stops).toEqual([sandbox.id]);
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("stopped");
+
+		// A stop the host refuses outright is an error, as before, not retried on every sweep.
+		const refused = await tom.createSandbox({ type: "microvm", autoStopMinutes: 1, wait: true });
+		clock += 2 * 60_000;
+		refuseStop = true;
+		await sweep();
+		expect((await tom.getSandbox(refused.id)).state).toBe("error");
+	});
+
+	it("keeps a fork that was made when a later one in its batch fails, rather than taking it for never made", async () => {
+		const stub = createStubBackend();
+		// Room for one more machine: as a host's backend does, it makes a batch's targets one by one, so the first is made
+		// and the second refused.
+		let room = 1;
+		const backend: SandboxBackend = {
+			...stub,
+			async fork(source, targets) {
+				const out = [];
+				for (const target of targets) {
+					if (room-- <= 0) throw new KantelError("unavailable", "The host is full");
+					out.push(...(await stub.fork(source, [target])));
+				}
+				return out;
+			},
+		};
+		const { tom } = setup(backend);
+		for (const live of [false, true]) {
+			room = 1;
+			const source = await tom.createSandbox({ type: "microvm", wait: true });
+			await tom.writeFile(source.id, { path: "/home/user/kept.txt", content: "kept" });
+			if (!live) await tom.stopSandbox(source.id, { wait: true });
+			const { items } = await tom.forkSandbox(source.id, { count: 2, wait: true });
+			const [made, refused] = await Promise.all(items.map((fork) => tom.getSandbox(fork.id)));
+			// The one made is running, its disk the source's; only the other failed.
+			expect(made?.state).toBe("running");
+			expect((await tom.readFile(made?.id ?? "", { path: "/home/user/kept.txt" })).content).toBe("kept");
+			expect(refused?.state).toBe("error");
+			// Stopped and started, the one made is its own machine again, never made anew or refused as never made.
+			await tom.stopSandbox(made?.id ?? "", { wait: true });
+			expect((await tom.startSandbox(made?.id ?? "", { wait: true })).state).toBe("running");
+			expect((await tom.readFile(made?.id ?? "", { path: "/home/user/kept.txt" })).content).toBe("kept");
+		}
+	});
+
+	it("won't rotate a key that may use the shared hosts for an admin who may not", async () => {
+		const { tom, ann, client } = setup(createStubBackend(), { sharedHosts: async (userId) => userId === "usr_tom" });
+		const org = await tom.createOrganisation({ name: "Acme" });
+		await ann.joinOrganisation({ code: (await tom.createInvite(org.id, { role: "admin" })).code ?? "" });
+		const scopes = ["sandboxes:read", "sandboxes:write", "exec"] as const;
+		const toms = await tom.createApiKey({ account: org.id, name: "tom's", scopes: [...scopes] });
+		const anns = await ann.createApiKey({ account: org.id, name: "ann's", scopes: [...scopes] });
+
+		// Ann, an admin of the account but kept off the shared hosts, can't take Tom's key; it still works, unchanged.
+		const refused = await failure(ann.rotateApiKey(toms.key.id));
+		expect(refused).toMatchObject({ code: "forbidden", message: SHARED_KEY_REFUSED });
+		expect((await client(toms.secret).createSandbox({ wait: true })).state).toBe("running");
+		// Her own she may rotate, and it stays off them; Tom may rotate either.
+		const hers = await ann.rotateApiKey(anns.key.id);
+		expect((await failure(client(hers.secret).createSandbox({ wait: true }))).code).toBe("unavailable");
+		expect((await tom.rotateApiKey(anns.key.id)).key.id).toBe(anns.key.id);
+		const his = await tom.rotateApiKey(toms.key.id);
+		expect((await client(his.secret).createSandbox({ wait: true })).state).toBe("running");
+	});
+
+	it("checks again once a sandbox is placed, so a call queued while it starts can't reach a shared host", async () => {
+		// The host's reply to the first create is held until `release`, so calls queue behind the placement.
+		const stub = createStubBackend();
+		let release = () => {};
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const backend: SandboxBackend = { ...stub, create: async (input) => held.then(() => stub.create(input)) };
+		const { tom, ann } = setup(backend, { sharedHosts: async (userId) => userId === "usr_tom" });
+		const org = await tom.createOrganisation({ name: "Acme" });
+		await ann.joinOrganisation({ code: (await tom.createInvite(org.id, { role: "member" })).code ?? "" });
+
+		const starting = await tom.createSandbox({ account: org.id });
+		expect(starting.state).toBe("starting");
+		// Ann finds it while it has no host yet, and queues calls on it; so does Tom.
+		expect((await ann.listSandboxes({ account: org.id })).items.map((item) => item.id)).toEqual([starting.id]);
+		const annRuns = failure(ann.runCommand(starting.id, { command: "echo hi" }));
+		const annWrites = failure(ann.writeFile(starting.id, { path: "/tmp/x", content: "x" }));
+		const annStops = failure(ann.stopSandbox(starting.id, {}));
+		const tomRuns = tom.runCommand(starting.id, { command: "echo hi" });
+		// Long enough for each to be let in (no host yet) and wait on the placement; nothing here takes a millisecond.
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect((await tom.getSandbox(starting.id)).state).toBe("starting");
+		release();
+
+		// Once it is on the shared host, hers are refused there and none of them reached it; Tom's ran.
+		for (const refused of await Promise.all([annRuns, annWrites, annStops])) {
+			expect(refused).toMatchObject({ code: "forbidden", message: SHARED_HOSTS_REFUSED });
+		}
+		expect((await tomRuns).stdout).toBe("hi\n");
+		const after = await tom.getSandbox(starting.id);
+		expect(after.state).toBe("running");
+		await expect(tom.readFile(starting.id, { path: "/tmp/x" })).rejects.toMatchObject({ code: "not_found" });
+	});
 });
 
 describe("hosts", () => {
@@ -408,5 +631,27 @@ describe("hosts", () => {
 
 		expect(await api.fetch(new Request("http://compute.test/v1/sessions"))).toBeUndefined();
 		expect(await api.fetch(new Request("http://compute.test/elsewhere"))).toBeUndefined();
+	});
+
+	it("keeps a revocation that lands while a drain is in flight", async () => {
+		const stub = createStubBackend();
+		let revokeMeanwhile: (() => Promise<unknown>) | undefined;
+		const { client, root } = setup({
+			...stub,
+			// Between the drain reading the host and writing it, another call revokes it.
+			async updateHost(hostId, change) {
+				const revoke = revokeMeanwhile;
+				revokeMeanwhile = undefined;
+				await revoke?.();
+				return stub.updateHost?.(hostId, change);
+			},
+		});
+		const ops = client((await root.createApiKey({ name: "ops", scopes: ["hosts:admin"] })).secret);
+		revokeMeanwhile = () => ops.revokeHost(STUB_HOST_ID);
+		expect((await failure(ops.updateHost(STUB_HOST_ID, { draining: true }))).code).toBe("conflict");
+		const listed = await ops.listHosts();
+		expect(listed.items.find((host) => host.id === STUB_HOST_ID)?.state).toBe("revoked");
+		// And the next capabilities refresh doesn't bring it back.
+		expect((await ops.listHosts()).items.find((host) => host.id === STUB_HOST_ID)?.state).toBe("revoked");
 	});
 });

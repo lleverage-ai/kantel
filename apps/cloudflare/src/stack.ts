@@ -278,8 +278,15 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		authenticator,
 		identity,
 		adminOrganisationId: organisation.id,
+		// A tunnel given under an email session ends with it (signing out, or its expiry), as self-hosted.
+		...(otpStores === undefined
+			? {}
+			: {
+					sessionLive: async (session: string) => (await otpStores.sessions.find(session, clock.now())) !== undefined,
+				}),
 		...(storage.compute === undefined ? {} : { sql: storage.compute }),
 		...(options.config.portsDomain === undefined ? {} : { portsDomain: options.config.portsDomain }),
+		...(options.config.connect === undefined ? {} : { connect: options.config.connect }),
 		now: () => clock.now(),
 	});
 	phase("compute");

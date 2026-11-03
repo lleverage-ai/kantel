@@ -8,9 +8,16 @@
  *   self-hosted gateway keeps in Postgres. Here it is the stack object's own SQLite (`objectSqlDriver`): one object
  *   answers every request, so there is one writer, and the records outlast a restart or a deploy.
  * - **Sandboxes:** the stub backend (`@kantel/compute/stub`), a just-bash shell over files in the object's memory, as a
- *   self-hosted gateway runs with no hosts. Kantel's hosts don't join this deployment yet. The object's memory goes
- *   when Cloudflare evicts it or a deploy replaces it, while the records stay: `revivingStub` then gives a sandbox the
- *   records still have a fresh, empty machine on its next call, rather than failing every call on it.
+ *   self-hosted gateway runs with no hosts. The object's memory goes when Cloudflare evicts it or a deploy replaces
+ *   it, while the records stay: `revivingStub` then gives a sandbox the records still have a fresh, empty machine on
+ *   its next call, rather than failing every call on it.
+ * - **Kantel Connect** (experimental, `connect`, off by default): an account's own machines. A person enrols one
+ *   (`POST /v1/connect/enrolments`); it registers at `POST /v1/hosts/register` with no sign-in, dials out to
+ *   `GET /v1/hosts/connect` and keeps that WebSocket open to the stack object (`src/stack-object.ts`), which holds the
+ *   one hub (`@kantel/hosts`), as a self-hosted gateway does. The registry of hosts and placements is in the object's
+ *   SQLite. Sandboxes of an account with a host of its own go there (`createRoutedBackend`); everyone else's stay on
+ *   the stub. SSH to those sandboxes is served (`GET /v1/hosts/tunnel/{ticket}`, over the host's connection); their
+ *   desktops, browsers' CDP and exposed ports aren't yet.
  * - **People:** whoever the stack's authenticator signs in (Cloudflare Access, or an email code on the public origin)
  *   is a compute person under their user ID, and an admin of the deployment's own organisation (the bootstrap's) is the
  *   compute plane's super-admin, as self-hosted. With open sign-up everyone administers a personal space of their own;
@@ -29,6 +36,8 @@ import {
 	type ComputeStore,
 	createComputeApi,
 	createMemoryStore,
+	createRoutedBackend,
+	joinTokenSpender,
 	type PersonIdentity,
 	type SandboxBackend,
 	type StoredSandbox,
@@ -41,9 +50,27 @@ import {
 	type IdentityDirectory,
 	isKantelError,
 	KantelError,
+	systemContext,
 } from "@kantel/contracts";
+import { createHostBackend } from "@kantel/hosts/backend";
+import {
+	createHostsApi,
+	DEFAULT_HOST_IMAGES,
+	HOSTS_CONNECT_PATH,
+	HOSTS_IMAGES_PATH,
+	HOSTS_REGISTER_PATH,
+} from "@kantel/hosts/http";
+import { type AcceptedHost, closeQuietly, type HostSocket } from "@kantel/hosts/hub";
+import { HOST_CLOSE_REVOKED } from "@kantel/hosts/protocol";
+import { createRelayAccess, RELAY_CLOSE_REVOKED, RELAY_REVOKED_REASON } from "@kantel/hosts/relay-access";
+import { createMemoryRelayStore, createSqlRelayStore, migrateRelay } from "@kantel/hosts/relay-store";
+import { createHostsService, type HostsService } from "@kantel/hosts/service";
+import { createMemoryHostStore, createSqlHostStore, migrateHosts } from "@kantel/hosts/store";
+import { createTunnelTickets, HOSTS_TUNNEL_PATH, type TunnelTickets } from "@kantel/hosts/tunnel";
+import { hashSessionToken, isSessionToken } from "@kantel/identity/otp";
 import type { SqlDriver } from "@kantel/sql";
 import { HOSTED_PORTS_DOMAIN } from "./config.ts";
+import { buffered } from "./route.ts";
 
 /** Where Cloudflare Access puts the signed-in person's token on each request it lets through. */
 const ACCESS_ASSERTION = "cf-access-jwt-assertion";
@@ -77,18 +104,147 @@ export interface StackCompute {
 	readonly api: ComputeApi;
 	/** What `GET /v1/deployment`-style logs say about it. */
 	readonly binding: string;
+	/** Kantel Connect's host side, when it is on. */
+	readonly hosts?: StackHosts;
 	close(): Promise<void>;
 }
 
+/** What a host reaches with no sign-in, with Kantel Connect on. */
+export interface StackHosts {
+	readonly service: HostsService;
+	/** Registration (`POST /v1/hosts/register`) and the images `kantel-host install` fetches; undefined for others. */
+	fetch(request: Request): Promise<Response | undefined>;
+	/**
+	 * A host's connection (`GET /v1/hosts/connect`), once the server has accepted its WebSocket: checks the credential
+	 * and hands the socket to the hub, or closes it with 4003 (kantel-host's "stop, don't retry") for a wrong or revoked
+	 * one. Undefined when it was refused.
+	 */
+	connect(credential: string | undefined, socket: HostSocket): Promise<AcceptedHost | undefined>;
+	/**
+	 * A raw tunnel (`GET /v1/hosts/tunnel/{ticket}`: a sandbox's port as binary WebSocket frames, for SSH's
+	 * ProxyCommand), once the server has accepted the client's WebSocket. Checks the ticket and that its grantee may still
+	 * open the sandbox, then opens the port over the host's connection; the session is closed with 4003 once they lose
+	 * access. Undefined, with the socket closed, when it was refused.
+	 */
+	tunnel(ticket: string, client: TunnelClient): Promise<{ write(bytes: Uint8Array): void; close(): void } | undefined>;
+}
+
+/** The client's side of a raw tunnel. */
+export interface TunnelClient {
+	send(bytes: Uint8Array): void;
+	close(code: number, reason: string): void;
+}
+
+/** What `onMessages` needs of an accepted WebSocket. */
+/** What a tunnel's client may send before its port is open (SSH sends a line and its key exchange: a few KiB). */
+export const TUNNEL_PENDING_LIMIT = 256 * 1024;
+/** And at most this many messages (an empty one is still an entry to keep). */
+export const TUNNEL_PENDING_MESSAGES = 256;
+
+/**
+ * What a tunnel's client sends before the host has opened its port, held to be written once it has. The one stack
+ * object holds every tunnel, so it holds at most `limit` bytes in at most `messages` messages: `hold` answers false
+ * (and lets go of everything) past either, and the tunnel is closed rather than kept in memory while its host never
+ * answers. `clear` lets go of it when the tunnel ends any other way; nothing is held after either.
+ */
+export function preOpenBuffer(limit = TUNNEL_PENDING_LIMIT, messages = TUNNEL_PENDING_MESSAGES) {
+	let chunks: Uint8Array[] = [];
+	let bytes = 0;
+	let open = true;
+	const clear = () => {
+		open = false;
+		chunks = [];
+	};
+	return {
+		hold(chunk: Uint8Array): boolean {
+			if (!open) return false;
+			bytes += chunk.byteLength;
+			if (bytes > limit || chunks.length >= messages) {
+				clear();
+				return false;
+			}
+			chunks.push(chunk);
+			return true;
+		},
+		/** Everything held, in order; nothing is held after. */
+		take(): Uint8Array[] {
+			const out = chunks;
+			clear();
+			return out;
+		},
+		clear,
+		/** What it holds now, for tests. */
+		held: () => ({ messages: chunks.length, bytes: chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0) }),
+	};
+}
+
+export interface MessageSocket {
+	binaryType?: string;
+	addEventListener(type: "message", listener: (event: { readonly data: unknown }) => void): void;
+}
+
+/**
+ * Hands an accepted socket's messages to `handle` in order, binary ones as bytes. Workers deliver binary messages as a
+ * `Blob` unless asked for an `ArrayBuffer` (and the hub drops anything else), so the socket is asked; a `Blob` that
+ * comes anyway is read without letting a later message overtake it. A frame whose handling fails is logged and
+ * skipped, so one bad frame never leaves a host's connection open but deaf.
+ */
+export function onMessages(
+	socket: MessageSocket,
+	handle: (frame: string | Uint8Array) => void,
+	log: (message: string, error: unknown) => void = (message, error) => console.error(message, error),
+): void {
+	try {
+		socket.binaryType = "arraybuffer";
+	} catch {
+		// A runtime that won't: Blobs, read below.
+	}
+	let queue: Promise<void> = Promise.resolve();
+	const failed = (error: unknown) => log("kantel: a WebSocket frame could not be handled", error);
+	socket.addEventListener("message", (event) => {
+		const data = event.data;
+		if (typeof data === "string" || data instanceof ArrayBuffer) {
+			const frame = typeof data === "string" ? data : new Uint8Array(data);
+			queue = queue.then(() => handle(frame)).catch(failed);
+		} else if (data instanceof Blob) {
+			const read = data.arrayBuffer();
+			// Read now, handled in turn; a read that fails is caught there, not left unhandled meanwhile.
+			read.catch(() => undefined);
+			queue = queue.then(async () => handle(new Uint8Array(await read))).catch(failed);
+		}
+	});
+}
+
+/** `/v1/hosts/tunnel/{ticket}`'s ticket, or undefined for any other path (a path after it is not served here). */
+export function tunnelTicket(path: string): string | undefined {
+	return new RegExp(`^${HOSTS_TUNNEL_PATH}/([A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+)$`).exec(path)?.[1];
+}
+
+/** The host credential on a host's connection request, if it carries one. */
+export function hostCredential(request: Request): string | undefined {
+	return /^Bearer\s+(\S+)$/i.exec(request.headers.get("authorization") ?? "")?.[1];
+}
+
+export { HOSTS_CONNECT_PATH };
+
 export interface StackComputeOptions {
 	readonly authenticator: Authenticator;
-	/** Who holds which role: an organisation admin who signs in is the compute plane's super-admin. */
-	readonly identity: Pick<IdentityDirectory, "authorize">;
 	/**
-	 * The deployment's own organisation: only its admins are super-admins, and only its members may use compute here.
-	 * Absent, any organisation's admin is a super-admin and anyone signed in may use it (tests with one organisation).
+	 * Who holds which role: an organisation admin who signs in is the compute plane's super-admin, and a member of the
+	 * deployment's organisation may use the stub.
+	 */
+	readonly identity: Pick<IdentityDirectory, "authorize" | "getUser">;
+	/**
+	 * The deployment's own organisation: only its admins are super-admins, and only its members may use the stub here.
+	 * Others are refused, or with Kantel Connect on, may use only hosts of their own. Absent, any organisation's admin
+	 * is a super-admin and anyone signed in may use it (tests with one organisation).
 	 */
 	readonly adminOrganisationId?: string;
+	/**
+	 * Whether a Kantel session (its token's hash) is live: a tunnel given under one ends when it does. Absent (no email
+	 * sign-in), sign-ins are taken to last; Access tokens carry no session to end.
+	 */
+	readonly sessionLive?: (session: string) => Promise<boolean>;
 	/** Where the records are: the stack object's SQLite. Absent, in memory (tests). */
 	readonly sql?: SqlDriver;
 	readonly now?: () => number;
@@ -96,10 +252,23 @@ export interface StackComputeOptions {
 	readonly fetch?: typeof fetch;
 	/**
 	 * The domain port URLs are under, `{port}-{subdomain}.{domain}`. Default `HOSTED_PORTS_DOMAIN` (`ports.kantel.dev`).
-	 * The stub backend only names the URLs: nothing serves them until hosts join this deployment.
+	 * The stub backend only names the URLs; Connect hosts' public ports aren't served here yet either.
 	 */
 	readonly portsDomain?: string;
+	/** Kantel Connect (KANTEL_CONNECT=experimental): where hosts reach this Worker. Absent, off. */
+	readonly connect?: { readonly publicUrl: string };
+	/** With Connect on, how often sandboxes past their auto-stop time are stopped. Default `CONNECT_SWEEP_MS`. */
+	readonly connectSweepMs?: number;
 }
+
+/**
+ * With Connect on, how often sandboxes past their auto-stop time are stopped, and due webhook deliveries sent, compute
+ * requests or not: a Connect sandbox is a real machine of someone's, which may be used over SSH alone. A connected host keeps the object up (its
+ * socket isn't hibernated), so this runs while there's a host to stop anything on, and once more as each connects.
+ */
+export const CONNECT_SWEEP_MS = 30_000;
+/** How long after a host connects its overdue sandboxes are swept: time for its hello to land. */
+const SWEEP_AFTER_CONNECT_MS = 2000;
 
 /** What someone outside the deployment's organisation is told: compute here is the stub's memory, not a host of theirs. */
 export const COMPUTE_MEMBERS_ONLY =
@@ -112,13 +281,16 @@ export const COMPUTE_MEMBERS_ONLY =
  *
  * Someone acting in another organisation (anyone who signed up on the public origin) is refused: the stub backend
  * keeps files and snapshots in this object's memory, which a stranger mustn't be able to fill. Refusing the person
- * refuses every way in, a compute key or a device sign-in included, since only a person can make either.
+ * refuses every way in, a compute key or a device sign-in included, since only a person can make either. With Kantel
+ * Connect on (`connect`) they are let in, never as a super-admin, to enrol and use hosts of their own: `sharedHosts`
+ * (`membersOf`) keeps them, and their keys, off the stub, with Connect on or off.
  */
 async function personOf(
 	authenticator: Authenticator,
 	identity: Pick<IdentityDirectory, "authorize">,
 	request: Request,
 	adminOrganisationId: string | undefined,
+	connect: boolean,
 ): Promise<PersonIdentity | undefined> {
 	let caller: Awaited<ReturnType<Authenticator["authenticate"]>>;
 	try {
@@ -127,15 +299,52 @@ async function personOf(
 		return undefined;
 	}
 	if (caller.actor.kind !== "human") return undefined;
-	if (adminOrganisationId !== undefined && caller.organisationId !== adminOrganisationId) {
-		throw new KantelError("forbidden", COMPUTE_MEMBERS_ONLY);
-	}
+	const outside = adminOrganisationId !== undefined && caller.organisationId !== adminOrganisationId;
+	if (outside && !connect) throw new KantelError("forbidden", COMPUTE_MEMBERS_ONLY);
 	// Only an admin of the deployment's organisation, never one of a personal space.
-	const superAdmin = await identity.authorize(callContextFor(caller), "admin").then(
-		() => true,
-		() => false,
-	);
-	return { userId: caller.actor.userId, name: caller.actor.userId, superAdmin };
+	const superAdmin =
+		!outside &&
+		(await identity.authorize(callContextFor(caller), "admin").then(
+			() => true,
+			() => false,
+		));
+	// A Kantel session can be ended (signing out), so access given under it records which one, to end with it.
+	const bearer = /^Bearer\s+(\S+)\s*$/i.exec(request.headers.get("authorization") ?? "")?.[1];
+	const session = bearer !== undefined && isSessionToken(bearer) ? await hashSessionToken(bearer) : undefined;
+	return {
+		userId: caller.actor.userId,
+		name: caller.actor.userId,
+		superAdmin,
+		...(session === undefined ? {} : { session }),
+	};
+}
+
+/** How long `membersOf` reuses an answer: a person who leaves the organisation loses the stub within this. */
+export const MEMBERSHIP_CACHE_MS = 5000;
+
+/**
+ * Whether a user is a member of the deployment's organisation, who may use the stub: as sign-in has it (the
+ * organisation they were created in, or any role there, a project's included), which `getUser` asked as Kantel
+ * answers. Anything else, an error included, is no. Answers are reused for `MEMBERSHIP_CACHE_MS`, since every
+ * sandbox call on the stub asks.
+ */
+function membersOf(
+	identity: Pick<IdentityDirectory, "getUser">,
+	organisationId: string,
+	now: () => number,
+): (userId: string) => Promise<boolean> {
+	const answers = new Map<string, { at: number; member: boolean }>();
+	return async (userId) => {
+		const cached = answers.get(userId);
+		if (cached !== undefined && now() - cached.at < MEMBERSHIP_CACHE_MS) return cached.member;
+		const member = await identity.getUser({ ...systemContext("compute"), organisationId }, userId).then(
+			() => true,
+			() => false,
+		);
+		if (answers.size >= 1000) answers.clear();
+		answers.set(userId, { at: now(), member });
+		return member;
+	};
 }
 
 /** The compute API over the stub backend, its records in `sql` (or memory), signed in with `authenticator`. */
@@ -147,22 +356,70 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		store = createSqlComputeStore(options.sql);
 	}
 	const now = options.now ?? Date.now;
+	const stub = revivingStub(
+		createStubBackend({ sandboxDomain: options.portsDomain ?? HOSTED_PORTS_DOMAIN }),
+		store.sandboxes,
+	);
+	const connect = options.connect === undefined ? undefined : await connectHosts(options.connect, options.sql, now);
+	const deploymentOrganisation = options.adminOrganisationId;
 	const api = createComputeApi({
 		store,
-		backend: revivingStub(
-			createStubBackend({ sandboxDomain: options.portsDomain ?? HOSTED_PORTS_DOMAIN }),
-			store.sandboxes,
-		),
+		backend:
+			connect === undefined
+				? stub
+				: createRoutedBackend({
+						primary: connect.backend,
+						fallback: stub,
+						holds: async (sandboxId) => (await connect.service.sandboxes.placement(sandboxId)) !== undefined,
+						holdsSnapshot: isHostSnapshotRef,
+					}),
 		authenticatePerson: (request) =>
-			personOf(options.authenticator, options.identity, request, options.adminOrganisationId),
+			personOf(options.authenticator, options.identity, request, options.adminOrganisationId, connect !== undefined),
+		...(options.sessionLive === undefined ? {} : { sessionLive: options.sessionLive }),
+		// The stub is its members', Connect on or off: with it on, people outside get in for hosts of their own, and a
+		// key one of them made then must stay off the stub once it is off.
+		...(deploymentOrganisation === undefined
+			? {}
+			: { sharedHosts: membersOf(options.identity, deploymentOrganisation, now) }),
 		mode: "hosted",
 		now,
 		...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+		// Enrolment commands name the address hosts dial, as tunnel URLs do, not the caller's origin.
+		...(connect === undefined ? {} : { connect: true, publicUrl: connect.publicUrl }),
 	});
+	connect?.service.useJoinTokens(joinTokenSpender(store));
+	connect?.bind((grantee, sandboxId) => api.service.stillAllowed(grantee, sandboxId));
 	const timers = whileBusy(api, now);
+	// The dispatcher runs only while compute requests come (`whileBusy`), so the sweep sends what it queued itself: a
+	// stop's `sandbox.stopped`, on the tick after, and any delivery whose retry has come due.
+	const sweep = () => {
+		void api.service.sweep().catch(() => undefined);
+		void api.dispatcher.drain().catch(() => undefined);
+	};
+	const sweeper = connect === undefined ? undefined : setInterval(sweep, options.connectSweepMs ?? CONNECT_SWEEP_MS);
+	const afterConnect = new Set<ReturnType<typeof setTimeout>>();
+	const hosts: StackHosts | undefined =
+		connect === undefined
+			? undefined
+			: {
+					...connect.hosts,
+					async connect(credential, socket) {
+						const held = await connect.hosts.connect(credential, socket);
+						if (held !== undefined) {
+							const timer = setTimeout(() => {
+								afterConnect.delete(timer);
+								sweep();
+							}, SWEEP_AFTER_CONNECT_MS);
+							afterConnect.add(timer);
+						}
+						return held;
+					},
+				};
+	const records = options.sql === undefined ? "memory" : "the stack object's SQLite";
 	return {
 		api,
-		binding: `${options.sql === undefined ? "memory" : "the stack object's SQLite"}, stub backend (experimental)`,
+		binding: `${records}, stub backend${connect === undefined ? "" : " and Kantel Connect hosts"} (experimental)`,
+		...(hosts === undefined ? {} : { hosts }),
 		async fetch(request) {
 			const answer = await api.fetch(request);
 			if (answer !== undefined) timers.touch();
@@ -170,9 +427,179 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		},
 		async close() {
 			timers.stop();
+			if (sweeper !== undefined) clearInterval(sweeper);
+			for (const timer of afterConnect) clearTimeout(timer);
+			connect?.access.stop();
+			connect?.service.close();
 			await api.close();
 		},
 	};
+}
+
+/**
+ * Kantel Connect's host side: the registry (in `sql`, else memory), the backend over it, and what hosts and tunnel
+ * clients reach. Of the tunnels the backend issues tickets for, raw ones (SSH) are served; desktops, a browser's CDP
+ * and exposed ports aren't yet.
+ */
+async function connectHosts(
+	config: { readonly publicUrl: string },
+	sql: SqlDriver | undefined,
+	now: () => number,
+): Promise<{
+	service: HostsService;
+	backend: SandboxBackend;
+	publicUrl: string;
+	hosts: StackHosts;
+	access: ReturnType<typeof createRelayAccess>;
+	bind(stillAllowed: (grantee: string | undefined, sandboxId: string) => Promise<boolean>): void;
+}> {
+	if (sql !== undefined) {
+		await migrateHosts(sql);
+		await migrateRelay(sql);
+	}
+	const service = createHostsService({
+		store: sql === undefined ? createMemoryHostStore() : createSqlHostStore(sql),
+		publicUrl: config.publicUrl,
+	});
+	const tickets = sweptAsUsed(
+		createTunnelTickets(sql === undefined ? createMemoryRelayStore() : createSqlRelayStore(sql), now),
+		now,
+	);
+	const backend = createHostBackend({ hosts: service, publicUrl: config.publicUrl, tickets, now });
+	let check: ((grantee: string | undefined, sandboxId: string) => Promise<boolean>) | undefined;
+	// Its timer runs only while a session is held, so it never keeps the object awake on its own.
+	const access = createRelayAccess({
+		stillAllowed: (grantee, sandboxId) => check?.(grantee, sandboxId) ?? Promise.resolve(false),
+		now,
+	});
+	// Registration only: the compute API serves hosts' management, so the registry's own admin routes refuse everyone.
+	const register = createHostsApi({
+		hosts: service,
+		authorizeAdmin: () => Promise.reject(new KantelError("not_found", "Not found")),
+	});
+	return {
+		service,
+		backend,
+		access,
+		publicUrl: config.publicUrl,
+		bind(stillAllowed) {
+			check = stillAllowed;
+		},
+		hosts: {
+			service,
+			async fetch(request) {
+				const path = new URL(request.url).pathname;
+				if (path === HOSTS_REGISTER_PATH) {
+					// Any other method has no body to bound: the handler answers it 405.
+					if (request.method !== "POST") return register.fetch(request);
+					// Anyone can reach it (past Access), so its body is counted as it comes, before any of it is parsed.
+					const bounded = await buffered(request, HOST_REGISTER_BODY_LIMIT);
+					return bounded instanceof Response ? bounded : register.fetch(bounded);
+				}
+				if (path.startsWith(`${HOSTS_IMAGES_PATH}/`)) return hostImage(request, path);
+				return undefined;
+			},
+			async connect(credential, socket) {
+				const host = credential === undefined ? undefined : await service.authenticate(credential);
+				if (host === undefined) {
+					socket.close(HOST_CLOSE_REVOKED, "The host credential is unknown or revoked");
+					return undefined;
+				}
+				return service.hub.accept(host.id, socket);
+			},
+			async tunnel(ticket, client) {
+				const grant = await tickets.verify(ticket, now());
+				// A desktop's ticket opens only the desktop's route, which isn't served here.
+				if (grant === undefined || grant.desktop !== undefined) {
+					client.close(HOST_CLOSE_REVOKED, "The tunnel URL is wrong or has expired");
+					return undefined;
+				}
+				if (!(await access.allowed(grant.grantee, grant.sandboxId))) {
+					client.close(RELAY_CLOSE_REVOKED, RELAY_REVOKED_REASON);
+					return undefined;
+				}
+				let stream: { write(bytes: Uint8Array): void; close(): void } | undefined;
+				const release = access.track({
+					sandboxId: grant.sandboxId,
+					kind: grant.port === 22 ? "ssh" : `tunnel ${grant.port}`,
+					...(grant.grantee === undefined ? {} : { grantee: grant.grantee }),
+					end: (reason) => {
+						client.close(RELAY_CLOSE_REVOKED, reason);
+						stream?.close();
+					},
+				});
+				access.start();
+				const done = () => {
+					release();
+					if (access.size === 0) access.stop();
+				};
+				try {
+					stream = await service.sandboxes.openPort(grant.sandboxId, grant.port, {
+						// Never throws into the host's connection: a client that can't take bytes is closed instead.
+						data: (bytes) => {
+							try {
+								client.send(bytes);
+							} catch {
+								closeQuietly(client, 1011, "The tunnel's client is gone");
+								stream?.close();
+							}
+						},
+						// The host's reason, ended or refused with: cut to fit and never thrown (`closeQuietly`).
+						end: (reason) => {
+							done();
+							closeQuietly(client, 1000, reason);
+						},
+					});
+				} catch (error) {
+					done();
+					closeQuietly(client, 1011, error instanceof Error ? error.message : String(error));
+					return undefined;
+				}
+				const opened = stream;
+				return {
+					write: (bytes) => opened.write(bytes),
+					close() {
+						done();
+						opened.close();
+					},
+				};
+			},
+		},
+	};
+}
+
+/** How often issuing a ticket also forgets long-expired ones. */
+const TICKET_SWEEP_MS = 10 * 60_000;
+
+/**
+ * Tickets that forget long-expired ones as new ones are issued, at most every `TICKET_SWEEP_MS`. A self-hosted gateway
+ * sweeps on a timer; here a timer would keep the object awake, so the sweep rides on use instead.
+ */
+export function sweptAsUsed(tickets: TunnelTickets, now: () => number): TunnelTickets {
+	let last = Number.NEGATIVE_INFINITY;
+	return {
+		issue(grant) {
+			const at = now();
+			if (at - last >= TICKET_SWEEP_MS) {
+				last = at;
+				void tickets.sweep(at).catch((error: unknown) => console.error("kantel: sweeping tunnel tickets", error));
+			}
+			return tickets.issue(grant);
+		},
+		verify: (ticket, at) => tickets.verify(ticket, at),
+		sweep: (at) => tickets.sweep(at),
+	};
+}
+
+/** A registration is a token, a name, labels and facts: a few kilobytes. */
+export const HOST_REGISTER_BODY_LIMIT = 64 * 1024;
+
+/** `GET /v1/hosts/images/{file}`: Kantel's published images, as a self-hosted gateway serves them by default. */
+function hostImage(request: Request, path: string): Response {
+	const name = path.slice(HOSTS_IMAGES_PATH.length + 1);
+	if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) return new Response("Not found", { status: 404 });
+	if (request.method !== "GET" && request.method !== "HEAD") return new Response(null, { status: 405 });
+	return new Response(null, { status: 302, headers: { location: `${DEFAULT_HOST_IMAGES}/${name}` } });
 }
 
 /** Runs the API's timers from a request until `IDLE_MS` after the last one, then sends what telemetry is queued. */
@@ -205,6 +632,9 @@ function whileBusy(api: ComputeApi, now: () => number): { touch(): void; stop():
 	};
 }
 
+/** A Connect host's snapshot reference is `{hostId}/{snapshotId}`; the stub's are `ref_…`. */
+export const isHostSnapshotRef = (ref: string): boolean => ref.startsWith("host_") && ref.includes("/");
+
 const lost = (error: unknown, prefix: string): error is KantelError =>
 	isKantelError(error) && error.code === "not_found" && error.message.startsWith(prefix);
 /** The stub's refusal for a sandbox it has no machine for (`stub-backend.ts`). */
@@ -219,9 +649,23 @@ const NO_SNAPSHOT = "The stub has no snapshot ";
  * fails as the stub does.
  */
 export function revivingStub(stub: SandboxBackend, sandboxes: Collection<StoredSandbox>): SandboxBackend {
+	/**
+	 * A sandbox or snapshot a Connect host holds is never the stub's to revive: with Connect off (or its host's placement
+	 * gone) it's refused, so its disk and its host stay as they are for when the host is back.
+	 */
+	const onHost = () =>
+		new KantelError("unavailable", "It is on a Kantel Connect host, which this deployment can't reach now");
+	const hostBacked = async (sandboxId: string) => {
+		const hostId = (await sandboxes.get(sandboxId))?.hostId;
+		return hostId !== undefined && hostId !== STUB_HOST_ID;
+	};
+	const refuseHostSnapshot = (ref: string | undefined) => {
+		if (ref !== undefined && isHostSnapshotRef(ref)) throw onHost();
+	};
 	const revive = async (sandboxId: string, cause: KantelError): Promise<void> => {
 		const record = await sandboxes.get(sandboxId);
 		if (record === undefined || record.state === "deleted") throw cause;
+		if (record.hostId !== undefined && record.hostId !== STUB_HOST_ID) throw onHost();
 		const made = stub.create({
 			sandboxId,
 			accountId: record.accountId,
@@ -251,6 +695,7 @@ export function revivingStub(stub: SandboxBackend, sandboxes: Collection<StoredS
 		options: O,
 		call: (options: O) => Promise<T>,
 	): Promise<T> => {
+		refuseHostSnapshot(options.fromSnapshot);
 		try {
 			return await call(options);
 		} catch (error) {
@@ -266,10 +711,29 @@ export function revivingStub(stub: SandboxBackend, sandboxes: Collection<StoredS
 		stop: (id, options) => onMachine(id, () => stub.stop(id, options)),
 		resume: (id, options) => onMachine(id, () => fromAny(options, (given) => stub.resume(id, given))),
 		recover: (id, options) => onMachine(id, () => fromAny(options, (given) => stub.recover(id, given))),
-		fork: (source, targets) =>
-			source.snapshot === undefined
+		fork: async (source, targets) => {
+			refuseHostSnapshot(source.snapshot);
+			return source.snapshot === undefined
 				? onMachine(source.sandboxId, () => stub.fork(source, targets))
-				: stub.fork(source, targets),
+				: stub.fork(source, targets);
+		},
+		async destroy(id) {
+			// The stub would answer that it has nothing to delete, and the host's machine would be left running.
+			if (await hostBacked(id)) throw onHost();
+			return stub.destroy(id);
+		},
+		listSnapshotFiles: async (ref, path) => {
+			refuseHostSnapshot(ref);
+			return stub.listSnapshotFiles(ref, path);
+		},
+		readSnapshotFile: async (ref, path) => {
+			refuseHostSnapshot(ref);
+			return stub.readSnapshotFile(ref, path);
+		},
+		deleteSnapshot: async (ref) => {
+			refuseHostSnapshot(ref);
+			return stub.deleteSnapshot(ref);
+		},
 		exec: (id, request) => onMachine(id, () => stub.exec(id, request)),
 		readFile: (id, path, range) => onMachine(id, () => stub.readFile(id, path, range)),
 		writeFile: (id, path, content, mode) => onMachine(id, () => stub.writeFile(id, path, content, mode)),

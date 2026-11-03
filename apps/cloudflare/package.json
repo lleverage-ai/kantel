@@ -18,6 +18,7 @@
 		"@kantel/audit": "workspace:*",
 		"@kantel/compute": "workspace:*",
 		"@kantel/contracts": "workspace:*",
+		"@kantel/hosts": "workspace:*",
 		"@kantel/identity": "workspace:*",
 		"@kantel/sql": "workspace:*"
 	},
