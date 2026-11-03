@@ -29,7 +29,10 @@ You can run all of Kantel yourself. The control plane, which serves the console 
 | Understand the moving parts | [Concepts](/concepts/) |
 | Decide where to run it | [Hosted or self-hosted](/hosted-or-self-hosted/) |
 | Run the control plane on your machine | [Install Kantel](/self-hosting/install/) |
-| Call it from code | [API reference](/api/reference/) |
+| Make and drive a sandbox | [Create and manage sandboxes](/sandboxes/lifecycle/) |
+| Let Claude Code, Codex or pi use it | [Use from your coding agent](/coding-agents/) |
+| Call it from TypeScript | [TypeScript SDK](/tools/typescript-sdk/) |
+| Look up a route | [API reference](/api/reference/) |
 
 ## Status
 
