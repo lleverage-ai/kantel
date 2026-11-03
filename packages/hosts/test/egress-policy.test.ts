@@ -2,7 +2,7 @@
 // given its own environment: its own placeholders, never its source's.
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { createComputeApi, joinTokenSpender } from "@kantel/compute";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHostBackend } from "../src/backend.ts";
 import { HOST_FEATURES } from "../src/protocol.ts";
 import { createMemoryRelayStore } from "../src/relay-store.ts";
@@ -135,5 +135,178 @@ describe("a host that enforces egress policy", () => {
 			egress: { revision: expect.any(Number), grants: [expect.objectContaining({ host: "evil.example" })] },
 		});
 		expect(JSON.stringify(host.calls)).not.toContain(SECRET);
+	});
+});
+
+describe("an egress update its host misses", () => {
+	it("is sent again, as it is then, once the host is back: grants and a rotation alike", async () => {
+		const { api, root, host } = await setup([HOST_FEATURES.egressPolicy]);
+		const environment = await protectedEnvironment(root);
+		const sandbox = await root.createSandbox({ environment: environment.id, wait: true });
+		const egressCalls = () => host.calls.filter((call) => call.method === "sandbox.egress");
+		expect(egressCalls()).toEqual([]);
+
+		// The host drops its link; the grants are saved meanwhile, and the update can't reach it.
+		host.connection.closed(1006, "gone");
+		await root.putSandboxGrants(sandbox.id, { grants: [{ action: "deny", host: "first.example" }] });
+		await root.putSandboxGrants(sandbox.id, { grants: [{ action: "deny", host: "second.example" }] });
+		await root.setEnvironmentVariable(environment.id, "GH_TOKEN", { value: "ghp_ROTATEDVALUE456" });
+		await api.service.idle();
+		expect(egressCalls()).toEqual([]);
+		const stored = await api.store.sandboxes.get(sandbox.id);
+		expect(stored?.egressApplied).toBeLessThan(stored?.egressRevision ?? 0);
+		// Nor does a sweep send it while the host is away.
+		await api.service.sweep();
+		await api.service.idle();
+		expect(egressCalls()).toEqual([]);
+
+		// Back, the sweep sends the latest, once: its grants, its environment's new version, its revision.
+		host.connect();
+		// Each sweep in turn, as a gateway runs them, until the host's hello has been taken.
+		await vi.waitFor(async () => {
+			await api.service.sweep();
+			await api.service.idle();
+			expect(egressCalls().length).toBeGreaterThan(0);
+		});
+		const sent = egressCalls();
+		expect(sent).toHaveLength(1);
+		const environmentNow = await api.store.environments.get(environment.id);
+		expect(sent[0]?.params).toMatchObject({
+			sandboxId: sandbox.id,
+			egress: {
+				revision: stored?.egressRevision,
+				grants: [expect.objectContaining({ host: "second.example" })],
+				protected: { version: environmentNow?.secretsVersion },
+			},
+		});
+		expect((await api.store.sandboxes.get(sandbox.id))?.egressApplied).toBe(stored?.egressRevision);
+		// Taken, it isn't sent again.
+		await api.service.sweep();
+		await api.service.idle();
+		expect(egressCalls()).toHaveLength(1);
+		expect(JSON.stringify(host.calls)).not.toContain(SECRET);
+		expect(JSON.stringify(host.calls)).not.toContain("ghp_ROTATEDVALUE456");
+	});
+});
+
+describe("a sandbox given a grant while it starts", () => {
+	it("doesn't run on a host that can't enforce it", async () => {
+		const { api, root, host } = await setup();
+		let release = () => {};
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		// The host answers the create only once the grant is in.
+		const original = host.send.bind(host);
+		host.send = (message: { type?: string; result?: { id?: string } }) => {
+			if (message.type === "result" && message.result?.id !== undefined && message.result.id.startsWith("sbx_")) {
+				void held.then(() => original(message));
+				return;
+			}
+			original(message);
+		};
+		const sandbox = await root.createSandbox({ type: "microvm" });
+		await vi.waitFor(() => expect(host.calls.some((call) => call.method === "sandbox.create")).toBe(true));
+		await root.putSandboxGrants(sandbox.id, { grants: [{ action: "deny", host: "evil.example" }] });
+		release();
+		await api.service.idle();
+		const after = await root.getSandbox(sandbox.id);
+		expect(after.state).toBe("error");
+		expect(after.reason).toMatch(/enforce egress grants/);
+		// Its machine went.
+		expect(host.calls.some((call) => call.method === "sandbox.delete")).toBe(true);
+	});
+
+	it("runs only once its host has the latest, though it changes again while that is sent", async () => {
+		const { api, root, host } = await setup([HOST_FEATURES.egressPolicy]);
+		const gates = new Map<string, () => void>();
+		const holding = new Set(["sandbox.create", "sandbox.egress"]);
+		host.hold = (method) => {
+			if (!holding.has(method)) return undefined;
+			holding.delete(method);
+			return new Promise<void>((resolve) => gates.set(method, resolve));
+		};
+		const egressCalls = () => host.calls.filter((call) => call.method === "sandbox.egress");
+		const sandbox = await root.createSandbox({ type: "microvm" });
+		await vi.waitFor(() => expect(gates.has("sandbox.create")).toBe(true));
+		await root.putSandboxGrants(sandbox.id, { grants: [{ action: "deny", host: "first.example" }] });
+		gates.get("sandbox.create")?.();
+		// The boot sends the first change, and the host is slow to take it; a second lands meanwhile.
+		await vi.waitFor(() => expect(gates.has("sandbox.egress")).toBe(true));
+		expect((await root.getSandbox(sandbox.id)).state).toBe("starting");
+		await root.putSandboxGrants(sandbox.id, { grants: [{ action: "deny", host: "second.example" }] });
+		expect((await root.getSandbox(sandbox.id)).state).toBe("starting");
+		gates.get("sandbox.egress")?.();
+		await api.service.idle();
+
+		// It runs with the second sent too, the last thing its host was told, at its revision.
+		expect((await root.getSandbox(sandbox.id)).state).toBe("running");
+		const stored = await api.store.sandboxes.get(sandbox.id);
+		const last = egressCalls().at(-1)?.params;
+		expect(last).toMatchObject({
+			egress: { revision: stored?.egressRevision, grants: [expect.objectContaining({ host: "second.example" })] },
+		});
+		expect(stored?.egressApplied).toBe(stored?.egressRevision);
+		// Revisions only go up, in the order sent.
+		const revisions = egressCalls().map((call) => (call.params.egress as { revision: number }).revision);
+		expect([...revisions].sort((a, b) => a - b)).toEqual(revisions);
+		expect(new Set(revisions).size).toBe(revisions.length);
+	});
+});
+
+describe("a sandbox on a host that can't enforce grants, given one while its boot reconciles", () => {
+	for (const where of ["sandbox", "environment"] as const) {
+		it(`fails, its machine gone, rather than run without it (a ${where} grant)`, async () => {
+			const { api, root, host } = await setup();
+			const environment = await root.createEnvironment({ name: "plain" });
+			const gates = new Map<string, () => void>();
+			const holding = new Set(["sandbox.create", "sandbox.egress"]);
+			host.hold = (method) => {
+				if (!holding.has(method)) return undefined;
+				holding.delete(method);
+				return new Promise<void>((resolve) => gates.set(method, resolve));
+			};
+			const sandbox = await root.createSandbox({ environment: environment.id });
+			await vi.waitFor(() => expect(gates.has("sandbox.create")).toBe(true));
+			// A change the old host can take (the account's proxy settings), so the boot sends it.
+			await root.putProxySettings({ enabled: true, defaultAction: "allow", allow: [], deny: [] });
+			gates.get("sandbox.create")?.();
+			await vi.waitFor(() => expect(gates.has("sandbox.egress")).toBe(true));
+			// While the host is slow to take it, a grant: let through (it isn't placed yet, as far as the check knows).
+			const grants = [{ action: "deny" as const, host: "evil.example" }];
+			if (where === "sandbox") await root.putSandboxGrants(sandbox.id, { grants });
+			else await root.putEnvironmentGrants(environment.id, { grants });
+			gates.get("sandbox.egress")?.();
+			await api.service.idle();
+			const after = await root.getSandbox(sandbox.id);
+			expect(after.state).toBe("error");
+			expect(after.reason).toMatch(/enforce egress grants/);
+			expect(host.calls.some((call) => call.method === "sandbox.delete")).toBe(true);
+			// The one update it was sent carried no grant.
+			const sent = host.calls.filter((call) => call.method === "sandbox.egress");
+			expect(sent).toHaveLength(1);
+			expect(JSON.stringify(sent)).not.toContain("evil.example");
+		});
+	}
+});
+
+describe("a running sandbox whose host turns out not to enforce its egress", () => {
+	it("is stopped, not left running without it", async () => {
+		const { api, root, host } = await setup();
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		expect(sandbox.state).toBe("running");
+		// A grant written past the up-front check (another gateway, as the sandbox was placed): the store has it, and
+		// the sweep sends it.
+		await api.store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			grants: [{ id: "grt_1", action: "deny", host: "evil.example", createdAt: 1 }],
+			egressRevision: (current.egressRevision ?? 0) + 1,
+		}));
+		await api.service.sweep();
+		await api.service.idle();
+		const after = await root.getSandbox(sandbox.id);
+		expect(after.state).toBe("stopped");
+		expect(host.calls.filter((call) => call.method === "sandbox.egress")).toEqual([]);
+		expect(host.calls.some((call) => call.method === "sandbox.stop")).toBe(true);
 	});
 });

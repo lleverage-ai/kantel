@@ -105,6 +105,11 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 * host ignores one read before a later change. Absent: none sent yet.
 	 */
 	readonly egressRevision?: number;
+	/**
+	 * The latest `egressRevision` its backend has taken (at its boot, or acknowledging an update). Behind
+	 * `egressRevision`, an update didn't get through (its host away, say), and the sweep sends the egress as it is now.
+	 */
+	readonly egressApplied?: number;
 	/** Its own egress grants. Absent on a sandbox made before there were any: none. */
 	readonly grants?: readonly computeSchema.EgressGrant[];
 	/**
@@ -205,14 +210,19 @@ export interface StoredEnvironment {
 }
 
 /**
- * An account's claim on an environment's name, ID `<accountId>/<name>`: inserted (`Collection.insert`) before the
- * environment takes the name, so of two creates or renames to one name, on any gateway, one wins.
+ * The key no two environments may share, an account's and a name: the store refuses a write that would give a second
+ * environment one (`UniqueViolation`), in the write itself, so a create or rename on any gateway, however delayed,
+ * never commits a name another environment holds.
  */
-export interface StoredEnvironmentName {
-	readonly id: string;
-	readonly accountId: string;
-	readonly environmentId: string;
-	readonly claimedAt: number;
+export const environmentNameKey = (environment: { readonly accountId: string; readonly name: string }) =>
+	JSON.stringify([environment.accountId, environment.name]);
+
+/** A write the store refused because it would give a second record a key another holds (an environment's name). */
+export class UniqueViolation extends Error {
+	constructor(kind: string) {
+		super(`Another ${kind} record has that key`);
+		this.name = "UniqueViolation";
+	}
 }
 
 /** One entry of a sandbox's egress log, as its host reported it; the newest `MAX_EGRESS_ENTRIES` are kept per sandbox. */
@@ -303,8 +313,8 @@ export interface ComputeStore {
 	readonly events: Collection<StoredEvent>;
 	readonly idempotency: Collection<StoredIdempotency>;
 	readonly deviceLogins: Collection<StoredDeviceLogin>;
+	/** No two with one account and name (`environmentNameKey`): a write that would make two throws. */
 	readonly environments: Collection<StoredEnvironment>;
-	readonly environmentNames: Collection<StoredEnvironmentName>;
 	readonly egress: Collection<StoredEgressEntry>;
 }
 
@@ -318,19 +328,31 @@ export function matches<T>(record: T, where: Partial<T> | undefined): boolean {
 	return Object.entries(where).every(([key, value]) => value === undefined || fields[key] === value);
 }
 
-/** A collection in a `Map`, copying records in and out. */
-export function memoryCollection<T extends { readonly id: string }>(): Collection<T> {
+/**
+ * A collection in a `Map`, copying records in and out. With `unique`, no two records may share its key: a write that
+ * would make two throws `UniqueViolation`, as the SQL store's unique index does.
+ */
+export function memoryCollection<T extends { readonly id: string }>(unique?: (record: T) => string): Collection<T> {
 	const records = new Map<string, T>();
+	const check = (record: T) => {
+		if (unique === undefined) return;
+		const key = unique(record);
+		for (const other of records.values()) {
+			if (other.id !== record.id && unique(other) === key) throw new UniqueViolation("compute");
+		}
+	};
 	return {
 		async get(id) {
 			const record = records.get(id);
 			return record === undefined ? undefined : structuredClone(record);
 		},
 		async put(record) {
+			check(record);
 			records.set(record.id, structuredClone(record));
 		},
 		async insert(record) {
 			if (records.has(record.id)) return false;
+			check(record);
 			records.set(record.id, structuredClone(record));
 			return true;
 		},
@@ -339,6 +361,7 @@ export function memoryCollection<T extends { readonly id: string }>(): Collectio
 			if (current === undefined) return undefined;
 			const next = change(structuredClone(current));
 			if (next === undefined) return undefined;
+			check(next);
 			records.set(id, structuredClone(next));
 			return structuredClone(next);
 		},
@@ -371,8 +394,7 @@ export function createMemoryStore(): ComputeStore {
 		events: memoryCollection(),
 		idempotency: memoryCollection(),
 		deviceLogins: memoryCollection(),
-		environments: memoryCollection(),
-		environmentNames: memoryCollection(),
+		environments: memoryCollection<StoredEnvironment>(environmentNameKey),
 		egress: memoryCollection(),
 	};
 }

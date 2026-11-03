@@ -1,6 +1,7 @@
 // Environments and their protected variables: sealing, the routes, what a sandbox made from one is given (a placeholder
 // of its own for each protected value, never the value), rotation, forks, grants, the host-facing `protectedTable` and
 // `recordEgress`, and that no answer, event, webhook payload or error ever carries a protected value.
+import type { computeSchema } from "@kantel/api";
 import { createKantelClient, KantelApiError, type KantelClient } from "@kantel/api/sdk";
 import { pgliteDatabase } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,9 +9,9 @@ import type { PersonIdentity } from "../src/auth.ts";
 import type { BackendEgress, ExecRequest, ExecResult, SandboxBackend, SandboxSpec } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createEphemeralSealer, createSealer, parseSecretsKey, sealedAt } from "../src/secrets.ts";
-import { MAX_EGRESS_ENTRIES, type ReportedEgress } from "../src/service.ts";
+import { MAX_EGRESS_ENTRIES, type ReportedEgress, repoCredential } from "../src/service.ts";
 import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
-import { type ComputeStore, createMemoryStore } from "../src/store.ts";
+import { type ComputeStore, createMemoryStore, type StoredEnvironment, UniqueViolation } from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 import { bytesToBase64 } from "../src/util.ts";
 
@@ -91,6 +92,7 @@ function setup(
 		readonly exec?: ExecHook;
 		/** Awaited inside the backend's create, before the machine is made. */
 		readonly beforeCreate?: (spec: SandboxSpec) => Promise<void>;
+		readonly now?: () => number;
 	} = {},
 ) {
 	const { backend, recorded } = recordingBackend(options.exec, options.beforeCreate);
@@ -100,6 +102,7 @@ function setup(
 		backend,
 		...(options.store === undefined ? {} : { store: options.store }),
 		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
+		...(options.now === undefined ? {} : { now: options.now }),
 		authenticatePerson: async (request) => {
 			const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
 			return token === undefined ? undefined : PEOPLE[token];
@@ -1196,5 +1199,225 @@ describe("egress updates", () => {
 		const cleared = last(recorded.egress);
 		expect(cleared?.egress).toBeUndefined();
 		expect(cleared?.revision).toBeGreaterThan(stored?.egressRevision ?? 0);
+	});
+
+	it("start each boot on a revision of its own, so a retry read while it last ran always loses", async () => {
+		const { api, tom } = setup();
+		const sandbox = await tom.createSandbox({ wait: true });
+		await tom.putSandboxGrants(sandbox.id, { grants: [{ action: "deny", host: "old.example" }] });
+		await api.service.idle();
+		// What a held retry from this run would carry.
+		const before = (await api.store.sandboxes.get(sandbox.id))?.egressRevision ?? 0;
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		await tom.startSandbox(sandbox.id, { wait: true });
+		const booted = await api.store.sandboxes.get(sandbox.id);
+		expect(booted?.state).toBe("running");
+		expect(booted?.egressRevision).toBeGreaterThan(before);
+		expect(booted?.egressApplied).toBe(booted?.egressRevision);
+	});
+});
+
+describe("a name write that is held up", () => {
+	async function sqlStore() {
+		const database = await pgliteDatabase.open();
+		cleanups.push(() => database.close());
+		await migrateComputeStore(database.driver);
+		return createSqlComputeStore(database.driver);
+	}
+	const stores = [
+		["in memory", async () => createMemoryStore()],
+		["in SQL", sqlStore],
+	] as const;
+
+	/**
+	 * `store`, with the next environment write after `arm()` (an `update` or an `insert`) held until released: a
+	 * gateway that read, then stalled (a pause, a slow network) before it wrote.
+	 */
+	function holdingWrites(store: ComputeStore) {
+		let held: { readonly wait: Promise<void>; readonly reached: () => void } | undefined;
+		const hold = async () => {
+			const holding = held;
+			held = undefined;
+			if (holding !== undefined) {
+				holding.reached();
+				await holding.wait;
+			}
+		};
+		const wrapped: ComputeStore = {
+			...store,
+			environments: {
+				...store.environments,
+				update: async (id, change, expected) => {
+					await hold();
+					return store.environments.update(id, change, expected);
+				},
+				insert: async (record) => {
+					await hold();
+					return store.environments.insert(record);
+				},
+			},
+		};
+		return {
+			store: wrapped,
+			arm() {
+				const release = gate();
+				const reached = gate();
+				held = { wait: release.wait, reached: reached.open };
+				return { reached: reached.wait, release: release.open };
+			},
+		};
+	}
+
+	/** The call's error code, once it settles (`undefined` if it worked). */
+	const settled = (call: Promise<unknown>) =>
+		call.then(
+			() => undefined,
+			(error: unknown) => (error instanceof KantelApiError ? error.code : String(error)),
+		);
+
+	for (const [where, makeStore] of stores) {
+		it(`never commits a name another environment took meanwhile: a create (${where})`, sqlTimeout, async () => {
+			const holding = holdingWrites(await makeStore());
+			const slow = setup({ store: holding.store, secretsKey: KEY });
+			const fast = setup({ store: holding.store, secretsKey: KEY });
+			await slow.tom.listEnvironments();
+			const held = holding.arm();
+			const create = settled(slow.tom.createEnvironment({ name: "a" }));
+			await held.reached;
+			// However long it is held (no grace period to wait out), another gateway's create of the name goes first.
+			const first = await fast.tom.createEnvironment({ name: "a" });
+			held.release();
+			expect(await create).toBe("conflict");
+			const named = (await fast.tom.listEnvironments()).items.filter((each) => each.name === "a");
+			expect(named.map((each) => each.id)).toEqual([first.id]);
+		});
+
+		it(`never commits a name another environment took meanwhile: a rename (${where})`, sqlTimeout, async () => {
+			const holding = holdingWrites(await makeStore());
+			const { tom } = setup({ store: holding.store, secretsKey: KEY });
+			const x = await tom.createEnvironment({ name: "x" });
+			const held = holding.arm();
+			const rename = settled(tom.updateEnvironment(x.id, { name: "d" }));
+			await held.reached;
+			const y = await tom.createEnvironment({ name: "d" });
+			held.release();
+			expect(await rename).toBe("conflict");
+			expect((await tom.getEnvironment(x.id)).name).toBe("x");
+			expect((await tom.getEnvironment(y.id)).name).toBe("d");
+		});
+
+		it(
+			`never commits a name another environment took meanwhile: a same-name update (${where})`,
+			sqlTimeout,
+			async () => {
+				const holding = holdingWrites(await makeStore());
+				const { tom } = setup({ store: holding.store, secretsKey: KEY });
+				const a = await tom.createEnvironment({ name: "a" });
+				// An update naming the environment as it was read ("a"), held after that read.
+				const held = holding.arm();
+				const update = settled(tom.updateEnvironment(a.id, { name: "a", description: "late" }));
+				await held.reached;
+				// Meanwhile A is renamed "b" and B takes "a".
+				await tom.updateEnvironment(a.id, { name: "b" });
+				const b = await tom.createEnvironment({ name: "a" });
+				held.release();
+				expect(await update).toBe("conflict");
+				expect((await tom.getEnvironment(a.id)).name).toBe("b");
+				expect((await tom.getEnvironment(b.id)).name).toBe("a");
+			},
+		);
+
+		it(`leaves nothing to recover when a write dies (${where})`, sqlTimeout, async () => {
+			const store = await makeStore();
+			const first = setup({ store, secretsKey: KEY });
+			const x = await first.tom.createEnvironment({ name: "a" });
+			// A create or rename that failed (here, refused) leaves its name as free as it found it, at once, on a
+			// gateway started since too: there is no claim apart from the environment itself.
+			const y = await first.tom.createEnvironment({ name: "y" });
+			expect((await failure(first.tom.updateEnvironment(y.id, { name: "a" }))).code).toBe("conflict");
+			await first.tom.updateEnvironment(x.id, { name: "c" });
+			const second = setup({ store, secretsKey: KEY });
+			expect((await second.tom.createEnvironment({ name: "a" })).name).toBe("a");
+			expect((await failure(second.tom.createEnvironment({ name: "c" }))).code).toBe("conflict");
+			await second.tom.deleteEnvironment(x.id);
+			expect((await second.tom.createEnvironment({ name: "c" })).name).toBe("c");
+			const names = (await second.tom.listEnvironments()).items.map((each) => each.name).sort();
+			expect(names).toEqual(["a", "c", "y"]);
+		});
+	}
+
+	it("is refused by the SQL store itself, whoever writes", sqlTimeout, async () => {
+		const store = await sqlStore();
+		const at = Date.now();
+		const record = (id: string, accountId: string, name: string): StoredEnvironment => ({
+			id,
+			accountId,
+			name,
+			variables: [],
+			files: [],
+			repos: [],
+			grants: [],
+			secretsVersion: 1,
+			createdAt: at,
+			updatedAt: at,
+		});
+		await store.environments.put(record("env_1", "acc_1", "a"));
+		await expect(store.environments.put(record("env_2", "acc_1", "a"))).rejects.toBeInstanceOf(UniqueViolation);
+		await expect(store.environments.insert(record("env_2", "acc_1", "a"))).rejects.toBeInstanceOf(UniqueViolation);
+		await store.environments.put(record("env_2", "acc_1", "b"));
+		await expect(store.environments.update("env_2", (current) => ({ ...current, name: "a" }))).rejects.toBeInstanceOf(
+			UniqueViolation,
+		);
+		// Another account's, and the same environment written again, are fine.
+		await store.environments.put(record("env_3", "acc_2", "a"));
+		await store.environments.put(record("env_1", "acc_1", "a"));
+		expect((await store.environments.list({ accountId: "acc_1" })).map((each) => each.name).sort()).toEqual(["a", "b"]);
+	});
+});
+
+describe("repoCredential", () => {
+	const placeholders = { TOKEN: "kph_x", OTHER: "kph_y" };
+	const environmentWith = (bindings: computeSchema.DestinationBinding[]) => ({
+		variables: [
+			{ name: "TOKEN", protected: true, bindings, createdAt: 1, updatedAt: 1 },
+		] as unknown as StoredEnvironment["variables"],
+	});
+	const repo = (url: string) => ({ url, path: "/home/user/r" });
+
+	it("picks a variable whose bindings cover the requests a clone makes, one binding or two", () => {
+		const cases: [computeSchema.DestinationBinding[], string, string | undefined][] = [
+			[
+				[{ host: "github.com", pathPrefixes: ["/acme/"], methods: ["GET", "POST"] }],
+				"https://github.com/acme/app",
+				"TOKEN",
+			],
+			[[{ host: "github.com", pathPrefixes: ["/acme/private.git/"] }], "https://github.com/acme/private.git", "TOKEN"],
+			[[{ host: "github.com", pathPrefixes: ["/acme/private/"] }], "https://github.com/acme/private/", "TOKEN"],
+			[
+				[
+					{ host: "github.com", pathPrefixes: ["/acme/app/info/refs"], methods: ["GET"] },
+					{ host: "github.com", pathPrefixes: ["/acme/app/git-upload-pack"], methods: ["POST"] },
+				],
+				"https://github.com/acme/app",
+				"TOKEN",
+			],
+			[[{ host: "*.example.com" }], "https://git.example.com/x/y", "TOKEN"],
+			// Not enough: one request isn't covered, another repository, another host, another port.
+			[[{ host: "github.com", methods: ["GET"] }], "https://github.com/acme/app", undefined],
+			[[{ host: "github.com", pathPrefixes: ["/acme/private.git/"] }], "https://github.com/acme/other", undefined],
+			[[{ host: "github.com", pathPrefixes: ["/acme/"] }], "https://github.com/other/app", undefined],
+			[[{ host: "api.github.com" }], "https://github.com/acme/app", undefined],
+			[[{ host: "github.com" }], "https://github.com:8443/acme/app", undefined],
+		];
+		for (const [bindings, url, want] of cases) {
+			expect(
+				repoCredential(environmentWith(bindings), repo(url), placeholders),
+				`${url} ${JSON.stringify(bindings)}`,
+			).toBe(want);
+		}
+		// Only a variable this sandbox has a placeholder for.
+		expect(
+			repoCredential(environmentWith([{ host: "github.com" }]), repo("https://github.com/a/b"), {}),
+		).toBeUndefined();
 	});
 });
