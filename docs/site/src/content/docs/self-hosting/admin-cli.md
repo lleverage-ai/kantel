@@ -1,17 +1,30 @@
 ---
 title: The admin command
-description: kantel-admin (npx @kantel/admin) installs and upgrades a self-hosted Kantel, changes its settings, reads its first compute key, and adds, drains and revokes the Linux hosts that run its sandboxes.
+description: kantel-admin installs and upgrades a self-hosted Kantel, changes its settings, reads its first compute key, and adds, drains and revokes the Linux hosts that run its sandboxes.
 ---
 
 `kantel-admin` is for whoever runs a self-hosted Kantel. It does what [Install Kantel](/self-hosting/install/) does by hand: it runs the installer, edits the stack's settings, reads the first compute key and manages hosts. Using sandboxes is the [`kantel` command's](/tools/cli/) job.
 
-It needs Node.js 22 or later. Run it with `npx @kantel/admin <command>`, or install it with `npm install -g @kantel/admin` and run `kantel-admin <command>`.
+## Install it
+
+It needs Node.js 22 or later, and [pnpm](https://pnpm.io/) 10 to build it. `@kantel/admin` isn't on npm yet, so build it from Kantel's repository, as for [`kantel`](/tools/cli/#install-it):
+
+```sh
+git clone https://github.com/lleverage-ai/kantel.git
+cd kantel
+pnpm install --frozen-lockfile --filter '@kantel/admin...'
+pnpm --filter @kantel/admin build
+npm install -g ./packages/admin/dist
+kantel-admin version
+```
+
+The build writes one file, `packages/admin/dist/kantel-admin.js`. Keep the clone, and run `git pull` and the build again to update it. Once the package is on npm, `npx @kantel/admin <command>` will run it with nothing to install.
 
 ## Set up a control plane
 
 ```sh
-npx @kantel/admin install --email you@example.com
-npx @kantel/admin status
+kantel-admin install --email you@example.com
+kantel-admin status
 ```
 
 `install` downloads [kantel.dev/install.sh](https://kantel.dev/install.sh) and runs it, passing on `--email`, `--ref`, `--repo`, `--tarball` and `--no-open`, and anything after `--`. `upgrade` runs it with `--upgrade`, which keeps your settings and data. `KANTEL_INSTALLER_URL` runs another copy of the installer, such as a path in a checkout.
@@ -25,9 +38,9 @@ Both find the install in `~/.kantel`; `--home` or `KANTEL_HOME` says otherwise.
 The stack's settings are in `~/.kantel/src/deploy/compose/.env` (the table in [Your own settings](/self-hosting/install/#your-own-settings) lists them).
 
 ```sh
-npx @kantel/admin config list
-npx @kantel/admin config set KANTEL_PUBLIC_URL=https://kantel.example.com --apply
-npx @kantel/admin config unset KANTEL_SMTP_URL
+kantel-admin config list
+kantel-admin config set KANTEL_PUBLIC_URL=https://kantel.example.com --apply
+kantel-admin config unset KANTEL_SMTP_URL
 ```
 
 `config list` shows secrets as `(set)`. `set` and `unset` change the lines in place. A change takes effect when the stack restarts with it: `kantel-admin apply` does that (`docker compose up -d --wait`, which recreates only the containers whose settings changed, and downloads nothing), and `--apply` does it straight after the change.
@@ -35,18 +48,18 @@ npx @kantel/admin config unset KANTEL_SMTP_URL
 ## The first compute key
 
 ```sh
-npx @kantel/admin bootstrap-key --save
+kantel-admin bootstrap-key --save
 ```
 
 The compute API is always on. `bootstrap-key` prints the compute API's first key, `computeKey` in the gateway's bootstrap file; with `--save` it checks the key and saves it, with the local URL, where `kantel login` would, so `kantel` and `kantel-admin` both use it. That key has every scope, `hosts:admin` too: keep it to yourself and give people, scripts and agents [keys of their own](/accounts/api-keys/#create-a-key).
 
 ## Add hosts
 
-A host is a Linux machine with `/dev/kvm` that runs `kantel-host` (Firecracker microVMs and workerd isolates). It dials out to the control plane, so it needs no open port. A host on the control plane's own machine joins at its local address, `http://127.0.0.1:58090`; a host anywhere else has to reach the control plane's public URL, so set that first:
+A host is a Linux machine with `/dev/kvm` that runs `kantel-host` (Firecracker microVMs and workerd isolates). It dials out to the control plane, so it needs no open port. A host on the control plane's own machine joins at its local address, `http://127.0.0.1:58090`; a host anywhere else has to reach the control plane's public URL, so set that first. [Hosts](/hosts/) covers what a machine needs and what the install does.
 
 ```sh
-npx @kantel/admin compute enable --public-url https://kantel.example.com --apply   # only for hosts on other machines
-npx @kantel/admin host add --name builder-1 --label zone=ams
+kantel-admin compute enable --public-url https://kantel.example.com --apply   # only for hosts on other machines
+kantel-admin host add --name builder-1 --label zone=ams
 ```
 
 The console's **Hosts** page does the same: **Add a host** makes the join command, and a fresh install's **Sandboxes** page leads there until the first host joins.
@@ -57,17 +70,21 @@ The console's **Hosts** page does the same: **Add a host** makes the join comman
 sudo npx -y @kantel/host@latest install --url https://kantel.example.com --token kth_...
 ```
 
-`sudo npx -y @kantel/admin host join --url https://kantel.example.com --token kth_...` on the machine does the same. With `--ssh root@builder-1`, `host add` runs the command on the machine for you over SSH. Arguments after `--` go to `kantel-host install`, such as `-- --tiers isolate --isolate-runtime native` on a machine without KVM (for trusted code only).
+:::note
+That command, `host join`, `host add --ssh` and `host run` all fetch `@kantel/host` with `npx`, and the package isn't on npm yet. Until it is, build `kantel-host` from the repository and run it on the machine with the same `--url` and `--token`, as [Hosts](/hosts/#add-a-host) shows.
+:::
+
+`kantel-admin host join --url https://kantel.example.com --token kth_...`, run as root on the machine, does the same as the printed command. With `--ssh root@builder-1`, `host add` runs the command on the machine for you over SSH. Arguments after `--` go to `kantel-host install`, such as `-- --tiers isolate --isolate-runtime native` on a machine without KVM (for trusted code only).
 
 `host run -- <command>` runs any other `kantel-host` command on the machine you're on: `doctor`, `status`, `update`, `uninstall`.
 
 ## Look after hosts
 
 ```sh
-npx @kantel/admin host list
-npx @kantel/admin host info host_6t5r4e
-npx @kantel/admin host drain host_6t5r4e      # no new sandboxes; --undo takes it back
-npx @kantel/admin host revoke host_6t5r4e --yes
+kantel-admin host list
+kantel-admin host info host_6t5r4e
+kantel-admin host drain host_6t5r4e      # no new sandboxes; --undo takes it back
+kantel-admin host revoke host_6t5r4e --yes
 ```
 
 `host list` shows each host's state, its agent's version (and a newer one when there is), the sandbox types it runs and how many sandboxes it has. Draining a host stops new sandboxes going on it; the ones there keep running. Revoking it revokes its credential and closes its connection: its sandboxes keep their disks but can't be reached until it joins again with a new token.

@@ -11,7 +11,13 @@ sidebar:
 These routes are part of Kantel's API, which every control plane serves. Their shapes may still change.
 :::
 
-A microVM has no address of its own that you can connect to. You reach its SSH through Kantel: either through your deployment's SSH gateway, or, on Kantel's own hosts, through a relay that carries SSH over a WebSocket. Kantel lets a key in and tells you the command that connects. Isolates have no SSH: the call answers `501` with `not_supported` for them.
+A microVM has no address of its own that you can connect to. You reach its SSH through Kantel: either through your deployment's SSH gateway, or, on [your own hosts](/hosts/), through a relay on the control plane that carries SSH over a WebSocket. Kantel lets a key in and tells you the command that connects. Isolates have no SSH: the call answers `501` with `not_supported` for them.
+
+With the [`kantel` command](/tools/cli/), one line does all of it, whichever way your deployment connects:
+
+```sh
+kantel ssh sbx_4kq9x2mt --exec
+```
 
 The examples use `KANTEL_URL` and `KANTEL_API_KEY` as set in [Create and manage sandboxes](/sandboxes/lifecycle/#before-you-start), and `jq`. The key needs `access`.
 
@@ -37,19 +43,17 @@ You can start a connection until `expiresAt`, `ttlMinutes` from now: 10 by defau
 
 ## Through Kantel's relay
 
-On Kantel's own hosts there is no SSH gateway to dial. The answer then has `proxyUrl`, a WebSocket URL whose binary frames carry the sandbox's SSH, and a `command` that connects through it with a `ProxyCommand`. SSH's own encryption and host key check run end to end inside it. Anyone holding `proxyUrl` can start a connection until it expires, so treat it like a password.
+On your own hosts there is no SSH gateway to dial. The answer then has `proxyUrl`, a WebSocket URL on the control plane's public address whose binary frames carry the sandbox's SSH, and a `command` that connects through it with a `ProxyCommand`. The control plane passes the bytes to the sandbox over the connection its host keeps open, so neither the host nor the sandbox needs an open port. SSH's own encryption and host key check run end to end inside it. Anyone holding `proxyUrl` can start a connection until it expires, so treat it like a password.
 
-`kantel ssh` does this for you. It asks for access, keeps the key Kantel made, and runs `ssh` with `kantel ssh-proxy` as its `ProxyCommand`:
+`kantel ssh` does this for you. It asks for access, saves the private key Kantel made in `~/.config/kantel/ssh/<sandbox ID>`, and runs `ssh` with `kantel ssh-proxy` as its `ProxyCommand`. Each run makes a new key pair, unless you give your own with `--public-key ~/.ssh/id_ed25519.pub`. It keeps the sandbox's host key in `~/.config/kantel/ssh/known_hosts`, learnt on the first connection.
 
-```sh
-kantel ssh sbx_4kq9x2mt --exec
-```
-
-Without `--exec` it prints the command, such as:
+Without `--exec`, `kantel ssh sbx_4kq9x2mt` prints the command, such as:
 
 ```text
 ssh -i ~/.config/kantel/ssh/sbx_4kq9x2mt -o IdentitiesOnly=yes -o 'ProxyCommand=kantel ssh-proxy --url wss://kantel.example/v1/hosts/tunnel/…' -o HostKeyAlias=sbx_4kq9x2mt -o UserKnownHostsFile=~/.config/kantel/ssh/known_hosts -o StrictHostKeyChecking=accept-new user@sbx_4kq9x2mt
 ```
+
+followed by `(start it by 2026-11-03 09:48 UTC; once connected it stays open)`. `--ttl` sets how long you have to start a connection, in minutes: 10 by default, from 5 up to 60. `--json` prints the command, the key's path, the host key's fingerprint and `expiresAt`. The `ssh-proxy` step needs `kantel` on your `PATH`.
 
 Any client that pipes its standard input and output through a WebSocket as binary frames works as the `ProxyCommand`. The answer's own `command` uses `websocat --binary`.
 
@@ -92,6 +96,13 @@ scp -P 2222 -r sbx_4kq9x2mt@ssh.kantel.example:app/dist ./dist
 
 This is the way to move files bigger than the [file routes'](/sandboxes/commands-and-files/) 1 MiB.
 
+Through the relay, `kantel scp` is simpler: it copies through the file routes, in parts for a file over 1 MiB on a microVM. To use `scp` itself, reuse the options `kantel ssh` prints:
+
+```sh
+opts=$(kantel ssh sbx_4kq9x2mt --json | jq -r .command | sed 's/^ssh //; s/ [^ ]*$//')
+eval "scp $opts ./data.csv user@sbx_4kq9x2mt:data.csv"
+```
+
 ## Forward a port
 
 To open a port of the sandbox on your own machine without a [public URL](/sandboxes/public-ports/), forward it:
@@ -100,7 +111,11 @@ To open a port of the sandbox on your own machine without a [public URL](/sandbo
 ssh -N -L 3000:localhost:3000 -p 2222 sbx_4kq9x2mt@ssh.kantel.example
 ```
 
-Then open <http://localhost:3000/>.
+Then open <http://localhost:3000/>. Through the relay, add the same flags to the options from [Copy files](#copy-files):
+
+```sh
+eval "ssh $opts -N -L 3000:localhost:3000 user@sbx_4kq9x2mt"
+```
 
 ## Editors over Remote SSH
 
@@ -116,4 +131,19 @@ Host kantel-fix-login-bug
 
 and connect to `kantel-fix-login-bug`. The sandbox's ID stays the same across a stop and resume, so the entry keeps working; ask for access again when it expires.
 
-<!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:665-679, packages/api/src/compute-schema.ts:644-669; the relay: packages/hosts/src/backend.ts (openSsh), packages/hosts/src/tunnel.ts, packages/cli/src/ssh-proxy.ts -->
+Through the relay, put the options `kantel ssh` prints into the entry instead:
+
+```text
+Host kantel-fix-login-bug
+  HostName sbx_4kq9x2mt
+  User user
+  IdentityFile ~/.config/kantel/ssh/sbx_4kq9x2mt
+  IdentitiesOnly yes
+  HostKeyAlias sbx_4kq9x2mt
+  UserKnownHostsFile ~/.config/kantel/ssh/known_hosts
+  ProxyCommand kantel ssh-proxy --url wss://kantel.example.com/v1/hosts/tunnel/…
+```
+
+The relay URL in `ProxyCommand` works for an hour at most, so run `kantel ssh sbx_4kq9x2mt --ttl 60` and copy in the new one before you reconnect. A connection that is already open stays open.
+
+<!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:665-679, packages/api/src/compute-schema.ts:644-669; the relay: packages/hosts/src/backend.ts (openSsh), packages/hosts/src/tunnel.ts, packages/cli/src/ssh-proxy.ts. The CLI and the relay's scp and port forward (5be456c): packages/cli/src/commands.ts:1114-1125,1269-1345, packages/hosts/src/tunnel.ts:1-70; run through a local host for TASK-4706 -->
