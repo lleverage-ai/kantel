@@ -1,6 +1,6 @@
 ---
 title: Use from your coding agent
-description: Let Claude Code, Codex or pi make and drive Kantel sandboxes from your machine, with a key for the agent, a skill to copy in, and an AGENTS.md snippet.
+description: Let Claude Code, Codex or pi make and drive Kantel sandboxes from your machine, with a key for the agent, Kantel's MCP server or a skill to copy in, and an AGENTS.md snippet.
 sidebar:
   badge:
     text: Experimental
@@ -11,11 +11,22 @@ sidebar:
 The agent drives Kantel through the compute API, which a control plane serves only when it runs with `KANTEL_COMPUTE=experimental`. Its shapes may still change.
 :::
 
-A coding agent on your machine can do its risky or heavy work in a Kantel sandbox instead of on your laptop: run a test suite on a clean Linux, try a migration, start Docker, open a browser, or fork five copies to try five fixes. The agent stays where it is, and calls Kantel's API with `curl`. You set it up once: a key for the agent, a skill that teaches it the API, and a few lines in `AGENTS.md`.
+A coding agent on your machine can do its risky or heavy work in a Kantel sandbox instead of on your laptop: run a test suite on a clean Linux, try a migration, start Docker, open a browser, or fork five copies to try five fixes. The agent stays where it is and reaches Kantel in one of two ways:
+
+- through Kantel's [MCP server](/tools/mcp-server/), which Claude Code and Codex take;
+- with a skill that teaches it Kantel's API over `curl`, which works in any agent that runs shell commands, pi included.
+
+You set it up once: a key for the agent, the MCP server or the skill, and a few lines in `AGENTS.md`.
 
 ## 1. Give the agent a key
 
-Make a key with the `agent` preset, which can make, drive, stop and snapshot sandboxes but can't delete them or change your account. Make it with a key of yours that holds `account:admin`, such as your install's [first key](/accounts/api-keys/#make-your-first-key):
+Make a key with the `agent` preset, which can make, drive, stop and snapshot sandboxes but can't delete them or change your account. Make it with a key of yours that holds `account:admin`, such as your install's [first key](/accounts/api-keys/#make-your-first-key). With the [`kantel` command](/tools/cli/), signed in with that key:
+
+```sh
+kantel key create coding-agent --preset agent --expires-days 30
+```
+
+or with `curl`:
 
 ```sh
 curl -s "$KANTEL_URL/v1/api-keys" \
@@ -39,9 +50,26 @@ For Claude Code you can instead set them only for Claude, in the `env` of `~/.cl
 { "env": { "KANTEL_URL": "http://127.0.0.1:58090", "KANTEL_API_KEY": "ksk_..." } }
 ```
 
-## 2. Add the skill
+## 2. Connect it over MCP
 
-A skill is a folder with a `SKILL.md` that the agent reads when a task needs it. Save the file below as `~/.agents/skills/kantel/SKILL.md`, which Codex and pi both read. For Claude Code, link the folder into its skills too:
+For Claude Code or Codex, [install the `kantel` command](/tools/cli/#install-it) and add its MCP server, with your control plane's address in place of `http://127.0.0.1:58090`:
+
+```sh
+# Claude Code
+claude mcp add kantel -e KANTEL_URL=http://127.0.0.1:58090 -e KANTEL_API_KEY=$KANTEL_API_KEY -- kantel mcp
+# Codex
+codex mcp add kantel --env KANTEL_URL=http://127.0.0.1:58090 --env KANTEL_API_KEY=$KANTEL_API_KEY -- kantel mcp
+```
+
+The agent then has tools such as `sandbox_create`, `sandbox_exec` and `file_write`. [MCP server](/tools/mcp-server/) lists them all and covers Cursor and other clients. With MCP in place you can skip the skill and go to [step 4](#4-add-the-agentsmd-snippet).
+
+### pi and the kantel command
+
+pi doesn't take MCP servers. It runs the `kantel` command through its shell instead: install the command, start pi with `KANTEL_URL` and `KANTEL_API_KEY` set as in step 1, and either add the skill below or run `kantel agents --write` in your repository. That adds a block to `AGENTS.md` that tells pi how to make a sandbox, run commands in it, move files and stop it with the command.
+
+## 3. Or add the skill
+
+The skill needs nothing installed but `curl` and `jq`, so it suits any agent. A skill is a folder with a `SKILL.md` that the agent reads when a task needs it. Save the file below as `~/.agents/skills/kantel/SKILL.md`, which Codex and pi both read. For Claude Code, link the folder into its skills too:
 
 ```sh
 mkdir -p ~/.agents/skills/kantel ~/.claude/skills
@@ -118,14 +146,14 @@ Errors are `{"error": {"code": "...", "message": "..."}}`. `conflict`: the sandb
 Full docs: https://kantel.dev/docs/llms.txt
 ````
 
-## 3. Add the AGENTS.md snippet
+## 4. Add the AGENTS.md snippet
 
-The skill says how; a line in your project's instructions says when. Add this to `AGENTS.md` at the root of a repository, which Codex and pi read:
+The MCP server or the skill says how; a line in your project's instructions says when. Add this to `AGENTS.md` at the root of a repository, which Codex and pi read:
 
 ```md
 ## Sandboxes
 
-Run tests, builds, Docker and anything that changes the system in a Kantel sandbox, not on this machine: use the `kantel` skill. Make one microVM per task, labelled with the task, reuse it while the task lasts, and stop it when you're done. Never print `KANTEL_API_KEY`.
+Run tests, builds, Docker and anything that changes the system in a Kantel sandbox, not on this machine: use the `kantel` MCP tools or the `kantel` skill. Make one microVM per task, labelled with the task, reuse it while the task lasts, and stop it when you're done. Never print `KANTEL_API_KEY`.
 ```
 
 Claude Code reads `CLAUDE.md` rather than `AGENTS.md`. Put one line in `CLAUDE.md` to pull the same file in:
@@ -136,10 +164,10 @@ Claude Code reads `CLAUDE.md` rather than `AGENTS.md`. Put one line in `CLAUDE.m
 
 To use it in every project, put the snippet in your agent's own instructions file instead: `~/.claude/CLAUDE.md` for Claude Code, `~/.codex/AGENTS.md` for Codex and `~/.pi/agent/AGENTS.md` for pi.
 
-## 4. Let the agent reach Kantel
+## 5. Let the agent reach Kantel
 
-- **Claude Code** asks before running each `curl`. To allow the agent's Kantel calls without asking, add `"Bash(curl:*)"` to `permissions.allow` in your settings, if you're happy for it to run `curl` freely.
-- **Codex** blocks network access from its default sandbox. Allow it in `~/.codex/config.toml`:
+- **Claude Code** asks before each MCP tool call and each `curl`. To let the MCP server's tools run without asking, add `"mcp__kantel"` to `permissions.allow` in your settings. With the skill, add `"Bash(curl:*)"` instead, if you're happy for it to run `curl` freely.
+- **Codex** blocks network access from the commands it runs in its default sandbox, which the skill needs. Allow it in `~/.codex/config.toml`:
 
   ```toml
   [sandbox_workspace_write]
