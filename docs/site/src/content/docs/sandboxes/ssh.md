@@ -16,7 +16,8 @@ A microVM has no address of its own that you can connect to. You reach its SSH t
 With the [`kantel` command](/tools/cli/), one line does all of it, whichever way your deployment connects:
 
 ```sh
-kantel ssh sbx_4kq9x2mt --exec
+kantel ssh sbx_4kq9x2mt                 # a shell
+kantel ssh sbx_4kq9x2mt -- uname -a     # one command, with its exit code
 ```
 
 The examples use `KANTEL_URL` and `KANTEL_API_KEY` as set in [Create and manage sandboxes](/sandboxes/lifecycle/#before-you-start), and `jq`. The key needs `access`.
@@ -47,13 +48,13 @@ On your own hosts there is no SSH gateway to dial. The answer then has `proxyUrl
 
 `kantel ssh` does this for you. It asks for access, saves the private key Kantel made in `~/.config/kantel/ssh/<sandbox ID>`, and runs `ssh` with `kantel ssh-proxy` as its `ProxyCommand`. Each run makes a new key pair, unless you give your own with `--public-key ~/.ssh/id_ed25519.pub`. It keeps the sandbox's host key in `~/.config/kantel/ssh/known_hosts`, learnt on the first connection.
 
-Without `--exec`, `kantel ssh sbx_4kq9x2mt` prints the command, such as:
+After `--`, a command runs instead of a shell, as with `ssh host command`: one word is a shell command line (`kantel ssh sbx_4kq9x2mt -- 'make && make test'`) and several are a command and its arguments, and `kantel` exits with the command's exit code. With `--print`, `kantel ssh sbx_4kq9x2mt` prints the command instead of running it, such as:
 
 ```text
 ssh -i ~/.config/kantel/ssh/sbx_4kq9x2mt -o IdentitiesOnly=yes -o 'ProxyCommand=kantel ssh-proxy --url wss://kantel.example/v1/hosts/tunnel/…' -o HostKeyAlias=sbx_4kq9x2mt -o UserKnownHostsFile=~/.config/kantel/ssh/known_hosts -o StrictHostKeyChecking=accept-new user@sbx_4kq9x2mt
 ```
 
-followed by `(start it by 2026-11-03 09:48 UTC; once connected it stays open)`. `--ttl` sets how long you have to start a connection, in minutes: 10 by default, from 5 up to 60. `--json` prints the command, the key's path, the host key's fingerprint and `expiresAt`. The `ssh-proxy` step needs `kantel` on your `PATH`.
+followed by `(start it by 2026-11-03 09:48 UTC; once connected it stays open)`. `--ttl` sets how long you have to start a connection, in minutes: 10 by default, from 5 up to 60. `--json` prints, as JSON, the command, the key's path, the host key's fingerprint and `expiresAt`. The `ssh-proxy` step needs `kantel` on your `PATH`.
 
 Any client that pipes its standard input and output through a WebSocket as binary frames works as the `ProxyCommand`. The answer's own `command` uses `websocat --binary`.
 

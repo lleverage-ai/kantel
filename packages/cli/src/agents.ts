@@ -88,7 +88,8 @@ ${CHEAT_SHEET}
 - Copies of a sandbox: \`npx kantel fork "$id" --count 3\`.
 - A microVM's desktop or Chrome: \`npx kantel desktop "$id"\`, \`npx kantel browser "$id"\` (prints a live view URL and a
   CDP URL for Playwright's \`connectOverCDP\`).
-- SSH (microVMs): \`npx kantel ssh "$id"\` prints the ssh command; \`--exec\` runs it. Prefer \`exec\` for commands.
+- SSH (microVMs): \`npx kantel ssh "$id"\` connects; \`-- <command>\` runs one there and \`--print\` prints the ssh
+  command instead. Prefer \`exec\` for commands.
 - Keep it running longer: \`npx kantel extend "$id" 120\` (minutes from now).
 - Every command and flag: \`npx kantel help\`, \`npx kantel help <command>\`.
 `;

@@ -161,6 +161,8 @@ interface CommandSpec {
 	readonly flags?: FlagSpecs;
 	/** What it takes after `--`, such as exec's `command…`. */
 	readonly rest?: string;
+	/** It runs without anything after `--`, as `ssh` does. */
+	readonly restOptional?: boolean;
 	/** More help, after the summary. */
 	readonly details?: string;
 	/** Resolves with the exit code, or anything else for 0. */
@@ -1268,10 +1270,14 @@ const SECTIONS: readonly Section[] = [
 			},
 			{
 				name: "ssh",
-				summary: "SSH access to a microVM: print the command that connects, or run it",
+				summary: "SSH into a microVM, or run one command there over SSH",
 				args: ID_ARG,
+				rest: "command…",
+				restOptional: true,
 				flags: {
-					exec: { type: "boolean", description: "Run ssh now, in this terminal" },
+					print: { type: "boolean", description: "Print the ssh command that connects, rather than running it" },
+					// Connecting was --exec when printing was the default; it still parses.
+					exec: { type: "boolean", description: "Run ssh now (the default)", hidden: true },
 					"public-key": {
 						type: "string",
 						value: "<file>",
@@ -1283,8 +1289,17 @@ const SECTIONS: readonly Section[] = [
 						description: "How long a connection can be started (default 10, at most 60)",
 					},
 				},
+				details:
+					"Connects in this terminal, through the control plane's relay when the sandbox is on its own hosts. After --,\n" +
+					"a command runs there instead of a shell, and kantel exits with its exit code: kantel ssh <id> -- uname -a.\n" +
+					"--print (or --json) prints the ssh command with its key and options, for scp, rsync or an ssh config entry.",
 				async run(ctx) {
 					const sandboxId = ctx.arg(0);
+					const remote = ctx.rest ?? [];
+					const print = ctx.boolean("print") || ctx.json;
+					if (print && remote.length > 0) throw new UsageError("--print prints the ssh command; give it no command");
+					// ssh joins its command's words with spaces for the remote shell, so each is quoted to arrive as it is.
+					const remoteArgs = remote.length === 0 ? [] : ["--", commandLine(remote)];
 					const keyPath = ctx.string("public-key");
 					const publicKey =
 						keyPath === undefined ? undefined : (await readFile(resolve(ctx.io.cwd, keyPath), "utf8")).trim();
@@ -1312,8 +1327,10 @@ const SECTIONS: readonly Section[] = [
 							...(identityFile === undefined ? {} : { identityFile }),
 						};
 						await mkdir(join(ctx.io.configDir, "ssh"), { recursive: true, mode: 0o700 });
-						if (ctx.boolean("exec")) {
-							return runSsh(tunnelSshArgs(tunnel, options), ctx.io, { [SSH_URL_ENV]: access.proxyUrl });
+						if (!print) {
+							return runSsh([...tunnelSshArgs(tunnel, options), ...remoteArgs], ctx.io, {
+								[SSH_URL_ENV]: access.proxyUrl,
+							});
 						}
 						const command = tunnelSshCommand(tunnel, { ...options, self: ["kantel"] });
 						const shown = { user: access.user, command, identityFile, hostKeyFingerprint: access.hostKeyFingerprint };
@@ -1329,7 +1346,7 @@ const SECTIONS: readonly Section[] = [
 						`${access.user}@${access.host}`,
 					];
 					const command = identityFile === undefined ? access.command : ["ssh", ...args].map(shellQuote).join(" ");
-					if (ctx.boolean("exec")) return runSsh(args, ctx.io);
+					if (!print) return runSsh([...args, ...remoteArgs], ctx.io);
 					// The private key stays in its file, out of the output.
 					const shown = {
 						host: access.host,
@@ -1939,7 +1956,9 @@ const argUsage = (arg: Arg): string => {
 
 function synopsis(command: CommandSpec): string {
 	const parts = [command.name, ...(command.args ?? []).map(argUsage)];
-	if (command.rest !== undefined) parts.push(`-- <${command.rest}>`);
+	if (command.rest !== undefined) {
+		parts.push(command.restOptional === true ? `[-- <${command.rest}>]` : `-- <${command.rest}>`);
+	}
 	return parts.join(" ");
 }
 

@@ -127,7 +127,7 @@ Run commands in it, open a shell, and look at its desktop:
 
 ```sh
 kantel exec sbx_4kq9x2mt -- uname -a
-kantel ssh sbx_4kq9x2mt --exec
+kantel ssh sbx_4kq9x2mt
 kantel desktop sbx_4kq9x2mt
 ```
 
