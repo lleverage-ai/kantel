@@ -15,10 +15,12 @@ export interface GatewayVars {
 }
 
 /**
- * Kantel's hosted ports domain (decided 3 Nov 2026), its own registrable-domain subtree apart from the console's, so a
- * sandbox's page can't set cookies the console reads. It isn't on the Public Suffix List yet (deferred until hosted
- * ports are served and used), so until it is, port names under it are one site to browsers: cookies aren't private
- * between sandboxes. A deployment of this Worker on another domain sets KANTEL_COMPUTE_PORTS_DOMAIN to its own.
+ * Kantel's hosted ports domain (decided 3 Nov 2026). It is under kantel.dev, a registrable domain apart from the
+ * console's (harbour.myslop.app), so a sandbox's page can't set cookies the console reads. It isn't on the Public
+ * Suffix List yet (deferred until hosted ports are served and used), so until it is, a port's page can set cookies for
+ * all of kantel.dev: port names are one site to browsers, cookies aren't private between sandboxes, and a console
+ * moved under kantel.dev would receive them too. A deployment of this Worker on another domain sets
+ * KANTEL_COMPUTE_PORTS_DOMAIN to its own.
  */
 export const HOSTED_PORTS_DOMAIN = "ports.kantel.dev";
 
