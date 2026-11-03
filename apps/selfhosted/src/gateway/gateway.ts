@@ -16,9 +16,15 @@
 //   any other /v1/...           404: the agent plane's session, model, connection, approval, vault, skills, memory,
 //                               sharing, workspace and browser APIs were removed
 //   anything else               the console (apps/console's build), with index.html for its client-side routes
+//
+// Every route but an exposed port's refuses a browser's write that doesn't come from the console (403,
+// @kantel/identity/csrf): a request that changes something and has no Authorization header must name the console's
+// origin in Origin (this host over http or https, or KANTEL_PUBLIC_URL), with Sec-Fetch-Site: same-origin when sent. An
+// API key or a Kantel session sent as a bearer passes unchanged. Kantel sessions are never read from a cookie.
 import { createAuditQueryHandler } from "@kantel/audit/http";
 import { type Authenticator, OTP_START_PATH, OTP_VERIFY_PATH, SESSION_END_PATH } from "@kantel/contracts";
 import { createAuthenticator, withAuthentication } from "@kantel/identity/authenticator";
+import { crossSiteRefusal } from "@kantel/identity/csrf";
 import { createIdentityHandler, isIdentityPath } from "@kantel/identity/http";
 import { type InviteMailer, isInviteMailer } from "@kantel/identity/invites";
 import { createEmailOtp, kantelSessionProvider, type OtpMailer } from "@kantel/identity/otp";
@@ -136,6 +142,7 @@ export function createGateway(options: GatewayOptions): Gateway {
 	);
 
 	const consoleAssets = options.consoleDir === undefined ? undefined : createStaticHandler(options.consoleDir);
+	const consoleOrigins = options.publicOrigin === undefined ? [] : [options.publicOrigin];
 
 	return {
 		async fetch(request, client = {}) {
@@ -146,6 +153,9 @@ export function createGateway(options: GatewayOptions): Gateway {
 					if (answer !== undefined) return answer;
 				}
 				if (path === "/healthz") return json({ ok: true });
+				// The request URL here is always http:, so the same host over https (TLS ended in front) is the console too.
+				const crossSite = crossSiteRefusal(request, { origins: consoleOrigins, httpsTwin: true });
+				if (crossSite !== undefined) return crossSite;
 				if (SIGN_IN_PATHS.has(path)) {
 					if (signIn === undefined) {
 						return json(
