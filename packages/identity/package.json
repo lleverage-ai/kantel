@@ -11,6 +11,8 @@
 		"./authenticator": "./src/authenticator.ts",
 		"./jwt": "./src/jwt.ts",
 		"./sql": "./src/sql.ts",
+		"./sessions": "./src/sessions.ts",
+		"./principal": "./src/principal.ts",
 		"./otp": "./src/otp.ts",
 		"./otp/http": "./src/otp-http.ts",
 		"./http": "./src/http.ts",

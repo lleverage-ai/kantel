@@ -91,6 +91,21 @@ creates the user or invites their email, and sign-in creates a user only for an 
   independent of the answer). Email one-time PIN sign-in asks it before sending a code: "canSignIn answers
   what signIn would, without linking or auditing anyone". A worker call too.
 
+## Sessions and the signed-in person (`@kantel/identity/sessions`, `/principal`)
+
+The seam every sign-in method and every gateway route shares; the model is in `packages/contracts/src/sign-in.ts`.
+
+- `createSessions({ identity, sessions, clock?, audit?, ttlMilliseconds? })` starts a Kantel session for a person
+  `signIn` resolved (`start(external, signIn)`: a `kts_` token, 32 random bytes, kept only as its SHA-256, 12 hours by
+  default) and ends one (`end(token)`), audited as `identity.session.started` and `identity.session.ended`. Stores:
+  `createMemorySessionStore()`, or the SQL table `identity_sessions`.
+- `kantelSessionProvider({ sessions })` goes in `createAuthenticator({ providers })`: a live session vouches for the
+  identity it was started with, and the person is resolved through `signIn` again on every call.
+- `signedInPerson(authenticator, identity, request)` is who a gateway route's caller is: a `SignedInPerson` (user ID,
+  name, email, method, organisation, whether they administer it, and their session's hash), or `undefined` for an API
+  key or no sign-in. The compute API on both gateways takes its `PersonIdentity` from it.
+- Proof: `packages/identity/test/sessions.test.ts`.
+
 ## Email one-time PIN (self-hosted)
 
 Sign-in is by email one-time PIN. On Cloudflare, Access's own one-time PIN

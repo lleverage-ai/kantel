@@ -71,7 +71,7 @@ import {
 } from "@kantel/compute";
 import { bootstrapSuperAdmin } from "@kantel/compute/serve";
 import { createStubBackend } from "@kantel/compute/stub";
-import { type Authenticator, callContextFor, type IdentityDirectory, KantelError } from "@kantel/contracts";
+import { type Authenticator, type IdentityDirectory, KantelError } from "@kantel/contracts";
 import { BROWSER_PORT, createHostBackend, SSH_PORT } from "@kantel/hosts/backend";
 import type { HostCluster } from "@kantel/hosts/cluster";
 import { createDesktopRoutes, type DesktopSocket, HOSTS_DESKTOP_PATH } from "@kantel/hosts/desktop";
@@ -89,7 +89,7 @@ import type { RelayStore } from "@kantel/hosts/relay-store";
 import { createHostsService, type HostsService } from "@kantel/hosts/service";
 import type { HostStore } from "@kantel/hosts/store";
 import { createTunnelTickets, HOSTS_TUNNEL_PATH, type IssuedGrant, type TunnelTickets } from "@kantel/hosts/tunnel";
-import { hashSessionToken, isSessionToken } from "@kantel/identity/otp";
+import { signedInPerson } from "@kantel/identity/principal";
 import { type WebSocket, WebSocketServer } from "ws";
 import { CLUSTER_PATH, type GatewayCluster } from "./cluster.ts";
 import type { UpgradeHandler } from "./node-http.ts";
@@ -321,39 +321,33 @@ export interface GatewayCompute {
  */
 async function personOf(
 	authenticator: Authenticator,
-	identity: Pick<IdentityDirectory, "authorize"> | undefined,
+	identity: PersonDirectory | undefined,
 	request: Request,
 ): Promise<PersonIdentity | undefined> {
-	let caller: Awaited<ReturnType<Authenticator["authenticate"]>>;
-	try {
-		caller = await authenticator.authenticate(request);
-	} catch {
-		return undefined;
-	}
-	if (caller.actor.kind !== "human") return undefined;
-	const superAdmin =
-		identity === undefined
-			? false
-			: await identity.authorize(callContextFor(caller), "admin").then(
-					() => true,
-					() => false,
-				);
-	// A Kantel session can be ended (signing out), so access given under it records which one, to end with it.
-	const bearer = /^Bearer\s+(\S+)\s*$/i.exec(request.headers.get("authorization") ?? "")?.[1];
-	const session = bearer !== undefined && isSessionToken(bearer) ? await hashSessionToken(bearer) : undefined;
+	const person = await signedInPerson(
+		authenticator,
+		identity ?? { authorize: () => Promise.reject(new KantelError("forbidden", "no directory")) },
+		request,
+	);
+	if (person === undefined) return undefined;
 	return {
-		userId: caller.actor.userId,
-		name: caller.actor.userId,
-		superAdmin,
-		...(session === undefined ? {} : { session }),
+		userId: person.userId,
+		name: person.name,
+		...(person.email === undefined ? {} : { email: person.email }),
+		superAdmin: person.admin,
+		// A Kantel session can be ended (signing out), so access given under it records which one, to end with it.
+		...(person.session === undefined ? {} : { session: person.session }),
 	};
 }
+
+/** What `personOf` asks identity: whether the person administers the organisation, and their name and email. */
+type PersonDirectory = Pick<IdentityDirectory, "authorize"> & Partial<Pick<IdentityDirectory, "getUser">>;
 
 /** The compute API over the stub, or over joined hosts with `hosts`, signed in with the gateway's `authenticator`. */
 export async function gatewayCompute(options: {
 	readonly authenticator: Authenticator;
 	/** Who holds which role: an organisation admin who signs in is the compute plane's super-admin. */
-	readonly identity?: Pick<IdentityDirectory, "authorize">;
+	readonly identity?: PersonDirectory;
 	/** The super-admin key's secret from an earlier start, if any. */
 	readonly superAdminKey?: string;
 	readonly publicUrl?: string;

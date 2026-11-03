@@ -33,13 +33,8 @@ import {
 } from "@kantel/compute";
 import { createSqlComputeStore, migrateComputeStore } from "@kantel/compute/sql";
 import { createStubBackend, STUB_HOST_ID } from "@kantel/compute/stub";
-import {
-	type Authenticator,
-	callContextFor,
-	type IdentityDirectory,
-	isKantelError,
-	type KantelError,
-} from "@kantel/contracts";
+import { type Authenticator, type IdentityDirectory, isKantelError, type KantelError } from "@kantel/contracts";
+import { signedInPerson } from "@kantel/identity/principal";
 import type { SqlDriver } from "@kantel/sql";
 
 /** Where Cloudflare Access puts the signed-in person's token on each request it lets through. */
@@ -80,7 +75,7 @@ export interface StackCompute {
 export interface StackComputeOptions {
 	readonly authenticator: Authenticator;
 	/** Who holds which role: an organisation admin who signs in is the compute plane's super-admin. */
-	readonly identity: Pick<IdentityDirectory, "authorize">;
+	readonly identity: Pick<IdentityDirectory, "authorize"> & Partial<Pick<IdentityDirectory, "getUser">>;
 	/** Where the records are: the stack object's SQLite. Absent, in memory (tests). */
 	readonly sql?: SqlDriver;
 	readonly now?: () => number;
@@ -89,27 +84,23 @@ export interface StackComputeOptions {
 }
 
 /**
- * The person a sign-in is, or undefined for a key or no sign-in. As the self-hosted gateway does
- * (`apps/selfhosted/src/gateway/compute.ts`): a person's sign-in carries no role of its own, so `identity` says
- * whether they administer the organisation.
+ * The person a sign-in is, or undefined for a key or no sign-in: identity's `signedInPerson`, as the self-hosted
+ * gateway has it (`apps/selfhosted/src/gateway/compute.ts`). An admin of the organisation is the super-admin.
  */
 async function personOf(
 	authenticator: Authenticator,
-	identity: Pick<IdentityDirectory, "authorize">,
+	identity: StackComputeOptions["identity"],
 	request: Request,
 ): Promise<PersonIdentity | undefined> {
-	let caller: Awaited<ReturnType<Authenticator["authenticate"]>>;
-	try {
-		caller = await authenticator.authenticate(request);
-	} catch {
-		return undefined;
-	}
-	if (caller.actor.kind !== "human") return undefined;
-	const superAdmin = await identity.authorize(callContextFor(caller), "admin").then(
-		() => true,
-		() => false,
-	);
-	return { userId: caller.actor.userId, name: caller.actor.userId, superAdmin };
+	const person = await signedInPerson(authenticator, identity, request);
+	if (person === undefined) return undefined;
+	return {
+		userId: person.userId,
+		name: person.name,
+		...(person.email === undefined ? {} : { email: person.email }),
+		superAdmin: person.admin,
+		...(person.session === undefined ? {} : { session: person.session }),
+	};
 }
 
 /** The compute API over the stub backend, its records in `sql` (or memory), signed in with `authenticator`. */

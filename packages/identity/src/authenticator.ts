@@ -25,7 +25,7 @@ import {
 import { decodeJwt } from "jose";
 import { isApiKeySecret } from "./index.ts";
 import type { SignInProvider } from "./jwt.ts";
-import { isSessionToken } from "./otp.ts";
+import { isSessionToken } from "./sessions.ts";
 import { registerSignedIn, type SignedIn } from "./signed-in.ts";
 
 /** The authenticator resolves keys and sign-ins as itself: `authenticateApiKey` and `signIn` are worker calls. */
