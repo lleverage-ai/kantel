@@ -8,6 +8,7 @@
 	"exports": {
 		".": "./src/index.ts",
 		"./backend": "./src/backend.ts",
+		"./cluster": "./src/cluster.ts",
 		"./port-http": "./src/port-http.ts",
 		"./port-websocket": "./src/port-websocket.ts",
 		"./ports": "./src/ports.ts",

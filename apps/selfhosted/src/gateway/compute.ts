@@ -73,6 +73,7 @@ import { bootstrapSuperAdmin } from "@kantel/compute/serve";
 import { createStubBackend } from "@kantel/compute/stub";
 import { type Authenticator, callContextFor, type IdentityDirectory, KantelError } from "@kantel/contracts";
 import { BROWSER_PORT, createHostBackend, SSH_PORT } from "@kantel/hosts/backend";
+import type { HostCluster } from "@kantel/hosts/cluster";
 import { createDesktopRoutes, type DesktopSocket, HOSTS_DESKTOP_PATH } from "@kantel/hosts/desktop";
 import { createHostsApi, HOSTS_CONNECT_PATH, HOSTS_REGISTER_PATH } from "@kantel/hosts/http";
 import { openPortWebSocket } from "@kantel/hosts/port-websocket";
@@ -90,6 +91,7 @@ import type { HostStore } from "@kantel/hosts/store";
 import { createTunnelTickets, HOSTS_TUNNEL_PATH, type IssuedGrant, type TunnelTickets } from "@kantel/hosts/tunnel";
 import { hashSessionToken, isSessionToken } from "@kantel/identity/otp";
 import { type WebSocket, WebSocketServer } from "ws";
+import { CLUSTER_PATH, type GatewayCluster } from "./cluster.ts";
 import type { UpgradeHandler } from "./node-http.ts";
 
 /** How often webhook deliveries that are due are sent. */
@@ -183,9 +185,11 @@ export function gatewayHosts(
 	config: ComputeHostsConfig,
 	store: HostStore,
 	log?: (message: string) => void,
+	cluster?: HostCluster,
 ): HostsService {
 	return createHostsService({
 		store,
+		...(cluster === undefined ? {} : { cluster }),
 		publicUrl: config.publicUrl,
 		...(config.pools === undefined ? {} : { pools: config.pools }),
 		...(config.joinCommand === undefined ? {} : { joinCommand: config.joinCommand }),
@@ -249,6 +253,8 @@ export interface GatewayHostsBackend {
 	readonly ports?: PortRouter;
 	/** Whether relayed access may go on; asks the compute API once `bind` is called. */
 	readonly access: RelayAccess;
+	/** This gateway among its replicas, with a database: it serves their calls for hosts connected here. */
+	readonly cluster?: GatewayCluster;
 	/** Points the access check at the compute API, once there is one. */
 	bind(stillAllowed: (grantee: string | undefined, sandboxId: string) => Promise<boolean>): void;
 }
@@ -258,7 +264,7 @@ export function gatewayRelay(
 	config: ComputeHostsConfig,
 	service: HostsService,
 	store: RelayStore,
-	options: { readonly intervalMs?: number; readonly now?: () => number } = {},
+	options: { readonly intervalMs?: number; readonly now?: () => number; readonly cluster?: GatewayCluster } = {},
 ): GatewayHostsBackend {
 	let check: ((grantee: string | undefined, sandboxId: string) => Promise<boolean>) | undefined;
 	const access = createRelayAccess({
@@ -283,6 +289,7 @@ export function gatewayRelay(
 		config,
 		tickets: createTunnelTickets(store, options.now),
 		...(ports === undefined ? {} : { ports }),
+		...(options.cluster === undefined ? {} : { cluster: options.cluster }),
 		access,
 		bind(stillAllowed) {
 			check = stillAllowed;
@@ -412,6 +419,9 @@ export async function gatewayCompute(options: {
 		hostRoutes = async (request) => {
 			const path = new URL(request.url).pathname;
 			if (path === HOSTS_REGISTER_PATH) return register.fetch(request);
+			if (path.startsWith(`${CLUSTER_PATH}/`)) {
+				return (await hosts.cluster?.peerRoutes(request)) ?? new Response("Not found", { status: 404 });
+			}
 			if (path.startsWith(`${HOST_IMAGES_PATH}/`)) {
 				return (await images?.(request)) ?? new Response("Not found", { status: 404 });
 			}
@@ -557,6 +567,8 @@ export function withHostUpgrades(
 		}
 
 		function hostConnection() {
+			// Another replica's port stream, for a host connected here.
+			if (hosts?.cluster?.peerUpgrade(incoming, socket, head, sockets)) return;
 			if (path !== HOSTS_CONNECT_PATH) {
 				if (next !== undefined) return next(incoming, socket, head);
 				socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");

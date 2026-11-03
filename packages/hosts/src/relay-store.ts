@@ -8,6 +8,7 @@
  */
 import type { SqlDriver } from "@kantel/sql";
 import { sqlNumber } from "@kantel/sql";
+import { clusterSchema } from "./cluster.ts";
 
 export interface TicketRecord {
 	/** The ticket's public half. */
@@ -111,11 +112,11 @@ export function relaySchema(dialect: SqlDriver["dialect"]): string[] {
 }
 
 /**
- * Creates the relay's tables if they are missing. On Postgres it takes an advisory lock first, so replicas starting
- * together don't race to create them.
+ * Creates the relay's tables, and the replicas' (`cluster.ts`), if they are missing. On Postgres it takes an advisory
+ * lock first, so replicas starting together don't race to create them.
  */
 export async function migrateRelay(driver: SqlDriver): Promise<void> {
-	const statements = relaySchema(driver.dialect).map((text) => ({ sql: text }));
+	const statements = [...relaySchema(driver.dialect), ...clusterSchema(driver.dialect)].map((text) => ({ sql: text }));
 	await driver.batch(
 		driver.dialect === "postgres" ? [{ sql: "SELECT pg_advisory_xact_lock(7316102021)" }, ...statements] : statements,
 	);

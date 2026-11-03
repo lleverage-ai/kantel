@@ -1,4 +1,5 @@
 export * from "./backend.ts";
+export * from "./cluster.ts";
 export * from "./http.ts";
 export * from "./hub.ts";
 export * from "./protocol.ts";

@@ -1,0 +1,271 @@
+// Gateway replicas sharing hosts: two hosts services over one registry and one cluster store, each its own replica,
+// with fake hosts connected to one or the other. A call, its events and a port stream reach the host through
+// whichever replica holds it; a host that moves takes its routing with it; a replica that stops or dies stops being
+// routed to; and replicas trust only each other's signatures, once.
+import { isKantelError } from "@kantel/contracts";
+import { pgliteDatabase } from "@kantel/sql/testing";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+	type ClusterStore,
+	createHostCluster,
+	createMemoryClusterStore,
+	createPeerVerifier,
+	createReplicaKey,
+	createSqlClusterStore,
+	type HostCluster,
+	PEER_SKEW_MS,
+	type PeerTransport,
+	signPeerRequest,
+} from "../src/cluster.ts";
+import { HOST_CLOSE_REVOKED, type HostSandbox } from "../src/protocol.ts";
+import { migrateRelay } from "../src/relay-store.ts";
+import { createHostsService, type HostsService } from "../src/service.ts";
+import { createMemoryHostStore, type HostStore } from "../src/store.ts";
+import { FakeHost, facts } from "./fake-host.ts";
+
+const opened: { close(): void }[] = [];
+afterEach(() => {
+	for (const item of opened.splice(0)) item.close();
+});
+
+const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+
+/** Replicas over one registry and one cluster store, reaching each other in process. */
+function cluster(options: { now?: () => number; store?: ClusterStore } = {}) {
+	const hosts: HostStore = createMemoryHostStore();
+	const store = options.store ?? createMemoryClusterStore();
+	const now = options.now ?? Date.now;
+	const replicas = new Map<string, HostCluster>();
+	const peer = (id: string) => {
+		const replica = replicas.get(id);
+		if (replica === undefined) throw new Error(`no replica ${id}`);
+		return replica.local();
+	};
+	const forwarded: string[] = [];
+	const transport: PeerTransport = {
+		call: (to, hostId, method, params, callOptions) => {
+			forwarded.push(`${to.id} ${method}`);
+			return peer(to.id).call(hostId, method, params, callOptions);
+		},
+		openPort: (to, hostId, sandboxId, port, sink) => {
+			forwarded.push(`${to.id} port ${port}`);
+			return peer(to.id).openPort(hostId, sandboxId, port, sink);
+		},
+		rewelcome: async (to, hostId, welcome) => peer(to.id).rewelcome(hostId, welcome),
+		disconnect: async (to, hostId, code, reason) => peer(to.id).disconnect(hostId, code, reason),
+	};
+	const replica = async (id: string) => {
+		const node = createHostCluster({
+			store,
+			transport,
+			replicaId: id,
+			url: `http://${id}.internal:8080`,
+			key: await createReplicaKey(),
+			now,
+			staleMs: 10_000,
+			heartbeatMs: 60_000,
+			log: () => undefined,
+		});
+		replicas.set(id, node);
+		const service: HostsService = createHostsService({
+			store: hosts,
+			publicUrl: "https://kantel.example.com",
+			clock: { now },
+			cluster: node,
+			log: () => undefined,
+		});
+		opened.push(service);
+		await node.start();
+		opened.push({ close: () => void node.stop().catch(() => undefined) });
+		return { id, node, service };
+	};
+	const join = async (service: HostsService) => {
+		const token = await service.createJoinToken({ name: "box" });
+		return (await service.register({ token: token.token, facts: facts() })).hostId;
+	};
+	return { store, replica, join, forwarded };
+}
+
+describe("gateway replicas", () => {
+	it("send a host's calls, their events and its port streams to the replica holding its connection", async () => {
+		const { replica, join, forwarded, store } = cluster();
+		const a = await replica("rep_a");
+		const b = await replica("rep_b");
+		const hostId = await join(a.service);
+		const host = new FakeHost(a.service, hostId);
+		host.connect();
+		await tick();
+		expect(await store.getOwner(hostId)).toMatchObject({ replicaId: "rep_a", epoch: 1 });
+		await b.node.tick();
+		expect((await b.service.get(hostId)).state).toBe("online");
+
+		// Placed, run and streamed from B; the host is on A.
+		const created = await b.service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-far" });
+		expect(created.hostId).toBe(hostId);
+		const events: string[] = [];
+		const result = await b.service.sandboxes.call(
+			"sbx-far",
+			"sandbox.exec",
+			{ command: "echo hi" },
+			{ onEvent: (event) => events.push(event.kind) },
+		);
+		expect(result).toMatchObject({ exitCode: 0, stdout: "hi\n" });
+		expect(events).toEqual(["exec.output"]);
+		const received: string[] = [];
+		const stream = await b.service.sandboxes.openPort("sbx-far", 22, {
+			data: (bytes) => received.push(new TextDecoder().decode(bytes)),
+			end: () => undefined,
+		});
+		stream.write(new TextEncoder().encode("SSH-2.0-test"));
+		expect(received).toEqual(["echo:SSH-2.0-test"]);
+		expect(forwarded).toEqual(["rep_a sandbox.create", "rep_a sandbox.exec", "rep_a port 22"]);
+		// A serves its own host itself.
+		await a.service.sandboxes.call<HostSandbox>("sbx-far", "sandbox.stop");
+		expect(forwarded).toHaveLength(3);
+	});
+
+	it("drain and revoke a host from any replica", async () => {
+		const { replica, join } = cluster();
+		const a = await replica("rep_a");
+		const b = await replica("rep_b");
+		const hostId = await join(a.service);
+		const host = new FakeHost(a.service, hostId);
+		host.connect();
+		await tick();
+		await b.service.update(hostId, { draining: true });
+		await tick();
+		expect(host.sent.filter((message) => message.type === "welcome").at(-1)?.welcome).toMatchObject({
+			draining: true,
+		});
+		await b.service.revoke(hostId);
+		await tick();
+		expect(host.closedWith?.code).toBe(HOST_CLOSE_REVOKED);
+	});
+
+	it("follow a host that reconnects to another replica, and the old replica lets its stale connection go", async () => {
+		const { replica, join, store } = cluster();
+		const a = await replica("rep_a");
+		const b = await replica("rep_b");
+		const hostId = await join(a.service);
+		const old = new FakeHost(a.service, hostId);
+		old.connect();
+		await tick();
+		await a.service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-move" });
+
+		// The balancer sends the host's next connection to B, before A has seen the old one close.
+		const moved = new FakeHost(b.service, hostId);
+		moved.connect([...old.sandboxes.values()]);
+		await tick();
+		expect(await store.getOwner(hostId)).toMatchObject({ replicaId: "rep_b", epoch: 2 });
+		await a.node.tick();
+		expect(old.closedWith?.code).toBe(4008);
+		old.connection.closed(4008, "replaced");
+		// The old connection's close doesn't release B's claim.
+		await tick();
+		expect(await store.getOwner(hostId)).toMatchObject({ replicaId: "rep_b", epoch: 2 });
+		expect(await a.service.sandboxes.call("sbx-move", "sandbox.exec", { command: "true" }).then(() => "ran")).toBe(
+			"ran",
+		);
+		expect(moved.sent.some((message) => message.method === "sandbox.exec")).toBe(true);
+	});
+
+	it("stop routing to a replica that stops (a rolling restart), and to one that died without saying so", async () => {
+		let now = 1_000_000;
+		const { replica, join, store } = cluster({ now: () => now });
+		const a = await replica("rep_a");
+		const b = await replica("rep_b");
+		const hostId = await join(a.service);
+		const host = new FakeHost(a.service, hostId);
+		host.connect();
+		await tick();
+		await a.service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-x" });
+		await b.node.tick();
+		expect(b.service.hub.connected(hostId)).toBe(true);
+
+		// A dies: it stops refreshing. Once it is stale, B no longer routes to it, and sweeps it later.
+		now += 11_000;
+		await b.node.tick();
+		expect(b.service.hub.connected(hostId)).toBe(false);
+		await expect(b.service.sandboxes.call("sbx-x", "sandbox.exec", {})).rejects.toSatisfy((error) =>
+			isKantelError(error, "unavailable"),
+		);
+		now += 30_000;
+		await b.node.tick();
+		expect(await store.getReplica("rep_a")).toBeUndefined();
+		expect(await store.getOwner(hostId)).toBeUndefined();
+
+		// A comes back (the pause ends): it registers again and claims the host it still holds.
+		await a.node.tick();
+		expect(await store.getOwner(hostId)).toMatchObject({ replicaId: "rep_a" });
+		await b.node.tick();
+		expect(b.service.hub.connected(hostId)).toBe(true);
+
+		// A stops for a restart: it forgets itself and its hosts at once.
+		await a.node.stop();
+		expect(await store.getOwner(hostId)).toBeUndefined();
+		await b.node.tick();
+		expect(b.service.hub.connected(hostId)).toBe(false);
+	});
+
+	it("record claims in SQL with epochs, so an old release never erases a newer claim", async () => {
+		const database = await pgliteDatabase.open();
+		opened.push({ close: () => void database.close() });
+		await migrateRelay(database.driver);
+		await migrateRelay(database.driver);
+		const store = createSqlClusterStore(database.driver);
+		await store.putReplica({ id: "rep_a", url: "http://a", publicKey: "k", startedAt: 1, heartbeatAt: 100 });
+		await store.putReplica({ id: "rep_b", url: "http://b", publicKey: "k", startedAt: 1, heartbeatAt: 50 });
+		expect(await store.claimHost("host_1", "rep_a", 10)).toBe(1);
+		expect(await store.claimHost("host_1", "rep_b", 11)).toBe(2);
+		await store.releaseHost("host_1", "rep_a", 1);
+		expect(await store.getOwner("host_1")).toMatchObject({ replicaId: "rep_b", epoch: 2 });
+		expect(await store.claimHost("host_2", "rep_a", 12)).toBe(1);
+		expect((await store.liveReplicas(60)).map((replica) => replica.id)).toEqual(["rep_a"]);
+		await store.sweepReplicas(60);
+		expect(await store.getOwner("host_1")).toBeUndefined();
+		expect(await store.getOwner("host_2")).toMatchObject({ replicaId: "rep_a" });
+		await store.removeReplica("rep_a");
+		expect(await store.owners()).toEqual([]);
+	});
+});
+
+describe("requests between replicas", () => {
+	it("are taken once, signed by a live replica, within the time allowed", async () => {
+		let now = 5_000_000;
+		const store = createMemoryClusterStore();
+		const key = await createReplicaKey();
+		const other = await createReplicaKey();
+		await store.putReplica({
+			id: "rep_a",
+			url: "http://a",
+			publicKey: key.publicKey,
+			startedAt: now,
+			heartbeatAt: now,
+		});
+		const verify = createPeerVerifier({ replicaId: "rep_b", store, staleMs: 10_000, now: () => now });
+		const elsewhere = createPeerVerifier({ replicaId: "rep_c", store, staleMs: 10_000, now: () => now });
+		const body = JSON.stringify({ hostId: "host_1", method: "sandbox.exec" });
+		const toB = { from: "rep_a", to: "rep_b" };
+		const signed = await signPeerRequest(key, toB, "call", body, now);
+		const request = { replicaId: "rep_a", operation: "call", at: Number(signed.at), nonce: signed.nonce, body };
+		expect(await verify({ ...request, signature: signed.signature })).toBe(true);
+		// Played again, to it or to another replica, which hasn't seen its nonce.
+		expect(await verify({ ...request, signature: signed.signature })).toBe(false);
+		expect(await elsewhere({ ...request, signature: signed.signature })).toBe(false);
+
+		const fresh = async (overrides: Partial<typeof request> = {}, signer = key, operation = "call", peers = toB) => {
+			const made = await signPeerRequest(signer, peers, operation, body, now);
+			return verify({ ...request, at: Number(made.at), nonce: made.nonce, signature: made.signature, ...overrides });
+		};
+		expect(await fresh()).toBe(true);
+		expect(await fresh({ body: `${body} ` })).toBe(false);
+		expect(await fresh({ operation: "disconnect" })).toBe(false);
+		expect(await fresh({}, other)).toBe(false);
+		expect(await fresh({ replicaId: "rep_unknown" })).toBe(false);
+		expect(await fresh({}, key, "call", { from: "rep_a", to: "rep_c" })).toBe(false);
+		expect(await fresh({ at: now - PEER_SKEW_MS - 1 })).toBe(false);
+		// A replica gone stale is no longer believed.
+		now += 11_000;
+		expect(await fresh()).toBe(false);
+	});
+});
