@@ -1185,7 +1185,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			try {
 				const result = await backend.exec(sandbox.id, {
 					command,
-					env: { ...sandbox.env },
+					// No terminal to ask on: a repository that wants a login fails at once, saying so.
+					env: { ...sandbox.env, GIT_TERMINAL_PROMPT: "0" },
 					timeoutMs: CLONE_TIMEOUT_MS,
 				});
 				if (result.exitCode !== 0 || result.timedOut) {
