@@ -303,6 +303,8 @@ function sameUrl(a: string, b: string): boolean {
 	}
 }
 
+const fileCount = (count: number): string => (count === 1 ? "1 file" : `${count} files`);
+
 const more = (cursor: string | undefined, command: string): string =>
 	cursor === undefined ? "" : `\n\nMore: ${command} --cursor ${cursor}`;
 
@@ -1147,7 +1149,7 @@ const SECTIONS: readonly Section[] = [
 							const copied = await uploadTree(client, target.sandboxId, local, await walk(local), remote, log);
 							ctx.emit(
 								{ ...copied, to: remote },
-								() => `Copied ${copied.files} files (${bytes(copied.bytes)}) to ${remote}.`,
+								() => `Copied ${fileCount(copied.files)} (${bytes(copied.bytes)}) to ${remote}.`,
 							);
 							return;
 						}
@@ -1166,7 +1168,7 @@ const SECTIONS: readonly Section[] = [
 						const copied = await downloadTree(client, sandboxId, remote, here, log);
 						ctx.emit(
 							{ ...copied, to: here },
-							() => `Copied ${copied.files} files (${bytes(copied.bytes)}) to ${here}.`,
+							() => `Copied ${fileCount(copied.files)} (${bytes(copied.bytes)}) to ${here}.`,
 						);
 						return;
 					}
@@ -1202,7 +1204,7 @@ const SECTIONS: readonly Section[] = [
 					const where = target.startsWith("/") ? target : `/home/user/${target}`;
 					ctx.emit(
 						{ ...copied, to: where },
-						() => `Pushed ${copied.files} files (${bytes(copied.bytes)}) to ${where}.`,
+						() => `Pushed ${fileCount(copied.files)} (${bytes(copied.bytes)}) to ${where}.`,
 					);
 				},
 			},
