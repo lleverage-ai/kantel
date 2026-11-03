@@ -13,11 +13,14 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/egress"
+	"github.com/lleverage-ai/kantel/apps/host/internal/egress/protect"
 	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
 	"github.com/lleverage-ai/kantel/apps/host/internal/isolate"
 	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
@@ -65,13 +68,21 @@ type Host struct {
 	net     *network.Manager
 	proxy   *egress.Proxy
 	facts   proto.Facts
+	// secrets holds sandboxes' protected values, in memory only, fetched from Kantel (secrets.fetch) on first use.
+	secrets *protect.Store
+	// cas are the sandboxes' interception CAs (keys in Root/egress-ca/<sandbox>, never in a guest).
+	cas *egress.CAStore
+	// egressLog batches the proxy's records to Kantel.
+	egressLog *egressBatcher
 
 	mu sync.Mutex
 	// bySlot is each running microVM's egress, by its network slot.
 	bySlot map[int]egress.Rules
 	// events go to the control plane while connected.
 	events func(proto.Event)
-	pools  map[string]int
+	// link makes calls to the control plane while connected.
+	link  *caller
+	pools map[string]int
 }
 
 // New starts the tiers the host can run.
@@ -81,6 +92,12 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 		return nil, err
 	}
 	h.proxy = egress.New(log.With("part", "egress"))
+	h.secrets = protect.NewStore(h.fetchSecrets)
+	h.cas = egress.NewCAStore(filepath.Join(cfg.Root, "egress-ca"))
+	h.proxy.Secrets = h.secrets
+	h.proxy.CAs = h.cas
+	h.egressLog = newEgressBatcher(h.sendEgress, h.connected)
+	h.proxy.OnRecord = h.egressLog.add
 	dest, err := destinations(cfg)
 	if err != nil {
 		return nil, err
@@ -152,6 +169,7 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 		return nil, errors.New("this host can run no sandbox tier: run `kantel-host doctor`")
 	}
 	h.facts = h.makeFacts()
+	go h.egressLog.run()
 	return h, nil
 }
 
@@ -253,6 +271,9 @@ func (h *Host) Close() {
 		t.Close()
 	}
 	h.proxy.Close()
+	if h.egressLog != nil {
+		h.egressLog.close()
+	}
 }
 
 func (h *Host) sandboxEvent(info proto.SandboxInfo) {
@@ -278,10 +299,20 @@ func (h *Host) egressRules(sandboxID, account string, e *proto.Egress) egress.Ru
 		r.Mode = e.Mode
 	}
 	r.Allow, r.Deny, r.DefaultDeny = e.Allow, e.Deny, e.DefaultDeny
+	// Protected variables and grants apply whatever the data path: a placeholder is worthless unless swapped, and a
+	// grant restricts.
+	if e.Protected != nil {
+		r.Protected = true
+		r.Intercept = slices.Clone(e.Protected.Intercept)
+	}
+	for _, g := range e.Grants {
+		r.Grants = append(r.Grants, egress.Grant{Action: g.Action, Host: g.Host, Methods: slices.Clone(g.Methods), Paths: slices.Clone(g.Paths), Rule: g.Rule})
+	}
 	if !h.cfg.ProxyDataPath {
 		return r
 	}
 	r.Upstream, r.Token, r.AttributionKey, r.Headers = e.Upstream, e.Token, e.AttributionKey, e.Headers
+	r.UpstreamCACert = e.CACert
 	return r
 }
 
@@ -345,15 +376,29 @@ func (h *Host) tier(name string) (Tier, error) {
 	return t, nil
 }
 
+// tierName is the name of the tier a create asks for.
+func (h *Host) tierName(name string) string {
+	if name == "" && len(h.order) > 0 {
+		return h.order[0]
+	}
+	return name
+}
+
 // tierOf finds the tier holding a sandbox.
 func (h *Host) tierOf(id string) (Tier, error) {
+	t, _, err := h.tierOfNamed(id)
+	return t, err
+}
+
+// tierOfNamed finds the tier holding a sandbox, and its name.
+func (h *Host) tierOfNamed(id string) (Tier, string, error) {
 	for _, name := range h.order {
 		t := h.tiers[name]
 		if _, err := t.Get(id); err == nil {
-			return t, nil
+			return t, name, nil
 		}
 	}
-	return nil, &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("no sandbox %s on this host", id)}
+	return nil, "", &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("no sandbox %s on this host", id)}
 }
 
 func (h *Host) tierOfSnapshot(id string) (Tier, error) {
@@ -385,7 +430,23 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if err != nil {
 			return nil, err
 		}
-		return t.Create(ctx, p)
+		if _, err := h.tierOf(p.SandboxID); err == nil {
+			// Before any CA is made: a new one would replace the CA the running sandbox of that ID trusts.
+			return nil, &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("sandbox %s already exists on this host", p.SandboxID)}
+		}
+		e, fresh, err := h.prepareEgress(h.tierName(p.Tier), p.SandboxID, p.Egress)
+		if err != nil {
+			return nil, err
+		}
+		p.Egress = e
+		info, err := t.Create(ctx, p)
+		if err != nil {
+			if fresh {
+				_ = h.cas.Forget(p.SandboxID)
+			}
+			return nil, err
+		}
+		return info, nil
 	case proto.MethodStop:
 		p, err := decode[proto.StopParams](params)
 		if err != nil {
@@ -395,25 +456,49 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if err != nil {
 			return nil, err
 		}
-		return t.Stop(ctx, p)
+		snap, err := t.Stop(ctx, p)
+		if err == nil {
+			// Its values aren't needed until it runs again; its CA is, as the guest trusts that one.
+			h.forgetSecrets(p.SandboxID)
+		}
+		return snap, err
 	case proto.MethodEgress:
 		p, err := decode[proto.ResumeParams](params)
 		if err != nil {
 			return nil, err
 		}
-		t, err := h.tierOf(p.SandboxID)
+		t, name, err := h.tierOfNamed(p.SandboxID)
 		if err != nil {
 			return nil, err
 		}
-		return map[string]bool{"ok": true}, t.SetEgress(p.SandboxID, p.Egress)
+		return map[string]bool{"ok": true}, h.setEgress(ctx, t, name, p)
+	case proto.MethodSecrets:
+		p, err := decode[proto.SecretsParams](params)
+		if err != nil {
+			return nil, err
+		}
+		if p.SandboxID == "" {
+			return nil, invalid("sandbox.secrets needs sandboxId")
+		}
+		// The placeholders stay the same, so nothing in the sandbox changes: the next request fetches the new values.
+		if h.secrets != nil {
+			h.secrets.Invalidate(p.SandboxID)
+		}
+		return struct{}{}, nil
 	case proto.MethodResume, proto.MethodStart:
 		p, err := decode[proto.ResumeParams](params)
 		if err != nil {
 			return nil, err
 		}
-		t, err := h.tierOf(p.SandboxID)
+		t, name, err := h.tierOfNamed(p.SandboxID)
 		if err != nil {
 			return nil, err
+		}
+		if p.Egress != nil {
+			// Without one the sandbox keeps its own, CA certificate included.
+			if p.Egress, _, err = h.prepareEgress(name, p.SandboxID, p.Egress); err != nil {
+				return nil, err
+			}
 		}
 		return t.Resume(ctx, p, method == proto.MethodStart)
 	case proto.MethodFork:
@@ -421,11 +506,27 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if err != nil {
 			return nil, err
 		}
-		t, err := h.tierOf(p.SandboxID)
+		t, name, err := h.tierOfNamed(p.SandboxID)
 		if err != nil {
 			return nil, err
 		}
-		return t.Fork(ctx, p)
+		if _, err := h.tierOf(p.NewID); err == nil {
+			return nil, &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("sandbox %s already exists on this host", p.NewID)}
+		}
+		// The fork gets its own CA: its parent's would let one sandbox's key be used for another's traffic.
+		e, fresh, err := h.prepareEgress(name, p.NewID, p.Egress)
+		if err != nil {
+			return nil, err
+		}
+		p.Egress = e
+		info, err := t.Fork(ctx, p)
+		if err != nil {
+			if fresh {
+				_ = h.cas.Forget(p.NewID)
+			}
+			return nil, err
+		}
+		return info, nil
 	case proto.MethodDelete:
 		p, err := decode[proto.SandboxRef](params)
 		if err != nil {
@@ -437,6 +538,10 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		}
 		if err := t.Delete(ctx, p.SandboxID); err != nil {
 			return nil, err
+		}
+		h.forgetSecrets(p.SandboxID)
+		if h.cas != nil {
+			_ = h.cas.Forget(p.SandboxID)
 		}
 		return map[string]bool{"ok": true}, nil
 	case proto.MethodGet:
