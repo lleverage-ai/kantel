@@ -3516,6 +3516,8 @@ export interface SshAccess {
 	readonly user: string;
 	/** A command line that connects, such as `ssh -p 2222 sbx_4kq9x2mt@ssh.example`. */
 	readonly command: string;
+	/** When there is no SSH gateway to dial: a WebSocket URL carrying the sandbox's SSH as binary frames, for an `ssh -o ProxyCommand=…` (`kantel ssh-proxy` is one). Anyone holding it can start a connection until `expiresAt`. */
+	readonly proxyUrl?: string;
 	/** When Kantel made the key pair: its private key, shown once. */
 	readonly privateKey?: string;
 	readonly hostKeyFingerprint?: string;
@@ -3526,7 +3528,7 @@ export interface SshAccess {
 export interface SshAccessBody {
 	/** An OpenSSH public key to let in. Absent: Kantel makes a key pair for this access. */
 	readonly publicKey?: string;
-	/** Default 60. */
+	/** How long a connection can be started with this access; one started in time stays open. Default 10. */
 	readonly ttlMinutes?: number;
 }
 
@@ -3957,7 +3959,7 @@ export interface VaultApprovalCard {
 export interface ViewAccessBody {
 	/** Watch only: no keyboard or mouse. Default false. */
 	readonly viewOnly?: boolean;
-	/** Default 60. */
+	/** How long the URLs can be opened for; a view or connection opened in time stays open. Default 10. */
 	readonly ttlMinutes?: number;
 }
 

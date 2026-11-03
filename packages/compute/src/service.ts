@@ -129,6 +129,11 @@ export const AUTOMATIC_SNAPSHOT_TTL_MS = 7 * 24 * 3_600_000;
 /** The usage readings kept per sandbox: a day at one every 5 minutes. */
 export const MAX_SAMPLES = 288;
 const DEFAULT_AUTO_STOP_MINUTES = 60;
+/**
+ * How long SSH, desktop and browser access can be opened for, unless the call says: a bearer URL that leaks is good for
+ * minutes, as boat.dev's are. A connection opened in time stays open; the schema caps a request at an hour.
+ */
+const ACCESS_TTL_MINUTES = 10;
 const DAY_MS = 24 * 3_600_000;
 
 const ISOLATE_CAPABILITIES: computeSchema.SandboxCapabilities = {
@@ -1679,7 +1684,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "access");
 			if (!sandbox.capabilities.ssh) throw new KantelError("not_supported", "SSH needs a microVM; this is an isolate");
 			const current = await requireRunning(sandbox.id);
-			const ttlMinutes = body.ttlMinutes ?? 60;
+			const ttlMinutes = body.ttlMinutes ?? ACCESS_TTL_MINUTES;
 			const grant = await backend.openSsh(current.id, {
 				ttlMinutes,
 				...(body.publicKey === undefined ? {} : { publicKey: body.publicKey }),
@@ -1689,6 +1694,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				port: grant.port,
 				user: grant.user,
 				command: grant.command ?? `ssh -p ${grant.port} ${grant.user}@${grant.host}`,
+				...(grant.proxyUrl === undefined ? {} : { proxyUrl: grant.proxyUrl }),
 				privateKey: grant.privateKey,
 				hostKeyFingerprint: grant.hostKeyFingerprint,
 				expiresAt: now() + ttlMinutes * 60_000,
@@ -1701,7 +1707,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				throw new KantelError("not_supported", "The desktop needs a microVM; this is an isolate");
 			}
 			const current = await requireRunning(sandbox.id);
-			const ttlMinutes = body.ttlMinutes ?? 60;
+			const ttlMinutes = body.ttlMinutes ?? ACCESS_TTL_MINUTES;
 			const viewOnly = body.viewOnly === true;
 			const access = await backend.openDesktop(current.id, { viewOnly, ttlMinutes });
 			return { url: access.url, embedUrl: access.embedUrl, viewOnly, expiresAt: now() + ttlMinutes * 60_000 };
@@ -1713,7 +1719,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				throw new KantelError("not_supported", "The browser needs a microVM; this is an isolate");
 			}
 			const current = await requireRunning(sandbox.id);
-			const ttlMinutes = body.ttlMinutes ?? 60;
+			const ttlMinutes = body.ttlMinutes ?? ACCESS_TTL_MINUTES;
 			const viewOnly = body.viewOnly === true;
 			const access = await backend.openBrowser(current.id, { viewOnly, ttlMinutes });
 			return { url: access.url, cdpUrl: access.cdpUrl, viewOnly, expiresAt: now() + ttlMinutes * 60_000 };

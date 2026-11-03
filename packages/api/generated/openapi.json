@@ -25987,6 +25987,10 @@
 						"type": "string",
 						"description": "A command line that connects, such as `ssh -p 2222 sbx_4kq9x2mt@ssh.example`."
 					},
+					"proxyUrl": {
+						"type": "string",
+						"description": "When there is no SSH gateway to dial: a WebSocket URL carrying the sandbox's SSH as binary frames, for an `ssh -o ProxyCommand=…` (`kantel ssh-proxy` is one). Anyone holding it can start a connection until `expiresAt`."
+					},
 					"privateKey": {
 						"type": "string",
 						"description": "When Kantel made the key pair: its private key, shown once."
@@ -26011,8 +26015,8 @@
 					"ttlMinutes": {
 						"type": "integer",
 						"minimum": 5,
-						"maximum": 1440,
-						"description": "Default 60."
+						"maximum": 60,
+						"description": "How long a connection can be started with this access; one started in time stays open. Default 10."
 					}
 				},
 				"title": "SshAccessBody"
@@ -27253,8 +27257,8 @@
 					"ttlMinutes": {
 						"type": "integer",
 						"minimum": 1,
-						"maximum": 1440,
-						"description": "Default 60."
+						"maximum": 60,
+						"description": "How long the URLs can be opened for; a view or connection opened in time stays open. Default 10."
 					}
 				},
 				"title": "ViewAccessBody"

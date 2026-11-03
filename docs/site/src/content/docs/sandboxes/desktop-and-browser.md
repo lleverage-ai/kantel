@@ -40,9 +40,9 @@ The answer is a [DesktopAccess](/api/reference/types/#desktopaccess):
 | `viewOnly` | Whether the viewer can only watch |
 | `expiresAt` | When the URL stops working, as epoch milliseconds |
 
-The body takes two optional fields: `ttlMinutes`, how long the URL lasts (default 60, at most 1,440), and `viewOnly`, to give a URL that watches with no keyboard or mouse.
+The body takes two optional fields: `ttlMinutes`, how long the URL can be opened for (default 10, at most 60), and `viewOnly`, to give a URL whose viewer only watches. A desktop opened in time stays open after the URL expires; open it again, after a reload for instance, and you need a new URL, so ask for one each time you show it.
 
-Anyone holding the URL can use the desktop until it expires, so share it like a password. To let someone watch an agent without being able to interfere, give them a `viewOnly` one:
+Anyone holding the URL can open the desktop until it expires, so share it like a password. To show someone an agent at work in a viewer with no keyboard or mouse, give them a `viewOnly` one. On Kantel's own hosts the viewer is what holds back the input, not the desktop: someone who takes the URL apart can still type, so give a `viewOnly` URL only to people you'd trust with the other kind.
 
 ```sh
 curl -s -X POST "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/desktop" \

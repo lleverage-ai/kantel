@@ -138,6 +138,8 @@ export interface SshGrant {
 	readonly hostKeyFingerprint?: string;
 	/** The command that connects, when it isn't `ssh -p {port} {user}@{host}` (a ProxyCommand through a tunnel). */
 	readonly command?: string;
+	/** A WebSocket URL carrying the sandbox's sshd as binary frames, when SSH goes through a tunnel, not a gateway. */
+	readonly proxyUrl?: string;
 }
 
 /** A CPU and memory reading of one running sandbox. */

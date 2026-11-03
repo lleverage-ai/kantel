@@ -646,7 +646,14 @@ export const SshAccessBody = Type.Object(
 		publicKey: Type.Optional(
 			Type.String({ description: "An OpenSSH public key to let in. Absent: Kantel makes a key pair for this access." }),
 		),
-		ttlMinutes: Type.Optional(Type.Integer({ minimum: 5, maximum: 1440, description: "Default 60." })),
+		ttlMinutes: Type.Optional(
+			Type.Integer({
+				minimum: 5,
+				maximum: 60,
+				description:
+					"How long a connection can be started with this access; one started in time stays open. Default 10.",
+			}),
+		),
 	},
 	{ title: "SshAccessBody" },
 );
@@ -659,6 +666,12 @@ export const SshAccess = Type.Object(
 		command: Type.String({
 			description: "A command line that connects, such as `ssh -p 2222 sbx_4kq9x2mt@ssh.example`.",
 		}),
+		proxyUrl: Type.Optional(
+			Type.String({
+				description:
+					"When there is no SSH gateway to dial: a WebSocket URL carrying the sandbox's SSH as binary frames, for an `ssh -o ProxyCommand=…` (`kantel ssh-proxy` is one). Anyone holding it can start a connection until `expiresAt`.",
+			}),
+		),
 		privateKey: Type.Optional(
 			Type.String({ description: "When Kantel made the key pair: its private key, shown once." }),
 		),
@@ -671,7 +684,13 @@ export const SshAccess = Type.Object(
 export const ViewAccessBody = Type.Object(
 	{
 		viewOnly: Type.Optional(Type.Boolean({ description: "Watch only: no keyboard or mouse. Default false." })),
-		ttlMinutes: Type.Optional(Type.Integer({ minimum: 1, maximum: 1440, description: "Default 60." })),
+		ttlMinutes: Type.Optional(
+			Type.Integer({
+				minimum: 1,
+				maximum: 60,
+				description: "How long the URLs can be opened for; a view or connection opened in time stays open. Default 10.",
+			}),
+		),
 	},
 	{ title: "ViewAccessBody" },
 );
