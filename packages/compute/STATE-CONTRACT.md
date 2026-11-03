@@ -9,10 +9,10 @@ This file describes what the code does and marks what it leaves open. Status on 
 
 | Part | Interface | Where | Status |
 | --- | --- | --- | --- |
-| Records | `ComputeStore`, `Collection<T>` | `packages/compute/src/store.ts`, `sql-store.ts` | SQL store in PR #577 (open) |
+| Records | `ComputeStore`, `Collection<T>` | `packages/compute/src/store.ts`, `sql-store.ts` | on main (#577) |
 | Host registry | `HostStore` | `packages/hosts/src/store.ts` | on main (Postgres or SQLite, D1, DO) |
-| Relay state | `RelayStore`, `TunnelTickets`, `RelayAccess` | `packages/hosts/src/relay-store.ts`, `tunnel.ts`, `relay-access.ts` | SQL store in PR #587 |
-| Host connections | the hub (`packages/hosts/src/hub.ts`), `ClusterStore` and `HostCluster` | `packages/hosts/src/cluster.ts`, `apps/selfhosted/src/gateway/cluster.ts` | forwarded to the owning replica (§8) |
+| Relay state | `RelayStore`, `TunnelTickets`, `RelayAccess` | `packages/hosts/src/relay-store.ts`, `tunnel.ts`, `relay-access.ts` | on main (#587) |
+| Host connections | the hub (`packages/hosts/src/hub.ts`), `ClusterStore` and `HostCluster` | `packages/hosts/src/cluster.ts`, `apps/selfhosted/src/gateway/cluster.ts` | on main (#592): forwarded to the owning replica (§8) |
 
 ## 1. Records
 
@@ -74,7 +74,7 @@ that won the transition may call the backend for it. The background step that fi
 must also be conditional on the passing state still being the one it set. Otherwise a `delete` that landed meanwhile
 would be overwritten.
 
-**Open in PR #577.** The service checks the state and then writes with `put`. Calls are put in order only by a queue
+**Open on main.** The service checks the state and then writes with `put`. Calls are put in order only by a queue
 inside each process (`pending` in `service.ts`). On one gateway that is enough. On two, both can pass the check. Two
 cases where this goes wrong:
 
@@ -92,7 +92,7 @@ that, so it needs no new store method.
 create **at most one** sandbox (or fork set, or command), whichever gateway each attempt lands on, and must answer the
 first answer to every retry.
 
-**Open in PR #577.** `once()` in `service.ts` reads `idempotency`, does the work, then `put`s the answer. Within a
+**Open on main.** `once()` in `service.ts` reads `idempotency`, does the work, then `put`s the answer. Within a
 process, `inflight` folds concurrent retries into one. Across gateways, a retry that lands elsewhere before the first
 call finishes finds no answer and creates a second sandbox. To close it, the store needs **insert-if-absent**: claim the
 key before doing the work, and have other gateways either wait for the claimed answer or answer `conflict` while it is
@@ -175,13 +175,16 @@ The self-hosted gateway **forwards to the replica that holds the socket** (`Clus
 - Every request between replicas is signed with the sender's private key (never stored) over the recipient's ID, the
   operation, the time (±30 s), a nonce the recipient hasn't seen and the body's SHA-256. Anything else is a 404.
 
+A Worker can meet this differently (§9.7).
+
 ## 9. Implementing it on D1 or Durable Objects
 
 A Worker backend is equivalent if:
 
 1. **It passes the conformance suites** that the memory and SQL stores pass: `packages/compute/test/sql-store.test.ts`
-   (order, `update` with 20 concurrent writers ending at 20, copies, NUL and lone surrogates) and the `HostStore` and
-   `RelayStore` tests in `packages/hosts/test`. `createSqlComputeStore` already runs on D1 (Miniflare) in that suite, so
+   (order, `update` with 20 concurrent writers ending at 20, copies, NUL and lone surrogates), and in
+   `packages/hosts/test` the `HostStore` (`store.test.ts`), tickets (`tunnel.test.ts`), exposures (`ports.test.ts`)
+   and revocation (`relay-access.test.ts`) tests. `createSqlComputeStore` already runs on D1 (Miniflare) in that suite, so
    **D1 can use the SQL store as it is**.
 2. **`update` is a real compare-and-set** (§2). In a Durable Object with SQLite storage, one object serialises its own
    requests, so a read-modify-write inside one request is atomic, as long as nothing is `await`ed on another object
