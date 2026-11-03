@@ -5,6 +5,8 @@
  * - `/healthz`: public liveness, the service name only. Access still guards it on the deployed hostname.
  * - Every `/v1/…`: the identity and audit APIs, served by the `KantelStack` Durable Object (`src/gateway.ts`); any other
  *   API path is a 404 there.
+ * - `/auth/…`: email-code sign-in, also the stack object's, which answers it only on the public origin
+ *   (KANTEL_PUBLIC_URL) and 404s it elsewhere.
  * - Everything else: the console's static assets (`consoleAsset`). A file the build holds is served without the Worker;
  *   a miss reaches it (`not_found_handling: "none"` in wrangler.jsonc). A miss under `/assets/` is a real 404: a chunk
  *   an older build named, which a tab opened before a deploy still asks for, must fail as a missing script, not load
@@ -21,6 +23,11 @@ import { API_KEY_BODY_LIMIT } from "@kantel/identity/http";
 
 /** The one stack object's name. */
 export const STACK_NAME = "m1";
+
+/** Email-code sign-in's routes (`/auth/otp/start`, `/auth/otp/verify`, `/auth/session/end`), served by the stack. */
+export const SIGN_IN_PREFIX = "/auth/";
+/** Their bodies are an email and a code: refused past this before the stack reads them. */
+const SIGN_IN_BODY_LIMIT = 4096;
 
 /** Something that answers a request: a Durable Object stub, or the assets fetcher. */
 export interface Answers {
@@ -171,8 +178,14 @@ export async function routeRequest<StackId>(request: Request, env: RouteEnv<Stac
 async function routeOnce<StackId>(request: Request, env: RouteEnv<StackId>): Promise<Response> {
 	const path = new URL(request.url).pathname;
 	if (path === "/healthz") return Response.json({ ok: true, service: "kantel" });
-	if (path !== "/v1" && !path.startsWith("/v1/")) return consoleAsset(request, env);
 	const stack = namedObject(env.STACK, STACK_NAME, env);
+	// Email-code sign-in: the stack answers it on the public origin only, and 404s it anywhere else.
+	if (path.startsWith(SIGN_IN_PREFIX)) {
+		const forwarded = await buffered(request, SIGN_IN_BODY_LIMIT);
+		if (forwarded instanceof Response) return forwarded;
+		return stack.fetch(forwarded);
+	}
+	if (path !== "/v1" && !path.startsWith("/v1/")) return consoleAsset(request, env);
 	const keysOrInvites = [API_KEYS_PATH, INVITES_PATH].some((base) => path === base || path.startsWith(`${base}/`));
 	if (request.method === "POST" && keysOrInvites) {
 		// Issuing or revoking a key or an invite: the stack refuses a stranger before it reads the small JSON body.

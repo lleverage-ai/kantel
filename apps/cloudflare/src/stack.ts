@@ -35,14 +35,19 @@ import {
 	systemClock,
 } from "@kantel/contracts";
 import { createAuthenticator } from "@kantel/identity/authenticator";
+import type { InviteMailer } from "@kantel/identity/invites";
 import { cloudflareAccessProvider, type SignInProvider } from "@kantel/identity/jwt";
 import { createMemoryIdentity } from "@kantel/identity/memory";
-import { createSqlIdentity, migrateIdentity } from "@kantel/identity/sql";
+import { createEmailOtp, createMemoryOtpStores, kantelSessionProvider } from "@kantel/identity/otp";
+import { createOtpHandler } from "@kantel/identity/otp/http";
+import { createSqlIdentity, createSqlOtpStores, migrateIdentity } from "@kantel/identity/sql";
 import type { SqlDriver } from "@kantel/sql";
 import { migrateObjectAuditOutbox, type OutboxedAudit, outboxedAudit } from "./audit-outbox.ts";
 import { BOOTSTRAP_ORGANISATION, sqlBootstrapFinder } from "./bootstrap-sql.ts";
 import { createStackCompute, type StackCompute } from "./compute.ts";
 import type { GatewayConfig } from "./config.ts";
+import { cloudflareMailer, dailyMailBudget, type MailBudget, type MailCounts, type SendEmailBinding } from "./mail.ts";
+import { openSignUp } from "./sign-up.ts";
 
 /** The context bootstrap runs in. Identity lets only a system actor create the first organisation and user. */
 const BOOTSTRAP: CallContext = {
@@ -126,6 +131,27 @@ export interface StackOptions {
 	/** Used to fetch Access's signing keys. Default the global `fetch`; tests and `wrangler dev` pass a mock issuer's. */
 	readonly accessFetch?: typeof fetch;
 	readonly storage?: StackStorage;
+	/**
+	 * What email-code sign-in sends with (`config.emailSignIn`): the `SIGN_IN_MAIL` binding, where the daily cap is
+	 * counted, and what keeps a send alive past the response (`ctx.waitUntil`). Without it nobody signs in by email.
+	 */
+	readonly mail?: {
+		readonly binding: SendEmailBinding;
+		readonly counts: MailCounts;
+		readonly defer?: (work: Promise<unknown>) => void;
+	};
+}
+
+/** Email-code sign-in and open sign-up on the public origin (`config.emailSignIn`). */
+export interface StackEmailSignIn {
+	/** The public origin, such as `https://app.kantel.dev`; only requests to it sign in this way. */
+	readonly publicUrl: string;
+	/** `POST /auth/otp/start`, `/auth/otp/verify` and `/auth/session/end`. */
+	readonly handler: (request: Request) => Promise<Response>;
+	/** Today's mail: a start takes one, and is refused once the cap is reached. */
+	readonly budget: MailBudget;
+	/** Emails invites made on the public origin, within the same cap. */
+	readonly invites: InviteMailer;
 }
 
 export interface Stack {
@@ -142,6 +168,8 @@ export interface Stack {
 	readonly admin: CallContext;
 	/** The compute API (`src/compute.ts`), signed in with `authenticator`. */
 	readonly compute: StackCompute;
+	/** Email-code sign-in on the public origin, when it is configured and can send mail. */
+	readonly emailSignIn?: StackEmailSignIn;
 	/** How long each part of the start took, in ms, for the object's start log. */
 	readonly startedIn: Readonly<Record<string, number>>;
 }
@@ -214,6 +242,19 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 			}),
 		);
 	}
+	// Email-code sign-in needs mail to send with; configured without it, nobody signs in that way and the log says why.
+	const emailConfig = options.config.emailSignIn;
+	if (emailConfig !== undefined && options.mail === undefined) {
+		console.warn("kantel: KANTEL_PUBLIC_URL is set but there is no SIGN_IN_MAIL binding; email sign-in is off");
+	}
+	const otpStores =
+		emailConfig === undefined || options.mail === undefined
+			? undefined
+			: driver === undefined
+				? createMemoryOtpStores()
+				: createSqlOtpStores(driver);
+	// A Kantel session (`kts_…`) is only ever a bearer; it never matches an Access token, nor an Access token it.
+	if (otpStores !== undefined) providers.push(kantelSessionProvider({ sessions: otpStores.sessions, clock }));
 	const authenticator = timedSignIn(createAuthenticator({ identity, providers }));
 	phase("identity and audit");
 
@@ -229,11 +270,36 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	const compute = await createStackCompute({
 		authenticator,
 		identity,
+		adminOrganisationId: organisation.id,
 		...(storage.compute === undefined ? {} : { sql: storage.compute }),
 		...(options.config.portsDomain === undefined ? {} : { portsDomain: options.config.portsDomain }),
 		now: () => clock.now(),
 	});
 	phase("compute");
+
+	let emailSignIn: StackEmailSignIn | undefined;
+	if (emailConfig !== undefined && options.mail !== undefined && otpStores !== undefined) {
+		const budget = dailyMailBudget({ cap: emailConfig.dailyCap, counts: options.mail.counts, now: () => clock.now() });
+		const mailer = cloudflareMailer({ binding: options.mail.binding, from: emailConfig.from, budget });
+		const otp = createEmailOtp({
+			identity: openSignUp(identity, {
+				onSignUp: (userId, organisationId) => console.log("kantel: signed up", userId, organisationId),
+			}),
+			codes: otpStores.codes,
+			sessions: otpStores.sessions,
+			mailer,
+			audit,
+			clock,
+			...(options.mail.defer === undefined ? {} : { defer: options.mail.defer }),
+			// Never the code: only the error and the address typed.
+			onMailError: (error, to) =>
+				console.error(
+					`kantel: sign-in mail to ${JSON.stringify(to)} failed:`,
+					error instanceof Error ? `${(error as { code?: unknown }).code ?? ""} ${error.message}` : error,
+				),
+		});
+		emailSignIn = { publicUrl: emailConfig.publicUrl, handler: createOtpHandler({ otp }), budget, invites: mailer };
+	}
 
 	return {
 		identity,
@@ -245,6 +311,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		project,
 		admin,
 		compute,
+		...(emailSignIn === undefined ? {} : { emailSignIn }),
 		startedIn,
 	};
 }

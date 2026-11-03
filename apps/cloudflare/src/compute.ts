@@ -11,8 +11,10 @@
  *   self-hosted gateway runs with no hosts. Kantel's hosts don't join this deployment yet. The object's memory goes
  *   when Cloudflare evicts it or a deploy replaces it, while the records stay: `revivingStub` then gives a sandbox the
  *   records still have a fresh, empty machine on its next call, rather than failing every call on it.
- * - **People:** whoever the stack's authenticator signs in (Cloudflare Access) is a compute person under their user ID,
- *   and an admin of the deployment's organisation is the compute plane's super-admin, as self-hosted. An identity
+ * - **People:** whoever the stack's authenticator signs in (Cloudflare Access, or an email code on the public origin)
+ *   is a compute person under their user ID, and an admin of the deployment's own organisation (the bootstrap's) is the
+ *   compute plane's super-admin, as self-hosted. With open sign-up everyone administers a personal space of their own;
+ *   that makes nobody a super-admin. An identity
  *   `ktk_` key is not a compute caller; the compute API's own `ksk_` keys are.
  *
  * Its timers (webhook deliveries every second, the OpenTelemetry export every minute) run only while requests keep
@@ -82,6 +84,11 @@ export interface StackComputeOptions {
 	readonly authenticator: Authenticator;
 	/** Who holds which role: an organisation admin who signs in is the compute plane's super-admin. */
 	readonly identity: Pick<IdentityDirectory, "authorize">;
+	/**
+	 * The deployment's own organisation: only its admins are super-admins. Absent, any organisation's admin is (tests
+	 * with one organisation).
+	 */
+	readonly adminOrganisationId?: string;
 	/** Where the records are: the stack object's SQLite. Absent, in memory (tests). */
 	readonly sql?: SqlDriver;
 	readonly now?: () => number;
@@ -103,6 +110,7 @@ async function personOf(
 	authenticator: Authenticator,
 	identity: Pick<IdentityDirectory, "authorize">,
 	request: Request,
+	adminOrganisationId: string | undefined,
 ): Promise<PersonIdentity | undefined> {
 	let caller: Awaited<ReturnType<Authenticator["authenticate"]>>;
 	try {
@@ -111,10 +119,13 @@ async function personOf(
 		return undefined;
 	}
 	if (caller.actor.kind !== "human") return undefined;
-	const superAdmin = await identity.authorize(callContextFor(caller), "admin").then(
-		() => true,
-		() => false,
-	);
+	// An admin of a personal space (anyone who signed up) or of another organisation is not the deployment's.
+	const superAdmin =
+		(adminOrganisationId === undefined || caller.organisationId === adminOrganisationId) &&
+		(await identity.authorize(callContextFor(caller), "admin").then(
+			() => true,
+			() => false,
+		));
 	return { userId: caller.actor.userId, name: caller.actor.userId, superAdmin };
 }
 
@@ -133,7 +144,8 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 			createStubBackend({ sandboxDomain: options.portsDomain ?? HOSTED_PORTS_DOMAIN }),
 			store.sandboxes,
 		),
-		authenticatePerson: (request) => personOf(options.authenticator, options.identity, request),
+		authenticatePerson: (request) =>
+			personOf(options.authenticator, options.identity, request, options.adminOrganisationId),
 		mode: "hosted",
 		now,
 		...(options.fetch === undefined ? {} : { fetch: options.fetch }),

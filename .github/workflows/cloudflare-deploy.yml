@@ -23,6 +23,10 @@ name: Cloudflare deploy
 #            the device flow (src/connections.ts); a confidential client's secret is a Worker secret, never in the var
 #   optional var KANTEL_COMPUTE_PORTS_DOMAIN: the domain sandboxes' port URLs are under (src/config.ts); unset, the
 #            Worker's default, ports.kantel.dev, Kantel's hosted ports domain. Nothing here routes it yet
+#   optional vars KANTEL_PUBLIC_URL with KANTEL_SIGN_IN_FROM (and KANTEL_SIGN_IN_DAILY_CAP, default 100): email-code
+#            sign-in and open sign-up on a public origin with no Access in front, such as https://app.kantel.dev, sending
+#            from an address on a domain onboarded for Cloudflare Email Sending (the SIGN_IN_MAIL binding). The origin's
+#            custom domain is attached once outside this workflow (apps/cloudflare/README.md, "The public origin")
 #   optional secrets, each set on the Worker as a secret of the same name when it exists (src/vault.ts):
 #            KANTEL_VAULT_KEY (without it the vault answers 503), KANTEL_VAULT_MODEL_GATEWAY_TOKEN,
 #            KANTEL_VAULT_EGRESS_GATEWAY_TOKEN, KANTEL_CPA_API_KEY, KANTEL_BRWSR_API_KEY (src/browser.ts: without it
@@ -91,6 +95,10 @@ jobs:
       KANTEL_OAUTH_CLIENTS: ${{ (vars.KANTEL_OAUTH_CLIENTS || vars.HARBOUR_OAUTH_CLIENTS) }}
       # Optional: the domain port URLs are under, for a deployment on a domain other than Kantel's ports.kantel.dev.
       KANTEL_COMPUTE_PORTS_DOMAIN: ${{ vars.KANTEL_COMPUTE_PORTS_DOMAIN }}
+      # Optional: email-code sign-in and open sign-up on the public origin, and the address its mail comes from.
+      KANTEL_PUBLIC_URL: ${{ vars.KANTEL_PUBLIC_URL }}
+      KANTEL_SIGN_IN_FROM: ${{ vars.KANTEL_SIGN_IN_FROM }}
+      KANTEL_SIGN_IN_DAILY_CAP: ${{ vars.KANTEL_SIGN_IN_DAILY_CAP }}
     steps:
       - uses: actions/checkout@v4
 
