@@ -7,7 +7,6 @@ import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } 
 import { ComputeApp, legacyComputePath } from "./compute/compute-app.tsx";
 import { syncTheme } from "./state/theme-sync.ts";
 import { BOOT } from "./ui/shell-styles.ts";
-import { BrowserViewerPage, viewOf } from "./viewer/viewer.tsx";
 import "./ui/styles.css";
 
 // The console is the compute console (compute/compute-app.tsx): sandboxes, snapshots, keys, the egress proxy,
@@ -33,7 +32,11 @@ const params = new URLSearchParams(location.search);
 const SOURCE_KEY = "kantel.console.source";
 const asked = params.get("source");
 if (asked === "api" || asked === "recorded") sessionStorage.setItem(SOURCE_KEY, asked);
-const source = sessionStorage.getItem(SOURCE_KEY) ?? import.meta.env.VITE_HARBOUR_SOURCE ?? "api";
+const source =
+	sessionStorage.getItem(SOURCE_KEY) ??
+	import.meta.env.VITE_KANTEL_SOURCE ??
+	import.meta.env.VITE_HARBOUR_SOURCE ??
+	"api";
 
 const identity = createConsoleIdentity({ tokens: hasStorage() ? storageTokens(localStorage) : memoryTokens() });
 
@@ -57,10 +60,7 @@ const boot = (): Promise<Boot> =>
 
 // Started here, not in render: a component that suspends before it mounts loses its state, so a promise made in
 // render would be made again on every retry.
-// A view link (`/browser/<browser>#<token>`) is a page of its own: one browser, live or replayed, with no sign-in and nothing
-// of the console (src/viewer/viewer.tsx).
-const viewing = viewOf(location.pathname, location.hash);
-const firstBoot: Promise<Boot> | undefined = source === "recorded" || viewing !== undefined ? undefined : boot();
+const firstBoot: Promise<Boot> | undefined = source === "recorded" ? undefined : boot();
 
 /** The app's ground while the console learns who is signed in: no spinner on a reload. */
 const Ground = () => <div className="kt-app h-dvh" aria-busy="true" />;
@@ -147,9 +147,7 @@ window.addEventListener("vite:preloadError", () => {
 
 createRoot(document.getElementById("root")!).render(
 	<StrictMode>
-		{viewing !== undefined ? (
-			<BrowserViewerPage view={viewing} />
-		) : source === "recorded" ? (
+		{source === "recorded" ? (
 			<ComputeApp />
 		) : firstBoot !== undefined ? (
 			<ApiConsole first={firstBoot} />

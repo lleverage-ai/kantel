@@ -9,7 +9,6 @@ import { createEmailOtp, createMemoryOtpStores, kantelSessionProvider, MemoryOtp
 import { createOtpHandler } from "@kantel/identity/otp/http";
 import { createSignInFlow } from "@kantel/ui";
 import { describe, expect, it } from "vitest";
-import { createApiClient } from "./http.ts";
 import { type ConsoleBoot, createConsoleIdentity, memoryTokens, storageTokens } from "./identity.ts";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "test" }, organisationId: "bootstrap" };
@@ -59,8 +58,8 @@ function expectKind<K extends ConsoleBoot["kind"]>(boot: ConsoleBoot, kind: K): 
 }
 
 describe("the console's sign-in", () => {
-	it("asks for an email code after a 401 that names it, then knows who is signed in and their projects", async () => {
-		const { consoleIdentity, tokens, mailed, fetch } = await world();
+	it("asks for an email code after a 401 that names it, then knows who is signed in", async () => {
+		const { consoleIdentity, tokens, mailed } = await world();
 		const signIn = expectKind(await consoleIdentity.boot(), "sign-in");
 
 		// The screen's flow, on the routes the console calls.
@@ -77,9 +76,6 @@ describe("the console's sign-in", () => {
 		expect(booted.actor.signOut).toBeDefined();
 		expect(booted.me.method).toBe("harbour_session");
 		expect(booted.headers()).toEqual({ authorization: `Bearer ${tokens.get()}` });
-
-		const api = createApiClient({ baseUrl: `${ORIGIN}/v1`, fetch, headers: booted.headers, actor: booted.actor });
-		expect((await api.projects()).map((project) => project.name)).toEqual(["Billing", "Website"]);
 	});
 
 	it("signs out: the session ends at the server and the next boot asks again", async () => {

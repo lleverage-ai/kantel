@@ -3,7 +3,7 @@
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
-	"description": "Kantel's shared React component library: tokens, primitives and session components, in T3 Code's style",
+	"description": "Kantel's shared React component library: tokens, primitives and the compute console, in T3 Code's style",
 	"license": "Apache-2.0",
 	"sideEffects": [
 		"**/*.css",
@@ -14,17 +14,7 @@
 		"./tokens.css": "./src/tokens/tokens.css",
 		"./tokens": "./src/tokens/tokens.ts",
 		"./theme-boot": "./src/theme/boot.ts",
-		"./vault/fixtures": "./src/vault/fixtures.ts",
 		"./compute/fixtures": "./src/compute/fixtures.ts",
-		"./audit/fixtures": "./src/audit/fixtures.ts",
-		"./schedules/fixtures": "./src/schedules/fixtures.ts",
-		"./sharing/fixtures": "./src/sharing/fixtures.ts",
-		"./connections/fixtures": "./src/connections/fixtures.ts",
-		"./tool-servers/fixtures": "./src/tool-servers/fixtures.ts",
-		"./environments/fixtures": "./src/environments/fixtures.ts",
-		"./skills/fixtures": "./src/skills/fixtures.ts",
-		"./memory/fixtures": "./src/memory/fixtures.ts",
-		"./workspace/image-fixture": "./src/workspace/image-fixture.ts",
 		"./token-lint": "./scripts/token-lint.ts"
 	},
 	"scripts": {
@@ -35,20 +25,14 @@
 		"test": "vitest run",
 		"lint:tokens": "node scripts/token-lint.ts",
 		"shoot": "node scripts/shoot.ts",
-		"build:harness": "vite build --config loop/harness/vite.config.ts",
-		"gates": "node loop/gates.ts",
-		"measure": "node loop/measure.ts",
-		"follow": "node loop/follow.ts"
+		"gates": "node loop/gates.ts"
 	},
 	"peerDependencies": {
 		"react": ">=19.0.0",
 		"react-dom": ">=19.0.0"
 	},
 	"devDependencies": {
-		"@kantel/audit": "workspace:*",
 		"@kantel/identity": "workspace:*",
-		"@kantel/memory": "workspace:*",
-		"@kantel/skills": "workspace:*",
 		"@ladle/react": "5.1.1",
 		"@tailwindcss/vite": "4.3.3",
 		"@types/node": "26.6.5",
@@ -64,28 +48,12 @@
 		"vitest": "5.0.5"
 	},
 	"dependencies": {
-		"@aiden0z/pptx-renderer": "1.4.0",
 		"@fontsource-variable/public-sans": "5.3.0",
 		"@fontsource-variable/roboto-mono": "5.3.0",
 		"@fontsource/abhaya-libre": "5.3.0",
 		"@kantel/contracts": "workspace:*",
-		"@kantel/protocol": "workspace:*",
-		"@kantel/schedules": "workspace:*",
-		"@kantel/vault": "workspace:*",
-		"@tiptap/core": "3.32.1",
-		"@tiptap/extension-table": "3.32.1",
-		"@tiptap/markdown": "3.32.1",
-		"@tiptap/pm": "3.32.1",
-		"@tiptap/react": "3.32.1",
-		"@tiptap/starter-kit": "3.32.1",
-		"docx-preview": "0.4.1",
 		"highlight.js": "11.12.0",
 		"lucide-react": "1.64.0",
-		"pdfjs-dist": "6.4.299",
-		"react-markdown": "10.1.0",
-		"remark-gfm": "4.0.1",
-		"tailwindcss": "4.3.3",
-		"virtua": "0.53.6",
-		"xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
+		"tailwindcss": "4.3.3"
 	}
 }
