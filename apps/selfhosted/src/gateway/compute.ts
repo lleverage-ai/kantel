@@ -87,6 +87,7 @@ import {
 	HOSTS_IMAGES_PATH,
 	HOSTS_REGISTER_PATH,
 } from "@kantel/hosts/http";
+import { closeQuietly } from "@kantel/hosts/hub";
 import { openPortWebSocket } from "@kantel/hosts/port-websocket";
 import { createPortRouter, type PortRouter } from "@kantel/hosts/ports";
 import { HOST_CLOSE_REVOKED, HOST_MAX_MESSAGE_BYTES } from "@kantel/hosts/protocol";
@@ -652,7 +653,8 @@ export function withHostUpgrades(
 				compute.sandboxes
 					.openPort(sandboxId, port, {
 						data: (bytes) => accepted.send(bytes, { binary: true }),
-						end: (reason) => accepted.close(1000, reason.slice(0, 120)),
+						// What the host says it ended or refused with is the host's: cut to fit and never thrown (`closeQuietly`).
+						end: (reason) => closeQuietly(accepted, 1000, reason),
 					})
 					.then(
 						(opened) => {
@@ -660,9 +662,9 @@ export function withHostUpgrades(
 							if (done) return opened.close();
 							for (const chunk of pending.splice(0)) opened.write(chunk);
 						},
-						(error: unknown) =>
-							accepted.close(1011, (error instanceof Error ? error.message : String(error)).slice(0, 120)),
-					);
+						(error: unknown) => closeQuietly(accepted, 1011, error instanceof Error ? error.message : String(error)),
+					)
+					.catch(() => closeQuietly(accepted, 1011, "The tunnel failed"));
 			});
 		}
 
@@ -697,9 +699,10 @@ export function withHostUpgrades(
 					{
 						message: (data, binary) => accepted.send(data, { binary }),
 						close: (code, reason) =>
-							accepted.close(
+							closeQuietly(
+								accepted,
 								code >= 1000 && code < 5000 && code !== 1005 && code !== 1006 ? code : 1011,
-								reason.slice(0, 120),
+								reason,
 							),
 					},
 					...(host === undefined ? [] : [host]),

@@ -89,4 +89,29 @@ describe("a host's malformed frames", () => {
 		// The gateway still answers.
 		expect((await fetch(`${replica.url}/nothing-here`)).status).toBe(404);
 	});
+
+	it("close a tunnel whose port.open the host refuses with long multibyte text, within a close frame's 123 bytes", async () => {
+		const driver = await sharedDatabase(cleanups);
+		const replica = await startReplica(driver, cleanups);
+		const odd = await joinHost(replica);
+		await connectHost(replica, odd.hostId, odd.credential, cleanups, [], { portOpenError: "é".repeat(120) });
+		const made = await replica.relay.service.sandboxes.create({ tier: "microvm" });
+		const ticket = await replica.relay.tickets.issue({
+			sandboxId: made.sandbox.id,
+			port: 22,
+			expiresAt: Date.now() + 60_000,
+		});
+		const client = new WebSocket(wsUrl(replica, `/v1/hosts/tunnel/${ticket}`));
+		cleanups.push(() => client.terminate());
+		const { code, reason } = await new Promise<{ code: number; reason: Buffer }>((resolve, reject) => {
+			client.on("close", (closeCode, closeReason) => resolve({ code: closeCode, reason: closeReason }));
+			client.on("error", reject);
+		});
+		expect(code).toBe(1011);
+		expect(reason.byteLength).toBeLessThanOrEqual(123);
+		expect(reason.toString()).toMatch(/^é+$/);
+		// The gateway and the host's connection carry on.
+		expect((await fetch(`${replica.url}/nothing-here`)).status).toBe(404);
+		expect(replica.relay.service.hub.connected(odd.hostId)).toBe(true);
+	});
 });

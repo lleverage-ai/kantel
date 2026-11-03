@@ -96,7 +96,8 @@ export function gatewayConfig(vars: GatewayVars): GatewayConfig {
 		throw new KantelError("invalid", "KANTEL_COMPUTE_PORTS_DOMAIN is a DNS name such as ports.example.com");
 	}
 	const connect = connectConfig(vars);
-	const emailSignIn = emailSignInConfig(vars, connect !== undefined);
+	// Set either way, the switch says the public origin may be Connect's alone: turning Connect off keeps it valid.
+	const emailSignIn = emailSignInConfig(vars, trimmed(vars.KANTEL_CONNECT) !== "");
 	return {
 		...(emailSignIn === undefined ? {} : { emailSignIn }),
 		...(portsDomain === "" ? {} : { portsDomain }),
@@ -129,14 +130,19 @@ const PUBLIC_ORIGIN = /^https?:\/\/[^/?#\s]+\/?$/i;
 
 /**
  * KANTEL_PUBLIC_URL, KANTEL_SIGN_IN_FROM and KANTEL_SIGN_IN_DAILY_CAP. Both of the first two or neither: one without the
- * other is refused rather than served with sign-in silently off. With Kantel Connect on (`connect`), the public origin
- * is also where hosts dial, so it may be set alone: sign-in is then off.
+ * other is refused rather than served with sign-in silently off. With the Kantel Connect switch set (`connect`, on or
+ * off), the public origin is also where hosts dial, so it may be set alone: sign-in is then off.
  */
 function emailSignInConfig(vars: GatewayVars, connect: boolean): GatewayConfig["emailSignIn"] {
 	const publicUrl = trimmed(vars.KANTEL_PUBLIC_URL);
 	const from = trimmed(vars.KANTEL_SIGN_IN_FROM);
 	if (publicUrl === "" && from === "") return undefined;
-	if (connect && from === "") return undefined;
+	if (connect && publicUrl !== "" && from === "") {
+		if (!PUBLIC_ORIGIN.test(publicUrl)) {
+			throw new KantelError("invalid", "KANTEL_PUBLIC_URL is an origin such as https://app.kantel.dev");
+		}
+		return undefined;
+	}
 	if (publicUrl === "" || from === "") {
 		throw new KantelError("invalid", "Set both KANTEL_PUBLIC_URL and KANTEL_SIGN_IN_FROM, or neither");
 	}

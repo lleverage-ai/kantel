@@ -38,9 +38,10 @@ works here as it does there (`src/compute.ts`):
   its sandboxes there (`createRoutedBackend`); everyone else keeps the stub. SSH to them is served
   (`/v1/hosts/tunnel/{ticket}`); desktops, browsers and public ports aren't yet. Hosts dial `KANTEL_PUBLIC_URL`: the
   public origin, with no Access in front, needs nothing more (with Connect on, it may be set without
-  `KANTEL_SIGN_IN_FROM`, leaving email sign-in off). Hosts can't sign in to Access, so an origin behind it needs a
-  bypass for `/v1/hosts/register`, `/v1/hosts/connect`, `/v1/hosts/images/*` and
-  `/v1/hosts/tunnel/*`, each of which checks its own token, credential or ticket. See
+  `KANTEL_SIGN_IN_FROM`, leaving email sign-in off, and so may `KANTEL_CONNECT=off`). Someone who signs up there may
+  enrol and use hosts of their own, but never the stub, which stays the deployment organisation's. Hosts can't sign
+  in to Access, so an origin behind it needs a bypass for `/v1/hosts/register`, `/v1/hosts/connect`,
+  `/v1/hosts/images/*` and `/v1/hosts/tunnel/*`, each of which checks its own token, credential or ticket. See
   `docs/site/src/content/docs/connect.md`.
 - The person Access signs in is a compute person under their Kantel user ID; an admin of the deployment's organisation
   is the compute super-admin. The console sends no credential behind Access, so the gateway gives the compute API

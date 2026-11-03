@@ -50,6 +50,7 @@ import {
 	type IdentityDirectory,
 	isKantelError,
 	KantelError,
+	systemContext,
 } from "@kantel/contracts";
 import { createHostBackend } from "@kantel/hosts/backend";
 import {
@@ -59,13 +60,14 @@ import {
 	HOSTS_IMAGES_PATH,
 	HOSTS_REGISTER_PATH,
 } from "@kantel/hosts/http";
-import type { AcceptedHost, HostSocket } from "@kantel/hosts/hub";
+import { type AcceptedHost, closeQuietly, type HostSocket } from "@kantel/hosts/hub";
 import { HOST_CLOSE_REVOKED } from "@kantel/hosts/protocol";
 import { createRelayAccess, RELAY_CLOSE_REVOKED, RELAY_REVOKED_REASON } from "@kantel/hosts/relay-access";
 import { createMemoryRelayStore, createSqlRelayStore, migrateRelay } from "@kantel/hosts/relay-store";
 import { createHostsService, type HostsService } from "@kantel/hosts/service";
 import { createMemoryHostStore, createSqlHostStore, migrateHosts } from "@kantel/hosts/store";
 import { createTunnelTickets, HOSTS_TUNNEL_PATH, type TunnelTickets } from "@kantel/hosts/tunnel";
+import { hashSessionToken, isSessionToken } from "@kantel/identity/otp";
 import type { SqlDriver } from "@kantel/sql";
 import { HOSTED_PORTS_DOMAIN } from "./config.ts";
 import { buffered } from "./route.ts";
@@ -227,13 +229,22 @@ export { HOSTS_CONNECT_PATH };
 
 export interface StackComputeOptions {
 	readonly authenticator: Authenticator;
-	/** Who holds which role: an organisation admin who signs in is the compute plane's super-admin. */
-	readonly identity: Pick<IdentityDirectory, "authorize">;
 	/**
-	 * The deployment's own organisation: only its admins are super-admins, and only its members may use compute here.
-	 * Absent, any organisation's admin is a super-admin and anyone signed in may use it (tests with one organisation).
+	 * Who holds which role: an organisation admin who signs in is the compute plane's super-admin, and a member of the
+	 * deployment's organisation may use the stub.
+	 */
+	readonly identity: Pick<IdentityDirectory, "authorize" | "roleOf">;
+	/**
+	 * The deployment's own organisation: only its admins are super-admins, and only its members may use the stub here.
+	 * Others are refused, or with Kantel Connect on, may use only hosts of their own. Absent, any organisation's admin
+	 * is a super-admin and anyone signed in may use it (tests with one organisation).
 	 */
 	readonly adminOrganisationId?: string;
+	/**
+	 * Whether a Kantel session (its token's hash) is live: a tunnel given under one ends when it does. Absent (no email
+	 * sign-in), sign-ins are taken to last; Access tokens carry no session to end.
+	 */
+	readonly sessionLive?: (session: string) => Promise<boolean>;
 	/** Where the records are: the stack object's SQLite. Absent, in memory (tests). */
 	readonly sql?: SqlDriver;
 	readonly now?: () => number;
@@ -259,13 +270,16 @@ export const COMPUTE_MEMBERS_ONLY =
  *
  * Someone acting in another organisation (anyone who signed up on the public origin) is refused: the stub backend
  * keeps files and snapshots in this object's memory, which a stranger mustn't be able to fill. Refusing the person
- * refuses every way in, a compute key or a device sign-in included, since only a person can make either.
+ * refuses every way in, a compute key or a device sign-in included, since only a person can make either. With Kantel
+ * Connect on (`connect`) they are let in, never as a super-admin, to enrol and use hosts of their own: `sharedHosts`
+ * (`memberOf`) keeps them, and their keys, off the stub.
  */
 async function personOf(
 	authenticator: Authenticator,
 	identity: Pick<IdentityDirectory, "authorize">,
 	request: Request,
 	adminOrganisationId: string | undefined,
+	connect: boolean,
 ): Promise<PersonIdentity | undefined> {
 	let caller: Awaited<ReturnType<Authenticator["authenticate"]>>;
 	try {
@@ -274,15 +288,36 @@ async function personOf(
 		return undefined;
 	}
 	if (caller.actor.kind !== "human") return undefined;
-	if (adminOrganisationId !== undefined && caller.organisationId !== adminOrganisationId) {
-		throw new KantelError("forbidden", COMPUTE_MEMBERS_ONLY);
-	}
+	const outside = adminOrganisationId !== undefined && caller.organisationId !== adminOrganisationId;
+	if (outside && !connect) throw new KantelError("forbidden", COMPUTE_MEMBERS_ONLY);
 	// Only an admin of the deployment's organisation, never one of a personal space.
-	const superAdmin = await identity.authorize(callContextFor(caller), "admin").then(
-		() => true,
-		() => false,
-	);
-	return { userId: caller.actor.userId, name: caller.actor.userId, superAdmin };
+	const superAdmin =
+		!outside &&
+		(await identity.authorize(callContextFor(caller), "admin").then(
+			() => true,
+			() => false,
+		));
+	// A Kantel session can be ended (signing out), so access given under it records which one, to end with it.
+	const bearer = /^Bearer\s+(\S+)\s*$/i.exec(request.headers.get("authorization") ?? "")?.[1];
+	const session = bearer !== undefined && isSessionToken(bearer) ? await hashSessionToken(bearer) : undefined;
+	return {
+		userId: caller.actor.userId,
+		name: caller.actor.userId,
+		superAdmin,
+		...(session === undefined ? {} : { session }),
+	};
+}
+
+/** Whether `userId` is a member of the deployment's organisation, with any role: who may use the stub. */
+async function memberOf(
+	identity: Pick<IdentityDirectory, "roleOf">,
+	organisationId: string,
+	userId: string,
+): Promise<boolean> {
+	const role = await identity
+		.roleOf(systemContext("compute"), { kind: "human", userId }, organisationId)
+		.catch(() => undefined);
+	return role !== undefined;
 }
 
 /** The compute API over the stub backend, its records in `sql` (or memory), signed in with `authenticator`. */
@@ -299,6 +334,7 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		store.sandboxes,
 	);
 	const connect = options.connect === undefined ? undefined : await connectHosts(options.connect, options.sql, now);
+	const deploymentOrganisation = options.adminOrganisationId;
 	const api = createComputeApi({
 		store,
 		backend:
@@ -311,7 +347,12 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 						holdsSnapshot: isHostSnapshotRef,
 					}),
 		authenticatePerson: (request) =>
-			personOf(options.authenticator, options.identity, request, options.adminOrganisationId),
+			personOf(options.authenticator, options.identity, request, options.adminOrganisationId, connect !== undefined),
+		...(options.sessionLive === undefined ? {} : { sessionLive: options.sessionLive }),
+		// With Connect on, people outside the deployment's organisation get in; the stub stays its members'.
+		...(connect === undefined || deploymentOrganisation === undefined
+			? {}
+			: { sharedHosts: (userId: string) => memberOf(options.identity, deploymentOrganisation, userId) }),
 		mode: "hosted",
 		now,
 		...(options.fetch === undefined ? {} : { fetch: options.fetch }),
@@ -444,18 +485,19 @@ async function connectHosts(
 							try {
 								client.send(bytes);
 							} catch {
-								client.close(1011, "The tunnel's client is gone");
+								closeQuietly(client, 1011, "The tunnel's client is gone");
 								stream?.close();
 							}
 						},
+						// The host's reason, ended or refused with: cut to fit and never thrown (`closeQuietly`).
 						end: (reason) => {
 							done();
-							client.close(1000, reason.slice(0, 120));
+							closeQuietly(client, 1000, reason);
 						},
 					});
 				} catch (error) {
 					done();
-					client.close(1011, (error instanceof Error ? error.message : String(error)).slice(0, 120));
+					closeQuietly(client, 1011, error instanceof Error ? error.message : String(error));
 					return undefined;
 				}
 				const opened = stream;

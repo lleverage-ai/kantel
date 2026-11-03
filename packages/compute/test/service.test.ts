@@ -20,8 +20,12 @@ afterEach(async () => {
 	for (const api of opened.splice(0)) await api.close();
 });
 
-function setup(backend: SandboxBackend = createStubBackend()) {
+function setup(
+	backend: SandboxBackend = createStubBackend(),
+	extra: Pick<Parameters<typeof createComputeApi>[0], "sharedHosts"> = {},
+) {
 	const api = createComputeApi({
+		...extra,
 		backend,
 		authenticatePerson: async (request) => {
 			const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
@@ -384,6 +388,27 @@ describe("organisations", () => {
 		expect((await failure(tom.removeMember(org.id, "usr_tom"))).code).toBe("conflict");
 		await ann.removeMember(org.id, "usr_ann");
 		expect((await failure(ann.listSandboxes({ account: org.id }))).code).toBe("forbidden");
+	});
+
+	it("keeps someone off the shared hosts (sharedHosts) out of a sandbox there, though a member shared its account", async () => {
+		const { tom, ann, root } = setup(createStubBackend(), { sharedHosts: async (userId) => userId === "usr_tom" });
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const invite = await tom.createInvite(org.id, { role: "member" });
+		await ann.joinOrganisation({ code: invite.code ?? "" });
+		// On the stub, the deployment's one shared host.
+		const shared = await tom.createSandbox({ account: org.id, wait: true });
+
+		// Ann sees it listed, but can't use it, nor put a sandbox of her own on the shared hosts.
+		expect((await ann.listSandboxes({ account: org.id })).items.map((item) => item.id)).toEqual([shared.id]);
+		expect((await failure(ann.getSandbox(shared.id))).code).toBe("forbidden");
+		expect((await failure(ann.runCommand(shared.id, { command: "true" }))).code).toBe("forbidden");
+		const placed = await failure(ann.createSandbox({ account: org.id, wait: true }));
+		expect(placed.code).toBe("unavailable");
+		expect(placed.message).toMatch(/host of this account's own/);
+		// Tom, who may, still can; and so can the super-admin with sandboxes of their own.
+		expect((await tom.runCommand(shared.id, { command: "echo hi" })).stdout).toBe("hi\n");
+		const roots = await root.createSandbox({ wait: true });
+		expect((await root.runCommand(roots.id, { command: "echo hi" })).stdout).toBe("hi\n");
 	});
 });
 

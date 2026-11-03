@@ -51,6 +51,8 @@ export interface ComputeApiOptions {
 	readonly limits?: ComputeLimits;
 	/** Whether a person's sign-in (`PersonIdentity.session`) is still live; absent, sign-ins are taken to last. */
 	readonly sessionLive?: (session: string) => Promise<boolean>;
+	/** Whether a user may use the deployment's shared hosts (`ComputeServiceOptions.sharedHosts`); absent, everyone. */
+	readonly sharedHosts?: (userId: string) => Promise<boolean>;
 }
 
 export interface ComputeApi {
@@ -114,6 +116,7 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 		...(options.rates === undefined ? {} : { rates: options.rates }),
 		...(options.limits === undefined ? {} : { limits: options.limits }),
 		...(options.sessionLive === undefined ? {} : { sessionLive: options.sessionLive }),
+		...(options.sharedHosts === undefined ? {} : { sharedHosts: options.sharedHosts }),
 	});
 	service = created;
 	const publicIds = new Set<string>(Object.keys(publicComputeRoutes));

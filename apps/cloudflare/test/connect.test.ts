@@ -10,9 +10,11 @@ import type { HostSocket } from "@kantel/hosts/hub";
 import { decodeStreamFrame, encodeStreamFrame, type HostMessage } from "@kantel/hosts/protocol";
 import { createMockAccess } from "@kantel/identity/testing";
 import type { SqlValue } from "@kantel/sql";
+import { syncSqliteDriver } from "@kantel/sql/sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { type ObjectSqlLike, objectSqlDriver } from "../src/audit-outbox.ts";
 import {
+	COMPUTE_MEMBERS_ONLY,
 	createStackCompute,
 	HOST_REGISTER_BODY_LIMIT,
 	hostCredential,
@@ -25,8 +27,9 @@ import {
 	TUNNEL_PENDING_MESSAGES,
 	tunnelTicket,
 } from "../src/compute.ts";
-import { gatewayConfig } from "../src/config.ts";
+import { type GatewayVars, gatewayConfig } from "../src/config.ts";
 import { createGateway } from "../src/gateway.ts";
+import { memoryMailCounts } from "../src/mail.ts";
 import { createStack } from "../src/stack.ts";
 
 const TEAM_DOMAIN = "kantel-test.cloudflareaccess.com";
@@ -464,8 +467,14 @@ describe("Kantel Connect on the Worker", () => {
 		const alone = gatewayConfig({ ...access, KANTEL_CONNECT: "experimental", KANTEL_PUBLIC_URL: BASE });
 		expect(alone.connect).toEqual({ publicUrl: BASE });
 		expect(alone.emailSignIn).toBeUndefined();
-		// Connect off: the public origin without its sender is refused, as before.
+		// Turned off, the same configuration stays valid, with neither Connect nor sign-in.
+		const off = gatewayConfig({ ...access, KANTEL_CONNECT: "off", KANTEL_PUBLIC_URL: BASE });
+		expect(off.connect).toBeUndefined();
+		expect(off.emailSignIn).toBeUndefined();
+		expect(() => gatewayConfig({ ...access, KANTEL_CONNECT: "off", KANTEL_PUBLIC_URL: `${BASE}/x` })).toThrow(/origin/);
+		// With no switch at all: the public origin without its sender is refused, as before.
 		expect(() => gatewayConfig({ ...access, KANTEL_PUBLIC_URL: BASE })).toThrow(/KANTEL_SIGN_IN_FROM/);
+		expect(() => gatewayConfig({ ...access, KANTEL_CONNECT: "off", KANTEL_SIGN_IN_FROM: "a@b.c" })).toThrow(/both/);
 		const both = gatewayConfig({
 			...access,
 			KANTEL_CONNECT: "experimental",
@@ -571,4 +580,155 @@ describe("Kantel Connect on the Worker", () => {
 		const kept = await again.stack.compute.hosts?.service.get(hostId);
 		expect(kept).toMatchObject({ id: hostId, accountId: personal, state: "revoked" });
 	});
+
+	it("lets someone who signs up on the public origin enrol and use a host of their own, never the stub", async () => {
+		const { call, signIn, hosts } = await startPublic();
+		const ada = await signIn("ada@example.test");
+
+		// In, but not a super-admin, and with no host of her own nothing runs: the stub is the deployment's.
+		const whoami = await call("GET", "/v1/whoami", { token: ada });
+		expect(whoami.status).toBe(200);
+		expect(whoami.body).toMatchObject({ superAdmin: false });
+		const personal = whoami.body.accountId as string;
+		const early = await call("POST", "/v1/sandboxes", { token: ada, body: { type: "isolate", wait: true } });
+		expect(early.status).toBe(503);
+		expect(early.body.error).toMatchObject({ code: "unavailable", message: /host of this account's own/ });
+		expect((await call("GET", "/v1/admin/hosts", { token: ada })).status).toBe(403);
+
+		// She enrols her machine into her personal account; it registers and connects.
+		const enrolment = await call("POST", "/v1/connect/enrolments", { token: ada, body: { name: "adas-box" } });
+		expect(enrolment.status).toBe(201);
+		expect(enrolment.body).toMatchObject({ accountId: personal });
+		const registered = await call("POST", "/v1/hosts/register", { body: { token: enrolment.body.token } });
+		const { hostId, credential } = registered.body as { hostId: string; credential: string };
+		const host = fakeHost();
+		const held = await hosts.connect(credential, host.socket);
+		if (held === undefined) throw new Error("The host's credential was refused");
+		host.attach(held, hostId);
+		await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
+		const listed = await call("GET", "/v1/connect/hosts", { token: ada });
+		expect(listed.body.items).toMatchObject([{ id: hostId, state: "online", accountId: personal }]);
+
+		// Her sandbox goes on her machine, and so does one made with a key she makes.
+		const made = await call("POST", "/v1/sandboxes", { token: ada, body: { type: "microvm", wait: true } });
+		expect(made.status).toBe(201);
+		const sandboxId = made.body.id as string;
+		expect(host.sandboxes.has(sandboxId)).toBe(true);
+		const key = await call("POST", "/v1/api-keys", {
+			token: ada,
+			body: { name: "cli", scopes: ["sandboxes:read", "sandboxes:write", "exec"] },
+		});
+		expect(key.status).toBe(201);
+		const byKey = await call("POST", "/v1/sandboxes", {
+			token: key.body.secret as string,
+			body: { type: "microvm", wait: true },
+		});
+		expect(host.sandboxes.has(byKey.body.id as string)).toBe(true);
+		// Her key, too, is kept off the stub: an isolate (which her host doesn't run) has nowhere to go.
+		const isolate = await call("POST", "/v1/sandboxes", {
+			token: key.body.secret as string,
+			body: { type: "isolate", wait: true },
+		});
+		expect(isolate.status).not.toBe(201);
+
+		// A tunnel given under a session ends with that session, and not with another of hers.
+		const later = await signIn("ada@example.test");
+		const ticketOf = async (token: string) => {
+			const ssh = await call("POST", `/v1/sandboxes/${sandboxId}/ssh`, { token, body: {} });
+			expect(ssh.status).toBe(201);
+			const ticket = tunnelTicket(new URL(ssh.body.proxyUrl as string).pathname);
+			if (ticket === undefined) throw new Error("Not a tunnel URL");
+			return ticket;
+		};
+		const first = await ticketOf(ada);
+		const second = await ticketOf(later);
+		expect((await call("POST", "/auth/session/end", { token: ada })).status).toBe(204);
+		const refused: number[] = [];
+		const ended = await hosts.tunnel(first, { send: () => undefined, close: (code) => refused.push(code) });
+		expect(ended).toBeUndefined();
+		expect(refused).toEqual([4003]);
+		const open = await hosts.tunnel(second, { send: () => undefined, close: () => undefined });
+		expect(open).toBeDefined();
+		open?.close();
+	});
+
+	it("keeps a public sign-up off the stub with Connect off, as before", async () => {
+		const { call, signIn } = await startPublic({ KANTEL_CONNECT: "off" });
+		const ada = await signIn("ada@example.test");
+		const refused = await call("POST", "/v1/sandboxes", { token: ada, body: { type: "isolate", wait: true } });
+		expect(refused.status).toBe(403);
+		expect(refused.body.error).toMatchObject({ code: "forbidden", message: COMPUTE_MEMBERS_ONLY });
+		expect((await call("POST", "/v1/connect/enrolments", { token: ada, body: {} })).status).toBe(403);
+	});
 });
+
+/**
+ * The Worker with email-code sign-in and open sign-up on its public origin, and Kantel Connect on (`vars` to change
+ * that): a call there with a session or key, and someone's sign-in, as `test/sign-in.test.ts` has them.
+ */
+async function startPublic(vars: GatewayVars = {}) {
+	const mock = createMockAccess({ teamDomain: TEAM_DOMAIN, audience: AUD });
+	const sent: { to: string; text?: string }[] = [];
+	const pending: Promise<unknown>[] = [];
+	const stack = await createStack({
+		config: gatewayConfig({
+			KANTEL_ACCESS_TEAM_DOMAIN: TEAM_DOMAIN,
+			KANTEL_ACCESS_AUD: AUD,
+			KANTEL_ADMIN_EMAIL: ADMIN,
+			KANTEL_PUBLIC_URL: BASE,
+			KANTEL_SIGN_IN_FROM: "sign-in@kantel.test",
+			KANTEL_CONNECT: "experimental",
+			...vars,
+		}),
+		accessFetch: mock.fetch,
+		storage: { sql: syncSqliteDriver(new DatabaseSync(":memory:")) },
+		mail: {
+			binding: {
+				send: async (message) => {
+					sent.push(message as { to: string; text?: string });
+					return { messageId: `m${sent.length}` };
+				},
+			},
+			counts: memoryMailCounts(),
+			defer: (work) => {
+				pending.push(work);
+			},
+		},
+	});
+	closers.push(() => stack.compute.close());
+	const gateway = createGateway(stack);
+	const call = async (method: string, path: string, options: { body?: unknown; token?: string } = {}) => {
+		const headers: Record<string, string> = {};
+		if (options.body !== undefined) headers["content-type"] = "application/json";
+		if (options.token !== undefined) headers.authorization = `Bearer ${options.token}`;
+		const response = await gateway.fetch(
+			new Request(`${BASE}${path}`, {
+				method,
+				headers,
+				...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+			}),
+		);
+		const text = await response.text();
+		return {
+			status: response.status,
+			body: (text === "" || !text.startsWith("{") ? {} : JSON.parse(text)) as Record<string, unknown>,
+		};
+	};
+	const signIn = async (email: string): Promise<string> => {
+		expect((await call("POST", "/auth/otp/start", { body: { email } })).status).toBe(202);
+		await Promise.all(pending.splice(0));
+		const code = /code is (\d{6})/.exec(sent.findLast((message) => message.to === email)?.text ?? "")?.[1];
+		const verified = await call("POST", "/auth/otp/verify", { body: { email, code } });
+		expect(verified.status).toBe(200);
+		return String(verified.body.token);
+	};
+	const hosts = stack.compute.hosts;
+	return {
+		call,
+		signIn,
+		get hosts() {
+			if (hosts === undefined) throw new Error("Connect is off");
+			return hosts;
+		},
+	};
+}

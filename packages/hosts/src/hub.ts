@@ -141,6 +141,27 @@ export function closeReason(reason: string): string {
 	return out;
 }
 
+/**
+ * Closes `socket` with `reason` cut to fit (`closeReason`), and never throws: a socket that is already gone, or a code
+ * or reason it won't take, is the same as closed. For a client's socket closed with what a host said (a port's end,
+ * a refused open), which an untrusted host can make anything.
+ */
+export function closeQuietly(
+	socket: { close(code?: number, reason?: string): void },
+	code: number,
+	reason: string,
+): void {
+	try {
+		socket.close(code, closeReason(reason));
+	} catch {
+		try {
+			socket.close(1011);
+		} catch {
+			// Already closed.
+		}
+	}
+}
+
 /** A host error as it came, made safe to throw: its code and message strings, or plain ones in their place. */
 function hostError(error: unknown): HostError {
 	if (!isObject(error)) return { code: "internal", message: `The host's call failed: ${typeof error}` };

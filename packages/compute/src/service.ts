@@ -118,7 +118,17 @@ export interface ComputeServiceOptions {
 	 * taken to last.
 	 */
 	readonly sessionLive?: (session: string) => Promise<boolean>;
+	/**
+	 * Whether a user (a person, or the person a key acts for) may use the deployment's shared hosts: have sandboxes
+	 * placed on them, or use one already there. Without, only their accounts' own hosts (Kantel Connect). Absent,
+	 * everyone may. The hosted gateway keeps its stub, in the stack object's memory, to the deployment's organisation.
+	 */
+	readonly sharedHosts?: (userId: string) => Promise<boolean>;
 }
+
+/** What someone kept off the shared hosts is told about a sandbox on one. */
+export const SHARED_HOSTS_REFUSED =
+	"This sandbox is on the deployment's shared hosts, which are for its own organisation; use a host of your own";
 
 export interface ComputeService {
 	/** A handler for every compute route that signs the caller in, given the signed-in caller. */
@@ -457,23 +467,43 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * a snapshot), every qualifying host the account may use, its own and shared alike, draining ones too (a drain stops
 	 * new sandboxes, not what a host already holds). The backend boots it where its disk is, only if that host is in the
 	 * list; preferring the account's hosts there would leave a disk on a shared host with nowhere eligible to boot.
+	 *
+	 * `shared`: whether the caller may use the shared hosts at all (`ComputeServiceOptions.sharedHosts`); without, only
+	 * the account's own.
 	 */
 	function requireHosts(
 		hosts: readonly StoredHost[],
 		accountId: string,
 		type: SandboxType,
 		labels: { readonly [key: string]: string },
-		affine = false,
+		affine: boolean,
+		shared: boolean,
 	): string[] {
 		const qualifying = hosts
 			.filter((host) => host.state === "online" || (affine && host.state === "draining"))
 			.filter((host) => host.tiers.includes(type))
 			.filter((host) => Object.entries(labels).every(([key, value]) => host.labels[key] === value));
 		const own = qualifying.filter((host) => host.accountId === accountId);
-		const shared = qualifying.filter((host) => host.accountId === undefined);
-		const eligible = (affine ? [...own, ...shared] : own.length > 0 ? own : shared).map((host) => host.id);
-		if (eligible.length === 0) throw new KantelError("unavailable", `No host can run a ${type} sandbox now`);
+		const common = shared ? qualifying.filter((host) => host.accountId === undefined) : [];
+		const eligible = (affine ? [...own, ...common] : own.length > 0 ? own : common).map((host) => host.id);
+		if (eligible.length === 0) {
+			throw new KantelError(
+				"unavailable",
+				shared
+					? `No host can run a ${type} sandbox now`
+					: `No host of this account's own can run a ${type} sandbox now`,
+			);
+		}
 		return eligible;
+	}
+
+	/**
+	 * Whether `principal` may use the deployment's shared hosts (`ComputeServiceOptions.sharedHosts`). A super-admin
+	 * always may.
+	 */
+	async function mayShare(principal: Principal): Promise<boolean> {
+		if (options.sharedHosts === undefined || principal.superAdmin) return true;
+		return options.sharedHosts(principal.userId);
 	}
 
 	// Views: what the API answers for a record.
@@ -785,6 +815,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const role = await roleIn(store, principal, sandbox.accountId);
 		if (role === undefined || !(await canSee(principal, sandbox, role))) throw notFound("sandbox");
 		requireScope(principal, scope, role);
+		// Someone kept off the shared hosts can't use a sandbox on one either, though a member shared its account.
+		if (sandbox.hostId !== undefined && !(await mayShare(principal))) {
+			const host = (await ensureHosts()).find((known) => known.id === sandbox.hostId);
+			if (host?.accountId === undefined) throw new KantelError("forbidden", SHARED_HOSTS_REFUSED);
+		}
 		return { sandbox, role };
 	}
 
@@ -1665,7 +1700,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 				await requireCapacity(account.id, 1);
 				const hostLabels = { ...body.hostLabels };
-				const hosts = requireHosts(await known, account.id, type, hostLabels, from !== undefined);
+				const hosts = requireHosts(
+					await known,
+					account.id,
+					type,
+					hostLabels,
+					from !== undefined,
+					await mayShare(principal),
+				);
 				const name = body.name ?? generatedName();
 				const sandbox: StoredSandbox = {
 					id: randomId("sbx"),
@@ -1807,7 +1849,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError("invalid", "A personal account's sandboxes are always private");
 				}
 				await requireCapacity(current.accountId, count);
-				const hosts = requireHosts(await ensureHosts(), current.accountId, current.type, current.hostLabels, true);
+				const hosts = requireHosts(
+					await ensureHosts(),
+					current.accountId,
+					current.type,
+					current.hostLabels,
+					true,
+					await mayShare(principal),
+				);
 				const forks: StoredSandbox[] = [];
 				for (let index = 0; index < count; index++) {
 					const name =
@@ -1890,7 +1939,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (current.state !== "running" && current.state !== "error") {
 				throw new KantelError("conflict", `A ${current.state} sandbox is started or resumed, not recovered`);
 			}
-			const hosts = requireHosts(await ensureHosts(), current.accountId, current.type, current.hostLabels, true);
+			const hosts = requireHosts(
+				await ensureHosts(),
+				current.accountId,
+				current.type,
+				current.hostLabels,
+				true,
+				await mayShare(principal),
+			);
 			const fromSnapshot = await latestRef(current);
 			const began = await transition(current.id, current.state, (latest) =>
 				withState(latest, "starting", { ports: [] }),
@@ -2753,7 +2809,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (current.type === "isolate" && body.size !== undefined)
 			throw new KantelError("invalid", "Isolates have no size");
 		await requireCapacity(current.accountId, 1);
-		const hosts = requireHosts(await ensureHosts(), current.accountId, current.type, current.hostLabels, true);
+		const hosts = requireHosts(
+			await ensureHosts(),
+			current.accountId,
+			current.type,
+			current.hostLabels,
+			true,
+			await mayShare(principal),
+		);
 		const fromSnapshot = await latestRef(current);
 		const began = await transition(current.id, current.state, (latest) =>
 			withState(latest, "starting", {
