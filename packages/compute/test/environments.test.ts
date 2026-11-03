@@ -1200,6 +1200,21 @@ describe("egress updates", () => {
 		expect(cleared?.egress).toBeUndefined();
 		expect(cleared?.revision).toBeGreaterThan(stored?.egressRevision ?? 0);
 	});
+
+	it("start each boot on a revision of its own, so a retry read while it last ran always loses", async () => {
+		const { api, tom } = setup();
+		const sandbox = await tom.createSandbox({ wait: true });
+		await tom.putSandboxGrants(sandbox.id, { grants: [{ action: "deny", host: "old.example" }] });
+		await api.service.idle();
+		// What a held retry from this run would carry.
+		const before = (await api.store.sandboxes.get(sandbox.id))?.egressRevision ?? 0;
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		await tom.startSandbox(sandbox.id, { wait: true });
+		const booted = await api.store.sandboxes.get(sandbox.id);
+		expect(booted?.state).toBe("running");
+		expect(booted?.egressRevision).toBeGreaterThan(before);
+		expect(booted?.egressApplied).toBe(booted?.egressRevision);
+	});
 });
 
 describe("a name write that is held up", () => {

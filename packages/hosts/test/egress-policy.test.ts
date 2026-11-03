@@ -254,6 +254,42 @@ describe("a sandbox given a grant while it starts", () => {
 	});
 });
 
+describe("a sandbox on a host that can't enforce grants, given one while its boot reconciles", () => {
+	for (const where of ["sandbox", "environment"] as const) {
+		it(`fails, its machine gone, rather than run without it (a ${where} grant)`, async () => {
+			const { api, root, host } = await setup();
+			const environment = await root.createEnvironment({ name: "plain" });
+			const gates = new Map<string, () => void>();
+			const holding = new Set(["sandbox.create", "sandbox.egress"]);
+			host.hold = (method) => {
+				if (!holding.has(method)) return undefined;
+				holding.delete(method);
+				return new Promise<void>((resolve) => gates.set(method, resolve));
+			};
+			const sandbox = await root.createSandbox({ environment: environment.id });
+			await vi.waitFor(() => expect(gates.has("sandbox.create")).toBe(true));
+			// A change the old host can take (the account's proxy settings), so the boot sends it.
+			await root.putProxySettings({ enabled: true, defaultAction: "allow", allow: [], deny: [] });
+			gates.get("sandbox.create")?.();
+			await vi.waitFor(() => expect(gates.has("sandbox.egress")).toBe(true));
+			// While the host is slow to take it, a grant: let through (it isn't placed yet, as far as the check knows).
+			const grants = [{ action: "deny" as const, host: "evil.example" }];
+			if (where === "sandbox") await root.putSandboxGrants(sandbox.id, { grants });
+			else await root.putEnvironmentGrants(environment.id, { grants });
+			gates.get("sandbox.egress")?.();
+			await api.service.idle();
+			const after = await root.getSandbox(sandbox.id);
+			expect(after.state).toBe("error");
+			expect(after.reason).toMatch(/enforce egress grants/);
+			expect(host.calls.some((call) => call.method === "sandbox.delete")).toBe(true);
+			// The one update it was sent carried no grant.
+			const sent = host.calls.filter((call) => call.method === "sandbox.egress");
+			expect(sent).toHaveLength(1);
+			expect(JSON.stringify(sent)).not.toContain("evil.example");
+		});
+	}
+});
+
 describe("a running sandbox whose host turns out not to enforce its egress", () => {
 	it("is stopped, not left running without it", async () => {
 		const { api, root, host } = await setup();
