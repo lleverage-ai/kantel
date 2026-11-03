@@ -1,0 +1,7 @@
+# Docker build context for guest/*.Dockerfile is apps/host: only what the images copy.
+*
+!dist/kantel-guest-*
+!dist/workerd-*
+!guest/
+!isolate/config.capnp
+!isolate/dist/

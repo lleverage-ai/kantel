@@ -1,0 +1,10 @@
+#!/bin/sh
+# The sandbox's desktop: an X server that is also a VNC server (loopback only; the host reaches it over vsock), a
+# window manager, and Chromium with its DevTools port on loopback for browser access (CDP).
+export DISPLAY=:1
+Xvnc :1 -geometry "${KANTEL_DESKTOP_SIZE:-1280x800}" -depth 24 -SecurityTypes None -localhost yes -rfbport 5901 \
+	-AlwaysShared -AcceptSetDesktopSize &
+for _ in $(seq 50); do [ -e /tmp/.X11-unix/X1 ] && break; sleep 0.1; done
+openbox &
+exec chromium --no-first-run --no-default-browser-check --disable-dev-shm-usage --remote-debugging-address=127.0.0.1 \
+	--remote-debugging-port=9222 --user-data-dir=/home/user/.config/chromium-kantel --start-maximized about:blank

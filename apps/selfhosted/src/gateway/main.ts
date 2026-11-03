@@ -62,6 +62,10 @@
 //                               otherwise, as on Cloudflare's deployment
 //   KANTEL_TOOL_SERVERS        `experimental` turns on tool servers (tool-servers.ts): MCP servers sessions call for
 //                               tools over a tunnel each dials to /v1/tool-servers/{id}/connect. Unset, there are none
+//   KANTEL_COMPUTE             `experimental` turns on the compute plane (compute.ts, @kantel/hosts): machines running
+//                               kantel-host join with a token and dial out to /v1/hosts/connect; the operator's routes are
+//                               /v1/admin/hosts and /v1/admin/compute/sandboxes. Needs KANTEL_PUBLIC_URL (or
+//                               KANTEL_COMPUTE_PUBLIC_URL). Unset, there is none
 //   KANTEL_SUBAGENTS           the `subagent` tool (subagents.ts, @kantel/subagents): a session hands a task to a child
 //                               session of the same agent and gets its answer. On unless set to anything but `on`
 //                               (`off`, say)
@@ -77,6 +81,7 @@ import { fileURLToPath } from "node:url";
 import { browserBinding, browserConfig, createBrowserViews, gatewayBrowserProvider } from "./browser.ts";
 import { callbackUrlAllowed, parseCallbackOrigins } from "./callbacks.ts";
 import { type Bootstrap, bootstrap, createGatewayComponents, putAssistantProfile } from "./components.ts";
+import { computeConfig, hostImages, withHostUpgrades } from "./compute.ts";
 import { connectionsConfig } from "./connections.ts";
 import { createDurableGatewayComponents, type DurableConfig } from "./durable.ts";
 import { importPolicyFile } from "./egress.ts";
@@ -123,7 +128,9 @@ export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
 	const connections = connectionsConfig(env, publicUrl === "" ? undefined : new URL(publicUrl).origin);
 	const environments = environmentsConfig(env);
 	const containers = containerTierConfig(env);
+	const compute = computeConfig(env);
 	return {
+		...(compute === undefined ? {} : { compute }),
 		sessionTools: sessionToolsConfig(env),
 		...(environments === undefined ? {} : { environments }),
 		...(containers === undefined ? {} : { containers }),
@@ -260,6 +267,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 					...browser,
 					...(cfg.connections === undefined ? {} : { connections: cfg.connections }),
 					...(cfg.toolServers === true ? { toolServers: true } : {}),
+					...(cfg.compute === undefined ? {} : { compute: cfg.compute }),
 					...(cfg.environments === undefined ? {} : { environments: cfg.environments }),
 					// In memory there is no token table: containers reach the vault proxy with no session token.
 					...(cfg.containers === undefined ? {} : { containers: await prepareContainerTier(cfg.containers) }),
@@ -272,6 +280,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 					...browser,
 					...(cfg.connections === undefined ? {} : { connections: cfg.connections }),
 					...(cfg.toolServers === true ? { toolServers: true } : {}),
+					...(cfg.compute === undefined ? {} : { compute: cfg.compute }),
 					...(cfg.environments === undefined ? {} : { environments: cfg.environments }),
 					...(cfg.containers === undefined ? {} : { containers: cfg.containers }),
 					subagents: cfg.subagents,
@@ -366,11 +375,24 @@ export async function serveGateway(cfg = gatewayConfig()) {
 			? { embedOrigins: cfg.browser.embedOrigins }
 			: {}),
 		...(cfg.publicOrigin === undefined ? {} : { publicOrigin: cfg.publicOrigin }),
+		// The hosts' operators: admins of the deployment's own organisation, and the bootstrap's service.
+		...(components.compute === undefined
+			? {}
+			: { computeOperator: { organisationId: seeded.organisationId, key: seeded.apiKey } }),
+		...(components.compute === undefined || cfg.compute?.images === undefined
+			? {}
+			: { computeImages: hostImages(cfg.compute.images) }),
 	});
 	const tunnels = components.toolServers === undefined ? undefined : toolServerUpgrades(components.toolServers);
-	const onUpgrade = withToolServerUpgrades(
-		tunnels,
-		browserViews === undefined ? undefined : (incoming, socket, head) => browserViews.upgrade(incoming, socket, head),
+	const onUpgrade = withHostUpgrades(
+		components.compute,
+		gateway.computeOperator === undefined
+			? undefined
+			: (request) => gateway.computeOperator?.(request) ?? Promise.resolve(false),
+		withToolServerUpgrades(
+			tunnels,
+			browserViews === undefined ? undefined : (incoming, socket, head) => browserViews.upgrade(incoming, socket, head),
+		),
 	);
 	const server = await listen(gateway.fetch, cfg.port, {
 		host: cfg.host,
@@ -385,6 +407,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 
 	const shutdown = async () => {
 		tunnels?.close();
+		components.compute?.close();
 		await gateway.close();
 		await server.close();
 		await components.close();

@@ -1,0 +1,21 @@
+{
+	"name": "@kantel/hosts",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"description": "The compute plane's control side: the host registry, join tokens, the hosts' connections, placement and sandbox dispatch to kantel-host",
+	"license": "Apache-2.0",
+	"exports": {
+		".": "./src/index.ts",
+		"./http": "./src/http.ts",
+		"./hub": "./src/hub.ts",
+		"./protocol": "./src/protocol.ts",
+		"./scheduler": "./src/scheduler.ts",
+		"./service": "./src/service.ts",
+		"./store": "./src/store.ts"
+	},
+	"dependencies": {
+		"@kantel/contracts": "workspace:*",
+		"@kantel/sql": "workspace:*"
+	}
+}

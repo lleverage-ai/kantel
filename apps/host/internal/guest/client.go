@@ -1,0 +1,261 @@
+package guest
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/lleverage-ai/kantel/apps/host/internal/vsock"
+)
+
+// Client talks to one guest's agent through Firecracker's vsock socket.
+type Client struct {
+	udsPath string
+	http    *http.Client
+}
+
+func NewClient(udsPath string) *Client {
+	dial := func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return vsock.Dial(ctx, udsPath, vsock.AgentPort)
+	}
+	return &Client{udsPath: udsPath, http: &http.Client{Transport: &http.Transport{DialContext: dial, MaxIdleConnsPerHost: 4, IdleConnTimeout: 30 * time.Second}}}
+}
+
+// Close drops idle connections (a VM about to be snapshotted or stopped).
+func (c *Client) Close() { c.http.CloseIdleConnections() }
+
+type apiError struct {
+	Status  int
+	Message string
+}
+
+func (e *apiError) Error() string { return fmt.Sprintf("guest agent %d: %s", e.Status, e.Message) }
+
+// IsNotFound reports a 404 from the agent.
+func IsNotFound(err error) bool {
+	var api *apiError
+	return errors.As(err, &api) && api.Status == 404
+}
+
+func (c *Client) do(ctx context.Context, method, path string, body io.Reader, out any) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, "http://guest"+path, body)
+	if err != nil {
+		return nil, err
+	}
+	if body != nil {
+		req.Header.Set("content-type", "application/json")
+	}
+	res, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if res.StatusCode >= 300 {
+		defer res.Body.Close()
+		var e struct {
+			Error string `json:"error"`
+		}
+		raw, _ := io.ReadAll(res.Body)
+		_ = json.Unmarshal(raw, &e)
+		if e.Error == "" {
+			e.Error = strings.TrimSpace(string(raw))
+		}
+		return nil, &apiError{Status: res.StatusCode, Message: e.Error}
+	}
+	if out != nil {
+		defer res.Body.Close()
+		return res, json.NewDecoder(res.Body).Decode(out)
+	}
+	return res, nil
+}
+
+func jsonBody(v any) io.Reader {
+	raw, _ := json.Marshal(v)
+	return bytes.NewReader(raw)
+}
+
+// Health asks once.
+func (c *Client) Health(ctx context.Context) (Health, error) {
+	var h Health
+	_, err := c.do(ctx, http.MethodGet, "/health", nil, &h)
+	return h, err
+}
+
+// WaitReady polls Health until the agent answers or ctx ends.
+func (c *Client) WaitReady(ctx context.Context) (Health, error) {
+	for {
+		attempt, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		h, err := c.Health(attempt)
+		cancel()
+		if err == nil {
+			return h, nil
+		}
+		select {
+		case <-ctx.Done():
+			return Health{}, fmt.Errorf("guest agent never answered: %w", err)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
+// WaitFor polls Health until every service in want is ready.
+func (c *Client) WaitFor(ctx context.Context, want ...string) (Health, error) {
+	for {
+		h, err := c.WaitReady(ctx)
+		if err != nil {
+			return h, err
+		}
+		have := map[string]bool{}
+		for _, r := range h.Ready {
+			have[r] = true
+		}
+		missing := false
+		for _, w := range want {
+			if !have[w] {
+				missing = true
+			}
+		}
+		if !missing {
+			return h, nil
+		}
+		select {
+		case <-ctx.Done():
+			return h, fmt.Errorf("guest services not ready (have %v, want %v)", h.Ready, want)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+func (c *Client) SetIdentity(ctx context.Context, id Identity) error {
+	_, err := c.do(ctx, http.MethodPost, "/identity", jsonBody(id), &map[string]any{})
+	return err
+}
+
+func (c *Client) Sync(ctx context.Context) error {
+	_, err := c.do(ctx, http.MethodPost, "/sync", nil, &map[string]any{})
+	return err
+}
+
+func (c *Client) Exec(ctx context.Context, req ExecRequest) (ExecResult, error) {
+	req.Stream = false
+	var out ExecResult
+	_, err := c.do(ctx, http.MethodPost, "/exec", jsonBody(req), &out)
+	return out, err
+}
+
+// ExecStream runs a command and calls onEvent for each line until its exit.
+func (c *Client) ExecStream(ctx context.Context, req ExecRequest, onEvent func(ExecEvent) error) error {
+	req.Stream = true
+	res, err := c.do(ctx, http.MethodPost, "/exec", jsonBody(req), nil)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	scanner := bufio.NewScanner(res.Body)
+	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
+	for scanner.Scan() {
+		var event ExecEvent
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			return err
+		}
+		if err := onEvent(event); err != nil {
+			return err
+		}
+		if event.Exit != nil || event.Error != "" {
+			return nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	return errors.New("command stream ended without an exit")
+}
+
+func (c *Client) ReadFile(ctx context.Context, path string) ([]byte, uint32, error) {
+	res, err := c.do(ctx, http.MethodGet, "/files?path="+url.QueryEscape(path), nil, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer res.Body.Close()
+	raw, err := io.ReadAll(res.Body)
+	mode, _ := strconv.ParseUint(res.Header.Get("x-file-mode"), 8, 32)
+	return raw, uint32(mode), err
+}
+
+func (c *Client) WriteFile(ctx context.Context, path string, data []byte, mode uint32) error {
+	q := url.Values{"path": {path}}
+	if mode != 0 {
+		q.Set("mode", strconv.FormatUint(uint64(mode), 8))
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, "http://guest/files?"+q.Encode(), bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	res, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 300 {
+		raw, _ := io.ReadAll(res.Body)
+		return &apiError{Status: res.StatusCode, Message: strings.TrimSpace(string(raw))}
+	}
+	return nil
+}
+
+func (c *Client) DeleteFile(ctx context.Context, path string, recursive bool) error {
+	q := url.Values{"path": {path}}
+	if recursive {
+		q.Set("recursive", "true")
+	}
+	_, err := c.do(ctx, http.MethodDelete, "/files?"+q.Encode(), nil, &map[string]any{})
+	return err
+}
+
+func (c *Client) ListFiles(ctx context.Context, path string) ([]FileEntry, error) {
+	var out struct {
+		Entries []FileEntry `json:"entries"`
+	}
+	_, err := c.do(ctx, http.MethodGet, "/files/list?path="+url.QueryEscape(path), nil, &out)
+	return out.Entries, err
+}
+
+// DialPort opens a byte stream to a TCP port on the guest's loopback.
+func (c *Client) DialPort(ctx context.Context, port int) (net.Conn, error) {
+	conn, err := vsock.Dial(ctx, c.udsPath, vsock.AgentPort)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(conn, "GET /ports/%d HTTP/1.1\r\nHost: guest\r\nConnection: Upgrade\r\nUpgrade: %s\r\n\r\n", port, PortUpgrade)
+	reader := bufio.NewReader(conn)
+	res, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	if res.StatusCode != http.StatusSwitchingProtocols {
+		raw, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+		conn.Close()
+		return nil, &apiError{Status: res.StatusCode, Message: strings.TrimSpace(string(raw))}
+	}
+	if reader.Buffered() > 0 {
+		return &readerConn{Conn: conn, reader: reader}, nil
+	}
+	return conn, nil
+}
+
+type readerConn struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (c *readerConn) Read(p []byte) (int, error) { return c.reader.Read(p) }

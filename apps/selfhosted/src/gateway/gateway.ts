@@ -40,12 +40,14 @@ import {
 	type Authenticator,
 	type CallContext,
 	callContextFor,
+	KantelError,
 	OTP_START_PATH,
 	OTP_VERIFY_PATH,
 	relyingPartyFor,
 	SESSION_END_PATH,
 } from "@kantel/contracts";
 import { boatWebhookPath, isEnvironmentsPath } from "@kantel/environments/http";
+import { createHostsApi, HOSTS_REGISTER_PATH, isHostsPath } from "@kantel/hosts/http";
 import { createAuthenticator, withAuthentication } from "@kantel/identity/authenticator";
 import { createIdentityHandler, isIdentityPath } from "@kantel/identity/http";
 import { type InviteMailer, isInviteMailer } from "@kantel/identity/invites";
@@ -107,6 +109,13 @@ export interface GatewayOptions {
 	 * made for and checked against. Default: the request's origin, which behind a TLS proxy is `http:`, so set it there.
 	 */
 	readonly publicOrigin?: string;
+	/**
+	 * Who operates the compute plane's hosts (`/v1/admin/hosts`, `/v1/admin/compute/...`): admins of the deployment's
+	 * own organisation, and the bootstrap's service (its key). Without it, those routes refuse everyone.
+	 */
+	readonly computeOperator?: { readonly organisationId: string; readonly key?: string };
+	/** The host images `kantel-host install` fetches (`GET /v1/hosts/images/...`, `compute.ts`'s `hostImages`). */
+	readonly computeImages?: (request: Request) => Promise<Response | undefined>;
 }
 
 /** Who sent a request, as the HTTP server saw it: never from a header the client could set. */
@@ -116,6 +125,11 @@ export interface ClientInfo {
 
 export interface Gateway {
 	fetch(request: Request, client?: ClientInfo): Promise<Response>;
+	/**
+	 * Whether a request comes from the compute plane's operator, for its upgrades (a sandbox's port over a WebSocket).
+	 * Undefined without the compute plane.
+	 */
+	computeOperator?(request: Request): Promise<boolean>;
 	close(): Promise<void>;
 }
 
@@ -335,6 +349,45 @@ export function createGateway(options: GatewayOptions): Gateway {
 					return (await toolServersApi.fetch(request)) ?? notFound();
 				});
 
+	// The compute plane (`compute.ts`): a host registers with its join token alone; the rest is the operator's (on
+	// Cloudflare, a super-admin), never an agent: an admin of the deployment's own organisation, or the bootstrap's
+	// service, whose key the bootstrap file holds.
+	const compute = components.compute;
+	const operator = options.computeOperator;
+	let operatorService: Promise<string | undefined> | undefined;
+	const bootstrapService = () => {
+		operatorService ??= (async () => {
+			if (operator?.key === undefined) return undefined;
+			const caller = await authenticator
+				.authenticate(new Request("http://gateway/", { headers: { authorization: `Bearer ${operator.key}` } }))
+				.catch(() => undefined);
+			return caller?.actor.kind === "service" ? caller.actor.serviceId : undefined;
+		})();
+		return operatorService;
+	};
+	const computeAuthorize =
+		compute === undefined
+			? undefined
+			: async (request: Request) => {
+					const ctx = await signedIn(request);
+					if (operator === undefined || ctx.organisationId !== operator.organisationId || ctx.actor.kind === "agent") {
+						throw new KantelError("forbidden", "Only the deployment's operators manage hosts");
+					}
+					if (ctx.actor.kind === "service" && ctx.actor.serviceId === (await bootstrapService())) return;
+					await organisationAdmin(ctx);
+				};
+	const computeApi =
+		compute === undefined || computeAuthorize === undefined
+			? undefined
+			: createHostsApi({ hosts: compute, authorizeAdmin: computeAuthorize });
+	const computeAdmin =
+		computeApi === undefined
+			? undefined
+			: withAuthentication(authenticator, async (request, caller) => {
+					callers.set(request, callContextFor(caller));
+					return (await computeApi.fetch(request)) ?? notFound();
+				});
+
 	// Programs (`session-tools.ts`): the service's own checks decide who saves and runs what, as on Cloudflare.
 	const programsApi =
 		components.programs === undefined
@@ -422,6 +475,14 @@ export function createGateway(options: GatewayOptions): Gateway {
 					return await connections(request);
 				}
 				if (toolServers !== undefined && isToolServersPath(path)) return await toolServers(request);
+				if (computeApi !== undefined && computeAdmin !== undefined && isHostsPath(path)) {
+					// Registration carries its own authority, the join token.
+					if (path === HOSTS_REGISTER_PATH) return (await computeApi.fetch(request)) ?? notFound();
+					return await computeAdmin(request);
+				}
+				if (computeApi !== undefined && path.startsWith("/v1/hosts/images/")) {
+					return (await options.computeImages?.(request)) ?? notFound();
+				}
 				if (isProgramsPath(path)) return programs === undefined ? notFound() : await programs(request);
 				if (modelProviders !== undefined && isModelProvidersPath(path)) return await modelProviders(request);
 				if (environmentsApi !== undefined && path === boatWebhookPath()) {
@@ -461,6 +522,19 @@ export function createGateway(options: GatewayOptions): Gateway {
 				return json({ error: { code: "unavailable", message: "The gateway could not answer" } }, 500);
 			}
 		},
+		...(computeAuthorize === undefined
+			? {}
+			: {
+					async computeOperator(request: Request) {
+						try {
+							callers.set(request, callContextFor(await authenticator.authenticate(request)));
+							await computeAuthorize(request);
+							return true;
+						} catch {
+							return false;
+						}
+					},
+				}),
 		async close() {
 			await sessions.close();
 		},

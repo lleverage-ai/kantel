@@ -306,6 +306,9 @@ importers:
       "@kantel/environments":
         specifier: workspace:*
         version: link:../../packages/environments
+      "@kantel/hosts":
+        specifier: workspace:*
+        version: link:../../packages/hosts
       "@kantel/identity":
         specifier: workspace:*
         version: link:../../packages/identity
@@ -602,6 +605,15 @@ importers:
       "@kantel/api":
         specifier: workspace:*
         version: link:../api
+      "@kantel/contracts":
+        specifier: workspace:*
+        version: link:../contracts
+      "@kantel/sql":
+        specifier: workspace:*
+        version: link:../sql
+
+  packages/hosts:
+    dependencies:
       "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
