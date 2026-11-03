@@ -45,7 +45,7 @@
 			}
 		},
 		{
-			"includes": ["packages/tunnel/src/**"],
+			"includes": ["packages/tunnel/src/**", "packages/cli/src/**"],
 			"linter": {
 				"rules": {
 					"correctness": { "noNodejsModules": "off" }
