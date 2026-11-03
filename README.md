@@ -16,17 +16,17 @@ Each package, app and target has a README, and each component package has a `CON
 | Path | What |
 | --- | --- |
 | `apps/cloudflare` | The Cloudflare deployment: one Worker, its Durable Objects, D1 and R2 |
-| `apps/selfhosted` | The self-hosted gateway and session hosts |
+| `apps/selfhosted` | The self-hosted gateway: the console, the compute plane's API, identity and audit |
 | `apps/console` | The console, the web app people use |
 | `apps/model-gateway` | The model gateway, which serves every model call |
 | `apps/vault-proxy` | The egress proxy that injects credentials for sandboxes |
 | `packages/contracts` | The TypeScript interfaces every component and target implements |
 | `packages/*` | The components (runtime, workspace, sandbox, vault, connections, browser, skills, memory, rules, schedules, audit, identity, models and more), the public API and SDK (`packages/api`), the component library (`packages/ui`) and the conformance suites (`packages/testing`) |
 | `targets/cloudflare/*`, `targets/selfhosted/*` | Each target's implementations of the contracts |
-| `deploy/compose`, `deploy/kubernetes` | Running the self-hosted stack with Docker Compose or on Kubernetes |
+| `deploy/compose` | Running the self-hosted stack with Docker Compose |
 | `images/*` | Container images: the sandbox, the browser, the isolate host and the Git mirror |
 | `examples/*` | Example host apps |
-| `spike`, `spikes/*` | The scripted scenario and conformance runs the self-hosted CI uses |
+| `spikes/*` | Earlier spikes, kept for reference |
 | `docs/site` | The documentation site |
 
 ## Development

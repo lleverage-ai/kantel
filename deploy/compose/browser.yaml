@@ -1,4 +1,3 @@
-# Kantel's own browsers are part of compose.yaml now (`browser-image`, `browser-host` and the gateway's
-# KANTEL_BROWSER_* settings), so every install has them. This overlay is kept, empty, so a COMPOSE_FILE or a `-f`
-# that still names it keeps working; it adds nothing. See compose.yaml and README.md, "Kantel's own browsers".
+# Kantel's own browsers were the agent plane's sessions' browsers, and were removed with it. This overlay is kept,
+# empty, so a COMPOSE_FILE or a `-f` that still names it keeps working; it adds nothing.
 services: {}

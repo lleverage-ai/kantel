@@ -1,25 +1,15 @@
 name: self-hosted
 
-# Not a pull request check: two runners can't run this ~9-minute stack for every push to every pull request. main.yml
-# calls it for main's newest head and deploys only if it passes. A pull request that changes the stack, its images or
-# this workflow can run it on demand: `gh workflow run selfhosted-spike.yml --ref <branch>`.
+# Not a pull request check: main.yml calls it for main's newest head and deploys only if it passes. A pull request that
+# changes the stack, its image or this workflow can run it on demand: `gh workflow run selfhosted-spike.yml --ref
+# <branch>`.
 #
-# `egress_source: vault` runs the same suite with the egress proxy taking its decisions from the vault (#209,
-# experimental): `gh workflow run selfhosted-spike.yml --ref <branch> -f egress_source=vault`. main.yml leaves it at
-# `static`, the default a deployment gets, so an experimental path never decides whether main deploys.
+# The stack is deploy/compose/compose.yaml: the gateway (the console, the compute plane's API, identity and audit),
+# Postgres and Mailpit. The checks below drive it as a deployment would: sign-in, keys, the compute plane, the bindings
+# on its Postgres and Mailpit, and a restart that keeps the deployment.
 on:
-  workflow_call:
-    inputs:
-      egress_source:
-        type: string
-        default: static
-  workflow_dispatch:
-    inputs:
-      egress_source:
-        description: Where the egress proxy takes its decisions from
-        type: choice
-        options: [static, vault]
-        default: static
+  workflow_call: {}
+  workflow_dispatch: {}
 
 # Two self-hosted runners run every workflow's jobs one at a time each, so a second run by hand on
 # the same branch replaces the first rather than queueing behind it. "Tear down" runs on cancel too and removes the
@@ -33,17 +23,9 @@ jobs:
   selfhosted:
     # Kantel's own self-hosted runner: GitHub-hosted runners stopped at the Actions budget.
     runs-on: [self-hosted, harbour]
-    timeout-minutes: 40
+    timeout-minutes: 30
     env:
-      KANTEL_CANARY_SECRET: ci-canary-${{ github.run_id }}-${{ github.run_attempt }}
-      KANTEL_VAULT_ISOLATE_KEY: ci-isolate-${{ github.run_id }}
-      # Every compose command and script below reads COMPOSE_FILE. With `egress_source: vault` (experimental, #18) the
-      # egress proxy takes its decisions from the vault (KANTEL_EGRESS_SOURCE=vault), set up by
-      # deploy/compose/egress-vault.yaml on top of compose.yaml. The vault injects only over https, so the scripted task
-      # then fetches the research fixture over https.
-      COMPOSE_FILE: ${{ inputs.egress_source == 'vault' && 'deploy/compose/compose.yaml:deploy/compose/egress-vault.yaml' || 'deploy/compose/compose.yaml' }}
-      KANTEL_EGRESS_KEY: ci-egress-${{ github.run_id }}-${{ github.run_attempt }}
-      KANTEL_RESEARCH_URL: ${{ inputs.egress_source == 'vault' && 'https://research-site/' || 'http://research-site/' }}
+      COMPOSE_FILE: deploy/compose/compose.yaml
       # The stack runs in a Docker daemon of its own (see "Start this run's Docker daemon"), not the host's.
       DIND_NAME: harbour-ci-dind-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
@@ -58,8 +40,8 @@ jobs:
           npm install --global bun@1.3.14
           bun --version
 
-      # The workspace install (as ci.yml does it), so the self-hosted tests can
-      # import the workspace packages and their conformance suites.
+      # The workspace install (as ci.yml does it), so the self-hosted tests can import the workspace packages and
+      # their conformance suites.
       - name: Install
         run: |
           npm install --global corepack@0.36.0
@@ -69,24 +51,15 @@ jobs:
       - name: Typecheck
         run: pnpm --filter @kantel/selfhosted typecheck
 
-      - name: Vault redaction tests
-        working-directory: apps/vault-proxy
-        run: bun test
-
-      # The runner shares the host's Docker with other Kantel stacks, and the session hosts' sandbox janitor removes
-      # every `harbour.owner` container on its daemon whose owner it doesn't know: stacks on one daemon delete each
-      # other's sandboxes. So this run's stack gets a Docker daemon of its own, a throwaway docker:dind container
-      # (privileged, on the default bridge, never the host network), and every docker and compose command below talks
-      # to it over TLS. The stack keeps compose.yaml's defaults inside it: nothing it publishes reaches the host's
-      # ports, so it can't clash with the host's stacks or another run.
+      # The runner shares the host's Docker with other Kantel stacks, so this run's stack gets a Docker daemon of its
+      # own, a throwaway docker:dind container (privileged, on the default bridge, never the host network), and every
+      # docker and compose command below talks to it over TLS. The stack keeps compose.yaml's defaults inside it:
+      # nothing it publishes reaches the host's ports, so it can't clash with the host's stacks or another run.
       #
       # The daemon starts with an empty image store, so every run pulls each base image again, and the runners share one
       # address: Docker Hub's unauthenticated pull limit stopped "Bring up the stack" with 429 toomanyrequests. The daemon
       # pulls through Google's public Docker Hub mirror (mirror.gcr.io) first, and from Docker Hub only if the mirror
       # fails.
-      #
-      # compose.yaml bind-mounts two files from the checkout (the vault policy and the research site), which the
-      # daemon resolves on its own filesystem: the checkout is mounted into it, read-only, at the same path.
       #
       # compose.yaml publishes on 127.0.0.1, which inside the daemon is its own loopback. One socat per published port,
       # on the daemon's network namespace, forwards the daemon's bridge address to it; the tests use that address.
@@ -94,7 +67,6 @@ jobs:
         run: |
           docker run --detach --privileged --name "$DIND_NAME" \
             --env DOCKER_TLS_CERTDIR=/certs --volume /var/lib/docker \
-            --volume "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE:ro" \
             docker:29-dind --registry-mirror=https://mirror.gcr.io
           for _ in $(seq 1 60); do
             docker exec "$DIND_NAME" docker info >/dev/null 2>&1 && break
@@ -107,7 +79,7 @@ jobs:
           docker cp "$DIND_NAME:/certs/client" "$certs"
           export DOCKER_HOST="tcp://$ip:2376" DOCKER_TLS_VERIFY=1 DOCKER_CERT_PATH="$certs"
           docker info --format 'reached {{.Name}} over TLS'
-          for port in 55432 59000 58080 58081 58082 58090 58025 58125; do
+          for port in 55432 58090 58025 58125; do
             docker run --detach --network host --name "forward-$port" alpine/socat:1.8.0.3 \
               "tcp-listen:$port,fork,reuseaddr,bind=$ip" "tcp:127.0.0.1:$port"
           done
@@ -118,7 +90,6 @@ jobs:
             echo "STACK=$ip"
             # What the tests run outside the stack connect to.
             echo "KANTEL_DATABASE_URL=postgres://harbour:harbour@$ip:55432/harbour"
-            echo "S3_ENDPOINT=http://$ip:59000"
           } >> "$GITHUB_ENV"
 
       # Compose needs buildx to build with BuildKit; without it, it falls back to the classic builder, which ignores
@@ -130,66 +101,31 @@ jobs:
           version: v0.37.2
           driver: docker
 
+      # As the installer does it.
       - name: Bring up the stack
-        run: docker compose up -d --build --wait
+        run: docker compose up -d --build --wait --remove-orphans
 
-      # The proxy decides with the vault, and says so; the gateway imported the policy file's credentialed routes.
-      - name: Egress decisions come from the vault
-        if: inputs.egress_source == 'vault'
-        run: |
-          docker compose exec -T vault-proxy node -e "fetch('http://127.0.0.1:3128/healthz').then(async (r) => { const h = await r.json(); console.log(h); process.exit(h.source === 'vault' && h.ok ? 0 : 1); })"
-          docker compose logs --no-color gateway | grep -F 'egress grants from /etc/harbour/vault-policy.json'
-
-      # With the gateway down, the vault's routes are refused, saying why, and never fall back to the policy file's
-      # credentials; then the gateway comes back and they work again.
-      - name: The proxy fails closed without the vault
-        if: inputs.egress_source == 'vault'
-        run: |
-          docker compose cp apps/vault-proxy/test/connect-probe.mjs vault-proxy:/tmp/connect-probe.mjs
-          # Each probe and each check on its own line, so either failing fails the step.
-          probe() {
-            docker compose exec -T vault-proxy node /tmp/connect-probe.mjs "$@" > "$RUNNER_TEMP/probe.txt"
-            cat "$RUNNER_TEMP/probe.txt"
-          }
-          probe research-site / ci-probe
-          grep -q '^200 ' "$RUNNER_TEMP/probe.txt"
-          probe api.github.com /zen ci-probe
-          grep -q '^403 .*No active grant or policy allows GET api.github.com/zen' "$RUNNER_TEMP/probe.txt"
-          docker compose stop gateway
-          probe research-site / ci-probe
-          grep -q '^403 .*the vault could not be asked' "$RUNNER_TEMP/probe.txt"
-          docker compose up -d --wait --no-deps gateway
-          probe research-site / ci-probe
-          grep -q '^200 ' "$RUNNER_TEMP/probe.txt"
-
-      # Includes the gateway's in-process test (apps/selfhosted/test/gateway).
-      - name: Conformance (--target=selfhosted)
-        run: bun spike/conformance/run.ts --target=selfhosted --base "http://$STACK:58081"
-
-      # The gateway in the stack: identity, the compute plane, audit queries and
-      # the console, over HTTP behind the API-key authenticator; then mail: a
-      # message sent through the gateway's KANTEL_SMTP_URL reaches Mailpit,
-      # where the email one-time PIN test will read its codes (#15).
+      # The gateway in the stack: identity, the compute plane, audit queries and the console, over HTTP behind the
+      # API-key authenticator; then mail: a message sent through the gateway's KANTEL_SMTP_URL reaches Mailpit, where
+      # the email one-time PIN test reads its codes (#15).
       - name: Gateway and Mailpit end to end
         run: >
           bun apps/selfhosted/test/gateway/stack.ts
           --base-url "http://$STACK:58090"
           --mailpit-url "http://$STACK:58025"
 
-      # Each real implementation the self-hosted deployment binds (runtime,
-      # audit, identity and OTP sign-in, workspaces, vault) against its
-      # contract's conformance suite, on this stack's Postgres, MinIO and
-      # Mailpit. The table goes to the job summary.
+      # Each real implementation the self-hosted deployment binds (audit, identity and OTP sign-in, the gateway's
+      # Postgres tables) against its contract's conformance suite, on this stack's Postgres and Mailpit. The table goes
+      # to the job summary.
       - name: Bindings against the stack
         run: >
           bun apps/selfhosted/test/bindings.ts --markdown "$GITHUB_STEP_SUMMARY"
           --postgres-url "$KANTEL_DATABASE_URL"
-          --s3-endpoint "$S3_ENDPOINT"
           --smtp-url "smtp://$STACK:58125?starttls=off"
           --mailpit-url "http://$STACK:58025"
 
-      # The gateway runs on those bindings: restarted, it must keep its
-      # deployment (the bootstrap key and the compute plane's key still work).
+      # The gateway runs on those bindings: restarted, it must keep its deployment (the bootstrap key and the compute
+      # plane's key still work).
       - name: Gateway after a restart
         run: |
           compose="docker compose"
@@ -203,55 +139,21 @@ jobs:
           fi
           bun apps/selfhosted/test/gateway/stack.ts --base-url "http://$STACK:58090" --mailpit-url "http://$STACK:58025"
 
-      - name: Scripted task
-        run: bun spike/scenario/run.ts --base "http://$STACK:58081"
-
-      - name: Kill the session owner mid tool call
-        run: >
-          bun spike/scenario/run.ts --crash
-          --kill-cmd "docker compose kill host-a"
-          --base "http://$STACK:58081"
-          --fallback "http://$STACK:58082"
-
-      # --no-deps: bring back host-a only. Without it compose on the runner
-      # also recreated the isolate host, vault proxy and migrations.
-      - name: Bring the killed host back
-        run: docker compose up -d --wait --no-deps host-a
-
-      # The scenario script shared with the Cloudflare target (#3).
-      # It needs the public internet: example.com, postman-echo.com, api.github.com.
-      # Each run prints its verdict and any failed checks on stderr; the full
-      # JSON reports are printed below if the job fails.
-      - name: Shared scenario (spikes/scenario/run.ts), normal and crash
-        if: hashFiles('spikes/scenario/run.ts') != ''
-        # The scenario is a historical spike and keeps its Harbour-era names.
-        env:
-          HARBOUR_SPIKE_TOKEN: unused-on-selfhosted
-          HARBOUR_CANARY: ci-canary-${{ github.run_id }}-${{ github.run_attempt }}
-        run: |
-          bun spikes/scenario/run.ts --base-url "http://$STACK:58081" > "$RUNNER_TEMP/shared-scenario.json"
-          bun spikes/scenario/run.ts --base-url "http://$STACK:58081" --kill-after-exec 2 > "$RUNNER_TEMP/shared-scenario-crash.json"
-
-      - name: Canary appears nowhere
-        run: deploy/compose/scripts/check-canary.sh
-
-      - name: Shared scenario reports on failure
-        if: failure()
-        run: |
-          for f in "$RUNNER_TEMP"/shared-scenario*.json; do
-            [ -f "$f" ] || continue
-            echo "::group::$(basename "$f")"
-            cat "$f"
-            echo "::endgroup::"
-          done
+      # The gateway's in-process tests on Bun, the runtime its image runs it on (ci.yml runs them on Node). Postgres
+      # tests skip here: "Bindings against the stack" runs them on the stack's. After the stack's checks, so those
+      # report whatever this finds.
+      - name: Gateway tests on Bun
+        if: success() || failure()
+        working-directory: apps/selfhosted
+        run: bun test ./test/gateway/
 
       # Only once this run's daemon is up: before that, compose would read the host's default `kantel` stack.
       - name: Logs on failure
         if: failure() && env.STACK != ''
         run: docker compose logs --no-color --timestamps --tail 300
 
-      # On the host's daemon: removing the daemon's container and its anonymous volume removes the whole stack,
-      # its images and its sandboxes with it.
+      # On the host's daemon: removing the daemon's container and its anonymous volume removes the whole stack and its
+      # images with it.
       - name: Tear down
         if: always()
         run: |
@@ -271,4 +173,4 @@ jobs:
             echo "::error::could not confirm $DIND_NAME was removed"
             exit 1
           fi
-          rm -rf "$RUNNER_TEMP/$DIND_NAME-certs" "$RUNNER_TEMP"/shared-scenario*.json
+          rm -rf "$RUNNER_TEMP/$DIND_NAME-certs"
