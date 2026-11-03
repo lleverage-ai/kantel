@@ -255,6 +255,11 @@ func (h *Host) floorFile(sandboxID string) string {
 func (h *Host) revisionFloor(sandboxID string) int64 {
 	h.floorMu.Lock()
 	defer h.floorMu.Unlock()
+	return h.loadFloorLocked(sandboxID)
+}
+
+// loadFloorLocked is revisionFloor with floorMu held: read from disk the first time, which is then what is durable.
+func (h *Host) loadFloorLocked(sandboxID string) int64 {
 	if v, ok := h.floors[sandboxID]; ok {
 		return v
 	}
@@ -266,36 +271,78 @@ func (h *Host) revisionFloor(sandboxID string) int64 {
 	}
 	if h.floors == nil {
 		h.floors = map[string]int64{}
+		h.durable = map[string]int64{}
 	}
 	h.floors[sandboxID] = v
+	h.durable[sandboxID] = v
 	return v
 }
 
-// raiseFloor records that the host took a sandbox's egress at revision (it never goes down), on disk before it is
-// relied on: a write that fails leaves it in memory, as before the floor was kept.
-func (h *Host) raiseFloor(sandboxID string, revision int64) {
-	if revision <= 0 || revision <= h.revisionFloor(sandboxID) {
-		return
+// floorWriteAttempts is how many times a floor write is tried before the call that needs it fails.
+const floorWriteAttempts = 3
+
+// errFloorUnsaved is a floor write that failed: the egress was applied, but its ordering isn't durable yet, so the
+// call fails and is retried (the same revision is taken again, and its floor written again).
+var errFloorUnsaved = &proto.Error{Code: proto.ErrUnavailable, Message: "the host couldn't save the sandbox's egress revision"}
+
+// raiseFloor records that the host took a sandbox's egress at revision (it never goes down) and writes it to disk,
+// fsynced, unless it is there already: the same revision again (a retry) writes it again if an earlier write failed.
+// An error means it is held in memory only.
+func (h *Host) raiseFloor(sandboxID string, revision int64) error {
+	if revision <= 0 {
+		return nil
 	}
 	h.floorMu.Lock()
 	defer h.floorMu.Unlock()
-	h.floors[sandboxID] = revision
+	if revision > h.loadFloorLocked(sandboxID) {
+		h.floors[sandboxID] = revision
+	}
+	want := h.floors[sandboxID]
+	if h.durable[sandboxID] >= want {
+		return nil
+	}
 	path := h.floorFile(sandboxID)
 	if path == "" {
-		return
+		return nil
 	}
-	if err := os.MkdirAll(h.floorDir(), 0o700); err != nil {
-		h.logf("egress revision floor for %s: %v", sandboxID, err)
-		return
+	var err error
+	for attempt := 0; attempt < floorWriteAttempts; attempt++ {
+		if err = writeDurably(h.floorDir(), path, []byte(strconv.FormatInt(want, 10))); err == nil {
+			h.durable[sandboxID] = want
+			return nil
+		}
+	}
+	h.logf("egress revision floor for %s: %v", sandboxID, err)
+	return errFloorUnsaved
+}
+
+// writeDurably replaces path with data atomically: a synced temporary file renamed over it, then its directory synced.
+func writeDurably(dir, path string, data []byte) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(strconv.FormatInt(revision, 10)), 0o600); err != nil {
-		h.logf("egress revision floor for %s: %v", sandboxID, err)
-		return
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	_, werr := f.Write(data)
+	serr := f.Sync()
+	cerr := f.Close()
+	if err := errors.Join(werr, serr, cerr); err != nil {
+		_ = os.Remove(tmp)
+		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		h.logf("egress revision floor for %s: %v", sandboxID, err)
+		_ = os.Remove(tmp)
+		return err
 	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }
 
 // forgetFloor drops a deleted sandbox's floor.
@@ -303,6 +350,7 @@ func (h *Host) forgetFloor(sandboxID string) {
 	h.floorMu.Lock()
 	defer h.floorMu.Unlock()
 	delete(h.floors, sandboxID)
+	delete(h.durable, sandboxID)
 	if path := h.floorFile(sandboxID); path != "" {
 		_ = os.Remove(path)
 	}
@@ -385,8 +433,11 @@ func (h *Host) setEgress(ctx context.Context, t Tier, tier string, p proto.Resum
 		return err
 	}
 	// Taken: an older one is refused from now on, a restart and a null egress notwithstanding. The same revision again
-	// still goes (it retries a CA install that failed).
-	h.raiseFloor(p.SandboxID, revision)
+	// still goes (it retries a CA install that failed, or a floor write). Not durable, the call fails, so Kantel sends it
+	// again rather than count on an ordering a restart would forget.
+	if err := h.raiseFloor(p.SandboxID, revision); err != nil {
+		return err
+	}
 	if e == nil || h.cas == nil || tier != microvm.Tier {
 		return nil
 	}

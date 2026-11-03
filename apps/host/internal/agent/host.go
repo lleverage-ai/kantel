@@ -80,6 +80,8 @@ type Host struct {
 	// or boot arriving late is ignored; kept on disk too (floorDir), across restarts.
 	floorMu sync.Mutex
 	floors  map[string]int64
+	// durable is what of floors is on disk, so a retry of the same revision writes a floor an earlier write failed to.
+	durable map[string]int64
 
 	mu sync.Mutex
 	// bySlot is each running microVM's egress, by its network slot.
@@ -464,7 +466,8 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			return nil, err
 		}
 		if p.Egress != nil {
-			h.raiseFloor(p.SandboxID, p.Egress.Revision)
+			// The tier keeps the egress with its revision, so its ordering is durable whatever the floor write does.
+			_ = h.raiseFloor(p.SandboxID, p.Egress.Revision)
 		}
 		return info, nil
 	case proto.MethodStop:
@@ -531,6 +534,12 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			}
 		}
 		if p.Egress != nil {
+			if revision > 0 {
+				// Kept with the egress by the tier, so the order holds across a restart, whatever the floor write does.
+				e := *p.Egress
+				e.Revision = revision
+				p.Egress = &e
+			}
 			// Without one the sandbox keeps its own, CA certificate included.
 			h.requireProtected(p.SandboxID, p.Egress)
 			if p.Egress, _, err = h.prepareEgress(name, p.SandboxID, p.Egress); err != nil {
@@ -539,7 +548,7 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		}
 		info, err := t.Resume(ctx, p, method == proto.MethodStart)
 		if err == nil && p.Egress != nil {
-			h.raiseFloor(p.SandboxID, revision)
+			_ = h.raiseFloor(p.SandboxID, revision)
 		}
 		return info, err
 	case proto.MethodFork:
@@ -576,7 +585,7 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			return nil, err
 		}
 		if p.Egress != nil {
-			h.raiseFloor(p.NewID, p.Egress.Revision)
+			_ = h.raiseFloor(p.NewID, p.Egress.Revision)
 		}
 		return info, nil
 	case proto.MethodDelete:

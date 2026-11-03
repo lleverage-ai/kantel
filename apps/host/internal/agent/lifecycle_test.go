@@ -656,3 +656,61 @@ func TestEgressOrderingHoldsAcrossBootsAndRestarts(t *testing.T) {
 		t.Fatalf("the floor outlived its sandbox: %v", err)
 	}
 }
+
+// A clear whose floor can't be written fails, though it was applied, so Kantel sends it again; the retry (the same
+// revision) writes the floor, and only then is it acknowledged: a restart after that still refuses an older update.
+func TestAFloorThatIsNotSavedFailsTheCallUntilARetrySavesIt(t *testing.T) {
+	tier := newLifecycleTier()
+	h := newLifecycleHost(t, tier)
+	deny := func(rev int64, host string) *proto.Egress {
+		return &proto.Egress{Mode: "proxy", Revision: rev, Grants: []proto.Grant{{Action: "deny", Host: host, Rule: "deny " + host}}}
+	}
+	held := func() *proto.Egress { e, _ := tier.EgressOf("sbx_1"); return e }
+	if err := call(t, h, proto.MethodCreate, proto.CreateParams{SandboxID: "sbx_1", Egress: deny(5, "first.example")}); err != nil {
+		t.Fatal(err)
+	}
+	// The floor's directory can't be made (a file is in its way).
+	dir := filepath.Join(h.cfg.Root, "egress-revision")
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir, []byte("in the way"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := call(t, h, proto.MethodEgress, proto.ResumeParams{SandboxID: "sbx_1", Revision: 30})
+	var perr *proto.Error
+	if !errors.As(err, &perr) || perr.Code != proto.ErrUnavailable {
+		t.Fatalf("a clear whose floor wasn't saved was acknowledged: %v", err)
+	}
+	// Applied all the same (the old policy isn't kept running), and ordered in memory meanwhile.
+	if e := held(); e != nil {
+		t.Fatalf("the clear: %+v", e)
+	}
+	if err := call(t, h, proto.MethodEgress, proto.ResumeParams{SandboxID: "sbx_1", Egress: deny(25, "old.example"), Revision: 25}); err != nil {
+		t.Fatal(err)
+	}
+	if e := held(); e != nil {
+		t.Fatalf("a stale update replaced a newer clear: %+v", e)
+	}
+	// The same clear again, once the disk is fine, saves it and is acknowledged.
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := call(t, h, proto.MethodEgress, proto.ResumeParams{SandboxID: "sbx_1", Revision: 30}); err != nil {
+		t.Fatalf("the retry: %v", err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(dir, "sbx_1")); err != nil || strings.TrimSpace(string(raw)) != "30" {
+		t.Fatalf("the retry didn't save the floor: %q %v", raw, err)
+	}
+	restarted := &Host{
+		cfg: h.cfg, log: h.log, tiers: h.tiers, order: h.order, bySlot: map[int]egress.Rules{},
+		cas: egress.NewCAStore(h.cfg.Root + "/egress-ca"),
+	}
+	restarted.secrets = protect.NewStore(restarted.fetchSecrets)
+	if err := call(t, restarted, proto.MethodEgress, proto.ResumeParams{SandboxID: "sbx_1", Egress: deny(25, "old.example"), Revision: 25}); err != nil {
+		t.Fatal(err)
+	}
+	if e := held(); e != nil {
+		t.Fatalf("after a restart, a stale update replaced a newer clear: %+v", e)
+	}
+}
