@@ -6,23 +6,23 @@ import { CommandBlock, OneTimeSecret } from "./one-time-secret.tsx";
 
 export default { title: "Primitives/One-time secret" } satisfies StoryDefault;
 
-const TOKEN = "ktt_Q7m2xK9vP4nR8sT3wB6yH2cJ5dE9aLf";
-const COMMAND = `npx @kantel/tunnel --kantel https://kantel.example.com --server ts_03warehouse --token ${TOKEN} -- <your stdio MCP server command>`;
-const URL_COMMAND = `npx @kantel/tunnel --kantel https://kantel.example.com --server ts_03warehouse --token ${TOKEN} --url http://127.0.0.1:8123/mcp`;
+const TOKEN = "kth_Q7m2xK9vP4nR8sT3wB6yH2cJ5dE9aLf";
+const COMMAND = `curl -fsSL https://kantel.example.com/install-host.sh | sh -s -- --join ${TOKEN}`;
+const RUN_COMMAND = `sudo kantel-host install --url https://kantel.example.com --token ${TOKEN}`;
 
-/** A tunnel token with the commands that use it; I've stored it hides it, as the owner forgets the secret. */
+/** A host's join token with the commands that use it; I've stored it hides it, as the owner forgets the secret. */
 function Reveal() {
 	const [shown, setShown] = useState(true);
 	if (!shown) return <Button onClick={() => setShown(true)}>Show it again (story only)</Button>;
 	return (
 		<OneTimeSecret
-			title="Copy the token for warehouse now"
+			title="Copy the join token for warehouse now"
 			secret={TOKEN}
-			secretLabel="Tunnel token"
+			secretLabel="Join token"
 			copyLabel="Copy token"
 			commands={[
-				{ label: "Run this where your MCP server runs", text: COMMAND },
-				{ label: "Or, for a Streamable HTTP server already listening on this machine", text: URL_COMMAND },
+				{ label: "Run this on the Linux machine that should run sandboxes", text: COMMAND },
+				{ label: "Or, where kantel-host is already installed", text: RUN_COMMAND },
 			]}
 			onAcknowledge={() => setShown(false)}
 		/>
@@ -49,7 +49,7 @@ export const States: Story = () => (
 			/>
 		</Section>
 		<Section title="Command block">
-			<CommandBlock command="npx @kantel/tunnel --help" label="See every option" />
+			<CommandBlock command="kantel-host --help" label="See every option" />
 		</Section>
 	</Sheet>
 );
