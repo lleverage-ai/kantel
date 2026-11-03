@@ -1282,17 +1282,15 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 			: {
 					hosts: {
 						list: () => gate(() => [...hosts.values()]),
-						join: (input) =>
+						// The command as the control plane makes it (packages/compute, createHostJoinToken): the host's name and
+						// labels go with the token, not on the command line.
+						join: () =>
 							gate(() => {
 								const token = fakeSecret("kth_");
-								const labels = Object.entries(input.labels ?? {})
-									.map(([key, value]) => ` --label ${key}=${value}`)
-									.join("");
-								const name = input.name === undefined || input.name === "" ? "" : ` --name ${input.name}`;
 								return {
 									token,
 									expiresAt: now() + HOUR,
-									command: `curl -fsSL https://kantel.dev/host.sh | sudo sh -s -- join https://kantel.example.com --token ${token}${name}${labels}`,
+									command: `curl -fsSL https://kantel.example.com/install-host.sh | sh -s -- --join ${token}`,
 								};
 							}),
 						drain: (id) =>
