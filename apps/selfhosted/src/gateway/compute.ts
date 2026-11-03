@@ -230,7 +230,7 @@ export function gatewayHosts(
 /** `GET /v1/hosts/images/{file}`: the host images `kantel-host install` fetches. */
 export const HOST_IMAGES_PATH = HOSTS_IMAGES_PATH;
 
-/** Kantel's published host images; the hosted gateway serves the same ones. */
+/** Kantel's published host images (`@kantel/hosts/http`); the hosted gateway serves the same ones. */
 export { DEFAULT_HOST_IMAGES };
 
 /** Where a host fetches the kantel-host that KANTEL_HOST_VERSION names: that version's GitHub Release. */
