@@ -1008,6 +1008,10 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 	snap := proto.SnapshotInfo{ID: snapID, SandboxID: src.meta.ID, Kind: "auto", CreatedAt: time.Now().UnixMilli(), Tier: Tier}
 	err = m.saveSnapshot(src, &snap)
 	owner, env := src.meta.Owner, src.meta.Env
+	if p.Env != nil {
+		// The fork's own: its protected placeholders aren't its source's.
+		env = p.Env
+	}
 	eg := p.Egress
 	if eg == nil {
 		eg = src.meta.Egress
@@ -1492,6 +1496,21 @@ func (m *Manager) Close() {
 	for _, r := range spare {
 		r.close()
 	}
+}
+
+// EgressOf answers a sandbox's egress as it keeps it in meta.json.
+func (m *Manager) EgressOf(id string) (*proto.Egress, error) {
+	s, err := m.get(id)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.meta.Egress == nil {
+		return nil, nil
+	}
+	e := *s.meta.Egress
+	return &e, nil
 }
 
 // SetEgress replaces a sandbox's egress; the worker's next request sees it.

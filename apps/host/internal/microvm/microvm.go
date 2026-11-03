@@ -1050,7 +1050,12 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 		src.mu.Unlock()
 		return proto.SandboxInfo{}, conflict("sandbox %s is %s", src.meta.ID, src.meta.State)
 	}
-	params := proto.CreateParams{SandboxID: p.NewID, Size: src.meta.Size, From: snapID, Env: src.meta.Env, SSHAuthorizedKeys: src.meta.SSHKeys, Egress: p.Egress, Owner: src.meta.Owner}
+	env := src.meta.Env
+	if p.Env != nil {
+		// The fork's own: its protected placeholders aren't its source's.
+		env = p.Env
+	}
+	params := proto.CreateParams{SandboxID: p.NewID, Size: src.meta.Size, From: snapID, Env: env, SSHAuthorizedKeys: src.meta.SSHKeys, Egress: p.Egress, Owner: src.meta.Owner}
 	if params.Egress == nil {
 		params.Egress = src.meta.Egress
 	}

@@ -388,3 +388,63 @@ func TestLifecycleCallsForOneSandboxDontInterleave(t *testing.T) {
 		t.Fatalf("%d calls were in the tier at once", tier.maxSeen.Load())
 	}
 }
+
+// An egress update older than the one the sandbox has is ignored, a null one's too; a newer or unordered one is
+// taken.
+func TestStaleEgressUpdateIsIgnored(t *testing.T) {
+	tier := newLifecycleTier()
+	h := newLifecycleHost(t, tier)
+	if err := call(t, h, proto.MethodCreate, proto.CreateParams{SandboxID: "sbx_1"}); err != nil {
+		t.Fatal(err)
+	}
+	deny := func(rev int64, host string) *proto.Egress {
+		return &proto.Egress{Mode: "proxy", Revision: rev, Grants: []proto.Grant{{Action: "deny", Host: host, Rule: "deny " + host}}}
+	}
+	held := func() *proto.Egress { e, _ := tier.EgressOf("sbx_1"); return e }
+	if err := call(t, h, proto.MethodEgress, proto.ResumeParams{SandboxID: "sbx_1", Egress: deny(20, "new.example"), Revision: 20}); err != nil {
+		t.Fatal(err)
+	}
+	if err := call(t, h, proto.MethodEgress, proto.ResumeParams{SandboxID: "sbx_1", Egress: deny(10, "old.example"), Revision: 10}); err != nil {
+		t.Fatal(err)
+	}
+	if e := held(); e == nil || e.Grants[0].Host != "new.example" || e.Revision != 20 {
+		t.Fatalf("a stale update replaced a newer one: %+v", e)
+	}
+	// A stale clear doesn't clear it either.
+	if err := call(t, h, proto.MethodEgress, proto.ResumeParams{SandboxID: "sbx_1", Revision: 15}); err != nil {
+		t.Fatal(err)
+	}
+	if e := held(); e == nil || e.Grants[0].Host != "new.example" {
+		t.Fatalf("a stale clear replaced a newer egress: %+v", e)
+	}
+	// A newer clear does, and one older than it is still refused once the egress is null.
+	if err := call(t, h, proto.MethodEgress, proto.ResumeParams{SandboxID: "sbx_1", Revision: 30}); err != nil {
+		t.Fatal(err)
+	}
+	if err := call(t, h, proto.MethodEgress, proto.ResumeParams{SandboxID: "sbx_1", Egress: deny(25, "old.example"), Revision: 25}); err != nil {
+		t.Fatal(err)
+	}
+	if e := held(); e != nil {
+		t.Fatalf("a stale update replaced a newer clear: %+v", e)
+	}
+	// Unordered (an older control plane) is always taken.
+	if err := call(t, h, proto.MethodEgress, proto.ResumeParams{SandboxID: "sbx_1", Egress: deny(0, "any.example")}); err != nil {
+		t.Fatal(err)
+	}
+	if e := held(); e == nil || e.Grants[0].Host != "any.example" {
+		t.Fatalf("an unordered update wasn't taken: %+v", e)
+	}
+}
+
+// The host reports that it enforces egress policy, so the control plane sends it grants and protected variables.
+func TestFactsReportEgressPolicy(t *testing.T) {
+	h := newLifecycleHost(t, newLifecycleTier())
+	f := h.makeFacts()
+	found := false
+	for _, feature := range f.Features {
+		found = found || feature == proto.FeatureEgressPolicy
+	}
+	if !found {
+		t.Fatalf("features %v", f.Features)
+	}
+}

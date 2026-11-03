@@ -84,7 +84,14 @@ type Facts struct {
 	Labels map[string]string `json:"labels,omitempty"`
 	// Egress is how sandboxes reach the internet: "open" (NAT), "proxy" (only through the egress proxy) or "none".
 	Egress string `json:"egress"`
+	// Features are what the host does beyond protocol 1 as first released (FeatureEgressPolicy). The control plane
+	// sends a sandbox a policy it must enforce only when its host reports the feature that enforces it.
+	Features []string `json:"features,omitempty"`
 }
+
+// FeatureEgressPolicy: the host enforces egress Grants (methods and paths too), swaps Protected placeholders only
+// where they are bound, refuses an egress older than its Revision, and gives a fork the Env its ForkParams name.
+const FeatureEgressPolicy = "egress-policy"
 
 // Size is a sandbox shape.
 type Size struct {
@@ -195,6 +202,9 @@ type Egress struct {
 	// Grants are the environment's then the sandbox's grants, applied on top of Allow and Deny (deny wins). A grant
 	// with methods or paths makes its host intercepted too.
 	Grants []Grant `json:"grants,omitempty"`
+	// Revision orders the control plane's egress updates for a sandbox: one older than the egress the host holds is
+	// stale (it was read before a later change) and is ignored. 0 is unordered and always taken.
+	Revision int64 `json:"revision,omitempty"`
 	// Allow and Deny are host patterns (`example.com`, `*.example.com`); deny wins. DefaultDeny refuses a host no
 	// rule names. They apply on the host's proxy, so to "proxy" sandboxes (an "open" one has its own way out).
 	Allow       []string `json:"allow,omitempty"`
@@ -305,6 +315,9 @@ type StopParams struct {
 type ResumeParams struct {
 	SandboxID string  `json:"sandboxId"`
 	Egress    *Egress `json:"egress,omitempty"`
+	// Revision (sandbox.egress) orders the update, as Egress.Revision does, null egress too: one older than the
+	// sandbox's is ignored.
+	Revision int64 `json:"revision,omitempty"`
 }
 
 // ForkParams is sandbox.fork: a new sandbox from the source's current state (running: a live snapshot; stopped: its
@@ -315,6 +328,8 @@ type ForkParams struct {
 	Egress    *Egress `json:"egress,omitempty"`
 	// SnapshotID names the snapshot a running source's fork takes (kept as an automatic snapshot of the source).
 	SnapshotID string `json:"snapshotId,omitempty"`
+	// Env is the fork's own environment (its own protected placeholders); absent, it has its source's.
+	Env map[string]string `json:"env,omitempty"`
 }
 
 // ExecParams is sandbox.exec. With Stream, output comes as events on the call before its result.

@@ -76,6 +76,9 @@ type Host struct {
 	egressLog *egressBatcher
 	// lifecycle is one CA-changing lifecycle call at a time per sandbox.
 	lifecycle sandboxLocks
+	// egressRevisions are the revisions of the sandboxes' latest sandbox.egress (by sandbox ID), a null egress's
+	// too, so a stale update arriving late is ignored.
+	egressRevisions sync.Map
 
 	mu sync.Mutex
 	// bySlot is each running microVM's egress, by its network slot.
@@ -211,6 +214,7 @@ func (h *Host) makeFacts() proto.Facts {
 		Version: h.version, Protocol: proto.ProtocolVersion, OS: runtime.GOOS, Arch: hostinfo.Arch(), Kernel: hostinfo.Kernel(),
 		Hostname: name, CPUs: runtime.NumCPU(), MemoryMiB: max(0, total-reserve), DiskGiB: hostinfo.FreeDiskGiB(h.cfg.Root),
 		KVM: kvm, Nested: nested && kvm, Tiers: h.Tiers(), Sizes: sizes, Labels: h.cfg.Labels, Egress: h.cfg.Egress,
+		Features: []string{proto.FeatureEgressPolicy},
 	}
 }
 
@@ -560,6 +564,7 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if h.cas != nil {
 			_ = h.cas.Forget(p.SandboxID)
 		}
+		h.egressRevisions.Delete(p.SandboxID)
 		return map[string]bool{"ok": true}, nil
 	case proto.MethodGet:
 		p, err := decode[proto.SandboxRef](params)

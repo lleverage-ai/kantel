@@ -217,6 +217,21 @@ func withoutPEM(bundle, own string) string {
 	return out + "\n"
 }
 
+// egressRevision is the revision of the egress a sandbox has: its latest sandbox.egress's, or what its kept egress
+// says (it came with a create or boot, or before the host restarted).
+func (h *Host) egressRevision(t Tier, sandboxID string) int64 {
+	var held int64
+	if v, ok := h.egressRevisions.Load(sandboxID); ok {
+		held = v.(int64)
+	}
+	if r, ok := t.(egressReader); ok {
+		if e, err := r.EgressOf(sandboxID); err == nil && e != nil && e.Revision > held {
+			held = e.Revision
+		}
+	}
+	return held
+}
+
 // egressReader is a tier that answers a sandbox's egress as it keeps it (microvm, which a fork inherits from).
 type egressReader interface {
 	EgressOf(id string) (*proto.Egress, error)
@@ -263,6 +278,22 @@ func installCA(ctx context.Context, t Tier, sandboxID, certPEM string) error {
 // setEgress is sandbox.egress: the new rules, and for a running microVM that intercepts, its CA installed in the
 // guest until that is confirmed. The caller holds the sandbox's lifecycle lock.
 func (h *Host) setEgress(ctx context.Context, t Tier, tier string, p proto.ResumeParams) error {
+	revision := p.Revision
+	if revision == 0 && p.Egress != nil {
+		revision = p.Egress.Revision
+	}
+	if revision > 0 {
+		if h.egressRevision(t, p.SandboxID) > revision {
+			// Read before a change whose own update has already come: the sandbox keeps the newer egress.
+			return nil
+		}
+		if p.Egress != nil {
+			e := *p.Egress
+			e.Revision = revision
+			p.Egress = &e
+		}
+		defer func() { h.egressRevisions.Store(p.SandboxID, revision) }()
+	}
 	if p.Egress == nil && h.cas != nil {
 		// The host's default egress intercepts nothing.
 		_ = h.cas.Forget(p.SandboxID)
