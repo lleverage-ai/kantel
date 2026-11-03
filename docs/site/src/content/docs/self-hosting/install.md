@@ -1,6 +1,6 @@
 ---
 title: Install Kantel
-description: Install Kantel's control plane on your own machine with one command, sign in to the console, find your first API key, and upgrade or remove it later.
+description: Install Kantel's control plane on your own machine with one command, sign in to the console, find your first API key, turn on the experimental compute API, and upgrade or remove it later.
 ---
 
 The control plane is Kantel's console and API. It runs as a Docker Compose stack on one machine, and the installer sets it up for you.
@@ -84,6 +84,36 @@ curl -s "$KANTEL_URL/v1/me" -H "authorization: Bearer $KANTEL_API_KEY"
 
 In fish, set the variables with `set -x KANTEL_URL http://127.0.0.1:58090` instead of `export`.
 
+## Turn on the compute API
+
+:::caution[Experimental]
+The compute API ([sandboxes](/sandboxes/lifecycle/), [snapshots](/snapshots/history/), [organisations](/accounts/organisations/), [scoped keys](/accounts/api-keys/), [webhooks](/monitoring/webhooks/) and [OpenTelemetry](/monitoring/opentelemetry/)) is off unless you turn it on, and its shapes may still change.
+:::
+
+Add `KANTEL_COMPUTE=experimental` to the stack's settings and upgrade, so the control plane starts with it:
+
+```sh
+echo 'KANTEL_COMPUTE=experimental' >> ~/.kantel/src/deploy/compose/.env
+curl -fsSL https://kantel.dev/install.sh | sh -s -- --upgrade
+```
+
+The compute API has keys of its own, which start `ksk_`. Its first one holds every scope, and the control plane writes it to the same file as `computeKey`:
+
+```sh
+docker compose -f ~/.kantel/src/deploy/compose/compose.yaml exec -T gateway cat /var/lib/harbour/bootstrap.json | jq -r .computeKey
+```
+
+Use it as `KANTEL_API_KEY`, and check it answers:
+
+```sh
+export KANTEL_API_KEY=ksk_...
+curl -s "$KANTEL_URL/v1/whoami" -H "authorization: Bearer $KANTEL_API_KEY"
+```
+
+That key can manage the deployment's hosts too, so keep it to yourself: give scripts and agents [keys of their own](/accounts/api-keys/#create-a-key) with only the scopes they need.
+
+For now, a self-hosted install runs every sandbox on a built-in stand-in: a shell over files held in memory, with no isolation between sandboxes. Commands and files work, but the microVM features (SSH, desktop, browser and pausing) answer with addresses that lead nowhere. The compute API keeps its records in memory as well, so sandboxes, snapshots, organisations and the keys you make are gone when the control plane restarts; only `computeKey` stays the same. Use it to try the API, not to run work.
+
 ## Your own settings
 
 The stack reads its settings from `~/.kantel/src/deploy/compose/.env`, which upgrades keep. The ones you're most likely to want:
@@ -99,6 +129,7 @@ The stack reads its settings from `~/.kantel/src/deploy/compose/.env`, which upg
 | `KANTEL_SANDBOX_CONTAINERS` | `off` runs no sandbox containers: sessions' `git`, `node`, `python3` and the like are refused |
 | `KANTEL_BROWSER_PROVIDER` | `off` gives sessions no browser. `brwsr`, with `KANTEL_BRWSR_API_KEY`, uses brwsr.dev instead of the stack's own browsers |
 | `KANTEL_SUBAGENTS` | `off` takes away the `subagent` tool, which hands a task to a child session |
+| `KANTEL_COMPUTE` | `experimental` turns on the compute API. See [Turn on the compute API](#turn-on-the-compute-api) |
 
 For example:
 
@@ -130,5 +161,7 @@ docker compose -f ~/.kantel/src/deploy/compose/compose.yaml down -v   # stop it 
 :::caution
 Parts of the stack mount the Docker socket, which is root on the machine. Install it on a machine you control.
 :::
+
+<!-- Compute API (675e554a): apps/selfhosted/src/gateway/compute.ts:1-74, apps/selfhosted/src/gateway/main.ts:360-382, deploy/compose/compose.yaml:325-328 -->
 
 <!-- Sources (e496aeb): apps/site/public/install.sh:1-25,40-95,196-290,300-370, deploy/compose/compose.yaml:250-330,415-430, apps/selfhosted/src/gateway/gateway.ts:1-30,390-400, apps/selfhosted/src/gateway/main.ts:1-40,130-160, deploy/compose/README.md:1-60. Sandbox containers, browsers and subagents (7492f92): deploy/compose/compose.yaml:22-45,296-328, apps/site/public/install.sh:10-25,255-285 -->
