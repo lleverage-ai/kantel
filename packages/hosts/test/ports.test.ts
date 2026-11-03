@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 import type { PortSink, PortStream } from "../src/hub.ts";
 import { proxyHttp, requestBytes } from "../src/port-http.ts";
 import { createPortRouter, PORT_COOKIE } from "../src/ports.ts";
+import { createMemoryRelayStore, type RelayStore } from "../src/relay-store.ts";
+import { sha256Hex } from "../src/tunnel.ts";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -36,15 +38,64 @@ const OK =
 	"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nSet-Cookie: a=1\r\nSet-Cookie: b=2\r\n\r\nhello";
 
 describe("an exposed port's name", () => {
-	const setup = (reply: (request: string) => string = () => OK) => {
+	const setup = (
+		reply: (request: string) => string = () => OK,
+		options: { store?: RelayStore; stillAllowed?: (grantee: string | undefined) => Promise<boolean> } = {},
+	) => {
 		const port = fakePort(reply);
-		const router = createPortRouter({ domain: "kantel-ports.test", openPort: port.openPort });
-		return { router, ...port };
+		const store = options.store ?? createMemoryRelayStore();
+		const router = createPortRouter({
+			domain: "kantel-ports.test",
+			openPort: port.openPort,
+			store,
+			...(options.stillAllowed === undefined ? {} : { stillAllowed: options.stillAllowed }),
+		});
+		return { router, store, ...port };
 	};
+
+	it("keeps its exposures in the store, a token only as its hash, so another gateway over it serves them", async () => {
+		const { router, store } = setup();
+		const { url } = await router.expose("sbx_1", 3000, { public: false, subdomain: "brave-otter-ab12cd" });
+		const token = new URL(url).searchParams.get("_token") ?? "";
+		const [row] = await store.exposuresOf("sbx_1");
+		expect(row).toMatchObject({ label: "3000-brave-otter-ab12cd", port: 3000, tokenHash: await sha256Hex(token) });
+		expect(JSON.stringify(row)).not.toContain(token);
+		const other = setup(undefined, { store });
+		expect((await other.router.fetch(new Request(url)))?.status).toBe(303);
+		const page = await other.router.fetch(
+			new Request("https://3000-brave-otter-ab12cd.kantel-ports.test/", {
+				headers: { cookie: `${PORT_COOKIE}=${token}` },
+			}),
+		);
+		expect(page?.status).toBe(200);
+		expect(other.opened).toHaveLength(1);
+	});
+
+	it("refuses a request with the right token once whoever exposed the port lost access", async () => {
+		let allowed = true;
+		const seen: (string | undefined)[] = [];
+		const { router, opened } = setup(undefined, {
+			stillAllowed: async (grantee) => {
+				seen.push(grantee);
+				return allowed;
+			},
+		});
+		const grantee = JSON.stringify({ kind: "key", keyId: "key_1" });
+		const { url } = await router.expose("sbx_1", 3000, { public: true, subdomain: "brave-otter-ab12cd", grantee });
+		expect((await router.fetch(new Request(url)))?.status).toBe(200);
+		allowed = false;
+		expect((await router.fetch(new Request(url)))?.status).toBe(403);
+		expect(await router.upgrade("3000-brave-otter-ab12cd.kantel-ports.test", "/", undefined)).toMatchObject({
+			ok: false,
+			status: 403,
+		});
+		expect(opened).toHaveLength(1);
+		expect(seen).toEqual([grantee, grantee, grantee]);
+	});
 
 	it("is token-gated by default: no token or a wrong one never reaches the sandbox", async () => {
 		const { router, opened } = setup();
-		const { url } = router.expose("sbx_1", 3000, { public: false, subdomain: "brave-otter-ab12cd" });
+		const { url } = await router.expose("sbx_1", 3000, { public: false, subdomain: "brave-otter-ab12cd" });
 		expect(url).toMatch(/^https:\/\/3000-brave-otter-ab12cd\.kantel-ports\.test\/\?_token=[A-Za-z0-9_-]{43}$/);
 		const bare = "https://3000-brave-otter-ab12cd.kantel-ports.test/";
 		expect((await router.fetch(new Request(bare)))?.status).toBe(401);
@@ -56,7 +107,7 @@ describe("an exposed port's name", () => {
 
 	it("trades the token for a cookie on that one name, then relays with the cookie", async () => {
 		const { router, opened } = setup();
-		const { url } = router.expose("sbx_1", 3000, { public: false, subdomain: "brave-otter-ab12cd" });
+		const { url } = await router.expose("sbx_1", 3000, { public: false, subdomain: "brave-otter-ab12cd" });
 		const token = new URL(url).searchParams.get("_token") ?? "";
 		const first = await router.fetch(new Request(`${url}&page=2`));
 		expect(first?.status).toBe(303);
@@ -86,7 +137,7 @@ describe("an exposed port's name", () => {
 
 	it("passes a POST with the token in the query on without a redirect, the token taken off", async () => {
 		const { router, opened } = setup();
-		const { url } = router.expose("sbx_1", 8080, { public: false, subdomain: "calm-heron-zz99yy" });
+		const { url } = await router.expose("sbx_1", 8080, { public: false, subdomain: "calm-heron-zz99yy" });
 		const answer = await router.fetch(new Request(url, { method: "POST", body: "x=1" }));
 		expect(answer?.status).toBe(200);
 		expect(opened[0]?.request).toMatch(/^POST \/ HTTP\/1\.1\r\n/);
@@ -96,16 +147,16 @@ describe("an exposed port's name", () => {
 
 	it("answers anyone for a public port, and nothing for a name nobody exposed, a hidden port or a forgotten sandbox", async () => {
 		const { router, opened } = setup();
-		const { url } = router.expose("sbx_1", 3000, { public: true, subdomain: "brave-otter-ab12cd" });
+		const { url } = await router.expose("sbx_1", 3000, { public: true, subdomain: "brave-otter-ab12cd" });
 		expect(url).toBe("https://3000-brave-otter-ab12cd.kantel-ports.test/");
 		expect((await router.fetch(new Request(url)))?.status).toBe(200);
 		expect((await router.fetch(new Request("https://3001-brave-otter-ab12cd.kantel-ports.test/")))?.status).toBe(404);
 		expect((await router.fetch(new Request("https://3000-someone-else.kantel-ports.test/")))?.status).toBe(404);
 		expect((await router.fetch(new Request("https://a.b.kantel-ports.test/")))?.status).toBe(404);
-		router.hide("sbx_1", 3000);
+		await router.hide("sbx_1", 3000);
 		expect((await router.fetch(new Request(url)))?.status).toBe(404);
-		router.expose("sbx_1", 3000, { public: true, subdomain: "brave-otter-ab12cd" });
-		router.forget("sbx_1");
+		await router.expose("sbx_1", 3000, { public: true, subdomain: "brave-otter-ab12cd" });
+		await router.forget("sbx_1");
 		expect((await router.fetch(new Request(url)))?.status).toBe(404);
 		expect(opened).toHaveLength(1);
 		// Any other name isn't the router's.
@@ -115,36 +166,41 @@ describe("an exposed port's name", () => {
 
 	it("ends a token when the port is exposed again or hidden", async () => {
 		const { router } = setup();
-		const first = router.expose("sbx_1", 3000, { public: false, subdomain: "brave-otter-ab12cd" }).url;
-		const second = router.expose("sbx_1", 3000, { public: false, subdomain: "brave-otter-ab12cd" }).url;
+		const first = (await router.expose("sbx_1", 3000, { public: false, subdomain: "brave-otter-ab12cd" })).url;
+		const second = (await router.expose("sbx_1", 3000, { public: false, subdomain: "brave-otter-ab12cd" })).url;
 		expect(second).not.toBe(first);
 		expect((await router.fetch(new Request(first)))?.status).toBe(401);
 		expect((await router.fetch(new Request(second)))?.status).toBe(303);
-		router.hide("sbx_1", 3000);
+		await router.hide("sbx_1", 3000);
 		expect((await router.fetch(new Request(second)))?.status).toBe(404);
 	});
 
-	it("lets a WebSocket upgrade through with the token, and no other", () => {
+	it("lets a WebSocket upgrade through with the token, and no other", async () => {
 		const { router } = setup();
-		const { url } = router.expose("sbx_1", 5173, { public: false, subdomain: "brave-otter-ab12cd" });
+		const { url } = await router.expose("sbx_1", 5173, { public: false, subdomain: "brave-otter-ab12cd" });
 		const token = new URL(url).searchParams.get("_token") ?? "";
 		const host = "5173-brave-otter-ab12cd.kantel-ports.test";
-		expect(router.upgrade(host, "/hmr", undefined)).toEqual({
+		expect(await router.upgrade(host, "/hmr", undefined)).toEqual({
 			ok: false,
 			status: 401,
 			reason: "This port needs its token",
 		});
-		expect(router.upgrade(host, "/hmr", `${PORT_COOKIE}=nope`)).toMatchObject({ ok: false, status: 401 });
-		expect(router.upgrade(host, "/hmr?x=1", `${PORT_COOKIE}=${token}`)).toEqual({
+		expect(await router.upgrade(host, "/hmr", `${PORT_COOKIE}=nope`)).toMatchObject({ ok: false, status: 401 });
+		expect(await router.upgrade(host, "/hmr?x=1", `${PORT_COOKIE}=${token}`)).toEqual({
 			ok: true,
 			sandboxId: "sbx_1",
 			port: 5173,
 			path: "/hmr?x=1",
 			host,
 		});
-		expect(router.upgrade(`${host}:443`, `/hmr?_token=${token}`, undefined)).toMatchObject({ ok: true, path: "/hmr" });
-		expect(router.upgrade("5174-brave-otter-ab12cd.kantel-ports.test", "/", undefined)).toMatchObject({ status: 404 });
-		expect(router.upgrade("kantel.test", "/v1/hosts/connect", undefined)).toBeUndefined();
+		expect(await router.upgrade(`${host}:443`, `/hmr?_token=${token}`, undefined)).toMatchObject({
+			ok: true,
+			path: "/hmr",
+		});
+		expect(await router.upgrade("5174-brave-otter-ab12cd.kantel-ports.test", "/", undefined)).toMatchObject({
+			status: 404,
+		});
+		expect(await router.upgrade("kantel.test", "/v1/hosts/connect", undefined)).toBeUndefined();
 	});
 });
 

@@ -72,22 +72,32 @@ import {
 import { bootstrapSuperAdmin } from "@kantel/compute/serve";
 import { createStubBackend } from "@kantel/compute/stub";
 import { type Authenticator, callContextFor, type IdentityDirectory, KantelError } from "@kantel/contracts";
-import { createHostBackend } from "@kantel/hosts/backend";
+import { BROWSER_PORT, createHostBackend, SSH_PORT } from "@kantel/hosts/backend";
 import { createDesktopRoutes, type DesktopSocket, HOSTS_DESKTOP_PATH } from "@kantel/hosts/desktop";
 import { createHostsApi, HOSTS_CONNECT_PATH, HOSTS_REGISTER_PATH } from "@kantel/hosts/http";
 import { openPortWebSocket } from "@kantel/hosts/port-websocket";
 import { createPortRouter, type PortRouter } from "@kantel/hosts/ports";
 import { HOST_CLOSE_REVOKED, HOST_MAX_MESSAGE_BYTES } from "@kantel/hosts/protocol";
+import {
+	createRelayAccess,
+	RELAY_CLOSE_REVOKED,
+	RELAY_REVOKED_REASON,
+	type RelayAccess,
+} from "@kantel/hosts/relay-access";
+import type { RelayStore } from "@kantel/hosts/relay-store";
 import { createHostsService, type HostsService } from "@kantel/hosts/service";
 import type { HostStore } from "@kantel/hosts/store";
-import { HOSTS_TUNNEL_PATH, verifyTunnel } from "@kantel/hosts/tunnel";
-import { WebSocketServer } from "ws";
+import { createTunnelTickets, HOSTS_TUNNEL_PATH, type IssuedGrant, type TunnelTickets } from "@kantel/hosts/tunnel";
+import { hashSessionToken, isSessionToken } from "@kantel/identity/otp";
+import { type WebSocket, WebSocketServer } from "ws";
 import type { UpgradeHandler } from "./node-http.ts";
 
 /** How often webhook deliveries that are due are sent. */
 const WEBHOOK_INTERVAL_MS = 1000;
 /** How often telemetry is exported. */
 const TELEMETRY_INTERVAL_MS = 60_000;
+/** How often expired tunnel tickets' rows are removed. */
+const TICKET_SWEEP_MS = 10 * 60_000;
 
 /** The `hosts` backend's settings. */
 export interface ComputeHostsConfig {
@@ -227,24 +237,57 @@ export function hostImages(source: string): (request: Request) => Promise<Respon
 	};
 }
 
-/** What the `hosts` backend needs from the gateway: the registry, and the secret tunnel tickets are signed with. */
+/**
+ * What the `hosts` backend needs from the gateway: the registry, the tunnel tickets and exposed ports (both in the relay
+ * store, so they outlast a restart and every replica serves them), and the check that ends relayed access.
+ */
 export interface GatewayHostsBackend {
 	readonly service: HostsService;
 	readonly config: ComputeHostsConfig;
-	/** 32 random bytes; a new one each start, so tunnel URLs end with the process. */
-	readonly tunnelSecret: Uint8Array;
-	/** Exposed ports, when the config names a domain for them (`portRouterFor`). */
+	readonly tickets: TunnelTickets;
+	/** Exposed ports, when the config names a domain for them. */
 	readonly ports?: PortRouter;
+	/** Whether relayed access may go on; asks the compute API once `bind` is called. */
+	readonly access: RelayAccess;
+	/** Points the access check at the compute API, once there is one. */
+	bind(stillAllowed: (grantee: string | undefined, sandboxId: string) => Promise<boolean>): void;
 }
 
-/** The exposed ports' router for `config`, over `service`'s port streams; undefined without a ports domain. */
-export function portRouterFor(config: ComputeHostsConfig, service: HostsService): PortRouter | undefined {
-	if (config.portsDomain === undefined) return undefined;
-	return createPortRouter({
-		domain: config.portsDomain,
-		scheme: new URL(config.publicUrl).protocol === "http:" ? "http" : "https",
-		openPort: (sandboxId, port, sink) => service.sandboxes.openPort(sandboxId, port, sink),
+/** The `hosts` backend's relay over `store`: tickets, exposed ports (with a ports domain) and the access check. */
+export function gatewayRelay(
+	config: ComputeHostsConfig,
+	service: HostsService,
+	store: RelayStore,
+	options: { readonly intervalMs?: number; readonly now?: () => number } = {},
+): GatewayHostsBackend {
+	let check: ((grantee: string | undefined, sandboxId: string) => Promise<boolean>) | undefined;
+	const access = createRelayAccess({
+		// Nothing is let through before the compute API can answer.
+		stillAllowed: (grantee, sandboxId) => check?.(grantee, sandboxId) ?? Promise.resolve(false),
+		...(options.intervalMs === undefined ? {} : { intervalMs: options.intervalMs }),
+		...(options.now === undefined ? {} : { now: options.now }),
 	});
+	const ports =
+		config.portsDomain === undefined
+			? undefined
+			: createPortRouter({
+					domain: config.portsDomain,
+					scheme: new URL(config.publicUrl).protocol === "http:" ? "http" : "https",
+					openPort: (sandboxId, port, sink) => service.sandboxes.openPort(sandboxId, port, sink),
+					store,
+					stillAllowed: (grantee, sandboxId) => access.allowed(grantee, sandboxId),
+					...(options.now === undefined ? {} : { now: options.now }),
+				});
+	return {
+		service,
+		config,
+		tickets: createTunnelTickets(store, options.now),
+		...(ports === undefined ? {} : { ports }),
+		access,
+		bind(stillAllowed) {
+			check = stillAllowed;
+		},
+	};
 }
 
 export interface GatewayCompute {
@@ -288,7 +331,15 @@ async function personOf(
 					() => true,
 					() => false,
 				);
-	return { userId: caller.actor.userId, name: caller.actor.userId, superAdmin };
+	// A Kantel session can be ended (signing out), so access given under it records which one, to end with it.
+	const bearer = /^Bearer\s+(\S+)\s*$/i.exec(request.headers.get("authorization") ?? "")?.[1];
+	const session = bearer !== undefined && isSessionToken(bearer) ? await hashSessionToken(bearer) : undefined;
+	return {
+		userId: caller.actor.userId,
+		name: caller.actor.userId,
+		superAdmin,
+		...(session === undefined ? {} : { session }),
+	};
 }
 
 /** The compute API over the stub, or over joined hosts with `hosts`, signed in with the gateway's `authenticator`. */
@@ -303,6 +354,8 @@ export async function gatewayCompute(options: {
 	readonly hosts?: GatewayHostsBackend;
 	/** Where the API's records are kept: Postgres with a database. Default in memory. */
 	readonly store?: ComputeStore;
+	/** Whether a Kantel session (its token's hash) is live: access given under one ends when it does. */
+	readonly sessionLive?: (session: string) => Promise<boolean>;
 }): Promise<GatewayCompute> {
 	const store: ComputeStore = options.store ?? createMemoryStore();
 	const records = options.store === undefined ? "memory" : "postgres";
@@ -313,7 +366,7 @@ export async function gatewayCompute(options: {
 			: createHostBackend({
 					hosts: hosts.service,
 					publicUrl: hosts.config.publicUrl,
-					tunnelSecret: hosts.tunnelSecret,
+					tickets: hosts.tickets,
 					...(hosts.config.attributionKey === undefined ? {} : { attributionKey: hosts.config.attributionKey }),
 					...(hosts.ports === undefined ? {} : { ports: hosts.ports }),
 					...(options.now === undefined ? {} : { now: options.now }),
@@ -325,6 +378,7 @@ export async function gatewayCompute(options: {
 		store,
 		backend,
 		authenticatePerson: (request) => personOf(options.authenticator, options.identity, request),
+		...(options.sessionLive === undefined ? {} : { sessionLive: options.sessionLive }),
 		...(publicUrl === undefined ? {} : { publicUrl }),
 		...(hosts?.config.joinCommand === undefined ? {} : { hostJoinCommand: hosts.config.joinCommand }),
 		...(options.now === undefined ? {} : { now: options.now }),
@@ -332,6 +386,15 @@ export async function gatewayCompute(options: {
 	const superAdminKey = await bootstrapSuperAdmin(api.store, options.superAdminKey, (options.now ?? Date.now)());
 	api.dispatcher.start(WEBHOOK_INTERVAL_MS);
 	api.exporter.start(TELEMETRY_INTERVAL_MS);
+	if (hosts !== undefined) {
+		hosts.bind((grantee, sandboxId) => api.service.stillAllowed(grantee, sandboxId));
+		hosts.access.start();
+	}
+	const sweepTickets = setInterval(
+		() => void hosts?.tickets.sweep((options.now ?? Date.now)()).catch(() => undefined),
+		TICKET_SWEEP_MS,
+	);
+	sweepTickets.unref();
 	let hostRoutes: GatewayCompute["hostRoutes"];
 	if (hosts !== undefined) {
 		// Registration only: the API serves the operator's routes, so the registry's own admin routes refuse everyone.
@@ -341,7 +404,8 @@ export async function gatewayCompute(options: {
 		});
 		const images = hosts.config.images === undefined ? undefined : hostImages(hosts.config.images);
 		const desktops = createDesktopRoutes({
-			secret: hosts.tunnelSecret,
+			tickets: hosts.tickets,
+			allowed: (grant) => hosts.access.allowed(grant.grantee, grant.sandboxId),
 			openPort: (sandboxId, port, sink) => hosts.service.sandboxes.openPort(sandboxId, port, sink),
 			...(options.now === undefined ? {} : { now: options.now }),
 		});
@@ -351,7 +415,7 @@ export async function gatewayCompute(options: {
 			if (path.startsWith(`${HOST_IMAGES_PATH}/`)) {
 				return (await images?.(request)) ?? new Response("Not found", { status: 404 });
 			}
-			// A desktop's page and Selkies' files, for a live desktop ticket.
+			// A desktop's page and Selkies' files, for a live desktop ticket whose holder still has access.
 			if (path.startsWith(`${HOSTS_DESKTOP_PATH}/`)) return desktops.fetch(request);
 			return undefined;
 		};
@@ -363,6 +427,8 @@ export async function gatewayCompute(options: {
 		...(hostRoutes === undefined ? {} : { hostRoutes }),
 		...(hosts?.ports === undefined ? {} : { portRoutes: hosts.ports.fetch }),
 		async close() {
+			clearInterval(sweepTickets);
+			hosts?.access.stop();
 			await api.close();
 		},
 	};
@@ -370,6 +436,13 @@ export async function gatewayCompute(options: {
 
 /** `GET /v1/hosts/tunnel/{ticket}[/{path}]`: a sandbox's port, as the ticket grants. */
 const TUNNEL_PATH = new RegExp(`^${HOSTS_TUNNEL_PATH}/([A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+)(/.*)?$`);
+
+/** What a relayed session is, for the log. */
+function sessionKind(port: number, rest: string | undefined): string {
+	if (port === SSH_PORT) return "ssh";
+	if (port === BROWSER_PORT) return "cdp";
+	return rest === undefined ? `tunnel ${port}` : `port ${port}`;
+}
 
 function bytesOf(data: unknown): Uint8Array {
 	const bytes = Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data as ArrayBuffer);
@@ -383,6 +456,9 @@ function bytesOf(data: unknown): Uint8Array {
  * ProxyCommand), or `/v1/hosts/tunnel/{ticket}/{path}`, an HTTP upgrade passed through to the port with that path
  * (Chromium's DevTools WebSocket, for Playwright's `connectOverCDP`). A desktop's stream is
  * `/v1/hosts/desktop/{ticket}/api/websockets` (`@kantel/hosts/desktop`), which filters a view-only ticket's messages.
+ *
+ * Every tunnel, desktop and port WebSocket is held in `hosts.access` while open, and closed with 4003 once whoever was
+ * given it loses access (`relay-access.ts`).
  */
 export function withHostUpgrades(
 	hosts: GatewayHostsBackend | undefined,
@@ -390,10 +466,11 @@ export function withHostUpgrades(
 	now: () => number = Date.now,
 ): UpgradeHandler | undefined {
 	if (hosts === undefined) return next;
-	const compute = hosts.service;
+	const { service: compute, tickets, access } = hosts;
 	const sockets = new WebSocketServer({ noServer: true, maxPayload: HOST_MAX_MESSAGE_BYTES });
 	const desktops = createDesktopRoutes({
-		secret: hosts.tunnelSecret,
+		tickets,
+		allowed: (grant) => access.allowed(grant.grantee, grant.sandboxId),
 		openPort: (sandboxId, port, sink) => compute.sandboxes.openPort(sandboxId, port, sink),
 		now,
 	});
@@ -401,75 +478,123 @@ export function withHostUpgrades(
 		const path = new URL(incoming.url ?? "/", "http://gateway").pathname;
 		const refuse = (code: number, reason: string) =>
 			sockets.handleUpgrade(incoming, socket, head, (accepted) => accepted.close(code, reason));
-		// An exposed port's name (a dev server's hot reload, an app's own WebSocket): only with its token, as its pages.
-		const port = hosts.ports?.upgrade(incoming.headers.host ?? "", incoming.url ?? "/", incoming.headers.cookie);
-		if (port !== undefined) {
-			if (!port.ok) {
-				socket.end(`HTTP/1.1 ${port.status} ${port.reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
-				return;
-			}
-			return passThrough(port.sandboxId, port.port, port.path, port.host);
-		}
-		if (path.startsWith(`${HOSTS_DESKTOP_PATH}/`)) {
-			void desktops.socket(incoming.url ?? "/").then(
-				(target) => {
-					if (target === undefined || target === "refused") {
-						return refuse(HOST_CLOSE_REVOKED, "The desktop URL is wrong or has expired");
-					}
-					return passThrough(target.sandboxId, target.port, target.path, undefined, target);
-				},
-				() => refuse(1011, "The gateway could not check the desktop URL"),
-			);
+		if (hosts.ports !== undefined) {
+			// An exposed port's name (a dev server's hot reload, an app's own WebSocket): only with its token, as its pages.
+			const ports = hosts.ports;
+			void (async () => {
+				const port = await ports.upgrade(incoming.headers.host ?? "", incoming.url ?? "/", incoming.headers.cookie);
+				if (port === undefined) return gatewayUpgrade();
+				if (!port.ok) {
+					socket.end(`HTTP/1.1 ${port.status} ${port.reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+					return;
+				}
+				const held = { sandboxId: port.sandboxId, kind: `port ${port.port}`, grantee: port.grantee };
+				return passThrough(port.sandboxId, port.port, port.path, port.host, held);
+			})().catch(() => socket.end("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"));
 			return;
 		}
-		const tunnel = TUNNEL_PATH.exec(path);
-		if (tunnel?.[1] !== undefined) {
-			const ticket = tunnel[1];
-			const rest = tunnel[2];
-			void verifyTunnel(hosts.tunnelSecret, ticket, now()).then(
-				(grant) => {
+		return gatewayUpgrade();
+
+		/**
+		 * An upgrade on the gateway's own name: a desktop's stream, a tunnel, a host's connection, or whatever served
+		 * upgrades before.
+		 */
+		function gatewayUpgrade() {
+			if (path.startsWith(`${HOSTS_DESKTOP_PATH}/`)) {
+				void desktops.socket(incoming.url ?? "/").then(
+					(target) => {
+						// Refused too when the ticket's holder has lost access.
+						if (target === undefined || target === "refused") {
+							return refuse(HOST_CLOSE_REVOKED, "The desktop URL is wrong or has expired");
+						}
+						const held = sessionOf(target.grant, "desktop");
+						return passThrough(target.sandboxId, target.port, target.path, undefined, held, target);
+					},
+					() => refuse(1011, "The gateway could not check the desktop URL"),
+				);
+				return;
+			}
+			const tunnel = TUNNEL_PATH.exec(path);
+			if (tunnel?.[1] !== undefined) {
+				const ticket = tunnel[1];
+				const rest = tunnel[2];
+				void (async () => {
+					const grant = await tickets.verify(ticket, now());
 					// A desktop's ticket opens only the desktop's route, where its mode is enforced.
 					if (grant === undefined || grant.desktop !== undefined) {
 						return refuse(HOST_CLOSE_REVOKED, "The tunnel URL is wrong or has expired");
 					}
-					if (rest === undefined) return rawTunnel(grant.sandboxId, grant.port);
-					return passThrough(grant.sandboxId, grant.port, rest);
+					if (!(await access.allowed(grant.grantee, grant.sandboxId))) {
+						return refuse(RELAY_CLOSE_REVOKED, RELAY_REVOKED_REASON);
+					}
+					const held = sessionOf(grant, sessionKind(grant.port, rest));
+					if (rest === undefined) return rawTunnel(grant.sandboxId, grant.port, held);
+					return passThrough(grant.sandboxId, grant.port, rest, undefined, held);
+				})().catch(() => refuse(1011, "The gateway could not check the tunnel URL"));
+				return;
+			}
+			return hostConnection();
+		}
+
+		/** A relayed session, as `hosts.access` holds it. */
+		function sessionOf(grant: IssuedGrant, kind: string) {
+			return { sandboxId: grant.sandboxId, kind, grantee: grant.grantee };
+		}
+
+		/** Holds a session in `hosts.access` while it is open. */
+		function hold(
+			accepted: WebSocket,
+			session: { sandboxId: string; kind: string; grantee: string | undefined },
+			end: (reason: string) => void,
+		) {
+			const release = access.track({
+				sandboxId: session.sandboxId,
+				kind: session.kind,
+				...(session.grantee === undefined ? {} : { grantee: session.grantee }),
+				end,
+			});
+			accepted.on("close", () => release());
+		}
+
+		function hostConnection() {
+			if (path !== HOSTS_CONNECT_PATH) {
+				if (next !== undefined) return next(incoming, socket, head);
+				socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+				return;
+			}
+			const credential = /^Bearer\s+(\S+)$/i.exec(incoming.headers.authorization ?? "")?.[1];
+			if (incoming.method !== "GET" || credential === undefined)
+				return refuse(HOST_CLOSE_REVOKED, "No host credential");
+			void compute.authenticate(credential).then(
+				(host) => {
+					if (host === undefined) return refuse(HOST_CLOSE_REVOKED, "The host credential is unknown or revoked");
+					sockets.handleUpgrade(incoming, socket, head, (accepted) => {
+						const held = compute.hub.accept(host.id, {
+							sendText: (text) => accepted.send(text),
+							sendBinary: (bytes) => accepted.send(bytes, { binary: true }),
+							close: (code, reason) => accepted.close(code, reason),
+						});
+						accepted.on("message", (data, binary) => {
+							if (binary) held.receive(bytesOf(data));
+							else held.receive(data.toString());
+						});
+						accepted.on("close", (code, reason) => held.closed(code, reason.toString()));
+						accepted.on("error", () => accepted.terminate());
+					});
 				},
-				() => refuse(1011, "The gateway could not check the tunnel URL"),
+				// The registry is down: a plain close, so the host retries.
+				() => refuse(1011, "The gateway could not check the credential"),
 			);
-			return;
 		}
-		if (path !== HOSTS_CONNECT_PATH) {
-			if (next !== undefined) return next(incoming, socket, head);
-			socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
-			return;
-		}
-		const credential = /^Bearer\s+(\S+)$/i.exec(incoming.headers.authorization ?? "")?.[1];
-		if (incoming.method !== "GET" || credential === undefined) return refuse(HOST_CLOSE_REVOKED, "No host credential");
-		void compute.authenticate(credential).then(
-			(host) => {
-				if (host === undefined) return refuse(HOST_CLOSE_REVOKED, "The host credential is unknown or revoked");
-				sockets.handleUpgrade(incoming, socket, head, (accepted) => {
-					const held = compute.hub.accept(host.id, {
-						sendText: (text) => accepted.send(text),
-						sendBinary: (bytes) => accepted.send(bytes, { binary: true }),
-						close: (code, reason) => accepted.close(code, reason),
-					});
-					accepted.on("message", (data, binary) => {
-						if (binary) held.receive(bytesOf(data));
-						else held.receive(data.toString());
-					});
-					accepted.on("close", (code, reason) => held.closed(code, reason.toString()));
-					accepted.on("error", () => accepted.terminate());
-				});
-			},
-			// The registry is down: a plain close, so the host retries.
-			() => refuse(1011, "The gateway could not check the credential"),
-		);
 
 		/** The port's bytes as binary WebSocket frames. */
-		function rawTunnel(sandboxId: string, port: number) {
+		function rawTunnel(
+			sandboxId: string,
+			port: number,
+			session: { sandboxId: string; kind: string; grantee: string | undefined },
+		) {
 			sockets.handleUpgrade(incoming, socket, head, (accepted) => {
+				hold(accepted, session, (reason) => accepted.close(RELAY_CLOSE_REVOKED, reason));
 				const pending: Uint8Array[] = [];
 				let stream: { write(bytes: Uint8Array): void; close(): void } | undefined;
 				let done = false;
@@ -506,12 +631,24 @@ export function withHostUpgrades(
 		 * to an upgrade's socket, so the client's side has to be `ws`'s. A desktop's `path` comes with its query, and its
 		 * `accept` drops what a view-only client sends.
 		 */
-		function passThrough(sandboxId: string, port: number, rest: string, host?: string, desktop?: DesktopSocket) {
+		function passThrough(
+			sandboxId: string,
+			port: number,
+			rest: string,
+			host: string | undefined,
+			session: { sandboxId: string; kind: string; grantee: string | undefined },
+			desktop?: DesktopSocket,
+		) {
 			// An exposed port's path comes with its query (less the token); a tunnel's takes the request's.
 			const query =
 				host === undefined && desktop === undefined ? new URL(incoming.url ?? "/", "http://gateway").search : "";
 			const accept = desktop?.accept;
 			sockets.handleUpgrade(incoming, socket, head, (accepted) => {
+				hold(accepted, session, (reason) => {
+					// The client hears why first; closing the port's side then ends it there too.
+					accepted.close(RELAY_CLOSE_REVOKED, reason);
+					inner.close();
+				});
 				const inner = openPortWebSocket(
 					(sink) => compute.sandboxes.openPort(sandboxId, port, sink),
 					port,

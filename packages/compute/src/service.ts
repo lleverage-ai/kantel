@@ -18,6 +18,9 @@ import {
 	type Acting,
 	accountById,
 	actingAccount,
+	decodeGrantee,
+	encodeGrantee,
+	liveKeyPrincipal,
 	memberId,
 	newApiKeySecret,
 	type Principal,
@@ -104,6 +107,11 @@ export interface ComputeServiceOptions {
 	/** Default `PLACEHOLDER_RATES`. */
 	readonly rates?: RateTable;
 	readonly limits?: ComputeLimits;
+	/**
+	 * Whether a sign-in a person's access was given under (`PersonIdentity.session`) is still live. Absent, sign-ins are
+	 * taken to last.
+	 */
+	readonly sessionLive?: (session: string) => Promise<boolean>;
 }
 
 export interface ComputeService {
@@ -113,12 +121,26 @@ export interface ComputeService {
 	readonly publicHandlers: RouteHandlers<PublicComputeRoutes, undefined>;
 	/** Stops every running sandbox whose `stopsAt` has passed. */
 	sweep(): Promise<void>;
+	/**
+	 * Whether `grantee` (`encodeGrantee`) may still open `sandboxId`'s access: the key unrevoked and unexpired, or the
+	 * person's sign-in live, and either still able to see the sandbox with the `access` scope. A relay asks while access
+	 * it carries lasts. No grantee named: true.
+	 */
+	stillAllowed(grantee: string | undefined, sandboxId: string): Promise<boolean>;
 	/** Reads every running sandbox's usage, keeps it, and answers it for the metrics export. */
 	sampleUsage(): Promise<TelemetryUsageSample[]>;
 	/** Resolves once every lifecycle operation and detached command started so far has ended. */
 	idle(): Promise<void>;
 	/** Kills the detached commands and waits for the work under way. */
 	close(): Promise<void>;
+}
+
+/** A port's URL as a sandbox's record keeps it: without its token, which only the answer to exposing it shows. */
+function withoutPortToken(url: string): string {
+	const parsed = new URL(url);
+	if (!parsed.searchParams.has("_token")) return url;
+	parsed.searchParams.delete("_token");
+	return parsed.toString();
 }
 
 /** The largest file the files routes read or write. */
@@ -1803,10 +1825,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const current = await requireRunning(sandbox.id);
 			const isPublic = body.public === true;
 			const existing = current.ports.find((entry) => entry.port === body.port);
-			if (existing !== undefined && existing.public === isPublic) return existing;
+			// A public port's URL holds no secret, so exposing it again answers it as it is. A gated port's token is shown
+			// once and kept only as a hash, so exposing it again gives it a new one, ending the old.
+			if (existing?.public && isPublic) return existing;
 			const { url } = await backend.exposePort(current.id, body.port, {
 				public: isPublic,
 				subdomain: current.subdomain,
+				grantee: encodeGrantee(principal),
 			});
 			const exposed: computeSchema.ExposedPort = {
 				port: body.port,
@@ -1816,7 +1841,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			};
 			await store.sandboxes.put({
 				...current,
-				ports: [...current.ports.filter((entry) => entry.port !== body.port), exposed],
+				ports: [
+					...current.ports.filter((entry) => entry.port !== body.port),
+					{ ...exposed, url: withoutPortToken(url) },
+				],
 			});
 			return exposed;
 		},
@@ -1839,6 +1867,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const ttlMinutes = body.ttlMinutes ?? ACCESS_TTL_MINUTES;
 			const grant = await backend.openSsh(current.id, {
 				ttlMinutes,
+				grantee: encodeGrantee(principal),
 				...(body.publicKey === undefined ? {} : { publicKey: body.publicKey }),
 			});
 			return {
@@ -1861,7 +1890,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const current = await requireRunning(sandbox.id);
 			const ttlMinutes = body.ttlMinutes ?? ACCESS_TTL_MINUTES;
 			const viewOnly = body.viewOnly === true;
-			const access = await backend.openDesktop(current.id, { viewOnly, ttlMinutes });
+			const access = await backend.openDesktop(current.id, { viewOnly, ttlMinutes, grantee: encodeGrantee(principal) });
 			return { url: access.url, embedUrl: access.embedUrl, viewOnly, expiresAt: now() + ttlMinutes * 60_000 };
 		},
 
@@ -1873,7 +1902,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const current = await requireRunning(sandbox.id);
 			const ttlMinutes = body.ttlMinutes ?? ACCESS_TTL_MINUTES;
 			const viewOnly = body.viewOnly === true;
-			const access = await backend.openBrowser(current.id, { viewOnly, ttlMinutes });
+			const access = await backend.openBrowser(current.id, { viewOnly, ttlMinutes, grantee: encodeGrantee(principal) });
 			return { url: access.url, cdpUrl: access.cdpUrl, viewOnly, expiresAt: now() + ttlMinutes * 60_000 };
 		},
 
@@ -2426,6 +2455,38 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	return {
 		handlers,
 		publicHandlers,
+
+		async stillAllowed(text, sandboxId) {
+			if (text === undefined) return true;
+			const grantee = decodeGrantee(text);
+			if (grantee === undefined) return false;
+			let principal: Principal;
+			if (grantee.kind === "key") {
+				const key = await liveKeyPrincipal(store, grantee.keyId, now());
+				if (key === undefined) return false;
+				principal = key;
+			} else {
+				const user = await store.users.get(grantee.userId);
+				if (user === undefined) return false;
+				if (grantee.session !== undefined && options.sessionLive !== undefined) {
+					if (!(await options.sessionLive(grantee.session))) return false;
+				}
+				principal = {
+					kind: "person",
+					userId: user.id,
+					name: user.name,
+					superAdmin: user.superAdmin,
+					personalAccountId: user.personalAccountId,
+				};
+			}
+			try {
+				await sandboxFor(principal, sandboxId, "access");
+				return true;
+			} catch (error) {
+				if (error instanceof KantelError) return false;
+				throw error;
+			}
+		},
 
 		async sweep() {
 			const at = now();

@@ -14,10 +14,11 @@ import {
 	viewerMessage,
 } from "../src/desktop.ts";
 import type { PortSink } from "../src/hub.ts";
+import { createMemoryRelayStore } from "../src/relay-store.ts";
 import { SELKIES_WEB } from "../src/selkies-web.ts";
-import { type DesktopMode, signTunnel } from "../src/tunnel.ts";
+import { createTunnelTickets, type DesktopMode } from "../src/tunnel.ts";
 
-const secret = crypto.getRandomValues(new Uint8Array(32));
+const tickets = createTunnelTickets(createMemoryRelayStore());
 const encoder = new TextEncoder();
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
@@ -33,10 +34,14 @@ const client: ClientFiles = {
 };
 
 /** Desktop routes over a fake port: an HTTP server answering `served` (as `answer` changes it), counting connections. */
-function routes(answer: (path: string) => { status: number; body: string } | undefined = () => undefined) {
+function routes(
+	answer: (path: string) => { status: number; body: string } | undefined = () => undefined,
+	allowed?: (grantee: string | undefined) => Promise<boolean>,
+) {
 	const opened: { sandboxId: string; port: number; request: string }[] = [];
 	const desktop = createDesktopRoutes({
-		secret,
+		tickets,
+		...(allowed === undefined ? {} : { allowed: (grant) => allowed(grant.grantee) }),
 		client,
 		async openPort(sandboxId: string, port: number, sink: PortSink) {
 			return {
@@ -58,12 +63,16 @@ function routes(answer: (path: string) => { status: number; body: string } | und
 	return { desktop, opened };
 }
 
-const ticket = (desktop: DesktopMode | undefined, overrides: { port?: number; expiresAt?: number } = {}) =>
-	signTunnel(secret, {
+const ticket = (
+	desktop: DesktopMode | undefined,
+	overrides: { port?: number; expiresAt?: number; grantee?: string } = {},
+) =>
+	tickets.issue({
 		sandboxId: "sbx_4kq9x2mt",
 		port: overrides.port ?? DESKTOP_PORT,
 		expiresAt: overrides.expiresAt ?? Date.now() + 10 * 60_000,
 		...(desktop === undefined ? {} : { desktop }),
+		...(overrides.grantee === undefined ? {} : { grantee: overrides.grantee }),
 	});
 const get = (path: string, method = "GET") => new Request(`https://kantel.test${path}`, { method });
 
@@ -114,7 +123,7 @@ describe("the desktop's page", () => {
 			"a tunnel's ticket": await ticket(undefined),
 			"another port": await ticket("control", { port: 22 }),
 			expired: await ticket("control", { expiresAt: Date.now() - 1 }),
-			"another secret": await signTunnel(new Uint8Array(32), {
+			"issued elsewhere": await createTunnelTickets(createMemoryRelayStore()).issue({
 				sandboxId: "sbx_4kq9x2mt",
 				port: DESKTOP_PORT,
 				expiresAt: Date.now() + 60_000,
@@ -132,6 +141,21 @@ describe("the desktop's page", () => {
 		const redirect = await desktop.fetch(get(bare));
 		expect(redirect?.status).toBe(308);
 		expect(redirect?.headers.get("location")).toBe(`${bare}/`);
+	});
+
+	it("answers nothing for a ticket whose holder has lost access, page or stream", async () => {
+		const gone = JSON.stringify({ kind: "key", keyId: "key_revoked" });
+		const { desktop, opened } = routes(undefined, async (grantee) => grantee !== gone);
+		const revoked = await ticket("control", { grantee: gone });
+		expect((await desktop.fetch(get(`${HOSTS_DESKTOP_PATH}/${revoked}/`)))?.status).toBe(404);
+		expect(await desktop.socket(`${HOSTS_DESKTOP_PATH}/${revoked}/api/websockets`)).toBe("refused");
+		expect(opened).toEqual([]);
+		// Someone else's still opens, and says who it was given to, so the gateway can end it later.
+		const kept = JSON.stringify({ kind: "key", keyId: "key_live" });
+		const target = await desktop.socket(
+			`${HOSTS_DESKTOP_PATH}/${await ticket("view", { grantee: kept })}/api/websockets`,
+		);
+		expect(target === "refused" ? undefined : target?.grant.grantee).toBe(kept);
 	});
 
 	it("puts view-only in the URL's fragment for Selkies' own viewer page, and in the ticket for the gateway", () => {
@@ -153,7 +177,8 @@ describe("the desktop's socket", () => {
 			path: `${DESKTOP_SOCKET}?role=viewer`,
 		});
 		const control = await desktop.socket(`${HOSTS_DESKTOP_PATH}/${await ticket("control")}${DESKTOP_SOCKET}`);
-		expect(control).toEqual({ sandboxId: "sbx_4kq9x2mt", port: DESKTOP_PORT, path: DESKTOP_SOCKET });
+		expect(control).toMatchObject({ sandboxId: "sbx_4kq9x2mt", port: DESKTOP_PORT, path: DESKTOP_SOCKET });
+		expect(control === "refused" ? undefined : control?.accept).toBeUndefined();
 		// Only Selkies' stream: not its WebRTC signalling, nor any other path.
 		for (const path of ["/api/webrtc/signaling", "/api/ws", "/", ""]) {
 			expect(await desktop.socket(`${HOSTS_DESKTOP_PATH}/${view}${path}`)).toBe("refused");

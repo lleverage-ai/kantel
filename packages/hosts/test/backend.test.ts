@@ -7,9 +7,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createHostBackend } from "../src/backend.ts";
 import { createPortRouter } from "../src/ports.ts";
 import type { HostFacts, HostMessage, HostSandbox } from "../src/protocol.ts";
+import { createMemoryRelayStore } from "../src/relay-store.ts";
 import { createHostsService, type HostsService } from "../src/service.ts";
 import { createMemoryHostStore } from "../src/store.ts";
-import { HOSTS_TUNNEL_PATH, signTunnel, verifyTunnel } from "../src/tunnel.ts";
+import { createTunnelTickets, HOSTS_TUNNEL_PATH } from "../src/tunnel.ts";
 
 const facts: HostFacts = {
 	version: "0.1.0",
@@ -178,19 +179,21 @@ afterEach(async () => {
 
 function setup(options: { ports?: boolean } = {}) {
 	const service = createHostsService({ store: createMemoryHostStore(), publicUrl: "https://kantel.test" });
-	const secret = crypto.getRandomValues(new Uint8Array(32));
+	const relay = createMemoryRelayStore();
+	const tickets = createTunnelTickets(relay);
 	const ports =
 		options.ports === true
 			? createPortRouter({
 					domain: "kantel-ports.test",
 					openPort: (sandboxId, port, sink) => service.sandboxes.openPort(sandboxId, port, sink),
+					store: relay,
 				})
 			: undefined;
 	const api: ComputeApi = createComputeApi({
 		backend: createHostBackend({
 			hosts: service,
 			publicUrl: "https://kantel.test",
-			tunnelSecret: secret,
+			tickets,
 			attributionKey: "attr-key",
 			...(ports === undefined ? {} : { ports }),
 		}),
@@ -209,7 +212,7 @@ function setup(options: { ports?: boolean } = {}) {
 		fetch: (input, init) =>
 			api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
 	});
-	return { service, api, root, secret, ports };
+	return { service, api, root, tickets, relay, ports };
 }
 
 async function failure(call: Promise<unknown>): Promise<KantelApiError> {
@@ -331,8 +334,8 @@ describe("the compute API on kantel-host hosts", () => {
 		expect(egressOf("sandbox.egress")).toBeNull();
 	});
 
-	it("answers desktop, browser and SSH access as tunnel URLs only the gateway's secret signs", async () => {
-		const { service, root, secret } = setup();
+	it("answers desktop, browser and SSH access as tunnel URLs with tickets the relay keeps", async () => {
+		const { service, root, tickets } = setup();
 		const token = await root.createHostJoinToken({});
 		const { hostId } = await service.register({ token: token.token, facts });
 		new FakeHost(service, hostId).connect();
@@ -346,27 +349,29 @@ describe("the compute API on kantel-host hosts", () => {
 		expect(desktop.embedUrl).toBe(desktop.url);
 		const ticket = ticketOf(desktop.url);
 		const prefix = `wss://kantel.test${HOSTS_TUNNEL_PATH}/`;
-		const grant = await verifyTunnel(secret, ticket, Date.now());
+		const grant = await tickets.verify(ticket, Date.now());
 		expect(grant).toMatchObject({ sandboxId: sandbox.id, port: 6080, desktop: "control" });
-		// View-only is signed into the ticket, so the gateway enforces it; the fragment is for Selkies' viewer page.
+		// Given to the caller: the relay ends it when their access ends.
+		expect(JSON.parse(grant?.grantee ?? "{}")).toEqual({ kind: "person", userId: "usr_root" });
+		// View-only is kept in the ticket's row, so the gateway enforces it; the fragment is for Selkies' viewer page.
 		const watch = await root.openDesktop(sandbox.id, { viewOnly: true });
 		expect(watch.url).toMatch(new RegExp(`^${page}[^/]+/#shared$`));
-		expect(await verifyTunnel(secret, ticketOf(watch.url), Date.now())).toMatchObject({ port: 6080, desktop: "view" });
-		expect(await verifyTunnel(crypto.getRandomValues(new Uint8Array(32)), ticket, Date.now())).toBeUndefined();
-		expect(await verifyTunnel(secret, ticket, Date.now() + 6 * 60_000)).toBeUndefined();
-		expect(await verifyTunnel(secret, `${ticket.slice(0, -2)}xx`, Date.now())).toBeUndefined();
+		expect(await tickets.verify(ticketOf(watch.url), Date.now())).toMatchObject({ port: 6080, desktop: "view" });
+		expect(await createTunnelTickets(createMemoryRelayStore()).verify(ticket, Date.now())).toBeUndefined();
+		expect(await tickets.verify(ticket, Date.now() + 6 * 60_000)).toBeUndefined();
+		expect(await tickets.verify(`${ticket.slice(0, -2)}xx`, Date.now())).toBeUndefined();
 
 		const browser = await root.openBrowser(sandbox.id, {});
 		expect(browser.cdpUrl).toMatch(new RegExp(`^${prefix}[^/]+/devtools/browser/abc-123$`));
 		expect(browser.url.startsWith(page)).toBe(true);
 		// Unless asked, a URL can be opened for 10 minutes; and never for more than an hour.
 		const cdpTicket = browser.cdpUrl.slice(prefix.length).split("/")[0] ?? "";
-		const cdpGrant = await verifyTunnel(secret, cdpTicket, Date.now());
+		const cdpGrant = await tickets.verify(cdpTicket, Date.now());
 		expect(cdpGrant?.expiresAt).toBeGreaterThan(Date.now() + 9 * 60_000);
 		expect(cdpGrant?.expiresAt).toBeLessThanOrEqual(Date.now() + 10 * 60_000);
 		expect(browser.expiresAt).toBeLessThanOrEqual(Date.now() + 10 * 60_000);
 		const longest = await root.openDesktop(sandbox.id, { ttlMinutes: 60 });
-		expect(await verifyTunnel(secret, ticketOf(longest.url), Date.now() + 59 * 60_000)).toBeDefined();
+		expect(await tickets.verify(ticketOf(longest.url), Date.now() + 59 * 60_000)).toBeDefined();
 		expect((await failure(root.openDesktop(sandbox.id, { ttlMinutes: 61 }))).code).toBe("invalid");
 		expect((await failure(root.openSsh(sandbox.id, { ttlMinutes: 24 * 60 }))).code).toBe("invalid");
 
@@ -375,15 +380,11 @@ describe("the compute API on kantel-host hosts", () => {
 		expect(made.hostKeyFingerprint).toBe("SHA256:hostkey");
 		expect(made.command).toMatch(/^ssh -o ProxyCommand='websocat --binary wss:\/\/kantel\.test\/v1\/hosts\/tunnel\//);
 		expect(made.proxyUrl).toMatch(new RegExp(`^${prefix}[^/]+$`));
-		expect((await verifyTunnel(secret, made.proxyUrl?.slice(prefix.length) ?? "", Date.now()))?.port).toBe(22);
+		expect((await tickets.verify(made.proxyUrl?.slice(prefix.length) ?? "", Date.now()))?.port).toBe(22);
 		expect(made.command).toContain(made.proxyUrl);
 		const own = await root.openSsh(sandbox.id, { publicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM me@laptop" });
 		expect(own.privateKey).toBeUndefined();
 		expect((await failure(root.openSsh(sandbox.id, { publicKey: "ssh-ed25519 AAAA\nrm -rf /" }))).code).toBe("invalid");
-
-		// Signed elsewhere, a ticket names any sandbox and port: only the secret makes one.
-		const forged = await signTunnel(secret, { sandboxId: "sbx_other", port: 22, expiresAt: Date.now() + 60_000 });
-		expect((await verifyTunnel(secret, forged, Date.now()))?.sandboxId).toBe("sbx_other");
 	});
 
 	it("exposes a microVM's ports only with a name for them, token-gated unless public, and forgets them on stop", async () => {
@@ -394,7 +395,7 @@ describe("the compute API on kantel-host hosts", () => {
 		expect(plain.capabilities.ports).toBe(false);
 		expect((await failure(without.root.exposePort(plain.id, { port: 3000 }))).code).toBe("not_supported");
 
-		const { service, root, ports } = setup({ ports: true });
+		const { service, root, ports, relay } = setup({ ports: true });
 		const token = await root.createHostJoinToken({});
 		new FakeHost(service, (await service.register({ token: token.token, facts })).hostId).connect();
 		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
@@ -409,6 +410,19 @@ describe("the compute API on kantel-host hosts", () => {
 		expect(open.url).toBe(`https://8080-${sandbox.subdomain}.kantel-ports.test/`);
 		const bare = new Request(`https://3000-${sandbox.subdomain}.kantel-ports.test/`);
 		expect((await ports?.fetch(bare))?.status).toBe(401);
+		// The records keep the URL without its token: it is shown once, in the answer to exposing the port.
+		const listed = await root.listPorts(sandbox.id);
+		expect(listed.items.find((entry) => entry.port === 3000)?.url).toBe(
+			`https://3000-${sandbox.subdomain}.kantel-ports.test/`,
+		);
+		expect(JSON.stringify(await relay.exposuresOf(sandbox.id))).not.toContain(
+			new URL(gated.url).searchParams.get("_token") ?? "-",
+		);
+		// Exposing it again gives it a new token and ends the old one; a public port answers as it is.
+		const again = await root.exposePort(sandbox.id, { port: 3000 });
+		expect(again.url).not.toBe(gated.url);
+		expect((await ports?.fetch(new Request(gated.url)))?.status).toBe(401);
+		expect((await root.exposePort(sandbox.id, { port: 8080, public: true })).url).toBe(open.url);
 
 		const isolate = await root.createSandbox({ type: "isolate", wait: true });
 		expect(isolate.capabilities.ports).toBe(false);

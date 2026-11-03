@@ -47,6 +47,8 @@ export interface ComputeApiOptions {
 	readonly deviceLoginUrl?: string;
 	readonly rates?: RateTable;
 	readonly limits?: ComputeLimits;
+	/** Whether a person's sign-in (`PersonIdentity.session`) is still live; absent, sign-ins are taken to last. */
+	readonly sessionLive?: (session: string) => Promise<boolean>;
 }
 
 export interface ComputeApi {
@@ -108,6 +110,7 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 		...(options.deviceLoginUrl === undefined ? {} : { deviceLoginUrl: options.deviceLoginUrl }),
 		...(options.rates === undefined ? {} : { rates: options.rates }),
 		...(options.limits === undefined ? {} : { limits: options.limits }),
+		...(options.sessionLive === undefined ? {} : { sessionLive: options.sessionLive }),
 	});
 	service = created;
 	const publicIds = new Set<string>(Object.keys(publicComputeRoutes));

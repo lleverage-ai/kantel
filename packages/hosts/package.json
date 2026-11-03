@@ -12,6 +12,8 @@
 		"./port-websocket": "./src/port-websocket.ts",
 		"./ports": "./src/ports.ts",
 		"./desktop": "./src/desktop.ts",
+		"./relay-access": "./src/relay-access.ts",
+		"./relay-store": "./src/relay-store.ts",
 		"./tunnel": "./src/tunnel.ts",
 		"./http": "./src/http.ts",
 		"./hub": "./src/hub.ts",

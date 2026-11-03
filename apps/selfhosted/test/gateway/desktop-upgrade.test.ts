@@ -7,18 +7,19 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { DESKTOP_PORT } from "@kantel/hosts/desktop";
 import type { PortSink } from "@kantel/hosts/hub";
+import { createMemoryRelayStore } from "@kantel/hosts/relay-store";
 import type { HostsService } from "@kantel/hosts/service";
-import { type DesktopMode, signTunnel } from "@kantel/hosts/tunnel";
+import { createTunnelTickets, type DesktopMode } from "@kantel/hosts/tunnel";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
-import { type GatewayHostsBackend, withHostUpgrades } from "../../src/gateway/compute.ts";
+import { gatewayRelay, withHostUpgrades } from "../../src/gateway/compute.ts";
 
 const servers: Server[] = [];
 afterEach(async () => {
 	for (const server of servers.splice(0)) await new Promise((resolve) => server.close(resolve));
 });
 
-const secret = crypto.getRandomValues(new Uint8Array(32));
+const relay = createMemoryRelayStore();
 
 /** What reached the fake Selkies: each connection's handshake path and the messages its client sent. */
 interface Seen {
@@ -85,7 +86,8 @@ async function gateway() {
 		};
 	};
 	const service = { authenticate: async () => undefined, sandboxes: { openPort } } as unknown as HostsService;
-	const hosts = { service, config: {}, tunnelSecret: secret } as unknown as GatewayHostsBackend;
+	const hosts = gatewayRelay({ publicUrl: "http://gateway.test" }, service, relay);
+	hosts.bind(async () => true);
 	const upgrades = withHostUpgrades(hosts, undefined);
 	const server = createServer((_, response) => response.writeHead(404).end());
 	server.on("upgrade", (incoming, socket, head) => upgrades?.(incoming, socket, head));
@@ -131,7 +133,7 @@ function drive(url: string, messages: (string | Uint8Array)[]): Promise<{ code: 
 }
 
 const ticket = (desktop: DesktopMode | undefined, port = DESKTOP_PORT) =>
-	signTunnel(secret, {
+	createTunnelTickets(relay).issue({
 		sandboxId: "sbx_4kq9x2mt",
 		port,
 		expiresAt: Date.now() + 10 * 60_000,
@@ -166,12 +168,13 @@ describe("a desktop's stream through the gateway", () => {
 	it("refuses a view-only ticket changed to drive, and a desktop ticket used as a tunnel, before touching the sandbox", async () => {
 		const { base, seen } = await gateway();
 		const view = await ticket("view");
-		const [, signature] = view.split(".") as [string, string];
-		const payload = (fields: unknown[]) => Buffer.from(JSON.stringify(fields)).toString("base64url");
-		const expiresAt = JSON.parse(Buffer.from(view.split(".")[0] ?? "", "base64url").toString())[2] as number;
+		const [, secret] = view.split(".") as [string, string];
+		// The mode is in the ticket's row, not its URL: the nearest thing to changing it is another ticket's ID.
+		const [controlId] = (await ticket("control")).split(".") as [string, string];
+		const [tunnelId] = (await ticket(undefined)).split(".") as [string, string];
 		const refused = {
-			"view-only changed to drive": `${payload(["sbx_4kq9x2mt", DESKTOP_PORT, expiresAt, "control"])}.${signature}`,
-			"view-only with its mode taken off": `${payload(["sbx_4kq9x2mt", DESKTOP_PORT, expiresAt])}.${signature}`,
+			"view-only's secret under a driving ticket's ID": `${controlId}.${secret}`,
+			"view-only's secret under a tunnel ticket's ID": `${tunnelId}.${secret}`,
 			"a tunnel's ticket for the desktop's port": await ticket(undefined),
 			"a desktop ticket for another port": await ticket("control", 22),
 		};
