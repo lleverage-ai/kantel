@@ -218,7 +218,12 @@ func benchTier(ctx context.Context, host *agent.Host, tier, size string, runs in
 	target := created[1]
 	samples, steps = nil, nil
 	var stopSamples []float64
-	for i := 0; i < runs; i++ {
+	// An isolate keeps no memory (its /workspace is what persists), so it has only the cold stop and start below.
+	paused := runs
+	if tier == "isolate" {
+		paused = 0
+	}
+	for i := 0; i < paused; i++ {
 		keep := true
 		t, err := call(proto.MethodStop, proto.StopParams{SandboxID: target, SnapshotID: id("stop", i), Memory: &keep}, nil)
 		if err != nil {
@@ -234,8 +239,10 @@ func benchTier(ctx context.Context, host *agent.Host, tier, size string, runs in
 			return out, err
 		}
 	}
-	out = append(out, summarise(tier, "stop", "warm", "pause: snapshot memory and disk", stopSamples, nil))
-	out = append(out, summarise(tier, "resume", "warm", "from its own memory snapshot ("+info.Source+")", samples, steps))
+	if paused > 0 {
+		out = append(out, summarise(tier, "stop", "warm", "pause: snapshot memory and disk", stopSamples, nil))
+		out = append(out, summarise(tier, "resume", "warm", "from its own memory snapshot ("+info.Source+")", samples, steps))
+	}
 	samples, steps = nil, nil
 	for i := 0; i < min(runs, 3); i++ {
 		keep := false
