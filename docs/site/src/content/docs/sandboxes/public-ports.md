@@ -35,6 +35,8 @@ The answer is an [ExposedPort](/api/reference/types/#exposedport) with the URL. 
 
 Every port name under one ports domain is the same site to browsers until the domain is on the Public Suffix List, and `ports.kantel.dev` isn't yet. So a page one sandbox serves can set cookies another sandbox's pages receive: don't rely on cookies being private between sandboxes. [Security model](/self-hosting/security/#the-ports-domain) has the details.
 
+The same goes for a console under the same registrable domain, such as `app.kantel.dev`: a port's page is the same site to it. The console doesn't depend on cookies or `SameSite` to stay safe from that. Its session is never a cookie, and it refuses a browser's changes from any origin but its own ([the console and the ports domain](/self-hosting/security/#the-console-and-the-ports-domain)). Listing `ports.kantel.dev` on the Public Suffix List, or giving hosted ports a domain of their own, is still to come.
+
 ## Tokens and public URLs
 
 By default the URL carries a token (`?_token=...`), and anyone holding the whole URL can open it. Treat it like a password: share it only with people who should see the app. A request without the token is refused with `401` and never reaches the sandbox.

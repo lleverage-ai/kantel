@@ -19,7 +19,7 @@ A sandbox has no address anyone can reach. Its host dials out to the control pla
 | Reading the database | It holds only the SHA-256 of each ticket's secret and each port's token, never the secret itself, so a copy of the database opens nothing |
 | A stale URL | A ticket may start a connection for 10 minutes by default and 60 at most. Hiding a port, stopping or deleting its sandbox, or exposing it again ends its token |
 | A view-only desktop link used to drive | The mode is in the ticket's row, not its URL. A view-only ticket opens Selkies as a viewer, and the gateway drops every message but the few a viewer needs. A desktop ticket opens only the desktop's route, never a raw tunnel to the port |
-| A sandbox's page attacking the console | Ports are served on their own domain, which can't be the console's or a parent of it. The token and its cookie are taken off before a request reaches the sandbox |
+| A sandbox's page attacking the console | Ports are served on their own domain, which can't be the console's or a parent of it. The token and its cookie are taken off before a request reaches the sandbox. The console's session is never a cookie, and a browser's write from any other origin is refused: see [the console and the ports domain](#the-console-and-the-ports-domain) |
 | A sandbox's page attacking another sandbox's | See [the ports domain](#the-ports-domain) |
 
 ## Revoking access ends open sessions
@@ -54,6 +54,26 @@ Each exposed port has its own name under the ports domain (`KANTEL_COMPUTE_PORTS
 Give ports a domain or subdomain nothing else uses. Kantel's hosted service uses `ports.kantel.dev`, apart from its console. On your own install, set your own with `KANTEL_COMPUTE_PORTS_DOMAIN`, such as `ports.example.com`.
 
 To make each name its own site, as GitHub does for `github.io`, the ports domain must also be on the [Public Suffix List](https://publicsuffix.org/submit/). The list asks for a project with thousands of users and more than two years left on the domain's registration. `ports.kantel.dev` isn't on it yet: its listing is deferred until hosted ports are served and in use. Until a browser ships a list with your ports domain on it, `ports.kantel.dev` included, cookies aren't private between sandboxes, so keep apps in sandboxes from relying on that.
+
+## The console and the ports domain
+
+While the ports domain isn't on the Public Suffix List, a port's page is also the same site as a console under the same registrable domain: `ports.kantel.dev` and `app.kantel.dev` are both `kantel.dev` to a browser. Such a page can set a cookie with `Domain=kantel.dev`, which the console's origin then receives, and its requests to the console are same-site, so `SameSite` doesn't stop them. Neither gateway relies on cookies or `SameSite` for this:
+
+| Threat | What stops it |
+| --- | --- |
+| A cookie planted for the whole domain, as a session | Kantel's session (`kts_…`) is never a cookie. The console keeps it in the page's own storage, which no other origin can read, and sends it as a bearer in `Authorization`. Neither gateway reads a session from any cookie, whatever its name, so a planted one signs nobody in |
+| A cookie planted to shadow one of the console's | Any cookie the console's origin sets for itself is a `__Host-` cookie over HTTPS: `Secure`, `Path=/` and no `Domain`. A browser won't let another name set one, and the console reads only the prefixed name. Over plain http on a laptop, where browsers refuse `__Host-`, it has no prefix |
+| A page elsewhere, a port's included, making the console's browser change something | Every request that changes something (`POST`, `PUT`, `PATCH`, `DELETE`) and has no `Authorization` header must come from the console's own origin: `Origin` must be exactly the console's (the address the request came to, the same host over HTTPS, or `KANTEL_PUBLIC_URL`), and `Sec-Fetch-Site`, when the browser sends it, must be `same-origin`. One with a cookie and no `Origin` is refused too. Anything else gets `403`. This covers the API, the sign-in routes and approving a device on the console's device page (`/device`, once `/compute/device`). It matters most behind Cloudflare Access, whose cookie signs a browser in by itself |
+| A port's page reading the console's data | The gateway sends no CORS headers, so a page on another origin can't read an answer or send a bearer it doesn't have |
+
+An API key or a session sent as a bearer (the CLI, the SDK, MCP, the console signed in with an email code) is something no other page can attach, so those requests pass as before, with or without an `Origin`. So does a request with neither a cookie nor an `Origin`, such as `kantel login` starting a device sign-in: it carries no one's credential.
+
+Two things are still open before Kantel's hosted service serves ports under `ports.kantel.dev`:
+
+- **A site of their own.** Either `ports.kantel.dev` goes on the Public Suffix List, or hosted ports move to a registrable domain that isn't the console's. Until then a port's page can still set cookies the console's origin receives (and ignores), and sandboxes' cookies aren't private from each other. Don't put Cloudflare Access in front of a console on the same registrable domain as its ports: a port's page could plant its own Access cookie there.
+- **A certificate for every port name.** Port names are two levels under `kantel.dev` (`3000-brave-otter-ab12cd.ports.kantel.dev`), so they need a wildcard certificate for `*.ports.kantel.dev`. Cloudflare's free Universal SSL covers only the first level under a zone; deeper names need Advanced Certificate Manager (Total TLS or an advanced certificate) or an uploaded certificate.
+
+On your own install, the simplest choice is a ports domain that is a registrable domain of its own, such as `kantel-ports.example`, not a sibling of the console's name.
 
 ## Several gateways
 

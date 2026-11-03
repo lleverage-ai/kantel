@@ -25,9 +25,15 @@
  * email code instead, and send the Kantel session (`kts_…`) as their bearer. A 401 there names `email_otp`, so the
  * console shows its own sign-in form; anywhere else it names Access, as before. Each code sent counts against the
  * daily mail cap: once it is reached, a start is refused (503) until the next UTC day.
+ *
+ * Before any of that, a browser's write that doesn't come from the console is refused (403, `@kantel/identity/csrf`):
+ * a request that changes something and has no `Authorization` header must say it is from the origin it was sent to
+ * (`Origin`, and `Sec-Fetch-Site: same-origin` when sent), so Access's cookie can't sign in a page elsewhere, a sandbox's
+ * port under the same site included. An API key or a Kantel session sent as a bearer passes unchanged.
  */
 import { createAuditQueryHandler } from "@kantel/audit/http";
 import { OTP_START_PATH, OTP_VERIFY_PATH, SESSION_END_PATH } from "@kantel/contracts";
+import { crossSiteRefusal } from "@kantel/identity/csrf";
 import { createIdentityHandler, isIdentityPath } from "@kantel/identity/http";
 import { type AddressLimitOptions, createAddressLimit } from "./address-limit.ts";
 import { withAccessBearer } from "./compute.ts";
@@ -91,6 +97,9 @@ export function createGateway(stack: Stack, options: GatewayOptions = {}): Gatew
 			const url = new URL(incoming.url);
 			const path = url.pathname;
 			const onPublic = publicHost !== undefined && url.host === publicHost;
+			// The console and its API share an origin, on the Access hostname and the public one alike.
+			const crossSite = crossSiteRefusal(incoming);
+			if (crossSite !== undefined) return crossSite;
 			if (SIGN_IN_PATHS.has(path)) {
 				if (email === undefined || !onPublic) return notFound();
 				return signIn(incoming, email);
