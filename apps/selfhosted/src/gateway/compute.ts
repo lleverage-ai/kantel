@@ -424,10 +424,12 @@ export async function gatewayCompute(options: {
 		...(options.now === undefined ? {} : { now: options.now }),
 		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
 	});
-	// Hosts fetch their sandboxes' protected values, and report what their egress proxies did, over their link.
+	// Hosts fetch their sandboxes' protected values, and report what their egress proxies did and their usage, over
+	// their link.
 	hosts?.service.useCompute({
 		secrets: (hostId, sandboxId) => api.service.protectedTable(hostId, sandboxId),
 		recordEgress: (hostId, records) => api.service.recordEgress(hostId, records),
+		recordUsage: (hostId, usage) => api.service.recordUsage(hostId, usage),
 		e2eChain: {
 			read: (hostId, space) => api.service.hostE2EChain(hostId, space),
 			append: (hostId, space, from, entries) => api.service.appendHostE2EChain(hostId, space, from, entries),
