@@ -160,6 +160,10 @@ describe("sandboxes", () => {
 		await api.service.idle();
 		expect(await plain.e2e?.mode(accountId)).toBe("off");
 		expect(plain.e2e?.served).toBe("gateway");
+		// The gateway's console frames Browser and Desktop on the page, and reads files and output as ever.
+		expect(plain.sandboxes.screens).toBe("console");
+		await plain.sandboxes.list(accountId);
+		expect(await plain.sandboxes.endToEnd?.(made.id)).toBe(false);
 
 		const calls: { sandboxId: string; method: string; params: { before?: string } }[] = [];
 		// The host's history, newest first, in pages of one: a console that drops the cursor sees only the newest.
@@ -205,7 +209,13 @@ describe("sandboxes", () => {
 			...(local === undefined ? {} : { local }),
 		});
 		expect(source.e2e).toMatchObject({ served: "local", device: "Ada's laptop" });
+		// kantel console's page frames nothing from the gateway: Browser and Desktop open in tabs of their own.
+		expect(source.sandboxes.screens).toBe("tab");
+		// Its files and output can't be read end to end yet; the page says so. Opened straight from its address, the
+		// console reads which account it's in first.
+		expect(await source.sandboxes.endToEnd?.(made.id)).toBe(true);
 		await source.sandboxes.list(accountId);
+		expect(await source.sandboxes.endToEnd?.(made.id)).toBe(true);
 		expect(await source.sandboxes.history(made.id)).toEqual([
 			{ id: "c2", command: "make test", startedAt: 2000, durationMs: 100, by: "Ada's laptop" },
 			{ id: "c1", command: "make", startedAt: 1000, durationMs: 250, exitCode: 0, by: "Ada's laptop" },
@@ -226,6 +236,50 @@ describe("sandboxes", () => {
 		const [listed] = await source.sandboxes.list(accountId);
 		// The stub backend's "default" is 2 vCPU and 4 GB, not the sample catalogue's 4 and 8.
 		expect(listed).toMatchObject({ id: made.id, size: "medium", resources: { vcpus: 2, memoryGb: 4, diskGb: 20 } });
+	});
+
+	it("reads one for its page, sets its auto-stop, and reads its live files and a failed command's output", async () => {
+		const { api, fetchApi } = setup();
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const made = await source.sandboxes.create({ accountId, name: "page", kind: "isolate", size: "small" });
+		await api.service.idle();
+
+		expect(await source.sandboxes.get(made.id)).toMatchObject({ id: made.id, name: "page", state: "running" });
+		const set = source.sandboxes.setAutoStop;
+		if (set === undefined) throw new Error("No setAutoStop");
+		expect((await set(made.id, 60)).stopsAt).toBeGreaterThan(Date.now());
+		expect((await set(made.id, undefined)).stopsAt).toBeUndefined();
+
+		const sdk = createKantelClient({ baseUrl: "/v1", token: "person-ada", fetch: fetchApi });
+		await sdk.writeFile(made.id, { path: "work/readme.txt", content: "Hello" });
+		const files = source.sandboxes.files;
+		if (files === undefined) throw new Error("No files");
+		const folder = await files.list(made.id, "home/user/work");
+		expect(folder.entries.map((entry) => [entry.kind, entry.path])).toEqual([["file", "home/user/work/readme.txt"]]);
+		expect(folder.more).toBe(false);
+		// A folder that runs on past the pages it reads says so, rather than looking complete.
+		let pages = 0;
+		const endless = await open(async (input, init) => {
+			const url = input instanceof Request ? input.url : String(input);
+			if (!new URL(url, "https://kantel.test").pathname.endsWith("/files/list")) return fetchApi(input, init);
+			pages += 1;
+			const entry = { name: `f${pages}`, path: `/home/user/f${pages}`, kind: "file", size: 1 };
+			return Response.json({ items: [entry], nextCursor: `c${pages}` });
+		});
+		const cut = await endless.sandboxes.files?.list(made.id, "home/user");
+		expect(cut?.more).toBe(true);
+		expect(cut?.entries).toHaveLength(pages);
+		expect(pages).toBe(20);
+		expect(await files.read(made.id, "home/user/work/readme.txt")).toBe("Hello");
+
+		await sdk.runCommand(made.id, { command: "echo fine" });
+		await sdk.runCommand(made.id, { command: "echo broken >&2; exit 2" });
+		const commands = await source.sandboxes.history(made.id);
+		const failed = commands.find((command) => command.exitCode !== undefined && command.exitCode !== 0);
+		const fine = commands.find((command) => command.exitCode === 0);
+		expect(fine?.output).toBeUndefined();
+		expect(failed?.output).toContain("broken");
 	});
 });
 

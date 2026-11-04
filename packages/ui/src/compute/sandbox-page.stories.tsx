@@ -1,0 +1,136 @@
+import { useState } from "react";
+import type { Story, StoryDefault } from "../workbench/ladle.ts";
+import type { HostingMode } from "./compute-model.ts";
+import { type ComputeFixtureOptions, createComputeFixtures, FIXTURE_NOW } from "./fixtures.ts";
+import { SandboxPage, type SandboxView } from "./sandbox-page.tsx";
+
+export default { title: "Compute/Sandbox page" } satisfies StoryDefault;
+
+// Each story keeps its own source and view, so the tabs, Stop, Resume and the menu all work against the fixtures.
+function Scenario({
+	sandboxId = "sbx_7f3k2m9qa1",
+	view = "overview",
+	hosting = "self-hosted",
+	options,
+	narrow = false,
+	menuOpen = false,
+	local,
+	e2e,
+}: {
+	sandboxId?: string;
+	view?: SandboxView;
+	hosting?: HostingMode;
+	options?: ComputeFixtureOptions;
+	narrow?: boolean;
+	menuOpen?: boolean;
+	/** Served by `kantel console`: screens in tabs of their own. */
+	local?: boolean;
+	/** An end-to-end account; "pending" while the console is still checking its chain, which never answers here. */
+	e2e?: boolean | "pending";
+}) {
+	const [source] = useState(() => createComputeFixtures({ hosting, ...options }));
+	const [sandboxes] = useState(() => {
+		if (local !== true && e2e === undefined) return source.sandboxes;
+		return {
+			...source.sandboxes,
+			...(local === true ? { screens: "tab" as const } : {}),
+			endToEnd: () => (e2e === "pending" ? new Promise<boolean>(() => {}) : Promise.resolve(e2e === true)),
+			// The host keeps no output end to end yet.
+			history: async (id: string) => {
+				const commands = await source.sandboxes.history(id);
+				return e2e === true ? commands.map(({ output: _, ...command }) => command) : commands;
+			},
+		};
+	});
+	return (
+		<SandboxPage
+			source={sandboxes}
+			snapshots={source.snapshots}
+			egress={source.egress}
+			hosting={hosting}
+			sandboxId={sandboxId}
+			initialView={view}
+			href={(to) => `#${sandboxId}/${to}`}
+			sandboxesHref="#sandboxes"
+			environmentHref={(id) => `#environments/${id}`}
+			now={FIXTURE_NOW}
+			narrow={narrow}
+			menuOpen={menuOpen}
+		/>
+	);
+}
+
+/** A running microVM: previews of its desktop and browser, SSH, ports, CPU and details. */
+export const Overview: Story = () => <Scenario />;
+
+/** Served by `kantel console`, which can't frame them: Browser, Desktop and the previews open each in a tab. */
+export const LocalConsole: Story = () => <Scenario local />;
+
+/** An end-to-end sandbox in `kantel console`: a failed command's output isn't shown yet, and says so. */
+export const LocalEndToEndLogs: Story = () => <Scenario local e2e view="logs" />;
+
+/** An end-to-end sandbox's Files in `kantel console`: one line, until the console reads them through the host. */
+export const LocalEndToEndFiles: Story = () => <Scenario local e2e view="files" />;
+
+/** The gateway's console, its browser a device in an end-to-end chain: screens in the console, files not yet. */
+export const HostedEndToEndFiles: Story = () => <Scenario e2e view="files" />;
+
+/** The gateway's console while it checks the chain: no files are read through the gateway until it knows. */
+export const CheckingEndToEndFiles: Story = () => <Scenario e2e="pending" view="files" />;
+
+/** The gateway's console with E2E off: the files that are in it now, as ever. */
+export const NotEndToEndFiles: Story = () => <Scenario e2e={false} view="files" />;
+
+/** The same on hosted Kantel, with its cost. */
+export const Hosted: Story = () => <Scenario hosting="hosted" />;
+
+/** ⋯ open: Fork, Save snapshot, Auto-stop and Delete. */
+export const Menu: Story = () => <Scenario menuOpen />;
+
+/** Logs: commands and what happened to it, newest first, the failed build open. */
+export const Logs: Story = () => <Scenario view="logs" />;
+
+/** Its egress log. */
+export const Egress: Story = () => <Scenario view="egress" />;
+
+/** Its snapshots. */
+export const Snapshots: Story = () => <Scenario view="snapshots" />;
+
+/** What's in it now. */
+export const Files: Story = () => <Scenario view="files" />;
+
+/** Its desktop, full size in the console. */
+export const Desktop: Story = () => <Scenario view="desktop" />;
+
+/** Its browser, full size in the console. */
+export const Browser: Story = () => <Scenario view="browser" />;
+
+/** A stopped microVM: no previews, Resume, and its files from its last snapshot. */
+export const Stopped: Story = () => <Scenario sandboxId="sbx_2q8w5e1rz4" />;
+
+/** A stopped one's Files: its latest snapshot's. */
+export const StoppedFiles: Story = () => <Scenario sandboxId="sbx_2q8w5e1rz4" view="files" />;
+
+/** One that failed: what went wrong, and Recover. */
+export const Failed: Story = () => <Scenario sandboxId="sbx_1o9p4a7se6" />;
+
+/** An isolate: no desktop, browser or SSH. */
+export const Isolate: Story = () => <Scenario sandboxId="sbx_9a2b6c4dq3" />;
+
+/** While it loads. */
+export const Loading: Story = () => <Scenario options={{ hang: true }} />;
+
+/** When Kantel can't be reached. */
+export const Unreachable: Story = () => <Scenario options={{ fail: true }} />;
+
+/** On a phone: no previews, Stop in ⋯, the sections stacked. */
+export const Mobile: Story = () => <Scenario narrow />;
+Mobile.meta = { width: 390 };
+
+/** A phone's Logs. */
+export const MobileLogs: Story = () => <Scenario narrow view="logs" />;
+MobileLogs.meta = { width: 390 };
+
+/** A phone's desktop. */
+export const MobileDesktop: Story = () => <Scenario narrow view="desktop" />;
+MobileDesktop.meta = { width: 390 };

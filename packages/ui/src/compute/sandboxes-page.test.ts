@@ -2,7 +2,9 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { Sandbox, SandboxState } from "./compute-model.ts";
-import { QUICK_SANDBOX, sandboxesShown, showsCpu } from "./sandboxes-page.tsx";
+import { outputUnavailable, sandboxTimeline } from "./sandbox-logs.tsx";
+import { filesShown, type SandboxTab, sandboxViewShown } from "./sandbox-page.tsx";
+import { QUICK_SANDBOX, sandboxesShown, screenLink, showsCpu } from "./sandboxes-page.tsx";
 import { SettingsFrame } from "./settings-nav.tsx";
 
 const box = (name: string, state: SandboxState): Sandbox => ({
@@ -16,6 +18,130 @@ const box = (name: string, state: SandboxState): Sandbox => ({
 	createdAt: 0,
 	createdBy: "",
 	usage: [],
+});
+
+describe("a sandbox's logs", () => {
+	it("puts its commands, its making and its snapshots in one timeline, newest first", () => {
+		const sandbox = {
+			...box("api", "running"),
+			createdAt: 100,
+			createdBy: "Ada",
+			environment: { id: "e", name: "dev" },
+		};
+		const timeline = sandboxTimeline(
+			sandbox,
+			[
+				{ id: "cmd_a", command: "ls", startedAt: 300, by: "Ada" },
+				{ id: "cmd_b", command: "make", startedAt: 500, exitCode: 2, by: "", output: "error" },
+			],
+			[
+				{ id: "snap_1", sandboxId: sandbox.id, takenAt: 200, reason: "periodic", sizeBytes: 0, expiresAt: 0 },
+				{ id: "snap_2", sandboxId: sandbox.id, takenAt: 400, reason: "stop", sizeBytes: 0, expiresAt: 0 },
+			],
+		);
+		expect(timeline.map((entry) => (entry.kind === "command" ? entry.command.command : entry.text))).toEqual([
+			"make",
+			"Stopped, snapshot taken",
+			"ls",
+			"Snapshot taken",
+			"Started from dev",
+		]);
+	});
+
+	it("names the sandbox a fork came from, even with the environment it inherited", () => {
+		const made = (sandbox: Pick<Sandbox, "environment" | "forkedFrom">) => {
+			const [entry] = sandboxTimeline({ ...box("api", "running"), ...sandbox }, [], []);
+			return entry?.kind === "event" ? entry.text : undefined;
+		};
+		const dev = { id: "e", name: "dev" };
+		expect(made({ environment: dev, forkedFrom: "sbx_parent" })).toBe("Forked from sbx_parent");
+		expect(made({ forkedFrom: "sbx_parent" })).toBe("Forked from sbx_parent");
+		expect(made({ environment: dev })).toBe("Started from dev");
+		expect(made({})).toBe("Created");
+	});
+
+	it("says a failed command's output isn't available only for an end-to-end sandbox's failure with none", () => {
+		const failedBare = { id: "c1", command: "make", startedAt: 1, exitCode: 2, by: "" };
+		const entries = (command: typeof failedBare & { output?: string }) =>
+			sandboxTimeline(box("api", "running"), [command], []);
+		expect(outputUnavailable(entries(failedBare), true)).toBe(true);
+		// The hosted console reads output, and says nothing.
+		expect(outputUnavailable(entries(failedBare), false)).toBe(false);
+		expect(outputUnavailable(entries({ ...failedBare, output: "error" }), true)).toBe(false);
+		expect(outputUnavailable(entries({ ...failedBare, exitCode: 0 }), true)).toBe(false);
+	});
+});
+
+describe("a sandbox's page", () => {
+	const tabs: readonly SandboxTab[] = ["overview", "logs", "snapshots", "files"];
+
+	it("shows Browser and Desktop in the console, and on Overview where they open in a tab of their own", () => {
+		const running = { inTab: false, windows: true, known: true, tabs };
+		for (const screen of ["desktop", "watch", "browser"] as const) {
+			expect(sandboxViewShown(screen, running)).toBe(screen);
+			// kantel console can't frame them: an address for one shows Overview, and they open in a tab.
+			expect(sandboxViewShown(screen, { ...running, inTab: true })).toBe("overview");
+			// Nothing to show once it's known to have none.
+			expect(sandboxViewShown(screen, { ...running, windows: false })).toBe("overview");
+			expect(sandboxViewShown(screen, { ...running, windows: false, known: false })).toBe(screen);
+		}
+		expect(sandboxViewShown("logs", running)).toBe("logs");
+		expect(sandboxViewShown("egress", running)).toBe("overview");
+	});
+
+	it("opens a row's Browser and Desktop in a tab where the console can't frame them, and on its page elsewhere", () => {
+		const click = (button = 0) => {
+			const event = {
+				button,
+				metaKey: false,
+				ctrlKey: false,
+				shiftKey: false,
+				prevented: false,
+				preventDefault() {
+					event.prevented = true;
+				},
+				currentTarget: { getAttribute: () => "/sandboxes/sbx_a/desktop" },
+			};
+			return event;
+		};
+		const went: string[] = [];
+		const tabs: string[] = [];
+		const navigate = (path: string) => went.push(path);
+		const openTab = (view: string) => tabs.push(view);
+
+		const local = click();
+		screenLink("tab", navigate, openTab)("desktop")(local);
+		expect([local.prevented, tabs, went]).toEqual([true, ["desktop"], []]);
+		// Not a primary click: left to the browser.
+		const middle = click(1);
+		screenLink("tab", navigate, openTab)("browser")(middle);
+		expect([middle.prevented, tabs]).toEqual([false, ["desktop"]]);
+
+		for (const screens of ["console", undefined] as const) {
+			const hosted = click();
+			screenLink(screens, navigate, openTab)("desktop")(hosted);
+			expect(hosted.prevented).toBe(true);
+		}
+		expect([went, tabs]).toEqual([["/sandboxes/sbx_a/desktop", "/sandboxes/sbx_a/desktop"], ["desktop"]]);
+	});
+
+	it("reads no live files until it knows they aren't end to end, and says so for one that is", () => {
+		const source = { files: { list: async () => ({ entries: [], more: false }), read: async () => undefined } };
+		const running = { state: "running" as const };
+		const snapshot = { id: "snap_1", takenAt: 0 };
+		const yes = { status: "ready", value: true } as const;
+		const no = { status: "ready", value: false } as const;
+		// Non-E2E, on the gateway's console or kantel console: its files, as ever.
+		expect(filesShown(running, source, no)).toBe("live");
+		// While the console asks (the gateway's console may read the chain), nothing is read.
+		expect(filesShown(running, source, { status: "loading" })).toBe("checking");
+		expect(filesShown(running, source, { status: "error", error: new Error("no chain") })).toBe("unchecked");
+		expect(filesShown(running, source, yes)).toBe("end-to-end");
+		// Stopped, its latest snapshot as before.
+		expect(filesShown({ ...running, state: "stopped", snapshot }, source, yes)).toBe("snapshot");
+		expect(filesShown({ ...running, state: "stopped" }, source, no)).toBe("none");
+		expect(filesShown(running, {}, no)).toBe("none");
+	});
 });
 
 describe("the sandboxes list", () => {

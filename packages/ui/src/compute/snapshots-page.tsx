@@ -11,7 +11,7 @@ import { Dialog } from "../primitives/dialog.tsx";
 import { PageHeader } from "../primitives/form-layout.tsx";
 import { compactAge } from "../primitives/format.ts";
 import { FolderIcon, PlusIcon } from "../primitives/icons.tsx";
-import { useLoad } from "../primitives/load.ts";
+import { useLoad, useReloadOn } from "../primitives/load.ts";
 import { EllipsisIcon, TrashIcon } from "../primitives/lucide.tsx";
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
@@ -75,7 +75,7 @@ const TABS: readonly { value: "saved" | "sandbox"; label: string }[] = [
 type NoticeSetter = (notice: { level: "info" | "error"; text: string } | undefined) => void;
 
 /** "2m ago", or "just now" under a minute. */
-const agoText = (at: number, now: number): string => {
+export const agoText = (at: number, now: number): string => {
 	const age = compactAge(at, now);
 	return age === "now" ? "just now" : `${age} ago`;
 };
@@ -412,7 +412,8 @@ function BySandbox({
 	);
 }
 
-function SandboxHistory({
+/** One sandbox's history: its own snapshots, newest first, each with Browse files and Delete. Its page's Snapshots tab. */
+export function SandboxHistory({
 	source,
 	sandbox,
 	now,
@@ -426,6 +427,8 @@ function SandboxHistory({
 	onNotice: NoticeSetter;
 }) {
 	const { state, reload } = useLoad(() => source.history(sandbox.id), [source, sandbox.id]);
+	// A stop or a save while it's shown adds a snapshot: read the history again.
+	useReloadOn(sandbox.snapshot?.id, reload);
 	const [removed, setRemoved] = useState<ReadonlySet<string>>(new Set());
 	const [deleting, setDeleting] = useState<SandboxSnapshot>();
 

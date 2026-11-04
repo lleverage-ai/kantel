@@ -26,6 +26,7 @@ import {
 	createKantelClient,
 	type DeviceLoginRequest,
 	type EgressGrantInput,
+	type ExposedPort,
 	type FileEntry,
 	type Host,
 	type Invite,
@@ -81,6 +82,7 @@ type UiSandbox = Awaited<ReturnType<SandboxesSource["list"]>>[number];
 type UiSandboxSize = UiSandbox["size"];
 type UiSandboxState = UiSandbox["state"];
 type UiCommand = Awaited<ReturnType<SandboxesSource["history"]>>[number];
+type UiPort = Awaited<ReturnType<NonNullable<SandboxesSource["ports"]>>>[number];
 type UiSandboxSnapshot = Awaited<ReturnType<SnapshotsSource["history"]>>[number];
 type UiSnapshotReason = UiSandboxSnapshot["reason"];
 type UiSavedSnapshot = Awaited<ReturnType<SnapshotsSource["saved"]>>[number];
@@ -144,15 +146,22 @@ const MAX_PAGES = 20;
 async function allPages<T>(
 	read: (cursor: string | undefined) => Promise<{ readonly items: readonly T[]; readonly nextCursor?: string }>,
 ): Promise<T[]> {
+	return (await firstPages(read)).items;
+}
+
+/** As `allPages`, saying whether the list went on past `MAX_PAGES`, for a view that should say it's cut off. */
+async function firstPages<T>(
+	read: (cursor: string | undefined) => Promise<{ readonly items: readonly T[]; readonly nextCursor?: string }>,
+): Promise<{ items: T[]; more: boolean }> {
 	const items: T[] = [];
 	let cursor: string | undefined;
 	for (let page = 0; page < MAX_PAGES; page += 1) {
 		const answer = await read(cursor);
 		items.push(...answer.items);
-		if (answer.nextCursor === undefined) break;
+		if (answer.nextCursor === undefined) return { items, more: false };
 		cursor = answer.nextCursor;
 	}
-	return items;
+	return { items, more: true };
 }
 
 /** A page query's cursor, when there is one. */
@@ -343,6 +352,20 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 	};
 }
 
+/** How many lines of a failed command's output the Logs tab shows: its end, where the error usually is. */
+const OUTPUT_LINES = 40;
+
+/** The end of what a failed command printed, stdout then stderr; none for one that succeeded or printed nothing. */
+function outputOf(command: Command): { readonly output?: string } {
+	if (command.exitCode === undefined || command.exitCode === 0) return {};
+	const printed = [command.stdout, command.stderr]
+		.map((text) => text.replace(/\s+$/, ""))
+		.filter((text) => text !== "")
+		.join("\n");
+	if (printed === "") return {};
+	return { output: printed.split("\n").slice(-OUTPUT_LINES).join("\n") };
+}
+
 function commandOf(command: Command): UiCommand {
 	return {
 		id: command.id,
@@ -352,7 +375,12 @@ function commandOf(command: Command): UiCommand {
 		...(command.exitCode === undefined ? {} : { exitCode: command.exitCode }),
 		// The API doesn't say who ran a command.
 		by: "",
+		...outputOf(command),
 	};
+}
+
+function portOf(port: ExposedPort): UiPort {
+	return { port: port.port, url: port.url, public: port.public, createdAt: port.createdAt };
 }
 
 function sandboxesSource(context: Context): SandboxesSource {
@@ -364,6 +392,10 @@ function sandboxesSource(context: Context): SandboxesSource {
 	return {
 		// The backend decides what each size is, and the API doesn't list them.
 		sizeFigures: false,
+		// `kantel console`'s page frames nothing from the gateway, so Browser and Desktop open in tabs of their own.
+		screens: context.local === undefined ? "console" : "tab",
+		// End to end, the host refuses the gateway's file reads, and the history it keeps carries no output yet.
+		endToEnd: async (id) => (await endToEndHost(context, id)) !== undefined,
 		list: async (accountId) => {
 			const sandboxes = await allPages((cursor) =>
 				api.listSandboxes({ account: accountId, all: true, ...after(cursor) }),
@@ -402,40 +434,95 @@ function sandboxesSource(context: Context): SandboxesSource {
 		},
 		access: async (id) => {
 			// microVMs only: an isolate's `not_supported` rejects the lot. SSH's private key, when Kantel makes one, has no
-			// place in the UI's access and is dropped.
+			// place in the UI's access and is dropped. The browser is driven where it runs, on the desktop, so its page is a
+			// desktop page too; while Chromium is still starting, the API refuses it and the desktop's stands in.
 			const [ssh, desktop, watch, browser] = await Promise.all([
 				api.openSsh(id),
 				api.openDesktop(id),
 				api.openDesktop(id, { viewOnly: true }),
-				api.openBrowser(id),
+				api.openBrowser(id).catch((error: unknown) => {
+					if (isCode(error, "unavailable")) return undefined;
+					throw error;
+				}),
 			]);
 			context.learnHost(ssh.host);
-			return { ssh: ssh.command, desktopUrl: desktop.url, desktopViewUrl: watch.url, browserUrl: browser.url };
+			const browserUrl = browser?.url ?? desktop.url;
+			return {
+				ssh: ssh.command,
+				desktopUrl: desktop.url,
+				desktopViewUrl: watch.url,
+				browserUrl,
+				// The browser's page is a desktop page, which a frame can show as it is.
+				embed: { desktop: desktop.embedUrl, watch: watch.embedUrl, browser: browserUrl },
+			};
 		},
 		history: async (id) => {
-			// End to end, the host keeps the history and the gateway has none of it: `kantel console` reads it there, or
-			// this browser does over its own session once it is a device in the chain.
-			const { local, browser } = context;
-			let account = context.sandboxAccounts.get(id);
-			if (account === undefined && (local !== undefined || browser !== undefined)) {
-				account = (await api.getSandbox(id)).accountId;
-				context.sandboxAccounts.set(id, account);
-			}
-			if (local !== undefined && account !== undefined && local.mode(account) !== "off") {
-				return hostHistory((params) => local.call<HostCommandPage>(id, "sandbox.history", params));
-			}
-			if (browser !== undefined && account !== undefined) {
-				// Where this browser trusts the space's chain, only the chain as it verifies from there decides: a gateway that
-				// answers no chain, or one that goes back on it, throws rather than reading as off. Where it trusts none yet,
-				// the gateway's word is all there is, and a space on E2E then gets the session's refusal to set it up.
-				const mode = (await browser.mode(account)) ?? (await chainMode(context, account));
-				if (mode !== "off") {
-					return hostHistory((params) => browser.call<HostCommandPage>(id, "sandbox.history", params));
-				}
-			}
+			// End to end, the host keeps the history and the gateway has none of it.
+			const host = await endToEndHost(context, id);
+			if (host !== undefined) return hostHistory((params) => host.call<HostCommandPage>(id, "sandbox.history", params));
 			return (await allPages((cursor) => api.listCommands(id, after(cursor)))).map(commandOf);
 		},
+		get: async (id) => {
+			const sandbox = await api.getSandbox(id);
+			await learnEnvironmentNames(context, sandbox.accountId, [sandbox]);
+			return view(sandbox);
+		},
+		// The API's `null` is always on.
+		setAutoStop: async (id, minutes) => view(await api.updateSandbox(id, { autoStopMinutes: minutes ?? null })),
+		usageNow: async (id) => {
+			// The latest point's memory; the API doesn't say how much disk is in use.
+			const latest = (await api.getSandboxUsage(id)).points.at(-1);
+			return latest === undefined ? {} : { memoryGb: Math.round((latest.memoryMb / 1024) * 10) / 10 };
+		},
+		ports: async (id) => (await api.listPorts(id)).items.map(portOf),
+		exposePort: async (id, port, isPublic) => portOf(await api.exposePort(id, { port, public: isPublic })),
+		hidePort: (id, port) => api.hidePort(id, String(port)),
+		files: {
+			list: async (id, path) => {
+				const { items, more } = await firstPages((cursor) =>
+					api.listFiles(id, { path: absolute(path), ...after(cursor) }),
+				);
+				return { entries: items.map(entryOf).sort(foldersFirst), more };
+			},
+			read: async (id, path) => {
+				try {
+					const file = await api.readFile(id, { path: absolute(path) });
+					return file.encoding === "utf8" ? file.content : undefined;
+				} catch (error) {
+					// As a snapshot's: a binary file, or one over 1 MiB, is `invalid`, the UI's undefined.
+					if (isCode(error, "invalid")) return undefined;
+					throw error;
+				}
+			},
+		},
 	};
+}
+
+/**
+ * How this console reaches an end-to-end sandbox's host, or undefined for a sandbox it reads through the gateway (its
+ * account has E2E off, or this console has no keys). `kantel console` reaches it through the CLI's device; the gateway's
+ * console through this browser's own, once it's a device in the chain.
+ */
+async function endToEndHost(
+	context: Context,
+	id: string,
+): Promise<{ call<T>(sandboxId: string, method: string, params?: object): Promise<T> } | undefined> {
+	const { local, browser } = context;
+	if (local === undefined && browser === undefined) return undefined;
+	let account = context.sandboxAccounts.get(id);
+	if (account === undefined) {
+		account = (await context.api.getSandbox(id)).accountId;
+		context.sandboxAccounts.set(id, account);
+	}
+	if (local !== undefined && local.mode(account) !== "off") return local;
+	if (browser !== undefined) {
+		// Where this browser trusts the space's chain, only the chain as it verifies from there decides: a gateway that
+		// answers no chain, or one that goes back on it, throws rather than reading as off. Where it trusts none yet,
+		// the gateway's word is all there is, and a space on E2E then gets the session's refusal to set it up.
+		const mode = (await browser.mode(account)) ?? (await chainMode(context, account));
+		if (mode !== "off") return browser;
+	}
+	return undefined;
 }
 
 /** Every page of a sandbox's history its host keeps, by its cursor; the list shows no output, so none is carried. */
