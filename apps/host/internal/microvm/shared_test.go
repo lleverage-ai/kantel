@@ -1,6 +1,8 @@
 package microvm
 
 import (
+	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -8,6 +10,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
@@ -142,5 +145,55 @@ func TestDropSizeTemplates(t *testing.T) {
 	}
 	if !reflect.DeepEqual(left, []string{"shared-4vcpu"}) {
 		t.Fatalf("templates left %v, want only shared-4vcpu", left)
+	}
+}
+
+type fakeDrive struct{ rescans int }
+
+func (d *fakeDrive) RescanDrive(context.Context, string, string) error { d.rescans++; return nil }
+
+type fakeDiskGuest struct{ asked []int64 }
+
+func (g *fakeDiskGuest) GrowDisk(_ context.Context, bytes int64) error {
+	g.asked = append(g.asked, bytes)
+	return nil
+}
+
+func (g *fakeDiskGuest) Exec(context.Context, guest.ExecRequest) (guest.ExecResult, error) {
+	return guest.ExecResult{}, errors.New("not called with a current agent")
+}
+
+// growDisk grows the file, always tells the VM and asks the guest to wait for the size it made; it never shrinks a
+// larger disk (a cold snapshot of a larger size), and asking again changes nothing.
+func TestGrowDisk(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "disk.ext4")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(path, 4<<30); err != nil {
+		t.Fatal(err)
+	}
+	drive, client := &fakeDrive{}, &fakeDiskGuest{}
+	for range 2 {
+		if err := growDisk(context.Background(), drive, client, path, 12<<30); err != nil {
+			t.Fatal(err)
+		}
+	}
+	info, _ := os.Stat(path)
+	if info.Size() != 12<<30 {
+		t.Fatalf("disk is %d bytes, want 12 GiB", info.Size())
+	}
+	if err := growDisk(context.Background(), drive, client, path, 2<<30); err != nil {
+		t.Fatal(err)
+	}
+	info, _ = os.Stat(path)
+	if info.Size() != 12<<30 {
+		t.Fatalf("a smaller size shrank the disk to %d bytes", info.Size())
+	}
+	if want := []int64{12 << 30, 12 << 30, 12 << 30}; !reflect.DeepEqual(client.asked, want) {
+		t.Fatalf("the guest was asked to wait for %v, want %v", client.asked, want)
+	}
+	if drive.rescans != 3 {
+		t.Fatalf("%d rescans, want one a call (a restored VM's device has its snapshot's capacity)", drive.rescans)
 	}
 }

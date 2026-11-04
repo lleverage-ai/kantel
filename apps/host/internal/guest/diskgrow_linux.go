@@ -2,10 +2,13 @@ package guest
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -18,8 +21,21 @@ const diskDevice = "/dev/vdb"
 // does online.
 const ext4ResizeFS = 0x40086610
 
-func (s *Server) growDisk(w http.ResponseWriter, _ *http.Request) {
-	if err := GrowFS(diskDevice); err != nil {
+// growDisk grows the disk's file system once the device is ?bytes= long (the size the host made it; the kernel learns
+// of it a moment after the host's rescan), or at once to whatever the device is without it.
+func (s *Server) growDisk(w http.ResponseWriter, r *http.Request) {
+	var want uint64
+	if v := r.URL.Query().Get("bytes"); v != "" {
+		n, err := strconv.ParseUint(v, 10, 64)
+		if err != nil {
+			fail(w, 400, fmt.Errorf("bytes: %w", err))
+			return
+		}
+		want = n
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+	if err := GrowFS(ctx, diskDevice, want); err != nil {
 		fail(w, 500, err)
 		return
 	}
@@ -27,21 +43,26 @@ func (s *Server) growDisk(w http.ResponseWriter, _ *http.Request) {
 }
 
 // GrowFS grows the ext4 file system mounted from dev to fill the device, online (resize2fs without the tool, which an
-// image needn't have). Nothing to do when it already does.
-func GrowFS(dev string) error {
+// image needn't have), once the device is at least want bytes (waiting for the kernel to see it until ctx ends).
+// Nothing to do when it already fills it.
+func GrowFS(ctx context.Context, dev string, want uint64) error {
 	mount, err := mountOf(dev)
 	if err != nil {
 		return err
 	}
-	f, err := os.Open(dev)
-	if err != nil {
-		return err
-	}
 	var bytes uint64
-	_, _, errno := unix.Syscall(unix.SYS_IOCTL, f.Fd(), unix.BLKGETSIZE64, uintptr(unsafe.Pointer(&bytes)))
-	f.Close()
-	if errno != 0 {
-		return fmt.Errorf("%s size: %w", dev, errno)
+	for {
+		if bytes, err = deviceBytes(dev); err != nil {
+			return err
+		}
+		if bytes >= want {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%s is %d bytes, not the %d asked for", dev, bytes, want)
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 	var st unix.Statfs_t
 	if err := unix.Statfs(mount, &st); err != nil {
@@ -63,6 +84,20 @@ func GrowFS(dev string) error {
 		return fmt.Errorf("grow %s to %d blocks: %w", mount, blocks, errno)
 	}
 	return nil
+}
+
+// deviceBytes is a block device's capacity as the kernel sees it.
+func deviceBytes(dev string) (uint64, error) {
+	f, err := os.Open(dev)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	var bytes uint64
+	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, f.Fd(), unix.BLKGETSIZE64, uintptr(unsafe.Pointer(&bytes))); errno != 0 {
+		return 0, fmt.Errorf("%s size: %w", dev, errno)
+	}
+	return bytes, nil
 }
 
 // mountOf is where dev is mounted, from /proc/self/mounts.

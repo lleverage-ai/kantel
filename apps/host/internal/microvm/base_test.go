@@ -661,3 +661,34 @@ func TestPinBasesKeepsSnapshotMetadataThroughAFailedPass(t *testing.T) {
 		t.Fatalf("pinned snapshot = %+v", snap)
 	}
 }
+
+// Close ends the background template builds (their VMs are disposable) and waits for them; none starts after.
+func TestCloseEndsBackgroundBuilds(t *testing.T) {
+	m := &Manager{log: slog.New(slog.NewTextHandler(io.Discard, nil)), templates: map[string]*sync.Mutex{}, rebuilding: map[string]bool{}}
+	m.bg, m.bgStop = context.WithCancel(context.Background())
+	started, ended := make(chan struct{}), make(chan error, 1)
+	m.rebuild = func(ctx context.Context, _ shape) error {
+		close(started)
+		<-ctx.Done()
+		time.Sleep(50 * time.Millisecond) // the VM being killed
+		ended <- ctx.Err()
+		return ctx.Err()
+	}
+	m.rebuildTemplate(shape{Size: proto.Size{Name: "default"}})
+	<-started
+	m.Close()
+	select {
+	case err := <-ended:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("the build ended with %v, want its context cancelled", err)
+		}
+	default:
+		t.Fatal("Close returned before the build ended")
+	}
+	m.rebuild = func(context.Context, shape) error {
+		t.Error("a build started after Close")
+		return nil
+	}
+	m.rebuildTemplate(shape{Size: proto.Size{Name: "large"}})
+	time.Sleep(50 * time.Millisecond)
+}

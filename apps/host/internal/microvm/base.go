@@ -515,7 +515,12 @@ func (m *Manager) rebuildTemplate(sh shape) {
 	if m.rebuilding == nil {
 		m.rebuilding = map[string]bool{}
 	}
-	if m.rebuilding[size.Name] || m.closed.Load() {
+	if m.rebuilding[size.Name] {
+		m.mu.Unlock()
+		return
+	}
+	ctx, ok := m.startBuilder()
+	if !ok {
 		m.mu.Unlock()
 		return
 	}
@@ -523,6 +528,7 @@ func (m *Manager) rebuildTemplate(sh shape) {
 	m.mu.Unlock()
 	m.log.Info("template is for other images; rebuilding it in the background", "size", size.Name)
 	go func() {
+		defer m.builders.Done()
 		done := func() {
 			m.mu.Lock()
 			delete(m.rebuilding, size.Name)
@@ -532,7 +538,7 @@ func (m *Manager) rebuildTemplate(sh shape) {
 		if run == nil {
 			run = m.swapTemplate
 		}
-		if err := run(context.Background(), sh); err != nil {
+		if err := run(ctx, sh); err != nil {
 			m.log.Error("background template rebuild failed; creates use the old template", "size", size.Name, "error", err)
 			// Not again at once: every create would start one.
 			time.AfterFunc(time.Minute, done)

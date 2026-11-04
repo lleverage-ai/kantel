@@ -185,9 +185,10 @@ func (c *Client) SetIdentitySteps(ctx context.Context, id Identity) (map[string]
 }
 
 // GrowDisk grows the file system on the sandbox's disk (/dev/vdb) to fill the device, online, after the host made the
-// device larger. An older agent answers 404 (IsNotFound).
-func (c *Client) GrowDisk(ctx context.Context) error {
-	_, err := c.do(ctx, http.MethodPost, "/disk/grow", nil, &map[string]any{})
+// device bytes long: the agent first waits until the guest kernel sees that capacity. An older agent answers 404
+// (IsNotFound).
+func (c *Client) GrowDisk(ctx context.Context, bytes int64) error {
+	_, err := c.do(ctx, http.MethodPost, "/disk/grow?bytes="+strconv.FormatInt(bytes, 10), nil, &map[string]any{})
 	return err
 }
 

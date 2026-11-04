@@ -185,6 +185,10 @@ type meta struct {
 	SSHKeys   []string          `json:"sshKeys,omitempty"`
 	Owner     string            `json:"owner,omitempty"`
 	Error     string            `json:"error,omitempty"`
+	// GrowDisk: the disk (its file, or the guest's file system) may still be smaller than the size's, as a sandbox
+	// restored from a shared template's or a snapshot's disk starts. Set until growDisk has made it the size's, so a
+	// stop, a host restart or a snapshot before then doesn't leave it smaller for good.
+	GrowDisk bool `json:"growDisk,omitempty"`
 }
 
 type sandbox struct {
@@ -222,7 +226,14 @@ type Manager struct {
 	sizeTemplatesDropped sync.Once
 	nextCID              atomic.Uint32
 	closed               atomic.Bool
-	spool                *spool
+	// bg is the background template builds' context, ended by Close, which waits for builders (counted, under mu, only
+	// while not closed) to settle: their VMs are disposable, unlike sandboxes', which outlive the daemon.
+	bg       context.Context
+	bgStop   context.CancelFunc
+	builders sync.WaitGroup
+	// holdGrowth (tests) makes growDisk give up as a stop or a restart before it would: the growth stays pending.
+	holdGrowth atomic.Bool
+	spool      *spool
 	// inUse is held (read) from picking a template until restoring it, so a background rebuild swaps it in between
 	// creates (base.go): a named size's (made in New) or a shared template's (made on first use), by name.
 	inUse map[string]*sync.RWMutex
@@ -416,6 +427,14 @@ func New(cfg Config) (*Manager, error) {
 		}
 	}
 	m := &Manager{cfg: cfg, log: cfg.Log.With("tier", Tier), sandboxes: map[string]*sandbox{}, templates: map[string]*sync.Mutex{}, inUse: map[string]*sync.RWMutex{}, rebuilding: map[string]bool{}, preparing: map[int]bool{}, sharedFailed: map[int]time.Time{}}
+	m.bg, m.bgStop = context.WithCancel(context.Background())
+	// Template builds a previous run left (it stopped or crashed mid-build): Firecracker outlives the daemon, and the
+	// next build of the template would remove the directory with its PID file.
+	building, _ := filepath.Glob(filepath.Join(cfg.Root, "templates", "*.building"))
+	for _, dir := range building {
+		fc.KillLeftover(filepath.Join(dir, "vm"))
+		_ = os.RemoveAll(dir)
+	}
 	m.hostMemoryMiB = hostinfo.MemoryMiB()
 	m.shared = sharedShape(cfg, m.hostMemoryMiB, defaultCPUs())
 	m.nextCID.Store(uint32(time.Now().UnixMilli()%100000) + 100)
@@ -473,7 +492,7 @@ func (m *Manager) memFile(sizeName, path string) (write string, done func(ok boo
 	}
 	return spooled, func(ok bool) error {
 		if !ok {
-			m.spool.cancel(spooled, n)
+			m.spool.cancel(spooled)
 			return nil
 		}
 		return m.spool.place(spooled, path)
@@ -571,6 +590,12 @@ func (m *Manager) adopt() error {
 				m.watch(s, machine)
 				m.sandboxes[s.meta.ID] = s
 				m.log.Info("adopted running sandbox", "sandbox", s.meta.ID, "pid", s.meta.Pid)
+				if s.meta.GrowDisk {
+					// The previous run answered its create but restarted before growing its disk.
+					if size, err := m.size(s.meta.Size); err == nil {
+						go m.growDisk(s, size.DiskGiB)
+					}
+				}
 				continue
 			}
 		}
@@ -839,6 +864,8 @@ func (m *Manager) buildTemplate(ctx context.Context, sh shape, dir string) (timi
 	t := timings{}
 	start := time.Now()
 	building := dir + ".building"
+	// A build this run abandoned (it timed out) may still have its VM: its PID file goes with the directory.
+	fc.KillLeftover(filepath.Join(building, "vm"))
 	_ = os.RemoveAll(building)
 	_ = os.RemoveAll(dir)
 	vm := filepath.Join(building, "vm")
@@ -1203,16 +1230,22 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 		}
 		t.step("reshape", &start)
 		if size.DiskGiB > reshape.DiskGiB {
-			// Once this answers (it holds the sandbox's lock until then): growing ext4 online takes a while, and
-			// nothing fills the template's disk (gigabytes) in that time.
-			go m.growDisk(s, size.DiskGiB)
+			s.meta.GrowDisk = true
 		}
+	} else if p.From != "" {
+		// The snapshot's may be from before its sandbox's disk was grown (or of another size, made without memory).
+		s.meta.GrowDisk = true
 	}
 	s.meta.State = proto.StateRunning
 	s.meta.Slot = s.link.Slot
 	s.meta.Pid = s.machine.Pid()
 	if err := m.writeMeta(s); err != nil {
 		return fail(err)
+	}
+	if s.meta.GrowDisk {
+		// Once this answers (it holds the sandbox's lock until then): growing ext4 online takes a while, and
+		// nothing fills the template's disk (gigabytes) in that time.
+		go m.growDisk(s, size.DiskGiB)
 	}
 	m.watch(s, s.machine)
 	t.step("finish", &start)
@@ -1473,6 +1506,10 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 	s.meta.Error = ""
 	if err := m.writeMeta(s); err != nil {
 		return proto.SandboxInfo{}, err
+	}
+	if s.meta.GrowDisk {
+		// Stopped (or snapshotted) before its disk was grown: grown now, as a create would.
+		go m.growDisk(s, size.DiskGiB)
 	}
 	m.watch(s, s.machine)
 	t["total"] = float64(time.Since(began).Microseconds()) / 1000
@@ -1958,7 +1995,36 @@ func (m *Manager) DialPort(ctx context.Context, id string, port int) (net.Conn, 
 
 // Close stops the tier taking work. Sandboxes keep running.
 func (m *Manager) Close() {
+	m.mu.Lock()
 	m.closed.Store(true)
+	m.mu.Unlock()
+	if m.bgStop != nil {
+		m.bgStop()
+	}
+	// Ending their context kills their VMs (buildTemplate's deferred Kill): a moment, unless one is stuck.
+	settled := make(chan struct{})
+	go func() {
+		m.builders.Wait()
+		close(settled)
+	}()
+	select {
+	case <-settled:
+	case <-time.After(20 * time.Second):
+		m.log.Warn("a background template build hasn't stopped; the next start ends its VM")
+	}
+}
+
+// startBuilder counts a background template build in, with the context it runs under, unless the tier is closing.
+// Call it with mu held; the build calls m.builders.Done when it ends.
+func (m *Manager) startBuilder() (context.Context, bool) {
+	if m.closed.Load() {
+		return nil, false
+	}
+	m.builders.Add(1)
+	if m.bg == nil {
+		return context.Background(), true // a Manager made without New (tests)
+	}
+	return m.bg, true
 }
 
 // Usage is the memory the tier's running sandboxes were given, and how many run and are stopped.

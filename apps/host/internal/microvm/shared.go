@@ -202,18 +202,24 @@ func (m *Manager) prepareShape(vcpus int) {
 		m.mu.Unlock()
 		return
 	}
+	ctx, ok := m.startBuilder()
+	if !ok {
+		m.mu.Unlock()
+		return
+	}
 	m.preparing[vcpus] = true
 	m.mu.Unlock()
 	defer func() {
 		m.mu.Lock()
 		delete(m.preparing, vcpus)
 		m.mu.Unlock()
+		m.builders.Done()
 	}()
 	if m.templateReady(sh) {
 		m.dropSizeTemplates()
 		return
 	}
-	_, _, err := m.template(context.Background(), sh)
+	_, _, err := m.template(ctx, sh)
 	if err == nil {
 		m.dropSizeTemplates()
 		return
@@ -364,45 +370,76 @@ func (m *Manager) restoreParallel(ctx context.Context, vm, diskPath, statePath, 
 	return machine, client, made, nil
 }
 
-// growDisk grows a sandbox's disk from its template's size to its own: the file, then (told by Firecracker) the guest's
-// ext4, online. Run once the create has answered, under the sandbox's lock so a stop waits for it; a failure leaves the
-// smaller disk working and is logged.
+// growDisk makes a running sandbox's disk (meta.GrowDisk) its size's: the file, then (told by Firecracker) the
+// guest's ext4, online, once the guest sees the new capacity. Run once a create, resume or adoption has answered, under
+// the sandbox's lock so a stop waits for it. Doing it again changes nothing, so the flag is cleared only once it has
+// worked: a stop first, a failure or a restart leaves it for the next resume or adoption. A failure leaves the smaller
+// disk working and is logged.
 func (m *Manager) growDisk(s *sandbox, gib int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.meta.State != proto.StateRunning || s.machine == nil {
+	if !s.meta.GrowDisk || s.meta.State != proto.StateRunning || s.machine == nil || m.holdGrowth.Load() {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	start := time.Now()
-	machine, client := s.machine, s.guest
-	err := func() error {
-		if err := os.Truncate(filepath.Join(s.vmDir(), fc.DiskFile), int64(gib)<<30); err != nil {
-			return err
-		}
-		if err := machine.RescanDrive(ctx, "disk", fc.DiskFile); err != nil {
-			return err
-		}
-		err := client.GrowDisk(ctx)
-		if !guest.IsNotFound(err) {
-			return err
-		}
-		// An agent from before /disk/grow: the image's resize2fs.
-		res, err := client.Exec(ctx, guest.ExecRequest{Argv: []string{"resize2fs", "/dev/vdb"}, User: "root", TimeoutMs: 50000})
-		if err != nil {
-			return err
-		}
-		if res.ExitCode != 0 {
-			return fmt.Errorf("resize2fs exited %d: %s", res.ExitCode, strings.TrimSpace(res.Stderr))
-		}
-		return nil
-	}()
-	if err != nil {
+	if err := growDisk(ctx, s.machine, s.guest, filepath.Join(s.vmDir(), fc.DiskFile), int64(gib)<<30); err != nil {
 		m.log.Warn("growing a sandbox's disk", "sandbox", s.meta.ID, "gib", gib, "error", err)
 		return
 	}
+	s.meta.GrowDisk = false
+	if err := m.writeMeta(s); err != nil {
+		m.log.Warn("growing a sandbox's disk", "sandbox", s.meta.ID, "error", err)
+	}
 	m.log.Debug("grew a sandbox's disk", "sandbox", s.meta.ID, "gib", gib, "ms", time.Since(start).Milliseconds())
+}
+
+// diskDevice is what growDisk needs of a running VM: to tell its guest the disk changed size.
+type diskDevice interface {
+	RescanDrive(ctx context.Context, id, path string) error
+}
+
+// diskGuest is what growDisk needs of its guest agent.
+type diskGuest interface {
+	GrowDisk(ctx context.Context, bytes int64) error
+	Exec(ctx context.Context, req guest.ExecRequest) (guest.ExecResult, error)
+}
+
+// growDisk makes the disk file at path (never smaller) bytes long, tells the guest, and grows its ext4 to fill it once
+// it sees that capacity.
+func growDisk(ctx context.Context, machine diskDevice, client diskGuest, path string, bytes int64) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.Size() < bytes {
+		if err := os.Truncate(path, bytes); err != nil {
+			return err
+		}
+	} else {
+		// Never shrunk: a cold snapshot of a larger size keeps its disk.
+		bytes = info.Size()
+	}
+	// Also when the file was already grown: a VM restored from a snapshot has the capacity it had then.
+	if err := machine.RescanDrive(ctx, "disk", fc.DiskFile); err != nil {
+		return err
+	}
+	// The agent waits for the guest to see the capacity before it grows the file system.
+	err = client.GrowDisk(ctx, bytes)
+	if !guest.IsNotFound(err) {
+		return err
+	}
+	// An agent from before /disk/grow: the image's resize2fs, once the kernel shows the capacity (in 512-byte sectors).
+	script := fmt.Sprintf(`i=0; while [ "$(cat /sys/class/block/vdb/size)" -lt %d ]; do i=$((i+1)); [ $i -gt 100 ] && { echo "/dev/vdb never reached %d bytes" >&2; exit 1; }; sleep 0.1; done; exec resize2fs /dev/vdb`, bytes/512, bytes)
+	res, err := client.Exec(ctx, guest.ExecRequest{Argv: []string{"sh", "-c", script}, User: "root", TimeoutMs: 50000})
+	if err != nil {
+		return err
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("resize2fs exited %d: %s", res.ExitCode, strings.TrimSpace(res.Stderr))
+	}
+	return nil
 }
 
 type reshapeResult struct {
