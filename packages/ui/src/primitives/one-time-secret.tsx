@@ -22,17 +22,27 @@ export const commandTextClass =
  * "latest/…") rather than mid-word. What is copied is the command as given; this is only how it is shown.
  */
 export function BreakableCommand({ command }: { command: string }) {
-	// After a single slash between two other characters: a path's parts, never inside "https://".
-	const parts = command.split(/(?<=[^/:]\/)(?=[^/])/);
+	// Each word kept whole (a flag such as --url never splits at its hyphens); a line breaks between words, or after a
+	// single slash between two other characters inside a long one: a path's parts, never inside "https://".
+	const words = command.split(/( +)/);
 	return (
 		<>
-			{parts.map((part, index) => (
-				// biome-ignore lint/suspicious/noArrayIndexKey: a fixed split of one string.
-				<Fragment key={index}>
-					{part}
-					{index < parts.length - 1 ? <wbr /> : null}
-				</Fragment>
-			))}
+			{words.map((word, index) => {
+				if (/^ +$/.test(word)) return word;
+				const parts = word.split(/(?<=[^/:]\/)(?=[^/])/);
+				return (
+					// biome-ignore lint/suspicious/noArrayIndexKey: a fixed split of one string.
+					<span key={index} className="whitespace-nowrap">
+						{parts.map((part, at) => (
+							// biome-ignore lint/suspicious/noArrayIndexKey: a fixed split of one string.
+							<Fragment key={at}>
+								{part}
+								{at < parts.length - 1 ? <wbr /> : null}
+							</Fragment>
+						))}
+					</span>
+				);
+			})}
 		</>
 	);
 }

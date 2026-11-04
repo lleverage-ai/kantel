@@ -12,7 +12,8 @@ const ACCESS: SandboxAccess = {
 	browserUrl: "",
 };
 
-// Commands carry <wbr> break hints after a path's slashes; the text read is the command without them.
+// Commands carry <wbr> break hints after a path's slashes, and each word in an unbreakable span; the text read is
+// the command without them.
 const render = (access: SandboxAccess) =>
 	renderToStaticMarkup(
 		createElement(SandboxSsh, {
@@ -22,7 +23,9 @@ const render = (access: SandboxAccess) =>
 			onAccessRetry: () => {},
 			now: 0,
 		}),
-	).replaceAll("<wbr/>", "");
+	)
+		.replaceAll("<wbr/>", "")
+		.replace(/<span class="whitespace-nowrap">([^<]*)<\/span>/g, "$1");
 
 describe("SandboxSsh", () => {
 	it("says to sign the CLI in to this Kantel once, under the install line, when the page has a gateway", () => {
