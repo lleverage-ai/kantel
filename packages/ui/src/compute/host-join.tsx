@@ -103,7 +103,7 @@ export function HostJoinCommand({ source, input, now: fixedNow, onJoined, poll =
 				<Skeleton lines={2} />
 			</div>
 		) : (
-			<CommandBlock command={made.join.command} copyLabel="Copy" />
+			<CommandBlock command={made.join.command} copyLabel="Copy" prompt />
 		);
 	const requirements = (
 		<p className="m-0 text-sm text-muted">

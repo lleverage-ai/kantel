@@ -10,31 +10,63 @@ import { Notice, Panel } from "./surface.tsx";
 const codeFrame =
 	"m-0 min-w-0 flex-1 overflow-x-auto rounded-control border border-border-input bg-sunken px-2.5 py-2 font-mono text-code leading-normal text-fg select-all whitespace-pre [scrollbar-width:none] mask-r-from-92% mask-r-to-100%";
 
-/** A command's text inside its field: one line, scrolling sideways with a fade where it is wider than the field. */
-const commandText =
-	"m-0 min-w-0 flex-1 overflow-x-auto py-1 font-mono text-code leading-normal text-fg select-all whitespace-pre [scrollbar-width:none] mask-r-from-92% mask-r-to-100%";
+/**
+ * A command's text inside its field: all of it on screen, wrapping only between words and after a slash (a URL's
+ * parts), never inside a token unless one is longer than the line.
+ */
+export const commandTextClass =
+	"m-0 min-w-0 flex-1 py-1 font-mono text-code leading-normal text-fg whitespace-pre-wrap wrap-break-word";
 
 /**
- * A command to run, in code's font, with its own Copy. It stays on one line and scrolls sideways where it is wider
- * than its box, fading at the edge it continues past, so no part of a copyable string is ever broken.
+ * A command's text with a break opportunity after every slash, so a long URL wraps at its parts ("…/releases/" then
+ * "latest/…") rather than mid-word. What is copied is the command as given; this is only how it is shown.
+ */
+export function BreakableCommand({ command }: { command: string }) {
+	const parts = command.split(/(?<=\/)/);
+	return (
+		<>
+			{parts.map((part, index) => (
+				// biome-ignore lint/suspicious/noArrayIndexKey: a fixed split of one string.
+				<span key={index}>
+					{part}
+					{index < parts.length - 1 ? <wbr /> : null}
+				</span>
+			))}
+		</>
+	);
+}
+
+/**
+ * A command to run, in code's font, with its own Copy pinned to the field's corner. All of it is shown, wrapping at
+ * spaces and slashes where it is wider than the field, so it can be read before it is copied. `prompt` puts the
+ * shell's "$" before it, as a sandbox's SSH command has it.
  */
 export function CommandBlock({
 	command,
 	label,
 	copyLabel = "Copy command",
+	prompt = false,
 }: {
 	command: string;
 	/** What the command is for, above it: "For a stdio server". */
 	label?: ReactNode;
 	copyLabel?: string;
+	prompt?: boolean;
 }) {
 	return (
 		<div className="kt-command-block flex min-w-0 flex-col gap-1">
 			{label === undefined ? null : <span className="text-sm text-muted">{label}</span>}
 			{/* One field with Copy pinned inside it, as a sandbox's SSH command has it. */}
-			<div className="flex min-w-0 items-center gap-2 rounded-control border border-border-input bg-sunken py-1 pr-1 pl-2.5">
-				<pre className={commandText}>
-					<code>{command}</code>
+			<div className="flex min-w-0 items-start gap-2 rounded-control border border-border-input bg-sunken py-1 pr-1 pl-2.5">
+				{prompt ? (
+					<span className="flex-none py-1 font-mono text-code leading-normal text-faint" aria-hidden="true">
+						$
+					</span>
+				) : null}
+				<pre className={commandTextClass}>
+					<code className="select-all">
+						<BreakableCommand command={command} />
+					</code>
 				</pre>
 				<CopyButton text={command} label={copyLabel} size="sm" variant="ghost" />
 			</div>

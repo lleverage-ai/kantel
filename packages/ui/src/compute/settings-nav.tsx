@@ -45,9 +45,8 @@ export function SettingsFrame({
 			aria-label={label}
 			className={
 				narrow
-					? // Sideways on a phone: the row fades at its end so a page past the edge reads as more to scroll to, and the
-						// page shown scrolls into view.
-						"-mx-gutter-narrow flex min-w-0 gap-1 overflow-x-auto px-gutter-narrow [scrollbar-width:none] mask-r-from-75% mask-r-to-100%"
+					? // On a phone the pages wrap onto a second line rather than run off the edge: every one in sight, none cut.
+						"flex min-w-0 flex-wrap gap-1"
 					: "sticky top-0 flex w-(--kt-menu-width) flex-none flex-col gap-0.5"
 			}
 		>
@@ -57,12 +56,6 @@ export function SettingsFrame({
 					className={`${link} ${item.selected ? linkState.selected : linkState.idle}`}
 					href={item.href}
 					aria-current={item.selected ? "page" : undefined}
-					{...(item.selected && narrow
-						? {
-								ref: (element: HTMLAnchorElement | null) =>
-									element?.scrollIntoView({ block: "nearest", inline: "nearest" }),
-							}
-						: {})}
 				>
 					{item.label}
 				</a>

@@ -9,7 +9,7 @@ import { Button } from "../primitives/button.tsx";
 import { CopyButton, Disclosure, TextAreaField } from "../primitives/controls.tsx";
 import { clockTime } from "../primitives/format.ts";
 import { DownloadIcon } from "../primitives/lucide.tsx";
-import { CommandBlock } from "../primitives/one-time-secret.tsx";
+import { BreakableCommand, CommandBlock, commandTextClass } from "../primitives/one-time-secret.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { Notice } from "../primitives/surface.tsx";
 import { CLI_INSTALL_COMMAND, type SandboxAccess, type SandboxesSource, type SandboxSshKey } from "./compute-model.ts";
@@ -28,17 +28,13 @@ export function publicKeyProblem(text: string): string | undefined {
 }
 
 /**
- * A command in code's font, with a Copy: always one line, never broken inside a token. Where it is wider than its
- * box (a phone) it scrolls sideways, fading at the edge it continues past, and Copy stays put.
+ * A command in code's font, with a Copy pinned to the corner: all of it shown, wrapping at spaces and slashes where it
+ * is wider than its box (a phone), so it can be read before it is copied.
  */
-/** One line that scrolls sideways when it must, with no visible scrollbar and a fade at its right edge. */
-const scrollLine =
-	"min-w-0 flex-1 overflow-x-auto py-1 leading-normal whitespace-nowrap [scrollbar-width:none] mask-r-from-90% mask-r-to-100%";
-
 function CommandLine({ command, copyLabel }: { command: string | undefined; copyLabel: string }) {
 	return (
-		<div className="flex min-h-control-lg min-w-0 items-center gap-2 rounded-panel border border-border bg-sunken py-1 pr-1 pl-3 font-mono text-code">
-			<span className="flex-none text-faint" aria-hidden="true">
+		<div className="flex min-h-control-lg min-w-0 items-start gap-2 rounded-panel border border-border bg-sunken py-1 pr-1 pl-3 font-mono text-code">
+			<span className="flex-none py-1 leading-normal text-faint" aria-hidden="true">
 				$
 			</span>
 			{command === undefined ? (
@@ -46,7 +42,9 @@ function CommandLine({ command, copyLabel }: { command: string | undefined; copy
 					<Skeleton />
 				</span>
 			) : (
-				<code className={`kt-selectable ${scrollLine} text-fg`}>{command}</code>
+				<code className={`kt-selectable ${commandTextClass}`}>
+					<BreakableCommand command={command} />
+				</code>
 			)}
 			{command === undefined ? null : <CopyButton text={command} label={copyLabel} size="sm" variant="ghost" />}
 		</div>
