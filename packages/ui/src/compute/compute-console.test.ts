@@ -8,11 +8,13 @@ describe("the compute console's paths", () => {
 	});
 
 	it("reads back every page it makes a path for", () => {
-		for (const page of COMPUTE_PAGES) {
-			// Egress is always one sandbox's: it has no page of its own.
-			if (page === "egress") expect(parseComputePath(computePath(page))).toBeUndefined();
-			else expect(parseComputePath(computePath(page))).toEqual({ page });
-		}
+		for (const page of COMPUTE_PAGES) expect(parseComputePath(computePath(page))).toEqual({ page });
+	});
+
+	it("opens Egress at the old Egress proxy page's address", () => {
+		expect(parseComputePath("/compute/proxy")).toEqual({ page: "egress" });
+		expect(parseComputePath("/proxy", "")).toEqual({ page: "egress" });
+		expect(parseComputePath("/compute/proxy/extra")).toBeUndefined();
 	});
 
 	it("carries the environment that's open, and the sandbox whose egress is", () => {
@@ -35,6 +37,8 @@ describe("the compute console's paths", () => {
 	it("leaves an environment or a sandbox's egress for its list when the account changes", () => {
 		expect(pathAfterAccountSwitch("/compute/environments/env_backend")).toBe("/compute/environments");
 		expect(pathAfterAccountSwitch("/compute/egress/sbx_4d8n")).toBe("/compute/sandboxes");
+		// The account's Egress is every account's: it stays.
+		expect(pathAfterAccountSwitch("/compute/egress")).toBeUndefined();
 		expect(pathAfterAccountSwitch("/compute/environments")).toBeUndefined();
 		expect(pathAfterAccountSwitch("/compute/keys")).toBeUndefined();
 		expect(pathAfterAccountSwitch("/environments/env_backend", "")).toBe("/environments");

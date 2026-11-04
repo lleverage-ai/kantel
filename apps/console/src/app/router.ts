@@ -52,6 +52,15 @@ export function searchWithout(search: string, names: readonly string[]): string 
 	return rest === "" ? "" : `?${rest}`;
 }
 
+/** The page's query string, with its `?`, following `navigate` and the browser's back and forward: a tab in it. */
+export function useSearch(): string {
+	return useSyncExternalStore(
+		subscribe,
+		() => location.search,
+		() => "",
+	);
+}
+
 /** The page's path, following `navigate` and the browser's back and forward. */
 export function usePathname(): string {
 	return useSyncExternalStore(

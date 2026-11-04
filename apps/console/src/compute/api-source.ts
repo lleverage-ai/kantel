@@ -648,12 +648,7 @@ function proxyOf(settings: ProxySettings): UiProxySettings {
 		...(settings.upstream === undefined
 			? {}
 			: { upstream: { url: settings.upstream.url, authSet: settings.upstream.headerNames.length > 0 } }),
-		// The API doesn't inspect HTTPS.
-		tlsInspection: false,
-		// The API adds no headers to sandboxes' requests.
-		headers: [],
-		// The API keeps no request log.
-		logRequests: false,
+		// No `logRequests`: the API keeps each sandbox's newest requests, with no switch.
 	};
 }
 
@@ -671,11 +666,7 @@ function proxySource({ api }: Context): ProxySource {
 	return {
 		get: async (accountId) => proxyOf(await api.getProxySettings({ account: accountId })),
 		update: async (accountId, change) => {
-			if (change.tlsInspection === true) throw notYet("Kantel's API can't inspect HTTPS requests yet.");
-			if (change.headers !== undefined && change.headers.length > 0) {
-				throw notYet("Kantel's API can't add headers to sandboxes' requests yet.");
-			}
-			if (change.logRequests === true) throw notYet("Kantel's API can't keep a log of proxy requests yet.");
+			if (change.logRequests === false) throw notYet("Kantel's API always keeps each sandbox's newest requests.");
 			// A PUT replaces the settings, so what the change leaves out is sent as it is now.
 			const current = await api.getProxySettings({ account: accountId });
 			const policy = change.policy ?? policyOf(current);
@@ -701,9 +692,6 @@ function proxySource({ api }: Context): ProxySource {
 				attribution: current.attribution,
 			};
 			return proxyOf(await api.putProxySettings(body));
-		},
-		recent: async () => {
-			throw notYet("Kantel's API doesn't keep a log of proxy requests yet.");
 		},
 	};
 }
@@ -846,7 +834,7 @@ const environmentOf = (environment: ApiEnvironment): UiEnvironment => ({
 });
 
 const egressEntryOf = (entry: ApiEgressEntry): UiEgressEntry => {
-	// The UI has no field for a refusal's `X-Kantel-Proxy-Error` code: it says why when the proxy gave no reason.
+	// A refusal's `X-Kantel-Proxy-Error` code says why when the proxy gave no reason in words.
 	const reason = entry.reason ?? entry.code;
 	return {
 		id: entry.id,
@@ -858,6 +846,7 @@ const egressEntryOf = (entry: ApiEgressEntry): UiEgressEntry => {
 		decision: entry.decision,
 		...(reason === undefined ? {} : { reason }),
 		...(entry.rule === undefined ? {} : { rule: entry.rule }),
+		...(entry.code === undefined ? {} : { code: entry.code }),
 		swapped: entry.swapped,
 		inspected: entry.inspected,
 		...(entry.status === undefined ? {} : { status: entry.status }),

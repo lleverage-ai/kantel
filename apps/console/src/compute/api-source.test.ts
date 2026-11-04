@@ -358,9 +358,6 @@ describe("proxy", () => {
 			policy: "open",
 			allow: [],
 			deny: [],
-			tlsInspection: false,
-			headers: [],
-			logRequests: false,
 		});
 
 		const updated = await source.proxy.update(accountId, {
@@ -385,8 +382,8 @@ describe("proxy", () => {
 		});
 		expect(removed.upstream).toEqual({ url: "http://upstream.example:3128", authSet: false });
 
-		await expect(source.proxy.update(accountId, { tlsInspection: true })).rejects.toThrow(/can't/);
-		await expect(source.proxy.recent(accountId)).rejects.toThrow(/proxy requests/);
+		// The API keeps each sandbox's log, with no switch to stop it.
+		await expect(source.proxy.update(accountId, { logRequests: false })).rejects.toThrow(/always keeps/);
 	});
 });
 
@@ -594,6 +591,7 @@ describe("egress", () => {
 				decision: "denied",
 				// The refusal's code stands in for a reason.
 				reason: "placeholder-unbound",
+				code: "placeholder-unbound",
 				swapped: [],
 				inspected: true,
 				bytesUp: 0,

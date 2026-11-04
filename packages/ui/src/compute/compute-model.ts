@@ -379,20 +379,14 @@ export interface ApiKeysSource {
 // ---------------------------------------------------------------------------------------------------------------------
 // Egress proxy
 
-/** What sandboxes may reach. */
+/** What sandboxes may reach: anything, the allowed hosts, or nothing. */
 export type EgressPolicy = "open" | "allowlist" | "closed";
 
-/** A header the proxy adds to requests for a host: the sandbox never sees the value. */
-export interface InjectedHeader {
-	readonly id: string;
-	/** A host name, or `*.example.com`. */
-	readonly host: string;
-	readonly header: string;
-	/** Absent once saved: only whether one is set shows. */
-	readonly value?: string;
-	readonly set: boolean;
-}
-
+/**
+ * An account's egress proxy. HTTPS inspection has no setting: the proxy looks inside the HTTPS of the hosts protected
+ * variables are bound to and rules name methods or paths for, which swaps and path rules need. Credentials go on a
+ * request as protected variables, bound to hosts, not as headers the proxy adds.
+ */
 export interface ProxySettings {
 	readonly accountId: string;
 	readonly enabled: boolean;
@@ -403,38 +397,23 @@ export interface ProxySettings {
 	readonly deny: readonly string[];
 	/** An upstream proxy every request goes through, such as a credential-injecting gateway. */
 	readonly upstream?: { readonly url: string; readonly authSet: boolean };
-	/** Inspect HTTPS with Kantel's CA (the sandbox trusts it), so headers can be added to HTTPS requests. */
-	readonly tlsInspection: boolean;
-	readonly headers: readonly InjectedHeader[];
-	/** Keep a log of every request: host, method, status and bytes. */
-	readonly logRequests: boolean;
-}
-
-/** One request through the proxy, for its log. */
-export interface ProxyRequest {
-	readonly id: string;
-	readonly at: number;
-	readonly sandboxId: string;
-	readonly sandboxName: string;
-	readonly method: string;
-	readonly host: string;
-	readonly path: string;
-	readonly status: number;
-	readonly decision: "allowed" | "denied";
-	readonly bytes: number;
+	/**
+	 * Keep a log of every request: host, method, status and bytes. Absent where the log is always kept and has no
+	 * switch, as with Kantel's API, which keeps each sandbox's newest requests.
+	 */
+	readonly logRequests?: boolean;
 }
 
 export type ProxySettingsChange = Partial<
-	Omit<ProxySettings, "accountId" | "upstream" | "headers"> & {
+	Omit<ProxySettings, "accountId" | "upstream"> & {
 		readonly upstream: { readonly url: string; readonly auth?: string } | null;
-		readonly headers: readonly InjectedHeader[];
 	}
 >;
 
+/** An account's proxy settings. Its log is each sandbox's (`EgressSource`), read together on the Egress page. */
 export interface ProxySource {
 	get(accountId: string): Promise<ProxySettings>;
 	update(accountId: string, change: ProxySettingsChange): Promise<ProxySettings>;
-	recent(accountId: string): Promise<readonly ProxyRequest[]>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -573,6 +552,8 @@ export interface EgressEntry {
 	readonly reason?: string;
 	/** The rule that decided it, such as `deny *.example-tracker.io`. */
 	readonly rule?: string;
+	/** A refusal's code, such as `placeholder-unbound`: a protected variable's placeholder sent to another host. */
+	readonly code?: string;
 	/** The protected variables whose values the proxy put in, by name. Empty: none. */
 	readonly swapped: readonly string[];
 	/** Whether the proxy looked inside the HTTPS (a protected variable's host or a method or path grant). */

@@ -22,7 +22,6 @@ import type {
 	OrganisationInvite,
 	OrganisationMember,
 	Plan,
-	ProxyRequest,
 	ProxySettings,
 	Sandbox,
 	SandboxCommand,
@@ -481,54 +480,8 @@ export const PROXY: ProxySettings = {
 	allow: ["api.github.com", "*.githubusercontent.com", "registry.npmjs.org", "pypi.org", "*.pythonhosted.org"],
 	deny: ["169.254.169.254"],
 	upstream: { url: "https://mehen.internal.example.com:8443", authSet: true },
-	tlsInspection: true,
-	headers: [
-		{ id: "hdr_gh", host: "api.github.com", header: "Authorization", set: true },
-		{ id: "hdr_npm", host: "registry.npmjs.org", header: "Authorization", set: true },
-	],
 	logRequests: true,
 };
-
-const proxyRequest = (
-	id: string,
-	ago: number,
-	box: Sandbox,
-	method: string,
-	host: string,
-	path: string,
-	status: number,
-	decision: ProxyRequest["decision"],
-	bytes: number,
-): ProxyRequest => ({
-	id,
-	at: FIXTURE_NOW - ago,
-	sandboxId: box.id,
-	sandboxName: box.name,
-	method,
-	host,
-	path,
-	status,
-	decision,
-	bytes,
-});
-
-export const PROXY_REQUESTS: readonly ProxyRequest[] = [
-	proxyRequest("req_1", 4_000, API_SERVER, "GET", "registry.npmjs.org", "/react", 200, "allowed", 18_220),
-	proxyRequest(
-		"req_2",
-		9_000,
-		DEV_STACK,
-		"POST",
-		"api.github.com",
-		"/repos/lleverage-ai/kantel/pulls",
-		201,
-		"allowed",
-		4_210,
-	),
-	proxyRequest("req_3", 31_000, SCRATCH, "GET", "example-tracker.io", "/collect", 403, "denied", 0),
-	proxyRequest("req_4", 75_000, DEV_STACK, "GET", "pypi.org", "/simple/httpx/", 200, "allowed", 9_871),
-	proxyRequest("req_5", 2 * MINUTE, API_SERVER, "GET", "169.254.169.254", "/latest/meta-data/", 403, "denied", 0),
-];
 
 const GITHUB: DestinationBinding = { host: "api.github.com", pathPrefixes: [], methods: [] };
 
@@ -643,7 +596,7 @@ export const EGRESS_LOG: readonly EgressEntry[] = [
 		path: "/3f9a1c",
 		decision: "denied",
 		reason: "GH_TOKEN's placeholder was sent to webhook.site, which it isn't bound to. Kantel didn't swap it.",
-		rule: "placeholder-unbound",
+		code: "placeholder-unbound",
 		inspected: true,
 		status: 403,
 		bytesUp: 220,
@@ -715,6 +668,52 @@ export const EGRESS_LOG: readonly EgressEntry[] = [
 		status: 403,
 	}),
 ];
+
+/** scratch's: an isolate with no environment, so only the account's rules decide. */
+export const SCRATCH_EGRESS_LOG: readonly EgressEntry[] = [
+	egressEntry("egr_s3", 20_000, {
+		method: "CONNECT",
+		host: "registry.npmjs.org",
+		decision: "allowed",
+		bytesUp: 2_210,
+		bytesDown: 418_400,
+	}),
+	egressEntry("egr_s2", 31_000, {
+		method: "CONNECT",
+		host: "example-tracker.io",
+		decision: "denied",
+		reason: "example-tracker.io isn't on the proxy settings' allow list.",
+	}),
+	egressEntry("egr_s1", 5 * MINUTE, {
+		method: "CONNECT",
+		host: "pypi.org",
+		decision: "allowed",
+		bytesUp: 1_120,
+		bytesDown: 61_900,
+	}),
+];
+
+/** eval-runner-12's, before its machine stopped answering: its Anthropic key swapped in. */
+export const EVAL_EGRESS_LOG: readonly EgressEntry[] = [
+	egressEntry("egr_e1", 12 * MINUTE, {
+		method: "POST",
+		host: "api.anthropic.com",
+		path: "/v1/messages",
+		decision: "allowed",
+		swapped: ["ANTHROPIC_API_KEY"],
+		inspected: true,
+		status: 200,
+		bytesUp: 8_400,
+		bytesDown: 3_120,
+	}),
+];
+
+/** Each sandbox's log; the others haven't sent anything. */
+const EGRESS_LOGS: Readonly<Record<string, readonly EgressEntry[]>> = {
+	[DEV_STACK.id]: EGRESS_LOG,
+	[SCRATCH.id]: SCRATCH_EGRESS_LOG,
+	[EVAL_RUNNER.id]: EVAL_EGRESS_LOG,
+};
 
 /** Placeholders as each of the environment's sandboxes has them: sample text, not real ones. */
 const placeholderOf = (sandboxId: string, name: string): string => {
@@ -1141,7 +1140,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 				})),
 			environmentGrants: env?.grants ?? [],
 			grants: sandboxGrants.get(box.id) ?? [],
-			entries: box.id === DEV_STACK.id ? EGRESS_LOG.map((entry) => moved(entry, ["at"])) : [],
+			entries: (EGRESS_LOGS[box.id] ?? []).map((entry) => moved(entry, ["at"])),
 		};
 	};
 	/** Moves a sandbox to `to` after `settleMs`, as a host would report. */
@@ -1432,27 +1431,16 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 									policy: "open",
 									allow: [],
 									deny: [],
-									tlsInspection: false,
-									headers: [],
 									logRequests: false,
 								}),
 				),
 			update: (accountId, change) =>
 				gate(async () => {
 					const current = proxies.get(accountId) ?? (await source.proxy.get(accountId));
-					const { upstream, headers, ...rest } = change;
-					const next: ProxySettings = {
-						...current,
-						...rest,
-						...(headers === undefined
-							? {}
-							: {
-									headers: headers.map(({ value, ...header }) => ({
-										...header,
-										set: header.set || value !== undefined,
-									})),
-								}),
-					};
+					const { upstream, ...rest } = change;
+					const merged: ProxySettings = { ...current, ...rest };
+					// As with Kantel's API, nothing allowed is closed: closing empties the allow list.
+					const next: ProxySettings = merged.policy === "closed" ? { ...merged, allow: [] } : merged;
 					const withUpstream: ProxySettings =
 						upstream === undefined
 							? next
@@ -1462,14 +1450,13 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 										...next,
 										upstream: {
 											url: upstream.url,
-											authSet: upstream.auth !== undefined || current.upstream?.authSet === true,
+											// No `auth` keeps the credentials; an empty one removes them.
+											authSet: upstream.auth === undefined ? current.upstream?.authSet === true : upstream.auth !== "",
 										},
 									};
 					proxies.set(accountId, withUpstream);
 					return withUpstream;
 				}),
-			recent: (accountId) =>
-				gate(() => (accountId === LLEVERAGE.id && !empty ? PROXY_REQUESTS.map((entry) => moved(entry, ["at"])) : [])),
 		},
 		environments: {
 			list: (accountId) =>
