@@ -89,6 +89,8 @@ export interface HostImages {
 	readonly autoUpdate: boolean;
 	/** Its signature policy: `require`, `warn` or `off`. */
 	readonly signatures: string;
+	/** Asked about a sandbox (`host.images` with `sandboxId`): its state on the host, such as `running`. */
+	readonly state?: string;
 }
 
 /** The host images Kantel wants hosts on (a welcome's `images`). */

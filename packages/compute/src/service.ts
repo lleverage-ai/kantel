@@ -3689,11 +3689,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			await refreshBase();
 			const onHostImages = current.base === undefined || baseImageOf(current.base) === HOST_BASE_IMAGE;
 			const rebaseTo = onHostImages && baseIndex !== undefined ? hostImageChannel(baseIndex)?.version : undefined;
-			await backend.prepareRebase?.(current.id, {
+			const prepared = await backend.prepareRebase?.(current.id, {
 				eligibleHosts: hosts,
 				...(rebaseTo === undefined ? {} : { rebaseTo }),
 			});
-			if (current.state === "running") {
+			// One recorded as `error` may still be running on its host (a boot that finished after its call gave up): it is
+			// stopped as a running one is, since the host's start would otherwise find it running and not boot it anew.
+			if (current.state === "running" || (current.state === "error" && prepared?.running === true)) {
 				// Its disk is saved first, as a stop saves it (without its memory, which a new base can't take): the boot below
 				// starts from that snapshot. Waited for, as the boot needs it.
 				const { work } = await beginStop(current, false, undefined, principal);
@@ -5238,14 +5240,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						: undefined,
 				);
 			}
+			// Snapshots by their ref, read in one pass (a host reports every one it has on each connection, and a ref isn't
+			// indexed): only those with no base yet are written.
+			const reported = new Map<string, string>();
 			for (const { ref, base } of reports.snapshots ?? []) {
 				if (typeof ref !== "string" || !ref.startsWith(`${hostId}/`) || !valid(base)) continue;
-				for (const snapshot of await store.snapshots.list({ ref })) {
-					if (snapshot.base !== undefined) continue;
-					await store.snapshots.update(snapshot.id, (current) =>
-						current.ref === ref && current.base === undefined ? { ...current, base } : undefined,
-					);
-				}
+				reported.set(ref, base);
+			}
+			if (reported.size === 0) return;
+			for (const snapshot of await store.snapshots.list()) {
+				const base = snapshot.ref === undefined ? undefined : reported.get(snapshot.ref);
+				if (base === undefined || snapshot.base !== undefined) continue;
+				const { ref } = snapshot;
+				await store.snapshots.update(snapshot.id, (current) =>
+					current.ref === ref && current.base === undefined ? { ...current, base } : undefined,
+				);
 			}
 		},
 

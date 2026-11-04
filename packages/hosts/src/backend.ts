@@ -390,7 +390,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			// Asked now rather than read from the hello's facts, which an update since has left behind, and for this sandbox:
 			// its tier's images, which a host config naming its root filesystem by path can hold back.
 			const images = await hosts.hub
-				.call<{ version?: string }>(hostId, HostMethods.hostImages, { sandboxId })
+				.call<{ version?: string; state?: string }>(hostId, HostMethods.hostImages, { sandboxId })
 				.catch((error: unknown) => {
 					const mapped = kantelErrorFromHost(error);
 					throw isKantelError(mapped, "not_supported")
@@ -407,6 +407,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					`The host its disk is on (${hostId}) has images ${have === "" ? "that aren't versioned" : have}, not ${rebaseTo}, yet: try again once it has taken the update`,
 				);
 			}
+			// Unknown when the host doesn't say: its start then refuses a machine still running on other images.
+			return images.state === undefined ? {} : { running: images.state === "running" };
 		},
 		resume: (sandboxId, how) => boot(sandboxId, "sandbox.resume", how),
 		// Recovering clears the sandbox's recorded ports (the compute API), so their exposures end with them: a URL the API

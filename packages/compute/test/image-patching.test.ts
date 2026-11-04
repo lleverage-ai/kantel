@@ -23,7 +23,8 @@ afterEach(async () => {
 
 /**
  * The stub, reporting bases as a host with image patching does: a new sandbox is on `HOST_BEHIND`, and a start with
- * `rebase` moves it onto `HOST_LATEST`. What each start was asked is kept in `starts`.
+ * `rebase` moves it onto `HOST_LATEST`. What each start was asked is kept in `starts`, and the order of stops and starts
+ * in `calls`; the preflight says whether the machine is running, as a host does.
  */
 function versionedStub(ready?: () => void) {
 	const stub = createStubBackend();
@@ -34,37 +35,45 @@ function versionedStub(ready?: () => void) {
 		return clock;
 	};
 	const starts: BootOptions[] = [];
+	const calls: string[] = [];
+	const running = new Set<string>();
 	const prepared: { readonly eligibleHosts: readonly string[]; readonly rebaseTo?: string }[] = [];
 	const backend: SandboxBackend = {
 		...stub,
-		async prepareRebase(_sandboxId, how) {
+		async prepareRebase(sandboxId, how) {
 			prepared.push(how);
 			ready?.();
+			return { running: running.has(sandboxId) };
 		},
 		async create(spec) {
 			const placement = await stub.create(spec);
+			running.add(spec.sandboxId);
 			const on = { base: HOST_BEHIND, baseAt: tick() };
 			bases.set(spec.sandboxId, on);
 			return { ...placement, ...on };
 		},
 		async start(sandboxId, how) {
 			starts.push(how);
+			calls.push("start");
 			const placement = await stub.start(sandboxId, how);
+			running.add(sandboxId);
 			if (how.rebase === true) bases.set(sandboxId, { base: HOST_LATEST, baseAt: tick() });
 			const on = bases.get(sandboxId);
 			return on === undefined ? placement : { ...placement, ...on };
 		},
 		async stop(sandboxId, how) {
+			calls.push("stop");
 			const taken = await stub.stop(sandboxId, how);
+			running.delete(sandboxId);
 			const on = bases.get(sandboxId);
 			return on === undefined ? taken : { ...taken, base: on.base };
 		},
 	};
-	return { backend, starts, prepared };
+	return { backend, starts, prepared, calls };
 }
 
 function setup(baseImages?: BaseImages, ready?: () => void) {
-	const { backend, starts, prepared } = versionedStub(ready);
+	const { backend, starts, prepared, calls } = versionedStub(ready);
 	const api = createComputeApi({
 		backend,
 		authenticatePerson: async (request) => {
@@ -82,7 +91,7 @@ function setup(baseImages?: BaseImages, ready?: () => void) {
 			fetch: (input, init) =>
 				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
 		});
-	return { api, starts, prepared, tom: client("tom-token"), root: client("root-token") };
+	return { api, starts, prepared, calls, tom: client("tom-token"), root: client("root-token") };
 }
 
 const indexed: BaseImages = { indexUrl: "https://example.test/index.json", index: async () => INDEX };
@@ -233,6 +242,32 @@ describe("image patching on", () => {
 		});
 		expect(starts[0]?.fromSnapshot).toBeDefined();
 		expect((await tom.readFile(sandbox.id, { path: "keep.txt" })).content).toBe("kept\n");
+	});
+
+	it("stops a sandbox recorded as errored whose machine is still running before booting it on the latest base", async () => {
+		const { api, tom, starts, calls } = setup(indexed);
+		const sandbox = await tom.createSandbox({ wait: true });
+		// A boot that finished on its host after its call gave up: the record says error, the machine runs on the old base.
+		await api.store.sandboxes.update(sandbox.id, (current) => ({ ...current, state: "error" }));
+		expect((await tom.restartSandboxOnLatest(sandbox.id)).state).toBe("starting");
+		await api.service.idle();
+		expect(calls).toEqual(["stop", "start"]);
+		expect(starts.map((how) => how.rebase)).toEqual([true]);
+		const after = await tom.getSandbox(sandbox.id);
+		expect(after.state).toBe("running");
+		expect(after.base?.version).toBe(HOST_LATEST);
+	});
+
+	it("boots a sandbox recorded as errored whose machine isn't running without stopping it", async () => {
+		const { api, tom, calls } = setup(indexed);
+		const sandbox = await tom.createSandbox({ wait: true });
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		calls.length = 0;
+		await api.store.sandboxes.update(sandbox.id, (current) => ({ ...current, state: "error" }));
+		await tom.restartSandboxOnLatest(sandbox.id);
+		await api.service.idle();
+		expect(calls).toEqual(["start"]);
+		expect((await tom.getSandbox(sandbox.id)).base?.version).toBe(HOST_LATEST);
 	});
 
 	it("restarts a stopped sandbox on the latest base", async () => {

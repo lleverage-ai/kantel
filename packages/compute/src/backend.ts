@@ -238,12 +238,13 @@ export interface SandboxBackend {
 	 * Image patching: whether a `start` with `rebase` (and `rebaseTo`) can land now, checked before a running sandbox is
 	 * stopped for it. Rejects when it can't: the machine its disk is on isn't among `eligibleHosts`, doesn't patch
 	 * images (`not_supported`), or isn't on `rebaseTo` yet (`unavailable`). Absent where a backend has no versioned
-	 * images (a rebase there is a plain start).
+	 * images (a rebase there is a plain start). Answers whether the machine is running there, where its host says: a
+	 * sandbox recorded as `error` may still be, and is stopped before the rebase's cold boot.
 	 */
 	prepareRebase?(
 		sandboxId: string,
 		options: { readonly eligibleHosts: readonly string[]; readonly rebaseTo?: string },
-	): Promise<void>;
+	): Promise<{ readonly running?: boolean } | undefined>;
 	/**
 	 * Saves the disk as a snapshot and lets the machine go, or with `keepMemory` pauses it, keeping its memory too
 	 * (`not_supported` where the type can't pause). Answers the disk snapshot taken.

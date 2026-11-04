@@ -181,7 +181,11 @@ class FakeHost {
 			case "host.images":
 				return this.images === undefined
 					? fail("unsupported", "image patching is off on this host")
-					: answer({ version: this.images, autoUpdate: true });
+					: answer({
+							version: this.images,
+							autoUpdate: true,
+							...(p.sandboxId === undefined ? {} : { state: this.sandboxes.get(String(p.sandboxId))?.state }),
+						});
 			default:
 				return fail("unsupported", `unknown method ${message.method}`);
 		}
@@ -545,7 +549,8 @@ describe("a restart on the latest base, checked with the host first", () => {
 		});
 		// Its own host isn't one it may use now (another one is).
 		await expect(prepare("host-images-20261103.1", ["hst_other"])).rejects.toMatchObject({ code: "unavailable" });
-		await expect(prepare("host-images-20261103.1")).resolves.toBeUndefined();
+		// Where it lands, and whether its machine is running there (a record that says `error` may not know).
+		await expect(prepare("host-images-20261103.1")).resolves.toEqual({ running: true });
 		// Asked about this sandbox: its tier's images.
 		expect(host.params.filter((call) => call.method === "host.images").at(-1)?.params).toEqual({
 			sandboxId: sandbox.id,
