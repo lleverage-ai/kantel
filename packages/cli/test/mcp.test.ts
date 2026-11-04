@@ -55,9 +55,47 @@ const COMMAND: Command = {
 	durationMs: 12,
 };
 
-const ROUTES: { readonly [route: string]: (body: unknown) => Response } = {
+const RUNNING: Command = {
+	...COMMAND,
+	id: "cmd_long",
+	command: "make",
+	state: "running",
+	stdout: "",
+	exitCode: undefined,
+};
+
+/** A response after `ms`, or a rejection when `signal` aborts first, as fetch does. */
+const later = (ms: number, response: () => Response, signal?: AbortSignal | null): Promise<Response> =>
+	new Promise((resolve, reject) => {
+		const timer = setTimeout(() => resolve(response()), ms);
+		signal?.addEventListener("abort", () => {
+			clearTimeout(timer);
+			reject(new DOMException("aborted", "AbortError"));
+		});
+	});
+
+/** cmd_long runs until it has been polled this many times. */
+let pollsUntilDone = 0;
+
+const ROUTES: {
+	readonly [route: string]: (body: unknown, signal?: AbortSignal | null) => Response | Promise<Response>;
+} = {
 	"POST /v1/sandboxes": () => Response.json(SANDBOX),
-	"POST /v1/sandboxes/sbx_mcp1/commands": () => Response.json(COMMAND),
+	"POST /v1/sandboxes/sbx_mcp1/commands": (body) =>
+		Response.json((body as { detached?: boolean }).detached === true ? RUNNING : COMMAND),
+	"POST /v1/sandboxes/sbx_slow/commands": (_body, signal) => later(120, () => Response.json(COMMAND), signal),
+	// Slow, and deaf to the signal, like a request that can't be aborted.
+	"POST /v1/sandboxes/sbx_slow/browser": () =>
+		later(300, () => Response.json({ url: "https://view.test", cdpUrl: "wss://cdp.test", expiresAt: 0 })),
+	"GET /v1/sandboxes/sbx_mcp1/commands/cmd_long": () => {
+		pollsUntilDone -= 1;
+		return Response.json(
+			pollsUntilDone > 0 ? RUNNING : { ...RUNNING, state: "exited", exitCode: 0, stdout: "built\n" },
+		);
+	},
+	"GET /v1/sandboxes/sbx_mcp1/commands": () => Response.json({ items: [{ ...RUNNING, stdout: "lots" }, COMMAND] }),
+	"DELETE /v1/sandboxes/sbx_mcp1/commands/cmd_long": () =>
+		Response.json({ ...RUNNING, state: "killed", exitCode: 137 }),
 	"GET /v1/sandboxes/sbx_gone": () =>
 		Response.json({ error: { code: "not_found", message: "No such sandbox" } }, { status: 404 }),
 	"POST /v1/sandboxes/sbx_stopped/commands": () =>
@@ -76,15 +114,18 @@ function fakeKantel() {
 			const error = { code: "not_found", message: `No route ${method} ${url.pathname}` };
 			return Response.json({ error }, { status: 404 });
 		}
-		return route(body);
+		return route(body, init?.signal);
 	};
 	return { fetch, calls };
 }
 
-function server() {
+function server(timing: { readonly pollIntervalMs?: number } = {}) {
 	const api = fakeKantel();
 	const client = createKantelClient({ baseUrl: "https://kantel.test/v1", token: "ksk_agent", fetch: api.fetch });
-	return { mcp: createMcpServer({ client, version: "1.2.3" }), calls: api.calls };
+	return {
+		mcp: createMcpServer({ client, version: "1.2.3", progressIntervalMs: 20, pollIntervalMs: 5, ...timing }),
+		calls: api.calls,
+	};
 }
 
 const request = (id: number, method: string, params?: object) => ({ jsonrpc: "2.0", id, method, params });
@@ -146,6 +187,9 @@ describe("the MCP server", () => {
 			"sandbox_fork",
 			"sandbox_delete",
 			"sandbox_exec",
+			"command_get",
+			"command_list",
+			"command_kill",
 			"file_read",
 			"file_write",
 			"file_list",
@@ -236,6 +280,197 @@ describe("the MCP server", () => {
 		]);
 	});
 
+	it("reports progress while a call waits, when the request carries a progress token", async () => {
+		const { mcp } = server();
+		const notes: { method: string; params: { progressToken: unknown; progress: number; message: string } }[] = [];
+		const answer = await mcp.handle(
+			request(30, "tools/call", {
+				name: "sandbox_exec",
+				arguments: { sandboxId: "sbx_slow", command: "make" },
+				_meta: { progressToken: "tok-1" },
+			}),
+			(note) => notes.push(note as (typeof notes)[number]),
+		);
+		expect(resultOf(answer).structuredContent).toMatchObject({ state: "exited" });
+		expect(notes.length).toBeGreaterThan(1);
+		for (const note of notes) {
+			expect(note).toMatchObject({ method: "notifications/progress", params: { progressToken: "tok-1" } });
+		}
+		// Each notification's progress is above the one before it, even several a second.
+		const progress = notes.map((note) => note.params.progress);
+		for (let index = 1; index < progress.length; index += 1) {
+			expect(progress[index]).toBeGreaterThan(progress[index - 1] ?? Number.POSITIVE_INFINITY);
+		}
+		expect(notes[0]?.params.message).toContain("sandbox_exec");
+		// None after the answer.
+		const sent = notes.length;
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		expect(notes).toHaveLength(sent);
+	});
+
+	it("ends a cancelled call at once, even when its request can't be aborted", async () => {
+		const { mcp } = server();
+		const notes: object[] = [];
+		const started = Date.now();
+		const pending = mcp.handle(
+			request(40, "tools/call", {
+				name: "browser_open",
+				arguments: { sandboxId: "sbx_slow" },
+				_meta: { progressToken: "b" },
+			}),
+			(note) => notes.push(note),
+		);
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		await mcp.handle({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 40 } });
+		expect(await pending).toBeUndefined();
+		expect(Date.now() - started).toBeLessThan(250);
+		const sent = notes.length;
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		expect(notes).toHaveLength(sent);
+	});
+
+	it("stops command_get's wait when it is cancelled between polls", async () => {
+		const { mcp, calls } = server({ pollIntervalMs: 1000 });
+		pollsUntilDone = 1_000;
+		const started = Date.now();
+		const pending = mcp.handle(
+			request(41, "tools/call", {
+				name: "command_get",
+				arguments: { sandboxId: "sbx_mcp1", commandId: "cmd_long", waitMs: 60_000 },
+			}),
+		);
+		// Its first pause between polls is 250 ms: cancel in the middle of it.
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		await mcp.handle({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 41 } });
+		expect(await pending).toBeUndefined();
+		expect(Date.now() - started).toBeLessThan(200);
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(calls.filter((call) => call.path.endsWith("/cmd_long"))).toHaveLength(1);
+	});
+
+	it("sends no progress without a progress token", async () => {
+		const { mcp } = server();
+		const notes: object[] = [];
+		await mcp.handle(
+			request(31, "tools/call", { name: "sandbox_exec", arguments: { sandboxId: "sbx_slow", command: "make" } }),
+			(note) => notes.push(note),
+		);
+		expect(notes).toEqual([]);
+	});
+
+	it("stops a call's wait on notifications/cancelled and gives it no answer", async () => {
+		const { mcp, calls } = server();
+		const notes: object[] = [];
+		const pending = mcp.handle(
+			request(32, "tools/call", {
+				name: "sandbox_exec",
+				arguments: { sandboxId: "sbx_slow", command: "make" },
+				_meta: { progressToken: 7 },
+			}),
+			(note) => notes.push(note),
+		);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(
+			await mcp.handle({
+				jsonrpc: "2.0",
+				method: "notifications/cancelled",
+				params: { requestId: 32, reason: "timeout" },
+			}),
+		).toBeUndefined();
+		expect(await pending).toBeUndefined();
+		const after = notes.length;
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(notes).toHaveLength(after);
+		// The command itself isn't killed: only the wait for it stops.
+		expect(calls.filter((call) => call.method === "DELETE")).toEqual([]);
+	});
+
+	it("starts a detached command and says how to pick it up", async () => {
+		const { mcp, calls } = server();
+		const started = resultOf(
+			await mcp.handle(
+				request(33, "tools/call", {
+					name: "sandbox_exec",
+					arguments: { sandboxId: "sbx_mcp1", command: "make", detached: true },
+				}),
+			),
+		);
+		expect(started.isError).toBeUndefined();
+		expect(started.structuredContent).toEqual({ commandId: "cmd_long", state: "running" });
+		expect(started.content[0]?.text).toContain("command_get");
+		expect(calls[0]?.body).toEqual({ command: "make", detached: true });
+		const both = resultOf(
+			await mcp.handle(
+				request(34, "tools/call", {
+					name: "sandbox_exec",
+					arguments: { sandboxId: "sbx_mcp1", command: "make", detached: true, timeoutMs: 1000 },
+				}),
+			),
+		);
+		expect(both.isError).toBe(true);
+		expect(both.content[0]?.text).toContain("no timeout");
+	});
+
+	it("gets a command, waiting for it to end with waitMs", async () => {
+		const { mcp, calls } = server();
+		pollsUntilDone = 3;
+		const done = resultOf(
+			await mcp.handle(
+				request(35, "tools/call", {
+					name: "command_get",
+					arguments: { sandboxId: "sbx_mcp1", commandId: "cmd_long", waitMs: 5000 },
+				}),
+			),
+		);
+		expect(done.structuredContent).toMatchObject({ state: "exited", exitCode: 0, stdout: "built\n" });
+		expect(calls.filter((call) => call.path.endsWith("/cmd_long"))).toHaveLength(3);
+	});
+
+	it("says a command is still running when its wait runs out, and how to pick it up", async () => {
+		const { mcp } = server();
+		pollsUntilDone = 1_000;
+		const running = resultOf(
+			await mcp.handle(
+				request(36, "tools/call", {
+					name: "command_get",
+					arguments: { sandboxId: "sbx_mcp1", commandId: "cmd_long", waitMs: 30 },
+				}),
+			),
+		);
+		expect(running.isError).toBeUndefined();
+		expect(running.structuredContent).toMatchObject({ commandId: "cmd_long", state: "running" });
+		expect(running.content[0]?.text).toContain("still running");
+		expect(running.content[0]?.text).toContain("command_get");
+		expect(running.content[0]?.text).toContain("command_kill");
+	});
+
+	it("lists commands without their output, and kills one", async () => {
+		const { mcp, calls } = server();
+		const listed = resultOf(
+			await mcp.handle(request(37, "tools/call", { name: "command_list", arguments: { sandboxId: "sbx_mcp1" } })),
+		);
+		expect(listed.structuredContent).toEqual({
+			items: [
+				{ commandId: "cmd_long", command: "make", state: "running", exitCode: null, startedAt: 0, durationMs: 12 },
+				{ commandId: "cmd_1", command: "echo hi", state: "exited", exitCode: 0, startedAt: 0, durationMs: 12 },
+			],
+		});
+		const killed = resultOf(
+			await mcp.handle(
+				request(38, "tools/call", {
+					name: "command_kill",
+					arguments: { sandboxId: "sbx_mcp1", commandId: "cmd_long" },
+				}),
+			),
+		);
+		expect(killed.structuredContent).toMatchObject({ state: "killed" });
+		expect(killed.content[0]?.text).toContain("was killed");
+		expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
+			"GET /v1/sandboxes/sbx_mcp1/commands",
+			"DELETE /v1/sandboxes/sbx_mcp1/commands/cmd_long",
+		]);
+	});
+
 	it("cuts long output in the middle, keeping its head and tail", () => {
 		const long = `HEAD${"x".repeat(200_000)}TAIL`;
 		const clipped = clipOutput(long);
@@ -283,6 +518,28 @@ describe("serving on stdio", () => {
 			.split("\n")
 			.map((line) => JSON.parse(line) as { id: number });
 		expect(answers.map((answer) => answer.id).sort()).toEqual([1, 2]);
+	});
+
+	it("writes progress as lines while a call waits, and no answer for a cancelled one", async () => {
+		const { mcp } = server();
+		const out: string[] = [];
+		async function* slowly(): AsyncGenerator<string> {
+			const call = (id: number) =>
+				request(id, "tools/call", {
+					name: "sandbox_exec",
+					arguments: { sandboxId: "sbx_slow", command: "make" },
+					_meta: { progressToken: `p${id}` },
+				});
+			yield `${JSON.stringify(call(1))}\n${JSON.stringify(call(2))}\n`;
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			yield `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 2 } })}\n`;
+		}
+		await serveStdio(mcp, { stdin: slowly(), stdout: { write: (chunk: string) => out.push(chunk) } });
+		const messages = out.map((line) => JSON.parse(line) as { id?: number; method?: string; params?: object });
+		expect(messages.filter((message) => message.id !== undefined).map((message) => message.id)).toEqual([1]);
+		expect(messages.filter((message) => message.method === "notifications/progress")).toContainEqual(
+			expect.objectContaining({ params: expect.objectContaining({ progressToken: "p1" }) }),
+		);
 	});
 
 	it("answers a line that isn't JSON with a parse error", async () => {

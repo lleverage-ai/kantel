@@ -112,19 +112,25 @@ Claude Code:
 claude mcp add kantel -e KANTEL_URL=https://kantel.example -e KANTEL_API_KEY=$KANTEL_API_KEY -- kantel mcp
 ```
 
+Claude Code waits for a tool call as long as `MCP_TOOL_TIMEOUT` says, about 28 hours when it isn't set. If you've set
+it lower, add `"timeout": 660000` to the `kantel` entry in `~/.claude.json` or `.mcp.json`.
+
 Codex:
 
 ```sh
 codex mcp add kantel --env KANTEL_URL=https://kantel.example --env KANTEL_API_KEY=$KANTEL_API_KEY -- kantel mcp
 ```
 
-or in `~/.codex/config.toml`, with the key in place of `$KANTEL_API_KEY`:
+Codex gives a tool call 60 s unless told otherwise, and a Kantel tool can wait up to 10 minutes, so add
+`tool_timeout_sec = 660` under `[mcp_servers.kantel]` in `~/.codex/config.toml`. Or put all of it there, with the key
+in place of `$KANTEL_API_KEY`:
 
 ```toml
 [mcp_servers.kantel]
 command = "kantel"
 args = ["mcp"]
 env = { KANTEL_URL = "https://kantel.example", KANTEL_API_KEY = "$KANTEL_API_KEY" }
+tool_timeout_sec = 660
 ```
 
 Cursor (`.cursor/mcp.json`) and other MCP clients, with the key in place of `$KANTEL_API_KEY`:
@@ -154,9 +160,12 @@ pi has no MCP: it uses the CLI. `kantel init` puts a block in `./AGENTS.md` and 
 
 `kantel mcp` speaks MCP over stdio (newline-delimited JSON-RPC 2.0, protocol revisions 2025-06-18, 2025-03-26 and
 2024-11-05). Its tools: `sandbox_create`, `sandbox_list`, `sandbox_get`, `sandbox_stop`, `sandbox_resume`,
-`sandbox_fork`, `sandbox_delete`, `sandbox_exec` (each output cut to about 64 KiB), `file_read`, `file_write`,
-`file_list`, `port_expose`, `snapshot_save`, `snapshot_list`, `browser_open` and `desktop_open`. An error Kantel
-answers comes back as a tool result with `isError`, for the agent to read.
+`sandbox_fork`, `sandbox_delete`, `sandbox_exec` (each output cut to about 64 KiB; `detached` answers at once),
+`command_get` (waiting up to `waitMs`), `command_list`, `command_kill`, `file_read`, `file_write`, `file_list`,
+`port_expose`, `snapshot_save`, `snapshot_list`, `browser_open` and `desktop_open`. An error Kantel answers comes back
+as a tool result with `isError`, for the agent to read. A call that carries a progress token gets
+`notifications/progress` every 15 s while it waits, and `notifications/cancelled` stops the wait (not the command) and
+its answer.
 
 ## From code
 

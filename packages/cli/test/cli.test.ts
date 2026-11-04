@@ -675,6 +675,7 @@ describe("agents", () => {
 			"codex mcp add kantel --env KANTEL_URL=https://kantel.example --env KANTEL_API_KEY=$KANTEL_API_KEY -- kantel mcp",
 		);
 		expect(codexToml(url)).toContain('command = "kantel"\nargs = ["mcp"]\n');
+		expect(codexToml(url)).toContain("\ntool_timeout_sec = 660");
 		expect(JSON.parse(mcpServersJson(url))).toMatchObject({
 			mcpServers: { kantel: { command: "kantel", args: ["mcp"] } },
 		});
@@ -685,6 +686,10 @@ describe("agents", () => {
 		expect(text.stdout).not.toContain("npx");
 		expect(text.stdout).toContain("-- kantel mcp");
 		expect(text.stdout).not.toContain("isn't on your PATH");
+		// Each MCP client's tool timeout, long enough for Kantel's longest wait.
+		expect(text.stdout).toContain('"timeout": 660000');
+		expect(text.stdout).toContain("tool_timeout_sec = 660 under [mcp_servers.kantel]");
+		expect(text.stdout).toContain("at least 660 s");
 		const json = JSON.parse((await kantel(["agents", "--json"], { env })).stdout) as {
 			readonly mcp: unknown;
 			readonly mcpServers: unknown;

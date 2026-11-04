@@ -1,10 +1,13 @@
 /**
  * Kantel's MCP server for coding agents, over stdio and without the MCP SDK: newline-delimited JSON-RPC 2.0, one
- * message a line. It answers `initialize`, `ping`, `tools/list` and `tools/call`; notifications get no reply. Its
- * tools drive sandboxes through the SDK, and an error Kantel answers comes back as a tool result with `isError`, so
- * the agent can read it. Nothing but JSON-RPC goes to stdout; logs go to stderr.
+ * message a line. It answers `initialize`, `ping`, `tools/list` and `tools/call`; notifications get no reply. A tool
+ * call that carries a `_meta.progressToken` gets `notifications/progress` every 15 s while it works, and
+ * `notifications/cancelled` stops its wait (not what it started in the sandbox) and its answer. Its tools drive
+ * sandboxes through the SDK, and an error Kantel answers comes back as a tool result with `isError`, so the agent can
+ * read it. Nothing but JSON-RPC goes to stdout; logs go to stderr.
  */
-import { KantelApiError, type KantelClient } from "@kantel/api/sdk";
+import { setTimeout as delay } from "node:timers/promises";
+import { type Command, KantelApiError, type KantelClient } from "@kantel/api/sdk";
 
 /** The protocol revisions this server speaks, newest first. */
 export const PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"] as const;
@@ -17,7 +20,14 @@ export const INSTRUCTIONS =
 	"Docker, a desktop and a browser) and keep its id. Run commands in it with sandbox_exec, and move files with " +
 	"file_write, file_read and file_list. port_expose gives a server in it a URL; snapshot_save keeps its state to " +
 	"start new sandboxes from. Stop it with sandbox_stop when you are done: a stopped sandbox keeps its disk and costs " +
-	"nothing to run, and sandbox_resume brings it back.";
+	"nothing to run, and sandbox_resume brings it back. For a server or a job longer than a minute or two, run " +
+	"sandbox_exec with detached, then wait for it and read its output with command_get.";
+
+/** How often a tool call that waits tells the client it is still working. */
+export const PROGRESS_INTERVAL_MS = 15_000;
+
+/** The longest any one tool call waits: an exec's longest timeout, or command_get's longest waitMs. */
+export const MAX_WAIT_MS = 600_000;
 
 const PARSE_ERROR = -32700;
 const INVALID_REQUEST = -32600;
@@ -66,6 +76,10 @@ type Args = { readonly [name: string]: unknown };
 interface ToolContext {
 	readonly client: KantelClient;
 	readonly account: string | undefined;
+	/** Aborted when the client cancels the call: stops the wait, not what was started in the sandbox. */
+	readonly signal: AbortSignal;
+	/** The longest command_get waits between polls. */
+	readonly pollIntervalMs: number;
 }
 
 interface Tool {
@@ -77,8 +91,11 @@ interface Tool {
 }
 
 export interface McpServer {
-	/** Answers one parsed JSON-RPC message (or a batch); undefined when it gets no reply, as a notification doesn't. */
-	handle(message: unknown): Promise<object | undefined>;
+	/**
+	 * Answers one parsed JSON-RPC message (or a batch); undefined when it gets no reply, as a notification or a
+	 * cancelled request doesn't. `notify` sends the client a notification while a request works, such as its progress.
+	 */
+	handle(message: unknown, notify?: (notification: object) => void): Promise<object | undefined>;
 }
 
 export interface McpServerOptions {
@@ -89,6 +106,10 @@ export interface McpServerOptions {
 	readonly account?: string;
 	/** Where a failure the server didn't expect is logged; default nowhere. */
 	readonly log?: (line: string) => void;
+	/** How often a call with a progress token reports progress; default 15 s. */
+	readonly progressIntervalMs?: number;
+	/** The longest command_get waits between polls for a command's end; default 2 s. */
+	readonly pollIntervalMs?: number;
 }
 
 // Schemas.
@@ -226,6 +247,52 @@ export function clipOutput(output: string): string {
 	);
 }
 
+/** How to pick up a command still running when the answer goes back. */
+const pickUp = (command: Command): string =>
+	`Wait for it and read its output with command_get (sandboxId ${command.sandboxId}, commandId ${command.id}, ` +
+	`waitMs up to ${MAX_WAIT_MS}), or end it with command_kill.`;
+
+/** A command as a tool answers it: its state, exit code and output, cut to about 64 KiB each. */
+export function commandResult(command: Command): ToolResult {
+	const stdout = clipOutput(command.stdout);
+	const stderr = clipOutput(command.stderr);
+	const lines: string[] = [];
+	switch (command.state) {
+		case "running":
+			lines.push(`The command ${command.id} is still running. ${pickUp(command)}`);
+			break;
+		case "timed_out":
+			lines.push(
+				"The command timed out and was killed. For a longer job, run it with detached and wait for it with command_get.",
+			);
+			break;
+		case "killed":
+			lines.push("The command was killed.");
+			break;
+		default:
+			lines.push(`The command exited with code ${command.exitCode ?? "unknown"}.`);
+	}
+	if (command.truncated) lines.push("Kantel kept only its first 1 MiB of output.");
+	if (command.state !== "running" || stdout !== "" || stderr !== "") {
+		lines.push("stdout:", stdout === "" ? "(empty)" : stdout);
+		if (stderr !== "") lines.push("stderr:", stderr);
+	}
+	return {
+		content: [{ type: "text", text: lines.join("\n") }],
+		structuredContent: {
+			commandId: command.id,
+			state: command.state,
+			exitCode: command.exitCode ?? null,
+			stdout,
+			stderr,
+			truncated: command.truncated || stdout !== command.stdout || stderr !== command.stderr,
+			durationMs: command.durationMs ?? null,
+		},
+	};
+}
+
+const commandId: PropertySchema = { type: "string", description: "The command's ID, such as cmd_9a8b7c." };
+
 const HINTS: { readonly [code: string]: string } = {
 	unauthenticated:
 		"Kantel needs an API key: set KANTEL_API_KEY in this MCP server's environment (make one with kantel key create " +
@@ -258,19 +325,22 @@ const TOOLS: readonly Tool[] = [
 			env: strings("Environment variables every command sees. Not for secrets: anyone who may exec sees them."),
 		}),
 		annotations: { title: "Create a sandbox", readOnlyHint: false, destructiveHint: false, idempotentHint: false },
-		async call(args, { client, account }) {
-			const sandbox = await client.createSandbox({
-				account,
-				type: optionalChoice(args, "type", SANDBOX_TYPES),
-				size: optionalChoice(args, "size", SIZES),
-				name: optionalText(args, "name"),
-				from: optionalText(args, "from"),
-				image: optionalText(args, "image"),
-				autoStopMinutes: optionalNumber(args, "autoStopMinutes"),
-				labels: optionalStrings(args, "labels"),
-				env: optionalStrings(args, "env"),
-				wait: true,
-			});
+		async call(args, { client, account, signal }) {
+			const sandbox = await client.createSandbox(
+				{
+					account,
+					type: optionalChoice(args, "type", SANDBOX_TYPES),
+					size: optionalChoice(args, "size", SIZES),
+					name: optionalText(args, "name"),
+					from: optionalText(args, "from"),
+					image: optionalText(args, "image"),
+					autoStopMinutes: optionalNumber(args, "autoStopMinutes"),
+					labels: optionalStrings(args, "labels"),
+					env: optionalStrings(args, "env"),
+					wait: true,
+				},
+				{ signal },
+			);
 			return json(sandbox, `Sandbox ${sandbox.id} (${sandbox.name}) is ${sandbox.state}.`);
 		},
 	},
@@ -279,8 +349,8 @@ const TOOLS: readonly Tool[] = [
 		description: "List the account's sandboxes, newest first: running ones, or all of them with all.",
 		inputSchema: schema({ all: { type: "boolean", description: "Include stopped, paused and errored ones." } }),
 		annotations: { title: "List sandboxes", readOnlyHint: true },
-		async call(args, { client, account }) {
-			const page = await client.listSandboxes({ account, all: optionalBoolean(args, "all") });
+		async call(args, { client, account, signal }) {
+			const page = await client.listSandboxes({ account, all: optionalBoolean(args, "all") }, { signal });
 			return json(page);
 		},
 	},
@@ -289,24 +359,34 @@ const TOOLS: readonly Tool[] = [
 		description: "Get a sandbox: its state, type, what it can do, when it stops by itself and what it has cost.",
 		inputSchema: schema({ sandboxId }, ["sandboxId"]),
 		annotations: { title: "Get a sandbox", readOnlyHint: true },
-		async call(args, { client }) {
-			return json(await client.getSandbox(text(args, "sandboxId")));
+		async call(args, { client, signal }) {
+			return json(await client.getSandbox(text(args, "sandboxId"), { signal }));
 		},
 	},
 	{
 		name: "sandbox_stop",
 		description:
 			"Stop a sandbox: its disk is kept as a snapshot and running programs end. It then costs nothing to run; " +
-			"sandbox_resume brings it back. With pause, a microVM keeps its memory too.",
+			"sandbox_resume brings it back. With pause, a microVM keeps its memory too. With wait, answers once it has " +
+			"stopped and its snapshot is saved.",
 		inputSchema: schema(
-			{ sandboxId, pause: { type: "boolean", description: "Keep its memory as well (microVMs only)." } },
+			{
+				sandboxId,
+				pause: { type: "boolean", description: "Keep its memory as well (microVMs only)." },
+				wait: { type: "boolean", description: "Answer once it is stopped or paused, not while it is stopping." },
+			},
 			["sandboxId"],
 		),
 		annotations: { title: "Stop a sandbox", readOnlyHint: false, destructiveHint: false, idempotentHint: true },
-		async call(args, { client }) {
-			const sandbox = await client.stopSandbox(text(args, "sandboxId"), {
-				keepMemory: optionalBoolean(args, "pause") === true ? true : undefined,
-			});
+		async call(args, { client, signal }) {
+			const sandbox = await client.stopSandbox(
+				text(args, "sandboxId"),
+				{
+					keepMemory: optionalBoolean(args, "pause") === true ? true : undefined,
+					wait: optionalBoolean(args, "wait") === true ? true : undefined,
+				},
+				{ signal },
+			);
 			return json(sandbox, `Sandbox ${sandbox.id} is ${sandbox.state}.`);
 		},
 	},
@@ -315,8 +395,8 @@ const TOOLS: readonly Tool[] = [
 		description: "Resume a stopped or paused sandbox and wait until it runs. Same id; files are as they were.",
 		inputSchema: schema({ sandboxId }, ["sandboxId"]),
 		annotations: { title: "Resume a sandbox", readOnlyHint: false, destructiveHint: false, idempotentHint: true },
-		async call(args, { client }) {
-			const sandbox = await client.resumeSandbox(text(args, "sandboxId"), { wait: true });
+		async call(args, { client, signal }) {
+			const sandbox = await client.resumeSandbox(text(args, "sandboxId"), { wait: true }, { signal });
 			return json(sandbox, `Sandbox ${sandbox.id} is ${sandbox.state}.`);
 		},
 	},
@@ -332,12 +412,12 @@ const TOOLS: readonly Tool[] = [
 			["sandboxId"],
 		),
 		annotations: { title: "Fork a sandbox", readOnlyHint: false, destructiveHint: false, idempotentHint: false },
-		async call(args, { client }) {
-			const forked = await client.forkSandbox(text(args, "sandboxId"), {
-				count: optionalNumber(args, "count"),
-				name: optionalText(args, "name"),
-				wait: true,
-			});
+		async call(args, { client, signal }) {
+			const forked = await client.forkSandbox(
+				text(args, "sandboxId"),
+				{ count: optionalNumber(args, "count"), name: optionalText(args, "name"), wait: true },
+				{ signal },
+			);
 			return json(forked, `Made ${forked.items.map((sandbox) => sandbox.id).join(", ")}.`);
 		},
 	},
@@ -348,8 +428,8 @@ const TOOLS: readonly Tool[] = [
 			"to stop paying for a sandbox you may want again, use sandbox_stop.",
 		inputSchema: schema({ sandboxId }, ["sandboxId"]),
 		annotations: { title: "Delete a sandbox", readOnlyHint: false, destructiveHint: true, idempotentHint: true },
-		async call(args, { client }) {
-			const sandbox = await client.deleteSandbox(text(args, "sandboxId"));
+		async call(args, { client, signal }) {
+			const sandbox = await client.deleteSandbox(text(args, "sandboxId"), { signal });
 			return json(sandbox, `Sandbox ${sandbox.id} is being deleted.`);
 		},
 	},
@@ -357,7 +437,10 @@ const TOOLS: readonly Tool[] = [
 		name: "sandbox_exec",
 		description:
 			"Run a shell command line in a running sandbox (bash -lc on a microVM) and wait for it to end; answers its " +
-			"exit code, stdout and stderr, each cut to about 64 KiB. Default timeout 30 s, at most 10 minutes.",
+			"exit code, stdout and stderr, each cut to about 64 KiB. Default timeout 30 s, at most 10 minutes: past it the " +
+			"command is killed. With detached it starts and answers its commandId at once, with no time limit: for servers " +
+			"and long jobs, or when your MCP client gives up on a call sooner than the command takes. Then wait for it " +
+			"with command_get.",
 		inputSchema: schema(
 			{
 				sandboxId,
@@ -366,47 +449,111 @@ const TOOLS: readonly Tool[] = [
 				timeoutMs: {
 					type: "integer",
 					minimum: 1,
-					maximum: 600_000,
-					description: "Kill it after this many milliseconds; default 30000.",
+					maximum: MAX_WAIT_MS,
+					description: "Kill it after this many milliseconds; default 30000. Not for detached.",
+				},
+				detached: {
+					type: "boolean",
+					description: "Start it and answer at once; it runs until it ends or command_kill ends it.",
 				},
 				env: strings("Environment variables for this command."),
 			},
 			["sandboxId", "command"],
 		),
 		annotations: { title: "Run a command", readOnlyHint: false, destructiveHint: false, openWorldHint: true },
-		async call(args, { client }) {
-			const command = await client.runCommand(text(args, "sandboxId"), {
-				command: text(args, "command"),
-				cwd: optionalText(args, "cwd"),
-				timeoutMs: optionalNumber(args, "timeoutMs"),
-				env: optionalStrings(args, "env"),
-			});
-			const stdout = clipOutput(command.stdout);
-			const stderr = clipOutput(command.stderr);
-			const status =
-				command.state === "timed_out"
-					? "timed out and was killed"
-					: command.state === "killed"
-						? "was killed"
-						: command.state === "running"
-							? "is still running"
-							: `exited with code ${command.exitCode ?? "unknown"}`;
-			const lines = [`The command ${status}.`];
-			if (command.truncated) lines.push("Kantel kept only its first 1 MiB of output.");
-			lines.push("stdout:", stdout === "" ? "(empty)" : stdout);
-			if (stderr !== "") lines.push("stderr:", stderr);
-			return {
-				content: [{ type: "text", text: lines.join("\n") }],
-				structuredContent: {
-					commandId: command.id,
-					state: command.state,
-					exitCode: command.exitCode ?? null,
-					stdout,
-					stderr,
-					truncated: command.truncated || stdout !== command.stdout || stderr !== command.stderr,
-					durationMs: command.durationMs ?? null,
+		async call(args, { client, signal }) {
+			const detached = optionalBoolean(args, "detached") === true;
+			if (detached && args.timeoutMs !== undefined) {
+				throw new ArgumentError("a detached command has no timeout: leave out timeoutMs, and end it with command_kill");
+			}
+			const command = await client.runCommand(
+				text(args, "sandboxId"),
+				{
+					command: text(args, "command"),
+					cwd: optionalText(args, "cwd"),
+					timeoutMs: optionalNumber(args, "timeoutMs"),
+					env: optionalStrings(args, "env"),
+					...(detached ? { detached: true } : {}),
 				},
-			};
+				{ signal },
+			);
+			if (!detached || command.state !== "running") return commandResult(command);
+			return json(
+				{ commandId: command.id, state: command.state },
+				`Started ${command.id}; it runs until it ends or is killed. ${pickUp(command)}`,
+			);
+		},
+	},
+	{
+		name: "command_get",
+		description:
+			"A command's state, exit code and output so far, each cut to about 64 KiB. With waitMs, waits up to that long " +
+			"for it to end first; if it is still running then, call command_get again.",
+		inputSchema: schema(
+			{
+				sandboxId,
+				commandId,
+				waitMs: {
+					type: "integer",
+					minimum: 0,
+					maximum: MAX_WAIT_MS,
+					description: "Wait up to this many milliseconds for it to end; default 0, at most 600000.",
+				},
+			},
+			["sandboxId", "commandId"],
+		),
+		annotations: { title: "Get a command", readOnlyHint: true },
+		async call(args, { client, signal, pollIntervalMs }) {
+			const sandbox = text(args, "sandboxId");
+			const id = text(args, "commandId");
+			const deadline = Date.now() + (optionalNumber(args, "waitMs") ?? 0);
+			let command = await client.getCommand(sandbox, id, { signal });
+			let pause = Math.min(250, pollIntervalMs);
+			while (command.state === "running" && Date.now() < deadline) {
+				await delay(Math.max(0, Math.min(pause, deadline - Date.now())), undefined, { signal });
+				pause = Math.min(pause * 2, pollIntervalMs);
+				command = await client.getCommand(sandbox, id, { signal });
+			}
+			return commandResult(command);
+		},
+	},
+	{
+		name: "command_list",
+		description:
+			"A sandbox's commands, newest first, with their state and exit code but not their output (command_get has " +
+			"it). Finds a command whose call your MCP client gave up on.",
+		inputSchema: schema(
+			{
+				sandboxId,
+				limit: { type: "integer", minimum: 1, maximum: 100, description: "At most this many; default 20." },
+			},
+			["sandboxId"],
+		),
+		annotations: { title: "List commands", readOnlyHint: true },
+		async call(args, { client, signal }) {
+			const page = await client.listCommands(
+				text(args, "sandboxId"),
+				{ limit: optionalNumber(args, "limit") ?? 20 },
+				{ signal },
+			);
+			const items = page.items.map((command) => ({
+				commandId: command.id,
+				command: command.command,
+				state: command.state,
+				exitCode: command.exitCode ?? null,
+				startedAt: command.startedAt,
+				durationMs: command.durationMs ?? null,
+			}));
+			return json({ items });
+		},
+	},
+	{
+		name: "command_kill",
+		description: "End a running command, such as a detached server. One that has ended is answered as it is.",
+		inputSchema: schema({ sandboxId, commandId }, ["sandboxId", "commandId"]),
+		annotations: { title: "Kill a command", readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+		async call(args, { client, signal }) {
+			return commandResult(await client.killCommand(text(args, "sandboxId"), text(args, "commandId"), { signal }));
 		},
 	},
 	{
@@ -421,11 +568,15 @@ const TOOLS: readonly Tool[] = [
 			["sandboxId", "path"],
 		),
 		annotations: { title: "Read a file", readOnlyHint: true },
-		async call(args, { client }) {
-			const file = await client.readFile(text(args, "sandboxId"), {
-				path: text(args, "path"),
-				encoding: optionalChoice(args, "encoding", ENCODINGS),
-			});
+		async call(args, { client, signal }) {
+			const file = await client.readFile(
+				text(args, "sandboxId"),
+				{
+					path: text(args, "path"),
+					encoding: optionalChoice(args, "encoding", ENCODINGS),
+				},
+				{ signal },
+			);
 			return { content: [{ type: "text", text: file.content }], structuredContent: file };
 		},
 	},
@@ -443,13 +594,17 @@ const TOOLS: readonly Tool[] = [
 			["sandboxId", "path", "content"],
 		),
 		annotations: { title: "Write a file", readOnlyHint: false, destructiveHint: true, idempotentHint: true },
-		async call(args, { client }) {
-			const entry = await client.writeFile(text(args, "sandboxId"), {
-				path: text(args, "path"),
-				content: text(args, "content"),
-				encoding: optionalChoice(args, "encoding", ENCODINGS),
-				mode: optionalText(args, "mode"),
-			});
+		async call(args, { client, signal }) {
+			const entry = await client.writeFile(
+				text(args, "sandboxId"),
+				{
+					path: text(args, "path"),
+					content: text(args, "content"),
+					encoding: optionalChoice(args, "encoding", ENCODINGS),
+					mode: optionalText(args, "mode"),
+				},
+				{ signal },
+			);
 			return json(entry, `Wrote ${entry.path} (${entry.size} bytes).`);
 		},
 	},
@@ -461,8 +616,8 @@ const TOOLS: readonly Tool[] = [
 			["sandboxId"],
 		),
 		annotations: { title: "List a directory", readOnlyHint: true },
-		async call(args, { client }) {
-			return json(await client.listFiles(text(args, "sandboxId"), { path: optionalText(args, "path") }));
+		async call(args, { client, signal }) {
+			return json(await client.listFiles(text(args, "sandboxId"), { path: optionalText(args, "path") }, { signal }));
 		},
 	},
 	{
@@ -479,12 +634,16 @@ const TOOLS: readonly Tool[] = [
 			["sandboxId", "port"],
 		),
 		annotations: { title: "Expose a port", readOnlyHint: false, destructiveHint: false, idempotentHint: true },
-		async call(args, { client }) {
+		async call(args, { client, signal }) {
 			const port = optionalNumber(args, "port") ?? 0;
-			const exposed = await client.exposePort(text(args, "sandboxId"), {
-				port,
-				public: optionalBoolean(args, "public"),
-			});
+			const exposed = await client.exposePort(
+				text(args, "sandboxId"),
+				{
+					port,
+					public: optionalBoolean(args, "public"),
+				},
+				{ signal },
+			);
 			return json(exposed, `Port ${exposed.port} is at ${exposed.url}`);
 		},
 	},
@@ -503,13 +662,16 @@ const TOOLS: readonly Tool[] = [
 			["sandboxId", "name"],
 		),
 		annotations: { title: "Save a snapshot", readOnlyHint: false, destructiveHint: false, idempotentHint: false },
-		async call(args, { client }) {
-			const snapshot = await client.saveSnapshot({
-				sandboxId: text(args, "sandboxId"),
-				name: text(args, "name"),
-				description: optionalText(args, "description"),
-				replace: optionalBoolean(args, "replace"),
-			});
+		async call(args, { client, signal }) {
+			const snapshot = await client.saveSnapshot(
+				{
+					sandboxId: text(args, "sandboxId"),
+					name: text(args, "name"),
+					description: optionalText(args, "description"),
+					replace: optionalBoolean(args, "replace"),
+				},
+				{ signal },
+			);
 			return json(snapshot, `Saved ${snapshot.name ?? snapshot.id} (${snapshot.id}).`);
 		},
 	},
@@ -521,12 +683,15 @@ const TOOLS: readonly Tool[] = [
 			saved: { type: "boolean", description: "Only saved snapshots." },
 		}),
 		annotations: { title: "List snapshots", readOnlyHint: true },
-		async call(args, { client, account }) {
-			const page = await client.listSnapshots({
-				account,
-				sandboxId: optionalText(args, "sandboxId"),
-				kind: optionalBoolean(args, "saved") === true ? "saved" : undefined,
-			});
+		async call(args, { client, account, signal }) {
+			const page = await client.listSnapshots(
+				{
+					account,
+					sandboxId: optionalText(args, "sandboxId"),
+					kind: optionalBoolean(args, "saved") === true ? "saved" : undefined,
+				},
+				{ signal },
+			);
 			return json(page);
 		},
 	},
@@ -540,8 +705,12 @@ const TOOLS: readonly Tool[] = [
 			["sandboxId"],
 		),
 		annotations: { title: "Open the browser", readOnlyHint: false, destructiveHint: false, idempotentHint: true },
-		async call(args, { client }) {
-			const access = await client.openBrowser(text(args, "sandboxId"), { viewOnly: optionalBoolean(args, "viewOnly") });
+		async call(args, { client, signal }) {
+			const access = await client.openBrowser(
+				text(args, "sandboxId"),
+				{ viewOnly: optionalBoolean(args, "viewOnly") },
+				{ signal },
+			);
 			return json(access, `Live view: ${access.url}\nCDP: ${access.cdpUrl}`);
 		},
 	},
@@ -553,8 +722,12 @@ const TOOLS: readonly Tool[] = [
 			["sandboxId"],
 		),
 		annotations: { title: "Open the desktop", readOnlyHint: false, destructiveHint: false, idempotentHint: true },
-		async call(args, { client }) {
-			const access = await client.openDesktop(text(args, "sandboxId"), { viewOnly: optionalBoolean(args, "viewOnly") });
+		async call(args, { client, signal }) {
+			const access = await client.openDesktop(
+				text(args, "sandboxId"),
+				{ viewOnly: optionalBoolean(args, "viewOnly") },
+				{ signal },
+			);
 			return json(access, `Desktop: ${access.url}`);
 		},
 	},
@@ -588,11 +761,18 @@ const isRecord = (value: unknown): value is { readonly [key: string]: unknown } 
 
 /** An MCP server over `client`; feed it messages with `handle`, or serve it on stdio with `serveStdio`. */
 export function createMcpServer(options: McpServerOptions): McpServer {
-	const context: ToolContext = { client: options.client, account: options.account };
 	const tools = new Map(TOOLS.map((tool) => [tool.name, tool]));
 	const log = options.log ?? (() => undefined);
+	const progressIntervalMs = options.progressIntervalMs ?? PROGRESS_INTERVAL_MS;
+	const pollIntervalMs = options.pollIntervalMs ?? 2000;
+	/** The tool calls under way, by request ID, to abort on `notifications/cancelled`. */
+	const calls = new Map<string | number, AbortController>();
 
-	async function callTool(id: JsonRpcId, params: { readonly [key: string]: unknown }): Promise<object> {
+	async function callTool(
+		id: JsonRpcId,
+		params: { readonly [key: string]: unknown },
+		notify: ((notification: object) => void) | undefined,
+	): Promise<object | undefined> {
 		const name = params.name;
 		if (typeof name !== "string") return failure(id, INVALID_PARAMS, "Invalid params: name is required");
 		const tool = tools.get(name);
@@ -601,9 +781,42 @@ export function createMcpServer(options: McpServerOptions): McpServer {
 		if (!isRecord(raw)) return success(id, errorResult("Invalid arguments: arguments must be an object"));
 		const problem = validateArguments(tool.inputSchema, raw);
 		if (problem !== undefined) return success(id, errorResult(`Invalid arguments: ${problem}`));
+		const controller = new AbortController();
+		if (id !== null) calls.set(id, controller);
+		const meta = isRecord(params._meta) ? params._meta : {};
+		const token = meta.progressToken;
+		const started = Date.now();
+		let ticks = 0;
+		const ticker =
+			notify !== undefined && (typeof token === "string" || typeof token === "number")
+				? setInterval(() => {
+						// MCP's progress must go up with every notification, so it counts them; the time is in the message.
+						ticks += 1;
+						const seconds = Math.round((Date.now() - started) / 1000);
+						notify({
+							jsonrpc: "2.0",
+							method: "notifications/progress",
+							params: { progressToken: token, progress: ticks, message: `${name}: still working after ${seconds} s` },
+						});
+					}, progressIntervalMs)
+				: undefined;
+		const context: ToolContext = {
+			client: options.client,
+			account: options.account,
+			signal: controller.signal,
+			pollIntervalMs,
+		};
+		// A cancellation ends the call at once, whatever its tool is waiting on: no more progress, and no answer.
+		const cancelled = new Promise<undefined>((resolve) => {
+			controller.signal.addEventListener("abort", () => resolve(undefined), { once: true });
+		});
+		const running = tool.call(raw, context);
+		running.catch(() => undefined);
 		try {
-			return success(id, await tool.call(raw, context));
+			const result = await Promise.race([running, cancelled]);
+			return result === undefined || controller.signal.aborted ? undefined : success(id, result);
 		} catch (error) {
+			if (controller.signal.aborted) return undefined;
 			if (error instanceof KantelApiError) {
 				const hint = HINTS[error.code];
 				const message = `${error.code}: ${error.message}${hint === undefined ? "" : `\n${hint}`}`;
@@ -613,10 +826,13 @@ export function createMcpServer(options: McpServerOptions): McpServer {
 			const message = error instanceof Error ? error.message : String(error);
 			log(`kantel mcp: ${name} failed: ${message}`);
 			return success(id, errorResult(message));
+		} finally {
+			clearInterval(ticker);
+			if (id !== null && calls.get(id) === controller) calls.delete(id);
 		}
 	}
 
-	async function one(message: unknown): Promise<object | undefined> {
+	async function one(message: unknown, notify?: (notification: object) => void): Promise<object | undefined> {
 		if (!isRecord(message)) return failure(null, INVALID_REQUEST, "Invalid request");
 		const method = message.method;
 		if (typeof method !== "string") {
@@ -624,8 +840,15 @@ export function createMcpServer(options: McpServerOptions): McpServer {
 			if ("result" in message || "error" in message) return undefined;
 			return failure(idOf(message.id), INVALID_REQUEST, "Invalid request: no method");
 		}
-		// A notification: no id, or one of MCP's. None needs anything from this server.
-		if (!("id" in message) || method.startsWith("notifications/")) return undefined;
+		// A notification: no id, or one of MCP's. Only a cancellation needs anything from this server: the wait it names
+		// stops, and its answer isn't sent.
+		if (!("id" in message) || method.startsWith("notifications/")) {
+			if (method === "notifications/cancelled" && isRecord(message.params)) {
+				const requestId = message.params.requestId;
+				if (typeof requestId === "string" || typeof requestId === "number") calls.get(requestId)?.abort();
+			}
+			return undefined;
+		}
 		const id = idOf(message.id);
 		if (message.jsonrpc !== "2.0") return failure(id, INVALID_REQUEST, 'Invalid request: jsonrpc must be "2.0"');
 		const params = isRecord(message.params) ? message.params : {};
@@ -645,7 +868,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
 				case "tools/list":
 					return success(id, { tools: TOOL_DEFINITIONS });
 				case "tools/call":
-					return await callTool(id, params);
+					return await callTool(id, params, notify);
 				default:
 					return failure(id, METHOD_NOT_FOUND, `Method not found: ${method}`);
 			}
@@ -656,10 +879,10 @@ export function createMcpServer(options: McpServerOptions): McpServer {
 	}
 
 	return {
-		async handle(message) {
-			if (!Array.isArray(message)) return one(message);
+		async handle(message, notify) {
+			if (!Array.isArray(message)) return one(message, notify);
 			if (message.length === 0) return failure(null, INVALID_REQUEST, "Invalid request: an empty batch");
-			const answers = (await Promise.all(message.map((item: unknown) => one(item)))).filter(
+			const answers = (await Promise.all(message.map((item: unknown) => one(item, notify)))).filter(
 				(answer): answer is object => answer !== undefined,
 			);
 			return answers.length === 0 ? undefined : answers;
@@ -675,8 +898,8 @@ export interface StdioOptions {
 }
 
 /**
- * Serves `server` on stdio: one JSON-RPC message a line in, one answer a line out. Requests are handled as they
- * arrive, so a long command doesn't hold up a `ping`. Resolves once stdin ends and every answer is written.
+ * Serves `server` on stdio: one JSON-RPC message a line in, one answer (or notification) a line out. Requests are
+ * handled as they arrive, so a long command doesn't hold up a `ping` or its own cancellation. Resolves once stdin ends and every answer is written.
  */
 export async function serveStdio(server: McpServer, io: StdioOptions): Promise<void> {
 	const pending = new Set<Promise<void>>();
@@ -694,7 +917,7 @@ export async function serveStdio(server: McpServer, io: StdioOptions): Promise<v
 			return;
 		}
 		const task: Promise<void> = server
-			.handle(message)
+			.handle(message, write)
 			.then((answer) => {
 				if (answer !== undefined) write(answer);
 			})
