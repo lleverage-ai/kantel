@@ -440,24 +440,56 @@ function sandboxesSource(context: Context): SandboxesSource {
 			// microVMs only: an isolate's `not_supported` rejects the lot. SSH's private key, when Kantel makes one, has no
 			// place in the UI's access and is dropped. The browser is driven where it runs, on the desktop, so its page is a
 			// desktop page too; while Chromium is still starting, the API refuses it and the desktop's stands in.
-			const [ssh, desktop, watch, browser] = await Promise.all([
-				api.openSsh(id),
-				api.openDesktop(id),
-				api.openDesktop(id, { viewOnly: true }),
-				api.openBrowser(id).catch((error: unknown) => {
-					if (isCode(error, "unavailable")) return undefined;
+			//
+			// Desktop and Browser that can't open are said so rather than opened onto an error page: in an end-to-end space
+			// (its host refuses the gateway's plaintext desktop; E2E sessions carry commands and files only so far), and
+			// where the gateway refuses them (`not_supported`: a deployment that doesn't serve this sandbox's desktop).
+			const endToEnd = await spaceEndToEnd(context, id);
+			const screen = async <T>(open: () => Promise<T>): Promise<Opened<T>> => {
+				if (endToEnd) return { refused: SCREENS_NOT_END_TO_END };
+				try {
+					return { value: await open() };
+				} catch (error) {
+					if (isCode(error, "not_supported")) return { refused: SCREENS_NOT_SERVED };
 					throw error;
-				}),
+				}
+			};
+			// SSH there is E2E v1's own, over a session from the person's device; the gateway's (which lets a key in with a
+			// command) the host refuses.
+			const [ssh, desktop, watch, browser] = await Promise.all([
+				endToEnd ? Promise.resolve(undefined) : api.openSsh(id),
+				screen(() => api.openDesktop(id)),
+				screen(() => api.openDesktop(id, { viewOnly: true })),
+				screen(() =>
+					api.openBrowser(id).catch((error: unknown) => {
+						if (isCode(error, "unavailable")) return undefined;
+						throw error;
+					}),
+				),
 			]);
-			context.learnHost(ssh.host);
-			const browserUrl = browser?.url ?? desktop.url;
+			if (ssh !== undefined) context.learnHost(ssh.host);
+			const desktopRefused = desktop.refused ?? watch.refused;
+			const desktopUrl = desktopRefused === undefined ? desktop.value?.url : undefined;
+			// While Chromium starts, the desktop's page stands in for the browser's, and its reason when it has one.
+			const browserUrl = browser.value?.url ?? desktopUrl;
+			const browserRefused = browser.refused ?? (browserUrl === undefined ? desktopRefused : undefined);
+			const unavailable = {
+				...(desktopRefused === undefined ? {} : { desktop: desktopRefused }),
+				...(browserRefused === undefined ? {} : { browser: browserRefused }),
+			};
 			return {
-				ssh: ssh.command,
-				desktopUrl: desktop.url,
-				desktopViewUrl: watch.url,
-				browserUrl,
+				ssh: ssh?.command ?? `kantel e2e ssh ${id}`,
+				// What can't open has no address: nothing links or frames it.
+				desktopUrl: desktopUrl ?? "",
+				desktopViewUrl: (desktopRefused === undefined ? watch.value?.url : undefined) ?? "",
+				browserUrl: browserUrl ?? "",
 				// The browser's page is a desktop page, which a frame can show as it is.
-				embed: { desktop: desktop.embedUrl, watch: watch.embedUrl, browser: browserUrl },
+				embed: {
+					desktop: (desktopRefused === undefined ? desktop.value?.embedUrl : undefined) ?? "",
+					watch: (desktopRefused === undefined ? watch.value?.embedUrl : undefined) ?? "",
+					browser: browserUrl ?? "",
+				},
+				...(Object.keys(unavailable).length === 0 ? {} : { unavailable }),
 			};
 		},
 		history: async (id) => {
@@ -522,6 +554,42 @@ function sandboxesSource(context: Context): SandboxesSource {
 	};
 }
 
+/** Desktop and Browser where the gateway refuses them: this deployment doesn't serve the sandbox's screens yet. */
+export const SCREENS_NOT_SERVED = "Not available here yet";
+/** Desktop and Browser in an end-to-end space: its E2E sessions carry commands and files, not screens, so far. */
+export const SCREENS_NOT_END_TO_END = "Not end to end yet";
+
+/** A screen's access, or why it can't open. */
+type Opened<T> =
+	| { readonly value: T; readonly refused?: undefined }
+	| { readonly refused: string; readonly value?: undefined };
+
+/** The account a sandbox is in, as last read, else asked for. */
+async function sandboxAccount(context: Context, id: string): Promise<string> {
+	let account = context.sandboxAccounts.get(id);
+	if (account === undefined) {
+		account = (await context.api.getSandbox(id)).accountId;
+		context.sandboxAccounts.set(id, account);
+	}
+	return account;
+}
+
+/**
+ * Whether a sandbox's space is end to end (E2E on or strict), where its host refuses the gateway's plaintext desktop:
+ * as this console's keys have its chain, else as the gateway has it. A chain that can't be read counts as off: the
+ * screens are then tried, and their host's refusal shown.
+ */
+async function spaceEndToEnd(context: Context, id: string): Promise<boolean> {
+	try {
+		const account = await sandboxAccount(context, id);
+		if (context.local !== undefined) return context.local.mode(account) !== "off";
+		const mode = (await context.browser?.mode(account)) ?? (await chainMode(context, account));
+		return mode !== "off";
+	} catch {
+		return false;
+	}
+}
+
 /**
  * How this console reaches an end-to-end sandbox's host, or undefined for a sandbox it reads through the gateway (its
  * account has E2E off, or this console has no keys). `kantel console` reaches it through the CLI's device; the gateway's
@@ -533,11 +601,7 @@ async function endToEndHost(
 ): Promise<{ call<T>(sandboxId: string, method: string, params?: object): Promise<T> } | undefined> {
 	const { local, browser } = context;
 	if (local === undefined && browser === undefined) return undefined;
-	let account = context.sandboxAccounts.get(id);
-	if (account === undefined) {
-		account = (await context.api.getSandbox(id)).accountId;
-		context.sandboxAccounts.set(id, account);
-	}
+	const account = await sandboxAccount(context, id);
 	if (local !== undefined && local.mode(account) !== "off") return local;
 	if (browser !== undefined) {
 		// Where this browser trusts the space's chain, only the chain as it verifies from there decides: a gateway that
