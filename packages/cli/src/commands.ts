@@ -906,6 +906,31 @@ export function proxyEnv(config: ResolvedConfig): Record<string, string> {
 	};
 }
 
+/** A page of a sandbox's command history, as its host keeps it (`sandbox.history`), newest first. */
+export interface E2EHistoryPage {
+	readonly items: readonly E2EHistoryEntry[];
+	readonly next?: string;
+}
+
+export interface E2EHistoryEntry {
+	readonly id: string;
+	readonly command?: string;
+	readonly argv?: readonly string[];
+	readonly cwd?: string;
+	readonly startedAt: number;
+	readonly endedAt: number;
+	readonly exitCode?: number;
+	readonly timedOut?: boolean;
+	readonly error?: string;
+	readonly stdout: string;
+	readonly stderr: string;
+	readonly truncated?: boolean;
+	readonly device: string;
+	readonly deviceLabel?: string;
+	readonly deviceClass?: string;
+	readonly member?: string;
+}
+
 /** An `rpc` session's call, with its error as the CLI's. */
 async function e2eCall<T>(ctx: Context, sandboxId: string, method: string, params: object): Promise<T> {
 	let session: e2e.OpenedE2E;
@@ -1209,6 +1234,43 @@ const E2E_COMMANDS: readonly CommandSpec[] = [
 			ctx.io.stdout.write(result.stdout);
 			ctx.io.stderr.write(result.stderr);
 			return result.exitCode;
+		},
+	},
+	{
+		name: "e2e history",
+		summary: "The commands run in a sandbox over E2E sessions, from its host",
+		args: ID_ARG,
+		flags: {
+			limit: { type: "string", value: "<n>", description: "How many, newest first (default 20, at most 100)" },
+			before: { type: "string", value: "<command-id>", description: "Older than this one" },
+			output: { type: "boolean", description: "Print each command's output too" },
+		},
+		details:
+			"The gateway never sees what runs in an E2E session, so the host keeps the history: the last 200 commands of\n" +
+			"each sandbox, with the last 64 KiB of their output. It goes when the sandbox is deleted, and can't be read\n" +
+			"while the host is offline.",
+		async run(ctx) {
+			const limit = Number(ctx.string("limit") ?? "20");
+			if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new UsageError("--limit is a number from 1 to 100");
+			const before = ctx.string("before");
+			const page = await e2eCall<E2EHistoryPage>(ctx, ctx.arg(0), "sandbox.history", {
+				limit,
+				...(before === undefined ? {} : { before }),
+			});
+			ctx.emit(page, () => {
+				if (page.items.length === 0) return "No commands yet.";
+				const lines = page.items.map((entry) => {
+					const status =
+						entry.exitCode === undefined ? (entry.error ?? "didn't finish") : `exit ${entry.exitCode}`;
+					const who = entry.deviceLabel ?? entry.device;
+					const head = `${entry.id}  ${new Date(entry.startedAt).toISOString()}  ${status}  ${who}\n  ${entry.command ?? (entry.argv ?? []).join(" ")}`;
+					if (!ctx.boolean("output")) return head;
+					const output = `${entry.stdout}${entry.stderr}`.trimEnd();
+					return output === "" ? head : `${head}\n${output.replace(/^/gm, "    ")}`;
+				});
+				if (page.next !== undefined) lines.push(`More: kantel e2e history ${ctx.arg(0)} --before ${page.next}`);
+				return lines.join("\n");
+			});
 		},
 	},
 	{

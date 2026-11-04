@@ -6,6 +6,7 @@ import (
 	"crypto/ecdh"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -1073,5 +1074,79 @@ func TestAJoinedHostTakesNoGatewayUpdateWhateverItsMode(t *testing.T) {
 	}
 	if err := fresh.gatewayUpdate(context.Background(), proto.UpdateParams{Version: "9.9.9"}, update); err != nil || ran != 1 {
 		t.Fatalf("a host that never joined didn't update: %v", err)
+	}
+}
+
+// A device's commands are kept on the host: the session reads them back, newest first and in pages, the gateway can't
+// (there is no such call for it), and deleting the sandbox deletes them.
+func TestCommandHistoryIsKeptOnTheHost(t *testing.T) {
+	h, _, v := e2eHost(t)
+	h.commands = newCommandLog(h.cfg.Root)
+	c, err := openSession(t, h, v, "sbx_one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range []string{"echo one", "echo two", "echo three"} {
+		if _, err := c.Call(proto.MethodExec, map[string]any{"command": cmd}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw, err := c.Call(MethodHistory, map[string]any{"limit": 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var page HistoryPage
+	if err := json.Unmarshal(raw, &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 2 || page.Items[0].Command != "echo three" || page.Items[1].Command != "echo two" || page.Next == "" {
+		t.Fatalf("first page %+v", page)
+	}
+	first := page.Items[0]
+	if first.Stdout != "ran: echo three\n" || first.ExitCode == nil || *first.ExitCode != 0 || first.Device == "" {
+		t.Fatalf("entry %+v", first)
+	}
+	raw, err = c.Call(MethodHistory, map[string]any{"before": page.Next})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page = HistoryPage{}
+	_ = json.Unmarshal(raw, &page)
+	if len(page.Items) != 1 || page.Items[0].Command != "echo one" || page.Next != "" {
+		t.Fatalf("second page %+v", page)
+	}
+	if _, err := h.Call(context.Background(), MethodHistory, []byte(`{"sandboxId":"sbx_one"}`), nil); err == nil {
+		t.Fatal("the gateway's call read the history")
+	}
+	info, err := os.Stat(h.commands.path("sbx_one"))
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("history file: %v %v", info, err)
+	}
+	h.commands.forget("sbx_one")
+	if got := h.commands.page("sbx_one", "", 0); len(got.Items) != 0 {
+		t.Fatalf("history after forget: %+v", got)
+	}
+}
+
+// The history keeps a sandbox's newest commands, and the tail of long output.
+func TestCommandHistoryIsBounded(t *testing.T) {
+	l := newCommandLog(t.TempDir())
+	for i := range historyKeep + 3 {
+		if err := l.add("sbx", HistoryEntry{ID: fmt.Sprintf("cmd_%d", i), Command: fmt.Sprint(i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all := l.read("sbx")
+	if len(all) != historyKeep || all[0].Command != "3" || all[len(all)-1].Command != fmt.Sprint(historyKeep+2) {
+		t.Fatalf("kept %d, from %s", len(all), all[0].Command)
+	}
+	var tail outputTail
+	tail.write(strings.Repeat("a", historyOutput))
+	tail.write("bc")
+	if len(tail.b) != historyOutput || !tail.truncated || !strings.HasSuffix(string(tail.b), "bc") {
+		t.Fatal("output wasn't cut to its tail")
+	}
+	if l.add("../escape", HistoryEntry{ID: "x"}) != nil || l.read("../escape") != nil {
+		t.Fatal("an ID named a path outside the log")
 	}
 }

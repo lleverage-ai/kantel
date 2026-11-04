@@ -92,6 +92,13 @@ describe("kantel e2e", () => {
 		expect(exec.code).toBe(0);
 		expect(exec.stdout).toBe(`${SECRET_OUTPUT}\n`);
 		expect(s.host.ran.at(-1)?.method).toBe("sandbox.exec");
+		// Its history comes from the host, over a session too.
+		const history = await root("e2e", "history", sandbox.id, "--output");
+		expect(history.stderr).toBe("");
+		expect(history.code).toBe(0);
+		expect(history.stdout).toContain(SECRET_COMMAND);
+		expect(history.stdout).toContain(`    ${SECRET_OUTPUT}`);
+		expect(history.stdout).toContain("root's laptop");
 
 		// Bob trusts the genesis he was given and sends his card; until it is added, the host won't let him in.
 		const joinedBob = await bob("e2e", "join", s.org.id, genesis, "--json");

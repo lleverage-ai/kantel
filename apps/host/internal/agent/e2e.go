@@ -821,7 +821,7 @@ func (h *Host) serveE2E(ctx context.Context, conn net.Conn, sandboxID string) er
 			return ""
 		},
 		RPC: func(ctx context.Context, d e2e.Device, sandbox, method string, params json.RawMessage, emit func(any)) (any, error) {
-			if !slices.Contains(sessionMethods, method) {
+			if !slices.Contains(sessionMethods, method) && method != MethodHistory {
 				return nil, &e2e.Error{Code: proto.ErrUnsupported, Message: "not in an E2E session: " + method}
 			}
 			// Like a gateway call, a device's holds its sandbox until it ends (e2eGate), and finds it still in the session's
@@ -854,8 +854,25 @@ func (h *Host) serveE2E(ctx context.Context, conn net.Conn, sandboxID string) er
 				}
 			}
 			p["sandboxId"] = sandbox
+			if method == MethodHistory {
+				if h.commands == nil {
+					return HistoryPage{Items: []HistoryEntry{}}, nil
+				}
+				before, _ := p["before"].(string)
+				limit, _ := p["limit"].(float64)
+				return h.commands.page(sandbox, before, int(limit)), nil
+			}
 			raw, _ := json.Marshal(p)
-			result, err := h.Call(ctx, method, raw, func(e proto.Event) { emit(e) })
+			call := func(onEvent func(proto.Event)) (any, error) { return h.Call(ctx, method, raw, onEvent) }
+			var result any
+			var err error
+			if method == proto.MethodExec && h.commands != nil {
+				// Kept on the host, which is the only place that sees it (history.go).
+				by := HistoryEntry{Device: d.ID, DeviceLabel: d.Label, DeviceClass: d.Class, Member: d.User}
+				result, err = h.commands.runLogged(sandbox, by, raw, call, func(e proto.Event) { emit(e) })
+			} else {
+				result, err = call(func(e proto.Event) { emit(e) })
+			}
 			if err != nil {
 				pe := toError(err)
 				return nil, &e2e.Error{Code: pe.Code, Message: pe.Message}
