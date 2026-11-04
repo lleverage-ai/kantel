@@ -7,9 +7,31 @@
 // when it asked for it, 5 wrong tries burn it, and an email gets 5 codes an hour. A deployment's own limit per client
 // address answers 429 with Retry-After.
 
-import { authenticationFailureOf, isKantelError, normaliseEmail } from "@kantel/contracts";
+import {
+	authenticationFailureOf,
+	isKantelError,
+	normaliseEmail,
+	type OAuthProvider,
+	type OAuthSignInError,
+} from "@kantel/contracts";
 
 export const SIGN_IN_CODE_DIGITS = 6;
+
+/**
+ * A provider the deployment signs people in with (GitHub, Google) and where its sign-in starts: the gateway's
+ * `oauthStartPath(provider)`. The screen shows a button for each, above the email form.
+ */
+export interface SignInProviderLink {
+	readonly provider: OAuthProvider;
+	readonly href: string;
+}
+
+/** Why the last sign-in with a provider failed, as the gateway's redirect back to the console said. */
+export interface ProviderSignInProblem {
+	readonly error: OAuthSignInError;
+	/** Which provider, when the redirect said. */
+	readonly provider?: OAuthProvider;
+}
 /** How long a code works, from when it was asked for (`OTP_CODE_TTL_MILLISECONDS` in @kantel/identity/otp). */
 export const SIGN_IN_CODE_TTL_MS = 10 * 60_000;
 /** How many tries a code allows; the last wrong one burns it (`OTP_MAX_ATTEMPTS`). */

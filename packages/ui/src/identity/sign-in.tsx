@@ -1,16 +1,20 @@
 import { type FormEvent, type ReactNode, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { KantelLockup } from "../brand/kantel.tsx";
-import { Button } from "../primitives/button.tsx";
+import { Button, buttonClass, buttonLabelClass } from "../primitives/button.tsx";
 import { TextField } from "../primitives/controls.tsx";
 import { clockTime } from "../primitives/format.ts";
+import { Spinner } from "../primitives/spinner.tsx";
 import { Notice } from "../primitives/surface.tsx";
+import { PROVIDER_NAMES, ProviderMark } from "./provider-marks.tsx";
 import {
 	codeIsDead,
 	createSignInFlow,
+	type ProviderSignInProblem,
 	SIGN_IN_CODE_DIGITS,
 	type SignInApi,
 	type SignInFlow,
 	type SignInProblem,
+	type SignInProviderLink,
 	type SignInState,
 } from "./sign-in-model.ts";
 
@@ -45,6 +49,15 @@ export interface SignInScreenProps {
 	readonly product?: string;
 	/** What stands over the heading. Default: Kantel's endorsed lockup, "Kantel, by Lleverage". */
 	readonly brand?: ReactNode;
+	/**
+	 * The providers the deployment signs people in with (the 401's `signIn` names them), each a button above the email
+	 * form that goes to its start link. Default none.
+	 */
+	readonly providers?: readonly SignInProviderLink[];
+	/** Why the last sign-in with a provider failed, shown over the buttons. */
+	readonly providerProblem?: ProviderSignInProblem;
+	/** Whether the deployment signs people in with an email code. Default true; false shows only the providers. */
+	readonly emailCode?: boolean;
 }
 
 const tries = (count: number) => (count === 1 ? "1 try" : `${count} tries`);
@@ -65,9 +78,42 @@ function problemText(problem: SignInProblem | undefined, now: number, product: s
 	}
 }
 
+/** The sentence for a failed sign-in with a provider, and how loudly to say it. */
+export function providerProblemText(
+	problem: ProviderSignInProblem,
+	product: string,
+): { readonly level: "warning" | "error"; readonly text: string } {
+	const name = problem.provider === undefined ? "the provider" : PROVIDER_NAMES[problem.provider];
+	const Name = problem.provider === undefined ? "The provider" : PROVIDER_NAMES[problem.provider];
+	switch (problem.error) {
+		case "cancelled":
+			return { level: "warning", text: `Signing in with ${name} was cancelled. Try again, or use another way below.` };
+		case "unverified_email":
+			return {
+				level: "error",
+				text:
+					problem.provider === "github"
+						? "Your GitHub account has no verified primary email. Verify it on GitHub, or sign in with an email code."
+						: `${Name} hasn't verified the email on your account. Verify it there, or sign in with an email code.`,
+			};
+		case "state_mismatch":
+			return {
+				level: "error",
+				text: "That sign-in didn't start in this browser, or it took too long. Start again from this page.",
+			};
+		case "not_allowed":
+			return {
+				level: "error",
+				text: `Your ${name} email hasn't been invited to this ${product}. Ask an admin to invite it.`,
+			};
+		default:
+			return { level: "error", text: `${product} couldn't finish signing you in with ${name}. Try again in a moment.` };
+	}
+}
+
 /**
- * Kantel's own sign-in, for a deployment that signs people in with an email code (self-hosted): the email, then
- * the 6-digit code mailed to it. It fills the page, centred, and works the same at 420px. A host shows it when the
+ * Kantel's own sign-in: GitHub and Google where the deployment has them, each a button that leaves for the provider,
+ * then the email and the 6-digit code mailed to it. It fills the page, centred, and works the same at 420px. A host shows it when the
  * API answers 401 and names `email_otp` as the way to sign in.
  *
  * The server never says why a code failed or whether an email is known, so the screen says what it can work out:
@@ -82,6 +128,9 @@ export function SignInScreen({
 	now = Date.now,
 	product = "Kantel",
 	brand = <KantelLockup endorsed className="h-(--kt-brand-md)" title="Kantel, by Lleverage" />,
+	providers = [],
+	providerProblem,
+	emailCode = true,
 }: SignInScreenProps) {
 	const latest = useRef({ api, onSignedIn });
 	latest.current = { api, onSignedIn };
@@ -119,7 +168,15 @@ export function SignInScreen({
 			<div className="flex w-full max-w-90 flex-col gap-3 mb-18 max-sm:mb-0">
 				<div className="mb-4">{brand}</div>
 				{state.step === "email" ? (
-					<EmailStep flow={flow} state={state} product={product} now={now} />
+					<EmailStep
+						flow={flow}
+						state={state}
+						product={product}
+						now={now}
+						providers={providers}
+						emailCode={emailCode}
+						{...(providerProblem === undefined ? {} : { providerProblem })}
+					/>
 				) : state.step === "code" ? (
 					<CodeStep flow={flow} state={state} product={product} now={now} />
 				) : (
@@ -130,47 +187,111 @@ export function SignInScreen({
 	);
 }
 
+/** A line either side of "or", between the providers' buttons and the email form. */
+const divider =
+	"flex items-center gap-3 text-xs text-faint before:h-px before:flex-1 before:bg-border after:h-px after:flex-1 after:bg-border";
+
+/** The providers' buttons: links to each one's start, which leave the page for the provider's consent screen. */
+function ProviderButtons({ providers }: { providers: readonly SignInProviderLink[] }) {
+	// The one followed, so its button shows a spinner while the browser leaves (a provider can take a moment).
+	const [leaving, setLeaving] = useState<string>();
+	return (
+		<div className="flex flex-col gap-2">
+			{providers.map(({ provider, href }) => (
+				<a
+					key={provider}
+					href={href}
+					className={`${buttonClass("secondary", "md")} w-full no-underline`}
+					aria-busy={leaving === provider || undefined}
+					onClick={() => setLeaving(provider)}
+				>
+					{leaving === provider ? <Spinner size="sm" /> : <ProviderMark provider={provider} />}
+					<span className={buttonLabelClass}>Sign in with {PROVIDER_NAMES[provider]}</span>
+				</a>
+			))}
+		</div>
+	);
+}
+
 function EmailStep({
 	flow,
 	state,
 	product,
 	now,
+	providers,
+	providerProblem,
+	emailCode,
 }: {
 	flow: SignInFlow;
 	state: Extract<SignInState, { step: "email" }>;
 	product: string;
 	now: () => number;
+	providers: readonly SignInProviderLink[];
+	providerProblem?: ProviderSignInProblem;
+	emailCode: boolean;
 }) {
 	const limited = state.problem?.kind === "rate-limited";
 	const notice = problemText(state.problem, now(), product);
+	const failed = providerProblem === undefined ? undefined : providerProblemText(providerProblem, product);
 	const submit = (event: FormEvent) => {
 		event.preventDefault();
 		void flow.requestCode();
 	};
+	const withProviders = providers.length > 0;
 	return (
 		<>
 			<h1 className={title}>Sign in to {product}</h1>
-			<p className={lede}>Enter your email and we'll send you a {SIGN_IN_CODE_DIGITS}-digit code.</p>
-			<form className={form} onSubmit={submit} noValidate>
-				<TextField
-					label="Email"
-					type="email"
-					name="email"
-					autoComplete="email"
-					inputMode="email"
-					spellCheck={false}
-					// The field is the whole page; focusing it is what the person came for.
-					autoFocus
-					value={state.email}
-					onChange={(event) => flow.setEmail(event.target.value)}
-					{...(state.problem?.kind === "invalid-email" ? { error: state.problem.message } : {})}
-				/>
-				<Button variant="primary" size="md" type="submit" busy={state.busy} disabled={limited}>
-					Email me a code
-				</Button>
-			</form>
+			<p className={lede}>
+				{!emailCode
+					? "Choose how to sign in."
+					: withProviders
+						? `Continue with ${providers.map(({ provider }) => PROVIDER_NAMES[provider]).join(" or ")}, or get a ${SIGN_IN_CODE_DIGITS}-digit code by email.`
+						: `Enter your email and we'll send you a ${SIGN_IN_CODE_DIGITS}-digit code.`}
+			</p>
+			{failed === undefined ? null : <Notice level={failed.level}>{failed.text}</Notice>}
+			{withProviders ? <ProviderButtons providers={providers} /> : null}
+			{withProviders && emailCode ? <div className={divider}>or</div> : null}
+			{emailCode ? (
+				<EmailForm flow={flow} state={state} limited={limited} submit={submit} autoFocus={!withProviders} />
+			) : null}
 			{notice === undefined ? null : <Notice level={limited ? "warning" : "error"}>{notice}</Notice>}
 		</>
+	);
+}
+
+function EmailForm({
+	flow,
+	state,
+	limited,
+	submit,
+	autoFocus,
+}: {
+	flow: SignInFlow;
+	state: Extract<SignInState, { step: "email" }>;
+	limited: boolean;
+	submit: (event: FormEvent) => void;
+	autoFocus: boolean;
+}) {
+	return (
+		<form className={form} onSubmit={submit} noValidate>
+			<TextField
+				label="Email"
+				type="email"
+				name="email"
+				autoComplete="email"
+				inputMode="email"
+				spellCheck={false}
+				// Alone, the field is the whole page and focusing it is what the person came for; under the providers' buttons it
+				// waits, so a screen reader starts at the heading and the buttons come first.
+				autoFocus={autoFocus}
+				value={state.email}
+				onChange={(event) => flow.setEmail(event.target.value)}
+				{...(state.problem?.kind === "invalid-email" ? { error: state.problem.message } : {})}
+			/>
+			<Button variant="primary" size="md" type="submit" busy={state.busy} disabled={limited}>
+				Email me a code
+			</Button>
+		</form>
 	);
 }
 
