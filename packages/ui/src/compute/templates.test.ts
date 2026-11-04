@@ -90,6 +90,25 @@ describe("what the console says about a template", () => {
 		);
 		expect(templatePickHint(byName("rust-ci"), FIXTURE_NOW)).toMatch(/^Nothing built yet/);
 	});
+
+	it("tells New sandbox a picked template boots fresh at another shape than its own, and restores again at its own", () => {
+		const python = byName("python-data");
+		const own = { vcpus: python.spec.vcpus, memoryMb: python.spec.memoryMb };
+		const fresh = `rather than its own ${resourcesText(python.spec)}, it boots the image and runs the setup itself, which takes longer.`;
+		expect(templatePickHint(python, FIXTURE_NOW, { ...own, vcpus: own.vcpus * 2 })).toBe(
+			`At ${resourcesText({ ...own, vcpus: own.vcpus * 2 })} ${fresh}`,
+		);
+		expect(templatePickHint(python, FIXTURE_NOW, { ...own, memoryMb: own.memoryMb * 2 })).toBe(
+			`At ${resourcesText({ ...own, memoryMb: own.memoryMb * 2 })} ${fresh}`,
+		);
+		// Sliders moved back to the template's own vCPUs and memory: its snapshot serves again.
+		expect(templatePickHint(python, FIXTURE_NOW, own)).toBe("Starts from its snapshot, built 2h ago.");
+		// One with nothing built says why it boots fresh at another shape too.
+		const rust = byName("rust-ci");
+		expect(templatePickHint(rust, FIXTURE_NOW, { vcpus: 2, memoryMb: rust.spec.memoryMb })).toMatch(
+			/^At 2 vCPU, .* rather than its own/,
+		);
+	});
 });
 
 describe("the template editor's variables", () => {

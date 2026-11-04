@@ -1497,7 +1497,7 @@ export function NewSandboxDialog({
 						}}
 						hint={
 							picked !== undefined
-								? templatePickHint(picked, now)
+								? templatePickHint(picked, now, shape)
 								: requested.pending
 									? "Reading the templates."
 									: "Experimental."

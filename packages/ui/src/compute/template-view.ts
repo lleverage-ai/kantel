@@ -4,8 +4,9 @@
 // changes it or closes it, whether that read answers or fails. Reading again on a timer stops while it's open and
 // starts again when it closes (at once, if a read failed meanwhile). A save sends only what was changed from the
 // template as Edit read it; while it's on its way the draft can't be changed or closed, so the answer closes just what
-// it saved, and a save that fails leaves it open, as typed, for another try. New template's form is a smaller store of
-// the same kind.
+// it saved, and a save that fails leaves it open, as typed, for another try. A save that succeeds puts the template it
+// answered with on the page before the editor closes, so Edit can't open again on the template from before it while
+// the reads that follow are on their way. New template's form is a smaller store of the same kind.
 
 import type { Loaded } from "../primitives/load.ts";
 import type { Template, TemplateSnapshot, TemplatesSource, TemplateVersion } from "./compute-model.ts";
@@ -143,8 +144,8 @@ export class TemplateView {
 	};
 
 	/**
-	 * Saves what the draft changed. Saved, the editor closes and the page reads again; refused, it stays as it was
-	 * before the save.
+	 * Saves what the draft changed. Saved, the page shows the template the save answered with, the editor closes and the
+	 * page reads again (dropping any read from before the save); refused, it stays as it was before the save.
 	 */
 	readonly save = async (): Promise<Template> => {
 		const editing = this.#state.editing;
@@ -161,7 +162,10 @@ export class TemplateView {
 			this.#set({ ...this.#state, editing });
 			throw error;
 		}
-		this.#set({ read: this.#state.read });
+		const { read } = this.#state;
+		this.#set({
+			read: read.status === "ready" ? { status: "ready", value: { ...read.value, template: saved } } : read,
+		});
 		this.reload();
 		return saved;
 	};

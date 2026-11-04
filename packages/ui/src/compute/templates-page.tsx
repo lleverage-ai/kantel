@@ -146,8 +146,17 @@ export function rebuildText(template: Pick<Template, "version" | "build">): stri
 		: `Rebuilding. New sandboxes start from v${start.version}'s current snapshot until the new one is ready, and still do if the rebuild fails.`;
 }
 
-/** What picking a template in New sandbox means for how it starts. */
-export function templatePickHint(template: Pick<Template, "version" | "build">, now: number): string {
+/**
+ * What picking a template in New sandbox means for how it starts, at `shape` (the template's own vCPUs and memory when
+ * none is given). A snapshot restores only into the machine it was built as, so at another shape it boots fresh.
+ */
+export function templatePickHint(
+	template: Pick<Template, "version" | "build" | "spec">,
+	now: number,
+	shape: Pick<TemplateSpec, "vcpus" | "memoryMb"> = template.spec,
+): string {
+	if (shape.vcpus !== template.spec.vcpus || shape.memoryMb !== template.spec.memoryMb)
+		return `At ${resourcesText(shape)} rather than its own ${resourcesText(template.spec)}, it boots the image and runs the setup itself, which takes longer.`;
 	const start = startingSnapshot(template);
 	if (start !== undefined) return `Starts from its snapshot, built ${agoText(start.readyAt ?? start.startedAt, now)}.`;
 	return template.build.ready === undefined

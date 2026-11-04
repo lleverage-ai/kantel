@@ -178,6 +178,32 @@ describe("a template's page while its editor is open", () => {
 		expect(reads()).toBe(3);
 	});
 
+	it("reopens Edit on what a save answered with while the reads after it are on their way, so a second save keeps the first", async () => {
+		const { view, held, first, sent, fixtures } = await editDuringRead();
+		// The read from before Edit is still on its way, and so are those the save starts.
+		const saved = await view.save();
+		expect(saved.spec.env).toEqual({ ...first.template.spec.env, NOTE: "two\nlines " });
+		expect(view.state().editing).toBeUndefined();
+		expect(view.state().read).toMatchObject({ status: "ready", value: { template: saved } });
+		// The read from before the save answers with node-web as it was before it, and is dropped.
+		held().resolve(first.template);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(view.state().read).toMatchObject({ status: "ready", value: { template: saved } });
+		view.edit();
+		expect(view.state().editing?.template).toBe(saved);
+		view.change((draft) => ({ ...draft, vcpus: "8" }));
+		const second = await view.save();
+		expect(sent[1]?.spec).toMatchObject({ vcpus: 8, env: { NOTE: "two\nlines " } });
+		expect(second.spec).toMatchObject({ vcpus: 8, env: { ...first.template.spec.env, NOTE: "two\nlines " } });
+		expect(second.description).toBe("Typed while a read was on its way");
+		expect((await fixtures.get("tpl_node")).spec).toEqual(second.spec);
+		// The reads after both saves still answer, and the page shows the second save.
+		held().resolve(saved);
+		held().resolve(second);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(view.state().read).toMatchObject({ status: "ready", value: { template: second } });
+	});
+
 	it("opens the editor on the first read when asked, and drops what a read answers after the page goes", async () => {
 		const fixtures = createTemplateFixtures({ now: FIXTURE_NOW, buildMs: 3_600_000 });
 		const later = deferred<Template>();
