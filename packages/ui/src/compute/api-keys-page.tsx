@@ -27,7 +27,7 @@ import {
 	expiresText,
 	SCOPE_PRESETS,
 } from "./compute-model.ts";
-import { cellMono, cellSub, computePage, messageOf, TableFrame, table, tableFrame, td, th } from "./parts.tsx";
+import { cellMono, cellSub, computePage, messageOf, None, TableFrame, table, tableFrame, td, th } from "./parts.tsx";
 
 export interface ComputeApiKeysPageProps {
 	readonly source: ApiKeysSource;
@@ -285,7 +285,7 @@ function KeyRow({ apiKey, now, onRevoke }: { apiKey: ApiKey; now: number; onRevo
 			</td>
 			<td className={td}>
 				{revoked ? (
-					<span className="text-faint">–</span>
+					<None className="text-faint" />
 				) : apiKey.expiresAt === undefined ? (
 					<span className="text-muted">Never</span>
 				) : (

@@ -32,3 +32,16 @@ export function keepShown(ticked: ReadonlySet<string>, shown: Iterable<string>):
 export function stillToDo<T>(targets: readonly T[], results: readonly PromiseSettledResult<unknown>[]): T[] {
 	return targets.filter((_, at) => results[at]?.status === "rejected");
 }
+
+/**
+ * What a confirmation asks about once an attempt on `attempted` has settled: the ones that failed, if it is still
+ * asking about `attempted`; otherwise whatever it asks now. A confirmation closed while its attempt ran stays closed,
+ * and one opened since keeps its own targets.
+ */
+export function retryTargets<T>(
+	current: readonly T[] | undefined,
+	attempted: readonly T[],
+	results: readonly PromiseSettledResult<unknown>[],
+): readonly T[] | undefined {
+	return current === attempted ? stillToDo(attempted, results) : current;
+}

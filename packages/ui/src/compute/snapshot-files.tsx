@@ -14,7 +14,7 @@ import { useLoad } from "../primitives/load.ts";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import { bytesText, type SnapshotEntry, type SnapshotsSource } from "./compute-model.ts";
-import { cellSub, messageOf, rowHover, TableFrame, table, tableFrame, td, th } from "./parts.tsx";
+import { cellSub, messageOf, None, rowHover, TableFrame, table, tableFrame, td, th } from "./parts.tsx";
 
 export interface SnapshotFilesProps {
 	readonly source: Pick<SnapshotsSource, "list" | "read" | "downloadUrl">;
@@ -184,10 +184,10 @@ function EntryTable({
 									</button>
 								</td>
 								<td className={`${td} text-right text-muted tabular-nums`}>
-									{entry.sizeBytes === undefined ? "–" : bytesText(entry.sizeBytes)}
+									{entry.sizeBytes === undefined ? <None /> : bytesText(entry.sizeBytes)}
 								</td>
 								<td className={`${td} text-muted`}>
-									{entry.modifiedAt === undefined ? "–" : compactAge(entry.modifiedAt, now)}
+									{entry.modifiedAt === undefined ? <None /> : compactAge(entry.modifiedAt, now)}
 								</td>
 							</tr>
 						);

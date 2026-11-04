@@ -15,7 +15,18 @@ import { Notice } from "../primitives/surface.tsx";
 import { bytesText, type EgressEntry, type EgressSource, type SandboxEgress } from "./compute-model.ts";
 import { bindingText } from "./egress-rules.ts";
 import { GrantsSection } from "./grants-section.tsx";
-import { cellMono, cellSub, computePage, messageOf, SectionHeading, TableFrame, table, td, th } from "./parts.tsx";
+import {
+	cellMono,
+	cellSub,
+	computePage,
+	messageOf,
+	None,
+	SectionHeading,
+	TableFrame,
+	table,
+	td,
+	th,
+} from "./parts.tsx";
 
 type LogFilter = "all" | "denied" | "swapped";
 
@@ -237,10 +248,10 @@ export function EgressPage({
 											)}
 										</td>
 										<td className={`${td} text-right tabular-nums text-muted`}>
-											{entry.bytesUp === 0 ? "–" : bytesText(entry.bytesUp)}
+											{entry.bytesUp === 0 ? <None /> : bytesText(entry.bytesUp)}
 										</td>
 										<td className={`${td} text-right tabular-nums text-muted`}>
-											{entry.bytesDown === 0 ? "–" : bytesText(entry.bytesDown)}
+											{entry.bytesDown === 0 ? <None /> : bytesText(entry.bytesDown)}
 										</td>
 									</tr>
 								))}

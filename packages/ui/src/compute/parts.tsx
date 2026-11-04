@@ -41,10 +41,39 @@ function headText(cell: Element): string {
 	return text.trim();
 }
 
-/** A cell with nothing to show: no words, or only a dash for none, and no picture or control. */
+/**
+ * The dash a table shows for a value it doesn't have. A card leaves a cell holding only this out; a value that is
+ * itself a dash (a variable set to "-") is real text, so it stays.
+ */
+export function None({ className }: { className?: string }) {
+	return (
+		<span className={className} data-none="">
+			–
+		</span>
+	);
+}
+
+/** The parts of a node `cellText` reads: a DOM node, or a stand-in for one in a test. */
+export interface TextNode {
+	readonly nodeType: number;
+	readonly textContent: string | null;
+	readonly childNodes: ArrayLike<TextNode>;
+	hasAttribute?(name: string): boolean;
+}
+
+/** A cell's text without its `None` placeholders. */
+export function cellText(node: TextNode): string {
+	let text = "";
+	for (const child of Array.from(node.childNodes)) {
+		if (child.nodeType === 3) text += child.textContent ?? "";
+		else if (child.nodeType === 1 && child.hasAttribute?.("data-none") !== true) text += cellText(child);
+	}
+	return text;
+}
+
+/** A cell with nothing to show: no words but a `None` placeholder, and no picture or control. */
 const emptyCell = (cell: Element): boolean =>
-	/^[\s\u2013\u2014-]*$/.test(cell.textContent ?? "") &&
-	cell.querySelector("svg, img, input, button, a, select") === null;
+	cellText(cell).trim() === "" && cell.querySelector("svg, img, input, button, a, select") === null;
 
 const setData = (cell: HTMLElement, name: string, value: string | undefined) => {
 	if (value === undefined) {

@@ -51,7 +51,7 @@ import {
 	stopsInText,
 } from "./compute-model.ts";
 import { computePage, messageOf, Sparkline, table } from "./parts.tsx";
-import { ChangeCounter, keepShown, stillToDo } from "./sandbox-selection.ts";
+import { ChangeCounter, keepShown, retryTargets } from "./sandbox-selection.ts";
 
 export type SandboxFilter = "all" | "running" | "stopped" | "error";
 
@@ -602,8 +602,9 @@ function SandboxList({
 					for (const box of gone) onChange(null, box.id);
 					const failure = results.find((result) => result.status === "rejected");
 					if (failure !== undefined) {
-						// The dialog stays open on the ones that are left, so Delete again doesn't retry the deleted.
-						setDeleting(stillToDo(boxes, results));
+						// The dialog stays open on the ones that are left, so Delete again doesn't retry the deleted, unless it was
+						// closed meanwhile or opened again on others.
+						setDeleting((current) => retryTargets(current, boxes, results));
 						throw failure.reason;
 					}
 					onNotice({
@@ -1242,7 +1243,11 @@ function DeleteDialog({
 	const sandbox = sandboxes?.length === 1 ? sandboxes[0] : undefined;
 	const [busy, setBusy] = useState(false);
 	const [failure, setFailure] = useState<string>();
+	// Which attempt the dialog is showing: one that settles after the dialog closed (or was opened again) leaves it be.
+	const attempt = useRef(0);
 	const close = () => {
+		attempt.current += 1;
+		setBusy(false);
 		setFailure(undefined);
 		onClose();
 	};
@@ -1259,13 +1264,15 @@ function DeleteDialog({
 						busy={busy}
 						onClick={() => {
 							if (sandboxes === undefined) return;
+							const mine = ++attempt.current;
 							setBusy(true);
+							setFailure(undefined);
 							onDelete(sandboxes).then(
 								() => {
-									setBusy(false);
-									close();
+									if (attempt.current === mine) close();
 								},
 								(caught: unknown) => {
+									if (attempt.current !== mine) return;
 									setBusy(false);
 									setFailure(messageOf(caught, "Kantel couldn't delete it. Try again."));
 								},

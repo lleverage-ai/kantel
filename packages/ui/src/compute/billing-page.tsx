@@ -23,7 +23,7 @@ import {
 	sizeSpec,
 	usedShare,
 } from "./compute-model.ts";
-import { CapacityBar, computePage, messageOf, SectionHeading, TableFrame, table, td, th } from "./parts.tsx";
+import { CapacityBar, computePage, messageOf, None, SectionHeading, TableFrame, table, td, th } from "./parts.tsx";
 
 export interface BillingPageProps {
 	readonly source: BillingSource;
@@ -333,7 +333,7 @@ function SandboxRates() {
 								<td className={`${td} text-right tabular-nums`}>{spec.memoryGb} GB</td>
 								<td className={`${td} text-right tabular-nums`}>{spec.diskGb} GB</td>
 								<td className={`${td} text-right tabular-nums`}>
-									{spec.centsPerHour === undefined ? "–" : costText(spec.centsPerHour)}
+									{spec.centsPerHour === undefined ? <None /> : costText(spec.centsPerHour)}
 								</td>
 							</tr>
 						))}

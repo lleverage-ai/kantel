@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ChangeCounter, keepShown, stillToDo } from "./sandbox-selection.ts";
+import { ChangeCounter, keepShown, retryTargets, stillToDo } from "./sandbox-selection.ts";
 
 describe("a slow bulk-stop answer", () => {
 	it("applies when nothing changed the sandbox after it was asked", () => {
@@ -54,5 +54,27 @@ describe("a bulk delete that partly failed", () => {
 		];
 		expect(stillToDo(["a", "b", "c"], results)).toEqual(["b"]);
 		expect(stillToDo(["a"], [{ status: "fulfilled", value: undefined }])).toEqual([]);
+	});
+
+	const partly: PromiseSettledResult<unknown>[] = [
+		{ status: "fulfilled", value: undefined },
+		{ status: "rejected", reason: new Error("busy") },
+	];
+
+	it("keeps the confirmation open on the failed ones while it still asks about them", () => {
+		const attempted = ["a", "b"];
+		expect(retryTargets(attempted, attempted, partly)).toEqual(["b"]);
+	});
+
+	it("doesn't reopen a confirmation closed while it ran", () => {
+		expect(retryTargets(undefined, ["a", "b"], partly)).toBeUndefined();
+	});
+
+	it("leaves a confirmation opened since on its own targets", () => {
+		const newer = ["c"];
+		expect(retryTargets(newer, ["a", "b"], partly)).toBe(newer);
+		// The same names in a new confirmation are still a new confirmation.
+		const again = ["a", "b"];
+		expect(retryTargets(again, ["a", "b"], partly)).toBe(again);
 	});
 });
