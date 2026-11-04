@@ -19,6 +19,11 @@ export interface PortHttpOptions {
 	readonly headTimeoutMs?: number;
 	/** The largest request body passed on (default 32 MiB). */
 	readonly maxBodyBytes?: number;
+	/**
+	 * Asked about each piece of the answer's body as it arrives, before it is queued for the reader: false, and the
+	 * answer fails (502) and its stream is closed, so what a sandbox pushes is held only as far as this lets it.
+	 */
+	readonly admit?: (bytes: number) => boolean;
 }
 
 const HOP_BY_HOP = new Set([
@@ -326,7 +331,12 @@ export function proxyHttp(
 				},
 			});
 			const emit = (bytes: Uint8Array) => {
-				if (!ended && bytes.length > 0) controller?.enqueue(bytes);
+				if (ended || bytes.length === 0) return;
+				if (options.admit !== undefined && !options.admit(bytes.length)) {
+					ended = true;
+					return fail(new PortHttpError(502, "The sandbox's server sent more than was expected"));
+				}
+				controller?.enqueue(bytes);
 			};
 			if (chunked) {
 				feed = dechunker(emit, close, fail);

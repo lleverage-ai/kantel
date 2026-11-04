@@ -220,6 +220,33 @@ describe("what a relayed WebSocket holds of the server's messages", () => {
 		expect(socket.closes[0]?.code).toBe(1009);
 	});
 
+	it("closes on a message in too many pieces, empty ones included, and counts each piece against the budget", async () => {
+		const budget = { limit: 1_000_000, held: 0 };
+		const socket = withOptions({ maxFragments: 100, budget });
+		await tick();
+		socket.server(enc(`${SWITCHED}\r\n`));
+		socket.server(serverFrame(0x1, new Uint8Array(0), false));
+		// Empty continuations: no bytes, but each kept piece is counted.
+		for (let i = 0; i < 50; i++) socket.server(serverFrame(0x0, new Uint8Array(0), false));
+		expect(socket.closes).toEqual([]);
+		expect(budget.held).toBeGreaterThanOrEqual(51 * 64);
+		const flood = new Uint8Array(60 * 2);
+		for (let i = 0; i < 60; i++) flood.set(serverFrame(0x0, new Uint8Array(0), false), i * 2);
+		socket.server(flood);
+		expect(socket.closes[0]).toEqual({ code: 1009, reason: "The message is in too many pieces" });
+		expect(budget.held).toBe(0);
+
+		// Tiny pieces against a small shared budget: closed once their keep passes it.
+		const small = { limit: 2048, held: 0 };
+		const tiny = withOptions({ budget: small });
+		await tick();
+		tiny.server(enc(`${SWITCHED}\r\n`));
+		tiny.server(serverFrame(0x1, enc("a"), false));
+		for (let i = 0; i < 100 && tiny.closes.length === 0; i++) tiny.server(serverFrame(0x0, enc("a"), false));
+		expect(tiny.closes[0]?.code).toBe(1009);
+		expect(small.held).toBe(0);
+	});
+
 	it("shares one budget between sockets, a message split across many chunks counted as it comes", async () => {
 		const budget = { limit: 8192, held: 0 };
 		const first = withOptions({ budget });

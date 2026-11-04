@@ -64,10 +64,17 @@ export interface DesktopSocket {
 
 /** How long a file of the client may take to come from the sandbox, head and body. */
 export const DESKTOP_FILE_TIMEOUT_MS = 30_000;
+/**
+ * The most every sandbox's files still arriving hold together (Selkies' whole client is about 2.3 MB, its biggest file
+ * about 0.5 MB): past it, a file is refused, as a wrong one is, and tried again on the next request.
+ */
+export const DESKTOP_FETCH_BUDGET = 32 * 1024 * 1024;
 
 export interface DesktopRoutesOptions {
 	/** How long a file may take to come from the sandbox (default `DESKTOP_FILE_TIMEOUT_MS`). */
 	readonly fileTimeoutMs?: number;
+	/** The most files still arriving hold together (default `DESKTOP_FETCH_BUDGET`). */
+	readonly fetchBudgetBytes?: number;
 	/** The relay's tickets, shared by every gateway replica. */
 	readonly tickets: Pick<TunnelTickets, "verify">;
 	/** Whether whoever was given the ticket may still use the sandbox (`relay-access.ts`); absent, everyone may. */
@@ -118,6 +125,7 @@ export function createDesktopRoutes(options: DesktopRoutesOptions): DesktopRoute
 	const now = options.now ?? Date.now;
 	const client = options.client ?? SELKIES_WEB;
 	const fileTimeout = options.fileTimeoutMs ?? DESKTOP_FILE_TIMEOUT_MS;
+	const budget = { limit: options.fetchBudgetBytes ?? DESKTOP_FETCH_BUDGET, held: 0 };
 	/**
 	 * Checked files, by SHA-256: the same in every sandbox on the same Selkies, so fetched once per gateway. Only bytes
 	 * that matched are kept here, so one sandbox's slow or wrong answer never stands for another's.
@@ -132,46 +140,66 @@ export function createDesktopRoutes(options: DesktopRoutesOptions): DesktopRoute
 		return options.allowed === undefined || (await options.allowed(grant)) ? grant : undefined;
 	}
 
-	/** A file of the client from the sandbox, if it is byte for byte the one Kantel knows. */
+	/**
+	 * A file of the client from the sandbox, if it is byte for byte the one Kantel knows. What the sandbox sends is
+	 * counted as it arrives, before it is queued (`admit`): never past the file's own size, nor past what every file
+	 * still arriving may hold together; either, and the answer fails and its stream is closed. Given up on once the
+	 * time is up.
+	 */
 	async function fetchFile(
 		sandboxId: string,
 		file: string,
 		sha256: string,
 		size: number,
 	): Promise<Uint8Array | undefined> {
-		const answer = await proxyHttp(
-			(sink) => options.openPort(sandboxId, DESKTOP_PORT, sink),
-			new Request(`http://127.0.0.1:${DESKTOP_PORT}/${file}`),
-			{ host: `127.0.0.1:${DESKTOP_PORT}`, path: `/${file}`, headTimeoutMs: fileTimeout },
-		);
-		if (answer.status !== 200 || answer.body === null) {
-			await answer.body?.cancel();
-			return undefined;
-		}
-		// Read as it comes, never past the size Kantel knows (the stream is cancelled, which closes it at the host), and
-		// given up on once the time is up: what a sandbox sends is held only up to the file's own size.
-		const reader = answer.body.getReader();
-		const bytes = new Uint8Array(size);
-		let at = 0;
-		const timer = setTimeout(() => void reader.cancel().catch(() => undefined), fileTimeout);
+		let held = 0;
+		let finished = false;
+		const admit = (bytes: number) => {
+			if (finished || held + bytes > size || budget.held + bytes > budget.limit) return false;
+			held += bytes;
+			budget.held += bytes;
+			return true;
+		};
 		try {
-			for (;;) {
-				const { done, value } = await reader.read();
-				if (done) break;
-				if (at + value.length > size) {
-					await reader.cancel().catch(() => undefined);
-					return undefined;
-				}
-				bytes.set(value, at);
-				at += value.length;
+			const answer = await proxyHttp(
+				(sink) => options.openPort(sandboxId, DESKTOP_PORT, sink),
+				new Request(`http://127.0.0.1:${DESKTOP_PORT}/${file}`),
+				{ host: `127.0.0.1:${DESKTOP_PORT}`, path: `/${file}`, headTimeoutMs: fileTimeout, admit },
+			);
+			const length = answer.headers.get("content-length");
+			if (answer.status !== 200 || answer.body === null || (length !== null && Number(length) !== size)) {
+				await answer.body?.cancel().catch(() => undefined);
+				return undefined;
 			}
-		} catch {
-			return undefined;
+			const reader = answer.body.getReader();
+			const chunks: Uint8Array[] = [];
+			const timer = setTimeout(() => void reader.cancel().catch(() => undefined), fileTimeout);
+			try {
+				for (;;) {
+					const { done, value } = await reader.read();
+					if (done) break;
+					chunks.push(value);
+				}
+			} catch {
+				return undefined;
+			} finally {
+				clearTimeout(timer);
+			}
+			if (held !== size) return undefined;
+			const bytes = new Uint8Array(size);
+			let at = 0;
+			for (const chunk of chunks) {
+				bytes.set(chunk, at);
+				at += chunk.length;
+			}
+			if (at !== size || hex(await crypto.subtle.digest("SHA-256", bytes)) !== sha256) return undefined;
+			return bytes;
 		} finally {
-			clearTimeout(timer);
+			// Read, failed or given up on: what it held is let go of (the verified copy is the cache's).
+			finished = true;
+			budget.held -= held;
+			held = 0;
 		}
-		if (at !== size || hex(await crypto.subtle.digest("SHA-256", bytes)) !== sha256) return undefined;
-		return bytes;
 	}
 
 	return {

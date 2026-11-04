@@ -443,6 +443,36 @@ describe("HTTP over a port's stream", () => {
 		expect(await answer.text()).toBe("hello, world");
 	});
 
+	it("asks `admit` about each piece of the body before queueing it, and fails at the first it refuses", async () => {
+		let closed = 0;
+		let admitted = 0;
+		const pieces = Array.from({ length: 200 }, () => "4\r\nabcd\r\n").join("");
+		const answer = await proxyHttp(
+			async (sink) => ({
+				stream: 1,
+				// One push holding the head and 800 bytes of body in 200 chunks: nothing reads between them.
+				write: () =>
+					sink.data(encoder.encode(`HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n${pieces}0\r\n\r\n`)),
+				close: () => {
+					closed += 1;
+				},
+			}),
+			new Request("https://p.test/"),
+			{
+				host: "p.test",
+				admit: (bytes) => {
+					if (admitted + bytes > 10) return false;
+					admitted += bytes;
+					return true;
+				},
+			},
+		);
+		expect(answer.status).toBe(200);
+		await expect(answer.text()).rejects.toMatchObject({ status: 502 });
+		expect(admitted).toBe(8);
+		expect(closed).toBeGreaterThan(0);
+	});
+
 	it("reads a body to the end of the stream when it has no length", async () => {
 		const answer = await send("HTTP/1.0 200 OK\r\n\r\nall of it");
 		expect(await answer.text()).toBe("all of it");

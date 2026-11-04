@@ -28,6 +28,8 @@ export interface PortWebSocketOptions {
 	readonly protocols?: readonly string[];
 	/** The largest message, as frames declare it, held while it arrives (default `MAX_MESSAGE_BYTES`). */
 	readonly maxMessageBytes?: number;
+	/** The most frames one message may come in (default `MAX_FRAGMENTS`). */
+	readonly maxFragments?: number;
 	/**
 	 * Shared by the sockets given it: what they hold together of frames and messages still arriving, at most `limit`
 	 * bytes. A socket that would go past it is closed (1009) before holding more.
@@ -49,6 +51,10 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 /** A message this big ends the connection: more than any DevTools answer (a full-page screenshot) needs. */
 export const MAX_MESSAGE_BYTES = 256 * 1024 * 1024;
+/** The most frames one message may come in: far more than any server splits one into. */
+export const MAX_FRAGMENTS = 4096;
+/** What a fragment held costs beyond its bytes, counted against a shared budget so empty ones aren't free. */
+const FRAGMENT_OVERHEAD = 64;
 /** RFC 7230's token: what a subprotocol's name may be. */
 const TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 /** Headers only the handshake itself sets. */
@@ -98,6 +104,7 @@ export function openPortWebSocket(
 	options: PortWebSocketOptions = {},
 ): PortWebSocket {
 	const maxMessage = options.maxMessageBytes ?? MAX_MESSAGE_BYTES;
+	const maxFragments = options.maxFragments ?? MAX_FRAGMENTS;
 	const budget = options.budget;
 	const offered = (options.protocols ?? []).map((name) => name.trim()).filter((name) => TOKEN.test(name));
 	let stream: PortStream | undefined;
@@ -110,8 +117,10 @@ export function openPortWebSocket(
 	let fragmentBytes = 0;
 	/** What this socket has counted against `budget`: its buffer and fragments, as last counted. */
 	let counted = 0;
+	/** What it holds: its buffer, its fragments' bytes, and each fragment's own keep however few bytes it has. */
+	const holding = () => buffer.length + fragmentBytes + fragments.length * FRAGMENT_OVERHEAD;
 	const recount = () => {
-		const now = closed ? 0 : buffer.length + fragmentBytes;
+		const now = closed ? 0 : holding();
 		if (budget !== undefined) budget.held += now - counted;
 		counted = now;
 	};
@@ -198,9 +207,14 @@ export function openPortWebSocket(
 			} else if (opcode !== 0x0) {
 				return finish(1002, `Unknown opcode ${opcode}`);
 			}
+			// However small (or empty) its pieces, a message is kept in at most `maxFragments` of them.
+			if (fragments.length >= maxFragments) return finish(1009, "The message is in too many pieces");
 			fragments.push(payload);
 			fragmentBytes += payload.length;
 			if (fragmentBytes > maxMessage) return finish(1009, "The message is too big");
+			if (budget !== undefined && budget.held - counted + holding() > budget.limit) {
+				return finish(1009, "Too much is held of messages still arriving");
+			}
 			if (!fin) continue;
 			const message = fragments.length === 1 ? (fragments[0] ?? new Uint8Array(0)) : new Uint8Array(fragmentBytes);
 			if (fragments.length > 1) {
@@ -219,7 +233,7 @@ export function openPortWebSocket(
 	const receive = (bytes: Uint8Array) => {
 		if (closed) return;
 		// Counted before it is held: past the shared budget, the socket is closed instead.
-		if (budget !== undefined && budget.held - counted + buffer.length + fragmentBytes + bytes.length > budget.limit) {
+		if (budget !== undefined && budget.held - counted + holding() + bytes.length > budget.limit) {
 			return finish(1009, "Too much is held of messages still arriving");
 		}
 		buffer = concat(buffer, bytes);
