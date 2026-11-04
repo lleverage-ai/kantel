@@ -41,6 +41,9 @@ type Message struct {
 	// stream.close (either way): a port stream ended; Reason says why.
 	Stream uint32 `json:"stream,omitempty"`
 	Reason string `json:"reason,omitempty"`
+
+	// usage (host → Kantel): one tick of the host's and its sandboxes' readings.
+	Usage *UsageSample `json:"usage,omitempty"`
 }
 
 // Error codes a call can fail with.
@@ -92,6 +95,10 @@ type Facts struct {
 // FeatureEgressPolicy: the host enforces egress Grants (methods and paths too), swaps Protected placeholders only
 // where they are bound, refuses an egress older than its Revision, and gives a fork the Env its ForkParams name.
 const FeatureEgressPolicy = "egress-policy"
+
+// FeatureUsage: the host sends a "usage" message every tick (UsageSample) without being asked, so the control plane
+// needn't run a command in a sandbox to read its usage.
+const FeatureUsage = "usage"
 
 // Size is a sandbox shape.
 type Size struct {
@@ -165,6 +172,48 @@ type SandboxInfo struct {
 	Source string `json:"source,omitempty"`
 	// Owner is the account the sandbox belongs to (its create's Owner): the space whose E2E chain covers it.
 	Owner string `json:"owner,omitempty"`
+	// Guest is what the microVM's image has, as its guest agent found it (absent from an agent too old to say).
+	Guest *GuestCapabilities `json:"guest,omitempty"`
+}
+
+// GuestCapabilities is a guest agent's report on its image: what it is, and whether it has a desktop, a browser and
+// Docker that Kantel can open. The compute API passes it on as a sandbox's capabilities.guest.
+type GuestCapabilities struct {
+	ReportedAt int64 `json:"reportedAt"`
+	Agent      struct {
+		Version string `json:"version"`
+		// Injected: Kantel put the agent in at boot (any Linux image), rather than the image shipping it.
+		Injected bool `json:"injected"`
+	} `json:"agent"`
+	OS struct {
+		ID      string `json:"id"`
+		Name    string `json:"name"`
+		Version string `json:"version,omitempty"`
+	} `json:"os"`
+	// Arch is uname -m's: x86_64 or aarch64.
+	Arch string `json:"arch"`
+	// Libc is "glibc", "musl" or "none".
+	Libc string `json:"libc"`
+	// Shell runs a command's string; empty: argv only.
+	Shell string `json:"shell,omitempty"`
+	// Init is PID 1: "systemd" (the image's) or "kantel" (the agent's own, for an image without systemd).
+	Init    string       `json:"init"`
+	Desktop GuestFeature `json:"desktop"`
+	Browser GuestFeature `json:"browser"`
+	Docker  GuestDocker  `json:"docker"`
+}
+
+// GuestFeature is one thing an image has or lacks: what was found, or why it isn't there.
+type GuestFeature struct {
+	Available bool   `json:"available"`
+	Detail    string `json:"detail,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// GuestDocker is Docker's GuestFeature, with whether /dev/kvm opens inside (nested virtualisation for containers).
+type GuestDocker struct {
+	GuestFeature
+	KVM bool `json:"kvm"`
 }
 
 // SnapshotInfo is one snapshot of a sandbox's disk (and, for a stop that kept it, its memory).
@@ -420,6 +469,46 @@ type Event struct {
 	At     int64  `json:"at"`
 	// Egress, for "egress" events: the proxy's decisions, at most 100 to an event.
 	Egress []EgressRecord `json:"egress,omitempty"`
+}
+
+// UsageSample is a "usage" message's (host → Kantel, once welcomed, every UsageIntervalSeconds; FeatureUsage): the
+// host's and its running sandboxes' CPU and memory over one interval, measured from the host's side, with no command
+// run in a sandbox. packages/hosts/src/protocol.ts calls it HostUsageReport. A control plane that predates it ignores
+// the message (its hub drops a type it doesn't know).
+//
+// CPU is utilisation over the interval that ended at At, 0 to 1, as the API's usage.recentCpu: the host's of all its
+// CPUs; a microVM's of its vCPUs (its Firecracker process's CPU time over vCPUs × interval); an isolate's of one CPU
+// (its JavaScript runs on one thread), as its share of its account's runtime's CPU time.
+type UsageSample struct {
+	// At is when it was taken, in milliseconds; IntervalMs is the span its CPU figures cover.
+	At         int64          `json:"at"`
+	IntervalMs int64          `json:"intervalMs"`
+	Host       HostUsage      `json:"host"`
+	Sandboxes  []SandboxUsage `json:"sandboxes"`
+}
+
+// HostUsage is the whole machine: CPU from /proc/stat, memory from /proc/meminfo (used is MemTotal - MemAvailable)
+// and the disk holding the host's data directory.
+type HostUsage struct {
+	CPU            float64 `json:"cpu"`
+	MemUsedBytes   int64   `json:"memUsedBytes"`
+	MemTotalBytes  int64   `json:"memTotalBytes"`
+	DiskUsedBytes  int64   `json:"diskUsedBytes"`
+	DiskTotalBytes int64   `json:"diskTotalBytes"`
+}
+
+// SandboxUsage is one running sandbox. A sandbox appears from its second sample on (CPU needs two readings).
+type SandboxUsage struct {
+	ID string `json:"id"`
+	// Kind is the tier: "microvm" or "isolate".
+	Kind string  `json:"kind"`
+	CPU  float64 `json:"cpu"`
+	// MemUsedBytes, for a microVM, is its Firecracker process's resident memory: the guest memory the VM has touched
+	// (the guest's page cache too, and nothing is given back without a balloon) and the VMM's own. MemLimitBytes is its
+	// size's memory. An isolate gets an even share of its account's runtime's resident memory and memory (workerd
+	// says nothing of an isolate's own).
+	MemUsedBytes  int64 `json:"memUsedBytes"`
+	MemLimitBytes int64 `json:"memLimitBytes"`
 }
 
 // Methods.

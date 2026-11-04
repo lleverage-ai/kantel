@@ -2,7 +2,7 @@
 // The marketing page's shell: head, the header with the endorsed lockup, and the footer.
 import "../styles/site.css";
 import lockupEndorsed from "../assets/brand/kantel-lockup-endorsed-on-light.svg?raw";
-import { GITHUB_URL, LLEVERAGE_URL, SITE_URL } from "../site.mjs";
+import { CONSOLE_URL, GITHUB_URL, LLEVERAGE_URL, SITE_URL } from "../site.mjs";
 
 interface Props {
 	title: string;
@@ -36,12 +36,17 @@ const lockup = lockupEndorsed.replace("<svg ", '<svg class="h-full w-auto" ');
 			>Skip to the content</a
 		>
 		<header class="sticky top-0 z-20 border-b border-transparent bg-paper/90 backdrop-blur-sm">
-			<nav class="mx-auto flex max-w-(--container-page) items-center justify-between gap-6 px-6 py-4 lg:px-12">
+			<nav class="mx-auto flex max-w-(--container-page) items-center justify-between gap-4 px-6 py-4 sm:gap-6 lg:px-12">
 				<a href="/" class="block h-7 text-ink sm:h-8" aria-label="Kantel, by Lleverage: home" set:html={lockup} />
-				<ul class="flex items-center gap-5 text-sm font-semibold sm:gap-8 sm:text-base">
+				<ul class="flex items-center gap-4 text-sm font-semibold sm:gap-8 sm:text-base">
 					<li><a class="hover:text-label" href="/docs/">Docs</a></li>
-					<li class="hidden sm:block"><a class="hover:text-label" href="/docs/api/reference/">API</a></li>
-					<li><a class="hover:text-label" href={GITHUB_URL}>GitHub</a></li>
+					<li class="hidden sm:block"><a class="hover:text-label" href={GITHUB_URL}>GitHub</a></li>
+					<li>
+						<a
+							class="inline-block rounded-input border border-midnight px-3 py-1.5 transition-colors hover:bg-midnight hover:text-paper"
+							href={CONSOLE_URL}>Console</a
+						>
+					</li>
 				</ul>
 			</nav>
 		</header>
@@ -61,9 +66,9 @@ const lockup = lockupEndorsed.replace("<svg ", '<svg class="h-full w-auto" ');
 					</p>
 				</div>
 				<ul class="space-y-2">
-					<li><a class="hover:text-midnight" href="/docs/">Docs</a></li>
-					<li><a class="hover:text-midnight" href="/docs/self-hosting/install/">Install Kantel</a></li>
-					<li><a class="hover:text-midnight" href="/docs/concepts/">Concepts</a></li>
+					<li><a class="hover:text-midnight" href="/docs/quickstart/">Quick start</a></li>
+					<li><a class="hover:text-midnight" href="/docs/own-hosts/">Add a host</a></li>
+					<li><a class="hover:text-midnight" href="/docs/self-hosting/install/">Self-host Kantel</a></li>
 					<li><a class="hover:text-midnight" href="/docs/api/reference/">API reference</a></li>
 				</ul>
 				<ul class="space-y-2">

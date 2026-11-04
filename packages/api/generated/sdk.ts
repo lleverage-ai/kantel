@@ -656,6 +656,61 @@ export interface ForkSandboxBody {
 	readonly wait?: boolean;
 }
 
+export interface GuestAgent {
+	readonly version: string;
+	/** Kantel put its guest agent into the image at boot (any Linux image), rather than the image shipping it. */
+	readonly injected: boolean;
+}
+
+/** What a microVM's image has, as its guest agent found it when it last started: its OS, and whether it has a desktop, a browser and Docker. */
+export interface GuestCapabilities {
+	/** Epoch milliseconds, UTC. */
+	readonly reportedAt: number;
+	readonly agent: GuestAgent;
+	readonly os: GuestOs;
+	/** The machine, as `uname -m` says it: `x86_64` or `aarch64`. */
+	readonly arch: string;
+	/** The image's C library; `none` for a static userland such as busybox's. */
+	readonly libc: "glibc" | "musl" | "none";
+	/** The shell a `command` runs in, such as `/bin/bash`; absent: `argv` only. */
+	readonly shell?: string;
+	/** PID 1: the image's systemd, or Kantel's own init when the image has none. */
+	readonly init: "systemd" | "kantel";
+	/** One thing a microVM's image has or lacks. */
+	readonly desktop: GuestFeature;
+	/** One thing a microVM's image has or lacks. */
+	readonly browser: GuestFeature;
+	readonly docker: GuestDocker;
+}
+
+export interface GuestDocker {
+	readonly available: boolean;
+	/** What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`. */
+	readonly detail?: string;
+	/** Why it isn't available, in words, such as `No desktop in this image`. */
+	readonly reason?: string;
+	/** `/dev/kvm` opens inside, so containers and VMs in it can nest. */
+	readonly kvm: boolean;
+}
+
+/** One thing a microVM's image has or lacks. */
+export interface GuestFeature {
+	readonly available: boolean;
+	/** What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`. */
+	readonly detail?: string;
+	/** Why it isn't available, in words, such as `No desktop in this image`. */
+	readonly reason?: string;
+}
+
+export interface GuestOs {
+	/** `/etc/os-release`'s `ID`, such as `debian`, `alpine` or `ubuntu`. */
+	readonly id: string;
+	/** Its pretty name, such as `Debian GNU/Linux 13 (trixie)`. */
+	readonly name: string;
+	/** `VERSION_ID`, such as `13` or `3.22.2`. */
+	readonly version?: string;
+}
+
 /** A machine that runs sandboxes. It dials out to the control plane; it takes no inbound ports. */
 export interface Host {
 	/** The host's ID, such as `host_6t5r4e`. */
@@ -684,6 +739,8 @@ export interface Host {
 	readonly joinedAt: number;
 	/** Epoch milliseconds, UTC. */
 	readonly lastSeenAt?: number;
+	/** A host's recent CPU and memory, for sparklines. */
+	readonly usage?: UsageSparklines;
 }
 
 export interface HostAllocated {
@@ -716,6 +773,33 @@ export interface HostList {
 
 /** `online`: connected and taking sandboxes. `unreachable`: its connection dropped; its sandboxes can't be reached until it is back. `draining`: connected, but takes no new sandboxes. `revoked`: its credential is revoked. */
 export type HostState = "online" | "unreachable" | "draining" | "revoked";
+
+/** A host's readings as they came, for a live graph: poll with `since` set to the last point's `at` for only the newer ones. */
+export interface HostUsage {
+	readonly hostId: string;
+	/** How far apart the points are: 5000 from a current host. */
+	readonly intervalMs: number;
+	/** 0 until the host has sent a reading. */
+	readonly memTotalBytes: number;
+	/** 0 until the host has sent a reading. */
+	readonly diskTotalBytes: number;
+	/** Oldest first, at most the last hour; with `since`, only those after it. Empty for a host that doesn't send its readings yet (an older kantel-host). */
+	readonly points: readonly HostUsagePoint[];
+}
+
+export interface HostUsagePoint {
+	/** Epoch milliseconds, UTC. */
+	readonly at: number;
+	/** CPU utilisation over the interval ending at `at`, 0 to 1 of all the host's CPUs. */
+	readonly cpu: number;
+	readonly memUsedBytes: number;
+	readonly diskUsedBytes: number;
+}
+
+export interface HostUsageQuery {
+	/** Only the points after this time (epoch milliseconds). */
+	readonly since?: number;
+}
 
 /** A way into an organisation: whoever joins with its code becomes a member. */
 export interface Invite {
@@ -979,7 +1063,7 @@ export interface Sandbox {
 	readonly reason?: string;
 	/** `private`: only the person who made it (and API keys of theirs) may see or use it. `organisation`: every member of its organisation may. A personal account's sandboxes are always `private`. */
 	readonly visibility: SandboxVisibility;
-	/** What this sandbox can do, from its type and its host. */
+	/** What this sandbox can do, from its type and its host, and for a microVM from what its guest agent found in its image (`guest`): `desktop`, `browser`, `docker` and `kvm` are false where the image lacks them. */
 	readonly capabilities: SandboxCapabilities;
 	/** The caller's own labels. */
 	readonly labels: {
@@ -1011,7 +1095,7 @@ export interface Sandbox {
 	readonly hostId?: string;
 }
 
-/** What this sandbox can do, from its type and its host. */
+/** What this sandbox can do, from its type and its host, and for a microVM from what its guest agent found in its image (`guest`): `desktop`, `browser`, `docker` and `kvm` are false where the image lacks them. */
 export interface SandboxCapabilities {
 	readonly exec: boolean;
 	readonly files: boolean;
@@ -1024,6 +1108,8 @@ export interface SandboxCapabilities {
 	readonly kvm: boolean;
 	/** Whether it can be paused with its memory kept. */
 	readonly pause: boolean;
+	/** What a microVM's image has, as its guest agent found it when it last started: its OS, and whether it has a desktop, a browser and Docker. */
+	readonly guest?: GuestCapabilities;
 }
 
 /** A sandbox's egress: what it was made with, its own grants and its log. */
@@ -1074,6 +1160,15 @@ export interface SandboxResources {
 	readonly diskGb: number;
 }
 
+export interface SandboxSeriesPoint {
+	/** Epoch milliseconds, UTC. */
+	readonly at: number;
+	/** CPU utilisation over the interval ending at `at`, 0 to 1 of the sandbox's own vCPUs. */
+	readonly cpu: number;
+	/** Memory in use at `at`. */
+	readonly memUsedBytes: number;
+}
+
 /** A microVM's size; a deployment may offer fewer. Isolates have none. */
 export type SandboxSizeName = "small" | "default" | "large" | "xlarge";
 
@@ -1108,6 +1203,10 @@ export interface SandboxUsage {
 		/** What a sandbox costs at the deployment's rates. A self-hosted install's rates are 0 unless its operator sets them. */
 		readonly cost: Cost;
 	};
+	/** The memory it may use, when its host reports it or its size sets it. */
+	readonly memLimitBytes?: number;
+	/** The sandbox's readings as they came, for a live graph: poll with `since` set to the last point's `at` for only the newer ones. */
+	readonly series: SandboxUsageSeries;
 }
 
 export interface SandboxUsagePoint {
@@ -1118,6 +1217,14 @@ export interface SandboxUsagePoint {
 	readonly memoryMb: number;
 	readonly runningSeconds: number;
 	readonly cost: number;
+}
+
+/** The sandbox's readings as they came, for a live graph: poll with `since` set to the last point's `at` for only the newer ones. */
+export interface SandboxUsageSeries {
+	/** How far apart the points are: 5000 from a host that sends its readings, longer from one that doesn't yet. */
+	readonly intervalMs: number;
+	/** Oldest first, at most the last hour; with `since`, only those after it. */
+	readonly points: readonly SandboxSeriesPoint[];
 }
 
 /** `private`: only the person who made it (and API keys of theirs) may see or use it. `organisation`: every member of its organisation may. A personal account's sandboxes are always `private`. */
@@ -1326,17 +1433,27 @@ export interface UpdateWebhookBody {
 }
 
 export interface UsageQuery {
-	/** From this time; default 24 hours ago. */
+	/** From this time; default 24 hours ago. `series` then holds only the points after it, so a client polls with the last point's `at`. */
 	readonly since?: number;
 	/** Default 300. */
 	readonly intervalSeconds?: number;
 }
 
+/** A host's recent CPU and memory, for sparklines. */
+export interface UsageSparklines {
+	/** CPU utilisation, 0 to 1, over the last 24 intervals of 5 minutes, oldest first. The last may be the interval under way. */
+	readonly recentCpu: readonly number[];
+	/** Memory in use, in bytes, over the same intervals as `recentCpu` (the same length), oldest first. */
+	readonly recentMemory: readonly number[];
+}
+
 export interface UsageSummary {
 	readonly runningSeconds: number;
 	readonly cpuSeconds: number;
-	/** CPU utilisation, 0 to 1, over the last 24 intervals of 5 minutes, oldest first: a sparkline. */
+	/** CPU utilisation, 0 to 1, over the last 24 intervals of 5 minutes, oldest first: a sparkline. The last may be the interval under way. */
 	readonly recentCpu: readonly number[];
+	/** Memory in use, in bytes, over the same intervals as `recentCpu` (the same length), oldest first. */
+	readonly recentMemory: readonly number[];
 }
 
 export interface ViewAccessBody {
@@ -1705,7 +1822,7 @@ export interface KantelClient {
 	recoverSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
 	/** Delete a sandbox permanently. Erases it and its automatic snapshots for good; saved snapshots of it stay. It can't be undone. A key needs `sandboxes:delete`. `DELETE /sandboxes/{sandboxId}` */
 	deleteSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
-	/** Get a sandbox's usage. CPU, memory, running time and cost per interval. A key needs `sandboxes:read`. `GET /sandboxes/{sandboxId}/usage` */
+	/** Get a sandbox's usage. CPU, memory, running time and cost per interval, and in `series` its readings as they came (every 5 seconds over the last hour from a current host). Poll with `since` set to the last series point's `at` for only the newer points. A key needs `sandboxes:read`. `GET /sandboxes/{sandboxId}/usage` */
 	getSandboxUsage(sandboxId: string, query?: UsageQuery, options?: CallOptions): Promise<SandboxUsage>;
 	/** Run a command. Runs a command line in a running sandbox and answers when it ends, with its exit code and output, or at `timeoutMs` (`timed_out`, the command killed). `detached` answers at once and lets it run with no limit. A stopped sandbox is `conflict`: resume it first. A key needs `exec`. Idempotent with `options.idempotencyKey`. `POST /sandboxes/{sandboxId}/commands` */
 	runCommand(sandboxId: string, body: RunCommandBody, options?: CallOptions): Promise<Command>;
@@ -1856,6 +1973,8 @@ export interface KantelClient {
 	createHostJoinToken(body?: CreateHostJoinTokenBody, options?: CallOptions): Promise<HostJoinToken>;
 	/** Get a host. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/hosts/{hostId}` */
 	getHost(hostId: string, options?: CallOptions): Promise<Host>;
+	/** Get a host's usage. Its CPU, memory and disk as it reported them, every 5 seconds over the last hour. Poll with `since` set to the last point's `at` for only the newer points. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/hosts/{hostId}/usage` */
+	getHostUsage(hostId: string, query?: HostUsageQuery, options?: CallOptions): Promise<HostUsage>;
 	/** Change a host. Renames it, replaces its labels, or drains it. A deployment super-admin only (a key needs `hosts:admin`). `PATCH /admin/hosts/{hostId}` */
 	updateHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
 	/** Revoke a host. Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. `unavailable`, and not revoked, when its credential is kept by a part of the deployment that is off (an account's own host, with account hosts switched off). A deployment super-admin only (a key needs `hosts:admin`). `DELETE /admin/hosts/{hostId}` */
@@ -1870,6 +1989,8 @@ export interface KantelClient {
 	listAccountHosts(query?: AccountScopedQuery, options?: CallOptions): Promise<HostList>;
 	/** Get one of an account's hosts. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `GET /hosts/{hostId}` */
 	getAccountHost(hostId: string, options?: CallOptions): Promise<Host>;
+	/** Get one of an account's hosts' usage. Its CPU, memory and disk as it reported them, every 5 seconds over the last hour. Poll with `since` set to the last point's `at` for only the newer points. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `GET /hosts/{hostId}/usage` */
+	getAccountHostUsage(hostId: string, query?: HostUsageQuery, options?: CallOptions): Promise<HostUsage>;
 	/** Change one of an account's hosts. Renames it, replaces its labels, or drains it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `PATCH /hosts/{hostId}` */
 	updateAccountHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
 	/** Remove one of an account's hosts. Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. Run `sudo kantel-host uninstall` on the machine to take the agent off it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `DELETE /hosts/{hostId}` */
@@ -2151,6 +2272,8 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "POST", path: "/admin/hosts/join-tokens", body }, callOptions),
 		getHost: (hostId, callOptions) =>
 			send(options, { method: "GET", path: `/admin/hosts/${encodeURIComponent(hostId)}` }, callOptions),
+		getHostUsage: (hostId, query, callOptions) =>
+			send(options, { method: "GET", path: `/admin/hosts/${encodeURIComponent(hostId)}/usage`, query }, callOptions),
 		updateHost: (hostId, body = {}, callOptions) =>
 			send(options, { method: "PATCH", path: `/admin/hosts/${encodeURIComponent(hostId)}`, body }, callOptions),
 		revokeHost: (hostId, callOptions) =>
@@ -2162,6 +2285,8 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		listAccountHosts: (query, callOptions) => send(options, { method: "GET", path: "/hosts", query }, callOptions),
 		getAccountHost: (hostId, callOptions) =>
 			send(options, { method: "GET", path: `/hosts/${encodeURIComponent(hostId)}` }, callOptions),
+		getAccountHostUsage: (hostId, query, callOptions) =>
+			send(options, { method: "GET", path: `/hosts/${encodeURIComponent(hostId)}/usage`, query }, callOptions),
 		updateAccountHost: (hostId, body = {}, callOptions) =>
 			send(options, { method: "PATCH", path: `/hosts/${encodeURIComponent(hostId)}`, body }, callOptions),
 		removeAccountHost: (hostId, callOptions) =>

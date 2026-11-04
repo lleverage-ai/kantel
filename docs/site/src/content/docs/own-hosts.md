@@ -19,7 +19,7 @@ It works the same way on a self-hosted control plane and on a hosted one such as
 
 You need `account:admin` in the account: you own your personal account, and an organisation's owners and admins have it. You don't need to be the deployment's super-admin.
 
-In the console, open **Hosts** and choose **Add a host**. From the CLI:
+In the console, open **Settings**, then **Hosts**, and choose **Add a host**. From the CLI:
 
 ```sh
 kantel hosts add my-laptop                  # into your personal account

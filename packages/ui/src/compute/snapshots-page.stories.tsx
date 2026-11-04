@@ -43,6 +43,26 @@ export const Files: Story = () => (
 	/>
 );
 
+/** An isolate's saved snapshot from a link that doesn't say its kind: asked, then its /workspace, its only files. */
+export const IsolateFiles: Story = () => (
+	<Scenario
+		initialView={{ name: "files", snapshotId: "ssn_py_tools", label: "python-tools", back: { name: "saved" } }}
+	/>
+);
+
+/** A microVM's snapshot with no folder in the address: it opens at /home/user, with Root above it. */
+export const MicrovmFilesStart: Story = () => (
+	<Scenario
+		initialView={{
+			name: "files",
+			snapshotId: "ssn_dev_stack_warm",
+			label: "dev-stack-warm",
+			kind: "microvm",
+			back: { name: "saved" },
+		}}
+	/>
+);
+
 /** A snapshot's files at `initial`, moving as the console's address would. */
 function Browser({ initial, options }: { initial: FilesAt; options?: ComputeFixtureOptions }) {
 	const [source] = useState(() => createComputeFixtures(options));

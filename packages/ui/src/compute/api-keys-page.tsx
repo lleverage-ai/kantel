@@ -1,21 +1,22 @@
-// The API keys page (compute console, experimental): an account's keys for the CLI, the SDKs, the MCP server and CI,
-// each with its prefix, its scopes (a preset's name when they match one), who made it and when, when it was last used
-// and when it expires. New key asks for a name, a preset or a custom set of scopes and an expiry, then shows the
-// secret once with the commands that use it. Revoke asks first: anything using the key stops at once. Revoked keys
-// stay in the list, muted, at the end. Every call goes through the `ApiKeysSource` the host binds; stories bind it to
-// fixtures. Not the identity area's `ApiKeysPage`, which is a host app's own keys.
+// The API keys page (compute console, under Settings): an account's keys for the CLI, the SDKs, the MCP server and CI.
+// Each row has the key's name and prefix, its access (a preset's name when the scopes match one), when it was last used,
+// when it expires and who made it, and Revoke in its ⋯. Revoked keys fold away under "N revoked". New key asks for a
+// name, the access and an expiry, then shows the secret once in a dialog that only Done closes. A phone gets two-line
+// rows. Every call goes through the `ApiKeysSource` the host binds; stories bind it to fixtures. Not the identity area's
+// `ApiKeysPage`, which is a host app's own keys.
 
 import { useId, useMemo, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { CheckboxField, SegmentedControl, SelectField, TextField } from "../primitives/controls.tsx";
 import { Dialog } from "../primitives/dialog.tsx";
-import { FormField, PageHeader } from "../primitives/form-layout.tsx";
+import { FormField } from "../primitives/form-layout.tsx";
 import { compactAge } from "../primitives/format.ts";
-import { PlusIcon } from "../primitives/icons.tsx";
+import { ChevronRightIcon, PlusIcon } from "../primitives/icons.tsx";
 import { useLoad } from "../primitives/load.ts";
-import { OneTimeSecret } from "../primitives/one-time-secret.tsx";
+import { EllipsisIcon, TrashIcon } from "../primitives/lucide.tsx";
+import { Menu } from "../primitives/menu.tsx";
+import { CommandBlock } from "../primitives/one-time-secret.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
-import { Badge, StatusLabel } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import {
 	API_SCOPES,
@@ -24,10 +25,11 @@ import {
 	type ApiScope,
 	type ComputeAccount,
 	type CreatedApiKey,
-	expiresText,
 	SCOPE_PRESETS,
+	untilText,
 } from "./compute-model.ts";
-import { cellMono, cellSub, computePage, messageOf, None, TableFrame, table, tableFrame, td, th } from "./parts.tsx";
+import { computePage, messageOf, table } from "./parts.tsx";
+import { SettingsPageHeader } from "./settings-nav.tsx";
 
 export interface ComputeApiKeysPageProps {
 	readonly source: ApiKeysSource;
@@ -38,10 +40,11 @@ export interface ComputeApiKeysPageProps {
 	readonly creating?: boolean;
 	/** A key just made, with its secret showing: for a story. */
 	readonly created?: CreatedApiKey;
+	/** A phone: two-line rows instead of the table. */
+	readonly narrow?: boolean;
+	/** Show the revoked keys unfolded, for a story. */
+	readonly revokedOpen?: boolean;
 }
-
-/** Where this console is, which is the control plane the CLI signs in to; a placeholder outside a browser. */
-const consoleOrigin = (): string => globalThis.location?.origin ?? "https://kantel.example.com";
 
 const EXPIRY_CHOICES = [
 	{ value: "30", label: "30 days" },
@@ -62,20 +65,21 @@ const presetOf = (scopes: readonly ApiScope[]) => SCOPE_PRESETS.find((preset) =>
 
 const scopeLabel = (scope: ApiScope): string => API_SCOPES.find((entry) => entry.scope === scope)?.label ?? scope;
 
-/** "Agent", "3 scopes", "1 scope": a key's scopes in a cell. */
-function scopesText(scopes: readonly ApiScope[]): string {
+/** "Agent", "3 scopes", "1 scope": what a key may do, in a cell. */
+function accessText(scopes: readonly ApiScope[]): string {
 	const preset = presetOf(scopes);
 	if (preset !== undefined) return preset.label;
 	return scopes.length === 1 ? "1 scope" : `${scopes.length} scopes`;
 }
 
-/** Live keys newest first, then revoked ones, most recently revoked first. */
+/** Newest first; revoked keys most recently revoked first. */
 function keyOrder(a: ApiKey, b: ApiKey): number {
-	const revoked = Number(a.revokedAt !== undefined) - Number(b.revokedAt !== undefined);
-	if (revoked !== 0) return revoked;
 	if (a.revokedAt !== undefined && b.revokedAt !== undefined) return b.revokedAt - a.revokedAt;
 	return b.createdAt - a.createdAt;
 }
+
+/** A date for a cell's tooltip. */
+const when = (at: number): string => new Date(at).toLocaleString("en-GB");
 
 export function ComputeApiKeysPage({
 	source,
@@ -83,6 +87,8 @@ export function ComputeApiKeysPage({
 	now: fixedNow,
 	creating = false,
 	created: initialCreated,
+	narrow = false,
+	revokedOpen = false,
 }: ComputeApiKeysPageProps) {
 	const { state, reload } = useLoad(() => source.list(account.id), [source, account.id]);
 	// Keys made or revoked here, ahead of the next read.
@@ -100,7 +106,11 @@ export function ComputeApiKeysPage({
 		if (listed === undefined) return undefined;
 		const byId = new Map(listed.map((key) => [key.id, key]));
 		for (const [id, key] of local) byId.set(id, key);
-		return [...byId.values()].sort(keyOrder);
+		const all = [...byId.values()].sort(keyOrder);
+		return {
+			live: all.filter((key) => key.revokedAt === undefined),
+			revoked: all.filter((key) => key.revokedAt !== undefined),
+		};
 	}, [listed, local]);
 
 	const keep = (key: ApiKey) => {
@@ -113,33 +123,11 @@ export function ComputeApiKeysPage({
 			New key
 		</Button>
 	);
+	const empty = keys !== undefined && keys.live.length === 0 && keys.revoked.length === 0;
 
 	return (
 		<div className={computePage}>
-			<PageHeader
-				title="API keys"
-				lede="Keys let the CLI, the SDKs, the MCP server and CI use this account. Each key can do only what its scopes allow."
-				actions={newKey}
-			/>
-			{created === undefined ? null : (
-				<OneTimeSecret
-					title={`Copy the key for ${created.key.name} now`}
-					secret={created.secret}
-					secretLabel="API key"
-					copyLabel="Copy key"
-					commands={[
-						{ label: "Use it in this shell", text: `export KANTEL_API_KEY=${created.secret}` },
-						// `kantel login` reads a key piped in, which keeps it out of the shell's history (packages/cli). It's the
-						// installed `kantel` (install-cli.sh, from the GitHub Release): the CLI isn't on npm, so not `npx kantel`.
-						{
-							label: "Or sign the CLI in with it",
-							text: `printf '%s' '${created.secret}' | kantel login --key-stdin --url ${consoleOrigin()}`,
-						},
-					]}
-					warning="Kantel shows this key only once and keeps just a hash of it. If it's lost, make a new key and revoke this one."
-					onAcknowledge={() => setCreated(undefined)}
-				/>
-			)}
+			<SettingsPageHeader title="API keys" actions={empty ? undefined : newKey} narrow={narrow} />
 			{notice === undefined ? null : (
 				<Notice
 					level={notice.level}
@@ -165,12 +153,19 @@ export function ComputeApiKeysPage({
 				</Notice>
 			) : keys === undefined ? (
 				<KeysSkeleton />
-			) : keys.length === 0 ? (
+			) : empty ? (
 				<EmptyState title="No API keys yet" action={newKey}>
-					Make a key for the CLI, an SDK, the MCP server or CI. It gets only the scopes you choose.
+					For the CLI, an SDK, the MCP server or CI.
 				</EmptyState>
 			) : (
-				<KeyTable keys={keys} now={now} onRevoke={setRevoking} />
+				<KeyList
+					live={keys.live}
+					revoked={keys.revoked}
+					now={now}
+					narrow={narrow}
+					revokedOpen={revokedOpen}
+					onRevoke={setRevoking}
+				/>
 			)}
 			{newOpen ? (
 				<NewKeyDialog
@@ -183,6 +178,7 @@ export function ComputeApiKeysPage({
 					}}
 				/>
 			) : null}
+			{created === undefined ? null : <CreatedDialog created={created} onDone={() => setCreated(undefined)} />}
 			<RevokeDialog
 				apiKey={revoking}
 				onClose={() => setRevoking(undefined)}
@@ -197,126 +193,242 @@ export function ComputeApiKeysPage({
 
 function KeysSkeleton() {
 	return (
-		<div className={tableFrame} aria-busy="true">
-			<div className="flex flex-col gap-3 p-4">
-				{[0, 1, 2].map((row) => (
-					<Skeleton key={row} />
-				))}
-			</div>
+		<div className="flex flex-col gap-3 py-2" aria-busy="true">
+			{[0, 1, 2].map((row) => (
+				<Skeleton key={row} />
+			))}
 		</div>
 	);
 }
 
-function KeyTable({ keys, now, onRevoke }: { keys: readonly ApiKey[]; now: number; onRevoke: (key: ApiKey) => void }) {
+/** The table: no frame round it, a hairline under the head and under every row. */
+const head = "h-control-md border-b border-border px-2 py-0 text-xs font-medium whitespace-nowrap text-muted";
+const cell = "border-b border-border px-2 py-2.5 align-middle whitespace-nowrap";
+
+/** The live keys, then the revoked ones folded under a toggle. */
+function KeyList({
+	live,
+	revoked,
+	now,
+	narrow,
+	revokedOpen,
+	onRevoke,
+}: {
+	live: readonly ApiKey[];
+	revoked: readonly ApiKey[];
+	now: number;
+	narrow: boolean;
+	revokedOpen: boolean;
+	onRevoke: (key: ApiKey) => void;
+}) {
+	const [open, setOpen] = useState(revokedOpen);
+	const foldId = useId();
+	const fold =
+		revoked.length === 0 ? null : (
+			<button
+				type="button"
+				className="kt-focusable inline-flex cursor-pointer items-center gap-1.5 rounded-control border-0 bg-transparent px-2 py-1 text-sm text-muted hover:bg-hover hover:text-fg"
+				aria-expanded={open}
+				aria-controls={foldId}
+				onClick={() => setOpen((was) => !was)}
+			>
+				<ChevronRightIcon size="sm" className={`transition-transform ${open ? "rotate-90" : ""}`} />
+				{revoked.length} revoked
+			</button>
+		);
+	if (narrow) {
+		return (
+			<div className="flex min-w-0 flex-col gap-3">
+				<ul className="kt-key-rows m-0 flex list-none flex-col p-0">
+					{live.map((key) => (
+						<KeyPhoneRow key={key.id} apiKey={key} now={now} onRevoke={onRevoke} />
+					))}
+				</ul>
+				{fold === null ? null : (
+					<div className="flex flex-col gap-1">
+						<div>{fold}</div>
+						{open ? (
+							<ul id={foldId} className="kt-key-rows m-0 flex list-none flex-col p-0">
+								{revoked.map((key) => (
+									<KeyPhoneRow key={key.id} apiKey={key} now={now} onRevoke={onRevoke} />
+								))}
+							</ul>
+						) : null}
+					</div>
+				)}
+			</div>
+		);
+	}
 	return (
-		<TableFrame>
+		<div className="kt-compute-table min-w-0 overflow-x-auto">
 			<table className={table}>
 				<thead>
 					<tr>
-						<th className={th} scope="col">
+						<th className={head} scope="col">
 							Name
 						</th>
-						<th className={th} scope="col">
-							Key
+						<th className={head} scope="col">
+							Access
 						</th>
-						<th className={th} scope="col">
-							Scopes
-						</th>
-						<th className={th} scope="col">
-							Created
-						</th>
-						<th className={th} scope="col">
+						<th className={head} scope="col">
 							Last used
 						</th>
-						<th className={th} scope="col">
+						<th className={head} scope="col">
 							Expires
 						</th>
-						<th className={th} scope="col">
-							Status
+						<th className={head} scope="col">
+							Created by
 						</th>
-						<th className={th} scope="col">
+						<th className={head} scope="col">
 							<span className="kt-sr-only">Actions</span>
 						</th>
 					</tr>
 				</thead>
 				<tbody>
-					{keys.map((key) => (
+					{live.map((key) => (
 						<KeyRow key={key.id} apiKey={key} now={now} onRevoke={onRevoke} />
 					))}
 				</tbody>
+				{fold === null ? null : (
+					<tbody id={foldId}>
+						<tr>
+							<td className="px-0 pt-3 pb-1" colSpan={6}>
+								{fold}
+							</td>
+						</tr>
+						{open ? revoked.map((key) => <KeyRow key={key.id} apiKey={key} now={now} onRevoke={onRevoke} />) : null}
+					</tbody>
+				)}
 			</table>
-		</TableFrame>
+		</div>
+	);
+}
+
+/** A key's state for its Expires cell: "in 69 days", "Never", "Expired" or "Revoked 3d ago". */
+function expiry(apiKey: ApiKey, now: number): { text: string; title?: string; done: boolean } {
+	if (apiKey.revokedAt !== undefined) {
+		return { text: `Revoked ${compactAge(apiKey.revokedAt, now)} ago`, title: when(apiKey.revokedAt), done: true };
+	}
+	if (apiKey.expiresAt === undefined) return { text: "Never", done: false };
+	const left = untilText(apiKey.expiresAt, now);
+	return { text: left ?? "Expired", title: when(apiKey.expiresAt), done: left === undefined };
+}
+
+/** Revoke, in the row's ⋯; a revoked key has none, but keeps the room so rows line up. */
+function KeyMenu({ apiKey, onRevoke }: { apiKey: ApiKey; onRevoke: (key: ApiKey) => void }) {
+	return (
+		<span className="flex h-control-xs w-control-xs flex-none items-center justify-end pointer-coarse:h-control-lg pointer-coarse:w-control-lg">
+			{apiKey.revokedAt === undefined ? (
+				<Menu
+					label={`Actions for ${apiKey.name}`}
+					icon={<EllipsisIcon />}
+					align="end"
+					entries={[
+						{
+							kind: "item",
+							id: "revoke",
+							label: "Revoke",
+							icon: <TrashIcon />,
+							danger: true,
+							onSelect: () => onRevoke(apiKey),
+						},
+					]}
+				/>
+			) : null}
+		</span>
 	);
 }
 
 function KeyRow({ apiKey, now, onRevoke }: { apiKey: ApiKey; now: number; onRevoke: (key: ApiKey) => void }) {
-	const revoked = apiKey.revokedAt !== undefined;
-	const expired = !revoked && apiKey.expiresAt !== undefined && apiKey.expiresAt <= now;
-	const muted = revoked || expired;
+	const ends = expiry(apiKey, now);
+	const muted = apiKey.revokedAt !== undefined || ends.done;
 	return (
-		<tr className={muted ? "text-muted" : undefined} data-key={apiKey.id}>
-			<td className={td}>
-				<span className={`block max-w-(--kt-card-width) truncate font-medium ${muted ? "text-muted" : "text-fg"}`}>
+		<tr className={`kt-key-row ${muted ? "text-muted" : "text-fg"}`} data-key={apiKey.id}>
+			<td className={cell}>
+				<span className={`block max-w-(--kt-popover-width) truncate font-medium ${muted ? "text-muted" : "text-fg"}`}>
 					{apiKey.name}
 				</span>
+				<span className="block font-mono text-code text-faint">{apiKey.prefix}…</span>
 			</td>
-			<td className={td}>
-				<span className={cellMono}>{apiKey.prefix}</span>
+			<td className={cell}>
+				<span title={apiKey.scopes.map(scopeLabel).join(", ")}>{accessText(apiKey.scopes)}</span>
 			</td>
-			<td className={td}>
-				<span className={muted ? "text-muted" : "text-fg"} title={apiKey.scopes.map(scopeLabel).join(", ")}>
-					{scopesText(apiKey.scopes)}
-				</span>
-			</td>
-			<td className={td}>
-				<span className="text-muted" title={new Date(apiKey.createdAt).toLocaleString("en-GB")}>
-					{compactAge(apiKey.createdAt, now)}
-				</span>
-				<span className={cellSub}>by {apiKey.createdBy}</span>
-			</td>
-			<td className={td}>
+			<td className={cell}>
 				{apiKey.lastUsedAt === undefined ? (
 					<span className="text-faint">Never</span>
 				) : (
-					<span className="text-muted" title={new Date(apiKey.lastUsedAt).toLocaleString("en-GB")}>
-						{compactAge(apiKey.lastUsedAt, now)}
+					<span className="text-muted" title={when(apiKey.lastUsedAt)}>
+						{compactAge(apiKey.lastUsedAt, now)} ago
 					</span>
 				)}
 			</td>
-			<td className={td}>
-				{revoked ? (
-					<None className="text-faint" />
-				) : apiKey.expiresAt === undefined ? (
-					<span className="text-muted">Never</span>
-				) : (
-					<span className="text-muted" title={new Date(apiKey.expiresAt).toLocaleString("en-GB")}>
-						{expiresText(apiKey.expiresAt, now)}
-					</span>
-				)}
+			<td className={cell}>
+				<span className="text-muted" title={ends.title}>
+					{ends.text}
+				</span>
 			</td>
-			<td className={td}>
-				{revoked ? (
-					<Badge>Revoked</Badge>
-				) : expired ? (
-					<Badge>Expired</Badge>
-				) : (
-					<StatusLabel status="done">Active</StatusLabel>
-				)}
+			<td className={cell}>
+				<span className="text-muted" title={`Created ${when(apiKey.createdAt)}`}>
+					{apiKey.createdBy}
+				</span>
 			</td>
-			<td className={`${td} w-0 text-right`}>
-				{revoked ? null : (
-					<Button size="xs" variant="ghost" onClick={() => onRevoke(apiKey)} aria-label={`Revoke ${apiKey.name}`}>
-						Revoke
-					</Button>
-				)}
+			<td className={`${cell} w-0 text-right`}>
+				<KeyMenu apiKey={apiKey} onRevoke={onRevoke} />
 			</td>
 		</tr>
 	);
 }
 
+/** A phone's row: the name, then its access, when it was last used and when it expires; ⋯ at the end. */
+function KeyPhoneRow({ apiKey, now, onRevoke }: { apiKey: ApiKey; now: number; onRevoke: (key: ApiKey) => void }) {
+	const ends = expiry(apiKey, now);
+	const muted = apiKey.revokedAt !== undefined || ends.done;
+	return (
+		<li className="kt-key-row flex min-w-0 items-center gap-2 border-b border-border py-3" data-key={apiKey.id}>
+			<div className="flex min-w-0 flex-1 flex-col gap-1">
+				<span className={`truncate text-md font-medium ${muted ? "text-muted" : "text-fg"}`}>{apiKey.name}</span>
+				<span className="flex min-w-0 flex-wrap gap-x-3 text-sm text-muted">
+					<span>{accessText(apiKey.scopes)}</span>
+					{apiKey.lastUsedAt === undefined ? (
+						<span>Never used</span>
+					) : (
+						<span>Used {compactAge(apiKey.lastUsedAt, now)} ago</span>
+					)}
+					{apiKey.revokedAt !== undefined || apiKey.expiresAt !== undefined ? (
+						<span>{ends.done || apiKey.revokedAt !== undefined ? ends.text : `Expires ${ends.text}`}</span>
+					) : null}
+				</span>
+			</div>
+			<KeyMenu apiKey={apiKey} onRevoke={onRevoke} />
+		</li>
+	);
+}
+
+/** The key just made, once: its secret and the line that uses it. Only Done closes it, so a stray click can't lose it. */
+function CreatedDialog({ created, onDone }: { created: CreatedApiKey; onDone: () => void }) {
+	return (
+		<Dialog
+			open
+			title="Copy your key"
+			onClose={() => {}}
+			actions={
+				<Button variant="primary" onClick={onDone}>
+					Done
+				</Button>
+			}
+		>
+			<div className="flex w-full min-w-0 flex-col gap-3 pt-1">
+				<CommandBlock command={created.secret} copyLabel="Copy" />
+				<p className="m-0 text-sm text-muted">You won't see it again.</p>
+				<CommandBlock label="Use it" command={`export KANTEL_API_KEY=${created.secret}`} />
+			</div>
+		</Dialog>
+	);
+}
+
 /**
- * New key: a name, a preset or a custom set of scopes, and when it expires. Choosing a preset ticks its scopes;
- * changing a tick makes the choice Custom.
+ * New key: a name, what it may do (a preset, or Custom with a tick per scope) and when it expires. A preset lists its
+ * scopes in a line; Custom keeps them and shows the ticks.
  */
 function NewKeyDialog({
 	onClose,
@@ -342,7 +454,6 @@ function NewKeyDialog({
 		if (preset !== undefined) setScopes(preset.scopes);
 	};
 	const tick = (scope: ApiScope, on: boolean) => {
-		setChoice(CUSTOM);
 		// Kept in the order API_SCOPES lists them.
 		setScopes((current) =>
 			API_SCOPES.map((entry) => entry.scope).filter((each) => (each === scope ? on : current.includes(each))),
@@ -368,14 +479,14 @@ function NewKeyDialog({
 	return (
 		<Dialog
 			open
-			title="New API key"
+			title="New key"
 			onClose={onClose}
 			onSubmit={submit}
 			actions={
 				<>
 					<Button onClick={onClose}>Cancel</Button>
 					<Button type="submit" variant="primary" busy={busy} disabled={!valid}>
-						Create key
+						Create
 					</Button>
 				</>
 			}
@@ -383,15 +494,14 @@ function NewKeyDialog({
 			<div className="flex w-(--kt-card-width) max-w-full flex-col gap-4 pt-2">
 				<TextField
 					label="Name"
-					hint="Say where it's used, so you know what stops if you revoke it."
 					value={name}
 					onChange={(event) => setName(event.currentTarget.value)}
 					placeholder="GitHub Actions"
 					required
 				/>
-				<FormField id={scopesId} label="Scopes">
+				<FormField id={scopesId} label="Access">
 					<SegmentedControl
-						label="Scope preset"
+						label="Access"
 						options={[
 							...SCOPE_PRESETS.map((preset) => ({ value: preset.id, label: preset.label })),
 							{ value: CUSTOM, label: "Custom" },
@@ -399,17 +509,21 @@ function NewKeyDialog({
 						value={choice}
 						onChange={choose}
 					/>
-					<div className="flex flex-col gap-2 pt-2">
-						{API_SCOPES.map((entry) => (
-							<CheckboxField
-								key={entry.scope}
-								label={entry.label}
-								hint={entry.help}
-								checked={scopes.includes(entry.scope)}
-								onChange={(event) => tick(entry.scope, event.currentTarget.checked)}
-							/>
-						))}
-					</div>
+					{choice === CUSTOM ? (
+						<div className="flex flex-col gap-2 pt-2">
+							{API_SCOPES.map((entry) => (
+								<CheckboxField
+									key={entry.scope}
+									label={entry.label}
+									hint={entry.help}
+									checked={scopes.includes(entry.scope)}
+									onChange={(event) => tick(entry.scope, event.currentTarget.checked)}
+								/>
+							))}
+						</div>
+					) : (
+						<p className="m-0 pt-1 text-xs text-muted">{scopes.map(scopeLabel).join(", ")}.</p>
+					)}
 				</FormField>
 				<SelectField
 					label="Expires"
@@ -464,7 +578,7 @@ function RevokeDialog({
 							);
 						}}
 					>
-						Revoke key
+						Revoke
 					</Button>
 				</>
 			}

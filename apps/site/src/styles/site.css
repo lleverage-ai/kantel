@@ -64,10 +64,11 @@
 /* tokens.css gives :root the console's dark scheme; the page is paper. */
 :root {
 	color-scheme: light;
-	/* The hero fills the first screen under the 4rem header, from the small viewport height so a phone's address bar
-	   coming and going never resizes it, and within sane bounds on very short or very tall screens. A custom property
-	   rather than a utility because Tailwind has no step for a calc() on the viewport. */
-	--hero-height: clamp(36rem, calc(100svh - 4rem), 64rem);
+	/* The hero fills most of the first screen under the 4rem header, leaving room for the three steps' heading to show
+	   below it. From the small viewport height so a phone's address bar coming and going never resizes it, and within
+	   sane bounds on very short or very tall screens. A custom property rather than a utility because Tailwind has no
+	   step for a calc() on the viewport. */
+	--hero-height: clamp(34rem, calc(100svh - 12rem), 52rem);
 }
 
 @layer base {

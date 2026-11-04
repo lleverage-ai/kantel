@@ -5,6 +5,15 @@
   Content-Type: text/plain; charset=utf-8
   Cache-Control: public, max-age=300
 
+# The CLI's installer, packages/cli/install-cli.sh, copied in as the site builds (scripts/sync-installers.mjs).
+/cli.sh
+  Content-Type: text/plain; charset=utf-8
+  Cache-Control: public, max-age=300
+
+/install-cli.sh
+  Content-Type: text/plain; charset=utf-8
+  Cache-Control: public, max-age=300
+
 # The docs for language models (scripts/llms-txt.mjs), as UTF-8 text.
 /docs/llms.txt
   Content-Type: text/plain; charset=utf-8

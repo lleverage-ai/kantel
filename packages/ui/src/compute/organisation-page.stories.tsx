@@ -5,6 +5,7 @@ import type { ComputeAccount, OrganisationInvite } from "./compute-model.ts";
 import {
 	type ComputeFixtureOptions,
 	createComputeFixtures,
+	EVALS,
 	FIXTURE_NOW,
 	LLEVERAGE,
 	PERSONAL,
@@ -14,16 +15,22 @@ import { OrganisationPage } from "./organisation-page.tsx";
 
 export default { title: "Compute/Organisation page" } satisfies StoryDefault;
 
+const ACCOUNTS: readonly ComputeAccount[] = [PERSONAL, LLEVERAGE, EVALS];
+
 // Each story keeps its own source, so inviting, revoking and removing change its organisation; leaving it goes back to
 // the personal account, and creating or joining one from there opens it.
 function Scenario({
 	account = LLEVERAGE,
 	options,
 	invited,
+	narrow = false,
+	accounts = ACCOUNTS,
 }: {
 	account?: ComputeAccount;
 	options?: ComputeFixtureOptions;
 	invited?: OrganisationInvite;
+	narrow?: boolean;
+	accounts?: readonly ComputeAccount[];
 }) {
 	const [source] = useState(() => createComputeFixtures(options));
 	const [current, setCurrent] = useState(account);
@@ -36,6 +43,9 @@ function Scenario({
 				account={current}
 				viewerId={VIEWER.id}
 				now={FIXTURE_NOW}
+				narrow={narrow}
+				accounts={accounts}
+				onSwitch={setCurrent}
 				onCreate={() => setDialog("create")}
 				onJoin={() => setDialog("join")}
 				onLeft={() => setCurrent(PERSONAL)}
@@ -55,7 +65,8 @@ function Scenario({
 	);
 }
 
-/** Lleverage, seen by Tom, an admin: he can invite, revoke and remove anyone but himself and the owner. */
+/** Lleverage's General, seen by Tom, an admin: he can rename it, invite, change roles and remove anyone but himself and
+ * the owner. */
 export const Organisation: Story = () => <Scenario />;
 
 /** An invite just made: its join code shows once, since Kantel sends no email. */
@@ -71,8 +82,15 @@ export const OrganisationInvited: Story = () => (
 	/>
 );
 
-/** A personal account: what organisations are for, and making or joining one. */
+/** A personal account's Organisations: the ones you belong to, with Switch, and Create or Join with a code. */
 export const OrganisationPersonal: Story = () => <Scenario account={PERSONAL} />;
+
+/** A personal account in no organisation yet. */
+export const OrganisationPersonalEmpty: Story = () => <Scenario account={PERSONAL} accounts={[PERSONAL]} />;
+
+/** Organisations on a phone: each row switches. */
+export const OrganisationPersonalMobile: Story = () => <Scenario account={PERSONAL} narrow />;
+OrganisationPersonalMobile.meta = { width: 390 };
 
 /** The members while they load. */
 export const OrganisationLoading: Story = () => <Scenario options={{ hang: true }} />;
@@ -80,6 +98,6 @@ export const OrganisationLoading: Story = () => <Scenario options={{ hang: true 
 /** The members when Kantel can't be reached. */
 export const OrganisationFailed: Story = () => <Scenario options={{ fail: true }} />;
 
-/** On a phone: the tables scroll sideways. */
-export const OrganisationMobile: Story = () => <Scenario />;
-OrganisationMobile.meta = { width: 420 };
+/** General on a phone: two-line rows. */
+export const OrganisationMobile: Story = () => <Scenario narrow />;
+OrganisationMobile.meta = { width: 390 };

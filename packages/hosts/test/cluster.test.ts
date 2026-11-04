@@ -4,7 +4,7 @@
 // routed to; and replicas trust only each other's signatures, once.
 import { isKantelError } from "@kantel/contracts";
 import { pgliteDatabase } from "@kantel/sql/testing";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	type ClusterStore,
 	createHostCluster,
@@ -13,6 +13,7 @@ import {
 	createReplicaKey,
 	createSqlClusterStore,
 	type HostCluster,
+	MAX_USAGE_QUEUE,
 	PEER_SKEW_MS,
 	type PeerTransport,
 	signPeerRequest,
@@ -260,6 +261,66 @@ describe("gateway replicas", () => {
 		expect(await store.getOwner("host_2")).toMatchObject({ replicaId: "rep_a" });
 		await store.removeReplica("rep_a");
 		expect(await store.owners()).toEqual([]);
+	});
+});
+
+describe("usage ticks passed on to other replicas", () => {
+	it("go to each peer one at a time, in the order they came, the oldest dropped past MAX_USAGE_QUEUE", async () => {
+		const store = createMemoryClusterStore();
+		const sent: string[] = [];
+		let inFlight = 0;
+		let most = 0;
+		let release: () => void = () => undefined;
+		const first = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const transport: PeerTransport = {
+			call: async () => undefined,
+			openPort: async () => {
+				throw new Error("no");
+			},
+			rewelcome: async () => undefined,
+			disconnect: async () => undefined,
+			usage: async (to, hostId, usage) => {
+				inFlight += 1;
+				most = Math.max(most, inFlight);
+				if (sent.length === 0) await first;
+				sent.push(`${to.id} ${hostId} ${(usage as { at: number }).at}`);
+				inFlight -= 1;
+				// One that fails doesn't hold back the rest.
+				if ((usage as { at: number }).at === 10) throw new Error("peer gone");
+			},
+		};
+		const node = (id: string) =>
+			createReplicaKey().then((key) =>
+				createHostCluster({
+					store,
+					transport,
+					replicaId: id,
+					url: `http://${id}.internal:8080`,
+					key,
+					staleMs: 10_000,
+					heartbeatMs: 60_000,
+					log: () => undefined,
+				}),
+			);
+		const b = await node("rep_b");
+		await b.start();
+		const a = await node("rep_a");
+		await a.start();
+		opened.push({ close: () => void a.stop().catch(() => undefined) });
+		opened.push({ close: () => void b.stop().catch(() => undefined) });
+		for (let at = 1; at <= MAX_USAGE_QUEUE + 3; at += 1) a.shareUsage(at % 2 === 0 ? "host_x" : "host_y", { at });
+		release();
+		await vi.waitFor(() => expect(sent).toHaveLength(MAX_USAGE_QUEUE + 1));
+		expect(most).toBe(1);
+		const order = sent.map((each) => Number(each.split(" ")[2]));
+		// The first was on its way; of the rest, the newest MAX_USAGE_QUEUE.
+		expect(order).toEqual([1, ...Array.from({ length: MAX_USAGE_QUEUE }, (_, index) => index + 4)]);
+		expect(sent.every((each) => each.startsWith("rep_b "))).toBe(true);
+		// Once drained, the next goes at once.
+		a.shareUsage("host_x", { at: 1000 });
+		await vi.waitFor(() => expect(sent.at(-1)).toBe("rep_b host_x 1000"));
 	});
 });
 

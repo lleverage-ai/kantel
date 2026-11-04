@@ -1,7 +1,7 @@
 // A sandbox's page (compute console): everything about one sandbox and every way into it. The header has its name and
 // state, Browser, Desktop and Stop, and ⋯ for Fork, Save snapshot, Auto-stop and Delete; under it its address, its
 // environment and when it stops. Five tabs follow. Overview: live previews of its desktop and browser (which open in
-// the console, full size), the SSH command in full, its ports, its CPU and memory, and its details. Logs: commands
+// the console, full size), SSH (sandbox-ssh.tsx), its ports, its CPU and memory, and its details. Logs: commands
 // and what happened to it, in one timeline. Egress: its egress log. Snapshots: its own history. Files: what's in it
 // now, or in its latest snapshot while it's stopped. On a phone the previews and Stop go (Stop is in ⋯) and the
 // sections stack. Every call goes through the sources the host binds; stories bind them to fixtures.
@@ -11,7 +11,7 @@ import { Breadcrumbs } from "../primitives/breadcrumbs.tsx";
 import { Button, buttonClass, buttonLabelClass } from "../primitives/button.tsx";
 import { CopyButton } from "../primitives/controls.tsx";
 import { compactAge } from "../primitives/format.ts";
-import { ClockIcon, EyeIcon, GlobeIcon, StopIcon } from "../primitives/icons.tsx";
+import { CheckIcon, ClockIcon, EyeIcon, GlobeIcon, MinusCircleIcon, StopIcon } from "../primitives/icons.tsx";
 import { type Loaded, useLoad, useReloadOn } from "../primitives/load.ts";
 import { DesktopIcon, EllipsisIcon, EnvironmentIcon, PlayIcon, ReconnectIcon } from "../primitives/lucide.tsx";
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
@@ -23,12 +23,15 @@ import {
 	costText,
 	type EgressSource,
 	type HostingMode,
+	imageLacks,
 	SANDBOX_KIND_LABELS,
 	SANDBOX_STATE_LABELS,
 	SANDBOX_STATE_STATUS,
 	type Sandbox,
 	type SandboxAccess,
 	type SandboxesSource,
+	type SandboxFeature,
+	type SandboxImage,
 	type SnapshotsSource,
 	sandboxActions,
 	sandboxMoving,
@@ -43,8 +46,9 @@ import { type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
 import { SandboxLogs } from "./sandbox-logs.tsx";
 import { SandboxPorts } from "./sandbox-ports.tsx";
 import { embedUrl, popOut, SandboxViewer, ScreenPreview, type ScreenView } from "./sandbox-screen.tsx";
+import { SandboxSsh } from "./sandbox-ssh.tsx";
 import { showsCpu } from "./sandboxes-page.tsx";
-import { type FilesAt, SnapshotFiles } from "./snapshot-files.tsx";
+import { type FilesAt, filesRoot, SnapshotFiles } from "./snapshot-files.tsx";
 import { agoText, SandboxHistory } from "./snapshots-page.tsx";
 
 /** The page's tabs. */
@@ -196,9 +200,9 @@ export function SandboxPage({
 }: SandboxPageProps) {
 	const { state, reload } = useLoad(() => source.get(sandboxId), [source, sandboxId]);
 	const [own, setOwn] = useState<SandboxView>(initialView);
-	const [ownFiles, setOwnFiles] = useState<FilesAt>(filesAt ?? { path: "" });
+	const [ownFiles, setOwnFiles] = useState<FilesAt>(filesAt ?? {});
 	const routed = navigate !== undefined && filesHref !== undefined;
-	const files = routed ? (filesAt ?? { path: "" }) : ownFiles;
+	const files = routed ? (filesAt ?? {}) : ownFiles;
 	const goFiles = (at: FilesAt) => {
 		if (routed) navigate(filesHref(at, sealed));
 		else setOwnFiles(at);
@@ -240,7 +244,14 @@ export function SandboxPage({
 	];
 	// Browser and Desktop each in a tab of their own, where the page can't frame them (`kantel console`).
 	const inTab = source.screens === "tab";
-	const view = sandboxViewShown(asked, { inTab, windows, known: sandbox !== undefined, tabs: tabsShown });
+	// A screen its image lacks (no desktop in it, say) is never opened: its address shows Overview, which says so.
+	const lacked =
+		sandbox !== undefined && isScreen(asked)
+			? imageLacks(sandbox, asked === "browser" ? "browser" : "desktop") !== undefined
+			: false;
+	const view = lacked
+		? "overview"
+		: sandboxViewShown(asked, { inTab, windows, known: sandbox !== undefined, tabs: tabsShown });
 	// A screen, or Overview's previews, mount new connections: old access is read again first.
 	const opensScreens = (next: SandboxView) => isScreen(next) || next === "overview";
 	const go = (next: SandboxView) => {
@@ -379,6 +390,8 @@ export function SandboxPage({
 	const held = access?.value;
 	const readyAccess = held !== undefined && held !== "loading" && !(held instanceof Error) ? held : undefined;
 	const screenLink = (to: ScreenView, label: string, icon: ReactNode) => {
+		// One its image lacks isn't offered at all: Overview's Image section says what's missing.
+		if (imageLacks(sandbox, to === "browser" ? "browser" : "desktop") !== undefined) return null;
 		// One that can't open here is shown disabled with its reason, never opened onto an error page.
 		const unavailable = readyAccess === undefined ? undefined : screenUnavailable(readyAccess, to);
 		const link =
@@ -539,7 +552,6 @@ export function SandboxPage({
 					narrow={narrow}
 					windows={windows}
 					access={access?.value}
-					freshAccess={freshAccess}
 					onAccessRetry={readAccess}
 					onOpen={go}
 					screenHref={href}
@@ -593,7 +605,6 @@ function Overview({
 	narrow,
 	windows,
 	access,
-	freshAccess,
 	onAccessRetry,
 	onOpen,
 	screenHref,
@@ -607,8 +618,6 @@ function Overview({
 	narrow: boolean;
 	windows: boolean;
 	access: SandboxAccess | "loading" | Error | undefined;
-	/** Access young enough for a new connection: the SSH command copied. */
-	freshAccess: () => Promise<SandboxAccess>;
 	onAccessRetry: () => void;
 	onOpen: (view: ScreenView) => void;
 	screenHref: (view: ScreenView) => string;
@@ -623,8 +632,13 @@ function Overview({
 	const { ports, exposePort, hidePort } = source;
 	const portsShown = ports !== undefined && exposePort !== undefined && hidePort !== undefined;
 
+	const lacks = { desktop: imageLacks(sandbox, "desktop"), browser: imageLacks(sandbox, "browser") };
+	const tiles = (["desktop", "browser"] as const).filter(
+		(kind) => lacks[kind] === undefined || lacks.desktop === undefined || lacks.browser === undefined,
+	);
 	const tile = (kind: "desktop" | "browser") => {
-		const unavailable = ready === undefined ? undefined : screenUnavailable(ready, kind);
+		// What the image lacks first: no access makes a desktop the image doesn't have.
+		const unavailable = lacks[kind] ?? (ready === undefined ? undefined : screenUnavailable(ready, kind));
 		if (unavailable !== undefined) {
 			// Nothing to open: the drawing, dimmed, and why under it.
 			return (
@@ -686,42 +700,11 @@ function Overview({
 	};
 
 	const ssh = !windows ? null : (
-		<section className="flex min-w-0 flex-col gap-2" aria-labelledby="sandbox-ssh">
-			<SectionHeading id="sandbox-ssh" title="SSH" />
-			{access instanceof Error ? (
-				<Notice
-					level="error"
-					action={
-						<Button size="sm" onClick={onAccessRetry}>
-							Try again
-						</Button>
-					}
-				>
-					{messageOf(access, "Kantel couldn't reach the sandbox.")}
-				</Notice>
-			) : (
-				<div className="flex min-h-control-lg min-w-0 items-center gap-2 rounded-panel border border-border bg-sunken py-1 pr-1 pl-3 font-mono text-code">
-					<span className="flex-none text-faint" aria-hidden="true">
-						$
-					</span>
-					{ready === undefined ? (
-						<span className="flex-1">
-							<Skeleton />
-						</span>
-					) : (
-						<code className="kt-selectable min-w-0 flex-1 truncate text-fg" title={ready.ssh}>
-							{ready.ssh}
-						</code>
-					)}
-					{ready === undefined ? null : (
-						<CopyButton text={async () => (await freshAccess()).ssh} size="sm" variant="ghost" />
-					)}
-				</div>
-			)}
-		</section>
+		<SandboxSsh source={source} sandboxId={sandbox.id} access={access} onAccessRetry={onAccessRetry} now={now} />
 	);
 
 	const usage = showsCpu(sandbox) ? <Usage source={source} sandbox={sandbox} refreshKey={usageKey} /> : null;
+	const image = sandbox.image === undefined ? null : <ImageSection image={sandbox.image} />;
 
 	const created = compactAge(sandbox.createdAt, now);
 	const details = (
@@ -777,7 +760,9 @@ function Overview({
 		sandbox.kind === "isolate"
 			? "An isolate has no desktop, browser or SSH."
 			: sandboxActions(sandbox.state).resume
-				? "Resume it to use its desktop, browser and SSH."
+				? tiles.length === 0
+					? "Resume it to use SSH."
+					: "Resume it to use its desktop, browser and SSH."
 				: undefined;
 
 	if (narrow) {
@@ -787,6 +772,7 @@ function Overview({
 				{ssh}
 				{portsSection}
 				{usage}
+				{image}
 				{details}
 			</div>
 		);
@@ -794,21 +780,101 @@ function Overview({
 	return (
 		<div className="grid min-w-0 items-start gap-10 xl:grid-cols-[minmax(0,1fr)_var(--kt-popover-width)]">
 			<div className="flex min-w-0 flex-col gap-8">
-				{windows ? (
-					<div className="grid grid-cols-2 gap-4">
-						{tile("desktop")}
-						{tile("browser")}
-					</div>
-				) : null}
+				{windows && tiles.length > 0 ? <div className="grid grid-cols-2 gap-4">{tiles.map(tile)}</div> : null}
+				{windows && tiles.length === 0 ? <NoScreens /> : null}
 				{ssh}
 				{portsSection}
 				{hint === undefined ? null : <p className="m-0 text-sm text-muted">{hint}</p>}
 			</div>
 			<aside className="flex min-w-0 flex-col gap-8">
 				{usage}
+				{image}
 				{details}
 			</aside>
 		</div>
+	);
+}
+
+/** Where the previews would be, for an image with neither a desktop nor a browser: said once, plainly. */
+function NoScreens() {
+	return (
+		<div className="flex min-w-0 items-start gap-3 rounded-panel border border-border border-dashed px-4 py-3 text-sm">
+			<span className="mt-0.5 flex-none text-faint" aria-hidden="true">
+				<DesktopIcon size="sm" />
+			</span>
+			<span className="flex min-w-0 flex-col gap-0.5">
+				<span className="text-fg">No desktop or browser in this image</span>
+				<span className="text-muted">Commands, files, ports and SSH work as in any sandbox.</span>
+			</span>
+		</div>
+	);
+}
+
+/** One feature's row: a check and what was found, or a dash and why it's missing. */
+function FeatureRow({ label, feature }: { label: string; feature: SandboxFeature }) {
+	return (
+		<li className="flex min-w-0 items-start gap-2">
+			<span className={`mt-0.5 flex-none ${feature.available ? "text-success" : "text-faint"}`} aria-hidden="true">
+				{feature.available ? <CheckIcon size="sm" /> : <MinusCircleIcon size="sm" />}
+			</span>
+			<span className="flex min-w-0 flex-col">
+				<span className={feature.available ? "text-fg" : "text-muted"}>
+					{label}
+					<span className="kt-sr-only">{feature.available ? ": yes" : ": no"}</span>
+				</span>
+				{feature.available ? (
+					feature.detail === undefined ? null : (
+						<span className="truncate text-muted text-xs" title={feature.detail}>
+							{feature.detail}
+						</span>
+					)
+				) : (
+					<span className="text-muted text-xs">{feature.reason}</span>
+				)}
+			</span>
+		</li>
+	);
+}
+
+const LIBC_LABELS: Readonly<Record<SandboxImage["libc"], string>> = {
+	glibc: "glibc",
+	musl: "musl",
+	none: "None (static)",
+};
+
+/**
+ * What its image has, as its guest agent found it: the OS, and the desktop, browser, Docker and nested virtualisation,
+ * each there or plainly missing, so nothing the image lacks is offered as a button that fails.
+ */
+export function ImageSection({ image }: { image: SandboxImage }) {
+	const kvm: SandboxFeature = image.kvm
+		? { available: true, detail: "/dev/kvm" }
+		: { available: false, reason: "Not on this host" };
+	return (
+		<section className="flex min-w-0 flex-col gap-3" aria-labelledby="sandbox-image">
+			<SectionHeading id="sandbox-image" title="Image" />
+			<dl className="m-0 grid grid-cols-[auto_minmax(0,1fr)] gap-x-6 gap-y-2.5 text-sm">
+				<dt className={dt}>OS</dt>
+				<dd className={`${dd} truncate`} title={image.os}>
+					{image.os}
+				</dd>
+				<dt className={dt}>Architecture</dt>
+				<dd className={`${dd} font-mono text-code`}>{image.arch}</dd>
+				<dt className={dt}>C library</dt>
+				<dd className={dd}>{LIBC_LABELS[image.libc]}</dd>
+				<dt className={dt}>Agent</dt>
+				<dd className={dd}>
+					{image.injected ? "Added by Kantel" : "In the image"}
+					<span className="text-muted">, {image.agentVersion}</span>
+				</dd>
+			</dl>
+			<ul className="m-0 flex list-none flex-col gap-2.5 p-0 text-sm" aria-label="What the image has">
+				<FeatureRow label="Desktop" feature={image.desktop} />
+				<FeatureRow label="Browser" feature={image.browser} />
+				<FeatureRow label="Docker" feature={image.docker} />
+				<FeatureRow label="Nested virtualisation" feature={kvm} />
+			</ul>
+		</section>
 	);
 }
 
@@ -918,6 +984,7 @@ function SnapshotsTab({
 					key={browsing.snapshotId}
 					source={source}
 					snapshotId={browsing.snapshotId}
+					root={filesRoot(sandbox.kind)}
 					at={browsing.at}
 					now={now}
 					backLabel="Back to snapshots"
@@ -933,7 +1000,7 @@ function SnapshotsTab({
 				source={source}
 				sandbox={sandbox}
 				now={now}
-				onBrowse={(snap) => setBrowsing({ snapshotId: snap.id, at: { path: "" } })}
+				onBrowse={(snap) => setBrowsing({ snapshotId: snap.id, at: {} })}
 				onNotice={onNotice}
 			/>
 		</div>
@@ -982,7 +1049,8 @@ function FilesTab({
 }) {
 	const shown = filesShown(sandbox, source, endToEnd);
 	const files = source.files;
-	const browse = { at, now, onNavigate, ...(href === undefined ? {} : { href }) };
+	// An isolate's files are its /workspace only; a microVM's open at /home/user and go up to /.
+	const browse = { at, now, onNavigate, root: filesRoot(sandbox.kind), ...(href === undefined ? {} : { href }) };
 	if (shown === "checking") return <Skeleton width="40%" />;
 	if (shown === "unchecked" && endToEnd.status === "error") {
 		return (

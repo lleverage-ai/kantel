@@ -29,6 +29,8 @@ import type {
 	Sandbox,
 	SandboxCommand,
 	SandboxEgress,
+	SandboxImage,
+	SandboxKind,
 	SandboxPort,
 	SandboxSnapshot,
 	SavedSnapshot,
@@ -37,7 +39,14 @@ import type {
 	Webhook,
 	WebhookDelivery,
 } from "./compute-model.ts";
-import { sameProxySettings, sizeSpec } from "./compute-model.ts";
+import {
+	cliLoginCommand,
+	cliSshCommand,
+	FilesRefusedError,
+	sameProxySettings,
+	sizeSpec,
+	sshWithoutCliCommand,
+} from "./compute-model.ts";
 import { stubUsage } from "./usage-stub.ts";
 
 /** The code the fixtures' waiting command line showed. */
@@ -111,6 +120,54 @@ const sandbox = (
 	};
 };
 
+/** Kantel's own image: a desktop, Chromium and Docker, with its agent built in. */
+export const KANTEL_IMAGE: SandboxImage = {
+	os: "Ubuntu 26.04 LTS",
+	osId: "ubuntu",
+	arch: "x86_64",
+	libc: "glibc",
+	shell: "/bin/bash",
+	init: "systemd",
+	injected: false,
+	agentVersion: "0.42.0",
+	desktop: { available: true, detail: "Xtigervnc, xfce4-session, Selkies" },
+	browser: { available: true, detail: "Chromium" },
+	docker: { available: true, detail: "dockerd 29.1" },
+	kvm: true,
+};
+
+/** A plain Alpine image Kantel put its agent into: commands, files, ports and SSH, and nothing more. */
+export const ALPINE_IMAGE: SandboxImage = {
+	os: "Alpine Linux v3.22",
+	osId: "alpine",
+	arch: "x86_64",
+	libc: "musl",
+	shell: "/bin/sh",
+	init: "kantel",
+	injected: true,
+	agentVersion: "0.42.0",
+	desktop: { available: false, reason: "No desktop in this image" },
+	browser: { available: false, reason: "No browser in this image" },
+	docker: { available: false, reason: "No Docker in this image" },
+	kvm: true,
+};
+
+/** Debian with Docker added and no desktop: Docker is there, the screens aren't. */
+export const DEBIAN_DOCKER_IMAGE: SandboxImage = {
+	os: "Debian GNU/Linux 13 (trixie)",
+	osId: "debian",
+	arch: "x86_64",
+	libc: "glibc",
+	shell: "/bin/bash",
+	init: "kantel",
+	injected: true,
+	agentVersion: "0.42.0",
+	desktop: { available: false, reason: "No desktop in this image" },
+	browser: { available: false, reason: "No browser in this image" },
+	docker: { available: true, detail: "dockerd 26.1.5" },
+	kvm: true,
+};
+
 export const API_SERVER = sandbox({
 	id: "sbx_7f3k2m9qa1",
 	name: "api-server",
@@ -128,6 +185,7 @@ export const API_SERVER = sandbox({
 	shared: true,
 	createdBy: "Alex Kemp",
 	environment: { id: "env_backend", name: "backend-dev" },
+	image: KANTEL_IMAGE,
 });
 
 export const DEV_STACK = sandbox({
@@ -145,6 +203,47 @@ export const DEV_STACK = sandbox({
 	hostId: "hst_hetzner_1",
 	shared: true,
 	environment: { id: "env_backend", name: "backend-dev" },
+	image: KANTEL_IMAGE,
+});
+
+/** Any Linux image runs: plain Alpine, with Kantel's agent put in at boot. */
+export const ALPINE_WORKER = sandbox({
+	id: "sbx_7c4x1n8ka2",
+	name: "alpine-worker",
+	slug: "lleverage",
+	accountId: LLEVERAGE.id,
+	kind: "microvm",
+	size: "small",
+	state: "running",
+	createdAt: FIXTURE_NOW - 40 * MINUTE,
+	stopsAt: FIXTURE_NOW + 20 * MINUTE,
+	snapshot: { id: "snp_alpine_1", takenAt: FIXTURE_NOW - 3 * MINUTE },
+	costCents: 1,
+	usage: usageSeries(3, 0.3),
+	hostId: "hst_hetzner_1",
+	shared: true,
+	createdBy: "Dean Smit",
+	image: ALPINE_IMAGE,
+});
+
+/** Debian with Docker and no desktop. */
+export const DEBIAN_CI = sandbox({
+	id: "sbx_2m6v9r3kd4",
+	name: "ci-docker",
+	slug: "lleverage",
+	accountId: LLEVERAGE.id,
+	kind: "microvm",
+	size: "medium",
+	state: "running",
+	createdAt: FIXTURE_NOW - 2 * HOUR,
+	stopsAt: FIXTURE_NOW + 30 * MINUTE,
+	snapshot: { id: "snp_ci_1", takenAt: FIXTURE_NOW - 5 * MINUTE },
+	costCents: 8,
+	usage: usageSeries(6, 0.5),
+	hostId: "hst_hetzner_2",
+	shared: true,
+	createdBy: "ci-runner",
+	image: DEBIAN_DOCKER_IMAGE,
 });
 
 export const SCRATCH = sandbox({
@@ -259,6 +358,8 @@ export const SANDBOXES: readonly Sandbox[] = [
 	NEW_ONE,
 	SCRATCH,
 	API_SERVER,
+	ALPINE_WORKER,
+	DEBIAN_CI,
 	EVAL_RUNNER,
 	BROWSER_AGENT,
 	DEV_STACK,
@@ -424,7 +525,64 @@ const TREE: Readonly<Record<string, readonly SnapshotEntry[]>> = {
 	],
 };
 
+/**
+ * An isolate's files: its workspace and nothing else. The host refuses any other path ("/ is outside /workspace, an
+ * isolate's only files"), as the fixtures do.
+ */
+const WORKSPACE_TREE: Readonly<Record<string, readonly SnapshotEntry[]>> = {
+	workspace: [
+		{ name: "src", path: "workspace/src", kind: "folder" },
+		{
+			name: ".gitignore",
+			path: "workspace/.gitignore",
+			kind: "file",
+			sizeBytes: 24,
+			modifiedAt: FIXTURE_NOW - 5 * MINUTE,
+		},
+		{
+			name: "README.md",
+			path: "workspace/README.md",
+			kind: "file",
+			sizeBytes: 214,
+			modifiedAt: FIXTURE_NOW - 4 * MINUTE,
+		},
+		{
+			name: "package.json",
+			path: "workspace/package.json",
+			kind: "file",
+			sizeBytes: 168,
+			modifiedAt: FIXTURE_NOW - 4 * MINUTE,
+		},
+	],
+	"workspace/src": [
+		{
+			name: "index.ts",
+			path: "workspace/src/index.ts",
+			kind: "file",
+			sizeBytes: 96,
+			modifiedAt: FIXTURE_NOW - 2 * MINUTE,
+		},
+	],
+};
+
+/** A folder of a sample sandbox or snapshot of this kind: an isolate's refuses anything outside /workspace. */
+export function sampleFolder(kind: SandboxKind | undefined, path: string): readonly SnapshotEntry[] {
+	const key = path.replace(/^\/+|\/+$/g, "");
+	if (kind !== "isolate") return TREE[key] ?? [];
+	if (key !== "workspace" && !key.startsWith("workspace/")) {
+		throw new FilesRefusedError(`/${key} is outside /workspace, an isolate's only files`);
+	}
+	const entries = WORKSPACE_TREE[key];
+	if (entries === undefined) throw new FilesRefusedError(`There's no folder /${key}.`);
+	return entries;
+}
+
 const FILES: Readonly<Record<string, string>> = {
+	"workspace/.gitignore": "node_modules\ndist\n.env\n",
+	"workspace/README.md":
+		"# scratch\n\nA quick place to try things. Everything here is in /workspace, the only files an isolate has.\n",
+	"workspace/package.json": '{\n  "name": "scratch",\n  "private": true,\n  "type": "module"\n}\n',
+	"workspace/src/index.ts": 'console.log("hello from an isolate");\n',
 	"etc/hostname": "api-server\n",
 	"etc/os-release": 'PRETTY_NAME="Ubuntu 24.04.3 LTS"\nNAME="Ubuntu"\nVERSION_ID="24.04"\nID=ubuntu\n',
 	"home/user/.bashrc": "# ~/.bashrc\nexport PATH=$HOME/.local/bin:$PATH\nalias ll='ls -la'\n",
@@ -1132,6 +1290,17 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 	const history = new Map<string, SandboxSnapshot[]>(
 		[...sandboxes.values()].map((box) => [box.id, [...historyFor(box)]]),
 	);
+	/** The kind of sandbox a snapshot is of: a saved one's own, or its sandbox's. */
+	const snapshotKind = (snapshotId: string): SandboxKind | undefined => {
+		const named = saved.get(snapshotId);
+		if (named !== undefined) return named.kind;
+		for (const box of sandboxes.values()) {
+			if (box.snapshot?.id === snapshotId || history.get(box.id)?.some((snap) => snap.id === snapshotId)) {
+				return box.kind;
+			}
+		}
+		return undefined;
+	};
 	const keys = new Map<string, ApiKey>(
 		(empty ? [] : KEYS).map((key) => [key.id, moved(key, ["createdAt", "lastUsedAt", "expiresAt", "revokedAt"])]),
 	);
@@ -1351,6 +1520,27 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					const at = accounts.findIndex((account) => account.id === accountId);
 					if (at > 0) accounts.splice(at, 1);
 				}),
+			rename: (accountId, name) =>
+				gate(() => {
+					const at = accounts.findIndex((account) => account.id === accountId);
+					const account = accounts[at];
+					if (account === undefined) throw new Error(`No account ${accountId}.`);
+					const renamed = { ...account, name };
+					accounts[at] = renamed;
+					return renamed;
+				}),
+			setRole: (accountId, memberId, role) =>
+				gate(() => {
+					const list = members.get(accountId) ?? [];
+					const member = list.find((each) => each.id === memberId);
+					if (member === undefined) throw new Error(`No member ${memberId}.`);
+					const changed = { ...member, role };
+					members.set(
+						accountId,
+						list.map((each) => (each.id === memberId ? changed : each)),
+					);
+					return changed;
+				}),
 		},
 		sandboxes: {
 			list: (accountId) =>
@@ -1451,10 +1641,35 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					const box = find(sandboxes, id, "sandbox");
 					const token = fakeSecret("").slice(0, 16);
 					return {
-						ssh: `ssh ${box.id}@ssh.kantel.example.com`,
+						ssh: cliSshCommand(box.id),
+						cliLogin: cliLoginCommand("https://kantel.example.com"),
+						sshWithoutCli: true,
 						desktopUrl: `https://${box.hostname}/desktop?token=${token}`,
 						desktopViewUrl: `https://${box.hostname}/desktop?token=${token}#shared`,
 						browserUrl: `https://${box.hostname}/browser?token=${token}`,
+					};
+				}),
+			sshKey: (id, publicKey) =>
+				gate(() => {
+					const box = find(sandboxes, id, "sandbox");
+					const target = {
+						sandboxId: box.id,
+						user: "user",
+						host: "kantel.example.com",
+						port: 443,
+						proxyUrl: `wss://kantel.example.com/v1/hosts/tunnel/${fakeSecret("").slice(0, 24)}`,
+					};
+					const shown = {
+						hostKeyFingerprint: "SHA256:q8Yf3uZb1nO0xT4rWk7mJcVd2sLhP9aE6gRiKy5tBvU",
+						expiresAt: now() + 10 * MINUTE,
+					};
+					if (publicKey !== undefined) return { command: sshWithoutCliCommand(target), ...shown };
+					const keyFile = { name: `kantel-${box.id}`, path: `~/Downloads/kantel-${box.id}` };
+					return {
+						command: sshWithoutCliCommand(target, keyFile.path),
+						privateKey: `-----BEGIN OPENSSH PRIVATE KEY-----\n${fakeSecret("sample")}\n-----END OPENSSH PRIVATE KEY-----\n`,
+						keyFile,
+						...shown,
 					};
 				}),
 			history: (id) =>
@@ -1509,9 +1724,9 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					);
 				}),
 			files: {
-				list: (_id, path) =>
+				list: (id, path) =>
 					gate(() => ({
-						entries: (TREE[path.replace(/^\/+|\/+$/g, "")] ?? []).map((entry) => moved(entry, ["modifiedAt"])),
+						entries: sampleFolder(sandboxes.get(id)?.kind, path).map((entry) => moved(entry, ["modifiedAt"])),
 						more: false,
 					})),
 				read: (_id, path, range) => gate(() => samplePart(path, range)),
@@ -1559,8 +1774,9 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						);
 					}
 				}),
-			list: (_snapshotId, path) =>
-				gate(() => (TREE[path.replace(/^\/+|\/+$/g, "")] ?? []).map((entry) => moved(entry, ["modifiedAt"]))),
+			list: (snapshotId, path) =>
+				gate(() => sampleFolder(snapshotKind(snapshotId), path).map((entry) => moved(entry, ["modifiedAt"]))),
+			kindOf: (snapshotId) => gate(() => snapshotKind(snapshotId) ?? "microvm"),
 			read: (_snapshotId, path, range) => gate(() => samplePart(path, range)),
 			downloadUrl: (snapshotId, path) =>
 				`https://kantel.example.com/v1/snapshots/${encodeURIComponent(snapshotId)}/download?path=${encodeURIComponent(path)}`,

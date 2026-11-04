@@ -216,7 +216,7 @@ Restarts the machine of a sandbox that doesn't answer or is in `error`, on its d
 
 `GET /v1/sandboxes/{sandboxId}/usage` (SDK method `getSandboxUsage`)
 
-CPU, memory, running time and cost per interval. A key needs `sandboxes:read`.
+CPU, memory, running time and cost per interval, and in `series` its readings as they came (every 5 seconds over the last hour from a current host). Poll with `since` set to the last series point's `at` for only the newer points. A key needs `sandboxes:read`.
 
 **Path parameters**
 
@@ -228,7 +228,7 @@ CPU, memory, running time and cost per interval. A key needs `sandboxes:read`.
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `since` | integer | no | From this time; default 24 hours ago. |
+| `since` | integer | no | From this time; default 24 hours ago. `series` then holds only the points after it, so a client polls with the last point's `at`. |
 | `intervalSeconds` | integer | no | Default 300. (minimum 60, maximum 86400) |
 
 **Answers**

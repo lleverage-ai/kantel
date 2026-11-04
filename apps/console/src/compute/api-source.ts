@@ -72,10 +72,19 @@ import type {
 	Environment as UiEnvironment,
 	EgressGrant as UiGrant,
 	SandboxEgress as UiSandboxEgress,
+	SandboxImage as UiSandboxImage,
 	EnvironmentVariable as UiVariable,
 	WebhooksSource,
 } from "@kantel/ui";
-import { DeviceSetupError, FileTooLargeError, sameProxySettings } from "@kantel/ui";
+import {
+	cliLoginCommand,
+	cliSshCommand,
+	DeviceSetupError,
+	FilesRefusedError,
+	FileTooLargeError,
+	sameProxySettings,
+	sshWithoutCliCommand,
+} from "@kantel/ui";
 import { type BrowserDevice, type BrowserDeviceOptions, browserDevice } from "./browser-device.ts";
 import { liveUsage, withUsage } from "./live-usage.ts";
 import type { HostCommand, HostCommandPage, LocalBridge } from "./local.ts";
@@ -252,6 +261,8 @@ function accountsSource({ api, caller }: Context): AccountsSource {
 			if (userId === undefined) throw notYet("An API key belongs to its account and can't leave it.");
 			await api.removeMember(accountId, userId);
 		},
+		rename: async (accountId, name) => accountOf(await api.updateAccount(accountId, { name })),
+		setRole: async (accountId, memberId, role) => memberOf(await api.updateMember(accountId, memberId, { role })),
 	};
 }
 
@@ -316,6 +327,34 @@ async function learnEnvironmentNames(
 	}
 }
 
+/** What the guest agent found in a microVM's image, where it has said (a newer host and agent). */
+function imageOf(sandbox: Sandbox): { image?: UiSandboxImage } {
+	const guest = sandbox.capabilities.guest;
+	if (guest === undefined) return {};
+	const feature = (found: { available: boolean; detail?: string; reason?: string }) => ({
+		available: found.available,
+		...(found.detail === undefined ? {} : { detail: found.detail }),
+		...(found.reason === undefined ? {} : { reason: found.reason }),
+	});
+	return {
+		image: {
+			os: guest.os.name,
+			osId: guest.os.id,
+			arch: guest.arch,
+			libc: guest.libc,
+			...(guest.shell === undefined ? {} : { shell: guest.shell }),
+			init: guest.init,
+			injected: guest.agent.injected,
+			agentVersion: guest.agent.version,
+			desktop: feature(guest.desktop),
+			browser: feature(guest.browser),
+			docker: feature(guest.docker),
+			// The sandbox's own `kvm` is the host's nesting and the image's /dev/kvm together.
+			kvm: sandbox.capabilities.kvm && guest.docker.kvm,
+		},
+	};
+}
+
 function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 	return {
 		id: sandbox.id,
@@ -356,6 +395,7 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 		shared: sandbox.visibility === "organisation",
 		...(sandbox.source?.sandboxId === undefined ? {} : { forkedFrom: sandbox.source.sandboxId }),
 		...environmentRefOf(sandbox, context),
+		...imageOf(sandbox),
 	};
 }
 
@@ -440,9 +480,10 @@ function sandboxesSource(context: Context): SandboxesSource {
 			await api.deleteSandbox(id);
 		},
 		access: async (id) => {
-			// microVMs only: an isolate's `not_supported` rejects the lot. SSH's private key, when Kantel makes one, has no
-			// place in the UI's access and is dropped. The browser is driven where it runs, on the desktop, so its page is a
-			// desktop page too; while Chromium is still starting, the API refuses it and the desktop's stands in.
+			// microVMs only: an isolate's `not_supported` rejects the lot. SSH is the CLI's `kantel ssh`, which lets a key of
+			// its own in when it's run, so nothing is asked for it here: a key for plain ssh is `sshKey`'s, made only when
+			// someone asks. The browser is driven where it runs, on the desktop, so its page is a desktop page too; while
+			// Chromium is still starting, the API refuses it and the desktop's stands in.
 			//
 			// Desktop and Browser that can't open are said so rather than opened onto an error page: in an end-to-end space
 			// (its host refuses the gateway's plaintext desktop; E2E sessions carry commands and files only so far), and
@@ -457,10 +498,7 @@ function sandboxesSource(context: Context): SandboxesSource {
 					throw error;
 				}
 			};
-			// SSH there is E2E v1's own, over a session from the person's device; the gateway's (which lets a key in with a
-			// command) the host refuses.
-			const [ssh, desktop, watch, browser] = await Promise.all([
-				endToEnd ? Promise.resolve(undefined) : api.openSsh(id),
+			const [desktop, watch, browser] = await Promise.all([
 				screen(() => api.openDesktop(id)),
 				screen(() => api.openDesktop(id, { viewOnly: true })),
 				screen(() =>
@@ -470,7 +508,6 @@ function sandboxesSource(context: Context): SandboxesSource {
 					}),
 				),
 			]);
-			if (ssh !== undefined) context.learnHost(ssh.host);
 			const desktopRefused = desktop.refused ?? watch.refused;
 			const desktopUrl = desktopRefused === undefined ? desktop.value?.url : undefined;
 			// While Chromium starts, the desktop's page stands in for the browser's, and its reason when it has one.
@@ -481,7 +518,15 @@ function sandboxesSource(context: Context): SandboxesSource {
 				...(browserRefused === undefined ? {} : { browser: browserRefused }),
 			};
 			return {
-				ssh: ssh?.command ?? `kantel e2e ssh ${id}`,
+				// SSH there is E2E v1's own, over a session from the person's device; the gateway's (which lets a key in with a
+				// command) the host refuses, so there's no plain ssh either.
+				ssh: cliSshCommand(id, endToEnd),
+				// The CLI signs in to the gateway that serves this page, under /v1 on its origin. `kantel console`'s page is the
+				// CLI's own, signed in already, and its loopback origin isn't a gateway.
+				...(context.local === undefined && globalThis.location?.origin !== undefined
+					? { cliLogin: cliLoginCommand(globalThis.location.origin) }
+					: {}),
+				sshWithoutCli: !endToEnd,
 				// What can't open has no address: nothing links or frames it.
 				desktopUrl: desktopUrl ?? "",
 				desktopViewUrl: (desktopRefused === undefined ? watch.value?.url : undefined) ?? "",
@@ -493,6 +538,26 @@ function sandboxesSource(context: Context): SandboxesSource {
 					browser: browserUrl ?? "",
 				},
 				...(Object.keys(unavailable).length === 0 ? {} : { unavailable }),
+			};
+		},
+		sshKey: async (id, publicKey) => {
+			const grant = await api.openSsh(id, publicKey === undefined ? {} : { publicKey });
+			context.learnHost(grant.host);
+			const target = { sandboxId: id, user: grant.user, host: grant.host, port: grant.port };
+			const routed = grant.proxyUrl === undefined ? target : { ...target, proxyUrl: grant.proxyUrl };
+			const privateKey = grant.privateKey?.trim();
+			const shown = {
+				...(grant.hostKeyFingerprint === undefined ? {} : { hostKeyFingerprint: grant.hostKeyFingerprint }),
+				expiresAt: grant.expiresAt,
+			};
+			if (privateKey === undefined || privateKey === "") return { command: sshWithoutCliCommand(routed), ...shown };
+			// The key Kantel made downloads under the sandbox's name, where a browser saves it by default.
+			const keyFile = { name: `kantel-${id}`, path: `~/Downloads/kantel-${id}` };
+			return {
+				command: sshWithoutCliCommand(routed, keyFile.path),
+				privateKey: `${privateKey}\n`,
+				keyFile,
+				...shown,
 			};
 		},
 		history: async (id) => {
@@ -521,41 +586,71 @@ function sandboxesSource(context: Context): SandboxesSource {
 		// browser's own on the gateway's console), which the gateway only relays as ciphertext; it can read none of it
 		// itself, and the host would refuse it if it asked. Otherwise the gateway's API reads them from the host.
 		files: {
-			list: async (id, path) => {
-				const host = await filesHost(context, id);
-				if (host !== undefined) {
-					const { entries } = await host.call<{ entries: HostFileEntry[] | null }>(id, "sandbox.files.list", {
-						path: absolute(path),
-					});
-					return { entries: (entries ?? []).map(hostEntryOf).sort(foldersFirst), more: false };
-				}
-				const { items, more } = await firstPages((cursor) =>
-					api.listFiles(id, { path: absolute(path), ...after(cursor) }),
-				);
-				return { entries: items.map(entryOf).sort(foldersFirst), more };
-			},
-			read: async (id, path, range) => {
-				const host = await filesHost(context, id);
-				if (host !== undefined) {
-					const answer = await host.call<{ data: string; fileSize?: number }>(id, "sandbox.files.read", {
-						path: absolute(path),
-						offset: range.offset,
-						length: range.length,
-					});
-					return hostPart(fromBase64(answer.data), answer.fileSize, range);
-				}
-				// Base64, so a binary's first bytes come back as they are and the UI decides what it can show.
-				const file = await api.readFile(id, {
-					path: absolute(path),
-					encoding: "base64",
-					offset: range.offset,
-					length: Math.min(range.length, MAX_READ_BYTES),
-				});
-				return { bytes: contentBytes(file), size: file.size };
-			},
+			list: (id, path) =>
+				refusing(async () => {
+					const host = await filesHost(context, id);
+					if (host !== undefined) {
+						const { entries } = await host.call<{ entries: HostFileEntry[] | null }>(id, "sandbox.files.list", {
+							path: absolute(path),
+						});
+						return { entries: (entries ?? []).map(hostEntryOf).sort(foldersFirst), more: false };
+					}
+					const { items, more } = await firstPages((cursor) =>
+						api.listFiles(id, { path: absolute(path), ...after(cursor) }),
+					);
+					return { entries: items.map(entryOf).sort(foldersFirst), more };
+				}),
+			read: (id, path, range) => refusing(() => readSandboxFile(context, id, path, range)),
 		},
 	};
 }
+
+/** A part of a running sandbox's file: over its host's E2E session where its space has one, else through the API. */
+async function readSandboxFile(context: Context, id: string, path: string, range: FileRange): Promise<FilePart> {
+	const host = await filesHost(context, id);
+	if (host !== undefined) {
+		const answer = await host.call<{ data: string; fileSize?: number }>(id, "sandbox.files.read", {
+			path: absolute(path),
+			offset: range.offset,
+			length: range.length,
+		});
+		return hostPart(fromBase64(answer.data), answer.fileSize, range);
+	}
+	// Base64, so a binary's first bytes come back as they are and the UI decides what it can show.
+	const file = await context.api.readFile(id, {
+		path: absolute(path),
+		encoding: "base64",
+		offset: range.offset,
+		length: Math.min(range.length, MAX_READ_BYTES),
+	});
+	return { bytes: contentBytes(file), size: file.size };
+}
+
+/**
+ * A read whose refusal (a path outside what the sandbox has, such as anything but an isolate's /workspace, or one that
+ * isn't there) is the UI's refusal, which it shows as a line and never offers to try again. Anything else (the host
+ * unreachable, a dropped session) is as it was, for Try again.
+ */
+async function refusing<T>(read: () => Promise<T>): Promise<T> {
+	try {
+		return await read();
+	} catch (error) {
+		if (refusedPath(error)) throw new FilesRefusedError(error.message);
+		throw error;
+	}
+}
+
+/**
+ * The API's and a host's codes for a path a sandbox won't read: `invalid` outside it, `not_found` absent. A host's is its
+ * own answer to the call, over this browser's session or `kantel console`'s (`answered`); a session that failed to open,
+ * with the same codes for a host not in the chain, is a failure, not a refusal.
+ */
+const refusedPath = (error: unknown): error is Error & { readonly code: string } =>
+	error instanceof Error &&
+	"code" in error &&
+	(error.code === "invalid" || error.code === "not_found") &&
+	(error instanceof KantelApiError ||
+		(error.name === "SessionError" && "answered" in error && error.answered === true));
 
 /** Desktop and Browser where the gateway refuses them: this deployment doesn't serve the sandbox's screens yet. */
 export const SCREENS_NOT_SERVED = "Not available here yet";
@@ -820,10 +915,12 @@ function snapshotsSource({ api }: Context): SnapshotsSource {
 		},
 		removeSaved: (id) => api.deleteSnapshot(id),
 		removeSnapshot: (id) => api.deleteSnapshot(id),
-		list: async (snapshotId, path) =>
-			(await allPages((cursor) => api.listSnapshotFiles(snapshotId, { path: absolute(path), ...after(cursor) })))
-				.map(entryOf)
-				.sort(foldersFirst),
+		list: (snapshotId, path) =>
+			refusing(async () =>
+				(await allPages((cursor) => api.listSnapshotFiles(snapshotId, { path: absolute(path), ...after(cursor) })))
+					.map(entryOf)
+					.sort(foldersFirst),
+			),
 		// A snapshot's file comes whole, up to the API's 1 MiB, however little the preview asks for; a larger one is
 		// `invalid`, and shows with its name and size only. Nothing is kept: a second look reads it again.
 		read: async (snapshotId, path) => {
@@ -832,11 +929,15 @@ function snapshotsSource({ api }: Context): SnapshotsSource {
 				return { bytes: contentBytes(file), size: file.size };
 			} catch (error) {
 				if (isCode(error, "invalid")) throw new FileTooLargeError();
+				// One that isn't there (any more) is a refusal, not worth trying again.
+				if (refusedPath(error)) throw new FilesRefusedError(error.message);
 				throw error;
 			}
 		},
 		// The API has no download route, and a link can't carry the bearer a read needs: no Download.
 		downloadUrl: () => undefined,
+		// Where a link to a snapshot's files doesn't say, the API does: an isolate's start at /workspace.
+		kindOf: async (snapshotId) => (await api.getSnapshot(snapshotId)).sandboxType,
 	};
 }
 
@@ -1662,7 +1763,7 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		...(!caller.superAdmin && (await offersOwnHosts(context))
 			? {
 					ownHosts: (accountId: string) =>
-						withUsage(ownHostsSource(context, accountId), "usage", usage.ownHost?.(accountId)),
+						withUsage(ownHostsSource(context, accountId), "usage", usage.ownHost(accountId)),
 				}
 			: {}),
 		// Only a person approves a device; a console signed in with a key has nothing to approve with.

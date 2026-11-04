@@ -1,6 +1,6 @@
 ---
 title: Hosts
-description: Add Linux machines that run your sandboxes with kantel-host, check a machine first, choose which host a sandbox goes on with labels, and update, drain, revoke or remove a host later.
+description: Add your own Linux machines as the hosts that run your sandboxes, on app.kantel.dev or a self-hosted control plane. Check a machine first, link it directly or over a private network such as Tailscale, choose which host a sandbox goes on with labels, and update, drain, revoke or remove a host later.
 sidebar:
   badge:
     text: Experimental
@@ -13,7 +13,18 @@ sidebar:
 
 A host is a Linux machine that runs sandboxes. It runs `kantel-host`, which boots microVMs with Firecracker, and isolates with workerd inside a microVM. The host dials out to the control plane over a WebSocket and keeps that connection open, so it needs no inbound port and can sit behind NAT. A sandbox stays on the host it started on, since its disk and memory are there.
 
-[Quickstart](/quickstart/) joins one host on the control plane's own machine. This page covers each step in full, for any number of machines.
+You bring the hosts, whether you use the hosted control plane at app.kantel.dev or run your own. [Quick start](/quickstart/) adds one host to app.kantel.dev, and [Self-host quick start](/self-hosting/quickstart/) joins one on the control plane's own machine. This page covers each step in full, for any number of machines.
+
+## How a host reaches Kantel
+
+A host only ever connects out, to the control plane's URL. That URL decides the link:
+
+| Link | How | Use it for |
+| --- | --- | --- |
+| Direct | The control plane's public HTTPS URL, such as `https://app.kantel.dev` | app.kantel.dev, or a self-hosted control plane with a public address. The host needs outbound HTTPS only |
+| Private network | The control plane's address on a network the host shares with it, such as a Tailscale tailnet | A self-hosted control plane that shouldn't be on the internet. See [Over a private network](#over-a-private-network) |
+
+Kantel Connect, a link through kantel.dev for hosts and self-hosted control planes that can't reach each other directly, is coming.
 
 ## What a host needs
 
@@ -92,6 +103,18 @@ apps/host/dist/kantel-host manifest ~/kantel-images
 
 ## Add a host
 
+### On app.kantel.dev
+
+In the console, open **Settings**, then **Hosts**, and select **Add a host** (or run `kantel hosts add <name>`). It makes a one-time token for the space you're in, your personal space or an organisation you're an admin of, and shows the command to run on the machine:
+
+```sh
+curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url https://app.kantel.dev --token kth_…
+```
+
+That is the host installer on Kantel's latest GitHub Release, below. The host belongs to that space: only its members' sandboxes run on it. Add any of the [installer's flags](#what-the-installer-does) after the token. See [Your own hosts](/own-hosts/).
+
+### On a self-hosted control plane
+
 A self-hosted control plane runs sandboxes on hosts unless `KANTEL_COMPUTE_BACKEND=stub` says otherwise. Hosts reach it at its local address, `http://127.0.0.1:58090`, which only a host on the same machine can use. For hosts on other machines, tell it the URL where hosts and people reach it:
 
 ```sh
@@ -114,6 +137,26 @@ A token works once, and for an hour unless `--expires-minutes` says otherwise. T
 curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url https://kantel.example.com --token kth_…
 ```
 
+### Over a private network
+
+A self-hosted control plane can stay off the internet and reach its hosts over a private network, such as a Tailscale tailnet that the control plane's machine, the hosts and your own computer are all on.
+
+The Compose stack publishes the gateway on `127.0.0.1:58090` only, so first put a proxy in front of it that listens on the private network and nowhere else. On a tailnet, Tailscale Serve does that, and gives it an HTTPS name on the tailnet (the tailnet needs HTTPS certificates turned on):
+
+```sh
+sudo tailscale serve --bg 58090
+```
+
+Check it from another machine on the tailnet: `curl https://kantel.your-tailnet.ts.net/healthz` should answer `{"ok":true}`. Then use that URL as the public URL:
+
+```sh
+kantel-admin compute enable --public-url https://kantel.your-tailnet.ts.net --apply
+```
+
+Join commands then carry that address, and hosts connect to it over the tailnet. Your browser needs to reach it too, for desktop, browser and SSH links. To keep the console on another address and give only hosts the tailnet one, set `KANTEL_COMPUTE_PUBLIC_URL` to it instead.
+
+### What the installer does
+
 The installer hands its options to `kantel-host install`, which:
 
 1. checks for `/dev/kvm` and nested virtualisation;
@@ -134,6 +177,7 @@ Without systemd, such as in a container, install stops after step 4: run `kantel
 | `--tiers LIST` | `microvm`, `isolate` or both, comma-separated. Default: what the machine can run |
 | `--isolate-runtime native` | Run isolates with workerd on the host itself, with no KVM. For trusted code only |
 | `--proxy-data-path` | Send sandboxes' traffic on to the account's [upstream proxy](/sandboxes/egress-proxy/#send-traffic-through-your-own-proxy). Experimental |
+| `--inject-guest-agent` | Boot microVMs through Kantel's initramfs, which puts the guest agent into [any Linux image](/sandboxes/custom-images/). Experimental |
 | `--root DIR` | Where sandboxes live. Default `/var/lib/kantel-host` |
 | `--config FILE` | The settings file. Default `/etc/kantel-host/config.json` |
 | `--no-start` | Install and register, but don't start the service |
@@ -174,6 +218,14 @@ host_u7nfa06bgsim  builder-1  online  dev      microvm  1          just now
 ```
 
 A host is `online`, `draining`, `unreachable` (registered, but not connected now) or `revoked`. `host info` adds its machine, whether it has KVM, its labels and when it joined.
+
+Every 5 seconds a host also sends Kantel its CPU, memory and disk, and each running sandbox's CPU and memory. It measures them from its own side and runs nothing in a sandbox to do it:
+
+- A microVM's CPU is its Firecracker process's CPU time as a share of its vCPUs. Its memory is that process's resident memory: the guest memory the VM has touched, page cache included. A microVM doesn't give memory back, so the figure stays near its high point after a spike.
+- An account's isolates share one runtime, so the host measures the runtime and shares it out. Each isolate's CPU is its part of the runtime's CPU time, split by how long each spent running commands, as a share of one CPU. The runtime's memory is split evenly.
+- The disk is the file system the host's data directory (`/var/lib/kantel-host`) is on.
+
+While the host can't reach Kantel it keeps the last 120 readings (10 minutes' worth at the default interval) and sends them when it reconnects.
 
 ## Where sandboxes go
 
@@ -245,10 +297,12 @@ Uninstalling doesn't tell the control plane, so revoke the host as well.
 | `egress` | `open` | A sandbox's network when its account has no [proxy settings](/sandboxes/egress-proxy/) turned on: `open` (through the egress proxy, with no rules), `proxy`, or `none` (no network at all) |
 | `egressAllowCIDRs` | none | Private ranges the egress proxy may connect to anyway, such as `["192.168.10.0/24"]` for a package mirror on your network |
 | `proxyDataPath` | `false` | What `--proxy-data-path` sets |
+| `injectGuestAgent` | `false` | What `--inject-guest-agent` sets: `sandboxImage` may be [any Linux image](/sandboxes/custom-images/) |
 | `proxyPort` | `3129` | The egress proxy's port, on each sandbox's gateway address |
 | `subnet` | `10.231.0.0/16` | Where sandboxes' addresses come from. Each microVM gets a `/30` of it |
 | `tiers` | what the machine can run | `["microvm"]`, `["isolate"]` or both |
 | `overcommitMemory` | `1.5` | How much more memory running sandboxes may be given than the host has, as a ratio. Restored sandboxes share their template's unchanged memory |
 | `autoUpdate` | `true` | Whether the control plane may move the host to another version |
+| `usageIntervalSeconds` | `5` | How often the host sends its and its sandboxes' usage, up to `300`. Below `0`, never |
 
 <!-- Sources (00d22cc): apps/selfhosted/src/gateway/compute.ts:1-45,100-140, deploy/compose/compose.yaml:325-340, packages/admin/src/admin.ts:404-430. (5be456c): apps/host/cmd/kantel-host/install.go:30-190,366-460,600-660, apps/host/cmd/kantel-host/main.go:60-215, apps/host/cmd/kantel-host/manifest.go, apps/host/internal/hostinfo (Checks), apps/host/internal/agent/config.go:20-120, apps/host/internal/agent/conn.go:194-210, apps/host/internal/microvm/microvm.go:55-60, apps/host/guest/README.md, apps/host/guest/rootfs.sh, packages/hosts/src/scheduler.ts:1-115, packages/hosts/src/service.ts:300-340, packages/compute/src/service.ts:334-347, packages/api/src/compute-schema.ts:391-395, apps/selfhosted/src/gateway/compute.ts:15-40,183-190, deploy/compose/compose.yaml:325-338 -->

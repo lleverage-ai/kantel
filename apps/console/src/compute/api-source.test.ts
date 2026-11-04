@@ -13,7 +13,7 @@ import {
 } from "@kantel/compute";
 import { createStubBackend, STUB_HOST_ID } from "@kantel/compute/stub";
 import { KantelError } from "@kantel/contracts";
-import type { ComputeSource } from "@kantel/ui";
+import { type ComputeSource, FilesRefusedError } from "@kantel/ui";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { apiCompute, SCREENS_NOT_END_TO_END, SCREENS_NOT_SERVED } from "./api-source.ts";
 import { localBridge } from "./local.ts";
@@ -259,7 +259,7 @@ describe("sandboxes", () => {
 		});
 		await refusing.api.service.idle();
 		const refused = await there.sandboxes.access(box.id);
-		expect(refused.ssh).toContain("ssh");
+		expect(refused.ssh).toBe(`kantel ssh ${box.id}`);
 		expect(refused.unavailable).toEqual({ desktop: SCREENS_NOT_SERVED, browser: SCREENS_NOT_SERVED });
 		expect([refused.desktopUrl, refused.desktopViewUrl, refused.browserUrl]).toEqual(["", "", ""]);
 
@@ -288,7 +288,61 @@ describe("sandboxes", () => {
 		expect(inSpace.unavailable).toEqual({ desktop: SCREENS_NOT_END_TO_END, browser: SCREENS_NOT_END_TO_END });
 		// SSH is E2E v1's own: the host refuses the gateway's, which lets a key in with a command.
 		expect(inSpace.ssh).toBe(`kantel e2e ssh ${made.id}`);
+		expect(inSpace.sshWithoutCli).toBe(false);
+		// `kantel console`'s page is the CLI's own, signed in already; its loopback origin is no gateway to sign in to.
+		if (local !== undefined) {
+			vi.stubGlobal("location", { origin: "http://127.0.0.1:58091" });
+			try {
+				expect((await e2e.sandboxes.access(made.id)).cliLogin).toBeUndefined();
+			} finally {
+				vi.unstubAllGlobals();
+			}
+		}
 		expect(asked.filter((path) => /\/(desktop|browser|ssh)$/.test(path))).toEqual([]);
+	});
+
+	it("shows the CLI's ssh and lets a key in for plain ssh only when asked, with the private key Kantel made", async () => {
+		const { api, fetchApi } = setup();
+		const asked: string[] = [];
+		const source = await open(async (input, init) => {
+			asked.push(new URL(input instanceof Request ? input.url : String(input), ORIGIN).pathname);
+			return fetchApi(input, init);
+		});
+		const made = await source.sandboxes.create({
+			accountId: await personalAccount(source),
+			kind: "microvm",
+			size: "small",
+		});
+		await api.service.idle();
+
+		// Opening the page lets no key in: the CLI's command needs nothing from the API.
+		const access = await source.sandboxes.access(made.id);
+		expect(access.ssh).toBe(`kantel ssh ${made.id}`);
+		expect(access.sshWithoutCli).toBe(true);
+		expect(asked.filter((path) => path.endsWith("/ssh"))).toEqual([]);
+		// Served by a gateway, the page says to sign the CLI in to it: the gateway is this page's origin.
+		vi.stubGlobal("location", { origin: "https://app.kantel.dev" });
+		try {
+			expect((await source.sandboxes.access(made.id)).cliLogin).toBe("kantel login --url https://app.kantel.dev");
+		} finally {
+			vi.unstubAllGlobals();
+		}
+
+		// Without a public key, Kantel makes a pair: its private half is the download, and the command uses its file.
+		const generated = await source.sandboxes.sshKey?.(made.id);
+		expect(generated?.privateKey).toMatch(/^-----BEGIN OPENSSH PRIVATE KEY-----\n[\s\S]*\n$/);
+		expect(generated?.keyFile).toEqual({ name: `kantel-${made.id}`, path: `~/Downloads/kantel-${made.id}` });
+		expect(generated?.command).toBe(
+			`chmod 600 ~/Downloads/kantel-${made.id} && ssh -i ~/Downloads/kantel-${made.id} -o IdentitiesOnly=yes -p 2222 ${made.id}@ssh.stub.kantel.invalid`,
+		);
+		expect(generated?.hostKeyFingerprint).toBe("SHA256:stub");
+
+		// With one, it's let in as it is and nothing private comes back.
+		const given = await source.sandboxes.sshKey?.(made.id, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample ada@laptop");
+		expect(given?.privateKey).toBeUndefined();
+		expect(given?.keyFile).toBeUndefined();
+		expect(given?.command).toBe(`ssh -p 2222 ${made.id}@ssh.stub.kantel.invalid`);
+		expect(asked.filter((path) => path.endsWith("/ssh"))).toHaveLength(2);
 	});
 
 	it("lists and reads an E2E sandbox's files over the console's own session, never the gateway's file routes", async () => {
@@ -358,6 +412,50 @@ describe("sandboxes", () => {
 		expect(gatewayFiles).toEqual([]);
 	});
 
+	it("tells a host's refusal of a path through `kantel console` from a session that failed", async () => {
+		const { api, fetchApi } = setup();
+		const plain = await open(fetchApi);
+		const accountId = await personalAccount(plain);
+		const made = await plain.sandboxes.create({ accountId, kind: "microvm", size: "small" });
+		await api.service.idle();
+		// What `kantel console` answers: the host's own refusal with its code, else a session that didn't get there.
+		const localFetch: typeof fetch = async (input, init) => {
+			const path = String(input);
+			if (path === "/local/info") return Response.json({ local: true, spaces: [{ id: accountId, mode: "on" }] });
+			if (path === "/local/e2e") {
+				const { params } = JSON.parse(String(init?.body)) as { params: { path: string } };
+				if (params.path === "/home/user") {
+					return Response.json(
+						{ error: { code: "e2e", message: "no such directory", hostCode: "not_found" } },
+						{ status: 502 },
+					);
+				}
+				if (params.path === "/home/user/secret") {
+					return Response.json({ error: { code: "e2e", message: "outside", hostCode: "invalid" } }, { status: 502 });
+				}
+				return Response.json({ error: { code: "e2e", message: "The relay closed the stream" } }, { status: 502 });
+			}
+			return fetchApi(input, init);
+		};
+		const local = await localBridge(localFetch, "127.0.0.1");
+		const source = await apiCompute({
+			headers: () => ({ authorization: "Bearer person-ada" }),
+			fetch: localFetch,
+			...(local === undefined ? {} : { local }),
+		});
+		const files = source.sandboxes.files;
+		if (files === undefined) throw new Error("No files");
+		// A start the image hasn't got, and a read the host won't do: refusals, with no Try again.
+		await expect(files.list(made.id, "home/user")).rejects.toBeInstanceOf(FilesRefusedError);
+		await expect(files.read(made.id, "home/user/secret", { offset: 0, length: 5 })).rejects.toBeInstanceOf(
+			FilesRefusedError,
+		);
+		// The session not getting there is a failure, to try again.
+		const dropped = await files.list(made.id, "tmp").catch((error: unknown) => error);
+		expect(dropped).toBeInstanceOf(Error);
+		expect(dropped).not.toBeInstanceOf(FilesRefusedError);
+	});
+
 	it("shows what the host gave a microVM, and names sizes without figures", async () => {
 		const { api, fetchApi } = setup();
 		const source = await open(fetchApi);
@@ -418,6 +516,37 @@ describe("sandboxes", () => {
 		expect(fine?.output).toBeUndefined();
 		expect(failed?.output).toContain("broken");
 	});
+
+	it("reads a path the sandbox refuses (outside an isolate's /workspace) as a refusal, and a failure as a failure", async () => {
+		const { api, fetchApi } = setup();
+		const plain = await open(fetchApi);
+		const accountId = await personalAccount(plain);
+		const made = await plain.sandboxes.create({ accountId, kind: "isolate", size: "small" });
+		await api.service.idle();
+		// The host's answers for an isolate, as the gateway passes them on: `invalid` for a path outside /workspace,
+		// `not_found` for one that isn't there, and `unavailable` when it can't reach the host.
+		const answers: Record<string, { status: number; code: string; message: string }> = {
+			"/": { status: 400, code: "invalid", message: "/ is outside /workspace, an isolate's only files" },
+			"/workspace/gone": { status: 404, code: "not_found", message: "no directory /workspace/gone" },
+			"/workspace": { status: 503, code: "unavailable", message: "The host isn't connected" },
+		};
+		const source = await open(async (input, init) => {
+			const url = new URL(input instanceof Request ? input.url : String(input), ORIGIN);
+			const answer = answers[url.searchParams.get("path") ?? ""];
+			if (!url.pathname.endsWith("/files/list") || answer === undefined) return fetchApi(input, init);
+			return Response.json({ error: { code: answer.code, message: answer.message } }, { status: answer.status });
+		});
+		const files = source.sandboxes.files;
+		if (files === undefined) throw new Error("No files");
+		const outside = await files.list(made.id, "").catch((error: unknown) => error);
+		expect(outside).toBeInstanceOf(FilesRefusedError);
+		expect((outside as Error).message).toBe("/ is outside /workspace, an isolate's only files");
+		await expect(files.list(made.id, "workspace/gone")).rejects.toBeInstanceOf(FilesRefusedError);
+		// A host that's away is worth trying again: not a refusal.
+		const away = await files.list(made.id, "workspace").catch((error: unknown) => error);
+		expect(away).toBeInstanceOf(Error);
+		expect(away).not.toBeInstanceOf(FilesRefusedError);
+	});
 });
 
 describe("snapshots", () => {
@@ -454,6 +583,21 @@ describe("snapshots", () => {
 
 		await source.snapshots.removeSaved(saved.id);
 		expect(await source.snapshots.saved(accountId)).toEqual([]);
+	});
+
+	it("says what kind of sandbox a snapshot is of, for a link to its files, and refuses a folder that isn't there", async () => {
+		const { api, fetchApi } = setup();
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const sandbox = await source.sandboxes.create({ accountId, kind: "isolate", size: "small" });
+		await api.service.idle();
+		await source.sandboxes.stop(sandbox.id);
+		await api.service.idle();
+		const [taken] = await source.snapshots.history(sandbox.id);
+		if (taken === undefined) throw new Error("No snapshot");
+		expect(await source.snapshots.kindOf?.(taken.id)).toBe("isolate");
+		const gone = await source.snapshots.list(taken.id, "home/user/nowhere").catch((error: unknown) => error);
+		expect(gone).toBeInstanceOf(FilesRefusedError);
 	});
 });
 
@@ -911,6 +1055,37 @@ describe("hosts", () => {
 		const hosts = await source.hosts.list();
 		expect(hosts.map((host) => host.id)).toContain(STUB_HOST_ID);
 		expect(hosts.find((host) => host.id === STUB_HOST_ID)?.state).toBe("online");
+	});
+
+	it("reads a sandbox's and a host's live usage, newer than a point it has", async () => {
+		const { api, fetchApi } = setup();
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const made = await source.sandboxes.create({ accountId, kind: "microvm", size: "small" });
+		await api.service.idle();
+
+		const read = source.sandboxes.usageSeries;
+		if (read === undefined) throw new Error("No live sandbox usage");
+		// Just booted, so no readings yet, but its limit is its size's memory.
+		const sandbox = await read(made.id, Date.now() - 600_000);
+		expect(sandbox).toEqual({ intervalMs: expect.any(Number), memLimitBytes: 1024 ** 3, points: [] });
+
+		const host = source.hosts?.usage;
+		if (host === undefined) throw new Error("No live host usage for a super-admin");
+		const usage = await host(STUB_HOST_ID, Date.now() - 600_000);
+		expect(usage).toMatchObject({
+			intervalMs: 5_000,
+			memLimitBytes: 256 * 1024 ** 3,
+			diskTotalBytes: 2048 * 1024 ** 3,
+		});
+		expect(usage.points.length).toBeGreaterThan(0);
+		for (const point of usage.points) {
+			expect(point.cpu).toBeGreaterThanOrEqual(0);
+			expect(point.cpu).toBeLessThanOrEqual(1);
+			expect(point.diskUsedBytes).toBeGreaterThan(0);
+		}
+		const newest = usage.points.at(-1)?.at ?? 0;
+		expect((await host(STUB_HOST_ID, newest)).points.every((point) => point.at > newest)).toBe(true);
 	});
 
 	it("has no hosts for someone who isn't a super-admin", async () => {

@@ -48,8 +48,9 @@ notes=$(
 	cat <<EOF
 Kantel $version.
 
-**Use sandboxes**: install the \`kantel\` command, and the operator's \`kantel-admin\`, for yourself (Linux or macOS, with
-Node.js 22 or later; no sudo). This installs this release; \`releases/latest/download/install-cli.sh\` installs the latest:
+**Use sandboxes**: install the \`kantel\` command for yourself (Linux or macOS, with Node.js 22 or later; no sudo). This
+installs this release (\`curl -fsSL https://kantel.dev/cli.sh | sh\` installs the latest), and \`sh -s -- --admin\` adds
+the operator's \`kantel-admin\`:
 
 \`\`\`sh
 curl -fsSL $base/install-cli.sh | sh

@@ -13,8 +13,7 @@ sudo chmod 755 /usr/local/bin/kantel-admin
 kantel-admin version
 ```
 
-`curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install-cli.sh | sh` installs it with
-`kantel`, for you alone in `~/.local/bin` (which `sudo` doesn't search, so use the lines above for `sudo kantel-admin`).
+`curl -fsSL https://kantel.dev/cli.sh | sh -s -- --admin` installs it with `kantel`, for you alone in `~/.local/bin` (which `sudo` doesn't search, so use the lines above for `sudo kantel-admin`).
 `SHA256SUMS` in the same release has its SHA-256, and the release's attestations say which workflow run built it
 (`gh attestation verify /usr/local/bin/kantel-admin --repo lleverage-ai/kantel`).
 

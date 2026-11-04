@@ -2,8 +2,10 @@
 // over a real WebSocket to one of them, and the replicas reaching each other over HTTP and WebSocket, signed. Whatever
 // replica a request lands on reaches the host; a tunnel URL either gave out works on both; revoking the host from the
 // other replica closes its connection; and in a rolling restart the host moves and the routing follows it.
+import { createReplicaKey, createSqlClusterStore } from "@kantel/hosts/cluster";
 import { HOST_CLOSE_REVOKED } from "@kantel/hosts/protocol";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createPeerTransport } from "../../src/gateway/cluster.ts";
 import {
 	type Cleanup,
 	connectHost,
@@ -94,5 +96,53 @@ describe("gateway replicas behind a load balancer", { timeout: 30_000 }, () => {
 		expect(second.calls).toEqual(["sandbox.exec"]);
 		const ticket = await c.relay.tickets.issue({ sandboxId: "sbx-roll", port: 5901, expiresAt: Date.now() + 60_000 });
 		expect(await echoThrough(c, ticket)).toBe("echo:again");
+	});
+
+	it("pass a host's usage ticks on to each other, taken only from the replica holding the host", async () => {
+		const driver = await sharedDatabase(cleanups);
+		const a = await startReplica(driver, cleanups);
+		const b = await startReplica(driver, cleanups);
+		const recorded = { a: vi.fn(async () => undefined), b: vi.fn(async () => undefined) };
+		for (const [name, replica] of [
+			["a", a],
+			["b", b],
+		] as const) {
+			replica.relay.service.useCompute({
+				secrets: async () => undefined,
+				recordEgress: async () => undefined,
+				recordUsage: recorded[name],
+			});
+			replica.cluster.useUsage((hostId, usage) => replica.relay.service.recordSharedUsage(hostId, usage));
+		}
+		const { hostId, credential } = await joinHost(a);
+		const host = await connectHost(a, hostId, credential, cleanups);
+		await a.cluster.cluster.tick();
+		const usage = {
+			at: Date.now(),
+			intervalMs: 5000,
+			host: { cpu: 0.25, memUsedBytes: 1, memTotalBytes: 2, diskUsedBytes: 3, diskTotalBytes: 4 },
+			sandboxes: [{ id: "sbx-1", kind: "microvm", cpu: 0.5, memUsedBytes: 5, memLimitBytes: 6 }],
+		};
+		host.socket.send(JSON.stringify({ type: "usage", usage }));
+		await vi.waitFor(() => expect(recorded.b).toHaveBeenCalledTimes(1));
+		expect(recorded.a).toHaveBeenCalledWith(hostId, usage);
+		expect(recorded.b).toHaveBeenCalledWith(hostId, usage, { shared: true });
+
+		// A replica that doesn't hold the host can't speak for it, even signed.
+		const store = createSqlClusterStore(driver);
+		const key = await createReplicaKey();
+		const now = Date.now();
+		await store.putReplica({
+			id: "rep_other",
+			url: "http://127.0.0.1:1",
+			publicKey: key.publicKey,
+			startedAt: now,
+			heartbeatAt: now,
+		});
+		const peerA = await store.getReplica(a.cluster.cluster.replicaId);
+		if (peerA === undefined) throw new Error("replica A isn't registered");
+		const other = createPeerTransport({ replicaId: "rep_other", key });
+		await expect(other.usage?.(peerA, hostId, usage)).rejects.toThrow(/409/);
+		expect(recorded.a).toHaveBeenCalledTimes(1);
 	});
 });

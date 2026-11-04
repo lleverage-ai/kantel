@@ -125,6 +125,8 @@ func run(args []string) error {
 		defer srv.Close()
 		log.Info("local API", "addr", *local)
 		if cfg.ControlPlane == "" {
+			// No control plane to push to: sampled anyway, for GET /usage.
+			go host.RunUsage(ctx)
 			<-ctx.Done()
 			return nil
 		}

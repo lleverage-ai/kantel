@@ -1,16 +1,22 @@
 import { describe, expect, it } from "vitest";
 import { filesAtOf, filesHash, filesSearch, searchWithoutFiles } from "./compute-console.tsx";
-import type { FilePart, FileRange, SnapshotEntry } from "./compute-model.ts";
-import { samplePart } from "./fixtures.ts";
+import { type FilePart, type FileRange, FilesRefusedError, type SnapshotEntry } from "./compute-model.ts";
+import { createComputeFixtures, SAVED, SCRATCH, samplePart } from "./fixtures.ts";
 import {
 	binaryByName,
 	changedUnder,
 	DOWNLOAD_MAX_BYTES,
+	filesRoot,
+	folderIn,
+	foldersBelow,
+	ISOLATE_ROOT,
+	MICROVM_ROOT,
 	PREVIEW_PART_BYTES,
 	parentOf,
 	readWhole,
 	sortEntries,
 	textOf,
+	WHOLE_ROOT,
 } from "./snapshot-files.tsx";
 
 const entry = (name: string, kind: SnapshotEntry["kind"]): SnapshotEntry => ({ name, path: name, kind });
@@ -37,14 +43,18 @@ describe("the file browser", () => {
 		expect(filesSearch("?hosting", { path: "home/user", file: "notes.md" })).toBe(
 			"?hosting=&path=/home/user&file=notes.md",
 		);
-		expect(filesSearch("?path=/etc&file=x", { path: "" })).toBe("");
+		// Where the browser starts has no `path`; the root is `/`.
+		expect(filesSearch("?path=/etc&file=x", {})).toBe("");
+		expect(filesSearch("", { path: "" })).toBe("?path=/");
 		expect(filesSearch("", { path: "home" }, "ssn_1")).toBe("?snapshot=ssn_1&path=/home");
 		expect(searchWithoutFiles("?snapshot=ssn_1&path=/home&hosting=1")).toBe("?hosting=1");
 		// Read back: a name with spaces and an ampersand survives; a file with a slash in it is no file.
 		const odd = filesSearch("", { path: "home/my files", file: "a & b.txt" });
 		expect(filesAtOf(odd)).toEqual({ path: "home/my files", file: "a & b.txt" });
 		expect(filesAtOf("?path=/home/user/&file=../x")).toEqual({ path: "home/user" });
-		expect(filesAtOf("")).toEqual({ path: "" });
+		expect(filesAtOf("")).toEqual({});
+		expect(filesAtOf("?path=/")).toEqual({ path: "" });
+		expect(filesAtOf("?file=notes.md")).toEqual({ file: "notes.md" });
 	});
 
 	it("keeps an end-to-end sandbox's place in the fragment, which never reaches the gateway", () => {
@@ -52,10 +62,66 @@ describe("the file browser", () => {
 		const hash = filesHash(at);
 		expect(hash).toBe("#path=/home/user/secret+plans&file=q3.md");
 		expect(filesAtOf("?hosting=1", hash)).toEqual(at);
-		expect(filesHash({ path: "" })).toBe("");
+		expect(filesHash({})).toBe("");
+		expect(filesHash({ path: "" })).toBe("#path=/");
 		// The fragment wins over a query; a fragment that isn't the browser's leaves the query be.
 		expect(filesAtOf("?path=/etc", "#path=/home")).toEqual({ path: "home" });
 		expect(filesAtOf("?path=/etc", "#top")).toEqual({ path: "etc" });
+	});
+});
+
+describe("where the browser may go", () => {
+	it("keeps an isolate's to /workspace, its only files: it starts there, and the crumbs start there", () => {
+		expect(filesRoot("isolate")).toBe(ISOLATE_ROOT);
+		expect(ISOLATE_ROOT).toEqual({ top: "workspace", label: "workspace", start: "workspace" });
+		expect(folderIn(ISOLATE_ROOT, undefined)).toBe("workspace");
+		expect(folderIn(ISOLATE_ROOT, "workspace/src")).toBe("workspace/src");
+		// At the top there are no crumbs above it, so Up is off; below it, the crumbs go back to it and no further.
+		expect(foldersBelow(ISOLATE_ROOT, "workspace")).toEqual([]);
+		expect(foldersBelow(ISOLATE_ROOT, "workspace/src/lib")).toEqual(["workspace/src", "workspace/src/lib"]);
+		expect(parentOf("workspace/src")).toBe("workspace");
+	});
+
+	it("clamps an address above or beside an isolate's /workspace to it, rather than asking for what it refuses", () => {
+		expect(folderIn(ISOLATE_ROOT, "")).toBe("workspace");
+		expect(folderIn(ISOLATE_ROOT, "etc")).toBe("workspace");
+		expect(folderIn(ISOLATE_ROOT, "home/user")).toBe("workspace");
+		// A name that only starts like it is beside it, not in it.
+		expect(folderIn(ISOLATE_ROOT, "workspaces")).toBe("workspace");
+		expect(foldersBelow(ISOLATE_ROOT, "etc")).toEqual([]);
+	});
+
+	it("opens a microVM's at /home/user, and lets it go up to /", () => {
+		expect(filesRoot("microvm")).toBe(MICROVM_ROOT);
+		expect(folderIn(MICROVM_ROOT, undefined)).toBe("home/user");
+		expect(folderIn(MICROVM_ROOT, "")).toBe("");
+		expect(folderIn(MICROVM_ROOT, "etc")).toBe("etc");
+		expect(foldersBelow(MICROVM_ROOT, "home/user")).toEqual(["home", "home/user"]);
+		expect(foldersBelow(MICROVM_ROOT, "")).toEqual([]);
+		// One whose kind isn't known shows the whole of it, from /.
+		expect(filesRoot(undefined)).toBe(WHOLE_ROOT);
+		expect(folderIn(WHOLE_ROOT, undefined)).toBe("");
+	});
+
+	it("reads an isolate's snapshot from /workspace, and refuses / as its host does, never as a failure", async () => {
+		const source = createComputeFixtures();
+		const saved = SAVED.find((entry) => entry.kind === "isolate");
+		if (saved === undefined) throw new Error("No isolate snapshot");
+		expect(await source.snapshots.kindOf?.(saved.id)).toBe("isolate");
+		const root = filesRoot(await source.snapshots.kindOf?.(saved.id));
+		const top = await source.snapshots.list(saved.id, folderIn(root, undefined));
+		expect(top.map((entry) => entry.path)).toContain("workspace/src");
+		await expect(source.snapshots.list(saved.id, "")).rejects.toBeInstanceOf(FilesRefusedError);
+		// A microVM's snapshot opens at /home/user.
+		const vm = SAVED.find((entry) => entry.kind === "microvm");
+		if (vm === undefined) throw new Error("No microVM snapshot");
+		const home = await source.snapshots.list(vm.id, folderIn(filesRoot(vm.kind), undefined));
+		expect(home.map((entry) => entry.name)).toContain("notes.md");
+		// And a running isolate's files the same.
+		const live = source.sandboxes.files;
+		if (live === undefined) throw new Error("No files");
+		await expect(live.list(SCRATCH.id, "")).rejects.toThrow("/ is outside /workspace, an isolate's only files");
+		expect((await live.list(SCRATCH.id, "workspace")).entries.length).toBeGreaterThan(0);
 	});
 });
 

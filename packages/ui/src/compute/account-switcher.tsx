@@ -45,7 +45,7 @@ const KindIcon = ({ kind }: { kind: AccountKind }) =>
 	kind === "personal" ? <PersonIcon size="sm" /> : <OrganisationIcon size="sm" />;
 
 /** The account's initials: round for a person, square for an organisation. */
-function AccountMark({ account }: { account: ComputeAccount }) {
+export function AccountMark({ account }: { account: Pick<ComputeAccount, "kind" | "name"> }) {
 	return (
 		<span
 			className={`kt-account-mark inline-grid size-control-sm flex-none place-items-center border border-border-strong bg-raised text-2xs font-strong leading-none text-fg ${
