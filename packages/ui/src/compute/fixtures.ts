@@ -1617,6 +1617,15 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 			join: (code) =>
 				gate(() => {
 					if (code.trim().length < 6) throw new Error("That code isn't right. Check it and try again.");
+					// A code made for another email, refused as the API refuses it.
+					if (code.trim().startsWith("kji_other")) {
+						throw Object.assign(
+							new Error(
+								`This invite is for ada@example.com, but you're signed in as ${VIEWER.email}. Sign in as ada@example.com to join.`,
+							),
+							{ code: "forbidden" },
+						);
+					}
 					const account: ComputeAccount = {
 						id: nextId("org"),
 						kind: "organisation",

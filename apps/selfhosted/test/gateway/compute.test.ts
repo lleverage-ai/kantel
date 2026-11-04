@@ -143,7 +143,9 @@ describe("the compute plane on the gateway", () => {
 
 		const refused = await failure(bob.joinOrganisation({ code }));
 		expect(refused.code).toBe("forbidden");
-		expect(refused.message).toBe("The invite is for someone else");
+		expect(refused.message).toBe(
+			"This invite is for ann@kantel.example.com, but you're signed in as bob@kantel.example.com. Sign in as ann@kantel.example.com to join.",
+		);
 		expect(await ann.joinOrganisation({ code })).toMatchObject({ id: org.id, role: "member" });
 	});
 

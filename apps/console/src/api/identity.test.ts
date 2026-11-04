@@ -5,12 +5,22 @@ import type { CallContext, SignInMethod } from "@kantel/contracts";
 import { createAuthenticator } from "@kantel/identity/authenticator";
 import { createIdentityHandler } from "@kantel/identity/http";
 import { createMemoryIdentity } from "@kantel/identity/memory";
+import { createOAuthSignIn } from "@kantel/identity/oauth";
 import { createEmailOtp, createMemoryOtpStores, kantelSessionProvider, MemoryOtpMailer } from "@kantel/identity/otp";
 import { createOtpHandler } from "@kantel/identity/otp/http";
+import { createMockOAuth, MockCookieJar, mockOAuthSignIn } from "@kantel/identity/testing/oauth";
 import { createSignInFlow } from "@kantel/ui";
 import { describe, expect, it } from "vitest";
 import { orderedSaves } from "../state/theme-sync.ts";
-import { type ConsoleBoot, createConsoleIdentity, memoryChoice, memoryTokens, storageTokens } from "./identity.ts";
+import {
+	type ConsoleBoot,
+	createConsoleIdentity,
+	type LandingPage,
+	memoryChoice,
+	memoryTokens,
+	storageTokens,
+	takeProviderLanding,
+} from "./identity.ts";
 
 const bootstrap: CallContext = { actor: { kind: "system", component: "test" }, organisationId: "bootstrap" };
 const ORIGIN = "https://kantel.test";
@@ -255,6 +265,135 @@ describe("the console's sign-in", () => {
 			tokens: memoryTokens(),
 		});
 		await expect(consoleIdentity.boot()).rejects.toMatchObject({ code: "unavailable" });
+	});
+});
+
+/** A page whose address the console reads and rewrites. */
+function landingAt(search: string): LandingPage & { readonly current: () => string } {
+	let now = search;
+	return {
+		search: () => now,
+		replaceSearch: (next) => {
+			now = next;
+		},
+		current: () => now,
+	};
+}
+
+describe("the console's sign-in with GitHub and Google", () => {
+	async function providerWorld(signIn: readonly SignInMethod[] = ["email_otp", "github", "google"]) {
+		const identity = createMemoryIdentity();
+		const ada = await identity.createUser(bootstrap, { name: "Ada Lovelace", email: ADA });
+		await identity.createOrganisation(bootstrap, { name: "Kantel", admin: { kind: "user", userId: ada.id } });
+		const stores = createMemoryOtpStores();
+		const oauth = createMockOAuth();
+		const providers = createOAuthSignIn({
+			clients: oauth.clients,
+			publicUrl: ORIGIN,
+			identity,
+			sessions: stores.sessions,
+			fetch: oauth.fetch,
+			endpoints: oauth.endpoints,
+		});
+		const identityRoutes = createIdentityHandler({
+			identity,
+			authenticator: createAuthenticator({ identity, providers: [kantelSessionProvider(stores)] }),
+			signIn,
+		});
+		// The browser: its cookies go with each request to the origin, and what the gateway sets is kept.
+		const jar = new MockCookieJar();
+		const gateway = async (request: Request) => {
+			const path = new URL(request.url).pathname;
+			if (providers.handles(path)) return providers.fetch(request);
+			if (path === "/v1/me" || path === "/v1/projects") return identityRoutes(request);
+			return Response.json({ items: [] });
+		};
+		const fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+			const request = new Request(input, init);
+			const cookie = jar.header();
+			if (cookie !== undefined) request.headers.set("cookie", cookie);
+			const response = await gateway(request);
+			jar.take(response);
+			return response;
+		};
+		return { oauth, jar, gateway, fetch };
+	}
+
+	it("offers each provider the 401 names, as a link to its start", async () => {
+		const { fetch } = await providerWorld();
+		const consoleIdentity = createConsoleIdentity({ baseUrl: ORIGIN, fetch, tokens: memoryTokens() });
+		const signIn = expectKind(await consoleIdentity.boot(), "sign-in");
+		expect(signIn.emailCode).toBe(true);
+		expect(signIn.providers).toEqual([
+			{ provider: "github", href: `${ORIGIN}/auth/oauth/github/start` },
+			{ provider: "google", href: `${ORIGIN}/auth/oauth/google/start` },
+		]);
+		expect(signIn.providerProblem).toBeUndefined();
+	});
+
+	it("shows the sign-in screen with providers alone when codes are off", async () => {
+		const { fetch } = await providerWorld(["github"]);
+		const signIn = expectKind(
+			await createConsoleIdentity({ baseUrl: ORIGIN, fetch, tokens: memoryTokens() }).boot(),
+			"sign-in",
+		);
+		expect(signIn.emailCode).toBe(false);
+		expect(signIn.providers.map((link) => link.provider)).toEqual(["github"]);
+	});
+
+	it("picks up the session the provider's sign-in left, once, and takes the parameters off the address", async () => {
+		const { oauth, jar, gateway, fetch } = await providerWorld();
+		const { landing } = await mockOAuthSignIn(gateway, {
+			origin: ORIGIN,
+			provider: "github",
+			oauth,
+			account: { id: 1, login: "ada", emails: [{ email: ADA, primary: true, verified: true }] },
+			jar,
+		});
+		const page = landingAt(`${landing.search}&tab=keys`);
+		const tokens = memoryTokens();
+		const consoleIdentity = createConsoleIdentity({ baseUrl: ORIGIN, fetch, tokens, landing: page });
+		expect(page.current()).toBe("?tab=keys");
+		const booted = expectKind(await consoleIdentity.boot(), "signed-in");
+		expect(booted.actor).toMatchObject({ name: "Ada Lovelace", email: ADA });
+		expect(tokens.get()).toMatch(/^kts_/);
+		expect(jar.header()).toBeUndefined();
+		// A reload doesn't ask again.
+		expect(expectKind(await consoleIdentity.boot(), "signed-in").actor.email).toBe(ADA);
+	});
+
+	it("says the sign-in lapsed when there is no session to pick up", async () => {
+		const { fetch } = await providerWorld();
+		const page = landingAt("?signed_in=google");
+		const consoleIdentity = createConsoleIdentity({ baseUrl: ORIGIN, fetch, tokens: memoryTokens(), landing: page });
+		const signIn = expectKind(await consoleIdentity.boot(), "sign-in");
+		expect(signIn.providerProblem).toEqual({ error: "state_mismatch", provider: "google" });
+		expect(page.current()).toBe("");
+		// Said once: the next boot asks plainly.
+		expect(expectKind(await consoleIdentity.boot(), "sign-in").providerProblem).toBeUndefined();
+	});
+
+	it("says why a provider's sign-in failed", async () => {
+		const { fetch } = await providerWorld();
+		const page = landingAt("?sign_in_error=unverified_email&provider=github");
+		const signIn = expectKind(
+			await createConsoleIdentity({ baseUrl: ORIGIN, fetch, tokens: memoryTokens(), landing: page }).boot(),
+			"sign-in",
+		);
+		expect(signIn.providerProblem).toEqual({ error: "unverified_email", provider: "github" });
+		expect(page.current()).toBe("");
+	});
+
+	it("leaves an address that names nothing Kantel knows as it is", () => {
+		for (const search of ["", "?tab=keys", "?signed_in=gitlab", "?sign_in_error=<script>"]) {
+			const page = landingAt(search);
+			expect(takeProviderLanding(page), search).toBeUndefined();
+			expect(page.current()).toBe(search);
+		}
+		expect(takeProviderLanding(landingAt("?sign_in_error=failed&provider=gitlab"))).toEqual({
+			kind: "failed",
+			problem: { error: "failed" },
+		});
 	});
 });
 

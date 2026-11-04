@@ -64,6 +64,28 @@ Kantel is invite-only, and the installer invites one address as the admin. To si
 
 A code lasts 10 minutes, and a sign-in 12 hours. To send codes to real inboxes, see [Your own settings](#your-own-settings).
 
+### Sign in with GitHub or Google
+
+The sign-in page can also offer **Sign in with GitHub** and **Sign in with Google**. Each needs an OAuth client you make with the provider, and `KANTEL_PUBLIC_URL` set to the HTTPS address people reach the console at, since the provider sends people back there. Kantel stays invite-only: someone signs in when the provider's verified email matches an invite or someone who already signs in. A person who signs in more than one way, with the same email, is one user.
+
+1. Make the clients, with these callback URLs, where `https://kantel.example.com` is your `KANTEL_PUBLIC_URL`:
+   - **GitHub**: in **Settings → Developer settings → OAuth Apps → New OAuth App**, set the **Homepage URL** to `https://kantel.example.com` and the **Authorization callback URL** to `https://kantel.example.com/auth/oauth/github/callback`. Kantel asks for the `read:user` and `user:email` scopes, and uses the account's primary email only once GitHub has verified it.
+   - **Google**: in the Google Cloud console, under **Google Auth Platform**, set up the consent screen with the `openid`, `.../auth/userinfo.email` and `.../auth/userinfo.profile` scopes. Then make a client of type **Web application**, with the **Authorized redirect URI** `https://kantel.example.com/auth/oauth/google/callback`. Kantel accepts an email only where Google vouches for it: a verified Gmail address, or a Google Workspace account's. Someone whose Google account uses another address signs in with an email code.
+2. Add each client's ID and secret to `~/.kantel/src/deploy/compose/.env`, and run the installer with `--upgrade`:
+
+   ```sh
+   cat >> ~/.kantel/src/deploy/compose/.env <<'EOF'
+   KANTEL_PUBLIC_URL=https://kantel.example.com
+   KANTEL_GITHUB_CLIENT_ID=...
+   KANTEL_GITHUB_CLIENT_SECRET=...
+   KANTEL_GOOGLE_CLIENT_ID=...
+   KANTEL_GOOGLE_CLIENT_SECRET=...
+   EOF
+   curl -fsSL https://kantel.dev/install.sh | sh -s -- --upgrade
+   ```
+
+A provider is on only when both its ID and secret are set. Leave a pair out and its button doesn't appear. Without SMTP for codes, the page offers only the providers.
+
 ## Your first API key
 
 On its first start the control plane makes an API key and writes it to a file in its container. Read it with:
@@ -169,6 +191,8 @@ The stack reads its settings from `~/.kantel/src/deploy/compose/.env`, which upg
 | `KANTEL_SMTP_URL` | Where sign-in codes go: `smtps://user:password@host:port` for TLS from the start, `smtp://user:password@host:port` for STARTTLS. Without it they go to the built-in mailbox |
 | `KANTEL_MAIL_FROM` | The sender of sign-in codes, such as `Kantel <kantel@example.com>` |
 | `KANTEL_PUBLIC_URL` | The console's address when people reach it through a TLS proxy, such as `https://kantel.example.com` |
+| `KANTEL_GITHUB_CLIENT_ID`, `KANTEL_GITHUB_CLIENT_SECRET` | A GitHub OAuth app's client, for **Sign in with GitHub**. See [Sign in with GitHub or Google](#sign-in-with-github-or-google) |
+| `KANTEL_GOOGLE_CLIENT_ID`, `KANTEL_GOOGLE_CLIENT_SECRET` | A Google OAuth client, for **Sign in with Google**. See [Sign in with GitHub or Google](#sign-in-with-github-or-google) |
 | `KANTEL_GATEWAY_PORT` | The console's port on `127.0.0.1`, instead of `58090` |
 | `KANTEL_ACCOUNT_HOSTS` | `experimental` lets people add machines of their own to their account or organisation. See [Your own hosts](/own-hosts/) |
 | `KANTEL_MOUNTS` | `experimental` turns on read-only [mounts](/api/reference/mounts/) (bundles and bucket prefixes), signed file URLs and archive extraction. Bundles are kept in the gateway's volume |

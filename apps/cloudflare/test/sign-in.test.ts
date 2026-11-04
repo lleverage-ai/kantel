@@ -253,7 +253,11 @@ describe("email-code sign-in on the public origin", () => {
 
 		const refused = await call(PUBLIC, "POST", "/v1/accounts/join", { token: bob, ...join });
 		expect(refused.status).toBe(403);
-		expect(refused.body.error).toMatchObject({ code: "forbidden", message: "The invite is for someone else" });
+		expect(refused.body.error).toMatchObject({
+			code: "forbidden",
+			message:
+				"This invite is for ann@example.test, but you're signed in as bob@example.test. Sign in as ann@example.test to join.",
+		});
 		const joined = await call(PUBLIC, "POST", "/v1/accounts/join", { token: ann, ...join });
 		expect(joined.status).toBe(200);
 		expect(joined.body).toMatchObject({ id: org.body.id, role: "member" });
