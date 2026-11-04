@@ -1,0 +1,463 @@
+// Package images is the host images a host boots sandboxes on (the guest kernel and root filesystems): fetching them
+// from a manifest, checking the manifest's signature, and keeping each version side by side, so an update changes
+// what new sandboxes boot on and never the image under a sandbox that exists.
+//
+// On disk (Store.Dir, default Root/images):
+//
+//	v/<version>/{vmlinux,sandbox.ext4,isolate.ext4,manifest.json}   one version's files
+//	current -> v/<version>                                          the version new sandboxes start on
+//	vmlinux, sandbox.ext4, isolate.ext4 -> current/...              the config's default paths, once linked
+package images
+
+import (
+	"compress/gzip"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// Manifest is <images>/manifest.json: the files a host needs, by name, for this architecture.
+type Manifest struct {
+	Version string          `json:"version"`
+	Files   map[string]File `json:"files"`
+}
+
+// File is one file a manifest lists.
+type File struct {
+	// Path is relative to the manifest (or a full URL).
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+	Size   int64  `json:"size"`
+	// Gzip: the file is gzip-compressed and is unpacked as it is fetched.
+	Gzip bool `json:"gzip,omitempty"`
+}
+
+// Arch is this machine's architecture as manifests name it.
+func Arch() string {
+	if runtime.GOARCH == "arm64" {
+		return "arm64"
+	}
+	return "amd64"
+}
+
+func isURL(s string) bool {
+	return strings.HasPrefix(s, "https://") || strings.HasPrefix(s, "http://")
+}
+
+// Open reads a file from a URL or a directory.
+func Open(base, rel string) (io.ReadCloser, error) {
+	if isURL(rel) {
+		return httpGet(rel)
+	}
+	if isURL(base) {
+		u, err := url.JoinPath(base, rel)
+		if err != nil {
+			return nil, err
+		}
+		return httpGet(u)
+	}
+	return os.Open(filepath.Join(strings.TrimPrefix(base, "file://"), rel))
+}
+
+func httpGet(u string) (io.ReadCloser, error) {
+	res, err := (&http.Client{Timeout: 0}).Get(u)
+	if err != nil {
+		return nil, err
+	}
+	if res.StatusCode != 200 {
+		res.Body.Close()
+		return nil, fmt.Errorf("GET %s: %s", u, res.Status)
+	}
+	return res.Body, nil
+}
+
+// Fetch writes one file, checking its digest; a file already there with the right digest is kept.
+func Fetch(base string, f File, dst string, mode os.FileMode) error {
+	if f.SHA256 != "" {
+		if sum, err := recordedSHA256(dst); err == nil && sum == f.SHA256 {
+			if _, err := os.Stat(dst); err == nil {
+				fmt.Printf("  %s: up to date\n", filepath.Base(dst))
+				return nil
+			}
+		}
+	}
+	in, err := Open(base, f.Path)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	hash := sha256.New()
+	var reader io.Reader = io.TeeReader(in, hash)
+	if f.Gzip {
+		gz, err := gzip.NewReader(reader)
+		if err != nil {
+			return err
+		}
+		reader = gz
+	}
+	tmp := dst + ".part"
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
+	if err != nil {
+		return err
+	}
+	started := time.Now()
+	n, err := io.Copy(out, reader)
+	if err != nil {
+		out.Close()
+		return fmt.Errorf("%s: %w", f.Path, err)
+	}
+	_, _ = io.Copy(io.Discard, in)
+	if err := out.Close(); err != nil {
+		return err
+	}
+	sum := hex.EncodeToString(hash.Sum(nil))
+	if f.SHA256 != "" && sum != f.SHA256 {
+		os.Remove(tmp)
+		return fmt.Errorf("%s: digest %s, want %s", f.Path, sum, f.SHA256)
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		return err
+	}
+	_ = os.WriteFile(dst+".sha256-source", []byte(sum), 0o644)
+	fmt.Printf("  %s: %d MB in %s\n", filepath.Base(dst), n>>20, time.Since(started).Round(100*time.Millisecond))
+	return nil
+}
+
+// recordedSHA256 is the digest Fetch recorded beside dst when it downloaded it.
+func recordedSHA256(dst string) (string, error) {
+	raw, err := os.ReadFile(dst + ".sha256-source")
+	return strings.TrimSpace(string(raw)), err
+}
+
+// ValidVersion says whether a version can name a directory: it comes from the control plane and from manifests, so
+// nothing in it may climb out of v/.
+func ValidVersion(v string) bool {
+	if v == "" || v == "." || v == ".." || len(v) > 128 || strings.HasSuffix(v, ".part") {
+		return false
+	}
+	for _, r := range v {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// VersionOf is the version a path to a versioned image names (<dir>/v/<version>/<file>), or "" for any other path.
+func VersionOf(p string) string {
+	if p == "" {
+		return ""
+	}
+	dir := filepath.Dir(filepath.Clean(p))
+	v := filepath.Base(dir)
+	if filepath.Base(filepath.Dir(dir)) != "v" || !ValidVersion(v) {
+		return ""
+	}
+	return v
+}
+
+// Store is the versioned images under Dir.
+type Store struct {
+	Dir string
+}
+
+const manifestFile = "manifest.json"
+
+// imageFile is one file of a version: its name in the manifest, its name in the version's directory (the names
+// the config's default paths have), and whether a microVM host needs it.
+type imageFile struct {
+	name, local string
+	required    bool
+}
+
+func versionFiles(arch string) []imageFile {
+	return []imageFile{
+		{name: "vmlinux-" + arch, local: "vmlinux", required: true},
+		{name: "sandbox-" + arch + ".ext4", local: "sandbox.ext4", required: true},
+		{name: "isolate-" + arch + ".ext4", local: "isolate.ext4"},
+	}
+}
+
+func (s Store) versionDir(version string) string { return filepath.Join(s.Dir, "v", version) }
+
+// installed says whether a version is whole: its manifest is written last, and the directory renamed into place.
+func (s Store) installed(version string) bool {
+	_, err := os.Stat(filepath.Join(s.versionDir(version), manifestFile))
+	return err == nil
+}
+
+// Current is the version new sandboxes start on.
+func (s Store) Current() (version string, ok bool) {
+	target, err := os.Readlink(filepath.Join(s.Dir, "current"))
+	if err != nil {
+		return "", false
+	}
+	v := filepath.Base(target)
+	if filepath.Dir(target) != "v" || !ValidVersion(v) {
+		return "", false
+	}
+	return v, true
+}
+
+// Version is the version a resolved image path is under in this store, or "".
+func (s Store) Version(p string) string {
+	v := VersionOf(p)
+	if v == "" {
+		return ""
+	}
+	got := filepath.Dir(filepath.Clean(p))
+	if got == s.versionDir(v) {
+		return v
+	}
+	// Dir may itself be under a link (Root on another disk), and a resolved path is past it.
+	if real, err := filepath.EvalSymlinks(s.Dir); err == nil && got == filepath.Join(real, "v", v) {
+		return v
+	}
+	return ""
+}
+
+// Install fetches a version's files for arch (none without KVM: they are the microVMs' and isolate VMs') into
+// v/<m.Version>, each checked against the manifest's digest. A version already installed is kept as it is; one
+// half-fetched carries on from what it has.
+func (s Store) Install(ctx context.Context, base string, m Manifest, arch string, kvm bool) (dir string, err error) {
+	if !ValidVersion(m.Version) {
+		return "", fmt.Errorf("images manifest: bad version %q", m.Version)
+	}
+	dir = s.versionDir(m.Version)
+	if s.installed(m.Version) {
+		return dir, nil
+	}
+	var files []imageFile
+	if kvm {
+		files = versionFiles(arch)
+		// Before anything is downloaded.
+		for _, f := range files {
+			if _, ok := m.Files[f.name]; !ok && f.required {
+				return "", fmt.Errorf("images %s have no %s", m.Version, f.name)
+			}
+		}
+	}
+	part := dir + ".part"
+	if err := os.MkdirAll(part, 0o755); err != nil {
+		return "", err
+	}
+	for _, f := range files {
+		mf, ok := m.Files[f.name]
+		if !ok {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		dst := filepath.Join(part, f.local)
+		s.reuse(mf.SHA256, f.local, dst)
+		if err := Fetch(base, mf, dst, 0o644); err != nil {
+			return "", fmt.Errorf("images %s: %w", m.Version, err)
+		}
+	}
+	raw, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(part, manifestFile), append(raw, '\n'), 0o644); err != nil {
+		return "", err
+	}
+	// A directory there without a manifest never finished.
+	_ = os.RemoveAll(dir)
+	if err := os.Rename(part, dir); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// reuse links into dst a file another version already has with the same digest, so a version that changes one file
+// downloads only that one (Fetch then finds dst up to date). The images are never written once fetched, so sharing
+// the inode is safe.
+func (s Store) reuse(sum, local, dst string) {
+	if sum == "" {
+		return
+	}
+	if _, err := os.Lstat(dst); err == nil {
+		return
+	}
+	entries, _ := os.ReadDir(filepath.Join(s.Dir, "v"))
+	for _, e := range entries {
+		if !e.IsDir() || !ValidVersion(e.Name()) {
+			continue
+		}
+		src := filepath.Join(s.Dir, "v", e.Name(), local)
+		if got, err := recordedSHA256(src); err != nil || got != sum {
+			continue
+		}
+		if os.Link(src, dst) != nil {
+			continue
+		}
+		_ = os.WriteFile(dst+".sha256-source", []byte(sum), 0o644)
+		return
+	}
+}
+
+// Activate makes version current: the link is replaced in one rename, so a reader sees the old version or the new.
+func (s Store) Activate(version string) error {
+	if !ValidVersion(version) {
+		return fmt.Errorf("bad images version %q", version)
+	}
+	if !s.installed(version) {
+		return fmt.Errorf("images %s aren't installed", version)
+	}
+	tmp := filepath.Join(s.Dir, "current.tmp")
+	_ = os.Remove(tmp)
+	if err := os.Symlink(filepath.Join("v", version), tmp); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(s.Dir, "current"))
+}
+
+// Paths are the config's image paths, which Link turns into links to the current version when they are the
+// defaults.
+type Paths struct {
+	Kernel, SandboxImage, IsolateImage string
+}
+
+// Link turns the config's image paths into links to current/<file>, only where they are the defaults under Dir and a
+// plain file or missing: a custom path is never touched. Plain files (from an install before images were versioned)
+// first move, once, into a version of their own, which becomes current, so what the host runs now doesn't change.
+func (s Store) Link(p Paths) error {
+	type entry struct{ path, local string }
+	var defaults, plain []entry
+	for _, e := range []entry{{p.Kernel, "vmlinux"}, {p.SandboxImage, "sandbox.ext4"}, {p.IsolateImage, "isolate.ext4"}} {
+		if e.path == "" || filepath.Clean(e.path) != filepath.Join(s.Dir, e.local) {
+			continue
+		}
+		defaults = append(defaults, e)
+		if info, err := os.Lstat(e.path); err == nil && info.Mode().IsRegular() {
+			plain = append(plain, e)
+		}
+	}
+	if len(plain) > 0 {
+		locals := make([]string, len(plain))
+		for i, e := range plain {
+			locals[i] = e.local
+		}
+		if err := s.migrate(locals); err != nil {
+			return fmt.Errorf("moving the images into %s: %w", filepath.Join(s.Dir, "v"), err)
+		}
+	}
+	if _, ok := s.Current(); !ok {
+		return nil
+	}
+	for _, e := range defaults {
+		if _, err := os.Lstat(e.path); !errors.Is(err, os.ErrNotExist) {
+			continue // a link already, or something of the operator's
+		}
+		// Only to a file the current version has: a link to nothing would make a missing image look present.
+		if _, err := os.Stat(filepath.Join(s.Dir, "current", e.local)); err != nil {
+			continue
+		}
+		if err := os.Symlink(filepath.Join("current", e.local), e.path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// migrate moves plain files at Dir/<local> into a new version and makes it current. The version is the installed
+// manifest's (Dir/manifest.json), else "initial"; one that exists already gets a suffix.
+func (s Store) migrate(locals []string) error {
+	version := "initial"
+	if raw, err := os.ReadFile(filepath.Join(s.Dir, manifestFile)); err == nil {
+		var m Manifest
+		if json.Unmarshal(raw, &m) == nil && ValidVersion(m.Version) {
+			version = m.Version
+		}
+	}
+	if _, err := os.Stat(s.versionDir(version)); err == nil {
+		version += "." + strconv.FormatInt(time.Now().Unix(), 10)
+	}
+	dir := s.versionDir(version)
+	part := dir + ".part"
+	_ = os.RemoveAll(part)
+	if err := os.MkdirAll(part, 0o755); err != nil {
+		return err
+	}
+	moving := map[string]bool{}
+	for _, local := range locals {
+		moving[local] = true
+	}
+	// The current version's other files come along (linked), so the new version is whole.
+	if current, ok := s.Current(); ok {
+		entries, _ := os.ReadDir(s.versionDir(current))
+		for _, e := range entries {
+			name := e.Name()
+			if e.IsDir() || name == manifestFile || moving[strings.TrimSuffix(name, ".sha256-source")] {
+				continue
+			}
+			_ = os.Link(filepath.Join(s.versionDir(current), name), filepath.Join(part, name))
+		}
+	}
+	for _, local := range locals {
+		src := filepath.Join(s.Dir, local)
+		if err := os.Rename(src, filepath.Join(part, local)); err != nil {
+			return err
+		}
+		_ = os.Rename(src+".sha256-source", filepath.Join(part, local+".sha256-source"))
+	}
+	raw, _ := json.MarshalIndent(Manifest{Version: version, Files: map[string]File{}}, "", "  ")
+	if err := os.WriteFile(filepath.Join(part, manifestFile), append(raw, '\n'), 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(part, dir); err != nil {
+		return err
+	}
+	return s.Activate(version)
+}
+
+// Prune removes the versions that aren't current, aren't among the newest keepNewest, and that keep doesn't want
+// (the microVM tier's sandboxes, snapshots and templates still on them). It answers what it removed.
+func (s Store) Prune(keep func(version string) bool, keepNewest int) []string {
+	entries, _ := os.ReadDir(filepath.Join(s.Dir, "v"))
+	current, _ := s.Current()
+	type version struct {
+		name string
+		at   time.Time
+	}
+	var versions []version
+	for _, e := range entries {
+		// A .part directory is a version still being fetched.
+		if !e.IsDir() || !ValidVersion(e.Name()) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		versions = append(versions, version{name: e.Name(), at: info.ModTime()})
+	}
+	sort.Slice(versions, func(i, j int) bool { return versions[i].at.After(versions[j].at) })
+	var removed []string
+	for i, v := range versions {
+		if v.name == current || i < keepNewest || (keep != nil && keep(v.name)) {
+			continue
+		}
+		if err := os.RemoveAll(s.versionDir(v.name)); err == nil {
+			removed = append(removed, v.name)
+		}
+	}
+	return removed
+}

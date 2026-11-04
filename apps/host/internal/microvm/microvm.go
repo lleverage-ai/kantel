@@ -13,8 +13,9 @@
 //
 // On disk (Root, default /var/lib/kantel-host):
 //
-//	images/vmlinux, images/sandbox.ext4      the kernel and the shared read-only root filesystem
-//	templates/<size>/{state,mem,disk.ext4}    each size's template snapshot
+//	images/vmlinux, images/sandbox.ext4      the kernel and the shared read-only root filesystem (with image
+//	                                          patching, links to images/current: package images, base.go)
+//	templates/<size>/{state,mem,disk.ext4}    each size's template snapshot (rootfs: the image it was made on)
 //	sandboxes/<id>/meta.json                  the sandbox's record
 //	sandboxes/<id>/vm/                        Firecracker's working directory: rootfs.ext4 (a link to the image),
 //	                                          disk.ext4 (the sandbox's own disk), state and mem after a stop
@@ -88,6 +89,12 @@ type Config struct {
 	// for the disk; SpoolMaxMiB caps it. Empty: straight to disk.
 	SpoolDir    string
 	SpoolMaxMiB int64
+	// PinBase (image patching): each sandbox, snapshot and template links the file Rootfs resolves to when it is made,
+	// so an update that repoints Rootfs changes only what new ones start on (base.go).
+	PinBase bool
+	// BackgroundTemplates (image patching): a template made with other images is still used while its replacement
+	// builds in the background, rather than every create waiting for it.
+	BackgroundTemplates bool
 }
 
 type meta struct {
@@ -142,6 +149,13 @@ type Manager struct {
 	nextCID   atomic.Uint32
 	closed    atomic.Bool
 	spool     *spool
+	// inUse is held (read) from picking a size's template until restoring it, so a background rebuild swaps it in
+	// between creates (base.go).
+	inUse map[string]*sync.RWMutex
+	// rebuilding are the sizes whose template is being rebuilt in the background; rebuild does it (swapTemplate when
+	// nil, tests replace it).
+	rebuilding map[string]bool
+	rebuild    func(ctx context.Context, size proto.Size) error
 }
 
 func New(cfg Config) (*Manager, error) {
@@ -159,11 +173,12 @@ func New(cfg Config) (*Manager, error) {
 			return nil, err
 		}
 	}
-	m := &Manager{cfg: cfg, log: cfg.Log.With("tier", Tier), sandboxes: map[string]*sandbox{}, pool: map[string][]*warm{}, poolWant: map[string]int{}, filling: map[string]bool{}, templates: map[string]*sync.Mutex{}}
+	m := &Manager{cfg: cfg, log: cfg.Log.With("tier", Tier), sandboxes: map[string]*sandbox{}, pool: map[string][]*warm{}, poolWant: map[string]int{}, filling: map[string]bool{}, templates: map[string]*sync.Mutex{}, inUse: map[string]*sync.RWMutex{}, rebuilding: map[string]bool{}}
 	m.nextCID.Store(uint32(time.Now().UnixMilli()%100000) + 100)
 	m.spool = newSpool(cfg.SpoolDir, cfg.SpoolMaxMiB<<20, m.log)
 	for _, size := range cfg.Sizes {
 		m.templates[size.Name] = &sync.Mutex{}
+		m.inUse[size.Name] = &sync.RWMutex{}
 	}
 	// Leftover pool VMs from a previous run aren't adopted: they are cheap to make again.
 	entries, _ := os.ReadDir(filepath.Join(cfg.Root, "pool"))
@@ -176,6 +191,7 @@ func New(cfg Config) (*Manager, error) {
 	if err := m.adopt(); err != nil {
 		return nil, err
 	}
+	m.pinBases()
 	// Memory files a previous run spooled and hadn't yet moved to disk.
 	vmMems, _ := filepath.Glob(filepath.Join(cfg.Root, "sandboxes", "*", "vm", "mem"))
 	snapMems, _ := filepath.Glob(filepath.Join(cfg.Root, "snapshots", "*", "mem"))
@@ -236,7 +252,7 @@ func (m *Manager) writeMeta(s *sandbox) error {
 }
 
 func (m *Manager) info(s *sandbox) proto.SandboxInfo {
-	info := proto.SandboxInfo{ID: s.meta.ID, Tier: Tier, Size: s.meta.Size, State: s.meta.State, Memory: s.meta.Memory, Error: s.meta.Error, CreatedAt: s.meta.CreatedAt, Owner: s.meta.Owner}
+	info := proto.SandboxInfo{ID: s.meta.ID, Tier: Tier, Size: s.meta.Size, State: s.meta.State, Memory: s.meta.Memory, Error: s.meta.Error, CreatedAt: s.meta.CreatedAt, Owner: s.meta.Owner, Base: baseOf(s.vmDir())}
 	if s.link != nil {
 		info.Address = s.link.GuestIP.String()
 	}
@@ -451,23 +467,49 @@ func (t timings) step(name string, since *time.Time) {
 	*since = now
 }
 
-// template returns the size's template snapshot, cold-booting one if there is none.
+// templateShape is the size's part of a template's fingerprint: a snapshot restores the vCPUs and memory it was made
+// with, so a size that changes (a new default, or the host's settings) needs a new template.
+func templateShape(size proto.Size) string {
+	return fmt.Sprintf(" size=%d/%d/%d", size.VCPUs, size.MemoryMiB, size.DiskGiB)
+}
+
+// templateFingerprint is what a size's template is made with: Firecracker, the kernel, the images and the shape.
+func (m *Manager) templateFingerprint(size proto.Size) string {
+	return fc.Fingerprint(m.cfg.Firecracker, m.cfg.Kernel, m.cfg.Rootfs) + templateShape(size)
+}
+
+// template returns the size's template snapshot, cold-booting one if there is none. With BackgroundTemplates, one
+// made with other images (but the same shape) is still returned while its replacement builds (base.go).
 func (m *Manager) template(ctx context.Context, size proto.Size) (string, timings, error) {
 	lock := m.templates[size.Name]
 	lock.Lock()
 	defer lock.Unlock()
 	dir := filepath.Join(m.cfg.Root, "templates", size.Name)
-	// The size's shape too: a snapshot restores the vCPUs and memory it was made with, so a size that changes (a new
-	// default, or the host's settings) needs a new template.
-	fingerprint := fc.Fingerprint(m.cfg.Firecracker, m.cfg.Kernel, m.cfg.Rootfs) +
-		fmt.Sprintf(" size=%d/%d/%d", size.VCPUs, size.MemoryMiB, size.DiskGiB)
 	if _, err := os.Stat(filepath.Join(dir, "ready")); err == nil {
-		if made, _ := os.ReadFile(filepath.Join(dir, "images")); string(made) == fingerprint {
+		made, _ := os.ReadFile(filepath.Join(dir, "images"))
+		if string(made) == m.templateFingerprint(size) {
+			return dir, nil, nil
+		}
+		if m.cfg.BackgroundTemplates && strings.HasSuffix(string(made), templateShape(size)) {
+			// Sandboxes made from it meanwhile are on its images, as their Base says.
+			m.rebuildTemplate(size)
 			return dir, nil, nil
 		}
 		// Made with other images (an update) or another shape: running sandboxes keep their mapping of the old memory file.
 		m.log.Info("template is for other images or another shape; rebuilding", "size", size.Name)
 	}
+	t, err := m.buildTemplate(ctx, size, dir)
+	if err != nil {
+		return "", nil, err
+	}
+	return dir, t, nil
+}
+
+// buildTemplate cold-boots a VM of the size on the current images, waits for its services, and snapshots it into
+// dir (replacing what is there), recording the images it was made with.
+func (m *Manager) buildTemplate(ctx context.Context, size proto.Size, dir string) (timings, error) {
+	fingerprint := m.templateFingerprint(size)
+	rootfs := m.baseRootfs()
 	t := timings{}
 	start := time.Now()
 	building := dir + ".building"
@@ -475,35 +517,35 @@ func (m *Manager) template(ctx context.Context, size proto.Size) (string, timing
 	_ = os.RemoveAll(dir)
 	vm := filepath.Join(building, "vm")
 	if err := os.MkdirAll(vm, 0o700); err != nil {
-		return "", nil, err
+		return nil, err
 	}
-	if err := os.Symlink(m.cfg.Rootfs, filepath.Join(vm, fc.RootfsFile)); err != nil {
-		return "", nil, err
+	if err := m.linkRootfs(vm, rootfs); err != nil {
+		return nil, err
 	}
 	if err := newDisk(filepath.Join(vm, fc.DiskFile), size.DiskGiB); err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	t.step("disk", &start)
 	link, err := m.cfg.Network.Add(network.EgressNone)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	defer m.cfg.Network.Remove(link)
 	machine, err := fc.Launch(ctx, m.cfg.Firecracker, vm)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	defer machine.Kill()
 	t.step("launch", &start)
 	if err := machine.Boot(ctx, fc.BootConfig{VCPUs: size.VCPUs, MemoryMiB: size.MemoryMiB, Kernel: m.cfg.Kernel, BootArgs: bootArgs, TapDevice: link.Tap, MAC: link.MAC, GuestCID: m.cid()}); err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	client := guest.NewClient(filepath.Join(vm, fc.VsockSocket))
 	defer client.Close()
 	bootCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 	if _, err := client.WaitReady(bootCtx); err != nil {
-		return "", nil, fmt.Errorf("template boot: %w (firecracker log: %s)", err, tail(filepath.Join(vm, fc.LogFile)))
+		return nil, fmt.Errorf("template boot: %w (firecracker log: %s)", err, tail(filepath.Join(vm, fc.LogFile)))
 	}
 	t.step("agent", &start)
 	// What the image says it runs (/etc/kantel/ready), else the desktop, browser and Docker. Not SSH: the image has
@@ -515,25 +557,27 @@ func (m *Manager) template(ctx context.Context, size proto.Size) (string, timing
 	_ = client.Sync(ctx)
 	client.Close()
 	if err := machine.Pause(ctx); err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	if err := machine.Snapshot(ctx, filepath.Join(building, "state"), filepath.Join(building, "mem")); err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	t.step("snapshot", &start)
 	machine.Kill()
 	if err := os.Rename(filepath.Join(vm, fc.DiskFile), filepath.Join(building, fc.DiskFile)); err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	_ = os.RemoveAll(vm)
 	if err := os.Rename(building, dir); err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	raw, _ := json.Marshal(map[string]any{"size": size, "timings": t, "at": time.Now().UnixMilli()})
 	_ = os.WriteFile(filepath.Join(dir, "images"), []byte(fingerprint), 0o600)
+	// The root filesystem its memory state is over: sandboxes restored from it link this one.
+	_ = os.WriteFile(filepath.Join(dir, "rootfs"), []byte(rootfs), 0o600)
 	_ = os.WriteFile(filepath.Join(dir, "ready"), raw, 0o600)
 	m.log.Info("template ready", "size", size.Name, "timings", t)
-	return dir, t, nil
+	return t, nil
 }
 
 func tail(path string) string {
@@ -616,6 +660,7 @@ func (m *Manager) warmOne(ctx context.Context, sizeName string) (*warm, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer m.useTemplate(sizeName)()
 	tpl, _, err := m.template(ctx, size)
 	if err != nil {
 		return nil, err
@@ -628,7 +673,8 @@ func (m *Manager) warmOne(ctx context.Context, sizeName string) (*warm, error) {
 	if err := os.MkdirAll(vm, 0o700); err != nil {
 		return nil, err
 	}
-	if err := os.Symlink(m.cfg.Rootfs, filepath.Join(vm, fc.RootfsFile)); err != nil {
+	// The template's own images: its memory state is over them.
+	if err := m.linkRootfs(vm, m.templateRootfs(tpl)); err != nil {
 		return nil, err
 	}
 	if err := copySparse(filepath.Join(tpl, fc.DiskFile), filepath.Join(vm, fc.DiskFile)); err != nil {
@@ -762,10 +808,8 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 		if err := os.MkdirAll(vm, 0o700); err != nil {
 			return fail(err)
 		}
-		if err := os.Symlink(m.cfg.Rootfs, filepath.Join(vm, fc.RootfsFile)); err != nil {
-			return fail(err)
-		}
-		var statePath, memPath, diskPath string
+		// rootfs is the images the snapshot or template it starts from is over, so its memory matches its disk.
+		var statePath, memPath, diskPath, rootfs string
 		if p.From != "" {
 			snap, err := m.readSnapshot(p.From)
 			if err != nil {
@@ -779,8 +823,11 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 			if snap.Memory {
 				statePath, memPath = filepath.Join(sdir, "state"), filepath.Join(sdir, "mem")
 			}
+			rootfs = m.snapshotRootfs(snap)
 			source = "snapshot"
 		} else {
+			// Until it is restored (the function's end): a background rebuild swaps the template in between creates.
+			defer m.useTemplate(size.Name)()
 			tpl, tt, err := m.template(ctx, size)
 			if err != nil {
 				return fail(err)
@@ -789,10 +836,14 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 				t["template."+k] = v
 			}
 			statePath, memPath, diskPath = filepath.Join(tpl, "state"), filepath.Join(tpl, "mem"), filepath.Join(tpl, fc.DiskFile)
+			rootfs = m.templateRootfs(tpl)
 			source = "snapshot"
 			if tt != nil {
 				source = "boot"
 			}
+		}
+		if err := m.linkRootfs(vm, rootfs); err != nil {
+			return fail(err)
 		}
 		start = time.Now()
 		if err := copySparse(diskPath, filepath.Join(vm, fc.DiskFile)); err != nil {
@@ -972,6 +1023,11 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 		s.meta.Egress = p.Egress
 		s.unsaved = true
 	}
+	if coldBoot && p.Rebase {
+		if err := m.rebase(s); err != nil {
+			return proto.SandboxInfo{}, err
+		}
+	}
 	t := timings{}
 	start := time.Now()
 	began := start
@@ -1134,6 +1190,8 @@ func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.Snap
 type snapshotMeta struct {
 	proto.SnapshotInfo
 	Size string `json:"size"`
+	// Rootfs is the root filesystem its disk is a layer over (base.go); empty in snapshots from before it was kept.
+	Rootfs string `json:"rootfs,omitempty"`
 }
 
 func (m *Manager) snapshotDir(id string) string {
@@ -1141,7 +1199,9 @@ func (m *Manager) snapshotDir(id string) string {
 }
 
 func (m *Manager) writeSnapshotMeta(s *sandbox, snap *proto.SnapshotInfo) error {
-	raw, _ := json.MarshalIndent(snapshotMeta{SnapshotInfo: *snap, Size: s.meta.Size}, "", "  ")
+	rootfs, base := rootfsOf(s.vmDir())
+	snap.Base = base
+	raw, _ := json.MarshalIndent(snapshotMeta{SnapshotInfo: *snap, Size: s.meta.Size, Rootfs: rootfs}, "", "  ")
 	return os.WriteFile(filepath.Join(m.snapshotDir(snap.ID), "meta.json"), raw, 0o600)
 }
 

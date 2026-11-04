@@ -23,6 +23,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/agent"
 	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
@@ -104,6 +105,10 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Before the tiers start: with image patching, cosign, the image links and the pinned Firecracker.
+	prepareCtx, cancelPrepare := context.WithTimeout(context.Background(), 10*time.Minute)
+	agent.PrepareImages(prepareCtx, cfg, FirecrackerVersion, log)
+	cancelPrepare()
 	host, err := agent.New(cfg, version, log)
 	if err != nil {
 		return err

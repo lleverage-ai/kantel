@@ -95,6 +95,8 @@ type Host struct {
 	floors  map[string]int64
 	// durable is what of floors is on disk, so a retry of the same revision writes a floor an earlier write failed to.
 	durable map[string]int64
+	// patching is versioned host images, with Config.ImagePatching (images.go).
+	patching imagePatching
 
 	mu sync.Mutex
 	// bySlot is each running microVM's egress, by its network slot.
@@ -164,6 +166,7 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 			SpoolDir: spoolDir, SpoolMaxMiB: spoolMax,
 			Root: cfg.Root + "/microvm", Firecracker: cfg.Firecracker, Kernel: cfg.Kernel, Rootfs: cfg.SandboxImage,
 			Sizes: sizes, Network: netm, ProxyPort: cfg.ProxyPort, DNS: cfg.DNS, Log: log,
+			PinBase: cfg.ImagePatching, BackgroundTemplates: cfg.ImagePatching,
 			Events: h.sandboxEvent,
 			Attach: h.attachSlot,
 			Detach: h.detachSlot,
@@ -196,6 +199,9 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 	}
 	if len(h.tiers) == 0 {
 		return nil, errors.New("this host can run no sandbox tier: run `kantel-host doctor`")
+	}
+	if cfg.ImagePatching {
+		h.startImagePatching(kvm)
 	}
 	h.facts = h.makeFacts()
 	go h.egressLog.run()
@@ -238,6 +244,9 @@ func (h *Host) makeFacts() proto.Facts {
 	if h.cfg.usageInterval() > 0 {
 		features = append(features, proto.FeatureUsage)
 	}
+	if h.cfg.ImagePatching {
+		features = append(features, proto.FeatureImagePatching)
+	}
 	return proto.Facts{
 		Version: h.version, Protocol: proto.ProtocolVersion, OS: runtime.GOOS, Arch: hostinfo.Arch(), Kernel: hostinfo.Kernel(),
 		Hostname: name, CPUs: runtime.NumCPU(), MemoryMiB: max(0, total-reserve), DiskGiB: hostinfo.FreeDiskGiB(h.cfg.Root),
@@ -247,7 +256,14 @@ func (h *Host) makeFacts() proto.Facts {
 }
 
 // Facts are what the host tells the control plane it is.
-func (h *Host) Facts() proto.Facts { return h.facts }
+func (h *Host) Facts() proto.Facts {
+	f := h.facts
+	if held := h.patching.facts.Load(); held != nil {
+		copied := *held
+		f.Images = &copied
+	}
+	return f
+}
 
 // Capacity is what is free now.
 func (h *Host) Capacity() proto.Capacity {
@@ -301,6 +317,7 @@ func (h *Host) ResetTemplates(tier string) {
 }
 
 func (h *Host) Close() {
+	h.stopImagePatching()
 	for _, t := range h.tiers {
 		t.Close()
 	}

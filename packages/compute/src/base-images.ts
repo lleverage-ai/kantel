@@ -1,6 +1,6 @@
 /**
  * Base image patching (experimental, KANTEL_IMAGE_PATCHING=experimental): the index of Kantel's base images that CI
- * publishes (.github/workflows/base-images.yml), what each version's CVE scan found, and how far behind its channel a
+ * publishes (.github/workflows/sandbox-image.yml), what each version's CVE scan found, and how far behind its channel a
  * digest is. Pure functions with no imports, so the workflow's scripts (tools/base-images) run them with Node's type
  * stripping, and the gateway reads the same shapes.
  *

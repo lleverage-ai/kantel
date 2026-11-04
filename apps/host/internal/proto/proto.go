@@ -90,6 +90,8 @@ type Facts struct {
 	// Features are what the host does beyond protocol 1 as first released (FeatureEgressPolicy). The control plane
 	// sends a sandbox a policy it must enforce only when its host reports the feature that enforces it.
 	Features []string `json:"features,omitempty"`
+	// Images is what the host boots new sandboxes on, and its image settings; present with FeatureImagePatching.
+	Images *HostImages `json:"images,omitempty"`
 }
 
 // FeatureEgressPolicy: the host enforces egress Grants (methods and paths too), swaps Protected placeholders only
@@ -99,6 +101,32 @@ const FeatureEgressPolicy = "egress-policy"
 // FeatureUsage: the host sends a "usage" message every tick (UsageSample) without being asked, so the control plane
 // needn't run a command in a sandbox to read its usage.
 const FeatureUsage = "usage"
+
+// FeatureImagePatching (experimental): the host keeps its host images by version, follows Welcome.Images, reports
+// each sandbox's and snapshot's Base, and restarts a sandbox on its current images when sandbox.start has Rebase.
+const FeatureImagePatching = "image-patching"
+
+// HostImages is a host's images: the version new sandboxes start on, and how it takes new ones.
+type HostImages struct {
+	// Version is the host images version new sandboxes boot on (empty when the images aren't versioned yet).
+	Version string `json:"version"`
+	// Firecracker is the Firecracker version the host runs, such as v1.17.0.
+	Firecracker string `json:"firecracker"`
+	// AutoUpdate says the host follows Welcome.Images.
+	AutoUpdate bool `json:"autoUpdate"`
+	// Signatures is the host's signature policy: "require", "warn" or "off".
+	Signatures string `json:"signatures"`
+}
+
+// ImageChannel is the host images Kantel wants hosts on.
+type ImageChannel struct {
+	// Channel names the channel, such as "stable".
+	Channel string `json:"channel"`
+	// Version is the release, such as host-images-20261103.
+	Version string `json:"version"`
+	// URL is the release's download base: it holds manifest.json and manifest.json.sigstore.json (a cosign bundle).
+	URL string `json:"url"`
+}
 
 // Size is a sandbox shape.
 type Size struct {
@@ -127,6 +155,10 @@ type Welcome struct {
 	Pools map[string]int `json:"pools,omitempty"`
 	// Draining hosts take no new sandboxes.
 	Draining bool `json:"draining,omitempty"`
+	// Images are the host images Kantel wants hosts on: a host with image patching and automatic image updates on
+	// fetches them, checks their signature, and starts new sandboxes on them. Running and stopped sandboxes stay on
+	// theirs until a sandbox.start with Rebase.
+	Images *ImageChannel `json:"images,omitempty"`
 }
 
 // Capacity is what is free now.
@@ -172,6 +204,9 @@ type SandboxInfo struct {
 	Source string `json:"source,omitempty"`
 	// Owner is the account the sandbox belongs to (its create's Owner): the space whose E2E chain covers it.
 	Owner string `json:"owner,omitempty"`
+	// Base is the host images version the sandbox's root filesystem is (empty when unknown: images not versioned).
+	// One older than the host's HostImages.Version is outdated until restarted with Rebase.
+	Base string `json:"base,omitempty"`
 }
 
 // SnapshotInfo is one snapshot of a sandbox's disk (and, for a stop that kept it, its memory).
@@ -185,6 +220,8 @@ type SnapshotInfo struct {
 	SizeBytes int64  `json:"sizeBytes"`
 	Memory    bool   `json:"memory"`
 	Tier      string `json:"tier"`
+	// Base is the host images version the snapshot's root filesystem is (empty when unknown: images not versioned).
+	Base string `json:"base,omitempty"`
 }
 
 // Egress is a sandbox's way out, sent with create, resume and fork.
@@ -328,6 +365,9 @@ type ResumeParams struct {
 	// ignored. A call with a Revision states the sandbox's egress: on sandbox.start and sandbox.resume, no Egress
 	// with a Revision is the host's default (a clear), while no Egress without one keeps the egress it has.
 	Revision int64 `json:"revision,omitempty"`
+	// Rebase, on sandbox.start (a cold boot), first moves the sandbox onto the host's current images: its own disk
+	// stays, its memory snapshot is dropped. sandbox.resume ignores it.
+	Rebase bool `json:"rebase,omitempty"`
 }
 
 // ForkParams is sandbox.fork: a new sandbox from the source's current state (running: a live snapshot; stopped: its

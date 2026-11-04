@@ -114,7 +114,7 @@ func (m *Manager) SnapshotFiles(id, p string) ([]proto.FileEntry, error) {
 	lowerFound := false
 	if !opaque {
 		var lower []dentry
-		lower, lowerFound = debugfsList(m.cfg.Rootfs, p)
+		lower, lowerFound = debugfsList(m.snapshotLower(id), p)
 		for _, e := range lower {
 			if hidden[e.name] {
 				continue
@@ -144,7 +144,7 @@ func (m *Manager) SnapshotRead(id, p string) ([]byte, error) {
 	}
 	p = path.Clean("/" + p)
 	parent, name := path.Dir(p), path.Base(p)
-	images := []struct{ image, dir string }{{disk, path.Join("/root", parent)}, {m.cfg.Rootfs, parent}}
+	images := []struct{ image, dir string }{{disk, path.Join("/root", parent)}, {m.snapshotLower(id), parent}}
 	for _, im := range images {
 		entries, _ := debugfsList(im.image, im.dir)
 		for _, e := range entries {

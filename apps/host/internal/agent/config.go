@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/lleverage-ai/kantel/apps/host/internal/images"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
@@ -67,6 +68,27 @@ type Config struct {
 	// UsageIntervalSeconds is how often the host samples its own and its sandboxes' CPU and memory and pushes them to
 	// the control plane (a "usage" event; default 5, below 0 never).
 	UsageIntervalSeconds int `json:"usageIntervalSeconds,omitempty"`
+
+	// ImagePatching is the switch for versioned host images (experimental, default off): the host keeps each version
+	// of the kernel and images side by side under ImagesDir, takes new ones from the control plane's image channel,
+	// checks their signatures, and keeps every sandbox on the images it was made on until it is restarted on the
+	// latest. Off, the host behaves as before.
+	ImagePatching bool `json:"imagePatching,omitempty"`
+	// AutoUpdateImages, with image patching on, follows the control plane's image channel (default true).
+	AutoUpdateImages *bool `json:"autoUpdateImages,omitempty"`
+	// ImageSignatures is "require" (default: unsigned or mis-signed images are refused), "warn" (logged, then used)
+	// or "off".
+	ImageSignatures string `json:"imageSignatures,omitempty"`
+	// ImageIdentity (a regexp) and ImageIssuer are the signing certificate's: Kantel's image workflow by default.
+	ImageIdentity string `json:"imageIdentity,omitempty"`
+	ImageIssuer   string `json:"imageIssuer,omitempty"`
+	// ImageKey is a cosign public key to check signatures with instead of the identity (an install that builds and
+	// signs its own images).
+	ImageKey string `json:"imageKey,omitempty"`
+	// Cosign is the cosign binary signatures are checked with (default Root/bin/cosign, fetched at start).
+	Cosign string `json:"cosign,omitempty"`
+	// ImagesDir holds the versioned images (default Root/images).
+	ImagesDir string `json:"imagesDir,omitempty"`
 }
 
 const DefaultRoot = "/var/lib/kantel-host"
@@ -91,15 +113,15 @@ func (c *Config) Defaults() {
 	if c.Root == "" {
 		c.Root = DefaultRoot
 	}
-	images := filepath.Join(c.Root, "images")
+	imageDir := filepath.Join(c.Root, "images")
 	set := func(p *string, v string) {
 		if *p == "" {
 			*p = v
 		}
 	}
-	set(&c.Kernel, filepath.Join(images, "vmlinux"))
-	set(&c.SandboxImage, filepath.Join(images, "sandbox.ext4"))
-	set(&c.IsolateImage, filepath.Join(images, "isolate.ext4"))
+	set(&c.Kernel, filepath.Join(imageDir, "vmlinux"))
+	set(&c.SandboxImage, filepath.Join(imageDir, "sandbox.ext4"))
+	set(&c.IsolateImage, filepath.Join(imageDir, "isolate.ext4"))
 	set(&c.Firecracker, filepath.Join(c.Root, "bin", "firecracker"))
 	set(&c.Workerd, filepath.Join(c.Root, "bin", "workerd"))
 	set(&c.IsolateBundle, filepath.Join(c.Root, "isolate"))
@@ -116,9 +138,16 @@ func (c *Config) Defaults() {
 	if c.OvercommitMemory == 0 {
 		c.OvercommitMemory = 1.5
 	}
+	set(&c.ImageSignatures, images.PolicyRequire)
+	set(&c.ImageIdentity, images.DefaultIdentity)
+	set(&c.ImageIssuer, images.DefaultIssuer)
+	set(&c.Cosign, filepath.Join(c.Root, "bin", "cosign"))
+	set(&c.ImagesDir, imageDir)
 }
 
 func (c *Config) autoUpdate() bool { return c.AutoUpdate == nil || *c.AutoUpdate }
+
+func (c *Config) autoUpdateImages() bool { return c.AutoUpdateImages == nil || *c.AutoUpdateImages }
 
 // Save writes the config, readable by root only (it holds the host's credential).
 func (c Config) Save(path string) error {

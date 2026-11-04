@@ -141,7 +141,7 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 		}
 		s.mu.Unlock()
 	}()
-	hello := proto.Message{Type: "hello", Hello: &proto.Hello{HostID: h.cfg.HostID, Facts: h.facts, Sandboxes: h.List(), Capacity: h.Capacity()}}
+	hello := proto.Message{Type: "hello", Hello: &proto.Hello{HostID: h.cfg.HostID, Facts: h.Facts(), Sandboxes: h.List(), Capacity: h.Capacity()}}
 	if err := s.send(ctx, hello); err != nil {
 		return err
 	}
@@ -220,6 +220,8 @@ func (h *Host) applyWelcome(ctx context.Context, w *proto.Welcome, update Update
 	if w.Pools != nil {
 		h.SetPools(w.Pools)
 	}
+	// Before the binary's update, which returns early for an E2E host; followImages has the same rule.
+	h.followImages(ctx, w.Images)
 	if update != nil && h.cfg.autoUpdate() && w.DesiredVersion != "" && w.DesiredVersion != h.version && w.UpdateURL != "" {
 		if h.e2e != nil && h.e2e.Enrolled() {
 			h.log.Info("not updating from the gateway: this host has joined an E2E space, so it is updated on the machine", "to", w.DesiredVersion)

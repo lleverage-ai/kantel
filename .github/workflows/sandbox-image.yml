@@ -1,27 +1,115 @@
 name: Sandbox image
 
-# Builds images/sandbox (the worker image for the container tier, #10), checks its tools, runs the self-hosted
-# container tier's Docker tests against it on gVisor, and records the image digest for the commit. Base images and
-# downloads are pinned in the Dockerfile; nothing is pushed to a registry.
-
-# Not a pull request check: main.yml calls it for main's newest head and deploys only if it passes. A pull request
-# that changes the image or the container tier can run it on demand: `gh workflow run sandbox-image.yml --ref <branch>`.
+# Two roles in one workflow: the sandbox image's gate, and the pipeline that publishes Kantel's patched base images.
+#
+# The gate (the `image` job) builds images/sandbox (the worker image for the container tier, #10), checks its tools,
+# runs the self-hosted container tier's Docker tests against it on gVisor, and records the image digest for the commit.
+# Base images and downloads are pinned in the Dockerfile; it pushes nothing to a registry. Not a pull request check:
+# main.yml calls it for main's newest head and deploys only if it passes. A pull request that changes the image or the
+# container tier can run it on demand: `gh workflow run sandbox-image.yml --ref <branch>`.
+#
+# The pipeline (every other job) gets Debian's and Ubuntu's security fixes into the base images as soon as they are
+# out: images/sandbox, images/browser and images/isolate-host, and the microVM host images once they're turned on.
+# - When: daily at 04:17 UTC it builds, scans and publishes every image. Every 6 hours (at :43) it rescans what each
+#   image's `stable` names with a fresh Trivy database, and dispatches a rebuild of any image with a fixable Critical
+#   or High CVE. By hand, on main only: `gh workflow run sandbox-image.yml --ref main -f publish=true` (optionally
+#   `-f images=sandbox,browser` and `-f reason=cve`). `-f dry_run=true` works on any branch: it builds and scans the
+#   images and prints the index it would publish, but pushes, signs and uploads nothing; that is how a change to this
+#   pipeline is tested. Called from main.yml, or run by hand without either input, only the gate runs.
+# - Each build: `--no-cache --pull`, and today's date as KANTEL_SECURITY_REFRESH, which re-runs each Dockerfile's
+#   security-upgrade layer (`apt-get upgrade`): the base images are pinned (by digest, most of them), so only that
+#   layer brings their packages up to date. Scanned with Trivy before it is pushed; with a fixable Critical or High finding it is rebuilt
+#   once straight away, since the fix may have reached the mirror minutes ago. Findings never fail the job (a fix may
+#   not be in Debian yet); the job summary and the index report them.
+# - Published: ghcr.io/lleverage-ai/kantel-<name>:<yyyy.mm.dd.run>, signed keyless with cosign by its digest, with the
+#   scan attached as a cosign vuln attestation, and its SARIF in code scanning (category base-image-<name>). The
+#   `stable` tag moves to it unless it has more fixable Critical findings than what `stable` named before, so the
+#   channel never regresses.
+# - The index (tools/base-images/README.md): index.json on the rolling `base-images` release, with its Sigstore bundle
+#   index.json.sigstore.json beside it. Each image's versions by digest, its `stable` channel, and each version's
+#   newest scan; the gateway and console read it.
+# - Host images (the `host-images` job), off until the repository variable KANTEL_HOST_IMAGES_DAILY is `true`:
+#   apps/host/guest/release.sh builds them daily and publishes the GitHub Release host-images-<yyyymmdd>.<run>, with a
+#   signed manifest.json.sigstore.json, recorded in the index as the image `host`.
+#
+# Verify an image (any of the three):
+#   cosign verify ghcr.io/lleverage-ai/kantel-sandbox:stable \
+#     --certificate-identity-regexp '^https://github.com/lleverage-ai/kantel/\.github/workflows/sandbox-image\.yml@refs/heads/main$' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+# and the index, or a host image release's manifest.json, with the same identity:
+#   cosign verify-blob --bundle index.json.sigstore.json --certificate-identity-regexp '<as above>' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com index.json
+#
+# One-time setup, which this workflow can't do itself. It needs no secrets: only GITHUB_TOKEN and OIDC.
+# 1. After the first publish, make the three packages public, so hosts pull them without credentials: on the
+#    organisation's Packages page, for each of kantel-sandbox, kantel-browser and kantel-isolate-host, Package
+#    settings > Change visibility > Public. Under "Manage Actions access" on the same page, give lleverage-ai/kantel
+#    the Write role (needed only if the package was created some other way than by this workflow's first push).
+# 2. Organisation settings > Actions > General > Workflow permissions must let GITHUB_TOKEN have the scopes the jobs
+#    ask for: packages: write, contents: write, id-token: write, security-events: write and actions: write. A job's
+#    explicit `permissions:` get them unless the organisation caps them.
+# 3. Code scanning, for the SARIF uploads: on by default for a public repository; if not, Settings > Code security.
+# 4. Optional: the repository variable KANTEL_HOST_IMAGES_DAILY=true (Settings > Secrets and variables > Actions >
+#    Variables) turns the daily host image build on, once a self-hosted runner has release.sh's tools (Docker, Go,
+#    bun, gzip, git, curl, jq and debugfs).
 on:
   workflow_call: {}
-  workflow_dispatch: {}
+  schedule:
+    # The daily build.
+    - cron: "17 4 * * *"
+    # The rescan.
+    - cron: "43 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Build, scan and publish the base images (main only; off, a run by hand is the gate)
+        type: boolean
+        default: false
+      reason:
+        description: Why, as the index records it
+        type: choice
+        options: [manual, cve]
+        default: manual
+      images:
+        description: Only these, comma-separated, of sandbox, browser and isolate-host (empty for all)
+        type: string
+        default: ""
+      dry_run:
+        description: Build and scan the base images and print the index it would publish; publish nothing
+        type: boolean
+        default: false
 
-# A second run by hand on the same branch replaces the first ("Clean up" still runs). Called from main.yml, each run
-# gets a group of its own: main.yml does main's batching, and a group shared with it would deadlock.
+# A second run by hand on the same branch replaces the first ("Clean up" still runs); a dry run counts as one. Called
+# from main.yml, each run gets a group of its own: main.yml does main's batching, and a group shared with it would
+# deadlock. The runs that publish (the schedule, and `publish` on main) share one group and are never cancelled, so a
+# published build always finishes and two never write the index at once. GitHub keeps one run waiting per group: a
+# third that arrives while one runs and another waits replaces the waiting one.
 concurrency:
-  group: sandbox-image-${{ github.event_name == 'workflow_dispatch' && github.workflow == 'Sandbox image' && github.ref || github.run_id }}
-  cancel-in-progress: true
+  group: sandbox-image-${{ github.workflow == 'Sandbox image' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' && inputs.publish && !inputs.dry_run && github.ref == 'refs/heads/main') && 'publish' || github.event_name == 'workflow_dispatch' && github.workflow == 'Sandbox image' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && !(github.workflow == 'Sandbox image' && inputs.publish && !inputs.dry_run && github.ref == 'refs/heads/main') }}
 
 permissions:
   contents: read
 
+env:
+  # Whether this run publishes: only on main, on the schedule or with `publish`, and never in a dry run. Every step
+  # that pushes, signs or uploads checks it.
+  PUBLISH: ${{ github.workflow == 'Sandbox image' && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' && inputs.publish) && !inputs.dry_run }}
+  TRIVY_VERSION: v0.76.1
+  COSIGN_VERSION: v3.1.4
+  INDEX_NOTES: |-
+    The index of Kantel's base images: index.json, which .github/workflows/sandbox-image.yml replaces on every build and rescan on main. For each image (sandbox, browser, isolate-host, and host for the microVM host images), what its `stable` channel names, its newest versions by digest, and each version's newest CVE scan. tools/base-images/README.md describes it.
+
+    It is signed keyless with cosign; index.json.sigstore.json is the bundle. To verify it:
+
+    cosign verify-blob --bundle index.json.sigstore.json --certificate-identity-regexp '^https://github.com/lleverage-ai/kantel/\.github/workflows/sandbox-image\.yml@refs/heads/main$' --certificate-oidc-issuer https://token.actions.githubusercontent.com index.json
+
 jobs:
   image:
     name: Build, check and record the sandbox image
+    # The gate: called from main.yml, or run by hand without `publish` or `dry_run`. Not on the schedule, which is the
+    # pipeline's alone.
+    if: ${{ github.event_name != 'schedule' && !inputs.publish && !inputs.dry_run }}
     # Kantel's own self-hosted runners: GitHub-hosted runners stopped at the Actions budget. `gvisor` marks a runner whose Docker has the runsc and runsc-kvm runtimes; jobs use them through Docker,
     # never runsc or sudo directly. Each runner runs one job at a time for every workflow, so this job stays lean.
     runs-on: [self-hosted, harbour, gvisor]
@@ -116,3 +204,635 @@ jobs:
           [ -z "$networks" ] || docker network rm $networks
           if [ -n "$(docker image ls --quiet "$IMAGE")" ]; then docker image rm "$IMAGE"; fi
           rm -f "$RUNNER_TEMP/sandbox-image.json" "$RUNNER_TEMP/sandbox-image.digest.json"
+
+  plan:
+    name: Plan the base image builds
+    # The pipeline: the schedule, or a run by hand with `publish` or `dry_run`. Never when main.yml calls this
+    # (github.event_name is then main.yml's own, and github.workflow its name).
+    if: ${{ github.workflow == 'Sandbox image' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' && (inputs.publish || inputs.dry_run)) }}
+    runs-on: [self-hosted, harbour]
+    timeout-minutes: 5
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      version: ${{ steps.plan.outputs.version }}
+      refresh: ${{ steps.plan.outputs.refresh }}
+      reason: ${{ steps.plan.outputs.reason }}
+    steps:
+      - name: Plan
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          CRON: ${{ github.event.schedule }}
+          IMAGES: ${{ inputs.images }}
+          REASON: ${{ inputs.reason }}
+          WANTS_PUBLISH: ${{ inputs.publish && !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          # Fail now rather than build for nothing: only main publishes.
+          if [ "$WANTS_PUBLISH" = true ] && [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::Publishing runs on main only; this run is on $GITHUB_REF. Run it with --ref main, or with -f dry_run=true."
+            exit 1
+          fi
+          # The 6-hourly cron only rescans (the rescan job); the daily one and a run by hand build.
+          if [ "$EVENT" = schedule ] && [ "$CRON" != "17 4 * * *" ]; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "A rescan: nothing to build."
+            exit 0
+          fi
+          if [ "$EVENT" = schedule ]; then reason=daily; else reason="${REASON:-manual}"; fi
+          selected=()
+          for name in ${IMAGES//,/ }; do
+            case "$name" in
+              sandbox | browser | isolate-host) [[ " ${selected[*]} " == *" $name "* ]] || selected+=("$name") ;;
+              *)
+                echo "::error::Unknown image '$name': the images are sandbox, browser and isolate-host."
+                exit 1
+                ;;
+            esac
+          done
+          [ "${#selected[@]}" -gt 0 ] || selected=(sandbox browser isolate-host)
+          entries=()
+          for name in "${selected[@]}"; do
+            # isolate-host's Dockerfile copies images/isolate-host/... from the repository's root; the others copy from
+            # their own directory.
+            if [ "$name" = isolate-host ]; then context=.; else context="images/$name"; fi
+            entries+=("{\"name\":\"$name\",\"context\":\"$context\",\"dockerfile\":\"images/$name/Dockerfile\"}")
+          done
+          today="$(date -u +%Y.%m.%d)"
+          version="$today.$GITHUB_RUN_NUMBER"
+          {
+            echo "build=true"
+            echo "matrix=[$(IFS=,; echo "${entries[*]}")]"
+            echo "version=$version"
+            echo "refresh=${today//./}"
+            echo "reason=$reason"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Base images"
+            echo
+            echo "Building ${selected[*]} as version \`$version\` ($reason)."
+            if [ "$PUBLISH" = true ]; then echo "This run publishes."; else echo "A dry run: it publishes nothing."; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Build and scan ${{ matrix.name }}
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: [self-hosted, harbour]
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write # push to GHCR with GITHUB_TOKEN
+      id-token: write # cosign keyless
+      security-events: write # the scan's SARIF in code scanning
+    strategy:
+      fail-fast: false
+      # One at a time: Kantel has two runners, and the other may be needed meanwhile.
+      max-parallel: 1
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      NAME: ${{ matrix.name }}
+      CONTEXT: ${{ matrix.context }}
+      DOCKERFILE: ${{ matrix.dockerfile }}
+      VERSION: ${{ needs.plan.outputs.version }}
+      REFRESH: ${{ needs.plan.outputs.refresh }}
+      REASON: ${{ needs.plan.outputs.reason }}
+      # This run's own tag on the host's Docker, removed in "Clean up", so runs never overwrite each other's image.
+      IMAGE: kantel-base-${{ matrix.name }}:ci-${{ github.run_id }}-${{ github.run_attempt }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # As in the `image` job: buildx for the runner's user (no sudo), on the host daemon's own BuildKit.
+      - uses: docker/setup-buildx-action@v3
+        with:
+          version: v0.37.2
+          driver: docker
+
+      # The scripts in tools/base-images run with Node's type stripping.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # Trivy and cosign install for the runner's user, without sudo.
+      - uses: aquasecurity/setup-trivy@v0.3.1
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+
+      - uses: sigstore/cosign-installer@v4.1.2
+        if: env.PUBLISH == 'true'
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+
+      - name: Prepare
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/base-image-$NAME"
+          rm -rf "$work"
+          mkdir -p "$work"
+          echo "WORK=$work" >> "$GITHUB_ENV"
+          # GHCR's repository names are lower case.
+          echo "REPOSITORY=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/kantel-$NAME" >> "$GITHUB_ENV"
+
+      # The index as published, for what `stable` names now (the new build takes it only if that doesn't regress it).
+      - name: The published index
+        run: |
+          set -euo pipefail
+          # None yet (no release, or no index on it) starts from an empty one. Any other error stops here, so a failure
+          # to read the index never replaces it with an empty one.
+          if gh release view base-images --json assets --jq '.assets[].name' >"$WORK/assets" 2>"$WORK/assets.err"; then
+            if grep -qx index.json "$WORK/assets"; then gh release download base-images --pattern index.json --dir "$WORK" --clobber; fi
+          elif grep -q 'release not found' "$WORK/assets.err"; then
+            echo "No base-images release yet: starting from an empty index."
+          else
+            cat "$WORK/assets.err" >&2
+            exit 1
+          fi
+
+      - uses: docker/login-action@v3
+        if: env.PUBLISH == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      # --no-cache so no stale apt layer survives, and today's date re-runs the security-upgrade layer too. Scanned
+      # before anything is pushed.
+      - name: Build and scan
+        run: |
+          set -euo pipefail
+          build() {
+            docker buildx build "$CONTEXT" --file "$DOCKERFILE" \
+              --no-cache --pull --provenance=false \
+              --build-arg KANTEL_SECURITY_REFRESH="$REFRESH" \
+              --tag "$IMAGE" --load --metadata-file "$WORK/metadata.json"
+          }
+          scan() {
+            trivy image --scanners vuln --format json --output "$WORK/trivy.json" "$IMAGE"
+            node tools/base-images/scan.ts "$WORK/trivy.json" --scanner "trivy ${TRIVY_VERSION#v}" --title "$1" >"$WORK/scan.json"
+          }
+          build
+          scan "$NAME $VERSION"
+          status=0
+          node tools/base-images/scan.ts "$WORK/trivy.json" --needs-rebuild || status=$?
+          case "$status" in
+            0) ;;
+            3)
+              # The fix may have reached the mirror since the build started: one more build, kept whatever it finds.
+              echo "A Critical or High finding has a fix out: rebuilding once."
+              docker image rm "$IMAGE"
+              build
+              scan "$NAME $VERSION, rebuilt"
+              ;;
+            *) exit "$status" ;;
+          esac
+          trivy image --scanners vuln --skip-db-update --format sarif --output "$WORK/trivy.sarif" "$IMAGE"
+
+      - name: Push, sign and attest
+        if: env.PUBLISH == 'true'
+        run: |
+          set -euo pipefail
+          docker tag "$IMAGE" "$REPOSITORY:$VERSION"
+          docker push "$REPOSITORY:$VERSION"
+          digest="$(docker buildx imagetools inspect "$REPOSITORY:$VERSION" --format '{{json .Manifest}}' | jq -r .digest)"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::No digest for $REPOSITORY:$VERSION"; exit 1; }
+          echo "DIGEST=$digest" >> "$GITHUB_ENV"
+          # Keyless: the certificate names this workflow on main, which is what `cosign verify` checks.
+          cosign sign --yes "$REPOSITORY@$digest"
+          trivy image --scanners vuln --skip-db-update --format cosign-vuln --output "$WORK/vuln.json" "$IMAGE"
+          cosign attest --yes --type vuln --predicate "$WORK/vuln.json" "$REPOSITORY@$digest"
+
+      # The build as the index records it. Whether it takes `stable` is decided against the published index: never a
+      # build with more fixable Critical findings than what `stable` names now.
+      - name: Record the build
+        run: |
+          set -euo pipefail
+          options=(--scan "$WORK/scan.json" --commit "$GITHUB_SHA" --reason "$REASON")
+          if [ "$PUBLISH" = true ]; then
+            digest="$DIGEST"
+            options+=(--signed)
+          else
+            # Nothing is pushed in a dry run, so the index it prints names the local image's digest.
+            digest="$(node -p 'require(process.argv[1])["containerimage.digest"]' "$WORK/metadata.json")"
+          fi
+          node tools/base-images/index.ts build "$WORK/index.json" "$NAME" "$REPOSITORY" "$VERSION" "$digest" \
+            "${options[@]}" >"$WORK/build-$NAME.json"
+          channels="$(jq -r '.channels | join(",")' "$WORK/build-$NAME.json")"
+          echo "CHANNELS=$channels" >> "$GITHUB_ENV"
+          {
+            echo "- \`$REPOSITORY:$VERSION\`: \`$digest\`"
+            if [ "$channels" = stable ]; then
+              echo "- \`stable\` moves to it."
+            else
+              echo "- \`stable\` stays where it is: this build has more fixable critical findings."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The same digest under another tag, not a new manifest list: `stable` names exactly what the index says.
+      - name: Move stable
+        if: env.PUBLISH == 'true' && env.CHANNELS == 'stable'
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create --prefer-index=false --tag "$REPOSITORY:stable" "$REPOSITORY@$DIGEST"
+          stable="$(docker buildx imagetools inspect "$REPOSITORY:stable" --format '{{json .Manifest}}' | jq -r .digest)"
+          [ "$stable" = "$DIGEST" ] || { echo "::error::$REPOSITORY:stable is $stable, not $DIGEST"; exit 1; }
+
+      # Code scanning is a view of the findings, not a gate: it mustn't fail a published build.
+      - uses: github/codeql-action/upload-sarif@v3
+        if: env.PUBLISH == 'true'
+        continue-on-error: true
+        with:
+          sarif_file: ${{ env.WORK }}/trivy.sarif
+          category: base-image-${{ matrix.name }}
+
+      # For the index job, which records every image's build in one go.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.name }}
+          path: ${{ env.WORK }}/build-${{ matrix.name }}.json
+          if-no-files-found: error
+          retention-days: 7
+
+      # Also after a failure or a cancelled run. Only this run's tags; the base layers stay on the host.
+      - name: Clean up
+        if: always()
+        run: |
+          for tag in "$IMAGE" "${REPOSITORY:-none}:$VERSION"; do
+            if [ -n "$(docker image ls --quiet "$tag")" ]; then docker image rm "$tag" || true; fi
+          done
+          rm -rf "$RUNNER_TEMP/base-image-$NAME"
+
+  index:
+    name: Publish the base image index
+    needs: [plan, build]
+    # Also when one image's build failed: the others' are still recorded.
+    if: ${{ !cancelled() && needs.plan.outputs.build == 'true' }}
+    runs-on: [self-hosted, harbour]
+    timeout-minutes: 10
+    permissions:
+      contents: write # create and update the base-images release
+      id-token: write # cosign keyless
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - uses: sigstore/cosign-installer@v4.1.2
+        if: env.PUBLISH == 'true'
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+
+      - name: Prepare
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/base-image-index"
+          rm -rf "$work"
+          mkdir -p "$work"
+          echo "WORK=$work" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: build-*
+          path: ${{ env.WORK }}/builds
+          merge-multiple: true
+
+      - name: The published index
+        run: |
+          set -euo pipefail
+          # As in the build job: none yet starts an empty one, and any other error stops here.
+          if gh release view base-images --json assets --jq '.assets[].name' >"$WORK/assets" 2>"$WORK/assets.err"; then
+            if grep -qx index.json "$WORK/assets"; then gh release download base-images --pattern index.json --dir "$WORK" --clobber; fi
+          elif grep -q 'release not found' "$WORK/assets.err"; then
+            echo "No base-images release yet: starting from an empty index."
+          else
+            cat "$WORK/assets.err" >&2
+            exit 1
+          fi
+
+      - name: Record the builds
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          builds=("$WORK"/builds/build-*.json)
+          if [ "${#builds[@]}" -eq 0 ]; then
+            echo "::error::No image was built, so there is nothing to record."
+            exit 1
+          fi
+          node tools/base-images/index.ts record "$WORK/index.json" "${builds[@]}" >"$WORK/new-index.json"
+          mv "$WORK/new-index.json" "$WORK/index.json"
+          {
+            echo "### Base image index"
+            echo
+            if [ "$PUBLISH" != true ]; then echo "A dry run: the index it would publish. Nothing was signed or uploaded."; echo; fi
+            node tools/base-images/index.ts summary "$WORK/index.json"
+            # The whole index too, unless it would take up most of the summary's 1 MiB.
+            if [ "$(wc -c <"$WORK/index.json")" -lt 800000 ]; then
+              echo
+              echo "<details><summary>index.json</summary>"
+              echo
+              echo '```json'
+              cat "$WORK/index.json"
+              echo '```'
+              echo "</details>"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Sign and upload the index
+        if: env.PUBLISH == 'true'
+        run: |
+          set -euo pipefail
+          cd "$WORK"
+          cosign sign-blob --yes --bundle index.json.sigstore.json index.json
+          if ! gh release view base-images >/dev/null 2>&1; then
+            gh release create base-images --prerelease --latest=false --title "Base images" --notes "$INDEX_NOTES"
+          fi
+          gh release upload base-images index.json index.json.sigstore.json --clobber
+          echo "Published https://github.com/$GITHUB_REPOSITORY/releases/download/base-images/index.json" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clean up
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/base-image-index"
+
+  # The microVM host images (kernel, sandbox and isolate root file systems), daily, once Tom has turned it on: a runner
+  # needs release.sh's tools first (Docker, Go, bun, gzip, git, curl, jq, debugfs). Not on a rebuild of only some
+  # images (a CVE rebuild names the container images), and in a dry run it builds and publishes nothing.
+  host-images:
+    name: Build and publish the host images
+    needs: [plan, index]
+    if: ${{ !cancelled() && vars.KANTEL_HOST_IMAGES_DAILY == 'true' && needs.plan.outputs.build == 'true' && !inputs.images }}
+    runs-on: [self-hosted, harbour]
+    timeout-minutes: 120
+    permissions:
+      contents: write # the host-images release, and the index's
+      id-token: write # cosign keyless
+    defaults:
+      run:
+        shell: bash
+    env:
+      REFRESH: ${{ needs.plan.outputs.refresh }}
+      REASON: ${{ needs.plan.outputs.reason }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/host/go.mod
+          cache-dependency-path: apps/host/go.sum
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - uses: sigstore/cosign-installer@v4.1.2
+        if: env.PUBLISH == 'true'
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+
+      - name: Prepare
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/host-images"
+          rm -rf "$work"
+          mkdir -p "$work"
+          echo "WORK=$work" >> "$GITHUB_ENV"
+          echo "TAG=host-images-$REFRESH.$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
+
+      # amd64 only: arm64 is published only once boot-check-arm64.sh has passed on its build, which needs QEMU here.
+      # KANTEL_NO_CACHE and the date reach rootfs.sh's docker build, as --no-cache and KANTEL_SECURITY_REFRESH.
+      - name: Build, and publish on main
+        env:
+          ARCHES: amd64
+          KANTEL_SECURITY_REFRESH: ${{ needs.plan.outputs.refresh }}
+          KANTEL_NO_CACHE: "1"
+        run: |
+          set -euo pipefail
+          if [ "$PUBLISH" = true ]; then
+            apps/host/guest/release.sh "$WORK/out" "$TAG" --publish
+          else
+            apps/host/guest/release.sh "$WORK/out" "$TAG"
+          fi
+
+      # Hosts check each file against manifest.json; this bundle lets them check manifest.json came from here.
+      - name: Sign the manifest
+        if: env.PUBLISH == 'true'
+        run: |
+          set -euo pipefail
+          cd "$WORK/out"
+          cosign sign-blob --yes --bundle manifest.json.sigstore.json manifest.json
+          gh release upload "$TAG" manifest.json.sigstore.json
+
+      - name: The published index
+        run: |
+          set -euo pipefail
+          # As in the build job: none yet starts an empty one, and any other error stops here.
+          if gh release view base-images --json assets --jq '.assets[].name' >"$WORK/assets" 2>"$WORK/assets.err"; then
+            if grep -qx index.json "$WORK/assets"; then gh release download base-images --pattern index.json --dir "$WORK" --clobber; fi
+          elif grep -q 'release not found' "$WORK/assets.err"; then
+            echo "No base-images release yet: starting from an empty index."
+          else
+            cat "$WORK/assets.err" >&2
+            exit 1
+          fi
+
+      # The host images are a release of files, so their digest is manifest.json's, which lists every file's SHA-256.
+      - name: Record the host images
+        run: |
+          set -euo pipefail
+          digest="sha256:$(sha256sum "$WORK/out/manifest.json" | cut -d' ' -f1)"
+          options=(--commit "$GITHUB_SHA" --reason "$REASON")
+          if [ "$PUBLISH" = true ]; then options+=(--signed); fi
+          node tools/base-images/index.ts build "$WORK/index.json" host \
+            "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG" "$TAG" "$digest" "${options[@]}" >"$WORK/build-host.json"
+          node tools/base-images/index.ts record "$WORK/index.json" "$WORK/build-host.json" >"$WORK/new-index.json"
+          mv "$WORK/new-index.json" "$WORK/index.json"
+          {
+            echo "### Host images"
+            echo
+            if [ "$PUBLISH" = true ]; then
+              echo "Published $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG (manifest \`$digest\`)."
+            else
+              echo "A dry run: built $TAG (manifest \`$digest\`); nothing was published."
+            fi
+            echo
+            node tools/base-images/index.ts summary "$WORK/index.json"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Sign and upload the index
+        if: env.PUBLISH == 'true'
+        run: |
+          set -euo pipefail
+          cd "$WORK"
+          cosign sign-blob --yes --bundle index.json.sigstore.json index.json
+          if ! gh release view base-images >/dev/null 2>&1; then
+            gh release create base-images --prerelease --latest=false --title "Base images" --notes "$INDEX_NOTES"
+          fi
+          gh release upload base-images index.json index.json.sigstore.json --clobber
+
+      # The images are gigabytes: only this run's directory and the tags rootfs.sh made.
+      - name: Clean up
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/host-images"
+          for tag in kantel-guest-sandbox:amd64 kantel-guest-isolate:amd64; do
+            if [ -n "$(docker image ls --quiet "$tag")" ]; then docker image rm "$tag" || true; fi
+          done
+
+  rescan:
+    name: Rescan what stable names
+    # The 6-hourly cron: a CVE published since the last build shows up here, with a fresh Trivy database.
+    if: github.workflow == 'Sandbox image' && github.event_name == 'schedule' && github.event.schedule == '43 */6 * * *'
+    runs-on: [self-hosted, harbour]
+    timeout-minutes: 30
+    permissions:
+      contents: write # the index on the base-images release
+      actions: write # dispatch a CVE rebuild of this workflow
+      id-token: write # cosign keyless
+      security-events: write # the rescans' SARIF in code scanning
+      packages: read # pull the images to scan while a package is still private (setup step 1 makes them public)
+    defaults:
+      run:
+        shell: bash
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - uses: aquasecurity/setup-trivy@v0.3.1
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+
+      - uses: sigstore/cosign-installer@v4.1.2
+        if: env.PUBLISH == 'true'
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+
+      - name: Prepare
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/base-image-rescan"
+          rm -rf "$work"
+          mkdir -p "$work/sarif"
+          echo "WORK=$work" >> "$GITHUB_ENV"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: The published index
+        run: |
+          set -euo pipefail
+          # As in the build job: none yet starts an empty one, and any other error stops here.
+          if gh release view base-images --json assets --jq '.assets[].name' >"$WORK/assets" 2>"$WORK/assets.err"; then
+            if grep -qx index.json "$WORK/assets"; then gh release download base-images --pattern index.json --dir "$WORK" --clobber; fi
+          elif grep -q 'release not found' "$WORK/assets.err"; then
+            echo "No base-images release yet: starting from an empty index."
+          else
+            cat "$WORK/assets.err" >&2
+            exit 1
+          fi
+
+      - name: Rescan
+        run: |
+          set -euo pipefail
+          scanner="trivy ${TRIVY_VERSION#v}"
+          stable="$(node tools/base-images/index.ts stable "$WORK/index.json")"
+          if [ -z "$stable" ]; then
+            echo "Nothing is published yet, so there is nothing to rescan." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # A fresh vulnerability database, not the one cached on the runner.
+          trivy clean --vuln-db
+          scanned=","
+          # The list on its own descriptor, so nothing in the loop can read it from standard input.
+          while IFS=$'\t' read -r name repository digest <&3; do
+            # Only the container images: `host` is a release of files, which Trivy doesn't scan as an image.
+            case "$repository" in ghcr.io/*) ;; *) continue ;; esac
+            trivy image --scanners vuln --format json --output "$WORK/trivy-$name.json" "$repository@$digest"
+            node tools/base-images/scan.ts "$WORK/trivy-$name.json" --scanner "$scanner" --title "Rescan of $name at $digest" >/dev/null
+            node tools/base-images/index.ts scan "$WORK/index.json" "$name" "$digest" "$WORK/trivy-$name.json" \
+              --scanner "$scanner" >"$WORK/new-index.json"
+            mv "$WORK/new-index.json" "$WORK/index.json"
+            trivy image --scanners vuln --skip-db-update --format sarif --output "$WORK/sarif/$name.sarif" "$repository@$digest"
+            scanned="$scanned$name,"
+          done 3<<<"$stable"
+          rebuild="$(node tools/base-images/index.ts needs-rebuild "$WORK/index.json")"
+          {
+            echo "SCANNED=$scanned"
+            echo "REBUILD=$rebuild"
+          } >> "$GITHUB_ENV"
+          if [ -n "$rebuild" ]; then
+            echo "A Critical or High finding has a fix out in $rebuild: rebuilding it." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Nothing to rebuild: no fixable Critical or High findings." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # One upload per image, each in its image's category, so a rescan replaces that image's alerts from its build.
+      - uses: github/codeql-action/upload-sarif@v3
+        if: env.PUBLISH == 'true' && contains(env.SCANNED, ',sandbox,')
+        continue-on-error: true
+        with:
+          sarif_file: ${{ env.WORK }}/sarif/sandbox.sarif
+          category: base-image-sandbox
+
+      - uses: github/codeql-action/upload-sarif@v3
+        if: env.PUBLISH == 'true' && contains(env.SCANNED, ',browser,')
+        continue-on-error: true
+        with:
+          sarif_file: ${{ env.WORK }}/sarif/browser.sarif
+          category: base-image-browser
+
+      - uses: github/codeql-action/upload-sarif@v3
+        if: env.PUBLISH == 'true' && contains(env.SCANNED, ',isolate-host,')
+        continue-on-error: true
+        with:
+          sarif_file: ${{ env.WORK }}/sarif/isolate-host.sarif
+          category: base-image-isolate-host
+
+      - name: Sign and upload the index
+        if: env.PUBLISH == 'true' && env.SCANNED != '' && env.SCANNED != ','
+        run: |
+          set -euo pipefail
+          cd "$WORK"
+          cosign sign-blob --yes --bundle index.json.sigstore.json index.json
+          gh release upload base-images index.json index.json.sigstore.json --clobber
+
+      # GITHUB_TOKEN may start a workflow_dispatch run (unlike most events it triggers). It waits for this run in the
+      # shared publish group.
+      - name: Dispatch a rebuild
+        if: env.PUBLISH == 'true' && env.REBUILD != ''
+        run: |
+          set -euo pipefail
+          gh workflow run sandbox-image.yml --ref main -f publish=true -f reason=cve -f images="$REBUILD"
+          echo "Dispatched a CVE rebuild of $REBUILD." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clean up
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/base-image-rescan"

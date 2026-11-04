@@ -13,6 +13,16 @@ RUN apt-get update \
 	&& find /usr/share/doc -type f ! -name copyright -delete
 # (Each package's copyright file stays: the image is published, and they carry the licences.)
 
+# Security updates: a rebuild of debian:trixie-slim from a warm cache keeps its old packages. The daily build
+# (.github/workflows/sandbox-image.yml, through release.sh and rootfs.sh) passes today's date, which re-runs this layer
+# even with a warm cache. The image's own sources include trixie-security, so no other source is needed.
+ARG KANTEL_SECURITY_REFRESH=unset
+RUN echo "security refresh $KANTEL_SECURITY_REFRESH" \
+	&& apt-get update \
+	&& apt-get -y upgrade --no-install-recommends \
+	&& apt-get clean && rm -rf /var/lib/apt/lists/* /usr/share/man/* \
+	&& find /usr/share/doc -type f ! -name copyright -delete
+
 # Staged, then copied with modes made readable (COPY keeps the build context's modes; see Dockerfile).
 COPY dist/kantel-guest-${TARGETARCH} /tmp/kantel-rootfs/usr/local/bin/kantel-guest
 COPY dist/workerd-${TARGETARCH} /tmp/kantel-rootfs/usr/local/bin/workerd
