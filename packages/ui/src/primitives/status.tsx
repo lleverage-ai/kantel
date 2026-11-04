@@ -45,7 +45,7 @@ export type BadgeTone = "neutral" | "accent" | Status;
 
 /** The pill. Its words are trimmed to their capitals and centred in it, so they look centred in any font. */
 const badgeBase =
-	"inline-flex h-[calc(var(--kt-control-xs)_-_var(--kt-step-1_5))] flex-none items-center rounded-full px-2 text-xs font-medium leading-none whitespace-nowrap";
+	"inline-flex h-[calc(var(--kt-control-xs)_-_var(--kt-step-1_5))] flex-none items-center rounded-sm px-2 text-xs font-medium leading-none whitespace-nowrap";
 
 /** Each tone's tint and text colour; a status tone reads its status's colours from the kt-status class. */
 const badgeTones = {

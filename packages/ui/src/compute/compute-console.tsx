@@ -1132,7 +1132,7 @@ function ConsoleLoading({ narrow, title }: { narrow: boolean; title: string | un
 				<span className={`${skeletonClass} h-(--kt-control-md) w-20 rounded-control`} />
 			</div>
 			<div className={`flex gap-3 ${narrow ? "flex-col" : "items-center justify-between"}`}>
-				<span className={`${skeletonClass} h-(--kt-control-md) w-72 max-w-full rounded-full`} />
+				<span className={`${skeletonClass} h-(--kt-control-md) w-72 max-w-full rounded-control`} />
 				<span className={`${skeletonClass} h-(--kt-control-md) ${narrow ? "w-full" : "w-80"} rounded-control`} />
 			</div>
 			<div className="flex flex-col">

@@ -183,14 +183,15 @@
 	--kt-brand-mark: 40px; /* the mark alone, over a page's welcome */
 	--kt-rail-width: 52px; /* the sidebar collapsed to a rail of icons */
 
-	/* Radius, Tom's scale (3 Nov 2026): 6px small, 10px controls (r-md), 14px panels and cards (r-lg), 18px bubbles
-	   (r-xl), 20px dialogs (r-2xl). Buttons, pills and tags are fully round (--kt-radius-full). */
-	--kt-radius: 14px;
+	/* Radius, the Lleverage app's scale (design-system/DESIGN.md, "Shape and radius"): 12px panels, cards and dialogs
+	   (lg), 10px buttons and inputs (md), 8px badges, chips and segments (sm), 4px for small marks. Only avatars, dots
+	   and the like are fully round (--kt-radius-full). */
+	--kt-radius: 12px;
 	--kt-radius-control: 10px;
-	--kt-radius-sm: 6px;
+	--kt-radius-sm: 8px;
 	--kt-radius-xs: 4px;
-	--kt-radius-bubble: 18px;
-	--kt-radius-dialog: 20px;
+	--kt-radius-bubble: 12px;
+	--kt-radius-dialog: 12px;
 	--kt-radius-full: 999px;
 
 	/* Elevation, for things that float (--kt-shadow-float, --kt-shadow-composer), and a service logo's edge and ink
