@@ -28,7 +28,7 @@ import {
 	SCOPE_PRESETS,
 	untilText,
 } from "./compute-model.ts";
-import { computePage, messageOf, table } from "./parts.tsx";
+import { computePage, messageOf, table, tableFrame } from "./parts.tsx";
 import { SettingsPageHeader } from "./settings-nav.tsx";
 
 export interface ComputeApiKeysPageProps {
@@ -260,7 +260,7 @@ function KeyList({
 		);
 	}
 	return (
-		<div className="kt-compute-table min-w-0 overflow-x-auto">
+		<div className={tableFrame}>
 			<table className={table}>
 				<thead>
 					<tr>

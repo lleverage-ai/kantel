@@ -13,7 +13,7 @@ import { Badge } from "../primitives/status.tsx";
 import { Notice } from "../primitives/surface.tsx";
 import { Switch } from "../primitives/switch.tsx";
 import type { Sandbox, SandboxCommand, SandboxesSource, SandboxSnapshot } from "./compute-model.ts";
-import { messageOf, table } from "./parts.tsx";
+import { messageOf, table, tableFrame } from "./parts.tsx";
 
 export type LogFilter = "all" | "commands" | "events";
 
@@ -210,7 +210,7 @@ export function SandboxLogs({
 					))}
 				</ul>
 			) : (
-				<div className="kt-compute-table min-w-0 overflow-x-auto">
+				<div className={tableFrame}>
 					<table className={table}>
 						<thead>
 							<tr>

@@ -55,7 +55,7 @@ import {
 	vcpuRangeFor,
 } from "./compute-model.ts";
 import { lineOf, ROW_SPAN_MS, seriesOf, useLiveUsage } from "./live-usage.ts";
-import { computePage, messageOf, Sparkline } from "./parts.tsx";
+import { computePage, messageOf, Sparkline, tableFrame } from "./parts.tsx";
 import { AUTO_STOP_CHOICES, DeleteDialog, type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
 import { popOut } from "./sandbox-screen.tsx";
 import { ChangeCounter, changeTaken, keepShown, retryTargets } from "./sandbox-selection.ts";
@@ -506,7 +506,7 @@ function SandboxList({
 			))}
 		</ul>
 	) : (
-		<div className="kt-compute-table min-w-0 overflow-x-auto">
+		<div className={tableFrame}>
 			<table className="w-full border-collapse text-left text-md">
 				<thead>
 					<tr>
@@ -840,8 +840,8 @@ function SandboxRow({
 				<span className="relative flex items-center justify-end gap-1">
 					{windows && href !== undefined ? (
 						// Over the columns to its left while shown, so the hidden buttons take no width from every row. The
-						// canvas under the row's own hover tint matches the row it sits on.
-						<span className={`absolute right-full mr-1 rounded-control bg-canvas ${onHover}`}>
+						// card's white under the row's own hover tint matches the row it sits on.
+						<span className={`absolute right-full mr-1 rounded-control bg-raised ${onHover}`}>
 							<span className="flex gap-1 rounded-control bg-hover pl-2">
 								<a className={ghostLink} href={href("browser")} onClick={onScreen("browser")}>
 									<GlobeIcon size="sm" />
