@@ -1066,6 +1066,54 @@ describe("copying files", () => {
 		expect(docker.stderr).toContain("kantel: left out config.json (credentials)");
 	});
 
+	it("push classifies files under what leads to the root: a deeper root, a linked root, a worktree", async () => {
+		const inside =
+			(dir: string) =>
+			(...args: string[]) =>
+				execFileSync("git", args, { cwd: dir, stdio: "ignore" });
+
+		// A root deeper in an agent directory, in a repository: its untracked files still stay behind.
+		const repo = join(configDir, "repo");
+		await files(repo, [".cursor/rules.md", ".cursor/User/settings.json", ".cursor/User/auth.json", "a.ts"]);
+		const inRepo = inside(repo);
+		inRepo("init", "-q");
+		inRepo("add", ".cursor/rules.md", ".cursor/User/settings.json", "a.ts");
+		const deeper = await pushed(["repo/.cursor/User"]);
+		expect(deeper.code).toBe(0);
+		expect(deeper.written).toEqual(["User/settings.json"]);
+		expect(deeper.stderr).toContain("kantel: left out auth.json (an agent's sign-in and settings)");
+
+		// A root named .docker through a link, outside and inside a repository.
+		await files(join(configDir, "elsewhere", "docker-files"), ["config.json", "daemon.json"]);
+		await symlink(join(configDir, "elsewhere", "docker-files"), join(configDir, "elsewhere", ".docker"));
+		const linked = await pushed(["elsewhere/.docker"]);
+		expect(linked.code).toBe(0);
+		expect(linked.written).toEqual([".docker/daemon.json"]);
+		expect(linked.stderr).toContain("kantel: left out config.json (credentials)");
+		const meant = await pushed(["elsewhere/.docker", "--no-default-excludes"]);
+		expect(meant.written).toEqual([".docker/config.json", ".docker/daemon.json"]);
+		await files(join(repo, "docker-files"), ["config.json", "daemon.json"]);
+		await symlink(join(repo, "docker-files"), join(repo, ".docker"));
+		inRepo("add", "docker-files");
+		const linkedInRepo = await pushed(["repo/.docker"]);
+		expect(linkedInRepo.written).toEqual([".docker/daemon.json"]);
+		expect(linkedInRepo.stderr).toContain("kantel: left out config.json (credentials)");
+
+		// A separate worktree in .claude/worktrees is a project of its own: its new files go, its .env doesn't.
+		const outer = join(configDir, "outer");
+		const worktree = join(outer, ".claude", "worktrees", "wt");
+		await files(outer, ["README.md"]);
+		await files(worktree, ["a.ts", "new.ts", ".env"]);
+		inside(outer)("init", "-q");
+		const inWorktree = inside(worktree);
+		inWorktree("init", "-q");
+		inWorktree("add", "a.ts");
+		const separate = await pushed([worktree]);
+		expect(separate.code).toBe(0);
+		expect(separate.written).toEqual(["wt/a.ts", "wt/new.ts"]);
+		expect(separate.stderr).toContain("kantel: left out .env (an environment file)");
+	});
+
 	it("scp sends a file over 1 MiB in parts and joins them with one command", async () => {
 		const big = Buffer.alloc(1024 * 1024 + 10, 7);
 		await writeFile(join(configDir, "big.bin"), big);

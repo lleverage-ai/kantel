@@ -224,13 +224,44 @@ function gitList(root: string, flags: readonly string[]): Promise<string[] | und
  */
 export async function gitFiles(
 	root: string,
-): Promise<{ readonly files: string[]; readonly tracked: ReadonlySet<string> } | undefined> {
-	const [files, tracked] = await Promise.all([
+): Promise<{ readonly files: string[]; readonly tracked: ReadonlySet<string>; readonly top: string } | undefined> {
+	const [files, tracked, top] = await Promise.all([
 		gitList(root, ["--cached", "--others", "--exclude-standard"]),
 		gitList(root, ["--cached"]),
+		gitTop(root),
 	]);
-	if (files === undefined || tracked === undefined) return undefined;
-	return { files, tracked: new Set(tracked) };
+	if (files === undefined || tracked === undefined || top === undefined) return undefined;
+	return { files, tracked: new Set(tracked), top };
+}
+
+/** The top of the working tree `root` is in, or undefined. */
+function gitTop(root: string): Promise<string | undefined> {
+	return new Promise((done) => {
+		const child = spawn("git", ["rev-parse", "--show-toplevel"], { cwd: root, stdio: ["ignore", "pipe", "ignore"] });
+		const chunks: Buffer[] = [];
+		child.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+		child.once("error", () => done(undefined));
+		child.once("close", (code) => {
+			const top = Buffer.concat(chunks).toString("utf8").trim();
+			done(code === 0 && top !== "" ? resolve(top) : undefined);
+		});
+	});
+}
+
+/**
+ * The paths that lead to `root`, with `/`, which push puts before each file it classifies, so a root inside `.cursor`
+ * or named `.docker` counts as it would from above. Both how it was named and where it resolves count. In a
+ * repository they start at its top (`top`), so a worktree in `.claude/worktrees` isn't all agent settings; elsewhere
+ * they are absolute.
+ */
+export async function rootContexts(root: string, top?: string): Promise<string[]> {
+	const named = join(await real(dirname(resolve(root))), basename(resolve(root)));
+	const resolved = await real(root);
+	const realTop = top === undefined ? undefined : await real(top);
+	const contexts = [named, resolved].map((path) =>
+		realTop !== undefined && within(path, realTop) ? relative(realTop, path) : path,
+	);
+	return [...new Set(contexts.map((path) => path.split(sep).join("/")))];
 }
 
 /** Credentials push leaves out wherever they are in the tree, even when git tracks them. */
@@ -302,17 +333,26 @@ export async function pushPlan(
 		readonly tracked?: ReadonlySet<string>;
 		readonly defaultExcludes: boolean;
 		readonly keep?: readonly string[];
+		/** What leads to `root` ({@link rootContexts}); default its absolute paths. */
+		readonly contexts?: readonly string[];
 	},
 ): Promise<{ readonly files: string[]; readonly skipped: Skipped[] }> {
 	const realRoot = await real(root);
 	const keep = await Promise.all((options.keep ?? []).map(real));
-	// The root's own name counts, as `.docker` does for `config.json`; checkPushRoot refuses a root in `.ssh` and such.
-	const base = basename(realRoot);
+	const contexts = options.contexts ?? (await rootContexts(root));
+	// Each file is classified under what leads to the root, so `.cursor/User/auth.json` counts when the root is
+	// `.cursor/User`, and `config.json` when it is `.docker`. A notice names the file as it is under the root.
 	const exclude = (rel: string): Skipped | undefined => {
 		if (!options.defaultExcludes) return undefined;
 		const posixRel = rel.split(sep).join("/");
-		const found = defaultExclude(`${base}/${posixRel}`, options.tracked?.has(posixRel));
-		return found === undefined ? undefined : { ...found, path: found.path.slice(base.length + 1) || posixRel };
+		for (const context of contexts) {
+			const prefix = context === "" ? "" : `${context.replace(/\/+$/, "")}/`;
+			const found = defaultExclude(`${prefix}${posixRel}`, options.tracked?.has(posixRel));
+			if (found === undefined) continue;
+			const under = found.path.startsWith(prefix) ? found.path.slice(prefix.length) : "";
+			return { ...found, path: under === "" ? posixRel : under };
+		}
+		return undefined;
 	};
 	const sent = new Set<string>();
 	const skipped = new Map<string, Skipped>();

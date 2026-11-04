@@ -98,6 +98,7 @@ import {
 	remoteIsDirectory,
 	remoteJoin,
 	remotePath,
+	rootContexts,
 	uploadFile,
 	uploadTree,
 	walk,
@@ -2147,6 +2148,7 @@ const SECTIONS: readonly Section[] = [
 						tracked: git?.tracked,
 						defaultExcludes,
 						keep: config === undefined ? [] : [config],
+						contexts: await rootContexts(root, git?.top),
 					});
 					for (const skipped of plan.skipped) ctx.note(`kantel: left out ${skipped.path} (${skipped.why})`);
 					if (plan.skipped.some((skipped) => skipped.byDefault === true) && !ctx.json) {
