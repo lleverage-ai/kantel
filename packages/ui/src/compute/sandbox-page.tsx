@@ -44,8 +44,8 @@ import {
 	type SnapshotsSource,
 	sandboxActions,
 	sandboxMoving,
+	sandboxSpec,
 	screenUnavailable,
-	sizeSpec,
 	sizeText,
 	stopsInText,
 } from "./compute-model.ts";
@@ -687,7 +687,7 @@ function Overview({
 	const ready = access !== undefined && access !== "loading" && !(access instanceof Error) ? access : undefined;
 	// Where the page can't frame a screen, its tile is the drawing and opens the screen in a tab.
 	const framed = ready !== undefined && source.screens !== "tab" ? ready : undefined;
-	const spec = sandbox.resources ?? sizeSpec(sandbox.size);
+	const spec = sandboxSpec(sandbox);
 	const { ports, exposePort, hidePort } = source;
 	const portsShown = ports !== undefined && exposePort !== undefined && hidePort !== undefined;
 
@@ -975,7 +975,7 @@ function Usage({ source, sandbox, refreshKey }: { source: SandboxesSource; sandb
 	const live = useLiveUsage(sandbox.state === "error" ? undefined : source.usageSeries, sandbox.id);
 	const series = seriesOf(live);
 	const loading = live.status === "loading";
-	const spec = sandbox.resources ?? sizeSpec(sandbox.size);
+	const spec = sandboxSpec(sandbox);
 	const liveCpu = lineOf(series, (point) => point.cpu, USAGE_KEEP_MS);
 	const liveMemory = lineOf(series, (point) => point.memUsedBytes, USAGE_KEEP_MS);
 	// Without a live source, its recent CPU as listed, untimed.
@@ -1042,7 +1042,8 @@ function Usage({ source, sandbox, refreshKey }: { source: SandboxesSource; sandb
 						}
 					/>
 				)}
-				{now?.diskGb === undefined ? null : meter("Disk", now.diskGb, spec.diskGb)}
+				{/* No disk of its own (an isolate's is 0): nothing to measure against, as Details says. */}
+				{now?.diskGb === undefined || spec.diskGb <= 0 ? null : meter("Disk", now.diskGb, spec.diskGb)}
 			</div>
 		</section>
 	);
