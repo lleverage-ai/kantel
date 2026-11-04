@@ -169,6 +169,12 @@ type ImageChannel struct {
 // template already built doesn't need it.
 const FeatureTemplateBuild = "template-build"
 
+// FeatureBucketMounts (HOST_FEATURES.mountsBucket): the host mounts CreateParams' bucket Mounts read-only in microVM
+// sandboxes (a lazy FUSE view over a host-wide read cache), fetches each bucket source's location and credentials with
+// bucket.fetch, answers each mount's status in SandboxInfo.Mounts (and later changes as a sandbox.mounts event), and
+// answers sandbox.mounts.refresh. Experimental: the control plane sends mounts only behind its switch.
+const FeatureBucketMounts = "mounts-bucket"
+
 // Size is a sandbox shape.
 type Size struct {
 	Name      string `json:"name"`
@@ -258,6 +264,8 @@ type SandboxInfo struct {
 	BaseAt int64 `json:"baseAt,omitempty"`
 	// Guest is what the microVM's image has, as its guest agent found it (absent from an agent too old to say).
 	Guest *GuestCapabilities `json:"guest,omitempty"`
+	// Mounts are the sandbox's read-only mounts and how each is doing (FeatureBucketMounts).
+	Mounts []MountStatus `json:"mounts,omitempty"`
 }
 
 // GuestCapabilities is a guest agent's report on its image: what it is, and whether it has a desktop, a browser and
@@ -299,6 +307,94 @@ type GuestDocker struct {
 	GuestFeature
 	KVM bool `json:"kvm"`
 }
+
+// Mount kinds.
+const (
+	MountBucket = "bucket"
+)
+
+// Mount is one read-only mount a sandbox is created with (HostMount): the sandbox sees it at Path and can't write to
+// it (EROFS). A bucket mount is a prefix of an account's bucket source. The host lists it once when it mounts (the
+// manifest: every object's path, size, mtime and ETag), so listing and stat in the sandbox are local, and fetches an
+// object's bytes only when the sandbox reads them, through the host's read cache.
+type Mount struct {
+	// Path is where it appears in the sandbox: absolute, and not one of the system's own directories.
+	Path string `json:"path"`
+	// Kind is "bucket" (or "bundle", which this host's bucket mounts leave alone).
+	Kind string `json:"kind"`
+	// Digest is a bundle's (kind "bundle").
+	Digest string `json:"digest,omitempty"`
+	// BucketSourceID is the account's bucket source: the host asks Kantel for its location and credentials
+	// (bucket.fetch) and keeps them in memory only. They never reach the sandbox.
+	BucketSourceID string `json:"bucketSourceId,omitempty"`
+	// Prefix is the part of the bucket mounted ("" the whole bucket); "reports" and "reports/" are the same.
+	Prefix string `json:"prefix,omitempty"`
+	// RefreshTTLSeconds is how old the manifest may be when the sandbox looks at the mount before the host lists the
+	// prefix again, in the background. Nil: the host's default (60); 0: never again (sandbox.mounts.refresh still does).
+	RefreshTTLSeconds *int `json:"refreshTtlSeconds,omitempty"`
+}
+
+// Mount states.
+const (
+	MountReady   = "ready"
+	MountPending = "pending"
+	MountFailed  = "failed"
+)
+
+// MountStatus is how one of a sandbox's mounts is doing (HostMountStatus, with the manifest's figures besides).
+type MountStatus struct {
+	Path  string `json:"path"`
+	Kind  string `json:"kind,omitempty"`
+	State string `json:"status"`
+	// Error says why a failed mount failed (never a credential).
+	Error string `json:"error,omitempty"`
+	// Objects and Bytes are what the manifest holds; RefreshedAt (ms) is when the prefix was last listed.
+	Objects     int   `json:"objects,omitempty"`
+	Bytes       int64 `json:"bytes,omitempty"`
+	RefreshedAt int64 `json:"refreshedAt,omitempty"`
+	// ListCalls is how many list requests (pages) the host has made for this mount since it was mounted.
+	ListCalls int64 `json:"listCalls,omitempty"`
+}
+
+// MountsRefreshParams is sandbox.mounts.refresh: list the sandbox's bucket mounts again now (Path empty: all of
+// them), and retry a failed one. The result is the sandbox's []MountStatus.
+type MountsRefreshParams struct {
+	SandboxID string `json:"sandboxId"`
+	Path      string `json:"path,omitempty"`
+}
+
+// BucketResolveParams is bucket.fetch (host → Kantel): a bucket source a sandbox on this host mounts.
+type BucketResolveParams struct {
+	SandboxID string `json:"sandboxId"`
+	SourceID  string `json:"bucketSourceId"`
+}
+
+// BucketSource is bucket.fetch's answer (HostBucketSource). Its credentials live only in the host's memory: never in
+// meta.json, a log, an error or anything the sandbox is sent.
+type BucketSource struct {
+	ID string `json:"id,omitempty"`
+	// Provider is "s3" (any S3-compatible store) or "gcs" (Google Cloud Storage: its XML API, with an HMAC key or a
+	// service account's key).
+	Provider string `json:"provider"`
+	Bucket   string `json:"bucket"`
+	// Endpoint is the store's origin, such as http://minio:9000; empty is the provider's own (AWS S3 in Region, or
+	// https://storage.googleapis.com).
+	Endpoint string `json:"endpoint,omitempty"`
+	Region   string `json:"region,omitempty"`
+	// Credentials: nil for a public bucket.
+	Credentials *BucketCredentials `json:"credentials,omitempty"`
+}
+
+// BucketCredentials is an access key (an S3 key or a GCS HMAC key), or a GCS service account's JSON key.
+type BucketCredentials struct {
+	AccessKeyID       string `json:"accessKeyId,omitempty"`
+	SecretAccessKey   string `json:"secretAccessKey,omitempty"`
+	SessionToken      string `json:"sessionToken,omitempty"`
+	ServiceAccountKey string `json:"serviceAccountKey,omitempty"`
+}
+
+// EventMounts is the event a host sends when a sandbox's mounts change status after its create answered.
+const EventMounts = "sandbox.mounts"
 
 // SnapshotInfo is one snapshot of a sandbox's disk (and, for a stop that kept it, its memory).
 type SnapshotInfo struct {
@@ -444,6 +540,8 @@ type CreateParams struct {
 	// Template makes the sandbox from a template (microVMs only): from its template snapshot, or by booting its image
 	// fresh and running its setup in the new sandbox.
 	Template *TemplateBoot `json:"template,omitempty"`
+	// Mounts are read-only mounts (FeatureBucketMounts); a tier that has none refuses them as unsupported.
+	Mounts []Mount `json:"mounts,omitempty"`
 }
 
 // TemplateBoot is how a sandbox made from a template boots.
@@ -765,4 +863,8 @@ const (
 	MethodTemplateBuild = "template.build"
 	// MethodTemplateDelete (TemplateDeleteParams) deletes a template snapshot; the result is {"ok": true}.
 	MethodTemplateDelete = "template.delete"
+	// MethodMountsRefresh (Kantel → host, MountsRefreshParams) lists a sandbox's bucket mounts again now.
+	MethodMountsRefresh = "sandbox.mounts.refresh"
+	// MethodBucketResolve (host → Kantel, BucketResolveParams) answers a BucketSource (HostMethods.bucketFetch).
+	MethodBucketResolve = "bucket.fetch"
 )

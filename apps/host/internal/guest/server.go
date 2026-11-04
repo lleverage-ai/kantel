@@ -40,6 +40,8 @@ type Server struct {
 	Injected bool
 	// Init is PID 1: "systemd" (the image's) or "kantel" (kantel-guest init's own, for an image without systemd).
 	Init string
+	// Mounts are the sandbox's read-only bucket mounts (POST /mounts); nil refuses them.
+	Mounts *Mounts
 
 	sshOnce    sync.Once
 	ssh        *SSHServer
@@ -66,7 +68,22 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /files/list", s.listFiles)
 	mux.HandleFunc("POST /files/extract", s.extractArchive)
 	mux.HandleFunc("GET /ports/{port}", s.port)
+	mux.HandleFunc("POST /mounts", s.mounts)
 	return mux
+}
+
+// mounts makes the guest's read-only mounts the ones asked for ([]MountSpec), answering []MountResult.
+func (s *Server) mounts(w http.ResponseWriter, r *http.Request) {
+	if s.Mounts == nil {
+		fail(w, http.StatusNotImplemented, errors.New("this guest agent has no mounts"))
+		return
+	}
+	var specs []MountSpec
+	if err := json.NewDecoder(r.Body).Decode(&specs); err != nil {
+		fail(w, 400, err)
+		return
+	}
+	writeJSON(w, 200, s.Mounts.Apply(r.Context(), specs))
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

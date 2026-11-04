@@ -52,6 +52,7 @@ import (
 	"github.com/lleverage-ai/kantel/apps/host/internal/guestinit"
 	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
 	"github.com/lleverage-ai/kantel/apps/host/internal/images"
+	"github.com/lleverage-ai/kantel/apps/host/internal/mounts"
 	"github.com/lleverage-ai/kantel/apps/host/internal/network"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
@@ -179,6 +180,8 @@ type Config struct {
 	// Each create, start or resume and template build is admitted against it (admit), beside what the tier holds. It is
 	// called with the tier's lock held, so it mustn't call the tier. Nil admits everything.
 	Budget func() (memoryMiB, diskGiB int64)
+	// Mounts serves sandboxes' read-only bucket mounts; nil refuses a create with mounts.
+	Mounts *mounts.Manager
 }
 
 type meta struct {
@@ -206,6 +209,8 @@ type meta struct {
 	// template's agent reported it (nil: an agent too old to say). Other sandboxes of the host's image have none and
 	// report the shared Manager.guest instead. Its snapshots keep it.
 	Guest *proto.GuestCapabilities `json:"guest,omitempty"`
+	// Mounts are the sandbox's read-only mounts as created (no credentials: the host resolves those).
+	Mounts []proto.Mount `json:"mounts,omitempty"`
 }
 
 type sandbox struct {
@@ -218,6 +223,9 @@ type sandbox struct {
 	// unsaved: meta differs from meta.json (a write failed). A call that would otherwise change nothing, a retried
 	// start, writes it before it answers.
 	unsaved bool
+	// adoptedMounts: the host adopted the sandbox running, with mounts its guest still holds, whose status the host
+	// hasn't confirmed with the guest since (ReconcileMounts).
+	adoptedMounts atomic.Bool
 }
 
 func (s *sandbox) vmDir() string { return filepath.Join(s.dir, "vm") }
@@ -615,8 +623,127 @@ func (m *Manager) info(s *sandbox) proto.SandboxInfo {
 	// Its own image's report: its template's, else its version's (a template rebuilt on a newer version doesn't change
 	// what this one boots).
 	info.Guest = m.sandboxGuest(s)
+	if mt := m.mountsOf(s); mt != nil {
+		info.Mounts = mt.Status()
+	}
 	return info
 }
+
+// mountsOf is the sandbox's mounts on the host (nil when it has none, or is deleted: its mounts were forgotten, and
+// aren't made again for its last event).
+func (m *Manager) mountsOf(s *sandbox) *mounts.Sandbox {
+	if m.cfg.Mounts == nil || len(s.meta.Mounts) == 0 || s.meta.State == proto.StateDeleted {
+		return nil
+	}
+	return m.cfg.Mounts.Sandbox(s.meta.ID, s.meta.Mounts)
+}
+
+// applyMounts serves a running sandbox's mounts to it and has its guest mount them: listing each prefix that has no
+// manifest yet first. A mount that fails says so in its status; the sandbox runs without it. Called with s.mu held.
+// fromSnapshot says the guest may hold mounts of its own from a snapshot, which go when it has none.
+func (m *Manager) applyMounts(ctx context.Context, s *sandbox, fromSnapshot bool) {
+	if m.cfg.Mounts == nil {
+		return
+	}
+	mt := m.mountsOf(s)
+	if mt == nil {
+		if fromSnapshot {
+			// An older guest agent has no mounts to clear: its answer doesn't matter.
+			_, _ = s.guest.Mount(ctx, nil)
+		}
+		return
+	}
+	if err := mt.Listen(s.vmDir(), fc.VsockSocket); err != nil {
+		mt.Applied(nil, err)
+		return
+	}
+	mt.Load(ctx)
+	mt.Applied(s.guest.Mount(ctx, mt.GuestSpecs()))
+}
+
+// RefreshMounts lists a running sandbox's bucket mounts again now (path: just that one) and shows the guest the new
+// manifests; a failed mount is tried again.
+func (m *Manager) RefreshMounts(ctx context.Context, p proto.MountsRefreshParams) ([]proto.MountStatus, error) {
+	s, err := m.get(p.SandboxID)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mt := m.mountsOf(s)
+	if mt == nil {
+		return nil, &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("sandbox %s has no mounts", s.meta.ID)}
+	}
+	if s.meta.State != proto.StateRunning || s.guest == nil {
+		return nil, conflict("sandbox %s is %s, not running", s.meta.ID, s.meta.State)
+	}
+	if err := mt.Refresh(ctx, p.Path); err != nil {
+		var pe *proto.Error
+		if errors.As(err, &pe) {
+			return nil, err
+		}
+		// A listing that failed is in the mount's status; the rest still go to the guest.
+	}
+	mt.Applied(s.guest.Mount(ctx, mt.GuestSpecs()))
+	m.emit(s)
+	return mt.Status(), nil
+}
+
+// ReconcileMounts confirms the mounts of sandboxes the host adopted running, once it can resolve their bucket
+// sources (it has just connected to Kantel): each prefix is listed, and the guest is shown every mount (so it keeps
+// one it holds whose listing failed), its answer setting each one's status. A sandbox some of whose mounts couldn't
+// be listed is tried again, less and less often, until ctx ends (the connection went; the next one tries again).
+func (m *Manager) ReconcileMounts(ctx context.Context) {
+	m.mu.Lock()
+	var adopted []*sandbox
+	for _, s := range m.sandboxes {
+		if s.adoptedMounts.Load() {
+			adopted = append(adopted, s)
+		}
+	}
+	m.mu.Unlock()
+	for _, s := range adopted {
+		go func() {
+			wait := 10 * time.Second
+			for !m.reconcileMounts(ctx, s) {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(wait):
+				}
+				wait = min(2*wait, 5*time.Minute)
+			}
+		}()
+	}
+}
+
+// reconcileMounts is one try of ReconcileMounts for s; done says there is nothing left to try.
+func (m *Manager) reconcileMounts(ctx context.Context, s *sandbox) (done bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	mt := m.mountsOf(s)
+	if !s.adoptedMounts.Load() || mt == nil || s.meta.State != proto.StateRunning || s.guest == nil {
+		// Stopped, deleted or applied again since (a stop and resume applies its mounts afresh).
+		s.adoptedMounts.Store(false)
+		return true
+	}
+	mt.Load(ctx)
+	results, err := s.guest.Mount(ctx, mt.AllGuestSpecs())
+	if err != nil {
+		m.log.Warn("adopted sandbox's mounts: the guest didn't answer", "sandbox", s.meta.ID, "error", err)
+		return ctx.Err() != nil
+	}
+	mt.Applied(results, nil)
+	m.emit(s)
+	if !mt.Listed() {
+		return false
+	}
+	s.adoptedMounts.Store(false)
+	return true
+}
+
+// MountsSupported says this tier takes CreateParams.Mounts.
+func (m *Manager) MountsSupported() bool { return m.cfg.Mounts != nil }
 
 func (m *Manager) emit(s *sandbox) {
 	if m.cfg.Events != nil {
@@ -652,6 +779,14 @@ func (m *Manager) adopt() error {
 				s.guest = guest.NewClient(filepath.Join(s.vmDir(), fc.VsockSocket))
 				m.attach(s, link.Slot)
 				m.watch(s, machine)
+				if mt := m.mountsOf(s); mt != nil {
+					// The guest's mounts are still up: serve them again (each lists its prefix when first asked). Their
+					// status is pending until ReconcileMounts confirms them with the guest, once the host is connected.
+					if err := mt.Listen(s.vmDir(), fc.VsockSocket); err != nil {
+						m.log.Warn("adopted sandbox's mounts", "sandbox", s.meta.ID, "error", err)
+					}
+					s.adoptedMounts.Store(true)
+				}
 				m.sandboxes[s.meta.ID] = s
 				m.log.Info("adopted running sandbox", "sandbox", s.meta.ID, "pid", s.meta.Pid)
 				if s.meta.GrowDisk {
@@ -698,6 +833,9 @@ func (m *Manager) watch(s *sandbox, machine *fc.Machine) {
 			m.cfg.Network.Remove(*s.link)
 			m.detach(s.link.Slot)
 			s.link = nil
+		}
+		if mt := m.mountsOf(s); mt != nil {
+			mt.Close()
 		}
 		s.meta.State = proto.StateStopped
 		s.meta.Memory = false
@@ -1472,11 +1610,19 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 	if err != nil {
 		return proto.SandboxInfo{}, err
 	}
+	if len(p.Mounts) > 0 {
+		if m.cfg.Mounts == nil {
+			return proto.SandboxInfo{}, &proto.Error{Code: proto.ErrUnsupported, Message: "this host has no bucket mounts"}
+		}
+		if err := mounts.Validate(p.Mounts); err != nil {
+			return proto.SandboxInfo{}, err
+		}
+	}
 	t := timings{}
 	start := time.Now()
 	began := start
 	dir := filepath.Join(m.cfg.Root, "sandboxes", p.SandboxID)
-	s := &sandbox{dir: dir, meta: meta{ID: p.SandboxID, Size: size.Name, State: proto.StateStarting, CreatedAt: time.Now().UnixMilli(), Egress: p.Egress, Env: p.Env, SSHKeys: p.SSHAuthorizedKeys, Owner: p.Owner}}
+	s := &sandbox{dir: dir, meta: meta{ID: p.SandboxID, Size: size.Name, State: proto.StateStarting, CreatedAt: time.Now().UnixMilli(), Egress: p.Egress, Env: p.Env, SSHKeys: p.SSHAuthorizedKeys, Owner: p.Owner, Mounts: p.Mounts}}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := m.register(s, size); err != nil {
@@ -1485,6 +1631,9 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 	fail := func(err error) (proto.SandboxInfo, error) {
 		if s.machine != nil {
 			s.machine.Kill()
+		}
+		if m.cfg.Mounts != nil {
+			m.cfg.Mounts.Forget(p.SandboxID)
 		}
 		if s.link != nil {
 			m.cfg.Network.Remove(*s.link)
@@ -1560,6 +1709,10 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 			return fail(err)
 		}
 		t.step("setup", &start)
+	}
+	if len(s.meta.Mounts) > 0 || p.From != "" {
+		m.applyMounts(ctx, s, p.From != "")
+		t.step("mounts", &start)
 	}
 	s.meta.State = proto.StateRunning
 	s.meta.Slot = s.link.Slot
@@ -1807,6 +1960,9 @@ func (m *Manager) Stop(ctx context.Context, p proto.StopParams) (proto.SnapshotI
 	}
 	s.machine = nil
 	machine.Kill()
+	if mt := m.mountsOf(s); mt != nil {
+		mt.Close()
+	}
 	t.step("kill", &start)
 	_ = os.Remove(filepath.Join(vm, "state"))
 	_ = os.Remove(filepath.Join(vm, "mem"))
@@ -1952,6 +2108,11 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 		return proto.SandboxInfo{}, fmt.Errorf("identity: %w", err)
 	}
 	t.step("identity", &start)
+	if len(s.meta.Mounts) > 0 {
+		// Restored, its FUSE mounts are still there and reach the host again; cold-booted, it mounts them anew.
+		m.applyMounts(ctx, s, false)
+		t.step("mounts", &start)
+	}
 	s.meta.State = proto.StateRunning
 	s.meta.Slot = link.Slot
 	s.meta.Pid = s.machine.Pid()
@@ -2011,7 +2172,7 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 		// The fork's own: its protected placeholders aren't its source's.
 		env = p.Env
 	}
-	params := proto.CreateParams{SandboxID: p.NewID, Size: src.meta.Size, From: snapID, Env: env, SSHAuthorizedKeys: src.meta.SSHKeys, Egress: p.Egress, Owner: src.meta.Owner}
+	params := proto.CreateParams{SandboxID: p.NewID, Size: src.meta.Size, From: snapID, Env: env, SSHAuthorizedKeys: src.meta.SSHKeys, Egress: p.Egress, Owner: src.meta.Owner, Mounts: src.meta.Mounts}
 	if params.Egress == nil {
 		params.Egress = src.meta.Egress
 	}
@@ -2253,6 +2414,9 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 		if snap.Kind == "auto" {
 			_ = os.RemoveAll(m.snapshotDir(snap.ID))
 		}
+	}
+	if m.cfg.Mounts != nil {
+		m.cfg.Mounts.Forget(id)
 	}
 	if err := os.RemoveAll(s.dir); err != nil {
 		return err

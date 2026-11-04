@@ -80,6 +80,26 @@ Point a host's `sandboxImage` at the result (or publish it, below). Keep `kantel
 the `user` account: the host relies on them. The host fingerprints Firecracker, the kernel and the image, and
 rebuilds its templates when any of them changes.
 
+## Bucket mounts
+
+A bucket mount (experimental) is a read-only FUSE file system the guest agent serves at the mount's path, mounted
+with `MS_RDONLY`, so every write fails with `EROFS`. The host lists the bucket prefix once (the manifest: each
+object's path, size, modification time and ETag) and the guest answers `ls`, `stat` and `find` from it with no
+call to anyone; an object's bytes come from the host when they are first read, over vsock port 1027, which reaches
+only that sandbox's own mounts on the host. The host keeps what it read in a shared on-disk cache (8 MiB chunks, by
+object and ETag), so a second sandbox on the host reading the same object never reaches the store. The bucket
+source's credentials stay on the host.
+
+- The view changes only when the manifest does: after `refreshTtlSeconds` (default 60; 0 never), on the control
+  plane's `sandbox.mounts.refresh`, or from inside with `getfattr -n user.kantel.refresh <mount>` (or Python's
+  `os.getxattr`). The host lists at most once every 5 seconds a mount, however often it is asked.
+- An object rewritten in the bucket after it was listed and never read on the host fails with `ESTALE` until a
+  refresh, rather than answer bytes that don't match its listed size and ETag. One read before, from any sandbox on
+  the host, is served from the cache.
+- Files are mode `0444`: object stores keep no execute bit, so run scripts with their interpreter (`sh x.sh`).
+- Mounts are restored by the guest agent after a restart (`/run/kantel/mounts.json`), and kept across stop and
+  resume; a cold start mounts them again.
+
 ## Snapshots on top
 
 A sandbox writes only to its own sparse ext4 (`/dev/vdb`), which `kantel-init` overlays on the shared image at `/`
@@ -94,7 +114,8 @@ old images for them.
 `kernel/kantel.config` is a Firecracker guest config with what Docker needs (overlayfs, cgroups v2, namespaces,
 netfilter and nftables, bridge, veth, VXLAN, IPVS) and KVM, so a sandbox runs its own VMs: on a host whose KVM has
 nested virtualisation on (`kvm_amd nested=1` or `kvm_intel nested=1`), `/dev/kvm` is there in every sandbox.
-`kernel/kantel-<arch>.config` adds what only one architecture has (x86_64's Intel and AMD KVM).
+`kernel/kantel-<arch>.config` adds what only one architecture has (x86_64's Intel and AMD KVM). FUSE (bucket mounts)
+is in Firecracker's config already; `kantel.config` names it so the build fails if it ever isn't.
 
 The host also relies on two drivers the Firecracker config already has built in, and `build.sh` fails if either is
 missing: vsock, for the guest agent, and `virtio_balloon`. Every microVM gets a balloon that never takes memory and only
