@@ -1336,6 +1336,143 @@ func testNewReapsInterruptedSnapshotBoots(t *testing.T, root string) {
 	}
 }
 
+// A create's record is on disk, starting and with its link's slot, before its machine starts (and so before a
+// template's setup runs in it): a host that restarted meanwhile would find it. A machine that won't start leaves no
+// link behind, and the record left with its directory is ended by the next run like any unfinished create.
+func TestStartMachineRecordsTheCreateBeforeItsMachineStarts(t *testing.T) {
+	root := t.TempDir()
+	// Stands for Firecracker: keeps what the sandbox's record was as it started (its working directory is the VM's), and
+	// fails.
+	firecracker := filepath.Join(root, "firecracker")
+	if err := os.WriteFile(firecracker, []byte("#!/bin/sh\ncp ../meta.json ../launched.json\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	disk := filepath.Join(root, "template-disk.ext4")
+	if err := os.WriteFile(disk, []byte("disk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	netm, err := network.New("10.231.0.0/16", 3129, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(Config{Root: root, Sizes: DefaultSizes, SpoolMaxMiB: -1, Network: netm, Firecracker: firecracker, Log: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	dir := filepath.Join(root, "sandboxes", "sbx_1")
+	s := &sandbox{dir: dir, meta: meta{ID: "sbx_1", Size: "default", State: proto.StateStarting}}
+	// A template booted fresh: a cold boot, then its setup.
+	origin := sandboxOrigin{rootfs: filepath.Join(root, "rootfs.ext4"), disk: disk, setup: "touch /opt/app/marker", source: "boot"}
+	if err := m.startMachine(context.Background(), s, origin, DefaultSizes[1], nil, timings{}); err == nil {
+		t.Fatal("a machine that exits at its start started")
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "launched.json"))
+	if err != nil {
+		t.Fatalf("no record as the machine started: %v", err)
+	}
+	var launched meta
+	if err := json.Unmarshal(raw, &launched); err != nil {
+		t.Fatal(err)
+	}
+	if launched.ID != "sbx_1" || launched.State != proto.StateStarting || launched.Slot <= 0 {
+		t.Fatalf("the record as the machine started: %+v", launched)
+	}
+	if s.link != nil || !slices.Contains(netm.Commands, fmt.Sprintf("ip link del kt%d", launched.Slot)) {
+		t.Fatalf("the failed start's link (kt%d) stayed: %+v %q", launched.Slot, s.link, netm.Commands)
+	}
+	if _, err := os.Stat(s.vmDir()); !os.IsNotExist(err) {
+		t.Fatalf("the failed start's vm directory stayed: %v", err)
+	}
+	again, err := New(Config{Root: root, Sizes: DefaultSizes, SpoolMaxMiB: -1, Log: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer again.Close()
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("the unfinished create's directory stayed: %v", err)
+	}
+	if _, err := again.Get("sbx_1"); err == nil {
+		t.Fatal("an unfinished create was adopted")
+	}
+}
+
+// A host that restarts while a create runs (a template's setup, say, its machine up and recorded starting) ends it
+// before it takes work: its Firecracker has exited, its link is gone and its slot free, and its directory too. It isn't
+// adopted as a sandbox, running or stopped, since its setup may have run only in part: the host hasn't it, and its ID
+// is free for the create's retry. Running and stopped sandboxes are adopted as before, a running one's link kept even
+// when a stale record of a failed create's start names its slot.
+func TestNewReapsInterruptedCreates(t *testing.T) {
+	root := t.TempDir()
+	writeRecord := func(id string, rec meta) string {
+		t.Helper()
+		dir := filepath.Join(root, "sandboxes", id)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := json.Marshal(rec)
+		if err := os.WriteFile(filepath.Join(dir, "meta.json"), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	setupDir := filepath.Join(root, "sandboxes", "sbx_setup")
+	setup := startLeftover(t, filepath.Join(setupDir, "vm"))
+	writeRecord("sbx_setup", meta{ID: "sbx_setup", Size: "default", State: proto.StateStarting, Slot: 7})
+	staleDir := writeRecord("sbx_stale", meta{ID: "sbx_stale", Size: "default", State: proto.StateStarting, Slot: 3})
+	runningDir := filepath.Join(root, "sandboxes", "sbx_1")
+	user := startLeftover(t, filepath.Join(runningDir, "vm"))
+	if err := os.WriteFile(filepath.Join(runningDir, "vm", fc.APISocket), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeRecord("sbx_1", meta{ID: "sbx_1", Size: "default", State: proto.StateRunning, Slot: 3, Pid: user.Process.Pid})
+	writeRecord("sbx_stopped", meta{ID: "sbx_stopped", Size: "default", State: proto.StateStopped})
+	netm, err := network.New("10.231.0.0/16", 3129, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := New(Config{Root: root, Sizes: DefaultSizes, SpoolMaxMiB: -1, Network: netm, Log: slog.New(slog.DiscardHandler)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	if !leftoverGone(setup.Process.Pid) {
+		t.Fatal("the interrupted create's VM still runs")
+	}
+	for _, dir := range []string{setupDir, staleDir} {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Fatalf("%s stayed: %v", dir, err)
+		}
+	}
+	if !slices.Contains(netm.Commands, "ip link del kt7") || slices.Contains(netm.Commands, "ip link del kt3") {
+		t.Fatalf("the create's link (kt7) should be removed, the running sandbox's (kt3) kept: %q", netm.Commands)
+	}
+	for _, id := range []string{"sbx_setup", "sbx_stale"} {
+		if info, err := m.Get(id); err == nil {
+			t.Fatalf("an unfinished create was adopted: %+v", info)
+		}
+	}
+	if syscall.Kill(user.Process.Pid, 0) != nil {
+		t.Fatal("the running sandbox's VM was killed")
+	}
+	if info, err := m.Get("sbx_1"); err != nil || info.State != proto.StateRunning {
+		t.Fatalf("the running sandbox: %+v %v", info, err)
+	}
+	if info, err := m.Get("sbx_stopped"); err != nil || info.State != proto.StateStopped {
+		t.Fatalf("the stopped sandbox: %+v %v", info, err)
+	}
+	// The host has only its sandboxes, and the create's ID is free for its retry.
+	if ids := m.List(); len(ids) != 2 {
+		t.Fatalf("the host has %+v", ids)
+	}
+	if err := m.register(&sandbox{meta: meta{ID: "sbx_setup", Size: "default", State: proto.StateStarting}}, DefaultSizes[1]); err != nil {
+		t.Fatalf("a retry of the create: %v", err)
+	}
+	if err := m.Delete(context.Background(), "sbx_1"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // leftoverGone says a process has exited, or is a zombie its parent hasn't reaped yet.
 func leftoverGone(pid int) bool {
 	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))

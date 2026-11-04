@@ -466,8 +466,10 @@ func New(cfg Config) (*Manager, error) {
 	if err := m.adopt(); err != nil {
 		return nil, err
 	}
-	// After adopt, which takes the running sandboxes' network slots: a build's is freed only if no sandbox has it.
+	// After adopt, which takes the running sandboxes' network slots: a build's or an unfinished create's is freed only if
+	// no sandbox has it.
 	m.reapInterruptedBuilds()
+	m.reapInterruptedCreates()
 	if err := m.PinBases(); err != nil {
 		// Retried before each image update and prune, which wait for it.
 		m.log.Warn("couldn't pin everything to its images; image updates and prunes wait until it is", "error", err)
@@ -567,7 +569,7 @@ func (m *Manager) emit(s *sandbox) {
 }
 
 // adopt picks up the sandboxes a previous run of the host left: running VMs whose Firecracker is still alive keep
-// running; the rest are stopped.
+// running; the rest are stopped. Creates it left unfinished (starting) aren't sandboxes: reapInterruptedCreates ends them.
 func (m *Manager) adopt() error {
 	entries, err := os.ReadDir(filepath.Join(m.cfg.Root, "sandboxes"))
 	if err != nil {
@@ -580,7 +582,7 @@ func (m *Manager) adopt() error {
 			continue
 		}
 		s := &sandbox{dir: dir}
-		if err := json.Unmarshal(raw, &s.meta); err != nil {
+		if err := json.Unmarshal(raw, &s.meta); err != nil || s.meta.State == proto.StateStarting {
 			continue
 		}
 		if s.meta.State == proto.StateRunning && s.meta.Pid > 0 && processAlive(s.meta.Pid) {
@@ -973,12 +975,7 @@ const buildSlotFile = "slot"
 // with the run; a retry builds again. Finished snapshots and running sandboxes (adopted already) are left as they are.
 // The helper containers of root filesystems being made go the same way (rootfsBuilder.reap).
 func (m *Manager) reapInterruptedBuilds() {
-	adopted := map[int]bool{}
-	for _, s := range m.sandboxes {
-		if s.link != nil {
-			adopted[s.link.Slot] = true
-		}
-	}
+	adopted := m.adoptedSlots()
 	var dirs []string
 	for _, parent := range []string{"templates", templateSnapshotsDir} {
 		found, _ := filepath.Glob(filepath.Join(m.cfg.Root, parent, "*.building"))
@@ -988,8 +985,8 @@ func (m *Manager) reapInterruptedBuilds() {
 		fc.KillLeftover(filepath.Join(dir, "vm"))
 		raw, err := os.ReadFile(filepath.Join(dir, buildSlotFile))
 		slot, convErr := strconv.Atoi(strings.TrimSpace(string(raw)))
-		if err == nil && convErr == nil && slot > 0 && !adopted[slot] && m.cfg.Network != nil {
-			m.cfg.Network.Remove(m.cfg.Network.LinkFor(slot, network.EgressNone))
+		if err == nil && convErr == nil {
+			m.removeLeftoverLink(slot, adopted)
 		}
 		if err := os.RemoveAll(dir); err != nil {
 			m.log.Warn("interrupted build's directory", "dir", dir, "error", err)
@@ -999,6 +996,55 @@ func (m *Manager) reapInterruptedBuilds() {
 	}
 	if m.tpl != nil {
 		m.tpl.rootfs.reap()
+	}
+}
+
+// reapInterruptedCreates ends the creates a previous run of the host left unfinished when it stopped (a crash, or an
+// update's exit) while their machine started or ran its template's setup, which can take many minutes: each sandbox
+// recorded as starting (startMachine records it before its machine starts) has its Firecracker killed and gone, its
+// link removed, and its directory with them, before New returns, so none of its memory, disk or network slot is in
+// use, unaccounted, once the tier takes work. It isn't adopted as a sandbox, since its setup may have run only in
+// part: its create failed with the run, as one that fails does, so the host doesn't have it and a retry of the create
+// (the control plane's, from the sandbox's saved recipe) makes it again under the same ID.
+func (m *Manager) reapInterruptedCreates() {
+	adopted := m.adoptedSlots()
+	entries, _ := os.ReadDir(filepath.Join(m.cfg.Root, "sandboxes"))
+	for _, e := range entries {
+		dir := filepath.Join(m.cfg.Root, "sandboxes", e.Name())
+		raw, err := os.ReadFile(filepath.Join(dir, "meta.json"))
+		if err != nil {
+			continue
+		}
+		var started meta
+		if err := json.Unmarshal(raw, &started); err != nil || started.State != proto.StateStarting {
+			continue
+		}
+		fc.KillLeftover(filepath.Join(dir, "vm"))
+		m.removeLeftoverLink(started.Slot, adopted)
+		if err := os.RemoveAll(dir); err != nil {
+			m.log.Warn("interrupted create's directory", "dir", dir, "error", err)
+			continue
+		}
+		m.log.Info("ended a create the host's previous run left unfinished", "sandbox", started.ID)
+	}
+}
+
+// adoptedSlots are the network slots of the sandboxes adopt found running.
+func (m *Manager) adoptedSlots() map[int]bool {
+	adopted := map[int]bool{}
+	for _, s := range m.sandboxes {
+		if s.link != nil {
+			adopted[s.link.Slot] = true
+		}
+	}
+	return adopted
+}
+
+// removeLeftoverLink removes the link a machine a previous run of the host left had in slot, unless a sandbox adopted
+// running has that slot (a record of it gone stale).
+func (m *Manager) removeLeftoverLink(slot int, adopted map[int]bool) {
+	if slot > 0 && !adopted[slot] && m.cfg.Network != nil {
+		m.cfg.Network.Remove(m.cfg.Network.LinkFor(slot, network.EgressNone))
 	}
 }
 
@@ -1382,8 +1428,8 @@ func (m *Manager) startSandbox(ctx context.Context, p proto.CreateParams, size p
 }
 
 // startMachine starts s's machine from origin in s's vm directory: the root filesystem linked, the disk copied (or a
-// new one), a network link, and the snapshot restored (or the machine booted). On failure it leaves no machine, link
-// or vm directory behind.
+// new one), a network link, its record (meta.json, starting), and the snapshot restored (or the machine booted). On
+// failure it leaves no machine, link or vm directory behind; the record goes with s's directory (Create's fail).
 func (m *Manager) startMachine(ctx context.Context, s *sandbox, origin sandboxOrigin, size proto.Size, e *proto.Egress, t timings) (err error) {
 	vm := s.vmDir()
 	defer func() {
@@ -1432,6 +1478,12 @@ func (m *Manager) startMachine(ctx context.Context, s *sandbox, origin sandboxOr
 	}
 	s.link = &link
 	t.step("network", &start)
+	// On disk, starting, with its slot, before its machine starts: a host that restarts before the create ends (a
+	// template's setup can run for many minutes) finds the machine and its link and ends them (reapInterruptedCreates).
+	s.meta.Slot = link.Slot
+	if err := m.writeMeta(s); err != nil {
+		return err
+	}
 	if origin.state == "" {
 		if err := m.boot(ctx, s, size); err != nil {
 			return err
