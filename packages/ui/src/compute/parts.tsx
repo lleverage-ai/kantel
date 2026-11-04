@@ -71,9 +71,18 @@ export function cellText(node: TextNode): string {
 	return text;
 }
 
-/** A cell with nothing to show: no words but a `None` placeholder, and no picture or control. */
+/**
+ * A cell with nothing to show and no picture or control: no text at all, or a `None` placeholder and nothing else but
+ * the space round it. Text that is only spaces without a placeholder (a variable set to " ") is a value, so it stays.
+ */
+export function emptyText(node: TextNode, marked: boolean): boolean {
+	if ((node.textContent ?? "") === "") return true;
+	return marked && cellText(node).trim() === "";
+}
+
 const emptyCell = (cell: Element): boolean =>
-	cellText(cell).trim() === "" && cell.querySelector("svg, img, input, button, a, select") === null;
+	emptyText(cell, cell.querySelector("[data-none]") !== null) &&
+	cell.querySelector("svg, img, input, button, a, select") === null;
 
 const setData = (cell: HTMLElement, name: string, value: string | undefined) => {
 	if (value === undefined) {
