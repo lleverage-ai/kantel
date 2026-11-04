@@ -6,7 +6,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Button } from "../primitives/button.tsx";
-import { TextField } from "../primitives/controls.tsx";
+import { Disclosure, TextField } from "../primitives/controls.tsx";
 import { useLoad } from "../primitives/load.ts";
 import { CommandBlock } from "../primitives/one-time-secret.tsx";
 import { Skeleton, Spinner } from "../primitives/spinner.tsx";
@@ -127,8 +127,21 @@ export function HostJoinCommand({ source, input, now: fixedNow, onJoined, poll =
 		<div className="kt-host-join flex min-w-0 flex-col gap-3">
 			{/* Before the command, not instead of it: it runs as it is on this machine, and the field fixes it for others. */}
 			{warning}
-			{command}
-			{requirements}
+			{/* While other machines can't reach the console, the address is the one thing to do: the command, which works on
+			    this machine only, waits behind a fold rather than inviting a copy that fails on the host. */}
+			{unreachable ? (
+				<Disclosure summary="Add a host on this machine instead">
+					<div className="flex min-w-0 flex-col gap-3">
+						{command}
+						{requirements}
+					</div>
+				</Disclosure>
+			) : (
+				<>
+					{command}
+					{requirements}
+				</>
+			)}
 		</div>
 	);
 }
@@ -253,7 +266,7 @@ function LoopbackWarning({ url, onSave }: { url: PublicUrl; onSave: (url: string
 			<div className="flex min-w-0 flex-col gap-2">
 				<span>
 					<strong className="font-medium text-fg">Other machines can't reach {url.publicUrl}.</strong> Give the console
-					an address hosts can reach, and the command below uses it.
+					an address hosts can reach, and the install command will use it.
 				</span>
 				<form
 					className="flex min-w-0 items-start gap-2 max-sm:flex-col max-sm:items-stretch"
@@ -276,7 +289,7 @@ function LoopbackWarning({ url, onSave }: { url: PublicUrl; onSave: (url: string
 						autoCapitalize="off"
 						{...(error === undefined ? {} : { error })}
 					/>
-					<Button type="submit" size="md" busy={busy} disabled={text.trim() === ""}>
+					<Button type="submit" variant="primary" size="md" busy={busy} disabled={text.trim() === ""}>
 						Save
 					</Button>
 				</form>
