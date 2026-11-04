@@ -7,6 +7,10 @@
  * One connection per host: a newer one takes over, and the older is closed with 4008. Only the current connection's
  * close marks the host gone, so a takeover never reads as a disconnect.
  *
+ * A welcomed host may call Kantel for one thing, `secrets.fetch`: the hub answers it through `secrets`, naming the
+ * host the connection was checked against, never one the host names, so a host is given only its own sandboxes'
+ * values. Its egress proxy's `egress` events go to `onEgress`.
+ *
  * Nothing here is Node-only: a Cloudflare Durable Object holding the socket can host it the same way.
  */
 import {
@@ -16,10 +20,13 @@ import {
 	HOST_CLOSE_REPLACED,
 	HOST_PROTOCOL_VERSION,
 	type HostCapacity,
+	type HostEgressRecord,
 	type HostError,
 	type HostEvent,
 	type HostHello,
+	type HostMessage,
 	HostMethods,
+	type HostSecrets,
 	type HostWelcome,
 	parseHostMessage,
 } from "./protocol.ts";
@@ -81,6 +88,13 @@ export interface HostHubOptions {
 	onEvent?(hostId: string, event: HostEvent): void;
 	/** The host's current connection ended. */
 	onDisconnected?(hostId: string): void;
+	/**
+	 * A host's `secrets.fetch`: the sandbox's protected values, or `undefined` unless the sandbox is on `hostId` (answered
+	 * `not_found`). Absent, every fetch is answered `unavailable`.
+	 */
+	secrets?(hostId: string, sandboxId: string): Promise<HostSecrets | undefined>;
+	/** A batch of what a host's egress proxy handled (an `egress` event). */
+	onEgress?(hostId: string, records: readonly HostEgressRecord[]): void | Promise<void>;
 	/** Default 120 s: a cold boot and a template build are slow. */
 	readonly callTimeoutMs?: number;
 	/** How long a host may take to say hello. Default 30 s. */
@@ -218,6 +232,47 @@ export function createHostHub(options: HostHubOptions): HostHub {
 		return connection;
 	};
 
+	/** Answers a call the host made: only `secrets.fetch`, for the host the connection was checked against. */
+	const answer = async (connection: Connection, message: HostMessage) => {
+		const id = message.id;
+		if (typeof id !== "string" || id === "") return;
+		const reply = (body: { readonly result: unknown } | { readonly error: HostError }) =>
+			send(connection, { type: "result", id, ...body });
+		if (message.method !== HostMethods.secretsFetch) {
+			reply({ error: { code: "unsupported", message: `Kantel answers no ${String(message.method)} call` } });
+			return;
+		}
+		const sandboxId = (message.params as { readonly sandboxId?: unknown } | null | undefined)?.sandboxId;
+		if (typeof sandboxId !== "string" || sandboxId === "") {
+			reply({ error: { code: "not_found", message: "secrets.fetch names no sandbox" } });
+			return;
+		}
+		if (!connection.welcomed || options.secrets === undefined) {
+			reply({ error: { code: "unavailable", message: "Kantel has no protected values to give now" } });
+			return;
+		}
+		try {
+			const secrets = await options.secrets(connection.hostId, sandboxId);
+			if (secrets === undefined) {
+				reply({ error: { code: "not_found", message: `No sandbox ${sandboxId} on this host` } });
+			} else {
+				reply({ result: secrets });
+			}
+		} catch {
+			// Not the error's own text: it is the control plane's business, and the host needs only to retry later.
+			reply({ error: { code: "unavailable", message: "The sandbox's protected values are unavailable now" } });
+		}
+	};
+
+	const egress = (hostId: string, records: readonly HostEgressRecord[]) => {
+		try {
+			const kept = options.onEgress?.(hostId, records);
+			if (kept instanceof Promise) kept.catch(() => undefined);
+		} catch {
+			// A log that fails to keep is no reason to drop the host.
+		}
+	};
+
 	const hello = async (connection: Connection, message: HostHello | undefined) => {
 		try {
 			if (message === undefined) throw new Error("The first message must be a hello");
@@ -293,6 +348,10 @@ export function createHostHub(options: HostHubOptions): HostHub {
 				}
 				// Anyone's machine can be a host (account hosts): a payload is read only once it is an object.
 				switch (message.type) {
+					case "call":
+						// It settles on its own, answering the host even on a failure; this catch is the last line.
+						answer(connection, message).catch(() => undefined);
+						return;
 					case "heartbeat":
 						if (isObject(message.heartbeat)) options.onHeartbeat?.(hostId, message.heartbeat.capacity);
 						return;
@@ -315,6 +374,10 @@ export function createHostHub(options: HostHubOptions): HostHub {
 						if (!isObject(message.event)) return;
 						if (typeof message.call === "string" && message.call !== "") {
 							connection.pending.get(message.call)?.onEvent?.(message.event);
+							return;
+						}
+						if (message.event.kind === "egress") {
+							if (connection.welcomed && Array.isArray(message.event.egress)) egress(hostId, message.event.egress);
 							return;
 						}
 						options.onEvent?.(hostId, message.event);

@@ -66,6 +66,7 @@ function labels(value: unknown): { [key: string]: string } {
 function facts(value: unknown): HostFacts {
 	if (!isObject(value)) throw new FactsError("facts is an object");
 	const tiers = list(value.tiers, "tiers").map((tier, at) => text(tier, `tiers[${at}]`));
+	const features = list(value.features, "features").map((feature, at) => text(feature, `features[${at}]`));
 	const kept = labels(value.labels);
 	return {
 		version: text(value.version, "version"),
@@ -84,6 +85,7 @@ function facts(value: unknown): HostFacts {
 		sizes: list(value.sizes, "sizes").map(size),
 		...(Object.keys(kept).length === 0 ? {} : { labels: kept }),
 		egress: text(value.egress, "egress"),
+		...(features.length === 0 ? {} : { features }),
 	};
 }
 

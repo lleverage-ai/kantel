@@ -153,6 +153,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 					components.cluster === undefined ? {} : { cluster: components.cluster },
 				);
 	const sessions = components.otp.sessions;
+	const secretsKey = process.env.KANTEL_SECRETS_KEY?.trim() || undefined;
 	const compute = await gatewayCompute({
 		authenticator,
 		identity: components.identity,
@@ -161,6 +162,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		...(cfg.publicOrigin === undefined ? {} : { publicUrl: cfg.publicOrigin }),
 		...(hosts === undefined ? {} : { hosts }),
 		...(components.computeStore === undefined ? {} : { store: components.computeStore }),
+		...(secretsKey === undefined ? {} : { secretsKey }),
 	});
 	seeded = { ...seeded, computeKey: compute.superAdminKey };
 	console.log(

@@ -58,6 +58,11 @@ export interface ComputeApiOptions {
 	readonly sessionLive?: (session: string) => Promise<boolean>;
 	/** Whether a user may use the deployment's shared hosts (`ComputeServiceOptions.sharedHosts`); absent, everyone. */
 	readonly sharedHosts?: (userId: string) => Promise<boolean>;
+	/**
+	 * `KANTEL_SECRETS_KEY`: 32 bytes, base64, sealing environments' protected values and secret files. Absent, a memory
+	 * store makes one for the process and a persistent store refuses them. Not a key: `createComputeApi` throws.
+	 */
+	readonly secretsKey?: string;
 }
 
 export interface ComputeApi {
@@ -122,6 +127,7 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 		...(options.limits === undefined ? {} : { limits: options.limits }),
 		...(options.sessionLive === undefined ? {} : { sessionLive: options.sessionLive }),
 		...(options.sharedHosts === undefined ? {} : { sharedHosts: options.sharedHosts }),
+		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
 	});
 	service = created;
 	const publicIds = new Set<string>(Object.keys(publicComputeRoutes));

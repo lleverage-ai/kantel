@@ -390,6 +390,12 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		...(own === undefined ? {} : { accountHosts: true, publicUrl: own.publicUrl }),
 	});
 	own?.service.useJoinTokens(joinTokenSpender(store));
+	// Hosts report what their egress proxies did. Protected values stay off here (no secrets key, so no environment holds
+	// one): a host asking for a sandbox's is answered that there are none.
+	own?.service.useCompute({
+		secrets: async () => undefined,
+		recordEgress: (hostId, records) => api.service.recordEgress(hostId, records),
+	});
 	own?.bind((grantee, sandboxId) => api.service.stillAllowed(grantee, sandboxId));
 	const timers = whileBusy(api, now);
 	// The dispatcher runs only while compute requests come (`whileBusy`), so the sweep sends what it queued itself: a

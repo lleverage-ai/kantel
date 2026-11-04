@@ -12,12 +12,20 @@
 
 import {
 	type Account,
+	type DestinationBinding as ApiBinding,
+	type EgressEntry as ApiEgressEntry,
+	type Environment as ApiEnvironment,
+	type EgressGrant as ApiGrant,
 	type ApiKey,
+	type EnvironmentRepo as ApiRepo,
+	type SandboxEgress as ApiSandboxEgress,
+	type EnvironmentVariable as ApiVariable,
 	type Caller,
 	type Command,
 	type CreatedBy,
 	createKantelClient,
 	type DeviceLoginRequest,
+	type EgressGrantInput,
 	type FileEntry,
 	type Host,
 	type Invite,
@@ -53,6 +61,12 @@ import type {
 	SandboxesSource,
 	SnapshotsSource,
 	TelemetrySource,
+	DestinationBinding as UiBinding,
+	EgressEntry as UiEgressEntry,
+	Environment as UiEnvironment,
+	EgressGrant as UiGrant,
+	SandboxEgress as UiSandboxEgress,
+	EnvironmentVariable as UiVariable,
 	WebhooksSource,
 } from "@kantel/ui";
 
@@ -75,6 +89,9 @@ type UiWebhookDelivery = Awaited<ReturnType<WebhooksSource["test"]>>;
 type UiTelemetrySettings = Awaited<ReturnType<TelemetrySource["get"]>>;
 type UiHost = Awaited<ReturnType<HostsSource["list"]>>[number];
 type UiHostState = UiHost["state"];
+type UiEnvironmentFile = UiEnvironment["files"][number];
+type UiRepo = UiEnvironment["repos"][number];
+type UiMethod = UiBinding["methods"][number];
 
 export interface ComputeApiOptions {
 	/** Default `/v1`, on this origin. */
@@ -97,6 +114,11 @@ interface Context {
 	readonly learnHost: (host: string) => void;
 	/** The person signed in, as the probe found them: whom `leave` removes. */
 	readonly caller: Caller;
+	/**
+	 * Environments' names by ID, as last read: a sandbox names only its environment's ID, and the UI shows the name.
+	 * Every environment the console reads goes in.
+	 */
+	readonly environmentNames: Map<string, string>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -233,6 +255,38 @@ const UI_STATES: Readonly<Record<SandboxState, UiSandboxState>> = {
 	deleted: "stopped",
 };
 
+/** The environment a sandbox was made from, when its name is known: none for one deleted since. */
+function environmentRefOf(
+	sandbox: Sandbox,
+	context: Context,
+): { readonly environment?: { readonly id: string; readonly name: string } } {
+	if (sandbox.environmentId === undefined) return {};
+	const name = context.environmentNames.get(sandbox.environmentId);
+	return name === undefined ? {} : { environment: { id: sandbox.environmentId, name } };
+}
+
+/**
+ * Reads the account's environments' names when a sandbox names an environment the console hasn't read. The names are
+ * only shown: a caller that can't list environments (a key without `account:read`) still gets its sandboxes.
+ */
+async function learnEnvironmentNames(
+	context: Context,
+	accountId: string,
+	sandboxes: readonly Sandbox[],
+): Promise<void> {
+	const unknown = sandboxes.some(
+		(sandbox) => sandbox.environmentId !== undefined && !context.environmentNames.has(sandbox.environmentId),
+	);
+	if (!unknown) return;
+	try {
+		for (const environment of (await context.api.listEnvironments({ account: accountId })).items) {
+			context.environmentNames.set(environment.id, environment.name);
+		}
+	} catch {
+		// Shown without their environment's name.
+	}
+}
+
 function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 	return {
 		id: sandbox.id,
@@ -272,6 +326,7 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 		...(sandbox.state === "error" && sandbox.reason !== undefined ? { error: sandbox.reason } : {}),
 		shared: sandbox.visibility === "organisation",
 		...(sandbox.source?.sandboxId === undefined ? {} : { forkedFrom: sandbox.source.sandboxId }),
+		...environmentRefOf(sandbox, context),
 	};
 }
 
@@ -293,21 +348,31 @@ function sandboxesSource(context: Context): SandboxesSource {
 	return {
 		// The backend decides what each size is, and the API doesn't list them.
 		sizeFigures: false,
-		list: async (accountId) =>
-			(await allPages((cursor) => api.listSandboxes({ account: accountId, all: true, ...after(cursor) }))).map(view),
-		create: async (input) =>
-			view(
-				await api.createSandbox({
-					account: input.accountId,
-					type: input.kind,
-					// Isolates have no size: the API refuses one.
-					...(input.kind === "microvm" ? { size: API_SIZES[input.size] } : {}),
-					...(input.name === undefined || input.name === "" ? {} : { name: input.name }),
-					...(input.fromSnapshot === undefined ? {} : { from: input.fromSnapshot }),
-					// The UI's absent auto-stop is always on, the API's `null`.
-					autoStopMinutes: input.autoStopMinutes ?? null,
-				}),
-			),
+		list: async (accountId) => {
+			const sandboxes = await allPages((cursor) =>
+				api.listSandboxes({ account: accountId, all: true, ...after(cursor) }),
+			);
+			await learnEnvironmentNames(context, accountId, sandboxes);
+			return sandboxes.map(view);
+		},
+		create: async (input) => {
+			const made = await api.createSandbox({
+				account: input.accountId,
+				type: input.kind,
+				// Isolates have no size: the API refuses one.
+				...(input.kind === "microvm" ? { size: API_SIZES[input.size] } : {}),
+				...(input.name === undefined || input.name === "" ? {} : { name: input.name }),
+				...(input.fromSnapshot === undefined ? {} : { from: input.fromSnapshot }),
+				// The API takes an environment's ID or its name; the UI picks by ID.
+				...(input.environmentId === undefined || input.environmentId === ""
+					? {}
+					: { environment: input.environmentId }),
+				// The UI's absent auto-stop is always on, the API's `null`.
+				autoStopMinutes: input.autoStopMinutes ?? null,
+			});
+			await learnEnvironmentNames(context, made.accountId, [made]);
+			return view(made);
+		},
 		stop: async (id) => view(await api.stopSandbox(id, {})),
 		resume: async (id) => view(await api.resumeSandbox(id, {})),
 		fork: async (id) => {
@@ -623,33 +688,198 @@ function deliveryOf(delivery: WebhookDelivery): UiWebhookDelivery {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Environments and egress (TASK-4826). The compute API has no environment or egress routes yet: the list is empty, so
-// the page offers New environment, and every other call says the API can't do it yet. The sample data has the lot.
+// Environments and a sandbox's egress (TASK-4826). The API leaves an empty list out of a binding or a grant (any path,
+// any method); the UI keeps it as `[]`. A protected variable's value is write-only on both sides: the API never
+// answers one, and the UI sends one only when it is new or rotated.
 
-function environmentsSource(): EnvironmentsSource {
-	const missing = async (): Promise<never> => {
-		throw notYet("Kantel's API doesn't keep environments yet.");
+/**
+ * The UI's methods are the common seven; the API takes any method in capitals. One outside the seven, set through the
+ * API, is kept as it is rather than dropped: dropping the only method of a binding or a grant would widen it to every
+ * method, and a save from the page would send it back so.
+ */
+const uiMethods = (methods: readonly string[] | undefined): readonly UiMethod[] =>
+	(methods ?? []) as readonly UiMethod[];
+
+const bindingOf = (binding: ApiBinding): UiBinding => ({
+	host: binding.host,
+	pathPrefixes: binding.pathPrefixes ?? [],
+	methods: uiMethods(binding.methods),
+});
+
+const apiBinding = (binding: UiBinding): ApiBinding => ({
+	host: binding.host,
+	...(binding.pathPrefixes.length === 0 ? {} : { pathPrefixes: binding.pathPrefixes }),
+	...(binding.methods.length === 0 ? {} : { methods: binding.methods }),
+});
+
+const variableOf = (variable: ApiVariable): UiVariable => ({
+	name: variable.name,
+	protected: variable.protected,
+	// The API answers a plain variable's value only.
+	...(variable.value === undefined ? {} : { value: variable.value }),
+	bindings: variable.bindings.map(bindingOf),
+	updatedAt: variable.updatedAt,
+});
+
+const fileOf = (file: ApiEnvironment["files"][number]): UiEnvironmentFile => ({
+	path: file.path,
+	mode: file.mode,
+	sizeBytes: file.sizeBytes,
+	updatedAt: file.updatedAt,
+});
+
+const repoOf = (repo: ApiRepo): UiRepo => ({
+	url: repo.url,
+	...(repo.path === undefined ? {} : { path: repo.path }),
+	...(repo.ref === undefined ? {} : { ref: repo.ref }),
+});
+
+// The UI's repository has the API's fields; a ref that is a commit, which the UI's hint allows, the API refuses: it
+// clones a branch or a tag.
+const apiRepo = (repo: UiRepo): ApiRepo => ({
+	url: repo.url,
+	...(repo.path === undefined || repo.path === "" ? {} : { path: repo.path }),
+	...(repo.ref === undefined || repo.ref === "" ? {} : { ref: repo.ref }),
+});
+
+const grantOf = (grant: ApiGrant): UiGrant => ({
+	id: grant.id,
+	action: grant.action,
+	host: grant.host,
+	methods: uiMethods(grant.methods),
+	paths: grant.paths ?? [],
+});
+
+/** A grant the page has just added has an ID of the page's making (`grt_new_1`): the API gives it its own. */
+const NEW_GRANT = /^grt_new_/;
+
+const grantInput = (grant: UiGrant): EgressGrantInput => ({
+	...(NEW_GRANT.test(grant.id) ? {} : { id: grant.id }),
+	action: grant.action,
+	host: grant.host,
+	...(grant.methods.length === 0 ? {} : { methods: grant.methods }),
+	...(grant.paths.length === 0 ? {} : { paths: grant.paths }),
+});
+
+const environmentOf = (environment: ApiEnvironment): UiEnvironment => ({
+	id: environment.id,
+	accountId: environment.accountId,
+	name: environment.name,
+	...(environment.description === undefined ? {} : { description: environment.description }),
+	variables: environment.variables.map(variableOf),
+	files: environment.files.map(fileOf),
+	repos: environment.repos.map(repoOf),
+	grants: environment.grants.map(grantOf),
+	sandboxCount: environment.sandboxCount,
+	createdAt: environment.createdAt,
+	updatedAt: environment.updatedAt,
+});
+
+const egressEntryOf = (entry: ApiEgressEntry): UiEgressEntry => {
+	// The UI has no field for a refusal's `X-Kantel-Proxy-Error` code: it says why when the proxy gave no reason.
+	const reason = entry.reason ?? entry.code;
+	return {
+		id: entry.id,
+		at: entry.at,
+		method: entry.method,
+		host: entry.host,
+		port: entry.port,
+		...(entry.path === undefined ? {} : { path: entry.path }),
+		decision: entry.decision,
+		...(reason === undefined ? {} : { reason }),
+		...(entry.rule === undefined ? {} : { rule: entry.rule }),
+		swapped: entry.swapped,
+		inspected: entry.inspected,
+		...(entry.status === undefined ? {} : { status: entry.status }),
+		bytesUp: entry.bytesUp,
+		bytesDown: entry.bytesDown,
+	};
+};
+
+const sandboxEgressOf = (egress: ApiSandboxEgress): UiSandboxEgress => ({
+	sandboxId: egress.sandboxId,
+	sandboxName: egress.sandboxName,
+	accountId: egress.accountId,
+	...(egress.environment === undefined
+		? {}
+		: { environment: { id: egress.environment.id, name: egress.environment.name } }),
+	protectedVariables: egress.protectedVariables.map((variable) => ({
+		name: variable.name,
+		placeholderPrefix: variable.placeholderPrefix,
+		bindings: variable.bindings.map(bindingOf),
+	})),
+	environmentGrants: egress.environmentGrants.map(grantOf),
+	grants: egress.grants.map(grantOf),
+	// The API's newest 100 (its default), newest first; the page has no paging.
+	entries: egress.entries.map(egressEntryOf),
+});
+
+function environmentsSource(context: Context): EnvironmentsSource {
+	const { api } = context;
+	const view = (environment: ApiEnvironment): UiEnvironment => {
+		context.environmentNames.set(environment.id, environment.name);
+		return environmentOf(environment);
 	};
 	return {
-		list: async () => [],
-		get: missing,
-		create: missing,
-		update: missing,
-		remove: missing,
-		setVariable: missing,
-		removeVariable: missing,
-		setFile: missing,
-		removeFile: missing,
-		setRepos: missing,
-		setGrants: missing,
+		list: async (accountId) => (await api.listEnvironments({ account: accountId })).items.map(view),
+		get: async (id) => view(await api.getEnvironment(id)),
+		create: async (input) =>
+			view(
+				await api.createEnvironment({
+					account: input.accountId,
+					name: input.name,
+					...(input.description === undefined || input.description === "" ? {} : { description: input.description }),
+				}),
+			),
+		// An empty description clears it, as the API's does.
+		update: async (id, change) =>
+			view(
+				await api.updateEnvironment(id, {
+					...(change.name === undefined ? {} : { name: change.name }),
+					...(change.description === undefined ? {} : { description: change.description }),
+				}),
+			),
+		remove: async (id) => {
+			await api.deleteEnvironment(id);
+			context.environmentNames.delete(id);
+		},
+		setVariable: async (id, input) =>
+			view(
+				await api.setEnvironmentVariable(id, input.name, {
+					protected: input.protected,
+					// Left out on a protected variable, it keeps its value: a change of its bindings alone.
+					...(input.value === undefined ? {} : { value: input.value }),
+					// Only a protected variable has bindings: the API refuses them on a plain one.
+					...(input.protected ? { bindings: input.bindings.map(apiBinding) } : {}),
+				}),
+			),
+		removeVariable: async (id, name) => view(await api.deleteEnvironmentVariable(id, name)),
+		// The page's contents are text, sent as UTF-8.
+		setFile: async (id, input) =>
+			view(
+				await api.setEnvironmentFile(id, {
+					path: input.path,
+					mode: input.mode,
+					...(input.content === undefined ? {} : { content: input.content, encoding: "utf8" as const }),
+				}),
+			),
+		removeFile: async (id, path) => view(await api.deleteEnvironmentFile(id, { path })),
+		setRepos: async (id, repos) => view(await api.putEnvironmentRepos(id, { repos: repos.map(apiRepo) })),
+		setGrants: async (id, grants) => view(await api.putEnvironmentGrants(id, { grants: grants.map(grantInput) })),
 	};
 }
 
-function egressSource(): EgressSource {
-	const missing = async (): Promise<never> => {
-		throw notYet("Kantel's API doesn't keep a sandbox's egress log or grants yet.");
+function egressSource(context: Context): EgressSource {
+	const { api } = context;
+	const view = (egress: ApiSandboxEgress): UiSandboxEgress => {
+		if (egress.environment !== undefined) context.environmentNames.set(egress.environment.id, egress.environment.name);
+		return sandboxEgressOf(egress);
 	};
-	return { get: missing, setGrants: missing };
+	return {
+		get: async (sandboxId) => view(await api.getSandboxEgress(sandboxId)),
+		setGrants: async (sandboxId, grants) =>
+			view(await api.putSandboxGrants(sandboxId, { grants: grants.map(grantInput) })),
+	};
 }
 
 /** The start of a signing secret, to tell webhooks apart: `whsec_9c1e`. */
@@ -962,6 +1192,7 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 			learned = host.replace(/^ssh\./, "");
 		},
 		caller,
+		environmentNames: new Map(),
 	};
 
 	return {
@@ -974,8 +1205,8 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		snapshots: snapshotsSource(context),
 		keys: keysSource(context),
 		proxy: proxySource(context),
-		environments: environmentsSource(),
-		egress: egressSource(),
+		environments: environmentsSource(context),
+		egress: egressSource(context),
 		webhooks: webhooksSource(context),
 		telemetry: telemetrySource(context),
 		...(caller.superAdmin ? { hosts: hostsSource(context) } : {}),

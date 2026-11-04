@@ -113,6 +113,8 @@ const WEBHOOK_INTERVAL_MS = 1000;
 const TELEMETRY_INTERVAL_MS = 60_000;
 /** How often expired tunnel tickets' rows are removed. */
 const TICKET_SWEEP_MS = 10 * 60_000;
+/** How often the compute sweep runs without requests: auto-stops, and egress a host missed while it was away. */
+const COMPUTE_SWEEP_MS = 5_000;
 
 /** The `hosts` backend's settings. */
 export interface ComputeHostsConfig {
@@ -387,6 +389,11 @@ export async function gatewayCompute(options: {
 	readonly store?: ComputeStore;
 	/** Whether a Kantel session (its token's hash) is live: access given under one ends when it does. */
 	readonly sessionLive?: (session: string) => Promise<boolean>;
+	/**
+	 * KANTEL_SECRETS_KEY: 32 bytes, base64, sealing environments' protected values and secret files. Without it, a
+	 * Postgres store refuses them (a memory store seals with a key of its own, lost with the process).
+	 */
+	readonly secretsKey?: string;
 }): Promise<GatewayCompute> {
 	const store: ComputeStore = options.store ?? createMemoryStore();
 	const records = options.store === undefined ? "memory" : "postgres";
@@ -414,6 +421,12 @@ export async function gatewayCompute(options: {
 		...(hosts?.config.joinCommand === undefined ? {} : { hostJoinCommand: hosts.config.joinCommand }),
 		...(hosts?.config.accountHosts === true ? { accountHosts: true } : {}),
 		...(options.now === undefined ? {} : { now: options.now }),
+		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
+	});
+	// Hosts fetch their sandboxes' protected values, and report what their egress proxies did, over their link.
+	hosts?.service.useCompute({
+		secrets: (hostId, sandboxId) => api.service.protectedTable(hostId, sandboxId),
+		recordEgress: (hostId, records) => api.service.recordEgress(hostId, records),
 	});
 	const superAdminKey = await bootstrapSuperAdmin(api.store, options.superAdminKey, (options.now ?? Date.now)());
 	api.dispatcher.start(WEBHOOK_INTERVAL_MS);
@@ -427,6 +440,10 @@ export async function gatewayCompute(options: {
 		TICKET_SWEEP_MS,
 	);
 	sweepTickets.unref();
+	// The compute sweep runs on a timer too, not only as requests come: a host back after a drop gets the egress
+	// updates it missed (and sandboxes due to stop are stopped) though nobody calls the API meanwhile.
+	const sweepCompute = setInterval(() => void api.service.sweep().catch(() => undefined), COMPUTE_SWEEP_MS);
+	sweepCompute.unref();
 	let hostRoutes: GatewayCompute["hostRoutes"];
 	if (hosts !== undefined) {
 		// Registration only: the API serves the operator's routes, so the registry's own admin routes refuse everyone.
@@ -463,6 +480,7 @@ export async function gatewayCompute(options: {
 		...(hosts?.ports === undefined ? {} : { portRoutes: hosts.ports.fetch }),
 		async close() {
 			clearInterval(sweepTickets);
+			clearInterval(sweepCompute);
 			hosts?.access.stop();
 			await api.close();
 		},
