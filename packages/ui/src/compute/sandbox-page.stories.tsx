@@ -3,6 +3,7 @@ import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import type { HostingMode } from "./compute-model.ts";
 import { type ComputeFixtureOptions, createComputeFixtures, FIXTURE_NOW } from "./fixtures.ts";
 import { SandboxPage, type SandboxView } from "./sandbox-page.tsx";
+import type { FilesAt } from "./snapshot-files.tsx";
 
 export default { title: "Compute/Sandbox page" } satisfies StoryDefault;
 
@@ -16,8 +17,11 @@ function Scenario({
 	menuOpen = false,
 	local,
 	e2e,
+	filesAt,
 }: {
 	sandboxId?: string;
+	/** Where the Files tab opens, as the address would say. */
+	filesAt?: FilesAt;
 	view?: SandboxView;
 	hosting?: HostingMode;
 	options?: ComputeFixtureOptions;
@@ -56,6 +60,7 @@ function Scenario({
 			now={FIXTURE_NOW}
 			narrow={narrow}
 			menuOpen={menuOpen}
+			{...(filesAt === undefined ? {} : { filesAt })}
 		/>
 	);
 }
@@ -116,6 +121,23 @@ export const Failed: Story = () => <Scenario sandboxId="sbx_1o9p4a7se6" />;
 
 /** An isolate: no desktop, browser or SSH. */
 export const Isolate: Story = () => <Scenario sandboxId="sbx_9a2b6c4dq3" />;
+
+/** An isolate's Files: its /workspace, its only files, where the crumbs start and Up stops. */
+export const IsolateFiles: Story = () => <Scenario sandboxId="sbx_9a2b6c4dq3" view="files" />;
+
+/** An isolate's Files from an address above /workspace (`?path=/`): clamped to /workspace, never refused. */
+export const IsolateFilesFromRoot: Story = () => (
+	<Scenario sandboxId="sbx_9a2b6c4dq3" view="files" filesAt={{ path: "" }} />
+);
+
+/** An isolate's folder that isn't there (an old link): a line and the way back to /workspace, not Try again. */
+export const IsolateFilesGone: Story = () => (
+	<Scenario sandboxId="sbx_9a2b6c4dq3" view="files" filesAt={{ path: "workspace/gone" }} />
+);
+
+/** An isolate's Files on a phone. */
+export const MobileIsolateFiles: Story = () => <Scenario sandboxId="sbx_9a2b6c4dq3" view="files" narrow />;
+MobileIsolateFiles.meta = { width: 390 };
 
 /** While it loads. */
 export const Loading: Story = () => <Scenario options={{ hang: true }} />;

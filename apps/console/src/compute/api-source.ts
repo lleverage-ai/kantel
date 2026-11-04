@@ -74,7 +74,7 @@ import type {
 	EnvironmentVariable as UiVariable,
 	WebhooksSource,
 } from "@kantel/ui";
-import { DeviceSetupError, FileTooLargeError, sameProxySettings } from "@kantel/ui";
+import { DeviceSetupError, FilesRefusedError, FileTooLargeError, sameProxySettings } from "@kantel/ui";
 import { type BrowserDevice, type BrowserDeviceOptions, browserDevice } from "./browser-device.ts";
 import type { HostCommand, HostCommandPage, LocalBridge } from "./local.ts";
 
@@ -486,41 +486,66 @@ function sandboxesSource(context: Context): SandboxesSource {
 		// browser's own on the gateway's console), which the gateway only relays as ciphertext; it can read none of it
 		// itself, and the host would refuse it if it asked. Otherwise the gateway's API reads them from the host.
 		files: {
-			list: async (id, path) => {
-				const host = await filesHost(context, id);
-				if (host !== undefined) {
-					const { entries } = await host.call<{ entries: HostFileEntry[] | null }>(id, "sandbox.files.list", {
-						path: absolute(path),
-					});
-					return { entries: (entries ?? []).map(hostEntryOf).sort(foldersFirst), more: false };
-				}
-				const { items, more } = await firstPages((cursor) =>
-					api.listFiles(id, { path: absolute(path), ...after(cursor) }),
-				);
-				return { entries: items.map(entryOf).sort(foldersFirst), more };
-			},
-			read: async (id, path, range) => {
-				const host = await filesHost(context, id);
-				if (host !== undefined) {
-					const answer = await host.call<{ data: string; fileSize?: number }>(id, "sandbox.files.read", {
-						path: absolute(path),
-						offset: range.offset,
-						length: range.length,
-					});
-					return hostPart(fromBase64(answer.data), answer.fileSize, range);
-				}
-				// Base64, so a binary's first bytes come back as they are and the UI decides what it can show.
-				const file = await api.readFile(id, {
-					path: absolute(path),
-					encoding: "base64",
-					offset: range.offset,
-					length: Math.min(range.length, MAX_READ_BYTES),
-				});
-				return { bytes: contentBytes(file), size: file.size };
-			},
+			list: (id, path) =>
+				refusing(async () => {
+					const host = await filesHost(context, id);
+					if (host !== undefined) {
+						const { entries } = await host.call<{ entries: HostFileEntry[] | null }>(id, "sandbox.files.list", {
+							path: absolute(path),
+						});
+						return { entries: (entries ?? []).map(hostEntryOf).sort(foldersFirst), more: false };
+					}
+					const { items, more } = await firstPages((cursor) =>
+						api.listFiles(id, { path: absolute(path), ...after(cursor) }),
+					);
+					return { entries: items.map(entryOf).sort(foldersFirst), more };
+				}),
+			read: (id, path, range) => refusing(() => readSandboxFile(context, id, path, range)),
 		},
 	};
 }
+
+/** A part of a running sandbox's file: over its host's E2E session where its space has one, else through the API. */
+async function readSandboxFile(context: Context, id: string, path: string, range: FileRange): Promise<FilePart> {
+	const host = await filesHost(context, id);
+	if (host !== undefined) {
+		const answer = await host.call<{ data: string; fileSize?: number }>(id, "sandbox.files.read", {
+			path: absolute(path),
+			offset: range.offset,
+			length: range.length,
+		});
+		return hostPart(fromBase64(answer.data), answer.fileSize, range);
+	}
+	// Base64, so a binary's first bytes come back as they are and the UI decides what it can show.
+	const file = await context.api.readFile(id, {
+		path: absolute(path),
+		encoding: "base64",
+		offset: range.offset,
+		length: Math.min(range.length, MAX_READ_BYTES),
+	});
+	return { bytes: contentBytes(file), size: file.size };
+}
+
+/**
+ * A read whose refusal (a path outside what the sandbox has, such as anything but an isolate's /workspace, or one that
+ * isn't there) is the UI's refusal, which it shows as a line and never offers to try again. Anything else (the host
+ * unreachable, a dropped session) is as it was, for Try again.
+ */
+async function refusing<T>(read: () => Promise<T>): Promise<T> {
+	try {
+		return await read();
+	} catch (error) {
+		if (refusedPath(error)) throw new FilesRefusedError(error.message);
+		throw error;
+	}
+}
+
+/** The API's and a host's (over E2E) codes for a path a sandbox won't read: `invalid` outside it, `not_found` absent. */
+const refusedPath = (error: unknown): error is Error & { readonly code: string } =>
+	error instanceof Error &&
+	"code" in error &&
+	(error.code === "invalid" || error.code === "not_found") &&
+	(error instanceof KantelApiError || error.name === "SessionError");
 
 /**
  * How this console reaches an end-to-end sandbox's host, or undefined for a sandbox it reads through the gateway (its
@@ -753,10 +778,12 @@ function snapshotsSource({ api }: Context): SnapshotsSource {
 		},
 		removeSaved: (id) => api.deleteSnapshot(id),
 		removeSnapshot: (id) => api.deleteSnapshot(id),
-		list: async (snapshotId, path) =>
-			(await allPages((cursor) => api.listSnapshotFiles(snapshotId, { path: absolute(path), ...after(cursor) })))
-				.map(entryOf)
-				.sort(foldersFirst),
+		list: (snapshotId, path) =>
+			refusing(async () =>
+				(await allPages((cursor) => api.listSnapshotFiles(snapshotId, { path: absolute(path), ...after(cursor) })))
+					.map(entryOf)
+					.sort(foldersFirst),
+			),
 		// A snapshot's file comes whole, up to the API's 1 MiB, however little the preview asks for; a larger one is
 		// `invalid`, and shows with its name and size only. Nothing is kept: a second look reads it again.
 		read: async (snapshotId, path) => {
@@ -765,11 +792,15 @@ function snapshotsSource({ api }: Context): SnapshotsSource {
 				return { bytes: contentBytes(file), size: file.size };
 			} catch (error) {
 				if (isCode(error, "invalid")) throw new FileTooLargeError();
+				// One that isn't there (any more) is a refusal, not worth trying again.
+				if (refusedPath(error)) throw new FilesRefusedError(error.message);
 				throw error;
 			}
 		},
 		// The API has no download route, and a link can't carry the bearer a read needs: no Download.
 		downloadUrl: () => undefined,
+		// Where a link to a snapshot's files doesn't say, the API does: an isolate's start at /workspace.
+		kindOf: async (snapshotId) => (await api.getSnapshot(snapshotId)).sandboxType,
 	};
 }
 
