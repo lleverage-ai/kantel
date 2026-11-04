@@ -220,8 +220,10 @@ call's `CallContext` from it with `callContextFor(caller, { projectId, requestId
 
 Credentials come from headers, never from a cookie: a Kantel session (`kts_…`) is a bearer, and no provider reads
 `Cookie`. Browsers still send cookies a gateway didn't set (Cloudflare Access's, or one a same-site page planted with
-`Domain=`), and `SameSite` doesn't stop a same-site page, such as a sandbox's port under a domain that isn't on the
-Public Suffix List. So both gateways put `@kantel/identity/csrf` in front of every route but an exposed port's:
+`Domain=`), and `SameSite` doesn't stop a same-site page, such as a sandbox's port on a self-hosted install whose ports
+domain shares the console's registrable domain. (Kantel's hosted ports are under `kantel.run`, a registrable domain of
+their own, so a port's page there is never the same site as the hosted console, `app.kantel.dev`.) So both gateways
+put `@kantel/identity/csrf` in front of every route but an exposed port's, same site or not:
 
 - `crossSiteRefusal(request, { origins?, httpsTwin? })` answers 403 (`forbidden`, `CROSS_SITE_REFUSED`) for a request
   that changes something (any method but GET, HEAD and OPTIONS), has no `Authorization` header, and either has a

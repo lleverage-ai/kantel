@@ -29,9 +29,10 @@
 		// A miss goes to the Worker (src/route.ts `consoleAsset`): a missing /assets/ file is a 404, not the console's page
 		// with a 200, so a tab opened before a deploy can't load the page as a script; any other path gets the page.
 		"not_found_handling": "none",
-		// The API, email-code sign-in, the health check, the browser viewer page (for its framing headers) and share links'
-		// pages always reach the Worker; every other path is the console.
-		"run_worker_first": ["/v1/*", "/auth/*", "/healthz", "/browser/*", "/shared/*"]
+		// Every request reaches the Worker first (src/route.ts), which serves the console's files through this binding. Assets
+		// match by path on every name the Worker is routed, and on an exposed port's name (*.kantel.run) a sandbox's `/` or
+		// `/assets/…` must be the sandbox's, never the console's.
+		"run_worker_first": true
 	},
 	// The Worker Loader: the dynamic-worker isolate backend loads one Dynamic Worker per session through it
 	// (src/dynamic-worker.ts). Sessions use it only when KANTEL_ISOLATE_BACKEND says so.
@@ -165,7 +166,7 @@
 				"directory": "../console/dist",
 				"binding": "ASSETS",
 				"not_found_handling": "none",
-				"run_worker_first": ["/v1/*", "/auth/*", "/healthz", "/__dev/*", "/browser/*", "/shared/*"]
+				"run_worker_first": true
 			},
 			"worker_loaders": [{ "binding": "LOADER" }],
 			"durable_objects": {

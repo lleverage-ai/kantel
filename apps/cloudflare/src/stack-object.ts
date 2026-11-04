@@ -145,9 +145,12 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 				{ status: 503 },
 			);
 		}
+		const url = new URL(request.url);
+		// An exposed port's name (`src/route.ts` sends every one here): only the sandbox's page answers there.
+		if (stack.compute.isPortName(url.hostname)) return stack.compute.servePort(request);
 		const hosts = stack.compute.hosts;
 		if (hosts !== undefined) {
-			const path = new URL(request.url).pathname;
+			const path = url.pathname;
 			if (path === HOSTS_CONNECT_PATH) return hostConnection(hosts, request);
 			const ticket = tunnelTicket(path);
 			if (ticket !== undefined) return rawTunnel(hosts, ticket, request);
