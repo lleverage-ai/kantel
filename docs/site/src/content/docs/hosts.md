@@ -226,7 +226,9 @@ Every 5 seconds a host also sends Kantel its CPU, memory and disk, and each runn
 - An account's isolates share one runtime, so the host measures the runtime and shares it out. Each isolate's CPU is its part of the runtime's CPU time, split by how long each spent running commands, as a share of one CPU. The runtime's memory is split evenly.
 - The disk is the file system the host's data directory (`/var/lib/kantel-host`) is on.
 
-While the host can't reach Kantel it keeps the last 120 readings (10 minutes' worth at the default interval) and sends them when it reconnects.
+The host keeps each reading until Kantel confirms it has it, up to the last 120 readings (10 minutes' worth at the default interval). Kantel confirms a reading once the gateway holding the host's connection has added it to the sandbox's usage. If the connection drops or stalls, the host sends every unconfirmed reading again, oldest first, when it reconnects, so readings already sent into a connection that then failed aren't lost. Kantel ignores a reading it already has, so nothing appears twice in the usage or the [OpenTelemetry export](/monitoring/opentelemetry/). If more than 120 readings go unconfirmed, for example because Kantel was out of reach for longer than 10 minutes, the oldest are dropped and the host logs how many.
+
+A host that predates this sends each reading once, and a reading sent into a connection that then fails is lost. The same applies to a newer host connected to a Kantel that predates it.
 
 ## Where sandboxes go
 
