@@ -268,14 +268,14 @@ export interface SandboxBackend {
 	/** Lets the machine go for good; its snapshots are deleted separately. */
 	destroy(sandboxId: string): Promise<void>;
 	/**
-	 * Streams a file out of a running sandbox, whatever its size (signed download URLs). Absent, the service reads it
-	 * with `readFile` a part at a time.
+	 * Streams a file out of a running sandbox, whatever its size (signed download URLs). Absent, or refusing with
+	 * `not_supported` (the sandbox's host can't), the service reads it with `readFile` a part at a time.
 	 */
 	readFileStream?(sandboxId: string, path: string): Promise<FileStream>;
 	/**
 	 * Streams `body` into a file, making its directories, replacing what was there only once the whole body has arrived
-	 * (signed upload URLs, archives). Absent, the service collects the body (up to `MAX_UNSTREAMED_WRITE_BYTES`) and
-	 * uses `writeFile`.
+	 * (signed upload URLs, archives). Absent, or refusing with `not_supported` before it reads any of `body`, the service
+	 * collects the body (up to `MAX_UNSTREAMED_WRITE_BYTES`) and uses `writeFile`.
 	 */
 	writeFileStream?(
 		sandboxId: string,
@@ -283,6 +283,19 @@ export interface SandboxBackend {
 		body: ReadableStream<Uint8Array>,
 		mode?: number,
 	): Promise<{ readonly size: number }>;
+	/**
+	 * Extracts the tar at `archive` (already checked: see `TarCheck`) into the directory `target`, making it, then
+	 * deletes the tar. The sandbox's own programs, shell and environment have no part in it, so a caller with only
+	 * `files` runs nothing in the sandbox (`PUT /sandboxes/{id}/files/archive`). Absent, or `not_supported`, archives
+	 * aren't extracted there.
+	 */
+	extractArchive?(sandboxId: string, archive: string, target: string): Promise<void>;
+	/**
+	 * The host a sandbox is placed on now, as the backend's scheduler recorded it, even while it is being booted there:
+	 * what a host's fetch of a starting sandbox's mounts' sources is checked against. Absent, a starting sandbox's
+	 * sources go to no host until it is placed.
+	 */
+	placedOn?(sandboxId: string): Promise<string | undefined>;
 	/** Runs a command line and answers when it ends, or at its timeout. */
 	exec(sandboxId: string, request: ExecRequest): Promise<ExecResult>;
 	/** Reads a file, or with a range, at most `range.length` bytes of it from `range.offset`. */

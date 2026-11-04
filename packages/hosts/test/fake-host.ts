@@ -4,6 +4,7 @@ import type { AcceptedHost } from "../src/hub.ts";
 import {
 	decodeStreamFrame,
 	encodeStreamFrame,
+	FILE_STREAM_WINDOW_BYTES,
 	type HostFacts,
 	type HostFileOpen,
 	type HostMessage,
@@ -61,6 +62,10 @@ export class FakeHost {
 	buffered?: () => number;
 	/** For a test: a write's bytes aren't acked (`stream.ack`) as they arrive, as from a sandbox that takes none. */
 	holdAcks = false;
+	/** Reads under way, by stream: what is still to send, and how much Kantel's reader has acked. */
+	readonly reads = new Map<number, { readonly data: Uint8Array; sent: number; acked: number }>();
+	/** `sandbox.files.extract` calls: the archive, the target. */
+	readonly extracts: { readonly archive: string; readonly target: string }[] = [];
 
 	constructor(
 		readonly service: HostsService,
@@ -148,7 +153,16 @@ export class FakeHost {
 		if (message.type === "stream.close" && typeof message.stream === "number") {
 			// An abort: a write under way is dropped, nothing put in place.
 			this.writes.delete(message.stream);
+			this.reads.delete(message.stream);
 			this.aborted.push(message.stream);
+			return;
+		}
+		if (message.type === "stream.ack" && typeof message.stream === "number") {
+			const read = this.reads.get(message.stream);
+			if (read !== undefined && typeof message.acked === "number") {
+				read.acked = Math.max(read.acked, message.acked);
+				this.sendRead(message.stream);
+			}
 			return;
 		}
 		if (message.type !== "call") return;
@@ -159,6 +173,20 @@ export class FakeHost {
 			return;
 		}
 		this.answerCall(message);
+	}
+
+	/** Sends what a read's window allows, as kantel-host does, and ends it once all is sent. */
+	private sendRead(stream: number) {
+		const read = this.reads.get(stream);
+		if (read === undefined) return;
+		while (read.sent < read.data.byteLength && read.sent - read.acked < FILE_STREAM_WINDOW_BYTES) {
+			const take = Math.min(this.chunkBytes, read.data.byteLength - read.sent);
+			this.connection.receive(encodeStreamFrame(stream, read.data.subarray(read.sent, read.sent + take)));
+			read.sent += take;
+		}
+		if (read.sent < read.data.byteLength) return;
+		this.reads.delete(stream);
+		this.send({ type: "stream.close", stream, reason: `ok ${read.data.byteLength}` });
 	}
 
 	private answerCall(message: HostMessage) {
@@ -214,10 +242,13 @@ export class FakeHost {
 				const data = this.files.get(open.path);
 				if (data === undefined) return fail("not_found", "no such file");
 				answer({ size: data.byteLength });
-				for (let at = 0; at < data.byteLength; at += this.chunkBytes) {
-					this.connection.receive(encodeStreamFrame(open.stream, data.subarray(at, at + this.chunkBytes)));
-				}
-				return this.send({ type: "stream.close", stream: open.stream, reason: `ok ${data.byteLength}` });
+				this.reads.set(open.stream, { data, sent: 0, acked: 0 });
+				return this.sendRead(open.stream);
+			}
+			case "sandbox.files.extract": {
+				const extract = message.params as { archive: string; target: string };
+				this.extracts.push({ archive: extract.archive, target: extract.target });
+				return answer({});
 			}
 			case "sandbox.exec": {
 				this.send({ type: "event", call: message.id, event: { kind: "exec.output", stdout: btoa("hi\n"), at: 1 } });

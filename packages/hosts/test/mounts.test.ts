@@ -9,7 +9,6 @@ import { createHostsApi, HOSTS_BUNDLES_PATH } from "../src/http.ts";
 import {
 	createHostHub,
 	FILE_STREAM_BUFFER_BYTES,
-	FILE_STREAM_WINDOW_BYTES,
 	HostCallError,
 	type HostHub,
 	type HostHubOptions,
@@ -18,6 +17,8 @@ import {
 import {
 	decodeStreamFrame,
 	encodeStreamFrame,
+	FILE_STREAM_ACK_BYTES,
+	FILE_STREAM_WINDOW_BYTES,
 	HOST_FEATURES,
 	type HostBucketSource,
 	type HostFileOpen,
@@ -144,7 +145,14 @@ describe("the hub's file streams", () => {
 		const opening = hub.openFile("host_a", { sandboxId: "sbx_a", path: "/home/user/big.bin", op: "read" }, sink);
 		const call = await host.called("sandbox.files.open");
 		const params = call.params as HostFileOpen;
-		expect(params).toEqual({ sandboxId: "sbx_a", path: "/home/user/big.bin", op: "read", stream: expect.any(Number) });
+		// A read says Kantel acks what it takes, so the host keeps within its window.
+		expect(params).toEqual({
+			sandboxId: "sbx_a",
+			path: "/home/user/big.bin",
+			op: "read",
+			stream: expect.any(Number),
+			acks: true,
+		});
 		expect(params.stream).toBeGreaterThan(0);
 		host.send({ type: "result", id: call.id, result: { size: 11 } });
 		// Before the caller has the stream: the sink was registered before the call.
@@ -631,6 +639,79 @@ describe("the backend's file streams", () => {
 			op: "read",
 		});
 		expect((await failure(read(backend, "sbx_one", "/home/user/missing"))).code).toBe("not_found");
+	});
+
+	it("read a file larger than the window only as fast as the reader takes it", async () => {
+		const { host, hostId, backend, connect } = await setup([HOST_FEATURES.fileStreams]);
+		host.chunkBytes = 64 * 1024;
+		await connect();
+		await backend.create(spec("sbx_one", hostId));
+		const big = new Uint8Array(FILE_STREAM_WINDOW_BYTES * 3).map((_, index) => index % 251);
+		host.files.set("/home/user/big", big);
+		const { size, body } = await read(backend, "sbx_one", "/home/user/big");
+		expect(size).toBe(big.byteLength);
+		// Nobody reads: the host has sent its window and waits.
+		await pause(20);
+		const [[stream, waiting] = [0, { sent: 0, acked: 0 }]] = [...host.reads];
+		expect(waiting.sent).toBe(FILE_STREAM_WINDOW_BYTES);
+		// A little read: acked once a part's worth is taken, and the host goes on by as much.
+		const reader = body.getReader();
+		let got = 0;
+		while (got < FILE_STREAM_ACK_BYTES) got += (await reader.read()).value?.byteLength ?? 0;
+		await pause(20);
+		expect(host.reads.get(stream)?.acked).toBe(got);
+		expect(host.reads.get(stream)?.sent).toBe(got + FILE_STREAM_WINDOW_BYTES);
+		// The rest, whole.
+		const chunks: Uint8Array[] = [];
+		for (;;) {
+			const next = await reader.read();
+			if (next.done) break;
+			chunks.push(next.value);
+		}
+		expect(got + chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)).toBe(big.byteLength);
+		expect(host.reads.size).toBe(0);
+	});
+
+	it("cancel a read the reader drops, and pass on a host's error", async () => {
+		const { host, hostId, backend, connect } = await setup([HOST_FEATURES.fileStreams]);
+		host.chunkBytes = 64 * 1024;
+		await connect();
+		await backend.create(spec("sbx_one", hostId));
+		host.files.set("/home/user/big", new Uint8Array(FILE_STREAM_WINDOW_BYTES * 2));
+		const { body } = await read(backend, "sbx_one", "/home/user/big");
+		await body.cancel();
+		const opened = host.calls.find((call) => call.method === "sandbox.files.open")?.params as unknown as HostFileOpen;
+		expect(host.aborted).toContain(opened.stream);
+		expect(host.reads.size).toBe(0);
+
+		const second = await read(backend, "sbx_one", "/home/user/big");
+		const [[stream] = [0]] = [...host.reads];
+		host.reads.delete(stream);
+		host.send({ type: "stream.close", stream, reason: "error not_found: it went" });
+		const refused = await new Response(second.body).arrayBuffer().catch((error: unknown) => error);
+		expect((refused as KantelError).code).toBe("not_found");
+	});
+
+	it("extract an archive with the host's own code, on a host that can, and refuse otherwise", async () => {
+		const old = await setup([HOST_FEATURES.fileStreams]);
+		await old.connect();
+		await old.backend.create(spec("sbx_one", old.hostId));
+		const refused = await failure(
+			old.backend.extractArchive?.("sbx_one", "/tmp/a.tar", "/home/user/work") ?? Promise.resolve(),
+		);
+		expect(refused.code).toBe("not_supported");
+		expect(old.host.calls.some((call) => call.method === "sandbox.files.extract")).toBe(false);
+
+		const { host, hostId, backend, connect } = await setup([HOST_FEATURES.fileStreams, HOST_FEATURES.filesExtract]);
+		await connect();
+		await backend.create(spec("sbx_one", hostId));
+		await backend.extractArchive?.("sbx_one", "/tmp/a.tar", "/home/user/work");
+		expect(host.extracts).toEqual([{ archive: "/tmp/a.tar", target: "/home/user/work" }]);
+		// Never a command.
+		expect(host.calls.some((call) => call.method === "sandbox.exec")).toBe(false);
+		// And the host a sandbox is placed on, as the scheduler recorded it.
+		expect(await backend.placedOn?.("sbx_one")).toBe(hostId);
+		expect(await backend.placedOn?.("sbx_none")).toBeUndefined();
 	});
 
 	it("write a body through, and answer the size the host says it wrote", async () => {

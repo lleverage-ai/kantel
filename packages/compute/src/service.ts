@@ -132,6 +132,8 @@ export interface ComputeServiceOptions {
 	readonly now: () => number;
 	/** The control plane's public URL, for host join commands. Default the request's origin. */
 	readonly publicUrl?: string;
+	/** The API's base path, where its routes are served (`createComputeApi`'s `basePath`), for the URLs it mints. Default `/v1`. */
+	readonly apiBasePath?: string;
 	/** Default `selfhosted`. */
 	readonly mode?: "selfhosted" | "hosted";
 	/** The join command shown with a host join token, with `{url}` and `{token}`. Default the npm package's. */
@@ -1903,9 +1905,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						return sealer;
 					},
 					publicUrl: (request) => (options.publicUrl ?? new URL(request.url).origin).replace(/\/+$/, ""),
+					apiBasePath: (options.apiBasePath ?? "/v1").replace(/\/+$/, ""),
 					sandboxFor,
 					requireRunning,
-					hosts: () => ensureHosts(),
 				});
 
 	async function requireCapacity(accountId: string, adding: number): Promise<void> {
@@ -2963,6 +2965,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// The record before its event: who may see an event is decided by its sandbox, so the event is never stored
 				// (or delivered) before the sandbox is.
 				await store.sandboxes.put(sandbox);
+				// Its mounts' sources, still there now it is stored (so a delete from now on counts it): one deleted meanwhile
+				// refuses the create, which forgets the sandbox before anything else saw it.
+				if (sandboxMounts !== undefined && mounts !== undefined) {
+					await mounts.holdSources(sandbox).catch(async (error: unknown) => {
+						await store.sandboxes.delete(sandbox.id);
+						throw error;
+					});
+				}
 				// Its egress is read once it is stored: a change to its environment or the proxy settings from then on moves its
 				// revision on (and its boot reconciles), which one read before couldn't promise. Read with the event's write.
 				const [egress] = await Promise.all([
@@ -3143,8 +3153,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						...(current.mounts === undefined ? {} : { mounts: pendingMounts(current.mounts) }),
 					});
 				}
+				for (const fork of forks) await store.sandboxes.put(fork);
+				// Each fork holds its own reference to the source's mounts' sources: checked once they are all stored, as a
+				// create's are, so the source's delete (and the sources' deletes) can't leave one mounting what is gone.
+				const first = forks[0];
+				if (mounts !== undefined && first?.mounts !== undefined) {
+					try {
+						await mounts.holdSources(first);
+					} catch (error) {
+						for (const fork of forks) await store.sandboxes.delete(fork.id);
+						throw error;
+					}
+				}
 				for (const fork of forks) {
-					await store.sandboxes.put(fork);
 					await emit("sandbox.created", fork.accountId, { sandbox: fork, data: { actor: actorOf(principal) } });
 				}
 				// Queued behind the source too, so it isn't stopped while its live disk is copied. The forks' egress is alike:

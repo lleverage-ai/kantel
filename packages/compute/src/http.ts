@@ -130,6 +130,7 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 		dispatcher,
 		exporter,
 		now,
+		apiBasePath: basePath,
 		...(options.publicUrl === undefined ? {} : { publicUrl: options.publicUrl }),
 		...(options.mode === undefined ? {} : { mode: options.mode }),
 		...(options.hostJoinCommand === undefined ? {} : { hostJoinCommand: options.hostJoinCommand }),

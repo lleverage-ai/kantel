@@ -378,7 +378,11 @@ function BucketSources({
 	);
 }
 
-/** Asks before a delete; stays open with the reason when it fails, such as a sandbox mounting it since the read. */
+/**
+ * Asks before a delete; stays open with the reason when it fails, such as a sandbox mounting it since the read. While
+ * a delete is under way it can't be dismissed (Cancel, Escape, the backdrop), so its answer only ever lands on its own
+ * confirmation, never on one opened for another item meanwhile.
+ */
 function DeleteDialog({
 	open,
 	title,
@@ -395,6 +399,7 @@ function DeleteDialog({
 	const [busy, setBusy] = useState(false);
 	const [failure, setFailure] = useState<string>();
 	const close = () => {
+		if (busy) return;
 		setFailure(undefined);
 		onClose();
 	};
@@ -405,7 +410,9 @@ function DeleteDialog({
 			onClose={close}
 			actions={
 				<>
-					<Button onClick={close}>Cancel</Button>
+					<Button onClick={close} disabled={busy}>
+						Cancel
+					</Button>
 					<Button
 						variant="danger"
 						busy={busy}
@@ -414,7 +421,8 @@ function DeleteDialog({
 							onDelete().then(
 								() => {
 									setBusy(false);
-									close();
+									setFailure(undefined);
+									onClose();
 								},
 								(caught: unknown) => {
 									setBusy(false);

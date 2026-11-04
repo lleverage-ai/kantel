@@ -14,8 +14,8 @@
  *
  * A file stream (`openFile`) is a port stream carrying a file of a sandbox's: the host sends a read's bytes and ends it
  * with a `stream.close` whose reason says how it went; a write's bytes go the other way, then an empty frame for the
- * end of them, while the host's `stream.ack`s say how much the sandbox has taken, so the writer keeps only
- * `FILE_STREAM_WINDOW_BYTES` ahead of it.
+ * end of them. Either way the receiver's `stream.ack`s say how much it has taken, and the sender keeps only
+ * `FILE_STREAM_WINDOW_BYTES` ahead of them: the host's of a write, Kantel's reader's of a read (`ack`).
  *
  * Nothing here is Node-only: a Cloudflare Durable Object holding the socket can host it the same way.
  */
@@ -23,6 +23,7 @@ import { parseMountStatuses } from "./facts.ts";
 import {
 	decodeStreamFrame,
 	encodeStreamFrame,
+	FILE_STREAM_WINDOW_BYTES,
 	HOST_CLOSE_PROTOCOL,
 	HOST_CLOSE_REPLACED,
 	HOST_EVENT_MOUNTS,
@@ -32,6 +33,7 @@ import {
 	type HostEgressRecord,
 	type HostError,
 	type HostEvent,
+	type HostFileOpen,
 	type HostHello,
 	type HostMessage,
 	HostMethods,
@@ -111,6 +113,11 @@ export interface FileStreamHandle extends PortStream {
 	 * doesn't pile a whole file into memory; at once when the stream has ended.
 	 */
 	drained(): Promise<void>;
+	/**
+	 * A read's reader has taken `taken` bytes of it in all: a `stream.ack` to the host, which sends no more than
+	 * `FILE_STREAM_WINDOW_BYTES` past what it was last told.
+	 */
+	ack(taken: number): void;
 }
 
 /** A file stream once the host has opened it: the size it answered for a read. */
@@ -121,12 +128,10 @@ export interface OpenedFile {
 
 /** How much a file stream's writer lets wait in the host's socket before it waits too. */
 export const FILE_STREAM_BUFFER_BYTES = 8 * 1024 * 1024;
-/**
- * How far a file stream's writer may get ahead of what the sandbox has taken (the host's `stream.ack`). The socket's
- * own count isn't enough: under Bun, ws's `bufferedAmount` never comes down again, and a send past its backpressure
- * limit is queued and may be sent twice. Kept well under that limit (16 MiB), so a write never reaches it.
- */
-export const FILE_STREAM_WINDOW_BYTES = 4 * 1024 * 1024;
+// How far a file stream's writer may get ahead of what the sandbox has taken (the host's `stream.ack`) is
+// `FILE_STREAM_WINDOW_BYTES`. The socket's own count isn't enough: under Bun, ws's `bufferedAmount` never comes down
+// again, and a send past its backpressure limit is queued and may be sent twice. Kept well under that limit (16 MiB),
+// so a write never reaches it.
 const DRAIN_POLL_MS = 10;
 const OPEN_TIMEOUT_MS = 20_000;
 
@@ -633,7 +638,10 @@ export function createHostHub(options: HostHubOptions): HostHub {
 			const stream = register(connection, sink);
 			let opened: unknown;
 			try {
-				opened = await this.call(hostId, HostMethods.fileOpen, { ...params, stream }, { timeoutMs: OPEN_TIMEOUT_MS });
+				// A read says its reader acks (`handle.ack`), so the host keeps within its window; one from an older Kantel,
+				// which doesn't, is sent as fast as the host can.
+				const call: HostFileOpen = { ...params, stream, ...(params.op === "read" ? { acks: true } : {}) };
+				opened = await this.call(hostId, HostMethods.fileOpen, call, { timeoutMs: OPEN_TIMEOUT_MS });
 			} catch (error) {
 				connection.streams.delete(stream);
 				throw error;
@@ -661,6 +669,9 @@ export function createHostHub(options: HostHubOptions): HostHub {
 				finish() {
 					// Its own send: `write` drops an empty chunk, which would otherwise read as the end.
 					if (open()) connection.socket.sendBinary(encodeStreamFrame(stream, new Uint8Array(0)));
+				},
+				ack(bytes) {
+					if (params.op === "read" && open()) send(connection, { type: "stream.ack", stream, acked: bytes });
 				},
 				drained() {
 					const waiting = () => {

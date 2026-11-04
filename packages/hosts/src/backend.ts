@@ -33,6 +33,7 @@ import { DESKTOP_PORT, desktopPath } from "./desktop.ts";
 import type { FileStreamHandle, PortSink } from "./hub.ts";
 import type { PortRouter } from "./ports.ts";
 import {
+	FILE_STREAM_ACK_BYTES,
 	HOST_E2E_PORT,
 	HOST_FEATURES,
 	type HostEgress,
@@ -297,6 +298,13 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		}
 	}
 
+	/** A read's bytes queued for its reader: kept at most `FILE_STREAM_WINDOW_BYTES` by the host's window. */
+	interface ReadQueue {
+		readonly chunks: Uint8Array[];
+		end?: { readonly error?: Error };
+		wake?: () => void;
+	}
+
 	const egressOf = (egress: BackendEgress | undefined) => {
 		const out = hostEgress(egress, options.attributionKey);
 		return out === undefined ? {} : { egress: out };
@@ -531,42 +539,87 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		},
 		async readFileStream(sandboxId, path): Promise<FileStream> {
 			await streamingHost(sandboxId);
-			// Made before the stream is opened: the host may send all of a small file before `openFile` resolves. The host
-			// can't be asked to wait, so what arrives is queued here until it is read; that is accepted.
-			let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+			// The sink is made before the stream is opened: the host may send a small file whole before `openFile`
+			// resolves. What arrives waits here until the reader takes it, and the reader's takings go back to the host
+			// (`stream.ack`), which sends no more than FILE_STREAM_WINDOW_BYTES past them: a slow client holds the host
+			// back, not the gateway's memory.
+			const queue: ReadQueue = { chunks: [] };
 			let handle: FileStreamHandle | undefined;
-			let ended = false;
+			let cancelled = false;
 			let received = 0;
-			const body = new ReadableStream<Uint8Array>({
-				start(made) {
-					controller = made;
+			let taken = 0;
+			let acked = 0;
+			const ack = () => {
+				if (handle === undefined || taken - acked < FILE_STREAM_ACK_BYTES) return;
+				acked = taken;
+				handle.ack(taken);
+			};
+			const body = new ReadableStream<Uint8Array>(
+				{
+					async pull(controller) {
+						while (queue.chunks.length === 0 && queue.end === undefined) {
+							await new Promise<void>((resolve) => {
+								queue.wake = resolve;
+							});
+						}
+						const chunk = queue.chunks.shift();
+						if (chunk !== undefined) {
+							taken += chunk.byteLength;
+							controller.enqueue(chunk);
+							ack();
+							return;
+						}
+						if (queue.end?.error !== undefined) controller.error(queue.end.error);
+						else controller.close();
+					},
+					cancel() {
+						cancelled = true;
+						queue.chunks.length = 0;
+						handle?.close();
+					},
 				},
-				cancel() {
-					ended = true;
-					handle?.close();
-				},
-			});
+				// Nothing pulled ahead of the reader, so what it has taken is what was handed to it.
+				{ highWaterMark: 0 },
+			);
 			const sink: PortSink = {
 				data(bytes) {
-					if (ended) return;
+					if (cancelled || queue.end !== undefined) return;
 					received += bytes.byteLength;
-					controller?.enqueue(bytes);
+					queue.chunks.push(bytes);
+					queue.wake?.();
 				},
 				end(reason) {
-					if (ended) return;
-					ended = true;
+					if (cancelled || queue.end !== undefined) return;
 					const end = fileStreamEnd(reason);
-					if (end instanceof KantelError) controller?.error(end);
+					if (end instanceof KantelError) queue.end = { error: end };
 					else if (end.size !== received) {
-						controller?.error(
-							new KantelError("unavailable", `The host sent ${received} bytes of a file it says has ${end.size}`),
-						);
-					} else controller?.close();
+						queue.end = {
+							error: new KantelError(
+								"unavailable",
+								`The host sent ${received} bytes of a file it says has ${end.size}`,
+							),
+						};
+					} else queue.end = {};
+					queue.wake?.();
 				},
 			};
 			const opened = await hosts.sandboxes.openFile(sandboxId, { path, op: "read" }, sink);
 			handle = opened.stream;
+			// What was taken before the handle came (nothing yet: no one had the body).
+			ack();
 			return { ...(opened.size === undefined ? {} : { size: opened.size }), body };
+		},
+		async extractArchive(sandboxId, archive, target) {
+			const { hostId } = await tierOf(sandboxId);
+			if (!(await featuresOf(hostId)).includes(HOST_FEATURES.filesExtract)) {
+				throw new KantelError("not_supported", "This sandbox's host can't extract archives; upgrade kantel-host");
+			}
+			// As long as a large archive takes to write out.
+			await call(sandboxId, HostMethods.fileExtract, { archive, target }, undefined, 30 * 60_000);
+		},
+		async placedOn(sandboxId) {
+			const placement = await hosts.sandboxes.placement(sandboxId);
+			return placement === undefined || placement.state === "deleted" ? undefined : placement.hostId;
 		},
 		async writeFileStream(sandboxId, path, body, mode) {
 			await streamingHost(sandboxId);

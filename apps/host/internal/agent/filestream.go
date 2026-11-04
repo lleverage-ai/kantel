@@ -28,6 +28,26 @@ type FileStreamer interface {
 	WriteFileStream(ctx context.Context, p proto.FileParams, r io.Reader) (int64, error)
 }
 
+// ArchiveExtractor is a tier that extracts archives (sandbox.files.extract) with its own code, never the sandbox's tar,
+// shell or environment: a caller that may only use files runs nothing in the sandbox. A tier without it answers the
+// call as unsupported.
+type ArchiveExtractor interface {
+	ExtractArchive(ctx context.Context, p proto.FileExtractParams) error
+}
+
+// archiveExtractor is the tier holding a sandbox, as an ArchiveExtractor.
+func (h *Host) archiveExtractor(sandboxID string) (ArchiveExtractor, error) {
+	t, name, err := h.tierOfNamed(sandboxID)
+	if err != nil {
+		return nil, err
+	}
+	x, ok := t.(ArchiveExtractor)
+	if !ok {
+		return nil, &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("%s sandboxes don't extract archives", name)}
+	}
+	return x, nil
+}
+
 // fileStreamer is the tier holding a sandbox, as a FileStreamer.
 func (h *Host) fileStreamer(sandboxID string) (FileStreamer, error) {
 	t, name, err := h.tierOfNamed(sandboxID)
@@ -66,7 +86,35 @@ type fileConn struct {
 	taken     atomic.Int64
 	signalled int64
 	acks      chan struct{}
+	// acked is how much of a read Kantel's reader has taken (its stream.ack); more is signalled on each, for sendFile
+	// waiting on its window.
+	acked atomic.Int64
+	more  chan struct{}
 }
+
+// ack is Kantel's stream.ack of a read: its reader has taken n bytes in all.
+func (c *fileConn) ack(n int64) {
+	if c.more == nil {
+		return
+	}
+	for {
+		cur := c.acked.Load()
+		if n <= cur || c.acked.CompareAndSwap(cur, n) {
+			break
+		}
+	}
+	select {
+	case c.more <- struct{}{}:
+	default:
+	}
+}
+
+// errFileInput is a write's input pipe failing because the tier closed its end (it gave up on the input, as the guest's
+// HTTP client does on a refused write): the transfer reports how it went, so the stream isn't closed under it.
+type errFileInput struct{ err error }
+
+func (e *errFileInput) Error() string { return e.err.Error() }
+func (e *errFileInput) Unwrap() error { return e.err }
 
 func (c *fileConn) Read([]byte) (int, error) { return 0, io.EOF }
 
@@ -83,7 +131,11 @@ func (c *fileConn) Write(b []byte) (int, error) {
 		default:
 		}
 	}
-	return n, err
+	if err != nil {
+		// The tier closed its end: its transfer ends with the reason, and says so on the stream itself.
+		return n, &errFileInput{err: err}
+	}
+	return n, nil
 }
 
 // CloseWrite is the end of a write's input: the tier reads io.EOF, and moves the file into place.
@@ -156,7 +208,10 @@ func (s *session) openFile(ctx, call context.Context, raw json.RawMessage) (any,
 			return nil, nil, err
 		}
 		result = map[string]int64{"size": size}
-		transfer = func() (int64, error) { return s.sendFile(ctx, p.Stream, body, size) }
+		if p.Acks {
+			conn.more = make(chan struct{}, 1)
+		}
+		transfer = func() (int64, error) { return s.sendFile(ctx, tctx, conn, p.Stream, body, size) }
 		finish = func() { body.Close() }
 	} else {
 		pr, pw := io.Pipe()
@@ -219,11 +274,20 @@ func (s *session) openFile(ctx, call context.Context, raw json.RawMessage) (any,
 }
 
 // sendFile sends r's bytes on a stream (on the session's context: a cancelled one closes the WebSocket) and answers how
-// many it sent; fewer or more than size is an error, as the file changed while it was read.
-func (s *session) sendFile(ctx context.Context, stream uint32, r io.Reader, size int64) (int64, error) {
+// many it sent; fewer or more than size is an error, as the file changed while it was read. When Kantel's reader acks
+// (FileOpenParams.Acks), it stays within FileStreamWindowBytes of what that has taken (conn's stream.acks), waiting
+// while it can't, until the stream ends (tctx).
+func (s *session) sendFile(ctx, tctx context.Context, conn *fileConn, stream uint32, r io.Reader, size int64) (int64, error) {
 	buf := make([]byte, 32*1024)
 	var sent int64
 	for {
+		for conn.more != nil && sent-conn.acked.Load() >= proto.FileStreamWindowBytes {
+			select {
+			case <-tctx.Done():
+				return sent, tctx.Err()
+			case <-conn.more:
+			}
+		}
 		n, err := r.Read(buf)
 		if n > 0 {
 			if werr := s.sendBinary(ctx, stream, buf[:n]); werr != nil {

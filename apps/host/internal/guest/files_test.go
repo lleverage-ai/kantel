@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -118,8 +117,8 @@ func TestFileStreamsRoundTrip(t *testing.T) {
 	if err != nil || n != int64(len(content)) {
 		t.Fatalf("write: %d bytes, %v", n, err)
 	}
-	if _, err := os.Stat(path + ".kantel-tmp"); !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("the temporary file was left: %v", err)
+	if names, err := os.ReadDir(filepath.Dir(path)); err != nil || len(names) != 1 {
+		t.Fatalf("a temporary file was left: %d entries, %v", len(names), err)
 	}
 	body, size, mode, err := client.ReadFileStream(ctx, path)
 	if err != nil {

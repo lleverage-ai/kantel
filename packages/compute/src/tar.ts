@@ -1,8 +1,9 @@
 /**
  * Checks a tar as it streams past, before any of it is extracted (`PUT /sandboxes/{id}/files/archive`): every entry must
  * land inside the directory it is extracted into. Refused (`invalid`): an absolute name or one that climbs out (`..`),
- * a symbolic link that points out (absolute, or climbing past the top), an entry at or under a link the archive made,
- * hard links, devices, FIFOs and any other kind of entry. POSIX (ustar, pax) and GNU (long names) tars are read; a
+ * a symbolic link that points out (absolute, or climbing past the top, as resolved through the archive's other links in
+ * whatever order they come), an entry at or under a link the archive made, hard links, devices, FIFOs and any other
+ * kind of entry. POSIX (ustar, pax) and GNU (long names) tars are read; a
  * pax or GNU long name replaces the header's own, as tar itself does.
  *
  * It only reads: the caller keeps the bytes, and extracts them (with the sandbox's own `tar`) only once `end` has
@@ -114,7 +115,22 @@ export function linkStaysInside(path: string, target: string): boolean {
 	return true;
 }
 
-const within = (inner: string, outer: string) => inner === outer || inner.startsWith(`${outer}/`);
+/**
+ * The archive's symbolic links by path, a component at a time, so finding the link an entry is at or under, or the
+ * link a component of a target names, costs the path's length and not the number of links.
+ */
+interface LinkNode {
+	readonly children: Map<string, LinkNode>;
+	/** Set when a link is at this path: its target and its whole path, for messages. */
+	link?: { readonly target: string; readonly path: string };
+}
+
+/** How many links one link's target may go through, as Linux's `MAXSYMLINKS`: past it, a loop. */
+const MAX_LINK_HOPS = 40;
+/** The longest name or link target, as Linux's `PATH_MAX`. */
+const MAX_NAME_LENGTH = 4096;
+/** The most bytes of link names and targets an archive may hold, as they are kept until its end. */
+const MAX_LINK_BYTES = 64 * 1024 * 1024;
 
 /** A tar's checker: `push` each chunk as it comes, then `end`. Either throws `invalid` at the first problem. */
 export class TarCheck {
@@ -134,10 +150,12 @@ export class TarCheck {
 	private longLink: string | undefined;
 	private zeroBlocks = 0;
 	private ended = false;
-	private readonly links: string[] = [];
+	private readonly links: LinkNode = { children: new Map() };
+	private readonly linkList: { readonly path: string; readonly target: string; readonly name: string }[] = [];
 	private files = 0;
 	private directories = 0;
 	private symlinks = 0;
+	private linkBytes = 0;
 	private bytes = 0;
 	private entries = 0;
 
@@ -180,11 +198,89 @@ export class TarCheck {
 
 	/** What the archive held; `invalid` when it stopped part-way through an entry. */
 	end(): TarSummary {
-		if (!this.ended && (this.headerFill !== 0 || this.dataLeft > 0 || this.keep !== undefined)) {
+		if (!this.ended && (this.headerFill !== 0 || this.dataLeft > 0 || this.padLeft > 0 || this.keep !== undefined)) {
 			refuse("The archive ends part-way through an entry");
 		}
 		if (this.entries === 0 && this.zeroBlocks === 0) refuse("The archive is empty");
+		// Each link resolved through all the others, which may come after it: none may lead out.
+		for (const link of this.linkList) {
+			if (!this.resolvesInside(link.path, link.target)) {
+				refuse(`The archive has a symbolic link that points out: ${link.name} -> ${link.target}`);
+			}
+		}
 		return { files: this.files, directories: this.directories, symlinks: this.symlinks, bytes: this.bytes };
+	}
+
+	/** The link at or above `path` (`a/b/c`), if the archive made one there. */
+	private linkAtOrAbove(path: string): string | undefined {
+		if (path === "") return undefined;
+		let node = this.links;
+		for (const part of path.split("/")) {
+			const next = node.children.get(part);
+			if (next === undefined) return undefined;
+			if (next.link !== undefined) return next.link.path;
+			node = next;
+		}
+		return undefined;
+	}
+
+	private addLink(path: string, target: string, name: string): void {
+		this.linkBytes += path.length + target.length;
+		if (this.linkBytes > MAX_LINK_BYTES) refuse("The archive's symbolic links come to more than 64 MiB of names");
+		let node = this.links;
+		for (const part of path.split("/")) {
+			let next = node.children.get(part);
+			if (next === undefined) {
+				next = { children: new Map() };
+				node.children.set(part, next);
+			}
+			node = next;
+		}
+		// A link over another (an earlier one under it) would move that one where its target is.
+		if (node.children.size > 0) refuse(`The archive has a symbolic link over its own symbolic links: ${name}`);
+		node.link = { target, path };
+		this.linkList.push({ path, target, name });
+	}
+
+	/**
+	 * Whether the link at `path` pointing at `target` stays inside the top once each component naming one of the
+	 * archive's links is replaced by that link's target, as the kernel resolves it after extraction. What isn't one of
+	 * the archive's links is taken for a directory (or a name yet to be made) inside the top. Too many hops is a loop,
+	 * refused too.
+	 */
+	private resolvesInside(path: string, target: string): boolean {
+		if (target === "" || target.startsWith("/")) return false;
+		// Where the walk is (its nodes in the link tree, `undefined` once off it), and the components still to walk, last
+		// first.
+		const nodes: (LinkNode | undefined)[] = [];
+		let node: LinkNode | undefined = this.links;
+		for (const part of path.split("/").slice(0, -1)) {
+			nodes.push(node);
+			node = node?.children.get(part);
+		}
+		const todo = target.split("/").reverse();
+		let hops = 0;
+		while (todo.length > 0) {
+			const part = todo.pop() as string;
+			if (part === "" || part === ".") continue;
+			if (part === "..") {
+				if (nodes.length === 0) return false;
+				node = nodes.pop();
+				continue;
+			}
+			const next: LinkNode | undefined = node?.children.get(part);
+			if (next?.link !== undefined) {
+				hops++;
+				if (hops > MAX_LINK_HOPS) return false;
+				if (next.link.target === "" || next.link.target.startsWith("/")) return false;
+				// Resolved from the directory the link is in, which is where the walk is.
+				for (const inner of next.link.target.split("/").reverse()) todo.push(inner);
+				continue;
+			}
+			nodes.push(node);
+			node = next;
+		}
+		return true;
 	}
 
 	private dataDone(): void {
@@ -240,8 +336,11 @@ export class TarCheck {
 		this.pax = new Map();
 		this.longName = undefined;
 		this.longLink = undefined;
+		if (name.length > MAX_NAME_LENGTH || linkName.length > MAX_NAME_LENGTH) {
+			refuse(`The archive has a name or link target longer than ${MAX_NAME_LENGTH} characters`);
+		}
 		const path = entryPath(name);
-		const under = this.links.find((link) => within(path, link));
+		const under = this.linkAtOrAbove(path);
 		if (under !== undefined) refuse(`The archive has an entry at or under its own symbolic link ${under}: ${name}`);
 		switch (type) {
 			case "0":
@@ -260,7 +359,7 @@ export class TarCheck {
 				if (!linkStaysInside(path, linkName)) {
 					refuse(`The archive has a symbolic link that points out: ${name} -> ${linkName}`);
 				}
-				this.links.push(path);
+				this.addLink(path, linkName, name);
 				this.symlinks++;
 				return;
 			case "1":

@@ -949,9 +949,10 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			async openFile(sandboxId, params, sink) {
 				if (params.op !== "read" && params.op !== "write") throw new KantelError("invalid", "op is read or write");
 				const placement = await placementOf(sandboxId);
-				// A file stream's bytes aren't relayed between replicas (`cluster.ts` relays calls and port streams only).
+				// A file stream's bytes aren't relayed between replicas (`cluster.ts` relays calls and port streams only): the
+				// compute service falls back to the file calls, which are.
 				if (!local.connected(placement.hostId) && hub.connected(placement.hostId)) {
-					throw new KantelError("unavailable", "File streams need the sandbox's host connected to this gateway");
+					throw new KantelError("not_supported", "File streams need the sandbox's host connected to this gateway");
 				}
 				try {
 					return await hub.openFile(placement.hostId, { ...params, sandboxId }, sink);

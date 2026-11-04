@@ -41,8 +41,9 @@ type Message struct {
 	// stream.close (either way): a port stream ended; Reason says why.
 	Stream uint32 `json:"stream,omitempty"`
 	Reason string `json:"reason,omitempty"`
-	// stream.ack (host → Kantel), on a file write stream (FeatureFileStreams): the bytes of it the sandbox has taken so
-	// far, sent every FileStreamAckBytes or so. Kantel keeps its writes only a window ahead of it.
+	// stream.ack, on a file stream (FeatureFileStreams): the bytes of it its receiver has taken so far. Host → Kantel on
+	// a write, the sandbox's, sent every FileStreamAckBytes or so; Kantel → host on a read, its reader's. The sender
+	// keeps within FileStreamWindowBytes of it.
 	Acked int64 `json:"acked,omitempty"`
 
 	// usage (host → Kantel): one tick of the host's and its sandboxes' readings.
@@ -51,6 +52,10 @@ type Message struct {
 
 // FileStreamAckBytes is about how often a host sends a file write stream's stream.ack.
 const FileStreamAckBytes = 512 << 10
+
+// FileStreamWindowBytes is how far a file stream's sender may get ahead of its receiver's stream.ack: a read's host of
+// what Kantel's reader has taken, so a slow download holds the host back rather than filling the gateway's memory.
+const FileStreamWindowBytes = 4 << 20
 
 // Error codes a call can fail with.
 const (
@@ -106,6 +111,10 @@ const FeatureEgressPolicy = "egress-policy"
 // sandboxes of a tier that streams files (the microVM tier), and acks a write's bytes as the sandbox takes them
 // (stream.ack).
 const FeatureFileStreams = "file-streams"
+
+// FeatureFilesExtract: the host serves sandbox.files.extract (FileExtractParams) for the sandboxes of a tier that
+// extracts archives (the microVM tier), with its own code: never the sandbox's tar, shell or environment.
+const FeatureFilesExtract = "files-extract"
 
 // FeatureUsage: the host sends a "usage" message every tick (UsageSample) without being asked, so the control plane
 // needn't run a command in a sandbox to read its usage.
@@ -391,6 +400,14 @@ type FileParams struct {
 	Length    int64  `json:"length,omitempty"`
 }
 
+// FileExtractParams is sandbox.files.extract's: the tar at Archive (absolute, already checked by Kantel) extracted
+// into the directory Target (absolute, made if missing), its entries owned by the sandbox's user, then deleted.
+type FileExtractParams struct {
+	SandboxID string `json:"sandboxId"`
+	Archive   string `json:"archive"`
+	Target    string `json:"target"`
+}
+
 type FileEntry struct {
 	Name    string `json:"name"`
 	Path    string `json:"path"`
@@ -435,6 +452,9 @@ type FileOpenParams struct {
 	Op        string `json:"op"`
 	// Mode is a write's permissions, such as 0o644 (the default).
 	Mode uint32 `json:"mode,omitempty"`
+	// Acks, on a read, is Kantel acking what its reader takes (stream.ack): the host keeps within FileStreamWindowBytes
+	// of it. False (an older Kantel), the host sends as fast as it can.
+	Acks bool `json:"acks,omitempty"`
 }
 
 // FileOpenParams' ops.
@@ -533,4 +553,7 @@ const (
 	MethodSecretsFetch = "secrets.fetch"
 	// MethodFileOpen (Kantel → host, FileOpenParams) streams a file's bytes on a port stream (FeatureFileStreams).
 	MethodFileOpen = "sandbox.files.open"
+	// MethodFileExtract (Kantel → host, FileExtractParams) extracts a tar in a sandbox into a directory with the host's
+	// own code (FeatureFilesExtract); the result is {}.
+	MethodFileExtract = "sandbox.files.extract"
 )

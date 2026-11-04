@@ -200,18 +200,31 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 		if err := json.Unmarshal(raw, &m); err != nil {
 			continue
 		}
-		switch m.Type {
-		case "call":
-			go s.call(ctx, m, update)
-		case "result":
-			// The answer to one of the host's own calls (secrets.fetch).
-			s.calls.deliver(m)
-		case "welcome":
-			if m.Welcome != nil {
-				h.applyWelcome(ctx, m.Welcome, update)
-			}
-		case "stream.close":
-			s.closeStream(m.Stream)
+		s.text(ctx, m, update)
+	}
+}
+
+// text handles a text message from Kantel.
+func (s *session) text(ctx context.Context, m proto.Message, update Updater) {
+	switch m.Type {
+	case "call":
+		go s.call(ctx, m, update)
+	case "result":
+		// The answer to one of the host's own calls (secrets.fetch).
+		s.calls.deliver(m)
+	case "welcome":
+		if m.Welcome != nil {
+			s.host.applyWelcome(ctx, m.Welcome, update)
+		}
+	case "stream.close":
+		s.closeStream(m.Stream)
+	case "stream.ack":
+		// Kantel's reader of a file read stream has taken this much: its window moves on.
+		s.mu.Lock()
+		conn := s.streams[m.Stream]
+		s.mu.Unlock()
+		if fc, ok := conn.(*fileConn); ok {
+			fc.ack(m.Acked)
 		}
 	}
 }
@@ -387,6 +400,11 @@ func (s *session) binary(frame []byte) {
 		return
 	}
 	if _, err := conn.Write(frame[4:]); err != nil {
+		// A file write whose tier gave up on its input still owns its stream: its transfer reports how it went.
+		var input *errFileInput
+		if errors.As(err, &input) {
+			return
+		}
 		s.closeStream(id)
 	}
 }

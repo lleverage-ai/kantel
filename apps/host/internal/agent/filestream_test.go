@@ -132,11 +132,8 @@ func connectSession(t *testing.T, h *Host) (*session, *controlPlane) {
 			if json.Unmarshal(raw, &m) != nil {
 				continue
 			}
-			switch m.Type {
-			case "call":
-				go s.call(ctx, m, nil)
-			case "stream.close":
-				s.closeStream(m.Stream)
+			if m.Type != "result" {
+				s.text(ctx, m, nil)
 			}
 		}
 	}()
@@ -208,7 +205,7 @@ func content(size int) []byte {
 // A read answers the file's size, then its bytes on the stream, then a stream.close of "ok <size>": nothing of the
 // stream before the answer, an empty file too.
 func TestAFileIsReadOnItsStream(t *testing.T) {
-	big := content(1<<20 + 77)
+	big := content(proto.FileStreamWindowBytes + 1<<20 + 77)
 	tier := newStreamTier(map[string][]byte{"/home/user/big.bin": big, "/home/user/empty": {}})
 	s, cp := connectSession(t, streamHost(t, tier))
 	for i, c := range []struct {
@@ -435,5 +432,156 @@ func TestFileConn(t *testing.T) {
 	_ = c.Close()
 	if ctx.Err() == nil {
 		t.Fatal("closing a read didn't cancel it")
+	}
+}
+
+// A read whose reader acks stays within FileStreamWindowBytes of what it has acked (stream.ack), and goes on as it
+// acks. (One from an older Kantel, without Acks, is sent whole: TestAFileIsReadOnItsStream.)
+func TestAFileReadWaitsForItsReader(t *testing.T) {
+	big := content(3*proto.FileStreamWindowBytes + 11)
+	tier := newStreamTier(map[string][]byte{"/home/user/big.bin": big})
+	_, cp := connectSession(t, streamHost(t, tier))
+	cp.open("r", proto.FileOpenParams{SandboxID: "sbx_one", Stream: 9, Path: "/home/user/big.bin", Op: proto.FileOpRead, Acks: true})
+	if m := cp.result("r"); m.Error != nil {
+		t.Fatal(m.Error)
+	}
+	var got bytes.Buffer
+	take := func(upTo int) {
+		t.Helper()
+		for got.Len() < upTo {
+			m, on, payload := cp.next()
+			if m.Type != "" || on != 9 {
+				t.Fatalf("%s on %d at %d bytes", m.Type, on, got.Len())
+			}
+			got.Write(payload)
+		}
+	}
+	take(proto.FileStreamWindowBytes)
+	// The window is full: nothing more comes until Kantel acks.
+	quiet, cancel := context.WithTimeout(cp.ctx, 200*time.Millisecond)
+	_, _, err := cp.ws.Read(quiet)
+	cancel()
+	if err == nil {
+		t.Fatalf("the host sent past its window, %d bytes unacked", got.Len())
+	}
+	// A read on the socket that timed out closes it (coder/websocket), so the rest is on a fresh session.
+	_, cp = connectSession(t, streamHost(t, tier))
+	cp.open("r", proto.FileOpenParams{SandboxID: "sbx_one", Stream: 9, Path: "/home/user/big.bin", Op: proto.FileOpRead, Acks: true})
+	if m := cp.result("r"); m.Error != nil {
+		t.Fatal(m.Error)
+	}
+	got.Reset()
+	for {
+		m, on, payload := cp.next()
+		if m.Type == "stream.close" {
+			if m.Reason != fmt.Sprintf("ok %d", len(big)) {
+				t.Fatalf("ended %q", m.Reason)
+			}
+			break
+		}
+		if m.Type != "" || on != 9 {
+			t.Fatalf("%s on %d", m.Type, on)
+		}
+		before := got.Len()
+		got.Write(payload)
+		if int64(got.Len()) > int64(len(big)) {
+			t.Fatal("more than the file")
+		}
+		// Ack every MiB, as Kantel's reader does.
+		if got.Len()/(1<<20) != before/(1<<20) {
+			cp.send(proto.Message{Type: "stream.ack", Stream: 9, Acked: int64(got.Len())})
+		}
+	}
+	if !bytes.Equal(got.Bytes(), big) {
+		t.Fatalf("%d bytes of %d, or not the file's", got.Len(), len(big))
+	}
+}
+
+// refusingTier refuses every write part-way, closing its input first, as the guest's HTTP client does when the agent
+// answers before it has sent the whole body.
+type refusingTier struct{ *streamTier }
+
+func (f refusingTier) WriteFileStream(_ context.Context, _ proto.FileParams, r io.Reader) (int64, error) {
+	_, _ = io.ReadFull(r, make([]byte, 10))
+	_ = r.(io.Closer).Close()
+	return 0, &proto.Error{Code: proto.ErrInvalid, Message: "no room"}
+}
+
+// A write whose tier closes its input and fails still ends with the tier's error, whatever frames come after.
+func TestARefusedWriteSaysWhy(t *testing.T) {
+	_, cp := connectSession(t, streamHost(t, refusingTier{newStreamTier(map[string][]byte{})}))
+	cp.open("w", proto.FileOpenParams{SandboxID: "sbx_one", Stream: 4, Path: "/home/user/up.bin", Op: proto.FileOpWrite})
+	if m := cp.result("w"); m.Error != nil {
+		t.Fatal(m.Error)
+	}
+	for range 20 {
+		cp.frame(4, content(64*1024))
+	}
+	for {
+		m, _, _ := cp.next()
+		if m.Type == "stream.ack" {
+			continue
+		}
+		if m.Type != "stream.close" || m.Stream != 4 || m.Reason != "error invalid: no room" {
+			t.Fatalf("%s %d %q", m.Type, m.Stream, m.Reason)
+		}
+		return
+	}
+}
+
+// extractTier is a streamTier that extracts archives, recording what it was asked.
+type extractTier struct {
+	*streamTier
+	asked chan proto.FileExtractParams
+}
+
+func (f extractTier) ExtractArchive(_ context.Context, p proto.FileExtractParams) error {
+	f.asked <- p
+	if p.Target == "/home/user/refused" {
+		return &proto.Error{Code: proto.ErrInvalid, Message: "a link points out"}
+	}
+	return nil
+}
+
+// sandbox.files.extract reaches a tier that extracts archives, and is unsupported on one that doesn't; the host
+// reports files-extract only with such a tier; and the gateway's is refused in an E2E space as file calls are.
+func TestAnArchiveIsExtractedByTheHost(t *testing.T) {
+	ctx := context.Background()
+	tier := extractTier{newStreamTier(map[string][]byte{}), make(chan proto.FileExtractParams, 4)}
+	h := streamHost(t, tier)
+	if !slices.Contains(h.makeFacts().Features, proto.FeatureFilesExtract) {
+		t.Error("a host with an extracting tier didn't report files-extract")
+	}
+	if slices.Contains(streamHost(t, newStreamTier(nil)).makeFacts().Features, proto.FeatureFilesExtract) {
+		t.Error("a host with no extracting tier reported files-extract")
+	}
+	call := func(h *Host, p proto.FileExtractParams) error {
+		raw, _ := json.Marshal(p)
+		_, err := h.Call(ctx, proto.MethodFileExtract, raw, nil)
+		return err
+	}
+	want := proto.FileExtractParams{SandboxID: "sbx_one", Archive: "/tmp/a.tar", Target: "/home/user/work"}
+	if err := call(h, want); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-tier.asked; got != want {
+		t.Fatalf("asked %+v", got)
+	}
+	var pe *proto.Error
+	if err := call(h, proto.FileExtractParams{SandboxID: "sbx_one", Archive: "/tmp/a.tar", Target: "/home/user/refused"}); !errors.As(err, &pe) || pe.Code != proto.ErrInvalid {
+		t.Fatalf("a refusal: %v", err)
+	}
+	<-tier.asked
+	if err := call(h, proto.FileExtractParams{SandboxID: "sbx_one", Archive: "a.tar", Target: "/home/user/work"}); !errors.As(err, &pe) || pe.Code != proto.ErrInvalid {
+		t.Fatalf("a relative archive: %v", err)
+	}
+	if err := call(streamHost(t, newStreamTier(nil)), want); !errors.As(err, &pe) || pe.Code != proto.ErrUnsupported {
+		t.Fatalf("a tier that doesn't extract: %v", err)
+	}
+
+	e2e, _, _ := e2eHost(t)
+	raw, _ := json.Marshal(proto.FileExtractParams{SandboxID: "sbx_one", Archive: "/tmp/a.tar", Target: "/home/user/work"})
+	if err := e2e.gatewayMayCall(proto.MethodFileExtract, raw); err == nil {
+		t.Error("the gateway may extract into an E2E space's sandbox")
 	}
 }

@@ -325,6 +325,40 @@ func (c *Client) WriteFileStream(ctx context.Context, path string, r io.Reader, 
 	return out.Size, nil
 }
 
+// ExtractArchive has the agent extract the tar at archive into the directory target with its own code (ExtractTar),
+// then delete the tar. An archive it won't extract is the agent's 400 (IsRefused); an agent from before it, 404 or
+// 405 (IsUnknownRoute).
+func (c *Client) ExtractArchive(ctx context.Context, archive, target string) error {
+	q := url.Values{"archive": {archive}, "target": {target}}
+	res, err := c.do(ctx, http.MethodPost, "/files/extract?"+q.Encode(), nil, nil)
+	if err != nil {
+		return err
+	}
+	res.Body.Close()
+	return nil
+}
+
+// IsRefused reports a 400 from the agent: what it was asked can't be done as asked.
+func IsRefused(err error) bool {
+	var api *apiError
+	return errors.As(err, &api) && api.Status == 400
+}
+
+// IsUnknownRoute reports the agent not serving what it was asked for at all: one from before it.
+func IsUnknownRoute(err error) bool {
+	var api *apiError
+	return errors.As(err, &api) && (api.Status == 404 || api.Status == 405)
+}
+
+// RefusalMessage is the agent's own words for a refusal, without the status.
+func RefusalMessage(err error) string {
+	var api *apiError
+	if errors.As(err, &api) {
+		return api.Message
+	}
+	return err.Error()
+}
+
 func (c *Client) DeleteFile(ctx context.Context, path string, recursive bool) error {
 	q := url.Values{"path": {path}}
 	if recursive {

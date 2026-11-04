@@ -267,6 +267,15 @@ export interface StoredJoinToken {
 export type StoredEvent = computeSchema.Event;
 
 /**
+ * A delete's claim on a record (mounts): while it is fresh, a create mounting the source refuses, so the delete's count
+ * of sandboxes mounting it can't miss one. A claim older than a minute is a delete that never finished, and ignored.
+ */
+export interface DeleteClaim {
+	readonly token: string;
+	readonly at: number;
+}
+
+/**
  * A bundle an account uploaded (mounts): its ID is `<accountId>/<digest>`, so an account has a digest once. Its bytes
  * are the bundle store's, kept once by digest for every account that uploads them.
  */
@@ -278,6 +287,19 @@ export interface StoredBundle {
 	readonly sizeBytes: number;
 	readonly createdAt: number;
 	readonly createdBy?: string;
+	readonly deleting?: DeleteClaim;
+}
+
+/**
+ * Who holds a bundle's bytes (mounts), by digest: uploads publishing a record for them, each with a lease until a
+ * time, or a delete removing them, with its claim. One holds off the other, so bytes are never removed under a record
+ * being published.
+ */
+export interface StoredBundleBlob {
+	/** The digest. */
+	readonly id: string;
+	readonly leases: { readonly [lease: string]: number };
+	readonly deleting?: DeleteClaim;
 }
 
 /** A bucket an account's sandboxes may mount prefixes of (mounts). Its credentials are sealed, and never answered. */
@@ -292,6 +314,7 @@ export interface StoredBucketSource {
 	/** The credentials' JSON, sealed at `bucketSources:<id>:credentials`. */
 	readonly credentials?: SealedValue;
 	readonly createdAt: number;
+	readonly deleting?: DeleteClaim;
 }
 
 /**
@@ -386,6 +409,7 @@ export interface ComputeStore {
 	readonly e2eChain: Collection<StoredE2EEntry>;
 	/** Mounts' bundles, bucket sources and signed file URLs (experimental). */
 	readonly bundles: Collection<StoredBundle>;
+	readonly bundleBlobs: Collection<StoredBundleBlob>;
 	readonly bucketSources: Collection<StoredBucketSource>;
 	readonly fileUrls: Collection<StoredFileUrl>;
 	readonly settings: Collection<StoredSetting>;
@@ -471,6 +495,7 @@ export function createMemoryStore(): ComputeStore {
 		egress: memoryCollection(),
 		e2eChain: memoryCollection(),
 		bundles: memoryCollection(),
+		bundleBlobs: memoryCollection(),
 		bucketSources: memoryCollection(),
 		fileUrls: memoryCollection(),
 		settings: memoryCollection(),
