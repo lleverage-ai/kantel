@@ -119,7 +119,7 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 	h.proxy.Secrets = h.secrets
 	h.proxy.CAs = h.cas
 	h.egressLog = newEgressBatcher(h.sendEgress, h.connected)
-	h.proxy.OnRecord = h.egressLog.add
+	h.proxy.OnRecord = h.recordEgress
 	dest, err := destinations(cfg)
 	if err != nil {
 		return nil, err

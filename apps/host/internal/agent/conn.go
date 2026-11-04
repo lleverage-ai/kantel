@@ -256,7 +256,7 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 	switch m.Method {
 	case proto.MethodPortOpen:
 		// The stream outlives the call, so it runs on the session's context; the gate holds until it is connected.
-		result, err = s.openPort(ctx, m.Params)
+		result, err = s.openPort(ctx, callCtx, m.Params)
 		done()
 	case proto.MethodHostUpdate:
 		var p proto.UpdateParams
@@ -271,9 +271,16 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 		done()
 	default:
 		result, err = s.host.Call(callCtx, m.Method, m.Params, func(e proto.Event) {
+			if callCtx.Err() != nil {
+				return
+			}
 			e.At = time.Now().UnixMilli()
 			_ = s.send(ctx, proto.Message{Type: "event", Call: m.ID, Event: &e})
 		})
+		// Ended (its space turned E2E on, or its sandbox is going): what it got after isn't sent.
+		if callCtx.Err() != nil && ctx.Err() == nil {
+			result, err = nil, &proto.Error{Code: proto.ErrConflict, Message: "this call was ended: its sandbox's space turned E2E on, or the sandbox is being replaced"}
+		}
 		done()
 	}
 	if err != nil {
@@ -288,7 +295,7 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 
 // openPort connects a stream the control plane named to a port of a sandbox, or for port 0 to an E2E session with the
 // host (e2e.go); binary frames carry it both ways.
-func (s *session) openPort(ctx context.Context, raw json.RawMessage) (any, error) {
+func (s *session) openPort(ctx, dial context.Context, raw json.RawMessage) (any, error) {
 	var p proto.PortParams
 	if err := json.Unmarshal(raw, &p); err != nil || p.Stream == 0 || p.Port < 0 || p.Port > 65535 {
 		return nil, invalid("bad port.open")
@@ -303,7 +310,7 @@ func (s *session) openPort(ctx context.Context, raw json.RawMessage) (any, error
 			return nil, err
 		}
 	} else {
-		dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		dialCtx, cancel := context.WithTimeout(dial, 15*time.Second)
 		defer cancel()
 		var err error
 		if conn, err = s.host.DialPort(dialCtx, p.SandboxID, p.Port); err != nil {

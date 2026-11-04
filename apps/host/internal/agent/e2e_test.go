@@ -12,10 +12,12 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/e2e"
+	"github.com/lleverage-ai/kantel/apps/host/internal/egress"
 	"github.com/lleverage-ai/kantel/apps/host/internal/isolate"
 	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
@@ -788,5 +790,76 @@ func TestTurningE2EOnEndsPlaintextCallsInFlight(t *testing.T) {
 	_ = app.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if _, err := app.Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatalf("the plaintext port stayed open: %v", err)
+	}
+}
+
+// An E2E sandbox's outbound requests aren't told to the gateway (their paths can carry tokens); a plaintext one's are.
+func TestEgressOfAnE2ESandboxIsntPublished(t *testing.T) {
+	h, _, _ := e2eHost(t)
+	h.egressLog = newEgressBatcher(h.sendEgress, nil)
+	h.recordEgress(egress.Record{SandboxID: "sbx_one", Method: "GET", Host: "api.telegram.org", Port: 443, Path: "/bot123:SECRET/getMe"})
+	h.recordEgress(egress.Record{SandboxID: "sbx_gone", Method: "GET", Host: "api.telegram.org", Port: 443, Path: "/bot123:SECRET/getMe"})
+	h.recordEgress(egress.Record{SandboxID: "sbx_other", Method: "GET", Host: "example.com", Port: 443, Path: "/"})
+	h.egressLog.mu.Lock()
+	buf := slices.Clone(h.egressLog.buf)
+	h.egressLog.mu.Unlock()
+	if len(buf) != 1 || buf[0].SandboxID != "sbx_other" {
+		t.Fatalf("batched %+v", buf)
+	}
+	// One batched while its space was off, sent after it turned on.
+	if err := h.sendEgress([]proto.EgressRecord{{SandboxID: "sbx_one", Path: "/bot123:SECRET/getMe"}}); err != nil {
+		t.Fatalf("an E2E record went to the link: %v", err)
+	}
+	if err := h.sendEgress([]proto.EgressRecord{{SandboxID: "sbx_other", Path: "/"}}); !errors.Is(err, errDisconnected) {
+		t.Fatalf("a plaintext record wasn't sent: %v", err)
+	}
+}
+
+// A device's call in a space E2E protects waits until every plaintext call there (and any whose space the host can't
+// tell, such as an orphan snapshot's read) has been ended and has returned; those of another space run on.
+func TestADevicesCallWaitsForPlaintextCallsToEnd(t *testing.T) {
+	h, tier, v := e2eHost(t)
+	type call struct {
+		ended    chan struct{}
+		returned atomic.Bool
+	}
+	start := func(space string) *call {
+		c := &call{ended: make(chan struct{})}
+		var forget func()
+		forget = h.watchPlain(space, func() {
+			close(c.ended)
+			go func() {
+				// An operation that takes a while to notice it was cancelled.
+				time.Sleep(150 * time.Millisecond)
+				c.returned.Store(true)
+				forget()
+			}()
+		})
+		return c
+	}
+	same, orphan, other := start(v.Space), start(""), start("acc_plain")
+	hostSide, deviceSide := net.Pipe()
+	if err := h.serveE2E(context.Background(), hostSide, "sbx_one"); err != nil {
+		t.Fatal(err)
+	}
+	_ = deviceSide.SetDeadline(time.Now().Add(10 * time.Second))
+	c, err := e2e.OpenClient(deviceSide, key(t, v.DeviceStatic), key(t, v.HostStatic).PublicKey().Bytes(), v.Space, v.HostID, "sbx_one", v.Entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := c.Call(proto.MethodExec, map[string]any{"command": "id"}); err != nil {
+		t.Fatal(err)
+	}
+	if !same.returned.Load() || !orphan.returned.Load() {
+		t.Fatal("the device's call ran while a plaintext call in its space still did")
+	}
+	select {
+	case <-other.ended:
+		t.Fatal("another space's plaintext call was ended")
+	default:
+	}
+	if len(tier.execs) != 1 {
+		t.Fatalf("%d commands ran", len(tier.execs))
 	}
 }

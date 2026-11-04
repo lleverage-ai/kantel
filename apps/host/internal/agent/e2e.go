@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net"
 	"slices"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/e2e"
+	"github.com/lleverage-ai/kantel/apps/host/internal/egress"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
@@ -94,6 +96,24 @@ func (h *Host) snapshotGuarded(t Tier, snapshotID string) (space string, covered
 		return "a space on this host", h.anyE2E()
 	}
 	return owner, h.e2eMode(owner) != e2e.ModeOff
+}
+
+// egressPublic is whether a sandbox's outbound requests may be told to the gateway: not one in an E2E space, whose
+// request paths (and any token in them) are the space's own, nor, on a host holding E2E spaces, one whose space it
+// can't tell.
+func (h *Host) egressPublic(sandboxID string) bool {
+	if h.e2e == nil || len(h.e2e.Spaces()) == 0 {
+		return true
+	}
+	space := h.ownerOf(sandboxID)
+	return space != "" && h.e2eMode(space) == e2e.ModeOff
+}
+
+// recordEgress batches a proxy record for the gateway, unless egressPublic says it isn't the gateway's to see.
+func (h *Host) recordEgress(r egress.Record) {
+	if h.egressPublic(r.SandboxID) {
+		h.egressLog.add(r)
+	}
 }
 
 func (h *Host) e2eMode(space string) string {
@@ -516,13 +536,9 @@ func (h *Host) gatewayGuard(ctx context.Context, method string, params json.RawM
 		leave()
 		release()
 	}
-	if err := h.gatewayMayCall(method, params); err != nil {
-		done()
-		return ctx, func() {}, err
-	}
 	// A plaintext call that reads or runs something ends if its space turns E2E on while it runs (a join, or an entry a
-	// session brings), rather than keeping what it reached.
-	if cancellable {
+	// session brings), rather than keeping what it reached; it is watched from before its check (watchPlain).
+	if cancellable && !isE2EPort(method, params) {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithCancel(ctx)
 		forget := h.watchPlain(h.spaceOfCall(method, params), cancel)
@@ -533,7 +549,20 @@ func (h *Host) gatewayGuard(ctx context.Context, method string, params json.RawM
 			inner()
 		}
 	}
+	if err := h.gatewayMayCall(method, params); err != nil {
+		done()
+		return ctx, func() {}, err
+	}
 	return ctx, done, nil
+}
+
+// isE2EPort is whether a call opens port 0, a device's E2E session, which isn't plaintext.
+func isE2EPort(method string, params json.RawMessage) bool {
+	if method != proto.MethodPortOpen {
+		return false
+	}
+	var p proto.PortParams
+	return json.Unmarshal(params, &p) == nil && p.Port == proto.PortE2E
 }
 
 // spaceOfCall is the space of the sandbox (or snapshot) a content call reaches, or "".
@@ -554,35 +583,39 @@ func (h *Host) spaceOfCall(method string, params json.RawMessage) string {
 	return h.ownerOf(p.SandboxID)
 }
 
-// plainCalls are the gateway's plaintext calls and port streams in flight, by their space, so they end when it turns
-// E2E on (watchPlain).
+// plainCalls are the gateway's plaintext calls and port streams in flight, by their space ("" when the host can't
+// tell it), so none outlives its space turning E2E on (drainPlain).
 type plainCalls struct {
 	mu       sync.Mutex
+	cond     *sync.Cond
 	next     int
-	calls    map[int]plainCall
+	calls    map[int]*plainCall
 	watching bool
 }
 
 type plainCall struct {
 	space string
 	end   func()
+	ended bool
 }
 
-// watchPlain ends end's call when space turns E2E on, looking every plainRecheck while any such call runs. forget is
-// for when the call is over.
+// watchPlain tracks a plaintext call or stream until forget: end stops it (cancels its context, closes its stream)
+// when its space turns E2E on. A call registers before it checks its space's mode, so either it sees E2E on and is
+// refused, or drainPlain finds it.
 func (h *Host) watchPlain(space string, end func()) (forget func()) {
-	if space == "" || h.e2e == nil {
+	if h.e2e == nil {
 		return func() {}
 	}
 	pc := &h.plain
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 	if pc.calls == nil {
-		pc.calls = map[int]plainCall{}
+		pc.calls = map[int]*plainCall{}
+		pc.cond = sync.NewCond(&pc.mu)
 	}
 	pc.next++
 	n := pc.next
-	pc.calls[n] = plainCall{space, end}
+	pc.calls[n] = &plainCall{space: space, end: end}
 	if !pc.watching {
 		pc.watching = true
 		go h.watchPlainLoop()
@@ -590,10 +623,69 @@ func (h *Host) watchPlain(space string, end func()) (forget func()) {
 	return func() {
 		pc.mu.Lock()
 		delete(pc.calls, n)
+		pc.cond.Broadcast()
 		pc.mu.Unlock()
 	}
 }
 
+// protectedNow is whether a plaintext call in space mustn't run on: its space is E2E on or strict, or the host can't
+// tell its space and holds some space that is.
+func (h *Host) protectedNow(space string) bool {
+	if space != "" {
+		return h.e2eMode(space) != e2e.ModeOff
+	}
+	for _, sp := range h.e2e.Spaces() {
+		if h.e2eMode(sp) != e2e.ModeOff {
+			return true
+		}
+	}
+	return false
+}
+
+// drainPlain ends every plaintext call and stream of space (and those whose space the host can't tell) and waits until
+// they have returned. A device's session calls it before each call, so nothing a device does in a space E2E protects
+// overlaps a plaintext gateway call still running there, whether the space turned on by a join or by an entry.
+func (h *Host) drainPlain(ctx context.Context, space string) error {
+	if h.e2e == nil || h.e2eMode(space) == e2e.ModeOff {
+		return nil
+	}
+	pc := &h.plain
+	pc.mu.Lock()
+	if pc.calls == nil {
+		pc.mu.Unlock()
+		return nil
+	}
+	matches := func(c *plainCall) bool { return c.space == space || c.space == "" }
+	var ending []func()
+	for _, c := range pc.calls {
+		if matches(c) && !c.ended {
+			c.ended = true
+			ending = append(ending, c.end)
+		}
+	}
+	pc.mu.Unlock()
+	for _, end := range ending {
+		end()
+	}
+	stop := context.AfterFunc(ctx, func() {
+		pc.mu.Lock()
+		pc.cond.Broadcast()
+		pc.mu.Unlock()
+	})
+	defer stop()
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	for slices.ContainsFunc(slices.Collect(maps.Values(pc.calls)), matches) {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		pc.cond.Wait()
+	}
+	return nil
+}
+
+// watchPlainLoop ends, every plainRecheck while any plaintext call runs, those whose space has turned E2E on, for a
+// space no device is using yet.
 func (h *Host) watchPlainLoop() {
 	every := h.plainRecheck
 	if every <= 0 {
@@ -609,11 +701,20 @@ func (h *Host) watchPlainLoop() {
 			pc.mu.Unlock()
 			return
 		}
+		calls := slices.Collect(maps.Values(pc.calls))
+		pc.mu.Unlock()
+		protected := map[string]bool{}
+		for _, c := range calls {
+			if _, ok := protected[c.space]; !ok {
+				protected[c.space] = h.protectedNow(c.space)
+			}
+		}
 		var ending []func()
-		for n, c := range pc.calls {
-			if h.e2eMode(c.space) != e2e.ModeOff {
+		pc.mu.Lock()
+		for _, c := range calls {
+			if protected[c.space] && !c.ended {
+				c.ended = true
 				ending = append(ending, c.end)
-				delete(pc.calls, n)
 			}
 		}
 		pc.mu.Unlock()
@@ -667,6 +768,9 @@ func (h *Host) serveE2E(ctx context.Context, conn net.Conn, sandboxID string) er
 			if h.ownerOf(sandbox) != space {
 				return nil, &e2e.Error{Code: proto.ErrNotFound, Message: "No such sandbox in this space"}
 			}
+			if err := h.drainPlain(ctx, space); err != nil {
+				return nil, err
+			}
 			var p map[string]any
 			if len(params) > 0 && string(params) != "null" {
 				if err := json.Unmarshal(params, &p); err != nil {
@@ -693,14 +797,17 @@ func (h *Host) serveE2E(ctx context.Context, conn net.Conn, sandboxID string) er
 			return result, nil
 		},
 		Port: func(ctx context.Context, _ e2e.Device, sandbox string, port int) (net.Conn, error) {
-			// Held until it connects, as a gateway port is.
-			_, leave, ok := h.gate.use(ctx, []string{"sandbox:" + sandbox}, true)
+			// Held until it connects, as a gateway port is; a delete cancels the dial.
+			ctx, leave, ok := h.gate.use(ctx, []string{"sandbox:" + sandbox}, true)
 			if !ok {
 				return nil, &e2e.Error{Code: proto.ErrConflict, Message: "This sandbox is being made or deleted"}
 			}
 			defer leave()
 			if h.ownerOf(sandbox) != space {
 				return nil, &e2e.Error{Code: proto.ErrNotFound, Message: "No such sandbox in this space"}
+			}
+			if err := h.drainPlain(ctx, space); err != nil {
+				return nil, err
 			}
 			return h.DialPort(ctx, sandbox, port)
 		},
