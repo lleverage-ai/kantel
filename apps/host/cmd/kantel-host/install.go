@@ -81,6 +81,7 @@ func install(args []string) error {
 	tiers := fs.String("tiers", "", "tiers to run: microvm,isolate (default: what the machine can)")
 	isolateRuntime := fs.String("isolate-runtime", "", `"native" runs isolates with workerd on the host itself (no KVM; trusted code only)`)
 	proxyDataPath := fs.Bool("proxy-data-path", false, "turn on the egress data path (experimental): sandboxes' traffic goes through the control plane's proxy settings")
+	injectGuestAgent := fs.Bool("inject-guest-agent", false, "boot microVMs through Kantel's initramfs, which puts the guest agent into any Linux image (experimental)")
 	noStart := fs.Bool("no-start", false, "install and register, but don't start the service")
 	_ = fs.Parse(args)
 	if os.Geteuid() != 0 {
@@ -113,7 +114,10 @@ func install(args []string) error {
 	if *proxyDataPath {
 		cfg.ProxyDataPath = true
 	}
-	cfg.Kernel, cfg.SandboxImage, cfg.IsolateImage, cfg.Firecracker, cfg.Workerd, cfg.IsolateBundle = "", "", "", "", "", ""
+	if *injectGuestAgent {
+		cfg.InjectGuestAgent = true
+	}
+	cfg.Kernel, cfg.SandboxImage, cfg.IsolateImage, cfg.Firecracker, cfg.Workerd, cfg.IsolateBundle, cfg.GuestAgent = "", "", "", "", "", "", ""
 	cfg.Defaults()
 
 	step("Checking this machine")
@@ -379,6 +383,10 @@ func fetchImages(cfg agent.Config, source string, kvm bool) error {
 			return err
 		}
 		if err := get("isolate-"+arch+".ext4", cfg.IsolateImage, 0o644, false); err != nil {
+			return err
+		}
+		// The static agent the initramfs is made from (injectGuestAgent); required only when that's on.
+		if err := get("kantel-guest-"+arch, cfg.GuestAgent, 0o755, cfg.InjectGuestAgent); err != nil {
 			return err
 		}
 	}

@@ -178,11 +178,21 @@ type BootConfig struct {
 	MemoryMiB int
 	Kernel    string
 	BootArgs  string
+	// Initrd is an initramfs to boot through (Kantel's, which injects the guest agent); empty boots the image's own init.
+	Initrd string
 	// TapDevice is the host TAP for eth0; MAC its guest address.
 	TapDevice string
 	MAC       string
 	// GuestCID is the vsock context ID (3 or more).
 	GuestCID uint32
+}
+
+func bootSource(cfg BootConfig) map[string]any {
+	source := map[string]any{"kernel_image_path": cfg.Kernel, "boot_args": cfg.BootArgs}
+	if cfg.Initrd != "" {
+		source["initrd_path"] = cfg.Initrd
+	}
+	return source
 }
 
 // Boot configures the VM (rootfs.ext4 read-only, disk.ext4 writable, eth0, vsock) and starts it.
@@ -192,7 +202,7 @@ func (m *Machine) Boot(ctx context.Context, cfg BootConfig) error {
 		body any
 	}{
 		{"/machine-config", map[string]any{"vcpu_count": cfg.VCPUs, "mem_size_mib": cfg.MemoryMiB, "smt": false}},
-		{"/boot-source", map[string]any{"kernel_image_path": cfg.Kernel, "boot_args": cfg.BootArgs}},
+		{"/boot-source", bootSource(cfg)},
 		{"/drives/rootfs", map[string]any{"drive_id": "rootfs", "path_on_host": RootfsFile, "is_root_device": true, "is_read_only": true}},
 		{"/drives/disk", map[string]any{"drive_id": "disk", "path_on_host": DiskFile, "is_root_device": false, "is_read_only": false}},
 		{"/network-interfaces/eth0", map[string]any{"iface_id": "eth0", "host_dev_name": cfg.TapDevice, "guest_mac": cfg.MAC}},

@@ -46,6 +46,7 @@ import (
 	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
 	"github.com/lleverage-ai/kantel/apps/host/internal/fsutil"
 	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
+	"github.com/lleverage-ai/kantel/apps/host/internal/guestinit"
 	"github.com/lleverage-ai/kantel/apps/host/internal/network"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
@@ -88,6 +89,10 @@ type Config struct {
 	// for the disk; SpoolMaxMiB caps it. Empty: straight to disk.
 	SpoolDir    string
 	SpoolMaxMiB int64
+	// Initrd is Kantel's initramfs (guestinit.Build): when set, every cold boot goes through it, which puts the guest
+	// agent into the image, so Rootfs may be any Linux root filesystem (injectGuestAgent, experimental). Empty boots
+	// the image's own kantel-init and agent.
+	Initrd string
 }
 
 type meta struct {
@@ -142,6 +147,43 @@ type Manager struct {
 	nextCID   atomic.Uint32
 	closed    atomic.Bool
 	spool     *spool
+	// guest is what the image has, as a template's agent reported it (guestFile); every sandbox shares the image.
+	guest atomic.Pointer[proto.GuestCapabilities]
+}
+
+// guestFile, in a template, is its agent's capability report.
+const guestFile = "guest.json"
+
+// bootConfig is a cold boot of size: through Kantel's initramfs when the host injects the agent.
+func (m *Manager) bootConfig(size proto.Size, tap, mac string, cid uint32) fc.BootConfig {
+	cfg := fc.BootConfig{VCPUs: size.VCPUs, MemoryMiB: size.MemoryMiB, Kernel: m.cfg.Kernel, BootArgs: bootArgs, TapDevice: tap, MAC: mac, GuestCID: cid}
+	if m.cfg.Initrd != "" {
+		cfg.Initrd, cfg.BootArgs = m.cfg.Initrd, guestinit.BootArgs
+	}
+	return cfg
+}
+
+// noteGuest keeps what a template's agent reported (nil: an agent too old to say).
+func (m *Manager) noteGuest(dir string, caps *proto.GuestCapabilities) {
+	if caps == nil {
+		_ = os.Remove(filepath.Join(dir, guestFile))
+		return
+	}
+	m.guest.Store(caps)
+	if raw, err := json.Marshal(caps); err == nil {
+		_ = os.WriteFile(filepath.Join(dir, guestFile), raw, 0o600)
+	}
+}
+
+// loadGuest reads a ready template's report, for a host that restarted (its templates are kept).
+func (m *Manager) loadGuest(dir string) {
+	if m.guest.Load() != nil {
+		return
+	}
+	var caps proto.GuestCapabilities
+	if raw, err := os.ReadFile(filepath.Join(dir, guestFile)); err == nil && json.Unmarshal(raw, &caps) == nil {
+		m.guest.Store(&caps)
+	}
 }
 
 func New(cfg Config) (*Manager, error) {
@@ -164,6 +206,8 @@ func New(cfg Config) (*Manager, error) {
 	m.spool = newSpool(cfg.SpoolDir, cfg.SpoolMaxMiB<<20, m.log)
 	for _, size := range cfg.Sizes {
 		m.templates[size.Name] = &sync.Mutex{}
+		// What the image has, before any sandbox needs a template: from one made before a restart.
+		m.loadGuest(filepath.Join(cfg.Root, "templates", size.Name))
 	}
 	// Leftover pool VMs from a previous run aren't adopted: they are cheap to make again.
 	entries, _ := os.ReadDir(filepath.Join(cfg.Root, "pool"))
@@ -240,6 +284,7 @@ func (m *Manager) info(s *sandbox) proto.SandboxInfo {
 	if s.link != nil {
 		info.Address = s.link.GuestIP.String()
 	}
+	info.Guest = m.guest.Load()
 	return info
 }
 
@@ -459,10 +504,16 @@ func (m *Manager) template(ctx context.Context, size proto.Size) (string, timing
 	dir := filepath.Join(m.cfg.Root, "templates", size.Name)
 	// The size's shape too: a snapshot restores the vCPUs and memory it was made with, so a size that changes (a new
 	// default, or the host's settings) needs a new template.
-	fingerprint := fc.Fingerprint(m.cfg.Firecracker, m.cfg.Kernel, m.cfg.Rootfs) +
+	images := []string{m.cfg.Firecracker, m.cfg.Kernel, m.cfg.Rootfs}
+	if m.cfg.Initrd != "" {
+		// Its name has the agent's digest: another agent (or turning injection on or off) makes a new template.
+		images = append(images, m.cfg.Initrd)
+	}
+	fingerprint := fc.Fingerprint(images...) +
 		fmt.Sprintf(" size=%d/%d/%d", size.VCPUs, size.MemoryMiB, size.DiskGiB)
 	if _, err := os.Stat(filepath.Join(dir, "ready")); err == nil {
 		if made, _ := os.ReadFile(filepath.Join(dir, "images")); string(made) == fingerprint {
+			m.loadGuest(dir)
 			return dir, nil, nil
 		}
 		// Made with other images (an update) or another shape: running sandboxes keep their mapping of the old memory file.
@@ -495,7 +546,7 @@ func (m *Manager) template(ctx context.Context, size proto.Size) (string, timing
 	}
 	defer machine.Kill()
 	t.step("launch", &start)
-	if err := machine.Boot(ctx, fc.BootConfig{VCPUs: size.VCPUs, MemoryMiB: size.MemoryMiB, Kernel: m.cfg.Kernel, BootArgs: bootArgs, TapDevice: link.Tap, MAC: link.MAC, GuestCID: m.cid()}); err != nil {
+	if err := machine.Boot(ctx, m.bootConfig(size, link.Tap, link.MAC, m.cid())); err != nil {
 		return "", nil, err
 	}
 	client := guest.NewClient(filepath.Join(vm, fc.VsockSocket))
@@ -512,6 +563,10 @@ func (m *Manager) template(ctx context.Context, size proto.Size) (string, timing
 		m.log.Warn("template services not all ready; snapshotting anyway", "size", size.Name, "error", err)
 	}
 	t.step("services", &start)
+	caps, err := client.Capabilities(bootCtx)
+	if err != nil {
+		m.log.Warn("guest agent's capabilities", "size", size.Name, "error", err)
+	}
 	_ = client.Sync(ctx)
 	client.Close()
 	if err := machine.Pause(ctx); err != nil {
@@ -530,6 +585,7 @@ func (m *Manager) template(ctx context.Context, size proto.Size) (string, timing
 		return "", nil, err
 	}
 	raw, _ := json.Marshal(map[string]any{"size": size, "timings": t, "at": time.Now().UnixMilli()})
+	m.noteGuest(dir, caps)
 	_ = os.WriteFile(filepath.Join(dir, "images"), []byte(fingerprint), 0o600)
 	_ = os.WriteFile(filepath.Join(dir, "ready"), raw, 0o600)
 	m.log.Info("template ready", "size", size.Name, "timings", t)
@@ -850,7 +906,7 @@ func (m *Manager) boot(ctx context.Context, s *sandbox, size proto.Size) error {
 		return err
 	}
 	s.meta.CID = m.cid()
-	if err := machine.Boot(ctx, fc.BootConfig{VCPUs: size.VCPUs, MemoryMiB: size.MemoryMiB, Kernel: m.cfg.Kernel, BootArgs: bootArgs, TapDevice: s.link.Tap, MAC: s.link.MAC, GuestCID: s.meta.CID}); err != nil {
+	if err := machine.Boot(ctx, m.bootConfig(size, s.link.Tap, s.link.MAC, s.meta.CID)); err != nil {
 		machine.Kill()
 		return err
 	}

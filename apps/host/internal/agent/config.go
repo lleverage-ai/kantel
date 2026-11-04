@@ -58,6 +58,12 @@ type Config struct {
 	// ProxyDataPath is the switch for the egress data path: when false (the default), the control plane's egress
 	// settings (upstream, token, allow/deny) are ignored and sandboxes get the host's default egress. Experimental.
 	ProxyDataPath bool `json:"proxyDataPath,omitempty"`
+	// InjectGuestAgent boots microVMs through Kantel's initramfs, which puts the guest agent (GuestAgent, a static
+	// kantel-guest) into the image at boot, so SandboxImage can be any Linux root filesystem: Kantel's, debian, alpine,
+	// busybox. Off (the default), the image must ship kantel-init and the agent itself, as Kantel's does. Experimental.
+	InjectGuestAgent bool `json:"injectGuestAgent,omitempty"`
+	// GuestAgent is the static kantel-guest the initramfs is made from (default Root/images/kantel-guest).
+	GuestAgent string `json:"guestAgent,omitempty"`
 	// SpoolDir is RAM (tmpfs) memory snapshots go to first, so stop and fork don't wait for the disk (default
 	// /dev/shm/kantel-host); SpoolMaxMiB caps it (default an eighth of memory, at most 16 GiB; -1 turns it off).
 	SpoolDir    string `json:"spoolDir,omitempty"`
@@ -97,6 +103,7 @@ func (c *Config) Defaults() {
 	set(&c.Kernel, filepath.Join(images, "vmlinux"))
 	set(&c.SandboxImage, filepath.Join(images, "sandbox.ext4"))
 	set(&c.IsolateImage, filepath.Join(images, "isolate.ext4"))
+	set(&c.GuestAgent, filepath.Join(images, "kantel-guest"))
 	set(&c.Firecracker, filepath.Join(c.Root, "bin", "firecracker"))
 	set(&c.Workerd, filepath.Join(c.Root, "bin", "workerd"))
 	set(&c.IsolateBundle, filepath.Join(c.Root, "isolate"))
