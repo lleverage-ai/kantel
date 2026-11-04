@@ -114,6 +114,13 @@ const AUDIT_PREFIX = "/v1/audit/";
 
 const SIGN_IN_PATHS: ReadonlySet<string> = new Set([OTP_START_PATH, OTP_VERIFY_PATH, SESSION_END_PATH]);
 
+/** The mailer behind session ending alone, where email codes are off: never asked to send, as their start is 503. */
+const NO_MAILER: OtpMailer = {
+	send: async () => {
+		throw new Error("Sign-in by email is not set up on this deployment");
+	},
+};
+
 /** 30 sign-in requests per client address per 15 minutes: room for a few people mistyping codes. */
 export const SIGN_IN_LIMIT: AddressLimitOptions = { requests: 30, windowMilliseconds: 15 * 60 * 1000 };
 
@@ -126,20 +133,19 @@ export function createGateway(options: GatewayOptions): Gateway {
 			providers: [kantelSessionProvider({ sessions: components.otp.sessions })],
 		});
 
-	const signIn =
-		options.mailer === undefined
-			? undefined
-			: createOtpHandler({
-					otp: createEmailOtp({
-						identity: components.identity,
-						codes: components.otp.codes,
-						sessions: components.otp.sessions,
-						mailer: options.mailer,
-						audit: components.audit,
-						// Never the code: the identity lane passes only the error and the address typed.
-						onMailError: (error, to) => console.error(`[gateway] sign-in mail to ${JSON.stringify(to)} failed:`, error),
-					}),
-				});
+	const otpHandler = (mailer: OtpMailer) =>
+		createOtpHandler({
+			otp: createEmailOtp({
+				identity: components.identity,
+				codes: components.otp.codes,
+				sessions: components.otp.sessions,
+				mailer,
+				audit: components.audit,
+				// Never the code: the identity lane passes only the error and the address typed.
+				onMailError: (error, to) => console.error(`[gateway] sign-in mail to ${JSON.stringify(to)} failed:`, error),
+			}),
+		});
+	const signIn = options.mailer === undefined ? undefined : otpHandler(options.mailer);
 	const signInLimit = createAddressLimit(options.signInLimit ?? SIGN_IN_LIMIT);
 
 	const oauth =
@@ -154,6 +160,9 @@ export function createGateway(options: GatewayOptions): Gateway {
 					...options.oauthProviders,
 					onFailure: (provider, reason) => console.warn(`[gateway] sign-in with ${provider} failed: ${reason}`),
 				});
+
+	// Ending a session (signing out) is every sign-in's: with GitHub or Google on and no mailer, it is still served.
+	const sessionEnd = signIn ?? (oauth === undefined ? undefined : otpHandler(NO_MAILER));
 
 	const audit = createAuditQueryHandler({ store: components.audit, authenticator });
 
@@ -195,7 +204,8 @@ export function createGateway(options: GatewayOptions): Gateway {
 				const crossSite = crossSiteRefusal(request, { origins: consoleOrigins, httpsTwin: true });
 				if (crossSite !== undefined) return crossSite;
 				if (SIGN_IN_PATHS.has(path)) {
-					if (signIn === undefined) {
+					const handler = path === SESSION_END_PATH ? sessionEnd : signIn;
+					if (handler === undefined) {
 						return json(
 							{ error: { code: "unavailable", message: "Sign-in by email is not set up on this deployment" } },
 							503,
@@ -207,7 +217,7 @@ export function createGateway(options: GatewayOptions): Gateway {
 						limited.headers.set("retry-after", String(retryAfter));
 						return limited;
 					}
-					return await signIn(request);
+					return await handler(request);
 				}
 				if (isOAuthPath(path)) {
 					if (oauth === undefined || !oauth.handles(path)) return notFound();

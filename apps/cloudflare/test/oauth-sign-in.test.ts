@@ -32,7 +32,14 @@ const ADA_GITHUB: MockGitHubAccount = {
 	name: "Ada Lovelace",
 	emails: [{ email: "ada@example.test", primary: true, verified: true }],
 };
-const ADA_GOOGLE: MockGoogleAccount = { sub: "g-1", email: "ada@example.test", email_verified: true, name: "Ada" };
+// A Google Workspace account (`hd`), so Google is authoritative for the address.
+const ADA_GOOGLE: MockGoogleAccount = {
+	sub: "g-1",
+	email: "ada@example.test",
+	email_verified: true,
+	hd: "example.test",
+	name: "Ada",
+};
 
 async function start(vars: GatewayVars = {}) {
 	const oauth = createMockOAuth();
@@ -194,6 +201,39 @@ describe("sign-in with GitHub and Google on the public origin", () => {
 		expect((await pickUp(jar, "https://evil.test")).status).toBe(403);
 		// Still there for the console, once.
 		expect((await pickUp(jar)).status).toBe(200);
+		await close();
+	});
+
+	it("signs nobody up from a Google email Google isn't authoritative for", async () => {
+		const { fetchGateway, oauth, call, signInWithCode, close } = await start();
+		const consumer: MockGoogleAccount = { sub: "g-9", email: "ada@example.test", email_verified: true };
+		const { landing, jar } = await mockOAuthSignIn(fetchGateway, {
+			origin: PUBLIC,
+			provider: "google",
+			oauth,
+			account: consumer,
+		});
+		expect(landing.searchParams.get("sign_in_error")).toBe("unverified_email");
+		expect(jar.header()).toBeUndefined();
+		// The address's owner, by code, later finds a space of their own with nobody else in it.
+		const token = await signInWithCode("ada@example.test");
+		const members = await call(PUBLIC, "GET", "/v1/members", { token });
+		expect((members.body.items as unknown[]).length).toBe(1);
+		await close();
+	});
+
+	it("makes one user and one space when first sign-ins by code, GitHub and Google race", async () => {
+		const { call, signIn, signInWithCode, close } = await start();
+		const tokens = await Promise.all([
+			signIn("github", ADA_GITHUB),
+			signIn("google", ADA_GOOGLE),
+			signInWithCode("ada@example.test"),
+		]);
+		const mes = await Promise.all(tokens.map(async (token) => (await call(PUBLIC, "GET", "/v1/me", { token })).body));
+		expect(new Set(mes.map((me) => JSON.stringify(me.actor))).size).toBe(1);
+		expect(new Set(mes.map((me) => me.organisationId)).size).toBe(1);
+		const organisations = await call(PUBLIC, "GET", "/v1/organisations", { token: tokens[0] });
+		expect((organisations.body.items as unknown[]).length).toBe(1);
 		await close();
 	});
 

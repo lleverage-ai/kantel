@@ -22,6 +22,7 @@ import {
 	isKantelSignInSubject,
 	type JsonValue,
 	KantelError,
+	kantelPrimarySubject,
 	normaliseEmail,
 	type Organisation,
 	type OrganisationId,
@@ -346,6 +347,9 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 	 */
 	async function accept(stored: StoredInvite, userId: UserId): Promise<void> {
 		const { invite } = stored;
+		// Of two sign-ins that race, the first to get here takes it, as in the SQL directory; the other found it pending
+		// before the first's audit let it run.
+		if (invites.get(invite.id)?.state !== "pending") return;
 		invites.set(invite.id, { ...stored, state: "accepted" });
 		const principal: Principal = Object.freeze({ kind: "user", userId });
 		const held = bindingsOf(invite.organisationId).some(
@@ -787,6 +791,9 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 				throw new KantelError("invalid", "a sign-in needs an issuer and a subject");
 			}
 			const externalSubject = externalSubjectOf(identity.issuer, identity.subject);
+			// Made or first linked by one of Kantel's own sign-ins: with the email code's subject, as the SQL directory does,
+			// and the provider's beside it.
+			const primary = kantelPrimarySubject(identity) ?? externalSubject;
 			const match = signInMatch(identity);
 			const pending = pendingInvitesTo(verifiedEmail(identity));
 			const first = pending[0];
@@ -800,12 +807,13 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 						id: newId("usr"),
 						name: inviteeName(identity.name, email),
 						email,
-						externalSubject,
+						externalSubject: primary,
 						createdAt: clock.now(),
 					}),
 					createdInOrganisationId: (first as StoredInvite).invite.organisationId,
 				};
 				users.set(stored.user.id, stored);
+				if (primary !== externalSubject) linkedSubjects.set(externalSubject, stored.user.id);
 				await emit(
 					{ actor: { kind: "human", userId: stored.user.id }, organisationId: stored.createdInOrganisationId },
 					"identity.user.created",
@@ -818,8 +826,9 @@ export function createMemoryIdentity(options: MemoryIdentityOptions = {}): Ident
 			}
 			if (match?.link === "another") linkedSubjects.set(externalSubject, stored.user.id);
 			if (match?.link === "subject") {
-				stored = { ...stored, user: Object.freeze({ ...stored.user, externalSubject }) };
+				stored = { ...stored, user: Object.freeze({ ...stored.user, externalSubject: primary }) };
 				users.set(stored.user.id, stored);
+				if (primary !== externalSubject) linkedSubjects.set(externalSubject, stored.user.id);
 			}
 			if (match !== undefined && match.link !== false) {
 				await emit(

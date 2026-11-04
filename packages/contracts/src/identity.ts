@@ -232,6 +232,20 @@ export const isKantelSignInSubject = (externalSubject: unknown): boolean =>
 	typeof externalSubject === "string" &&
 	KANTEL_SIGN_IN_ISSUERS.some((issuer) => externalSubject.startsWith(externalSubjectOf(issuer, "")));
 
+/**
+ * The subject a user first made by one of Kantel's own sign-ins is made with, whichever it was: the email code's for the
+ * address it proved (`externalSubjectOf(EMAIL_OTP_ISSUER, email)`, normalised). `external_subject` is UNIQUE, so two
+ * first sign-ins with one email that race (an email code and GitHub, say) meet on it and make one user; the provider's
+ * own subject is linked beside it. Undefined for any other sign-in, or one with no verified email.
+ */
+export function kantelPrimarySubject(identity: ExternalIdentity): string | undefined {
+	if (!isKantelSignInIssuer(identity.issuer) || identity.emailVerified !== true || typeof identity.email !== "string") {
+		return undefined;
+	}
+	const email = normaliseEmail(identity.email);
+	return email === "" ? undefined : externalSubjectOf(EMAIL_OTP_ISSUER, email);
+}
+
 /** A signed-in person's user record and the organisations they may act in. */
 export interface SignIn {
 	readonly user: User;

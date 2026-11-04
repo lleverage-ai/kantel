@@ -24,7 +24,13 @@ const ADMIN_GITHUB: MockGitHubAccount = {
 	name: "The Admin",
 	emails: [{ email: ADMIN_EMAIL, primary: true, verified: true }],
 };
-const ADMIN_GOOGLE: MockGoogleAccount = { sub: "g-42", email: ADMIN_EMAIL, email_verified: true, name: "Admin" };
+const ADMIN_GOOGLE: MockGoogleAccount = {
+	sub: "g-42",
+	email: ADMIN_EMAIL,
+	email_verified: true,
+	hd: "kantel.example.test",
+	name: "Admin",
+};
 
 async function start(options: Partial<GatewayOptions> = {}) {
 	const components = createGatewayComponents();
@@ -98,6 +104,41 @@ describe("sign-in with GitHub and Google, self-hosted", () => {
 			actors.push(signedIn.actor);
 		}
 		expect(actors[1]).toEqual(actors[0]);
+		await close();
+	});
+
+	it("ends a GitHub session on sign-out with no mailer, while email codes stay off", async () => {
+		const { oauth, fetchGateway, pickUp, close } = await start({ mailer: undefined });
+		const unauthenticated = (await (await fetchGateway(new Request(`${PUBLIC}/v1/me`))).json()) as { error: unknown };
+		expect(unauthenticated.error).toMatchObject({ signIn: ["github", "google"] });
+		const { jar } = await mockOAuthSignIn(fetchGateway, {
+			origin: PUBLIC,
+			provider: "github",
+			oauth,
+			account: ADMIN_GITHUB,
+		});
+		const token = String((await pickUp(jar)).body.token);
+		const me = () => fetchGateway(new Request(`${PUBLIC}/v1/me`, { headers: { authorization: `Bearer ${token}` } }));
+		expect((await me()).status).toBe(200);
+		const end = () =>
+			fetchGateway(
+				new Request(`${PUBLIC}/auth/session/end`, {
+					method: "POST",
+					headers: { authorization: `Bearer ${token}`, origin: PUBLIC, "sec-fetch-site": "same-origin" },
+				}),
+			);
+		expect((await end()).status).toBe(204);
+		expect((await me()).status).toBe(401);
+		expect((await end()).status).toBe(204);
+		// Email codes are still off.
+		const started = await fetchGateway(
+			new Request(`${PUBLIC}/auth/otp/start`, {
+				method: "POST",
+				headers: { "content-type": "application/json", origin: PUBLIC, "sec-fetch-site": "same-origin" },
+				body: JSON.stringify({ email: ADMIN_EMAIL }),
+			}),
+		);
+		expect(started.status).toBe(503);
 		await close();
 	});
 

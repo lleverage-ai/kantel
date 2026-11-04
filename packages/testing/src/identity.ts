@@ -1400,6 +1400,53 @@ export function createIdentityConformance(options: {
 			}),
 		},
 		{
+			name: "signIn makes one user for an invited email when first sign-ins by code, GitHub and Google race",
+			run: withSubject(async ({ identity }, deps) => {
+				const tenant = await createTenant(identity, "Acme");
+				await identity.createInvite(tenant.admin, { email: "Newcomer@Example.test", role: "viewer" });
+				const email = "newcomer@example.test";
+				const ways = [
+					{ issuer: GITHUB_ISSUER, subject: "9001", email: "Newcomer@Example.test", emailVerified: true },
+					{ issuer: GOOGLE_ISSUER, subject: "g-9001", email, emailVerified: true },
+					{ issuer: EMAIL_OTP_ISSUER, subject: email, email, emailVerified: true },
+				];
+				const created = deps.audit.ofType("identity.user.created").length;
+				const signedIn = await Promise.all(ways.map((way) => identity.signIn(WORKER, way)));
+				const userId = signedIn[0]?.user.id;
+				a.ok(userId !== undefined);
+				for (const one of signedIn) a.strictEqual(one.user.id, userId, "one user, whichever way won");
+				a.strictEqual(deps.audit.ofType("identity.user.created").length, created + 1, "made once");
+				a.strictEqual(deps.audit.ofType("identity.invite.accepted").length, 1, "the invite is accepted once");
+				for (const way of ways) {
+					const again = await identity.signIn(WORKER, { issuer: way.issuer, subject: way.subject });
+					a.strictEqual(again.user.id, userId, `${way.issuer} resolves to them by its subject`);
+				}
+				a.strictEqual(
+					(await identity.getUser(tenant.admin, userId as string)).externalSubject,
+					externalSubjectOf(EMAIL_OTP_ISSUER, email),
+					"made with the email code's subject, the one they all meet on",
+				);
+
+				// The same for someone made beforehand (open sign-up makes users this way), first linked by a provider.
+				await identity.createInvite(tenant.admin, { email: "ida@example.test", role: "viewer" });
+				const ida = await Promise.all([
+					identity.signIn(WORKER, {
+						issuer: GITHUB_ISSUER,
+						subject: "9002",
+						email: "ida@example.test",
+						emailVerified: true,
+					}),
+					identity.signIn(WORKER, {
+						issuer: GOOGLE_ISSUER,
+						subject: "g-9002",
+						email: "ida@example.test",
+						emailVerified: true,
+					}),
+				]);
+				a.strictEqual(ida[0]?.user.id, ida[1]?.user.id, "two providers racing make one user");
+			}),
+		},
+		{
 			name: "worker calls: signIn refuses every caller but system",
 			run: withSubject(async ({ identity }, deps) => {
 				const tenant = await createTenant(identity, "Acme");

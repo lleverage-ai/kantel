@@ -38,6 +38,8 @@ export interface MockGoogleAccount {
 	readonly sub: string;
 	readonly email: string;
 	readonly email_verified: boolean;
+	/** A Google Workspace account's hosted domain; absent for a Gmail or other consumer account. */
+	readonly hd?: string;
 	readonly name?: string;
 }
 

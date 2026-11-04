@@ -135,8 +135,11 @@ client ID and secret are both Worker secrets, set by the deploy from the reposit
 | Google (a Web application client) | `KANTEL_GOOGLE_CLIENT_ID`, `KANTEL_GOOGLE_CLIENT_SECRET` | `https://app.kantel.dev/auth/oauth/google/callback` | `openid`, `email`, `profile` |
 
 The callback is `KANTEL_PUBLIC_URL` with the path above, so another deployment registers its own origin's. GitHub must
-have a verified primary email for the account, and Google must say `email_verified`; anyone else is turned back with a
-message on the sign-in page. Unset, the provider's routes are 404 and the 401 doesn't name it. They are never served on
+have a verified primary email for the account. Google must say `email_verified` for an address it is authoritative for:
+a Gmail address, or a Google Workspace account's (`hd` set). A consumer Google account on another address was verified
+only when it was made, and the address may have changed hands since, so it never links, joins an invite or signs up by
+that email (it signs in only once linked). Anyone turned back sees why on the sign-in page. A user's first sign-in, any
+of the three ways, makes them with the email code's subject, so first sign-ins that race make one user. Unset, the provider's routes are 404 and the 401 doesn't name it. They are never served on
 the Access hostname (harbour.myslop.app), which signs in with Access as before. Removing a repository secret doesn't
 remove the Worker secret (the secrets file is additive): `wrangler secret delete` does.
 

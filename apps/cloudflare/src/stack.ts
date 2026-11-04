@@ -140,7 +140,7 @@ export interface StackOptions {
 	readonly accessFetch?: typeof fetch;
 	/**
 	 * GitHub's and Google's endpoints, and the `fetch` their token and identity calls go through. Default the real ones
-	 * and the global `fetch`; tests pass a mock's (`@kantel/identity/testing/oauth`).
+	 * and the global `fetch`; tests pass a mock's.
 	 */
 	readonly oauthProviders?: Pick<OAuthSignInOptions, "fetch" | "endpoints">;
 	readonly storage?: StackStorage;

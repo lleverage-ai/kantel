@@ -45,7 +45,13 @@ import {
 	systemContext,
 } from "@kantel/contracts";
 import { clearConsoleCookie, readConsoleCookie, setConsoleCookie } from "./cookies.ts";
-import { createSessionStarter, hashSessionToken, isSessionToken, type SessionStarterOptions } from "./otp.ts";
+import {
+	createSessionStarter,
+	hashSessionToken,
+	isSessionToken,
+	type SessionStarterOptions,
+	type StartedSession,
+} from "./otp.ts";
 
 /** A provider's OAuth client, as registered with it. */
 export interface OAuthClient {
@@ -206,6 +212,15 @@ class ProviderRefused extends Error {}
 /** The person a provider vouched for, or why they can't sign in with it. */
 type ProviderIdentity = ExternalIdentity | "unverified_email";
 
+/**
+ * Whether Google is authoritative for `email`, so its `email_verified` says who holds the address now: a Gmail address,
+ * or any address of a Google Workspace account, which has the hosted domain `hd`
+ * (https://developers.google.com/identity/sign-in/web/backend-auth).
+ */
+export function googleIsAuthoritative(email: string, hd: unknown): boolean {
+	return /@gmail\.com$/i.test(email.trim()) || (typeof hd === "string" && hd.trim() !== "");
+}
+
 export function createOAuthSignIn(options: OAuthSignInOptions): OAuthSignIn {
 	const clock = options.clock ?? systemClock;
 	const doFetch = options.fetch ?? ((input: string, init?: RequestInit) => fetch(input, init));
@@ -344,18 +359,18 @@ export function createOAuthSignIn(options: OAuthSignInOptions): OAuthSignIn {
 			sub?: unknown;
 			email?: unknown;
 			email_verified?: unknown;
+			hd?: unknown;
 			name?: unknown;
 		};
 		if (typeof info.sub !== "string" || info.sub === "") throw new ProviderRefused("userinfo has no sub");
 		// OpenID Connect's userinfo: Google says `email_verified` true only for an address it has verified.
 		if (info.email_verified !== true || typeof info.email !== "string" || info.email === "") return "unverified_email";
-		return {
-			issuer: GOOGLE_ISSUER,
-			subject: info.sub,
-			email: info.email,
-			emailVerified: true,
-			...(typeof info.name === "string" && info.name !== "" ? { name: info.name } : {}),
-		};
+		const name = typeof info.name === "string" && info.name !== "" ? { name: info.name } : {};
+		// But it vouches for the address now only where it is authoritative for it: Gmail, or a Workspace account (`hd`).
+		// Another address was verified once, when the account was made, and may have changed hands since; it signs in only
+		// an account already linked (by its subject), and never links, joins an invite or signs up by that email.
+		if (!googleIsAuthoritative(info.email, info.hd)) return { issuer: GOOGLE_ISSUER, subject: info.sub, ...name };
+		return { issuer: GOOGLE_ISSUER, subject: info.sub, email: info.email, emailVerified: true, ...name };
 	}
 
 	async function callback(request: Request, provider: OAuthProvider, client: OAuthClient): Promise<Response> {
@@ -386,14 +401,18 @@ export function createOAuthSignIn(options: OAuthSignInOptions): OAuthSignIn {
 		}
 		if (external === "unverified_email") return failed(provider, "unverified_email", "no verified email");
 
-		let signedIn: SignIn;
+		let session: StartedSession;
 		try {
-			signedIn = await options.identity.signIn(OAUTH_CONTEXT, external);
+			session = await starter.start(external, await options.identity.signIn(OAUTH_CONTEXT, external));
 		} catch (cause) {
-			if (isKantelError(cause, "forbidden")) return failed(provider, "not_allowed", "nobody here matches them");
-			throw cause;
+			if (isKantelError(cause, "forbidden")) {
+				// With no email the provider vouches for, only an account linked already could sign in.
+				return external.emailVerified === true
+					? failed(provider, "not_allowed", "nobody here matches them")
+					: failed(provider, "unverified_email", "the provider is not authoritative for their email");
+			}
+			return failed(provider, "failed", `signing in failed: ${cause instanceof Error ? cause.message : String(cause)}`);
 		}
-		const session = await starter.start(external, signedIn);
 		const maxAge = Math.max(1, Math.min(OAUTH_SESSION_HANDOFF_SECONDS, (session.expiresAt - clock.now()) / 1000));
 		return redirect(consoleUrl({ [OAUTH_DONE_PARAM]: provider }), [
 			clearState(),

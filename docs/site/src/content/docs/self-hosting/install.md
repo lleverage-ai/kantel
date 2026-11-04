@@ -70,7 +70,7 @@ The sign-in page can also offer **Sign in with GitHub** and **Sign in with Googl
 
 1. Make the clients, with these callback URLs, where `https://kantel.example.com` is your `KANTEL_PUBLIC_URL`:
    - **GitHub**: in **Settings → Developer settings → OAuth Apps → New OAuth App**, set the **Homepage URL** to `https://kantel.example.com` and the **Authorization callback URL** to `https://kantel.example.com/auth/oauth/github/callback`. Kantel asks for the `read:user` and `user:email` scopes, and uses the account's primary email only once GitHub has verified it.
-   - **Google**: in the Google Cloud console, under **Google Auth Platform**, set up the consent screen with the `openid`, `.../auth/userinfo.email` and `.../auth/userinfo.profile` scopes. Then make a client of type **Web application**, with the **Authorized redirect URI** `https://kantel.example.com/auth/oauth/google/callback`. Kantel only accepts an email that Google has verified.
+   - **Google**: in the Google Cloud console, under **Google Auth Platform**, set up the consent screen with the `openid`, `.../auth/userinfo.email` and `.../auth/userinfo.profile` scopes. Then make a client of type **Web application**, with the **Authorized redirect URI** `https://kantel.example.com/auth/oauth/google/callback`. Kantel accepts an email only where Google vouches for it: a verified Gmail address, or a Google Workspace account's. Someone whose Google account uses another address signs in with an email code.
 2. Add each client's ID and secret to `~/.kantel/src/deploy/compose/.env`, and run the installer with `--upgrade`:
 
    ```sh

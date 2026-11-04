@@ -31,6 +31,7 @@ import {
 	type JsonValue,
 	KANTEL_SIGN_IN_ISSUERS,
 	KantelError,
+	kantelPrimarySubject,
 	normaliseEmail,
 	type Organisation,
 	type OrganisationId,
@@ -581,7 +582,12 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 	 * Links `externalSubject` to `user` beside the subject they have, or, when a concurrent sign-in linked it first, finds
 	 * whoever now holds it. Audits `identity.user.linked` once, from the sign-in that linked.
 	 */
-	async function linkAnother(user: StoredUser, externalSubject: string, issuer: string): Promise<StoredUser> {
+	async function linkAnother(
+		user: StoredUser,
+		externalSubject: string,
+		issuer: string,
+		options: { readonly audit?: boolean } = {},
+	): Promise<StoredUser> {
 		try {
 			await driver.query(
 				"INSERT INTO identity_user_subjects (external_subject, user_id, issuer, created_at) VALUES (?, ?, ?, ?)",
@@ -592,6 +598,8 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			if (holder !== undefined) return holder;
 			throw error;
 		}
+		// Not when the sign-in has just made or linked the user, which it audited.
+		if (options.audit === false) return user;
 		await emit(
 			{ actor: { kind: "human", userId: user.user.id }, organisationId: user.createdInOrganisationId },
 			"identity.user.linked",
@@ -1639,6 +1647,9 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			if (signsInWithKantel !== undefined)
 				stored = await linkAnother(signsInWithKantel, externalSubject, identity.issuer);
 			if (stored === undefined) {
+				// A user someone makes with one of Kantel's own sign-ins is made with the email code's subject, UNIQUE, so two
+				// first sign-ins with one email (a code and GitHub, say) meet on it; the provider's is linked beside it below.
+				const primary = kantelPrimarySubject(identity) ?? externalSubject;
 				const invited =
 					email === undefined || email === ""
 						? []
@@ -1650,15 +1661,21 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 				// A concurrent first sign-in may have linked the invited user since the subject lookup, taking them out of
 				// the unlinked candidates; whoever now holds this subject is this person. Ambiguity is still refused.
 				if (only === undefined) {
-					stored = await userBySubject(externalSubject);
+					stored =
+						(await userBySubject(externalSubject)) ??
+						(primary === externalSubject ? undefined : await userBySubject(primary));
 					const first = pending[0];
 					if (stored === undefined && first !== undefined) {
 						// Someone new, invited: a user of their own, in the first inviting organisation.
-						stored = await joinByInvite(identity, externalSubject, first.organisationId);
+						stored = await joinByInvite(identity, primary, first.organisationId);
 					}
 					if (stored === undefined) throw forbidden("no user matches this sign-in");
 				} else {
-					stored = await linkInvited(only, externalSubject, identity.issuer);
+					stored = await linkInvited(only, primary, identity.issuer);
+				}
+				// Made or linked with the email code's subject (by this sign-in or one racing it): the provider's beside it.
+				if (stored.user.externalSubject !== externalSubject) {
+					stored = await linkAnother(stored, externalSubject, identity.issuer, { audit: false });
 				}
 			}
 			const userId = stored.user.id;

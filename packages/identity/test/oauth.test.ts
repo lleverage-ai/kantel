@@ -40,6 +40,8 @@ const ADA_GOOGLE: MockGoogleAccount = {
 	sub: "10769150350006150715113082367",
 	email: "ada@kantel.test",
 	email_verified: true,
+	// A Google Workspace account: Google is authoritative for its address.
+	hd: "kantel.test",
 	name: "Ada L.",
 };
 
@@ -185,6 +187,113 @@ describe("sign-in with GitHub and Google", () => {
 			account: { ...ADA_GOOGLE, email_verified: false },
 		});
 		expect(google.landing.searchParams.get("sign_in_error")).toBe("unverified_email");
+	});
+
+	it("trusts a Google email only where Google is authoritative for it: Gmail or Workspace", async () => {
+		const { signIn, oauth, ada, organisation, identity, pickUp } = await setUp();
+		// A consumer Google account on an address elsewhere: verified once, but it may have changed hands since.
+		const consumer: MockGoogleAccount = { sub: "g-consumer", email: "ada@kantel.test", email_verified: true };
+		const refused = await mockOAuthSignIn(signIn.fetch, {
+			origin: ORIGIN,
+			provider: "google",
+			oauth,
+			account: consumer,
+		});
+		expect(Object.fromEntries(refused.landing.searchParams)).toEqual({
+			sign_in_error: "unverified_email",
+			provider: "google",
+		});
+		// It took nothing: the subject isn't linked, and Ada is as she was.
+		await expect(
+			identity.signIn(systemContext("test"), { issuer: GOOGLE_ISSUER, subject: "g-consumer" }),
+		).rejects.toMatchObject({ code: "forbidden" });
+
+		// Nor does it accept an invite to that address.
+		await identity.createInvite(
+			{ actor: { kind: "human", userId: ada.id }, organisationId: organisation.id },
+			{ email: "newcomer@elsewhere.test", role: "viewer" },
+		);
+		const invitee = await mockOAuthSignIn(signIn.fetch, {
+			origin: ORIGIN,
+			provider: "google",
+			oauth,
+			account: { sub: "g-newcomer", email: "newcomer@elsewhere.test", email_verified: true },
+		});
+		expect(invitee.landing.searchParams.get("sign_in_error")).toBe("unverified_email");
+
+		// Gmail is Google's own.
+		await identity.createUser(bootstrap, {
+			name: "Grace",
+			email: "grace.hopper@gmail.com",
+			externalSubject: externalSubjectOf(EMAIL_OTP_ISSUER, "grace.hopper@gmail.com"),
+		});
+		const gmail = await mockOAuthSignIn(signIn.fetch, {
+			origin: ORIGIN,
+			provider: "google",
+			oauth,
+			account: { sub: "g-grace", email: "Grace.Hopper@gmail.com", email_verified: true },
+		});
+		expect(gmail.landing.searchParams.get("signed_in")).toBe("google");
+		expect((await pickUp(gmail.jar)).body.user.name).toBe("Grace");
+
+		// Once linked through Workspace, the subject signs in by itself, even if the account later loses `hd`.
+		const linked = await mockOAuthSignIn(signIn.fetch, {
+			origin: ORIGIN,
+			provider: "google",
+			oauth,
+			account: ADA_GOOGLE,
+		});
+		expect((await pickUp(linked.jar)).body.user.id).toBe(ada.id);
+		const { hd: _hd, ...noLongerWorkspace } = ADA_GOOGLE;
+		const later = await mockOAuthSignIn(signIn.fetch, {
+			origin: ORIGIN,
+			provider: "google",
+			oauth,
+			account: noLongerWorkspace,
+		});
+		expect(later.landing.searchParams.get("signed_in")).toBe("google");
+		expect((await pickUp(later.jar)).body.user.id).toBe(ada.id);
+	});
+
+	it("lands on the error page, with the state cleared, when the directory or the session store fails", async () => {
+		const oauth = createMockOAuth();
+		const identity = createMemoryIdentity();
+		await identity.createUser(bootstrap, {
+			name: "Ada",
+			email: "ada@kantel.test",
+			externalSubject: externalSubjectOf(EMAIL_OTP_ISSUER, "ada@kantel.test"),
+		});
+		const stores = createMemoryOtpStores();
+		const failures: string[] = [];
+		for (const broken of [
+			{
+				identity: { ...identity, signIn: async () => Promise.reject(new Error("database is down")) },
+				sessions: stores.sessions,
+			},
+			{
+				identity,
+				sessions: { ...stores.sessions, create: async () => Promise.reject(new Error("session store is down")) },
+			},
+		]) {
+			const signIn = createOAuthSignIn({
+				clients: oauth.clients,
+				publicUrl: ORIGIN,
+				identity: broken.identity,
+				sessions: broken.sessions,
+				fetch: oauth.fetch,
+				endpoints: oauth.endpoints,
+				onFailure: (_provider, reason) => failures.push(reason),
+			});
+			const { landing, jar } = await mockOAuthSignIn(signIn.fetch, {
+				origin: ORIGIN,
+				provider: "github",
+				oauth,
+				account: ADA_GITHUB,
+			});
+			expect(Object.fromEntries(landing.searchParams)).toEqual({ sign_in_error: "failed", provider: "github" });
+			expect(jar.header()).toBeUndefined();
+		}
+		expect(failures).toEqual(["signing in failed: database is down", "signing in failed: session store is down"]);
 	});
 
 	it("says a declined consent was cancelled", async () => {

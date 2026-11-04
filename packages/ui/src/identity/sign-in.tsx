@@ -94,7 +94,9 @@ export function providerProblemText(
 				text:
 					problem.provider === "github"
 						? "Your GitHub account has no verified primary email. Verify it on GitHub, or sign in with an email code."
-						: `${Name} hasn't verified the email on your account. Verify it there, or sign in with an email code.`,
+						: problem.provider === "google"
+							? "Google can vouch only for a verified Gmail or Google Workspace address. Use one of those, or sign in with an email code."
+							: `${Name} hasn't verified the email on your account. Verify it there, or sign in with an email code.`,
 			};
 		case "state_mismatch":
 			return {

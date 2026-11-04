@@ -22,6 +22,7 @@ import {
 	type IdentityDirectory,
 	isKantelError,
 	isKantelSignInIssuer,
+	kantelPrimarySubject,
 	normaliseEmail,
 	type SignIn,
 } from "@kantel/contracts";
@@ -150,8 +151,9 @@ export function openSignUp(
 	}
 
 	/**
-	 * A user for this proven address, linked to the sign-in's subject (the code's email, or the provider's user ID), named
-	 * as the provider has them, else by the address. A concurrent first sign-in may have made it.
+	 * A user for this proven address, named as the provider has them, else by the address. It is made with the email
+	 * code's subject whichever way they came (`kantelPrimarySubject`), so a concurrent first sign-in with this address,
+	 * by the same way or another, finds it rather than making a second; the sign-in after links a provider's subject.
 	 */
 	async function makeUser(external: ExternalIdentity & { email: string }): Promise<void> {
 		const name =
@@ -160,7 +162,7 @@ export function openSignUp(
 			await identity.createUser(SIGN_UP, {
 				name,
 				email: external.email,
-				externalSubject: externalSubjectOf(external.issuer, external.subject),
+				externalSubject: kantelPrimarySubject(external) ?? externalSubjectOf(external.issuer, external.subject),
 			});
 		} catch (error) {
 			if (!isKantelError(error, "conflict")) throw error;
