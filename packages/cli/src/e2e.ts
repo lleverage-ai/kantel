@@ -9,6 +9,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { chmod, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { KantelApiError, type KantelClient } from "@kantel/api/sdk";
 import { fromBase64url, fromUtf8, toBase64url, utf8 } from "@kantel/e2e/bytes";
@@ -60,58 +61,148 @@ async function writePrivate(path: string, value: unknown): Promise<void> {
 	}
 }
 
-/** A lock older than this was left by a process that died holding it: what it guards takes milliseconds. */
-const STALE_LOCK_MS = 30_000;
-const LOCK_WAIT_MS = 10_000;
+/**
+ * A lock taken on another machine (a config directory on a shared disk) is abandoned only after this long: its
+ * holder can't be asked whether it is running. One taken on this machine is abandoned when its process has gone.
+ */
+const FOREIGN_LOCK_MS = 10 * 60_000;
+/** A lock file still without its holder after this long was left by a process that died making it. */
+const UNWRITTEN_LOCK_MS = 5_000;
+
+export interface LockOptions {
+	/** How long to wait for another kantel to finish; default 30 s. */
+	readonly waitMs?: number;
+	/** For tests: runs once an abandoned lock is found, before it is broken, to let another process go first. */
+	readonly beforeBreak?: () => Promise<void>;
+}
+
+/** A lock file as it was seen: which file (a new one is another file) and whether its holder has gone. */
+interface SeenLock {
+	readonly dev: number;
+	readonly ino: number;
+	readonly abandoned: boolean;
+}
 
 /**
  * Runs `act` holding `<path>.lock`, which every kantel sharing the config directory takes before it changes `path`
- * (or decides from it what to change): an exclusively created file, since Node has no flock. A lock left by a process
- * that died is broken once it is stale; it is moved aside first and checked again, so a fresh one is never broken.
+ * (or decides from it what to change): an exclusively created file holding its process and machine, since Node has
+ * no flock.
+ *
+ * A lock is broken only when its holder has gone: its process isn't running on this machine, or (taken on another
+ * machine) it is very old. Breaking one takes `<path>.lock.break` first, then looks again: so of two kantels that
+ * found the same abandoned lock, the second sees the first one's fresh lock, whose holder is running, and leaves it.
+ * A holder removes the lock on its way out only if it is still the file it made.
  */
-export async function withFileLock<T>(path: string, act: () => Promise<T>): Promise<T> {
+export async function withFileLock<T>(path: string, act: () => Promise<T>, options: LockOptions = {}): Promise<T> {
 	const lock = `${path}.lock`;
 	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-	const deadline = Date.now() + LOCK_WAIT_MS;
+	const deadline = Date.now() + (options.waitMs ?? 30_000);
+	let held: SeenLock | undefined;
 	for (let wait = 5; ; wait = Math.min(wait * 2, 100)) {
-		try {
-			const handle = await open(lock, "wx", 0o600);
-			await handle.writeFile(`${process.pid}\n`);
-			await handle.close();
-			break;
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-		}
-		if (await breakStale(lock)) continue;
+		held = await takeLock(lock);
+		if (held !== undefined) break;
+		if (await breakAbandoned(lock, options.beforeBreak)) continue;
 		if (Date.now() > deadline) {
-			throw new Error(`Another kantel is changing ${path}: try again, or remove ${lock} if none is running`);
+			throw new Error(
+				`Another kantel is changing ${path}: try again. If none is running, remove ${lock} (and ${lock}.break)`,
+			);
 		}
 		await new Promise((resolveWait) => setTimeout(resolveWait, wait));
 	}
 	try {
 		return await act();
 	} finally {
+		await releaseLock(lock, held);
+	}
+}
+
+/** Makes `lock`, holding this process and machine, or says it is there already. */
+async function takeLock(lock: string): Promise<SeenLock | undefined> {
+	let handle: Awaited<ReturnType<typeof open>>;
+	try {
+		handle = await open(lock, "wx", 0o600);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "EEXIST") return undefined;
+		throw error;
+	}
+	try {
+		await handle.writeFile(`${process.pid} ${hostname()}\n`);
+		const { dev, ino } = await handle.stat();
+		return { dev, ino, abandoned: false };
+	} catch (error) {
+		await rm(lock, { force: true });
+		throw error;
+	} finally {
+		await handle.close();
+	}
+}
+
+async function releaseLock(lock: string, held: SeenLock | undefined): Promise<void> {
+	const now = await stat(lock).catch(() => undefined);
+	if (held !== undefined && now !== undefined && now.dev === held.dev && now.ino === held.ino) {
 		await rm(lock, { force: true });
 	}
 }
 
-async function breakStale(lock: string): Promise<boolean> {
-	const held = await stat(lock).catch(() => undefined);
-	if (held === undefined) return true;
-	if (Date.now() - held.mtimeMs <= STALE_LOCK_MS) return false;
-	const aside = `${lock}.${process.pid}.${randomBytes(6).toString("hex")}.stale`;
+/** `lock` as it is now, or nothing if it has gone. */
+async function seeLock(lock: string): Promise<SeenLock | undefined> {
+	// One open file for both, so what it says and which file it is are the same file's.
+	let handle: Awaited<ReturnType<typeof open>>;
 	try {
-		await rename(lock, aside);
-	} catch {
+		handle = await open(lock, "r");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw error;
+	}
+	let content: string;
+	let info: Awaited<ReturnType<typeof handle.stat>>;
+	try {
+		info = await handle.stat();
+		content = await handle.readFile("utf8");
+	} finally {
+		await handle.close();
+	}
+	const age = Date.now() - Number(info.mtimeMs);
+	const [pid, machine] = content.trim().split(" ");
+	const abandoned =
+		pid === undefined || pid === "" || machine === undefined
+			? age > UNWRITTEN_LOCK_MS
+			: machine === hostname()
+				? !running(Number(pid))
+				: age > FOREIGN_LOCK_MS;
+	return { dev: Number(info.dev), ino: Number(info.ino), abandoned };
+}
+
+function running(pid: number): boolean {
+	if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+	try {
+		process.kill(pid, 0);
 		return true;
+	} catch (error) {
+		// EPERM: it is running, as someone else.
+		return (error as NodeJS.ErrnoException).code === "EPERM";
 	}
-	const moved = await stat(aside).catch(() => undefined);
-	if (moved !== undefined && Date.now() - moved.mtimeMs <= STALE_LOCK_MS) {
-		// Another process broke the stale lock and took a fresh one in between: that one goes back.
-		await rename(aside, lock).catch(() => undefined);
-		return false;
+}
+
+/**
+ * Removes `lock` if its holder has gone, and says whether to try for it again now. Done holding `<lock>.break`, and
+ * only if the lock is still the abandoned file it was: one made since is someone's, who is running.
+ */
+async function breakAbandoned(lock: string, beforeBreak?: () => Promise<void>): Promise<boolean> {
+	const seen = await seeLock(lock);
+	if (seen === undefined) return true;
+	if (!seen.abandoned) return false;
+	await beforeBreak?.();
+	const breaker = await takeLock(`${lock}.break`);
+	if (breaker === undefined) return false;
+	try {
+		const again = await seeLock(lock);
+		if (again?.abandoned && again.dev === seen.dev && again.ino === seen.ino) {
+			await rm(lock, { force: true });
+		}
+	} finally {
+		await releaseLock(`${lock}.break`, breaker);
 	}
-	await rm(aside, { force: true });
 	return true;
 }
 
@@ -293,7 +384,17 @@ interface PendingGenesis {
 	readonly user: string;
 }
 
-/** Starts `space`'s chain with this device as its admin, and pins it. */
+/** What the gateway answers before it changes anything: it didn't publish what it refused so. */
+const DEFINITE_REFUSALS = new Set([400, 401, 403, 404, 422]);
+
+/**
+ * Starts `space`'s chain with this device as its admin, and pins it.
+ *
+ * The signed genesis is kept (`e2e/pending/<space>.json`) before it is published, and stays until it is pinned, until
+ * another chain is found there, or until the gateway refuses it outright. It is never replaced: an init whose answer
+ * was lost, or one still running, may yet publish it. A retry publishes the same genesis again, and one asking for
+ * another mode or person is refused until that one is finished.
+ */
 export async function initChain(
 	client: KantelClient,
 	configDir: string,
@@ -302,6 +403,12 @@ export async function initChain(
 	user: string,
 	mode: "on" | "strict",
 ): Promise<VerifiedChain> {
+	const trusted = await pinnedGenesis(configDir, space);
+	if (trusted !== undefined) {
+		throw new Error(
+			`This device trusts ${space}'s chain already (genesis ${short(trusted)}): kantel e2e status shows it, and kantel e2e mode changes its mode`,
+		);
+	}
 	const path = pendingPath(configDir, space);
 	const taken = `${space} already has a chain, which this device didn't start: an admin gives you its genesis for kantel e2e join`;
 	// Kept before it is published, so a lost answer can't leave the space with a chain this device didn't pin.
@@ -314,11 +421,22 @@ export async function initChain(
 				return { genesis: pending.entry, published: entries };
 			}
 			if (first !== undefined) {
+				// It can't be published now: a space's first entry never changes.
 				await rm(path, { force: true });
 				throw new Error(taken);
 			}
-			// Never published: it is used again if it asked for the same, so a retry can't race its own first try.
-			if (pending.mode === mode && pending.user === user) return { genesis: pending.entry, published: undefined };
+			// Not published yet, but it may still be: it is published again, as it is.
+			if (pending.user !== user) {
+				throw new Error(
+					`An earlier kantel e2e init for ${space}, as ${pending.user}, may still be publishing its chain: sign in as them and run it again to finish it`,
+				);
+			}
+			if (pending.mode !== mode) {
+				throw new Error(
+					`An earlier kantel e2e init for ${space}, E2E ${pending.mode}, may still be publishing its chain: finish it with kantel e2e init${pending.mode === "on" ? "" : ` --mode ${pending.mode}`}, then change it with kantel e2e mode ${mode}`,
+				);
+			}
+			return { genesis: pending.entry, published: undefined };
 		}
 		const entry = await signEntry(
 			undefined,
@@ -336,10 +454,9 @@ export async function initChain(
 	try {
 		entries = published ?? (await client.appendE2EChain(space, { from: 0, entries: [genesis] })).entries;
 	} catch (error) {
-		// Refused outright (not an admin, say): nothing was published.
-		const refused = error instanceof KantelApiError && error.status < 500 && error.code !== "conflict";
-		if (refused) {
-			await rm(path, { force: true });
+		// Refused outright (not an admin, say): nothing was published, nor will be by another try of the same.
+		if (error instanceof KantelApiError && DEFINITE_REFUSALS.has(error.status)) {
+			await forgetPending(path, pin);
 			throw error;
 		}
 		// Lost, or a conflict: it may have been added before the answer was lost, or another chain got there first.
@@ -347,7 +464,7 @@ export async function initChain(
 		const first = existing[0];
 		if (first === undefined) throw error;
 		if ((await entryHash(first)) !== pin) {
-			await rm(path, { force: true });
+			await forgetPending(path, pin);
 			throw new Error(taken);
 		}
 		entries = existing;
@@ -355,8 +472,16 @@ export async function initChain(
 	const state = await verifyChain(entries, pin);
 	await pinGenesis(configDir, space, pin);
 	await checkpoint(configDir, state);
-	await rm(path, { force: true });
+	await forgetPending(path, pin);
 	return { entries, state };
+}
+
+/** Removes the pending genesis if it is still `pin`'s (under its lock). */
+async function forgetPending(path: string, pin: string): Promise<void> {
+	await withFileLock(path, async () => {
+		const pending = await readJson<PendingGenesis>(path);
+		if (pending !== undefined && (await entryHash(pending.entry)) === pin) await rm(path, { force: true });
+	});
 }
 
 /** What `kantel e2e host-ticket` prints: the host's join command, with a ticket good for `minutes`. */

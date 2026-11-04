@@ -187,6 +187,38 @@ describe("kantel e2e", () => {
 		expect((await root("e2e", "mode", "strict")).code).toBe(0);
 	});
 
+	it("finishes an init whose answer was lost, with the genesis it signed, and says the mode that chain has", async () => {
+		const s = await organisation();
+		const dir = await mkdtemp(join(tmpdir(), "kantel-e2e-init-"));
+		dirs.push(dir);
+		const same = { configDir: dir, home: dir };
+		// The gateway takes the genesis, but its answer is lost, and so is the read after it.
+		let lose = 2;
+		const losing = async (input: string | URL | Request, init?: RequestInit) => {
+			const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+			const response = await s.gatewayFetch(input, init);
+			if (lose > 0 && url.pathname.endsWith("/e2e/chain")) {
+				lose--;
+				throw new TypeError("fetch failed");
+			}
+			return response;
+		};
+		const lost = await (await cli(s, "root", s.org.id, losing, same))("e2e", "init", "--yes");
+		expect(lost.code).not.toBe(0);
+		const root = await cli(s, "root", s.org.id, s.gatewayFetch, same);
+		// Asked for strict this time, it finishes the chain it started, which is on, and says so in both outputs.
+		const json = await root("e2e", "init", "--mode", "strict", "--yes", "--json");
+		expect(json.code).toBe(0);
+		const result = JSON.parse(json.stdout) as { genesis: string; mode: string };
+		expect(result.mode).toBe("on");
+		const status = JSON.parse((await root("e2e", "status", "--json")).stdout) as { genesis: string; mode: string };
+		expect(status).toMatchObject({ genesis: result.genesis, mode: "on" });
+		// Done, init again says so rather than starting another.
+		const again = await root("e2e", "init", "--mode", "strict", "--yes");
+		expect(again.code).not.toBe(0);
+		expect(again.stderr).toMatch(/This device trusts .*'s chain already/);
+	});
+
 	it("adds a new member's device with one JSON result", async () => {
 		const s = await organisation();
 		const root = await cli(s, "root", s.org.id);

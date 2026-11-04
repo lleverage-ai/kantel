@@ -1025,9 +1025,13 @@ const E2E_COMMANDS: readonly CommandSpec[] = [
 					if (error instanceof KantelApiError) throw error;
 					throw e2eFailure(error);
 				});
-			ctx.emit({ space, genesis: chain.state.genesis, mode }, () =>
+			// What the chain says, not what was asked: a resumed init finishes the one it started, whose mode was signed
+			// then (a different one isn't resumed), and entries after its genesis may have changed it since.
+			const started = chain.state.mode;
+			ctx.emit({ space, genesis: chain.state.genesis, mode: started }, () =>
 				[
-					`Started ${space}'s chain, E2E ${mode}. Its genesis is ${chain.state.genesis}.`,
+					`Started ${space}'s chain, E2E ${started}. Its genesis is ${chain.state.genesis}.`,
+					...(started === mode ? [] : [`It is E2E ${started}, not ${mode}: kantel e2e mode ${mode} changes it.`]),
 					"Give each member that genesis yourself (not through Kantel) for: kantel e2e join " +
 						`${space} ${chain.state.genesis}`,
 					"Then enrol your hosts: kantel e2e host-ticket <name>.",

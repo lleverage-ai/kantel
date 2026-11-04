@@ -2,8 +2,10 @@
 // many commands start at once, a checkpoint that only moves forward, an append taken only if the answer holds it, and an
 // init whose answer was lost finishing with the genesis this device signed. The gateway is a stand-in that holds
 // one chain and can lose answers or answer what it likes.
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
+import { mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { KantelApiError, type KantelClient } from "@kantel/api/sdk";
 import { type ChainEntry, chainDevice, entryHash, signEntry, verifyChain } from "@kantel/e2e/chain";
@@ -142,7 +144,7 @@ describe("the space file", () => {
 		await expect(pinGenesis(dir, SPACE, "b".repeat(43))).rejects.toThrow(/already trusts another chain/);
 	});
 
-	it("waits for a lock another command holds, and breaks one left by a command that died", async () => {
+	it("waits for a lock another command holds", async () => {
 		const dir = await configDir();
 		const path = join(dir, "thing.json");
 		const order: string[] = [];
@@ -159,14 +161,130 @@ describe("the space file", () => {
 			),
 		]);
 		expect(order).toEqual(["first in", "first out", "second"]);
-		// A lock from long ago: its holder has gone.
-		const { utimes, writeFile } = await import("node:fs/promises");
-		await writeFile(`${path}.lock`, "999999\n");
-		const old = new Date(Date.now() - 60_000);
-		await utimes(`${path}.lock`, old, old);
-		await expect(withFileLock(path, async () => "in")).resolves.toBe("in");
 	});
+
+	it("breaks a lock only when its holder has gone", async () => {
+		const dir = await configDir();
+		const path = join(dir, "thing.json");
+		const lock = `${path}.lock`;
+		const aged = async (ms: number) => {
+			const then = new Date(Date.now() - ms);
+			await utimes(lock, then, then);
+		};
+		// A process on this machine that has finished: its lock is broken at once, however new.
+		await writeFile(lock, `${await finishedPid()} ${hostname()}\n`);
+		await expect(withFileLock(path, async () => "in", { waitMs: 200 })).resolves.toBe("in");
+		expect(existsSync(lock)).toBe(false);
+
+		// One still running: never broken, however old.
+		const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "ignore" });
+		try {
+			await writeFile(lock, `${holder.pid} ${hostname()}\n`);
+			await aged(24 * 60 * 60_000);
+			await expect(withFileLock(path, async () => "in", { waitMs: 200 })).rejects.toThrow(/Another kantel is changing/);
+			expect(await readFile(lock, "utf8")).toBe(`${holder.pid} ${hostname()}\n`);
+		} finally {
+			holder.kill();
+		}
+
+		// One from another machine: only once it is very old, as it can't be asked.
+		await writeFile(lock, "4242 another-machine\n");
+		await aged(60_000);
+		await expect(withFileLock(path, async () => "in", { waitMs: 200 })).rejects.toThrow(/Another kantel/);
+		await aged(11 * 60_000);
+		await expect(withFileLock(path, async () => "in", { waitMs: 200 })).resolves.toBe("in");
+
+		// One never written (its maker died making it): after a few seconds.
+		await writeFile(lock, "");
+		await expect(withFileLock(path, async () => "in", { waitMs: 200 })).rejects.toThrow(/Another kantel/);
+		await aged(10_000);
+		await expect(withFileLock(path, async () => "in", { waitMs: 200 })).resolves.toBe("in");
+	});
+
+	it("of two that found the same abandoned lock, the second leaves the first one's new lock alone", async () => {
+		const dir = await configDir();
+		const path = join(dir, "thing.json");
+		await writeFile(`${path}.lock`, `${await finishedPid()} ${hostname()}\n`);
+		const signal = () => {
+			let fire = () => {};
+			const fired = new Promise<void>((done) => {
+				fire = done;
+			});
+			return { fire, fired };
+		};
+		const firstIn = signal();
+		const secondLooked = signal();
+		let inside = 0;
+		let most = 0;
+		const enter = async (hold: () => Promise<void>) => {
+			inside++;
+			most = Math.max(most, inside);
+			await hold();
+			inside--;
+		};
+		// The second finds the abandoned lock, then waits while the first breaks it and takes its own.
+		const second = withFileLock(path, () => enter(async () => {}), {
+			beforeBreak: async () => {
+				await firstIn.fired;
+				setTimeout(secondLooked.fire, 30);
+			},
+		});
+		await new Promise((done) => setTimeout(done, 10));
+		const first = withFileLock(path, () =>
+			enter(async () => {
+				firstIn.fire();
+				// Still inside while the second goes on from what it found.
+				await secondLooked.fired;
+			}),
+		);
+		await Promise.all([first, second]);
+		expect(most).toBe(1);
+	});
+
+	it("lets one process in at a time when many find the same abandoned lock", async () => {
+		const dir = await configDir();
+		const path = join(dir, "counter.json");
+		await writeFile(path, "0");
+		// Each process adds 1 to the counter 25 times, reading and writing it while holding the lock, with a pause in
+		// between: a second process inside at once loses an addition. Each starts with an abandoned lock there.
+		const worker = join(dir, "worker.ts");
+		await writeFile(
+			worker,
+			[
+				`import { readFile, writeFile } from "node:fs/promises";`,
+				`import { withFileLock } from ${JSON.stringify(join(import.meta.dirname, "..", "src", "e2e.ts"))};`,
+				`const path = ${JSON.stringify(path)};`,
+				"for (let i = 0; i < 25; i++) {",
+				"	await withFileLock(path, async () => {",
+				`		const n = Number(await readFile(path, "utf8"));`,
+				"		await new Promise((done) => setTimeout(done, Math.random() * 3));",
+				"		await writeFile(path, String(n + 1));",
+				"	});",
+				"}",
+			].join("\n"),
+		);
+		await writeFile(`${path}.lock`, `${await finishedPid()} ${hostname()}\n`);
+		const runs = Array.from(
+			{ length: 6 },
+			() =>
+				new Promise<number | null>((done) => {
+					const child = spawn(process.execPath, [worker], { stdio: ["ignore", "ignore", "inherit"] });
+					child.on("exit", done);
+				}),
+		);
+		expect(await Promise.all(runs)).toEqual(Array(6).fill(0));
+		expect(Number(await readFile(path, "utf8"))).toBe(150);
+		expect(existsSync(`${path}.lock`)).toBe(false);
+		expect(existsSync(`${path}.lock.break`)).toBe(false);
+	}, 60_000);
 });
+
+/** The PID of a process that has finished. */
+async function finishedPid(): Promise<number> {
+	const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+	await new Promise((done) => child.on("exit", done));
+	return child.pid as number;
+}
 
 describe("an append", () => {
 	async function started() {
@@ -259,6 +377,56 @@ describe("starting a chain", () => {
 		expect(g.chain).toHaveLength(1);
 		expect(finished.state.genesis).toBe(await entryHash(g.chain[0] as ChainEntry));
 		expect(await pinnedGenesis(dir, SPACE)).toBe(finished.state.genesis);
+	});
+
+	it("never replaces a genesis that may still be published: another mode is refused until it is finished", async () => {
+		const dir = await configDir();
+		const device = await loadDevice(dir);
+		const g = gateway();
+		// Lost on the way: nothing was published, but this device can't know that.
+		const append = g.client.appendE2EChain;
+		(g.client as { appendE2EChain: unknown }).appendE2EChain = async () => {
+			throw new TypeError("fetch failed");
+		};
+		await expect(initChain(g.client, dir, device, SPACE, USER, "on")).rejects.toThrow(/fetch failed/);
+		const pendingFile = join(dir, "e2e", "pending", `${SPACE}.json`);
+		const kept = await readFile(pendingFile, "utf8");
+		await expect(initChain(g.client, dir, device, SPACE, USER, "strict")).rejects.toThrow(
+			/may still be publishing its chain: finish it with kantel e2e init, then change it with kantel e2e mode strict/,
+		);
+		await expect(initChain(g.client, dir, device, SPACE, "usr_other", "on")).rejects.toThrow(/as usr_root/);
+		// A rate limit isn't a refusal of what was sent: it is kept too.
+		(g.client as { appendE2EChain: unknown }).appendE2EChain = async () => {
+			throw new KantelApiError(429, "rate_limited", "Slow down");
+		};
+		await expect(initChain(g.client, dir, device, SPACE, USER, "on")).rejects.toThrow(/Slow down/);
+		expect(await readFile(pendingFile, "utf8")).toBe(kept);
+		// Finished with the same mode, it publishes the very genesis it kept.
+		(g.client as { appendE2EChain: unknown }).appendE2EChain = append;
+		const done = await initChain(g.client, dir, device, SPACE, USER, "on");
+		expect(done.state.genesis).toBe(await entryHash((JSON.parse(kept) as { entry: ChainEntry }).entry));
+		expect(existsSync(pendingFile)).toBe(false);
+	});
+
+	it("says the chain's own mode when it finishes an init that had been published", async () => {
+		const dir = await configDir();
+		const device = await loadDevice(dir);
+		const g = gateway();
+		g.loseNext = true;
+		const getChain = g.client.getE2EChain;
+		let failRead = true;
+		(g.client as { getE2EChain: unknown }).getE2EChain = async (space: string) => {
+			if (failRead) {
+				failRead = false;
+				throw new TypeError("fetch failed");
+			}
+			return getChain(space);
+		};
+		await expect(initChain(g.client, dir, device, SPACE, USER, "on")).rejects.toThrow(/fetch failed/);
+		// Asked for strict now, it finishes the one it published, which is on, and says so.
+		const finished = await initChain(g.client, dir, device, SPACE, USER, "strict");
+		expect(finished.state.mode).toBe("on");
+		expect(g.chain).toHaveLength(1);
 	});
 
 	it("trusts nothing when another chain is there, and keeps nothing when it is refused", async () => {
