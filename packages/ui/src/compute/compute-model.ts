@@ -963,8 +963,28 @@ export interface HostJoin {
 	readonly command: string;
 }
 
+/** Where hosts reach the control plane: the address in every join command. */
+export interface PublicUrl {
+	readonly publicUrl: string;
+	/** A super-admin set it in the console, ahead of the deployment's own. */
+	readonly setHere: boolean;
+	/** The deployment's own, which clearing the console's goes back to. */
+	readonly deploymentUrl: string;
+	/** Only a host on the same machine can reach it: `127.0.0.1`, `localhost`. */
+	readonly loopback: boolean;
+}
+
+/** Reads and sets where hosts reach the control plane: a super-admin's. */
+export interface PublicUrlSource {
+	get(): Promise<PublicUrl>;
+	/** An http(s) origin, or null for the deployment's own. */
+	set(url: string | null): Promise<PublicUrl>;
+}
+
 export interface HostsSource {
 	list(): Promise<readonly Host[]>;
+	/** Where hosts reach the control plane, when this person may change it: the deployment's hosts, a super-admin's. */
+	readonly publicUrl?: PublicUrlSource;
 	/** A join token for a new host, and the command with it in. */
 	join(input: { readonly name?: string; readonly labels?: Readonly<Record<string, string>> }): Promise<HostJoin>;
 	/** Stops new sandboxes landing on it; running ones keep running. */
