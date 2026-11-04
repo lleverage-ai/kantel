@@ -64,8 +64,10 @@ kantel e2e status
 While E2E is on, the host refuses the gateway's own command, file, port and snapshot-read calls for the
 organisation's sandboxes; starting, stopping and deleting them still go through the gateway. The gateway can't give
 those sandboxes environment variables, SSH keys, an upstream proxy, a CA or intercepting egress rules (any of these
-could read what runs there), so set variables in a session with `kantel e2e exec` or `kantel e2e put`. Hosts holding
-an E2E space are updated on the machine, not by the gateway.
+could read what runs there), so set variables in a session with `kantel e2e exec` or `kantel e2e put`. A host that
+has joined a space is updated on the machine (`kantel-host update`), never by the gateway, even while the space is
+off: the space still trusts its host key. An update the gateway started before the join finishes before the join goes
+ahead.
 
 ## Take access away
 
