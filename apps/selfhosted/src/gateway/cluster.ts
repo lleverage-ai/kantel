@@ -70,7 +70,8 @@ const signedHeaders = (signed: { replica: string; at: string; nonce: string; sig
 	"x-kantel-signature": signed.signature,
 });
 
-const unavailable = (message: string) => new HostCallError({ code: "unavailable", message });
+const unavailable = (message: string, unanswered = false) =>
+	new HostCallError({ code: "unavailable", message, ...(unanswered ? { unanswered } : {}) });
 
 /** How long passing a usage tick on may take: the next comes in 5 seconds. */
 const USAGE_TIMEOUT_MS = 5_000;
@@ -85,6 +86,8 @@ export function createPeerTransport(options: {
 	const post = async (peer: ReplicaRecord, operation: string, payload: object, signal?: AbortSignal) => {
 		const body = JSON.stringify(payload);
 		const signed = await signPeerRequest(options.key, { from: options.replicaId, to: peer.id }, operation, body);
+		// Aborted before it left: nothing was sent.
+		if (signal?.aborted) throw new HostCallError({ code: "timeout", message: "The call was aborted" });
 		try {
 			return await send(`${peer.url}${CLUSTER_PATH}/${operation}`, {
 				method: "POST",
@@ -93,8 +96,14 @@ export function createPeerTransport(options: {
 				...(signal === undefined ? {} : { signal }),
 			});
 		} catch (error) {
-			if (signal?.aborted) throw new HostCallError({ code: "timeout", message: "The call was aborted" });
-			throw unavailable(`Gateway replica ${peer.id} is unreachable: ${error instanceof Error ? error.message : error}`);
+			// The request may have reached the peer, and the call the host, before the answer was lost.
+			if (signal?.aborted) {
+				throw new HostCallError({ code: "timeout", message: "The call was aborted", unanswered: true });
+			}
+			throw unavailable(
+				`Gateway replica ${peer.id} is unreachable: ${error instanceof Error ? error.message : error}`,
+				true,
+			);
 		}
 	};
 	return {
@@ -111,12 +120,23 @@ export function createPeerTransport(options: {
 				callOptions.signal,
 			);
 			if (!response.ok || response.body === null) {
-				throw unavailable(`Gateway replica ${peer.id} refused the call (${response.status})`);
+				// The peer refuses a call it won't send on (4xx: unsigned, not its host) before it reaches the host. A 5xx may be
+				// a proxy's on the way, and an empty answer carries none, after the peer sent it on: neither says it wasn't done.
+				throw unavailable(
+					`Gateway replica ${peer.id} refused the call (${response.status})`,
+					response.ok || response.status >= 500,
+				);
 			}
 			const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
 			let buffered = "";
 			for (;;) {
-				const { value, done } = await reader.read();
+				const { value, done } = await reader.read().catch((error: unknown) => {
+					// The answer's stream broke: the call was on its way, or done, on the host.
+					throw unavailable(
+						`Gateway replica ${peer.id} lost the call: ${error instanceof Error ? error.message : error}`,
+						true,
+					);
+				});
 				if (value !== undefined) buffered += value;
 				let newline = buffered.indexOf("\n");
 				while (newline >= 0) {
@@ -138,7 +158,7 @@ export function createPeerTransport(options: {
 						return message.result;
 					}
 				}
-				if (done) throw unavailable(`Gateway replica ${peer.id} ended the call without an answer`);
+				if (done) throw unavailable(`Gateway replica ${peer.id} ended the call without an answer`, true);
 			}
 		},
 		async rewelcome(peer, hostId, welcome) {
@@ -303,7 +323,12 @@ export async function createGatewayCluster(options: {
 								line({
 									error:
 										error instanceof HostCallError
-											? { code: error.code, message: error.message }
+											? {
+													code: error.code,
+													message: error.message,
+													// Whether the host may have carried it out, for the caller to keep what it placed.
+													...(error.unanswered ? { unanswered: true } : {}),
+												}
 											: { code: "internal", message: "The call failed on the replica holding the host" },
 								}),
 						)

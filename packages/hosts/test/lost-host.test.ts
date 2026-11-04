@@ -1,0 +1,191 @@
+// A host lost in the middle of a call: Kantel claims no more than the host has said. A create or fork it never answered
+// stays placed on it, counted there, until it reconnects and says what it holds; one it refused, or that never left, is
+// gone. A sandbox on a revoked host is written off by its delete, without asking a host that never comes back.
+import { isKantelError } from "@kantel/contracts";
+import { afterEach, describe, expect, it } from "vitest";
+import { createHostsService, type HostsService, unanswered } from "../src/service.ts";
+import { createMemoryHostStore } from "../src/store.ts";
+import { FakeHost, facts } from "./fake-host.ts";
+
+const services: HostsService[] = [];
+afterEach(() => {
+	for (const service of services.splice(0)) service.close();
+});
+
+const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+/** A promise that never settles: a host that never answers. */
+const never = () => new Promise<void>(() => undefined);
+
+async function setup(callTimeoutMs?: number) {
+	const store = createMemoryHostStore();
+	const logs: string[] = [];
+	const service = createHostsService({
+		store,
+		publicUrl: "https://kantel.example.com/",
+		log: (message) => logs.push(message),
+		...(callTimeoutMs === undefined ? {} : { callTimeoutMs }),
+	});
+	services.push(service);
+	const token = await service.createJoinToken({ name: "a" });
+	const { hostId } = await service.register({ token: token.token, facts: facts() });
+	const host = new FakeHost(service, hostId);
+	host.connect();
+	await tick();
+	return { store, service, logs, hostId, host };
+}
+
+describe("a host lost mid-call", () => {
+	it("keeps a create whose link dropped placed, until the host's hello says it made it", async () => {
+		const { store, service, hostId, host } = await setup();
+		host.hold = (method) => (method === "sandbox.create" ? never() : undefined);
+		const creating = service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-held" });
+		await tick();
+		// The host made it, then the link dropped before its answer.
+		host.sandboxes.set("sbx-held", {
+			id: "sbx-held",
+			tier: "microvm",
+			size: "default",
+			state: "running",
+			createdAt: 1,
+		});
+		host.connection.closed(1006, "gone");
+		const error = await creating.catch((caught: unknown) => caught);
+		expect(isKantelError(error, "unavailable")).toBe(true);
+		expect(unanswered(error)).toBe(true);
+		expect((error as Error).message).toMatch(/whether it made the sandbox is known once it reconnects/);
+		// Not claimed gone: still placed, and counted on the host.
+		expect((await store.getPlacement("sbx-held"))?.state).toBe("starting");
+		expect((await service.get(hostId)).allocated).toMatchObject({ sandboxes: 1, memoryMb: 2048 });
+
+		const back = new FakeHost(service, hostId);
+		back.connect([...host.sandboxes.values()]);
+		await tick();
+		expect((await store.getPlacement("sbx-held"))?.state).toBe("running");
+		// So deleting it reaches the host, and the machine goes.
+		await service.sandboxes.delete("sbx-held");
+		expect(back.calls.some((call) => call.method === "sandbox.delete" && call.params.sandboxId === "sbx-held")).toBe(
+			true,
+		);
+		expect(await store.getPlacement("sbx-held")).toBeUndefined();
+	});
+
+	it("marks a create the host never made lost once it reconnects without it", async () => {
+		const { store, service, hostId, host } = await setup();
+		host.hold = (method) => (method === "sandbox.create" ? never() : undefined);
+		const creating = service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-gone" });
+		await tick();
+		host.connection.closed(1006, "gone");
+		await expect(creating).rejects.toSatisfy(unanswered);
+		new FakeHost(service, hostId).connect();
+		await tick();
+		const placement = await store.getPlacement("sbx-gone");
+		expect(placement?.state).toBe("lost");
+		// A lost one holds nothing on the host.
+		expect((await service.get(hostId)).allocated).toMatchObject({ sandboxes: 0, memoryMb: 0 });
+		// So the compute plane's retry of the create makes it.
+		const again = await service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-gone" });
+		expect(again.sandbox.state).toBe("running");
+		expect((await store.getPlacement("sbx-gone"))?.state).toBe("running");
+	});
+
+	it("refuses to make again a sandbox whose create isn't settled, or that its host has", async () => {
+		const { service, hostId, host } = await setup();
+		host.hold = (method) => (method === "sandbox.create" ? never() : undefined);
+		const creating = service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-twice" });
+		await tick();
+		host.sandboxes.set("sbx-twice", {
+			id: "sbx-twice",
+			tier: "microvm",
+			size: "default",
+			state: "running",
+			createdAt: 1,
+		});
+		host.connection.closed(1006, "gone");
+		await expect(creating).rejects.toSatisfy(unanswered);
+		const unsettled = await service.sandboxes
+			.create({ tier: "microvm", sandboxId: "sbx-twice" })
+			.catch((caught: unknown) => caught);
+		expect(isKantelError(unsettled, "conflict")).toBe(true);
+		expect((unsettled as Error).message).toMatch(/hasn't said yet whether it made it/);
+		new FakeHost(service, hostId).connect([...host.sandboxes.values()]);
+		await tick();
+		const held = await service.sandboxes
+			.create({ tier: "microvm", sandboxId: "sbx-twice" })
+			.catch((caught: unknown) => caught);
+		expect(isKantelError(held, "conflict")).toBe(true);
+		expect((held as Error).message).toBe("A sandbox with that ID exists");
+	});
+
+	it("keeps a create that timed out placed, and takes the host's later word on it", async () => {
+		const { store, service, host } = await setup(20);
+		let answer: () => void = () => undefined;
+		host.hold = (method) =>
+			method === "sandbox.create"
+				? new Promise<void>((resolve) => {
+						answer = resolve;
+					})
+				: undefined;
+		await expect(service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-slow" })).rejects.toSatisfy(unanswered);
+		expect((await store.getPlacement("sbx-slow"))?.state).toBe("starting");
+		// The host finishes later: its answer comes after the call gave up, and its event says it runs.
+		answer();
+		host.send({
+			type: "event",
+			event: {
+				kind: "sandbox",
+				sandbox: { id: "sbx-slow", tier: "microvm", size: "default", state: "running", createdAt: 1 },
+			},
+		});
+		await tick();
+		expect((await store.getPlacement("sbx-slow"))?.state).toBe("running");
+	});
+
+	it("keeps a fork whose link dropped placed on its source's host", async () => {
+		const { store, service, host } = await setup();
+		await service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-source" });
+		host.hold = (method) => (method === "sandbox.fork" ? never() : undefined);
+		const forking = service.sandboxes.fork("sbx-source", { newId: "sbx-fork" });
+		await tick();
+		host.connection.closed(1006, "gone");
+		await expect(forking).rejects.toSatisfy(unanswered);
+		expect((await store.getPlacement("sbx-fork"))?.state).toBe("starting");
+	});
+
+	it("forgets a create the host refused", async () => {
+		const { store, service, host } = await setup();
+		host.hold = (method) => {
+			if (method !== "sandbox.create") return undefined;
+			// Answered with an error, not dropped: the host said it made nothing.
+			const call = host.sent.findLast((message) => message.method === "sandbox.create");
+			host.send({ type: "result", id: call?.id, error: { code: "capacity", message: "full" } });
+			return never();
+		};
+		const error = await service.sandboxes
+			.create({ tier: "microvm", sandboxId: "sbx-refused" })
+			.catch((caught: unknown) => caught);
+		expect(isKantelError(error, "exhausted")).toBe(true);
+		expect(unanswered(error)).toBe(false);
+		expect(await store.getPlacement("sbx-refused")).toBeUndefined();
+	});
+
+	it("doesn't claim a delete whose link dropped", async () => {
+		const { store, service, host } = await setup();
+		await service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-del" });
+		host.hold = (method) => (method === "sandbox.delete" ? never() : undefined);
+		const deleting = service.sandboxes.delete("sbx-del");
+		await tick();
+		host.connection.closed(1006, "gone");
+		await expect(deleting).rejects.toSatisfy(unanswered);
+		expect((await store.getPlacement("sbx-del"))?.state).toBe("running");
+	});
+
+	it("writes off a sandbox on a revoked host when it is deleted, without calling the host", async () => {
+		const { store, service, hostId, host, logs } = await setup();
+		await service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-stranded" });
+		await service.revoke(hostId);
+		await service.sandboxes.delete("sbx-stranded");
+		expect(await store.getPlacement("sbx-stranded")).toBeUndefined();
+		expect(host.calls.some((call) => call.method === "sandbox.delete")).toBe(false);
+		expect(logs.join("\n")).toMatch(/sbx-stranded written off: its host .* is revoked/);
+	});
+});

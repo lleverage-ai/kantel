@@ -7,6 +7,7 @@ import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createRoutedBackend, NOT_HELD } from "../src/routed-backend.ts";
 import {
 	checkShape,
+	HOST_REVOKED_REASON,
 	hourlyRate,
 	type InviteMail,
 	inviteForSomeoneElse,
@@ -1521,6 +1522,20 @@ describe("hosts", () => {
 		for (const bad of ["https://$(id).example.com", "https://a'b.example.com", "https://a!b.example.com"]) {
 			expect(() => publicOrigin(bad)).toThrow("domain name or an IP address");
 		}
+	});
+
+	it("says a revoked host's sandboxes can't be reached, and lets them be deleted", async () => {
+		const { tom, root } = setup();
+		const running = await tom.createSandbox({ wait: true });
+		const stopped = await tom.createSandbox({ wait: true });
+		await tom.stopSandbox(stopped.id, { wait: true });
+		await root.revokeHost(STUB_HOST_ID);
+		for (const id of [running.id, stopped.id]) {
+			const after = await tom.getSandbox(id);
+			expect(after).toMatchObject({ state: "error", reason: HOST_REVOKED_REASON });
+		}
+		const deleted = await tom.deleteSandbox(running.id);
+		expect(deleted.state).toBe("deleted");
 	});
 
 	it("keeps a revocation that lands while a drain is in flight", async () => {

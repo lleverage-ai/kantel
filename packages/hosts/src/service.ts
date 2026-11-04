@@ -487,9 +487,26 @@ function shapeIn(shape: Shape, tier: SandboxTier): Shape {
 	return { vcpus, memoryMiB };
 }
 
+/** Kantel's errors for host calls that were sent and never answered (`HostCallError.unanswered`). */
+const unansweredErrors = new WeakSet<object>();
+
+/**
+ * Whether `error` is a host call that was sent and never answered: its link dropped, it timed out or was aborted, or the
+ * replica holding the host lost it. The host may have carried it out, so nothing it would have changed is undone.
+ */
+export function unanswered(error: unknown): boolean {
+	return typeof error === "object" && error !== null && unansweredErrors.has(error);
+}
+
 /** A host's error as Kantel's: the codes line up where they can. */
 export function kantelErrorFromHost(error: unknown): unknown {
 	if (!(error instanceof HostCallError)) return error;
+	const mapped = kantelCodeError(error);
+	if (error.unanswered) unansweredErrors.add(mapped);
+	return mapped;
+}
+
+function kantelCodeError(error: HostCallError): KantelError {
 	const code =
 		error.code === "not_found" || error.code === "invalid" || error.code === "conflict"
 			? error.code
@@ -950,6 +967,47 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		return settled;
 	};
 
+	/**
+	 * A create or fork that failed. What the host refused, or a call that never reached it, made nothing: its placement
+	 * goes. One sent and never answered may have made the sandbox there, so its placement stays, `starting`, counted on
+	 * that host, until the host says: its event once it is made, or its next hello (what it holds, or `lost`). Answers the
+	 * error to throw, which says the outcome isn't known.
+	 */
+	const unplace = async (
+		placement: PlacementRecord,
+		host: HostRecord | undefined,
+		error: unknown,
+	): Promise<unknown> => {
+		if (!unanswered(error)) {
+			await store.removePlacement(placement.sandboxId);
+			return error;
+		}
+		const name = host?.name ?? placement.hostId;
+		log(`[hosts] host ${placement.hostId} didn't answer for sandbox ${placement.sandboxId}; kept as placed there`);
+		const known = new KantelError(
+			"unavailable",
+			`Host ${name} didn't answer (${error instanceof Error ? error.message : String(error)}): whether it made the sandbox is known once it reconnects`,
+		);
+		unansweredErrors.add(known);
+		return known;
+	};
+
+	/**
+	 * Refuses a create or fork whose ID is placed already. One its host has since said it doesn't have (`lost`, by its
+	 * hello) may be made again: the compute plane retries a create that went unanswered this way. One still `starting`
+	 * from such a create isn't known either way yet; one its host has is there, for a delete to end.
+	 */
+	const refuseTaken = (existing: PlacementRecord | undefined) => {
+		if (existing === undefined || existing.state === "lost") return;
+		if (existing.state === "starting") {
+			throw new KantelError(
+				"conflict",
+				"A sandbox with that ID is being made, or its host hasn't said yet whether it made it; try again once it has",
+			);
+		}
+		throw new KantelError("conflict", "A sandbox with that ID exists");
+	};
+
 	const reserve = (hostId: string, memoryMiB: number, diskGiB: number) => {
 		reserved.set(hostId, [...(reserved.get(hostId) ?? []), { at: clock.now(), memoryMiB, diskGiB }]);
 	};
@@ -1150,7 +1208,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				}
 				// Two reads that don't depend on each other: one round trip.
 				const [existing, listed] = await Promise.all([store.getPlacement(sandboxId), store.listHosts()]);
-				if (existing !== undefined) throw new KantelError("conflict", "A sandbox with that ID exists");
+				refuseTaken(existing);
 				const usable = listed
 					.map(sane)
 					.filter((host) => only === undefined || only.has(host.id))
@@ -1267,17 +1325,14 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						...(statuses === undefined ? {} : { mounts: statuses }),
 					};
 				} catch (error) {
-					await store.removePlacement(sandboxId);
-					throw error;
+					throw await unplace(placement, chosen.host, error);
 				}
 			},
 			async fork(sandboxId, input = {}) {
 				const source = await placementOf(sandboxId);
 				const newId = input.newId ?? shortId("sbx");
 				if (!SANDBOX_ID.test(newId)) throw new KantelError("invalid", "Not a valid sandbox ID");
-				if ((await store.getPlacement(newId)) !== undefined) {
-					throw new KantelError("conflict", "A sandbox with that ID exists");
-				}
+				refuseTaken(await store.getPlacement(newId));
 				const now = clock.now();
 				const placement: PlacementRecord = {
 					...source,
@@ -1310,8 +1365,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						...(statuses === undefined ? {} : { mounts: statuses }),
 					};
 				} catch (error) {
-					await store.removePlacement(newId);
-					throw error;
+					throw await unplace(placement, await store.getHost(source.hostId), error);
 				}
 			},
 			async call<T>(sandboxId: string, method: string, params: object = {}, callOptions?: CallOptions) {
@@ -1338,6 +1392,14 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			},
 			async delete(sandboxId) {
 				const placement = await placementOf(sandboxId);
+				const host = await store.getHost(placement.hostId);
+				if (host === undefined || host.revoked) {
+					// Its host was revoked (or removed) by an operator: it never connects again to say, so deleting the sandbox
+					// writes off its placement. That is the operator's decision; nothing here claims the machine is gone.
+					log(`[hosts] sandbox ${sandboxId} written off: its host ${placement.hostId} is revoked`);
+					await store.removePlacement(sandboxId);
+					return;
+				}
 				try {
 					await onHost(placement.hostId, HostMethods.delete, { sandboxId });
 				} catch (error) {

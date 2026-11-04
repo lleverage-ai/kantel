@@ -342,6 +342,8 @@ export const SHARED_HOSTS_REFUSED =
 export const NEVER_MADE =
 	"This sandbox was never made from its source, and there's no snapshot left to make it from; fork or create it again";
 
+/** A sandbox's reason once its host is revoked (`strandOn`). */
+export const HOST_REVOKED_REASON = "Its host was revoked, so it can't be reached; delete it to write it off";
 /** A host whose credential no running backend holds (an account's own, account hosts off) can't be revoked. */
 export const HOST_NOT_REVOCABLE =
 	"This host's credential is kept by a part of the deployment that is off (account hosts); turn it on to revoke the host";
@@ -794,6 +796,8 @@ const NOT_DELETED: readonly computeSchema.SandboxState[] = [
 	"error",
 	"deleting",
 ];
+/** The states a revoked host's sandbox is moved to `error` from (`strandOn`): a delete under way is left to it. */
+const STRANDABLE: readonly computeSchema.SandboxState[] = ["starting", "running", "stopping", "stopped", "paused"];
 /**
  * How long SSH, desktop and browser access can be opened for, unless the call says: a bearer URL that leaks is good for
  * minutes, as boat.dev's are. A connection opened in time stays open; the schema caps a request at an hour.
@@ -3129,7 +3133,30 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			throw new KantelError("unavailable", HOST_NOT_REVOCABLE);
 		}
 		const revoked = await store.hosts.update(host.id, (current) => ({ ...current, state: "revoked" }));
+		await strandOn(host.id);
 		return hostView(revoked ?? { ...host, state: "revoked" });
+	}
+
+	/**
+	 * The sandboxes of a revoked host: it never connects again, so none of them can be reached, run or started there, and
+	 * none is claimed to. Each is `error`, saying so, for its owner to delete, which writes it off. One being deleted is
+	 * left to its delete.
+	 */
+	async function strandOn(hostId: string): Promise<void> {
+		for (const sandbox of await store.sandboxes.list({ hostId })) {
+			// From whatever live state it is in when written, not as listed: a boot or stop that lands in between doesn't
+			// leave it running or stopped on a host that is gone.
+			let previous: SandboxState = sandbox.state;
+			const result = await transition(sandbox.id, STRANDABLE, (current) => {
+				previous = current.state;
+				return withState(current, "error", { reason: HOST_REVOKED_REASON, ports: [] });
+			}).catch(() => undefined);
+			if (result === undefined || !("moved" in result)) continue;
+			await emit("sandbox.error", result.moved.accountId, {
+				sandbox: result.moved,
+				data: { previousState: previous, reason: HOST_REVOKED_REASON },
+			});
+		}
 	}
 
 	/**
