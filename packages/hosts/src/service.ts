@@ -399,7 +399,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	/**
 	 * A host from before warm pools were removed that still reports warm machines is told to keep none, by the call it
 	 * knows, not only by its welcome: its pools may come from a welcome sent before this control plane, on a connection
-	 * still open. Once a minute at most, until it reports none.
+	 * still open. Once a minute at most, until it reports none. That kantel-host has no call that ends an idle warm VM:
+	 * told this, it makes no more, its next create of that size takes the one it has, and its update (a version that
+	 * clears its old pool directory on start) or restart ends the rest.
 	 */
 	const endLegacyPools = (hostId: string, reported: unknown) => {
 		const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;

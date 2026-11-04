@@ -625,15 +625,9 @@ func (m *Manager) template(ctx context.Context, size proto.Size) (string, timing
 	t.step("agent", &start)
 	// What the image has, which detection reads from its files: so before the service wait, whose timeout would
 	// otherwise cancel this too.
-	capsCtx, capsCancel := context.WithTimeout(ctx, 30*time.Second)
-	caps, err := client.Capabilities(capsCtx)
-	capsCancel()
-	if err != nil && m.cfg.Initrd != "" {
-		// An injected agent always reports: a template without its report would offer what the image may lack.
-		return "", nil, fmt.Errorf("template boot: the guest agent's capabilities: %w", err)
-	}
+	caps, err := m.guestReport(ctx, client, size)
 	if err != nil {
-		m.log.Warn("guest agent's capabilities", "size", size.Name, "error", err)
+		return "", nil, fmt.Errorf("template boot: %w", err)
 	}
 	// What the image says it runs (/etc/kantel/ready), else the desktop, browser and Docker. Not SSH: the image has
 	// no host keys, so sshd starts only once a sandbox has its identity.
@@ -664,6 +658,22 @@ func (m *Manager) template(ctx context.Context, size proto.Size) (string, timing
 	_ = os.WriteFile(filepath.Join(dir, "ready"), raw, 0o600)
 	m.log.Info("template ready", "size", size.Name, "timings", t)
 	return dir, t, nil
+}
+
+// guestReport asks a freshly booted guest's agent what its image has. An injected agent always reports, so its failing
+// to is an error: a sandbox without the report would be offered what the image may lack. An older agent that can't
+// say gives nil, logged.
+func (m *Manager) guestReport(ctx context.Context, client *guest.Client, size proto.Size) (*proto.GuestCapabilities, error) {
+	capsCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	caps, err := client.Capabilities(capsCtx)
+	if err != nil && m.cfg.Initrd != "" {
+		return nil, fmt.Errorf("the guest agent's capabilities: %w", err)
+	}
+	if err != nil {
+		m.log.Warn("guest agent's capabilities", "size", size.Name, "error", err)
+	}
+	return caps, nil
 }
 
 func tail(path string) string {
@@ -841,6 +851,18 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 			}
 			source = "boot"
 			t.step("boot", &start)
+			if custom && p.From == "" {
+				// No template asked the image what it has, so this boot does, as a template's would: what a sandbox
+				// reports doesn't depend on whether its shape has a template. Every sandbox shares the image.
+				caps, err := m.guestReport(ctx, s.guest, size)
+				if err != nil {
+					return fail(fmt.Errorf("boot: %w", err))
+				}
+				if caps != nil {
+					m.guest.Store(caps)
+				}
+				t.step("capabilities", &start)
+			}
 		}
 	}
 	if err := m.cfg.Network.SetEgress(s.link, egressMode(p.Egress)); err != nil {
