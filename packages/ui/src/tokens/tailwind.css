@@ -89,6 +89,7 @@
 
 	--color-border: var(--kt-border);
 	--color-border-strong: var(--kt-border-strong);
+	--color-skeleton: var(--kt-skeleton);
 	--color-border-input: var(--kt-border-input);
 
 	--color-fg: var(--kt-text);
