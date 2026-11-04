@@ -13,6 +13,7 @@ import (
 //
 //	POST /call/<method>        body: the call's params; answer: its result, or {"error": {...}}
 //	GET  /facts, /capacity
+//	GET  /usage                the newest usage sample (404 until the host has one)
 //	GET  /port/<sandbox>/<port> (Upgrade: tcp)  a raw stream to the sandbox's port
 //
 // It has no authentication: listen on loopback only.
@@ -53,6 +54,15 @@ func (h *Host) LocalHandler() http.Handler {
 	})
 	mux.HandleFunc("GET /capacity", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(h.Capacity())
+	})
+	mux.HandleFunc("GET /usage", func(w http.ResponseWriter, _ *http.Request) {
+		sample, ok := h.LatestUsage()
+		if !ok {
+			http.Error(w, "no usage sample yet", 404)
+			return
+		}
+		w.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(w).Encode(sample)
 	})
 	mux.HandleFunc("GET /port/{sandbox}/{port}", func(w http.ResponseWriter, r *http.Request) {
 		port, err := strconv.Atoi(r.PathValue("port"))

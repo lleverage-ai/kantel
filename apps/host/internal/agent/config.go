@@ -64,6 +64,9 @@ type Config struct {
 	SpoolMaxMiB int64  `json:"spoolMaxMiB,omitempty"`
 	// AutoUpdate lets the control plane move the host to the version it wants (default true).
 	AutoUpdate *bool `json:"autoUpdate,omitempty"`
+	// UsageIntervalSeconds is how often the host samples its own and its sandboxes' CPU and memory and pushes them to
+	// the control plane (a "usage" event; default 5, below 0 never).
+	UsageIntervalSeconds int `json:"usageIntervalSeconds,omitempty"`
 }
 
 const DefaultRoot = "/var/lib/kantel-host"
