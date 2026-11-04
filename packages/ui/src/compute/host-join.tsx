@@ -81,8 +81,8 @@ export function HostJoinCommand({ source, input, now: fixedNow, onJoined, poll =
 	useJoinWait(source, waiting ? baseline.known : undefined, onJoined);
 
 	const now = fixedNow ?? Date.now();
-	// While other machines can't reach the console, the command works only on this machine: say so under it, with the
-	// field that fixes it.
+	// While other machines can't reach the console, the command works only on this machine: say so before it, with the
+	// field that fixes it, so the address is set before the command is copied.
 	const unreachable = url?.loopback === true && source.publicUrl !== undefined;
 	const command =
 		baseline.error !== undefined && baseline.known === undefined ? (
@@ -113,21 +113,22 @@ export function HostJoinCommand({ source, input, now: fixedNow, onJoined, poll =
 				: `The token works once and ${expiresText(made.join.expiresAt, now).toLowerCase()}.`}
 		</p>
 	);
+	const warning = unreachable ? (
+		<LoopbackWarning
+			url={url}
+			onSave={async (next) => {
+				const saved = await (source.publicUrl as NonNullable<HostsSource["publicUrl"]>).set(next);
+				setShownUrl(saved);
+				setGeneration((value) => value + 1);
+			}}
+		/>
+	) : null;
 	return (
 		<div className="kt-host-join flex min-w-0 flex-col gap-3">
+			{/* Before the command, not instead of it: it runs as it is on this machine, and the field fixes it for others. */}
+			{warning}
 			{command}
 			{requirements}
-			{/* Under the command, not instead of it: it runs as it is on this machine, and the field fixes it for others. */}
-			{unreachable ? (
-				<LoopbackWarning
-					url={url}
-					onSave={async (next) => {
-						const saved = await (source.publicUrl as NonNullable<HostsSource["publicUrl"]>).set(next);
-						setShownUrl(saved);
-						setGeneration((value) => value + 1);
-					}}
-				/>
-			) : null}
 		</div>
 	);
 }
@@ -252,7 +253,7 @@ function LoopbackWarning({ url, onSave }: { url: PublicUrl; onSave: (url: string
 			<div className="flex min-w-0 flex-col gap-2">
 				<span>
 					<strong className="font-medium text-fg">Other machines can't reach {url.publicUrl}.</strong> Give the console
-					an address hosts can reach, then copy the command again.
+					an address hosts can reach, and the command below uses it.
 				</span>
 				<form
 					className="flex min-w-0 items-start gap-2 max-sm:flex-col max-sm:items-stretch"

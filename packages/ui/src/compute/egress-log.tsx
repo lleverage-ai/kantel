@@ -277,6 +277,8 @@ function RequestCell({
 	);
 }
 
+const statusCode = "text-muted tabular-nums [text-box:trim-both_cap_alphabetic]";
+
 function Decision({ entry, slot = true }: { entry: LoggedEntry; slot?: boolean }) {
 	return (
 		<span className="flex items-center gap-2">
@@ -284,10 +286,11 @@ function Decision({ entry, slot = true }: { entry: LoggedEntry; slot?: boolean }
 			{entry.decision === "allowed" ? <Badge tone="neutral">Allowed</Badge> : <Badge tone="error">Denied</Badge>}
 			{/* In the wide log a fixed slot, empty when there's no status, keeps the badges in one column; a phone's meta line
 			    leaves it out rather than leave a hole. */}
+			{/* Trimmed to its capitals, as the badge's words are, so the code and the badge share one centre line. */}
 			{slot ? (
-				<span className="w-8 text-right text-muted tabular-nums">{entry.status ?? ""}</span>
+				<span className={`w-8 text-right ${statusCode}`}>{entry.status ?? ""}</span>
 			) : entry.status === undefined ? null : (
-				<span className="text-muted tabular-nums">{entry.status}</span>
+				<span className={statusCode}>{entry.status}</span>
 			)}
 		</span>
 	);

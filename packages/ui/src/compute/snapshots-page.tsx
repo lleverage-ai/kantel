@@ -192,7 +192,7 @@ export function SnapshotsPage({
 		<div className={computePage}>
 			<PageHeader
 				title="Snapshots"
-				lede="Saved snapshots have a name and stay until you delete them; new sandboxes start from them. Each sandbox also keeps its own history, taken when it stops and regularly while it runs, for 14 days."
+				lede="Saved snapshots stay until you delete them, and new sandboxes start from them."
 			/>
 			{notice === undefined ? null : (
 				<Notice
@@ -456,6 +456,8 @@ function BySandbox({
 			<div className="max-w-(--kt-card-width)">
 				<SelectField
 					label="Sandbox"
+					// Where a sandbox's own history is explained: the page's lede keeps to saved snapshots.
+					hint="Taken when it stops and regularly while it runs, and kept for 14 days."
 					value={chosen.id}
 					onChange={(event) => onPick(event.currentTarget.value)}
 					options={list.map((box) => ({
