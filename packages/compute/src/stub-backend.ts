@@ -24,6 +24,7 @@ import type {
 	TakenSnapshot,
 	UsageSample,
 } from "./backend.ts";
+import { type BackendUsageReport, RAW_WINDOW_MS, USAGE_INTERVAL_MS } from "./usage-series.ts";
 import { baseName, HOME, randomId, randomSecret, sliceRange } from "./util.ts";
 
 /** The stub's one host. */
@@ -37,6 +38,51 @@ export interface StubBackendOptions {
 	readonly types?: readonly computeSchema.SandboxType[];
 	/** The domain public port URLs are under: `http://<port>-<subdomain>.<domain>`. Default `sandbox.localhost`. */
 	readonly sandboxDomain?: string;
+	/** For its usage readings' times. Default `Date.now`. */
+	readonly now?: () => number;
+}
+
+/** The stub host's memory and disk, as its usage reports them. */
+const STUB_HOST_MEMORY_BYTES = 256 * 1024 ** 3;
+const STUB_HOST_DISK_BYTES = 2048 * 1024 ** 3;
+/** What the stub host itself uses, besides its sandboxes. */
+const STUB_HOST_BASE_BYTES = 2 * 1024 ** 3;
+const MIB = 1024 * 1024;
+/** An isolate's memory limit, as the stub reports it. */
+const ISOLATE_MEMORY_BYTES = 128 * MIB;
+
+/** FNV-1a: a stable 32-bit number from a string, so a sandbox's made-up readings are the same however often read. */
+function hash(text: string): number {
+	let value = 0x811c9dc5;
+	for (let index = 0; index < text.length; index += 1) {
+		value ^= text.charCodeAt(index);
+		value = Math.imul(value, 0x01000193) >>> 0;
+	}
+	return value;
+}
+
+/** A number in [0, 1) from a seed and a tick, the same every time. */
+function noise(seed: number, tick: number): number {
+	let value = (seed ^ Math.imul(tick, 0x9e3779b1)) >>> 0;
+	value = Math.imul(value ^ (value >>> 16), 0x85ebca6b) >>> 0;
+	value = Math.imul(value ^ (value >>> 13), 0xc2b2ae35) >>> 0;
+	return ((value ^ (value >>> 16)) >>> 0) / 0x1_0000_0000;
+}
+
+/**
+ * A plausible reading of a stub sandbox at `at`: a slow swell, a quicker ripple and some noise, its own per sandbox, and
+ * the same whenever it is asked for, so a series made up in two reads lines up.
+ */
+export function stubReading(sandboxId: string, at: number, baseBytes: number): { cpu: number; memUsedBytes: number } {
+	const seed = hash(sandboxId);
+	const tick = Math.floor(at / 5_000);
+	const phase = (seed % 1000) / 1000;
+	const slow = Math.sin(2 * Math.PI * (at / (240_000 + (seed % 120) * 1_000) + phase));
+	const quick = Math.sin(2 * Math.PI * (at / 35_000 + phase * 3));
+	const burst = noise(seed, Math.floor(tick / 6)) > 0.85 ? 0.35 : 0;
+	const cpu = 0.12 + 0.08 * slow + 0.04 * quick + 0.06 * noise(seed, tick) + burst;
+	const memory = baseBytes + (24 + 16 * slow + 4 * noise(seed ^ 0x5bd1e995, tick)) * MIB;
+	return { cpu: Math.min(1, Math.max(0, cpu)), memUsedBytes: Math.round(memory) };
 }
 
 const SIZES: readonly BackendSize[] = [
@@ -90,6 +136,8 @@ interface Machine {
 	fs: InMemoryFs | undefined;
 	bash: Bash | undefined;
 	state: "running" | "paused" | "stopped";
+	/** When it last booted or resumed, for its usage readings. */
+	runningSince: number;
 	readonly ports: Map<number, string>;
 }
 
@@ -142,6 +190,17 @@ async function restore(tree: Tree | undefined): Promise<InMemoryFs> {
 	return fs;
 }
 
+/** A machine's memory before its made-up wobble: 64 MiB and its files (they live in memory). */
+async function baseBytes(fs: InMemoryFs): Promise<number> {
+	let bytes = 0;
+	for (const path of fs.getAllPaths()) {
+		if (reserved(path)) continue;
+		const stat = await fs.lstat(path).catch(() => undefined);
+		if (stat?.isFile === true) bytes += stat.size;
+	}
+	return 64 * MIB + bytes;
+}
+
 function treeSize(tree: Tree): number {
 	let size = 0;
 	for (const file of tree.files.values()) size += file.bytes.byteLength;
@@ -175,6 +234,9 @@ function entriesOf(tree: Tree, dir: string): BackendFileEntry[] {
 export function createStubBackend(options: StubBackendOptions = {}): SandboxBackend {
 	const types: readonly computeSchema.SandboxType[] = options.types ?? ["isolate", "microvm"];
 	const domain = options.sandboxDomain ?? "sandbox.localhost";
+	const now = options.now ?? Date.now;
+	/** When the stub host came up: it reports nothing before. */
+	const upSince = now();
 	const machines = new Map<string, Machine>();
 	const snapshots = new Map<string, Tree>();
 
@@ -224,6 +286,7 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 		machine.fs = fs;
 		machine.bash = new Bash({ fs, cwd: HOME, env: { HOME, USER: "user", ...machine.env } });
 		machine.state = "running";
+		machine.runningSince = now();
 	};
 	const snapshotTree = (ref: string): Tree => {
 		const tree = snapshots.get(ref);
@@ -250,6 +313,7 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			fs: undefined,
 			bash: undefined,
 			state: "stopped",
+			runningSince: now(),
 			ports: new Map(),
 		};
 		boot(machine, await fromSnapshot(spec.fromSnapshot));
@@ -510,13 +574,55 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 		async usage(sandboxId): Promise<UsageSample> {
 			const machine = machineOf(sandboxId);
 			if (machine.state !== "running" || machine.fs === undefined) return { cpu: 0, memoryBytes: 0 };
-			let bytes = 0;
-			for (const path of machine.fs.getAllPaths()) {
-				if (reserved(path)) continue;
-				const stat = await machine.fs.lstat(path).catch(() => undefined);
-				if (stat?.isFile === true) bytes += stat.size;
+			const reading = stubReading(sandboxId, now(), await baseBytes(machine.fs));
+			return { cpu: reading.cpu, memoryBytes: reading.memUsedBytes };
+		},
+
+		// The stub host's ticks, made up: every running machine's, 5 seconds apart, from when it booted.
+		async usageReports(since, until): Promise<BackendUsageReport[]> {
+			const live = [...machines.values()].filter((machine) => machine.state === "running" && machine.fs !== undefined);
+			const bases = new Map<string, number>();
+			for (const machine of live) bases.set(machine.id, await baseBytes(machine.fs as InMemoryFs));
+			const first = Math.max(since, until - RAW_WINDOW_MS, upSince - USAGE_INTERVAL_MS);
+			const reports: BackendUsageReport[] = [];
+			for (
+				let at = (Math.floor(first / USAGE_INTERVAL_MS) + 1) * USAGE_INTERVAL_MS;
+				at <= until;
+				at += USAGE_INTERVAL_MS
+			) {
+				const sandboxes = live
+					.filter((machine) => machine.runningSince <= at)
+					.map((machine) => {
+						const reading = stubReading(machine.id, at, bases.get(machine.id) ?? 0);
+						const size = SIZES.find((entry) => entry.name === (machine.size ?? "default"));
+						return {
+							id: machine.id,
+							kind: machine.type,
+							cpu: reading.cpu,
+							memUsedBytes: reading.memUsedBytes,
+							memLimitBytes:
+								machine.type === "microvm" && size !== undefined ? size.memoryMb * MIB : ISOLATE_MEMORY_BYTES,
+						};
+					});
+				const ambient = stubReading(STUB_HOST_ID, at, STUB_HOST_BASE_BYTES);
+				reports.push({
+					hostId: STUB_HOST_ID,
+					at,
+					intervalMs: USAGE_INTERVAL_MS,
+					host: {
+						cpu: Math.min(
+							1,
+							ambient.cpu / 4 + sandboxes.reduce((sum, each) => sum + each.cpu, 0) / host.capacity.vcpus,
+						),
+						memUsedBytes: ambient.memUsedBytes + sandboxes.reduce((sum, each) => sum + each.memUsedBytes, 0),
+						memTotalBytes: STUB_HOST_MEMORY_BYTES,
+						diskUsedBytes: 40 * 1024 ** 3 + snapshots.size * 64 * MIB,
+						diskTotalBytes: STUB_HOST_DISK_BYTES,
+					},
+					sandboxes,
+				});
 			}
-			return { cpu: 0.05, memoryBytes: 64 * 1024 * 1024 + bytes };
+			return reports;
 		},
 	};
 }

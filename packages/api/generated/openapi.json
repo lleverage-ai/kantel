@@ -668,7 +668,7 @@
 						"name": "since",
 						"in": "query",
 						"required": false,
-						"description": "From this time; default 24 hours ago.",
+						"description": "From this time; default 24 hours ago. `series` then holds only the points after it, so a client polls with the last point's `at`.",
 						"schema": {
 							"type": "integer"
 						}
@@ -2287,7 +2287,7 @@
 			"get": {
 				"operationId": "getSandboxUsage",
 				"summary": "Get a sandbox's usage",
-				"description": "CPU, memory, running time and cost per interval. A key needs `sandboxes:read`.",
+				"description": "CPU, memory, running time and cost per interval, and in `series` its readings as they came (every 5 seconds over the last hour from a current host). Poll with `since` set to the last series point's `at` for only the newer points. A key needs `sandboxes:read`.",
 				"tags": ["sandboxes"],
 				"parameters": [
 					{
@@ -2303,7 +2303,7 @@
 						"name": "since",
 						"in": "query",
 						"required": false,
-						"description": "From this time; default 24 hours ago.",
+						"description": "From this time; default 24 hours ago. `series` then holds only the points after it, so a client polls with the last point's `at`.",
 						"schema": {
 							"type": "integer"
 						}
@@ -7740,6 +7740,86 @@
 				}
 			}
 		},
+		"/admin/hosts/{hostId}/usage": {
+			"get": {
+				"operationId": "getHostUsage",
+				"summary": "Get a host's usage",
+				"description": "Its CPU, memory and disk as it reported them, every 5 seconds over the last hour. Poll with `since` set to the last point's `at` for only the newer points. A deployment super-admin only (a key needs `hosts:admin`).",
+				"tags": ["hosts"],
+				"parameters": [
+					{
+						"name": "hostId",
+						"in": "path",
+						"required": true,
+						"description": "The host's ID.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "since",
+						"in": "query",
+						"required": false,
+						"description": "Only the points after this time (epoch milliseconds).",
+						"schema": {
+							"type": "integer"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The host's readings.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/HostUsage"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/admin/public-url": {
 			"get": {
 				"operationId": "getPublicUrl",
@@ -8181,6 +8261,96 @@
 							"application/json": {
 								"schema": {
 									"$ref": "#/components/schemas/Host"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/hosts/{hostId}/usage": {
+			"get": {
+				"operationId": "getAccountHostUsage",
+				"summary": "Get one of an account's hosts' usage",
+				"description": "Its CPU, memory and disk as it reported them, every 5 seconds over the last hour. Poll with `since` set to the last point's `at` for only the newer points. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
+				"tags": ["account-hosts"],
+				"parameters": [
+					{
+						"name": "hostId",
+						"in": "path",
+						"required": true,
+						"description": "The host's ID.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "since",
+						"in": "query",
+						"required": false,
+						"description": "Only the points after this time (epoch milliseconds).",
+						"schema": {
+							"type": "integer"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The host's readings.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/HostUsage"
 								}
 							}
 						}
@@ -10277,6 +10447,9 @@
 					"lastSeenAt": {
 						"type": "integer",
 						"description": "Epoch milliseconds, UTC."
+					},
+					"usage": {
+						"$ref": "#/components/schemas/UsageSparklines"
 					}
 				},
 				"title": "Host",
@@ -10374,6 +10547,64 @@
 				],
 				"title": "HostState",
 				"description": "`online`: connected and taking sandboxes. `unreachable`: its connection dropped; its sandboxes can't be reached until it is back. `draining`: connected, but takes no new sandboxes. `revoked`: its credential is revoked."
+			},
+			"HostUsage": {
+				"type": "object",
+				"required": ["hostId", "intervalMs", "memTotalBytes", "diskTotalBytes", "points"],
+				"properties": {
+					"hostId": {
+						"type": "string"
+					},
+					"intervalMs": {
+						"type": "integer",
+						"minimum": 1,
+						"description": "How far apart the points are: 5000 from a current host."
+					},
+					"memTotalBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "0 until the host has sent a reading."
+					},
+					"diskTotalBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "0 until the host has sent a reading."
+					},
+					"points": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/HostUsagePoint"
+						},
+						"description": "Oldest first, at most the last hour; with `since`, only those after it. Empty for a host that doesn't send its readings yet (an older kantel-host)."
+					}
+				},
+				"title": "HostUsage",
+				"description": "A host's readings as they came, for a live graph: poll with `since` set to the last point's `at` for only the newer ones."
+			},
+			"HostUsagePoint": {
+				"type": "object",
+				"required": ["at", "cpu", "memUsedBytes", "diskUsedBytes"],
+				"properties": {
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"cpu": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1,
+						"description": "CPU utilisation over the interval ending at `at`, 0 to 1 of all the host's CPUs."
+					},
+					"memUsedBytes": {
+						"type": "integer",
+						"minimum": 0
+					},
+					"diskUsedBytes": {
+						"type": "integer",
+						"minimum": 0
+					}
+				},
+				"title": "HostUsagePoint"
 			},
 			"Invite": {
 				"type": "object",
@@ -11201,6 +11432,28 @@
 				},
 				"title": "SandboxResources"
 			},
+			"SandboxSeriesPoint": {
+				"type": "object",
+				"required": ["at", "cpu", "memUsedBytes"],
+				"properties": {
+					"at": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"cpu": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1,
+						"description": "CPU utilisation over the interval ending at `at`, 0 to 1 of the sandbox's own vCPUs."
+					},
+					"memUsedBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Memory in use at `at`."
+					}
+				},
+				"title": "SandboxSeriesPoint"
+			},
 			"SandboxSizeName": {
 				"anyOf": [
 					{
@@ -11291,7 +11544,7 @@
 			},
 			"SandboxUsage": {
 				"type": "object",
-				"required": ["sandboxId", "intervalSeconds", "points", "totals"],
+				"required": ["sandboxId", "intervalSeconds", "points", "totals", "series"],
 				"properties": {
 					"sandboxId": {
 						"type": "string"
@@ -11319,6 +11572,14 @@
 								"$ref": "#/components/schemas/Cost"
 							}
 						}
+					},
+					"memLimitBytes": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "The memory it may use, when its host reports it or its size sets it."
+					},
+					"series": {
+						"$ref": "#/components/schemas/SandboxUsageSeries"
 					}
 				},
 				"title": "SandboxUsage"
@@ -11348,6 +11609,26 @@
 					}
 				},
 				"title": "SandboxUsagePoint"
+			},
+			"SandboxUsageSeries": {
+				"type": "object",
+				"required": ["intervalMs", "points"],
+				"properties": {
+					"intervalMs": {
+						"type": "integer",
+						"minimum": 1,
+						"description": "How far apart the points are: 5000 from a host that sends its readings, longer from one that doesn't yet."
+					},
+					"points": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SandboxSeriesPoint"
+						},
+						"description": "Oldest first, at most the last hour; with `since`, only those after it."
+					}
+				},
+				"title": "SandboxUsageSeries",
+				"description": "The sandbox's readings as they came, for a live graph: poll with `since` set to the last point's `at` for only the newer ones."
 			},
 			"SandboxVisibility": {
 				"anyOf": [
@@ -11892,9 +12173,34 @@
 				},
 				"title": "UpdateWebhookBody"
 			},
+			"UsageSparklines": {
+				"type": "object",
+				"required": ["recentCpu", "recentMemory"],
+				"properties": {
+					"recentCpu": {
+						"type": "array",
+						"items": {
+							"type": "number",
+							"minimum": 0,
+							"maximum": 1
+						},
+						"description": "CPU utilisation, 0 to 1, over the last 24 intervals of 5 minutes, oldest first. The last may be the interval under way."
+					},
+					"recentMemory": {
+						"type": "array",
+						"items": {
+							"type": "number",
+							"minimum": 0
+						},
+						"description": "Memory in use, in bytes, over the same intervals as `recentCpu` (the same length), oldest first."
+					}
+				},
+				"title": "UsageSparklines",
+				"description": "A host's recent CPU and memory, for sparklines."
+			},
 			"UsageSummary": {
 				"type": "object",
-				"required": ["runningSeconds", "cpuSeconds", "recentCpu"],
+				"required": ["runningSeconds", "cpuSeconds", "recentCpu", "recentMemory"],
 				"properties": {
 					"runningSeconds": {
 						"type": "number"
@@ -11909,7 +12215,15 @@
 							"minimum": 0,
 							"maximum": 1
 						},
-						"description": "CPU utilisation, 0 to 1, over the last 24 intervals of 5 minutes, oldest first: a sparkline."
+						"description": "CPU utilisation, 0 to 1, over the last 24 intervals of 5 minutes, oldest first: a sparkline. The last may be the interval under way."
+					},
+					"recentMemory": {
+						"type": "array",
+						"items": {
+							"type": "number",
+							"minimum": 0
+						},
+						"description": "Memory in use, in bytes, over the same intervals as `recentCpu` (the same length), oldest first."
 					}
 				},
 				"title": "UsageSummary"

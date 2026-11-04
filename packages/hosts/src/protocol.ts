@@ -84,6 +84,11 @@ export const HOST_FEATURES = {
 	 * only where bound, refuses older `revision`s, and a fork takes its `env`.
 	 */
 	egressPolicy: "egress-policy",
+	/**
+	 * The host sends a `usage` message every tick (`HostUsageReport`). Kantel then never reads a sandbox's usage by
+	 * running a command in it, which it still does for a host without it.
+	 */
+	usage: "usage",
 } as const;
 
 /** Whether an egress needs the `egress-policy` feature to be enforced: it has grants or protected variables. */
@@ -244,6 +249,47 @@ export interface HostEgressRecord {
 	readonly bytesDown: number;
 }
 
+/**
+ * One tick of a host's usage: `{ "type": "usage", "usage": HostUsageReport }`, sent every `intervalMs` (5000) once
+ * welcomed. A control plane that predates it ignores the message.
+ *
+ * `cpu` is utilisation over the interval that ended at `at`, 0 to 1 (as the API's `recentCpu`): a sandbox's of its own
+ * vCPUs (a microVM's vCPU time over vcpus × interval; an isolate's process CPU time over the interval, of one CPU), the
+ * host's of all its CPUs. Above 1 is taken as 1.
+ */
+export interface HostUsageReport {
+	/** When the readings were taken, epoch milliseconds. */
+	readonly at: number;
+	/** The tick, 1000 to 300000; 5000 by default. */
+	readonly intervalMs: number;
+	readonly host: HostUsageTotals;
+	/** Every sandbox running at the tick. Go's nil slice (`null`) is none. */
+	readonly sandboxes: readonly HostSandboxUsage[] | null;
+}
+
+export interface HostUsageTotals {
+	readonly cpu: number;
+	readonly memUsedBytes: number;
+	readonly memTotalBytes: number;
+	/** The filesystem sandboxes' disks and snapshots are on. */
+	readonly diskUsedBytes: number;
+	readonly diskTotalBytes: number;
+}
+
+export interface HostSandboxUsage {
+	readonly id: string;
+	readonly kind: SandboxTier;
+	readonly cpu: number;
+	/**
+	 * As kantel-host measures it from the host's side (`SandboxUsage` in apps/host/internal/proto/proto.go): a microVM's
+	 * Firecracker process's resident memory (the guest memory it has touched, page cache included, and the VMM's own); an
+	 * isolate's even share of its account's runtime's resident memory.
+	 */
+	readonly memUsedBytes: number;
+	/** A microVM's size's memory; an isolate's even share of its account's runtime's memory limit. */
+	readonly memLimitBytes: number;
+}
+
 export interface HostHello {
 	readonly hostId: string;
 	readonly facts: HostFacts;
@@ -274,10 +320,12 @@ export interface HostEvent {
 }
 
 export interface HostMessage {
-	readonly type: "hello" | "welcome" | "heartbeat" | "call" | "result" | "event" | "stream.close" | string;
+	readonly type: "hello" | "welcome" | "heartbeat" | "usage" | "call" | "result" | "event" | "stream.close" | string;
 	readonly hello?: HostHello;
 	readonly welcome?: HostWelcome;
 	readonly heartbeat?: { readonly capacity: HostCapacity };
+	/** For `usage`: one tick of the host's readings. */
+	readonly usage?: HostUsageReport;
 	readonly id?: string;
 	readonly method?: string;
 	readonly params?: unknown;

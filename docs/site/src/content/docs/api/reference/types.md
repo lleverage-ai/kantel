@@ -675,6 +675,7 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | `accountId` | string | no | The account the host belongs to, when it was added to one by its people: only that account's sandboxes run on it. Absent for a host the deployment's super-admin joined, which any account's sandboxes may use. |
 | `joinedAt` | integer | yes | Epoch milliseconds, UTC. |
 | `lastSeenAt` | integer | no | Epoch milliseconds, UTC. |
+| `usage` | [UsageSparklines](/api/reference/types/#usagesparklines) | no |  |
 
 ### HostAllocated
 
@@ -713,6 +714,27 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 `online`: connected and taking sandboxes. `unreachable`: its connection dropped; its sandboxes can't be reached until it is back. `draining`: connected, but takes no new sandboxes. `revoked`: its credential is revoked.
 
 One of: `"online"` or `"unreachable"` or `"draining"` or `"revoked"`.
+
+### HostUsage
+
+A host's readings as they came, for a live graph: poll with `since` set to the last point's `at` for only the newer ones.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hostId` | string | yes |  |
+| `intervalMs` | integer | yes | How far apart the points are: 5000 from a current host. (minimum 1) |
+| `memTotalBytes` | integer | yes | 0 until the host has sent a reading. (minimum 0) |
+| `diskTotalBytes` | integer | yes | 0 until the host has sent a reading. (minimum 0) |
+| `points` | [HostUsagePoint](/api/reference/types/#hostusagepoint)[] | yes | Oldest first, at most the last hour; with `since`, only those after it. Empty for a host that doesn't send its readings yet (an older kantel-host). |
+
+### HostUsagePoint
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `at` | integer | yes | Epoch milliseconds, UTC. |
+| `cpu` | number | yes | CPU utilisation over the interval ending at `at`, 0 to 1 of all the host's CPUs. (minimum 0, maximum 1) |
+| `memUsedBytes` | integer | yes |  (minimum 0) |
+| `diskUsedBytes` | integer | yes |  (minimum 0) |
 
 ### Invite
 
@@ -975,6 +997,14 @@ A protected variable as one sandbox has it: never its value.
 | `memoryMb` | integer | yes |  |
 | `diskGb` | integer | yes |  |
 
+### SandboxSeriesPoint
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `at` | integer | yes | Epoch milliseconds, UTC. |
+| `cpu` | number | yes | CPU utilisation over the interval ending at `at`, 0 to 1 of the sandbox's own vCPUs. (minimum 0, maximum 1) |
+| `memUsedBytes` | integer | yes | Memory in use at `at`. (minimum 0) |
+
 ### SandboxSizeName
 
 A microVM's size; a deployment may offer fewer. Isolates have none.
@@ -1010,6 +1040,8 @@ One of: `"isolate"` or `"microvm"`.
 | `intervalSeconds` | integer | yes |  |
 | `points` | [SandboxUsagePoint](/api/reference/types/#sandboxusagepoint)[] | yes |  |
 | `totals` | object | yes |  |
+| `memLimitBytes` | integer | no | The memory it may use, when its host reports it or its size sets it. (minimum 0) |
+| `series` | [SandboxUsageSeries](/api/reference/types/#sandboxusageseries) | yes |  |
 
 ### SandboxUsagePoint
 
@@ -1020,6 +1052,15 @@ One of: `"isolate"` or `"microvm"`.
 | `memoryMb` | number | yes |  |
 | `runningSeconds` | number | yes |  |
 | `cost` | number | yes |  |
+
+### SandboxUsageSeries
+
+The sandbox's readings as they came, for a live graph: poll with `since` set to the last point's `at` for only the newer ones.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `intervalMs` | integer | yes | How far apart the points are: 5000 from a host that sends its readings, longer from one that doesn't yet. (minimum 1) |
+| `points` | [SandboxSeriesPoint](/api/reference/types/#sandboxseriespoint)[] | yes | Oldest first, at most the last hour; with `since`, only those after it. |
 
 ### SandboxVisibility
 
@@ -1222,13 +1263,23 @@ What the collector answered to an empty export sent on save.
 | `events` | [EventType](/api/reference/types/#eventtype)[] | no |  |
 | `enabled` | boolean | no |  |
 
+### UsageSparklines
+
+A host's recent CPU and memory, for sparklines.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `recentCpu` | number[] | yes | CPU utilisation, 0 to 1, over the last 24 intervals of 5 minutes, oldest first. The last may be the interval under way. |
+| `recentMemory` | number[] | yes | Memory in use, in bytes, over the same intervals as `recentCpu` (the same length), oldest first. |
+
 ### UsageSummary
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `runningSeconds` | number | yes |  |
 | `cpuSeconds` | number | yes |  |
-| `recentCpu` | number[] | yes | CPU utilisation, 0 to 1, over the last 24 intervals of 5 minutes, oldest first: a sparkline. |
+| `recentCpu` | number[] | yes | CPU utilisation, 0 to 1, over the last 24 intervals of 5 minutes, oldest first: a sparkline. The last may be the interval under way. |
+| `recentMemory` | number[] | yes | Memory in use, in bytes, over the same intervals as `recentCpu` (the same length), oldest first. |
 
 ### ViewAccessBody
 

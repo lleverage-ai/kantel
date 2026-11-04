@@ -60,6 +60,8 @@ import {
 	HostJoinToken,
 	HostList,
 	HostPath,
+	HostUsage,
+	HostUsageQuery,
 	Invite,
 	InviteList,
 	InvitePath,
@@ -513,7 +515,12 @@ export const getSandboxUsage = defineRoute({
 	path: "/sandboxes/{sandboxId}/usage",
 	tag: "sandboxes",
 	summary: "Get a sandbox's usage",
-	description: describe("CPU, memory, running time and cost per interval.", scope("sandboxes:read")),
+	description: describe(
+		"CPU, memory, running time and cost per interval, and in `series` its readings as they came (every 5 seconds over",
+		"the last hour from a current host). Poll with `since` set to the last series point's `at` for only the newer",
+		"points.",
+		scope("sandboxes:read"),
+	),
 	params: SandboxPath,
 	query: UsageQuery,
 	answer: { status: 200, description: "The usage.", schema: SandboxUsage },
@@ -1560,6 +1567,23 @@ export const createHostJoinToken = defineRoute({
 	errors: ["invalid", "forbidden"],
 });
 
+export const getHostUsage = defineRoute({
+	operationId: "getHostUsage",
+	method: "GET",
+	path: "/admin/hosts/{hostId}/usage",
+	tag: "hosts",
+	summary: "Get a host's usage",
+	description: describe(
+		"Its CPU, memory and disk as it reported them, every 5 seconds over the last hour. Poll with `since` set to the",
+		"last point's `at` for only the newer points.",
+		SUPER_ADMIN,
+	),
+	params: HostPath,
+	query: HostUsageQuery,
+	answer: { status: 200, description: "The host's readings.", schema: HostUsage },
+	errors: readErrors,
+});
+
 export const getPublicUrl = defineRoute({
 	operationId: "getPublicUrl",
 	method: "GET",
@@ -1596,6 +1620,7 @@ export const hostRoutes = {
 	listHosts,
 	createHostJoinToken,
 	getHost,
+	getHostUsage,
 	updateHost,
 	revokeHost,
 	getPublicUrl,
@@ -1656,6 +1681,24 @@ export const getAccountHost = defineRoute({
 	errors: [...readErrors, "not_supported"],
 });
 
+export const getAccountHostUsage = defineRoute({
+	operationId: "getAccountHostUsage",
+	method: "GET",
+	path: "/hosts/{hostId}/usage",
+	tag: "account-hosts",
+	summary: "Get one of an account's hosts' usage",
+	description: describe(
+		"Its CPU, memory and disk as it reported them, every 5 seconds over the last hour. Poll with `since` set to the",
+		"last point's `at` for only the newer points.",
+		scope("account:read"),
+		ACCOUNT_HOSTS,
+	),
+	params: HostPath,
+	query: HostUsageQuery,
+	answer: { status: 200, description: "The host's readings.", schema: HostUsage },
+	errors: [...readErrors, "not_supported"],
+});
+
 export const updateAccountHost = defineRoute({
 	operationId: "updateAccountHost",
 	method: "PATCH",
@@ -1690,6 +1733,7 @@ export const accountHostRoutes = {
 	createAccountJoinToken,
 	listAccountHosts,
 	getAccountHost,
+	getAccountHostUsage,
 	updateAccountHost,
 	removeAccountHost,
 } as const;
