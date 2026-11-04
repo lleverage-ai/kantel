@@ -210,10 +210,15 @@ func (m *Manager) prepareShape(vcpus int) {
 		m.mu.Unlock()
 	}()
 	if m.templateReady(sh) {
+		m.dropSizeTemplates()
 		return
 	}
 	_, _, err := m.template(context.Background(), sh)
-	if err == nil || m.closed.Load() {
+	if err == nil {
+		m.dropSizeTemplates()
+		return
+	}
+	if m.closed.Load() {
 		return
 	}
 	if errors.Is(err, errNoVirtioMem) {
@@ -226,6 +231,35 @@ func (m *Manager) prepareShape(vcpus int) {
 	m.mu.Lock()
 	m.sharedFailed[vcpus] = time.Now()
 	m.mu.Unlock()
+}
+
+// dropSizeTemplates removes the named sizes' templates, once a shared template is ready: with shared templates on no
+// sandbox restores one (a shape that doesn't fit cold-boots), and the guest kernel has shown it can grow memory, so
+// they are only disk (gigabytes each, after an upgrade from a host that made them). Turning shared templates off
+// makes them again on first use. A running sandbox restored from one keeps its mapping of the removed memory file.
+func (m *Manager) dropSizeTemplates() {
+	m.sizeTemplatesDropped.Do(func() {
+		for _, size := range m.cfg.Sizes {
+			dir := filepath.Join(m.cfg.Root, "templates", size.Name)
+			_ = os.RemoveAll(dir + ".building")
+			if _, err := os.Stat(dir); err != nil {
+				continue
+			}
+			lock := m.templateLock(size.Name)
+			if lock != nil {
+				lock.Lock()
+			}
+			err := os.RemoveAll(dir)
+			if lock != nil {
+				lock.Unlock()
+			}
+			if err != nil {
+				m.log.Warn("removing a size's template", "size", size.Name, "error", err)
+			} else {
+				m.log.Info("removed a size's template: shared templates are on", "size", size.Name)
+			}
+		}
+	})
 }
 
 // WaitTemplate makes, or waits for, the template a create of p would restore: its vCPU count's shared template, or

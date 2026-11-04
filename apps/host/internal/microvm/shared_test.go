@@ -1,6 +1,10 @@
 package microvm
 
 import (
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -108,5 +112,35 @@ func TestSharedShapeOverrides(t *testing.T) {
 	}
 	if _, ok := c.fits(proto.Size{VCPUs: 1, MemoryMiB: 1024, DiskGiB: 10}); ok {
 		t.Error("a disk smaller than the template's fits")
+	}
+}
+
+// Once a shared template is ready the named sizes' templates are only disk: they go, the shared ones stay.
+func TestDropSizeTemplates(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"default", "large", "small.building", "shared-4vcpu"} {
+		if err := os.MkdirAll(filepath.Join(root, "templates", dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "templates", dir, "mem"), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m, err := New(Config{Root: root, Sizes: DefaultSizes, SpoolMaxMiB: -1, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	m.dropSizeTemplates()
+	entries, err := os.ReadDir(filepath.Join(root, "templates"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var left []string
+	for _, e := range entries {
+		left = append(left, e.Name())
+	}
+	if !reflect.DeepEqual(left, []string{"shared-4vcpu"}) {
+		t.Fatalf("templates left %v, want only shared-4vcpu", left)
 	}
 }

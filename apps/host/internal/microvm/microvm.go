@@ -209,9 +209,12 @@ type Manager struct {
 	sharedOff    atomic.Bool
 	preparing    map[int]bool
 	sharedFailed map[int]time.Time
-	nextCID      atomic.Uint32
-	closed       atomic.Bool
-	spool        *spool
+	// sizeTemplatesDropped: the named sizes' templates (from shared templates off, or a host from before them) are
+	// removed once, when a shared template is first ready.
+	sizeTemplatesDropped sync.Once
+	nextCID              atomic.Uint32
+	closed               atomic.Bool
+	spool                *spool
 	// hostMemoryMiB is the machine's memory, a custom shape's ceiling (0: unknown, no ceiling but the sanity cap).
 	hostMemoryMiB int64
 	// guest is what the image has, as a template's agent reported it (guestFile); every sandbox shares the image.
