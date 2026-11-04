@@ -93,6 +93,7 @@ func TestRewriteRequest(t *testing.T) {
 		name    string
 		raw     string
 		dest    Destination
+		p       Provider // testStore() when nil
 		swapped []string
 		check   func(t *testing.T, req *http.Request)
 	}{
@@ -184,9 +185,10 @@ func TestRewriteRequest(t *testing.T) {
 			},
 		},
 		{
-			name:    "unknown placeholder left alone",
+			name:    "placeholder-like text in a sandbox with no protected variables left alone",
 			raw:     rawRequest("POST", "https://api.github.com/x", []string{"X-Other: " + phUnknown}, "a "+phUnknown),
 			dest:    githubDest,
+			p:       noProtected{},
 			swapped: nil,
 			check: func(t *testing.T, req *http.Request) {
 				if req.Header.Get("X-Other") != phUnknown || readBody(t, req) != "a "+phUnknown {
@@ -209,7 +211,11 @@ func TestRewriteRequest(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := readRequest(t, tt.raw)
-			swapped, err := RewriteRequest(context.Background(), req, "sbx-1", tt.dest, testStore())
+			p := tt.p
+			if p == nil {
+				p = testStore()
+			}
+			swapped, err := RewriteRequest(context.Background(), req, "sbx-1", tt.dest, p)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -255,6 +261,9 @@ func TestRewriteRequestRefuses(t *testing.T) {
 		{"unbound in the body", []string{"Authorization: Bearer " + phGitHub}, `{"npm":"` + phNPM + `"}`, testStore(), CodeUnbound, "NPM_TOKEN"},
 		{"unbound in basic credentials", []string{"Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("u:"+phNPM))}, "x", testStore(), CodeUnbound, "NPM_TOKEN"},
 		{"values unavailable", []string{"Authorization: Bearer " + phGitHub}, "body", failing, CodeUnavailable, ""},
+		// Another sandbox's placeholder, such as a fork's parent's: refused, not sent on unswapped.
+		{"another sandbox's in a header", []string{"Authorization: Bearer " + phUnknown}, "", testStore(), CodeUnknown, ""},
+		{"another sandbox's in the body", []string{"Authorization: Bearer " + phGitHub}, `{"t":"` + phUnknown + `"}`, testStore(), CodeUnknown, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -100,7 +100,7 @@ Set a protected value with `--value-stdin`, as above, rather than as `NAME=value
 
 ## How a protected variable works
 
-Each sandbox gets its own placeholder for each protected variable: `kph_` and 40 random letters and digits, made when the sandbox is created and kept while it lives. A placeholder means nothing outside its sandbox. A fork gets fresh ones, and any of the parent's placeholders left on the fork's disk aren't swapped for it.
+Each sandbox gets its own placeholder for each protected variable: `kph_` and 40 random letters and digits, made when the sandbox is created and kept while it lives. A placeholder means nothing outside its sandbox. A fork gets fresh ones. The parent's placeholders are never swapped for the fork: a request from the fork carrying one is refused with `placeholder-unknown` and logged. A live fork keeps the parent's running processes, and their environment still holds the parent's placeholders, so restart any that make protected requests; new commands and shells get the fork's own.
 
 The real value lives in three places only:
 
@@ -173,12 +173,13 @@ When the proxy refuses a request, or can't complete one, it answers the sandbox 
 | Code | Why |
 | --- | --- |
 | `denied` | A grant refused the request. `X-Kantel-Proxy-Rule` names it |
-| `placeholder-unbound` | The request carried a placeholder to a destination outside the variable's bindings, or one that isn't this sandbox's. Nothing was sent |
+| `placeholder-unbound` | The request carried a placeholder to a destination outside the variable's bindings. Nothing was sent |
+| `placeholder-unknown` | The request carried a placeholder that isn't this sandbox's, such as a fork's parent's. It is never swapped, and nothing was sent |
 | `secret-unavailable` | The host couldn't get the value from Kantel, such as while the control plane is unreachable. Nothing was sent |
 | `upstream-failed` | The proxy couldn't connect to the real host, or that host's certificate didn't check out |
 | `body-too-large` | The request's body was larger than the proxy reads to swap placeholders in |
 
-`denied` and `placeholder-unbound` come with status 403, and `secret-unavailable` and `upstream-failed` with 502 or 503. A request refused before an HTTPS tunnel opens gets the same headers on its 403, though `curl` then shows only `CONNECT tunnel failed, response 403`. Every refusal is in the [egress log](#the-egress-log).
+`denied`, `placeholder-unbound` and `placeholder-unknown` come with status 403, and `secret-unavailable` and `upstream-failed` with 502 or 503. A request refused before an HTTPS tunnel opens gets the same headers on its 403, though `curl` then shows only `CONNECT tunnel failed, response 403`. Every refusal is in the [egress log](#the-egress-log).
 
 ## Check a sandbox
 
