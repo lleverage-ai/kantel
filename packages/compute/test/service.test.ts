@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
 import type { SandboxBackend } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
+import { createRoutedBackend, NOT_HELD } from "../src/routed-backend.ts";
 import {
 	checkShape,
 	hourlyRate,
@@ -736,6 +737,122 @@ describe("organisations", () => {
 		expect(fork?.resources).toMatchObject({ vcpus: 4, memoryMb: 8192 });
 		await tom.stopSandbox(made.id, { wait: true });
 		expect((await tom.startSandbox(made.id, { wait: true })).resources).toMatchObject({ vcpus: 4, memoryMb: 8192 });
+	});
+
+	it("makes a plain sandbox whose create failed again as its create would, on recover, start or resume", async () => {
+		const stub = createStubBackend();
+		let failing = true;
+		const creates: string[] = [];
+		const backend: SandboxBackend = {
+			...stub,
+			create: (spec) => {
+				creates.push(spec.sandboxId);
+				return failing
+					? Promise.reject(new KantelError("unavailable", "The disk couldn't be made"))
+					: stub.create(spec);
+			},
+		};
+		const { api, tom } = setup(backend);
+		// Made from no snapshot, each create fails: no backend has them, and they have no snapshot of their own.
+		const made = [];
+		for (let i = 0; i < 3; i++) made.push(await tom.createSandbox({ type: "microvm", wait: true }));
+		expect(made.map((sandbox) => sandbox.state)).toEqual(["error", "error", "error"]);
+		failing = false;
+
+		// Each is made again with the backend's create, as its create made it, rather than asked of a backend without it.
+		const [recovered, started, resumed] = made.map((sandbox) => sandbox.id);
+		await tom.recoverSandbox(recovered ?? "");
+		await api.service.idle();
+		expect((await tom.startSandbox(started ?? "", { wait: true })).state).toBe("running");
+		expect((await tom.resumeSandbox(resumed ?? "", { wait: true })).state).toBe("running");
+		for (const sandbox of made) {
+			expect((await tom.getSandbox(sandbox.id)).state).toBe("running");
+			expect((await tom.runCommand(sandbox.id, { command: "echo hi" })).stdout).toBe("hi\n");
+		}
+		expect(creates.filter((id) => id === recovered)).toHaveLength(2);
+	});
+
+	it("makes a plain microVM of its own shape whose create failed again as that shape, on recover, start or resume", async () => {
+		const stub = createStubBackend();
+		let failing = true;
+		const creates: { readonly sandboxId: string; readonly size?: string; readonly shape?: unknown }[] = [];
+		const backend: SandboxBackend = {
+			...stub,
+			create: (spec) => {
+				creates.push({ sandboxId: spec.sandboxId, size: spec.size, shape: spec.shape });
+				return failing
+					? Promise.reject(new KantelError("unavailable", "The disk couldn't be made"))
+					: stub.create(spec);
+			},
+		};
+		const { api, tom } = setup(backend);
+		const custom = { vcpus: 3, memoryMb: 6144 };
+		const made = [];
+		for (let i = 0; i < 3; i++) made.push(await tom.createSandbox({ type: "microvm", resources: custom, wait: true }));
+		expect(made.map((sandbox) => sandbox.state)).toEqual(["error", "error", "error"]);
+		failing = false;
+
+		// Each is made again at the shape it asked for: no preset's size in its place.
+		const [recovered, started, resumed] = made.map((sandbox) => sandbox.id);
+		await tom.recoverSandbox(recovered ?? "");
+		await api.service.idle();
+		await tom.startSandbox(started ?? "", { wait: true });
+		await tom.resumeSandbox(resumed ?? "", { wait: true });
+		for (const sandbox of made) {
+			const again = await tom.getSandbox(sandbox.id);
+			expect(again.state).toBe("running");
+			expect(again.resources).toMatchObject(custom);
+			const remade = creates.filter((create) => create.sandboxId === sandbox.id);
+			expect(remade).toHaveLength(2);
+			expect(remade[1]).toMatchObject({ shape: custom });
+			expect(remade[1]?.size).toBeUndefined();
+		}
+	});
+
+	it("sends a sandbox the routed backend's fallback has just made its egress before it runs, and refuses one never made", async () => {
+		const stub = createStubBackend();
+		let release = () => {};
+		const booting = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let failing = false;
+		const fallback: SandboxBackend = {
+			...stub,
+			create: async (spec) => {
+				if (failing) throw new KantelError("unavailable", "The disk couldn't be made");
+				await booting;
+				return stub.create(spec);
+			},
+		};
+		// An account-hosts side with no hosts: everything is the fallback's, as is the records' say of what it holds.
+		const primary: SandboxBackend = {
+			...createStubBackend(),
+			capabilities: async () => ({ types: ["isolate", "microvm"], sizes: [], hosts: [] }),
+		};
+		const records: { api?: ComputeApi } = {};
+		const routed = createRoutedBackend({
+			primary,
+			fallback,
+			holds: async () => false,
+			fallbackHolds: async (id) => (await records.api?.store.sandboxes.get(id))?.hostId === STUB_HOST_ID,
+			holdsSnapshot: () => false,
+		});
+		const { api, tom } = setup(routed);
+		records.api = api;
+
+		// Its grants change while it is made: sent once it is placed, before its record says where, so it runs.
+		const sandbox = await tom.createSandbox({});
+		await tom.putSandboxGrants(sandbox.id, { grants: [{ action: "deny", host: "evil.example" }] });
+		release();
+		await api.service.idle();
+		expect(await tom.getSandbox(sandbox.id)).toMatchObject({ state: "running" });
+		expect((await tom.runCommand(sandbox.id, { command: "echo hi" })).stdout).toBe("hi\n");
+
+		// One whose create failed is the fallback's no more than anyone's.
+		failing = true;
+		const lost = await tom.createSandbox({ wait: true });
+		expect(lost.state).toBe("error");
+		await expect(routed.exec(lost.id, { command: "true" })).rejects.toMatchObject({ message: NOT_HELD });
 	});
 
 	it("keeps an overdue sandbox whose host is away running, and auto-stops it once its host is back", async () => {
