@@ -36,6 +36,7 @@ import {
 	FILE_STREAM_ACK_BYTES,
 	HOST_E2E_PORT,
 	HOST_FEATURES,
+	HOST_WRITE_FILE_MAX_BYTES,
 	type HostEgress,
 	type HostGuest,
 	HostMethods,
@@ -541,6 +542,13 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			return { bytes, size: answer.fileSize };
 		},
 		async writeFile(sandboxId, path, content, mode) {
+			// Past the host's message limit the host would drop its whole link, every sandbox's calls and streams on it.
+			if (content.length > HOST_WRITE_FILE_MAX_BYTES) {
+				throw new KantelError(
+					"invalid",
+					`This sandbox's host takes files of at most ${HOST_WRITE_FILE_MAX_BYTES} bytes in one write; it can't stream larger ones`,
+				);
+			}
 			await call(sandboxId, "sandbox.files.write", {
 				path,
 				data: toBase64(content),

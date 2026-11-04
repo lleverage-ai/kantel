@@ -37,7 +37,9 @@ func (s *Server) extractArchive(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err)
 		return
 	}
-	err = ExtractTar(archive, target, 1000, 1000)
+	// Owned by the sandbox's default user, as a file write's are: 1000 on Kantel's image, an injected image's own user.
+	uid, gid := s.owner("")
+	err = ExtractTar(archive, target, uid, gid)
 	// The tar goes whatever happened: it was only ever staged for this.
 	_ = os.Remove(archive)
 	var refused *errArchive

@@ -20,6 +20,8 @@ import {
 	FILE_STREAM_ACK_BYTES,
 	FILE_STREAM_WINDOW_BYTES,
 	HOST_FEATURES,
+	HOST_MESSAGE_LIMIT_BYTES,
+	HOST_WRITE_FILE_MAX_BYTES,
 	type HostBucketSource,
 	type HostFileOpen,
 	type HostMessage,
@@ -623,6 +625,21 @@ describe("the backend's file streams", () => {
 		expect((await failure(read(backend, "sbx_one", "/home/user/a.txt"))).code).toBe("not_supported");
 		expect((await failure(write(backend, "sbx_one", "/home/user/b.txt", streamOf("x")))).code).toBe("not_supported");
 		expect(host.calls.some((call) => call.method === "sandbox.files.open")).toBe(false);
+	});
+
+	it("leave a write the host's message limit can't hold unsent, refused, and send one that fits", async () => {
+		const { host, hostId, backend, connect } = await setup();
+		await connect();
+		await backend.create(spec("sbx_one", hostId));
+		// Its base64 alone would pass the host's message limit, so the host would drop its whole link.
+		expect(Math.ceil(HOST_WRITE_FILE_MAX_BYTES / 3) * 4).toBeLessThan(HOST_MESSAGE_LIMIT_BYTES - 1024 * 1024 + 4);
+		const big = new Uint8Array(HOST_WRITE_FILE_MAX_BYTES + 1);
+		const refused = await failure(backend.writeFile("sbx_one", "/home/user/big.bin", big));
+		expect(refused.code).toBe("invalid");
+		expect(host.calls.some((call) => call.method === "sandbox.files.write")).toBe(false);
+		// One that fits is sent (this fake host doesn't keep it).
+		await backend.writeFile("sbx_one", "/home/user/small.txt", encode("fits")).catch(() => undefined);
+		expect(host.calls.some((call) => call.method === "sandbox.files.write")).toBe(true);
 	});
 
 	it("read a file's bytes as they come, and refuse a missing one", async () => {

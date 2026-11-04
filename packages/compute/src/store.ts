@@ -309,6 +309,12 @@ export interface StoredBundle {
 export interface StoredBundleBlob {
 	/** The digest. */
 	readonly id: string;
+	/**
+	 * The generation the bytes are kept as now (`BundleBlobStore`), which is what's read. It moves on once a delete has
+	 * removed them, and when an upload takes over from a delete whose claim lapsed, so a removal landing late only ever
+	 * removes a generation nothing reads any more. Absent: 0, from before there were generations.
+	 */
+	readonly generation?: number;
 	readonly leases: { readonly [lease: string]: number };
 	readonly deleting?: DeleteClaim;
 }

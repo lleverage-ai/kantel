@@ -14,7 +14,7 @@ import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
 import { type ComputeStore, createMemoryStore } from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
-import { entryPath, linkStaysInside, TarCheck } from "../src/tar.ts";
+import { entryPath, linkStaysInside, MAX_LINK_NODES, TarCheck } from "../src/tar.ts";
 import { bytesToBase64 } from "../src/util.ts";
 
 const BASE_URL = "http://compute.test/v1";
@@ -134,7 +134,24 @@ function setup(options: SetupOptions = {}) {
 	const fetchApi = (input: string | Request | URL, init?: RequestInit) =>
 		api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 }));
 	const client = (token: string) => createKantelClient({ baseUrl, token, fetch: fetchApi });
-	return { api, stub, store, bundles, specs, fetchApi, tom: client("tom-token"), ann: client("ann-token") };
+	/** A digest's bytes as they are read now: the generation its row says. */
+	const kept = {
+		open: async (digest: string) => {
+			const row = await store.bundleBlobs.get(digest);
+			return bundles.open(digest, row?.generation ?? 0);
+		},
+	};
+	return {
+		api,
+		stub,
+		store,
+		bundles: kept,
+		blobs: bundles,
+		specs,
+		fetchApi,
+		tom: client("tom-token"),
+		ann: client("ann-token"),
+	};
 }
 
 async function failure(call: Promise<unknown>): Promise<KantelApiError> {
@@ -251,6 +268,31 @@ describe("a tar's check", () => {
 		expect(check(entries).symlinks).toBe(20_000);
 		// A scan of every earlier link each time would be 200 million comparisons.
 		expect(performance.now() - started).toBeLessThan(5_000);
+	});
+
+	it("refuses links whose paths would come to too many nodes, however short their names", () => {
+		// Each link a deep path under a prefix of its own: a node per component, 1,001 a link.
+		const deep = `${"a/".repeat(1_000)}l`;
+		const entries: TarEntry[] = [];
+		const links = Math.ceil(MAX_LINK_NODES / 1_001) + 1;
+		for (let index = 0; index < links; index++) {
+			entries.push(paxPath(`d${index}/${deep}`), { name: "ignored-for-pax", type: "2", link: "." });
+		}
+		expect(() => check(entries)).toThrow(/directories and names/);
+		// Fewer of them are fine.
+		expect(check(entries.slice(0, 20)).symlinks).toBe(10);
+	});
+
+	it("keeps no name as the archive spelt it, only its path", () => {
+		// A pax name of many `./` comes to a short path: an escaping link is named by that path.
+		const entries: TarEntry[] = [
+			paxPath(`${"./".repeat(1_500)}a`),
+			{ name: "ignored-for-pax", type: "2", link: "." },
+			paxPath(`${"./".repeat(1_500)}b`),
+			{ name: "ignored-for-pax", type: "2", link: "a/.." },
+			{ name: "c", type: "2", link: "b/../.." },
+		];
+		expect(() => check(entries)).toThrow(/points out: (c -> b\/\.\.\/\.\.|b -> a\/\.\.)/);
 	});
 
 	it("resolves names and links as tar does", () => {
@@ -733,18 +775,102 @@ describe.each(STORES)("sources and the sandboxes mounting them, stored $name", s
 		expect((await ann.listBundles()).items.map((bundle) => bundle.digest)).toEqual([digest]);
 		expect(await bundles.open(digest)).toBeDefined();
 
-		// Tom's upload has written the bytes but not yet leased them when Ann deletes hers, the last record: the bytes go,
-		// and Tom's upload refuses rather than publish a record without them.
-		once(store.bundleBlobs, "insert", async () => {
-			await ann.deleteBundle(digest);
-		});
-		const refused = await failure(tom.uploadBundle(SKILLS.slice().buffer));
-		expect(refused.code).toBe("unavailable");
-		for (const record of await store.bundles.list()) expect(await bundles.open(record.digest)).toBeDefined();
-		expect(await store.bundles.list()).toEqual([]);
-		// Again, and it's there.
+		// Tom's upload has staged the bytes but not yet leased them when Ann deletes hers, the last record: the bytes go,
+		// and Tom's upload keeps its own copy again, as the next generation, before it publishes.
+		await ann.deleteBundle(digest);
 		await tom.uploadBundle(SKILLS.slice().buffer);
+		const before = (await store.bundleBlobs.get(digest))?.generation;
+		once(store.bundleBlobs, "get", async () => {
+			await tom.deleteBundle(digest);
+			expect(await bundles.open(digest)).toBeUndefined();
+		});
+		await ann.uploadBundle(SKILLS.slice().buffer);
+		expect((await store.bundleBlobs.get(digest))?.generation).toBeGreaterThan(before ?? 0);
+		expect(await store.bundles.list()).toHaveLength(1);
+		expect((await ann.listBundles()).items.map((bundle) => bundle.digest)).toEqual([digest]);
 		expect(await bundles.open(digest)).toBeDefined();
+	});
+
+	it("keep a bundle's bytes when a removal stalls past its claim and an upload takes over", async () => {
+		let clock = 1_000_000;
+		const { tom, ann, store, bundles, blobs } = await on({ now: () => clock });
+		const digest = digestOf(SKILLS);
+		await tom.uploadBundle(SKILLS.slice().buffer);
+		// Tom's delete removes the last record and goes to remove the bytes, but its removal stalls until its claim has
+		// lapsed and Ann has uploaded the same bytes; then it lands.
+		once(blobs, "delete", async () => {
+			clock += 61_000;
+			await ann.uploadBundle(SKILLS.slice().buffer);
+		});
+		await tom.deleteBundle(digest);
+		expect(await store.bundles.list()).toHaveLength(1);
+		expect(await bundles.open(digest)).toBeDefined();
+		expect((await ann.listBundles()).items.map((bundle) => bundle.digest)).toEqual([digest]);
+		// And the generation the stalled removal claimed is gone: nothing is left behind.
+		const row = await store.bundleBlobs.get(digest);
+		expect(row?.deleting).toBeUndefined();
+		expect(await blobs.open(digest, (row?.generation ?? 0) - 1)).toBeUndefined();
+	});
+
+	it("keep a bundle's bytes for an upload whose publish stalls past its lease as the last other record goes", async () => {
+		let clock = 1_000_000;
+		const { tom, ann, store, bundles } = await on({ now: () => clock });
+		const digest = digestOf(SKILLS);
+		await tom.uploadBundle(SKILLS.slice().buffer);
+		// Ann's upload holds its lease, but its record's insert stalls past it; meanwhile Tom deletes the last record, and
+		// its delete, finding no lease and no record, removes the bytes.
+		once(store.bundles, "insert", async () => {
+			clock += 6 * 60_000;
+			await tom.deleteBundle(digest);
+		});
+		await ann.uploadBundle(SKILLS.slice().buffer);
+		expect(await store.bundles.list()).toHaveLength(1);
+		expect((await ann.listBundles()).items.map((bundle) => bundle.digest)).toEqual([digest]);
+		expect(await bundles.open(digest)).toBeDefined();
+	});
+
+	it("remove a bundle's bytes when a delete left them to an upload whose record then fails to go in", async () => {
+		const { tom, ann, store, bundles } = await on();
+		const digest = digestOf(SKILLS);
+		await tom.uploadBundle(SKILLS.slice().buffer);
+		// Ann's upload holds its lease as Tom deletes the last record (so the delete leaves the bytes to it), and then its
+		// insert fails.
+		const insert = store.bundles.insert.bind(store.bundles);
+		store.bundles.insert = async () => {
+			store.bundles.insert = insert;
+			await tom.deleteBundle(digest);
+			throw new Error("the database went away");
+		};
+		await expect(ann.uploadBundle(SKILLS.slice().buffer)).rejects.toThrow();
+		expect(await store.bundles.list()).toEqual([]);
+		expect(await bundles.open(digest)).toBeUndefined();
+		const row = await store.bundleBlobs.get(digest);
+		expect(row?.deleting).toBeUndefined();
+		expect(Object.keys(row?.leases ?? {})).toEqual([]);
+	});
+
+	it("remove a bundle's bytes when the last record goes while an upload of them holds its lease", async () => {
+		const { tom, store, bundles } = await on();
+		const digest = digestOf(SKILLS);
+		await tom.uploadBundle(SKILLS.slice().buffer);
+		// Tom uploads it again (it has it: no new record), and deletes it while that upload still holds its lease.
+		const insert = store.bundles.insert.bind(store.bundles);
+		let deleted = false;
+		store.bundles.insert = async (record) => {
+			const done = await insert(record);
+			if (!deleted) {
+				deleted = true;
+				await tom.deleteBundle(digest);
+			}
+			return done;
+		};
+		await tom.uploadBundle(SKILLS.slice().buffer);
+		expect(deleted).toBe(true);
+		expect(await store.bundles.list()).toEqual([]);
+		expect(await bundles.open(digest)).toBeUndefined();
+		const row = await store.bundleBlobs.get(digest);
+		expect(row?.deleting).toBeUndefined();
+		expect(Object.keys(row?.leases ?? {})).toEqual([]);
 	});
 
 	it("refuse a second delete under way, stop a delete too slow to trust its claim, and outlive a delete that died", async () => {

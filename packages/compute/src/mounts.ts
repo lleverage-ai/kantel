@@ -20,22 +20,42 @@ export interface StoredBlob {
 }
 
 /**
+ * A body a `BundleBlobStore` has taken in and checked, staged: kept as one generation of its digest or more (`keep`),
+ * until it is let go (`discard`).
+ */
+export interface StagedBlob {
+	readonly digest: string;
+	readonly sizeBytes: number;
+	/**
+	 * Keeps the bytes as `generation` of the digest, which `open` and `delete` then name; bytes kept there already stay
+	 * (they are the same bytes). May be called again, for another generation, until `discard`.
+	 */
+	keep(generation: number): Promise<void>;
+	/** Lets the staged copy go; the generations it was kept as stay. */
+	discard(): Promise<void>;
+}
+
+/**
  * Where bundles' tars are kept, by digest (`sha256:<hex>`), once however many accounts upload the same bytes: a
  * directory self-hosted (`@kantel/compute/bundles`'s `createDirBundleStore`), memory in tests.
+ *
+ * Each digest's bytes are kept as a generation, a whole number the compute plane picks (`StoredBundleBlob.generation`):
+ * a delete removes only the generation it was given, so one that lands late can't remove bytes kept since under the
+ * next. Generation 0 is where bytes were kept before there were generations.
  */
 export interface BundleBlobStore {
 	/**
-	 * Streams `body` in, hashing it as it comes, and keeps it under its digest; bytes it has already are kept once.
-	 * Rejects with `invalid` past `maxBytes`, or when the digest isn't `expectDigest`, keeping nothing.
+	 * Streams `body` in, hashing it as it comes, and stages it. Rejects with `invalid` past `maxBytes`, or when the digest
+	 * isn't `expectDigest`, keeping nothing.
 	 */
 	put(
 		body: ReadableStream<Uint8Array>,
 		options: { readonly maxBytes: number; readonly expectDigest?: string },
-	): Promise<{ readonly digest: string; readonly sizeBytes: number }>;
-	/** The bytes stored under `digest`, or undefined. */
-	open(digest: string): Promise<StoredBlob | undefined>;
-	/** Forgets the bytes; nothing stored is not an error. */
-	delete(digest: string): Promise<void>;
+	): Promise<StagedBlob>;
+	/** The bytes kept as `generation` of `digest`, or undefined. */
+	open(digest: string, generation: number): Promise<StoredBlob | undefined>;
+	/** Forgets the bytes kept as `generation` of `digest`; nothing stored is not an error. */
+	delete(digest: string, generation: number): Promise<void>;
 }
 
 /** The largest bundle by default: 2 GiB. */

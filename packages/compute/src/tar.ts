@@ -131,6 +131,11 @@ const MAX_LINK_HOPS = 40;
 const MAX_NAME_LENGTH = 4096;
 /** The most bytes of link names and targets an archive may hold, as they are kept until its end. */
 const MAX_LINK_BYTES = 64 * 1024 * 1024;
+/**
+ * The most components the links' paths may come to, each a node kept until the archive's end (a few hundred bytes
+ * with its map): deep paths under many distinct prefixes make one each, however short their names.
+ */
+export const MAX_LINK_NODES = 256 * 1024;
 
 /** A tar's checker: `push` each chunk as it comes, then `end`. Either throws `invalid` at the first problem. */
 export class TarCheck {
@@ -151,7 +156,9 @@ export class TarCheck {
 	private zeroBlocks = 0;
 	private ended = false;
 	private readonly links: LinkNode = { children: new Map() };
-	private readonly linkList: { readonly path: string; readonly target: string; readonly name: string }[] = [];
+	/** Only what `MAX_LINK_BYTES` counts: an entry's name as the archive spelt it is never kept. */
+	private readonly linkList: { readonly path: string; readonly target: string }[] = [];
+	private linkNodes = 0;
 	private files = 0;
 	private directories = 0;
 	private symlinks = 0;
@@ -205,7 +212,7 @@ export class TarCheck {
 		// Each link resolved through all the others, which may come after it: none may lead out.
 		for (const link of this.linkList) {
 			if (!this.resolvesInside(link.path, link.target)) {
-				refuse(`The archive has a symbolic link that points out: ${link.name} -> ${link.target}`);
+				refuse(`The archive has a symbolic link that points out: ${link.path} -> ${link.target}`);
 			}
 		}
 		return { files: this.files, directories: this.directories, symlinks: this.symlinks, bytes: this.bytes };
@@ -224,22 +231,26 @@ export class TarCheck {
 		return undefined;
 	}
 
-	private addLink(path: string, target: string, name: string): void {
+	private addLink(path: string, target: string): void {
 		this.linkBytes += path.length + target.length;
 		if (this.linkBytes > MAX_LINK_BYTES) refuse("The archive's symbolic links come to more than 64 MiB of names");
 		let node = this.links;
 		for (const part of path.split("/")) {
 			let next = node.children.get(part);
 			if (next === undefined) {
+				this.linkNodes++;
+				if (this.linkNodes > MAX_LINK_NODES) {
+					refuse(`The archive's symbolic links' paths come to more than ${MAX_LINK_NODES} directories and names`);
+				}
 				next = { children: new Map() };
 				node.children.set(part, next);
 			}
 			node = next;
 		}
 		// A link over another (an earlier one under it) would move that one where its target is.
-		if (node.children.size > 0) refuse(`The archive has a symbolic link over its own symbolic links: ${name}`);
+		if (node.children.size > 0) refuse(`The archive has a symbolic link over its own symbolic links: ${path}`);
 		node.link = { target, path };
-		this.linkList.push({ path, target, name });
+		this.linkList.push({ path, target });
 	}
 
 	/**
@@ -359,7 +370,7 @@ export class TarCheck {
 				if (!linkStaysInside(path, linkName)) {
 					refuse(`The archive has a symbolic link that points out: ${name} -> ${linkName}`);
 				}
-				this.addLink(path, linkName, name);
+				this.addLink(path, linkName);
 				this.symlinks++;
 				return;
 			case "1":

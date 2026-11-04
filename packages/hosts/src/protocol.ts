@@ -118,6 +118,15 @@ export const FILE_STREAM_WINDOW_BYTES = 4 * 1024 * 1024;
 /** How often a file stream's receiver acknowledges what it has taken: each this many bytes. */
 export const FILE_STREAM_ACK_BYTES = 1024 * 1024;
 
+/** The largest message a host reads from Kantel (`ws.SetReadLimit` in the host's `conn.go`): it drops the link past it. */
+export const HOST_MESSAGE_LIMIT_BYTES = 64 * 1024 * 1024;
+/**
+ * The largest file `sandbox.files.write` takes, whose bytes go in its message as base64 (four bytes for each three):
+ * what fits HOST_MESSAGE_LIMIT_BYTES with a mebibyte to spare for the rest of the message. A larger one needs the host
+ * to stream files (`file-streams`).
+ */
+export const HOST_WRITE_FILE_MAX_BYTES = Math.floor(((HOST_MESSAGE_LIMIT_BYTES - 1024 * 1024) * 3) / 4);
+
 /**
  * A read-only mount, as a create (and every boot after it) carries it in `mounts`. Never a credential: a bucket's
  * settings and credentials are fetched with `bucket.fetch`, and a bundle's tar over HTTP, by the host that needs them.

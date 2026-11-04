@@ -24,6 +24,7 @@ import {
 	FILE_URL_PATH,
 	type MountsOptions,
 	type ResolvedBucketSource,
+	type StagedBlob,
 	type StoredBlob,
 } from "./mounts.ts";
 import { type Sealer, sealedAt } from "./secrets.ts";
@@ -33,6 +34,7 @@ import type {
 	DeleteClaim,
 	StoredBucketSource,
 	StoredBundle,
+	StoredBundleBlob,
 	StoredSandbox,
 } from "./store.ts";
 import { gunzipIfGzipped, TarCheck } from "./tar.ts";
@@ -88,6 +90,8 @@ const DELETE_CLAIM_MS = 60_000;
 const BLOB_LEASE_MS = 5 * 60_000;
 /** How long an upload waits for a removal of the same bytes to end before giving up. */
 const BLOB_WAIT_MS = 30_000;
+/** The generation a digest's bytes are first kept as (`StoredBundleBlob.generation`); 0 is from before there were any. */
+const FIRST_GENERATION = 1;
 
 /** A backend's refusal of a stream it can't make, as opposed to a stream that failed. */
 const unsupported = (error: unknown) => error instanceof KantelError && error.code === "not_supported";
@@ -364,35 +368,64 @@ export function createMounts(deps: MountsDeps) {
 			.catch(() => undefined);
 	}
 
+	/** The generation a digest's bytes are kept as now. */
+	const generationOf = (row: StoredBundleBlob) => row.generation ?? 0;
+
 	/**
-	 * Leases a bundle's bytes for an upload until it lets go (`releaseLease`), so they aren't removed while the upload
-	 * publishes its record. Waits out a removal under way (`removeBytesUnlessKept`) first.
+	 * Leases a digest's bytes for an upload until it lets go (`releaseLease`), so they aren't removed while the upload
+	 * publishes its record, keeping its staged copy as the generation the digest is on first: the bytes are there before
+	 * the lease is. Waits out a removal under way (`removeBytesUnlessKept`). One whose claim lapsed (its delete died, or
+	 * stalled) is taken over onto the next generation, which that delete's removal, should it land yet, never touches.
 	 */
-	async function leaseBytes(digest: string): Promise<string> {
+	async function leaseBytes(staged: StagedBlob): Promise<{ readonly lease: string; readonly generation: number }> {
+		const { digest } = staged;
 		const lease = randomSlug(12);
 		const deadline = now() + BLOB_WAIT_MS;
 		for (;;) {
-			if (await store.bundleBlobs.insert({ id: digest, leases: { [lease]: now() + BLOB_LEASE_MS } })) return lease;
-			let removing = false;
-			const written = await store.bundleBlobs.update(digest, (current) => {
-				if (claimed(current)) {
-					removing = true;
-					return undefined;
-				}
-				const at = now();
-				const leases = Object.fromEntries(Object.entries(current.leases).filter(([, until]) => until > at));
-				const { deleting: _stale, ...rest } = current;
-				return { ...rest, leases: { ...leases, [lease]: at + BLOB_LEASE_MS } };
-			});
-			if (written !== undefined) return lease;
-			if (removing) {
+			const current = await store.bundleBlobs.get(digest);
+			if (current === undefined) {
+				await staged.keep(FIRST_GENERATION);
+				const row = { id: digest, generation: FIRST_GENERATION, leases: { [lease]: now() + BLOB_LEASE_MS } };
+				if (await store.bundleBlobs.insert(row)) return { lease, generation: FIRST_GENERATION };
+				continue;
+			}
+			if (claimed(current)) {
 				if (now() > deadline) {
 					throw new KantelError("unavailable", "This bundle's bytes are being removed; upload it again shortly");
 				}
 				await sleep(50);
+				continue;
 			}
-			// Otherwise the record went between the insert and the update: again.
+			const was = generationOf(current);
+			const generation = current.deleting === undefined ? was : was + 1;
+			await staged.keep(generation);
+			const written = await store.bundleBlobs.update(digest, (latest) => {
+				// Changed since it was read (a claim, a generation): read again.
+				if (claimed(latest) || generationOf(latest) !== was || latest.deleting?.token !== current.deleting?.token) {
+					return undefined;
+				}
+				const at = now();
+				const leases = Object.fromEntries(Object.entries(latest.leases).filter(([, until]) => until > at));
+				const { deleting: _lapsed, ...rest } = latest;
+				return { ...rest, generation, leases: { ...leases, [lease]: at + BLOB_LEASE_MS } };
+			});
+			if (written === undefined) continue;
+			// Taken over: the generation the lapsed delete claimed is read by nothing now, whether or not it removes it.
+			if (generation !== was) await options.bundles.delete(digest, was).catch(() => undefined);
+			return { lease, generation };
 		}
+	}
+
+	/**
+	 * Renews an upload's lease once its record is published, answering whether it still held the bytes all along: a lease
+	 * that lapsed meanwhile (a stalled publish) may have let a delete claim and remove them.
+	 */
+	async function stillLeased(digest: string, lease: string, generation: number): Promise<boolean> {
+		const renewed = await store.bundleBlobs.update(digest, (current) => {
+			if (current.leases[lease] === undefined || generationOf(current) !== generation) return undefined;
+			return { ...current, leases: { ...current.leases, [lease]: now() + BLOB_LEASE_MS } };
+		});
+		return renewed !== undefined;
 	}
 
 	async function releaseLease(digest: string, lease: string): Promise<void> {
@@ -409,15 +442,16 @@ export function createMounts(deps: MountsDeps) {
 	 * Removes a bundle's bytes once no account has the digest, unless an upload holds them. It claims the bytes first,
 	 * which an upload's lease refuses (and which holds off new leases), then looks for accounts' records: an upload
 	 * publishes its record while holding its lease, so a record is either seen here or published after this claim was
-	 * let go, by an upload that then checks the bytes are still there.
+	 * let go, by an upload that then confirms its lease held (`stillLeased`). It removes only the generation it claimed,
+	 * and moves the digest on to the next once it has, so bytes kept again afterwards are never the ones it removes.
 	 */
 	async function removeBytesUnlessKept(digest: string): Promise<void> {
 		const token = randomSlug(12);
 		const claim = { token, at: now() };
-		let held = false;
-		for (let attempt = 0; attempt < 5 && !held; attempt++) {
-			if (await store.bundleBlobs.insert({ id: digest, leases: {}, deleting: claim })) {
-				held = true;
+		let held: number | undefined;
+		for (let attempt = 0; attempt < 5 && held === undefined; attempt++) {
+			if (await store.bundleBlobs.insert({ id: digest, generation: FIRST_GENERATION, leases: {}, deleting: claim })) {
+				held = FIRST_GENERATION;
 				break;
 			}
 			let kept = false;
@@ -431,14 +465,18 @@ export function createMounts(deps: MountsDeps) {
 				return { ...current, leases: {}, deleting: claim };
 			});
 			if (kept) return;
-			held = written !== undefined;
+			if (written !== undefined) held = generationOf(written);
 		}
-		if (!held) return;
+		if (held === undefined) return;
+		const generation = held;
+		let removed = false;
 		try {
-			const unused = (await store.bundles.list({ digest })).length === 0;
-			// As with a record's delete: a claim this old may have lapsed and let an upload lease the bytes, so they stay
-			// (bytes kept with no record cost space, never a mount).
-			if (unused && now() - claim.at <= DELETE_CLAIM_MS / 2) await options.bundles.delete(digest);
+			if ((await store.bundles.list({ digest })).length === 0) {
+				// Should its claim lapse first and an upload take over, the upload keeps the bytes as the next generation:
+				// this one, landing however late, removes nothing that is read.
+				await options.bundles.delete(digest, generation);
+				removed = true;
+			}
 		} finally {
 			// Only its own claim goes, and the row stays: had the claim lapsed, an upload's lease may be in it now, which a
 			// delete of the row would drop. (One small row per digest ever removed; the next upload reuses it.)
@@ -446,17 +484,23 @@ export function createMounts(deps: MountsDeps) {
 				.update(digest, (current) => {
 					if (current.deleting?.token !== token) return undefined;
 					const { deleting: _mine, ...rest } = current;
-					return rest;
+					return removed && generationOf(current) === generation ? { ...rest, generation: generation + 1 } : rest;
 				})
 				.catch(() => undefined);
 		}
 	}
 
-	async function bytesThere(digest: string): Promise<boolean> {
-		const blob = await options.bundles.open(digest);
-		if (blob === undefined) return false;
-		await blob.body.cancel().catch(() => undefined);
-		return true;
+	/** A digest's bytes as kept now, read again should an upload move them on to a new generation as they're opened. */
+	async function openBytes(digest: string): Promise<StoredBlob | undefined> {
+		for (let attempt = 0; attempt < 3; attempt++) {
+			const row = await store.bundleBlobs.get(digest);
+			const generation = row === undefined ? 0 : generationOf(row);
+			const blob = await options.bundles.open(digest, generation);
+			if (blob !== undefined) return blob;
+			const after = await store.bundleBlobs.get(digest);
+			if ((after === undefined ? 0 : generationOf(after)) === generation) return undefined;
+		}
+		return undefined;
 	}
 
 	/** Collects a body for a backend that can't stream one in, up to `MAX_UNSTREAMED_WRITE_BYTES`. */
@@ -642,29 +686,44 @@ export function createMounts(deps: MountsDeps) {
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "sandboxes:write", role);
 			if (request.body === null) throw new KantelError("invalid", "Send the bundle's tar as the request's body");
-			const stored = await options.bundles.put(request.body, {
+			const staged = await options.bundles.put(request.body, {
 				maxBytes: maxBundleBytes,
 				...(query.digest === undefined ? {} : { expectDigest: query.digest }),
 			});
 			const record: StoredBundle = {
-				id: bundleKey(account.id, stored.digest),
+				id: bundleKey(account.id, staged.digest),
 				accountId: account.id,
-				digest: stored.digest,
-				sizeBytes: stored.sizeBytes,
+				digest: staged.digest,
+				sizeBytes: staged.sizeBytes,
 				createdAt: now(),
 				...(principal.userId === undefined ? {} : { createdBy: principal.userId }),
 			};
-			// The record is published under a lease on the bytes, so a delete of the digest's last other record can't remove
-			// them meanwhile; one that removed them before the lease is caught by the check.
-			const lease = await leaseBytes(stored.digest);
-			let inserted: boolean;
+			// The record is published under a lease on the bytes, kept before the lease is taken, so a delete of the digest's
+			// last other record can't remove them meanwhile. Should the lease lapse before the record is in (a stalled
+			// publish), a delete may have: the bytes are kept again, under a new lease, before the upload answers.
+			let inserted = false;
 			try {
-				if (!(await bytesThere(stored.digest))) {
-					throw new KantelError("unavailable", "This bundle's bytes were removed as it was uploaded; upload it again");
+				for (let attempt = 0; ; attempt++) {
+					const { lease, generation } = await leaseBytes(staged);
+					try {
+						if (attempt === 0) inserted = await store.bundles.insert(record);
+						if (await stillLeased(staged.digest, lease, generation)) break;
+					} finally {
+						await releaseLease(staged.digest, lease);
+					}
+					if (attempt >= 3) {
+						throw new KantelError(
+							"unavailable",
+							"This bundle's bytes kept being removed as it was uploaded; upload it again",
+						);
+					}
 				}
-				inserted = await store.bundles.insert(record);
 			} finally {
-				await releaseLease(stored.digest, lease);
+				await staged.discard().catch(() => undefined);
+				// A delete of the digest's last record while the lease held the bytes left them for this upload; with no
+				// record now (this upload's own deleted meanwhile, or its insert failed), nothing else will remove them.
+				const records = await store.bundles.list({ digest: staged.digest }).catch(() => undefined);
+				if (records?.length === 0) await removeBytesUnlessKept(staged.digest).catch(() => undefined);
 			}
 			if (inserted) return bundleView(record);
 			// Uploaded again: the bundle it has already, as it was, with 200 rather than 201.
@@ -837,7 +896,7 @@ export function createMounts(deps: MountsDeps) {
 			if (!(await hostMayServe(hostId, sandbox)) || sandbox === undefined) return undefined;
 			if (!mountsOfSource(sandbox, bundleMatches(digest))) return undefined;
 			if ((await store.bundles.get(bundleKey(sandbox.accountId, digest))) === undefined) return undefined;
-			return options.bundles.open(digest);
+			return openBytes(digest);
 		},
 
 		async bucketSourceForHost(
