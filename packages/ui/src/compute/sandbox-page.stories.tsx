@@ -18,6 +18,7 @@ function Scenario({
 	local,
 	e2e,
 	filesAt,
+	unavailable,
 }: {
 	sandboxId?: string;
 	/** Where the Files tab opens, as the address would say. */
@@ -31,12 +32,22 @@ function Scenario({
 	local?: boolean;
 	/** An end-to-end account; "pending" while the console is still checking its chain, which never answers here. */
 	e2e?: boolean | "pending";
+	/** Why Desktop and Browser can't open, as the console says it. */
+	unavailable?: string;
 }) {
 	const [source] = useState(() => createComputeFixtures({ hosting, ...options }));
 	const [sandboxes] = useState(() => {
-		if (local !== true && e2e === undefined) return source.sandboxes;
+		if (local !== true && e2e === undefined && unavailable === undefined) return source.sandboxes;
 		return {
 			...source.sandboxes,
+			...(unavailable === undefined
+				? {}
+				: {
+						access: async (id: string) => ({
+							...(await source.sandboxes.access(id)),
+							unavailable: { desktop: unavailable, browser: unavailable },
+						}),
+					}),
 			...(local === true ? { screens: "tab" as const } : {}),
 			endToEnd: () => (e2e === "pending" ? new Promise<boolean>(() => {}) : Promise.resolve(e2e === true)),
 			// The host keeps no output end to end yet.
@@ -109,6 +120,15 @@ export const Desktop: Story = () => <Scenario view="desktop" />;
 
 /** Its browser, full size in the console. */
 export const Browser: Story = () => <Scenario view="browser" />;
+
+/** Where Desktop and Browser can't open yet: disabled, with why, and no frame onto an error. */
+export const ScreensUnavailable: Story = () => <Scenario unavailable="Not available here yet" />;
+
+/** The same full size, reached from its address. */
+export const DesktopUnavailable: Story = () => <Scenario unavailable="Not available here yet" view="desktop" />;
+
+/** An end-to-end space: its E2E sessions don't carry the screens yet. */
+export const ScreensNotEndToEnd: Story = () => <Scenario unavailable="Not end to end yet" />;
 
 /** A stopped microVM: no previews, Resume, and its files from its last snapshot. */
 export const Stopped: Story = () => <Scenario sandboxId="sbx_2q8w5e1rz4" />;

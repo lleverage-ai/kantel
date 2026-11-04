@@ -32,6 +32,7 @@ import {
 	type SnapshotsSource,
 	sandboxActions,
 	sandboxMoving,
+	screenUnavailable,
 	sizeSpec,
 	stopsInText,
 } from "./compute-model.ts";
@@ -374,21 +375,36 @@ export function SandboxPage({
 					...menu.entries,
 				]
 			: menu.entries;
+	const held = access?.value;
+	const readyAccess = held !== undefined && held !== "loading" && !(held instanceof Error) ? held : undefined;
 	const screenLink = (to: ScreenView, label: string, icon: ReactNode) => {
-		const link = (
-			<a
-				className={`${buttonClass("secondary", narrow ? "md" : "sm")} no-underline ${narrow ? "w-full" : ""}`}
-				href={href(to)}
-				onClick={(event) => {
-					if (event.metaKey || event.ctrlKey || event.shiftKey) return;
-					event.preventDefault();
-					go(to);
-				}}
-			>
-				{icon}
-				<span className={buttonLabelClass}>{label}</span>
-			</a>
-		);
+		// One that can't open here is shown disabled with its reason, never opened onto an error page.
+		const unavailable = readyAccess === undefined ? undefined : screenUnavailable(readyAccess, to);
+		const link =
+			unavailable !== undefined ? (
+				<Button
+					size={narrow ? "md" : "sm"}
+					icon={icon}
+					disabled
+					title={unavailable}
+					className={narrow ? "w-full" : undefined}
+				>
+					{label}
+				</Button>
+			) : (
+				<a
+					className={`${buttonClass("secondary", narrow ? "md" : "sm")} no-underline ${narrow ? "w-full" : ""}`}
+					href={href(to)}
+					onClick={(event) => {
+						if (event.metaKey || event.ctrlKey || event.shiftKey) return;
+						event.preventDefault();
+						go(to);
+					}}
+				>
+					{icon}
+					<span className={buttonLabelClass}>{label}</span>
+				</a>
+			);
 		// A button doesn't grow; on a phone its wrapper does, so the two share the row.
 		return narrow ? <span className="flex min-w-0 flex-1">{link}</span> : link;
 	};
@@ -606,49 +622,67 @@ function Overview({
 	const { ports, exposePort, hidePort } = source;
 	const portsShown = ports !== undefined && exposePort !== undefined && hidePort !== undefined;
 
-	const tile = (kind: "desktop" | "browser") => (
-		<div className="kt-sandbox-tile flex min-w-0 flex-col overflow-hidden rounded-panel border border-border bg-panel">
-			<a
-				className="kt-focusable block"
-				href={screenHref(kind)}
-				aria-label={kind === "desktop" ? "Open the desktop" : "Open the browser"}
-				onClick={(event) => {
-					if (event.metaKey || event.ctrlKey || event.shiftKey) return;
-					event.preventDefault();
-					onOpen(kind);
-				}}
-			>
-				<ScreenPreview
-					kind={kind}
-					label={kind === "desktop" ? `${sandbox.name}'s desktop` : `${sandbox.name}'s browser`}
-					{...(framed === undefined
-						? {}
-						: (() => {
-								const url = embedUrl(framed, kind === "desktop" ? "watch" : "browser");
-								return url === undefined ? {} : { url };
-							})())}
-				/>
-			</a>
-			<div className="flex h-control-lg items-center gap-2 border-t border-border px-3">
-				<span className="font-medium text-fg">{kind === "desktop" ? "Desktop" : "Browser"}</span>
-				<span className="flex-1" />
-				{kind === "desktop" ? (
-					<a
-						className={`${buttonClass("ghost", "xs")} no-underline`}
-						href={screenHref("watch")}
-						onClick={(event) => {
-							if (event.metaKey || event.ctrlKey || event.shiftKey) return;
-							event.preventDefault();
-							onOpen("watch");
-						}}
-					>
-						<EyeIcon size="sm" />
-						<span className={buttonLabelClass}>Watch</span>
-					</a>
-				) : null}
+	const tile = (kind: "desktop" | "browser") => {
+		const unavailable = ready === undefined ? undefined : screenUnavailable(ready, kind);
+		if (unavailable !== undefined) {
+			// Nothing to open: the drawing, dimmed, and why under it.
+			return (
+				<div className="kt-sandbox-tile flex min-w-0 flex-col overflow-hidden rounded-panel border border-border bg-panel">
+					<div className="opacity-50">
+						<ScreenPreview kind={kind} label={kind === "desktop" ? "Desktop" : "Browser"} />
+					</div>
+					<div className="flex h-control-lg items-center gap-2 border-t border-border px-3">
+						<span className="font-medium text-fg">{kind === "desktop" ? "Desktop" : "Browser"}</span>
+						<span className="flex-1" />
+						<span className="truncate text-muted text-sm">{unavailable}</span>
+					</div>
+				</div>
+			);
+		}
+		return (
+			<div className="kt-sandbox-tile flex min-w-0 flex-col overflow-hidden rounded-panel border border-border bg-panel">
+				<a
+					className="kt-focusable block"
+					href={screenHref(kind)}
+					aria-label={kind === "desktop" ? "Open the desktop" : "Open the browser"}
+					onClick={(event) => {
+						if (event.metaKey || event.ctrlKey || event.shiftKey) return;
+						event.preventDefault();
+						onOpen(kind);
+					}}
+				>
+					<ScreenPreview
+						kind={kind}
+						label={kind === "desktop" ? `${sandbox.name}'s desktop` : `${sandbox.name}'s browser`}
+						{...(framed === undefined
+							? {}
+							: (() => {
+									const url = embedUrl(framed, kind === "desktop" ? "watch" : "browser");
+									return url === undefined ? {} : { url };
+								})())}
+					/>
+				</a>
+				<div className="flex h-control-lg items-center gap-2 border-t border-border px-3">
+					<span className="font-medium text-fg">{kind === "desktop" ? "Desktop" : "Browser"}</span>
+					<span className="flex-1" />
+					{kind === "desktop" ? (
+						<a
+							className={`${buttonClass("ghost", "xs")} no-underline`}
+							href={screenHref("watch")}
+							onClick={(event) => {
+								if (event.metaKey || event.ctrlKey || event.shiftKey) return;
+								event.preventDefault();
+								onOpen("watch");
+							}}
+						>
+							<EyeIcon size="sm" />
+							<span className={buttonLabelClass}>Watch</span>
+						</a>
+					) : null}
+				</div>
 			</div>
-		</div>
-	);
+		);
+	};
 
 	const ssh = !windows ? null : (
 		<section className="flex min-w-0 flex-col gap-2" aria-labelledby="sandbox-ssh">

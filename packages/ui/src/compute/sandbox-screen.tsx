@@ -11,7 +11,7 @@ import { DesktopIcon, ExternalLinkIcon, FullScreenIcon } from "../primitives/luc
 import { Skeleton } from "../primitives/spinner.tsx";
 import { StatusDot } from "../primitives/status.tsx";
 import { Notice } from "../primitives/surface.tsx";
-import type { SandboxAccess } from "./compute-model.ts";
+import { type SandboxAccess, screenUnavailable } from "./compute-model.ts";
 import { messageOf } from "./parts.tsx";
 
 /** What the viewer shows: the desktop to use, the desktop to watch only, or the browser. */
@@ -187,23 +187,36 @@ export function SandboxViewer({
 }: SandboxViewerProps) {
 	const frame = useRef<HTMLDivElement>(null);
 	const ready = access !== "loading" && !(access instanceof Error) ? access : undefined;
-	const url = ready === undefined ? undefined : embedUrl(ready, view);
+	const unavailable = ready === undefined ? undefined : screenUnavailable(ready, view);
+	const url = ready === undefined || unavailable !== undefined ? undefined : embedUrl(ready, view);
 	const go = (next: ScreenView) => (onView === undefined ? window.location.assign(viewHref(next)) : onView(next));
 	const other: ScreenView = view === "browser" ? "desktop" : "browser";
-	const otherButton = (
-		<a
-			className={`${buttonClass("ghost", "sm")} no-underline`}
-			href={viewHref(other)}
-			onClick={(event) => {
-				if (onView === undefined || event.metaKey || event.ctrlKey || event.shiftKey) return;
-				event.preventDefault();
-				onView(other);
-			}}
-		>
-			{other === "browser" ? <GlobeIcon size="sm" /> : <DesktopIcon size="sm" />}
-			<span className={buttonLabelClass}>{other === "browser" ? "Browser" : "Desktop"}</span>
-		</a>
-	);
+	const otherUnavailable = ready === undefined ? undefined : screenUnavailable(ready, other);
+	const otherButton =
+		otherUnavailable !== undefined ? (
+			<Button
+				size="sm"
+				variant="ghost"
+				icon={other === "browser" ? <GlobeIcon size="sm" /> : <DesktopIcon size="sm" />}
+				disabled
+				title={otherUnavailable}
+			>
+				{other === "browser" ? "Browser" : "Desktop"}
+			</Button>
+		) : (
+			<a
+				className={`${buttonClass("ghost", "sm")} no-underline`}
+				href={viewHref(other)}
+				onClick={(event) => {
+					if (onView === undefined || event.metaKey || event.ctrlKey || event.shiftKey) return;
+					event.preventDefault();
+					onView(other);
+				}}
+			>
+				{other === "browser" ? <GlobeIcon size="sm" /> : <DesktopIcon size="sm" />}
+				<span className={buttonLabelClass}>{other === "browser" ? "Browser" : "Desktop"}</span>
+			</a>
+		);
 	let body: ReactNode;
 	if (access === "loading") body = <Skeleton lines={3} />;
 	else if (access instanceof Error)
@@ -219,6 +232,12 @@ export function SandboxViewer({
 				>
 					{messageOf(access, "Kantel couldn't reach the sandbox.")}
 				</Notice>
+			</div>
+		);
+	else if (unavailable !== undefined)
+		body = (
+			<div className="flex size-full items-center justify-center p-4 text-muted" role="status">
+				{unavailable}
 			</div>
 		);
 	else if (url === undefined) body = <ScaledStandIn kind={view === "browser" ? "browser" : "desktop"} />;
@@ -251,7 +270,7 @@ export function SandboxViewer({
 					/>
 				</div>
 				<div className="flex flex-none items-center gap-1">
-					{view === "browser" ? null : (
+					{view === "browser" || unavailable !== undefined ? null : (
 						<SegmentedControl
 							label="Desktop"
 							options={[
@@ -268,6 +287,7 @@ export function SandboxViewer({
 						variant="ghost"
 						label="Full screen"
 						icon={<FullScreenIcon size="sm" />}
+						disabled={unavailable !== undefined}
 						onClick={() => void frame.current?.requestFullscreen?.()}
 					/>
 					<IconButton
@@ -275,7 +295,7 @@ export function SandboxViewer({
 						variant="ghost"
 						label="Open in a new tab"
 						icon={<ExternalLinkIcon size="sm" />}
-						disabled={ready === undefined}
+						disabled={ready === undefined || unavailable !== undefined}
 						onClick={() => {
 							if (ready !== undefined) popOut(view, ready, freshAccess);
 						}}
