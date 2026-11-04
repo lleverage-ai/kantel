@@ -27,7 +27,12 @@ afterEach(async () => {
  */
 function versionedStub(ready?: () => void) {
 	const stub = createStubBackend();
-	const bases = new Map<string, string>();
+	const bases = new Map<string, { base: string; baseAt: number }>();
+	let clock = 1_000;
+	const tick = () => {
+		clock += 1_000;
+		return clock;
+	};
 	const starts: BootOptions[] = [];
 	const prepared: { readonly eligibleHosts: readonly string[]; readonly rebaseTo?: string }[] = [];
 	const backend: SandboxBackend = {
@@ -38,20 +43,21 @@ function versionedStub(ready?: () => void) {
 		},
 		async create(spec) {
 			const placement = await stub.create(spec);
-			bases.set(spec.sandboxId, HOST_BEHIND);
-			return { ...placement, base: HOST_BEHIND };
+			const on = { base: HOST_BEHIND, baseAt: tick() };
+			bases.set(spec.sandboxId, on);
+			return { ...placement, ...on };
 		},
 		async start(sandboxId, how) {
 			starts.push(how);
 			const placement = await stub.start(sandboxId, how);
-			if (how.rebase === true) bases.set(sandboxId, HOST_LATEST);
-			const base = bases.get(sandboxId);
-			return base === undefined ? placement : { ...placement, base };
+			if (how.rebase === true) bases.set(sandboxId, { base: HOST_LATEST, baseAt: tick() });
+			const on = bases.get(sandboxId);
+			return on === undefined ? placement : { ...placement, ...on };
 		},
 		async stop(sandboxId, how) {
 			const taken = await stub.stop(sandboxId, how);
-			const base = bases.get(sandboxId);
-			return base === undefined ? taken : { ...taken, base };
+			const on = bases.get(sandboxId);
+			return on === undefined ? taken : { ...taken, base: on.base };
 		},
 	};
 	return { backend, starts, prepared };
@@ -151,12 +157,24 @@ describe("image patching on", () => {
 			return rest;
 		});
 		const hostId = (await api.store.sandboxes.get(sandbox.id))?.hostId ?? "";
+		const putOnAt = (await api.store.sandboxes.get(sandbox.id))?.baseAt ?? 0;
 		// A hello's report of the old base, delayed past a restart on latest that records the new one.
 		await tom.restartSandboxOnLatest(sandbox.id);
 		await api.service.idle();
 		expect((await tom.getSandbox(sandbox.id)).base?.version).toBe(HOST_LATEST);
-		await api.service.recordBases(hostId, { sandboxes: [{ sandboxId: sandbox.id, base: HOST_OLDEST }] });
+		const rebasedAt = (await api.store.sandboxes.get(sandbox.id))?.baseAt ?? 0;
+		expect(rebasedAt).toBeGreaterThan(putOnAt);
+		const report = (base: string, baseAt?: number) =>
+			api.service.recordBases(hostId, {
+				sandboxes: [{ sandboxId: sandbox.id, base, ...(baseAt === undefined ? {} : { baseAt }) }],
+			});
+		await report(HOST_BEHIND, putOnAt);
+		await report(HOST_OLDEST);
 		expect((await tom.getSandbox(sandbox.id)).base?.version).toBe(HOST_LATEST);
+		// One the host says it put the sandbox on later (a rebase boot whose answer never came back) is taken.
+		await report(HOST_BEHIND, rebasedAt + 1);
+		expect((await tom.getSandbox(sandbox.id)).base?.version).toBe(HOST_BEHIND);
+		expect((await api.store.sandboxes.get(sandbox.id))?.baseAt).toBe(rebasedAt + 1);
 	});
 
 	it("fills in the base of a snapshot saved before its host versioned its images", async () => {

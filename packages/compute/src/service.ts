@@ -283,9 +283,11 @@ export interface ComputeService {
 	/**
 	 * Fills in the bases a host says its sandboxes' disks and its snapshots are on (image patching, experimental: its
 	 * hello, its events and its snapshot list), so what was made before the host versioned its images shows its base
-	 * without another boot. Only a sandbox on `hostId`, or a snapshot whose ref is that host's, and only one with no base
-	 * recorded yet: a base changes only in a boot (a restart on latest), whose answer records it, so an observation that
-	 * arrives late never replaces a newer one. Only a base that looks like one (a host images version or a digest).
+	 * without another boot. Only a sandbox on `hostId`, or a snapshot whose ref is that host's. A sandbox's report is
+	 * ordered by its `baseAt`, the time the host put it on that base: it fills a missing base, and replaces one only when
+	 * later than the time recorded (a rebase boot whose answer was lost), so one read before a boot never undoes it. A
+	 * snapshot's base never changes, so only a missing one is filled. Only a base that looks like one (a host images
+	 * version or a digest).
 	 */
 	recordBases(hostId: string, reports: BaseReports): Promise<void>;
 	/** Resolves once every lifecycle operation and detached command started so far has ended. */
@@ -1435,7 +1437,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									hostId: placement.hostId,
 									resources: placement.resources ?? current.resources,
 									capabilities: placement.capabilities,
-									...(placement.base === undefined ? {} : { base: placement.base }),
+									...placedBase(placement),
 								}),
 						stopsAt: at,
 						stopFor: reason,
@@ -2085,7 +2087,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				capabilities: placement.capabilities,
 				health: "ok",
 				// What its root file system is now (a rebase moves it on); a backend that doesn't say leaves what it was.
-				...(placement.base === undefined ? {} : { base: placement.base }),
+				...placedBase(placement),
 				...(applied === undefined || (sandbox.egressApplied ?? Number.NEGATIVE_INFINITY) >= applied
 					? {}
 					: { egressApplied: applied }),
@@ -5087,18 +5089,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		async recordBases(hostId, reports) {
 			const valid = (base: unknown): base is string => typeof base === "string" && REPORTED_BASE.test(base);
-			for (const { sandboxId, base } of reports.sandboxes ?? []) {
+			// A report replaces what the record has when the record has no base, or when the host says it put the sandbox on
+			// this base after the time the record has (a boot whose answer was lost); one from before never does.
+			const newer = (current: StoredSandbox, base: string, at: number | undefined) =>
+				current.base === undefined || (at !== undefined && current.base !== base && at > (current.baseAt ?? 0));
+			for (const { sandboxId, base, baseAt } of reports.sandboxes ?? []) {
 				if (typeof sandboxId !== "string" || !valid(base)) continue;
+				const at = typeof baseAt === "number" && Number.isFinite(baseAt) && baseAt > 0 ? baseAt : undefined;
 				const sandbox = await store.sandboxes.get(sandboxId);
-				if (sandbox === undefined || sandbox.hostId !== hostId || sandbox.base !== undefined) continue;
-				// Decided on the record as it is when written (the SQL store's conditional update): a boot that recorded a base
-				// meanwhile wins.
+				if (sandbox === undefined || sandbox.hostId !== hostId || !newer(sandbox, base, at)) continue;
+				// Decided again on the record as it is when written (the SQL store's conditional update reruns it): a boot that
+				// recorded a later base meanwhile wins.
 				await store.sandboxes.update(sandboxId, (current) =>
 					current.hostId === hostId &&
-					current.base === undefined &&
+					newer(current, base, at) &&
 					current.state !== "deleted" &&
 					current.state !== "deleting"
-						? { ...current, base }
+						? { ...current, base, baseAt: at ?? 0 }
 						: undefined,
 				);
 			}
@@ -5142,9 +5149,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	};
 }
 
+/** A boot's base for the sandbox's record: the base and when it was put on it (0: not said); nothing when not said. */
+function placedBase(placement: Placement): { base?: string; baseAt?: number } {
+	return placement.base === undefined ? {} : { base: placement.base, baseAt: placement.baseAt ?? 0 };
+}
+
 /** What a host says its sandboxes and snapshots are on (`ComputeService.recordBases`). */
 export interface BaseReports {
-	readonly sandboxes?: readonly { readonly sandboxId: string; readonly base: string }[];
+	/** `baseAt`: when the host put it on `base` (`HostSandbox.baseAt`), which orders reports; absent from older hosts. */
+	readonly sandboxes?: readonly { readonly sandboxId: string; readonly base: string; readonly baseAt?: number }[];
 	/** By the snapshot's ref, `<hostId>/<snapshot ID on the host>`. */
 	readonly snapshots?: readonly { readonly ref: string; readonly base: string }[];
 }

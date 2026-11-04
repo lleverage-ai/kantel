@@ -243,7 +243,12 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 						},
 					}),
 			capabilities: capabilitiesOf(tier, nested === true, options.ports !== undefined, sandbox.guest),
-			...(sandbox.base === undefined || sandbox.base === "" ? {} : { base: sandbox.base }),
+			...(sandbox.base === undefined || sandbox.base === ""
+				? {}
+				: {
+						base: sandbox.base,
+						...(typeof sandbox.baseAt === "number" && sandbox.baseAt > 0 ? { baseAt: sandbox.baseAt } : {}),
+					}),
 		};
 	}
 

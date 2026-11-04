@@ -161,6 +161,11 @@ export interface HostSandbox {
 	 * host's `images.version` is outdated until restarted with `rebase`.
 	 */
 	readonly base?: string;
+	/**
+	 * When it was put on `base` (unix milliseconds, the host's clock: a create, a rebase or its first pinning), with
+	 * `base` only. Reports of a sandbox's base are ordered by it.
+	 */
+	readonly baseAt?: number;
 	/** What a microVM's image has, as its guest agent found it; absent from a host too old to say. */
 	readonly guest?: HostGuest;
 }

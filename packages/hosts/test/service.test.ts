@@ -233,7 +233,7 @@ describe("hosts service", () => {
 
 	it("passes on the bases a host reports for its own sandboxes, from its hello and its events", async () => {
 		const { service, store, join } = await setup();
-		const recorded: { hostId: string; sandboxId: string; base: string }[] = [];
+		const recorded: { hostId: string; sandboxId: string; base: string; baseAt?: number }[] = [];
 		service.useCompute({
 			secrets: async () => undefined,
 			recordEgress: async () => undefined,
@@ -259,14 +259,22 @@ describe("hosts service", () => {
 		await placed("sbx-unversioned");
 		const host = new FakeHost(service, a.hostId);
 		host.connect([
-			{ id: "sbx-old", tier: "microvm", size: "default", state: "stopped", createdAt: 1, base: "host-images-1" },
+			{
+				id: "sbx-old",
+				tier: "microvm",
+				size: "default",
+				state: "stopped",
+				createdAt: 1,
+				base: "host-images-1",
+				baseAt: 5,
+			},
 			// An older host's report: no base, so nothing is said (and nothing erased).
 			{ id: "sbx-unversioned", tier: "microvm", size: "default", state: "stopped", createdAt: 1 },
 			// Not Kantel's placement on this host: never passed on.
 			{ id: "stray", tier: "microvm", size: "default", state: "stopped", createdAt: 1, base: "host-images-1" },
 		]);
 		await tick();
-		expect(recorded).toEqual([{ hostId: a.hostId, sandboxId: "sbx-old", base: "host-images-1" }]);
+		expect(recorded).toEqual([{ hostId: a.hostId, sandboxId: "sbx-old", base: "host-images-1", baseAt: 5 }]);
 		// An event with the state unchanged still says its base.
 		host.send({
 			type: "event",

@@ -15,6 +15,7 @@ import (
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
+	"golang.org/x/sys/unix"
 )
 
 func linkVM(t *testing.T, vm, target string) {
@@ -156,6 +157,15 @@ func TestRebaseMovesAStoppedSandboxOntoTheCurrentImages(t *testing.T) {
 	if got := baseOf(s.vmDir()); got != "old" {
 		t.Fatalf("base before = %q", got)
 	}
+	// Put on old an hour ago: a rebase's report is ordered after it.
+	long := time.Now().Add(-time.Hour)
+	if err := unix.Lutimes(filepath.Join(s.vmDir(), fc.RootfsFile), []unix.Timeval{unix.NsecToTimeval(long.UnixNano()), unix.NsecToTimeval(long.UnixNano())}); err != nil {
+		t.Fatal(err)
+	}
+	before := m.info(s).BaseAt
+	if before != long.UnixMilli() {
+		t.Fatalf("baseAt before = %d, want %d", before, long.UnixMilli())
+	}
 	// A rebase the caller expects on another version is refused, and changes nothing.
 	if err := m.rebase(s, "newer"); err == nil || !strings.Contains(err.Error(), "hasn't taken the update") {
 		t.Fatalf("a rebase onto a version the host hasn't taken: %v", err)
@@ -180,8 +190,8 @@ func TestRebaseMovesAStoppedSandboxOntoTheCurrentImages(t *testing.T) {
 	if err := json.Unmarshal(raw, &saved); err != nil || saved.Memory {
 		t.Fatalf("saved %s (%v)", raw, err)
 	}
-	if info := m.info(s); info.Base != "new" {
-		t.Fatalf("info's base = %q", info.Base)
+	if info := m.info(s); info.Base != "new" || info.BaseAt <= before {
+		t.Fatalf("info's base = %q at %d, want new after %d", info.Base, info.BaseAt, before)
 	}
 }
 

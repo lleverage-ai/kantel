@@ -117,6 +117,11 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 */
 	readonly egressApplied?: number;
 	/**
+	 * When its host put it on `base` (`Placement.baseAt`, the host's clock; 0 or absent: not said). A host's later report
+	 * of its base replaces `base` only when it says a later time (`ComputeService.recordBases`).
+	 */
+	readonly baseAt?: number;
+	/**
 	 * Why it is due to stop at `stopsAt`, when that isn't its auto-stop: its host can't enforce its egress as stored. The
 	 * sweep stops it with this reason, as many times as it takes.
 	 */

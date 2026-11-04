@@ -308,6 +308,9 @@ func (m *Manager) writeMeta(s *sandbox) error {
 
 func (m *Manager) info(s *sandbox) proto.SandboxInfo {
 	info := proto.SandboxInfo{ID: s.meta.ID, Tier: Tier, Size: s.meta.Size, State: s.meta.State, Memory: s.meta.Memory, Error: s.meta.Error, CreatedAt: s.meta.CreatedAt, Owner: s.meta.Owner, Base: baseOf(s.vmDir())}
+	if info.Base != "" {
+		info.BaseAt = baseAtOf(s.vmDir())
+	}
 	if s.link != nil {
 		info.Address = s.link.GuestIP.String()
 	}

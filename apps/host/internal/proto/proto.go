@@ -207,6 +207,10 @@ type SandboxInfo struct {
 	// Base is the host images version the sandbox's root filesystem is (empty when unknown: images not versioned).
 	// One older than the host's HostImages.Version is outdated until restarted with Rebase.
 	Base string `json:"base,omitempty"`
+	// BaseAt is when the sandbox was put on Base (unix milliseconds: its root filesystem link's time, set by a create,
+	// a rebase or the first pinning); with Base only. Reports of one sandbox's base are ordered by it, so one read
+	// before a rebase never replaces what the rebase reported.
+	BaseAt int64 `json:"baseAt,omitempty"`
 	// Guest is what the microVM's image has, as its guest agent found it (absent from an agent too old to say).
 	Guest *GuestCapabilities `json:"guest,omitempty"`
 }

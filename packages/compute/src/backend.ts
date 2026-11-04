@@ -120,6 +120,11 @@ export interface Placement {
 	 * stub, a host whose images aren't versioned), and the sandbox's record keeps what it had.
 	 */
 	readonly base?: string;
+	/**
+	 * With `base`: when the machine was put on it, by the backend's own clock (a host's root filesystem link time).
+	 * The record keeps it, and a later report of the base replaces it only when it says a later time.
+	 */
+	readonly baseAt?: number;
 }
 
 /** How to boot a machine for a sandbox that has none. */

@@ -133,7 +133,7 @@ export interface HostComputeLink {
 	recordBases?(
 		hostId: string,
 		reports: {
-			readonly sandboxes?: readonly { readonly sandboxId: string; readonly base: string }[];
+			readonly sandboxes?: readonly { readonly sandboxId: string; readonly base: string; readonly baseAt?: number }[];
 			readonly snapshots?: readonly { readonly ref: string; readonly base: string }[];
 		},
 	): Promise<void>;
@@ -392,6 +392,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	 * reaches it, and one it failed to take is tried again, without waiting for it to reconnect.
 	 */
 	const imagesToldAt = new Map<string, number>();
+	/** A host sandbox's `baseAt`, when it says one. */
+	const baseAtOf = (sandbox: { baseAt?: unknown }): { baseAt?: number } =>
+		typeof sandbox.baseAt === "number" && sandbox.baseAt > 0 ? { baseAt: sandbox.baseAt } : {};
 	/** Hosts whose snapshot bases haven't been read on their connection yet (image patching hosts only). */
 	const snapshotBasesDue = new Set<string>();
 	/**
@@ -457,14 +460,14 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		// Go marshals an empty list as null (kantel-host 0.1.0-dev on a host with no sandboxes).
 		const sandboxes = message.sandboxes ?? [];
 		const held = new Map(sandboxes.map((sandbox) => [sandbox.id, sandbox]));
-		const bases: { sandboxId: string; base: string }[] = [];
+		const bases: { sandboxId: string; base: string; baseAt?: number }[] = [];
 		for (const placement of await store.placementsOn(hostId)) {
 			const sandbox = held.get(placement.sandboxId);
 			const state = sandbox?.state ?? "lost";
 			if (state !== placement.state) await store.putPlacement({ ...placement, state, updatedAt: now });
 			// What its disk is on, where the host says (one without image patching doesn't, and nothing is erased).
 			if (typeof sandbox?.base === "string" && sandbox.base !== "") {
-				bases.push({ sandboxId: placement.sandboxId, base: sandbox.base });
+				bases.push({ sandboxId: placement.sandboxId, base: sandbox.base, ...baseAtOf(sandbox) });
 			}
 			held.delete(placement.sandboxId);
 		}
@@ -517,7 +520,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					if (placement === undefined || placement.hostId !== hostId) return;
 					const base = (sandbox as { base?: unknown }).base;
 					if (typeof base === "string" && base !== "" && sandbox.state !== "deleted") {
-						await compute?.recordBases?.(hostId, { sandboxes: [{ sandboxId: sandbox.id, base }] });
+						await compute?.recordBases?.(hostId, {
+							sandboxes: [{ sandboxId: sandbox.id, base, ...baseAtOf(sandbox as { baseAt?: unknown }) }],
+						});
 					}
 					// The call that caused the event usually recorded the state already (a create's `running`).
 					if (sandbox.state === placement.state) return;

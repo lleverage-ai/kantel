@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sync/atomic"
 	"time"
@@ -51,9 +52,12 @@ func (h *Host) isolateImages(cfg Config) (kernel, rootfs string) {
 		return p
 	}
 	rootfs, kernel = resolve(cfg.IsolateImage), resolve(cfg.Kernel)
-	// One version's kernel with its root filesystem: an activation between the two resolutions can't pair them across.
-	if v := images.VersionOf(rootfs); v != "" && images.VersionOf(kernel) != "" && images.VersionOf(kernel) != v {
-		if same := filepath.Join(filepath.Dir(rootfs), filepath.Base(kernel)); fileExists(same) {
+	// The default kernel link (current/<name>, as package images leaves it) follows the channel, so it is taken from
+	// the root filesystem's own version: an activation between the two resolutions can't pair them across. A kernel
+	// the config names any other way is the operator's pin, kept as it is (as microvm's kernelFor keeps it).
+	name := filepath.Base(cfg.Kernel)
+	if target, err := os.Readlink(cfg.Kernel); err == nil && target == filepath.Join("current", name) && images.VersionOf(rootfs) != "" {
+		if same := filepath.Join(filepath.Dir(rootfs), name); fileExists(same) {
 			kernel = same
 		}
 	}

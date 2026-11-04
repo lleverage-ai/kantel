@@ -128,6 +128,16 @@ func baseOf(vm string) string {
 	return base
 }
 
+// baseAtOf is when a VM directory was put on its base, in unix milliseconds: its root filesystem link's own time
+// (each link is made new, and renamed into place, so it moves on only when the base is set). 0 when it has none.
+func baseAtOf(vm string) int64 {
+	info, err := os.Lstat(filepath.Join(vm, fc.RootfsFile))
+	if err != nil {
+		return 0
+	}
+	return info.ModTime().UnixMilli()
+}
+
 // templateRootfs is the root filesystem a template was made on (Rootfs for one from before it was recorded).
 func (m *Manager) templateRootfs(dir string) string {
 	if raw, err := os.ReadFile(filepath.Join(dir, "rootfs")); err == nil {

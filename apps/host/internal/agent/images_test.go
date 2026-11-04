@@ -373,3 +373,34 @@ func TestTheIsolateTierStaysOnTheImagesItStartedWith(t *testing.T) {
 		t.Fatalf("removed %v: want b gone and a, which the isolate tier runs on, kept", removed)
 	}
 }
+
+// A kernel the config names by a version's own path is the operator's pin: the isolate tier keeps it while its root
+// filesystem follows current. Only the default kernel link is paired with the root filesystem's version.
+func TestTheIsolateTierKeepsAPinnedKernel(t *testing.T) {
+	h := newLifecycleHost(t, newLifecycleTier())
+	store := images.Store{Dir: filepath.Join(h.cfg.Root, "images")}
+	for _, v := range []string{"a", "b"} {
+		dir := filepath.Join(store.Dir, "v", v)
+		writeFile(t, filepath.Join(dir, "manifest.json"), "{}")
+		writeFile(t, filepath.Join(dir, "vmlinux"), v)
+		writeFile(t, filepath.Join(dir, "isolate.ext4"), v)
+	}
+	if err := store.Activate("b"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"vmlinux", "isolate.ext4"} {
+		if err := os.Symlink(filepath.Join("current", name), filepath.Join(store.Dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.cfg.ImagePatching = true
+	h.cfg.Kernel, h.cfg.IsolateImage = filepath.Join(store.Dir, "v", "a", "vmlinux"), filepath.Join(store.Dir, "isolate.ext4")
+	kernel, rootfs := h.isolateImages(h.cfg)
+	if images.VersionOf(kernel) != "a" || images.VersionOf(rootfs) != "b" {
+		t.Fatalf("isolate images %s, %s; want the pinned kernel a with root filesystem b", kernel, rootfs)
+	}
+	h.cfg.Kernel = filepath.Join(store.Dir, "vmlinux")
+	if kernel, _ := h.isolateImages(h.cfg); images.VersionOf(kernel) != "b" {
+		t.Fatalf("default kernel %s; want b's, the root filesystem's", kernel)
+	}
+}
