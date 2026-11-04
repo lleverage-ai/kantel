@@ -79,8 +79,17 @@ describe("the two themes", () => {
 	});
 
 	it("every raw colour is in a palette: tokens.css holds only formulas on them, and the fixed few", () => {
-		// The same in both themes: white on a solid colour, the scrim over an image, the mark's orange.
-		const fixed = new Set(["on-solid", "thumb-scrim", "brand-fulcrum"]);
+		// The same in both themes: white on a solid colour, the scrim over an image, the mark's orange, and Google's "G"
+		// in the four colours its branding guidelines require.
+		const fixed = new Set([
+			"on-solid",
+			"thumb-scrim",
+			"brand-fulcrum",
+			"brand-google-blue",
+			"brand-google-green",
+			"brand-google-yellow",
+			"brand-google-red",
+		]);
 		const raw = [...shared.tokens].filter(([name, value]) => isRawColour(value) && !fixed.has(name));
 		expect(raw).toEqual([]);
 		// And no palette token is set twice.
