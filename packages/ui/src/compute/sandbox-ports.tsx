@@ -1,0 +1,248 @@
+// A sandbox's ports with an HTTPS URL of their own, on its Overview: each private (only with the token from when it
+// was exposed) or public (anyone with the URL). Expose gives a port a URL; a private port's link carries its token and
+// is shown once, to copy. Every call goes through the `SandboxesSource` the host binds.
+
+import { useState } from "react";
+import { Button } from "../primitives/button.tsx";
+import { CheckboxField, CopyButton, TextField } from "../primitives/controls.tsx";
+import { Dialog } from "../primitives/dialog.tsx";
+import { GlobeIcon, LockIcon, PlusIcon } from "../primitives/icons.tsx";
+import { useLoad } from "../primitives/load.ts";
+import { EllipsisIcon, TrashIcon } from "../primitives/lucide.tsx";
+import { Menu } from "../primitives/menu.tsx";
+import { Skeleton } from "../primitives/spinner.tsx";
+import { Notice } from "../primitives/surface.tsx";
+import type { SandboxesSource, SandboxPort } from "./compute-model.ts";
+import { messageOf, SectionHeading, table } from "./parts.tsx";
+import type { SandboxNotice } from "./sandbox-actions.tsx";
+
+type PortsSource = Required<Pick<SandboxesSource, "ports" | "exposePort" | "hidePort">>;
+
+/** The tag on a port: a lock for private, a globe in the highlight colour for public. */
+function Visibility({ isPublic }: { isPublic: boolean }) {
+	return (
+		<span
+			className={`inline-flex items-center gap-1 rounded-xs px-1.5 py-0.5 text-2xs font-medium whitespace-nowrap ${isPublic ? "bg-accent-soft text-accent-text" : "bg-active text-muted"}`}
+		>
+			{isPublic ? <GlobeIcon size="sm" /> : <LockIcon size="sm" />}
+			{isPublic ? "Public" : "Private"}
+		</span>
+	);
+}
+
+const cell = "border-b border-border px-2 py-2 align-middle";
+
+export function SandboxPorts({
+	source,
+	sandboxId,
+	onNotice,
+}: {
+	source: PortsSource;
+	sandboxId: string;
+	onNotice: (notice: SandboxNotice | undefined) => void;
+}) {
+	const { state, reload } = useLoad(() => source.ports(sandboxId), [source, sandboxId]);
+	const [exposing, setExposing] = useState(false);
+	// A private port's URL with its token, as exposing it answered: shown once.
+	const [issued, setIssued] = useState<SandboxPort>();
+
+	const expose = async (port: number, isPublic: boolean) => {
+		const made = await source.exposePort(sandboxId, port, isPublic);
+		setIssued(made.public ? undefined : made);
+		reload();
+	};
+	const change = (port: SandboxPort, isPublic: boolean) => {
+		expose(port.port, isPublic).catch((caught: unknown) =>
+			onNotice({ level: "error", text: messageOf(caught, `Kantel couldn't change port ${port.port}. Try again.`) }),
+		);
+	};
+	const hide = (port: SandboxPort) => {
+		source.hidePort(sandboxId, port.port).then(
+			() => {
+				if (issued?.port === port.port) setIssued(undefined);
+				onNotice({ level: "info", text: `Port ${port.port}'s URL no longer works.` });
+				reload();
+			},
+			(caught: unknown) =>
+				onNotice({ level: "error", text: messageOf(caught, `Kantel couldn't hide port ${port.port}. Try again.`) }),
+		);
+	};
+
+	return (
+		<section className="flex min-w-0 flex-col gap-2" aria-labelledby="sandbox-ports">
+			<SectionHeading
+				id="sandbox-ports"
+				title="Ports"
+				actions={
+					<Button size="sm" variant="ghost" icon={<PlusIcon size="sm" />} onClick={() => setExposing(true)}>
+						Expose
+					</Button>
+				}
+			/>
+			{issued === undefined ? null : (
+				<Notice
+					level="info"
+					action={
+						<span className="flex gap-1">
+							<CopyButton text={issued.url} size="xs" />
+							<Button size="xs" variant="ghost" onClick={() => setIssued(undefined)}>
+								Dismiss
+							</Button>
+						</span>
+					}
+				>
+					<span className="block">Copy port {issued.port}'s link now. Its token isn't shown again.</span>
+					<code className="block truncate font-mono text-code">{issued.url}</code>
+				</Notice>
+			)}
+			{state.status === "error" ? (
+				<Notice
+					level="error"
+					action={
+						<Button size="sm" onClick={reload}>
+							Try again
+						</Button>
+					}
+				>
+					{messageOf(state.error, "Kantel couldn't read the ports.")}
+				</Notice>
+			) : state.status === "loading" ? (
+				<Skeleton lines={2} />
+			) : state.value.length === 0 ? (
+				<p className="m-0 text-sm text-muted">No ports yet. Expose one to give it an HTTPS URL.</p>
+			) : (
+				<table className={`${table} table-fixed`}>
+					<tbody>
+						{state.value.map((port) => (
+							<tr key={port.port} data-port={port.port}>
+								<td className={`${cell} w-16 font-mono text-code tabular-nums`}>{port.port}</td>
+								<td className={`${cell} truncate font-mono text-code`}>
+									<a
+										className="text-fg no-underline hover:underline"
+										href={port.url}
+										target="_blank"
+										rel="noopener noreferrer"
+									>
+										{port.url.replace(/^https:\/\//, "")}
+									</a>
+								</td>
+								<td className={`${cell} w-24`}>
+									<Visibility isPublic={port.public} />
+								</td>
+								<td className={`${cell} w-20 text-right`}>
+									<span className="inline-flex items-center gap-0.5">
+										<CopyButton text={port.url} iconOnly size="xs" variant="ghost" label="Copy URL" />
+										<Menu
+											label={`Actions for port ${port.port}`}
+											icon={<EllipsisIcon />}
+											align="end"
+											entries={[
+												port.public
+													? {
+															kind: "item",
+															id: "private",
+															label: "Make private",
+															icon: <LockIcon size="sm" />,
+															onSelect: () => change(port, false),
+														}
+													: {
+															kind: "item",
+															id: "public",
+															label: "Make public",
+															icon: <GlobeIcon size="sm" />,
+															onSelect: () => change(port, true),
+														},
+												{ kind: "separator", id: "sep-hide" },
+												{
+													kind: "item",
+													id: "hide",
+													label: "Hide",
+													icon: <TrashIcon />,
+													danger: true,
+													onSelect: () => hide(port),
+												},
+											]}
+										/>
+									</span>
+								</td>
+							</tr>
+						))}
+					</tbody>
+				</table>
+			)}
+			<ExposeDialog open={exposing} onClose={() => setExposing(false)} onExpose={expose} />
+		</section>
+	);
+}
+
+function ExposeDialog({
+	open,
+	onClose,
+	onExpose,
+}: {
+	open: boolean;
+	onClose: () => void;
+	onExpose: (port: number, isPublic: boolean) => Promise<void>;
+}) {
+	const [port, setPort] = useState("");
+	const [isPublic, setPublic] = useState(false);
+	const [busy, setBusy] = useState(false);
+	const [failure, setFailure] = useState<string>();
+	const number = Number(port);
+	const valid = /^\d+$/.test(port) && number >= 1 && number <= 65535;
+	const close = () => {
+		setPort("");
+		setPublic(false);
+		setFailure(undefined);
+		onClose();
+	};
+	return (
+		<Dialog
+			open={open}
+			title="Expose a port"
+			onClose={close}
+			onSubmit={() => {
+				if (!valid) return;
+				setBusy(true);
+				onExpose(number, isPublic).then(
+					() => {
+						setBusy(false);
+						close();
+					},
+					(caught: unknown) => {
+						setBusy(false);
+						setFailure(messageOf(caught, "Kantel couldn't expose it. Try again."));
+					},
+				);
+			}}
+			actions={
+				<>
+					<Button onClick={close}>Cancel</Button>
+					<Button type="submit" variant="primary" busy={busy} disabled={!valid}>
+						Expose
+					</Button>
+				</>
+			}
+		>
+			<div className="flex w-(--kt-card-width) max-w-full flex-col gap-3 pt-2">
+				<TextField
+					label="Port"
+					inputMode="numeric"
+					width="short"
+					mono
+					placeholder="3000"
+					value={port}
+					onChange={(event) => setPort(event.currentTarget.value.trim())}
+					{...(port === "" || valid ? {} : { error: "A port from 1 to 65535." })}
+				/>
+				<CheckboxField
+					label="Public"
+					hint="Anyone with the URL can open it. Private needs the link's token."
+					checked={isPublic}
+					onChange={(event) => setPublic(event.currentTarget.checked)}
+				/>
+			</div>
+			{failure === undefined ? null : <p className="kt-dialog-error">{failure}</p>}
+		</Dialog>
+	);
+}

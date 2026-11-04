@@ -17,6 +17,7 @@ import {
 	ChevronsDownUp,
 	ChevronsUpDown,
 	CircleAlert,
+	CircleDot,
 	CreditCard,
 	Ellipsis,
 	ExternalLink,
@@ -36,6 +37,7 @@ import {
 	ListFilter,
 	LogOut,
 	type LucideIcon,
+	Maximize2,
 	Monitor,
 	Moon,
 	Network,
@@ -123,6 +125,9 @@ export const ReplayIcon = lucide(RotateCcw, "ReplayIcon");
 export const PreviousStepIcon = lucide(SkipBack, "PreviousStepIcon");
 export const NextStepIcon = lucide(SkipForward, "NextStepIcon");
 export const ExternalLinkIcon = lucide(ExternalLink, "ExternalLinkIcon");
+export const FullScreenIcon = lucide(Maximize2, "FullScreenIcon");
+/** Something that happened to a sandbox, in its log: started, a snapshot taken, stopped. */
+export const EventIcon = lucide(CircleDot, "EventIcon");
 // File types, for attachment cards (`file-icons.ts`).
 export const LucideFileIcon = lucide(File, "LucideFileIcon");
 export const FileTextIcon = lucide(FileText, "FileTextIcon");

@@ -227,6 +227,36 @@ describe("sandboxes", () => {
 		// The stub backend's "default" is 2 vCPU and 4 GB, not the sample catalogue's 4 and 8.
 		expect(listed).toMatchObject({ id: made.id, size: "medium", resources: { vcpus: 2, memoryGb: 4, diskGb: 20 } });
 	});
+
+	it("reads one for its page, sets its auto-stop, and reads its live files and a failed command's output", async () => {
+		const { api, fetchApi } = setup();
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const made = await source.sandboxes.create({ accountId, name: "page", kind: "isolate", size: "small" });
+		await api.service.idle();
+
+		expect(await source.sandboxes.get(made.id)).toMatchObject({ id: made.id, name: "page", state: "running" });
+		const set = source.sandboxes.setAutoStop;
+		if (set === undefined) throw new Error("No setAutoStop");
+		expect((await set(made.id, 60)).stopsAt).toBeGreaterThan(Date.now());
+		expect((await set(made.id, undefined)).stopsAt).toBeUndefined();
+
+		const sdk = createKantelClient({ baseUrl: "/v1", token: "person-ada", fetch: fetchApi });
+		await sdk.writeFile(made.id, { path: "work/readme.txt", content: "Hello" });
+		const files = source.sandboxes.files;
+		if (files === undefined) throw new Error("No files");
+		const entries = await files.list(made.id, "home/user/work");
+		expect(entries.map((entry) => [entry.kind, entry.path])).toEqual([["file", "home/user/work/readme.txt"]]);
+		expect(await files.read(made.id, "home/user/work/readme.txt")).toBe("Hello");
+
+		await sdk.runCommand(made.id, { command: "echo fine" });
+		await sdk.runCommand(made.id, { command: "echo broken >&2; exit 2" });
+		const commands = await source.sandboxes.history(made.id);
+		const failed = commands.find((command) => command.exitCode !== undefined && command.exitCode !== 0);
+		const fine = commands.find((command) => command.exitCode === 0);
+		expect(fine?.output).toBeUndefined();
+		expect(failed?.output).toContain("broken");
+	});
 });
 
 describe("snapshots", () => {

@@ -163,14 +163,17 @@ export function Sparkline({
 	values,
 	label,
 	tone = "done",
+	size = "sm",
 }: {
 	values: readonly number[];
 	/** What it shows, for assistive tech: "CPU over the last hour, peak 82%". */
 	label: string;
 	tone?: "done" | "idle" | "working" | "error";
+	/** `sm`, a row's: 64 by 16. `lg`, a sandbox page's: as wide as its column, 28 high. */
+	size?: "sm" | "lg";
 }) {
-	const width = 64;
-	const height = 16;
+	const width = size === "lg" ? 320 : 64;
+	const height = size === "lg" ? 28 : 16;
 	const count = Math.max(2, values.length);
 	const max = Math.max(1, ...values);
 	const points = (values.length === 0 ? [0, 0] : values)
@@ -188,7 +191,7 @@ export function Sparkline({
 	}[tone];
 	return (
 		<svg
-			className={`kt-sparkline block h-4 w-16 ${colour}`}
+			className={`kt-sparkline block ${size === "lg" ? "h-7 w-full" : "h-4 w-16"} ${colour}`}
 			viewBox={`0 0 ${width} ${height}`}
 			preserveAspectRatio="none"
 			role="img"

@@ -26,6 +26,7 @@ import {
 	createKantelClient,
 	type DeviceLoginRequest,
 	type EgressGrantInput,
+	type ExposedPort,
 	type FileEntry,
 	type Host,
 	type Invite,
@@ -81,6 +82,7 @@ type UiSandbox = Awaited<ReturnType<SandboxesSource["list"]>>[number];
 type UiSandboxSize = UiSandbox["size"];
 type UiSandboxState = UiSandbox["state"];
 type UiCommand = Awaited<ReturnType<SandboxesSource["history"]>>[number];
+type UiPort = Awaited<ReturnType<NonNullable<SandboxesSource["ports"]>>>[number];
 type UiSandboxSnapshot = Awaited<ReturnType<SnapshotsSource["history"]>>[number];
 type UiSnapshotReason = UiSandboxSnapshot["reason"];
 type UiSavedSnapshot = Awaited<ReturnType<SnapshotsSource["saved"]>>[number];
@@ -343,6 +345,20 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 	};
 }
 
+/** How many lines of a failed command's output the Logs tab shows: its end, where the error usually is. */
+const OUTPUT_LINES = 40;
+
+/** The end of what a failed command printed, stdout then stderr; none for one that succeeded or printed nothing. */
+function outputOf(command: Command): { readonly output?: string } {
+	if (command.exitCode === undefined || command.exitCode === 0) return {};
+	const printed = [command.stdout, command.stderr]
+		.map((text) => text.replace(/\s+$/, ""))
+		.filter((text) => text !== "")
+		.join("\n");
+	if (printed === "") return {};
+	return { output: printed.split("\n").slice(-OUTPUT_LINES).join("\n") };
+}
+
 function commandOf(command: Command): UiCommand {
 	return {
 		id: command.id,
@@ -352,7 +368,12 @@ function commandOf(command: Command): UiCommand {
 		...(command.exitCode === undefined ? {} : { exitCode: command.exitCode }),
 		// The API doesn't say who ran a command.
 		by: "",
+		...outputOf(command),
 	};
+}
+
+function portOf(port: ExposedPort): UiPort {
+	return { port: port.port, url: port.url, public: port.public, createdAt: port.createdAt };
 }
 
 function sandboxesSource(context: Context): SandboxesSource {
@@ -402,15 +423,27 @@ function sandboxesSource(context: Context): SandboxesSource {
 		},
 		access: async (id) => {
 			// microVMs only: an isolate's `not_supported` rejects the lot. SSH's private key, when Kantel makes one, has no
-			// place in the UI's access and is dropped.
+			// place in the UI's access and is dropped. The browser is driven where it runs, on the desktop, so its page is a
+			// desktop page too; while Chromium is still starting, the API refuses it and the desktop's stands in.
 			const [ssh, desktop, watch, browser] = await Promise.all([
 				api.openSsh(id),
 				api.openDesktop(id),
 				api.openDesktop(id, { viewOnly: true }),
-				api.openBrowser(id),
+				api.openBrowser(id).catch((error: unknown) => {
+					if (isCode(error, "unavailable")) return undefined;
+					throw error;
+				}),
 			]);
 			context.learnHost(ssh.host);
-			return { ssh: ssh.command, desktopUrl: desktop.url, desktopViewUrl: watch.url, browserUrl: browser.url };
+			const browserUrl = browser?.url ?? desktop.url;
+			return {
+				ssh: ssh.command,
+				desktopUrl: desktop.url,
+				desktopViewUrl: watch.url,
+				browserUrl,
+				// The browser's page is a desktop page, which a frame can show as it is.
+				embed: { desktop: desktop.embedUrl, watch: watch.embedUrl, browser: browserUrl },
+			};
 		},
 		history: async (id) => {
 			// End to end, the host keeps the history and the gateway has none of it: `kantel console` reads it there, or
@@ -434,6 +467,37 @@ function sandboxesSource(context: Context): SandboxesSource {
 				}
 			}
 			return (await allPages((cursor) => api.listCommands(id, after(cursor)))).map(commandOf);
+		},
+		get: async (id) => {
+			const sandbox = await api.getSandbox(id);
+			await learnEnvironmentNames(context, sandbox.accountId, [sandbox]);
+			return view(sandbox);
+		},
+		// The API's `null` is always on.
+		setAutoStop: async (id, minutes) => view(await api.updateSandbox(id, { autoStopMinutes: minutes ?? null })),
+		usageNow: async (id) => {
+			// The latest point's memory; the API doesn't say how much disk is in use.
+			const latest = (await api.getSandboxUsage(id)).points.at(-1);
+			return latest === undefined ? {} : { memoryGb: Math.round((latest.memoryMb / 1024) * 10) / 10 };
+		},
+		ports: async (id) => (await api.listPorts(id)).items.map(portOf),
+		exposePort: async (id, port, isPublic) => portOf(await api.exposePort(id, { port, public: isPublic })),
+		hidePort: (id, port) => api.hidePort(id, String(port)),
+		files: {
+			list: async (id, path) =>
+				(await allPages((cursor) => api.listFiles(id, { path: absolute(path), ...after(cursor) })))
+					.map(entryOf)
+					.sort(foldersFirst),
+			read: async (id, path) => {
+				try {
+					const file = await api.readFile(id, { path: absolute(path) });
+					return file.encoding === "utf8" ? file.content : undefined;
+				} catch (error) {
+					// As a snapshot's: a binary file, or one over 1 MiB, is `invalid`, the UI's undefined.
+					if (isCode(error, "invalid")) return undefined;
+					throw error;
+				}
+			},
 		},
 	};
 }

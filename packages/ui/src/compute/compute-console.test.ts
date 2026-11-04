@@ -6,6 +6,7 @@ import {
 	egressTabPath,
 	parseComputePath,
 	pathAfterAccountSwitch,
+	sandboxPath,
 } from "./compute-console.tsx";
 
 describe("Egress's tabs", () => {
@@ -41,6 +42,23 @@ describe("the compute console's paths", () => {
 			sandboxId: "sbx_4d8n",
 		});
 		expect(parseComputePath("/compute/environments/env_backend/extra")).toBeUndefined();
+	});
+
+	it("carries a sandbox's page, its tab and its screens", () => {
+		expect(sandboxPath("/compute", "sbx_7f3k")).toBe("/compute/sandboxes/sbx_7f3k");
+		expect(parseComputePath("/compute/sandboxes/sbx_7f3k")).toEqual({
+			page: "sandboxes",
+			sandboxId: "sbx_7f3k",
+			sandboxView: "overview",
+		});
+		for (const view of ["logs", "egress", "snapshots", "files", "desktop", "watch", "browser"] as const) {
+			const path = sandboxPath("/compute", "sbx_7f3k", view);
+			expect(path).toBe(`/compute/sandboxes/sbx_7f3k/${view}`);
+			expect(parseComputePath(path)).toEqual({ page: "sandboxes", sandboxId: "sbx_7f3k", sandboxView: view });
+		}
+		expect(parseComputePath("/compute/sandboxes/sbx_7f3k/nowhere")).toBeUndefined();
+		expect(parseComputePath("/compute/sandboxes/sbx_7f3k/logs/more")).toBeUndefined();
+		expect(pathAfterAccountSwitch("/compute/sandboxes/sbx_7f3k/desktop")).toBe("/compute/sandboxes");
 	});
 
 	it("carries the sandbox whose snapshots are open", () => {

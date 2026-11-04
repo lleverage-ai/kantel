@@ -26,6 +26,7 @@ import type {
 	Sandbox,
 	SandboxCommand,
 	SandboxEgress,
+	SandboxPort,
 	SandboxSnapshot,
 	SavedSnapshot,
 	SnapshotEntry,
@@ -941,6 +942,16 @@ export const COMMANDS: readonly SandboxCommand[] = [
 		by: "GitHub Actions",
 	},
 	{
+		id: "cmd_4b",
+		command: "pnpm build",
+		startedAt: FIXTURE_NOW - 9 * MINUTE,
+		durationMs: 18_300,
+		exitCode: 1,
+		by: "Claude Code on Tom's laptop",
+		output:
+			"> tsc -p tsconfig.build.json\nsrc/routes/sandboxes.ts(212,7): error TS2322: Type 'string | undefined' is not assignable to type 'string'.\nFound 1 error in src/routes/sandboxes.ts:212\n ELIFECYCLE  Command failed with exit code 1.",
+	},
+	{
 		id: "cmd_4",
 		command: "docker compose up -d db",
 		startedAt: FIXTURE_NOW - 18 * MINUTE,
@@ -973,6 +984,17 @@ export const COMMANDS: readonly SandboxCommand[] = [
 		by: "Claude Code on Tom's laptop",
 	},
 ];
+
+/** The ports the sample sandboxes have given a URL. */
+export const PORTS: Readonly<Record<string, readonly SandboxPort[]>> = {
+	[API_SERVER.id]: [
+		{ port: 3000, url: `https://3000-${API_SERVER.hostname}`, public: false, createdAt: FIXTURE_NOW - 2 * HOUR },
+		{ port: 8080, url: `https://8080-${API_SERVER.hostname}`, public: true, createdAt: FIXTURE_NOW - 40 * MINUTE },
+	],
+	[DEV_STACK.id]: [
+		{ port: 5173, url: `https://5173-${DEV_STACK.hostname}`, public: false, createdAt: FIXTURE_NOW - DAY },
+	],
+};
 
 export interface ComputeFixtureOptions {
 	readonly hosting?: HostingMode;
@@ -1068,6 +1090,9 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 				files: env.files.map((file) => moved(file, ["updatedAt"])),
 			},
 		]),
+	);
+	const ports = new Map<string, readonly SandboxPort[]>(
+		empty ? [] : Object.entries(PORTS).map(([id, list]) => [id, list.map((entry) => moved(entry, ["createdAt"]))]),
 	);
 	const sandboxGrants = new Map<string, readonly EgressGrant[]>(
 		empty ? [] : [[DEV_STACK.id, [{ id: "grt_dev_pypi", action: "allow", host: "pypi.org", methods: [], paths: [] }]]],
@@ -1352,9 +1377,46 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 				}),
 			history: (id) =>
 				gate(() => {
-					find(sandboxes, id, "sandbox");
-					return COMMANDS.map((command) => moved(command, ["startedAt"]));
+					const box = find(sandboxes, id, "sandbox");
+					// Commands ran only in a sandbox that has been up: one starting for the first time has none yet.
+					return box.state === "starting" && box.snapshot === undefined
+						? []
+						: COMMANDS.map((command) => moved(command, ["startedAt"]));
 				}),
+			get: (id) => gate(() => find(sandboxes, id, "sandbox")),
+			setAutoStop: (id, minutes) =>
+				gate(() => {
+					const { stopsAt: _, ...box } = find(sandboxes, id, "sandbox");
+					return put(minutes === undefined ? box : { ...box, stopsAt: now() + minutes * MINUTE });
+				}),
+			usageNow: (id) =>
+				gate(() => {
+					const box = find(sandboxes, id, "sandbox");
+					const spec = box.resources ?? sizeSpec(box.size);
+					return { memoryGb: Math.round(spec.memoryGb * 0.32 * 10) / 10, diskGb: Math.round(spec.diskGb * 0.32) };
+				}),
+			ports: (id) => gate(() => [...(ports.get(id) ?? [])].sort((a, b) => a.port - b.port)),
+			exposePort: (id, port, isPublic) =>
+				gate(() => {
+					const box = find(sandboxes, id, "sandbox");
+					const url = `https://${port}-${box.hostname}`;
+					const entry: SandboxPort = { port, url, public: isPublic, createdAt: now() };
+					ports.set(id, [...(ports.get(id) ?? []).filter((each) => each.port !== port), entry]);
+					// A private port's answer carries its token, once.
+					return isPublic ? entry : { ...entry, url: `${url}?token=${fakeSecret("").slice(0, 16)}` };
+				}),
+			hidePort: (id, port) =>
+				gate(() => {
+					ports.set(
+						id,
+						(ports.get(id) ?? []).filter((each) => each.port !== port),
+					);
+				}),
+			files: {
+				list: (_id, path) =>
+					gate(() => (TREE[path.replace(/^\/+|\/+$/g, "")] ?? []).map((entry) => moved(entry, ["modifiedAt"]))),
+				read: (_id, path) => gate(() => FILES[path.replace(/^\/+/, "")]),
+			},
 		},
 		snapshots: {
 			saved: (accountId) =>

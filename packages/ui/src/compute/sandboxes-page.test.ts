@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { Sandbox, SandboxState } from "./compute-model.ts";
+import { sandboxTimeline } from "./sandbox-logs.tsx";
 import { QUICK_SANDBOX, sandboxesShown, showsCpu } from "./sandboxes-page.tsx";
 import { SettingsFrame } from "./settings-nav.tsx";
 
@@ -16,6 +17,35 @@ const box = (name: string, state: SandboxState): Sandbox => ({
 	createdAt: 0,
 	createdBy: "",
 	usage: [],
+});
+
+describe("a sandbox's logs", () => {
+	it("puts its commands, its making and its snapshots in one timeline, newest first", () => {
+		const sandbox = {
+			...box("api", "running"),
+			createdAt: 100,
+			createdBy: "Ada",
+			environment: { id: "e", name: "dev" },
+		};
+		const timeline = sandboxTimeline(
+			sandbox,
+			[
+				{ id: "cmd_a", command: "ls", startedAt: 300, by: "Ada" },
+				{ id: "cmd_b", command: "make", startedAt: 500, exitCode: 2, by: "", output: "error" },
+			],
+			[
+				{ id: "snap_1", sandboxId: sandbox.id, takenAt: 200, reason: "periodic", sizeBytes: 0, expiresAt: 0 },
+				{ id: "snap_2", sandboxId: sandbox.id, takenAt: 400, reason: "stop", sizeBytes: 0, expiresAt: 0 },
+			],
+		);
+		expect(timeline.map((entry) => (entry.kind === "command" ? entry.command.command : entry.text))).toEqual([
+			"make",
+			"Stopped, snapshot taken",
+			"ls",
+			"Snapshot taken",
+			"Started from dev",
+		]);
+	});
 });
 
 describe("the sandboxes list", () => {

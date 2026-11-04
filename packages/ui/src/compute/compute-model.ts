@@ -174,6 +174,8 @@ export interface SandboxCommand {
 	readonly exitCode?: number;
 	/** Who or what ran it: a person, an API key's name. */
 	readonly by: string;
+	/** The end of what it printed, stdout then stderr, for a command that failed. */
+	readonly output?: string;
 }
 
 /** How to reach a sandbox, made when asked for: tokens in it are short-lived. */
@@ -186,6 +188,32 @@ export interface SandboxAccess {
 	readonly desktopViewUrl: string;
 	/** Only its browser, without the desktop. */
 	readonly browserUrl: string;
+	/**
+	 * The same three for a frame in the console. Absent where there's nothing real to show (the sample data): the
+	 * console draws a stand-in.
+	 */
+	readonly embed?: { readonly desktop: string; readonly watch: string; readonly browser: string };
+}
+
+/** A port in a sandbox with an HTTPS URL of its own. */
+export interface SandboxPort {
+	readonly port: number;
+	/** Its URL, without the token a private one's link carries when it's first exposed. */
+	readonly url: string;
+	/** Anyone with the URL may open it. Private: only with the token from when it was exposed. */
+	readonly public: boolean;
+	readonly createdAt: number;
+}
+
+/** A file or folder in a running sandbox, as a snapshot's are: its path from the root, with no leading slash. */
+export type SandboxEntry = SnapshotEntry;
+
+/** What a running sandbox is using now, where its host says. */
+export interface SandboxUsageNow {
+	/** Memory in use, in GB. */
+	readonly memoryGb?: number;
+	/** Disk in use, in GB. */
+	readonly diskGb?: number;
 }
 
 export interface SandboxesSource {
@@ -206,6 +234,24 @@ export interface SandboxesSource {
 	remove(id: string): Promise<void>;
 	access(id: string): Promise<SandboxAccess>;
 	history(id: string): Promise<readonly SandboxCommand[]>;
+	/** One sandbox, for its page. */
+	get(id: string): Promise<Sandbox>;
+	/** Minutes until auto-stop stops it, from now; undefined keeps it always on. */
+	setAutoStop?(id: string, minutes: number | undefined): Promise<Sandbox>;
+	/** What a running sandbox is using now. Absent: its page shows CPU only. */
+	usageNow?(id: string): Promise<SandboxUsageNow>;
+	/** Its ports with a URL. Absent where the host can't list them: the page has no Ports. */
+	ports?(id: string): Promise<readonly SandboxPort[]>;
+	/** Gives a port a URL, or changes whether it's public. A private port's answer has its token in the URL, once. */
+	exposePort?(id: string, port: number, isPublic: boolean): Promise<SandboxPort>;
+	/** Its URL stops working at once. */
+	hidePort?(id: string, port: number): Promise<void>;
+	/** A running sandbox's files: folders first, then files, by name. Absent: the Files tab shows its latest snapshot. */
+	files?: {
+		list(id: string, path: string): Promise<readonly SandboxEntry[]>;
+		/** A text file's content; undefined for a binary or a file too big to show. */
+		read(id: string, path: string): Promise<string | undefined>;
+	};
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

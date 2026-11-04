@@ -75,7 +75,7 @@ const TABS: readonly { value: "saved" | "sandbox"; label: string }[] = [
 type NoticeSetter = (notice: { level: "info" | "error"; text: string } | undefined) => void;
 
 /** "2m ago", or "just now" under a minute. */
-const agoText = (at: number, now: number): string => {
+export const agoText = (at: number, now: number): string => {
 	const age = compactAge(at, now);
 	return age === "now" ? "just now" : `${age} ago`;
 };
@@ -412,7 +412,8 @@ function BySandbox({
 	);
 }
 
-function SandboxHistory({
+/** One sandbox's history: its own snapshots, newest first, each with Browse files and Delete. Its page's Snapshots tab. */
+export function SandboxHistory({
 	source,
 	sandbox,
 	now,

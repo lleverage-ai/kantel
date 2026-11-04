@@ -36,6 +36,7 @@ import { EnvironmentPage, EnvironmentsPage } from "./environments-page.tsx";
 import { HostsPage } from "./hosts-page.tsx";
 import { OrganisationPage } from "./organisation-page.tsx";
 import { messageOf } from "./parts.tsx";
+import { SANDBOX_VIEWS, SandboxPage, type SandboxView } from "./sandbox-page.tsx";
 import { SandboxesPage } from "./sandboxes-page.tsx";
 import { SettingsFrame, type SettingsNavItem } from "./settings-nav.tsx";
 import { SnapshotsPage } from "./snapshots-page.tsx";
@@ -79,12 +80,14 @@ export const COMPUTE_PAGES: readonly ComputePage[] = [
 ];
 
 /**
- * What a path under the console's base shows: a page, for Snapshots the sandbox it's about, for Egress the sandbox
- * when it is one sandbox's rather than the account's, and for Environments the environment that's open.
+ * What a path under the console's base shows: a page, for Sandboxes and Snapshots the sandbox it's about, for Egress
+ * the sandbox when it is one sandbox's rather than the account's, for a sandbox's page its tab or screen, and for
+ * Environments the environment that's open.
  */
 export type ComputeRoute = {
 	readonly page: ComputePage;
 	readonly sandboxId?: string;
+	readonly sandboxView?: SandboxView;
 	readonly environmentId?: string;
 };
 
@@ -92,12 +95,17 @@ export type ComputeRoute = {
 export function parseComputePath(pathname: string, base = "/compute"): ComputeRoute | undefined {
 	if (pathname !== base && !pathname.startsWith(`${base}/`)) return undefined;
 	const parts = pathname.slice(base.length).split("/").filter(Boolean);
-	const [first, second] = parts;
+	const [first, second, third] = parts;
 	if (first === undefined) return { page: "sandboxes" };
 	// The Egress proxy page's address before Egress was one page: a link to it still opens Egress.
 	if (first === "proxy" && parts.length === 1) return { page: "egress" };
 	if (!(COMPUTE_PAGES as readonly string[]).includes(first)) return undefined;
 	const page = first as ComputePage;
+	// A sandbox's page, and its tab or screen: /sandboxes/<id>/<view>.
+	if (page === "sandboxes" && second !== undefined && parts.length <= 3) {
+		if (third !== undefined && !(SANDBOX_VIEWS as readonly string[]).includes(third)) return undefined;
+		return { page, sandboxId: decodeURIComponent(second), sandboxView: (third ?? "overview") as SandboxView };
+	}
 	if (parts.length > 2) return undefined;
 	if (page === "snapshots" && second !== undefined) return { page, sandboxId: decodeURIComponent(second) };
 	if (page === "environments" && second !== undefined) return { page, environmentId: decodeURIComponent(second) };
@@ -114,8 +122,15 @@ export function parseComputePath(pathname: string, base = "/compute"): ComputeRo
 export function pathAfterAccountSwitch(pathname: string, base = "/compute"): string | undefined {
 	const open = parseComputePath(pathname, base);
 	if (open?.page === "environments" && open.environmentId !== undefined) return computePath("environments", base);
-	if (open?.page === "egress" && open.sandboxId !== undefined) return computePath("sandboxes", base);
+	if ((open?.page === "egress" || open?.page === "sandboxes") && open.sandboxId !== undefined)
+		return computePath("sandboxes", base);
 	return undefined;
+}
+
+/** The path of a sandbox's page under `base`, or of one of its tabs or screens. */
+export function sandboxPath(base: string, sandboxId: string, view: SandboxView = "overview"): string {
+	const page = computePath("sandboxes", base, sandboxId);
+	return view === "overview" ? page : `${page}/${view}`;
 }
 
 /** The path of a page under `base`, and of one sandbox's or environment's when `id` is given. */
@@ -673,15 +688,31 @@ function PageFor({
 	const timing = now === undefined ? {} : { now };
 	switch (page) {
 		case "sandboxes":
-			return (
+			return route.sandboxId !== undefined ? (
+				<SandboxPage
+					source={source.sandboxes}
+					snapshots={source.snapshots}
+					egress={source.egress}
+					hosting={source.hosting}
+					sandboxId={route.sandboxId}
+					accountId={account.id}
+					view={route.sandboxView ?? "overview"}
+					href={(view) => sandboxPath(base, route.sandboxId ?? "", view)}
+					sandboxesHref={computePath("sandboxes", base)}
+					environmentHref={(id) => computePath("environments", base, id)}
+					navigate={navigate}
+					narrow={narrow}
+					{...timing}
+				/>
+			) : (
 				<SandboxesPage
 					source={source.sandboxes}
 					snapshots={source.snapshots}
 					account={account}
 					hosting={source.hosting}
-					onSnapshots={(sandboxId) => navigate(computePath("snapshots", base, sandboxId))}
+					sandboxHref={(sandboxId, view) => sandboxPath(base, sandboxId, view)}
+					navigate={navigate}
 					environments={(accountId) => source.environments.list(accountId)}
-					onEgress={(sandboxId) => navigate(computePath("egress", base, sandboxId))}
 					creating={new URLSearchParams(search).has("new")}
 					narrow={narrow}
 					{...(noHosts ? { [ownHosts ? "ownHostHref" : "addHostHref"]: `${computePath("hosts", base)}?add` } : {})}

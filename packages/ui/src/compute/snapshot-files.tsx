@@ -19,14 +19,19 @@ import { cellSub, messageOf, None, rowHover, TableFrame, table, tableFrame, td, 
 export interface SnapshotFilesProps {
 	readonly source: Pick<SnapshotsSource, "list" | "read" | "downloadUrl">;
 	readonly snapshotId: string;
-	/** What the snapshot is called, as the heading: a saved snapshot's name, or a sandbox's and when it was taken. */
-	readonly label: string;
+	/**
+	 * What the snapshot is called, as the heading: a saved snapshot's name, or a sandbox's and when it was taken. None
+	 * under a sandbox page's tabs, where the page says whose files they are.
+	 */
+	readonly label?: string;
+	/** The line under the heading. */
+	readonly lede?: string;
 	/** The open folder from the snapshot's root, with no leading slash; "" is the root. */
 	readonly path: string;
 	readonly now: number;
-	/** Says where the back button goes: "Back to saved snapshots". */
-	readonly backLabel: string;
-	readonly onBack: () => void;
+	/** Says where the back button goes: "Back to saved snapshots". No back button without `onBack`. */
+	readonly backLabel?: string;
+	readonly onBack?: () => void;
 	readonly onOpenFolder: (path: string) => void;
 	/** A file in the open folder to show at once, for a story or a link. */
 	readonly initialFile?: string;
@@ -41,6 +46,7 @@ export function SnapshotFiles({
 	source,
 	snapshotId,
 	label,
+	lede = "The files as they were when this snapshot was taken.",
 	path,
 	now,
 	backLabel,
@@ -73,16 +79,18 @@ export function SnapshotFiles({
 
 	return (
 		<>
-			<div>
-				<button
-					type="button"
-					onClick={onBack}
-					className="kt-focusable m-0 cursor-pointer rounded-xs border-0 bg-transparent p-0 text-xs text-muted hover:text-fg hover:underline"
-				>
-					{backLabel}
-				</button>
-			</div>
-			<PageHeader title={label} lede="The files as they were when this snapshot was taken." />
+			{onBack === undefined ? null : (
+				<div>
+					<button
+						type="button"
+						onClick={onBack}
+						className="kt-focusable m-0 cursor-pointer rounded-xs border-0 bg-transparent p-0 text-xs text-muted hover:text-fg hover:underline"
+					>
+						{backLabel ?? "Back"}
+					</button>
+				</div>
+			)}
+			{label === undefined ? null : <PageHeader title={label} lede={lede} />}
 			<div className="flex min-w-0 items-center gap-3">
 				<Breadcrumbs label="Folder" parents={parents} current={<span>{segments.at(-1) ?? "Root"}</span>} />
 				{folderHref === undefined ? null : (
@@ -251,11 +259,16 @@ function FileView({
 				</div>
 			) : state.value === undefined ? (
 				<p className="m-0 p-4 text-muted">
-					Kantel can't show this file here.{" "}
-					<a className="text-fg underline decoration-border-strong underline-offset-2" href={href} download>
-						Download it
-					</a>{" "}
-					to open it.
+					Kantel can't show this file here.
+					{href === undefined ? null : (
+						<>
+							{" "}
+							<a className="text-fg underline decoration-border-strong underline-offset-2" href={href} download>
+								Download it
+							</a>{" "}
+							to open it.
+						</>
+					)}
 				</p>
 			) : (
 				<pre
