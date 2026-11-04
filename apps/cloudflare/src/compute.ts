@@ -516,6 +516,9 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 						primary: own.backend,
 						fallback: stub,
 						holds: async (sandboxId) => (await own.service.sandboxes.placement(sandboxId)) !== undefined,
+						// The stub's are those it placed. One no host holds and the stub never placed (its create on an account's
+						// host failed) isn't revived on the stub: it is made again where its create would put it.
+						fallbackHolds: async (sandboxId) => (await store.sandboxes.get(sandboxId))?.hostId === STUB_HOST_ID,
 						holdsSnapshot: isHostSnapshotRef,
 					}),
 		authenticatePerson: (request) =>

@@ -2,7 +2,8 @@
 // eligible hosts narrowed to that backend's own, so the service's constraints (type, labels, owner) survive.
 import { describe, expect, it } from "vitest";
 import type { BackendCapabilities, BackendHost, SandboxBackend } from "../src/backend.ts";
-import { createRoutedBackend } from "../src/routed-backend.ts";
+import { createRoutedBackend, NOT_HELD } from "../src/routed-backend.ts";
+import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 
 const host = (id: string, accountId?: string): BackendHost => ({
 	id,
@@ -99,5 +100,58 @@ describe("createRoutedBackend", () => {
 		await routed.prepareRebase?.("sbx_f1", { eligibleHosts: ["host_own", "host_stub"] });
 		expect(primary.seen).toEqual([{ method: "prepareRebase", eligible: ["host_own"] }]);
 		expect(fallback.seen).toEqual([{ method: "prepareRebase", eligible: ["host_stub"] }]);
+	});
+
+	it("refuses a sandbox neither holds rather than ask the fallback for it, and places it again only with create", async () => {
+		const primary = fake([host("host_own", "acc_a")]);
+		const fallback = fake([host("host_stub")]);
+		const routed = createRoutedBackend({
+			primary: primary.backend,
+			fallback: fallback.backend,
+			holds: async (id) => id.startsWith("sbx_p"),
+			fallbackHolds: async (id) => id.startsWith("sbx_f"),
+			holdsSnapshot: (ref) => ref.startsWith("host_"),
+		});
+		const eligible = ["host_own", "host_stub"];
+		// Its create failed on the account's host: neither has it.
+		for (const call of [
+			routed.start("sbx_lost", { env: {}, eligibleHosts: eligible }),
+			routed.resume("sbx_lost", { env: {}, eligibleHosts: eligible }),
+			routed.recover("sbx_lost", { env: {}, eligibleHosts: eligible }),
+			routed.exec("sbx_lost", { command: "true" }),
+		]) {
+			await expect(call).rejects.toMatchObject({ code: "unavailable", message: NOT_HELD });
+		}
+		expect([...primary.seen, ...fallback.seen]).toEqual([]);
+		// What the fallback holds still goes there, a destroy of one neither holds too (it has nothing to destroy).
+		await routed.start("sbx_f1", { env: {}, eligibleHosts: eligible });
+		await routed.destroy("sbx_lost");
+		// Made again as a create, it goes where a new sandbox goes: the account's own host.
+		await routed.create(spec("sbx_lost", eligible));
+		expect(fallback.seen).toEqual([{ method: "start", eligible: ["host_stub"] }]);
+		expect(primary.seen).toEqual([{ method: "create", eligible: ["host_own"] }]);
+	});
+
+	it("says why the fallback can't take a sandbox it holds when none of the hosts it may use is the fallback's", async () => {
+		const stub = createStubBackend();
+		const routed = createRoutedBackend({
+			primary: fake([host("host_own", "acc_a")]).backend,
+			fallback: stub,
+			holds: async () => false,
+			holdsSnapshot: () => false,
+		});
+		await routed.create(spec("sbx_f1", [STUB_HOST_ID]));
+		// It may use only the account's host now: narrowed to the stub's own, none is left.
+		await expect(routed.recover("sbx_f1", { env: {}, eligibleHosts: ["host_own"] })).rejects.toMatchObject({
+			code: "unavailable",
+			message: "It is on the deployment's shared hosts, none of which it may use now; it may use host_own",
+		});
+		// The stub, asked itself, says as much.
+		await expect(stub.recover("sbx_f1", { env: {}, eligibleHosts: [] })).rejects.toMatchObject({
+			message: `The stub's host (${STUB_HOST_ID}) isn't one this sandbox may use now: none of its eligible hosts is the stub's`,
+		});
+		await expect(stub.recover("sbx_f1", { env: {}, eligibleHosts: ["host_own"] })).rejects.toMatchObject({
+			message: `The stub's host (${STUB_HOST_ID}) isn't one this sandbox may use now; it may use host_own`,
+		});
 	});
 });

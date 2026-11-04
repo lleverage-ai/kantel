@@ -106,7 +106,7 @@ async function start(db: DatabaseSync, vars: { KANTEL_ACCOUNT_HOSTS?: string; KA
  * echoes what comes in, uppercased (an SSH server stands in), or with `http`, answers one HTTP request with a page
  * naming the request line and the Host it was asked for, then ends the stream (a web server stands in).
  */
-function fakeHost(options: { readonly http?: boolean } = {}) {
+function fakeHost(options: { readonly http?: boolean; failCreates?: number } = {}) {
 	const requests = new Map<number, string>();
 	/** Streams that upgraded to a WebSocket: what the server has of their frames so far. */
 	const sockets = new Map<number, Uint8Array>();
@@ -127,6 +127,12 @@ function fakeHost(options: { readonly http?: boolean } = {}) {
 			const params = message.params as { sandboxId: string; command?: string; snapshotId?: string };
 			const answer = (result: unknown) => receive(JSON.stringify({ type: "result", id: message.id, result }));
 			if (message.method === "sandbox.create") {
+				// The first `failCreates` creates fail as a host whose disk can't be made fails them.
+				if ((options.failCreates ?? 0) > 0) {
+					options.failCreates = (options.failCreates ?? 0) - 1;
+					const error = { code: "internal", message: "The sandbox's disk couldn't be partitioned" };
+					return receive(JSON.stringify({ type: "result", id: message.id, error }));
+				}
 				sandboxes.add(params.sandboxId);
 				return answer({ id: params.sandboxId, tier: "microvm", size: "default", state: "running", createdAt: 1 });
 			}
@@ -943,6 +949,72 @@ describe("Account hosts on the Worker", () => {
 		const again = await start(db, on);
 		const kept = await again.stack.compute.hosts?.service.get(hostId);
 		expect(kept).toMatchObject({ id: hostId, accountId: personal, state: "revoked" });
+	});
+
+	it("makes a microVM whose create failed on the account's host again there on recover or start, never on the stub", async () => {
+		const db = new DatabaseSync(":memory:");
+		const { stack, call } = await start(db, { KANTEL_ACCOUNT_HOSTS: "experimental", KANTEL_PUBLIC_URL: BASE });
+		const hosts = stack.compute.hosts;
+		if (hosts === undefined) throw new Error("Account hosts are on");
+		const joinToken = await call("POST", "/v1/hosts/join-tokens", { name: "kantel" });
+		const registered = await call("POST", "/v1/hosts/register", { token: joinToken.body.token }, {});
+		const { hostId, credential } = registered.body as { hostId: string; credential: string };
+		// Its first two creates fail, as a host whose disk can't be partitioned fails them.
+		const host = fakeHost({ failCreates: 2 });
+		const held = await hosts.connect(credential, host.socket);
+		if (held === undefined) throw new Error("The host's credential was refused");
+		host.attach(held, hostId);
+		await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
+
+		// Plain creates (no snapshot), both failed on the host: neither the host nor the stub holds them.
+		const ids: string[] = [];
+		for (let i = 0; i < 2; i++) {
+			const made = await call("POST", "/v1/sandboxes", { type: "microvm", wait: true });
+			expect(made.body).toMatchObject({ state: "error" });
+			expect(made.body.hostId).toBeUndefined();
+			ids.push(made.body.id as string);
+		}
+		const [recovered = "", started = ""] = ids;
+		expect(await hosts.service.sandboxes.placement(recovered)).toBeUndefined();
+		expect(host.sandboxes.size).toBe(0);
+
+		// Recovered, the first is made again as its create would make it, on the account's host; the second, started.
+		const recovering = await call("POST", `/v1/sandboxes/${recovered}/recover`);
+		expect(recovering.status).toBe(200);
+		await expect.poll(async () => (await call("GET", `/v1/sandboxes/${recovered}`)).body.state).toBe("running");
+		const restarted = await call("POST", `/v1/sandboxes/${started}/start`, { wait: true });
+		expect(restarted.body).toMatchObject({ state: "running", hostId });
+		for (const id of ids) {
+			expect((await call("GET", `/v1/sandboxes/${id}`)).body).toMatchObject({ state: "running", hostId });
+			expect(host.sandboxes.has(id)).toBe(true);
+			const run = await call("POST", `/v1/sandboxes/${id}/commands`, { command: "echo hello" });
+			expect(run.body).toMatchObject({ exitCode: 0, stdout: "hello from my own machine\n" });
+		}
+		expect(host.calls.filter((method) => method === "sandbox.create")).toHaveLength(4);
+	});
+
+	it("makes a sign-up's microVM whose create failed on her host again there on recover, with no stub to fall to", async () => {
+		const { call, signIn, hosts } = await startPublic();
+		const ada = await signIn("ada@example.test");
+		const joinToken = await call("POST", "/v1/hosts/join-tokens", { token: ada, body: { name: "adas-box" } });
+		const registered = await call("POST", "/v1/hosts/register", { body: { token: joinToken.body.token } });
+		const { hostId, credential } = registered.body as { hostId: string; credential: string };
+		const host = fakeHost({ failCreates: 1 });
+		const held = await hosts.connect(credential, host.socket);
+		if (held === undefined) throw new Error("The host's credential was refused");
+		host.attach(held, hostId);
+		await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
+
+		const made = await call("POST", "/v1/sandboxes", { token: ada, body: { type: "microvm", wait: true } });
+		expect(made.body).toMatchObject({ state: "error" });
+		const sandboxId = made.body.id as string;
+
+		// Her host is the only one she may use; recovered, the sandbox is made there, not refused for the stub's lack.
+		expect((await call("POST", `/v1/sandboxes/${sandboxId}/recover`, { token: ada })).status).toBe(200);
+		await expect
+			.poll(async () => (await call("GET", `/v1/sandboxes/${sandboxId}`, { token: ada })).body.state)
+			.toBe("running");
+		expect(host.sandboxes.has(sandboxId)).toBe(true);
 	});
 
 	it("serves a host's sandbox's exposed port on its name under kantel.run, with its token unless public", async () => {

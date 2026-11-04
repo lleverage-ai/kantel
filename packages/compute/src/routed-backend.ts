@@ -9,7 +9,9 @@
  *
  * A sandbox or snapshot stays on the backend that holds it: adding a host changes where new sandboxes go, not where
  * existing disks are. For those calls the service passes every qualifying host the account may use (online, the
- * type, the labels), and the backend that answers gets the ones among them that are its own.
+ * type, the labels), and the backend that answers gets the ones among them that are its own. A sandbox neither holds
+ * (its create failed, say) isn't sent to `fallback` to be answered as if it were there: it is refused (`NOT_HELD`), and
+ * the service makes it again with `create`, which places it as any new sandbox.
  */
 import { KantelError } from "@kantel/contracts";
 import type { BackendCapabilities, BackendSize, Placement, SandboxBackend, SandboxSpec } from "./backend.ts";
@@ -19,23 +21,58 @@ export interface RoutedBackendOptions {
 	readonly fallback: SandboxBackend;
 	/** Whether `primary` holds the sandbox (it was placed there). */
 	holds(sandboxId: string): Promise<boolean>;
+	/**
+	 * Whether `fallback` holds a sandbox `primary` doesn't (its placement there is recorded). Absent, it is taken to hold
+	 * every such sandbox. One `fallback` has just made here is taken as held before then, so the calls of its boot (its
+	 * egress, sent before it is recorded as running) reach it.
+	 */
+	fallbackHolds?(sandboxId: string): Promise<boolean>;
 	/** Whether a snapshot reference is `primary`'s. */
 	holdsSnapshot(ref: string): boolean;
 }
 
+/** What a call for a sandbox neither backend holds is refused with. */
+export const NOT_HELD =
+	"No backend holds this sandbox: it isn't on one of the account's own hosts or on the deployment's shared hosts " +
+	"(it was never placed, if its create failed)";
+
 export function createRoutedBackend(options: RoutedBackendOptions): SandboxBackend {
-	const { primary, fallback } = options;
-	const on = async (sandboxId: string): Promise<SandboxBackend> =>
-		(await options.holds(sandboxId)) ? primary : fallback;
+	const { primary, fallback, fallbackHolds } = options;
+	/** Sandboxes `fallback` made here whose placement `fallbackHolds` doesn't see yet; each goes once it does. */
+	const madeOnFallback = new Set<string>();
+	const made = (backend: SandboxBackend, sandboxIds: readonly string[]) => {
+		if (backend === fallback && fallbackHolds !== undefined) for (const id of sandboxIds) madeOnFallback.add(id);
+	};
+	/** The backend that holds the sandbox, refused when neither does. */
+	const on = async (sandboxId: string): Promise<SandboxBackend> => {
+		if (await options.holds(sandboxId)) return primary;
+		if (fallbackHolds === undefined) return fallback;
+		if (await fallbackHolds(sandboxId)) {
+			madeOnFallback.delete(sandboxId);
+			return fallback;
+		}
+		if (madeOnFallback.has(sandboxId)) return fallback;
+		throw new KantelError("unavailable", NOT_HELD);
+	};
 	const forRef = (ref: string): SandboxBackend => (options.holdsSnapshot(ref) ? primary : fallback);
 
-	/** The service's eligible hosts narrowed to `backend`'s own: the constraints kept, the disk's backend respected. */
+	/**
+	 * The service's eligible hosts narrowed to `backend`'s own: the constraints kept, the disk's backend respected. On
+	 * `fallback`, none left is refused here, saying which hosts it may use (`primary` says which host its disk is on).
+	 */
 	async function affine<T extends { readonly eligibleHosts: readonly string[] }>(
 		backend: SandboxBackend,
 		input: T,
 	): Promise<T> {
 		const own = new Set((await backend.capabilities()).hosts.map((host) => host.id));
-		return { ...input, eligibleHosts: input.eligibleHosts.filter((id) => own.has(id)) };
+		const eligibleHosts = input.eligibleHosts.filter((id) => own.has(id));
+		if (backend === fallback && eligibleHosts.length === 0 && input.eligibleHosts.length > 0) {
+			throw new KantelError(
+				"unavailable",
+				`It is on the deployment's shared hosts, none of which it may use now; it may use ${input.eligibleHosts.join(", ")}`,
+			);
+		}
+		return { ...input, eligibleHosts };
 	}
 
 	/** Where a new sandbox goes: the backend its snapshot is on, else `primary` for any of its hosts. */
@@ -63,7 +100,9 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		},
 		async create(spec): Promise<Placement> {
 			const placed = await placeNew(spec);
-			return placed.backend.create(placed.spec);
+			const placement = await placed.backend.create(placed.spec);
+			made(placed.backend, [spec.sandboxId]);
+			return placement;
 		},
 		async start(id, boot) {
 			const backend = await on(id);
@@ -81,13 +120,25 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		},
 		async fork(source, targets) {
 			const backend = source.snapshot === undefined ? await on(source.sandboxId) : forRef(source.snapshot);
-			return backend.fork(source, await Promise.all(targets.map((target) => affine(backend, target))));
+			const placements = await backend.fork(
+				source,
+				await Promise.all(targets.map((target) => affine(backend, target))),
+			);
+			made(
+				backend,
+				targets.map((target) => target.sandboxId),
+			);
+			return placements;
 		},
 		async recover(id, boot) {
 			const backend = await on(id);
 			return backend.recover(id, await affine(backend, boot));
 		},
-		destroy: async (id) => (await on(id)).destroy(id),
+		// A sandbox neither holds has nothing to destroy: `fallback` answers it, as it answers one it lost.
+		async destroy(id) {
+			madeOnFallback.delete(id);
+			return ((await options.holds(id)) ? primary : fallback).destroy(id);
+		},
 		exec: async (id, request) => (await on(id)).exec(id, request),
 		readFile: async (id, path, range) => (await on(id)).readFile(id, path, range),
 		writeFile: async (id, path, content, mode) => (await on(id)).writeFile(id, path, content, mode),
