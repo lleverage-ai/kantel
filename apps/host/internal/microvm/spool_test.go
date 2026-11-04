@@ -132,3 +132,50 @@ func TestSpoolMovesMemoryToDiskAndKeepsLinks(t *testing.T) {
 		t.Fatalf("spool still counts %d bytes", used)
 	}
 }
+
+// A shared template's sandbox's memory file spans its whole hotplug region, mostly holes: draining it gives back what
+// was reserved for it, not its length, so the spool never counts below empty (and then holds more than its max).
+func TestSpoolGivesBackWhatItReserved(t *testing.T) {
+	root := t.TempDir()
+	sp := newSpool(filepath.Join(root, "spool"), 1<<20, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	path := sp.reserve(4096)
+	if path == "" {
+		t.Fatal("no room")
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write(bytes.Repeat([]byte{1}, 4096)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(64 << 20); err != nil { // 64 MiB long, 4 KiB written
+		t.Fatal(err)
+	}
+	f.Close()
+	if err := sp.place(path, filepath.Join(root, "mem")); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		sp.mu.Lock()
+		pending, used := len(sp.targets), sp.used
+		sp.mu.Unlock()
+		if pending == 0 {
+			if used != 0 {
+				t.Fatalf("the spool counts %d bytes used once empty, want 0", used)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the spool never drained")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// A cancelled reservation gives back what it took too.
+	cancelled := sp.reserve(8192)
+	sp.cancel(cancelled)
+	if sp.used != 0 {
+		t.Fatalf("a cancelled reservation left %d bytes used", sp.used)
+	}
+}

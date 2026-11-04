@@ -78,6 +78,8 @@ type Config struct {
 	// UsageIntervalSeconds is how often the host samples its own and its sandboxes' CPU and memory and pushes them to
 	// the control plane (a "usage" event; default 5, below 0 never).
 	UsageIntervalSeconds int `json:"usageIntervalSeconds,omitempty"`
+	// MicroVM holds the microVM tier's template settings.
+	MicroVM MicroVMConfig `json:"microvm,omitempty"`
 
 	// ImagePatching is the switch for versioned host images (experimental, default off): the host keeps each version
 	// of the kernel and images side by side under ImagesDir, takes new ones from the control plane's image channel,
@@ -99,6 +101,30 @@ type Config struct {
 	Cosign string `json:"cosign,omitempty"`
 	// ImagesDir holds the versioned images (default Root/images).
 	ImagesDir string `json:"imagesDir,omitempty"`
+}
+
+// MicroVMConfig is the microVM tier's template settings.
+type MicroVMConfig struct {
+	// SharedTemplate (default true) makes a template snapshot per vCPU count, on disk, serve every memory and disk
+	// size of that count, named or custom: a sandbox restores in well under a second with no warm pool and no
+	// template of its own to boot first; its memory is plugged with virtio-mem and its disk is grown. The named
+	// sizes' counts are made in the background when the host starts, any other count on its first create (which
+	// cold-boots meanwhile). false keeps a template per named size and cold-boots custom shapes, as before. Package
+	// microvm (shared.go) says how.
+	SharedTemplate *bool `json:"sharedTemplate,omitempty"`
+	// The shared templates' shape. TemplateVCPUs is the most vCPUs a shared template has (default the host's CPUs,
+	// at most 32); TemplateMemoryMiB the memory one boots with (default the least of the named sizes', at least
+	// 1024); TemplateMaxMemoryMiB the most memory one can grow to (default the machine's); TemplateDiskGiB the disk
+	// one is made with (default the smallest of the named sizes'). A shape outside them cold-boots.
+	TemplateVCPUs        int `json:"templateVCPUs,omitempty"`
+	TemplateMemoryMiB    int `json:"templateMemoryMiB,omitempty"`
+	TemplateMaxMemoryMiB int `json:"templateMaxMemoryMiB,omitempty"`
+	TemplateDiskGiB      int `json:"templateDiskGiB,omitempty"`
+}
+
+// SharedTemplates says whether the microVM tier's shared templates are on (the default).
+func (c MicroVMConfig) SharedTemplates() bool {
+	return c.SharedTemplate == nil || *c.SharedTemplate
 }
 
 const DefaultRoot = "/var/lib/kantel-host"

@@ -29,6 +29,9 @@ type spool struct {
 	mu      sync.Mutex
 	used    int64
 	targets map[string][]string // spool file -> the symlinks that point at it
+	// charged is what each spool file counts for in used, given back when it goes: its reservation, not its length
+	// (a shared template's sandbox's memory file spans its whole hotplug region, mostly holes).
+	charged map[string]int64
 	queue   chan string
 
 	beforeRename func(target string) // tests: called after the copy, before the lock is taken to rename
@@ -42,7 +45,7 @@ func newSpool(dir string, maxBytes int64, log *slog.Logger) *spool {
 		log.Warn("no memory spool", "dir", dir, "error", err)
 		return nil
 	}
-	sp := &spool{dir: dir, max: maxBytes, log: log, targets: map[string][]string{}, queue: make(chan string, 1024)}
+	sp := &spool{dir: dir, max: maxBytes, log: log, targets: map[string][]string{}, charged: map[string]int64{}, queue: make(chan string, 1024)}
 	go sp.worker()
 	return sp
 }
@@ -63,19 +66,26 @@ func (sp *spool) reserve(n int64) string {
 	_, _ = rand.Read(b)
 	path := filepath.Join(sp.dir, hex.EncodeToString(b)+".mem")
 	sp.targets[path] = nil
+	sp.charged[path] = n
 	return path
 }
 
 // cancel gives back a reservation whose file was never written.
-func (sp *spool) cancel(path string, n int64) {
+func (sp *spool) cancel(path string) {
 	if sp == nil || path == "" {
 		return
 	}
 	sp.mu.Lock()
 	delete(sp.targets, path)
-	sp.used -= n
+	sp.release(path)
 	sp.mu.Unlock()
 	_ = os.Remove(path)
+}
+
+// release gives back what path was charged, once. Called with mu held.
+func (sp *spool) release(path string) {
+	sp.used -= sp.charged[path]
+	delete(sp.charged, path)
 }
 
 // place points target at the spooled file and queues the file for the disk. Call it once per spooled file, after
@@ -123,11 +133,6 @@ func (sp *spool) worker() {
 // flush copies one spooled file to disk once (beside the first of its targets still pointing at it), hard-links
 // that copy over each such target, and frees the RAM.
 func (sp *spool) flush(path string) {
-	info, err := os.Stat(path)
-	size := int64(0)
-	if err == nil {
-		size = info.Size()
-	}
 	var copied string // the disk copy, a hidden file the targets are hard-linked to
 	defer func() {
 		if copied != "" {
@@ -178,7 +183,7 @@ func (sp *spool) flush(path string) {
 		sp.mu.Lock()
 		if len(sp.targets[path]) == len(targets) {
 			delete(sp.targets, path)
-			sp.used -= size
+			sp.release(path)
 			sp.mu.Unlock()
 			break
 		}
@@ -205,7 +210,13 @@ func (sp *spool) adopt(paths []string) {
 		sp.mu.Lock()
 		_, known := sp.targets[dest]
 		if !known {
-			sp.used += info.Size()
+			// What it takes in RAM: a sparse file's holes take none.
+			n := info.Size()
+			if st, ok := info.Sys().(*syscall.Stat_t); ok {
+				n = st.Blocks * 512
+			}
+			sp.charged[dest] = n
+			sp.used += n
 		}
 		sp.targets[dest] = append(sp.targets[dest], target)
 		sp.mu.Unlock()
