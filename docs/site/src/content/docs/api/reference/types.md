@@ -603,6 +603,57 @@ One of: `"utf8"` or `"base64"`.
 | `labels` | Record&lt;string, string&gt; | no |  |
 | `wait` | boolean | no |  |
 
+### GuestAgent
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `version` | string | yes |  |
+| `injected` | boolean | yes | Kantel put its guest agent into the image at boot (any Linux image), rather than the image shipping it. |
+
+### GuestCapabilities
+
+What a microVM's image has, as its guest agent found it when it last started: its OS, and whether it has a desktop, a browser and Docker.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `reportedAt` | integer | yes | Epoch milliseconds, UTC. |
+| `agent` | [GuestAgent](/api/reference/types/#guestagent) | yes |  |
+| `os` | [GuestOs](/api/reference/types/#guestos) | yes |  |
+| `arch` | string | yes | The machine, as `uname -m` says it: `x86_64` or `aarch64`. |
+| `libc` | `"glibc"` or `"musl"` or `"none"` | yes | The image's C library; `none` for a static userland such as busybox's. |
+| `shell` | string | no | The shell a `command` runs in, such as `/bin/bash`; absent: `argv` only. |
+| `init` | `"systemd"` or `"kantel"` | yes | PID 1: the image's systemd, or Kantel's own init when the image has none. |
+| `desktop` | [GuestFeature](/api/reference/types/#guestfeature) | yes |  |
+| `browser` | [GuestFeature](/api/reference/types/#guestfeature) | yes |  |
+| `docker` | [GuestDocker](/api/reference/types/#guestdocker) | yes |  |
+
+### GuestDocker
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `available` | boolean | yes |  |
+| `detail` | string | no | What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`. |
+| `reason` | string | no | Why it isn't available, in words, such as `No desktop in this image`. |
+| `kvm` | boolean | yes | `/dev/kvm` opens inside, so containers and VMs in it can nest. |
+
+### GuestFeature
+
+One thing a microVM's image has or lacks.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `available` | boolean | yes |  |
+| `detail` | string | no | What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`. |
+| `reason` | string | no | Why it isn't available, in words, such as `No desktop in this image`. |
+
+### GuestOs
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | `/etc/os-release`'s `ID`, such as `debian`, `alpine` or `ubuntu`. |
+| `name` | string | yes | Its pretty name, such as `Debian GNU/Linux 13 (trixie)`. |
+| `version` | string | no | `VERSION_ID`, such as `13` or `3.22.2`. |
+
 ### Host
 
 A machine that runs sandboxes. It dials out to the control plane; it takes no inbound ports.
@@ -876,7 +927,7 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 
 ### SandboxCapabilities
 
-What this sandbox can do, from its type and its host.
+What this sandbox can do, from its type and its host, and for a microVM from what its guest agent found in its image (`guest`): `desktop`, `browser`, `docker` and `kvm` are false where the image lacks them.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -889,6 +940,7 @@ What this sandbox can do, from its type and its host.
 | `docker` | boolean | yes |  |
 | `kvm` | boolean | yes | `/dev/kvm` inside, for nested virtualisation. |
 | `pause` | boolean | yes | Whether it can be paused with its memory kept. |
+| `guest` | [GuestCapabilities](/api/reference/types/#guestcapabilities) | no |  |
 
 ### SandboxEgress
 
