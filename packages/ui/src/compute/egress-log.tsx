@@ -371,7 +371,8 @@ function PhoneEntry({
 			data-egress={entry.id}
 			data-decision={entry.decision}
 		>
-			{/* The request whole on its own line, then the decision with when, which sandbox and how much moved. */}
+			{/* Three tiers: the request whole; the decision with when and which sandbox; then, quieter, what was swapped
+			    in and how much moved. */}
 			<RequestCell entry={entry} open={expanded} detailId={detailId} onToggle={onToggle} wrap />
 			<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-sm text-muted">
 				<Decision entry={entry} slot={false} />
@@ -379,9 +380,11 @@ function PhoneEntry({
 					{agoText(entry.at, now)}
 				</span>
 				{sandboxColumn ? <span>{entry.sandboxName}</span> : null}
+			</div>
+			<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-faint empty:hidden">
 				{entry.swapped.length === 0 ? null : (
 					<span>
-						Swapped <span className="font-mono text-code text-fg">{entry.swapped.join(", ")}</span>
+						Swapped <span className="font-mono text-muted">{entry.swapped.join(", ")}</span>
 					</span>
 				)}
 				{/* What moved, in words; nothing at all is left unsaid rather than shown as dashes. */}

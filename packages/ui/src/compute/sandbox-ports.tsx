@@ -110,7 +110,13 @@ export function SandboxPorts({
 				id="sandbox-ports"
 				title="Ports"
 				actions={
-					<Button size="sm" variant="ghost" icon={<PlusIcon size="sm" />} onClick={() => setExposing(true)}>
+					<Button
+						size="sm"
+						variant="ghost"
+						className="-mr-3"
+						icon={<PlusIcon size="sm" />}
+						onClick={() => setExposing(true)}
+					>
 						Expose
 					</Button>
 				}

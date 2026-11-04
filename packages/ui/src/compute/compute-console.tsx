@@ -1139,23 +1139,30 @@ function ConsoleLoading({ narrow, title }: { narrow: boolean; title: string | un
 				<span className={`${skeletonClass} h-(--kt-control-md) ${narrow ? "w-full" : "w-80"} rounded-control`} />
 			</div>
 			{narrow ? (
-				<div className="flex flex-col">
-					{Array.from({ length: rows }, (_, row) => (
-						<div
-							// biome-ignore lint/suspicious/noArrayIndexKey: identical placeholder rows.
-							key={row}
-							className="flex items-start gap-3 border-b border-border py-3"
-						>
-							<span className={`${skeletonClass} mt-1 size-3.5 flex-none`} />
-							<div className="flex min-w-0 flex-1 flex-col gap-2">
-								<Skeleton width={`${40 + ((row * 17) % 30)}%`} />
-								<Skeleton width={`${55 + ((row * 11) % 25)}%`} />
+				// The phone list as it loads: Select all over a card of two-line rows, the shape of what replaces it.
+				<div className="flex flex-col gap-2">
+					<div className="flex h-control-sm items-center gap-3">
+						<span className={`${skeletonClass} size-3.5 flex-none`} />
+						<span className={`${skeletonClass} h-(--kt-text-sm) w-20`} />
+					</div>
+					<div className="flex flex-col rounded-panel border border-border bg-raised">
+						{Array.from({ length: rows }, (_, row) => (
+							<div
+								// biome-ignore lint/suspicious/noArrayIndexKey: identical placeholder rows.
+								key={row}
+								className="flex items-start gap-3 border-b border-border px-3 py-3 last:border-b-0"
+							>
+								<span className={`${skeletonClass} mt-1 size-3.5 flex-none`} />
+								<div className="flex min-w-0 flex-1 flex-col gap-2 py-0.5">
+									<Skeleton width={`${40 + ((row * 17) % 30)}%`} />
+									<Skeleton width={`${55 + ((row * 11) % 25)}%`} />
+								</div>
+								<div className="w-16 flex-none pt-0.5">
+									<Skeleton />
+								</div>
 							</div>
-							<div className="w-16 flex-none">
-								<Skeleton />
-							</div>
-						</div>
-					))}
+						))}
+					</div>
 				</div>
 			) : (
 				// The sandboxes table itself, with placeholders in its cells: the page that arrives lands on it unmoved.

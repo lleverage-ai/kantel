@@ -237,31 +237,27 @@ function KeyList({
 			</button>
 		);
 	if (narrow) {
+		// One card, as on a wide screen: the live keys, then the revoked ones' fold as the card's last row, and the revoked
+		// keys under it when it's open.
 		return (
-			<div className="flex min-w-0 flex-col gap-3">
-				<ul className="kt-key-rows m-0 flex list-none flex-col rounded-panel border border-border bg-raised p-0">
-					{live.map((key) => (
-						<KeyPhoneRow key={key.id} apiKey={key} now={now} onRevoke={onRevoke} />
-					))}
-				</ul>
-				{fold === null ? null : (
-					<div className="flex flex-col gap-1">
-						<div>{fold}</div>
-						{open ? (
-							<ul
-								id={foldId}
-								className="kt-key-rows m-0 flex list-none flex-col rounded-panel border border-border bg-raised p-0"
-							>
-								{revoked.map((key) => (
-									<KeyPhoneRow key={key.id} apiKey={key} now={now} onRevoke={onRevoke} />
-								))}
-							</ul>
-						) : null}
-					</div>
-				)}
-			</div>
+			<ul className="kt-key-rows m-0 flex list-none flex-col rounded-panel border border-border bg-raised p-0">
+				{live.map((key) => (
+					<KeyPhoneRow key={key.id} apiKey={key} now={now} onRevoke={onRevoke} />
+				))}
+				{fold === null ? null : <li className="border-b border-border px-3 py-2 last:border-b-0">{fold}</li>}
+				{fold !== null && open ? (
+					<li className="p-0">
+						<ul id={foldId} className="kt-key-rows m-0 flex list-none flex-col p-0">
+							{revoked.map((key) => (
+								<KeyPhoneRow key={key.id} apiKey={key} now={now} onRevoke={onRevoke} />
+							))}
+						</ul>
+					</li>
+				) : null}
+			</ul>
 		);
 	}
+
 	return (
 		<div className={tableFrame}>
 			<table className={table}>

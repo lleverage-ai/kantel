@@ -783,7 +783,7 @@ function SandboxColumns({ hosted }: { hosted: boolean }) {
 			<col className="w-28" />
 			{hosted ? <col className="w-20" /> : null}
 			<col className="w-16" />
-			<col className="w-28" />
+			<col className="w-24" />
 		</colgroup>
 	);
 }
@@ -904,7 +904,7 @@ function SandboxRow({
 				{/* What went wrong under the name, and what to do about it at the end of the same line. */}
 				<td className="border-b border-border px-2 pt-0 pb-2.5 text-sm" colSpan={hosting === "hosted" ? 9 : 8}>
 					<span className="flex min-w-0 items-center gap-3">
-						<span className="min-w-0 flex-1 text-status-error">{failure}</span>
+						<span className="min-w-0 flex-1 text-fg">{failure}</span>
 						{can.recover ? (
 							<Button size="sm" icon={<ReconnectIcon size="sm" />} onClick={recover}>
 								Recover
@@ -944,7 +944,7 @@ function SandboxPhoneRow({
 				<StateLabel state={sandbox.state} />
 			</div>
 			{sandbox.state === "error" && sandbox.error !== undefined ? (
-				<span className="line-clamp-2 text-sm text-status-error">{sandbox.error}</span>
+				<span className="line-clamp-2 text-sm text-fg">{sandbox.error}</span>
 			) : (
 				<span className="flex min-w-0 flex-wrap gap-x-3 text-sm text-muted">
 					<span>
