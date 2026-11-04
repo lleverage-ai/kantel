@@ -774,7 +774,9 @@ describe("Account hosts on the Worker", () => {
 		expect(traded.status).toBe(303);
 		expect(traded.headers.get("location")).toBe("/hello?a=1");
 		const cookie = (traded.headers.get("set-cookie") ?? "").split(";")[0] ?? "";
-		expect(traded.headers.get("set-cookie")).toMatch(/HttpOnly; SameSite=Lax; Secure$/);
+		expect(traded.headers.get("set-cookie")).toMatch(
+			/^__Host-kantel_port=[^;]+; Path=\/; HttpOnly; Secure; SameSite=Lax$/,
+		);
 		// With it, the sandbox's own page, asked for under its public name, with Kantel's cookie kept from it.
 		const served = await page("/hello?a=1", { cookie, "cf-connecting-ip": "203.0.113.9" });
 		expect(served.status).toBe(200);
@@ -794,6 +796,61 @@ describe("Account hosts on the Worker", () => {
 		expect(await openPage.text()).toContain(`Host: ${publicName}`);
 		expect((await call("DELETE", `/v1/sandboxes/${sandboxId}/ports/8080`)).status).toBe(204);
 		expect((await compute.servePort(new Request(`https://${publicName}/`))).status).toBe(404);
+	});
+
+	it("gives a microVM placed before ports were served here the ports capability on start, and nothing else", async () => {
+		const db = new DatabaseSync(":memory:");
+		const on = { KANTEL_ACCOUNT_HOSTS: "experimental", KANTEL_PUBLIC_URL: BASE };
+		const first = await start(db, on);
+		const hosts = first.stack.compute.hosts;
+		if (hosts === undefined) throw new Error("Account hosts are on");
+		const token = (await first.call("POST", "/v1/hosts/join-tokens", { name: "toms-box" })).body.token as string;
+		const { hostId, credential } = (await first.call("POST", "/v1/hosts/register", { token }, {})).body as {
+			hostId: string;
+			credential: string;
+		};
+		const host = fakeHost({ http: true });
+		const held = await hosts.connect(credential, host.socket);
+		if (held === undefined) throw new Error("The host's credential was refused");
+		host.attach(held, hostId);
+		await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
+		const vm = (await first.call("POST", "/v1/sandboxes", { type: "microvm", wait: true })).body;
+		const isolate = (await first.call("POST", "/v1/sandboxes", { type: "isolate", wait: true })).body;
+		expect(vm.capabilities).toMatchObject({ ports: true });
+		await first.stack.compute.close();
+
+		// As the previous deploy wrote it: a running microVM on an account host, without ports.
+		const record = (id: unknown) => {
+			const row = db
+				.prepare("SELECT data FROM compute_api_records WHERE kind = 'sandboxes' AND id = ?")
+				.get(String(id));
+			return JSON.parse(String((row as { data: string }).data)) as Record<string, unknown>;
+		};
+		const written = (id: unknown, data: Record<string, unknown>) =>
+			db
+				.prepare("UPDATE compute_api_records SET data = ? WHERE kind = 'sandboxes' AND id = ?")
+				.run(JSON.stringify(data), String(id));
+		const before = record(vm.id);
+		written(vm.id, { ...before, capabilities: { ...(before.capabilities as object), ports: false } });
+		// An isolate's record never gets ports, whatever its placement says (this fake host answers every tier as a VM).
+		const isolateWritten = record(isolate.id);
+		written(isolate.id, {
+			...isolateWritten,
+			capabilities: { ...(isolateWritten.capabilities as object), ports: false },
+		});
+		const isolateBefore = record(isolate.id);
+
+		// On start, before any call: the microVM's record is as it was with ports (what `exposePort` checks), state,
+		// placement and every other field kept; the isolate's is untouched. (The identity directory here is in memory, so
+		// the person's account is new after a restart: the record is what's checked.)
+		const again = await start(db, on);
+		expect(record(vm.id)).toEqual(before);
+		expect(record(isolate.id)).toEqual(isolateBefore);
+		// Starting again over records that have it changes nothing.
+		await again.stack.compute.close();
+		const settled = record(vm.id);
+		await start(db, on);
+		expect(record(vm.id)).toEqual(settled);
 	});
 
 	it("answers every name under the ports domain with a 404 while account hosts are off", async () => {
