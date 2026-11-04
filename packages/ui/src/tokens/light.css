@@ -51,7 +51,7 @@
 	--kt-accent: hsl(23 89.4% 52%); /* highlight: the product orange */
 	--kt-accent-hover: hsl(23 89.4% 46%); /* highlight-hover */
 	--kt-accent-fg: hsl(210 33.3% 11.8%); /* foreground: Midnight */
-	--kt-accent-text: hsl(24 84% 36%); /* highlight, darkened for text */
+	--kt-accent-text: hsl(24 84% 33%); /* highlight, darkened for text: AA on its soft ground too */
 	/* The primary action (one per surface): the product orange, as the app's primary button, in both themes. Midnight on
 	   it, not white: white on this orange is 3:1, under AA; Midnight is 5.5:1. */
 	--kt-primary: hsl(23 89.4% 52%); /* highlight */

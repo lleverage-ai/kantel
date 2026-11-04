@@ -58,7 +58,7 @@
 	--kt-accent: hsl(24 84% 57%); /* highlight */
 	--kt-accent-hover: hsl(24 84% 51%); /* highlight-hover */
 	--kt-accent-fg: hsl(220 6% 11%); /* on-primary */
-	--kt-accent-text: hsl(24 84% 57%); /* highlight */
+	--kt-accent-text: hsl(24 84% 63%); /* highlight, lifted for text: AA on its soft ground too */
 	/* The primary action (one per surface): the orange, with the canvas on it. */
 	--kt-primary: hsl(24 84% 53.1%); /* primary */
 	--kt-primary-hover: hsl(24 84% 47%); /* primary-hover */
