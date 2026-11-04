@@ -8,7 +8,7 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { copyFile, type FileHandle, link, mkdir, open, rename, rm, stat, unlink } from "node:fs/promises";
+import { copyFile, type FileHandle, link, mkdir, open, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { KantelError } from "@kantel/contracts";
@@ -35,6 +35,13 @@ function generationOf(generation: number): number {
 		throw new KantelError("invalid", `A bundle's generation is a whole number, not ${String(generation)}`);
 	}
 	return generation;
+}
+
+/** A store's mark (`BundleBlobStore.mark`) as a name, checked first: letters, digits, `_` and `-` alone. */
+function markName(id: string): string {
+	if (!/^[A-Za-z0-9_-]{1,100}$/.test(id))
+		throw new KantelError("invalid", "A bundle store's mark is letters and digits");
+	return id;
 }
 
 /** What a generation of a digest is stored as: the hex alone for generation 0, as before there were generations. */
@@ -92,6 +99,7 @@ const isMissing = (error: unknown) => (error as { code?: unknown } | null)?.code
 /** Bundles in memory, for tests and a gateway with nowhere on disk to keep them: gone with the process. */
 export function createMemoryBundleStore(): BundleBlobStore {
 	const blobs = new Map<string, Uint8Array>();
+	const marks = new Set<string>();
 	return {
 		async put(body, options) {
 			await checkExpected(body, options.expectDigest);
@@ -134,6 +142,12 @@ export function createMemoryBundleStore(): BundleBlobStore {
 		async delete(digest, generation) {
 			blobs.delete(nameOf(digest, generation));
 		},
+		async mark(id) {
+			marks.add(markName(id));
+		},
+		async marked(id) {
+			return marks.has(markName(id));
+		},
 	};
 }
 
@@ -146,6 +160,7 @@ export function createMemoryBundleStore(): BundleBlobStore {
 export function createDirBundleStore(dir: string): BundleBlobStore {
 	const tmpDir = join(dir, "tmp");
 	const blobDir = join(dir, "sha256");
+	const markDir = join(dir, "marks");
 	const pathOf = (digest: string, generation: number) => join(blobDir, nameOf(digest, generation));
 	return {
 		async put(body, options) {
@@ -223,6 +238,17 @@ export function createDirBundleStore(dir: string): BundleBlobStore {
 			await unlink(pathOf(digest, generation)).catch((error: unknown) => {
 				if (!isMissing(error)) throw error;
 			});
+		},
+		async mark(id) {
+			await mkdir(markDir, { recursive: true });
+			await writeFile(join(markDir, markName(id)), "", { mode: 0o600 });
+		},
+		async marked(id) {
+			const info = await stat(join(markDir, markName(id))).catch((error: unknown) => {
+				if (isMissing(error)) return undefined;
+				throw error;
+			});
+			return info?.isFile() === true;
 		},
 	};
 }

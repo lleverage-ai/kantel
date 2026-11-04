@@ -1,6 +1,7 @@
 // The compute plane's records behave the same in memory and on every SQL driver a target uses: records copied in and
 // out, `list` oldest first by first insertion, and `update` atomic, so several gateways can share one database.
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
+import type { SqlDriver } from "@kantel/sql";
 import { pgliteDatabase, testDatabaseKinds } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
@@ -31,6 +32,8 @@ interface Opened {
 	readonly items: Collection<Item>;
 	/** Runs the migration again; absent in memory. */
 	readonly migrate?: () => Promise<void>;
+	/** Runs `then` once, just after the next read of one record a versioned write makes, before it writes; SQL only. */
+	readonly afterVersionedRead?: (then: () => Promise<void>) => void;
 }
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -242,6 +245,29 @@ function behaves(open: () => Promise<Opened>, sql: boolean) {
 			expect(await items.get("a")).toEqual(item("a"));
 		});
 
+		it("writes nothing over a record deleted and inserted again since it was read, though its version is the same", async () => {
+			const { items, afterVersionedRead } = await open();
+			await items.put(item("a", "a", false, 1));
+			// Between this update's read and its write, the record is deleted and made again: version 1 both times.
+			afterVersionedRead?.(async () => {
+				await items.delete("a");
+				await items.insert(item("a", "a", false, 5));
+			});
+			const updated = await items.update("a", (current) => ({ ...current, count: current.count + 1 }));
+			// Made from the record there now, not over it from the one read before.
+			expect(updated?.count).toBe(6);
+			expect((await items.get("a"))?.count).toBe(6);
+
+			await items.put(item("b", "a", false, 1));
+			afterVersionedRead?.(async () => {
+				await items.delete("b");
+				await items.insert(item("b", "a", false, 5));
+			});
+			// The check approved the record read, which is gone; the one there now it doesn't, so that one stays.
+			expect(await items.deleteIf("b", (current) => current.count === 1)).toBe(false);
+			expect((await items.get("b"))?.count).toBe(5);
+		});
+
 		it("refuses to list by a field that isn't a plain name", async () => {
 			const { items } = await open();
 			await expect(items.list({ "group') OR ('1": "x" } as unknown as Partial<Item>)).rejects.toThrow(/no field/);
@@ -260,10 +286,27 @@ for (const kind of testDatabaseKinds()) {
 			cleanups.push(() => database.close());
 			await migrateComputeStore(database.driver);
 			await migrateComputeStore(database.driver);
+			let pending: (() => Promise<void>) | undefined;
+			const driver: SqlDriver = {
+				dialect: database.driver.dialect,
+				batch: (statements) => database.driver.batch(statements),
+				async query(text, params) {
+					const rows = await database.driver.query(text, params);
+					const then = pending;
+					if (then !== undefined && text.startsWith("SELECT data, version ")) {
+						pending = undefined;
+						await then();
+					}
+					return rows as never;
+				},
+			};
 			return {
 				store: createSqlComputeStore(database.driver),
-				items: sqlCollection<Item>(database.driver, "items"),
+				items: sqlCollection<Item>(driver, "items"),
 				migrate: () => migrateComputeStore(database.driver),
+				afterVersionedRead: (then) => {
+					pending = then;
+				},
 			};
 		}, true);
 	});

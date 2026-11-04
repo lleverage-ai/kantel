@@ -278,9 +278,14 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 		result, err = s.openPort(ctx, callCtx, m.Params)
 		done()
 	case proto.MethodFileOpen:
-		// As a port's, the stream outlives the call: it runs on the session's context; the gate holds until it is set up.
-		result, start, err = s.openFile(ctx, callCtx, m.Params)
-		done()
+		// As a port's, the stream outlives the call: it runs on the session's context. The gate holds until its transfer
+		// has ended, not only until it is set up: a write finds its sandbox only once it starts, so a claim on the
+		// sandbox (its delete, or another made with its ID) ends the transfer and waits for it, and the bytes can never
+		// reach a sandbox the gateway may not write to. openFile releases it (done) once the transfer is over.
+		result, start, err = s.openFile(ctx, callCtx, m.Params, done)
+		if err != nil {
+			done()
+		}
 	case proto.MethodHostUpdate:
 		var p proto.UpdateParams
 		if err = json.Unmarshal(m.Params, &p); err == nil {

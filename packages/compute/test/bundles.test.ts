@@ -65,6 +65,19 @@ async function bytesOf(store: BundleBlobStore, digest: string, generation = 1): 
 }
 
 describe.each(stores)("the %s bundle store", (_name, make) => {
+	it("holds the marks left in it, and no other store's, and refuses a mark that isn't a plain name", async () => {
+		const { store } = await make();
+		const other = await make();
+		expect(await store.marked("bst_one")).toBe(false);
+		await store.mark("bst_one");
+		await store.mark("bst_one");
+		expect(await store.marked("bst_one")).toBe(true);
+		expect(await store.marked("bst_two")).toBe(false);
+		expect(await other.store.marked("bst_one")).toBe(false);
+		await expect(store.mark("../escape")).rejects.toMatchObject({ code: "invalid" });
+		await expect(store.marked("")).rejects.toMatchObject({ code: "invalid" });
+	});
+
 	it("keeps a body as a generation of its digest once, however often it is put", async () => {
 		const { store, files } = await make();
 		const tar = encode("a tar's bytes, in two chunks");

@@ -34,6 +34,8 @@ import type { FileStreamHandle, PortSink } from "./hub.ts";
 import type { PortRouter } from "./ports.ts";
 import {
 	FILE_STREAM_ACK_BYTES,
+	FILE_STREAM_FRAME_MAX_BYTES,
+	FILE_STREAM_WINDOW_BYTES,
 	HOST_E2E_PORT,
 	HOST_FEATURES,
 	HOST_WRITE_FILE_MAX_BYTES,
@@ -561,7 +563,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			// The sink is made before the stream is opened: the host may send a small file whole before `openFile`
 			// resolves. What arrives waits here until the reader takes it, and the reader's takings go back to the host
 			// (`stream.ack`), which sends no more than FILE_STREAM_WINDOW_BYTES past them: a slow client holds the host
-			// back, not the gateway's memory.
+			// back, not the gateway's memory. That isn't left to the host, an account's own machine: a frame it sends once
+			// the window is full, or one larger than FILE_STREAM_FRAME_MAX_BYTES, ends the read and frees what it holds, so
+			// at most the window and one frame are ever kept.
 			const queue: ReadQueue = { chunks: [] };
 			let handle: FileStreamHandle | undefined;
 			let cancelled = false;
@@ -600,9 +604,21 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				// Nothing pulled ahead of the reader, so what it has taken is what was handed to it.
 				{ highWaterMark: 0 },
 			);
+			let overran = false;
 			const sink: PortSink = {
 				data(bytes) {
 					if (cancelled || queue.end !== undefined) return;
+					// The host sends a frame only while less than its window is unacked: `acked` is the most it can know of.
+					if (received - acked >= FILE_STREAM_WINDOW_BYTES || bytes.byteLength > FILE_STREAM_FRAME_MAX_BYTES) {
+						overran = true;
+						queue.chunks.length = 0;
+						queue.end = {
+							error: new KantelError("unavailable", "The sandbox's host sent more of the file than it was asked for"),
+						};
+						handle?.close();
+						queue.wake?.();
+						return;
+					}
 					received += bytes.byteLength;
 					queue.chunks.push(bytes);
 					queue.wake?.();
@@ -624,6 +640,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			};
 			const opened = await hosts.sandboxes.openFile(sandboxId, { path, op: "read" }, sink);
 			handle = opened.stream;
+			if (overran) handle.close();
 			// What was taken before the handle came (nothing yet: no one had the body).
 			ack();
 			return { ...(opened.size === undefined ? {} : { size: opened.size }), body };
@@ -647,17 +664,29 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				settle = resolve;
 			});
 			let finished = false;
+			// The host may end the stream first (an error): then the rest of the body isn't waited for. Its one end
+			// handler cancels the body, which ends a read waiting on it, rather than each read racing the end: a race per
+			// chunk would keep every chunk's reaction on `ended` until the transfer is over.
+			let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+			let hostEnded = false;
 			const { stream: handle } = await hosts.sandboxes.openFile(
 				sandboxId,
 				{ path, op: "write", ...(mode === undefined ? {} : { mode }) },
-				{ data: () => undefined, end: (reason) => settle(reason) },
+				{
+					data: () => undefined,
+					end: (reason) => {
+						hostEnded = true;
+						settle(reason);
+						if (!finished) reader?.cancel().catch(() => undefined);
+					},
+				},
 			);
-			const reader = body.getReader();
+			reader = body.getReader();
 			try {
 				for (;;) {
-					// The host may end the stream first (an error): then the rest of the body isn't waited for.
-					const next = await Promise.race([reader.read(), ended.then(() => undefined)]);
-					if (next === undefined) {
+					const next = hostEnded ? undefined : await reader.read();
+					// Ended by the host (its end cancelled the read): not the body's own end, so nothing is finished.
+					if (next === undefined || hostEnded) {
 						reader.cancel().catch(() => undefined);
 						break;
 					}

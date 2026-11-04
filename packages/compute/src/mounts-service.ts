@@ -205,6 +205,43 @@ export function createMounts(deps: MountsDeps) {
 	const maxBundleBytes = options.maxBundleBytes ?? DEFAULT_MAX_BUNDLE_BYTES;
 	const maxArchiveBytes = options.maxArchiveBytes ?? DEFAULT_MAX_ARCHIVE_BYTES;
 
+	/**
+	 * Resolves once this gateway's bundle store is known to be the deployment's: the one holding the mark the
+	 * deployment's records name (`StoredSetting` `bundleStore`), the first gateway to need it leaving it. Gateways over
+	 * one database share bundle records, so one whose own store isn't theirs (a replica with a volume of its own, or a
+	 * store in memory that a restart emptied) refuses to keep, serve or remove bundles' bytes rather than answering for
+	 * bytes it can't reach: a re-upload taken as kept, a host told a bundle is missing, another store's bytes left
+	 * behind by a delete. Answered once found; asked again after a refusal, so a fixed store is seen.
+	 */
+	let storeChecked: Promise<void> | undefined;
+	const refuseStore = () =>
+		new KantelError(
+			"unavailable",
+			"This gateway's bundle store isn't the one the deployment's bundles are kept in: every gateway over one database must share one bundle store (KANTEL_BUNDLES_DIR)",
+		);
+	async function checkStore(): Promise<void> {
+		const named = await store.settings.get("bundleStore");
+		if (named !== undefined) {
+			if (!(await options.bundles.marked(named.value))) throw refuseStore();
+			return;
+		}
+		// The first: its mark, then the record naming it, so a record never names a mark no store has. Of two at once,
+		// one record goes in; the other's mark is spare, and its store is checked for the one that won.
+		const mark = randomId("bst", 16);
+		await options.bundles.mark(mark);
+		const at = now();
+		if (await store.settings.insert({ id: "bundleStore", value: mark, updatedAt: at, updatedBy: "gateway" })) return;
+		const won = await store.settings.get("bundleStore");
+		if (won === undefined || !(await options.bundles.marked(won.value))) throw refuseStore();
+	}
+	function bundleStore(): Promise<void> {
+		storeChecked ??= checkStore().catch((error: unknown) => {
+			storeChecked = undefined;
+			throw error;
+		});
+		return storeChecked;
+	}
+
 	/** How many of an account's sandboxes mount a source; a list passes its sandboxes, read once for all its items. */
 	async function mountedBy(
 		accountId: string,
@@ -591,6 +628,7 @@ export function createMounts(deps: MountsDeps) {
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "sandboxes:write", role);
 			if (request.body === null) throw new KantelError("invalid", "Send the bundle's tar as the request's body");
+			await bundleStore();
 			const staged = await options.bundles.put(request.body, {
 				maxBytes: maxBundleBytes,
 				...(query.digest === undefined ? {} : { expectDigest: query.digest }),
@@ -632,6 +670,8 @@ export function createMounts(deps: MountsDeps) {
 
 		deleteBundle: async (principal, { params, query }) => {
 			const bundle = await bundleFor(principal, query.account, params.digest, "sandboxes:write");
+			// Not the record without its bytes: another store's would be left there for good.
+			await bundleStore();
 			const removed = await deleteUnlessMounted(
 				store.bundles,
 				bundle,
@@ -783,6 +823,8 @@ export function createMounts(deps: MountsDeps) {
 			if (!mountsOfSource(sandbox, bundleMatches(digest))) return undefined;
 			const bundle = await store.bundles.get(bundleKey(sandbox.accountId, digest));
 			if (bundle === undefined) return undefined;
+			// Refused, not missing, when its bytes are in a store this gateway hasn't.
+			await bundleStore();
 			return options.bundles.open(digest, generationOf(bundle));
 		},
 

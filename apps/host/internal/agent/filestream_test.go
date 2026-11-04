@@ -319,6 +319,53 @@ func TestAnAbortedWriteKeepsNothing(t *testing.T) {
 	}
 }
 
+// A claim on a sandbox (its delete, or a create of another with its ID) ends a write under way and waits for it to end
+// before it goes on: a write finds its sandbox only as it starts, so its call's guard is held until then and after,
+// and nothing of it can reach a sandbox made with the ID in the meantime.
+func TestAClaimOnTheSandboxEndsAWriteAndWaitsForIt(t *testing.T) {
+	tier := newStreamTier(map[string][]byte{})
+	h := streamHost(t, tier)
+	_, cp := connectSession(t, h)
+	cp.open("w", proto.FileOpenParams{SandboxID: "sbx_one", Stream: 9, Path: "/home/user/up.bin", Op: proto.FileOpWrite})
+	if m := cp.result("w"); m.Error != nil {
+		t.Fatal(m.Error)
+	}
+	cp.frame(9, content(1000))
+	claimed := make(chan func(), 1)
+	go func() { claimed <- h.gate.claim([]string{"sandbox:sbx_one"}) }()
+	var release func()
+	select {
+	case release = <-claimed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the claim waited on a write that never ended")
+	}
+	defer release()
+	// By the time the claim has the sandbox, the write has ended, kept nothing, and can send nothing more.
+	select {
+	case err := <-tier.writes:
+		if err == nil {
+			t.Fatal("the write ended as if all of it had come")
+		}
+	default:
+		t.Fatal("the claim went on while the write was still under way")
+	}
+	if _, ok := tier.file("/home/user/up.bin"); ok {
+		t.Fatal("a write ended by a claim was kept")
+	}
+	m, _, _ := cp.next()
+	for m.Type == "stream.ack" {
+		m, _, _ = cp.next()
+	}
+	if m.Type != "stream.close" || m.Stream != 9 || !strings.HasPrefix(m.Reason, "error conflict") {
+		t.Fatalf("%s %d %q", m.Type, m.Stream, m.Reason)
+	}
+	// A write once the sandbox is claimed is refused at once.
+	cp.open("w2", proto.FileOpenParams{SandboxID: "sbx_one", Stream: 10, Path: "/home/user/up.bin", Op: proto.FileOpWrite})
+	if m := cp.result("w2"); m.Error == nil || m.Error.Code != proto.ErrConflict {
+		t.Fatalf("a write on a claimed sandbox: %s, %v", m.Result, m.Error)
+	}
+}
+
 // What is wrong with a file stream is the call's error, and registers no stream.
 func TestAFileStreamIsRefused(t *testing.T) {
 	ctx := context.Background()
@@ -326,7 +373,7 @@ func TestAFileStreamIsRefused(t *testing.T) {
 		t.Helper()
 		s := &session{host: h, streams: map[uint32]net.Conn{}}
 		raw, _ := json.Marshal(p)
-		_, start, err := s.openFile(ctx, ctx, raw)
+		_, start, err := s.openFile(ctx, ctx, raw, func() {})
 		var pe *proto.Error
 		if !errors.As(err, &pe) || pe.Code != code || start != nil || len(s.streams) != 0 {
 			t.Errorf("%+v: %v, want %s", p, err, code)

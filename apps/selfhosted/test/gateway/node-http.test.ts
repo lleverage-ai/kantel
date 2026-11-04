@@ -1,8 +1,15 @@
 // The HTTP server streams the bodies of the routes that take files of any size (a signed file URL's upload, a bundle,
 // an archive) to the handler as they come, with no size cap and only an idle timeout, and reads every other body whole.
 import { connect } from "node:net";
+import { Readable } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
-import { type FetchHandler, type Listening, listen, streamsRequestBody } from "../../src/gateway/node-http.ts";
+import {
+	type FetchHandler,
+	type Listening,
+	listen,
+	streamsRequestBody,
+	toStreamedRequest,
+} from "../../src/gateway/node-http.ts";
 
 const servers: Listening[] = [];
 afterEach(async () => {
@@ -85,6 +92,23 @@ describe("which request bodies are streamed", () => {
 });
 
 describe("a streamed body", () => {
+	it("stops taking from the connection after a bounded number of bytes while nothing reads it", async () => {
+		let pulled = 0;
+		const incoming = new Readable({
+			read() {
+				pulled += 1024;
+				this.push(new Uint8Array(1024));
+			},
+		});
+		const request = toStreamedRequest(incoming, "http://localhost/v1/file-urls/kfu_slow", new AbortController().signal);
+		const reader = (request.body as ReadableStream<Uint8Array>).getReader();
+		await reader.read();
+		for (let turn = 0; turn < 50; turn++) await new Promise((resolve) => setImmediate(resolve));
+		// Its queue counts bytes, to the request's own high-water mark: counting chunks it would take thousands of them.
+		expect(pulled).toBeLessThan(4 * incoming.readableHighWaterMark);
+		await reader.cancel();
+	});
+
 	it("has no size cap: 6 MiB, more than any buffered body may be, reaches the handler whole", async () => {
 		const server = await serve(counting, 5_000);
 		const size = 6 * 1024 * 1024;

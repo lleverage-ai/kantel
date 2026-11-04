@@ -62,6 +62,8 @@ export class FakeHost {
 	buffered?: () => number;
 	/** For a test: a write's bytes aren't acked (`stream.ack`) as they arrive, as from a sandbox that takes none. */
 	holdAcks = false;
+	/** For a test: a read sends all of its file at once, past its window, as a host that ignores acks would. */
+	ignoreWindow = false;
 	/** Reads under way, by stream: what is still to send, and how much Kantel's reader has acked. */
 	readonly reads = new Map<number, { readonly data: Uint8Array; sent: number; acked: number }>();
 	/** `sandbox.files.extract` calls: the archive, the target. */
@@ -179,7 +181,11 @@ export class FakeHost {
 	private sendRead(stream: number) {
 		const read = this.reads.get(stream);
 		if (read === undefined) return;
-		while (read.sent < read.data.byteLength && read.sent - read.acked < FILE_STREAM_WINDOW_BYTES) {
+		while (
+			read.sent < read.data.byteLength &&
+			(this.ignoreWindow || read.sent - read.acked < FILE_STREAM_WINDOW_BYTES) &&
+			this.reads.has(stream)
+		) {
 			const take = Math.min(this.chunkBytes, read.data.byteLength - read.sent);
 			this.connection.receive(encodeStreamFrame(stream, read.data.subarray(read.sent, read.sent + take)));
 			read.sent += take;

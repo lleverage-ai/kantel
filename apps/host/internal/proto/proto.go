@@ -57,6 +57,10 @@ const FileStreamAckBytes = 512 << 10
 // what Kantel's reader has taken, so a slow download holds the host back rather than filling the gateway's memory.
 const FileStreamWindowBytes = 4 << 20
 
+// FileStreamFrameMaxBytes is the most of a file a read's host sends in one frame (Kantel's FILE_STREAM_FRAME_MAX_BYTES):
+// Kantel ends a read whose host sends a larger frame, or any frame once FileStreamWindowBytes are unacked.
+const FileStreamFrameMaxBytes = 1 << 20
+
 // Error codes a call can fail with.
 const (
 	ErrNotFound    = "not_found"

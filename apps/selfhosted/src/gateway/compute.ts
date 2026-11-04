@@ -50,7 +50,9 @@
  *   KANTEL_MOUNTS                `experimental` turns on read-only mounts (bundles and bucket prefixes in a sandbox),
  *                                bundles (`POST /v1/bundles`), bucket sources, signed file URLs (`/v1/file-urls/...`)
  *                                and archive extraction, with either backend. A bundle's tar is kept once per account under
- *                                `bundles/` beside the bootstrap file (KANTEL_BOOTSTRAP_FILE, a volume in Compose).
+ *                                `bundles/` beside the bootstrap file (KANTEL_BOOTSTRAP_FILE, a volume in Compose), or
+ *                                in KANTEL_BUNDLES_DIR, which replicas over one database must share: one whose store
+ *                                isn't the deployment's refuses bundles' bytes (`BundleBlobStore.mark`).
  *                                Default off: their routes answer 501 not_supported
  *
  * An account's proxy settings (PUT /v1/proxy) reach its sandboxes as they boot (create, start, resume, fork): the host's

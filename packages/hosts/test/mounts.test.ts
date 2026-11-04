@@ -18,6 +18,7 @@ import {
 	decodeStreamFrame,
 	encodeStreamFrame,
 	FILE_STREAM_ACK_BYTES,
+	FILE_STREAM_FRAME_MAX_BYTES,
 	FILE_STREAM_WINDOW_BYTES,
 	HOST_FEATURES,
 	HOST_MESSAGE_LIMIT_BYTES,
@@ -689,6 +690,32 @@ describe("the backend's file streams", () => {
 		expect(host.reads.size).toBe(0);
 	});
 
+	it("end a read whose host sends past its window or in too large a frame, keeping none of it", async () => {
+		const { host, hostId, backend, connect } = await setup([HOST_FEATURES.fileStreams]);
+		host.chunkBytes = 64 * 1024;
+		host.ignoreWindow = true;
+		await connect();
+		await backend.create(spec("sbx_one", hostId));
+		host.files.set("/home/user/big", new Uint8Array(FILE_STREAM_WINDOW_BYTES * 4));
+		// Nobody reads, and the host goes on sending anyway: the gateway keeps no more than its window of it.
+		const { body } = await read(backend, "sbx_one", "/home/user/big");
+		await pause(20);
+		const refused = await new Response(body).arrayBuffer().catch((error: unknown) => error);
+		expect((refused as KantelError).code).toBe("unavailable");
+
+		// One frame larger than any a host sends.
+		host.ignoreWindow = false;
+		host.chunkBytes = FILE_STREAM_FRAME_MAX_BYTES + 1;
+		const second = await read(backend, "sbx_one", "/home/user/big");
+		const failed = await new Response(second.body).arrayBuffer().catch((error: unknown) => error);
+		expect((failed as KantelError).code).toBe("unavailable");
+
+		// A host within its window, in frames of at most the largest, reads whole.
+		host.chunkBytes = FILE_STREAM_FRAME_MAX_BYTES;
+		const third = await read(backend, "sbx_one", "/home/user/big");
+		expect((await new Response(third.body).arrayBuffer()).byteLength).toBe(FILE_STREAM_WINDOW_BYTES * 4);
+	});
+
 	it("cancel a read the reader drops, and pass on a host's error", async () => {
 		const { host, hostId, backend, connect } = await setup([HOST_FEATURES.fileStreams]);
 		host.chunkBytes = 64 * 1024;
@@ -789,6 +816,31 @@ describe("the backend's file streams", () => {
 		const odd = await failure(write(backend, "sbx_one", "/home/user/a", streamOf("abc")));
 		expect([odd.code, odd.message]).toEqual(["unavailable", "the disk failed"]);
 		expect(host.files.size).toBe(0);
+	});
+
+	it("stop waiting on the body when the host ends the write, and cancel the body", async () => {
+		const { host, hostId, backend, connect } = await setup([HOST_FEATURES.fileStreams]);
+		await connect();
+		await backend.create(spec("sbx_one", hostId));
+		let cancelled = false;
+		// A client that sends a little, then nothing more for as long as it likes.
+		const stalled = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(encode("abc"));
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const writing = write(backend, "sbx_one", "/home/user/e.txt", stalled);
+		await pause(20);
+		const [[stream] = [0]] = [...host.writes];
+		host.writes.delete(stream);
+		host.send({ type: "stream.close", stream, reason: "error refused: the disk is full" });
+		const refused = await failure(writing);
+		expect([refused.code, refused.message]).toEqual(["refused", "the disk is full"]);
+		expect(cancelled).toBe(true);
+		expect(host.files.has("/home/user/e.txt")).toBe(false);
 	});
 
 	it("abort the stream when the body fails, so nothing is put in place", async () => {

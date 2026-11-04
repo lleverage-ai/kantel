@@ -117,6 +117,12 @@ export const HOST_FEATURES = {
 export const FILE_STREAM_WINDOW_BYTES = 4 * 1024 * 1024;
 /** How often a file stream's receiver acknowledges what it has taken: each this many bytes. */
 export const FILE_STREAM_ACK_BYTES = 1024 * 1024;
+/**
+ * The largest frame of a file a read's host sends (the host's are 32 KiB, `sendFile`'s buffer). With the window, what
+ * Kantel holds of a read for its reader is bounded however the host behaves: a host is an account's own machine, so a
+ * frame past this, or one sent once `FILE_STREAM_WINDOW_BYTES` are unacked, ends the read rather than being kept.
+ */
+export const FILE_STREAM_FRAME_MAX_BYTES = 1024 * 1024;
 
 /** The largest message a host reads from Kantel (`ws.SetReadLimit` in the host's `conn.go`): it drops the link past it. */
 export const HOST_MESSAGE_LIMIT_BYTES = 64 * 1024 * 1024;

@@ -336,11 +336,12 @@ export interface StoredFileUrl {
 }
 
 /**
- * A deployment-wide setting a super-admin changed in the console, by name: `publicUrl`, where hosts reach the control
- * plane, ahead of the deployment's own.
+ * A deployment-wide setting, by name: `publicUrl`, where hosts reach the control plane, ahead of the deployment's own,
+ * as a super-admin changed it in the console; `bundleStore`, the mark the first gateway to keep a bundle left in its
+ * bundle store, which any gateway's must hold for it to keep, serve or remove bundles' bytes (`BundleBlobStore.mark`).
  */
 export interface StoredSetting {
-	readonly id: "publicUrl";
+	readonly id: "publicUrl" | "bundleStore";
 	readonly value: string;
 	readonly updatedAt: number;
 	readonly updatedBy: string;

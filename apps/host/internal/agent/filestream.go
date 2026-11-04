@@ -173,7 +173,7 @@ var _ net.Conn = (*fileConn)(nil)
 // the session's context (call, the call's own, can end it only until it is set up); start, called once the call is
 // answered, runs it, so neither the bytes nor the stream.close that ends it come before the answer. When it ends, the
 // stream goes from the session's and a stream.close says how it went, unless Kantel closed the stream itself.
-func (s *session) openFile(ctx, call context.Context, raw json.RawMessage) (any, func(), error) {
+func (s *session) openFile(ctx, call context.Context, raw json.RawMessage, release func()) (any, func(), error) {
 	var p proto.FileOpenParams
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, nil, invalid("bad sandbox.files.open: %v", err)
@@ -192,7 +192,8 @@ func (s *session) openFile(ctx, call context.Context, raw json.RawMessage) (any,
 	}
 	fp := proto.FileParams{SandboxID: p.SandboxID, Path: p.Path, Mode: p.Mode}
 	tctx, cancel := context.WithCancel(ctx)
-	// Until it is set up, the call's end (a claim on its sandbox, or its space turning E2E on) ends it too.
+	// Until its transfer is over, the call's end (a claim on its sandbox, or its space turning E2E on) ends it too:
+	// the call's guard (release) is held as long, so a claim waits for the transfer to stop before it goes on.
 	stop := context.AfterFunc(call, cancel)
 	conn := &fileConn{cancel: cancel}
 	var result any
@@ -216,14 +217,17 @@ func (s *session) openFile(ctx, call context.Context, raw json.RawMessage) (any,
 	} else {
 		pr, pw := io.Pipe()
 		conn.w = pw
+		// Ended (a claim on its sandbox, Kantel's abort): a tier waiting on the next frame reads the abort at once rather
+		// than waiting for one, so a claim waiting on the transfer isn't held by a gateway that sends nothing more.
+		context.AfterFunc(tctx, func() { _ = pw.CloseWithError(errFileStreamAborted) })
 		conn.acks = make(chan struct{}, 1)
 		result = struct{}{}
 		transfer = func() (int64, error) { return streamer.WriteFileStream(tctx, fp, pr) }
 		finish = func() { _ = pr.CloseWithError(errors.New("the file stream has ended")) }
 	}
-	stop()
 	if tctx.Err() != nil {
 		// Ended while it was being set up: nothing was registered, so nothing else will close it.
+		stop()
 		cancel()
 		finish()
 		return nil, nil, &proto.Error{Code: proto.ErrConflict, Message: "this call was ended: its sandbox's space turned E2E on, or the sandbox is being replaced"}
@@ -254,6 +258,8 @@ func (s *session) openFile(ctx, call context.Context, raw json.RawMessage) (any,
 		go func() {
 			defer forget()
 			n, err := transfer()
+			// Before the guard goes, as the guard's release ends the call's context.
+			stop()
 			s.mu.Lock()
 			current := s.streams[p.Stream] == registered
 			if current {
@@ -262,9 +268,11 @@ func (s *session) openFile(ctx, call context.Context, raw json.RawMessage) (any,
 			s.mu.Unlock()
 			finish()
 			if err != nil && tctx.Err() != nil && ctx.Err() == nil {
-				err = &proto.Error{Code: proto.ErrConflict, Message: "this file stream was ended: its sandbox's space turned E2E on"}
+				err = &proto.Error{Code: proto.ErrConflict, Message: "this file stream was ended: its sandbox's space turned E2E on, or the sandbox is being deleted or replaced"}
 			}
 			conn.Close()
+			// Nothing of the transfer is left to reach the sandbox: a claim waiting on it may go on.
+			release()
 			if current {
 				_ = s.send(ctx, proto.Message{Type: "stream.close", Stream: p.Stream, Reason: fileStreamReason(n, err)})
 			}
@@ -278,7 +286,8 @@ func (s *session) openFile(ctx, call context.Context, raw json.RawMessage) (any,
 // (FileOpenParams.Acks), it stays within FileStreamWindowBytes of what that has taken (conn's stream.acks), waiting
 // while it can't, until the stream ends (tctx).
 func (s *session) sendFile(ctx, tctx context.Context, conn *fileConn, stream uint32, r io.Reader, size int64) (int64, error) {
-	buf := make([]byte, 32*1024)
+	// Well within proto.FileStreamFrameMaxBytes, past which Kantel ends the read.
+	buf := make([]byte, min(32*1024, proto.FileStreamFrameMaxBytes))
 	var sent int64
 	for {
 		for conn.more != nil && sent-conn.acked.Load() >= proto.FileStreamWindowBytes {

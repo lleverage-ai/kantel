@@ -56,6 +56,13 @@ export interface BundleBlobStore {
 	open(digest: string, generation: number): Promise<StoredBlob | undefined>;
 	/** Forgets the bytes kept as `generation` of `digest`; nothing stored is not an error. */
 	delete(digest: string, generation: number): Promise<void>;
+	/**
+	 * Leaves `id` in the store, as `marked` then finds it: how a gateway tells that its store is the one the deployment's
+	 * bundle records were kept in (`StoredSetting` `bundleStore`), as every gateway over one database must share it.
+	 */
+	mark(id: string): Promise<void>;
+	/** Whether `mark` left `id` in this store. */
+	marked(id: string): Promise<boolean>;
 }
 
 /** The largest bundle by default: 2 GiB. */

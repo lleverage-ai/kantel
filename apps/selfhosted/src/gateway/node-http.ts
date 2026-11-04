@@ -89,21 +89,32 @@ function toRequest(incoming: IncomingMessage, body: Buffer | undefined, signal: 
 	});
 }
 
-/** A request whose body is `incoming` itself, read as the handler reads it. */
-function toStreamedRequest(incoming: IncomingMessage, signal: AbortSignal): Request {
+/**
+ * A request whose body is `incoming` itself, read as the handler reads it. The body's queue counts bytes, up to the
+ * request's own high-water mark: by default a web stream counts chunks, so a reader that stops (a signed upload waiting
+ * on its host's window) would leave thousands of whole HTTP chunks queued before `incoming` paused.
+ */
+export function toStreamedRequest(incoming: Readable, url: string, signal: AbortSignal): Request {
 	const headers = new Headers();
-	for (const [name, value] of Object.entries(incoming.headers)) {
+	const message = incoming as Partial<IncomingMessage>;
+	for (const [name, value] of Object.entries(message.headers ?? {})) {
 		if (typeof value === "string") headers.set(name, value);
 		else if (Array.isArray(value)) for (const item of value) headers.append(name, item);
 	}
-	return new Request(`http://${incoming.headers.host ?? "localhost"}${incoming.url ?? "/"}`, {
-		method: incoming.method ?? "PUT",
+	return new Request(url, {
+		method: message.method ?? "PUT",
 		headers,
 		signal,
-		body: Readable.toWeb(incoming) as ReadableStream<Uint8Array>,
+		body: Readable.toWeb(incoming, {
+			strategy: { highWaterMark: incoming.readableHighWaterMark, size: (chunk) => (chunk as Uint8Array).byteLength },
+		}) as ReadableStream<Uint8Array>,
 		// What fetch needs for a body that is a stream: sent (here, read) as it comes.
 		duplex: "half",
 	} as RequestInit & { duplex: "half" });
+}
+
+function incomingRequest(incoming: IncomingMessage, signal: AbortSignal): Request {
+	return toStreamedRequest(incoming, `http://${incoming.headers.host ?? "localhost"}${incoming.url ?? "/"}`, signal);
 }
 
 async function write(
@@ -196,7 +207,7 @@ export async function listen(handler: FetchHandler, port: number, options: Liste
 			incoming.on("close", disarm);
 			void (async () => {
 				const response = await answer(() => {
-					const request = toStreamedRequest(incoming, controller.signal);
+					const request = incomingRequest(incoming, controller.signal);
 					arm();
 					// After `Readable.toWeb` has started the flow, so this listener only watches it.
 					incoming.on("data", arm);

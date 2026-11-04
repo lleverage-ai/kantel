@@ -102,6 +102,8 @@ interface SetupOptions {
 	readonly now?: () => number;
 	/** Default an in-memory one. */
 	readonly store?: ComputeStore;
+	/** Where bundles' bytes go; default a memory store of this setup's own. */
+	readonly bundleStore?: BundleBlobStore;
 }
 
 function setup(options: SetupOptions = {}) {
@@ -116,7 +118,7 @@ function setup(options: SetupOptions = {}) {
 		...options.backend?.(stub),
 	};
 	// The memory store, noting each generation kept and not yet deleted, so a test can see bytes left without a record.
-	const memory = createMemoryBundleStore();
+	const memory = options.bundleStore ?? createMemoryBundleStore();
 	const live = new Map<string, { readonly digest: string; readonly generation: number }>();
 	const liveKey = (digest: string, generation: number) => `${digest}#${generation}`;
 	const bundles: BundleBlobStore = {
@@ -137,6 +139,8 @@ function setup(options: SetupOptions = {}) {
 			await memory.delete(digest, generation);
 			live.delete(liveKey(digest, generation));
 		},
+		mark: (id) => memory.mark(id),
+		marked: (id) => memory.marked(id),
 	};
 	const store = options.store ?? createMemoryStore();
 	const baseUrl = `http://compute.test${options.basePath ?? "/v1"}`;
@@ -225,6 +229,34 @@ describe("a tar's check", () => {
 				{ name: "ignored-for-pax", data: encode("xy") },
 			]),
 		).toEqual({ files: 2, directories: 1, symlinks: 2, bytes: 7 });
+	});
+
+	it("refuses a malformed pax header at once, however long, and still reads several records split across pieces", () => {
+		const pax = (text: string): TarEntry => ({ name: "PaxHeader", type: "x", data: encode(text) });
+		const next = { name: "file", data: encode("x") };
+		const refused = (text: string) => expect(() => check([pax(text), next], 4 << 20)).toThrow(/bad pax header/);
+		// Read as it was, this rescanned nearly all of the header for each byte it moved: about 10^12 steps.
+		const started = performance.now();
+		refused(`${"0".repeat(1_048_573)}1 \n`);
+		expect(performance.now() - started).toBeLessThan(1_000);
+		// A length that doesn't cover its own prefix and newline, or ends past the header or not on a newline.
+		refused("1 \n");
+		refused("3 a\n");
+		refused("99 path=x\n");
+		refused("10 path=xy\n");
+		refused("x path=a\n");
+		// Two records in one header, the first long enough to be cut across pieces.
+		const record = (key: string, value: string) => {
+			const body = ` ${key}=${value}\n`;
+			let length = body.length + 1;
+			while (`${length}${body}`.length !== length) length++;
+			return `${length}${body}`;
+		};
+		const name = `${"long/".repeat(200)}name.txt`;
+		expect(
+			check([pax(`${record("path", name)}${record("mtime", "1.5")}`), { name: "ignored-for-pax", data: encode("x") }])
+				.files,
+		).toBe(1);
 	});
 
 	it("refuses names and links that leave the directory, and kinds it doesn't extract", () => {
@@ -450,6 +482,44 @@ describe("a sandbox's mounts", () => {
 			}),
 		);
 		expect(bucket.code).toBe("not_found");
+	});
+
+	it("keep, serve and remove bundles only on gateways sharing the deployment's bundle store", async () => {
+		const store = createMemoryStore();
+		const shared = createMemoryBundleStore();
+		const first = setup({ store, bundleStore: shared });
+		const bundle = await first.tom.uploadBundle(SKILLS.slice().buffer);
+		const sandbox = await first.tom.createSandbox({
+			type: "microvm",
+			mounts: [{ path: "/mnt/skills", source: { kind: "bundle", digest: bundle.digest } }],
+			wait: true,
+		});
+		// A replica over the same records with a store of its own (a volume of its own): it lists the bundle, but
+		// refuses to answer for bytes it can't reach, rather than taking a re-upload as kept, telling a host the bundle
+		// is missing, or deleting the record and leaving the bytes behind.
+		const apart = setup({ store });
+		expect((await apart.tom.listBundles()).items.map((item) => item.digest)).toEqual([bundle.digest]);
+		const upload = await failure(apart.tom.uploadBundle(SKILLS.slice().buffer));
+		expect([upload.status, upload.code]).toEqual([503, "unavailable"]);
+		expect(upload.message).toContain("KANTEL_BUNDLES_DIR");
+		await expect(apart.api.service.bundleForHost(STUB_HOST_ID, sandbox.id, bundle.digest)).rejects.toMatchObject({
+			code: "unavailable",
+		});
+		await first.tom.deleteSandbox(sandbox.id);
+		expect((await failure(apart.tom.deleteBundle(bundle.digest))).code).toBe("unavailable");
+		expect(await store.bundles.list()).toHaveLength(1);
+
+		// One sharing the store does all three.
+		const beside = setup({ store, bundleStore: shared });
+		const again = await beside.fetchApi("http://compute.test/v1/bundles", {
+			method: "POST",
+			headers: { authorization: "Bearer tom-token" },
+			body: SKILLS.slice(),
+		});
+		expect(again.status).toBe(200);
+		await beside.tom.deleteBundle(bundle.digest);
+		expect(await store.bundles.list()).toEqual([]);
+		expect(await shared.open(bundle.digest, 1)).toBeUndefined();
 	});
 
 	it("give hosts a bundle and a bucket source's credentials only for their own sandboxes, and take their reports", async () => {

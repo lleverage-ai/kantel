@@ -64,17 +64,33 @@ function checksumOk(block: Uint8Array): boolean {
 	return sum === stored;
 }
 
-/** A pax extended header's records: `<length> <key>=<value>\n` each. */
+/** The most digits a pax record's length may have: more would be longer than the 1 MiB an extended header may be. */
+const PAX_LENGTH_DIGITS = 7;
+
+/**
+ * A pax extended header's records: `<length> <key>=<value>\n` each, `<length>` counting the whole record, itself
+ * included. Each record is checked before it is read: a length of a few digits then a space, a length covering that
+ * much and a newline, ending in one, inside the header. So every step reads only the record it then moves past, and
+ * malformed metadata is refused at once rather than rescanned.
+ */
 function paxRecords(data: Uint8Array): Map<string, string> {
 	const records = new Map<string, string>();
+	const bad = () => refuse("The archive has a bad pax header");
 	let at = 0;
 	while (at < data.length) {
-		const space = data.indexOf(0x20, at);
-		if (space === -1) break;
-		const length = Number.parseInt(new TextDecoder().decode(data.subarray(at, space)), 10);
-		if (!Number.isInteger(length) || length <= 0 || at + length > data.length) {
-			refuse("The archive has a bad pax header");
+		// Some tar writers pad the header with NULs after its last record.
+		if (data[at] === 0) break;
+		let space = at;
+		let length = 0;
+		while (space < data.length && space - at < PAX_LENGTH_DIGITS) {
+			const byte = data[space] ?? 0;
+			if (byte < 0x30 || byte > 0x39) break;
+			length = length * 10 + (byte - 0x30);
+			space++;
 		}
+		if (space === at || data[space] !== 0x20) bad();
+		// The record holds its length, the space and the newline at least, and ends inside the header in a newline.
+		if (length < space - at + 2 || at + length > data.length || data[at + length - 1] !== 0x0a) bad();
 		const record = new TextDecoder().decode(data.subarray(space + 1, at + length - 1));
 		const equals = record.indexOf("=");
 		if (equals > 0) records.set(record.slice(0, equals), record.slice(equals + 1));
