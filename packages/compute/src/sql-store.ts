@@ -210,5 +210,6 @@ export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 		deviceLogins: sqlCollection(driver, "deviceLogins"),
 		environments: sqlCollection(driver, "environments"),
 		egress: sqlCollection(driver, "egress"),
+		settings: sqlCollection(driver, "settings"),
 	};
 }

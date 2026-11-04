@@ -820,6 +820,17 @@ export interface ProxyUpstream {
 	readonly headerNames: readonly string[];
 }
 
+export interface PublicUrl {
+	/** Where hosts reach this control plane: the address in every join command, such as `https://kantel.example.com`. */
+	readonly publicUrl: string;
+	/** `console`: a super-admin set it here. `deployment`: the deployment's own (`KANTEL_PUBLIC_URL`, or the address the call came in at). */
+	readonly source: "console" | "deployment";
+	/** The deployment's own, which `publicUrl` goes back to when cleared. */
+	readonly deploymentUrl: string;
+	/** `publicUrl` is a loopback address (`127.0.0.1`, `localhost`): only a host on the same machine can join. */
+	readonly loopback: boolean;
+}
+
 export interface PutEgressGrantsBody {
 	readonly grants: readonly EgressGrantInput[];
 	/** The list as you last read it. Given, the write is refused with `conflict` if the list has changed since, so an edit made from an older read can't undo someone else's: read it again and redo the edit. Left out, the list is replaced whatever it holds. */
@@ -1090,6 +1101,11 @@ export interface SetEnvironmentVariableBody {
 	readonly value?: string;
 	/** A protected variable's destinations, at least one. Left out, a protected one keeps its own. */
 	readonly bindings?: readonly DestinationBinding[];
+}
+
+export interface SetPublicUrlBody {
+	/** An http(s) origin, such as `https://kantel.example.com`; `null` goes back to the deployment's own. */
+	readonly publicUrl: string | null;
 }
 
 export interface Snapshot {
@@ -1787,6 +1803,10 @@ export interface KantelClient {
 	updateHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
 	/** Revoke a host. Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. `unavailable`, and not revoked, when its credential is kept by a part of the deployment that is off (an account's own host, with account hosts switched off). A deployment super-admin only (a key needs `hosts:admin`). `DELETE /admin/hosts/{hostId}` */
 	revokeHost(hostId: string, options?: CallOptions): Promise<Host>;
+	/** Get the public URL. Where hosts reach this control plane: the address join commands give them, and whether only a host on the same machine could use it. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/public-url` */
+	getPublicUrl(options?: CallOptions): Promise<PublicUrl>;
+	/** Set the public URL. Sets where hosts reach this control plane, for the join commands made from now on, ahead of the deployment's own `KANTEL_PUBLIC_URL`. `null` goes back to the deployment's own. Hosts that have joined keep the address they joined with. A deployment super-admin only (a key needs `hosts:admin`). `PUT /admin/public-url` */
+	setPublicUrl(body: SetPublicUrlBody, options?: CallOptions): Promise<PublicUrl>;
 	/** Make a join token for one of your own hosts. A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it to the account (the caller's personal account unless `account` names an organisation). The host dials out to this deployment and keeps the connection open, so it needs no inbound port. Once it has joined, the account's new sandboxes go on its own hosts, and no other account's sandboxes ever do. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `POST /hosts/join-tokens` */
 	createAccountJoinToken(body?: CreateAccountJoinTokenBody, options?: CallOptions): Promise<AccountJoinToken>;
 	/** List an account's hosts. The hosts joined to the account, revoked ones included. The deployment's shared hosts aren't listed. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `GET /hosts` */
@@ -2068,6 +2088,8 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "PATCH", path: `/admin/hosts/${encodeURIComponent(hostId)}`, body }, callOptions),
 		revokeHost: (hostId, callOptions) =>
 			send(options, { method: "DELETE", path: `/admin/hosts/${encodeURIComponent(hostId)}` }, callOptions),
+		getPublicUrl: (callOptions) => send(options, { method: "GET", path: "/admin/public-url" }, callOptions),
+		setPublicUrl: (body, callOptions) => send(options, { method: "PUT", path: "/admin/public-url", body }, callOptions),
 		createAccountJoinToken: (body = {}, callOptions) =>
 			send(options, { method: "POST", path: "/hosts/join-tokens", body }, callOptions),
 		listAccountHosts: (query, callOptions) => send(options, { method: "GET", path: "/hosts", query }, callOptions),

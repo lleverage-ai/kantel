@@ -24,6 +24,7 @@ import type {
 	Plan,
 	ProxyRequest,
 	ProxySettings,
+	PublicUrl,
 	Sandbox,
 	SandboxCommand,
 	SandboxEgress,
@@ -985,6 +986,13 @@ export interface ComputeFixtureOptions {
 	readonly settleMs?: number;
 	/** The viewer is not a super-admin. */
 	readonly notSuperAdmin?: boolean;
+	/** A new install's first run: no hosts, so no sandboxes either, with the rest as usual. */
+	readonly noHosts?: boolean;
+	/**
+	 * Where hosts reach the control plane, as the deployment set it. Default a default install's loopback address
+	 * (`http://127.0.0.1:58090`), or Kantel's own address when hosted.
+	 */
+	readonly publicUrl?: string;
 }
 
 let counter = 0;
@@ -1024,7 +1032,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 	};
 
 	const sandboxes = new Map<string, Sandbox>(
-		(empty ? [] : SANDBOXES).map((box) => {
+		(empty || options.noHosts === true ? [] : SANDBOXES).map((box) => {
 			const copy = moved(box, ["createdAt", "stopsAt"]);
 			const snapshot =
 				box.snapshot === undefined ? {} : { snapshot: { ...box.snapshot, takenAt: at(box.snapshot.takenAt) } };
@@ -1053,8 +1061,20 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 		Object.entries(DELIVERIES).map(([id, list]) => [id, list.map((entry) => moved(entry, ["at"]))]),
 	);
 	const hosts = new Map<string, Host>(
-		(empty ? [] : HOSTS).map((host) => [host.id, moved(host, ["lastSeenAt", "joinedAt"])]),
+		(empty || options.noHosts === true ? [] : HOSTS).map((host) => [host.id, moved(host, ["lastSeenAt", "joinedAt"])]),
 	);
+	const deploymentUrl =
+		options.publicUrl ?? (hosting === "hosted" ? "https://kantel.example.com" : "http://127.0.0.1:58090");
+	let publicUrlSet: string | undefined;
+	const publicUrl = (): PublicUrl => {
+		const url = publicUrlSet ?? deploymentUrl;
+		return {
+			publicUrl: url,
+			setHere: publicUrlSet !== undefined,
+			deploymentUrl,
+			loopback: /^https?:\/\/(127\.|localhost|\[::1\]|0\.0\.0\.0)/.test(url),
+		};
+	};
 	const proxies = new Map<string, ProxySettings>();
 	const environments = new Map<string, Environment>(
 		(empty ? [] : ENVIRONMENTS).map((env) => [
@@ -1689,9 +1709,20 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 								return {
 									token,
 									expiresAt: now() + HOUR,
-									command: `curl -fsSL https://kantel.example.com/install-host.sh | sh -s -- --join ${token}`,
+									command: `curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url ${publicUrl().publicUrl} --token ${token}`,
 								};
 							}),
+						publicUrl: {
+							get: () => gate(publicUrl),
+							set: (url) =>
+								gate(() => {
+									if (url !== null && !/^https?:\/\/[^/\s]+\/?$/.test(url.trim())) {
+										throw new Error("The public URL is an origin, with no path, such as https://kantel.example.com");
+									}
+									publicUrlSet = url === null ? undefined : url.trim().replace(/\/$/, "");
+									return publicUrl();
+								}),
+						},
 						drain: (id) =>
 							gate(() => {
 								const host = { ...find(hosts, id, "host"), state: "draining" as const };

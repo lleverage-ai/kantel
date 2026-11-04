@@ -44,6 +44,7 @@ export type {
 	HostingMode,
 	HostsSource,
 	ProxySource,
+	PublicUrlSource,
 	SandboxEgress,
 	SandboxesSource,
 	SnapshotsSource,

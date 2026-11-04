@@ -42,7 +42,7 @@ describe("compute routes", () => {
 	it("keeps hosts under /admin and super-admins only", () => {
 		for (const route of Object.values(computeRoutes)) {
 			if (route.tag !== "hosts") continue;
-			expect(route.path.startsWith("/admin/hosts")).toBe(true);
+			expect(route.path.startsWith("/admin/")).toBe(true);
 			expect(route.description).toContain("`hosts:admin`");
 		}
 	});

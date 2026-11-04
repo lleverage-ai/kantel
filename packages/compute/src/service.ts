@@ -423,6 +423,48 @@ function checkUrl(url: string, what: string): void {
 	}
 }
 
+/**
+ * A public URL as an origin, `https://kantel.example.com`: http(s), with nothing after the host but a trailing slash.
+ */
+export function publicOrigin(url: string): string {
+	let parsed: URL;
+	try {
+		parsed = new URL(url.trim());
+	} catch {
+		throw new KantelError("invalid", "The public URL is not a URL, such as https://kantel.example.com");
+	}
+	if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+		throw new KantelError("invalid", "The public URL starts with https:// or http://");
+	}
+	if (
+		parsed.username !== "" ||
+		parsed.password !== "" ||
+		parsed.pathname !== "/" ||
+		parsed.search !== "" ||
+		parsed.hash !== ""
+	) {
+		throw new KantelError("invalid", "The public URL is an origin, with no path, such as https://kantel.example.com");
+	}
+	return parsed.origin;
+}
+
+/** Whether only a host on the same machine could reach `url`: `127.0.0.1`, `localhost`, `::1` or `0.0.0.0`. */
+export function isLoopbackUrl(url: string): boolean {
+	let host: string;
+	try {
+		host = new URL(url).hostname.toLowerCase();
+	} catch {
+		return false;
+	}
+	return (
+		host === "localhost" ||
+		host.endsWith(".localhost") ||
+		/^127\.\d+\.\d+\.\d+$/.test(host) ||
+		host === "[::1]" ||
+		host === "0.0.0.0"
+	);
+}
+
 function decodeUtf8(bytes: Uint8Array, path: string): string {
 	try {
 		// `ignoreBOM` is the default, given because workers-types requires it (apps/cloudflare serves this API).
@@ -1989,6 +2031,22 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/** A join token, shown once, and its command; an account's joins the host to `owner.accountId`. */
+	/**
+	 * Where hosts reach this control plane: the URL a super-admin set in the console, else the deployment's own
+	 * (`publicUrl`, or the address the call came in at).
+	 */
+	async function publicUrlView(request: Request): Promise<computeSchema.PublicUrl> {
+		const deploymentUrl = (options.publicUrl ?? new URL(request.url).origin).replace(/\/+$/, "");
+		const set = await store.settings.get("publicUrl");
+		const publicUrl = set?.value ?? deploymentUrl;
+		return {
+			publicUrl,
+			source: set === undefined ? "deployment" : "console",
+			deploymentUrl,
+			loopback: isLoopbackUrl(publicUrl),
+		};
+	}
+
 	async function mintJoinToken(
 		body: {
 			readonly name?: string;
@@ -2010,7 +2068,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			createdAt: now(),
 			...(owner === undefined ? {} : { accountId: owner.accountId, createdBy: owner.createdBy }),
 		});
-		const publicUrl = (options.publicUrl ?? new URL(request.url).origin).replace(/\/+$/, "");
+		const { publicUrl } = await publicUrlView(request);
 		return {
 			id,
 			token,
@@ -4004,6 +4062,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		createHostJoinToken: async (principal, { body }, request) => {
 			requireScope(principal, "hosts:admin");
 			return mintJoinToken(body, request);
+		},
+
+		getPublicUrl: async (principal, _input, request) => {
+			requireScope(principal, "hosts:admin");
+			return publicUrlView(request);
+		},
+
+		setPublicUrl: async (principal, { body }, request) => {
+			requireScope(principal, "hosts:admin");
+			if (body.publicUrl === null) await store.settings.delete("publicUrl");
+			else {
+				await store.settings.put({
+					id: "publicUrl",
+					value: publicOrigin(body.publicUrl),
+					updatedAt: now(),
+					updatedBy: principal.userId,
+				});
+			}
+			return publicUrlView(request);
 		},
 
 		getHost: async (principal, { params }) => hostView(await hostFor(principal, params.hostId)),

@@ -88,6 +88,11 @@ export interface SandboxesPageProps {
 	 * account can use, so with no sandboxes New stays the action, with a link here to add a host beside it.
 	 */
 	readonly ownHostHref?: string;
+	/**
+	 * With `addHostHref`, what the page shows in place of its list while there are no sandboxes: the first run, which
+	 * adds the host right here. Without it, a link to Hosts' Add host.
+	 */
+	readonly firstRun?: ReactNode;
 }
 
 /** What New makes without asking: New sandbox's own defaults, "MicroVM, Medium, stops after 1 hour". */
@@ -167,6 +172,7 @@ export function SandboxesPage({
 	narrow = false,
 	addHostHref,
 	ownHostHref,
+	firstRun,
 }: SandboxesPageProps) {
 	const { state, reload } = useLoad(() => source.list(account.id), [source, account.id]);
 	// Sandboxes made or changed here, ahead of the next read: a new one shows the moment New is pressed.
@@ -314,6 +320,8 @@ export function SandboxesPage({
 				</Notice>
 			) : sandboxes === undefined ? (
 				<SandboxesSkeleton />
+			) : sandboxes.length === 0 && addHostHref !== undefined && firstRun !== undefined ? (
+				firstRun
 			) : sandboxes.length === 0 && addHostHref !== undefined ? (
 				<EmptyState
 					title="Add a host to run sandboxes on"
