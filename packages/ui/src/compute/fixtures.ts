@@ -1231,6 +1231,27 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					const at = accounts.findIndex((account) => account.id === accountId);
 					if (at > 0) accounts.splice(at, 1);
 				}),
+			rename: (accountId, name) =>
+				gate(() => {
+					const at = accounts.findIndex((account) => account.id === accountId);
+					const account = accounts[at];
+					if (account === undefined) throw new Error(`No account ${accountId}.`);
+					const renamed = { ...account, name };
+					accounts[at] = renamed;
+					return renamed;
+				}),
+			setRole: (accountId, memberId, role) =>
+				gate(() => {
+					const list = members.get(accountId) ?? [];
+					const member = list.find((each) => each.id === memberId);
+					if (member === undefined) throw new Error(`No member ${memberId}.`);
+					const changed = { ...member, role };
+					members.set(
+						accountId,
+						list.map((each) => (each.id === memberId ? changed : each)),
+					);
+					return changed;
+				}),
 		},
 		sandboxes: {
 			list: (accountId) =>

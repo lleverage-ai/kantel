@@ -6,7 +6,6 @@
 
 import { type ReactNode, useState } from "react";
 import { Button } from "../primitives/button.tsx";
-import { PageHeader } from "../primitives/form-layout.tsx";
 import { DAY } from "../primitives/format.ts";
 import { useLoad } from "../primitives/load.ts";
 import { Skeleton } from "../primitives/spinner.tsx";
@@ -24,6 +23,7 @@ import {
 	usedShare,
 } from "./compute-model.ts";
 import { CapacityBar, computePage, messageOf, None, SectionHeading, TableFrame, table, td, th } from "./parts.tsx";
+import { SettingsPageHeader } from "./settings-nav.tsx";
 
 export interface BillingPageProps {
 	readonly source: BillingSource;
@@ -80,14 +80,7 @@ export function BillingPage({ source, account, now: fixedNow }: BillingPageProps
 
 	return (
 		<div className={computePage}>
-			<PageHeader
-				title="Billing"
-				lede={
-					account.kind === "organisation"
-						? `${account.name}'s plan, what it has used this period and what sandboxes cost.`
-						: "Your plan, what you've used this period and what sandboxes cost."
-				}
-			/>
+			<SettingsPageHeader title="Plan and billing" />
 			<Notice level="info" announce={false}>
 				This is a demo of hosted Kantel. No payment is taken and no card is stored.
 			</Notice>

@@ -79,6 +79,10 @@ export interface AccountsSource {
 	revokeInvite(accountId: string, inviteId: string): Promise<void>;
 	removeMember(accountId: string, memberId: string): Promise<void>;
 	leave(accountId: string): Promise<void>;
+	/** Renames an organisation; needs admin. Absent where the source can't. */
+	rename?(accountId: string, name: string): Promise<ComputeAccount>;
+	/** Changes a member's role; needs admin, and only an owner makes or unmakes an owner. Absent where it can't. */
+	setRole?(accountId: string, memberId: string, role: AccountRole): Promise<OrganisationMember>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -931,11 +935,17 @@ export function bytesText(bytes: number): string {
 
 /** "Expires in 3 days", "Expires in 5h", "Expired". */
 export function expiresText(expiresAt: number, now: number): string {
-	const left = expiresAt - now;
-	if (left <= 0) return "Expired";
-	if (left >= 2 * DAY) return `Expires in ${Math.floor(left / DAY)} days`;
-	if (left >= HOUR) return `Expires in ${Math.floor(left / HOUR)}h`;
-	return `Expires in ${Math.max(1, Math.floor(left / MINUTE))}m`;
+	const left = untilText(expiresAt, now);
+	return left === undefined ? "Expired" : `Expires ${left}`;
+}
+
+/** "in 69 days", "in 5h", "in 3m": how long until `at`, or undefined once it has passed. */
+export function untilText(at: number, now: number): string | undefined {
+	const left = at - now;
+	if (left <= 0) return undefined;
+	if (left >= 2 * DAY) return `in ${Math.floor(left / DAY)} days`;
+	if (left >= HOUR) return `in ${Math.floor(left / HOUR)}h`;
+	return `in ${Math.max(1, Math.floor(left / MINUTE))}m`;
 }
 
 /** The ssh command for a sandbox, by its id, through the account's gateway. */

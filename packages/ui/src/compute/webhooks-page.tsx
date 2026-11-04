@@ -7,7 +7,7 @@ import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { CheckboxField, TextField } from "../primitives/controls.tsx";
 import { Dialog } from "../primitives/dialog.tsx";
-import { FormField, PageHeader } from "../primitives/form-layout.tsx";
+import { FormField } from "../primitives/form-layout.tsx";
 import { compactAge } from "../primitives/format.ts";
 import { ChevronRightIcon, PencilIcon, PlusIcon, SendIcon } from "../primitives/icons.tsx";
 import { useLoad } from "../primitives/load.ts";
@@ -28,6 +28,7 @@ import {
 	type WebhooksSource,
 } from "./compute-model.ts";
 import { cellMono, cellSub, computePage, messageOf, TableFrame, table, tableFrame, td, th } from "./parts.tsx";
+import { SettingsPageHeader } from "./settings-nav.tsx";
 
 export interface WebhooksPageProps {
 	readonly source: WebhooksSource;
@@ -111,11 +112,7 @@ export function WebhooksPage({ source, account, now: fixedNow, initialOpen }: We
 
 	return (
 		<div className={computePage}>
-			<PageHeader
-				title="Webhooks"
-				lede="Kantel posts an event to your endpoint when a sandbox changes state. Each delivery is signed with the endpoint's secret, and retried with backoff if it fails."
-				actions={addButton}
-			/>
+			<SettingsPageHeader title="Webhooks" actions={addButton} />
 			{created === undefined ? null : (
 				<OneTimeSecret
 					title={`Copy the signing secret for ${hostOf(created.webhook.url)} now`}

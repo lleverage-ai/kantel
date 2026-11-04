@@ -1,23 +1,25 @@
-// The Organisation page (compute console, experimental): the people in the current organisation and the invites
-// waiting, with your role. Admins and owners invite people, revoke invites and remove members; anyone but the owner
-// can leave. On a personal account it says what organisations are for and offers to make or join one. Every call goes
-// through the `AccountsSource` the host binds; stories bind it to fixtures.
+// The organisation's settings and your organisations (compute console, under Settings).
+//
+// In an organisation, General: its name, its people (members and invites waiting, in one list, each with its role) and
+// Leave. Admins and owners rename it, invite people, change roles, revoke invites and remove members; anyone but the
+// owner can leave. On the personal account, Organisations: the ones you belong to, with your role and Switch, and
+// Create or Join with a code under them. Every call goes through the `AccountsSource` the host binds; stories bind it to
+// fixtures.
 
 import { useId, useState } from "react";
+import { initials } from "../identity/signed-in-as.tsx";
 import { Button } from "../primitives/button.tsx";
 import { SelectField, TextField } from "../primitives/controls.tsx";
 import { Dialog } from "../primitives/dialog.tsx";
-import { PageHeader } from "../primitives/form-layout.tsx";
 import { compactAge } from "../primitives/format.ts";
-import { PlusIcon } from "../primitives/icons.tsx";
+import { ChevronDownIcon, ChevronRightIcon, PlusIcon } from "../primitives/icons.tsx";
 import { useLoad } from "../primitives/load.ts";
-import { EllipsisIcon, InviteIcon, RevokeInviteIcon, TrashIcon } from "../primitives/lucide.tsx";
-import { Menu } from "../primitives/menu.tsx";
+import { EllipsisIcon, RevokeInviteIcon, TrashIcon } from "../primitives/lucide.tsx";
+import { Menu, type MenuEntry } from "../primitives/menu.tsx";
 import { OneTimeSecret } from "../primitives/one-time-secret.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
-import { Badge } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
-import { ACCOUNT_ROLE_LABELS } from "./account-switcher.tsx";
+import { ACCOUNT_ROLE_LABELS, AccountMark } from "./account-switcher.tsx";
 import type {
 	AccountRole,
 	AccountsSource,
@@ -25,7 +27,8 @@ import type {
 	OrganisationInvite,
 	OrganisationMember,
 } from "./compute-model.ts";
-import { computePage, messageOf, SectionHeading, TableFrame, table, tableFrame, td, th } from "./parts.tsx";
+import { computePage, messageOf, SectionHeading } from "./parts.tsx";
+import { SettingsPageHeader } from "./settings-nav.tsx";
 
 export interface OrganisationPageProps {
 	readonly source: AccountsSource;
@@ -34,12 +37,20 @@ export interface OrganisationPageProps {
 	readonly viewerId: string;
 	/** A fixed time, for stories. */
 	readonly now?: number;
-	/** Opens Create an organisation, from a personal account. */
+	/** Every account the viewer has, for the personal account's list of organisations. */
+	readonly accounts?: readonly ComputeAccount[];
+	/** Switches the console to an organisation, from the personal account's list. */
+	readonly onSwitch?: (account: ComputeAccount) => void;
+	/** Opens Create an organisation, from the personal account. */
 	readonly onCreate?: () => void;
-	/** Opens Join with a code, from a personal account. */
+	/** Opens Join with a code, from the personal account. */
 	readonly onJoin?: () => void;
 	/** The viewer left the organisation: the host switches to another account. */
 	readonly onLeft?: () => void;
+	/** The organisation has a new name: the host reads its accounts again. */
+	readonly onRenamed?: (account: ComputeAccount) => void;
+	/** A phone: rows that fit 390px. */
+	readonly narrow?: boolean;
 	/** An invite just made, with its join code showing: for a story. */
 	readonly invited?: OrganisationInvite;
 }
@@ -50,86 +61,153 @@ const INVITE_ROLES: readonly { value: Exclude<AccountRole, "owner">; label: stri
 	{ value: "admin", label: "Admin" },
 ];
 
-const YOUR_ROLE: Readonly<Record<AccountRole, string>> = {
-	owner: "You're its owner.",
-	admin: "You're an admin.",
-	member: "You're a member.",
-};
-
 const canManage = (role: AccountRole): boolean => role === "owner" || role === "admin";
 
 type NoticeState = { level: "info" | "error"; text: string };
 
-export function OrganisationPage({
+export function OrganisationPage(props: OrganisationPageProps) {
+	return props.account.kind === "personal" ? <OrganisationsList {...props} /> : <General {...props} />;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Organisations: the personal account's list
+
+function OrganisationsList({
 	source,
-	account,
-	viewerId,
-	now,
+	accounts = [],
+	narrow = false,
+	onSwitch,
 	onCreate,
 	onJoin,
-	onLeft,
-	invited,
 }: OrganisationPageProps) {
-	if (account.kind === "personal") {
-		return (
-			<div className={computePage}>
-				<PageHeader title="Organisation" />
-				<EmptyState
-					title="This is your personal account"
-					action={
-						onCreate === undefined && onJoin === undefined ? undefined : (
-							<div className="flex flex-wrap justify-center gap-2">
-								{onCreate === undefined ? null : (
-									<Button variant="primary" icon={<PlusIcon size="sm" />} onClick={onCreate}>
-										Create an organisation
-									</Button>
-								)}
-								{onJoin === undefined ? null : (
-									<Button icon={<InviteIcon />} onClick={onJoin}>
-										Join with a code
-									</Button>
-								)}
-							</div>
-						)
-					}
-				>
-					Your personal account is yours alone. Organisations are where sandboxes, keys, snapshots and settings are
-					shared with other people.
-				</EmptyState>
+	const organisations = accounts.filter((each) => each.kind === "organisation");
+	const actions =
+		onCreate === undefined && onJoin === undefined ? null : (
+			<div className="flex flex-wrap items-center gap-2">
+				{onCreate === undefined ? null : (
+					<Button icon={<PlusIcon size="sm" />} onClick={onCreate}>
+						Create
+					</Button>
+				)}
+				{onJoin === undefined ? null : (
+					<Button variant="ghost" onClick={onJoin}>
+						Join with a code
+					</Button>
+				)}
 			</div>
 		);
-	}
 	return (
-		<OrganisationDetails
-			source={source}
-			account={account}
-			viewerId={viewerId}
-			now={now}
-			{...(onLeft === undefined ? {} : { onLeft })}
-			{...(invited === undefined ? {} : { invited })}
-		/>
+		<div className={computePage}>
+			<SettingsPageHeader title="Organisations" narrow={narrow} />
+			{organisations.length === 0 ? (
+				<EmptyState title="No organisations yet" action={actions ?? undefined}>
+					Share sandboxes, snapshots and keys with other people.
+				</EmptyState>
+			) : (
+				<>
+					<ul className="kt-organisation-rows m-0 flex list-none flex-col p-0">
+						{organisations.map((organisation) => (
+							<OrganisationRow
+								key={organisation.id}
+								source={source}
+								organisation={organisation}
+								narrow={narrow}
+								{...(onSwitch === undefined ? {} : { onSwitch })}
+							/>
+						))}
+					</ul>
+					{actions}
+				</>
+			)}
+		</div>
 	);
 }
 
-function OrganisationDetails({
+/** "5 members", read from the organisation itself: an account in the list doesn't always count them. */
+function useMemberCount(source: AccountsSource, organisation: ComputeAccount): string | undefined {
+	const { state } = useLoad(() => source.members(organisation.id), [source, organisation.id]);
+	if (state.status !== "ready") return undefined;
+	const count = state.value.length;
+	return count === 1 ? "1 member" : `${count} members`;
+}
+
+function OrganisationRow({
+	source,
+	organisation,
+	narrow,
+	onSwitch,
+}: {
+	source: AccountsSource;
+	organisation: ComputeAccount;
+	narrow: boolean;
+	onSwitch?: (account: ComputeAccount) => void;
+}) {
+	const members = useMemberCount(source, organisation);
+	const role = ACCOUNT_ROLE_LABELS[organisation.role];
+	const who = (
+		<span className="flex min-w-0 flex-1 flex-col gap-0.5">
+			<span className="truncate font-medium text-fg">{organisation.name}</span>
+			<span className="min-h-4 truncate text-xs text-muted">{members ?? ""}</span>
+		</span>
+	);
+	// A phone: the whole row switches, with a chevron, as a list of places to go.
+	if (narrow && onSwitch !== undefined) {
+		return (
+			<li className="border-b border-border" data-account={organisation.id}>
+				<button
+					type="button"
+					className="kt-focusable flex w-full min-w-0 cursor-pointer items-center gap-3 border-0 bg-transparent px-0 py-3 text-left [font-family:inherit] text-md text-fg"
+					onClick={() => onSwitch(organisation)}
+					aria-label={`Switch to ${organisation.name}, ${role}`}
+				>
+					<AccountMark account={organisation} />
+					{who}
+					<span className="flex-none text-sm text-muted">{role}</span>
+					<ChevronRightIcon className="flex-none text-faint" />
+				</button>
+			</li>
+		);
+	}
+	return (
+		<li
+			className="flex min-w-0 items-center gap-3 border-b border-border px-2 py-2.5 text-sm"
+			data-account={organisation.id}
+		>
+			<AccountMark account={organisation} />
+			{who}
+			<span className="w-24 flex-none text-muted">{role}</span>
+			{onSwitch === undefined ? null : (
+				<Button size="sm" onClick={() => onSwitch(organisation)} aria-label={`Switch to ${organisation.name}`}>
+					Switch
+				</Button>
+			)}
+		</li>
+	);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// General: an organisation's name, people and Leave
+
+function General({
 	source,
 	account,
 	viewerId,
 	now: fixedNow,
 	onLeft,
+	onRenamed,
+	narrow = false,
 	invited: firstInvited,
-}: {
-	source: AccountsSource;
-	account: ComputeAccount;
-	viewerId: string;
-	now: number | undefined;
-	onLeft?: () => void;
-	invited?: OrganisationInvite;
-}) {
+}: OrganisationPageProps) {
 	const members = useLoad(() => source.members(account.id), [source, account.id]);
-	const invites = useLoad(() => source.invites(account.id), [source, account.id]);
-	// What this page changed, ahead of the next read: people removed, invites revoked and invites sent.
+	const manager = canManage(account.role);
+	// Only an admin may list the invites.
+	const invites = useLoad(
+		() => (manager ? source.invites(account.id) : Promise.resolve([] as readonly OrganisationInvite[])),
+		[source, account.id, manager],
+	);
+	// What this page changed, ahead of the next read: people removed or given a new role, invites revoked and sent.
 	const [removed, setRemoved] = useState<ReadonlySet<string>>(new Set());
+	const [roles, setRoles] = useState<ReadonlyMap<string, AccountRole>>(new Map());
 	const [revoked, setRevoked] = useState<ReadonlySet<string>>(new Set());
 	const [sent, setSent] = useState<readonly OrganisationInvite[]>([]);
 	const [notice, setNotice] = useState<NoticeState>();
@@ -138,10 +216,14 @@ function OrganisationDetails({
 	// The invite just made, while its join code shows.
 	const [invited, setInvited] = useState(firstInvited);
 	const now = fixedNow ?? Date.now();
-	const manager = canManage(account.role);
+	const headingId = useId();
 
 	const memberList =
-		members.state.status === "ready" ? members.state.value.filter((member) => !removed.has(member.id)) : undefined;
+		members.state.status === "ready"
+			? members.state.value
+					.filter((member) => !removed.has(member.id))
+					.map((member) => ({ ...member, role: roles.get(member.id) ?? member.role }))
+			: undefined;
 	const inviteList =
 		invites.state.status === "ready"
 			? [
@@ -150,7 +232,7 @@ function OrganisationDetails({
 						invites.state.status === "ready" ? !invites.state.value.some((read) => read.id === invite.id) : true,
 					),
 				].filter((invite) => !revoked.has(invite.id))
-			: undefined;
+			: [];
 
 	const toggle = (set: ReadonlySet<string>, id: string, on: boolean): ReadonlySet<string> => {
 		const next = new Set(set);
@@ -163,7 +245,7 @@ function OrganisationDetails({
 		setRemoved((current) => toggle(current, member.id, true));
 		try {
 			await source.removeMember(account.id, member.id);
-			setNotice({ level: "info", text: `Removed ${member.name} from ${account.name}.` });
+			setNotice({ level: "info", text: `Removed ${member.name}.` });
 			members.reload();
 		} catch (caught) {
 			setRemoved((current) => toggle(current, member.id, false));
@@ -183,40 +265,42 @@ function OrganisationDetails({
 		}
 	};
 
-	const count = memberList?.length ?? account.members;
-	const people = count === 1 ? "1 person" : `${count} people`;
-	const headingId = useId();
+	const sourceRename = source.rename;
+	const rename =
+		manager && sourceRename !== undefined
+			? async (name: string) => onRenamed?.(await sourceRename(account.id, name))
+			: undefined;
+	const setRole = source.setRole;
+	const changeRole =
+		setRole === undefined
+			? undefined
+			: async (member: OrganisationMember, role: AccountRole) => {
+					const was = member.role;
+					setRoles((current) => new Map(current).set(member.id, role));
+					try {
+						await setRole(account.id, member.id, role);
+						setNotice({ level: "info", text: `${member.name} is now ${ACCOUNT_ROLE_LABELS[role].toLowerCase()}.` });
+						members.reload();
+					} catch (caught) {
+						setRoles((current) => new Map(current).set(member.id, was));
+						setNotice({
+							level: "error",
+							text: messageOf(caught, `Kantel couldn't change ${member.name}'s role. Try again.`),
+						});
+					}
+				};
+
 	return (
 		<div className={computePage}>
-			<PageHeader
-				title={account.name}
-				lede={
-					account.slug === undefined ? (
-						<>
-							It has {people}. {YOUR_ROLE[account.role]}
-						</>
-					) : (
-						<>
-							Its slug is <span className="font-mono text-code text-fg">{account.slug}</span>, and it has {people}.{" "}
-							{YOUR_ROLE[account.role]}
-						</>
-					)
-				}
-				actions={
-					manager ? (
-						<Button variant="primary" icon={<InviteIcon />} onClick={() => setInviting(true)}>
-							Invite people
-						</Button>
-					) : undefined
-				}
-			/>
+			<SettingsPageHeader title="General" narrow={narrow} />
+			<NameField account={account} {...(rename === undefined ? {} : { rename })} />
 			{invited?.code === undefined ? null : (
 				<OneTimeSecret
 					title={`Send ${invited.email} this code now`}
 					secret={invited.code}
 					secretLabel="Join code"
 					copyLabel="Copy code"
-					warning={`Kantel sends no email and shows this code only once. ${invited.email} joins as ${ACCOUNT_ROLE_LABELS[invited.role].toLowerCase()} with it: in the account menu, Join with an invite code. It works once.`}
+					warning={`Kantel sends no email and shows this code only once. It works once, from the account menu's Join.`}
 					acknowledgeLabel="Done"
 					onAcknowledge={() => setInvited(undefined)}
 				/>
@@ -233,82 +317,68 @@ function OrganisationDetails({
 					{notice.text}
 				</Notice>
 			)}
-			{members.state.status === "error" && memberList === undefined ? (
-				<Notice
-					level="error"
-					action={
-						<Button
-							size="sm"
-							onClick={() => {
-								members.reload();
-								invites.reload();
-							}}
-						>
-							Try again
-						</Button>
+			<section className="flex min-w-0 flex-col gap-2" aria-labelledby={`${headingId}-members`}>
+				<SectionHeading
+					id={`${headingId}-members`}
+					title="Members"
+					actions={
+						manager ? (
+							<Button icon={<PlusIcon size="sm" />} onClick={() => setInviting(true)}>
+								Invite
+							</Button>
+						) : undefined
 					}
-				>
-					{messageOf(members.state.error, "Kantel couldn't read the organisation's members.")}
-				</Notice>
-			) : memberList === undefined ? (
-				<TableSkeleton />
-			) : (
-				<>
-					<section className="flex min-w-0 flex-col gap-2" aria-labelledby={`${headingId}-members`}>
-						<SectionHeading id={`${headingId}-members`} title="Members" />
-						<MembersTable
-							members={memberList}
-							viewerId={viewerId}
-							manager={manager}
-							now={now}
-							onRemove={(member) => void remove(member)}
-						/>
-					</section>
-					<section className="flex min-w-0 flex-col gap-2" aria-labelledby={`${headingId}-invites`}>
-						<SectionHeading id={`${headingId}-invites`} title="Invites" />
-						{invites.state.status === "error" && inviteList === undefined ? (
-							<Notice
-								level="error"
-								action={
-									<Button size="sm" onClick={invites.reload}>
-										Try again
-									</Button>
-								}
-							>
-								{messageOf(invites.state.error, "Kantel couldn't read the invites.")}
-							</Notice>
-						) : inviteList === undefined ? (
-							<TableSkeleton rows={1} />
-						) : inviteList.length === 0 ? (
-							<p className="m-0 text-sm text-muted">No invites waiting.</p>
-						) : (
-							<InvitesTable
-								invites={inviteList}
-								manager={manager}
-								now={now}
-								onRevoke={(invite) => void revoke(invite)}
-							/>
-						)}
-					</section>
-					{account.role === "owner" ? null : (
-						<section className="flex min-w-0 flex-col gap-2" aria-labelledby={`${headingId}-leave`}>
-							<SectionHeading id={`${headingId}-leave`} title="Leave organisation" />
-							<div className="flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-panel border border-status-error-line bg-panel px-3 py-2.5">
-								<p className="m-0 min-w-0 flex-[1_1_var(--kt-card-width)] text-sm text-muted">
-									You lose access to its sandboxes, snapshots and keys. Someone who can invite people can ask you back.
-								</p>
-								<Button variant="danger" onClick={() => setLeaving(true)}>
-									Leave organisation
-								</Button>
-							</div>
-						</section>
-					)}
-				</>
+				/>
+				{members.state.status === "error" && memberList === undefined ? (
+					<Notice
+						level="error"
+						action={
+							<Button size="sm" onClick={members.reload}>
+								Try again
+							</Button>
+						}
+					>
+						{messageOf(members.state.error, "Kantel couldn't read the members.")}
+					</Notice>
+				) : memberList === undefined ? (
+					<RowsSkeleton />
+				) : (
+					<People
+						members={memberList}
+						invites={inviteList}
+						viewerId={viewerId}
+						viewerRole={account.role}
+						now={now}
+						narrow={narrow}
+						onRemove={(member) => void remove(member)}
+						onRevoke={(invite) => void revoke(invite)}
+						{...(manager && changeRole !== undefined
+							? { onRole: (member: OrganisationMember, role: AccountRole) => void changeRole(member, role) }
+							: {})}
+					/>
+				)}
+				{invites.state.status === "error" ? (
+					<p className="m-0 text-sm text-status-error">
+						{messageOf(invites.state.error, "Kantel couldn't read the invites.")}
+					</p>
+				) : null}
+			</section>
+			{account.role === "owner" ? null : (
+				<section className="flex min-w-0 flex-col gap-2 pt-4" aria-labelledby={`${headingId}-leave`}>
+					<SectionHeading id={`${headingId}-leave`} title="Leave" />
+					<div className="flex min-w-0 flex-wrap items-center justify-between gap-3">
+						<p className="m-0 min-w-0 text-sm text-muted">
+							You lose access to {account.name}'s sandboxes, snapshots and keys.
+						</p>
+						<Button variant="danger" onClick={() => setLeaving(true)}>
+							Leave {account.name}
+						</Button>
+					</div>
+				</section>
 			)}
 			{manager ? (
 				<InviteDialog
 					open={inviting}
-					account={account}
 					onClose={() => setInviting(false)}
 					onInvite={async (input) => {
 						const made = await source.invite(account.id, input);
@@ -316,7 +386,7 @@ function OrganisationDetails({
 						const { code, ...invite } = made;
 						setSent((current) => [...current, invite]);
 						if (code === undefined) {
-							setNotice({ level: "info", text: `Invited ${invite.email} as ${ACCOUNT_ROLE_LABELS[invite.role]}.` });
+							setNotice({ level: "info", text: `Invited ${invite.email}.` });
 						} else {
 							setNotice(undefined);
 							setInvited(made);
@@ -338,194 +408,250 @@ function OrganisationDetails({
 	);
 }
 
-function TableSkeleton({ rows = 4 }: { rows?: number }) {
+/** The organisation's name: a field an admin can change and save; for anyone else, read only. */
+function NameField({ account, rename }: { account: ComputeAccount; rename?: (name: string) => Promise<void> }) {
+	const [name, setName] = useState(account.name);
+	const [busy, setBusy] = useState(false);
+	const [failure, setFailure] = useState<string>();
+	const trimmed = name.trim();
+	const dirty = rename !== undefined && trimmed !== "" && trimmed !== account.name;
+	const save = () => {
+		if (!dirty || busy || rename === undefined) return;
+		setBusy(true);
+		setFailure(undefined);
+		rename(trimmed).then(
+			() => setBusy(false),
+			(caught: unknown) => {
+				setBusy(false);
+				setFailure(messageOf(caught, "Kantel couldn't rename it. Try again."));
+			},
+		);
+	};
 	return (
-		<div className={tableFrame} aria-busy="true">
-			<div className="flex flex-col gap-3 p-4">
-				{[0, 1, 2, 3].slice(0, rows).map((row) => (
-					<Skeleton key={row} />
-				))}
+		<form
+			className="flex min-w-0 max-w-(--kt-card-width) items-end gap-2"
+			onSubmit={(event) => {
+				event.preventDefault();
+				save();
+			}}
+		>
+			<div className="min-w-0 flex-1">
+				<TextField
+					label="Name"
+					value={name}
+					readOnly={rename === undefined}
+					maxLength={100}
+					onChange={(event) => setName(event.currentTarget.value)}
+					{...(failure === undefined ? {} : { error: failure })}
+				/>
 			</div>
+			{dirty ? (
+				<Button type="submit" variant="primary" busy={busy}>
+					Save
+				</Button>
+			) : null}
+		</form>
+	);
+}
+
+function RowsSkeleton() {
+	return (
+		<div className="flex flex-col gap-3 py-2" aria-busy="true">
+			{[0, 1, 2, 3].map((row) => (
+				<Skeleton key={row} />
+			))}
 		</div>
 	);
 }
 
-function RoleBadge({ role }: { role: AccountRole }) {
-	return <Badge tone={role === "owner" ? "accent" : "neutral"}>{ACCOUNT_ROLE_LABELS[role]}</Badge>;
+/** A person's initials in a circle; an invite's from its email. */
+function PersonMark({ name }: { name: string }) {
+	return (
+		<span
+			className="inline-grid size-control-sm flex-none place-items-center rounded-full border border-border-strong bg-raised text-2xs font-strong leading-none text-fg"
+			aria-hidden="true"
+		>
+			{initials(name)}
+		</span>
+	);
 }
 
-function MembersTable({
+/** A row's role: words, or for an admin a menu of the roles they may give, in the same words. */
+function RoleControl({
+	member,
+	viewerRole,
+	onRole,
+}: {
+	member: OrganisationMember;
+	viewerRole: AccountRole;
+	onRole?: (member: OrganisationMember, role: AccountRole) => void;
+}) {
+	const label = ACCOUNT_ROLE_LABELS[member.role];
+	// Only an owner makes or unmakes an owner.
+	const offered: readonly AccountRole[] = viewerRole === "owner" ? ["member", "admin", "owner"] : ["member", "admin"];
+	if (onRole === undefined || !offered.includes(member.role)) return <RoleText role={member.role} />;
+	const entries: MenuEntry[] = offered.map((role) => ({
+		kind: "item",
+		id: role,
+		label: ACCOUNT_ROLE_LABELS[role],
+		checked: role === member.role,
+		onSelect: () => {
+			if (role !== member.role) onRole(member, role);
+		},
+	}));
+	return (
+		<Menu
+			label={`Role for ${member.name}`}
+			entries={entries}
+			align="end"
+			triggerClassName="kt-focusable inline-flex cursor-pointer items-center gap-1 rounded-control border-0 bg-transparent px-1.5 py-1 [font-family:inherit] text-sm text-muted hover:bg-hover hover:text-fg aria-expanded:bg-hover"
+			trigger={
+				<>
+					{label}
+					<ChevronDownIcon size="sm" />
+				</>
+			}
+		/>
+	);
+}
+
+/** A role in words, taking the room a role's menu takes so the column lines up. */
+function RoleText({ role }: { role: AccountRole }) {
+	return (
+		<span className="inline-flex items-center gap-1 px-1.5 py-1 text-sm text-muted">
+			{ACCOUNT_ROLE_LABELS[role]}
+			<ChevronDownIcon size="sm" className="invisible" />
+		</span>
+	);
+}
+
+/** The ⋯ for a row, or the room it takes so rows line up. */
+function RowMenu({ label, entries }: { label: string; entries: readonly MenuEntry[] }) {
+	return (
+		<span className="flex h-control-xs w-control-xs flex-none items-center justify-end pointer-coarse:h-control-lg pointer-coarse:w-control-lg">
+			{entries.length === 0 ? null : <Menu label={label} icon={<EllipsisIcon />} align="end" entries={entries} />}
+		</span>
+	);
+}
+
+/** Members, the owner first, then admins, then members, each by name; then the invites waiting. */
+function People({
 	members,
+	invites,
 	viewerId,
-	manager,
+	viewerRole,
 	now,
+	narrow,
 	onRemove,
+	onRevoke,
+	onRole,
 }: {
 	members: readonly OrganisationMember[];
+	invites: readonly OrganisationInvite[];
 	viewerId: string;
-	manager: boolean;
+	viewerRole: AccountRole;
 	now: number;
+	narrow: boolean;
 	onRemove: (member: OrganisationMember) => void;
+	onRevoke: (invite: OrganisationInvite) => void;
+	onRole?: (member: OrganisationMember, role: AccountRole) => void;
 }) {
-	// The owner first, then admins, then members, each by name.
+	const manager = canManage(viewerRole);
 	const rank: Readonly<Record<AccountRole, number>> = { owner: 0, admin: 1, member: 2 };
 	const sorted = [...members].sort((a, b) => rank[a.role] - rank[b.role] || a.name.localeCompare(b.name, "en-GB"));
+	const row = `flex min-w-0 items-center gap-3 border-b border-border py-2.5 text-sm ${narrow ? "" : "px-2"}`;
+	const status = narrow ? "hidden" : "w-32 flex-none text-muted";
 	return (
-		<TableFrame>
-			<table className={table}>
-				<thead>
-					<tr>
-						<th className={th} scope="col">
-							Name
-						</th>
-						<th className={th} scope="col">
-							Email
-						</th>
-						<th className={th} scope="col">
-							Role
-						</th>
-						<th className={th} scope="col">
-							Joined
-						</th>
+		<ul className="kt-member-rows m-0 flex list-none flex-col p-0">
+			{sorted.map((member) => {
+				const you = member.id === viewerId;
+				const removable = manager && !you && member.role !== "owner";
+				return (
+					<li key={member.id} className={row} data-member={member.id}>
+						<PersonMark name={member.name} />
+						<span
+							className="flex min-w-0 flex-1 flex-col gap-0.5"
+							title={`Joined ${compactAge(member.joinedAt, now)} ago`}
+						>
+							<span className="truncate font-medium text-fg">
+								{member.name}
+								{you ? <span className="font-regular text-muted"> you</span> : null}
+							</span>
+							{member.email === "" ? null : <span className="truncate text-xs text-muted">{member.email}</span>}
+						</span>
+						<span className={status} />
+						<span className="flex flex-none justify-end">
+							<RoleControl
+								member={member}
+								viewerRole={viewerRole}
+								{...(you || onRole === undefined ? {} : { onRole })}
+							/>
+						</span>
 						{manager ? (
-							<th className={th} scope="col">
-								<span className="kt-sr-only">Actions</span>
-							</th>
+							<RowMenu
+								label={`Actions for ${member.name}`}
+								entries={
+									removable
+										? [
+												{
+													kind: "item",
+													id: "remove",
+													label: "Remove",
+													icon: <TrashIcon />,
+													danger: true,
+													onSelect: () => onRemove(member),
+												},
+											]
+										: []
+								}
+							/>
 						) : null}
-					</tr>
-				</thead>
-				<tbody>
-					{sorted.map((member) => {
-						const you = member.id === viewerId;
-						const removable = manager && !you && member.role !== "owner";
-						return (
-							<tr key={member.id} data-member={member.id}>
-								<td className={td}>
-									<span className="flex items-center gap-2">
-										<span className="block max-w-(--kt-card-width) truncate font-medium text-fg">{member.name}</span>
-										{you ? <Badge>You</Badge> : null}
-									</span>
-								</td>
-								<td className={td}>
-									<span className="text-muted">{member.email}</span>
-								</td>
-								<td className={td}>
-									<RoleBadge role={member.role} />
-								</td>
-								<td className={td}>
-									<span className="text-muted" title={new Date(member.joinedAt).toLocaleString("en-GB")}>
-										{compactAge(member.joinedAt, now)}
-									</span>
-								</td>
-								{manager ? (
-									<td className={`${td} w-0`}>
-										{/* A row with no menu keeps the menu's height, so every row is as tall. */}
-										<span className="flex h-control-xs items-center justify-end pointer-coarse:h-control-lg">
-											{removable ? (
-												<Menu
-													label={`Actions for ${member.name}`}
-													icon={<EllipsisIcon />}
-													align="end"
-													entries={[
-														{
-															kind: "item",
-															id: "remove",
-															label: "Remove",
-															icon: <TrashIcon />,
-															danger: true,
-															onSelect: () => onRemove(member),
-														},
-													]}
-												/>
-											) : null}
-										</span>
-									</td>
-								) : null}
-							</tr>
-						);
-					})}
-				</tbody>
-			</table>
-		</TableFrame>
+					</li>
+				);
+			})}
+			{invites.map((invite) => {
+				const sent = `Invited ${compactAge(invite.sentAt, now)} ago`;
+				const name = invite.email === "" ? "Anyone with the code" : invite.email;
+				return (
+					<li key={invite.id} className={row} data-invite={invite.id}>
+						<PersonMark name={invite.email === "" ? "?" : invite.email} />
+						<span className="flex min-w-0 flex-1 flex-col gap-0.5">
+							<span className="truncate font-medium text-fg">{name}</span>
+							{narrow ? <span className="truncate text-xs text-muted">{sent}</span> : null}
+						</span>
+						<span className={status}>{narrow ? null : sent}</span>
+						<span className="flex flex-none justify-end">
+							<RoleText role={invite.role} />
+						</span>
+						{manager ? (
+							<RowMenu
+								label={`Actions for the invite to ${name}`}
+								entries={[
+									{
+										kind: "item",
+										id: "revoke",
+										label: "Revoke invite",
+										icon: <RevokeInviteIcon />,
+										danger: true,
+										onSelect: () => onRevoke(invite),
+									},
+								]}
+							/>
+						) : null}
+					</li>
+				);
+			})}
+		</ul>
 	);
 }
 
-function InvitesTable({
-	invites,
-	manager,
-	now,
-	onRevoke,
-}: {
-	invites: readonly OrganisationInvite[];
-	manager: boolean;
-	now: number;
-	onRevoke: (invite: OrganisationInvite) => void;
-}) {
-	return (
-		<TableFrame>
-			<table className={table}>
-				<thead>
-					<tr>
-						<th className={th} scope="col">
-							Email
-						</th>
-						<th className={th} scope="col">
-							Role
-						</th>
-						<th className={th} scope="col">
-							Sent
-						</th>
-						{manager ? (
-							<th className={th} scope="col">
-								<span className="kt-sr-only">Actions</span>
-							</th>
-						) : null}
-					</tr>
-				</thead>
-				<tbody>
-					{invites.map((invite) => (
-						<tr key={invite.id} data-invite={invite.id}>
-							<td className={td}>
-								<span className="font-medium text-fg">{invite.email}</span>
-							</td>
-							<td className={td}>
-								<RoleBadge role={invite.role} />
-							</td>
-							<td className={td}>
-								<span className="text-muted" title={new Date(invite.sentAt).toLocaleString("en-GB")}>
-									{compactAge(invite.sentAt, now)}
-								</span>
-							</td>
-							{manager ? (
-								<td className={`${td} w-0 text-right`}>
-									<Button
-										size="xs"
-										variant="ghost"
-										icon={<RevokeInviteIcon />}
-										aria-label={`Revoke the invite to ${invite.email}`}
-										onClick={() => onRevoke(invite)}
-									>
-										Revoke
-									</Button>
-								</td>
-							) : null}
-						</tr>
-					))}
-				</tbody>
-			</table>
-		</TableFrame>
-	);
-}
-
-/** Invite people: an email and the role they join with. Errors from the call show in the dialog. */
+/** Invite: an email and the role they join with. Errors from the call show in the dialog. */
 function InviteDialog({
 	open,
-	account,
 	onClose,
 	onInvite,
 }: {
 	open: boolean;
-	account: ComputeAccount;
 	onClose: () => void;
 	onInvite: (input: { email: string; role: AccountRole }) => Promise<void>;
 }) {
@@ -558,21 +684,18 @@ function InviteDialog({
 	return (
 		<Dialog
 			open={open}
-			title="Invite people"
+			title="Invite"
 			onClose={close}
 			onSubmit={submit}
 			actions={
 				<>
 					<Button onClick={close}>Cancel</Button>
 					<Button type="submit" variant="primary" busy={busy} disabled={!valid}>
-						Make invite
+						Invite
 					</Button>
 				</>
 			}
 		>
-			<p>
-				Kantel makes a code for them to join <strong>{account.name}</strong> and use its sandboxes. You send it to them.
-			</p>
 			<div className="flex w-(--kt-card-width) max-w-full flex-col gap-4 pt-2">
 				<TextField
 					label="Email"
@@ -644,7 +767,7 @@ function LeaveDialog({
 		>
 			<p>
 				You lose access to <strong>{account.name}</strong>'s sandboxes, snapshots and keys at once. Sandboxes you made
-				stay with the organisation.
+				stay with it.
 			</p>
 			{failure === undefined ? null : <p className="kt-dialog-error">{failure}</p>}
 		</Dialog>

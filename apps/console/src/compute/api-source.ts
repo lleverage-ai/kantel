@@ -223,6 +223,8 @@ function accountsSource({ api, caller }: Context): AccountsSource {
 			if (userId === undefined) throw notYet("An API key belongs to its account and can't leave it.");
 			await api.removeMember(accountId, userId);
 		},
+		rename: async (accountId, name) => accountOf(await api.updateAccount(accountId, { name })),
+		setRole: async (accountId, memberId, role) => memberOf(await api.updateMember(accountId, memberId, { role })),
 	};
 }
 
