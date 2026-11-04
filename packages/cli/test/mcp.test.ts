@@ -10,6 +10,8 @@ import { clipOutput, createMcpServer, PROTOCOL_VERSIONS, serveStdio, TOOL_DEFINI
 interface Call {
 	readonly method: string;
 	readonly path: string;
+	/** The query string, such as ?limit=20. */
+	readonly search: string;
 	readonly body: unknown;
 	readonly authorization: string | null;
 }
@@ -78,7 +80,7 @@ const later = (ms: number, response: () => Response, signal?: AbortSignal | null
 let pollsUntilDone = 0;
 
 const ROUTES: {
-	readonly [route: string]: (body: unknown, signal?: AbortSignal | null) => Response | Promise<Response>;
+	readonly [route: string]: (body: unknown, signal?: AbortSignal | null, url?: URL) => Response | Promise<Response>;
 } = {
 	"POST /v1/sandboxes": () => Response.json(SANDBOX),
 	"POST /v1/sandboxes/sbx_mcp1/commands": (body) =>
@@ -94,6 +96,12 @@ const ROUTES: {
 		);
 	},
 	"GET /v1/sandboxes/sbx_mcp1/commands": () => Response.json({ items: [{ ...RUNNING, stdout: "lots" }, COMMAND] }),
+	"GET /v1/sandboxes/sbx_many/commands": (_body, _signal, url) =>
+		Response.json(
+			url?.searchParams.get("cursor") === "c2"
+				? { items: [{ ...COMMAND, id: "cmd_old" }] }
+				: { items: [{ ...COMMAND, id: "cmd_new" }], nextCursor: "c2" },
+		),
 	"DELETE /v1/sandboxes/sbx_mcp1/commands/cmd_long": () =>
 		Response.json({ ...RUNNING, state: "killed", exitCode: 137 }),
 	"GET /v1/sandboxes/sbx_gone": () =>
@@ -108,13 +116,19 @@ function fakeKantel() {
 		const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
 		const method = init?.method ?? "GET";
 		const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
-		calls.push({ method, path: url.pathname, body, authorization: new Headers(init?.headers).get("authorization") });
+		calls.push({
+			method,
+			path: url.pathname,
+			search: url.search,
+			body,
+			authorization: new Headers(init?.headers).get("authorization"),
+		});
 		const route = ROUTES[`${method} ${url.pathname}`];
 		if (route === undefined) {
 			const error = { code: "not_found", message: `No route ${method} ${url.pathname}` };
 			return Response.json({ error }, { status: 404 });
 		}
-		return route(body, init?.signal);
+		return route(body, init?.signal, url);
 	};
 	return { fetch, calls };
 }
@@ -442,6 +456,30 @@ describe("the MCP server", () => {
 		expect(running.content[0]?.text).toContain("still running");
 		expect(running.content[0]?.text).toContain("command_get");
 		expect(running.content[0]?.text).toContain("command_kill");
+	});
+
+	it("pages through a sandbox's commands with nextCursor and cursor", async () => {
+		const { mcp, calls } = server();
+		const first = resultOf(
+			await mcp.handle(
+				request(42, "tools/call", { name: "command_list", arguments: { sandboxId: "sbx_many", limit: 1 } }),
+			),
+		);
+		expect(first.structuredContent).toMatchObject({ items: [{ commandId: "cmd_new" }], nextCursor: "c2" });
+		expect(first.content[0]?.text).toContain("cursor c2");
+		const second = resultOf(
+			await mcp.handle(
+				request(43, "tools/call", {
+					name: "command_list",
+					arguments: { sandboxId: "sbx_many", limit: 1, cursor: "c2" },
+				}),
+			),
+		);
+		expect(second.structuredContent).toEqual({
+			items: [{ commandId: "cmd_old", command: "echo hi", state: "exited", exitCode: 0, startedAt: 0, durationMs: 12 }],
+		});
+		expect(second.content[0]?.text).not.toContain("older commands");
+		expect(calls.map((call) => call.search)).toEqual(["?limit=1", "?limit=1&cursor=c2"]);
 	});
 
 	it("lists commands without their output, and kills one", async () => {

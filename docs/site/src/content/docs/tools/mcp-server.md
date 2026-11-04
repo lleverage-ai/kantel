@@ -86,7 +86,7 @@ pi doesn't take MCP servers. It uses the `kantel` command through its shell inst
 | `sandbox_fork` | Copies of a sandbox, `count` at a time |
 | `sandbox_delete` | Delete one for good. An `agent` key isn't allowed to |
 | `sandbox_exec` | Run a command line and wait for it: its exit code, stdout and stderr, each cut to about 64 KiB. With `detached`, start it and answer its ID at once |
-| `command_get`, `command_list`, `command_kill` | A command's state and output, waiting up to `waitMs` for it to end; a sandbox's commands; end one |
+| `command_get`, `command_list`, `command_kill` | A command's state and output, waiting up to `waitMs` for it to end; a sandbox's commands, a page at a time with `cursor`; end one |
 | `file_read`, `file_write`, `file_list` | A sandbox's files, up to 1 MiB each, as text or base64 |
 | `port_expose` | An HTTPS URL for a port in the sandbox |
 | `snapshot_save`, `snapshot_list` | Save a sandbox's state under a name, and list saved snapshots or one sandbox's history |

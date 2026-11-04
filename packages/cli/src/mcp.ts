@@ -521,11 +521,13 @@ const TOOLS: readonly Tool[] = [
 		name: "command_list",
 		description:
 			"A sandbox's commands, newest first, with their state and exit code but not their output (command_get has " +
-			"it). Finds a command whose call your MCP client gave up on.",
+			"it). Finds a command whose call your MCP client gave up on. When there are more, nextCursor is set: pass it " +
+			"as cursor for the next, older page.",
 		inputSchema: schema(
 			{
 				sandboxId,
 				limit: { type: "integer", minimum: 1, maximum: 100, description: "At most this many; default 20." },
+				cursor: { type: "string", description: "A previous answer's nextCursor, for the page after it." },
 			},
 			["sandboxId"],
 		),
@@ -533,7 +535,7 @@ const TOOLS: readonly Tool[] = [
 		async call(args, { client, signal }) {
 			const page = await client.listCommands(
 				text(args, "sandboxId"),
-				{ limit: optionalNumber(args, "limit") ?? 20 },
+				{ limit: optionalNumber(args, "limit") ?? 20, cursor: optionalText(args, "cursor") },
 				{ signal },
 			);
 			const items = page.items.map((command) => ({
@@ -544,7 +546,11 @@ const TOOLS: readonly Tool[] = [
 				startedAt: command.startedAt,
 				durationMs: command.durationMs ?? null,
 			}));
-			return json({ items });
+			if (page.nextCursor === undefined) return json({ items });
+			return json(
+				{ items, nextCursor: page.nextCursor },
+				`There are older commands: call command_list again with cursor ${page.nextCursor} for them.`,
+			);
 		},
 	},
 	{
