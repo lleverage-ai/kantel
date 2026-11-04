@@ -880,6 +880,19 @@ export interface ProxySettings {
 	readonly updatedAt: number;
 }
 
+/** The settings as you last read them: `GET /proxy`'s answer will do. Given, the write is refused with `conflict` if they have changed since, so an edit made from an older read can't undo someone else's: read them again and redo the edit. Left out, the settings are replaced whatever they hold. */
+export interface ProxySettingsExpected {
+	readonly enabled: boolean;
+	readonly defaultAction: "allow" | "deny";
+	readonly allow: readonly string[];
+	readonly deny: readonly string[];
+	readonly upstream?: {
+		readonly url: string;
+		readonly headerNames: readonly string[];
+	};
+	readonly attribution: boolean;
+}
+
 export interface ProxyUpstream {
 	/** Another proxy every allowed request goes on to, such as a Mehen. */
 	readonly url: string;
@@ -914,6 +927,8 @@ export interface PutProxySettingsBody {
 		};
 	} | null;
 	readonly attribution?: boolean;
+	/** The settings as you last read them: `GET /proxy`'s answer will do. Given, the write is refused with `conflict` if they have changed since, so an edit made from an older read can't undo someone else's: read them again and redo the edit. Left out, the settings are replaced whatever they hold. */
+	readonly expected?: ProxySettingsExpected;
 }
 
 export interface PutTelemetryBody {
@@ -1827,7 +1842,7 @@ export interface KantelClient {
 	denyDeviceLogin(userCode: string, options?: CallOptions): Promise<DeviceLoginRequest>;
 	/** Get the proxy settings. Where the account's sandboxes' outbound traffic may go. A key needs `account:read`. `GET /proxy` */
 	getProxySettings(query?: AccountScopedQuery, options?: CallOptions): Promise<ProxySettings>;
-	/** Set the proxy settings. Replaces them. Running sandboxes pick them up within a minute. An upstream's header values are kept encrypted and never shown again; leave `upstream.headers` out to keep the ones it has. A key needs `account:admin`. `PUT /proxy` */
+	/** Set the proxy settings. Replaces them. Running sandboxes pick them up within a minute. An upstream's header values are kept encrypted and never shown again; leave `upstream.headers` out to keep the ones it has. With `expected`, the settings as you read them, a write made from an older read is refused with `conflict`. A key needs `account:admin`. `PUT /proxy` */
 	putProxySettings(body: PutProxySettingsBody, options?: CallOptions): Promise<ProxySettings>;
 	/** List environments. The account's environments, oldest first. A key needs `account:read`. `GET /environments` */
 	listEnvironments(query?: AccountScopedQuery, options?: CallOptions): Promise<EnvironmentList>;

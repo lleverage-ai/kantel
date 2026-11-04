@@ -403,6 +403,55 @@ describe("keys and scopes", () => {
 		expect(JSON.stringify(settings)).not.toContain("hush-123");
 		expect(JSON.stringify(await tom.getProxySettings())).not.toContain("hush-123");
 	});
+
+	it("refuses a proxy write made from an older read, with `expected`, and leaves the settings as they were", async () => {
+		const { tom } = setup();
+		// Never written: the defaults are what was read.
+		const unset = await tom.getProxySettings();
+		const first = await tom.putProxySettings({
+			enabled: true,
+			defaultAction: "deny",
+			allow: ["api.github.com"],
+			upstream: { url: "https://mehen.example", headers: { authorization: "Bearer hush-123" } },
+			expected: unset,
+		});
+		// Someone else adds a host from that read.
+		const theirs = await tom.putProxySettings({
+			...first,
+			upstream: { url: "https://mehen.example" },
+			allow: [...first.allow, "pypi.org"],
+			expected: first,
+		});
+		expect(theirs.upstream?.headerNames).toEqual(["authorization"]);
+
+		// A write from the same, now older, read would drop pypi.org: it is refused.
+		const stale = await failure(
+			tom.putProxySettings({
+				...first,
+				upstream: { url: "https://mehen.example" },
+				deny: ["evil.example"],
+				expected: first,
+			}),
+		);
+		expect(stale.code).toBe("conflict");
+		const now = await tom.getProxySettings();
+		expect(now).toMatchObject({ allow: ["api.github.com", "pypi.org"], deny: [] });
+
+		// From the defaults too, once the settings have been written.
+		expect((await failure(tom.putProxySettings({ enabled: false, expected: unset }))).code).toBe("conflict");
+		// Without `expected` the write replaces them whatever they hold, as before.
+		expect(await tom.putProxySettings({ enabled: false })).toMatchObject({ enabled: false, allow: [] });
+	});
+
+	it("refuses a first proxy write whose `expected` isn't the defaults", async () => {
+		const { tom } = setup();
+		const unset = await tom.getProxySettings();
+		const refused = await failure(
+			tom.putProxySettings({ enabled: true, expected: { ...unset, allow: ["api.github.com"] } }),
+		);
+		expect(refused.code).toBe("conflict");
+		expect(await tom.getProxySettings()).toEqual(unset);
+	});
 });
 
 describe("device sign-in", () => {

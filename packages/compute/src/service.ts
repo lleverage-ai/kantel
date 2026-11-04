@@ -778,6 +778,36 @@ const grantsKey = (
 		]),
 	);
 
+/** An account's proxy settings before any are written: off, everything allowed. */
+const unsetProxy = (account: StoredAccount): StoredProxy => ({
+	id: account.id,
+	accountId: account.id,
+	enabled: false,
+	defaultAction: "allow",
+	allow: [],
+	deny: [],
+	attribution: false,
+	updatedAt: account.createdAt,
+});
+
+/** Proxy settings as text that is the same when they are: for a write's `expected`. Header values aren't in it. */
+const proxyKey = (settings: {
+	readonly enabled: boolean;
+	readonly defaultAction: string;
+	readonly allow: readonly string[];
+	readonly deny: readonly string[];
+	readonly upstream?: { readonly url: string; readonly headerNames: readonly string[] };
+	readonly attribution: boolean;
+}): string =>
+	JSON.stringify([
+		settings.enabled,
+		settings.defaultAction,
+		settings.allow,
+		settings.deny,
+		settings.upstream === undefined ? null : [settings.upstream.url, [...settings.upstream.headerNames].sort()],
+		settings.attribution,
+	]);
+
 /** Refuses a write made from a read of `what` that is out of date: `expected` isn't what is there now. */
 function requireUnchanged(expected: string | undefined, now: string, what: string): void {
 	if (expected !== undefined && expected !== now) {
@@ -1571,6 +1601,35 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (error instanceof UniqueViolation) throw nameTaken(name);
 			throw error;
 		}
+	}
+
+	/**
+	 * Replaces an account's proxy settings with `replacing` of them, only while they are still `expected` (`proxyKey`):
+	 * otherwise `conflict`. Settings never written read as `unsetProxy`'s, and the first write inserts them; another
+	 * writer's insert meanwhile is read and compared like any change. The settings appearing and going again and again
+	 * meanwhile is a `conflict` too.
+	 */
+	async function replaceProxyAsRead(
+		account: StoredAccount,
+		expected: string,
+		replacing: (existing: StoredProxy | undefined) => StoredProxy,
+	): Promise<StoredProxy> {
+		const what = "The proxy settings";
+		for (let attempt = 0; attempt < 3; attempt++) {
+			const existing = await store.proxies.get(account.id);
+			if (existing === undefined) {
+				requireUnchanged(expected, proxyKey(proxyView(unsetProxy(account))), what);
+				const settings = replacing(undefined);
+				if (await store.proxies.insert(settings)) return settings;
+				continue;
+			}
+			const changed = await store.proxies.update(account.id, (current) => {
+				requireUnchanged(expected, proxyKey(proxyView(current)), what);
+				return replacing(current);
+			});
+			if (changed !== undefined) return changed;
+		}
+		throw new KantelError("conflict", `${what} keep changing; read them again and redo the change`);
 	}
 
 	/** Changes an environment with `update`, answering it as written; `not_found` when it went meanwhile. */
@@ -3846,45 +3905,42 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "account:read", role);
 			const stored = await store.proxies.get(account.id);
-			return proxyView(
-				stored ?? {
-					id: account.id,
-					accountId: account.id,
-					enabled: false,
-					defaultAction: "allow",
-					allow: [],
-					deny: [],
-					attribution: false,
-					updatedAt: account.createdAt,
-				},
-			);
+			return proxyView(stored ?? unsetProxy(account));
 		},
 
 		putProxySettings: async (principal, { body }) => {
 			const { account, role } = await actingAccount(store, principal, body.account);
 			requireScope(principal, "account:admin", role);
-			const existing = await store.proxies.get(account.id);
-			let upstream: StoredProxy["upstream"];
-			let upstreamHeaders: StoredProxy["upstreamHeaders"];
-			if (body.upstream !== undefined && body.upstream !== null) {
-				checkUrl(body.upstream.url, "The upstream");
-				upstreamHeaders =
-					body.upstream.headers === undefined ? (existing?.upstreamHeaders ?? {}) : { ...body.upstream.headers };
-				upstream = { url: body.upstream.url, headerNames: Object.keys(upstreamHeaders) };
-			}
-			const settings: StoredProxy = {
-				id: account.id,
-				accountId: account.id,
-				enabled: body.enabled,
-				defaultAction: body.defaultAction ?? "allow",
-				allow: [...(body.allow ?? [])],
-				deny: [...(body.deny ?? [])],
-				upstream,
-				upstreamHeaders,
-				attribution: body.attribution === true,
-				updatedAt: now(),
+			if (body.upstream !== undefined && body.upstream !== null) checkUrl(body.upstream.url, "The upstream");
+			/** The settings the body makes of `existing`, which keeps its upstream's header values when none are given. */
+			const replacing = (existing: StoredProxy | undefined): StoredProxy => {
+				let upstream: StoredProxy["upstream"];
+				let upstreamHeaders: StoredProxy["upstreamHeaders"];
+				if (body.upstream !== undefined && body.upstream !== null) {
+					upstreamHeaders =
+						body.upstream.headers === undefined ? (existing?.upstreamHeaders ?? {}) : { ...body.upstream.headers };
+					upstream = { url: body.upstream.url, headerNames: Object.keys(upstreamHeaders) };
+				}
+				return {
+					id: account.id,
+					accountId: account.id,
+					enabled: body.enabled,
+					defaultAction: body.defaultAction ?? "allow",
+					allow: [...(body.allow ?? [])],
+					deny: [...(body.deny ?? [])],
+					upstream,
+					upstreamHeaders,
+					attribution: body.attribution === true,
+					updatedAt: now(),
+				};
 			};
-			await store.proxies.put(settings);
+			let settings: StoredProxy;
+			if (body.expected === undefined) {
+				settings = replacing(await store.proxies.get(account.id));
+				await store.proxies.put(settings);
+			} else {
+				settings = await replaceProxyAsRead(account, proxyKey(body.expected), replacing);
+			}
 			// Running sandboxes take them now where the backend can; the rest when they next boot. Each with its own
 			// protected hosts and grants.
 			if (backend.updateEgress !== undefined) {

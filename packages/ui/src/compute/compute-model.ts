@@ -305,7 +305,16 @@ export interface SandboxAccess {
 	 * console draws a stand-in.
 	 */
 	readonly embed?: { readonly desktop: string; readonly watch: string; readonly browser: string };
+	/**
+	 * Why Desktop or Browser can't open for this sandbox yet, in a few words ("Not available here yet"). Absent, it can.
+	 * One that can't is shown disabled with its reason, never opened onto an error page; its URLs are then unused.
+	 */
+	readonly unavailable?: { readonly desktop?: string; readonly browser?: string };
 }
+
+/** Why a screen can't open, from its access: the desktop's reason for Watch too. Undefined when it can. */
+export const screenUnavailable = (access: SandboxAccess, view: "desktop" | "watch" | "browser"): string | undefined =>
+	access.unavailable?.[view === "browser" ? "browser" : "desktop"];
 
 /** A port in a sandbox with an HTTPS URL of its own. */
 export interface SandboxPort {
@@ -614,8 +623,29 @@ export interface ProxySettings {
 export type ProxySettingsChange = Partial<
 	Omit<ProxySettings, "accountId" | "upstream"> & {
 		readonly upstream: { readonly url: string; readonly auth?: string } | null;
+		/**
+		 * The settings as read, which the change was made from. Given, the change is refused with `conflict` if they have
+		 * changed since, for the caller to make again on a fresh read. Left out, the change is made on the settings as
+		 * they are when it is written.
+		 */
+		readonly expected: ProxySettings;
 	}
 >;
+
+/** Whether two reads of an account's proxy settings are the same: for a change's `expected`. */
+export const sameProxySettings = (a: ProxySettings, b: ProxySettings): boolean => {
+	const key = (settings: ProxySettings) =>
+		JSON.stringify([
+			settings.accountId,
+			settings.enabled,
+			settings.policy,
+			settings.allow,
+			settings.deny,
+			settings.upstream === undefined ? null : [settings.upstream.url, settings.upstream.authSet],
+			settings.logRequests ?? null,
+		]);
+	return key(a) === key(b);
+};
 
 /** An account's proxy settings. Its log is each sandbox's (`EgressSource`), read together on the Egress page. */
 export interface ProxySource {

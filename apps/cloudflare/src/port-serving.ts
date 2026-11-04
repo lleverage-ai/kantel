@@ -14,7 +14,8 @@
  *   cut off (its host stream closed), rather than the object running out of memory.
  * - **Encoding.** The answer's body is the sandbox's bytes as sent, compressed or not, so it leaves with
  *   `encodeBody: "manual"` when it names a `Content-Encoding`: Workers would otherwise compress it again.
- * - **WebSockets** (a dev server's hot reload) aren't relayed yet: 501.
+ * - **WebSockets** (a dev server's hot reload) are the stack object's, which passes them through with account hosts on
+ *   (`StackHosts.socketTarget` and `relay` in `src/compute.ts`); one that reaches here is answered 501.
  *
  * Portable (no `cloudflare:workers`), so the tests run it in Node.
  */

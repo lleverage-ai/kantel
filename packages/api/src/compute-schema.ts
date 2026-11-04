@@ -1237,6 +1237,24 @@ export const ProxySettings = Type.Object(
 	},
 );
 
+export const ProxySettingsExpected = Type.Object(
+	{
+		enabled: Type.Boolean(),
+		defaultAction: Type.Union([Type.Literal("allow"), Type.Literal("deny")]),
+		allow: Type.Array(Type.String()),
+		deny: Type.Array(Type.String()),
+		upstream: Type.Optional(Type.Object({ url: Type.String(), headerNames: Type.Array(Type.String()) })),
+		attribution: Type.Boolean(),
+	},
+	{
+		title: "ProxySettingsExpected",
+		description:
+			"The settings as you last read them: `GET /proxy`'s answer will do. Given, the write is refused with `conflict` " +
+			"if they have changed since, so an edit made from an older read can't undo someone else's: read them again and " +
+			"redo the edit. Left out, the settings are replaced whatever they hold.",
+	},
+);
+
 export const PutProxySettingsBody = Type.Object(
 	{
 		account: accountQuery,
@@ -1256,6 +1274,7 @@ export const PutProxySettingsBody = Type.Object(
 			]),
 		),
 		attribution: Type.Optional(Type.Boolean()),
+		expected: Type.Optional(ProxySettingsExpected),
 	},
 	{ title: "PutProxySettingsBody" },
 );
@@ -1866,6 +1885,7 @@ export type ApiKeyScope = Static<typeof ApiKeyScope>;
 export type ApiKeyPreset = Static<typeof ApiKeyPreset>;
 export type ApiKey = Static<typeof ApiKey>;
 export type ProxySettings = Static<typeof ProxySettings>;
+export type ProxySettingsExpected = Static<typeof ProxySettingsExpected>;
 export type DestinationBinding = Static<typeof DestinationBinding>;
 export type EgressGrant = Static<typeof EgressGrant>;
 export type EgressGrantInput = Static<typeof EgressGrantInput>;
