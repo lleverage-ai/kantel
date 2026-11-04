@@ -262,6 +262,8 @@ importers:
 
   packages/contracts: {}
 
+  packages/e2e: {}
+
   packages/environments:
     dependencies:
       "@earendil-works/pi-ai":
