@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
 import type { SandboxBackend } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
+import { createRoutedBackend, NOT_HELD } from "../src/routed-backend.ts";
 import { isLoopbackUrl, NEVER_MADE, publicOrigin, SHARED_HOSTS_REFUSED, SHARED_KEY_REFUSED } from "../src/service.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 
@@ -576,6 +577,52 @@ describe("organisations", () => {
 			expect((await tom.runCommand(sandbox.id, { command: "echo hi" })).stdout).toBe("hi\n");
 		}
 		expect(creates.filter((id) => id === recovered)).toHaveLength(2);
+	});
+
+	it("sends a sandbox the routed backend's fallback has just made its egress before it runs, and refuses one never made", async () => {
+		const stub = createStubBackend();
+		let release = () => {};
+		const booting = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let failing = false;
+		const fallback: SandboxBackend = {
+			...stub,
+			create: async (spec) => {
+				if (failing) throw new KantelError("unavailable", "The disk couldn't be made");
+				await booting;
+				return stub.create(spec);
+			},
+		};
+		// An account-hosts side with no hosts: everything is the fallback's, as is the records' say of what it holds.
+		const primary: SandboxBackend = {
+			...createStubBackend(),
+			capabilities: async () => ({ types: ["isolate", "microvm"], sizes: [], hosts: [] }),
+		};
+		const records: { api?: ComputeApi } = {};
+		const routed = createRoutedBackend({
+			primary,
+			fallback,
+			holds: async () => false,
+			fallbackHolds: async (id) => (await records.api?.store.sandboxes.get(id))?.hostId === STUB_HOST_ID,
+			holdsSnapshot: () => false,
+		});
+		const { api, tom } = setup(routed);
+		records.api = api;
+
+		// Its grants change while it is made: sent once it is placed, before its record says where, so it runs.
+		const sandbox = await tom.createSandbox({});
+		await tom.putSandboxGrants(sandbox.id, { grants: [{ action: "deny", host: "evil.example" }] });
+		release();
+		await api.service.idle();
+		expect(await tom.getSandbox(sandbox.id)).toMatchObject({ state: "running" });
+		expect((await tom.runCommand(sandbox.id, { command: "echo hi" })).stdout).toBe("hi\n");
+
+		// One whose create failed is the fallback's no more than anyone's.
+		failing = true;
+		const lost = await tom.createSandbox({ wait: true });
+		expect(lost.state).toBe("error");
+		await expect(routed.exec(lost.id, { command: "true" })).rejects.toMatchObject({ message: NOT_HELD });
 	});
 
 	it("keeps an overdue sandbox whose host is away running, and auto-stops it once its host is back", async () => {

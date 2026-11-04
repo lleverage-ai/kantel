@@ -22,8 +22,9 @@ export interface RoutedBackendOptions {
 	/** Whether `primary` holds the sandbox (it was placed there). */
 	holds(sandboxId: string): Promise<boolean>;
 	/**
-	 * Whether `fallback` holds a sandbox `primary` doesn't (it was placed there). Absent, it is taken to hold every such
-	 * sandbox.
+	 * Whether `fallback` holds a sandbox `primary` doesn't (its placement there is recorded). Absent, it is taken to hold
+	 * every such sandbox. One `fallback` has just made here is taken as held before then, so the calls of its boot (its
+	 * egress, sent before it is recorded as running) reach it.
 	 */
 	fallbackHolds?(sandboxId: string): Promise<boolean>;
 	/** Whether a snapshot reference is `primary`'s. */
@@ -36,11 +37,21 @@ export const NOT_HELD =
 	"(it was never placed, if its create failed)";
 
 export function createRoutedBackend(options: RoutedBackendOptions): SandboxBackend {
-	const { primary, fallback } = options;
+	const { primary, fallback, fallbackHolds } = options;
+	/** Sandboxes `fallback` made here whose placement `fallbackHolds` doesn't see yet; each goes once it does. */
+	const madeOnFallback = new Set<string>();
+	const made = (backend: SandboxBackend, sandboxIds: readonly string[]) => {
+		if (backend === fallback && fallbackHolds !== undefined) for (const id of sandboxIds) madeOnFallback.add(id);
+	};
 	/** The backend that holds the sandbox, refused when neither does. */
 	const on = async (sandboxId: string): Promise<SandboxBackend> => {
 		if (await options.holds(sandboxId)) return primary;
-		if (options.fallbackHolds === undefined || (await options.fallbackHolds(sandboxId))) return fallback;
+		if (fallbackHolds === undefined) return fallback;
+		if (await fallbackHolds(sandboxId)) {
+			madeOnFallback.delete(sandboxId);
+			return fallback;
+		}
+		if (madeOnFallback.has(sandboxId)) return fallback;
 		throw new KantelError("unavailable", NOT_HELD);
 	};
 	const forRef = (ref: string): SandboxBackend => (options.holdsSnapshot(ref) ? primary : fallback);
@@ -89,7 +100,9 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		},
 		async create(spec): Promise<Placement> {
 			const placed = await placeNew(spec);
-			return placed.backend.create(placed.spec);
+			const placement = await placed.backend.create(placed.spec);
+			made(placed.backend, [spec.sandboxId]);
+			return placement;
 		},
 		async start(id, boot) {
 			const backend = await on(id);
@@ -102,14 +115,25 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		},
 		async fork(source, targets) {
 			const backend = source.snapshot === undefined ? await on(source.sandboxId) : forRef(source.snapshot);
-			return backend.fork(source, await Promise.all(targets.map((target) => affine(backend, target))));
+			const placements = await backend.fork(
+				source,
+				await Promise.all(targets.map((target) => affine(backend, target))),
+			);
+			made(
+				backend,
+				targets.map((target) => target.sandboxId),
+			);
+			return placements;
 		},
 		async recover(id, boot) {
 			const backend = await on(id);
 			return backend.recover(id, await affine(backend, boot));
 		},
 		// A sandbox neither holds has nothing to destroy: `fallback` answers it, as it answers one it lost.
-		destroy: async (id) => ((await options.holds(id)) ? primary : fallback).destroy(id),
+		async destroy(id) {
+			madeOnFallback.delete(id);
+			return ((await options.holds(id)) ? primary : fallback).destroy(id);
+		},
 		exec: async (id, request) => (await on(id)).exec(id, request),
 		readFile: async (id, path, range) => (await on(id)).readFile(id, path, range),
 		writeFile: async (id, path, content, mode) => (await on(id)).writeFile(id, path, content, mode),

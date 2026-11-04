@@ -1896,6 +1896,36 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		});
 	}
 
+	/**
+	 * The environment `bootAgain` provisions a sandbox it makes from its image with (its create failed, so the files and
+	 * repositories its create would have put there never were), checked as its create checks it: only a caller that may
+	 * run commands has repositories cloned. None for a sandbox on a disk of its own or made from a snapshot, which has them.
+	 */
+	async function provisionedAgain(
+		principal: Principal,
+		role: MemberRole,
+		sandbox: StoredSandbox,
+	): Promise<StoredEnvironment | undefined> {
+		if (!neverPlaced(sandbox) || sandbox.source !== undefined || sandbox.environmentId === undefined) return undefined;
+		const environment = await store.environments.get(sandbox.environmentId);
+		if (environment === undefined) return undefined;
+		if (environment.repos.length > 0) requireScope(principal, "exec", role);
+		return environment;
+	}
+
+	/** `boot`, then, once it runs, the provisioning its create would have done (`provisionedAgain`). */
+	async function bootProvisioned(
+		sandboxId: string,
+		run: () => Promise<Placement>,
+		environment: StoredEnvironment | undefined,
+		sent: { readonly egressRevision: number | undefined },
+	): Promise<StoredSandbox | undefined> {
+		const booted = await boot(sandboxId, run, undefined, sent);
+		if (booted?.state === "running" && environment !== undefined)
+			await provision(booted, environment).catch(() => undefined);
+		return booted;
+	}
+
 	/** Lets the backend drop a snapshot's bytes once no snapshot record shares them. */
 	async function releaseRef(ref: string | undefined): Promise<void> {
 		if (ref === undefined) return;
@@ -3121,13 +3151,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		},
 
 		recoverSandbox: async (principal, { params }) => {
-			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
+			const { sandbox, role } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
 			const current = await settledFor(principal, sandbox.id);
 			if (current.state !== "running" && current.state !== "error") {
 				throw new KantelError("conflict", `A ${current.state} sandbox is started or resumed, not recovered`);
 			}
 			const hosts = await hostsToBoot(principal, current);
 			const fromSnapshot = await latestRef(current);
+			const environment = await provisionedAgain(principal, role, current);
 			// A boot's egress is read afresh, so it gets a revision of its own: an update read before (from when it last ran,
 			// say, still being retried) never equals it, and loses.
 			const began = await transition(current.id, current.state, (latest) =>
@@ -3139,7 +3170,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const egress = await egressFor(starting.accountId, starting);
 			keepGoing(
 				track([current.id], () =>
-					boot(
+					bootProvisioned(
 						current.id,
 						() =>
 							bootAgain(
@@ -3147,7 +3178,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								{ fromSnapshot, env: current.env, eligibleHosts: hosts, size: current.size, ...egress },
 								(options) => backend.recover(current.id, options),
 							),
-						undefined,
+						environment,
 						{ egressRevision: starting.egressRevision },
 					),
 				),
@@ -4326,7 +4357,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		body: { readonly size?: computeSchema.SandboxSizeName; readonly wait?: boolean },
 		how: "start" | "resume",
 	): Promise<Sandbox> {
-		const { sandbox } = await sandboxFor(principal, sandboxId, "sandboxes:write");
+		const { sandbox, role } = await sandboxFor(principal, sandboxId, "sandboxes:write");
 		const current = await settledFor(principal, sandbox.id);
 		if (current.state === "running") return sandboxView(current, principal);
 		if (current.state !== "stopped" && current.state !== "paused" && current.state !== "error") {
@@ -4337,6 +4368,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		await requireCapacity(current.accountId, 1);
 		const hosts = await hostsToBoot(principal, current);
 		const fromSnapshot = await latestRef(current);
+		const environment = await provisionedAgain(principal, role, current);
 		const began = await transition(current.id, current.state, (latest) =>
 			withState(latest, "starting", {
 				size: body.size ?? latest.size,
@@ -4361,13 +4393,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			...(await egressFor(starting.accountId, starting)),
 		};
 		const work = track([current.id], () =>
-			boot(
+			bootProvisioned(
 				current.id,
 				() =>
 					bootAgain(current, bootOptions, (options) =>
 						how === "start" ? backend.start(current.id, options) : backend.resume(current.id, options),
 					),
-				undefined,
+				environment,
 				{ egressRevision: starting.egressRevision },
 			),
 		);
