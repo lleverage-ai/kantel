@@ -120,6 +120,26 @@ curl -X PUT "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_I
 
 A deploy that names no custom domain leaves it in place. No Access application covers it, and none should.
 
+### Sign in with GitHub and Google
+
+On the public origin people can also sign in with GitHub or Google (`@kantel/identity/oauth`): OAuth's authorisation
+code flow with PKCE, under `/auth/oauth/<provider>/start` and `/callback`, with the same open sign-up, sessions and
+per-address limit as email codes. The directory links a provider's account to the person who already signs in with its
+verified email (`IdentityDirectory.signIn`), so they keep one user and one Personal space. Each provider is on once its
+client ID and secret are both Worker secrets, set by the deploy from the repository secrets of the same names
+(`scripts/vault-secrets.ts`; a pair half set fails the run):
+
+| Provider | Repository secrets | Callback URL to register | Scopes |
+| --- | --- | --- | --- |
+| GitHub (an OAuth app) | `KANTEL_GITHUB_CLIENT_ID`, `KANTEL_GITHUB_CLIENT_SECRET` | `https://app.kantel.dev/auth/oauth/github/callback` | `read:user`, `user:email` |
+| Google (a Web application client) | `KANTEL_GOOGLE_CLIENT_ID`, `KANTEL_GOOGLE_CLIENT_SECRET` | `https://app.kantel.dev/auth/oauth/google/callback` | `openid`, `email`, `profile` |
+
+The callback is `KANTEL_PUBLIC_URL` with the path above, so another deployment registers its own origin's. GitHub must
+have a verified primary email for the account, and Google must say `email_verified`; anyone else is turned back with a
+message on the sign-in page. Unset, the provider's routes are 404 and the 401 doesn't name it. They are never served on
+the Access hostname (harbour.myslop.app), which signs in with Access as before. Removing a repository secret doesn't
+remove the Worker secret (the secrets file is additive): `wrangler secret delete` does.
+
 ### Exposed ports
 
 With `KANTEL_COMPUTE_PORTS_DOMAIN` set (the repository variable; `kantel.run` for Kantel's own), the deploy routes

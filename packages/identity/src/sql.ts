@@ -27,7 +27,9 @@ import {
 	INVITE_TTL_MILLISECONDS,
 	type Invite,
 	type IssuedApiKey,
+	isKantelSignInIssuer,
 	type JsonValue,
+	KANTEL_SIGN_IN_ISSUERS,
 	KantelError,
 	normaliseEmail,
 	type Organisation,
@@ -140,6 +142,15 @@ export function identitySchema(dialect: SqlDialect): readonly string[] {
 			created_at ${time} NOT NULL
 		)`,
 		"CREATE INDEX IF NOT EXISTS identity_users_by_email ON identity_users (email_normalised)",
+		// More of Kantel's own sign-ins (an email code, GitHub, Google) linked to a user beside their `external_subject`,
+		// by verified email (see `IdentityDirectory.signIn`). A subject is here or in `identity_users`, never both.
+		`CREATE TABLE IF NOT EXISTS identity_user_subjects (
+			external_subject TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL,
+			issuer TEXT NOT NULL,
+			created_at ${time} NOT NULL
+		)`,
+		"CREATE INDEX IF NOT EXISTS identity_user_subjects_by_user ON identity_user_subjects (user_id)",
 		`CREATE TABLE IF NOT EXISTS identity_services (
 			id TEXT PRIMARY KEY,
 			organisation_id TEXT NOT NULL,
@@ -321,6 +332,19 @@ function inviteOf(row: InviteRow): Invite {
 
 const PROJECT_COLUMNS = "p.id, p.organisation_id, p.name, p.created_at";
 const USER_COLUMNS = "id, name, email, external_subject, created_in_organisation_id, created_at";
+/** `USER_COLUMNS` of `identity_users u`. */
+const USER_COLUMNS_OF_U = USER_COLUMNS.split(", ")
+	.map((column) => `u.${column}`)
+	.join(", ");
+/**
+ * `external_subject` is one of Kantel's own sign-ins' (`isKantelSignInSubject`): one `substr(external_subject, 1, ?) =
+ * ?` per issuer, its prefix's length and the prefix following as parameters (`KANTEL_SUBJECT_PARAMS`).
+ */
+const KANTEL_SUBJECT = `(${KANTEL_SIGN_IN_ISSUERS.map(() => "substr(external_subject, 1, ?) = ?").join(" OR ")})`;
+const KANTEL_SUBJECT_PARAMS: readonly SqlValue[] = KANTEL_SIGN_IN_ISSUERS.flatMap((issuer) => {
+	const prefix = externalSubjectOf(issuer, "");
+	return [prefix.length, prefix];
+});
 const BINDING_COLUMNS = "organisation_id, principal_kind, principal_id, scope, role, granted_at, granted_by";
 /** Every key column, with its details; follow with a `WHERE` on `k`. */
 const SELECT_KEYS =
@@ -529,11 +553,53 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 		if ((await resolveRole(ctx.actor, ctx.organisationId, projectId)) === undefined) throw notFound("project");
 	}
 
+	/** The user whose subject `externalSubject` is, or who was linked to it (`identity_user_subjects`): one statement. */
 	async function userBySubject(externalSubject: string): Promise<StoredUser | undefined> {
-		const [row] = await driver.query<UserRow>(`SELECT ${USER_COLUMNS} FROM identity_users WHERE external_subject = ?`, [
-			externalSubject,
-		]);
+		const [row] = await driver.query<UserRow>(
+			`SELECT ${USER_COLUMNS} FROM identity_users WHERE external_subject = ?
+			UNION ALL
+			SELECT ${USER_COLUMNS_OF_U} FROM identity_user_subjects s JOIN identity_users u ON u.id = s.user_id
+			WHERE s.external_subject = ?`,
+			[externalSubject, externalSubject],
+		);
 		return row === undefined ? undefined : storedUserOf(row);
+	}
+
+	/**
+	 * The one user who signs in with `email` (normalised) another of Kantel's own ways, or undefined when none or several
+	 * do. Only for a sign-in of Kantel's own (`isKantelSignInIssuer`).
+	 */
+	async function kantelSignInByEmail(email: string): Promise<StoredUser | undefined> {
+		const rows = await driver.query<UserRow>(
+			`SELECT ${USER_COLUMNS} FROM identity_users WHERE email_normalised = ? AND ${KANTEL_SUBJECT} LIMIT 2`,
+			[email, ...KANTEL_SUBJECT_PARAMS],
+		);
+		return rows.length === 1 && rows[0] !== undefined ? storedUserOf(rows[0]) : undefined;
+	}
+
+	/**
+	 * Links `externalSubject` to `user` beside the subject they have, or, when a concurrent sign-in linked it first, finds
+	 * whoever now holds it. Audits `identity.user.linked` once, from the sign-in that linked.
+	 */
+	async function linkAnother(user: StoredUser, externalSubject: string, issuer: string): Promise<StoredUser> {
+		try {
+			await driver.query(
+				"INSERT INTO identity_user_subjects (external_subject, user_id, issuer, created_at) VALUES (?, ?, ?, ?)",
+				[externalSubject, user.user.id, issuer, clock.now()],
+			);
+		} catch (error) {
+			const holder = await userBySubject(externalSubject).catch(() => undefined);
+			if (holder !== undefined) return holder;
+			throw error;
+		}
+		await emit(
+			{ actor: { kind: "human", userId: user.user.id }, organisationId: user.createdInOrganisationId },
+			"identity.user.linked",
+			user.createdInOrganisationId,
+			{ kind: "identity.user", id: user.user.id },
+			{ issuer },
+		);
+		return user;
 	}
 
 	/** Whether the organisation exists, and (when given) the project exists in it. */
@@ -1565,6 +1631,13 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 			// `external_subject` is UNIQUE, so at most one user matches.
 			const [pending, found] = await Promise.all([pendingInvitesTo(email), userBySubject(externalSubject)]);
 			let stored = found;
+			// Someone who signs in with this email another of Kantel's ways (an email code, GitHub, Google) is this person.
+			const signsInWithKantel =
+				stored === undefined && email !== undefined && email !== "" && isKantelSignInIssuer(identity.issuer)
+					? await kantelSignInByEmail(email)
+					: undefined;
+			if (signsInWithKantel !== undefined)
+				stored = await linkAnother(signsInWithKantel, externalSubject, identity.issuer);
 			if (stored === undefined) {
 				const invited =
 					email === undefined || email === ""
@@ -1618,9 +1691,23 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 					: "";
 			// The same statement whoever the identity names: both index lookups run every time, and the subject's match
 			// wins over any number of unlinked users with the email, as it does in `signIn`.
-			const [row] = await driver.query<{ by_subject: unknown; invited: unknown; invites: unknown }>(
+			// Only one of Kantel's own sign-ins is matched by another's email.
+			const kantelEmail = isKantelSignInIssuer(identity?.issuer) ? email : "";
+			const [row] = await driver.query<{
+				by_subject: unknown;
+				by_link: unknown;
+				by_kantel: unknown;
+				invited: unknown;
+				invites: unknown;
+			}>(
 				`SELECT
 					(SELECT COUNT(*) FROM identity_users WHERE external_subject = ?) AS by_subject,
+					(SELECT COUNT(*) FROM identity_user_subjects WHERE external_subject = ?) AS by_link,
+					(SELECT COUNT(*) FROM (
+						SELECT 1 AS one FROM identity_users
+						WHERE email_normalised = ? AND email_normalised <> '' AND ${KANTEL_SUBJECT}
+						LIMIT 2
+					) AS kantel) AS by_kantel,
 					(SELECT COUNT(*) FROM (
 						SELECT 1 AS one FROM identity_users
 						WHERE external_subject IS NULL AND email_normalised = ? AND email_normalised <> ''
@@ -1631,12 +1718,13 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 						WHERE email_normalised = ? AND email_normalised <> '' AND ${INVITE_PENDING}
 						LIMIT 1
 					) AS pending) AS invites`,
-				[externalSubject, email, email, clock.now()],
+				[externalSubject, externalSubject, kantelEmail, ...KANTEL_SUBJECT_PARAMS, email, email, clock.now()],
 			);
 			if (!wellFormed || row === undefined) return false;
-			const bySubject = sqlNumber(row.by_subject);
+			const bySubject = sqlNumber(row.by_subject) + sqlNumber(row.by_link);
 			if (bySubject > 0) return bySubject === 1;
 			if (email === "") return false;
+			if (sqlNumber(row.by_kantel) === 1) return true;
 			return sqlNumber(row.invited) === 1 || sqlNumber(row.invites) > 0;
 		},
 

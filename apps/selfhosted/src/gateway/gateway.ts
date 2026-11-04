@@ -5,6 +5,9 @@
 //   /healthz                    liveness, no credentials
 //   /auth/otp/start, /verify    email one-time PIN sign-in (@kantel/identity/otp/http), no credentials, limited per
 //   /auth/session/end           client address; it issues Kantel sessions (`kts_…`), which every API below accepts
+//   /auth/oauth/<provider>/...  sign-in with GitHub and Google (@kantel/identity/oauth), for each provider whose OAuth
+//   /auth/oauth/session         client is set (with KANTEL_PUBLIC_URL); the same limit and the same sessions. Invite-only
+//                               as email codes are: a verified email matches an invited person. Off, they are 404
 //   /v1/deployment              which implementation backs each contract, and where mail goes (credentials needed)
 //   /v1/hosts/...               what `kantel-host` calls: registration, its tunnel and the host images (compute.ts)
 //   /v1/...                     the compute plane's API (@kantel/compute, compute.ts): sandboxes, snapshots, keys,
@@ -12,7 +15,7 @@
 //   /v1/audit/events, /event    audit query API (@kantel/audit/http)
 //   /v1/me, /v1/projects        who is signed in and their projects, members and a host app's API keys
 //   /v1/keys, /v1/members, ...  (@kantel/identity/http); a 401 there names `email_otp` when sign-in by email is set up,
-//                               so the console offers it
+//                               and `github` and `google` when they are, so the console offers them
 //   any other /v1/...           404: the agent plane's session, model, connection, approval, vault, skills, memory,
 //                               sharing, workspace and browser APIs were removed
 //   anything else               the console (apps/console's build), with index.html for its client-side routes
@@ -22,11 +25,18 @@
 // origin in Origin (this host over http or https, or KANTEL_PUBLIC_URL), with Sec-Fetch-Site: same-origin when sent. An
 // API key or a Kantel session sent as a bearer passes unchanged. Kantel sessions are never read from a cookie.
 import { createAuditQueryHandler } from "@kantel/audit/http";
-import { type Authenticator, OTP_START_PATH, OTP_VERIFY_PATH, SESSION_END_PATH } from "@kantel/contracts";
+import {
+	type Authenticator,
+	OTP_START_PATH,
+	OTP_VERIFY_PATH,
+	SESSION_END_PATH,
+	type SignInMethod,
+} from "@kantel/contracts";
 import { createAuthenticator, withAuthentication } from "@kantel/identity/authenticator";
 import { crossSiteRefusal } from "@kantel/identity/csrf";
 import { createIdentityHandler, isIdentityPath } from "@kantel/identity/http";
 import { type InviteMailer, isInviteMailer } from "@kantel/identity/invites";
+import { createOAuthSignIn, isOAuthPath, type OAuthClients, type OAuthSignInOptions } from "@kantel/identity/oauth";
 import { createEmailOtp, kantelSessionProvider, type OtpMailer } from "@kantel/identity/otp";
 import { createOtpHandler } from "@kantel/identity/otp/http";
 import { type AddressLimitOptions, createAddressLimit } from "./address-limit.ts";
@@ -55,6 +65,16 @@ export interface GatewayOptions {
 	readonly consoleDir?: string;
 	/** Where the console is served (KANTEL_PUBLIC_URL): an invite links to it. Default: the console's own page. */
 	readonly publicOrigin?: string;
+	/**
+	 * Sign-in with GitHub and Google: each provider's OAuth client (`oauthClientsFromEnv`). Needs `publicOrigin`, which
+	 * the providers' callbacks are under; without it, or a client, a provider's routes are 404.
+	 */
+	readonly oauth?: OAuthClients;
+	/**
+	 * GitHub's and Google's endpoints, and the `fetch` their token and identity calls go through. Default the real ones
+	 * and the global `fetch`; tests pass a mock's (`@kantel/identity/testing/oauth`).
+	 */
+	readonly oauthProviders?: Pick<OAuthSignInOptions, "fetch" | "endpoints">;
 	/**
 	 * The compute plane's API (`compute.ts`, always on under `serveGateway`): it answers its own routes under `/v1`,
 	 * signing callers in itself, and `undefined` for every other path.
@@ -122,13 +142,31 @@ export function createGateway(options: GatewayOptions): Gateway {
 				});
 	const signInLimit = createAddressLimit(options.signInLimit ?? SIGN_IN_LIMIT);
 
+	const oauth =
+		options.oauth === undefined || options.publicOrigin === undefined
+			? undefined
+			: createOAuthSignIn({
+					clients: options.oauth,
+					publicUrl: options.publicOrigin,
+					identity: components.identity,
+					sessions: components.otp.sessions,
+					audit: components.audit,
+					...options.oauthProviders,
+					onFailure: (provider, reason) => console.warn(`[gateway] sign-in with ${provider} failed: ${reason}`),
+				});
+
 	const audit = createAuditQueryHandler({ store: components.audit, authenticator });
 
-	// The console asks `/v1/me` first; its 401 says how a person signs in here, and without a mailer nobody can.
+	// The console asks `/v1/me` first; its 401 says how a person signs in here, and without a mailer or a provider nobody
+	// can.
+	const methods: readonly SignInMethod[] = [
+		...(signIn === undefined ? [] : ["email_otp" as const]),
+		...(oauth?.providers ?? []),
+	];
 	const identity = createIdentityHandler({
 		identity: components.identity,
 		authenticator,
-		signIn: signIn === undefined ? [] : ["email_otp"],
+		signIn: methods,
 		// An invite links to the console's public origin: the request URL here is always `http:`.
 		invites: {
 			...(isInviteMailer(options.mailer) ? { mailer: options.mailer } : {}),
@@ -170,6 +208,16 @@ export function createGateway(options: GatewayOptions): Gateway {
 						return limited;
 					}
 					return await signIn(request);
+				}
+				if (isOAuthPath(path)) {
+					if (oauth === undefined || !oauth.handles(path)) return notFound();
+					const retryAfter = signInLimit.take(client.address ?? "unknown");
+					if (retryAfter !== undefined) {
+						const limited = json({ error: { code: "exhausted", message: "Too many sign-in requests" } }, 429);
+						limited.headers.set("retry-after", String(retryAfter));
+						return limited;
+					}
+					return await oauth.fetch(request);
 				}
 				if (path === "/v1/deployment") return await deployment(request);
 				if (options.computeHosts !== undefined && path.startsWith("/v1/hosts/")) {

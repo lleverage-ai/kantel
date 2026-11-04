@@ -227,6 +227,11 @@ export const KANTEL_SIGN_IN_ISSUERS: readonly string[] = [EMAIL_OTP_ISSUER, GITH
 export const isKantelSignInIssuer = (issuer: unknown): boolean =>
 	typeof issuer === "string" && KANTEL_SIGN_IN_ISSUERS.includes(issuer);
 
+/** Whether `externalSubject` (`externalSubjectOf`'s) is one of Kantel's own sign-ins'. */
+export const isKantelSignInSubject = (externalSubject: unknown): boolean =>
+	typeof externalSubject === "string" &&
+	KANTEL_SIGN_IN_ISSUERS.some((issuer) => externalSubject.startsWith(externalSubjectOf(issuer, "")));
+
 /** A signed-in person's user record and the organisations they may act in. */
 export interface SignIn {
 	readonly user: User;
@@ -430,8 +435,13 @@ export interface IdentityDirectory {
 	/**
 	 * Resolves a person a sign-in provider vouched for to their user. Kantel is invite-only: an admin creates
 	 * the user first, and sign-in never creates one.
-	 * - A user whose `externalSubject` is `externalSubjectOf(issuer, subject)` is that person. Issuer and subject compare
-	 *   exactly, case included: OIDC subjects are opaque. `createUser` refuses a subject another user has (`conflict`).
+	 * - A user whose `externalSubject` is `externalSubjectOf(issuer, subject)`, or who was linked to it as below, is that
+	 *   person. Issuer and subject compare exactly, case included: OIDC subjects are opaque. `createUser` refuses a
+	 *   subject another user has (`conflict`).
+	 * - Otherwise, for one of Kantel's own sign-ins (`isKantelSignInIssuer`: an email code, GitHub, Google) with a
+	 *   verified email, the one user with that email who already signs in with another of Kantel's own sign-ins is that
+	 *   person: the subject is linked to them too, once, and audited as `identity.user.linked`. So someone who signed up
+	 *   with an email code and then signs in with GitHub (or the other way round) stays one user, with one space.
 	 * - Otherwise, when the provider verified the email, the one user with that email and no `externalSubject` is linked
 	 *   to the subject, once, and audited as `identity.user.linked`. Emails compare trimmed and lower-cased
 	 *   (`normaliseEmail`), on both sides, before deciding there is exactly one.
@@ -565,8 +575,12 @@ export const OAUTH_SESSION_PATH = `${OAUTH_PATH_PREFIX}session`;
 
 /** The query parameter the console's page gets after a successful OAuth sign-in: `?signed_in=github`. */
 export const OAUTH_DONE_PARAM = "signed_in";
-/** The query parameter the console's page gets when an OAuth sign-in failed: `?sign_in_error=cancelled`. */
+/**
+ * The query parameter the console's page gets when an OAuth sign-in failed, `?sign_in_error=cancelled`, beside
+ * `OAUTH_PROVIDER_PARAM` naming the provider: `&provider=google`.
+ */
 export const OAUTH_ERROR_PARAM = "sign_in_error";
+export const OAUTH_PROVIDER_PARAM = "provider";
 
 /**
  * Why an OAuth sign-in failed, as the console says it:
