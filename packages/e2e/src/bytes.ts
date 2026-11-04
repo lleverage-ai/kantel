@@ -1,7 +1,7 @@
 /** Bytes helpers the rest of the package shares. Portable: browsers, Workers, Bun and Node. */
 
 const encoder = new TextEncoder();
-const decoder = new TextDecoder("utf-8", { fatal: true });
+const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
 
 export const utf8 = (text: string): Uint8Array => encoder.encode(text);
 

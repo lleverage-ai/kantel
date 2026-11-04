@@ -41,7 +41,8 @@ async function importSeed(
 		true,
 		usages,
 	);
-	const jwk = await crypto.subtle.exportKey("jwk", privateKey);
+	// Cast: Workers' types answer exportKey with a union whatever the format.
+	const jwk = (await crypto.subtle.exportKey("jwk", privateKey)) as { x?: string };
 	if (typeof jwk.x !== "string") throw new Error(`This runtime didn't give the ${curve} public key`);
 	const publicKey = await crypto.subtle.importKey(
 		"raw",
@@ -54,7 +55,7 @@ async function importSeed(
 }
 
 async function rawPublic(key: WebKey): Promise<Uint8Array> {
-	return new Uint8Array(await crypto.subtle.exportKey("raw", key));
+	return new Uint8Array((await crypto.subtle.exportKey("raw", key)) as ArrayBuffer);
 }
 
 /** An Ed25519 key that signs. */
@@ -106,7 +107,12 @@ export async function dhFromSeed(seed: Uint8Array): Promise<DhKeyPair> {
 			if (remote.byteLength !== KEY_BYTES) throw new Error("An X25519 public key is 32 bytes");
 			const key = await crypto.subtle.importKey("raw", own(remote), { name: "X25519" }, false, []);
 			const shared = new Uint8Array(
-				await crypto.subtle.deriveBits({ name: "X25519", public: key }, pair.privateKey, 256),
+				// Cast: Workers' types spell the standard `public` member `$public`; the runtime takes `public`.
+				await crypto.subtle.deriveBits(
+					{ name: "X25519", public: key } as unknown as Parameters<typeof crypto.subtle.deriveBits>[0],
+					pair.privateKey,
+					256,
+				),
 			);
 			if (equalBytes(shared, new Uint8Array(KEY_BYTES))) throw new Error("A low-order X25519 key");
 			return shared;
