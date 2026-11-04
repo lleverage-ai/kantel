@@ -411,6 +411,10 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 	own?.service.useCompute({
 		secrets: async () => undefined,
 		recordEgress: (hostId, records) => api.service.recordEgress(hostId, records),
+		e2eChain: {
+			read: (hostId, space) => api.service.hostE2EChain(hostId, space),
+			append: (hostId, space, from, entries) => api.service.appendHostE2EChain(hostId, space, from, entries),
+		},
 	});
 	own?.bind((grantee, sandboxId) => api.service.stillAllowed(grantee, sandboxId));
 	const timers = whileBusy(api, now);

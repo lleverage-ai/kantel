@@ -427,6 +427,10 @@ export async function gatewayCompute(options: {
 	hosts?.service.useCompute({
 		secrets: (hostId, sandboxId) => api.service.protectedTable(hostId, sandboxId),
 		recordEgress: (hostId, records) => api.service.recordEgress(hostId, records),
+		e2eChain: {
+			read: (hostId, space) => api.service.hostE2EChain(hostId, space),
+			append: (hostId, space, from, entries) => api.service.appendHostE2EChain(hostId, space, from, entries),
+		},
 	});
 	const superAdminKey = await bootstrapSuperAdmin(api.store, options.superAdminKey, (options.now ?? Date.now)());
 	api.dispatcher.start(WEBHOOK_INTERVAL_MS);

@@ -19,6 +19,7 @@
  */
 import { computeSchema, type PublicComputeRoutes, type RouteHandlers, type SignedInComputeRoutes } from "@kantel/api";
 import { KantelError } from "@kantel/contracts";
+import type { ChainEntry } from "@kantel/e2e/chain";
 import {
 	type Acting,
 	accountById,
@@ -44,6 +45,7 @@ import type {
 	Placement,
 	SandboxBackend,
 } from "./backend.ts";
+import { createE2EChains } from "./e2e.ts";
 import { createEphemeralSealer, createSealer, type SealedValue, type Sealer, sealedAt } from "./secrets.ts";
 import type {
 	ComputeStore,
@@ -231,6 +233,18 @@ export interface ComputeService {
 	 * doesn't open.
 	 */
 	protectedTable(hostId: string, sandboxId: string): Promise<ProtectedTable | undefined>;
+	/**
+	 * An organisation's E2E chain, for a host that asked over its credential (`kantel-host e2e join`): an account's own
+	 * host reads only its account's, a shared host any. `not_found` otherwise.
+	 */
+	hostE2EChain(hostId: string, space: string): Promise<ChainEntry[]>;
+	/** Adds a host's own entries (a `host.add` naming it, signed with an admin's join ticket) to the chain. */
+	appendHostE2EChain(
+		hostId: string,
+		space: string,
+		from: number,
+		entries: readonly ChainEntry[],
+	): Promise<ChainEntry[]>;
 	/**
 	 * Keeps what a host's egress proxy reported, in each sandbox's log (the newest `MAX_EGRESS_ENTRIES`). Records for a
 	 * sandbox not on `hostId` are dropped, and a path's query string is never kept.
@@ -727,6 +741,15 @@ const whole = (value: unknown): number =>
 /** The compute plane's handlers over a store and a backend. */
 export function createComputeService(options: ComputeServiceOptions): ComputeService {
 	const { store, backend, dispatcher, exporter, now } = options;
+	const e2eChains = createE2EChains(store.e2eChain, now);
+	/** A host's own account's chain, or any for a shared host; the same `not_found` for a space it may not read. */
+	const hostMayUseChain = async (hostId: string, space: string) => {
+		const host = (await ensureHosts()).find((known) => known.id === hostId);
+		const account = await store.accounts.get(space);
+		if (host === undefined || account === undefined || (host.accountId !== undefined && host.accountId !== space)) {
+			throw new KantelError("not_found", "No such space");
+		}
+	};
 	const rates = options.rates ?? PLACEHOLDER_RATES;
 	const limits = options.limits ?? {};
 	const mode = options.mode ?? "selfhosted";
@@ -3248,6 +3271,50 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return undefined;
 		},
 
+		openE2E: async (principal, { params, body }) => {
+			const { sandbox } = await sandboxFor(principal, params.sandboxId, "access");
+			if (backend.openE2E === undefined) {
+				throw new KantelError("not_supported", "This gateway's sandboxes aren't on hosts it can open E2E sessions to");
+			}
+			const current = await requireRunning(principal, sandbox.id);
+			const ttlMinutes = body.ttlMinutes ?? ACCESS_TTL_MINUTES;
+			const access = await backend.openE2E(current.id, { ttlMinutes, grantee: encodeGrantee(principal) });
+			return {
+				url: access.url,
+				hostId: access.hostId,
+				accountId: current.accountId,
+				expiresAt: now() + ttlMinutes * 60_000,
+			};
+		},
+
+		getE2EChain: async (principal, { params }) => {
+			const { account, role } = await accountById(store, principal, params.accountId);
+			requireScope(principal, "account:read", role);
+			return { entries: await e2eChains.read(account.id) };
+		},
+
+		appendE2EChain: async (principal, { params, body }) => {
+			const { account, role } = await accountById(store, principal, params.accountId);
+			requireScope(principal, "account:read", role);
+			const person = requirePerson(principal);
+			const entries = await e2eChains.append(account.id, body.from, body.entries, async (payload) => {
+				if (payload.type === "genesis") {
+					// What it starts with is its admin: an admin of the organisation, starting it on their own device.
+					if (role === "member") throw new KantelError("forbidden", "Only an admin or owner starts the chain");
+					if (payload.body.device.user !== person.userId) {
+						throw new KantelError("forbidden", "The genesis lists the device of the person who starts it");
+					}
+				}
+				if (
+					payload.type === "member.add" &&
+					(await store.members.get(memberId(account.id, payload.body.user))) === undefined
+				) {
+					throw new KantelError("invalid", `${payload.body.user} isn't a member of the organisation`);
+				}
+			});
+			return { entries };
+		},
+
 		openSsh: async (principal, { params, body }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "access");
 			if (!sandbox.capabilities.ssh) throw new KantelError("not_supported", "SSH needs a microVM; this is an isolate");
@@ -4221,6 +4288,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (sample !== undefined) samples.push(sample);
 			}
 			return samples;
+		},
+
+		async hostE2EChain(hostId, space) {
+			await hostMayUseChain(hostId, space);
+			return e2eChains.read(space);
+		},
+
+		async appendHostE2EChain(hostId, space, from, entries) {
+			await hostMayUseChain(hostId, space);
+			return e2eChains.append(space, from, entries, (payload) => {
+				if (payload.type !== "host.add" || payload.body.host.id !== hostId) {
+					throw new KantelError("forbidden", "A host adds only its own host.add");
+				}
+			});
 		},
 
 		async protectedTable(hostId, sandboxId) {

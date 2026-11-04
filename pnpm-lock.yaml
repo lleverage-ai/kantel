@@ -253,6 +253,9 @@ importers:
       "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
+      "@kantel/e2e":
+        specifier: workspace:*
+        version: link:../e2e
       "@kantel/sql":
         specifier: workspace:*
         version: link:../sql
@@ -300,6 +303,9 @@ importers:
       "@kantel/api":
         specifier: workspace:*
         version: link:../api
+      "@kantel/e2e":
+        specifier: workspace:*
+        version: link:../e2e
 
   packages/identity:
     dependencies:
