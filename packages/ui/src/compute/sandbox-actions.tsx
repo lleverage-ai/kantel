@@ -1,7 +1,7 @@
 // What a sandbox's ⋯ menu does, on its page and on its row in the list: Fork, Save snapshot, Auto-stop and Delete, and
 // the dialogs they open. The ways in (Browser, Desktop, SSH), its logs, egress and snapshots are on its page, not here.
 
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "../primitives/button.tsx";
 import { SelectField, TextField } from "../primitives/controls.tsx";
 import { Dialog } from "../primitives/dialog.tsx";
@@ -9,6 +9,7 @@ import { ClockIcon, ForkIcon } from "../primitives/icons.tsx";
 import { SnapshotIcon, TrashIcon } from "../primitives/lucide.tsx";
 import type { MenuEntry } from "../primitives/menu.tsx";
 import { type Sandbox, type SandboxesSource, type SavedSnapshot, sandboxActions } from "./compute-model.ts";
+import { autoStopChanges } from "./one-change.ts";
 import { messageOf } from "./parts.tsx";
 
 export type SandboxNotice = { readonly level: "info" | "error"; readonly text: string };
@@ -130,7 +131,9 @@ export function useSandboxMenu(
 					sandbox={open === "auto-stop" ? sandbox : undefined}
 					onClose={close}
 					onSet={async (box, minutes) => {
-						const changed = await source.setAutoStop?.(box.id, minutes);
+						// One change at a time to each sandbox's, from its page or its row, even once this dialog has gone: a
+						// slow earlier one can't land after a later one and undo it.
+						const changed = await autoStopChanges.run(box.id, async () => source.setAutoStop?.(box.id, minutes));
 						if (changed !== undefined) onChange(changed, changed.id);
 					}}
 				/>
@@ -294,6 +297,9 @@ function AutoStopDialog({
 }) {
 	const [choice, setChoice] = useState<string>("60");
 	const { busy, failure, setFailure, run } = useAttempt(onClose);
+	// A change from another view, or from before this dialog last closed, still on its way.
+	const changing = useSyncExternalStore(autoStopChanges.subscribe, autoStopChanges.changing);
+	const elsewhere = !busy && sandbox !== undefined && changing.has(sandbox.id);
 	const close = () => {
 		setFailure(undefined);
 		onClose();
@@ -313,7 +319,7 @@ function AutoStopDialog({
 			actions={
 				<>
 					<Button onClick={close}>Cancel</Button>
-					<Button type="submit" variant="primary" busy={busy}>
+					<Button type="submit" variant="primary" busy={busy || elsewhere}>
 						Save
 					</Button>
 				</>

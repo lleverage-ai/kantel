@@ -146,15 +146,22 @@ const MAX_PAGES = 20;
 async function allPages<T>(
 	read: (cursor: string | undefined) => Promise<{ readonly items: readonly T[]; readonly nextCursor?: string }>,
 ): Promise<T[]> {
+	return (await firstPages(read)).items;
+}
+
+/** As `allPages`, saying whether the list went on past `MAX_PAGES`, for a view that should say it's cut off. */
+async function firstPages<T>(
+	read: (cursor: string | undefined) => Promise<{ readonly items: readonly T[]; readonly nextCursor?: string }>,
+): Promise<{ items: T[]; more: boolean }> {
 	const items: T[] = [];
 	let cursor: string | undefined;
 	for (let page = 0; page < MAX_PAGES; page += 1) {
 		const answer = await read(cursor);
 		items.push(...answer.items);
-		if (answer.nextCursor === undefined) break;
+		if (answer.nextCursor === undefined) return { items, more: false };
 		cursor = answer.nextCursor;
 	}
-	return items;
+	return { items, more: true };
 }
 
 /** A page query's cursor, when there is one. */
@@ -471,10 +478,12 @@ function sandboxesSource(context: Context): SandboxesSource {
 		exposePort: async (id, port, isPublic) => portOf(await api.exposePort(id, { port, public: isPublic })),
 		hidePort: (id, port) => api.hidePort(id, String(port)),
 		files: {
-			list: async (id, path) =>
-				(await allPages((cursor) => api.listFiles(id, { path: absolute(path), ...after(cursor) })))
-					.map(entryOf)
-					.sort(foldersFirst),
+			list: async (id, path) => {
+				const { items, more } = await firstPages((cursor) =>
+					api.listFiles(id, { path: absolute(path), ...after(cursor) }),
+				);
+				return { entries: items.map(entryOf).sort(foldersFirst), more };
+			},
 			read: async (id, path) => {
 				try {
 					const file = await api.readFile(id, { path: absolute(path) });

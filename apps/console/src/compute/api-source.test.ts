@@ -255,8 +255,22 @@ describe("sandboxes", () => {
 		await sdk.writeFile(made.id, { path: "work/readme.txt", content: "Hello" });
 		const files = source.sandboxes.files;
 		if (files === undefined) throw new Error("No files");
-		const entries = await files.list(made.id, "home/user/work");
-		expect(entries.map((entry) => [entry.kind, entry.path])).toEqual([["file", "home/user/work/readme.txt"]]);
+		const folder = await files.list(made.id, "home/user/work");
+		expect(folder.entries.map((entry) => [entry.kind, entry.path])).toEqual([["file", "home/user/work/readme.txt"]]);
+		expect(folder.more).toBe(false);
+		// A folder that runs on past the pages it reads says so, rather than looking complete.
+		let pages = 0;
+		const endless = await open(async (input, init) => {
+			const url = input instanceof Request ? input.url : String(input);
+			if (!new URL(url, "https://kantel.test").pathname.endsWith("/files/list")) return fetchApi(input, init);
+			pages += 1;
+			const entry = { name: `f${pages}`, path: `/home/user/f${pages}`, kind: "file", size: 1 };
+			return Response.json({ items: [entry], nextCursor: `c${pages}` });
+		});
+		const cut = await endless.sandboxes.files?.list(made.id, "home/user");
+		expect(cut?.more).toBe(true);
+		expect(cut?.entries).toHaveLength(pages);
+		expect(pages).toBe(20);
 		expect(await files.read(made.id, "home/user/work/readme.txt")).toBe("Hello");
 
 		await sdk.runCommand(made.id, { command: "echo fine" });

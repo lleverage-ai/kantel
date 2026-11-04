@@ -44,6 +44,7 @@ import {
 } from "./compute-model.ts";
 import { computePage, messageOf, Sparkline, table } from "./parts.tsx";
 import { AUTO_STOP_CHOICES, DeleteDialog, type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
+import { popOut } from "./sandbox-screen.tsx";
 import { ChangeCounter, keepShown, retryTargets } from "./sandbox-selection.ts";
 
 /** A view of one sandbox's page that a row links to. */
@@ -597,11 +598,36 @@ const head = "h-control-md border-b border-border px-2 py-0 text-xs font-medium 
 const cell = "border-b border-border px-2 py-2.5 align-middle whitespace-nowrap";
 
 /** Follows a link in the app without reloading, unless it's a modified click (a new tab). */
-const follow = (navigate: ((path: string) => void) | undefined) => (event: MouseEvent<HTMLAnchorElement>) => {
+const follow = (navigate: ((path: string) => void) | undefined) => (event: LinkClick) => {
 	if (navigate === undefined || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey) return;
 	event.preventDefault();
 	navigate(event.currentTarget.getAttribute("href") ?? "");
 };
+
+/** The click on an anchor, as much of it as `follow` and `screenLink` read. */
+type LinkClick = Pick<
+	MouseEvent<HTMLAnchorElement>,
+	"button" | "metaKey" | "ctrlKey" | "shiftKey" | "preventDefault"
+> & {
+	readonly currentTarget: Pick<HTMLAnchorElement, "getAttribute">;
+};
+
+/**
+ * A row's Browser and Desktop: to the sandbox's page, or each to a tab of its own where the console can't frame them
+ * (`screens` "tab"), as on the sandbox's page. `openTab` runs during the click, so the browser lets the tab open.
+ */
+export function screenLink(
+	screens: SandboxesSource["screens"],
+	navigate: ((path: string) => void) | undefined,
+	openTab: (view: "browser" | "desktop") => void,
+): (view: "browser" | "desktop") => (event: LinkClick) => void {
+	if (screens !== "tab") return () => follow(navigate);
+	return (view) => (event) => {
+		if (event.button !== 0) return;
+		event.preventDefault();
+		openTab(view);
+	};
+}
 
 /** What a row can do: its buttons, and ⋯ with Stop and the sandbox menu's four. */
 function useRowActions(sandbox: Sandbox, calls: RowCalls) {
@@ -643,7 +669,11 @@ function useRowActions(sandbox: Sandbox, calls: RowCalls) {
 	const { sandboxHref } = calls;
 	const href =
 		pending || sandboxHref === undefined ? undefined : (view?: SandboxRowView) => sandboxHref(sandbox.id, view);
-	return { pending, can, windows, resume, recover, actions, href };
+	const onLink = follow(calls.navigate);
+	const onScreen = screenLink(source.screens, calls.navigate, (view) =>
+		popOut(view, undefined, () => source.access(sandbox.id)),
+	);
+	return { pending, can, windows, resume, recover, actions, href, onLink, onScreen };
 }
 
 /** The state, in its colour. */
@@ -693,9 +723,8 @@ function SandboxRow({
 	ticked: boolean;
 	onTick: (on: boolean) => void;
 }) {
-	const { pending, can, windows, resume, recover, actions, href } = useRowActions(sandbox, calls);
+	const { pending, can, windows, resume, recover, actions, href, onLink, onScreen } = useRowActions(sandbox, calls);
 	const stops = stopsText(sandbox, now);
-	const onLink = follow(calls.navigate);
 	return (
 		// The name's link covers the row (its ::after), so anywhere on it opens the sandbox; the tick box and the buttons
 		// sit above it.
@@ -756,11 +785,11 @@ function SandboxRow({
 				<span className="relative flex items-center justify-end gap-1">
 					{windows && href !== undefined ? (
 						<span className={`flex gap-1 ${onHover}`}>
-							<a className={ghostLink} href={href("browser")} onClick={onLink}>
+							<a className={ghostLink} href={href("browser")} onClick={onScreen("browser")}>
 								<GlobeIcon size="sm" />
 								<span className={buttonLabelClass}>Browser</span>
 							</a>
-							<a className={ghostLink} href={href("desktop")} onClick={onLink}>
+							<a className={ghostLink} href={href("desktop")} onClick={onScreen("desktop")}>
 								<DesktopIcon size="sm" />
 								<span className={buttonLabelClass}>Desktop</span>
 							</a>

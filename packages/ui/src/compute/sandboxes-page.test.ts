@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { Sandbox, SandboxState } from "./compute-model.ts";
 import { outputUnavailable, sandboxTimeline } from "./sandbox-logs.tsx";
 import { filesShown, type SandboxTab, sandboxViewShown } from "./sandbox-page.tsx";
-import { QUICK_SANDBOX, sandboxesShown, showsCpu } from "./sandboxes-page.tsx";
+import { QUICK_SANDBOX, sandboxesShown, screenLink, showsCpu } from "./sandboxes-page.tsx";
 import { SettingsFrame } from "./settings-nav.tsx";
 
 const box = (name: string, state: SandboxState): Sandbox => ({
@@ -89,8 +89,44 @@ describe("a sandbox's page", () => {
 		expect(sandboxViewShown("egress", running)).toBe("overview");
 	});
 
+	it("opens a row's Browser and Desktop in a tab where the console can't frame them, and on its page elsewhere", () => {
+		const click = (button = 0) => {
+			const event = {
+				button,
+				metaKey: false,
+				ctrlKey: false,
+				shiftKey: false,
+				prevented: false,
+				preventDefault() {
+					event.prevented = true;
+				},
+				currentTarget: { getAttribute: () => "/sandboxes/sbx_a/desktop" },
+			};
+			return event;
+		};
+		const went: string[] = [];
+		const tabs: string[] = [];
+		const navigate = (path: string) => went.push(path);
+		const openTab = (view: string) => tabs.push(view);
+
+		const local = click();
+		screenLink("tab", navigate, openTab)("desktop")(local);
+		expect([local.prevented, tabs, went]).toEqual([true, ["desktop"], []]);
+		// Not a primary click: left to the browser.
+		const middle = click(1);
+		screenLink("tab", navigate, openTab)("browser")(middle);
+		expect([middle.prevented, tabs]).toEqual([false, ["desktop"]]);
+
+		for (const screens of ["console", undefined] as const) {
+			const hosted = click();
+			screenLink(screens, navigate, openTab)("desktop")(hosted);
+			expect(hosted.prevented).toBe(true);
+		}
+		expect([went, tabs]).toEqual([["/sandboxes/sbx_a/desktop", "/sandboxes/sbx_a/desktop"], ["desktop"]]);
+	});
+
 	it("reads no live files until it knows they aren't end to end, and says so for one that is", () => {
-		const source = { files: { list: async () => [], read: async () => undefined } };
+		const source = { files: { list: async () => ({ entries: [], more: false }), read: async () => undefined } };
 		const running = { state: "running" as const };
 		const snapshot = { id: "snap_1", takenAt: 0 };
 		const yes = { status: "ready", value: true } as const;

@@ -208,6 +208,12 @@ export interface SandboxPort {
 /** A file or folder in a running sandbox, as a snapshot's are: its path from the root, with no leading slash. */
 export type SandboxEntry = SnapshotEntry;
 
+/** A running sandbox's folder: what Kantel read of it, and whether it has more than that (a very big folder). */
+export interface SandboxFolder {
+	readonly entries: readonly SandboxEntry[];
+	readonly more: boolean;
+}
+
 /** What a running sandbox is using now, where its host says. */
 export interface SandboxUsageNow {
 	/** Memory in use, in GB. */
@@ -248,7 +254,7 @@ export interface SandboxesSource {
 	hidePort?(id: string, port: number): Promise<void>;
 	/** A running sandbox's files: folders first, then files, by name. Absent: the Files tab shows its latest snapshot. */
 	files?: {
-		list(id: string, path: string): Promise<readonly SandboxEntry[]>;
+		list(id: string, path: string): Promise<SandboxFolder>;
 		/** A text file's content; undefined for a binary or a file too big to show. */
 		read(id: string, path: string): Promise<string | undefined>;
 	};

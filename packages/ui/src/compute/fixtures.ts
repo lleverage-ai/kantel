@@ -1414,7 +1414,10 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 				}),
 			files: {
 				list: (_id, path) =>
-					gate(() => (TREE[path.replace(/^\/+|\/+$/g, "")] ?? []).map((entry) => moved(entry, ["modifiedAt"]))),
+					gate(() => ({
+						entries: (TREE[path.replace(/^\/+|\/+$/g, "")] ?? []).map((entry) => moved(entry, ["modifiedAt"])),
+						more: false,
+					})),
 				read: (_id, path) => gate(() => FILES[path.replace(/^\/+/, "")]),
 			},
 		},

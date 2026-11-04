@@ -13,11 +13,14 @@ import { FileIcon, FolderIcon } from "../primitives/icons.tsx";
 import { useLoad } from "../primitives/load.ts";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
-import { bytesText, type SnapshotEntry, type SnapshotsSource } from "./compute-model.ts";
+import { bytesText, type SandboxFolder, type SnapshotEntry, type SnapshotsSource } from "./compute-model.ts";
 import { cellSub, messageOf, None, rowHover, TableFrame, table, tableFrame, td, th } from "./parts.tsx";
 
 export interface SnapshotFilesProps {
-	readonly source: Pick<SnapshotsSource, "list" | "read" | "downloadUrl">;
+	/** A folder's entries, or a running sandbox's folder, which says when it has more than Kantel read. */
+	readonly source: Pick<SnapshotsSource, "read" | "downloadUrl"> & {
+		list(snapshotId: string, path: string): Promise<readonly SnapshotEntry[] | SandboxFolder>;
+	};
 	readonly snapshotId: string;
 	/**
 	 * What the snapshot is called, as the heading: a saved snapshot's name, or a sandbox's and when it was taken. None
@@ -36,6 +39,8 @@ export interface SnapshotFilesProps {
 	/** A file in the open folder to show at once, for a story or a link. */
 	readonly initialFile?: string;
 }
+
+const isFolder = (value: readonly SnapshotEntry[] | SandboxFolder): value is SandboxFolder => !Array.isArray(value);
 
 const parentOf = (path: string): string => path.slice(0, Math.max(0, path.lastIndexOf("/")));
 
@@ -58,10 +63,11 @@ export function SnapshotFiles({
 	const [picked, setPicked] = useState(initialFile);
 	// A file picked in another folder isn't shown here.
 	const open = picked !== undefined && parentOf(picked) === path ? picked : undefined;
-	const entries =
-		state.status === "ready"
-			? [...state.value].sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "folder" ? -1 : 1))
-			: undefined;
+	const folder: SandboxFolder | undefined =
+		state.status !== "ready" ? undefined : isFolder(state.value) ? state.value : { entries: state.value, more: false };
+	const entries = folder?.entries
+		? [...folder.entries].sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "folder" ? -1 : 1))
+		: undefined;
 	const openEntry = entries?.find((entry) => entry.path === open);
 	const folderHref = source.downloadUrl(snapshotId, path);
 
@@ -122,6 +128,11 @@ export function SnapshotFiles({
 				<EmptyState title="This folder is empty" />
 			) : (
 				<div className="grid min-w-0 items-start gap-4 lg:grid-cols-2">
+					{folder?.more === true ? (
+						<p className="m-0 text-sm text-muted lg:col-span-2">
+							Showing the first {entries.length.toLocaleString("en")} in this folder.
+						</p>
+					) : null}
 					<EntryTable
 						entries={entries}
 						open={open}

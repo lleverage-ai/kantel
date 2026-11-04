@@ -16,6 +16,7 @@ import { Menu } from "../primitives/menu.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { Notice } from "../primitives/surface.tsx";
 import type { SandboxesSource, SandboxPort } from "./compute-model.ts";
+import { type Changes, oneChangeEach } from "./one-change.ts";
 import { messageOf, SectionHeading, table } from "./parts.tsx";
 import type { SandboxNotice } from "./sandbox-actions.tsx";
 
@@ -35,44 +36,14 @@ function Visibility({ isPublic }: { isPublic: boolean }) {
 
 const cell = "border-b border-border px-2 py-2 align-middle";
 
-export interface PortChanges {
-	/** Runs `call` as the port's one change, or refuses if another is on its way; frees the port once it answers. */
-	run<T>(port: number, call: () => Promise<T>): Promise<T>;
-	/** The ports with a change on its way: the same set until one starts or ends. */
-	changing(): ReadonlySet<number>;
-	subscribe(listener: () => void): () => void;
-}
+export type PortChanges = Changes<number>;
 
 /**
  * One change at a time to each port: `run` refuses a port with one on its way, and frees it once that answers, either
  * way. Listeners hear each start and end. Other ports go on as they like.
  */
-export function portChanges(): PortChanges {
-	let changing: ReadonlySet<number> = new Set();
-	const listeners = new Set<() => void>();
-	const set = (next: ReadonlySet<number>) => {
-		changing = next;
-		for (const listener of listeners) listener();
-	};
-	return {
-		async run<T>(port: number, call: () => Promise<T>): Promise<T> {
-			if (changing.has(port)) throw new Error(`Port ${port} is still changing. Try again in a moment.`);
-			set(new Set([...changing, port]));
-			try {
-				return await call();
-			} finally {
-				set(new Set([...changing].filter((other) => other !== port)));
-			}
-		},
-		changing: () => changing,
-		subscribe(listener) {
-			listeners.add(listener);
-			return () => {
-				listeners.delete(listener);
-			};
-		},
-	};
-}
+export const portChanges = (): PortChanges =>
+	oneChangeEach((port) => `Port ${port} is still changing. Try again in a moment.`);
 
 const bySandbox = new Map<string, PortChanges>();
 

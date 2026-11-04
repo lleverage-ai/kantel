@@ -758,7 +758,10 @@ function Overview({
 	);
 }
 
-/** CPU over the last two hours, larger than a row's, and memory and disk where the host says. */
+/**
+ * Its recent CPU, larger than a row's, and memory and disk where the host says. The samples carry no times, and the
+ * host takes one on each usage read, so the line claims no fixed window.
+ */
 function Usage({ source, sandbox, refreshKey }: { source: SandboxesSource; sandbox: Sandbox; refreshKey: unknown }) {
 	const { usageNow } = source;
 	const { state, reload } = useLoad(
@@ -789,11 +792,7 @@ function Usage({ source, sandbox, refreshKey }: { source: SandboxesSource; sandb
 	);
 	return (
 		<section className="flex min-w-0 flex-col gap-3" aria-labelledby="sandbox-usage">
-			<SectionHeading
-				id="sandbox-usage"
-				title="Usage"
-				actions={<span className="text-xs text-muted">Last 2 hours</span>}
-			/>
+			<SectionHeading id="sandbox-usage" title="Usage" actions={<span className="text-xs text-muted">Recent</span>} />
 			<div className="flex flex-col gap-4 text-sm">
 				<div className="flex flex-col gap-1.5">
 					<div className="flex justify-between gap-3">
@@ -804,7 +803,7 @@ function Usage({ source, sandbox, refreshKey }: { source: SandboxesSource; sandb
 						size="lg"
 						values={sandbox.usage}
 						tone={sandbox.state === "error" ? "error" : "done"}
-						label={`CPU over the last two hours, peak ${peak}%`}
+						label={`Recent CPU, peak ${peak}%`}
 					/>
 				</div>
 				{now?.memoryGb === undefined ? null : meter("Memory", now.memoryGb, spec.memoryGb)}
