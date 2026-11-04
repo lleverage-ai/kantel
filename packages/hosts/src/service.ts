@@ -359,7 +359,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	const welcomeFor = (host: HostRecord): HostWelcome => ({
 		hostId: host.id,
 		heartbeatSeconds: options.heartbeatSeconds ?? 15,
-		// Hosts keep no warm pools; an older one still running some ends them on this.
+		// Hosts keep no warm pools; an older one that keeps some makes no more on this (see `endLegacyPools`).
 		pools: {},
 		...(host.draining ? { draining: true } : {}),
 		...(options.desiredVersion === undefined ? {} : { desiredVersion: options.desiredVersion }),
