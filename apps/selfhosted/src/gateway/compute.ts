@@ -681,12 +681,21 @@ export function withHostUpgrades(
 				(host) => {
 					if (host === undefined) return refuse(HOST_CLOSE_REVOKED, "The host credential is unknown or revoked");
 					sockets.handleUpgrade(incoming, socket, head, (accepted) => {
+						// The bytes of binary frames sent but not yet written out, counted from each send's callback. Not the
+						// socket's own `bufferedAmount`: under Bun, ws's never comes down again, so a file stream waiting on it
+						// would stall for good once it had sent FILE_STREAM_BUFFER_BYTES.
+						let unsent = 0;
 						const held = compute.hub.accept(host.id, {
 							sendText: (text) => accepted.send(text),
-							sendBinary: (bytes) => accepted.send(bytes, { binary: true }),
+							sendBinary: (bytes) => {
+								unsent += bytes.byteLength;
+								accepted.send(bytes, { binary: true }, () => {
+									unsent -= bytes.byteLength;
+								});
+							},
 							close: (code, reason) => accepted.close(code, reason),
 							// How far behind the socket is, so a file stream to the host waits rather than queues without end.
-							bufferedAmount: () => accepted.bufferedAmount,
+							bufferedAmount: () => unsent,
 						});
 						// The hub's receive closes a connection whose frame it can't handle; this catch is the last line, so
 						// nothing a host sends (anyone's, with account hosts) escapes into the gateway process.

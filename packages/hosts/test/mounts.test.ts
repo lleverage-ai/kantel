@@ -9,6 +9,7 @@ import { createHostsApi, HOSTS_BUNDLES_PATH } from "../src/http.ts";
 import {
 	createHostHub,
 	FILE_STREAM_BUFFER_BYTES,
+	FILE_STREAM_WINDOW_BYTES,
 	HostCallError,
 	type HostHub,
 	type HostHubOptions,
@@ -263,6 +264,42 @@ describe("the hub's file streams", () => {
 		const blindCall = await other.called("sandbox.files.open");
 		other.send({ type: "result", id: blindCall.id, result: {} });
 		await (await blindOpening).stream.drained();
+	});
+
+	it("keeps a write only FILE_STREAM_WINDOW_BYTES ahead of what the host acks, whatever the socket says", async () => {
+		// A socket that says nothing is waiting, as Bun's ws can while a send is queued.
+		const hub = hubWith();
+		const host = attach(hub, "host_a", () => 0);
+		await host.welcomed();
+		const opening = hub.openFile("host_a", { sandboxId: "sbx_a", path: "/a", op: "write" }, keeping().sink);
+		const call = await host.called("sandbox.files.open");
+		host.send({ type: "result", id: call.id, result: {} });
+		const { stream } = await opening;
+		const chunk = new Uint8Array(FILE_STREAM_WINDOW_BYTES / 2);
+		stream.write(chunk);
+		await stream.drained();
+		stream.write(chunk);
+		let drained = false;
+		const draining = stream.drained().then(() => {
+			drained = true;
+		});
+		await pause(40);
+		expect(drained).toBe(false);
+		// An ack for another stream, or one that says less, doesn't let it go.
+		host.send({ type: "stream.ack", stream: stream.stream + 1, acked: FILE_STREAM_WINDOW_BYTES });
+		host.send({ type: "stream.ack", stream: stream.stream, acked: 0 });
+		await pause(20);
+		expect(drained).toBe(false);
+		host.send({ type: "stream.ack", stream: stream.stream, acked: 1 });
+		await draining;
+		expect(drained).toBe(true);
+
+		// Once the stream has ended, an ack for it is dropped, and its writer isn't held.
+		stream.write(chunk);
+		stream.write(chunk);
+		host.send({ type: "stream.close", stream: stream.stream, reason: "ok 0" });
+		host.send({ type: "stream.ack", stream: stream.stream, acked: FILE_STREAM_WINDOW_BYTES * 2 });
+		await stream.drained();
 	});
 });
 
@@ -620,6 +657,27 @@ describe("the backend's file streams", () => {
 		expect(host.files.has("/home/user/c.txt")).toBe(false);
 		buffered = 0;
 		expect(await writing).toEqual({ size: 3 });
+	});
+
+	it("write a file larger than the window as the host acks it, and wait while it doesn't", async () => {
+		const { host, hostId, backend, connect } = await setup([HOST_FEATURES.fileStreams]);
+		await connect();
+		await backend.create(spec("sbx_one", hostId));
+		const piece = "x".repeat(1024 * 1024);
+		const pieces = Array.from({ length: (FILE_STREAM_WINDOW_BYTES * 3) / piece.length }, () => piece);
+		expect(await write(backend, "sbx_one", "/home/user/big", streamOf(...pieces))).toEqual({
+			size: FILE_STREAM_WINDOW_BYTES * 3,
+		});
+		expect(host.files.get("/home/user/big")?.byteLength).toBe(FILE_STREAM_WINDOW_BYTES * 3);
+
+		host.holdAcks = true;
+		const writing = write(backend, "sbx_one", "/home/user/held", streamOf(...pieces));
+		await pause(40);
+		const [[stream, held] = [0, { chunks: [] }]] = [...host.writes];
+		expect(held.chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)).toBe(FILE_STREAM_WINDOW_BYTES);
+		host.send({ type: "stream.ack", stream, acked: FILE_STREAM_WINDOW_BYTES * 3 });
+		host.holdAcks = false;
+		expect(await writing).toEqual({ size: FILE_STREAM_WINDOW_BYTES * 3 });
 	});
 
 	it("throw the host's error, its code when it is Kantel's", async () => {

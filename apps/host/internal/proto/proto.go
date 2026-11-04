@@ -41,7 +41,13 @@ type Message struct {
 	// stream.close (either way): a port stream ended; Reason says why.
 	Stream uint32 `json:"stream,omitempty"`
 	Reason string `json:"reason,omitempty"`
+	// stream.ack (host → Kantel), on a file write stream (FeatureFileStreams): the bytes of it the sandbox has taken so
+	// far, sent every FileStreamAckBytes or so. Kantel keeps its writes only a window ahead of it.
+	Acked int64 `json:"acked,omitempty"`
 }
+
+// FileStreamAckBytes is about how often a host sends a file write stream's stream.ack.
+const FileStreamAckBytes = 512 << 10
 
 // Error codes a call can fail with.
 const (
@@ -94,7 +100,8 @@ type Facts struct {
 const FeatureEgressPolicy = "egress-policy"
 
 // FeatureFileStreams: the host serves sandbox.files.open (FileOpenParams), a file's bytes on a port stream, for the
-// sandboxes of a tier that streams files (the microVM tier).
+// sandboxes of a tier that streams files (the microVM tier), and acks a write's bytes as the sandbox takes them
+// (stream.ack).
 const FeatureFileStreams = "file-streams"
 
 // Size is a sandbox shape.

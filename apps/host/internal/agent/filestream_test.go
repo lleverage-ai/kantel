@@ -252,7 +252,8 @@ func TestAFileIsReadOnItsStream(t *testing.T) {
 }
 
 // A write answers {}, takes the bytes Kantel sends and an empty frame for the end, keeps the file only then, and
-// ends the stream with "ok <size>".
+// ends the stream with "ok <size>". On the way it may ack what the tier has taken (stream.ack), rising, never more
+// than was sent.
 func TestAFileIsWrittenFromItsStream(t *testing.T) {
 	tier := newStreamTier(map[string][]byte{})
 	_, cp := connectSession(t, streamHost(t, tier))
@@ -266,8 +267,24 @@ func TestAFileIsWrittenFromItsStream(t *testing.T) {
 		cp.frame(3, rest[:n])
 		rest = rest[n:]
 	}
+	// Before the end: acks up to the last FileStreamAckBytes the tier has taken.
+	var acked int64
+	for acked < int64(len(want))/proto.FileStreamAckBytes*proto.FileStreamAckBytes {
+		m, _, _ := cp.next()
+		if m.Type != "stream.ack" || m.Stream != 3 || m.Acked < acked || m.Acked > int64(len(want)) {
+			t.Fatalf("%s on %d for %d, after %d", m.Type, m.Stream, m.Acked, acked)
+		}
+		acked = m.Acked
+	}
 	cp.frame(3, nil)
 	m, _, _ := cp.next()
+	for m.Type == "stream.ack" {
+		if m.Stream != 3 || m.Acked < acked || m.Acked > int64(len(want)) {
+			t.Fatalf("stream.ack on %d for %d, after %d", m.Stream, m.Acked, acked)
+		}
+		acked = m.Acked
+		m, _, _ = cp.next()
+	}
 	if m.Type != "stream.close" || m.Stream != 3 || m.Reason != fmt.Sprintf("ok %d", len(want)) {
 		t.Fatalf("%s %d %q", m.Type, m.Stream, m.Reason)
 	}

@@ -59,6 +59,8 @@ export class FakeHost {
 	mountStatus?: (mounts: readonly HostMount[]) => HostMountStatus[];
 	/** For a test: the socket's buffered bytes, as a WebSocket reports them; absent, it can't tell. */
 	buffered?: () => number;
+	/** For a test: a write's bytes aren't acked (`stream.ack`) as they arrive, as from a sandbox that takes none. */
+	holdAcks = false;
 
 	constructor(
 		readonly service: HostsService,
@@ -110,6 +112,10 @@ export class FakeHost {
 		if (frame !== undefined && write !== undefined) {
 			if (frame.payload.byteLength > 0) {
 				write.chunks.push(frame.payload.slice());
+				if (!this.holdAcks) {
+					const acked = write.chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+					this.send({ type: "stream.ack", stream: frame.stream, acked });
+				}
 				return;
 			}
 			// The empty frame: all of it has arrived.

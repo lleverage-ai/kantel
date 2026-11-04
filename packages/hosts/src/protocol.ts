@@ -317,7 +317,16 @@ export interface HostEvent {
 }
 
 export interface HostMessage {
-	readonly type: "hello" | "welcome" | "heartbeat" | "call" | "result" | "event" | "stream.close" | string;
+	readonly type:
+		| "hello"
+		| "welcome"
+		| "heartbeat"
+		| "call"
+		| "result"
+		| "event"
+		| "stream.close"
+		| "stream.ack"
+		| string;
 	readonly hello?: HostHello;
 	readonly welcome?: HostWelcome;
 	readonly heartbeat?: { readonly capacity: HostCapacity };
@@ -331,6 +340,8 @@ export interface HostMessage {
 	readonly call?: string;
 	readonly stream?: number;
 	readonly reason?: string;
+	/** For `stream.ack` (host → Kantel): the bytes of a file write stream the sandbox has taken so far. */
+	readonly acked?: number;
 }
 
 /**

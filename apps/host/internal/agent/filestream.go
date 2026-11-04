@@ -9,6 +9,7 @@ import (
 	"net"
 	"path"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
@@ -60,6 +61,11 @@ type fileConn struct {
 	// w is a write's pipe; nil for a read, whose stream carries nothing from Kantel (what it sends is dropped).
 	w      *io.PipeWriter
 	cancel context.CancelFunc
+	// taken is how much of a write the tier has read from the pipe; acks is signalled each FileStreamAckBytes of it,
+	// for the goroutine that sends stream.ack. Write runs on the session's reader only, so signalled needs no lock.
+	taken     atomic.Int64
+	signalled int64
+	acks      chan struct{}
 }
 
 func (c *fileConn) Read([]byte) (int, error) { return 0, io.EOF }
@@ -68,7 +74,16 @@ func (c *fileConn) Write(b []byte) (int, error) {
 	if c.w == nil {
 		return len(b), nil
 	}
-	return c.w.Write(b)
+	// The pipe hands b to the tier's read, so it returns once the tier has taken it: what Kantel's window waits on.
+	n, err := c.w.Write(b)
+	if total := c.taken.Add(int64(n)); total-c.signalled >= proto.FileStreamAckBytes {
+		c.signalled = total
+		select {
+		case c.acks <- struct{}{}:
+		default:
+		}
+	}
+	return n, err
 }
 
 // CloseWrite is the end of a write's input: the tier reads io.EOF, and moves the file into place.
@@ -146,6 +161,7 @@ func (s *session) openFile(ctx, call context.Context, raw json.RawMessage) (any,
 	} else {
 		pr, pw := io.Pipe()
 		conn.w = pw
+		conn.acks = make(chan struct{}, 1)
 		result = struct{}{}
 		transfer = func() (int64, error) { return streamer.WriteFileStream(tctx, fp, pr) }
 		finish = func() { _ = pr.CloseWithError(errors.New("the file stream has ended")) }
@@ -167,6 +183,19 @@ func (s *session) openFile(ctx, call context.Context, raw json.RawMessage) (any,
 	// A plaintext file stream ends if its sandbox's space turns E2E on while it runs, as a port does.
 	forget := s.host.watchPlain(s.host.ownerOf(p.SandboxID), func() { conn.Close() })
 	start := func() {
+		if conn.acks != nil {
+			// Off the session's reader, so a slow socket never holds the frames coming in; ends with the stream.
+			go func() {
+				for {
+					select {
+					case <-tctx.Done():
+						return
+					case <-conn.acks:
+						_ = s.send(ctx, proto.Message{Type: "stream.ack", Stream: p.Stream, Acked: conn.taken.Load()})
+					}
+				}
+			}()
+		}
 		go func() {
 			defer forget()
 			n, err := transfer()

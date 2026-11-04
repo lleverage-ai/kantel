@@ -14,7 +14,8 @@
  *
  * A file stream (`openFile`) is a port stream carrying a file of a sandbox's: the host sends a read's bytes and ends it
  * with a `stream.close` whose reason says how it went; a write's bytes go the other way, then an empty frame for the
- * end of them.
+ * end of them, while the host's `stream.ack`s say how much the sandbox has taken, so the writer keeps only
+ * `FILE_STREAM_WINDOW_BYTES` ahead of it.
  *
  * Nothing here is Node-only: a Cloudflare Durable Object holding the socket can host it the same way.
  */
@@ -105,8 +106,9 @@ export interface FileStreamHandle extends PortStream {
 	/** The end of a write's bytes: an empty frame, which the host reads as the end of input. */
 	finish(): void;
 	/**
-	 * Resolves once the host's socket has less than `FILE_STREAM_BUFFER_BYTES` waiting to go out, so a writer doesn't
-	 * pile a whole file into memory; at once when the socket can't tell, or the stream has ended.
+	 * Resolves once the sandbox has taken all but `FILE_STREAM_WINDOW_BYTES` of what was written (the host's
+	 * `stream.ack`), and the host's socket has less than `FILE_STREAM_BUFFER_BYTES` waiting to go out, so a writer
+	 * doesn't pile a whole file into memory; at once when the stream has ended.
 	 */
 	drained(): Promise<void>;
 }
@@ -119,6 +121,12 @@ export interface OpenedFile {
 
 /** How much a file stream's writer lets wait in the host's socket before it waits too. */
 export const FILE_STREAM_BUFFER_BYTES = 8 * 1024 * 1024;
+/**
+ * How far a file stream's writer may get ahead of what the sandbox has taken (the host's `stream.ack`). The socket's
+ * own count isn't enough: under Bun, ws's `bufferedAmount` never comes down again, and a send past its backpressure
+ * limit is queued and may be sent twice. Kept well under that limit (16 MiB), so a write never reaches it.
+ */
+export const FILE_STREAM_WINDOW_BYTES = 4 * 1024 * 1024;
 const DRAIN_POLL_MS = 10;
 const OPEN_TIMEOUT_MS = 20_000;
 
@@ -186,6 +194,8 @@ interface Connection {
 	closed: boolean;
 	readonly pending: Map<string, Pending>;
 	readonly streams: Map<number, PortSink>;
+	/** A file write stream's `stream.ack`s: how much of it the sandbox has taken. */
+	readonly acks: Map<number, (taken: number) => void>;
 }
 
 const DEFAULT_CALL_TIMEOUT_MS = 120_000;
@@ -304,6 +314,7 @@ export function createHostHub(options: HostHubOptions): HostHub {
 			connection.socket.sendBinary(encodeStreamFrame(stream, bytes));
 		},
 		close() {
+			connection.acks.delete(stream);
 			if (!connection.streams.delete(stream)) return;
 			send(connection, { type: "stream.close", stream, reason: "closed by the client" });
 		},
@@ -437,6 +448,7 @@ export function createHostHub(options: HostHubOptions): HostHub {
 				closed: false,
 				pending: new Map(),
 				streams: new Map(),
+				acks: new Map(),
 			};
 			const older = held.get(hostId);
 			held.set(hostId, connection);
@@ -522,8 +534,17 @@ export function createHostHub(options: HostHubOptions): HostHub {
 						options.onEvent?.(hostId, message.event);
 						return;
 					}
+					case "stream.ack": {
+						const stream = message.stream ?? 0;
+						const ack = connection.acks.get(stream);
+						if (ack === undefined) return;
+						if (!connection.streams.has(stream)) connection.acks.delete(stream);
+						else if (typeof message.acked === "number" && Number.isSafeInteger(message.acked)) ack(message.acked);
+						return;
+					}
 					case "stream.close": {
 						const stream = message.stream ?? 0;
+						connection.acks.delete(stream);
 						const sink = connection.streams.get(stream);
 						if (sink === undefined) return;
 						connection.streams.delete(stream);
@@ -619,25 +640,51 @@ export function createHostHub(options: HostHubOptions): HostHub {
 			}
 			const size = isObject(opened) ? (opened as { readonly size?: unknown }).size : undefined;
 			const open = () => !connection.closed && connection.streams.has(stream);
+			const base = portStream(connection, stream);
+			// A write's bytes sent, and how many of them the host says the sandbox has taken.
+			let sent = 0;
+			let taken = 0;
+			let wake: (() => void) | undefined;
+			if (params.op === "write") {
+				connection.acks.set(stream, (bytes) => {
+					if (bytes > taken) taken = bytes;
+					wake?.();
+				});
+			}
 			const handle: FileStreamHandle = {
-				...portStream(connection, stream),
+				...base,
+				write(bytes) {
+					if (bytes.byteLength === 0 || !open()) return;
+					sent += bytes.byteLength;
+					base.write(bytes);
+				},
 				finish() {
 					// Its own send: `write` drops an empty chunk, which would otherwise read as the end.
 					if (open()) connection.socket.sendBinary(encodeStreamFrame(stream, new Uint8Array(0)));
 				},
 				drained() {
-					const buffered = () => connection.socket.bufferedAmount?.();
 					const waiting = () => {
-						const amount = buffered();
-						return open() && amount !== undefined && amount >= FILE_STREAM_BUFFER_BYTES;
+						if (!open()) return false;
+						if (sent - taken >= FILE_STREAM_WINDOW_BYTES) return true;
+						const buffered = connection.socket.bufferedAmount?.();
+						return buffered !== undefined && buffered >= FILE_STREAM_BUFFER_BYTES;
 					};
 					if (!waiting()) return Promise.resolve();
+					// Checked again on each ack, and every DRAIN_POLL_MS for the socket (and for a stream that ended).
 					return new Promise<void>((resolve) => {
-						const poll = () => {
-							if (waiting()) setTimeout(poll, DRAIN_POLL_MS);
-							else resolve();
+						let timer: ReturnType<typeof setTimeout> | undefined;
+						const check = () => {
+							if (waiting()) return;
+							clearTimeout(timer);
+							wake = undefined;
+							resolve();
 						};
-						setTimeout(poll, DRAIN_POLL_MS);
+						const poll = () => {
+							check();
+							if (wake === check) timer = setTimeout(poll, DRAIN_POLL_MS);
+						};
+						wake = check;
+						timer = setTimeout(poll, DRAIN_POLL_MS);
 					});
 				},
 			};
