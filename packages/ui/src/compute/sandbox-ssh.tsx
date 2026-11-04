@@ -60,37 +60,54 @@ function saveText(text: string, name: string): void {
 	setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
-/** Plain ssh: a key let in on request, and the command that uses it. */
-function WithoutCli({
-	sandboxId,
-	sshKey,
-	now,
-}: {
-	sandboxId: string;
-	sshKey: NonNullable<SandboxesSource["sshKey"]>;
-	now: number;
-}) {
-	const [publicKey, setPublicKey] = useState("");
-	const [busy, setBusy] = useState(false);
-	const [failed, setFailed] = useState<Error | undefined>(undefined);
-	const [granted, setGranted] = useState<SandboxSshKey | undefined>(undefined);
-	const problem = publicKeyProblem(publicKey);
+/** Plain ssh's request and its answer, for one sandbox. */
+interface Grant {
+	readonly sandboxId: string;
+	readonly publicKey: string;
+	readonly busy: boolean;
+	readonly failed?: Error;
+	readonly granted?: SandboxSshKey;
+}
+
+/**
+ * Plain ssh's state, kept by the SSH section rather than inside its disclosure, which unmounts what it hides: folding
+ * it while a key is being let in, or after, keeps the answer (and the private key it carries, shown once) for when it
+ * opens again. Another sandbox starts afresh, and an answer for one that's no longer shown is dropped.
+ */
+function useGrant(sandboxId: string, sshKey: SandboxesSource["sshKey"]) {
+	const fresh: Grant = { sandboxId, publicKey: "", busy: false };
+	const [grant, setGrant] = useState<Grant>(fresh);
+	const shown = grant.sandboxId === sandboxId ? grant : fresh;
+	const problem = publicKeyProblem(shown.publicKey);
+	/** Changes this sandbox's state, starting afresh if the last one kept was another's. */
+	const update = (change: (state: Grant) => Grant) =>
+		setGrant((state) => change(state.sandboxId === sandboxId ? state : fresh));
+	const setPublicKey = (publicKey: string) => update((state) => ({ ...state, publicKey }));
 	const ask = () => {
-		if (problem !== undefined || busy) return;
-		setBusy(true);
-		setFailed(undefined);
-		const key = publicKey.trim();
+		if (sshKey === undefined || problem !== undefined || shown.busy) return;
+		const key = shown.publicKey.trim();
+		update((state) => ({ sandboxId, publicKey: state.publicKey, busy: true, ...pick(state.granted) }));
+		// Settles only the sandbox it was asked for: the page may show another by then.
+		const settle = (change: (state: Grant) => Grant) =>
+			setGrant((state) => (state.sandboxId === sandboxId ? change(state) : state));
 		sshKey(sandboxId, key === "" ? undefined : key).then(
-			(answer) => {
-				setGranted(answer);
-				setBusy(false);
-			},
-			(caught: unknown) => {
-				setFailed(caught instanceof Error ? caught : new Error(String(caught)));
-				setBusy(false);
-			},
+			(answer) => settle((state) => ({ sandboxId, publicKey: state.publicKey, busy: false, granted: answer })),
+			(caught: unknown) =>
+				settle((state) => ({
+					...state,
+					busy: false,
+					failed: caught instanceof Error ? caught : new Error(String(caught)),
+				})),
 		);
 	};
+	return { ...shown, problem, setPublicKey, ask };
+}
+
+const pick = (granted: SandboxSshKey | undefined) => (granted === undefined ? {} : { granted });
+
+/** Plain ssh: a key let in on request, and the command that uses it. */
+function WithoutCli({ grant, now }: { grant: ReturnType<typeof useGrant>; now: number }) {
+	const { publicKey, setPublicKey, busy, failed, granted, problem, ask } = grant;
 	let result: ReactNode = null;
 	if (granted !== undefined) {
 		const { privateKey, keyFile, hostKeyFingerprint, expiresAt } = granted;
@@ -126,6 +143,17 @@ function WithoutCli({
 							: `Run it in a terminal with websocat installed, by ${clockTime(expiresAt, now)}; once connected it stays open.`
 					}
 				/>
+				{privateKey === undefined ? (
+					<p className="m-0 text-sm text-muted">
+						ssh offers your default keys (such as <code className="font-mono text-code">~/.ssh/id_ed25519</code>) and
+						ssh-agent's. If the key you pasted isn't one of them, add{" "}
+						<code className="kt-selectable font-mono text-code text-fg">
+							-i &lt;its private key file&gt; -o IdentitiesOnly=yes
+						</code>{" "}
+						after <code className="font-mono text-code">ssh</code>: the file on your machine without .pub, which never
+						goes in the console.
+					</p>
+				) : null}
 				{hostKeyFingerprint === undefined ? null : (
 					<p className="m-0 text-sm text-muted">
 						The first time, ssh asks you to trust the sandbox's host key: check it's{" "}
@@ -188,6 +216,7 @@ export function SandboxSsh({
 }) {
 	const ready = access !== undefined && access !== "loading" && !(access instanceof Error) ? access : undefined;
 	const { sshKey } = source;
+	const grant = useGrant(sandboxId, sshKey);
 	return (
 		<section className="flex min-w-0 flex-col gap-2" aria-labelledby="sandbox-ssh">
 			<SectionHeading id="sandbox-ssh" title="SSH" />
@@ -205,11 +234,15 @@ export function SandboxSsh({
 			) : (
 				<>
 					<CommandLine command={ready?.ssh} copyLabel="Copy" />
-					<p className="m-0 text-sm text-muted">With the Kantel CLI, which needs Node.js 22 or later. To install it:</p>
+					<p className="m-0 text-sm text-muted">
+						With the Kantel CLI, which needs Node.js 22 or later.{" "}
+						{ready?.cliLogin === undefined ? "To install it:" : "Install it, then sign it in to this Kantel once:"}
+					</p>
 					<CommandLine command={CLI_INSTALL_COMMAND} copyLabel="Copy" />
+					{ready?.cliLogin === undefined ? null : <CommandLine command={ready.cliLogin} copyLabel="Copy" />}
 					{ready?.sshWithoutCli === true && sshKey !== undefined ? (
 						<Disclosure summary="Without the Kantel CLI" defaultOpen={withoutCliOpen}>
-							<WithoutCli sandboxId={sandboxId} sshKey={sshKey} now={now} />
+							<WithoutCli grant={grant} now={now} />
 						</Disclosure>
 					) : null}
 				</>

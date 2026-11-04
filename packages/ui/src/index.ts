@@ -60,6 +60,7 @@ export type {
 } from "./compute/compute-model.ts";
 export {
 	CLI_INSTALL_COMMAND,
+	cliLoginCommand,
 	cliSshCommand,
 	DeviceSetupError,
 	FilesRefusedError,

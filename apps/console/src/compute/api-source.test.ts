@@ -289,6 +289,15 @@ describe("sandboxes", () => {
 		// SSH is E2E v1's own: the host refuses the gateway's, which lets a key in with a command.
 		expect(inSpace.ssh).toBe(`kantel e2e ssh ${made.id}`);
 		expect(inSpace.sshWithoutCli).toBe(false);
+		// `kantel console`'s page is the CLI's own, signed in already; its loopback origin is no gateway to sign in to.
+		if (local !== undefined) {
+			vi.stubGlobal("location", { origin: "http://127.0.0.1:58091" });
+			try {
+				expect((await e2e.sandboxes.access(made.id)).cliLogin).toBeUndefined();
+			} finally {
+				vi.unstubAllGlobals();
+			}
+		}
 		expect(asked.filter((path) => /\/(desktop|browser|ssh)$/.test(path))).toEqual([]);
 	});
 
@@ -311,6 +320,13 @@ describe("sandboxes", () => {
 		expect(access.ssh).toBe(`kantel ssh ${made.id}`);
 		expect(access.sshWithoutCli).toBe(true);
 		expect(asked.filter((path) => path.endsWith("/ssh"))).toEqual([]);
+		// Served by a gateway, the page says to sign the CLI in to it: the gateway is this page's origin.
+		vi.stubGlobal("location", { origin: "https://app.kantel.dev" });
+		try {
+			expect((await source.sandboxes.access(made.id)).cliLogin).toBe("kantel login --url https://app.kantel.dev");
+		} finally {
+			vi.unstubAllGlobals();
+		}
 
 		// Without a public key, Kantel makes a pair: its private half is the download, and the command uses its file.
 		const generated = await source.sandboxes.sshKey?.(made.id);

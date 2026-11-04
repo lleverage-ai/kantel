@@ -22,10 +22,11 @@ kantel ssh sbx_4kq9x2mt -- uname -a     # one command, with its exit code
 
 ## From the console
 
-A microVM's Overview shows SSH as `kantel ssh <sandbox ID>`, with the one line that installs the CLI under it (it needs Node.js 22 or later):
+A microVM's Overview shows SSH as `kantel ssh <sandbox ID>`, with the line that installs the CLI under it (it needs Node.js 22 or later), and the one that signs it in to the Kantel the console belongs to, once:
 
 ```sh
 curl -fsSL https://kantel.dev/cli.sh | sh
+kantel login --url https://app.kantel.dev
 ```
 
 Without the CLI, open **Without the Kantel CLI**. Paste your OpenSSH public key to let it in, or leave it empty and Kantel makes a key pair: download its private key, which isn't shown again. **Get the command** then shows a plain `ssh` command with [websocat](https://github.com/vi/websocat) as its `ProxyCommand`, such as:
@@ -34,7 +35,7 @@ Without the CLI, open **Without the Kantel CLI**. Paste your OpenSSH public key 
 chmod 600 ~/Downloads/kantel-sbx_4kq9x2mt && ssh -i ~/Downloads/kantel-sbx_4kq9x2mt -o IdentitiesOnly=yes -o 'ProxyCommand=websocat --binary wss://kantel.example/v1/hosts/tunnel/…' user@sbx_4kq9x2mt
 ```
 
-and the host key's fingerprint, to check when ssh asks you to trust it the first time. Start the connection within 10 minutes; once connected it stays open. Nothing is let in until you ask.
+and the host key's fingerprint, to check when ssh asks you to trust it the first time. With a pasted key, ssh offers your default keys and ssh-agent's: if the pasted one isn't among them, add `-i <its private key file> -o IdentitiesOnly=yes` after `ssh`. Start the connection within 10 minutes; once connected it stays open. Nothing is let in until you ask.
 
 The examples use `KANTEL_URL` and `KANTEL_API_KEY` as set in [Create and manage sandboxes](/sandboxes/lifecycle/#before-you-start), and `jq`. The key needs `access`.
 

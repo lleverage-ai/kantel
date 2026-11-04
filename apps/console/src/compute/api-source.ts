@@ -75,6 +75,7 @@ import type {
 	WebhooksSource,
 } from "@kantel/ui";
 import {
+	cliLoginCommand,
 	cliSshCommand,
 	DeviceSetupError,
 	FilesRefusedError,
@@ -485,6 +486,11 @@ function sandboxesSource(context: Context): SandboxesSource {
 				// SSH there is E2E v1's own, over a session from the person's device; the gateway's (which lets a key in with a
 				// command) the host refuses, so there's no plain ssh either.
 				ssh: cliSshCommand(id, endToEnd),
+				// The CLI signs in to the gateway that serves this page, under /v1 on its origin. `kantel console`'s page is the
+				// CLI's own, signed in already, and its loopback origin isn't a gateway.
+				...(context.local === undefined && globalThis.location?.origin !== undefined
+					? { cliLogin: cliLoginCommand(globalThis.location.origin) }
+					: {}),
 				sshWithoutCli: !endToEnd,
 				// What can't open has no address: nothing links or frames it.
 				desktopUrl: desktopUrl ?? "",

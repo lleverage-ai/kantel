@@ -38,6 +38,7 @@ import type {
 	WebhookDelivery,
 } from "./compute-model.ts";
 import {
+	cliLoginCommand,
 	cliSshCommand,
 	FilesRefusedError,
 	sameProxySettings,
@@ -1506,6 +1507,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					const token = fakeSecret("").slice(0, 16);
 					return {
 						ssh: cliSshCommand(box.id),
+						cliLogin: cliLoginCommand("https://kantel.example.com"),
 						sshWithoutCli: true,
 						desktopUrl: `https://${box.hostname}/desktop?token=${token}`,
 						desktopViewUrl: `https://${box.hostname}/desktop?token=${token}#shared`,

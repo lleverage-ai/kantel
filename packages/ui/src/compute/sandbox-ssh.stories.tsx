@@ -10,6 +10,7 @@ const ID = "sbx_7f3k2m9qa1";
 
 const ACCESS: SandboxAccess = {
 	ssh: `kantel ssh ${ID}`,
+	cliLogin: "kantel login --url https://app.kantel.dev",
 	sshWithoutCli: true,
 	desktopUrl: "",
 	desktopViewUrl: "",
@@ -64,6 +65,11 @@ export const WithoutCliFails: Story = () => <Scenario open fail />;
 /** End to end: `kantel e2e ssh`, and no plain ssh, which the host refuses. */
 export const EndToEnd: Story = () => (
 	<Scenario access={{ ...ACCESS, ssh: `kantel e2e ssh ${ID}`, sshWithoutCli: false }} />
+);
+
+/** `kantel console`'s page: the CLI serves it, signed in already, so there's no sign-in line. */
+export const LocalConsole: Story = () => (
+	<Scenario access={{ ssh: ACCESS.ssh, sshWithoutCli: true, desktopUrl: "", desktopViewUrl: "", browserUrl: "" }} />
 );
 
 /** While the sandbox's access loads. */

@@ -186,6 +186,11 @@ export interface SandboxAccess {
 	 */
 	readonly ssh: string;
 	/**
+	 * Signs the CLI in to the Kantel this console belongs to, once, before `ssh` works: `kantel login --url <gateway>`.
+	 * Absent where the CLI already is (`kantel console` serves the page).
+	 */
+	readonly cliLogin?: string;
+	/**
 	 * Whether plain `ssh` can get in without the CLI, through `SandboxesSource.sshKey`: not end to end, where the host
 	 * refuses the gateway's SSH. Absent: no.
 	 */
@@ -210,6 +215,11 @@ export interface SandboxAccess {
 
 /** The one line that installs the Kantel CLI (`kantel`), from kantel.dev: it pastes the same into bash, zsh and fish. */
 export const CLI_INSTALL_COMMAND = "curl -fsSL https://kantel.dev/cli.sh | sh";
+
+/** Signs the CLI in to the Kantel at `url` (its gateway's public origin, such as https://app.kantel.dev). */
+export function cliLoginCommand(url: string): string {
+	return `kantel login --url ${url}`;
+}
 
 /** The CLI's command that SSHes into a sandbox. */
 export const cliSshCommand = (sandboxId: string, endToEnd = false): string =>
