@@ -19,12 +19,12 @@ import type {
 	BaseImage,
 	BaseImagesOverview,
 	BaseImagesSource,
+	BaseImageTemplate,
 	BaseImageVersion,
 	ImageBuildReason,
 	ImageFinding,
 	ImageScan,
 	ImageSeverity,
-	TemplateBase,
 } from "./compute-model.ts";
 import {
 	cellMono,
@@ -68,7 +68,7 @@ export function scanStatus(scan: ImageScan | undefined): Tagged {
 }
 
 /** A template's state: rebuilding, up to date, or how far behind its base is. */
-export function templateStatus(template: Pick<TemplateBase, "base" | "rebuilding">): Tagged {
+export function templateStatus(template: Pick<BaseImageTemplate, "base" | "rebuilding">): Tagged {
 	if (template.rebuilding) return { tone: "accent", text: "Rebuilding" };
 	if (!template.base.outdated) return { tone: "done", text: "Up to date" };
 	const behind = template.base.behind === undefined ? "behind the latest" : behindText(template.base.behind);
@@ -457,7 +457,7 @@ function VersionLine({ version, now }: { version: BaseImageVersion; now: number 
 	);
 }
 
-function TemplatesTable({ templates }: { templates: readonly TemplateBase[] }) {
+function TemplatesTable({ templates }: { templates: readonly BaseImageTemplate[] }) {
 	return (
 		<TableFrame>
 			<table className={table}>

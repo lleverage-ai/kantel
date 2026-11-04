@@ -11,6 +11,7 @@
  * (AES-256-GCM, `secrets.ts`), and opened only to send them to a sandbox's host.
  */
 import type { computeSchema } from "@kantel/api";
+import type { SandboxTemplateBoot } from "./backend.ts";
 import type { StoredE2EEntry } from "./e2e.ts";
 import type { SealedValue } from "./secrets.ts";
 
@@ -168,6 +169,12 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 * size, or before shapes. A fork asks for the same.
 	 */
 	readonly shape?: { readonly vcpus: number; readonly memoryMb: number };
+	/**
+	 * Made from a template: how a fresh boot of it boots, its base and setup as its create resolved them, so a create
+	 * that failed before placing it (`bootAgain`) is made again the same, whatever its template has become since. No
+	 * snapshot: a retry boots fresh.
+	 */
+	readonly templateBoot?: Omit<SandboxTemplateBoot, "snapshot">;
 };
 
 export type StoredCommand = computeSchema.Command & { readonly accountId: string };
@@ -264,13 +271,113 @@ export interface StoredEnvironment {
 export const environmentNameKey = (environment: { readonly accountId: string; readonly name: string }) =>
 	JSON.stringify([environment.accountId, environment.name]);
 
-/** A write the store refused because it would give a second record a key another holds (an environment's name). */
+/** A write the store refused because it would give a second record a key another holds (an environment's or template's name). */
 export class UniqueViolation extends Error {
 	constructor(kind: string) {
 		super(`Another ${kind} record has that key`);
 		this.name = "UniqueViolation";
 	}
 }
+
+/** A template: its current version and spec (every default filled in), and its versions beside it. */
+export interface StoredTemplate {
+	readonly id: string;
+	readonly accountId: string;
+	readonly name: string;
+	readonly description?: string;
+	readonly version: number;
+	readonly spec: computeSchema.TemplateSpec;
+	/**
+	 * Moves on with each rebuild: part of its snapshots' IDs (`templateSnapshotId`), so a rebuild's builds never meet the
+	 * ones it threw away.
+	 */
+	readonly cacheEpoch: number;
+	/** The person it belongs to: its maker, or the person whose key made it. Its builds use the shared hosts they may. */
+	readonly ownerUserId: string;
+	readonly createdAt: number;
+	readonly updatedAt: number;
+	readonly createdBy: computeSchema.Sandbox["createdBy"];
+	/**
+	 * When its retirement (its deletion, or its account's) began: from then it is gone to every caller and every build,
+	 * and its record is kept, last, until its versions and cache entries have gone, so a retirement cut short is
+	 * finished by a sweep.
+	 */
+	readonly retiredAt?: number;
+}
+
+/**
+ * The key no two templates may share, an account's and a name, kept as an environment's is (`environmentNameKey`): the
+ * store refuses a write that would give a second template of the account the name (`UniqueViolation`).
+ */
+export const templateNameKey = (template: { readonly accountId: string; readonly name: string }) =>
+	JSON.stringify([template.accountId, template.name]);
+
+/** One version of a template, never changed; its ID is `<templateId>@<version>`. */
+export interface StoredTemplateVersion {
+	readonly id: string;
+	readonly templateId: string;
+	readonly version: number;
+	readonly spec: computeSchema.TemplateSpec;
+	readonly createdAt: number;
+	readonly createdBy: computeSchema.Sandbox["createdBy"];
+	/** The SQL store's mark of the one write attempt that recorded it, which tells that attempt it was its own. */
+	readonly writeId?: string;
+}
+
+/**
+ * A template snapshot (a cache entry, never a user snapshot): its wire shape, its account, and the backend's reference
+ * to its bytes once it is built.
+ */
+export type StoredTemplateSnapshot = Omit<computeSchema.TemplateSnapshot, "state"> & {
+	/**
+	 * Its wire states, and `deleting`: thrown away (`discarded` on the wire) with its bytes, at `ref` (or, its build
+	 * never having answered, under its ID on its host), not yet deleted from its host; every sweep tries again until they
+	 * are, whether its template is still there or not.
+	 */
+	readonly state: computeSchema.TemplateSnapshotState | "deleting";
+	readonly accountId: string;
+	readonly ref?: string;
+	/**
+	 * When its host had no room for its build (`exhausted`), which left it `queued` with no gateway working on it: the
+	 * first reconcile `TEMPLATE_BUILD_RETRY_MS` after claims it and tries again.
+	 */
+	readonly deferred?: number;
+	/**
+	 * Thrown away (`deleting`) while it built: when its build's lease ends (`TEMPLATE_BUILD_LEASE_MS` from `startedAt`).
+	 * Until then its bytes are left to its build, which holds them on its host and deletes them when it ends; after, its
+	 * gateway is taken to have died with it, and a sweep deletes them by its ID.
+	 */
+	readonly buildLeaseEnds?: number;
+};
+
+/** A template as `TemplateWrites.update` changes it, and the version the change makes when it makes one. */
+export interface TemplateChange {
+	readonly template: StoredTemplate;
+	/** The template's new version (`<templateId>@<version>`), present only when the change moves its version on. */
+	readonly version?: StoredTemplateVersion;
+}
+
+/**
+ * Writes of a template that record a version of it: the template and its version are written together or not at all,
+ * so no template is at a version its history lacks, and no version is recorded that its template never reached. Each
+ * throws `UniqueViolation` for a write that would give the template a name another of its account holds
+ * (`templateNameKey`).
+ */
+export interface TemplateWrites {
+	/** Inserts a new template and its first version; false, writing neither, when a template has its ID. */
+	insert(template: StoredTemplate, version: StoredTemplateVersion): Promise<boolean>;
+	/**
+	 * Changes a template as `Collection.update` does, and records the change's version in the same write when it gives
+	 * one. A version already recorded under that ID is kept as it is.
+	 */
+	update(
+		id: string,
+		change: (current: StoredTemplate) => TemplateChange | undefined,
+	): Promise<StoredTemplate | undefined>;
+}
+
+/** A base image's channel; its ID is `<image>:<channel>`. */
+export type StoredTemplateBase = computeSchema.TemplateBaseChannel & { readonly id: string };
 
 /** One entry of a sandbox's egress log, as its host reported it; the newest `MAX_EGRESS_ENTRIES` are kept per sandbox. */
 export type StoredEgressEntry = computeSchema.EgressEntry & {
@@ -440,6 +547,17 @@ export interface ComputeStore {
 	readonly bucketSources: Collection<StoredBucketSource>;
 	readonly fileUrls: Collection<StoredFileUrl>;
 	readonly settings: Collection<StoredSetting>;
+	/**
+	 * No two with one account and name (`templateNameKey`): a write that would make two throws. A write that makes a
+	 * version goes through `templateWrites`.
+	 */
+	readonly templates: Collection<StoredTemplate>;
+	readonly templateVersions: Collection<StoredTemplateVersion>;
+	/** A template and its version, written together. */
+	readonly templateWrites: TemplateWrites;
+	/** Template snapshots: a cache, apart from `snapshots`, which the template code never reads or writes. */
+	readonly templateSnapshots: Collection<StoredTemplateSnapshot>;
+	readonly templateBases: Collection<StoredTemplateBase>;
 }
 
 /**
@@ -452,11 +570,23 @@ export function matches<T>(record: T, where: Partial<T> | undefined): boolean {
 	return Object.entries(where).every(([key, value]) => value === undefined || fields[key] === value);
 }
 
+/** A memory collection, its records and its unique-key check: for writes over two collections at once. */
+interface MemoryTable<T extends { readonly id: string }> {
+	readonly collection: Collection<T>;
+	readonly records: Map<string, T>;
+	/** Throws `UniqueViolation` when `record` would share its unique key with another record. */
+	check(record: T): void;
+}
+
 /**
  * A collection in a `Map`, copying records in and out. With `unique`, no two records may share its key: a write that
  * would make two throws `UniqueViolation`, as the SQL store's unique index does.
  */
 export function memoryCollection<T extends { readonly id: string }>(unique?: (record: T) => string): Collection<T> {
+	return memoryTable(unique).collection;
+}
+
+function memoryTable<T extends { readonly id: string }>(unique?: (record: T) => string): MemoryTable<T> {
 	const records = new Map<string, T>();
 	const check = (record: T) => {
 		if (unique === undefined) return;
@@ -465,7 +595,7 @@ export function memoryCollection<T extends { readonly id: string }>(unique?: (re
 			if (other.id !== record.id && unique(other) === key) throw new UniqueViolation("compute");
 		}
 	};
-	return {
+	const collection: Collection<T> = {
 		async get(id) {
 			const record = records.get(id);
 			return record === undefined ? undefined : structuredClone(record);
@@ -501,10 +631,44 @@ export function memoryCollection<T extends { readonly id: string }>(unique?: (re
 			return [...records.values()].filter((record) => matches(record, where)).map((record) => structuredClone(record));
 		},
 	};
+	return { collection, records, check };
+}
+
+/** `TemplateWrites` over memory tables: each write is made in one turn, so nothing reads half of it. */
+function memoryTemplateWrites(
+	templates: MemoryTable<StoredTemplate>,
+	versions: MemoryTable<StoredTemplateVersion>,
+): TemplateWrites {
+	const record = (version: StoredTemplateVersion | undefined) => {
+		if (version !== undefined && !versions.records.has(version.id)) {
+			versions.records.set(version.id, structuredClone(version));
+		}
+	};
+	return {
+		async insert(template, version) {
+			if (templates.records.has(template.id)) return false;
+			templates.check(template);
+			templates.records.set(template.id, structuredClone(template));
+			record(version);
+			return true;
+		},
+		async update(id, change) {
+			const current = templates.records.get(id);
+			if (current === undefined) return undefined;
+			const next = change(structuredClone(current));
+			if (next === undefined) return undefined;
+			templates.check(next.template);
+			templates.records.set(id, structuredClone(next.template));
+			record(next.version);
+			return structuredClone(next.template);
+		},
+	};
 }
 
 /** A `ComputeStore` in memory. */
 export function createMemoryStore(): ComputeStore {
+	const templates = memoryTable<StoredTemplate>(templateNameKey);
+	const templateVersions = memoryTable<StoredTemplateVersion>();
 	return {
 		users: memoryCollection(),
 		accounts: memoryCollection(),
@@ -530,6 +694,11 @@ export function createMemoryStore(): ComputeStore {
 		bucketSources: memoryCollection(),
 		fileUrls: memoryCollection(),
 		settings: memoryCollection(),
+		templates: templates.collection,
+		templateVersions: templateVersions.collection,
+		templateWrites: memoryTemplateWrites(templates, templateVersions),
+		templateSnapshots: memoryCollection(),
+		templateBases: memoryCollection(),
 	};
 }
 

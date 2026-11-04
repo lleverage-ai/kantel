@@ -47,6 +47,7 @@ function setup(
 		accountHosts?: boolean;
 		backend?: SandboxBackend;
 		baseImages?: Parameters<typeof createComputeApi>[0]["baseImages"];
+		templates?: boolean;
 	} = {},
 ) {
 	const { backend = createStubBackend(), ...rest } = options;
@@ -507,6 +508,29 @@ describe("sandboxes", () => {
 		expect(await source.sandboxes.get(isolate.id)).toMatchObject({ resources: { vcpus: 0, memoryGb: 0.375 } });
 	});
 
+	it("sends no resources for a template's microVM whose sliders weren't moved, so the template's own apply", async () => {
+		const { fetchApi } = setup();
+		const sent: Record<string, unknown>[] = [];
+		const recording: typeof fetch = async (input, init) => {
+			const request = new Request(new URL(String(input instanceof Request ? input.url : input), ORIGIN), init);
+			if (request.method === "POST" && new URL(request.url).pathname.endsWith("/sandboxes")) {
+				sent.push((await request.clone().json()) as Record<string, unknown>);
+			}
+			return fetchApi(request);
+		};
+		const source = await open(recording);
+		const accountId = await personalAccount(source);
+		// The stub deployment has no such template: only what was sent matters here.
+		await source.sandboxes.create({ accountId, kind: "microvm", templateId: "tpl_any" }).catch(() => undefined);
+		await source.sandboxes
+			.create({ accountId, kind: "microvm", shape: { vcpus: 4, memoryMb: 8192 }, templateId: "tpl_any" })
+			.catch(() => undefined);
+		expect(sent).toHaveLength(2);
+		expect(sent[0]).toMatchObject({ type: "microvm", template: "tpl_any" });
+		expect(sent[0]).not.toHaveProperty("resources");
+		expect(sent[1]).toMatchObject({ type: "microvm", template: "tpl_any", resources: { vcpus: 4, memoryMb: 8192 } });
+	});
+
 	it("reads one for its page, sets its auto-stop, and reads its live files and a failed command's output", async () => {
 		const { api, fetchApi } = setup();
 		const source = await open(fetchApi);
@@ -585,6 +609,54 @@ describe("sandboxes", () => {
 		const away = await files.list(made.id, "workspace").catch((error: unknown) => error);
 		expect(away).toBeInstanceOf(Error);
 		expect(away).not.toBeInstanceOf(FilesRefusedError);
+	});
+});
+
+describe("templates", () => {
+	it("changes a description alone without a new version, and makes the next one only for a changed spec", async () => {
+		const { api, fetchApi } = setup({ templates: true });
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const templates = source.templates;
+		if (templates === undefined) throw new Error("Templates aren't offered.");
+		const spec = {
+			image: { kind: "kantel-base" },
+			base: { image: "kantel/sandbox", channel: "stable" },
+			vcpus: 2,
+			memoryMb: 4096,
+			env: { APP_MODE: "one" },
+			grants: [],
+		} as const;
+		const made = await templates.create({ accountId, name: "web", spec });
+		await api.service.idle();
+
+		const described = await templates.update(made.id, { description: "The web app" });
+		expect(described).toMatchObject({ version: 1, name: "web", description: "The web app" });
+		expect(await templates.versions(made.id)).toHaveLength(1);
+		const cleared = await templates.update(made.id, { description: "" });
+		expect(cleared.description).toBeUndefined();
+
+		const changed = await templates.update(made.id, { spec: { ...spec, env: { APP_MODE: "two" } } });
+		expect(changed).toMatchObject({ version: 2, name: "web", spec: { env: { APP_MODE: "two" } } });
+		expect((await templates.versions(made.id)).map((entry) => entry.version)).toEqual([2, 1]);
+		await api.service.idle();
+	});
+
+	it("lists the base channels the deployment publishes, with the digests each has published", async () => {
+		const { api, fetchApi } = setup({ templates: true });
+		const source = await open(fetchApi);
+		const templates = source.templates;
+		if (templates === undefined) throw new Error("Templates aren't offered.");
+		expect(await templates.bases()).toEqual([]);
+		const first = `sha256:${"1".repeat(64)}`;
+		const second = `sha256:${"2".repeat(64)}`;
+		await api.service.publishTemplateBase({ image: "kantel/sandbox", channel: "stable", digest: first });
+		await api.service.publishTemplateBase({ image: "kantel/sandbox", channel: "stable", digest: second });
+		const [stable, ...others] = await templates.bases();
+		expect(others).toEqual([]);
+		expect(stable).toMatchObject({ image: "kantel/sandbox", channel: "stable", digest: second });
+		expect(stable?.history.map((release) => release.digest)).toEqual([second, first]);
+		await api.service.idle();
 	});
 });
 

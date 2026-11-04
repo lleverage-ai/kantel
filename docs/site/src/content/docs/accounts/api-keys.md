@@ -38,7 +38,7 @@ A self-hosted install makes the first key itself, with every scope, when you [tu
 | `sandboxes:read` | Listing and reading sandboxes, their usage and their events |
 | `sandboxes:write` | Creating, changing, starting, stopping, pausing, resuming, forking and recovering sandboxes |
 | `sandboxes:delete` | Deleting sandboxes for good |
-| `exec` | Running, reading and killing commands |
+| `exec` | Running, reading and killing commands, and making a sandbox that runs them with the variables you give it: one whose environment clones repositories, or whose template has setup |
 | `files` | Reading, writing, listing and deleting files |
 | `access` | SSH, the desktop, the browser and public ports |
 | `snapshots:read` | Listing snapshots and reading their files |

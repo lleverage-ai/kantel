@@ -1,7 +1,9 @@
 // The compute plane's routes: each is in the v1 routes and the document, says it is experimental, and names the scope a
-// key needs (or who may call it), and the scope presets only name real scopes.
+// key needs (or who may call it), and the scope presets only name real scopes. A template's spec names Kantel's base
+// image only, never a Dockerfile, an image reference or a registry.
+import Value from "typebox/value";
 import { describe, expect, it } from "vitest";
-import { API_KEY_PRESETS, API_KEY_SCOPES } from "../src/compute-schema.ts";
+import { API_KEY_PRESETS, API_KEY_SCOPES, PublishTemplateBaseBody, TemplateSpec } from "../src/compute-schema.ts";
 import { computeRoutes, routes } from "../src/index.ts";
 
 const PEOPLE_OR_ANY = new Set([
@@ -13,6 +15,7 @@ const PEOPLE_OR_ANY = new Set([
 	"pollDeviceLogin",
 	"getDeviceLogin",
 	"denyDeviceLogin",
+	"listTemplateBases",
 ]);
 
 describe("compute routes", () => {
@@ -52,5 +55,29 @@ describe("compute routes", () => {
 			for (const scope of scopes) expect(API_KEY_SCOPES).toContain(scope);
 			expect(scopes).not.toContain("hosts:admin");
 		}
+	});
+});
+
+describe("a template's spec", () => {
+	const digest = `sha256:${"1".repeat(64)}`;
+
+	it("takes Kantel's base image, or no image at all", () => {
+		expect(Value.Check(TemplateSpec, {})).toBe(true);
+		expect(Value.Check(TemplateSpec, { image: { kind: "kantel-base" } })).toBe(true);
+		expect(Value.Check(TemplateSpec, { image: { kind: "dockerfile", dockerfile: "FROM alpine\n" } })).toBe(false);
+		expect(Value.Check(TemplateSpec, { image: { kind: "image", ref: "ghcr.io/acme/agent:1" } })).toBe(false);
+	});
+
+	it("names a base image by its repository path alone, with no registry port, tag or digest", () => {
+		for (const image of ["kantel/sandbox", "kantel/sandbox-gpu", "acme/tools/base", "sandbox"]) {
+			expect(Value.Check(TemplateSpec, { base: { image, channel: "stable" } }), image).toBe(true);
+			expect(Value.Check(TemplateSpec, { base: { image, digest } }), image).toBe(true);
+			expect(Value.Check(PublishTemplateBaseBody, { image, channel: "stable", digest }), image).toBe(true);
+		}
+		for (const image of ["registry.example.com:5000/acme/base", "kantel/sandbox:latest", `kantel/sandbox@${digest}`]) {
+			expect(Value.Check(TemplateSpec, { base: { image, channel: "stable" } }), image).toBe(false);
+			expect(Value.Check(PublishTemplateBaseBody, { image, channel: "stable", digest }), image).toBe(false);
+		}
+		expect(Value.Check(TemplateSpec, { base: { image: "kantel/sandbox", digest: "sha256:feed" } })).toBe(false);
 	});
 });

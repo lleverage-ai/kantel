@@ -151,16 +151,17 @@ func e2eRefusal(space string) error {
 // gatewayMayCall refuses a call from the control plane that would reach the content of a sandbox in an E2E space.
 func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 	var p struct {
-		SandboxID         string            `json:"sandboxId"`
-		NewID             string            `json:"newId"`
-		SnapshotID        string            `json:"snapshotId"`
-		Port              int               `json:"port"`
-		From              string            `json:"from"`
-		Owner             string            `json:"owner"`
-		Tier              string            `json:"tier"`
-		Env               map[string]string `json:"env"`
-		SSHAuthorizedKeys []string          `json:"sshAuthorizedKeys"`
-		Egress            *proto.Egress     `json:"egress"`
+		SandboxID         string              `json:"sandboxId"`
+		NewID             string              `json:"newId"`
+		SnapshotID        string              `json:"snapshotId"`
+		Port              int                 `json:"port"`
+		From              string              `json:"from"`
+		Owner             string              `json:"owner"`
+		Tier              string              `json:"tier"`
+		Env               map[string]string   `json:"env"`
+		SSHAuthorizedKeys []string            `json:"sshAuthorizedKeys"`
+		Egress            *proto.Egress       `json:"egress"`
+		Template          *proto.TemplateBoot `json:"template"`
 	}
 	_ = json.Unmarshal(params, &p)
 	// A create or fork reads its space's E2E epoch once, before any check (egress included): if E2E comes on while the
@@ -242,6 +243,10 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 		// exported function such as BASH_FUNC_cat%% (or LD_PRELOAD, BASH_ENV) would run in every command a device runs.
 		if h.e2eMode(p.Owner) != e2e.ModeOff && (len(p.Env) > 0 || len(p.SSHAuthorizedKeys) > 0) {
 			return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("%s is end-to-end encrypted: its sandboxes take no environment variables or SSH keys from the gateway", p.Owner)}
+		}
+		// Nor a template: its image and setup are the gateway's, and would run in every command a device runs.
+		if h.e2eMode(p.Owner) != e2e.ModeOff && p.Template != nil {
+			return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("%s is end-to-end encrypted: its sandboxes aren't made from templates", p.Owner)}
 		}
 		if p.From != "" {
 			// A sandbox made from an E2E sandbox's snapshot stays in that space, or its content would be plaintext; and the

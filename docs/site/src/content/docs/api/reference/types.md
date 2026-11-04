@@ -97,7 +97,7 @@ One of: `"read-only"` or `"agent"` or `"ci"` or `"admin"`.
 
 ### ApiKeyScope
 
-What a key may do. `sandboxes:read`: list and inspect sandboxes, their usage and events. `sandboxes:write`: create, change, start, stop, pause, resume, fork and recover. `sandboxes:delete`: delete for good. `exec`: run commands. `files`: read and write files. `access`: SSH, desktop, browser and public ports. `snapshots:read`, `snapshots:write`: snapshots and saved snapshots. `account:read`: the account, its members, keys, environments and sandboxes' egress. `account:admin`: members, keys, webhooks, telemetry, the proxy, environments and sandboxes' grants. `hosts:admin`: the deployment's hosts, for a super-admin's key only.
+What a key may do. `sandboxes:read`: list and inspect sandboxes, their usage and events. `sandboxes:write`: create, change, start, stop, pause, resume, fork and recover. `sandboxes:delete`: delete for good. `exec`: run commands. `files`: read and write files. `access`: SSH, desktop, browser and public ports. `snapshots:read`, `snapshots:write`: snapshots and saved snapshots. `account:read`: the account, its members, keys, environments, templates and sandboxes' egress. `account:admin`: members, keys, webhooks, telemetry, the proxy, environments, templates and sandboxes' grants. `hosts:admin`: the deployment's hosts and template bases, for a super-admin's key only.
 
 One of: `"sandboxes:read"` or `"sandboxes:write"` or `"sandboxes:delete"` or `"exec"` or `"files"` or `"access"` or `"snapshots:read"` or `"snapshots:write"` or `"account:read"` or `"account:admin"` or `"hosts:admin"`.
 
@@ -464,9 +464,19 @@ Every field is optional: `{}` makes a running isolate in the caller's account.
 | `labels` | Record&lt;string, string&gt; | no |  |
 | `env` | Record&lt;string, string&gt; | no | Environment variables every command sees, after the environment's. Not secrets: they are shown to anyone who may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused. |
 | `environment` | string | no | Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables. |
+| `template` | string | no | Make a microVM from this template, a template's ID or name in the account (experimental, `KANTEL_TEMPLATES`): from its newest built snapshot when one is ready, else by booting its image and running its setup. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with `size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it fresh whatever its snapshot, running the setup with the sandbox's variables. |
 | `hostLabels` | Record&lt;string, string&gt; | no | Place it only on a host with each label, such as `{ site: "home" }`. |
 | `mounts` | [Mount](/api/reference/types/#mount)[] | no | Files from outside the sandbox, read-only inside it: at most 16, at paths that don't overlap. A bundle or bucket source it names must be the account's. microVMs only: an isolate is refused (`not_supported`). A host that can't mount a source marks that mount `failed`, and the sandbox runs without it. A fork keeps its source's mounts. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). (at most 16 items) |
 | `wait` | boolean | no | Answer once it is `running` (or `error`) rather than as soon as it is placed. |
+
+### CreateTemplateBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
+| `name` | string | yes | Unique in the account: lower-case letters, digits and dashes, at most 63. |
+| `description` | string | no |  (at most 500 characters) |
+| `spec` | [TemplateSpec](/api/reference/types/#templatespec) | yes |  |
 
 ### CreateWebhookBody
 
@@ -1106,6 +1116,14 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `deploymentUrl` | string | yes | The deployment's own, which `publicUrl` goes back to when cleared. |
 | `loopback` | boolean | yes | `publicUrl` is a loopback address (`127.0.0.1`, `localhost`): only a host on the same machine can join. |
 
+### PublishTemplateBaseBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `image` | string | yes | The base image, such as `kantel/sandbox`. (at most 255 characters) |
+| `channel` | string | yes | A channel, such as `stable`. |
+| `digest` | string | yes | The digest the channel publishes from now. |
+
 ### PutEgressGrantsBody
 
 | Field | Type | Required | Description |
@@ -1183,6 +1201,7 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `latestSnapshotId` | string | no | The snapshot a resume or fork would use. |
 | `source` | [SandboxSource](/api/reference/types/#sandboxsource) | no |  |
 | `environmentId` | string | no | The environment it was made from. |
+| `template` | [SandboxTemplate](/api/reference/types/#sandboxtemplate) | no |  |
 | `grants` | [EgressGrant](/api/reference/types/#egressgrant)[] | yes | Its own egress grants, on top of its environment's. |
 | `mounts` | [SandboxMount](/api/reference/types/#sandboxmount)[] | no | Its read-only mounts, as its create named them, each with its status. Absent: none. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). |
 | `createdBy` | [CreatedBy](/api/reference/types/#createdby) | yes |  |
@@ -1354,6 +1373,18 @@ What it was made from.
 
 One of: `"starting"` or `"running"` or `"stopping"` or `"stopped"` or `"paused"` or `"error"` or `"deleting"` or `"deleted"`.
 
+### SandboxTemplate
+
+The template a sandbox was made from.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The template's ID, `tpl_…`. |
+| `name` | string | yes |  |
+| `version` | integer | yes | The template's version it was made from. |
+| `snapshotId` | string | no | The template snapshot it started from, `tsn_…`; absent for a fresh boot. |
+| `start` | `"snapshot"` or `"boot"` | yes | `snapshot`: it started from the template's built snapshot. `boot`: none was ready, so it booted the template's image and ran its setup itself. |
+
 ### SandboxType
 
 `isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH.
@@ -1478,6 +1509,8 @@ What an hour costs, per vCPU and GB; absent where it is free.
 | `state` | [SnapshotState](/api/reference/types/#snapshotstate) | yes |  |
 | `trigger` | `"periodic"` or `"stop"` or `"manual"` or `"save"` | no | What took it. |
 | `memory` | boolean | yes | Whether it holds the sandbox's memory as well as its disk (a pause). |
+| `size` | [SandboxSizeName](/api/reference/types/#sandboxsizename) | no |  |
+| `resources` | [SandboxResources](/api/reference/types/#sandboxresources) | no |  |
 | `sizeBytes` | integer | no |  |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 | `expiresAt` | integer | no | Epoch milliseconds, UTC. |
@@ -1578,6 +1611,216 @@ What the collector answered to an empty export sent on save.
 | `status` | integer | no |  |
 | `error` | string | no |  |
 
+### Template
+
+A microVM profile: image, base, resources, variables, setup and egress, versioned.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The template's ID, such as `tpl_4kq9x2mt`. |
+| `accountId` | string | yes |  |
+| `name` | string | yes |  |
+| `description` | string | no |  |
+| `version` | integer | yes | Its current version; a new spec makes the next. |
+| `spec` | [TemplateSpec](/api/reference/types/#templatespec) | yes |  |
+| `build` | [TemplateBuildStatus](/api/reference/types/#templatebuildstatus) | yes |  |
+| `sandboxCount` | integer | yes | How many sandboxes were made from it and still exist. |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
+| `createdBy` | [CreatedBy](/api/reference/types/#createdby) | yes |  |
+
+### TemplateBase
+
+The Kantel base image it boots: a channel the deployment publishes (`/v1/template-bases`), or a digest one published. Default: `kantel/sandbox`'s `stable` channel; until that channel publishes a digest, each host's own sandbox image.
+
+One of: [TemplateBaseChannelRef](/api/reference/types/#templatebasechannelref) or [TemplateBasePinned](/api/reference/types/#templatebasepinned).
+
+### TemplateBaseChannel
+
+A base image's channel and the digests it has published.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `image` | string | yes |  |
+| `channel` | string | yes |  |
+| `digest` | string | yes | The digest it publishes now. |
+| `publishedAt` | integer | yes | Epoch milliseconds, UTC. |
+| `history` | [TemplateBaseRelease](/api/reference/types/#templatebaserelease)[] | yes | Every digest it has published, newest first. |
+
+### TemplateBaseChannelRef
+
+Follow a channel: rebuilt when it publishes a new digest.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `image` | string | yes | The base image, such as `kantel/sandbox`. (at most 255 characters) |
+| `channel` | string | yes | A channel, such as `stable`. |
+
+### TemplateBaseList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [TemplateBaseChannel](/api/reference/types/#templatebasechannel)[] | yes |  |
+
+### TemplateBasePinned
+
+Pin an exact digest, one its channels published: never rebuilt for a new release.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `image` | string | yes | The base image, such as `kantel/sandbox`. (at most 255 characters) |
+| `digest` | string | yes | The digest pinned. |
+
+### TemplateBaseRelease
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `digest` | string | yes |  |
+| `publishedAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### TemplateBehind
+
+How far a pinned base is behind its channel.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `releases` | integer | yes | How many digests the base's channel has published since the pinned one. |
+| `since` | integer | yes | Epoch milliseconds, UTC. |
+| `latestDigest` | string | yes |  |
+
+### TemplateBuildStatus
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `state` | `"none"` or `"building"` or `"ready"` or `"stale"` or `"failed"` | yes | `none`: nothing built yet; sandboxes boot fresh. `stale`: what is built is for an older key, and used until its replacement is ready if it is of the template's current version. A `ready` snapshot of an older version starts no sandbox: they boot fresh until the current version's is ready. |
+| `ready` | [TemplateSnapshot](/api/reference/types/#templatesnapshot) | no |  |
+| `building` | [TemplateSnapshot](/api/reference/types/#templatesnapshot) | no |  |
+| `error` | string | no |  |
+| `behind` | [TemplateBehind](/api/reference/types/#templatebehind) | no |  |
+
+### TemplateBuiltFrom
+
+What a template snapshot was built from.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `baseImage` | string | yes |  |
+| `channel` | string | no | The channel it followed; absent when pinned. |
+| `baseDigest` | string | yes | Empty while the channel has no published digest. |
+| `pinned` | boolean | yes |  |
+| `imageDigest` | string | no | The digest of the image its host booted, as the host reported it. |
+| `kernel` | string | yes |  |
+| `firecracker` | string | yes |  |
+
+### TemplateCacheKey
+
+What a template snapshot is for: a change to any part builds another. A create starts from it only when it gets the same vCPUs and memory.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `templateVersion` | string | yes | `<templateId>@<version>`. |
+| `baseDigest` | string | yes |  |
+| `kernel` | string | yes |  |
+| `firecracker` | string | yes |  |
+| `vcpus` | integer | yes |  |
+| `memoryMb` | integer | yes | With `vcpus`, the machine it was built as: the template's resources, which a fresh boot from it gets too. |
+
+### TemplateImage
+
+What a template's machines boot. Only `kantel-base` for now: Kantel's base image, customised by the setup script, which runs in the VM behind the template's egress grants. Default: `kantel-base`.
+
+One of: [TemplateKantelBaseImage](/api/reference/types/#templatekantelbaseimage).
+
+### TemplateKantelBaseImage
+
+The template's `base` itself, as its deployment publishes it; the setup script adds the rest.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"kantel-base"` | yes |  |
+
+### TemplateList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [Template](/api/reference/types/#template)[] | yes |  |
+
+### TemplateNetwork
+
+Egress grants for its sandboxes and for its build's boot.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `grants` | [EgressGrantInput](/api/reference/types/#egressgrantinput)[] | yes |  (at most 200 items) |
+
+### TemplateResources
+
+Its sandboxes' and its builds' vCPUs and memory, exactly, unless a create names a size; a deployment must offer a size with at least them. Default 2 vCPUs and 4096 MB.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `vcpus` | integer | yes |  (minimum 1, maximum 64) |
+| `memoryMb` | integer | yes |  (minimum 128, maximum 262144) |
+
+### TemplateSnapshot
+
+A built template: its image booted once, its setup run, then snapshotted. A cache entry Kantel throws away and rebuilds at will, never one of the account's snapshots.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The template snapshot's ID, `tsn_…`. |
+| `templateId` | string | yes |  |
+| `version` | integer | yes |  |
+| `key` | [TemplateCacheKey](/api/reference/types/#templatecachekey) | yes |  |
+| `keyHash` | string | yes | The SHA-256 hex of the key's canonical JSON. |
+| `state` | [TemplateSnapshotState](/api/reference/types/#templatesnapshotstate) | yes |  |
+| `hostId` | string | no | The host it was built on, which holds it. |
+| `builtFrom` | [TemplateBuiltFrom](/api/reference/types/#templatebuiltfrom) | yes |  |
+| `startedAt` | integer | yes | Epoch milliseconds, UTC. |
+| `readyAt` | integer | no | Epoch milliseconds, UTC. |
+| `error` | string | no | Why the build failed. |
+| `sizeBytes` | integer | no |  |
+
+### TemplateSnapshotList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [TemplateSnapshot](/api/reference/types/#templatesnapshot)[] | yes | Newest first. |
+
+### TemplateSnapshotState
+
+`stale`: built for a key no longer wanted, and used while its replacement builds only if it is of the template's current version. `failed`: not tried again until its key changes or the template is rebuilt. `discarded`: thrown away.
+
+One of: `"queued"` or `"building"` or `"ready"` or `"stale"` or `"failed"` or `"discarded"`.
+
+### TemplateSpec
+
+A template version's definition, never changed once made. Answered with every default filled in.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `image` | [TemplateImage](/api/reference/types/#templateimage) | no |  |
+| `base` | [TemplateBase](/api/reference/types/#templatebase) | no |  |
+| `resources` | [TemplateResources](/api/reference/types/#templateresources) | no |  |
+| `env` | Record&lt;string, string&gt; | no | Plain variables, not secrets: under the environment's and the create's own. |
+| `setup` | string | no | A shell script run once, as root, when the snapshot is built (or at a fresh boot). (at most 65536 characters) |
+| `network` | [TemplateNetwork](/api/reference/types/#templatenetwork) | no |  |
+
+### TemplateVersion
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `version` | integer | yes |  |
+| `spec` | [TemplateSpec](/api/reference/types/#templatespec) | yes |  |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+| `createdBy` | [CreatedBy](/api/reference/types/#createdby) | yes |  |
+
+### TemplateVersionList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [TemplateVersion](/api/reference/types/#templateversion)[] | yes | Newest first. |
+
 ### UpdateAccountBody
 
 | Field | Type | Required | Description |
@@ -1615,6 +1858,16 @@ What the collector answered to an empty export sent on save.
 | `extendMinutes` | integer | no | Move `stopsAt` to this long from now. (minimum 1, maximum 43200) |
 | `visibility` | [SandboxVisibility](/api/reference/types/#sandboxvisibility) | no |  |
 | `labels` | Record&lt;string, string&gt; | no | Replaces its labels. |
+
+### UpdateTemplateBody
+
+A `spec` that differs from the current one makes a new version.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | no |  |
+| `description` | string | no | Empty clears it. (at most 500 characters) |
+| `spec` | [TemplateSpec](/api/reference/types/#templatespec) | no |  |
 
 ### UpdateWebhookBody
 

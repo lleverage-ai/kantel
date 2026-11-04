@@ -90,6 +90,22 @@ func (m *Manager) baseRootfs() string {
 	return p
 }
 
+// pinRootfs is the file a new reference to rootfs links: for Rootfs itself (the host's image), the version it resolves
+// to now (baseRootfs), so a later update doesn't move it; any other root filesystem (a version's file already, or a
+// template's pulled base) as it is. Called with the base lock held.
+func (m *Manager) pinRootfs(rootfs string) string {
+	if rootfs == m.cfg.Rootfs {
+		return m.baseRootfs()
+	}
+	return rootfs
+}
+
+// pulledRootfs says whether rootfs is a template's pulled base's root filesystem (images/templates/<key>.ext4,
+// rootfs.go) rather than the host's image, whatever version of it: no host image version, and never rebased.
+func (m *Manager) pulledRootfs(rootfs string) bool {
+	return rootfs != "" && filepath.Dir(filepath.Clean(rootfs)) == filepath.Join(m.cfg.Root, "images", "templates")
+}
+
 // linkRootfs gives a VM directory its root filesystem: a link to target (Rootfs when empty).
 func (m *Manager) linkRootfs(vm, target string) error {
 	if target == "" {
@@ -139,8 +155,8 @@ func baseAtOf(vm string) int64 {
 	return info.ModTime().UnixMilli()
 }
 
-// templateRootfs is the root filesystem a template was made on (Rootfs for one from before it was recorded).
-func (m *Manager) templateRootfs(dir string) string {
+// sizeTemplateRootfs is the root filesystem a size's template was made on (Rootfs for one from before it was recorded).
+func (m *Manager) sizeTemplateRootfs(dir string) string {
 	if raw, err := os.ReadFile(filepath.Join(dir, "rootfs")); err == nil {
 		if p := strings.TrimSpace(string(raw)); p != "" {
 			return p
@@ -157,15 +173,6 @@ func (m *Manager) snapshotRootfs(snap snapshotMeta) string {
 	return m.cfg.Rootfs
 }
 
-// snapshotLower is the image a snapshot's files are looked up in below its own disk.
-func (m *Manager) snapshotLower(id string) string {
-	snap, err := m.readSnapshot(id)
-	if err != nil {
-		return m.cfg.Rootfs
-	}
-	return m.snapshotRootfs(snap)
-}
-
 // gone is whether a reference read failed only because it isn't there (deleted, or not yet written), rather than
 // because it couldn't be read: a walk of what is in use may pass over the first, never the second.
 func gone(err error) bool {
@@ -176,8 +183,12 @@ func gone(err error) bool {
 // vmRootfsChecked is vmRootfs for a walk of what is in use: "" for a VM directory with no root filesystem link (gone,
 // or one that isn't a link, which names no version), an error for one that
 // couldn't be read.
-func vmRootfsChecked(vm string) (string, error) {
-	target, err := os.Readlink(filepath.Join(vm, fc.RootfsFile))
+func vmRootfsChecked(vm string) (string, error) { return linkChecked(filepath.Join(vm, fc.RootfsFile)) }
+
+// linkChecked is what the link at p names, for a walk of what is in use: "" when there is none (gone, or not a link),
+// an error when it couldn't be read.
+func linkChecked(p string) (string, error) {
+	target, err := os.Readlink(p)
 	if err == nil {
 		return target, nil
 	}
@@ -239,7 +250,7 @@ func scanSnapshotsIn(tierRoot string) ([]snapshotMeta, error) {
 	return out, errors.Join(errs...)
 }
 
-// BasesInUse are the image versions the tier's sandboxes, snapshots and templates are on: what a
+// BasesInUse are the image versions the tier's sandboxes, snapshots, templates and template snapshots are on: what a
 // prune of old versions must keep. A reference it couldn't read is an error, and the caller keeps every version: a
 // partial answer would let a prune remove a version something still boots on.
 func (m *Manager) BasesInUse() (map[string]bool, error) { return BasesUnder(m.cfg.Root) }
@@ -288,6 +299,20 @@ func BasesUnder(root string) (map[string]bool, error) {
 			errs = append(errs, fmt.Errorf("%s: %w", dir, err))
 		}
 		// One being built (<size>.building, <size>.next.building) links its images from its VM directory.
+		addVM(filepath.Join(dir, "vm"))
+	}
+	// A template snapshot (templates.go) of the host's image is on the version its build booted: its rootfs link says
+	// which, from its build's directory (<id>.building, whose VM directory links it too) on.
+	templateSnapshots, err := entriesOf(filepath.Join(root, templateSnapshotsDir))
+	if err != nil {
+		errs = append(errs, err)
+	}
+	for _, dir := range templateSnapshots {
+		target, err := linkChecked(filepath.Join(dir, templateRootfsLink))
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", dir, err))
+		}
+		add(target)
 		addVM(filepath.Join(dir, "vm"))
 	}
 	return in, errors.Join(errs...)
@@ -368,7 +393,7 @@ func (m *Manager) pinBasesLocked() error {
 			errs = append(errs, fmt.Errorf("%s: %w", dir, err))
 			continue
 		}
-		if m.templateRootfs(dir) == m.cfg.Rootfs {
+		if m.sizeTemplateRootfs(dir) == m.cfg.Rootfs {
 			if err := fsutil.WriteFileDurably(filepath.Join(dir, "rootfs"), []byte(base), 0o600); err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", dir, err))
 			}
@@ -406,11 +431,15 @@ func (m *Manager) rebase(s *sandbox, to string) error {
 	if have := images.VersionOf(base); to != "" && have != to {
 		return images.NotCurrent(have, to)
 	}
+	if err := m.rebaseable(s); err != nil {
+		return err
+	}
 	if vmRootfs(vm) == base {
 		return nil
 	}
-	if s.meta.Memory {
-		s.meta.Memory = false
+	// A template's report was of the image it was built on: on the new one, its version's is the sandbox's (guestOf).
+	if s.meta.Memory || s.meta.Guest != nil {
+		s.meta.Memory, s.meta.Guest = false, nil
 		if err := m.writeMeta(s); err != nil {
 			return err
 		}
@@ -420,6 +449,27 @@ func (m *Manager) rebase(s *sandbox, to string) error {
 	}
 	m.log.Info("sandbox moved onto the current images", "sandbox", s.meta.ID, "base", images.VersionOf(base))
 	return nil
+}
+
+// rebaseable refuses a rebase of a sandbox on a template's pulled base (pulledRootfs): the host's images aren't its
+// image, and its disk was made over that base. Called with s.mu held.
+func (m *Manager) rebaseable(s *sandbox) error {
+	if s.meta.Rootfs != "" || m.pulledRootfs(vmRootfs(s.vmDir())) {
+		return conflict("sandbox %s is on its template's own base image, not the host's images: it isn't moved onto them", s.meta.ID)
+	}
+	return nil
+}
+
+// CanRebase says whether a rebase may move the sandbox onto the host's images (rebaseable): asked before a restart on
+// latest stops it.
+func (m *Manager) CanRebase(sandboxID string) error {
+	s, err := m.get(sandboxID)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return m.rebaseable(s)
 }
 
 // rebaseTarget refuses a rebase the caller expects to land on to ("": any) when the host's current images are another

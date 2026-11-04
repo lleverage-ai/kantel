@@ -252,6 +252,27 @@ describe("deploy config", () => {
 		);
 	});
 
+	it("passes the templates switch on as it is, refusing anything but experimental or off", () => {
+		const vars = (env: Record<string, string>) =>
+			deployConfig(rawConfig, deployValues({ ...configured, ...env }, "deploy")).vars as Record<string, string>;
+		expect(vars({}).KANTEL_TEMPLATES).toBe("");
+		expect(vars({ KANTEL_TEMPLATES: "experimental" }).KANTEL_TEMPLATES).toBe("experimental");
+		expect(vars({ KANTEL_TEMPLATES: "off" }).KANTEL_TEMPLATES).toBe("off");
+		expect(() => deployValues({ ...configured, KANTEL_TEMPLATES: "on" }, "deploy")).toThrow(
+			"KANTEL_TEMPLATES must be experimental or off",
+		);
+		const runtime = (value: string) =>
+			gatewayConfig({
+				KANTEL_ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
+				KANTEL_ACCESS_AUD: "aud",
+				KANTEL_TEMPLATES: value,
+			});
+		expect(runtime("experimental").templates).toBe(true);
+		expect(runtime("").templates).toBeUndefined();
+		expect(runtime("off").templates).toBeUndefined();
+		expect(() => runtime("on")).toThrow("KANTEL_TEMPLATES");
+	});
+
 	it("routes the hostname on its parent zone, never as a custom domain", () => {
 		expect(zoneOf("harbour.myslop.app")).toBe("myslop.app");
 		expect(zoneOf("kantel.example.co.uk")).toBe("example.co.uk");

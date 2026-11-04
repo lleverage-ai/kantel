@@ -234,6 +234,15 @@ describe("the compute plane on the gateway", () => {
 		}
 	});
 
+	it("turns templates on only for KANTEL_TEMPLATES=experimental, on the stub or on hosts", () => {
+		expect(computeConfig({ KANTEL_TEMPLATES: "off" })).toEqual({});
+		expect(computeConfig({ KANTEL_TEMPLATES: "experimental" })).toEqual({ templates: true });
+		expect(
+			computeConfig({ KANTEL_TEMPLATES: "experimental", KANTEL_COMPUTE_PUBLIC_URL: "http://127.0.0.1:58090" }),
+		).toMatchObject({ templates: true, hosts: { publicUrl: "http://127.0.0.1:58090" } });
+		expect(() => computeConfig({ KANTEL_TEMPLATES: "on" })).toThrow(/KANTEL_TEMPLATES/);
+	});
+
 	it("asks hosts to update only for KANTEL_HOST_VERSION, from its GitHub Release by default", () => {
 		const env = { KANTEL_COMPUTE_BACKEND: "hosts", KANTEL_PUBLIC_URL: "https://kantel.example.com" };
 		expect(computeConfig(env)?.hosts?.desiredVersion).toBeUndefined();

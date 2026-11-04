@@ -64,6 +64,9 @@
  *                                in KANTEL_BUNDLES_DIR, which replicas over one database must share: one whose store
  *                                isn't the deployment's refuses bundles' bytes (`BundleBlobStore.mark`).
  *                                Default off: their routes answer 501 not_supported
+ *   KANTEL_TEMPLATES             `experimental` turns on templates: versioned microVM profiles whose snapshots are built
+ *                                in the background (`/v1/templates`, `/v1/template-bases`), on the stub or on hosts
+ *                                that build them. Default off: those routes answer 501 not_supported
  *
  * An account's proxy settings (PUT /v1/proxy) reach its sandboxes as they boot (create, start, resume, fork): the host's
  * egress proxy applies the allow and deny rules, and with the host's --proxy-data-path switch on passes allowed
@@ -173,6 +176,8 @@ export interface ComputeConfig {
 	readonly imagePatching?: { readonly indexUrl: string };
 	/** Mounts, bundles and signed file URLs (KANTEL_MOUNTS=experimental), on either backend. */
 	readonly mounts?: boolean;
+	/** Templates (KANTEL_TEMPLATES=experimental): versioned microVM profiles and their snapshot cache. */
+	readonly templates?: boolean;
 }
 
 /**
@@ -188,7 +193,8 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 		: {};
 	// Read whatever the backend, so a typo stops the gateway on the stub too.
 	const mounts = mountsSwitch(env[MOUNTS_SWITCH]);
-	if (backend === "stub") return { ...(mounts ? { mounts } : {}), ...patching };
+	const templates = templatesSwitch(env.KANTEL_TEMPLATES) ? { templates: true } : {};
+	if (backend === "stub") return { ...(mounts ? { mounts } : {}), ...templates, ...patching };
 	if (backend !== "hosts") throw new Error("KANTEL_COMPUTE_BACKEND is `stub` or `hosts`");
 	if (!/^https?:\/\/[^/]+\/?$/.test(publicUrl)) {
 		throw new Error(
@@ -221,6 +227,7 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 	}
 	return {
 		...(mounts ? { mounts } : {}),
+		...templates,
 		hosts: {
 			publicUrl: new URL(publicUrl).origin,
 			...(accountHosts ? { accountHosts } : {}),
@@ -254,6 +261,17 @@ export function mountsSwitch(raw: string | undefined): boolean {
 	if (value === "" || value === "off") return false;
 	if (value === "experimental") return true;
 	throw new Error(`${MOUNTS_SWITCH} is \`experimental\` or \`off\``);
+}
+
+/**
+ * KANTEL_TEMPLATES: `experimental` turns templates on; unset, empty or `off` leaves them off. Anything else is a mistake
+ * worth stopping for, as KANTEL_ACCOUNT_HOSTS's is.
+ */
+export function templatesSwitch(raw: string | undefined): boolean {
+	const value = raw?.trim().toLowerCase() ?? "";
+	if (value === "" || value === "off") return false;
+	if (value === "experimental") return true;
+	throw new Error("KANTEL_TEMPLATES is `experimental` or `off`");
 }
 
 /** The registry of hosts (`@kantel/hosts`) the `hosts` backend places sandboxes on. */
@@ -501,6 +519,8 @@ export async function gatewayCompute(options: {
 	readonly mounts?: { readonly bundlesDir?: string };
 	/** Emails an organisation's invites, with a link to join, where the deployment has mail (KANTEL_SMTP_URL). */
 	readonly invites?: InviteMailing;
+	/** Templates (KANTEL_TEMPLATES=experimental). Default off. */
+	readonly templates?: boolean;
 }): Promise<GatewayCompute> {
 	const store: ComputeStore = options.store ?? createMemoryStore();
 	const records = options.store === undefined ? "memory" : "postgres";
@@ -543,6 +563,7 @@ export async function gatewayCompute(options: {
 		...(publicUrl === undefined ? {} : { publicUrl }),
 		...(hosts?.config.joinCommand === undefined ? {} : { hostJoinCommand: hosts.config.joinCommand }),
 		...(hosts?.config.accountHosts === true ? { accountHosts: true } : {}),
+		...(options.templates === true ? { templates: true } : {}),
 		...(options.now === undefined ? {} : { now: options.now }),
 		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
 		...(baseImages === undefined ? {} : { baseImages }),

@@ -71,6 +71,10 @@ type Config struct {
 	SpoolMaxMiB int64  `json:"spoolMaxMiB,omitempty"`
 	// AutoUpdate lets the control plane move the host to the version it wants (default true).
 	AutoUpdate *bool `json:"autoUpdate,omitempty"`
+	// TemplateRegistry is the operator's registry templates' Kantel base images are pulled from, by digest, such as
+	// ghcr.io/lleverage-ai (no default). Unset, the host makes templates only from SandboxImage, and refuses a template
+	// whose base is pinned to a digest.
+	TemplateRegistry string `json:"templateRegistry,omitempty"`
 	// UsageIntervalSeconds is how often the host samples its own and its sandboxes' CPU and memory and pushes them to
 	// the control plane (a "usage" event; default 5, below 0 never).
 	UsageIntervalSeconds int `json:"usageIntervalSeconds,omitempty"`

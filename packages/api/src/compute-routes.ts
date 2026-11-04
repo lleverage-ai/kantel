@@ -1,7 +1,7 @@
 /**
  * The compute plane's routes: sandboxes (isolates and microVMs) behind one API, with their commands, files, ports,
- * desktop, browser and SSH, their snapshots, and the accounts, scoped API keys, proxy, environments, webhooks,
- * OpenTelemetry export and hosts around them. A self-hosted gateway always serves them.
+ * desktop, browser and SSH, their snapshots, and the accounts, scoped API keys, proxy, environments, templates,
+ * webhooks, OpenTelemetry export and hosts around them. A self-hosted gateway always serves them.
  *
  * Every route but a device sign-in's start and poll (`public`) takes a bearer: a scoped API key (`ksk_…`), or a person's
  * sign-in. A key acts in its own account; a person
@@ -39,6 +39,7 @@ import {
 	CreateInviteBody,
 	CreateOrganisationBody,
 	CreateSandboxBody,
+	CreateTemplateBody,
 	CreateWebhookBody,
 	DesktopAccess,
 	DeviceLogin,
@@ -83,6 +84,7 @@ import {
 	ListFilesQuery,
 	ListSandboxesQuery,
 	ListSnapshotsQuery,
+	ListTemplatesQuery,
 	Member,
 	MemberList,
 	MemberPath,
@@ -91,6 +93,7 @@ import {
 	PortPath,
 	ProxySettings,
 	PublicUrl,
+	PublishTemplateBaseBody,
 	PutEgressGrantsBody,
 	PutEnvironmentReposBody,
 	PutProxySettingsBody,
@@ -121,11 +124,19 @@ import {
 	TakeSnapshotBody,
 	TelemetryExport,
 	TelemetryTest,
+	Template,
+	TemplateBaseChannel,
+	TemplateBaseList,
+	TemplateList,
+	TemplatePath,
+	TemplateSnapshotList,
+	TemplateVersionList,
 	UpdateAccountBody,
 	UpdateEnvironmentBody,
 	UpdateHostBody,
 	UpdateMemberBody,
 	UpdateSandboxBody,
+	UpdateTemplateBody,
 	UpdateWebhookBody,
 	UploadBundleQuery,
 	UsageQuery,
@@ -141,6 +152,7 @@ import {
 import { defineRoute } from "./route.ts";
 
 const scope = (needed: string) => `A key needs \`${needed}\`.`;
+const SUPER_ADMIN = "A deployment super-admin only (a key needs `hosts:admin`).";
 const describe = (...parts: string[]) => parts.join(" ");
 const readErrors = ["invalid", "forbidden", "not_found"] as const;
 const changeErrors = ["invalid", "forbidden", "not_found", "conflict"] as const;
@@ -1461,6 +1473,180 @@ export const environmentComputeRoutes = {
 	putSandboxGrants,
 } as const;
 
+// Templates (experimental): microVM profiles, versioned, and the snapshots built from them.
+
+const TEMPLATES = "Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).";
+
+export const listTemplates = defineRoute({
+	operationId: "listTemplates",
+	method: "GET",
+	path: "/templates",
+	tag: "templates",
+	summary: "List templates",
+	description: describe(
+		"The account's templates, oldest first, each with its build. With `baseDigest`, only those built from or pinned to",
+		"that base.",
+		scope("account:read"),
+		TEMPLATES,
+	),
+	query: ListTemplatesQuery,
+	answer: { status: 200, description: "The templates.", schema: TemplateList },
+	errors: ["invalid", "forbidden", "not_supported"],
+});
+
+export const createTemplate = defineRoute({
+	operationId: "createTemplate",
+	method: "POST",
+	path: "/templates",
+	tag: "templates",
+	summary: "Create a template",
+	description: describe(
+		"A template at version 1, named uniquely in the account. Its snapshot builds in the background on each kind of",
+		"host the account may use; until one is ready, sandboxes made from it boot its image and run its setup themselves.",
+		scope("account:admin"),
+		TEMPLATES,
+	),
+	body: CreateTemplateBody,
+	answer: { status: 201, description: "The template.", schema: Template },
+	errors: ["invalid", "forbidden", "conflict", "not_supported"],
+});
+
+export const getTemplate = defineRoute({
+	operationId: "getTemplate",
+	method: "GET",
+	path: "/templates/{templateId}",
+	tag: "templates",
+	summary: "Get a template",
+	description: describe("With its build, and how far behind a pinned base is.", scope("account:read"), TEMPLATES),
+	params: TemplatePath,
+	answer: { status: 200, description: "The template.", schema: Template },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const updateTemplate = defineRoute({
+	operationId: "updateTemplate",
+	method: "PATCH",
+	path: "/templates/{templateId}",
+	tag: "templates",
+	summary: "Change a template",
+	description: describe(
+		"Renames it or changes its description; a new `spec` makes the next version, which builds in the background.",
+		"Sandboxes start only from a snapshot of the template's current version, so they boot fresh until it's ready.",
+		scope("account:admin"),
+		TEMPLATES,
+	),
+	params: TemplatePath,
+	body: UpdateTemplateBody,
+	answer: { status: 200, description: "The template.", schema: Template },
+	errors: [...changeErrors, "not_supported"],
+});
+
+export const deleteTemplate = defineRoute({
+	operationId: "deleteTemplate",
+	method: "DELETE",
+	path: "/templates/{templateId}",
+	tag: "templates",
+	summary: "Delete a template",
+	description: describe(
+		"Deletes it, its versions and its built snapshots. Sandboxes made from it keep running.",
+		scope("account:admin"),
+		TEMPLATES,
+	),
+	params: TemplatePath,
+	answer: { status: 204, description: "Deleted." },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const listTemplateVersions = defineRoute({
+	operationId: "listTemplateVersions",
+	method: "GET",
+	path: "/templates/{templateId}/versions",
+	tag: "templates",
+	summary: "List a template's versions",
+	description: describe("Newest first.", scope("account:read"), TEMPLATES),
+	params: TemplatePath,
+	answer: { status: 200, description: "Its versions.", schema: TemplateVersionList },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const listTemplateSnapshots = defineRoute({
+	operationId: "listTemplateSnapshots",
+	method: "GET",
+	path: "/templates/{templateId}/snapshots",
+	tag: "templates",
+	summary: "List a template's snapshots",
+	description: describe(
+		"Its built snapshots and builds, newest first, discarded ones included: a cache, not the account's snapshots.",
+		scope("account:read"),
+		TEMPLATES,
+	),
+	params: TemplatePath,
+	answer: { status: 200, description: "Its snapshots.", schema: TemplateSnapshotList },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const rebuildTemplate = defineRoute({
+	operationId: "rebuildTemplate",
+	method: "POST",
+	path: "/templates/{templateId}/rebuild",
+	tag: "templates",
+	summary: "Rebuild a template",
+	description: describe(
+		"Builds its snapshots again, failed ones included. A ready one is kept, stale, and sandboxes go on starting from",
+		"it until its replacement is ready, and after a rebuild that fails; with none, they boot fresh until the new ones",
+		"are ready.",
+		scope("account:admin"),
+		TEMPLATES,
+	),
+	params: TemplatePath,
+	answer: { status: 200, description: "The template, building.", schema: Template },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const listTemplateBases = defineRoute({
+	operationId: "listTemplateBases",
+	method: "GET",
+	path: "/template-bases",
+	tag: "templates",
+	summary: "List base images' channels",
+	description: describe(
+		"Every base channel templates may follow, with the digests it has published. Any signed-in caller.",
+		TEMPLATES,
+	),
+	answer: { status: 200, description: "The channels.", schema: TemplateBaseList },
+	errors: ["not_supported"],
+});
+
+export const publishTemplateBase = defineRoute({
+	operationId: "publishTemplateBase",
+	method: "POST",
+	path: "/template-bases",
+	tag: "templates",
+	summary: "Publish a base image's digest",
+	description: describe(
+		"Makes `digest` the channel's current one, made if it is new. Every template following the channel rebuilds in",
+		"the background; pinned ones don't, and say how far behind they are.",
+		SUPER_ADMIN,
+		TEMPLATES,
+	),
+	body: PublishTemplateBaseBody,
+	answer: { status: 200, description: "The channel.", schema: TemplateBaseChannel },
+	errors: ["invalid", "forbidden", "not_supported"],
+});
+
+export const templateRoutes = {
+	listTemplates,
+	createTemplate,
+	getTemplate,
+	updateTemplate,
+	deleteTemplate,
+	listTemplateVersions,
+	listTemplateSnapshots,
+	rebuildTemplate,
+	listTemplateBases,
+	publishTemplateBase,
+} as const;
+
 // Events, webhooks and telemetry.
 
 export const listEvents = defineRoute({
@@ -1633,8 +1819,6 @@ export const webhookRoutes = {
 export const telemetryRoutes = { getTelemetry, putTelemetry, deleteTelemetry } as const;
 
 // Hosts: the deployment's super-admins only. The host agent's own protocol is not part of the public API.
-
-const SUPER_ADMIN = "A deployment super-admin only (a key needs `hosts:admin`).";
 
 export const listHosts = defineRoute({
 	operationId: "listHosts",
@@ -2046,6 +2230,7 @@ export const computeRoutes = {
 	...deviceLoginRoutes,
 	...proxyRoutes,
 	...environmentComputeRoutes,
+	...templateRoutes,
 	...eventRoutes,
 	...webhookRoutes,
 	...telemetryRoutes,

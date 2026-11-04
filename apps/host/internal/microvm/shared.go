@@ -316,8 +316,9 @@ func checkVirtioMem(ctx context.Context, client *guest.Client) error {
 }
 
 // restoreParallel makes a new sandbox's disk, its network and its Firecracker process side by side, then restores the
-// snapshot into it. The link is returned when it was made, even on an error, for the caller to remove.
-func (m *Manager) restoreParallel(ctx context.Context, vm, diskPath, statePath, memPath, egress string, t timings) (*fc.Machine, *guest.Client, *network.Link, error) {
+// snapshot into it; linked, when set, runs once all three are made and before the snapshot loads. The link is
+// returned when it was made, even on an error, for the caller to remove.
+func (m *Manager) restoreParallel(ctx context.Context, vm, diskPath, statePath, memPath, egress string, t timings, linked func(network.Link) error) (*fc.Machine, *guest.Client, *network.Link, error) {
 	start := time.Now()
 	var wg sync.WaitGroup
 	var diskErr, netErr, launchErr error
@@ -353,6 +354,12 @@ func (m *Manager) restoreParallel(ctx context.Context, vm, diskPath, statePath, 
 			machine.Kill()
 		}
 		return nil, nil, made, err
+	}
+	if linked != nil {
+		if err := linked(link); err != nil {
+			machine.Kill()
+			return nil, nil, made, err
+		}
 	}
 	if err := machine.Load(ctx, statePath, memPath, link.Tap); err != nil {
 		machine.Kill()

@@ -328,7 +328,11 @@ func (m *Machine) Shutdown(ctx context.Context, grace time.Duration) {
 // PidFile is where Launch notes the process, so a VM left behind by a crashed daemon can be found.
 const PidFile = "firecracker.pid"
 
-// KillLeftover ends the Firecracker process a crashed daemon left running in dir, if there is one.
+// leftoverExit is how long KillLeftover waits for a killed process to have gone.
+const leftoverExit = 10 * time.Second
+
+// KillLeftover ends the Firecracker process a crashed daemon left running in dir, if there is one, and waits (up to
+// leftoverExit) until it has exited, so its memory is free when it returns.
 func KillLeftover(dir string) {
 	raw, err := os.ReadFile(filepath.Join(dir, PidFile))
 	if err != nil {
@@ -339,11 +343,50 @@ func KillLeftover(dir string) {
 		return
 	}
 	// Only if that PID is still a process working in dir (PIDs are reused).
-	cwd, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid))
-	if err != nil || strings.TrimSuffix(cwd, " (deleted)") != dir {
+	if !workingIn(pid, dir) {
 		return
 	}
 	_ = syscall.Kill(pid, syscall.SIGKILL)
+	for deadline := time.Now().Add(leftoverExit); !exited(pid) && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// workingIn says process pid's working directory is dir. They are compared as directories (device and inode), not
+// as paths: /proc gives the working directory's resolved path, so a dir reached through a symlink (the host's state
+// directory, say) never equals it as text. A working directory since removed (" (deleted)") is compared by path.
+func workingIn(pid int, dir string) bool {
+	proc := fmt.Sprintf("/proc/%d/cwd", pid)
+	if cwd, err := os.Stat(proc); err == nil {
+		if want, err := os.Stat(dir); err == nil && os.SameFile(cwd, want) {
+			return true
+		}
+	}
+	cwd, err := os.Readlink(proc)
+	if err != nil {
+		return false
+	}
+	cwd = strings.TrimSuffix(cwd, " (deleted)")
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		if abs, err := filepath.Abs(resolved); err == nil && cwd == abs {
+			return true
+		}
+	}
+	return cwd == filepath.Clean(dir)
+}
+
+// exited says a process is gone, or a zombie (its memory freed, waiting for its parent to reap it).
+func exited(pid int) bool {
+	if syscall.Kill(pid, 0) != nil {
+		return true
+	}
+	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return true
+	}
+	// pid (comm) state ...: comm may hold spaces and parentheses, so the state follows the last ")".
+	_, rest, ok := strings.Cut(string(raw[bytes.LastIndexByte(raw, ')')+1:]), " ")
+	return ok && strings.HasPrefix(rest, "Z")
 }
 
 // Fingerprint identifies the files a snapshot was made with (Firecracker, the kernel, the root filesystem): a

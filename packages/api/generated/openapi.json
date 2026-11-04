@@ -7034,6 +7034,767 @@
 				}
 			}
 		},
+		"/templates": {
+			"get": {
+				"operationId": "listTemplates",
+				"summary": "List templates",
+				"description": "The account's templates, oldest first, each with its build. With `baseDigest`, only those built from or pinned to that base. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
+				"tags": ["templates"],
+				"parameters": [
+					{
+						"name": "account",
+						"in": "query",
+						"required": false,
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "baseDigest",
+						"in": "query",
+						"required": false,
+						"description": "Only those with a snapshot built from this base digest, or pinned to it.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The templates.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/TemplateList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "createTemplate",
+				"summary": "Create a template",
+				"description": "A template at version 1, named uniquely in the account. Its snapshot builds in the background on each kind of host the account may use; until one is ready, sandboxes made from it boot its image and run its setup themselves. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
+				"tags": ["templates"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/CreateTemplateBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The template.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Template"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/templates/{templateId}": {
+			"get": {
+				"operationId": "getTemplate",
+				"summary": "Get a template",
+				"description": "With its build, and how far behind a pinned base is. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
+				"tags": ["templates"],
+				"parameters": [
+					{
+						"name": "templateId",
+						"in": "path",
+						"required": true,
+						"description": "The template's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The template.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Template"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"patch": {
+				"operationId": "updateTemplate",
+				"summary": "Change a template",
+				"description": "Renames it or changes its description; a new `spec` makes the next version, which builds in the background. Sandboxes start only from a snapshot of the template's current version, so they boot fresh until it's ready. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
+				"tags": ["templates"],
+				"parameters": [
+					{
+						"name": "templateId",
+						"in": "path",
+						"required": true,
+						"description": "The template's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": false,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/UpdateTemplateBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The template.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Template"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "deleteTemplate",
+				"summary": "Delete a template",
+				"description": "Deletes it, its versions and its built snapshots. Sandboxes made from it keep running. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
+				"tags": ["templates"],
+				"parameters": [
+					{
+						"name": "templateId",
+						"in": "path",
+						"required": true,
+						"description": "The template's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"204": {
+						"description": "Deleted."
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/templates/{templateId}/versions": {
+			"get": {
+				"operationId": "listTemplateVersions",
+				"summary": "List a template's versions",
+				"description": "Newest first. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
+				"tags": ["templates"],
+				"parameters": [
+					{
+						"name": "templateId",
+						"in": "path",
+						"required": true,
+						"description": "The template's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Its versions.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/TemplateVersionList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/templates/{templateId}/snapshots": {
+			"get": {
+				"operationId": "listTemplateSnapshots",
+				"summary": "List a template's snapshots",
+				"description": "Its built snapshots and builds, newest first, discarded ones included: a cache, not the account's snapshots. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
+				"tags": ["templates"],
+				"parameters": [
+					{
+						"name": "templateId",
+						"in": "path",
+						"required": true,
+						"description": "The template's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "Its snapshots.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/TemplateSnapshotList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/templates/{templateId}/rebuild": {
+			"post": {
+				"operationId": "rebuildTemplate",
+				"summary": "Rebuild a template",
+				"description": "Builds its snapshots again, failed ones included. A ready one is kept, stale, and sandboxes go on starting from it until its replacement is ready, and after a rebuild that fails; with none, they boot fresh until the new ones are ready. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
+				"tags": ["templates"],
+				"parameters": [
+					{
+						"name": "templateId",
+						"in": "path",
+						"required": true,
+						"description": "The template's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The template, building.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Template"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/template-bases": {
+			"get": {
+				"operationId": "listTemplateBases",
+				"summary": "List base images' channels",
+				"description": "Every base channel templates may follow, with the digests it has published. Any signed-in caller. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
+				"tags": ["templates"],
+				"responses": {
+					"200": {
+						"description": "The channels.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/TemplateBaseList"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"post": {
+				"operationId": "publishTemplateBase",
+				"summary": "Publish a base image's digest",
+				"description": "Makes `digest` the channel's current one, made if it is new. Every template following the channel rebuilds in the background; pinned ones don't, and say how far behind they are. A deployment super-admin only (a key needs `hosts:admin`). Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
+				"tags": ["templates"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/PublishTemplateBaseBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The channel.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/TemplateBaseChannel"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/events": {
 			"get": {
 				"operationId": "listEvents",
@@ -9891,7 +10652,7 @@
 					}
 				],
 				"title": "ApiKeyScope",
-				"description": "What a key may do. `sandboxes:read`: list and inspect sandboxes, their usage and events. `sandboxes:write`: create, change, start, stop, pause, resume, fork and recover. `sandboxes:delete`: delete for good. `exec`: run commands. `files`: read and write files. `access`: SSH, desktop, browser and public ports. `snapshots:read`, `snapshots:write`: snapshots and saved snapshots. `account:read`: the account, its members, keys, environments and sandboxes' egress. `account:admin`: members, keys, webhooks, telemetry, the proxy, environments and sandboxes' grants. `hosts:admin`: the deployment's hosts, for a super-admin's key only."
+				"description": "What a key may do. `sandboxes:read`: list and inspect sandboxes, their usage and events. `sandboxes:write`: create, change, start, stop, pause, resume, fork and recover. `sandboxes:delete`: delete for good. `exec`: run commands. `files`: read and write files. `access`: SSH, desktop, browser and public ports. `snapshots:read`, `snapshots:write`: snapshots and saved snapshots. `account:read`: the account, its members, keys, environments, templates and sandboxes' egress. `account:admin`: members, keys, webhooks, telemetry, the proxy, environments, templates and sandboxes' grants. `hosts:admin`: the deployment's hosts and template bases, for a super-admin's key only."
 			},
 			"ApproveDeviceLoginBody": {
 				"type": "object",
@@ -10897,6 +11658,10 @@
 						"type": "string",
 						"description": "Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables."
 					},
+					"template": {
+						"type": "string",
+						"description": "Make a microVM from this template, a template's ID or name in the account (experimental, `KANTEL_TEMPLATES`): from its newest built snapshot when one is ready, else by booting its image and running its setup. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with `size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it fresh whatever its snapshot, running the setup with the sandbox's variables."
+					},
 					"hostLabels": {
 						"type": "object",
 						"patternProperties": {
@@ -10921,6 +11686,29 @@
 				},
 				"title": "CreateSandboxBody",
 				"description": "Every field is optional: `{}` makes a running isolate in the caller's account."
+			},
+			"CreateTemplateBody": {
+				"type": "object",
+				"required": ["name", "spec"],
+				"properties": {
+					"account": {
+						"type": "string",
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`."
+					},
+					"name": {
+						"type": "string",
+						"pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+						"description": "Unique in the account: lower-case letters, digits and dashes, at most 63."
+					},
+					"description": {
+						"type": "string",
+						"maxLength": 500
+					},
+					"spec": {
+						"$ref": "#/components/schemas/TemplateSpec"
+					}
+				},
+				"title": "CreateTemplateBody"
 			},
 			"CreateWebhookBody": {
 				"type": "object",
@@ -12831,6 +13619,30 @@
 				},
 				"title": "PublicUrl"
 			},
+			"PublishTemplateBaseBody": {
+				"type": "object",
+				"required": ["image", "channel", "digest"],
+				"properties": {
+					"image": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 255,
+						"pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$",
+						"description": "The base image, such as `kantel/sandbox`."
+					},
+					"channel": {
+						"type": "string",
+						"pattern": "^[a-z0-9][a-z0-9._-]{0,62}$",
+						"description": "A channel, such as `stable`."
+					},
+					"digest": {
+						"type": "string",
+						"pattern": "^sha256:[0-9a-f]{64}$",
+						"description": "The digest the channel publishes from now."
+					}
+				},
+				"title": "PublishTemplateBaseBody"
+			},
 			"PutEgressGrantsBody": {
 				"type": "object",
 				"required": ["grants"],
@@ -13130,6 +13942,9 @@
 					"environmentId": {
 						"type": "string",
 						"description": "The environment it was made from."
+					},
+					"template": {
+						"$ref": "#/components/schemas/SandboxTemplate"
 					},
 					"grants": {
 						"type": "array",
@@ -13567,6 +14382,42 @@
 				"title": "SandboxState",
 				"description": "`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots."
 			},
+			"SandboxTemplate": {
+				"type": "object",
+				"required": ["id", "name", "version", "start"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The template's ID, `tpl_…`."
+					},
+					"name": {
+						"type": "string"
+					},
+					"version": {
+						"type": "integer",
+						"description": "The template's version it was made from."
+					},
+					"snapshotId": {
+						"type": "string",
+						"description": "The template snapshot it started from, `tsn_…`; absent for a fresh boot."
+					},
+					"start": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "snapshot"
+							},
+							{
+								"type": "string",
+								"const": "boot"
+							}
+						],
+						"description": "`snapshot`: it started from the template's built snapshot. `boot`: none was ready, so it booted the template's image and ran its setup itself."
+					}
+				},
+				"title": "SandboxTemplate",
+				"description": "The template a sandbox was made from."
+			},
 			"SandboxType": {
 				"anyOf": [
 					{
@@ -13921,6 +14772,12 @@
 						"type": "boolean",
 						"description": "Whether it holds the sandbox's memory as well as its disk (a pause)."
 					},
+					"size": {
+						"$ref": "#/components/schemas/SandboxSizeName"
+					},
+					"resources": {
+						"$ref": "#/components/schemas/SandboxResources"
+					},
 					"sizeBytes": {
 						"type": "integer"
 					},
@@ -14173,6 +15030,522 @@
 				"title": "TelemetryTestResult",
 				"description": "What the collector answered to an empty export sent on save."
 			},
+			"Template": {
+				"type": "object",
+				"required": [
+					"id",
+					"accountId",
+					"name",
+					"version",
+					"spec",
+					"build",
+					"sandboxCount",
+					"createdAt",
+					"updatedAt",
+					"createdBy"
+				],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The template's ID, such as `tpl_4kq9x2mt`."
+					},
+					"accountId": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					},
+					"description": {
+						"type": "string"
+					},
+					"version": {
+						"type": "integer",
+						"description": "Its current version; a new spec makes the next."
+					},
+					"spec": {
+						"$ref": "#/components/schemas/TemplateSpec"
+					},
+					"build": {
+						"$ref": "#/components/schemas/TemplateBuildStatus"
+					},
+					"sandboxCount": {
+						"type": "integer",
+						"description": "How many sandboxes were made from it and still exist."
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"updatedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"createdBy": {
+						"$ref": "#/components/schemas/CreatedBy"
+					}
+				},
+				"title": "Template",
+				"description": "A microVM profile: image, base, resources, variables, setup and egress, versioned."
+			},
+			"TemplateBase": {
+				"anyOf": [
+					{
+						"$ref": "#/components/schemas/TemplateBaseChannelRef"
+					},
+					{
+						"$ref": "#/components/schemas/TemplateBasePinned"
+					}
+				],
+				"title": "TemplateBase",
+				"description": "The Kantel base image it boots: a channel the deployment publishes (`/v1/template-bases`), or a digest one published. Default: `kantel/sandbox`'s `stable` channel; until that channel publishes a digest, each host's own sandbox image."
+			},
+			"TemplateBaseChannel": {
+				"type": "object",
+				"required": ["image", "channel", "digest", "publishedAt", "history"],
+				"properties": {
+					"image": {
+						"type": "string"
+					},
+					"channel": {
+						"type": "string"
+					},
+					"digest": {
+						"type": "string",
+						"description": "The digest it publishes now."
+					},
+					"publishedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"history": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/TemplateBaseRelease"
+						},
+						"description": "Every digest it has published, newest first."
+					}
+				},
+				"title": "TemplateBaseChannel",
+				"description": "A base image's channel and the digests it has published."
+			},
+			"TemplateBaseChannelRef": {
+				"type": "object",
+				"required": ["image", "channel"],
+				"properties": {
+					"image": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 255,
+						"pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$",
+						"description": "The base image, such as `kantel/sandbox`."
+					},
+					"channel": {
+						"type": "string",
+						"pattern": "^[a-z0-9][a-z0-9._-]{0,62}$",
+						"description": "A channel, such as `stable`."
+					}
+				},
+				"title": "TemplateBaseChannelRef",
+				"description": "Follow a channel: rebuilt when it publishes a new digest."
+			},
+			"TemplateBaseList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/TemplateBaseChannel"
+						}
+					}
+				},
+				"title": "TemplateBaseList"
+			},
+			"TemplateBasePinned": {
+				"type": "object",
+				"required": ["image", "digest"],
+				"properties": {
+					"image": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 255,
+						"pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$",
+						"description": "The base image, such as `kantel/sandbox`."
+					},
+					"digest": {
+						"type": "string",
+						"pattern": "^sha256:[0-9a-f]{64}$",
+						"description": "The digest pinned."
+					}
+				},
+				"title": "TemplateBasePinned",
+				"description": "Pin an exact digest, one its channels published: never rebuilt for a new release."
+			},
+			"TemplateBaseRelease": {
+				"type": "object",
+				"required": ["digest", "publishedAt"],
+				"properties": {
+					"digest": {
+						"type": "string"
+					},
+					"publishedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "TemplateBaseRelease"
+			},
+			"TemplateBehind": {
+				"type": "object",
+				"required": ["releases", "since", "latestDigest"],
+				"properties": {
+					"releases": {
+						"type": "integer",
+						"description": "How many digests the base's channel has published since the pinned one."
+					},
+					"since": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"latestDigest": {
+						"type": "string"
+					}
+				},
+				"title": "TemplateBehind",
+				"description": "How far a pinned base is behind its channel."
+			},
+			"TemplateBuildStatus": {
+				"type": "object",
+				"required": ["state"],
+				"properties": {
+					"state": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "none"
+							},
+							{
+								"type": "string",
+								"const": "building"
+							},
+							{
+								"type": "string",
+								"const": "ready"
+							},
+							{
+								"type": "string",
+								"const": "stale"
+							},
+							{
+								"type": "string",
+								"const": "failed"
+							}
+						],
+						"description": "`none`: nothing built yet; sandboxes boot fresh. `stale`: what is built is for an older key, and used until its replacement is ready if it is of the template's current version. A `ready` snapshot of an older version starts no sandbox: they boot fresh until the current version's is ready."
+					},
+					"ready": {
+						"$ref": "#/components/schemas/TemplateSnapshot"
+					},
+					"building": {
+						"$ref": "#/components/schemas/TemplateSnapshot"
+					},
+					"error": {
+						"type": "string"
+					},
+					"behind": {
+						"$ref": "#/components/schemas/TemplateBehind"
+					}
+				},
+				"title": "TemplateBuildStatus"
+			},
+			"TemplateBuiltFrom": {
+				"type": "object",
+				"required": ["baseImage", "baseDigest", "pinned", "kernel", "firecracker"],
+				"properties": {
+					"baseImage": {
+						"type": "string"
+					},
+					"channel": {
+						"type": "string",
+						"description": "The channel it followed; absent when pinned."
+					},
+					"baseDigest": {
+						"type": "string",
+						"description": "Empty while the channel has no published digest."
+					},
+					"pinned": {
+						"type": "boolean"
+					},
+					"imageDigest": {
+						"type": "string",
+						"description": "The digest of the image its host booted, as the host reported it."
+					},
+					"kernel": {
+						"type": "string"
+					},
+					"firecracker": {
+						"type": "string"
+					}
+				},
+				"title": "TemplateBuiltFrom",
+				"description": "What a template snapshot was built from."
+			},
+			"TemplateCacheKey": {
+				"type": "object",
+				"required": ["templateVersion", "baseDigest", "kernel", "firecracker", "vcpus", "memoryMb"],
+				"properties": {
+					"templateVersion": {
+						"type": "string",
+						"description": "`<templateId>@<version>`."
+					},
+					"baseDigest": {
+						"type": "string"
+					},
+					"kernel": {
+						"type": "string"
+					},
+					"firecracker": {
+						"type": "string"
+					},
+					"vcpus": {
+						"type": "integer"
+					},
+					"memoryMb": {
+						"type": "integer",
+						"description": "With `vcpus`, the machine it was built as: the template's resources, which a fresh boot from it gets too."
+					}
+				},
+				"title": "TemplateCacheKey",
+				"description": "What a template snapshot is for: a change to any part builds another. A create starts from it only when it gets the same vCPUs and memory."
+			},
+			"TemplateImage": {
+				"anyOf": [
+					{
+						"$ref": "#/components/schemas/TemplateKantelBaseImage"
+					}
+				],
+				"title": "TemplateImage",
+				"description": "What a template's machines boot. Only `kantel-base` for now: Kantel's base image, customised by the setup script, which runs in the VM behind the template's egress grants. Default: `kantel-base`."
+			},
+			"TemplateKantelBaseImage": {
+				"type": "object",
+				"required": ["kind"],
+				"properties": {
+					"kind": {
+						"type": "string",
+						"const": "kantel-base"
+					}
+				},
+				"title": "TemplateKantelBaseImage",
+				"description": "The template's `base` itself, as its deployment publishes it; the setup script adds the rest."
+			},
+			"TemplateList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/Template"
+						}
+					}
+				},
+				"title": "TemplateList"
+			},
+			"TemplateNetwork": {
+				"type": "object",
+				"required": ["grants"],
+				"properties": {
+					"grants": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/EgressGrantInput"
+						},
+						"maxItems": 200
+					}
+				},
+				"title": "TemplateNetwork",
+				"description": "Egress grants for its sandboxes and for its build's boot."
+			},
+			"TemplateResources": {
+				"type": "object",
+				"required": ["vcpus", "memoryMb"],
+				"properties": {
+					"vcpus": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 64
+					},
+					"memoryMb": {
+						"type": "integer",
+						"minimum": 128,
+						"maximum": 262144
+					}
+				},
+				"title": "TemplateResources",
+				"description": "Its sandboxes' and its builds' vCPUs and memory, exactly, unless a create names a size; a deployment must offer a size with at least them. Default 2 vCPUs and 4096 MB."
+			},
+			"TemplateSnapshot": {
+				"type": "object",
+				"required": ["id", "templateId", "version", "key", "keyHash", "state", "builtFrom", "startedAt"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The template snapshot's ID, `tsn_…`."
+					},
+					"templateId": {
+						"type": "string"
+					},
+					"version": {
+						"type": "integer"
+					},
+					"key": {
+						"$ref": "#/components/schemas/TemplateCacheKey"
+					},
+					"keyHash": {
+						"type": "string",
+						"description": "The SHA-256 hex of the key's canonical JSON."
+					},
+					"state": {
+						"$ref": "#/components/schemas/TemplateSnapshotState"
+					},
+					"hostId": {
+						"type": "string",
+						"description": "The host it was built on, which holds it."
+					},
+					"builtFrom": {
+						"$ref": "#/components/schemas/TemplateBuiltFrom"
+					},
+					"startedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"readyAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"error": {
+						"type": "string",
+						"description": "Why the build failed."
+					},
+					"sizeBytes": {
+						"type": "integer"
+					}
+				},
+				"title": "TemplateSnapshot",
+				"description": "A built template: its image booted once, its setup run, then snapshotted. A cache entry Kantel throws away and rebuilds at will, never one of the account's snapshots."
+			},
+			"TemplateSnapshotList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/TemplateSnapshot"
+						},
+						"description": "Newest first."
+					}
+				},
+				"title": "TemplateSnapshotList"
+			},
+			"TemplateSnapshotState": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "queued"
+					},
+					{
+						"type": "string",
+						"const": "building"
+					},
+					{
+						"type": "string",
+						"const": "ready"
+					},
+					{
+						"type": "string",
+						"const": "stale"
+					},
+					{
+						"type": "string",
+						"const": "failed"
+					},
+					{
+						"type": "string",
+						"const": "discarded"
+					}
+				],
+				"title": "TemplateSnapshotState",
+				"description": "`stale`: built for a key no longer wanted, and used while its replacement builds only if it is of the template's current version. `failed`: not tried again until its key changes or the template is rebuilt. `discarded`: thrown away."
+			},
+			"TemplateSpec": {
+				"type": "object",
+				"properties": {
+					"image": {
+						"$ref": "#/components/schemas/TemplateImage"
+					},
+					"base": {
+						"$ref": "#/components/schemas/TemplateBase"
+					},
+					"resources": {
+						"$ref": "#/components/schemas/TemplateResources"
+					},
+					"env": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"type": "string"
+							}
+						},
+						"description": "Plain variables, not secrets: under the environment's and the create's own."
+					},
+					"setup": {
+						"type": "string",
+						"maxLength": 65536,
+						"description": "A shell script run once, as root, when the snapshot is built (or at a fresh boot)."
+					},
+					"network": {
+						"$ref": "#/components/schemas/TemplateNetwork"
+					}
+				},
+				"title": "TemplateSpec",
+				"description": "A template version's definition, never changed once made. Answered with every default filled in."
+			},
+			"TemplateVersion": {
+				"type": "object",
+				"required": ["version", "spec", "createdAt", "createdBy"],
+				"properties": {
+					"version": {
+						"type": "integer"
+					},
+					"spec": {
+						"$ref": "#/components/schemas/TemplateSpec"
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"createdBy": {
+						"$ref": "#/components/schemas/CreatedBy"
+					}
+				},
+				"title": "TemplateVersion"
+			},
+			"TemplateVersionList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/TemplateVersion"
+						},
+						"description": "Newest first."
+					}
+				},
+				"title": "TemplateVersionList"
+			},
 			"UpdateAccountBody": {
 				"type": "object",
 				"properties": {
@@ -14274,6 +15647,25 @@
 					}
 				},
 				"title": "UpdateSandboxBody"
+			},
+			"UpdateTemplateBody": {
+				"type": "object",
+				"properties": {
+					"name": {
+						"type": "string",
+						"pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+					},
+					"description": {
+						"type": "string",
+						"maxLength": 500,
+						"description": "Empty clears it."
+					},
+					"spec": {
+						"$ref": "#/components/schemas/TemplateSpec"
+					}
+				},
+				"title": "UpdateTemplateBody",
+				"description": "A `spec` that differs from the current one makes a new version."
 			},
 			"UpdateWebhookBody": {
 				"type": "object",

@@ -13,6 +13,7 @@ import {
 	SettingsIcon,
 	ShieldCheckIcon,
 	SnapshotIcon,
+	TemplateIcon,
 } from "../primitives/lucide.tsx";
 import { Sidebar, SidebarBrand, SidebarItem, SidebarSection } from "../primitives/sidebar.tsx";
 import { Skeleton, skeletonClass } from "../primitives/spinner.tsx";
@@ -49,6 +50,7 @@ import { SettingsFrame, type SettingsNavItem } from "./settings-nav.tsx";
 import type { FilesAt } from "./snapshot-files.tsx";
 import { SnapshotsPage, type SnapshotsView } from "./snapshots-page.tsx";
 import { TelemetryPage } from "./telemetry-page.tsx";
+import { TemplatePage, TemplatesPage } from "./templates-page.tsx";
 import { UserMenu } from "./user-menu.tsx";
 import { WebhooksPage } from "./webhooks-page.tsx";
 
@@ -64,6 +66,7 @@ export type ComputePage =
 	| "sandboxes"
 	| "snapshots"
 	| "environments"
+	| "templates"
 	| "egress"
 	| "keys"
 	| "webhooks"
@@ -81,6 +84,7 @@ export const COMPUTE_PAGES: readonly ComputePage[] = [
 	"sandboxes",
 	"snapshots",
 	"environments",
+	"templates",
 	"egress",
 	"keys",
 	"webhooks",
@@ -105,6 +109,8 @@ export type ComputeRoute = {
 	readonly sandboxId?: string;
 	readonly sandboxView?: SandboxView;
 	readonly environmentId?: string;
+	/** Templates (experimental): the template that's open. */
+	readonly templateId?: string;
 };
 
 /** The route for `pathname`, or undefined when it isn't under `base` or names no page. `base` itself is Sandboxes. */
@@ -125,6 +131,7 @@ export function parseComputePath(pathname: string, base = "/compute"): ComputeRo
 	if (parts.length > 2) return undefined;
 	if (page === "snapshots" && second !== undefined) return { page, sandboxId: decodeURIComponent(second) };
 	if (page === "environments" && second !== undefined) return { page, environmentId: decodeURIComponent(second) };
+	if (page === "templates" && second !== undefined) return { page, templateId: decodeURIComponent(second) };
 	// Egress is the account's, or one sandbox's.
 	if (page === "egress" && second !== undefined) return { page, sandboxId: decodeURIComponent(second) };
 	return parts.length === 1 ? { page } : undefined;
@@ -138,6 +145,7 @@ export function parseComputePath(pathname: string, base = "/compute"): ComputeRo
 export function pathAfterAccountSwitch(pathname: string, base = "/compute"): string | undefined {
 	const open = parseComputePath(pathname, base);
 	if (open?.page === "environments" && open.environmentId !== undefined) return computePath("environments", base);
+	if (open?.page === "templates" && open.templateId !== undefined) return computePath("templates", base);
 	if ((open?.page === "egress" || open?.page === "sandboxes") && open.sandboxId !== undefined)
 		return computePath("sandboxes", base);
 	// A snapshot's files, or a sandbox's history, are the last account's: the new one's saved snapshots instead.
@@ -470,7 +478,8 @@ export function ComputeConsole({
 		(route.page === "images" && me !== undefined && !imagesShown) ||
 		(route.page === "billing" && !billingShown) ||
 		(route.page === "mounts" && !mountsShown) ||
-		(route.page === "device" && source.devices === undefined)
+		(route.page === "device" && source.devices === undefined) ||
+		(route.page === "templates" && source.templates === undefined)
 			? "sandboxes"
 			: route.page;
 
@@ -526,6 +535,15 @@ export function ComputeConsole({
 		{ id: "egress", label: "Egress", short: "Egress", icon: <ProxyIcon />, on: page === "egress" && !sandboxEgress },
 		{ id: "organisation", label: "Settings", short: "Settings", icon: <SettingsIcon />, on: inSettings },
 	] as const;
+	// Templates (experimental), where the deployment has them: in the sidebar after Environments, not in a phone's tab
+	// bar, which keeps its five.
+	const sidebarPages = [
+		...pages.slice(0, 3),
+		...(source.templates === undefined
+			? []
+			: [{ id: "templates", label: "Templates", icon: <TemplateIcon />, on: page === "templates" }]),
+		...pages.slice(3, 4),
+	];
 	const href = (id: string) => computePath(id as ComputePage, base);
 
 	const name = signedInAs?.name ?? me?.name;
@@ -639,7 +657,7 @@ export function ComputeConsole({
 						<>
 							{switcher}
 							<SidebarSection label="Pages" heading={false}>
-								{pages.slice(0, 4).map((each) => (
+								{sidebarPages.map((each) => (
 									<SidebarItem
 										key={each.id}
 										icon={each.icon}
@@ -705,7 +723,10 @@ export function ComputeConsole({
 						/>
 					</div>
 				) : account === undefined || me === undefined ? (
-					<ConsoleLoading narrow={narrow} title={inSettings ? "Settings" : pages.find((each) => each.on)?.label} />
+					<ConsoleLoading
+						narrow={narrow}
+						title={inSettings ? "Settings" : sidebarPages.find((each) => each.on)?.label}
+					/>
 				) : (
 					<div className={narrow ? "p-gutter-narrow" : "p-gutter"}>
 						<SettingsFrameFor
@@ -717,7 +738,7 @@ export function ComputeConsole({
 						>
 							<PageFor
 								// A new account or page starts afresh: nothing of the last one's dialogs or filters carries over.
-								key={`${account.id}/${page}/${route.sandboxId ?? route.environmentId ?? ""}`}
+								key={`${account.id}/${page}/${route.sandboxId ?? route.environmentId ?? route.templateId ?? ""}`}
 								page={page}
 								route={route}
 								source={source}
@@ -860,6 +881,9 @@ function PageFor({
 					href={(view) => sandboxPath(base, route.sandboxId ?? "", view)}
 					sandboxesHref={computePath("sandboxes", base)}
 					environmentHref={(id) => computePath("environments", base, id)}
+					{...(source.templates === undefined
+						? {}
+						: { templateHref: (id: string) => computePath("templates", base, id) })}
 					navigate={navigate}
 					narrow={narrow}
 					{...(route.sandboxView === "files" ? { filesAt: filesAtOf(search, hash) } : {})}
@@ -880,6 +904,15 @@ function PageFor({
 					sandboxHref={(sandboxId, view) => sandboxPath(base, sandboxId, view)}
 					navigate={navigate}
 					environments={(accountId) => source.environments.list(accountId)}
+					{...(source.templates === undefined
+						? {}
+						: {
+								templates: (accountId: string) =>
+									(source.templates as NonNullable<ComputeSource["templates"]>).list(accountId),
+								...(new URLSearchParams(search).get("template") === null
+									? {}
+									: { template: new URLSearchParams(search).get("template") as string }),
+							})}
 					creating={new URLSearchParams(search).has("new")}
 					narrow={narrow}
 					{...(noHosts ? { [ownHosts ? "ownHostHref" : "addHostHref"]: `${computePath("hosts", base)}?add` } : {})}
@@ -917,6 +950,28 @@ function PageFor({
 					environmentId={route.environmentId}
 					accountId={account.id}
 					listHref={computePath("environments", base)}
+					navigate={navigate}
+					{...timing}
+				/>
+			);
+		case "templates":
+			if (source.templates === undefined) return null;
+			return route.templateId === undefined ? (
+				<TemplatesPage
+					source={source.templates}
+					account={account}
+					templateHref={(id) => computePath("templates", base, id)}
+					navigate={navigate}
+					creating={new URLSearchParams(search).has("new")}
+					{...timing}
+				/>
+			) : (
+				<TemplatePage
+					source={source.templates}
+					templateId={route.templateId}
+					accountId={account.id}
+					listHref={computePath("templates", base)}
+					newSandboxHref={(id) => `${computePath("sandboxes", base)}?new&template=${encodeURIComponent(id)}`}
 					navigate={navigate}
 					{...timing}
 				/>

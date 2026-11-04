@@ -1,11 +1,22 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { Sandbox, SandboxState } from "./compute-model.ts";
+import type { Sandbox, SandboxState, Template } from "./compute-model.ts";
+import { createComputeFixtures, FIXTURE_NOW, LLEVERAGE } from "./fixtures.ts";
 import { outputUnavailable, sandboxTimeline } from "./sandbox-logs.tsx";
 import { filesShown, type SandboxTab, sandboxViewShown } from "./sandbox-page.tsx";
-import { QUICK_SANDBOX, sandboxesShown, screenLink, showsCpu } from "./sandboxes-page.tsx";
+import {
+	newSandboxInput,
+	newSandboxType,
+	QUICK_SANDBOX,
+	requestedTemplate,
+	SandboxesPage,
+	sandboxesShown,
+	screenLink,
+	showsCpu,
+} from "./sandboxes-page.tsx";
 import { SettingsFrame } from "./settings-nav.tsx";
+import { sampleTemplates } from "./template-fixtures.ts";
 
 const box = (name: string, state: SandboxState): Sandbox => ({
 	id: `sbx_${name}`,
@@ -192,5 +203,93 @@ describe("Settings' navigation", () => {
 			).replace(/ class="[^"]*"/g, "");
 		expect(skeleton(true)).toBe(skeleton(false));
 		expect(skeleton(true)).toContain('<form id="page">');
+	});
+});
+
+describe("New sandbox", () => {
+	const python = sampleTemplates(FIXTURE_NOW).find((template) => template.id === "tpl_python") as Template;
+	const form = {
+		accountId: LLEVERAGE.id,
+		name: "",
+		kind: "microvm" as const,
+		shape: { vcpus: 2, memoryMb: 4096 },
+		shapeChosen: false,
+		from: "",
+		environment: "",
+		autoStop: "60",
+	};
+
+	it("names no shape for a template's sandbox unless a slider moved, so the template's own applies", () => {
+		const own = newSandboxInput({ ...form, template: python });
+		expect(own).toEqual({ accountId: LLEVERAGE.id, kind: "microvm", templateId: "tpl_python", autoStopMinutes: 60 });
+		expect("shape" in own).toBe(false);
+		const moved = { vcpus: 4, memoryMb: 8192 };
+		expect(newSandboxInput({ ...form, template: python, shape: moved, shapeChosen: true }).shape).toEqual(moved);
+		// Without a template, and for an isolate, the shape the sliders show.
+		expect(newSandboxInput(form).shape).toEqual({ vcpus: 2, memoryMb: 4096 });
+		expect(newSandboxInput({ ...form, kind: "isolate", shape: { vcpus: 0, memoryMb: 256 }, template: python })).toEqual(
+			{
+				accountId: LLEVERAGE.id,
+				kind: "isolate",
+				shape: { vcpus: 0, memoryMb: 256 },
+				autoStopMinutes: 60,
+			},
+		);
+	});
+
+	it("keeps a requested template until the list is read, and says so when it can't be had", () => {
+		const microvm = newSandboxType(undefined, true);
+		expect(requestedTemplate("tpl_python", { status: "loading" }, microvm)).toEqual({ pending: true });
+		expect(requestedTemplate("tpl_python", { status: "ready", value: [python] }, microvm)).toEqual({
+			template: python,
+			pending: false,
+		});
+		expect(requestedTemplate("tpl_python", { status: "failed" }, microvm).problem).toMatch(
+			/couldn't read the templates/,
+		);
+		expect(requestedTemplate("tpl_gone", { status: "ready", value: [python] }, microvm).problem).toMatch(
+			/isn't in this account/,
+		);
+		expect(requestedTemplate("", { status: "loading" }, microvm)).toEqual({ pending: false });
+	});
+
+	it("keeps a requested template, refused, when the hosts' answer says none runs microVMs", () => {
+		const list = { status: "ready", value: [python] } as const;
+		// Before the hosts answer, a microVM from the template, waiting for its list.
+		const before = newSandboxType(undefined, true);
+		expect(before).toEqual({ kind: "microvm", chosen: false });
+		expect(requestedTemplate("tpl_python", { status: "loading" }, before)).toEqual({ pending: true });
+		// The answer lands with no microVM host: an isolate is picked, but the template isn't dropped for it.
+		const after = newSandboxType(undefined, false);
+		expect(after).toEqual({ kind: "isolate", chosen: false });
+		for (const read of [{ status: "loading" } as const, list]) {
+			const requested = requestedTemplate("tpl_python", read, after);
+			expect(requested.pending).toBe(false);
+			expect(requested.template).toBeUndefined();
+			expect(requested.problem).toMatch(/none of this organisation's hosts run them\. Pick None or choose Isolate/);
+		}
+		// A clean isolate takes the user's own choice: None, or Isolate chosen.
+		expect(requestedTemplate("", list, after)).toEqual({ pending: false });
+		expect(requestedTemplate("tpl_python", list, newSandboxType("isolate", false))).toEqual({ pending: false });
+		expect(requestedTemplate("tpl_python", list, newSandboxType("isolate", true))).toEqual({ pending: false });
+		// A microVM chosen before the answer can't be made once it says there are none.
+		expect(newSandboxType("microvm", false)).toEqual({ kind: "isolate", chosen: false });
+	});
+
+	it("opens from a template's page with it picked, and waits for the list rather than dropping it", () => {
+		const markup = renderToStaticMarkup(
+			createElement(SandboxesPage, {
+				source: createComputeFixtures().sandboxes,
+				account: LLEVERAGE,
+				hosting: "self-hosted",
+				templates: () => new Promise<readonly Template[]>(() => {}),
+				template: "tpl_python",
+				creating: true,
+				now: FIXTURE_NOW,
+			}),
+		);
+		expect(markup).toMatch(/<option value="tpl_python" selected="">tpl_python<\/option>/);
+		expect(markup).toContain("Reading the templates.");
+		expect(markup).toMatch(/<button[^>]*type="submit"[^>]*disabled=""[^>]*aria-busy="true"/);
 	});
 });
