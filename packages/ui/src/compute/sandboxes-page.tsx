@@ -837,10 +837,13 @@ function SandboxRow({
 			<td className={`${cell} w-0 pr-0`}>
 				<TickBox label={`Select ${sandbox.name}`} checked={ticked} disabled={pending} onChange={onTick} />
 			</td>
-			<td className={cell}>
-				<span className="block max-w-(--kt-popover-width) truncate font-medium text-fg">{sandbox.name}</span>
+			{/* The name takes the room the other columns leave, and truncates, so the row's actions never go off the edge. */}
+			<td className={`${cell} w-full min-w-40 max-w-0`}>
+				<span className="block truncate font-medium text-fg" title={sandbox.name}>
+					{sandbox.name}
+				</span>
 				{sandbox.state === "error" && sandbox.error !== undefined ? (
-					<span className="block max-w-(--kt-popover-width) truncate text-xs text-status-error" title={sandbox.error}>
+					<span className="block truncate text-xs text-status-error" title={sandbox.error}>
 						{sandbox.error}
 					</span>
 				) : null}
