@@ -925,7 +925,7 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 				source = "boot"
 			}
 		}
-		start = time.Now()
+		t.step("plan", &start)
 		if reshape != nil {
 			// The disk, the network and the Firecracker process side by side: none needs another.
 			machine, client, link, err := m.restoreParallel(ctx, vm, diskPath, statePath, memPath, egressMode(p.Egress), t)
@@ -968,6 +968,7 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 		return fail(err)
 	}
 	m.attach(s, s.link.Slot)
+	t.step("attach", &start)
 	var reshaped chan reshapeResult
 	if reshape != nil {
 		// Beside the identity: the memory is Firecracker's and the guest kernel's to plug, the identity the agent's.
@@ -1008,10 +1009,12 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 		return fail(err)
 	}
 	m.watch(s, s.machine)
+	t.step("finish", &start)
 	t["total"] = float64(time.Since(began).Microseconds()) / 1000
 	info := m.info(s)
 	info.Timings, info.Source = t, source
 	m.emit(s)
+	m.log.Debug("create", "sandbox", s.meta.ID, "size", size.Name, "source", source, "timings", t)
 	return info, nil
 }
 
