@@ -108,6 +108,25 @@ const ROUTES: {
 		Response.json({ error: { code: "not_found", message: "No such sandbox" } }, { status: 404 }),
 	"POST /v1/sandboxes/sbx_stopped/commands": () =>
 		Response.json({ error: { code: "conflict", message: "The sandbox is stopped" } }, { status: 409 }),
+	"POST /v1/sandboxes/sbx_away/resume": () =>
+		Response.json(
+			{
+				error: {
+					code: "unavailable",
+					message: "No host can run a microvm sandbox now",
+					details: { reason: "host_unavailable" },
+				},
+			},
+			{ status: 503 },
+		),
+	"POST /v1/sandboxes/sbx_full/resume": () =>
+		Response.json({
+			...SANDBOX,
+			id: "sbx_full",
+			state: "error",
+			reason: "No host can take a microVM of size default (full)",
+			placementReason: "insufficient_capacity",
+		}),
 };
 
 function fakeKantel() {
@@ -259,6 +278,26 @@ describe("the MCP server", () => {
 		);
 		expect(stopped.isError).toBe(true);
 		expect(stopped.content[0]?.text).toContain("sandbox_resume");
+	});
+
+	it("names why a sandbox can't be placed, with what to do about it", async () => {
+		const { mcp } = server();
+		const away = resultOf(
+			await mcp.handle(request(20, "tools/call", { name: "sandbox_resume", arguments: { sandboxId: "sbx_away" } })),
+		);
+		expect(away.isError).toBe(true);
+		expect(away.content[0]?.text).toContain("unavailable (host_unavailable): No host can run a microvm sandbox now");
+		expect(away.content[0]?.text).toContain("Try again later");
+		expect(away.structuredContent).toMatchObject({ error: { code: "unavailable", reason: "host_unavailable" } });
+		// A boot that couldn't place it answers the sandbox in error, saying why.
+		const full = resultOf(
+			await mcp.handle(request(21, "tools/call", { name: "sandbox_resume", arguments: { sandboxId: "sbx_full" } })),
+		);
+		expect(full.isError).toBeUndefined();
+		expect(full.content[0]?.text).toContain(
+			"Sandbox sbx_full is error (insufficient_capacity): No host can take a microVM of size default (full)",
+		);
+		expect(full.content[0]?.text).toContain("The hosts are full now");
 	});
 
 	it("refuses bad arguments before calling Kantel", async () => {

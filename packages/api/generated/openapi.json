@@ -12387,9 +12387,13 @@
 							},
 							"details": {
 								"type": "object",
-								"patternProperties": {
-									"^.*$": {}
-								}
+								"properties": {
+									"reason": {
+										"$ref": "#/components/schemas/PlacementReason"
+									}
+								},
+								"additionalProperties": true,
+								"description": "More about the error, by code. A sandbox that can't be placed (on create, start, resume or fork) has `reason`."
 							}
 						}
 					}
@@ -12491,6 +12495,9 @@
 					},
 					"reason": {
 						"type": "string"
+					},
+					"placementReason": {
+						"$ref": "#/components/schemas/PlacementReason"
 					},
 					"actor": {
 						"$ref": "#/components/schemas/CreatedBy"
@@ -13449,6 +13456,44 @@
 				"title": "MountStatus",
 				"description": "`pending`: its host is still putting it in place. `ready`: its files are there. `failed`: they aren't, and `error` says why; the sandbox runs without it."
 			},
+			"PlacementReason": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "no_host"
+					},
+					{
+						"type": "string",
+						"const": "no_host_for_type"
+					},
+					{
+						"type": "string",
+						"const": "no_host_with_labels"
+					},
+					{
+						"type": "string",
+						"const": "no_host_offers_size"
+					},
+					{
+						"type": "string",
+						"const": "no_host_enforces_egress"
+					},
+					{
+						"type": "string",
+						"const": "insufficient_capacity"
+					},
+					{
+						"type": "string",
+						"const": "host_unavailable"
+					},
+					{
+						"type": "string",
+						"const": "account_limit"
+					}
+				],
+				"title": "PlacementReason",
+				"description": "Why a sandbox couldn't be placed on a host. `no_host`: no host it may use is connected. `no_host_for_type`: none runs its type. `no_host_with_labels`: none has every label in `hostLabels`. `no_host_offers_size`: none offers its size or can make its resources. `no_host_enforces_egress`: none that could take it enforces egress grants or protected variables. `insufficient_capacity`: hosts match but none has the memory or disk free now; retry later. `host_unavailable`: the host its disk or snapshot is on can't take it now (offline, draining or not one it may use, or gone during the boot). `account_limit`: the account runs as many sandboxes as it may."
+			},
 			"PollDeviceLoginBody": {
 				"type": "object",
 				"required": ["deviceCode"],
@@ -13920,6 +13965,9 @@
 					"reason": {
 						"type": "string",
 						"description": "Why it is in `error` or `degraded`, in words."
+					},
+					"placementReason": {
+						"$ref": "#/components/schemas/PlacementReason"
 					},
 					"visibility": {
 						"$ref": "#/components/schemas/SandboxVisibility"

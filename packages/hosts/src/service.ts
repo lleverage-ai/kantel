@@ -5,7 +5,7 @@
  * The public sandbox API (docs/site/src/content/docs/api/reference/sandboxes.md) is built over `sandboxes` here; this
  * package doesn't decide who may use which sandbox, only where it runs and how it is reached.
  */
-import { type Clock, KantelError, systemClock } from "@kantel/contracts";
+import { type Clock, KantelError, placementError, systemClock } from "@kantel/contracts";
 import type { HostCluster } from "./cluster.ts";
 import {
 	parseHostCapacity,
@@ -467,6 +467,13 @@ function labelsOf(value: unknown): { [key: string]: string } {
 }
 
 const SANDBOX_ID = /^[a-z0-9][a-z0-9_-]{2,62}$/;
+/** The calls that boot a sandbox on its host: its create, fork, start and resume. */
+const BOOTS: ReadonlySet<string> = new Set([
+	HostMethods.create,
+	HostMethods.fork,
+	HostMethods.start,
+	HostMethods.resume,
+]);
 
 /** A shape as asked: whole vCPUs (0 for an isolate) and memory in MiB, at least 128. */
 function shapeIn(shape: Shape, tier: SandboxTier): Shape {
@@ -491,7 +498,9 @@ export function kantelErrorFromHost(error: unknown): unknown {
 				: error.code === "unsupported"
 					? "not_supported"
 					: "unavailable";
-	return new KantelError(code, error.message);
+	return code === "exhausted"
+		? placementError(code, "insufficient_capacity", error.message)
+		: new KantelError(code, error.message);
 }
 
 export function createHostsService(options: HostsServiceOptions): HostsService {
@@ -904,14 +913,14 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	 * Refuses an egress with grants or protected variables for a host that doesn't report enforcing them: a host that
 	 * predates them would drop the fields and answer as if it had applied them.
 	 */
-	const requireEnforced = async (hostId: string, params: object, known?: HostRecord): Promise<void> => {
+	const requireEnforced = async (hostId: string, params: object, known?: HostRecord, boot = false): Promise<void> => {
 		if (!needsEgressPolicy((params as { egress?: HostEgress | null }).egress)) return;
 		const host = known ?? (await store.getHost(hostId));
 		if (host !== undefined && enforcesPolicy(host)) return;
-		throw new KantelError(
-			"not_supported",
-			`The host ${host?.name ?? hostId} doesn't enforce egress grants or protected variables; upgrade its kantel-host`,
-		);
+		const message = `The host ${host?.name ?? hostId} doesn't enforce egress grants or protected variables; upgrade its kantel-host`;
+		throw boot
+			? placementError("not_supported", "no_host_enforces_egress", message)
+			: new KantelError("not_supported", message);
 	};
 
 	const onHost = async <T>(
@@ -921,11 +930,17 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		callOptions?: CallOptions,
 		known?: HostRecord,
 	): Promise<T> => {
-		await requireEnforced(hostId, params, known);
+		// A boot puts a sandbox on a host: when that host can't take it, the error says why, as a placement's does.
+		const boot = BOOTS.has(method);
+		await requireEnforced(hostId, params, known, boot);
 		try {
 			return await hub.call<T>(hostId, method, await trusted(hostId, params, known), callOptions);
 		} catch (error) {
-			throw kantelErrorFromHost(error);
+			const converted = kantelErrorFromHost(error);
+			if (boot && error instanceof HostCallError && error.disconnected && converted instanceof KantelError) {
+				throw placementError(converted.code, "host_unavailable", converted.message);
+			}
+			throw converted;
 		}
 	};
 
@@ -1146,8 +1161,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				// Grants and protected variables go only where they are enforced.
 				const hosts = needsEgressPolicy(input.egress) ? templating.filter(enforcesPolicy) : templating;
 				if (hosts.length === 0 && templating.length > 0) {
-					throw new KantelError(
+					throw placementError(
 						"not_supported",
+						"no_host_enforces_egress",
 						"No host that could take it enforces egress grants or protected variables; upgrade kantel-host",
 					);
 				}
@@ -1179,7 +1195,11 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					},
 					candidates,
 				);
-				if (isRefusal(chosen)) throw new KantelError("exhausted", chosen.reason);
+				if (isRefusal(chosen)) {
+					// From a snapshot it goes only on the snapshot's host: that host not being up is the reason, not a lack of hosts.
+					const reason = input.from !== undefined && chosen.code === "no_host" ? "host_unavailable" : chosen.code;
+					throw placementError("exhausted", reason, chosen.reason);
+				}
 				const now = clock.now();
 				const placement: PlacementRecord = {
 					sandboxId,

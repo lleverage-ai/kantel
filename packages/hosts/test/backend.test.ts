@@ -586,6 +586,29 @@ describe("the compute API on kantel-host hosts", () => {
 		});
 	});
 
+	it("says why a sandbox can't be placed, at its create and when its host is gone", async () => {
+		const { service, root } = setup();
+		const none = await failure(root.createSandbox({ type: "microvm" }));
+		expect([none.status, none.code, none.reason]).toEqual([503, "unavailable", "no_host"]);
+		const join = async () => {
+			const { hostId } = await service.register({ token: (await root.createHostJoinToken({})).token, facts });
+			const host = new FakeHost(service, hostId);
+			host.connect();
+			return hostId;
+		};
+		const first = await join();
+		const labelled = await failure(root.createSandbox({ type: "microvm", hostLabels: { zone: "ams" } }));
+		expect([labelled.status, labelled.code, labelled.reason]).toEqual([503, "unavailable", "no_host_with_labels"]);
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		await root.stopSandbox(sandbox.id, { wait: true });
+		// Its host goes; another is up. Its disk is on the first, so its boot fails, saying why.
+		await join();
+		service.hub.disconnect(first, 1001, "gone");
+		const started = await root.startSandbox(sandbox.id, { wait: true });
+		expect(started).toMatchObject({ state: "error", placementReason: "host_unavailable" });
+		expect(started.reason).toContain(`The host its disk is on (${first}) can't take it now`);
+	});
+
 	it("revokes and drains a host through the API, and the registry follows", async () => {
 		const { service, root } = setup();
 		const token = await root.createHostJoinToken({});

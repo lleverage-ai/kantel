@@ -456,8 +456,10 @@ function callerName(caller: Caller): string {
 const kindOf = (sandbox: Sandbox): string =>
 	sandbox.type === "microvm" && sandbox.size !== undefined ? `microvm ${sandbox.size}` : sandbox.type;
 
-const stateOf = (sandbox: Sandbox): string =>
-	sandbox.reason === undefined ? sandbox.state : `${sandbox.state}: ${sandbox.reason}`;
+const stateOf = (sandbox: Sandbox): string => {
+	const state = sandbox.placementReason === undefined ? sandbox.state : `${sandbox.state} (${sandbox.placementReason})`;
+	return sandbox.reason === undefined ? state : `${state}: ${sandbox.reason}`;
+};
 
 function sandboxTable(sandboxes: readonly Sandbox[]): string {
 	return table(
@@ -3639,7 +3641,9 @@ async function execute(command: CommandSpec, argv: readonly string[], io: Io): P
 
 function report(error: unknown, io: Io): number {
 	if (error instanceof KantelApiError) {
-		io.stderr.write(`kantel: ${error.code}: ${error.message}\n`);
+		io.stderr.write(
+			`kantel: ${error.code}: ${error.message}${error.reason === undefined ? "" : ` (reason: ${error.reason})`}\n`,
+		);
 		if (error.code === "unauthenticated") io.stderr.write("Sign in with: kantel login (or set KANTEL_API_KEY)\n");
 		return 1;
 	}

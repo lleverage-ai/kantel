@@ -128,7 +128,11 @@ describe("createRoutedBackend", () => {
 			routed.recover("sbx_lost", { env: {}, eligibleHosts: eligible }),
 			routed.exec("sbx_lost", { command: "true" }),
 		]) {
-			await expect(call).rejects.toMatchObject({ code: "unavailable", message: NOT_HELD });
+			await expect(call).rejects.toMatchObject({
+				code: "unavailable",
+				message: NOT_HELD,
+				details: { reason: "host_unavailable" },
+			});
 		}
 		expect([...primary.seen, ...fallback.seen]).toEqual([]);
 		// What the fallback holds still goes there, a destroy of one neither holds too (it has nothing to destroy).

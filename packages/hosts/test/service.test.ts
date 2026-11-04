@@ -3,8 +3,9 @@
 import { isKantelError } from "@kantel/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHostsApi } from "../src/http.ts";
+import { HostCallError } from "../src/hub.ts";
 import { HOST_CLOSE_REPLACED, HOST_CLOSE_REVOKED, HOST_FEATURES, type HostSandbox } from "../src/protocol.ts";
-import { createHostsService, type HostsService, IMAGES_REFRESH_MS } from "../src/service.ts";
+import { createHostsService, type HostsService, IMAGES_REFRESH_MS, kantelErrorFromHost } from "../src/service.ts";
 import { createMemoryHostStore } from "../src/store.ts";
 import { FakeHost, facts } from "./fake-host.ts";
 
@@ -342,6 +343,72 @@ describe("hosts service", () => {
 		});
 		await tick();
 		expect(host.sent.filter((message) => message.type === "welcome")).toHaveLength(1);
+	});
+
+	it("says host_unavailable when the host goes while it boots a sandbox, and nothing for other calls", async () => {
+		const { service, join } = await setup();
+		const a = await join("a");
+		let host = new FakeHost(service, a.hostId);
+		host.connect();
+		await tick();
+		await service.sandboxes.create({ tier: "microvm", sandboxId: "sbx-held" });
+		const reasonOf = (call: Promise<unknown>) =>
+			call.then(
+				() => "answered",
+				(error: unknown) => (isKantelError(error) ? `${error.code} ${String(error.details?.reason)}` : String(error)),
+			);
+		/** `call` with the host holding `method` unanswered, then gone. */
+		const dropped = async (method: string, call: () => Promise<unknown>) => {
+			host.hold = (held) => (held === method ? new Promise<void>(() => undefined) : undefined);
+			const before = host.calls.length;
+			const pending = reasonOf(call());
+			while (!host.calls.slice(before).some((made) => made.method === method)) await tick();
+			service.hub.disconnect(a.hostId, 1001, "gone");
+			const answer = await pending;
+			host = new FakeHost(service, a.hostId);
+			host.connect();
+			await tick();
+			return answer;
+		};
+		expect(await dropped("sandbox.create", () => service.sandboxes.create({ tier: "microvm" }))).toBe(
+			"unavailable host_unavailable",
+		);
+		expect(await dropped("sandbox.start", () => service.sandboxes.call("sbx-held", "sandbox.start"))).toBe(
+			"unavailable host_unavailable",
+		);
+		// Not a boot: its host going is an ordinary `unavailable`.
+		expect(
+			await dropped("sandbox.exec", () => service.sandboxes.call("sbx-held", "sandbox.exec", { command: "true" })),
+		).toBe("unavailable undefined");
+		// Nor is a host's own failure of a boot a placement's.
+		const broke = kantelErrorFromHost(new HostCallError({ code: "unavailable", message: "It broke" }));
+		expect(isKantelError(broke, "unavailable") && broke.details).toBeUndefined();
+	});
+
+	it("says why it can't place a sandbox in details.reason, the codes as before", async () => {
+		const { service, join } = await setup();
+		const a = await join("a");
+		const host = new FakeHost(service, a.hostId);
+		host.freeMemoryMiB = 1_000;
+		host.connect();
+		await tick();
+		const refusal = (input: Parameters<HostsService["sandboxes"]["create"]>[0]) =>
+			service.sandboxes.create(input).then(
+				() => "placed",
+				(error: unknown) => (isKantelError(error) ? `${error.code} ${String(error.details?.reason)}` : String(error)),
+			);
+		expect(await refusal({ tier: "microvm" })).toBe("exhausted insufficient_capacity");
+		expect(await refusal({ tier: "microvm", labels: { zone: "ams" } })).toBe("exhausted no_host_with_labels");
+		expect(await refusal({ tier: "microvm", size: "huge" })).toBe("exhausted no_host_offers_size");
+		// Made from a snapshot, it goes only on the snapshot's host: that host being away is the reason.
+		const b = await join("b");
+		expect(await refusal({ tier: "microvm", hostIds: [b.hostId], from: "snap_1" })).toBe("exhausted host_unavailable");
+		expect(await refusal({ tier: "microvm", hostIds: [b.hostId] })).toBe("exhausted no_host");
+		// A host that refuses it for capacity itself says so too.
+		const fromHost = kantelErrorFromHost(new HostCallError({ code: "capacity", message: "The host is full" }));
+		expect(isKantelError(fromHost, "exhausted") && fromHost.details).toEqual({ reason: "insufficient_capacity" });
+		const other = kantelErrorFromHost(new HostCallError({ code: "internal", message: "It broke" }));
+		expect(isKantelError(other, "unavailable") && other.details).toBeUndefined();
 	});
 
 	it("sends a custom shape as its numbers, only to a host that makes them, and a named one by its name", async () => {

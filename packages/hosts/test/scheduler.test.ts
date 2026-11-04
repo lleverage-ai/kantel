@@ -168,4 +168,32 @@ describe("place", () => {
 		const full = place({ tier: "microvm", size: "large" }, [candidate("small", capacity(1_000))]);
 		expect(isRefusal(full) && full.reason).toMatch(/full/);
 	});
+
+	it("names the reason it can't place, after the check the nearest host failed", () => {
+		const codeOf = (...args: Parameters<typeof place>) => {
+			const chosen = place(...args);
+			return isRefusal(chosen) ? chosen.code : `placed on ${chosen.host.id}`;
+		};
+		const microvm = { tier: "microvm", size: "default" } as const;
+		expect(codeOf(microvm, [])).toBe("no_host");
+		expect(codeOf(microvm, [candidate("gone", {}, { connected: false })])).toBe("no_host");
+		expect(codeOf(microvm, [candidate("drained", { draining: true })])).toBe("no_host");
+		expect(codeOf(microvm, [candidate("new", { facts: undefined })])).toBe("no_host");
+		expect(codeOf(microvm, [candidate("revoked", { revoked: true })])).toBe("no_host");
+		const isolatesOnly = candidate("isolates", { facts: { ...facts, tiers: ["isolate"] } });
+		expect(codeOf(microvm, [isolatesOnly])).toBe("no_host_for_type");
+		expect(codeOf({ tier: "microvm", size: "xlarge" }, [candidate("h")])).toBe("no_host_offers_size");
+		expect(codeOf({ tier: "microvm", shape: { vcpus: 3, memoryMiB: 3072 } }, [candidate("named")])).toBe(
+			"no_host_offers_size",
+		);
+		expect(codeOf({ ...microvm, labels: { zone: "ams" } }, [candidate("h", { labels: { zone: "fra" } })])).toBe(
+			"no_host_with_labels",
+		);
+		expect(codeOf(microvm, [candidate("full", capacity(1_000))])).toBe("insufficient_capacity");
+		// Hosts turned away for different reasons: the one that got furthest names it, so a full host says to retry.
+		expect(
+			codeOf(microvm, [isolatesOnly, candidate("gone", {}, { connected: false }), candidate("full", capacity(1_000))]),
+		).toBe("insufficient_capacity");
+		expect(codeOf(microvm, [isolatesOnly, candidate("drained", { draining: true })])).toBe("no_host_for_type");
+	});
 });

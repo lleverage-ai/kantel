@@ -64,10 +64,16 @@ export interface AcceptedHost {
 /** A call the host answered with an error, or that never got an answer. */
 export class HostCallError extends Error {
 	readonly code: string;
-	constructor(error: HostError) {
+	/**
+	 * The host wasn't there to answer: not connected, or gone while the call waited. A host's own refusal or failure,
+	 * and a timeout, isn't this.
+	 */
+	readonly disconnected: boolean;
+	constructor(error: HostError, how: { readonly disconnected?: boolean } = {}) {
 		super(error.message);
 		this.name = "HostCallError";
 		this.code = error.code;
+		this.disconnected = how.disconnected === true;
 	}
 }
 
@@ -326,7 +332,9 @@ export function createHostHub(options: HostHubOptions): HostHub {
 		connection.closed = true;
 		for (const [id, pending] of connection.pending) {
 			clearTimeout(pending.timer);
-			pending.reject(new HostCallError({ code: "unavailable", message: `The host disconnected: ${reason}` }));
+			pending.reject(
+				new HostCallError({ code: "unavailable", message: `The host disconnected: ${reason}` }, { disconnected: true }),
+			);
 			connection.pending.delete(id);
 		}
 		for (const [id, sink] of connection.streams) {
@@ -342,7 +350,10 @@ export function createHostHub(options: HostHubOptions): HostHub {
 	const current = (hostId: string): Connection => {
 		const connection = held.get(hostId);
 		if (connection === undefined || !connection.welcomed || connection.closed) {
-			throw new HostCallError({ code: "unavailable", message: `Host ${hostId} is not connected` });
+			throw new HostCallError(
+				{ code: "unavailable", message: `Host ${hostId} is not connected` },
+				{ disconnected: true },
+			);
 		}
 		return connection;
 	};

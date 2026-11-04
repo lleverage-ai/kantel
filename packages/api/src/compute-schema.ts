@@ -15,7 +15,7 @@ import {
 	MAX_MOUNTS,
 } from "@kantel/contracts/mounts";
 import Type, { type Static } from "typebox";
-import { Timestamp } from "./schema.ts";
+import { PlacementReason, Timestamp } from "./schema.ts";
 
 const id = (description: string) => Type.String({ description });
 const limit = Type.Optional(Type.Integer({ minimum: 1, maximum: 500, description: "At most this many; default 50." }));
@@ -732,6 +732,7 @@ export const Sandbox = Type.Object(
 		state: SandboxState,
 		health: Type.Optional(SandboxHealth),
 		reason: Type.Optional(Type.String({ description: "Why it is in `error` or `degraded`, in words." })),
+		placementReason: Type.Optional(PlacementReason),
 		visibility: SandboxVisibility,
 		capabilities: SandboxCapabilities,
 		labels: Type.Record(Type.String(), Type.String(), { description: "The caller's own labels." }),
@@ -2372,6 +2373,7 @@ export const Event = Type.Object(
 				state: Type.Optional(SandboxState),
 				previousState: Type.Optional(SandboxState),
 				reason: Type.Optional(Type.String()),
+				placementReason: Type.Optional(PlacementReason),
 				actor: Type.Optional(CreatedBy),
 			},
 			{ title: "EventData" },

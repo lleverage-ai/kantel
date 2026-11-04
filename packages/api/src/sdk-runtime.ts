@@ -59,17 +59,23 @@ export interface CallOptions {
 	readonly headers?: { readonly [name: string]: string };
 }
 
-/** An error Kantel answered with: its KantelError code (or `unauthenticated`), message and HTTP status. */
+/**
+ * An error Kantel answered with: its KantelError code (or `unauthenticated`), message and HTTP status, and its details.
+ * A sandbox that can't be placed has `reason` (`details.reason`), such as `insufficient_capacity`: retry later.
+ */
 export class KantelApiError extends Error {
 	readonly status: number;
 	readonly code: string;
 	readonly details?: { readonly [key: string]: unknown };
+	/** Why a sandbox couldn't be placed, a `PlacementReason` such as `no_host_for_type`; absent for other errors. */
+	readonly reason?: string;
 	constructor(status: number, code: string, message: string, details?: { readonly [key: string]: unknown }) {
 		super(message);
 		this.name = "KantelApiError";
 		this.status = status;
 		this.code = code;
 		if (details !== undefined) this.details = details;
+		if (typeof details?.reason === "string") this.reason = details.reason;
 	}
 }
 

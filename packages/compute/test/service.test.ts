@@ -2,7 +2,7 @@ import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
 import { KantelError } from "@kantel/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
-import type { SandboxBackend } from "../src/backend.ts";
+import type { BackendCapabilities, SandboxBackend } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createRoutedBackend, NOT_HELD } from "../src/routed-backend.ts";
 import {
@@ -40,7 +40,7 @@ afterEach(async () => {
 
 function setup(
 	backend: SandboxBackend = createStubBackend(),
-	extra: Pick<Parameters<typeof createComputeApi>[0], "sharedHosts" | "invites"> = {},
+	extra: Pick<Parameters<typeof createComputeApi>[0], "sharedHosts" | "invites" | "limits"> = {},
 ) {
 	const api = createComputeApi({
 		...extra,
@@ -443,6 +443,123 @@ describe("sandboxes", () => {
 		expect(stopped.state).toBe("stopped");
 		expect(stopped.usage.runningSeconds).toBe(31 * 60);
 		expect(stopped.cost.total).toBeGreaterThan(0);
+	});
+});
+
+describe("placement reasons", () => {
+	/** The stub, its hosts as `hosts` says (the stub's own one, as it reports it, by default). */
+	function placing(
+		hosts: (own: BackendCapabilities) => BackendCapabilities = (own) => own,
+		types?: Parameters<typeof createStubBackend>[0],
+	): SandboxBackend {
+		const stub = createStubBackend(types);
+		return { ...stub, capabilities: async () => hosts(await stub.capabilities()) };
+	}
+	const reasonOf = async (call: Promise<unknown>) => {
+		const error = await failure(call);
+		return { status: error.status, code: error.code, reason: error.reason, details: error.details };
+	};
+
+	it("says no_host when no host is connected, and no_host_for_type when none runs the type", async () => {
+		const { tom } = setup(placing(() => ({ types: [], sizes: [], hosts: [] })));
+		expect(await reasonOf(tom.createSandbox({ type: "microvm" }))).toEqual({
+			status: 503,
+			code: "unavailable",
+			reason: "no_host",
+			details: { reason: "no_host" },
+		});
+		const isolates = setup(placing(undefined, { types: ["isolate"] }));
+		expect(await reasonOf(isolates.tom.createSandbox({ type: "microvm" }))).toMatchObject({
+			status: 503,
+			code: "unavailable",
+			reason: "no_host_for_type",
+		});
+		// The host is there, but offline.
+		const offline = setup(
+			placing((own) => ({ ...own, hosts: own.hosts.map((host) => ({ ...host, connected: false })) })),
+		);
+		expect(await reasonOf(offline.tom.createSandbox({ type: "microvm" }))).toMatchObject({
+			status: 503,
+			reason: "no_host",
+		});
+	});
+
+	it("says no_host_with_labels and no_host_offers_size, the codes as before", async () => {
+		const { tom } = setup(placing((own) => ({ ...own, sizes: own.sizes.filter((size) => size.name !== "xlarge") })));
+		expect(await reasonOf(tom.createSandbox({ hostLabels: { zone: "ams" } }))).toMatchObject({
+			status: 503,
+			code: "unavailable",
+			reason: "no_host_with_labels",
+		});
+		expect(await reasonOf(tom.createSandbox({ type: "microvm", size: "xlarge" }))).toMatchObject({
+			status: 501,
+			code: "not_supported",
+			reason: "no_host_offers_size",
+		});
+	});
+
+	it("says account_limit when the account runs as many sandboxes as it may", async () => {
+		const { tom } = setup(placing(), { limits: { concurrentSandboxes: 1 } });
+		await tom.createSandbox({ wait: true });
+		expect(await reasonOf(tom.createSandbox({}))).toMatchObject({
+			status: 429,
+			code: "exhausted",
+			reason: "account_limit",
+		});
+	});
+
+	it("says host_unavailable when a stopped sandbox's host can't take it back", async () => {
+		let hostUp = true;
+		let otherHost = false;
+		const backend = placing((own) => {
+			const [stub] = own.hosts;
+			if (stub === undefined) throw new Error("The stub has a host");
+			return {
+				...own,
+				hosts: [
+					{ ...stub, connected: hostUp },
+					...(otherHost ? [{ ...stub, id: "host_other", name: "other", connected: true }] : []),
+				],
+			};
+		});
+		const { tom } = setup(backend);
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		hostUp = false;
+		// No host at all: the start is refused, naming its own host as the trouble.
+		expect(await reasonOf(tom.startSandbox(sandbox.id, { wait: true }))).toMatchObject({
+			status: 503,
+			code: "unavailable",
+			reason: "host_unavailable",
+		});
+		// So are a fork of it and a sandbox made from its snapshot, bound to that host as it is, whatever the fleet has.
+		expect(await reasonOf(tom.forkSandbox(sandbox.id, {}))).toMatchObject({
+			status: 503,
+			code: "unavailable",
+			reason: "host_unavailable",
+		});
+		const snapshotId = (await tom.getSandbox(sandbox.id)).latestSnapshotId;
+		expect(snapshotId).toBeDefined();
+		expect(await reasonOf(tom.createSandbox({ type: "microvm", from: snapshotId }))).toMatchObject({
+			status: 503,
+			code: "unavailable",
+			reason: "host_unavailable",
+		});
+		// Another host is up, but its disk is on its own: its boot fails, and the sandbox says why.
+		otherHost = true;
+		const started = await tom.startSandbox(sandbox.id, { wait: true });
+		expect(started).toMatchObject({ state: "error", placementReason: "host_unavailable" });
+		// Back on its host, it starts, and the reason goes with the error.
+		hostUp = true;
+		const again = await tom.startSandbox(sandbox.id, { wait: true });
+		expect(again.state).toBe("running");
+		expect(again.placementReason).toBeUndefined();
+	});
+
+	it("carries no reason on other errors", async () => {
+		const { tom } = setup();
+		const error = await failure(tom.getSandbox("sbx_missing"));
+		expect([error.code, error.reason, error.details]).toEqual(["not_found", undefined, undefined]);
 	});
 });
 

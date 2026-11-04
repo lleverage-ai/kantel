@@ -29,6 +29,9 @@ import {
 	mountCovering,
 	mountsTouching,
 	normaliseEmail,
+	type PlacementReason,
+	placementError,
+	placementReasonOf,
 } from "@kantel/contracts";
 import type { ChainEntry } from "@kantel/e2e/chain";
 import {
@@ -752,8 +755,9 @@ export function shapeFor(
 	const presets = hosts.flatMap((host) => host.sizes ?? deploymentSizes);
 	const shape = checkShape(type, resources, presets);
 	if (type === "microvm" && checkHosts && !hosts.some((host) => makesShape(host, deploymentSizes, shape))) {
-		throw new KantelError(
+		throw placementError(
 			"not_supported",
+			"no_host_offers_size",
 			`No host this sandbox may use can make a microVM of ${shape.vcpus} vCPU and ${shape.memoryMb} MB; see getSandboxShapes`,
 		);
 	}
@@ -1524,19 +1528,34 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		affine: boolean,
 		shared: boolean,
 	): string[] {
-		const qualifying = hosts
-			.filter((host) => host.state === "online" || (affine && host.state === "draining"))
-			.filter((host) => host.tiers.includes(type))
-			.filter((host) => Object.entries(labels).every(([key, value]) => host.labels[key] === value));
+		// The hosts it may use, narrowed a check at a time, so a refusal says which check left none.
+		const up = hosts
+			.filter((host) => host.accountId === accountId || (shared && host.accountId === undefined))
+			.filter((host) => host.state === "online" || (affine && host.state === "draining"));
+		const typed = up.filter((host) => host.tiers.includes(type));
+		const qualifying = typed.filter((host) =>
+			Object.entries(labels).every(([key, value]) => host.labels[key] === value),
+		);
 		const own = qualifying.filter((host) => host.accountId === accountId);
 		const common = shared ? qualifying.filter((host) => host.accountId === undefined) : [];
 		const eligible = (affine ? [...own, ...common] : own.length > 0 ? own : common).map((host) => host.id);
 		if (eligible.length === 0) {
-			throw new KantelError(
+			// Bound to its disk or snapshot, it can go only on that one host, whatever else the fleet has: that host is the
+			// reason, as it is when the boot finds it gone with other hosts up.
+			const reason: PlacementReason = affine
+				? "host_unavailable"
+				: up.length === 0
+					? "no_host"
+					: typed.length === 0
+						? "no_host_for_type"
+						: "no_host_with_labels";
+			const what = `${article(type)} ${type} sandbox${reason === "no_host_with_labels" ? " with those host labels" : ""}`;
+			throw placementError(
 				"unavailable",
+				reason,
 				shared
-					? `No host can run ${article(type)} ${type} sandbox now`
-					: `No host of this account's own can run ${article(type)} ${type} sandbox now. Add one with kantel hosts add, or under Hosts in the console`,
+					? `No host can run ${what} now`
+					: `No host of this account's own can run ${what} now. Add one with kantel hosts add, or under Hosts in the console`,
 			);
 		}
 		return eligible;
@@ -1588,6 +1607,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			state: sandbox.state,
 			health: sandbox.health,
 			reason: sandbox.reason,
+			placementReason: sandbox.placementReason,
 			visibility: sandbox.visibility,
 			capabilities: sandbox.capabilities,
 			labels: sandbox.labels,
@@ -2384,6 +2404,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			stoppedAt: state === "stopped" || state === "paused" ? at : sandbox.stoppedAt,
 			lifecycle: (sandbox.lifecycle ?? 0) + 1,
 			reason: extra.reason,
+			placementReason: extra.placementReason,
 			// A stop it was due for is done with once it boots again.
 			...(state === "starting" ? { stopFor: undefined } : {}),
 		};
@@ -2486,7 +2507,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			(sandbox) => sandbox.state === "starting" || sandbox.state === "running" || sandbox.state === "stopping",
 		).length;
 		if (active + adding > limits.concurrentSandboxes) {
-			throw new KantelError("exhausted", `The account may run ${limits.concurrentSandboxes} sandboxes at once`);
+			throw placementError(
+				"exhausted",
+				"account_limit",
+				`The account may run ${limits.concurrentSandboxes} sandboxes at once`,
+			);
 		}
 	}
 
@@ -2735,12 +2760,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 */
 	async function fail(sandboxId: string, error: unknown, from: SandboxState): Promise<StoredSandbox | undefined> {
 		const reason = messageOf(error);
-		const result = await transition(sandboxId, from, (sandbox) => withState(sandbox, "error", { reason })).catch(
-			() => undefined,
-		);
+		const placementReason = placementReasonOf(error);
+		const result = await transition(sandboxId, from, (sandbox) =>
+			withState(sandbox, "error", { reason, ...(placementReason === undefined ? {} : { placementReason }) }),
+		).catch(() => undefined);
 		if (result === undefined || !("moved" in result)) return undefined;
 		const next = result.moved;
-		await emit("sandbox.error", next.accountId, { sandbox: next, data: { previousState: from, reason } });
+		await emit("sandbox.error", next.accountId, {
+			sandbox: next,
+			data: { previousState: from, reason, ...(placementReason === undefined ? {} : { placementReason }) },
+		});
 		return next;
 	}
 
@@ -4034,13 +4063,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// A check below may refuse the call before this is awaited.
 				known.catch(() => undefined);
 				const capabilities = await read;
-				if (!capabilities.types.includes(type)) throw new KantelError("unavailable", `No host runs ${type} sandboxes`);
+				if (!capabilities.types.includes(type)) {
+					throw placementError(
+						"unavailable",
+						capabilities.hosts.length === 0 ? "no_host" : "no_host_for_type",
+						`No host runs ${type} sandboxes`,
+					);
+				}
 				if (type === "isolate" && body.size !== undefined) throw new KantelError("invalid", "Isolates have no size");
 				if (body.size !== undefined && body.resources !== undefined) {
 					throw new KantelError("invalid", "Give resources or a size, not both");
 				}
 				if (body.size !== undefined && !capabilities.sizes.some((size) => size.name === body.size)) {
-					throw new KantelError("not_supported", `This deployment doesn't offer the size ${body.size}`);
+					throw placementError(
+						"not_supported",
+						"no_host_offers_size",
+						`This deployment doesn't offer the size ${body.size}`,
+					);
 				}
 				if (account.kind === "personal" && body.visibility === "organisation") {
 					throw new KantelError("invalid", "A personal account's sandboxes are always private");

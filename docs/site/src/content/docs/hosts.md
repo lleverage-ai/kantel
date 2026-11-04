@@ -244,7 +244,7 @@ curl -s -X POST "$KANTEL_URL/v1/sandboxes" \
   -d '{"type": "microvm", "hostLabels": {"zone": "ams"}}'
 ```
 
-The `kantel` command has no flag for this yet. When no host can take a sandbox, the create answers `503` with `unavailable`, such as `No host can run a microvm sandbox now`.
+The `kantel` command has no flag for this yet. When no host can take a sandbox, Kantel says why: the create answers `503` with `unavailable` and `details.reason` `no_host_with_labels` when no host has the labels, and a sandbox whose matching hosts are all full goes to `error` with `placementReason` `insufficient_capacity`. [When it can't be placed](/sandboxes/lifecycle/#when-it-cant-be-placed) lists them.
 
 A host offers three microVM sizes unless its settings say otherwise:
 

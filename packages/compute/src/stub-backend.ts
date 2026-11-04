@@ -9,7 +9,7 @@
  * boundary: it is a stand-in for lane 2's host scheduler.
  */
 import type { computeSchema } from "@kantel/api";
-import { KantelError } from "@kantel/contracts";
+import { KantelError, placementError } from "@kantel/contracts";
 import { Bash, InMemoryFs } from "just-bash";
 import {
 	type BackendCapabilities,
@@ -295,10 +295,13 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			throw new KantelError("not_supported", `${what} needs a microVM; this is an isolate`);
 	};
 	const placeable = (eligibleHosts: readonly string[], type: computeSchema.SandboxType) => {
-		if (!types.includes(type)) throw new KantelError("unavailable", `No host runs ${type} sandboxes`);
+		if (!types.includes(type)) {
+			throw placementError("unavailable", "no_host_for_type", `No host runs ${type} sandboxes`);
+		}
 		if (eligibleHosts.includes(STUB_HOST_ID)) return;
-		throw new KantelError(
+		throw placementError(
 			"unavailable",
+			"host_unavailable",
 			eligibleHosts.length === 0
 				? `The stub's host (${STUB_HOST_ID}) isn't one this sandbox may use now: none of its eligible hosts is the stub's`
 				: `The stub's host (${STUB_HOST_ID}) isn't one this sandbox may use now; it may use ${eligibleHosts.join(", ")}`,
