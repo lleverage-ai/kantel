@@ -50,6 +50,7 @@ import {
 	type SavedSnapshot,
 	sandboxActions,
 	sandboxMoving,
+	sandboxSpec,
 	shapeCentsPerHour,
 	shapeCreatable,
 	sizeText,
@@ -836,8 +837,7 @@ function SandboxRow({
 				)}
 			</td>
 			<td className={cell}>
-				{SANDBOX_KIND_LABELS[sandbox.kind]}{" "}
-				<span className="text-faint">{sizeText(sandbox.resources ?? sandbox.size)}</span>
+				{SANDBOX_KIND_LABELS[sandbox.kind]} <span className="text-faint">{sizeText(sandboxSpec(sandbox))}</span>
 			</td>
 			<td className={cell}>
 				{sandbox.environment === undefined ? <span className="text-faint">–</span> : sandbox.environment.name}
@@ -937,7 +937,7 @@ function SandboxPhoneRow({
 			) : (
 				<span className="flex min-w-0 flex-wrap gap-x-3 text-sm text-muted">
 					<span>
-						{SANDBOX_KIND_LABELS[sandbox.kind]}, {sizeText(sandbox.resources ?? sandbox.size)}
+						{SANDBOX_KIND_LABELS[sandbox.kind]}, {sizeText(sandboxSpec(sandbox))}
 					</span>
 					{sandbox.environment === undefined ? null : <span>{sandbox.environment.name}</span>}
 					{stops === "–" ? null : <span>{stops === "Always on" || stops === "Now" ? stops : `Stops ${stops}`}</span>}
