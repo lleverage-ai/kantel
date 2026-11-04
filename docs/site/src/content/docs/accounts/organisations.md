@@ -19,8 +19,8 @@ Everything in Kantel belongs to an account: sandboxes, snapshots, API keys, webh
 ## In the console
 
 - **Create an organisation**: open the account switcher and select **Create an organisation**. You become its owner, and the console switches to it.
-- **Invite someone**: on the organisation's **Organisation** page, select **Invite people**, enter their email address and a role, and pass on the join code it shows. The code is shown once.
-- **Join one**: open the account switcher, select **Join with an invite code**, and enter the code you were given. Sign in first with the email address the invite was made for.
+- **Invite someone**: switch to the organisation, open **Settings**, then **General**, select **Invite**, enter their email address and a role, and pass on the join code it shows. The code is shown once. Admins and owners change a member's role from the same list.
+- **Join one**: open the account switcher, select **Join with an invite code**, and enter the code you were given. Sign in first with the email address the invite was made for: signed in as anyone else, the console says which email the invite is for and offers **Sign out**.
 
 The account switcher also moves you between your personal space and your organisations. The rest of this page does the same over the API.
 

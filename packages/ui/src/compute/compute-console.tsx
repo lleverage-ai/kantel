@@ -747,6 +747,7 @@ export function ComputeConsole({
 			<JoinOrganisationDialog
 				open={dialog === "join"}
 				onClose={() => setDialog(undefined)}
+				{...(onSignOut === undefined ? {} : { onSignOut })}
 				onJoin={async (code) => {
 					const joined = await source.accounts.join(code);
 					switchTo(joined);
