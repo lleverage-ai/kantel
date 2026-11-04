@@ -93,6 +93,10 @@ type Facts struct {
 // where they are bound, refuses an egress older than its Revision, and gives a fork the Env its ForkParams name.
 const FeatureEgressPolicy = "egress-policy"
 
+// FeatureCustomShapes: sandbox.create takes vcpus, memoryMiB and diskGiB for a microVM shape off the named sizes,
+// and memoryMiB for an isolate.
+const FeatureCustomShapes = "custom-shapes"
+
 // Size is a sandbox shape.
 type Size struct {
 	Name      string `json:"name"`
@@ -298,6 +302,13 @@ type CreateParams struct {
 	// Owner is the organisation or account the sandbox belongs to; the isolate tier keeps each owner's sandboxes in
 	// their own VM.
 	Owner string `json:"owner,omitempty"`
+	// VCPUs, MemoryMiB and DiskGiB are, for a microVM, a shape off the host's named sizes (all three set, Size
+	// empty), which cold-boots: no warm pool or template is kept for it. For an isolate, MemoryMiB is the memory asked
+	// for, recorded and passed to the runtime but not enforced per isolate (workerd has no per-isolate memory limit;
+	// the account VM's memory is the bound).
+	VCPUs     int `json:"vcpus,omitempty"`
+	MemoryMiB int `json:"memoryMiB,omitempty"`
+	DiskGiB   int `json:"diskGiB,omitempty"`
 }
 
 type SandboxRef struct {

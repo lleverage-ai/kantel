@@ -167,8 +167,10 @@ across gateways.
 
 ## 5. Warm acquisition, claims and leases
 
-- **The warm claim is on the host.** Each host keeps its own pool of pre-warmed microVMs (`microvm/default: 1` by
-  default, set by the gateway in the host's welcome). It claims one under its own lock, in 0.2–0.4 ms of the roughly
+- **The warm claim is on the host.** A host may keep its own pool of pre-warmed microVMs, set by the gateway in the
+  host's welcome: the host's own `pools`, else the deployment's (`microvm/default: 1` hosted; none self-hosted, where a
+  host may be doing other things, unless `KANTEL_COMPUTE_POOLS` or the host's `pools` asks). A pool is of a named size,
+  so it serves only a create of that size's exact vCPUs and memory; any other shape cold-boots. It claims one under its own lock, in 0.2–0.4 ms of the roughly
   145 ms create. The gateway holds no lease on a warm sandbox. So two gateways can't double-claim one: the second
   create on a host with an empty pool falls back to restoring the template snapshot (about 210 ms). That is slower but
   correct.

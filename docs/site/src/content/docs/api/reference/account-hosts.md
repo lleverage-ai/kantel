@@ -67,7 +67,7 @@ A key needs `account:read`. Experimental: `not_supported` unless the deployment 
 
 `PATCH /v1/hosts/{hostId}` (SDK method `updateAccountHost`)
 
-Renames it, replaces its labels, or drains it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
+Renames it, replaces its labels, drains it, or sets its warm pools. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).
 
 **Path parameters**
 

@@ -89,6 +89,24 @@ type meta struct {
 	Env       map[string]string `json:"env,omitempty"`
 	Egress    *proto.Egress     `json:"egress,omitempty"`
 	Error     string            `json:"error,omitempty"`
+	// MemoryMiB is the memory the sandbox asked for (DefaultMemoryMiB when it asked for none; 0 in a sandbox made
+	// before it was recorded). Requested, not enforced: workerd's WorkerLoader limits take only cpuMs and subRequests,
+	// so the runtime records it; the account VM's memory (Config.MemoryMiB) is the enforced ceiling, shared by the
+	// owner's isolates.
+	MemoryMiB int `json:"memoryMiB,omitempty"`
+}
+
+// An isolate's memory: what a sandbox gets when it asks for none, and the range it may ask for.
+const (
+	DefaultMemoryMiB = 256
+	minMemoryMiB     = 128
+	maxMemoryMiB     = 512
+	stepMemoryMiB    = 64
+)
+
+// validMemory says memoryMiB is a memory an isolate may ask for (0 is none asked).
+func validMemory(memoryMiB int) bool {
+	return memoryMiB == 0 || (memoryMiB >= minMemoryMiB && memoryMiB <= maxMemoryMiB && memoryMiB%stepMemoryMiB == 0)
 }
 
 // Entry is one path in a manifest (the same shape as images/isolate-host/src/sandbox.ts's ManifestEntry).
@@ -872,7 +890,12 @@ func (m *Manager) load(ctx context.Context, s *sandbox, t timings) (string, erro
 	var res struct {
 		Hit any `json:"hit"`
 	}
-	if err := r.call(ctx, "/load", map[string]string{"sandboxId": s.meta.ID}, &res); err != nil {
+	memoryMiB := s.meta.MemoryMiB
+	if memoryMiB == 0 {
+		memoryMiB = DefaultMemoryMiB
+	}
+	// memoryMiB is recorded by the runtime, not enforced (meta.MemoryMiB).
+	if err := r.call(ctx, "/load", map[string]any{"sandboxId": s.meta.ID, "memoryMiB": memoryMiB}, &res); err != nil {
 		return "", err
 	}
 	t.step("isolate", &start)
@@ -889,10 +912,17 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 	if !validID(p.SandboxID) {
 		return proto.SandboxInfo{}, &proto.Error{Code: proto.ErrInvalid, Message: "bad sandbox ID"}
 	}
+	if !validMemory(p.MemoryMiB) {
+		return proto.SandboxInfo{}, &proto.Error{Code: proto.ErrInvalid, Message: "an isolate's memory is 128 to 512 MiB in steps of 64"}
+	}
+	memoryMiB := p.MemoryMiB
+	if memoryMiB == 0 {
+		memoryMiB = DefaultMemoryMiB
+	}
 	t := timings{}
 	began := time.Now()
 	dir := filepath.Join(m.cfg.Root, "sandboxes", p.SandboxID)
-	s := &sandbox{dir: dir, meta: meta{ID: p.SandboxID, Owner: p.Owner, State: proto.StateStarting, CreatedAt: time.Now().UnixMilli(), Env: p.Env, Egress: p.Egress}}
+	s := &sandbox{dir: dir, meta: meta{ID: p.SandboxID, Owner: p.Owner, State: proto.StateStarting, CreatedAt: time.Now().UnixMilli(), Env: p.Env, Egress: p.Egress, MemoryMiB: memoryMiB}}
 	m.mu.Lock()
 	if _, ok := m.sandboxes[p.SandboxID]; ok {
 		m.mu.Unlock()
@@ -1023,7 +1053,7 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 	}
 	snap := proto.SnapshotInfo{ID: snapID, SandboxID: src.meta.ID, Kind: "auto", CreatedAt: time.Now().UnixMilli(), Tier: Tier}
 	err = m.saveSnapshot(src, &snap)
-	owner, env := src.meta.Owner, src.meta.Env
+	owner, env, memoryMiB := src.meta.Owner, src.meta.Env, src.meta.MemoryMiB
 	if p.Env != nil {
 		// The fork's own: its protected placeholders aren't its source's.
 		env = p.Env
@@ -1037,7 +1067,7 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 		return proto.SandboxInfo{}, err
 	}
 	m.pruneAuto(src.meta.ID)
-	info, err := m.Create(ctx, proto.CreateParams{SandboxID: p.NewID, Tier: Tier, From: snapID, Env: env, Egress: eg, Owner: owner})
+	info, err := m.Create(ctx, proto.CreateParams{SandboxID: p.NewID, Tier: Tier, From: snapID, Env: env, Egress: eg, Owner: owner, MemoryMiB: memoryMiB})
 	if err != nil {
 		return info, err
 	}

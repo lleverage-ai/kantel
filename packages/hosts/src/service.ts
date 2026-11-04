@@ -25,7 +25,7 @@ import {
 	needsEgressPolicy,
 	type SandboxTier,
 } from "./protocol.ts";
-import { type Candidate, isRefusal, place, sizeOn } from "./scheduler.ts";
+import { type Candidate, isRefusal, makesCustomShapes, place, type Shape, sizeOn } from "./scheduler.ts";
 import type { HostRecord, HostStore, PlacementRecord } from "./store.ts";
 
 /** Whether a host reports enforcing egress grants and protected variables. */
@@ -59,6 +59,8 @@ export interface HostView {
 		readonly diskGb: number;
 	};
 	readonly labels: { readonly [key: string]: string };
+	/** The warm machines it keeps, by `<tier>/<size>`: its own setting, else the deployment's. Empty: none. */
+	readonly pools: { readonly [pool: string]: number };
 	/** The account whose own host it is, which alone may use it; absent for a shared host. */
 	readonly accountId?: string;
 	readonly joinedAt: number;
@@ -76,8 +78,13 @@ export interface JoinTokenView {
 export interface CreateSandboxInput {
 	readonly sandboxId?: string;
 	readonly tier: SandboxTier;
-	/** Default `default` (microVMs); isolates have one size. */
+	/** A microVM's named size, as asked for before shapes. Default `default`; `shape` wins. */
 	readonly size?: string;
+	/**
+	 * A microVM's vCPUs and memory, or an isolate's memory (`vcpus` 0). A shape off the host's named sizes boots from
+	 * scratch; an isolate's memory is recorded on its host, not enforced.
+	 */
+	readonly shape?: Shape;
 	/**
 	 * The organisation or account; isolates of one owner share a VM. An account's own host takes only that
 	 * owner's sandboxes, so a sandbox with no owner never goes on one.
@@ -150,7 +157,10 @@ export interface HostsServiceOptions {
 	 * `curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url {url} --token {token}`.
 	 */
 	readonly joinCommand?: string;
-	/** Warm sandboxes wanted on every host, by `<tier>/<size>`. Default `{"microvm/default": 1}`. */
+	/**
+	 * Warm sandboxes wanted on every host without a setting of its own, by `<tier>/<size>`. Default none: a warm
+	 * machine holds its memory while idle, and a self-hosted machine may be doing other things.
+	 */
 	readonly pools?: { readonly [pool: string]: number };
 	/** The version hosts should run, and where they get it (`{version}`, `{os}`, `{arch}`). */
 	readonly desiredVersion?: string;
@@ -217,6 +227,8 @@ export interface HostsService {
 			readonly name?: string;
 			readonly labels?: { readonly [key: string]: string };
 			readonly draining?: boolean;
+			/** The host's own warm pools; null goes back to the deployment's. */
+			readonly pools?: { readonly [pool: string]: number } | null;
 		},
 	): Promise<HostView>;
 	revoke(hostId: string): Promise<HostView>;
@@ -280,6 +292,38 @@ function labelsOf(value: unknown): { [key: string]: string } {
 }
 
 const SANDBOX_ID = /^[a-z0-9][a-z0-9_-]{2,62}$/;
+const POOL = /^(microvm|isolate)\/[a-z0-9-]+$/;
+/** At most this many warm machines of one shape on a host. */
+const MAX_POOL = 16;
+
+/** Warm pools as given: `<tier>/<size>` to a count from 0 to 16. */
+function poolsIn(value: unknown): { [pool: string]: number } {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		throw new KantelError("invalid", "pools is an object of counts by `<tier>/<size>`");
+	}
+	const out: { [pool: string]: number } = {};
+	for (const [pool, count] of Object.entries(value)) {
+		if (!POOL.test(pool))
+			throw new KantelError("invalid", `${pool} isn't a pool: it is <tier>/<size>, such as microvm/default`);
+		if (typeof count !== "number" || !Number.isInteger(count) || count < 0 || count > MAX_POOL) {
+			throw new KantelError("invalid", `A pool keeps 0 to ${MAX_POOL} warm machines`);
+		}
+		if (count > 0) out[pool] = count;
+	}
+	return out;
+}
+
+/** A shape as asked: whole vCPUs (0 for an isolate) and memory in MiB, at least 128. */
+function shapeIn(shape: Shape, tier: SandboxTier): Shape {
+	const { vcpus, memoryMiB } = shape;
+	if (!Number.isInteger(vcpus) || !Number.isInteger(memoryMiB) || memoryMiB < 128) {
+		throw new KantelError("invalid", "A shape is whole vCPUs and at least 128 MiB of memory");
+	}
+	if (tier === "microvm" ? vcpus < 1 : vcpus !== 0) {
+		throw new KantelError("invalid", tier === "microvm" ? "A microVM has at least 1 vCPU" : "An isolate has no vCPUs");
+	}
+	return { vcpus, memoryMiB };
+}
 
 /** A host's error as Kantel's: the codes line up where they can. */
 export function kantelErrorFromHost(error: unknown): unknown {
@@ -299,7 +343,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	const { store } = options;
 	const clock = options.clock ?? systemClock;
 	const log = options.log ?? ((message: string) => console.error(message));
-	const pools = options.pools ?? { "microvm/default": 1 };
+	const pools = options.pools ?? {};
+	/** The warm pools a host is to keep: its own, else the deployment's. */
+	const poolsOf = (host: HostRecord) => host.pools ?? pools;
 	let joinTokens: ExternalJoinTokens = store;
 	let compute: HostComputeLink | undefined;
 	/**
@@ -327,7 +373,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	const welcomeFor = (host: HostRecord): HostWelcome => ({
 		hostId: host.id,
 		heartbeatSeconds: options.heartbeatSeconds ?? 15,
-		pools: host.draining ? {} : pools,
+		pools: host.draining ? {} : poolsOf(host),
 		...(host.draining ? { draining: true } : {}),
 		...(options.desiredVersion === undefined ? {} : { desiredVersion: options.desiredVersion }),
 		...(options.updateUrl === undefined ? {} : { updateUrl: options.updateUrl }),
@@ -459,6 +505,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				diskGb: placements.reduce((sum, placement) => sum + placement.diskGiB, 0),
 			},
 			labels: { ...facts?.labels, ...host.labels },
+			pools: { ...poolsOf(host) },
 			...(host.accountId === undefined ? {} : { accountId: host.accountId }),
 			joinedAt: host.joinedAt,
 			...(host.lastSeenAt === undefined ? {} : { lastSeenAt: host.lastSeenAt }),
@@ -634,14 +681,19 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			) {
 				throw new KantelError("invalid", "A host's name is 1 to 100 characters");
 			}
+			const { pools: _pools, ...rest } = host;
+			const nextPools =
+				change.pools === undefined ? host.pools : change.pools === null ? undefined : poolsIn(change.pools);
 			const next: HostRecord = {
-				...host,
+				...rest,
 				...(change.name === undefined ? {} : { name: change.name }),
 				...(change.labels === undefined ? {} : { labels: labelsOf(change.labels) }),
 				...(change.draining === undefined ? {} : { draining: change.draining === true }),
+				...(nextPools === undefined ? {} : { pools: nextPools }),
 			};
 			await store.putHost(next);
-			if (change.draining !== undefined && change.draining !== host.draining) hub.rewelcome(hostId, welcomeFor(next));
+			const redrained = change.draining !== undefined && change.draining !== host.draining;
+			if (redrained || change.pools !== undefined) hub.rewelcome(hostId, welcomeFor(next));
 			return view(next);
 		},
 		async revoke(hostId) {
@@ -657,7 +709,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				if (tier !== "microvm" && tier !== "isolate") throw new KantelError("invalid", "tier is microvm or isolate");
 				const sandboxId = input.sandboxId ?? shortId("sbx");
 				if (!SANDBOX_ID.test(sandboxId)) throw new KantelError("invalid", "Not a valid sandbox ID");
-				const sizeName = tier === "isolate" ? "isolate" : (input.size ?? "default");
+				const shape = input.shape === undefined ? undefined : shapeIn(input.shape, tier);
 				const only = input.hostIds === undefined ? undefined : new Set(input.hostIds);
 				if (input.from !== undefined && only?.size !== 1) {
 					throw new KantelError("invalid", "A sandbox made from a snapshot goes on the snapshot's host");
@@ -698,7 +750,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				const chosen = place(
 					{
 						tier,
-						size: sizeName,
+						...(input.size === undefined ? {} : { size: input.size }),
+						...(shape === undefined ? {} : { shape }),
 						...(input.owner === undefined ? {} : { owner: input.owner }),
 						...(input.labels === undefined ? {} : { labels: input.labels }),
 					},
@@ -728,7 +781,15 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						{
 							sandboxId,
 							tier,
-							size: tier === "isolate" ? "" : chosen.size.name,
+							// A custom shape goes as its numbers (the host names it); a named size by its name.
+							size: tier === "isolate" || chosen.custom ? "" : chosen.size.name,
+							...(chosen.custom
+								? { vcpus: chosen.size.vcpus, memoryMiB: chosen.size.memoryMiB, diskGiB: chosen.size.diskGiB }
+								: {}),
+							// What an isolate asked for, recorded by a host that knows of it.
+							...(tier === "isolate" && shape !== undefined && makesCustomShapes(chosen.host)
+								? { memoryMiB: shape.memoryMiB }
+								: {}),
 							...(input.from === undefined ? {} : { from: input.from }),
 							...(input.owner === undefined ? {} : { owner: input.owner }),
 							...(input.env === undefined ? {} : { env: input.env }),

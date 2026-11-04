@@ -260,6 +260,7 @@ Every field is optional: `{}` makes a running isolate in the caller's account.
 | `name` | string | no | Default: a generated name, such as `brave-otter`. (at most 63 characters) |
 | `type` | [SandboxType](/api/reference/types/#sandboxtype) | no |  |
 | `size` | [SandboxSizeName](/api/reference/types/#sandboxsizename) | no |  |
+| `resources` | [SandboxShapeInput](/api/reference/types/#sandboxshapeinput) | no |  |
 | `image` | string | no | A microVM's base image. Default: the deployment's. |
 | `from` | string | no | Start from this snapshot: a snapshot's ID or a saved snapshot's name in the account. |
 | `autoStopMinutes` | integer or null | no | Default 60. `null`: never stop by itself. |
@@ -621,6 +622,7 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | `capacity` | [HostCapacity](/api/reference/types/#hostcapacity) | yes |  |
 | `allocated` | [HostAllocated](/api/reference/types/#hostallocated) | yes |  |
 | `labels` | Record&lt;string, string&gt; | yes |  |
+| `pools` | Record&lt;string, integer&gt; | no | The warm machines it keeps ready, by `<type>/<size>`: its own setting, else the deployment's. Empty: none. |
 | `accountId` | string | no | The account the host belongs to, when it was added to one by its people: only that account's sandboxes run on it. Absent for a host the deployment's super-admin joined, which any account's sandboxes may use. |
 | `joinedAt` | integer | yes | Epoch milliseconds, UTC. |
 | `lastSeenAt` | integer | no | Epoch milliseconds, UTC. |
@@ -657,6 +659,12 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | --- | --- | --- | --- |
 | `items` | [Host](/api/reference/types/#host)[] | yes |  |
 
+### HostPools
+
+Warm machines the host keeps ready, by `<type>/<size>`, such as `{"microvm/default": 1}`: a create of that shape is then a restore. They hold memory while idle, so a host keeps none unless asked. `null`: the deployment's default (none unless its operator set `KANTEL_COMPUTE_POOLS`).
+
+One of: Record&lt;string, integer&gt; or null.
+
 ### HostState
 
 `online`: connected and taking sandboxes. `unreachable`: its connection dropped; its sandboxes can't be reached until it is back. `draining`: connected, but takes no new sandboxes. `revoked`: its credential is revoked.
@@ -682,6 +690,13 @@ A way into an organisation: whoever joins with its code becomes a member.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `items` | [Invite](/api/reference/types/#invite)[] | yes |  |
+
+### IsolateShapes
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `memoryMb` | [ShapeRange](/api/reference/types/#shaperange) | yes |  |
+| `enforced` | boolean | yes | Whether an isolate's memory is a hard limit. False today: the runtime records it, and the account VM's memory, shared by its isolates, is the limit. |
 
 ### IssuedApiKey
 
@@ -717,6 +732,18 @@ A way into an organisation: whoever joins with its code becomes a member.
 `member`: uses the organisation's shared sandboxes and snapshots and makes their own. `admin`: also manages members, API keys, webhooks, telemetry and the proxy. `owner`: also renames or deletes the organisation. A personal account's person is its `owner`.
 
 One of: `"member"` or `"admin"` or `"owner"`.
+
+### MicrovmShapes
+
+Absent when no host the account may use runs microVMs.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `vcpus` | [ShapeRange](/api/reference/types/#shaperange) | yes |  |
+| `memoryMb` | [ShapeRange](/api/reference/types/#shaperange) | yes |  |
+| `memoryMbPerVcpu` | object | yes | Memory follows vCPUs: each vCPU has at least `min` and at most `max` MB. |
+| `presets` | [ShapePreset](/api/reference/types/#shapepreset)[] | yes |  |
+| `custom` | boolean | yes | Whether a host takes shapes off the presets; when false, only the presets. |
 
 ### PollDeviceLoginBody
 
@@ -900,9 +927,28 @@ A protected variable as one sandbox has it: never its value.
 | `memoryMb` | integer | yes |  |
 | `diskGb` | integer | yes |  |
 
+### SandboxShapeInput
+
+What a new sandbox gets. A shape off the hosts' presets boots from scratch where a preset may come from a host's warm pool.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `vcpus` | integer | no | A microVM's vCPUs. An isolate has none of its own: it shares its account's VM's CPU. (minimum 1) |
+| `memoryMb` | integer | yes | Memory in MB. An isolate takes 128 to 512 in steps of 64; a microVM up to what a host offers (`getSandboxShapes`). (minimum 128) |
+
+### SandboxShapes
+
+What a new sandbox in the account may be: the ranges its hosts offer, their presets and the rates.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `isolate` | [IsolateShapes](/api/reference/types/#isolateshapes) | yes |  |
+| `microvm` | [MicrovmShapes](/api/reference/types/#microvmshapes) | no |  |
+| `rates` | [ShapeRates](/api/reference/types/#shaperates) | no |  |
+
 ### SandboxSizeName
 
-A microVM's size; a deployment may offer fewer. Isolates have none.
+A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now.
 
 One of: `"small"` or `"default"` or `"large"` or `"xlarge"`.
 
@@ -980,6 +1026,36 @@ One of: `"private"` or `"organisation"`.
 | `protected` | boolean | no | Default false. |
 | `value` | string | no | Required for a new variable and when it becomes protected or plain. Left out on a protected one, it keeps its value (to change its bindings); a new value for a protected one is a rotation. (at most 32768 characters) |
 | `bindings` | [DestinationBinding](/api/reference/types/#destinationbinding)[] | no | A protected variable's destinations, at least one. Left out, a protected one keeps its own. (at most 32 items) |
+
+### ShapePreset
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | [SandboxSizeName](/api/reference/types/#sandboxsizename) | yes |  |
+| `vcpus` | integer | yes |  |
+| `memoryMb` | integer | yes |  |
+| `diskGb` | integer | yes |  |
+| `warm` | boolean | yes | A host the account may use keeps machines of it ready (a warm pool); off by default. |
+
+### ShapeRange
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `min` | integer | yes |  |
+| `max` | integer | yes |  |
+| `step` | integer | yes |  |
+| `default` | integer | yes |  |
+
+### ShapeRates
+
+What an hour costs, per vCPU and GB; absent where it is free.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `currency` | string | yes |  |
+| `microvmPerVcpuHour` | number | yes |  |
+| `microvmPerGbHour` | number | yes |  |
+| `isolatePerGbHour` | number | yes |  |
 
 ### Snapshot
 
@@ -1115,6 +1191,7 @@ What the collector answered to an empty export sent on save.
 | `name` | string | no |  (at most 100 characters) |
 | `labels` | Record&lt;string, string&gt; | no |  |
 | `draining` | boolean | no | Stop placing new sandboxes on it. |
+| `pools` | [HostPools](/api/reference/types/#hostpools) | no |  |
 
 ### UpdateMemberBody
 

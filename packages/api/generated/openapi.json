@@ -1339,7 +1339,7 @@
 			"post": {
 				"operationId": "createSandbox",
 				"summary": "Create a sandbox",
-				"description": "Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. A key needs `sandboxes:write`.",
+				"description": "Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. A key needs `sandboxes:write`.",
 				"tags": ["sandboxes"],
 				"parameters": [
 					{
@@ -1447,6 +1447,67 @@
 					},
 					"503": {
 						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sandbox-shapes": {
+			"get": {
+				"operationId": "getSandboxShapes",
+				"summary": "Get the shapes a sandbox may be",
+				"description": "What a new sandbox in the account may be, from the hosts it may use: an isolate's memory, a microVM's vCPUs and memory, the hosts' presets (and which a host keeps warm) and what an hour costs. A key needs `sandboxes:read`.",
+				"tags": ["sandboxes"],
+				"parameters": [
+					{
+						"name": "account",
+						"in": "query",
+						"required": false,
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The shapes.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SandboxShapes"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -7564,7 +7625,7 @@
 			"patch": {
 				"operationId": "updateHost",
 				"summary": "Change a host",
-				"description": "Renames it, replaces its labels, or drains it. A deployment super-admin only (a key needs `hosts:admin`).",
+				"description": "Renames it, replaces its labels, drains it, or sets its warm pools. A deployment super-admin only (a key needs `hosts:admin`).",
 				"tags": ["hosts"],
 				"parameters": [
 					{
@@ -7954,7 +8015,7 @@
 			"patch": {
 				"operationId": "updateAccountHost",
 				"summary": "Change one of an account's hosts",
-				"description": "Renames it, replaces its labels, or drains it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
+				"description": "Renames it, replaces its labels, drains it, or sets its warm pools. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`).",
 				"tags": ["account-hosts"],
 				"parameters": [
 					{
@@ -8852,6 +8913,9 @@
 					},
 					"size": {
 						"$ref": "#/components/schemas/SandboxSizeName"
+					},
+					"resources": {
+						"$ref": "#/components/schemas/SandboxShapeInput"
 					},
 					"image": {
 						"type": "string",
@@ -10019,6 +10083,15 @@
 							}
 						}
 					},
+					"pools": {
+						"type": "object",
+						"patternProperties": {
+							"^.*$": {
+								"type": "integer"
+							}
+						},
+						"description": "The warm machines it keeps ready, by `<type>/<size>`: its own setting, else the deployment's. Empty: none."
+					},
 					"accountId": {
 						"type": "string",
 						"description": "The account the host belongs to, when it was added to one by its people: only that account's sandboxes run on it. Absent for a host the deployment's super-admin joined, which any account's sandboxes may use."
@@ -10106,6 +10179,25 @@
 				},
 				"title": "HostList"
 			},
+			"HostPools": {
+				"anyOf": [
+					{
+						"type": "object",
+						"patternProperties": {
+							"^(microvm|isolate)/[a-z0-9-]+$": {
+								"type": "integer",
+								"minimum": 0,
+								"maximum": 16
+							}
+						}
+					},
+					{
+						"type": "null"
+					}
+				],
+				"title": "HostPools",
+				"description": "Warm machines the host keeps ready, by `<type>/<size>`, such as `{\"microvm/default\": 1}`: a create of that shape is then a restore. They hold memory while idle, so a host keeps none unless asked. `null`: the deployment's default (none unless its operator set `KANTEL_COMPUTE_POOLS`)."
+			},
 			"HostState": {
 				"anyOf": [
 					{
@@ -10173,6 +10265,20 @@
 					}
 				},
 				"title": "InviteList"
+			},
+			"IsolateShapes": {
+				"type": "object",
+				"required": ["memoryMb", "enforced"],
+				"properties": {
+					"memoryMb": {
+						"$ref": "#/components/schemas/ShapeRange"
+					},
+					"enforced": {
+						"type": "boolean",
+						"description": "Whether an isolate's memory is a hard limit. False today: the runtime records it, and the account VM's memory, shared by its isolates, is the limit."
+					}
+				},
+				"title": "IsolateShapes"
 			},
 			"IssuedApiKey": {
 				"type": "object",
@@ -10252,6 +10358,43 @@
 				],
 				"title": "MemberRole",
 				"description": "`member`: uses the organisation's shared sandboxes and snapshots and makes their own. `admin`: also manages members, API keys, webhooks, telemetry and the proxy. `owner`: also renames or deletes the organisation. A personal account's person is its `owner`."
+			},
+			"MicrovmShapes": {
+				"type": "object",
+				"required": ["vcpus", "memoryMb", "memoryMbPerVcpu", "presets", "custom"],
+				"properties": {
+					"vcpus": {
+						"$ref": "#/components/schemas/ShapeRange"
+					},
+					"memoryMb": {
+						"$ref": "#/components/schemas/ShapeRange"
+					},
+					"memoryMbPerVcpu": {
+						"type": "object",
+						"required": ["min", "max"],
+						"properties": {
+							"min": {
+								"type": "integer"
+							},
+							"max": {
+								"type": "integer"
+							}
+						},
+						"description": "Memory follows vCPUs: each vCPU has at least `min` and at most `max` MB."
+					},
+					"presets": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ShapePreset"
+						}
+					},
+					"custom": {
+						"type": "boolean",
+						"description": "Whether a host takes shapes off the presets; when false, only the presets."
+					}
+				},
+				"title": "MicrovmShapes",
+				"description": "Absent when no host the account may use runs microVMs."
 			},
 			"PollDeviceLoginBody": {
 				"type": "object",
@@ -10863,6 +11006,41 @@
 				},
 				"title": "SandboxResources"
 			},
+			"SandboxShapeInput": {
+				"type": "object",
+				"required": ["memoryMb"],
+				"properties": {
+					"vcpus": {
+						"type": "integer",
+						"minimum": 1,
+						"description": "A microVM's vCPUs. An isolate has none of its own: it shares its account's VM's CPU."
+					},
+					"memoryMb": {
+						"type": "integer",
+						"minimum": 128,
+						"description": "Memory in MB. An isolate takes 128 to 512 in steps of 64; a microVM up to what a host offers (`getSandboxShapes`)."
+					}
+				},
+				"title": "SandboxShapeInput",
+				"description": "What a new sandbox gets. A shape off the hosts' presets boots from scratch where a preset may come from a host's warm pool."
+			},
+			"SandboxShapes": {
+				"type": "object",
+				"required": ["isolate"],
+				"properties": {
+					"isolate": {
+						"$ref": "#/components/schemas/IsolateShapes"
+					},
+					"microvm": {
+						"$ref": "#/components/schemas/MicrovmShapes"
+					},
+					"rates": {
+						"$ref": "#/components/schemas/ShapeRates"
+					}
+				},
+				"title": "SandboxShapes",
+				"description": "What a new sandbox in the account may be: the ranges its hosts offer, their presets and the rates."
+			},
 			"SandboxSizeName": {
 				"anyOf": [
 					{
@@ -10883,7 +11061,7 @@
 					}
 				],
 				"title": "SandboxSizeName",
-				"description": "A microVM's size; a deployment may offer fewer. Isolates have none."
+				"description": "A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now."
 			},
 			"SandboxSource": {
 				"type": "object",
@@ -11103,6 +11281,68 @@
 					}
 				},
 				"title": "SetEnvironmentVariableBody"
+			},
+			"ShapePreset": {
+				"type": "object",
+				"required": ["name", "vcpus", "memoryMb", "diskGb", "warm"],
+				"properties": {
+					"name": {
+						"$ref": "#/components/schemas/SandboxSizeName"
+					},
+					"vcpus": {
+						"type": "integer"
+					},
+					"memoryMb": {
+						"type": "integer"
+					},
+					"diskGb": {
+						"type": "integer"
+					},
+					"warm": {
+						"type": "boolean",
+						"description": "A host the account may use keeps machines of it ready (a warm pool); off by default."
+					}
+				},
+				"title": "ShapePreset"
+			},
+			"ShapeRange": {
+				"type": "object",
+				"required": ["min", "max", "step", "default"],
+				"properties": {
+					"min": {
+						"type": "integer"
+					},
+					"max": {
+						"type": "integer"
+					},
+					"step": {
+						"type": "integer"
+					},
+					"default": {
+						"type": "integer"
+					}
+				},
+				"title": "ShapeRange"
+			},
+			"ShapeRates": {
+				"type": "object",
+				"required": ["currency", "microvmPerVcpuHour", "microvmPerGbHour", "isolatePerGbHour"],
+				"properties": {
+					"currency": {
+						"type": "string"
+					},
+					"microvmPerVcpuHour": {
+						"type": "number"
+					},
+					"microvmPerGbHour": {
+						"type": "number"
+					},
+					"isolatePerGbHour": {
+						"type": "number"
+					}
+				},
+				"title": "ShapeRates",
+				"description": "What an hour costs, per vCPU and GB; absent where it is free."
 			},
 			"Snapshot": {
 				"type": "object",
@@ -11457,6 +11697,9 @@
 					"draining": {
 						"type": "boolean",
 						"description": "Stop placing new sandboxes on it."
+					},
+					"pools": {
+						"$ref": "#/components/schemas/HostPools"
 					}
 				},
 				"title": "UpdateHostBody"

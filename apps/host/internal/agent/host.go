@@ -236,7 +236,7 @@ func (h *Host) makeFacts() proto.Facts {
 		Version: h.version, Protocol: proto.ProtocolVersion, OS: runtime.GOOS, Arch: hostinfo.Arch(), Kernel: hostinfo.Kernel(),
 		Hostname: name, CPUs: runtime.NumCPU(), MemoryMiB: max(0, total-reserve), DiskGiB: hostinfo.FreeDiskGiB(h.cfg.Root),
 		KVM: kvm, Nested: nested && kvm, Tiers: h.Tiers(), Sizes: sizes, Labels: h.cfg.Labels, Egress: h.cfg.Egress,
-		Features: []string{proto.FeatureEgressPolicy},
+		Features: []string{proto.FeatureEgressPolicy, proto.FeatureCustomShapes},
 	}
 }
 

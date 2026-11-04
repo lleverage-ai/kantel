@@ -9,20 +9,22 @@
 import type { computeSchema } from "@kantel/api";
 import { KantelError } from "@kantel/contracts";
 import { Bash, InMemoryFs } from "just-bash";
-import type {
-	BackendCapabilities,
-	BackendFileEntry,
-	BackendHost,
-	BackendSize,
-	BootOptions,
-	ExecRequest,
-	ExecResult,
-	Placement,
-	SandboxBackend,
-	SandboxSpec,
-	SshGrant,
-	TakenSnapshot,
-	UsageSample,
+import {
+	type BackendCapabilities,
+	type BackendFileEntry,
+	type BackendHost,
+	type BackendShape,
+	type BackendSize,
+	type BootOptions,
+	CUSTOM_SHAPES_FEATURE,
+	type ExecRequest,
+	type ExecResult,
+	type Placement,
+	type SandboxBackend,
+	type SandboxSpec,
+	type SshGrant,
+	type TakenSnapshot,
+	type UsageSample,
 } from "./backend.ts";
 import { baseName, HOME, randomId, randomSecret, sliceRange } from "./util.ts";
 
@@ -85,6 +87,8 @@ interface Machine {
 	readonly id: string;
 	readonly type: computeSchema.SandboxType;
 	size: computeSchema.SandboxSizeName | undefined;
+	/** A microVM's vCPUs and memory as asked for, off the sizes or on them. */
+	shape: BackendShape | undefined;
 	env: { readonly [name: string]: string };
 	/** The disk while it runs or is paused (its memory); absent while stopped. */
 	fs: InMemoryFs | undefined;
@@ -188,6 +192,9 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 		kvm: types.includes("microvm"),
 		nestedVirtualisation: false,
 		capacity: { vcpus: 64, memoryMb: 262_144, diskGb: 2048 },
+		// It enforces what its sandboxes get however they run, makes any shape, and keeps no warm machines.
+		features: ["egress-policy", CUSTOM_SHAPES_FEATURE],
+		sizes: SIZES,
 		labels: { site: "local" },
 	};
 
@@ -212,8 +219,18 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 		if (!eligibleHosts.includes(STUB_HOST_ID)) throw new KantelError("unavailable", "No host can take the sandbox");
 	};
 	const placement = (machine: Machine): Placement => {
-		const size =
-			machine.type === "microvm" ? SIZES.find((entry) => entry.name === (machine.size ?? "default")) : undefined;
+		const named = SIZES.find((entry) => entry.name === (machine.size ?? "default"));
+		const shape = machine.shape;
+		// A shape off the sizes gets the disk of the smallest size with at least its memory, as kantel-host's do.
+		const shaped =
+			shape === undefined
+				? named
+				: {
+						vcpus: shape.vcpus,
+						memoryMb: shape.memoryMb,
+						diskGb: (SIZES.find((entry) => entry.memoryMb >= shape.memoryMb) ?? SIZES.at(-1))?.diskGb ?? 20,
+					};
+		const size = machine.type === "microvm" ? shaped : undefined;
 		return {
 			hostId: STUB_HOST_ID,
 			...(size === undefined ? {} : { resources: { vcpus: size.vcpus, memoryMb: size.memoryMb, diskGb: size.diskGb } }),
@@ -246,6 +263,7 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			id: spec.sandboxId,
 			type: spec.type,
 			size: spec.size,
+			shape: spec.type === "microvm" ? spec.shape : undefined,
 			env: { ...spec.env },
 			fs: undefined,
 			bash: undefined,

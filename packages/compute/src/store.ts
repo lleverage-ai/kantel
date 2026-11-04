@@ -135,6 +135,11 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	readonly ports: readonly computeSchema.ExposedPort[];
 	/** The snapshot its memory was paused into, while `paused`. */
 	readonly pausedSnapshotId?: string;
+	/**
+	 * What it asked for at create: a microVM's vCPUs and memory, an isolate's memory (`vcpus` 0). Absent: made by a named
+	 * size, or before shapes. A fork asks for the same.
+	 */
+	readonly shape?: { readonly vcpus: number; readonly memoryMb: number };
 };
 
 export type StoredCommand = computeSchema.Command & { readonly accountId: string };

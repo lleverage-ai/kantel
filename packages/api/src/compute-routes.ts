@@ -89,6 +89,7 @@ import {
 	SandboxEgressQuery,
 	SandboxPage,
 	SandboxPath,
+	SandboxShapes,
 	SandboxUsage,
 	SaveSnapshotBody,
 	SetEnvironmentFileBody,
@@ -357,6 +358,22 @@ export const listSandboxes = defineRoute({
 	errors: ["invalid", "forbidden"],
 });
 
+export const getSandboxShapes = defineRoute({
+	operationId: "getSandboxShapes",
+	method: "GET",
+	path: "/sandbox-shapes",
+	tag: "sandboxes",
+	summary: "Get the shapes a sandbox may be",
+	description: describe(
+		"What a new sandbox in the account may be, from the hosts it may use: an isolate's memory, a microVM's vCPUs and",
+		"memory, the hosts' presets (and which a host keeps warm) and what an hour costs.",
+		scope("sandboxes:read"),
+	),
+	query: AccountScopedQuery,
+	answer: { status: 200, description: "The shapes.", schema: SandboxShapes },
+	errors: ["invalid", "forbidden"],
+});
+
 export const createSandbox = defineRoute({
 	operationId: "createSandbox",
 	method: "POST",
@@ -365,6 +382,8 @@ export const createSandbox = defineRoute({
 	summary: "Create a sandbox",
 	description: describe(
 		"Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one.",
+		"`resources` sets its vCPUs and memory (`getSandboxShapes` says what may be asked); `size`, a named size, still",
+		"works for now.",
 		"Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no",
 		"host able to run the type is `unavailable`.",
 		scope("sandboxes:write"),
@@ -520,6 +539,7 @@ export const getSandboxUsage = defineRoute({
 
 export const sandboxRoutes = {
 	listSandboxes,
+	getSandboxShapes,
 	createSandbox,
 	getSandbox,
 	updateSandbox,
@@ -1517,7 +1537,7 @@ export const updateHost = defineRoute({
 	path: "/admin/hosts/{hostId}",
 	tag: "hosts",
 	summary: "Change a host",
-	description: describe("Renames it, replaces its labels, or drains it.", SUPER_ADMIN),
+	description: describe("Renames it, replaces its labels, drains it, or sets its warm pools.", SUPER_ADMIN),
 	params: HostPath,
 	body: UpdateHostBody,
 	answer: { status: 200, description: "The host.", schema: Host },
@@ -1619,7 +1639,11 @@ export const updateAccountHost = defineRoute({
 	path: "/hosts/{hostId}",
 	tag: "account-hosts",
 	summary: "Change one of an account's hosts",
-	description: describe("Renames it, replaces its labels, or drains it.", scope("account:admin"), ACCOUNT_HOSTS),
+	description: describe(
+		"Renames it, replaces its labels, drains it, or sets its warm pools.",
+		scope("account:admin"),
+		ACCOUNT_HOSTS,
+	),
 	params: HostPath,
 	body: UpdateHostBody,
 	answer: { status: 200, description: "The host.", schema: Host },

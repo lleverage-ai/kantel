@@ -27,6 +27,11 @@ export interface HostRecord {
 	 * the operator joined, which every account shares.
 	 */
 	readonly accountId?: string;
+	/**
+	 * The warm machines it is to keep, by `<tier>/<size>`, set on the host itself; absent, the deployment's (none unless
+	 * its operator set some). A self-hosted machine may be doing other things, so none is the default.
+	 */
+	readonly pools?: { readonly [pool: string]: number };
 }
 
 export interface JoinTokenRecord {

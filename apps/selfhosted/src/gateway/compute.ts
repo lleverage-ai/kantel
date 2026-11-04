@@ -22,7 +22,7 @@
  *   KANTEL_COMPUTE_PUBLIC_URL    with `hosts`: where hosts and clients reach this gateway (join commands, desktop,
  *                                browser and SSH tunnels); default KANTEL_PUBLIC_URL, one of which `hosts` needs.
  *                                deploy/compose/compose.yaml sets it to the gateway's local address by default
- *   KANTEL_COMPUTE_POOLS         warm sandboxes per host, as JSON such as {"microvm/default": 2}; default one
+ *   KANTEL_COMPUTE_POOLS         warm sandboxes per host, as JSON such as {"microvm/default": 2}; default none
  *                                default-size microVM
  *   KANTEL_COMPUTE_JOIN_COMMAND  the join command shown with a token, with {url} and {token}; default the host
  *                                installer from Kantel's latest GitHub Release (DEFAULT_HOST_JOIN_COMMAND)

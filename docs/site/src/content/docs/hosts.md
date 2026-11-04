@@ -197,7 +197,11 @@ A host offers three microVM sizes unless its settings say otherwise:
 | `default` | 4 | 2 GiB | 20 GiB |
 | `large` | 4 | 8 GiB | 50 GiB |
 
-Each host keeps one warm `default` microVM ready. `KANTEL_COMPUTE_POOLS` on the control plane changes that for every host, as JSON such as `{"microvm/default": 2, "microvm/large": 1}`.
+A create can also ask for any vCPUs and memory with `resources`, such as `{"type": "microvm", "resources": {"vcpus": 3, "memoryMb": 6144}}`. A shape that matches a size goes as that size; any other goes only to a host whose `kantel-host` makes custom shapes, and boots from scratch. Its disk is the smallest size's with at least its memory. `GET /v1/sandbox-shapes` says what the hosts you may use offer.
+
+A self-hosted host keeps no warm microVMs, since the machine may be doing other things: each create boots one. To keep some ready, set `KANTEL_COMPUTE_POOLS` on the control plane for every host, as JSON such as `{"microvm/default": 2, "microvm/large": 1}`, or set one host's own with `PATCH /v1/admin/hosts/{hostId}` and `{"pools": {"microvm/default": 1}}` (`null` goes back to the control plane's). A warm machine serves only a create of its size's exact vCPUs and memory, and holds that memory while it waits. Hosted, each host keeps one warm `default`.
+
+An isolate's `resources` is its memory alone, 128 to 512 MB in steps of 64 (256 by default); it shares its account's VM's CPU. Kantel records what it asked for, but workerd can't hold one isolate to a memory limit yet: the account's VM's memory is the limit its isolates share.
 
 ## Update a host
 

@@ -285,8 +285,10 @@ export interface CreateSandboxBody {
 	readonly name?: string;
 	/** `isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
 	readonly type?: SandboxType;
-	/** A microVM's size; a deployment may offer fewer. Isolates have none. */
+	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now. */
 	readonly size?: SandboxSizeName;
+	/** What a new sandbox gets. A shape off the hosts' presets boots from scratch where a preset may come from a host's warm pool. */
+	readonly resources?: SandboxShapeInput;
 	/** A microVM's base image. Default: the deployment's. */
 	readonly image?: string;
 	/** Start from this snapshot: a snapshot's ID or a saved snapshot's name in the account. */
@@ -644,7 +646,7 @@ export interface ForkSandboxBody {
 	readonly name?: string;
 	/** Fork from this snapshot of the sandbox. Default: its newest, or its live state. */
 	readonly snapshotId?: string;
-	/** A microVM's size; a deployment may offer fewer. Isolates have none. */
+	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now. */
 	readonly size?: SandboxSizeName;
 	/** How many copies; default 1. */
 	readonly count?: number;
@@ -677,6 +679,10 @@ export interface Host {
 	readonly allocated: HostAllocated;
 	readonly labels: {
 		readonly [key: string]: string;
+	};
+	/** The warm machines it keeps ready, by `<type>/<size>`: its own setting, else the deployment's. Empty: none. */
+	readonly pools?: {
+		readonly [key: string]: number;
 	};
 	/** The account the host belongs to, when it was added to one by its people: only that account's sandboxes run on it. Absent for a host the deployment's super-admin joined, which any account's sandboxes may use. */
 	readonly accountId?: string;
@@ -714,6 +720,11 @@ export interface HostList {
 	readonly items: readonly Host[];
 }
 
+/** Warm machines the host keeps ready, by `<type>/<size>`, such as `{"microvm/default": 1}`: a create of that shape is then a restore. They hold memory while idle, so a host keeps none unless asked. `null`: the deployment's default (none unless its operator set `KANTEL_COMPUTE_POOLS`). */
+export type HostPools = {
+	readonly [key: string]: number;
+} | null;
+
 /** `online`: connected and taking sandboxes. `unreachable`: its connection dropped; its sandboxes can't be reached until it is back. `draining`: connected, but takes no new sandboxes. `revoked`: its credential is revoked. */
 export type HostState = "online" | "unreachable" | "draining" | "revoked";
 
@@ -735,6 +746,12 @@ export interface Invite {
 
 export interface InviteList {
 	readonly items: readonly Invite[];
+}
+
+export interface IsolateShapes {
+	readonly memoryMb: ShapeRange;
+	/** Whether an isolate's memory is a hard limit. False today: the runtime records it, and the account VM's memory, shared by its isolates, is the limit. */
+	readonly enforced: boolean;
 }
 
 export interface IssuedApiKey {
@@ -816,6 +833,20 @@ export interface MemberList {
 
 /** `member`: uses the organisation's shared sandboxes and snapshots and makes their own. `admin`: also manages members, API keys, webhooks, telemetry and the proxy. `owner`: also renames or deletes the organisation. A personal account's person is its `owner`. */
 export type MemberRole = "member" | "admin" | "owner";
+
+/** Absent when no host the account may use runs microVMs. */
+export interface MicrovmShapes {
+	readonly vcpus: ShapeRange;
+	readonly memoryMb: ShapeRange;
+	/** Memory follows vCPUs: each vCPU has at least `min` and at most `max` MB. */
+	readonly memoryMbPerVcpu: {
+		readonly min: number;
+		readonly max: number;
+	};
+	readonly presets: readonly ShapePreset[];
+	/** Whether a host takes shapes off the presets; when false, only the presets. */
+	readonly custom: boolean;
+}
 
 export interface PollDeviceLoginBody {
 	readonly deviceCode: string;
@@ -910,7 +941,7 @@ export interface ReadSnapshotFileQuery {
 }
 
 export interface ResumeSandboxBody {
-	/** A microVM's size; a deployment may offer fewer. Isolates have none. */
+	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now. */
 	readonly size?: SandboxSizeName;
 	/** Answer once it is `running` (or `error`). */
 	readonly wait?: boolean;
@@ -940,7 +971,7 @@ export interface Sandbox {
 	readonly subdomain: string;
 	/** `isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
 	readonly type: SandboxType;
-	/** A microVM's size; a deployment may offer fewer. Isolates have none. */
+	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now. */
 	readonly size?: SandboxSizeName;
 	readonly resources?: SandboxResources;
 	/** The base image a microVM was made from, such as `ubuntu-24.04`. */
@@ -1048,7 +1079,24 @@ export interface SandboxResources {
 	readonly diskGb: number;
 }
 
-/** A microVM's size; a deployment may offer fewer. Isolates have none. */
+/** What a new sandbox gets. A shape off the hosts' presets boots from scratch where a preset may come from a host's warm pool. */
+export interface SandboxShapeInput {
+	/** A microVM's vCPUs. An isolate has none of its own: it shares its account's VM's CPU. */
+	readonly vcpus?: number;
+	/** Memory in MB. An isolate takes 128 to 512 in steps of 64; a microVM up to what a host offers (`getSandboxShapes`). */
+	readonly memoryMb: number;
+}
+
+/** What a new sandbox in the account may be: the ranges its hosts offer, their presets and the rates. */
+export interface SandboxShapes {
+	readonly isolate: IsolateShapes;
+	/** Absent when no host the account may use runs microVMs. */
+	readonly microvm?: MicrovmShapes;
+	/** What an hour costs, per vCPU and GB; absent where it is free. */
+	readonly rates?: ShapeRates;
+}
+
+/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now. */
 export type SandboxSizeName = "small" | "default" | "large" | "xlarge";
 
 /** What it was made from. */
@@ -1126,6 +1174,31 @@ export interface SetEnvironmentVariableBody {
 	readonly value?: string;
 	/** A protected variable's destinations, at least one. Left out, a protected one keeps its own. */
 	readonly bindings?: readonly DestinationBinding[];
+}
+
+export interface ShapePreset {
+	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now. */
+	readonly name: SandboxSizeName;
+	readonly vcpus: number;
+	readonly memoryMb: number;
+	readonly diskGb: number;
+	/** A host the account may use keeps machines of it ready (a warm pool); off by default. */
+	readonly warm: boolean;
+}
+
+export interface ShapeRange {
+	readonly min: number;
+	readonly max: number;
+	readonly step: number;
+	readonly default: number;
+}
+
+/** What an hour costs, per vCPU and GB; absent where it is free. */
+export interface ShapeRates {
+	readonly currency: string;
+	readonly microvmPerVcpuHour: number;
+	readonly microvmPerGbHour: number;
+	readonly isolatePerGbHour: number;
 }
 
 export interface Snapshot {
@@ -1267,6 +1340,8 @@ export interface UpdateHostBody {
 	};
 	/** Stop placing new sandboxes on it. */
 	readonly draining?: boolean;
+	/** Warm machines the host keeps ready, by `<type>/<size>`, such as `{"microvm/default": 1}`: a create of that shape is then a restore. They hold memory while idle, so a host keeps none unless asked. `null`: the deployment's default (none unless its operator set `KANTEL_COMPUTE_POOLS`). */
+	readonly pools?: HostPools;
 }
 
 export interface UpdateMemberBody {
@@ -1656,7 +1731,9 @@ export interface KantelClient {
 	revokeInvite(accountId: string, inviteId: string, options?: CallOptions): Promise<void>;
 	/** List sandboxes. The account's sandboxes the caller may see, newest first: by default the ones starting, running or stopping; `all` adds stopped, paused and errored ones. Deleted ones are left out. A key needs `sandboxes:read`. `GET /sandboxes` */
 	listSandboxes(query?: ListSandboxesQuery, options?: CallOptions): Promise<SandboxPage>;
-	/** Create a sandbox. Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes` */
+	/** Get the shapes a sandbox may be. What a new sandbox in the account may be, from the hosts it may use: an isolate's memory, a microVM's vCPUs and memory, the hosts' presets (and which a host keeps warm) and what an hour costs. A key needs `sandboxes:read`. `GET /sandbox-shapes` */
+	getSandboxShapes(query?: AccountScopedQuery, options?: CallOptions): Promise<SandboxShapes>;
+	/** Create a sandbox. Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes` */
 	createSandbox(body?: CreateSandboxBody, options?: CallOptions): Promise<Sandbox>;
 	/** Get a sandbox. A key needs `sandboxes:read`. `GET /sandboxes/{sandboxId}` */
 	getSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
@@ -1825,7 +1902,7 @@ export interface KantelClient {
 	createHostJoinToken(body?: CreateHostJoinTokenBody, options?: CallOptions): Promise<HostJoinToken>;
 	/** Get a host. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/hosts/{hostId}` */
 	getHost(hostId: string, options?: CallOptions): Promise<Host>;
-	/** Change a host. Renames it, replaces its labels, or drains it. A deployment super-admin only (a key needs `hosts:admin`). `PATCH /admin/hosts/{hostId}` */
+	/** Change a host. Renames it, replaces its labels, drains it, or sets its warm pools. A deployment super-admin only (a key needs `hosts:admin`). `PATCH /admin/hosts/{hostId}` */
 	updateHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
 	/** Revoke a host. Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. `unavailable`, and not revoked, when its credential is kept by a part of the deployment that is off (an account's own host, with account hosts switched off). A deployment super-admin only (a key needs `hosts:admin`). `DELETE /admin/hosts/{hostId}` */
 	revokeHost(hostId: string, options?: CallOptions): Promise<Host>;
@@ -1835,7 +1912,7 @@ export interface KantelClient {
 	listAccountHosts(query?: AccountScopedQuery, options?: CallOptions): Promise<HostList>;
 	/** Get one of an account's hosts. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `GET /hosts/{hostId}` */
 	getAccountHost(hostId: string, options?: CallOptions): Promise<Host>;
-	/** Change one of an account's hosts. Renames it, replaces its labels, or drains it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `PATCH /hosts/{hostId}` */
+	/** Change one of an account's hosts. Renames it, replaces its labels, drains it, or sets its warm pools. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `PATCH /hosts/{hostId}` */
 	updateAccountHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
 	/** Remove one of an account's hosts. Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. Run `sudo kantel-host uninstall` on the machine to take the agent off it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `DELETE /hosts/{hostId}` */
 	removeAccountHost(hostId: string, options?: CallOptions): Promise<Host>;
@@ -1900,6 +1977,8 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 				callOptions,
 			),
 		listSandboxes: (query, callOptions) => send(options, { method: "GET", path: "/sandboxes", query }, callOptions),
+		getSandboxShapes: (query, callOptions) =>
+			send(options, { method: "GET", path: "/sandbox-shapes", query }, callOptions),
 		createSandbox: (body = {}, callOptions) => send(options, { method: "POST", path: "/sandboxes", body }, callOptions),
 		getSandbox: (sandboxId, callOptions) =>
 			send(options, { method: "GET", path: `/sandboxes/${encodeURIComponent(sandboxId)}` }, callOptions),

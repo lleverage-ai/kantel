@@ -19,6 +19,7 @@ import {
 	type ApiKey,
 	type EnvironmentRepo as ApiRepo,
 	type SandboxEgress as ApiSandboxEgress,
+	type SandboxShapes as ApiSandboxShapes,
 	type EnvironmentVariable as ApiVariable,
 	type Caller,
 	type Command,
@@ -71,10 +72,11 @@ import type {
 	Environment as UiEnvironment,
 	EgressGrant as UiGrant,
 	SandboxEgress as UiSandboxEgress,
+	SandboxShapes as UiSandboxShapes,
 	EnvironmentVariable as UiVariable,
 	WebhooksSource,
 } from "@kantel/ui";
-import { DeviceSetupError, FileTooLargeError } from "@kantel/ui";
+import { DEFAULT_SANDBOX_SHAPES, DeviceSetupError, FileTooLargeError } from "@kantel/ui";
 import { type BrowserDevice, type BrowserDeviceOptions, browserDevice } from "./browser-device.ts";
 import type { HostCommand, HostCommandPage, LocalBridge } from "./local.ts";
 
@@ -305,6 +307,37 @@ async function learnEnvironmentNames(
 	}
 }
 
+/**
+ * What New sandbox's sliders may choose, as the API says. With no host for microVMs, the sample's microVM ranges stand
+ * in (the page offers no microVM then); the API's rates are a currency's units an hour, the page's US cents.
+ */
+export function shapesOf(shapes: ApiSandboxShapes): UiSandboxShapes {
+	const microvm = shapes.microvm;
+	const preferred = microvm?.presets.find((preset) => preset.name === "default") ?? microvm?.presets[0];
+	return {
+		isolate: { memoryMb: { ...shapes.isolate.memoryMb } },
+		microvm:
+			microvm === undefined
+				? DEFAULT_SANDBOX_SHAPES.microvm
+				: {
+						vcpus: { ...microvm.vcpus },
+						memoryMb: { ...microvm.memoryMb },
+						memoryMbPerVcpu: { ...microvm.memoryMbPerVcpu },
+						presets: microvm.presets.map((preset) => ({ ...preset })),
+						diskGb: preferred?.diskGb ?? DEFAULT_SANDBOX_SHAPES.microvm.diskGb,
+					},
+		...(shapes.rates === undefined
+			? {}
+			: {
+					rates: {
+						microvmCentsPerVcpuHour: shapes.rates.microvmPerVcpuHour * 100,
+						microvmCentsPerGbHour: shapes.rates.microvmPerGbHour * 100,
+						isolateCentsPerGbHour: shapes.rates.isolatePerGbHour * 100,
+					},
+				}),
+	};
+}
+
 function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 	return {
 		id: sandbox.id,
@@ -320,7 +353,8 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 			: {
 					resources: {
 						vcpus: sandbox.resources.vcpus,
-						memoryGb: Math.round(sandbox.resources.memoryMb / 1024),
+						// Unrounded: an isolate's 384 MB is 0.375 GB, which the page shows as MB.
+						memoryGb: sandbox.resources.memoryMb / 1024,
 						diskGb: sandbox.resources.diskGb,
 					},
 				}),
@@ -397,11 +431,20 @@ function sandboxesSource(context: Context): SandboxesSource {
 			await learnEnvironmentNames(context, accountId, sandboxes);
 			return sandboxes.map(view);
 		},
+		shapes: async (accountId) => shapesOf(await api.getSandboxShapes({ account: accountId })),
 		create: async (input) => {
 			const made = await api.createSandbox({
 				account: input.accountId,
 				type: input.kind,
-				// Work in progress: the shape goes to the API once it takes vCPUs and memory.
+				// An isolate asks for memory alone: it shares its account's VM's CPU.
+				...(input.shape === undefined
+					? {}
+					: {
+							resources:
+								input.kind === "isolate"
+									? { memoryMb: input.shape.memoryMb }
+									: { vcpus: input.shape.vcpus, memoryMb: input.shape.memoryMb },
+						}),
 				...(input.name === undefined || input.name === "" ? {} : { name: input.name }),
 				...(input.fromSnapshot === undefined ? {} : { from: input.fromSnapshot }),
 				// The API takes an environment's ID or its name; the UI picks by ID.

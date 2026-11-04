@@ -12,6 +12,15 @@
  */
 import type { computeSchema } from "@kantel/api";
 
+/** A sandbox's vCPUs (0 for an isolate, which shares its account's VM's CPU) and memory, as asked for. */
+export interface BackendShape {
+	readonly vcpus: number;
+	readonly memoryMb: number;
+}
+
+/** A host feature: it makes microVMs of any shape, not only its named sizes (`@kantel/hosts`'s `custom-shapes`). */
+export const CUSTOM_SHAPES_FEATURE = "custom-shapes";
+
 /** A size a deployment offers for microVMs, and the resources it stands for. */
 export interface BackendSize {
 	readonly name: computeSchema.SandboxSizeName;
@@ -36,6 +45,10 @@ export interface BackendHost {
 	 */
 	readonly features?: readonly string[];
 	readonly capacity: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number };
+	/** Its named microVM sizes (the presets). Absent: the deployment's `sizes`. */
+	readonly sizes?: readonly BackendSize[];
+	/** The warm machines it keeps, by `<type>/<size>`. Absent or empty: none. */
+	readonly pools?: { readonly [pool: string]: number };
 	readonly labels: { readonly [key: string]: string };
 	/** Whether it is connected now; absent, it always is (the stub). A host that isn't is `unreachable`. */
 	readonly connected?: boolean;
@@ -60,6 +73,11 @@ export interface SandboxSpec {
 	/** Its name under the sandbox domain, which its port URLs start with. */
 	readonly subdomain: string;
 	readonly size?: computeSchema.SandboxSizeName;
+	/**
+	 * What it asked for: a microVM's vCPUs and memory (`size` is then the preset it matches, if any), or an isolate's
+	 * memory (`vcpus` 0). Absent: `size`, or the default.
+	 */
+	readonly shape?: BackendShape;
 	readonly image?: string;
 	/** Environment variables every command sees. */
 	readonly env: { readonly [name: string]: string };
@@ -285,13 +303,15 @@ export interface SandboxBackend {
 	updateSecrets?(sandboxId: string, version: number): Promise<void>;
 	/** The super-admin revoked a host: refuse its credential and drop its connection. Absent, nothing to do. */
 	revokeHost?(hostId: string): Promise<void>;
-	/** The super-admin renamed, relabelled or drained a host. Absent, nothing to do. */
+	/** The super-admin renamed, relabelled, drained or set the warm pools of a host. Absent, nothing to do. */
 	updateHost?(
 		hostId: string,
 		change: {
 			readonly name?: string;
 			readonly labels?: { readonly [key: string]: string };
 			readonly draining?: boolean;
+			/** Its own warm pools; null goes back to the deployment's. */
+			readonly pools?: { readonly [pool: string]: number } | null;
 		},
 	): Promise<void>;
 }

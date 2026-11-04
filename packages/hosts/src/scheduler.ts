@@ -2,20 +2,33 @@
  * Placement: which host a new sandbox goes on. A sandbox then stays on its host (its disk and memory are there), so
  * this runs only at create, and at a fork, which stays on the source's host.
  *
- * A host qualifies when it is connected, not revoked or draining, runs the tier, offers the size, carries every label
- * asked for, and has the memory and disk free. What it reported in its last heartbeat is reduced by what has been
- * placed on it since, so a burst of creates doesn't all land on the host that looked emptiest a few seconds ago.
+ * A host qualifies when it is connected, not revoked or draining, runs the tier, can make the shape, carries every
+ * label asked for, and has the memory and disk free. What it reported in its last heartbeat is reduced by what has
+ * been placed on it since, so a burst of creates doesn't all land on the host that looked emptiest a few seconds ago.
  *
- * Among those, a host with a warm sandbox of that tier and size ready wins (a create there is a restore, a few hundred
+ * A microVM is asked for by shape (vCPUs and memory) or, as before shapes, by a size's name. A shape one of the host's
+ * named sizes has is that size; another is a custom shape, which a host makes only if it reports `custom-shapes` and
+ * has the vCPUs and memory, and which boots from scratch (no warm pool or template is kept for it).
+ *
+ * Among those, a host with a warm sandbox of that tier and shape ready wins (a create there is a restore, a few hundred
  * milliseconds, not a boot); then, for the isolate tier, a host already holding the owner's runtime (isolates of one
- * owner share a VM); then the most free memory, the least loaded.
+ * owner share a VM); then the most free memory, the least loaded. Warm pools are off unless a host is given some, and
+ * placement needs none: with no pool anywhere, the warm step decides nothing.
  */
-import type { HostSize, SandboxTier } from "./protocol.ts";
+import { HOST_FEATURES, type HostSize, type SandboxTier } from "./protocol.ts";
 import type { HostRecord } from "./store.ts";
+
+/** What a sandbox asks for: a microVM's vCPUs and memory, or an isolate's memory alone (`vcpus` 0). */
+export interface Shape {
+	readonly vcpus: number;
+	readonly memoryMiB: number;
+}
 
 export interface PlacementRequest {
 	readonly tier: SandboxTier;
-	readonly size: string;
+	/** A microVM's named size, as asked for before shapes; `shape` wins when both are given. Default `default`. */
+	readonly size?: string;
+	readonly shape?: Shape;
 	readonly owner?: string;
 	/** Labels the host must carry, such as `{"region": "eu"}`. */
 	readonly labels?: { readonly [key: string]: string };
@@ -33,23 +46,89 @@ export interface Candidate {
 
 export interface Placement {
 	readonly host: HostRecord;
+	/** What the host makes: one of its named sizes, or a custom shape (`custom`). */
 	readonly size: HostSize;
+	/** A shape off the host's named sizes: sent to it as vCPUs, memory and disk, and booted from scratch. */
+	readonly custom: boolean;
 	readonly warm: boolean;
 }
 
 export type Refusal = { readonly reason: string };
 
-/** The isolate tier's one shape: isolates are small, and share their owner's VM. */
+/**
+ * What an isolate books on its host. Isolates share their owner's VM, which the host counts in its free memory once it
+ * runs, so an isolate books only this much, whatever memory it asked for (128 to 512 MB): booking what it asked for
+ * would have a host full of small isolates look full long before its VMs are. The memory it asked for goes to the host
+ * and is recorded, not enforced (workerd has no per-isolate memory limit).
+ */
 export const ISOLATE_SIZE: HostSize = { name: "isolate", vcpus: 0, memoryMiB: 64, diskGiB: 0 };
 
-export function sizeOn(host: HostRecord, tier: SandboxTier, size: string): HostSize | undefined {
-	if (tier === "isolate") return ISOLATE_SIZE;
-	return host.facts?.sizes.find((candidate) => candidate.name === size);
+/** The name a host gives a custom shape (apps/host/internal/microvm's CustomSizeName). */
+export const customSizeName = (size: Omit<HostSize, "name">): string =>
+	`custom-${size.vcpus}c-${size.memoryMiB}m-${size.diskGiB}g`;
+
+/**
+ * The disk a custom shape gets on `sizes`: the smallest named size with at least its memory's disk, else the largest
+ * one's. A host with no named sizes gives 20 GiB.
+ */
+export function diskFor(sizes: readonly HostSize[], memoryMiB: number): number {
+	const byMemory = [...sizes].sort((a, b) => a.memoryMiB - b.memoryMiB || a.diskGiB - b.diskGiB);
+	return (byMemory.find((size) => size.memoryMiB >= memoryMiB) ?? byMemory.at(-1))?.diskGiB ?? 20;
 }
+
+/** Whether a host makes shapes off its named sizes. */
+export const makesCustomShapes = (host: HostRecord): boolean =>
+	host.facts?.features?.includes(HOST_FEATURES.customShapes) === true;
+
+/**
+ * What `host` would make for the request: a named size it has (by name, or by a shape matching one exactly), a custom
+ * shape it can make, or nothing.
+ */
+export function shapeOn(
+	host: HostRecord,
+	request: Pick<PlacementRequest, "tier" | "size" | "shape">,
+): { readonly size: HostSize; readonly custom: boolean } | undefined {
+	if (request.tier === "isolate") return { size: ISOLATE_SIZE, custom: false };
+	const facts = host.facts;
+	if (facts === undefined) return undefined;
+	const { shape } = request;
+	if (shape === undefined) {
+		const name = request.size ?? "default";
+		const named = facts.sizes.find((candidate) => candidate.name === name);
+		return named === undefined ? undefined : { size: named, custom: false };
+	}
+	const named = facts.sizes.find(
+		(candidate) => candidate.vcpus === shape.vcpus && candidate.memoryMiB === shape.memoryMiB,
+	);
+	if (named !== undefined) return { size: named, custom: false };
+	if (!makesCustomShapes(host) || shape.vcpus > facts.cpus || shape.memoryMiB > facts.memoryMiB) return undefined;
+	const custom = { vcpus: shape.vcpus, memoryMiB: shape.memoryMiB, diskGiB: diskFor(facts.sizes, shape.memoryMiB) };
+	return { size: { name: customSizeName(custom), ...custom }, custom: true };
+}
+
+/** A host's named size, by name: what a sandbox placed before shapes was made as. */
+export function sizeOn(host: HostRecord, tier: SandboxTier, size: string): HostSize | undefined {
+	return shapeOn(host, { tier, size })?.size;
+}
+
+/** The request in words, for a refusal: "4 vCPU, 8192 MiB" or "size large". */
+const asked = (request: PlacementRequest): string =>
+	request.tier === "isolate"
+		? "an isolate"
+		: request.shape === undefined
+			? `a microVM of size ${request.size ?? "default"}`
+			: `a microVM of ${request.shape.vcpus} vCPU and ${request.shape.memoryMiB} MiB`;
 
 export function place(request: PlacementRequest, candidates: readonly Candidate[]): Placement | Refusal {
 	const reasons = new Set<string>();
-	const fits: { candidate: Candidate; size: HostSize; warm: boolean; free: number; owner: boolean }[] = [];
+	const fits: {
+		candidate: Candidate;
+		size: HostSize;
+		custom: boolean;
+		warm: boolean;
+		free: number;
+		owner: boolean;
+	}[] = [];
 	for (const candidate of candidates) {
 		const { host } = candidate;
 		if (host.revoked) continue;
@@ -71,11 +150,18 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 			reasons.add(`no ${request.tier} tier`);
 			continue;
 		}
-		const size = sizeOn(host, request.tier, request.size);
-		if (size === undefined) {
-			reasons.add(`no size ${request.size}`);
+		const shaped = shapeOn(host, request);
+		if (shaped === undefined) {
+			reasons.add(
+				request.shape === undefined
+					? `no size ${request.size ?? "default"}`
+					: makesCustomShapes(host)
+						? "too small for that shape"
+						: "only its named sizes",
+			);
 			continue;
 		}
+		const { size } = shaped;
 		const labels = { ...facts.labels, ...host.labels };
 		if (Object.entries(request.labels ?? {}).some(([key, value]) => labels[key] !== value)) {
 			reasons.add("labels don't match");
@@ -87,18 +173,20 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 			reasons.add("full");
 			continue;
 		}
+		// Pools are kept for named sizes only, so a custom shape is never warm.
 		const pool = `${request.tier}/${request.tier === "isolate" ? "default" : size.name}`;
 		fits.push({
 			candidate,
 			size,
-			warm: (capacity.warm[pool] ?? 0) > 0,
+			custom: shaped.custom,
+			warm: !shaped.custom && (capacity.warm[pool] ?? 0) > 0,
 			free: freeMemory,
 			owner: request.owner !== undefined && candidate.owners.has(request.owner),
 		});
 	}
 	if (fits.length === 0) {
 		const why = reasons.size === 0 ? "no hosts have joined" : [...reasons].sort().join(", ");
-		return { reason: `No host can take a ${request.tier} sandbox of size ${request.size} (${why})` };
+		return { reason: `No host can take ${asked(request)} (${why})` };
 	}
 	fits.sort(
 		(a, b) =>
@@ -110,7 +198,7 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 	);
 	const best = fits[0];
 	if (best === undefined) return { reason: "No host" };
-	return { host: best.candidate.host, size: best.size, warm: best.warm };
+	return { host: best.candidate.host, size: best.size, custom: best.custom, warm: best.warm };
 }
 
 export function isRefusal(value: Placement | Refusal): value is Refusal {

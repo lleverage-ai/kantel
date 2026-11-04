@@ -3,7 +3,7 @@
 import { isKantelError } from "@kantel/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHostsApi } from "../src/http.ts";
-import { HOST_CLOSE_REPLACED, HOST_CLOSE_REVOKED, type HostSandbox } from "../src/protocol.ts";
+import { HOST_CLOSE_REPLACED, HOST_CLOSE_REVOKED, HOST_FEATURES, type HostSandbox } from "../src/protocol.ts";
 import { createHostsService, type HostsService } from "../src/service.ts";
 import { createMemoryHostStore } from "../src/store.ts";
 import { FakeHost, facts } from "./fake-host.ts";
@@ -88,7 +88,8 @@ describe("hosts service", () => {
 		expect(host.welcomed()).toBe(true);
 		expect(host.sent[0]).toMatchObject({
 			type: "welcome",
-			welcome: { hostId: a.hostId, heartbeatSeconds: 15, pools: { "microvm/default": 1 } },
+			// No warm pools unless asked for: a host may be doing other things.
+			welcome: { hostId: a.hostId, heartbeatSeconds: 15, pools: {} },
 		});
 		expect((await store.getPlacement("lost-one"))?.state).toBe("lost");
 		expect(logs.join("\n")).toMatch(/didn't place: stray/);
@@ -189,6 +190,64 @@ describe("hosts service", () => {
 		});
 		expect((await service.get(a.hostId)).state).toBe("draining");
 		expect((await service.sandboxes.create({ tier: "microvm" })).hostId).toBe(b.hostId);
+	});
+
+	it("sends a custom shape as its numbers, only to a host that makes them, and a named one by its name", async () => {
+		const { service, join } = await setup();
+		const old = await join("old");
+		const fresh = await join("fresh");
+		const hostOld = new FakeHost(service, old.hostId);
+		hostOld.freeMemoryMiB = 30_000;
+		hostOld.connect();
+		const hostNew = new FakeHost(service, fresh.hostId, [HOST_FEATURES.customShapes]);
+		hostNew.freeMemoryMiB = 10_000;
+		hostNew.connect();
+		await tick();
+		const custom = await service.sandboxes.create({ tier: "microvm", shape: { vcpus: 3, memoryMiB: 6144 } });
+		expect(custom.hostId).toBe(fresh.hostId);
+		expect(hostNew.calls.find((call) => call.method === "sandbox.create")?.params).toMatchObject({
+			size: "",
+			vcpus: 3,
+			memoryMiB: 6144,
+			diskGiB: 20,
+		});
+		expect(custom.placement).toMatchObject({ size: "custom-3c-6144m-20g", vcpus: 3, memoryMiB: 6144 });
+		// The shape of its named size goes by name, to the roomier host, which needn't make custom shapes.
+		const named = await service.sandboxes.create({ tier: "microvm", shape: { vcpus: 2, memoryMiB: 2048 } });
+		expect(named.hostId).toBe(old.hostId);
+		expect(hostOld.calls.find((call) => call.method === "sandbox.create")?.params).toMatchObject({ size: "default" });
+		expect(hostOld.calls.find((call) => call.method === "sandbox.create")?.params).not.toHaveProperty("vcpus");
+		// An isolate's memory reaches a host that records it, as what it asked for.
+		const isolate = await service.sandboxes.create({
+			tier: "isolate",
+			shape: { vcpus: 0, memoryMiB: 384 },
+			hostIds: [fresh.hostId],
+		});
+		expect(isolate.hostId).toBe(fresh.hostId);
+		expect(hostNew.calls.filter((call) => call.method === "sandbox.create").at(-1)?.params).toMatchObject({
+			tier: "isolate",
+			size: "",
+			memoryMiB: 384,
+		});
+	});
+
+	it("keeps no warm machines unless a host is given pools, and goes back to the deployment's", async () => {
+		const { service, join } = await setup();
+		const a = await join("a");
+		const host = new FakeHost(service, a.hostId);
+		host.connect();
+		await tick();
+		const welcomes = () => host.sent.filter((message) => message.type === "welcome");
+		expect(welcomes().at(-1)?.welcome).toMatchObject({ pools: {} });
+		const updated = await service.update(a.hostId, { pools: { "microvm/default": 2 } });
+		expect(updated.pools).toEqual({ "microvm/default": 2 });
+		expect(welcomes().at(-1)?.welcome).toMatchObject({ pools: { "microvm/default": 2 } });
+		await expect(service.update(a.hostId, { pools: { "microvm/default": 99 } })).rejects.toSatisfy((error) =>
+			isKantelError(error, "invalid"),
+		);
+		const reset = await service.update(a.hostId, { pools: null });
+		expect(reset.pools).toEqual({});
+		expect(welcomes().at(-1)?.welcome).toMatchObject({ pools: {} });
 	});
 
 	it("takes over from an older connection and revokes a host for good", async () => {

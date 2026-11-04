@@ -35,6 +35,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -46,6 +47,7 @@ import (
 	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
 	"github.com/lleverage-ai/kantel/apps/host/internal/fsutil"
 	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
+	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
 	"github.com/lleverage-ai/kantel/apps/host/internal/network"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
@@ -60,6 +62,61 @@ var DefaultSizes = []proto.Size{
 	{Name: "small", VCPUs: 1, MemoryMiB: 1024, DiskGiB: 10},
 	{Name: "default", VCPUs: 4, MemoryMiB: 2048, DiskGiB: 20},
 	{Name: "large", VCPUs: 4, MemoryMiB: 8192, DiskGiB: 50},
+}
+
+// A custom size is a shape off the named sizes, named custom-<vcpus>c-<memoryMiB>m-<diskGiB>g (such as
+// custom-5c-8192m-60g); names starting custom- are kept for them. It cold-boots: the host keeps no template or warm
+// pool for it.
+const (
+	customPrefix       = "custom-"
+	maxCustomVCPUs     = 32
+	minCustomMemoryMiB = 128
+	maxCustomDiskGiB   = 4096
+)
+
+// CustomSizeName is the size name of a custom shape.
+func CustomSizeName(vcpus, memoryMiB, diskGiB int) string {
+	return fmt.Sprintf("%s%dc-%dm-%dg", customPrefix, vcpus, memoryMiB, diskGiB)
+}
+
+// isCustom says a size name is a custom shape's, not one of the host's named sizes.
+func isCustom(name string) bool {
+	return strings.HasPrefix(name, customPrefix)
+}
+
+// parseCustomSize reads a name as CustomSizeName writes it; ok is false for anything else (signs, leading zeros,
+// other units).
+func parseCustomSize(name string) (vcpus, memoryMiB, diskGiB int, ok bool) {
+	rest, found := strings.CutPrefix(name, customPrefix)
+	if !found {
+		return 0, 0, 0, false
+	}
+	parts := strings.Split(rest, "-")
+	if len(parts) != 3 {
+		return 0, 0, 0, false
+	}
+	var n [3]int
+	for i, unit := range []string{"c", "m", "g"} {
+		digits, found := strings.CutSuffix(parts[i], unit)
+		if !found || digits == "" || len(digits) > 9 {
+			return 0, 0, 0, false
+		}
+		for _, r := range digits {
+			if r < '0' || r > '9' {
+				return 0, 0, 0, false
+			}
+		}
+		v, err := strconv.Atoi(digits)
+		if err != nil {
+			return 0, 0, 0, false
+		}
+		n[i] = v
+	}
+	// One name per shape: custom-05c-... isn't custom-5c-....
+	if CustomSizeName(n[0], n[1], n[2]) != name {
+		return 0, 0, 0, false
+	}
+	return n[0], n[1], n[2], true
 }
 
 // Config is the tier's setup.
@@ -138,10 +195,15 @@ type Manager struct {
 	pool      map[string][]*warm
 	poolWant  map[string]int
 	filling   map[string]bool
+	// templates are keyed by size name, and only the named sizes have one. Fast cold starts for custom shapes (a
+	// per-shape template, or a snapshot to restore) would need templates keyed by the shape's fingerprint and a
+	// bounded cache, since a template's memory file is as large as the shape's memory: future work.
 	templates map[string]*sync.Mutex
 	nextCID   atomic.Uint32
 	closed    atomic.Bool
 	spool     *spool
+	// hostMemoryMiB is the machine's memory, a custom shape's ceiling (0: unknown, no ceiling but the sanity cap).
+	hostMemoryMiB int64
 }
 
 func New(cfg Config) (*Manager, error) {
@@ -160,6 +222,7 @@ func New(cfg Config) (*Manager, error) {
 		}
 	}
 	m := &Manager{cfg: cfg, log: cfg.Log.With("tier", Tier), sandboxes: map[string]*sandbox{}, pool: map[string][]*warm{}, poolWant: map[string]int{}, filling: map[string]bool{}, templates: map[string]*sync.Mutex{}}
+	m.hostMemoryMiB = hostinfo.MemoryMiB()
 	m.nextCID.Store(uint32(time.Now().UnixMilli()%100000) + 100)
 	m.spool = newSpool(cfg.SpoolDir, cfg.SpoolMaxMiB<<20, m.log)
 	for _, size := range cfg.Sizes {
@@ -212,6 +275,17 @@ func (m *Manager) size(name string) (proto.Size, error) {
 		if s.Name == name {
 			return s, nil
 		}
+	}
+	if vcpus, memoryMiB, diskGiB, ok := parseCustomSize(name); ok {
+		maxVCPUs := min(maxCustomVCPUs, runtime.NumCPU())
+		maxMemoryMiB := 1 << 20
+		if m.hostMemoryMiB > 0 {
+			maxMemoryMiB = int(min(m.hostMemoryMiB, 1<<20))
+		}
+		if vcpus < 1 || vcpus > maxVCPUs || memoryMiB < minCustomMemoryMiB || memoryMiB > maxMemoryMiB || diskGiB < 1 || diskGiB > maxCustomDiskGiB {
+			return proto.Size{}, &proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("a custom size on this host is 1 to %d vCPUs, %d to %d MiB of memory and 1 to %d GiB of disk", maxVCPUs, minCustomMemoryMiB, maxMemoryMiB, maxCustomDiskGiB)}
+		}
+		return proto.Size{Name: name, VCPUs: vcpus, MemoryMiB: memoryMiB, DiskGiB: diskGiB}, nil
 	}
 	return proto.Size{}, &proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("no size %q on this host", name)}
 }
@@ -454,6 +528,10 @@ func (t timings) step(name string, since *time.Time) {
 // template returns the size's template snapshot, cold-booting one if there is none.
 func (m *Manager) template(ctx context.Context, size proto.Size) (string, timings, error) {
 	lock := m.templates[size.Name]
+	if lock == nil {
+		// A custom shape (or a size this host doesn't have): templates are kept for the named sizes only.
+		return "", nil, &proto.Error{Code: proto.ErrInternal, Message: fmt.Sprintf("no template is kept for size %q", size.Name)}
+	}
 	lock.Lock()
 	defer lock.Unlock()
 	dir := filepath.Join(m.cfg.Root, "templates", size.Name)
@@ -564,20 +642,31 @@ func (m *Manager) restore(ctx context.Context, vmDir, statePath, memPath string,
 	return machine, client, nil
 }
 
-// SetPools sets how many warm sandboxes to keep per size, and starts filling.
+// SetPools sets how many warm sandboxes to keep per size, and starts filling. Pools are kept for the named sizes
+// only: a custom shape cold-boots.
 func (m *Manager) SetPools(want map[string]int) {
 	m.mu.Lock()
 	m.poolWant = map[string]int{}
 	for size, n := range want {
+		if isCustom(size) {
+			m.log.Warn("no warm pool is kept for a custom size; ignoring it", "size", size)
+			continue
+		}
 		m.poolWant[size] = n
 	}
 	m.mu.Unlock()
 	for size := range want {
-		m.fill(size)
+		if !isCustom(size) {
+			m.fill(size)
+		}
 	}
 }
 
 func (m *Manager) fill(sizeName string) {
+	if isCustom(sizeName) {
+		m.log.Warn("no warm pool is kept for a custom size", "size", sizeName)
+		return
+	}
 	m.mu.Lock()
 	if m.filling[sizeName] || m.closed.Load() {
 		m.mu.Unlock()
@@ -612,6 +701,9 @@ func (m *Manager) fill(sizeName string) {
 }
 
 func (m *Manager) warmOne(ctx context.Context, sizeName string) (*warm, error) {
+	if isCustom(sizeName) {
+		return nil, fmt.Errorf("no warm pool is kept for custom size %s", sizeName)
+	}
 	size, err := m.size(sizeName)
 	if err != nil {
 		return nil, err
@@ -712,15 +804,25 @@ func validID(id string) bool {
 }
 
 // Create makes a sandbox: from a warm sandbox when the pool has one, else by restoring the size's template (or
-// p.From, a snapshot).
+// p.From, a snapshot). A custom shape (p.VCPUs, p.MemoryMiB and p.DiskGiB with no p.Size) cold-boots unless it is
+// made from a snapshot.
 func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.SandboxInfo, error) {
 	if !validID(p.SandboxID) {
 		return proto.SandboxInfo{}, &proto.Error{Code: proto.ErrInvalid, Message: "bad sandbox ID"}
 	}
-	size, err := m.size(p.Size)
+	sizeName := p.Size
+	if sizeName == "" && (p.VCPUs != 0 || p.MemoryMiB != 0 || p.DiskGiB != 0) {
+		if p.VCPUs <= 0 || p.MemoryMiB <= 0 || p.DiskGiB <= 0 {
+			return proto.SandboxInfo{}, &proto.Error{Code: proto.ErrInvalid, Message: "a custom size needs vcpus, memoryMiB and diskGiB"}
+		}
+		sizeName = CustomSizeName(p.VCPUs, p.MemoryMiB, p.DiskGiB)
+	}
+	size, err := m.size(sizeName)
 	if err != nil {
 		return proto.SandboxInfo{}, err
 	}
+	// A named size keeps its warm pool and template; a custom one has neither.
+	custom := isCustom(size.Name)
 	t := timings{}
 	start := time.Now()
 	began := start
@@ -743,7 +845,7 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 		return proto.SandboxInfo{}, err
 	}
 	source := "pool"
-	if p.From == "" {
+	if p.From == "" && !custom {
 		if w := m.claim(size.Name); w != nil {
 			if err := os.Rename(w.dir, dir); err != nil {
 				w.machine.Kill()
@@ -780,6 +882,9 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 				statePath, memPath = filepath.Join(sdir, "state"), filepath.Join(sdir, "mem")
 			}
 			source = "snapshot"
+		} else if custom {
+			// No template: a fresh disk, then a cold boot below.
+			source = "boot"
 		} else {
 			tpl, tt, err := m.template(ctx, size)
 			if err != nil {
@@ -795,7 +900,11 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 			}
 		}
 		start = time.Now()
-		if err := copySparse(diskPath, filepath.Join(vm, fc.DiskFile)); err != nil {
+		if diskPath != "" {
+			if err := copySparse(diskPath, filepath.Join(vm, fc.DiskFile)); err != nil {
+				return fail(err)
+			}
+		} else if err := newDisk(filepath.Join(vm, fc.DiskFile), size.DiskGiB); err != nil {
 			return fail(err)
 		}
 		t.step("disk", &start)

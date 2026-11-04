@@ -52,11 +52,14 @@ export type {
 	ProxySource,
 	SandboxEgress,
 	SandboxesSource,
+	SandboxShape,
+	SandboxShapes,
+	ShapePreset,
 	SnapshotsSource,
 	TelemetrySource,
 	WebhooksSource,
 } from "./compute/compute-model.ts";
-export { DeviceSetupError, FileTooLargeError } from "./compute/compute-model.ts";
+export { DEFAULT_SANDBOX_SHAPES, DeviceSetupError, FileTooLargeError } from "./compute/compute-model.ts";
 // Identity: who is signed in, and Kantel's own email-code sign-in.
 export { SignInScreen, type SignInScreenProps } from "./identity/sign-in.tsx";
 export {

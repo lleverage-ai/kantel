@@ -237,7 +237,104 @@ export const SandboxHealth = Type.Union([Type.Literal("ok"), Type.Literal("degra
 
 export const SandboxSizeName = Type.Union(
 	[Type.Literal("small"), Type.Literal("default"), Type.Literal("large"), Type.Literal("xlarge")],
-	{ title: "SandboxSizeName", description: "A microVM's size; a deployment may offer fewer. Isolates have none." },
+	{
+		title: "SandboxSizeName",
+		description:
+			"A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: " +
+			"a named size is still taken for now.",
+	},
+);
+
+/** An isolate's memory: 128 to 512 MB in steps of 64, 256 by default. */
+export const ISOLATE_MEMORY_MB = { min: 128, max: 512, step: 64, default: 256 } as const;
+
+export const SandboxShapeInput = Type.Object(
+	{
+		vcpus: Type.Optional(
+			Type.Integer({
+				minimum: 1,
+				description: "A microVM's vCPUs. An isolate has none of its own: it shares its account's VM's CPU.",
+			}),
+		),
+		memoryMb: Type.Integer({
+			minimum: ISOLATE_MEMORY_MB.min,
+			description:
+				"Memory in MB. An isolate takes 128 to 512 in steps of 64; a microVM up to what a host offers " +
+				"(`getSandboxShapes`).",
+		}),
+	},
+	{
+		title: "SandboxShapeInput",
+		description:
+			"What a new sandbox gets. A shape off the hosts' presets boots from scratch where a preset may come from a " +
+			"host's warm pool.",
+	},
+);
+
+export const ShapeRange = Type.Object(
+	{ min: Type.Integer(), max: Type.Integer(), step: Type.Integer(), default: Type.Integer() },
+	{ title: "ShapeRange" },
+);
+
+export const ShapePreset = Type.Object(
+	{
+		name: SandboxSizeName,
+		vcpus: Type.Integer(),
+		memoryMb: Type.Integer(),
+		diskGb: Type.Integer(),
+		warm: Type.Boolean({
+			description: "A host the account may use keeps machines of it ready (a warm pool); off by default.",
+		}),
+	},
+	{ title: "ShapePreset" },
+);
+
+export const SandboxShapes = Type.Object(
+	{
+		isolate: Type.Object(
+			{
+				memoryMb: ShapeRange,
+				enforced: Type.Boolean({
+					description:
+						"Whether an isolate's memory is a hard limit. False today: the runtime records it, and the account VM's " +
+						"memory, shared by its isolates, is the limit.",
+				}),
+			},
+			{ title: "IsolateShapes" },
+		),
+		microvm: Type.Optional(
+			Type.Object(
+				{
+					vcpus: ShapeRange,
+					memoryMb: ShapeRange,
+					memoryMbPerVcpu: Type.Object(
+						{ min: Type.Integer(), max: Type.Integer() },
+						{ description: "Memory follows vCPUs: each vCPU has at least `min` and at most `max` MB." },
+					),
+					presets: Type.Array(ShapePreset),
+					custom: Type.Boolean({
+						description: "Whether a host takes shapes off the presets; when false, only the presets.",
+					}),
+				},
+				{ title: "MicrovmShapes", description: "Absent when no host the account may use runs microVMs." },
+			),
+		),
+		rates: Type.Optional(
+			Type.Object(
+				{
+					currency: Type.String(),
+					microvmPerVcpuHour: Type.Number(),
+					microvmPerGbHour: Type.Number(),
+					isolatePerGbHour: Type.Number(),
+				},
+				{ title: "ShapeRates", description: "What an hour costs, per vCPU and GB; absent where it is free." },
+			),
+		),
+	},
+	{
+		title: "SandboxShapes",
+		description: "What a new sandbox in the account may be: the ranges its hosts offer, their presets and the rates.",
+	},
 );
 
 export const SandboxResources = Type.Object(
@@ -428,6 +525,7 @@ export const CreateSandboxBody = Type.Object(
 		),
 		type: Type.Optional(SandboxType),
 		size: Type.Optional(SandboxSizeName),
+		resources: Type.Optional(SandboxShapeInput),
 		image: Type.Optional(Type.String({ description: "A microVM's base image. Default: the deployment's." })),
 		from: Type.Optional(
 			Type.String({
@@ -1614,6 +1712,20 @@ export const HostState = Type.Union(
 	},
 );
 
+export const HostPools = Type.Union(
+	[
+		Type.Record(Type.String({ pattern: "^(microvm|isolate)/[a-z0-9-]+$" }), Type.Integer({ minimum: 0, maximum: 16 })),
+		Type.Null(),
+	],
+	{
+		title: "HostPools",
+		description:
+			'Warm machines the host keeps ready, by `<type>/<size>`, such as `{"microvm/default": 1}`: a create of that ' +
+			"shape is then a restore. They hold memory while idle, so a host keeps none unless asked. `null`: the " +
+			"deployment's default (none unless its operator set `KANTEL_COMPUTE_POOLS`).",
+	},
+);
+
 export const Host = Type.Object(
 	{
 		id: id("The host's ID, such as `host_6t5r4e`."),
@@ -1644,6 +1756,12 @@ export const Host = Type.Object(
 			{ title: "HostAllocated" },
 		),
 		labels: Type.Record(Type.String(), Type.String()),
+		pools: Type.Optional(
+			Type.Record(Type.String(), Type.Integer(), {
+				description:
+					"The warm machines it keeps ready, by `<type>/<size>`: its own setting, else the deployment's. Empty: none.",
+			}),
+		),
 		accountId: Type.Optional(
 			id(
 				"The account the host belongs to, when it was added to one by its people: only that account's " +
@@ -1669,6 +1787,7 @@ export const UpdateHostBody = Type.Object(
 		name: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
 		labels: Type.Optional(Type.Record(Type.String(), Type.String())),
 		draining: Type.Optional(Type.Boolean({ description: "Stop placing new sandboxes on it." })),
+		pools: Type.Optional(HostPools),
 	},
 	{ title: "UpdateHostBody" },
 );
@@ -1731,6 +1850,10 @@ export type SandboxType = Static<typeof SandboxType>;
 export type SandboxState = Static<typeof SandboxState>;
 export type SandboxVisibility = Static<typeof SandboxVisibility>;
 export type SandboxSizeName = Static<typeof SandboxSizeName>;
+export type SandboxShapeInput = Static<typeof SandboxShapeInput>;
+export type SandboxShapes = Static<typeof SandboxShapes>;
+export type ShapePreset = Static<typeof ShapePreset>;
+export type HostPools = Static<typeof HostPools>;
 export type SandboxCapabilities = Static<typeof SandboxCapabilities>;
 export type Sandbox = Static<typeof Sandbox>;
 export type CreateSandboxBody = Static<typeof CreateSandboxBody>;

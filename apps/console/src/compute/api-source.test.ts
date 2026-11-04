@@ -297,11 +297,27 @@ describe("sandboxes", () => {
 		const { api, fetchApi } = setup();
 		const source = await open(fetchApi);
 		const accountId = await personalAccount(source);
-		const made = await source.sandboxes.create({ accountId, kind: "microvm", shape: { vcpus: 4, memoryMb: 8192 } });
+		const made = await source.sandboxes.create({ accountId, kind: "microvm" });
 		await api.service.idle();
 		const [listed] = await source.sandboxes.list(accountId);
 		// The stub backend's "default" is 2 vCPU and 4 GB, not the sample catalogue's 4 and 8.
 		expect(listed).toMatchObject({ id: made.id, size: "medium", resources: { vcpus: 2, memoryGb: 4, diskGb: 20 } });
+	});
+
+	it("asks for the shape the sliders chose, and reads what may be chosen from the API", async () => {
+		const { api, fetchApi } = setup();
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const shapes = await source.sandboxes.shapes?.(accountId);
+		expect(shapes?.isolate.memoryMb).toEqual({ min: 128, max: 512, step: 64, default: 256 });
+		expect(shapes?.microvm.presets.map((preset) => preset.name)).toEqual(["small", "default", "large", "xlarge"]);
+		// Self-hosted: no price.
+		expect(shapes?.rates).toBeUndefined();
+		const custom = await source.sandboxes.create({ accountId, kind: "microvm", shape: { vcpus: 3, memoryMb: 6144 } });
+		const isolate = await source.sandboxes.create({ accountId, kind: "isolate", shape: { vcpus: 0, memoryMb: 384 } });
+		await api.service.idle();
+		expect(await source.sandboxes.get(custom.id)).toMatchObject({ resources: { vcpus: 3, memoryGb: 6 } });
+		expect(await source.sandboxes.get(isolate.id)).toMatchObject({ resources: { vcpus: 0, memoryGb: 0.375 } });
 	});
 
 	it("reads one for its page, sets its auto-stop, and reads its live files and a failed command's output", async () => {

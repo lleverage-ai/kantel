@@ -84,6 +84,11 @@ export const HOST_FEATURES = {
 	 * only where bound, refuses older `revision`s, and a fork takes its `env`.
 	 */
 	egressPolicy: "egress-policy",
+	/**
+	 * `sandbox.create` takes `vcpus`, `memoryMiB` and `diskGiB` for a microVM off the host's named sizes (it boots from
+	 * scratch), and an isolate's `memoryMiB` (recorded, not enforced).
+	 */
+	customShapes: "custom-shapes",
 } as const;
 
 /** Whether an egress needs the `egress-policy` feature to be enforced: it has grants or protected variables. */
@@ -100,7 +105,7 @@ export interface HostCapacity {
 	readonly running: number;
 	readonly stopped: number;
 	readonly load1: number;
-	/** Pre-warmed sandboxes ready, by `<tier>/<pool>`. */
+	/** Pre-warmed sandboxes ready, by `<tier>/<pool>`: a pool is one of the host's named sizes. */
 	readonly warm: { readonly [pool: string]: number };
 }
 
@@ -234,7 +239,10 @@ export interface HostWelcome {
 	readonly desiredVersion?: string;
 	/** With `{version}`, `{os}` and `{arch}` for the host to fill in. */
 	readonly updateUrl?: string;
-	/** Pre-warmed sandboxes wanted, by `<tier>/<pool>`, such as `{"microvm/default": 2}`. */
+	/**
+	 * Pre-warmed sandboxes wanted, by `<tier>/<pool>`, such as `{"microvm/default": 2}`: the host's own setting, else the
+	 * deployment's, which is none by default. Every create of another shape boots, so none is needed.
+	 */
 	readonly pools?: { readonly [pool: string]: number };
 	readonly draining?: boolean;
 }
