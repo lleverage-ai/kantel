@@ -77,9 +77,13 @@ type Cache struct {
 	version string
 	// mu is held while an image is linked or removed, so eviction never removes one between a sandbox finding it and
 	// linking it.
-	mu     sync.Mutex
-	bmu    sync.Mutex
-	builds map[string]*build
+	mu sync.Mutex
+	// acquiring counts, by image path, the Link calls under way for it (held under mu). Eviction never removes an
+	// image a Link is waiting for, so a new image survives until the sandbox that asked for it has linked it, even
+	// when images in use already fill the cache or the image alone is bigger than MaxBytes.
+	acquiring map[string]int
+	bmu       sync.Mutex
+	builds    map[string]*build
 	// failed remembers a bundle whose fetch or build failed, for FailureTTL, so the sandboxes that mount it are told
 	// at once rather than each fetching it again.
 	failed map[string]failure
@@ -119,7 +123,7 @@ func New(cfg Config) (*Cache, error) {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
-	c := &Cache{cfg: cfg, log: cfg.Log.With("part", "bundles"), builds: map[string]*build{}, failed: map[string]failure{}}
+	c := &Cache{cfg: cfg, log: cfg.Log.With("part", "bundles"), builds: map[string]*build{}, failed: map[string]failure{}, acquiring: map[string]int{}}
 	_ = os.RemoveAll(c.tmpDir())
 	for _, dir := range []string{c.imagesDir(), c.tmpDir()} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -326,6 +330,21 @@ func (c *Cache) mkfsImage(ctx context.Context, tarPath, out, scratch string) err
 // hasn't it. The image is in use, and never evicted, while dst exists. It answers whether the image was cached and
 // its size.
 func (c *Cache) Link(ctx context.Context, digest, dst string, fetch Fetch) (cached bool, size int64, err error) {
+	image := c.Image(digest)
+	c.mu.Lock()
+	c.acquiring[image]++
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		if c.acquiring[image]--; c.acquiring[image] <= 0 {
+			delete(c.acquiring, image)
+		}
+		c.mu.Unlock()
+		// Given up or failed: an image no sandbox took may go again, if the cache is over its bound.
+		if err != nil {
+			c.Evict()
+		}
+	}()
 	for attempt := 0; ; attempt++ {
 		was, err := c.Get(ctx, digest, fetch)
 		if err != nil {
@@ -333,9 +352,9 @@ func (c *Cache) Link(ctx context.Context, digest, dst string, fetch Fetch) (cach
 		}
 		cached = cached || (attempt == 0 && was)
 		c.mu.Lock()
-		size, err = c.linkLocked(c.Image(digest), dst)
+		size, err = c.linkLocked(image, dst)
 		c.mu.Unlock()
-		// Evicted between Get and here (it wasn't in use yet): get it again.
+		// Removed between Get and here (only by hand, since eviction skips an image being acquired): get it again.
 		if errors.Is(err, fs.ErrNotExist) && attempt < 2 {
 			cached = false
 			continue
@@ -406,8 +425,8 @@ func (c *Cache) list() []image {
 	return out
 }
 
-// Evict removes the least recently used images that no sandbox or snapshot links to, until the cache's
-// images take at most MaxBytes (or none is left that may go).
+// Evict removes the least recently used images that no sandbox or snapshot links to and no Link is waiting for,
+// until the cache's images take at most MaxBytes (or none is left that may go).
 func (c *Cache) Evict() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -424,7 +443,7 @@ func (c *Cache) Evict() {
 		if total <= c.cfg.MaxBytes {
 			break
 		}
-		if im.links > 1 {
+		if im.links > 1 || c.acquiring[im.path] > 0 {
 			continue
 		}
 		if err := os.Remove(im.path); err == nil {

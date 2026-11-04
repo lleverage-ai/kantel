@@ -57,8 +57,10 @@ func Extract(tarPath, root string, maxBytes int64) error {
 		mode := os.FileMode(hdr.Mode) & os.ModePerm
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o755); err != nil {
-				return err
+			// Never through a symbolic link the tar made at the directory's own name: MkdirAll accepts one to an
+			// existing directory, and the modes set below would then land outside root.
+			if err := mkdirAt(target); err != nil {
+				return fmt.Errorf("the bundle's directory %q: %w", hdr.Name, err)
 			}
 			// Their modes last: a directory without write permission still takes its entries first.
 			dirs = append(dirs, dirMode{target, hdr})
@@ -113,6 +115,11 @@ func Extract(tarPath, root string, maxBytes int64) error {
 	}
 	for i := len(dirs) - 1; i >= 0; i-- {
 		d := dirs[i]
+		// Only a real directory: a later entry can't have made it anything else (replace refuses a directory), but
+		// a chmod that follows a link must never be possible here.
+		if info, err := os.Lstat(d.path); err != nil || !info.IsDir() {
+			continue
+		}
 		_ = os.Chmod(d.path, os.FileMode(d.hdr.Mode)&os.ModePerm)
 		_ = os.Chtimes(d.path, d.hdr.ModTime, d.hdr.ModTime)
 	}
@@ -154,6 +161,25 @@ func within(root, name string) (string, error) {
 		}
 	}
 	return filepath.Join(root, filepath.FromSlash(name)), nil
+}
+
+// mkdirAt makes the directory target (its parents exist), or keeps one already there. Anything else at target, a
+// symbolic link above all, is refused.
+func mkdirAt(target string) error {
+	info, err := os.Lstat(target)
+	if errors.Is(err, os.ErrNotExist) {
+		return os.Mkdir(target, 0o755)
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("is a symbolic link the bundle made")
+	}
+	if !info.IsDir() {
+		return errors.New("is a file the bundle made")
+	}
+	return nil
 }
 
 // replace clears the way for an entry at target: a later entry of the same name wins, as with tar itself. A

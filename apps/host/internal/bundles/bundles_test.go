@@ -234,6 +234,69 @@ func TestLinkAndEvictionKeepImagesInUse(t *testing.T) {
 	}
 }
 
+// TestLinkSurvivesAFullCache: a new image is never evicted before the sandbox that asked for it has linked it, when
+// images in use already fill the cache or the image alone is bigger than the cache's bound.
+func TestLinkSurvivesAFullCache(t *testing.T) {
+	c := fakeCache(t, 12<<10, nil)
+	vm := t.TempDir()
+	pinned := makeTar(t, entry{name: "f", body: strings.Repeat("p", 11<<10)})
+	if _, _, err := c.Link(context.Background(), digestOf(pinned), filepath.Join(vm, "bundle0.erofs"), serve(pinned, nil)); err != nil {
+		t.Fatal(err)
+	}
+	// The cache is full of images in use; a new one must still be linked, with one fetch.
+	fresh := makeTar(t, entry{name: "f", body: strings.Repeat("n", 9<<10)})
+	var fetches atomic.Int32
+	if _, _, err := c.Link(context.Background(), digestOf(fresh), filepath.Join(vm, "bundle1.erofs"), serve(fresh, &fetches)); err != nil || fetches.Load() != 1 {
+		t.Fatalf("with the cache full of images in use: err=%v fetches=%d", err, fetches.Load())
+	}
+	// One image bigger than the whole bound.
+	huge := makeTar(t, entry{name: "f", body: strings.Repeat("h", 20<<10)})
+	fetches.Store(0)
+	if _, _, err := c.Link(context.Background(), digestOf(huge), filepath.Join(vm, "bundle2.erofs"), serve(huge, &fetches)); err != nil || fetches.Load() != 1 {
+		t.Fatalf("an image bigger than the cache: err=%v fetches=%d", err, fetches.Load())
+	}
+	for i, raw := range [][]byte{pinned, fresh, huge} {
+		if !c.Has(digestOf(raw)) {
+			t.Fatalf("image %d is linked, so kept", i)
+		}
+	}
+
+	// A caller that gives up while the image builds: once built, nothing holds it, and it may go.
+	release := make(chan struct{})
+	slow := fakeCache(t, 1, func(ctx context.Context) error { <-release; return nil })
+	abandoned := makeTar(t, entry{name: "f", body: "x"})
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, _, err := slow.Link(ctx, digestOf(abandoned), filepath.Join(vm, "bundle3.erofs"), serve(abandoned, nil)); err == nil {
+		t.Fatal("the caller's wait ends with its context")
+	}
+	close(release)
+	deadline := time.Now().Add(2 * time.Second)
+	for slow.bmuBuilding(digestOf(abandoned)) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if slow.Has(digestOf(abandoned)) {
+		t.Fatal("an image no sandbox took is evicted when the cache is over its bound")
+	}
+	// Released: once its sandboxes let go, the images may go too.
+	for _, n := range []string{"bundle0.erofs", "bundle1.erofs", "bundle2.erofs"} {
+		if err := os.Remove(filepath.Join(vm, n)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c.Evict()
+	if total, _, _ := c.Usage(); total > 12<<10 {
+		t.Fatalf("released images are reclaimed, the cache holds %d bytes", total)
+	}
+}
+
+func (c *Cache) bmuBuilding(digest string) bool {
+	c.bmu.Lock()
+	defer c.bmu.Unlock()
+	_, ok := c.builds[digest]
+	return ok
+}
+
 func TestLinkReplacesTheDrivesFile(t *testing.T) {
 	c := fakeCache(t, 1<<30, nil)
 	vm := t.TempDir()
@@ -328,6 +391,55 @@ func TestExtractKeepsModesAndStaysInside(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "escape")); err == nil {
 		t.Fatal("nothing is written outside the root")
+	}
+}
+
+// TestExtractNeverChmodsThroughALink: a symbolic link to a directory outside the root, then a directory entry of the
+// same name, must be refused without touching that directory's mode or times.
+func TestExtractNeverChmodsThroughALink(t *testing.T) {
+	dir := t.TempDir()
+	sentinel := filepath.Join(dir, "sentinel")
+	if err := os.Mkdir(sentinel, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	then := time.Unix(1_600_000_000, 0)
+	if err := os.Chtimes(sentinel, then, then); err != nil {
+		t.Fatal(err)
+	}
+	for name, bad := range map[string][]byte{
+		"dir entry at a link":        makeTar(t, entry{name: "out", typ: tar.TypeSymlink, link: sentinel}, entry{name: "out/", typ: tar.TypeDir, mode: 0o777}),
+		"dir entry at a link (./)":   makeTar(t, entry{name: "./out", typ: tar.TypeSymlink, link: sentinel}, entry{name: "./out", typ: tar.TypeDir, mode: 0o777}),
+		"nested dir entry at a link": makeTar(t, entry{name: "a/", typ: tar.TypeDir, mode: 0o755}, entry{name: "a/out", typ: tar.TypeSymlink, link: sentinel}, entry{name: "a/out/", typ: tar.TypeDir, mode: 0o777}),
+		"dir entry at a file":        makeTar(t, entry{name: "f", body: "x"}, entry{name: "f/", typ: tar.TypeDir, mode: 0o777}),
+	} {
+		p := filepath.Join(dir, "bad.tar")
+		if err := os.WriteFile(p, bad, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out := filepath.Join(dir, "bad-"+strings.NewReplacer(" ", "-", "(", "", ")", "", "/", "").Replace(name))
+		if err := Extract(p, out, 1<<20); err == nil {
+			t.Errorf("%s: refused", name)
+		}
+		st, err := os.Stat(sentinel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Mode().Perm() != 0o700 || !st.ModTime().Equal(then) {
+			t.Fatalf("%s: the directory outside the root was changed: %v %v", name, st.Mode(), st.ModTime())
+		}
+	}
+	// A symbolic link to a directory (inside or out) is kept as a link, not followed, when no entry is under it.
+	ok := makeTar(t, entry{name: "d/", typ: tar.TypeDir, mode: 0o755}, entry{name: "d/f", body: "x"}, entry{name: "ln", typ: tar.TypeSymlink, link: "d"}, entry{name: "out", typ: tar.TypeSymlink, link: sentinel})
+	p := filepath.Join(dir, "ok.tar")
+	if err := os.WriteFile(p, ok, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(dir, "ok")
+	if err := Extract(p, root, 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	if target, err := os.Readlink(filepath.Join(root, "out")); err != nil || target != sentinel {
+		t.Fatalf("the link is kept as it is: %q %v", target, err)
 	}
 }
 
