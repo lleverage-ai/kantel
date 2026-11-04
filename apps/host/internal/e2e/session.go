@@ -52,7 +52,9 @@ type ServeOptions struct {
 	Static *ecdh.PrivateKey
 	HostID string
 	Chain  Chain
-	// Authorize gives a reason to refuse the device's hello, or "" (such as: no such sandbox in this space).
+	// Authorize gives a reason to refuse the device's hello, or "" (such as: no such sandbox in this space). It is asked
+	// again with the chain on every revalidation and call, so what it checks (the sandbox still being one the session
+	// may reach) ends a session that no longer holds, open ports and calls in flight included.
 	Authorize func(d Device, h Hello) string
 	// RPC runs one call. Emit sends an event for it before the result.
 	RPC func(ctx context.Context, d Device, sandbox, method string, params json.RawMessage, emit func(any)) (any, error)
@@ -258,8 +260,9 @@ func Serve(ctx context.Context, conn io.ReadWriteCloser, o ServeOptions) error {
 	if o.OnOpen != nil {
 		o.OnOpen(device, hello)
 	}
-	// The session lasts only while the chain lets the device in: it is looked at again every few seconds, so a removal
-	// (or strict mode) that reaches the host from another session or a join ends this one, calls in flight included.
+	// The session lasts only while the chain lets the device in, and Authorize still lets it reach its sandbox: they are
+	// looked at again every few seconds, so a removal (or strict mode, or E2E turned off and on, which retires the
+	// sandbox) that reaches the host from another session or a join ends this one, calls in flight and ports included.
 	var revoked atomic.Pointer[string]
 	go func() {
 		every := o.Revalidate
@@ -273,7 +276,7 @@ func Serve(ctx context.Context, conn io.ReadWriteCloser, o ServeOptions) error {
 			case <-ctx.Done():
 				return
 			case <-tick.C:
-				if why := stillAllowed(o, device); why != "" {
+				if why := stillAllowed(o, device, hello); why != "" {
 					revoked.Store(&why)
 					cancel()
 					return
@@ -361,7 +364,7 @@ func Serve(ctx context.Context, conn io.ReadWriteCloser, o ServeOptions) error {
 		}
 		// Each call is let in by the chain as it is now: a device removed since the session opened is refused, and its
 		// session ended.
-		if why := stillAllowed(o, device); why != "" {
+		if why := stillAllowed(o, device, hello); why != "" {
 			_ = s.send(rpcReply{ID: req.ID, Error: &Error{"forbidden", why}})
 			return errors.New(why)
 		}
@@ -396,8 +399,8 @@ func Serve(ctx context.Context, conn io.ReadWriteCloser, o ServeOptions) error {
 	}
 }
 
-// stillAllowed says why device may no longer use its session under the chain as it is now, or "".
-func stillAllowed(o ServeOptions, device Device) string {
+// stillAllowed says why device may no longer use its session (hello's) under the chain as it is now, or "".
+func stillAllowed(o ServeOptions, device Device, hello Hello) string {
 	state := o.Chain.State()
 	if state == nil {
 		return "This host's chain for the space doesn't verify"
@@ -406,7 +409,13 @@ func stillAllowed(o ServeOptions, device Device) string {
 	if !ok || d.DH != device.DH {
 		return "This device isn't in the space's chain"
 	}
-	return state.Allowed(device.ID)
+	if why := state.Allowed(device.ID); why != "" {
+		return why
+	}
+	if o.Authorize != nil {
+		return o.Authorize(device, hello)
+	}
+	return ""
 }
 
 // open reads the device's `open`, takes the entries it brings, and finds the device.

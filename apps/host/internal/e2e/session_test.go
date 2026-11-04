@@ -6,6 +6,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -328,4 +329,55 @@ func TestARemovalEndsACallInFlight(t *testing.T) {
 	if err := <-served; err == nil || !strings.Contains(err.Error(), "isn't in the space's chain") {
 		t.Fatalf("ended with %v", err)
 	}
+}
+
+// Authorize is asked again as a session runs: when it stops letting the session reach its sandbox (E2E was turned off
+// and on, retiring it), an open port closes and a call in flight ends, with no further request.
+func TestAnAuthorizeThatNoLongerHoldsEndsPortsAndCalls(t *testing.T) {
+	var v sessionVector
+	readVector(t, "session.json", &v)
+	state, _ := VerifyChain(v.Entries, "")
+	chain := &memChain{state: state}
+	var retired atomic.Bool
+	authorize := func(Device, Hello) string {
+		if retired.Load() {
+			return "This sandbox was made while E2E was off"
+		}
+		return ""
+	}
+	target, app := net.Pipe()
+	defer app.Close()
+	_, port := openSession(t, chain, ServeOptions{Revalidate: 20 * time.Millisecond, Authorize: authorize, Port: func(context.Context, Device, string, int) (net.Conn, error) {
+		return target, nil
+	}}, "port")
+	started, stopped := make(chan struct{}), make(chan struct{})
+	s, call := openSession(t, chain, ServeOptions{Revalidate: 20 * time.Millisecond, Authorize: authorize, RPC: func(ctx context.Context, _ Device, _, _ string, _ json.RawMessage, emit func(any)) (any, error) {
+		close(started)
+		<-ctx.Done()
+		close(stopped)
+		return nil, ctx.Err()
+	}}, "rpc")
+	if err := s.send(map[string]any{"id": 1, "method": "sandbox.exec"}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	select {
+	case <-port:
+		t.Fatal("the port closed while its sandbox was still let in")
+	case <-stopped:
+		t.Fatal("the call ended while its sandbox was still let in")
+	case <-time.After(100 * time.Millisecond):
+	}
+	retired.Store(true)
+	for name, served := range map[string]chan error{"port": port, "call": call} {
+		select {
+		case err := <-served:
+			if err == nil || !strings.Contains(err.Error(), "made while E2E was off") {
+				t.Fatalf("%s ended with %v", name, err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("the %s ran on after its sandbox was retired", name)
+		}
+	}
+	<-stopped
 }

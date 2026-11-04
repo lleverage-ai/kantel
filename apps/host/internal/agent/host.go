@@ -83,6 +83,8 @@ type Host struct {
 	// plain are the gateway's plaintext calls and streams in flight, ended if their space turns E2E on (e2e.go).
 	plain        plainCalls
 	plainRecheck time.Duration
+	// e2eRevalidate is how often an open E2E session looks at the chain again (default every 3s).
+	e2eRevalidate time.Duration
 	// e2e is the host's E2E keys and the chains of the spaces it joined (Root/e2e; e2e.go).
 	e2e *e2e.Store
 	// floors are the latest egress revisions the host has taken (by sandbox ID), a null egress's too, so a stale update

@@ -65,10 +65,14 @@ func (f *e2eTier) HasSnapshot(id string) bool {
 	return slices.ContainsFunc(f.snaps, func(s proto.SnapshotInfo) bool { return s.ID == id })
 }
 
-func (f *e2eTier) Exec(_ context.Context, p proto.ExecParams, _ func(string, string)) (proto.ExecResult, error) {
+func (f *e2eTier) Exec(ctx context.Context, p proto.ExecParams, _ func(string, string)) (proto.ExecResult, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.execs = append(f.execs, p)
+	f.mu.Unlock()
+	if p.Command == "block" {
+		<-ctx.Done()
+		return proto.ExecResult{}, ctx.Err()
+	}
 	return proto.ExecResult{ExitCode: 0, Stdout: "ran: " + p.Command + "\n"}, nil
 }
 
@@ -928,9 +932,6 @@ func TestOnlySandboxesMadeUnderE2ETakeSessions(t *testing.T) {
 // reach it. The chain's entries are the shared vectors'.
 func TestTurningE2EOffAndOnRetiresItsSandboxes(t *testing.T) {
 	h, _, v := e2eHost(t)
-	if _, err := openSession(t, h, v, "sbx_one"); err != nil {
-		t.Fatal(err)
-	}
 	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "packages", "e2e", "vectors", "chain.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -953,13 +954,60 @@ func TestTurningE2EOffAndOnRetiresItsSandboxes(t *testing.T) {
 	if len(entries) != len(v.Entries)+2 {
 		t.Fatalf("the vector has %d entries", len(entries))
 	}
+	// A call that runs across the change ends with it, with no further request.
+	h.e2eRevalidate = 20 * time.Millisecond
+	c, err := openSession(t, h, v, "sbx_one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked := make(chan error, 1)
+	go func() {
+		_, err := c.Call(proto.MethodExec, map[string]any{"command": "block"})
+		blocked <- err
+	}()
+	select {
+	case err := <-blocked:
+		t.Fatalf("the call ended before the change: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
 	if _, err := h.e2e.Space(v.Space).Extend(len(v.Entries), entries[len(v.Entries):]); err != nil {
 		t.Fatal(err)
+	}
+	select {
+	case err := <-blocked:
+		if err == nil {
+			t.Fatal("the call finished as if nothing changed")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a call in a retired sandbox ran on")
 	}
 	if h.e2eMode(v.Space) == e2e.ModeOff {
 		t.Fatal("E2E isn't on again")
 	}
 	if _, err := openSession(t, h, v, "sbx_one"); err == nil || !strings.Contains(err.Error(), "made while E2E was off") {
 		t.Fatalf("a sandbox from before E2E went off took a session: %v", err)
+	}
+}
+
+// A sandbox is recorded under the epoch its create read before its checks: if E2E came on while they ran, it isn't
+// trusted under the new one.
+func TestABirthIsBoundToTheEpochItsCreateRead(t *testing.T) {
+	h, tier, v := e2eHost(t)
+	tier.mu.Lock()
+	tier.owners["sbx_race"], tier.owners["sbx_stale"] = v.Space, v.Space
+	tier.mu.Unlock()
+	if err := h.markBorn("sbx_race", v.Space, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.markBorn("sbx_stale", v.Space, "an-earlier-epoch"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"sbx_race", "sbx_stale"} {
+		if h.bornIn(id, v.Space) {
+			t.Errorf("%s is trusted under an epoch it wasn't made in", id)
+		}
+	}
+	if err := h.markBorn("sbx_race", v.Space, h.onSince(v.Space)); err != nil || !h.bornIn("sbx_race", v.Space) {
+		t.Fatalf("a sandbox made under the current epoch isn't trusted: %v", err)
 	}
 }

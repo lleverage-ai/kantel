@@ -204,6 +204,9 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 		}
 		return nil
 	case method == proto.MethodCreate:
+		// The chain's E2E epoch is read once, before every check: if E2E comes on while they run, the sandbox is recorded
+		// under the epoch before (none), so it isn't trusted under the new one (markBorn).
+		since := h.onSince(p.Owner)
 		// An ID once used in an E2E space isn't given to another space: its snapshots would follow it.
 		if was, ok := h.recordedOwner(p.SandboxID); ok && was != p.Owner {
 			return &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("sandbox ID %s was used in %s, which is end-to-end encrypted", p.SandboxID, was)}
@@ -244,15 +247,16 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 		if err := h.recordE2E(p.SandboxID, p.Owner); err != nil {
 			return err
 		}
-		return h.markBorn(p.SandboxID, p.Owner)
+		return h.markBorn(p.SandboxID, p.Owner, since)
 	case method == proto.MethodFork:
 		owner := h.ownerOf(p.SandboxID)
+		since := h.onSince(owner)
 		if h.e2eMode(owner) != e2e.ModeOff {
 			if len(p.Env) > 0 {
 				return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("%s is end-to-end encrypted: a fork takes no environment variables from the gateway", owner)}
 			}
 			// A fork copies its source's disk: one of a sandbox made while E2E was off would carry what the gateway left.
-			if !h.bornIn(p.SandboxID, owner) {
+			if since == "" || !h.bornUnder(p.SandboxID, owner, since) {
 				return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("%s is end-to-end encrypted: %s was made while E2E was off, so it isn't forked", owner, p.SandboxID)}
 			}
 			if was, ok := h.recordedOwner(p.NewID); ok && was != owner {
@@ -264,12 +268,12 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 			if err := h.recordE2E(p.NewID, owner); err != nil {
 				return err
 			}
-			return h.markBorn(p.NewID, owner)
+			return h.markBorn(p.NewID, owner, since)
 		}
 		if was, ok := h.recordedOwner(p.NewID); ok && was != owner {
 			return &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("sandbox ID %s was used in %s, which is end-to-end encrypted", p.NewID, was)}
 		}
-		return h.markBorn(p.NewID, owner)
+		return h.markBorn(p.NewID, owner, since)
 	default:
 		return nil
 	}
@@ -703,15 +707,24 @@ const notBorn = "This sandbox was made while E2E was off in its space (or before
 // (the chain's OnSince is still the one it was made under), and still in space. The record is the host's own
 // (born.json): nothing the gateway sends sets it.
 func (h *Host) bornIn(sandboxID, space string) bool {
-	if h.e2e == nil || space == "" {
+	return h.bornUnder(sandboxID, space, h.onSince(space))
+}
+
+// bornUnder is bornIn, for the epoch since that a call read once.
+func (h *Host) bornUnder(sandboxID, space, since string) bool {
+	if h.e2e == nil || space == "" || since == "" {
 		return false
 	}
 	b, ok := h.e2e.BornRecord(sandboxID)
-	if !ok || b.Space != space || h.ownerOf(sandboxID) != space {
-		return false
+	return ok && b.Space == space && b.OnSince == since && h.ownerOf(sandboxID) == space
+}
+
+// onSince is space's E2E epoch (its chain's OnSince), "" when E2E is off there.
+func (h *Host) onSince(space string) string {
+	if h.e2e == nil || space == "" {
+		return ""
 	}
-	since := h.e2e.OnSince(space)
-	return since != "" && since == b.OnSince
+	return h.e2e.OnSince(space)
 }
 
 // snapshotBorn is whether a snapshot in tier t was taken of a sandbox bornIn space, after it was made: one taken of an
@@ -734,14 +747,15 @@ func (h *Host) snapshotBorn(t Tier, snapshotID, space string) bool {
 	return false
 }
 
-// markBorn records, before the create or fork runs, whether sandboxID is made under E2E: born in space when E2E is on
-// there, and otherwise any record an earlier sandbox of that ID left is dropped.
-func (h *Host) markBorn(sandboxID, space string) error {
+// markBorn records, before the create or fork runs, whether sandboxID is made under E2E: born in space under the epoch
+// since the call read before its checks, when there was one, and otherwise any record an earlier sandbox of that ID
+// left is dropped.
+func (h *Host) markBorn(sandboxID, space, since string) error {
 	if h.e2e == nil || sandboxID == "" {
 		return nil
 	}
 	var err error
-	if since := h.e2e.OnSince(space); space != "" && since != "" && h.e2eMode(space) != e2e.ModeOff {
+	if space != "" && since != "" {
 		err = h.e2e.RecordBorn(sandboxID, e2e.Born{Space: space, OnSince: since, At: time.Now().UnixMilli()})
 	} else {
 		err = h.e2e.ForgetBorn(sandboxID)
@@ -769,9 +783,10 @@ func (h *Host) serveE2E(ctx context.Context, conn net.Conn, sandboxID string) er
 		return err
 	}
 	opts := e2e.ServeOptions{
-		Static: id.Static,
-		HostID: h.cfg.HostID,
-		Chain:  chain,
+		Static:     id.Static,
+		HostID:     h.cfg.HostID,
+		Chain:      chain,
+		Revalidate: h.e2eRevalidate,
 		Authorize: func(_ e2e.Device, hello e2e.Hello) string {
 			if hello.Sandbox != sandboxID {
 				return "This session was relayed for another sandbox"
