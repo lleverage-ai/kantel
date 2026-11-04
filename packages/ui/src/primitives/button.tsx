@@ -17,11 +17,12 @@ const buttonBase =
 const buttonVariants: { readonly [variant in ButtonVariant]: string } = {
 	// Semibold: dark words on the orange read firmer a step heavier.
 	primary: "border-transparent bg-primary font-strong! text-primary-fg hover:not-disabled:bg-primary-hover",
-	secondary: "border-transparent bg-secondary text-fg hover:not-disabled:bg-secondary-hover",
+	// A hairline round it, so it keeps its shape on a tinted ground (a failed row, an alert) as well as the page.
+	secondary: "border-border-strong bg-secondary text-fg hover:not-disabled:bg-secondary-hover",
 	ghost: "border-transparent bg-transparent text-muted hover:not-disabled:bg-hover hover:not-disabled:text-fg",
 	danger: "border-transparent bg-destructive text-on-solid hover:not-disabled:bg-destructive/85",
 	/** A destructive action that isn't the page's point (Leave): the secondary ground, in the danger colour. */
-	"danger-quiet": "border-transparent bg-secondary text-status-error hover:not-disabled:bg-secondary-hover",
+	"danger-quiet": "border-border-strong bg-secondary text-status-error hover:not-disabled:bg-secondary-hover",
 };
 
 /** Each size's height, inline padding and font size, for a button with words. Every button has the control radius, as the Lleverage app's. */
