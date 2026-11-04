@@ -26,7 +26,7 @@ export function InstallPage({ source, narrow = false }: InstallPageProps) {
 	return (
 		<div className={computePage}>
 			<header className="kt-page-header flex min-h-control-md min-w-0 items-center border-b border-border pb-3">
-				<h1 className={`m-0 truncate font-strong leading-tight text-fg ${narrow ? "text-lg" : "text-md"}`}>Install</h1>
+				<h1 className={`m-0 truncate font-strong leading-tight text-fg text-heading`}>Install</h1>
 			</header>
 			<section className="flex max-w-(--kt-content-width) min-w-0 flex-col gap-3" aria-labelledby="kt-public-url">
 				<SectionHeading id="kt-public-url" title="Public URL" />

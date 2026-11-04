@@ -488,7 +488,7 @@ export function SandboxPage({
 			{crumbs(<span>{sandbox.name}</span>)}
 			<header className="kt-sandbox-header flex min-w-0 flex-col gap-3">
 				<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-3">
-					<h1 className={`m-0 min-w-0 truncate font-strong leading-tight text-fg text-lg`}>{sandbox.name}</h1>
+					<h1 className="m-0 min-w-0 truncate text-heading font-strong leading-tight text-fg">{sandbox.name}</h1>
 					<StateLabel state={sandbox.state} />
 					<div className={`flex items-center gap-2 ${narrow ? "w-full" : "ml-auto"}`}>{actions}</div>
 				</div>

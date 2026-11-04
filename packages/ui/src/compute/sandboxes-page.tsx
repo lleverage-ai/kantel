@@ -128,8 +128,8 @@ const bucket = (state: SandboxState): Exclude<SandboxFilter, "all"> =>
 const matches = (box: Sandbox, filter: SandboxFilter): boolean => filter === "all" || bucket(box.state) === filter;
 
 /**
- * The sandboxes the list shows: those in the filter whose name has the search in it. A phone has no search field, so the
- * page passes no search there: one typed on a wider window mustn't hide rows on a phone with no way to clear it.
+ * The sandboxes the list shows: those in the filter whose name has the search in it. The search field is there at every
+ * width, so a search typed on a wider window can be cleared on a phone too.
  */
 export const sandboxesShown = (
 	sandboxes: readonly Sandbox[],
@@ -279,7 +279,7 @@ export function SandboxesPage({
 			FILTERS.map((option) => [option.value, all.filter((box) => matches(box, option.value)).length]),
 		) as Record<SandboxFilter, number>;
 	}, [sandboxes]);
-	const shown = sandboxes === undefined ? undefined : sandboxesShown(sandboxes, filter, narrow ? "" : search);
+	const shown = sandboxes === undefined ? undefined : sandboxesShown(sandboxes, filter, search);
 
 	// With no host anywhere, nothing could run a new sandbox: no New until one is added.
 	const newButton =
@@ -298,7 +298,7 @@ export function SandboxesPage({
 			{/* The title and New on one line, on a phone too, where PageHeader would put New under the title. */}
 			<header className="kt-page-header flex min-h-control-md min-w-0 items-center justify-between gap-4 border-b border-border pb-3">
 				<h1
-					className={`kt-page-header-title m-0 truncate font-strong leading-tight text-fg ${narrow ? "text-lg" : "text-md"}`}
+					className={`kt-page-header-title m-0 truncate font-strong leading-tight text-fg text-heading`}
 				>
 					Sandboxes
 				</h1>
@@ -368,18 +368,16 @@ export function SandboxesPage({
 							value={filter}
 							onChange={setFilter}
 						/>
-						{narrow ? null : (
-							<div className="w-(--kt-popover-width) max-w-full">
-								<TextField
-									label="Search sandboxes"
-									hideLabel
-									type="search"
-									placeholder="Search"
-									value={search}
-									onChange={(event) => setSearch(event.currentTarget.value)}
-								/>
-							</div>
-						)}
+						<div className={narrow ? "w-full" : "w-(--kt-popover-width) max-w-full"}>
+							<TextField
+								label="Search sandboxes"
+								hideLabel
+								type="search"
+								placeholder="Search"
+								value={search}
+								onChange={(event) => setSearch(event.currentTarget.value)}
+							/>
+						</div>
 					</div>
 					<SandboxList
 						sandboxes={shown ?? []}
@@ -897,7 +895,7 @@ function SandboxPhoneRow({
 				<StateLabel state={sandbox.state} />
 			</div>
 			{sandbox.state === "error" && sandbox.error !== undefined ? (
-				<span className="truncate text-sm text-status-error">{sandbox.error}</span>
+				<span className="line-clamp-2 text-sm text-status-error">{sandbox.error}</span>
 			) : (
 				<span className="flex min-w-0 flex-wrap gap-x-3 text-sm text-muted">
 					<span>

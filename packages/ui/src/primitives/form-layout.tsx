@@ -74,7 +74,7 @@ export function PageHeader({
 		<header className={withClass(pageHeader, className)}>
 			<Title
 				id={titleId}
-				className="kt-page-header-title col-start-1 row-start-1 m-0 min-w-0 text-lg font-strong leading-tight text-fg [overflow-wrap:anywhere]"
+				className="kt-page-header-title col-start-1 row-start-1 m-0 min-w-0 text-heading font-strong leading-tight text-fg [overflow-wrap:anywhere]"
 			>
 				{title}
 			</Title>

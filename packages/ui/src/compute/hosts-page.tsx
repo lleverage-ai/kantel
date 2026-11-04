@@ -163,7 +163,7 @@ export function HostsPage({
 			{/* The title and Add on one line, on a phone too, as Sandboxes has them. */}
 			<header className="kt-page-header flex min-h-control-md min-w-0 items-center justify-between gap-4 border-b border-border pb-3">
 				<h1
-					className={`kt-page-header-title m-0 truncate font-strong leading-tight text-fg ${narrow ? "text-lg" : "text-md"}`}
+					className={`kt-page-header-title m-0 truncate font-strong leading-tight text-fg text-heading`}
 				>
 					Hosts
 				</h1>
