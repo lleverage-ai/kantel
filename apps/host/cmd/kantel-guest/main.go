@@ -2,6 +2,10 @@
 // vsock (see internal/guest), and applies each sandbox's identity after a boot, restore or fork.
 //
 //	kantel-guest serve [--bridge 127.0.0.1:7001=1025 ...]
+//	kantel-guest doctor (also run as kantel-doctor)
+//
+// doctor checks, from inside the sandbox, that its protected environment variables will be swapped by the host's
+// proxy: one line per check, exiting 1 if any fails.
 //
 // A bridge listens on a TCP address inside the guest and connects each connection to a vsock port on the host: the
 // isolate tier's VM reaches the host's file store and egress proxy that way, with no network device at all.
@@ -15,6 +19,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -30,8 +35,11 @@ func (b *bridges) String() string     { return strings.Join(*b, ",") }
 func (b *bridges) Set(v string) error { *b = append(*b, v); return nil }
 
 func main() {
+	if filepath.Base(os.Args[0]) == "kantel-doctor" || (len(os.Args) >= 2 && os.Args[1] == "doctor") {
+		os.Exit(doctor(os.Stdout))
+	}
 	if len(os.Args) < 2 || os.Args[1] != "serve" {
-		fmt.Fprintln(os.Stderr, "usage: kantel-guest serve [--bridge addr=hostport ...]")
+		fmt.Fprintln(os.Stderr, "usage: kantel-guest serve [--bridge addr=hostport ...] | kantel-guest doctor")
 		os.Exit(2)
 	}
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)

@@ -834,7 +834,8 @@ describe("login in the browser", () => {
 		const first = await kantel(["login", "--url", "https://kantel.test"], { env: {}, routes });
 		expect(first.code).toBe(0);
 		expect(first.stderr).toContain(STARTED.verificationUrlComplete);
-		expect(first.stderr).toContain("kantel login --wait");
+		// With the --url it was given: --wait alone would ask the saved or default URL, which doesn't know the code.
+		expect(first.stderr).toContain("Then run: kantel login --wait --url https://kantel.test");
 		expect(first.opened).toEqual([]);
 		const pending = join(configDir, "login-pending.json");
 		expect((await stat(pending)).mode & 0o777).toBe(0o600);
