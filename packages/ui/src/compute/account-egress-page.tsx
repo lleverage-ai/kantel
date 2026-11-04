@@ -469,8 +469,12 @@ function upstreamProblem(url: string): string | undefined {
 	return undefined;
 }
 
-/** Settings: the upstream proxy and the log, one Save for both; turning the proxy off or on at the foot. */
-function SettingsView({
+/**
+ * Settings: the upstream proxy and the log, one Save for both; turning the proxy off or on at the foot. While a save
+ * runs, through the read after it, the draft can't change: the page starts the form again from what was saved, which
+ * would drop anything typed meanwhile.
+ */
+export function SettingsView({
 	proxy,
 	busy,
 	onSave,
@@ -515,6 +519,8 @@ function SettingsView({
 	const changed = Object.keys(update).length > 0;
 	const invalid = urlError !== undefined || authError !== undefined;
 	const saving = busy === "settings";
+	// Read-only rather than disabled, so the field keeps the focus it has.
+	const locked = saving ? { readOnly: true, "aria-readonly": true } : {};
 	const discard = () => {
 		setUrl(proxy.upstream?.url ?? "");
 		setAuthEditing(proxy.upstream?.authSet !== true);
@@ -545,6 +551,7 @@ function SettingsView({
 							placeholder="https://gateway.example.com:8443"
 							mono
 							spellCheck={false}
+							{...locked}
 							{...(urlError === undefined ? {} : { error: urlError })}
 						/>
 						{authEditing ? (
@@ -556,6 +563,7 @@ function SettingsView({
 								value={auth}
 								onChange={(event) => setAuth(event.currentTarget.value)}
 								mono
+								{...locked}
 								{...(authError === undefined ? {} : { error: authError })}
 								{...(proxy.upstream?.authSet === true
 									? {
@@ -563,6 +571,7 @@ function SettingsView({
 												<Button
 													size="xs"
 													variant="ghost"
+													disabled={saving}
 													onClick={() => {
 														setAuthEditing(false);
 														setAuth("");
@@ -583,13 +592,14 @@ function SettingsView({
 								<span className="flex flex-wrap items-center gap-2">
 									{authRemoved ? <Badge tone="error">Removed</Badge> : <Badge tone="done">Set</Badge>}
 									{authRemoved ? (
-										<Button size="xs" variant="ghost" onClick={() => setAuthRemoved(false)}>
+										<Button size="xs" variant="ghost" disabled={saving} onClick={() => setAuthRemoved(false)}>
 											Undo
 										</Button>
 									) : (
 										<>
 											<Button
 												size="xs"
+												disabled={saving}
 												onClick={() => {
 													setAuthEditing(true);
 													setAuth("");
@@ -597,7 +607,7 @@ function SettingsView({
 											>
 												Replace
 											</Button>
-											<Button size="xs" variant="ghost" onClick={() => setAuthRemoved(true)}>
+											<Button size="xs" variant="ghost" disabled={saving} onClick={() => setAuthRemoved(true)}>
 												Remove
 											</Button>
 										</>
@@ -613,6 +623,7 @@ function SettingsView({
 							<Switch
 								label="Log every request"
 								checked={logRequests}
+								disabled={saving}
 								onChange={setLogRequests}
 								hint="The host, method, status and size of each request, on the Log tab."
 							/>
