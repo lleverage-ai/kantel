@@ -62,6 +62,7 @@ export type {
 	SandboxBase,
 	SandboxEgress,
 	SandboxesSource,
+	SandboxImage,
 	SandboxSshKey,
 	SnapshotsSource,
 	SshTarget,

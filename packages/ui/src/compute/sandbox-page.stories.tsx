@@ -130,6 +130,18 @@ export const Desktop: Story = () => <Scenario view="desktop" />;
 /** Its browser, full size in the console. */
 export const Browser: Story = () => <Scenario view="browser" />;
 
+/** Plain Alpine with Kantel's agent put in: no desktop or browser to offer, so none is; its Image section says so. */
+export const NoDesktopImage: Story = () => <Scenario sandboxId="sbx_7c4x1n8ka2" />;
+
+/** Debian with Docker and no desktop: Docker there, the screens not. */
+export const DockerNoDesktopImage: Story = () => <Scenario sandboxId="sbx_2m6v9r3kd4" />;
+
+/** The same on a phone. */
+export const NoDesktopImagePhone: Story = () => <Scenario sandboxId="sbx_7c4x1n8ka2" narrow />;
+
+/** Its address asks for a desktop the image doesn't have: Overview, never a frame onto an error. */
+export const NoDesktopImageAskedForDesktop: Story = () => <Scenario sandboxId="sbx_7c4x1n8ka2" view="desktop" />;
+
 /** Where Desktop and Browser can't open yet: disabled, with why, and no frame onto an error. */
 export const ScreensUnavailable: Story = () => <Scenario unavailable="Not available here yet" />;
 

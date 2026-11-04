@@ -47,6 +47,7 @@ import (
 	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
 	"github.com/lleverage-ai/kantel/apps/host/internal/fsutil"
 	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
+	"github.com/lleverage-ai/kantel/apps/host/internal/guestinit"
 	"github.com/lleverage-ai/kantel/apps/host/internal/network"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
@@ -95,6 +96,10 @@ type Config struct {
 	// BackgroundTemplates (image patching): a template made with other images is still used while its replacement
 	// builds in the background, rather than every create waiting for it.
 	BackgroundTemplates bool
+	// Initrd is Kantel's initramfs (guestinit.Build): when set, every cold boot goes through it, which puts the guest
+	// agent into the image, so Rootfs may be any Linux root filesystem (injectGuestAgent, experimental). Empty boots
+	// the image's own kantel-init and agent.
+	Initrd string
 }
 
 type meta struct {
@@ -162,6 +167,45 @@ type Manager struct {
 	// pinning serialises PinBases; pinned is its first success (base.go).
 	pinning sync.Mutex
 	pinned  atomic.Bool
+	// guest is what the image has, as a template's agent reported it (guestFile); every sandbox shares the image.
+	guest atomic.Pointer[proto.GuestCapabilities]
+}
+
+// guestFile, in a template, is its agent's capability report.
+const guestFile = "guest.json"
+
+// bootConfig is a cold boot of size on kernel (kernelFor: its root filesystem's version's): through Kantel's
+// initramfs when the host injects the agent.
+func (m *Manager) bootConfig(size proto.Size, kernel, tap, mac string, cid uint32) fc.BootConfig {
+	cfg := fc.BootConfig{VCPUs: size.VCPUs, MemoryMiB: size.MemoryMiB, Kernel: kernel, BootArgs: bootArgs, TapDevice: tap, MAC: mac, GuestCID: cid}
+	if m.cfg.Initrd != "" {
+		cfg.Initrd, cfg.BootArgs = m.cfg.Initrd, guestinit.BootArgs
+	}
+	return cfg
+}
+
+// noteGuest keeps what a template's agent reported (nil: an agent too old to say).
+func (m *Manager) noteGuest(dir string, caps *proto.GuestCapabilities) {
+	// Even nil: a template with no report mustn't keep the one before it (another image's).
+	m.guest.Store(caps)
+	if caps == nil {
+		_ = os.Remove(filepath.Join(dir, guestFile))
+		return
+	}
+	if raw, err := json.Marshal(caps); err == nil {
+		_ = os.WriteFile(filepath.Join(dir, guestFile), raw, 0o600)
+	}
+}
+
+// loadGuest reads a ready template's report, for a host that restarted (its templates are kept).
+func (m *Manager) loadGuest(dir string) {
+	if m.guest.Load() != nil {
+		return
+	}
+	var caps proto.GuestCapabilities
+	if raw, err := os.ReadFile(filepath.Join(dir, guestFile)); err == nil && json.Unmarshal(raw, &caps) == nil {
+		m.guest.Store(&caps)
+	}
 }
 
 func New(cfg Config) (*Manager, error) {
@@ -185,6 +229,8 @@ func New(cfg Config) (*Manager, error) {
 	for _, size := range cfg.Sizes {
 		m.templates[size.Name] = &sync.Mutex{}
 		m.inUse[size.Name] = &sync.RWMutex{}
+		// What the image has, before any sandbox needs a template: from one made before a restart.
+		m.loadGuest(filepath.Join(cfg.Root, "templates", size.Name))
 	}
 	// Leftover pool VMs from a previous run aren't adopted: they are cheap to make again.
 	entries, _ := os.ReadDir(filepath.Join(cfg.Root, "pool"))
@@ -265,6 +311,7 @@ func (m *Manager) info(s *sandbox) proto.SandboxInfo {
 	if s.link != nil {
 		info.Address = s.link.GuestIP.String()
 	}
+	info.Guest = m.guest.Load()
 	return info
 }
 
@@ -482,9 +529,15 @@ func templateShape(size proto.Size) string {
 	return fmt.Sprintf(" size=%d/%d/%d", size.VCPUs, size.MemoryMiB, size.DiskGiB)
 }
 
-// templateFingerprint is what a size's template is made with: Firecracker, the kernel, the images and the shape.
+// templateFingerprint is what a size's template is made with: Firecracker, the kernel, the images, Kernel's
+// initramfs when it injects the guest agent (its name has the agent's digest: another agent, or turning injection on
+// or off, makes a new template) and the shape.
 func (m *Manager) templateFingerprint(size proto.Size) string {
-	return fc.Fingerprint(m.cfg.Firecracker, m.cfg.Kernel, m.cfg.Rootfs) + templateShape(size)
+	images := []string{m.cfg.Firecracker, m.cfg.Kernel, m.cfg.Rootfs}
+	if m.cfg.Initrd != "" {
+		images = append(images, m.cfg.Initrd)
+	}
+	return fc.Fingerprint(images...) + templateShape(size)
 }
 
 // template returns the size's template snapshot, cold-booting one if there is none. With BackgroundTemplates, one
@@ -497,6 +550,7 @@ func (m *Manager) template(ctx context.Context, size proto.Size) (string, timing
 	if _, err := os.Stat(filepath.Join(dir, "ready")); err == nil {
 		made, _ := os.ReadFile(filepath.Join(dir, "images"))
 		if string(made) == m.templateFingerprint(size) {
+			m.loadGuest(dir)
 			return dir, nil, nil
 		}
 		if m.cfg.BackgroundTemplates && strings.HasSuffix(string(made), templateShape(size)) {
@@ -557,7 +611,7 @@ func (m *Manager) buildTemplate(ctx context.Context, size proto.Size, dir string
 	}
 	defer machine.Kill()
 	t.step("launch", &start)
-	if err := machine.Boot(ctx, fc.BootConfig{VCPUs: size.VCPUs, MemoryMiB: size.MemoryMiB, Kernel: kernel, BootArgs: bootArgs, TapDevice: link.Tap, MAC: link.MAC, GuestCID: m.cid()}); err != nil {
+	if err := machine.Boot(ctx, m.bootConfig(size, kernel, link.Tap, link.MAC, m.cid())); err != nil {
 		return nil, err
 	}
 	client := guest.NewClient(filepath.Join(vm, fc.VsockSocket))
@@ -568,6 +622,18 @@ func (m *Manager) buildTemplate(ctx context.Context, size proto.Size, dir string
 		return nil, fmt.Errorf("template boot: %w (firecracker log: %s)", err, tail(filepath.Join(vm, fc.LogFile)))
 	}
 	t.step("agent", &start)
+	// What the image has, which detection reads from its files: so before the service wait, whose timeout would
+	// otherwise cancel this too.
+	capsCtx, capsCancel := context.WithTimeout(ctx, 30*time.Second)
+	caps, err := client.Capabilities(capsCtx)
+	capsCancel()
+	if err != nil && m.cfg.Initrd != "" {
+		// An injected agent always reports: a template without its report would offer what the image may lack.
+		return nil, fmt.Errorf("template boot: the guest agent's capabilities: %w", err)
+	}
+	if err != nil {
+		m.log.Warn("guest agent's capabilities", "size", size.Name, "error", err)
+	}
 	// What the image says it runs (/etc/kantel/ready), else the desktop, browser and Docker. Not SSH: the image has
 	// no host keys, so sshd starts only once a sandbox has its identity.
 	if _, err := client.WaitExpected(bootCtx, "desktop", "browser", "docker"); err != nil {
@@ -596,6 +662,7 @@ func (m *Manager) buildTemplate(ctx context.Context, size proto.Size, dir string
 		return nil, err
 	}
 	raw, _ := json.Marshal(map[string]any{"size": size, "timings": t, "at": time.Now().UnixMilli()})
+	m.noteGuest(dir, caps)
 	_ = os.WriteFile(filepath.Join(dir, "images"), []byte(fingerprint), 0o600)
 	_ = os.WriteFile(filepath.Join(dir, "ready"), raw, 0o600)
 	m.log.Info("template ready", "size", size.Name, "timings", t)
@@ -941,7 +1008,7 @@ func (m *Manager) boot(ctx context.Context, s *sandbox, size proto.Size) error {
 		return err
 	}
 	s.meta.CID = m.cid()
-	if err := machine.Boot(ctx, fc.BootConfig{VCPUs: size.VCPUs, MemoryMiB: size.MemoryMiB, Kernel: kernel, BootArgs: bootArgs, TapDevice: s.link.Tap, MAC: s.link.MAC, GuestCID: s.meta.CID}); err != nil {
+	if err := machine.Boot(ctx, m.bootConfig(size, kernel, s.link.Tap, s.link.MAC, s.meta.CID)); err != nil {
 		machine.Kill()
 		return err
 	}

@@ -38,6 +38,7 @@ import type {
 	SandboxBase,
 	SandboxCommand,
 	SandboxEgress,
+	SandboxImage,
 	SandboxKind,
 	SandboxPort,
 	SandboxSnapshot,
@@ -150,6 +151,54 @@ const onBase = (
 	...(security ? { security: true } : {}),
 });
 
+/** Kantel's own image: a desktop, Chromium and Docker, with its agent built in. */
+export const KANTEL_IMAGE: SandboxImage = {
+	os: "Ubuntu 26.04 LTS",
+	osId: "ubuntu",
+	arch: "x86_64",
+	libc: "glibc",
+	shell: "/bin/bash",
+	init: "systemd",
+	injected: false,
+	agentVersion: "0.42.0",
+	desktop: { available: true, detail: "Xtigervnc, xfce4-session, Selkies" },
+	browser: { available: true, detail: "Chromium" },
+	docker: { available: true, detail: "dockerd 29.1" },
+	kvm: true,
+};
+
+/** A plain Alpine image Kantel put its agent into: commands, files, ports and SSH, and nothing more. */
+export const ALPINE_IMAGE: SandboxImage = {
+	os: "Alpine Linux v3.22",
+	osId: "alpine",
+	arch: "x86_64",
+	libc: "musl",
+	shell: "/bin/sh",
+	init: "kantel",
+	injected: true,
+	agentVersion: "0.42.0",
+	desktop: { available: false, reason: "No desktop in this image" },
+	browser: { available: false, reason: "No browser in this image" },
+	docker: { available: false, reason: "No Docker in this image" },
+	kvm: true,
+};
+
+/** Debian with Docker added and no desktop: Docker is there, the screens aren't. */
+export const DEBIAN_DOCKER_IMAGE: SandboxImage = {
+	os: "Debian GNU/Linux 13 (trixie)",
+	osId: "debian",
+	arch: "x86_64",
+	libc: "glibc",
+	shell: "/bin/bash",
+	init: "kantel",
+	injected: true,
+	agentVersion: "0.42.0",
+	desktop: { available: false, reason: "No desktop in this image" },
+	browser: { available: false, reason: "No browser in this image" },
+	docker: { available: true, detail: "dockerd 26.1.5" },
+	kvm: true,
+};
+
 export const API_SERVER = sandbox({
 	id: "sbx_7f3k2m9qa1",
 	name: "api-server",
@@ -169,6 +218,7 @@ export const API_SERVER = sandbox({
 	environment: { id: "env_backend", name: "backend-dev" },
 	// Six days behind, with the openssl fix the latest was rebuilt for.
 	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, "2026.10.29.809", { days: 6, versions: 3 }, true),
+	image: KANTEL_IMAGE,
 });
 
 export const DEV_STACK = sandbox({
@@ -187,6 +237,47 @@ export const DEV_STACK = sandbox({
 	shared: true,
 	environment: { id: "env_backend", name: "backend-dev" },
 	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, SANDBOX_IMAGE_LATEST.version),
+	image: KANTEL_IMAGE,
+});
+
+/** Any Linux image runs: plain Alpine, with Kantel's agent put in at boot. */
+export const ALPINE_WORKER = sandbox({
+	id: "sbx_7c4x1n8ka2",
+	name: "alpine-worker",
+	slug: "lleverage",
+	accountId: LLEVERAGE.id,
+	kind: "microvm",
+	size: "small",
+	state: "running",
+	createdAt: FIXTURE_NOW - 40 * MINUTE,
+	stopsAt: FIXTURE_NOW + 20 * MINUTE,
+	snapshot: { id: "snp_alpine_1", takenAt: FIXTURE_NOW - 3 * MINUTE },
+	costCents: 1,
+	usage: usageSeries(3, 0.3),
+	hostId: "hst_hetzner_1",
+	shared: true,
+	createdBy: "Dean Smit",
+	image: ALPINE_IMAGE,
+});
+
+/** Debian with Docker and no desktop. */
+export const DEBIAN_CI = sandbox({
+	id: "sbx_2m6v9r3kd4",
+	name: "ci-docker",
+	slug: "lleverage",
+	accountId: LLEVERAGE.id,
+	kind: "microvm",
+	size: "medium",
+	state: "running",
+	createdAt: FIXTURE_NOW - 2 * HOUR,
+	stopsAt: FIXTURE_NOW + 30 * MINUTE,
+	snapshot: { id: "snp_ci_1", takenAt: FIXTURE_NOW - 5 * MINUTE },
+	costCents: 8,
+	usage: usageSeries(6, 0.5),
+	hostId: "hst_hetzner_2",
+	shared: true,
+	createdBy: "ci-runner",
+	image: DEBIAN_DOCKER_IMAGE,
 });
 
 export const SCRATCH = sandbox({
@@ -303,6 +394,8 @@ export const SANDBOXES: readonly Sandbox[] = [
 	NEW_ONE,
 	SCRATCH,
 	API_SERVER,
+	ALPINE_WORKER,
+	DEBIAN_CI,
 	EVAL_RUNNER,
 	BROWSER_AGENT,
 	DEV_STACK,

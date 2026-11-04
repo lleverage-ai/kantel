@@ -1891,6 +1891,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return sandbox;
 	}
 
+	/** Refuses a desktop or browser the sandbox doesn't have, with its image's reason where it reported one. */
+	function requireScreen(sandbox: StoredSandbox, screen: "desktop" | "browser"): void {
+		if (sandbox.capabilities[screen]) return;
+		throw new KantelError(
+			"not_supported",
+			sandbox.type === "microvm"
+				? (sandbox.capabilities.guest?.[screen].reason ?? `No ${screen} in this image`)
+				: `The ${screen} needs a microVM; this is an isolate`,
+		);
+	}
+
 	/** `settledFor`, refused with `conflict` unless the sandbox is running. */
 	async function requireRunning(principal: Principal, sandboxId: string): Promise<StoredSandbox> {
 		const sandbox = await settledFor(principal, sandboxId);
@@ -3667,10 +3678,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		openDesktop: async (principal, { params, body }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "access");
-			if (!sandbox.capabilities.desktop) {
-				throw new KantelError("not_supported", "The desktop needs a microVM; this is an isolate");
-			}
+			requireScreen(sandbox, "desktop");
 			const current = await requireRunning(principal, sandbox.id);
+			// Again once it's placed: a new sandbox's image reports what it has only then.
+			requireScreen(current, "desktop");
 			const ttlMinutes = body.ttlMinutes ?? ACCESS_TTL_MINUTES;
 			const viewOnly = body.viewOnly === true;
 			const access = await backend.openDesktop(current.id, { viewOnly, ttlMinutes, grantee: encodeGrantee(principal) });
@@ -3679,10 +3690,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		openBrowser: async (principal, { params, body }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "access");
-			if (!sandbox.capabilities.browser) {
-				throw new KantelError("not_supported", "The browser needs a microVM; this is an isolate");
-			}
+			requireScreen(sandbox, "browser");
 			const current = await requireRunning(principal, sandbox.id);
+			requireScreen(current, "browser");
 			const ttlMinutes = body.ttlMinutes ?? ACCESS_TTL_MINUTES;
 			const viewOnly = body.viewOnly === true;
 			const access = await backend.openBrowser(current.id, { viewOnly, ttlMinutes, grantee: encodeGrantee(principal) });

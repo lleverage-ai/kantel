@@ -159,6 +159,8 @@ export interface Sandbox {
 	 * sandbox: it moves to the latest base when it restarts on it. Absent where Kantel doesn't say (an isolate).
 	 */
 	readonly base?: SandboxBase;
+	/** What a microVM's image has, as its guest agent found it; absent until one has said (an older host or image). */
+	readonly image?: SandboxImage;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -262,6 +264,58 @@ export interface BaseImagesOverview {
 
 export interface BaseImagesSource {
 	overview(): Promise<BaseImagesOverview>;
+}
+
+/** One thing an image has or lacks: what the guest agent found, or why it isn't there. */
+export interface SandboxFeature {
+	readonly available: boolean;
+	/** What was found, such as "Xtigervnc, xfce4-session, Selkies". */
+	readonly detail?: string;
+	/** Why not, in a few words, such as "No desktop in this image". */
+	readonly reason?: string;
+}
+
+/**
+ * What a microVM's image has, as the guest agent Kantel runs in it found it when it last started: any Linux image runs,
+ * and what it lacks (a desktop, a browser, Docker) is shown as missing rather than offered.
+ */
+export interface SandboxImage {
+	/** Its OS's name, such as "Debian GNU/Linux 13 (trixie)". */
+	readonly os: string;
+	/** `/etc/os-release`'s ID, such as `alpine`. */
+	readonly osId: string;
+	/** `x86_64` or `aarch64`. */
+	readonly arch: string;
+	readonly libc: "glibc" | "musl" | "none";
+	/** The shell commands run in; absent, there is none (argv only). */
+	readonly shell?: string;
+	/** PID 1: the image's systemd, or Kantel's own init. */
+	readonly init: "systemd" | "kantel";
+	/** Kantel put its agent into the image at boot rather than the image shipping it. */
+	readonly injected: boolean;
+	readonly agentVersion: string;
+	readonly desktop: SandboxFeature;
+	readonly browser: SandboxFeature;
+	readonly docker: SandboxFeature;
+	/** `/dev/kvm` opens inside, for nested VMs. */
+	readonly kvm: boolean;
+}
+
+/** What the console says for each feature an image lacks when the agent gives no reason of its own. */
+export const IMAGE_LACKS: Readonly<Record<"desktop" | "browser" | "docker", string>> = {
+	desktop: "No desktop in this image",
+	browser: "No browser in this image",
+	docker: "No Docker in this image",
+};
+
+/** Why the sandbox's image lacks a feature, in a few words; undefined when it has it or nothing is known yet. */
+export function imageLacks(
+	sandbox: Pick<Sandbox, "image">,
+	feature: "desktop" | "browser" | "docker",
+): string | undefined {
+	const found = sandbox.image?.[feature];
+	if (found === undefined || found.available) return undefined;
+	return found.reason ?? IMAGE_LACKS[feature];
 }
 
 export interface CreateSandboxInput {

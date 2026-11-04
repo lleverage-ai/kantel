@@ -81,6 +81,7 @@ func install(args []string) error {
 	tiers := fs.String("tiers", "", "tiers to run: microvm,isolate (default: what the machine can)")
 	isolateRuntime := fs.String("isolate-runtime", "", `"native" runs isolates with workerd on the host itself (no KVM; trusted code only)`)
 	proxyDataPath := fs.Bool("proxy-data-path", false, "turn on the egress data path (experimental): sandboxes' traffic goes through the control plane's proxy settings")
+	injectGuestAgent := fs.Bool("inject-guest-agent", false, "boot microVMs through Kantel's initramfs, which puts the guest agent into any Linux image (experimental)")
 	noStart := fs.Bool("no-start", false, "install and register, but don't start the service")
 	_ = fs.Parse(args)
 	if os.Geteuid() != 0 {
@@ -97,6 +98,13 @@ func install(args []string) error {
 		return errors.New("--token is required: make one on Kantel's Hosts page (a kth_ token)")
 	}
 	cfg.ControlPlane = *controlPlane
+	// The installer's own files go back to where it puts them, under the new root; an operator's own sandbox image or
+	// guest agent (a custom image, see docs/sandboxes/custom-images) is kept, and fetchImages leaves it alone. Which
+	// is which is decided here alone (keptFiles).
+	image, agentBin, keep, err := keptFiles(cfg, *root)
+	if err != nil {
+		return err
+	}
 	cfg.Root = *root
 	if *name != "" {
 		cfg.Name = *name
@@ -113,7 +121,10 @@ func install(args []string) error {
 	if *proxyDataPath {
 		cfg.ProxyDataPath = true
 	}
-	cfg.Kernel, cfg.SandboxImage, cfg.IsolateImage, cfg.Firecracker, cfg.Workerd, cfg.IsolateBundle = "", "", "", "", "", ""
+	if *injectGuestAgent {
+		cfg.InjectGuestAgent = true
+	}
+	cfg.Kernel, cfg.SandboxImage, cfg.IsolateImage, cfg.Firecracker, cfg.Workerd, cfg.IsolateBundle, cfg.GuestAgent = "", image, "", "", "", "", agentBin
 	cfg.Defaults()
 
 	step("Checking this machine")
@@ -143,7 +154,7 @@ func install(args []string) error {
 	if source == "" {
 		source = cfg.ControlPlane + "/v1/hosts/images"
 	}
-	if err := fetchImages(cfg, source, kvm); err != nil {
+	if err := fetchImages(cfg, source, kvm, keep); err != nil {
 		return err
 	}
 
@@ -249,8 +260,46 @@ func fileSHA256(p string) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-func fetchImages(cfg agent.Config, source string, kvm bool) error {
+// custom is a configured image path when it isn't the installer's own (images/<name> under root), else "".
+func custom(root, configured, name string) string {
+	if root == "" {
+		root = agent.DefaultRoot
+	}
+	if configured == "" || filepath.Clean(configured) == filepath.Join(root, "images", name) {
+		return ""
+	}
+	return configured
+}
+
+// kept is which of the operator's own files install keeps (custom): fetchImages fetches none of them.
+type kept struct{ image, agent bool }
+
+// keptFiles is the operator's own sandbox image and guest agent in loaded (settings read with their root), which an
+// install to newRoot keeps. Who owns a file is where it is: the installer owns <root>/images/sandbox.ext4 and
+// <root>/images/kantel-guest, and nothing else. So an operator's file can't be kept at one of those under newRoot,
+// where the next run would take it for the installer's: that's an error, not a guess.
+func keptFiles(loaded agent.Config, newRoot string) (image, agentBin string, keep kept, err error) {
+	image, agentBin = custom(loaded.Root, loaded.SandboxImage, "sandbox.ext4"), custom(loaded.Root, loaded.GuestAgent, "kantel-guest")
+	for _, own := range []struct{ path, name, setting string }{{image, "sandbox.ext4", "sandboxImage"}, {agentBin, "kantel-guest", "guestAgent"}} {
+		if own.path != "" && custom(newRoot, own.path, own.name) == "" {
+			return "", "", kept{}, fmt.Errorf("%s %s is the installer's own path for its %s under --root %s: move your file elsewhere (any other name will do) and set %s to it", own.setting, own.path, own.name, newRoot, own.setting)
+		}
+	}
+	return image, agentBin, kept{image: image != "", agent: agentBin != ""}, nil
+}
+
+func fetchImages(cfg agent.Config, source string, kvm bool, keep kept) error {
 	arch := archName()
+	// An operator's own sandbox image or guest agent: theirs to keep, not a release's to replace.
+	mine := func(own bool, dst, setting string) (bool, error) {
+		if !own {
+			return false, nil
+		}
+		if _, err := os.Stat(dst); err != nil {
+			return true, fmt.Errorf("the configured %s: %w", setting, err)
+		}
+		return true, nil
+	}
 	in, err := open(source, "manifest.json")
 	if err != nil {
 		return fmt.Errorf("images manifest at %s: %w", source, err)
@@ -283,11 +332,23 @@ func fetchImages(cfg agent.Config, source string, kvm bool) error {
 		if err := get("vmlinux-"+arch, cfg.Kernel, 0o644, true); err != nil {
 			return err
 		}
-		if err := get("sandbox-"+arch+".ext4", cfg.SandboxImage, 0o644, true); err != nil {
+		if own, err := mine(keep.image, cfg.SandboxImage, "sandboxImage"); err != nil {
 			return err
+		} else if !own {
+			if err := get("sandbox-"+arch+".ext4", cfg.SandboxImage, 0o644, true); err != nil {
+				return err
+			}
 		}
 		if err := get("isolate-"+arch+".ext4", cfg.IsolateImage, 0o644, false); err != nil {
 			return err
+		}
+		// The static agent the initramfs is made from (injectGuestAgent); required only when that's on.
+		if own, err := mine(keep.agent, cfg.GuestAgent, "guestAgent"); err != nil {
+			return err
+		} else if !own {
+			if err := get("kantel-guest-"+arch, cfg.GuestAgent, 0o755, cfg.InjectGuestAgent); err != nil {
+				return err
+			}
 		}
 	}
 	if cfg.IsolateRuntime == "native" {

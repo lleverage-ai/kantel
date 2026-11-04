@@ -101,6 +101,13 @@ type Health struct {
 // wait for them.
 const ReadyFile = "/etc/kantel/ready"
 
+// InjectedBin is where kantel-guest init puts the agent in an image it boots (a tmpfs, so the image's own files and
+// the sandbox's disk are untouched): kantel-guest, and kantel-doctor beside it.
+const InjectedBin = "/.kantel/bin"
+
+// HostKeyPath is the sandbox's SSH host key, which a fresh identity makes (sshd's, or the injected agent's server).
+const HostKeyPath = "/etc/ssh/ssh_host_ed25519_key"
+
 // Service ports on the guest's loopback, which the host reaches over vsock (GET /ports/{port}).
 const (
 	PortSSH     = 22

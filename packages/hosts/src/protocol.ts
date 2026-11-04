@@ -156,6 +156,29 @@ export interface HostSandbox {
 	 * host's `images.version` is outdated until restarted with `rebase`.
 	 */
 	readonly base?: string;
+	/** What a microVM's image has, as its guest agent found it; absent from a host too old to say. */
+	readonly guest?: HostGuest;
+}
+
+/** One thing a microVM's image has or lacks. */
+export interface HostGuestFeature {
+	readonly available: boolean;
+	readonly detail?: string;
+	readonly reason?: string;
+}
+
+/** A guest agent's report of its image (`GuestCapabilities` in proto.go), passed to the API as it is. */
+export interface HostGuest {
+	readonly reportedAt: number;
+	readonly agent: { readonly version: string; readonly injected: boolean };
+	readonly os: { readonly id: string; readonly name: string; readonly version?: string };
+	readonly arch: string;
+	readonly libc: "glibc" | "musl" | "none";
+	readonly shell?: string;
+	readonly init: "systemd" | "kantel";
+	readonly desktop: HostGuestFeature;
+	readonly browser: HostGuestFeature;
+	readonly docker: HostGuestFeature & { readonly kvm: boolean };
 }
 
 export interface HostSnapshot {

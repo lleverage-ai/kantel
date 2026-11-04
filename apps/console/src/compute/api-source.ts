@@ -78,6 +78,7 @@ import type {
 	Environment as UiEnvironment,
 	EgressGrant as UiGrant,
 	SandboxEgress as UiSandboxEgress,
+	SandboxImage as UiSandboxImage,
 	EnvironmentVariable as UiVariable,
 	WebhooksSource,
 } from "@kantel/ui";
@@ -422,6 +423,34 @@ function baseFieldOf(record: object): { readonly base?: UiSandboxBase } {
 	return base === undefined || base === null ? {} : { base: baseOf(base) };
 }
 
+/** What the guest agent found in a microVM's image, where it has said (a newer host and agent). */
+function imageOf(sandbox: Sandbox): { image?: UiSandboxImage } {
+	const guest = sandbox.capabilities.guest;
+	if (guest === undefined) return {};
+	const feature = (found: { available: boolean; detail?: string; reason?: string }) => ({
+		available: found.available,
+		...(found.detail === undefined ? {} : { detail: found.detail }),
+		...(found.reason === undefined ? {} : { reason: found.reason }),
+	});
+	return {
+		image: {
+			os: guest.os.name,
+			osId: guest.os.id,
+			arch: guest.arch,
+			libc: guest.libc,
+			...(guest.shell === undefined ? {} : { shell: guest.shell }),
+			init: guest.init,
+			injected: guest.agent.injected,
+			agentVersion: guest.agent.version,
+			desktop: feature(guest.desktop),
+			browser: feature(guest.browser),
+			docker: feature(guest.docker),
+			// The sandbox's own `kvm` is the host's nesting and the image's /dev/kvm together.
+			kvm: sandbox.capabilities.kvm && guest.docker.kvm,
+		},
+	};
+}
+
 function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 	return {
 		id: sandbox.id,
@@ -463,6 +492,7 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 		...(sandbox.source?.sandboxId === undefined ? {} : { forkedFrom: sandbox.source.sandboxId }),
 		...environmentRefOf(sandbox, context),
 		...baseFieldOf(sandbox),
+		...imageOf(sandbox),
 	};
 }
 

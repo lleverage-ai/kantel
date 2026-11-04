@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 	"github.com/lleverage-ai/kantel/apps/host/internal/vsock"
 )
 
@@ -149,6 +150,18 @@ func (c *Client) waitFor(ctx context.Context, wanted func(Health) []string) (Hea
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+}
+
+// Capabilities asks the agent what its image has; nil (and no error) from an agent too old to say.
+func (c *Client) Capabilities(ctx context.Context) (*proto.GuestCapabilities, error) {
+	var out proto.GuestCapabilities
+	if _, err := c.do(ctx, http.MethodGet, "/capabilities", nil, &out); err != nil {
+		if IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (c *Client) SetIdentity(ctx context.Context, id Identity) error {
