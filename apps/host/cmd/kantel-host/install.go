@@ -14,7 +14,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,6 +23,7 @@ import (
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/agent"
 	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
+	"github.com/lleverage-ai/kantel/apps/host/internal/images"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
@@ -228,114 +228,22 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	return os.Rename(tmp, dst)
 }
 
-// ImageManifest is <images>/manifest.json: the files a host needs, by name, for this architecture.
-type ImageManifest struct {
-	Version string               `json:"version"`
-	Files   map[string]ImageFile `json:"files"`
-}
+// ImageManifest is <images>/manifest.json: the files a host needs, by name, for this architecture (package images,
+// which the daemon's image updates share).
+type ImageManifest = images.Manifest
 
-type ImageFile struct {
-	// Path is relative to the manifest (or a full URL).
-	Path   string `json:"path"`
-	SHA256 string `json:"sha256"`
-	Size   int64  `json:"size"`
-	// Gzip: the file is gzip-compressed and is unpacked as it is fetched.
-	Gzip bool `json:"gzip,omitempty"`
-}
+type ImageFile = images.File
 
-func archName() string {
-	if runtime.GOARCH == "arm64" {
-		return "arm64"
-	}
-	return "amd64"
-}
+func archName() string { return images.Arch() }
 
 // open reads a file from a URL or a directory.
 func open(base, rel string) (io.ReadCloser, error) {
-	if strings.HasPrefix(rel, "https://") || strings.HasPrefix(rel, "http://") {
-		return httpGet(rel)
-	}
-	if strings.HasPrefix(base, "https://") || strings.HasPrefix(base, "http://") {
-		u, err := url.JoinPath(base, rel)
-		if err != nil {
-			return nil, err
-		}
-		return httpGet(u)
-	}
-	return os.Open(filepath.Join(strings.TrimPrefix(base, "file://"), rel))
-}
-
-func httpGet(u string) (io.ReadCloser, error) {
-	res, err := (&http.Client{Timeout: 0}).Get(u)
-	if err != nil {
-		return nil, err
-	}
-	if res.StatusCode != 200 {
-		res.Body.Close()
-		return nil, fmt.Errorf("GET %s: %s", u, res.Status)
-	}
-	return res.Body, nil
+	return images.Open(context.Background(), base, rel)
 }
 
 // fetch writes one file, checking its digest; a file already there with the right digest is kept.
 func fetch(base string, f ImageFile, dst string, mode os.FileMode) error {
-	if f.SHA256 != "" {
-		if sum, err := recordedSHA256(dst); err == nil && sum == f.SHA256 {
-			if _, err := os.Stat(dst); err == nil {
-				fmt.Printf("  %s: up to date\n", filepath.Base(dst))
-				return nil
-			}
-		}
-	}
-	in, err := open(base, f.Path)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	hash := sha256.New()
-	var reader io.Reader = io.TeeReader(in, hash)
-	if f.Gzip {
-		gz, err := gzip.NewReader(reader)
-		if err != nil {
-			return err
-		}
-		reader = gz
-	}
-	tmp := dst + ".part"
-	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
-	if err != nil {
-		return err
-	}
-	started := time.Now()
-	n, err := io.Copy(out, reader)
-	if err != nil {
-		out.Close()
-		return fmt.Errorf("%s: %w", f.Path, err)
-	}
-	_, _ = io.Copy(io.Discard, in)
-	if err := out.Close(); err != nil {
-		return err
-	}
-	sum := hex.EncodeToString(hash.Sum(nil))
-	if f.SHA256 != "" && sum != f.SHA256 {
-		os.Remove(tmp)
-		return fmt.Errorf("%s: digest %s, want %s", f.Path, sum, f.SHA256)
-	}
-	if err := os.Rename(tmp, dst); err != nil {
-		return err
-	}
-	_ = os.WriteFile(dst+".sha256-source", []byte(sum), 0o644)
-	fmt.Printf("  %s: %d MB in %s\n", filepath.Base(dst), n>>20, time.Since(started).Round(100*time.Millisecond))
-	return nil
-}
-
-// recordedSHA256 is the digest fetch recorded beside dst when it downloaded it.
-func recordedSHA256(dst string) (string, error) {
-	raw, err := os.ReadFile(dst + ".sha256-source")
-	return strings.TrimSpace(string(raw)), err
+	return images.Fetch(context.Background(), base, f, dst, mode)
 }
 
 // fileSHA256 hashes a file as it is on disk.
@@ -489,67 +397,9 @@ func checkArch(manifest ImageManifest, arch string) error {
 
 // fetchFirecracker gets Firecracker's release from GitHub and checks it against the release's SHA256SUMS.
 func fetchFirecracker(dst string) error {
-	if out, err := exec.Command(dst, "--version").Output(); err == nil && strings.Contains(string(out), strings.TrimPrefix(FirecrackerVersion, "v")) {
-		fmt.Printf("  firecracker %s: up to date\n", FirecrackerVersion)
-		return nil
-	}
-	arch := "x86_64"
-	if runtime.GOARCH == "arm64" {
-		arch = "aarch64"
-	}
-	base := "https://github.com/firecracker-microvm/firecracker/releases/download/" + FirecrackerVersion + "/"
-	name := fmt.Sprintf("firecracker-%s-%s.tgz", FirecrackerVersion, arch)
-	sums, err := httpGet(base + name + ".sha256.txt")
-	if err != nil {
-		return err
-	}
-	sumText, _ := io.ReadAll(sums)
-	sums.Close()
-	want := strings.Fields(string(sumText))
-	body, err := httpGet(base + name)
-	if err != nil {
-		return err
-	}
-	raw, err := io.ReadAll(body)
-	body.Close()
-	if err != nil {
-		return err
-	}
-	got := sha256.Sum256(raw)
-	if len(want) == 0 || want[0] != hex.EncodeToString(got[:]) {
-		return fmt.Errorf("%s: digest doesn't match the release's", name)
-	}
-	gz, err := gzip.NewReader(bytes.NewReader(raw))
-	if err != nil {
-		return err
-	}
-	tr := tar.NewReader(gz)
-	member := fmt.Sprintf("release-%s-%s/firecracker-%s-%s", FirecrackerVersion, arch, FirecrackerVersion, arch)
-	for {
-		h, err := tr.Next()
-		if err == io.EOF {
-			return fmt.Errorf("%s has no %s", name, member)
-		}
-		if err != nil {
-			return err
-		}
-		if h.Name == member {
-			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-				return err
-			}
-			out, err := os.OpenFile(dst+".part", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
-			if err != nil {
-				return err
-			}
-			if _, err := io.Copy(out, tr); err != nil {
-				out.Close()
-				return err
-			}
-			out.Close()
-			fmt.Printf("  firecracker %s\n", FirecrackerVersion)
-			return os.Rename(dst+".part", dst)
-		}
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	return images.FetchFirecracker(ctx, dst, FirecrackerVersion)
 }
 
 func untar(r io.Reader, dir string) error {

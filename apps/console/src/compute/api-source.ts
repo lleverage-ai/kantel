@@ -7,14 +7,18 @@
 // and `apiCompute` throws. The UI's records are shaped for its pages, not the API, so each source maps the API's records
 // field by field. Where the UI has a field the API lacks, a neutral value stands in, with a comment saying so; where
 // the UI asks for something no route does, the call rejects with a sentence saying Kantel's API can't do it yet.
-// Timestamps need no conversion: both sides use epoch milliseconds. The account goes in the query of a read and in
-// the body of a write, as the contract's `account` field says.
+// Timestamps need no conversion: both sides use epoch milliseconds, except the base image fields (a sandbox's and a
+// saved snapshot's `base`, and the admin images overview), whose times are ISO strings and are parsed here. Those and
+// Restart on latest base are newer than the generated SDK, so they are read and called as raw routes with local types
+// (`ApiSandboxBase` and the rest). The account goes in the query of a read and in the body of a write, as the
+// contract's `account` field says.
 
 import {
 	type Account,
 	type DestinationBinding as ApiBinding,
 	type BucketSource as ApiBucketSource,
 	type Bundle as ApiBundle,
+	type ApiCall,
 	type EgressEntry as ApiEgressEntry,
 	type Environment as ApiEnvironment,
 	type EgressGrant as ApiGrant,
@@ -47,6 +51,7 @@ import {
 	type SandboxSizeName,
 	type SandboxState,
 	type Snapshot,
+	send,
 	type TelemetryExport,
 	type Webhook,
 	type WebhookDelivery,
@@ -56,6 +61,7 @@ import { DeviceTrustError } from "@kantel/e2e/device";
 import type {
 	AccountsSource,
 	ApiKeysSource,
+	BaseImagesSource,
 	ComputeAccount,
 	ComputeSource,
 	ComputeViewer,
@@ -121,6 +127,70 @@ type UiPublicUrl = Awaited<ReturnType<NonNullable<HostsSource["publicUrl"]>["get
 type UiEnvironmentFile = UiEnvironment["files"][number];
 type UiRepo = UiEnvironment["repos"][number];
 type UiMethod = UiBinding["methods"][number];
+type UiSandboxBase = NonNullable<UiSandbox["base"]>;
+type UiImagesOverview = Awaited<ReturnType<BaseImagesSource["overview"]>>;
+type UiBaseImage = UiImagesOverview["images"][number];
+type UiBaseImageVersion = UiBaseImage["versions"][number];
+type UiTemplateBase = UiImagesOverview["templates"][number];
+
+// The base image fields and the images overview, as the API sends them (times ISO), until the generated SDK has them.
+interface ApiSandboxBase {
+	readonly image: string;
+	readonly version?: string;
+	readonly outdated: boolean;
+	readonly latest?: { readonly version: string; readonly builtAt: string };
+	readonly behind?: { readonly days: number; readonly versions: number };
+	readonly security?: boolean;
+}
+
+interface ApiImageScan {
+	readonly scanner: string;
+	readonly scannedAt: string;
+	readonly counts: {
+		readonly critical: number;
+		readonly high: number;
+		readonly medium: number;
+		readonly low: number;
+		readonly unknown: number;
+	};
+	readonly fixable: { readonly critical: number; readonly high: number };
+	readonly findings: NonNullable<UiBaseImageVersion["scan"]>["findings"];
+}
+
+interface ApiBaseImageVersion {
+	readonly version: string;
+	readonly digest: string;
+	readonly builtAt: string;
+	readonly signed: boolean;
+	readonly reason?: UiBaseImageVersion["reason"];
+	readonly scan?: ApiImageScan;
+}
+
+interface ApiBaseImage {
+	readonly name: string;
+	readonly repository: string;
+	readonly channel: "stable";
+	readonly latest?: ApiBaseImageVersion;
+	readonly versions: readonly ApiBaseImageVersion[];
+}
+
+interface ApiTemplateBase {
+	readonly id: string;
+	readonly name: string;
+	readonly image: string;
+	readonly channel?: string;
+	readonly pinned?: string;
+	readonly base: ApiSandboxBase;
+	readonly rebuilding: boolean;
+}
+
+interface ApiImagesOverview {
+	readonly images: readonly ApiBaseImage[];
+	readonly templates: readonly ApiTemplateBase[];
+	readonly indexUrl: string;
+	readonly generatedAt?: string;
+	readonly error?: string;
+}
 type UiMounts = NonNullable<ComputeSource["mounts"]>;
 type UiBundle = Awaited<ReturnType<UiMounts["bundles"]>>[number];
 type UiBucketSource = Awaited<ReturnType<UiMounts["bucketSources"]>>[number];
@@ -158,6 +228,8 @@ interface Context {
 	readonly environmentNames: Map<string, string>;
 	/** Sandboxes' accounts by ID, as last read: which one's chain decides where its commands are read from. */
 	readonly sandboxAccounts: Map<string, string>;
+	/** One raw call with the client's options, for a route the generated SDK doesn't have yet. */
+	readonly call: <T>(call: ApiCall) => Promise<T>;
 	/**
 	 * Bucket sources' names and buckets by ID, as last read: a sandbox's bucket mount names only its source's ID, and the
 	 * UI shows the name and the bucket where it knows them. Every bucket source the console reads goes in.
@@ -337,6 +409,31 @@ async function learnEnvironmentNames(
 	}
 }
 
+/** An ISO time as epoch milliseconds; `fallback` (default 0) for one that doesn't parse. */
+const msOf = (iso: string, fallback = 0): number => {
+	const ms = Date.parse(iso);
+	return Number.isNaN(ms) ? fallback : ms;
+};
+
+function baseOf(base: ApiSandboxBase): UiSandboxBase {
+	return {
+		image: base.image,
+		...(base.version === undefined ? {} : { version: base.version }),
+		outdated: base.outdated,
+		...(base.latest === undefined
+			? {}
+			: { latest: { version: base.latest.version, builtAt: msOf(base.latest.builtAt) } }),
+		...(base.behind === undefined ? {} : { behind: { days: base.behind.days, versions: base.behind.versions } }),
+		...(base.security === undefined ? {} : { security: base.security }),
+	};
+}
+
+/** A sandbox's or a snapshot's `base`, which the generated SDK's records don't have yet. */
+function baseFieldOf(record: object): { readonly base?: UiSandboxBase } {
+	const { base } = record as { readonly base?: ApiSandboxBase | null };
+	return base === undefined || base === null ? {} : { base: baseOf(base) };
+}
+
 /**
  * Reads the account's bucket sources' names when a sandbox mounts a bucket source the console hasn't read. Like an
  * environment's name, only shown: a caller that can't list them (a key without `account:read`) still gets its sandboxes,
@@ -487,6 +584,7 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 		shared: sandbox.visibility === "organisation",
 		...(sandbox.source?.sandboxId === undefined ? {} : { forkedFrom: sandbox.source.sandboxId }),
 		...environmentRefOf(sandbox, context),
+		...baseFieldOf(sandbox),
 		...mountsOf(sandbox, context),
 		...imageOf(sandbox),
 	};
@@ -578,6 +676,14 @@ function sandboxesSource(context: Context): SandboxesSource {
 			return view(fork);
 		},
 		recover: async (id) => view(await api.recoverSandbox(id)),
+		// Not in the generated SDK yet: the raw route, as `recoverSandbox` calls its own.
+		restartOnLatest: async (id) =>
+			view(
+				await context.call<Sandbox>({
+					method: "POST",
+					path: `/sandboxes/${encodeURIComponent(id)}/restart-on-latest`,
+				}),
+			),
 		remove: async (id) => {
 			await api.deleteSandbox(id);
 		},
@@ -971,6 +1077,7 @@ function savedSnapshotOf(snapshot: Snapshot, sandboxName: string): UiSavedSnapsh
 		sizeBytes: snapshot.sizeBytes ?? 0,
 		// The API doesn't count the sandboxes started from a snapshot.
 		uses: 0,
+		...baseFieldOf(snapshot),
 	};
 }
 
@@ -1691,6 +1798,67 @@ function publicUrlOf(made: PublicUrl): UiPublicUrl {
 	};
 }
 
+function imageVersionOf(version: ApiBaseImageVersion): UiBaseImageVersion {
+	const builtAt = msOf(version.builtAt);
+	return {
+		version: version.version,
+		digest: version.digest,
+		builtAt,
+		signed: version.signed,
+		...(version.reason === undefined ? {} : { reason: version.reason }),
+		...(version.scan === undefined
+			? {}
+			: {
+					scan: {
+						scanner: version.scan.scanner,
+						// A scan whose time doesn't parse shows as when the version was built.
+						scannedAt: msOf(version.scan.scannedAt, builtAt),
+						counts: version.scan.counts,
+						fixable: version.scan.fixable,
+						findings: version.scan.findings,
+					},
+				}),
+	};
+}
+
+function baseImageOf(image: ApiBaseImage): UiBaseImage {
+	return {
+		name: image.name,
+		repository: image.repository,
+		channel: image.channel,
+		...(image.latest === undefined ? {} : { latest: imageVersionOf(image.latest) }),
+		versions: image.versions.map(imageVersionOf),
+	};
+}
+
+function templateBaseOf(template: ApiTemplateBase): UiTemplateBase {
+	return {
+		id: template.id,
+		name: template.name,
+		image: template.image,
+		...(template.channel === undefined ? {} : { channel: template.channel }),
+		...(template.pinned === undefined ? {} : { pinned: template.pinned }),
+		base: baseOf(template.base),
+		rebuilding: template.rebuilding,
+	};
+}
+
+/** The deployment's base images and templates (`/v1/admin/hosts/images`, super-admin, experimental). */
+function imagesSource({ call }: Context): BaseImagesSource {
+	return {
+		overview: async () => {
+			const overview = await call<ApiImagesOverview>({ method: "GET", path: "/admin/hosts/images" });
+			return {
+				images: overview.images.map(baseImageOf),
+				templates: overview.templates.map(templateBaseOf),
+				indexUrl: overview.indexUrl,
+				...(overview.generatedAt === undefined ? {} : { generatedAt: msOf(overview.generatedAt) }),
+				...(overview.error === undefined ? {} : { error: overview.error }),
+			};
+		},
+	};
+}
+
 /** An account's own hosts (`/v1/hosts`, experimental): the same page, scoped to the account. */
 function ownHostsSource({ api }: Context, accountId: string): HostsSource {
 	return {
@@ -1713,6 +1881,19 @@ function ownHostsSource({ api }: Context, accountId: string): HostsSource {
 }
 
 /** Whether the deployment lets accounts add hosts of their own: it answers `not_supported` when it doesn't. */
+/**
+ * Whether the gateway has image patching on (KANTEL_IMAGE_PATCHING), so Admin > Images has something to show: off, its
+ * overview answers `not_supported`. An index the gateway can't read still opens the page, which says so.
+ */
+async function offersImages({ call }: Context): Promise<boolean> {
+	try {
+		await call<ApiImagesOverview>({ method: "GET", path: "/admin/hosts/images" });
+		return true;
+	} catch (caught) {
+		return !(caught instanceof KantelApiError && caught.code === "not_supported");
+	}
+}
+
 async function offersOwnHosts({ api }: Context): Promise<boolean> {
 	try {
 		await api.listAccountHosts({});
@@ -1850,7 +2031,7 @@ function sessionDevice(
 /**
  * The compute console on the gateway this console is served by. Asks who is calling first: a gateway that doesn't
  * serve the compute routes answers 404, this throws, and the console shows no compute pages. The
- * hosts source is there only for a deployment super-admin; billing isn't, as the API has no plans.
+ * hosts and images sources are there only for a deployment super-admin; billing isn't, as the API has no plans.
  */
 export async function apiCompute(options: ComputeApiOptions = {}): Promise<ComputeSource> {
 	const doFetch = options.fetch ?? ((input: RequestInfo | URL, init?: RequestInit) => fetch(input, init));
@@ -1859,11 +2040,12 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		if (response.status === 401) options.onUnauthenticated?.();
 		return response;
 	};
-	const api = createKantelClient({
+	const clientOptions: KantelClientOptions = {
 		baseUrl: options.baseUrl ?? "/v1",
 		...(options.headers === undefined ? {} : { headers: options.headers }),
 		fetch: watched,
-	});
+	};
+	const api = createKantelClient(clientOptions);
 	// The probe: the routes are served, and who is calling, with the session's headers as they are now, kept: what
 	// this browser does as a device it does as that session, and no later one.
 	const signedIn = options.headers === undefined ? undefined : await options.headers();
@@ -1899,6 +2081,7 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		caller,
 		environmentNames: new Map(),
 		sandboxAccounts: new Map(),
+		call: <T>(call: ApiCall) => send<T>(clientOptions, call),
 		bucketSources: new Map(),
 		...(local === undefined ? {} : { local }),
 		...(browser === undefined ? {} : { browser }),
@@ -1927,6 +2110,7 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		webhooks: webhooksSource(context),
 		telemetry: telemetrySource(context),
 		...(caller.superAdmin ? { hosts: withUsage(hostsSource(context), "usage", usage.host) } : {}),
+		...(caller.superAdmin && (await offersImages(context)) ? { images: imagesSource(context) } : {}),
 		// Anyone else manages their accounts' own hosts, where the deployment allows it.
 		...(ownHostsOffered
 			? {

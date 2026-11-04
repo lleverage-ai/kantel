@@ -17,6 +17,7 @@ import { Menu, type MenuEntry } from "../primitives/menu.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
+import { BaseOutdatedBadge } from "./base-outdated.tsx";
 import {
 	bytesText,
 	type ComputeAccount,
@@ -366,6 +367,11 @@ function SavedList({
 								<tr key={entry.id} className={rowHover} data-snapshot={entry.id}>
 									<td className={td}>
 										<span className="block max-w-(--kt-card-width) truncate font-medium text-fg">{entry.name}</span>
+										{entry.base?.outdated === true ? (
+											<span className="mt-1 flex">
+												<BaseOutdatedBadge base={entry.base} now={now} subject="snapshot" />
+											</span>
+										) : null}
 									</td>
 									<td className={td}>
 										<span className="text-fg">{entry.sandboxName}</span>

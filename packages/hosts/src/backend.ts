@@ -28,7 +28,7 @@ import type {
 	SandboxSpec,
 	TakenSnapshot,
 } from "@kantel/compute";
-import { type ErrorCode, KantelError } from "@kantel/contracts";
+import { type ErrorCode, isKantelError, KantelError } from "@kantel/contracts";
 import { DESKTOP_PORT, desktopPath } from "./desktop.ts";
 import type { FileStreamHandle, PortSink } from "./hub.ts";
 import type { PortRouter } from "./ports.ts";
@@ -46,7 +46,7 @@ import {
 	type HostSandbox,
 	type SandboxTier,
 } from "./protocol.ts";
-import { type HostsService, mountHandoff, type SandboxPlacement } from "./service.ts";
+import { type HostsService, kantelErrorFromHost, mountHandoff, type SandboxPlacement } from "./service.ts";
 import { type DesktopMode, HOSTS_TUNNEL_PATH, MAX_TUNNEL_MINUTES, type TunnelTickets } from "./tunnel.ts";
 
 export { DESKTOP_PORT } from "./desktop.ts";
@@ -137,7 +137,16 @@ export function hostEgress(egress: BackendEgress | undefined, attributionKey?: s
 interface HostSnapshot {
 	readonly id: string;
 	readonly sizeBytes: number;
+	/** The host images version its root file system is (image patching); absent when unknown. */
+	readonly base?: string;
 }
+
+/** A snapshot as the compute service keeps it: its ref on its host, its size and its base when the host said. */
+const takenOn = (hostId: string, snap: HostSnapshot): TakenSnapshot => ({
+	ref: `${hostId}/${snap.id}`,
+	sizeBytes: snap.sizeBytes,
+	...(snap.base === undefined || snap.base === "" ? {} : { base: snap.base }),
+});
 
 interface HostFileEntry {
 	readonly name: string;
@@ -294,6 +303,12 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 						},
 					}),
 			capabilities: capabilitiesOf(tier, nested === true, options.ports !== undefined, sandbox.guest),
+			...(sandbox.base === undefined || sandbox.base === ""
+				? {}
+				: {
+						base: sandbox.base,
+						...(typeof sandbox.baseAt === "number" && sandbox.baseAt > 0 ? { baseAt: sandbox.baseAt } : {}),
+					}),
 			...(known.mounts === undefined ? {} : { mounts: known.mounts }),
 		};
 	}
@@ -350,6 +365,11 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		const sandbox = await call<HostSandbox>(sandboxId, method, {
 			...egressOf(how.egress),
 			...(revision === undefined ? {} : { revision }),
+			// Only a cold boot rebases; a host without image patching ignores the fields. With `rebaseTo` the host refuses
+			// to land anywhere else.
+			...(method === "sandbox.start" && how.rebase === true
+				? { rebase: true, ...(how.rebaseTo === undefined ? {} : { rebaseTo: how.rebaseTo }) }
+				: {}),
 			...(mounts.send.length === 0 ? {} : { mounts: mounts.send }),
 		});
 		const statuses = mounts.status(sandbox);
@@ -452,6 +472,40 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		},
 		create: createOne,
 		start: (sandboxId, how) => boot(sandboxId, "sandbox.start", how),
+		async prepareRebase(sandboxId, { eligibleHosts, rebaseTo }) {
+			const { hostId } = await tierOf(sandboxId);
+			mayUse(hostId, eligibleHosts);
+			// A host's sandbox is on host images: without a version to land on (the index unread, or naming no stable host
+			// release) a rebase would land on whatever the host has, so it's refused before the sandbox stops.
+			if (rebaseTo === undefined) {
+				throw new KantelError(
+					"unavailable",
+					"Kantel's base image index names no stable host images now, so there's no latest base to restart on: try again later",
+				);
+			}
+			// Asked now rather than read from the hello's facts, which an update since has left behind, and for this sandbox:
+			// its tier's images, which a host config naming its root filesystem by path can hold back.
+			const images = await hosts.hub
+				.call<{ version?: string; state?: string }>(hostId, HostMethods.hostImages, { sandboxId })
+				.catch((error: unknown) => {
+					const mapped = kantelErrorFromHost(error);
+					throw isKantelError(mapped, "not_supported")
+						? new KantelError(
+								"not_supported",
+								`The host its disk is on (${hostId}) doesn't patch its images: turn on imagePatching in its config, or update kantel-host`,
+							)
+						: mapped;
+				});
+			const have = images.version ?? "";
+			if (have !== rebaseTo) {
+				throw new KantelError(
+					"unavailable",
+					`The host its disk is on (${hostId}) has images ${have === "" ? "that aren't versioned" : have}, not ${rebaseTo}, yet: try again once it has taken the update`,
+				);
+			}
+			// Unknown when the host doesn't say: its start then refuses a machine still running on other images.
+			return images.state === undefined ? {} : { running: images.state === "running" };
+		},
 		resume: (sandboxId, how) => boot(sandboxId, "sandbox.resume", how),
 		// Recovering clears the sandbox's recorded ports (the compute API), so their exposures end with them: a URL the API
 		// no longer lists, and can't hide, must not still reach the machine.
@@ -479,7 +533,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				snapshotId: snapshotId(),
 				memory: keepMemory,
 			});
-			return { ref: `${hostId}/${snap.id}`, sizeBytes: snap.sizeBytes };
+			return takenOn(hostId, snap);
 		},
 		async fork(source, targets: readonly SandboxSpec[]): Promise<Placement[]> {
 			const out: Placement[] = [];
@@ -726,7 +780,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		async takeSnapshot(sandboxId): Promise<TakenSnapshot> {
 			const { hostId } = await tierOf(sandboxId);
 			const snap = await call<HostSnapshot>(sandboxId, "snapshot.save", { snapshotId: snapshotId() });
-			return { ref: `${hostId}/${snap.id}`, sizeBytes: snap.sizeBytes };
+			return takenOn(hostId, snap);
 		},
 		async listSnapshotFiles(ref, path) {
 			const { hostId, snapshotId: id } = parseRef(ref);

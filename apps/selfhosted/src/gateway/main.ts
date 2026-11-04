@@ -195,6 +195,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		...(hosts === undefined ? {} : { hosts }),
 		...(components.computeStore === undefined ? {} : { store: components.computeStore }),
 		...(secretsKey === undefined ? {} : { secretsKey }),
+		...(cfg.compute.imagePatching === undefined ? {} : { imagePatching: cfg.compute.imagePatching }),
 		// KANTEL_BUNDLES_DIR, else beside the bootstrap file: the directory the gateway keeps on disk (Compose's
 		// gatewaystate volume).
 		...(cfg.compute.mounts === true

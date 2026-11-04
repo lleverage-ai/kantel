@@ -553,6 +553,56 @@ export const EgressGrantInput = Type.Object(
 	{ title: "EgressGrantInput" },
 );
 
+// Base images (experimental, behind the deployment's KANTEL_IMAGE_PATCHING switch).
+
+export const SandboxBase = Type.Object(
+	{
+		image: Type.String({
+			description:
+				"The base image it is on, by its name in Kantel's base image index: `host` for a microVM (the host images: " +
+				"kernel and root file system), `sandbox` for the container tier.",
+		}),
+		version: Type.Optional(
+			Type.String({ description: "The version of the base it is on, such as `host-images-20261104.812`." }),
+		),
+		outdated: Type.Boolean({ description: "Its base isn't the version its channel (`stable`) names now." }),
+		latest: Type.Optional(
+			Type.Object(
+				{
+					version: Type.String(),
+					builtAt: Type.String({ description: "When it was built, ISO 8601." }),
+				},
+				{ title: "SandboxBaseLatest", description: "The version its channel names now." },
+			),
+		),
+		behind: Type.Optional(
+			Type.Object(
+				{
+					days: Type.Integer({
+						minimum: 0,
+						description: "Whole days since the version after its own was built: how long it has been superseded.",
+					}),
+					versions: Type.Integer({ minimum: 0, description: "How many versions are newer." }),
+				},
+				{ title: "SandboxBaseBehind", description: "How far behind its channel it is, while outdated." },
+			),
+		),
+		security: Type.Optional(
+			Type.Boolean({
+				description: "A newer version fixes Critical or High vulnerabilities this one has: restart it on the latest.",
+			}),
+		),
+	},
+	{
+		title: "SandboxBase",
+		description:
+			"The base image a sandbox's (or a snapshot's) root file system is, and how far behind it is. A running sandbox is " +
+			"never patched underneath: an outdated one stays on its base until it is restarted on the latest " +
+			"(`restartSandboxOnLatest`) or made again. Experimental: present only where the deployment has image patching " +
+			"on (`KANTEL_IMAGE_PATCHING`) and knows the version.",
+	},
+);
+
 // Read-only mounts (experimental, behind the deployment's KANTEL_MOUNTS switch): what a sandbox's create names, and
 // what its record answers.
 
@@ -686,6 +736,7 @@ export const Sandbox = Type.Object(
 		cost: Cost,
 		usage: UsageSummary,
 		hostId: Type.Optional(Type.String({ description: "The host it runs on; only a super-admin is shown it." })),
+		base: Type.Optional(SandboxBase),
 	},
 	{ title: "Sandbox" },
 );
@@ -1318,6 +1369,7 @@ export const Snapshot = Type.Object(
 		sizeBytes: Type.Optional(Type.Integer()),
 		createdAt: Timestamp,
 		expiresAt: Type.Optional(Timestamp),
+		base: Type.Optional(SandboxBase),
 	},
 	{ title: "Snapshot" },
 );
@@ -2307,6 +2359,132 @@ export const SetPublicUrlBody = Type.Object(
 	{ title: "SetPublicUrlBody" },
 );
 
+// Base images, for the super-admin (experimental, behind the deployment's KANTEL_IMAGE_PATCHING switch).
+
+const isoTime = (description: string) => Type.String({ description: `${description}, ISO 8601.` });
+
+export const BaseImageFinding = Type.Object(
+	{
+		id: Type.String({ description: "`CVE-2026-1234`, or the scanner's own ID where there is no CVE." }),
+		severity: Type.Union(
+			[
+				Type.Literal("critical"),
+				Type.Literal("high"),
+				Type.Literal("medium"),
+				Type.Literal("low"),
+				Type.Literal("unknown"),
+			],
+			{ title: "ScanSeverity" },
+		),
+		package: Type.String({ description: "The package it is in, such as `openssl`." }),
+		installed: Type.String({ description: "The package's version in the image." }),
+		fixed: Type.Optional(Type.String({ description: "The version that fixes it, where one is out." })),
+		title: Type.Optional(Type.String()),
+	},
+	{ title: "BaseImageFinding", description: "One vulnerability a scan found in an image." },
+);
+
+const severityCount = (description: string) => Type.Integer({ minimum: 0, description });
+
+export const BaseImageScan = Type.Object(
+	{
+		scanner: Type.String({ description: "What scanned it, such as `trivy 0.68.1`." }),
+		scannedAt: isoTime("When"),
+		counts: Type.Object(
+			{
+				critical: severityCount("Critical findings."),
+				high: severityCount("High findings."),
+				medium: severityCount("Medium findings."),
+				low: severityCount("Low findings."),
+				unknown: severityCount("Findings of no known severity."),
+			},
+			{ title: "BaseImageScanCounts", description: "Every finding, by severity." },
+		),
+		fixable: Type.Object(
+			{
+				critical: severityCount("Critical findings with a fix out."),
+				high: severityCount("High findings with a fix out."),
+			},
+			{
+				title: "BaseImageScanFixable",
+				description: "Critical and High findings with a fix out: what makes Kantel rebuild the image at once.",
+			},
+		),
+		findings: Type.Array(BaseImageFinding, {
+			description: "The Critical and High findings, most severe first, at most 50.",
+		}),
+	},
+	{ title: "BaseImageScan", description: "What the newest CVE scan of a version found." },
+);
+
+export const BaseImageVersion = Type.Object(
+	{
+		version: Type.String({ description: "Its tag, such as `2026.11.04.1`." }),
+		digest: Type.String({ description: "`sha256:…`: the digest it is pulled by. A version's digest never changes." }),
+		builtAt: isoTime("When it was built"),
+		signed: Type.Boolean({ description: "Signed with cosign, keyless, by Kantel's build." }),
+		reason: Type.Optional(
+			Type.Union([Type.Literal("daily"), Type.Literal("cve"), Type.Literal("manual"), Type.Literal("push")], {
+				description: "Why it was built: the daily build, a fixable Critical or High finding, by hand, or a change.",
+			}),
+		),
+		scan: Type.Optional(BaseImageScan),
+	},
+	{ title: "BaseImageVersion", description: "One build of a base image." },
+);
+
+export const BaseImage = Type.Object(
+	{
+		name: Type.String({
+			description: "`sandbox`, `browser`, `isolate-host`, or `host` for the microVM host images.",
+		}),
+		repository: Type.String({
+			description: "Where it is pulled from, such as `ghcr.io/lleverage-ai/kantel-sandbox`; for `host`, the release's.",
+		}),
+		channel: Type.Literal("stable", { description: "The channel `latest` is of." }),
+		latest: Type.Optional(BaseImageVersion),
+		versions: Type.Array(BaseImageVersion, { description: "Its newest versions, newest first, at most 10." }),
+	},
+	{ title: "BaseImage" },
+);
+
+export const BaseImageTemplate = Type.Object(
+	{
+		id: Type.String(),
+		name: Type.String(),
+		image: Type.String({ description: "The base image it is built on." }),
+		channel: Type.Optional(Type.String({ description: "The channel it follows, such as `stable`." })),
+		pinned: Type.Optional(
+			Type.String({ description: "The digest it is pinned to, when it doesn't follow a channel." }),
+		),
+		base: SandboxBase,
+		rebuilding: Type.Boolean({ description: "Whether it is being rebuilt on the latest base now." }),
+	},
+	{ title: "BaseImageTemplate", description: "A template and the base it is built on." },
+);
+
+export const BaseImageList = Type.Object(
+	{
+		images: Type.Array(BaseImage),
+		templates: Type.Array(BaseImageTemplate, {
+			description: "Templates and their bases; empty until templates exist.",
+		}),
+		indexUrl: Type.String({
+			description: "Where the deployment reads the base image index (`KANTEL_BASE_IMAGE_INDEX`).",
+		}),
+		generatedAt: Type.Optional(isoTime("When the index was last written")),
+		error: Type.Optional(
+			Type.String({ description: "Why the index couldn't be read; `images` is empty then. It is tried again soon." }),
+		),
+	},
+	{
+		title: "BaseImageList",
+		description:
+			"Kantel's base images as the index CI publishes them: each image's latest version, its newest versions and what " +
+			"their CVE scans found.",
+	},
+);
+
 // An account's own hosts (experimental, behind the deployment's KANTEL_ACCOUNT_HOSTS switch).
 
 export const CreateAccountJoinTokenBody = Type.Object(
@@ -2406,6 +2584,11 @@ export type DeviceLogin = Static<typeof DeviceLogin>;
 export type DeviceLoginState = Static<typeof DeviceLoginState>;
 export type DeviceLoginResult = Static<typeof DeviceLoginResult>;
 export type DeviceLoginRequest = Static<typeof DeviceLoginRequest>;
+export type SandboxBase = Static<typeof SandboxBase>;
+export type BaseImageVersion = Static<typeof BaseImageVersion>;
+export type BaseImage = Static<typeof BaseImage>;
+export type BaseImageTemplate = Static<typeof BaseImageTemplate>;
+export type BaseImageList = Static<typeof BaseImageList>;
 
 /** Every scope, in the order the docs list them. */
 export const API_KEY_SCOPES: readonly ApiKeyScope[] = [

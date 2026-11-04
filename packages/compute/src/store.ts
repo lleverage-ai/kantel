@@ -106,7 +106,7 @@ export interface StoredSample {
 }
 
 /** A sandbox: its wire shape (but its cost and usage, worked out when answered) and what the service keeps besides. */
-export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "grants"> & {
+export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "grants" | "base"> & {
 	/** The person it belongs to: its maker, or the person whose key made it. */
 	readonly ownerUserId: string;
 	/** What every command sees: its environment's plain variables and placeholders, then the create's own. */
@@ -122,6 +122,17 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 * `egressRevision`, an update didn't get through (its host away, say), and the sweep sends the egress as it is now.
 	 */
 	readonly egressApplied?: number;
+	/**
+	 * When its host put it on `base` (`Placement.baseAt`, the host's clock; 0 or absent: not said). A host's later report
+	 * of its base replaces `base` only when it says a later time (`ComputeService.recordBases`).
+	 */
+	readonly baseAt?: number;
+	/**
+	 * Moves on by one with every change of its state (`withState`), so a lifecycle step that read it earlier can claim
+	 * the next only while nothing else has moved it since, even if it is back in the state it read (a restart in
+	 * between). Absent: 0, a record from before it was kept.
+	 */
+	readonly lifecycle?: number;
 	/**
 	 * Why it is due to stop at `stopsAt`, when that isn't its auto-stop: its host can't enforce its egress as stored. The
 	 * sweep stops it with this reason, as many times as it takes.
@@ -147,6 +158,12 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	/** The snapshot its memory was paused into, while `paused`. */
 	readonly pausedSnapshotId?: string;
 	/**
+	 * The base image version its root file system is, as its backend reported it (`Placement.base`): a host images
+	 * version such as `host-images-20261104.812`, or a container image's `sha256:` digest. Answered, with how far behind
+	 * it is, as the API's `base` (image patching on). Absent: not reported.
+	 */
+	readonly base?: string;
+	/**
 	 * What it asked for at create: a microVM's vCPUs and memory, an isolate's memory (`vcpus` 0). Absent: made by a named
 	 * size, or before shapes. A fork asks for the same.
 	 */
@@ -155,8 +172,11 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 
 export type StoredCommand = computeSchema.Command & { readonly accountId: string };
 
-/** A snapshot and the backend's reference to its bytes (absent until it is ready). */
-export type StoredSnapshot = computeSchema.Snapshot & { readonly ref?: string };
+/**
+ * A snapshot and the backend's reference to its bytes (absent until it is ready), and the base image version its root
+ * file system is (`TakenSnapshot.base`), answered as the API's `base`.
+ */
+export type StoredSnapshot = Omit<computeSchema.Snapshot, "base"> & { readonly ref?: string; readonly base?: string };
 
 export type StoredApiKey = computeSchema.ApiKey & {
 	/** The SHA-256 hex of the secret. */

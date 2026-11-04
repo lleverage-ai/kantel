@@ -10,6 +10,7 @@
 		"packages/*/generated/**/*.ts",
 		"images/isolate-host/src/pool.ts",
 		"images/isolate-host/test/**/*.ts",
+		"tools/base-images/**/*.ts",
 		"vitest.config.ts",
 		"docs/site/scripts/*.ts"
 	],

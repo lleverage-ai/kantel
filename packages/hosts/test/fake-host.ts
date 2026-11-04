@@ -38,6 +38,8 @@ export class FakeHost {
 	readonly sent: HostMessage[] = [];
 	readonly binary: Uint8Array[] = [];
 	readonly sandboxes = new Map<string, HostSandbox>();
+	/** What `snapshot.list` answers. */
+	snapshots: { readonly id: string; readonly sandboxId: string; readonly base?: string }[] = [];
 	closedWith: { code: number; reason: string } | undefined;
 	connection!: AcceptedHost;
 	freeMemoryMiB = 20_000;
@@ -266,6 +268,10 @@ export class FakeHost {
 				return answer({ ok: true });
 			case "sandbox.secrets":
 				return answer({});
+			case "snapshot.list":
+				return answer({
+					snapshots: this.snapshots.filter((s) => params.sandboxId === "" || s.sandboxId === params.sandboxId),
+				});
 			default:
 				return fail("unsupported", `unknown method ${message.method}`);
 		}

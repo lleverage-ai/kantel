@@ -111,6 +111,101 @@ The key the device gets, in the approver's personal account unless `account` nam
 | `preset` | [ApiKeyPreset](/api/reference/types/#apikeypreset) | no |  |
 | `expiresInDays` | integer | no | Default 90. The key stops working after it. (minimum 1, maximum 3650) |
 
+### BaseImage
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | yes | `sandbox`, `browser`, `isolate-host`, or `host` for the microVM host images. |
+| `repository` | string | yes | Where it is pulled from, such as `ghcr.io/lleverage-ai/kantel-sandbox`; for `host`, the release's. |
+| `channel` | `"stable"` | yes | The channel `latest` is of. |
+| `latest` | [BaseImageVersion](/api/reference/types/#baseimageversion) | no |  |
+| `versions` | [BaseImageVersion](/api/reference/types/#baseimageversion)[] | yes | Its newest versions, newest first, at most 10. |
+
+### BaseImageFinding
+
+One vulnerability a scan found in an image.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | `CVE-2026-1234`, or the scanner's own ID where there is no CVE. |
+| `severity` | [ScanSeverity](/api/reference/types/#scanseverity) | yes |  |
+| `package` | string | yes | The package it is in, such as `openssl`. |
+| `installed` | string | yes | The package's version in the image. |
+| `fixed` | string | no | The version that fixes it, where one is out. |
+| `title` | string | no |  |
+
+### BaseImageList
+
+Kantel's base images as the index CI publishes them: each image's latest version, its newest versions and what their CVE scans found.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `images` | [BaseImage](/api/reference/types/#baseimage)[] | yes |  |
+| `templates` | [BaseImageTemplate](/api/reference/types/#baseimagetemplate)[] | yes | Templates and their bases; empty until templates exist. |
+| `indexUrl` | string | yes | Where the deployment reads the base image index (`KANTEL_BASE_IMAGE_INDEX`). |
+| `generatedAt` | string | no | When the index was last written, ISO 8601. |
+| `error` | string | no | Why the index couldn't be read; `images` is empty then. It is tried again soon. |
+
+### BaseImageScan
+
+What the newest CVE scan of a version found.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `scanner` | string | yes | What scanned it, such as `trivy 0.68.1`. |
+| `scannedAt` | string | yes | When, ISO 8601. |
+| `counts` | [BaseImageScanCounts](/api/reference/types/#baseimagescancounts) | yes |  |
+| `fixable` | [BaseImageScanFixable](/api/reference/types/#baseimagescanfixable) | yes |  |
+| `findings` | [BaseImageFinding](/api/reference/types/#baseimagefinding)[] | yes | The Critical and High findings, most severe first, at most 50. |
+
+### BaseImageScanCounts
+
+Every finding, by severity.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `critical` | integer | yes | Critical findings. (minimum 0) |
+| `high` | integer | yes | High findings. (minimum 0) |
+| `medium` | integer | yes | Medium findings. (minimum 0) |
+| `low` | integer | yes | Low findings. (minimum 0) |
+| `unknown` | integer | yes | Findings of no known severity. (minimum 0) |
+
+### BaseImageScanFixable
+
+Critical and High findings with a fix out: what makes Kantel rebuild the image at once.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `critical` | integer | yes | Critical findings with a fix out. (minimum 0) |
+| `high` | integer | yes | High findings with a fix out. (minimum 0) |
+
+### BaseImageTemplate
+
+A template and the base it is built on.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes |  |
+| `name` | string | yes |  |
+| `image` | string | yes | The base image it is built on. |
+| `channel` | string | no | The channel it follows, such as `stable`. |
+| `pinned` | string | no | The digest it is pinned to, when it doesn't follow a channel. |
+| `base` | [SandboxBase](/api/reference/types/#sandboxbase) | yes |  |
+| `rebuilding` | boolean | yes | Whether it is being rebuilt on the latest base now. |
+
+### BaseImageVersion
+
+One build of a base image.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `version` | string | yes | Its tag, such as `2026.11.04.1`. |
+| `digest` | string | yes | `sha256:…`: the digest it is pulled by. A version's digest never changes. |
+| `builtAt` | string | yes | When it was built, ISO 8601. |
+| `signed` | boolean | yes | Signed with cosign, keyless, by Kantel's build. |
+| `reason` | `"daily"` or `"cve"` or `"manual"` or `"push"` | no | Why it was built: the daily build, a fixable Critical or High finding, by hand, or a change. |
+| `scan` | [BaseImageScan](/api/reference/types/#baseimagescan) | no |  |
+
 ### BrowserAccess
 
 | Field | Type | Required | Description |
@@ -1097,6 +1192,38 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `cost` | [Cost](/api/reference/types/#cost) | yes |  |
 | `usage` | [UsageSummary](/api/reference/types/#usagesummary) | yes |  |
 | `hostId` | string | no | The host it runs on; only a super-admin is shown it. |
+| `base` | [SandboxBase](/api/reference/types/#sandboxbase) | no |  |
+
+### SandboxBase
+
+The base image a sandbox's (or a snapshot's) root file system is, and how far behind it is. A running sandbox is never patched underneath: an outdated one stays on its base until it is restarted on the latest (`restartSandboxOnLatest`) or made again. Experimental: present only where the deployment has image patching on (`KANTEL_IMAGE_PATCHING`) and knows the version.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `image` | string | yes | The base image it is on, by its name in Kantel's base image index: `host` for a microVM (the host images: kernel and root file system), `sandbox` for the container tier. |
+| `version` | string | no | The version of the base it is on, such as `host-images-20261104.812`. |
+| `outdated` | boolean | yes | Its base isn't the version its channel (`stable`) names now. |
+| `latest` | [SandboxBaseLatest](/api/reference/types/#sandboxbaselatest) | no |  |
+| `behind` | [SandboxBaseBehind](/api/reference/types/#sandboxbasebehind) | no |  |
+| `security` | boolean | no | A newer version fixes Critical or High vulnerabilities this one has: restart it on the latest. |
+
+### SandboxBaseBehind
+
+How far behind its channel it is, while outdated.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `days` | integer | yes | Whole days since the version after its own was built: how long it has been superseded. (minimum 0) |
+| `versions` | integer | yes | How many versions are newer. (minimum 0) |
+
+### SandboxBaseLatest
+
+The version its channel names now.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `version` | string | yes |  |
+| `builtAt` | string | yes | When it was built, ISO 8601. |
 
 ### SandboxCapabilities
 
@@ -1279,6 +1406,10 @@ One of: `"private"` or `"organisation"`.
 | `description` | string | no |  (at most 500 characters) |
 | `replace` | boolean | no | Replace a saved snapshot of the same name. |
 
+### ScanSeverity
+
+One of: `"critical"` or `"high"` or `"medium"` or `"low"` or `"unknown"`.
+
 ### SetEnvironmentFileBody
 
 `encoding` says how `content` is written: `utf8` (the default) or `base64`.
@@ -1350,6 +1481,7 @@ What an hour costs, per vCPU and GB; absent where it is free.
 | `sizeBytes` | integer | no |  |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 | `expiresAt` | integer | no | Epoch milliseconds, UTC. |
+| `base` | [SandboxBase](/api/reference/types/#sandboxbase) | no |  |
 
 ### SnapshotKind
 

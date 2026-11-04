@@ -6,6 +6,12 @@ The container tier's image: what a session's container runs when a command needs
 It runs commands as `sandbox` (uid 1000), with `HOME=/workspace`. The container tier decides the network: none by
 default, or the vault's egress proxy (`targets/selfhosted/sandbox/README.md`). Nothing secret is in the image.
 
+The same workflow also rebuilds it every day from scratch, and again as soon as a scan finds a Critical or High CVE
+with a fix out, then scans it with Trivy, signs it with cosign and publishes it as
+`ghcr.io/lleverage-ai/kantel-sandbox:<version>` and `:stable` (`tools/base-images/README.md`). The base image stays
+pinned by digest, so its Debian packages are upgraded at build time instead: a security-upgrade layer runs
+`apt-get upgrade`, and the daily build's date (`KANTEL_SECURITY_REFRESH`) makes it run again each day.
+
 ## What's in it
 
 The baseline an agent reaches for without asking. Debian packages come from the base image's release (trixie); the

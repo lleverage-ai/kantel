@@ -21,6 +21,7 @@ import {
 import { isKantelError } from "@kantel/contracts";
 import { type AuthenticatePerson, authenticate, UnauthenticatedError } from "./auth.ts";
 import type { SandboxBackend } from "./backend.ts";
+import type { BaseImages } from "./base-status.ts";
 import { FILE_URL_PATH, type MountsOptions } from "./mounts.ts";
 import {
 	type ComputeLimits,
@@ -79,6 +80,11 @@ export interface ComputeApiOptions {
 	 * store makes one for the process and a persistent store refuses them. Not a key: `createComputeApi` throws.
 	 */
 	readonly secretsKey?: string;
+	/**
+	 * Image patching (experimental, `KANTEL_IMAGE_PATCHING`): Kantel's base image index, cached by the caller
+	 * (`baseImageIndexReader`). Absent, off: no `base` fields, and its routes answer `not_supported`.
+	 */
+	readonly baseImages?: BaseImages;
 	/** Mounts, bundles and signed file URLs (`KANTEL_MOUNTS=experimental`), with where bundles are kept. Default off. */
 	readonly mounts?: MountsOptions;
 	/** Emails an invite made for an address, with a link to join (`ComputeServiceOptions.invites`); absent, none. */
@@ -149,6 +155,7 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 		...(options.sessionLive === undefined ? {} : { sessionLive: options.sessionLive }),
 		...(options.sharedHosts === undefined ? {} : { sharedHosts: options.sharedHosts }),
 		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
+		...(options.baseImages === undefined ? {} : { baseImages: options.baseImages }),
 		...(options.mounts === undefined ? {} : { mounts: options.mounts }),
 		...(options.invites === undefined ? {} : { invites: options.invites }),
 	});

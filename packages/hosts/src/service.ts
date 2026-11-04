@@ -34,6 +34,7 @@ import {
 	type HostEgressRecord,
 	type HostFacts,
 	type HostHello,
+	type HostImageChannel,
 	HostMethods,
 	type HostMount,
 	type HostMountStatus,
@@ -200,6 +201,18 @@ export interface HostComputeLink {
 	secrets(hostId: string, sandboxId: string): Promise<HostSecrets | undefined>;
 	recordEgress(hostId: string, records: readonly HostEgressRecord[]): Promise<void>;
 	/**
+	 * Fills in the bases a host reports for its own sandboxes (`HostSandbox.base`, image patching: its hello and events)
+	 * and snapshots (its snapshot list, read once a connection), so what was made before it versioned its images shows
+	 * its base without another boot (`ComputeService.recordBases`). A snapshot is named by its ref, `<hostId>/<id>`.
+	 */
+	recordBases?(
+		hostId: string,
+		reports: {
+			readonly sandboxes?: readonly { readonly sandboxId: string; readonly base: string; readonly baseAt?: number }[];
+			readonly snapshots?: readonly { readonly ref: string; readonly base: string }[];
+		},
+	): Promise<void>;
+	/**
 	 * A host's `bucket.fetch`: the bucket source with its credentials opened, or `undefined` unless the sandbox is on
 	 * `hostId` and mounts it (`ComputeService.bucketSourceForHost`).
 	 */
@@ -230,6 +243,12 @@ export interface HostComputeLink {
 			entries: readonly E2EChainEntry[],
 		): Promise<readonly E2EChainEntry[]>;
 	};
+	/**
+	 * The host images Kantel wants hosts on, for their welcome (image patching, experimental): from the base image index's
+	 * `host` entry, its `stable` version. Absent (the feature off), or undefined (no such version), the welcome has none
+	 * and hosts keep the images they have. A failure is logged and the welcome goes without, so a host still connects.
+	 */
+	images?(): Promise<HostImageChannel | undefined>;
 }
 
 /** A chain entry as the gateway passes it on: opaque to it, verified by hosts and devices (`@kantel/e2e`). */
@@ -378,6 +397,8 @@ const DEFAULT_JOIN_COMMAND =
 const LABEL_KEY = /^[a-z0-9][a-z0-9._/-]{0,62}$/i;
 /** States that hold the sandbox's vCPUs and memory on its host; a stopped one holds only its disk. */
 const LIVE = new Set(["starting", "running", "stopping"]);
+/** How often a connected host is told again which images Kantel wants it on (image patching): 15 minutes. */
+export const IMAGES_REFRESH_MS = 15 * 60 * 1000;
 
 function labelsOf(value: unknown): { [key: string]: string } {
 	if (value === undefined) return {};
@@ -452,7 +473,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		void work.catch((error) => log(`[hosts] ${error instanceof Error ? error.message : String(error)}`));
 	};
 
-	const welcomeFor = (host: HostRecord): HostWelcome => ({
+	const baseWelcome = (host: HostRecord): HostWelcome => ({
 		hostId: host.id,
 		heartbeatSeconds: options.heartbeatSeconds ?? 15,
 		// Hosts keep no warm pools; an older one that keeps some makes no more on this (see `endLegacyPools`).
@@ -461,6 +482,77 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		...(options.desiredVersion === undefined ? {} : { desiredVersion: options.desiredVersion }),
 		...(options.updateUrl === undefined ? {} : { updateUrl: options.updateUrl }),
 	});
+	// With image patching off the welcome is made at once, as before: no await between a hello and its answer.
+	const welcomeFor = (host: HostRecord): HostWelcome | Promise<HostWelcome> => {
+		const base = baseWelcome(host);
+		if (compute?.images === undefined) return base;
+		return compute.images().then(
+			(images) => (images === undefined ? base : { ...base, images }),
+			(error) => {
+				log(
+					`[hosts] no images in host ${host.id}'s welcome: ${error instanceof Error ? error.message : String(error)}`,
+				);
+				return base;
+			},
+		);
+	};
+
+	/**
+	 * When each host connected here was last told the images Kantel wants it on (image patching). A host that stays
+	 * connected is told again on a heartbeat once `IMAGES_REFRESH_MS` have passed: a release published since its hello
+	 * reaches it, and one it failed to take is tried again, without waiting for it to reconnect.
+	 */
+	const imagesToldAt = new Map<string, number>();
+	/** A host sandbox's `baseAt`, when it says one. */
+	const baseAtOf = (sandbox: { baseAt?: unknown }): { baseAt?: number } =>
+		typeof sandbox.baseAt === "number" && sandbox.baseAt > 0 ? { baseAt: sandbox.baseAt } : {};
+	/** Hosts whose snapshot bases haven't been read on their connection yet (image patching hosts only). */
+	const snapshotBasesDue = new Set<string>();
+	/**
+	 * Reads a host's snapshots once a connection and passes on the bases they report: snapshots saved before the host
+	 * versioned its images have none recorded, and the host pins them when image patching starts.
+	 */
+	const readSnapshotBases = (hostId: string) => {
+		if (!snapshotBasesDue.delete(hostId) || compute?.recordBases === undefined) return;
+		const link = compute;
+		report(
+			(async () => {
+				const listed = await hub.call<{ snapshots?: readonly { id?: unknown; base?: unknown }[] | null }>(
+					hostId,
+					HostMethods.snapshotList,
+					{ sandboxId: "" },
+				);
+				const snapshots: { ref: string; base: string }[] = [];
+				for (const snap of listed.snapshots ?? []) {
+					if (typeof snap.id === "string" && typeof snap.base === "string" && snap.base !== "") {
+						snapshots.push({ ref: `${hostId}/${snap.id}`, base: snap.base });
+					}
+				}
+				if (snapshots.length > 0) await link.recordBases?.(hostId, { snapshots });
+			})(),
+		);
+	};
+
+	const refreshImages = (hostId: string) => {
+		if (compute?.images === undefined) return;
+		const now = clock.now();
+		const told = imagesToldAt.get(hostId);
+		if (told === undefined) {
+			imagesToldAt.set(hostId, now);
+			return;
+		}
+		if (now - told < IMAGES_REFRESH_MS) return;
+		imagesToldAt.set(hostId, now);
+		report(
+			(async () => {
+				const host = await store.getHost(hostId);
+				if (host === undefined || host.revoked) return;
+				const welcome = await welcomeFor(host);
+				// No images (the index can't be read): nothing new to say, and the host keeps what it has.
+				if (welcome.images !== undefined) hub.rewelcome(hostId, welcome);
+			})(),
+		);
+	};
 
 	const hello = async (hostId: string, message: HostHello): Promise<void> => {
 		const host = await store.getHost(hostId);
@@ -486,12 +578,23 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		// Go marshals an empty list as null (kantel-host 0.1.0-dev on a host with no sandboxes).
 		const sandboxes = message.sandboxes ?? [];
 		const held = new Map(sandboxes.map((sandbox) => [sandbox.id, sandbox]));
+		const bases: { sandboxId: string; base: string; baseAt?: number }[] = [];
 		for (const placement of await store.placementsOn(hostId)) {
 			const sandbox = held.get(placement.sandboxId);
 			const state = sandbox?.state ?? "lost";
 			if (state !== placement.state) await store.putPlacement({ ...placement, state, updatedAt: now });
+			// What its disk is on, where the host says (one without image patching doesn't, and nothing is erased).
+			if (typeof sandbox?.base === "string" && sandbox.base !== "") {
+				bases.push({ sandboxId: placement.sandboxId, base: sandbox.base, ...baseAtOf(sandbox) });
+			}
 			held.delete(placement.sandboxId);
 		}
+		if (bases.length > 0 && compute?.recordBases !== undefined) {
+			report(compute.recordBases(hostId, { sandboxes: bases }));
+		}
+		// Its snapshots' bases, once it is welcomed (the hello doesn't carry them): on its first heartbeat.
+		if (facts.value.features?.includes(HOST_FEATURES.imagePatching) === true) snapshotBasesDue.add(hostId);
+		else snapshotBasesDue.delete(hostId);
 		if (held.size > 0) {
 			log(`[hosts] host ${hostId} holds sandboxes Kantel didn't place: ${[...held.keys()].slice(0, 10).join(", ")}`);
 		}
@@ -536,6 +639,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	const local = createHostHub({
 		async onHello(hostId, message) {
 			await hello(hostId, message);
+			imagesToldAt.set(hostId, clock.now());
 			// Recorded before the welcome, so no replica routes elsewhere once the host takes calls here.
 			await cluster?.claim(hostId);
 			return welcomeNow(hostId);
@@ -553,6 +657,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			endLegacyPools(hostId, reported);
 			const capacity = parsed.value;
 			reserved.delete(hostId);
+			refreshImages(hostId);
+			readSnapshotBases(hostId);
 			report(
 				(async () => {
 					await store.updateHost(hostId, (host) => ({ ...host, capacity, lastSeenAt: clock.now() }));
@@ -567,6 +673,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				(async () => {
 					const placement = await store.getPlacement(sandbox.id);
 					if (placement === undefined || placement.hostId !== hostId) return;
+					const base = (sandbox as { base?: unknown }).base;
+					if (typeof base === "string" && base !== "" && sandbox.state !== "deleted") {
+						await compute?.recordBases?.(hostId, {
+							sandboxes: [{ sandboxId: sandbox.id, base, ...baseAtOf(sandbox as { baseAt?: unknown }) }],
+						});
+					}
 					// The call that caused the event usually recorded the state already (a create's `running`).
 					if (sandbox.state === placement.state) return;
 					if (sandbox.state === "deleted") await store.removePlacement(sandbox.id);
@@ -607,6 +719,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		},
 		onDisconnected(hostId) {
 			log(`[hosts] host ${hostId} disconnected`);
+			imagesToldAt.delete(hostId);
+			snapshotBasesDue.delete(hostId);
 			poolsEnded.delete(hostId);
 			cluster?.release(hostId);
 			report(
@@ -852,7 +966,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			if (next === undefined) throw new KantelError("not_found", "No such host");
 			if (next.revoked) throw new KantelError("conflict", "The host is revoked");
 			const redrained = change.draining !== undefined && change.draining !== host.draining;
-			if (redrained) hub.rewelcome(hostId, welcomeFor(next));
+			if (redrained) hub.rewelcome(hostId, await welcomeFor(next));
 			return view(next);
 		},
 		async revoke(hostId) {

@@ -40,6 +40,8 @@ class FakeHost {
 	readonly params: { method: string; params: { [key: string]: unknown } }[] = [];
 	/** Off: a kantel-host from before ranged reads, which answers a read's whole file and no fileSize. */
 	rangedReads = true;
+	/** The host images version it answers `host.images` with; absent, image patching is off on it. */
+	images?: string;
 	/** What its images' guest agent reports; absent, a host from before the guest agent said. */
 	guest: HostGuest | undefined;
 	receive!: (text: string) => void;
@@ -176,6 +178,14 @@ class FakeHost {
 			case "snapshot.delete":
 				this.snapshots.delete(String(p.snapshotId));
 				return answer({ ok: true });
+			case "host.images":
+				return this.images === undefined
+					? fail("unsupported", "image patching is off on this host")
+					: answer({
+							version: this.images,
+							autoUpdate: true,
+							...(p.sandboxId === undefined ? {} : { state: this.sandboxes.get(String(p.sandboxId))?.state }),
+						});
 			default:
 				return fail("unsupported", `unknown method ${message.method}`);
 		}
@@ -200,14 +210,15 @@ function setup(options: { ports?: boolean } = {}) {
 					store: relay,
 				})
 			: undefined;
+	const backend = createHostBackend({
+		hosts: service,
+		publicUrl: "https://kantel.test",
+		tickets,
+		attributionKey: "attr-key",
+		...(ports === undefined ? {} : { ports }),
+	});
 	const api: ComputeApi = createComputeApi({
-		backend: createHostBackend({
-			hosts: service,
-			publicUrl: "https://kantel.test",
-			tickets,
-			attributionKey: "attr-key",
-			...(ports === undefined ? {} : { ports }),
-		}),
+		backend,
 		authenticatePerson: async (request) => (request.headers.get("authorization") === "Bearer root" ? ROOT : undefined),
 		fetch: async () => new Response(null, { status: 204 }),
 		publicUrl: "https://kantel.test",
@@ -223,7 +234,7 @@ function setup(options: { ports?: boolean } = {}) {
 		fetch: (input, init) =>
 			api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
 	});
-	return { service, api, root, tickets, relay, ports };
+	return { service, api, root, tickets, relay, ports, backend };
 }
 
 async function failure(call: Promise<unknown>): Promise<KantelApiError> {
@@ -516,5 +527,39 @@ describe("the compute API on kantel-host hosts", () => {
 		expect((await service.get(hostId)).state).toBe("draining");
 		expect((await root.revokeHost(hostId)).state).toBe("revoked");
 		expect(await service.authenticate(credential)).toBeUndefined();
+	});
+});
+
+describe("a restart on the latest base, checked with the host first", () => {
+	it("asks the sandbox's own host for its images, and refuses where it can't land", async () => {
+		const { service, root, backend } = setup();
+		const token = await root.createHostJoinToken({ name: "box-1" });
+		const { hostId } = await service.register({ token: token.token, facts });
+		const host = new FakeHost(service, hostId);
+		host.connect();
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		const prepare = (rebaseTo?: string, eligibleHosts: readonly string[] = [hostId]) =>
+			backend.prepareRebase?.(sandbox.id, { eligibleHosts, ...(rebaseTo === undefined ? {} : { rebaseTo }) });
+
+		// Image patching off on the host.
+		await expect(prepare("host-images-20261104.2")).rejects.toMatchObject({ code: "not_supported" });
+		host.images = "host-images-20261103.1";
+		// Not on the version yet.
+		await expect(prepare("host-images-20261104.2")).rejects.toMatchObject({
+			code: "unavailable",
+			message: expect.stringMatching(/host-images-20261103\.1, not host-images-20261104\.2/),
+		});
+		// Its own host isn't one it may use now (another one is).
+		await expect(prepare("host-images-20261103.1", ["hst_other"])).rejects.toMatchObject({ code: "unavailable" });
+		// Where it lands, and whether its machine is running there (a record that says `error` may not know).
+		await expect(prepare("host-images-20261103.1")).resolves.toEqual({ running: true });
+		// Asked about this sandbox: its tier's images.
+		expect(host.params.filter((call) => call.method === "host.images").at(-1)?.params).toEqual({
+			sandboxId: sandbox.id,
+		});
+		// No version to land on (the index names no stable host images): refused, not left to whatever the host has.
+		await expect(prepare()).rejects.toMatchObject({ code: "unavailable" });
+		// No sandbox stopped for any of it.
+		expect(host.calls.filter((method) => method === "sandbox.stop")).toEqual([]);
 	});
 });

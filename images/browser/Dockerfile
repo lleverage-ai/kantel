@@ -46,6 +46,17 @@ RUN apt-get update \
  && apt-get purge -y curl && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/* /usr/share/doc /usr/share/man
 
+# Security updates: the base image is pinned by digest, so its own packages
+# only get Debian's fixes here. The daily build
+# (.github/workflows/sandbox-image.yml) passes today's date, which re-runs
+# this layer even with a warm cache. Before the versions are recorded and the
+# profile template is made below, so both come from the upgraded Chromium.
+ARG KANTEL_SECURITY_REFRESH=unset
+RUN echo "security refresh $KANTEL_SECURITY_REFRESH" \
+ && apt-get update \
+ && apt-get -y upgrade --no-install-recommends \
+ && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Warm the font cache and build a first-run profile template at image build
 # time, so a fresh session skips that work (~0.5 s at 1/4 vCPU).
 RUN chromium --version | tee /opt/chromium.version \

@@ -108,6 +108,11 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 			const backend = await on(id);
 			return backend.start(id, await affine(backend, boot));
 		},
+		async prepareRebase(id, how) {
+			// The backend that holds it checks, among its own hosts; one with no versioned images has nothing to check.
+			const backend = await on(id);
+			return await backend.prepareRebase?.(id, await affine(backend, how));
+		},
 		stop: async (id, how) => (await on(id)).stop(id, how),
 		async resume(id, boot) {
 			const backend = await on(id);

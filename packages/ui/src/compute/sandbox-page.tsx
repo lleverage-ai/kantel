@@ -20,6 +20,7 @@ import { PageTabs } from "../primitives/page-tabs.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { StatusLabel } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
+import { BaseOutdatedBadge, behindText } from "./base-outdated.tsx";
 import {
 	costText,
 	type EgressSource,
@@ -523,6 +524,25 @@ export function SandboxPage({
 				</div>
 			</header>
 			{sandbox.state === "error" && sandbox.error !== undefined ? <Notice level="error">{sandbox.error}</Notice> : null}
+			{sandbox.base?.outdated === true ? (
+				<Notice
+					level="warning"
+					{...(menu.restartOnLatest === undefined
+						? {}
+						: {
+								action: (
+									<Button size="xs" onClick={menu.restartOnLatest}>
+										Restart on latest
+									</Button>
+								),
+							})}
+				>
+					{sandbox.base.security === true
+						? "This sandbox is on an outdated base image with security fixes waiting."
+						: "This sandbox is on an outdated base image."}{" "}
+					Kantel never patches a running sandbox: restart it on the latest base to pick up the newer image.
+				</Notice>
+			) : null}
 			{notice === undefined ? null : (
 				<Notice
 					level={notice.level}
@@ -729,6 +749,20 @@ function Overview({
 					{sizeText(spec)}
 					{spec.diskGb > 0 ? `, ${spec.diskGb} GB disk` : ""}
 				</dd>
+				{sandbox.base === undefined ? null : (
+					<>
+						<dt className={dt}>Base</dt>
+						<dd className={`${dd} flex flex-wrap items-center gap-x-2 gap-y-1`}>
+							<span className="truncate font-mono text-code" title={sandbox.base.image}>
+								{sandbox.base.version ?? sandbox.base.image}
+							</span>
+							<BaseOutdatedBadge base={sandbox.base} now={now} />
+							{sandbox.base.outdated && sandbox.base.behind !== undefined ? (
+								<span className="text-muted">{behindText(sandbox.base.behind)}</span>
+							) : null}
+						</dd>
+					</>
+				)}
 				{sandbox.snapshot === undefined ? null : (
 					<>
 						<dt className={dt}>Snapshot</dt>

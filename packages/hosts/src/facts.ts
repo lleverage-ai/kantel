@@ -8,6 +8,7 @@ import { MAX_MOUNTS } from "@kantel/contracts";
 import type {
 	HostCapacity,
 	HostFacts,
+	HostImages,
 	HostMountStatus,
 	HostSandboxUsage,
 	HostSize,
@@ -73,11 +74,31 @@ function labels(value: unknown): { [key: string]: string } {
 	return out;
 }
 
+/**
+ * A host's images (image patching), or undefined when it reports none or none shaped as kantel-host sends them: they are
+ * shown, never placed by, so a malformed report is dropped rather than refused.
+ */
+function images(value: unknown): HostImages | undefined {
+	if (!isObject(value)) return undefined;
+	try {
+		return {
+			version: text(value.version ?? "", "images.version"),
+			firecracker: text(value.firecracker ?? "", "images.firecracker"),
+			autoUpdate: value.autoUpdate === true,
+			signatures: text(value.signatures ?? "", "images.signatures"),
+		};
+	} catch (error) {
+		if (error instanceof FactsError) return undefined;
+		throw error;
+	}
+}
+
 function facts(value: unknown): HostFacts {
 	if (!isObject(value)) throw new FactsError("facts is an object");
 	const tiers = list(value.tiers, "tiers").map((tier, at) => text(tier, `tiers[${at}]`));
 	const features = list(value.features, "features").map((feature, at) => text(feature, `features[${at}]`));
 	const kept = labels(value.labels);
+	const hostImages = images(value.images);
 	return {
 		version: text(value.version, "version"),
 		protocol: count(value.protocol, "protocol"),
@@ -96,6 +117,7 @@ function facts(value: unknown): HostFacts {
 		...(Object.keys(kept).length === 0 ? {} : { labels: kept }),
 		egress: text(value.egress, "egress"),
 		...(features.length === 0 ? {} : { features }),
+		...(hostImages === undefined ? {} : { images: hostImages }),
 	};
 }
 

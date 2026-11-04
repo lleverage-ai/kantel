@@ -94,6 +94,8 @@ type Host struct {
 	floors  map[string]int64
 	// durable is what of floors is on disk, so a retry of the same revision writes a floor an earlier write failed to.
 	durable map[string]int64
+	// patching is versioned host images, with Config.ImagePatching (images.go).
+	patching imagePatching
 
 	mu sync.Mutex
 	// bySlot is each running microVM's egress, by its network slot.
@@ -170,6 +172,7 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 			SpoolDir: spoolDir, SpoolMaxMiB: spoolMax, Initrd: initrd,
 			Root: cfg.Root + "/microvm", Firecracker: cfg.Firecracker, Kernel: cfg.Kernel, Rootfs: cfg.SandboxImage,
 			Sizes: sizes, Network: netm, ProxyPort: cfg.ProxyPort, DNS: cfg.DNS, Log: log,
+			PinBase: cfg.ImagePatching, BackgroundTemplates: cfg.ImagePatching,
 			Events: h.sandboxEvent,
 			Attach: h.attachSlot,
 			Detach: h.detachSlot,
@@ -188,9 +191,14 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 		isolateReady = kvm && fileExists(cfg.Firecracker) && fileExists(cfg.Kernel) && fileExists(cfg.IsolateImage)
 	}
 	if (all || want[isolate.Tier]) && isolateReady {
+		// A VM runtime's images, held on one version for the daemon's lifetime (isolateImages); native uses none.
+		isoKernel, isoRootfs := cfg.Kernel, cfg.IsolateImage
+		if cfg.IsolateRuntime != "native" {
+			isoKernel, isoRootfs = h.isolateImages(cfg)
+		}
 		iso, err := isolate.New(isolate.Config{
-			Root: cfg.Root + "/isolate", Runtime: cfg.IsolateRuntime, Firecracker: cfg.Firecracker, Kernel: cfg.Kernel,
-			Rootfs: cfg.IsolateImage, Workerd: cfg.Workerd, Bundle: cfg.IsolateBundle, Egress: h.proxy,
+			Root: cfg.Root + "/isolate", Runtime: cfg.IsolateRuntime, Firecracker: cfg.Firecracker, Kernel: isoKernel,
+			Rootfs: isoRootfs, Workerd: cfg.Workerd, Bundle: cfg.IsolateBundle, Egress: h.proxy,
 			Rules: h.liveRules, Log: log, Events: h.sandboxEvent,
 		})
 		if err != nil {
@@ -202,6 +210,9 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 	}
 	if len(h.tiers) == 0 {
 		return nil, errors.New("this host can run no sandbox tier: run `kantel-host doctor`")
+	}
+	if cfg.ImagePatching {
+		h.startImagePatching(kvm)
 	}
 	h.facts = h.makeFacts()
 	go h.egressLog.run()
@@ -258,6 +269,9 @@ func (h *Host) makeFacts() proto.Facts {
 	if h.cfg.usageInterval() > 0 {
 		features = append(features, proto.FeatureUsage)
 	}
+	if h.cfg.ImagePatching {
+		features = append(features, proto.FeatureImagePatching)
+	}
 	return proto.Facts{
 		Version: h.version, Protocol: proto.ProtocolVersion, OS: runtime.GOOS, Arch: hostinfo.Arch(), Kernel: hostinfo.Kernel(),
 		Hostname: name, CPUs: runtime.NumCPU(), MemoryMiB: max(0, total-reserve), DiskGiB: hostinfo.FreeDiskGiB(h.cfg.Root),
@@ -267,7 +281,14 @@ func (h *Host) makeFacts() proto.Facts {
 }
 
 // Facts are what the host tells the control plane it is.
-func (h *Host) Facts() proto.Facts { return h.facts }
+func (h *Host) Facts() proto.Facts {
+	f := h.facts
+	if held := h.patching.facts.Load(); held != nil {
+		copied := *held
+		f.Images = &copied
+	}
+	return f
+}
 
 // Capacity is what is free now.
 func (h *Host) Capacity() proto.Capacity {
@@ -292,6 +313,7 @@ func (h *Host) ResetTemplates(tier string) {
 }
 
 func (h *Host) Close() {
+	h.stopImagePatching()
 	for _, t := range h.tiers {
 		t.Close()
 	}
@@ -546,6 +568,13 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		t, name, err := h.tierOfNamed(p.SandboxID)
 		if err != nil {
 			return nil, err
+		}
+		// A rebase onto images this host hasn't taken is refused before anything changes (the tier checks again as it
+		// relinks).
+		if method == proto.MethodStart && p.Rebase && p.RebaseTo != "" {
+			if err := h.rebaseTarget(p.SandboxID, p.RebaseTo); err != nil {
+				return nil, err
+			}
 		}
 		revision := revisionOf(p)
 		// A boot with a revision states the sandbox's egress, none being the host's default; one without an egress
@@ -804,6 +833,8 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			return nil, err
 		}
 		return map[string]any{"data": base64.StdEncoding.EncodeToString(data), "size": len(data)}, nil
+	case proto.MethodHostImages:
+		return h.hostImages(params)
 	}
 	return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "unknown method " + method}
 }

@@ -230,6 +230,24 @@ Restarts the machine of a sandbox that doesn't answer or is in `error`, on its d
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
+## Restart a sandbox on the latest base
+
+`POST /v1/sandboxes/{sandboxId}/restart-on-latest` (SDK method `restartSandboxOnLatest`)
+
+Restarts the machine on the newest base image, on its disk as it is: a running sandbox's disk is saved and it is stopped first (as `stop` does, without its memory), then it boots cold on the latest base. Memory is lost, and so are running programs. A running sandbox is never patched underneath: this is how an outdated one (`base.outdated`) moves on. Answers once it is starting. A sandbox starting, stopping or being deleted is `conflict`. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`).
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sandboxId` | string | yes | The sandbox's ID. |
+
+**Answers**
+
+- `200`: [Sandbox](/api/reference/types/#sandbox) (`application/json`). The sandbox, starting.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `429` exhausted, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
 ## Get a sandbox's usage
 
 `GET /v1/sandboxes/{sandboxId}/usage` (SDK method `getSandboxUsage`)

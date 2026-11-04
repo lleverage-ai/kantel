@@ -75,6 +75,32 @@ export interface HostFacts {
 	 * merely accept, is gated on one: a host that predates it would ignore the field and report success.
 	 */
 	readonly features?: readonly string[];
+	/** What the host boots new sandboxes on, and its image settings; present with `image-patching`. */
+	readonly images?: HostImages;
+}
+
+/** A host's images: the version new sandboxes start on, and how it takes new ones. */
+export interface HostImages {
+	/** The host images version new sandboxes boot on; empty when the images aren't versioned yet. */
+	readonly version: string;
+	/** The Firecracker version the host runs, such as `v1.17.0`. */
+	readonly firecracker: string;
+	/** Whether the host follows the welcome's `images`. */
+	readonly autoUpdate: boolean;
+	/** Its signature policy: `require`, `warn` or `off`. */
+	readonly signatures: string;
+	/** Asked about a sandbox (`host.images` with `sandboxId`): its state on the host, such as `running`. */
+	readonly state?: string;
+}
+
+/** The host images Kantel wants hosts on (a welcome's `images`). */
+export interface HostImageChannel {
+	/** Such as `stable`. */
+	readonly channel: string;
+	/** The release, such as `host-images-20261103`. */
+	readonly version: string;
+	/** The release's download base: it holds `manifest.json` and `manifest.json.sigstore.json` (a cosign bundle). */
+	readonly url: string;
 }
 
 /** Features a host may report in its facts. */
@@ -84,6 +110,12 @@ export const HOST_FEATURES = {
 	 * only where bound, refuses older `revision`s, and a fork takes its `env`.
 	 */
 	egressPolicy: "egress-policy",
+	/**
+	 * Image patching (experimental): the host keeps its host images by version, follows the welcome's `images`, reports
+	 * each sandbox's and snapshot's `base`, and restarts a sandbox on its current images when `sandbox.start` has
+	 * `rebase`.
+	 */
+	imagePatching: "image-patching",
 	/**
 	 * Bundle mounts (`HostMount` of kind `bundle` in a create, start, resume, fork or recover): the host fetches the
 	 * bundle's tar (`GET /v1/hosts/bundles/{digest}`), mounts it read-only, and answers each mount's status in the
@@ -230,6 +262,16 @@ export interface HostSandbox {
 	 * `account` (its account's VM already ran).
 	 */
 	readonly source?: string;
+	/**
+	 * The host images version its root file system is; absent when unknown (images not versioned). One older than the
+	 * host's `images.version` is outdated until restarted with `rebase`.
+	 */
+	readonly base?: string;
+	/**
+	 * When it was put on `base` (unix milliseconds, the host's clock: a create, a rebase or its first pinning), with
+	 * `base` only. Reports of a sandbox's base are ordered by it.
+	 */
+	readonly baseAt?: number;
 	/** Its mounts' statuses, from a host with a mounts feature. */
 	readonly mounts?: readonly HostMountStatus[];
 	/** What a microVM's image has, as its guest agent found it; absent from a host too old to say. */
@@ -266,6 +308,8 @@ export interface HostSnapshot {
 	readonly sizeBytes: number;
 	readonly memory: boolean;
 	readonly tier: SandboxTier;
+	/** The host images version its root file system is; absent when unknown (images not versioned). */
+	readonly base?: string;
 }
 
 /** A sandbox's way out, sent with create, resume and fork. The host holds the token; the sandbox never sees it. */
@@ -415,6 +459,26 @@ export interface HostWelcome {
 	 */
 	readonly pools?: { readonly [pool: string]: never };
 	readonly draining?: boolean;
+	/**
+	 * The host images Kantel wants hosts on (image patching): a host with automatic image updates on fetches them, checks
+	 * their signature, and starts new sandboxes on them. Running and stopped sandboxes stay on theirs until a
+	 * `sandbox.start` with `rebase`.
+	 */
+	readonly images?: HostImageChannel;
+}
+
+/**
+ * `sandbox.start` and `sandbox.resume`'s params, past the sandbox's ID (the Go side's `ResumeParams`).
+ */
+export interface HostResumeParams {
+	readonly egress?: HostEgress;
+	/** Orders the boot's egress (its `egressRevision`); with one, no `egress` is the host's default, a clear. */
+	readonly revision?: number;
+	/**
+	 * On `sandbox.start` (a cold boot): first move the sandbox onto the host's current images. Its own disk stays, its
+	 * memory snapshot is dropped. `sandbox.resume` ignores it.
+	 */
+	readonly rebase?: boolean;
 }
 
 export interface HostEvent {
@@ -494,6 +558,11 @@ export const HostMethods = {
 	snapshotRead: "snapshot.read",
 	portOpen: "port.open",
 	hostUpdate: "host.update",
+	/**
+	 * Kantel to host (image patching): `{ sandboxId? }`, answered with the host's `HostImages` as they are now, and with
+	 * a `sandboxId` that sandbox's `state` on the host.
+	 */
+	hostImages: "host.images",
 	/**
 	 * Kantel to a host from before warm pools were removed, which still reports warm machines: `{}`, the pools it should
 	 * keep (none). A current host has no such method.

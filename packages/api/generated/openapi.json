@@ -2344,6 +2344,117 @@
 				}
 			}
 		},
+		"/sandboxes/{sandboxId}/restart-on-latest": {
+			"post": {
+				"operationId": "restartSandboxOnLatest",
+				"summary": "Restart a sandbox on the latest base",
+				"description": "Restarts the machine on the newest base image, on its disk as it is: a running sandbox's disk is saved and it is stopped first (as `stop` does, without its memory), then it boots cold on the latest base. Memory is lost, and so are running programs. A running sandbox is never patched underneath: this is how an outdated one (`base.outdated`) moves on. Answers once it is starting. A sandbox starting, stopping or being deleted is `conflict`. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`).",
+				"tags": ["sandboxes"],
+				"parameters": [
+					{
+						"name": "sandboxId",
+						"in": "path",
+						"required": true,
+						"description": "The sandbox's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The sandbox, starting.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Sandbox"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"429": {
+						"description": "`exhausted`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/sandboxes/{sandboxId}/usage": {
 			"get": {
 				"operationId": "getSandboxUsage",
@@ -7794,6 +7905,56 @@
 				}
 			}
 		},
+		"/admin/hosts/images": {
+			"get": {
+				"operationId": "listBaseImages",
+				"summary": "List base images",
+				"description": "Kantel's base images as the index its build publishes them: each image's latest version on the `stable` channel, its newest versions and what their CVE scans found, and the templates built on them. An index that can't be read is answered as `error`, with no images. A deployment super-admin only (a key needs `hosts:admin`). Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`).",
+				"tags": ["hosts"],
+				"responses": {
+					"200": {
+						"description": "The base images.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/BaseImageList"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/admin/hosts": {
 			"get": {
 				"operationId": "listHosts",
@@ -9751,6 +9912,260 @@
 				},
 				"title": "ApproveDeviceLoginBody",
 				"description": "The key the device gets, in the approver's personal account unless `account` names an organisation. Without `preset`, every scope the approver may grant there, `hosts:admin` included for a super-admin."
+			},
+			"BaseImage": {
+				"type": "object",
+				"required": ["name", "repository", "channel", "versions"],
+				"properties": {
+					"name": {
+						"type": "string",
+						"description": "`sandbox`, `browser`, `isolate-host`, or `host` for the microVM host images."
+					},
+					"repository": {
+						"type": "string",
+						"description": "Where it is pulled from, such as `ghcr.io/lleverage-ai/kantel-sandbox`; for `host`, the release's."
+					},
+					"channel": {
+						"type": "string",
+						"const": "stable",
+						"description": "The channel `latest` is of."
+					},
+					"latest": {
+						"$ref": "#/components/schemas/BaseImageVersion"
+					},
+					"versions": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/BaseImageVersion"
+						},
+						"description": "Its newest versions, newest first, at most 10."
+					}
+				},
+				"title": "BaseImage"
+			},
+			"BaseImageFinding": {
+				"type": "object",
+				"required": ["id", "severity", "package", "installed"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "`CVE-2026-1234`, or the scanner's own ID where there is no CVE."
+					},
+					"severity": {
+						"$ref": "#/components/schemas/ScanSeverity"
+					},
+					"package": {
+						"type": "string",
+						"description": "The package it is in, such as `openssl`."
+					},
+					"installed": {
+						"type": "string",
+						"description": "The package's version in the image."
+					},
+					"fixed": {
+						"type": "string",
+						"description": "The version that fixes it, where one is out."
+					},
+					"title": {
+						"type": "string"
+					}
+				},
+				"title": "BaseImageFinding",
+				"description": "One vulnerability a scan found in an image."
+			},
+			"BaseImageList": {
+				"type": "object",
+				"required": ["images", "templates", "indexUrl"],
+				"properties": {
+					"images": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/BaseImage"
+						}
+					},
+					"templates": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/BaseImageTemplate"
+						},
+						"description": "Templates and their bases; empty until templates exist."
+					},
+					"indexUrl": {
+						"type": "string",
+						"description": "Where the deployment reads the base image index (`KANTEL_BASE_IMAGE_INDEX`)."
+					},
+					"generatedAt": {
+						"type": "string",
+						"description": "When the index was last written, ISO 8601."
+					},
+					"error": {
+						"type": "string",
+						"description": "Why the index couldn't be read; `images` is empty then. It is tried again soon."
+					}
+				},
+				"title": "BaseImageList",
+				"description": "Kantel's base images as the index CI publishes them: each image's latest version, its newest versions and what their CVE scans found."
+			},
+			"BaseImageScan": {
+				"type": "object",
+				"required": ["scanner", "scannedAt", "counts", "fixable", "findings"],
+				"properties": {
+					"scanner": {
+						"type": "string",
+						"description": "What scanned it, such as `trivy 0.68.1`."
+					},
+					"scannedAt": {
+						"type": "string",
+						"description": "When, ISO 8601."
+					},
+					"counts": {
+						"$ref": "#/components/schemas/BaseImageScanCounts"
+					},
+					"fixable": {
+						"$ref": "#/components/schemas/BaseImageScanFixable"
+					},
+					"findings": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/BaseImageFinding"
+						},
+						"description": "The Critical and High findings, most severe first, at most 50."
+					}
+				},
+				"title": "BaseImageScan",
+				"description": "What the newest CVE scan of a version found."
+			},
+			"BaseImageScanCounts": {
+				"type": "object",
+				"required": ["critical", "high", "medium", "low", "unknown"],
+				"properties": {
+					"critical": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Critical findings."
+					},
+					"high": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "High findings."
+					},
+					"medium": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Medium findings."
+					},
+					"low": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Low findings."
+					},
+					"unknown": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Findings of no known severity."
+					}
+				},
+				"title": "BaseImageScanCounts",
+				"description": "Every finding, by severity."
+			},
+			"BaseImageScanFixable": {
+				"type": "object",
+				"required": ["critical", "high"],
+				"properties": {
+					"critical": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Critical findings with a fix out."
+					},
+					"high": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "High findings with a fix out."
+					}
+				},
+				"title": "BaseImageScanFixable",
+				"description": "Critical and High findings with a fix out: what makes Kantel rebuild the image at once."
+			},
+			"BaseImageTemplate": {
+				"type": "object",
+				"required": ["id", "name", "image", "base", "rebuilding"],
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					},
+					"image": {
+						"type": "string",
+						"description": "The base image it is built on."
+					},
+					"channel": {
+						"type": "string",
+						"description": "The channel it follows, such as `stable`."
+					},
+					"pinned": {
+						"type": "string",
+						"description": "The digest it is pinned to, when it doesn't follow a channel."
+					},
+					"base": {
+						"$ref": "#/components/schemas/SandboxBase"
+					},
+					"rebuilding": {
+						"type": "boolean",
+						"description": "Whether it is being rebuilt on the latest base now."
+					}
+				},
+				"title": "BaseImageTemplate",
+				"description": "A template and the base it is built on."
+			},
+			"BaseImageVersion": {
+				"type": "object",
+				"required": ["version", "digest", "builtAt", "signed"],
+				"properties": {
+					"version": {
+						"type": "string",
+						"description": "Its tag, such as `2026.11.04.1`."
+					},
+					"digest": {
+						"type": "string",
+						"description": "`sha256:…`: the digest it is pulled by. A version's digest never changes."
+					},
+					"builtAt": {
+						"type": "string",
+						"description": "When it was built, ISO 8601."
+					},
+					"signed": {
+						"type": "boolean",
+						"description": "Signed with cosign, keyless, by Kantel's build."
+					},
+					"reason": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "daily"
+							},
+							{
+								"type": "string",
+								"const": "cve"
+							},
+							{
+								"type": "string",
+								"const": "manual"
+							},
+							{
+								"type": "string",
+								"const": "push"
+							}
+						],
+						"description": "Why it was built: the daily build, a fixable Critical or High finding, by hand, or a change."
+					},
+					"scan": {
+						"$ref": "#/components/schemas/BaseImageScan"
+					}
+				},
+				"title": "BaseImageVersion",
+				"description": "One build of a base image."
 			},
 			"BrowserAccess": {
 				"type": "object",
@@ -12754,9 +13169,75 @@
 					"hostId": {
 						"type": "string",
 						"description": "The host it runs on; only a super-admin is shown it."
+					},
+					"base": {
+						"$ref": "#/components/schemas/SandboxBase"
 					}
 				},
 				"title": "Sandbox"
+			},
+			"SandboxBase": {
+				"type": "object",
+				"required": ["image", "outdated"],
+				"properties": {
+					"image": {
+						"type": "string",
+						"description": "The base image it is on, by its name in Kantel's base image index: `host` for a microVM (the host images: kernel and root file system), `sandbox` for the container tier."
+					},
+					"version": {
+						"type": "string",
+						"description": "The version of the base it is on, such as `host-images-20261104.812`."
+					},
+					"outdated": {
+						"type": "boolean",
+						"description": "Its base isn't the version its channel (`stable`) names now."
+					},
+					"latest": {
+						"$ref": "#/components/schemas/SandboxBaseLatest"
+					},
+					"behind": {
+						"$ref": "#/components/schemas/SandboxBaseBehind"
+					},
+					"security": {
+						"type": "boolean",
+						"description": "A newer version fixes Critical or High vulnerabilities this one has: restart it on the latest."
+					}
+				},
+				"title": "SandboxBase",
+				"description": "The base image a sandbox's (or a snapshot's) root file system is, and how far behind it is. A running sandbox is never patched underneath: an outdated one stays on its base until it is restarted on the latest (`restartSandboxOnLatest`) or made again. Experimental: present only where the deployment has image patching on (`KANTEL_IMAGE_PATCHING`) and knows the version."
+			},
+			"SandboxBaseBehind": {
+				"type": "object",
+				"required": ["days", "versions"],
+				"properties": {
+					"days": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Whole days since the version after its own was built: how long it has been superseded."
+					},
+					"versions": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "How many versions are newer."
+					}
+				},
+				"title": "SandboxBaseBehind",
+				"description": "How far behind its channel it is, while outdated."
+			},
+			"SandboxBaseLatest": {
+				"type": "object",
+				"required": ["version", "builtAt"],
+				"properties": {
+					"version": {
+						"type": "string"
+					},
+					"builtAt": {
+						"type": "string",
+						"description": "When it was built, ISO 8601."
+					}
+				},
+				"title": "SandboxBaseLatest",
+				"description": "The version its channel names now."
 			},
 			"SandboxCapabilities": {
 				"type": "object",
@@ -13231,6 +13712,31 @@
 				},
 				"title": "SaveSnapshotBody"
 			},
+			"ScanSeverity": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "critical"
+					},
+					{
+						"type": "string",
+						"const": "high"
+					},
+					{
+						"type": "string",
+						"const": "medium"
+					},
+					{
+						"type": "string",
+						"const": "low"
+					},
+					{
+						"type": "string",
+						"const": "unknown"
+					}
+				],
+				"title": "ScanSeverity"
+			},
 			"SetEnvironmentFileBody": {
 				"type": "object",
 				"required": ["path"],
@@ -13425,6 +13931,9 @@
 					"expiresAt": {
 						"type": "integer",
 						"description": "Epoch milliseconds, UTC."
+					},
+					"base": {
+						"$ref": "#/components/schemas/SandboxBase"
 					}
 				},
 				"title": "Snapshot"

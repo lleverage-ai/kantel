@@ -19,6 +19,7 @@ import {
 	ApiKeyList,
 	ApiKeyPath,
 	ApproveDeviceLoginBody,
+	BaseImageList,
 	BrowserAccess,
 	BucketSource,
 	BucketSourceList,
@@ -529,6 +530,29 @@ export const recoverSandbox = defineRoute({
 	errors: lifecycleErrors,
 });
 
+/** What the image patching routes say of their switch. */
+const IMAGE_PATCHING =
+	"Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`).";
+
+export const restartSandboxOnLatest = defineRoute({
+	operationId: "restartSandboxOnLatest",
+	method: "POST",
+	path: "/sandboxes/{sandboxId}/restart-on-latest",
+	tag: "sandboxes",
+	summary: "Restart a sandbox on the latest base",
+	description: describe(
+		"Restarts the machine on the newest base image, on its disk as it is: a running sandbox's disk is saved and it is",
+		"stopped first (as `stop` does, without its memory), then it boots cold on the latest base. Memory is lost, and so",
+		"are running programs. A running sandbox is never patched underneath: this is how an outdated one (`base.outdated`)",
+		"moves on. Answers once it is starting. A sandbox starting, stopping or being deleted is `conflict`.",
+		scope("sandboxes:write"),
+		IMAGE_PATCHING,
+	),
+	params: SandboxPath,
+	answer: { status: 200, description: "The sandbox, starting.", schema: Sandbox },
+	errors: [...lifecycleErrors, "exhausted"],
+});
+
 export const deleteSandbox = defineRoute({
 	operationId: "deleteSandbox",
 	method: "DELETE",
@@ -573,6 +597,7 @@ export const sandboxRoutes = {
 	resumeSandbox,
 	forkSandbox,
 	recoverSandbox,
+	restartSandboxOnLatest,
 	deleteSandbox,
 	getSandboxUsage,
 } as const;
@@ -1740,6 +1765,27 @@ export const hostRoutes = {
 	setPublicUrl,
 } as const;
 
+// Kantel's base images and how far behind each is (image patching, experimental): the deployment's super-admins only.
+
+export const listBaseImages = defineRoute({
+	operationId: "listBaseImages",
+	method: "GET",
+	path: "/admin/hosts/images",
+	tag: "hosts",
+	summary: "List base images",
+	description: describe(
+		"Kantel's base images as the index its build publishes them: each image's latest version on the `stable` channel,",
+		"its newest versions and what their CVE scans found, and the templates built on them. An index that can't be read",
+		"is answered as `error`, with no images.",
+		SUPER_ADMIN,
+		IMAGE_PATCHING,
+	),
+	answer: { status: 200, description: "The base images.", schema: BaseImageList },
+	errors: ["forbidden", "not_supported"],
+});
+
+export const baseImageRoutes = { listBaseImages } as const;
+
 // An account's own hosts, added by its people rather than by the deployment's super-admin. Only that account's
 // sandboxes run on them. Experimental: a deployment serves these only with KANTEL_ACCOUNT_HOSTS=experimental, and
 // answers `not_supported` otherwise.
@@ -2003,6 +2049,8 @@ export const computeRoutes = {
 	...eventRoutes,
 	...webhookRoutes,
 	...telemetryRoutes,
+	// Before the hosts' `/admin/hosts/{hostId}`, which would otherwise take `images` for a host's ID.
+	...baseImageRoutes,
 	...hostRoutes,
 	...accountHostRoutes,
 	...mountRoutes,

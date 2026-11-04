@@ -94,6 +94,14 @@ describe("createRoutedBackend", () => {
 		expect(primary.seen.map((call) => call.eligible)).toEqual([["host_own"], ["host_own"]]);
 	});
 
+	it("asks the backend that holds a sandbox whether a rebase can land, among its own hosts", async () => {
+		const { routed, primary, fallback } = setup();
+		await routed.prepareRebase?.("sbx_p1", { eligibleHosts: ["host_own", "host_stub"], rebaseTo: "v2" });
+		await routed.prepareRebase?.("sbx_f1", { eligibleHosts: ["host_own", "host_stub"] });
+		expect(primary.seen).toEqual([{ method: "prepareRebase", eligible: ["host_own"] }]);
+		expect(fallback.seen).toEqual([{ method: "prepareRebase", eligible: ["host_stub"] }]);
+	});
+
 	it("refuses a sandbox neither holds rather than ask the fallback for it, and places it again only with create", async () => {
 		const primary = fake([host("host_own", "acc_a")]);
 		const fallback = fake([host("host_stub")]);

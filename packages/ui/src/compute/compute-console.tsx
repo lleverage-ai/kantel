@@ -11,6 +11,7 @@ import {
 	SandboxIcon,
 	ServerIcon,
 	SettingsIcon,
+	ShieldCheckIcon,
 	SnapshotIcon,
 } from "../primitives/lucide.tsx";
 import { Sidebar, SidebarBrand, SidebarItem, SidebarSection } from "../primitives/sidebar.tsx";
@@ -36,6 +37,7 @@ import { EgressPage } from "./egress-page.tsx";
 import { EnvironmentPage, EnvironmentsPage } from "./environments-page.tsx";
 import { FirstRun } from "./first-run.tsx";
 import { HostsPage } from "./hosts-page.tsx";
+import { ImagesPage } from "./images-page.tsx";
 import { InstallPage } from "./install-page.tsx";
 import { MountsPage } from "./mounts-page.tsx";
 import { OrganisationPage } from "./organisation-page.tsx";
@@ -53,7 +55,7 @@ import { WebhooksPage } from "./webhooks-page.tsx";
 // The compute console: the shell around the compute plane's pages. On a wide screen, a sidebar with the account
 // switcher, the account's five pages (Sandboxes, Snapshots, Environments, Egress, Settings), Admin for a super-admin
 // and your menu at its foot; on a phone, a top bar with the switcher and your initials, and the five pages in a tab bar
-// along the bottom. Admin is its own area, outside the accounts: a super-admin's Hosts and Install, with its own
+// along the bottom. Admin is its own area, outside the accounts: a super-admin's Hosts, Install and Images, with its own
 // sidebar and a way back. It routes on the path under `base` (the root of the console app, `""`) and leaves where the
 // data comes from to its `source`: the sample data in fixtures.ts, or the API. A super-admin on a deployment with no
 // host yet is shown the first run: Sandboxes leads with adding one, right there.
@@ -72,6 +74,7 @@ export type ComputePage =
 	| "hosts"
 	| "mounts"
 	| "install"
+	| "images"
 	| "device";
 
 export const COMPUTE_PAGES: readonly ComputePage[] = [
@@ -88,6 +91,7 @@ export const COMPUTE_PAGES: readonly ComputePage[] = [
 	"hosts",
 	"mounts",
 	"install",
+	"images",
 	"device",
 ];
 
@@ -452,6 +456,8 @@ export function ComputeConsole({
 	// shared hosts, so none of its own only adds a link to Add a host beside New sandbox (PageFor).
 	const noHosts = hosts.state.status === "ready" && hosts.state.value?.length === 0;
 	const billingShown = source.hosting === "hosted" && source.billing !== undefined;
+	// The deployment's base images and templates: a super-admin's, beside Hosts.
+	const imagesShown = superAdmin && source.images !== undefined;
 	// Read-only mounts' bundles and bucket sources, where the deployment has turned mounts on (experimental).
 	const mountsShown = source.mounts !== undefined;
 	// A page this person can't open goes to Sandboxes rather than showing nothing. Device sign-in has no sidebar item:
@@ -461,6 +467,7 @@ export function ComputeConsole({
 	const page =
 		(route.page === "hosts" && me !== undefined && !hostsShown) ||
 		(route.page === "install" && me !== undefined && installSource === undefined) ||
+		(route.page === "images" && me !== undefined && !imagesShown) ||
 		(route.page === "billing" && !billingShown) ||
 		(route.page === "mounts" && !mountsShown) ||
 		(route.page === "device" && source.devices === undefined)
@@ -470,13 +477,15 @@ export function ComputeConsole({
 	const failed =
 		viewer.state.status === "error" ? viewer.state : accounts.state.status === "error" ? accounts.state : undefined;
 
-	// Admin is the deployment's, not an account's: a super-admin's Hosts, outside the switcher, with a way back.
-	const adminShown = hostsShown && superAdmin;
-	const inAdmin = adminShown && (page === "hosts" || page === "install");
-	const adminHref = computePath("hosts", base);
+	// Admin is the deployment's, not an account's: a super-admin's Hosts, Install and Images, outside the switcher, with
+	// a way back.
+	const adminShown = superAdmin && (hostsShown || imagesShown);
+	const inAdmin = adminShown && (page === "hosts" || page === "install" || page === "images");
+	const adminHref = computePath(hostsShown ? "hosts" : "images", base);
 	const adminItems: SettingsNavItem[] = [
-		{ id: "hosts", label: "Hosts" },
+		...(hostsShown ? [{ id: "hosts", label: "Hosts" }] : []),
 		...(installSource === undefined ? [] : [{ id: "install", label: "Install" }]),
+		...(imagesShown ? [{ id: "images", label: "Images" }] : []),
 	].map((item) => ({ ...item, href: computePath(item.id as ComputePage, base), selected: page === item.id }));
 	const hostCount = hosts.state.status === "ready" ? hosts.state.value?.length : undefined;
 	// An account's own hosts, where the deployment lets it add them, are one of its settings.
@@ -607,7 +616,15 @@ export function ComputeConsole({
 								{adminItems.map((item) => (
 									<SidebarItem
 										key={item.id}
-										icon={item.id === "hosts" ? <ServerIcon /> : <SettingsIcon />}
+										icon={
+											item.id === "hosts" ? (
+												<ServerIcon />
+											) : item.id === "images" ? (
+												<ShieldCheckIcon />
+											) : (
+												<SettingsIcon />
+											)
+										}
 										label={item.label}
 										href={item.href}
 										selected={item.selected ?? false}
@@ -988,6 +1005,8 @@ function PageFor({
 			return hosts?.publicUrl === undefined || ownHosts ? null : (
 				<InstallPage source={hosts.publicUrl} narrow={narrow} />
 			);
+		case "images":
+			return source.images === undefined ? null : <ImagesPage source={source.images} {...timing} />;
 		case "device": {
 			const code = new URLSearchParams(search).get("code") ?? undefined;
 			return source.devices === undefined ? null : (

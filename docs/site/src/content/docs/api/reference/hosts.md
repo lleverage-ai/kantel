@@ -9,6 +9,18 @@ sidebar:
 
 The machines that run sandboxes: join tokens, labels, drain and revoke. Super-admins only.
 
+## List base images
+
+`GET /v1/admin/hosts/images` (SDK method `listBaseImages`)
+
+Kantel's base images as the index its build publishes them: each image's latest version on the `stable` channel, its newest versions and what their CVE scans found, and the templates built on them. An index that can't be read is answered as `error`, with no images. A deployment super-admin only (a key needs `hosts:admin`). Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`).
+
+**Answers**
+
+- `200`: [BaseImageList](/api/reference/types/#baseimagelist) (`application/json`). The base images.
+
+**Errors**: `401` unauthenticated, `403` forbidden, `501` not_supported. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
 ## List hosts
 
 `GET /v1/admin/hosts` (SDK method `listHosts`)
