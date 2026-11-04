@@ -1427,7 +1427,8 @@ export function SandboxesTableSkeleton({ rows = 8 }: { rows?: number }) {
 								</td>
 							))}
 							<td className={`${cell} w-0`}>
-								<span className="block size-control-xs" />
+								{/* The room the loaded rows keep for a hidden Resume and the menu. */}
+								<span className="ml-auto block h-control-xs w-36" />
 							</td>
 						</tr>
 					))}
