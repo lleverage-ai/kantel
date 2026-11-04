@@ -289,7 +289,14 @@ function LoopbackWarning({ url, onSave }: { url: PublicUrl; onSave: (url: string
 						autoCapitalize="off"
 						{...(error === undefined ? {} : { error })}
 					/>
-					<Button type="submit" variant="primary" size="md" busy={busy} disabled={text.trim() === ""}>
+					<Button
+						type="submit"
+						// The page's one action once an address is written; quiet while there's nothing to save.
+						variant={text.trim() === "" ? "secondary" : "primary"}
+						size="md"
+						busy={busy}
+						disabled={text.trim() === ""}
+					>
 						Save
 					</Button>
 				</form>
