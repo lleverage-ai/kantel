@@ -1,7 +1,7 @@
 // The Hosts page (compute console, experimental): for a super-admin the deployment's hosts, in Admin, and for anyone
 // else, where the deployment allows it, the account's own (`owner`), in Settings, which run only its sandboxes. The
-// machines that run sandboxes, each with its state, platform, CPU, memory and disk in use, the sandboxes on it and its
-// host agent's version. A host can be drained, so no new sandboxes land on it, or removed, which revokes its
+// machines that run sandboxes, each with its state, platform, live CPU and memory, disk in use, the sandboxes on it and
+// its host agent's version; opening a row shows its CPU, memory and disk as graphs over the last 10 minutes. A host can be drained, so no new sandboxes land on it, or removed, which revokes its
 // credential. Add host makes a one-time join command to run on the new machine and waits for it to join; the host
 // agent dials out, so a host needs no inbound ports. Every call goes through the `HostsSource` the host binds; stories
 // bind it to fixtures.
@@ -11,7 +11,7 @@ import { Button } from "../primitives/button.tsx";
 import { Disclosure, TextField } from "../primitives/controls.tsx";
 import { Dialog } from "../primitives/dialog.tsx";
 import { compactAge } from "../primitives/format.ts";
-import { PlusIcon } from "../primitives/icons.tsx";
+import { ChevronDownIcon, ChevronRightIcon, PlusIcon } from "../primitives/icons.tsx";
 import { useLoad } from "../primitives/load.ts";
 import { EllipsisIcon, PauseIcon, PlayIcon, TrashIcon } from "../primitives/lucide.tsx";
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
@@ -27,7 +27,9 @@ import {
 	usedShare,
 } from "./compute-model.ts";
 import { HostJoinCommand, type HostJoinInput, JoinWaiting } from "./host-join.tsx";
-import { computePage, messageOf } from "./parts.tsx";
+import { HostCpu, HostGraphs, HostMemory, useHostUsage } from "./host-usage.tsx";
+import { ROW_POINTS, seriesOf } from "./live-usage.ts";
+import { computePage, messageOf, Sparkline } from "./parts.tsx";
 
 export interface HostsPageProps {
 	readonly source: HostsSource;
@@ -42,6 +44,8 @@ export interface HostsPageProps {
 	readonly narrow?: boolean;
 	/** Stops Add host reading the hosts while it waits, for a story. */
 	readonly poll?: boolean;
+	/** The host whose graphs show at first, for a story. */
+	readonly opened?: string;
 }
 
 type NoticeState = { level: "info" | "error"; text: string };
@@ -77,6 +81,8 @@ export function parseLabels(text: string): { readonly labels: Record<string, str
 
 const head = "h-control-md border-b border-border px-2 py-0 text-xs font-medium whitespace-nowrap text-muted";
 const cell = "border-b border-border px-2 py-2.5 align-middle whitespace-nowrap";
+/** An opened row's cell: its graphs under it carry the hairline. */
+const cellOpen = "px-2 py-2.5 align-middle whitespace-nowrap";
 
 export function HostsPage({
 	source,
@@ -86,6 +92,7 @@ export function HostsPage({
 	owner,
 	narrow = false,
 	poll = true,
+	opened,
 }: HostsPageProps) {
 	const { state, reload } = useLoad(() => source.list(), [source]);
 	// Hosts changed here, ahead of the next read: a drain shows at once; null is a removed host.
@@ -144,9 +151,11 @@ export function HostsPage({
 	);
 	const rows = (host: Host) => ({
 		host,
+		source,
 		now,
 		onDrain: (on: boolean) => void drain(host, on),
 		onRemove: () => setRemoving(host),
+		opened: host.id === opened,
 	});
 
 	return (
@@ -226,7 +235,7 @@ export function HostsPage({
 											Machine
 										</th>
 										<th className={head} scope="col">
-											CPU (vCPU)
+											{source.usage === undefined ? "CPU (vCPU)" : "CPU"}
 										</th>
 										<th className={head} scope="col">
 											Memory (GB)
@@ -393,67 +402,142 @@ function Machine({ host }: { host: Host }) {
 	);
 }
 
-type RowProps = { host: Host; now: number; onDrain: (on: boolean) => void; onRemove: () => void };
+type RowProps = {
+	host: Host;
+	source: HostsSource;
+	now: number;
+	onDrain: (on: boolean) => void;
+	onRemove: () => void;
+	/** Its graphs show at first. */
+	opened: boolean;
+};
 
-function HostRow({ host, now, onDrain, onRemove }: RowProps) {
+/** The columns a host's row has, for its opened graphs' one cell. */
+const COLUMNS = 9;
+
+/** A row's chevron: right when it's closed, down when it's open. */
+const Chevron = ({ open }: { open: boolean }) => (
+	<span className="flex-none text-faint" aria-hidden="true">
+		{open ? <ChevronDownIcon size="sm" /> : <ChevronRightIcon size="sm" />}
+	</span>
+);
+
+function HostRow({ host, source, now, onDrain, onRemove, opened }: RowProps) {
 	const labels = Object.entries(host.labels);
+	const [open, setOpen] = useState(opened);
+	const live = useHostUsage(source, host);
+	const graphsId = `host-graphs-${host.id}`;
+	const shows = source.usage !== undefined && live.status !== "off";
 	return (
-		<tr className="kt-host-row hover:bg-hover" data-host={host.id}>
-			<td className={cell}>
-				<span className="block max-w-(--kt-popover-width) truncate font-medium text-fg">{host.name}</span>
-				{labels.length === 0 ? null : (
-					<span className="block max-w-(--kt-popover-width) truncate font-mono text-code text-muted">
-						{labels.map(([key, value]) => `${key}=${value}`).join(" ")}
-					</span>
-				)}
-			</td>
-			<td className={cell}>
-				<HostState host={host} now={now} />
-			</td>
-			<td className={cell}>
-				<Machine host={host} />
-			</td>
-			<td className={cell}>
-				<Capacity used={host.used.vcpus} total={host.vcpus} />
-			</td>
-			<td className={cell}>
-				<Capacity used={host.used.memoryGb} total={host.memoryGb} />
-			</td>
-			<td className={cell}>
-				<Capacity used={host.used.diskGb} total={host.diskGb} />
-			</td>
-			<td className={`${cell} text-right tabular-nums`} title={sandboxesText(host.sandboxes)}>
-				{number(running(host))}
-			</td>
-			<td className={cell}>
-				<Agent host={host} />
-			</td>
-			<td className={`${cell} w-0 text-right`}>{hostMenu(host, onDrain, onRemove)}</td>
-		</tr>
+		<>
+			<tr className={`kt-host-row hover:bg-hover ${open ? "bg-hover" : ""}`} data-host={host.id}>
+				<td className={open ? cellOpen : cell}>
+					<button
+						type="button"
+						className="kt-focusable -ml-1 flex min-w-0 items-start gap-1 rounded-control px-1 text-left"
+						aria-expanded={open}
+						aria-controls={graphsId}
+						onClick={() => setOpen(!open)}
+					>
+						<span className="flex h-5 items-center">
+							<Chevron open={open} />
+						</span>
+						<span className="flex min-w-0 flex-col">
+							<span className="block max-w-(--kt-popover-width) truncate font-medium text-fg">{host.name}</span>
+							{labels.length === 0 ? null : (
+								<span className="block max-w-(--kt-popover-width) truncate font-mono text-code text-muted">
+									{labels.map(([key, value]) => `${key}=${value}`).join(" ")}
+								</span>
+							)}
+						</span>
+					</button>
+				</td>
+				<td className={open ? cellOpen : cell}>
+					<HostState host={host} now={now} />
+				</td>
+				<td className={open ? cellOpen : cell}>
+					<Machine host={host} />
+				</td>
+				<td className={open ? cellOpen : cell}>
+					{shows ? <HostCpu host={host} live={live} /> : <Capacity used={host.used.vcpus} total={host.vcpus} />}
+				</td>
+				<td className={open ? cellOpen : cell}>
+					{shows ? (
+						<HostMemory host={host} live={live} />
+					) : (
+						<Capacity used={host.used.memoryGb} total={host.memoryGb} />
+					)}
+				</td>
+				<td className={open ? cellOpen : cell}>
+					<Capacity used={host.used.diskGb} total={host.diskGb} />
+				</td>
+				<td className={`${open ? cellOpen : cell} text-right tabular-nums`} title={sandboxesText(host.sandboxes)}>
+					{number(running(host))}
+				</td>
+				<td className={open ? cellOpen : cell}>
+					<Agent host={host} />
+				</td>
+				<td className={`${open ? cellOpen : cell} w-0 text-right`}>{hostMenu(host, onDrain, onRemove)}</td>
+			</tr>
+			{open ? (
+				<tr className="kt-host-graphs bg-hover" id={graphsId}>
+					<td className={`${cell} pt-1 pb-4 pl-8`} colSpan={COLUMNS}>
+						<HostGraphs host={host} live={live} />
+					</td>
+				</tr>
+			) : null}
+		</>
 	);
 }
 
-/** A phone's row: the name with its state beside it, then the machine, its vCPU and sandboxes, and ⋯. */
-function HostPhoneRow({ host, now, onDrain, onRemove }: RowProps) {
+/**
+ * A phone's row: the name with its CPU line and state beside it, then the machine, its vCPU and sandboxes, and ⋯.
+ * Tapping it opens its graphs under it.
+ */
+function HostPhoneRow({ host, source, now, onDrain, onRemove, opened }: RowProps) {
+	const [open, setOpen] = useState(opened);
+	const live = useHostUsage(source, host);
+	const graphsId = `host-graphs-${host.id}`;
 	return (
-		<li className="kt-host-row flex min-w-0 items-center gap-2 border-b border-border py-3" data-host={host.id}>
-			<div className="flex min-w-0 flex-1 flex-col gap-1">
-				<div className="flex min-w-0 items-center gap-3">
-					<span className="min-w-0 flex-1 truncate text-md font-medium text-fg">{host.name}</span>
-					<HostState host={host} now={now} />
-				</div>
-				<span className="flex min-w-0 flex-wrap gap-x-3 text-sm text-muted">
-					<span>
-						{host.os}, {host.arch}
+		<li className="kt-host-row flex min-w-0 flex-col gap-3 border-b border-border py-3" data-host={host.id}>
+			<div className="flex min-w-0 items-center gap-2">
+				<button
+					type="button"
+					className="kt-focusable flex min-w-0 flex-1 flex-col gap-1 rounded-control text-left"
+					aria-expanded={open}
+					aria-controls={graphsId}
+					onClick={() => setOpen(!open)}
+				>
+					<span className="flex min-w-0 items-center gap-3">
+						<span className="min-w-0 flex-1 truncate text-md font-medium text-fg">{host.name}</span>
+						{source.usage !== undefined && live.status !== "off" ? (
+							<Sparkline
+								values={(seriesOf(live)?.points ?? []).slice(-ROW_POINTS).map((point) => point.cpu)}
+								slots={ROW_POINTS}
+								loading={live.status === "loading"}
+								label={`${host.name}'s CPU over the last 2 minutes`}
+							/>
+						) : null}
+						<HostState host={host} now={now} />
 					</span>
-					<span>
-						{number(host.used.vcpus)} of {number(host.vcpus)} vCPU
+					<span className="flex min-w-0 flex-wrap gap-x-3 text-sm text-muted">
+						<span>
+							{host.os}, {host.arch}
+						</span>
+						<span>
+							{number(host.used.vcpus)} of {number(host.vcpus)} vCPU
+						</span>
+						<span>{count(running(host), "sandbox", "sandboxes")}</span>
+						{host.updateAvailable === undefined ? null : <span className="text-status-approval">Update</span>}
 					</span>
-					<span>{count(running(host), "sandbox", "sandboxes")}</span>
-					{host.updateAvailable === undefined ? null : <span className="text-status-approval">Update</span>}
-				</span>
+				</button>
+				{hostMenu(host, onDrain, onRemove)}
 			</div>
-			{hostMenu(host, onDrain, onRemove)}
+			{open ? (
+				<div id={graphsId}>
+					<HostGraphs host={host} live={live} narrow />
+				</div>
+			) : null}
 		</li>
 	);
 }

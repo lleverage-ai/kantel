@@ -152,17 +152,11 @@ describe("a sandbox's page", () => {
 });
 
 describe("the sandboxes list", () => {
-	const samples = [0.1, 0.4, 0.2];
-
-	it("draws CPU only while a sandbox runs or has just failed, never a flat line for a stopped one", () => {
-		expect(showsCpu({ state: "running", usage: samples })).toBe(true);
-		expect(showsCpu({ state: "stopping", usage: samples })).toBe(true);
-		expect(showsCpu({ state: "error", usage: samples })).toBe(true);
-		for (const state of ["stopped", "paused", "starting"] as const)
-			expect(showsCpu({ state, usage: samples })).toBe(false);
-		// Nothing to draw yet.
-		expect(showsCpu({ state: "running", usage: [] })).toBe(false);
-		expect(showsCpu({ state: "running", usage: [0.3] })).toBe(false);
+	it("draws CPU while a sandbox runs or has just failed, isolates and new ones too, never for a stopped one", () => {
+		expect(showsCpu({ state: "running" })).toBe(true);
+		expect(showsCpu({ state: "stopping" })).toBe(true);
+		expect(showsCpu({ state: "error" })).toBe(true);
+		for (const state of ["stopped", "paused", "starting"] as const) expect(showsCpu({ state })).toBe(false);
 	});
 
 	it("makes New's sandbox with New sandbox's defaults: a medium microVM that stops after an hour", () => {

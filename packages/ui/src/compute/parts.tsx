@@ -155,57 +155,173 @@ export function TableFrame({ children, bar, className, ...rest }: ComponentProps
 export const messageOf = (caught: unknown, fallback: string): string =>
 	caught instanceof Error ? caught.message : fallback;
 
+type LineTone = "done" | "idle" | "working" | "muted" | "error";
+
+const lineColour: Record<LineTone, string> = {
+	done: "text-status-done",
+	idle: "text-faint",
+	muted: "text-muted",
+	working: "text-status-working",
+	error: "text-status-error",
+};
+
 /**
- * A row of numbers as a line: a sandbox's CPU over the last hour. Drawn in a fixed box and stretched to its width;
- * a flat line for no use. It has no axes: the number beside it, or the label, says what it means.
+ * The x and y of each value in a `width` by `height` box, 0 to `max` from the bottom up. With `slots`, each value has a
+ * slot of its own and they end at the right edge, so a line that's still filling grows from the right as time does;
+ * without, they spread across the whole width.
+ */
+export function linePoints(
+	values: readonly number[],
+	{ width, height, max = 1, slots }: { width: number; height: number; max?: number; slots?: number },
+): readonly (readonly [number, number])[] {
+	const count = Math.max(2, slots ?? values.length);
+	const shown = values.slice(-count);
+	const offset = count - shown.length;
+	const top = max > 0 ? max : 1;
+	return shown.map((value, at) => [
+		((offset + at) / (count - 1)) * width,
+		height - 1 - (Math.min(top, Math.max(0, value)) / top) * (height - 2),
+	]);
+}
+
+const pointsText = (points: readonly (readonly [number, number])[]): string =>
+	points.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+
+/**
+ * A row of numbers as a line: a sandbox's CPU over the last few minutes. Drawn in a fixed box and stretched to its
+ * width, 0 to 1 from the bottom up; a flat line for no use. It has no axes: the number beside it, or the label, says
+ * what it means. `loading` is a faint line that breathes, while the first points are read.
  */
 export function Sparkline({
 	values,
 	label,
 	tone = "done",
 	size = "sm",
+	slots,
+	loading = false,
 }: {
 	values: readonly number[];
 	/** What it shows, for assistive tech: "CPU over the last hour, peak 82%". */
 	label: string;
-	tone?: "done" | "idle" | "working" | "error";
+	tone?: LineTone;
 	/** `sm`, a row's: 64 by 16. `lg`, a sandbox page's: as wide as its column, 28 high. */
 	size?: "sm" | "lg";
+	/** How many values fill it, so a line still filling ends at the right. Default: as many as there are. */
+	slots?: number;
+	loading?: boolean;
 }) {
 	const width = size === "lg" ? 320 : 64;
 	const height = size === "lg" ? 28 : 16;
-	const count = Math.max(2, values.length);
-	const max = Math.max(1, ...values);
-	const points = (values.length === 0 ? [0, 0] : values)
-		.map((value, at) => {
-			const x = (at / (count - 1)) * width;
-			const y = height - 1 - (Math.max(0, value) / max) * (height - 2);
-			return `${x.toFixed(1)},${y.toFixed(1)}`;
-		})
-		.join(" ");
-	const colour = {
-		done: "text-status-done",
-		idle: "text-faint",
-		working: "text-status-working",
-		error: "text-status-error",
-	}[tone];
+	const drawn = values.length < 2 ? [0, 0] : values;
+	const points = linePoints(drawn, {
+		width,
+		height,
+		...(values.length < 2 ? {} : slots === undefined ? {} : { slots }),
+	});
+	const colour = lineColour[loading || values.length < 2 ? "idle" : tone];
 	return (
 		<svg
-			className={`kt-sparkline block ${size === "lg" ? "h-7 w-full" : "h-4 w-16"} ${colour}`}
+			className={`kt-sparkline block flex-none ${size === "lg" ? "h-7 w-full" : "h-4 w-16"} ${colour} ${loading ? breathe : ""}`}
 			viewBox={`0 0 ${width} ${height}`}
 			preserveAspectRatio="none"
 			role="img"
 			aria-label={label}
+			{...(loading ? { "aria-busy": true } : {})}
 		>
 			<polyline
-				points={points}
+				points={pointsText(points)}
 				fill="none"
 				stroke="currentColor"
 				strokeWidth="1.25"
 				strokeLinejoin="round"
 				vectorEffect="non-scaling-stroke"
+				{...(loading ? { strokeDasharray: "2 3" } : {})}
 			/>
 		</svg>
+	);
+}
+
+/** A loading line's breathing: opacity only, as the status dots do. */
+const breathe = "animate-[kt-pulse_var(--kt-duration-pulse)_var(--kt-ease-breathe)_infinite]";
+
+/**
+ * A live graph, larger than a row's sparkline: a filled line, 0 to `max` from the bottom up, over a faint line at
+ * half, with its name and latest figure over it. Each value has its slot of `slots`, so it fills from the right as
+ * points arrive and then scrolls. `loading` breathes until the first points are read; with no values it's a flat line.
+ */
+export function UsageGraph({
+	title,
+	value,
+	values,
+	label,
+	slots,
+	max = 1,
+	tone = "done",
+	loading = false,
+}: {
+	title: ReactNode;
+	/** The latest figure, beside the title: "12%", "1.2 of 8 GB". */
+	value?: ReactNode;
+	values: readonly number[];
+	/** What it shows, for assistive tech: "CPU over the last 10 minutes, peak 82%". */
+	label: string;
+	slots: number;
+	/** The value at the top: 1 for a share, a limit for memory. */
+	max?: number;
+	tone?: LineTone;
+	loading?: boolean;
+}) {
+	const width = 320;
+	const height = 64;
+	const empty = values.length < 2;
+	const points = linePoints(empty ? [0, 0] : values, { width, height, max, ...(empty ? {} : { slots }) });
+	const first = points[0];
+	const last = points.at(-1);
+	const area =
+		first === undefined || last === undefined || empty
+			? undefined
+			: `${pointsText(points)} ${last[0].toFixed(1)},${height} ${first[0].toFixed(1)},${height}`;
+	const colour = lineColour[loading || empty ? "idle" : tone];
+	return (
+		<figure className="kt-usage-graph m-0 flex min-w-0 flex-col gap-1.5">
+			<figcaption className="flex min-w-0 items-baseline justify-between gap-3 text-sm">
+				<span className="text-muted">{title}</span>
+				{loading ? (
+					<None className="text-faint" />
+				) : (
+					<span className="truncate text-fg tabular-nums">{value ?? <None className="text-faint" />}</span>
+				)}
+			</figcaption>
+			<svg
+				className={`block h-16 w-full overflow-visible rounded-xs bg-sunken ${colour} ${loading ? breathe : ""}`}
+				viewBox={`0 0 ${width} ${height}`}
+				preserveAspectRatio="none"
+				role="img"
+				aria-label={label}
+				{...(loading ? { "aria-busy": true } : {})}
+			>
+				<line
+					className="text-border"
+					x1="0"
+					x2={width}
+					y1={height / 2}
+					y2={height / 2}
+					stroke="currentColor"
+					strokeDasharray="3 3"
+					vectorEffect="non-scaling-stroke"
+				/>
+				{area === undefined ? null : <polygon points={area} fill="currentColor" fillOpacity="0.14" stroke="none" />}
+				<polyline
+					points={pointsText(points)}
+					fill="none"
+					stroke="currentColor"
+					strokeWidth="1.5"
+					strokeLinejoin="round"
+					vectorEffect="non-scaling-stroke"
+					{...(loading ? { strokeDasharray: "2 3" } : {})}
+				/>
+			</svg>
+		</figure>
 	);
 }
 

@@ -38,6 +38,7 @@ import type {
 	WebhookDelivery,
 } from "./compute-model.ts";
 import { sameProxySettings, sizeSpec } from "./compute-model.ts";
+import { stubUsage } from "./usage-stub.ts";
 
 /** The code the fixtures' waiting command line showed. */
 export const FIXTURE_DEVICE_CODE = "BCDF-GHJK";
@@ -1476,6 +1477,20 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					const spec = box.resources ?? sizeSpec(box.size);
 					return { memoryGb: Math.round(spec.memoryGb * 0.32 * 10) / 10, diskGb: Math.round(spec.diskGb * 0.32) };
 				}),
+			// Live on this browser's clock, whatever time the rest is at: the graphs move.
+			usageSeries: (id, since) =>
+				gate(() => {
+					const box = find(sandboxes, id, "sandbox");
+					const spec = box.resources ?? sizeSpec(box.size);
+					const memLimitBytes = spec.memoryGb * 1024 ** 3;
+					if (box.state !== "running") return { intervalMs: 5_000, memLimitBytes, points: [] };
+					return stubUsage(id, {
+						since,
+						now: Date.now(),
+						memLimitBytes,
+						...(box.kind === "isolate" ? { busy: 0.04 + (id.length % 5) / 50 } : {}),
+					});
+				}),
 			ports: (id) => gate(() => [...(ports.get(id) ?? [])].sort((a, b) => a.port - b.port)),
 			exposePort: (id, port, isPublic) =>
 				gate(() => {
@@ -1847,6 +1862,25 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 			: {
 					hosts: {
 						list: () => gate(() => [...hosts.values()]),
+						usage: (id, since) =>
+							gate(() => {
+								const host = find(hosts, id, "host");
+								const memLimitBytes = host.memoryGb * 1024 ** 3;
+								const diskTotalBytes = host.diskGb * 1024 ** 3;
+								if (host.state === "offline" || host.state === "joining") {
+									return { intervalMs: 5_000, memLimitBytes, diskTotalBytes, points: [] };
+								}
+								// Round what's allocated on it, which is what its sandboxes could use.
+								return stubUsage(id, {
+									since,
+									now: Date.now(),
+									memLimitBytes,
+									diskTotalBytes,
+									busy: Math.max(0.03, (host.used.vcpus / Math.max(1, host.vcpus)) * 0.6),
+									memory: Math.max(0.05, (host.used.memoryGb / Math.max(1, host.memoryGb)) * 0.8),
+									disk: host.used.diskGb / Math.max(1, host.diskGb),
+								});
+							}),
 						// The command as the control plane makes it (packages/compute, createHostJoinToken): the host's name and
 						// labels go with the token, not on the command line.
 						join: () =>

@@ -17,6 +17,7 @@ function Scenario({
 	local,
 	e2e,
 	unavailable,
+	usage = "live",
 }: {
 	sandboxId?: string;
 	view?: SandboxView;
@@ -30,8 +31,18 @@ function Scenario({
 	e2e?: boolean | "pending";
 	/** Why Desktop and Browser can't open, as the console says it. */
 	unavailable?: string;
+	/** `live`: the sample's made-up usage every 5 seconds. `loading`: it never answers. `none`: no live source. */
+	usage?: "live" | "loading" | "none";
 }) {
-	const [source] = useState(() => createComputeFixtures({ hosting, ...options }));
+	const [source] = useState(() => {
+		const made = createComputeFixtures({ hosting, ...options });
+		if (usage === "live") return made;
+		const { usageSeries: _, ...rest } = made.sandboxes;
+		return {
+			...made,
+			sandboxes: usage === "none" ? rest : { ...rest, usageSeries: () => new Promise<never>(() => {}) },
+		};
+	});
 	const [sandboxes] = useState(() => {
 		if (local !== true && e2e === undefined && unavailable === undefined) return source.sandboxes;
 		return {
@@ -71,8 +82,14 @@ function Scenario({
 	);
 }
 
-/** A running microVM: previews of its desktop and browser, SSH, ports, CPU and details. */
+/** A running microVM: previews of its desktop and browser, SSH, ports, live CPU and memory, and details. */
 export const Overview: Story = () => <Scenario />;
+
+/** Its CPU and memory while their first readings load. */
+export const UsageLoading: Story = () => <Scenario usage="loading" />;
+
+/** Where the source has no live usage: its recent CPU as listed, and memory as a meter. */
+export const NoLiveUsage: Story = () => <Scenario usage="none" />;
 
 /** Served by `kantel console`, which can't frame them: Browser, Desktop and the previews open each in a tab. */
 export const LocalConsole: Story = () => <Scenario local />;
