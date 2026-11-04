@@ -300,7 +300,8 @@ Uninstalling doesn't tell the control plane, so revoke the host as well.
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `egress` | `open` | A sandbox's network when its account has no [proxy settings](/sandboxes/egress-proxy/) turned on: `open` (through the egress proxy, with no rules), `proxy`, or `none` (no network at all) |
-| `egressAllowCIDRs` | none | Private ranges the egress proxy may connect to anyway, such as `["192.168.10.0/24"]` for a package mirror on your network |
+| `egressAllowCIDRs` | none | Private ranges the egress proxy may connect to anyway, such as `["192.168.10.0/24"]` for a package mirror on your network. Bucket mounts reach their store under the same rule, so a MinIO on your network needs its range here |
+| `mountCacheMiB` | `10240` | The host's read cache for bucket mounts (experimental), on disk in `mountCacheDir` (default `<root>/mount-cache`) and shared by every sandbox on the host; the least recently read goes first. `-1` turns bucket mounts off |
 | `proxyDataPath` | `false` | What `--proxy-data-path` sets |
 | `injectGuestAgent` | `false` | What `--inject-guest-agent` sets: `sandboxImage` may be [any Linux image](/sandboxes/custom-images/) |
 | `proxyPort` | `3129` | The egress proxy's port, on each sandbox's gateway address |

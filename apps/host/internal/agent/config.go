@@ -69,6 +69,10 @@ type Config struct {
 	// /dev/shm/kantel-host); SpoolMaxMiB caps it (default an eighth of memory, at most 16 GiB; -1 turns it off).
 	SpoolDir    string `json:"spoolDir,omitempty"`
 	SpoolMaxMiB int64  `json:"spoolMaxMiB,omitempty"`
+	// MountCacheMiB is the host's read cache for sandboxes' bucket mounts, shared by every sandbox on the host
+	// (default 10240; -1 turns bucket mounts off). MountCacheDir is where it is (default Root/mount-cache).
+	MountCacheMiB int64  `json:"mountCacheMiB,omitempty"`
+	MountCacheDir string `json:"mountCacheDir,omitempty"`
 	// AutoUpdate lets the control plane move the host to the version it wants (default true).
 	AutoUpdate *bool `json:"autoUpdate,omitempty"`
 	// TemplateRegistry is the operator's registry templates' Kantel base images are pulled from, by digest, such as

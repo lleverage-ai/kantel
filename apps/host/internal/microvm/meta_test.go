@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/lleverage-ai/kantel/apps/host/internal/mounts"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
@@ -59,5 +60,32 @@ func TestLiveSnapshotRefusesABadIDBeforeWriting(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(root); len(entries) != 0 {
 		t.Fatalf("liveSnapshot wrote %v before refusing", entries)
+	}
+}
+
+// Deleting a sandbox with mounts forgets them, and its last event doesn't make them again.
+func TestDeleteForgetsMountsForGood(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "sandboxes", "sbx_m")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	specs := []proto.Mount{{Path: "/mnt/x", Kind: proto.MountBucket, BucketSourceID: "bks_1"}}
+	mm := mounts.New(mounts.Config{})
+	var last proto.SandboxInfo
+	m := &Manager{cfg: Config{Root: root, Mounts: mm, Events: func(info proto.SandboxInfo) { last = info }}}
+	s := &sandbox{meta: meta{ID: "sbx_m", State: proto.StateStopped, Mounts: specs}, dir: dir}
+	m.sandboxes = map[string]*sandbox{"sbx_m": s}
+	if len(m.info(s).Mounts) != 1 || mm.Get("sbx_m") == nil {
+		t.Fatal("a stopped sandbox's mounts aren't held")
+	}
+	if err := m.Delete(context.Background(), "sbx_m"); err != nil {
+		t.Fatal(err)
+	}
+	if last.State != proto.StateDeleted {
+		t.Errorf("the last event: %+v", last)
+	}
+	if mm.Get("sbx_m") != nil {
+		t.Error("the deletion's event made the sandbox's mounts again")
 	}
 }

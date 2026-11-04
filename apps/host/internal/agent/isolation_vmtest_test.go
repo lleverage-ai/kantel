@@ -82,7 +82,8 @@ func lan(t *testing.T) {
 	}
 }
 
-func call[T any](t *testing.T, h *Host, method string, params any) T {
+// vmCall is a call that must succeed, answering its result (lifecycle_test.go's call answers only the error).
+func vmCall[T any](t *testing.T, h *Host, method string, params any) T {
 	t.Helper()
 	raw, _ := json.Marshal(params)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -101,7 +102,7 @@ func call[T any](t *testing.T, h *Host, method string, params any) T {
 
 func run(t *testing.T, h *Host, sandbox, command string) proto.ExecResult {
 	t.Helper()
-	return call[proto.ExecResult](t, h, proto.MethodExec, proto.ExecParams{SandboxID: sandbox, Command: command, User: "root", TimeoutMs: 30_000})
+	return vmCall[proto.ExecResult](t, h, proto.MethodExec, proto.ExecParams{SandboxID: sandbox, Command: command, User: "root", TimeoutMs: 30_000})
 }
 
 // probe is one attempt that must fail (or, for a control, succeed), with what it printed.
@@ -141,7 +142,7 @@ func TestIsolation(t *testing.T) {
 	// A and B are "open" (the proxy with no rules); C is "none".
 	sandboxes := map[string]proto.SandboxInfo{}
 	for id, mode := range map[string]string{"sbx_vm_a": "open", "sbx_vm_b": "open", "sbx_vm_c": "none"} {
-		info := call[proto.SandboxInfo](t, h, proto.MethodCreate, proto.CreateParams{SandboxID: id, Tier: "microvm", Egress: &proto.Egress{Mode: mode}})
+		info := vmCall[proto.SandboxInfo](t, h, proto.MethodCreate, proto.CreateParams{SandboxID: id, Tier: "microvm", Egress: &proto.Egress{Mode: mode}})
 		sandboxes[id] = info
 		t.Cleanup(func() {
 			_, _ = h.Call(context.Background(), proto.MethodDelete, json.RawMessage(fmt.Sprintf(`{"sandboxId":%q}`, id)), nil)

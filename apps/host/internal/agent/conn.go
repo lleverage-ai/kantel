@@ -165,6 +165,8 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 	}
 	h.link = s.calls
 	h.mu.Unlock()
+	// Mounts of sandboxes adopted at start can resolve their bucket sources now.
+	go h.reconcileMounts(ctx)
 	beat := welcome.Welcome.HeartbeatSeconds
 	if beat <= 0 {
 		beat = 15

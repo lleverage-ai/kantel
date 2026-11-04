@@ -14,6 +14,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -73,13 +74,19 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	server := &guest.Server{Version: version, Injected: *injected, Init: *pid1}
+	mounts := &guest.Mounts{
+		Dial:      func(context.Context) (net.Conn, error) { return vsock.DialHost(guest.MountPort) },
+		StateFile: guest.MountsStateFile,
+	}
+	server := &guest.Server{Version: version, Injected: *injected, Init: *pid1, Mounts: mounts}
 	if *injected {
 		// Its SSH server's key, before the first identity (ssh-access prints its fingerprint).
 		if err := guest.EnsureHostKey(); err != nil {
 			log.Printf("ssh host key: %v", err)
 		}
 	}
+	// Mounts a previous run of the agent had: their FUSE servers ended with it.
+	go mounts.Restore(context.Background())
 	if l, err := net.Listen("tcp", guest.LocalProxyAddr); err == nil {
 		go func() { log.Print(server.ServeLocalProxy(l)) }()
 	} else {

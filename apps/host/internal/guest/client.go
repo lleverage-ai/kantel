@@ -175,6 +175,16 @@ func (c *Client) SetIdentity(ctx context.Context, id Identity) error {
 	return err
 }
 
+// Mount makes the guest's read-only mounts the specs (an empty list unmounts them all).
+func (c *Client) Mount(ctx context.Context, specs []MountSpec) ([]MountResult, error) {
+	if specs == nil {
+		specs = []MountSpec{}
+	}
+	var out []MountResult
+	_, err := c.do(ctx, http.MethodPost, "/mounts", jsonBody(specs), &out)
+	return out, err
+}
+
 func (c *Client) Sync(ctx context.Context) error {
 	_, err := c.do(ctx, http.MethodPost, "/sync", nil, &map[string]any{})
 	return err
