@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
+	"slices"
 	"testing"
 	"time"
 
@@ -348,7 +349,7 @@ func TestUsageSendChecksOwnersAgain(t *testing.T) {
 		t.Fatal("leaving changed the queued sample")
 	}
 	// Once sent, its owners go.
-	s.flush(func(proto.UsageSample) error { return nil })
+	s.flush(nil, false, func(proto.UsageSample) error { return nil })
 	s.taken = nil
 	s.keep(proto.UsageSample{At: 2})
 	if _, ok := s.ownerOf("sbx_a"); ok {
@@ -367,7 +368,7 @@ func TestUsageBacklogIsBoundedAndKeepsOrder(t *testing.T) {
 	// The link fails part-way: what wasn't sent waits for the next try, in order.
 	var sent []int64
 	fail := 40
-	sentN, dropped := s.flush(func(u proto.UsageSample) error {
+	sentN, dropped, _ := s.flush(nil, false, func(u proto.UsageSample) error {
 		if u.At == int64(fail) {
 			return errDisconnected
 		}
@@ -381,12 +382,165 @@ func TestUsageBacklogIsBoundedAndKeepsOrder(t *testing.T) {
 		t.Fatalf("left %d from %d", len(s.queue), s.queue[0].At)
 	}
 	fail = -1
-	sentN, dropped = s.flush(func(proto.UsageSample) error { return nil })
+	sentN, dropped, _ = s.flush(nil, false, func(proto.UsageSample) error { return nil })
 	if sentN != usageBacklog-10 || dropped != 0 || len(s.queue) != 0 {
 		t.Fatalf("second flush: sent %d dropped %d left %d", sentN, dropped, len(s.queue))
 	}
 	if latest := s.latest; latest == nil || latest.At != usageBacklog+29 {
 		t.Fatalf("latest %+v", latest)
+	}
+}
+
+// seqs are the Seq of each sample.
+func seqs(samples []proto.UsageSample) []uint64 {
+	out := make([]uint64, 0, len(samples))
+	for _, s := range samples {
+		out = append(out, s.Seq)
+	}
+	return out
+}
+
+// Each sample is numbered in the sampler's run, from 1 up; another sampler (a restarted host) has another run.
+func TestUsageSamplesAreNumberedInTheirRun(t *testing.T) {
+	s := (&fakeProc{}).sampler()
+	s.run = newUsageRun()
+	for i := range 3 {
+		s.keep(proto.UsageSample{At: int64(i)})
+	}
+	if got := seqs(s.queue); !slices.Equal(got, []uint64{1, 2, 3}) {
+		t.Fatalf("seqs %v", got)
+	}
+	for _, q := range s.queue {
+		if q.Run != s.run || len(q.Run) != 16 {
+			t.Fatalf("run %q, the sampler's %q", q.Run, s.run)
+		}
+	}
+	if newUsageRun() == s.run {
+		t.Fatal("two runs with one name")
+	}
+}
+
+// With acks, a sample sent stays queued until a usage.ack covers it, and isn't sent again on the same link; on the next
+// link, everything unacknowledged goes again, in order: ticks written into a connection that then died aren't lost.
+func TestUsageUnackedSamplesAreSentAgainOnTheNextLink(t *testing.T) {
+	s := (&fakeProc{}).sampler()
+	first, second := &caller{}, &caller{}
+	var sent []uint64
+	send := func(u proto.UsageSample) error { sent = append(sent, u.Seq); return nil }
+	for i := range 3 {
+		s.keep(proto.UsageSample{At: int64(i)})
+	}
+	if n, _, _ := s.flush(first, true, send); n != 3 || len(s.queue) != 3 {
+		t.Fatalf("sent %d, %d queued", n, len(s.queue))
+	}
+	// The same link again: nothing goes twice.
+	s.keep(proto.UsageSample{At: 3})
+	if n, _, _ := s.flush(first, true, send); n != 1 || !slices.Equal(sent, []uint64{1, 2, 3, 4}) {
+		t.Fatalf("sent %d: %v", n, sent)
+	}
+	s.acked(2)
+	if got := seqs(s.queue); !slices.Equal(got, []uint64{3, 4}) {
+		t.Fatalf("after ack 2: %v", got)
+	}
+	// The link died with 3 and 4 written into it; 5 and 6 were taken while it was down.
+	s.keep(proto.UsageSample{At: 4})
+	s.keep(proto.UsageSample{At: 5})
+	sent = nil
+	if n, _, _ := s.flush(second, true, send); n != 4 || !slices.Equal(sent, []uint64{3, 4, 5, 6}) {
+		t.Fatalf("resent %d: %v", n, sent)
+	}
+	// An ack can't take back what it covers, nor one from the link before be wrong: it covers what was taken.
+	s.acked(6)
+	s.acked(4)
+	if len(s.queue) != 0 {
+		t.Fatalf("left %v", seqs(s.queue))
+	}
+}
+
+// A send that fails part-way on a link keeps what didn't go, which goes next on that link or the next.
+func TestUsageAFailedSendIsTriedAgainInOrder(t *testing.T) {
+	s := (&fakeProc{}).sampler()
+	link := &caller{}
+	for i := range 5 {
+		s.keep(proto.UsageSample{At: int64(i)})
+	}
+	var sent []uint64
+	failAt := uint64(3)
+	send := func(u proto.UsageSample) error {
+		if u.Seq == failAt {
+			return errDisconnected
+		}
+		sent = append(sent, u.Seq)
+		return nil
+	}
+	s.flush(link, true, send)
+	failAt = 0
+	s.flush(link, true, send)
+	if !slices.Equal(sent, []uint64{1, 2, 3, 4, 5}) {
+		t.Fatalf("sent %v", sent)
+	}
+}
+
+// Talking to a control plane that predates acks (its welcome has no UsageAcks), a sample is done with once written,
+// as before: nothing is kept for an ack that never comes, and nothing goes again on the next link.
+func TestUsageWithoutAcksASampleIsDoneOnceWritten(t *testing.T) {
+	s := (&fakeProc{}).sampler()
+	first, second := &caller{}, &caller{}
+	var sent []uint64
+	send := func(u proto.UsageSample) error { sent = append(sent, u.Seq); return nil }
+	for i := range 3 * usageBacklog {
+		s.keep(proto.UsageSample{At: int64(i)})
+		if _, dropped, unconfirmed := s.flush(first, false, send); dropped != 0 || unconfirmed != 0 {
+			t.Fatalf("dropped %d, unconfirmed %d", dropped, unconfirmed)
+		}
+		if len(s.queue) != 0 {
+			t.Fatalf("%d queued after a flush", len(s.queue))
+		}
+	}
+	s.keep(proto.UsageSample{At: 9999})
+	sent = nil
+	s.flush(second, false, send)
+	if !slices.Equal(sent, []uint64{3*usageBacklog + 1}) {
+		t.Fatalf("on the next link: %v", sent)
+	}
+}
+
+// With acks that never come (a control plane that says it acks and doesn't), the backlog stays bounded: the oldest
+// go, counted as unconfirmed rather than as dropped unsent.
+func TestUsageUnackedBacklogIsBounded(t *testing.T) {
+	s := (&fakeProc{}).sampler()
+	link := &caller{}
+	send := func(proto.UsageSample) error { return nil }
+	unconfirmed := 0
+	for i := range usageBacklog + 80 {
+		s.keep(proto.UsageSample{At: int64(i)})
+		_, dropped, n := s.flush(link, true, send)
+		if dropped != 0 {
+			t.Fatalf("dropped %d unsent", dropped)
+		}
+		unconfirmed += n
+	}
+	if len(s.queue) != usageBacklog || s.queue[0].Seq != 81 || unconfirmed != 80 {
+		t.Fatalf("queue %d from %d, %d unconfirmed", len(s.queue), s.queue[0].Seq, unconfirmed)
+	}
+}
+
+// The wire: a tick's run and seq, a welcome's usageAcks, Kantel's usage.ack.
+func TestUsageAckWireShape(t *testing.T) {
+	raw, _ := json.Marshal(proto.Message{Type: "usage", Usage: &proto.UsageSample{Seq: 7, Run: "0123456789abcdef", At: 1, IntervalMs: 5000}})
+	want := `{"type":"usage","usage":{"seq":7,"run":"0123456789abcdef","at":1,"intervalMs":5000,"host":{"cpu":0,"memUsedBytes":0,"memTotalBytes":0,"diskUsedBytes":0,"diskTotalBytes":0},"sandboxes":null}}`
+	if string(raw) != want {
+		t.Fatalf("got  %s\nwant %s", raw, want)
+	}
+	var m proto.Message
+	if err := json.Unmarshal([]byte(`{"type":"welcome","welcome":{"hostId":"h","heartbeatSeconds":15,"usageAcks":true}}`), &m); err != nil || !m.Welcome.UsageAcks {
+		t.Fatalf("welcome %+v %v", m.Welcome, err)
+	}
+	if err := json.Unmarshal([]byte(`{"type":"usage.ack","acked":42}`), &m); err != nil || m.Acked != 42 {
+		t.Fatalf("ack %+v %v", m, err)
+	}
+	if !slices.Contains(streamHost(t, newStreamTier(nil)).makeFacts().Features, proto.FeatureUsageAcks) {
+		t.Fatal("the facts don't say usage-acks")
 	}
 }
 

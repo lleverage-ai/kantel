@@ -539,6 +539,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		...(host.draining ? { draining: true } : {}),
 		...(options.desiredVersion === undefined ? {} : { desiredVersion: options.desiredVersion }),
 		...(options.updateUrl === undefined ? {} : { updateUrl: options.updateUrl }),
+		// Ticks are acknowledged once this gateway's compute plane has taken them (`onUsage`): with none linked, nothing
+		// would be, so the host is told nothing and does as with an older Kantel.
+		...(compute?.recordUsage === undefined ? {} : { usageAcks: true }),
 	});
 	// With image patching off the welcome is made at once, as before: no await between a hello and its answer.
 	const welcomeFor = (host: HostRecord): HostWelcome | Promise<HostWelcome> => {
@@ -760,8 +763,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			if (link?.reportMounts === undefined) return;
 			report((async () => link.reportMounts?.(hostId, sandboxId, mounts))());
 		},
-		onUsage(hostId, reported) {
-			if (compute?.recordUsage === undefined && cluster === undefined) return;
+		onUsage(hostId, reported): Promise<void> | undefined {
+			if (compute?.recordUsage === undefined && cluster === undefined) return undefined;
 			const parsed = parseHostUsage(reported);
 			if (!parsed.ok) {
 				// A tick comes every few seconds: say so once an hour per host, not every time.
@@ -770,10 +773,14 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					badUsageLogged.set(hostId, at);
 					log(`[hosts] host ${hostId} sent a usage tick that isn't valid (${parsed.reason}); ignored`);
 				}
-				return;
+				return undefined;
 			}
-			if (compute?.recordUsage !== undefined) report(compute.recordUsage(hostId, parsed.value));
+			// Taken here, by the replica holding the host's connection, which exports it: what the hub acknowledges once
+			// it resolves. Passing it on to the other replicas is for their graphs, and isn't waited for.
+			const taken = compute?.recordUsage?.(hostId, parsed.value);
+			if (taken !== undefined) report(taken);
 			cluster?.shareUsage(hostId, parsed.value);
+			return taken;
 		},
 		onDisconnected(hostId) {
 			log(`[hosts] host ${hostId} disconnected`);

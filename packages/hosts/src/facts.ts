@@ -187,6 +187,20 @@ function sandboxUsage(value: unknown, at: number): HostSandboxUsage | undefined 
 	};
 }
 
+/** The longest `run` a usage tick may name: kantel-host's are 16 hex digits. */
+const MAX_USAGE_RUN = 64;
+
+/**
+ * A tick's `run` and `seq` (`usage-acks`), both or neither: a `seq` that isn't a whole number from 1, or a `run` that
+ * isn't a short string, leaves the tick as an older host's, taken but never acknowledged.
+ */
+function usageSequence(value: Record<string, unknown>): { readonly seq: number; readonly run: string } | undefined {
+	const { seq, run } = value;
+	if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1) return undefined;
+	if (typeof run !== "string" || run === "" || run.length > MAX_USAGE_RUN) return undefined;
+	return { seq, run };
+}
+
 function usage(value: unknown): HostUsageReport & { readonly sandboxes: readonly HostSandboxUsage[] } {
 	if (!isObject(value)) throw new FactsError("usage is an object");
 	const at = count(value.at, "usage.at");
@@ -199,6 +213,7 @@ function usage(value: unknown): HostUsageReport & { readonly sandboxes: readonly
 		throw new FactsError(`usage.sandboxes is a list of at most ${MAX_USAGE_SANDBOXES}`);
 	}
 	return {
+		...usageSequence(value),
 		at,
 		intervalMs,
 		host: usageTotals(value.host),

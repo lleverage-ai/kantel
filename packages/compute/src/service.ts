@@ -381,7 +381,9 @@ export interface ComputeService {
 	 * Takes a host's usage tick (`HostUsageReport` in @kantel/hosts): its own readings and its sandboxes', kept in
 	 * memory for an hour as they came and as 5-minute means, a sandbox's in its record. Readings for a sandbox not on
 	 * `hostId` are dropped. A host's ticks are taken in the order they came. `shared`: another gateway replica, the one
-	 * holding the host's connection, passed it on; that one exports it to telemetry, so this one doesn't.
+	 * holding the host's connection, passed it on; that one exports it to telemetry, so this one doesn't. A numbered tick
+	 * (`seq` and `run`) taken already, as one sent again after a reconnect is, resolves without being taken twice. It
+	 * resolves once the tick is in its series: what the host's link acknowledges (`usage.ack`).
 	 */
 	recordUsage(hostId: string, report: ReportedUsage, how?: { readonly shared?: boolean }): Promise<void>;
 	/**
@@ -1307,6 +1309,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const exportedUntil = new Map<string, number>();
 	/** When each host's last tick arrived, by this process's clock: whether it is reporting. */
 	const tickArrivedAt = new Map<string, number>();
+	/**
+	 * The newest tick taken from each host that numbers them (`ReportedUsage.seq`, `usage-acks`), in its sampler's run:
+	 * one sent again after a reconnect, at or before it, is acknowledged without being taken twice.
+	 */
+	const takenSeq = new Map<string, { readonly run: string; readonly seq: number }>();
 	/** Up to when the backend's own ticks (the stub's) are in. */
 	let pulledUntil = Number.NEGATIVE_INFINITY;
 	/** The stub's past ticks being taken (`catchUpUsage`), if they are. */
@@ -3081,6 +3088,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		hostSeries.settle(asOf);
 		for (const { key, rollup } of sandboxSeries.settle(asOf)) await keepRollup(key, rollup).catch(() => undefined);
 		for (const [hostId, at] of tickArrivedAt) if (at < now() - RAW_WINDOW_MS) tickArrivedAt.delete(hostId);
+		// A host's backlog is minutes long: an hour without a tick, none of what it would send again is still to come.
+		for (const hostId of takenSeq.keys()) if (!tickArrivedAt.has(hostId)) takenSeq.delete(hostId);
 	}
 
 	/**
@@ -3139,10 +3148,32 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/** Each host's tick being taken, so the next waits for it (`recordUsage`). */
 	const ingesting = new Map<string, Promise<void>>();
 
-	/** Takes a host's tick after the one before it from the same host. */
+	/**
+	 * Whether a numbered tick is one already taken: its run's, at or before the newest taken. A series takes only newer
+	 * points too, but a tick stamped with this process's clock (its host's ran ahead, `MAX_CLOCK_SKEW_MS`) would get a
+	 * new time each time it came, and this doesn't depend on it.
+	 */
+	const takenAlready = (hostId: string, report: ReportedUsage): boolean => {
+		if (report.seq === undefined || report.run === undefined) return false;
+		const taken = takenSeq.get(hostId);
+		return taken !== undefined && taken.run === report.run && report.seq <= taken.seq;
+	};
+
+	/** Takes a host's tick after the one before it from the same host; a numbered tick taken already, not again. */
 	function ingestInTurn(hostId: string, report: ReportedUsage, shared: boolean): Promise<void> {
 		const before = ingesting.get(hostId) ?? Promise.resolve();
-		const turn = before.then(() => ingest(hostId, report, { shared }));
+		const turn = before.then(async () => {
+			if (takenAlready(hostId, report)) return;
+			await ingest(hostId, report, { shared });
+			// Only once all of it is in: a tick that failed part-way is taken again when it is sent again, and its series
+			// skip the points they have (each takes only newer ones).
+			if (report.seq !== undefined && report.run !== undefined) {
+				const taken = takenSeq.get(hostId);
+				if (taken === undefined || taken.run !== report.run || report.seq > taken.seq) {
+					takenSeq.set(hostId, { run: report.run, seq: report.seq });
+				}
+			}
+		});
 		const settled = turn.catch(() => undefined);
 		ingesting.set(hostId, settled);
 		void settled.then(() => {

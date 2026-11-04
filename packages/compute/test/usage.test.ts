@@ -534,6 +534,124 @@ describe("usage ticks across gateway replicas over one store", () => {
 	});
 });
 
+// A host with `usage-acks` numbers its ticks (`run`, `seq`) and, after a reconnect, sends again every tick no
+// `usage.ack` covered: those the dying connection lost, and those taken whose ack it lost. Each is taken once.
+describe("numbered usage ticks sent again after a reconnect", () => {
+	const T0 = Date.UTC(2026, 10, 4, 14, 0, 0);
+	const RUN = "0123456789abcdef";
+	const reading = (id: string, cpu: number) => ({
+		id,
+		kind: "isolate" as const,
+		cpu,
+		memUsedBytes: MIB,
+		memLimitBytes: 0,
+	});
+	/** Tick `seq` of `run`, taken at T0 + seq ticks. */
+	const numbered = (id: string, seq: number, run = RUN, at = T0 + seq * USAGE_INTERVAL_MS): ReportedUsage => ({
+		...tick(at, [reading(id, seq / 100)]),
+		seq,
+		run,
+	});
+
+	it("are taken once each, in the series and the export, and fill what the connection lost", async () => {
+		let clock = T0;
+		const { backend, reads } = hostless(() => clock);
+		const { api, tom } = setup(backend, () => clock);
+		const box = await tom.createSandbox({ wait: true });
+		// 1 to 3 arrive and are taken, but their acks are lost with the connection; 4 and 5 die with it unread.
+		for (let seq = 1; seq <= 3; seq += 1) {
+			clock = T0 + seq * USAGE_INTERVAL_MS;
+			await api.service.recordUsage(STUB_HOST_ID, numbered(box.id, seq));
+		}
+		const before = (await api.service.sampleUsage()).map((each) => each.at);
+		// The host reconnects: everything unacknowledged, 1 to 5, then 6 to 8 as they are taken.
+		clock = T0 + 8 * USAGE_INTERVAL_MS;
+		for (let seq = 1; seq <= 8; seq += 1) await api.service.recordUsage(STUB_HOST_ID, numbered(box.id, seq));
+		// And a stray repeat of the newest.
+		await api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 8));
+		const after = (await api.service.sampleUsage()).map((each) => each.at);
+
+		const every = Array.from({ length: 8 }, (_, index) => T0 + (index + 1) * USAGE_INTERVAL_MS);
+		const points = (await tom.getSandboxUsage(box.id)).series.points;
+		expect(points.map((each) => each.at)).toEqual(every);
+		expect(points.map((each) => each.cpu)).toEqual([1, 2, 3, 4, 5, 6, 7, 8].map((seq) => seq / 100));
+		expect([...before, ...after]).toEqual(every);
+		expect(reads).toEqual([]);
+	});
+
+	it("are taken once even when stamped on arrival (the host's clock ahead), which a series' own check misses", async () => {
+		let clock = T0;
+		const { backend } = hostless(() => clock);
+		const { api, tom } = setup(backend, () => clock);
+		const box = await tom.createSandbox({ wait: true });
+		const ahead = T0 + 3_600_000;
+		await api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 1, RUN, ahead));
+		// Sent again after a reconnect, it would be stamped with the later arrival and taken as a second point.
+		clock += USAGE_INTERVAL_MS;
+		await api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 1, RUN, ahead));
+		expect((await tom.getSandboxUsage(box.id)).series.points.map((each) => each.at)).toEqual([T0]);
+		expect((await api.service.sampleUsage()).map((each) => each.at)).toEqual([T0]);
+	});
+
+	it("of a restarted host, whose new run counts from 1 again, are taken", async () => {
+		let clock = T0;
+		const { backend } = hostless(() => clock);
+		const { api, tom } = setup(backend, () => clock);
+		const box = await tom.createSandbox({ wait: true });
+		for (let seq = 1; seq <= 3; seq += 1) await api.service.recordUsage(STUB_HOST_ID, numbered(box.id, seq));
+		clock = T0 + 10 * USAGE_INTERVAL_MS;
+		for (let seq = 1; seq <= 2; seq += 1) {
+			await api.service.recordUsage(
+				STUB_HOST_ID,
+				numbered(box.id, seq, "fedcba9876543210", T0 + (seq + 5) * USAGE_INTERVAL_MS),
+			);
+		}
+		expect((await tom.getSandboxUsage(box.id)).series.points).toHaveLength(5);
+	});
+
+	it("from an older host, unnumbered, are taken as before: a repeat by its time only", async () => {
+		let clock = T0;
+		const { backend } = hostless(() => clock);
+		const { api, tom } = setup(backend, () => clock);
+		const box = await tom.createSandbox({ wait: true });
+		const old = tick(T0 + USAGE_INTERVAL_MS, [reading(box.id, 0.1)]);
+		await api.service.recordUsage(STUB_HOST_ID, old);
+		await api.service.recordUsage(STUB_HOST_ID, old);
+		await api.service.recordUsage(STUB_HOST_ID, tick(T0 + 2 * USAGE_INTERVAL_MS, [reading(box.id, 0.2)]));
+		clock = T0 + 2 * USAGE_INTERVAL_MS;
+		expect((await tom.getSandboxUsage(box.id)).series.points.map((each) => each.cpu)).toEqual([0.1, 0.2]);
+		expect(await api.service.sampleUsage()).toHaveLength(2);
+	});
+
+	it("to the replica the host moved to, of ticks the first passed on, are exported once between them", async () => {
+		let clock = T0;
+		const store = createMemoryStore();
+		const a = setup(hostless(() => clock).backend, () => clock, store);
+		const b = setup(hostless(() => clock).backend, () => clock, store);
+		const box = await a.tom.createSandbox({ wait: true });
+		// A holds the host: it takes 1 to 3 and passes them on to B; their acks die with the connection.
+		for (let seq = 1; seq <= 3; seq += 1) {
+			clock = T0 + seq * USAGE_INTERVAL_MS;
+			await a.api.service.recordUsage(STUB_HOST_ID, numbered(box.id, seq));
+			await b.api.service.recordUsage(STUB_HOST_ID, numbered(box.id, seq), { shared: true });
+		}
+		// The host reconnects to B and sends 1 to 4 again; B passes on what it takes.
+		clock = T0 + 4 * USAGE_INTERVAL_MS;
+		for (let seq = 1; seq <= 4; seq += 1) {
+			await b.api.service.recordUsage(STUB_HOST_ID, numbered(box.id, seq));
+			await a.api.service.recordUsage(STUB_HOST_ID, numbered(box.id, seq), { shared: true });
+		}
+		const fromA = (await a.api.service.sampleUsage()).map((each) => each.at);
+		const fromB = (await b.api.service.sampleUsage()).map((each) => each.at);
+		const every = [1, 2, 3, 4].map((seq) => T0 + seq * USAGE_INTERVAL_MS);
+		expect([...fromA, ...fromB].sort()).toEqual(every);
+		expect(fromB).toEqual([T0 + 4 * USAGE_INTERVAL_MS]);
+		for (const api of [a, b]) {
+			expect((await api.tom.getSandboxUsage(box.id)).series.points.map((each) => each.at)).toEqual(every);
+		}
+	});
+});
+
 describe("the stub's replay", () => {
 	it("settles no further than the ticks it took in, however long it took", async () => {
 		const T0 = Date.UTC(2026, 10, 4, 16, 0, 0);

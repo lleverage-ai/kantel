@@ -46,7 +46,9 @@ type Message struct {
 	// keeps within FileStreamWindowBytes of it.
 	Acked int64 `json:"acked,omitempty"`
 
-	// usage (host → Kantel): one tick of the host's and its sandboxes' readings.
+	// usage (host → Kantel): one tick of the host's and its sandboxes' readings. Its answer, on a connection whose
+	// welcome had UsageAcks, is a usage.ack (Kantel → host) whose Acked is the Seq of the newest tick Kantel has taken,
+	// covering every earlier one (FeatureUsageAcks).
 	Usage *UsageSample `json:"usage,omitempty"`
 }
 
@@ -135,6 +137,11 @@ const FeatureCustomShapes = "custom-shapes"
 // needn't run a command in a sandbox to read its usage.
 const FeatureUsage = "usage"
 
+// FeatureUsageAcks: each usage tick carries Run and Seq, and on a connection whose welcome has UsageAcks the host keeps
+// a tick until a usage.ack covers it, sending again on its next connection what none did, so a tick written into a
+// connection that then dies isn't lost. Without UsageAcks (an older control plane) a tick is done with once written.
+const FeatureUsageAcks = "usage-acks"
+
 // FeatureImagePatching (experimental): the host keeps its host images by version, follows Welcome.Images, reports
 // each sandbox's and snapshot's Base, and restarts a sandbox on its current images when sandbox.start has Rebase.
 const FeatureImagePatching = "image-patching"
@@ -198,6 +205,9 @@ type Welcome struct {
 	// fetches them, checks their signature, and starts new sandboxes on them. Running and stopped sandboxes stay on
 	// theirs until a sandbox.start with Rebase.
 	Images *ImageChannel `json:"images,omitempty"`
+	// UsageAcks says Kantel acknowledges usage ticks on this connection (usage.ack, FeatureUsageAcks). The connection's
+	// first welcome decides it; a later one doesn't change it.
+	UsageAcks bool `json:"usageAcks,omitempty"`
 }
 
 // Capacity is what is free now.
@@ -680,6 +690,11 @@ type Event struct {
 // CPUs; a microVM's of its vCPUs (its Firecracker process's CPU time over vCPUs × interval); an isolate's of one CPU
 // (its JavaScript runs on one thread), as its share of its account's runtime's CPU time.
 type UsageSample struct {
+	// Seq is the tick's place in Run, from 1 up by one per tick taken (FeatureUsageAcks); one the backlog dropped leaves
+	// a gap. Run is chosen when the sampler starts, so a restarted host's Seq starting again isn't taken for ticks Kantel
+	// has already had. Kantel takes a tick at most once by them, so one sent again after a reconnect isn't counted twice.
+	Seq uint64 `json:"seq,omitempty"`
+	Run string `json:"run,omitempty"`
 	// At is when it was taken, in milliseconds; IntervalMs is the span its CPU figures cover.
 	At         int64          `json:"at"`
 	IntervalMs int64          `json:"intervalMs"`

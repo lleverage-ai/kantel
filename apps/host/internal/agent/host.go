@@ -104,6 +104,8 @@ type Host struct {
 	events func(proto.Event)
 	// link makes calls to the control plane while connected.
 	link *caller
+	// usageAcks says the link's welcome had UsageAcks: usage ticks wait for Kantel's usage.ack (usage.go).
+	usageAcks bool
 	// usage samples the host and its sandboxes while RunUsage runs (usage.go).
 	usage *usageSampler
 }
@@ -269,7 +271,7 @@ func (h *Host) makeFacts() proto.Facts {
 		}
 	}
 	if h.cfg.usageInterval() > 0 {
-		features = append(features, proto.FeatureUsage)
+		features = append(features, proto.FeatureUsage, proto.FeatureUsageAcks)
 	}
 	if h.cfg.ImagePatching {
 		features = append(features, proto.FeatureImagePatching)

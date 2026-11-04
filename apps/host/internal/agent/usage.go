@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"slices"
 	"sync"
 	"time"
@@ -16,8 +18,12 @@ import (
 const (
 	// defaultUsageInterval is how often the host samples itself and its sandboxes (usageIntervalSeconds).
 	defaultUsageInterval = 5 * time.Second
-	// usageBacklog bounds the samples kept while the control plane can't be reached: past it the oldest go.
+	// usageBacklog bounds the samples kept, those not sent yet and those Kantel hasn't acknowledged (FeatureUsageAcks):
+	// past it the oldest go. 120 is 10 minutes at the default interval, a few hundred kilobytes for a busy host.
 	usageBacklog = 120
+	// unconfirmedWarnEvery spaces the warnings about acknowledged-delivery ticks dropped unacknowledged: with a control
+	// plane that never answers them, one goes every tick.
+	unconfirmedWarnEvery = 10 * time.Minute
 	// maxUsageSandboxes is the most sandboxes one tick names.
 	maxUsageSandboxes = 4096
 	// guestMemoryTimeout bounds asking one microVM's Firecracker for its guest's memory, which it answers from what it
@@ -61,10 +67,23 @@ type usageSampler struct {
 	// taken is the owner of each sandbox in the last reading (take's, for keep).
 	taken map[string]string
 
-	mu      sync.Mutex
-	queue   []proto.UsageSample
-	dropped int
-	latest  *proto.UsageSample
+	mu sync.Mutex
+	// queue is what waits, oldest first, in Seq order: samples not yet sent on the current link, and with acks those
+	// sent and not yet acknowledged (usage.ack).
+	queue []proto.UsageSample
+	// run names this sampler's run, and seq is the last Seq given (keep).
+	run string
+	seq uint64
+	// link is the connection the samples up to sentSeq went out on: on another, everything queued goes again.
+	link    *caller
+	sentSeq uint64
+	// everSent is the newest Seq sent on any link: a sample at or before it that the backlog drops may have arrived.
+	everSent uint64
+	// dropped are samples the backlog dropped before they were ever sent; unconfirmed, those it dropped sent but never
+	// acknowledged.
+	dropped     int
+	unconfirmed int
+	latest      *proto.UsageSample
 	// owners is the owner of each sandbox in a queued sample, to check again as it leaves.
 	owners map[string]string
 }
@@ -79,6 +98,7 @@ func (h *Host) newUsageSampler() *usageSampler {
 		readRSS:     usage.ReadRSS,
 		now:         time.Now,
 		counters:    usage.NewCounters(),
+		run:         newUsageRun(),
 	}
 	s.processes = func() []usage.Process {
 		if t, ok := h.tiers[microvm.Tier].(interface{ Processes() []usage.Process }); ok {
@@ -263,15 +283,31 @@ func (s *usageSampler) isolates(mem usage.Memory, sh usage.Shared) []proto.Sandb
 	return out
 }
 
-// keep queues a sample for the control plane, dropping the oldest past usageBacklog.
+// newUsageRun names a sampler's run: 16 hex digits, random, so a restarted host's Seq starting again at 1 is told
+// apart from the ticks Kantel had from the run before.
+func newUsageRun() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+// keep numbers a sample (Run, Seq) and queues it for the control plane, dropping the oldest past usageBacklog.
 func (s *usageSampler) keep(sample proto.UsageSample) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.seq++
+	sample.Seq, sample.Run = s.seq, s.run
 	s.latest = &sample
 	s.queue = append(s.queue, sample)
 	if over := len(s.queue) - usageBacklog; over > 0 {
+		for _, q := range s.queue[:over] {
+			if q.Seq <= s.everSent {
+				s.unconfirmed++
+			} else {
+				s.dropped++
+			}
+		}
 		s.queue = slices.Delete(s.queue, 0, over)
-		s.dropped += over
 	}
 	// The owners of what waits: the last reading's, and those still queued.
 	owners := make(map[string]string, len(s.taken))
@@ -305,29 +341,59 @@ func (s *usageSampler) ownerOf(sandboxID string) (string, bool) {
 	return owner, ok
 }
 
-// flush sends what waits, oldest first, one message a sample; a send that fails keeps it and what's after it for the
-// next try. It answers how many were sent and dropped since the last flush that sent any.
-func (s *usageSampler) flush(send func(proto.UsageSample) error) (sent, dropped int) {
+// flush sends on link what waits and hasn't gone on it yet, oldest first, one message a sample; a send that fails
+// keeps it and what's after it for the next try. On a link other than the last one's, everything queued goes again:
+// what went on the last may have been lost with it. With acks (the link's welcome had UsageAcks) a sample sent stays
+// queued until a usage.ack covers it (acked); without (an older control plane), it is done with once written, as
+// before. It answers how many were sent, and how many the backlog dropped (never sent, and sent but unacknowledged)
+// since the last flush that sent any.
+func (s *usageSampler) flush(link *caller, acks bool, send func(proto.UsageSample) error) (sent, dropped, unconfirmed int) {
 	for {
 		s.mu.Lock()
-		if len(s.queue) == 0 {
-			s.mu.Unlock()
-			return sent, dropped
+		if link != s.link {
+			s.link, s.sentSeq = link, 0
 		}
-		next := s.queue[0]
+		i := slices.IndexFunc(s.queue, func(q proto.UsageSample) bool { return q.Seq > s.sentSeq })
+		if i < 0 {
+			s.mu.Unlock()
+			return sent, dropped, unconfirmed
+		}
+		next := s.queue[i]
 		s.mu.Unlock()
 		if err := send(next); err != nil {
-			return sent, dropped
+			return sent, dropped, unconfirmed
 		}
 		s.mu.Lock()
-		if len(s.queue) > 0 && s.queue[0].At == next.At {
-			s.queue = s.queue[1:]
+		s.sentSeq = max(s.sentSeq, next.Seq)
+		s.everSent = max(s.everSent, next.Seq)
+		if !acks {
+			s.dropThrough(next.Seq)
 		}
 		if sent == 0 {
 			dropped, s.dropped = s.dropped, 0
+			unconfirmed, s.unconfirmed = s.unconfirmed, 0
 		}
 		s.mu.Unlock()
 		sent++
+	}
+}
+
+// acked lets go of the samples Kantel has taken: a usage.ack covers its Seq and every one before it. One from an
+// earlier connection is as good: what it covers was taken.
+func (s *usageSampler) acked(seq uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dropThrough(seq)
+}
+
+// dropThrough removes the queued samples up to seq; s.mu is held.
+func (s *usageSampler) dropThrough(seq uint64) {
+	n := 0
+	for n < len(s.queue) && s.queue[n].Seq <= seq {
+		n++
+	}
+	if n > 0 {
+		s.queue = slices.Delete(s.queue, 0, n)
 	}
 }
 
@@ -346,6 +412,7 @@ func (h *Host) RunUsage(ctx context.Context) {
 	s.take()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	var warnedUnconfirmed time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -355,32 +422,50 @@ func (h *Host) RunUsage(ctx context.Context) {
 			if sample, ok := s.take(); ok {
 				s.keep(sample)
 			}
-			if !h.connected() {
+			h.mu.Lock()
+			link, acks := h.link, h.usageAcks
+			h.mu.Unlock()
+			if link == nil {
 				continue
 			}
-			if sent, dropped := s.flush(h.sendUsage); dropped > 0 {
+			sent, dropped, unconfirmed := s.flush(link, acks, func(sample proto.UsageSample) error { return h.sendUsage(link, sample) })
+			if dropped > 0 {
 				h.log.Warn("usage samples dropped while the control plane was out of reach", "dropped", dropped, "sent", sent)
+			}
+			if unconfirmed > 0 && time.Since(warnedUnconfirmed) >= unconfirmedWarnEvery {
+				warnedUnconfirmed = time.Now()
+				h.log.Warn("usage samples dropped from the backlog before the control plane acknowledged them", "dropped", unconfirmed)
 			}
 		}
 	}
 }
 
-// sendUsage sends one sample as a "usage" message over the current connection. A control plane that doesn't know the
-// type drops it (packages/hosts/src/hub.ts answers a type it doesn't know with nothing, and keeps the connection), so
-// this needs no gate.
-func (h *Host) sendUsage(sample proto.UsageSample) error {
+// sendUsage sends one sample as a "usage" message on link. A control plane that doesn't know the type drops it
+// (packages/hosts/src/hub.ts answers a type it doesn't know with nothing, and keeps the connection), and one that
+// predates FeatureUsageAcks ignores Run and Seq, so this needs no gate.
+func (h *Host) sendUsage(link *caller, sample proto.UsageSample) error {
 	h.mu.Lock()
-	c, s := h.link, h.usage
+	s := h.usage
 	h.mu.Unlock()
 	if s != nil {
 		sample = s.leaving(sample, h.usageVisible)
 	}
-	if c == nil {
+	if link == nil {
 		return errDisconnected
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return c.send(ctx, proto.Message{Type: "usage", Usage: &sample})
+	return link.send(ctx, proto.Message{Type: "usage", Usage: &sample})
+}
+
+// usageAcked is Kantel's usage.ack: the samples up to seq are taken, so the backlog lets them go.
+func (h *Host) usageAcked(seq uint64) {
+	h.mu.Lock()
+	s := h.usage
+	h.mu.Unlock()
+	if s != nil {
+		s.acked(seq)
+	}
 }
 
 // usageVisible says whether a sandbox of owner (its space) is the control plane's to see: all are, unless the host
