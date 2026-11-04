@@ -69,9 +69,7 @@ export function SettingsFrame({
 	return (
 		<div className="flex min-w-0 flex-col gap-5">
 			{titled ? (
-				<header
-					className="kt-page-header flex min-h-control-md min-w-0 items-center border-b border-border pb-3"
-				>
+				<header className="kt-page-header flex min-h-control-md min-w-0 items-center border-b border-border pb-3">
 					<h1 className={`kt-page-header-title m-0 truncate font-strong leading-tight text-fg text-heading`}>
 						{label}
 					</h1>

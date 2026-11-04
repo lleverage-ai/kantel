@@ -9,7 +9,13 @@ import { Button } from "../primitives/button.tsx";
 import { CopyButton, Disclosure, TextAreaField } from "../primitives/controls.tsx";
 import { clockTime } from "../primitives/format.ts";
 import { DownloadIcon } from "../primitives/lucide.tsx";
-import { BreakableCommand, CommandBlock, commandFrameClass, commandPromptClass, commandTextClass } from "../primitives/one-time-secret.tsx";
+import {
+	BreakableCommand,
+	CommandBlock,
+	commandFrameClass,
+	commandPromptClass,
+	commandTextClass,
+} from "../primitives/one-time-secret.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { Notice } from "../primitives/surface.tsx";
 import { CLI_INSTALL_COMMAND, type SandboxAccess, type SandboxesSource, type SandboxSshKey } from "./compute-model.ts";
