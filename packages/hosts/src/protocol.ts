@@ -84,7 +84,68 @@ export const HOST_FEATURES = {
 	 * only where bound, refuses older `revision`s, and a fork takes its `env`.
 	 */
 	egressPolicy: "egress-policy",
+	/**
+	 * Bundle mounts (`HostMount` of kind `bundle` in a create, start, resume, fork or recover): the host fetches the
+	 * bundle's tar (`GET /v1/hosts/bundles/{digest}`), mounts it read-only, and answers each mount's status in the
+	 * sandbox it returns (`HostSandbox.mounts`). Without it, Kantel sends no mounts and marks them `failed`.
+	 */
+	mountsBundle: "mounts-bundle",
+	/**
+	 * Bucket mounts (`HostMount` of kind `bucket`): the host fetches the bucket source with `bucket.fetch`, mounts the
+	 * prefix read-only, and answers its status as for bundles.
+	 */
+	mountsBucket: "mounts-bucket",
+	/** `sandbox.files.open`: a file's bytes streamed both ways on a port stream (signed file URLs, archives). */
+	fileStreams: "file-streams",
 } as const;
+
+/**
+ * A read-only mount, as a create (and every boot after it) carries it in `mounts`. Never a credential: a bucket's
+ * settings and credentials are fetched with `bucket.fetch`, and a bundle's tar over HTTP, by the host that needs them.
+ */
+export type HostMount =
+	| { readonly path: string; readonly kind: "bundle"; readonly digest: string }
+	| {
+			readonly path: string;
+			readonly kind: "bucket";
+			readonly bucketSourceId: string;
+			readonly prefix: string;
+			readonly refreshTtlSeconds?: number;
+	  };
+
+/** A mount's status as the host reports it, by path. */
+export interface HostMountStatus {
+	readonly path: string;
+	readonly status: "pending" | "ready" | "failed";
+	readonly error?: string;
+}
+
+/** The answer to a host's `bucket.fetch` `{ sandboxId, bucketSourceId }`: what reads the bucket, in host memory only. */
+export interface HostBucketSource {
+	readonly id: string;
+	readonly provider: "s3" | "gcs";
+	readonly bucket: string;
+	readonly endpoint?: string;
+	readonly region?: string;
+	readonly credentials?:
+		| { readonly accessKeyId: string; readonly secretAccessKey: string; readonly sessionToken?: string }
+		| { readonly serviceAccountKey: string };
+}
+
+/**
+ * `sandbox.files.open`'s params: a file of a sandbox on a port stream (`HOST_FEATURES.fileStreams`). `read`: the host
+ * answers `{ size }`, sends the file's bytes on the stream and closes it. `write`: Kantel sends the bytes, then an
+ * empty frame for the end; the host writes them beside the file, moves them over it once all have arrived, and closes
+ * the stream with a reason of `ok <size>`, or `error <code>: <message>` (nothing is moved then).
+ */
+export interface HostFileOpen {
+	readonly sandboxId: string;
+	readonly stream: number;
+	readonly path: string;
+	readonly op: "read" | "write";
+	/** For a write: the file's permissions, such as 0o644 (the default). */
+	readonly mode?: number;
+}
 
 /** Whether an egress needs the `egress-policy` feature to be enforced: it has grants or protected variables. */
 export function needsEgressPolicy(egress: HostEgress | null | undefined): boolean {
@@ -121,6 +182,8 @@ export interface HostSandbox {
 	readonly timings?: { readonly [step: string]: number };
 	/** How a create was served: `pool`, `snapshot` or `boot`. */
 	readonly source?: string;
+	/** Its mounts' statuses, from a host with a mounts feature. */
+	readonly mounts?: readonly HostMountStatus[];
 }
 
 export interface HostSnapshot {
@@ -301,7 +364,17 @@ export const HostMethods = {
 	secrets: "sandbox.secrets",
 	/** Host to Kantel: `{ sandboxId }`, answered with `HostSecrets`, or `not_found` for a sandbox not on that host. */
 	secretsFetch: "secrets.fetch",
+	/** A file's bytes on a port stream, `HostFileOpen`; answered `{ size? }` once it is open. */
+	fileOpen: "sandbox.files.open",
+	/**
+	 * Host to Kantel: `{ sandboxId, bucketSourceId }`, answered with `HostBucketSource`, or `not_found` unless the
+	 * sandbox is on that host and mounts that bucket source.
+	 */
+	bucketFetch: "bucket.fetch",
 } as const;
+
+/** An event a host sends when a sandbox's mounts change status after its create answered: `HostSandbox.mounts`. */
+export const HOST_EVENT_MOUNTS = "sandbox.mounts";
 
 export type HostMethod = (typeof HostMethods)[keyof typeof HostMethods];
 

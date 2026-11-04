@@ -18,7 +18,7 @@
  * swap in on requests to the variable's bindings.
  */
 import { computeSchema, type PublicComputeRoutes, type RouteHandlers, type SignedInComputeRoutes } from "@kantel/api";
-import { KantelError } from "@kantel/contracts";
+import { KantelError, MOUNTS_OFF } from "@kantel/contracts";
 import type { ChainEntry } from "@kantel/e2e/chain";
 import {
 	type Acting,
@@ -41,11 +41,13 @@ import type {
 	BackendEgress,
 	BackendEgressGrant,
 	BackendFileEntry,
+	BackendMountStatus,
 	BootOptions,
 	Placement,
 	SandboxBackend,
 } from "./backend.ts";
 import { createE2EChains } from "./e2e.ts";
+import type { MountsOptions, ResolvedBucketSource, StoredBlob } from "./mounts.ts";
 import { createEphemeralSealer, createSealer, type SealedValue, type Sealer, sealedAt } from "./secrets.ts";
 import type {
 	ComputeStore,
@@ -132,6 +134,12 @@ export interface ComputeServiceOptions {
 	 * `KANTEL_ACCOUNT_HOSTS=experimental`, and only where sandboxes run on hosts.
 	 */
 	readonly accountHosts?: boolean;
+	/**
+	 * Read-only mounts, bundles, bucket sources, signed file URLs and archive extraction (experimental). Absent, off:
+	 * their routes, and a create naming `mounts`, answer `not_supported`. The gateways turn it on with
+	 * `KANTEL_MOUNTS=experimental`.
+	 */
+	readonly mounts?: MountsOptions;
 	/** The console page where a person approves a device sign-in, with `{url}` for the public URL. */
 	readonly deviceLoginUrl?: string;
 	/** Default `PLACEHOLDER_RATES`. */
@@ -250,10 +258,40 @@ export interface ComputeService {
 	 * sandbox not on `hostId` are dropped, and a path's query string is never kept.
 	 */
 	recordEgress(hostId: string, records: readonly ReportedEgress[]): Promise<void>;
+	/**
+	 * A bundle's tar, for the host that asked (`GET /v1/hosts/bundles/{digest}`): `undefined` unless `sandboxId` is on
+	 * `hostId` (or still starting, so being placed there) and mounts `digest`. Mounts off: always `undefined`.
+	 */
+	bundleForHost(hostId: string, sandboxId: string, digest: string): Promise<StoredBlob | undefined>;
+	/**
+	 * A bucket source with its credentials opened, for the host that asked over its link (`bucket.fetch`): `undefined`
+	 * unless `sandboxId` is on `hostId` (or still starting) and mounts `bucketSourceId`. `unavailable` when its
+	 * credentials don't open. Mounts off: always `undefined`.
+	 */
+	bucketSourceForHost(
+		hostId: string,
+		sandboxId: string,
+		bucketSourceId: string,
+	): Promise<ResolvedBucketSource | undefined>;
+	/**
+	 * A host's later word on a sandbox's mounts (a `sandbox.mounts` event): each status replaces the one at its path.
+	 * Dropped unless the sandbox is on `hostId`; a path the sandbox doesn't mount is ignored.
+	 */
+	reportMounts(hostId: string, sandboxId: string, mounts: readonly BackendMountStatus[]): Promise<void>;
+	/**
+	 * Answers a signed file URL (`GET` or `PUT /v1/file-urls/{token}`), which takes no credential: the token is the
+	 * grant. Streams the file out, or the request's body in.
+	 */
+	serveFileUrl(token: string, request: Request): Promise<Response>;
 	/** Resolves once every lifecycle operation and detached command started so far has ended. */
 	idle(): Promise<void>;
 	/** Kills the detached commands and waits for the work under way. */
 	close(): Promise<void>;
+}
+
+/** What a mounts route answers with mounts off. */
+async function mountsOff(): Promise<never> {
+	throw new KantelError("not_supported", MOUNTS_OFF);
 }
 
 /** A port's URL as a sandbox's record keeps it: without its token, which only the answer to exposing it shows. */
@@ -4133,6 +4171,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		removeAccountHost: async (principal, { params }) =>
 			revokeStoredHost((await accountHostFor(principal, params.hostId, "account:admin")).host),
+
+		createUploadUrl: mountsOff,
+		createDownloadUrl: mountsOff,
+		extractArchive: mountsOff,
+		uploadBundle: mountsOff,
+		listBundles: mountsOff,
+		getBundle: mountsOff,
+		deleteBundle: mountsOff,
+		createBucketSource: mountsOff,
+		listBucketSources: mountsOff,
+		getBucketSource: mountsOff,
+		deleteBucketSource: mountsOff,
 	};
 
 	async function idle(): Promise<void> {
@@ -4379,6 +4429,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		async close() {
 			for (const controller of runningCommands.values()) controller.abort();
 			await idle();
+		},
+
+		async bundleForHost() {
+			return undefined;
+		},
+
+		async bucketSourceForHost() {
+			return undefined;
+		},
+
+		async reportMounts() {},
+
+		async serveFileUrl() {
+			return mountsOff();
 		},
 
 		idle,

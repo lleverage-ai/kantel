@@ -69,6 +69,30 @@ export interface SandboxSpec {
 	readonly fromSnapshot?: string;
 	/** The account's egress proxy settings when they're on; a backend that can't enforce them ignores them. */
 	readonly egress?: BackendEgress;
+	/**
+	 * Read-only mounts (experimental, `KANTEL_MOUNTS`): microVMs only. A backend answers each one's status in
+	 * `Placement.mounts`; one it doesn't answer is marked `failed` by the service, so a backend that predates mounts
+	 * never leaves one looking mounted.
+	 */
+	readonly mounts?: readonly BackendMount[];
+}
+
+/**
+ * A mount as the backend is given it. A bundle's bytes are fetched by digest (`ComputeService.bundleForHost`, or over
+ * HTTP at `GET /v1/hosts/bundles/{digest}?sandboxId=` with the host's credential); a bucket source's settings and
+ * opened credentials by ID (`ComputeService.bucketSourceForHost`, `bucket.fetch` over the host's link). Neither is
+ * sent with the spec, so no credential rides a create.
+ */
+export interface BackendMount {
+	readonly path: string;
+	readonly source: computeSchema.MountSource;
+}
+
+/** A mount's status as the backend reports it, by path. */
+export interface BackendMountStatus {
+	readonly path: string;
+	readonly status: computeSchema.MountStatus;
+	readonly error?: string;
 }
 
 /**
@@ -113,6 +137,12 @@ export interface Placement {
 	readonly hostId: string;
 	readonly resources?: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number };
 	readonly capabilities: computeSchema.SandboxCapabilities;
+	/**
+	 * The status of each of the spec's or boot's mounts the backend handled, by path. A mount it doesn't answer for is
+	 * `failed` ("this host can't mount …"). A later change (`pending` to `ready`) comes through
+	 * `ComputeService.reportMounts`.
+	 */
+	readonly mounts?: readonly BackendMountStatus[];
 }
 
 /** How to boot a machine for a sandbox that has none. */
@@ -123,6 +153,8 @@ export interface BootOptions {
 	readonly env: { readonly [name: string]: string };
 	readonly eligibleHosts: readonly string[];
 	readonly egress?: BackendEgress;
+	/** The sandbox's mounts, mounted again on the new machine. */
+	readonly mounts?: readonly BackendMount[];
 	/**
 	 * The revision of the sandbox's egress the boot carries, with no egress too: the boot states its egress (none is the
 	 * host's default), and an update read before it is refused as older.
@@ -154,6 +186,15 @@ export interface ExecResult {
 	readonly stderr: string;
 	readonly timedOut: boolean;
 }
+
+/** A file being read as a stream: its size, when known up front, and its bytes. */
+export interface FileStream {
+	readonly size?: number;
+	readonly body: ReadableStream<Uint8Array>;
+}
+
+/** The largest body the service collects to write with `writeFile`, for a backend without `writeFileStream`. */
+export const MAX_UNSTREAMED_WRITE_BYTES = 64 * 1024 * 1024;
 
 /** A part of a file: at most `length` bytes from `offset`. */
 export interface FileRange {
@@ -226,6 +267,22 @@ export interface SandboxBackend {
 	recover(sandboxId: string, options: BootOptions): Promise<Placement>;
 	/** Lets the machine go for good; its snapshots are deleted separately. */
 	destroy(sandboxId: string): Promise<void>;
+	/**
+	 * Streams a file out of a running sandbox, whatever its size (signed download URLs). Absent, the service reads it
+	 * with `readFile` a part at a time.
+	 */
+	readFileStream?(sandboxId: string, path: string): Promise<FileStream>;
+	/**
+	 * Streams `body` into a file, making its directories, replacing what was there only once the whole body has arrived
+	 * (signed upload URLs, archives). Absent, the service collects the body (up to `MAX_UNSTREAMED_WRITE_BYTES`) and
+	 * uses `writeFile`.
+	 */
+	writeFileStream?(
+		sandboxId: string,
+		path: string,
+		body: ReadableStream<Uint8Array>,
+		mode?: number,
+	): Promise<{ readonly size: number }>;
 	/** Runs a command line and answers when it ends, or at its timeout. */
 	exec(sandboxId: string, request: ExecRequest): Promise<ExecResult>;
 	/** Reads a file, or with a range, at most `range.length` bytes of it from `range.offset`. */
