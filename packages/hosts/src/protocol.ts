@@ -450,14 +450,24 @@ export interface HostSandboxUsage {
 	readonly kind: SandboxTier;
 	readonly cpu: number;
 	/**
-	 * As kantel-host measures it from the host's side (`SandboxUsage` in apps/host/internal/proto/proto.go): a microVM's
-	 * Firecracker process's resident memory (the guest memory it has touched, page cache included, and the VMM's own); an
-	 * isolate's even share of its account's runtime's resident memory.
+	 * As kantel-host measures it, with nothing run in the sandbox (`SandboxUsage` in apps/host/internal/proto/proto.go): a
+	 * microVM's guest's own count of its used memory, MemTotal - MemAvailable as its balloon driver reports them to
+	 * Firecracker (`memSource` `guest`: page cache not counted, and it falls when the guest frees memory); else, for a VM
+	 * without those figures, its Firecracker process's resident memory (`rss`: the guest memory it has touched, page cache
+	 * included, and the VMM's own; it never falls). An isolate's even share of its account's runtime's resident memory.
 	 */
 	readonly memUsedBytes: number;
 	/** A microVM's size's memory; an isolate's even share of its account's runtime's memory limit. */
 	readonly memLimitBytes: number;
+	/**
+	 * Where `memUsedBytes` came from: `guest` (the guest's own count) or `rss` (the host process's resident memory). A host
+	 * that predates it sends none, and its figures are all `rss`.
+	 */
+	readonly memSource?: HostMemorySource;
 }
+
+/** `HostSandboxUsage.memSource`. */
+export type HostMemorySource = "guest" | "rss";
 
 export interface HostHello {
 	readonly hostId: string;

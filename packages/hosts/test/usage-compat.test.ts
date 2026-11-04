@@ -7,7 +7,7 @@ import { facts } from "./fake-host.ts";
 
 /** What kantel-host's Go side marshals (TestUsageEventWireShape in apps/host/internal/agent/usage_test.go). */
 const USAGE_FRAME =
-	'{"type":"usage","usage":{"at":1,"intervalMs":5000,"host":{"cpu":0.25,"memUsedBytes":1,"memTotalBytes":2,"diskUsedBytes":3,"diskTotalBytes":4},"sandboxes":[{"id":"sbx_a","kind":"microvm","cpu":0.5,"memUsedBytes":5,"memLimitBytes":6}]}}';
+	'{"type":"usage","usage":{"at":1,"intervalMs":5000,"host":{"cpu":0.25,"memUsedBytes":1,"memTotalBytes":2,"diskUsedBytes":3,"diskTotalBytes":4},"sandboxes":[{"id":"sbx_a","kind":"microvm","cpu":0.5,"memUsedBytes":5,"memLimitBytes":6,"memSource":"guest"}]}}';
 
 const hubs: HostHub[] = [];
 

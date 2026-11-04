@@ -703,13 +703,27 @@ type SandboxUsage struct {
 	// Kind is the tier: "microvm" or "isolate".
 	Kind string  `json:"kind"`
 	CPU  float64 `json:"cpu"`
-	// MemUsedBytes, for a microVM, is its Firecracker process's resident memory: the guest memory the VM has touched
-	// (the guest's page cache too, and nothing is given back without a balloon) and the VMM's own. MemLimitBytes is its
-	// size's memory. An isolate gets an even share of its account's runtime's resident memory and memory (workerd
-	// says nothing of an isolate's own).
+	// MemUsedBytes, for a microVM, is what its guest counts as used, MemTotal - MemAvailable as its virtio_balloon
+	// driver reports them to Firecracker (MemSource "guest"): so not its page cache, and it falls when the guest frees
+	// memory. A VM without the balloon's statistics (one restored from a snapshot made before them, or a kernel
+	// without the driver) gets its Firecracker process's resident memory instead (MemSource "rss"): the guest memory the
+	// VM has touched, page cache included, which never falls, and the VMM's own. MemLimitBytes is its size's memory. An
+	// isolate gets an even share of its account's runtime's resident memory and memory ("rss"; workerd says nothing of
+	// an isolate's own).
 	MemUsedBytes  int64 `json:"memUsedBytes"`
 	MemLimitBytes int64 `json:"memLimitBytes"`
+	// MemSource is where MemUsedBytes came from, MemSourceGuest or MemSourceRSS. A host that predates it sends none
+	// (its figures are all "rss").
+	MemSource string `json:"memSource,omitempty"`
 }
+
+// SandboxUsage.MemSource's values.
+const (
+	// MemSourceGuest is the guest's own count of its used memory (MemTotal - MemAvailable), read from outside it.
+	MemSourceGuest = "guest"
+	// MemSourceRSS is the resident memory of the host process that runs the sandbox (or the sandbox's share of it).
+	MemSourceRSS = "rss"
+)
 
 // Methods.
 const (

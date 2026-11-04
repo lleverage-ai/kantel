@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"math"
@@ -98,7 +99,8 @@ func TestUsageSampleHostAndMicroVMs(t *testing.T) {
 	}
 	a := got["sbx_a"]
 	approx(t, "sbx_a cpu", a.CPU, 0.5)
-	if a.Kind != "microvm" || a.MemUsedBytes != 700<<20 || a.MemLimitBytes != 2<<30 {
+	// No guest figures to read (ReadGuest unset): its Firecracker's resident memory, and it says so.
+	if a.Kind != "microvm" || a.MemUsedBytes != 700<<20 || a.MemLimitBytes != 2<<30 || a.MemSource != proto.MemSourceRSS {
 		t.Fatalf("sbx_a %+v", a)
 	}
 
@@ -151,6 +153,87 @@ func TestUsageSampleCounterReset(t *testing.T) {
 	}
 	approx(t, "host", sample.Host.CPU, 0.5)
 	approx(t, "sbx_a", byID(sample)["sbx_a"].CPU, 0.5)
+}
+
+// A microVM's memory is its guest's own count, MemTotal - MemAvailable from its balloon's statistics: it falls when the
+// guest frees memory, while its Firecracker's resident memory stays at its high point.
+func TestUsageSampleMicroVMGuestMemory(t *testing.T) {
+	guest := usage.Memory{Total: 1_950 << 20, Available: 1_450 << 20}
+	var guestErr error
+	var asked int
+	f := &fakeProc{
+		host:  usage.HostCPU{Total: 1_000, Idle: 500},
+		procs: map[int]usage.ProcCPU{100: {Ticks: 10, Start: 7}},
+		rss:   map[int]int64{100: 600 << 20},
+		vms: []usage.Process{{SandboxID: "sbx_a", Pid: 100, CPUs: 2, MemLimitBytes: 2 << 30,
+			ReadGuest: func(ctx context.Context) (usage.Memory, error) {
+				asked++
+				if _, ok := ctx.Deadline(); !ok {
+					t.Error("the guest's figures are read with a deadline")
+				}
+				return guest, guestErr
+			}}},
+	}
+	s := f.sampler()
+	t0 := time.Unix(10_000, 0)
+	tick := 0
+	read := func() proto.SandboxUsage {
+		t.Helper()
+		tick++
+		f.host.Total += 1_000
+		f.host.Idle += 500
+		f.procs[100] = usage.ProcCPU{Ticks: f.procs[100].Ticks + 100, Start: 7}
+		sample, ok := s.sample(t0.Add(time.Duration(tick) * 5 * time.Second))
+		if !ok {
+			t.Fatal("want a sample")
+		}
+		got, ok := byID(sample)["sbx_a"]
+		if !ok {
+			t.Fatalf("no sbx_a in %+v", sample.Sandboxes)
+		}
+		return got
+	}
+	s.sample(t0)
+
+	a := read()
+	if a.MemUsedBytes != 500<<20 || a.MemSource != proto.MemSourceGuest || a.MemLimitBytes != 2<<30 {
+		t.Fatalf("at rest %+v", a)
+	}
+	// The guest takes 1 GiB: both rise.
+	guest.Available -= 1 << 30
+	f.rss[100] = 1_900 << 20
+	if a = read(); a.MemUsedBytes != 1_524<<20 || a.MemSource != proto.MemSourceGuest {
+		t.Fatalf("after the allocation %+v", a)
+	}
+	// And frees it: the guest's figure falls back, though the process keeps every page it touched.
+	guest.Available += 1 << 30
+	if a = read(); a.MemUsedBytes != 500<<20 || a.MemSource != proto.MemSourceGuest {
+		t.Fatalf("after the free %+v", a)
+	}
+
+	// No statistics (a VM restored from a snapshot made before the balloon): resident memory, marked as such.
+	guestErr = errors.New("firecracker GET /balloon/statistics: 400")
+	if a = read(); a.MemUsedBytes != 1_900<<20 || a.MemSource != proto.MemSourceRSS {
+		t.Fatalf("without statistics %+v", a)
+	}
+	// Figures that make no sense are not taken either.
+	guestErr = nil
+	for _, bad := range []usage.Memory{{}, {Total: 1 << 30, Available: 2 << 30}, {Total: 1 << 30, Available: -1}} {
+		guest = bad
+		if a = read(); a.MemUsedBytes != 1_900<<20 || a.MemSource != proto.MemSourceRSS {
+			t.Fatalf("from %+v: %+v", bad, a)
+		}
+	}
+
+	// A held sandbox isn't asked: its lock may be a snapshot's, with its Firecracker busy.
+	before := asked
+	f.vms[0].Held = true
+	f.host.Total += 1_000
+	f.host.Idle += 500
+	s.sample(t0.Add(time.Duration(tick+1) * 5 * time.Second))
+	if asked != before {
+		t.Fatal("a held sandbox's guest was asked")
+	}
 }
 
 func TestUsageSampleIsolatesShareTheirRuntime(t *testing.T) {
@@ -401,13 +484,13 @@ func TestUsageEventWireShape(t *testing.T) {
 	m := proto.Message{Type: "usage", Usage: &proto.UsageSample{
 		At: 1, IntervalMs: 5000,
 		Host:      proto.HostUsage{CPU: 0.25, MemUsedBytes: 1, MemTotalBytes: 2, DiskUsedBytes: 3, DiskTotalBytes: 4},
-		Sandboxes: []proto.SandboxUsage{{ID: "sbx_a", Kind: "microvm", CPU: 0.5, MemUsedBytes: 5, MemLimitBytes: 6}},
+		Sandboxes: []proto.SandboxUsage{{ID: "sbx_a", Kind: "microvm", CPU: 0.5, MemUsedBytes: 5, MemLimitBytes: 6, MemSource: "guest"}},
 	}}
 	raw, err := json.Marshal(m)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"type":"usage","usage":{"at":1,"intervalMs":5000,"host":{"cpu":0.25,"memUsedBytes":1,"memTotalBytes":2,"diskUsedBytes":3,"diskTotalBytes":4},"sandboxes":[{"id":"sbx_a","kind":"microvm","cpu":0.5,"memUsedBytes":5,"memLimitBytes":6}]}}`
+	want := `{"type":"usage","usage":{"at":1,"intervalMs":5000,"host":{"cpu":0.25,"memUsedBytes":1,"memTotalBytes":2,"diskUsedBytes":3,"diskTotalBytes":4},"sandboxes":[{"id":"sbx_a","kind":"microvm","cpu":0.5,"memUsedBytes":5,"memLimitBytes":6,"memSource":"guest"}]}}`
 	if string(raw) != want {
 		t.Fatalf("got  %s\nwant %s", raw, want)
 	}

@@ -921,7 +921,13 @@ export const SandboxSeriesPoint = Type.Object(
 			maximum: 1,
 			description: "CPU utilisation over the interval ending at `at`, 0 to 1 of the sandbox's own vCPUs.",
 		}),
-		memUsedBytes: Type.Integer({ minimum: 0, description: "Memory in use at `at`." }),
+		memUsedBytes: Type.Integer({
+			minimum: 0,
+			description:
+				"Memory in use at `at`. For a microVM, what its guest counts as used (total less available, page cache not " +
+				"counted), so it falls when the guest frees memory; from a host or VM that can't report that, the memory " +
+				"the VM holds on its host, which stays near its high point. For an isolate, its share of its account's runtime.",
+		}),
 	},
 	{ title: "SandboxSeriesPoint" },
 );
