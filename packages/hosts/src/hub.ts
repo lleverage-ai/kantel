@@ -142,6 +142,8 @@ export interface HostHubOptions {
 	 */
 	onHello(hostId: string, hello: HostHello): Promise<HostWelcome>;
 	onHeartbeat?(hostId: string, capacity: HostCapacity): void;
+	/** A welcomed host's usage tick (a `usage` message), as it came: the service checks it. */
+	onUsage?(hostId: string, usage: unknown): void;
 	/** A sandbox changed state (an event not tied to a call). */
 	onEvent?(hostId: string, event: HostEvent): void;
 	/** The host's current connection ended. */
@@ -506,6 +508,9 @@ export function createHostHub(options: HostHubOptions): HostHub {
 						return;
 					case "heartbeat":
 						if (isObject(message.heartbeat)) options.onHeartbeat?.(hostId, message.heartbeat.capacity);
+						return;
+					case "usage":
+						if (connection.welcomed && isObject(message.usage)) options.onUsage?.(hostId, message.usage);
 						return;
 					case "result": {
 						const id = typeof message.id === "string" ? message.id : undefined;

@@ -34,6 +34,17 @@ import (
 // Server is the guest agent's HTTP handler.
 type Server struct {
 	Version string
+	// Injected: Kantel put this agent into the image at boot (kantel-guest init), so the image may be any Linux root
+	// filesystem: the agent configures the network itself, serves SSH itself (port 22's stream is its own SSH server,
+	// whatever the image has), and runs commands as root where the image has no `user`.
+	Injected bool
+	// Init is PID 1: "systemd" (the image's) or "kantel" (kantel-guest init's own, for an image without systemd).
+	Init string
+
+	sshOnce    sync.Once
+	ssh        *SSHServer
+	expectOnce sync.Once
+	expect     []string
 
 	mu       sync.Mutex
 	identity *Identity
@@ -44,6 +55,7 @@ type Server struct {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.health)
+	mux.HandleFunc("GET /capabilities", s.capabilities)
 	mux.HandleFunc("POST /identity", s.setIdentity)
 	mux.HandleFunc("POST /exec", s.exec)
 	mux.HandleFunc("POST /sync", s.sync)
@@ -80,9 +92,16 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	if _, err := os.Stat("/run/docker.sock"); err == nil {
 		ready = append(ready, "docker")
 	}
+	if s.Injected && !slicesContains(ready, "ssh") {
+		// The agent's own SSH server answers port 22's stream (sshServer).
+		ready = append(ready, "ssh")
+	}
 	sort.Strings(ready)
 	raw, _ := os.ReadFile(ReadyFile)
 	expect := parseReady(string(raw))
+	if len(expect) == 0 && s.Injected {
+		expect = s.expected()
+	}
 	s.mu.Lock()
 	id := ""
 	if s.identity != nil {
@@ -90,6 +109,44 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 	}
 	s.mu.Unlock()
 	writeJSON(w, 200, Health{OK: true, BootID: strings.TrimSpace(string(boot)), Uptime: uptime, Identity: id, Version: s.Version, Ready: ready, Expect: expect})
+}
+
+// expected is what an injected agent's image runs, from what it has, so a template of a plain image (no ReadyFile)
+// doesn't wait for a desktop it will never have. Always ssh: the agent's own, so never empty (which would mean "the
+// host's defaults").
+func (s *Server) expected() []string {
+	s.expectOnce.Do(func() {
+		c := Detect("/", s.Version, s.Init, true)
+		s.expect = []string{"ssh"}
+		if c.Desktop.Available {
+			s.expect = append(s.expect, "desktop", "stream")
+		}
+		if c.Browser.Available {
+			s.expect = append(s.expect, "browser")
+		}
+		if c.Docker.Available {
+			s.expect = append(s.expect, "docker")
+		}
+	})
+	return s.expect
+}
+
+func slicesContains(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
+// capabilities reports what the image has (Detect), for the host to pass on as the sandbox's capabilities.guest.
+func (s *Server) capabilities(w http.ResponseWriter, _ *http.Request) {
+	pid1 := s.Init
+	if pid1 == "" {
+		pid1 = "systemd"
+	}
+	writeJSON(w, 200, Detect("/", s.Version, pid1, s.Injected))
 }
 
 // parseReady reads a ReadyFile: one service per line; blank lines and # comments are skipped.
@@ -138,7 +195,7 @@ func (s *Server) setIdentity(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err)
 		return
 	}
-	if err := applyIdentity(&id); err != nil {
+	if err := s.applyIdentity(&id); err != nil {
 		fail(w, 500, err)
 		return
 	}
@@ -149,7 +206,10 @@ func (s *Server) setIdentity(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
-func applyIdentity(id *Identity) error {
+func (s *Server) applyIdentity(id *Identity) error {
+	if s.Injected {
+		ensureAPIHome()
+	}
 	if id.Entropy != "" {
 		if raw, err := base64.StdEncoding.DecodeString(id.Entropy); err == nil {
 			_ = addEntropy(raw)
@@ -164,7 +224,12 @@ func applyIdentity(id *Identity) error {
 		_ = os.WriteFile("/etc/hostname", []byte(id.Hostname+"\n"), 0o644)
 		_ = os.WriteFile("/etc/hosts", []byte(fmt.Sprintf("127.0.0.1 localhost\n127.0.1.1 %s\n::1 localhost ip6-localhost ip6-loopback\n", id.Hostname)), 0o644)
 	}
-	if id.Address != "" {
+	if id.Address != "" && s.Injected {
+		// Any image: no ip(8) to count on (debian:trixie and busybox have none), so netlink directly.
+		if err := ConfigureInterface("eth0", id.Address, id.Gateway); err != nil {
+			return fmt.Errorf("eth0: %w", err)
+		}
+	} else if id.Address != "" {
 		// One ip process for the lot: each process costs milliseconds in a just-restored VM.
 		batch := "link set eth0 up\naddr flush dev eth0\naddr add " + id.Address + " dev eth0\n"
 		if id.Gateway != "" {
@@ -202,13 +267,18 @@ func applyIdentity(id *Identity) error {
 		_ = os.Remove("/etc/kantel/proxy.env")
 	}
 	if id.CACert != "" {
+		_ = os.MkdirAll("/usr/local/share/ca-certificates", 0o755)
 		_ = os.WriteFile("/usr/local/share/ca-certificates/kantel-egress.crt", []byte(id.CACert), 0o644)
-		_ = run("update-ca-certificates")
+		if err := run("update-ca-certificates"); err != nil && s.Injected {
+			// An image without ca-certificates' tool (busybox): the bundle programs read, with the CA added once.
+			trustCA(id.CACert)
+		}
 	}
 	if id.Fresh {
 		machineID := make([]byte, 16)
 		_, _ = rand.Read(machineID)
 		_ = os.WriteFile("/etc/machine-id", []byte(hex.EncodeToString(machineID)+"\n"), 0o444)
+		_ = os.MkdirAll("/etc/ssh", 0o755)
 		for _, f := range []string{"/etc/ssh/ssh_host_ed25519_key", "/etc/ssh/ssh_host_ed25519_key.pub", "/etc/ssh/ssh_host_rsa_key", "/etc/ssh/ssh_host_rsa_key.pub", "/etc/ssh/ssh_host_ecdsa_key", "/etc/ssh/ssh_host_ecdsa_key.pub"} {
 			_ = os.Remove(f)
 		}
@@ -216,16 +286,25 @@ func applyIdentity(id *Identity) error {
 			return err
 		}
 		// sshd fails to start with no host keys (a template, a fresh clone), so restart rather than try-restart, which
-		// leaves a failed unit alone.
-		if err := run("systemctl", "restart", "--no-block", "ssh.service"); err != nil {
-			return err
+		// leaves a failed unit alone. An injected agent is the SSH server, and reads the key per connection.
+		if !s.Injected {
+			if err := run("systemctl", "restart", "--no-block", "ssh.service"); err != nil {
+				return err
+			}
 		}
 	}
 	if id.SSHAuthorizedKeys != nil {
-		if err := os.MkdirAll("/home/user/.ssh", 0o700); err == nil {
-			_ = os.WriteFile("/home/user/.ssh/authorized_keys", []byte(strings.Join(id.SSHAuthorizedKeys, "\n")+"\n"), 0o600)
-			_ = os.Chown("/home/user/.ssh", 1000, 1000)
-			_ = os.Chown("/home/user/.ssh/authorized_keys", 1000, 1000)
+		home, uid, gid := "/home/user", 1000, 1000
+		if u, err := LoginUser(""); err == nil && s.Injected {
+			home = u.HomeDir
+			uid, _ = strconv.Atoi(u.Uid)
+			gid, _ = strconv.Atoi(u.Gid)
+		}
+		dir := filepath.Join(home, ".ssh")
+		if err := os.MkdirAll(dir, 0o700); err == nil {
+			_ = os.WriteFile(filepath.Join(dir, "authorized_keys"), []byte(strings.Join(id.SSHAuthorizedKeys, "\n")+"\n"), 0o600)
+			_ = os.Chown(dir, uid, gid)
+			_ = os.Chown(filepath.Join(dir, "authorized_keys"), uid, gid)
 		}
 	}
 	writeEnv(envFile, id.Env)
@@ -268,14 +347,97 @@ func writeEnv(path string, env map[string]string) {
 	_ = os.WriteFile(path, []byte(b.String()), 0o644)
 }
 
+// trustCA adds a PEM certificate to the system bundle, where there's no update-ca-certificates to do it.
+func trustCA(pemCert string) {
+	const bundle = systemCABundle
+	raw, _ := os.ReadFile(bundle)
+	if strings.Contains(string(raw), strings.TrimSpace(pemCert)) {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(bundle), 0o755)
+	f, err := os.OpenFile(bundle, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	if len(raw) > 0 && !strings.HasSuffix(string(raw), "\n") {
+		_, _ = f.WriteString("\n")
+	}
+	_, _ = f.WriteString(strings.TrimSpace(pemCert) + "\n")
+}
+
+// systemCABundle is where Debian, Ubuntu and Alpine keep the trust store programs read.
+const systemCABundle = "/etc/ssl/certs/ca-certificates.crt"
+
+// owner is who a file written for name ("" or "user": the login account; "root") belongs to: Kantel's image's user
+// (1000), or in an injected image the account LoginUser resolves name to, as commands and SSH run as.
+func (s *Server) owner(name string) (uid, gid int) {
+	if name == "root" {
+		return 0, 0
+	}
+	if !s.Injected {
+		return 1000, 1000
+	}
+	u, err := LoginUser(name)
+	if err != nil {
+		return 0, 0
+	}
+	uid, _ = strconv.Atoi(u.Uid)
+	gid, _ = strconv.Atoi(u.Gid)
+	return uid, gid
+}
+
+// APIHome is where Kantel's API starts a command and the console's file browser: Kantel's image's user's home.
+const APIHome = "/home/user"
+
+// ensureAPIHome makes APIHome in an image that lacks it (a stock image, whose account is root), owned by the account
+// commands run as, so the API's commands and files work there as they do on Kantel's image.
+func ensureAPIHome() {
+	if _, err := os.Stat(APIHome); err == nil {
+		return
+	}
+	if err := os.MkdirAll(APIHome, 0o755); err != nil {
+		return
+	}
+	if u, err := LoginUser(""); err == nil {
+		uid, _ := strconv.Atoi(u.Uid)
+		gid, _ := strconv.Atoi(u.Gid)
+		_ = os.Chown(APIHome, uid, gid)
+	}
+}
+
+// LoginUser is the account a command or SSH session runs as: name, or `user` when name is empty; and where an image
+// has no `user` (a stock image), root.
+func LoginUser(name string) (*user.User, error) {
+	if name == "" {
+		name = "user"
+	}
+	u, err := user.Lookup(name)
+	if err != nil && (name == "user" || name == "root") {
+		if root, rootErr := user.Lookup("root"); rootErr == nil {
+			return root, nil
+		}
+		// An image with no /etc/passwd at all (a scratch image with a static binary or two).
+		return &user.User{Uid: "0", Gid: "0", Username: "root", HomeDir: "/root"}, nil
+	}
+	return u, err
+}
+
 func (s *Server) commandEnv(req *ExecRequest, home string, username string) []string {
+	shell := Shell("/")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
 	env := map[string]string{
 		"PATH":  "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 		"HOME":  home,
 		"USER":  username,
 		"LANG":  "C.UTF-8",
 		"TERM":  "xterm-256color",
-		"SHELL": "/bin/bash",
+		"SHELL": shell,
+	}
+	if s.Injected {
+		env["PATH"] += ":" + InjectedBin
 	}
 	if raw, err := os.ReadFile("/etc/kantel/proxy.env"); err == nil {
 		for _, line := range strings.Split(string(raw), "\n") {
@@ -318,26 +480,34 @@ func (s *Server) commandEnv(req *ExecRequest, home string, username string) []st
 }
 
 func (s *Server) buildCommand(ctx context.Context, req *ExecRequest) (*exec.Cmd, error) {
-	username := req.User
-	if username == "" {
-		username = "user"
-	}
-	u, err := user.Lookup(username)
+	u, err := LoginUser(req.User)
 	if err != nil {
 		return nil, err
 	}
+	username := u.Username
 	uid, _ := strconv.Atoi(u.Uid)
 	gid, _ := strconv.Atoi(u.Gid)
 	var cmd *exec.Cmd
 	if len(req.Argv) > 0 {
 		cmd = exec.CommandContext(ctx, req.Argv[0], req.Argv[1:]...)
+	} else if shell := Shell("/"); shell != "" {
+		cmd = exec.CommandContext(ctx, shell, "-lc", req.Command)
 	} else {
-		cmd = exec.CommandContext(ctx, "/bin/bash", "-lc", req.Command)
+		return nil, errors.New("this image has no shell (/bin/sh): run the command as argv")
 	}
 	cmd.Env = s.commandEnv(req, u.HomeDir, username)
 	cmd.Dir = req.Cwd
-	if cmd.Dir == "" {
+	if cmd.Dir != "" {
+		// Said here, as otherwise the failed chdir reads as the shell missing ("fork/exec /bin/sh: no such file").
+		if info, err := os.Stat(cmd.Dir); err != nil || !info.IsDir() {
+			return nil, fmt.Errorf("no directory %s in the sandbox", cmd.Dir)
+		}
+	} else {
 		cmd.Dir = u.HomeDir
+		if _, err := os.Stat(cmd.Dir); err != nil {
+			// A stock image's account whose home was never made.
+			cmd.Dir = "/"
+		}
 	}
 	attr := &syscall.SysProcAttr{Setpgid: true}
 	if uid != 0 {
@@ -409,7 +579,8 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 		logPath := fmt.Sprintf("/tmp/kantel-detached-%d.log", time.Now().UnixNano())
 		if f, err := os.Create(logPath); err == nil {
 			cmd.Stdout, cmd.Stderr = f, f
-			_ = os.Chown(logPath, 1000, 1000)
+			uid, gid := s.owner(req.User)
+			_ = os.Chown(logPath, uid, gid)
 		}
 		cmd.Cancel = nil
 		if err := cmd.Start(); err != nil {
@@ -610,10 +781,7 @@ func (s *Server) writeFile(w http.ResponseWriter, r *http.Request) {
 			mode = os.FileMode(n)
 		}
 	}
-	owner := 1000
-	if r.URL.Query().Get("user") == "root" {
-		owner = 0
-	}
+	uid, gid := s.owner(r.URL.Query().Get("user"))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		fail(w, 500, err)
 		return
@@ -632,7 +800,7 @@ func (s *Server) writeFile(w http.ResponseWriter, r *http.Request) {
 	}
 	if err == nil {
 		_ = os.Chmod(tmp, mode)
-		_ = os.Chown(tmp, owner, owner)
+		_ = os.Chown(tmp, uid, gid)
 		err = os.Rename(tmp, path)
 	}
 	if err != nil {
@@ -718,6 +886,21 @@ func (s *Server) port(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, errors.New("expected Upgrade: "+PortUpgrade))
 		return
 	}
+	if port == PortSSH && s.Injected {
+		// Kantel's SSH is the agent's own server, the same in every image, sshd or none.
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			fail(w, 500, errors.New("cannot hijack"))
+			return
+		}
+		conn, buffered, err := hijacker.Hijack()
+		if err != nil {
+			return
+		}
+		_, _ = conn.Write([]byte("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " + PortUpgrade + "\r\n\r\n"))
+		s.sshServer().ServeConn(&bufferedConn{Conn: conn, r: buffered.Reader})
+		return
+	}
 	target, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 5*time.Second)
 	if err != nil {
 		fail(w, 502, err)
@@ -736,6 +919,19 @@ func (s *Server) port(w http.ResponseWriter, r *http.Request) {
 	}
 	_, _ = conn.Write([]byte("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: " + PortUpgrade + "\r\n\r\n"))
 	Pipe(conn, buffered, target)
+}
+
+// bufferedConn reads what the HTTP server had already buffered before the rest of the connection.
+type bufferedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (c *bufferedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
+
+func (s *Server) sshServer() *SSHServer {
+	s.sshOnce.Do(func() { s.ssh = &SSHServer{Server: s, HostKey: HostKeyPath} })
+	return s.ssh
 }
 
 // Pipe copies both ways until either side ends, then closes both.

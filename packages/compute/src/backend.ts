@@ -11,6 +11,7 @@
  * no host can take the work.
  */
 import type { computeSchema } from "@kantel/api";
+import type { BackendUsageReport } from "./usage-series.ts";
 
 /** A size a deployment offers for microVMs, and the resources it stands for. */
 export interface BackendSize {
@@ -230,6 +231,8 @@ export interface SshGrant {
 	readonly proxyUrl?: string;
 }
 
+export type { BackendUsageReport };
+
 /** A CPU and memory reading of one running sandbox. */
 export interface UsageSample {
 	/** CPU utilisation, 0 to 1. */
@@ -341,8 +344,16 @@ export interface SandboxBackend {
 		sandboxId: string,
 		options: { readonly ttlMinutes: number; readonly grantee?: string },
 	): Promise<{ readonly url: string; readonly hostId: string }>;
-	/** A CPU and memory reading of a running sandbox. */
+	/**
+	 * A CPU and memory reading of a running sandbox, read when asked: the fallback for a host that doesn't send its
+	 * readings (`ComputeService.recordUsage`) yet.
+	 */
 	usage(sandboxId: string): Promise<UsageSample>;
+	/**
+	 * The ticks a backend with no host to send them makes itself (the stub): one report per host for each tick after
+	 * `since` up to `until`, oldest first, as a host would have sent them. Absent: its hosts send their own.
+	 */
+	usageReports?(since: number, until: number): Promise<BackendUsageReport[]>;
 	/**
 	 * The account's proxy settings changed: apply them to this running sandbox (undefined when they were turned off).
 	 * Absent, sandboxes get them when they next boot.

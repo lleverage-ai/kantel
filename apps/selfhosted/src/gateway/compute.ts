@@ -467,10 +467,12 @@ export async function gatewayCompute(options: {
 		...(bundleStore === undefined ? {} : { mounts: { bundles: bundleStore } }),
 	});
 	// Hosts fetch their sandboxes' protected values, bundles and bucket sources, and report what their egress proxies
-	// did and how their mounts went, over their link. (With mounts off, the service answers nothing for either source.)
+	// did, their usage and how their mounts went, over their link. (With mounts off, the service answers nothing for
+	// either source.)
 	hosts?.service.useCompute({
 		secrets: (hostId, sandboxId) => api.service.protectedTable(hostId, sandboxId),
 		recordEgress: (hostId, records) => api.service.recordEgress(hostId, records),
+		recordUsage: (hostId, usage, how) => api.service.recordUsage(hostId, usage, how),
 		e2eChain: {
 			read: (hostId, space) => api.service.hostE2EChain(hostId, space),
 			append: (hostId, space, from, entries) => api.service.appendHostE2EChain(hostId, space, from, entries),
@@ -479,6 +481,8 @@ export async function gatewayCompute(options: {
 		bucketSource: (hostId, sandboxId, id) => api.service.bucketSourceForHost(hostId, sandboxId, id),
 		reportMounts: (hostId, sandboxId, mounts) => api.service.reportMounts(hostId, sandboxId, mounts),
 	});
+	// With several gateways, the one holding a host's connection passes its usage ticks on, so a poll on any has them.
+	if (hosts !== undefined) hosts.cluster?.useUsage((hostId, usage) => hosts.service.recordSharedUsage(hostId, usage));
 	const superAdminKey = await bootstrapSuperAdmin(api.store, options.superAdminKey, (options.now ?? Date.now)());
 	api.dispatcher.start(WEBHOOK_INTERVAL_MS);
 	api.exporter.start(TELEMETRY_INTERVAL_MS);

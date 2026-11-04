@@ -105,6 +105,17 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 			return backend.openE2E(id, how);
 		},
 		usage: async (id) => (await on(id)).usage(id),
+		...(primary.usageReports === undefined && fallback.usageReports === undefined
+			? {}
+			: {
+					async usageReports(since: number, until: number) {
+						const [first, second] = await Promise.all([
+							primary.usageReports?.(since, until) ?? [],
+							fallback.usageReports?.(since, until) ?? [],
+						]);
+						return [...first, ...second].sort((a, b) => a.at - b.at);
+					},
+				}),
 		async updateEgress(id, egress, revision) {
 			await (await on(id)).updateEgress?.(id, egress, revision);
 		},

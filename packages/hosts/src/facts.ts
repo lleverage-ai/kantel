@@ -5,7 +5,16 @@
  * sends it, and reading a stored one that isn't (kept before this check) treats it as no report at all.
  */
 import { MAX_MOUNTS } from "@kantel/contracts";
-import type { HostCapacity, HostFacts, HostMountStatus, HostSize, SandboxTier } from "./protocol.ts";
+import type {
+	HostCapacity,
+	HostFacts,
+	HostMountStatus,
+	HostSandboxUsage,
+	HostSize,
+	HostUsageReport,
+	HostUsageTotals,
+	SandboxTier,
+} from "./protocol.ts";
 
 const TIERS: ReadonlySet<string> = new Set<SandboxTier>(["microvm", "isolate"]);
 const MAX_TEXT = 256;
@@ -105,6 +114,61 @@ function capacity(value: unknown): HostCapacity {
 	};
 }
 
+/** The most sandboxes one usage tick may name: more than any host runs. */
+export const MAX_USAGE_SANDBOXES = 4096;
+/** A usage tick's interval, in milliseconds. */
+const MIN_USAGE_INTERVAL_MS = 1_000;
+const MAX_USAGE_INTERVAL_MS = 300_000;
+
+/** CPU utilisation: 0 to 1, above 1 taken as 1. */
+const utilisation = (value: unknown, field: string): number => Math.min(1, count(value, field));
+
+function usageTotals(value: unknown): HostUsageTotals {
+	if (!isObject(value)) throw new FactsError("usage.host is an object");
+	return {
+		cpu: utilisation(value.cpu, "usage.host.cpu"),
+		memUsedBytes: count(value.memUsedBytes, "usage.host.memUsedBytes"),
+		memTotalBytes: count(value.memTotalBytes, "usage.host.memTotalBytes"),
+		diskUsedBytes: count(value.diskUsedBytes, "usage.host.diskUsedBytes"),
+		diskTotalBytes: count(value.diskTotalBytes, "usage.host.diskTotalBytes"),
+	};
+}
+
+/** One sandbox's reading, or undefined for one of a kind this control plane doesn't know (left out, not refused). */
+function sandboxUsage(value: unknown, at: number): HostSandboxUsage | undefined {
+	if (!isObject(value)) throw new FactsError(`usage.sandboxes[${at}] is an object`);
+	const kind = text(value.kind, `usage.sandboxes[${at}].kind`);
+	if (!TIERS.has(kind)) return undefined;
+	return {
+		id: text(value.id, `usage.sandboxes[${at}].id`),
+		kind: kind as SandboxTier,
+		cpu: utilisation(value.cpu, `usage.sandboxes[${at}].cpu`),
+		memUsedBytes: count(value.memUsedBytes, `usage.sandboxes[${at}].memUsedBytes`),
+		memLimitBytes: count(value.memLimitBytes, `usage.sandboxes[${at}].memLimitBytes`),
+	};
+}
+
+function usage(value: unknown): HostUsageReport & { readonly sandboxes: readonly HostSandboxUsage[] } {
+	if (!isObject(value)) throw new FactsError("usage is an object");
+	const at = count(value.at, "usage.at");
+	const intervalMs = count(value.intervalMs, "usage.intervalMs");
+	if (intervalMs < MIN_USAGE_INTERVAL_MS || intervalMs > MAX_USAGE_INTERVAL_MS) {
+		throw new FactsError(`usage.intervalMs is ${MIN_USAGE_INTERVAL_MS} to ${MAX_USAGE_INTERVAL_MS}`);
+	}
+	const sandboxes = value.sandboxes ?? [];
+	if (!Array.isArray(sandboxes) || sandboxes.length > MAX_USAGE_SANDBOXES) {
+		throw new FactsError(`usage.sandboxes is a list of at most ${MAX_USAGE_SANDBOXES}`);
+	}
+	return {
+		at,
+		intervalMs,
+		host: usageTotals(value.host),
+		sandboxes: sandboxes
+			.map((each, index) => sandboxUsage(each, index))
+			.filter((each): each is HostSandboxUsage => each !== undefined),
+	};
+}
+
 const checked =
 	<T>(parse: (value: unknown) => T) =>
 	(value: unknown): { ok: true; value: T } | { ok: false; reason: string } => {
@@ -120,6 +184,8 @@ const checked =
 export const parseHostFacts = checked(facts);
 /** A host's capacity, from its hello or a heartbeat; or why not. */
 export const parseHostCapacity = checked(capacity);
+/** A host's usage tick (`HostUsageReport`), normalised: CPU above 1 taken as 1, `null` sandboxes as none; or why not. */
+export const parseHostUsage = checked(usage);
 
 /** Stored facts, read: undefined when they aren't shaped as facts (kept before the check), so they count as none. */
 export function storedFacts(value: unknown): HostFacts | undefined {

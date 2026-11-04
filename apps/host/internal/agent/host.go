@@ -23,6 +23,7 @@ import (
 	"github.com/lleverage-ai/kantel/apps/host/internal/e2e"
 	"github.com/lleverage-ai/kantel/apps/host/internal/egress"
 	"github.com/lleverage-ai/kantel/apps/host/internal/egress/protect"
+	"github.com/lleverage-ai/kantel/apps/host/internal/guestinit"
 	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
 	"github.com/lleverage-ai/kantel/apps/host/internal/isolate"
 	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
@@ -160,8 +161,16 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 		if spoolMax < 0 {
 			spoolDir = ""
 		}
+		initrd := ""
+		if cfg.InjectGuestAgent {
+			// Experimental: any Linux image, with the agent put in at boot.
+			if initrd, err = guestinit.Build(filepath.Join(cfg.Root, "microvm", "initramfs"), cfg.GuestAgent); err != nil {
+				return nil, fmt.Errorf("injectGuestAgent: %w", err)
+			}
+			log.Info("microVMs boot through Kantel's initramfs (injected guest agent)", "agent", cfg.GuestAgent, "initramfs", initrd)
+		}
 		mv, err := microvm.New(microvm.Config{
-			SpoolDir: spoolDir, SpoolMaxMiB: spoolMax,
+			SpoolDir: spoolDir, SpoolMaxMiB: spoolMax, Initrd: initrd,
 			Root: cfg.Root + "/microvm", Firecracker: cfg.Firecracker, Kernel: cfg.Kernel, Rootfs: cfg.SandboxImage,
 			Sizes: sizes, Network: netm, ProxyPort: cfg.ProxyPort, DNS: cfg.DNS, Log: log,
 			Events: h.sandboxEvent,

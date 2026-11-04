@@ -53,6 +53,7 @@ export type {
 	PublicUrlSource,
 	SandboxEgress,
 	SandboxesSource,
+	SandboxImage,
 	SandboxSshKey,
 	SnapshotsSource,
 	SshTarget,
