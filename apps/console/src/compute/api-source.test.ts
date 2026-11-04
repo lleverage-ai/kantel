@@ -358,9 +358,6 @@ describe("proxy", () => {
 			policy: "open",
 			allow: [],
 			deny: [],
-			tlsInspection: false,
-			headers: [],
-			logRequests: false,
 		});
 
 		const updated = await source.proxy.update(accountId, {
@@ -385,8 +382,26 @@ describe("proxy", () => {
 		});
 		expect(removed.upstream).toEqual({ url: "http://upstream.example:3128", authSet: false });
 
-		await expect(source.proxy.update(accountId, { tlsInspection: true })).rejects.toThrow(/can't/);
-		await expect(source.proxy.recent(accountId)).rejects.toThrow(/proxy requests/);
+		// The API keeps each sandbox's log, with no switch to stop it.
+		await expect(source.proxy.update(accountId, { logRequests: false })).rejects.toThrow(/always keeps/);
+	});
+
+	it("goes from Nothing to Allowed hosts with the first host in one change, an IPv4 address included", async () => {
+		const { fetchApi } = setup();
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+
+		const closed = await source.proxy.update(accountId, { policy: "closed" });
+		expect(closed).toMatchObject({ policy: "closed", allow: [] });
+		// Allowed hosts alone can't be had: with nothing allowed the API reads it back as Nothing.
+		expect(await source.proxy.update(accountId, { policy: "allowlist" })).toMatchObject({ policy: "closed" });
+
+		const opened = await source.proxy.update(accountId, { policy: "allowlist", allow: ["1.1.1.1"] });
+		expect(opened).toMatchObject({ policy: "allowlist", allow: ["1.1.1.1"] });
+		expect(await source.proxy.get(accountId)).toMatchObject({ policy: "allowlist", allow: ["1.1.1.1"] });
+
+		// Removing the last host for every sandbox is Nothing again.
+		expect(await source.proxy.update(accountId, { allow: [] })).toMatchObject({ policy: "closed" });
 	});
 });
 
@@ -492,6 +507,19 @@ describe("environments", () => {
 		// Saved again as the page has them, they keep their IDs.
 		const again = await source.environments.setGrants(made.id, withGrants.grants);
 		expect(again.grants).toEqual(withGrants.grants);
+		// Written from an older read, Kantel refuses with `conflict` and the grants stay as they are.
+		const stale = [withGrants.grants[0]];
+		await expect(
+			source.environments.setGrants(
+				made.id,
+				[],
+				stale.filter((g) => g !== undefined),
+			),
+		).rejects.toMatchObject({ code: "conflict" });
+		expect((await source.environments.get(made.id)).grants).toEqual(withGrants.grants);
+		// Written from the current read, it's taken.
+		const kept = await source.environments.setGrants(made.id, withGrants.grants, withGrants.grants);
+		expect(kept.grants).toEqual(withGrants.grants);
 
 		const renamed = await source.environments.update(made.id, { name: "api", description: "" });
 		expect(renamed.name).toBe("api");
@@ -594,6 +622,7 @@ describe("egress", () => {
 				decision: "denied",
 				// The refusal's code stands in for a reason.
 				reason: "placeholder-unbound",
+				code: "placeholder-unbound",
 				swapped: [],
 				inspected: true,
 				bytesUp: 0,
@@ -629,6 +658,9 @@ describe("egress", () => {
 			},
 		]);
 		expect(granted.environmentGrants).toEqual(egress.environmentGrants);
+		// A write from the read before that grant was added is refused, so it can't take the grant away.
+		await expect(source.egress.setGrants(sandbox.id, [], egress.grants)).rejects.toMatchObject({ code: "conflict" });
+		expect((await source.egress.get(sandbox.id)).grants).toEqual(granted.grants);
 	});
 });
 

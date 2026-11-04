@@ -16,6 +16,7 @@ import { Sidebar, SidebarBrand, SidebarItem, SidebarSection } from "../primitive
 import { Spinner } from "../primitives/spinner.tsx";
 import { Notice } from "../primitives/surface.tsx";
 import { TabBar } from "../primitives/tab-bar.tsx";
+import { AccountEgressPage, EGRESS_TABS, type EgressTab } from "./account-egress-page.tsx";
 import { AccountSwitcher, CreateOrganisationDialog, JoinOrganisationDialog } from "./account-switcher.tsx";
 import { ComputeApiKeysPage } from "./api-keys-page.tsx";
 import { BillingPage } from "./billing-page.tsx";
@@ -26,7 +27,6 @@ import { EnvironmentPage, EnvironmentsPage } from "./environments-page.tsx";
 import { HostsPage } from "./hosts-page.tsx";
 import { OrganisationPage } from "./organisation-page.tsx";
 import { messageOf } from "./parts.tsx";
-import { ProxyPage } from "./proxy-page.tsx";
 import { SandboxesPage } from "./sandboxes-page.tsx";
 import { SettingsFrame, type SettingsNavItem } from "./settings-nav.tsx";
 import { SnapshotsPage } from "./snapshots-page.tsx";
@@ -48,7 +48,6 @@ export type ComputePage =
 	| "environments"
 	| "egress"
 	| "keys"
-	| "proxy"
 	| "webhooks"
 	| "telemetry"
 	| "organisation"
@@ -62,7 +61,6 @@ export const COMPUTE_PAGES: readonly ComputePage[] = [
 	"environments",
 	"egress",
 	"keys",
-	"proxy",
 	"webhooks",
 	"telemetry",
 	"organisation",
@@ -72,8 +70,8 @@ export const COMPUTE_PAGES: readonly ComputePage[] = [
 ];
 
 /**
- * What a path under the console's base shows: a page, for Snapshots and Egress the sandbox it's about, and for
- * Environments the environment that's open.
+ * What a path under the console's base shows: a page, for Snapshots the sandbox it's about, for Egress the sandbox
+ * when it is one sandbox's rather than the account's, and for Environments the environment that's open.
  */
 export type ComputeRoute = {
 	readonly page: ComputePage;
@@ -87,13 +85,15 @@ export function parseComputePath(pathname: string, base = "/compute"): ComputeRo
 	const parts = pathname.slice(base.length).split("/").filter(Boolean);
 	const [first, second] = parts;
 	if (first === undefined) return { page: "sandboxes" };
+	// The Egress proxy page's address before Egress was one page: a link to it still opens Egress.
+	if (first === "proxy" && parts.length === 1) return { page: "egress" };
 	if (!(COMPUTE_PAGES as readonly string[]).includes(first)) return undefined;
 	const page = first as ComputePage;
 	if (parts.length > 2) return undefined;
 	if (page === "snapshots" && second !== undefined) return { page, sandboxId: decodeURIComponent(second) };
 	if (page === "environments" && second !== undefined) return { page, environmentId: decodeURIComponent(second) };
-	// Egress is always one sandbox's.
-	if (page === "egress") return second === undefined ? undefined : { page, sandboxId: decodeURIComponent(second) };
+	// Egress is the account's, or one sandbox's.
+	if (page === "egress" && second !== undefined) return { page, sandboxId: decodeURIComponent(second) };
 	return parts.length === 1 ? { page } : undefined;
 }
 
@@ -105,13 +105,24 @@ export function parseComputePath(pathname: string, base = "/compute"): ComputeRo
 export function pathAfterAccountSwitch(pathname: string, base = "/compute"): string | undefined {
 	const open = parseComputePath(pathname, base);
 	if (open?.page === "environments" && open.environmentId !== undefined) return computePath("environments", base);
-	if (open?.page === "egress") return computePath("sandboxes", base);
+	if (open?.page === "egress" && open.sandboxId !== undefined) return computePath("sandboxes", base);
 	return undefined;
 }
 
 /** The path of a page under `base`, and of one sandbox's or environment's when `id` is given. */
 export function computePath(page: ComputePage, base = "/compute", id?: string): string {
 	return id === undefined ? `${base}/${page}` : `${base}/${page}/${encodeURIComponent(id)}`;
+}
+
+/**
+ * The address of the account's Egress on `tab`. Every tab names itself, Log too: an address with a query of its own
+ * replaces the current one (`?tab=rules`) when the console navigates, so one without would keep it. The rest of
+ * `search` (`?hosting`) is kept.
+ */
+export function egressTabPath(tab: EgressTab, search: string, base = "/compute"): string {
+	const params = new URLSearchParams(search);
+	params.set("tab", tab);
+	return `${computePath("egress", base)}?${params}`;
 }
 
 const ACCOUNT_KEY = "kantel.compute.account";
@@ -313,15 +324,16 @@ export function ComputeConsole({
 		...(billingShown ? [{ id: "billing", label: "Plan and billing" }] : []),
 	].map((item) => ({ ...item, href: computePath(item.id as ComputePage, base), selected: page === item.id }));
 
-	// The five pages: the sidebar's on a wide screen, the tab bar's on a phone. Egress is the account's egress proxy
-	// until its own page comes; a sandbox's egress log is still one of the sandbox's.
+	// The five pages: the sidebar's on a wide screen, the tab bar's on a phone. A sandbox's egress log is still one of
+	// the sandbox's until the sandbox has a page of its own.
+	const sandboxEgress = page === "egress" && route.sandboxId !== undefined;
 	const pages = [
 		{
 			id: "sandboxes",
 			label: "Sandboxes",
 			short: "Sandboxes",
 			icon: <SandboxIcon />,
-			on: page === "sandboxes" || page === "egress",
+			on: page === "sandboxes" || sandboxEgress,
 		},
 		{ id: "snapshots", label: "Snapshots", short: "Snapshots", icon: <SnapshotIcon />, on: page === "snapshots" },
 		{
@@ -331,7 +343,7 @@ export function ComputeConsole({
 			icon: <EnvironmentIcon />,
 			on: page === "environments",
 		},
-		{ id: "proxy", label: "Egress", short: "Egress", icon: <ProxyIcon />, on: page === "proxy" },
+		{ id: "egress", label: "Egress", short: "Egress", icon: <ProxyIcon />, on: page === "egress" && !sandboxEgress },
 		{ id: "organisation", label: "Settings", short: "Settings", icon: <SettingsIcon />, on: inSettings },
 	] as const;
 	const href = (id: string) => computePath(id as ComputePage, base);
@@ -644,8 +656,26 @@ function PageFor({
 					{...timing}
 				/>
 			);
-		case "egress":
-			return route.sandboxId === undefined ? null : (
+		case "egress": {
+			if (route.sandboxId === undefined) {
+				const asked = new URLSearchParams(search).get("tab");
+				const tab = (EGRESS_TABS as readonly string[]).includes(asked ?? "") ? (asked as EgressTab) : "log";
+				const tabHref = (each: EgressTab) => egressTabPath(each, search, base);
+				return (
+					<AccountEgressPage
+						source={source}
+						account={account}
+						tab={tab}
+						tabHref={tabHref}
+						onTab={(each) => navigate(tabHref(each))}
+						environmentHref={(id) => computePath("environments", base, id)}
+						sandboxHref={(id) => computePath("egress", base, id)}
+						narrow={narrow}
+						{...timing}
+					/>
+				);
+			}
+			return (
 				<EgressPage
 					source={source.egress}
 					sandboxId={route.sandboxId}
@@ -655,10 +685,9 @@ function PageFor({
 					navigate={navigate}
 				/>
 			);
+		}
 		case "keys":
 			return <ComputeApiKeysPage source={source.keys} account={account} {...timing} />;
-		case "proxy":
-			return <ProxyPage source={source.proxy} account={account} {...timing} />;
 		case "webhooks":
 			return <WebhooksPage source={source.webhooks} account={account} {...timing} />;
 		case "telemetry":
