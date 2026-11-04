@@ -296,8 +296,9 @@ describe("env set", () => {
 			stdin: input(SECRET),
 		});
 		expect(result.code).toBe(0);
-		// The value alone: its mode and bindings stay as Kantel has them when it is written, not as they were read.
-		expect(result.calls[2]?.body).toEqual({ value: SECRET });
+		// The value and that it is protected: its bindings stay as Kantel has them when it is written, not as they were
+		// read, and the value is never kept plain, even if the variable was removed or made plain meanwhile.
+		expect(result.calls[2]?.body).toEqual({ protected: true, value: SECRET });
 		expect(result.stdout).toContain("Rotated GH_TOKEN in work");
 		expect(result.stdout).toContain("same placeholder");
 		expect(result.stdout + result.stderr).not.toContain(SECRET);
@@ -317,7 +318,7 @@ describe("env set", () => {
 			stdin: input(SECRET),
 		});
 		expect(result.code).toBe(0);
-		expect(result.calls[2]?.body).toEqual({ value: SECRET });
+		expect(result.calls[2]?.body).toEqual({ protected: true, value: SECRET });
 		expect(result.stdout).toContain("Rotated GH_TOKEN in work: protected, sent only to api.github.com/repos/acme/:GET");
 		expect(result.stdout + result.stderr).not.toContain(SECRET);
 	});
@@ -430,6 +431,25 @@ describe("env show and list", () => {
 });
 
 describe("env files, repos and grants", () => {
+	it("says the mode a secret file has once saved: new contents without --mode keep the file's", async () => {
+		const saved = (mode: number) => () => ({
+			...ENVIRONMENT,
+			files: [{ path: "/home/user/.npmrc", mode, sizeBytes: 3, updatedAt: NOW }],
+		});
+		const kept = await kantel(["env", "file", "work", "~/.npmrc"], {
+			routes: { ...ENVIRONMENT_ROUTES, "PUT /v1/environments/env_work1/files": saved(0o644) },
+			stdin: input("abc"),
+		});
+		expect(kept.code).toBe(0);
+		expect(kept.calls.at(-1)?.body).toEqual({ path: "~/.npmrc", content: "YWJj", encoding: "base64" });
+		expect(kept.stdout).toContain("Saved ~/.npmrc (3 B, mode 0644) in work.");
+		const fresh = await kantel(["env", "file", "work", ".npmrc"], {
+			routes: { ...ENVIRONMENT_ROUTES, "PUT /v1/environments/env_work1/files": saved(0o600) },
+			stdin: input("abc"),
+		});
+		expect(fresh.stdout).toContain("mode 0600");
+	});
+
 	it("sends a secret file's content as base64, from --from or stdin, and removes one", async () => {
 		const local = join(configDir, "npmrc");
 		await writeFile(local, "//registry.npmjs.org/:_authToken=secret\n");

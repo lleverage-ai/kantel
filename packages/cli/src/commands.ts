@@ -781,6 +781,24 @@ function variableIn(
 	return found === undefined ? undefined : { protected: found.protected, bindings: found.bindings };
 }
 
+/** A secret file as Kantel answered it, when the answer is an environment holding it at `path`. */
+function fileIn(answer: unknown, path: string): { readonly mode: number; readonly sizeBytes: number } | undefined {
+	if (typeof answer !== "object" || answer === null) return undefined;
+	const files = (answer as { readonly files?: unknown }).files;
+	if (!Array.isArray(files)) return undefined;
+	// Kantel answers the path as it keeps it, absolute under /home/user (`~/` is there too); the command has it as typed.
+	const wanted = new Set([path, posix.resolve("/home/user", path.startsWith("~/") ? path.slice(2) : path)]);
+	const found = files.find(
+		(file): file is { path: string; mode: number; sizeBytes: number } =>
+			typeof file === "object" &&
+			file !== null &&
+			wanted.has(file.path) &&
+			typeof file.mode === "number" &&
+			typeof file.sizeBytes === "number",
+	);
+	return found === undefined ? undefined : { mode: found.mode, sizeBytes: found.sizeBytes };
+}
+
 // The commands.
 
 const SECTIONS: readonly Section[] = [
@@ -1859,10 +1877,12 @@ const SECTIONS: readonly Section[] = [
 					if (keep && !wasProtected) {
 						throw new CliError(`${name} isn't protected in ${environment.name}, so there is no value to keep`);
 					}
-					// Only what the command changes is sent: its mode when a flag gives it, its bindings when --bind does. A
-					// value alone leaves both as Kantel has them when it is written, so a rotation never undoes a change to
-					// them made since the read above (and a protected variable never turns plain).
-					const mode = plain ? false : asked || keep || bindings.length > 0 ? true : undefined;
+					// Its bindings are sent only when --bind gives them, so a rotation never undoes a change to them made since
+					// the read above. Its mode is sent when a flag gives it, and for a rotation of one read as protected: that
+					// value is meant to be sealed, so if the variable was removed or made plain meanwhile, Kantel refuses the
+					// write (a protected variable needs a binding) rather than keeping the new value in the clear. Read as plain
+					// or new, a value alone leaves the mode as Kantel has it: one protected meanwhile stays so.
+					const mode = plain ? false : asked || keep || bindings.length > 0 || wasProtected ? true : undefined;
 					if (mode === true && bindings.length === 0 && !wasProtected) {
 						throw new UsageError("a protected variable needs --bind <host>: where its value may be sent");
 					}
@@ -1934,9 +1954,12 @@ const SECTIONS: readonly Section[] = [
 						encoding: "base64",
 					});
 					const size = content.length;
+					// The mode it has now, as Kantel answers: new contents without --mode keep the file's.
+					const saved = fileIn(answer, path);
+					const shownMode = saved?.mode ?? mode ?? 0o600;
 					ctx.emit(withoutProtectedValues(answer ?? { environmentId, path, sizeBytes: size }), () =>
 						[
-							`Saved ${path} (${bytes(size)}, mode ${octal(mode ?? 0o600)}) in ${ctx.arg(0)}.`,
+							`Saved ${path} (${bytes(saved?.sizeBytes ?? size)}, mode ${octal(shownMode)}) in ${ctx.arg(0)}.`,
 							"Sandboxes made from now on get it.",
 						].join("\n"),
 					);

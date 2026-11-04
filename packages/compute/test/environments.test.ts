@@ -956,7 +956,7 @@ describe("an edit made from an older read", () => {
 		const sandbox = await tom.createSandbox({ environment: environment.id, wait: true });
 
 		/** The command line against this service; `meanwhile` runs once, after its read and before its first write. */
-		async function cli(argv: readonly string[], meanwhile: () => Promise<unknown>, stdin?: string) {
+		async function cli(argv: readonly string[], meanwhile: () => Promise<unknown>, stdin?: string, exits = 0) {
 			let pending: (() => Promise<unknown>) | undefined = meanwhile;
 			const writes: unknown[] = [];
 			const out: string[] = [];
@@ -996,7 +996,8 @@ describe("an edit made from an older read", () => {
 			});
 			const text = out.join("");
 			expect(text).not.toContain(SECRET);
-			expect(code, text).toBe(0);
+			if (stdin !== undefined) expect(text).not.toContain(stdin);
+			expect(code, text).toBe(exits);
 			return { writes, text };
 		}
 		const cliDir = await mkdtemp(join(tmpdir(), "kantel-cli-edit-"));
@@ -1062,62 +1063,80 @@ describe("an edit made from an older read", () => {
 			() => tom.setEnvironmentVariable(environment.id, "GH_TOKEN", { bindings: narrowed }),
 			"ghp_rotatedValue",
 		);
-		expect(rotated.writes).toEqual([{ value: "ghp_rotatedValue" }]);
+		// Protected intent and the value; no bindings from the read.
+		expect(rotated.writes).toEqual([{ protected: true, value: "ghp_rotatedValue" }]);
 		expect(rotated.text).toContain("sent only to api.github.com/repos/acme/:GET");
-		const token = (await tom.getEnvironment(environment.id)).variables.find((each) => each.name === "GH_TOKEN");
-		expect(token).toMatchObject({ protected: true, bindings: narrowed });
-		expect(token).not.toHaveProperty("value");
+		const variableOf = async (name: string) =>
+			(await tom.getEnvironment(environment.id)).variables.find((each) => each.name === name);
+		expect(await variableOf("GH_TOKEN")).toMatchObject({ protected: true, bindings: narrowed });
+		expect(await variableOf("GH_TOKEN")).not.toHaveProperty("value");
+		/** That `value` is nowhere in the environment as stored, nor in any answer about it. */
+		const nowhere = async (value: string) => {
+			expect(JSON.stringify(await store.environments.get(environment.id))).not.toContain(value);
+			expect(JSON.stringify(await tom.getEnvironment(environment.id))).not.toContain(value);
+		};
+		await nowhere("ghp_rotatedValue");
 
-		// A value set on what read as plain, protected meanwhile: it stays protected, its value sealed, or the write is
-		// refused; never plain again.
-		const npm = await runCliExpectingProtected(api, environment.id, async () => {
-			await tom.setEnvironmentVariable(environment.id, "NPM_TOKEN", {
-				protected: true,
-				value: "npm_sealedNow",
-				bindings: [{ host: "registry.npmjs.org" }],
-			});
+		// A rotation of one read as protected, removed meanwhile: refused, never made again as plain.
+		const afterRemoval = await cli(
+			["env", "set", "cli", "GH_TOKEN", "--value-stdin"],
+			() => tom.deleteEnvironmentVariable(environment.id, "GH_TOKEN"),
+			"ghp_afterRemoval",
+			1,
+		);
+		expect(afterRemoval.writes).toEqual([{ protected: true, value: "ghp_afterRemoval" }]);
+		expect(await variableOf("GH_TOKEN")).toBeUndefined();
+		await nowhere("ghp_afterRemoval");
+
+		// …and made plain meanwhile: refused, the plain value someone else set stays, the new one is nowhere.
+		await tom.setEnvironmentVariable(environment.id, "GH_TOKEN", { protected: true, value: SECRET, bindings: GITHUB });
+		const afterPlain = await cli(
+			["env", "set", "cli", "GH_TOKEN", "--value-stdin"],
+			() => tom.setEnvironmentVariable(environment.id, "GH_TOKEN", { protected: false, value: "made-plain" }),
+			"ghp_afterPlain",
+			1,
+		);
+		expect(afterPlain.writes).toEqual([{ protected: true, value: "ghp_afterPlain" }]);
+		expect(await variableOf("GH_TOKEN")).toMatchObject({ protected: false, value: "made-plain" });
+		await nowhere("ghp_afterPlain");
+
+		// A value set on what read as plain, protected meanwhile: the value alone is sent, so it stays protected and
+		// the value is sealed; never plain again.
+		const npm = await cli(
+			["env", "set", "cli", "NPM_TOKEN", "--value-stdin"],
+			() =>
+				tom.setEnvironmentVariable(environment.id, "NPM_TOKEN", {
+					protected: true,
+					value: "npm_sealedNow",
+					bindings: [{ host: "registry.npmjs.org" }],
+				}),
+			"npm_valueAfterRead",
+		);
+		expect(npm.writes).toEqual([{ value: "npm_valueAfterRead" }]);
+		expect(await variableOf("NPM_TOKEN")).toMatchObject({
+			protected: true,
+			bindings: [{ host: "registry.npmjs.org" }],
 		});
-		expect(npm).toEqual({ protected: true, bindings: [{ host: "registry.npmjs.org" }] });
+		await nowhere("npm_valueAfterRead");
 
-		/** `kantel env set cli NPM_TOKEN=…` with `meanwhile` between its read and write: NPM_TOKEN as it is after. */
-		async function runCliExpectingProtected(
-			compute: ComputeApi,
-			environmentId: string,
-			meanwhile: () => Promise<void>,
-		): Promise<unknown> {
-			let pending: (() => Promise<void>) | undefined = meanwhile;
-			const writes: unknown[] = [];
-			const sink = { isTTY: false, write: () => true };
-			await runCli(["env", "set", "cli", "NPM_TOKEN=npm_valueAfterRead"], {
-				fetch: async (input, init) => {
-					const request = new Request(input, init);
-					if (request.method === "PUT") {
-						writes.push(JSON.parse(await request.clone().text()));
-						const now = pending;
-						pending = undefined;
-						await now?.();
-					}
-					return (await compute.fetch(request)) ?? new Response(null, { status: 404 });
-				},
-				env: { KANTEL_URL: BASE_URL.replace(/\/v1$/, ""), KANTEL_API_KEY: "tom-token" },
-				stdout: sink,
-				stderr: sink,
-				stdin: { isTTY: true, async *[Symbol.asyncIterator]() {} },
-				configDir: cliDir,
-				cwd: cliDir,
-				home: cliDir,
-				self: ["/usr/local/bin/node", "/usr/local/bin/kantel"],
-				openUrl: () => {},
-				sleep: async () => {},
-			});
-			// The value alone: no mode or bindings from the read.
-			expect(writes).toEqual([{ value: "npm_valueAfterRead" }]);
-			const stored = await store.environments.get(environmentId);
-			const variable = stored?.variables.find((each) => each.name === "NPM_TOKEN");
-			expect(variable).not.toHaveProperty("value");
-			const view = (await tom.getEnvironment(environmentId)).variables.find((each) => each.name === "NPM_TOKEN");
-			return view === undefined ? undefined : { protected: view.protected, bindings: view.bindings };
-		}
+		// --keep-value --bind re-binds and keeps a value rotated meanwhile; --plain still makes one plain.
+		const rebound = await cli(
+			["env", "set", "cli", "NPM_TOKEN", "--keep-value", "--bind", "registry.npmjs.org/-/:GET"],
+			() => tom.setEnvironmentVariable(environment.id, "NPM_TOKEN", { value: "npm_rotatedMeanwhile" }),
+		);
+		expect(rebound.writes).toEqual([
+			{ protected: true, bindings: [{ host: "registry.npmjs.org", pathPrefixes: ["/-/"], methods: ["GET"] }] },
+		]);
+		const storedNpm = (await store.environments.get(environment.id))?.variables.find(
+			(each) => each.name === "NPM_TOKEN",
+		);
+		const aad = sealedAt("environments", environment.id, "variables.NPM_TOKEN");
+		const sealed = storedNpm?.sealed;
+		expect(storedNpm?.protected).toBe(true);
+		const opened = sealed === undefined ? "" : await createSealer(KEY).openText(sealed, aad);
+		expect(opened).toBe("npm_rotatedMeanwhile");
+		await cli(["env", "set", "cli", "NPM_TOKEN=public-now", "--plain"], async () => {});
+		expect(await variableOf("NPM_TOKEN")).toMatchObject({ protected: false, value: "public-now" });
 	});
 });
 
