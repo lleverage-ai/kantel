@@ -19,6 +19,7 @@ import {
 	type DeviceClass,
 	type EntryBody,
 	encodeJoinTicket,
+	entryHash,
 	type SpaceState,
 	signEntry,
 	verifyChain,
@@ -108,9 +109,16 @@ export async function cardFingerprint(device: ChainDevice): Promise<string> {
 	return fingerprint(fromBase64url(device.sign), fromBase64url(device.dh));
 }
 
+/** What this device keeps of a space: the genesis it trusts, and the newest entry it has verified. */
+interface SpaceFile {
+	readonly genesis: string;
+	readonly seq?: number;
+	readonly head?: string;
+}
+
 /** The genesis this device trusts for `space`, if it has one. */
 export async function pinnedGenesis(configDir: string, space: string): Promise<string | undefined> {
-	return (await readJson<{ genesis: string }>(spacePath(configDir, space)))?.genesis;
+	return (await readJson<SpaceFile>(spacePath(configDir, space)))?.genesis;
 }
 
 export async function pinGenesis(configDir: string, space: string, genesis: string): Promise<void> {
@@ -118,7 +126,25 @@ export async function pinGenesis(configDir: string, space: string, genesis: stri
 	if (pinned !== undefined && pinned !== genesis) {
 		throw new Error(`This device already trusts another chain for ${space} (${short(pinned)})`);
 	}
-	await writePrivate(spacePath(configDir, space), { genesis });
+	if (pinned === undefined) await writePrivate(spacePath(configDir, space), { genesis });
+}
+
+/**
+ * Takes a chain this device verified from its genesis only if it carries on from the newest one it verified before,
+ * then remembers it: else the gateway could serve an older chain, with a device or host since removed still in it.
+ */
+async function checkpoint(configDir: string, state: SpaceState): Promise<void> {
+	const path = spacePath(configDir, state.space);
+	const saved = await readJson<SpaceFile>(path);
+	if (saved?.seq !== undefined && saved.head !== undefined) {
+		if (state.seq < saved.seq || state.hashes[saved.seq] !== saved.head) {
+			throw new Error(
+				`The gateway's chain for ${state.space} goes back on what this device verified before (seq ${saved.seq}): it isn't used`,
+			);
+		}
+	}
+	if (saved?.seq === state.seq && saved.head === state.head) return;
+	await writePrivate(path, { genesis: state.genesis, seq: state.seq, head: state.head });
 }
 
 export const short = (hash: string) => hash.slice(0, 16);
@@ -138,12 +164,15 @@ export async function verifiedChain(client: KantelClient, configDir: string, spa
 	}
 	const { entries } = await client.getE2EChain(space);
 	if (entries.length === 0) throw new Error(`The gateway has no chain for ${space}`);
-	return { entries, state: await verifyChain(entries, genesis) };
+	const state = await verifyChain(entries, genesis);
+	await checkpoint(configDir, state);
+	return { entries, state };
 }
 
 /** Signs `body` with this device after `chain`'s head and adds it. */
 export async function appendEntry(
 	client: KantelClient,
+	configDir: string,
 	device: Device,
 	chain: VerifiedChain,
 	body: EntryBody,
@@ -160,7 +189,9 @@ export async function appendEntry(
 		from: chain.state.seq + 1,
 		entries: [entry],
 	});
-	return { entries, state: await verifyChain(entries, chain.state.genesis) };
+	const state = await verifyChain(entries, chain.state.genesis);
+	await checkpoint(configDir, state);
+	return { entries, state };
 }
 
 /** Starts `space`'s chain with this device as its admin, and pins it. */
@@ -179,9 +210,12 @@ export async function initChain(
 		{ id: device.id, signer: device.identity.signer },
 		Date.now(),
 	);
+	// The genesis is the one this device signed, whatever chain the gateway answers with.
+	const pin = await entryHash(genesis);
 	const { entries } = await client.appendE2EChain(space, { from: 0, entries: [genesis] });
-	const state = await verifyChain(entries);
-	await pinGenesis(configDir, space, state.genesis);
+	const state = await verifyChain(entries, pin);
+	await pinGenesis(configDir, space, pin);
+	await checkpoint(configDir, state);
 	return { entries, state };
 }
 

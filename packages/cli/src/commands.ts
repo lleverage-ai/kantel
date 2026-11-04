@@ -840,10 +840,12 @@ async function e2eChainOf(ctx: Context): Promise<{ chain: e2e.VerifiedChain; dev
 /** Signs and adds one entry with this device, and says what the chain is now. */
 async function e2eAppend(ctx: Context, body: EntryBody, done: string): Promise<void> {
 	const { chain, device } = await e2eChainOf(ctx);
-	const next = await e2e.appendEntry(await ctx.client(), device, chain, body).catch((error: unknown) => {
-		if (error instanceof KantelApiError) throw error;
-		throw e2eFailure(error);
-	});
+	const next = await e2e
+		.appendEntry(await ctx.client(), ctx.io.configDir, device, chain, body)
+		.catch((error: unknown) => {
+			if (error instanceof KantelApiError) throw error;
+			throw e2eFailure(error);
+		});
 	ctx.emit({ space: next.state.space, seq: next.state.seq, head: next.state.head }, () => done);
 }
 

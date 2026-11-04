@@ -5,7 +5,7 @@
 // checked for the command and its output, and a key the gateway slips into the chain is refused by the host.
 import { KantelApiError } from "@kantel/api/sdk";
 import { utf8 } from "@kantel/e2e/bytes";
-import { chainDevice, createHostTicket, signEntry, verifyChain } from "@kantel/e2e/chain";
+import { chainDevice, createHostTicket, signEntry, signHostEntry, verifyChain } from "@kantel/e2e/chain";
 import { keyId, newIdentity } from "@kantel/e2e/keys";
 import { openSession, SessionClient } from "@kantel/e2e/session";
 import { contains } from "@kantel/e2e/testing";
@@ -166,6 +166,37 @@ describe("E2E through the gateway", () => {
 		).resolves.toMatchObject({
 			error: { code: "forbidden" },
 		});
+	});
+
+	it("takes no host.add from a ticket that has run out, however it is dated", async () => {
+		const s = await setup();
+		const sandbox = await s.root.createSandbox({ type: "microvm", wait: true });
+		const device = await newIdentity();
+		const by = { id: await keyId("kd", device.signer.publicKey), signer: device.signer };
+		const at = Date.now() - 3_600_000;
+		const genesis = await signEntry(
+			undefined,
+			sandbox.accountId,
+			{ type: "genesis", body: { mode: "on", device: await chainDevice(device, ROOT.userId, "cli", "laptop") } },
+			by,
+			at,
+		);
+		await s.root.appendE2EChain(sandbox.accountId, { from: 0, entries: [genesis] });
+		const state = await verifyChain([genesis]);
+		// A ticket that ran out half an hour ago, which its holder never used, signed into a host.add dated before then.
+		const ticket = await createHostTicket(state, by, "rack-1", at + 1_800_000);
+		const hostAdd = await signHostEntry(state, ticket, { id: s.hostId, identity: await s.host.identity }, at + 60_000);
+		await expect(verifyChain([genesis, hostAdd])).resolves.toBeDefined();
+		await expect(
+			s.hostCall("POST", sandbox.accountId, { space: sandbox.accountId, from: 1, entries: [hostAdd] }),
+		).resolves.toMatchObject({ error: { code: "expired" } });
+	});
+
+	it("lets a shared host read only the chains of spaces it runs sandboxes of", async () => {
+		const s = await space();
+		const bob = await s.as("bob").getCaller();
+		await expect(s.hostCall("GET", bob.accountId)).resolves.toMatchObject({ error: { code: "not_found" } });
+		await expect(s.hostCall("GET", s.accountId)).resolves.toMatchObject({ entries: expect.any(Array) });
 	});
 
 	it("refuses a device the gateway put in the chain itself", async () => {

@@ -17,7 +17,12 @@ afterEach(async () => {
 });
 
 /** One person's `kantel`, with a config directory (and so a device) of their own. */
-async function cli(s: Gateway, who: keyof typeof PEOPLE, account: string) {
+async function cli(
+	s: Gateway,
+	who: keyof typeof PEOPLE,
+	account: string,
+	fetch: (input: string | URL | Request, init?: RequestInit) => Promise<Response> = s.gatewayFetch,
+) {
 	const configDir = await mkdtemp(join(tmpdir(), `kantel-e2e-${who}-`));
 	dirs.push(configDir);
 	return async (...argv: string[]) => {
@@ -33,7 +38,7 @@ async function cli(s: Gateway, who: keyof typeof PEOPLE, account: string) {
 		});
 		const code = await run([...argv, "--account", account], {
 			env: { KANTEL_URL: "https://kantel.test", KANTEL_API_KEY: who },
-			fetch: s.gatewayFetch,
+			fetch,
 			configDir,
 			home: configDir,
 			stdout: sink(out),
@@ -132,5 +137,27 @@ describe("kantel e2e", () => {
 		const status = await bob("e2e", "status");
 		expect(status.code).not.toBe(0);
 		expect(status.stderr).toMatch(/genesis/i);
+	});
+
+	it("won't take a chain from the gateway that goes back on one this device verified", async () => {
+		const s = await organisation();
+		// A gateway that, once told to, answers the chain as it was before its newest entry.
+		let rollBack = false;
+		const fetch = async (input: string | URL | Request, init?: RequestInit) => {
+			const response = await s.gatewayFetch(input, init);
+			const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+			if (!rollBack || (init?.method ?? "GET") !== "GET" || !url.pathname.endsWith("/e2e/chain")) return response;
+			const { entries } = (await response.json()) as { entries: unknown[] };
+			return Response.json({ entries: entries.slice(0, -1) });
+		};
+		const root = await cli(s, "root", s.org.id, fetch);
+		expect((await root("e2e", "init")).code).toBe(0);
+		// The admin takes Bob out (he was in); the gateway then hides that.
+		expect((await root("e2e", "add-member", PEOPLE.bob.userId)).code).toBe(0);
+		expect((await root("e2e", "remove-member", PEOPLE.bob.userId)).code).toBe(0);
+		rollBack = true;
+		const status = await root("e2e", "status");
+		expect(status.code).not.toBe(0);
+		expect(status.stderr).toMatch(/goes back on what this device verified/);
 	});
 });
