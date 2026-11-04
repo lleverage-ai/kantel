@@ -2413,12 +2413,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * Keeps the 5-minute means that ended with no point to close them (a sandbox that stopped). Not while the stub's past
-	 * ticks are being replayed (`catchUpUsage`), whose later ones would find their 5 minutes closed; the replay settles
-	 * once they are all in (`replay`).
+	 * Keeps the 5-minute means that ended with no point to close them (a sandbox that stopped), once every tick that
+	 * could be in them is: the stub's are taken in first (`catchUpUsage`), so a 5 minutes is never closed with its later
+	 * ticks still to come. What that leaves untaken is under a tick old, and a 5 minutes closes only `2 *
+	 * USAGE_INTERVAL_MS` after it ends. The one way to settle, but for the replay's own once its ticks are in (`replay`).
 	 */
-	async function settleUsage(how: { readonly replay?: boolean } = {}): Promise<void> {
-		if (replaying !== undefined && how.replay !== true) return;
+	async function settleUsage(): Promise<void> {
+		await catchUpUsage();
+		// A replay begun meanwhile settles when it ends.
+		if (replaying !== undefined) return;
+		await settleTaken();
+	}
+
+	/** Settles what the series hold now: only after the stub's ticks are in (`settleUsage`, `replay`). */
+	async function settleTaken(): Promise<void> {
 		settledAt = now();
 		hostSeries.settle(now());
 		for (const { key, rollup } of sandboxSeries.settle(now())) await keepRollup(key, rollup).catch(() => undefined);
@@ -2526,7 +2534,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			await ingest(report.hostId, report, { known, settle: false }).catch(() => undefined);
 		}
 		// Once every past tick is in: only now can a 5 minutes be closed for want of more.
-		if (reports.length > 0 && now() - settledAt >= SETTLE_EVERY_MS) await settleUsage({ replay: true });
+		if (reports.length > 0 && now() - settledAt >= SETTLE_EVERY_MS) await settleTaken();
 	}
 
 	/** The sandboxes placed on a host and not deleted. */

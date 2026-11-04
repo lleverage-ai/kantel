@@ -526,6 +526,24 @@ describe("usage ticks across gateway replicas over one store", () => {
 });
 
 describe("the stub's replay", () => {
+	it("is taken in before a live host's tick settles anything", async () => {
+		const T0 = Date.UTC(2026, 10, 4, 15, 0, 0);
+		let clock = T0;
+		const { api, tom } = setup(createStubBackend({ now: () => clock }), () => clock);
+		const box = await tom.createSandbox({ wait: true });
+		// Its ticks are in to a minute through its first 5 minutes.
+		clock = T0 + 60_000;
+		await tom.getSandbox(box.id);
+		// 11 minutes on, another host's tick comes before any read: what it settles, it settles with every tick in.
+		clock = T0 + 12 * 60_000;
+		await api.service.recordUsage("host_other", tick(clock, []));
+		const samples = (await api.store.sandboxes.get(box.id))?.samples ?? [];
+		expect(samples.map((sample) => [sample.at, sample.readings])).toEqual([
+			[T0, ROLLUP_MS / USAGE_INTERVAL_MS],
+			[T0 + ROLLUP_MS, ROLLUP_MS / USAGE_INTERVAL_MS],
+		]);
+	});
+
 	it("is waited for by an export that comes while it is part way through, and a live host's tick doesn't settle it", async () => {
 		const T0 = Date.UTC(2026, 10, 4, 14, 0, 0);
 		let clock = T0;
@@ -556,12 +574,12 @@ describe("the stub's replay", () => {
 		clock = T0 + 12 * 60_000;
 		const read = tom.getSandbox(box.id);
 		await held;
-		// Another host's tick, which settles now and then.
-		await api.service.recordUsage("host_other", tick(clock, []));
+		// Another host's tick, which settles now and then: it waits for the replay to settle.
+		const live = api.service.recordUsage("host_other", tick(clock, []));
 		const exported = api.service.sampleUsage();
 		await new Promise((resolve) => setTimeout(resolve, 5));
 		release();
-		await Promise.all([read, exported]);
+		await Promise.all([read, live, exported]);
 		const samples = (await api.store.sandboxes.get(box.id))?.samples ?? [];
 		expect(samples.map((sample) => [sample.at, sample.readings])).toEqual([
 			[T0, ROLLUP_MS / USAGE_INTERVAL_MS],

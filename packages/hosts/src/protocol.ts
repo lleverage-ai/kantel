@@ -257,9 +257,13 @@ export interface HostSandboxUsage {
 	readonly id: string;
 	readonly kind: SandboxTier;
 	readonly cpu: number;
-	/** A microVM's guest memory in use (not what the VMM mapped); an isolate's heap. */
+	/**
+	 * As kantel-host measures it from the host's side (`SandboxUsage` in apps/host/internal/proto/proto.go): a microVM's
+	 * Firecracker process's resident memory (the guest memory it has touched, page cache included, and the VMM's own); an
+	 * isolate's even share of its account's runtime's resident memory.
+	 */
 	readonly memUsedBytes: number;
-	/** Its size's memory, or an isolate's heap limit. */
+	/** A microVM's size's memory; an isolate's even share of its account's runtime's memory limit. */
 	readonly memLimitBytes: number;
 }
 
