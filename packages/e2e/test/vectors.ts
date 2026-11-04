@@ -12,6 +12,7 @@ import {
 	chainDevice,
 	createHostTicket,
 	deviceAllowed,
+	encodeJoinTicket,
 	extendChain,
 	type SpaceState,
 	signEntry,
@@ -344,11 +345,43 @@ export async function sessionVector(): Promise<SessionVector> {
 	};
 }
 
+export interface JoinVector {
+	/** The space's chain as the gateway gives it to a joining host. */
+	readonly entries: readonly ChainEntry[];
+	/** What `kantel e2e hosts ticket` prints for a host called rack-9. */
+	readonly word: string;
+	/** Another space's chain: a gateway that hands the host this instead. */
+	readonly otherEntries: readonly ChainEntry[];
+}
+
+/** A ticket for a second host, which the Go host's join must turn into a host.add the chain takes. */
+export async function joinVector(): Promise<JoinVector> {
+	const f = await fixture();
+	const join = await createHostTicket(
+		f.state,
+		{ id: f.tomId, signer: f.tom.signer },
+		"rack-9",
+		// Long after the fixture, so the Go host's clock is inside it for years.
+		T0 + 20 * 365 * 24 * 3_600_000,
+		await seed("ticket-9"),
+	);
+	const other = await fixedIdentity("other-space");
+	const otherGenesis = await signEntry(
+		undefined,
+		SPACE,
+		{ type: "genesis", body: { mode: "on", device: await chainDevice(other, "usr_tom", "cli", "other") } },
+		{ id: await keyId("kd", other.signer.publicKey), signer: other.signer },
+		T0,
+	);
+	return { entries: f.entries, word: encodeJoinTicket(join), otherEntries: [otherGenesis] };
+}
+
 const here = (name: string) => fileURLToPath(new URL(`../vectors/${name}`, import.meta.url));
 
 export const vectorFiles = {
 	chain: here("chain.json"),
 	session: here("session.json"),
+	join: here("join.json"),
 };
 
 export const render = (value: unknown) => `${JSON.stringify(value, null, "\t")}\n`;
@@ -356,4 +389,5 @@ export const render = (value: unknown) => `${JSON.stringify(value, null, "\t")}\
 if (process.argv.includes("--write")) {
 	await writeFile(vectorFiles.chain, render(await chainVectors()));
 	await writeFile(vectorFiles.session, render(await sessionVector()));
+	await writeFile(vectorFiles.join, render(await joinVector()));
 }

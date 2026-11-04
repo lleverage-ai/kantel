@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { chainVectors, sessionVector, vectorFiles } from "./vectors.ts";
+import { chainVectors, joinVector, sessionVector, vectorFiles } from "./vectors.ts";
 
 const read = async (path: string): Promise<unknown> => JSON.parse(await readFile(path, "utf8"));
 const plain = (value: unknown): unknown => JSON.parse(JSON.stringify(value));
@@ -14,6 +14,10 @@ describe("cross-language vectors", () => {
 
 	it("vectors/session.json is the session the TypeScript device and host have", async () => {
 		expect(await read(vectorFiles.session)).toEqual(plain(await sessionVector()));
+	});
+
+	it("vectors/join.json is what the TypeScript makes", async () => {
+		expect(await read(vectorFiles.join)).toEqual(plain(await joinVector()));
 	});
 
 	it("covers what the gateway must not be able to do", async () => {
