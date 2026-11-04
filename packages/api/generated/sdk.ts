@@ -1577,7 +1577,7 @@ export interface TakeSnapshotBody {
 	readonly description?: string;
 }
 
-/** Where an account's telemetry goes: sandbox metrics (`kantel.sandbox.running`, `kantel.sandbox.cpu.seconds`, `kantel.sandbox.cost`, …) every 60 seconds, and each lifecycle event as an OTLP log record when it happens. */
+/** Where an account's telemetry goes: sandbox metrics (`kantel.sandbox.cpu`, `kantel.sandbox.memory_bytes` and `kantel.sandbox.running_seconds`) every 60 seconds, and each lifecycle event as an OTLP log record when it happens. */
 export interface TelemetryExport {
 	readonly accountId: string;
 	/** An OTLP/HTTP collector's base URL; `/v1/metrics` and `/v1/logs` are added. */
@@ -1599,7 +1599,7 @@ export interface TelemetryLastExport {
 }
 
 export interface TelemetryTest {
-	/** Where an account's telemetry goes: sandbox metrics (`kantel.sandbox.running`, `kantel.sandbox.cpu.seconds`, `kantel.sandbox.cost`, …) every 60 seconds, and each lifecycle event as an OTLP log record when it happens. */
+	/** Where an account's telemetry goes: sandbox metrics (`kantel.sandbox.cpu`, `kantel.sandbox.memory_bytes` and `kantel.sandbox.running_seconds`) every 60 seconds, and each lifecycle event as an OTLP log record when it happens. */
 	readonly telemetry: TelemetryExport;
 	/** What the collector answered to an empty export sent on save. */
 	readonly test: TelemetryTestResult;
