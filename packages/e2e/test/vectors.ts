@@ -410,6 +410,8 @@ export interface JoinVector {
 	 * for rack-9 made after it, with which the host joins the chain as it now is.
 	 */
 	readonly race: { readonly entry: ChainEntry; readonly word: string };
+	/** A ticket for rack-9 that runs out ten years after the fixture, half as long as `word`. */
+	readonly shortWord: string;
 }
 
 /** A ticket for a second host, which the Go host's join must turn into a host.add the chain takes. */
@@ -445,11 +447,19 @@ export async function joinVector(): Promise<JoinVector> {
 		T0 + 20 * 365 * 24 * 3_600_000,
 		await seed("ticket-9-again"),
 	);
+	const short = await createHostTicket(
+		f.state,
+		{ id: f.tomId, signer: f.tom.signer },
+		"rack-9",
+		T0 + 10 * 365 * 24 * 3_600_000,
+		await seed("ticket-9-short"),
+	);
 	return {
 		entries: f.entries,
 		word: encodeJoinTicket(join),
 		otherEntries: [otherGenesis],
 		race: { entry: won, word: encodeJoinTicket(again) },
+		shortWord: encodeJoinTicket(short),
 	};
 }
 

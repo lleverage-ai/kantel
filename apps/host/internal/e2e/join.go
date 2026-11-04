@@ -20,6 +20,26 @@ type hostAddPayload struct {
 	} `json:"body"`
 }
 
+// hostAddTicket is the ticket a host.add was signed with.
+func hostAddTicket(e Entry) (Entry, bool) {
+	raw, err := FromB64(e.Payload)
+	if err != nil {
+		return Entry{}, false
+	}
+	var p hostAddPayload
+	if json.Unmarshal(raw, &p) != nil || p.Type != "host.add" {
+		return Entry{}, false
+	}
+	return p.Body.Ticket, true
+}
+
+// Usable says whether the gateway still takes a host.add made with the ticket at now (milliseconds): it checks expiry
+// against its own clock when the entry is appended, not against the entry's time.
+func (j *JoinTicket) Usable(now int64) bool {
+	t, _, err := parseTicket(j.Ticket)
+	return err == nil && now <= t.exp
+}
+
 // SignHostAdd is the host.add a host signs with its join ticket's one-off key, to follow state. The host is hostID
 // (its ID on the gateway, which the relay routes by) with identity's keys. The entry is checked against state before
 // it is given back, so a ticket for another space, an expired one or a spent one fails here.

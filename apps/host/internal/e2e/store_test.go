@@ -16,6 +16,65 @@ type joinVector struct {
 		Entry Entry  `json:"entry"`
 		Word  string `json:"word"`
 	} `json:"race"`
+	ShortWord string `json:"shortWord"`
+}
+
+// A proposal that can't be taken any more gives way to a host.add with the ticket given now: one whose ticket ran out,
+// or one signed with another ticket. Only a proposal with this ticket, unexpired, is published again.
+func TestAProposalGivesWayToAFreshTicket(t *testing.T) {
+	var v joinVector
+	readVector(t, "join.json", &v)
+	store, _ := OpenStore(t.TempDir())
+	short, _ := DecodeJoinTicket(v.ShortWord)
+	long, _ := DecodeJoinTicket(v.Word)
+	now := time.Now()
+	first, _, err := store.Join(short, v.Entries, "host_two", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, _, err := store.Join(short, v.Entries, "host_two", now.Add(time.Minute)); err != nil || again != first {
+		t.Fatalf("an unexpired retry didn't publish the same proposal: %v", err)
+	}
+	// Eleven years on, the short ticket has run out: the gateway would refuse its proposal, and signing with it again
+	// fails, so nothing goes out with it.
+	later := now.AddDate(11, 0, 0)
+	if _, _, err := store.Join(short, v.Entries, "host_two", later); err == nil {
+		t.Fatal("the proposal of an expired ticket was published again")
+	}
+	// A fresh ticket replaces it.
+	fresh, st, err := store.Join(long, v.Entries, "host_two", later)
+	if err != nil {
+		t.Fatalf("a fresh ticket couldn't replace the expired proposal: %v", err)
+	}
+	if fresh == first || !proposedWith(fresh, long) {
+		t.Fatal("the host published the expired proposal")
+	}
+	if _, err := VerifyChain(entriesPlus(v.Entries, fresh), ""); err != nil || st.Seq != len(v.Entries) {
+		t.Fatalf("seq %d: %v", st.Seq, err)
+	}
+	if p, ok := store.proposal("acc_org"); !ok || p.Entry != fresh {
+		t.Fatal("the fresh host.add isn't the proposal")
+	}
+	if got := store.Space("acc_org").Entries(0); len(got) != len(v.Entries) {
+		t.Fatalf("a proposal is in the host's chain (%d entries)", len(got))
+	}
+	if err := store.Confirm("acc_org", first); err == nil {
+		t.Fatal("the replaced proposal was confirmed")
+	}
+	if err := store.Confirm("acc_org", fresh); err != nil {
+		t.Fatal(err)
+	}
+	// Accepted, it stays, however old its ticket gets.
+	muchLater := now.AddDate(30, 0, 0)
+	if e, _, err := store.Join(long, v.Entries, "host_two", muchLater); err != nil || e != fresh {
+		t.Fatalf("the accepted host.add changed: %v", err)
+	}
+	if _, _, err := store.Join(short, entriesPlus(v.Entries, first), "host_two", now); err == nil {
+		t.Fatal("the host swapped its accepted host.add for the replaced proposal")
+	}
+	if got := store.Space("acc_org").Entries(0); len(got) != len(v.Entries)+1 || got[len(v.Entries)] != fresh {
+		t.Fatalf("the accepted chain changed: %d entries", len(got))
+	}
 }
 
 // entriesPlus is entries with more after them, in a new slice.

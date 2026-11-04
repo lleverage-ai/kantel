@@ -545,9 +545,11 @@ func (s *Store) join(join *JoinTicket, entries []Entry, hostID string, now time.
 		}
 		return Entry{}, nil, fmt.Errorf("the chain has host %s with other keys", hostID)
 	}
-	// A host.add this host proposed on the chain as the gateway still has it (its publish failed): the same one again,
-	// not a second signed onto the same head.
-	if p, ok := s.proposal(space); ok && p.Seq == len(entries) {
+	// A proposal is never part of the chain the host holds to, so it is only kept while it can still be taken: one this
+	// host made on the chain as the gateway still has it (its publish failed), with the ticket given now, which hasn't
+	// expired, is published again rather than a second signed onto the same head. Anything else (the chain went past
+	// it, or a new ticket because the old one ran out) gets a host.add signed with this ticket, which replaces it.
+	if p, ok := s.proposal(space); ok && p.Seq == len(entries) && proposedWith(p.Entry, join) && join.Usable(now.UnixMilli()) {
 		if next, err := VerifyChain(append(append([]Entry{}, entries...), p.Entry), genesis); err == nil {
 			if err := s.save(space, genesis, entries); err != nil {
 				return Entry{}, nil, err
@@ -649,6 +651,12 @@ func (s *Store) proposal(space string) (proposal, bool) {
 }
 
 func (s *Store) dropProposal(space string) { _ = os.Remove(s.proposalPath(space)) }
+
+// proposedWith says whether host.add e was signed with join's ticket.
+func proposedWith(e Entry, join *JoinTicket) bool {
+	t, ok := hostAddTicket(e)
+	return ok && t == join.Ticket
+}
 
 // save writes a joined space's chain. The first time, the chain is staged in pending/ before the space is marked
 // joined, so a join that stops between the marker and the chain stays strict (joined, no chain) and a retry finishes
