@@ -48,6 +48,7 @@ import {
 	createMemoryStore,
 	createRoutedBackend,
 	hostImageChannel,
+	type InviteMailing,
 	joinTokenSpender,
 	type PersonIdentity,
 	type SandboxBackend,
@@ -377,6 +378,8 @@ export interface StackComputeOptions {
 	readonly hostSweepMs?: number;
 	/** Image patching (KANTEL_IMAGE_PATCHING=experimental): where the base image index is read. Absent, off. */
 	readonly imagePatching?: { readonly indexUrl: string };
+	/** Emails an organisation's invites, with a link to join, where the deployment has mail. Absent, none. */
+	readonly invites?: InviteMailing;
 }
 
 /**
@@ -535,6 +538,7 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		// Join commands name the address hosts dial, as tunnel URLs do, not the caller's origin.
 		...(own === undefined ? {} : { accountHosts: true, publicUrl: own.publicUrl }),
 		...(baseImages === undefined ? {} : { baseImages }),
+		...(options.invites === undefined ? {} : { invites: options.invites }),
 	});
 	if (own !== undefined) await grantPorts(store, await own.microvms());
 	own?.service.useJoinTokens(joinTokenSpender(store));

@@ -180,6 +180,13 @@ export const Invite = Type.Object(
 		code: Type.Optional(
 			Type.String({ description: "The join code, such as `kji_…`. Shown once, when the invite is made." }),
 		),
+		emailed: Type.Optional(
+			Type.Boolean({
+				description:
+					"Only when the invite is made: whether Kantel emailed it, with a link that joins with its code. False " +
+					"without an email, where the deployment sends no mail, or when the send failed.",
+			}),
+		),
 		expiresAt: Timestamp,
 		createdAt: Timestamp,
 	},

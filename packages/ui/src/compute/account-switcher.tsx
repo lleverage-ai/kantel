@@ -4,7 +4,7 @@
 // CreateOrganisationDialog and JoinOrganisationDialog are what its
 // last two rows open; the host opens them, so a page can open them too. On a phone it is in the top bar, the same row.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { initials } from "../identity/signed-in-as.tsx";
 import { Button } from "../primitives/button.tsx";
 import { TextField } from "../primitives/controls.tsx";
@@ -228,14 +228,20 @@ export function JoinOrganisationDialog({
 	onClose,
 	onJoin,
 	onSignOut,
+	initialCode,
 }: {
 	open: boolean;
 	onClose: () => void;
 	onJoin: (code: string) => Promise<unknown>;
 	/** Signs the person out; offered when the invite is for someone else. */
 	onSignOut?: () => void;
+	/** The code it opens with: an invite email's link's. */
+	initialCode?: string;
 }) {
 	const [code, setCode] = useState("");
+	useEffect(() => {
+		if (open && initialCode !== undefined) setCode(initialCode);
+	}, [open, initialCode]);
 	const [busy, setBusy] = useState(false);
 	const [failure, setFailure] = useState<{ readonly text: string; readonly otherPerson: boolean }>();
 	const close = () => {

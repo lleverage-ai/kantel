@@ -11042,6 +11042,10 @@
 						"type": "string",
 						"description": "The join code, such as `kji_…`. Shown once, when the invite is made."
 					},
+					"emailed": {
+						"type": "boolean",
+						"description": "Only when the invite is made: whether Kantel emailed it, with a link that joins with its code. False without an email, where the deployment sends no mail, or when the send failed."
+					},
 					"expiresAt": {
 						"type": "integer",
 						"description": "Epoch milliseconds, UTC."

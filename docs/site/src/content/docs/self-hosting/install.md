@@ -188,7 +188,7 @@ The stack reads its settings from `~/.kantel/src/deploy/compose/.env`, which upg
 | Setting | What it does |
 | --- | --- |
 | `KANTEL_ADMIN_EMAIL` | The address invited as the first admin |
-| `KANTEL_SMTP_URL` | Where sign-in codes go: `smtps://user:password@host:port` for TLS from the start, `smtp://user:password@host:port` for STARTTLS. Without it they go to the built-in mailbox |
+| `KANTEL_SMTP_URL` | Where sign-in codes and invites go: `smtps://user:password@host:port` for TLS from the start, `smtp://user:password@host:port` for STARTTLS. Without it they go to the built-in mailbox |
 | `KANTEL_MAIL_FROM` | The sender of sign-in codes, such as `Kantel <kantel@example.com>` |
 | `KANTEL_PUBLIC_URL` | The console's address when people reach it through a TLS proxy, such as `https://kantel.example.com` |
 | `KANTEL_GITHUB_CLIENT_ID`, `KANTEL_GITHUB_CLIENT_SECRET` | A GitHub OAuth app's client, for **Sign in with GitHub**. See [Sign in with GitHub or Google](#sign-in-with-github-or-google) |

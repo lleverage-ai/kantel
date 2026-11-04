@@ -17,7 +17,13 @@ import { isKantelError } from "@kantel/contracts";
 import { type AuthenticatePerson, authenticate, UnauthenticatedError } from "./auth.ts";
 import type { SandboxBackend } from "./backend.ts";
 import type { BaseImages } from "./base-status.ts";
-import { type ComputeLimits, type ComputeService, createComputeService, type RateTable } from "./service.ts";
+import {
+	type ComputeLimits,
+	type ComputeService,
+	createComputeService,
+	type InviteMailing,
+	type RateTable,
+} from "./service.ts";
 import { type ComputeStore, createMemoryStore } from "./store.ts";
 import { createTelemetryExporter, type TelemetryExporter } from "./telemetry.ts";
 import { createWebhookDispatcher, type WebhookDispatcher } from "./webhooks.ts";
@@ -69,6 +75,8 @@ export interface ComputeApiOptions {
 	 * (`baseImageIndexReader`). Absent, off: no `base` fields, and its routes answer `not_supported`.
 	 */
 	readonly baseImages?: BaseImages;
+	/** Emails an invite made for an address, with a link to join (`ComputeServiceOptions.invites`); absent, none. */
+	readonly invites?: InviteMailing;
 }
 
 export interface ComputeApi {
@@ -135,6 +143,7 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 		...(options.sharedHosts === undefined ? {} : { sharedHosts: options.sharedHosts }),
 		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
 		...(options.baseImages === undefined ? {} : { baseImages: options.baseImages }),
+		...(options.invites === undefined ? {} : { invites: options.invites }),
 	});
 	service = created;
 	const publicIds = new Set<string>(Object.keys(publicComputeRoutes));
