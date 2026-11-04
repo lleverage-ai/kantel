@@ -1121,17 +1121,18 @@ function ConsoleLoading({ narrow, title }: { narrow: boolean; title: string | un
 	const rows = narrow ? 6 : 8;
 	return (
 		<div
-			className={`flex flex-col gap-6 ${narrow ? "p-gutter-narrow" : "p-gutter"}`}
+			// The page's own spacing (computePage's gap, the header's height and rule), so nothing moves when it arrives.
+			className={`flex flex-col gap-5 ${narrow ? "p-gutter-narrow" : "p-gutter"}`}
 			role="status"
 			aria-label="Opening the console"
 		>
-			<div className="flex items-center justify-between gap-4 border-b border-border pb-4">
+			<div className="flex min-h-control-md items-center justify-between gap-4 border-b border-border pb-3">
 				{title === undefined ? (
 					<span className={`${skeletonClass} h-(--kt-text-heading) w-32`} />
 				) : (
 					<p className="m-0 truncate text-heading font-strong leading-tight text-fg">{title}</p>
 				)}
-				<span className={`${skeletonClass} h-(--kt-control-md) w-20 rounded-control`} />
+				<span className={`${skeletonClass} h-control-sm w-28 rounded-control`} />
 			</div>
 			<div className={`flex gap-3 ${narrow ? "flex-col" : "items-center justify-between"}`}>
 				<span className={`${skeletonClass} h-(--kt-control-md) w-72 max-w-full rounded-control`} />
