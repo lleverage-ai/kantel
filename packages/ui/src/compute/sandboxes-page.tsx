@@ -398,6 +398,8 @@ type RowCalls = {
 	sandboxHref?: (sandboxId: string, view?: SandboxRowView) => string;
 	navigate?: (path: string) => void;
 	onChange: (box: Sandbox | null, id: string, asked?: number) => void;
+	/** What to pass `onChange` with a call's answer, read as the call is made, so a later change to it wins. */
+	asked?: (id: string) => number;
 	onNotice: (notice: SandboxNotice | undefined) => void;
 };
 
@@ -463,6 +465,7 @@ function SandboxList({
 		...(sandboxHref === undefined ? {} : { sandboxHref }),
 		...(navigate === undefined ? {} : { navigate }),
 		onChange,
+		asked,
 		onNotice,
 	};
 	const list = narrow ? (
@@ -631,16 +634,24 @@ export function screenLink(
 
 /** What a row can do: its buttons, and ⋯ with Stop and the sandbox menu's four. */
 function useRowActions(sandbox: Sandbox, calls: RowCalls) {
-	const { source, save, onChange, onNotice } = calls;
+	const { source, save, onChange, asked, onNotice } = calls;
 	const pending = sandbox.id.startsWith("pending_");
 	const can = sandboxActions(sandbox.state);
 	const windows = can.connect && sandbox.kind === "microvm";
-	const menu = useSandboxMenu(sandbox, { source, ...(save === undefined ? {} : { save }), onChange, onNotice });
+	const menu = useSandboxMenu(sandbox, {
+		source,
+		...(save === undefined ? {} : { save }),
+		onChange,
+		...(asked === undefined ? {} : { asked }),
+		onNotice,
+	});
 
 	const act = async (what: string, call: () => Promise<Sandbox>) => {
 		try {
+			// As the menu's: an answer overtaken by a later change to it (a Delete) is dropped.
+			const since = asked?.(sandbox.id);
 			const box = await call();
-			onChange(box, box.id);
+			onChange(box, box.id, since);
 		} catch (caught) {
 			onNotice({ level: "error", text: messageOf(caught, `Kantel couldn't ${what} ${sandbox.name}. Try again.`) });
 		}

@@ -27,9 +27,29 @@ export interface SandboxMenuCalls {
 	readonly source: SandboxesSource;
 	/** Saves a sandbox's latest snapshot under a name; without it there's no Save snapshot. */
 	readonly save?: (sandboxId: string, name: string) => Promise<SavedSnapshot>;
-	/** A sandbox changed or was made (a fork); `null` when it was deleted. */
-	readonly onChange: (box: Sandbox | null, id: string) => void;
+	/**
+	 * A sandbox changed or was made (a fork); `null` when it was deleted. `asked`, where given, is what `asked` read as the
+	 * call was made: the answer is dropped if the sandbox changed since (a Stop or a Delete that answered first).
+	 */
+	readonly onChange: (box: Sandbox | null, id: string, asked?: number) => void;
+	/** Where a sandbox's changes have got to, as the list counts them; without it every answer applies. */
+	readonly asked?: (id: string) => number;
 	readonly onNotice: (notice: SandboxNotice | undefined) => void;
+}
+
+/**
+ * Sets a sandbox's auto-stop: one change at a time to each sandbox's, from its page or its row, even once the dialog
+ * has gone, so a slow earlier one can't land after a later one and undo it. Its answer is dropped if the sandbox
+ * changed meanwhile (stopped or deleted), so it can't bring back a row a Delete took away.
+ */
+export async function setAutoStop(
+	{ source, onChange, asked }: Pick<SandboxMenuCalls, "source" | "onChange" | "asked">,
+	id: string,
+	minutes: number | undefined,
+): Promise<void> {
+	const since = asked?.(id);
+	const changed = await autoStopChanges.run(id, async () => source.setAutoStop?.(id, minutes));
+	if (changed !== undefined) onChange(changed, changed.id, since);
 }
 
 /**
@@ -38,8 +58,9 @@ export interface SandboxMenuCalls {
  */
 export function useSandboxMenu(
 	sandbox: Sandbox | undefined,
-	{ source, save, onChange, onNotice }: SandboxMenuCalls,
+	calls: SandboxMenuCalls,
 ): { entries: readonly MenuEntry[]; dialogs: ReactNode } {
+	const { source, save, onChange, onNotice } = calls;
 	const [open, setOpen] = useState<"delete" | "save" | "auto-stop">();
 	const close = () => setOpen(undefined);
 	const can = sandboxActions(sandbox?.state ?? "stopped");
@@ -130,12 +151,7 @@ export function useSandboxMenu(
 				<AutoStopDialog
 					sandbox={open === "auto-stop" ? sandbox : undefined}
 					onClose={close}
-					onSet={async (box, minutes) => {
-						// One change at a time to each sandbox's, from its page or its row, even once this dialog has gone: a
-						// slow earlier one can't land after a later one and undo it.
-						const changed = await autoStopChanges.run(box.id, async () => source.setAutoStop?.(box.id, minutes));
-						if (changed !== undefined) onChange(changed, changed.id);
-					}}
+					onSet={(box, minutes) => setAutoStop(calls, box.id, minutes)}
 				/>
 			)}
 		</>
