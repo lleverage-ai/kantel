@@ -723,12 +723,24 @@ const StateLabel = ({ state }: { state: SandboxState }) => (
  * live source it's the sandbox's recent CPU as listed, which doesn't move. A row in error says what happened in words
  * instead, so it draws no line.
  */
-function Cpu({ sandbox, source, percent = false }: { sandbox: Sandbox; source: SandboxesSource; percent?: boolean }) {
+function Cpu({
+	sandbox,
+	source,
+	percent = false,
+	labelled = false,
+}: {
+	sandbox: Sandbox;
+	source: SandboxesSource;
+	percent?: boolean;
+	/** In a line of meta text, as a phone's row has it: "CPU" before the line, and the figure at the line's size. */
+	labelled?: boolean;
+}) {
 	const shown = showsCpu(sandbox) && sandbox.state !== "error";
 	const live = useLiveUsage(shown ? source.usageSeries : undefined, sandbox.id, {
 		keepMs: ROW_SPAN_MS,
 	});
-	if (!shown) return null;
+	// Nothing to read: a dash in the table's column, as its other empty cells have, and nothing in a phone's line.
+	if (!shown) return labelled ? null : <span className="text-faint">–</span>;
 	const series = seriesOf(live);
 	const line = lineOf(series, (point) => point.cpu, ROW_SPAN_MS);
 	// Without a live source, its recent CPU as listed, untimed.
@@ -743,6 +755,7 @@ function Cpu({ sandbox, source, percent = false }: { sandbox: Sandbox; source: S
 			: `CPU ${series === undefined ? "lately" : "over the last 2 minutes"} for ${sandbox.name}, peak ${peak}%`;
 	return (
 		<span className="inline-flex items-center gap-2">
+			{labelled ? <span aria-hidden="true">CPU</span> : null}
 			<Sparkline
 				values={values}
 				// Busy past 80%: the line and its figure turn the caution colour, so a glance finds the loaded ones.
@@ -752,7 +765,9 @@ function Cpu({ sandbox, source, percent = false }: { sandbox: Sandbox; source: S
 				{...(series === undefined ? {} : { timed: line.timed })}
 			/>
 			{percent && sandbox.state === "running" ? (
-				<span className={`w-9 text-right text-md tabular-nums ${busy ? "text-status-approval" : "text-muted"}`}>
+				<span
+					className={`tabular-nums ${labelled ? "" : "w-9 text-right text-md "}${busy ? "text-status-approval" : "text-muted"}`}
+				>
 					{latest === undefined ? <span className="text-faint">–</span> : `${Math.round(latest * 100)}%`}
 				</span>
 			) : null}
@@ -783,7 +798,8 @@ function SandboxColumns({ hosted }: { hosted: boolean }) {
 			<col className="w-28" />
 			{hosted ? <col className="w-20" /> : null}
 			<col className="w-16" />
-			<col className="w-24" />
+			{/* The row menu, and Recover where a row has it; Browser and Desktop overlay the columns to its left. */}
+			<col className="w-12" />
 		</colgroup>
 	);
 }
@@ -807,7 +823,6 @@ function SandboxRow({
 	const stops = stopsText(sandbox, now);
 	// What went wrong gets a line of its own under the row, across the columns, rather than truncating in the name's.
 	const failure = sandbox.state === "error" ? sandbox.error : undefined;
-	// A failed sandbox's two rows share a faint error ground, so the row and what went wrong read as one.
 	// A failed sandbox's two rows share a light error ground and a red edge on the left: one band, read at a glance.
 	const failedGround = "bg-status-error-soft/60 [&>td:first-child]:shadow-[inset_2px_0_0_var(--kt-status-error)]";
 	const tone = ticked ? "bg-selected" : failure === undefined ? "hover:bg-hover" : failedGround;
@@ -880,14 +895,19 @@ function SandboxRow({
 							</span>
 						</span>
 					) : can.recover && failure === undefined ? (
-						<Button size="sm" icon={<ReconnectIcon size="sm" />} onClick={recover}>
-							Recover
-						</Button>
-					) : can.resume ? (
-						<span className={onHover}>
-							<Button size="sm" variant="ghost" icon={<PlayIcon size="sm" />} onClick={resume}>
-								Resume
+						// Over Created, as Browser and Desktop are: the column keeps only the menu's width.
+						<span className="absolute right-full mr-1 rounded-control bg-raised">
+							<Button size="sm" icon={<ReconnectIcon size="sm" />} onClick={recover}>
+								Recover
 							</Button>
+						</span>
+					) : can.resume ? (
+						<span className={`absolute right-full mr-1 rounded-control bg-raised ${onHover}`}>
+							<span className="flex rounded-control bg-hover pl-2">
+								<Button size="sm" variant="ghost" icon={<PlayIcon size="sm" />} onClick={resume}>
+									Resume
+								</Button>
+							</span>
 						</span>
 					) : null}
 					{actions}
@@ -918,8 +938,8 @@ function SandboxRow({
 }
 
 /**
- * A phone's row, all of it a link to the sandbox's page: the name with its CPU and state beside it, the machine and
- * when it stops under it, and a chevron. The page has the actions. The tick box is beside the link, not in it.
+ * A phone's row, all of it a link to the sandbox's page: the name with its state beside it, the machine, when it
+ * stops and its CPU under it, and a chevron. The page has the actions. The tick box is beside the link, not in it.
  */
 function SandboxPhoneRow({
 	sandbox,
@@ -940,7 +960,6 @@ function SandboxPhoneRow({
 		<div className="flex min-w-0 flex-1 flex-col gap-1">
 			<div className="flex min-w-0 items-center gap-3">
 				<span className="min-w-0 flex-1 truncate text-md font-medium text-fg">{sandbox.name}</span>
-				<Cpu sandbox={sandbox} source={calls.source} percent />
 				<StateLabel state={sandbox.state} />
 			</div>
 			{sandbox.state === "error" && sandbox.error !== undefined ? (
@@ -952,6 +971,10 @@ function SandboxPhoneRow({
 					</span>
 					{sandbox.environment === undefined ? null : <span>{sandbox.environment.name}</span>}
 					{stops === "–" ? null : <span>{stops === "Always on" || stops === "Now" ? stops : `Stops ${stops}`}</span>}
+					{/* Its CPU on a line of its own, the same place on every row, not beside the name: the name leads alone. */}
+					<span className="basis-full empty:hidden">
+						<Cpu sandbox={sandbox} source={calls.source} percent labelled />
+					</span>
 				</span>
 			)}
 		</div>
