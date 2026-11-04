@@ -710,7 +710,7 @@ function Overview({
 	const details = (
 		<section className="flex min-w-0 flex-col gap-3" aria-labelledby="sandbox-details">
 			<SectionHeading id="sandbox-details" title="Details" />
-			<dl className="m-0 grid grid-cols-[auto_minmax(0,1fr)] gap-x-6 gap-y-2.5 text-sm">
+			<dl className="m-0 grid grid-cols-[var(--kt-label-width)_minmax(0,1fr)] gap-x-4 gap-y-2.5 text-sm">
 				<dt className={dt}>ID</dt>
 				<dd className={`${dd} flex items-center gap-1`}>
 					<span className="truncate font-mono text-code">{sandbox.id}</span>
@@ -877,7 +877,7 @@ export function ImageSection({ image }: { image: SandboxImage }) {
 	return (
 		<section className="flex min-w-0 flex-col gap-3" aria-labelledby="sandbox-image">
 			<SectionHeading id="sandbox-image" title="Image" />
-			<dl className="m-0 grid grid-cols-[auto_minmax(0,1fr)] gap-x-6 gap-y-2.5 text-sm">
+			<dl className="m-0 grid grid-cols-[var(--kt-label-width)_minmax(0,1fr)] gap-x-4 gap-y-2.5 text-sm">
 				<dt className={dt}>OS</dt>
 				<dd className={`${dd} truncate`} title={image.os}>
 					{image.os}

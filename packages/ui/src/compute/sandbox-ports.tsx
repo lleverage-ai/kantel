@@ -5,7 +5,7 @@
 // after it; the guard belongs to the sandbox, not to this view, so leaving the tab mid-change doesn't drop it. Every
 // call goes through the `SandboxesSource` the host binds.
 
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "../primitives/button.tsx";
 import { CheckboxField, CopyButton, TextField } from "../primitives/controls.tsx";
 import { Dialog } from "../primitives/dialog.tsx";
@@ -334,10 +334,10 @@ function Address({ address }: { address: string }) {
 		<>
 			{parts.map((part, index) => (
 				// biome-ignore lint/suspicious/noArrayIndexKey: a fixed split of one string.
-				<span key={index}>
+				<Fragment key={index}>
 					{part}
 					{index < parts.length - 1 ? <wbr /> : null}
-				</span>
+				</Fragment>
 			))}
 		</>
 	);

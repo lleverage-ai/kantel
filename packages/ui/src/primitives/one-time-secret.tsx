@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useId, useRef } from "react";
+import { Fragment, type ReactNode, useEffect, useId, useRef } from "react";
 import { Button } from "./button.tsx";
 import { CopyButton } from "./controls.tsx";
 import { FormActions } from "./form-layout.tsx";
@@ -22,15 +22,16 @@ export const commandTextClass =
  * "latest/…") rather than mid-word. What is copied is the command as given; this is only how it is shown.
  */
 export function BreakableCommand({ command }: { command: string }) {
-	const parts = command.split(/(?<=\/)/);
+	// After a single slash between two other characters: a path's parts, never inside "https://".
+	const parts = command.split(/(?<=[^/:]\/)(?=[^/])/);
 	return (
 		<>
 			{parts.map((part, index) => (
 				// biome-ignore lint/suspicious/noArrayIndexKey: a fixed split of one string.
-				<span key={index}>
+				<Fragment key={index}>
 					{part}
 					{index < parts.length - 1 ? <wbr /> : null}
-				</span>
+				</Fragment>
 			))}
 		</>
 	);

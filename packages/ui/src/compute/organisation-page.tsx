@@ -18,6 +18,7 @@ import { EllipsisIcon, RevokeInviteIcon, TrashIcon } from "../primitives/lucide.
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
 import { OneTimeSecret } from "../primitives/one-time-secret.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
+import { Badge } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import { ACCOUNT_ROLE_LABELS, AccountMark } from "./account-switcher.tsx";
 import type {
@@ -623,9 +624,10 @@ function People({
 							className="flex min-w-0 flex-1 flex-col gap-0.5"
 							title={`Joined ${compactAge(member.joinedAt, now)} ago`}
 						>
-							<span className="truncate font-medium text-fg">
-								{member.name}
-								{you ? <span className="font-regular text-muted"> you</span> : null}
+							<span className="flex min-w-0 items-center gap-2">
+								<span className="truncate font-medium text-fg">{member.name}</span>
+								{/* A label, not part of the name. */}
+								{you ? <Badge tone="neutral">You</Badge> : null}
 							</span>
 							{member.email === "" ? null : <span className="truncate text-sm text-muted">{member.email}</span>}
 						</span>

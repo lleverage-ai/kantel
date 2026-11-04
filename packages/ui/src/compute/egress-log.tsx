@@ -279,7 +279,8 @@ function Decision({ entry }: { entry: LoggedEntry }) {
 		<span className="flex items-center gap-2">
 			{/* Both decisions as a badge, so every row in the log is the same height and reads the same way. */}
 			{entry.decision === "allowed" ? <Badge tone="neutral">Allowed</Badge> : <Badge tone="error">Denied</Badge>}
-			{entry.status === undefined ? null : <span className="text-muted tabular-nums">{entry.status}</span>}
+			{/* A fixed slot, empty when there's no status, so the badges stand in one column down the log. */}
+			<span className="w-8 text-right text-muted tabular-nums">{entry.status ?? ""}</span>
 		</span>
 	);
 }
@@ -380,9 +381,17 @@ function PhoneEntry({
 						Swapped <span className="font-mono text-code text-fg">{entry.swapped.join(", ")}</span>
 					</span>
 				)}
-				<span className="tabular-nums">
-					{sizeText(entry.bytesUp)} sent, {sizeText(entry.bytesDown)} received
-				</span>
+				{/* What moved, in words; nothing at all is left unsaid rather than shown as dashes. */}
+				{entry.bytesUp === 0 && entry.bytesDown === 0 ? null : (
+					<span className="tabular-nums">
+						{[
+							entry.bytesUp === 0 ? undefined : `${bytesText(entry.bytesUp)} sent`,
+							entry.bytesDown === 0 ? undefined : `${bytesText(entry.bytesDown)} received`,
+						]
+							.filter((part) => part !== undefined)
+							.join(", ")}
+					</span>
+				)}
 			</div>
 			{expanded ? (
 				<div id={detailId} className="pt-1">

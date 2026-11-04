@@ -42,7 +42,7 @@ import { OrganisationPage } from "./organisation-page.tsx";
 import { messageOf } from "./parts.tsx";
 import { ProfilePage } from "./profile-page.tsx";
 import { SANDBOX_VIEWS, SandboxPage, type SandboxView } from "./sandbox-page.tsx";
-import { SandboxesPage } from "./sandboxes-page.tsx";
+import { SandboxesPage, SandboxesTableSkeleton } from "./sandboxes-page.tsx";
 import { SettingsFrame, type SettingsNavItem } from "./settings-nav.tsx";
 import type { FilesAt } from "./snapshot-files.tsx";
 import { SnapshotsPage, type SnapshotsView } from "./snapshots-page.tsx";
@@ -1113,9 +1113,6 @@ function SettingsFrameFor({
 	);
 }
 
-/** The loaded table's columns after the name (state, machine, environment, stops, CPU, created), as placeholders. */
-const LOADING_COLUMNS = ["w-16", "w-36", "w-24", "w-20", "w-24", "w-12"] as const;
-
 /**
  * The console while its first read is on its way: the page's own shape (a title, the filters, a few rows) in
  * placeholders, so the page that arrives lands where the eye already is. Announced once, as a status.
@@ -1140,42 +1137,29 @@ function ConsoleLoading({ narrow, title }: { narrow: boolean; title: string | un
 				<span className={`${skeletonClass} h-(--kt-control-md) w-72 max-w-full rounded-control`} />
 				<span className={`${skeletonClass} h-(--kt-control-md) ${narrow ? "w-full" : "w-80"} rounded-control`} />
 			</div>
-			{/* On a wide screen in the tables' white card, under a header row's height, as the list that replaces it. */}
-			<div className={narrow ? "flex flex-col" : "flex flex-col rounded-panel border border-border bg-raised"}>
-				{narrow ? null : <div className="h-control-md border-b border-border" />}
-				{Array.from({ length: rows }, (_, row) => (
-					<div
-						// biome-ignore lint/suspicious/noArrayIndexKey: identical placeholder rows.
-						key={row}
-						className={`flex items-center border-b border-border ${narrow ? "gap-3 py-4" : "gap-4 px-4 py-3.5 last:border-b-0"}`}
-					>
-						<span className={`${skeletonClass} size-3.5 flex-none`} />
-						{narrow ? (
-							<>
-								<div className="flex min-w-0 flex-1 flex-col gap-2">
-									<Skeleton width={`${40 + ((row * 17) % 30)}%`} />
-									<Skeleton width={`${55 + ((row * 11) % 25)}%`} />
-								</div>
-								<div className="w-16 flex-none">
-									<Skeleton />
-								</div>
-							</>
-						) : (
-							<>
-								<div className="min-w-0 flex-1">
-									<Skeleton width={`${30 + ((row * 17) % 30)}%`} />
-								</div>
-								{LOADING_COLUMNS.map((width, column) => (
-									// biome-ignore lint/suspicious/noArrayIndexKey: fixed placeholder columns, some the same width.
-									<div key={column} className={`${width} flex-none`}>
-										<Skeleton width="75%" />
-									</div>
-								))}
-							</>
-						)}
-					</div>
-				))}
-			</div>
+			{narrow ? (
+				<div className="flex flex-col">
+					{Array.from({ length: rows }, (_, row) => (
+						<div
+							// biome-ignore lint/suspicious/noArrayIndexKey: identical placeholder rows.
+							key={row}
+							className="flex items-start gap-3 border-b border-border py-3"
+						>
+							<span className={`${skeletonClass} mt-1 size-3.5 flex-none`} />
+							<div className="flex min-w-0 flex-1 flex-col gap-2">
+								<Skeleton width={`${40 + ((row * 17) % 30)}%`} />
+								<Skeleton width={`${55 + ((row * 11) % 25)}%`} />
+							</div>
+							<div className="w-16 flex-none">
+								<Skeleton />
+							</div>
+						</div>
+					))}
+				</div>
+			) : (
+				// The sandboxes table itself, with placeholders in its cells: the page that arrives lands on it unmoved.
+				<SandboxesTableSkeleton rows={rows} />
+			)}
 		</div>
 	);
 }

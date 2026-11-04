@@ -449,9 +449,7 @@ function PolicyControl({
 				Sandboxes may reach
 			</span>
 			<SegmentedControl label="Sandboxes may reach" options={POLICIES} value={policy} onChange={onChange} />
-			{narrow ? null : (
-				<span className="text-sm text-muted">Deny wins. The cloud metadata address is always blocked.</span>
-			)}
+			<span className="text-sm text-muted">Deny wins. The cloud metadata address is always blocked.</span>
 		</div>
 	);
 }

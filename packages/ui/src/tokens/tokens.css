@@ -182,6 +182,7 @@
 	--kt-brand-md: 28px; /* the endorsed lockup's height over sign-in */
 	--kt-brand-mark: 40px; /* the mark alone, over a page's welcome */
 	--kt-rail-width: 52px; /* the sidebar collapsed to a rail of icons */
+	--kt-label-width: 104px; /* the label column of a list of facts (a sandbox's Image and Details), one for all */
 
 	/* Radius, the Lleverage app's scale (design-system/DESIGN.md, "Shape and radius"): 12px panels, cards and dialogs
 	   (lg), 10px buttons and inputs (md), 8px badges, chips and segments (sm), 4px for small marks. Only avatars, dots

@@ -18,7 +18,7 @@ import { useLoad } from "../primitives/load.ts";
 import { DesktopIcon, EllipsisIcon, PlayIcon, ReconnectIcon, TrashIcon } from "../primitives/lucide.tsx";
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
 import { SliderField } from "../primitives/slider.tsx";
-import { Skeleton } from "../primitives/spinner.tsx";
+import { Skeleton, skeletonClass } from "../primitives/spinner.tsx";
 import { SplitButton } from "../primitives/split-button.tsx";
 import { StatusLabel } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
@@ -1367,5 +1367,56 @@ export function NewSandboxDialog({
 				)}
 			</div>
 		</Dialog>
+	);
+}
+
+/** The loaded table's columns, as placeholder widths: name, state, machine, environment, stops, CPU, created. */
+const SKELETON_WIDTHS = ["w-40", "w-16", "w-36", "w-24", "w-16", "w-24", "w-10"] as const;
+
+/**
+ * The sandboxes table while the console's first read is on its way: the same frame, header and row cells as the loaded
+ * table, with placeholders in the cells, so nothing moves when the rows arrive.
+ */
+export function SandboxesTableSkeleton({ rows = 8 }: { rows?: number }) {
+	return (
+		<div className={tableFrame} aria-hidden="true">
+			<table className="w-full border-collapse text-left text-md">
+				<thead>
+					<tr>
+						<th className={`${head} w-0 pr-0`}>
+							<span className={`${skeletonClass} size-3.5`} />
+						</th>
+						{["Name", "State", "Machine", "Environment", "Stops", "CPU"].map((label) => (
+							<th key={label} className={head}>
+								{label}
+							</th>
+						))}
+						<th className={`${head} text-right`}>Created</th>
+						<th className={head} />
+					</tr>
+				</thead>
+				<tbody>
+					{Array.from({ length: rows }, (_, row) => (
+						// biome-ignore lint/suspicious/noArrayIndexKey: identical placeholder rows.
+						<tr key={row}>
+							<td className={`${cell} w-0 pr-0`}>
+								<span className={`${skeletonClass} size-3.5`} />
+							</td>
+							{SKELETON_WIDTHS.map((width, column) => (
+								// biome-ignore lint/suspicious/noArrayIndexKey: fixed placeholder columns.
+								<td key={column} className={cell}>
+									<span className={`block ${width}`}>
+										<Skeleton width={column === 0 ? `${55 + ((row * 17) % 40)}%` : "80%"} />
+									</span>
+								</td>
+							))}
+							<td className={`${cell} w-0`}>
+								<span className="block size-control-xs" />
+							</td>
+						</tr>
+					))}
+				</tbody>
+			</table>
+		</div>
 	);
 }

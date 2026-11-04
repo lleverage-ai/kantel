@@ -227,7 +227,7 @@ function KeyList({
 		revoked.length === 0 ? null : (
 			<button
 				type="button"
-				className="kt-focusable inline-flex cursor-pointer items-center gap-1.5 rounded-control border-0 bg-transparent px-2 py-1 text-sm text-muted hover:bg-hover hover:text-fg"
+				className="kt-focusable -ml-2 inline-flex cursor-pointer items-center gap-1.5 rounded-control border-0 bg-transparent px-2 py-1 text-sm text-muted hover:bg-hover hover:text-fg"
 				aria-expanded={open}
 				aria-controls={foldId}
 				onClick={() => setOpen((was) => !was)}
