@@ -15,13 +15,16 @@ Operating a self-hosted Kantel (install, upgrade, hosts) is `kantel-admin`, in `
 Kantel's GitHub Releases carries as one file.
 
 It needs Node 22 or later. Each of Kantel's GitHub Releases carries it as one file, `kantel.js`, with an installer
-(`install-cli.sh`, here) that puts it in `~/.local/bin` without sudo, and works pasted into bash, zsh or fish:
+(`install-cli.sh`, here) that puts it in `~/.local/bin` without sudo, and works pasted into bash, zsh or fish.
+kantel.dev serves the installer as `/cli.sh` (apps/site copies this file in as it builds), and it installs the latest
+release:
 
 ```sh
-curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install-cli.sh | sh
+curl -fsSL https://kantel.dev/cli.sh | sh
 ```
 
-Run it again to update. In this repository the package is `@kantel/cli`. It is built as the npm package `kantel` too,
+Run it again to update. `sh -s -- --admin` adds `kantel-admin`. A release's own copy
+(`releases/download/v0.2.0/install-cli.sh`) installs that release. In this repository the package is `@kantel/cli`. It is built as the npm package `kantel` too,
 but npm publishing is on hold, so `npx kantel` doesn't work: install it as above and run `kantel`.
 
 ## Signing in

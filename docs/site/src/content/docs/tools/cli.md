@@ -17,14 +17,15 @@ Running a self-hosted install, and its hosts, is a separate command for operator
 
 ## Install it
 
-It needs Node.js 22 or later, on Linux or macOS. Each of Kantel's [GitHub Releases](https://github.com/lleverage-ai/kantel/releases) carries it as one file, `kantel.js`, and an installer for it that needs no sudo. This line works in bash, zsh and fish:
+It needs Node.js 22 or later, on Linux or macOS. Each of Kantel's [GitHub Releases](https://github.com/lleverage-ai/kantel/releases) carries it as one file, `kantel.js`, and kantel.dev serves an installer for it that needs no sudo. This line works in bash, zsh and fish:
 
 ```sh
-curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install-cli.sh | sh
+curl -fsSL https://kantel.dev/cli.sh | sh
 kantel version
+kantel login --url https://app.kantel.dev
 ```
 
-It checks the files against the release's `SHA256SUMS`, puts them in `~/.local/share/kantel`, and links `~/.local/bin/kantel` and `~/.local/bin/kantel-admin` (the [operator's command](/self-hosting/admin-cli/)) to them. If `~/.local/bin` isn't on your `PATH`, it says how to put it there (`fish_add_path ~/.local/bin` in fish). Run the same line again to update. After `| sh -s --`, `--dir DIR` links the commands in another directory, `--no-admin` installs `kantel` alone, and `--version 0.1.0` installs that release. `gh attestation verify ~/.local/share/kantel/kantel.mjs --repo lleverage-ai/kantel` checks that Kantel's release workflow built it.
+It downloads the latest release's files, checks them against its `SHA256SUMS`, puts them in `~/.local/share/kantel`, and links `~/.local/bin/kantel` to them. If `~/.local/bin` isn't on your `PATH`, it says how to put it there (`fish_add_path ~/.local/bin` in fish). Run the same line again to update. After `| sh -s --`, `--admin` adds `~/.local/bin/kantel-admin` (the [operator's command](/self-hosting/admin-cli/), for self-hosting; once it's installed, updates keep it up to date unless you say `--no-admin`), `--dir DIR` links the commands in another directory, and `--version 0.1.0` installs that release. Each release also carries the same installer as `install-cli.sh`, which installs that release. `gh attestation verify ~/.local/share/kantel/kantel.mjs --repo lleverage-ai/kantel` checks that Kantel's release workflow built it.
 
 It isn't on npm (publishing is on hold), so `npx kantel` doesn't work: install it as above and run `kantel`. To build it yourself instead, run `pnpm install --frozen-lockfile --filter '@kantel/cli...'` and `pnpm --filter @kantel/cli build` in a clone of the repository, which writes one file, `packages/cli/dist/kantel.js`, and `npm install -g ./packages/cli/dist` to put it on your `PATH`.
 

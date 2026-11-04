@@ -75,9 +75,10 @@ jobs:
       # kantel.dev (apps/site) syncs the docs into /docs as it builds and fails on any internal link that doesn't
       # resolve, so a docs page that moves breaks here rather than on the site. It has a lockfile of its own, outside
       # the workspace. About 30 s, most of it images.
-      - name: kantel.dev builds and its install.sh parses
+      - name: kantel.dev builds and its install.sh and cli.sh parse
         run: |
           sh -n apps/site/public/install.sh
+          sh -n packages/cli/install-cli.sh
           pnpm --dir apps/site install --frozen-lockfile --ignore-workspace
           pnpm --dir apps/site build
 

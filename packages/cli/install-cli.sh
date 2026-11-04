@@ -1,25 +1,33 @@
 #!/bin/sh
-# Installs Kantel's commands, `kantel` and `kantel-admin`, from Kantel's GitHub Release, for you alone and without sudo:
+# Installs Kantel's CLI, `kantel`, from Kantel's GitHub Release, for you alone and without sudo:
+#
+#   curl -fsSL https://kantel.dev/cli.sh | sh
+#
+# kantel.dev serves this file as it is in the repository (apps/site copies it in as it builds), so it installs the
+# latest release. Each release has its own copy too, stamped with its version, which installs that release:
 #
 #   curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install-cli.sh | sh
 #
 # The same line works in bash, zsh and fish: the script runs under sh whatever your shell is. It
-#   1. checks Node.js 22 or later is installed: both commands are one JavaScript file each, for Linux and macOS alike;
-#   2. downloads kantel.js, kantel-admin.js, kantel-console.tar.gz and SHA256SUMS from the release this script came
-#      from, and checks each file's SHA-256;
-#   3. puts them in ~/.local/share/kantel (KANTEL_HOME) as kantel.mjs, kantel-admin.mjs and console/ (the files
-#      `kantel console` serves), links ~/.local/bin/kantel and ~/.local/bin/kantel-admin to them, and says how to put
-#      ~/.local/bin on your PATH if it isn't.
+#   1. checks Node.js 22 or later is installed: each command is one JavaScript file, for Linux and macOS alike;
+#   2. downloads kantel.js, kantel-console.tar.gz and SHA256SUMS from the release (kantel-admin.js too, with
+#      --admin), and checks each file's SHA-256;
+#   3. puts them in ~/.local/share/kantel (KANTEL_HOME) as kantel.mjs and console/ (the files `kantel console`
+#      serves), links ~/.local/bin/kantel to it, and says how to put ~/.local/bin on your PATH if it isn't.
 # Run it again to update; a running command keeps its file.
 #
-# Options, after `sh -s --` (as in `curl -fsSL …/install-cli.sh | sh -s -- --dir ~/bin`):
+# `kantel-admin`, the operator CLI that installs and upgrades a self-hosted control plane, comes with --admin. Once
+# it's installed, running this again updates it too, unless you say --no-admin.
+#
+# Options, after `sh -s --` (as in `curl -fsSL https://kantel.dev/cli.sh | sh -s -- --admin`):
 #   --version V   install release V (such as 0.1.0) rather than this script's own
 #   --dir DIR     link the commands in DIR rather than ~/.local/bin (KANTEL_BIN_DIR)
-#   --no-admin    install `kantel` only
+#   --admin       install `kantel-admin` as well
+#   --no-admin    install `kantel` only, even where kantel-admin is installed already
 # KANTEL_RELEASE_URL downloads from elsewhere: a directory URL holding the release's files, for a mirror or a test.
 #
-# tools/release/pack.sh stamps the release's version below. The whole script is read before anything runs (see the
-# last line), so a download cut short does nothing.
+# tools/release/pack.sh stamps the release's version below; unstamped, as kantel.dev serves it, it installs the latest.
+# The whole script is read before anything runs (see the last line), so a download cut short does nothing.
 set -eu
 
 KANTEL_RELEASE_VERSION="__KANTEL_VERSION__"
@@ -49,7 +57,8 @@ sha256() {
 main() {
 	version=$KANTEL_RELEASE_VERSION
 	bin=${KANTEL_BIN_DIR:-}
-	admin=1
+	# kantel-admin: 1 asked for, 0 refused, empty for "only if it's installed already".
+	admin=
 	while [ $# -gt 0 ]; do
 		case "$1" in
 		--version)
@@ -71,15 +80,19 @@ main() {
 			bin=${1#--dir=}
 			shift
 			;;
+		--admin)
+			admin=1
+			shift
+			;;
 		--no-admin)
 			admin=0
 			shift
 			;;
 		-h | --help)
-			say "usage: install-cli.sh [--version V] [--dir DIR] [--no-admin]"
+			say "usage: install-cli.sh [--version V] [--dir DIR] [--admin | --no-admin]"
 			return 0
 			;;
-		*) die "unknown option $1 (--version, --dir and --no-admin are the options)" ;;
+		*) die "unknown option $1 (--version, --dir, --admin and --no-admin are the options)" ;;
 		esac
 	done
 
@@ -108,8 +121,13 @@ main() {
 	else
 		base="https://github.com/$REPO/releases/download/v$version"
 	fi
+	# Neither flag: kantel-admin is updated where this script installed it before (its link in bin points into lib).
+	if [ -z "$admin" ]; then
+		admin=0
+		if [ -L "$bin/kantel-admin" ] && [ -e "$lib/kantel-admin.mjs" ]; then admin=1; fi
+	fi
 	commands="kantel"
-	[ "$admin" = 1 ] && commands="kantel kantel-admin"
+	if [ "$admin" = 1 ]; then commands="kantel kantel-admin"; fi
 
 	work=$(mktemp -d)
 	trap 'rm -rf "$work"' EXIT
@@ -177,7 +195,10 @@ main() {
 		say "  bash, zsh: add  export PATH=\"$bin:\$PATH\"  to ~/.bashrc or ~/.zshrc"
 		;;
 	esac
-	say "Next: kantel login --url https://<your Kantel>"
+	say "Next: kantel login --url https://app.kantel.dev (or your own Kantel's URL)"
+	if [ "$admin" = 0 ]; then
+		say "Self-hosting? Add kantel-admin with: curl -fsSL https://kantel.dev/cli.sh | sh -s -- --admin"
+	fi
 }
 
 main "$@"

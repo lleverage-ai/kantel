@@ -130,7 +130,7 @@ export function ComputeApiKeysPage({
 					commands={[
 						{ label: "Use it in this shell", text: `export KANTEL_API_KEY=${created.secret}` },
 						// `kantel login` reads a key piped in, which keeps it out of the shell's history (packages/cli). It's the
-						// installed `kantel` (install-cli.sh, from the GitHub Release): the CLI isn't on npm, so not `npx kantel`.
+						// installed `kantel` (kantel.dev/cli.sh, from the GitHub Release): the CLI isn't on npm, so not `npx kantel`.
 						{
 							label: "Or sign the CLI in with it",
 							text: `printf '%s' '${created.secret}' | kantel login --key-stdin --url ${consoleOrigin()}`,

@@ -754,7 +754,7 @@ describe("agents", () => {
 		expect(claude.startsWith("# Claude\n\n<!-- kantel:start -->")).toBe(true);
 		const agents = await readFile(join(project, "AGENTS.md"), "utf8");
 		expect(agents).toContain("`id=$(kantel new --type microvm --json | jq -r .id)`");
-		expect(agents).toContain("releases/latest/download/install-cli.sh | sh");
+		expect(agents).toContain("curl -fsSL https://kantel.dev/cli.sh | sh");
 		expect(agents + claude).not.toContain("npx");
 		for (const skill of [".claude/skills/kantel/SKILL.md", ".agents/skills/kantel/SKILL.md"]) {
 			const text = await readFile(join(project, skill), "utf8");
