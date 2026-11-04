@@ -2,11 +2,14 @@
 // sparklines `recentCpu` and `recentMemory`, fed to the metrics export, and the exec read kept only for a host that
 // doesn't send ticks yet. The stub makes up its own ticks, so graphs move with no host.
 import { createKantelClient } from "@kantel/api/sdk";
+import type { SqlDriver } from "@kantel/sql";
+import { pgliteDatabase } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
 import type { SandboxBackend, UsageSample } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { FALLBACK_INTERVAL_MS, MAX_SAMPLES, spanMean } from "../src/service.ts";
+import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
 import { type ComputeStore, createMemoryStore } from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID, stubReading } from "../src/stub-backend.ts";
 import {
@@ -27,8 +30,10 @@ const PEOPLE: { readonly [token: string]: PersonIdentity } = {
 };
 
 const opened: ComputeApi[] = [];
+const databases: { close(): Promise<void> | void }[] = [];
 afterEach(async () => {
 	for (const api of opened.splice(0)) await api.close();
+	for (const database of databases.splice(0)) await database.close();
 });
 
 /** A point at `at`, its CPU and memory. */
@@ -753,6 +758,110 @@ describe("numbered usage ticks sent again after a reconnect", () => {
 		expect(fromB).toEqual([T0 + 4 * USAGE_INTERVAL_MS]);
 		// B still draws all four.
 		expect((await b.tom.getSandboxUsage(box.id)).series.points).toHaveLength(4);
+	});
+
+	/**
+	 * One Postgres (PGlite) under any number of replicas' SQL stores. While `lose` is set, the next claim a replica writes
+	 * (`usageClaims`) is committed and its answer lost: the statement runs, then the call fails, as when a connection
+	 * dies with the reply on its way.
+	 */
+	async function sqlStores() {
+		const database = await pgliteDatabase.open();
+		databases.push(database);
+		await migrateComputeStore(database.driver);
+		const state = { lose: false };
+		const driver: SqlDriver = {
+			dialect: database.driver.dialect,
+			batch: (statements) => database.driver.batch(statements),
+			async query(text, params) {
+				const rows = await database.driver.query(text, params);
+				if (state.lose && text.startsWith("INSERT") && params?.[0] === "usageClaims") {
+					state.lose = false;
+					throw new Error("connection lost");
+				}
+				return rows as never;
+			},
+		};
+		return { store: () => createSqlComputeStore(driver), state };
+	}
+
+	it("whose claim was written but its answer lost are still exported once, by the replica that claimed them", {
+		...(pgliteDatabase.testTimeoutMs === undefined ? {} : { timeout: pgliteDatabase.testTimeoutMs }),
+	}, async () => {
+		let clock = T0;
+		const { store, state } = await sqlStores();
+		const a = setup(hostless(() => clock).backend, () => clock, store());
+		const b = setup(hostless(() => clock).backend, () => clock, store());
+		const box = await a.tom.createSandbox({ wait: true });
+		clock = T0 + USAGE_INTERVAL_MS;
+		await a.api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 1));
+		// A's claim to 2 is in the store, but A doesn't know: 2 isn't acknowledged, and A holds it.
+		state.lose = true;
+		clock = T0 + 2 * USAGE_INTERVAL_MS;
+		await expect(a.api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 2))).rejects.toThrow("connection lost");
+		// The host moves to B and sends 2 again, then 3: B draws 2, A's, and exports 3, its own.
+		clock = T0 + 3 * USAGE_INTERVAL_MS;
+		await b.api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 2));
+		await b.api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 3));
+		// A's next export brings in what it holds, knowing the claim for its own.
+		const fromA = (await a.api.service.sampleUsage()).map((each) => each.at);
+		const fromB = (await b.api.service.sampleUsage()).map((each) => each.at);
+		expect(fromA).toEqual([1, 2].map((seq) => T0 + seq * USAGE_INTERVAL_MS));
+		expect(fromB).toEqual([T0 + 3 * USAGE_INTERVAL_MS]);
+	});
+
+	it("whose claim was written but its answer lost are exported once when sent to the same replica again", {
+		...(pgliteDatabase.testTimeoutMs === undefined ? {} : { timeout: pgliteDatabase.testTimeoutMs }),
+	}, async () => {
+		let clock = T0;
+		const { store, state } = await sqlStores();
+		const a = setup(hostless(() => clock).backend, () => clock, store());
+		const box = await a.tom.createSandbox({ wait: true });
+		state.lose = true;
+		clock = T0 + USAGE_INTERVAL_MS;
+		await expect(a.api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 1))).rejects.toThrow("connection lost");
+		await a.api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 1));
+		await a.api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 2));
+		expect((await a.api.service.sampleUsage()).map((each) => each.at)).toEqual(
+			[1, 2].map((seq) => T0 + seq * USAGE_INTERVAL_MS),
+		);
+	});
+
+	it("of a restarted host's new run aren't exported twice when an old run's tick comes late to another replica", async () => {
+		let clock = T0;
+		const store = createMemoryStore();
+		const a = setup(hostless(() => clock).backend, () => clock, store);
+		const b = setup(hostless(() => clock).backend, () => clock, store);
+		const box = await a.tom.createSandbox({ wait: true });
+		const NEW_RUN = "fedcba9876543210";
+		clock = T0 + 5 * USAGE_INTERVAL_MS;
+		// The host restarted and joined B: B takes its new run's 1.
+		await b.api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 1, NEW_RUN, T0 + 5 * USAGE_INTERVAL_MS));
+		// A takes the old run's 4 late.
+		await a.api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 4, RUN, T0 + 4 * USAGE_INTERVAL_MS));
+		// The host moves to A and sends the new run's 1 again, its ack lost.
+		await a.api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 1, NEW_RUN, T0 + 5 * USAGE_INTERVAL_MS));
+		const fromA = (await a.api.service.sampleUsage()).map((each) => each.at);
+		const fromB = (await b.api.service.sampleUsage()).map((each) => each.at);
+		expect(fromA).toEqual([T0 + 4 * USAGE_INTERVAL_MS]);
+		expect(fromB).toEqual([T0 + 5 * USAGE_INTERVAL_MS]);
+	});
+
+	it("are claimed only while the host could send them again: an hour or more", async () => {
+		let clock = T0;
+		const store = createMemoryStore();
+		const { api, tom } = setup(hostless(() => clock).backend, () => clock, store);
+		const box = await tom.createSandbox({ wait: true });
+		for (let seq = 1; seq <= 3; seq += 1) {
+			clock = T0 + seq * USAGE_INTERVAL_MS;
+			await api.service.recordUsage(STUB_HOST_ID, numbered(box.id, seq));
+		}
+		expect(await store.usageClaims.list()).toHaveLength(3);
+		// Over an hour on, the next tick sweeps them, keeping its own.
+		clock = T0 + 2 * 3_600_000;
+		await api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 4, RUN, clock));
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect((await store.usageClaims.list()).map((each) => each.id)).toEqual([`${STUB_HOST_ID}:${RUN}:4`]);
 	});
 });
 
