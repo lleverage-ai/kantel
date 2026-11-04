@@ -13,16 +13,18 @@ function Scenario({
 	hosting = "self-hosted",
 	account = "org_lleverage",
 	options,
-	narrow = false,
+	narrow,
 	sandboxId,
 }: {
 	page?: ComputePage;
 	hosting?: HostingMode;
 	account?: string;
 	options?: ComputeFixtureOptions;
+	/** The phone layout; by default it follows the story's width, as the console's does (max-width: 640px). */
 	narrow?: boolean;
 	sandboxId?: string;
 }) {
+	const [fits] = useState(() => window.matchMedia("(max-width: 640px)").matches);
 	const [source] = useState(() => createComputeFixtures({ hosting, ...options }));
 	const [path, setPath] = useState(() => computePath(page, "/compute", sandboxId));
 	const [pathname = "/compute", search = ""] = path.split(/(?=\?)/);
@@ -35,7 +37,7 @@ function Scenario({
 				search={search}
 				navigate={setPath}
 				now={FIXTURE_NOW}
-				narrow={narrow}
+				narrow={narrow ?? fits}
 				sample
 				initialAccountId={account}
 			/>
@@ -81,6 +83,12 @@ MobileInstall.meta = { width: 390 };
 export const HostsHosted: Story = () => <Scenario page="hosts" hosting="hosted" />;
 /** A member who isn't a super-admin has no Hosts. */
 export const NotSuperAdmin: Story = () => <Scenario options={{ notSuperAdmin: true }} />;
+/** One sandbox open on its overview. */
+export const Sandbox: Story = () => <Scenario sandboxId="sbx_7f3k2m9qa1" />;
+/** An account with nothing yet: no sandboxes, snapshots, keys, webhooks or hosts. */
+export const Empty: Story = () => <Scenario options={{ empty: true }} />;
+/** The first read still on its way. */
+export const Loading: Story = () => <Scenario options={{ hang: true }} />;
 export const Failed: Story = () => <Scenario options={{ fail: true }} />;
 /** A phone: the top bar, the page and the five pages along the bottom. */
 export const Mobile: Story = () => <Scenario narrow />;

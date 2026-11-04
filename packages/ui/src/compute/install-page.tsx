@@ -15,18 +15,18 @@ import { computePage, messageOf, SectionHeading } from "./parts.tsx";
 
 export interface InstallPageProps {
 	readonly source: PublicUrlSource;
-	/** A phone: the title a step larger, as other pages have it. */
+	/** A phone. The page is the same at every width now that every title has the heading size; kept for callers. */
 	readonly narrow?: boolean;
 }
 
-export function InstallPage({ source, narrow = false }: InstallPageProps) {
+export function InstallPage({ source }: InstallPageProps) {
 	const { state, reload } = useLoad(() => source.get(), [source]);
 	const [saved, setSaved] = useState<PublicUrl>();
 	const url = saved ?? (state.status === "ready" ? state.value : undefined);
 	return (
 		<div className={computePage}>
 			<header className="kt-page-header flex min-h-control-md min-w-0 items-center border-b border-border pb-3">
-				<h1 className={`m-0 truncate font-strong leading-tight text-fg ${narrow ? "text-lg" : "text-md"}`}>Install</h1>
+				<h1 className={`m-0 truncate font-strong leading-tight text-fg text-heading`}>Install</h1>
 			</header>
 			<section className="flex max-w-(--kt-content-width) min-w-0 flex-col gap-3" aria-labelledby="kt-public-url">
 				<SectionHeading id="kt-public-url" title="Public URL" />

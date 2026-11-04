@@ -153,6 +153,7 @@
 	--text-sm: var(--kt-text-sm);
 	--text-md: var(--kt-text-md);
 	--text-lg: var(--kt-text-lg);
+	--text-heading: var(--kt-text-heading);
 	--text-code: var(--kt-text-code);
 	--text-display: var(--kt-text-display);
 	--text-title: var(--kt-text-title);

@@ -2,6 +2,7 @@ import type { ThemePreference } from "@kantel/contracts";
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { KantelLockup, KantelMark } from "../brand/kantel.tsx";
 import { Button } from "../primitives/button.tsx";
+import { AlertIcon } from "../primitives/icons.tsx";
 import { useLoad } from "../primitives/load.ts";
 import {
 	BackIcon,
@@ -13,8 +14,7 @@ import {
 	SnapshotIcon,
 } from "../primitives/lucide.tsx";
 import { Sidebar, SidebarBrand, SidebarItem, SidebarSection } from "../primitives/sidebar.tsx";
-import { Spinner } from "../primitives/spinner.tsx";
-import { Notice } from "../primitives/surface.tsx";
+import { Skeleton, skeletonClass } from "../primitives/spinner.tsx";
 import { TabBar } from "../primitives/tab-bar.tsx";
 import { AccountEgressPage, EGRESS_TABS, type EgressTab } from "./account-egress-page.tsx";
 import { AccountSwitcher, CreateOrganisationDialog, JoinOrganisationDialog } from "./account-switcher.tsx";
@@ -679,27 +679,16 @@ export function ComputeConsole({
 				)}
 				{failed !== undefined ? (
 					<div className={`grid h-full place-items-center ${narrow ? "p-gutter-narrow" : "p-gutter"}`}>
-						<Notice
-							level="error"
-							action={
-								<Button
-									size="sm"
-									onClick={() => {
-										viewer.reload();
-										accounts.reload();
-									}}
-								>
-									Try again
-								</Button>
-							}
-						>
-							Kantel can't open the console right now. {messageOf(failed.error, "Try again in a moment.")}
-						</Notice>
+						<ConsoleUnavailable
+							message={messageOf(failed.error, "Try again in a moment.")}
+							onRetry={() => {
+								viewer.reload();
+								accounts.reload();
+							}}
+						/>
 					</div>
 				) : account === undefined || me === undefined ? (
-					<div className="grid h-full place-items-center">
-						<Spinner label="Opening the console" />
-					</div>
+					<ConsoleLoading narrow={narrow} title={inSettings ? "Settings" : pages.find((each) => each.on)?.label} />
 				) : (
 					<div className={narrow ? "p-gutter-narrow" : "p-gutter"}>
 						<SettingsFrameFor
@@ -1111,5 +1100,81 @@ function SettingsFrameFor({
 		</SettingsFrame>
 	) : (
 		children
+	);
+}
+
+/**
+ * The console while its first read is on its way: the page's own shape (a title, the filters, a few rows) in
+ * placeholders, so the page that arrives lands where the eye already is. Announced once, as a status.
+ */
+function ConsoleLoading({ narrow, title }: { narrow: boolean; title: string | undefined }) {
+	const rows = narrow ? 6 : 8;
+	return (
+		<div
+			className={`flex flex-col gap-6 ${narrow ? "p-gutter-narrow" : "p-gutter"}`}
+			role="status"
+			aria-label="Opening the console"
+		>
+			<div className="flex items-center justify-between gap-4 border-b border-border pb-4">
+				{title === undefined ? (
+					<span className={`${skeletonClass} h-(--kt-text-heading) w-32`} />
+				) : (
+					<p className="m-0 truncate text-heading font-strong leading-tight text-fg">{title}</p>
+				)}
+				<span className={`${skeletonClass} h-(--kt-control-md) w-20 rounded-control`} />
+			</div>
+			<div className={`flex gap-3 ${narrow ? "flex-col" : "items-center justify-between"}`}>
+				<span className={`${skeletonClass} h-(--kt-control-md) w-72 max-w-full rounded-full`} />
+				<span className={`${skeletonClass} h-(--kt-control-md) ${narrow ? "w-full" : "w-80"} rounded-control`} />
+			</div>
+			<div className="flex flex-col">
+				{Array.from({ length: rows }, (_, row) => (
+					<div
+						// biome-ignore lint/suspicious/noArrayIndexKey: identical placeholder rows.
+						key={row}
+						className="flex items-center gap-6 border-b border-border py-4"
+					>
+						<div className="flex min-w-0 flex-1 flex-col gap-2">
+							<Skeleton width={`${40 + ((row * 17) % 30)}%`} />
+							{narrow ? <Skeleton width={`${55 + ((row * 11) % 25)}%`} /> : null}
+						</div>
+						{narrow ? null : (
+							<>
+								<div className="w-24">
+									<Skeleton width="70%" />
+								</div>
+								<div className="w-40">
+									<Skeleton width="80%" />
+								</div>
+								<div className="w-24">
+									<Skeleton width="60%" />
+								</div>
+							</>
+						)}
+					</div>
+				))}
+			</div>
+		</div>
+	);
+}
+
+/** The console can't read what it needs: what happened, in a sentence, and the one thing to do about it. */
+function ConsoleUnavailable({ message, onRetry }: { message: string; onRetry: () => void }) {
+	return (
+		<div className="flex max-w-md flex-col items-center gap-4 text-center" role="alert">
+			<span className="grid size-12 place-items-center rounded-full bg-status-error-soft text-status-error">
+				<AlertIcon />
+			</span>
+			<div className="flex flex-col gap-1.5">
+				<h1 className="m-0 text-heading font-strong leading-tight text-fg">Kantel can't open the console</h1>
+				<p className="m-0 text-md leading-normal text-muted">{message}</p>
+				<p className="m-0 text-sm leading-normal text-faint">
+					If it keeps happening, check that the Kantel server is running and that this device is online.
+				</p>
+			</div>
+			<Button variant="primary" onClick={onRetry}>
+				Try again
+			</Button>
+		</div>
 	);
 }

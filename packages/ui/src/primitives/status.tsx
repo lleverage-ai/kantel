@@ -26,7 +26,7 @@ export function StatusDot({ status, label }: { status: Status; label?: string })
 
 /** The words with their dot. The dot sits on the words' baseline, then moves up onto the middle of their capitals. */
 const statusLabelClass =
-	"inline-flex min-w-0 items-baseline gap-1.5 text-xs leading-tight whitespace-nowrap text-(--kt-status-current) [&>.kt-status-dot]:translate-y-(--kt-on-cap)";
+	"inline-flex min-w-0 items-baseline gap-1.5 text-sm leading-tight whitespace-nowrap text-(--kt-status-current) [&>.kt-status-dot]:translate-y-(--kt-on-cap)";
 
 /**
  * A status in words with its dot: "Working", "Needs approval". The words default to the status's own label; pass
