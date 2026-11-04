@@ -230,9 +230,11 @@ const opens = (entry: LoggedEntry): boolean =>
 function RequestText({ entry, wrap = false }: { entry: LoggedEntry; wrap?: boolean }) {
 	return (
 		<>
-			<span className="text-muted">{entry.method} </span>
-			{/* Wrapped, the host stays whole and the path breaks only after a slash, never inside a name. */}
-			<span className={`text-fg${wrap ? " whitespace-nowrap" : ""}`}>{hostText(entry)}</span>
+			{/* Wrapped, the method and host stay together on one line and the path breaks only after a slash. */}
+			<span className={wrap ? "whitespace-nowrap" : undefined}>
+				<span className="text-muted">{entry.method} </span>
+				<span className="text-fg">{hostText(entry)}</span>
+			</span>
 			<span className="text-muted">
 				{wrap && entry.path !== undefined ? <BreakableCommand command={entry.path} /> : (entry.path ?? "")}
 			</span>

@@ -547,11 +547,11 @@ export function ComputeConsole({
 				onJoin={() => setDialog("join")}
 			/>
 		) : failed === undefined ? (
-			// While the accounts are read, the switcher's shape, so the pages under it don't move when it arrives.
-			<span className={`${skeletonClass} h-control-md w-full rounded-control`} />
+			// While the accounts are read, the switcher's shape and height, so the pages under it don't move when it arrives.
+			<span className={`${skeletonClass} h-control-lg w-full rounded-control`} />
 		) : (
 			// The accounts couldn't be read: said in the switcher's place, as the account is in the foot.
-			<span className="flex h-control-md items-center px-2.5 text-sm text-faint">Organisation unavailable</span>
+			<span className="flex h-control-lg items-center px-2.5 text-sm text-faint">Organisation unavailable</span>
 		);
 	const backToConsole = (
 		<a
@@ -1139,7 +1139,7 @@ function ConsoleLoading({ narrow, title }: { narrow: boolean; title: string | un
 				<span className={`${skeletonClass} h-(--kt-control-md) ${narrow ? "w-full" : "w-80"} rounded-control`} />
 			</div>
 			{narrow ? (
-				// The phone list as it loads: Select all over a card of two-line rows, the shape of what replaces it.
+				// The phone list as it loads: Select all over a card of three-line rows, the shape of what replaces it.
 				<div className="flex flex-col gap-2">
 					<div className="flex h-control-sm items-center gap-3">
 						<span className={`${skeletonClass} size-3.5 flex-none`} />
@@ -1156,6 +1156,8 @@ function ConsoleLoading({ narrow, title }: { narrow: boolean; title: string | un
 								<div className="flex min-w-0 flex-1 flex-col gap-2 py-0.5">
 									<Skeleton width={`${40 + ((row * 17) % 30)}%`} />
 									<Skeleton width={`${55 + ((row * 11) % 25)}%`} />
+									{/* The stop time's line, which most loaded rows have. */}
+									<Skeleton width={`${25 + ((row * 7) % 15)}%`} />
 								</div>
 								{/* The state, then its CPU under it, as a loaded row has them on the right. */}
 								<div className="flex w-16 flex-none flex-col items-end gap-2 py-0.5">

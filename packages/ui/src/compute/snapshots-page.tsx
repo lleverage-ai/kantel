@@ -15,7 +15,6 @@ import { useLoad, useReloadOn } from "../primitives/load.ts";
 import { EllipsisIcon, TrashIcon } from "../primitives/lucide.tsx";
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
-import { Badge } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import {
 	bytesText,
@@ -367,14 +366,15 @@ function SavedList({
 									<td className={td}>
 										<span className="block max-w-(--kt-card-width) truncate font-medium text-fg">{entry.name}</span>
 									</td>
-									{/* On a phone (table.css): where it came from on a line of its own, the type beside the name, and
-									    the size, uses and age as one quiet line. */}
+									{/* On a phone (table.css): where it came from on a line of its own, then the type, size, age and
+									    uses as one quiet line. */}
 									<td className={td} data-phone="line">
 										<span className="text-fg">{entry.sandboxName}</span>
 										{entry.sandboxId === undefined ? <span className={cellSub}>Since deleted</span> : null}
 									</td>
-									<td className={td} data-phone="title">
-										<Badge tone="neutral">{SANDBOX_KIND_LABELS[entry.kind]}</Badge>
+									{/* Plain words, as the sandboxes list gives a type: a tag here would outweigh the name. */}
+									<td className={td} data-phone="bare">
+										{SANDBOX_KIND_LABELS[entry.kind]}
 									</td>
 									<td className={`${td} text-right tabular-nums`} data-phone="bare">
 										{bytesText(entry.sizeBytes)}

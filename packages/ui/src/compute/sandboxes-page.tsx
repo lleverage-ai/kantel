@@ -782,7 +782,7 @@ function Cpu({
 			/>
 			{percent && sandbox.state === "running" ? (
 				<span
-					className={`tabular-nums ${compact ? "" : "w-9 text-right text-md "}${busy ? "text-status-approval" : "text-muted"}`}
+					className={`tabular-nums ${compact ? "w-8 text-right " : "w-9 text-right text-md "}${busy ? "text-status-approval" : "text-muted"}`}
 				>
 					{latest === undefined ? <span className="text-faint">–</span> : `${Math.round(latest * 100)}%`}
 				</span>
