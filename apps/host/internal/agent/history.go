@@ -1,12 +1,13 @@
 package agent
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,9 @@ import (
 const (
 	historyKeep   = 200
 	historyOutput = 64 << 10
+	// historyAnswer caps each output stream of a non-streamed answer, as the guest does (guest.ExecRequest's
+	// MaxOutputBytes): the host runs such a command streamed, to keep its real tail, and answers its first bytes.
+	historyAnswer = 1 << 20
 )
 
 // MethodHistory is a session's own method: the host answers it from its log, with no tier call.
@@ -76,32 +80,40 @@ func (l *commandLog) path(sandboxID string) string {
 	return filepath.Join(l.dir, sandboxID+".jsonl")
 }
 
-// read is the sandbox's history, oldest first, its newest historyKeep only.
+// read is the sandbox's history, oldest first, its newest historyKeep only (none if the file can't be read).
 func (l *commandLog) read(sandboxID string) []HistoryEntry {
-	all := l.readAll(sandboxID)
+	all, err := l.readAll(sandboxID)
+	if err != nil {
+		return nil
+	}
+	return newest(all)
+}
+
+func newest(all []HistoryEntry) []HistoryEntry {
 	if len(all) > historyKeep {
 		return all[len(all)-historyKeep:]
 	}
 	return all
 }
 
-// readAll is every entry in the sandbox's file, oldest first. A line that doesn't decode is skipped.
-func (l *commandLog) readAll(sandboxID string) []HistoryEntry {
+// readAll is every entry in the sandbox's file, oldest first, or the error reading it. Every line is read, however
+// long; one that doesn't decode is skipped, and those after it are still read.
+func (l *commandLog) readAll(sandboxID string) ([]HistoryEntry, error) {
 	raw, err := os.ReadFile(l.path(sandboxID))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var out []HistoryEntry
-	sc := bufio.NewScanner(bytes.NewReader(raw))
-	// Two outputs, JSON-escaped (a control byte takes six).
-	sc.Buffer(make([]byte, 0, 64<<10), 16*historyOutput)
-	for sc.Scan() {
+	for line := range bytes.SplitSeq(raw, []byte{'\n'}) {
 		var e HistoryEntry
-		if json.Unmarshal(sc.Bytes(), &e) == nil && e.ID != "" {
+		if len(bytes.TrimSpace(line)) > 0 && json.Unmarshal(line, &e) == nil && e.ID != "" {
 			out = append(out, e)
 		}
 	}
-	return out
+	return out, nil
 }
 
 func (l *commandLog) add(sandboxID string, e HistoryEntry) error {
@@ -118,26 +130,27 @@ func (l *commandLog) add(sandboxID string, e HistoryEntry) error {
 		return err
 	}
 	n, known := l.lines[sandboxID]
-	if !known {
-		n = len(l.readAll(sandboxID))
+	var all []HistoryEntry
+	if !known || n >= 2*historyKeep {
+		read, err := l.readAll(sandboxID)
+		if err != nil {
+			// Not cut back from a file it couldn't read: the entry is added, and the file read again next time.
+			delete(l.lines, sandboxID)
+			return l.appendLine(sandboxID, line)
+		}
+		all, n = read, len(read)
 	}
 	if n < 2*historyKeep {
-		f, err := os.OpenFile(l.path(sandboxID), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		if _, err := f.Write(append(line, '\n')); err != nil {
+		if err := l.appendLine(sandboxID, line); err != nil {
 			delete(l.lines, sandboxID)
 			return err
 		}
 		l.lines[sandboxID] = n + 1
 		return nil
 	}
-	// Twice the limit: keep the newest, written whole.
-	all := append(l.readAll(sandboxID), e)
+	// Twice the limit, counted from a whole read: keep the newest, written whole.
 	var buf bytes.Buffer
-	for _, kept := range all[len(all)-historyKeep:] {
+	for _, kept := range newest(append(all, e)) {
 		raw, _ := json.Marshal(kept)
 		buf.Write(raw)
 		buf.WriteByte('\n')
@@ -150,12 +163,27 @@ func (l *commandLog) add(sandboxID string, e HistoryEntry) error {
 		delete(l.lines, sandboxID)
 		return err
 	}
-	l.lines[sandboxID] = historyKeep
+	l.lines[sandboxID] = len(newest(append(all, e)))
 	return nil
 }
 
-// page is up to limit entries, newest first, older than the entry before ("" for the newest).
-func (l *commandLog) page(sandboxID, before string, limit int) HistoryPage {
+func (l *commandLog) appendLine(sandboxID string, line []byte) error {
+	f, err := os.OpenFile(l.path(sandboxID), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(append(line, '\n'))
+	return err
+}
+
+// historyPageOutput bounds the output one page carries, well inside a session's message (e2e.MaxControlMessage)
+// however its bytes escape in JSON: a page stops early, at one entry at least, rather than outgrow it.
+const historyPageOutput = 4 << 20
+
+// page is up to limit entries, newest first, older than the entry before ("" for the newest); without output, their
+// stdout and stderr are left out (a list that shows none needs none).
+func (l *commandLog) page(sandboxID, before string, limit int, output bool) HistoryPage {
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
@@ -173,8 +201,21 @@ func (l *commandLog) page(sandboxID, before string, limit int) HistoryPage {
 		}
 	}
 	out := HistoryPage{Items: []HistoryEntry{}}
+	carried := 0
 	for i := end - 1; i >= 0 && len(out.Items) < limit; i-- {
-		out.Items = append(out.Items, all[i])
+		e := all[i]
+		if !output {
+			e.Stdout, e.Stderr = "", ""
+		}
+		size := len(e.Stdout) + len(e.Stderr) + len(e.Command)
+		for _, arg := range e.Argv {
+			size += len(arg)
+		}
+		if len(out.Items) > 0 && carried+size > historyPageOutput {
+			break
+		}
+		carried += size
+		out.Items = append(out.Items, e)
 	}
 	if n := len(out.Items); n > 0 && end-n > 0 {
 		out.Next = out.Items[n-1].ID
@@ -211,11 +252,48 @@ func (t *outputTail) write(s string) {
 	}
 }
 
-// streamed is a streamed output chunk as text: the guest sends base64, an isolate its text.
-func streamed(s string) string {
+// outputHead keeps the first max bytes of a command's output, as a non-streamed answer has them.
+type outputHead struct {
+	b         []byte
+	max       int
+	truncated bool
+}
+
+func (h *outputHead) write(s string) {
+	if room := h.max - len(h.b); len(s) > room {
+		h.b = append(h.b, s[:max(room, 0)]...)
+		h.truncated = true
+		return
+	}
+	h.b = append(h.b, s...)
+}
+
+// clip keeps the first n bytes of s, saying if it cut any.
+func clip(s string, n int) (string, bool) {
+	if len(s) <= n {
+		return s, false
+	}
+	return s[:n], true
+}
+
+// StreamEncoding is how a tier's streamed output chunks are written: the microVM guest's are base64 (guest's
+// streamPipe); an isolate's are its text.
+type StreamEncoding int
+
+const (
+	StreamText StreamEncoding = iota
+	StreamBase64
+)
+
+// text is a streamed chunk as the bytes it stands for, by its tier's encoding, never by what it looks like.
+func (enc StreamEncoding) text(s string) string {
+	if enc != StreamBase64 || s == "" {
+		return s
+	}
 	if raw, err := base64.StdEncoding.DecodeString(s); err == nil {
 		return string(raw)
 	}
+	// Not the guest's base64 after all: kept as it came rather than lost.
 	return s
 }
 
@@ -226,41 +304,89 @@ func historyID() string {
 }
 
 // runLogged runs a device's exec through run and records it in the sandbox's history, output included.
-func (l *commandLog) runLogged(sandboxID string, by HistoryEntry, params []byte, run func(onEvent func(proto.Event)) (any, error), emit func(proto.Event)) (any, error) {
+//
+// The output kept is the real tail of each stream. A tier whose non-streamed answer is cut to its first bytes (the
+// guest's, enc StreamBase64) is run streamed here, unseen by the device: the host keeps the tail and answers the
+// device as the tier would have, with the first historyAnswer bytes. The exit code is kept only for a command that
+// finished: not for one that failed to run, nor a detached one, which has only started.
+func (l *commandLog) runLogged(sandboxID string, by HistoryEntry, params []byte, enc StreamEncoding, run func(params []byte, onEvent func(proto.Event)) (any, error), emit func(proto.Event)) (any, error) {
 	var p proto.ExecParams
 	_ = json.Unmarshal(params, &p)
 	e := by
-	e.ID, e.Command, e.Argv, e.Cwd, e.User, e.Detached = historyID(), p.Command, p.Argv, p.Cwd, p.User, p.Detached
+	e.ID, e.Cwd, e.User, e.Detached = historyID(), p.Cwd, p.User, p.Detached
+	var cut bool
+	e.Command, cut = clip(p.Command, historyOutput)
+	e.Argv, e.Truncated = clipArgv(p.Argv)
+	e.Truncated = e.Truncated || cut
 	e.StartedAt = time.Now().UnixMilli()
 	var stdout, stderr outputTail
 	var mu sync.Mutex
-	result, err := run(func(ev proto.Event) {
+	// Run streamed for its tail, answered whole.
+	quiet := enc == StreamBase64 && !p.Stream && !p.Detached
+	var headOut, headErr outputHead
+	if quiet {
+		headOut.max, headErr.max = historyAnswer, historyAnswer
+		p.Stream = true
+		params, _ = json.Marshal(p)
+	}
+	result, err := run(params, func(ev proto.Event) {
 		if ev.Kind == "exec.output" {
+			out, errOut := enc.text(ev.Stdout), enc.text(ev.Stderr)
 			mu.Lock()
-			stdout.write(streamed(ev.Stdout))
-			stderr.write(streamed(ev.Stderr))
+			stdout.write(out)
+			stderr.write(errOut)
+			if quiet {
+				headOut.write(out)
+				headErr.write(errOut)
+			}
 			mu.Unlock()
+			if quiet {
+				return
+			}
 		}
 		emit(ev)
 	})
 	e.EndedAt = time.Now().UnixMilli()
 	mu.Lock()
+	defer mu.Unlock()
 	if r, ok := result.(proto.ExecResult); ok {
-		code := r.ExitCode
-		e.ExitCode, e.TimedOut = &code, r.TimedOut
-		// A streamed command's result carries no output of its own: what came in events stands.
-		if len(stdout.b) == 0 && len(stderr.b) == 0 {
+		if quiet {
+			r.Stdout, r.Stderr = string(headOut.b), string(headErr.b)
+			r.Truncated = headOut.truncated || headErr.truncated
+			result = r
+		}
+		if err == nil && !p.Detached {
+			code := r.ExitCode
+			e.ExitCode, e.TimedOut = &code, r.TimedOut
+		}
+		// A command whose output came in no events (not streamed, or an isolate's): its answer's output, which is
+		// whole for those tiers. A detached one's is where its log went, not output.
+		if len(stdout.b) == 0 && len(stderr.b) == 0 && !p.Detached {
 			stdout.write(r.Stdout)
 			stderr.write(r.Stderr)
+			e.Truncated = e.Truncated || r.Truncated
 		}
-		e.Truncated = r.Truncated
 	}
 	if err != nil {
 		e.Error = err.Error()
 	}
 	e.Stdout, e.Stderr = string(stdout.b), string(stderr.b)
 	e.Truncated = e.Truncated || stdout.truncated || stderr.truncated
-	mu.Unlock()
 	_ = l.add(sandboxID, e)
 	return result, err
+}
+
+// clipArgv keeps argv's first arguments up to historyOutput bytes in all, the one that crosses it cut.
+func clipArgv(argv []string) ([]string, bool) {
+	var out []string
+	room := historyOutput
+	for i, arg := range argv {
+		kept, cut := clip(arg, room)
+		out = append(out, kept)
+		room -= len(kept)
+		if cut || (room == 0 && i < len(argv)-1) {
+			return out, true
+		}
+	}
+	return out, false
 }

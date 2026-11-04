@@ -411,8 +411,19 @@ function sandboxesSource(context: Context): SandboxesSource {
 			const { local } = context;
 			const account = context.sandboxAccounts.get(id);
 			if (local !== undefined && account !== undefined && local.mode(account) !== "off") {
-				const page = await local.call<HostCommandPage>(id, "sandbox.history", { limit: 100 });
-				return page.items.map(hostCommandOf);
+				// Every page the host keeps, by its cursor; the list shows no output, so none is carried.
+				const commands = await allPages(async (cursor) => {
+					const page = await local.call<HostCommandPage>(id, "sandbox.history", {
+						limit: 100,
+						output: false,
+						...(cursor === undefined ? {} : { before: cursor }),
+					});
+					return {
+						items: page.items,
+						...(page.next === undefined || page.next === "" ? {} : { nextCursor: page.next }),
+					};
+				});
+				return commands.map(hostCommandOf);
 			}
 			return (await allPages((cursor) => api.listCommands(id, after(cursor)))).map(commandOf);
 		},

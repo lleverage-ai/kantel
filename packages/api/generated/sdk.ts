@@ -1702,7 +1702,7 @@ export interface KantelClient {
 	openDesktop(sandboxId: string, body?: ViewAccessBody, options?: CallOptions): Promise<DesktopAccess>;
 	/** Open the browser. Starts the sandbox's Chromium if it isn't running, and answers a live view URL and a CDP URL for Playwright or Puppeteer. microVMs only. A key needs `access`. `POST /sandboxes/{sandboxId}/browser` */
 	openBrowser(sandboxId: string, body?: ViewAccessBody, options?: CallOptions): Promise<BrowserAccess>;
-	/** Open an end-to-end encrypted session. A short-lived WebSocket URL to the sandbox's host for a Noise session (`kantel e2e`), which the gateway relays and can't read. In an organisation with end-to-end encryption on, the host runs commands, files and ports only in one. A key needs `access`. `POST /sandboxes/{sandboxId}/e2e` */
+	/** Open an end-to-end encrypted session. A short-lived WebSocket URL to the sandbox's host for a Noise session (`kantel e2e`), which the gateway relays and can't read. In an organisation with end-to-end encryption on, the host runs commands, files and ports only in one. It opens for a stopped or paused sandbox too, whose command history the host still has; what needs a running guest is refused in the session. A key needs `access`. `POST /sandboxes/{sandboxId}/e2e` */
 	openE2E(sandboxId: string, body?: E2EAccessBody, options?: CallOptions): Promise<E2EAccess>;
 	/** Get an organisation's E2E chain. Its signed entries, oldest first: empty until an admin starts it with `kantel e2e init`. A key needs `account:read`. `GET /accounts/{accountId}/e2e/chain` */
 	getE2EChain(accountId: string, options?: CallOptions): Promise<E2EChain>;

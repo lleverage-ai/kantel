@@ -82,13 +82,17 @@ const TYPES: Readonly<Record<string, string>> = {
 };
 
 /**
- * The page's policy: its code and its calls are this server's only. `inline` is the hashes of the inline scripts in
- * the CLI's own index.html (the theme, set before the page paints), and no other inline script runs.
+ * The page's policy: its code and its calls are this server's only. Scripts come from the CLI's own files under
+ * `scripts` (`<origin>/assets/`), never from `/v1/...`, which is the gateway's to answer, though on this origin.
+ * `inline` is the hashes of the inline scripts in the CLI's own index.html (the theme, set before the page paints), and
+ * no other inline script runs.
  */
-const policy = (inline: readonly string[]) =>
+const policy = (scripts: string, inline: readonly string[]) =>
 	[
 		"default-src 'self'",
-		["script-src 'self'", ...inline.map((hash) => `'sha256-${hash}'`)].join(" "),
+		["script-src", scripts, ...inline.map((hash) => `'sha256-${hash}'`)].join(" "),
+		`worker-src ${scripts}`,
+		"object-src 'none'",
 		"connect-src 'self'",
 		"img-src 'self' data:",
 		"style-src 'self' 'unsafe-inline'",
@@ -97,6 +101,38 @@ const policy = (inline: readonly string[]) =>
 		"base-uri 'none'",
 		"form-action 'self'",
 	].join("; ");
+
+/**
+ * What the gateway answers is data on this origin, never a page or a script with its authority (its cookie and
+ * `/local/e2e`, this device's key). Its type is one of these, or it goes as bytes; and whatever it is, a document made
+ * of it is sandboxed with no scripts, in an origin of its own.
+ */
+const GATEWAY_TYPES: ReadonlySet<string> = new Set([
+	"application/json",
+	"application/problem+json",
+	"application/x-ndjson",
+	"application/octet-stream",
+	"application/gzip",
+	"application/x-tar",
+	"application/zip",
+	"text/plain",
+	"text/event-stream",
+]);
+
+const GATEWAY_HEADERS: Record<string, string> = {
+	"content-security-policy": "default-src 'none'; sandbox; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+	"x-content-type-options": "nosniff",
+	"cross-origin-resource-policy": "same-origin",
+};
+
+/** The gateway's content type, if it is data; otherwise bytes. */
+export function gatewayType(type: string | null): string {
+	const essence = (type ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+	if (!GATEWAY_TYPES.has(essence)) return "application/octet-stream";
+	// Its parameters (a charset) only for text, and only a plain one.
+	const charset = /;\s*charset="?([A-Za-z0-9_-]+)"?/i.exec(type ?? "")?.[1];
+	return essence.startsWith("text/") && charset !== undefined ? `${essence}; charset=${charset}` : essence;
+}
 
 /** The hashes of a page's inline scripts (those without `src`). */
 export function inlineScriptHashes(html: string): string[] {
@@ -113,7 +149,7 @@ export function inlineScriptHashes(html: string): string[] {
 }
 
 const PAGE_HEADERS: Record<string, string> = {
-	"content-security-policy": policy([]),
+	"content-security-policy": policy("'none'", []),
 	"x-content-type-options": "nosniff",
 	"referrer-policy": "no-referrer",
 	"cross-origin-opener-policy": "same-origin",
@@ -176,10 +212,12 @@ export async function serveLocalConsole(options: LocalConsoleOptions): Promise<L
 	const index = await readFile(join(root, "index.html")).catch(() => {
 		throw new Error(`The console's files aren't in ${root}: build it with pnpm --filter @kantel/console build`);
 	});
-	const pageHeaders = { "content-security-policy": policy(inlineScriptHashes(index.toString("utf8"))) };
+	const inline = inlineScriptHashes(index.toString("utf8"));
 	const gateway = new URL(options.gateway);
 	let origin = "";
 	let hosts: readonly string[] = [];
+	// Set once the port is known: a path in a policy names its origin.
+	let pageHeaders: Record<string, string> = {};
 
 	const serveFile = async (response: ServerResponse, pathname: string): Promise<void> => {
 		const path = resolve(root, `.${normalize(decodeURIComponent(pathname))}`);
@@ -225,11 +263,18 @@ export async function serveLocalConsole(options: LocalConsoleOptions): Promise<L
 			);
 		}
 		const out: Record<string, string> = {};
-		for (const name of ["content-type", "etag", "www-authenticate", "retry-after", "location"]) {
+		for (const name of ["etag", "www-authenticate", "retry-after", "location"]) {
 			const value = answer.headers.get(name);
 			if (value !== null) out[name] = value;
 		}
-		send(response, answer.status, Buffer.from(await answer.arrayBuffer()), out["content-type"] ?? "text/plain", out);
+		const bytes = Buffer.from(await answer.arrayBuffer());
+		response.writeHead(answer.status, {
+			...PAGE_HEADERS,
+			...out,
+			...GATEWAY_HEADERS,
+			"content-type": gatewayType(answer.headers.get("content-type")),
+		});
+		response.end(bytes);
 	};
 
 	const local = async (request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> => {
@@ -311,6 +356,7 @@ export async function serveLocalConsole(options: LocalConsoleOptions): Promise<L
 	origin = `http://127.0.0.1:${port}`;
 	// Not localhost: the cookie and the origin calls are checked against are 127.0.0.1's.
 	hosts = [`127.0.0.1:${port}`];
+	pageHeaders = { "content-security-policy": policy(`${origin}/assets/`, inline) };
 	return {
 		url: `${origin}/?k=${key}`,
 		origin,

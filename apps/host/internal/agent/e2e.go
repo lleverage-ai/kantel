@@ -860,18 +860,22 @@ func (h *Host) serveE2E(ctx context.Context, conn net.Conn, sandboxID string) er
 				}
 				before, _ := p["before"].(string)
 				limit, _ := p["limit"].(float64)
-				return h.commands.page(sandbox, before, int(limit)), nil
+				// Output comes unless the device says it wants none.
+				output, said := p["output"].(bool)
+				return h.commands.page(sandbox, before, int(limit), output || !said), nil
 			}
 			raw, _ := json.Marshal(p)
-			call := func(onEvent func(proto.Event)) (any, error) { return h.Call(ctx, method, raw, onEvent) }
+			call := func(params []byte, onEvent func(proto.Event)) (any, error) {
+				return h.Call(ctx, method, params, onEvent)
+			}
 			var result any
 			var err error
 			if method == proto.MethodExec && h.commands != nil {
 				// Kept on the host, which is the only place that sees it (history.go).
 				by := HistoryEntry{Device: d.ID, DeviceLabel: d.Label, DeviceClass: d.Class, Member: d.User}
-				result, err = h.commands.runLogged(sandbox, by, raw, call, func(e proto.Event) { emit(e) })
+				result, err = h.commands.runLogged(sandbox, by, raw, h.streamEncoding(sandbox), call, func(e proto.Event) { emit(e) })
 			} else {
-				result, err = call(func(e proto.Event) { emit(e) })
+				result, err = call(raw, func(e proto.Event) { emit(e) })
 			}
 			if err != nil {
 				pe := toError(err)

@@ -751,6 +751,8 @@ export const openE2E = defineRoute({
 	description: describe(
 		"A short-lived WebSocket URL to the sandbox's host for a Noise session (`kantel e2e`), which the gateway relays and",
 		"can't read. In an organisation with end-to-end encryption on, the host runs commands, files and ports only in one.",
+		"It opens for a stopped or paused sandbox too, whose command history the host still has; what needs a running",
+		"guest is refused in the session.",
 		scope("access"),
 	),
 	params: SandboxPath,

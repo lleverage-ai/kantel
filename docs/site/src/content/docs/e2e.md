@@ -72,6 +72,16 @@ has joined a space is updated on the machine (`kantel-host update`), never by th
 off: the space still trusts its host key. An update the gateway started before the join finishes before the join goes
 ahead.
 
+### Command history and the local console
+
+The host keeps each sandbox's last 200 commands from sessions, with the last 64 KiB of their output; the gateway never
+has them. `kantel e2e history <sandbox> [--output]` reads them over a session, and works while the sandbox is stopped
+as long as its host is online. Deleting the sandbox deletes its history.
+
+`kantel console` serves the console from the CLI's own release on `127.0.0.1` and makes its E2E calls with this
+device's key, which never reaches the browser. Only the browser that opens the link it prints gets in. What the
+gateway answers there is shown as data only: the console runs no page or script the gateway sends.
+
 ## Take access away
 
 `kantel e2e remove-device <device>`, `kantel e2e remove-member <user>` and `kantel e2e remove-host <host>` add a signed

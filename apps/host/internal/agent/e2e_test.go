@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdh"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -66,7 +67,7 @@ func (f *e2eTier) HasSnapshot(id string) bool {
 	return slices.ContainsFunc(f.snaps, func(s proto.SnapshotInfo) bool { return s.ID == id })
 }
 
-func (f *e2eTier) Exec(ctx context.Context, p proto.ExecParams, _ func(string, string)) (proto.ExecResult, error) {
+func (f *e2eTier) Exec(ctx context.Context, p proto.ExecParams, onOutput func(string, string)) (proto.ExecResult, error) {
 	f.mu.Lock()
 	f.execs = append(f.execs, p)
 	f.mu.Unlock()
@@ -74,7 +75,13 @@ func (f *e2eTier) Exec(ctx context.Context, p proto.ExecParams, _ func(string, s
 		<-ctx.Done()
 		return proto.ExecResult{}, ctx.Err()
 	}
-	return proto.ExecResult{ExitCode: 0, Stdout: "ran: " + p.Command + "\n"}, nil
+	out := "ran: " + p.Command + "\n"
+	if p.Stream && onOutput != nil {
+		// As the microVM guest streams: base64 chunks, and an answer with no output of its own.
+		onOutput(base64.StdEncoding.EncodeToString([]byte(out)), "")
+		return proto.ExecResult{ExitCode: 0}, nil
+	}
+	return proto.ExecResult{ExitCode: 0, Stdout: out}, nil
 }
 
 type sessionVector struct {
@@ -1106,6 +1113,15 @@ func TestCommandHistoryIsKeptOnTheHost(t *testing.T) {
 	if first.Stdout != "ran: echo three\n" || first.ExitCode == nil || *first.ExitCode != 0 || first.Device == "" {
 		t.Fatalf("entry %+v", first)
 	}
+	// The device's command wasn't streamed, so its answer has the output; the host ran it streamed, for the tail.
+	raw, err = c.Call(proto.MethodExec, map[string]any{"command": "echo four"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var answer proto.ExecResult
+	if err := json.Unmarshal(raw, &answer); err != nil || answer.Stdout != "ran: echo four\n" || answer.Truncated {
+		t.Fatalf("answer %s: %v", raw, err)
+	}
 	raw, err = c.Call(MethodHistory, map[string]any{"before": page.Next})
 	if err != nil {
 		t.Fatal(err)
@@ -1122,8 +1138,18 @@ func TestCommandHistoryIsKeptOnTheHost(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("history file: %v %v", info, err)
 	}
+	// Without output, for a list that shows none.
+	raw, err = c.Call(MethodHistory, map[string]any{"output": false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page = HistoryPage{}
+	_ = json.Unmarshal(raw, &page)
+	if len(page.Items) != 4 || page.Items[0].Command != "echo four" || page.Items[0].Stdout != "" {
+		t.Fatalf("page without output %+v", page)
+	}
 	h.commands.forget("sbx_one")
-	if got := h.commands.page("sbx_one", "", 0); len(got.Items) != 0 {
+	if got := h.commands.page("sbx_one", "", 0, true); len(got.Items) != 0 {
 		t.Fatalf("history after forget: %+v", got)
 	}
 }
@@ -1146,7 +1172,182 @@ func TestCommandHistoryIsBounded(t *testing.T) {
 	if len(tail.b) != historyOutput || !tail.truncated || !strings.HasSuffix(string(tail.b), "bc") {
 		t.Fatal("output wasn't cut to its tail")
 	}
+	// A page carries a bounded amount of output, and its cursor goes on from where it stopped.
+	full := strings.Repeat("o", historyOutput)
+	for i := range 100 {
+		if err := l.add("sbx_full", HistoryEntry{ID: fmt.Sprintf("cmd_%d", i), Stdout: full, Stderr: full}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var seen []string
+	pages := 0
+	for before := ""; ; pages++ {
+		page := l.page("sbx_full", before, 100, true)
+		if len(page.Items) == 0 || len(page.Items) > historyPageOutput/(2*historyOutput) {
+			t.Fatalf("page of %d", len(page.Items))
+		}
+		for _, e := range page.Items {
+			seen = append(seen, e.ID)
+		}
+		if before = page.Next; before == "" {
+			break
+		}
+	}
+	if len(seen) != 100 || seen[0] != "cmd_99" || seen[99] != "cmd_0" || pages < 3 {
+		t.Fatalf("read %d over %d pages", len(seen), pages+1)
+	}
+	if page := l.page("sbx_full", "", 100, false); len(page.Items) != 100 || page.Next != "" {
+		t.Fatalf("page without output: %d", len(page.Items))
+	}
 	if l.add("../escape", HistoryEntry{ID: "x"}) != nil || l.read("../escape") != nil {
 		t.Fatal("an ID named a path outside the log")
+	}
+}
+
+// History decodes a streamed chunk by its tier's encoding, never by its looks: an isolate's text that happens to be
+// base64 ("QUJD") is kept as it is, and the guest's base64 is decoded.
+func TestCommandHistoryDecodesOutputByItsTier(t *testing.T) {
+	l := newCommandLog(t.TempDir())
+	streamedRun := func(chunk string) func([]byte, func(proto.Event)) (any, error) {
+		return func(_ []byte, onEvent func(proto.Event)) (any, error) {
+			onEvent(proto.Event{Kind: "exec.output", Stdout: chunk})
+			return proto.ExecResult{ExitCode: 0}, nil
+		}
+	}
+	params := []byte(`{"command":"printf QUJD","stream":true}`)
+	var sent []proto.Event
+	emit := func(ev proto.Event) { sent = append(sent, ev) }
+	if _, err := l.runLogged("sbx", HistoryEntry{Device: "d"}, params, StreamText, streamedRun("QUJD"), emit); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.runLogged("sbx", HistoryEntry{Device: "d"}, params, StreamBase64, streamedRun(base64.StdEncoding.EncodeToString([]byte("QUJD"))), emit); err != nil {
+		t.Fatal(err)
+	}
+	all := l.read("sbx")
+	if len(all) != 2 || all[0].Stdout != "QUJD" || all[1].Stdout != "QUJD" {
+		t.Fatalf("history %+v", all)
+	}
+	// A streamed command's events reach the device as the tier sent them.
+	if len(sent) != 2 || sent[0].Stdout != "QUJD" || sent[1].Stdout != "UVVKRA==" {
+		t.Fatalf("events %+v", sent)
+	}
+}
+
+// A command the guest would answer cut to its first MiB keeps its real tail in the history: the host runs it streamed,
+// sends the device no events it didn't ask for, and answers it as the guest would have.
+func TestCommandHistoryKeepsTheTailOfLongOutput(t *testing.T) {
+	l := newCommandLog(t.TempDir())
+	var ran proto.ExecParams
+	chunk := strings.Repeat("x", 64<<10)
+	run := func(params []byte, onEvent func(proto.Event)) (any, error) {
+		_ = json.Unmarshal(params, &ran)
+		for range (historyAnswer + historyAnswer/2) / len(chunk) {
+			onEvent(proto.Event{Kind: "exec.output", Stdout: base64.StdEncoding.EncodeToString([]byte(chunk))})
+		}
+		onEvent(proto.Event{Kind: "exec.output", Stdout: base64.StdEncoding.EncodeToString([]byte("the end\n"))})
+		return proto.ExecResult{ExitCode: 3}, nil
+	}
+	var sent int
+	result, err := l.runLogged("sbx", HistoryEntry{Device: "d"}, []byte(`{"command":"yes"}`), StreamBase64, run, func(proto.Event) { sent++ })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ran.Stream || sent != 0 {
+		t.Fatalf("streamed %v, events sent %d", ran.Stream, sent)
+	}
+	answer := result.(proto.ExecResult)
+	if len(answer.Stdout) != historyAnswer || !answer.Truncated || answer.ExitCode != 3 || strings.Contains(answer.Stdout, "the end") {
+		t.Fatalf("answer: %d bytes, truncated %v, exit %d", len(answer.Stdout), answer.Truncated, answer.ExitCode)
+	}
+	e := l.read("sbx")[0]
+	if len(e.Stdout) != historyOutput || !strings.HasSuffix(e.Stdout, "the end\n") || !e.Truncated || e.ExitCode == nil || *e.ExitCode != 3 {
+		t.Fatalf("entry: %d bytes, ends %q, truncated %v", len(e.Stdout), e.Stdout[len(e.Stdout)-10:], e.Truncated)
+	}
+	// An isolate's answer is whole, and isn't run any other way.
+	ran = proto.ExecParams{}
+	whole := func(params []byte, _ func(proto.Event)) (any, error) {
+		_ = json.Unmarshal(params, &ran)
+		return proto.ExecResult{Stdout: "all of it"}, nil
+	}
+	if _, err := l.runLogged("sbx_iso", HistoryEntry{}, []byte(`{"command":"x"}`), StreamText, whole, func(proto.Event) {}); err != nil || ran.Stream {
+		t.Fatalf("isolate ran streamed %v: %v", ran.Stream, err)
+	}
+	if got := l.read("sbx_iso")[0].Stdout; got != "all of it" {
+		t.Fatalf("isolate output %q", got)
+	}
+}
+
+// An exit code is kept only for a command that finished: not one that failed (whatever result came with the error),
+// nor a detached one, which has only started.
+func TestCommandHistoryKeepsAnExitCodeOnlyWhenTheCommandFinished(t *testing.T) {
+	l := newCommandLog(t.TempDir())
+	cases := []struct {
+		name   string
+		params string
+		result any
+		err    error
+	}{
+		{"failed", `{"command":"x"}`, nil, errors.New("guest went away")},
+		{"stream broke", `{"command":"x","stream":true}`, proto.ExecResult{ExitCode: 0}, errors.New("command stream ended without an exit")},
+		{"detached", `{"command":"x","detached":true}`, proto.ExecResult{Pid: 42, Stdout: "/tmp/kantel-detached-1.log"}, nil},
+	}
+	for _, c := range cases {
+		run := func([]byte, func(proto.Event)) (any, error) { return c.result, c.err }
+		_, _ = l.runLogged("sbx_"+strings.ReplaceAll(c.name, " ", "_"), HistoryEntry{}, []byte(c.params), StreamBase64, run, func(proto.Event) {})
+		e := l.read("sbx_" + strings.ReplaceAll(c.name, " ", "_"))[0]
+		if e.ExitCode != nil || e.Stdout != "" {
+			t.Errorf("%s: exit %v, stdout %q", c.name, e.ExitCode, e.Stdout)
+		}
+		if (c.err != nil) != (e.Error != "") {
+			t.Errorf("%s: error %q", c.name, e.Error)
+		}
+	}
+}
+
+// The reader takes every record the writer writes, however long, and a bad line costs only itself.
+func TestCommandHistoryReadsEveryRecordItWrites(t *testing.T) {
+	l := newCommandLog(t.TempDir())
+	// Control bytes take six bytes each in JSON: this line is over 20 MiB.
+	huge := HistoryEntry{ID: "cmd_huge", Command: strings.Repeat("\x01", 2<<20), Stdout: strings.Repeat("\x00", historyOutput), Stderr: strings.Repeat("\x02", historyOutput)}
+	if err := l.add("sbx", HistoryEntry{ID: "cmd_before"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.add("sbx", huge); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(l.path("sbx"), os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString("{not json\n")
+	_ = f.Close()
+	if err := l.add("sbx", HistoryEntry{ID: "cmd_after"}); err != nil {
+		t.Fatal(err)
+	}
+	all := l.read("sbx")
+	if len(all) != 3 || all[0].ID != "cmd_before" || all[1].ID != "cmd_huge" || all[1].Command != huge.Command || all[2].ID != "cmd_after" {
+		t.Fatalf("read %d entries", len(all))
+	}
+	// A device's command is kept to historyOutput bytes, as its output is.
+	params, _ := json.Marshal(proto.ExecParams{Command: huge.Command, Argv: []string{strings.Repeat("a", historyOutput), "b"}})
+	_, _ = l.runLogged("sbx_long", HistoryEntry{}, params, StreamText, func([]byte, func(proto.Event)) (any, error) { return proto.ExecResult{}, nil }, func(proto.Event) {})
+	e := l.read("sbx_long")[0]
+	if len(e.Command) != historyOutput || len(e.Argv) != 1 || !e.Truncated {
+		t.Fatalf("command %d bytes, argv %d, truncated %v", len(e.Command), len(e.Argv), e.Truncated)
+	}
+	// A file read whole is cut back by count, the long entry and all.
+	l2 := newCommandLog(t.TempDir())
+	for i := range 2*historyKeep + 1 {
+		e := HistoryEntry{ID: fmt.Sprintf("cmd_%d", i)}
+		if i == 2*historyKeep-1 {
+			e = huge
+		}
+		if err := l2.add("sbx", e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	kept := l2.read("sbx")
+	if len(kept) != historyKeep || kept[len(kept)-2].ID != "cmd_huge" || kept[len(kept)-1].ID != fmt.Sprintf("cmd_%d", 2*historyKeep) {
+		t.Fatalf("kept %d", len(kept))
 	}
 }

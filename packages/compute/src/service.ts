@@ -3287,7 +3287,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (backend.openE2E === undefined) {
 				throw new KantelError("not_supported", "This gateway's sandboxes aren't on hosts it can open E2E sessions to");
 			}
-			const current = await requireRunning(principal, sandbox.id);
+			// A session is with the host, not the guest: a stopped or paused sandbox's still is (its disk and its command
+			// history are there), and the host refuses what needs a running guest. One starting, stopping or failed waits.
+			const current = await settledFor(principal, sandbox.id);
+			if (current.state !== "running" && current.state !== "stopped" && current.state !== "paused") {
+				throw new KantelError("conflict", `The sandbox is ${current.state}; its host can't open a session for it`);
+			}
 			const ttlMinutes = body.ttlMinutes ?? ACCESS_TTL_MINUTES;
 			const access = await backend.openE2E(current.id, { ttlMinutes, grantee: encodeGrantee(principal) });
 			return {

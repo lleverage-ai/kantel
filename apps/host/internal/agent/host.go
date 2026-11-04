@@ -437,6 +437,14 @@ func (h *Host) tierOfNamed(id string) (Tier, string, error) {
 	return nil, "", &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("no sandbox %s on this host", id)}
 }
 
+// streamEncoding is how the tier holding a sandbox writes streamed output: the microVM guest's chunks are base64.
+func (h *Host) streamEncoding(id string) StreamEncoding {
+	if _, name, err := h.tierOfNamed(id); err == nil && name == microvm.Tier {
+		return StreamBase64
+	}
+	return StreamText
+}
+
 func (h *Host) tierOfSnapshot(id string) (Tier, error) {
 	for _, name := range h.order {
 		if h.tiers[name].HasSnapshot(id) {

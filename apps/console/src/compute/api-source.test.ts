@@ -161,7 +161,20 @@ describe("sandboxes", () => {
 		expect(await plain.e2e?.mode(accountId)).toBe("off");
 		expect(plain.e2e?.served).toBe("gateway");
 
-		const calls: { sandboxId: string; method: string }[] = [];
+		const calls: { sandboxId: string; method: string; params: { before?: string } }[] = [];
+		// The host's history, newest first, in pages of one: a console that drops the cursor sees only the newest.
+		const kept = [
+			{ id: "c2", command: "make test", startedAt: 2000, endedAt: 2100, device: "d1", deviceLabel: "Ada's laptop" },
+			{
+				id: "c1",
+				command: "make",
+				startedAt: 1000,
+				endedAt: 1250,
+				exitCode: 0,
+				device: "d1",
+				deviceLabel: "Ada's laptop",
+			},
+		];
 		const localFetch: typeof fetch = async (input, init) => {
 			const path = String(input);
 			if (path === "/local/info") {
@@ -172,22 +185,12 @@ describe("sandboxes", () => {
 				});
 			}
 			if (path === "/local/e2e") {
-				calls.push(JSON.parse(String(init?.body)));
-				return Response.json({
-					result: {
-						items: [
-							{
-								id: "c1",
-								command: "make",
-								startedAt: 1000,
-								endedAt: 1250,
-								exitCode: 0,
-								device: "d1",
-								deviceLabel: "Ada's laptop",
-							},
-						],
-					},
-				});
+				const call = JSON.parse(String(init?.body)) as (typeof calls)[number];
+				calls.push(call);
+				const from = call.params.before === undefined ? 0 : kept.findIndex((c) => c.id === call.params.before) + 1;
+				const items = kept.slice(from, from + 1);
+				const next = from + 1 < kept.length ? items.at(-1)?.id : undefined;
+				return Response.json({ result: { items, ...(next === undefined ? {} : { next }) } });
 			}
 			return fetchApi(input, init);
 		};
@@ -204,9 +207,13 @@ describe("sandboxes", () => {
 		expect(source.e2e).toMatchObject({ served: "local", device: "Ada's laptop" });
 		await source.sandboxes.list(accountId);
 		expect(await source.sandboxes.history(made.id)).toEqual([
+			{ id: "c2", command: "make test", startedAt: 2000, durationMs: 100, by: "Ada's laptop" },
 			{ id: "c1", command: "make", startedAt: 1000, durationMs: 250, exitCode: 0, by: "Ada's laptop" },
 		]);
-		expect(calls).toEqual([{ sandboxId: made.id, method: "sandbox.history", params: { limit: 100 } }]);
+		expect(calls).toEqual([
+			{ sandboxId: made.id, method: "sandbox.history", params: { limit: 100, output: false } },
+			{ sandboxId: made.id, method: "sandbox.history", params: { limit: 100, output: false, before: "c2" } },
+		]);
 	});
 
 	it("shows what the host gave a microVM, and names sizes without figures", async () => {

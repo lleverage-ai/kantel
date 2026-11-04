@@ -102,6 +102,19 @@ describe("kantel e2e", () => {
 		expect(history.stdout).toContain(SECRET_COMMAND);
 		expect(history.stdout).toContain(`    ${SECRET_OUTPUT}`);
 		expect(history.stdout).toContain("root's laptop");
+		// A stopped sandbox's history is still on its host, and read without starting it; one mid-change isn't.
+		const stored = await s.api.store.sandboxes.get(sandbox.id);
+		if (stored === undefined) throw new Error(`No record of ${sandbox.id}`);
+		await s.api.store.sandboxes.put({ ...stored, state: "stopped" });
+		const stopped = await root("e2e", "history", sandbox.id);
+		expect(stopped.stderr).toBe("");
+		expect(stopped.code).toBe(0);
+		expect(stopped.stdout).toContain(SECRET_COMMAND);
+		await s.api.store.sandboxes.put({ ...stored, state: "error" });
+		const failed = await root("e2e", "history", sandbox.id);
+		expect(failed.code).not.toBe(0);
+		expect(failed.stderr).toContain("The sandbox is error; its host can't open a session for it");
+		await s.api.store.sandboxes.put(stored);
 
 		// Bob trusts the genesis he was given and sends his card; until it is added, the host won't let him in.
 		const joinedBob = await bob("e2e", "join", s.org.id, genesis, "--json");
@@ -246,7 +259,7 @@ describe("kantel e2e", () => {
 			expect(await page.text()).toContain("<title>Kantel</title>");
 			// Its own inline script runs by its hash; no other.
 			const hash = createHash("sha256").update(theme).digest("base64");
-			expect(page.headers.get("content-security-policy")).toContain(`script-src 'self' 'sha256-${hash}';`);
+			expect(page.headers.get("content-security-policy")).toContain(`script-src ${c.origin}/assets/ 'sha256-${hash}';`);
 			// A path can't climb out of the console's files: it is one of its pages, or not found.
 			for (const path of [
 				"/%2e%2e/%2e%2e/etc/passwd",
@@ -262,6 +275,9 @@ describe("kantel e2e", () => {
 				headers: { cookie, authorization: "Bearer bob" },
 			});
 			expect(list.status).toBe(200);
+			// As data in a sandbox with no scripts (console-gateway.test.ts has a gateway that tries).
+			expect(list.headers.get("content-type")).toBe("application/json");
+			expect(list.headers.get("content-security-policy")).toMatch(/^default-src 'none'; sandbox;/);
 			expect(seen.at(-1)).toMatchObject({ authorization: "Bearer root" });
 			expect(seen.at(-1)?.url).toBe(`https://kantel.test/v1/sandboxes?account=${s.org.id}`);
 
