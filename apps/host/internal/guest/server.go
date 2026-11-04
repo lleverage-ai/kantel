@@ -227,13 +227,7 @@ func applyIdentity(id *Identity) error {
 			_ = os.Chown("/home/user/.ssh/authorized_keys", 1000, 1000)
 		}
 	}
-	if len(id.Env) > 0 {
-		var b strings.Builder
-		for k, v := range id.Env {
-			fmt.Fprintf(&b, "%s=%s\n", k, strconv.Quote(v))
-		}
-		_ = os.WriteFile("/etc/kantel/env", []byte(b.String()), 0o644)
-	}
+	writeEnv(envFile, id.Env)
 	// dockerd and Chromium use LocalProxyAddr, which follows the identity's proxy, so nothing restarts here: a restart
 	// would stop a resumed or forked sandbox's containers and close its tabs (and, as a restored sandbox's monotonic
 	// clock carries on from its template's, soon trips systemd's start limit).
@@ -256,6 +250,23 @@ func (s *Server) sync(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
+// envFile holds the sandbox's own variables, which every command gets.
+const envFile = "/etc/kantel/env"
+
+// writeEnv makes path hold exactly env: an identity's Env is the sandbox's whole environment (the host resolves a
+// fork's inheritance before it sends one), so an empty one leaves none, not what the disk had from its source.
+func writeEnv(path string, env map[string]string) {
+	if len(env) == 0 {
+		_ = os.Remove(path)
+		return
+	}
+	var b strings.Builder
+	for k, v := range env {
+		fmt.Fprintf(&b, "%s=%s\n", k, strconv.Quote(v))
+	}
+	_ = os.WriteFile(path, []byte(b.String()), 0o644)
+}
+
 func (s *Server) commandEnv(req *ExecRequest, home string, username string) []string {
 	env := map[string]string{
 		"PATH":  "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -272,7 +283,7 @@ func (s *Server) commandEnv(req *ExecRequest, home string, username string) []st
 			}
 		}
 	}
-	if raw, err := os.ReadFile("/etc/kantel/env"); err == nil {
+	if raw, err := os.ReadFile(envFile); err == nil {
 		for _, line := range strings.Split(string(raw), "\n") {
 			if k, v, ok := strings.Cut(line, "="); ok && k != "" {
 				if unq, err := strconv.Unquote(v); err == nil {

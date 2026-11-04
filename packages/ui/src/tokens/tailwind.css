@@ -102,8 +102,9 @@
 	--color-accent-text: var(--kt-accent-text);
 	--color-accent-soft: var(--kt-accent-soft);
 	--color-focus: var(--kt-focus);
-	--color-highlight: var(--kt-highlight);
-	--color-highlight-hover: var(--kt-highlight-hover);
+	--color-primary: var(--kt-primary);
+	--color-primary-hover: var(--kt-primary-hover);
+	--color-primary-fg: var(--kt-primary-fg);
 
 	--color-destructive: var(--kt-destructive);
 	--color-warning: var(--kt-warning);
@@ -194,7 +195,6 @@
 	--spacing-icon-md: var(--kt-icon-md);
 	--spacing-dot: var(--kt-dot);
 	--spacing-thumb: var(--kt-thumb);
-	--spacing-topbar: var(--kt-topbar-height);
 
 	/* Measures, for `max-w-*` and `w-*`: `max-w-content`, `w-sidebar`, `w-popover`. */
 	--container-content: var(--kt-content-width);

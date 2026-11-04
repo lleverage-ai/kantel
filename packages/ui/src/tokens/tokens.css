@@ -163,11 +163,12 @@
 	--kt-presented-image-size: 336px; /* an image's tile in the transcript, alone: the widest it shows */
 	--kt-presented-image-size-many: 176px; /* the same, two or more side by side: four to a row in the content width */
 	--kt-sidebar-width: 300px;
+	--kt-nav-width: 232px; /* the console's sidebar: its five pages, the switcher and your menu */
+	--kt-tabbar-height: 56px; /* the phone's bottom tab bar, without the home indicator's inset */
+	--kt-topbar-height: 56px; /* a page's top bar: its title, and its primary action on the right */
 	/* A console page's column: centred in the room beside the sidebar, its title and actions on its edges, its tables
 	   as wide as it is (after boat.dev's console, Tom, 3 Nov 2026). */
 	--kt-page-width: 1200px;
-	/* The phone's top bar, in place of the sidebar: the logo, the account and the menu that opens the nav. */
-	--kt-topbar-height: 52px;
 	--kt-brand-sm: 20px; /* the Kantel lockup's height in the sidebar's head */
 	--kt-brand-md: 28px; /* the endorsed lockup's height over sign-in */
 	--kt-brand-mark: 40px; /* the mark alone, over a page's welcome */

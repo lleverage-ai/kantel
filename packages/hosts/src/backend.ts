@@ -24,7 +24,7 @@ import type {
 import { KantelError } from "@kantel/contracts";
 import { DESKTOP_PORT, desktopPath } from "./desktop.ts";
 import type { PortRouter } from "./ports.ts";
-import type { HostEgress, HostSandbox, SandboxTier } from "./protocol.ts";
+import { type HostEgress, HostMethods, type HostSandbox, type SandboxTier } from "./protocol.ts";
 import type { HostsService, SandboxPlacement } from "./service.ts";
 import { type DesktopMode, HOSTS_TUNNEL_PATH, MAX_TUNNEL_MINUTES, type TunnelTickets } from "./tunnel.ts";
 
@@ -90,6 +90,23 @@ export function hostEgress(egress: BackendEgress | undefined, attributionKey?: s
 			? {}
 			: { upstream: egress.upstream.url, headers: { ...egress.upstream.headers } }),
 		...(egress.attribution && attributionKey !== undefined ? { attributionKey } : {}),
+		// The hosts to intercept and the version only: the host fetches the values itself (secrets.fetch), so they never
+		// ride a create's params, which the host keeps on disk.
+		...(egress.protected === undefined
+			? {}
+			: { protected: { version: egress.protected.version, intercept: [...egress.protected.intercept] } }),
+		...(egress.grants === undefined || egress.grants.length === 0
+			? {}
+			: {
+					grants: egress.grants.map((grant) => ({
+						action: grant.action,
+						host: grant.host,
+						...(grant.methods === undefined ? {} : { methods: [...grant.methods] }),
+						...(grant.paths === undefined ? {} : { paths: [...grant.paths] }),
+						rule: grant.rule,
+					})),
+				}),
+		...(egress.revision === undefined ? {} : { revision: egress.revision }),
 	};
 }
 
@@ -225,8 +242,13 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	): Promise<Placement> {
 		const { hostId } = await tierOf(sandboxId);
 		mayUse(hostId, how.eligibleHosts);
-		const egress = how.egress;
-		const sandbox = await call<HostSandbox>(sandboxId, method, egressOf(egress));
+		const revision = how.egressRevision ?? how.egress?.revision;
+		// With a revision the host takes the boot's egress as stated, none being its default (a clear); an update read
+		// before this boot, with an older revision, is refused after it.
+		const sandbox = await call<HostSandbox>(sandboxId, method, {
+			...egressOf(how.egress),
+			...(revision === undefined ? {} : { revision }),
+		});
 		return placed(sandboxId, sandbox, hostId);
 	}
 
@@ -305,6 +327,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					tiers: [...host.tiers],
 					kvm: host.kvm,
 					nestedVirtualisation: host.nestedVirtualisation,
+					features: [...host.features],
 					capacity: { ...host.capacity },
 					labels: { ...host.labels },
 					connected: host.state === "online" || host.state === "draining",
@@ -318,8 +341,16 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		start: (sandboxId, how) => boot(sandboxId, "sandbox.start", how),
 		resume: (sandboxId, how) => boot(sandboxId, "sandbox.resume", how),
 		recover: (sandboxId, how) => boot(sandboxId, "sandbox.start", how),
-		async updateEgress(sandboxId, egress) {
-			await call(sandboxId, "sandbox.egress", { egress: hostEgress(egress, options.attributionKey) ?? null });
+		async updateEgress(sandboxId, egress, revision) {
+			await call(sandboxId, "sandbox.egress", {
+				egress: hostEgress(egress, options.attributionKey) ?? null,
+				// A null egress is ordered too: the host ignores one older than the egress it has.
+				...(revision === undefined ? {} : { revision }),
+			});
+		},
+		async updateSecrets(sandboxId, version) {
+			// The host drops its copy; its next request that needs one fetches the new values.
+			await call(sandboxId, HostMethods.secrets, { sandboxId, version });
 		},
 		async stop(sandboxId, { keepMemory }): Promise<TakenSnapshot> {
 			const { tier, hostId } = await tierOf(sandboxId);
@@ -345,6 +376,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				const { sandbox, hostId, ...known } = await hosts.sandboxes.fork(source.sandboxId, {
 					newId: target.sandboxId,
 					...egressOf(target.egress),
+					// Its own placeholders, not its source's: the host gives the guest this environment.
+					env: target.env,
 				});
 				out.push(await placed(target.sandboxId, sandbox, hostId, known));
 			}

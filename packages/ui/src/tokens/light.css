@@ -44,15 +44,17 @@
 	--kt-text-faint: color-mix(in srgb, var(--kt-text-muted) 95%, var(--kt-text-disabled));
 	--kt-text-disabled: hsl(60 7% 60%); /* muted-fg-subtle */
 
-	/* The accent: the primary, deep navy, with white on it; text in the accent is the navy too. The orange is the
-	   highlight, for what is pointed out rather than pressed: it is under AA as text on the canvas (2.83:1), so never
-	   small text on its own. */
-	--kt-accent: hsl(230 35% 15%); /* primary */
-	--kt-accent-hover: hsl(230 35% 22%); /* primary-hover */
-	--kt-accent-fg: hsl(0 0% 100%); /* on-primary */
-	--kt-accent-text: var(--kt-accent);
-	--kt-highlight: hsl(24 84% 53.1%); /* highlight */
-	--kt-highlight-hover: hsl(24 84% 47%); /* highlight-hover */
+	/* The accent: his highlight, the brand's orange, for what is pointed out rather than pressed (focus, where you are),
+	   with his foreground on it. It is under AA as text on the canvas (2.82:1), so links are a darker cut of the same
+	   hue that passes on the canvas and the panel. */
+	--kt-accent: hsl(24 84% 53.1%); /* highlight */
+	--kt-accent-hover: hsl(24 84% 47%); /* highlight-hover */
+	--kt-accent-fg: hsl(83 11% 14.1%); /* foreground */
+	--kt-accent-text: hsl(24 84% 36%); /* highlight, darkened for text */
+	/* The primary action (one per surface): deep navy, with white on it. */
+	--kt-primary: hsl(230 35% 15%); /* primary */
+	--kt-primary-hover: hsl(230 35% 22%); /* primary-hover */
+	--kt-primary-fg: hsl(0 0% 100%); /* on-primary */
 
 	/* Status text: info, success, warning and destructive as his text colours, plus Kantel's indigo for waiting. */
 	--kt-status-working: hsl(210 45% 45%); /* info */

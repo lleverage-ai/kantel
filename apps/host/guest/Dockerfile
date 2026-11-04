@@ -112,7 +112,8 @@ COPY guest/rootfs/ /tmp/kantel-rootfs/
 RUN chmod -R u+rwX,go+rX-w /tmp/kantel-rootfs /usr/local/bin/kantel-guest \
 	&& cp -a /tmp/kantel-rootfs/. / && rm -rf /tmp/kantel-rootfs \
 	&& cp /etc/xdg/xfce4/panel/default.xml /home/user/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml \
-	&& chown -R 1000:1000 /home/user && mkdir -p /etc/kantel
+	&& chown -R 1000:1000 /home/user && mkdir -p /etc/kantel \
+	&& ln -sf kantel-guest /usr/local/bin/kantel-doctor
 
 # No serial getty (the console is Firecracker's stdout), no units that wait for hardware a microVM doesn't have or
 # fetch things on a timer, and SSH keys only per sandbox (the guest agent makes them after every create and fork).

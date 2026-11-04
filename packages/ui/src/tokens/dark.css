@@ -52,16 +52,17 @@
 	--kt-text-faint: color-mix(in srgb, var(--kt-text-muted) 75%, var(--kt-text-disabled));
 	--kt-text-disabled: hsl(50 10% 45%); /* muted-fg-subtle */
 
-	/* The accent: the primary, the brand's orange, with the canvas on it. Text in the accent is his lighter highlight.
-	   A host app rebrands by setting --kt-accent, --kt-accent-hover, --kt-accent-text and --kt-accent-fg on any
-	   ancestor. */
-	--kt-accent: hsl(24 84% 53.1%); /* primary */
-	--kt-accent-hover: hsl(24 84% 47%); /* primary-hover */
+	/* The accent: his highlight, the brand's orange a little lighter than the primary, for what is pointed out rather
+	   than pressed (focus, where you are, links), with the canvas on it. A host app rebrands by setting --kt-accent,
+	   --kt-accent-hover, --kt-accent-text and --kt-accent-fg on any ancestor. */
+	--kt-accent: hsl(24 84% 57%); /* highlight */
+	--kt-accent-hover: hsl(24 84% 51%); /* highlight-hover */
 	--kt-accent-fg: hsl(220 6% 11%); /* on-primary */
-	--kt-accent-text: var(--kt-highlight);
-	/* The brand's orange where something is pointed out rather than pressed. */
-	--kt-highlight: hsl(24 84% 57%); /* highlight */
-	--kt-highlight-hover: hsl(24 84% 51%); /* highlight-hover */
+	--kt-accent-text: hsl(24 84% 57%); /* highlight */
+	/* The primary action (one per surface): the orange, with the canvas on it. */
+	--kt-primary: hsl(24 84% 53.1%); /* primary */
+	--kt-primary-hover: hsl(24 84% 47%); /* primary-hover */
+	--kt-primary-fg: hsl(220 6% 11%); /* on-primary */
 
 	/* Status text: info, success, warning and destructive as his text colours, plus Kantel's indigo for waiting. Their
 	   soft fills are formulas in tokens.css. */

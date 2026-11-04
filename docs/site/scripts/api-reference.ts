@@ -88,7 +88,6 @@ const NOT_DOCUMENTED = new Set([
 	"connections",
 	"projects",
 	"tool-servers",
-	"environments",
 	"model-providers",
 	"programs",
 ]);
@@ -142,6 +141,12 @@ const TAGS: {
 		title: "Proxy",
 		order: 8,
 		about: "Where sandboxes' outbound traffic may go, and through what.",
+	},
+	environments: {
+		title: "Environments",
+		order: 8.5,
+		about:
+			"What new sandboxes inherit: variables (plain and protected), secret files, repositories and egress grants; and a sandbox's egress log.",
 	},
 	events: { title: "Events", order: 9, about: "The account's events, as webhooks deliver them." },
 	webhooks: {

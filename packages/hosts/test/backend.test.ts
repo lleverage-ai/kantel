@@ -312,6 +312,8 @@ describe("the compute API on kantel-host hosts", () => {
 			upstream: "http://mehen.internal:3128",
 			headers: { "X-Mehen-Key": "secret" },
 			attributionKey: "attr-key",
+			// Each sandbox's egress revision, which orders its updates.
+			revision: expect.any(Number),
 		};
 		// The running sandbox gets them at once.
 		await expect.poll(() => egressOf("sandbox.egress")).toEqual(want);

@@ -1,7 +1,7 @@
 /**
  * The compute plane's routes: sandboxes (isolates and microVMs) behind one API, with their commands, files, ports,
- * desktop, browser and SSH, their snapshots, and the accounts, scoped API keys, proxy, webhooks, OpenTelemetry export
- * and hosts around them. A self-hosted gateway always serves them.
+ * desktop, browser and SSH, their snapshots, and the accounts, scoped API keys, proxy, environments, webhooks,
+ * OpenTelemetry export and hosts around them. A self-hosted gateway always serves them.
  *
  * Every route but a device sign-in's start and poll (`public`) takes a bearer: a scoped API key (`ksk_…`), or a person's
  * sign-in. A key acts in its own account; a person
@@ -26,6 +26,7 @@ import {
 	CommandPath,
 	CreateAccountJoinTokenBody,
 	CreateApiKeyBody,
+	CreateEnvironmentBody,
 	CreateHostJoinTokenBody,
 	CreateInviteBody,
 	CreateOrganisationBody,
@@ -36,6 +37,11 @@ import {
 	DeviceLoginPath,
 	DeviceLoginRequest,
 	DeviceLoginResult,
+	Environment,
+	EnvironmentFileQuery,
+	EnvironmentList,
+	EnvironmentPath,
+	EnvironmentVariablePath,
 	EventPage,
 	ExposedPort,
 	ExposedPortList,
@@ -66,6 +72,8 @@ import {
 	PollDeviceLoginBody,
 	PortPath,
 	ProxySettings,
+	PutEgressGrantsBody,
+	PutEnvironmentReposBody,
 	PutProxySettingsBody,
 	PutTelemetryBody,
 	ReadFileQuery,
@@ -73,10 +81,14 @@ import {
 	ResumeSandboxBody,
 	RunCommandBody,
 	Sandbox,
+	SandboxEgress,
+	SandboxEgressQuery,
 	SandboxPage,
 	SandboxPath,
 	SandboxUsage,
 	SaveSnapshotBody,
+	SetEnvironmentFileBody,
+	SetEnvironmentVariableBody,
 	Snapshot,
 	SnapshotFilesQuery,
 	SnapshotPage,
@@ -89,6 +101,7 @@ import {
 	TelemetryExport,
 	TelemetryTest,
 	UpdateAccountBody,
+	UpdateEnvironmentBody,
 	UpdateHostBody,
 	UpdateMemberBody,
 	UpdateSandboxBody,
@@ -1024,6 +1037,222 @@ export const putProxySettings = defineRoute({
 
 export const proxyRoutes = { getProxySettings, putProxySettings } as const;
 
+// Environments: what sandboxes start with. And each sandbox's egress.
+
+const RUNNING_AT_ONCE = "Running sandboxes made from it pick the change up at once.";
+
+export const listEnvironments = defineRoute({
+	operationId: "listEnvironments",
+	method: "GET",
+	path: "/environments",
+	tag: "environments",
+	summary: "List environments",
+	description: describe("The account's environments, oldest first.", scope("account:read")),
+	query: AccountScopedQuery,
+	answer: { status: 200, description: "The environments.", schema: EnvironmentList },
+	errors: ["invalid", "forbidden"],
+});
+
+export const createEnvironment = defineRoute({
+	operationId: "createEnvironment",
+	method: "POST",
+	path: "/environments",
+	tag: "environments",
+	summary: "Create an environment",
+	description: describe(
+		"An empty environment, named uniquely in the account. A sandbox starts with it when its create names it.",
+		scope("account:admin"),
+	),
+	body: CreateEnvironmentBody,
+	answer: { status: 201, description: "The environment.", schema: Environment },
+	errors: ["invalid", "forbidden", "conflict"],
+});
+
+export const getEnvironment = defineRoute({
+	operationId: "getEnvironment",
+	method: "GET",
+	path: "/environments/{environmentId}",
+	tag: "environments",
+	summary: "Get an environment",
+	description: describe("Never a protected variable's value nor a secret file's contents.", scope("account:read")),
+	params: EnvironmentPath,
+	answer: { status: 200, description: "The environment.", schema: Environment },
+	errors: readErrors,
+});
+
+export const updateEnvironment = defineRoute({
+	operationId: "updateEnvironment",
+	method: "PATCH",
+	path: "/environments/{environmentId}",
+	tag: "environments",
+	summary: "Change an environment",
+	description: describe("Renames it or changes its description.", scope("account:admin")),
+	params: EnvironmentPath,
+	body: UpdateEnvironmentBody,
+	answer: { status: 200, description: "The environment.", schema: Environment },
+	errors: changeErrors,
+});
+
+export const deleteEnvironment = defineRoute({
+	operationId: "deleteEnvironment",
+	method: "DELETE",
+	path: "/environments/{environmentId}",
+	tag: "environments",
+	summary: "Delete an environment",
+	description: describe(
+		"Sandboxes made from it keep what they started with, but their protected variables stop resolving at once.",
+		scope("account:admin"),
+	),
+	params: EnvironmentPath,
+	answer: { status: 204, description: "Deleted." },
+	errors: readErrors,
+});
+
+export const setEnvironmentVariable = defineRoute({
+	operationId: "setEnvironmentVariable",
+	method: "PUT",
+	path: "/environments/{environmentId}/variables/{name}",
+	tag: "environments",
+	summary: "Set an environment variable",
+	description: describe(
+		"Adds or changes a variable. A protected one needs at least one binding, and its value is kept encrypted and never",
+		"shown again; leave `value` out to change only its bindings. A new value for a protected variable is a rotation:",
+		"sandboxes keep their placeholders, and their next request carries the new value.",
+		RUNNING_AT_ONCE,
+		"Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused. Protected",
+		"values need the deployment's secrets key (`not_supported` without one).",
+		scope("account:admin"),
+	),
+	params: EnvironmentVariablePath,
+	body: SetEnvironmentVariableBody,
+	answer: { status: 200, description: "The environment.", schema: Environment },
+	errors: ["invalid", "forbidden", "not_found", "conflict", "not_supported"],
+});
+
+export const deleteEnvironmentVariable = defineRoute({
+	operationId: "deleteEnvironmentVariable",
+	method: "DELETE",
+	path: "/environments/{environmentId}/variables/{name}",
+	tag: "environments",
+	summary: "Delete an environment variable",
+	description: describe(
+		"A protected variable stops resolving in the sandboxes made from the environment at once.",
+		scope("account:admin"),
+	),
+	params: EnvironmentVariablePath,
+	answer: { status: 200, description: "The environment.", schema: Environment },
+	errors: readErrors,
+});
+
+export const setEnvironmentFile = defineRoute({
+	operationId: "setEnvironmentFile",
+	method: "PUT",
+	path: "/environments/{environmentId}/files",
+	tag: "environments",
+	summary: "Set a secret file",
+	description: describe(
+		"Adds or replaces a file new sandboxes start with, written once they are running. Its contents are kept encrypted",
+		"and never shown again; leave `content` out to change only its mode. Needs the deployment's secrets key",
+		"(`not_supported` without one).",
+		scope("account:admin"),
+	),
+	params: EnvironmentPath,
+	body: SetEnvironmentFileBody,
+	answer: { status: 200, description: "The environment.", schema: Environment },
+	errors: ["invalid", "forbidden", "not_found", "conflict", "not_supported"],
+});
+
+export const deleteEnvironmentFile = defineRoute({
+	operationId: "deleteEnvironmentFile",
+	method: "DELETE",
+	path: "/environments/{environmentId}/files",
+	tag: "environments",
+	summary: "Delete a secret file",
+	description: describe("Sandboxes made from the environment keep their copy.", scope("account:admin")),
+	params: EnvironmentPath,
+	query: EnvironmentFileQuery,
+	answer: { status: 200, description: "The environment.", schema: Environment },
+	errors: readErrors,
+});
+
+export const putEnvironmentRepos = defineRoute({
+	operationId: "putEnvironmentRepos",
+	method: "PUT",
+	path: "/environments/{environmentId}/repos",
+	tag: "environments",
+	summary: "Set an environment's repositories",
+	description: describe(
+		"Replaces them. New sandboxes clone each once they are running (`git clone --depth 1`), through the egress proxy.",
+		scope("account:admin"),
+	),
+	params: EnvironmentPath,
+	body: PutEnvironmentReposBody,
+	answer: { status: 200, description: "The environment.", schema: Environment },
+	errors: changeErrors,
+});
+
+export const putEnvironmentGrants = defineRoute({
+	operationId: "putEnvironmentGrants",
+	method: "PUT",
+	path: "/environments/{environmentId}/grants",
+	tag: "environments",
+	summary: "Set an environment's egress grants",
+	description: describe("Replaces them.", RUNNING_AT_ONCE, scope("account:admin")),
+	params: EnvironmentPath,
+	body: PutEgressGrantsBody,
+	answer: { status: 200, description: "The environment.", schema: Environment },
+	errors: changeErrors,
+});
+
+export const getSandboxEgress = defineRoute({
+	operationId: "getSandboxEgress",
+	method: "GET",
+	path: "/sandboxes/{sandboxId}/egress",
+	tag: "environments",
+	summary: "Get a sandbox's egress",
+	description: describe(
+		"Its environment, its protected variables (each placeholder's first 8 characters, never a value), its grants and",
+		"the newest of its egress log: what its host's proxy let through or refused.",
+		scope("account:read"),
+	),
+	params: SandboxPath,
+	query: SandboxEgressQuery,
+	answer: { status: 200, description: "Its egress.", schema: SandboxEgress },
+	errors: readErrors,
+});
+
+export const putSandboxGrants = defineRoute({
+	operationId: "putSandboxGrants",
+	method: "PUT",
+	path: "/sandboxes/{sandboxId}/grants",
+	tag: "environments",
+	summary: "Set a sandbox's egress grants",
+	description: describe(
+		"Replaces its own grants, on top of its environment's. A running sandbox picks them up at once.",
+		scope("account:admin"),
+	),
+	params: SandboxPath,
+	body: PutEgressGrantsBody,
+	answer: { status: 200, description: "Its egress.", schema: SandboxEgress },
+	errors: changeErrors,
+});
+
+export const environmentComputeRoutes = {
+	listEnvironments,
+	createEnvironment,
+	getEnvironment,
+	updateEnvironment,
+	deleteEnvironment,
+	setEnvironmentVariable,
+	deleteEnvironmentVariable,
+	setEnvironmentFile,
+	deleteEnvironmentFile,
+	putEnvironmentRepos,
+	putEnvironmentGrants,
+	getSandboxEgress,
+	putSandboxGrants,
+} as const;
+
 // Events, webhooks and telemetry.
 
 export const listEvents = defineRoute({
@@ -1373,6 +1602,7 @@ export const computeRoutes = {
 	...apiKeyRoutes,
 	...deviceLoginRoutes,
 	...proxyRoutes,
+	...environmentComputeRoutes,
 	...eventRoutes,
 	...webhookRoutes,
 	...telemetryRoutes,
