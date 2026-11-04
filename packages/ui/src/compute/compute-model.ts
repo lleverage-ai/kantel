@@ -112,6 +112,114 @@ export const SANDBOX_SIZES: readonly SandboxSizeSpec[] = [
 	{ size: "xlarge", label: "Extra large", vcpus: 16, memoryGb: 32, diskGb: 240, centsPerHour: 20 },
 ];
 
+/** What a new sandbox gets. An isolate's `vcpus` is 0: it shares its account's VM's CPU. */
+export interface SandboxShape {
+	readonly vcpus: number;
+	readonly memoryMb: number;
+}
+
+/** A slider's range: its ends, its step and where it starts. */
+export interface ShapeRange {
+	readonly min: number;
+	readonly max: number;
+	readonly step: number;
+	readonly default: number;
+}
+
+/** A shape the hosts offer by name. `warm`: a host keeps machines of it ready, so a create there is a restore. */
+export interface ShapePreset extends SandboxShape {
+	readonly name: string;
+	readonly diskGb: number;
+	readonly warm: boolean;
+}
+
+/** What New sandbox's sliders may choose. */
+export interface SandboxShapes {
+	readonly isolate: { readonly memoryMb: ShapeRange };
+	readonly microvm: {
+		readonly vcpus: ShapeRange;
+		readonly memoryMb: ShapeRange;
+		/** Memory follows vCPUs: each vCPU has at least `min` and at most `max` MB. */
+		readonly memoryMbPerVcpu: { readonly min: number; readonly max: number };
+		readonly presets: readonly ShapePreset[];
+		/** The disk a shape off the presets gets, in GB. */
+		readonly diskGb: number;
+	};
+	/** Hosted only: US cents an hour while it runs, per vCPU and per GB of memory. */
+	readonly rates?: {
+		readonly microvmCentsPerVcpuHour: number;
+		readonly microvmCentsPerGbHour: number;
+		readonly isolateCentsPerGbHour: number;
+	};
+}
+
+/** Isolates: 128 to 512 MB in 64 MB steps, 256 by default. */
+export const ISOLATE_MEMORY: ShapeRange = { min: 128, max: 512, step: 64, default: 256 };
+
+/** The sample data's shapes: its sizes as presets, none kept warm (a self-hosted host keeps none unless asked). */
+export const DEFAULT_SANDBOX_SHAPES: SandboxShapes = {
+	isolate: { memoryMb: ISOLATE_MEMORY },
+	microvm: {
+		vcpus: { min: 1, max: 16, step: 1, default: 4 },
+		memoryMb: { min: 512, max: 32768, step: 512, default: 8192 },
+		memoryMbPerVcpu: { min: 512, max: 8192 },
+		presets: [
+			{ name: "small", vcpus: 2, memoryMb: 4096, diskGb: 40, warm: false },
+			{ name: "medium", vcpus: 4, memoryMb: 8192, diskGb: 60, warm: false },
+			{ name: "large", vcpus: 8, memoryMb: 16384, diskGb: 120, warm: false },
+			{ name: "xlarge", vcpus: 16, memoryMb: 32768, diskGb: 240, warm: false },
+		],
+		diskGb: 60,
+	},
+	rates: { microvmCentsPerVcpuHour: 0.75, microvmCentsPerGbHour: 0.125, isolateCentsPerGbHour: 2 },
+};
+
+/** The memory a microVM of `vcpus` may have: the range, narrowed to what that many vCPUs may hold. */
+export function memoryRangeFor(shapes: SandboxShapes, vcpus: number): ShapeRange {
+	const { memoryMb, memoryMbPerVcpu } = shapes.microvm;
+	const step = memoryMb.step;
+	const min = Math.max(memoryMb.min, Math.ceil((vcpus * memoryMbPerVcpu.min) / step) * step);
+	const max = Math.max(min, Math.min(memoryMb.max, Math.floor((vcpus * memoryMbPerVcpu.max) / step) * step));
+	return { min, max, step, default: Math.min(max, Math.max(min, memoryMb.default)) };
+}
+
+/** `memoryMb` moved into what `vcpus` may hold, as the memory slider does when the vCPU slider moves. */
+export function fitMemory(shapes: SandboxShapes, vcpus: number, memoryMb: number): number {
+	const range = memoryRangeFor(shapes, vcpus);
+	return Math.min(range.max, Math.max(range.min, memoryMb));
+}
+
+/** The preset a microVM shape is, if it is one. */
+export function presetOf(shapes: SandboxShapes, shape: SandboxShape): ShapePreset | undefined {
+	return shapes.microvm.presets.find((preset) => preset.vcpus === shape.vcpus && preset.memoryMb === shape.memoryMb);
+}
+
+/**
+ * Whether New sandbox says a microVM of `shape` boots cold: only where some host keeps warm machines (a self-hosted
+ * host keeps none unless its operator asks) and this shape isn't one of them.
+ */
+export function coldStart(shapes: SandboxShapes, shape: SandboxShape): boolean {
+	if (!shapes.microvm.presets.some((preset) => preset.warm)) return false;
+	return presetOf(shapes, shape)?.warm !== true;
+}
+
+/** US cents an hour for a sandbox of `shape`, at the shapes' rates; undefined where there are none (self-hosted). */
+export function shapeCentsPerHour(shapes: SandboxShapes, kind: SandboxKind, shape: SandboxShape): number | undefined {
+	const rates = shapes.rates;
+	if (rates === undefined) return undefined;
+	const gb = shape.memoryMb / 1024;
+	return kind === "isolate"
+		? gb * rates.isolateCentsPerGbHour
+		: shape.vcpus * rates.microvmCentsPerVcpuHour + gb * rates.microvmCentsPerGbHour;
+}
+
+/** "512 MB", "2 GB", "1.5 GB": memory in the unit that reads best. */
+export function memoryText(memoryMb: number): string {
+	if (memoryMb < 1024) return `${memoryMb} MB`;
+	const gb = memoryMb / 1024;
+	return `${Number.isInteger(gb) ? gb : gb.toFixed(1)} GB`;
+}
+
 /** The latest snapshot a sandbox has: what a resume or fork starts from. */
 export interface SnapshotRef {
 	readonly id: string;
@@ -156,7 +264,11 @@ export interface CreateSandboxInput {
 	readonly accountId: string;
 	readonly name?: string;
 	readonly kind: SandboxKind;
-	readonly size: SandboxSize;
+	/**
+	 * What it gets: vCPUs and memory for a microVM, memory alone for an isolate (it shares its account's VM's CPU).
+	 * Absent: the deployment's default.
+	 */
+	readonly shape?: SandboxShape;
 	/** A saved snapshot to start from. */
 	readonly fromSnapshot?: string;
 	/** Minutes until auto-stop; undefined is always on. */
@@ -224,10 +336,10 @@ export interface SandboxUsageNow {
 
 export interface SandboxesSource {
 	/**
-	 * Whether New sandbox can say what each size is. A deployment's hosts decide that, and the API has no list of them,
-	 * so a live source names the sizes without figures. True when left out.
+	 * What New sandbox's sliders may choose, from the hosts the account may use, and what each costs. Absent:
+	 * `DEFAULT_SANDBOX_SHAPES`.
 	 */
-	readonly sizeFigures?: boolean;
+	shapes?(accountId: string): Promise<SandboxShapes>;
 	list(accountId: string): Promise<readonly Sandbox[]>;
 	create(input: CreateSandboxInput): Promise<Sandbox>;
 	stop(id: string): Promise<Sandbox>;
@@ -1007,10 +1119,11 @@ export const SANDBOX_KIND_LABELS: Readonly<Record<SandboxKind, string>> = {
 export const sizeSpec = (size: SandboxSize): SandboxSizeSpec =>
 	SANDBOX_SIZES.find((spec) => spec.size === size) ?? (SANDBOX_SIZES[1] as SandboxSizeSpec);
 
-/** "4 vCPU, 8 GB": a size, or what a sandbox was given, in a line. */
+/** "4 vCPU, 8 GB" ("Shared CPU, 256 MB" for an isolate): a size, or what a sandbox was given, in a line. */
 export const sizeText = (size: SandboxSize | { readonly vcpus: number; readonly memoryGb: number }): string => {
 	const spec = typeof size === "string" ? sizeSpec(size) : size;
-	return `${spec.vcpus} vCPU, ${spec.memoryGb} GB`;
+	const memory = memoryText(Math.round(spec.memoryGb * 1024));
+	return spec.vcpus === 0 ? `Shared CPU, ${memory}` : `${spec.vcpus} vCPU, ${memory}`;
 };
 
 /** A sandbox is between states, so the page reads it again soon. */

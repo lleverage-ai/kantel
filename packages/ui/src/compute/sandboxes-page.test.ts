@@ -166,7 +166,7 @@ describe("the sandboxes list", () => {
 	});
 
 	it("makes New's sandbox with New sandbox's defaults: a medium microVM that stops after an hour", () => {
-		expect(QUICK_SANDBOX).toEqual({ kind: "microvm", size: "medium", autoStopMinutes: 60 });
+		expect(QUICK_SANDBOX).toEqual({ kind: "microvm", autoStopMinutes: 60 });
 	});
 
 	it("filters by state and by a trimmed, case-blind search, and shows everything with no search", () => {

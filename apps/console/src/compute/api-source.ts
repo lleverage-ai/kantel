@@ -254,13 +254,6 @@ function accountsSource({ api, caller }: Context): AccountsSource {
 // ---------------------------------------------------------------------------------------------------------------------
 // Sandboxes
 
-const API_SIZES: Readonly<Record<UiSandboxSize, SandboxSizeName>> = {
-	small: "small",
-	medium: "default",
-	large: "large",
-	xlarge: "xlarge",
-};
-
 const UI_SIZES: Readonly<Record<SandboxSizeName, UiSandboxSize>> = {
 	small: "small",
 	default: "medium",
@@ -393,8 +386,6 @@ function sandboxesSource(context: Context): SandboxesSource {
 		return sandboxOf(sandbox, context);
 	};
 	return {
-		// The backend decides what each size is, and the API doesn't list them.
-		sizeFigures: false,
 		// `kantel console`'s page frames nothing from the gateway, so Browser and Desktop open in tabs of their own.
 		screens: context.local === undefined ? "console" : "tab",
 		// End to end, the host refuses the gateway's file reads, and the history it keeps carries no output yet.
@@ -410,8 +401,7 @@ function sandboxesSource(context: Context): SandboxesSource {
 			const made = await api.createSandbox({
 				account: input.accountId,
 				type: input.kind,
-				// Isolates have no size: the API refuses one.
-				...(input.kind === "microvm" ? { size: API_SIZES[input.size] } : {}),
+				// Work in progress: the shape goes to the API once it takes vCPUs and memory.
 				...(input.name === undefined || input.name === "" ? {} : { name: input.name }),
 				...(input.fromSnapshot === undefined ? {} : { from: input.fromSnapshot }),
 				// The API takes an environment's ID or its name; the UI picks by ID.

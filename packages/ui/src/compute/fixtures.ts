@@ -36,7 +36,7 @@ import type {
 	Webhook,
 	WebhookDelivery,
 } from "./compute-model.ts";
-import { sizeSpec } from "./compute-model.ts";
+import { DEFAULT_SANDBOX_SHAPES, presetOf, type SandboxSize, sizeSpec } from "./compute-model.ts";
 
 /** The code the fixtures' waiting command line showed. */
 export const FIXTURE_DEVICE_CODE = "BCDF-GHJK";
@@ -152,6 +152,7 @@ export const SCRATCH = sandbox({
 	accountId: LLEVERAGE.id,
 	kind: "isolate",
 	size: "small",
+	resources: { vcpus: 0, memoryGb: 0.25, diskGb: 0 },
 	state: "running",
 	createdAt: FIXTURE_NOW - 6 * MINUTE,
 	stopsAt: FIXTURE_NOW + 9 * MINUTE,
@@ -216,6 +217,7 @@ export const NEW_ONE = sandbox({
 	accountId: LLEVERAGE.id,
 	kind: "isolate",
 	size: "small",
+	resources: { vcpus: 0, memoryGb: 0.25, diskGb: 0 },
 	state: "starting",
 	createdAt: FIXTURE_NOW - 2_000,
 	stopsAt: FIXTURE_NOW + HOUR,
@@ -1071,6 +1073,11 @@ export interface ComputeFixtureOptions {
 	readonly settleMs?: number;
 	/** The viewer is not a super-admin. */
 	readonly notSuperAdmin?: boolean;
+	/**
+	 * A host keeps warm machines of these presets (by name), so New sandbox says when a shape off them boots cold.
+	 * Default none: a self-hosted host keeps none unless its operator asks.
+	 */
+	readonly warmPresets?: readonly string[];
 }
 
 let counter = 0;
@@ -1332,6 +1339,20 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 				}),
 		},
 		sandboxes: {
+			shapes: () =>
+				gate(() => ({
+					isolate: DEFAULT_SANDBOX_SHAPES.isolate,
+					microvm: {
+						...DEFAULT_SANDBOX_SHAPES.microvm,
+						presets: DEFAULT_SANDBOX_SHAPES.microvm.presets.map((preset) => ({
+							...preset,
+							warm: options.warmPresets?.includes(preset.name) === true,
+						})),
+					},
+					...(hosting === "hosted" && DEFAULT_SANDBOX_SHAPES.rates !== undefined
+						? { rates: DEFAULT_SANDBOX_SHAPES.rates }
+						: {}),
+				})),
 			list: (accountId) =>
 				gate(() =>
 					[...sandboxes.values()]
@@ -1348,7 +1369,23 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						hostname: `${name}.${slugOf(input.accountId)}.kantel.example.com`,
 						accountId: input.accountId,
 						kind: input.kind,
-						size: input.size,
+						size:
+							input.shape === undefined
+								? "medium"
+								: ((presetOf(DEFAULT_SANDBOX_SHAPES, input.shape)?.name ?? "medium") as SandboxSize),
+						...(input.shape === undefined
+							? {}
+							: {
+									resources: {
+										vcpus: input.shape.vcpus,
+										memoryGb: input.shape.memoryMb / 1024,
+										diskGb:
+											input.kind === "isolate"
+												? 0
+												: (presetOf(DEFAULT_SANDBOX_SHAPES, input.shape)?.diskGb ??
+													DEFAULT_SANDBOX_SHAPES.microvm.diskGb),
+									},
+								}),
 						state: "starting",
 						createdAt: now(),
 						createdBy: VIEWER.name,

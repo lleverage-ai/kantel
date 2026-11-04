@@ -124,7 +124,7 @@ describe("sandboxes", () => {
 		const source = await open(fetchApi);
 		const accountId = await personalAccount(source);
 
-		const made = await source.sandboxes.create({ accountId, name: "lab", kind: "isolate", size: "small" });
+		const made = await source.sandboxes.create({ accountId, name: "lab", kind: "isolate" });
 		expect(made).toMatchObject({ name: "lab", accountId, kind: "isolate", state: "starting", createdBy: "Ada" });
 		expect(made.stopsAt).toBeUndefined();
 		await api.service.idle();
@@ -156,7 +156,7 @@ describe("sandboxes", () => {
 		const { api, fetchApi } = setup();
 		const plain = await open(fetchApi);
 		const accountId = await personalAccount(plain);
-		const made = await plain.sandboxes.create({ accountId, kind: "isolate", size: "small" });
+		const made = await plain.sandboxes.create({ accountId, kind: "isolate" });
 		await api.service.idle();
 		expect(await plain.e2e?.mode(accountId)).toBe("off");
 		expect(plain.e2e?.served).toBe("gateway");
@@ -230,7 +230,7 @@ describe("sandboxes", () => {
 		const { api, fetchApi } = setup();
 		const plain = await open(fetchApi);
 		const accountId = await personalAccount(plain);
-		const made = await plain.sandboxes.create({ accountId, kind: "isolate", size: "small" });
+		const made = await plain.sandboxes.create({ accountId, kind: "isolate" });
 		await api.service.idle();
 		const calls: { sandboxId: string; method: string; params: object }[] = [];
 		const gatewayFiles: string[] = [];
@@ -297,8 +297,7 @@ describe("sandboxes", () => {
 		const { api, fetchApi } = setup();
 		const source = await open(fetchApi);
 		const accountId = await personalAccount(source);
-		expect(source.sandboxes.sizeFigures).toBe(false);
-		const made = await source.sandboxes.create({ accountId, kind: "microvm", size: "medium" });
+		const made = await source.sandboxes.create({ accountId, kind: "microvm", shape: { vcpus: 4, memoryMb: 8192 } });
 		await api.service.idle();
 		const [listed] = await source.sandboxes.list(accountId);
 		// The stub backend's "default" is 2 vCPU and 4 GB, not the sample catalogue's 4 and 8.
@@ -309,7 +308,7 @@ describe("sandboxes", () => {
 		const { api, fetchApi } = setup();
 		const source = await open(fetchApi);
 		const accountId = await personalAccount(source);
-		const made = await source.sandboxes.create({ accountId, name: "page", kind: "isolate", size: "small" });
+		const made = await source.sandboxes.create({ accountId, name: "page", kind: "isolate" });
 		await api.service.idle();
 
 		expect(await source.sandboxes.get(made.id)).toMatchObject({ id: made.id, name: "page", state: "running" });
@@ -360,7 +359,7 @@ describe("snapshots", () => {
 		const { api, fetchApi } = setup();
 		const source = await open(fetchApi);
 		const accountId = await personalAccount(source);
-		const sandbox = await source.sandboxes.create({ accountId, kind: "isolate", size: "small" });
+		const sandbox = await source.sandboxes.create({ accountId, kind: "isolate" });
 		await api.service.idle();
 		// The UI source runs no commands, so the SDK writes the files.
 		const sdk = createKantelClient({ baseUrl: "/v1", token: "person-ada", fetch: fetchApi });
@@ -680,7 +679,6 @@ describe("egress", () => {
 		const sandbox = await source.sandboxes.create({
 			accountId,
 			kind: "isolate",
-			size: "small",
 			environmentId: environment.id,
 		});
 		expect(sandbox.environment).toEqual({ id: environment.id, name: "backend" });

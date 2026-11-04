@@ -129,6 +129,7 @@ export {
 	type SidebarToggleProps,
 	useSidebarCollapsed,
 } from "./primitives/sidebar.tsx";
+export { onStep, SliderField, type SliderFieldProps, sliderPercent } from "./primitives/slider.tsx";
 export { Kbd, Skeleton, Spinner } from "./primitives/spinner.tsx";
 export { SplitButton, type SplitButtonProps } from "./primitives/split-button.tsx";
 export {
