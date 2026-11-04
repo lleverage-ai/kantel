@@ -447,6 +447,22 @@ export function CapacityBar({ share, children }: { share: number; children: Reac
 
 /** A heading over a section of a page, with its own actions on the right. */
 /**
+ * A label and its value side by side, one of a wrapping line of them in a `<dl>`: a phone card's facts, each named,
+ * a line or two tall rather than a row per fact.
+ */
+export function MetaPair({ label, title, children }: { label: string; title?: string; children: ReactNode }) {
+	return (
+		<div className="flex min-w-0 gap-1.5" title={title}>
+			<dt className="text-muted">{label}</dt>
+			<dd className="m-0 min-w-0 truncate text-fg">{children}</dd>
+		</div>
+	);
+}
+
+/** The line of MetaPairs on a phone card. */
+export const metaLineClass = "m-0 flex min-w-0 flex-wrap gap-x-4 gap-y-1 text-sm";
+
+/**
  * A section a phone keeps folded: the heading is the button, with a one-line summary of what's inside while closed, so
  * a long page ends in short rows rather than every detail at full length. Wide screens use a plain section.
  */

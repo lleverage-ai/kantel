@@ -28,7 +28,7 @@ import {
 	SCOPE_PRESETS,
 	untilText,
 } from "./compute-model.ts";
-import { computePage, messageOf, table, tableFrame } from "./parts.tsx";
+import { computePage, MetaPair, messageOf, metaLineClass, table, tableFrame } from "./parts.tsx";
 import { SettingsPageHeader } from "./settings-nav.tsx";
 
 export interface ComputeApiKeysPageProps {
@@ -347,7 +347,7 @@ function KeyRow({ apiKey, now, onRevoke }: { apiKey: ApiKey; now: number; onRevo
 				<span className={`block max-w-(--kt-popover-width) truncate font-medium ${muted ? "text-muted" : "text-fg"}`}>
 					{apiKey.name}
 				</span>
-				<span className="block font-mono text-code text-faint">{apiKey.prefix}…</span>
+				<span className="block font-mono text-code text-muted">{apiKey.prefix}…</span>
 			</td>
 			<td className={cell}>
 				<span title={apiKey.scopes.map(scopeLabel).join(", ")}>{accessText(apiKey.scopes)}</span>
@@ -382,46 +382,39 @@ function KeyRow({ apiKey, now, onRevoke }: { apiKey: ApiKey; now: number; onRevo
 function KeyPhoneRow({ apiKey, now, onRevoke }: { apiKey: ApiKey; now: number; onRevoke: (key: ApiKey) => void }) {
 	const ends = expiry(apiKey, now);
 	const muted = apiKey.revokedAt !== undefined || ends.done;
+	const ending =
+		apiKey.revokedAt !== undefined
+			? { label: "Revoked", value: `${compactAge(apiKey.revokedAt, now)} ago` }
+			: apiKey.expiresAt === undefined
+				? undefined
+				: ends.done
+					? { label: "Expired", value: `${compactAge(apiKey.expiresAt, now)} ago` }
+					: { label: "Expires", value: ends.text };
 	return (
-		<li
-			className="kt-key-row flex min-w-0 items-center gap-2 border-b border-border px-3 py-3 last:border-b-0"
-			data-key={apiKey.id}
-		>
-			<div className="flex min-w-0 flex-1 flex-col gap-1">
-				<span className={`truncate text-md font-medium ${muted ? "text-muted" : "text-fg"}`}>{apiKey.name}</span>
-				{/* The key's identifier on its own line, then what it may do and when it was used. */}
-				<span className="font-mono text-code text-muted">{apiKey.prefix}…</span>
-				{/* What it may do, when it was used, when it ends and who made it, each labelled, as the table's columns are. */}
-				<dl className="m-0 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-sm">
-					<dt className="text-muted">Access</dt>
-					<dd className="m-0 min-w-0 text-fg">{accessText(apiKey.scopes)}</dd>
-					<dt className="text-muted">Last used</dt>
-					<dd className="m-0 min-w-0 text-fg">
-						{apiKey.lastUsedAt === undefined ? "Never" : `${compactAge(apiKey.lastUsedAt, now)} ago`}
-					</dd>
-					{apiKey.revokedAt !== undefined || apiKey.expiresAt !== undefined ? (
-						<>
-							<dt className="text-muted">
-								{apiKey.revokedAt !== undefined ? "Revoked" : ends.done ? "Expired" : "Expires"}
-							</dt>
-							<dd className="m-0 min-w-0 text-fg" title={ends.title}>
-								{apiKey.revokedAt !== undefined
-									? `${compactAge(apiKey.revokedAt, now)} ago`
-									: ends.done
-										? `${compactAge(apiKey.expiresAt ?? now, now)} ago`
-										: ends.text}
-							</dd>
-						</>
-					) : null}
-					{apiKey.createdBy === "" ? null : (
-						<>
-							<dt className="text-muted">Created by</dt>
-							<dd className="m-0 min-w-0 truncate text-fg">{apiKey.createdBy}</dd>
-						</>
-					)}
-				</dl>
+		<li className="kt-key-row flex min-w-0 flex-col gap-1 border-b border-border px-3 py-3 last:border-b-0" data-key={apiKey.id}>
+			{/* The name with its menu on one line, so the action sits with what it acts on. */}
+			<div className="flex min-w-0 items-center gap-2">
+				<span className={`min-w-0 flex-1 truncate text-md font-medium ${muted ? "text-muted" : "text-fg"}`}>
+					{apiKey.name}
+				</span>
+				<span className="-my-1 -mr-1">
+					<KeyMenu apiKey={apiKey} onRevoke={onRevoke} />
+				</span>
 			</div>
-			<KeyMenu apiKey={apiKey} onRevoke={onRevoke} />
+			<span className="font-mono text-code text-muted">{apiKey.prefix}…</span>
+			{/* Each fact with its label before it, in one wrapping line: as quick to scan as the table, a line or two tall. */}
+			<dl className={metaLineClass}>
+				<MetaPair label="Access">{accessText(apiKey.scopes)}</MetaPair>
+				<MetaPair label="Used">
+					{apiKey.lastUsedAt === undefined ? "Never" : `${compactAge(apiKey.lastUsedAt, now)} ago`}
+				</MetaPair>
+				{ending === undefined ? null : (
+					<MetaPair label={ending.label} title={ends.title}>
+						{ending.value}
+					</MetaPair>
+				)}
+				{apiKey.createdBy === "" ? null : <MetaPair label="By">{apiKey.createdBy}</MetaPair>}
+			</dl>
 		</li>
 	);
 }
