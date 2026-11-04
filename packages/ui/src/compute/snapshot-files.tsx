@@ -6,6 +6,9 @@
 // Everything is read on demand through the `source` the host binds: a folder's entries when it opens, and a file's
 // first part only when it's picked, the next on Load more. Nothing is read ahead, and a file the preview can't show (a
 // binary, by its name or its bytes) is read no further. Stories bind the source to fixtures.
+//
+// Where it may go depends on the sandbox (`filesRoot`): an isolate has only /workspace, so the browser starts there and
+// never goes above it; a microVM's opens at its person's home, /home/user, and may go up to /.
 
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { FilePreview, type FilePreviewBody } from "../preview/file-preview.tsx";
@@ -23,15 +26,21 @@ import {
 	DeviceSetupError,
 	type FilePart,
 	type FileRange,
+	FilesRefusedError,
 	FileTooLargeError,
 	type SandboxFolder,
+	type SandboxKind,
 	type SnapshotEntry,
 } from "./compute-model.ts";
 import { messageOf, None, table, tableFrame, td, th } from "./parts.tsx";
 
-/** Where the browser is: the open folder from the root, with no leading slash ("" is the root), and its open file. */
+/** Where the browser is: the open folder and its open file. */
 export interface FilesAt {
-	readonly path: string;
+	/**
+	 * The folder from the filesystem's root, with no leading slash ("" is /). Absent: where the browser starts, its
+	 * root's `start`.
+	 */
+	readonly path?: string;
 	/** The name of the file open in the preview, in that folder. */
 	readonly file?: string;
 }
@@ -46,8 +55,58 @@ export interface FilesSource {
 	downloadUrl?(id: string, path: string): string | undefined;
 }
 
+/** Where a file browser may go, and where it starts. Paths are from the filesystem's root, with no leading slash. */
+export interface FilesRoot {
+	/** The highest folder it goes to: "" for /. */
+	readonly top: string;
+	/** What the top's crumb says. */
+	readonly label: string;
+	/** Where it opens when the address names no folder: the top or a folder in it. */
+	readonly start: string;
+}
+
+/** An isolate's files are its workspace and nothing else: the host refuses any path outside /workspace. */
+export const ISOLATE_ROOT: FilesRoot = { top: "workspace", label: "workspace", start: "workspace" };
+/**
+ * A microVM is a whole machine: the browser opens at its person's home, /home/user (where the API's paths and commands
+ * start, and where its files are), and may go up to /.
+ */
+export const MICROVM_ROOT: FilesRoot = { top: "", label: "Root", start: "home/user" };
+/** Where the kind of sandbox isn't known: the whole filesystem, from /. */
+export const WHOLE_ROOT: FilesRoot = { top: "", label: "Root", start: "" };
+
+/** Where the browser may go in a sandbox of this kind, or in one whose kind isn't known. */
+export const filesRoot = (kind: SandboxKind | undefined): FilesRoot =>
+	kind === "isolate" ? ISOLATE_ROOT : kind === "microvm" ? MICROVM_ROOT : WHOLE_ROOT;
+
+/** Whether `path` is `top` or a folder in it. */
+export const within = (path: string, top: string): boolean => top === "" || path === top || path.startsWith(`${top}/`);
+
+/**
+ * The folder the browser shows for an address's: its start where the address names none, and the top where it names
+ * one above or beside the top (`?path=/` on an isolate), which is never asked for.
+ */
+export const folderIn = (root: FilesRoot, path: string | undefined): string =>
+	path === undefined ? root.start : within(path, root.top) ? path : root.top;
+
+/** The folders from the top down to `path` (in it), each by its path: none at the top itself. */
+export function foldersBelow(root: FilesRoot, path: string): string[] {
+	if (path === root.top || !within(path, root.top)) return [];
+	const below = (root.top === "" ? path : path.slice(root.top.length + 1)).split("/");
+	return below.map((_, index) => join(root.top, below.slice(0, index + 1).join("/")));
+}
+
+/** A start folder that a read of it found refused: by the source and sandbox or snapshot it was read from. */
+interface MissingStart {
+	readonly source: FilesSource;
+	readonly snapshotId: string;
+	readonly start: string;
+}
+
 export interface SnapshotFilesProps {
 	readonly source: FilesSource;
+	/** Where it may go and where it starts: by the kind of sandbox the files are of. The whole filesystem without. */
+	readonly root?: FilesRoot;
 	/** The snapshot's ID, or a running sandbox's. */
 	readonly snapshotId: string;
 	/**
@@ -127,17 +186,41 @@ const follow = (event: MouseEvent, go: () => void) => {
 export function SnapshotFiles({
 	source,
 	snapshotId,
+	root = WHOLE_ROOT,
 	label,
 	lede = "The files as they were when this snapshot was taken.",
-	at,
+	at: asked,
 	now,
 	backLabel,
 	onBack,
 	onNavigate,
 	href,
 }: SnapshotFilesProps) {
-	const { path } = at;
-	const { state, reload } = useLoad(() => source.list(snapshotId, path), [source, snapshotId, path]);
+	// A start that isn't there (a microVM with no /home/user) opens at the top instead: known only from that sandbox's or
+	// snapshot's own read of its start, never from another folder's.
+	const [missingStart, setMissingStart] = useState<MissingStart | undefined>(undefined);
+	const startMissing =
+		missingStart !== undefined &&
+		missingStart.source === source &&
+		missingStart.snapshotId === snapshotId &&
+		missingStart.start === root.start;
+	const path = asked.path === undefined && startMissing ? root.top : folderIn(root, asked.path);
+	const readingStart = asked.path === undefined && path === root.start && root.start !== root.top;
+	// A file named beside a folder that isn't shown isn't opened.
+	const at: FilesAt =
+		asked.file === undefined || (asked.path !== undefined && asked.path !== path)
+			? { path }
+			: { path, file: asked.file };
+	const { state, reload } = useLoad(() => {
+		const read = source.list(snapshotId, path);
+		if (!readingStart) return read;
+		// What this read was of, as it was asked: its refusal is about this start and nothing shown since.
+		const of: MissingStart = { source, snapshotId, start: path };
+		return read.catch((error: unknown) => {
+			if (error instanceof FilesRefusedError) setMissingStart(of);
+			throw error;
+		});
+	}, [source, snapshotId, path, readingStart]);
 	const folder: SandboxFolder | undefined =
 		state.status !== "ready" ? undefined : isFolder(state.value) ? state.value : { entries: state.value, more: false };
 	const entries = folder === undefined ? undefined : sortEntries(folder.entries);
@@ -148,22 +231,21 @@ export function SnapshotFiles({
 		at.file === undefined ? undefined : (openEntry ?? { name: at.file, path: join(path, at.file), kind: "file" });
 	const folderHref = source.downloadUrl?.(snapshotId, path);
 
-	const segments = path === "" ? [] : path.split("/");
+	const folders = foldersBelow(root, path);
 	const place = (to: string) => ({
 		key: to,
 		...(href === undefined ? {} : { href: href({ path: to }) }),
 		onSelect: () => onNavigate({ path: to }),
 	});
+	const nameOf = (folder: string) => folder.slice(folder.lastIndexOf("/") + 1);
 	const parents: Crumb[] =
-		segments.length === 0
+		folders.length === 0
 			? []
 			: [
-					{ ...place(""), label: "Root" },
-					...segments.slice(0, -1).map((segment, index) => ({
-						...place(segments.slice(0, index + 1).join("/")),
-						label: segment,
-					})),
+					{ ...place(root.top), label: root.label },
+					...folders.slice(0, -1).map((folder) => ({ ...place(folder), label: nameOf(folder) })),
 				];
+	const current = folders.at(-1);
 
 	const opened = open !== undefined;
 	return (
@@ -189,14 +271,14 @@ export function SnapshotFiles({
 							label="Up"
 							title="Up a folder"
 							icon={<FolderUpIcon />}
-							disabled={segments.length === 0}
+							disabled={current === undefined}
 							onClick={() => onNavigate({ path: parentOf(path) })}
 							className="-ml-1"
 						/>
 						<Breadcrumbs
 							label="Folder"
 							parents={parents}
-							current={<span className="truncate">{segments.at(-1) ?? "Root"}</span>}
+							current={<span className="truncate">{current === undefined ? root.label : nameOf(current)}</span>}
 						/>
 						{folderHref === undefined ? null : (
 							<a
@@ -209,7 +291,17 @@ export function SnapshotFiles({
 							</a>
 						)}
 					</div>
-					{state.status === "error" && state.error instanceof DeviceSetupError ? (
+					{state.status === "error" && state.error instanceof FilesRefusedError ? (
+						// A refusal stays a refusal: a line, and the way back to the top, never Try again.
+						<div className="flex min-w-0 items-center justify-between gap-3 px-3 py-1">
+							<p className="m-0 min-w-0 text-sm text-muted">{state.error.message}</p>
+							{path === root.top ? null : (
+								<Button size="xs" variant="ghost" onClick={() => onNavigate({ path: root.top })}>
+									{root.top === "" ? "Go to the root" : `Go to ${root.label}`}
+								</Button>
+							)}
+						</div>
+					) : state.status === "error" && state.error instanceof DeviceSetupError ? (
 						<div className="flex min-w-0 items-center justify-between gap-3 px-3 py-1">
 							<p className="m-0 min-w-0 text-sm text-muted">{state.error.message}</p>
 							<Button size="xs" variant="ghost" onClick={reload}>
@@ -536,19 +628,25 @@ function FileView({
 			? { status: "error", message: downloading.message, onRetry: () => setDownloading("idle") }
 			: reading.status === "loading"
 				? { status: "loading" }
-				: reading.status === "error" && reading.error instanceof DeviceSetupError
-					? { status: "error", message: reading.error.message, onRetry: retry }
-					: reading.status === "error"
-						? { status: "error", message: messageOf(reading.error, "Kantel couldn't read this file."), onRetry: retry }
-						: reading.status === "none"
-							? { status: "none" }
-							: {
-									status: "text",
-									text: reading.text,
-									shown: reading.bytes.byteLength,
-									size: reading.size,
-									...(reading.more === "done" ? {} : { onMore: more, loadingMore: reading.more === "loading" }),
-								};
+				: reading.status === "error" && reading.error instanceof FilesRefusedError
+					? { status: "error", message: reading.error.message }
+					: reading.status === "error" && reading.error instanceof DeviceSetupError
+						? { status: "error", message: reading.error.message, onRetry: retry }
+						: reading.status === "error"
+							? {
+									status: "error",
+									message: messageOf(reading.error, "Kantel couldn't read this file."),
+									onRetry: retry,
+								}
+							: reading.status === "none"
+								? { status: "none" }
+								: {
+										status: "text",
+										text: reading.text,
+										shown: reading.bytes.byteLength,
+										size: reading.size,
+										...(reading.more === "done" ? {} : { onMore: more, loadingMore: reading.more === "loading" }),
+									};
 	const tooBig =
 		(size !== undefined && size > DOWNLOAD_MAX_BYTES) || (reading.status === "none" && reading.tooLarge === true);
 	return (

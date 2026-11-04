@@ -7,6 +7,7 @@ served from Cloudflare Workers static assets.
 | --- | --- |
 | `/` | The marketing page, `src/pages/index.astro` |
 | `/install.sh` | The installer, `public/install.sh`, served as is |
+| `/cli.sh`, `/install-cli.sh` | The CLI's installer, `packages/cli/install-cli.sh`, copied in at build time (see below) |
 | `/docs/` | The usage docs in `docs/site`, copied in at build time (see below) |
 
 ## Building it
@@ -51,6 +52,19 @@ downloads through `gh`):
 ```sh
 curl -fsSL https://kantel.dev/install.sh | sh -s -- --repo your-name/kantel
 ```
+
+## The CLI's installer
+
+`curl -fsSL https://kantel.dev/cli.sh | sh` installs `kantel`, the CLI, for the person running it (no sudo; Node.js
+22 or later). `scripts/sync-installers.mjs` copies `packages/cli/install-cli.sh` into `public/` as `cli.sh` and
+`install-cli.sh` before every dev and build, so the site serves the repository's one copy: edit it there. The copies
+are git-ignored, `_headers` serves them as text, and `scripts/check-links.mjs` fails the build if `dist/` doesn't
+hold the same file.
+
+The copy is unstamped (`tools/release/pack.sh` stamps a release's version into the release's own copy), so it
+downloads the latest GitHub Release's `kantel.js` and console files and checks each against that release's
+`SHA256SUMS`. `sh -s -- --admin` adds `kantel-admin`, for self-hosting; the comment at the script's top lists the
+rest. The deploy runs when `packages/cli/install-cli.sh` changes, as for the site's own files.
 
 ## The console mocks
 

@@ -1711,6 +1711,36 @@ export const HostJoinToken = Type.Object(
 	{ title: "HostJoinToken" },
 );
 
+// Where hosts reach the control plane: the address in every join command.
+
+export const PublicUrl = Type.Object(
+	{
+		publicUrl: Type.String({
+			description:
+				"Where hosts reach this control plane: the address in every join command, such as `https://kantel.example.com`.",
+		}),
+		source: Type.Union([Type.Literal("console"), Type.Literal("deployment")], {
+			description:
+				"`console`: a super-admin set it here. `deployment`: the deployment's own (`KANTEL_PUBLIC_URL`, or the address the call came in at).",
+		}),
+		deploymentUrl: Type.String({ description: "The deployment's own, which `publicUrl` goes back to when cleared." }),
+		loopback: Type.Boolean({
+			description:
+				"`publicUrl` is a loopback address (`127.0.0.1`, `localhost`): only a host on the same machine can join.",
+		}),
+	},
+	{ title: "PublicUrl" },
+);
+
+export const SetPublicUrlBody = Type.Object(
+	{
+		publicUrl: Type.Union([Type.String({ maxLength: 2048 }), Type.Null()], {
+			description: "An http(s) origin, such as `https://kantel.example.com`; `null` goes back to the deployment's own.",
+		}),
+	},
+	{ title: "SetPublicUrlBody" },
+);
+
 // An account's own hosts (experimental, behind the deployment's KANTEL_ACCOUNT_HOSTS switch).
 
 export const CreateAccountJoinTokenBody = Type.Object(
@@ -1781,6 +1811,7 @@ export type TelemetryExport = Static<typeof TelemetryExport>;
 export type Host = Static<typeof Host>;
 export type HostState = Static<typeof HostState>;
 export type HostJoinToken = Static<typeof HostJoinToken>;
+export type PublicUrl = Static<typeof PublicUrl>;
 export type AccountJoinToken = Static<typeof AccountJoinToken>;
 export type DeviceLogin = Static<typeof DeviceLogin>;
 export type DeviceLoginState = Static<typeof DeviceLoginState>;

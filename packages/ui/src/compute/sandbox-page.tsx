@@ -1,7 +1,7 @@
 // A sandbox's page (compute console): everything about one sandbox and every way into it. The header has its name and
 // state, Browser, Desktop and Stop, and ⋯ for Fork, Save snapshot, Auto-stop and Delete; under it its address, its
 // environment and when it stops. Five tabs follow. Overview: live previews of its desktop and browser (which open in
-// the console, full size), the SSH command in full, its ports, its CPU and memory, and its details. Logs: commands
+// the console, full size), SSH (sandbox-ssh.tsx), its ports, its CPU and memory, and its details. Logs: commands
 // and what happened to it, in one timeline. Egress: its egress log. Snapshots: its own history. Files: what's in it
 // now, or in its latest snapshot while it's stopped. On a phone the previews and Stop go (Stop is in ⋯) and the
 // sections stack. Every call goes through the sources the host binds; stories bind them to fixtures.
@@ -42,8 +42,9 @@ import { type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
 import { SandboxLogs } from "./sandbox-logs.tsx";
 import { SandboxPorts } from "./sandbox-ports.tsx";
 import { embedUrl, popOut, SandboxViewer, ScreenPreview, type ScreenView } from "./sandbox-screen.tsx";
+import { SandboxSsh } from "./sandbox-ssh.tsx";
 import { showsCpu } from "./sandboxes-page.tsx";
-import { type FilesAt, SnapshotFiles } from "./snapshot-files.tsx";
+import { type FilesAt, filesRoot, SnapshotFiles } from "./snapshot-files.tsx";
 import { agoText, SandboxHistory } from "./snapshots-page.tsx";
 
 /** The page's tabs. */
@@ -195,9 +196,9 @@ export function SandboxPage({
 }: SandboxPageProps) {
 	const { state, reload } = useLoad(() => source.get(sandboxId), [source, sandboxId]);
 	const [own, setOwn] = useState<SandboxView>(initialView);
-	const [ownFiles, setOwnFiles] = useState<FilesAt>(filesAt ?? { path: "" });
+	const [ownFiles, setOwnFiles] = useState<FilesAt>(filesAt ?? {});
 	const routed = navigate !== undefined && filesHref !== undefined;
-	const files = routed ? (filesAt ?? { path: "" }) : ownFiles;
+	const files = routed ? (filesAt ?? {}) : ownFiles;
 	const goFiles = (at: FilesAt) => {
 		if (routed) navigate(filesHref(at, sealed));
 		else setOwnFiles(at);
@@ -538,7 +539,6 @@ export function SandboxPage({
 					narrow={narrow}
 					windows={windows}
 					access={access?.value}
-					freshAccess={freshAccess}
 					onAccessRetry={readAccess}
 					onOpen={go}
 					screenHref={href}
@@ -592,7 +592,6 @@ function Overview({
 	narrow,
 	windows,
 	access,
-	freshAccess,
 	onAccessRetry,
 	onOpen,
 	screenHref,
@@ -606,8 +605,6 @@ function Overview({
 	narrow: boolean;
 	windows: boolean;
 	access: SandboxAccess | "loading" | Error | undefined;
-	/** Access young enough for a new connection: the SSH command copied. */
-	freshAccess: () => Promise<SandboxAccess>;
 	onAccessRetry: () => void;
 	onOpen: (view: ScreenView) => void;
 	screenHref: (view: ScreenView) => string;
@@ -685,39 +682,7 @@ function Overview({
 	};
 
 	const ssh = !windows ? null : (
-		<section className="flex min-w-0 flex-col gap-2" aria-labelledby="sandbox-ssh">
-			<SectionHeading id="sandbox-ssh" title="SSH" />
-			{access instanceof Error ? (
-				<Notice
-					level="error"
-					action={
-						<Button size="sm" onClick={onAccessRetry}>
-							Try again
-						</Button>
-					}
-				>
-					{messageOf(access, "Kantel couldn't reach the sandbox.")}
-				</Notice>
-			) : (
-				<div className="flex min-h-control-lg min-w-0 items-center gap-2 rounded-panel border border-border bg-sunken py-1 pr-1 pl-3 font-mono text-code">
-					<span className="flex-none text-faint" aria-hidden="true">
-						$
-					</span>
-					{ready === undefined ? (
-						<span className="flex-1">
-							<Skeleton />
-						</span>
-					) : (
-						<code className="kt-selectable min-w-0 flex-1 truncate text-fg" title={ready.ssh}>
-							{ready.ssh}
-						</code>
-					)}
-					{ready === undefined ? null : (
-						<CopyButton text={async () => (await freshAccess()).ssh} size="sm" variant="ghost" />
-					)}
-				</div>
-			)}
-		</section>
+		<SandboxSsh source={source} sandboxId={sandbox.id} access={access} onAccessRetry={onAccessRetry} now={now} />
 	);
 
 	const usage = showsCpu(sandbox) ? <Usage source={source} sandbox={sandbox} refreshKey={usageKey} /> : null;
@@ -886,6 +851,7 @@ function SnapshotsTab({
 					key={browsing.snapshotId}
 					source={source}
 					snapshotId={browsing.snapshotId}
+					root={filesRoot(sandbox.kind)}
 					at={browsing.at}
 					now={now}
 					backLabel="Back to snapshots"
@@ -901,7 +867,7 @@ function SnapshotsTab({
 				source={source}
 				sandbox={sandbox}
 				now={now}
-				onBrowse={(snap) => setBrowsing({ snapshotId: snap.id, at: { path: "" } })}
+				onBrowse={(snap) => setBrowsing({ snapshotId: snap.id, at: {} })}
 				onNotice={onNotice}
 			/>
 		</div>
@@ -950,7 +916,8 @@ function FilesTab({
 }) {
 	const shown = filesShown(sandbox, source, endToEnd);
 	const files = source.files;
-	const browse = { at, now, onNavigate, ...(href === undefined ? {} : { href }) };
+	// An isolate's files are its /workspace only; a microVM's open at /home/user and go up to /.
+	const browse = { at, now, onNavigate, root: filesRoot(sandbox.kind), ...(href === undefined ? {} : { href }) };
 	if (shown === "checking") return <Skeleton width="40%" />;
 	if (shown === "unchecked" && endToEnd.status === "error") {
 		return (

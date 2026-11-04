@@ -22,6 +22,10 @@ const linkState = {
 
 export interface SettingsFrameProps {
 	readonly items: readonly SettingsNavItem[];
+	/** The navigation's name: Settings, or Admin's on a phone. */
+	readonly label?: string;
+	/** The label as the title over the page: Settings has it; Admin's pages head themselves, so its row doesn't. */
+	readonly titled?: boolean;
 	/** A phone: the links in a row over the page, scrolling sideways when they don't fit. */
 	readonly narrow?: boolean;
 	/** The settings page shown. */
@@ -29,10 +33,16 @@ export interface SettingsFrameProps {
 }
 
 /** Settings' title, then a settings page with Settings' navigation beside it, or over it on a phone. */
-export function SettingsFrame({ items, narrow = false, children }: SettingsFrameProps) {
+export function SettingsFrame({
+	items,
+	label = "Settings",
+	titled = true,
+	narrow = false,
+	children,
+}: SettingsFrameProps) {
 	const nav = (
 		<nav
-			aria-label="Settings"
+			aria-label={label}
 			className={
 				narrow
 					? "-mx-gutter-narrow flex min-w-0 gap-1 overflow-x-auto px-gutter-narrow"
@@ -55,15 +65,17 @@ export function SettingsFrame({ items, narrow = false, children }: SettingsFrame
 	// remount the page, which would lose a draft or a new key's secret that hasn't been copied yet.
 	return (
 		<div className="flex min-w-0 flex-col gap-5">
-			<header
-				className={`kt-page-header flex min-h-control-md min-w-0 items-center ${narrow ? "" : "border-b border-border pb-3"}`}
-			>
-				<h1
-					className={`kt-page-header-title m-0 truncate font-strong leading-tight text-fg ${narrow ? "text-lg" : "text-md"}`}
+			{titled ? (
+				<header
+					className={`kt-page-header flex min-h-control-md min-w-0 items-center ${narrow ? "" : "border-b border-border pb-3"}`}
 				>
-					Settings
-				</h1>
-			</header>
+					<h1
+						className={`kt-page-header-title m-0 truncate font-strong leading-tight text-fg ${narrow ? "text-lg" : "text-md"}`}
+					>
+						{label}
+					</h1>
+				</header>
+			) : null}
 			<div className={narrow ? "flex min-w-0 flex-col gap-4" : "flex min-w-0 items-start gap-8"}>
 				{nav}
 				<div className="min-w-0 flex-1">{children}</div>

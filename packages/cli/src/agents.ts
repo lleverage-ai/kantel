@@ -1,6 +1,6 @@
 /**
  * Copy-paste setup for coding agents: Claude Code, Codex and Cursor (or any MCP client) run `kantel mcp`, the installed
- * `kantel` (install-cli.sh puts it in ~/.local/bin; it isn't on npm, so not `npx kantel`); pi, which has no MCP, gets
+ * `kantel` (kantel.dev/cli.sh, install-cli.sh, puts it in ~/.local/bin; it isn't on npm, so not `npx kantel`); pi, which has no MCP, gets
  * an AGENTS.md block telling it to use the CLI. Each snippet carries Kantel's URL, but never a key: always the
  * `$KANTEL_API_KEY` placeholder, with a scoped key suggested for the agent.
  */
@@ -11,9 +11,11 @@ export const KEY_PLACEHOLDER = "$KANTEL_API_KEY";
 /** Makes a key for an agent: it can make and drive sandboxes, but not manage the account. */
 export const AGENT_KEY_COMMAND = "kantel key create agent --preset agent";
 
-/** Installs `kantel` from Kantel's latest GitHub Release, without sudo, from bash, zsh or fish. */
-export const INSTALL_COMMAND =
-	"curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install-cli.sh | sh";
+/**
+ * Installs `kantel` from Kantel's latest GitHub Release, without sudo, from bash, zsh or fish: kantel.dev serves
+ * install-cli.sh as /cli.sh.
+ */
+export const INSTALL_COMMAND = "curl -fsSL https://kantel.dev/cli.sh | sh";
 
 export const HARNESSES = ["claude", "codex", "pi", "cursor"] as const;
 export type Harness = (typeof HARNESSES)[number];
