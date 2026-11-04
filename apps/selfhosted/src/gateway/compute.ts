@@ -344,11 +344,12 @@ export interface GatewayCompute {
  * The person a gateway sign-in is, or undefined for a key or no sign-in (a `ksk_` key is the compute API's own). A
  * person who is admin across the deployment's organisation is the compute plane's super-admin, who sees and adds
  * hosts. (A person's sign-in carries no role of its own: roles are held per project or organisation, so it asks
- * `identity`.)
+ * `identity`.) Their email comes from `identity` too, with `getUser`: an invite made for an address is joined by
+ * matching it, so without it no such invite could be.
  */
 async function personOf(
 	authenticator: Authenticator,
-	identity: Pick<IdentityDirectory, "authorize"> | undefined,
+	identity: PersonDirectory | undefined,
 	request: Request,
 ): Promise<PersonIdentity | undefined> {
 	let caller: Awaited<ReturnType<Authenticator["authenticate"]>>;
@@ -358,29 +359,40 @@ async function personOf(
 		return undefined;
 	}
 	if (caller.actor.kind !== "human") return undefined;
-	const superAdmin =
+	const ctx = callContextFor(caller);
+	const [superAdmin, user] = await Promise.all([
 		identity === undefined
 			? false
-			: await identity.authorize(callContextFor(caller), "admin").then(
+			: identity.authorize(ctx, "admin").then(
 					() => true,
 					() => false,
-				);
+				),
+		identity?.getUser?.(ctx, caller.actor.userId).catch(() => undefined),
+	]);
+	const email = user?.email === undefined || user.email === "" ? undefined : user.email;
 	// A Kantel session can be ended (signing out), so access given under it records which one, to end with it.
 	const bearer = /^Bearer\s+(\S+)\s*$/i.exec(request.headers.get("authorization") ?? "")?.[1];
 	const session = bearer !== undefined && isSessionToken(bearer) ? await hashSessionToken(bearer) : undefined;
 	return {
 		userId: caller.actor.userId,
 		name: caller.actor.userId,
+		...(email === undefined ? {} : { email }),
 		superAdmin,
 		...(session === undefined ? {} : { session }),
 	};
 }
 
+/** What `personOf` asks identity: whether the person administers the organisation, and their email. */
+type PersonDirectory = Pick<IdentityDirectory, "authorize"> & Partial<Pick<IdentityDirectory, "getUser">>;
+
 /** The compute API over the stub, or over joined hosts with `hosts`, signed in with the gateway's `authenticator`. */
 export async function gatewayCompute(options: {
 	readonly authenticator: Authenticator;
-	/** Who holds which role: an organisation admin who signs in is the compute plane's super-admin. */
-	readonly identity?: Pick<IdentityDirectory, "authorize">;
+	/**
+	 * Who holds which role (an organisation admin who signs in is the compute plane's super-admin) and, with `getUser`,
+	 * each person's email.
+	 */
+	readonly identity?: PersonDirectory;
 	/** The super-admin key's secret from an earlier start, if any. */
 	readonly superAdminKey?: string;
 	readonly publicUrl?: string;
