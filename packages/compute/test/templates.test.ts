@@ -1013,6 +1013,54 @@ describe("a template's custom image", () => {
 		expect(builds).toHaveLength(3);
 	});
 
+	it("is booted again, on a retry of a failed create, only on a host holding its image", async () => {
+		const { api, tom, build, refuse, created } = setup({ moreHosts: ["hst_two"] });
+		const template = await tom.createTemplate({ name: "rg", spec: dockerfileSpec() });
+		(await build(0)).release();
+		await api.service.idle();
+		const holder = (await tom.getTemplate(template.id)).build.ready?.hostId;
+		expect(holder).toBe(STUB_HOST_ID);
+		refuse.creates = true;
+		const failed = await tom.createSandbox({ template: "rg", wait: true });
+		expect(failed.state).toBe("error");
+		refuse.creates = false;
+		expect((await api.store.sandboxes.get(failed.id))?.templateBoot?.holders).toEqual([STUB_HOST_ID]);
+		// Its template edited and deleted meanwhile: the retry boots the same image, on the host holding it alone.
+		await tom.deleteTemplate(template.id);
+		await api.service.idle();
+		await tom.recoverSandbox(failed.id);
+		await api.service.idle();
+		const retried = created.filter((spec) => spec.sandboxId === failed.id);
+		expect(retried).toHaveLength(2);
+		expect(retried[1]?.eligibleHosts).toEqual([STUB_HOST_ID]);
+		expect(retried[1]?.template).not.toHaveProperty("holders");
+		expect(retried[1]?.template?.rootfsKey).toBe(retried[0]?.template?.rootfsKey);
+		expect((await tom.getSandbox(failed.id)).state).toBe("running");
+	});
+
+	it("is built again for a base release only when it is a Dockerfile, which builds on the base", async () => {
+		const { api, tom, root, build, builds, releaseAll } = setup();
+		await root.publishTemplateBase({ image: "kantel/sandbox", channel: "stable", digest: D1 });
+		const py = await tom.createTemplate({
+			name: "py",
+			spec: { ...SPEC, image: { kind: "image", ref: "python:3.13-slim" } },
+		});
+		const rg = await tom.createTemplate({ name: "rg", spec: dockerfileSpec() });
+		await releaseAll(() => api.service.idle());
+		const before = (await tom.getTemplate(py.id)).build.ready;
+		expect(builds).toHaveLength(2);
+
+		await root.publishTemplateBase({ image: "kantel/sandbox", channel: "stable", digest: D2 });
+		await api.service.sweep();
+		const again = await build(2);
+		expect(again.spec).toMatchObject({ templateId: rg.id, baseDigest: D2 });
+		await releaseAll(() => api.service.idle());
+		// The image reference's key, and its pulled image, are as they were: nothing pulled it again.
+		expect(builds.filter((each) => each.spec.templateId === py.id)).toHaveLength(1);
+		const after = (await tom.getTemplate(py.id)).build;
+		expect(after).toMatchObject({ state: "ready", ready: { id: before?.id, keyHash: before?.keyHash } });
+	});
+
 	it("is never reclaimed by another gateway while its build may still run, and is once its lease has lapsed", async () => {
 		const store = createMemoryStore();
 		const bytesOnHosts: BytesOnHosts = new Set();

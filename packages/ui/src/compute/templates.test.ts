@@ -382,6 +382,26 @@ describe("a template's custom image", () => {
 		}
 	});
 
+	it("saves as an image reference whatever its hidden base fields hold, which switching back still has", () => {
+		// A digest to pin picked on a deployment that published none: the base fields can't be saved as they are.
+		const halfway = { ...templateDraft(), name: "py", baseMode: "digest" as const, digest: "" };
+		expect(templateDraftProblems(halfway).ready).toBe(false);
+		const ref = { ...halfway, imageKind: "image" as const, imageRef: "python:3.13-slim" };
+		expect(templateDraftProblems(ref).ready).toBe(true);
+		expect(templateEditorInput(ref, []).spec.base).toEqual(DEFAULT_TEMPLATE_BASE);
+		// Back to a Dockerfile or the base: the half-picked base is as it was, and must be finished first.
+		for (const imageKind of ["dockerfile", "kantel-base"] as const) {
+			const back = { ...ref, imageKind, dockerfile: "FROM alpine\n" };
+			expect(back).toMatchObject({ baseMode: "digest", digest: "" });
+			expect(templateDraftProblems(back).ready, imageKind).toBe(false);
+		}
+		// A whole base picked is saved as picked, and an image-reference template read back saves nothing new.
+		const pinned = { ...ref, digest: BASE_STABLE };
+		expect(templateEditorInput(pinned, []).spec.base).toEqual({ image: "kantel/sandbox", digest: BASE_STABLE });
+		const slim = byName("python-slim");
+		expect(templateEditorChange(slim, templateDraft(slim))).toEqual({});
+	});
+
 	it("says what it is and what a snapshot was built from", () => {
 		const ci = byName("ci-tools");
 		const slim = byName("python-slim");

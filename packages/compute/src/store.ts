@@ -172,9 +172,10 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	/**
 	 * Made from a template: how a fresh boot of it boots, its base and setup as its create resolved them, so a create
 	 * that failed before placing it (`bootAgain`) is made again the same, whatever its template has become since. No
-	 * snapshot: a retry boots fresh.
+	 * snapshot: a retry boots fresh. A custom image's (`rootfsKey`) names the hosts holding it (`holders`), the only ones
+	 * a retry may boot it on, among those the sandbox may use then.
 	 */
-	readonly templateBoot?: Omit<SandboxTemplateBoot, "snapshot">;
+	readonly templateBoot?: Omit<SandboxTemplateBoot, "snapshot"> & { readonly holders?: readonly string[] };
 };
 
 export type StoredCommand = computeSchema.Command & { readonly accountId: string };

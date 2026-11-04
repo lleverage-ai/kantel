@@ -79,7 +79,17 @@ Templates are on only with `KANTEL_TEMPLATES=experimental`, and a host builds cu
 
 A template's image can be a Dockerfile (`{ "kind": "dockerfile", "dockerfile": "…" }`) or an image reference (`{ "kind": "image", "ref": "python:3.13-slim" }`) instead of Kantel's base. The host never builds or pulls it with its own Docker: a build microVM boots the host's sandbox image, runs Docker inside itself and writes the image's files to a new root filesystem. That microVM is on a network link like any sandbox's, so its only way out is the host's egress proxy, which checks each connection's address as it connects. A pull, a registry's redirect, a `RUN` step's download or an `ONBUILD` trigger in a pulled image reaches a public address the build's rules allow, or nothing. It never reaches the host, its network, cloud metadata or another sandbox, and the private ranges a host's `egressAllowCIDRs` opens to ordinary sandboxes (a LAN mirror, say) are closed to it too.
 
-A build may reach the template's grants, the account's proxy settings and the host's `templateBuilder.registries`; every other host is refused. A Dockerfile has no build context, so `COPY` has nothing to copy; fetch what it needs with `RUN`. `ARG KANTEL_BASE` then `FROM $KANTEL_BASE` builds on the template's base; a base pinned to a published digest is pulled from the host's `templateRegistry`. An image reference ignores the template's base and needs no `templateRegistry`.
+A build may reach the template's grants, the account's proxy settings and the host's `templateBuilder.registries`; every other host is refused. A Dockerfile has no build context, so `COPY` has nothing to copy; fetch what it needs with `RUN`. `ARG KANTEL_BASE` then `FROM $KANTEL_BASE` builds on the template's base; a base pinned to a published digest is pulled from the host's `templateRegistry`. An image reference ignores the template's base and needs no `templateRegistry`, and a new Kantel base release doesn't pull it again; a rebuild does.
+
+A grant with methods or paths, or a protected variable's bound host, has the egress proxy open HTTPS with the build's own CA, which a stage on a pulled image doesn't trust. Every stage may mount the build microVM's trust store, which holds that CA and the public roots, as the secret `kantel-ca`:
+
+```dockerfile
+FROM curlimages/curl
+RUN --mount=type=secret,id=kantel-ca,mode=0444 \
+    curl --cacert /run/secrets/kantel-ca -fsSL https://example.com/tool.tar.gz -o /tmp/tool.tar.gz
+```
+
+The secret is mounted for that step alone and never ends up in the image; `mode=0444` lets a stage that runs as another user than root, as `curlimages/curl` does, read it. Tools that read a bundle from the environment take it the same way, such as `SSL_CERT_FILE=/run/secrets/kantel-ca` or `NODE_EXTRA_CA_CERTS=/run/secrets/kantel-ca`.
 
 The image is built once per template version and rebuild, for that account alone. Its digest (the pulled image's, or the one the Dockerfile made) is part of the template snapshot's key, and shows as the snapshot's `builtFrom.imageDigest`. An image reference pinned `@sha256:…` must pull that digest. Sandboxes of the template boot the image through the injected guest agent, so a host needs `injectGuestAgent` as well. Only hosts with `templateBuilder` on build or boot them, and Kantel places those sandboxes on those hosts.
 

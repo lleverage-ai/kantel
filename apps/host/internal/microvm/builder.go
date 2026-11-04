@@ -113,7 +113,13 @@ func customImageKey(owner string, img *proto.TemplateImage, base templateImage) 
 	if img.Kind == proto.TemplateImageDockerfile {
 		source = dockerfileDigest(img.Dockerfile)
 	}
-	sum := sha256.Sum256([]byte(strings.Join([]string{"custom", owner, img.Scope, img.Kind, source, base.BaseImage + "@" + base.BaseDigest}, "\x00")))
+	// Only a Dockerfile builds on the template's base; an image reference's key is the same whatever base it names, so
+	// a Kantel base release never pulls it again.
+	baseRef := ""
+	if img.Kind == proto.TemplateImageDockerfile {
+		baseRef = base.BaseImage + "@" + base.BaseDigest
+	}
+	sum := sha256.Sum256([]byte(strings.Join([]string{"custom", owner, img.Scope, img.Kind, source, baseRef}, "\x00")))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -229,7 +235,8 @@ func (m *Manager) customRootfs(ctx context.Context, build, owner string, img *pr
 	}
 	out, err := run(ctx, builderJob{
 		dir: work, id: build, owner: owner, image: img, baseRef: baseRef, size: size,
-		egress: m.builderEgress(e, base), env: env,
+		// The operator's templateRegistry is reachable only by a build that pulls a Kantel base from it.
+		egress: BuilderEgress(e, m.cfg.TemplateBuilder, m.cfg.TemplateRegistry, baseRef != ""), env: env,
 	})
 	if err != nil {
 		return "", "", "", err
@@ -335,7 +342,10 @@ func writeSynced(path string, data []byte) error {
 // host's egress proxy, guest.LocalProxyAddr). It builds the Dockerfile with no build context (so ADD and COPY reach
 // only URLs, through the proxy) or pulls the reference, exports the image's files into the output drive (/dev/vdc,
 // made empty by the host), and prints what it made on its last line. A RUN step shares the microVM's network, whose
-// only way out is the same proxy, and is given it.
+// only way out is the same proxy, and is given it, and the microVM's trust store as the BuildKit secret kantel-ca:
+// the public roots and, where the build's grants intercept HTTPS, its egress CA (SetIdentity installed it), which a
+// stage on any base mounts for a download (RUN --mount=type=secret,id=kantel-ca,mode=0444 curl --cacert /run/secrets/kantel-ca)
+// without it ending up in a layer.
 const builderScript = `set -eu
 out=/mnt/kantel-out
 mkdir -p "$out"
@@ -363,7 +373,8 @@ dockerfile)
 			| docker build --network=none -q -t kantel-base:local - >/dev/null
 		base=kantel-base:local
 	fi
-	docker build --network=host --build-arg "KANTEL_BASE=$base" \
+	DOCKER_BUILDKIT=1 docker build --network=host --build-arg "KANTEL_BASE=$base" \
+		--secret id=kantel-ca,src=` + systemCABundle + ` \
 		--build-arg "HTTP_PROXY=$proxy" --build-arg "HTTPS_PROXY=$proxy" \
 		--build-arg "http_proxy=$proxy" --build-arg "https_proxy=$proxy" \
 		-t kantel-template:build - < /tmp/kantel.Dockerfile

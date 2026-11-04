@@ -824,7 +824,8 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 		for (const runtime of hostRuntimes) {
 			const key = await templateCacheKey({
 				templateVersion: templateVersionId(template.id, template.version),
-				baseDigest: base.digest,
+				// An image reference doesn't use the base, so a base release never builds it again (a rebuild does).
+				baseDigest: custom?.image.kind === "image" ? "" : base.digest,
 				...(custom === undefined ? {} : { source: custom.source }),
 				...(custom?.pinned === undefined ? {} : { imageDigest: custom.pinned }),
 				kernel: runtime.kernel,

@@ -316,6 +316,11 @@ func TestACustomImagesKeyIsItsAccountScopeAndImage(t *testing.T) {
 	if key == base.key() {
 		t.Fatal("a custom image's key is its base's")
 	}
+	// An image reference doesn't use the base: a Kantel base release leaves its key, and its pulled image, as they were.
+	ref := &proto.TemplateImage{Kind: proto.TemplateImageRef, Ref: "python:3.13", Scope: "tpl_1@1#0"}
+	if customImageKey("acc_1", ref, base) != customImageKey("acc_1", ref, templateImage{BaseImage: "kantel/sandbox", BaseDigest: testDigest}) {
+		t.Fatal("an image reference's key follows the unused base")
+	}
 }
 
 func TestTemplateImagesAreCheckedBeforeAnythingRuns(t *testing.T) {
@@ -367,7 +372,8 @@ func TestTheBuildsDigestIsTheMicroVMsLastResultLine(t *testing.T) {
 // The build script builds with no build context (the Dockerfile on stdin), gives RUN steps the microVM's network,
 // whose only way out is the proxy, and writes the image into the output drive: nothing is mounted from the host.
 func TestTheBuildScriptBuildsWithNoContextIntoTheOutputDrive(t *testing.T) {
-	for _, want := range []string{"-t kantel-template:build - < /tmp/kantel.Dockerfile", "--network=host", "mount -t ext4 /dev/vdc", `docker export "$c" | tar -x -C "$out"`, "umount"} {
+	// Every stage, whatever its base, may mount the build's trust store (its egress CA included) as a secret.
+	for _, want := range []string{"-t kantel-template:build - < /tmp/kantel.Dockerfile", "--network=host", "--secret id=kantel-ca,src=/etc/ssl/certs/ca-certificates.crt", "DOCKER_BUILDKIT=1 docker build", "mount -t ext4 /dev/vdc", `docker export "$c" | tar -x -C "$out"`, "umount"} {
 		if !strings.Contains(builderScript, want) {
 			t.Errorf("the build script has no %q", want)
 		}

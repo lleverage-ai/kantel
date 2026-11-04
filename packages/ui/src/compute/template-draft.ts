@@ -229,8 +229,8 @@ export function templateDraftProblems(draft: TemplateDraft): {
 		name === undefined &&
 		variables.every((problem) => problem === undefined) &&
 		imageReady &&
-		draft.baseImage !== "" &&
-		(draft.baseMode === "channel" ? draft.channel !== "" : draft.digest !== "");
+		// An image reference doesn't use the base, whose fields it hides: it saves the default when they're incomplete.
+		(draft.imageKind === "image" || baseComplete(draft));
 	return {
 		...(name === undefined ? {} : { name }),
 		...(dockerfile === undefined ? {} : { dockerfile }),
@@ -238,6 +238,22 @@ export function templateDraftProblems(draft: TemplateDraft): {
 		variables,
 		ready,
 	};
+}
+
+/** The draft's base fields name a whole base: an image, and the channel it follows or the digest it pins. */
+const baseComplete = (draft: TemplateDraft): boolean =>
+	draft.baseImage !== "" && (draft.baseMode === "channel" ? draft.channel !== "" : draft.digest !== "");
+
+/**
+ * The base a draft saves: its fields', or, for an image reference (which hides them, and doesn't use the base) whose
+ * fields are incomplete, the default, so a base picked half-way never keeps it from saving. The fields keep what was
+ * typed, for switching back.
+ */
+function templateBaseOf(draft: TemplateDraft): TemplateSpec["base"] {
+	if (draft.imageKind === "image" && !baseComplete(draft)) return { ...DEFAULT_TEMPLATE_BASE };
+	return draft.baseMode === "channel"
+		? { image: draft.baseImage, channel: draft.channel }
+		: { image: draft.baseImage, digest: draft.digest };
 }
 
 /** The image a draft saves: only the picked kind's Dockerfile or reference. */
@@ -275,10 +291,7 @@ export function templateEditorInput(draft: TemplateDraft, kept: readonly EgressG
 		description: draft.description.trim(),
 		spec: {
 			image: templateImageOf(draft),
-			base:
-				draft.baseMode === "channel"
-					? { image: draft.baseImage, channel: draft.channel }
-					: { image: draft.baseImage, digest: draft.digest },
+			base: templateBaseOf(draft),
 			vcpus: Number(draft.vcpus),
 			memoryMb: Number(draft.memory),
 			env: templateEnv(draft.variables),
