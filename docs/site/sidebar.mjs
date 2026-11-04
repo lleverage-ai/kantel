@@ -5,7 +5,7 @@
 export const sidebar = [
 	{
 		label: "Get started",
-		items: [{ label: "What Kantel is", link: "/" }, "quickstart", "own-hosts", "hosts", "concepts", "coding-agents"],
+		items: [{ label: "What Kantel is", link: "/" }, "what-works-today", "quickstart", "own-hosts", "hosts", "concepts", "coding-agents"],
 	},
 	{
 		label: "Sandboxes",
