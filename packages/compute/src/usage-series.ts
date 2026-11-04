@@ -55,6 +55,8 @@ export interface UsagePoint {
 	readonly memUsedBytes: number;
 	/** A host's; 0 for a sandbox. */
 	readonly diskUsedBytes: number;
+	/** Passed on by the gateway replica holding the host, which exports it; not taken here. */
+	readonly shared?: boolean;
 }
 
 /** What a series knows besides its points: the newest report's limits. */
@@ -65,8 +67,11 @@ export interface UsageMeta {
 	readonly diskTotalBytes?: number;
 }
 
-/** A 5-minute mean: `at` is its start. */
-export type Rollup = UsagePoint;
+/**
+ * A 5-minute mean: `at` is its start. `readings`: how many points it is the mean of. `local`: whether any was taken
+ * here rather than passed on (`UsagePoint.shared`), so this replica may keep it.
+ */
+export type Rollup = Omit<UsagePoint, "shared"> & { readonly readings: number; readonly local: boolean };
 
 export interface UsageSeries {
 	/**
@@ -94,6 +99,8 @@ export interface UsageSeries {
 interface Bucket {
 	from: number;
 	count: number;
+	/** Of `count`, the points taken here. */
+	local: number;
 	cpu: number;
 	mem: number;
 	disk: number;
@@ -116,6 +123,8 @@ const mean = (bucket: Bucket): Rollup => ({
 	cpu: clamp01(bucket.cpu / bucket.count),
 	memUsedBytes: bytes(bucket.mem / bucket.count),
 	diskUsedBytes: bytes(bucket.disk / bucket.count),
+	readings: bucket.count,
+	local: bucket.local > 0,
 });
 
 /** An in-memory usage series, keyed by sandbox or host ID. */
@@ -164,6 +173,7 @@ export function createUsageSeries(): UsageSeries {
 				cpu: clamp01(point.cpu),
 				memUsedBytes: bytes(point.memUsedBytes),
 				diskUsedBytes: bytes(point.diskUsedBytes),
+				...(point.shared === true ? { shared: true } : {}),
 			};
 			track.meta = meta;
 			track.points.push(clean);
@@ -175,8 +185,9 @@ export function createUsageSeries(): UsageSeries {
 			// one mean per 5 minutes.
 			const lastRollup = track.rollups[track.rollups.length - 1];
 			if (track.bucket === undefined && lastRollup !== undefined && lastRollup.at >= from) return closed;
-			track.bucket ??= { from, count: 0, cpu: 0, mem: 0, disk: 0 };
+			track.bucket ??= { from, count: 0, local: 0, cpu: 0, mem: 0, disk: 0 };
 			track.bucket.count += 1;
+			if (clean.shared !== true) track.bucket.local += 1;
 			track.bucket.cpu += clean.cpu;
 			track.bucket.mem += clean.memUsedBytes;
 			track.bucket.disk += clean.diskUsedBytes;

@@ -78,7 +78,14 @@ describe("a usage series", () => {
 		const start = ROLLUP_MS * 1000;
 		expect(series.add("s", point(start, 0.2, 100), { intervalMs: 5000 })).toBeUndefined();
 		expect(series.add("s", point(start + 5000, 0.4, 300), { intervalMs: 5000 })).toBeUndefined();
-		expect(series.partial("s")).toEqual({ at: start, cpu: 0.30000000000000004, memUsedBytes: 200, diskUsedBytes: 0 });
+		expect(series.partial("s")).toEqual({
+			at: start,
+			cpu: 0.30000000000000004,
+			memUsedBytes: 200,
+			diskUsedBytes: 0,
+			readings: 2,
+			local: true,
+		});
 		const closed = series.add("s", point(start + ROLLUP_MS, 1, 1000), { intervalMs: 5000 });
 		expect(closed).toMatchObject({ at: start, memUsedBytes: 200 });
 		expect(closed?.cpu).toBeCloseTo(0.3);
@@ -94,14 +101,26 @@ describe("a usage series", () => {
 		const start = ROLLUP_MS * 1000;
 		series.add("s", point(start), { intervalMs: 5000 });
 		expect(series.settle(start + ROLLUP_MS)).toEqual([]);
-		expect(series.settle(start + ROLLUP_MS + 10_000)).toEqual([{ key: "s", rollup: point(start) }]);
+		const mean = { ...point(start), readings: 1, local: true };
+		expect(series.settle(start + ROLLUP_MS + 10_000)).toEqual([{ key: "s", rollup: mean }]);
 		expect(series.keys()).toEqual(["s"]);
 		// A point late for the closed 5 minutes is kept, but makes no second mean for them.
 		series.add("s", point(start + 20_000, 1), { intervalMs: 5000 });
 		expect(series.read("s").points).toHaveLength(2);
-		expect(series.rollups("s")).toEqual([point(start)]);
+		expect(series.rollups("s")).toEqual([mean]);
 		series.settle(start + ROLLUP_MS * (ROLLUP_POINTS + 2));
 		expect(series.keys()).toEqual([]);
+	});
+
+	it("says whether a mean has a point taken here, not only ones another replica passed on", () => {
+		const series = createUsageSeries();
+		const start = ROLLUP_MS * 1000;
+		series.add("passed", { ...point(start), shared: true }, { intervalMs: 5000 });
+		series.add("mixed", { ...point(start), shared: true }, { intervalMs: 5000 });
+		series.add("mixed", point(start + 5000), { intervalMs: 5000 });
+		expect(series.partial("passed")).toMatchObject({ readings: 1, local: false });
+		expect(series.partial("mixed")).toMatchObject({ readings: 2, local: true });
+		expect(series.read("mixed").points.map((each) => each.shared === true)).toEqual([true, false]);
 	});
 });
 
@@ -344,7 +363,9 @@ describe("a host's usage ticks, when things happen in between", () => {
 				T0,
 				T0 + USAGE_INTERVAL_MS,
 			]);
-			expect((await api.store.sandboxes.get(id))?.samples).toEqual([{ at: T0 - ROLLUP_MS, cpu: 0.1, memoryMb: 1 }]);
+			expect((await api.store.sandboxes.get(id))?.samples).toEqual([
+				{ at: T0 - ROLLUP_MS, cpu: 0.1, memoryMb: 1, readings: 1 },
+			]);
 		}
 	});
 
@@ -415,11 +436,145 @@ describe("a host's usage ticks, when things happen in between", () => {
 	});
 });
 
+describe("usage ticks across gateway replicas over one store", () => {
+	const T0 = Date.UTC(2026, 10, 4, 13, 0, 0);
+	const reading = (id: string, cpu: number) => ({
+		id,
+		kind: "isolate" as const,
+		cpu,
+		memUsedBytes: MIB,
+		memLimitBytes: 0,
+	});
+
+	/** Replicas A and B over one store, and a sandbox on the stub's host made through A. */
+	async function replicas(clock: () => number) {
+		const store = createMemoryStore();
+		const a = setup(hostless(clock).backend, clock, store);
+		const b = setup(hostless(clock).backend, clock, store);
+		const box = await a.tom.createSandbox({ wait: true });
+		return { a: a.api, b: b.api, tom: a.tom, store, id: box.id };
+	}
+
+	it("export each point once when the host moves replica before either exports", async () => {
+		let clock = T0 + 1000;
+		const { a, b, id } = await replicas(() => clock);
+		const t1 = clock;
+		await a.service.recordUsage(STUB_HOST_ID, tick(t1, [reading(id, 0.2)]));
+		await b.service.recordUsage(STUB_HOST_ID, tick(t1, [reading(id, 0.2)]), { shared: true });
+		// The host reconnects to B, which takes t2 and passes it on to A.
+		clock += USAGE_INTERVAL_MS;
+		const t2 = clock;
+		await b.service.recordUsage(STUB_HOST_ID, tick(t2, [reading(id, 0.3)]));
+		await a.service.recordUsage(STUB_HOST_ID, tick(t2, [reading(id, 0.3)]), { shared: true });
+		const fromA = (await a.service.sampleUsage()).map((each) => each.at);
+		const fromB = (await b.service.sampleUsage()).map((each) => each.at);
+		expect(fromA).toEqual([t1]);
+		expect(fromB).toEqual([t2]);
+	});
+
+	it("keep the mean of the replica that saw the whole 5 minutes, not one that joined late", async () => {
+		let clock = T0;
+		const { a, b, store, id } = await replicas(() => clock);
+		const ticks = ROLLUP_MS / USAGE_INTERVAL_MS;
+		for (let index = 0; index < ticks; index += 1) {
+			clock = T0 + index * USAGE_INTERVAL_MS;
+			const sent = tick(clock, [reading(id, index < ticks - 1 ? 0.1 : 0.9)]);
+			await a.service.recordUsage(STUB_HOST_ID, sent);
+			// B starts for the last tick only.
+			if (index === ticks - 1) await b.service.recordUsage(STUB_HOST_ID, sent, { shared: true });
+		}
+		// The next 5 minutes begin: B, passed on everything it has, closes its first, and keeps nothing.
+		clock = T0 + ROLLUP_MS;
+		const next = tick(clock, [reading(id, 0.5)]);
+		await b.service.recordUsage(STUB_HOST_ID, next, { shared: true });
+		expect((await store.sandboxes.get(id))?.samples).toEqual([]);
+		await a.service.recordUsage(STUB_HOST_ID, next);
+		const [kept] = (await store.sandboxes.get(id))?.samples ?? [];
+		expect(kept?.readings).toBe(ticks);
+		expect(kept?.cpu).toBeCloseTo((0.1 * (ticks - 1) + 0.9) / ticks, 10);
+		// Settling a 5 minutes passed on only keeps nothing either.
+		clock = T0 + 3 * ROLLUP_MS;
+		await b.service.sampleUsage();
+		expect((await store.sandboxes.get(id))?.samples.map((each) => each.at)).toEqual([T0]);
+	});
+
+	it("keep the fuller mean when a host moves part way through 5 minutes, whichever writes first", async () => {
+		let clock = T0;
+		const { a, b, store, id } = await replicas(() => clock);
+		const ticks = ROLLUP_MS / USAGE_INTERVAL_MS;
+		for (let index = 0; index < ticks; index += 1) {
+			clock = T0 + index * USAGE_INTERVAL_MS;
+			const sent = tick(clock, [reading(id, index < ticks / 2 ? 0.2 : 0.6)]);
+			// A holds the host for the first half and passes it on; then B, just started, holds it and passes it to A.
+			if (index < ticks / 2) {
+				await a.service.recordUsage(STUB_HOST_ID, sent);
+			} else {
+				await b.service.recordUsage(STUB_HOST_ID, sent);
+				await a.service.recordUsage(STUB_HOST_ID, sent, { shared: true });
+			}
+		}
+		clock = T0 + ROLLUP_MS;
+		const next = tick(clock, [reading(id, 0.5)]);
+		await b.service.recordUsage(STUB_HOST_ID, next);
+		expect((await store.sandboxes.get(id))?.samples[0]?.readings).toBe(ticks / 2);
+		await a.service.recordUsage(STUB_HOST_ID, next, { shared: true });
+		const samples = (await store.sandboxes.get(id))?.samples ?? [];
+		expect(samples).toHaveLength(1);
+		expect(samples[0]?.readings).toBe(ticks);
+		expect(samples[0]?.cpu).toBeCloseTo(0.4, 10);
+	});
+});
+
+describe("the stub's replay", () => {
+	it("is waited for by an export that comes while it is part way through, and a live host's tick doesn't settle it", async () => {
+		const T0 = Date.UTC(2026, 10, 4, 14, 0, 0);
+		let clock = T0;
+		const base = createMemoryStore();
+		let hold: { held: () => void; release: Promise<void> } | undefined;
+		const store: ComputeStore = {
+			...base,
+			sandboxes: {
+				...base.sandboxes,
+				update: async (id, change) => {
+					const once = hold;
+					hold = undefined;
+					if (once !== undefined) {
+						once.held();
+						await once.release;
+					}
+					return base.sandboxes.update(id, change);
+				},
+			},
+		};
+		const { api, tom } = setup(createStubBackend({ now: () => clock }), () => clock, store);
+		const box = await tom.createSandbox({ wait: true });
+		let release: () => void = () => undefined;
+		const held = new Promise<void>((resolve) => {
+			hold = { held: resolve, release: new Promise<void>((done) => (release = done)) };
+		});
+		// 12 minutes on: the replay closes its first 5 minutes at the second's first tick, and that write is held.
+		clock = T0 + 12 * 60_000;
+		const read = tom.getSandbox(box.id);
+		await held;
+		// Another host's tick, which settles now and then.
+		await api.service.recordUsage("host_other", tick(clock, []));
+		const exported = api.service.sampleUsage();
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		release();
+		await Promise.all([read, exported]);
+		const samples = (await api.store.sandboxes.get(box.id))?.samples ?? [];
+		expect(samples.map((sample) => [sample.at, sample.readings])).toEqual([
+			[T0, ROLLUP_MS / USAGE_INTERVAL_MS],
+			[T0 + ROLLUP_MS, ROLLUP_MS / USAGE_INTERVAL_MS],
+		]);
+	});
+});
+
 describe("spanMean", () => {
 	it("weights 5-minute means by their overlap, and an older single reading as a minute", () => {
 		const samples = [
-			{ at: 0, cpu: 0.2, memoryMb: 100 },
-			{ at: ROLLUP_MS, cpu: 0.6, memoryMb: 300 },
+			{ at: 0, cpu: 0.2, memoryMb: 100, readings: 60 },
+			{ at: ROLLUP_MS, cpu: 0.6, memoryMb: 300, readings: 60 },
 		];
 		expect(spanMean(samples, 0, ROLLUP_MS)).toEqual({ cpu: 0.2, memoryMb: 100 });
 		const straddling = spanMean(samples, ROLLUP_MS / 2, ROLLUP_MS + ROLLUP_MS / 2);
@@ -427,6 +582,10 @@ describe("spanMean", () => {
 		expect(straddling.memoryMb).toBeCloseTo(200);
 		expect(spanMean([{ at: 12_345, cpu: 0.7, memoryMb: 9 }], 0, ROLLUP_MS)).toEqual({ cpu: 0.7, memoryMb: 9 });
 		expect(spanMean([{ at: 12_345, cpu: 0.7, memoryMb: 9 }], 20_000, ROLLUP_MS)).toEqual({ cpu: 0, memoryMb: 0 });
+		// A single reading taken on a 5-minute boundary is still a single reading: it counts only where it falls.
+		const onBoundary = [{ at: ROLLUP_MS, cpu: 0.7, memoryMb: 9 }];
+		expect(spanMean(onBoundary, ROLLUP_MS + 60_000, 2 * ROLLUP_MS)).toEqual({ cpu: 0, memoryMb: 0 });
+		expect(spanMean(onBoundary, ROLLUP_MS, ROLLUP_MS + 60_000)).toEqual({ cpu: 0.7, memoryMb: 9 });
 	});
 });
 

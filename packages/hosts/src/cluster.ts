@@ -370,6 +370,9 @@ export interface HostCluster {
 	shareUsage(hostId: string, usage: unknown): void;
 }
 
+/** The usage ticks waiting for one peer at most: a minute of 12 hosts' 5-second ticks. */
+export const MAX_USAGE_QUEUE = 144;
+
 const NOT_CONNECTED = (hostId: string) =>
 	new HostCallError({ code: "unavailable", message: `Host ${hostId} is not connected` });
 
@@ -462,6 +465,26 @@ export function createHostCluster(options: HostClusterOptions): HostCluster {
 		void work.catch((error) => log(`[cluster] ${what}: ${error instanceof Error ? error.message : String(error)}`));
 	};
 
+	/**
+	 * Usage ticks waiting to go to each peer, oldest first. One goes at a time, so a peer takes a host's ticks in the order
+	 * they came (a series keeps only newer points); past `MAX_USAGE_QUEUE` the oldest is dropped.
+	 */
+	const usageQueues = new Map<string, { hostId: string; usage: unknown }[]>();
+	const drainUsage = async (peer: ReplicaRecord, queue: { hostId: string; usage: unknown }[]) => {
+		const send = transport.usage;
+		try {
+			for (let next = queue.shift(); next !== undefined && send !== undefined; next = queue.shift()) {
+				await send(peer, next.hostId, next.usage).catch((error) =>
+					log(
+						`[cluster] sharing host ${next?.hostId}'s usage: ${error instanceof Error ? error.message : String(error)}`,
+					),
+				);
+			}
+		} finally {
+			if (usageQueues.get(peer.id) === queue) usageQueues.delete(peer.id);
+		}
+	};
+
 	return {
 		replicaId,
 		route(local) {
@@ -519,7 +542,17 @@ export function createHostCluster(options: HostClusterOptions): HostCluster {
 		shareUsage(hostId, usage) {
 			const send = transport.usage;
 			if (send === undefined || stopped) return;
-			for (const peer of peers) safely(`sharing host ${hostId}'s usage`, send(peer, hostId, usage));
+			for (const peer of peers) {
+				const queue = usageQueues.get(peer.id);
+				if (queue !== undefined) {
+					queue.push({ hostId, usage });
+					if (queue.length > MAX_USAGE_QUEUE) queue.shift();
+					continue;
+				}
+				const fresh = [{ hostId, usage }];
+				usageQueues.set(peer.id, fresh);
+				void drainUsage(peer, fresh);
+			}
 		},
 		async stop() {
 			stopped = true;
