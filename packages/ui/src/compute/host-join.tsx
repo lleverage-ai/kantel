@@ -4,12 +4,13 @@
 // follow it: a warning says so and, for a super-admin, takes the address hosts should use instead, then makes the
 // command again with it.
 
-import { useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { Disclosure, TextField } from "../primitives/controls.tsx";
 import { useLoad } from "../primitives/load.ts";
 import { CommandBlock } from "../primitives/one-time-secret.tsx";
-import { Skeleton, Spinner } from "../primitives/spinner.tsx";
+import { Skeleton } from "../primitives/spinner.tsx";
+import { StatusLabel } from "../primitives/status.tsx";
 import { Notice } from "../primitives/surface.tsx";
 import { expiresText, type Host, type HostJoin, type HostsSource, type PublicUrl } from "./compute-model.ts";
 import { messageOf } from "./parts.tsx";
@@ -29,6 +30,13 @@ export interface HostJoinCommandProps {
 	readonly onJoined?: (host: Host) => void;
 	/** Stops reading the hosts, for a story whose fixtures never change. */
 	readonly poll?: boolean;
+	/**
+	 * Under the command and what the machine needs, and folded with them while hosts can't reach the console: the wait
+	 * for the host, which only means something once the command can be run.
+	 */
+	readonly after?: ReactNode;
+	/** Whether hosts can't reach the console, so the address is the step's first job: told as it changes. */
+	readonly onBlocked?: (blocked: boolean) => void;
 }
 
 /** `http://127.0.0.1:58090` alone, or an origin: what the public URL field accepts. */
@@ -40,7 +48,15 @@ export function looksLikeOrigin(text: string): boolean {
  * The join command, the loopback warning when it needs one, what the machine needs, and the wait for it. Makes a
  * new command whenever `input` changes or the public URL is set.
  */
-export function HostJoinCommand({ source, input, now: fixedNow, onJoined, poll = true }: HostJoinCommandProps) {
+export function HostJoinCommand({
+	source,
+	input,
+	now: fixedNow,
+	onJoined,
+	poll = true,
+	after,
+	onBlocked,
+}: HostJoinCommandProps) {
 	const [made, setMade] = useState<{ readonly join?: HostJoin; readonly error?: string }>({});
 	const [generation, setGeneration] = useState(0);
 	const inputKey = JSON.stringify(input ?? {});
@@ -84,6 +100,7 @@ export function HostJoinCommand({ source, input, now: fixedNow, onJoined, poll =
 	// While other machines can't reach the console, the command works only on this machine: say so before it, with the
 	// field that fixes it, so the address is set before the command is copied.
 	const unreachable = url?.loopback === true && source.publicUrl !== undefined;
+	useEffect(() => onBlocked?.(unreachable), [onBlocked, unreachable]);
 	const command =
 		baseline.error !== undefined && baseline.known === undefined ? (
 			<Notice level="error">{baseline.error}</Notice>
@@ -130,28 +147,30 @@ export function HostJoinCommand({ source, input, now: fixedNow, onJoined, poll =
 			{/* While other machines can't reach the console, the address is the one thing to do: the command, which works on
 			    this machine only, waits behind a fold rather than inviting a copy that fails on the host. */}
 			{unreachable ? (
-				<Disclosure summary="Add a host on this machine instead">
+				<Disclosure summary="Run it on this machine instead">
 					<div className="flex min-w-0 flex-col gap-3">
 						{command}
 						{requirements}
+						{after}
 					</div>
 				</Disclosure>
 			) : (
 				<>
 					{command}
 					{requirements}
+					{after}
 				</>
 			)}
 		</div>
 	);
 }
 
-/** "Waiting for the host", while the wait runs: a spinner and the words, announced politely. */
+/** "Waiting for the host", while the wait runs: a breathing dot and the words, announced politely. */
 export function JoinWaiting() {
 	return (
-		<span className="kt-host-join-waiting flex items-center gap-2 text-sm text-muted" role="status">
-			<Spinner size="sm" />
-			Waiting for the host
+		// The list's "Starting": a breathing dot and the words, so it reads as something under way, not an empty radio.
+		<span className="kt-host-join-waiting text-sm" role="status">
+			<StatusLabel status="working">Waiting for the host</StatusLabel>
 		</span>
 	);
 }
@@ -269,7 +288,7 @@ function LoopbackWarning({ url, onSave }: { url: PublicUrl; onSave: (url: string
 					an address hosts can reach, and the install command will use it.
 				</span>
 				<form
-					className="flex min-w-0 items-start gap-2 max-sm:flex-col max-sm:items-stretch"
+					className="flex min-w-0 items-end gap-2 max-sm:flex-col max-sm:items-stretch"
 					onSubmit={(event) => {
 						event.preventDefault();
 						save();
@@ -278,7 +297,6 @@ function LoopbackWarning({ url, onSave }: { url: PublicUrl; onSave: (url: string
 					<TextField
 						className="min-w-0 flex-1"
 						label="Public URL"
-						hideLabel
 						type="url"
 						inputMode="url"
 						placeholder="https://kantel.example.com"
@@ -289,14 +307,7 @@ function LoopbackWarning({ url, onSave }: { url: PublicUrl; onSave: (url: string
 						autoCapitalize="off"
 						{...(error === undefined ? {} : { error })}
 					/>
-					<Button
-						type="submit"
-						// The page's one action once an address is written; quiet while there's nothing to save.
-						variant={text.trim() === "" ? "secondary" : "primary"}
-						size="md"
-						busy={busy}
-						disabled={text.trim() === ""}
-					>
+					<Button type="submit" variant="primary" size="md" busy={busy}>
 						Save
 					</Button>
 				</form>
