@@ -69,7 +69,7 @@ Add `--inject-guest-agent` to the host's join command, or set `injectGuestAgent`
 }
 ```
 
-The installer fetches the agent (`kantel-guest-amd64` or `kantel-guest-arm64`) with the other images; `guestAgent` names another one. Running the installer again (an upgrade, say) keeps a `sandboxImage` or `guestAgent` of your own and fetches only the files it put there itself. The host builds its initramfs from the agent and makes its templates again when the agent changes. A host runs one image, so to offer several, run a host per image and choose between them with [labels](/hosts/).
+The installer fetches the agent (`kantel-guest-amd64` or `kantel-guest-arm64`) with the other images; `guestAgent` names another one. Running the installer again (an upgrade, say) keeps a `sandboxImage` or `guestAgent` of your own and fetches only the files it put there itself. Those are `images/sandbox.ext4` and `images/kantel-guest` under the host's root, so give your own files any other name; the installer stops with an error rather than treat one of yours as its own. The host builds its initramfs from the agent and makes its templates again when the agent changes. A host runs one image, so to offer several, run a host per image and choose between them with [labels](/hosts/).
 
 ## What a sandbox says its image has
 

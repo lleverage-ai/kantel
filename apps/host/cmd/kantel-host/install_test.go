@@ -10,6 +10,34 @@ import (
 	"github.com/lleverage-ai/kantel/apps/host/internal/agent"
 )
 
+// Successive installs, the root moving between them, keep the operator's files every time; one that would end up at
+// the installer's own path under the new root is refused rather than taken for the installer's on the next run.
+func TestKeptFilesAcrossInstalls(t *testing.T) {
+	cfg := agent.Config{Root: "/opt/kh", SandboxImage: "/srv/debian.sqfs", GuestAgent: "/srv/kantel-guest"}
+	cfg.Defaults()
+	for _, root := range []string{"/var/lib/kantel-host", "/var/lib/kantel-host", "/opt/kh"} {
+		image, agentBin, keep, err := keptFiles(cfg, root)
+		if err != nil || image != "/srv/debian.sqfs" || agentBin != "/srv/kantel-guest" || !keep.image || !keep.agent {
+			t.Fatalf("to %s: %q %q %+v %v", root, image, agentBin, keep, err)
+		}
+		// What install saves, and the next run loads.
+		cfg = agent.Config{Root: root, SandboxImage: image, GuestAgent: agentBin}
+		cfg.Defaults()
+	}
+	// The installer's own files, followed to the new root, never kept.
+	managed := agent.Config{Root: "/opt/kh"}
+	managed.Defaults()
+	if image, agentBin, keep, err := keptFiles(managed, "/var/lib/kantel-host"); err != nil || image != "" || agentBin != "" || keep.image || keep.agent {
+		t.Errorf("managed: %q %q %+v %v", image, agentBin, keep, err)
+	}
+	// An operator's image at what is the installer's own path under the new root.
+	clash := agent.Config{Root: "/opt/kh", SandboxImage: "/var/lib/kantel-host/images/sandbox.ext4"}
+	clash.Defaults()
+	if _, _, _, err := keptFiles(clash, "/var/lib/kantel-host"); err == nil || !strings.Contains(err.Error(), "sandboxImage") {
+		t.Errorf("a clash: %v", err)
+	}
+}
+
 // fetchImages fetches none of the operator's own files, even one at the very path the installer would use, and
 // still fetches its own.
 func TestFetchImagesLeavesKeptFilesAlone(t *testing.T) {

@@ -100,9 +100,11 @@ func install(args []string) error {
 	cfg.ControlPlane = *controlPlane
 	// The installer's own files go back to where it puts them, under the new root; an operator's own sandbox image or
 	// guest agent (a custom image, see docs/sandboxes/custom-images) is kept, and fetchImages leaves it alone. Which
-	// is which is decided here alone, by the root the settings were loaded with.
-	image, agentBin := custom(cfg.Root, cfg.SandboxImage, "sandbox.ext4"), custom(cfg.Root, cfg.GuestAgent, "kantel-guest")
-	keep := kept{image: image != "", agent: agentBin != ""}
+	// is which is decided here alone (keptFiles).
+	image, agentBin, keep, err := keptFiles(cfg, *root)
+	if err != nil {
+		return err
+	}
 	cfg.Root = *root
 	if *name != "" {
 		cfg.Name = *name
@@ -361,9 +363,22 @@ func custom(root, configured, name string) string {
 	return configured
 }
 
-// kept is which of the operator's own files install keeps (custom): fetchImages fetches none of them, wherever they
-// are, even at the path the installer would use.
+// kept is which of the operator's own files install keeps (custom): fetchImages fetches none of them.
 type kept struct{ image, agent bool }
+
+// keptFiles is the operator's own sandbox image and guest agent in loaded (settings read with their root), which an
+// install to newRoot keeps. Who owns a file is where it is: the installer owns <root>/images/sandbox.ext4 and
+// <root>/images/kantel-guest, and nothing else. So an operator's file can't be kept at one of those under newRoot,
+// where the next run would take it for the installer's: that's an error, not a guess.
+func keptFiles(loaded agent.Config, newRoot string) (image, agentBin string, keep kept, err error) {
+	image, agentBin = custom(loaded.Root, loaded.SandboxImage, "sandbox.ext4"), custom(loaded.Root, loaded.GuestAgent, "kantel-guest")
+	for _, own := range []struct{ path, name, setting string }{{image, "sandbox.ext4", "sandboxImage"}, {agentBin, "kantel-guest", "guestAgent"}} {
+		if own.path != "" && custom(newRoot, own.path, own.name) == "" {
+			return "", "", kept{}, fmt.Errorf("%s %s is the installer's own path for its %s under --root %s: move your file elsewhere (any other name will do) and set %s to it", own.setting, own.path, own.name, newRoot, own.setting)
+		}
+	}
+	return image, agentBin, kept{image: image != "", agent: agentBin != ""}, nil
+}
 
 func fetchImages(cfg agent.Config, source string, kvm bool, keep kept) error {
 	arch := archName()
