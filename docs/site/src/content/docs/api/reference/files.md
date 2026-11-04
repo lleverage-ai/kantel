@@ -110,7 +110,7 @@ A key needs `files`.
 
 `POST /v1/sandboxes/{sandboxId}/files/upload-url` (SDK method `createUploadUrl`)
 
-A short-lived URL the sandbox's host serves: `PUT` the file to it as the raw request body, of any size, with no `Authorization` header. Missing directories are made, and a file already there is replaced only once the upload is complete. The URL is bound to this sandbox and path, and expires after `ttlSeconds`. A path in a read-only mount is refused (`conflict`). The sandbox must be running when the URL is used. Treat it as a secret. A key needs `files`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).
+A short-lived URL on the API, streamed straight to the sandbox's host: `PUT` the file to it as the raw request body, of any size, with no `Authorization` header; the answer is `{ path, size }`. Missing directories are made, and a file already there is replaced only once the upload is complete. The URL is bound to this sandbox and path, and expires after `ttlSeconds`. A path in a read-only mount is refused (`conflict`). The sandbox must be running when the URL is used. Treat it as a secret. A key needs `files`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).
 
 **Path parameters**
 
@@ -130,7 +130,7 @@ A short-lived URL the sandbox's host serves: `PUT` the file to it as the raw req
 
 `POST /v1/sandboxes/{sandboxId}/files/download-url` (SDK method `createDownloadUrl`)
 
-A short-lived URL the sandbox's host serves: `GET` it, with no `Authorization` header, for the file's bytes as they are when it is fetched, streamed whatever its size. The URL is bound to this sandbox and path, and expires after `ttlSeconds`. The sandbox must be running when the URL is used. Treat it as a secret. A key needs `files`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).
+A short-lived URL on the API, streamed straight from the sandbox's host: `GET` it, with no `Authorization` header, for the file's bytes as they are when it is fetched, whatever its size (`HEAD` for its size alone). The URL is bound to this sandbox and path, and expires after `ttlSeconds`. The sandbox must be running when the URL is used. Treat it as a secret. A key needs `files`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).
 
 **Path parameters**
 

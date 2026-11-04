@@ -847,7 +847,7 @@ export const FileUrl = Type.Object(
 	{
 		title: "FileUrl",
 		description:
-			"A short-lived URL for one file of one sandbox, served from the sandbox's host and streamed, so a file of any " +
+			"A short-lived URL for one file of one sandbox, streamed to or from the sandbox's host, so a file of any " +
 			"size moves without base64.",
 	},
 );

@@ -675,8 +675,8 @@ export const createUploadUrl = defineRoute({
 	tag: "files",
 	summary: "Get an upload URL for a file",
 	description: describe(
-		"A short-lived URL the sandbox's host serves: `PUT` the file to it as the raw request body, of any size, with no",
-		"`Authorization` header. Missing directories are made, and a file already there is replaced only once the upload",
+		"A short-lived URL on the API, streamed straight to the sandbox's host: `PUT` the file to it as the raw request",
+		"body, of any size, with no `Authorization` header; the answer is `{ path, size }`. Missing directories are made, and a file already there is replaced only once the upload",
 		"is complete. The URL is bound to this sandbox and path, and expires after `ttlSeconds`. A path in a read-only",
 		"mount is refused (`conflict`). The sandbox must be running when the URL is used. Treat it as a secret.",
 		scope("files"),
@@ -695,8 +695,8 @@ export const createDownloadUrl = defineRoute({
 	tag: "files",
 	summary: "Get a download URL for a file",
 	description: describe(
-		"A short-lived URL the sandbox's host serves: `GET` it, with no `Authorization` header, for the file's bytes as",
-		"they are when it is fetched, streamed whatever its size. The URL is bound to this sandbox and path, and expires",
+		"A short-lived URL on the API, streamed straight from the sandbox's host: `GET` it, with no `Authorization`",
+		"header, for the file's bytes as they are when it is fetched, whatever its size (`HEAD` for its size alone). The URL is bound to this sandbox and path, and expires",
 		"after `ttlSeconds`. The sandbox must be running when the URL is used. Treat it as a secret.",
 		scope("files"),
 		MOUNTS,

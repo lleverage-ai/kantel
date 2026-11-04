@@ -215,5 +215,8 @@ export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 		environments: sqlCollection(driver, "environments"),
 		egress: sqlCollection(driver, "egress"),
 		e2eChain: sqlCollection(driver, "e2eChain"),
+		bundles: sqlCollection(driver, "bundles"),
+		bucketSources: sqlCollection(driver, "bucketSources"),
+		fileUrls: sqlCollection(driver, "fileUrls"),
 	};
 }

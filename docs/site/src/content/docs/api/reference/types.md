@@ -698,7 +698,7 @@ One of: `"utf8"` or `"base64"`.
 
 ### FileUrl
 
-A short-lived URL for one file of one sandbox, served from the sandbox's host and streamed, so a file of any size moves without base64.
+A short-lived URL for one file of one sandbox, streamed to or from the sandbox's host, so a file of any size moves without base64.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |

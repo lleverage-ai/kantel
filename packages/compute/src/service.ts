@@ -18,7 +18,7 @@
  * swap in on requests to the variable's bindings.
  */
 import { computeSchema, type PublicComputeRoutes, type RouteHandlers, type SignedInComputeRoutes } from "@kantel/api";
-import { KantelError, MOUNTS_OFF } from "@kantel/contracts";
+import { KantelError, MOUNTS_OFF, mountCovering, mountsTouching } from "@kantel/contracts";
 import type { ChainEntry } from "@kantel/e2e/chain";
 import {
 	type Acting,
@@ -48,6 +48,14 @@ import type {
 } from "./backend.ts";
 import { createE2EChains } from "./e2e.ts";
 import type { MountsOptions, ResolvedBucketSource, StoredBlob } from "./mounts.ts";
+import {
+	backendMounts,
+	createMounts,
+	type MountHandlers,
+	mountsAfter,
+	pendingMounts,
+	reportMountStatuses,
+} from "./mounts-service.ts";
 import { createEphemeralSealer, createSealer, type SealedValue, type Sealer, sealedAt } from "./secrets.ts";
 import type {
 	ComputeStore,
@@ -293,6 +301,26 @@ export interface ComputeService {
 async function mountsOff(): Promise<never> {
 	throw new KantelError("not_supported", MOUNTS_OFF);
 }
+
+/** Refuses a write into one of the sandbox's mounts, which are read-only. */
+function refuseInMount(sandbox: StoredSandbox, path: string): void {
+	const mount = mountCovering(sandbox.mounts, path);
+	if (mount !== undefined) throw new KantelError("conflict", `${path} is in the read-only mount at ${mount.path}`);
+}
+
+const MOUNTS_OFF_HANDLERS: MountHandlers = {
+	createUploadUrl: mountsOff,
+	createDownloadUrl: mountsOff,
+	extractArchive: mountsOff,
+	uploadBundle: mountsOff,
+	listBundles: mountsOff,
+	getBundle: mountsOff,
+	deleteBundle: mountsOff,
+	createBucketSource: mountsOff,
+	listBucketSources: mountsOff,
+	getBucketSource: mountsOff,
+	deleteBucketSource: mountsOff,
+};
 
 /** A port's URL as a sandbox's record keeps it: without its token, which only the answer to exposing it shows. */
 function withoutPortToken(url: string): string {
@@ -1039,6 +1067,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			createdAt: sandbox.createdAt,
 			startedAt: sandbox.startedAt,
 			stoppedAt: sandbox.stoppedAt,
+			...(sandbox.mounts === undefined
+				? {}
+				: { mounts: sandbox.mounts.map((mount) => ({ ...mount, source: { ...mount.source } })) }),
 			cost: { currency: rates.currency, total: round((seconds / 3600) * rate), ratePerHour: rate },
 			usage: {
 				runningSeconds: round(seconds),
@@ -1738,6 +1769,30 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return sandbox;
 	}
 
+	/** Mounts, bundles, bucket sources, file URLs and archives, when the deployment turned them on. */
+	const mounts =
+		options.mounts === undefined
+			? undefined
+			: createMounts({
+					store,
+					backend,
+					options: options.mounts,
+					now,
+					sealer: () => {
+						if (sealer === undefined) {
+							throw new KantelError(
+								"not_supported",
+								"Bucket sources' credentials need the deployment's secrets key: set KANTEL_SECRETS_KEY",
+							);
+						}
+						return sealer;
+					},
+					publicUrl: (request) => (options.publicUrl ?? new URL(request.url).origin).replace(/\/+$/, ""),
+					sandboxFor,
+					requireRunning,
+					hosts: () => ensureHosts(),
+				});
+
 	async function requireCapacity(accountId: string, adding: number): Promise<void> {
 		if (limits.concurrentSandboxes === undefined) return;
 		const active = (await store.sandboxes.list({ accountId })).filter(
@@ -1829,6 +1884,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				resources: placement.resources ?? sandbox.resources,
 				capabilities: placement.capabilities,
 				health: "ok",
+				...(sandbox.mounts === undefined ? {} : { mounts: mountsAfter(sandbox.mounts, placement.mounts) }),
 				...(applied === undefined || (sandbox.egressApplied ?? Number.NEGATIVE_INFINITY) >= applied
 					? {}
 					: { egressApplied: applied }),
@@ -2685,6 +2741,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return once(principal, "createSandbox", idempotencyKey, async () => {
 				const from = body.from === undefined ? undefined : await snapshotFrom(principal, account.id, body.from);
 				const type = body.type ?? from?.sandboxType ?? "isolate";
+				if (body.mounts !== undefined && body.mounts.length > 0 && mounts === undefined) {
+					throw new KantelError("not_supported", MOUNTS_OFF);
+				}
+				const sandboxMounts = await mounts?.checkCreate(account.id, type, body.mounts);
 				const environment =
 					body.environment === undefined ? undefined : await environmentIn(account.id, body.environment);
 				// Its repositories are cloned with a command that runs with the env this call chooses (a shell reads functions
@@ -2767,6 +2827,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					runs: [],
 					samples: [],
 					ports: [],
+					...(sandboxMounts === undefined ? {} : { mounts: sandboxMounts }),
 				};
 				// The record before its event: who may see an event is decided by its sandbox, so the event is never stored
 				// (or delivered) before the sandbox is.
@@ -2792,6 +2853,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								eligibleHosts: hosts,
 								fromSnapshot: from?.ref,
 								...egress,
+								...(sandboxMounts === undefined ? {} : { mounts: backendMounts(sandboxMounts) }),
 							}),
 						sandbox,
 						{ egressRevision },
@@ -2946,6 +3008,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						runs: [],
 						samples: [],
 						ports: [],
+						// A fork keeps its source's mounts, put in place afresh on its own machine.
+						...(current.mounts === undefined ? {} : { mounts: pendingMounts(current.mounts) }),
 					});
 				}
 				for (const fork of forks) {
@@ -2976,6 +3040,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 											env: fork.env,
 											eligibleHosts: hosts,
 											...egress,
+											...(fork.mounts === undefined ? {} : { mounts: backendMounts(fork.mounts) }),
 										},
 									],
 								);
@@ -3013,7 +3078,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// A boot's egress is read afresh, so it gets a revision of its own: an update read before (from when it last ran,
 			// say, still being retried) never equals it, and loses.
 			const began = await transition(current.id, current.state, (latest) =>
-				withState(latest, "starting", { ports: [], egressRevision: later(latest.egressRevision) }),
+				withState(latest, "starting", {
+					ports: [],
+					egressRevision: later(latest.egressRevision),
+					...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts) }),
+				}),
 			);
 			if (!("moved" in began)) throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
 			const starting = began.moved;
@@ -3026,7 +3095,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						() =>
 							bootAgain(
 								current,
-								{ fromSnapshot, env: current.env, eligibleHosts: hosts, size: current.size, ...egress },
+								{
+									fromSnapshot,
+									env: current.env,
+									eligibleHosts: hosts,
+									size: current.size,
+									...egress,
+									...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
+								},
 								(options) => backend.recover(current.id, options),
 							),
 						undefined,
@@ -3245,6 +3321,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "files");
 			await requireRunning(principal, sandbox.id);
 			const path = resolvePath(body.path);
+			refuseInMount(sandbox, path);
 			const bytes = body.encoding === "base64" ? base64ToBytes(body.content) : new TextEncoder().encode(body.content);
 			if (bytes.byteLength > MAX_FILE_BYTES) throw new KantelError("invalid", "A file written here is at most 1 MiB");
 			let mode: number | undefined;
@@ -3258,7 +3335,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		deleteFile: async (principal, { params, query }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "files");
 			await requireRunning(principal, sandbox.id);
-			await backend.deleteFile(sandbox.id, resolvePath(query.path));
+			const path = resolvePath(query.path);
+			const touching = mountsTouching(sandbox.mounts, path);
+			if (touching.length > 0) {
+				throw new KantelError("conflict", `${path} is in or over the read-only mount at ${touching[0]?.path}`);
+			}
+			await backend.deleteFile(sandbox.id, path);
 			return undefined;
 		},
 
@@ -4172,17 +4254,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		removeAccountHost: async (principal, { params }) =>
 			revokeStoredHost((await accountHostFor(principal, params.hostId, "account:admin")).host),
 
-		createUploadUrl: mountsOff,
-		createDownloadUrl: mountsOff,
-		extractArchive: mountsOff,
-		uploadBundle: mountsOff,
-		listBundles: mountsOff,
-		getBundle: mountsOff,
-		deleteBundle: mountsOff,
-		createBucketSource: mountsOff,
-		listBucketSources: mountsOff,
-		getBucketSource: mountsOff,
-		deleteBucketSource: mountsOff,
+		...(mounts?.handlers ?? MOUNTS_OFF_HANDLERS),
 	};
 
 	async function idle(): Promise<void> {
@@ -4227,6 +4299,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			withState(latest, "starting", {
 				size: body.size ?? latest.size,
 				pausedSnapshotId: how === "resume" ? latest.pausedSnapshotId : undefined,
+				...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts) }),
 				// Its egress is read afresh for the boot: a revision of its own, so an update read before (from when it last
 				// ran, still being retried) never equals it, and loses.
 				egressRevision: later(latest.egressRevision),
@@ -4245,6 +4318,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			eligibleHosts: hosts,
 			// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
 			...(await egressFor(starting.accountId, starting)),
+			...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
 		};
 		const work = track([current.id], () =>
 			boot(
@@ -4431,18 +4505,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			await idle();
 		},
 
-		async bundleForHost() {
-			return undefined;
+		async bundleForHost(hostId, sandboxId, digest) {
+			return mounts?.bundleForHost(hostId, sandboxId, digest);
 		},
 
-		async bucketSourceForHost() {
-			return undefined;
+		async bucketSourceForHost(hostId, sandboxId, bucketSourceId) {
+			return mounts?.bucketSourceForHost(hostId, sandboxId, bucketSourceId);
 		},
 
-		async reportMounts() {},
+		async reportMounts(hostId, sandboxId, statuses) {
+			// Kept even with mounts off now: a sandbox made while they were on still has them.
+			await reportMountStatuses(store, hostId, sandboxId, statuses);
+		},
 
-		async serveFileUrl() {
-			return mountsOff();
+		async serveFileUrl(token, request) {
+			return mounts === undefined ? mountsOff() : mounts.serveFileUrl(token, request);
 		},
 
 		idle,

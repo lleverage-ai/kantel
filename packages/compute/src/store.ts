@@ -266,6 +266,50 @@ export interface StoredJoinToken {
 
 export type StoredEvent = computeSchema.Event;
 
+/**
+ * A bundle an account uploaded (mounts): its ID is `<accountId>/<digest>`, so an account has a digest once. Its bytes
+ * are the bundle store's, kept once by digest for every account that uploads them.
+ */
+export interface StoredBundle {
+	readonly id: string;
+	readonly accountId: string;
+	/** `sha256:<hex>`. */
+	readonly digest: string;
+	readonly sizeBytes: number;
+	readonly createdAt: number;
+	readonly createdBy?: string;
+}
+
+/** A bucket an account's sandboxes may mount prefixes of (mounts). Its credentials are sealed, and never answered. */
+export interface StoredBucketSource {
+	readonly id: string;
+	readonly accountId: string;
+	readonly name: string;
+	readonly provider: computeSchema.BucketProvider;
+	readonly bucket: string;
+	readonly endpoint?: string;
+	readonly region?: string;
+	/** The credentials' JSON, sealed at `bucketSources:<id>:credentials`. */
+	readonly credentials?: SealedValue;
+	readonly createdAt: number;
+}
+
+/**
+ * A signed file URL (mounts): its ID is the SHA-256 hex of its token, which only its answer shows. It is for one file
+ * of one sandbox, one way, until `expiresAt`.
+ */
+export interface StoredFileUrl {
+	readonly id: string;
+	readonly sandboxId: string;
+	readonly accountId: string;
+	/** Absolute. */
+	readonly path: string;
+	/** `GET` downloads the file, `PUT` uploads it. */
+	readonly method: "GET" | "PUT";
+	readonly expiresAt: number;
+	readonly createdAt: number;
+}
+
 /** A device sign-in (`kantel login` in a browser); its ID is the SHA-256 hex of its device code. */
 export interface StoredDeviceLogin {
 	readonly id: string;
@@ -329,6 +373,10 @@ export interface ComputeStore {
 	readonly egress: Collection<StoredEgressEntry>;
 	/** Each organisation's E2E chain, an entry a record (`e2e.ts`). */
 	readonly e2eChain: Collection<StoredE2EEntry>;
+	/** Mounts' bundles, bucket sources and signed file URLs (experimental). */
+	readonly bundles: Collection<StoredBundle>;
+	readonly bucketSources: Collection<StoredBucketSource>;
+	readonly fileUrls: Collection<StoredFileUrl>;
 }
 
 /**
@@ -410,6 +458,9 @@ export function createMemoryStore(): ComputeStore {
 		environments: memoryCollection<StoredEnvironment>(environmentNameKey),
 		egress: memoryCollection(),
 		e2eChain: memoryCollection(),
+		bundles: memoryCollection(),
+		bucketSources: memoryCollection(),
+		fileUrls: memoryCollection(),
 	};
 }
 
