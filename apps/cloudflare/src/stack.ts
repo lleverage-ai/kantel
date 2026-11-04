@@ -285,6 +285,22 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 	});
 	phase("bootstrap");
 
+	// Sign-in codes and invites, both kinds, go through the one mailer and its daily cap.
+	const mail =
+		emailConfig === undefined || options.mail === undefined || otpStores === undefined
+			? undefined
+			: (() => {
+					const budget = dailyMailBudget({
+						cap: emailConfig.dailyCap,
+						counts: options.mail.counts,
+						now: () => clock.now(),
+					});
+					return {
+						budget,
+						mailer: cloudflareMailer({ binding: options.mail.binding, from: emailConfig.from, budget }),
+					};
+				})();
+
 	const compute = await createStackCompute({
 		authenticator,
 		identity,
@@ -298,14 +314,26 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		...(storage.compute === undefined ? {} : { sql: storage.compute }),
 		...(options.config.portsDomain === undefined ? {} : { portsDomain: options.config.portsDomain }),
 		...(options.config.accountHosts === undefined ? {} : { accountHosts: options.config.accountHosts }),
+		...(mail === undefined || emailConfig === undefined
+			? {}
+			: {
+					invites: {
+						send: (message) => mail.mailer.sendInvite(message),
+						consoleUrl: emailConfig.publicUrl,
+						onMailError: (error, to) =>
+							console.error(
+								`kantel: organisation invite mail to ${JSON.stringify(to)} failed:`,
+								error instanceof Error ? error.message : error,
+							),
+					},
+				}),
 		now: () => clock.now(),
 	});
 	phase("compute");
 
 	let emailSignIn: StackEmailSignIn | undefined;
-	if (emailConfig !== undefined && options.mail !== undefined && otpStores !== undefined) {
-		const budget = dailyMailBudget({ cap: emailConfig.dailyCap, counts: options.mail.counts, now: () => clock.now() });
-		const mailer = cloudflareMailer({ binding: options.mail.binding, from: emailConfig.from, budget });
+	if (emailConfig !== undefined && options.mail !== undefined && otpStores !== undefined && mail !== undefined) {
+		const { budget, mailer } = mail;
 		// One open sign-up for email codes and providers alike, so one person's sign-ins provision one space at a time.
 		const signUp = openSignUp(identity, {
 			...(storage.signUps === undefined ? {} : { records: storage.signUps }),

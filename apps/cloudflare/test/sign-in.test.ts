@@ -237,8 +237,8 @@ describe("email-code sign-in on the public origin", () => {
 		await close();
 	});
 
-	it("lets the person a compute invite was made for join with its code, and nobody else (#657)", async () => {
-		const { call, signIn, close } = await start({ KANTEL_ACCOUNT_HOSTS: "experimental" });
+	it("emails a compute invite with a link, which only the person it was made for can join with (#657)", async () => {
+		const { call, signIn, sent, close } = await start({ KANTEL_ACCOUNT_HOSTS: "experimental" });
 		const ada = await signIn("ada@example.test");
 		const ann = await signIn("ann@example.test");
 		const bob = await signIn("bob@example.test");
@@ -249,7 +249,13 @@ describe("email-code sign-in on the public origin", () => {
 			body: { email: "Ann@Example.test", role: "member" },
 		});
 		expect(invite.status).toBe(201);
-		const join = { body: { code: invite.body.code } };
+		expect(invite.body.emailed).toBe(true);
+		// Sent through the sign-in mail binding: the console's link, the code in its fragment.
+		const mail = sent.findLast((message) => message.to === "ann@example.test");
+		expect(mail?.subject).toBe("ada@example.test invited you to Acme on Kantel");
+		const link = /https:\S+/.exec(mail?.text ?? "")?.[0] ?? "";
+		expect(link).toBe(`${PUBLIC}/organisation#join=${invite.body.code}`);
+		const join = { body: { code: decodeURIComponent(new URL(link).hash.slice("#join=".length)) } };
 
 		const refused = await call(PUBLIC, "POST", "/v1/accounts/join", { token: bob, ...join });
 		expect(refused.status).toBe(403);

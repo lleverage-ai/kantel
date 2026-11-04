@@ -80,7 +80,7 @@ describe("the two themes", () => {
 
 	it("every raw colour is in a palette: tokens.css holds only formulas on them, and the fixed few", () => {
 		// The same in both themes: white on a solid colour, the scrim over an image, the mark's orange, and Google's "G"
-		// in the four colours its branding guidelines require.
+		// in the four colours its branding requires.
 		const fixed = new Set([
 			"on-solid",
 			"thumb-scrim",

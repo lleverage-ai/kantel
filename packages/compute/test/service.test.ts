@@ -6,7 +6,9 @@ import type { SandboxBackend } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createRoutedBackend, NOT_HELD } from "../src/routed-backend.ts";
 import {
+	type InviteMail,
 	inviteForSomeoneElse,
+	inviteLink,
 	isLoopbackUrl,
 	NEVER_MADE,
 	publicOrigin,
@@ -33,7 +35,7 @@ afterEach(async () => {
 
 function setup(
 	backend: SandboxBackend = createStubBackend(),
-	extra: Pick<Parameters<typeof createComputeApi>[0], "sharedHosts"> = {},
+	extra: Pick<Parameters<typeof createComputeApi>[0], "sharedHosts" | "invites"> = {},
 ) {
 	const api = createComputeApi({
 		...extra,
@@ -514,6 +516,87 @@ describe("organisations", () => {
 		);
 		expect(await ann.joinOrganisation({ code })).toMatchObject({ id: org.id, role: "admin" });
 		expect((await failure(tom.createInvite(org.id, { email: "not an email" }))).code).toBe("invalid");
+	});
+
+	it("emails an invite made for an address, with a link that joins with its code", async () => {
+		const sent: InviteMail[] = [];
+		const { tom, ann } = setup(createStubBackend(), {
+			invites: { send: async (mail) => void sent.push(mail), consoleUrl: "https://kantel.example.com/" },
+		});
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const invite = await tom.createInvite(org.id, { email: "Ann@Example.com", role: "member" });
+		expect(invite.emailed).toBe(true);
+		expect(sent).toEqual([
+			{
+				to: "ann@example.com",
+				organisation: "Acme",
+				invitedBy: "tom@example.com",
+				link: `https://kantel.example.com/organisation#join=${invite.code}`,
+				expiresAt: invite.expiresAt,
+			},
+		]);
+		// The link's code is the invite's: following it joins.
+		const code = decodeURIComponent(new URL(sent[0]?.link ?? "").hash.replace(/^#join=/, ""));
+		expect(await ann.joinOrganisation({ code })).toMatchObject({ id: org.id, role: "member" });
+
+		// An invite for anyone with the code goes to nobody.
+		expect((await tom.createInvite(org.id, {})).emailed).toBe(false);
+		expect(sent).toHaveLength(1);
+	});
+
+	it("keeps an invite whose email didn't go, and says so; without mail it sends none", async () => {
+		const failed: string[] = [];
+		const { tom, ann } = setup(createStubBackend(), {
+			invites: {
+				send: async () => {
+					throw new Error("mail is down");
+				},
+				onMailError: (_error, to) => void failed.push(to),
+			},
+		});
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const invite = await tom.createInvite(org.id, { email: "ann@example.com" });
+		expect(invite.emailed).toBe(false);
+		expect(failed).toEqual(["ann@example.com"]);
+		expect(await ann.joinOrganisation({ code: invite.code ?? "" })).toMatchObject({ id: org.id });
+
+		const unmailed = setup();
+		const other = await unmailed.tom.createOrganisation({ name: "Beta" });
+		expect((await unmailed.tom.createInvite(other.id, { email: "ann@example.com" })).emailed).toBe(false);
+	});
+
+	it("emails an invite only to an address that can sign in to follow its link, where the deployment says", async () => {
+		const sent: InviteMail[] = [];
+		const asked: string[] = [];
+		const { tom, ann } = setup(createStubBackend(), {
+			invites: {
+				send: async (mail) => void sent.push(mail),
+				canSignIn: async (email) => {
+					asked.push(email);
+					return email === "ann@example.com";
+				},
+			},
+		});
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const stranger = await tom.createInvite(org.id, { email: "stranger@example.com" });
+		expect(stranger).toMatchObject({ email: "stranger@example.com", emailed: false });
+		expect(stranger.code).toMatch(/^kji_/);
+		const invite = await tom.createInvite(org.id, { email: "Ann@Example.com" });
+		expect(invite.emailed).toBe(true);
+		expect(asked).toEqual(["stranger@example.com", "ann@example.com"]);
+		expect(sent.map((mail) => mail.to)).toEqual(["ann@example.com"]);
+		expect(await ann.joinOrganisation({ code: invite.code ?? "" })).toMatchObject({ id: org.id });
+	});
+
+	it("links an invite to the console where the call came in, without a console URL", async () => {
+		const sent: InviteMail[] = [];
+		const { tom } = setup(createStubBackend(), { invites: { send: async (mail) => void sent.push(mail) } });
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const invite = await tom.createInvite(org.id, { email: "ann@example.com" });
+		expect(sent[0]?.link).toBe(`http://compute.test/organisation#join=${invite.code}`);
+		expect(inviteLink("https://kantel.example.com//", "kji_a/b")).toBe(
+			"https://kantel.example.com/organisation#join=kji_a%2Fb",
+		);
 	});
 
 	it("tells someone signed in with no email which email an invite is for", () => {

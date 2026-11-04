@@ -166,6 +166,42 @@ export interface ComputeServiceOptions {
 	 * (`not_supported`), and plain variables still work. Not a key: the service refuses to start.
 	 */
 	readonly secretsKey?: string;
+	/** Emails an invite made for an address, with a link that joins with its code. Absent, Kantel sends none. */
+	readonly invites?: InviteMailing;
+}
+
+/** One invite to email: the same message as identity's `InviteMessage`, so its mailers send it as they are. */
+export interface InviteMail {
+	readonly to: string;
+	/** The organisation's name. */
+	readonly organisation: string;
+	/** Who made the invite: their email, or their name without one. */
+	readonly invitedBy: string;
+	/** The console, opened on the join with the invite's code (`inviteLink`). */
+	readonly link: string;
+	readonly expiresAt: number;
+}
+
+/** How a deployment emails invites (`ComputeServiceOptions.invites`). */
+export interface InviteMailing {
+	send(mail: InviteMail): Promise<void>;
+	/**
+	 * Whether `email` can sign in to follow the link. An invite to an address that can't isn't emailed (its code is shown
+	 * to pass on instead), since its link would lead nowhere. Without it, every address can (open sign-up).
+	 */
+	readonly canSignIn?: (email: string) => Promise<boolean>;
+	/** The console's address, which the link opens. Default the address the invite was made at. */
+	readonly consoleUrl?: string;
+	/** A send that failed, for the log: the invite stands, and the console shows its code to pass on instead. */
+	readonly onMailError?: (error: unknown, to: string) => void;
+}
+
+/**
+ * The link in an invite's email: the console, which opens Join with the code. The code goes in the fragment, which a
+ * browser never sends, so it stays out of every request log on the way.
+ */
+export function inviteLink(consoleUrl: string, code: string): string {
+	return `${consoleUrl.replace(/\/+$/, "")}/organisation#join=${encodeURIComponent(code)}`;
 }
 
 /** A destination a protected value may go to, as the host's proxy is given it: every list present, empty for any. */
@@ -1711,6 +1747,41 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 	}
 
+	/**
+	 * Emails an invite with a link that joins with its code, when the deployment sends mail; whether it went. A send that
+	 * fails leaves the invite standing: the console shows the code to pass on instead.
+	 */
+	const mailInvite = async (
+		principal: Principal,
+		invite: StoredInvite,
+		to: string,
+		code: string,
+		request: Request,
+	): Promise<boolean> => {
+		const mailing = options.invites;
+		if (mailing === undefined) return false;
+		try {
+			if (mailing.canSignIn !== undefined && !(await mailing.canSignIn(to))) return false;
+			const [account, inviter] = await Promise.all([
+				store.accounts.get(invite.accountId),
+				principal.kind === "person" ? principal : store.users.get(principal.userId),
+			]);
+			const consoleUrl = mailing.consoleUrl ?? new URL(request.url).origin;
+			await mailing.send({
+				to,
+				organisation: account?.name ?? "an organisation",
+				// Never a user ID, which a record made before people were named by their names may still have.
+				invitedBy: inviter?.email || (isPlaceholderName(inviter?.name) ? undefined : inviter?.name) || "Someone",
+				link: inviteLink(consoleUrl, code),
+				expiresAt: invite.expiresAt,
+			});
+			return true;
+		} catch (error) {
+			mailing.onMailError?.(error, to);
+			return false;
+		}
+	};
+
 	const inviteView = (invite: StoredInvite, code?: string): computeSchema.Invite => ({
 		id: invite.id,
 		accountId: invite.accountId,
@@ -3132,7 +3203,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return { items: newestFirst(open).map((invite) => inviteView(invite)) };
 		},
 
-		createInvite: async (principal, { params, body }) => {
+		createInvite: async (principal, { params, body }, request) => {
 			const acting = await accountById(store, principal, params.accountId);
 			requireScope(principal, "account:admin", acting.role);
 			requireOrganisation(acting);
@@ -3152,7 +3223,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				createdAt: now(),
 			};
 			await store.invites.put(invite);
-			return inviteView(invite, code);
+			const emailed = email === undefined ? false : await mailInvite(principal, invite, email, code, request);
+			return { ...inviteView(invite, code), emailed };
 		},
 
 		revokeInvite: async (principal, { params }) => {
