@@ -687,7 +687,7 @@ export function ComputeConsole({
 					/>
 				)}
 				{failed !== undefined ? (
-					<div className={`flex flex-1 flex-col ${narrow ? "p-gutter-narrow" : "p-gutter"}`}>
+					<div className={`flex min-h-full flex-col ${narrow ? "p-gutter-narrow" : "p-gutter"}`}>
 						<ConsoleUnavailable
 							title={inSettings ? "Settings" : pages.find((each) => each.on)?.label}
 							message={messageOf(failed.error, "Try again in a moment.")}

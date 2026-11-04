@@ -271,7 +271,8 @@ export function Sparkline({
 	label: string;
 	tone?: LineTone;
 	/** `sm`, a row's: 64 by 16. `lg`, a sandbox page's: as wide as its column, 28 high. */
-	size?: "sm" | "lg";
+	/** xs: under a phone row's state, a short line so the row's words keep the width. */
+	size?: "xs" | "sm" | "lg";
 	/** How many values fill it, so a line still filling ends at the right. Default: as many as there are. */
 	slots?: number;
 	/** Live readings' times: each value is drawn where its time is, and `slots` is ignored. */
@@ -292,7 +293,7 @@ export function Sparkline({
 	const colour = lineColour[loading || empty ? "idle" : tone];
 	return (
 		<svg
-			className={`kt-sparkline block flex-none ${size === "lg" ? "h-7 w-full" : "h-4 w-16"} ${colour} ${loading ? breathe : ""}`}
+			className={`kt-sparkline block flex-none ${size === "lg" ? "h-7 w-full" : size === "xs" ? "h-4 w-12" : "h-4 w-16"} ${colour} ${loading ? breathe : ""}`}
 			viewBox={`0 0 ${width} ${height}`}
 			preserveAspectRatio="none"
 			role="img"

@@ -764,6 +764,7 @@ function Cpu({
 	return (
 		<span className="inline-flex items-center gap-2">
 			<Sparkline
+				size={compact ? "xs" : "sm"}
 				values={values}
 				// Busy past 80%: the line and its figure turn the caution colour, so a glance finds the loaded ones.
 				tone={busy ? "warning" : "done"}
@@ -972,14 +973,21 @@ function SandboxPhoneRow({
 				{sandbox.state === "error" && sandbox.error !== undefined ? (
 					<span className="line-clamp-2 text-sm text-fg">{sandbox.error}</span>
 				) : (
-					<span className="flex min-w-0 flex-wrap gap-x-3 text-sm text-muted">
-						<span>
+					// The machine on one line, then where it runs and when it stops on the next: the same lines on every card.
+					<span className="flex min-w-0 flex-col text-sm text-muted">
+						<span className="truncate">
 							{SANDBOX_KIND_LABELS[sandbox.kind]}, {sizeText(sandbox.resources ?? sandbox.size)}
 						</span>
-						{sandbox.environment === undefined ? null : <span>{sandbox.environment.name}</span>}
-						{stops === "–" ? null : (
-							<span>{stops === "Always on" || stops === "Now" ? stops : `Stops ${stops}`}</span>
-						)}
+						<span className="flex min-w-0 gap-x-3 empty:hidden">
+							{sandbox.environment === undefined ? null : (
+								<span className="truncate">{sandbox.environment.name}</span>
+							)}
+							{stops === "–" ? null : (
+								<span className="flex-none">
+									{stops === "Always on" || stops === "Now" ? stops : `Stops ${stops}`}
+								</span>
+							)}
+						</span>
 					</span>
 				)}
 			</div>
