@@ -368,6 +368,10 @@ type ResumeParams struct {
 	// Rebase, on sandbox.start (a cold boot), first moves the sandbox onto the host's current images: its own disk
 	// stays, its memory snapshot is dropped. sandbox.resume ignores it.
 	Rebase bool `json:"rebase,omitempty"`
+	// RebaseTo, with Rebase, is the host images version (HostImages.Version) the gateway expects the rebase to land on:
+	// a host whose current images are another refuses the start before it changes anything, as it hasn't taken that
+	// update. Empty: whatever is current.
+	RebaseTo string `json:"rebaseTo,omitempty"`
 }
 
 // ForkParams is sandbox.fork: a new sandbox from the source's current state (running: a live snapshot; stopped: its

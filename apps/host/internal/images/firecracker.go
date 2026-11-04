@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -29,14 +30,14 @@ func FetchFirecracker(dst, version string) error {
 	}
 	base := "https://github.com/firecracker-microvm/firecracker/releases/download/" + version + "/"
 	name := fmt.Sprintf("firecracker-%s-%s.tgz", version, arch)
-	sums, err := httpGet(base + name + ".sha256.txt")
+	sums, err := httpGet(context.Background(), base+name+".sha256.txt")
 	if err != nil {
 		return err
 	}
 	sumText, _ := io.ReadAll(sums)
 	sums.Close()
 	want := strings.Fields(string(sumText))
-	body, err := httpGet(base + name)
+	body, err := httpGet(context.Background(), base+name)
 	if err != nil {
 		return err
 	}

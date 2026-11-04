@@ -17,7 +17,59 @@ import (
 // A sandbox's base is the root filesystem its disk is a layer over. With versioned images (package images) Rootfs is
 // a link to the current version, and each VM directory links the file it resolved to when the sandbox was made: an
 // update repoints Rootfs, so new sandboxes start on the new version, while a running or stopped one stays on its own
-// until a start with Rebase moves it.
+// until a start with Rebase moves it. The kernel is the version's too (kernelFor): a sandbox boots the kernel and root
+// filesystem of one version, whatever is current.
+//
+// The base lock (Manager.bases) keeps a prune of old versions from missing a reference in flight: every step that
+// reads a reference to a version and writes another (a create linking its template's or snapshot's base, a warm
+// sandbox's move into sandboxes/, a template's build and swap, a snapshot's save, a rebase) holds it to read, and a
+// prune holds it to write from its walk of what is in use (BasesInUse) until it has removed what wasn't (LockBases).
+// Each is held only for those few file operations, never across a boot or a copy, so a waiting prune doesn't hold up
+// creates for long.
+
+// holdBases holds the base lock to read, until the returned func is called.
+func (m *Manager) holdBases() func() {
+	m.bases.RLock()
+	return m.bases.RUnlock
+}
+
+// LockBases holds off every new reference to an image version until unlock is called: a prune holds it from its
+// BasesInUse until it has removed the versions nothing uses.
+func (m *Manager) LockBases() (unlock func()) {
+	m.bases.Lock()
+	return m.bases.Unlock
+}
+
+// kernelFor is the kernel to boot over rootfs: with PinBase, rootfs a version's file and Kernel the default path (a
+// link to current/<file> beside the store's v/), the same version's kernel, so a sandbox or template boots the
+// kernel and root filesystem of one version and never the current kernel over an older root filesystem. A custom
+// kernel, images that aren't versioned, or a version without the file, boot Kernel as before.
+func (m *Manager) kernelFor(rootfs string) string {
+	if !m.cfg.PinBase || m.cfg.Kernel == "" || images.VersionOf(rootfs) == "" {
+		return m.cfg.Kernel
+	}
+	name := filepath.Base(m.cfg.Kernel)
+	// Read as a link, not followed: whether it is the default is all that is asked of it.
+	if target, err := os.Readlink(m.cfg.Kernel); err != nil || target != filepath.Join("current", name) {
+		return m.cfg.Kernel
+	}
+	store, err := filepath.EvalSymlinks(filepath.Dir(m.cfg.Kernel))
+	if err != nil {
+		return m.cfg.Kernel
+	}
+	if abs, err := filepath.Abs(store); err == nil {
+		store = abs
+	}
+	version := filepath.Dir(filepath.Clean(rootfs))
+	if filepath.Dir(filepath.Dir(version)) != store {
+		return m.cfg.Kernel
+	}
+	pinned := filepath.Join(version, name)
+	if _, err := os.Stat(pinned); err != nil {
+		return m.cfg.Kernel
+	}
+	return pinned
+}
 
 // baseRootfs is the root filesystem new sandboxes and templates boot on: with PinBase, Rootfs resolved (the current
 // version's file); else Rootfs itself, as before.
@@ -135,6 +187,7 @@ func (m *Manager) BasesInUse() map[string]bool {
 // pinBases, with PinBase, points what still names Rootfs itself (made before the images were versioned) at the file
 // Rootfs resolves to now, which is what it was made on, so a later update doesn't move it.
 func (m *Manager) pinBases() {
+	defer m.holdBases()()
 	base := m.baseRootfs()
 	if !m.cfg.PinBase || base == m.cfg.Rootfs {
 		return
@@ -164,12 +217,18 @@ func (m *Manager) pinBases() {
 	}
 }
 
-// rebase moves a stopped sandbox onto the current images before a cold boot. Its own disk stays; its memory
-// snapshot, taken over the old images, can't be resumed after, so it is forgotten first (should the relink fail, the
-// sandbox still boots, on its old images). Called with s.mu held.
-func (m *Manager) rebase(s *sandbox) error {
+// rebase moves a stopped sandbox onto the current images before a cold boot (whose kernel follows its root
+// filesystem, kernelFor). Its own disk stays; its memory snapshot, taken over the old images, can't be resumed after,
+// so it is forgotten first (should the relink fail, the sandbox still boots, on its old images). With to, the version
+// the caller expects, a host whose current images are another is refused before anything changes. Called with s.mu
+// held.
+func (m *Manager) rebase(s *sandbox, to string) error {
+	defer m.holdBases()()
 	vm := s.vmDir()
 	base := m.baseRootfs()
+	if have := images.VersionOf(base); to != "" && have != to {
+		return images.NotCurrent(have, to)
+	}
 	if vmRootfs(vm) == base {
 		return nil
 	}
@@ -183,6 +242,18 @@ func (m *Manager) rebase(s *sandbox) error {
 		return err
 	}
 	m.log.Info("sandbox moved onto the current images", "sandbox", s.meta.ID, "base", images.VersionOf(base))
+	return nil
+}
+
+// rebaseTarget refuses a rebase the caller expects to land on to ("": any) when the host's current images are another
+// version: it hasn't taken that update.
+func (m *Manager) rebaseTarget(to string) error {
+	if to == "" {
+		return nil
+	}
+	if have := images.VersionOf(m.baseRootfs()); have != to {
+		return images.NotCurrent(have, to)
+	}
 	return nil
 }
 
@@ -267,6 +338,8 @@ func (m *Manager) swapTemplate(ctx context.Context, size proto.Size) error {
 	lock := m.templates[size.Name]
 	lock.Lock()
 	defer lock.Unlock()
+	// The template's base moves from next to dir: not while a prune walks the templates.
+	defer m.holdBases()()
 	_ = os.RemoveAll(old)
 	if err := os.Rename(dir, old); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err

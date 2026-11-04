@@ -156,6 +156,9 @@ type Manager struct {
 	// nil, tests replace it).
 	rebuilding map[string]bool
 	rebuild    func(ctx context.Context, size proto.Size) error
+	// bases is the base lock: read while a reference to an image version is made or moved, written by a prune from its
+	// walk of what is in use until its removals (base.go).
+	bases sync.RWMutex
 }
 
 func New(cfg Config) (*Manager, error) {
@@ -506,10 +509,11 @@ func (m *Manager) template(ctx context.Context, size proto.Size) (string, timing
 }
 
 // buildTemplate cold-boots a VM of the size on the current images, waits for its services, and snapshots it into
-// dir (replacing what is there), recording the images it was made with.
+// dir (replacing what is there), recording the images it was made with. The kernel is the root filesystem's
+// version's (kernelFor), chosen with it, so an activation while it builds can't pair one version's kernel with
+// another's root filesystem.
 func (m *Manager) buildTemplate(ctx context.Context, size proto.Size, dir string) (timings, error) {
 	fingerprint := m.templateFingerprint(size)
-	rootfs := m.baseRootfs()
 	t := timings{}
 	start := time.Now()
 	building := dir + ".building"
@@ -519,9 +523,19 @@ func (m *Manager) buildTemplate(ctx context.Context, size proto.Size, dir string
 	if err := os.MkdirAll(vm, 0o700); err != nil {
 		return nil, err
 	}
-	if err := m.linkRootfs(vm, rootfs); err != nil {
+	// The base is picked and linked under the base lock, and recorded (rootfs) before the VM directory goes, so a prune
+	// finds it in the template from here on.
+	unhold := m.holdBases()
+	rootfs := m.baseRootfs()
+	err := m.linkRootfs(vm, rootfs)
+	if err == nil {
+		err = os.WriteFile(filepath.Join(building, "rootfs"), []byte(rootfs), 0o600)
+	}
+	unhold()
+	if err != nil {
 		return nil, err
 	}
+	kernel := m.kernelFor(rootfs)
 	if err := newDisk(filepath.Join(vm, fc.DiskFile), size.DiskGiB); err != nil {
 		return nil, err
 	}
@@ -537,7 +551,7 @@ func (m *Manager) buildTemplate(ctx context.Context, size proto.Size, dir string
 	}
 	defer machine.Kill()
 	t.step("launch", &start)
-	if err := machine.Boot(ctx, fc.BootConfig{VCPUs: size.VCPUs, MemoryMiB: size.MemoryMiB, Kernel: m.cfg.Kernel, BootArgs: bootArgs, TapDevice: link.Tap, MAC: link.MAC, GuestCID: m.cid()}); err != nil {
+	if err := machine.Boot(ctx, fc.BootConfig{VCPUs: size.VCPUs, MemoryMiB: size.MemoryMiB, Kernel: kernel, BootArgs: bootArgs, TapDevice: link.Tap, MAC: link.MAC, GuestCID: m.cid()}); err != nil {
 		return nil, err
 	}
 	client := guest.NewClient(filepath.Join(vm, fc.VsockSocket))
@@ -568,13 +582,15 @@ func (m *Manager) buildTemplate(ctx context.Context, size proto.Size, dir string
 		return nil, err
 	}
 	_ = os.RemoveAll(vm)
-	if err := os.Rename(building, dir); err != nil {
+	// Its rootfs (the root filesystem its memory state is over, which sandboxes restored from it link) moves with it.
+	unhold = m.holdBases()
+	err = os.Rename(building, dir)
+	unhold()
+	if err != nil {
 		return nil, err
 	}
 	raw, _ := json.Marshal(map[string]any{"size": size, "timings": t, "at": time.Now().UnixMilli()})
 	_ = os.WriteFile(filepath.Join(dir, "images"), []byte(fingerprint), 0o600)
-	// The root filesystem its memory state is over: sandboxes restored from it link this one.
-	_ = os.WriteFile(filepath.Join(dir, "rootfs"), []byte(rootfs), 0o600)
 	_ = os.WriteFile(filepath.Join(dir, "ready"), raw, 0o600)
 	m.log.Info("template ready", "size", size.Name, "timings", t)
 	return t, nil
@@ -673,8 +689,12 @@ func (m *Manager) warmOne(ctx context.Context, sizeName string) (*warm, error) {
 	if err := os.MkdirAll(vm, 0o700); err != nil {
 		return nil, err
 	}
-	// The template's own images: its memory state is over them.
-	if err := m.linkRootfs(vm, m.templateRootfs(tpl)); err != nil {
+	// The template's own images: its memory state is over them. Under the base lock, as the reference moves from the
+	// template to the warm sandbox.
+	unhold := m.holdBases()
+	err = m.linkRootfs(vm, m.templateRootfs(tpl))
+	unhold()
+	if err != nil {
 		return nil, err
 	}
 	if err := copySparse(filepath.Join(tpl, fc.DiskFile), filepath.Join(vm, fc.DiskFile)); err != nil {
@@ -791,7 +811,11 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 	source := "pool"
 	if p.From == "" {
 		if w := m.claim(size.Name); w != nil {
-			if err := os.Rename(w.dir, dir); err != nil {
+			// From pool/ to sandboxes/, its base with it: not while a prune walks them.
+			unhold := m.holdBases()
+			err := os.Rename(w.dir, dir)
+			unhold()
+			if err != nil {
 				w.machine.Kill()
 				m.cfg.Network.Remove(w.link)
 				return fail(err)
@@ -808,14 +832,19 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 		if err := os.MkdirAll(vm, 0o700); err != nil {
 			return fail(err)
 		}
-		// rootfs is the images the snapshot or template it starts from is over, so its memory matches its disk.
+		// rootfs is the images the snapshot or template it starts from is over, so its memory matches its disk. It is read
+		// from there and linked here under the base lock (unhold releases it), so a prune finds it in one or the other.
 		var statePath, memPath, diskPath, rootfs string
+		var unhold func()
 		if p.From != "" {
+			unhold = m.holdBases()
 			snap, err := m.readSnapshot(p.From)
 			if err != nil {
+				unhold()
 				return fail(err)
 			}
 			if snap.Size != size.Name && snap.Memory {
+				unhold()
 				return fail(&proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("snapshot %s is of a %s sandbox; a sandbox made from it is that size too", p.From, snap.Size)})
 			}
 			sdir := m.snapshotDir(p.From)
@@ -836,13 +865,16 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 				t["template."+k] = v
 			}
 			statePath, memPath, diskPath = filepath.Join(tpl, "state"), filepath.Join(tpl, "mem"), filepath.Join(tpl, fc.DiskFile)
+			unhold = m.holdBases()
 			rootfs = m.templateRootfs(tpl)
 			source = "snapshot"
 			if tt != nil {
 				source = "boot"
 			}
 		}
-		if err := m.linkRootfs(vm, rootfs); err != nil {
+		err := m.linkRootfs(vm, rootfs)
+		unhold()
+		if err != nil {
 			return fail(err)
 		}
 		start = time.Now()
@@ -893,15 +925,17 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 	return info, nil
 }
 
-// boot cold-boots s from its own disk (Start, or a snapshot with no memory).
+// boot cold-boots s from its own disk (Start, or a snapshot with no memory), on the kernel of the version its root
+// filesystem is (kernelFor): the one it was made on, or a rebase moved it to.
 func (m *Manager) boot(ctx context.Context, s *sandbox, size proto.Size) error {
 	vm := s.vmDir()
+	kernel := m.kernelFor(vmRootfs(vm))
 	machine, err := fc.Launch(ctx, m.cfg.Firecracker, vm)
 	if err != nil {
 		return err
 	}
 	s.meta.CID = m.cid()
-	if err := machine.Boot(ctx, fc.BootConfig{VCPUs: size.VCPUs, MemoryMiB: size.MemoryMiB, Kernel: m.cfg.Kernel, BootArgs: bootArgs, TapDevice: s.link.Tap, MAC: s.link.MAC, GuestCID: s.meta.CID}); err != nil {
+	if err := machine.Boot(ctx, fc.BootConfig{VCPUs: size.VCPUs, MemoryMiB: size.MemoryMiB, Kernel: kernel, BootArgs: bootArgs, TapDevice: s.link.Tap, MAC: s.link.MAC, GuestCID: s.meta.CID}); err != nil {
 		machine.Kill()
 		return err
 	}
@@ -1019,12 +1053,19 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 	if err != nil {
 		return proto.SandboxInfo{}, err
 	}
+	// A rebase onto a version this host's images aren't on is refused before anything changes (rebase checks again as
+	// it relinks).
+	if coldBoot && p.Rebase {
+		if err := m.rebaseTarget(p.RebaseTo); err != nil {
+			return proto.SandboxInfo{}, err
+		}
+	}
 	if p.Egress != nil {
 		s.meta.Egress = p.Egress
 		s.unsaved = true
 	}
 	if coldBoot && p.Rebase {
-		if err := m.rebase(s); err != nil {
+		if err := m.rebase(s, p.RebaseTo); err != nil {
 			return proto.SandboxInfo{}, err
 		}
 	}
@@ -1199,6 +1240,8 @@ func (m *Manager) snapshotDir(id string) string {
 }
 
 func (m *Manager) writeSnapshotMeta(s *sandbox, snap *proto.SnapshotInfo) error {
+	// The sandbox's base is now the snapshot's too: recorded under the base lock.
+	defer m.holdBases()()
 	rootfs, base := rootfsOf(s.vmDir())
 	snap.Base = base
 	raw, _ := json.MarshalIndent(snapshotMeta{SnapshotInfo: *snap, Size: s.meta.Size, Rootfs: rootfs}, "", "  ")

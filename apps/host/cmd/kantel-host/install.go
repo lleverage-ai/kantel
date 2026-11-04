@@ -226,11 +226,13 @@ type ImageFile = images.File
 func archName() string { return images.Arch() }
 
 // open reads a file from a URL or a directory.
-func open(base, rel string) (io.ReadCloser, error) { return images.Open(base, rel) }
+func open(base, rel string) (io.ReadCloser, error) {
+	return images.Open(context.Background(), base, rel)
+}
 
 // fetch writes one file, checking its digest; a file already there with the right digest is kept.
 func fetch(base string, f ImageFile, dst string, mode os.FileMode) error {
-	return images.Fetch(base, f, dst, mode)
+	return images.Fetch(context.Background(), base, f, dst, mode)
 }
 
 // fileSHA256 hashes a file as it is on disk.

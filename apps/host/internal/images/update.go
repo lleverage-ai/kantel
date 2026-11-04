@@ -56,11 +56,12 @@ func (u *Updater) Check(ctx context.Context, ch proto.ImageChannel) error {
 	}
 	defer os.RemoveAll(tmp)
 	manifestPath, bundlePath := filepath.Join(tmp, manifestFile), filepath.Join(tmp, bundleFile)
-	if err := download(ch.URL, manifestFile, manifestPath); err != nil {
+	// Every download is ctx's (Open): at its deadline a stalled one ends, and so does the check, freeing mu.
+	if err := download(ctx, ch.URL, manifestFile, manifestPath); err != nil {
 		return fmt.Errorf("images %s: %w", ch.Version, err)
 	}
 	// A release without a bundle: Verify says what that means under the policy.
-	bundleErr := download(ch.URL, bundleFile, bundlePath)
+	bundleErr := download(ctx, ch.URL, bundleFile, bundlePath)
 	if bundleErr != nil {
 		_ = os.Remove(bundlePath)
 	}
@@ -96,16 +97,36 @@ func (u *Updater) Check(ctx context.Context, ch proto.ImageChannel) error {
 	return nil
 }
 
-// Prune is Store.Prune, one at a time with Check, so a version being installed or activated is never removed.
-func (u *Updater) Prune(keep func(version string) bool, keepNewest int) []string {
+// Prune is Store.Prune, one at a time with Check, so a version being installed or activated is never removed. inUse,
+// when set, is called once Check is out of the way: it holds off new references to versions (the tiers' base lock)
+// and answers what is in use, and release is called once the versions are removed, so a version judged unused can't
+// gain a reference before it goes. (Taken after mu, so a long download doesn't hold up the tiers.)
+func (u *Updater) Prune(inUse func() (keep func(version string) bool, release func()), keepNewest int) []string {
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	var keep func(string) bool
+	if inUse != nil {
+		var release func()
+		keep, release = inUse()
+		if release != nil {
+			defer release()
+		}
+	}
 	return u.Store.Prune(keep, keepNewest)
 }
 
-// download copies a small file (a manifest, a bundle) from a URL or a directory.
-func download(base, rel, dst string) error {
-	in, err := Open(base, rel)
+// NotCurrent refuses a rebase the gateway expects to land on want, on a host whose current images are have ("" when
+// they aren't versioned): the host hasn't taken that update, so the rebase would land elsewhere.
+func NotCurrent(have, want string) error {
+	if have == "" {
+		have = "unversioned"
+	}
+	return &proto.Error{Code: proto.ErrUnavailable, Message: fmt.Sprintf("this host's images are %s, not %s; it hasn't taken the update yet", have, want)}
+}
+
+// download copies a small file (a manifest, a bundle) from a URL or a directory, within ctx.
+func download(ctx context.Context, base, rel, dst string) error {
+	in, err := Open(ctx, base, rel)
 	if err != nil {
 		return err
 	}

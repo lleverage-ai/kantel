@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -155,7 +156,14 @@ func TestRebaseMovesAStoppedSandboxOntoTheCurrentImages(t *testing.T) {
 	if got := baseOf(s.vmDir()); got != "old" {
 		t.Fatalf("base before = %q", got)
 	}
-	if err := m.rebase(s); err != nil {
+	// A rebase the caller expects on another version is refused, and changes nothing.
+	if err := m.rebase(s, "newer"); err == nil || !strings.Contains(err.Error(), "hasn't taken the update") {
+		t.Fatalf("a rebase onto a version the host hasn't taken: %v", err)
+	}
+	if got := baseOf(s.vmDir()); got != "old" || !s.meta.Memory {
+		t.Fatalf("a refused rebase moved the sandbox to %q (memory %v)", got, s.meta.Memory)
+	}
+	if err := m.rebase(s, "new"); err != nil {
 		t.Fatal(err)
 	}
 	if got := baseOf(s.vmDir()); got != "new" {
@@ -174,5 +182,100 @@ func TestRebaseMovesAStoppedSandboxOntoTheCurrentImages(t *testing.T) {
 	}
 	if info := m.info(s); info.Base != "new" {
 		t.Fatalf("info's base = %q", info.Base)
+	}
+}
+
+// versionedImages is an images directory as package images leaves it: versions old and new, each with its kernel and
+// root filesystem, current on new, and the default paths linked to current.
+func versionedImages(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	images := filepath.Join(root, "images")
+	for _, v := range []string{"old", "new"} {
+		if err := os.MkdirAll(filepath.Join(images, "v", v), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range []string{"vmlinux", "sandbox.ext4"} {
+			if err := os.WriteFile(filepath.Join(images, "v", v, f), []byte(v+" "+f), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := os.Symlink(filepath.Join("v", "new"), filepath.Join(images, "current")); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"vmlinux", "sandbox.ext4"} {
+		if err := os.Symlink(filepath.Join("current", f), filepath.Join(images, f)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return images
+}
+
+// A sandbox or template boots the kernel of its own root filesystem's version, not the current one; a custom kernel,
+// or image patching off, boots the configured kernel as before.
+func TestTheKernelIsPinnedWithTheRootFilesystem(t *testing.T) {
+	images := versionedImages(t)
+	m := &Manager{cfg: Config{Kernel: filepath.Join(images, "vmlinux"), Rootfs: filepath.Join(images, "sandbox.ext4"), PinBase: true}}
+	old := filepath.Join(images, "v", "old", "sandbox.ext4")
+	if got, want := m.kernelFor(old), filepath.Join(images, "v", "old", "vmlinux"); got != want {
+		t.Fatalf("kernel over old = %s, want %s", got, want)
+	}
+	// A template build picks its root filesystem and the kernel with it.
+	if got, want := m.kernelFor(m.baseRootfs()), filepath.Join(images, "v", "new", "vmlinux"); got != want {
+		t.Fatalf("kernel over the current root filesystem = %s, want %s", got, want)
+	}
+	// An unversioned root filesystem boots the configured kernel.
+	if got := m.kernelFor(m.cfg.Rootfs); got != m.cfg.Kernel {
+		t.Fatalf("kernel over the unpinned root filesystem = %s", got)
+	}
+	custom := filepath.Join(t.TempDir(), "vmlinux")
+	if err := os.WriteFile(custom, []byte("custom"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.cfg.Kernel = custom
+	if got := m.kernelFor(old); got != custom {
+		t.Fatalf("a custom kernel was replaced by %s", got)
+	}
+	m.cfg.Kernel, m.cfg.PinBase = filepath.Join(images, "vmlinux"), false
+	if got := m.kernelFor(old); got != m.cfg.Kernel {
+		t.Fatalf("with image patching off, the kernel is %s", got)
+	}
+}
+
+// A prune's LockBases holds off a reference being moved (here a rebase's relink) until it has removed what it found
+// unused; the move then goes ahead.
+func TestLockBasesHoldsOffNewReferences(t *testing.T) {
+	images := versionedImages(t)
+	root := t.TempDir()
+	dir := filepath.Join(root, "sandboxes", "sbx_1")
+	linkVM(t, filepath.Join(dir, "vm"), filepath.Join(images, "v", "old", "sandbox.ext4"))
+	s := &sandbox{dir: dir, meta: meta{ID: "sbx_1", State: proto.StateStopped}}
+	m := &Manager{cfg: Config{Root: root, Rootfs: filepath.Join(images, "sandbox.ext4"), PinBase: true}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	unlock := m.LockBases()
+	done := make(chan error, 1)
+	go func() { done <- m.rebase(s, "") }()
+	select {
+	case err := <-done:
+		t.Fatalf("a rebase relinked while a prune held the bases: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if got := baseOf(s.vmDir()); got != "old" {
+		t.Fatalf("base while held = %q", got)
+	}
+	unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the rebase didn't go ahead once the prune was done")
+	}
+	if got := baseOf(s.vmDir()); got != "new" {
+		t.Fatalf("base after = %q, want new", got)
 	}
 }

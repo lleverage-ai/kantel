@@ -57,23 +57,29 @@ func isURL(s string) bool {
 	return strings.HasPrefix(s, "https://") || strings.HasPrefix(s, "http://")
 }
 
-// Open reads a file from a URL or a directory.
-func Open(base, rel string) (io.ReadCloser, error) {
+// Open reads a file from a URL or a directory. A URL's request is made with ctx, so its end (an update's deadline)
+// stops the connection and every read of the body, not only the connect.
+func Open(ctx context.Context, base, rel string) (io.ReadCloser, error) {
 	if isURL(rel) {
-		return httpGet(rel)
+		return httpGet(ctx, rel)
 	}
 	if isURL(base) {
 		u, err := url.JoinPath(base, rel)
 		if err != nil {
 			return nil, err
 		}
-		return httpGet(u)
+		return httpGet(ctx, u)
 	}
 	return os.Open(filepath.Join(strings.TrimPrefix(base, "file://"), rel))
 }
 
-func httpGet(u string) (io.ReadCloser, error) {
-	res, err := (&http.Client{Timeout: 0}).Get(u)
+// httpGet has no timeout of its own (a root filesystem takes a while): ctx bounds it.
+func httpGet(ctx context.Context, u string) (io.ReadCloser, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -84,8 +90,9 @@ func httpGet(u string) (io.ReadCloser, error) {
 	return res.Body, nil
 }
 
-// Fetch writes one file, checking its digest; a file already there with the right digest is kept.
-func Fetch(base string, f File, dst string, mode os.FileMode) error {
+// Fetch writes one file, checking its digest; a file already there with the right digest is kept. ctx bounds the
+// download (Open).
+func Fetch(ctx context.Context, base string, f File, dst string, mode os.FileMode) error {
 	if f.SHA256 != "" {
 		if sum, err := recordedSHA256(dst); err == nil && sum == f.SHA256 {
 			if _, err := os.Stat(dst); err == nil {
@@ -94,7 +101,7 @@ func Fetch(base string, f File, dst string, mode os.FileMode) error {
 			}
 		}
 	}
-	in, err := Open(base, f.Path)
+	in, err := Open(ctx, base, f.Path)
 	if err != nil {
 		return err
 	}
@@ -267,7 +274,7 @@ func (s Store) Install(ctx context.Context, base string, m Manifest, arch string
 		}
 		dst := filepath.Join(part, f.local)
 		s.reuse(mf.SHA256, f.local, dst)
-		if err := Fetch(base, mf, dst, 0o644); err != nil {
+		if err := Fetch(ctx, base, mf, dst, 0o644); err != nil {
 			return "", fmt.Errorf("images %s: %w", m.Version, err)
 		}
 	}
@@ -337,7 +344,8 @@ type Paths struct {
 
 // Link turns the config's image paths into links to current/<file>, only where they are the defaults under Dir and a
 // plain file or missing: a custom path is never touched. Plain files (from an install before images were versioned)
-// first move, once, into a version of their own, which becomes current, so what the host runs now doesn't change.
+// first go, once, into a version of their own, which becomes current, so what the host runs now doesn't change; a
+// migration that was stopped part-way is finished by the next Link (migrate).
 func (s Store) Link(p Paths) error {
 	type entry struct{ path, local string }
 	var defaults, plain []entry
@@ -356,7 +364,7 @@ func (s Store) Link(p Paths) error {
 			locals[i] = e.local
 		}
 		if err := s.migrate(locals); err != nil {
-			return fmt.Errorf("moving the images into %s: %w", filepath.Join(s.Dir, "v"), err)
+			return fmt.Errorf("putting the images into %s: %w", filepath.Join(s.Dir, "v"), err)
 		}
 	}
 	if _, ok := s.Current(); !ok {
@@ -377,8 +385,16 @@ func (s Store) Link(p Paths) error {
 	return nil
 }
 
-// migrate moves plain files at Dir/<local> into a new version and makes it current. The version is the installed
-// manifest's (Dir/manifest.json), else "initial"; one that exists already gets a suffix.
+// migrationStep is called between the steps of a migration; a test makes it fail to stop one there, as a crash would.
+var migrationStep = func(step string) error { return nil }
+
+// migrate puts plain files at Dir/<local> into a version of their own, makes it current, and replaces them with links
+// to it. The version is the installed manifest's (Dir/manifest.json), else "initial"; one that exists already gets a
+// suffix. No step moves or removes the only copy of an image: the originals are linked (or copied) into the staging
+// directory, which is renamed into place whole; then the version is activated; and only then is each default path
+// replaced, in one rename, by a link to the same file under current. So a migration stopped anywhere is started
+// again by the next Link: a staging directory holds only second names, and a version already committed with these
+// very files is finished rather than made again.
 func (s Store) migrate(locals []string) error {
 	version := "initial"
 	if raw, err := os.ReadFile(filepath.Join(s.Dir, manifestFile)); err == nil {
@@ -387,11 +403,15 @@ func (s Store) migrate(locals []string) error {
 			version = m.Version
 		}
 	}
+	if held, ok := s.holding(version, locals); ok {
+		return s.finishMigration(held, locals)
+	}
 	if _, err := os.Stat(s.versionDir(version)); err == nil {
 		version += "." + strconv.FormatInt(time.Now().Unix(), 10)
 	}
 	dir := s.versionDir(version)
 	part := dir + ".part"
+	// Only second names (links or copies) are ever in it.
 	_ = os.RemoveAll(part)
 	if err := os.MkdirAll(part, 0o755); err != nil {
 		return err
@@ -413,19 +433,128 @@ func (s Store) migrate(locals []string) error {
 	}
 	for _, local := range locals {
 		src := filepath.Join(s.Dir, local)
-		if err := os.Rename(src, filepath.Join(part, local)); err != nil {
+		if err := stage(src, filepath.Join(part, local)); err != nil {
 			return err
 		}
-		_ = os.Rename(src+".sha256-source", filepath.Join(part, local+".sha256-source"))
+		if _, err := os.Stat(src + ".sha256-source"); err == nil {
+			_ = stage(src+".sha256-source", filepath.Join(part, local+".sha256-source"))
+		}
+		if err := migrationStep("staging"); err != nil {
+			return err
+		}
 	}
 	raw, _ := json.MarshalIndent(Manifest{Version: version, Files: map[string]File{}}, "", "  ")
 	if err := os.WriteFile(filepath.Join(part, manifestFile), append(raw, '\n'), 0o644); err != nil {
 		return err
 	}
+	if err := migrationStep("staged"); err != nil {
+		return err
+	}
 	if err := os.Rename(part, dir); err != nil {
 		return err
 	}
-	return s.Activate(version)
+	if err := migrationStep("committed"); err != nil {
+		return err
+	}
+	return s.finishMigration(version, locals)
+}
+
+// finishMigration makes a version migrate committed current, then replaces each plain file at Dir/<local> (the
+// same file as the version's) with a link to current/<local>, in one rename: the default path names the image
+// throughout. The digest recorded beside it went into the version with it.
+func (s Store) finishMigration(version string, locals []string) error {
+	if err := s.Activate(version); err != nil {
+		return err
+	}
+	if err := migrationStep("activated"); err != nil {
+		return err
+	}
+	for _, local := range locals {
+		p := filepath.Join(s.Dir, local)
+		if _, err := os.Stat(filepath.Join(s.versionDir(version), local+".sha256-source")); err == nil {
+			_ = os.Remove(p + ".sha256-source")
+		}
+		tmp := p + ".link"
+		_ = os.Remove(tmp)
+		if err := os.Symlink(filepath.Join("current", local), tmp); err != nil {
+			return err
+		}
+		if err := os.Rename(tmp, p); err != nil {
+			_ = os.Remove(tmp)
+			return err
+		}
+		if err := migrationStep("replacing"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// holding is the installed version (version, or one migrate named after it with a suffix) that already has the plain
+// files at Dir/<locals> as its own: one a migration committed before it was stopped, which a retry finishes.
+func (s Store) holding(version string, locals []string) (string, bool) {
+	candidates := []string{version}
+	entries, _ := os.ReadDir(filepath.Join(s.Dir, "v"))
+	for _, e := range entries {
+		if e.IsDir() && ValidVersion(e.Name()) && strings.HasPrefix(e.Name(), version+".") {
+			candidates = append(candidates, e.Name())
+		}
+	}
+	for _, v := range candidates {
+		if s.installed(v) && s.holds(v, locals) {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// holds says whether version's files at <locals> are the plain files at Dir/<locals>: the same inode (linked when it
+// was staged), or a copy of the same size and time (staged across filesystems).
+func (s Store) holds(version string, locals []string) bool {
+	for _, local := range locals {
+		have, err := os.Stat(filepath.Join(s.Dir, local))
+		if err != nil {
+			return false
+		}
+		staged, err := os.Stat(filepath.Join(s.versionDir(version), local))
+		if err != nil {
+			return false
+		}
+		if !os.SameFile(have, staged) && (have.Size() != staged.Size() || !have.ModTime().Equal(staged.ModTime())) {
+			return false
+		}
+	}
+	return true
+}
+
+// stage gives src a second name at dst, leaving src as it is: a hard link, or where that can't be made (dst on
+// another filesystem) a copy with src's mode and time.
+func stage(src, dst string) error {
+	if err := os.Link(src, dst); err == nil {
+		return nil
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	_ = os.Remove(dst)
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	return os.Chtimes(dst, info.ModTime(), info.ModTime())
 }
 
 // Prune removes the versions that aren't current, aren't among the newest keepNewest, and that keep doesn't want

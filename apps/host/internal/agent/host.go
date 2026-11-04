@@ -573,6 +573,13 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if err != nil {
 			return nil, err
 		}
+		// A rebase onto images this host hasn't taken is refused before anything changes (the tier checks again as it
+		// relinks).
+		if method == proto.MethodStart && p.Rebase && p.RebaseTo != "" {
+			if err := h.rebaseTarget(p.RebaseTo); err != nil {
+				return nil, err
+			}
+		}
 		revision := revisionOf(p)
 		// A boot with a revision states the sandbox's egress, none being the host's default; one without an egress
 		// and without a revision keeps the egress it has, CA certificate included.

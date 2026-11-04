@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync/atomic"
 	"time"
 
+	"github.com/lleverage-ai/kantel/apps/host/internal/e2e"
 	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
 	"github.com/lleverage-ai/kantel/apps/host/internal/images"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
@@ -30,6 +32,9 @@ type imagePatching struct {
 type imageTier interface {
 	// BasesInUse are the versions its sandboxes, snapshots and templates are on.
 	BasesInUse() map[string]bool
+	// LockBases holds off every new or moving reference to a version (a create, a template swap, a warm sandbox's move,
+	// a snapshot's save) until unlock: a prune holds it from BasesInUse until its removals are done.
+	LockBases() (unlock func())
 	// ImagesChanged says a new version is current, so stale templates start rebuilding.
 	ImagesChanged()
 }
@@ -116,10 +121,36 @@ func (h *Host) followImages(ctx context.Context, ch *proto.ImageChannel) {
 		checkCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Hour)
 		defer cancel()
 		h.log.Info("updating host images", "to", ch.Version, "channel", ch.Channel)
-		if err := u.Check(checkCtx, *ch); err != nil {
+		if err := h.checkImages(checkCtx, u, *ch); errors.Is(err, e2e.ErrEnrolled) {
+			h.log.Info("not updating host images from the gateway: this host has joined an E2E space, so it is updated on the machine", "to", ch.Version)
+		} else if err != nil {
 			h.log.Error("host images update failed; new sandboxes stay on the current images", "to", ch.Version, "error", err)
 		}
 	}()
+}
+
+// checkImages runs an update the gateway asked for under the E2E store's enrolment lock, the one a join takes first,
+// as gatewayUpdate runs a binary update: one that started before a join finishes (download, checks and activation)
+// before the join completes, and none runs on a host that has joined (e2e.ErrEnrolled). The images are what every
+// sandbox boots, so one the gateway picks could read an E2E space's sandboxes.
+func (h *Host) checkImages(ctx context.Context, u *images.Updater, ch proto.ImageChannel) error {
+	if h.e2e == nil {
+		return u.Check(ctx, ch)
+	}
+	return h.e2e.Unenrolled(func() error { return u.Check(ctx, ch) })
+}
+
+// rebaseTarget refuses a sandbox.start whose rebase the gateway expects to land on to when this host's current images
+// are another version (or aren't versioned): the host hasn't taken that update, and a rebase would land elsewhere.
+func (h *Host) rebaseTarget(to string) error {
+	have := ""
+	if h.cfg.ImagePatching {
+		have, _ = imageStore(h.cfg).Current()
+	}
+	if have != to {
+		return images.NotCurrent(have, to)
+	}
+	return nil
 }
 
 // imagesActivated is the updater's OnActivate: the facts say the new version, and the tiers start rebuilding what
@@ -151,21 +182,32 @@ func (h *Host) pruneImagesEvery(stop <-chan struct{}, every time.Duration) {
 }
 
 // pruneImages removes the image versions nothing uses: not current, not among the newest few, and no sandbox,
-// snapshot or template on them.
+// snapshot or template on them. The tiers' base locks are held from their walk until the removals are done, so no
+// reference to a version is made or moved between finding it unused and removing it.
 func (h *Host) pruneImages() []string {
 	u := h.patching.updater
 	if u == nil {
 		return nil
 	}
-	inUse := map[string]bool{}
-	for _, name := range h.order {
-		if t, ok := h.tiers[name].(imageTier); ok {
-			for v := range t.BasesInUse() {
-				inUse[v] = true
+	inUse := func() (func(string) bool, func()) {
+		var unlocks []func()
+		used := map[string]bool{}
+		for _, name := range h.order {
+			if t, ok := h.tiers[name].(imageTier); ok {
+				unlocks = append(unlocks, t.LockBases())
+				for v := range t.BasesInUse() {
+					used[v] = true
+				}
 			}
 		}
+		release := func() {
+			for i := len(unlocks) - 1; i >= 0; i-- {
+				unlocks[i]()
+			}
+		}
+		return func(v string) bool { return used[v] }, release
 	}
-	removed := u.Prune(func(v string) bool { return inUse[v] }, keepImageVersions)
+	removed := u.Prune(inUse, keepImageVersions)
 	if len(removed) > 0 {
 		h.log.Info("removed host image versions nothing uses", "versions", removed)
 	}
