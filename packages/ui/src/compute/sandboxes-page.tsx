@@ -569,7 +569,8 @@ function SandboxList({
 		</div>
 	);
 	return (
-		<>
+		// Select all sits right over the rows it ticks, closer to them than the page's gap.
+		<div className="flex min-w-0 flex-col gap-2">
 			<SelectionBar
 				narrow={narrow}
 				count={selected.length}
@@ -618,7 +619,7 @@ function SandboxList({
 					});
 				}}
 			/>
-		</>
+		</div>
 	);
 }
 

@@ -777,9 +777,10 @@ function Overview({
 		return (
 			<div className="flex min-w-0 flex-col gap-8">
 				{windows || hint === undefined ? null : <p className="m-0 text-sm text-muted">{hint}</p>}
+				{/* How it's doing first, on a phone, where the side column would otherwise come after the way in. */}
+				{usage}
 				{ssh}
 				{portsSection}
-				{usage}
 				{image}
 				{details}
 				{mounts}

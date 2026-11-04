@@ -42,7 +42,7 @@ function CommandLine({ command, copyLabel }: { command: string | undefined; copy
 					<Skeleton />
 				</span>
 			) : (
-				<code className="kt-selectable min-w-0 flex-1 py-1 leading-normal text-fg wrap-anywhere">
+				<code className="kt-selectable min-w-0 flex-1 py-1 leading-normal break-all text-fg">
 					{command}
 				</code>
 			)}
