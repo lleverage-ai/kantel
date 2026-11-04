@@ -1112,6 +1112,34 @@ describe("copying files", () => {
 		expect(separate.code).toBe(0);
 		expect(separate.written).toEqual(["wt/a.ts", "wt/new.ts"]);
 		expect(separate.stderr).toContain("kantel: left out .env (an environment file)");
+
+		// The same worktree through a link in another project's .claude: still a project of its own.
+		await mkdir(join(repo, ".claude", "worktrees"), { recursive: true });
+		await symlink(worktree, join(repo, ".claude", "worktrees", "wt"));
+		const throughLink = await pushed(["repo/.claude/worktrees/wt"]);
+		expect(throughLink.code).toBe(0);
+		expect(throughLink.written).toEqual(["wt/a.ts", "wt/new.ts"]);
+
+		// An agent directory that is a link, above the root: what's under it still counts as its.
+		const linkedAgent = join(configDir, "linked-agent");
+		await files(linkedAgent, ["editor-state/User/settings.json", "editor-state/User/auth.json", "a.ts"]);
+		await symlink(join(linkedAgent, "editor-state"), join(linkedAgent, ".cursor"));
+		const inLinkedAgent = inside(linkedAgent);
+		inLinkedAgent("init", "-q");
+		inLinkedAgent("add", "editor-state/User/settings.json", "a.ts");
+		const throughAgentLink = await pushed(["linked-agent/.cursor/User"]);
+		expect(throughAgentLink.code).toBe(0);
+		expect(throughAgentLink.written).toEqual(["User/settings.json"]);
+		expect(throughAgentLink.stderr).toContain("kantel: left out auth.json (an agent's sign-in and settings)");
+
+		// A repository whose top is .docker itself.
+		const dockerRepo = join(configDir, "docker-home", ".docker");
+		await files(dockerRepo, ["config.json", "daemon.json"]);
+		inside(dockerRepo)("init", "-q");
+		const dockerTop = await pushed(["docker-home/.docker"]);
+		expect(dockerTop.code).toBe(0);
+		expect(dockerTop.written).toEqual([".docker/daemon.json"]);
+		expect(dockerTop.stderr).toContain("kantel: left out config.json (credentials)");
 	});
 
 	it("scp sends a file over 1 MiB in parts and joins them with one command", async () => {

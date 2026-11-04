@@ -250,18 +250,25 @@ function gitTop(root: string): Promise<string | undefined> {
 
 /**
  * The paths that lead to `root`, with `/`, which push puts before each file it classifies, so a root inside `.cursor`
- * or named `.docker` counts as it would from above. Both how it was named and where it resolves count. In a
- * repository they start at its top (`top`), so a worktree in `.claude/worktrees` isn't all agent settings; elsewhere
- * they are absolute.
+ * or named `.docker` counts as it would from above. Both the path as named, links and all, and where it resolves
+ * count. In a repository each starts at its top, named by its own name (`.docker` when git starts there), so a
+ * worktree in `.claude/worktrees` isn't all agent settings. The named path's top is its nearest ancestor that
+ * resolves to the repository's (`top`); with none, and outside a repository, the paths are absolute.
  */
 export async function rootContexts(root: string, top?: string): Promise<string[]> {
-	const named = join(await real(dirname(resolve(root))), basename(resolve(root)));
+	const named = resolve(root);
 	const resolved = await real(root);
-	const realTop = top === undefined ? undefined : await real(top);
-	const contexts = [named, resolved].map((path) =>
-		realTop !== undefined && within(path, realTop) ? relative(realTop, path) : path,
-	);
-	return [...new Set(contexts.map((path) => path.split(sep).join("/")))];
+	const posixOf = (path: string) => path.split(sep).join("/");
+	if (top === undefined) return [...new Set([named, resolved].map(posixOf))];
+	const realTop = await real(top);
+	const fromTop = (path: string, at: string) => join(basename(at), relative(at, path));
+	let namedTop: string | undefined;
+	for (let at = named; namedTop === undefined; at = dirname(at)) {
+		if ((await real(at)) === realTop) namedTop = at;
+		else if (dirname(at) === at) break;
+	}
+	const contexts = [namedTop === undefined ? named : fromTop(named, namedTop), fromTop(resolved, realTop)];
+	return [...new Set(contexts.map(posixOf))];
 }
 
 /** Credentials push leaves out wherever they are in the tree, even when git tracks them. */
