@@ -180,8 +180,21 @@ export interface SandboxCommand {
 
 /** How to reach a sandbox, made when asked for: tokens in it are short-lived. */
 export interface SandboxAccess {
-	/** The ssh command for this sandbox. */
+	/**
+	 * The Kantel CLI's command that SSHes in: `kantel ssh <id>`, which lets a key of its own in and needs nothing else,
+	 * or `kantel e2e ssh <id>` end to end. It has no token, so it works whenever it's run.
+	 */
 	readonly ssh: string;
+	/**
+	 * Signs the CLI in to the Kantel this console belongs to, once, before `ssh` works: `kantel login --url <gateway>`.
+	 * Absent where the CLI already is (`kantel console` serves the page).
+	 */
+	readonly cliLogin?: string;
+	/**
+	 * Whether plain `ssh` can get in without the CLI, through `SandboxesSource.sshKey`: not end to end, where the host
+	 * refuses the gateway's SSH. Absent: no.
+	 */
+	readonly sshWithoutCli?: boolean;
 	/** Its desktop in the browser. */
 	readonly desktopUrl: string;
 	/** The same desktop to watch only: Kantel drops the viewer's keyboard and mouse. */
@@ -198,6 +211,69 @@ export interface SandboxAccess {
 	 * One that can't is shown disabled with its reason, never opened onto an error page; its URLs are then unused.
 	 */
 	readonly unavailable?: { readonly desktop?: string; readonly browser?: string };
+}
+
+/** The one line that installs the Kantel CLI (`kantel`), from kantel.dev: it pastes the same into bash, zsh and fish. */
+export const CLI_INSTALL_COMMAND = "curl -fsSL https://kantel.dev/cli.sh | sh";
+
+/** Signs the CLI in to the Kantel at `url` (its gateway's public origin, such as https://app.kantel.dev). */
+export function cliLoginCommand(url: string): string {
+	return `kantel login --url ${url}`;
+}
+
+/** The CLI's command that SSHes into a sandbox. */
+export const cliSshCommand = (sandboxId: string, endToEnd = false): string =>
+	`kantel ${endToEnd ? "e2e ssh" : "ssh"} ${sandboxId}`;
+
+/** SSH without the CLI: a key let in for a while, and the plain `ssh` command that connects with it. */
+export interface SandboxSshKey {
+	/** The command that connects, with the key's file in it when Kantel made the key. */
+	readonly command: string;
+	/** The private half of a key pair Kantel made, shown once: absent when a public key was given. */
+	readonly privateKey?: string;
+	/** Where the command expects the private key, and the name it downloads as. */
+	readonly keyFile?: { readonly name: string; readonly path: string };
+	/** The sandbox's SSH host key, as ssh shows it the first time (`SHA256:…`). */
+	readonly hostKeyFingerprint?: string;
+	/** The time a connection must start by; one started stays open. */
+	readonly expiresAt?: number;
+}
+
+/** Where `sshWithoutCliCommand` connects: the API's answer to `POST /v1/sandboxes/{id}/ssh`. */
+export interface SshTarget {
+	readonly sandboxId: string;
+	readonly user: string;
+	/** The relay's WebSocket URL, when there's no SSH gateway to dial. */
+	readonly proxyUrl?: string;
+	readonly host: string;
+	readonly port: number;
+}
+
+/** A word as a POSIX shell (and fish) reads it back unchanged. */
+const shellWord = (word: string): string =>
+	/^[\w@%+=:,./~-]+$/.test(word) ? word : `'${word.replaceAll("'", `'\\''`)}'`;
+
+/**
+ * The plain `ssh` command for a sandbox, for someone without the CLI: through the relay with websocat as its
+ * ProxyCommand (any WebSocket client that pipes stdin and stdout as binary frames does), or to the SSH gateway. With
+ * `identityFile`, ssh offers that key only; a downloaded key is readable by others, which ssh refuses, so its mode is
+ * set first. It reads the same in bash, zsh and fish.
+ */
+export function sshWithoutCliCommand(target: SshTarget, identityFile?: string): string {
+	const key = identityFile === undefined ? [] : ["-i", identityFile, "-o", "IdentitiesOnly=yes"];
+	const ssh =
+		target.proxyUrl === undefined
+			? ["ssh", ...key, "-p", String(target.port), `${target.user}@${target.host}`]
+			: [
+					"ssh",
+					...key,
+					"-o",
+					// ssh expands %-tokens in a ProxyCommand: a literal % is %%.
+					`ProxyCommand=websocat --binary ${target.proxyUrl.replaceAll("%", "%%")}`,
+					`${target.user}@${target.sandboxId}`,
+				];
+	const line = ssh.map(shellWord).join(" ");
+	return identityFile === undefined ? line : `chmod 600 ${shellWord(identityFile)} && ${line}`;
 }
 
 /** Why a screen can't open, from its access: the desktop's reason for Watch too. Undefined when it can. */
@@ -248,6 +324,11 @@ export interface SandboxesSource {
 	/** Deletes the sandbox and every snapshot of it, for good. */
 	remove(id: string): Promise<void>;
 	access(id: string): Promise<SandboxAccess>;
+	/**
+	 * SSH without the CLI: lets `publicKey` (one OpenSSH public key) in, or, without one, a key pair Kantel makes and
+	 * answers once. Absent: the page offers the CLI's command only.
+	 */
+	sshKey?(id: string, publicKey?: string): Promise<SandboxSshKey>;
 	history(id: string): Promise<readonly SandboxCommand[]>;
 	/** One sandbox, for its page. */
 	get(id: string): Promise<Sandbox>;

@@ -74,7 +74,15 @@ import type {
 	EnvironmentVariable as UiVariable,
 	WebhooksSource,
 } from "@kantel/ui";
-import { DeviceSetupError, FilesRefusedError, FileTooLargeError, sameProxySettings } from "@kantel/ui";
+import {
+	cliLoginCommand,
+	cliSshCommand,
+	DeviceSetupError,
+	FilesRefusedError,
+	FileTooLargeError,
+	sameProxySettings,
+	sshWithoutCliCommand,
+} from "@kantel/ui";
 import { type BrowserDevice, type BrowserDeviceOptions, browserDevice } from "./browser-device.ts";
 import type { HostCommand, HostCommandPage, LocalBridge } from "./local.ts";
 
@@ -437,9 +445,10 @@ function sandboxesSource(context: Context): SandboxesSource {
 			await api.deleteSandbox(id);
 		},
 		access: async (id) => {
-			// microVMs only: an isolate's `not_supported` rejects the lot. SSH's private key, when Kantel makes one, has no
-			// place in the UI's access and is dropped. The browser is driven where it runs, on the desktop, so its page is a
-			// desktop page too; while Chromium is still starting, the API refuses it and the desktop's stands in.
+			// microVMs only: an isolate's `not_supported` rejects the lot. SSH is the CLI's `kantel ssh`, which lets a key of
+			// its own in when it's run, so nothing is asked for it here: a key for plain ssh is `sshKey`'s, made only when
+			// someone asks. The browser is driven where it runs, on the desktop, so its page is a desktop page too; while
+			// Chromium is still starting, the API refuses it and the desktop's stands in.
 			//
 			// Desktop and Browser that can't open are said so rather than opened onto an error page: in an end-to-end space
 			// (its host refuses the gateway's plaintext desktop; E2E sessions carry commands and files only so far), and
@@ -454,10 +463,7 @@ function sandboxesSource(context: Context): SandboxesSource {
 					throw error;
 				}
 			};
-			// SSH there is E2E v1's own, over a session from the person's device; the gateway's (which lets a key in with a
-			// command) the host refuses.
-			const [ssh, desktop, watch, browser] = await Promise.all([
-				endToEnd ? Promise.resolve(undefined) : api.openSsh(id),
+			const [desktop, watch, browser] = await Promise.all([
 				screen(() => api.openDesktop(id)),
 				screen(() => api.openDesktop(id, { viewOnly: true })),
 				screen(() =>
@@ -467,7 +473,6 @@ function sandboxesSource(context: Context): SandboxesSource {
 					}),
 				),
 			]);
-			if (ssh !== undefined) context.learnHost(ssh.host);
 			const desktopRefused = desktop.refused ?? watch.refused;
 			const desktopUrl = desktopRefused === undefined ? desktop.value?.url : undefined;
 			// While Chromium starts, the desktop's page stands in for the browser's, and its reason when it has one.
@@ -478,7 +483,15 @@ function sandboxesSource(context: Context): SandboxesSource {
 				...(browserRefused === undefined ? {} : { browser: browserRefused }),
 			};
 			return {
-				ssh: ssh?.command ?? `kantel e2e ssh ${id}`,
+				// SSH there is E2E v1's own, over a session from the person's device; the gateway's (which lets a key in with a
+				// command) the host refuses, so there's no plain ssh either.
+				ssh: cliSshCommand(id, endToEnd),
+				// The CLI signs in to the gateway that serves this page, under /v1 on its origin. `kantel console`'s page is the
+				// CLI's own, signed in already, and its loopback origin isn't a gateway.
+				...(context.local === undefined && globalThis.location?.origin !== undefined
+					? { cliLogin: cliLoginCommand(globalThis.location.origin) }
+					: {}),
+				sshWithoutCli: !endToEnd,
 				// What can't open has no address: nothing links or frames it.
 				desktopUrl: desktopUrl ?? "",
 				desktopViewUrl: (desktopRefused === undefined ? watch.value?.url : undefined) ?? "",
@@ -490,6 +503,26 @@ function sandboxesSource(context: Context): SandboxesSource {
 					browser: browserUrl ?? "",
 				},
 				...(Object.keys(unavailable).length === 0 ? {} : { unavailable }),
+			};
+		},
+		sshKey: async (id, publicKey) => {
+			const grant = await api.openSsh(id, publicKey === undefined ? {} : { publicKey });
+			context.learnHost(grant.host);
+			const target = { sandboxId: id, user: grant.user, host: grant.host, port: grant.port };
+			const routed = grant.proxyUrl === undefined ? target : { ...target, proxyUrl: grant.proxyUrl };
+			const privateKey = grant.privateKey?.trim();
+			const shown = {
+				...(grant.hostKeyFingerprint === undefined ? {} : { hostKeyFingerprint: grant.hostKeyFingerprint }),
+				expiresAt: grant.expiresAt,
+			};
+			if (privateKey === undefined || privateKey === "") return { command: sshWithoutCliCommand(routed), ...shown };
+			// The key Kantel made downloads under the sandbox's name, where a browser saves it by default.
+			const keyFile = { name: `kantel-${id}`, path: `~/Downloads/kantel-${id}` };
+			return {
+				command: sshWithoutCliCommand(routed, keyFile.path),
+				privateKey: `${privateKey}\n`,
+				keyFile,
+				...shown,
 			};
 		},
 		history: async (id) => {
