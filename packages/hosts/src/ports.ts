@@ -25,7 +25,9 @@
  *   traded for the cookie (a 303 to the address without it) only where the redirected request may use the cookie
  *   (`tradesForCookie`); elsewhere, such as another page's frame of the port, it is served directly, token taken off.
  * - Every cookie of that name is tried against the token's hash, so one planted under it can't open a port, nor stop
- *   the real one being read.
+ *   the real one being read. None of its names (`__Host-kantel_port`, `kantel_port`, `_kantel_port`) reaches the sandbox.
+ * - A token-gated port's answers are `Cache-Control: private, no-cache`: every port's name shares one browser cache
+ *   partition, so a cached answer is reused only once the gate has let the new request in.
  *
  * Exposures are kept in the relay store (`relay-store.ts`), so they outlast a gateway restart and every replica answers
  * every port's name. The store keeps the SHA-256 of a token, never the token: the URL with it is shown once, when the
@@ -133,6 +135,9 @@ function cookiesNamed(header: string | null | undefined, name: string): string[]
 		.filter((part) => part.startsWith(`${name}=`))
 		.map((part) => part.slice(name.length + 1));
 }
+
+/** The cache policy of every answer a token-gated port gives: reused only after the gate has let the request in again. */
+export const PRIVATE_PORT_CACHE = "private, no-cache";
 
 /** Methods that change nothing: a navigation with one of these may carry the cookie from anywhere, as SameSite=Lax. */
 const SAFE_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD"]);
@@ -302,12 +307,20 @@ export function createPortRouter(options: PortRouterOptions): PortRouter {
 			const forwarded: Record<string, string> = { "x-forwarded-proto": scheme, "x-forwarded-host": url.host };
 			if (client?.address !== undefined) forwarded["x-forwarded-for"] = client.address;
 			try {
-				return await proxyHttp((sink) => options.openPort(exposure.sandboxId, exposure.port, sink), request, {
+				const answer = await proxyHttp((sink) => options.openPort(exposure.sandboxId, exposure.port, sink), request, {
 					host: url.host,
 					path: `${url.pathname}${url.search}`,
 					forwarded,
-					dropCookies: [cookieName, LEGACY_PORT_COOKIE],
+					// Every name the gate's cookie has had, whatever this gateway's scheme: none reaches the sandbox.
+					dropCookies: [PORT_COOKIE, PORT_COOKIE_BASE, LEGACY_PORT_COOKIE],
 				});
+				if (exposure.tokenHash !== undefined) {
+					// Every port's name shares one browser cache partition (one site), so a response this request was let in
+					// for must not be reused for one the gate would refuse, such as another sandbox's <script src>. `no-cache`
+					// sends every reuse back through the gate (a 304 still saves the body); `private` keeps it out of shared caches.
+					answer.headers.set("cache-control", PRIVATE_PORT_CACHE);
+				}
+				return answer;
 			} catch (error) {
 				if (error instanceof PortHttpError) return text(error.status, error.message);
 				return text(502, "The sandbox's port didn't answer.");

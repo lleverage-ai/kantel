@@ -45,6 +45,8 @@ Opening the URL in a browser trades the token for a cookie on that one host name
 
 The cookie works for the app's own pages, for a link followed to it, and for the same sandbox's other ports: a frontend on port 5173 can call its API on port 8080, `fetch` and WebSockets included, once 8080's URL has been opened in that browser. A page on another sandbox's port, or on any other site, can't use it; its requests get `401` as if they had no cookie. To frame one port in another, put the token in the frame's URL: the frame is served directly, without trading the token for the cookie. The cookie was called `_kantel_port` before and that name is no longer read: open the URL with its token again.
 
+A token-gated port's answers go out with `Cache-Control: private, no-cache`, whatever the app sets, so the browser checks with Kantel before reusing anything it cached; an `ETag` or `Last-Modified` still saves downloading it again. A public port keeps the app's own caching.
+
 To end a token, hide the port: exposing it afterwards gives it a new one. Stopping or deleting the sandbox ends its ports too.
 
 To let anyone open it with no token, such as a preview you want to post in a pull request, expose it with `public`:

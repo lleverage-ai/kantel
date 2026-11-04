@@ -366,11 +366,35 @@ describe("an exposed port's cookie", () => {
 		expect(bare?.status).toBe(401);
 	});
 
-	it("keeps the old cookie and its own from the sandbox's server", async () => {
-		const { status, token, opened } = await setup();
-		expect(await status({ cookie: `theme=dark; _kantel_port=old; ${PORT_COOKIE}=${token}` })).toBe(200);
-		expect(opened[0]?.request).toContain("Cookie: theme=dark\r\n");
-		expect(opened[0]?.request).not.toContain("kantel_port");
+	it("keeps every name the cookie has had from the sandbox's server, whatever the scheme", async () => {
+		const all = (token: string) => `theme=dark; _kantel_port=old; kantel_port=${token}; __Host-kantel_port=${token}`;
+		for (const scheme of ["https", "http"] as const) {
+			const { status, token, opened } = await setup(scheme);
+			expect(await status({ cookie: all(token) })).toBe(200);
+			expect(opened[0]?.request).toContain("Cookie: theme=dark\r\n");
+			expect(opened[0]?.request).not.toContain("kantel_port");
+			expect(opened[0]?.request).not.toContain(token);
+		}
+	});
+
+	it("makes a token-gated port's answers revalidate through the gate, and leaves a public port's alone", async () => {
+		const cacheable =
+			'HTTP/1.1 200 OK\r\nCache-Control: public, max-age=3600\r\nETag: "v1"\r\nContent-Length: 2\r\n\r\nok';
+		const port = fakePort(() => cacheable);
+		const router = createPortRouter({ domain: DOMAIN, openPort: port.openPort, store: createMemoryRelayStore() });
+		const { url } = await router.expose("sbx_1", 3000, { public: false, subdomain: "brave-otter-ab12cd" });
+		const token = new URL(url).searchParams.get("_token") ?? "";
+		const gated = await router.fetch(
+			new Request(`${VICTIM}/config.js`, {
+				headers: { cookie: `${PORT_COOKIE}=${token}`, "sec-fetch-site": "same-origin" },
+			}),
+		);
+		expect(gated?.status).toBe(200);
+		expect(gated?.headers.get("cache-control")).toBe("private, no-cache");
+		expect(gated?.headers.get("etag")).toBe('"v1"');
+		const { url: open } = await router.expose("sbx_1", 4000, { public: true, subdomain: "brave-otter-ab12cd" });
+		const publicAnswer = await router.fetch(new Request(`${open}config.js`));
+		expect(publicAnswer?.headers.get("cache-control")).toBe("public, max-age=3600");
 	});
 
 	it("has no prefix and no Secure over plain http, where a browser refuses __Host-", async () => {
