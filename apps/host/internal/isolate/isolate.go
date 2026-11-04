@@ -761,10 +761,16 @@ func (m *Manager) runtimeFor(ctx context.Context, account string) (*runtime, str
 	r.lastUsed.Store(time.Now().UnixMilli())
 	m.mu.Lock()
 	if existing, ok := m.runtimes[account]; ok && existing.alive() {
-		// Another create for the account won the race: use its runtime, keep this one spare.
-		m.spare = append(m.spare, r)
+		// Another create for the account won the race: use its runtime, keep this one spare if a spare is wanted.
 		r.account.Store(nil)
+		keep := len(m.spare) < m.spareWant
+		if keep {
+			m.spare = append(m.spare, r)
+		}
 		m.mu.Unlock()
+		if !keep {
+			r.close()
+		}
 		return existing, "account", nil
 	}
 	m.runtimes[account] = r
@@ -773,10 +779,19 @@ func (m *Manager) runtimeFor(ctx context.Context, account string) (*runtime, str
 }
 
 // SetPools sets how many spare runtimes to keep ("isolate/default": n).
+// A lower target (0 included) ends the surplus spares now; account runtimes aren't touched.
 func (m *Manager) SetPools(want map[string]int) {
 	m.mu.Lock()
-	m.spareWant = want["default"]
+	m.spareWant = max(0, want["default"])
+	var surplus []*runtime
+	if len(m.spare) > m.spareWant {
+		surplus = append(surplus, m.spare[m.spareWant:]...)
+		m.spare = m.spare[:m.spareWant]
+	}
 	m.mu.Unlock()
+	for _, r := range surplus {
+		r.close()
+	}
 	go m.fillSpare()
 }
 
@@ -806,9 +821,17 @@ func (m *Manager) fillSpare() {
 			time.Sleep(10 * time.Second)
 			continue
 		}
+		// The target may have dropped while it started: one no longer wanted is ended, not kept.
 		m.mu.Lock()
-		m.spare = append(m.spare, r)
+		wanted := len(m.spare) < m.spareWant && !m.closed.Load()
+		if wanted {
+			m.spare = append(m.spare, r)
+		}
 		m.mu.Unlock()
+		if !wanted {
+			r.close()
+			return
+		}
 	}
 }
 

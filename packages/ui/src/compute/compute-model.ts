@@ -142,8 +142,11 @@ export interface SandboxShapes {
 		/** Memory follows vCPUs: each vCPU has at least `min` and at most `max` MB. */
 		readonly memoryMbPerVcpu: { readonly min: number; readonly max: number };
 		readonly presets: readonly ShapePreset[];
-		/** The disk a shape off the presets gets, in GB. */
-		readonly diskGb: number;
+		/**
+		 * Whether some host makes a shape off the presets. False (every host is an older kantel-host): only the presets
+		 * may be chosen. Absent: true.
+		 */
+		readonly custom?: boolean;
 	};
 	/** Hosted only: US cents an hour while it runs, per vCPU and per GB of memory. */
 	readonly rates?: {
@@ -169,7 +172,6 @@ export const DEFAULT_SANDBOX_SHAPES: SandboxShapes = {
 			{ name: "large", vcpus: 8, memoryMb: 16384, diskGb: 120, warm: false },
 			{ name: "xlarge", vcpus: 16, memoryMb: 32768, diskGb: 240, warm: false },
 		],
-		diskGb: 60,
 	},
 	rates: { microvmCentsPerVcpuHour: 0.75, microvmCentsPerGbHour: 0.125, isolateCentsPerGbHour: 2 },
 };
@@ -202,6 +204,22 @@ export function coldStart(shapes: SandboxShapes, shape: SandboxShape): boolean {
 	if (!shapes.microvm.presets.some((preset) => preset.warm)) return false;
 	return presetOf(shapes, shape)?.warm !== true;
 }
+
+/**
+ * The disk a microVM of `shape` gets, in GB, by the hosts' rule: a preset's own; off them, the smallest preset's with
+ * at least its memory, else the largest's. Undefined with no presets to go by.
+ */
+export function diskFor(shapes: SandboxShapes, shape: SandboxShape): number | undefined {
+	const presets = shapes.microvm.presets;
+	const own = presetOf(shapes, shape);
+	if (own !== undefined) return own.diskGb;
+	const byMemory = [...presets].sort((a, b) => a.memoryMb - b.memoryMb || a.diskGb - b.diskGb);
+	return (byMemory.find((preset) => preset.memoryMb >= shape.memoryMb) ?? byMemory.at(-1))?.diskGb;
+}
+
+/** Whether New sandbox offers any vCPUs and memory, or only the presets (no host makes custom shapes). */
+export const customShapes = (shapes: SandboxShapes): boolean =>
+	shapes.microvm.custom !== false || shapes.microvm.presets.length === 0;
 
 /** US cents an hour for a sandbox of `shape`, at the shapes' rates; undefined where there are none (self-hosted). */
 export function shapeCentsPerHour(shapes: SandboxShapes, kind: SandboxKind, shape: SandboxShape): number | undefined {

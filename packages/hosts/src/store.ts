@@ -5,6 +5,7 @@
  * Secrets are never stored: a join token's row and a host's row hold the SHA-256 of the token or credential. A join
  * token is spent by one conditional update, so two hosts racing with the same token can't both join.
  */
+import { KantelError } from "@kantel/contracts";
 import type { SqlDriver, SqlValue } from "@kantel/sql";
 import type { HostCapacity, HostFacts, SandboxTier } from "./protocol.ts";
 
@@ -74,6 +75,12 @@ export interface HostStore {
 	/** Every host, revoked ones too, oldest first. */
 	listHosts(): Promise<HostRecord[]>;
 	putHost(host: HostRecord): Promise<void>;
+	/**
+	 * Changes a host as it is now, atomically: `change` is given the stored record and answers the next (undefined
+	 * leaves it). A write that raced another is redone on the newer record, so a report never undoes an operator's
+	 * change (its pools, name, labels, drain) or a revocation. Resolves what was written, or undefined.
+	 */
+	updateHost(id: string, change: (host: HostRecord) => HostRecord | undefined): Promise<HostRecord | undefined>;
 	putPlacement(placement: PlacementRecord): Promise<void>;
 	getPlacement(sandboxId: string): Promise<PlacementRecord | undefined>;
 	placementsOn(hostId: string): Promise<PlacementRecord[]>;
@@ -115,6 +122,16 @@ export function createMemoryHostStore(): HostStore {
 			// Revocation sticks: a write that read the host before it was revoked doesn't bring its credential back.
 			const revoked = hosts.get(host.id)?.revoked === true;
 			hosts.set(host.id, copy(revoked ? { ...host, revoked: true } : host));
+		},
+		async updateHost(id, change) {
+			// Read, change and write with no await between them: nothing else runs in between.
+			const current = hosts.get(id);
+			if (current === undefined) return undefined;
+			const next = change(copy(current));
+			if (next === undefined) return undefined;
+			const written = current.revoked ? { ...next, revoked: true } : next;
+			hosts.set(id, copy(written));
+			return copy(written);
 		},
 		async putPlacement(placement) {
 			placements.set(placement.sandboxId, copy(placement));
@@ -174,6 +191,9 @@ const parse = <T>(row: Record<string, unknown>): T => JSON.parse(String(row.data
  * and facts' values are strings, so a `"revoked"` inside one is escaped.
  */
 const REVOKED_PATTERN = '%"revoked":true%';
+
+/** How many times `updateHost` reads again after losing a write to another, before it gives up. */
+const UPDATE_ATTEMPTS = 8;
 
 /** Records in SQL. Run `migrateHosts` first. */
 export function createSqlHostStore(driver: SqlDriver): HostStore {
@@ -238,6 +258,25 @@ export function createSqlHostStore(driver: SqlDriver): HostStore {
 					REVOKED_PATTERN,
 				]);
 			}
+		},
+		async updateHost(id, change) {
+			// Compare and set on the row's data as read: a write that lost to another reads again and redoes its change.
+			for (let attempt = 0; attempt < UPDATE_ATTEMPTS; attempt += 1) {
+				const [row] = await driver.query("SELECT data FROM compute_hosts WHERE id = ?", [id]);
+				if (row === undefined) return undefined;
+				const read = String(row.data);
+				const current = JSON.parse(read) as HostRecord;
+				const next = change(current);
+				if (next === undefined) return undefined;
+				const written = current.revoked ? { ...next, revoked: true } : next;
+				const won = await driver.query("UPDATE compute_hosts SET data = ? WHERE id = ? AND data = ? RETURNING id", [
+					JSON.stringify(written),
+					id,
+					read,
+				]);
+				if (won.length > 0) return written;
+			}
+			throw new KantelError("unavailable", `The host ${id} kept changing; try again`);
 		},
 		async putPlacement(placement) {
 			await upsert(

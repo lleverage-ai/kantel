@@ -458,6 +458,46 @@ export function checkShape(
 	return { vcpus, memoryMb };
 }
 
+/** Whether `host` can make a microVM of `shape`: one of its named sizes, or any shape it has room for where it makes them. */
+function makesShape(
+	host: BackendHost,
+	deploymentSizes: readonly BackendSize[],
+	shape: { readonly vcpus: number; readonly memoryMb: number },
+): boolean {
+	if (!host.tiers.includes("microvm")) return false;
+	const named = (host.sizes ?? deploymentSizes).some(
+		(size) => size.vcpus === shape.vcpus && size.memoryMb === shape.memoryMb,
+	);
+	return named || (makesCustom(host) && shape.vcpus <= host.capacity.vcpus && shape.memoryMb <= host.capacity.memoryMb);
+}
+
+/**
+ * A create's shape, checked: what it asked for, against the hosts it may go to (`hosts`), however full they are now.
+ * An isolate that asks for nothing gets the default 256 MB; a microVM, its deployment's default size (undefined). A
+ * microVM shape none of them can make is `not_supported` before anything is stored, unless `checkHosts` is false (a
+ * create from a snapshot, which goes to the snapshot's host and boots as it was).
+ */
+export function shapeFor(
+	type: computeSchema.SandboxType,
+	resources: computeSchema.SandboxShapeInput | undefined,
+	hosts: readonly BackendHost[],
+	deploymentSizes: readonly BackendSize[],
+	checkHosts = true,
+): { readonly vcpus: number; readonly memoryMb: number } | undefined {
+	if (resources === undefined) {
+		return type === "isolate" ? { vcpus: 0, memoryMb: computeSchema.ISOLATE_MEMORY_MB.default } : undefined;
+	}
+	const presets = hosts.flatMap((host) => host.sizes ?? deploymentSizes);
+	const shape = checkShape(type, resources, presets);
+	if (type === "microvm" && checkHosts && !hosts.some((host) => makesShape(host, deploymentSizes, shape))) {
+		throw new KantelError(
+			"not_supported",
+			`No host this sandbox may use can make a microVM of ${shape.vcpus} vCPU and ${shape.memoryMb} MB; see getSandboxShapes`,
+		);
+	}
+	return shape;
+}
+
 function hostChanged(known: StoredHost, next: StoredHost): boolean {
 	const { lastSeenAt: knownSeen, ...knownRest } = known;
 	const { lastSeenAt: nextSeen, ...nextRest } = next;
@@ -1946,6 +1986,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			accountId: sandbox.accountId,
 			type: sandbox.type,
 			subdomain: sandbox.subdomain,
+			...(sandbox.shape === undefined ? {} : { shape: sandbox.shape }),
 			...(sandbox.image === undefined ? {} : { image: sandbox.image }),
 		});
 	}
@@ -2936,36 +2977,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (body.size !== undefined && !capabilities.sizes.some((size) => size.name === body.size)) {
 					throw new KantelError("not_supported", `This deployment doesn't offer the size ${body.size}`);
 				}
-				const presets = capabilities.hosts.flatMap((host) => host.sizes ?? capabilities.sizes);
-				// What it asks for; an isolate that asks for nothing gets the default 256 MB.
-				const shape =
-					body.resources !== undefined
-						? checkShape(type, body.resources, presets)
-						: type === "isolate"
-							? { vcpus: 0, memoryMb: computeSchema.ISOLATE_MEMORY_MB.default }
-							: undefined;
-				// A microVM shape no host can make is refused now, not left to fail in its boot.
-				if (type === "microvm" && shape !== undefined && from === undefined) {
-					const makes = capabilities.hosts.some(
-						(host) =>
-							host.tiers.includes("microvm") &&
-							((host.sizes ?? capabilities.sizes).some(
-								(size) => size.vcpus === shape.vcpus && size.memoryMb === shape.memoryMb,
-							) ||
-								(makesCustom(host) && shape.vcpus <= host.capacity.vcpus && shape.memoryMb <= host.capacity.memoryMb)),
-					);
-					if (!makes) {
-						throw new KantelError(
-							"not_supported",
-							`No host can make a microVM of ${shape.vcpus} vCPU and ${shape.memoryMb} MB; see getSandboxShapes`,
-						);
-					}
-				}
-				// The preset it matches, named, so a host with a warm pool of it can serve it.
-				const preset =
-					type === "microvm" && shape !== undefined
-						? capabilities.sizes.find((size) => size.vcpus === shape.vcpus && size.memoryMb === shape.memoryMb)?.name
-						: undefined;
 				if (account.kind === "personal" && body.visibility === "organisation") {
 					throw new KantelError("invalid", "A personal account's sandboxes are always private");
 				}
@@ -2979,6 +2990,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					from !== undefined,
 					await mayShare(principal),
 				);
+				// Its shape is checked against the hosts it may go to, as placement will choose among them.
+				const eligible = new Set(hosts);
+				const shape = shapeFor(
+					type,
+					body.resources,
+					capabilities.hosts.filter((host) => eligible.has(host.id)),
+					capabilities.sizes,
+					from === undefined,
+				);
+				// The preset it matches, named, so a host with a warm pool of it can serve it.
+				const preset =
+					type === "microvm" && shape !== undefined
+						? capabilities.hosts
+								.filter((host) => eligible.has(host.id))
+								.flatMap((host) => host.sizes ?? capabilities.sizes)
+								.find((size) => size.vcpus === shape.vcpus && size.memoryMb === shape.memoryMb)?.name
+						: undefined;
 				const name = body.name ?? generatedName();
 				const sandbox: StoredSandbox = {
 					id: randomId("sbx"),

@@ -27,7 +27,9 @@ import {
 	type CreateSandboxInput,
 	coldStart,
 	costText,
+	customShapes,
 	DEFAULT_SANDBOX_SHAPES,
+	diskFor,
 	type Environment,
 	fitMemory,
 	type HostingMode,
@@ -1000,7 +1002,8 @@ const readShapes = (source: SandboxesSource, accountId: string): Promise<Sandbox
  * New sandbox's sliders. A microVM: vCPUs, then memory, which follows the vCPUs within what each may hold; a tick
  * marks each shape the hosts offer by name. An isolate: memory alone, since it shares its account's VM's CPU. Under
  * them, the shape in a line, its price where there is one (hosted), and, only where some host keeps warm machines
- * and this shape isn't one of them, that it boots cold.
+ * and this shape isn't one of them, that it boots cold. Where no host makes a shape off the presets (older hosts),
+ * a microVM is one of the presets, chosen from a list.
  */
 export function ShapeFields({
 	kind,
@@ -1009,6 +1012,7 @@ export function ShapeFields({
 	shape,
 	onVcpus,
 	onMemory,
+	onPreset,
 }: {
 	kind: SandboxKind;
 	shapes: SandboxShapes;
@@ -1016,6 +1020,8 @@ export function ShapeFields({
 	shape: SandboxShape;
 	onVcpus: (vcpus: number) => void;
 	onMemory: (memoryMb: number) => void;
+	/** A preset chosen whole, where only presets may be. */
+	onPreset: (shape: SandboxShape) => void;
 }) {
 	const cents = hosting === "hosted" ? shapeCentsPerHour(shapes, kind, shape) : undefined;
 	const price = cents === undefined ? "" : `, ${costText(cents)} an hour`;
@@ -1042,9 +1048,40 @@ export function ShapeFields({
 	}
 	const { vcpus: cpuRange, presets } = shapes.microvm;
 	const memory = memoryRangeFor(shapes, shape.vcpus);
-	const preset = presetOf(shapes, shape);
-	const disk = preset?.diskGb ?? shapes.microvm.diskGb;
+	const disk = diskFor(shapes, shape);
 	const cold = coldStart(shapes, shape);
+	const summary = (
+		<p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
+			<span>
+				{shape.vcpus} vCPU, {memoryText(shape.memoryMb)} memory{disk === undefined ? "" : `, ${disk} GB disk`}
+				{price}
+			</span>
+			{cold ? (
+				<span className="text-faint">Cold start: no host keeps this shape warm, so it boots from scratch.</span>
+			) : null}
+		</p>
+	);
+	if (!customShapes(shapes)) {
+		const chosen = presetOf(shapes, shape) ?? presets[0];
+		return (
+			<div className="flex flex-col gap-4">
+				<SelectField
+					label="Size"
+					hint="These hosts make only their named sizes; update kantel-host for any vCPUs and memory."
+					value={chosen?.name ?? ""}
+					onChange={(event) => {
+						const next = presets.find((entry) => entry.name === event.currentTarget.value);
+						if (next !== undefined) onPreset({ vcpus: next.vcpus, memoryMb: next.memoryMb });
+					}}
+					options={presets.map((entry) => ({
+						value: entry.name,
+						label: `${entry.vcpus} vCPU, ${memoryText(entry.memoryMb)}`,
+					}))}
+				/>
+				{summary}
+			</div>
+		);
+	}
 	return (
 		<div className="flex flex-col gap-4">
 			<SliderField
@@ -1067,19 +1104,15 @@ export function ShapeFields({
 				marks={presets.filter((entry) => entry.vcpus === shape.vcpus).map((entry) => entry.memoryMb)}
 				onChange={onMemory}
 			/>
-			<p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
-				<span>
-					{shape.vcpus} vCPU, {memoryText(shape.memoryMb)} memory, {disk} GB disk{price}
-				</span>
-				{cold ? (
-					<span className="text-faint">Cold start: no host keeps this shape warm, so it boots from scratch.</span>
-				) : null}
-			</p>
+			{summary}
 		</div>
 	);
 }
 
-function NewSandboxDialog({
+/** Where New sandbox's shapes are: read (or the source can't say, so the defaults stand), being read, or not read. */
+type ShapesRead = "ready" | "reading" | "failed";
+
+export function NewSandboxDialog({
 	open,
 	account,
 	hosting,
@@ -1109,29 +1142,49 @@ function NewSandboxDialog({
 	const [environment, setEnvironment] = useState("");
 	const [saved, setSaved] = useState<readonly SavedSnapshot[]>([]);
 	const [envs, setEnvs] = useState<readonly Environment[]>([]);
+	// A source that says what its hosts offer: nothing may be chosen or created until it has, so a create never goes
+	// with the sample's figures. One that can't say keeps the defaults.
+	const [shapesRead, setShapesRead] = useState<ShapesRead>(loadShapes === undefined ? "ready" : "reading");
 	const asked = useRef(false);
+	const readShapesNow = useCallback(() => {
+		if (loadShapes === undefined) return;
+		setShapesRead("reading");
+		loadShapes().then(
+			(read) => {
+				// Set once, before any slider can move: the controls show only once this lands.
+				const presets = read.microvm.presets;
+				const start = customShapes(read)
+					? {
+							vcpus: read.microvm.vcpus.default,
+							memoryMb: fitMemory(read, read.microvm.vcpus.default, read.microvm.memoryMb.default),
+						}
+					: (presets.find(
+							(preset) =>
+								preset.vcpus === read.microvm.vcpus.default && preset.memoryMb === read.microvm.memoryMb.default,
+						) ?? presets[0]);
+				setShapes(read);
+				if (start !== undefined) {
+					setVcpus(start.vcpus);
+					setMemoryMb(start.memoryMb);
+				}
+				setIsolateMb(read.isolate.memoryMb.default);
+				setShapesRead("ready");
+			},
+			() => setShapesRead("failed"),
+		);
+	}, [loadShapes]);
 	useEffect(() => {
 		if (!open || asked.current) return;
 		asked.current = true;
 		savedSnapshots?.().then(setSaved, () => setSaved([]));
 		environments?.().then(setEnvs, () => setEnvs([]));
-		// The deployment's own ranges replace the defaults when they come; until then (or if they can't be read) the
-		// defaults stand, and the API refuses a shape no host can take.
-		loadShapes?.().then(
-			(read) => {
-				setShapes(read);
-				setVcpus(read.microvm.vcpus.default);
-				setMemoryMb(fitMemory(read, read.microvm.vcpus.default, read.microvm.memoryMb.default));
-				setIsolateMb(read.isolate.memoryMb.default);
-			},
-			() => undefined,
-		);
-	}, [open, savedSnapshots, environments, loadShapes]);
+		readShapesNow();
+	}, [open, savedSnapshots, environments, readShapesNow]);
 	const valid = name === "" || /^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/.test(name);
 	const fromOptions = saved.filter((entry) => entry.kind === kind);
 	const shape: SandboxShape = kind === "isolate" ? { vcpus: 0, memoryMb: isolateMb } : { vcpus, memoryMb };
 	const submit = () => {
-		if (!valid) return;
+		if (!valid || shapesRead !== "ready") return;
 		onCreate({
 			accountId: account.id,
 			...(name === "" ? {} : { name }),
@@ -1154,7 +1207,7 @@ function NewSandboxDialog({
 			actions={
 				<>
 					<Button onClick={onClose}>Cancel</Button>
-					<Button type="submit" variant="primary" disabled={!valid}>
+					<Button type="submit" variant="primary" disabled={!valid || shapesRead !== "ready"}>
 						Create
 					</Button>
 				</>
@@ -1186,17 +1239,38 @@ function NewSandboxDialog({
 							: "A V8 isolate with a shell and JavaScript. Up in milliseconds, nearly free, no Docker."}
 					</span>
 				</div>
-				<ShapeFields
-					kind={kind}
-					shapes={shapes}
-					hosting={hosting}
-					shape={shape}
-					onVcpus={(next) => {
-						setVcpus(next);
-						setMemoryMb((current) => fitMemory(shapes, next, current));
-					}}
-					onMemory={(next) => (kind === "isolate" ? setIsolateMb(next) : setMemoryMb(next))}
-				/>
+				{shapesRead === "reading" ? (
+					<p className="text-xs text-muted" role="status">
+						Reading what the hosts offer…
+					</p>
+				) : shapesRead === "failed" ? (
+					<Notice
+						level="error"
+						action={
+							<Button size="sm" onClick={readShapesNow}>
+								Try again
+							</Button>
+						}
+					>
+						Kantel couldn't read what the hosts offer, so a size can't be chosen yet.
+					</Notice>
+				) : (
+					<ShapeFields
+						kind={kind}
+						shapes={shapes}
+						hosting={hosting}
+						shape={shape}
+						onVcpus={(next) => {
+							setVcpus(next);
+							setMemoryMb((current) => fitMemory(shapes, next, current));
+						}}
+						onMemory={(next) => (kind === "isolate" ? setIsolateMb(next) : setMemoryMb(next))}
+						onPreset={(next) => {
+							setVcpus(next.vcpus);
+							setMemoryMb(next.memoryMb);
+						}}
+					/>
+				)}
 				{envs.length === 0 ? null : (
 					<SelectField
 						label="Environment"

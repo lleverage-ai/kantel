@@ -644,6 +644,9 @@ func (m *Manager) restore(ctx context.Context, vmDir, statePath, memPath string,
 
 // SetPools sets how many warm sandboxes to keep per size, and starts filling. Pools are kept for the named sizes
 // only: a custom shape cold-boots.
+//
+// A lower target (0 included, as when an operator turns pools off) ends the surplus idle VMs now, freeing their
+// memory; claimed ones are sandboxes and aren't touched.
 func (m *Manager) SetPools(want map[string]int) {
 	m.mu.Lock()
 	m.poolWant = map[string]int{}
@@ -654,7 +657,12 @@ func (m *Manager) SetPools(want map[string]int) {
 		}
 		m.poolWant[size] = n
 	}
+	var surplus []*warm
+	m.pool, surplus = trimPools(m.pool, m.poolWant)
 	m.mu.Unlock()
+	for _, w := range surplus {
+		m.discard(w)
+	}
 	for size := range want {
 		if !isCustom(size) {
 			m.fill(size)
@@ -693,11 +701,47 @@ func (m *Manager) fill(sizeName string) {
 				time.Sleep(10 * time.Second)
 				continue
 			}
+			// The target may have dropped while it warmed: one no longer wanted is ended, not kept.
 			m.mu.Lock()
-			m.pool[sizeName] = append(m.pool[sizeName], w)
+			wanted := len(m.pool[sizeName]) < m.poolWant[sizeName] && !m.closed.Load()
+			if wanted {
+				m.pool[sizeName] = append(m.pool[sizeName], w)
+			}
 			m.mu.Unlock()
+			if !wanted {
+				m.discard(w)
+				return
+			}
 		}
 	}()
+}
+
+// trimPools keeps at most want[size] idle VMs of each size (none of a size not wanted), oldest first, and answers
+// the rest to end.
+func trimPools(pool map[string][]*warm, want map[string]int) (map[string][]*warm, []*warm) {
+	kept := map[string][]*warm{}
+	var surplus []*warm
+	for size, list := range pool {
+		n := max(0, min(len(list), want[size]))
+		if n > 0 {
+			kept[size] = list[:n]
+		}
+		surplus = append(surplus, list[n:]...)
+	}
+	return kept, surplus
+}
+
+// discard ends an idle warm VM: its process, its network link and its files.
+func (m *Manager) discard(w *warm) {
+	if w.machine != nil {
+		w.machine.Kill()
+	}
+	if m.cfg.Network != nil {
+		m.cfg.Network.Remove(w.link)
+	}
+	if w.dir != "" {
+		_ = os.RemoveAll(w.dir)
+	}
 }
 
 func (m *Manager) warmOne(ctx context.Context, sizeName string) (*warm, error) {
@@ -1565,9 +1609,7 @@ func (m *Manager) Close() {
 	m.mu.Unlock()
 	for _, list := range pools {
 		for _, w := range list {
-			w.machine.Kill()
-			m.cfg.Network.Remove(w.link)
-			_ = os.RemoveAll(w.dir)
+			m.discard(w)
 		}
 	}
 }

@@ -12,6 +12,7 @@ import {
 	PLACEHOLDER_RATES,
 	SHARED_HOSTS_REFUSED,
 	SHARED_KEY_REFUSED,
+	shapeFor,
 } from "../src/service.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 
@@ -306,6 +307,31 @@ describe("sandboxes", () => {
 		expect(warm).toMatchObject({ vcpus: { max: 8 }, memoryMb: { max: 16_384 }, custom: true });
 		expect(warm?.presets).toEqual([{ name: "default", vcpus: 2, memoryMb: 2048, diskGb: 20, warm: true }]);
 		expect(microvmShapes([], sizes)).toBeUndefined();
+	});
+
+	it("checks a shape against the hosts this create may use only, however full they are", () => {
+		const host = {
+			id: "named",
+			name: "named",
+			version: "1",
+			os: "linux",
+			arch: "x86_64",
+			tiers: ["microvm"],
+			kvm: true,
+			nestedVirtualisation: false,
+			capacity: { vcpus: 8, memoryMb: 16_384, diskGb: 200 },
+			labels: {},
+		} as const;
+		const sizes = [{ name: "default", vcpus: 2, memoryMb: 2048, diskGb: 20 }] as const;
+		const custom = { vcpus: 3, memoryMb: 6144 };
+		// Only named sizes where it may go: another account's upgraded host doesn't count.
+		expect(() => shapeFor("microvm", custom, [host], sizes)).toThrow(/No host this sandbox may use/);
+		expect(shapeFor("microvm", { vcpus: 2, memoryMb: 2048 }, [host], sizes)).toEqual({ vcpus: 2, memoryMb: 2048 });
+		expect(shapeFor("microvm", custom, [{ ...host, features: ["custom-shapes"] }], sizes)).toEqual(custom);
+		// From a snapshot it boots on the snapshot's host as it was.
+		expect(shapeFor("microvm", custom, [host], sizes, false)).toEqual(custom);
+		expect(shapeFor("isolate", undefined, [], sizes)).toEqual({ vcpus: 0, memoryMb: 256 });
+		expect(shapeFor("microvm", undefined, [], sizes)).toBeUndefined();
 	});
 
 	it("extends a running sandbox's stop time and stops it once that passes", async () => {

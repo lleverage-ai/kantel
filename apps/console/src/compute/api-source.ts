@@ -314,7 +314,6 @@ async function learnEnvironmentNames(
  */
 export function shapesOf(shapes: ApiSandboxShapes): UiSandboxShapes {
 	const microvm = shapes.microvm;
-	const preferred = microvm?.presets.find((preset) => preset.name === "default") ?? microvm?.presets[0];
 	return {
 		isolate: { memoryMb: { ...shapes.isolate.memoryMb } },
 		microvm:
@@ -325,7 +324,8 @@ export function shapesOf(shapes: ApiSandboxShapes): UiSandboxShapes {
 						memoryMb: { ...microvm.memoryMb },
 						memoryMbPerVcpu: { ...microvm.memoryMbPerVcpu },
 						presets: microvm.presets.map((preset) => ({ ...preset })),
-						diskGb: preferred?.diskGb ?? DEFAULT_SANDBOX_SHAPES.microvm.diskGb,
+						// Older hosts only: then just the presets may be chosen.
+						custom: microvm.custom,
 					},
 		...(shapes.rates === undefined
 			? {}

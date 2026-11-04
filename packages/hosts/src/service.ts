@@ -390,7 +390,14 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			throw new Error("The hello's sandboxes aren't a list");
 		}
 		const now = clock.now();
-		await store.putHost({ ...host, facts: facts.value, capacity: capacity.value, lastSeenAt: now });
+		// Only what the host reports: what an operator set meanwhile (its pools, name, labels, drain) stands.
+		const reported = await store.updateHost(hostId, (latest) => ({
+			...latest,
+			facts: facts.value,
+			capacity: capacity.value,
+			lastSeenAt: now,
+		}));
+		if (reported === undefined || reported.revoked) throw new Error("This host is revoked");
 		reserved.delete(hostId);
 		// Reconcile: what the host holds is the truth about state; a placement the host no longer has is lost.
 		// Go marshals an empty list as null (kantel-host 0.1.0-dev on a host with no sandboxes).
@@ -406,7 +413,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			log(`[hosts] host ${hostId} holds sandboxes Kantel didn't place: ${[...held.keys()].slice(0, 10).join(", ")}`);
 		}
 		log(`[hosts] host ${hostId} connected (${facts.value.version}, ${sandboxes.length} sandboxes)`);
-		return welcomeFor({ ...host, facts: facts.value });
+		// Its welcome is the host as written, with any pools an operator set meanwhile.
+		return welcomeFor(reported);
 	};
 
 	const cluster = options.cluster;
@@ -427,8 +435,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			reserved.delete(hostId);
 			report(
 				(async () => {
-					const host = await store.getHost(hostId);
-					if (host !== undefined) await store.putHost({ ...host, capacity, lastSeenAt: clock.now() });
+					await store.updateHost(hostId, (host) => ({ ...host, capacity, lastSeenAt: clock.now() }));
 				})(),
 			);
 		},
@@ -459,8 +466,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			cluster?.release(hostId);
 			report(
 				(async () => {
-					const host = await store.getHost(hostId);
-					if (host !== undefined) await store.putHost({ ...host, lastSeenAt: clock.now() });
+					await store.updateHost(hostId, (host) => ({ ...host, lastSeenAt: clock.now() }));
 				})(),
 			);
 		},
@@ -681,17 +687,22 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			) {
 				throw new KantelError("invalid", "A host's name is 1 to 100 characters");
 			}
-			const { pools: _pools, ...rest } = host;
-			const nextPools =
-				change.pools === undefined ? host.pools : change.pools === null ? undefined : poolsIn(change.pools);
-			const next: HostRecord = {
-				...rest,
-				...(change.name === undefined ? {} : { name: change.name }),
-				...(change.labels === undefined ? {} : { labels: labelsOf(change.labels) }),
-				...(change.draining === undefined ? {} : { draining: change.draining === true }),
-				...(nextPools === undefined ? {} : { pools: nextPools }),
-			};
-			await store.putHost(next);
+			const labels = change.labels === undefined ? undefined : labelsOf(change.labels);
+			const pools = change.pools === undefined || change.pools === null ? undefined : poolsIn(change.pools);
+			// On the host as stored now, so a report that lands meanwhile neither undoes this nor is undone by it.
+			const next = await store.updateHost(hostId, (latest) => {
+				const { pools: kept, ...rest } = latest;
+				const nextPools = change.pools === undefined ? kept : change.pools === null ? undefined : pools;
+				return {
+					...rest,
+					...(change.name === undefined ? {} : { name: change.name }),
+					...(labels === undefined ? {} : { labels }),
+					...(change.draining === undefined ? {} : { draining: change.draining === true }),
+					...(nextPools === undefined ? {} : { pools: nextPools }),
+				};
+			});
+			if (next === undefined) throw new KantelError("not_found", "No such host");
+			if (next.revoked) throw new KantelError("conflict", "The host is revoked");
 			const redrained = change.draining !== undefined && change.draining !== host.draining;
 			if (redrained || change.pools !== undefined) hub.rewelcome(hostId, welcomeFor(next));
 			return view(next);

@@ -51,6 +51,33 @@ function behaves(open: () => Promise<HostStore>) {
 		expect(await store.spendJoinToken("nope", "host_d", 1)).toBeUndefined();
 	});
 
+	it("changes a host as it is now, so a report never undoes an operator's pools, or a revocation", async () => {
+		const store = await open();
+		await store.insertHost(host("host_a", 10));
+		// An operator sets pools, then clears them, then resets them; a report runs on whatever is stored.
+		await store.updateHost("host_a", (latest) => ({ ...latest, pools: { "microvm/default": 2 } }));
+		const reported = await store.updateHost("host_a", (latest) => ({ ...latest, lastSeenAt: 5 }));
+		expect(reported).toMatchObject({ lastSeenAt: 5, pools: { "microvm/default": 2 } });
+		await store.updateHost("host_a", (latest) => ({ ...latest, pools: {} }));
+		await store.updateHost("host_a", (latest) => ({ ...latest, lastSeenAt: 6 }));
+		expect((await store.getHost("host_a"))?.pools).toEqual({});
+		await store.updateHost("host_a", ({ pools: _pools, ...rest }) => rest);
+		await store.updateHost("host_a", (latest) => ({ ...latest, lastSeenAt: 7 }));
+		expect(await store.getHost("host_a")).not.toHaveProperty("pools");
+		// Two at once both land: each is redone on what the other wrote.
+		await Promise.all([
+			store.updateHost("host_a", (latest) => ({ ...latest, pools: { "microvm/large": 1 } })),
+			store.updateHost("host_a", (latest) => ({ ...latest, lastSeenAt: 8 })),
+		]);
+		expect(await store.getHost("host_a")).toMatchObject({ lastSeenAt: 8, pools: { "microvm/large": 1 } });
+		// A revoked host stays revoked, and an unknown one or a no-op writes nothing.
+		await store.putHost({ ...((await store.getHost("host_a")) as HostRecord), revoked: true });
+		const after = await store.updateHost("host_a", (latest) => ({ ...latest, revoked: false, lastSeenAt: 9 }));
+		expect(after).toMatchObject({ revoked: true, lastSeenAt: 9 });
+		expect(await store.updateHost("nope", (latest) => latest)).toBeUndefined();
+		expect(await store.updateHost("host_a", () => undefined)).toBeUndefined();
+	});
+
 	it("finds hosts by ID and credential, lists oldest first and replaces a record", async () => {
 		const store = await open();
 		await store.insertHost(host("host_b", 20));

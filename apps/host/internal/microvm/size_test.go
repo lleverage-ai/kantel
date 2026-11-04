@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
@@ -101,5 +103,43 @@ func TestPoolsAreKeptForNamedSizesOnly(t *testing.T) {
 	}
 	if _, _, err := m.template(context.Background(), proto.Size{Name: CustomSizeName(2, 2048, 20), VCPUs: 2, MemoryMiB: 2048, DiskGiB: 20}); err == nil {
 		t.Fatal("template made one for a custom size")
+	}
+}
+
+// A lower pool target ends the surplus idle VMs at once (their files go), keeping the oldest; 0 ends them all.
+func TestSetPoolsEndsSurplusWarmVMs(t *testing.T) {
+	root := t.TempDir()
+	idle := func(name string) *warm {
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return &warm{dir: dir, size: "default"}
+	}
+	a, b, c, d := idle("a"), idle("b"), idle("c"), idle("d")
+	m := &Manager{
+		log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		pool:     map[string][]*warm{"default": {a, b, c}, "large": {d}},
+		poolWant: map[string]int{"default": 3, "large": 1},
+		filling:  map[string]bool{},
+	}
+	m.SetPools(map[string]int{"default": 1})
+	if got := m.Warm(); got["default"] != 1 || got["large"] != 0 {
+		t.Fatalf("Warm() = %v, want default 1 and large 0", got)
+	}
+	if m.pool["default"][0] != a {
+		t.Fatal("the oldest warm VM wasn't the one kept")
+	}
+	for _, gone := range []*warm{b, c, d} {
+		if _, err := os.Stat(gone.dir); !os.IsNotExist(err) {
+			t.Fatalf("%s is still there: %v", gone.dir, err)
+		}
+	}
+	m.SetPools(map[string]int{})
+	if len(m.pool) != 0 {
+		t.Fatalf("pools left after turning them off: %v", m.Warm())
+	}
+	if _, err := os.Stat(a.dir); !os.IsNotExist(err) {
+		t.Fatal("the last warm VM's files are still there")
 	}
 }

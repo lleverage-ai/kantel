@@ -36,7 +36,14 @@ import type {
 	Webhook,
 	WebhookDelivery,
 } from "./compute-model.ts";
-import { DEFAULT_SANDBOX_SHAPES, presetOf, type SandboxSize, sameProxySettings, sizeSpec } from "./compute-model.ts";
+import {
+	DEFAULT_SANDBOX_SHAPES,
+	diskFor,
+	presetOf,
+	type SandboxSize,
+	sameProxySettings,
+	sizeSpec,
+} from "./compute-model.ts";
 
 /** The code the fixtures' waiting command line showed. */
 export const FIXTURE_DEVICE_CODE = "BCDF-GHJK";
@@ -1379,11 +1386,8 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 									resources: {
 										vcpus: input.shape.vcpus,
 										memoryGb: input.shape.memoryMb / 1024,
-										diskGb:
-											input.kind === "isolate"
-												? 0
-												: (presetOf(DEFAULT_SANDBOX_SHAPES, input.shape)?.diskGb ??
-													DEFAULT_SANDBOX_SHAPES.microvm.diskGb),
+										// Off the presets, the hosts' rule: the smallest preset's disk with at least its memory.
+										diskGb: input.kind === "isolate" ? 0 : (diskFor(DEFAULT_SANDBOX_SHAPES, input.shape) ?? 0),
 									},
 								}),
 						state: "starting",

@@ -1,8 +1,12 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { onStep, sliderPercent } from "../primitives/slider.tsx";
 import {
 	coldStart,
+	customShapes,
 	DEFAULT_SANDBOX_SHAPES,
+	diskFor,
 	fitMemory,
 	memoryRangeFor,
 	memoryText,
@@ -11,6 +15,7 @@ import {
 	shapeCentsPerHour,
 	sizeText,
 } from "./compute-model.ts";
+import { NewSandboxDialog, ShapeFields } from "./sandboxes-page.tsx";
 
 const warm = (names: readonly string[]): SandboxShapes => ({
 	...DEFAULT_SANDBOX_SHAPES,
@@ -73,5 +78,70 @@ describe("slider steps", () => {
 		expect(onStep(5, 1, 1, 1)).toBe(1);
 		expect(sliderPercent(256, 128, 512)).toBeCloseTo(33.33, 1);
 		expect(sliderPercent(1, 1, 1)).toBe(0);
+	});
+});
+
+describe("New sandbox's shapes, as the hosts make them", () => {
+	const presetsOnly: SandboxShapes = {
+		...DEFAULT_SANDBOX_SHAPES,
+		microvm: { ...DEFAULT_SANDBOX_SHAPES.microvm, custom: false },
+	};
+	const fields = (shapes: SandboxShapes, shape: { vcpus: number; memoryMb: number }) =>
+		renderToStaticMarkup(
+			createElement(ShapeFields, {
+				kind: "microvm",
+				shapes,
+				hosting: "self-hosted",
+				shape,
+				onVcpus: () => {},
+				onMemory: () => {},
+				onPreset: () => {},
+			}),
+		);
+
+	it("gives a shape the disk the hosts would: a preset's own, else the smallest preset's with its memory", () => {
+		expect(diskFor(DEFAULT_SANDBOX_SHAPES, { vcpus: 4, memoryMb: 8192 })).toBe(60);
+		expect(diskFor(DEFAULT_SANDBOX_SHAPES, { vcpus: 1, memoryMb: 512 })).toBe(40);
+		expect(diskFor(DEFAULT_SANDBOX_SHAPES, { vcpus: 5, memoryMb: 10_240 })).toBe(120);
+		expect(diskFor(DEFAULT_SANDBOX_SHAPES, { vcpus: 16, memoryMb: 65_536 })).toBe(240);
+		const none = { ...DEFAULT_SANDBOX_SHAPES, microvm: { ...DEFAULT_SANDBOX_SHAPES.microvm, presets: [] } };
+		expect(diskFor(none, { vcpus: 2, memoryMb: 2048 })).toBeUndefined();
+		expect(fields(DEFAULT_SANDBOX_SHAPES, { vcpus: 1, memoryMb: 512 })).toContain("40 GB disk");
+		expect(fields(none, { vcpus: 2, memoryMb: 2048 })).not.toContain("GB disk");
+	});
+
+	it("offers only the presets, from a list, where no host makes other shapes", () => {
+		expect(customShapes(DEFAULT_SANDBOX_SHAPES)).toBe(true);
+		expect(customShapes(presetsOnly)).toBe(false);
+		const html = fields(presetsOnly, { vcpus: 4, memoryMb: 8192 });
+		expect(html).not.toContain('type="range"');
+		expect(html.match(/<option/g)).toHaveLength(DEFAULT_SANDBOX_SHAPES.microvm.presets.length);
+		expect(fields(DEFAULT_SANDBOX_SHAPES, { vcpus: 4, memoryMb: 8192 })).toContain('type="range"');
+	});
+
+	it("can't create until a source that says what its hosts offer has said", () => {
+		const dialog = (shapes?: () => Promise<SandboxShapes>) =>
+			renderToStaticMarkup(
+				createElement(NewSandboxDialog, {
+					open: true,
+					account: { id: "acct", kind: "personal", name: "Ada", role: "owner", members: 1 },
+					hosting: "self-hosted",
+					...(shapes === undefined ? {} : { shapes }),
+					onClose: () => {},
+					onCreate: () => {},
+				}),
+			);
+		const create = (html: string) =>
+			[...html.matchAll(/(<button[^>]*>)(.*?)<\/button>/g)].find(
+				(match) => match[2]?.replace(/<[^>]*>/g, "") === "Create",
+			)?.[1] ?? "missing";
+		const reading = dialog(() => new Promise(() => {}));
+		expect(reading).toContain("Reading what the hosts offer");
+		expect(reading).not.toContain('type="range"');
+		expect(create(reading)).toMatch(/\sdisabled=""/);
+		// A source that can't say keeps the defaults, ready at once.
+		const defaults = dialog();
+		expect(defaults).toContain('type="range"');
+		expect(create(defaults)).not.toMatch(/\sdisabled=""/);
 	});
 });
