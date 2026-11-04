@@ -456,6 +456,8 @@ const STOP_LEASE_MS = 5 * 60_000;
 const UNENFORCED = "Its host doesn't enforce egress grants or protected variables";
 /** What a host reports when it enforces egress grants and protected variables (`HOST_FEATURES` in @kantel/hosts). */
 const EGRESS_POLICY_FEATURE = "egress-policy";
+/** What a host reports when it sends its own usage ticks (`HOST_FEATURES.usage` in @kantel/hosts). */
+const USAGE_FEATURE = "usage";
 /**
  * How long an idempotency key's claim lasts without a renewal: a gateway that dies mid-call frees its key within this,
  * and a retry then does the work. The holder renews it every `IDEMPOTENCY_RENEW_MS` while the work runs.
@@ -2945,14 +2947,39 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	};
 
 	/**
-	 * The fallback for a host that doesn't send its readings (an older kantel-host): one reading by running a command in
-	 * the sandbox, at most once per `minGapMs`, added to its series as a host's tick would be.
+	 * The hosts the backend names, read once however many sandboxes ask (`readUsage`); `undefined` when they can't be read.
 	 */
-	async function readUsage(sandbox: StoredSandbox, minGapMs: number): Promise<void> {
+	function hostsOnce(): () => Promise<readonly BackendHost[] | undefined> {
+		let hosts: Promise<readonly BackendHost[] | undefined> | undefined;
+		return () => {
+			hosts ??= backend.capabilities().then(
+				(capabilities) => capabilities.hosts,
+				() => undefined,
+			);
+			return hosts;
+		};
+	}
+
+	/**
+	 * The fallback for a host that doesn't send its readings (an older kantel-host): one reading by running a command in
+	 * the sandbox, at most once per `minGapMs`, added to its series as a host's tick would be. Never for a host that says
+	 * it sends them (`usage`), even while its ticks are late: they wait on the host while it can't reach the control plane
+	 * and come when it can, and a reading here, stamped later than they are, would keep them out of the series (it takes
+	 * only newer points). Nor when the hosts can't be read: the host may well be one that sends them.
+	 */
+	async function readUsage(
+		sandbox: StoredSandbox,
+		minGapMs: number,
+		hosts: () => Promise<readonly BackendHost[] | undefined> = hostsOnce(),
+	): Promise<void> {
 		if (sandbox.state !== "running" || hostReports(sandbox.hostId)) return;
 		const at = now();
 		if (at - (fallbackReadAt.get(sandbox.id) ?? Number.NEGATIVE_INFINITY) < minGapMs) return;
 		fallbackReadAt.set(sandbox.id, at);
+		const known = await hosts();
+		if (known === undefined) return;
+		const host = known.find((each) => each.id === sandbox.hostId);
+		if (host?.features?.includes(USAGE_FEATURE) === true) return;
 		const reading = await backend.usage(sandbox.id).catch(() => undefined);
 		if (reading === undefined) return;
 		const limit = sandbox.resources?.memoryMb === undefined ? {} : { memLimitBytes: sandbox.resources.memoryMb * MIB };
@@ -5213,7 +5240,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const samples: TelemetryUsageSample[] = [];
 			const running = await store.sandboxes.list({ state: "running" });
 			// The export's own timer is the fallback's pace: one read per flush for a host that doesn't send its own.
-			for (const sandbox of running) await readUsage(sandbox, 0);
+			const hosts = hostsOnce();
+			for (const sandbox of running) await readUsage(sandbox, 0, hosts);
 			const byId = new Map(running.map((sandbox) => [sandbox.id, sandbox]));
 			// Every reading not yet taken, whatever the sandbox's state now: one that stopped since still sends what it had.
 			for (const id of sandboxSeries.keys()) {

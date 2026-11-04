@@ -41,8 +41,9 @@ export interface BackendHost {
 	readonly kvm: boolean;
 	readonly nestedVirtualisation: boolean;
 	/**
-	 * What it does beyond what every host does; `egress-policy`: it enforces egress grants and protected variables.
-	 * Absent: what the backend's sandboxes get is enforced however they run (the stub).
+	 * What it does beyond what every host does; `egress-policy`: it enforces egress grants and protected variables;
+	 * `usage`: it sends its own usage ticks, so none is read by running a command in a sandbox. Absent: what the backend's
+	 * sandboxes get is enforced however they run (the stub).
 	 */
 	readonly features?: readonly string[];
 	readonly capacity: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number };
