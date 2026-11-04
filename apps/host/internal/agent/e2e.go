@@ -150,6 +150,22 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 			}
 		}
 	}
+	// On a host holding E2E spaces a snapshot's ID is its own, in every tier: with two of one ID, which one a later call
+	// reached would depend on which tier looked first.
+	if h.anyE2E() {
+		var made []string
+		switch method {
+		case proto.MethodStop, proto.MethodSnapshotSave:
+			made = []string{p.SnapshotID}
+		case proto.MethodFork:
+			made = []string{p.SnapshotID, "fork-" + p.NewID}
+		}
+		for _, id := range made {
+			if id != "" && h.snapshotExists(id) {
+				return &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("snapshot %s already exists on this host", id)}
+			}
+		}
+	}
 	space := ""
 	switch {
 	case slices.Contains(contentMethods, method):
@@ -170,6 +186,9 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 		// An ID once used in an E2E space isn't given to another space: its snapshots would follow it.
 		if was, ok := h.recordedOwner(p.SandboxID); ok && was != p.Owner {
 			return &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("sandbox ID %s was used in %s, which is end-to-end encrypted", p.SandboxID, was)}
+		}
+		if err := h.freshForE2E(p.SandboxID, p.Owner); err != nil {
+			return err
 		}
 		// The gateway gives an E2E space's sandbox no environment or SSH keys of its own, made fresh or from a snapshot: an
 		// exported function such as BASH_FUNC_cat%% (or LD_PRELOAD, BASH_ENV) would run in every command a device runs.
@@ -206,6 +225,9 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 			if was, ok := h.recordedOwner(p.NewID); ok && was != owner {
 				return &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("sandbox ID %s was used in %s", p.NewID, was)}
 			}
+			if err := h.freshForE2E(p.NewID, owner); err != nil {
+				return err
+			}
 			return h.recordE2E(p.NewID, owner)
 		}
 		if was, ok := h.recordedOwner(p.NewID); ok && was != owner {
@@ -217,6 +239,35 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 	}
 	if h.e2eMode(space) != e2e.ModeOff {
 		return e2eRefusal(space)
+	}
+	return nil
+}
+
+func (h *Host) snapshotExists(id string) bool {
+	for _, name := range h.order {
+		if h.tiers[name].HasSnapshot(id) {
+			return true
+		}
+	}
+	return false
+}
+
+// freshForE2E refuses to give id to E2E space when it names a sandbox, or snapshots, the host doesn't already know as
+// that space's: recording it would make another space's disk (one the gateway could have prepared) the E2E space's.
+func (h *Host) freshForE2E(id, space string) error {
+	if h.e2eMode(space) == e2e.ModeOff {
+		return nil
+	}
+	if was, ok := h.recordedOwner(id); ok && was == space {
+		return nil
+	}
+	if _, err := h.tierOf(id); err == nil {
+		return &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("sandbox %s already exists on this host", id)}
+	}
+	for _, name := range h.order {
+		if len(h.tiers[name].Snapshots(id)) > 0 {
+			return &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("sandbox ID %s has snapshots from another space on this host", id)}
+		}
 	}
 	return nil
 }
@@ -240,11 +291,12 @@ func egressReaches(e *proto.Egress) string {
 	return ""
 }
 
-// e2eGate keeps a gateway call's E2E check bound to the sandbox (or snapshot) it goes on to reach. The check is made
-// before the call resolves its ID again, so without it a sandbox deleted and made again in an E2E space between the two
-// would be reached. A gateway content call is in the gate from before its check until it is done; making an ID E2E's
-// (a create or fork into an E2E space, a snapshot of an E2E sandbox) first cancels and waits for the calls in the
-// gate for that ID, and keeps new ones out until it is done, after which their check sees the E2E owner.
+// e2eGate keeps every gateway call's E2E check true while it runs: the check is made on IDs, which the call then
+// resolves again, so what an ID names mustn't change in between. One rule does it, whatever the call: a gateway call
+// "uses" each sandbox and snapshot ID it names, from before its check until it ends; a call that changes what an ID
+// names (a create or delete, the new ID of a fork, a snapshot it saves or deletes) "claims" that ID first, which
+// cancels the calls using it, waits for them to end, and turns new ones away until the claim is done. So an ID's
+// owner is the same at a call's check and all through it, whichever tier it resolves to.
 type e2eGate struct {
 	mu      sync.Mutex
 	cond    *sync.Cond
@@ -261,26 +313,32 @@ func (g *e2eGate) init() {
 	}
 }
 
-// enter puts a gateway call on key in the gate; false while key is being made E2E's.
-func (g *e2eGate) enter(ctx context.Context, key string) (context.Context, func(), bool) {
+// use puts a call on keys; false when one of them is claimed. leave is to be called when the call ends.
+func (g *e2eGate) use(ctx context.Context, keys []string) (context.Context, func(), bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.init()
-	if g.claimed[key] > 0 {
-		return ctx, func() {}, false
+	for _, key := range keys {
+		if g.claimed[key] > 0 {
+			return ctx, func() {}, false
+		}
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	g.next++
 	n := g.next
-	if g.calls[key] == nil {
-		g.calls[key] = map[int]context.CancelFunc{}
+	for _, key := range keys {
+		if g.calls[key] == nil {
+			g.calls[key] = map[int]context.CancelFunc{}
+		}
+		g.calls[key][n] = cancel
 	}
-	g.calls[key][n] = cancel
 	return ctx, func() {
 		g.mu.Lock()
-		delete(g.calls[key], n)
-		if len(g.calls[key]) == 0 {
-			delete(g.calls, key)
+		for _, key := range keys {
+			delete(g.calls[key], n)
+			if len(g.calls[key]) == 0 {
+				delete(g.calls, key)
+			}
 		}
 		g.cond.Broadcast()
 		g.mu.Unlock()
@@ -288,80 +346,93 @@ func (g *e2eGate) enter(ctx context.Context, key string) (context.Context, func(
 	}, true
 }
 
-// claim cancels the gateway calls on key and waits for them to end, keeping new ones out until release.
-func (g *e2eGate) claim(key string) (release func()) {
+// claim cancels the calls using keys and waits for them to end, keeping new ones out until release. A claim waits only
+// on calls past their own claims, which wait on nothing in the gate, so claims can't deadlock.
+func (g *e2eGate) claim(keys []string) (release func()) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.init()
-	g.claimed[key]++
-	for _, cancel := range g.calls[key] {
-		cancel()
+	for _, key := range keys {
+		g.claimed[key]++
+		for _, cancel := range g.calls[key] {
+			cancel()
+		}
 	}
-	for len(g.calls[key]) > 0 {
+	for slices.ContainsFunc(keys, func(key string) bool { return len(g.calls[key]) > 0 }) {
 		g.cond.Wait()
 	}
 	return func() {
 		g.mu.Lock()
-		g.claimed[key]--
-		if g.claimed[key] == 0 {
-			delete(g.claimed, key)
+		for _, key := range keys {
+			g.claimed[key]--
+			if g.claimed[key] == 0 {
+				delete(g.claimed, key)
+			}
 		}
 		g.mu.Unlock()
 	}
 }
 
-// gatewayGuard is gatewayMayCall with the call bound to what it checked (e2eGate): ctx is the call's context, and done
-// is called when the call has ended.
-func (h *Host) gatewayGuard(ctx context.Context, method string, params json.RawMessage) (context.Context, func(), error) {
+// gateKeys are the IDs a gateway call uses and claims (e2eGate).
+func gateKeys(method string, params json.RawMessage) (uses, claims []string) {
 	var p struct {
 		SandboxID  string `json:"sandboxId"`
 		NewID      string `json:"newId"`
 		SnapshotID string `json:"snapshotId"`
-		Port       int    `json:"port"`
-		Owner      string `json:"owner"`
+		From       string `json:"from"`
 	}
 	_ = json.Unmarshal(params, &p)
-	var claims []string
-	var key string
-	switch {
-	case slices.Contains(contentMethods, method) || (method == proto.MethodPortOpen && p.Port != proto.PortE2E):
-		key = "sandbox:" + p.SandboxID
-	case method == proto.MethodSnapshotRead || method == proto.MethodSnapshotTree:
-		key = "snapshot:" + p.SnapshotID
-	case method == proto.MethodCreate:
-		if h.e2eMode(p.Owner) != e2e.ModeOff {
-			claims = append(claims, "sandbox:"+p.SandboxID)
-		}
-	case method == proto.MethodFork || method == proto.MethodStop || method == proto.MethodSnapshotSave:
-		if h.e2eMode(h.ownerOf(p.SandboxID)) != e2e.ModeOff {
-			if p.NewID != "" {
-				claims = append(claims, "sandbox:"+p.NewID)
-			}
-			if p.SnapshotID != "" {
-				claims = append(claims, "snapshot:"+p.SnapshotID)
-			}
+	sandbox := func(id string) string { return "sandbox:" + id }
+	snapshot := func(id string) string { return "snapshot:" + id }
+	add := func(list *[]string, key, id string) {
+		if id != "" {
+			*list = append(*list, key)
 		}
 	}
-	done := func() {}
-	if key != "" {
-		var ok bool
-		var leave func()
-		if ctx, leave, ok = h.gate.enter(ctx, key); !ok {
-			return ctx, done, &proto.Error{Code: proto.ErrConflict, Message: "that sandbox is being made in an end-to-end encrypted space"}
-		}
-		done = leave
+	switch method {
+	case proto.MethodCreate:
+		add(&claims, sandbox(p.SandboxID), p.SandboxID)
+		add(&uses, snapshot(p.From), p.From)
+	case proto.MethodDelete:
+		add(&claims, sandbox(p.SandboxID), p.SandboxID)
+	case proto.MethodFork:
+		add(&uses, sandbox(p.SandboxID), p.SandboxID)
+		add(&claims, sandbox(p.NewID), p.NewID)
+		add(&claims, snapshot(p.SnapshotID), p.SnapshotID)
+		// The isolate tier names a fork's snapshot after the fork when the call doesn't.
+		add(&claims, snapshot("fork-"+p.NewID), p.NewID)
+	case proto.MethodStop, proto.MethodSnapshotSave:
+		add(&uses, sandbox(p.SandboxID), p.SandboxID)
+		add(&claims, snapshot(p.SnapshotID), p.SnapshotID)
+	case proto.MethodSnapshotDel:
+		add(&claims, snapshot(p.SnapshotID), p.SnapshotID)
+	case proto.MethodSnapshotRead, proto.MethodSnapshotTree:
+		add(&uses, snapshot(p.SnapshotID), p.SnapshotID)
+	default:
+		add(&uses, sandbox(p.SandboxID), p.SandboxID)
 	}
 	slices.Sort(claims)
-	var releases []func()
-	for _, c := range claims {
-		releases = append(releases, h.gate.claim(c))
+	claims = slices.Compact(claims)
+	uses = slices.DeleteFunc(uses, func(k string) bool { return slices.Contains(claims, k) })
+	return uses, claims
+}
+
+// gatewayGuard is gatewayMayCall with the call bound to what it checked (e2eGate): ctx is the call's context, and done
+// is called when the call has ended.
+func (h *Host) gatewayGuard(ctx context.Context, method string, params json.RawMessage) (context.Context, func(), error) {
+	uses, claims := gateKeys(method, params)
+	release := func() {}
+	if len(claims) > 0 {
+		release = h.gate.claim(claims)
 	}
-	if len(releases) > 0 {
-		done = func() {
-			for _, r := range releases {
-				r()
-			}
-		}
+	ctx, leave, ok := h.gate.use(ctx, uses)
+	if !ok {
+		release()
+		return ctx, func() {}, &proto.Error{Code: proto.ErrConflict, Message: "a sandbox or snapshot this call names is being made or deleted: try again"}
+	}
+	done := func() {
+		leave()
+		release()
 	}
 	if err := h.gatewayMayCall(method, params); err != nil {
 		done()

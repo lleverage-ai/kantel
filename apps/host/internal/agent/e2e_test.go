@@ -483,3 +483,67 @@ func TestAGatewayCallIsBoundToTheSandboxItChecked(t *testing.T) {
 		done()
 	}
 }
+
+// Every gateway call, lifecycle ones too, holds the IDs it checked until it ends: a delete (or snapshot delete) waits
+// for it, so a sandbox or snapshot can't be swapped under a call for an E2E one.
+func TestAnIDCantChangeUnderAGatewayCall(t *testing.T) {
+	h, vm, v := e2eHost(t)
+	iso := &e2eTier{owners: map[string]string{}, snaps: []proto.SnapshotInfo{{ID: "snap_two", SandboxID: "sbx_one"}}}
+	vm.snaps = append(vm.snaps, proto.SnapshotInfo{ID: "snap_two", SandboxID: "sbx_other"})
+	h.tiers[isolate.Tier] = iso
+	h.order = []string{microvm.Tier, isolate.Tier}
+	guard := func(method string, params any) (context.Context, func(), error) {
+		raw, _ := json.Marshal(params)
+		return h.gatewayGuard(context.Background(), method, raw)
+	}
+	waits := func(what string, ctx context.Context, done func(), method string, params any) {
+		t.Helper()
+		finished := make(chan func(), 1)
+		go func() {
+			_, release, err := guard(method, params)
+			if err != nil {
+				t.Errorf("%s: %v", method, err)
+			}
+			finished <- release
+		}()
+		select {
+		case <-ctx.Done():
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s didn't cancel %s", method, what)
+		}
+		select {
+		case <-finished:
+			t.Fatalf("%s went ahead while %s ran", method, what)
+		case <-time.After(100 * time.Millisecond):
+		}
+		done()
+		(<-finished)()
+	}
+	// A read checked against the first tier's plaintext snapshot: deleting that one waits for the read to end.
+	ctx, done, err := guard(proto.MethodSnapshotRead, map[string]any{"snapshotId": "snap_two", "path": "/"})
+	if err != nil {
+		t.Fatalf("the first tier's snap_two is plaintext: %v", err)
+	}
+	waits("a snapshot read", ctx, done, proto.MethodSnapshotDel, map[string]any{"snapshotId": "snap_two"})
+	// A fork checked as a plaintext sandbox's: its delete waits for it.
+	ctx, done, err = guard(proto.MethodFork, map[string]any{"sandboxId": "sbx_other", "newId": "sbx_f1", "snapshotId": "snap_f1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waits("a fork", ctx, done, proto.MethodDelete, map[string]any{"sandboxId": "sbx_other"})
+	// A new snapshot can't take an ID another tier has.
+	if _, _, err := guard(proto.MethodStop, map[string]any{"sandboxId": "sbx_one", "snapshotId": "snap_one"}); err == nil {
+		t.Fatal("a stop took a snapshot ID that exists")
+	}
+	// An E2E create can't take an ID a plaintext sandbox has, or had (its snapshots would become the space's).
+	if _, _, err := guard(proto.MethodCreate, map[string]any{"sandboxId": "sbx_other", "owner": v.Space}); err == nil {
+		t.Fatal("an E2E create took a plaintext sandbox's ID")
+	}
+	if _, ok := h.e2e.RecordedOwner("sbx_other"); ok {
+		t.Fatal("a refused create recorded the ID as the E2E space's")
+	}
+	delete(vm.owners, "sbx_other")
+	if _, _, err := guard(proto.MethodCreate, map[string]any{"sandboxId": "sbx_other", "owner": v.Space}); err == nil {
+		t.Fatal("an E2E create took the ID of a deleted plaintext sandbox whose snapshots remain")
+	}
+}
