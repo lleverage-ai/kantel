@@ -131,13 +131,15 @@ true`), so a sandbox's `/` or `/assets/…` is never the console's file; the con
 need the token in their URL unless exposed public, as on a self-hosted install. WebSockets to them (a dev server's
 hot reload) answer 501 for now.
 
-The names also need a proxied wildcard DNS record, added once outside the deploy (Workers routes only match traffic
-that reaches Cloudflare's proxy), for example:
+The names also need proxied wildcard DNS records, added once outside the deploy (Workers routes only match traffic
+that reaches Cloudflare's proxy): an `A` and an `AAAA`, so IPv4-only clients resolve them too. For example:
 
 ```sh
-curl -X POST "https://api.cloudflare.com/client/v4/zones/<kantel.run zone>/dns_records" \
-  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H 'content-type: application/json' \
-  -d '{"type":"AAAA","name":"*.kantel.run","content":"100::","proxied":true,"comment":"Kantel exposed ports"}'
+for record in '"type":"A","content":"192.0.2.1"' '"type":"AAAA","content":"100::"'; do
+  curl -X POST "https://api.cloudflare.com/client/v4/zones/<kantel.run zone>/dns_records" \
+    -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H 'content-type: application/json' \
+    -d "{$record,\"name\":\"*.kantel.run\",\"proxied\":true,\"comment\":\"Kantel exposed ports\"}"
+done
 ```
 
 No Access application covers the ports domain, and none should: each port checks its own token.
