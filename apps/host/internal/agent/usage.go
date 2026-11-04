@@ -17,6 +17,8 @@ const (
 	defaultUsageInterval = 5 * time.Second
 	// usageBacklog bounds the samples kept while the control plane can't be reached: past it the oldest go.
 	usageBacklog = 120
+	// maxUsageSandboxes is the most sandboxes one tick names.
+	maxUsageSandboxes = 4096
 )
 
 // usageInterval is how often the host samples usage, 1 s to 5 minutes (the range the control plane takes); 0 is
@@ -100,7 +102,10 @@ func (s *usageSampler) sample(now time.Time) (proto.UsageSample, bool) {
 		s.sandboxes(now, usage.Memory{})
 		return proto.UsageSample{}, false
 	}
-	out := proto.UsageSample{At: now.UnixMilli(), IntervalMs: now.Sub(prevAt).Milliseconds(), Host: proto.HostUsage{CPU: busy}}
+	// The interval as measured, in the 1 s to 5 minutes the control plane takes (a tick a little early, or one after the
+	// host was paused, is still a reading of that interval).
+	interval := min(max(now.Sub(prevAt).Milliseconds(), 1000), 300_000)
+	out := proto.UsageSample{At: now.UnixMilli(), IntervalMs: interval, Host: proto.HostUsage{CPU: busy}}
 	mem, err := s.readMemory()
 	if err == nil {
 		out.Host.MemUsedBytes, out.Host.MemTotalBytes = mem.Used(), mem.Total
@@ -109,6 +114,10 @@ func (s *usageSampler) sample(now time.Time) (proto.UsageSample, bool) {
 		out.Host.DiskUsedBytes, out.Host.DiskTotalBytes = disk.Used, disk.Total
 	}
 	out.Sandboxes = s.sandboxes(now, mem)
+	if len(out.Sandboxes) > maxUsageSandboxes {
+		// The control plane refuses a tick with more (packages/hosts/src/facts.ts, MAX_USAGE_SANDBOXES).
+		out.Sandboxes = out.Sandboxes[:maxUsageSandboxes]
+	}
 	return out, true
 }
 

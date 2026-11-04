@@ -260,7 +260,27 @@ func TestUsageBacklogIsBoundedAndKeepsOrder(t *testing.T) {
 	}
 }
 
-// The wire shape the control plane reads (packages/hosts/src/protocol.ts HostUsage): keep the two in step.
+// The control plane takes an interval of 1 s to 5 minutes: a tick a little early, or the first after the host was
+// paused, still goes.
+func TestUsageIntervalInRange(t *testing.T) {
+	f := &fakeProc{host: usage.HostCPU{Total: 10_000, Idle: 9_000}}
+	s := f.sampler()
+	t0 := time.Unix(10_000, 0)
+	s.sample(t0)
+	for _, step := range []struct {
+		after time.Duration
+		want  int64
+	}{{999 * time.Millisecond, 1000}, {4999 * time.Millisecond, 4999}, {time.Hour, 300_000}} {
+		t0 = t0.Add(step.after)
+		f.host.Total += 1_000
+		sample, ok := s.sample(t0)
+		if !ok || sample.IntervalMs != step.want {
+			t.Fatalf("after %v: interval %d (ok %v), want %d", step.after, sample.IntervalMs, ok, step.want)
+		}
+	}
+}
+
+// The wire shape the control plane reads (packages/hosts/src/protocol.ts HostUsageReport): keep the two in step.
 func TestUsageEventWireShape(t *testing.T) {
 	m := proto.Message{Type: "usage", Usage: &proto.UsageSample{
 		At: 1, IntervalMs: 5000,
