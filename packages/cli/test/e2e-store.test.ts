@@ -84,6 +84,33 @@ describe("this device's identity", () => {
 		// No lock or half-written file is left behind.
 		expect(await readdir(join(dir, "e2e"))).toEqual(["device.json"]);
 	});
+
+	it("is one identity across processes that start at once", async () => {
+		const dir = await configDir();
+		const worker = join(dir, "device.ts");
+		await writeFile(
+			worker,
+			[
+				`import { loadDevice } from ${JSON.stringify(join(import.meta.dirname, "..", "src", "e2e.ts"))};`,
+				`process.stdout.write((await loadDevice(${JSON.stringify(dir)})).id);`,
+			].join("\n"),
+		);
+		const ids = await Promise.all(
+			Array.from(
+				{ length: 6 },
+				() =>
+					new Promise<string>((done, fail) => {
+						const child = spawn(process.execPath, [worker], { stdio: ["ignore", "pipe", "inherit"] });
+						let out = "";
+						child.stdout.on("data", (chunk: Buffer) => {
+							out += chunk.toString();
+						});
+						child.on("exit", (code) => (code === 0 ? done(out) : fail(new Error(`exit ${code}`))));
+					}),
+			),
+		);
+		expect(new Set(ids)).toEqual(new Set([(await loadDevice(dir)).id]));
+	}, 60_000);
 });
 
 describe("the space file", () => {

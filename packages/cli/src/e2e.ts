@@ -8,7 +8,7 @@
  * adds, or a chain it makes up, is refused here as it is on the host.
  */
 import { randomBytes } from "node:crypto";
-import { chmod, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { KantelApiError, type KantelClient } from "@kantel/api/sdk";
@@ -56,6 +56,26 @@ async function writePrivate(path: string, value: unknown): Promise<void> {
 		await writeFile(temporary, `${JSON.stringify(value, null, "\t")}\n`, { mode: 0o600 });
 		await chmod(temporary, 0o600);
 		await rename(temporary, path);
+	} finally {
+		await rm(temporary, { force: true });
+	}
+}
+
+/**
+ * Writes `path` whole if it isn't there, and says whether it did: linked into place, which fails if a file is there,
+ * so it never replaces one.
+ */
+async function createPrivate(path: string, value: unknown): Promise<boolean> {
+	await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+	const temporary = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+	try {
+		await writeFile(temporary, `${JSON.stringify(value, null, "\t")}\n`, { mode: 0o600 });
+		await chmod(temporary, 0o600);
+		await link(temporary, path);
+		return true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+		throw error;
 	} finally {
 		await rm(temporary, { force: true });
 	}
@@ -231,8 +251,8 @@ export async function loadDevice(configDir: string, label?: string): Promise<Dev
 				seeds: { sign: toBase64url(randomSeed()), dh: toBase64url(randomSeed()) },
 				label: label ?? "kantel",
 			};
-			await writePrivate(path, fresh);
-			return fresh;
+			// Published only if there is none, even were the lock not held: a device's keys are never written over.
+			return (await createPrivate(path, fresh)) ? fresh : ((await readJson<DeviceFile>(path)) as DeviceFile);
 		}));
 	const identity = await identityFromSeeds(file.seeds);
 	return { identity, id: await keyId("kd", identity.signer.publicKey), label: file.label };
