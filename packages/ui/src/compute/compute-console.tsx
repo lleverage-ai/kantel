@@ -1162,7 +1162,7 @@ function ConsoleUnavailable({ message, onRetry }: { message: string; onRetry: ()
 				<AlertIcon />
 			</span>
 			<div className="flex flex-col gap-1.5">
-				<h1 className="m-0 text-heading font-strong leading-tight text-fg">Kantel can't open the console right now</h1>
+				<h1 className="m-0 text-heading font-strong leading-tight text-fg">Kantel can't open the console</h1>
 				<p className="m-0 text-md leading-normal text-muted">{message}</p>
 			</div>
 			<Button onClick={onRetry}>Try again</Button>

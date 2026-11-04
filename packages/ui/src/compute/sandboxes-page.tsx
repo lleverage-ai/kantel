@@ -720,11 +720,12 @@ const StateLabel = ({ state }: { state: SandboxState }) => (
 
 /**
  * CPU over the last two minutes, as a line read again every few seconds, or nothing when it isn't running. Without a
- * live source it's the sandbox's recent CPU as listed, which doesn't move.
+ * live source it's the sandbox's recent CPU as listed, which doesn't move. A row in error says what happened in words
+ * instead, so it draws no line.
  */
 function Cpu({ sandbox, source, percent = false }: { sandbox: Sandbox; source: SandboxesSource; percent?: boolean }) {
-	const shown = showsCpu(sandbox);
-	const live = useLiveUsage(shown && sandbox.state !== "error" ? source.usageSeries : undefined, sandbox.id, {
+	const shown = showsCpu(sandbox) && sandbox.state !== "error";
+	const live = useLiveUsage(shown ? source.usageSeries : undefined, sandbox.id, {
 		keepMs: ROW_SPAN_MS,
 	});
 	if (!shown) return null;
@@ -743,7 +744,7 @@ function Cpu({ sandbox, source, percent = false }: { sandbox: Sandbox; source: S
 		<span className="inline-flex items-center gap-2">
 			<Sparkline
 				values={values}
-				tone={sandbox.state === "error" ? "error" : "done"}
+				tone="done"
 				label={loading ? `Reading ${sandbox.name}'s CPU` : label}
 				loading={loading}
 				{...(series === undefined ? {} : { timed: line.timed })}
@@ -781,11 +782,14 @@ function SandboxRow({
 }) {
 	const { pending, can, windows, resume, recover, actions, href, onLink, onScreen } = useRowActions(sandbox, calls);
 	const stops = stopsText(sandbox, now);
-	return (
+	// What went wrong gets a line of its own under the row, across the columns, rather than truncating in the name's.
+	const failure = sandbox.state === "error" ? sandbox.error : undefined;
+	const tone = ticked ? "bg-selected" : "hover:bg-hover";
+	const row = (
 		// The name's link covers the row (its ::after), so anywhere on it opens the sandbox; the tick box and the buttons
 		// sit above it.
 		<tr
-			className={`kt-sandbox-row group/row relative ${ticked ? "bg-selected" : "hover:bg-hover"}`}
+			className={`kt-sandbox-row group/row relative ${tone} ${failure === undefined ? "" : "[&>td]:border-b-0 [&>td]:pb-1"}`}
 			data-sandbox={sandbox.id}
 		>
 			<td className={`${cell} w-0 pr-0`}>
@@ -807,11 +811,6 @@ function SandboxRow({
 						{sandbox.name}
 					</a>
 				)}
-				{sandbox.state === "error" && sandbox.error !== undefined ? (
-					<span className="block truncate text-xs text-status-error" title={sandbox.error}>
-						{sandbox.error}
-					</span>
-				) : null}
 			</td>
 			<td className={cell}>
 				<StateLabel state={sandbox.state} />
@@ -866,6 +865,18 @@ function SandboxRow({
 			</td>
 		</tr>
 	);
+	if (failure === undefined) return row;
+	return (
+		<>
+			{row}
+			<tr className={`kt-sandbox-row-failure ${ticked ? "bg-selected" : ""}`}>
+				<td className="border-b border-border p-0" />
+				<td className="border-b border-border px-2 pt-0 pb-2.5 text-sm text-status-error" colSpan={hosting === "hosted" ? 9 : 8}>
+					{failure}
+				</td>
+			</tr>
+		</>
+	);
 }
 
 /**
@@ -885,7 +896,7 @@ function SandboxPhoneRow({
 	ticked: boolean;
 	onTick: (on: boolean) => void;
 }) {
-	const { pending, href, actions } = useRowActions(sandbox, calls);
+	const { pending, href, actions, can, recover } = useRowActions(sandbox, calls);
 	const stops = stopsText(sandbox, now);
 	const body = (
 		<div className="flex min-w-0 flex-1 flex-col gap-1">
@@ -909,7 +920,7 @@ function SandboxPhoneRow({
 	);
 	return (
 		<li
-			className={`kt-sandbox-row flex min-w-0 items-center gap-3 border-b border-border ${ticked ? "bg-selected" : ""}`}
+			className={`kt-sandbox-row flex min-w-0 flex-wrap items-center gap-x-3 border-b border-border ${ticked ? "bg-selected" : ""}`}
 			data-sandbox={sandbox.id}
 		>
 			<TickBox label={`Select ${sandbox.name}`} checked={ticked} disabled={pending} onChange={onTick} />
@@ -928,6 +939,13 @@ function SandboxPhoneRow({
 					<ChevronRightIcon size="sm" className="flex-none text-faint" />
 				</a>
 			)}
+			{can.recover && href !== undefined ? (
+				<div className="basis-full pb-3 pl-6.5">
+					<Button size="sm" icon={<ReconnectIcon size="sm" />} onClick={recover}>
+						Recover
+					</Button>
+				</div>
+			) : null}
 		</li>
 	);
 }

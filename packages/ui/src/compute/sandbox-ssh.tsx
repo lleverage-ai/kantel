@@ -27,7 +27,10 @@ export function publicKeyProblem(text: string): string | undefined {
 	return PUBLIC_KEY.test(key) ? undefined : "Paste one OpenSSH public key, such as the line in ~/.ssh/id_ed25519.pub.";
 }
 
-/** A command on one line in code's font, with a Copy: the shape the page has always shown SSH in. */
+/**
+ * A command in code's font, with a Copy: on one line where it fits, wrapping where it doesn't (a phone), so all of
+ * it can be read before it is copied.
+ */
 function CommandLine({ command, copyLabel }: { command: string | undefined; copyLabel: string }) {
 	return (
 		<div className="flex min-h-control-lg min-w-0 items-center gap-2 rounded-panel border border-border bg-sunken py-1 pr-1 pl-3 font-mono text-code">
@@ -39,7 +42,7 @@ function CommandLine({ command, copyLabel }: { command: string | undefined; copy
 					<Skeleton />
 				</span>
 			) : (
-				<code className="kt-selectable min-w-0 flex-1 truncate text-fg" title={command}>
+				<code className="kt-selectable min-w-0 flex-1 py-1 leading-normal text-fg wrap-anywhere">
 					{command}
 				</code>
 			)}
