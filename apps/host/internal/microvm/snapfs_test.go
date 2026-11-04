@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -54,6 +55,44 @@ func TestParseUnsquashfs(t *testing.T) {
 	}
 	if _, found, _ := parseUnsquashfs(unsquashfsEtc, "/nope"); found {
 		t.Error("a missing directory is found")
+	}
+}
+
+// With squashfs-tools on the machine: a real squashfs image, read by its literal names (unsquashfs's wildcards off).
+func TestSquashfsImageReadsLiteralNames(t *testing.T) {
+	for _, tool := range []string{"mksquashfs", "unsquashfs"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skip("no " + tool)
+		}
+	}
+	src := t.TempDir()
+	for name, content := range map[string]string{"app/[ab].txt": "literal", "app/a.txt": "a", "app/b.txt": "b", "app/[slug]/f": "in"} {
+		full := filepath.Join(src, name)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	image := filepath.Join(t.TempDir(), "image.sqfs")
+	if out, err := exec.Command("mksquashfs", src, image, "-no-progress", "-quiet").CombinedOutput(); err != nil {
+		t.Fatalf("mksquashfs: %v %s", err, out)
+	}
+	m := &Manager{cfg: Config{Rootfs: image}}
+	entries, found, err := m.imageList("/app")
+	if err != nil || !found || len(entries) != 4 {
+		t.Fatalf("/app: %v %v %v", entries, found, err)
+	}
+	if entries, found, err := m.imageList("/app/[slug]"); err != nil || !found || len(entries) != 1 || entries[0].name != "f" {
+		t.Errorf("/app/[slug]: %v %v %v", entries, found, err)
+	}
+	if _, found, err := m.imageList("/nope"); err != nil || found {
+		t.Errorf("/nope: %v %v", found, err)
+	}
+	got, err := m.imageRead("/app/[ab].txt", dentry{})
+	if err != nil || string(got) != "literal" {
+		t.Errorf("[ab].txt: %q %v", got, err)
 	}
 }
 

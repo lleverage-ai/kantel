@@ -246,7 +246,8 @@ func TestInjectedAgent(t *testing.T) {
 			}
 			portOK(func() (io.ReadWriteCloser, error) { return client.Dial("tcp", "127.0.0.1:8000") })
 
-			// A lost connection hangs up its terminal: the shell and what runs in it end, rather than linger.
+			// A lost connection hangs up its terminal: the shell and its foreground job end, rather than linger, even a job
+			// in a process group of its own (job control) that ignores SIGHUP.
 			session, _ = client.NewSession()
 			if err := session.RequestPty("xterm", 40, 100, ssh.TerminalModes{}); err != nil {
 				t.Fatal(err)
@@ -255,7 +256,7 @@ func TestInjectedAgent(t *testing.T) {
 			if err := session.Shell(); err != nil {
 				t.Fatal(err)
 			}
-			_, _ = io.WriteString(stdin, "sleep 4242\n")
+			_, _ = io.WriteString(stdin, "sh -c 'trap \"\" HUP; exec sleep 4242'\n")
 			sleeping := func() string {
 				return strings.TrimSpace(exec(proto.ExecParams{Command: `for p in /proc/[0-9]*; do tr '\0' ' ' < $p/cmdline 2>/dev/null; echo; done | grep -c '^sleep 4242' || true`}).Stdout)
 			}

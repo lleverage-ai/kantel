@@ -7,6 +7,21 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// foreground is the process group in the foreground of the terminal whose controlling side ptmx is, or 0.
+func foreground(ptmx *os.File) int {
+	raw, err := ptmx.SyscallConn()
+	if err != nil {
+		return 0
+	}
+	pgrp := 0
+	_ = raw.Control(func(fd uintptr) {
+		if pg, err := unix.IoctlGetInt(int(fd), unix.TIOCGPGRP); err == nil {
+			pgrp = pg
+		}
+	})
+	return pgrp
+}
+
 // openPTY opens a new pseudo-terminal pair: the controlling side (ptmx) and the terminal a shell gets (pts).
 func openPTY() (ptmx, pts *os.File, err error) {
 	fd, err := unix.Open("/dev/ptmx", unix.O_RDWR|unix.O_NOCTTY|unix.O_CLOEXEC, 0)

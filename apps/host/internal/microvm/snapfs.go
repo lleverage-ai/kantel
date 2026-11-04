@@ -96,7 +96,8 @@ func (m *Manager) imageList(dir string) (entries []dentry, found bool, err error
 // imageRead reads a file of the image found by imageList.
 func (m *Manager) imageRead(p string, e dentry) ([]byte, error) {
 	if imageFormat(m.cfg.Rootfs) == "squashfs" {
-		out, err := exec.Command("unsquashfs", "-cat", m.cfg.Rootfs, p).Output()
+		// -no-wildcards: the path is a name, not a pattern (a file called "[ab].txt" beside a.txt).
+		out, err := exec.Command("unsquashfs", "-no-wildcards", "-cat", m.cfg.Rootfs, p).Output()
 		if err != nil {
 			return nil, fmt.Errorf("unsquashfs -cat %s: %w", p, err)
 		}
@@ -122,7 +123,7 @@ func unsquashfsList(image, dir string) ([]dentry, bool, error) {
 	}
 	dir = path.Clean("/" + dir)
 	depth := 1
-	args := []string{"-lln", "-d", "", image}
+	args := []string{"-no-wildcards", "-lln", "-d", "", image}
 	if dir != "/" {
 		depth = strings.Count(dir, "/") + 1
 		args = append(args, dir)

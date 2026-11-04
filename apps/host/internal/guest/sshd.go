@@ -359,8 +359,11 @@ func (sess *session) finished() {
 }
 
 // hangUp ends what a session started when its channel ends before it did (a closed terminal window, a lost
-// connection): it closes the terminal, which hangs it up, and sends the session's process group SIGHUP, then SIGKILL
-// after three seconds. Processes a command put in a session of their own (setsid, a daemon) are left running.
+// connection). Its process groups are the command's own (Setsid with a terminal, Setpgid without) and, with a
+// terminal, the terminal's foreground job, which a shell's job control puts in a group of its own. It closes the
+// terminal, which hangs it up, sends both groups SIGHUP, and SIGKILL to whatever of them is left after three seconds,
+// the shell's exit notwithstanding (a job can ignore SIGHUP). Background jobs and processes a command put in a
+// session of their own (setsid, a daemon) are left running, as sshd leaves them.
 func (sess *session) hangUp() {
 	sess.mu.Lock()
 	cmd, tty, done := sess.cmd, sess.tty, sess.done
@@ -368,26 +371,31 @@ func (sess *session) hangUp() {
 	if cmd == nil || cmd.Process == nil || done {
 		return
 	}
+	groups := []int{cmd.Process.Pid}
 	if tty != nil {
+		if fg := foreground(tty); fg > 0 && fg != groups[0] {
+			groups = append(groups, fg)
+		}
 		_ = tty.Close()
 	}
-	// Its process group is its own (Setsid with a terminal, Setpgid without), led by it, and not reaped while !done.
-	pgid := cmd.Process.Pid
-	_ = syscall.Kill(-pgid, syscall.SIGHUP)
+	for _, g := range groups {
+		_ = syscall.Kill(-g, syscall.SIGHUP)
+	}
 	go func() {
 		for range 30 {
 			time.Sleep(100 * time.Millisecond)
-			sess.mu.Lock()
-			done := sess.done
-			sess.mu.Unlock()
-			if done {
+			left := false
+			for _, g := range groups {
+				if syscall.Kill(-g, 0) == nil {
+					left = true
+				}
+			}
+			if !left {
 				return
 			}
 		}
-		sess.mu.Lock()
-		defer sess.mu.Unlock()
-		if !sess.done {
-			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		for _, g := range groups {
+			_ = syscall.Kill(-g, syscall.SIGKILL)
 		}
 	}()
 }

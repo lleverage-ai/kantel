@@ -98,6 +98,10 @@ func install(args []string) error {
 		return errors.New("--token is required: make one on Kantel's Hosts page (a kth_ token)")
 	}
 	cfg.ControlPlane = *controlPlane
+	// The installer's own files go back to where it puts them, under the new root; an operator's own sandbox image or
+	// guest agent (a custom image, see docs/sandboxes/custom-images) is kept, and fetchImages leaves it alone. Which
+	// is which is by the root the settings were loaded with.
+	image, agentBin := custom(cfg.Root, cfg.SandboxImage, "sandbox.ext4"), custom(cfg.Root, cfg.GuestAgent, "kantel-guest")
 	cfg.Root = *root
 	if *name != "" {
 		cfg.Name = *name
@@ -117,9 +121,6 @@ func install(args []string) error {
 	if *injectGuestAgent {
 		cfg.InjectGuestAgent = true
 	}
-	// The installer's own files go back to where it puts them; an operator's own sandbox image or guest agent (a
-	// custom image, see docs/sandboxes/custom-images) is kept, and fetchImages leaves it alone.
-	image, agentBin := custom(cfg.Root, cfg.SandboxImage, "sandbox.ext4"), custom(cfg.Root, cfg.GuestAgent, "kantel-guest")
 	cfg.Kernel, cfg.SandboxImage, cfg.IsolateImage, cfg.Firecracker, cfg.Workerd, cfg.IsolateBundle, cfg.GuestAgent = "", image, "", "", "", "", agentBin
 	cfg.Defaults()
 
