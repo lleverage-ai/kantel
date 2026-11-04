@@ -6,7 +6,7 @@ import { type ComputeApi, createComputeApi, joinTokenSpender } from "@kantel/com
 import { afterEach, describe, expect, it } from "vitest";
 import { createHostBackend } from "../src/backend.ts";
 import { createPortRouter } from "../src/ports.ts";
-import type { HostFacts, HostMessage, HostSandbox } from "../src/protocol.ts";
+import type { HostFacts, HostGuest, HostMessage, HostSandbox } from "../src/protocol.ts";
 import { createMemoryRelayStore } from "../src/relay-store.ts";
 import { createHostsService, type HostsService } from "../src/service.ts";
 import { createMemoryHostStore } from "../src/store.ts";
@@ -40,6 +40,8 @@ class FakeHost {
 	readonly params: { method: string; params: { [key: string]: unknown } }[] = [];
 	/** Off: a kantel-host from before ranged reads, which answers a read's whole file and no fileSize. */
 	rangedReads = true;
+	/** What its images' guest agent reports; absent, a host from before the guest agent said. */
+	guest: HostGuest | undefined;
 	receive!: (text: string) => void;
 
 	constructor(
@@ -82,6 +84,7 @@ class FakeHost {
 			size: s.size,
 			state: s.state,
 			createdAt: 1,
+			...(this.guest === undefined ? {} : { guest: this.guest }),
 		});
 		switch (message.method) {
 			case "sandbox.create": {
@@ -441,6 +444,49 @@ describe("the compute API on kantel-host hosts", () => {
 
 		await root.stopSandbox(sandbox.id, { wait: true });
 		expect((await ports?.fetch(new Request(open.url)))?.status).toBe(404);
+	});
+
+	it("gives a microVM what its image's guest agent reports, and refuses the desktop and browser an image lacks", async () => {
+		const { service, root } = setup();
+		const token = await root.createHostJoinToken({});
+		const { hostId } = await service.register({ token: token.token, facts });
+		const host = new FakeHost(service, hostId);
+		const lacks = (what: string) => ({ available: false, reason: `No ${what} in this image` });
+		host.guest = {
+			reportedAt: 1,
+			agent: { version: "1.18.0", injected: true },
+			os: { id: "alpine", name: "Alpine Linux v3.22", version: "3.22.7" },
+			arch: "x86_64",
+			libc: "musl",
+			shell: "/bin/sh",
+			init: "kantel",
+			desktop: lacks("desktop"),
+			browser: lacks("browser"),
+			docker: { ...lacks("Docker"), kvm: true },
+		};
+		host.connect();
+
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		expect(sandbox.capabilities).toMatchObject({
+			exec: true,
+			ssh: true,
+			desktop: false,
+			browser: false,
+			docker: false,
+			kvm: true,
+			guest: { os: { id: "alpine" }, libc: "musl", agent: { injected: true } },
+		});
+		const desktop = await failure(root.openDesktop(sandbox.id, {}));
+		expect(desktop).toMatchObject({ code: "not_supported", message: "No desktop in this image" });
+		expect(await failure(root.openBrowser(sandbox.id, {}))).toMatchObject({ code: "not_supported" });
+
+		// It keeps the report through a stop and a start.
+		await root.stopSandbox(sandbox.id, { wait: true });
+		await root.startSandbox(sandbox.id, { wait: true });
+		expect((await root.getSandbox(sandbox.id)).capabilities).toMatchObject({
+			desktop: false,
+			guest: { os: { id: "alpine" } },
+		});
 	});
 
 	it("revokes and drains a host through the API, and the registry follows", async () => {

@@ -24,7 +24,14 @@ import type {
 import { KantelError } from "@kantel/contracts";
 import { DESKTOP_PORT, desktopPath } from "./desktop.ts";
 import type { PortRouter } from "./ports.ts";
-import { HOST_E2E_PORT, type HostEgress, HostMethods, type HostSandbox, type SandboxTier } from "./protocol.ts";
+import {
+	HOST_E2E_PORT,
+	type HostEgress,
+	type HostGuest,
+	HostMethods,
+	type HostSandbox,
+	type SandboxTier,
+} from "./protocol.ts";
 import type { HostsService, SandboxPlacement } from "./service.ts";
 import { type DesktopMode, HOSTS_TUNNEL_PATH, MAX_TUNNEL_MINUTES, type TunnelTickets } from "./tunnel.ts";
 
@@ -152,18 +159,25 @@ function fileEntry(entry: HostFileEntry): BackendFileEntry {
 	};
 }
 
-function capabilitiesOf(tier: SandboxTier, nested: boolean, ports: boolean) {
+/**
+ * What a sandbox can do. A microVM's guest report, where its host sent one, says what its image has: an image without
+ * a desktop, a browser or Docker can't offer them, and `/dev/kvm` must open inside for nesting. With no report (a host
+ * from before the guest agent said), a microVM is Kantel's own image, which has them all.
+ */
+export function capabilitiesOf(tier: SandboxTier, nested: boolean, ports: boolean, guest?: HostGuest) {
 	const vm = tier === "microvm";
+	const report = vm ? guest : undefined;
 	return {
 		exec: true,
 		files: true,
 		ssh: vm,
-		desktop: vm,
-		browser: vm,
+		desktop: vm && (report?.desktop.available ?? true),
+		browser: vm && (report?.browser.available ?? true),
 		ports: vm && ports,
-		docker: vm,
-		kvm: vm && nested,
+		docker: vm && (report?.docker.available ?? true),
+		kvm: vm && nested && (report?.docker.kvm ?? true),
 		pause: vm,
+		...(report === undefined ? {} : { guest: report }),
 	};
 }
 
@@ -216,7 +230,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 							diskGb: placement.diskGiB,
 						},
 					}),
-			capabilities: capabilitiesOf(tier, nested === true, options.ports !== undefined),
+			capabilities: capabilitiesOf(tier, nested === true, options.ports !== undefined, sandbox.guest),
 		};
 	}
 

@@ -3424,7 +3424,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		openDesktop: async (principal, { params, body }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "access");
 			if (!sandbox.capabilities.desktop) {
-				throw new KantelError("not_supported", "The desktop needs a microVM; this is an isolate");
+				throw new KantelError(
+					"not_supported",
+					sandbox.type === "microvm"
+						? (sandbox.capabilities.guest?.desktop.reason ?? "No desktop in this image")
+						: "The desktop needs a microVM; this is an isolate",
+				);
 			}
 			const current = await requireRunning(principal, sandbox.id);
 			const ttlMinutes = body.ttlMinutes ?? ACCESS_TTL_MINUTES;
@@ -3436,7 +3441,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		openBrowser: async (principal, { params, body }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "access");
 			if (!sandbox.capabilities.browser) {
-				throw new KantelError("not_supported", "The browser needs a microVM; this is an isolate");
+				throw new KantelError(
+					"not_supported",
+					sandbox.type === "microvm"
+						? (sandbox.capabilities.guest?.browser.reason ?? "No browser in this image")
+						: "The browser needs a microVM; this is an isolate",
+				);
 			}
 			const current = await requireRunning(principal, sandbox.id);
 			const ttlMinutes = body.ttlMinutes ?? ACCESS_TTL_MINUTES;

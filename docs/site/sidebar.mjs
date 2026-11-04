@@ -22,6 +22,7 @@ export const sidebar = [
 			"sandboxes/ssh",
 			"sandboxes/egress-proxy",
 			"sandboxes/environments",
+			"sandboxes/custom-images",
 		],
 	},
 	{
