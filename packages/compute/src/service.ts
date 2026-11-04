@@ -184,6 +184,11 @@ export interface InviteMail {
 /** How a deployment emails invites (`ComputeServiceOptions.invites`). */
 export interface InviteMailing {
 	send(mail: InviteMail): Promise<void>;
+	/**
+	 * Whether `email` can sign in to follow the link. An invite to an address that can't isn't emailed (its code is shown
+	 * to pass on instead), since its link would lead nowhere. Without it, every address can (open sign-up).
+	 */
+	readonly canSignIn?: (email: string) => Promise<boolean>;
 	/** The console's address, which the link opens. Default the address the invite was made at. */
 	readonly consoleUrl?: string;
 	/** A send that failed, for the log: the invite stands, and the console shows its code to pass on instead. */
@@ -1755,6 +1760,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const mailing = options.invites;
 		if (mailing === undefined) return false;
 		try {
+			if (mailing.canSignIn !== undefined && !(await mailing.canSignIn(to))) return false;
 			const [account, inviter] = await Promise.all([
 				store.accounts.get(invite.accountId),
 				principal.kind === "person" ? principal : store.users.get(principal.userId),

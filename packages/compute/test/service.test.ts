@@ -564,6 +564,29 @@ describe("organisations", () => {
 		expect((await unmailed.tom.createInvite(other.id, { email: "ann@example.com" })).emailed).toBe(false);
 	});
 
+	it("emails an invite only to an address that can sign in to follow its link, where the deployment says", async () => {
+		const sent: InviteMail[] = [];
+		const asked: string[] = [];
+		const { tom, ann } = setup(createStubBackend(), {
+			invites: {
+				send: async (mail) => void sent.push(mail),
+				canSignIn: async (email) => {
+					asked.push(email);
+					return email === "ann@example.com";
+				},
+			},
+		});
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const stranger = await tom.createInvite(org.id, { email: "stranger@example.com" });
+		expect(stranger).toMatchObject({ email: "stranger@example.com", emailed: false });
+		expect(stranger.code).toMatch(/^kji_/);
+		const invite = await tom.createInvite(org.id, { email: "Ann@Example.com" });
+		expect(invite.emailed).toBe(true);
+		expect(asked).toEqual(["stranger@example.com", "ann@example.com"]);
+		expect(sent.map((mail) => mail.to)).toEqual(["ann@example.com"]);
+		expect(await ann.joinOrganisation({ code: invite.code ?? "" })).toMatchObject({ id: org.id });
+	});
+
 	it("links an invite to the console where the call came in, without a console URL", async () => {
 		const sent: InviteMail[] = [];
 		const { tom } = setup(createStubBackend(), { invites: { send: async (mail) => void sent.push(mail) } });

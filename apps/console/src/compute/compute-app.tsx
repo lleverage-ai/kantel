@@ -148,7 +148,17 @@ export function ComputeApp({
 	const hash = useHash();
 	const narrow = useMedia(NARROW_QUERY);
 	// An invite link's code, waiting for Join (`keepJoinLink`).
-	const [joinCode] = useState(joinLink.pending);
+	const [joinCode, setJoinCode] = useState(joinLink.pending);
+	// One opened in a tab already showing the console (pasted into its address bar) changes only the fragment.
+	useEffect(() => {
+		if (!joinLink.take(hash)) return;
+		history.replaceState(null, "", `${location.pathname}${location.search}`);
+		setJoinCode(joinLink.pending());
+	}, [hash]);
+	const joinCodeDone = () => {
+		joinLink.forget();
+		setJoinCode(undefined);
+	};
 	// One source for the tab's life: what a person does on one page (a new sandbox, a revoked key) shows on the next.
 	const [sourced, setSourced] = useState<Sourced>();
 	// biome-ignore lint/correctness/useExhaustiveDependencies: chosen once; who is signed in doesn't change under it.
@@ -203,7 +213,7 @@ export function ComputeApp({
 			{...(signedInAs === undefined ? {} : { signedInAs })}
 			{...(onSignOut === undefined ? {} : { onSignOut })}
 			{...(onThemeChoose === undefined ? {} : { onThemeChoose })}
-			{...(joinCode === undefined ? {} : { joinCode, onJoinCodeDone: joinLink.forget })}
+			{...(joinCode === undefined ? {} : { joinCode, onJoinCodeDone: joinCodeDone })}
 		/>
 	);
 }

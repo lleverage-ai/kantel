@@ -77,7 +77,15 @@ import {
 } from "@kantel/compute";
 import { bootstrapSuperAdmin } from "@kantel/compute/serve";
 import { createStubBackend } from "@kantel/compute/stub";
-import { type Authenticator, callContextFor, type IdentityDirectory, KantelError } from "@kantel/contracts";
+import {
+	type Authenticator,
+	callContextFor,
+	EMAIL_OTP_ISSUER,
+	type IdentityDirectory,
+	KantelError,
+	normaliseEmail,
+	systemContext,
+} from "@kantel/contracts";
 import { BROWSER_PORT, createHostBackend, SSH_PORT } from "@kantel/hosts/backend";
 import type { HostCluster } from "@kantel/hosts/cluster";
 import { createDesktopRoutes, type DesktopSocket, HOSTS_DESKTOP_PATH } from "@kantel/hosts/desktop";
@@ -387,15 +395,40 @@ async function personOf(
 /**
  * A compute organisation's invites, emailed with the deployment's mailer (the one that sends sign-in codes). The link
  * opens the console at `publicOrigin` (KANTEL_PUBLIC_URL): the request URL here is always `http:`.
+ *
+ * Sign-in here is invite-only: someone the deployment doesn't know yet can't get a sign-in code, and an organisation's
+ * invite doesn't change that (letting someone into the deployment is its admins' call, with the deployment's own
+ * invites). So with `identity`, an invite is emailed only to an address that can sign in by email code; for anyone
+ * else the console shows the code, and an admin invites them to the deployment first.
  */
-export function computeInvites(mailer: InviteMailer, publicOrigin: string | undefined): InviteMailing {
+export function computeInvites(
+	mailer: InviteMailer,
+	publicOrigin: string | undefined,
+	identity?: Pick<IdentityDirectory, "canSignIn">,
+): InviteMailing {
 	return {
 		send: (mail) => mailer.sendInvite(mail),
+		...(identity === undefined
+			? {}
+			: {
+					canSignIn: (email: string) => {
+						const normalised = normaliseEmail(email);
+						return identity.canSignIn(INVITE_MAIL, {
+							issuer: EMAIL_OTP_ISSUER,
+							subject: normalised,
+							email: normalised,
+							emailVerified: true,
+						});
+					},
+				}),
 		...(publicOrigin === undefined ? {} : { consoleUrl: publicOrigin }),
 		onMailError: (error, to) =>
 			console.error(`[gateway] organisation invite mail to ${JSON.stringify(to)} failed:`, error),
 	};
 }
+
+/** The context `computeInvites` asks identity whether an invite's address can sign in under. */
+const INVITE_MAIL = systemContext("gateway.compute-invites");
 
 /** What `personOf` asks identity: whether the person administers the organisation, and their email. */
 type PersonDirectory = Pick<IdentityDirectory, "authorize"> & Partial<Pick<IdentityDirectory, "getUser">>;

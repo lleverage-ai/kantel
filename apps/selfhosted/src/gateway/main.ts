@@ -191,7 +191,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		...(hosts === undefined ? {} : { hosts }),
 		...(components.computeStore === undefined ? {} : { store: components.computeStore }),
 		...(secretsKey === undefined ? {} : { secretsKey }),
-		...(mailer === undefined ? {} : { invites: computeInvites(mailer, cfg.publicOrigin) }),
+		...(mailer === undefined ? {} : { invites: computeInvites(mailer, cfg.publicOrigin, components.identity) }),
 	});
 	seeded = { ...seeded, computeKey: compute.superAdminKey };
 	console.log(

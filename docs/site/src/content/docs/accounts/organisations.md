@@ -19,7 +19,7 @@ Everything in Kantel belongs to an account: sandboxes, snapshots, API keys, webh
 ## In the console
 
 - **Create an organisation**: open the account switcher and select **Create an organisation**. You become its owner, and the console switches to it.
-- **Invite someone**: switch to the organisation, open **Settings**, then **General**, select **Invite**, and enter their email address and a role. Where the deployment sends mail, Kantel emails them a link that opens the console's **Join** with the code filled in. Otherwise, or if the email doesn't arrive, pass on the join code it shows. The code is shown once. Admins and owners change a member's role from the same list.
+- **Invite someone**: switch to the organisation, open **Settings**, then **General**, select **Invite**, and enter their email address and a role. Where the deployment sends mail, Kantel emails them a link that opens the console's **Join** with the code filled in. Otherwise, or if the email doesn't arrive, pass on the join code it shows. The code is shown once. On a self-hosted install, someone who can't sign in to it yet isn't emailed: an admin invites them to the deployment first. Admins and owners change a member's role from the same list.
 - **Join one**: open the account switcher, select **Join with an invite code**, and enter the code you were given. Sign in first with the email address the invite was made for: signed in as anyone else, the console says which email the invite is for and offers **Sign out**.
 
 The account switcher also moves you between your personal space and your organisations. The rest of this page does the same over the API.
@@ -111,7 +111,7 @@ console.log(invite.code); // kji_...
 | `email` | Only this person may use the code. Leave it out to make a code anyone holding it can use |
 | `expiresInHours` | How long the code works. Default 168 (a week), at most 720 (30 days) |
 
-With an `email`, where the deployment sends mail (self-hosted with `KANTEL_SMTP_URL`, or the hosted service), Kantel emails the invite with a link to the console that opens **Join** with the code. The answer's `emailed` says whether it went. The code is in the link's fragment, which a browser doesn't send, so it stays out of request logs.
+With an `email`, where the deployment sends mail (self-hosted with `KANTEL_SMTP_URL`, or the hosted service), Kantel emails the invite with a link to the console that opens **Join** with the code. The answer's `emailed` says whether it went. Self-hosted sign-in is invite-only, so an invite to someone who can't sign in to the deployment yet isn't emailed (`emailed: false`): an admin invites them to the deployment, and then they join with the code. The code is in the link's fragment, which a browser doesn't send, so it stays out of request logs.
 
 The person joins with the code, signed in as themselves (`POST /v1/accounts/join`, `joinOrganisation`). A code that has expired or has been used answers `410` with `expired`.
 

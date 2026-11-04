@@ -39,7 +39,9 @@ async function serve(on: boolean, superAdminKey?: string, mailer?: MemoryInviteM
 				authenticator,
 				identity: components.identity,
 				...(superAdminKey === undefined ? {} : { superAdminKey }),
-				...(mailer === undefined ? {} : { invites: computeInvites(mailer, "https://kantel.example.com") }),
+				...(mailer === undefined
+					? {}
+					: { invites: computeInvites(mailer, "https://kantel.example.com", components.identity) }),
 			})
 		: undefined;
 	if (compute !== undefined) cleanups.push(() => compute.close());
@@ -155,6 +157,7 @@ describe("the compute plane on the gateway", () => {
 		const mailer = new MemoryInviteMailer();
 		const { client, person } = await serve(true, undefined, mailer);
 		const tom = client(await person("tom", "admin"));
+		await person("ann", "viewer");
 		const org = await tom.createOrganisation({ name: "Acme" });
 		const invite = await tom.createInvite(org.id, { email: "ann@kantel.example.com" });
 		expect(invite.emailed).toBe(true);
@@ -167,6 +170,19 @@ describe("the compute plane on the gateway", () => {
 				expiresAt: invite.expiresAt,
 			},
 		]);
+	});
+
+	it("doesn't email an invite to someone who can't sign in to the deployment, and shows its code instead", async () => {
+		// Sign-in is invite-only here: a stranger gets no sign-in code, so a link would lead nowhere. Letting them in is
+		// the deployment's admins' call; an organisation's invite doesn't.
+		const mailer = new MemoryInviteMailer();
+		const { client, person } = await serve(true, undefined, mailer);
+		const tom = client(await person("tom", "admin"));
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const invite = await tom.createInvite(org.id, { email: "stranger@kantel.example.com" });
+		expect(invite).toMatchObject({ email: "stranger@kantel.example.com", emailed: false });
+		expect(invite.code).toMatch(/^kji_/);
+		expect(mailer.sent).toEqual([]);
 	});
 
 	it("is always on: on joined hosts wherever it knows where hosts reach it, else on the stub", () => {

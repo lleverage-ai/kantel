@@ -1,5 +1,5 @@
 import type { ThemePreference } from "@kantel/contracts";
-import { type MouseEvent, type ReactNode, useCallback, useMemo, useState } from "react";
+import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { KantelLockup, KantelMark } from "../brand/kantel.tsx";
 import { Button } from "../primitives/button.tsx";
 import { useLoad } from "../primitives/load.ts";
@@ -363,6 +363,10 @@ export function ComputeConsole({
 	const accounts = useLoad(() => source.accounts.list(), [source]);
 	const [accountId, setAccountId] = useState<string | undefined>(() => initialAccountId ?? keptAccount());
 	const [dialog, setDialog] = useState<"create" | "join" | undefined>(joinCode === undefined ? undefined : "join");
+	// A link's code that arrives once the console is up opens Join too.
+	useEffect(() => {
+		if (joinCode !== undefined) setDialog("join");
+	}, [joinCode]);
 	const closeJoin = () => {
 		setDialog(undefined);
 		onJoinCodeDone?.();
