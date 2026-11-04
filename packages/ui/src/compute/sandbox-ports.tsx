@@ -148,7 +148,7 @@ export function SandboxPorts({
 				<p className="m-0 text-sm text-muted">No ports yet. Expose one to give it an HTTPS URL.</p>
 			) : (
 				// Each port is two lines: its number, visibility and actions over its whole address, never broken mid-host.
-				<div className="sm:rounded-panel sm:border sm:border-border sm:bg-raised sm:px-4 sm:[&_tr:last-child]:border-b-0">
+				<div className="rounded-panel border border-border bg-raised px-3 sm:px-4 [&_tr:last-child]:border-b-0">
 					<table className={`${table} block`}>
 						<tbody className="block">
 							{state.value.map((port) => {

@@ -16,24 +16,30 @@
 	display: none;
 }
 
+/* Words only a phone row needs, inline in a value ("9 uses" where the header said Uses). */
+.kt-phone-only {
+	display: none;
+}
+
 @container kt-table (max-width: 40rem) {
 	.kt-table-cards-only {
 		display: flex;
 	}
 
-	/* No frame round the table: rows are a list. Nothing scrolls sideways. */
+	.kt-phone-only {
+		display: inline;
+	}
+
+	/* The table keeps its white card, as every list does at every width; nothing scrolls sideways. */
 	.kt-table-cards > .kt-compute-table {
 		overflow: visible;
-		border: 0;
-		border-radius: 0;
-		background: none;
 	}
 
 	.kt-table-cards > .kt-compute-table > table {
 		display: block;
 	}
 
-	/* The header is read, not shown: each card says what its values are. */
+	/* The header is read, not shown: each row says what its values are where that isn't plain. */
 	.kt-table-cards > .kt-compute-table > table > thead {
 		position: absolute;
 		width: var(--kt-hairline);
@@ -43,7 +49,7 @@
 		white-space: nowrap;
 	}
 
-	/* Its controls aren't reached either: the cards have their own (Select all is in the bar over them). */
+	/* Its controls aren't reached either: the rows have their own (Select all is in the bar over them). */
 	.kt-table-cards > .kt-compute-table > table > thead :is(input, button, a, select) {
 		visibility: hidden;
 	}
@@ -53,17 +59,22 @@
 		flex-direction: column;
 	}
 
-	/* A row, as a phone's lists have them: the checkbox, the name and the menu on its first line; every other value
-	   under them, each with its heading over it. A hairline between rows, no card. The
-	   empty ::after, flex-basis 100% and ordered between the two, is what breaks the line. */
+	/* A row, as the sandboxes list has it on a phone: the checkbox, the name, anything marked for the title line (a
+	   type badge) and the menu on the first line; the rest under them as one or two quiet lines of plain values, a
+	   heading before a value only where the value needs one. A hairline between rows inside the card. The empty
+	   ::after, flex-basis 100% and ordered between the two, is what breaks the line. */
 	.kt-table-cards > .kt-compute-table > table > tbody > tr {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
 		column-gap: var(--kt-step-3);
-		row-gap: var(--kt-step-2);
-		padding: var(--kt-step-3) 0;
+		row-gap: var(--kt-step-1);
+		padding: var(--kt-step-3) var(--kt-step-3);
 		border-bottom: var(--kt-hairline) solid var(--kt-border);
+	}
+
+	.kt-table-cards > .kt-compute-table > table > tbody > tr:last-child {
+		border-bottom: 0;
 	}
 
 	.kt-table-cards > .kt-compute-table > table > tbody > tr::after {
@@ -81,14 +92,11 @@
 		background: var(--kt-hover);
 	}
 
-	/* The values under the name: the first (where it came from, what it is) across the row, the rest two to a line in
-	   fixed halves, each its heading over its value and top-aligned, so the same fact sits in the same place on every
-	   row. */
+	/* A value under the name: inline, in the secondary size and colour, the values a step apart. */
 	.kt-table-cards > .kt-compute-table > table > tbody > tr > td {
 		order: 4;
 		display: block;
-		flex: 0 0 calc(50% - var(--kt-step-3) / 2);
-		align-self: flex-start;
+		flex: none;
 		/* The table's own widths (a checkbox or menu column's w-0, a long cell's max-w-0) don't apply here. */
 		width: auto;
 		min-width: 0;
@@ -102,26 +110,32 @@
 		font-size: var(--kt-text-sm);
 	}
 
-	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-label]::before {
+	/* Its heading before it ("Saved from browser-agent"), unless the value says itself (`data-phone="bare"`, "5.1 GB")
+	   or sits on the title line. */
+	.kt-table-cards
+		> .kt-compute-table
+		> table
+		> tbody
+		> tr
+		> td[data-label]:not([data-phone~="bare"], [data-phone~="title"])::before {
 		content: attr(data-label);
-		display: block;
+		margin-right: var(--kt-step-1);
 		color: var(--kt-text-faint);
-		font-size: var(--kt-text-xs);
 	}
 
-	/* A value laid out as a row of its own (a status with its code, a sparkline with its figure) stays inline. */
-	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-label] > .flex {
-		display: inline-flex;
+	/* A value with a second line (a date and who made it, a source and that it's gone) runs on as one phrase. */
+	.kt-table-cards > .kt-compute-table > table > tbody > tr > td > :is(.flex-col, .block) {
+		display: inline;
 	}
 
-	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-cell="primary"] + td {
+	.kt-table-cards > .kt-compute-table > table > tbody > tr > td > * + * {
+		margin-left: var(--kt-step-1);
+		color: var(--kt-text-faint);
+	}
+
+	/* A value that starts a line of its own (`data-phone="line"`), so the meta lines break where they mean to. */
+	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-phone~="line"] {
 		flex-basis: 100%;
-	}
-
-	/* A value's second line (who made it, that its source is gone) stays a line of its own, in the caption size. */
-	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-label] > * + * {
-		display: block;
-		font-size: var(--kt-text-xs);
 	}
 
 	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-cell="select"] {
@@ -135,6 +149,12 @@
 		color: var(--kt-text);
 		font-size: var(--kt-text-md);
 		font-weight: var(--kt-weight-medium);
+	}
+
+	/* Something that belongs beside the name (`data-phone="title"`): a type badge. */
+	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-phone~="title"] {
+		order: 1;
+		flex: none;
 	}
 
 	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-cell="actions"] {

@@ -239,7 +239,7 @@ function KeyList({
 	if (narrow) {
 		return (
 			<div className="flex min-w-0 flex-col gap-3">
-				<ul className="kt-key-rows m-0 flex list-none flex-col p-0">
+				<ul className="kt-key-rows m-0 flex list-none flex-col rounded-panel border border-border bg-raised p-0">
 					{live.map((key) => (
 						<KeyPhoneRow key={key.id} apiKey={key} now={now} onRevoke={onRevoke} />
 					))}
@@ -248,7 +248,10 @@ function KeyList({
 					<div className="flex flex-col gap-1">
 						<div>{fold}</div>
 						{open ? (
-							<ul id={foldId} className="kt-key-rows m-0 flex list-none flex-col p-0">
+							<ul
+								id={foldId}
+								className="kt-key-rows m-0 flex list-none flex-col rounded-panel border border-border bg-raised p-0"
+							>
 								{revoked.map((key) => (
 									<KeyPhoneRow key={key.id} apiKey={key} now={now} onRevoke={onRevoke} />
 								))}
@@ -384,7 +387,10 @@ function KeyPhoneRow({ apiKey, now, onRevoke }: { apiKey: ApiKey; now: number; o
 	const ends = expiry(apiKey, now);
 	const muted = apiKey.revokedAt !== undefined || ends.done;
 	return (
-		<li className="kt-key-row flex min-w-0 items-center gap-2 border-b border-border py-3" data-key={apiKey.id}>
+		<li
+			className="kt-key-row flex min-w-0 items-center gap-2 border-b border-border px-3 py-3 last:border-b-0"
+			data-key={apiKey.id}
+		>
 			<div className="flex min-w-0 flex-1 flex-col gap-1">
 				<span className={`truncate text-md font-medium ${muted ? "text-muted" : "text-fg"}`}>{apiKey.name}</span>
 				{/* The key's identifier on its own line, then what it may do and when it was used. */}

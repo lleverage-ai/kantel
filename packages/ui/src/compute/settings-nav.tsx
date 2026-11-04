@@ -45,12 +45,14 @@ export function SettingsFrame({
 			aria-label={label}
 			className={
 				narrow
-					? // On a phone the pages sit three to a line, packed to the start: every one in sight, none cut or left alone.
-						"grid min-w-0 grid-cols-[repeat(3,max-content)] justify-start gap-1"
+					? // On a phone the pages wrap as pills the width of their words, three on the first line and the rest on the
+						// next: every one in sight, none cut or left alone.
+						"flex min-w-0 flex-wrap gap-1"
 					: "sticky top-0 flex w-(--kt-menu-width) flex-none flex-col gap-0.5"
 			}
 		>
-			{items.map((item) => (
+			{items.map((item, index) => [
+				narrow && index === 3 ? <span key="break" className="basis-full" aria-hidden="true" /> : null,
 				<a
 					key={item.id}
 					className={`${link} ${item.selected ? linkState.selected : linkState.idle}`}
@@ -58,8 +60,8 @@ export function SettingsFrame({
 					aria-current={item.selected ? "page" : undefined}
 				>
 					{item.label}
-				</a>
-			))}
+				</a>,
+			])}
 		</nav>
 	);
 	// The same elements in both layouts, only their classes change: crossing the breakpoint (turning a phone) must not

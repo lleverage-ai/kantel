@@ -15,7 +15,8 @@ const buttonBase =
 
 /** Each variant's border colour, background and text colour, and its hover (never while disabled). */
 const buttonVariants: { readonly [variant in ButtonVariant]: string } = {
-	primary: "border-transparent bg-primary text-primary-fg hover:not-disabled:bg-primary-hover",
+	// Semibold: dark words on the orange read firmer a step heavier.
+	primary: "border-transparent bg-primary font-strong! text-primary-fg hover:not-disabled:bg-primary-hover",
 	secondary: "border-transparent bg-secondary text-fg hover:not-disabled:bg-secondary-hover",
 	ghost: "border-transparent bg-transparent text-muted hover:not-disabled:bg-hover hover:not-disabled:text-fg",
 	danger: "border-transparent bg-destructive text-on-solid hover:not-disabled:bg-destructive/85",

@@ -155,7 +155,7 @@ export function EgressLog({
 		shown.length === 0 ? (
 			<p className="m-0 py-2 text-sm text-muted">{entries.length === 0 ? emptyText : "Nothing matches."}</p>
 		) : narrow ? (
-			<ul className="m-0 flex list-none flex-col p-0">
+			<ul className="m-0 flex list-none flex-col rounded-panel border border-border bg-raised p-0">
 				{shown.map((entry) => (
 					<PhoneEntry
 						key={entry.id}
@@ -276,13 +276,18 @@ function RequestCell({
 	);
 }
 
-function Decision({ entry }: { entry: LoggedEntry }) {
+function Decision({ entry, slot = true }: { entry: LoggedEntry; slot?: boolean }) {
 	return (
 		<span className="flex items-center gap-2">
 			{/* Both decisions as a badge, so every row in the log is the same height and reads the same way. */}
 			{entry.decision === "allowed" ? <Badge tone="neutral">Allowed</Badge> : <Badge tone="error">Denied</Badge>}
-			{/* A fixed slot, empty when there's no status, so the badges stand in one column down the log. */}
-			<span className="w-8 text-right text-muted tabular-nums">{entry.status ?? ""}</span>
+			{/* In the wide log a fixed slot, empty when there's no status, keeps the badges in one column; a phone's meta line
+			    leaves it out rather than leave a hole. */}
+			{slot ? (
+				<span className="w-8 text-right text-muted tabular-nums">{entry.status ?? ""}</span>
+			) : entry.status === undefined ? null : (
+				<span className="text-muted tabular-nums">{entry.status}</span>
+			)}
 		</span>
 	);
 }
@@ -362,14 +367,14 @@ function PhoneEntry({
 	const expanded = open && opens(entry);
 	return (
 		<li
-			className="flex min-w-0 flex-col gap-1 border-b border-border py-3"
+			className="flex min-w-0 flex-col gap-1 border-b border-border px-3 py-3 last:border-b-0"
 			data-egress={entry.id}
 			data-decision={entry.decision}
 		>
 			{/* The request whole on its own line, then the decision with when, which sandbox and how much moved. */}
 			<RequestCell entry={entry} open={expanded} detailId={detailId} onToggle={onToggle} wrap />
 			<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-sm text-muted">
-				<Decision entry={entry} />
+				<Decision entry={entry} slot={false} />
 				<span className="tabular-nums" title={new Date(entry.at).toLocaleString("en-GB")}>
 					{agoText(entry.at, now)}
 				</span>

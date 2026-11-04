@@ -493,7 +493,7 @@ function SandboxList({
 		onNotice,
 	};
 	const list = narrow ? (
-		<ul className="kt-sandbox-rows m-0 flex list-none flex-col p-0">
+		<ul className="kt-sandbox-rows m-0 flex list-none flex-col rounded-panel border border-border bg-raised p-0">
 			{sandboxes.map((box) => (
 				<SandboxPhoneRow
 					key={box.id}
@@ -507,7 +507,8 @@ function SandboxList({
 		</ul>
 	) : (
 		<div className={tableFrame}>
-			<table className="w-full border-collapse text-left text-md">
+			<table className="w-full table-fixed border-collapse text-left text-md">
+				<SandboxColumns hosted={hosting === "hosted"} />
 				<thead>
 					<tr>
 						<th className={`${head} w-0 pr-0`} scope="col">
@@ -751,7 +752,7 @@ function Cpu({ sandbox, source, percent = false }: { sandbox: Sandbox; source: S
 				{...(series === undefined ? {} : { timed: line.timed })}
 			/>
 			{percent && sandbox.state === "running" ? (
-				<span className={`w-8 text-right text-sm tabular-nums ${busy ? "text-status-approval" : "text-muted"}`}>
+				<span className={`w-9 text-right text-md tabular-nums ${busy ? "text-status-approval" : "text-muted"}`}>
 					{latest === undefined ? <span className="text-faint">–</span> : `${Math.round(latest * 100)}%`}
 				</span>
 			) : null}
@@ -765,6 +766,27 @@ const onHover =
 
 /** A link styled as a ghost button: Browser and Desktop open in the console. */
 const ghostLink = `${buttonClass("ghost", "sm")} relative no-underline`;
+
+/**
+ * The sandboxes table's columns, fixed so the loaded table and its loading skeleton line up exactly: the name takes
+ * what the others leave. The actions column fits Resume (shown under the pointer) and the menu.
+ */
+function SandboxColumns({ hosted }: { hosted: boolean }) {
+	return (
+		<colgroup>
+			<col className="w-10" />
+			<col />
+			<col className="w-24" />
+			<col className="w-50" />
+			<col className="w-28" />
+			<col className="w-24" />
+			<col className="w-28" />
+			{hosted ? <col className="w-20" /> : null}
+			<col className="w-16" />
+			<col className="w-28" />
+		</colgroup>
+	);
+}
 
 function SandboxRow({
 	sandbox,
@@ -936,7 +958,7 @@ function SandboxPhoneRow({
 	);
 	return (
 		<li
-			className={`kt-sandbox-row flex min-w-0 flex-wrap items-start gap-x-3 border-b border-border ${ticked ? "bg-selected" : sandbox.state === "error" ? "-mx-gutter-narrow bg-status-error-soft/60 px-gutter-narrow shadow-[inset_2px_0_0_var(--kt-status-error)]" : ""}`}
+			className={`kt-sandbox-row flex min-w-0 flex-wrap items-start gap-x-3 border-b border-border px-3 first:rounded-t-panel last:rounded-b-panel last:border-b-0 ${ticked ? "bg-selected" : sandbox.state === "error" ? "bg-status-error-soft/60 shadow-[inset_2px_0_0_var(--kt-status-error)]" : ""}`}
 			data-sandbox={sandbox.id}
 		>
 			{/* On the name's line, not the middle of the row: it selects the sandbox the name names. */}
@@ -1398,7 +1420,8 @@ const SKELETON_NAMES = [
 export function SandboxesTableSkeleton({ rows = 8 }: { rows?: number }) {
 	return (
 		<div className={tableFrame} aria-hidden="true">
-			<table className="w-full border-collapse text-left text-md">
+			<table className="w-full table-fixed border-collapse text-left text-md">
+				<SandboxColumns hosted={false} />
 				<thead>
 					<tr>
 						<th className={`${head} w-0 pr-0`}>
@@ -1426,10 +1449,7 @@ export function SandboxesTableSkeleton({ rows = 8 }: { rows?: number }) {
 									<span className={`${skeletonClass} inline-block text-transparent select-none`}>{text}</span>
 								</td>
 							))}
-							<td className={`${cell} w-0`}>
-								{/* The room the loaded rows keep for a hidden Resume and the menu. */}
-								<span className="ml-auto block h-control-xs w-36" />
-							</td>
+							<td className={cell} />
 						</tr>
 					))}
 				</tbody>

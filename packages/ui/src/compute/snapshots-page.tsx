@@ -367,21 +367,28 @@ function SavedList({
 									<td className={td}>
 										<span className="block max-w-(--kt-card-width) truncate font-medium text-fg">{entry.name}</span>
 									</td>
-									<td className={td}>
+									{/* On a phone (table.css): where it came from on a line of its own, the type beside the name, and
+									    the size, uses and age as one quiet line. */}
+									<td className={td} data-phone="line">
 										<span className="text-fg">{entry.sandboxName}</span>
 										{entry.sandboxId === undefined ? <span className={cellSub}>Since deleted</span> : null}
 									</td>
-									<td className={td}>
+									<td className={td} data-phone="title">
 										<Badge tone="neutral">{SANDBOX_KIND_LABELS[entry.kind]}</Badge>
 									</td>
-									<td className={`${td} text-right tabular-nums`}>{bytesText(entry.sizeBytes)}</td>
-									<td className={td}>
+									<td className={`${td} text-right tabular-nums`} data-phone="bare">
+										{bytesText(entry.sizeBytes)}
+									</td>
+									<td className={td} data-phone="bare">
 										<span className="text-fg" title={new Date(entry.createdAt).toLocaleString("en-GB")}>
 											{compactAge(entry.createdAt, now)}
 										</span>
 										<span className={cellSub}>by {entry.createdBy}</span>
 									</td>
-									<td className={`${td} text-right tabular-nums`}>{entry.uses.toLocaleString("en-GB")}</td>
+									<td className={`${td} text-right tabular-nums`} data-phone="bare">
+										{entry.uses.toLocaleString("en-GB")}
+										<span className="kt-phone-only"> {entry.uses === 1 ? "use" : "uses"}</span>
+									</td>
 									<td className={`${td} w-0 text-right`}>
 										<Menu label={`Actions for ${entry.name}`} icon={<EllipsisIcon />} entries={entries} align="end" />
 									</td>
