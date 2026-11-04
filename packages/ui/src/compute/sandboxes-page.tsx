@@ -42,7 +42,7 @@ import {
 	sizeText,
 	stopsInText,
 } from "./compute-model.ts";
-import { ROW_POINTS, seriesOf, USAGE_POLL_MS, useLiveUsage } from "./live-usage.ts";
+import { lineOf, ROW_SPAN_MS, seriesOf, useLiveUsage } from "./live-usage.ts";
 import { computePage, messageOf, Sparkline, table } from "./parts.tsx";
 import { AUTO_STOP_CHOICES, DeleteDialog, type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
 import { popOut } from "./sandbox-screen.tsx";
@@ -709,11 +709,13 @@ const StateLabel = ({ state }: { state: SandboxState }) => (
 function Cpu({ sandbox, source, percent = false }: { sandbox: Sandbox; source: SandboxesSource; percent?: boolean }) {
 	const shown = showsCpu(sandbox);
 	const live = useLiveUsage(shown && sandbox.state !== "error" ? source.usageSeries : undefined, sandbox.id, {
-		keepMs: ROW_POINTS * USAGE_POLL_MS,
+		keepMs: ROW_SPAN_MS,
 	});
 	if (!shown) return null;
 	const series = seriesOf(live);
-	const values = series === undefined ? (live.status === "off" ? sandbox.usage : []) : series.points.map((p) => p.cpu);
+	const line = lineOf(series, (point) => point.cpu, ROW_SPAN_MS);
+	// Without a live source, its recent CPU as listed, untimed.
+	const values = series === undefined ? (live.status === "off" ? sandbox.usage : []) : line.values;
 	const loading = live.status === "loading";
 	const latest = values.at(-1);
 	const peak = Math.round(Math.max(0, ...values) * 100);
@@ -728,7 +730,7 @@ function Cpu({ sandbox, source, percent = false }: { sandbox: Sandbox; source: S
 				tone={sandbox.state === "error" ? "error" : "done"}
 				label={loading ? `Reading ${sandbox.name}'s CPU` : label}
 				loading={loading}
-				{...(series === undefined ? {} : { slots: ROW_POINTS })}
+				{...(series === undefined ? {} : { timed: line.timed })}
 			/>
 			{percent && sandbox.state === "running" ? (
 				<span className="w-8 text-right text-xs text-muted tabular-nums">

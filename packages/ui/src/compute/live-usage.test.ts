@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { UsageSeries } from "./compute-model.ts";
-import { gbText, mergeSeries } from "./live-usage.ts";
-import { linePoints } from "./parts.tsx";
+import { gbText, lineOf, mergeSeries } from "./live-usage.ts";
+import { linePoints, lineSegments } from "./parts.tsx";
 import { STUB_INTERVAL_MS, stubUsage } from "./usage-stub.ts";
 
 const series = (ats: readonly number[], extra: Partial<UsageSeries> = {}): UsageSeries => ({
@@ -84,6 +84,45 @@ describe("a graph's line", () => {
 
 	it("spreads across the width without slots", () => {
 		expect(linePoints([0, 0.5, 1], { width: 100, height: 11 }).map(([x]) => x)).toEqual([0, 50, 100]);
+	});
+
+	it("puts live readings where their times are, the newest at the right, whatever their cadence", () => {
+		// An older host's fallback: a reading every 15 seconds, though it says 60.
+		const newest = 1_000_000_000_000;
+		const points = Array.from({ length: 60 }, (_, index) => ({
+			at: newest - (59 - index) * 15_000,
+			cpu: 0.5,
+			memUsedBytes: 0,
+		}));
+		const line = lineOf({ intervalMs: 60_000, points }, (point) => point.cpu, 600_000);
+		// 10 minutes of them, not the last 10 because 60-second slots fit 10.
+		expect(line.values).toHaveLength(41);
+		const [segment] = lineSegments(line.values, { width: 600, height: 11, timed: line.timed });
+		expect(segment?.map(([x]) => x)).toEqual(Array.from({ length: 41 }, (_, index) => index * 15));
+	});
+
+	it("breaks the line where readings are missing", () => {
+		const times = [0, 5_000, 10_000, 60_000, 65_000, 120_000];
+		const segments = lineSegments([0, 0, 0, 1, 1, 1], {
+			width: 120,
+			height: 11,
+			timed: { times, spanMs: 120_000, gapMs: 15_000 },
+		});
+		expect(segments.map((segment) => segment.map(([x]) => x))).toEqual([
+			[0, 5, 10],
+			[60, 65],
+			[119, 120],
+		]);
+	});
+
+	it("leaves out readings older than its span before the newest", () => {
+		const times = [0, 50_000, 100_000, 110_000, 120_000];
+		const line = lineOf(
+			{ intervalMs: 5_000, points: times.map((at) => ({ at, cpu: 0, memUsedBytes: 0 })) },
+			(point) => point.cpu,
+			30_000,
+		);
+		expect(line.timed.times).toEqual([100_000, 110_000, 120_000]);
 	});
 
 	it("draws against a limit and never past it", () => {

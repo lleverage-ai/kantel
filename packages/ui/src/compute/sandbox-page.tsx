@@ -40,7 +40,7 @@ import {
 	stopsInText,
 } from "./compute-model.ts";
 import { EgressPage } from "./egress-page.tsx";
-import { gbBytes, gbText, seriesOf, USAGE_KEEP_MS, USAGE_POLL_MS, useLiveUsage } from "./live-usage.ts";
+import { gbBytes, gbText, lineOf, seriesOf, USAGE_KEEP_MS, useLiveUsage } from "./live-usage.ts";
 import { computePage, messageOf, SectionHeading, UsageGraph } from "./parts.tsx";
 import { type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
 import { SandboxLogs } from "./sandbox-logs.tsx";
@@ -894,11 +894,12 @@ function Usage({ source, sandbox, refreshKey }: { source: SandboxesSource; sandb
 	const live = useLiveUsage(sandbox.state === "error" ? undefined : source.usageSeries, sandbox.id);
 	const series = seriesOf(live);
 	const loading = live.status === "loading";
-	const slots = Math.round(USAGE_KEEP_MS / (series?.intervalMs ?? USAGE_POLL_MS));
 	const spec = sandbox.resources ?? sizeSpec(sandbox.size);
-	const cpu =
-		series !== undefined ? series.points.map((point) => point.cpu) : live.status === "off" ? sandbox.usage : [];
-	const memory = series?.points.map((point) => point.memUsedBytes) ?? [];
+	const liveCpu = lineOf(series, (point) => point.cpu, USAGE_KEEP_MS);
+	const liveMemory = lineOf(series, (point) => point.memUsedBytes, USAGE_KEEP_MS);
+	// Without a live source, its recent CPU as listed, untimed.
+	const cpu = series !== undefined ? liveCpu.values : live.status === "off" ? sandbox.usage : [];
+	const memory = liveMemory.values;
 	const limit = series?.memLimitBytes ?? gbBytes(spec.memoryGb);
 	const latestCpu = cpu.at(-1);
 	const latestMemory = memory.at(-1);
@@ -933,7 +934,7 @@ function Usage({ source, sandbox, refreshKey }: { source: SandboxesSource; sandb
 					title="CPU"
 					{...(latestCpu === undefined ? {} : { value: `${Math.round(latestCpu * 100)}%` })}
 					values={cpu}
-					slots={series === undefined ? cpu.length : slots}
+					{...(series === undefined ? { slots: cpu.length } : { timed: liveCpu.timed })}
 					tone={sandbox.state === "error" ? "error" : "done"}
 					loading={loading}
 					label={cpu.length === 0 ? "No CPU readings yet" : `CPU ${span}, peak ${peak}%`}
@@ -948,7 +949,7 @@ function Usage({ source, sandbox, refreshKey }: { source: SandboxesSource; sandb
 						{...(latestMemory === undefined ? {} : { value: `${gbText(latestMemory)} of ${gbText(limit)} GB` })}
 						values={memory}
 						max={limit}
-						slots={slots}
+						timed={liveMemory.timed}
 						tone="working"
 						loading={loading}
 						label={

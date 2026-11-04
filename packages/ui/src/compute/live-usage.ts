@@ -4,6 +4,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { UsagePoint, UsageRead, UsageSeries } from "./compute-model.ts";
+import type { TimedLine } from "./parts.tsx";
 
 /** How often the graphs read again: the hosts sample every 5 seconds. */
 export const USAGE_POLL_MS = 5_000;
@@ -11,8 +12,37 @@ export const USAGE_POLL_MS = 5_000;
 /** How much a sandbox's or host's page keeps: 10 minutes at 5 seconds. */
 export const USAGE_KEEP_MS = 10 * 60_000;
 
-/** How many points a row's sparkline draws: 2 minutes at 5 seconds. */
-export const ROW_POINTS = 24;
+/** How much a row's sparkline draws: 2 minutes. */
+export const ROW_SPAN_MS = 2 * 60_000;
+
+/** One measure of a series, as a graph draws it: its values in the span, and their times. */
+export interface UsageLine {
+	readonly values: readonly number[];
+	readonly timed: TimedLine;
+}
+
+/**
+ * `pick` of each of `series`'s points in the `spanMs` up to the newest, with their times, so a graph puts each where
+ * its time is. A point `pick` has nothing for is left out. Three intervals without a reading break the line.
+ */
+export function lineOf(
+	series: UsageSeries | undefined,
+	pick: (point: UsagePoint) => number | undefined,
+	spanMs: number,
+): UsageLine {
+	const points = series?.points ?? [];
+	const from = (points.at(-1)?.at ?? 0) - spanMs;
+	const values: number[] = [];
+	const times: number[] = [];
+	for (const point of points) {
+		const value = pick(point);
+		if (value === undefined || point.at < from) continue;
+		values.push(value);
+		times.push(point.at);
+	}
+	const gapMs = 3 * Math.max(series?.intervalMs ?? USAGE_POLL_MS, USAGE_POLL_MS);
+	return { values, timed: { times, spanMs, gapMs } };
+}
 
 export type LiveUsage =
 	/** Nothing to read: no live source, or it isn't running. */

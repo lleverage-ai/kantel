@@ -184,6 +184,67 @@ export function linePoints(
 	]);
 }
 
+/**
+ * Where live readings are on the time axis: each value's time, beside it in `values`, and the span the line shows up to
+ * the newest. A gap longer than `gapMs` between two readings breaks the line, so missing readings show as missing.
+ */
+export interface TimedLine {
+	readonly times: readonly number[];
+	readonly spanMs: number;
+	readonly gapMs: number;
+}
+
+type Segment = readonly (readonly [number, number])[];
+
+/**
+ * The line's pieces in a `width` by `height` box, 0 to `max` from the bottom up. Timed, each value is where its time
+ * is in the last `spanMs` before the newest, which is at the right edge; one before that is left out, and a gap breaks
+ * the line. Untimed, it's one piece, as `linePoints` places it.
+ */
+export function lineSegments(
+	values: readonly number[],
+	{
+		width,
+		height,
+		max = 1,
+		slots,
+		timed,
+	}: { width: number; height: number; max?: number; slots?: number; timed?: TimedLine },
+): readonly Segment[] {
+	if (timed === undefined)
+		return [linePoints(values, { width, height, max, ...(slots === undefined ? {} : { slots }) })];
+	const newest = timed.times.at(-1);
+	if (newest === undefined) return [];
+	const top = max > 0 ? max : 1;
+	const from = newest - timed.spanMs;
+	const segments: [number, number][][] = [];
+	let previous: number | undefined;
+	values.forEach((value, index) => {
+		const at = timed.times[index];
+		if (at === undefined || at < from) return;
+		const point: [number, number] = [
+			((at - from) / timed.spanMs) * width,
+			height - 1 - (Math.min(top, Math.max(0, value)) / top) * (height - 2),
+		];
+		const last = segments.at(-1);
+		if (last === undefined || previous === undefined || at - previous > timed.gapMs) segments.push([point]);
+		else last.push(point);
+		previous = at;
+	});
+	// A lone reading between gaps is a short tick, so it's still seen.
+	return segments.map((segment) => {
+		const only = segment[0];
+		return segment.length === 1 && only !== undefined ? [[Math.max(0, only[0] - 1), only[1]], only] : segment;
+	});
+}
+
+/** How many of `values` a timed line shows: those in its span. */
+const inSpan = (values: readonly number[], timed: TimedLine | undefined): number => {
+	const newest = timed?.times.at(-1);
+	if (timed === undefined || newest === undefined) return values.length;
+	return timed.times.filter((at) => at >= newest - timed.spanMs).length;
+};
+
 const pointsText = (points: readonly (readonly [number, number])[]): string =>
 	points.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
 
@@ -198,6 +259,7 @@ export function Sparkline({
 	tone = "done",
 	size = "sm",
 	slots,
+	timed,
 	loading = false,
 }: {
 	values: readonly number[];
@@ -208,17 +270,22 @@ export function Sparkline({
 	size?: "sm" | "lg";
 	/** How many values fill it, so a line still filling ends at the right. Default: as many as there are. */
 	slots?: number;
+	/** Live readings' times: each value is drawn where its time is, and `slots` is ignored. */
+	timed?: TimedLine;
 	loading?: boolean;
 }) {
 	const width = size === "lg" ? 320 : 64;
 	const height = size === "lg" ? 28 : 16;
-	const drawn = values.length < 2 ? [0, 0] : values;
-	const points = linePoints(drawn, {
-		width,
-		height,
-		...(values.length < 2 ? {} : slots === undefined ? {} : { slots }),
-	});
-	const colour = lineColour[loading || values.length < 2 ? "idle" : tone];
+	const empty = inSpan(values, timed) < 2;
+	const segments = empty
+		? [linePoints([0, 0], { width, height })]
+		: lineSegments(values, {
+				width,
+				height,
+				...(slots === undefined ? {} : { slots }),
+				...(timed === undefined ? {} : { timed }),
+			});
+	const colour = lineColour[loading || empty ? "idle" : tone];
 	return (
 		<svg
 			className={`kt-sparkline block flex-none ${size === "lg" ? "h-7 w-full" : "h-4 w-16"} ${colour} ${loading ? breathe : ""}`}
@@ -228,15 +295,18 @@ export function Sparkline({
 			aria-label={label}
 			{...(loading ? { "aria-busy": true } : {})}
 		>
-			<polyline
-				points={pointsText(points)}
-				fill="none"
-				stroke="currentColor"
-				strokeWidth="1.25"
-				strokeLinejoin="round"
-				vectorEffect="non-scaling-stroke"
-				{...(loading ? { strokeDasharray: "2 3" } : {})}
-			/>
+			{segments.map((points) => (
+				<polyline
+					key={points[0]?.[0] ?? 0}
+					points={pointsText(points)}
+					fill="none"
+					stroke="currentColor"
+					strokeWidth="1.25"
+					strokeLinejoin="round"
+					vectorEffect="non-scaling-stroke"
+					{...(loading ? { strokeDasharray: "2 3" } : {})}
+				/>
+			))}
 		</svg>
 	);
 }
@@ -246,8 +316,9 @@ const breathe = "animate-[kt-pulse_var(--kt-duration-pulse)_var(--kt-ease-breath
 
 /**
  * A live graph, larger than a row's sparkline: a filled line, 0 to `max` from the bottom up, over a faint line at
- * half, with its name and latest figure over it. Each value has its slot of `slots`, so it fills from the right as
- * points arrive and then scrolls. `loading` breathes until the first points are read; with no values it's a flat line.
+ * half, with its name and latest figure over it. Live readings are `timed`: each is where its time is, the newest at
+ * the right, and a gap in them breaks the line; untimed values each have a slot of `slots`. `loading` breathes until
+ * the first points are read; with no values it's a flat line.
  */
 export function UsageGraph({
 	title,
@@ -255,6 +326,7 @@ export function UsageGraph({
 	values,
 	label,
 	slots,
+	timed,
 	max = 1,
 	tone = "done",
 	loading = false,
@@ -265,7 +337,10 @@ export function UsageGraph({
 	values: readonly number[];
 	/** What it shows, for assistive tech: "CPU over the last 10 minutes, peak 82%". */
 	label: string;
-	slots: number;
+	/** How many values fill it, for untimed values. */
+	slots?: number;
+	/** Live readings' times: each value is drawn where its time is, and `slots` is ignored. */
+	timed?: TimedLine;
 	/** The value at the top: 1 for a share, a limit for memory. */
 	max?: number;
 	tone?: LineTone;
@@ -273,14 +348,23 @@ export function UsageGraph({
 }) {
 	const width = 320;
 	const height = 64;
-	const empty = values.length < 2;
-	const points = linePoints(empty ? [0, 0] : values, { width, height, max, ...(empty ? {} : { slots }) });
-	const first = points[0];
-	const last = points.at(-1);
-	const area =
-		first === undefined || last === undefined || empty
+	const empty = inSpan(values, timed) < 2;
+	const segments = empty
+		? [linePoints([0, 0], { width, height })]
+		: lineSegments(values, {
+				width,
+				height,
+				max,
+				...(slots === undefined ? {} : { slots }),
+				...(timed === undefined ? {} : { timed }),
+			});
+	const areaOf = (points: Segment): string | undefined => {
+		const first = points[0];
+		const last = points.at(-1);
+		return first === undefined || last === undefined || empty
 			? undefined
 			: `${pointsText(points)} ${last[0].toFixed(1)},${height} ${first[0].toFixed(1)},${height}`;
+	};
 	const colour = lineColour[loading || empty ? "idle" : tone];
 	return (
 		<figure className="kt-usage-graph m-0 flex min-w-0 flex-col gap-1.5">
@@ -310,16 +394,25 @@ export function UsageGraph({
 					strokeDasharray="3 3"
 					vectorEffect="non-scaling-stroke"
 				/>
-				{area === undefined ? null : <polygon points={area} fill="currentColor" fillOpacity="0.14" stroke="none" />}
-				<polyline
-					points={pointsText(points)}
-					fill="none"
-					stroke="currentColor"
-					strokeWidth="1.5"
-					strokeLinejoin="round"
-					vectorEffect="non-scaling-stroke"
-					{...(loading ? { strokeDasharray: "2 3" } : {})}
-				/>
+				{segments.map((points) => {
+					const area = areaOf(points);
+					return (
+						<g key={points[0]?.[0] ?? 0}>
+							{area === undefined ? null : (
+								<polygon points={area} fill="currentColor" fillOpacity="0.14" stroke="none" />
+							)}
+							<polyline
+								points={pointsText(points)}
+								fill="none"
+								stroke="currentColor"
+								strokeWidth="1.5"
+								strokeLinejoin="round"
+								vectorEffect="non-scaling-stroke"
+								{...(loading ? { strokeDasharray: "2 3" } : {})}
+							/>
+						</g>
+					);
+				})}
 			</svg>
 		</figure>
 	);

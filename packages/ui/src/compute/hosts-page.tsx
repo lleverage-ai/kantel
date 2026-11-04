@@ -28,7 +28,7 @@ import {
 } from "./compute-model.ts";
 import { HostJoinCommand, type HostJoinInput, JoinWaiting } from "./host-join.tsx";
 import { HostCpu, HostGraphs, HostMemory, useHostUsage } from "./host-usage.tsx";
-import { ROW_POINTS, seriesOf } from "./live-usage.ts";
+import { lineOf, ROW_SPAN_MS, seriesOf } from "./live-usage.ts";
 import { computePage, messageOf, Sparkline } from "./parts.tsx";
 
 export interface HostsPageProps {
@@ -512,8 +512,7 @@ function HostPhoneRow({ host, source, now, onDrain, onRemove, opened }: RowProps
 						<span className="min-w-0 flex-1 truncate text-md font-medium text-fg">{host.name}</span>
 						{source.usage !== undefined && live.status !== "off" ? (
 							<Sparkline
-								values={(seriesOf(live)?.points ?? []).slice(-ROW_POINTS).map((point) => point.cpu)}
-								slots={ROW_POINTS}
+								{...lineOf(seriesOf(live), (point) => point.cpu, ROW_SPAN_MS)}
 								loading={live.status === "loading"}
 								label={`${host.name}'s CPU over the last 2 minutes`}
 							/>

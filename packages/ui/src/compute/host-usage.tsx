@@ -7,10 +7,10 @@ import {
 	gbBytes,
 	gbText,
 	type LiveUsage,
-	ROW_POINTS,
+	lineOf,
+	ROW_SPAN_MS,
 	seriesOf,
 	USAGE_KEEP_MS,
-	USAGE_POLL_MS,
 	useLiveUsage,
 } from "./live-usage.ts";
 import { Sparkline, UsageGraph } from "./parts.tsx";
@@ -24,20 +24,17 @@ export const useHostUsage = (source: HostsSource, host: Host): LiveUsage =>
 
 const percent = (share: number): string => `${Math.round(share * 100)}%`;
 
-/** The last `ROW_POINTS` of a series: the row's sparkline. */
-const recent = <T,>(values: readonly T[]): readonly T[] => values.slice(-ROW_POINTS);
-
 /** A row's live CPU: its line over the last 2 minutes and the latest figure. Undefined when it has none to show. */
 export function HostCpu({ host, live }: { host: Host; live: LiveUsage }) {
 	const series = seriesOf(live);
 	const loading = live.status === "loading";
-	const values = recent(series?.points.map((point) => point.cpu) ?? []);
+	const { values, timed } = lineOf(series, (point) => point.cpu, ROW_SPAN_MS);
 	const latest = values.at(-1);
 	return (
 		<span className="flex items-center gap-2">
 			<Sparkline
 				values={values}
-				slots={ROW_POINTS}
+				timed={timed}
 				loading={loading}
 				label={
 					loading
@@ -57,13 +54,13 @@ export function HostMemory({ host, live }: { host: Host; live: LiveUsage }) {
 	const series = seriesOf(live);
 	const loading = live.status === "loading";
 	const total = series?.memLimitBytes ?? gbBytes(host.memoryGb);
-	const used = recent(series?.points.map((point) => point.memUsedBytes) ?? []);
+	const { values: used, timed } = lineOf(series, (point) => point.memUsedBytes, ROW_SPAN_MS);
 	const latest = used.at(-1);
 	return (
 		<span className="flex items-center gap-2">
 			<Sparkline
 				values={used.map((bytes) => bytes / total)}
-				slots={ROW_POINTS}
+				timed={timed}
 				loading={loading}
 				tone="working"
 				label={loading ? `Reading ${host.name}'s memory` : `${host.name}'s memory over the last 2 minutes`}
@@ -88,14 +85,12 @@ export function HostMemory({ host, live }: { host: Host; live: LiveUsage }) {
 export function HostGraphs({ host, live, narrow = false }: { host: Host; live: LiveUsage; narrow?: boolean }) {
 	const series = seriesOf(live);
 	const loading = live.status === "loading";
-	const slots = Math.round(USAGE_KEEP_MS / (series?.intervalMs ?? USAGE_POLL_MS));
-	const points = series?.points ?? [];
 	const memTotal = series?.memLimitBytes ?? gbBytes(host.memoryGb);
 	const diskTotal = series?.diskTotalBytes ?? gbBytes(host.diskGb);
-	const cpu = points.map((point) => point.cpu);
-	const memory = points.map((point) => point.memUsedBytes);
-	const disk = points.flatMap((point) => (point.diskUsedBytes === undefined ? [] : [point.diskUsedBytes]));
-	const last = points.at(-1);
+	const cpu = lineOf(series, (point) => point.cpu, USAGE_KEEP_MS);
+	const memory = lineOf(series, (point) => point.memUsedBytes, USAGE_KEEP_MS);
+	const disk = lineOf(series, (point) => point.diskUsedBytes, USAGE_KEEP_MS);
+	const last = series?.points.at(-1);
 	const down = live.status === "off";
 	return (
 		<div className="flex min-w-0 flex-col gap-3" data-host-graphs={host.id}>
@@ -103,17 +98,17 @@ export function HostGraphs({ host, live, narrow = false }: { host: Host; live: L
 				<UsageGraph
 					title="CPU"
 					{...(last === undefined ? {} : { value: `${percent(last.cpu)} of ${host.vcpus} vCPU` })}
-					values={cpu}
-					slots={slots}
+					values={cpu.values}
+					timed={cpu.timed}
 					loading={loading}
-					label={`${host.name}'s CPU over the last 10 minutes, peak ${percent(Math.max(0, ...cpu))}`}
+					label={`${host.name}'s CPU over the last 10 minutes, peak ${percent(Math.max(0, ...cpu.values))}`}
 				/>
 				<UsageGraph
 					title="Memory"
 					{...(last === undefined ? {} : { value: `${gbText(last.memUsedBytes)} of ${gbText(memTotal)} GB` })}
-					values={memory}
+					values={memory.values}
 					max={memTotal}
-					slots={slots}
+					timed={memory.timed}
 					tone="working"
 					loading={loading}
 					label={`${host.name}'s memory over the last 10 minutes`}
@@ -123,9 +118,9 @@ export function HostGraphs({ host, live, narrow = false }: { host: Host; live: L
 					{...(last?.diskUsedBytes === undefined
 						? {}
 						: { value: `${gbText(last.diskUsedBytes)} of ${gbText(diskTotal)} GB` })}
-					values={disk}
+					values={disk.values}
 					max={diskTotal}
-					slots={slots}
+					timed={disk.timed}
 					tone="muted"
 					loading={loading}
 					label={`${host.name}'s disk over the last 10 minutes`}
