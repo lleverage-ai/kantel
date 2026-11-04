@@ -309,7 +309,7 @@ export function TemplatesPage({
 		<div className={computePage}>
 			<PageHeader
 				title={<span className="inline-flex items-center gap-2">Templates {experimental}</span>}
-				lede="How a sandbox's machine is made: Kantel's base image, its vCPUs and memory, variables, a setup script that installs what it needs and where it may connect, versioned. Kantel builds each version once and snapshots it, so sandboxes made from it start in about a second."
+				lede="How a sandbox's machine is made: Kantel's base image or a custom one, its vCPUs and memory, variables, a setup script that installs what it needs and where it may connect, versioned. Kantel builds each version once and snapshots it, so sandboxes made from it start in about a second."
 				actions={addButton}
 			/>
 			{state.status === "error" ? (
@@ -721,8 +721,9 @@ export function TemplatePage({
 			<section className="flex flex-col gap-3" aria-labelledby="template-snapshots">
 				<SectionHeading id="template-snapshots" title="Snapshot cache" />
 				<p className="m-0 max-w-content text-sm text-muted">
-					A snapshot is rebuilt when the version, the base's digest, the host's kernel or Firecracker, or the size
-					changes. Kantel throws these away at will; your sandboxes' own snapshots are kept apart and never touched.
+					A snapshot is rebuilt when the version, the base's digest, a custom image's built digest, the host's kernel or
+					Firecracker, or the size changes. Kantel throws these away at will; your sandboxes' own snapshots are kept
+					apart and never touched.
 				</p>
 				{live.length === 0 ? (
 					<Panel>
@@ -804,7 +805,7 @@ function SnapshotTable({
 							Version
 						</th>
 						<th className={th} scope="col">
-							Base
+							Image
 						</th>
 						<th className={th} scope="col">
 							Kernel, Firecracker
@@ -835,12 +836,7 @@ function SnapshotTable({
 									</span>
 								</td>
 								<td className={`${td} tabular-nums`}>v{entry.version}</td>
-								<td className={td}>
-									<span className={cellMono}>{shortDigest(entry.key.baseDigest)}</span>
-									<span className={cellSub}>
-										{entry.builtFrom.pinned ? "pinned" : `${entry.builtFrom.channel ?? ""} channel`}
-									</span>
-								</td>
+								<td className={td}>{snapshotImageCell(entry)}</td>
 								<td className={td}>
 									<span className={cellMono}>
 										{entry.key.kernel}, {entry.key.firecracker}
@@ -869,6 +865,30 @@ function SnapshotTable({
 	);
 }
 
+/** A cache entry's image: its base's digest and channel, or its custom image's built digest and where it came from. */
+function snapshotImageCell(entry: TemplateSnapshot) {
+	const from = entry.builtFrom;
+	if (from.source === "dockerfile" || from.source === "image") {
+		const digest = entry.key.imageDigest ?? from.imageDigest;
+		return (
+			<>
+				<span className={cellMono}>{digest === undefined ? "Not built yet" : shortDigest(digest)}</span>
+				<span className={`${cellSub} max-w-(--kt-card-width) truncate`}>
+					{from.source === "dockerfile"
+						? `Dockerfile ${shortDigest(from.dockerfileDigest ?? "")}`
+						: (from.imageRef ?? "Image reference")}
+				</span>
+			</>
+		);
+	}
+	return (
+		<>
+			<span className={cellMono}>{shortDigest(entry.key.baseDigest)}</span>
+			<span className={cellSub}>{from.pinned ? "pinned" : `${from.channel ?? ""} channel`}</span>
+		</>
+	);
+}
+
 function VersionTable({ versions, now }: { versions: readonly TemplateVersion[]; now: number }) {
 	return (
 		<TableFrame>
@@ -879,7 +899,7 @@ function VersionTable({ versions, now }: { versions: readonly TemplateVersion[];
 							Version
 						</th>
 						<th className={th} scope="col">
-							Base
+							Image
 						</th>
 						<th className={th} scope="col">
 							Size
@@ -895,8 +915,11 @@ function VersionTable({ versions, now }: { versions: readonly TemplateVersion[];
 							<td className={`${td} tabular-nums`}>v{entry.version}</td>
 							<td className={td}>
 								<span className="block max-w-(--kt-card-width) truncate font-mono text-code">
-									{baseText(entry.spec)}
+									{entry.spec.image.kind === "image" ? entry.spec.image.ref : baseText(entry.spec)}
 								</span>
+								{entry.spec.image.kind === "dockerfile" ? (
+									<span className={cellSub}>Dockerfile on its base</span>
+								) : null}
 							</td>
 							<td className={`${td} tabular-nums`}>{resourcesText(entry.spec)}</td>
 							<td className={td}>
