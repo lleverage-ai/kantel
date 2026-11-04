@@ -17,6 +17,7 @@ import { type ObjectSqlLike, objectSqlDriver } from "../src/audit-outbox.ts";
 import {
 	COMPUTE_MEMBERS_ONLY,
 	createStackCompute,
+	HOST_E2E_CHAIN_BODY_LIMIT,
 	HOST_REGISTER_BODY_LIMIT,
 	hostCredential,
 	type MessageSocket,
@@ -100,8 +101,20 @@ async function start(db: DatabaseSync, vars: { KANTEL_ACCOUNT_HOSTS?: string; KA
 	return { stack, call };
 }
 
-/** kantel-host as the hub sees it over its WebSocket: it says hello, then runs sandboxes and an `echo`. */
-function fakeHost() {
+/**
+ * kantel-host as the hub sees it over its WebSocket: it says hello, then runs sandboxes and an `echo`. A port's stream
+ * echoes what comes in, uppercased (an SSH server stands in), or with `http`, answers one HTTP request with a page
+ * naming the request line and the Host it was asked for, then ends the stream (a web server stands in).
+ */
+function fakeHost(options: { readonly http?: boolean } = {}) {
+	const requests = new Map<number, string>();
+	/** Streams that upgraded to a WebSocket: what the server has of their frames so far. */
+	const sockets = new Map<number, Uint8Array>();
+	/** Every WebSocket message the port's server heard, as `{request line} {opcode} {text}`. */
+	const heard: string[] = [];
+	/** Every WebSocket handshake's head, as the port's server got it. */
+	const handshakes: string[] = [];
+	const lines = new Map<number, string>();
 	const sandboxes = new Set<string>();
 	const calls: string[] = [];
 	let closed: { code: number; reason: string } | undefined;
@@ -124,6 +137,11 @@ function fakeHost() {
 				return answer({ id: params.snapshotId, sizeBytes: 1 });
 			}
 			if (message.method === "sandbox.exec") {
+				// Chromium's DevTools, asked whether it's up (`openBrowser`).
+				if (params.command?.includes("127.0.0.1:9222/json/version")) {
+					const stdout = JSON.stringify({ webSocketDebuggerUrl: "ws://127.0.0.1:9222/devtools/browser/b-1" });
+					return answer({ exitCode: 0, stdout, stderr: "" });
+				}
 				const echo = /^echo (.*)$/.exec(params.command ?? "");
 				return answer({ exitCode: 0, stdout: `${echo?.[1] ?? ""} from my own machine\n`, stderr: "" });
 			}
@@ -134,6 +152,65 @@ function fakeHost() {
 		sendBinary(bytes) {
 			const frame = decodeStreamFrame(bytes);
 			if (frame === undefined) return;
+			const upgraded = sockets.get(frame.stream);
+			if (upgraded !== undefined) {
+				// A WebSocket server: each message back uppercased, as the same kind; a close answered and the stream ended.
+				let buffer = concatBytes(upgraded, frame.payload);
+				for (let message = clientFrame(buffer); message !== undefined; message = clientFrame(buffer)) {
+					buffer = buffer.slice(message.size);
+					const text = new TextDecoder().decode(message.payload);
+					heard.push(`${lines.get(frame.stream)} ${message.opcode} ${text}`);
+					if (message.opcode === 0x8) {
+						receive(JSON.stringify({ type: "stream.close", stream: frame.stream, reason: "closed" }));
+						continue;
+					}
+					if (text === "huge") {
+						// Only the head of a 17 MiB binary message: the relay must refuse it on what it says it is.
+						const head = new Uint8Array(10);
+						head[0] = 0x82;
+						head[1] = 127;
+						new DataView(head.buffer).setBigUint64(2, BigInt(17 * 1024 * 1024));
+						receive(encodeStreamFrame(frame.stream, head));
+						continue;
+					}
+					const back = new TextEncoder().encode(text.toUpperCase());
+					receive(encodeStreamFrame(frame.stream, serverFrame(message.opcode, back)));
+				}
+				sockets.set(frame.stream, buffer);
+				return;
+			}
+			const sofar = (requests.get(frame.stream) ?? "") + new TextDecoder().decode(frame.payload);
+			if (/^GET [^\r\n]* HTTP\/1\.1\r\n/.test(sofar) && /\r\nupgrade: websocket\r\n/i.test(sofar)) {
+				if (!sofar.includes("\r\n\r\n")) return void requests.set(frame.stream, sofar);
+				const head = sofar.split("\r\n\r\n")[0] ?? "";
+				const [line = "", ...headers] = head.split("\r\n");
+				const host = headers.find((header) => /^host:/i.test(header)) ?? "";
+				lines.set(frame.stream, `${line.split(" ")[1]} ${host}`);
+				sockets.set(frame.stream, new Uint8Array(0));
+				handshakes.push(head);
+				// The first subprotocol offered, if any, is the one chosen.
+				const offered = headers.find((header) => /^sec-websocket-protocol:/i.test(header));
+				const chosen = offered?.split(":")[1]?.split(",")[0]?.trim();
+				const accepted =
+					"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+					(chosen === undefined ? "" : `Sec-WebSocket-Protocol: ${chosen}\r\n`) +
+					"\r\n";
+				receive(encodeStreamFrame(frame.stream, new TextEncoder().encode(accepted)));
+				return;
+			}
+			if (options.http === true) {
+				const sofar = (requests.get(frame.stream) ?? "") + new TextDecoder().decode(frame.payload);
+				requests.set(frame.stream, sofar);
+				if (!sofar.includes("\r\n\r\n")) return;
+				const [line = "", ...headers] = sofar.split("\r\n\r\n")[0]?.split("\r\n") ?? [];
+				const host = headers.find((header) => /^host:/i.test(header)) ?? "";
+				const cookie = headers.find((header) => /^cookie:/i.test(header)) ?? "no cookie";
+				const body = `${line}\n${host}\n${cookie}\n`;
+				const answer = `HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: ${body.length}\r\n\r\n${body}`;
+				receive(encodeStreamFrame(frame.stream, new TextEncoder().encode(answer)));
+				receive(JSON.stringify({ type: "stream.close", stream: frame.stream, reason: "done" }));
+				return;
+			}
 			const text = new TextDecoder().decode(frame.payload).toUpperCase();
 			receive(encodeStreamFrame(frame.stream, new TextEncoder().encode(text)));
 		},
@@ -170,11 +247,53 @@ function fakeHost() {
 		socket,
 		sandboxes,
 		calls,
+		heard,
+		handshakes,
 		closed: () => closed,
 		/** Hands the hub's `receive` over, then says hello. */
 		attach(held: { receive(frame: string | Uint8Array): void }, hostId: string) {
 			receive = (frame) => held.receive(frame);
 			receive(hello(hostId));
+		},
+	};
+}
+
+function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+	const out = new Uint8Array(a.length + b.length);
+	out.set(a);
+	out.set(b, a.length);
+	return out;
+}
+
+/** One masked client frame (short ones only, as these tests send) at the start of `buffer`, if it's all there. */
+function clientFrame(buffer: Uint8Array): { opcode: number; payload: Uint8Array; size: number } | undefined {
+	if (buffer.length < 6) return undefined;
+	const length = (buffer[1] ?? 0) & 0x7f;
+	if (length >= 126) throw new Error("The fake host reads short frames only");
+	if (buffer.length < 6 + length) return undefined;
+	const mask = buffer.subarray(2, 6);
+	const payload = buffer.slice(6, 6 + length).map((byte, i) => byte ^ (mask[i & 3] ?? 0));
+	return { opcode: (buffer[0] ?? 0) & 0x0f, payload, size: 6 + length };
+}
+
+/** A server's frame: unmasked, short. */
+function serverFrame(opcode: number, payload: Uint8Array): Uint8Array {
+	return concatBytes(new Uint8Array([0x80 | opcode, payload.length]), payload);
+}
+
+/** A relayed WebSocket's client, as the stack object's accepted socket: what it was sent, and how it was closed. */
+function socketClient() {
+	const got: string[] = [];
+	let closed: { code: number; reason: string } | undefined;
+	return {
+		got,
+		closed: () => closed,
+		client: {
+			send: (data: string | Uint8Array) =>
+				got.push(typeof data === "string" ? `text ${data}` : `binary ${new TextDecoder().decode(data)}`),
+			close: (code: number, reason: string) => {
+				closed ??= { code, reason };
+			},
 		},
 	};
 }
@@ -288,6 +407,26 @@ describe("Account hosts on the Worker", () => {
 		if (held === undefined) throw new Error("The host's credential was refused");
 		host.attach(held, hostId);
 		await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
+
+		// The host's E2E chain is served on its credential (`kantel-host e2e join`), and an append's body is bounded.
+		const account = (await call("GET", "/v1/whoami")).body.accountId as string;
+		const chainOf = (init: RequestInit, auth = credential) =>
+			hosts.fetch(
+				new Request(`${BASE}/v1/hosts/e2e/chain?space=${account}`, {
+					...init,
+					headers: { authorization: `Bearer ${auth}`, "content-type": "application/json" },
+				}),
+			);
+		const read = await chainOf({ method: "GET" });
+		expect(read?.status).toBe(200);
+		expect(await read?.json()).toEqual({ entries: [] });
+		expect((await chainOf({ method: "GET" }, "khc_wrong"))?.status).toBe(401);
+		const big = JSON.stringify({
+			space: account,
+			from: 0,
+			entries: [{ payload: "x".repeat(HOST_E2E_CHAIN_BODY_LIMIT), sig: "" }],
+		});
+		expect((await chainOf({ method: "POST", body: big }))?.status).toBe(413);
 
 		// New sandboxes go on the host; the old one starts again on the stub, where its disk is, and forks there.
 		const fresh = await call("POST", "/v1/sandboxes", { type: "microvm", wait: true });
@@ -686,6 +825,101 @@ describe("Account hosts on the Worker", () => {
 		expect(refused).toEqual([4003]);
 		expect(tunnelTicket(`${proxyUrl.pathname}/json/version`)).toBeUndefined();
 
+		// The desktop: its page is the desktop route's, on its ticket with no sign-in (the console's frame and a new tab
+		// open it alike), never the gateway's "No such route". This host's port 6080 isn't Selkies, so the route refuses
+		// what the sandbox sent for it.
+		const desktop = await call("POST", `/v1/sandboxes/${sandboxId}/desktop`, {});
+		expect(desktop.status).toBe(201);
+		const page = new URL(desktop.body.url as string);
+		expect(page.origin).toBe(BASE);
+		expect(page.pathname).toMatch(/^\/v1\/hosts\/desktop\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\/$/);
+		expect(desktop.body.embedUrl).toBe(desktop.body.url);
+		const served = await call("GET", page.pathname, undefined, {});
+		expect(served.status).toBe(502);
+		expect(served.body).toEqual({});
+		const moved = await call("GET", page.pathname.slice(0, -1), undefined, {});
+		expect([moved.status, moved.headers.get("location")]).toEqual([308, page.pathname]);
+		const expired = await call("GET", `/v1/hosts/desktop/${forged}/`, undefined, {});
+		expect([expired.status, expired.body]).toEqual([404, {}]);
+
+		// Its stream goes through to Selkies on port 6080, message by message, text and binary kept apart.
+		// The console's own credentials, sent along by a browser, never reach the sandbox's desktop or DevTools.
+		const consoleCredentials = { cookie: "__Host-kantel_session=console", authorization: "Bearer console" };
+		const upgrade = (url: string) =>
+			new Request(url.replace(/^wss:/, "https:"), { headers: { upgrade: "websocket", ...consoleCredentials } });
+		const control = await hosts.socketTarget(upgrade(`${page.href}api/websockets?player=1`));
+		if (control === undefined || "refused" in control) throw new Error("The desktop's socket was refused");
+		expect(control).toMatchObject({ sandboxId, port: 6080, path: "/api/websockets?player=1", kind: "desktop" });
+		expect(control.headers).toBeUndefined();
+		const driver = socketClient();
+		const driving = hosts.relay(control, driver.client);
+		expect(await driving.ready).toEqual({});
+		driving.send("kd,65");
+		driving.send(new TextEncoder().encode("upload"));
+		await expect.poll(() => driver.got).toEqual(["text KD,65", "binary UPLOAD"]);
+		driving.close();
+		// Watch: Selkies' viewer role, whatever the client asks for, and only what a viewer needs to watch reaches it.
+		const watch = await call("POST", `/v1/sandboxes/${sandboxId}/desktop`, { viewOnly: true });
+		expect(new URL(watch.body.url as string).hash).toBe("#shared");
+		const watchPage = new URL(watch.body.url as string);
+		watchPage.hash = "";
+		const viewing = await hosts.socketTarget(upgrade(`${watchPage.href}api/websockets?role=controller`));
+		if (viewing === undefined || "refused" in viewing) throw new Error("The watch socket was refused");
+		expect(viewing.path).toBe("/api/websockets?role=viewer");
+		const viewer = socketClient();
+		const watching = hosts.relay(viewing, viewer.client);
+		watching.send("kd,65");
+		watching.send("START_VIDEO");
+		await expect.poll(() => viewer.got).toEqual(["text START_VIDEO"]);
+		watching.close();
+		expect(host.heard).toEqual([
+			"/api/websockets?player=1 Host: 127.0.0.1:6080 1 kd,65",
+			"/api/websockets?player=1 Host: 127.0.0.1:6080 2 upload",
+			expect.stringMatching(/^\/api\/websockets\?player=1 Host: 127\.0\.0\.1:6080 8 /),
+			"/api/websockets?role=viewer Host: 127.0.0.1:6080 1 START_VIDEO",
+			expect.stringMatching(/^\/api\/websockets\?role=viewer Host: 127\.0\.0\.1:6080 8 /),
+		]);
+
+		// The browser: watched and driven on the desktop's page, and Chromium's DevTools for CDP clients through the
+		// tunnel with its path, asked for as 127.0.0.1 (Chromium refuses any other Host).
+		const browser = await call("POST", `/v1/sandboxes/${sandboxId}/browser`, {});
+		expect(browser.status).toBe(201);
+		expect(new URL(browser.body.url as string).pathname).toMatch(/^\/v1\/hosts\/desktop\//);
+		const cdpUrl = browser.body.cdpUrl as string;
+		expect(cdpUrl).toMatch(/^wss:\/\/kantel\.test\/v1\/hosts\/tunnel\/[^/]+\/devtools\/browser\/b-1$/);
+		const cdp = await hosts.socketTarget(upgrade(cdpUrl));
+		if (cdp === undefined || "refused" in cdp) throw new Error("The CDP socket was refused");
+		expect(cdp).toMatchObject({ sandboxId, port: 9222, path: "/devtools/browser/b-1", kind: "cdp" });
+		const playwright = socketClient();
+		const driven = hosts.relay(cdp, playwright.client);
+		driven.send('{"id":1,"method":"Browser.getVersion"}');
+		await expect.poll(() => playwright.got).toEqual(['text {"ID":1,"METHOD":"BROWSER.GETVERSION"}']);
+		driven.close();
+		expect(cdp.headers).toBeUndefined();
+		for (const handshake of host.handshakes) expect(handshake).not.toMatch(/^(cookie|authorization):/im);
+		expect(host.heard).toContain('/devtools/browser/b-1 Host: 127.0.0.1:9222 1 {"id":1,"method":"Browser.getVersion"}');
+
+		// A ticket opens only its own route: a desktop's isn't a tunnel, a tunnel's isn't a desktop, a forged one neither.
+		const cdpTicket = /\/v1\/hosts\/tunnel\/([^/]+)\//.exec(cdpUrl)?.[1] ?? "";
+		const desktopTicket = page.pathname.split("/")[4] ?? "";
+		for (const wrong of [
+			`${BASE}/v1/hosts/tunnel/${desktopTicket}/devtools/browser/b-1`,
+			`${BASE}/v1/hosts/desktop/${cdpTicket}/api/websockets`,
+			`${BASE}/v1/hosts/desktop/${desktopTicket}/api/other`,
+			`${BASE}/v1/hosts/tunnel/${forged}/devtools/browser/b-1`,
+		]) {
+			expect(await hosts.socketTarget(upgrade(wrong))).toMatchObject({ refused: { code: 4003 } });
+		}
+		// Anything else upgrading isn't one of these.
+		expect(await hosts.socketTarget(upgrade(`${BASE}/v1/whoami`))).toBeUndefined();
+		expect(await hosts.socketTarget(upgrade(proxyUrl.href))).toBeUndefined();
+
+		// What a client sends before the sandbox's server has answered is bounded, as a raw tunnel's is.
+		const flooder = socketClient();
+		const flooding = hosts.relay(cdp, flooder.client);
+		for (let i = 0; i <= TUNNEL_PENDING_MESSAGES; i++) flooding.send("x");
+		expect(flooder.closed()).toEqual({ code: 1009, reason: "Too much sent before the sandbox answered" });
+
 		// An organisation with no host of its own keeps the stub.
 		const org = await call("POST", "/v1/accounts", { name: "Acme" });
 		const orgId = org.body.id as string;
@@ -709,6 +943,188 @@ describe("Account hosts on the Worker", () => {
 		const again = await start(db, on);
 		const kept = await again.stack.compute.hosts?.service.get(hostId);
 		expect(kept).toMatchObject({ id: hostId, accountId: personal, state: "revoked" });
+	});
+
+	it("serves a host's sandbox's exposed port on its name under kantel.run, with its token unless public", async () => {
+		const db = new DatabaseSync(":memory:");
+		const { stack, call } = await start(db, { KANTEL_ACCOUNT_HOSTS: "experimental", KANTEL_PUBLIC_URL: BASE });
+		const hosts = stack.compute.hosts;
+		if (hosts === undefined) throw new Error("Account hosts are on");
+		const token = (await call("POST", "/v1/hosts/join-tokens", { name: "toms-box" })).body.token as string;
+		const { hostId, credential } = (await call("POST", "/v1/hosts/register", { token }, {})).body as {
+			hostId: string;
+			credential: string;
+		};
+		const host = fakeHost({ http: true });
+		const held = await hosts.connect(credential, host.socket);
+		if (held === undefined) throw new Error("The host's credential was refused");
+		host.attach(held, hostId);
+		await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
+		const sandbox = await call("POST", "/v1/sandboxes", { type: "microvm", wait: true });
+		const sandboxId = sandbox.body.id as string;
+		const name = `3000-${sandbox.body.subdomain as string}.kantel.run`;
+
+		const exposed = await call("POST", `/v1/sandboxes/${sandboxId}/ports`, { port: 3000 });
+		expect(exposed.status).toBe(201);
+		const url = new URL(exposed.body.url as string);
+		expect(url.origin).toBe(`https://${name}`);
+		const portToken = url.searchParams.get("_token");
+		expect(portToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+		// Every name under the ports domain is the port's alone: never the console, the API or the public origin.
+		const compute = stack.compute;
+		expect(compute.isPortName(name)).toBe(true);
+		expect(compute.isPortName("deep.name.kantel.run")).toBe(true);
+		for (const other of ["kantel.run", "app.kantel.dev", "kantel.test", "evilkantel.run"]) {
+			expect(compute.isPortName(other)).toBe(false);
+		}
+		const page = (path: string, headers: Record<string, string> = {}) =>
+			compute.servePort(new Request(`https://${name}${path}`, { headers, redirect: "manual" }));
+
+		// Without its token, nothing reaches the sandbox.
+		const bare = await page("/");
+		expect(bare.status).toBe(401);
+		expect(await page("/v1/me").then((answer) => answer.status)).toBe(401);
+		// The token is traded for a cookie on this one name, and taken off the address.
+		const traded = await page(`/hello?a=1&_token=${portToken}`);
+		expect(traded.status).toBe(303);
+		expect(traded.headers.get("location")).toBe("/hello?a=1");
+		const cookie = (traded.headers.get("set-cookie") ?? "").split(";")[0] ?? "";
+		expect(traded.headers.get("set-cookie")).toMatch(
+			/^__Host-kantel_port=[^;]+; Path=\/; HttpOnly; Secure; SameSite=Lax$/,
+		);
+		// With it, the sandbox's own page, asked for under its public name, with Kantel's cookie kept from it.
+		const served = await page("/hello?a=1", { cookie, "cf-connecting-ip": "203.0.113.9" });
+		expect(served.status).toBe(200);
+		expect(await served.text()).toBe(`GET /hello?a=1 HTTP/1.1\nHost: ${name}\nno cookie\n`);
+
+		// A name nobody exposed never reaches a sandbox.
+		const nobody = await compute.servePort(new Request("https://4000-nobody.kantel.run/"));
+		expect(nobody.status).toBe(404);
+
+		// A WebSocket on the port's name (a dev server's hot reload) goes through, on the same token or cookie as its
+		// pages, asked for under the port's public name.
+		const upgrade = (path: string, headers: Record<string, string> = {}) =>
+			hosts.socketTarget(new Request(`https://${name}${path}`, { headers: { upgrade: "websocket", ...headers } }));
+		expect(await upgrade("/hmr")).toEqual({ refused: { code: 4401, reason: "This port needs its token" } });
+		expect(await hosts.socketTarget(new Request("https://4000-nobody.kantel.run/"))).toMatchObject({
+			refused: { code: 4404 },
+		});
+		// The cookie counts only from the port's own pages (or the same sandbox's), by Origin.
+		expect(await upgrade("/hmr", { cookie, origin: "https://evil.example" })).toMatchObject({
+			refused: { code: 4401 },
+		});
+		const hmr = await upgrade("/hmr?v=2", { cookie, origin: `https://${name}` });
+		if (hmr === undefined || "refused" in hmr) throw new Error("The port's socket was refused");
+		expect(hmr).toMatchObject({ sandboxId, port: 3000, path: "/hmr?v=2", host: name, kind: "port 3000" });
+		const withToken = await upgrade(`/hmr?_token=${portToken}`);
+		expect(withToken).toMatchObject({ path: "/hmr" });
+		const reloads = socketClient();
+		const reloading = hosts.relay(hmr, reloads.client);
+		expect(await reloading.ready).toEqual({});
+		reloading.send("ping");
+		await expect.poll(() => reloads.got).toEqual(["text PING"]);
+		expect(host.heard).toEqual([`/hmr?v=2 Host: ${name} 1 ping`]);
+		reloading.close();
+
+		// The application's own cookies and Authorization reach its server, Kantel's gate cookie (every name it has had)
+		// never; the client's subprotocol is offered, and the one the server chose is the client's to see in its 101.
+		const app = await upgrade("/hmr", {
+			cookie: `session=app-1; ${cookie}; kantel_port=old; _kantel_port=older; theme=dark`,
+			origin: `https://${name}`,
+			authorization: "Bearer app-token",
+			"sec-websocket-protocol": "vite-hmr",
+		});
+		if (app === undefined || "refused" in app) throw new Error("The port's socket was refused");
+		const vite = socketClient();
+		const hot = hosts.relay(app, vite.client, ["vite-hmr"]);
+		expect(await hot.ready).toEqual({ protocol: "vite-hmr" });
+		const handshake = host.handshakes.at(-1) ?? "";
+		expect(handshake).toContain("Sec-WebSocket-Protocol: vite-hmr\r\n");
+		expect(handshake).toContain("cookie: session=app-1; theme=dark\r\n");
+		expect(handshake).toContain("authorization: Bearer app-token\r\n");
+		expect(handshake).not.toMatch(/kantel_port/);
+		expect(handshake).not.toContain(portToken ?? "");
+		// A message from the sandbox bigger than the Worker holds is refused on its head, before its bytes arrive.
+		hot.send("huge");
+		await expect.poll(() => vite.closed()).toMatchObject({ code: 1009 });
+		// One that reaches the page server itself (account hosts off) is still refused.
+		expect((await page("/", { cookie, upgrade: "websocket" })).status).toBe(501);
+
+		// Exposed public: no token needed. Hidden: gone.
+		const open = await call("POST", `/v1/sandboxes/${sandboxId}/ports`, { port: 8080, public: true });
+		expect(new URL(open.body.url as string).search).toBe("");
+		const publicName = `8080-${sandbox.body.subdomain as string}.kantel.run`;
+		const openPage = await compute.servePort(new Request(`https://${publicName}/`));
+		expect(openPage.status).toBe(200);
+		expect(await openPage.text()).toContain(`Host: ${publicName}`);
+		expect((await call("DELETE", `/v1/sandboxes/${sandboxId}/ports/8080`)).status).toBe(204);
+		expect((await compute.servePort(new Request(`https://${publicName}/`))).status).toBe(404);
+	});
+
+	it("gives a microVM placed before ports were served here the ports capability on start, and nothing else", async () => {
+		const db = new DatabaseSync(":memory:");
+		const on = { KANTEL_ACCOUNT_HOSTS: "experimental", KANTEL_PUBLIC_URL: BASE };
+		const first = await start(db, on);
+		const hosts = first.stack.compute.hosts;
+		if (hosts === undefined) throw new Error("Account hosts are on");
+		const token = (await first.call("POST", "/v1/hosts/join-tokens", { name: "toms-box" })).body.token as string;
+		const { hostId, credential } = (await first.call("POST", "/v1/hosts/register", { token }, {})).body as {
+			hostId: string;
+			credential: string;
+		};
+		const host = fakeHost({ http: true });
+		const held = await hosts.connect(credential, host.socket);
+		if (held === undefined) throw new Error("The host's credential was refused");
+		host.attach(held, hostId);
+		await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
+		const vm = (await first.call("POST", "/v1/sandboxes", { type: "microvm", wait: true })).body;
+		const isolate = (await first.call("POST", "/v1/sandboxes", { type: "isolate", wait: true })).body;
+		expect(vm.capabilities).toMatchObject({ ports: true });
+		await first.stack.compute.close();
+
+		// As the previous deploy wrote it: a running microVM on an account host, without ports.
+		const record = (id: unknown) => {
+			const row = db
+				.prepare("SELECT data FROM compute_api_records WHERE kind = 'sandboxes' AND id = ?")
+				.get(String(id));
+			return JSON.parse(String((row as { data: string }).data)) as Record<string, unknown>;
+		};
+		const written = (id: unknown, data: Record<string, unknown>) =>
+			db
+				.prepare("UPDATE compute_api_records SET data = ? WHERE kind = 'sandboxes' AND id = ?")
+				.run(JSON.stringify(data), String(id));
+		const before = record(vm.id);
+		written(vm.id, { ...before, capabilities: { ...(before.capabilities as object), ports: false } });
+		// An isolate's record never gets ports, whatever its placement says (this fake host answers every tier as a VM).
+		const isolateWritten = record(isolate.id);
+		written(isolate.id, {
+			...isolateWritten,
+			capabilities: { ...(isolateWritten.capabilities as object), ports: false },
+		});
+		const isolateBefore = record(isolate.id);
+
+		// On start, before any call: the microVM's record is as it was with ports (what `exposePort` checks), state,
+		// placement and every other field kept; the isolate's is untouched. (The identity directory here is in memory, so
+		// the person's account is new after a restart: the record is what's checked.)
+		const again = await start(db, on);
+		expect(record(vm.id)).toEqual(before);
+		expect(record(isolate.id)).toEqual(isolateBefore);
+		// Starting again over records that have it changes nothing.
+		await again.stack.compute.close();
+		const settled = record(vm.id);
+		await start(db, on);
+		expect(record(vm.id)).toEqual(settled);
+	});
+
+	it("answers every name under the ports domain with a 404 while account hosts are off", async () => {
+		const { stack, call } = await start(new DatabaseSync(":memory:"));
+		const made = await call("POST", "/v1/sandboxes", { name: "web", wait: true });
+		const exposed = await call("POST", `/v1/sandboxes/${made.body.id as string}/ports`, { port: 3000 });
+		const url = new URL(exposed.body.url as string);
+		expect(url.hostname).toBe(`3000-${made.body.subdomain as string}.kantel.run`);
+		expect(stack.compute.isPortName(url.hostname)).toBe(true);
+		expect((await stack.compute.servePort(new Request(url))).status).toBe(404);
 	});
 
 	it("lets someone who signs up on the public origin add and use a host of their own, never the stub", async () => {

@@ -8,6 +8,7 @@ import { constants } from "node:fs";
 import { access, chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, posix, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
 	type ApiKey,
 	type ApiKeyPreset,
@@ -26,6 +27,8 @@ import {
 	type SandboxSizeName,
 	type SandboxType,
 } from "@kantel/api/sdk";
+import type { EntryBody } from "@kantel/e2e/chain";
+import { type ByteChannel, SessionClient } from "@kantel/e2e/session";
 import {
 	AGENTS_BLOCK,
 	agentsGuide,
@@ -62,6 +65,8 @@ import {
 	resolveConfig,
 	writeStoredConfig,
 } from "./config.ts";
+import { type LocalConsole, type LocalInfo, serveLocalConsole } from "./console.ts";
+import * as e2e from "./e2e.ts";
 import {
 	type Binding,
 	bindingsText,
@@ -131,6 +136,10 @@ export interface RunOptions {
 	 * `kantel` isn't on the PATH; default this process's.
 	 */
 	readonly self?: readonly string[];
+	/** Opens the relay's WebSocket for an E2E session (`kantel e2e`); default a WebSocket to the URL. */
+	readonly connect?: (url: string) => Promise<ByteChannel>;
+	/** `kantel console` is serving: resolves when it should stop; default on Ctrl-C (SIGINT) or SIGTERM. */
+	readonly served?: (console: LocalConsole) => Promise<void>;
 }
 
 interface Io {
@@ -145,6 +154,70 @@ interface Io {
 	readonly sleep: (ms: number) => Promise<void>;
 	readonly home: string;
 	readonly self: readonly string[] | undefined;
+	readonly connect: (url: string) => Promise<ByteChannel>;
+	readonly served: (console: LocalConsole) => Promise<void>;
+}
+
+/** Until Ctrl-C or SIGTERM. */
+function untilSignalled(): Promise<void> {
+	return new Promise((done) => {
+		const stop = () => {
+			process.off("SIGINT", stop);
+			process.off("SIGTERM", stop);
+			done();
+		};
+		process.on("SIGINT", stop);
+		process.on("SIGTERM", stop);
+	});
+}
+
+/**
+ * Where the console's built files are: `--dir`, `KANTEL_CONSOLE_DIR`, `console/` beside the bundled CLI (its npm
+ * package), or the console's build in this checkout.
+ */
+async function consoleDir(ctx: Context): Promise<string> {
+	const here = dirname(fileURLToPath(import.meta.url));
+	const given = ctx.string("dir") ?? ctx.io.env.KANTEL_CONSOLE_DIR;
+	const candidates =
+		given === undefined
+			? [join(here, "console"), join(here, "..", "..", "..", "apps", "console", "dist")]
+			: [resolve(ctx.io.cwd, given)];
+	for (const candidate of candidates) {
+		if (
+			await access(join(candidate, "index.html")).then(
+				() => true,
+				() => false,
+			)
+		) {
+			return candidate;
+		}
+	}
+	throw new CliError(
+		given === undefined
+			? "This CLI has no console files: install the kantel package, or build them with pnpm --filter @kantel/console build"
+			: `There is no console in ${candidates[0]} (no index.html)`,
+	);
+}
+
+/** What `kantel console` tells its page about E2E: this device, and each space it pinned, verified now. */
+async function localInfo(ctx: Context): Promise<LocalInfo> {
+	const device = await e2e.loadDevice(ctx.io.configDir).catch(() => undefined);
+	const spaces = await Promise.all(
+		(await e2e.pinnedSpaces(ctx.io.configDir)).map(async (id) => {
+			try {
+				const chain = await e2e.verifiedChain(await ctx.client(), ctx.io.configDir, id);
+				return { id, mode: chain.state.mode };
+			} catch (error) {
+				// A chain this device can't verify is treated as E2E: the page never falls back to the gateway for it.
+				return { id, mode: "strict" as const, error: error instanceof Error ? error.message : String(error) };
+			}
+		}),
+	);
+	return {
+		local: true,
+		...(device === undefined ? {} : { device: { id: device.id, label: device.label } }),
+		spaces,
+	};
 }
 
 /** Whether an executable `name` is in one of the PATH's directories. */
@@ -800,6 +873,638 @@ function fileIn(answer: unknown, path: string): { readonly mode: number; readonl
 }
 
 // The commands.
+
+// End-to-end encryption (e2e.ts).
+
+/** The space a command acts in: --account, the config's, or the caller's own. */
+async function e2eSpace(ctx: Context): Promise<string> {
+	const account = (await ctx.config()).account;
+	return account ?? (await (await ctx.client()).getCaller()).accountId;
+}
+
+async function e2eUser(ctx: Context): Promise<string> {
+	const user = (await (await ctx.client()).getCaller()).user;
+	if (user === undefined) throw new CliError("Sign in as a person (kantel login): an API key has no devices");
+	return user.id;
+}
+
+const e2eFailure = (error: unknown) => new CliError(error instanceof Error ? error.message : String(error));
+
+async function e2eChainOf(ctx: Context): Promise<{ chain: e2e.VerifiedChain; device: e2e.Device }> {
+	try {
+		const space = await e2eSpace(ctx);
+		const [device, chain] = await Promise.all([
+			e2e.loadDevice(ctx.io.configDir),
+			e2e.verifiedChain(await ctx.client(), ctx.io.configDir, space),
+		]);
+		return { chain, device };
+	} catch (error) {
+		if (error instanceof KantelApiError) throw error;
+		throw e2eFailure(error);
+	}
+}
+
+/**
+ * Signs `body` with this device after `checked`'s head (the chain whatever decided on it was read from) and adds it.
+ * If another entry got there first, the gateway refuses it: nothing decided on an older chain is signed onto a newer
+ * one.
+ */
+async function e2eSign(
+	ctx: Context,
+	checked: { chain: e2e.VerifiedChain; device: e2e.Device },
+	body: EntryBody,
+): Promise<e2e.VerifiedChain> {
+	return e2e.appendEntry(await ctx.client(), ctx.io.configDir, checked.device, checked.chain, body).catch((error) => {
+		if (error instanceof KantelApiError && error.code === "conflict") {
+			throw new CliError("The chain changed while this ran (another change got there first): run it again");
+		}
+		if (error instanceof KantelApiError) throw error;
+		throw e2eFailure(error);
+	});
+}
+
+const emitChain = (ctx: Context, chain: e2e.VerifiedChain, done: string) =>
+	ctx.emit({ space: chain.state.space, seq: chain.state.seq, head: chain.state.head }, () => done);
+
+/** Signs and adds one entry with this device, and says what the chain is now. */
+async function e2eAppend(ctx: Context, body: EntryBody, done: string): Promise<void> {
+	emitChain(ctx, await e2eSign(ctx, await e2eChainOf(ctx), body), done);
+}
+
+/** Every sandbox in the space now, stopped ones too: those turning E2E on retires. */
+async function spaceSandboxes(ctx: Context, space: string): Promise<string[]> {
+	const client = await ctx.client();
+	const ids: string[] = [];
+	let cursor: string | undefined;
+	do {
+		const page = await client.listSandboxes({ account: space, all: true, cursor });
+		ids.push(...page.items.map((item) => item.id));
+		cursor = page.nextCursor ?? undefined;
+	} while (cursor !== undefined);
+	return ids;
+}
+
+const RETIRE_FLAGS = {
+	yes: { type: "boolean", short: "y", description: "Yes, retire the space's existing sandboxes" },
+} as const;
+
+/**
+ * Turning E2E on retires every sandbox the space has: hosts give sessions only to sandboxes they make while E2E is on,
+ * as the gateway could have changed an older one. Without --yes this lists them and stops.
+ */
+async function confirmRetiring(ctx: Context, space: string, again: string): Promise<void> {
+	const ids = await spaceSandboxes(ctx, space);
+	if (ids.length === 0 || ctx.boolean("yes")) return;
+	const shown = ids.slice(0, 20).join(", ") + (ids.length > 20 ? ` and ${ids.length - 20} more` : "");
+	throw new UsageError(
+		`Turning E2E on retires ${space}'s ${ids.length} existing sandbox${ids.length === 1 ? "" : "es"}: ${shown}. ` +
+			"Hosts open E2E sessions only to sandboxes made while E2E is on, and the gateway can't reach these either. " +
+			"Nothing is deleted: kantel delete <id> --yes removes them when you're done. " +
+			`To go ahead, run: ${again} --yes`,
+	);
+}
+
+/** What `kantel e2e ssh-proxy` is run with: the gateway, credential and account this invocation resolved. */
+export function proxyEnv(config: ResolvedConfig): Record<string, string> {
+	return {
+		KANTEL_URL: config.url,
+		...(config.apiKey === undefined ? {} : { KANTEL_API_KEY: config.apiKey }),
+		...(config.account === undefined ? {} : { KANTEL_ACCOUNT: config.account }),
+	};
+}
+
+/** A page of a sandbox's command history, as its host keeps it (`sandbox.history`), newest first. */
+export interface E2EHistoryPage {
+	readonly items: readonly E2EHistoryEntry[];
+	readonly next?: string;
+}
+
+export interface E2EHistoryEntry {
+	readonly id: string;
+	readonly command?: string;
+	readonly argv?: readonly string[];
+	readonly cwd?: string;
+	readonly startedAt: number;
+	readonly endedAt: number;
+	readonly exitCode?: number;
+	readonly timedOut?: boolean;
+	readonly error?: string;
+	readonly stdout: string;
+	readonly stderr: string;
+	readonly truncated?: boolean;
+	readonly device: string;
+	readonly deviceLabel?: string;
+	readonly deviceClass?: string;
+	readonly member?: string;
+}
+
+/** An `rpc` session's call, with its error as the CLI's. */
+async function e2eCall<T>(ctx: Context, sandboxId: string, method: string, params: object): Promise<T> {
+	let session: e2e.OpenedE2E;
+	try {
+		session = await e2e.openE2ESession(
+			await ctx.client(),
+			ctx.io.configDir,
+			sandboxId,
+			"rpc",
+			undefined,
+			ctx.io.connect,
+		);
+	} catch (error) {
+		if (error instanceof KantelApiError) throw error;
+		throw e2eFailure(error);
+	}
+	const client = new SessionClient(session);
+	try {
+		return await client.call<T>(method, params);
+	} catch (error) {
+		throw e2eFailure(error);
+	} finally {
+		client.close();
+	}
+}
+
+const E2E_DETAILS =
+	"Sessions go through the gateway's relay to the sandbox's host, which only that host can read: this device checks\n" +
+	"the host's key, and the host this device's, against the organisation's signed chain. The chain is trusted from\n" +
+	"its genesis, which this device made (init) or an admin gave it (join), never from the gateway.";
+
+const E2E_COMMANDS: readonly CommandSpec[] = [
+	{
+		name: "console",
+		summary: "Open the console from this CLI on 127.0.0.1, with E2E sandboxes' commands and history",
+		flags: {
+			port: { type: "string", value: "<port>", description: "Where it listens on 127.0.0.1 (default a free port)" },
+			"no-browser": { type: "boolean", description: "Only print the link (also KANTEL_NO_BROWSER)" },
+			dir: { type: "string", value: "<dir>", description: "The console's built files, if not this CLI's own" },
+		},
+		details:
+			"The console's code comes from this CLI's release, not from the gateway, so the gateway can't change what runs\n" +
+			"it. Its API calls go to the gateway with this CLI's key, which stays here. In an end-to-end encrypted\n" +
+			"organisation, commands, files and history go to the sandbox's host over sessions with this device's key.\n" +
+			"Only the browser that opens the printed link gets in. Ctrl-C stops it.",
+		async run(ctx) {
+			const config = await ctx.config();
+			if (config.apiKey === undefined) throw new CliError("Sign in first: kantel login");
+			const portFlag = ctx.string("port");
+			const port = portFlag === undefined ? 0 : Number(portFlag);
+			if (!Number.isInteger(port) || port < 0 || port > 65_535) throw new UsageError("--port is a port number");
+			const served = await serveLocalConsole({
+				dir: await consoleDir(ctx),
+				gateway: config.url,
+				apiKey: config.apiKey,
+				fetch: ctx.io.fetch,
+				userAgent: `kantel-cli/${VERSION} (console)`,
+				port,
+				info: () => localInfo(ctx),
+				e2eCall: (sandboxId, method, params) => e2eCall(ctx, sandboxId, method, params),
+			});
+			try {
+				ctx.emit(
+					{ url: served.url },
+					() => `The console is at ${served.url}\nOnly this link lets a browser in. Ctrl-C stops it.`,
+				);
+				if (!ctx.boolean("no-browser") && !hasValue(ctx.io.env.KANTEL_NO_BROWSER)) ctx.io.openUrl(served.url);
+				await ctx.io.served(served);
+			} finally {
+				await served.close();
+			}
+		},
+	},
+	{
+		name: "e2e status",
+		summary: "This device, and the organisation's chain as this device verifies it",
+		details: E2E_DETAILS,
+		async run(ctx) {
+			const device = await e2e.loadDevice(ctx.io.configDir);
+			const space = await e2eSpace(ctx);
+			const pinned = await e2e.pinnedGenesis(ctx.io.configDir, space);
+			const state =
+				pinned === undefined
+					? undefined
+					: (
+							await e2e.verifiedChain(await ctx.client(), ctx.io.configDir, space).catch((error: unknown) => {
+								throw e2eFailure(error);
+							})
+						).state;
+			const view = {
+				device: { id: device.id, label: device.label, fingerprint: await e2e.deviceFingerprint(device) },
+				space,
+				...(state === undefined
+					? {}
+					: {
+							genesis: state.genesis,
+							mode: state.mode,
+							seq: state.seq,
+							inChain: state.devices.has(device.id),
+							members: Object.fromEntries(state.members),
+							devices: [...state.devices.values()],
+							hosts: [...state.hosts.values()],
+						}),
+			};
+			ctx.emit(view, () => {
+				const lines = [`This device: ${device.id} (${device.label}), fingerprint ${view.device.fingerprint}`];
+				if (state === undefined) {
+					lines.push(`${space}: this device trusts no chain yet (kantel e2e init, or kantel e2e join)`);
+					return lines.join("\n");
+				}
+				lines.push(
+					`${space}: E2E ${state.mode}, ${state.seq + 1} entries, genesis ${state.genesis}`,
+					state.devices.has(device.id) ? "This device is in the chain." : "This device isn't in the chain yet.",
+					"",
+					table(
+						["DEVICE", "PERSON", "ROLE", "CLASS", "LABEL"],
+						[...state.devices.values()].map((d) => [d.id, d.user, state.members.get(d.user) ?? "", d.class, d.label]),
+					),
+					"",
+					state.hosts.size === 0
+						? "No hosts yet: kantel e2e host-ticket <name>."
+						: table(
+								["HOST", "NAME"],
+								[...state.hosts.values()].map((h) => [h.id, h.name]),
+							),
+				);
+				return lines.join("\n");
+			});
+		},
+	},
+	{
+		name: "e2e init",
+		summary: "Start the organisation's chain with this device as its first admin (an admin or owner)",
+		flags: {
+			mode: {
+				type: "string",
+				value: "<on|strict>",
+				description: "strict also keeps the hosted console out; default on",
+			},
+			label: {
+				type: "string",
+				value: "<label>",
+				description: "This device's name in the chain (default kantel on <host>)",
+			},
+			...RETIRE_FLAGS,
+		},
+		details:
+			`${E2E_DETAILS}\nWith E2E on, the organisation's hosts in the chain run commands, files and ports only in sessions, ` +
+			"and only in sandboxes they make while it is on: the space's existing sandboxes are retired (needs --yes).",
+		async run(ctx) {
+			const mode = choice(ctx.string("mode"), ["on", "strict"] as const, "--mode") ?? "on";
+			const device = await e2e.loadDevice(ctx.io.configDir, ctx.string("label") ?? `kantel on ${hostname()}`);
+			const space = await e2eSpace(ctx);
+			await confirmRetiring(ctx, space, `kantel e2e init${mode === "on" ? "" : ` --mode ${mode}`}`);
+			const chain = await e2e
+				.initChain(await ctx.client(), ctx.io.configDir, device, space, await e2eUser(ctx), mode)
+				.catch((error: unknown) => {
+					if (error instanceof KantelApiError) throw error;
+					throw e2eFailure(error);
+				});
+			// What the chain says, not what was asked: a resumed init finishes the one it started, whose mode was signed
+			// then (a different one isn't resumed), and entries after its genesis may have changed it since.
+			const started = chain.state.mode;
+			ctx.emit({ space, genesis: chain.state.genesis, mode: started }, () =>
+				[
+					`Started ${space}'s chain, E2E ${started}. Its genesis is ${chain.state.genesis}.`,
+					...(started === mode ? [] : [`It is E2E ${started}, not ${mode}: kantel e2e mode ${mode} changes it.`]),
+					"Give each member that genesis yourself (not through Kantel) for: kantel e2e join " +
+						`${space} ${chain.state.genesis}`,
+					"Then enrol your hosts: kantel e2e host-ticket <name>.",
+				].join("\n"),
+			);
+		},
+	},
+	{
+		name: "e2e join",
+		summary: "Trust an organisation's chain from the genesis an admin gave you",
+		args: [{ name: "space" }, { name: "genesis" }],
+		flags: {
+			label: { type: "string", value: "<label>", description: "This device's name (default kantel on <host>)" },
+		},
+		async run(ctx) {
+			const [space, genesis] = [ctx.arg(0), ctx.arg(1)];
+			const device = await e2e.loadDevice(ctx.io.configDir, ctx.string("label") ?? `kantel on ${hostname()}`);
+			await e2e.pinGenesis(ctx.io.configDir, space, genesis).catch((error: unknown) => {
+				throw e2eFailure(error);
+			});
+			const card = await e2e.deviceCard(device, await e2eUser(ctx));
+			const print = await e2e.deviceFingerprint(device);
+			ctx.emit({ space, genesis, card, fingerprint: print }, () =>
+				[
+					`This device trusts ${space}'s chain from ${e2e.short(genesis)}.`,
+					"Unless it is in the chain already, send an admin this, and check the fingerprint with them:",
+					`kantel e2e add-device --member ${card}`,
+					`Fingerprint: ${print}`,
+				].join("\n"),
+			);
+		},
+	},
+	{
+		name: "e2e device",
+		summary: "This device's card, for an admin's kantel e2e add-device",
+		flags: {
+			label: { type: "string", value: "<label>", description: "This device's name (default kantel on <host>)" },
+		},
+		details: "Send the card to an admin yourself; they check the fingerprint with you before they add it.",
+		async run(ctx) {
+			const device = await e2e.loadDevice(ctx.io.configDir, ctx.string("label") ?? `kantel on ${hostname()}`);
+			const card = await e2e.deviceCard(device, await e2eUser(ctx));
+			const print = await e2e.deviceFingerprint(device);
+			ctx.emit({ id: device.id, card, fingerprint: print }, () =>
+				[`kantel e2e add-device ${card}`, `Fingerprint: ${print}`].join("\n"),
+			);
+		},
+	},
+	{
+		name: "e2e add-device",
+		summary: "Add a person's device to the chain from its card (yours, or anyone's as an admin)",
+		args: [{ name: "card" }],
+		flags: { member: { type: "boolean", description: "Also add its person to the chain as a member, if they aren't" } },
+		async run(ctx) {
+			const device = await e2e.parseCard(ctx.arg(0)).catch((error: unknown) => {
+				throw new UsageError(error instanceof Error ? error.message : String(error));
+			});
+			const print = await e2e.cardFingerprint(device);
+			ctx.note(`Adding ${device.id} (${device.label}) for ${device.user}, fingerprint ${print}: check it with them.`);
+			// Whether they are a member is read from the chain the member.add is signed onto, so an admin made one in the
+			// meantime is never made a member again.
+			const checked = await e2eChainOf(ctx);
+			let { chain } = checked;
+			if (ctx.boolean("member") && !chain.state.members.has(device.user)) {
+				chain = await e2eSign(ctx, checked, { type: "member.add", body: { user: device.user, role: "member" } });
+			}
+			chain = await e2eSign(ctx, { chain, device: checked.device }, { type: "device.add", body: { device } });
+			emitChain(
+				ctx,
+				chain,
+				`Added ${device.id}. They trust the chain with: kantel e2e join ${chain.state.space} ${chain.state.genesis}`,
+			);
+		},
+	},
+	{
+		name: "e2e remove-device",
+		summary: "Take a device out of the chain: hosts refuse its sessions from then on",
+		args: [{ name: "device" }],
+		async run(ctx) {
+			await e2eAppend(ctx, { type: "device.remove", body: { id: ctx.arg(0) } }, `Removed ${ctx.arg(0)}.`);
+		},
+	},
+	{
+		name: "e2e add-member",
+		summary: "Let a member of the organisation into the chain (an admin's device)",
+		args: [{ name: "user" }],
+		flags: { admin: { type: "boolean", description: "As an admin of the chain" } },
+		async run(ctx) {
+			const role = ctx.boolean("admin") ? "admin" : "member";
+			await e2eAppend(ctx, { type: "member.add", body: { user: ctx.arg(0), role } }, `${ctx.arg(0)} is a ${role}.`);
+		},
+	},
+	{
+		name: "e2e remove-member",
+		summary: "Take a person and all their devices out of the chain (an admin's device)",
+		args: [{ name: "user" }],
+		async run(ctx) {
+			await e2eAppend(ctx, { type: "member.remove", body: { user: ctx.arg(0) } }, `Removed ${ctx.arg(0)}.`);
+		},
+	},
+	{
+		name: "e2e host-ticket",
+		summary: "A one-off ticket for a host to join the chain (an admin's device)",
+		args: [{ name: "name" }],
+		flags: { expires: { type: "string", value: "<minutes>", description: "How long it lasts, default 60" } },
+		details:
+			"Run the command it prints on the host, as root: the host signs its own entry with the ticket and adds it.\n" +
+			"The ticket is a secret until it is used, and works once.",
+		async run(ctx) {
+			const { chain, device } = await e2eChainOf(ctx);
+			const word = await e2e
+				.hostTicket(device, chain, ctx.arg(0), whole(ctx.string("expires"), "--expires") ?? 60)
+				.catch((error: unknown) => {
+					throw e2eFailure(error);
+				});
+			const command = `sudo kantel-host e2e join ${word}`;
+			ctx.emit({ ticket: word, command }, () => command);
+		},
+	},
+	{
+		name: "e2e remove-host",
+		summary: "Take a host out of the chain: devices won't open sessions to it",
+		args: [{ name: "host" }],
+		async run(ctx) {
+			await e2eAppend(ctx, { type: "host.remove", body: { id: ctx.arg(0) } }, `Removed ${ctx.arg(0)}.`);
+		},
+	},
+	{
+		name: "e2e mode",
+		summary: "Turn E2E off, on, or strict (strict also keeps the hosted console out)",
+		args: [{ name: "mode" }],
+		flags: RETIRE_FLAGS,
+		details:
+			"Turning it on (from off) retires the space's existing sandboxes (needs --yes): hosts open sessions only to " +
+			"sandboxes made while E2E is on, and turning it off and on again retires those too.",
+		async run(ctx) {
+			const mode = choice(ctx.arg(0), ["off", "on", "strict"] as const, "The mode") ?? "on";
+			// Signed onto the chain it was checked against: if it was turned off meanwhile, this is refused rather than
+			// turning it on again without the confirmation.
+			const checked = await e2eChainOf(ctx);
+			if (mode !== "off" && checked.chain.state.mode === "off") {
+				await confirmRetiring(ctx, checked.chain.state.space, `kantel e2e mode ${mode}`);
+			}
+			const done =
+				mode === "off"
+					? "E2E is off; hosts take it at their next session. Turning it on again retires every sandbox the space has then."
+					: `E2E is ${mode}; hosts take it at their next session.`;
+			emitChain(ctx, await e2eSign(ctx, checked, { type: "mode", body: { mode } }), done);
+		},
+	},
+	{
+		name: "e2e exec",
+		summary: "Run a command in a sandbox over an E2E session",
+		args: ID_ARG,
+		rest: "command…",
+		flags: { cwd: { type: "string", value: "<dir>", description: "Where it runs" } },
+		details: E2E_DETAILS,
+		async run(ctx) {
+			const command = ctx.rest ?? [];
+			if (command.length === 0) throw new UsageError("Give the command after --: kantel e2e exec <id> -- ls");
+			const cwd = ctx.string("cwd");
+			const result = await e2eCall<{ exitCode: number; stdout: string; stderr: string }>(
+				ctx,
+				ctx.arg(0),
+				"sandbox.exec",
+				{
+					command: commandLine(command),
+					...(cwd === undefined ? {} : { cwd }),
+				},
+			);
+			if (ctx.json) {
+				ctx.emit(result, () => "");
+				return result.exitCode;
+			}
+			ctx.io.stdout.write(result.stdout);
+			ctx.io.stderr.write(result.stderr);
+			return result.exitCode;
+		},
+	},
+	{
+		name: "e2e history",
+		summary: "The commands run in a sandbox over E2E sessions, from its host",
+		args: ID_ARG,
+		flags: {
+			limit: { type: "string", value: "<n>", description: "How many, newest first (default 20, at most 100)" },
+			before: { type: "string", value: "<command-id>", description: "Older than this one" },
+			output: { type: "boolean", description: "Print each command's output too" },
+		},
+		details:
+			"The gateway never sees what runs in an E2E session, so the host keeps the history: the last 200 commands of\n" +
+			"each sandbox, with the last 64 KiB of their output. It goes when the sandbox is deleted, and can't be read\n" +
+			"while the host is offline.",
+		async run(ctx) {
+			const limit = Number(ctx.string("limit") ?? "20");
+			if (!Number.isInteger(limit) || limit < 1 || limit > 100)
+				throw new UsageError("--limit is a number from 1 to 100");
+			const before = ctx.string("before");
+			const page = await e2eCall<E2EHistoryPage>(ctx, ctx.arg(0), "sandbox.history", {
+				limit,
+				...(before === undefined ? {} : { before }),
+			});
+			ctx.emit(page, () => {
+				if (page.items.length === 0) return "No commands yet.";
+				const lines = page.items.map((entry) => {
+					const status = entry.exitCode === undefined ? (entry.error ?? "didn't finish") : `exit ${entry.exitCode}`;
+					const who = entry.deviceLabel ?? entry.device;
+					const head = `${entry.id}  ${new Date(entry.startedAt).toISOString()}  ${status}  ${who}\n  ${entry.command ?? (entry.argv ?? []).join(" ")}`;
+					if (!ctx.boolean("output")) return head;
+					const output = `${entry.stdout}${entry.stderr}`.trimEnd();
+					return output === "" ? head : `${head}\n${output.replace(/^/gm, "    ")}`;
+				});
+				if (page.next !== undefined) lines.push(`More: kantel e2e history ${ctx.arg(0)} --before ${page.next}`);
+				return lines.join("\n");
+			});
+		},
+	},
+	{
+		name: "e2e cat",
+		summary: "Print a sandbox's file, read over an E2E session",
+		args: [{ name: "id" }, { name: "path" }],
+		async run(ctx) {
+			const read = await e2eCall<{ data: string }>(ctx, ctx.arg(0), "sandbox.files.read", { path: ctx.arg(1) });
+			ctx.io.stdout.write(Buffer.from(read.data, "base64"));
+		},
+	},
+	{
+		name: "e2e put",
+		summary: "Write a local file (or - for stdin) to a sandbox over an E2E session",
+		args: [{ name: "id" }, { name: "local" }, { name: "remote" }],
+		async run(ctx) {
+			const local = ctx.arg(1);
+			let data: Buffer;
+			if (local === "-") {
+				const chunks: Buffer[] = [];
+				for await (const chunk of ctx.io.stdin()) chunks.push(Buffer.from(chunk));
+				data = Buffer.concat(chunks);
+			} else data = await readFile(resolve(ctx.io.cwd, local));
+			if (data.byteLength > MAX_FILE) throw new UsageError("Kantel writes files of up to 1 MiB");
+			await e2eCall(ctx, ctx.arg(0), "sandbox.files.write", { path: ctx.arg(2), data: data.toString("base64") });
+			ctx.note(`Wrote ${bytes(data.byteLength)} to ${ctx.arg(2)}.`);
+		},
+	},
+	{
+		name: "e2e ssh",
+		summary: "SSH into a microVM over an E2E session",
+		args: ID_ARG,
+		rest: "command…",
+		restOptional: true,
+		flags: {
+			identity: {
+				type: "string",
+				value: "<file>",
+				description: "Your SSH private key; its .pub is let in first (default ~/.ssh/id_ed25519)",
+			},
+		},
+		details:
+			"It lets your public key in over a session, then runs ssh with kantel e2e ssh-proxy as its ProxyCommand: the\n" +
+			"relay carries the SSH connection inside the Noise session, so it sees neither.",
+		async run(ctx) {
+			const sandboxId = ctx.arg(0);
+			const identityFile = resolve(ctx.io.cwd, ctx.string("identity") ?? join(ctx.io.home, ".ssh", "id_ed25519"));
+			const publicKey = (await readFile(`${identityFile}.pub`, "utf8")).trim();
+			const letIn = await e2eCall<{ exitCode: number; stderr: string }>(ctx, sandboxId, "sandbox.exec", {
+				command:
+					'mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && (grep -qxF "$K" ~/.ssh/authorized_keys || printf "%s\\n" "$K" >> ~/.ssh/authorized_keys) && chmod 600 ~/.ssh/authorized_keys',
+				env: { K: publicKey },
+				user: "user",
+			});
+			if (letIn.exitCode !== 0) throw new CliError(`The sandbox didn't let the key in: ${letIn.stderr}`);
+			const self = ctx.io.self ?? thisCli() ?? ["kantel"];
+			const proxy = [...self, "e2e", "ssh-proxy", sandboxId].map(shellQuote).join(" ").replaceAll("%", "%%");
+			const remote = ctx.rest ?? [];
+			// The proxy is another kantel, which hasn't this one's flags: it gets the gateway and credential this one
+			// resolved through its environment, not on ssh's command line.
+			const env = proxyEnv(await ctx.config());
+			return runSsh(
+				[
+					"-i",
+					identityFile,
+					"-o",
+					"IdentitiesOnly=yes",
+					"-o",
+					`ProxyCommand=${proxy}`,
+					"-o",
+					`UserKnownHostsFile=${join(ctx.io.configDir, "ssh", "known_hosts")}`,
+					"-o",
+					`HostKeyAlias=${sandboxId}`,
+					`user@${sandboxId}`,
+					...(remote.length === 0 ? [] : ["--", commandLine(remote)]),
+				],
+				ctx.io,
+				env,
+			);
+		},
+	},
+	{
+		name: "e2e ssh-proxy",
+		summary: "A sandbox's port over an E2E session, on stdin and stdout (ssh's ProxyCommand)",
+		hidden: true,
+		args: ID_ARG,
+		flags: { port: { type: "string", value: "<port>", description: "Default 22" } },
+		async run(ctx) {
+			const port = whole(ctx.string("port"), "--port") ?? 22;
+			let session: e2e.OpenedE2E;
+			try {
+				session = await e2e.openE2ESession(
+					await ctx.client(),
+					ctx.io.configDir,
+					ctx.arg(0),
+					"port",
+					port,
+					ctx.io.connect,
+				);
+			} catch (error) {
+				ctx.io.stderr.write(`kantel e2e ssh-proxy: ${error instanceof Error ? error.message : String(error)}\n`);
+				return 255;
+			}
+			return pipeSession(session, ctx.io);
+		},
+	},
+];
+
+/** A port session's bytes on stdin and stdout, until either side ends. */
+function pipeSession(session: e2e.OpenedE2E, io: Io): Promise<number> {
+	return new Promise((done) => {
+		if (session.leftover.byteLength > 0) io.stdout.write(session.leftover);
+		session.stream.onData((bytes) => io.stdout.write(bytes));
+		session.stream.onClose(() => done(0));
+		void (async () => {
+			try {
+				for await (const chunk of io.stdin()) {
+					await session.stream.write(typeof chunk === "string" ? new TextEncoder().encode(chunk) : chunk);
+				}
+			} catch {
+				// stdin closed under us.
+			}
+			session.stream.close("ssh closed its side");
+		})();
+	});
+}
 
 const SECTIONS: readonly Section[] = [
 	{
@@ -2476,6 +3181,10 @@ const SECTIONS: readonly Section[] = [
 		],
 	},
 	{
+		title: "End-to-end encryption (experimental)",
+		commands: E2E_COMMANDS,
+	},
+	{
 		title: "Coding agents",
 		commands: [
 			{
@@ -2630,6 +3339,7 @@ const GROUPS: { readonly [name: string]: string } = {
 	webhook: "Send the account's events to a URL",
 	telemetry: "Send the account's metrics and events to OpenTelemetry",
 	hosts: "Run your sandboxes on machines of your own (experimental)",
+	e2e: "End-to-end encryption between your devices and your hosts, which the gateway relays but can't read",
 };
 const GROUP_ALIASES: { readonly [alias: string]: string } = { sb: "sandbox" };
 /** Other names for commands: short ones, and the `sandbox …` spellings of the first CLI, which keep working. */
@@ -2964,6 +3674,8 @@ export async function run(argv: readonly string[], options: RunOptions = {}): Pr
 		sleep: options.sleep ?? ((ms) => new Promise((done) => setTimeout(done, ms))),
 		home: options.home ?? homedir(),
 		self: options.self ?? thisCli(),
+		connect: options.connect ?? e2e.webSocketChannel,
+		served: options.served ?? untilSignalled,
 	};
 	try {
 		return await dispatch(argv, io);

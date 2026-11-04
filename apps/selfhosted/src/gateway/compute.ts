@@ -84,6 +84,7 @@ import {
 	createHostsApi,
 	DEFAULT_HOST_IMAGES,
 	HOSTS_CONNECT_PATH,
+	HOSTS_E2E_CHAIN_PATH,
 	HOSTS_IMAGES_PATH,
 	HOSTS_REGISTER_PATH,
 } from "@kantel/hosts/http";
@@ -427,6 +428,10 @@ export async function gatewayCompute(options: {
 	hosts?.service.useCompute({
 		secrets: (hostId, sandboxId) => api.service.protectedTable(hostId, sandboxId),
 		recordEgress: (hostId, records) => api.service.recordEgress(hostId, records),
+		e2eChain: {
+			read: (hostId, space) => api.service.hostE2EChain(hostId, space),
+			append: (hostId, space, from, entries) => api.service.appendHostE2EChain(hostId, space, from, entries),
+		},
 	});
 	const superAdminKey = await bootstrapSuperAdmin(api.store, options.superAdminKey, (options.now ?? Date.now)());
 	api.dispatcher.start(WEBHOOK_INTERVAL_MS);
@@ -446,7 +451,8 @@ export async function gatewayCompute(options: {
 	sweepCompute.unref();
 	let hostRoutes: GatewayCompute["hostRoutes"];
 	if (hosts !== undefined) {
-		// Registration only: the API serves the operator's routes, so the registry's own admin routes refuse everyone.
+		// Registration and a host's E2E chain (on its credential) only: the API serves the operator's routes, so the
+		// registry's own admin routes refuse everyone.
 		const register = createHostsApi({
 			hosts: hosts.service,
 			authorizeAdmin: () => Promise.reject(new KantelError("not_found", "Not found")),
@@ -460,7 +466,7 @@ export async function gatewayCompute(options: {
 		});
 		hostRoutes = async (request) => {
 			const path = new URL(request.url).pathname;
-			if (path === HOSTS_REGISTER_PATH) return register.fetch(request);
+			if (path === HOSTS_REGISTER_PATH || path === HOSTS_E2E_CHAIN_PATH) return register.fetch(request);
 			if (path.startsWith(`${CLUSTER_PATH}/`)) {
 				return (await hosts.cluster?.peerRoutes(request)) ?? new Response("Not found", { status: 404 });
 			}

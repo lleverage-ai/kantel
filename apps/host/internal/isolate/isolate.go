@@ -236,7 +236,7 @@ func readManifest(path string) (Manifest, error) {
 }
 
 func (m *Manager) info(s *sandbox) proto.SandboxInfo {
-	return proto.SandboxInfo{ID: s.meta.ID, Tier: Tier, Size: "isolate", State: s.meta.State, Error: s.meta.Error, CreatedAt: s.meta.CreatedAt}
+	return proto.SandboxInfo{ID: s.meta.ID, Tier: Tier, Size: "isolate", State: s.meta.State, Error: s.meta.Error, CreatedAt: s.meta.CreatedAt, Owner: s.meta.Owner}
 }
 
 func (m *Manager) emit(s *sandbox) {

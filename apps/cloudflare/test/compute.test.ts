@@ -123,9 +123,9 @@ describe("the compute API on the gateway", () => {
 		await close();
 	});
 
-	it("names port URLs under ports.kantel.dev, or the deployment's own ports domain", async () => {
+	it("names port URLs under kantel.run, or the deployment's own ports domain", async () => {
 		for (const [vars, domain] of [
-			[{}, "ports.kantel.dev"],
+			[{}, "kantel.run"],
 			[{ KANTEL_COMPUTE_PORTS_DOMAIN: "ports.example.com" }, "ports.example.com"],
 		] as const) {
 			const { call, close } = await start(undefined, vars);

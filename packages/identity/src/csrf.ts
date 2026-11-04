@@ -1,12 +1,13 @@
 /**
  * Cross-site request refusal for the console's API, without relying on SameSite (TASK-4842).
  *
- * Kantel's hosted ports live under a name such as `ports.kantel.dev`. Until that domain is on the Public Suffix List,
- * a sandbox's page there is the same site as a console under the same registrable domain (`app.kantel.dev`), so a
- * browser sends the console's cookies with the page's requests whatever their SameSite says. Kantel's own sessions are
- * bearers the console sends in `Authorization`, which no other page can add, but a cookie can still sign a request in:
- * Cloudflare Access's, on a deployment behind it. So every gateway refuses a browser's state-changing request that
- * doesn't come from the console itself.
+ * Kantel's hosted ports live under `kantel.run`, a registrable domain of its own, so a sandbox's page there is never
+ * the same site as the hosted console (`app.kantel.dev`). A self-hosted install can still put its ports domain under
+ * its console's registrable domain, and while that domain isn't on the Public Suffix List a sandbox's page there is the
+ * same site as the console, so a browser sends the console's cookies with the page's requests whatever their SameSite
+ * says. Kantel's own sessions are bearers the console sends in `Authorization`, which no other page can add, but a
+ * cookie can still sign a request in: Cloudflare Access's, on a deployment behind it. So every gateway refuses a
+ * browser's state-changing request that doesn't come from the console itself, same site or cross-site.
  *
  * `crossSiteRefusal` looks only at requests that change something (any method but GET, HEAD and OPTIONS) and carry no
  * `Authorization` header: an API key or a Kantel session sent as a bearer (the CLI, the SDK, MCP, and the console on

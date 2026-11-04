@@ -178,6 +178,8 @@ export interface SandboxCommand {
 	readonly exitCode?: number;
 	/** Who or what ran it: a person, an API key's name. */
 	readonly by: string;
+	/** The end of what it printed, stdout then stderr, for a command that failed. */
+	readonly output?: string;
 }
 
 /** How to reach a sandbox, made when asked for: tokens in it are short-lived. */
@@ -190,6 +192,47 @@ export interface SandboxAccess {
 	readonly desktopViewUrl: string;
 	/** Only its browser, without the desktop. */
 	readonly browserUrl: string;
+	/**
+	 * The same three for a frame in the console. Absent where there's nothing real to show (the sample data): the
+	 * console draws a stand-in.
+	 */
+	readonly embed?: { readonly desktop: string; readonly watch: string; readonly browser: string };
+	/**
+	 * Why Desktop or Browser can't open for this sandbox yet, in a few words ("Not available here yet"). Absent, it can.
+	 * One that can't is shown disabled with its reason, never opened onto an error page; its URLs are then unused.
+	 */
+	readonly unavailable?: { readonly desktop?: string; readonly browser?: string };
+}
+
+/** Why a screen can't open, from its access: the desktop's reason for Watch too. Undefined when it can. */
+export const screenUnavailable = (access: SandboxAccess, view: "desktop" | "watch" | "browser"): string | undefined =>
+	access.unavailable?.[view === "browser" ? "browser" : "desktop"];
+
+/** A port in a sandbox with an HTTPS URL of its own. */
+export interface SandboxPort {
+	readonly port: number;
+	/** Its URL, without the token a private one's link carries when it's first exposed. */
+	readonly url: string;
+	/** Anyone with the URL may open it. Private: only with the token from when it was exposed. */
+	readonly public: boolean;
+	readonly createdAt: number;
+}
+
+/** A file or folder in a running sandbox, as a snapshot's are: its path from the root, with no leading slash. */
+export type SandboxEntry = SnapshotEntry;
+
+/** A running sandbox's folder: what Kantel read of it, and whether it has more than that (a very big folder). */
+export interface SandboxFolder {
+	readonly entries: readonly SandboxEntry[];
+	readonly more: boolean;
+}
+
+/** What a running sandbox is using now, where its host says. */
+export interface SandboxUsageNow {
+	/** Memory in use, in GB. */
+	readonly memoryGb?: number;
+	/** Disk in use, in GB. */
+	readonly diskGb?: number;
 }
 
 export interface SandboxesSource {
@@ -210,6 +253,36 @@ export interface SandboxesSource {
 	remove(id: string): Promise<void>;
 	access(id: string): Promise<SandboxAccess>;
 	history(id: string): Promise<readonly SandboxCommand[]>;
+	/** One sandbox, for its page. */
+	get(id: string): Promise<Sandbox>;
+	/** Minutes until auto-stop stops it, from now; undefined keeps it always on. */
+	setAutoStop?(id: string, minutes: number | undefined): Promise<Sandbox>;
+	/** What a running sandbox is using now. Absent: its page shows CPU only. */
+	usageNow?(id: string): Promise<SandboxUsageNow>;
+	/** Its ports with a URL. Absent where the host can't list them: the page has no Ports. */
+	ports?(id: string): Promise<readonly SandboxPort[]>;
+	/** Gives a port a URL, or changes whether it's public. A private port's answer has its token in the URL, once. */
+	exposePort?(id: string, port: number, isPublic: boolean): Promise<SandboxPort>;
+	/** Its URL stops working at once. */
+	hidePort?(id: string, port: number): Promise<void>;
+	/**
+	 * A running sandbox's files, read from its host on demand: one folder's entries at a time (folders first, then files,
+	 * by name), and one part of a file at a time. Absent: the Files tab shows its latest snapshot.
+	 */
+	files?: {
+		list(id: string, path: string): Promise<SandboxFolder>;
+		read(id: string, path: string, range: FileRange): Promise<FilePart>;
+	};
+	/**
+	 * Where Browser and Desktop open: on the sandbox's page ("console", when left out), or each in a tab of its own
+	 * ("tab") where the page can't frame them, as `kantel console`'s page can't.
+	 */
+	readonly screens?: "console" | "tab";
+	/**
+	 * True for a sandbox this console can't yet read files or command output from end to end: its Files tab and a failed
+	 * command say so, and its files aren't read until this answers. False, or absent, for the rest.
+	 */
+	endToEnd?(id: string): Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -255,6 +328,37 @@ export interface SnapshotEntry {
 	readonly modifiedAt?: number;
 }
 
+/** Where a part of a file starts, and the most it holds, in bytes. */
+export interface FileRange {
+	readonly offset: number;
+	readonly length: number;
+}
+
+/**
+ * A part of a file as read: its bytes from the range's offset, and the whole file's size. It may hold more than the
+ * range asked for where the file can only be read whole (a snapshot's, up to 1 MiB).
+ */
+export interface FilePart {
+	readonly bytes: Uint8Array;
+	readonly size: number;
+}
+
+/** A file the source won't read for a preview (a snapshot's over the API's 1 MiB): its name and size, no contents. */
+export class FileTooLargeError extends Error {
+	override readonly name = "FileTooLargeError";
+	constructor(readonly size?: number) {
+		super("This file is too big to show here.");
+	}
+}
+
+/**
+ * A read that needs this browser set up as a device first: an end-to-end space's files are read only over a session
+ * of its own, and the gateway, which only relays it, can't. The message says how, in a line.
+ */
+export class DeviceSetupError extends Error {
+	override readonly name = "DeviceSetupError";
+}
+
 export interface SnapshotsSource {
 	saved(accountId: string): Promise<readonly SavedSnapshot[]>;
 	/** Each sandbox's history, newest first. */
@@ -264,8 +368,8 @@ export interface SnapshotsSource {
 	removeSnapshot(id: string): Promise<void>;
 	/** A folder in a snapshot, saved or historical: folders first, then files, by name. */
 	list(snapshotId: string, path: string): Promise<readonly SnapshotEntry[]>;
-	/** A text file's content; undefined for a binary or a file too big to show. */
-	read(snapshotId: string, path: string): Promise<string | undefined>;
+	/** A part of a file, read when it's opened. */
+	read(snapshotId: string, path: string, range: FileRange): Promise<FilePart>;
 	/** A link to download a file or folder (as a tarball), or undefined where there is none: no Download then. */
 	downloadUrl(snapshotId: string, path: string): string | undefined;
 }
@@ -383,20 +487,14 @@ export interface ApiKeysSource {
 // ---------------------------------------------------------------------------------------------------------------------
 // Egress proxy
 
-/** What sandboxes may reach. */
+/** What sandboxes may reach: anything, the allowed hosts, or nothing. */
 export type EgressPolicy = "open" | "allowlist" | "closed";
 
-/** A header the proxy adds to requests for a host: the sandbox never sees the value. */
-export interface InjectedHeader {
-	readonly id: string;
-	/** A host name, or `*.example.com`. */
-	readonly host: string;
-	readonly header: string;
-	/** Absent once saved: only whether one is set shows. */
-	readonly value?: string;
-	readonly set: boolean;
-}
-
+/**
+ * An account's egress proxy. HTTPS inspection has no setting: the proxy looks inside the HTTPS of the hosts protected
+ * variables are bound to and rules name methods or paths for, which swaps and path rules need. Credentials go on a
+ * request as protected variables, bound to hosts, not as headers the proxy adds.
+ */
 export interface ProxySettings {
 	readonly accountId: string;
 	readonly enabled: boolean;
@@ -407,38 +505,44 @@ export interface ProxySettings {
 	readonly deny: readonly string[];
 	/** An upstream proxy every request goes through, such as a credential-injecting gateway. */
 	readonly upstream?: { readonly url: string; readonly authSet: boolean };
-	/** Inspect HTTPS with Kantel's CA (the sandbox trusts it), so headers can be added to HTTPS requests. */
-	readonly tlsInspection: boolean;
-	readonly headers: readonly InjectedHeader[];
-	/** Keep a log of every request: host, method, status and bytes. */
-	readonly logRequests: boolean;
-}
-
-/** One request through the proxy, for its log. */
-export interface ProxyRequest {
-	readonly id: string;
-	readonly at: number;
-	readonly sandboxId: string;
-	readonly sandboxName: string;
-	readonly method: string;
-	readonly host: string;
-	readonly path: string;
-	readonly status: number;
-	readonly decision: "allowed" | "denied";
-	readonly bytes: number;
+	/**
+	 * Keep a log of every request: host, method, status and bytes. Absent where the log is always kept and has no
+	 * switch, as with Kantel's API, which keeps each sandbox's newest requests.
+	 */
+	readonly logRequests?: boolean;
 }
 
 export type ProxySettingsChange = Partial<
-	Omit<ProxySettings, "accountId" | "upstream" | "headers"> & {
+	Omit<ProxySettings, "accountId" | "upstream"> & {
 		readonly upstream: { readonly url: string; readonly auth?: string } | null;
-		readonly headers: readonly InjectedHeader[];
+		/**
+		 * The settings as read, which the change was made from. Given, the change is refused with `conflict` if they have
+		 * changed since, for the caller to make again on a fresh read. Left out, the change is made on the settings as
+		 * they are when it is written.
+		 */
+		readonly expected: ProxySettings;
 	}
 >;
 
+/** Whether two reads of an account's proxy settings are the same: for a change's `expected`. */
+export const sameProxySettings = (a: ProxySettings, b: ProxySettings): boolean => {
+	const key = (settings: ProxySettings) =>
+		JSON.stringify([
+			settings.accountId,
+			settings.enabled,
+			settings.policy,
+			settings.allow,
+			settings.deny,
+			settings.upstream === undefined ? null : [settings.upstream.url, settings.upstream.authSet],
+			settings.logRequests ?? null,
+		]);
+	return key(a) === key(b);
+};
+
+/** An account's proxy settings. Its log is each sandbox's (`EgressSource`), read together on the Egress page. */
 export interface ProxySource {
 	get(accountId: string): Promise<ProxySettings>;
 	update(accountId: string, change: ProxySettingsChange): Promise<ProxySettings>;
-	recent(accountId: string): Promise<readonly ProxyRequest[]>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -556,7 +660,8 @@ export interface EnvironmentsSource {
 	setFile(id: string, input: FileInput): Promise<Environment>;
 	removeFile(id: string, path: string): Promise<Environment>;
 	setRepos(id: string, repos: readonly EnvironmentRepo[]): Promise<Environment>;
-	setGrants(id: string, grants: readonly EgressGrant[]): Promise<Environment>;
+	/** Replaces its grants. With `expected`, refused with `conflict` if they are no longer those. */
+	setGrants(id: string, grants: readonly EgressGrant[], expected?: readonly EgressGrant[]): Promise<Environment>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -577,6 +682,8 @@ export interface EgressEntry {
 	readonly reason?: string;
 	/** The rule that decided it, such as `deny *.example-tracker.io`. */
 	readonly rule?: string;
+	/** A refusal's code, such as `placeholder-unbound`: a protected variable's placeholder sent to another host. */
+	readonly code?: string;
 	/** The protected variables whose values the proxy put in, by name. Empty: none. */
 	readonly swapped: readonly string[];
 	/** Whether the proxy looked inside the HTTPS (a protected variable's host or a method or path grant). */
@@ -613,8 +720,12 @@ export interface SandboxEgress {
 
 export interface EgressSource {
 	get(sandboxId: string): Promise<SandboxEgress>;
-	/** Replaces the sandbox's own grants; they apply to its next request. */
-	setGrants(sandboxId: string, grants: readonly EgressGrant[]): Promise<SandboxEgress>;
+	/** Replaces the sandbox's own grants; they apply to its next request. With `expected`, as for an environment's. */
+	setGrants(
+		sandboxId: string,
+		grants: readonly EgressGrant[],
+		expected?: readonly EgressGrant[],
+	): Promise<SandboxEgress>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -860,6 +971,44 @@ export interface ComputeSource {
 	readonly billing?: BillingSource;
 	/** Approving a command line's sign-in, at `/device`. Absent where nothing can sign in that way. */
 	readonly devices?: DeviceLoginsSource;
+	/** Where this console's code came from, and each account's end-to-end encryption. Absent, nothing is said. */
+	readonly e2e?: E2ESource;
+}
+
+/** An account's end-to-end encryption, as its signed chain says: off, on, or strict (no hosted console at all). */
+export type E2EMode = "off" | "on" | "strict";
+
+/**
+ * What end-to-end encryption means for the console's pages. `local`: `kantel console` serves it from the CLI's own
+ * files, and its sandboxes' commands, files and history go to their host over sessions with the CLI's device key.
+ * `gateway`: the gateway serves it, so in an end-to-end encrypted account it shows none of that unless this browser
+ * is a device in the account's chain (`browser`).
+ */
+export interface E2ESource {
+	readonly served: "local" | "gateway";
+	/** This device's label in the chain, when local. */
+	readonly device?: string;
+	mode(accountId: string): Promise<E2EMode>;
+	/** This browser as a device of its own (a `web` device in the chain), when the gateway serves the console. */
+	readonly browser?: BrowserDeviceSource;
+}
+
+/**
+ * Where this browser stands in an account's chain. `unpinned`: it trusts no chain there yet, so it needs the genesis an
+ * admin gives out of band. `pending`: it trusts the chain but isn't in it; an admin adds it with `command` after
+ * checking `fingerprint` with its person. `ready`: it is in, as `label`. `refused`: it can't be (the space is strict,
+ * its person isn't a member, or the gateway's chain goes back on one it verified), for `reason`.
+ */
+export type BrowserStanding =
+	| { readonly kind: "unpinned" }
+	| { readonly kind: "pending"; readonly command: string; readonly fingerprint: string }
+	| { readonly kind: "ready"; readonly label: string }
+	| { readonly kind: "refused"; readonly reason: string };
+
+export interface BrowserDeviceSource {
+	standing(accountId: string): Promise<BrowserStanding>;
+	/** Trusts the chain from `genesis` (what `kantel e2e status` prints), making this browser's keys if it has none. */
+	trust(accountId: string, genesis: string): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -920,18 +1069,7 @@ export function costText(cents: number): string {
 /** "$20", "$100": a plan's price, with no pence. */
 export const priceText = (cents: number): string => (cents % 100 === 0 ? `$${cents / 100}` : costText(cents));
 
-/** "1.2 GB", "340 MB", "12 KB". */
-export function bytesText(bytes: number): string {
-	if (bytes < 1024) return `${bytes} B`;
-	const units = ["KB", "MB", "GB", "TB"];
-	let value = bytes / 1024;
-	let unit = 0;
-	while (value >= 1024 && unit < units.length - 1) {
-		value /= 1024;
-		unit += 1;
-	}
-	return `${value >= 10 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
-}
+export { bytesText } from "../primitives/format.ts";
 
 /** "Expires in 3 days", "Expires in 5h", "Expired". */
 export function expiresText(expiresAt: number, now: number): string {

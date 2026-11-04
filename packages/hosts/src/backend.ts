@@ -24,7 +24,7 @@ import type {
 import { KantelError } from "@kantel/contracts";
 import { DESKTOP_PORT, desktopPath } from "./desktop.ts";
 import type { PortRouter } from "./ports.ts";
-import { type HostEgress, HostMethods, type HostSandbox, type SandboxTier } from "./protocol.ts";
+import { HOST_E2E_PORT, type HostEgress, HostMethods, type HostSandbox, type SandboxTier } from "./protocol.ts";
 import type { HostsService, SandboxPlacement } from "./service.ts";
 import { type DesktopMode, HOSTS_TUNNEL_PATH, MAX_TUNNEL_MINUTES, type TunnelTickets } from "./tunnel.ts";
 
@@ -340,7 +340,12 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		create: createOne,
 		start: (sandboxId, how) => boot(sandboxId, "sandbox.start", how),
 		resume: (sandboxId, how) => boot(sandboxId, "sandbox.resume", how),
-		recover: (sandboxId, how) => boot(sandboxId, "sandbox.start", how),
+		// Recovering clears the sandbox's recorded ports (the compute API), so their exposures end with them: a URL the API
+		// no longer lists, and can't hide, must not still reach the machine.
+		recover: async (sandboxId, how) => {
+			await options.ports?.forget(sandboxId);
+			return boot(sandboxId, "sandbox.start", how);
+		},
 		async updateEgress(sandboxId, egress, revision) {
 			await call(sandboxId, "sandbox.egress", {
 				egress: hostEgress(egress, options.attributionKey) ?? null,
@@ -506,6 +511,13 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				...(key === undefined && privateKey.trim() !== "" ? { privateKey: `${privateKey.trim()}\n` } : {}),
 				...(fingerprint.trim() === "" ? {} : { hostKeyFingerprint: fingerprint.trim() }),
 			};
+		},
+		async openE2E(sandboxId, { ttlMinutes, grantee }) {
+			const placement = await hosts.sandboxes.placement(sandboxId);
+			if (placement === undefined) throw new KantelError("not_found", "The sandbox isn't on a host");
+			// The ticket is for the host's E2E responder, not a port of the sandbox: the device authenticates the host by the
+			// key the space's chain lists for `hostId`, so what the relay passes is only ever ciphertext.
+			return { url: await tunnel(sandboxId, HOST_E2E_PORT, ttlMinutes, grantee), hostId: placement.hostId };
 		},
 		async openDesktop(sandboxId, { ttlMinutes, viewOnly, grantee }) {
 			const { tier } = await tierOf(sandboxId);

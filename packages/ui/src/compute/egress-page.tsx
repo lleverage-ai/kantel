@@ -57,6 +57,8 @@ export interface EgressPageProps {
 	readonly navigate?: (path: string) => void;
 	/** Show this filter first, for a story. */
 	readonly initialFilter?: LogFilter;
+	/** Under the sandbox page's Egress tab: no way back and no heading, which the page has. */
+	readonly embedded?: boolean;
 }
 
 export function EgressPage({
@@ -67,12 +69,13 @@ export function EgressPage({
 	environmentHref,
 	navigate,
 	initialFilter = "all",
+	embedded = false,
 }: EgressPageProps) {
 	const { state, reload } = useLoad(() => source.get(sandboxId), [source, sandboxId]);
 	const [saved, setSaved] = useState<SandboxEgress>();
 	const [filter, setFilter] = useState<LogFilter>(initialFilter);
 	const egress = saved ?? (state.status === "ready" ? state.value : undefined);
-	const back = (
+	const back = embedded ? null : (
 		<a
 			className="inline-flex items-center gap-1 text-sm text-muted no-underline hover:text-fg"
 			href={sandboxesHref}
@@ -127,22 +130,24 @@ export function EgressPage({
 	return (
 		<div className={computePage}>
 			{back}
-			<PageHeader
-				title={`Egress from ${egress.sandboxName}`}
-				lede="Every request and connection the sandbox made through its host's egress proxy, what was decided and which protected variables were swapped in. Values never appear here."
-				actions={
-					env === undefined ? null : environmentHref === undefined ? (
-						<Badge>Environment {env.name}</Badge>
-					) : (
-						<a
-							className="text-sm text-muted underline decoration-border-strong underline-offset-2 hover:text-fg"
-							href={environmentHref(env.id)}
-						>
-							Environment {env.name}
-						</a>
-					)
-				}
-			/>
+			{embedded ? null : (
+				<PageHeader
+					title={`Egress from ${egress.sandboxName}`}
+					lede="Every request and connection the sandbox made through its host's egress proxy, what was decided and which protected variables were swapped in. Values never appear here."
+					actions={
+						env === undefined ? null : environmentHref === undefined ? (
+							<Badge>Environment {env.name}</Badge>
+						) : (
+							<a
+								className="text-sm text-muted underline decoration-border-strong underline-offset-2 hover:text-fg"
+								href={environmentHref(env.id)}
+							>
+								Environment {env.name}
+							</a>
+						)
+					}
+				/>
+			)}
 
 			<section className="flex min-w-0 flex-col gap-2" aria-labelledby="egress-log-title">
 				<SectionHeading

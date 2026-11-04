@@ -344,6 +344,42 @@ With `approved`, the new key and its secret, shown this once.
 
 One of: `"pending"` or `"approved"` or `"denied"` or `"expired"`.
 
+### E2EAccess
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `url` | string | yes | A WebSocket URL to the sandbox's host that carries a Noise session as binary frames. The gateway relays it and can't read it: the device checks the host's key against the space's chain, and the host checks the device's. |
+| `hostId` | string | yes | The host the sandbox is on: the chain's entry for it has its key. |
+| `accountId` | string | yes | The sandbox's organisation: the space whose chain the session is in. |
+| `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### E2EAccessBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `ttlMinutes` | integer | no | How long a session can be started with this URL; one started in time stays open. Default 10. (minimum 1, maximum 60) |
+| `user` | string | no | The person whose device will open the session. Refused (`forbidden`) unless the call is that person's, so a browser whose sign-in may have changed under it (a cookie it can't read) never gets a URL for someone else's sign-in to use with its keys. |
+
+### E2EChain
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `entries` | [E2EEntry](/api/reference/types/#e2eentry)[] | yes | Oldest first; an entry's `seq` is its index. |
+
+### E2EChainAppend
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `from` | integer | yes | The seq of the first entry given: the chain's length as the caller last saw it. (minimum 0) |
+| `entries` | [E2EEntry](/api/reference/types/#e2eentry)[] | yes |  (at most 100 items) |
+
+### E2EEntry
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `payload` | string | yes | Base64url of the entry's JSON, exactly the bytes that were signed. |
+| `sig` | string | yes | Base64url of its Ed25519 signature. |
+
 ### EgressEntry
 
 One request or connection a sandbox made through its host's egress proxy. Never a value.
@@ -703,6 +739,19 @@ Where sandboxes' outbound traffic may go, and through what, for one account. Exp
 | `attribution` | boolean | yes | Tell the upstream which sandbox and account each request came from, in signed `Kantel-Sandbox` and `Kantel-Account` headers. |
 | `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
 
+### ProxySettingsExpected
+
+The settings as you last read them: `GET /proxy`'s answer will do. Given, the write is refused with `conflict` if they have changed since, so an edit made from an older read can't undo someone else's: read them again and redo the edit. Left out, the settings are replaced whatever they hold.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `enabled` | boolean | yes |  |
+| `defaultAction` | `"allow"` or `"deny"` | yes |  |
+| `allow` | string[] | yes |  |
+| `deny` | string[] | yes |  |
+| `upstream` | object | no |  |
+| `attribution` | boolean | yes |  |
+
 ### ProxyUpstream
 
 | Field | Type | Required | Description |
@@ -735,6 +784,7 @@ Where sandboxes' outbound traffic may go, and through what, for one account. Exp
 | `deny` | string[] | no |  |
 | `upstream` | object or null | no |  |
 | `attribution` | boolean | no |  |
+| `expected` | [ProxySettingsExpected](/api/reference/types/#proxysettingsexpected) | no |  |
 
 ### PutTelemetryBody
 

@@ -287,17 +287,33 @@ func (c *Client) DialPort(ctx context.Context, port int) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Until the upgrade is answered, a cancelled ctx closes the socket, so a guest that never answers can't hold the
+	// dial (and what waits on it, such as the sandbox's delete) open. stop disarms it for the stream that's returned.
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
 	fmt.Fprintf(conn, "GET /ports/%d HTTP/1.1\r\nHost: guest\r\nConnection: Upgrade\r\nUpgrade: %s\r\n\r\n", port, PortUpgrade)
 	reader := bufio.NewReader(conn)
 	res, err := http.ReadResponse(reader, nil)
 	if err != nil {
+		stop()
 		conn.Close()
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		return nil, err
 	}
 	if res.StatusCode != http.StatusSwitchingProtocols {
+		// Still armed while the refusal's body is read, which a guest could withhold too.
 		raw, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+		stop()
 		conn.Close()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, &apiError{Status: res.StatusCode, Message: strings.TrimSpace(string(raw))}
+	}
+	if !stop() {
+		conn.Close()
+		return nil, ctx.Err()
 	}
 	if reader.Buffered() > 0 {
 		return &readerConn{Conn: conn, reader: reader}, nil

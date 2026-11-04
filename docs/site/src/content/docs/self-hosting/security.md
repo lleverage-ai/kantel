@@ -51,6 +51,8 @@ A plain request to an exposed port still gets the HTTP status.
 
 Each exposed port has its own name under the ports domain (`KANTEL_COMPUTE_PORTS_DOMAIN`), such as `3000-brave-otter-ab12cd.kantel-ports.example`, and its token cookie is set on that one name only. Browsers still treat every name under one registrable domain as the same site: a page one sandbox serves can set a cookie for the whole domain, which other sandboxes' pages then receive, and a sandbox's page is same-site with another's for `SameSite` cookies.
 
+Give ports a domain nothing else uses. Kantel's hosted service uses `kantel.run`, a separate registrable domain from its console's `app.kantel.dev`, so a port's page is never the same site as the console. Each port's name is one level under it, such as `3000-brave-otter-ab12cd.kantel.run`, so the wildcard certificate for `*.kantel.run` covers every port. On your own install, set your own with `KANTEL_COMPUTE_PORTS_DOMAIN`, ideally a registrable domain of its own, such as `kantel-ports.example`.
+
 ### The port's own cookie
 
 `SameSite=Lax` doesn't stop a page on one sandbox's port from sending requests to another's with that port's token cookie attached, since to a browser they are the same site. So the gateway doesn't rely on it:
@@ -66,18 +68,16 @@ A frontend on one port calling its API on another port of the same sandbox keeps
 
 The cookie was `_kantel_port` before; that name is no longer read. Open the port's URL with its token again, or expose the port again for a new one.
 
-Give ports a domain or subdomain nothing else uses. Kantel's hosted service uses `ports.kantel.dev`, apart from its console. On your own install, set your own with `KANTEL_COMPUTE_PORTS_DOMAIN`, such as `ports.example.com`.
+### What only the Public Suffix List fixes
 
-To make each name its own site, as GitHub does for `github.io`, the ports domain must also be on the [Public Suffix List](https://publicsuffix.org/submit/). The list asks for a project with thousands of users and more than two years left on the domain's registration. `ports.kantel.dev` isn't on it yet: its listing is deferred until hosted ports are served and in use. Until a browser ships a list with your ports domain on it, `ports.kantel.dev` included, cookies aren't private between sandboxes, so keep apps in sandboxes from relying on that.
-
-The gateway protects its own token cookie (above), but two things only the Public Suffix List fixes, and Kantel plans to submit `ports.kantel.dev` once hosted ports are live with users:
+To make each name its own site, as GitHub does for `github.io`, the ports domain must also be on the [Public Suffix List](https://publicsuffix.org/submit/). `kantel.run` isn't on it, so on the hosted service, as on an install whose ports domain isn't listed, the gateway protects its own token cookie (above) but two things remain:
 
 - **Apps' own cookies.** The cookies an app in a sandbox sets for itself are sent to it by other sandboxes' pages (`SameSite` doesn't stop a same-site request), and another sandbox's page can set cookies for the whole ports domain that the app then receives. The gateway makes an app's `Set-Cookie` host-only, so an app can't set one for every port by mistake, but it can't stop a hostile page doing so from the browser. An app that needs its cookies private should use `__Host-` names and check `Origin` or `Sec-Fetch-Site` itself.
 - **Cookie bombs.** A page can set enough large cookies for the whole ports domain that the browser's requests to every port name grow past what servers accept, so they fail until the person clears those cookies. This denies service; it opens nothing.
 
 ## The console and the ports domain
 
-While the ports domain isn't on the Public Suffix List, a port's page is also the same site as a console under the same registrable domain: `ports.kantel.dev` and `app.kantel.dev` are both `kantel.dev` to a browser. Such a page can set a cookie with `Domain=kantel.dev`, which the console's origin then receives, and its requests to the console are same-site, so `SameSite` doesn't stop them. Neither gateway relies on cookies or `SameSite` for this:
+On Kantel's hosted service, a port's page (`*.kantel.run`) is cross-site to the console (`app.kantel.dev`): it can't set a cookie the console's origin receives, and browsers treat its requests to the console as cross-site. On your own install, a ports domain under the console's registrable domain, such as `ports.example.com` beside `kantel.example.com`, is the same site as the console while it isn't on the Public Suffix List. A page there can set a cookie with `Domain=example.com`, which the console's origin then receives, and its requests to the console are same-site, so `SameSite` doesn't stop them. Neither gateway relies on cookies, `SameSite` or a separate domain for this:
 
 | Threat | What stops it |
 | --- | --- |
@@ -88,12 +88,7 @@ While the ports domain isn't on the Public Suffix List, a port's page is also th
 
 An API key or a session sent as a bearer (the CLI, the SDK, MCP, the console signed in with an email code) is something no other page can attach, so those requests pass as before, with or without an `Origin`. So does a request with neither a cookie nor an `Origin`, such as `kantel login` starting a device sign-in: it carries no one's credential.
 
-Two things are still open before Kantel's hosted service serves ports under `ports.kantel.dev`:
-
-- **A site of their own.** Either `ports.kantel.dev` goes on the Public Suffix List, or hosted ports move to a registrable domain that isn't the console's. Until then a port's page can still set cookies the console's origin receives (and ignores), and sandboxes' cookies aren't private from each other. Don't put Cloudflare Access in front of a console on the same registrable domain as its ports: a port's page could plant its own Access cookie there.
-- **A certificate for every port name.** Port names are two levels under `kantel.dev` (`3000-brave-otter-ab12cd.ports.kantel.dev`), so they need a wildcard certificate for `*.ports.kantel.dev`. Cloudflare's free Universal SSL covers only the first level under a zone; deeper names need Advanced Certificate Manager (Total TLS or an advanced certificate) or an uploaded certificate.
-
-On your own install, the simplest choice is a ports domain that is a registrable domain of its own, such as `kantel-ports.example`, not a sibling of the console's name.
+On your own install, the simplest choice is a ports domain that is a registrable domain of its own, such as `kantel-ports.example`, not a sibling of the console's name, as the hosted service does with `kantel.run`. Don't put Cloudflare Access in front of a console on the same registrable domain as its ports: a port's page could plant its own Access cookie there. Keep port names one level under the ports domain's zone, as Kantel names them, so one wildcard certificate covers them: Cloudflare's free Universal SSL covers only the first level under a zone.
 
 ## Several gateways
 

@@ -3,9 +3,10 @@ import type { ThemePreference } from "@kantel/contracts";
 import { Button, ComputeConsole, type ComputeSource, type HostingMode, Notice } from "@kantel/ui";
 import { createComputeFixtures } from "@kantel/ui/compute/fixtures";
 import { useEffect, useState } from "react";
-import { navigate, searchWithout, usePathname } from "../app/router.ts";
+import { navigate, searchWithout, useHash, usePathname, useSearch } from "../app/router.ts";
 import { NARROW_QUERY, useMedia } from "../app/use-media.ts";
 import { apiCompute } from "./api-source.ts";
+import { localBridge } from "./local.ts";
 
 // The console: the compute plane's pages at the root of the app (`/sandboxes`, `/hosts` and the rest; `/` is
 // Sandboxes).
@@ -45,14 +46,15 @@ function hostingMode(): HostingMode {
 
 /**
  * Goes to a page of the compute console. The app's `navigate` keeps the query, which carries `?hosting`; `?new` (open
- * New sandbox) and `?add` (open Add a host) are for the one page they were given to, so they are dropped first.
+ * New sandbox) and `?add` (open Add a host) are for the one page they were given to, so they are dropped first. A file
+ * browser's place (`?path`, `?file`, `?snapshot`) isn't kept either, though Back still finds it where it was.
  */
 function go(path: string): void {
 	const search = new URLSearchParams(location.search);
 	if (!path.includes("?") && (search.has("new") || search.has("add"))) {
 		history.replaceState(null, "", `${location.pathname}${searchWithout(location.search, ["new", "add"])}`);
 	}
-	navigate(path);
+	navigate(path, { drop: ["path", "file", "snapshot"] });
 }
 
 /**
@@ -105,7 +107,10 @@ async function sourceFor(
 	const wantsSample = hosting === "hosted" || new URLSearchParams(location.search).get("data") === "sample";
 	if (api !== undefined && !wantsSample) {
 		try {
-			return { source: namedFor(await apiCompute({ ...api, hosting }), signedInAs), sample: false };
+			// Served by `kantel console`: its bridge reads E2E sandboxes' history from their hosts (local.ts).
+			const local = await localBridge();
+			const options = { ...api, hosting, ...(local === undefined ? {} : { local }) };
+			return { source: namedFor(await apiCompute(options), signedInAs), sample: false };
 		} catch (error) {
 			if (error instanceof KantelApiError && error.status === 403) return { refused: error.message };
 			console.info("kantel: the compute API isn't served here, so the console shows sample data:", error);
@@ -134,6 +139,9 @@ export function ComputeApp({
 	onThemeChoose?: (preference: ThemePreference) => void;
 }) {
 	const pathname = usePathname();
+	// Egress's tab is in the query: Back from Rules to Log moves only that.
+	const search = useSearch();
+	const hash = useHash();
 	const narrow = useMedia(NARROW_QUERY);
 	// One source for the tab's life: what a person does on one page (a new sandbox, a revoked key) shows on the next.
 	const [sourced, setSourced] = useState<Sourced>();
@@ -180,7 +188,8 @@ export function ComputeApp({
 		<ComputeConsole
 			source={sourced.source}
 			pathname={pathname}
-			search={location.search}
+			search={search}
+			hash={hash}
 			navigate={go}
 			base={COMPUTE_BASE}
 			narrow={narrow}

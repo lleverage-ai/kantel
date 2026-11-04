@@ -4,8 +4,9 @@
  * Kantel's sessions are not cookies: the console sends its session (`kts_…`) as a bearer and keeps it in the page's
  * localStorage, which no other origin can read, and neither gateway reads a session from a cookie. A cookie the
  * console's origin does need (a sign-in's short-lived state, say) goes through here, so a page under a sibling name (a
- * sandbox's port under the same registrable domain, before the ports domain is on the Public Suffix List) can neither
- * set it nor shadow it:
+ * sandbox's port on a self-hosted install whose ports domain shares the console's registrable domain; hosted ports are
+ * on `kantel.run`, a registrable domain of their own, and never share the console's site) can neither set it nor
+ * shadow it:
  *
  * - Over HTTPS it is a `__Host-` cookie: `Secure`, `Path=/` and no `Domain`. A browser refuses a `__Host-` cookie set
  *   any other way, so another name can't plant one for the console, and the console reads only the prefixed name: a

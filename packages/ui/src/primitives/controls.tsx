@@ -87,7 +87,8 @@ export function Disclosure({
 
 /**
  * Copies text and says so for a moment. The label stays in words ("Copy link"); the icon changes to a tick and the
- * label to "Copied" for 1.5s, announced politely.
+ * label to "Copied" for 1.5s, announced politely. `text` may be read on the click, for text that goes stale (a link
+ * with a token that expires).
  */
 export function CopyButton({
 	text,
@@ -95,12 +96,25 @@ export function CopyButton({
 	iconOnly = false,
 	className,
 	...rest
-}: Omit<ButtonProps, "onClick" | "children" | "icon"> & { text: string; label?: string; iconOnly?: boolean }) {
+}: Omit<ButtonProps, "onClick" | "children" | "icon"> & {
+	text: string | (() => Promise<string>);
+	label?: string;
+	iconOnly?: boolean;
+}) {
 	const [copied, setCopied] = useState(false);
 	const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
 	useEffect(() => () => clearTimeout(timer.current), []);
 	const copy = useCallback(() => {
-		void navigator.clipboard?.writeText(text).then(
+		const clipboard = navigator.clipboard;
+		if (clipboard === undefined) return;
+		let written: Promise<void>;
+		if (typeof text === "string") written = clipboard.writeText(text);
+		else if (typeof ClipboardItem !== "undefined" && typeof clipboard.write === "function") {
+			// The item is handed over during the click, with its text to come, which Safari needs for a later write.
+			const blob = text().then((value) => new Blob([value], { type: "text/plain" }));
+			written = clipboard.write([new ClipboardItem({ "text/plain": blob })]);
+		} else written = text().then((value) => clipboard.writeText(value));
+		void written.then(
 			() => {
 				setCopied(true);
 				clearTimeout(timer.current);

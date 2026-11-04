@@ -30,6 +30,8 @@
 		"@kantel/sql": "workspace:*"
 	},
 	"devDependencies": {
-		"@kantel/api": "workspace:*"
+		"@kantel/api": "workspace:*",
+		"@kantel/cli": "workspace:*",
+		"@kantel/e2e": "workspace:*"
 	}
 }

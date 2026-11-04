@@ -21,8 +21,9 @@ name: Cloudflare deploy
 #            metadata document and CIMD is tried before DCR (#338); unset, CIMD is never offered
 #   optional var KANTEL_OAUTH_CLIENTS: the deployment's own OAuth clients as JSON, such as a public GitHub client for
 #            the device flow (src/connections.ts); a confidential client's secret is a Worker secret, never in the var
-#   optional var KANTEL_COMPUTE_PORTS_DOMAIN: the domain sandboxes' port URLs are under (src/config.ts); unset, the
-#            Worker's default, ports.kantel.dev, Kantel's hosted ports domain. Nothing here routes it yet
+#   optional var KANTEL_COMPUTE_PORTS_DOMAIN: the domain sandboxes' port URLs are under (src/config.ts), routed to the
+#            Worker as *.{domain}/* (its wildcard DNS record is added once outside the deploy, README "Exposed
+#            ports"); unset, the Worker's default, kantel.run, Kantel's hosted ports domain, with no route
 #   optional vars KANTEL_PUBLIC_URL with KANTEL_SIGN_IN_FROM (and KANTEL_SIGN_IN_DAILY_CAP, default 100): email-code
 #            sign-in and open sign-up on a public origin with no Access in front, such as https://app.kantel.dev, sending
 #            from an address on a domain onboarded for Cloudflare Email Sending (the SIGN_IN_MAIL binding). The origin's
@@ -96,7 +97,7 @@ jobs:
       KANTEL_CONNECTIONS_CIMD: ${{ (vars.KANTEL_CONNECTIONS_CIMD || vars.HARBOUR_CONNECTIONS_CIMD) }}
       # Optional: the deployment's own OAuth clients (JSON), such as a public GitHub client for signing in with a code.
       KANTEL_OAUTH_CLIENTS: ${{ (vars.KANTEL_OAUTH_CLIENTS || vars.HARBOUR_OAUTH_CLIENTS) }}
-      # Optional: the domain port URLs are under, for a deployment on a domain other than Kantel's ports.kantel.dev.
+      # Optional: the domain port URLs are under (kantel.run for Kantel's own), routed to the Worker when set.
       KANTEL_COMPUTE_PORTS_DOMAIN: ${{ vars.KANTEL_COMPUTE_PORTS_DOMAIN }}
       # Optional: email-code sign-in and open sign-up on the public origin, and the address its mail comes from.
       KANTEL_PUBLIC_URL: ${{ vars.KANTEL_PUBLIC_URL }}

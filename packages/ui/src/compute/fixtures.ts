@@ -17,16 +17,18 @@ import type {
 	EgressEntry,
 	EgressGrant,
 	Environment,
+	FilePart,
+	FileRange,
 	Host,
 	HostingMode,
 	OrganisationInvite,
 	OrganisationMember,
 	Plan,
-	ProxyRequest,
 	ProxySettings,
 	Sandbox,
 	SandboxCommand,
 	SandboxEgress,
+	SandboxPort,
 	SandboxSnapshot,
 	SavedSnapshot,
 	SnapshotEntry,
@@ -34,7 +36,7 @@ import type {
 	Webhook,
 	WebhookDelivery,
 } from "./compute-model.ts";
-import { sizeSpec } from "./compute-model.ts";
+import { sameProxySettings, sizeSpec } from "./compute-model.ts";
 
 /** The code the fixtures' waiting command line showed. */
 export const FIXTURE_DEVICE_CODE = "BCDF-GHJK";
@@ -368,6 +370,21 @@ const TREE: Readonly<Record<string, readonly SnapshotEntry[]>> = {
 	],
 	"home/user/app": [
 		{ name: "src", path: "home/user/app/src", kind: "folder" },
+		{ name: "node_modules", path: "home/user/app/node_modules", kind: "folder", modifiedAt: FIXTURE_NOW - 2 * DAY },
+		{
+			name: "README.md",
+			path: "home/user/app/README.md",
+			kind: "file",
+			sizeBytes: 1_902,
+			modifiedAt: FIXTURE_NOW - 3 * DAY,
+		},
+		{
+			name: "tsconfig.json",
+			path: "home/user/app/tsconfig.json",
+			kind: "file",
+			sizeBytes: 318,
+			modifiedAt: FIXTURE_NOW - 2 * DAY,
+		},
 		{
 			name: "docker-compose.yml",
 			path: "home/user/app/docker-compose.yml",
@@ -417,7 +434,51 @@ const FILES: Readonly<Record<string, string>> = {
 		'{\n  "name": "app",\n  "private": true,\n  "type": "module",\n  "scripts": {\n    "dev": "node --watch src/server.ts"\n  }\n}\n',
 	"home/user/app/src/server.ts":
 		'import { createServer } from "node:http";\n\ncreateServer((_, res) => res.end("ok")).listen(3000);\n',
+	"home/user/app/README.md":
+		"# app\n\nA small API for the dev stack.\n\n## Run it\n\n```sh\npnpm install\npnpm dev\n```\n\nIt listens on 3000.\n",
+	"home/user/app/tsconfig.json":
+		'{\n  "compilerOptions": {\n    "target": "es2023",\n    "module": "nodenext",\n    "strict": true\n  }\n}\n',
 };
+
+const sampleText = new TextEncoder();
+let syslog: Uint8Array | undefined;
+
+/**
+ * A sample file's bytes: its text; for the screenshot, a PNG's signature and then zeros, to its size; for the syslog,
+ * lines written out to its size, so the preview reads a part of it.
+ */
+function sampleBytes(path: string): Uint8Array {
+	const key = path.replace(/^\/+/, "");
+	const text = FILES[key];
+	if (text !== undefined) return sampleText.encode(text);
+	if (key === "home/user/app/screenshot.png") {
+		const png = new Uint8Array(248_113);
+		png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+		return png;
+	}
+	if (key === "var/log/syslog") {
+		if (syslog === undefined) {
+			const lines: string[] = [];
+			let size = 0;
+			for (let at = 0; size < 2_481_662; at += 1) {
+				const second = String(at % 60).padStart(2, "0");
+				const line = `Nov  4 09:${String(Math.floor(at / 60) % 60).padStart(2, "0")}:${second} api-server node[812]: GET /health 200 ${at % 7}ms\n`;
+				lines.push(line);
+				size += line.length;
+			}
+			syslog = sampleText.encode(lines.join("")).subarray(0, 2_481_662);
+		}
+		return syslog;
+	}
+	throw new Error(`There's no ${path} here.`);
+}
+
+/** The part of a sample file a range asks for, and its size. */
+export function samplePart(path: string, range: FileRange): FilePart {
+	const bytes = sampleBytes(path);
+	const start = Math.min(range.offset, bytes.byteLength);
+	return { bytes: bytes.subarray(start, Math.min(start + range.length, bytes.byteLength)), size: bytes.byteLength };
+}
 
 export const KEYS: readonly ApiKey[] = [
 	{
@@ -481,54 +542,8 @@ export const PROXY: ProxySettings = {
 	allow: ["api.github.com", "*.githubusercontent.com", "registry.npmjs.org", "pypi.org", "*.pythonhosted.org"],
 	deny: ["169.254.169.254"],
 	upstream: { url: "https://mehen.internal.example.com:8443", authSet: true },
-	tlsInspection: true,
-	headers: [
-		{ id: "hdr_gh", host: "api.github.com", header: "Authorization", set: true },
-		{ id: "hdr_npm", host: "registry.npmjs.org", header: "Authorization", set: true },
-	],
 	logRequests: true,
 };
-
-const proxyRequest = (
-	id: string,
-	ago: number,
-	box: Sandbox,
-	method: string,
-	host: string,
-	path: string,
-	status: number,
-	decision: ProxyRequest["decision"],
-	bytes: number,
-): ProxyRequest => ({
-	id,
-	at: FIXTURE_NOW - ago,
-	sandboxId: box.id,
-	sandboxName: box.name,
-	method,
-	host,
-	path,
-	status,
-	decision,
-	bytes,
-});
-
-export const PROXY_REQUESTS: readonly ProxyRequest[] = [
-	proxyRequest("req_1", 4_000, API_SERVER, "GET", "registry.npmjs.org", "/react", 200, "allowed", 18_220),
-	proxyRequest(
-		"req_2",
-		9_000,
-		DEV_STACK,
-		"POST",
-		"api.github.com",
-		"/repos/lleverage-ai/kantel/pulls",
-		201,
-		"allowed",
-		4_210,
-	),
-	proxyRequest("req_3", 31_000, SCRATCH, "GET", "example-tracker.io", "/collect", 403, "denied", 0),
-	proxyRequest("req_4", 75_000, DEV_STACK, "GET", "pypi.org", "/simple/httpx/", 200, "allowed", 9_871),
-	proxyRequest("req_5", 2 * MINUTE, API_SERVER, "GET", "169.254.169.254", "/latest/meta-data/", 403, "denied", 0),
-];
 
 const GITHUB: DestinationBinding = { host: "api.github.com", pathPrefixes: [], methods: [] };
 
@@ -643,7 +658,7 @@ export const EGRESS_LOG: readonly EgressEntry[] = [
 		path: "/3f9a1c",
 		decision: "denied",
 		reason: "GH_TOKEN's placeholder was sent to webhook.site, which it isn't bound to. Kantel didn't swap it.",
-		rule: "placeholder-unbound",
+		code: "placeholder-unbound",
 		inspected: true,
 		status: 403,
 		bytesUp: 220,
@@ -653,6 +668,7 @@ export const EGRESS_LOG: readonly EgressEntry[] = [
 		host: "api.github.com",
 		path: "/repos/lleverage-ai/kantel/branches/old",
 		decision: "denied",
+		code: "denied",
 		reason: "Denied by the environment's grant.",
 		rule: "deny DELETE api.github.com /repos/*",
 		inspected: true,
@@ -681,6 +697,7 @@ export const EGRESS_LOG: readonly EgressEntry[] = [
 		method: "CONNECT",
 		host: "collect.example-tracker.io",
 		decision: "denied",
+		code: "denied",
 		reason: "Denied by the environment's grant.",
 		rule: "deny *.example-tracker.io",
 	}),
@@ -715,6 +732,54 @@ export const EGRESS_LOG: readonly EgressEntry[] = [
 		status: 403,
 	}),
 ];
+
+/** scratch's: an isolate with no environment, so only the account's rules decide. */
+export const SCRATCH_EGRESS_LOG: readonly EgressEntry[] = [
+	egressEntry("egr_s3", 20_000, {
+		method: "CONNECT",
+		host: "registry.npmjs.org",
+		decision: "allowed",
+		bytesUp: 2_210,
+		bytesDown: 418_400,
+	}),
+	egressEntry("egr_s2", 31_000, {
+		method: "CONNECT",
+		host: "example-tracker.io",
+		decision: "denied",
+		// As the host records it: every refusal by the rules is `denied`, its reason saying which.
+		code: "denied",
+		reason: "example-tracker.io isn't on the proxy settings' allow list.",
+	}),
+	egressEntry("egr_s1", 5 * MINUTE, {
+		method: "CONNECT",
+		host: "pypi.org",
+		decision: "allowed",
+		bytesUp: 1_120,
+		bytesDown: 61_900,
+	}),
+];
+
+/** eval-runner-12's, before its machine stopped answering: its Anthropic key swapped in. */
+export const EVAL_EGRESS_LOG: readonly EgressEntry[] = [
+	egressEntry("egr_e1", 12 * MINUTE, {
+		method: "POST",
+		host: "api.anthropic.com",
+		path: "/v1/messages",
+		decision: "allowed",
+		swapped: ["ANTHROPIC_API_KEY"],
+		inspected: true,
+		status: 200,
+		bytesUp: 8_400,
+		bytesDown: 3_120,
+	}),
+];
+
+/** Each sandbox's log; the others haven't sent anything. */
+const EGRESS_LOGS: Readonly<Record<string, readonly EgressEntry[]>> = {
+	[DEV_STACK.id]: EGRESS_LOG,
+	[SCRATCH.id]: SCRATCH_EGRESS_LOG,
+	[EVAL_RUNNER.id]: EVAL_EGRESS_LOG,
+};
 
 /** Placeholders as each of the environment's sandboxes has them: sample text, not real ones. */
 const placeholderOf = (sandboxId: string, name: string): string => {
@@ -938,6 +1003,16 @@ export const COMMANDS: readonly SandboxCommand[] = [
 		by: "GitHub Actions",
 	},
 	{
+		id: "cmd_4b",
+		command: "pnpm build",
+		startedAt: FIXTURE_NOW - 9 * MINUTE,
+		durationMs: 18_300,
+		exitCode: 1,
+		by: "Claude Code on Tom's laptop",
+		output:
+			"> tsc -p tsconfig.build.json\nsrc/routes/sandboxes.ts(212,7): error TS2322: Type 'string | undefined' is not assignable to type 'string'.\nFound 1 error in src/routes/sandboxes.ts:212\n ELIFECYCLE  Command failed with exit code 1.",
+	},
+	{
 		id: "cmd_4",
 		command: "docker compose up -d db",
 		startedAt: FIXTURE_NOW - 18 * MINUTE,
@@ -970,6 +1045,17 @@ export const COMMANDS: readonly SandboxCommand[] = [
 		by: "Claude Code on Tom's laptop",
 	},
 ];
+
+/** The ports the sample sandboxes have given a URL. */
+export const PORTS: Readonly<Record<string, readonly SandboxPort[]>> = {
+	[API_SERVER.id]: [
+		{ port: 3000, url: `https://3000-${API_SERVER.hostname}`, public: false, createdAt: FIXTURE_NOW - 2 * HOUR },
+		{ port: 8080, url: `https://8080-${API_SERVER.hostname}`, public: true, createdAt: FIXTURE_NOW - 40 * MINUTE },
+	],
+	[DEV_STACK.id]: [
+		{ port: 5173, url: `https://5173-${DEV_STACK.hostname}`, public: false, createdAt: FIXTURE_NOW - DAY },
+	],
+};
 
 export interface ComputeFixtureOptions {
 	readonly hosting?: HostingMode;
@@ -1066,6 +1152,9 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 			},
 		]),
 	);
+	const ports = new Map<string, readonly SandboxPort[]>(
+		empty ? [] : Object.entries(PORTS).map(([id, list]) => [id, list.map((entry) => moved(entry, ["createdAt"]))]),
+	);
 	const sandboxGrants = new Map<string, readonly EgressGrant[]>(
 		empty ? [] : [[DEV_STACK.id, [{ id: "grt_dev_pypi", action: "allow", host: "pypi.org", methods: [], paths: [] }]]],
 	);
@@ -1110,6 +1199,16 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 		await new Promise((resolve) => setTimeout(resolve, 60));
 		return make();
 	};
+	/** Refuses a grant write made from an older read, as Kantel's API does with `conflict`. */
+	const requireGrants = (expected: readonly EgressGrant[] | undefined, now: readonly EgressGrant[], what: string) => {
+		const key = (grants: readonly EgressGrant[]) =>
+			JSON.stringify(grants.map((grant) => [grant.id, grant.action, grant.host, grant.methods, grant.paths]));
+		if (expected !== undefined && key(expected) !== key(now)) {
+			throw Object.assign(new Error(`${what} changed since you read them; read them again and redo the change`), {
+				code: "conflict",
+			});
+		}
+	};
 	const find = <T>(map: Map<string, T>, id: string, what: string): T => {
 		const found = map.get(id);
 		if (found === undefined) throw new Error(`No ${what} ${id}.`);
@@ -1141,7 +1240,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 				})),
 			environmentGrants: env?.grants ?? [],
 			grants: sandboxGrants.get(box.id) ?? [],
-			entries: box.id === DEV_STACK.id ? EGRESS_LOG.map((entry) => moved(entry, ["at"])) : [],
+			entries: (EGRESS_LOGS[box.id] ?? []).map((entry) => moved(entry, ["at"])),
 		};
 	};
 	/** Moves a sandbox to `to` after `settleMs`, as a host would report. */
@@ -1360,9 +1459,49 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 				}),
 			history: (id) =>
 				gate(() => {
-					find(sandboxes, id, "sandbox");
-					return COMMANDS.map((command) => moved(command, ["startedAt"]));
+					const box = find(sandboxes, id, "sandbox");
+					// Commands ran only in a sandbox that has been up: one starting for the first time has none yet.
+					return box.state === "starting" && box.snapshot === undefined
+						? []
+						: COMMANDS.map((command) => moved(command, ["startedAt"]));
 				}),
+			get: (id) => gate(() => find(sandboxes, id, "sandbox")),
+			setAutoStop: (id, minutes) =>
+				gate(() => {
+					const { stopsAt: _, ...box } = find(sandboxes, id, "sandbox");
+					return put(minutes === undefined ? box : { ...box, stopsAt: now() + minutes * MINUTE });
+				}),
+			usageNow: (id) =>
+				gate(() => {
+					const box = find(sandboxes, id, "sandbox");
+					const spec = box.resources ?? sizeSpec(box.size);
+					return { memoryGb: Math.round(spec.memoryGb * 0.32 * 10) / 10, diskGb: Math.round(spec.diskGb * 0.32) };
+				}),
+			ports: (id) => gate(() => [...(ports.get(id) ?? [])].sort((a, b) => a.port - b.port)),
+			exposePort: (id, port, isPublic) =>
+				gate(() => {
+					const box = find(sandboxes, id, "sandbox");
+					const url = `https://${port}-${box.hostname}`;
+					const entry: SandboxPort = { port, url, public: isPublic, createdAt: now() };
+					ports.set(id, [...(ports.get(id) ?? []).filter((each) => each.port !== port), entry]);
+					// A private port's answer carries its token, once.
+					return isPublic ? entry : { ...entry, url: `${url}?token=${fakeSecret("").slice(0, 16)}` };
+				}),
+			hidePort: (id, port) =>
+				gate(() => {
+					ports.set(
+						id,
+						(ports.get(id) ?? []).filter((each) => each.port !== port),
+					);
+				}),
+			files: {
+				list: (_id, path) =>
+					gate(() => ({
+						entries: (TREE[path.replace(/^\/+|\/+$/g, "")] ?? []).map((entry) => moved(entry, ["modifiedAt"])),
+						more: false,
+					})),
+				read: (_id, path, range) => gate(() => samplePart(path, range)),
+			},
 		},
 		snapshots: {
 			saved: (accountId) =>
@@ -1408,7 +1547,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 				}),
 			list: (_snapshotId, path) =>
 				gate(() => (TREE[path.replace(/^\/+|\/+$/g, "")] ?? []).map((entry) => moved(entry, ["modifiedAt"]))),
-			read: (_snapshotId, path) => gate(() => FILES[path.replace(/^\/+/, "")]),
+			read: (_snapshotId, path, range) => gate(() => samplePart(path, range)),
 			downloadUrl: (snapshotId, path) =>
 				`https://kantel.example.com/v1/snapshots/${encodeURIComponent(snapshotId)}/download?path=${encodeURIComponent(path)}`,
 		},
@@ -1453,27 +1592,29 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 									policy: "open",
 									allow: [],
 									deny: [],
-									tlsInspection: false,
-									headers: [],
 									logRequests: false,
 								}),
 				),
 			update: (accountId, change) =>
 				gate(async () => {
 					const current = proxies.get(accountId) ?? (await source.proxy.get(accountId));
-					const { upstream, headers, ...rest } = change;
-					const next: ProxySettings = {
-						...current,
-						...rest,
-						...(headers === undefined
-							? {}
-							: {
-									headers: headers.map(({ value, ...header }) => ({
-										...header,
-										set: header.set || value !== undefined,
-									})),
-								}),
-					};
+					const { upstream, expected, ...rest } = change;
+					// As with Kantel's API, a change made from an older read is refused.
+					if (expected !== undefined && !sameProxySettings(expected, current)) {
+						throw Object.assign(
+							new Error("The proxy settings changed since you read them; read them again and redo the change"),
+							{ code: "conflict" },
+						);
+					}
+					const merged: ProxySettings = { ...current, ...rest };
+					// As with Kantel's API, nothing allowed is closed: closing empties the allow list, and Allowed hosts with
+					// none allowed reads back as closed.
+					const next: ProxySettings =
+						merged.policy === "closed"
+							? { ...merged, allow: [] }
+							: merged.policy === "allowlist" && merged.allow.length === 0
+								? { ...merged, policy: "closed" }
+								: merged;
 					const withUpstream: ProxySettings =
 						upstream === undefined
 							? next
@@ -1483,14 +1624,13 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 										...next,
 										upstream: {
 											url: upstream.url,
-											authSet: upstream.auth !== undefined || current.upstream?.authSet === true,
+											// No `auth` keeps the credentials; an empty one removes them.
+											authSet: upstream.auth === undefined ? current.upstream?.authSet === true : upstream.auth !== "",
 										},
 									};
 					proxies.set(accountId, withUpstream);
 					return withUpstream;
 				}),
-			recent: (accountId) =>
-				gate(() => (accountId === LLEVERAGE.id && !empty ? PROXY_REQUESTS.map((entry) => moved(entry, ["at"])) : [])),
 		},
 		environments: {
 			list: (accountId) =>
@@ -1602,13 +1742,19 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					if (twice !== undefined) throw new Error(`${twice} is in the list twice.`);
 					return putEnvironment({ ...env, repos });
 				}),
-			setGrants: (id, grants) => gate(() => putEnvironment({ ...find(environments, id, "environment"), grants })),
+			setGrants: (id, grants, expected) =>
+				gate(() => {
+					const env = find(environments, id, "environment");
+					requireGrants(expected, env.grants, "The environment's grants");
+					return putEnvironment({ ...env, grants });
+				}),
 		},
 		egress: {
 			get: (sandboxId) => gate(() => egressOf(sandboxId)),
-			setGrants: (sandboxId, grants) =>
+			setGrants: (sandboxId, grants, expected) =>
 				gate(() => {
 					find(sandboxes, sandboxId, "sandbox");
+					requireGrants(expected, sandboxGrants.get(sandboxId) ?? [], "The sandbox's grants");
 					sandboxGrants.set(sandboxId, grants);
 					return egressOf(sandboxId);
 				}),

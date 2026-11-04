@@ -73,6 +73,9 @@ importers:
       "@kantel/contracts":
         specifier: workspace:*
         version: link:../../packages/contracts
+      "@kantel/e2e":
+        specifier: workspace:*
+        version: link:../../packages/e2e
       "@kantel/identity":
         specifier: workspace:*
         version: link:../../packages/identity
@@ -89,6 +92,9 @@ importers:
       "@kantel/compute":
         specifier: workspace:*
         version: link:../../packages/compute
+      "@kantel/hosts":
+        specifier: workspace:*
+        version: link:../../packages/hosts
       "@tailwindcss/vite":
         specifier: 4.3.3
         version: 4.3.3(vite@8.3.5(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
@@ -104,6 +110,9 @@ importers:
       "@vitejs/plugin-react":
         specifier: 6.1.2
         version: 6.1.2(vite@8.3.5(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
+      playwright-core:
+        specifier: 1.64.1
+        version: 1.64.1
       typescript:
         specifier: 7.0.2
         version: 7.0.2
@@ -240,10 +249,16 @@ importers:
       "@kantel/api":
         specifier: workspace:*
         version: link:../api
+      "@kantel/e2e":
+        specifier: workspace:*
+        version: link:../e2e
     devDependencies:
       esbuild:
         specifier: 0.28.2
         version: 0.28.2
+      playwright-core:
+        specifier: 1.64.1
+        version: 1.64.1
 
   packages/compute:
     dependencies:
@@ -253,6 +268,9 @@ importers:
       "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
+      "@kantel/e2e":
+        specifier: workspace:*
+        version: link:../e2e
       "@kantel/sql":
         specifier: workspace:*
         version: link:../sql
@@ -261,6 +279,8 @@ importers:
         version: 3.6.0
 
   packages/contracts: {}
+
+  packages/e2e: {}
 
   packages/environments:
     dependencies:
@@ -298,6 +318,12 @@ importers:
       "@kantel/api":
         specifier: workspace:*
         version: link:../api
+      "@kantel/cli":
+        specifier: workspace:*
+        version: link:../cli
+      "@kantel/e2e":
+        specifier: workspace:*
+        version: link:../e2e
 
   packages/identity:
     dependencies:

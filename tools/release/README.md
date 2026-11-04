@@ -5,6 +5,7 @@ A Kantel release is one version of everything, on the GitHub Release `v<version>
 | What | From | How people get it |
 | --- | --- | --- |
 | `kantel.js`, the user CLI and MCP server (Node.js 22+) | `packages/cli` | `install-cli.sh` installs it as `kantel` |
+| `kantel-console.tar.gz`, the console's files, which `kantel console` serves on 127.0.0.1 | `apps/console` | `install-cli.sh` puts them in `~/.local/share/kantel/console`; the npm package has them in `console/` |
 | `kantel-admin.js`, the operator CLI (Node.js 22+) | `packages/admin` | `install-cli.sh` installs it as `kantel-admin`, or `curl -fsSLo kantel-admin …/releases/latest/download/kantel-admin.js` |
 | `install-cli.sh`, the CLIs' installer | `packages/cli/install-cli.sh` | `curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install-cli.sh \| sh` |
 | `kantel-host-linux-amd64`, `kantel-host-linux-arm64`, the host agent | `apps/host` | `install.sh` downloads it |
@@ -13,8 +14,8 @@ A Kantel release is one version of everything, on the GitHub Release `v<version>
 
 Both one-liners work pasted into bash, zsh and fish: the scripts run under `sh`.
 
-`install-cli.sh` needs no sudo: it puts the files in `~/.local/share/kantel` (`KANTEL_HOME`) as `kantel.mjs` and
-`kantel-admin.mjs`, so Node runs them as ES modules whatever is around them, and links `~/.local/bin/kantel` and
+`install-cli.sh` needs no sudo: it puts the files in `~/.local/share/kantel` (`KANTEL_HOME`) as `kantel.mjs`,
+`kantel-admin.mjs` and `console/`, so Node runs them as ES modules whatever is around them, and links `~/.local/bin/kantel` and
 `~/.local/bin/kantel-admin` to them. `sh -s -- --dir DIR` links them elsewhere, `--no-admin` skips `kantel-admin`,
 and `--version V` installs a release other than the script's own. Run it again to update.
 
@@ -78,7 +79,7 @@ npm audit signatures   # in a project that installed kantel: checks its provenan
 ## Locally
 
 ```sh
-pnpm install --filter "@kantel/admin..."
+pnpm install --filter "@kantel/admin..." --filter "@kantel/console..."
 tools/release/pack.sh 0.1.0 /tmp/release
 tools/release/smoke.sh 0.1.0 /tmp/release
 tools/release/github-release.sh --dry-run 0.1.0 /tmp/release

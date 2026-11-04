@@ -2,6 +2,8 @@
 // and the server in the sandbox sees the request as sent, less Kantel's token and cookie, over HTTP/1.1 on the port's
 // stream. The cookie is `__Host-` and counts only from the port's own pages, the person, or the same sandbox's other
 // ports (TASK-4887).
+import v8 from "node:v8";
+import vm from "node:vm";
 import { describe, expect, it } from "vitest";
 import type { PortSink, PortStream } from "../src/hub.ts";
 import { proxyHttp, requestBytes } from "../src/port-http.ts";
@@ -441,6 +443,140 @@ describe("HTTP over a port's stream", () => {
 		expect(answer.headers.get("connection")).toBeNull();
 		expect(answer.headers.get("transfer-encoding")).toBeNull();
 		expect(await answer.text()).toBe("hello, world");
+	});
+
+	it("hands each piece of the body to `take` instead of queueing it, and fails at the first it refuses", async () => {
+		let closed = 0;
+		let admitted = 0;
+		const taken: string[] = [];
+		const pieces = Array.from({ length: 200 }, () => "4\r\nabcd\r\n").join("");
+		const answer = await proxyHttp(
+			async (sink) => ({
+				stream: 1,
+				// One push holding the head and 800 bytes of body in 200 chunks: nothing reads between them.
+				write: () =>
+					sink.data(encoder.encode(`HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n${pieces}0\r\n\r\n`)),
+				close: () => {
+					closed += 1;
+				},
+			}),
+			new Request("https://p.test/"),
+			{
+				host: "p.test",
+				take: (bytes) => {
+					if (admitted + bytes.length > 10) return false;
+					admitted += bytes.length;
+					taken.push(decoder.decode(bytes));
+					return true;
+				},
+			},
+		);
+		expect(answer.status).toBe(200);
+		// The stream carries none of it: it only fails, once `take` refused.
+		const reader = answer.body?.getReader();
+		await expect(reader?.read()).rejects.toMatchObject({ status: 502 });
+		expect(taken).toEqual(["abcd", "abcd"]);
+		expect(closed).toBeGreaterThan(0);
+
+		// One it takes whole ends the stream with nothing in it.
+		const whole: string[] = [];
+		const done = await proxyHttp(
+			async (sink) => ({
+				stream: 2,
+				write: () => sink.data(encoder.encode("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello")),
+				close: () => undefined,
+			}),
+			new Request("https://p.test/"),
+			{ host: "p.test", take: (bytes) => whole.push(decoder.decode(bytes)) > 0 },
+		);
+		expect(await done.text()).toBe("");
+		expect(whole).toEqual(["hello"]);
+	});
+
+	it("keeps no push it has read alive while an answer `take` is given stalls, chunked or not", async () => {
+		v8.setFlagsFromString("--expose-gc");
+		const gc = vm.runInNewContext("gc") as () => void;
+		for (const framing of ["chunked", "length"] as const) {
+			let sink: PortSink | undefined;
+			let pushed: WeakRef<ArrayBuffer> | undefined;
+			let taken = 0;
+			const answer = await proxyHttp(
+				async (given) => {
+					sink = given;
+					return {
+						stream: 1,
+						write: () => {
+							// One big push: the head, then 100,000 one-byte chunks (or 100,000 bytes of a longer body),
+							// then a size line cut short, so the parser has something it must keep.
+							const body = framing === "chunked" ? `${"1\r\nx\r\n".repeat(100_000)}1` : "x".repeat(100_000);
+							const head = framing === "chunked" ? "Transfer-Encoding: chunked\r\n" : "Content-Length: 100001\r\n";
+							const bytes = encoder.encode(`HTTP/1.1 200 OK\r\n${head}\r\n${body}`);
+							pushed = new WeakRef(bytes.buffer);
+							given.data(bytes);
+						},
+						close: () => undefined,
+					};
+				},
+				new Request("https://p.test/"),
+				{
+					host: "p.test",
+					take: (bytes) => {
+						taken += bytes.length;
+						return true;
+					},
+				},
+			);
+			expect(taken).toBe(100_000);
+			// Stalled: the answer and its parser are still alive, the push long read.
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			gc();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			gc();
+			expect({ framing, kept: pushed?.deref() !== undefined }).toEqual({ framing, kept: false });
+			expect(answer.status).toBe(200);
+			sink?.end("done");
+		}
+	});
+
+	it("refuses too big a head even whole in one push, and keeps no interim head while waiting for the real one", async () => {
+		const big = `HTTP/1.1 200 OK\r\nX-Big: ${"x".repeat(70 * 1024)}\r\n\r\nhello`;
+		await expect(send(big)).rejects.toMatchObject({ status: 502 });
+		const whole = proxyHttp(
+			async (sink) => ({ stream: 1, write: () => sink.data(encoder.encode(big)), close: () => undefined }),
+			new Request("https://p.test/"),
+			{ host: "p.test" },
+		);
+		await expect(whole).rejects.toMatchObject({ status: 502 });
+
+		v8.setFlagsFromString("--expose-gc");
+		const gc = vm.runInNewContext("gc") as () => void;
+		let pushed: WeakRef<ArrayBuffer> | undefined;
+		let sink: PortSink | undefined;
+		const pending = proxyHttp(
+			async (given) => {
+				sink = given;
+				return {
+					stream: 1,
+					write: () => {
+						// A thousand interim heads, then the start of the real one.
+						const bytes = encoder.encode(`${"HTTP/1.1 100 Continue\r\n\r\n".repeat(1000)}HTTP/1.1 200 OK\r\n`);
+						pushed = new WeakRef(bytes.buffer);
+						given.data(bytes);
+					},
+					close: () => undefined,
+				};
+			},
+			new Request("https://p.test/"),
+			{ host: "p.test" },
+		);
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		gc();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		gc();
+		expect(pushed?.deref()).toBeUndefined();
+		// What it kept is the head's start: the rest of it still makes the answer.
+		sink?.data(encoder.encode("Content-Length: 2\r\n\r\nok"));
+		expect(await (await pending).text()).toBe("ok");
 	});
 
 	it("reads a body to the end of the stream when it has no length", async () => {

@@ -57,3 +57,16 @@ export function timeLeft(expiresAt: number, now: number): string {
 	}
 	return `${duration(left)} left`;
 }
+
+/** "1.2 GB", "340 MB", "12 KB". */
+export function bytesText(bytes: number): string {
+	if (bytes < 1024) return `${bytes} B`;
+	const units = ["KB", "MB", "GB", "TB"];
+	let value = bytes / 1024;
+	let unit = 0;
+	while (value >= 1024 && unit < units.length - 1) {
+		value /= 1024;
+		unit += 1;
+	}
+	return `${value >= 10 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
+}
