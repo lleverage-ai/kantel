@@ -109,4 +109,62 @@ describe("a person's record", () => {
 			"ann@example.com",
 		);
 	});
+
+	it("is named by their name, else their email, and their personal account with them", async () => {
+		const store = createMemoryStore();
+		const named = await ensurePerson(store, { userId: "usr_1", name: "Ann", email: "ann@example.com" }, T);
+		expect(named.name).toBe("Ann");
+		expect((await store.accounts.get(named.personalAccountId))?.name).toBe("Ann");
+		const unnamed = await ensurePerson(store, { userId: "usr_2", name: "usr_2", email: "bob@example.com" }, T);
+		expect(unnamed.name).toBe("bob@example.com");
+		expect((await store.accounts.get(unnamed.personalAccountId))?.name).toBe("bob@example.com");
+		expect((await ensurePerson(store, { userId: "usr_3", name: "" }, T)).name).toBe("usr_3");
+	});
+
+	it("never has a real name overwritten by a sign-in that carries only their user ID or nothing", async () => {
+		const store = createMemoryStore();
+		await ensurePerson(store, { userId: "usr_1", name: "Ann", email: "ann@example.com" }, T);
+		for (const name of ["usr_1", "", "  "]) {
+			const again = await ensurePerson(store, { userId: "usr_1", name, email: "ann@example.com" }, T + MINUTE);
+			expect(again.name).toBe("Ann");
+		}
+		expect((await store.users.get("usr_1"))?.name).toBe("Ann");
+		// A name sign-in does give replaces it.
+		expect((await ensurePerson(store, { userId: "usr_1", name: "Ann Lee" }, T + 2 * MINUTE)).name).toBe("Ann Lee");
+	});
+
+	it("mends a record that was named by its user ID, and its personal account, on the next sign-in", async () => {
+		// Before the fix every gateway passed the user ID as the name, and each sign-in wrote it back.
+		const store = createMemoryStore();
+		const legacy = await ensurePerson(store, { userId: "usr_1", name: "usr_1" }, T);
+		expect(legacy.name).toBe("usr_1");
+		const mended = await ensurePerson(store, { userId: "usr_1", name: "usr_1", email: "ann@example.com" }, T + MINUTE);
+		expect(mended.name).toBe("ann@example.com");
+		expect((await store.accounts.get(legacy.personalAccountId))?.name).toBe("ann@example.com");
+		// A real name later replaces the email that stood in for it, on the account too.
+		await ensurePerson(store, { userId: "usr_1", name: "Ann", email: "ann@example.com" }, T + 2 * MINUTE);
+		expect((await store.users.get("usr_1"))?.name).toBe("Ann");
+		expect((await store.accounts.get(legacy.personalAccountId))?.name).toBe("Ann");
+	});
+
+	it("leaves a personal account its person renamed alone", async () => {
+		const store = createMemoryStore();
+		const user = await ensurePerson(store, { userId: "usr_1", name: "Ann" }, T);
+		const account = await store.accounts.get(user.personalAccountId);
+		if (account === undefined) throw new Error("no personal account");
+		await store.accounts.put({ ...account, name: "Ann's sandboxes" });
+		await ensurePerson(store, { userId: "usr_1", name: "Ann Lee" }, T + MINUTE);
+		expect((await store.accounts.get(user.personalAccountId))?.name).toBe("Ann's sandboxes");
+	});
+
+	it("is signed in under their name, else their email, never a user ID while either is known", async () => {
+		const store = createMemoryStore();
+		const request = new Request("http://compute.test/v1/me", { headers: { authorization: "Bearer person" } });
+		const principal = await authenticate(request, {
+			store,
+			now: T,
+			authenticatePerson: async () => ({ userId: "usr_1", name: "usr_1", email: "ann@example.com" }),
+		});
+		expect(principal).toMatchObject({ kind: "person", name: "ann@example.com" });
+	});
 });

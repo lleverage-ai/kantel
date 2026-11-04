@@ -6,6 +6,7 @@
 export * from "./auth.ts";
 export * from "./backend.ts";
 export * from "./http.ts";
+export * from "./names.ts";
 export * from "./routed-backend.ts";
 export * from "./secrets.ts";
 export * from "./service.ts";

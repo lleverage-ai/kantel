@@ -46,6 +46,7 @@ import type {
 	SandboxBackend,
 } from "./backend.ts";
 import { createE2EChains } from "./e2e.ts";
+import { isPlaceholderName, personName } from "./names.ts";
 import { createEphemeralSealer, createSealer, type SealedValue, type Sealer, sealedAt } from "./secrets.ts";
 import type {
 	ComputeStore,
@@ -1720,6 +1721,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		createdAt: invite.createdAt,
 	});
 
+	/**
+	 * A personal account named for its person (`name`) when it was made with their user ID for a name, as gateways named
+	 * people once; any other account as it is.
+	 */
+	const personalNamed = (account: StoredAccount, name: string | undefined): StoredAccount =>
+		account.kind === "personal" && name !== undefined && isPlaceholderName(account.name)
+			? { ...account, name }
+			: account;
+
 	const accountView = (account: StoredAccount, role: MemberRole): computeSchema.Account => ({
 		id: account.id,
 		kind: account.kind,
@@ -1759,7 +1769,39 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const actorOf = (principal: Principal): Sandbox["createdBy"] =>
 		principal.kind === "key"
 			? { kind: "api_key", id: principal.keyId, name: principal.keyName }
-			: { kind: "user", id: principal.userId, name: principal.name };
+			: { kind: "user", id: principal.userId, name: personName(principal) };
+
+	/** What a person is called now, by user ID: undefined for someone the store doesn't know. */
+	async function nameOfUser(userId: string): Promise<string | undefined> {
+		const user = await store.users.get(userId);
+		return user === undefined ? undefined : personName({ userId: user.id, name: user.name, email: user.email });
+	}
+
+	/**
+	 * `items` with each person who made one named as they are now when their record names them by a user ID: gateways
+	 * named everyone that way once, and what they made then still says so. Each person is looked up once.
+	 */
+	async function withMakersNamed<T extends { readonly createdBy: Sandbox["createdBy"] }>(
+		items: readonly T[],
+	): Promise<T[]> {
+		const names = new Map<string, Promise<string | undefined>>();
+		return Promise.all(
+			items.map(async (item) => {
+				const maker = item.createdBy;
+				if (maker.kind !== "user" || !isPlaceholderName(maker.name, maker.id)) return item;
+				let name = names.get(maker.id);
+				if (name === undefined) {
+					name = nameOfUser(maker.id);
+					names.set(maker.id, name);
+				}
+				const named = await name;
+				return named === undefined || named === maker.name ? item : { ...item, createdBy: { ...maker, name: named } };
+			}),
+		);
+	}
+
+	const withMakerNamed = async <T extends { readonly createdBy: Sandbox["createdBy"] }>(item: T): Promise<T> =>
+		(await withMakersNamed([item]))[0] ?? item;
 
 	// Events.
 
@@ -2734,7 +2776,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const user = await store.users.get(member.userId);
 			members.push({
 				userId: member.userId,
-				name: user?.name ?? member.userId,
+				// A record made while gateways named people by their user ID still has it: their email, then.
+				name: personName({ userId: member.userId, name: user?.name, email: user?.email }),
 				email: user?.email,
 				role: member.role,
 				joinedAt: member.joinedAt,
@@ -2747,12 +2790,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (principal.kind === "key") {
 			const account = await store.accounts.get(principal.accountId);
 			const role = await roleIn(store, principal, principal.accountId);
-			return account === undefined || role === undefined ? [] : [accountView(account, role)];
+			if (account === undefined || role === undefined) return [];
+			const named =
+				account.kind === "personal" && isPlaceholderName(account.name)
+					? personalNamed(account, await nameOfUser(principal.userId))
+					: account;
+			return [accountView(named, role)];
 		}
 		const accounts: computeSchema.Account[] = [];
 		for (const member of await store.members.list({ userId: principal.userId })) {
 			const account = await store.accounts.get(member.accountId);
-			if (account !== undefined) accounts.push(accountView(account, member.role));
+			if (account !== undefined) accounts.push(accountView(personalNamed(account, personName(principal)), member.role));
 		}
 		return accounts.sort((a, b) =>
 			a.id === principal.personalAccountId ? -1 : b.id === principal.personalAccountId ? 1 : a.createdAt - b.createdAt,
@@ -2910,7 +2958,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				};
 			}
 			return {
-				user: { id: principal.userId, name: principal.name, email: principal.email },
+				user: { id: principal.userId, name: personName(principal), email: principal.email },
 				accountId: principal.personalAccountId,
 				accounts,
 				superAdmin: principal.superAdmin,
@@ -2972,7 +3020,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		getAccount: async (principal, { params }) => {
 			const { account, role } = await accountById(store, principal, params.accountId);
 			requireScope(principal, "account:read", role);
-			return accountView(account, role);
+			if (account.kind !== "personal" || !isPlaceholderName(account.name)) return accountView(account, role);
+			// Only its person, or a key of theirs, gets here.
+			return accountView(personalNamed(account, await nameOfUser(principal.userId)), role);
 		},
 
 		updateAccount: async (principal, { params, body }) => {
@@ -3134,7 +3184,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (await canSee(principal, sandbox, role)) visible.push(sandbox);
 			}
 			const page = paginate(newestFirst(visible), query.limit, query.cursor);
-			return { items: page.items.map((sandbox) => sandboxView(sandbox, principal)), nextCursor: page.nextCursor };
+			return {
+				items: await withMakersNamed(page.items.map((sandbox) => sandboxView(sandbox, principal))),
+				nextCursor: page.nextCursor,
+			};
 		},
 
 		createSandbox: async (principal, { body, idempotencyKey }) => {
@@ -3275,7 +3328,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		getSandbox: async (principal, { params }) => {
 			await catchUpUsage();
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:read", true);
-			return sandboxView(sandbox, principal);
+			return withMakerNamed(sandboxView(sandbox, principal));
 		},
 
 		updateSandbox: async (principal, { params, body }) => {
@@ -4049,7 +4102,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		listApiKeys: async (principal, { query }) => {
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "account:read", role);
-			return { items: newestFirst(await store.apiKeys.list({ accountId: account.id })).map(apiKeyView) };
+			return {
+				items: await withMakersNamed(newestFirst(await store.apiKeys.list({ accountId: account.id })).map(apiKeyView)),
+			};
 		},
 
 		createApiKey: async (principal, { body }) => {
@@ -4080,7 +4135,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return { key: apiKeyView(key), secret };
 		},
 
-		getApiKey: async (principal, { params }) => apiKeyView(await apiKeyFor(principal, params.apiKeyId, "account:read")),
+		getApiKey: async (principal, { params }) =>
+			withMakerNamed(apiKeyView(await apiKeyFor(principal, params.apiKeyId, "account:read"))),
 
 		rotateApiKey: async (principal, { params }) => {
 			const key = await apiKeyFor(principal, params.apiKeyId, "account:admin");
@@ -4667,7 +4723,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	async function personSummary(userId: string) {
 		const user = await store.users.get(userId);
-		return user === undefined ? undefined : { id: user.id, name: user.name, email: user.email };
+		return user === undefined
+			? undefined
+			: { id: user.id, name: personName({ userId: user.id, name: user.name, email: user.email }), email: user.email };
 	}
 
 	/** Starts (fresh from the newest snapshot) or resumes (from memory when paused) a sandbox. */
@@ -4750,7 +4808,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				principal = {
 					kind: "person",
 					userId: user.id,
-					name: user.name,
+					name: personName({ userId: user.id, name: user.name, email: user.email }),
 					superAdmin: user.superAdmin,
 					personalAccountId: user.personalAccountId,
 				};

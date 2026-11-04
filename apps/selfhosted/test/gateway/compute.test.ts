@@ -148,6 +148,21 @@ describe("the compute plane on the gateway", () => {
 		expect(await ann.joinOrganisation({ code })).toMatchObject({ id: org.id, role: "member" });
 	});
 
+	it("names people in the compute plane as identity has them, never by their user ID", async () => {
+		const { client, person } = await serve(true);
+		const tom = client(await person("tom", "admin"));
+		const ann = client(await person("ann", "operator"));
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const invite = await tom.createInvite(org.id, { email: "ann@kantel.example.com", role: "member" });
+		await ann.joinOrganisation({ code: invite.code ?? "" });
+
+		const members = await tom.listMembers(org.id);
+		expect(members.items.map((member) => member.name).sort()).toEqual(["ann", "tom"]);
+		expect((await tom.getCaller()).user?.name).toBe("tom");
+		const sandbox = await ann.createSandbox({ account: org.id, wait: true });
+		expect(sandbox.createdBy).toMatchObject({ kind: "user", name: "ann" });
+	});
+
 	it("is always on: on joined hosts wherever it knows where hosts reach it, else on the stub", () => {
 		expect(computeConfig({})).toEqual({});
 		// The old switch is no longer read: off or on, the same.

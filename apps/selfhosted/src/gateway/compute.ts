@@ -72,6 +72,7 @@ import {
 	createMemoryStore,
 	joinTokenSpender,
 	type PersonIdentity,
+	personName,
 	type SandboxBackend,
 } from "@kantel/compute";
 import { bootstrapSuperAdmin } from "@kantel/compute/serve";
@@ -344,8 +345,8 @@ export interface GatewayCompute {
  * The person a gateway sign-in is, or undefined for a key or no sign-in (a `ksk_` key is the compute API's own). A
  * person who is admin across the deployment's organisation is the compute plane's super-admin, who sees and adds
  * hosts. (A person's sign-in carries no role of its own: roles are held per project or organisation, so it asks
- * `identity`.) Their email comes from `identity` too, with `getUser`: an invite made for an address is joined by
- * matching it, so without it no such invite could be.
+ * `identity`.) Their name and email come from `identity` too, with `getUser`: an invite made for an address is joined
+ * by matching it, so without it no such invite could be, and the members list and "created by" name them so.
  */
 async function personOf(
 	authenticator: Authenticator,
@@ -375,14 +376,15 @@ async function personOf(
 	const session = bearer !== undefined && isSessionToken(bearer) ? await hashSessionToken(bearer) : undefined;
 	return {
 		userId: caller.actor.userId,
-		name: caller.actor.userId,
+		// As they are known everywhere else: their name, else their email, never their user ID while either is known.
+		name: personName({ userId: caller.actor.userId, name: user?.name, email }),
 		...(email === undefined ? {} : { email }),
 		superAdmin,
 		...(session === undefined ? {} : { session }),
 	};
 }
 
-/** What `personOf` asks identity: whether the person administers the organisation, and their email. */
+/** What `personOf` asks identity: whether the person administers the organisation, and their name and email. */
 type PersonDirectory = Pick<IdentityDirectory, "authorize"> & Partial<Pick<IdentityDirectory, "getUser">>;
 
 /** The compute API over the stub, or over joined hosts with `hosts`, signed in with the gateway's `authenticator`. */
@@ -390,7 +392,7 @@ export async function gatewayCompute(options: {
 	readonly authenticator: Authenticator;
 	/**
 	 * Who holds which role (an organisation admin who signs in is the compute plane's super-admin) and, with `getUser`,
-	 * each person's email.
+	 * each person's name and email.
 	 */
 	readonly identity?: PersonDirectory;
 	/** The super-admin key's secret from an earlier start, if any. */
