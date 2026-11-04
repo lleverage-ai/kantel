@@ -62,8 +62,10 @@ export interface OrganisationInvite {
 	readonly email: string;
 	readonly role: AccountRole;
 	readonly sentAt: number;
-	/** The join code (`kji_…`), only on the invite just made: Kantel shows it once and sends no email. */
+	/** The join code (`kji_…`), only on the invite just made: Kantel shows it once. */
 	readonly code?: string;
+	/** Only on the invite just made: whether Kantel emailed it with a link to join. */
+	readonly emailed?: boolean;
 }
 
 export interface AccountsSource {

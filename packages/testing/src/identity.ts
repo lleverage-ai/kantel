@@ -9,6 +9,8 @@ import {
 	type CallContext,
 	EMAIL_OTP_ISSUER,
 	externalSubjectOf,
+	GITHUB_ISSUER,
+	GOOGLE_ISSUER,
 	type IdentityDirectory,
 	INVITE_TTL_MILLISECONDS,
 	type Organisation,
@@ -1297,6 +1299,151 @@ export function createIdentityConformance(options: {
 					(ctx) => identity.canSignIn(ctx, otp("ada@example.test")),
 					tenant.organisation.id,
 				);
+			}),
+		},
+		{
+			name: "signIn links Kantel's own sign-ins (email code, GitHub, Google) to one user by verified email",
+			run: withSubject(async ({ identity }, deps) => {
+				const tenant = await createTenant(identity, "Acme");
+				const otp = (email: string) => ({ issuer: EMAIL_OTP_ISSUER, subject: email, email, emailVerified: true });
+				const ada = await identity.createUser(tenant.admin, {
+					name: "Ada",
+					email: "ada@example.test",
+					externalSubject: externalSubjectOf(EMAIL_OTP_ISSUER, "ada@example.test"),
+				});
+				const github = { issuer: GITHUB_ISSUER, subject: "583231", email: "Ada@Example.test", name: "Ada L" };
+
+				a.strictEqual(
+					await identity.canSignIn(WORKER, { ...github, emailVerified: true }),
+					true,
+					"canSignIn agrees before the link",
+				);
+				await a.rejectsWithCode(identity.signIn(WORKER, github), "forbidden", "an unverified email links nobody");
+				const before = deps.audit.ofType("identity.user.linked").length;
+				const first = await identity.signIn(WORKER, { ...github, emailVerified: true });
+				a.strictEqual(first.user.id, ada.id, "GitHub's verified email finds the person who signs in with a code");
+				a.strictEqual(
+					first.user.externalSubject,
+					externalSubjectOf(EMAIL_OTP_ISSUER, "ada@example.test"),
+					"their own subject stays",
+				);
+				a.strictEqual(deps.audit.ofType("identity.user.linked").length, before + 1, "the link is audited once");
+				a.partialDeepEqual(deps.audit.ofType("identity.user.linked").at(-1), {
+					actor: { kind: "human", userId: ada.id },
+					subject: { kind: "identity.user", id: ada.id },
+					data: { issuer: GITHUB_ISSUER },
+				});
+				const again = await identity.signIn(WORKER, { issuer: GITHUB_ISSUER, subject: "583231" });
+				a.strictEqual(again.user.id, ada.id, "the link holds by GitHub's user ID, whatever the email is now");
+				a.strictEqual(deps.audit.ofType("identity.user.linked").length, before + 1, "and links nothing again");
+				a.strictEqual(
+					(await identity.signIn(WORKER, otp("ada@example.test"))).user.id,
+					ada.id,
+					"the code still signs in",
+				);
+				await a.rejectsWithCode(
+					identity.createUser(tenant.admin, {
+						name: "Someone else",
+						externalSubject: externalSubjectOf(GITHUB_ISSUER, "583231"),
+					}),
+					"conflict",
+					"a linked subject is taken",
+				);
+
+				// The other way round: someone who signed up with Google, then asks for an email code.
+				const grace = await identity.createUser(tenant.admin, {
+					name: "Grace",
+					email: "grace@example.test",
+					externalSubject: externalSubjectOf(GOOGLE_ISSUER, "10769150350006150715113082367"),
+				});
+				a.strictEqual(await identity.canSignIn(WORKER, otp("grace@example.test")), true);
+				a.strictEqual((await identity.signIn(WORKER, otp("grace@example.test"))).user.id, grace.id);
+				a.strictEqual(
+					(await identity.signIn(WORKER, { issuer: GOOGLE_ISSUER, subject: "10769150350006150715113082367" })).user.id,
+					grace.id,
+				);
+
+				// Another provider's subject (an Access or OIDC issuer) is never matched by a Kantel sign-in's email.
+				await identity.createUser(tenant.admin, {
+					name: "Linus",
+					email: "linus@example.test",
+					externalSubject: externalSubjectOf("https://idp.example.test", "linus"),
+				});
+				const linus = { issuer: GITHUB_ISSUER, subject: "1024025", email: "linus@example.test", emailVerified: true };
+				a.strictEqual(await identity.canSignIn(WORKER, linus), false);
+				await a.rejectsWithCode(
+					identity.signIn(WORKER, linus),
+					"forbidden",
+					"an OIDC user's email links no Kantel sign-in",
+				);
+				// Nor does an OIDC sign-in's email link a user who signs in Kantel's way.
+				const oidc = {
+					issuer: "https://idp.example.test",
+					subject: "ada",
+					email: "ada@example.test",
+					emailVerified: true,
+				};
+				a.strictEqual(await identity.canSignIn(WORKER, oidc), false);
+				await a.rejectsWithCode(identity.signIn(WORKER, oidc), "forbidden");
+
+				// An email two users who sign in Kantel's way share links neither.
+				for (const subject of ["twin-a", "twin-b"]) {
+					await identity.createUser(tenant.admin, {
+						name: subject,
+						email: "twin@example.test",
+						externalSubject: externalSubjectOf(GOOGLE_ISSUER, subject),
+					});
+				}
+				const twin = { issuer: GITHUB_ISSUER, subject: "77", email: "twin@example.test", emailVerified: true };
+				a.strictEqual(await identity.canSignIn(WORKER, twin), false);
+				await a.rejectsWithCode(identity.signIn(WORKER, twin), "forbidden");
+			}),
+		},
+		{
+			name: "signIn makes one user for an invited email when first sign-ins by code, GitHub and Google race",
+			run: withSubject(async ({ identity }, deps) => {
+				const tenant = await createTenant(identity, "Acme");
+				await identity.createInvite(tenant.admin, { email: "Newcomer@Example.test", role: "viewer" });
+				const email = "newcomer@example.test";
+				const ways = [
+					{ issuer: GITHUB_ISSUER, subject: "9001", email: "Newcomer@Example.test", emailVerified: true },
+					{ issuer: GOOGLE_ISSUER, subject: "g-9001", email, emailVerified: true },
+					{ issuer: EMAIL_OTP_ISSUER, subject: email, email, emailVerified: true },
+				];
+				const created = deps.audit.ofType("identity.user.created").length;
+				const signedIn = await Promise.all(ways.map((way) => identity.signIn(WORKER, way)));
+				const userId = signedIn[0]?.user.id;
+				a.ok(userId !== undefined);
+				for (const one of signedIn) a.strictEqual(one.user.id, userId, "one user, whichever way won");
+				a.strictEqual(deps.audit.ofType("identity.user.created").length, created + 1, "made once");
+				a.strictEqual(deps.audit.ofType("identity.invite.accepted").length, 1, "the invite is accepted once");
+				for (const way of ways) {
+					const again = await identity.signIn(WORKER, { issuer: way.issuer, subject: way.subject });
+					a.strictEqual(again.user.id, userId, `${way.issuer} resolves to them by its subject`);
+				}
+				a.strictEqual(
+					(await identity.getUser(tenant.admin, userId as string)).externalSubject,
+					externalSubjectOf(EMAIL_OTP_ISSUER, email),
+					"made with the email code's subject, the one they all meet on",
+				);
+
+				// The same for someone made beforehand (open sign-up makes users this way), first linked by a provider.
+				await identity.createInvite(tenant.admin, { email: "ida@example.test", role: "viewer" });
+				const ida = await Promise.all([
+					identity.signIn(WORKER, {
+						issuer: GITHUB_ISSUER,
+						subject: "9002",
+						email: "ida@example.test",
+						emailVerified: true,
+					}),
+					identity.signIn(WORKER, {
+						issuer: GOOGLE_ISSUER,
+						subject: "g-9002",
+						email: "ida@example.test",
+						emailVerified: true,
+					}),
+				]);
+				a.strictEqual(ida[0]?.user.id, ida[1]?.user.id, "two providers racing make one user");
 			}),
 		},
 		{

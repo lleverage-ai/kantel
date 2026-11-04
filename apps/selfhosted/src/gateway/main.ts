@@ -21,6 +21,14 @@
 //                               so a person can sign in by email one-time PIN (Kantel is invite-only)
 //   KANTEL_PUBLIC_URL           where people reach the console, such as https://kantel.example.com: invites link to it,
 //                               and hosts on other machines reach the gateway there. Default: the request's own origin
+//   KANTEL_GITHUB_CLIENT_ID, KANTEL_GITHUB_CLIENT_SECRET
+//                               a GitHub OAuth app's client, for sign-in with GitHub; its callback URL is
+//                               KANTEL_PUBLIC_URL/auth/oauth/github/callback. Both or it stays off, and it needs
+//                               KANTEL_PUBLIC_URL. Invite-only as email codes are: a verified primary email that an
+//                               invite or an existing user has signs in
+//   KANTEL_GOOGLE_CLIENT_ID, KANTEL_GOOGLE_CLIENT_SECRET
+//                               a Google OAuth client (web application), for sign-in with Google; its redirect URI is
+//                               KANTEL_PUBLIC_URL/auth/oauth/google/callback. The same terms as GitHub's
 //   KANTEL_COMPUTE_BACKEND, KANTEL_COMPUTE_PUBLIC_URL
 //                               the compute plane's API (compute.ts, @kantel/compute), always on: accounts, sandboxes,
 //                               snapshots, `ksk_` keys, webhooks, OpenTelemetry and hosts; its super-admin key is
@@ -44,10 +52,11 @@ import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAuthenticator } from "@kantel/identity/authenticator";
+import { oauthClientsFromEnv } from "@kantel/identity/oauth";
 import { kantelSessionProvider } from "@kantel/identity/otp";
 import { replicaUrl } from "./cluster.ts";
 import { type Bootstrap, bootstrap, createGatewayComponents } from "./components.ts";
-import { computeConfig, gatewayCompute, gatewayRelay, withHostUpgrades } from "./compute.ts";
+import { computeConfig, computeInvites, gatewayCompute, gatewayRelay, withHostUpgrades } from "./compute.ts";
 import { createDurableGatewayComponents, type DurableConfig } from "./durable.ts";
 import { createGateway } from "./gateway.ts";
 import { createMailer, describeMail, mailConfig, plausibleAddress } from "./mail.ts";
@@ -72,8 +81,25 @@ export function gatewayConfig(env: NodeJS.ProcessEnv = process.env) {
 		projects: projectList(env.KANTEL_PROJECTS),
 		...(adminEmail === "" ? {} : { adminEmail }),
 		mail: mailConfig(env),
+		oauth: oauthConfig(env, publicUrl !== ""),
 		durable: durableConfig(env),
 	};
+}
+
+/**
+ * The OAuth clients of the providers whose ID and secret are both set, or undefined when none is. They need
+ * KANTEL_PUBLIC_URL (`hasPublicUrl`): set without it, the log says they are off.
+ */
+export function oauthConfig(env: NodeJS.ProcessEnv, hasPublicUrl: boolean) {
+	const clients = oauthClientsFromEnv(env, (message) => console.warn(`[gateway] ${message.replace(/^kantel: /, "")}`));
+	if (Object.keys(clients).length === 0) return undefined;
+	if (!hasPublicUrl) {
+		console.warn(
+			"[gateway] sign-in with GitHub and Google needs KANTEL_PUBLIC_URL, their callbacks' origin; it is off",
+		);
+		return undefined;
+	}
+	return clients;
 }
 
 /**
@@ -154,6 +180,8 @@ export async function serveGateway(cfg = gatewayConfig()) {
 				);
 	const sessions = components.otp.sessions;
 	const secretsKey = process.env.KANTEL_SECRETS_KEY?.trim() || undefined;
+	// One mailer for sign-in codes and both kinds of invite: the deployment's organisation's and a compute organisation's.
+	const mailer = cfg.mail === undefined ? undefined : createMailer(cfg.mail);
 	const compute = await gatewayCompute({
 		authenticator,
 		identity: components.identity,
@@ -163,6 +191,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		...(hosts === undefined ? {} : { hosts }),
 		...(components.computeStore === undefined ? {} : { store: components.computeStore }),
 		...(secretsKey === undefined ? {} : { secretsKey }),
+		...(mailer === undefined ? {} : { invites: computeInvites(mailer, cfg.publicOrigin, components.identity) }),
 	});
 	seeded = { ...seeded, computeKey: compute.superAdminKey };
 	console.log(
@@ -177,8 +206,9 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		...(compute.hostRoutes === undefined ? {} : { computeHosts: compute.hostRoutes }),
 		...(compute.portRoutes === undefined ? {} : { computePorts: compute.portRoutes }),
 		consoleDir: cfg.consoleDir,
-		...(cfg.mail === undefined ? {} : { mail: describeMail(cfg.mail), mailer: createMailer(cfg.mail) }),
+		...(cfg.mail === undefined || mailer === undefined ? {} : { mail: describeMail(cfg.mail), mailer }),
 		...(cfg.publicOrigin === undefined ? {} : { publicOrigin: cfg.publicOrigin }),
+		...(cfg.oauth === undefined ? {} : { oauth: cfg.oauth }),
 	});
 	const onUpgrade = withHostUpgrades(hosts, undefined);
 	const server = await listen(gateway.fetch, cfg.port, {
@@ -189,7 +219,8 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		`[gateway] listening on ${server.port}; organisation ${seeded.organisationId}, project ${seeded.projectId}` +
 			`${seeded.projects === undefined ? "" : `, projects ${JSON.stringify(seeded.projects)}`}; ` +
 			`bootstrap key in ${cfg.bootstrapFile}; bindings ${JSON.stringify(components.bindings)}; ` +
-			`mail ${cfg.mail === undefined ? "off" : JSON.stringify(describeMail(cfg.mail))}`,
+			`mail ${cfg.mail === undefined ? "off" : JSON.stringify(describeMail(cfg.mail))}; ` +
+			`sign-in with ${cfg.oauth === undefined ? "no provider" : Object.keys(cfg.oauth).join(" and ")}`,
 	);
 
 	const shutdown = async () => {

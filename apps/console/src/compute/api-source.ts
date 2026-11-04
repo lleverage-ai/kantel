@@ -239,6 +239,7 @@ function inviteOf(invite: Invite): UiInvite {
 		sentAt: invite.createdAt,
 		// Only the invite just made has its code; the page shows it once.
 		...(invite.code === undefined ? {} : { code: invite.code }),
+		...(invite.emailed === undefined ? {} : { emailed: invite.emailed }),
 	};
 }
 

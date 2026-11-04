@@ -9,8 +9,8 @@
  * - `/healthz`: public liveness, the service name only. Access still guards it on the deployed hostname.
  * - Every `/v1/…`: the identity and audit APIs, served by the `KantelStack` Durable Object (`src/gateway.ts`); any other
  *   API path is a 404 there.
- * - `/auth/…`: email-code sign-in, also the stack object's, which answers it only on the public origin
- *   (KANTEL_PUBLIC_URL) and 404s it elsewhere.
+ * - `/auth/…`: email-code sign-in and sign-in with GitHub and Google (`/auth/oauth/…`), also the stack object's, which
+ *   answers them only on the public origin (KANTEL_PUBLIC_URL) and 404s them elsewhere.
  * - Everything else: the console's static assets (`consoleAsset`), through the `ASSETS` binding. A file the build holds
  *   is served as it is; a miss comes back as a 404 (`not_found_handling: "none"` in wrangler.jsonc). A miss under `/assets/` is a real 404: a chunk
  *   an older build named, which a tab opened before a deploy still asks for, must fail as a missing script, not load
@@ -29,7 +29,7 @@ import { type GatewayVars, isPortName, portsDomainOf } from "./config.ts";
 /** The one stack object's name. */
 export const STACK_NAME = "m1";
 
-/** Email-code sign-in's routes (`/auth/otp/start`, `/auth/otp/verify`, `/auth/session/end`), served by the stack. */
+/** Sign-in's routes (`/auth/otp/…`, `/auth/session/end`, `/auth/oauth/…`), served by the stack. */
 export const SIGN_IN_PREFIX = "/auth/";
 /** Their bodies are an email and a code: refused past this before the stack reads them. */
 const SIGN_IN_BODY_LIMIT = 4096;

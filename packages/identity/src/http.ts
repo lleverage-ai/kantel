@@ -46,6 +46,7 @@ import {
 	ME_PATH,
 	ME_PREFERENCES_PATH,
 	type MeResponse,
+	OAUTH_SESSION_PATH,
 	ORGANISATION_HEADER,
 	ORGANISATION_KEY_MAX_ROLE,
 	type OrganisationId,
@@ -866,6 +867,11 @@ export interface IdentityClient {
 	verifyOtp(email: string, code: string, signal?: AbortSignal): Promise<OtpVerifyResponse>;
 	/** Ends a Kantel session. */
 	endSession(token: string, signal?: AbortSignal): Promise<void>;
+	/**
+	 * Picks up the session a sign-in with GitHub or Google left in its short-lived cookie (`POST OAUTH_SESSION_PATH`),
+	 * once. Rejects `unauthenticated` when there is none. Only on the console's own origin: the cookie is its.
+	 */
+	oauthSession(signal?: AbortSignal): Promise<OtpVerifyResponse>;
 	/** The keys the caller administers, revoked ones included. Never a secret. */
 	listApiKeys(input?: { readonly serviceId?: string }, signal?: AbortSignal): Promise<ApiKey[]>;
 	/** Issues a key; the answer is the only time its secret is ever sent. */
@@ -1014,6 +1020,10 @@ export function createIdentityClient(options: IdentityClientOptions): IdentityCl
 
 		async endSession(token, signal) {
 			await post(SESSION_END_PATH, {}, signal, { authorization: `Bearer ${token}` });
+		},
+
+		async oauthSession(signal) {
+			return (await (await post(OAUTH_SESSION_PATH, {}, signal)).json()) as OtpVerifyResponse;
 		},
 
 		async listApiKeys(input = {}, signal) {

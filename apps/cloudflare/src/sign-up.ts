@@ -1,8 +1,12 @@
 /**
- * Open sign-up on the public origin: anyone who proves an email address with a code is let in, and someone new gets a
- * user of their own and a personal space (an organisation they administer, with a Default project).
+ * Open sign-up on the public origin: anyone who proves an email address, with a code or through GitHub or Google (whose
+ * verified email Kantel's own sign-in requires), is let in, and someone new gets a user of their own and a personal
+ * space (an organisation they administer, with a Default project). Someone who already signs in one of those ways and
+ * then uses another is the same user, with the same space: the directory links them by the verified email
+ * (`IdentityDirectory.signIn`).
  *
- * It wraps the directory only where the email-code sign-in reaches it (`createEmailOtp`'s `canSignIn` and `signIn`).
+ * It wraps the directory only where those sign-ins reach it (`createEmailOtp`'s and `createOAuthSignIn`'s `canSignIn`
+ * and `signIn`).
  * Everything else, the authenticator included, uses the directory as it is: by the time a session is used the user
  * exists. Behind Access nothing changes, and an invited person still joins the organisation that invited them.
  *
@@ -13,11 +17,12 @@
  */
 import {
 	type CallContext,
-	EMAIL_OTP_ISSUER,
 	type ExternalIdentity,
 	externalSubjectOf,
 	type IdentityDirectory,
 	isKantelError,
+	isKantelSignInIssuer,
+	kantelPrimarySubject,
 	normaliseEmail,
 	type SignIn,
 } from "@kantel/contracts";
@@ -33,8 +38,9 @@ const SIGN_UP: CallContext = {
 /** The name a new personal space is given. */
 export const PERSONAL_SPACE_NAME = "Personal";
 
-const isEmailCode = (identity: ExternalIdentity): identity is ExternalIdentity & { email: string } =>
-	identity.issuer === EMAIL_OTP_ISSUER && identity.emailVerified === true && typeof identity.email === "string";
+/** One of Kantel's own sign-ins (an email code, GitHub, Google), with the email it proved. */
+const isProvenEmail = (identity: ExternalIdentity): identity is ExternalIdentity & { email: string } =>
+	isKantelSignInIssuer(identity.issuer) && identity.emailVerified === true && typeof identity.email === "string";
 
 /** How far a person's sign-up has got: begun, the space made, its project made. */
 export interface SignUpRecord {
@@ -144,13 +150,19 @@ export function openSignUp(
 		return withSpace(signedIn, organisationId);
 	}
 
-	/** A user for this proven address, linked to the code's subject. A concurrent first sign-in may have made it. */
+	/**
+	 * A user for this proven address, named as the provider has them, else by the address. It is made with the email
+	 * code's subject whichever way they came (`kantelPrimarySubject`), so a concurrent first sign-in with this address,
+	 * by the same way or another, finds it rather than making a second; the sign-in after links a provider's subject.
+	 */
 	async function makeUser(external: ExternalIdentity & { email: string }): Promise<void> {
+		const name =
+			typeof external.name === "string" && external.name.trim() !== "" ? external.name.trim() : external.email;
 		try {
 			await identity.createUser(SIGN_UP, {
-				name: external.email,
+				name,
 				email: external.email,
-				externalSubject: externalSubjectOf(external.issuer, external.subject),
+				externalSubject: kantelPrimarySubject(external) ?? externalSubjectOf(external.issuer, external.subject),
 			});
 		} catch (error) {
 			if (!isKantelError(error, "conflict")) throw error;
@@ -160,11 +172,11 @@ export function openSignUp(
 	return {
 		async canSignIn(ctx, external) {
 			// Every proven address may sign in: someone new signs up.
-			if (isEmailCode(external) && normaliseEmail(external.email) !== "") return true;
+			if (isProvenEmail(external) && normaliseEmail(external.email) !== "") return true;
 			return identity.canSignIn(ctx, external);
 		},
 		async signIn(ctx, external): Promise<SignIn> {
-			if (!isEmailCode(external)) return identity.signIn(ctx, external);
+			if (!isProvenEmail(external)) return identity.signIn(ctx, external);
 			let signedIn: SignIn;
 			try {
 				signedIn = await identity.signIn(ctx, external);

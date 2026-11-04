@@ -748,6 +748,7 @@ A way into an organisation: whoever joins with its code becomes a member.
 | `role` | [MemberRole](/api/reference/types/#memberrole) | yes |  |
 | `email` | string | no |  |
 | `code` | string | no | The join code, such as `kji_…`. Shown once, when the invite is made. |
+| `emailed` | boolean | no | Only when the invite is made: whether Kantel emailed it, with a link that joins with its code. False without an email, where the deployment sends no mail, or when the send failed. |
 | `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 

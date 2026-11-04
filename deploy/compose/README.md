@@ -89,6 +89,13 @@ credentials in the URL if the relay needs them. In compose both default to Mailp
 `KANTEL_SMTP_URL` the sign-in routes answer 503. The gateway refuses to start on a malformed value, and
 `/v1/deployment` shows the server and From address, never the credentials.
 
+People can also sign in with GitHub or Google (`@kantel/identity/oauth`) once `KANTEL_PUBLIC_URL` is set and a
+provider's `KANTEL_GITHUB_CLIENT_ID` and `KANTEL_GITHUB_CLIENT_SECRET` (or `KANTEL_GOOGLE_CLIENT_ID` and
+`KANTEL_GOOGLE_CLIENT_SECRET`) are. Register `$KANTEL_PUBLIC_URL/auth/oauth/github/callback` (or `.../google/callback`)
+as the client's callback. It is invite-only as codes are: the provider's verified email must match an invite or a user,
+and it shares the per-address limit. The [install guide](../../docs/site/src/content/docs/self-hosting/install.md#sign-in-with-github-or-google)
+has the steps.
+
 ### On the host's network
 
 The `next-to-sal.yaml` overlay runs the gateway on the host's network, listening on 127.0.0.1 only, reaching Postgres

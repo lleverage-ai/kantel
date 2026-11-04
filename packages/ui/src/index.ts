@@ -80,6 +80,7 @@ export {
 	codeDigits,
 	createSignInFlow,
 	initialSignIn,
+	type ProviderSignInProblem,
 	SIGN_IN_CODE_DIGITS,
 	SIGN_IN_CODE_TTL_MS,
 	SIGN_IN_MAX_CODES,
@@ -88,6 +89,7 @@ export {
 	type SignInFlow,
 	type SignInFlowOptions,
 	type SignInProblem,
+	type SignInProviderLink,
 	type SignInState,
 	signInProblem,
 } from "./identity/sign-in-model.ts";

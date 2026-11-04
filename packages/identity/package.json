@@ -15,10 +15,12 @@
 		"./sql": "./src/sql.ts",
 		"./otp": "./src/otp.ts",
 		"./otp/http": "./src/otp-http.ts",
+		"./oauth": "./src/oauth.ts",
 		"./http": "./src/http.ts",
 		"./invites": "./src/invites.ts",
 		"./smtp": "./src/smtp.ts",
-		"./testing": "./src/testing.ts"
+		"./testing": "./src/testing.ts",
+		"./testing/oauth": "./src/testing-oauth.ts"
 	},
 	"dependencies": {
 		"@kantel/contracts": "workspace:*",
