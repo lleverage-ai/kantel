@@ -268,11 +268,15 @@ export interface ComputeConsoleProps {
 	readonly onJoinCodeDone?: () => void;
 }
 
-/** A wide screen: the sidebar beside the page. A phone: the top bar, the page, and the tab bar under it. */
+/**
+ * A wide screen: as the Lleverage app's shell (design-system/LAYOUT.md), a grey ground with the sidebar sitting on it
+ * and the page floating beside it as a rounded panel. A phone: the top bar, the page, and the tab bar under it.
+ */
 const SHELL = "kt-app grid h-dvh";
-const SHELL_WIDE = "grid-cols-[var(--kt-nav-width)_minmax(0,1fr)]";
+const SHELL_WIDE = "grid-cols-[var(--kt-nav-width)_minmax(0,1fr)] bg-sunken";
 const SHELL_NARROW = "grid-rows-[auto_minmax(0,1fr)_auto]";
-const MAIN = "min-h-0 min-w-0 overflow-y-auto";
+const MAIN = "min-h-0 min-w-0 overflow-y-auto bg-canvas";
+const MAIN_WIDE = "my-2 mr-2 rounded-panel border border-border";
 
 /**
  * What the strip over the page says about end-to-end encryption in this account, and in which tone; undefined for
@@ -581,7 +585,7 @@ export function ComputeConsole({
 				<Sidebar
 					role="complementary"
 					aria-label={inAdmin ? "Admin" : "Compute console"}
-					className="min-h-0"
+					className="min-h-0 border-r-0! bg-transparent!"
 					head={
 						<SidebarBrand>
 							<KantelLockup className="h-(--kt-brand-sm)" title="Kantel" />
@@ -648,10 +652,10 @@ export function ComputeConsole({
 					)}
 				</Sidebar>
 			)}
-			<main className={MAIN}>
+			<main className={narrow ? MAIN : `${MAIN} ${MAIN_WIDE}`}>
 				{sample && failed === undefined ? (
 					<p
-						className={`kt-sample-banner m-0 border-b border-border bg-status-waiting-soft py-1.5 text-sm text-status-waiting ${narrow ? "px-gutter-narrow" : "px-gutter"}`}
+						className={`kt-sample-banner m-0 border-b border-border bg-accent-soft py-1.5 text-sm text-accent-text ${narrow ? "px-gutter-narrow" : "px-gutter"}`}
 					>
 						{source.hosting === "hosted" ? "Hosted demo on sample data." : "Sample data."} Nothing here is real.
 					</p>
