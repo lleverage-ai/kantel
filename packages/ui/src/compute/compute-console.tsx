@@ -641,9 +641,9 @@ function PageFor({
 		case "proxy":
 			return <ProxyPage source={source.proxy} account={account} {...timing} />;
 		case "webhooks":
-			return <WebhooksPage source={source.webhooks} account={account} {...timing} />;
+			return <WebhooksPage source={source.webhooks} account={account} narrow={narrow} {...timing} />;
 		case "telemetry":
-			return <TelemetryPage source={source.telemetry} account={account} {...timing} />;
+			return <TelemetryPage source={source.telemetry} account={account} narrow={narrow} {...timing} />;
 		case "organisation":
 			return (
 				<OrganisationPage
@@ -671,7 +671,7 @@ function PageFor({
 			);
 		case "billing":
 			return source.billing === undefined ? null : (
-				<BillingPage source={source.billing} account={account} {...timing} />
+				<BillingPage source={source.billing} account={account} narrow={narrow} {...timing} />
 			);
 		case "hosts":
 			return hosts === undefined ? null : (

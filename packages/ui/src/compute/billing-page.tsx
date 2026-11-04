@@ -28,6 +28,8 @@ import { SettingsPageHeader } from "./settings-nav.tsx";
 export interface BillingPageProps {
 	readonly source: BillingSource;
 	readonly account: ComputeAccount;
+	/** A phone, inside Settings: the page's name is left to the selected link. */
+	readonly narrow?: boolean;
 	/** A fixed time, for stories. */
 	readonly now?: number;
 }
@@ -49,7 +51,7 @@ function sizesText(plan: Plan): string {
 
 type NoticeState = { level: "info" | "error"; text: string };
 
-export function BillingPage({ source, account, now: fixedNow }: BillingPageProps) {
+export function BillingPage({ source, account, now: fixedNow, narrow = false }: BillingPageProps) {
 	const { state, reload } = useLoad(
 		() => Promise.all([source.summary(account.id), source.plans()] as const),
 		[source, account.id],
@@ -80,7 +82,7 @@ export function BillingPage({ source, account, now: fixedNow }: BillingPageProps
 
 	return (
 		<div className={computePage}>
-			<SettingsPageHeader title="Plan and billing" />
+			<SettingsPageHeader title="Plan and billing" narrow={narrow} />
 			<Notice level="info" announce={false}>
 				This is a demo of hosted Kantel. No payment is taken and no card is stored.
 			</Notice>

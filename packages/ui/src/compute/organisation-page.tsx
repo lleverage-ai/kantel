@@ -63,6 +63,26 @@ const INVITE_ROLES: readonly { value: Exclude<AccountRole, "owner">; label: stri
 
 const canManage = (role: AccountRole): boolean => role === "owner" || role === "admin";
 
+/**
+ * One change at a time for each member: `run` starts a change unless one for the same member is still going, and says
+ * which members are busy as that changes. The API writes a role or a removal as it comes, so two at once could land in
+ * either order; holding the second until the first settles keeps what is stored and what is shown the same.
+ */
+export function createMemberLocks(onBusy: (busy: ReadonlySet<string>) => void) {
+	const busy = new Set<string>();
+	return {
+		run<T>(memberId: string, change: () => Promise<T>): Promise<T> | undefined {
+			if (busy.has(memberId)) return undefined;
+			busy.add(memberId);
+			onBusy(new Set(busy));
+			return change().finally(() => {
+				busy.delete(memberId);
+				onBusy(new Set(busy));
+			});
+		},
+	};
+}
+
 type NoticeState = { level: "info" | "error"; text: string };
 
 export function OrganisationPage(props: OrganisationPageProps) {
@@ -215,6 +235,9 @@ function General({
 	const [leaving, setLeaving] = useState(false);
 	// The invite just made, while its join code shows.
 	const [invited, setInvited] = useState(firstInvited);
+	// Members with a role change or a removal on its way: their role and Remove wait for it.
+	const [busy, setBusy] = useState<ReadonlySet<string>>(new Set());
+	const [locks] = useState(() => createMemberLocks(setBusy));
 	const now = fixedNow ?? Date.now();
 	const headingId = useId();
 
@@ -241,17 +264,18 @@ function General({
 		return next;
 	};
 
-	const remove = async (member: OrganisationMember) => {
-		setRemoved((current) => toggle(current, member.id, true));
-		try {
-			await source.removeMember(account.id, member.id);
-			setNotice({ level: "info", text: `Removed ${member.name}.` });
-			members.reload();
-		} catch (caught) {
-			setRemoved((current) => toggle(current, member.id, false));
-			setNotice({ level: "error", text: messageOf(caught, `Kantel couldn't remove ${member.name}. Try again.`) });
-		}
-	};
+	const remove = (member: OrganisationMember) =>
+		locks.run(member.id, async () => {
+			setRemoved((current) => toggle(current, member.id, true));
+			try {
+				await source.removeMember(account.id, member.id);
+				setNotice({ level: "info", text: `Removed ${member.name}.` });
+				members.reload();
+			} catch (caught) {
+				setRemoved((current) => toggle(current, member.id, false));
+				setNotice({ level: "error", text: messageOf(caught, `Kantel couldn't remove ${member.name}. Try again.`) });
+			}
+		});
 
 	const revoke = async (invite: OrganisationInvite) => {
 		setRevoked((current) => toggle(current, invite.id, true));
@@ -268,27 +292,36 @@ function General({
 	const sourceRename = source.rename;
 	const rename =
 		manager && sourceRename !== undefined
-			? async (name: string) => onRenamed?.(await sourceRename(account.id, name))
+			? async (name: string) => {
+					const renamed = await sourceRename(account.id, name);
+					onRenamed?.(renamed);
+				}
 			: undefined;
 	const setRole = source.setRole;
 	const changeRole =
 		setRole === undefined
 			? undefined
-			: async (member: OrganisationMember, role: AccountRole) => {
-					const was = member.role;
-					setRoles((current) => new Map(current).set(member.id, role));
-					try {
-						await setRole(account.id, member.id, role);
-						setNotice({ level: "info", text: `${member.name} is now ${ACCOUNT_ROLE_LABELS[role].toLowerCase()}.` });
-						members.reload();
-					} catch (caught) {
-						setRoles((current) => new Map(current).set(member.id, was));
-						setNotice({
-							level: "error",
-							text: messageOf(caught, `Kantel couldn't change ${member.name}'s role. Try again.`),
-						});
-					}
-				};
+			: (member: OrganisationMember, role: AccountRole) =>
+					locks.run(member.id, async () => {
+						// What was shown, and confirmed, before: nothing else for this member can have changed it meanwhile.
+						const was = member.role;
+						setRoles((current) => new Map(current).set(member.id, role));
+						try {
+							const changed = await setRole(account.id, member.id, role);
+							setRoles((current) => new Map(current).set(member.id, changed.role));
+							setNotice({
+								level: "info",
+								text: `${member.name} is now ${ACCOUNT_ROLE_LABELS[changed.role].toLowerCase()}.`,
+							});
+							members.reload();
+						} catch (caught) {
+							setRoles((current) => new Map(current).set(member.id, was));
+							setNotice({
+								level: "error",
+								text: messageOf(caught, `Kantel couldn't change ${member.name}'s role. Try again.`),
+							});
+						}
+					});
 
 	return (
 		<div className={computePage}>
@@ -350,6 +383,7 @@ function General({
 						viewerRole={account.role}
 						now={now}
 						narrow={narrow}
+						busy={busy}
 						onRemove={(member) => void remove(member)}
 						onRevoke={(invite) => void revoke(invite)}
 						{...(manager && changeRole !== undefined
@@ -543,6 +577,7 @@ function People({
 	viewerRole,
 	now,
 	narrow,
+	busy,
 	onRemove,
 	onRevoke,
 	onRole,
@@ -553,6 +588,8 @@ function People({
 	viewerRole: AccountRole;
 	now: number;
 	narrow: boolean;
+	/** Members with a change on its way: their role and Remove wait for it. */
+	busy: ReadonlySet<string>;
 	onRemove: (member: OrganisationMember) => void;
 	onRevoke: (invite: OrganisationInvite) => void;
 	onRole?: (member: OrganisationMember, role: AccountRole) => void;
@@ -566,9 +603,10 @@ function People({
 		<ul className="kt-member-rows m-0 flex list-none flex-col p-0">
 			{sorted.map((member) => {
 				const you = member.id === viewerId;
-				const removable = manager && !you && member.role !== "owner";
+				const waiting = busy.has(member.id);
+				const removable = manager && !you && !waiting && member.role !== "owner";
 				return (
-					<li key={member.id} className={row} data-member={member.id}>
+					<li key={member.id} className={row} data-member={member.id} aria-busy={waiting || undefined}>
 						<PersonMark name={member.name} />
 						<span
 							className="flex min-w-0 flex-1 flex-col gap-0.5"
@@ -585,7 +623,7 @@ function People({
 							<RoleControl
 								member={member}
 								viewerRole={viewerRole}
-								{...(you || onRole === undefined ? {} : { onRole })}
+								{...(you || waiting || onRole === undefined ? {} : { onRole })}
 							/>
 						</span>
 						{manager ? (
