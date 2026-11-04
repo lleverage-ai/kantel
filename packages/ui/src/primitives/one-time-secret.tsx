@@ -71,7 +71,7 @@ export function CommandBlock({
 			<div className="flex min-w-0 items-start gap-2 rounded-control border border-border-input bg-sunken py-1 pr-1 pl-2.5">
 				{prompt ? (
 					<span
-						className="flex-none py-1 font-mono text-code leading-normal text-faint max-sm:hidden"
+						className="flex-none py-1 font-mono text-code leading-normal text-faint"
 						aria-hidden="true"
 					>
 						$

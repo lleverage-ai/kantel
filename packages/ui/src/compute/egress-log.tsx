@@ -262,7 +262,7 @@ function RequestCell({
 	return (
 		<button
 			type="button"
-			className="kt-focusable -ml-1 flex max-w-full min-w-0 cursor-pointer items-center gap-1 rounded-sm border-0 bg-transparent px-1 py-0.5 text-left hover:bg-hover"
+			className={`kt-focusable -ml-1 flex max-w-full min-w-0 cursor-pointer items-center ${wrap ? "w-full gap-2" : "gap-1"} rounded-sm border-0 bg-transparent px-1 py-0.5 text-left hover:bg-hover`}
 			aria-expanded={open}
 			aria-controls={detailId}
 			title={text}
@@ -271,7 +271,8 @@ function RequestCell({
 			<span className={`${cellMono} block min-w-0 ${wrap ? "wrap-anywhere" : "max-w-(--kt-card-width) truncate"}`}>
 				<RequestText entry={entry} />
 			</span>
-			<Chevron size="sm" className="flex-none text-faint" />
+			{/* Wrapped, as on a phone's card, the chevron keeps to the card's right edge, wherever the request ends. */}
+			<Chevron size="sm" className={`flex-none text-faint${wrap ? " ml-auto self-start mt-0.5" : ""}`} />
 		</button>
 	);
 }
@@ -381,10 +382,10 @@ function PhoneEntry({
 				</span>
 				{sandboxColumn ? <span>{entry.sandboxName}</span> : null}
 			</div>
-			<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-faint empty:hidden">
+			<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-sm text-muted empty:hidden">
 				{entry.swapped.length === 0 ? null : (
 					<span>
-						Swapped <span className="font-mono text-muted">{entry.swapped.join(", ")}</span>
+						Swapped <span className="font-mono text-fg">{entry.swapped.join(", ")}</span>
 					</span>
 				)}
 				{/* What moved, in words; nothing at all is left unsaid rather than shown as dashes. */}

@@ -391,18 +391,35 @@ function KeyPhoneRow({ apiKey, now, onRevoke }: { apiKey: ApiKey; now: number; o
 				<span className={`truncate text-md font-medium ${muted ? "text-muted" : "text-fg"}`}>{apiKey.name}</span>
 				{/* The key's identifier on its own line, then what it may do and when it was used. */}
 				<span className="font-mono text-code text-muted">{apiKey.prefix}…</span>
-				<span className="flex min-w-0 flex-wrap gap-x-3 text-sm text-muted">
-					<span>{accessText(apiKey.scopes)}</span>
-					{apiKey.lastUsedAt === undefined ? (
-						<span>Never used</span>
-					) : (
-						<span>Used {compactAge(apiKey.lastUsedAt, now)} ago</span>
-					)}
+				{/* What it may do, when it was used, when it ends and who made it, each labelled, as the table's columns are. */}
+				<dl className="m-0 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-sm">
+					<dt className="text-muted">Access</dt>
+					<dd className="m-0 min-w-0 text-fg">{accessText(apiKey.scopes)}</dd>
+					<dt className="text-muted">Last used</dt>
+					<dd className="m-0 min-w-0 text-fg">
+						{apiKey.lastUsedAt === undefined ? "Never" : `${compactAge(apiKey.lastUsedAt, now)} ago`}
+					</dd>
 					{apiKey.revokedAt !== undefined || apiKey.expiresAt !== undefined ? (
-						<span>{ends.done || apiKey.revokedAt !== undefined ? ends.text : `Expires ${ends.text}`}</span>
+						<>
+							<dt className="text-muted">
+								{apiKey.revokedAt !== undefined ? "Revoked" : ends.done ? "Expired" : "Expires"}
+							</dt>
+							<dd className="m-0 min-w-0 text-fg" title={ends.title}>
+								{apiKey.revokedAt !== undefined
+									? `${compactAge(apiKey.revokedAt, now)} ago`
+									: ends.done
+										? `${compactAge(apiKey.expiresAt ?? now, now)} ago`
+										: ends.text}
+							</dd>
+						</>
 					) : null}
-					{apiKey.createdBy === "" ? null : <span>By {apiKey.createdBy}</span>}
-				</span>
+					{apiKey.createdBy === "" ? null : (
+						<>
+							<dt className="text-muted">Created by</dt>
+							<dd className="m-0 min-w-0 truncate text-fg">{apiKey.createdBy}</dd>
+						</>
+					)}
+				</dl>
 			</div>
 			<KeyMenu apiKey={apiKey} onRevoke={onRevoke} />
 		</li>
