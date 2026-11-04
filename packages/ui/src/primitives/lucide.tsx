@@ -3,6 +3,7 @@ import {
 	AppWindow,
 	Archive,
 	ArchiveRestore,
+	ArrowUp,
 	Blocks,
 	BookOpen,
 	Bot,
@@ -19,6 +20,7 @@ import {
 	CircleAlert,
 	CircleDot,
 	CreditCard,
+	Download,
 	Ellipsis,
 	ExternalLink,
 	Eye,
@@ -67,6 +69,7 @@ import {
 	UserX,
 	WandSparkles,
 	Webhook,
+	X,
 	Zap,
 } from "lucide-react";
 import type { IconProps } from "./icons.tsx";
@@ -182,3 +185,8 @@ export const ProxyIcon = lucide(Network, "ProxyIcon");
 export const WebhookIcon = lucide(Webhook, "WebhookIcon");
 export const TelemetryIcon = lucide(Activity, "TelemetryIcon");
 export const BillingIcon = lucide(CreditCard, "BillingIcon");
+/** The file browser (compute/snapshot-files.tsx) and its preview (preview/file-preview.tsx). */
+export const FolderUpIcon = lucide(ArrowUp, "FolderUpIcon");
+export const LucideFolderIcon = lucide(FolderClosed, "LucideFolderIcon");
+export const DownloadIcon = lucide(Download, "DownloadIcon");
+export const CloseIcon = lucide(X, "CloseIcon");

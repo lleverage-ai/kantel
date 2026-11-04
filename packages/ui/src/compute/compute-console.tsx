@@ -39,7 +39,8 @@ import { messageOf } from "./parts.tsx";
 import { SANDBOX_VIEWS, SandboxPage, type SandboxView } from "./sandbox-page.tsx";
 import { SandboxesPage } from "./sandboxes-page.tsx";
 import { SettingsFrame, type SettingsNavItem } from "./settings-nav.tsx";
-import { SnapshotsPage } from "./snapshots-page.tsx";
+import type { FilesAt } from "./snapshot-files.tsx";
+import { SnapshotsPage, type SnapshotsView } from "./snapshots-page.tsx";
 import { TelemetryPage } from "./telemetry-page.tsx";
 import { UserMenu } from "./user-menu.tsx";
 import { WebhooksPage } from "./webhooks-page.tsx";
@@ -124,6 +125,8 @@ export function pathAfterAccountSwitch(pathname: string, base = "/compute"): str
 	if (open?.page === "environments" && open.environmentId !== undefined) return computePath("environments", base);
 	if ((open?.page === "egress" || open?.page === "sandboxes") && open.sandboxId !== undefined)
 		return computePath("sandboxes", base);
+	// A snapshot's files, or a sandbox's history, are the last account's: the new one's saved snapshots instead.
+	if (open?.page === "snapshots") return computePath("snapshots", base);
 	return undefined;
 }
 
@@ -131,6 +134,54 @@ export function pathAfterAccountSwitch(pathname: string, base = "/compute"): str
 export function sandboxPath(base: string, sandboxId: string, view: SandboxView = "overview"): string {
 	const page = computePath("sandboxes", base, sandboxId);
 	return view === "overview" ? page : `${page}/${view}`;
+}
+
+/** The query parameters a file browser keeps in the address: the folder, the file open in it, and whose files. */
+const FILES_PARAMS = ["path", "file", "snapshot"] as const;
+
+/**
+ * Where a file browser is, from the address: its query, `?path=/home/user&file=notes.md`, or for an end-to-end sandbox
+ * its fragment, `#path=/home/user&file=notes.md`, which the fragment wins. The root without `path`.
+ */
+export function filesAtOf(search: string, hash = ""): FilesAt {
+	const fragment = new URLSearchParams(hash.replace(/^#/, ""));
+	const params = fragment.has("path") || fragment.has("file") ? fragment : new URLSearchParams(search);
+	const path = (params.get("path") ?? "").replace(/^\/+|\/+$/g, "");
+	const file = params.get("file") ?? "";
+	return file === "" || file.includes("/") ? { path } : { path, file };
+}
+
+/**
+ * `search` with a file browser's place in it (`snapshot`, when given, says whose files), the rest kept (`?hosting`).
+ * The folder is the API's absolute path, `/home/user`; the root has none.
+ */
+export function filesSearch(search: string, at: FilesAt, snapshot?: string): string {
+	const params = new URLSearchParams(search);
+	for (const name of FILES_PARAMS) params.delete(name);
+	if (snapshot !== undefined) params.set("snapshot", snapshot);
+	if (at.path !== "") params.set("path", `/${at.path}`);
+	if (at.file !== undefined) params.set("file", at.file);
+	// The slashes in a path read as they are.
+	const query = params.toString().replaceAll("%2F", "/");
+	return query === "" ? "" : `?${query}`;
+}
+
+/** `search` without a file browser's place, with its `?` when anything is left. */
+export function searchWithoutFiles(search: string): string {
+	return filesSearch(search, { path: "" });
+}
+
+/**
+ * An end-to-end sandbox's place in the file browser as the address's fragment, `#path=/home/user&file=notes.md`. A
+ * browser never sends a fragment, in a request or a `Referer`, so its folder and file names stay out of the gateway's
+ * sight as its files do; Back, Forward and copied links work as with the query.
+ */
+export function filesHash(at: FilesAt): string {
+	const params = new URLSearchParams();
+	if (at.path !== "") params.set("path", `/${at.path}`);
+	if (at.file !== undefined) params.set("file", at.file);
+	const fragment = params.toString().replaceAll("%2F", "/");
+	return fragment === "" ? "" : `#${fragment}`;
 }
 
 /** The path of a page under `base`, and of one sandbox's or environment's when `id` is given. */
@@ -173,6 +224,8 @@ export interface ComputeConsoleProps {
 	readonly pathname: string;
 	/** The address's query: `?new` opens New sandbox. */
 	readonly search?: string;
+	/** The address's fragment, with its `#`: where an end-to-end sandbox's file browser is. */
+	readonly hash?: string;
 	/** Goes to a path in the app without reloading the page. */
 	readonly navigate: (path: string) => void;
 	/** Where the console lives. Default `/compute`. */
@@ -267,6 +320,7 @@ export function ComputeConsole({
 	source,
 	pathname,
 	search = "",
+	hash = "",
 	navigate,
 	base = "/compute",
 	now,
@@ -593,6 +647,7 @@ export function ComputeConsole({
 								now={now}
 								base={base}
 								search={search}
+								hash={hash}
 								navigate={navigate}
 								noHosts={noHosts}
 								narrow={narrow}
@@ -655,6 +710,7 @@ function PageFor({
 	now,
 	base,
 	search,
+	hash,
 	navigate,
 	noHosts,
 	narrow,
@@ -672,6 +728,7 @@ function PageFor({
 	now: number | undefined;
 	base: string;
 	search: string;
+	hash: string;
 	navigate: (path: string) => void;
 	/** There's no host yet: the deployment's, for a super-admin, or the account's own. */
 	noHosts: boolean;
@@ -702,6 +759,13 @@ function PageFor({
 					environmentHref={(id) => computePath("environments", base, id)}
 					navigate={navigate}
 					narrow={narrow}
+					{...(route.sandboxView === "files" ? { filesAt: filesAtOf(search, hash) } : {})}
+					filesHref={(at, sealed) => {
+						const files = sandboxPath(base, route.sandboxId ?? "", "files");
+						return sealed
+							? `${files}${searchWithoutFiles(search)}${filesHash(at)}`
+							: `${files}${filesSearch(search, at)}`;
+					}}
 					{...timing}
 				/>
 			) : (
@@ -721,15 +785,14 @@ function PageFor({
 			);
 		case "snapshots":
 			return (
-				<SnapshotsPage
-					source={source.snapshots}
-					sandboxes={source.sandboxes}
+				<SnapshotsRoute
+					source={source}
 					account={account}
-					initialView={
-						route.sandboxId === undefined ? { name: "saved" } : { name: "sandbox", sandboxId: route.sandboxId }
-					}
-					onStartFrom={() => navigate(`${computePath("sandboxes", base)}?new`)}
-					{...timing}
+					sandboxId={route.sandboxId}
+					base={base}
+					search={search}
+					navigate={navigate}
+					timing={timing}
 				/>
 			);
 		case "environments":
@@ -826,6 +889,74 @@ function PageFor({
 			);
 		}
 	}
+}
+
+/**
+ * The Snapshots page, with a snapshot's files in the address (`?snapshot=ssn_1&path=/home/user&file=notes.md`), so Back,
+ * Forward and links reach them. The saved list and a sandbox's history are the page's own, under `/snapshots[/<id>]`.
+ */
+function SnapshotsRoute({
+	source,
+	account,
+	sandboxId,
+	base,
+	search,
+	navigate,
+	timing,
+}: {
+	source: ComputeSource;
+	account: ComputeAccount;
+	sandboxId: string | undefined;
+	base: string;
+	search: string;
+	navigate: (path: string) => void;
+	timing: { now?: number };
+}) {
+	const listed: SnapshotsView = sandboxId === undefined ? { name: "saved" } : { name: "sandbox", sandboxId };
+	const [list, setList] = useState<SnapshotsView>(listed);
+	// What each snapshot was called where it was opened, for its heading; a link to its files has none.
+	const [labels] = useState(() => new Map<string, string>());
+	const snapshot = new URLSearchParams(search).get("snapshot") ?? "";
+	const at = filesAtOf(search);
+	const label = labels.get(snapshot);
+	const view: SnapshotsView =
+		snapshot === ""
+			? list
+			: {
+					name: "files",
+					snapshotId: snapshot,
+					...(label === undefined ? {} : { label }),
+					...(at.path === "" ? {} : { path: at.path }),
+					...(at.file === undefined ? {} : { file: at.file }),
+					back: list,
+				};
+	const page = list.name === "sandbox" && list.sandboxId !== undefined ? list.sandboxId : undefined;
+	const hrefOf = (next: SnapshotsView): string => {
+		const path = computePath("snapshots", base, page);
+		if (next.name !== "files") return `${path}${searchWithoutFiles(search)}`;
+		const place = { path: next.path ?? "", ...(next.file === undefined ? {} : { file: next.file }) };
+		return `${path}${filesSearch(search, place, next.snapshotId)}`;
+	};
+	return (
+		<SnapshotsPage
+			source={source.snapshots}
+			sandboxes={source.sandboxes}
+			account={account}
+			view={view}
+			onViewChange={(next) => {
+				if (next.name === "files") {
+					if (next.label !== undefined) labels.set(next.snapshotId, next.label);
+					navigate(hrefOf(next));
+					return;
+				}
+				setList(next);
+				if (snapshot !== "") navigate(hrefOf(next));
+			}}
+			viewHref={hrefOf}
+			onStartFrom={() => navigate(`${computePath("sandboxes", base)}?new`)}
+			{...timing}
+		/>
+	);
 }
 
 /** Settings' navigation around a settings page; any other page as it is. */

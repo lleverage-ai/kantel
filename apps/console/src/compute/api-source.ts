@@ -58,6 +58,8 @@ import type {
 	E2EMode,
 	EgressSource,
 	EnvironmentsSource,
+	FilePart,
+	FileRange,
 	HostingMode,
 	HostsSource,
 	ProxySource,
@@ -72,6 +74,7 @@ import type {
 	EnvironmentVariable as UiVariable,
 	WebhooksSource,
 } from "@kantel/ui";
+import { DeviceSetupError, FileTooLargeError } from "@kantel/ui";
 import { type BrowserDevice, type BrowserDeviceOptions, browserDevice } from "./browser-device.ts";
 import type { HostCommand, HostCommandPage, LocalBridge } from "./local.ts";
 
@@ -477,22 +480,42 @@ function sandboxesSource(context: Context): SandboxesSource {
 		ports: async (id) => (await api.listPorts(id)).items.map(portOf),
 		exposePort: async (id, port, isPublic) => portOf(await api.exposePort(id, { port, public: isPublic })),
 		hidePort: (id, port) => api.hidePort(id, String(port)),
+		// Read on demand, a folder or a part of a file at a time, and kept nowhere: not here, nor by the gateway. End to
+		// end, both go to the host over this console's own session (the CLI's device under `kantel console`, this
+		// browser's own on the gateway's console), which the gateway only relays as ciphertext; it can read none of it
+		// itself, and the host would refuse it if it asked. Otherwise the gateway's API reads them from the host.
 		files: {
 			list: async (id, path) => {
+				const host = await filesHost(context, id);
+				if (host !== undefined) {
+					const { entries } = await host.call<{ entries: HostFileEntry[] | null }>(id, "sandbox.files.list", {
+						path: absolute(path),
+					});
+					return { entries: (entries ?? []).map(hostEntryOf).sort(foldersFirst), more: false };
+				}
 				const { items, more } = await firstPages((cursor) =>
 					api.listFiles(id, { path: absolute(path), ...after(cursor) }),
 				);
 				return { entries: items.map(entryOf).sort(foldersFirst), more };
 			},
-			read: async (id, path) => {
-				try {
-					const file = await api.readFile(id, { path: absolute(path) });
-					return file.encoding === "utf8" ? file.content : undefined;
-				} catch (error) {
-					// As a snapshot's: a binary file, or one over 1 MiB, is `invalid`, the UI's undefined.
-					if (isCode(error, "invalid")) return undefined;
-					throw error;
+			read: async (id, path, range) => {
+				const host = await filesHost(context, id);
+				if (host !== undefined) {
+					const answer = await host.call<{ data: string; fileSize?: number }>(id, "sandbox.files.read", {
+						path: absolute(path),
+						offset: range.offset,
+						length: range.length,
+					});
+					return hostPart(fromBase64(answer.data), answer.fileSize, range);
 				}
+				// Base64, so a binary's first bytes come back as they are and the UI decides what it can show.
+				const file = await api.readFile(id, {
+					path: absolute(path),
+					encoding: "base64",
+					offset: range.offset,
+					length: Math.min(range.length, MAX_READ_BYTES),
+				});
+				return { bytes: contentBytes(file), size: file.size };
 			},
 		},
 	};
@@ -523,6 +546,75 @@ async function endToEndHost(
 		if (mode !== "off") return browser;
 	}
 	return undefined;
+}
+
+/**
+ * The host to read an end-to-end sandbox's files from, or undefined to read them through the gateway. Where this browser
+ * isn't a device in the space's chain yet, a short line to set it up, never a read through the gateway.
+ */
+async function filesHost(context: Context, id: string): ReturnType<typeof endToEndHost> {
+	const host = await endToEndHost(context, id);
+	if (host === undefined) return undefined;
+	return {
+		call: async <T>(sandboxId: string, method: string, params?: object): Promise<T> => {
+			try {
+				return await host.call<T>(sandboxId, method, params);
+			} catch (error) {
+				if (error instanceof DeviceTrustError) throw new DeviceSetupError(deviceSetupLine(error));
+				throw error;
+			}
+		},
+	};
+}
+
+/** What the Files tab says where this browser can't read a space's files end to end yet. */
+function deviceSetupLine(error: DeviceTrustError): string {
+	return error.problem === "unpinned"
+		? "End-to-end encrypted: set this browser up as a device (the strip at the top) to see its files."
+		: `End-to-end encrypted: ${error.message.replace(/\.$/, "")}.`;
+}
+
+/** The API reads at most this much of a file at a time. */
+const MAX_READ_BYTES = 1024 * 1024;
+
+/** Standard base64 (the API's and a host's `data`) as bytes. */
+function fromBase64(text: string): Uint8Array {
+	const binary = atob(text);
+	const out = new Uint8Array(binary.length);
+	for (let at = 0; at < binary.length; at++) out[at] = binary.charCodeAt(at);
+	return out;
+}
+
+/** A file's content as the API answered it, as bytes. */
+function contentBytes(file: { readonly encoding: "utf8" | "base64"; readonly content: string }): Uint8Array {
+	return file.encoding === "base64" ? fromBase64(file.content) : new TextEncoder().encode(file.content);
+}
+
+/** A host's answer to a ranged read; one from before ranged reads answers the whole file, without its size. */
+function hostPart(bytes: Uint8Array, fileSize: number | undefined, range: FileRange): FilePart {
+	if (fileSize !== undefined) return { bytes, size: fileSize };
+	const start = Math.min(range.offset, bytes.byteLength);
+	return { bytes: bytes.subarray(start, Math.min(start + range.length, bytes.byteLength)), size: bytes.byteLength };
+}
+
+/** A folder's entry as a host lists it over an E2E session (`kantel-host`'s own shape). */
+interface HostFileEntry {
+	readonly name: string;
+	readonly path: string;
+	readonly type: string;
+	readonly size: number;
+	readonly modTimeMs?: number;
+}
+
+function hostEntryOf(entry: HostFileEntry): UiSnapshotEntry {
+	const folder = entry.type === "dir";
+	return {
+		name: entry.name,
+		path: entry.path.replace(/^\/+/, ""),
+		kind: folder ? "folder" : "file",
+		...(folder ? {} : { sizeBytes: entry.size }),
+		...(entry.modTimeMs === undefined ? {} : { modifiedAt: entry.modTimeMs }),
+	};
 }
 
 /** Every page of a sandbox's history its host keeps, by its cursor; the list shows no output, so none is carried. */
@@ -664,13 +756,14 @@ function snapshotsSource({ api }: Context): SnapshotsSource {
 			(await allPages((cursor) => api.listSnapshotFiles(snapshotId, { path: absolute(path), ...after(cursor) })))
 				.map(entryOf)
 				.sort(foldersFirst),
+		// A snapshot's file comes whole, up to the API's 1 MiB, however little the preview asks for; a larger one is
+		// `invalid`, and shows with its name and size only. Nothing is kept: a second look reads it again.
 		read: async (snapshotId, path) => {
 			try {
-				const file = await api.readSnapshotFile(snapshotId, { path: absolute(path) });
-				return file.encoding === "utf8" ? file.content : undefined;
+				const file = await api.readSnapshotFile(snapshotId, { path: absolute(path), encoding: "base64" });
+				return { bytes: contentBytes(file), size: file.size };
 			} catch (error) {
-				// The API refuses a file that isn't UTF-8 text or is over 1 MiB as `invalid`: the UI's undefined.
-				if (isCode(error, "invalid")) return undefined;
+				if (isCode(error, "invalid")) throw new FileTooLargeError();
 				throw error;
 			}
 		},
