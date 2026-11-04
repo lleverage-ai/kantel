@@ -4,6 +4,7 @@
 //   POST /v1/hosts/cluster/call         a host call; the answer is NDJSON: {"event"} lines, then {"result"} or {"error"}
 //   POST /v1/hosts/cluster/rewelcome    sends a host its welcome again
 //   POST /v1/hosts/cluster/disconnect   closes a host's connection (its credential was revoked)
+//   POST /v1/hosts/cluster/usage        a usage tick from a host connected to the sender, kept here too
 //   GET  /v1/hosts/cluster/port         a WebSocket: "open" once the sandbox's port is, then its bytes both ways
 //
 // Each request is signed with the sending replica's Ed25519 key (`x-kantel-replica`, `-at`, `-nonce`, `-signature`);
@@ -37,6 +38,8 @@ export interface GatewayCluster {
 	peerRoutes(request: Request): Promise<Response | undefined>;
 	/** A replica's port stream through this one: true when the upgrade was its to take. */
 	peerUpgrade(incoming: IncomingMessage, socket: Duplex, head: Buffer, sockets: WebSocketServer): boolean;
+	/** Where a usage tick a peer passed on goes (`HostsService.recordSharedUsage`). Before: it is dropped. */
+	useUsage(record: (hostId: string, usage: unknown) => Promise<void>): void;
 }
 
 /**
@@ -68,6 +71,9 @@ const signedHeaders = (signed: { replica: string; at: string; nonce: string; sig
 });
 
 const unavailable = (message: string) => new HostCallError({ code: "unavailable", message });
+
+/** How long passing a usage tick on may take: the next comes in 5 seconds. */
+const USAGE_TIMEOUT_MS = 5_000;
 
 /** The client half: this replica's requests to others, signed with its key. */
 export function createPeerTransport(options: {
@@ -140,6 +146,11 @@ export function createPeerTransport(options: {
 		},
 		async disconnect(peer, hostId, code, reason) {
 			await post(peer, "disconnect", { hostId, code, reason });
+		},
+		async usage(peer, hostId, usage) {
+			const response = await post(peer, "usage", { hostId, usage }, AbortSignal.timeout(USAGE_TIMEOUT_MS));
+			await response.body?.cancel().catch(() => undefined);
+			if (!response.ok) throw unavailable(`Gateway replica ${peer.id} refused the usage tick (${response.status})`);
 		},
 		async openPort(peer, hostId, sandboxId, port, sink) {
 			const query = new URLSearchParams({ host: hostId, sandbox: sandboxId, port: String(port) }).toString();
@@ -221,6 +232,7 @@ export async function createGatewayCluster(options: {
 		if (replicaId === undefined || at === undefined || nonce === undefined || signature === undefined) return false;
 		return verify({ replicaId, operation, at: Number(at), nonce, body, signature });
 	};
+	let recordUsage: ((hostId: string, usage: unknown) => Promise<void>) | undefined;
 	const notFound = () => new Response("Not found", { status: 404 });
 
 	return {
@@ -229,9 +241,26 @@ export async function createGatewayCluster(options: {
 			const path = new URL(request.url).pathname;
 			if (!path.startsWith(`${CLUSTER_PATH}/`)) return undefined;
 			const operation = path.slice(CLUSTER_PATH.length + 1);
-			if (request.method !== "POST" || !["call", "rewelcome", "disconnect"].includes(operation)) return notFound();
+			if (request.method !== "POST" || !["call", "rewelcome", "disconnect", "usage"].includes(operation)) {
+				return notFound();
+			}
 			const body = await request.text();
 			if (!(await signedBy(request.headers, operation, body))) return notFound();
+			if (operation === "usage") {
+				const input = JSON.parse(body) as { hostId?: unknown; usage?: unknown };
+				if (typeof input.hostId !== "string") return new Response(null, { status: 400 });
+				// Only from the replica holding the host: a peer can't speak for a host connected elsewhere.
+				const owner = await options.store.getOwner(input.hostId);
+				if (owner === undefined || owner.replicaId !== request.headers.get("x-kantel-replica")) {
+					return new Response(null, { status: 409 });
+				}
+				try {
+					await recordUsage?.(input.hostId, input.usage);
+				} catch {
+					return new Response(null, { status: 400 });
+				}
+				return new Response(null, { status: 204 });
+			}
 			const local = cluster.local();
 			const input = JSON.parse(body) as {
 				hostId: string;
@@ -337,6 +366,9 @@ export async function createGatewayCluster(options: {
 				});
 			})().catch(() => refuseUpgrade(incoming, socket, head, 502, "The replica could not check the stream", sockets));
 			return true;
+		},
+		useUsage(record) {
+			recordUsage = record;
 		},
 	};
 }

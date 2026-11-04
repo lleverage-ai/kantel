@@ -210,6 +210,8 @@ export interface PeerTransport {
 	openPort(peer: ReplicaRecord, hostId: string, sandboxId: string, port: number, sink: PortSink): Promise<PortStream>;
 	rewelcome(peer: ReplicaRecord, hostId: string, welcome: HostWelcome): Promise<void>;
 	disconnect(peer: ReplicaRecord, hostId: string, code: number, reason: string): Promise<void>;
+	/** Passes a usage tick from a host connected here on to a peer, which keeps it too (`HostCluster.shareUsage`). */
+	usage?(peer: ReplicaRecord, hostId: string, usage: unknown): Promise<void>;
 }
 
 /** This replica's signing key: the private half never leaves the process. */
@@ -361,6 +363,11 @@ export interface HostCluster {
 	stop(): Promise<void>;
 	/** Refreshes now: the heartbeat, the hosts' owners, and stale connections closed. */
 	tick(): Promise<void>;
+	/**
+	 * Passes a usage tick from a host connected here on to every other live replica, without waiting: usage series are
+	 * kept in each replica's memory, and a poll may land on any of them.
+	 */
+	shareUsage(hostId: string, usage: unknown): void;
 }
 
 const NOT_CONNECTED = (hostId: string) =>
@@ -378,6 +385,8 @@ export function createHostCluster(options: HostClusterOptions): HostCluster {
 	const claims = new Map<string, number>();
 	/** Hosts held by other live replicas, as last read. */
 	let remote = new Map<string, ReplicaRecord>();
+	/** The other live replicas, as last read. */
+	let peers: ReplicaRecord[] = [];
 	let timer: ReturnType<typeof setInterval> | undefined;
 	let stopped = false;
 
@@ -417,6 +426,7 @@ export function createHostCluster(options: HostClusterOptions): HostCluster {
 			if (owner.replicaId !== replicaId && replica !== undefined) next.set(owner.hostId, replica);
 		}
 		remote = next;
+		peers = [...live.values()].filter((replica) => replica.id !== replicaId);
 		const local = localHub;
 		if (local === undefined) return;
 		for (const owner of owners) {
@@ -506,8 +516,14 @@ export function createHostCluster(options: HostClusterOptions): HostCluster {
 			timer = setInterval(() => safely("heartbeat", tick()), heartbeatMs);
 			(timer as { unref?: () => void }).unref?.();
 		},
+		shareUsage(hostId, usage) {
+			const send = transport.usage;
+			if (send === undefined || stopped) return;
+			for (const peer of peers) safely(`sharing host ${hostId}'s usage`, send(peer, hostId, usage));
+		},
 		async stop() {
 			stopped = true;
+			peers = [];
 			if (timer !== undefined) clearInterval(timer);
 			timer = undefined;
 			claims.clear();

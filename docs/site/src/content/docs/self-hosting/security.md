@@ -99,6 +99,7 @@ With a database, any number of gateways may run behind one load balancer. They s
 | A forged request between gateways | Each gateway makes an Ed25519 key when it starts. Only the public half goes into the database; the private half never leaves the process. Every request between gateways is signed over the gateway it is for, the operation, the time, a fresh nonce and the body's SHA-256. Anything unsigned, signed by a key no live gateway registered, or signed for another gateway gets `404` (a WebSocket, close code `4404`), as an unknown path would |
 | Replaying a captured request | A request is good for 30 seconds, once, on the gateway it was signed for |
 | A request bouncing between gateways | A gateway serves a forwarded request only for a host connected to itself |
+| A gateway speaking for a host it doesn't hold | The gateway holding a host passes its usage readings on to the others, so a graph is the same whichever answers. A gateway takes them only from the one the database records as holding that host, and checks them as it checks the host's own |
 | A gateway that died | One not seen for 10 seconds gets nothing forwarded to it, and its hosts reconnect to another |
 | A late disconnect wiping a newer connection | Each claim on a host has an epoch, and a gateway releases only its own |
 | A revoked host | Revoking it on any gateway closes its WebSocket on whichever holds it, and its credential is refused on all of them |

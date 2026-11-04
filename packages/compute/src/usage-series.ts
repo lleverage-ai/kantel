@@ -82,8 +82,6 @@ export interface UsageSeries {
 	partial(key: string): Rollup | undefined;
 	/** The kept 5-minute means and the one under way, the newest `count` (default `SPARKLINE_POINTS`). */
 	rollups(key: string, count?: number): Rollup[];
-	/** Whether a point came within `withinMs` of `now`. */
-	fresh(key: string, now: number, withinMs?: number): boolean;
 	/**
 	 * Closes the 5-minute means whose span ended `graceMs` or more before `now` (a sandbox that stopped reporting), and
 	 * forgets series with no point for `RAW_WINDOW_MS` and no mean for a day. Answers the means it closed, by key.
@@ -173,6 +171,10 @@ export function createUsageSeries(): UsageSeries {
 			const from = Math.floor(clean.at / ROLLUP_MS) * ROLLUP_MS;
 			let closed: Rollup | undefined;
 			if (track.bucket !== undefined && track.bucket.from !== from) closed = close(track);
+			// A point late for 5 minutes already closed (`settle`) is kept as it came, but the mean stays as it was closed:
+			// one mean per 5 minutes.
+			const lastRollup = track.rollups[track.rollups.length - 1];
+			if (track.bucket === undefined && lastRollup !== undefined && lastRollup.at >= from) return closed;
 			track.bucket ??= { from, count: 0, cpu: 0, mem: 0, disk: 0 };
 			track.bucket.count += 1;
 			track.bucket.cpu += clean.cpu;
@@ -206,12 +208,6 @@ export function createUsageSeries(): UsageSeries {
 			if (track === undefined) return [];
 			const all = track.bucket === undefined ? track.rollups : [...track.rollups, mean(track.bucket)];
 			return all.slice(-count);
-		},
-		fresh(key, now, withinMs) {
-			const track = tracks.get(key);
-			const last = track === undefined ? undefined : newest(track);
-			if (track === undefined || last === undefined) return false;
-			return now - last.at <= (withinMs ?? Math.max(3 * track.meta.intervalMs, 15_000));
 		},
 		settle(now, graceMs = 2 * USAGE_INTERVAL_MS) {
 			const closed: { key: string; rollup: Rollup }[] = [];

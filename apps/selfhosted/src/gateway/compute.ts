@@ -429,12 +429,14 @@ export async function gatewayCompute(options: {
 	hosts?.service.useCompute({
 		secrets: (hostId, sandboxId) => api.service.protectedTable(hostId, sandboxId),
 		recordEgress: (hostId, records) => api.service.recordEgress(hostId, records),
-		recordUsage: (hostId, usage) => api.service.recordUsage(hostId, usage),
+		recordUsage: (hostId, usage, how) => api.service.recordUsage(hostId, usage, how),
 		e2eChain: {
 			read: (hostId, space) => api.service.hostE2EChain(hostId, space),
 			append: (hostId, space, from, entries) => api.service.appendHostE2EChain(hostId, space, from, entries),
 		},
 	});
+	// With several gateways, the one holding a host's connection passes its usage ticks on, so a poll on any has them.
+	if (hosts !== undefined) hosts.cluster?.useUsage((hostId, usage) => hosts.service.recordSharedUsage(hostId, usage));
 	const superAdminKey = await bootstrapSuperAdmin(api.store, options.superAdminKey, (options.now ?? Date.now)());
 	api.dispatcher.start(WEBHOOK_INTERVAL_MS);
 	api.exporter.start(TELEMETRY_INTERVAL_MS);
