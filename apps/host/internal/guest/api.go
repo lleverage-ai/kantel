@@ -9,7 +9,10 @@ type Identity struct {
 	SandboxID string `json:"sandboxId"`
 	Hostname  string `json:"hostname"`
 	// Address is the guest's IPv4 address with its prefix, such as 10.231.0.6/30.
-	Address string   `json:"address"`
+	Address string `json:"address"`
+	// MAC is eth0's address. A restore keeps the snapshot's, the same in every clone of a template, so it is set here.
+	// (An agent from before it ignores it.)
+	MAC     string   `json:"mac,omitempty"`
 	Gateway string   `json:"gateway"`
 	DNS     []string `json:"dns,omitempty"`
 	// ProxyEnv is written to /etc/kantel/proxy.env (HTTP_PROXY, HTTPS_PROXY, NO_PROXY and their lower-case forms),

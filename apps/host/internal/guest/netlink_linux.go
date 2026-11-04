@@ -72,6 +72,34 @@ func ConfigureInterface(name, cidr, gateway string) error {
 	return nil
 }
 
+// SetMAC gives an interface the MAC address mac, as `ip link set <name> address <mac>` does (RTM_NEWLINK).
+func SetMAC(name, mac string) error {
+	ifc, err := net.InterfaceByName(name)
+	if err != nil {
+		return err
+	}
+	hw, err := net.ParseMAC(mac)
+	if err != nil {
+		return err
+	}
+	if ifc.HardwareAddr.String() == hw.String() {
+		return nil
+	}
+	nl, err := newNetlink()
+	if err != nil {
+		return err
+	}
+	defer nl.close()
+	body := make([]byte, unix.SizeofIfInfomsg)
+	body[0] = unix.AF_UNSPEC
+	binary.NativeEndian.PutUint32(body[4:], uint32(ifc.Index))
+	body = append(body, attr(unix.IFLA_ADDRESS, hw)...)
+	if err := nl.request(unix.RTM_NEWLINK, 0, body); err != nil {
+		return fmt.Errorf("%s address %s: %w", name, mac, err)
+	}
+	return nil
+}
+
 // LinkUp sets an interface up (SIOCSIFFLAGS), as `ip link set <name> up` does.
 func LinkUp(name string) error {
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)

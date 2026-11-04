@@ -273,8 +273,10 @@ export const SandboxShapeInput = Type.Object(
 	{
 		title: "SandboxShapeInput",
 		description:
-			"What a new sandbox gets. A preset restores its size's template snapshot on the host; a shape off the " +
-			"presets boots from scratch.",
+			"What a new sandbox gets. A microVM restores a template snapshot on its host: by default the one its host " +
+			"keeps for its vCPU count, whatever its memory, so a shape off the presets is as fast as a preset once that " +
+			"count's template is made. A host with shared templates turned off keeps one per preset, and a shape off " +
+			"the presets boots from scratch.",
 	},
 );
 

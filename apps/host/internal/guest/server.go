@@ -59,6 +59,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /identity", s.setIdentity)
 	mux.HandleFunc("POST /exec", s.exec)
 	mux.HandleFunc("POST /sync", s.sync)
+	mux.HandleFunc("POST /disk/grow", s.growDisk)
 	mux.HandleFunc("GET /files", s.readFile)
 	mux.HandleFunc("PUT /files", s.writeFile)
 	mux.HandleFunc("DELETE /files", s.deleteFile)
@@ -194,7 +195,8 @@ func (s *Server) setIdentity(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, err)
 		return
 	}
-	if err := s.applyIdentity(&id); err != nil {
+	steps := map[string]float64{}
+	if err := s.applyIdentity(&id, steps); err != nil {
 		fail(w, 500, err)
 		return
 	}
@@ -202,10 +204,18 @@ func (s *Server) setIdentity(w http.ResponseWriter, r *http.Request) {
 	s.identity = &id
 	s.mu.Unlock()
 	s.upstream.Store(proxyUpstream(id.ProxyEnv))
-	writeJSON(w, 200, map[string]bool{"ok": true})
+	writeJSON(w, 200, map[string]any{"ok": true, "stepsMs": steps})
 }
 
-func (s *Server) applyIdentity(id *Identity) error {
+// applyIdentity makes the guest the identity's machine, recording in steps how long each part took (ms).
+func (s *Server) applyIdentity(id *Identity, steps map[string]float64) error {
+	last := time.Now()
+	step := func(name string) {
+		now := time.Now()
+		steps[name] += float64(now.Sub(last).Microseconds()) / 1000
+		last = now
+	}
+	defer step("rest")
 	if s.Injected {
 		ensureAPIHome()
 	}
@@ -218,27 +228,26 @@ func (s *Server) applyIdentity(id *Identity) error {
 		tv := syscall.NsecToTimeval(id.UnixTimeMs * int64(time.Millisecond))
 		_ = syscall.Settimeofday(&tv)
 	}
+	step("entropy+clock")
 	if id.Hostname != "" {
 		_ = syscall.Sethostname([]byte(id.Hostname))
 		_ = os.WriteFile("/etc/hostname", []byte(id.Hostname+"\n"), 0o644)
 		_ = os.WriteFile("/etc/hosts", []byte(fmt.Sprintf("127.0.0.1 localhost\n127.0.1.1 %s\n::1 localhost ip6-localhost ip6-loopback\n", id.Hostname)), 0o644)
 	}
-	if id.Address != "" && s.Injected {
-		// Any image: no ip(8) to count on (debian:trixie and busybox have none), so netlink directly.
+	if id.MAC != "" {
+		// A restore keeps its template's MAC address: every clone would share one. virtio-net takes a new one while
+		// up (Firecracker's TAP doesn't filter on it).
+		if err := SetMAC("eth0", id.MAC); err != nil {
+			return fmt.Errorf("eth0: %w", err)
+		}
+	}
+	if id.Address != "" {
+		// Over rtnetlink in this process, for any image (debian:trixie and busybox have no ip(8)), and because an ip
+		// process costs tens of milliseconds in a just-restored VM.
 		if err := ConfigureInterface("eth0", id.Address, id.Gateway); err != nil {
 			return fmt.Errorf("eth0: %w", err)
 		}
-	} else if id.Address != "" {
-		// One ip process for the lot: each process costs milliseconds in a just-restored VM.
-		batch := "link set eth0 up\naddr flush dev eth0\naddr add " + id.Address + " dev eth0\n"
-		if id.Gateway != "" {
-			batch += "route replace default via " + id.Gateway + "\n"
-		}
-		cmd := exec.Command("ip", "-batch", "-")
-		cmd.Stdin = strings.NewReader(batch)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("ip: %v: %s", err, strings.TrimSpace(string(out)))
-		}
+		step("ip")
 	}
 	if len(id.DNS) > 0 {
 		var b strings.Builder
@@ -272,6 +281,7 @@ func (s *Server) applyIdentity(id *Identity) error {
 			// An image without ca-certificates' tool (busybox): the bundle programs read, with the CA added once.
 			trustCA(id.CACert)
 		}
+		step("ca")
 	}
 	if id.Fresh {
 		machineID := make([]byte, 16)
@@ -284,6 +294,7 @@ func (s *Server) applyIdentity(id *Identity) error {
 		if err := writeHostKey("/etc/ssh/ssh_host_ed25519_key", id.Hostname); err != nil {
 			return err
 		}
+		step("hostkey")
 		// sshd fails to start with no host keys (a template, a fresh clone), so restart rather than try-restart, which
 		// leaves a failed unit alone. An injected agent is the SSH server, and reads the key per connection.
 		if !s.Injected {
@@ -291,6 +302,7 @@ func (s *Server) applyIdentity(id *Identity) error {
 				return err
 			}
 		}
+		step("sshd")
 	}
 	if id.SSHAuthorizedKeys != nil {
 		home, uid, gid := "/home/user", 1000, 1000

@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
@@ -333,12 +334,26 @@ func (m *Manager) SnapshotRead(id, p string) ([]byte, error) {
 	return nil, &proto.Error{Code: proto.ErrNotFound, Message: "no file " + p + " in snapshot " + id}
 }
 
-// ResetTemplates forgets every size's template snapshot (a benchmark's cold start).
+// ResetTemplates forgets every template snapshot, the sizes' and the shared ones (a benchmark's cold start).
 func (m *Manager) ResetTemplates() {
+	names := map[string]bool{}
 	for _, size := range m.cfg.Sizes {
-		lock := m.templates[size.Name]
+		names[size.Name] = true
+	}
+	// The shared templates too, made or being made.
+	entries, _ := os.ReadDir(filepath.Join(m.cfg.Root, "templates"))
+	for _, e := range entries {
+		if name := strings.TrimSuffix(e.Name(), ".building"); strings.HasPrefix(name, sharedPrefix) {
+			names[name] = true
+		}
+	}
+	for name := range names {
+		lock := m.templateLock(name)
 		lock.Lock()
-		_ = os.RemoveAll(filepath.Join(m.cfg.Root, "templates", size.Name))
+		_ = os.RemoveAll(filepath.Join(m.cfg.Root, "templates", name))
 		lock.Unlock()
 	}
+	m.mu.Lock()
+	m.sharedFailed = map[int]time.Time{}
+	m.mu.Unlock()
 }

@@ -148,6 +148,19 @@ type Config struct {
 	// agent into the image, so Rootfs may be any Linux root filesystem (injectGuestAgent, experimental). Empty boots
 	// the image's own kantel-init and agent.
 	Initrd string
+	// SharedTemplate: a template snapshot per vCPU count, each serving every memory and disk of that count (named
+	// sizes and custom shapes alike), instead of one per named size, so any shape the sliders pick restores in a
+	// fraction of a second (shared.go). After a restore the sandbox's extra memory is plugged (virtio-mem) and its
+	// disk grown. The named sizes' counts are made in the background when the tier starts; a create of a count with
+	// no template yet cold-boots while its template is made. A shape that doesn't fit (more vCPUs than
+	// TemplateVCPUs, less memory than its count boots with or more than it grows to, a smaller disk) cold-boots.
+	// Unset, the Template fields default as sharedShape says. Off: a template per named size, and custom shapes
+	// cold-boot.
+	SharedTemplate       bool
+	TemplateVCPUs        int
+	TemplateMemoryMiB    int
+	TemplateMaxMemoryMiB int
+	TemplateDiskGiB      int
 }
 
 type meta struct {
@@ -186,13 +199,19 @@ type Manager struct {
 	log       *slog.Logger
 	mu        sync.Mutex
 	sandboxes map[string]*sandbox
-	// templates are keyed by size name, and only the named sizes have one. Fast cold starts for custom shapes (a
-	// per-shape template, or a snapshot to restore) would need templates keyed by the shape's fingerprint and a
-	// bounded cache, since a template's memory file is as large as the shape's memory: future work.
+	// templates are the template directories' locks, by name: a named size's (with shared templates off) or a
+	// shared template's (shared-<n>vcpu, made on first use).
 	templates map[string]*sync.Mutex
-	nextCID   atomic.Uint32
-	closed    atomic.Bool
-	spool     *spool
+	// shared is the shared templates' shape when Config.SharedTemplate is on, and sharedOff set once the guest
+	// kernel turns out unable to grow one. preparing are the vCPU counts whose template is being made in the
+	// background, sharedFailed when a count's last failed.
+	shared       *sharedConfig
+	sharedOff    atomic.Bool
+	preparing    map[int]bool
+	sharedFailed map[int]time.Time
+	nextCID      atomic.Uint32
+	closed       atomic.Bool
+	spool        *spool
 	// hostMemoryMiB is the machine's memory, a custom shape's ceiling (0: unknown, no ceiling but the sanity cap).
 	hostMemoryMiB int64
 	// guest is what the image has, as a template's agent reported it (guestFile); every sandbox shares the image.
@@ -203,11 +222,15 @@ type Manager struct {
 // template or a custom shape's boot (which has no template), so a host that restarts still has it.
 const guestFile = "guest.json"
 
-// bootConfig is a cold boot of size: through Kantel's initramfs when the host injects the agent.
-func (m *Manager) bootConfig(size proto.Size, tap, mac string, cid uint32) fc.BootConfig {
-	cfg := fc.BootConfig{VCPUs: size.VCPUs, MemoryMiB: size.MemoryMiB, Kernel: m.cfg.Kernel, BootArgs: bootArgs, TapDevice: tap, MAC: mac, GuestCID: cid}
+// bootConfig is a cold boot of a shape: through Kantel's initramfs when the host injects the agent, with its
+// hotpluggable memory when it has some (a shared template).
+func (m *Manager) bootConfig(sh shape, tap, mac string, cid uint32) fc.BootConfig {
+	cfg := fc.BootConfig{VCPUs: sh.VCPUs, MemoryMiB: sh.MemoryMiB, Kernel: m.cfg.Kernel, BootArgs: bootArgs, TapDevice: tap, MAC: mac, GuestCID: cid, HotplugMiB: sh.HotplugMiB}
 	if m.cfg.Initrd != "" {
 		cfg.Initrd, cfg.BootArgs = m.cfg.Initrd, guestinit.BootArgs
+	}
+	if sh.HotplugMiB > 0 {
+		cfg.BootArgs += hotplugBootArgs
 	}
 	return cfg
 }
@@ -267,8 +290,9 @@ func New(cfg Config) (*Manager, error) {
 			return nil, err
 		}
 	}
-	m := &Manager{cfg: cfg, log: cfg.Log.With("tier", Tier), sandboxes: map[string]*sandbox{}, templates: map[string]*sync.Mutex{}}
+	m := &Manager{cfg: cfg, log: cfg.Log.With("tier", Tier), sandboxes: map[string]*sandbox{}, templates: map[string]*sync.Mutex{}, preparing: map[int]bool{}, sharedFailed: map[int]time.Time{}}
 	m.hostMemoryMiB = hostinfo.MemoryMiB()
+	m.shared = sharedShape(cfg, m.hostMemoryMiB, defaultCPUs())
 	m.nextCID.Store(uint32(time.Now().UnixMilli()%100000) + 100)
 	m.spool = newSpool(cfg.SpoolDir, cfg.SpoolMaxMiB<<20, m.log)
 	// The latest report, a custom shape's boot's included; a host from before the root kept one has its templates'.
@@ -289,6 +313,10 @@ func New(cfg Config) (*Manager, error) {
 	_ = os.Remove(filepath.Join(cfg.Root, "pool"))
 	if err := m.adopt(); err != nil {
 		return nil, err
+	}
+	if m.shared != nil {
+		// Made now, on disk, so the first create restores one rather than booting: they cost disk, not memory.
+		go m.prepareShared()
 	}
 	// Memory files a previous run spooled and hadn't yet moved to disk.
 	vmMems, _ := filepath.Glob(filepath.Join(cfg.Root, "sandboxes", "*", "vm", "mem"))
@@ -480,6 +508,7 @@ func (m *Manager) identity(s *sandbox, fresh bool) guest.Identity {
 		SandboxID:  s.meta.ID,
 		Hostname:   hostname(s.meta.ID),
 		Address:    s.link.GuestCIDR(),
+		MAC:        s.link.MAC,
 		Gateway:    s.link.HostIP.String(),
 		Entropy:    randomEntropy(),
 		UnixTimeMs: time.Now().UnixMilli(),
@@ -577,9 +606,50 @@ func (t timings) step(name string, since *time.Time) {
 	*since = now
 }
 
-// template returns the size's template snapshot, cold-booting one if there is none.
-func (m *Manager) template(ctx context.Context, size proto.Size) (string, timings, error) {
-	lock := m.templates[size.Name]
+// templateLock is the lock a template's directory is made under: a named size's, or a shared template's (made on
+// first use). nil for any other name: no template is kept for a custom shape.
+func (m *Manager) templateLock(name string) *sync.Mutex {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	lock := m.templates[name]
+	if lock == nil && strings.HasPrefix(name, sharedPrefix) {
+		lock = &sync.Mutex{}
+		m.templates[name] = lock
+	}
+	return lock
+}
+
+// templateFingerprint is what a shape's template is made of and with: a snapshot restores only onto the same
+// Firecracker, kernel and root filesystem, and with the vCPUs and memory it was made with, so a size that changes (a
+// new default, or the host's settings) needs a new template.
+func (m *Manager) templateFingerprint(sh shape) string {
+	images := []string{m.cfg.Firecracker, m.cfg.Kernel, m.cfg.Rootfs}
+	if m.cfg.Initrd != "" {
+		// Its name has the agent's digest: another agent (or turning injection on or off) makes a new template.
+		images = append(images, m.cfg.Initrd)
+	}
+	fingerprint := fc.Fingerprint(images...) +
+		fmt.Sprintf(" size=%d/%d/%d", sh.VCPUs, sh.MemoryMiB, sh.DiskGiB)
+	if sh.HotplugMiB > 0 {
+		fingerprint += fmt.Sprintf(" hotplug=%d args=%q", sh.HotplugMiB, m.bootConfig(sh, "", "", 0).BootArgs)
+	}
+	return fingerprint
+}
+
+// templateReady says whether the shape's template is made, for these images, without making it.
+func (m *Manager) templateReady(sh shape) bool {
+	dir := filepath.Join(m.cfg.Root, "templates", sh.Name)
+	if _, err := os.Stat(filepath.Join(dir, "ready")); err != nil {
+		return false
+	}
+	made, _ := os.ReadFile(filepath.Join(dir, "images"))
+	return string(made) == m.templateFingerprint(sh)
+}
+
+// template returns the shape's template snapshot (a named size's, or a shared one), cold-booting one if there is none.
+func (m *Manager) template(ctx context.Context, sh shape) (string, timings, error) {
+	size := sh.Size
+	lock := m.templateLock(size.Name)
 	if lock == nil {
 		// A custom shape (or a size this host doesn't have): templates are kept for the named sizes only.
 		return "", nil, &proto.Error{Code: proto.ErrInternal, Message: fmt.Sprintf("no template is kept for size %q", size.Name)}
@@ -587,20 +657,12 @@ func (m *Manager) template(ctx context.Context, size proto.Size) (string, timing
 	lock.Lock()
 	defer lock.Unlock()
 	dir := filepath.Join(m.cfg.Root, "templates", size.Name)
-	// The size's shape too: a snapshot restores the vCPUs and memory it was made with, so a size that changes (a new
-	// default, or the host's settings) needs a new template.
-	images := []string{m.cfg.Firecracker, m.cfg.Kernel, m.cfg.Rootfs}
-	if m.cfg.Initrd != "" {
-		// Its name has the agent's digest: another agent (or turning injection on or off) makes a new template.
-		images = append(images, m.cfg.Initrd)
+	fingerprint := m.templateFingerprint(sh)
+	if m.templateReady(sh) {
+		m.loadGuest(dir)
+		return dir, nil, nil
 	}
-	fingerprint := fc.Fingerprint(images...) +
-		fmt.Sprintf(" size=%d/%d/%d", size.VCPUs, size.MemoryMiB, size.DiskGiB)
 	if _, err := os.Stat(filepath.Join(dir, "ready")); err == nil {
-		if made, _ := os.ReadFile(filepath.Join(dir, "images")); string(made) == fingerprint {
-			m.loadGuest(dir)
-			return dir, nil, nil
-		}
 		// Made with other images (an update) or another shape: running sandboxes keep their mapping of the old memory file.
 		m.log.Info("template is for other images or another shape; rebuilding", "size", size.Name)
 	}
@@ -631,7 +693,7 @@ func (m *Manager) template(ctx context.Context, size proto.Size) (string, timing
 	}
 	defer machine.Kill()
 	t.step("launch", &start)
-	if err := machine.Boot(ctx, m.bootConfig(size, link.Tap, link.MAC, m.cid())); err != nil {
+	if err := machine.Boot(ctx, m.bootConfig(sh, link.Tap, link.MAC, m.cid())); err != nil {
 		return "", nil, err
 	}
 	client := guest.NewClient(filepath.Join(vm, fc.VsockSocket))
@@ -642,6 +704,11 @@ func (m *Manager) template(ctx context.Context, size proto.Size) (string, timing
 		return "", nil, fmt.Errorf("template boot: %w (firecracker log: %s)", err, tail(filepath.Join(vm, fc.LogFile)))
 	}
 	t.step("agent", &start)
+	if sh.HotplugMiB > 0 {
+		if err := checkVirtioMem(bootCtx, client); err != nil {
+			return "", nil, fmt.Errorf("template boot: %w", err)
+		}
+	}
 	// What the image has, which detection reads from its files: so before the service wait, whose timeout would
 	// otherwise cancel this too.
 	caps, err := m.guestReport(ctx, client, size)
@@ -671,7 +738,12 @@ func (m *Manager) template(ctx context.Context, size proto.Size) (string, timing
 	if err := os.Rename(building, dir); err != nil {
 		return "", nil, err
 	}
-	raw, _ := json.Marshal(map[string]any{"size": size, "timings": t, "at": time.Now().UnixMilli()})
+	if sh.HotplugMiB > 0 {
+		// The memory file holds every page of the boot memory, most of them never touched (zero): holes cost no disk.
+		_ = exec.Command("fallocate", "--dig-holes", filepath.Join(dir, "mem")).Run()
+		t.step("holes", &start)
+	}
+	raw, _ := json.Marshal(map[string]any{"size": size, "hotplugMiB": sh.HotplugMiB, "timings": t, "at": time.Now().UnixMilli()})
 	m.noteGuest(dir, caps)
 	_ = os.WriteFile(filepath.Join(dir, "images"), []byte(fingerprint), 0o600)
 	_ = os.WriteFile(filepath.Join(dir, "ready"), raw, 0o600)
@@ -761,25 +833,24 @@ func validID(id string) bool {
 	return true
 }
 
-// Create makes a sandbox by restoring the size's template (or p.From, a snapshot). A custom shape (p.VCPUs, p.MemoryMiB and p.DiskGiB with no p.Size) cold-boots unless it is
-// made from a snapshot.
+// Create makes a sandbox by restoring a template (or p.From, a snapshot). With shared templates on, any shape (a
+// named size, or a custom one: p.VCPUs, p.MemoryMiB and p.DiskGiB with no p.Size) restores its vCPU count's template,
+// and cold-boots while that is being made. With them off, a named size restores its own template and a custom shape
+// cold-boots.
 func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.SandboxInfo, error) {
 	if !validID(p.SandboxID) {
 		return proto.SandboxInfo{}, &proto.Error{Code: proto.ErrInvalid, Message: "bad sandbox ID"}
 	}
-	sizeName := p.Size
-	if sizeName == "" && (p.VCPUs != 0 || p.MemoryMiB != 0 || p.DiskGiB != 0) {
-		if p.VCPUs <= 0 || p.MemoryMiB <= 0 || p.DiskGiB <= 0 {
-			return proto.SandboxInfo{}, &proto.Error{Code: proto.ErrInvalid, Message: "a custom size needs vcpus, memoryMiB and diskGiB"}
-		}
-		sizeName = CustomSizeName(p.VCPUs, p.MemoryMiB, p.DiskGiB)
-	}
-	size, err := m.size(sizeName)
+	size, err := m.createSize(p)
 	if err != nil {
 		return proto.SandboxInfo{}, err
 	}
 	// A named size keeps a template; a custom one has none.
 	custom := isCustom(size.Name)
+	// coldBoot: no template to restore (a custom shape with shared templates off, or a shape whose shared template
+	// isn't made or can't make it); reshape: the shared template restored, which the sandbox is grown from.
+	coldBoot := false
+	var reshape *shape
 	t := timings{}
 	start := time.Now()
 	began := start
@@ -825,11 +896,23 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 				statePath, memPath = filepath.Join(sdir, "state"), filepath.Join(sdir, "mem")
 			}
 			source = "snapshot"
-		} else if custom {
-			// No template: a fresh disk, then a cold boot below.
+		} else if sh, fits, ready := m.sharedPlan(size); ready {
+			tpl, tt, err := m.template(ctx, sh)
+			if err != nil {
+				return fail(err)
+			}
+			for k, v := range tt {
+				t["template."+k] = v
+			}
+			statePath, memPath, diskPath = filepath.Join(tpl, "state"), filepath.Join(tpl, "mem"), filepath.Join(tpl, fc.DiskFile)
+			source = "snapshot"
+			reshape = &sh
+		} else if custom || fits || m.sharedOn() {
+			// No template: a fresh disk, then a cold boot below (and, when it fits, its shared template is being made).
+			coldBoot = true
 			source = "boot"
 		} else {
-			tpl, tt, err := m.template(ctx, size)
+			tpl, tt, err := m.template(ctx, shape{Size: size})
 			if err != nil {
 				return fail(err)
 			}
@@ -843,22 +926,19 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 			}
 		}
 		start = time.Now()
-		if diskPath != "" {
-			if err := copySparse(diskPath, filepath.Join(vm, fc.DiskFile)); err != nil {
+		if reshape != nil {
+			// The disk, the network and the Firecracker process side by side: none needs another.
+			machine, client, link, err := m.restoreParallel(ctx, vm, diskPath, statePath, memPath, egressMode(p.Egress), t)
+			s.link = link
+			if err != nil {
 				return fail(err)
 			}
-		} else if err := newDisk(filepath.Join(vm, fc.DiskFile), size.DiskGiB); err != nil {
+			s.machine, s.guest = machine, client
+			start = time.Now()
+		} else if err := m.prepare(s, vm, diskPath, size, egressMode(p.Egress), t, &start); err != nil {
 			return fail(err)
-		}
-		t.step("disk", &start)
-		link, err := m.cfg.Network.Add(egressMode(p.Egress))
-		if err != nil {
-			return fail(err)
-		}
-		s.link = &link
-		t.step("network", &start)
-		if statePath != "" {
-			machine, client, err := m.restore(ctx, vm, statePath, memPath, link)
+		} else if statePath != "" {
+			machine, client, err := m.restore(ctx, vm, statePath, memPath, *s.link)
 			if err != nil {
 				return fail(err)
 			}
@@ -870,7 +950,7 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 			}
 			source = "boot"
 			t.step("boot", &start)
-			if custom && p.From == "" {
+			if coldBoot {
 				// No template asked the image what it has, so this boot does, as a template's would: what a sandbox
 				// reports doesn't depend on whether its shape has a template. Every sandbox shares the image.
 				caps, err := m.guestReport(ctx, s.guest, size)
@@ -888,10 +968,39 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 		return fail(err)
 	}
 	m.attach(s, s.link.Slot)
-	if err := s.guest.SetIdentity(ctx, m.identity(s, true)); err != nil {
+	var reshaped chan reshapeResult
+	if reshape != nil {
+		// Beside the identity: the memory is Firecracker's and the guest kernel's to plug, the identity the agent's.
+		reshaped = make(chan reshapeResult, 1)
+		machine := s.machine
+		go func() { reshaped <- m.reshape(ctx, machine, size, *reshape) }()
+	}
+	steps, err := s.guest.SetIdentitySteps(ctx, m.identity(s, true))
+	for k, v := range steps {
+		t["identity."+k] = v
+	}
+	if err != nil {
+		if reshaped != nil {
+			<-reshaped
+		}
 		return fail(fmt.Errorf("identity: %w", err))
 	}
 	t.step("identity", &start)
+	if reshaped != nil {
+		r := <-reshaped
+		for k, v := range r.timings {
+			t["reshape."+k] = v
+		}
+		if r.err != nil {
+			return fail(fmt.Errorf("memory: %w", r.err))
+		}
+		t.step("reshape", &start)
+		if size.DiskGiB > reshape.DiskGiB {
+			// Once this answers (it holds the sandbox's lock until then): growing ext4 online takes a while, and
+			// nothing fills the template's disk (gigabytes) in that time.
+			go m.growDisk(s, size.DiskGiB)
+		}
+	}
 	s.meta.State = proto.StateRunning
 	s.meta.Slot = s.link.Slot
 	s.meta.Pid = s.machine.Pid()
@@ -906,6 +1015,46 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 	return info, nil
 }
 
+// createSize is the size a create asks for: a named one (p.Size), or a custom shape.
+func (m *Manager) createSize(p proto.CreateParams) (proto.Size, error) {
+	sizeName := p.Size
+	if sizeName == "" && (p.VCPUs != 0 || p.MemoryMiB != 0 || p.DiskGiB != 0) {
+		if p.VCPUs <= 0 || p.MemoryMiB <= 0 || p.DiskGiB <= 0 {
+			return proto.Size{}, &proto.Error{Code: proto.ErrInvalid, Message: "a custom size needs vcpus, memoryMiB and diskGiB"}
+		}
+		sizeName = CustomSizeName(p.VCPUs, p.MemoryMiB, p.DiskGiB)
+	}
+	return m.size(sizeName)
+}
+
+// sharedPlan is sharedFor when shared templates are on; nothing fits when they're off.
+func (m *Manager) sharedPlan(size proto.Size) (sh shape, fits, ready bool) {
+	if !m.sharedOn() {
+		return shape{}, false, false
+	}
+	return m.sharedFor(size)
+}
+
+// prepare gives a new sandbox its disk (a copy of diskPath, or an empty one of the size's) and its network, one after
+// the other.
+func (m *Manager) prepare(s *sandbox, vm, diskPath string, size proto.Size, egress string, t timings, start *time.Time) error {
+	if diskPath != "" {
+		if err := copySparse(diskPath, filepath.Join(vm, fc.DiskFile)); err != nil {
+			return err
+		}
+	} else if err := newDisk(filepath.Join(vm, fc.DiskFile), size.DiskGiB); err != nil {
+		return err
+	}
+	t.step("disk", start)
+	link, err := m.cfg.Network.Add(egress)
+	if err != nil {
+		return err
+	}
+	s.link = &link
+	t.step("network", start)
+	return nil
+}
+
 // boot cold-boots s from its own disk (Start, or a snapshot with no memory).
 func (m *Manager) boot(ctx context.Context, s *sandbox, size proto.Size) error {
 	vm := s.vmDir()
@@ -914,7 +1063,7 @@ func (m *Manager) boot(ctx context.Context, s *sandbox, size proto.Size) error {
 		return err
 	}
 	s.meta.CID = m.cid()
-	if err := machine.Boot(ctx, m.bootConfig(size, s.link.Tap, s.link.MAC, s.meta.CID)); err != nil {
+	if err := machine.Boot(ctx, m.bootConfig(shape{Size: size}, s.link.Tap, s.link.MAC, s.meta.CID)); err != nil {
 		machine.Kill()
 		return err
 	}

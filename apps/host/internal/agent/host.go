@@ -170,9 +170,12 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 			SpoolDir: spoolDir, SpoolMaxMiB: spoolMax, Initrd: initrd,
 			Root: cfg.Root + "/microvm", Firecracker: cfg.Firecracker, Kernel: cfg.Kernel, Rootfs: cfg.SandboxImage,
 			Sizes: sizes, Network: netm, ProxyPort: cfg.ProxyPort, DNS: cfg.DNS, Log: log,
-			Events: h.sandboxEvent,
-			Attach: h.attachSlot,
-			Detach: h.detachSlot,
+			Events:         h.sandboxEvent,
+			Attach:         h.attachSlot,
+			Detach:         h.detachSlot,
+			SharedTemplate: cfg.MicroVM.SharedTemplates(), TemplateVCPUs: cfg.MicroVM.TemplateVCPUs,
+			TemplateMemoryMiB: cfg.MicroVM.TemplateMemoryMiB, TemplateMaxMemoryMiB: cfg.MicroVM.TemplateMaxMemoryMiB,
+			TemplateDiskGiB: cfg.MicroVM.TemplateDiskGiB,
 		})
 		if err != nil {
 			return nil, err
@@ -275,6 +278,18 @@ func (h *Host) ResetTemplates(tier string) {
 	if t, ok := h.tiers[tier]; ok {
 		t.ResetTemplates()
 	}
+}
+
+// WaitTemplate waits until the template a create of the params would restore is made, where the tier keeps templates
+// (a benchmark measuring creates after a host's templates are ready).
+func (h *Host) WaitTemplate(ctx context.Context, tier string, p proto.CreateParams) error {
+	t, ok := h.tiers[tier].(interface {
+		WaitTemplate(context.Context, proto.CreateParams) error
+	})
+	if !ok {
+		return nil
+	}
+	return t.WaitTemplate(ctx, p)
 }
 
 func (h *Host) Close() {
