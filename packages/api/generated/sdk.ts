@@ -1997,6 +1997,8 @@ export interface KantelClient {
 	putTelemetry(body: PutTelemetryBody, options?: CallOptions): Promise<TelemetryTest>;
 	/** Remove the OpenTelemetry export. A key needs `account:admin`. `DELETE /telemetry` */
 	deleteTelemetry(query?: AccountScopedQuery, options?: CallOptions): Promise<void>;
+	/** List base images. Kantel's base images as the index its build publishes them: each image's latest version on the `stable` channel, its newest versions and what their CVE scans found, and the templates built on them. An index that can't be read is answered as `error`, with no images. A deployment super-admin only (a key needs `hosts:admin`). Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`). `GET /admin/hosts/images` */
+	listBaseImages(options?: CallOptions): Promise<BaseImageList>;
 	/** List hosts. Every host that has joined, revoked ones included. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/hosts` */
 	listHosts(options?: CallOptions): Promise<HostList>;
 	/** Make a host join token. A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it with the token. A deployment super-admin only (a key needs `hosts:admin`). `POST /admin/hosts/join-tokens` */
@@ -2011,8 +2013,6 @@ export interface KantelClient {
 	getPublicUrl(options?: CallOptions): Promise<PublicUrl>;
 	/** Set the public URL. Sets where hosts reach this control plane, for the join commands made from now on, ahead of the deployment's own `KANTEL_PUBLIC_URL`. `null` goes back to the deployment's own. Hosts that have joined keep the address they joined with. A deployment super-admin only (a key needs `hosts:admin`). `PUT /admin/public-url` */
 	setPublicUrl(body: SetPublicUrlBody, options?: CallOptions): Promise<PublicUrl>;
-	/** List base images. Kantel's base images as the index its build publishes them: each image's latest version on the `stable` channel, its newest versions and what their CVE scans found, and the templates built on them. An index that can't be read is answered as `error`, with no images. A deployment super-admin only (a key needs `hosts:admin`). Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`). `GET /admin/compute/images` */
-	listBaseImages(options?: CallOptions): Promise<BaseImageList>;
 	/** Make a join token for one of your own hosts. A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it to the account (the caller's personal account unless `account` names an organisation). The host dials out to this deployment and keeps the connection open, so it needs no inbound port. Once it has joined, the account's new sandboxes go on its own hosts, and no other account's sandboxes ever do. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `POST /hosts/join-tokens` */
 	createAccountJoinToken(body?: CreateAccountJoinTokenBody, options?: CallOptions): Promise<AccountJoinToken>;
 	/** List an account's hosts. The hosts joined to the account, revoked ones included. The deployment's shared hosts aren't listed. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `GET /hosts` */
@@ -2301,6 +2301,7 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 		putTelemetry: (body, callOptions) => send(options, { method: "PUT", path: "/telemetry", body }, callOptions),
 		deleteTelemetry: (query, callOptions) =>
 			send(options, { method: "DELETE", path: "/telemetry", query }, callOptions),
+		listBaseImages: (callOptions) => send(options, { method: "GET", path: "/admin/hosts/images" }, callOptions),
 		listHosts: (callOptions) => send(options, { method: "GET", path: "/admin/hosts" }, callOptions),
 		createHostJoinToken: (body = {}, callOptions) =>
 			send(options, { method: "POST", path: "/admin/hosts/join-tokens", body }, callOptions),
@@ -2312,7 +2313,6 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "DELETE", path: `/admin/hosts/${encodeURIComponent(hostId)}` }, callOptions),
 		getPublicUrl: (callOptions) => send(options, { method: "GET", path: "/admin/public-url" }, callOptions),
 		setPublicUrl: (body, callOptions) => send(options, { method: "PUT", path: "/admin/public-url", body }, callOptions),
-		listBaseImages: (callOptions) => send(options, { method: "GET", path: "/admin/compute/images" }, callOptions),
 		createAccountJoinToken: (body = {}, callOptions) =>
 			send(options, { method: "POST", path: "/hosts/join-tokens", body }, callOptions),
 		listAccountHosts: (query, callOptions) => send(options, { method: "GET", path: "/hosts", query }, callOptions),

@@ -1707,11 +1707,11 @@ function templateBaseOf(template: ApiTemplateBase): UiTemplateBase {
 	};
 }
 
-/** The deployment's base images and templates (`/v1/admin/compute/images`, super-admin, experimental). */
+/** The deployment's base images and templates (`/v1/admin/hosts/images`, super-admin, experimental). */
 function imagesSource({ call }: Context): BaseImagesSource {
 	return {
 		overview: async () => {
-			const overview = await call<ApiImagesOverview>({ method: "GET", path: "/admin/compute/images" });
+			const overview = await call<ApiImagesOverview>({ method: "GET", path: "/admin/hosts/images" });
 			return {
 				images: overview.images.map(baseImageOf),
 				templates: overview.templates.map(templateBaseOf),

@@ -331,25 +331,27 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		void work.catch((error) => log(`[hosts] ${error instanceof Error ? error.message : String(error)}`));
 	};
 
-	const welcomeFor = async (host: HostRecord): Promise<HostWelcome> => {
-		const images =
-			compute?.images === undefined
-				? undefined
-				: await compute.images().catch((error) => {
-						log(
-							`[hosts] no images in host ${host.id}'s welcome: ${error instanceof Error ? error.message : String(error)}`,
-						);
-						return undefined;
-					});
-		return {
-			hostId: host.id,
-			heartbeatSeconds: options.heartbeatSeconds ?? 15,
-			pools: host.draining ? {} : pools,
-			...(host.draining ? { draining: true } : {}),
-			...(options.desiredVersion === undefined ? {} : { desiredVersion: options.desiredVersion }),
-			...(options.updateUrl === undefined ? {} : { updateUrl: options.updateUrl }),
-			...(images === undefined ? {} : { images }),
-		};
+	const baseWelcome = (host: HostRecord): HostWelcome => ({
+		hostId: host.id,
+		heartbeatSeconds: options.heartbeatSeconds ?? 15,
+		pools: host.draining ? {} : pools,
+		...(host.draining ? { draining: true } : {}),
+		...(options.desiredVersion === undefined ? {} : { desiredVersion: options.desiredVersion }),
+		...(options.updateUrl === undefined ? {} : { updateUrl: options.updateUrl }),
+	});
+	// With image patching off the welcome is made at once, as before: no await between a hello and its answer.
+	const welcomeFor = (host: HostRecord): HostWelcome | Promise<HostWelcome> => {
+		const base = baseWelcome(host);
+		if (compute?.images === undefined) return base;
+		return compute.images().then(
+			(images) => (images === undefined ? base : { ...base, images }),
+			(error) => {
+				log(
+					`[hosts] no images in host ${host.id}'s welcome: ${error instanceof Error ? error.message : String(error)}`,
+				);
+				return base;
+			},
+		);
 	};
 
 	const hello = async (hostId: string, message: HostHello): Promise<HostWelcome> => {

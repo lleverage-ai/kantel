@@ -24,7 +24,7 @@
  *   the base image index CI publishes, from `KANTEL_BASE_IMAGE_INDEX` (default the `base-images` GitHub Release's
  *   index.json, `DEFAULT_BASE_IMAGE_INDEX`), at most every 5 minutes, a failure kept for a minute. Sandboxes and saved
  *   snapshots then say which base they are on and how far behind it is (`base`; the stub reports none), `POST
- *   /v1/sandboxes/{id}/restart-on-latest` moves one onto the newest, `GET /v1/admin/compute/images` lists the images
+ *   /v1/sandboxes/{id}/restart-on-latest` moves one onto the newest, `GET /v1/admin/hosts/images` lists the images
  *   and their CVE scans, and account hosts are told the host images to fetch in their welcome. Off, there is no `base`
  *   and those routes answer 501 not_supported.
  * - **People:** whoever the stack's authenticator signs in (Cloudflare Access, or an email code on the public origin)

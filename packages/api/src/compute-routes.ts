@@ -1632,7 +1632,7 @@ export const hostRoutes = {
 export const listBaseImages = defineRoute({
 	operationId: "listBaseImages",
 	method: "GET",
-	path: "/admin/compute/images",
+	path: "/admin/hosts/images",
 	tag: "hosts",
 	summary: "List base images",
 	description: describe(
@@ -1756,8 +1756,9 @@ export const computeRoutes = {
 	...eventRoutes,
 	...webhookRoutes,
 	...telemetryRoutes,
-	...hostRoutes,
+	// Before the hosts' `/admin/hosts/{hostId}`, which would otherwise take `images` for a host's ID.
 	...baseImageRoutes,
+	...hostRoutes,
 	...accountHostRoutes,
 } as const;
 

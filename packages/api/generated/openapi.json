@@ -7512,6 +7512,56 @@
 				}
 			}
 		},
+		"/admin/hosts/images": {
+			"get": {
+				"operationId": "listBaseImages",
+				"summary": "List base images",
+				"description": "Kantel's base images as the index its build publishes them: each image's latest version on the `stable` channel, its newest versions and what their CVE scans found, and the templates built on them. An index that can't be read is answered as `error`, with no images. A deployment super-admin only (a key needs `hosts:admin`). Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`).",
+				"tags": ["hosts"],
+				"responses": {
+					"200": {
+						"description": "The base images.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/BaseImageList"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/admin/hosts": {
 			"get": {
 				"operationId": "listHosts",
@@ -7938,56 +7988,6 @@
 					},
 					"403": {
 						"description": "`forbidden`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					}
-				}
-			}
-		},
-		"/admin/compute/images": {
-			"get": {
-				"operationId": "listBaseImages",
-				"summary": "List base images",
-				"description": "Kantel's base images as the index its build publishes them: each image's latest version on the `stable` channel, its newest versions and what their CVE scans found, and the templates built on them. An index that can't be read is answered as `error`, with no images. A deployment super-admin only (a key needs `hosts:admin`). Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`).",
-				"tags": ["hosts"],
-				"responses": {
-					"200": {
-						"description": "The base images.",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/BaseImageList"
-								}
-							}
-						}
-					},
-					"401": {
-						"description": "The request needs a valid credential (`unauthenticated`).",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"403": {
-						"description": "`forbidden`",
-						"content": {
-							"application/json": {
-								"schema": {
-									"$ref": "#/components/schemas/ErrorBody"
-								}
-							}
-						}
-					},
-					"501": {
-						"description": "`not_supported`",
 						"content": {
 							"application/json": {
 								"schema": {

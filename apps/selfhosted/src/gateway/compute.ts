@@ -50,7 +50,7 @@
  *   KANTEL_IMAGE_PATCHING        `experimental` turns on image patching: sandboxes and saved snapshots say which base
  *                                image they are on and how far behind it is (`base`), `POST
  *                                /v1/sandboxes/{id}/restart-on-latest` moves one onto the newest, `GET
- *                                /v1/admin/compute/images` lists the base images and their CVE scans, and hosts are
+ *                                /v1/admin/hosts/images` lists the base images and their CVE scans, and hosts are
  *                                told the host images to fetch in their welcome. Default off: no `base`, and those
  *                                routes answer 501 not_supported
  *   KANTEL_BASE_IMAGE_INDEX      with image patching: where the base image index CI publishes is read, an http(s) URL;
