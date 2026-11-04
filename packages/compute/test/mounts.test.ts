@@ -11,6 +11,7 @@ import type { PersonIdentity } from "../src/auth.ts";
 import type { SandboxBackend, SandboxSpec } from "../src/backend.ts";
 import { createMemoryBundleStore } from "../src/bundles.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
+import type { BundleBlobStore } from "../src/mounts.ts";
 import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
 import { type ComputeStore, createMemoryStore } from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
@@ -114,7 +115,29 @@ function setup(options: SetupOptions = {}) {
 		},
 		...options.backend?.(stub),
 	};
-	const bundles = createMemoryBundleStore();
+	// The memory store, noting each generation kept and not yet deleted, so a test can see bytes left without a record.
+	const memory = createMemoryBundleStore();
+	const live = new Map<string, { readonly digest: string; readonly generation: number }>();
+	const liveKey = (digest: string, generation: number) => `${digest}#${generation}`;
+	const bundles: BundleBlobStore = {
+		put: async (body, putOptions) => {
+			const staged = await memory.put(body, putOptions);
+			return {
+				digest: staged.digest,
+				sizeBytes: staged.sizeBytes,
+				keep: async (generation) => {
+					await staged.keep(generation);
+					live.set(liveKey(staged.digest, generation), { digest: staged.digest, generation });
+				},
+				discard: () => staged.discard(),
+			};
+		},
+		open: (digest, generation) => memory.open(digest, generation),
+		delete: async (digest, generation) => {
+			await memory.delete(digest, generation);
+			live.delete(liveKey(digest, generation));
+		},
+	};
 	const store = options.store ?? createMemoryStore();
 	const baseUrl = `http://compute.test${options.basePath ?? "/v1"}`;
 	const api = createComputeApi({
@@ -134,11 +157,31 @@ function setup(options: SetupOptions = {}) {
 	const fetchApi = (input: string | Request | URL, init?: RequestInit) =>
 		api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 }));
 	const client = (token: string) => createKantelClient({ baseUrl, token, fetch: fetchApi });
-	/** A digest's bytes as they are read now: the generation its row says. */
 	const kept = {
+		/** A digest's bytes: its records', or, with no record, any generation of it still kept (bytes left behind). */
 		open: async (digest: string) => {
-			const row = await store.bundleBlobs.get(digest);
-			return bundles.open(digest, row?.generation ?? 0);
+			for (const record of await store.bundles.list({ digest })) {
+				const blob = await bundles.open(digest, record.generation ?? 0);
+				if (blob !== undefined) return blob;
+			}
+			for (const left of live.values()) {
+				if (left.digest === digest) return bundles.open(digest, left.generation);
+			}
+			return undefined;
+		},
+		/**
+		 * Throws unless every record opens bytes of its own, the bytes kept are exactly the records' (none left behind), and
+		 * no two records share a generation.
+		 */
+		consistent: async () => {
+			const owned = new Set<string>();
+			for (const record of await store.bundles.list()) {
+				const key = liveKey(record.digest, record.generation ?? 0);
+				expect(owned.has(key), `${record.id} shares its bytes`).toBe(false);
+				owned.add(key);
+				expect(await bundles.open(record.digest, record.generation ?? 0), `${record.id} has no bytes`).toBeDefined();
+			}
+			expect([...live.keys()].sort()).toEqual([...owned].sort());
 		},
 	};
 	return {
@@ -763,78 +806,89 @@ describe.each(STORES)("sources and the sandboxes mounting them, stored $name", s
 		await tom.deleteBundle(again.digest);
 	});
 
+	// A record owns the generation of bytes its upload kept, so however an upload and a delete of the same digest
+	// interleave or stall, each record opens its own bytes and none are left without a record (`consistent`).
+
 	it("keep a bundle's bytes for an upload publishing them as another account deletes its own", async () => {
 		const { tom, ann, store, bundles } = await on();
 		const digest = digestOf(SKILLS);
 		await tom.uploadBundle(SKILLS.slice().buffer);
-		// Ann's upload holds its lease and is publishing its record: Tom's delete of the last other record keeps the bytes.
 		once(store.bundles, "insert", async () => {
 			await tom.deleteBundle(digest);
 		});
 		await ann.uploadBundle(SKILLS.slice().buffer);
 		expect((await ann.listBundles()).items.map((bundle) => bundle.digest)).toEqual([digest]);
-		expect(await bundles.open(digest)).toBeDefined();
-
-		// Tom's upload has staged the bytes but not yet leased them when Ann deletes hers, the last record: the bytes go,
-		// and Tom's upload keeps its own copy again, as the next generation, before it publishes.
-		await ann.deleteBundle(digest);
-		await tom.uploadBundle(SKILLS.slice().buffer);
-		const before = (await store.bundleBlobs.get(digest))?.generation;
-		once(store.bundleBlobs, "get", async () => {
-			await tom.deleteBundle(digest);
-			expect(await bundles.open(digest)).toBeUndefined();
-		});
-		await ann.uploadBundle(SKILLS.slice().buffer);
-		expect((await store.bundleBlobs.get(digest))?.generation).toBeGreaterThan(before ?? 0);
-		expect(await store.bundles.list()).toHaveLength(1);
-		expect((await ann.listBundles()).items.map((bundle) => bundle.digest)).toEqual([digest]);
-		expect(await bundles.open(digest)).toBeDefined();
+		await bundles.consistent();
 	});
 
-	it("keep a bundle's bytes when a removal stalls past its claim and an upload takes over", async () => {
+	it("keep a bundle's bytes when a delete's removal of its own stalls while another account uploads them", async () => {
 		let clock = 1_000_000;
 		const { tom, ann, store, bundles, blobs } = await on({ now: () => clock });
 		const digest = digestOf(SKILLS);
 		await tom.uploadBundle(SKILLS.slice().buffer);
-		// Tom's delete removes the last record and goes to remove the bytes, but its removal stalls until its claim has
-		// lapsed and Ann has uploaded the same bytes; then it lands.
+		// Tom's delete has removed his record and goes to remove its bytes, but stalls, long past any claim, while Ann
+		// uploads the same bytes; then it lands.
 		once(blobs, "delete", async () => {
-			clock += 61_000;
+			clock += 10 * 60_000;
 			await ann.uploadBundle(SKILLS.slice().buffer);
 		});
 		await tom.deleteBundle(digest);
-		expect(await store.bundles.list()).toHaveLength(1);
-		expect(await bundles.open(digest)).toBeDefined();
-		expect((await ann.listBundles()).items.map((bundle) => bundle.digest)).toEqual([digest]);
-		// And the generation the stalled removal claimed is gone: nothing is left behind.
-		const row = await store.bundleBlobs.get(digest);
-		expect(row?.deleting).toBeUndefined();
-		expect(await blobs.open(digest, (row?.generation ?? 0) - 1)).toBeUndefined();
+		expect((await store.bundles.list()).map((record) => record.accountId)).toEqual([
+			(await ann.listBundles()).items[0]?.accountId,
+		]);
+		await bundles.consistent();
 	});
 
-	it("keep a bundle's bytes for an upload whose publish stalls past its lease as the last other record goes", async () => {
+	it("keep a bundle's bytes for an upload whose insert stalls while the last other record goes", async () => {
 		let clock = 1_000_000;
 		const { tom, ann, store, bundles } = await on({ now: () => clock });
 		const digest = digestOf(SKILLS);
 		await tom.uploadBundle(SKILLS.slice().buffer);
-		// Ann's upload holds its lease, but its record's insert stalls past it; meanwhile Tom deletes the last record, and
-		// its delete, finding no lease and no record, removes the bytes.
 		once(store.bundles, "insert", async () => {
-			clock += 6 * 60_000;
+			clock += 10 * 60_000;
 			await tom.deleteBundle(digest);
 		});
 		await ann.uploadBundle(SKILLS.slice().buffer);
-		expect(await store.bundles.list()).toHaveLength(1);
 		expect((await ann.listBundles()).items.map((bundle) => bundle.digest)).toEqual([digest]);
-		expect(await bundles.open(digest)).toBeDefined();
+		await bundles.consistent();
 	});
 
-	it("remove a bundle's bytes when a delete left them to an upload whose record then fails to go in", async () => {
+	it("keep a bundle's bytes for an upload whose stalled insert lands as a delete's held removal of the last other record does", async () => {
+		let clock = 1_000_000;
+		const { tom, ann, store, bundles, blobs } = await on({ now: () => clock });
+		const digest = digestOf(SKILLS);
+		await tom.uploadBundle(SKILLS.slice().buffer);
+		// Ann's insert stalls; Tom deletes the last other record and his removal of its bytes is held; Ann's insert lands,
+		// her upload answers, and only then does Tom's removal.
+		let release: () => void = () => undefined;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let reached: () => void = () => undefined;
+		const removing = new Promise<void>((resolve) => {
+			reached = resolve;
+		});
+		once(blobs, "delete", async () => {
+			reached();
+			await held;
+		});
+		let deleted: Promise<void> | undefined;
+		once(store.bundles, "insert", async () => {
+			clock += 10 * 60_000;
+			deleted = tom.deleteBundle(digest);
+			await removing;
+		});
+		await ann.uploadBundle(SKILLS.slice().buffer);
+		release();
+		await deleted;
+		expect((await ann.listBundles()).items.map((bundle) => bundle.digest)).toEqual([digest]);
+		await bundles.consistent();
+	});
+
+	it("leave no bytes behind for an upload whose record fails to go in as the last other record goes", async () => {
 		const { tom, ann, store, bundles } = await on();
 		const digest = digestOf(SKILLS);
 		await tom.uploadBundle(SKILLS.slice().buffer);
-		// Ann's upload holds its lease as Tom deletes the last record (so the delete leaves the bytes to it), and then its
-		// insert fails.
 		const insert = store.bundles.insert.bind(store.bundles);
 		store.bundles.insert = async () => {
 			store.bundles.insert = insert;
@@ -844,33 +898,56 @@ describe.each(STORES)("sources and the sandboxes mounting them, stored $name", s
 		await expect(ann.uploadBundle(SKILLS.slice().buffer)).rejects.toThrow();
 		expect(await store.bundles.list()).toEqual([]);
 		expect(await bundles.open(digest)).toBeUndefined();
-		const row = await store.bundleBlobs.get(digest);
-		expect(row?.deleting).toBeUndefined();
-		expect(Object.keys(row?.leases ?? {})).toEqual([]);
+		await bundles.consistent();
 	});
 
-	it("remove a bundle's bytes when the last record goes while an upload of them holds its lease", async () => {
-		const { tom, store, bundles } = await on();
+	it("keep a record's bytes when its insert threw but went in", async () => {
+		const { ann, store, bundles } = await on();
+		const insert = store.bundles.insert.bind(store.bundles);
+		store.bundles.insert = async (record) => {
+			store.bundles.insert = insert;
+			await insert(record);
+			throw new Error("the answer was lost");
+		};
+		await expect(ann.uploadBundle(SKILLS.slice().buffer)).rejects.toThrow();
+		expect(await store.bundles.list()).toHaveLength(1);
+		await bundles.consistent();
+	});
+
+	it("leave no bytes behind for a re-upload as the account's record goes, nor for uploads of it at once", async () => {
+		const { tom, store, bundles, fetchApi } = await on();
+		const fetchStatus = async () =>
+			(
+				await fetchApi(`${BASE_URL}/bundles`, {
+					method: "POST",
+					headers: { authorization: "Bearer tom-token", "content-type": "application/x-tar" },
+					body: SKILLS.slice(),
+				})
+			).status;
 		const digest = digestOf(SKILLS);
 		await tom.uploadBundle(SKILLS.slice().buffer);
-		// Tom uploads it again (it has it: no new record), and deletes it while that upload still holds its lease.
-		const insert = store.bundles.insert.bind(store.bundles);
-		let deleted = false;
-		store.bundles.insert = async (record) => {
-			const done = await insert(record);
-			if (!deleted) {
-				deleted = true;
-				await tom.deleteBundle(digest);
-			}
-			return done;
-		};
+		// A re-upload (Tom has it) whose look for his record comes just after his delete: it uploads it anew.
+		once(store.bundles, "get", async () => {
+			await tom.deleteBundle(digest);
+		});
 		await tom.uploadBundle(SKILLS.slice().buffer);
-		expect(deleted).toBe(true);
-		expect(await store.bundles.list()).toEqual([]);
+		expect(await store.bundles.list()).toHaveLength(1);
+		await bundles.consistent();
+		// Two uploads by one account at once, the second publishing first: the first keeps nothing of its own.
+		await tom.deleteBundle(digest);
+		let second: Promise<unknown> | undefined;
+		once(store.bundles, "insert", async () => {
+			second = tom.uploadBundle(SKILLS.slice().buffer);
+			await second;
+		});
+		const first = await fetchStatus();
+		await second;
+		expect(first).toBe(200);
+		expect(await store.bundles.list()).toHaveLength(1);
+		await bundles.consistent();
+		await tom.deleteBundle(digest);
+		await bundles.consistent();
 		expect(await bundles.open(digest)).toBeUndefined();
-		const row = await store.bundleBlobs.get(digest);
-		expect(row?.deleting).toBeUndefined();
-		expect(Object.keys(row?.leases ?? {})).toEqual([]);
 	});
 
 	it("refuse a second delete under way, stop a delete too slow to trust its claim, and outlive a delete that died", async () => {
@@ -918,10 +995,9 @@ describe.each(STORES)("sources and the sandboxes mounting them, stored $name", s
 		await tom.deleteBundle(bundle.digest);
 		expect(await store.bundles.list()).toEqual([]);
 		expect(await bundles.open(bundle.digest)).toBeUndefined();
-		// The bytes' row keeps no claim, and the next upload leases it as usual.
-		expect((await store.bundleBlobs.get(bundle.digest))?.deleting).toBeUndefined();
 		await tom.uploadBundle(SKILLS.slice().buffer);
 		expect(await bundles.open(bundle.digest)).toBeDefined();
+		await bundles.consistent();
 	});
 
 	it("stay when a delete's final removal is held past its claim's lapse while a create takes them, for either kind", async () => {

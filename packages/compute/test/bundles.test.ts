@@ -1,4 +1,4 @@
-// Both bundle stores: a tar is kept once as each generation of its SHA-256 however often it is put, and a body that is
+// Both bundle stores: a tar is kept as each generation of its SHA-256 it is told, once however often, and a body that is
 // too large or isn't what its digest says leaves nothing behind.
 import { createHash } from "node:crypto";
 import { mkdtemp, readdir, rm } from "node:fs/promises";

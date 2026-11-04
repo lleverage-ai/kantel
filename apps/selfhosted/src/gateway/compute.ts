@@ -49,7 +49,7 @@
  *                                `/v1/hosts` routes for them answer 501 not_supported
  *   KANTEL_MOUNTS                `experimental` turns on read-only mounts (bundles and bucket prefixes in a sandbox),
  *                                bundles (`POST /v1/bundles`), bucket sources, signed file URLs (`/v1/file-urls/...`)
- *                                and archive extraction, with either backend. Bundles' tars are kept once each under
+ *                                and archive extraction, with either backend. A bundle's tar is kept once per account under
  *                                `bundles/` beside the bootstrap file (KANTEL_BOOTSTRAP_FILE, a volume in Compose).
  *                                Default off: their routes answer 501 not_supported
  *

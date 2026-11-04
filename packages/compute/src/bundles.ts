@@ -3,7 +3,7 @@
  * exported from the package's index, which also runs on Cloudflare Workers.
  *
  * Both stores hash a body as it streams in (never holding a 2 GiB tar in memory to do it, for the directory) and stage
- * it, then keep it as a generation of its digest when told, so bytes many accounts upload are stored once. A body past
+ * it, then keep it as the generation of its digest the record it is for owns, when told. A body past
  * `maxBytes`, or whose digest isn't the one expected, is refused with `invalid` and leaves nothing behind.
  */
 import { createHash, randomUUID } from "node:crypto";

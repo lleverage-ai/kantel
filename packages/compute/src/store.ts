@@ -288,7 +288,8 @@ export interface DeleteClaim {
 
 /**
  * A bundle an account uploaded (mounts): its ID is `<accountId>/<digest>`, so an account has a digest once. Its bytes
- * are the bundle store's, kept once by digest for every account that uploads them.
+ * are the bundle store's, kept as `generation` of the digest, which this record alone owns: they are kept before it is
+ * published and removed only once it is gone, so they are there for as long as it is.
  */
 export interface StoredBundle {
 	readonly id: string;
@@ -298,24 +299,8 @@ export interface StoredBundle {
 	readonly sizeBytes: number;
 	readonly createdAt: number;
 	readonly createdBy?: string;
-	readonly deleting?: DeleteClaim;
-}
-
-/**
- * Who holds a bundle's bytes (mounts), by digest: uploads publishing a record for them, each with a lease until a
- * time, or a delete removing them, with its claim. One holds off the other, so bytes are never removed under a record
- * being published.
- */
-export interface StoredBundleBlob {
-	/** The digest. */
-	readonly id: string;
-	/**
-	 * The generation the bytes are kept as now (`BundleBlobStore`), which is what's read. It moves on once a delete has
-	 * removed them, and when an upload takes over from a delete whose claim lapsed, so a removal landing late only ever
-	 * removes a generation nothing reads any more. Absent: 0, from before there were generations.
-	 */
+	/** The generation of the digest its bytes are kept as (`BundleBlobStore`). Absent: 0, from before generations. */
 	readonly generation?: number;
-	readonly leases: { readonly [lease: string]: number };
 	readonly deleting?: DeleteClaim;
 }
 
@@ -426,7 +411,6 @@ export interface ComputeStore {
 	readonly e2eChain: Collection<StoredE2EEntry>;
 	/** Mounts' bundles, bucket sources and signed file URLs (experimental). */
 	readonly bundles: Collection<StoredBundle>;
-	readonly bundleBlobs: Collection<StoredBundleBlob>;
 	readonly bucketSources: Collection<StoredBucketSource>;
 	readonly fileUrls: Collection<StoredFileUrl>;
 	readonly settings: Collection<StoredSetting>;
@@ -517,7 +501,6 @@ export function createMemoryStore(): ComputeStore {
 		egress: memoryCollection(),
 		e2eChain: memoryCollection(),
 		bundles: memoryCollection(),
-		bundleBlobs: memoryCollection(),
 		bucketSources: memoryCollection(),
 		fileUrls: memoryCollection(),
 		settings: memoryCollection(),

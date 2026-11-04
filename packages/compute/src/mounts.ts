@@ -36,12 +36,12 @@ export interface StagedBlob {
 }
 
 /**
- * Where bundles' tars are kept, by digest (`sha256:<hex>`), once however many accounts upload the same bytes: a
- * directory self-hosted (`@kantel/compute/bundles`'s `createDirBundleStore`), memory in tests.
+ * Where bundles' tars are kept, by digest (`sha256:<hex>`) and generation: a directory self-hosted
+ * (`@kantel/compute/bundles`'s `createDirBundleStore`), memory in tests.
  *
- * Each digest's bytes are kept as a generation, a whole number the compute plane picks (`StoredBundleBlob.generation`):
- * a delete removes only the generation it was given, so one that lands late can't remove bytes kept since under the
- * next. Generation 0 is where bytes were kept before there were generations.
+ * A generation is a whole number the compute plane picks for each upload, and the bundle record that upload publishes
+ * owns it alone (`StoredBundle.generation`): an account has a digest once, so its bytes are kept once, and no record's
+ * bytes are ever another's to remove. Generation 0 is where bytes were kept before there were generations.
  */
 export interface BundleBlobStore {
 	/**
