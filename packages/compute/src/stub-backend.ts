@@ -271,7 +271,13 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 	};
 	const placeable = (eligibleHosts: readonly string[], type: computeSchema.SandboxType) => {
 		if (!types.includes(type)) throw new KantelError("unavailable", `No host runs ${type} sandboxes`);
-		if (!eligibleHosts.includes(STUB_HOST_ID)) throw new KantelError("unavailable", "No host can take the sandbox");
+		if (eligibleHosts.includes(STUB_HOST_ID)) return;
+		throw new KantelError(
+			"unavailable",
+			eligibleHosts.length === 0
+				? `The stub's host (${STUB_HOST_ID}) isn't one this sandbox may use now: none of its eligible hosts is the stub's`
+				: `The stub's host (${STUB_HOST_ID}) isn't one this sandbox may use now; it may use ${eligibleHosts.join(", ")}`,
+		);
 	};
 	const placement = (machine: Machine): Placement => {
 		const size =

@@ -1216,6 +1216,55 @@ describe("a repository's clone", () => {
 		expect((await writer.createSandbox({ environment: plain.id, wait: true })).state).toBe("running");
 	});
 
+	it("is made, with the secret files, once a sandbox whose create failed is made again, by a caller who may run commands", async () => {
+		let failing = true;
+		const { api, tom, recorded } = setup({
+			exec: (request) =>
+				request.command.includes(" clone ") ? { exitCode: 0, stdout: "", stderr: "", timedOut: false } : undefined,
+			beforeCreate: async () => {
+				if (failing) throw new KantelError("unavailable", "The sandbox's disk couldn't be partitioned");
+			},
+		});
+		const npmrc = "//registry.npmjs.org/:_authToken=npm_AGAIN\n";
+		const environment = await githubEnvironment(tom, "repos");
+		await tom.setEnvironmentFile(environment.id, { path: ".npmrc", content: npmrc });
+		await tom.putEnvironmentRepos(environment.id, { repos: [{ url: "https://github.com/acme/app" }] });
+		const ids: string[] = [];
+		for (let i = 0; i < 3; i++) {
+			const made = await tom.createSandbox({ environment: "repos", type: "microvm", wait: true });
+			expect(made.state).toBe("error");
+			ids.push(made.id);
+		}
+		const clones = () => recorded.execs.filter((request) => request.command.includes(" clone ")).length;
+		expect(clones()).toBe(0);
+		failing = false;
+
+		// Made again from its image, it has nothing its create would have put there: a caller who may not run commands
+		// can't have the repositories cloned, as at its create.
+		const writer = createKantelClient({
+			baseUrl: BASE_URL,
+			token: (await tom.createApiKey({ name: "writer", scopes: ["sandboxes:read", "sandboxes:write"] })).secret,
+			fetch: (input, init) =>
+				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+		const [recovered = "", started = "", resumed = ""] = ids;
+		expect((await failure(writer.recoverSandbox(recovered))).code).toBe("forbidden");
+		await tom.recoverSandbox(recovered);
+		await tom.startSandbox(started, { wait: true });
+		await tom.resumeSandbox(resumed, { wait: true });
+		await api.service.idle();
+		for (const id of ids) {
+			expect((await tom.getSandbox(id)).state).toBe("running");
+			expect((await tom.readFile(id, { path: ".npmrc" })).content).toBe(npmrc);
+		}
+		expect(clones()).toBe(3);
+		// On a disk of its own from then on, a start provisions nothing again.
+		await tom.stopSandbox(started, { wait: true });
+		await tom.startSandbox(started, { wait: true });
+		await api.service.idle();
+		expect(clones()).toBe(3);
+	});
+
 	it("clones the repositories authorised at the create, not ones added before it booted", async () => {
 		let release = () => {};
 		const booting = new Promise<void>((resolve) => {
