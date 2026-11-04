@@ -16,8 +16,9 @@
  *   `GET /v1/hosts/connect` and keeps that WebSocket open to the stack object (`src/stack-object.ts`), which holds the
  *   one hub (`@kantel/hosts`), as a self-hosted gateway does. The registry of hosts and placements is in the object's
  *   SQLite. Sandboxes of an account with a host of its own go there (`createRoutedBackend`); everyone else's stay on
- *   the stub. SSH to those sandboxes is served (`GET /v1/hosts/tunnel/{ticket}`, over the host's connection); their
- *   desktops, browsers' CDP and exposed ports aren't yet.
+ *   the stub. SSH to those sandboxes is served (`GET /v1/hosts/tunnel/{ticket}`, over the host's connection), and so
+ *   are their exposed ports' pages, at `https://{port}-{subdomain}.{portsDomain}` (`src/port-serving.ts`), over HTTP; their
+ *   desktops, browsers' CDP and WebSockets to exposed ports aren't yet.
  * - **People:** whoever the stack's authenticator signs in (Cloudflare Access, or an email code on the public origin)
  *   is a compute person under their user ID, and an admin of the deployment's own organisation (the bootstrap's) is the
  *   compute plane's super-admin, as self-hosted. With open sign-up everyone administers a personal space of their own;
@@ -61,6 +62,7 @@ import {
 	HOSTS_REGISTER_PATH,
 } from "@kantel/hosts/http";
 import { type AcceptedHost, closeQuietly, type HostSocket } from "@kantel/hosts/hub";
+import { createPortRouter, type PortRouter } from "@kantel/hosts/ports";
 import { HOST_CLOSE_REVOKED } from "@kantel/hosts/protocol";
 import { createRelayAccess, RELAY_CLOSE_REVOKED, RELAY_REVOKED_REASON } from "@kantel/hosts/relay-access";
 import { createMemoryRelayStore, createSqlRelayStore, migrateRelay } from "@kantel/hosts/relay-store";
@@ -69,7 +71,8 @@ import { createMemoryHostStore, createSqlHostStore, migrateHosts } from "@kantel
 import { createTunnelTickets, HOSTS_TUNNEL_PATH, type TunnelTickets } from "@kantel/hosts/tunnel";
 import { hashSessionToken, isSessionToken } from "@kantel/identity/otp";
 import type { SqlDriver } from "@kantel/sql";
-import { HOSTED_PORTS_DOMAIN } from "./config.ts";
+import { HOSTED_PORTS_DOMAIN, isPortName } from "./config.ts";
+import { createPortServing, type PortServingLimits } from "./port-serving.ts";
 import { buffered } from "./route.ts";
 
 /** Where Cloudflare Access puts the signed-in person's token on each request it lets through. */
@@ -106,6 +109,14 @@ export interface StackCompute {
 	readonly binding: string;
 	/** Account hosts' host side, when it is on. */
 	readonly hosts?: StackHosts;
+	/** Whether a host name is an exposed port's (`{label}.{portsDomain}`): only `servePort` answers it, never the API. */
+	isPortName(hostname: string): boolean;
+	/**
+	 * The answer on an exposed port's name: the sandbox's own page, relayed over its host's connection, with the port's
+	 * token unless it was exposed public (`@kantel/hosts/ports`). A 404 for a name nobody exposed, and for every name
+	 * while account hosts are off; a 501 for a WebSocket, which isn't relayed here yet.
+	 */
+	servePort(request: Request): Promise<Response>;
 	close(): Promise<void>;
 }
 
@@ -120,6 +131,8 @@ export interface StackHosts {
 	 * one. Undefined when it was refused.
 	 */
 	connect(credential: string | undefined, socket: HostSocket): Promise<AcceptedHost | undefined>;
+	/** Exposed ports: their URLs, and the pages behind them. */
+	readonly ports: PortRouter;
 	/**
 	 * A raw tunnel (`GET /v1/hosts/tunnel/{ticket}`: a sandbox's port as binary WebSocket frames, for SSH's
 	 * ProxyCommand), once the server has accepted the client's WebSocket. Checks the ticket and that its grantee may still
@@ -251,10 +264,12 @@ export interface StackComputeOptions {
 	/** For webhook deliveries and telemetry exports. Default the global `fetch`. */
 	readonly fetch?: typeof fetch;
 	/**
-	 * The domain port URLs are under, `{port}-{subdomain}.{domain}`. Default `HOSTED_PORTS_DOMAIN` (`ports.kantel.dev`).
-	 * The stub backend only names the URLs; account hosts' public ports aren't served here yet either.
+	 * The domain port URLs are under, `{port}-{subdomain}.{domain}`. Default `HOSTED_PORTS_DOMAIN` (`kantel.run`). The
+	 * stub backend only names the URLs; account hosts' microVMs' ports are served on them (`servePort`).
 	 */
 	readonly portsDomain?: string;
+	/** Bounds on exposed ports' traffic in this object (`src/port-serving.ts`). Default its constants. */
+	readonly portLimits?: PortServingLimits;
 	/** Account hosts (KANTEL_ACCOUNT_HOSTS=experimental): where hosts reach this Worker. Absent, off. */
 	readonly accountHosts?: { readonly publicUrl: string };
 	/** With account hosts on, how often sandboxes past their auto-stop time are stopped. Default `HOST_SWEEP_MS`. */
@@ -357,12 +372,12 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		store = createSqlComputeStore(options.sql);
 	}
 	const now = options.now ?? Date.now;
-	const stub = revivingStub(
-		createStubBackend({ sandboxDomain: options.portsDomain ?? HOSTED_PORTS_DOMAIN }),
-		store.sandboxes,
-	);
+	const portsDomain = options.portsDomain ?? HOSTED_PORTS_DOMAIN;
+	const stub = revivingStub(createStubBackend({ sandboxDomain: portsDomain }), store.sandboxes);
 	const own =
-		options.accountHosts === undefined ? undefined : await accountHostsSide(options.accountHosts, options.sql, now);
+		options.accountHosts === undefined
+			? undefined
+			: await accountHostsSide({ ...options.accountHosts, portsDomain }, options.sql, now);
 	const deploymentOrganisation = options.adminOrganisationId;
 	const api = createComputeApi({
 		store,
@@ -389,6 +404,7 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		// Join commands name the address hosts dial, as tunnel URLs do, not the caller's origin.
 		...(own === undefined ? {} : { accountHosts: true, publicUrl: own.publicUrl }),
 	});
+	if (own !== undefined) await grantPorts(store, await own.microvms());
 	own?.service.useJoinTokens(joinTokenSpender(store));
 	// Hosts report what their egress proxies did. Protected values stay off here (no secrets key, so no environment holds
 	// one): a host asking for a sandbox's is answered that there are none.
@@ -428,6 +444,8 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		api,
 		binding: `${records}, stub backend${own === undefined ? "" : " and account hosts"} (experimental)`,
 		...(hosts === undefined ? {} : { hosts }),
+		isPortName: (hostname) => isPortName(hostname, portsDomain),
+		servePort: createPortServing(own?.hosts.ports, options.portLimits),
 		async fetch(request) {
 			const answer = await api.fetch(request);
 			if (answer !== undefined) timers.touch();
@@ -446,11 +464,11 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 
 /**
  * Account hosts' host side: the registry (in `sql`, else memory), the backend over it, and what hosts and tunnel
- * clients reach. Of the tunnels the backend issues tickets for, raw ones (SSH) are served; desktops, a browser's CDP
- * and exposed ports aren't yet.
+ * clients reach. Of the tunnels the backend issues tickets for, raw ones (SSH) are served; desktops and a browser's CDP
+ * aren't yet. Exposed ports are, over HTTP, on `portsDomain`'s names (`servePort`).
  */
 async function accountHostsSide(
-	config: { readonly publicUrl: string },
+	config: { readonly publicUrl: string; readonly portsDomain: string },
 	sql: SqlDriver | undefined,
 	now: () => number,
 ): Promise<{
@@ -460,26 +478,34 @@ async function accountHostsSide(
 	hosts: StackHosts;
 	access: ReturnType<typeof createRelayAccess>;
 	bind(stillAllowed: (grantee: string | undefined, sandboxId: string) => Promise<boolean>): void;
+	/** The sandboxes placed on a host of the registry as microVMs, now. */
+	microvms(): Promise<string[]>;
 }> {
 	if (sql !== undefined) {
 		await migrateHosts(sql);
 		await migrateRelay(sql);
 	}
-	const service = createHostsService({
-		store: sql === undefined ? createMemoryHostStore() : createSqlHostStore(sql),
-		publicUrl: config.publicUrl,
-	});
-	const tickets = sweptAsUsed(
-		createTunnelTickets(sql === undefined ? createMemoryRelayStore() : createSqlRelayStore(sql), now),
-		now,
-	);
-	const backend = createHostBackend({ hosts: service, publicUrl: config.publicUrl, tickets, now });
+	const hostStore = sql === undefined ? createMemoryHostStore() : createSqlHostStore(sql);
+	const service = createHostsService({ store: hostStore, publicUrl: config.publicUrl });
+	const relay = sql === undefined ? createMemoryRelayStore() : createSqlRelayStore(sql);
+	const tickets = sweptAsUsed(createTunnelTickets(relay, now), now);
 	let check: ((grantee: string | undefined, sandboxId: string) => Promise<boolean>) | undefined;
 	// Its timer runs only while a session is held, so it never keeps the object awake on its own.
 	const access = createRelayAccess({
 		stillAllowed: (grantee, sandboxId) => check?.(grantee, sandboxId) ?? Promise.resolve(false),
 		now,
 	});
+	// Exposures are kept in the relay store beside the tickets, so a port's URL outlasts the object being evicted.
+	const ports = createPortRouter({
+		domain: config.portsDomain,
+		scheme: "https",
+		openPort: (sandboxId, port, sink) => service.sandboxes.openPort(sandboxId, port, sink),
+		store: relay,
+		// Whoever exposed a port must still be able to open its sandbox, asked as a tunnel's holder is.
+		stillAllowed: (grantee, sandboxId) => access.allowed(grantee, sandboxId),
+		now,
+	});
+	const backend = createHostBackend({ hosts: service, publicUrl: config.publicUrl, tickets, ports, now });
 	// Registration only: the compute API serves hosts' management, so the registry's own admin routes refuse everyone.
 	const register = createHostsApi({
 		hosts: service,
@@ -493,8 +519,13 @@ async function accountHostsSide(
 		bind(stillAllowed) {
 			check = stillAllowed;
 		},
+		async microvms() {
+			const placed = await Promise.all((await hostStore.listHosts()).map((host) => hostStore.placementsOn(host.id)));
+			return placed.flat().flatMap((placement) => (placement.tier === "microvm" ? [placement.sandboxId] : []));
+		},
 		hosts: {
 			service,
+			ports,
 			async fetch(request) {
 				const path = new URL(request.url).pathname;
 				if (path === HOSTS_REGISTER_PATH) {
@@ -597,6 +628,23 @@ export function sweptAsUsed(tickets: TunnelTickets, now: () => number): TunnelTi
 		verify: (ticket, at) => tickets.verify(ticket, at),
 		sweep: (at) => tickets.sweep(at),
 	};
+}
+
+/**
+ * Gives the account-host microVMs `sandboxIds` the `ports` capability. A placement's capabilities are written once,
+ * when it boots, and before exposed ports were served here a microVM's were written without ports: its API record then
+ * refuses `exposePort` until the machine is booted again. Called on every start with the registry's microVM placements,
+ * before the API answers anything; a record that has it already, or isn't a live microVM, is left as it is, and nothing
+ * else about any record changes.
+ */
+export async function grantPorts(store: ComputeStore, sandboxIds: readonly string[]): Promise<void> {
+	for (const sandboxId of sandboxIds) {
+		await store.sandboxes.update(sandboxId, (current) =>
+			current.type !== "microvm" || current.state === "deleted" || current.capabilities.ports
+				? undefined
+				: { ...current, capabilities: { ...current.capabilities, ports: true } },
+		);
+	}
 }
 
 /** A registration is a token, a name, labels and facts: a few kilobytes. */

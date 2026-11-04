@@ -100,8 +100,13 @@ async function start(db: DatabaseSync, vars: { KANTEL_ACCOUNT_HOSTS?: string; KA
 	return { stack, call };
 }
 
-/** kantel-host as the hub sees it over its WebSocket: it says hello, then runs sandboxes and an `echo`. */
-function fakeHost() {
+/**
+ * kantel-host as the hub sees it over its WebSocket: it says hello, then runs sandboxes and an `echo`. A port's stream
+ * echoes what comes in, uppercased (an SSH server stands in), or with `http`, answers one HTTP request with a page
+ * naming the request line and the Host it was asked for, then ends the stream (a web server stands in).
+ */
+function fakeHost(options: { readonly http?: boolean } = {}) {
+	const requests = new Map<number, string>();
 	const sandboxes = new Set<string>();
 	const calls: string[] = [];
 	let closed: { code: number; reason: string } | undefined;
@@ -134,6 +139,19 @@ function fakeHost() {
 		sendBinary(bytes) {
 			const frame = decodeStreamFrame(bytes);
 			if (frame === undefined) return;
+			if (options.http === true) {
+				const sofar = (requests.get(frame.stream) ?? "") + new TextDecoder().decode(frame.payload);
+				requests.set(frame.stream, sofar);
+				if (!sofar.includes("\r\n\r\n")) return;
+				const [line = "", ...headers] = sofar.split("\r\n\r\n")[0]?.split("\r\n") ?? [];
+				const host = headers.find((header) => /^host:/i.test(header)) ?? "";
+				const cookie = headers.find((header) => /^cookie:/i.test(header)) ?? "no cookie";
+				const body = `${line}\n${host}\n${cookie}\n`;
+				const answer = `HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: ${body.length}\r\n\r\n${body}`;
+				receive(encodeStreamFrame(frame.stream, new TextEncoder().encode(answer)));
+				receive(JSON.stringify({ type: "stream.close", stream: frame.stream, reason: "done" }));
+				return;
+			}
 			const text = new TextDecoder().decode(frame.payload).toUpperCase();
 			receive(encodeStreamFrame(frame.stream, new TextEncoder().encode(text)));
 		},
@@ -709,6 +727,140 @@ describe("Account hosts on the Worker", () => {
 		const again = await start(db, on);
 		const kept = await again.stack.compute.hosts?.service.get(hostId);
 		expect(kept).toMatchObject({ id: hostId, accountId: personal, state: "revoked" });
+	});
+
+	it("serves a host's sandbox's exposed port on its name under kantel.run, with its token unless public", async () => {
+		const db = new DatabaseSync(":memory:");
+		const { stack, call } = await start(db, { KANTEL_ACCOUNT_HOSTS: "experimental", KANTEL_PUBLIC_URL: BASE });
+		const hosts = stack.compute.hosts;
+		if (hosts === undefined) throw new Error("Account hosts are on");
+		const token = (await call("POST", "/v1/hosts/join-tokens", { name: "toms-box" })).body.token as string;
+		const { hostId, credential } = (await call("POST", "/v1/hosts/register", { token }, {})).body as {
+			hostId: string;
+			credential: string;
+		};
+		const host = fakeHost({ http: true });
+		const held = await hosts.connect(credential, host.socket);
+		if (held === undefined) throw new Error("The host's credential was refused");
+		host.attach(held, hostId);
+		await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
+		const sandbox = await call("POST", "/v1/sandboxes", { type: "microvm", wait: true });
+		const sandboxId = sandbox.body.id as string;
+		const name = `3000-${sandbox.body.subdomain as string}.kantel.run`;
+
+		const exposed = await call("POST", `/v1/sandboxes/${sandboxId}/ports`, { port: 3000 });
+		expect(exposed.status).toBe(201);
+		const url = new URL(exposed.body.url as string);
+		expect(url.origin).toBe(`https://${name}`);
+		const portToken = url.searchParams.get("_token");
+		expect(portToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+		// Every name under the ports domain is the port's alone: never the console, the API or the public origin.
+		const compute = stack.compute;
+		expect(compute.isPortName(name)).toBe(true);
+		expect(compute.isPortName("deep.name.kantel.run")).toBe(true);
+		for (const other of ["kantel.run", "app.kantel.dev", "kantel.test", "evilkantel.run"]) {
+			expect(compute.isPortName(other)).toBe(false);
+		}
+		const page = (path: string, headers: Record<string, string> = {}) =>
+			compute.servePort(new Request(`https://${name}${path}`, { headers, redirect: "manual" }));
+
+		// Without its token, nothing reaches the sandbox.
+		const bare = await page("/");
+		expect(bare.status).toBe(401);
+		expect(await page("/v1/me").then((answer) => answer.status)).toBe(401);
+		// The token is traded for a cookie on this one name, and taken off the address.
+		const traded = await page(`/hello?a=1&_token=${portToken}`);
+		expect(traded.status).toBe(303);
+		expect(traded.headers.get("location")).toBe("/hello?a=1");
+		const cookie = (traded.headers.get("set-cookie") ?? "").split(";")[0] ?? "";
+		expect(traded.headers.get("set-cookie")).toMatch(
+			/^__Host-kantel_port=[^;]+; Path=\/; HttpOnly; Secure; SameSite=Lax$/,
+		);
+		// With it, the sandbox's own page, asked for under its public name, with Kantel's cookie kept from it.
+		const served = await page("/hello?a=1", { cookie, "cf-connecting-ip": "203.0.113.9" });
+		expect(served.status).toBe(200);
+		expect(await served.text()).toBe(`GET /hello?a=1 HTTP/1.1\nHost: ${name}\nno cookie\n`);
+
+		// A name nobody exposed, and a WebSocket (not relayed here yet), never reach a sandbox.
+		const nobody = await compute.servePort(new Request("https://4000-nobody.kantel.run/"));
+		expect(nobody.status).toBe(404);
+		expect((await page("/", { cookie, upgrade: "websocket" })).status).toBe(501);
+
+		// Exposed public: no token needed. Hidden: gone.
+		const open = await call("POST", `/v1/sandboxes/${sandboxId}/ports`, { port: 8080, public: true });
+		expect(new URL(open.body.url as string).search).toBe("");
+		const publicName = `8080-${sandbox.body.subdomain as string}.kantel.run`;
+		const openPage = await compute.servePort(new Request(`https://${publicName}/`));
+		expect(openPage.status).toBe(200);
+		expect(await openPage.text()).toContain(`Host: ${publicName}`);
+		expect((await call("DELETE", `/v1/sandboxes/${sandboxId}/ports/8080`)).status).toBe(204);
+		expect((await compute.servePort(new Request(`https://${publicName}/`))).status).toBe(404);
+	});
+
+	it("gives a microVM placed before ports were served here the ports capability on start, and nothing else", async () => {
+		const db = new DatabaseSync(":memory:");
+		const on = { KANTEL_ACCOUNT_HOSTS: "experimental", KANTEL_PUBLIC_URL: BASE };
+		const first = await start(db, on);
+		const hosts = first.stack.compute.hosts;
+		if (hosts === undefined) throw new Error("Account hosts are on");
+		const token = (await first.call("POST", "/v1/hosts/join-tokens", { name: "toms-box" })).body.token as string;
+		const { hostId, credential } = (await first.call("POST", "/v1/hosts/register", { token }, {})).body as {
+			hostId: string;
+			credential: string;
+		};
+		const host = fakeHost({ http: true });
+		const held = await hosts.connect(credential, host.socket);
+		if (held === undefined) throw new Error("The host's credential was refused");
+		host.attach(held, hostId);
+		await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
+		const vm = (await first.call("POST", "/v1/sandboxes", { type: "microvm", wait: true })).body;
+		const isolate = (await first.call("POST", "/v1/sandboxes", { type: "isolate", wait: true })).body;
+		expect(vm.capabilities).toMatchObject({ ports: true });
+		await first.stack.compute.close();
+
+		// As the previous deploy wrote it: a running microVM on an account host, without ports.
+		const record = (id: unknown) => {
+			const row = db
+				.prepare("SELECT data FROM compute_api_records WHERE kind = 'sandboxes' AND id = ?")
+				.get(String(id));
+			return JSON.parse(String((row as { data: string }).data)) as Record<string, unknown>;
+		};
+		const written = (id: unknown, data: Record<string, unknown>) =>
+			db
+				.prepare("UPDATE compute_api_records SET data = ? WHERE kind = 'sandboxes' AND id = ?")
+				.run(JSON.stringify(data), String(id));
+		const before = record(vm.id);
+		written(vm.id, { ...before, capabilities: { ...(before.capabilities as object), ports: false } });
+		// An isolate's record never gets ports, whatever its placement says (this fake host answers every tier as a VM).
+		const isolateWritten = record(isolate.id);
+		written(isolate.id, {
+			...isolateWritten,
+			capabilities: { ...(isolateWritten.capabilities as object), ports: false },
+		});
+		const isolateBefore = record(isolate.id);
+
+		// On start, before any call: the microVM's record is as it was with ports (what `exposePort` checks), state,
+		// placement and every other field kept; the isolate's is untouched. (The identity directory here is in memory, so
+		// the person's account is new after a restart: the record is what's checked.)
+		const again = await start(db, on);
+		expect(record(vm.id)).toEqual(before);
+		expect(record(isolate.id)).toEqual(isolateBefore);
+		// Starting again over records that have it changes nothing.
+		await again.stack.compute.close();
+		const settled = record(vm.id);
+		await start(db, on);
+		expect(record(vm.id)).toEqual(settled);
+	});
+
+	it("answers every name under the ports domain with a 404 while account hosts are off", async () => {
+		const { stack, call } = await start(new DatabaseSync(":memory:"));
+		const made = await call("POST", "/v1/sandboxes", { name: "web", wait: true });
+		const exposed = await call("POST", `/v1/sandboxes/${made.body.id as string}/ports`, { port: 3000 });
+		const url = new URL(exposed.body.url as string);
+		expect(url.hostname).toBe(`3000-${made.body.subdomain as string}.kantel.run`);
+		expect(stack.compute.isPortName(url.hostname)).toBe(true);
+		expect((await stack.compute.servePort(new Request(url))).status).toBe(404);
 	});
 
 	it("lets someone who signs up on the public origin add and use a host of their own, never the stub", async () => {

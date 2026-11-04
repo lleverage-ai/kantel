@@ -340,7 +340,12 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		create: createOne,
 		start: (sandboxId, how) => boot(sandboxId, "sandbox.start", how),
 		resume: (sandboxId, how) => boot(sandboxId, "sandbox.resume", how),
-		recover: (sandboxId, how) => boot(sandboxId, "sandbox.start", how),
+		// Recovering clears the sandbox's recorded ports (the compute API), so their exposures end with them: a URL the API
+		// no longer lists, and can't hide, must not still reach the machine.
+		recover: async (sandboxId, how) => {
+			await options.ports?.forget(sandboxId);
+			return boot(sandboxId, "sandbox.start", how);
+		},
 		async updateEgress(sandboxId, egress, revision) {
 			await call(sandboxId, "sandbox.egress", {
 				egress: hostEgress(egress, options.attributionKey) ?? null,

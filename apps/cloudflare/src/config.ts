@@ -37,14 +37,38 @@ export interface GatewayVars {
 export const DEFAULT_DAILY_MAIL_CAP = 100;
 
 /**
- * Kantel's hosted ports domain (decided 3 Nov 2026). It is under kantel.dev, a registrable domain apart from the
- * console's (harbour.myslop.app), so a sandbox's page can't set cookies the console reads. It isn't on the Public
- * Suffix List yet (deferred until hosted ports are served and used), so until it is, a port's page can set cookies for
- * all of kantel.dev: port names are one site to browsers, cookies aren't private between sandboxes, and a console
- * moved under kantel.dev would receive them too. A deployment of this Worker on another domain sets
- * KANTEL_COMPUTE_PORTS_DOMAIN to its own.
+ * Kantel's hosted ports domain (4 Nov 2026): `kantel.run`, a registrable domain of its own, apart from the console's
+ * (`app.kantel.dev`, `harbour.myslop.app`). A port's page is therefore never the same site as the console: it can't set
+ * a cookie the console reads, and the console's cross-site refusal (`@kantel/identity/csrf`) refuses its writes. Port
+ * names are one label under it (`3000-brave-otter-ab12cd.kantel.run`), so Cloudflare's Universal SSL certificate
+ * (`kantel.run`, `*.kantel.run`) covers every one. kantel.run isn't on the Public Suffix List, so port names are one
+ * site with each other: a sandbox's page can set cookies for all of kantel.run. A deployment of this Worker on another
+ * domain sets KANTEL_COMPUTE_PORTS_DOMAIN to its own.
  */
-export const HOSTED_PORTS_DOMAIN = "ports.kantel.dev";
+export const HOSTED_PORTS_DOMAIN = "kantel.run";
+
+/**
+ * The ports domain from KANTEL_COMPUTE_PORTS_DOMAIN as `gatewayConfig` reads it (`*.` and trailing dots taken off,
+ * lower case), else `HOSTED_PORTS_DOMAIN`. Never throws: routing asks it before the stack has checked the value.
+ */
+export function portsDomainOf(vars: Pick<GatewayVars, "KANTEL_COMPUTE_PORTS_DOMAIN">): string {
+	const domain = normalisedDomain(vars.KANTEL_COMPUTE_PORTS_DOMAIN);
+	return domain === "" ? HOSTED_PORTS_DOMAIN : domain;
+}
+
+/**
+ * Whether `hostname` is under the ports domain: an exposed port's name, `{port}-{subdomain}.{domain}`. Any name under it
+ * counts, however deep, so none of them ever reaches the console or the API; the stack answers a name that isn't a
+ * port's with a 404 (`src/compute.ts` `servePort`).
+ */
+export function isPortName(hostname: string, domain: string): boolean {
+	return hostname.toLowerCase().replace(/\.$/, "").endsWith(`.${domain}`);
+}
+
+const normalisedDomain = (value: string | undefined): string =>
+	trimmed(value)
+		.toLowerCase()
+		.replace(/^\*?\.+|\.+$/g, "");
 
 export interface GatewayConfig {
 	/** Cloudflare Access, when people may sign in. Without it only API keys authenticate. */
@@ -89,11 +113,17 @@ export function gatewayConfig(vars: GatewayVars): GatewayConfig {
 	}
 	const adminName = trimmed(vars.KANTEL_ADMIN_NAME);
 	// As the self-hosted gateway reads its own: `*.` and trailing dots taken off, lower case.
-	const portsDomain = trimmed(vars.KANTEL_COMPUTE_PORTS_DOMAIN)
-		.toLowerCase()
-		.replace(/^\*?\.+|\.+$/g, "");
+	const portsDomain = normalisedDomain(vars.KANTEL_COMPUTE_PORTS_DOMAIN);
 	if (portsDomain !== "" && !DNS_NAME.test(portsDomain)) {
 		throw new KantelError("invalid", "KANTEL_COMPUTE_PORTS_DOMAIN is a DNS name such as ports.example.com");
+	}
+	// Every name under the ports domain is a port's (`src/route.ts`): the public origin under it would be unreachable.
+	const publicHost = PUBLIC_ORIGIN.test(trimmed(vars.KANTEL_PUBLIC_URL))
+		? new URL(trimmed(vars.KANTEL_PUBLIC_URL)).hostname
+		: "";
+	const ports = portsDomainOf(vars);
+	if (publicHost !== "" && (publicHost === ports || publicHost.endsWith(`.${ports}`))) {
+		throw new KantelError("invalid", "KANTEL_PUBLIC_URL can't be the ports domain or a name under it");
 	}
 	const accountHosts = accountHostsConfig(vars);
 	// Set either way, the switch says the public origin may be for hosts alone: turning them off keeps it valid.
