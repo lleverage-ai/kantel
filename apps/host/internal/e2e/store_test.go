@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -95,6 +96,62 @@ func TestAChainFileThatDoesntVerifyShutsPlaintextOut(t *testing.T) {
 	fresh, _ := OpenStore(dir)
 	if fresh.Mode(st.Space) != ModeStrict || len(fresh.Spaces()) != 1 {
 		t.Fatalf("a new process: mode %s, spaces %v", fresh.Mode(st.Space), fresh.Spaces())
+	}
+	// Nor does joining again bring it back: the chain was in place once, so no staged copy is left to start from.
+	if _, _, err := fresh.Join(join, v.Entries, "host_two", time.Now()); err == nil {
+		t.Fatal("a joined space whose chain went was joined again from the gateway's chain")
+	}
+}
+
+// A first join that fails between marking the space joined and writing its chain stays strict, and the same join
+// command finishes it once the fault is gone, with the host.add it signed the first time.
+func TestAnInterruptedFirstJoinCanBeRetried(t *testing.T) {
+	var v joinVector
+	readVector(t, "join.json", &v)
+	dir := t.TempDir()
+	store, _ := OpenStore(dir)
+	join, _ := DecodeJoinTicket(v.Word)
+	space, _, _ := join.TicketSpace()
+	// The fault: a file where the chains' folder should be, so writing the chain fails after the space is marked joined.
+	blocker := filepath.Join(dir, "spaces")
+	if err := os.Remove(blocker); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.Join(join, v.Entries, "host_two", time.Now()); err == nil {
+		t.Fatal("the join wrote its chain over the fault")
+	}
+	if !store.joined()[space] || store.Mode(space) != ModeStrict {
+		t.Fatalf("after the failed join: joined %v, mode %s", store.joined()[space], store.Mode(space))
+	}
+	_, staged, err := store.staged(space)
+	if err != nil || len(staged) != len(v.Entries)+1 {
+		t.Fatalf("staged %d entries: %v", len(staged), err)
+	}
+	if err := os.Remove(blocker); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, st, err := fresh.Join(join, v.Entries, "host_two", time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry != staged[len(v.Entries)] {
+		t.Fatal("the retry signed a new host.add rather than publishing the first")
+	}
+	if fresh.Mode(space) != ModeOn || st.Mode != ModeOn {
+		t.Fatalf("mode %s, chain says %s", fresh.Mode(space), st.Mode)
+	}
+	if got := fresh.Space(space).Entries(0); len(got) != len(v.Entries)+1 {
+		t.Fatalf("the chain has %d entries", len(got))
+	}
+	if _, _, err := fresh.staged(space); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the staged chain is still there: %v", err)
 	}
 }
 

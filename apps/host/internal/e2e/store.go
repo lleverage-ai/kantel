@@ -51,6 +51,9 @@ type spaceChain struct {
 
 // OpenStore opens dir (made if missing).
 func OpenStore(dir string) (*Store, error) {
+	if err := os.MkdirAll(filepath.Join(dir, "pending"), 0o700); err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(filepath.Join(dir, "spaces"), 0o700); err != nil {
 		return nil, err
 	}
@@ -375,6 +378,7 @@ func (c *spaceChain) loadLocked() (*State, error) {
 		return nil, fmt.Errorf("%s is another space's chain", c.path)
 	}
 	c.file, c.state, c.modTime = f, st, info.ModTime()
+	c.store.dropStaged(c.space)
 	return st, nil
 }
 
@@ -493,13 +497,25 @@ func (s *Store) join(join *JoinTicket, entries []Entry, hostID string, now time.
 		c.state = nil
 		c.mu.Unlock()
 		cur, err := c.load()
-		if err != nil {
+		var have []Entry
+		switch {
+		case err == nil:
+			have = c.Entries(0)
+		case errors.Is(err, os.ErrNotExist):
+			// A first join that stopped between marking the space joined and writing its chain finishes from the chain
+			// it staged first; a joined space with neither stays strict.
+			if cur, have, err = s.staged(space); err != nil {
+				return Entry{}, nil, fmt.Errorf("this host joined %s but holds no chain for it, so it can't be joined again: %w", space, err)
+			}
+			if err := s.save(space, cur.Genesis, have); err != nil {
+				return Entry{}, nil, err
+			}
+		default:
 			return Entry{}, nil, fmt.Errorf("this host's chain for %s doesn't verify, so it can't be joined again: %w", space, err)
 		}
 		if cur.Genesis != genesis {
 			return Entry{}, nil, fmt.Errorf("this host already holds another chain for %s", space)
 		}
-		have := c.Entries(0)
 		if !samePrefix(have, entries) {
 			if samePrefix(entries, have) {
 				// The gateway is behind: if what it lacks starts with this host's own host.add, publish that again.
@@ -534,11 +550,55 @@ func (s *Store) join(join *JoinTicket, entries []Entry, hostID string, now time.
 	return e, next, nil
 }
 
+// save writes a joined space's chain. The first time, the chain is staged in pending/ before the space is marked
+// joined, so a join that stops between the marker and the chain stays strict (joined, no chain) and a retry finishes
+// it from the staged chain (staged), without going back on it.
 func (s *Store) save(space, genesis string, entries []Entry) error {
+	path := filepath.Join(s.dir, "spaces", space+".json")
+	if _, err := os.Stat(path); err != nil {
+		if err := writeFile(s.pendingPath(space), spaceFile{Genesis: genesis, Entries: entries}); err != nil {
+			return err
+		}
+	}
 	if err := s.markJoined(space); err != nil {
 		return err
 	}
-	return writeFile(filepath.Join(s.dir, "spaces", space+".json"), spaceFile{Genesis: genesis, Entries: entries})
+	if err := writeFile(path, spaceFile{Genesis: genesis, Entries: entries}); err != nil {
+		return err
+	}
+	s.dropStaged(space)
+	return nil
+}
+
+func (s *Store) pendingPath(space string) string {
+	return filepath.Join(s.dir, "pending", space+".json")
+}
+
+// dropStaged forgets a first join's staged chain once the chain is in place, so it can't be used to go back on the
+// chain if that is lost later. One left behind (a failed removal) goes when the chain is next read (loadLocked).
+func (s *Store) dropStaged(space string) { _ = os.Remove(s.pendingPath(space)) }
+
+// staged is the chain a first join of space staged before it marked the space joined, verified.
+func (s *Store) staged(space string) (*State, []Entry, error) {
+	raw, err := os.ReadFile(s.pendingPath(space))
+	if err != nil {
+		return nil, nil, err
+	}
+	var f spaceFile
+	if err := json.Unmarshal(raw, &f); err != nil {
+		return nil, nil, err
+	}
+	if f.Genesis == "" {
+		return nil, nil, errors.New("the staged chain pins no genesis")
+	}
+	st, err := VerifyChain(f.Entries, f.Genesis)
+	if err != nil {
+		return nil, nil, err
+	}
+	if st.Space != space {
+		return nil, nil, errors.New("the staged chain is another space's")
+	}
+	return st, f.Entries, nil
 }
 
 // samePrefix reports whether prefix is the start of entries.
