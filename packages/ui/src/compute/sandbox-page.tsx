@@ -43,7 +43,7 @@ import {
 } from "./compute-model.ts";
 import { EgressPage } from "./egress-page.tsx";
 import { gbBytes, gbText, lineOf, seriesOf, USAGE_KEEP_MS, useLiveUsage } from "./live-usage.ts";
-import { computePage, messageOf, SectionHeading, UsageGraph } from "./parts.tsx";
+import { computePage, FoldSection, messageOf, SectionHeading, UsageGraph } from "./parts.tsx";
 import { type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
 import { SandboxLogs } from "./sandbox-logs.tsx";
 import { SandboxMounts } from "./sandbox-mounts.tsx";
@@ -704,12 +704,10 @@ function Overview({
 	);
 
 	const usage = showsCpu(sandbox) ? <Usage source={source} sandbox={sandbox} refreshKey={usageKey} /> : null;
-	const image = sandbox.image === undefined ? null : <ImageSection image={sandbox.image} />;
+	const image = sandbox.image === undefined ? null : <ImageSection image={sandbox.image} folded={narrow} />;
 
 	const created = compactAge(sandbox.createdAt, now);
-	const details = (
-		<section className="flex min-w-0 flex-col gap-3" aria-labelledby="sandbox-details">
-			<SectionHeading id="sandbox-details" title="Details" />
+	const detailsList = (
 			<dl className="m-0 grid grid-cols-[var(--kt-label-width)_minmax(0,1fr)] gap-x-4 gap-y-2.5 text-sm">
 				<dt className={dt}>ID</dt>
 				<dd className={`${dd} flex items-center gap-1`}>
@@ -747,6 +745,20 @@ function Overview({
 					</>
 				)}
 			</dl>
+	);
+	// A phone folds it to one line: what it is and its size.
+	const details = narrow ? (
+		<FoldSection
+			id="sandbox-details"
+			title="Details"
+			summary={`${SANDBOX_KIND_LABELS[sandbox.kind]}, ${sizeText(spec)}`}
+		>
+			{detailsList}
+		</FoldSection>
+	) : (
+		<section className="flex min-w-0 flex-col gap-3" aria-labelledby="sandbox-details">
+			<SectionHeading id="sandbox-details" title="Details" />
+			{detailsList}
 		</section>
 	);
 
@@ -878,13 +890,12 @@ const LIBC_LABELS: Readonly<Record<SandboxImage["libc"], string>> = {
  * What its image has, as its guest agent found it: the OS, and the desktop, browser, Docker and nested virtualisation,
  * each there or plainly missing, so nothing the image lacks is offered as a button that fails.
  */
-export function ImageSection({ image }: { image: SandboxImage }) {
+export function ImageSection({ image, folded = false }: { image: SandboxImage; folded?: boolean }) {
 	const kvm: SandboxFeature = image.kvm
 		? { available: true, detail: "/dev/kvm" }
 		: { available: false, reason: "Not on this host" };
-	return (
-		<section className="flex min-w-0 flex-col gap-3" aria-labelledby="sandbox-image">
-			<SectionHeading id="sandbox-image" title="Image" />
+	const body = (
+		<>
 			<dl className="m-0 grid grid-cols-[var(--kt-label-width)_minmax(0,1fr)] gap-x-4 gap-y-2.5 text-sm">
 				<dt className={dt}>OS</dt>
 				<dd className={`${dd} truncate`} title={image.os}>
@@ -906,6 +917,17 @@ export function ImageSection({ image }: { image: SandboxImage }) {
 				<FeatureRow label="Docker" feature={image.docker} />
 				<FeatureRow label="Nested virtualisation" feature={kvm} />
 			</ul>
+		</>
+	);
+	// A phone folds it to one line: the OS and architecture.
+	return folded ? (
+		<FoldSection id="sandbox-image" title="Image" summary={`${image.os}, ${image.arch}`}>
+			{body}
+		</FoldSection>
+	) : (
+		<section className="flex min-w-0 flex-col gap-3" aria-labelledby="sandbox-image">
+			<SectionHeading id="sandbox-image" title="Image" />
+			{body}
 		</section>
 	);
 }

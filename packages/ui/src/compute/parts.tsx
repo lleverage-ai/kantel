@@ -2,7 +2,8 @@
 // bar. Pages lay out their own tables from these, so the sandboxes, snapshots, keys and hosts tables line up and read
 // alike, and turn into the same stacked cards on a phone.
 
-import { type ComponentProps, type ReactNode, useLayoutEffect, useRef } from "react";
+import { type ComponentProps, type ReactNode, useId, useLayoutEffect, useRef, useState } from "react";
+import { ChevronDownIcon } from "../primitives/icons.tsx";
 import "./table.css";
 
 /**
@@ -304,7 +305,7 @@ export function Sparkline({
 					points={pointsText(points)}
 					fill="none"
 					stroke="currentColor"
-					strokeWidth="1.25"
+					strokeWidth="1.5"
 					strokeLinejoin="round"
 					vectorEffect="non-scaling-stroke"
 					{...(loading ? { strokeDasharray: "2 3" } : {})}
@@ -445,6 +446,50 @@ export function CapacityBar({ share, children }: { share: number; children: Reac
 }
 
 /** A heading over a section of a page, with its own actions on the right. */
+/**
+ * A section a phone keeps folded: the heading is the button, with a one-line summary of what's inside while closed, so
+ * a long page ends in short rows rather than every detail at full length. Wide screens use a plain section.
+ */
+export function FoldSection({
+	id,
+	title,
+	summary,
+	children,
+}: {
+	id: string;
+	title: ReactNode;
+	/** What's inside, in a few words, while it's folded. */
+	summary: ReactNode;
+	children: ReactNode;
+}) {
+	const [open, setOpen] = useState(false);
+	const bodyId = useId();
+	return (
+		<section className="flex min-w-0 flex-col gap-3" aria-labelledby={id}>
+			<h2 id={id} className="-mx-2 my-0 text-lg font-strong leading-tight text-fg">
+				<button
+					type="button"
+					className="kt-focusable flex min-h-control-md w-full cursor-pointer items-center gap-3 rounded-control border-0 bg-transparent px-2 text-left text-fg [font-family:inherit] [font-size:inherit] [font-weight:inherit] [line-height:inherit] hover:bg-hover"
+					aria-expanded={open}
+					aria-controls={bodyId}
+					onClick={() => setOpen(!open)}
+				>
+					<span className="flex min-w-0 flex-1 flex-col gap-0.5">
+						<span>{title}</span>
+						{open ? null : <span className="truncate font-normal text-muted text-sm">{summary}</span>}
+					</span>
+					<ChevronDownIcon size="sm" className={`flex-none text-faint transition-transform${open ? " rotate-180" : ""}`} />
+				</button>
+			</h2>
+			{open ? (
+				<div id={bodyId} className="flex min-w-0 flex-col gap-3">
+					{children}
+				</div>
+			) : null}
+		</section>
+	);
+}
+
 export function SectionHeading({ title, actions, id }: { title: ReactNode; actions?: ReactNode; id?: string }) {
 	return (
 		<div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
