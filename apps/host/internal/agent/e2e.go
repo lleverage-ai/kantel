@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/e2e"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
@@ -519,7 +520,107 @@ func (h *Host) gatewayGuard(ctx context.Context, method string, params json.RawM
 		done()
 		return ctx, func() {}, err
 	}
+	// A plaintext call that reads or runs something ends if its space turns E2E on while it runs (a join, or an entry a
+	// session brings), rather than keeping what it reached.
+	if cancellable {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ctx)
+		forget := h.watchPlain(h.spaceOfCall(method, params), cancel)
+		inner := done
+		done = func() {
+			forget()
+			cancel()
+			inner()
+		}
+	}
 	return ctx, done, nil
+}
+
+// spaceOfCall is the space of the sandbox (or snapshot) a content call reaches, or "".
+func (h *Host) spaceOfCall(method string, params json.RawMessage) string {
+	var p struct {
+		SandboxID  string `json:"sandboxId"`
+		SnapshotID string `json:"snapshotId"`
+	}
+	_ = json.Unmarshal(params, &p)
+	if method == proto.MethodSnapshotRead || method == proto.MethodSnapshotTree {
+		t, err := h.tierOfSnapshot(p.SnapshotID)
+		if err != nil {
+			return ""
+		}
+		space, _ := h.snapshotOwner(t, p.SnapshotID)
+		return space
+	}
+	return h.ownerOf(p.SandboxID)
+}
+
+// plainCalls are the gateway's plaintext calls and port streams in flight, by their space, so they end when it turns
+// E2E on (watchPlain).
+type plainCalls struct {
+	mu       sync.Mutex
+	next     int
+	calls    map[int]plainCall
+	watching bool
+}
+
+type plainCall struct {
+	space string
+	end   func()
+}
+
+// watchPlain ends end's call when space turns E2E on, looking every plainRecheck while any such call runs. forget is
+// for when the call is over.
+func (h *Host) watchPlain(space string, end func()) (forget func()) {
+	if space == "" || h.e2e == nil {
+		return func() {}
+	}
+	pc := &h.plain
+	pc.mu.Lock()
+	defer pc.mu.Unlock()
+	if pc.calls == nil {
+		pc.calls = map[int]plainCall{}
+	}
+	pc.next++
+	n := pc.next
+	pc.calls[n] = plainCall{space, end}
+	if !pc.watching {
+		pc.watching = true
+		go h.watchPlainLoop()
+	}
+	return func() {
+		pc.mu.Lock()
+		delete(pc.calls, n)
+		pc.mu.Unlock()
+	}
+}
+
+func (h *Host) watchPlainLoop() {
+	every := h.plainRecheck
+	if every <= 0 {
+		every = 2 * time.Second
+	}
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+	pc := &h.plain
+	for range tick.C {
+		pc.mu.Lock()
+		if len(pc.calls) == 0 {
+			pc.watching = false
+			pc.mu.Unlock()
+			return
+		}
+		var ending []func()
+		for n, c := range pc.calls {
+			if h.e2eMode(c.space) != e2e.ModeOff {
+				ending = append(ending, c.end)
+				delete(pc.calls, n)
+			}
+		}
+		pc.mu.Unlock()
+		for _, end := range ending {
+			end()
+		}
+	}
 }
 
 // serveE2E runs one E2E session on conn, for a session the control plane relays to sandboxID.

@@ -316,7 +316,13 @@ func (s *session) openPort(ctx context.Context, raw json.RawMessage) (any, error
 	}
 	s.streams[p.Stream] = conn
 	s.mu.Unlock()
+	// A plaintext port closes if its sandbox's space turns E2E on while it is open.
+	forget := func() {}
+	if p.Port != proto.PortE2E {
+		forget = s.host.watchPlain(s.host.ownerOf(p.SandboxID), func() { conn.Close() })
+	}
 	go func() {
+		defer forget()
 		buf := make([]byte, 32*1024)
 		for {
 			n, err := conn.Read(buf)

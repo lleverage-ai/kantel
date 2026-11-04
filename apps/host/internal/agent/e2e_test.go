@@ -751,3 +751,42 @@ func TestASessionDoesntReachItsSandboxsIDInAnotherSpace(t *testing.T) {
 		t.Fatalf("%d commands ran", len(tier.execs))
 	}
 }
+
+// A plaintext command, and a plaintext port, that started while the space was off end when the host joins its chain.
+func TestTurningE2EOnEndsPlaintextCallsInFlight(t *testing.T) {
+	h, _, v := e2eHost(t)
+	h.plainRecheck = 20 * time.Millisecond
+	path := filepath.Join(h.cfg.Root, "e2e", "spaces", v.Space+".json")
+	aside := path + ".aside"
+	if err := os.Rename(path, aside); err != nil {
+		t.Fatal(err)
+	}
+	exec, _ := json.Marshal(map[string]any{"sandboxId": "sbx_one", "command": "tail -f /home/user/.env"})
+	ctx, done, err := h.gatewayGuard(context.Background(), proto.MethodExec, exec)
+	if err != nil {
+		t.Fatalf("the space is off, so its exec is let in: %v", err)
+	}
+	defer done()
+	port, app := net.Pipe()
+	defer app.Close()
+	forget := h.watchPlain(v.Space, func() { port.Close() })
+	defer forget()
+	select {
+	case <-ctx.Done():
+		t.Fatal("cancelled while the space was off")
+	case <-time.After(100 * time.Millisecond):
+	}
+	// The host joins: its chain for the space appears.
+	if err := os.Rename(aside, path); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the plaintext exec ran on after E2E came on")
+	}
+	_ = app.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := app.Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("the plaintext port stayed open: %v", err)
+	}
+}
