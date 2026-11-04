@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
@@ -165,49 +166,124 @@ func (m *Manager) snapshotLower(id string) string {
 	return m.snapshotRootfs(snap)
 }
 
+// gone is whether a reference read failed only because it isn't there (deleted, or not yet written), rather than
+// because it couldn't be read: a walk of what is in use may pass over the first, never the second.
+func gone(err error) bool {
+	return errors.Is(err, os.ErrNotExist)
+}
+
+// vmRootfsChecked is vmRootfs for a walk of what is in use: "" for a VM directory with no root filesystem link (gone,
+// or one that isn't a link, which names no version), an error for one that couldn't be read.
+func vmRootfsChecked(vm string) (string, error) {
+	target, err := os.Readlink(filepath.Join(vm, fc.RootfsFile))
+	if err == nil {
+		return target, nil
+	}
+	if gone(err) || errors.Is(err, syscall.EINVAL) {
+		return "", nil
+	}
+	return "", err
+}
+
+// scanSnapshots is every snapshot's metadata, as snapshotsOf (unsorted), but says which couldn't be read or decoded,
+// which snapshotsOf passes over: a prune or a pinning pass that went ahead without one would miss the base it is on.
+// A snapshot whose directory or metadata isn't there (deleted, or not yet written, when its sandbox still names the
+// base) is no reference.
+func (m *Manager) scanSnapshots() ([]snapshotMeta, error) {
+	root := filepath.Join(m.cfg.Root, "snapshots")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if gone(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("listing snapshots: %w", err)
+	}
+	var out []snapshotMeta
+	var errs []error
+	for _, e := range entries {
+		if !validID(e.Name()) {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(root, e.Name(), "meta.json"))
+		if gone(err) {
+			continue
+		}
+		var snap snapshotMeta
+		if err == nil {
+			err = json.Unmarshal(raw, &snap)
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf("snapshot %s: %w", e.Name(), err))
+			continue
+		}
+		out = append(out, snap)
+	}
+	return out, errors.Join(errs...)
+}
+
 // BasesInUse are the image versions the tier's sandboxes, warm sandboxes, snapshots and templates are on: what a
-// prune of old versions must keep.
-func (m *Manager) BasesInUse() map[string]bool {
+// prune of old versions must keep. A reference it couldn't read is an error, and the caller keeps every version: a
+// partial answer would let a prune remove a version something still boots on.
+func (m *Manager) BasesInUse() (map[string]bool, error) {
 	in := map[string]bool{}
+	var errs []error
 	add := func(p string) {
 		if v := images.VersionOf(p); v != "" {
 			in[v] = true
 		}
 	}
+	addVM := func(vm string) {
+		target, err := vmRootfsChecked(vm)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", vm, err))
+		}
+		add(target)
+	}
 	// The pool before the sandboxes: a claim moves a warm sandbox from one to the other, so it is seen in either.
 	for _, pattern := range []string{filepath.Join(m.cfg.Root, "pool", "*", "vm"), filepath.Join(m.cfg.Root, "sandboxes", "*", "vm")} {
 		vms, _ := filepath.Glob(pattern)
 		for _, vm := range vms {
-			add(vmRootfs(vm))
+			addVM(vm)
 		}
 	}
-	for _, snap := range m.snapshotsOf("") {
+	snaps, err := m.scanSnapshots()
+	if err != nil {
+		errs = append(errs, err)
+	}
+	for _, snap := range snaps {
 		add(snap.Rootfs)
 	}
-	entries, _ := os.ReadDir(filepath.Join(m.cfg.Root, "templates"))
+	entries, err := os.ReadDir(filepath.Join(m.cfg.Root, "templates"))
+	if err != nil && !gone(err) {
+		errs = append(errs, fmt.Errorf("listing templates: %w", err))
+	}
 	for _, e := range entries {
 		dir := filepath.Join(m.cfg.Root, "templates", e.Name())
 		if raw, err := os.ReadFile(filepath.Join(dir, "rootfs")); err == nil {
 			add(strings.TrimSpace(string(raw)))
+		} else if !gone(err) {
+			errs = append(errs, fmt.Errorf("%s: %w", dir, err))
 		}
 		// One being built (<size>.building, <size>.next.building) links its images from its VM directory.
-		add(vmRootfs(filepath.Join(dir, "vm")))
+		addVM(filepath.Join(dir, "vm"))
 	}
-	return in
+	return in, errors.Join(errs...)
 }
 
 // PinBases, with PinBase, points what still names Rootfs itself (made before the images were versioned) at the file
 // Rootfs resolves to now, which is what it was made on, so a later update doesn't move it. Each file is replaced
 // durably (the old one stays readable until its replacement is in place) and a pass that fails is said: an update or
 // a prune doesn't go ahead until one has succeeded, as a legacy reference follows current wherever it moves. Safe to
-// run again; the first success is remembered.
+// run again; the first success is remembered. It holds the base lock to write for the whole pass, so nothing that
+// makes, moves or rewrites a reference (a snapshot's metadata, pruneAuto's included) runs beside it, and a snapshot
+// it couldn't read fails the pass rather than being left to follow current.
 func (m *Manager) PinBases() error {
 	m.pinning.Lock()
 	defer m.pinning.Unlock()
 	if m.pinned.Load() {
 		return nil
 	}
-	defer m.holdBases()()
+	defer m.LockBases()()
 	if err := m.pinBasesLocked(); err != nil {
 		return fmt.Errorf("pinning what this host made before its images were versioned: %w", err)
 	}
@@ -223,7 +299,12 @@ func (m *Manager) pinBasesLocked() error {
 	var errs []error
 	vms, _ := filepath.Glob(filepath.Join(m.cfg.Root, "sandboxes", "*", "vm"))
 	for _, vm := range vms {
-		if vmRootfs(vm) == m.cfg.Rootfs {
+		target, err := vmRootfsChecked(vm)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", vm, err))
+			continue
+		}
+		if target == m.cfg.Rootfs {
 			if err := relinkRootfs(vm, base); err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", vm, err))
 			}
@@ -232,13 +313,22 @@ func (m *Manager) pinBasesLocked() error {
 	readies, _ := filepath.Glob(filepath.Join(m.cfg.Root, "templates", "*", "ready"))
 	for _, ready := range readies {
 		dir := filepath.Dir(ready)
+		// One whose record can't be read isn't taken for one from before it was recorded: that would move it.
+		if _, err := os.ReadFile(filepath.Join(dir, "rootfs")); err != nil && !gone(err) {
+			errs = append(errs, fmt.Errorf("%s: %w", dir, err))
+			continue
+		}
 		if m.templateRootfs(dir) == m.cfg.Rootfs {
 			if err := fsutil.WriteFileDurably(filepath.Join(dir, "rootfs"), []byte(base), 0o600); err != nil {
 				errs = append(errs, fmt.Errorf("%s: %w", dir, err))
 			}
 		}
 	}
-	for _, snap := range m.snapshotsOf("") {
+	snaps, err := m.scanSnapshots()
+	if err != nil {
+		errs = append(errs, err)
+	}
+	for _, snap := range snaps {
 		if snap.Rootfs != "" && snap.Rootfs != m.cfg.Rootfs {
 			continue
 		}

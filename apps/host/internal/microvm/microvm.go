@@ -48,6 +48,7 @@ import (
 	"github.com/lleverage-ai/kantel/apps/host/internal/fsutil"
 	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
 	"github.com/lleverage-ai/kantel/apps/host/internal/guestinit"
+	"github.com/lleverage-ai/kantel/apps/host/internal/images"
 	"github.com/lleverage-ai/kantel/apps/host/internal/network"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
@@ -167,12 +168,19 @@ type Manager struct {
 	// pinning serialises PinBases; pinned is its first success (base.go).
 	pinning sync.Mutex
 	pinned  atomic.Bool
-	// guest is what the image has, as a template's agent reported it (guestFile); every sandbox shares the image.
-	guest atomic.Pointer[proto.GuestCapabilities]
+	// guests are what each image has, as the agent in a template on it reported (guestFile), by that image's version
+	// ("" when the images aren't versioned); a nil report is an agent too old to say. A sandbox is told its own base's:
+	// with image patching, sandboxes on older versions run beside ones on the current version.
+	guestsMu sync.Mutex
+	guests   map[string]*proto.GuestCapabilities
 }
 
-// guestFile, in a template, is its agent's capability report.
-const guestFile = "guest.json"
+// guestFile, in a template, is its agent's capability report. Reports for versioned images are kept in guestsDir too,
+// <version>.json, so a sandbox on an older version still has its own once its template has been rebuilt.
+const (
+	guestFile = "guest.json"
+	guestsDir = "guests"
+)
 
 // bootConfig is a cold boot of size on kernel (kernelFor: its root filesystem's version's): through Kantel's
 // initramfs when the host injects the agent.
@@ -184,27 +192,90 @@ func (m *Manager) bootConfig(size proto.Size, kernel, tap, mac string, cid uint3
 	return cfg
 }
 
-// noteGuest keeps what a template's agent reported (nil: an agent too old to say).
+// noteGuest keeps what a template's agent reported (nil: an agent too old to say), as what the image version the
+// template is on has.
 func (m *Manager) noteGuest(dir string, caps *proto.GuestCapabilities) {
-	// Even nil: a template with no report mustn't keep the one before it (another image's).
-	m.guest.Store(caps)
-	if caps == nil {
-		_ = os.Remove(filepath.Join(dir, guestFile))
-		return
+	base := images.VersionOf(m.templateRootfs(dir))
+	// Even nil: a template with no report mustn't keep the one before it on the same image.
+	m.guestsMu.Lock()
+	if m.guests == nil {
+		m.guests = map[string]*proto.GuestCapabilities{}
 	}
-	if raw, err := json.Marshal(caps); err == nil {
-		_ = os.WriteFile(filepath.Join(dir, guestFile), raw, 0o600)
+	m.guests[base] = caps
+	m.guestsMu.Unlock()
+	files := []string{filepath.Join(dir, guestFile)}
+	if base != "" && m.cfg.Root != "" {
+		files = append(files, filepath.Join(m.cfg.Root, guestsDir, base+".json"))
+	}
+	var raw []byte
+	if caps != nil {
+		raw, _ = json.Marshal(caps)
+	}
+	for _, file := range files {
+		if raw == nil {
+			_ = os.Remove(file)
+			continue
+		}
+		_ = os.MkdirAll(filepath.Dir(file), 0o700)
+		_ = fsutil.WriteFileDurably(file, raw, 0o600)
 	}
 }
 
-// loadGuest reads a ready template's report, for a host that restarted (its templates are kept).
+// loadGuest reads a ready template's report, for a host that restarted (its templates are kept), unless its image's is
+// already known.
 func (m *Manager) loadGuest(dir string) {
-	if m.guest.Load() != nil {
+	base := images.VersionOf(m.templateRootfs(dir))
+	m.guestsMu.Lock()
+	defer m.guestsMu.Unlock()
+	if _, known := m.guests[base]; known {
 		return
 	}
 	var caps proto.GuestCapabilities
 	if raw, err := os.ReadFile(filepath.Join(dir, guestFile)); err == nil && json.Unmarshal(raw, &caps) == nil {
-		m.guest.Store(&caps)
+		if m.guests == nil {
+			m.guests = map[string]*proto.GuestCapabilities{}
+		}
+		m.guests[base] = &caps
+	}
+}
+
+// loadGuests reads the reports kept for each image version (guestsDir), for a host that restarted.
+func (m *Manager) loadGuests() {
+	entries, _ := os.ReadDir(filepath.Join(m.cfg.Root, guestsDir))
+	m.guestsMu.Lock()
+	defer m.guestsMu.Unlock()
+	for _, e := range entries {
+		base, ok := strings.CutSuffix(e.Name(), ".json")
+		if !ok || !images.ValidVersion(base) {
+			continue
+		}
+		var caps proto.GuestCapabilities
+		if raw, err := os.ReadFile(filepath.Join(m.cfg.Root, guestsDir, e.Name())); err == nil && json.Unmarshal(raw, &caps) == nil {
+			if m.guests == nil {
+				m.guests = map[string]*proto.GuestCapabilities{}
+			}
+			m.guests[base] = &caps
+		}
+	}
+}
+
+// guestOf is what the image version base has, as its template's agent reported (nil when no report is known).
+func (m *Manager) guestOf(base string) *proto.GuestCapabilities {
+	m.guestsMu.Lock()
+	defer m.guestsMu.Unlock()
+	return m.guests[base]
+}
+
+// ForgetGuests drops the reports kept for image versions a prune removed.
+func (m *Manager) ForgetGuests(versions []string) {
+	m.guestsMu.Lock()
+	defer m.guestsMu.Unlock()
+	for _, v := range versions {
+		if !images.ValidVersion(v) {
+			continue
+		}
+		delete(m.guests, v)
+		_ = os.Remove(filepath.Join(m.cfg.Root, guestsDir, v+".json"))
 	}
 }
 
@@ -226,6 +297,7 @@ func New(cfg Config) (*Manager, error) {
 	m := &Manager{cfg: cfg, log: cfg.Log.With("tier", Tier), sandboxes: map[string]*sandbox{}, pool: map[string][]*warm{}, poolWant: map[string]int{}, filling: map[string]bool{}, templates: map[string]*sync.Mutex{}, inUse: map[string]*sync.RWMutex{}, rebuilding: map[string]bool{}}
 	m.nextCID.Store(uint32(time.Now().UnixMilli()%100000) + 100)
 	m.spool = newSpool(cfg.SpoolDir, cfg.SpoolMaxMiB<<20, m.log)
+	m.loadGuests()
 	for _, size := range cfg.Sizes {
 		m.templates[size.Name] = &sync.Mutex{}
 		m.inUse[size.Name] = &sync.RWMutex{}
@@ -246,6 +318,10 @@ func New(cfg Config) (*Manager, error) {
 	if err := m.PinBases(); err != nil {
 		// Retried before each image update and prune, which wait for it.
 		m.log.Warn("couldn't pin everything to its images; image updates and prunes wait until it is", "error", err)
+	}
+	// A template from before its base was recorded is on a version now it is pinned: its report is that version's.
+	for _, size := range cfg.Sizes {
+		m.loadGuest(filepath.Join(cfg.Root, "templates", size.Name))
 	}
 	// Memory files a previous run spooled and hadn't yet moved to disk.
 	vmMems, _ := filepath.Glob(filepath.Join(cfg.Root, "sandboxes", "*", "vm", "mem"))
@@ -314,7 +390,8 @@ func (m *Manager) info(s *sandbox) proto.SandboxInfo {
 	if s.link != nil {
 		info.Address = s.link.GuestIP.String()
 	}
-	info.Guest = m.guest.Load()
+	// Its own image's report: a template rebuilt on a newer version doesn't change what this one boots.
+	info.Guest = m.guestOf(info.Base)
 	return info
 }
 
@@ -1113,6 +1190,17 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.meta.State == proto.StateRunning {
+		// A rebase is a cold boot on the target images: a machine running on others (one a gateway lost track of) isn't
+		// that, so it is refused rather than answered as done. One already on them is that boot, retried.
+		if coldBoot && p.Rebase {
+			target := p.RebaseTo
+			if target == "" {
+				target = images.VersionOf(m.baseRootfs())
+			}
+			if have := baseOf(s.vmDir()); have != target {
+				return proto.SandboxInfo{}, conflict("sandbox %s is running on images %q, not %q: stop it before restarting it on them", s.meta.ID, have, target)
+			}
+		}
 		// Running already (a retry, say). What it holds is on disk before it says so: an earlier boot that couldn't
 		// write it failed, and a restart mustn't bring back the egress before it.
 		if s.unsaved {

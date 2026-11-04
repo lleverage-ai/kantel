@@ -66,8 +66,15 @@ func TestBasesInUse(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "templates", "default", "rootfs"), []byte(images+"four/sandbox.ext4\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// A snapshot whose metadata isn't written yet (its sandbox names its base) is no reference, and no error.
+	if err := os.MkdirAll(filepath.Join(root, "snapshots", "snap_2"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	m := &Manager{cfg: Config{Root: root}}
-	got := m.BasesInUse()
+	got, err := m.BasesInUse()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, v := range []string{"one", "two", "three", "four", "five"} {
 		if !got[v] {
 			t.Errorf("%s isn't in use: %v", v, got)
@@ -75,6 +82,159 @@ func TestBasesInUse(t *testing.T) {
 	}
 	if len(got) != 5 {
 		t.Errorf("in use: %v", got)
+	}
+}
+
+// A snapshot whose metadata can't be read or decoded may be the only reference to a version: BasesInUse says so
+// rather than answering without it, and a pinning pass fails rather than being remembered as done. Once it can be
+// read, both go ahead and see its base.
+func TestAnUnreadableSnapshotStopsPruningAndPinning(t *testing.T) {
+	images := versionedImages(t)
+	root := t.TempDir()
+	m := &Manager{cfg: Config{Root: root, Rootfs: filepath.Join(images, "sandbox.ext4"), PinBase: true}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	dir := m.snapshotDir("snap_1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	metaFile := filepath.Join(dir, "meta.json")
+	if err := os.WriteFile(metaFile, []byte(`{"id":"snap_1","rootfs":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := m.BasesInUse(); err == nil {
+		t.Fatalf("an undecodable snapshot was passed over: %v", got)
+	}
+	if err := m.PinBases(); err == nil || m.pinned.Load() {
+		t.Fatalf("a pinning pass that couldn't read a snapshot succeeded: %v", err)
+	}
+	raw, _ := json.Marshal(snapshotMeta{SnapshotInfo: proto.SnapshotInfo{ID: "snap_1", Kind: "saved"}, Rootfs: filepath.Join(images, "v", "old", "sandbox.ext4")})
+	if err := os.WriteFile(metaFile, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.PinBases(); err != nil || !m.pinned.Load() {
+		t.Fatalf("pinning once the snapshot can be read: %v", err)
+	}
+	got, err := m.BasesInUse()
+	if err != nil || !got["old"] || len(got) != 1 {
+		t.Fatalf("in use = %v, %v; want old alone", got, err)
+	}
+}
+
+// A pinning pass rewrites snapshot metadata: it holds the base lock to write, so it waits for what holds it to read
+// (pruneAuto's rewrite of the same metadata, a snapshot's save) and they can't overlap.
+func TestPinBasesWaitsForSnapshotWriters(t *testing.T) {
+	images := versionedImages(t)
+	root := t.TempDir()
+	m := &Manager{cfg: Config{Root: root, Rootfs: filepath.Join(images, "sandbox.ext4"), PinBase: true}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	dir := m.snapshotDir("snap_1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"id":"snap_1","sandboxId":"sbx_1","kind":"auto","createdAt":1793491200000,"memory":true}`
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unhold := m.holdBases() // as pruneAuto holds it while it rewrites
+	done := make(chan error, 1)
+	go func() { done <- m.PinBases() }()
+	select {
+	case err := <-done:
+		t.Fatalf("a pinning pass ran beside a snapshot writer: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	// The writer's rewrite (pruneAuto dropping memory) lands first; the pass then pins what it wrote.
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), []byte(strings.Replace(legacy, `"memory":true`, `"memory":false`, 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unhold()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the pinning pass didn't go ahead once the writer was done")
+	}
+	snap, err := m.readSnapshot("snap_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Base != "new" || snap.Memory {
+		t.Fatalf("after the pass: base %q, memory %v; want new, false", snap.Base, snap.Memory)
+	}
+}
+
+// A rebase start is a cold boot on the target images: a machine still running on others (one its gateway recorded as
+// errored) is refused, not answered as booted. An ordinary start stays a no-op for a running machine, and so does a
+// rebase start whose machine is already on the target (that boot, retried).
+func TestARebaseStartRefusesAMachineRunningOnOtherImages(t *testing.T) {
+	images := versionedImages(t)
+	root := t.TempDir()
+	dir := filepath.Join(root, "sandboxes", "sbx_1")
+	linkVM(t, filepath.Join(dir, "vm"), filepath.Join(images, "v", "old", "sandbox.ext4"))
+	s := &sandbox{dir: dir, meta: meta{ID: "sbx_1", State: proto.StateRunning}}
+	m := &Manager{cfg: Config{Root: root, Rootfs: filepath.Join(images, "sandbox.ext4"), PinBase: true}, log: slog.New(slog.NewTextHandler(io.Discard, nil)), sandboxes: map[string]*sandbox{"sbx_1": s}}
+	ctx := context.Background()
+	var perr *proto.Error
+	if _, err := m.Resume(ctx, proto.ResumeParams{SandboxID: "sbx_1", Rebase: true, RebaseTo: "new"}, true); !errors.As(err, &perr) || perr.Code != proto.ErrConflict {
+		t.Fatalf("a rebase start of a machine running on old: %v", err)
+	}
+	if _, err := m.Resume(ctx, proto.ResumeParams{SandboxID: "sbx_1", Rebase: true}, true); !errors.As(err, &perr) || perr.Code != proto.ErrConflict {
+		t.Fatalf("a rebase start with no named target, of a machine running on old: %v", err)
+	}
+	if info, err := m.Resume(ctx, proto.ResumeParams{SandboxID: "sbx_1"}, true); err != nil || info.Base != "old" {
+		t.Fatalf("an ordinary start of a running machine: %+v, %v", info, err)
+	}
+	if err := relinkRootfs(s.vmDir(), filepath.Join(images, "v", "new", "sandbox.ext4")); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := m.Resume(ctx, proto.ResumeParams{SandboxID: "sbx_1", Rebase: true, RebaseTo: "new"}, true); err != nil || info.Base != "new" {
+		t.Fatalf("a retried rebase start of a machine already on new: %+v, %v", info, err)
+	}
+}
+
+// Each image version keeps its own guest report: a template rebuilt on a newer version doesn't change what a sandbox
+// still on the older one is told it has, a rebase does, and the reports outlive a restart and the older template.
+func TestGuestReportsFollowEachSandboxsBase(t *testing.T) {
+	images := versionedImages(t)
+	root := t.TempDir()
+	m := &Manager{cfg: Config{Root: root, Rootfs: filepath.Join(images, "sandbox.ext4"), PinBase: true}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	template := func(dir, version string) string {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "rootfs"), []byte(filepath.Join(images, "v", version, "sandbox.ext4")), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	m.noteGuest(template(filepath.Join(root, "templates", "default"), "old"), &proto.GuestCapabilities{ReportedAt: 1})
+	dir := filepath.Join(root, "sandboxes", "sbx_1")
+	linkVM(t, filepath.Join(dir, "vm"), filepath.Join(images, "v", "old", "sandbox.ext4"))
+	s := &sandbox{dir: dir, meta: meta{ID: "sbx_1", State: proto.StateStopped}}
+	// The background rebuild on new.
+	m.noteGuest(template(filepath.Join(root, "templates", "default.next"), "new"), &proto.GuestCapabilities{ReportedAt: 2})
+	if got := m.info(s).Guest; got == nil || got.ReportedAt != 1 {
+		t.Fatalf("a sandbox on old is told %+v", got)
+	}
+	// A restart, with old's template gone: the kept report is read back.
+	if err := os.RemoveAll(filepath.Join(root, "templates", "default")); err != nil {
+		t.Fatal(err)
+	}
+	restarted := &Manager{cfg: m.cfg, log: m.log}
+	restarted.loadGuests()
+	if got := restarted.info(s).Guest; got == nil || got.ReportedAt != 1 {
+		t.Fatalf("after a restart, a sandbox on old is told %+v", got)
+	}
+	if err := restarted.rebase(s, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := restarted.info(s).Guest; got == nil || got.ReportedAt != 2 {
+		t.Fatalf("after a rebase onto new, the sandbox is told %+v", got)
+	}
+	// A prune that removed old forgets its report.
+	restarted.ForgetGuests([]string{"old"})
+	if _, err := os.Stat(filepath.Join(root, guestsDir, "old.json")); !os.IsNotExist(err) || restarted.guestOf("old") != nil {
+		t.Errorf("old's report outlived its prune: %v", err)
 	}
 }
 

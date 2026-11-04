@@ -116,6 +116,9 @@ type HostImages struct {
 	AutoUpdate bool `json:"autoUpdate"`
 	// Signatures is the host's signature policy: "require", "warn" or "off".
 	Signatures string `json:"signatures"`
+	// State, when host.images is asked about a sandbox, is its state on this host (running, stopped, ...): a gateway
+	// whose record of it is `error` learns whether its machine is still running before it restarts it on new images.
+	State string `json:"state,omitempty"`
 }
 
 // ImageChannel is the host images Kantel wants hosts on.

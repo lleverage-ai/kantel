@@ -126,13 +126,14 @@ type baseTier struct {
 	unlock  func()
 	unlocks int
 	pinErr  error
+	walkErr error
 }
 
 func (b *baseTier) PinBases() error { return b.pinErr }
 
-func (b *baseTier) BasesInUse() map[string]bool {
+func (b *baseTier) BasesInUse() (map[string]bool, error) {
 	b.walked = b.locked
-	return b.inUse
+	return b.inUse, b.walkErr
 }
 
 func (b *baseTier) ImagesChanged() {}
@@ -190,6 +191,42 @@ func TestAPruneHoldsTheBasesUntilItHasRemoved(t *testing.T) {
 		if gone(v) {
 			t.Errorf("%s was removed", v)
 		}
+	}
+}
+
+// A tier that couldn't read every reference to a version (a snapshot's metadata it couldn't read) stops the prune:
+// nothing is removed, the lock is let go, and the next prune, once it can read them, removes only what is unused.
+func TestAPruneRemovesNothingWhenAReferenceCannotBeRead(t *testing.T) {
+	h := newLifecycleHost(t, newLifecycleTier())
+	store := images.Store{Dir: filepath.Join(h.cfg.Root, "images")}
+	first := time.Now().Add(-time.Hour)
+	for i, v := range []string{"a", "b", "c", "d", "e"} {
+		dir := filepath.Join(store.Dir, "v", v)
+		writeFile(t, filepath.Join(dir, "manifest.json"), "{}")
+		at := first.Add(time.Duration(i) * time.Minute)
+		if err := os.Chtimes(dir, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Activate("e"); err != nil {
+		t.Fatal(err)
+	}
+	tier := &baseTier{inUse: map[string]bool{}, walkErr: errors.New("snapshot snap_1: permission denied")}
+	h.tiers = map[string]Tier{microvm.Tier: tier}
+	h.order = []string{microvm.Tier}
+	h.patching.updater = &images.Updater{Store: store, Log: h.log}
+	if removed := h.pruneImages(); len(removed) != 0 {
+		t.Fatalf("a prune with an unread reference removed %v", removed)
+	}
+	if tier.locked || tier.unlocks != 1 {
+		t.Fatalf("still locked %v, unlocked %d times", tier.locked, tier.unlocks)
+	}
+	// Read now, and on b: b stays, the rest unused go.
+	tier.walkErr, tier.inUse = nil, map[string]bool{"b": true}
+	removed := h.pruneImages()
+	slices.Sort(removed)
+	if !slices.Equal(removed, []string{"a", "c"}) {
+		t.Fatalf("removed %v, want [a c]", removed)
 	}
 }
 

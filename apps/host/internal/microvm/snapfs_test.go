@@ -143,12 +143,12 @@ func TestNoteGuestForgetsTheLastReport(t *testing.T) {
 	dir := t.TempDir()
 	m := &Manager{}
 	m.noteGuest(dir, &proto.GuestCapabilities{Arch: "x86_64"})
-	if _, err := os.Stat(filepath.Join(dir, guestFile)); err != nil || m.guest.Load() == nil {
+	if _, err := os.Stat(filepath.Join(dir, guestFile)); err != nil || m.guestOf("") == nil {
 		t.Fatalf("a report isn't kept: %v", err)
 	}
 	// A template with no report (an older agent): nothing of the one before it stays.
 	m.noteGuest(dir, nil)
-	if _, err := os.Stat(filepath.Join(dir, guestFile)); !os.IsNotExist(err) || m.guest.Load() != nil {
-		t.Errorf("the last template's report outlives it: %v, %v", err, m.guest.Load())
+	if _, err := os.Stat(filepath.Join(dir, guestFile)); !os.IsNotExist(err) || m.guestOf("") != nil {
+		t.Errorf("the last template's report outlives it: %v, %v", err, m.guestOf(""))
 	}
 }

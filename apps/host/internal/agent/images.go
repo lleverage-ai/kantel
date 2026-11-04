@@ -67,8 +67,9 @@ func (h *Host) isolateImages(cfg Config) (kernel, rootfs string) {
 
 // imageTier is a tier whose sandboxes are pinned to image versions (microvm).
 type imageTier interface {
-	// BasesInUse are the versions its sandboxes, snapshots and templates are on.
-	BasesInUse() map[string]bool
+	// BasesInUse are the versions its sandboxes, snapshots and templates are on; an error when a reference couldn't be
+	// read, so the answer may be missing one.
+	BasesInUse() (map[string]bool, error)
 	// LockBases holds off every new or moving reference to a version (a create, a template swap, a warm sandbox's move,
 	// a snapshot's save) until unlock: a prune holds it from BasesInUse until its removals are done.
 	LockBases() (unlock func())
@@ -95,19 +96,26 @@ func (h *Host) pinBases() error {
 // configuredVersions are the store versions the host config's image and kernel paths resolve to: one pinned by path
 // to an older version's file is in use for as long as the config names it (the defaults, through current, are the
 // current version's).
-func (h *Host) configuredVersions() map[string]bool {
+// A path that isn't there names no version; one that couldn't be resolved is an error, as it might name one.
+func (h *Host) configuredVersions() (map[string]bool, error) {
 	in := map[string]bool{}
+	var errs []error
 	for _, p := range append([]string{h.cfg.Kernel, h.cfg.SandboxImage, h.cfg.IsolateImage}, h.patching.held...) {
 		if p == "" {
 			continue
 		}
-		if resolved, err := filepath.EvalSymlinks(p); err == nil {
-			if v := images.VersionOf(resolved); v != "" {
-				in[v] = true
+		resolved, err := filepath.EvalSymlinks(p)
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				errs = append(errs, err)
 			}
+			continue
+		}
+		if v := images.VersionOf(resolved); v != "" {
+			in[v] = true
 		}
 	}
-	return in
+	return in, errors.Join(errs...)
 }
 
 func imageStore(cfg Config) images.Store { return images.Store{Dir: cfg.ImagesDir} }
@@ -244,6 +252,13 @@ func (h *Host) hostImages(params json.RawMessage) (any, error) {
 		return nil, err
 	}
 	answer.Version = version
+	// Its state here, which a gateway whose record says `error` can't know: a restart on new images stops it first when
+	// its machine is still running.
+	if t, _, err := h.tierOfNamed(p.SandboxID); err == nil {
+		if info, err := t.Get(p.SandboxID); err == nil {
+			answer.State = info.State
+		}
+	}
 	return answer, nil
 }
 
@@ -322,11 +337,14 @@ func (h *Host) pruneImages() []string {
 	}
 	inUse := func() (func(string) bool, func()) {
 		var unlocks []func()
-		used := h.configuredVersions()
+		used, err := h.configuredVersions()
+		errs := []error{err}
 		for _, name := range h.order {
 			if t, ok := h.tiers[name].(imageTier); ok {
 				unlocks = append(unlocks, t.LockBases())
-				for v := range t.BasesInUse() {
+				bases, err := t.BasesInUse()
+				errs = append(errs, err)
+				for v := range bases {
 					used[v] = true
 				}
 			}
@@ -336,11 +354,21 @@ func (h *Host) pruneImages() []string {
 				unlocks[i]()
 			}
 		}
+		if err := errors.Join(errs...); err != nil {
+			// Every version is kept: one only an unread reference names would otherwise go. The next prune tries again.
+			h.log.Warn("not pruning host images: couldn't read everything that may use them", "error", err)
+			return func(string) bool { return true }, release
+		}
 		return func(v string) bool { return used[v] }, release
 	}
 	removed := u.Prune(inUse, keepImageVersions)
 	if len(removed) > 0 {
 		h.log.Info("removed host image versions nothing uses", "versions", removed)
+		for _, name := range h.order {
+			if t, ok := h.tiers[name].(interface{ ForgetGuests(versions []string) }); ok {
+				t.ForgetGuests(removed)
+			}
+		}
 	}
 	return removed
 }
