@@ -98,6 +98,9 @@ const tooLarge = (limit: number) =>
 
 /** The request with its body read here, up to `limit`, or a 413. */
 export async function buffered(request: Request, limit: number): Promise<Request | Response> {
+	// A GET or HEAD has no body to bound, and a Request can't be made with one (sign-in with GitHub and Google's
+	// start and callback are GETs).
+	if (request.method === "GET" || request.method === "HEAD") return request;
 	const body = await readLimited(request, limit);
 	if (body === undefined) return tooLarge(limit);
 	return new Request(request.url, { method: request.method, headers: request.headers, body });
