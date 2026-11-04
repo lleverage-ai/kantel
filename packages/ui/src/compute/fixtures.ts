@@ -1079,7 +1079,11 @@ const imageVersion = (
 
 const baseImage = (name: string, versions: readonly BaseImageVersion[]): BaseImage => ({
 	name,
-	repository: `ghcr.io/lleverage-ai/kantel-${name}`,
+	// The microVM host images are GitHub Releases; the others are containers on GHCR.
+	repository:
+		name === "host"
+			? `https://github.com/lleverage-ai/kantel/releases/download/${versions[0]?.version ?? "host-images"}`
+			: `ghcr.io/lleverage-ai/kantel-${name}`,
 	channel: "stable",
 	...(versions[0] === undefined ? {} : { latest: versions[0] }),
 	versions,
@@ -1186,7 +1190,7 @@ function sampleImages(at: (time: number) => number): BaseImagesOverview {
 	return {
 		images,
 		templates,
-		indexUrl: "https://images.kantel.example.com/stable/index.json",
+		indexUrl: "https://github.com/lleverage-ai/kantel/releases/download/base-images/index.json",
 		generatedAt: ago(20 * MINUTE),
 	};
 }
@@ -2242,7 +2246,11 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						overview: () =>
 							gate(() =>
 								empty
-									? { images: [], templates: [], indexUrl: "https://images.kantel.example.com/stable/index.json" }
+									? {
+											images: [],
+											templates: [],
+											indexUrl: "https://github.com/lleverage-ai/kantel/releases/download/base-images/index.json",
+										}
 									: sampleImages(at),
 							),
 					},

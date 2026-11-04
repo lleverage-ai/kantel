@@ -521,7 +521,7 @@ export function SandboxPage({
 					{sandbox.base.security === true
 						? "This sandbox is on an outdated base image with security fixes waiting."
 						: "This sandbox is on an outdated base image."}{" "}
-					Kantel never patches a running sandbox; restart it on the latest base to pick up security fixes.
+					Kantel never patches a running sandbox: restart it on the latest base to pick up the newer image.
 				</Notice>
 			) : null}
 			{notice === undefined ? null : (
