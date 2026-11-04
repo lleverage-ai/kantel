@@ -221,6 +221,23 @@ func (env *protectedEnv) recordsCopy() []Record {
 	return append([]Record(nil), env.records...)
 }
 
+// recordsAtLeast is the records once there are n of them: a request is recorded as it finishes, which can be just
+// after the client has its answer. It fails the test if they don't come within a few seconds.
+func (env *protectedEnv) recordsAtLeast(n int) []Record {
+	env.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		recs := env.recordsCopy()
+		if len(recs) >= n {
+			return recs
+		}
+		if time.Now().After(deadline) {
+			env.t.Fatalf("%d records, not %d: %+v", len(recs), n, recs)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // noValues fails the test if a value got anywhere the sandbox or a log can see.
 func (env *protectedEnv) noValues(where string, text string) {
 	env.t.Helper()
