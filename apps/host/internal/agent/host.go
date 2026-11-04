@@ -169,13 +169,15 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 			log.Info("microVMs boot through Kantel's initramfs (injected guest agent)", "agent", cfg.GuestAgent, "initramfs", initrd)
 		}
 		mv, err := microvm.New(microvm.Config{
-			SpoolDir: spoolDir, SpoolMaxMiB: spoolMax, Initrd: initrd,
+			SpoolDir: spoolDir, SpoolMaxMiB: spoolMax, Initrd: initrd, TemplateRegistry: cfg.TemplateRegistry,
 			Root: cfg.Root + "/microvm", Firecracker: cfg.Firecracker, Kernel: cfg.Kernel, Rootfs: cfg.SandboxImage,
 			Sizes: sizes, Network: netm, ProxyPort: cfg.ProxyPort, DNS: cfg.DNS, Log: log,
 			PinBase: cfg.ImagePatching, BackgroundTemplates: cfg.ImagePatching,
 			Events: h.sandboxEvent,
 			Attach: h.attachSlot,
 			Detach: h.detachSlot,
+			// Creates, starts, resumes and template builds are admitted against the host's budget, as Capacity reports it.
+			Budget: h.budgetBeside(microvm.Tier),
 		})
 		if err != nil {
 			return nil, err
@@ -214,7 +216,7 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 	if cfg.ImagePatching {
 		h.startImagePatching(kvm)
 	}
-	h.facts = h.makeFacts()
+	h.facts = h.withRuntime(h.makeFacts())
 	go h.egressLog.run()
 	return h, nil
 }
@@ -280,17 +282,21 @@ func (h *Host) makeFacts() proto.Facts {
 	}
 }
 
-// Facts are what the host tells the control plane it is.
+// Facts are what the host tells the control plane it is, with FeatureTemplateBuild while it can build templates.
 func (h *Host) Facts() proto.Facts {
 	f := h.facts
 	if held := h.patching.facts.Load(); held != nil {
 		copied := *held
 		f.Images = &copied
 	}
+	if h.canBuildTemplates(context.Background()) == nil {
+		f.Features = append(append([]string{}, f.Features...), proto.FeatureTemplateBuild)
+	}
 	return f
 }
 
-// Capacity is what is free now.
+// Capacity is what is free now: the memory budget less what its sandboxes and its template builds use, and the free
+// disk less what its builds hold; with the builds named, as they are counted.
 func (h *Host) Capacity() proto.Capacity {
 	c := proto.Capacity{Warm: map[string]int{}, Load1: hostinfo.Load1(), FreeDiskGiB: hostinfo.FreeDiskGiB(h.cfg.Root)}
 	var used int64
@@ -300,9 +306,34 @@ func (h *Host) Capacity() proto.Capacity {
 		c.Running += running
 		c.Stopped += stopped
 	}
-	budget := int64(float64(h.facts.MemoryMiB) * h.cfg.OvercommitMemory)
-	c.FreeMemoryMiB = max(0, budget-used)
+	if t, err := h.templateTier(); err == nil {
+		ids, memoryMiB, diskGiB := t.TemplateBuilds()
+		used += memoryMiB
+		c.FreeDiskGiB = max(0, c.FreeDiskGiB-diskGiB)
+		c.Builds = ids
+	}
+	c.FreeMemoryMiB = max(0, h.memoryBudgetMiB()-used)
 	return c
+}
+
+// budgetBeside is what the tier named may use now (microvm.Config.Budget): the memory budget less what the other
+// tiers use, and the free disk. It never calls that tier, whose lock is held when it is called.
+func (h *Host) budgetBeside(tier string) func() (memoryMiB, diskGiB int64) {
+	return func() (int64, int64) {
+		memory := h.memoryBudgetMiB()
+		for name, t := range h.tiers {
+			if name != tier {
+				used, _, _ := t.Usage()
+				memory -= used
+			}
+		}
+		return memory, hostinfo.FreeDiskGiB(h.cfg.Root)
+	}
+}
+
+// memoryBudgetMiB is the memory the host gives its sandboxes and template builds: what it has for them, overcommitted.
+func (h *Host) memoryBudgetMiB() int64 {
+	return int64(float64(h.facts.MemoryMiB) * h.cfg.OvercommitMemory)
 }
 
 // ResetTemplates drops a tier's templates (a benchmark's cold start).
@@ -492,6 +523,9 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		t, err := h.tier(p.Tier)
 		if err != nil {
 			return nil, err
+		}
+		if p.Template != nil && h.tierName(p.Tier) != microvm.Tier {
+			return nil, invalid("a sandbox made from a template is a microVM")
 		}
 		defer h.lifecycle.lock(p.SandboxID)()
 		if _, err := h.tierOf(p.SandboxID); err == nil {
@@ -835,6 +869,8 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		return map[string]any{"data": base64.StdEncoding.EncodeToString(data), "size": len(data)}, nil
 	case proto.MethodHostImages:
 		return h.hostImages(params)
+	case proto.MethodTemplateBuild, proto.MethodTemplateDelete:
+		return h.templateCall(ctx, method, params)
 	}
 	return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "unknown method " + method}
 }

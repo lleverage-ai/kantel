@@ -31,6 +31,7 @@ export type {
 	BaseImage,
 	BaseImagesOverview,
 	BaseImagesSource,
+	BaseImageTemplate,
 	BaseImageVersion,
 	BillingSource,
 	BrowserDeviceSource,
@@ -70,7 +71,12 @@ export type {
 	SnapshotsSource,
 	SshTarget,
 	TelemetrySource,
-	TemplateBase,
+	Template,
+	TemplateBaseChannel,
+	TemplateSnapshot,
+	TemplateSpec,
+	TemplatesSource,
+	TemplateVersion,
 	WebhooksSource,
 } from "./compute/compute-model.ts";
 export {

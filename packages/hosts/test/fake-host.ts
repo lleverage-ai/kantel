@@ -69,6 +69,12 @@ export class FakeHost {
 	readonly reads = new Map<number, { readonly data: Uint8Array; sent: number; acked: number }>();
 	/** `sandbox.files.extract` calls: the archive, the target. */
 	readonly extracts: { readonly archive: string; readonly target: string }[] = [];
+	/** How a create is answered as served (`HostSandbox.source`): `boot` for a template snapshot it couldn't restore. */
+	createSource = "pool";
+	/** For a test: a call of a method it answers an error for fails with it. */
+	refuse?: (method: string) => { readonly code: string; readonly message: string } | undefined;
+	/** Facts it reports beyond the usual: its Firecracker and guest kernel, say. */
+	moreFacts: Partial<HostFacts> = {};
 
 	constructor(
 		readonly service: HostsService,
@@ -91,7 +97,7 @@ export class FakeHost {
 			type: "hello",
 			hello: {
 				hostId: this.hostId,
-				facts: facts({}, this.features),
+				facts: { ...facts({}, this.features), ...this.moreFacts },
 				sandboxes: [...this.sandboxes.values()],
 				capacity: {
 					freeMemoryMiB: this.freeMemoryMiB,
@@ -209,6 +215,8 @@ export class FakeHost {
 		/** A sandbox as answered: with its mounts' statuses when the test reports them. */
 		const withMounts = (sandbox: HostSandbox): HostSandbox =>
 			this.mountStatus === undefined ? sandbox : { ...sandbox, mounts: this.mountStatus(params.mounts ?? []) };
+		const refused = this.refuse?.(message.method ?? "");
+		if (refused !== undefined) return fail(refused.code, refused.message);
 		switch (message.method) {
 			case "sandbox.create":
 			case "sandbox.fork": {
@@ -219,7 +227,7 @@ export class FakeHost {
 					size: "default",
 					state: "running",
 					createdAt: 1,
-					source: "pool",
+					source: this.createSource,
 				};
 				this.sandboxes.set(id, sandbox);
 				return answer(withMounts(sandbox));
@@ -272,6 +280,12 @@ export class FakeHost {
 				return answer({
 					snapshots: this.snapshots.filter((s) => params.sandboxId === "" || s.sandboxId === params.sandboxId),
 				});
+			case "template.build": {
+				const build = message.params as { snapshotId: string };
+				return answer({ ref: build.snapshotId, imageDigest: "sha256:feed", sizeBytes: 42 });
+			}
+			case "template.delete":
+				return answer({ ok: true });
 			default:
 				return fail("unsupported", `unknown method ${message.method}`);
 		}

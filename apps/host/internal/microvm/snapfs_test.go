@@ -1,13 +1,16 @@
 package microvm
 
 import (
+	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 
+	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
@@ -158,5 +161,48 @@ func TestNoteGuestForgetsTheLastReport(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(d, guestFile)); !os.IsNotExist(err) || m.guestOf("") != nil {
 			t.Errorf("the last template's report outlives it in %s: %v, %v", d, err, m.guestOf(""))
 		}
+	}
+}
+
+// A snapshot's files are read over the root filesystem a sandbox made from it reads: the template's it records, else
+// the host's image.
+func TestSnapshotFilesReadTheRootfsTheSnapshotRestoresOnto(t *testing.T) {
+	m, _ := testManager(t)
+	templateRootfs, _, err := m.tpl.rootfs.rootfs(context.Background(), testTemplateImage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		id, rootfs, want string
+	}{
+		{"snap_template", templateRootfs, templateRootfs},
+		{"snap_old", "", m.cfg.Rootfs},
+	} {
+		dir := m.snapshotDir(c.id)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		_ = os.WriteFile(filepath.Join(dir, fc.DiskFile), []byte("disk"), 0o600)
+		raw, _ := json.Marshal(snapshotMeta{SnapshotInfo: proto.SnapshotInfo{ID: c.id}, Size: DefaultSizes[1].Name, Rootfs: c.rootfs})
+		if err := os.WriteFile(filepath.Join(dir, "meta.json"), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		disk, lower, err := m.snapshotLayers(c.id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if disk != filepath.Join(dir, fc.DiskFile) || lower != c.want {
+			t.Fatalf("%s: layers %s over %s, want %s", c.id, disk, lower, c.want)
+		}
+		origin, err := m.startOf(context.Background(), proto.CreateParams{SandboxID: "sbx_1", From: c.id}, DefaultSizes[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if origin.rootfs != lower || origin.disk != disk {
+			t.Fatalf("%s: a sandbox made from it reads %s over %s; its files are read as %s over %s", c.id, origin.disk, origin.rootfs, disk, lower)
+		}
+	}
+	if _, _, err := m.snapshotLayers("snap_none"); err == nil {
+		t.Fatal("a snapshot that isn't there has layers")
 	}
 }

@@ -11,6 +11,7 @@ import type {
 	ApiScope,
 	BaseImage,
 	BaseImagesOverview,
+	BaseImageTemplate,
 	BaseImageVersion,
 	BillingSummary,
 	BucketSource,
@@ -49,7 +50,6 @@ import type {
 	SavedSnapshot,
 	SnapshotEntry,
 	TelemetrySettings,
-	TemplateBase,
 	Webhook,
 	WebhookDelivery,
 } from "./compute-model.ts";
@@ -63,8 +63,10 @@ import {
 	sameProxySettings,
 	sizeSpec,
 	sshWithoutCliCommand,
+	startingSnapshot,
 } from "./compute-model.ts";
 import { inUseText } from "./mounts.ts";
+import { createTemplateFixtures } from "./template-fixtures.ts";
 import { stubUsage } from "./usage-stub.ts";
 
 /** The code the fixtures' waiting command line showed. */
@@ -1369,7 +1371,7 @@ function sampleImages(at: (time: number) => number): BaseImagesOverview {
 			imageVersion("host", "host-images-20261103.811", ago(DAY + 5 * HOUR), "daily"),
 		]),
 	];
-	const templates: readonly TemplateBase[] = [
+	const templates: readonly BaseImageTemplate[] = [
 		{
 			id: "tpl_node22",
 			name: "node-22",
@@ -1552,6 +1554,8 @@ export interface ComputeFixtureOptions {
 	 * (`http://127.0.0.1:58090`), or Kantel's own address when hosted.
 	 */
 	readonly publicUrl?: string;
+	/** The deployment has templates turned on (experimental): Templates in the sidebar and a picker in New sandbox. */
+	readonly templates?: boolean;
 }
 
 let counter = 0;
@@ -1727,6 +1731,10 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 		await new Promise((resolve) => setTimeout(resolve, 60));
 		return make();
 	};
+	const templates =
+		options.templates === true
+			? createTemplateFixtures({ now: at(base), clock: now, empty, gate, accountId: LLEVERAGE.id })
+			: undefined;
 	/** Refuses a grant write made from an older read, as Kantel's API does with `conflict`. */
 	const requireGrants = (expected: readonly EgressGrant[] | undefined, now: readonly EgressGrant[], what: string) => {
 		const key = (grants: readonly EgressGrant[]) =>
@@ -1917,7 +1925,11 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						.sort((a, b) => b.createdAt - a.createdAt),
 				),
 			create: (input: CreateSandboxInput) =>
-				gate(() => {
+				gate(async () => {
+					const made = input.templateId === undefined ? undefined : await templates?.get(input.templateId);
+					// A template's own vCPUs and memory when the sliders weren't moved off them.
+					const shape =
+						input.shape ?? (made === undefined ? undefined : { vcpus: made.spec.vcpus, memoryMb: made.spec.memoryMb });
 					const id = nextId("sbx");
 					const name = input.name?.trim() || `sandbox-${id.slice(-4)}`;
 					const box: Sandbox = {
@@ -1927,17 +1939,17 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						accountId: input.accountId,
 						kind: input.kind,
 						size:
-							input.shape === undefined
+							shape === undefined
 								? "medium"
-								: ((presetOf(DEFAULT_SANDBOX_SHAPES, input.shape)?.name ?? "medium") as SandboxSize),
-						...(input.shape === undefined
+								: ((presetOf(DEFAULT_SANDBOX_SHAPES, shape)?.name ?? "medium") as SandboxSize),
+						...(shape === undefined
 							? {}
 							: {
 									resources: {
-										vcpus: input.shape.vcpus,
-										memoryGb: input.shape.memoryMb / 1024,
+										vcpus: shape.vcpus,
+										memoryGb: shape.memoryMb / 1024,
 										// As a host gives it: a preset's own, else the smallest preset's with at least its memory.
-										diskGb: input.kind === "isolate" ? 0 : sampleDisk(input.shape.memoryMb),
+										diskGb: input.kind === "isolate" ? 0 : sampleDisk(shape.memoryMb),
 									},
 								}),
 						state: "starting",
@@ -1954,6 +1966,23 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 									environment: {
 										id: input.environmentId,
 										name: find(environments, input.environmentId, "environment").name,
+									},
+								}),
+						...(made === undefined
+							? {}
+							: {
+									template: {
+										id: made.id,
+										name: made.name,
+										version: made.version,
+										// Only a snapshot of its current version restores, and only into the vCPUs and memory it was
+										// built as.
+										start:
+											startingSnapshot(made) === undefined ||
+											shape?.vcpus !== made.spec.vcpus ||
+											shape.memoryMb !== made.spec.memoryMb
+												? "boot"
+												: "snapshot",
 									},
 								}),
 					};
@@ -2271,6 +2300,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					return withUpstream;
 				}),
 		},
+		...(templates === undefined ? {} : { templates }),
 		environments: {
 			list: (accountId) =>
 				gate(() =>

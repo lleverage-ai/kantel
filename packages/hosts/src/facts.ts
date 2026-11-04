@@ -93,6 +93,13 @@ function images(value: unknown): HostImages | undefined {
 	}
 }
 
+/** A string a host may leave out (Go's `omitempty`): absent when it does, or when it is empty. */
+function optionalText<K extends string>(value: Record<string, unknown>, field: K): { [key in K]?: string } {
+	const found = value[field];
+	if (found === undefined || found === null || found === "") return {};
+	return { [field]: text(found, field) } as { [key in K]?: string };
+}
+
 function facts(value: unknown): HostFacts {
 	if (!isObject(value)) throw new FactsError("facts is an object");
 	const tiers = list(value.tiers, "tiers").map((tier, at) => text(tier, `tiers[${at}]`));
@@ -117,6 +124,8 @@ function facts(value: unknown): HostFacts {
 		...(Object.keys(kept).length === 0 ? {} : { labels: kept }),
 		egress: text(value.egress, "egress"),
 		...(features.length === 0 ? {} : { features }),
+		...optionalText(value, "firecracker"),
+		...optionalText(value, "guestKernel"),
 		...(hostImages === undefined ? {} : { images: hostImages }),
 	};
 }
@@ -124,12 +133,14 @@ function facts(value: unknown): HostFacts {
 function capacity(value: unknown): HostCapacity {
 	if (!isObject(value)) throw new FactsError("capacity is an object");
 	// A host from before warm pools were removed also sends `warm`, its ready pool counts: ignored.
+	const builds = list(value.builds, "builds").map((build, at) => text(build, `builds[${at}]`));
 	return {
 		freeMemoryMiB: count(value.freeMemoryMiB, "freeMemoryMiB"),
 		freeDiskGiB: count(value.freeDiskGiB, "freeDiskGiB"),
 		running: count(value.running, "running"),
 		stopped: count(value.stopped, "stopped"),
 		load1: count(value.load1, "load1"),
+		...(builds.length === 0 ? {} : { builds }),
 	};
 }
 

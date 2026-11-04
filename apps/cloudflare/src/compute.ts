@@ -375,6 +375,8 @@ export interface StackComputeOptions {
 	readonly relayLimits?: RelayLimits;
 	/** Account hosts (KANTEL_ACCOUNT_HOSTS=experimental): where hosts reach this Worker. Absent, off. */
 	readonly accountHosts?: { readonly publicUrl: string };
+	/** Templates (KANTEL_TEMPLATES=experimental): versioned microVM profiles and their snapshot cache. Default off. */
+	readonly templates?: boolean;
 	/** With account hosts on, how often sandboxes past their auto-stop time are stopped. Default `HOST_SWEEP_MS`. */
 	readonly hostSweepMs?: number;
 	/** Image patching (KANTEL_IMAGE_PATCHING=experimental): where the base image index is read. Absent, off. */
@@ -541,6 +543,7 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		...(own === undefined ? {} : { accountHosts: true, publicUrl: own.publicUrl }),
 		...(baseImages === undefined ? {} : { baseImages }),
 		...(options.invites === undefined ? {} : { invites: options.invites }),
+		...(options.templates === true ? { templates: true } : {}),
 	});
 	if (own !== undefined) await grantPorts(store, await own.microvms());
 	own?.service.useJoinTokens(joinTokenSpender(store));
@@ -1103,7 +1106,8 @@ const NO_SNAPSHOT = "The stub has no snapshot ";
 
 /**
  * The stub, for a stub whose memory can go while the records stay. A call for a sandbox it has no machine for gives that
- * sandbox a fresh machine (an empty disk, its type, size and environment from the record) and is made again; a boot
+ * sandbox a fresh machine (an empty disk, or its template's setup run on one, its type, size and environment from the
+ * record) and is made again; a boot
  * from a snapshot it no longer holds boots from an empty disk. Anything else, and a sandbox the records don't have,
  * fails as the stub does.
  */
@@ -1121,7 +1125,22 @@ export function revivingStub(stub: SandboxBackend, sandboxes: Collection<StoredS
 	const refuseHostSnapshot = (ref: string | undefined) => {
 		if (ref !== undefined && isHostSnapshotRef(ref)) throw onHost();
 	};
-	const revive = async (sandboxId: string, cause: KantelError): Promise<void> => {
+	/**
+	 * Revivals under way, by sandbox: every call that finds the sandbox's machine gone while one runs waits for it, so a
+	 * sandbox has one creation attempt at a time and no later one replaces a machine already answered. It goes once that
+	 * attempt ends, made or failed, so a failed one (its template's setup, say) can be tried again.
+	 */
+	const reviving = new Map<string, Promise<void>>();
+	const revive = (sandboxId: string, cause: KantelError): Promise<void> => {
+		const under = reviving.get(sandboxId);
+		if (under !== undefined) return under;
+		const attempt = reviveOnce(sandboxId, cause).finally(() => {
+			if (reviving.get(sandboxId) === attempt) reviving.delete(sandboxId);
+		});
+		reviving.set(sandboxId, attempt);
+		return attempt;
+	};
+	const reviveOnce = async (sandboxId: string, cause: KantelError): Promise<void> => {
 		const record = await sandboxes.get(sandboxId);
 		if (record === undefined || record.state === "deleted") throw cause;
 		if (record.hostId !== undefined && record.hostId !== STUB_HOST_ID) throw onHost();
@@ -1134,6 +1153,9 @@ export function revivingStub(stub: SandboxBackend, sandboxes: Collection<StoredS
 			// What it asked for, so it revives as the shape it was made.
 			...(record.shape === undefined ? {} : { shape: record.shape }),
 			...(record.image === undefined ? {} : { image: record.image }),
+			// One made from a template is made again from the base and setup its create resolved, booted fresh, as `bootAgain`
+			// makes it: what its template is now, or whether it still is, doesn't matter.
+			...(record.templateBoot === undefined ? {} : { template: { ...record.templateBoot } }),
 			env: record.env,
 			eligibleHosts: [STUB_HOST_ID],
 		});

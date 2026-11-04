@@ -306,6 +306,7 @@ Uninstalling doesn't tell the control plane, so revoke the host as well.
 | `subnet` | `10.231.0.0/16` | Where sandboxes' addresses come from. Each microVM gets a `/30` of it |
 | `tiers` | what the machine can run | `["microvm"]`, `["isolate"]` or both |
 | `overcommitMemory` | `1.5` | How much more memory running sandboxes may be given than the host has, as a ratio. Restored sandboxes share their template's unchanged memory |
+| `templateRegistry` | none | The registry the host pulls templates' base images from, by digest, such as `ghcr.io/lleverage-ai`. Without it, the host makes templates only from its own sandbox image, and refuses a template whose base is a published digest. Templates are experimental (`KANTEL_TEMPLATES`) |
 | `autoUpdate` | `true` | Whether the control plane may move the host to another version |
 | `usageIntervalSeconds` | `5` | How often the host sends its and its sandboxes' usage, up to `300`. Below `0`, never |
 

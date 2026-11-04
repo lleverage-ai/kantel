@@ -3,12 +3,15 @@ package hostinfo
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // Check is one prerequisite, as `kantel-host doctor` shows it.
@@ -164,6 +167,8 @@ func Checks(root string) []Check {
 		_, err := lookPath(tool)
 		out = append(out, Check{Name: tool, OK: err == nil, Detail: pathDetail(tool, err), MicroVM: true})
 	}
+	docker, ddetail := Docker()
+	out = append(out, Check{Name: "docker", OK: docker, Detail: ddetail})
 	if _, err := os.Stat("/dev/net/tun"); err != nil {
 		out = append(out, Check{Name: "tun", OK: false, Detail: "/dev/net/tun is missing (modprobe tun)", MicroVM: true})
 	} else {
@@ -177,6 +182,26 @@ func Checks(root string) []Check {
 		out = append(out, Check{Name: "os", OK: false, Detail: runtime.GOOS + ": only Linux hosts run sandboxes for now", MicroVM: true})
 	}
 	return out
+}
+
+// Docker reports whether the host's Docker answers: templates' images are built with it. Only template builds need
+// it; sandboxes, and templates already built, run without it.
+func Docker() (bool, string) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return false, "docker not found on PATH: install Docker Engine and start it for this host to build templates (sandboxes run without it)"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "docker", "version", "--format", "{{.Server.Version}}").CombinedOutput()
+	if err != nil {
+		return false, fmt.Sprintf("the Docker daemon doesn't answer (%s): start it for this host to build templates (sandboxes run without it)", strings.TrimSpace(lastLine(string(out))))
+	}
+	return true, "Docker " + strings.TrimSpace(string(out)) + " builds templates' images"
+}
+
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	return lines[len(lines)-1]
 }
 
 func pathDetail(tool string, err error) string {

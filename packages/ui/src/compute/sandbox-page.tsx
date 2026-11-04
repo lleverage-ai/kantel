@@ -14,7 +14,14 @@ import { CopyButton } from "../primitives/controls.tsx";
 import { compactAge } from "../primitives/format.ts";
 import { CheckIcon, ClockIcon, EyeIcon, GlobeIcon, MinusCircleIcon, StopIcon } from "../primitives/icons.tsx";
 import { type Loaded, useLoad, useReloadOn } from "../primitives/load.ts";
-import { DesktopIcon, EllipsisIcon, EnvironmentIcon, PlayIcon, ReconnectIcon } from "../primitives/lucide.tsx";
+import {
+	DesktopIcon,
+	EllipsisIcon,
+	EnvironmentIcon,
+	PlayIcon,
+	ReconnectIcon,
+	TemplateIcon,
+} from "../primitives/lucide.tsx";
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
 import { PageTabs } from "../primitives/page-tabs.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
@@ -108,6 +115,8 @@ export interface SandboxPageProps {
 	readonly sandboxesHref: string;
 	/** An environment's page, from the sandbox's environment. */
 	readonly environmentHref?: (environmentId: string) => string;
+	/** A template's page, from the template the sandbox was made from. */
+	readonly templateHref?: (templateId: string) => string;
 	/** Goes to a path in the app; without it the page changes view in place. */
 	readonly navigate?: (path: string) => void;
 	/** A fixed time, for stories. */
@@ -197,6 +206,7 @@ export function SandboxPage({
 	href,
 	sandboxesHref,
 	environmentHref,
+	templateHref,
 	navigate,
 	now: fixedNow,
 	pollMs = 1000,
@@ -513,6 +523,29 @@ export function SandboxPage({
 									{sandbox.environment.name}
 								</a>
 							)}
+						</span>
+					)}
+					{sandbox.template === undefined ? null : (
+						<span
+							className="inline-flex items-center gap-1.5"
+							title={
+								sandbox.template.start === "snapshot"
+									? "Started from the template's snapshot"
+									: "Booted the template's image and ran its setup"
+							}
+						>
+							<TemplateIcon size="sm" />
+							{templateHref === undefined ? (
+								sandbox.template.name
+							) : (
+								<a
+									className="text-fg underline decoration-border-strong underline-offset-2"
+									href={templateHref(sandbox.template.id)}
+								>
+									{sandbox.template.name}
+								</a>
+							)}
+							<span className="text-faint">v{sandbox.template.version}</span>
 						</span>
 					)}
 					{stops === "–" ? null : (

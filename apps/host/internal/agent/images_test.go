@@ -472,6 +472,41 @@ type rebasingTier struct {
 
 func (r rebasingTier) RebaseVersion() string { return r.version }
 
+// refusingRebaseTier is a rebasing tier that won't move refused (a sandbox on a template's own base image).
+type refusingRebaseTier struct {
+	rebasingTier
+	refused string
+}
+
+func (r refusingRebaseTier) CanRebase(sandboxID string) error {
+	if sandboxID == r.refused {
+		return &proto.Error{Code: proto.ErrConflict, Message: "sandbox " + sandboxID + " is on its template's own base image"}
+	}
+	return nil
+}
+
+// A sandbox its tier won't move onto the host's images (one on a template's pulled base) is refused by host.images's
+// preflight, before a restart on latest stops it, and by the start; the tier's other sandboxes aren't.
+func TestARebaseOfASandboxItsTierWontMoveIsRefusedAtThePreflight(t *testing.T) {
+	tier := newLifecycleTier()
+	h := newLifecycleHost(t, tier)
+	h.cfg.ImagePatching = true
+	tier.stopped["sbx_1"], tier.stopped["sbx_2"] = true, true
+	h.tiers[microvm.Tier] = refusingRebaseTier{rebasingTier{tier, "host-images-20261104"}, "sbx_1"}
+	if err := call(t, h, proto.MethodHostImages, proto.HostImagesParams{SandboxID: "sbx_1"}); err == nil || !strings.Contains(err.Error(), "its template's own base image") {
+		t.Fatalf("host.images for a sandbox its tier won't move: %v", err)
+	}
+	if err := call(t, h, proto.MethodStart, proto.ResumeParams{SandboxID: "sbx_1", Rebase: true, RebaseTo: "host-images-20261104"}); err == nil {
+		t.Fatal("a rebase of a sandbox its tier won't move started")
+	}
+	if info, _ := tier.Get("sbx_1"); info.State != proto.StateStopped {
+		t.Fatalf("the refused start left the sandbox %s", info.State)
+	}
+	if err := call(t, h, proto.MethodHostImages, proto.HostImagesParams{SandboxID: "sbx_2"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // With image patching the isolate VM tier is given the immutable files its configured paths resolve to at start: an
 // activation since doesn't move what its template and runtimes restore over, and a prune keeps that version.
 func TestTheIsolateTierStaysOnTheImagesItStartedWith(t *testing.T) {

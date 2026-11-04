@@ -28,6 +28,9 @@ import {
 	type SandboxEgress as ApiSandboxEgress,
 	type SandboxMount as ApiSandboxMount,
 	type SandboxShapes as ApiSandboxShapes,
+	type Template as ApiTemplate,
+	type TemplateSnapshot as ApiTemplateSnapshot,
+	type TemplateSpec as ApiTemplateSpec,
 	type EnvironmentVariable as ApiVariable,
 	type Caller,
 	type Command,
@@ -78,6 +81,7 @@ import type {
 	SandboxesSource,
 	SnapshotsSource,
 	TelemetrySource,
+	TemplatesSource,
 	DestinationBinding as UiBinding,
 	EgressEntry as UiEgressEntry,
 	Environment as UiEnvironment,
@@ -85,6 +89,9 @@ import type {
 	SandboxEgress as UiSandboxEgress,
 	SandboxImage as UiSandboxImage,
 	SandboxShapes as UiSandboxShapes,
+	Template as UiTemplate,
+	TemplateSnapshot as UiTemplateSnapshot,
+	TemplateSpec as UiTemplateSpec,
 	EnvironmentVariable as UiVariable,
 	WebhooksSource,
 } from "@kantel/ui";
@@ -587,6 +594,16 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 		...baseFieldOf(sandbox),
 		...mountsOf(sandbox, context),
 		...imageOf(sandbox),
+		...(sandbox.template === undefined
+			? {}
+			: {
+					template: {
+						id: sandbox.template.id,
+						name: sandbox.template.name,
+						version: sandbox.template.version,
+						start: sandbox.template.start,
+					},
+				}),
 	};
 }
 
@@ -662,6 +679,8 @@ function sandboxesSource(context: Context): SandboxesSource {
 				...(input.environmentId === undefined || input.environmentId === ""
 					? {}
 					: { environment: input.environmentId }),
+				// The API takes a template's ID or its name; the UI picks by ID.
+				...(input.templateId === undefined || input.templateId === "" ? {} : { template: input.templateId }),
 				// The UI's absent auto-stop is always on, the API's `null`.
 				autoStopMinutes: input.autoStopMinutes ?? null,
 			});
@@ -1880,6 +1899,139 @@ function ownHostsSource({ api }: Context, accountId: string): HostsSource {
 	};
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// Templates (experimental)
+
+/** The API answers a spec with every default filled in; these stand in should one be missing. */
+const DEFAULT_BASE = { image: "kantel/sandbox", channel: "stable" } as const;
+const KANTEL_BASE = { kind: "kantel-base" } as const;
+
+const templateSpecOf = (spec: ApiTemplateSpec): UiTemplateSpec => {
+	const base = spec.base ?? DEFAULT_BASE;
+	return {
+		image: spec.image ?? KANTEL_BASE,
+		base: "digest" in base ? { image: base.image, digest: base.digest } : { image: base.image, channel: base.channel },
+		vcpus: spec.resources?.vcpus ?? 2,
+		memoryMb: spec.resources?.memoryMb ?? 4096,
+		env: spec.env ?? {},
+		...(spec.setup === undefined || spec.setup === "" ? {} : { setup: spec.setup }),
+		// A template's grants are inputs: one without an ID gets one of the page's making, which grantInput drops again.
+		grants: (spec.network?.grants ?? []).map((grant, at) => ({
+			id: grant.id ?? `grt_new_tpl_${at}`,
+			action: grant.action,
+			host: grant.host,
+			methods: uiMethods(grant.methods),
+			paths: grant.paths ?? [],
+		})),
+	};
+};
+
+const apiTemplateSpec = (spec: UiTemplateSpec): ApiTemplateSpec => ({
+	image: spec.image,
+	base:
+		spec.base.digest !== undefined
+			? { image: spec.base.image, digest: spec.base.digest }
+			: { image: spec.base.image, channel: spec.base.channel },
+	resources: { vcpus: spec.vcpus, memoryMb: spec.memoryMb },
+	env: { ...spec.env },
+	...(spec.setup === undefined ? {} : { setup: spec.setup }),
+	network: { grants: spec.grants.map(grantInput) },
+});
+
+const templateSnapshotOf = (entry: ApiTemplateSnapshot): UiTemplateSnapshot => ({
+	id: entry.id,
+	version: entry.version,
+	state: entry.state,
+	key: entry.key,
+	keyHash: entry.keyHash,
+	...(entry.hostId === undefined ? {} : { hostId: entry.hostId }),
+	builtFrom: {
+		baseImage: entry.builtFrom.baseImage,
+		...(entry.builtFrom.channel === undefined ? {} : { channel: entry.builtFrom.channel }),
+		baseDigest: entry.builtFrom.baseDigest,
+		pinned: entry.builtFrom.pinned,
+		...(entry.builtFrom.imageDigest === undefined ? {} : { imageDigest: entry.builtFrom.imageDigest }),
+	},
+	startedAt: entry.startedAt,
+	...(entry.readyAt === undefined ? {} : { readyAt: entry.readyAt }),
+	...(entry.error === undefined ? {} : { error: entry.error }),
+	...(entry.sizeBytes === undefined ? {} : { sizeBytes: entry.sizeBytes }),
+});
+
+const templateOf = (template: ApiTemplate): UiTemplate => ({
+	id: template.id,
+	accountId: template.accountId,
+	name: template.name,
+	...(template.description === undefined || template.description === "" ? {} : { description: template.description }),
+	version: template.version,
+	spec: templateSpecOf(template.spec),
+	build: {
+		state: template.build.state,
+		...(template.build.ready === undefined ? {} : { ready: templateSnapshotOf(template.build.ready) }),
+		...(template.build.building === undefined ? {} : { building: templateSnapshotOf(template.build.building) }),
+		...(template.build.error === undefined ? {} : { error: template.build.error }),
+		...(template.build.behind === undefined ? {} : { behind: template.build.behind }),
+	},
+	sandboxCount: template.sandboxCount,
+	createdAt: template.createdAt,
+	updatedAt: template.updatedAt,
+});
+
+function templatesSource({ api }: Context): TemplatesSource {
+	return {
+		list: async (accountId) => (await api.listTemplates({ account: accountId })).items.map(templateOf),
+		get: async (id) => templateOf(await api.getTemplate(id)),
+		create: async (input) =>
+			templateOf(
+				await api.createTemplate({
+					account: input.accountId,
+					name: input.name,
+					...(input.description === undefined || input.description === "" ? {} : { description: input.description }),
+					spec: apiTemplateSpec(input.spec),
+				}),
+			),
+		// An empty description clears it, as the API's does; a spec that differs makes the next version.
+		update: async (id, change) =>
+			templateOf(
+				await api.updateTemplate(id, {
+					...(change.name === undefined ? {} : { name: change.name }),
+					...(change.description === undefined ? {} : { description: change.description }),
+					...(change.spec === undefined ? {} : { spec: apiTemplateSpec(change.spec) }),
+				}),
+			),
+		remove: async (id) => {
+			await api.deleteTemplate(id);
+		},
+		versions: async (id) =>
+			(await api.listTemplateVersions(id)).items.map((entry) => ({
+				version: entry.version,
+				spec: templateSpecOf(entry.spec),
+				createdAt: entry.createdAt,
+				by: actorName(entry.createdBy),
+			})),
+		snapshots: async (id) => (await api.listTemplateSnapshots(id)).items.map(templateSnapshotOf),
+		bases: async () =>
+			(await api.listTemplateBases()).items.map((entry) => ({
+				image: entry.image,
+				channel: entry.channel,
+				digest: entry.digest,
+				publishedAt: entry.publishedAt,
+				history: entry.history.map((release) => ({ digest: release.digest, publishedAt: release.publishedAt })),
+			})),
+		rebuild: async (id) => templateOf(await api.rebuildTemplate(id)),
+	};
+}
+
+/** Whether the deployment has templates turned on (experimental): it answers `not_supported` when it hasn't. */
+async function offersTemplates({ api }: Context): Promise<boolean> {
+	try {
+		await api.listTemplates({});
+		return true;
+	} catch (caught) {
+		return !(caught instanceof KantelApiError && caught.code === "not_supported");
+	}
+}
+
 /** Whether the deployment lets accounts add hosts of their own: it answers `not_supported` when it doesn't. */
 /**
  * Whether the gateway has image patching on (KANTEL_IMAGE_PATCHING), so Admin > Images has something to show: off, its
@@ -2106,6 +2258,7 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		keys: keysSource(context),
 		proxy: proxySource(context),
 		environments: environmentsSource(context),
+		...((await offersTemplates(context)) ? { templates: templatesSource(context) } : {}),
 		egress: egressSource(context),
 		webhooks: webhooksSource(context),
 		telemetry: telemetrySource(context),

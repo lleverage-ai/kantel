@@ -22,6 +22,7 @@
  *   that one sender.
  * - optionally, accounts' own hosts (`KANTEL_ACCOUNT_HOSTS=experimental`, experimental), which dial out to
  *   KANTEL_PUBLIC_URL, as a var of the same name.
+ * - optionally, templates (`KANTEL_TEMPLATES=experimental`, experimental), as a var of the same name.
  *
  * `--mode deploy` needs every variable and refuses to write a config without them. `--mode dry-run` fills a missing
  * one with a placeholder, so `wrangler deploy --dry-run` still checks the whole config's shape before the account is
@@ -88,6 +89,9 @@ export const OPTIONAL_DEPLOY_VARIABLES = [
 	// Experimental: `experimental` lets anyone signed in add machines of their own, which dial out to KANTEL_PUBLIC_URL
 	// (so it needs that) and run only their account's sandboxes (src/compute.ts). Unset or `off`, it stays off.
 	"KANTEL_ACCOUNT_HOSTS",
+	// Experimental: `experimental` turns on templates, versioned microVM profiles whose snapshots are built in the
+	// background (`/v1/templates`). Unset or `off`, it stays off.
+	"KANTEL_TEMPLATES",
 ] as const;
 export type OptionalDeployVariable = (typeof OPTIONAL_DEPLOY_VARIABLES)[number];
 
@@ -162,6 +166,7 @@ const OPTIONAL_CHECKS: Readonly<
 	KANTEL_SIGN_IN_FROM: { test: (v) => isEmail(v), expect: "an email address" },
 	KANTEL_SIGN_IN_DAILY_CAP: { test: (v) => /^\d{1,6}$/.test(v), expect: "a whole number" },
 	KANTEL_ACCOUNT_HOSTS: { test: (v) => v === "experimental" || v === "off", expect: "experimental or off" },
+	KANTEL_TEMPLATES: { test: (v) => v === "experimental" || v === "off", expect: "experimental or off" },
 };
 
 /**
@@ -316,6 +321,8 @@ export interface DeployValues {
 	 * which dial the public origin; `off` keeps them off but, like `experimental`, lets the origin go without sign-in.
 	 */
 	readonly accountHosts?: "experimental" | "off";
+	/** The templates switch, when set (`KANTEL_TEMPLATES`). */
+	readonly templates?: "experimental" | "off";
 	/** The variables a dry run filled with placeholders. Always empty in deploy mode. */
 	readonly placeholders: readonly DeployVariable[];
 }
@@ -384,6 +391,7 @@ export function deployValues(env: Readonly<Record<string, string | undefined>>, 
 	}
 	if (invalid.length > 0) throw new Error(invalid.join("; "));
 	const r2Bucket = optional("KANTEL_R2_BUCKET");
+	const templatesSwitch = optional("KANTEL_TEMPLATES");
 	const hint = optional("KANTEL_LOCATION_HINT");
 
 	const value = (name: Exclude<DeployVariable, "CLOUDFLARE_ACCOUNT_ID">): string =>
@@ -418,6 +426,7 @@ export function deployValues(env: Readonly<Record<string, string | undefined>>, 
 		...(accountHostsSwitch === "experimental" || accountHostsSwitch === "off"
 			? { accountHosts: accountHostsSwitch }
 			: {}),
+		...(templatesSwitch === "experimental" || templatesSwitch === "off" ? { templates: templatesSwitch } : {}),
 		placeholders: missing,
 	};
 }
@@ -519,6 +528,7 @@ export function deployConfig(raw: RawConfig, values: DeployValues): Record<strin
 							: { KANTEL_SIGN_IN_DAILY_CAP: values.emailSignIn.dailyCap }),
 					}),
 			...(values.accountHosts === undefined ? {} : { KANTEL_ACCOUNT_HOSTS: values.accountHosts }),
+			...(values.templates === undefined ? {} : { KANTEL_TEMPLATES: values.templates }),
 		},
 		...(values.browserContainers === true || values.sandboxContainers === true
 			? {

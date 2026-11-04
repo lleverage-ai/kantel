@@ -42,12 +42,15 @@ import {
 	type HostSandboxUsage,
 	type HostSecrets,
 	type HostSize,
+	type HostTemplateBoot,
+	type HostTemplateBuild,
+	type HostTemplateBuilt,
 	type HostUsageReport,
 	type HostWelcome,
 	needsEgressPolicy,
 	type SandboxTier,
 } from "./protocol.ts";
-import { type Candidate, isRefusal, makesCustomShapes, place, type Shape, sizeOn } from "./scheduler.ts";
+import { type Candidate, isRefusal, makesCustomShapes, place, type Shape, shapeOn, sizeOn } from "./scheduler.ts";
 import type { HostRecord, HostStore, PlacementRecord } from "./store.ts";
 
 /** Whether a host reports enforcing egress grants and protected variables. */
@@ -102,6 +105,9 @@ export interface HostBundle {
 	readonly sizeBytes: number;
 	readonly body: ReadableStream<Uint8Array>;
 }
+/** Whether a host reports templates (`HOST_FEATURES.templates`): only such a host is sent a build or a template create. */
+export const runsTemplates = (host: HostRecord): boolean =>
+	storedFacts(host.facts)?.features?.includes(HOST_FEATURES.templates) === true;
 
 export const JOIN_TOKEN_PREFIX = "kth_";
 export const HOST_CREDENTIAL_PREFIX = "khc_";
@@ -169,7 +175,29 @@ export interface CreateSandboxInput {
 	readonly from?: string;
 	/** Read-only mounts: those the chosen host can do are sent, the others answered `failed` (`mountHandoff`). */
 	readonly mounts?: readonly HostMount[];
+	/**
+	 * Made from a template (microVMs only); one with a `snapshot` goes on the one host `hostIds` names, which holds it,
+	 * and restores it only when it was built as the create's size or shape.
+	 */
+	readonly template?: HostTemplateBoot;
 }
+
+/** A template build as the compute plane asks for it: the host gives the disk, as it would for a create of the shape. */
+export type TemplateBuildInput = Omit<HostTemplateBuild, "diskGiB">;
+
+/** A microVM host's runtime, from its facts: what a template snapshot made there restores onto. */
+export interface HostTemplateRuntime {
+	readonly hostId: string;
+	/** Absent for a host from before templates. */
+	readonly guestKernel?: string;
+	readonly firecracker?: string;
+}
+
+/**
+ * How long a template build may take: its base image pulled, a boot, and its setup (which the host bounds at 30
+ * minutes). A create from a template is given as long: booting fresh, it pulls the image and runs the setup too.
+ */
+export const TEMPLATE_BUILD_TIMEOUT_MS = 50 * 60_000;
 
 /** Join tokens kept elsewhere, such as by the compute API, which mints them (`createHostJoinToken`). */
 export interface ExternalJoinTokens {
@@ -371,6 +399,19 @@ export interface HostsService {
 		 */
 		openFile(sandboxId: string, params: Omit<FileOpenParams, "sandboxId">, sink: PortSink): Promise<OpenedFile>;
 	};
+	/** Template snapshots, which hosts build and keep apart from sandboxes' snapshots (microVMs only). */
+	readonly templates: {
+		/** The runtime of each connected microVM host that isn't draining and runs templates (`HOST_FEATURES.templates`). */
+		runtimes(): Promise<HostTemplateRuntime[]>;
+		/**
+		 * Builds one on `hostId`, which must be one the build's owner may use, as a create's host must, and run templates.
+		 * Admitted as a create is, it holds its machine's memory and disk until it ends: `exhausted` while the host has no
+		 * room for them, whether this replica sees that or the host refuses it (`capacity`), having less room than its
+		 * last report said (another replica's builds and creates since). Either is for trying again later.
+		 */
+		build(hostId: string, input: TemplateBuildInput): Promise<HostTemplateBuilt>;
+		delete(hostId: string, snapshotId: string): Promise<void>;
+	};
 	close(): void;
 }
 
@@ -456,15 +497,32 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	 * every hello and heartbeat. So no replica goes on seeing a host as full after the host has reported again.
 	 */
 	const reserved = new Map<string, { at: number; memoryMiB: number; diskGiB: number }[]>();
-	/** What this replica placed on `host` since its last report. */
+	/**
+	 * The template builds this replica started on each host and no report of the host has named yet, by snapshot ID:
+	 * each holds its machine's memory and disk from before its call until a report names it (`HostCapacity.builds`, whose
+	 * free memory and disk leave it out from then on) or the call ends, so it is counted once, and neither another build
+	 * nor a create this replica places takes its room meanwhile. A fast check only: the host admits each build and create
+	 * itself against everything it runs, every replica's included (`capacity` when it hasn't room), and counts a build in
+	 * its reports until its machine has gone, however long after the call that is.
+	 */
+	const building = new Map<string, Map<string, { readonly memoryMiB: number; readonly diskGiB: number }>>();
+	/**
+	 * What this replica placed on `host` since its last report, and what its builds there hold that no report has named.
+	 * A build a report names is let go here for good: the host counts it from then on, and a later report without it
+	 * means it has ended.
+	 */
 	const reservedOn = (host: HostRecord) => {
 		const since = host.lastSeenAt ?? Number.NEGATIVE_INFINITY;
 		const live = (reserved.get(host.id) ?? []).filter((entry) => entry.at > since);
 		if (live.length === 0) reserved.delete(host.id);
 		else reserved.set(host.id, live);
+		const builds = building.get(host.id);
+		for (const snapshotId of host.capacity?.builds ?? []) builds?.delete(snapshotId);
+		if (builds?.size === 0) building.delete(host.id);
+		const held = [...live, ...(builds?.values() ?? [])];
 		return {
-			memoryMiB: live.reduce((sum, entry) => sum + entry.memoryMiB, 0),
-			diskGiB: live.reduce((sum, entry) => sum + entry.diskGiB, 0),
+			memoryMiB: held.reduce((sum, entry) => sum + entry.memoryMiB, 0),
+			diskGiB: held.reduce((sum, entry) => sum + entry.diskGiB, 0),
 		};
 	};
 	/** When each host's last invalid usage tick was logged. */
@@ -854,6 +912,55 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		reserved.set(hostId, [...(reserved.get(hostId) ?? []), { at: clock.now(), memoryMiB, diskGiB }]);
 	};
 
+	/**
+	 * The machine a template build boots on `host`: what the host would make for a create of the vCPUs and memory asked
+	 * for (`shapeOn`: one of its named sizes, or a custom shape where it makes them), disk and all, so a sandbox of that
+	 * shape restored from the build is the machine a fresh boot of it would be. `not_supported` where it can make neither.
+	 */
+	const buildShape = (host: HostRecord, input: TemplateBuildInput): HostSize => {
+		const shaped = shapeOn(host, { tier: "microvm", shape: { vcpus: input.vcpus, memoryMiB: input.memoryMiB } });
+		if (shaped === undefined) {
+			throw new KantelError(
+				"not_supported",
+				`The host ${host.name} can't make a microVM of ${input.vcpus} vCPUs and ${input.memoryMiB} MiB to build the template in`,
+			);
+		}
+		return shaped.size;
+	};
+
+	/**
+	 * Admits a template build to `host` as placement admits a sandbox: refused (`exhausted`) unless the memory and disk
+	 * its last report left free, less what this replica placed and is building there unreported, fit its machine.
+	 * Admitted, it holds them (`building`) until a report names the build or the caller lets the hold go, when the call
+	 * has ended. The host admits it again, and alone for certain (`build`).
+	 */
+	const admitBuild = (
+		host: HostRecord,
+		snapshotId: string,
+		shape: { readonly memoryMiB: number; readonly diskGiB: number },
+	) => {
+		if (!hub.connected(host.id)) throw new KantelError("unavailable", `The host ${host.name} isn't connected`);
+		if (host.draining) throw new KantelError("unavailable", `The host ${host.name} is draining`);
+		const capacity = host.capacity;
+		const held = reservedOn(host);
+		if (
+			capacity === undefined ||
+			capacity.freeMemoryMiB - held.memoryMiB < shape.memoryMiB ||
+			capacity.freeDiskGiB - held.diskGiB < shape.diskGiB
+		) {
+			throw new KantelError("exhausted", `The host ${host.name} has no room to build the template now`);
+		}
+		const hold = { memoryMiB: shape.memoryMiB, diskGiB: shape.diskGiB };
+		const holds = building.get(host.id) ?? new Map();
+		holds.set(snapshotId, hold);
+		building.set(host.id, holds);
+		return () => {
+			const current = building.get(host.id);
+			if (current?.get(snapshotId) === hold) current.delete(snapshotId);
+			if (current?.size === 0) building.delete(host.id);
+		};
+	};
+
 	return {
 		hub,
 		async createJoinToken(input) {
@@ -987,6 +1094,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				if (input.from !== undefined && only?.size !== 1) {
 					throw new KantelError("invalid", "A sandbox made from a snapshot goes on the snapshot's host");
 				}
+				if (input.template !== undefined && tier !== "microvm") {
+					throw new KantelError("invalid", "A sandbox made from a template is a microVM");
+				}
+				if (input.template?.snapshot !== undefined && only?.size !== 1) {
+					throw new KantelError("invalid", "A sandbox made from a template snapshot goes on the snapshot's host");
+				}
 				// Two reads that don't depend on each other: one round trip.
 				const [existing, listed] = await Promise.all([store.getPlacement(sandboxId), store.listHosts()]);
 				if (existing !== undefined) throw new KantelError("conflict", "A sandbox with that ID exists");
@@ -995,9 +1108,14 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					.filter((host) => only === undefined || only.has(host.id))
 					// An account's own host takes only that account's sandboxes, whatever the caller named.
 					.filter((host) => host.accountId === undefined || host.accountId === input.owner);
+				// A template goes only to a host that runs templates.
+				const templating = input.template === undefined ? usable : usable.filter(runsTemplates);
+				if (templating.length === 0 && usable.length > 0) {
+					throw new KantelError("not_supported", "No host that could take it runs templates; upgrade kantel-host");
+				}
 				// Grants and protected variables go only where they are enforced.
-				const hosts = needsEgressPolicy(input.egress) ? usable.filter(enforcesPolicy) : usable;
-				if (hosts.length === 0 && usable.length > 0) {
+				const hosts = needsEgressPolicy(input.egress) ? templating.filter(enforcesPolicy) : templating;
+				if (hosts.length === 0 && templating.length > 0) {
 					throw new KantelError(
 						"not_supported",
 						"No host that could take it enforces egress grants or protected variables; upgrade kantel-host",
@@ -1020,6 +1138,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						};
 					}),
 				);
+				const template = input.template;
 				const chosen = place(
 					{
 						tier,
@@ -1065,13 +1184,16 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 								? { memoryMiB: shape.memoryMiB }
 								: {}),
 							...(input.from === undefined ? {} : { from: input.from }),
+							// Its template boots as the size or custom shape placed, restoring its snapshot only if built as that.
+							...(template === undefined ? {} : { template }),
 							...(input.owner === undefined ? {} : { owner: input.owner }),
 							...(input.env === undefined ? {} : { env: input.env }),
 							...(input.sshAuthorizedKeys === undefined ? {} : { sshAuthorizedKeys: input.sshAuthorizedKeys }),
 							...(input.egress === undefined ? {} : { egress: input.egress }),
 							...mountsParam(mounts),
 						},
-						undefined,
+						// From a template, as long as a build: a fresh boot pulls its base image and runs its setup.
+						template === undefined ? undefined : { timeoutMs: TEMPLATE_BUILD_TIMEOUT_MS },
 						chosen.host,
 					);
 					const settled = await settle(placement, sandbox);
@@ -1191,6 +1313,61 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				} catch (error) {
 					throw kantelErrorFromHost(error);
 				}
+			},
+		},
+		templates: {
+			async runtimes() {
+				const out: HostTemplateRuntime[] = [];
+				for (const host of (await store.listHosts()).map(sane)) {
+					if (host.revoked || host.draining || !hub.connected(host.id) || !runsTemplates(host)) continue;
+					const facts = host.facts;
+					if (facts === undefined || !facts.tiers.includes("microvm")) continue;
+					out.push({
+						hostId: host.id,
+						...(facts.guestKernel === undefined ? {} : { guestKernel: facts.guestKernel }),
+						...(facts.firecracker === undefined ? {} : { firecracker: facts.firecracker }),
+					});
+				}
+				return out;
+			},
+			async build(hostId, input) {
+				const host = sane(await hostOf(hostId));
+				// An account's own host builds only that account's templates, as it takes only its sandboxes.
+				if (host.revoked || (host.accountId !== undefined && host.accountId !== input.owner)) {
+					throw new KantelError("unavailable", `The host ${host.name} can't build this template`);
+				}
+				if (host.facts?.tiers.includes("microvm") !== true) {
+					throw new KantelError("not_supported", `The host ${host.name} doesn't run microVMs, which templates make`);
+				}
+				if (!runsTemplates(host)) {
+					throw new KantelError(
+						"not_supported",
+						`The host ${host.name} doesn't run templates; upgrade its kantel-host`,
+					);
+				}
+				const shape = buildShape(host, input);
+				const params: HostTemplateBuild = {
+					...input,
+					vcpus: shape.vcpus,
+					memoryMiB: shape.memoryMiB,
+					diskGiB: shape.diskGiB,
+				};
+				// Its machine's memory and disk, held from before the call until a report counts the build or the call ends.
+				const release = admitBuild(host, input.snapshotId, shape);
+				try {
+					return await onHost<HostTemplateBuilt>(
+						hostId,
+						HostMethods.templateBuild,
+						params,
+						{ timeoutMs: TEMPLATE_BUILD_TIMEOUT_MS },
+						host,
+					);
+				} finally {
+					release();
+				}
+			},
+			async delete(hostId, snapshotId) {
+				await onHost(hostId, HostMethods.templateDelete, { snapshotId });
 			},
 		},
 		close() {

@@ -238,6 +238,12 @@ type rebaseTier interface {
 	RebaseVersion() string
 }
 
+// sandboxRebaser is a rebase tier that may refuse to move a particular sandbox (the microVM tier: one on a template's
+// own base image, which the host's images aren't).
+type sandboxRebaser interface {
+	CanRebase(sandboxID string) error
+}
+
 // hostImages answers host.images: the host's images as they are now. With a sandboxId, Version is the version a
 // rebase of that sandbox would land on (its tier's, which a config naming its root filesystem by path can hold back
 // from the store's current one), and a sandbox whose tier doesn't rebase is refused as unsupported.
@@ -288,6 +294,11 @@ func (h *Host) rebaseVersion(sandboxID string) (string, error) {
 	rt, ok := t.(rebaseTier)
 	if !ok {
 		return "", &proto.Error{Code: proto.ErrUnsupported, Message: "a " + name + " sandbox isn't moved onto other images"}
+	}
+	if sr, ok := t.(sandboxRebaser); ok {
+		if err := sr.CanRebase(sandboxID); err != nil {
+			return "", err
+		}
 	}
 	return rt.RebaseVersion(), nil
 }
