@@ -1249,7 +1249,8 @@ const pageHost = (): string | undefined => {
  * that session's headers as they were (`asThem`), never the tab's current ones, so one person's keys never go with
  * another's credentials. Before each thing it does it checks the tab is still signed in as that session and the gateway
  * still says it is that person; once either isn't so it is retired for good, and the page must be loaded again. Behind
- * Cloudflare Access the credential is a cookie the page can't read, so the gateway's answer is the whole check there.
+ * Cloudflare Access the credential is a cookie the page can't read and could change after that check, so the session's
+ * URL is asked for as `person` too: the gateway gives it only to that person's sign-in, in the same call.
  */
 function sessionDevice(
 	person: string,
@@ -1280,9 +1281,25 @@ function sessionDevice(
 		if (who !== person) retire(ENDED);
 		return person;
 	};
+	const openE2E = async (id: string) => {
+		try {
+			return await asThem.openE2E(id, { user: person });
+		} catch (error) {
+			// Another sign-in than the one this device is for: the same as the check above failing.
+			if (error instanceof KantelApiError && (error.status === 401 || error.status === 403)) {
+				const now = await asThem.getCaller().then(
+					(caller) => caller.user?.id,
+					() => undefined,
+				);
+				if (now !== person) retire(ENDED);
+			}
+			throw error;
+		}
+	};
 	return browserDevice({
 		...options.browser,
-		gateway: { openE2E: (id) => asThem.openE2E(id, {}), getE2EChain: (space) => asThem.getE2EChain(space) },
+		// The chain is only data, verified from this browser's pin whoever asked for it; the session's URL is the grant.
+		gateway: { openE2E, getE2EChain: (space) => asThem.getE2EChain(space) },
 		user,
 	});
 }

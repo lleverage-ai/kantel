@@ -3283,6 +3283,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		},
 
 		openE2E: async (principal, { params, body }) => {
+			// The URL's grant is the caller's: it goes only to the person whose device asked for it.
+			if (body.user !== undefined && body.user !== principal.userId) {
+				throw new KantelError("forbidden", "This session was asked for as another person: the sign-in has changed");
+			}
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "access");
 			if (backend.openE2E === undefined) {
 				throw new KantelError("not_supported", "This gateway's sandboxes aren't on hosts it can open E2E sessions to");

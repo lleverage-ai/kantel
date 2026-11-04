@@ -274,23 +274,48 @@ describe("the hosted console's browser device", () => {
 		const { db } = memoryDb();
 		// Cloudflare Access: no header from the page; the browser sends the edge's cookie, here whoever `cookie` names.
 		let cookie = "bob";
-		const source = await apiCompute({
-			baseUrl: "https://kantel.test/v1",
-			headers: () => ({}),
-			fetch: (input, init) => {
-				const request = new Request(input, init);
-				request.headers.set("authorization", `Bearer ${cookie}`);
-				return s.gatewayFetch(request);
-			},
-			browser: { db, connect: s.tunnel },
-		});
+		// Set, the cookie becomes Root's as the session's URL is asked for: after every check the device makes.
+		let switchAfterCheck = false;
+		const opened: number[] = [];
+		const make = () =>
+			apiCompute({
+				baseUrl: "https://kantel.test/v1",
+				headers: () => ({}),
+				fetch: async (input, init) => {
+					const request = new Request(input, init);
+					const opening = new URL(request.url).pathname === `/v1/sandboxes/${s.sandbox.id}/e2e`;
+					if (switchAfterCheck && opening) cookie = "root";
+					request.headers.set("authorization", `Bearer ${cookie}`);
+					const response = await s.gatewayFetch(request);
+					if (opening) opened.push(response.status);
+					return response;
+				},
+				browser: { db, connect: s.tunnel },
+			});
+		const source = await make();
 		await enrol(s, source);
 		expect(await source.sandboxes.history(s.sandbox.id)).toEqual([]);
-		cookie = "root";
 		const ran = s.host.ran.length;
+
+		// Root's cookie by the next call.
+		cookie = "root";
 		await expect(source.sandboxes.history(s.sandbox.id)).rejects.toThrow(
 			/sign-in has ended or another has replaced it/,
 		);
+		expect(s.host.ran.length).toBe(ran);
+
+		// Root's cookie between the check and the session's URL: the gateway gives Root no URL asked for as Bob.
+		cookie = "bob";
+		const fresh = await make();
+		opened.length = 0;
+		switchAfterCheck = true;
+		await expect(fresh.sandboxes.history(s.sandbox.id)).rejects.toThrow(/sign-in has ended or another has replaced it/);
+		expect(opened).toEqual([403]);
+		expect(s.host.ran.length).toBe(ran);
+		// And the tab is retired: Bob's cookie back doesn't bring it back.
+		switchAfterCheck = false;
+		cookie = "bob";
+		await expect(fresh.sandboxes.history(s.sandbox.id)).rejects.toThrow(/sign-in has ended/);
 		expect(s.host.ran.length).toBe(ran);
 	});
 

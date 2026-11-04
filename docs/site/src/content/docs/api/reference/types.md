@@ -358,6 +358,7 @@ One of: `"pending"` or `"approved"` or `"denied"` or `"expired"`.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `ttlMinutes` | integer | no | How long a session can be started with this URL; one started in time stays open. Default 10. (minimum 1, maximum 60) |
+| `user` | string | no | The person whose device will open the session. Refused (`forbidden`) unless the call is that person's, so a browser whose sign-in may have changed under it (a cookie it can't read) never gets a URL for someone else's sign-in to use with its keys. |
 
 ### E2EChain
 

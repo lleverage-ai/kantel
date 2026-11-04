@@ -396,6 +396,8 @@ export interface E2EAccess {
 export interface E2EAccessBody {
 	/** How long a session can be started with this URL; one started in time stays open. Default 10. */
 	readonly ttlMinutes?: number;
+	/** The person whose device will open the session. Refused (`forbidden`) unless the call is that person's, so a browser whose sign-in may have changed under it (a cookie it can't read) never gets a URL for someone else's sign-in to use with its keys. */
+	readonly user?: string;
 }
 
 export interface E2EChain {
