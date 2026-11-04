@@ -102,7 +102,9 @@ export function scanMarkdown(scan: ImageScan, title: string): string {
 
 /** Trivy's JSON report carries its schema's version; anything else is the wrong file, not a clean image. */
 const isTrivyReport = (value: unknown) =>
-	typeof value === "object" && value !== null && typeof (value as { SchemaVersion?: unknown }).SchemaVersion === "number";
+	typeof value === "object" &&
+	value !== null &&
+	typeof (value as { SchemaVersion?: unknown }).SchemaVersion === "number";
 
 export interface CommandResult {
 	readonly code: number;

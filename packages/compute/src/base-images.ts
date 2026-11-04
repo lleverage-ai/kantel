@@ -244,9 +244,10 @@ export function recordBuild(index: BaseImageIndex, build: PublishedBuild, at: st
 		channels,
 		versions: versions.slice(0, BASE_IMAGE_HISTORY),
 	};
-	const images = existing === undefined
-		? [...index.images, entry].sort((a, b) => a.name.localeCompare(b.name))
-		: index.images.map((image) => (image.name === build.name ? entry : image));
+	const images =
+		existing === undefined
+			? [...index.images, entry].sort((a, b) => a.name.localeCompare(b.name))
+			: index.images.map((image) => (image.name === build.name ? entry : image));
 	return { version: BASE_IMAGE_INDEX_VERSION, generatedAt: at, images };
 }
 

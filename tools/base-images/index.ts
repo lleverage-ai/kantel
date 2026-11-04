@@ -253,11 +253,7 @@ function run(argv: readonly string[], read: Read, now: string): string {
 			return json(index);
 		}
 		case "build": {
-			const { positional, options } = splitArgs(
-				rest,
-				["--scan", "--commit", "--reason", "--built-at"],
-				["--signed"],
-			);
+			const { positional, options } = splitArgs(rest, ["--scan", "--commit", "--reason", "--built-at"], ["--signed"]);
 			const [indexPath, name, repository, version, digest, ...extra] = positional;
 			if (name === undefined || repository === undefined || version === undefined || digest === undefined) {
 				throw new UsageError("build needs an index, a name, a repository, a version and a digest");
@@ -297,7 +293,8 @@ function run(argv: readonly string[], read: Read, now: string): string {
 			}
 			const trivy = readJson(read, report);
 			// Trivy's JSON report carries its schema's version; anything else is the wrong file, not a clean image.
-			if (!isObject(trivy) || typeof trivy.SchemaVersion !== "number") throw new Error(`${report} isn't a Trivy JSON report`);
+			if (!isObject(trivy) || typeof trivy.SchemaVersion !== "number")
+				throw new Error(`${report} isn't a Trivy JSON report`);
 			const scan = summariseTrivy(trivy, option(options, "--scanner") ?? "trivy", now);
 			return json(recordScan(index, name, digest, scan, now));
 		}
