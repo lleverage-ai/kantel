@@ -9,6 +9,7 @@ import { createStubBackend, STUB_HOST_ID } from "@kantel/compute/stub";
 import type { ComputeSource } from "@kantel/ui";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { apiCompute } from "./api-source.ts";
+import { localBridge } from "./local.ts";
 
 const ORIGIN = "https://kantel.test";
 
@@ -149,6 +150,70 @@ describe("sandboxes", () => {
 		await source.sandboxes.remove(fork.id);
 		await api.service.idle();
 		expect((await source.sandboxes.list(accountId)).map((sandbox) => sandbox.id)).toEqual([made.id]);
+	});
+
+	it("reads an E2E sandbox's history from its host through kantel console, and others' from the gateway", async () => {
+		const { api, fetchApi } = setup();
+		const plain = await open(fetchApi);
+		const accountId = await personalAccount(plain);
+		const made = await plain.sandboxes.create({ accountId, kind: "isolate", size: "small" });
+		await api.service.idle();
+		expect(await plain.e2e?.mode(accountId)).toBe("off");
+		expect(plain.e2e?.served).toBe("gateway");
+
+		const calls: { sandboxId: string; method: string; params: { before?: string } }[] = [];
+		// The host's history, newest first, in pages of one: a console that drops the cursor sees only the newest.
+		const kept = [
+			{ id: "c2", command: "make test", startedAt: 2000, endedAt: 2100, device: "d1", deviceLabel: "Ada's laptop" },
+			{
+				id: "c1",
+				command: "make",
+				startedAt: 1000,
+				endedAt: 1250,
+				exitCode: 0,
+				device: "d1",
+				deviceLabel: "Ada's laptop",
+			},
+		];
+		const localFetch: typeof fetch = async (input, init) => {
+			const path = String(input);
+			if (path === "/local/info") {
+				return Response.json({
+					local: true,
+					device: { id: "d1", label: "Ada's laptop" },
+					spaces: [{ id: accountId, mode: "on" }],
+				});
+			}
+			if (path === "/local/e2e") {
+				const call = JSON.parse(String(init?.body)) as (typeof calls)[number];
+				calls.push(call);
+				const from = call.params.before === undefined ? 0 : kept.findIndex((c) => c.id === call.params.before) + 1;
+				const items = kept.slice(from, from + 1);
+				const next = from + 1 < kept.length ? items.at(-1)?.id : undefined;
+				return Response.json({ result: { items, ...(next === undefined ? {} : { next }) } });
+			}
+			return fetchApi(input, init);
+		};
+		// Only on 127.0.0.1 does the console ask for kantel console's bridge.
+		expect(await localBridge(localFetch, "kantel.example.com")).toBeUndefined();
+		const local = await localBridge(localFetch, "127.0.0.1");
+		expect(local?.mode(accountId)).toBe("on");
+		expect(local?.mode("acct_elsewhere")).toBe("off");
+		const source = await apiCompute({
+			headers: () => ({ authorization: "Bearer person-ada" }),
+			fetch: fetchApi,
+			...(local === undefined ? {} : { local }),
+		});
+		expect(source.e2e).toMatchObject({ served: "local", device: "Ada's laptop" });
+		await source.sandboxes.list(accountId);
+		expect(await source.sandboxes.history(made.id)).toEqual([
+			{ id: "c2", command: "make test", startedAt: 2000, durationMs: 100, by: "Ada's laptop" },
+			{ id: "c1", command: "make", startedAt: 1000, durationMs: 250, exitCode: 0, by: "Ada's laptop" },
+		]);
+		expect(calls).toEqual([
+			{ sandboxId: made.id, method: "sandbox.history", params: { limit: 100, output: false } },
+			{ sandboxId: made.id, method: "sandbox.history", params: { limit: 100, output: false, before: "c2" } },
+		]);
 	});
 
 	it("shows what the host gave a microVM, and names sizes without figures", async () => {

@@ -53,6 +53,7 @@ import type {
 	ComputeViewer,
 	DeviceLogin,
 	DeviceLoginsSource,
+	E2EMode,
 	EgressSource,
 	EnvironmentsSource,
 	HostingMode,
@@ -69,6 +70,7 @@ import type {
 	EnvironmentVariable as UiVariable,
 	WebhooksSource,
 } from "@kantel/ui";
+import type { HostCommand, HostCommandPage, LocalBridge } from "./local.ts";
 
 // `@kantel/ui` exports the sources but not every record they carry, so the records are read off the sources' methods.
 type UiMember = Awaited<ReturnType<AccountsSource["members"]>>[number];
@@ -103,6 +105,8 @@ export interface ComputeApiOptions {
 	readonly onUnauthenticated?: () => void;
 	/** Default `self-hosted`. */
 	readonly hosting?: HostingMode;
+	/** `kantel console`'s bridge, when it serves this page (local.ts). */
+	readonly local?: LocalBridge;
 }
 
 /** What every source shares: the client, how the console runs, and the domain sandbox addresses are under. */
@@ -119,6 +123,9 @@ interface Context {
 	 * Every environment the console reads goes in.
 	 */
 	readonly environmentNames: Map<string, string>;
+	/** Sandboxes' accounts by ID, as last read: which one's chain decides where its commands are read from. */
+	readonly sandboxAccounts: Map<string, string>;
+	readonly local?: LocalBridge;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -344,7 +351,10 @@ function commandOf(command: Command): UiCommand {
 
 function sandboxesSource(context: Context): SandboxesSource {
 	const { api } = context;
-	const view = (sandbox: Sandbox) => sandboxOf(sandbox, context);
+	const view = (sandbox: Sandbox) => {
+		context.sandboxAccounts.set(sandbox.id, sandbox.accountId);
+		return sandboxOf(sandbox, context);
+	};
 	return {
 		// The backend decides what each size is, and the API doesn't list them.
 		sizeFigures: false,
@@ -396,8 +406,68 @@ function sandboxesSource(context: Context): SandboxesSource {
 			context.learnHost(ssh.host);
 			return { ssh: ssh.command, desktopUrl: desktop.url, desktopViewUrl: watch.url, browserUrl: browser.url };
 		},
-		history: async (id) => (await allPages((cursor) => api.listCommands(id, after(cursor)))).map(commandOf),
+		history: async (id) => {
+			// End to end, the host keeps the history and the gateway has none of it: `kantel console` reads it there.
+			const { local } = context;
+			const account = context.sandboxAccounts.get(id);
+			if (local !== undefined && account !== undefined && local.mode(account) !== "off") {
+				// Every page the host keeps, by its cursor; the list shows no output, so none is carried.
+				const commands = await allPages(async (cursor) => {
+					const page = await local.call<HostCommandPage>(id, "sandbox.history", {
+						limit: 100,
+						output: false,
+						...(cursor === undefined ? {} : { before: cursor }),
+					});
+					return {
+						items: page.items,
+						...(page.next === undefined || page.next === "" ? {} : { nextCursor: page.next }),
+					};
+				});
+				return commands.map(hostCommandOf);
+			}
+			return (await allPages((cursor) => api.listCommands(id, after(cursor)))).map(commandOf);
+		},
 	};
+}
+
+function hostCommandOf(command: HostCommand): UiCommand {
+	return {
+		id: command.id,
+		command: command.command ?? (command.argv ?? []).join(" "),
+		startedAt: command.startedAt,
+		durationMs: Math.max(0, command.endedAt - command.startedAt),
+		...(command.exitCode === undefined ? {} : { exitCode: command.exitCode }),
+		// The device that ran it, by its label in the chain.
+		by: command.deviceLabel ?? command.device,
+	};
+}
+
+/** An account's mode, for the strip over the page: from its chain's entries as the gateway has them, not verified. */
+async function chainMode(context: Context, accountId: string): Promise<E2EMode> {
+	const { entries } = await context.api.getE2EChain(accountId);
+	let mode: E2EMode = "off";
+	for (const entry of entries) {
+		try {
+			const payload = JSON.parse(new TextDecoder().decode(base64url(entry.payload))) as {
+				readonly type?: string;
+				readonly body?: { readonly mode?: string };
+			};
+			const named = payload.body?.mode;
+			const sets = payload.type === "genesis" || payload.type === "mode";
+			if (sets && (named === "on" || named === "strict" || named === "off")) mode = named;
+		} catch {
+			// An entry that doesn't read says nothing here; hosts and devices refuse the chain.
+		}
+	}
+	return mode;
+}
+
+function base64url(text: string): Uint8Array {
+	const padded = text
+		.replaceAll("-", "+")
+		.replaceAll("_", "/")
+		.padEnd(Math.ceil(text.length / 4) * 4, "=");
+	return Uint8Array.from(atob(padded), (char) => char.charCodeAt(0));
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1193,7 +1263,10 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		},
 		caller,
 		environmentNames: new Map(),
+		sandboxAccounts: new Map(),
+		...(options.local === undefined ? {} : { local: options.local }),
 	};
+	const { local } = options;
 
 	return {
 		hosting: context.hosting,
@@ -1216,5 +1289,13 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 			: {}),
 		// Only a person approves a device; a console signed in with a key has nothing to approve with.
 		...(caller.apiKey === undefined ? { devices: devicesSource(context) } : {}),
+		e2e:
+			local === undefined
+				? { served: "gateway", mode: (accountId) => chainMode(context, accountId) }
+				: {
+						served: "local",
+						...(local.info.device === undefined ? {} : { device: local.info.device.label }),
+						mode: async (accountId) => local.mode(accountId),
+					},
 	};
 }

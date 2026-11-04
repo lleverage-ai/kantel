@@ -166,6 +166,24 @@ export class E2EHost {
 					return { data: Buffer.from(`${SECRET_OUTPUT}\n`).toString("base64"), size: SECRET_OUTPUT.length + 1 };
 				}
 				if (method === "sandbox.files.write") return { ok: true };
+				if (method === "sandbox.history") {
+					// As kantel-host's log answers (apps/host/internal/agent/history.go), newest first.
+					const items = this.ran
+						.filter((call) => call.method === "sandbox.exec")
+						.map((call, i) => ({
+							id: `cmd_${i}`,
+							command: (call.params as { command?: string }).command,
+							startedAt: 1_700_000_000_000 + i,
+							endedAt: 1_700_000_000_001 + i,
+							exitCode: 0,
+							stdout: `${SECRET_OUTPUT}\n`,
+							stderr: "",
+							device: call.device,
+							deviceLabel: device.label,
+						}))
+						.reverse();
+					return { items };
+				}
 				return { exitCode: 0, stdout: `${SECRET_OUTPUT}\n`, stderr: "" };
 			},
 		});

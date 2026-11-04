@@ -87,6 +87,8 @@ type Host struct {
 	e2eRevalidate time.Duration
 	// e2e is the host's E2E keys and the chains of the spaces it joined (Root/e2e; e2e.go).
 	e2e *e2e.Store
+	// commands is the history of commands devices ran in E2E sessions (history.go).
+	commands *commandLog
 	// floors are the latest egress revisions the host has taken (by sandbox ID), a null egress's too, so a stale update
 	// or boot arriving late is ignored; kept on disk too (floorDir), across restarts.
 	floorMu sync.Mutex
@@ -115,6 +117,7 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 		return nil, fmt.Errorf("e2e store: %w", err)
 	}
 	h.e2e = store
+	h.commands = newCommandLog(cfg.Root)
 	h.proxy = egress.New(log.With("part", "egress"))
 	h.secrets = protect.NewStore(h.fetchSecrets)
 	h.cas = egress.NewCAStore(filepath.Join(cfg.Root, "egress-ca"))
@@ -434,6 +437,14 @@ func (h *Host) tierOfNamed(id string) (Tier, string, error) {
 	return nil, "", &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("no sandbox %s on this host", id)}
 }
 
+// streamEncoding is how the tier holding a sandbox writes streamed output: the microVM guest's chunks are base64.
+func (h *Host) streamEncoding(id string) StreamEncoding {
+	if _, name, err := h.tierOfNamed(id); err == nil && name == microvm.Tier {
+		return StreamBase64
+	}
+	return StreamText
+}
+
 func (h *Host) tierOfSnapshot(id string) (Tier, error) {
 	for _, name := range h.order {
 		if h.tiers[name].HasSnapshot(id) {
@@ -632,6 +643,9 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			_ = h.cas.Forget(p.SandboxID)
 		}
 		h.forgetFloor(p.SandboxID)
+		if h.commands != nil {
+			h.commands.forget(p.SandboxID)
+		}
 		return map[string]bool{"ok": true}, nil
 	case proto.MethodGet:
 		p, err := decode[proto.SandboxRef](params)

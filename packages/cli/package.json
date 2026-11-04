@@ -19,6 +19,7 @@
 		"@kantel/e2e": "workspace:*"
 	},
 	"devDependencies": {
-		"esbuild": "0.28.2"
+		"esbuild": "0.28.2",
+		"playwright-core": "1.64.1"
 	}
 }

@@ -44,6 +44,9 @@ gateway could reach them while it was off.
 Run the printed command on the host. A self-hosted host with no route to the gateway's chain API can join offline
 with `kantel-host e2e join --chain chain.json <ticket>`, which prints its signed entry for you to publish.
 
+The host's entry counts once the gateway has taken it. If someone else's change lands first, the join fails. Run it
+again, with a new ticket if the old one has run out, and the host signs a new entry on the chain as it is now.
+
 Each member trusts the genesis and sends their device's card to an admin, who checks its fingerprint with them:
 
 ```sh
@@ -68,6 +71,16 @@ could read what runs there), so set variables in a session with `kantel e2e exec
 has joined a space is updated on the machine (`kantel-host update`), never by the gateway, even while the space is
 off: the space still trusts its host key. An update the gateway started before the join finishes before the join goes
 ahead.
+
+### Command history and the local console
+
+The host keeps each sandbox's last 200 commands from sessions, with the last 64 KiB of their output; the gateway never
+has them. `kantel e2e history <sandbox> [--output]` reads them over a session, and works while the sandbox is stopped
+as long as its host is online. Deleting the sandbox deletes its history.
+
+`kantel console` serves the console from the CLI's own release on `127.0.0.1` and makes its E2E calls with this
+device's key, which never reaches the browser. Only the browser that opens the link it prints gets in. What the
+gateway answers there is shown as data only: the console runs no page or script the gateway sends.
 
 ## Take access away
 
