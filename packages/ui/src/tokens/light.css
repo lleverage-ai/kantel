@@ -1,8 +1,9 @@
 /* The light theme's palette: every colour the light theme sets, and the one place to change it. It sets the same
    tokens as dark.css (src/tokens/theme.test.ts holds the two together), so nothing of the dark palette shows through.
 
-   Paper (#f9f7f0), the brand's page ground, with white for things raised above it; midnight text; the same orange
-   accent, with links in a darker cut of it so they pass AA on paper. On [data-kt-theme="light"], which
+   Lleverage's "Crisp": paper (#f9f7f0), the brand's page ground, with white for things raised above it; midnight text
+   and a midnight (navy) primary action; the orange kept as the highlight (focus, where you are), with links in a
+   darker cut of it so they pass AA on paper. On [data-kt-theme="light"], which
    src/theme/controller.ts sets on <html> when a person chooses Light, or System on a light device. The doubled attribute
    outweighs dark.css's :root and portal rules. */
 
@@ -12,7 +13,7 @@
 
 	/* Surfaces. */
 	--kt-canvas: #f9f7f0;
-	--kt-panel: #f1efe6;
+	--kt-panel: #f3f1e9;
 	--kt-raised: #ffffff;
 	--kt-sunken: #efede4;
 	--kt-hover: color-mix(in srgb, var(--kt-text) 5%, transparent);
@@ -38,6 +39,10 @@
 	--kt-accent-hover: #d9661a;
 	--kt-accent-fg: #141e28;
 	--kt-accent-text: #a84d0c;
+	/* The primary action (one per surface): Crisp's navy, with white on it. */
+	--kt-primary: #141e28;
+	--kt-primary-hover: #2c353e;
+	--kt-primary-fg: #ffffff;
 
 	/* Status. */
 	--kt-status-working: #2f6a9f;

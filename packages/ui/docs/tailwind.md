@@ -59,6 +59,7 @@ modifiers such as `bg-accent/50`.
 | `--kt-border`, `-border-strong`, `-border-input` | `border-border`, `border-border-strong`, `border-border-input` |
 | `--kt-text`, `-text-muted`, `-text-faint`, `-text-disabled` | `text-fg`, `text-muted`, `text-faint`, `text-disabled` |
 | `--kt-accent`, `-accent-hover`, `-accent-fg`, `-accent-text`, `-accent-soft`, `-focus` | `bg-accent`, `bg-accent-hover`, `text-accent-fg`, `text-accent-text`, `bg-accent-soft`, `outline-focus` |
+| `--kt-primary`, `-primary-hover`, `-primary-fg` | `bg-primary`, `bg-primary-hover`, `text-primary-fg` |
 | `--kt-status-<s>`, `-<s>-soft`, `-<s>-line` | `text-status-working`, `bg-status-done-soft`, `border-status-error-line` |
 | `--kt-diff-add`, `-diff-del` | `text-diff-add`, `text-diff-del` |
 | `--kt-glass`, `-glass-outline`, `-thumb-scrim`, `-on-solid`, `-drop-fill`, `-drop-line` | `bg-glass`, `border-glass-outline`, `bg-thumb-scrim`, `text-on-solid`, `bg-drop-fill`, `border-drop-line` |
@@ -72,6 +73,7 @@ modifiers such as `bg-accent/50`.
 | `--kt-logo-edge`, `-logo-dark-mark`, `-logo-light-mark` | `drop-shadow-logo`, `filter-(--kt-logo-dark-mark)`, `filter-(--kt-logo-light-mark)` (a service's logo, drawn with no tile: provider-logo.tsx) |
 | `--kt-control-xs` … `-control-lg`, `-icon-sm`, `-icon-md`, `-dot`, `-thumb` | `size-control-sm`, `h-control-md`, `size-icon-sm`, `size-dot`, `size-thumb` (any sizing or spacing utility) |
 | `--kt-content-width`, `-card-width`, `-sidebar-width`, `-rail-width`, `-popover-width`, `-menu-width`, `-palette-width`, `-share-width`, `-doc-width` | `max-w-content`, `max-w-card`, `w-sidebar`, `w-rail`, `w-popover`, `w-menu`, `w-palette`, `w-share`, `max-w-doc` |
+| `--kt-nav-width`, `-topbar-height`, `-tabbar-height` | `w-(--kt-nav-width)`, `h-(--kt-topbar-height)`, `h-(--kt-tabbar-height)`: the compute console's sidebar, and a phone's top bar and tab bar |
 | `--kt-ease`, `-ease-breathe` | `ease-standard`, `ease-breathe`; `transition-*` default to `--kt-duration` and `--kt-ease` |
 | `--kt-step-0` … `-step-12` | Tailwind's steps, by the same number: `--kt-step-2` is `p-2`, `--kt-step-1_5` is `gap-1.5` |
 | `--kt-gap-within`, `-gap-between`, `-gap-turn`, `-pad-card`, `-pad-panel`, `-gutter`, `-gutter-narrow` | `gap-within`, `mt-between`, `pt-turn`, `p-pad-card`, `p-pad-panel`, `px-gutter`, `px-gutter-narrow` (any spacing utility; [spacing.md](spacing.md)) |

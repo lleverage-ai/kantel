@@ -25,17 +25,7 @@ function useSubmitCode(code: string | undefined) {
 }
 
 // Each story keeps its own source, so creating or joining an organisation adds it to the menu and switches to it.
-function Scenario({
-	collapsed = false,
-	open = false,
-	opened,
-	code,
-}: {
-	collapsed?: boolean;
-	open?: boolean;
-	opened?: Opened;
-	code?: string;
-}) {
+function Scenario({ open = false, opened, code }: { open?: boolean; opened?: Opened; code?: string }) {
 	const [source] = useState(() => createComputeFixtures());
 	const [accounts, setAccounts] = useState<readonly ComputeAccount[]>([PERSONAL, LLEVERAGE, EVALS]);
 	const [current, setCurrent] = useState<ComputeAccount>(LLEVERAGE);
@@ -49,16 +39,13 @@ function Scenario({
 		<div className="flex min-h-(--kt-popover-height) items-start">
 			{/* Hidden while a dialog is open: the modal makes it inert, and the keyboard gate counts it as unreachable. */}
 			{dialog === undefined ? (
-				<div
-					className={`flex flex-col rounded-panel border border-border bg-panel p-1.5 ${collapsed ? "w-rail items-center" : "w-sidebar"}`}
-				>
+				<div className="flex w-(--kt-nav-width) flex-col rounded-panel border border-border bg-panel p-1.5">
 					<AccountSwitcher
 						accounts={accounts}
 						current={current}
 						onSwitch={setCurrent}
 						onCreate={() => setDialog("create")}
 						onJoin={() => setDialog("join")}
-						collapsed={collapsed}
 						defaultOpen={open}
 					/>
 				</div>
@@ -79,9 +66,6 @@ function Scenario({
 
 /** Open, on an organisation: the personal account first, then the organisations with your role, then make or join one. */
 export const Switcher: Story = () => <Scenario open />;
-
-/** On the sidebar's collapsed rail: the current account's initials alone. */
-export const SwitcherCollapsed: Story = () => <Scenario collapsed />;
 
 /** Create an organisation, open: the slug follows the name until it's edited. */
 export const CreateOrganisation: Story = () => <Scenario opened="create" />;

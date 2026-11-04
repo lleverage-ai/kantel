@@ -64,5 +64,12 @@ export const HostsHosted: Story = () => <Scenario page="hosts" hosting="hosted" 
 /** A member who isn't a super-admin has no Hosts. */
 export const NotSuperAdmin: Story = () => <Scenario options={{ notSuperAdmin: true }} />;
 export const Failed: Story = () => <Scenario options={{ fail: true }} />;
+/** A phone: the top bar, the page and the five pages along the bottom. */
 export const Mobile: Story = () => <Scenario narrow />;
-Mobile.meta = { width: 420 };
+Mobile.meta = { width: 390 };
+/** Settings on a phone: its pages in a row over the page. */
+export const MobileSettings: Story = () => <Scenario page="keys" narrow />;
+MobileSettings.meta = { width: 390 };
+/** Admin on a phone: a way back to the console, and no tab bar. */
+export const MobileAdmin: Story = () => <Scenario page="hosts" narrow />;
+MobileAdmin.meta = { width: 390 };

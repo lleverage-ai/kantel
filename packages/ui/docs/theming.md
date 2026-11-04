@@ -8,9 +8,10 @@ Each theme is one palette in one file: `src/tokens/dark.css` and `src/tokens/lig
 component reads the `--kt-*` tokens, so the page restyles in the next frame without rendering anything in React.
 
 Both follow the Lleverage brand: paper `#f9f7f0` as the light ground, paper text on the dark one (never pure white),
-orange `#ec7523` as the one accent, kept to primary actions, links and the focus ring, and the brand's three faces.
-The dark palette is interim: the earlier midnight with its blue taken down toward neutral greys, until the "less blue"
-dark of the mobile prototype replaces it (see the comment at the top of `dark.css`).
+orange `#ec7523` as the accent for links and the focus ring, and the brand's three faces. Light is "Crisp": paper,
+with a near-black navy primary button and white text on it. Dark is "Bold": neutral greys with no blue, and an orange
+primary button with dark text on it. The primary action has its own tokens (`primary`, `primary-hover`, `primary-fg`)
+so a theme can draw it apart from the accent.
 
 ## The pieces
 
@@ -22,7 +23,7 @@ dark of the mobile prototype replaces it (see the comment at the top of `dark.cs
 | `src/tokens/theme.test.ts` | Holds the two palettes to the same tokens and checks each for contrast. |
 | `src/theme/controller.ts` | Applies the preference to the page, follows the device for System, and remembers the choice in `localStorage`. |
 | `src/theme/boot.ts` | The inline script that applies the remembered theme before first paint. |
-| `src/theme/theme-switch.tsx` | `ThemeSwitch`, the System / Light / Dark segmented control. |
+| `src/theme/theme-switch.tsx` | `ThemeSwitch`, the System / Light / Dark segmented control, and `useThemeMenuEntry`, the same three choices as a submenu (the console's own menu uses it). |
 | `src/code/` | Highlighted code: Highlight.js writes `hljs-*` classes and `syntax.css` maps them onto the `--kt-syntax-*` tokens. |
 
 ## Tokens
@@ -41,6 +42,8 @@ Tailwind utilities theme the same way: `src/tokens/tailwind.css` maps each token
   and `text-disabled`.
 - **Accent**: `accent`, `accent-hover`, `accent-fg` (text on the accent), `accent-text` (the accent as link text),
   and, in `tokens.css`, `accent-soft` and `focus`.
+- **Primary**: `primary`, `primary-hover` and `primary-fg` (text on the primary button, at least 4.5:1 on both),
+  for the primary button alone.
 - **Status**: `status-working`, `status-waiting`, `status-approval`, `status-done`, `status-error` and
   `status-idle`, each at least 4.5:1 on canvas and panel, and no two closer than 0.08 apart in OKLab, so they stay
   distinguishable. Their soft fills and lines are in `tokens.css`.

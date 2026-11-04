@@ -7,10 +7,9 @@
    portal rule. The formulas built on these (soft tints, the terminal, the derived syntax colours) are in tokens.css and
    follow whichever palette is on the page.
 
-   Interim, 3 Nov 2026: the earlier midnight (#141e28) with its blue tint taken down toward neutral greys, about a fifth
-   of its chroma kept, at the same lightness: the surfaces, the disabled text and code comments. Paper text and borders,
-   the orange accent and the status and syntax colours are unchanged. To be replaced by the "less blue" dark of the
-   lleverage-mobile-prototype-v2 prototype.
+   Lleverage's "Bold" with the blue taken out (the console redesign, Nov 2026): near-neutral hsl(220 5-6%) greys, the
+   page a step lighter than the sidebar and a card a step lighter again, and the brand's orange as the primary action,
+   with dark text on it (5.7:1; white on that orange is 3.0:1).
 
    Outside CSS, only the browser's chrome repeats the canvas: the dark theme-color in apps/console/index.html and the
    colours in apps/console/public/manifest.webmanifest. Change them with --kt-canvas. */
@@ -21,11 +20,12 @@
 [data-kt-theme="dark"] .kt-theme {
 	color-scheme: dark;
 
-	/* Surfaces: a near-neutral dark grey, a panel and a raised card a step lighter, and a well a step darker. */
-	--kt-canvas: #1b1d1f;
-	--kt-panel: #202224;
-	--kt-raised: #27292b;
-	--kt-sunken: #151618;
+	/* Surfaces: Bold's background, hsl(220 6% 12%); the sidebar's panel a step darker; a raised card, Bold's card,
+	   hsl(220 5% 16%), a step lighter; and a well. */
+	--kt-canvas: #1c1d20;
+	--kt-panel: #18191b;
+	--kt-raised: #27282b;
+	--kt-sunken: #161719;
 	--kt-hover: rgb(249 247 240 / 0.05);
 	--kt-active: rgb(249 247 240 / 0.08);
 	--kt-selected: rgb(249 247 240 / 0.07);
@@ -39,7 +39,7 @@
 	--kt-border-input: rgb(249 247 240 / 0.13);
 
 	/* Text: paper, never pure white. All pass WCAG AA (4.5:1) on --kt-raised and darker. */
-	--kt-text: #f9f7f0;
+	--kt-text: #f1f0ea;
 	--kt-text-muted: #bdbbb3;
 	--kt-text-faint: #9d9b94;
 	--kt-text-disabled: #636465;
@@ -48,8 +48,12 @@
 	   --kt-accent, --kt-accent-hover, --kt-accent-text and --kt-accent-fg on any ancestor. */
 	--kt-accent: #ec7523;
 	--kt-accent-hover: #ff9626;
-	--kt-accent-fg: #1b1d1f;
+	--kt-accent-fg: #1c1d20;
 	--kt-accent-text: #f08a47;
+	/* The primary action (one per surface): the orange, with the canvas on it. */
+	--kt-primary: #ec7523;
+	--kt-primary-hover: #f08a47;
+	--kt-primary-fg: #1c1d20;
 
 	/* Status: the brand's product set (info, success, warning, destructive) lifted to pass AA on the canvas, plus indigo.
 	   Their soft fills are formulas in tokens.css. */
