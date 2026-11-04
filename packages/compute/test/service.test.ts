@@ -556,6 +556,45 @@ describe("placement reasons", () => {
 		expect(again.placementReason).toBeUndefined();
 	});
 
+	it("names a refusal for the type by the hosts the caller may use, and a snapshot's by its host", async () => {
+		let microvmHost = true;
+		let isolatesUp = true;
+		const backend = placing((own) => {
+			const [stub] = own.hosts;
+			if (stub === undefined) throw new Error("The stub has a host");
+			const isolates = {
+				...stub,
+				id: "host_isolates",
+				name: "isolates",
+				tiers: ["isolate" as const],
+				connected: isolatesUp,
+			};
+			return {
+				...own,
+				types: microvmHost ? ["isolate", "microvm"] : ["isolate"],
+				hosts: microvmHost ? [stub, isolates] : [isolates],
+			};
+		});
+		const { tom } = setup(backend);
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		const from = (await tom.getSandbox(sandbox.id)).latestSnapshotId;
+		// The microVM host is gone (revoked, say): only an isolate host is left.
+		microvmHost = false;
+		expect(await reasonOf(tom.createSandbox({ type: "microvm", from }))).toMatchObject({
+			status: 503,
+			code: "unavailable",
+			reason: "host_unavailable",
+		});
+		expect(await reasonOf(tom.createSandbox({ type: "microvm" }))).toMatchObject({
+			status: 503,
+			reason: "no_host_for_type",
+		});
+		// And with that one offline too, none is connected at all.
+		isolatesUp = false;
+		expect(await reasonOf(tom.createSandbox({ type: "microvm" }))).toMatchObject({ status: 503, reason: "no_host" });
+	});
+
 	it("carries no reason on other errors", async () => {
 		const { tom } = setup();
 		const error = await failure(tom.getSandbox("sbx_missing"));

@@ -119,6 +119,14 @@ const ROUTES: {
 			},
 			{ status: 503 },
 		),
+	"GET /v1/sandboxes/sbx_full": () =>
+		Response.json({
+			...SANDBOX,
+			id: "sbx_full",
+			state: "error",
+			reason: "No host can take a microVM of size default (full)",
+			placementReason: "insufficient_capacity",
+		}),
 	"POST /v1/sandboxes/sbx_full/resume": () =>
 		Response.json({
 			...SANDBOX,
@@ -298,6 +306,13 @@ describe("the MCP server", () => {
 			"Sandbox sbx_full is error (insufficient_capacity): No host can take a microVM of size default (full)",
 		);
 		expect(full.content[0]?.text).toContain("The hosts are full now");
+		// Read later, it says the same, and is still the whole sandbox.
+		const got = resultOf(
+			await mcp.handle(request(22, "tools/call", { name: "sandbox_get", arguments: { sandboxId: "sbx_full" } })),
+		);
+		expect(got.content[0]?.text).toContain("Sandbox sbx_full is error (insufficient_capacity)");
+		expect(got.content[0]?.text).toContain("The hosts are full now");
+		expect(got.structuredContent).toMatchObject({ id: "sbx_full", placementReason: "insufficient_capacity" });
 	});
 
 	it("refuses bad arguments before calling Kantel", async () => {

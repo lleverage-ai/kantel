@@ -4064,11 +4064,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				known.catch(() => undefined);
 				const capabilities = await read;
 				if (!capabilities.types.includes(type)) {
-					throw placementError(
-						"unavailable",
-						capabilities.hosts.length === 0 ? "no_host" : "no_host_for_type",
-						`No host runs ${type} sandboxes`,
-					);
+					// Why, as `requireHosts` would say it: of the hosts the caller may use, and from a snapshot its own host.
+					let reason: PlacementReason = "no_host_for_type";
+					try {
+						requireHosts(
+							await known,
+							account.id,
+							type,
+							{ ...body.hostLabels },
+							from !== undefined,
+							await mayShare(principal),
+						);
+					} catch (error) {
+						reason = placementReasonOf(error) ?? reason;
+					}
+					throw placementError("unavailable", reason, `No host runs ${type} sandboxes`);
 				}
 				if (type === "isolate" && body.size !== undefined) throw new KantelError("invalid", "Isolates have no size");
 				if (body.size !== undefined && body.resources !== undefined) {

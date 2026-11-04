@@ -389,7 +389,8 @@ const TOOLS: readonly Tool[] = [
 		inputSchema: schema({ sandboxId }, ["sandboxId"]),
 		annotations: { title: "Get a sandbox", readOnlyHint: true },
 		async call(args, { client, signal }) {
-			return json(await client.getSandbox(text(args, "sandboxId"), { signal }));
+			const sandbox = await client.getSandbox(text(args, "sandboxId"), { signal });
+			return json(sandbox, `Sandbox ${sandbox.id} is ${stateLine(sandbox)}.`);
 		},
 	},
 	{
