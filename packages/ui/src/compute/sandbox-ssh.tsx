@@ -42,9 +42,7 @@ function CommandLine({ command, copyLabel }: { command: string | undefined; copy
 					<Skeleton />
 				</span>
 			) : (
-				<code className="kt-selectable min-w-0 flex-1 py-1 leading-normal break-all text-fg">
-					{command}
-				</code>
+				<code className="kt-selectable min-w-0 flex-1 py-1 leading-normal break-all text-fg">{command}</code>
 			)}
 			{command === undefined ? null : <CopyButton text={command} label={copyLabel} size="sm" variant="ghost" />}
 		</div>

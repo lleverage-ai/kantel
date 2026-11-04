@@ -15,11 +15,11 @@ import { computePage, messageOf, SectionHeading } from "./parts.tsx";
 
 export interface InstallPageProps {
 	readonly source: PublicUrlSource;
-	/** A phone: the title a step larger, as other pages have it. */
+	/** A phone. The page is the same at every width now that every title has the heading size; kept for callers. */
 	readonly narrow?: boolean;
 }
 
-export function InstallPage({ source, narrow = false }: InstallPageProps) {
+export function InstallPage({ source }: InstallPageProps) {
 	const { state, reload } = useLoad(() => source.get(), [source]);
 	const [saved, setSaved] = useState<PublicUrl>();
 	const url = saved ?? (state.status === "ready" ? state.value : undefined);

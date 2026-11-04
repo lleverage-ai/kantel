@@ -297,9 +297,7 @@ export function SandboxesPage({
 		<div className={computePage}>
 			{/* The title and New on one line, on a phone too, where PageHeader would put New under the title. */}
 			<header className="kt-page-header flex min-h-control-md min-w-0 items-center justify-between gap-4 border-b border-border pb-3">
-				<h1
-					className={`kt-page-header-title m-0 truncate font-strong leading-tight text-fg text-heading`}
-				>
+				<h1 className={`kt-page-header-title m-0 truncate font-strong leading-tight text-fg text-heading`}>
 					Sandboxes
 				</h1>
 				{newButton}
@@ -872,7 +870,10 @@ function SandboxRow({
 			{row}
 			<tr className={`kt-sandbox-row-failure ${ticked ? "bg-selected" : ""}`}>
 				<td className="border-b border-border p-0" />
-				<td className="border-b border-border px-2 pt-0 pb-2.5 text-sm text-status-error" colSpan={hosting === "hosted" ? 9 : 8}>
+				<td
+					className="border-b border-border px-2 pt-0 pb-2.5 text-sm text-status-error"
+					colSpan={hosting === "hosted" ? 9 : 8}
+				>
 					{failure}
 				</td>
 			</tr>

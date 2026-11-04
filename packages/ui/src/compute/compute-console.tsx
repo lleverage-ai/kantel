@@ -2,8 +2,8 @@ import type { ThemePreference } from "@kantel/contracts";
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { KantelLockup, KantelMark } from "../brand/kantel.tsx";
 import { Button } from "../primitives/button.tsx";
-import { useLoad } from "../primitives/load.ts";
 import { AlertIcon } from "../primitives/icons.tsx";
+import { useLoad } from "../primitives/load.ts";
 import {
 	BackIcon,
 	EnvironmentIcon,
