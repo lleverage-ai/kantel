@@ -25,6 +25,7 @@ import {
 	type EgressSource,
 	type HostingMode,
 	imageLacks,
+	quietState,
 	SANDBOX_KIND_LABELS,
 	SANDBOX_STATE_LABELS,
 	SANDBOX_STATE_STATUS,
@@ -123,9 +124,11 @@ export interface SandboxPageProps {
 	readonly filesHref?: (at: FilesAt, sealed: boolean) => string;
 }
 
-/** The state, in its colour. */
+/** The state, by the list's rule: words in its colour only for an error or a change under way, quiet otherwise. */
 const StateLabel = ({ state }: { state: Sandbox["state"] }) => (
-	<StatusLabel status={SANDBOX_STATE_STATUS[state]}>{SANDBOX_STATE_LABELS[state]}</StatusLabel>
+	<StatusLabel status={SANDBOX_STATE_STATUS[state]} quiet={quietState(state)}>
+		{SANDBOX_STATE_LABELS[state]}
+	</StatusLabel>
 );
 
 type HeldAccess = { readonly value: SandboxAccess | "loading" | Error; readonly at: number };
@@ -708,43 +711,43 @@ function Overview({
 
 	const created = compactAge(sandbox.createdAt, now);
 	const detailsList = (
-			<dl className="m-0 grid grid-cols-[var(--kt-label-width)_minmax(0,1fr)] gap-x-4 gap-y-2.5 text-sm">
-				<dt className={dt}>ID</dt>
-				<dd className={`${dd} flex items-center gap-1`}>
-					<span className="truncate font-mono text-code">{sandbox.id}</span>
-					<CopyButton text={sandbox.id} iconOnly size="xs" variant="ghost" label="Copy ID" />
-				</dd>
-				<dt className={dt}>Type</dt>
-				<dd className={dd}>{SANDBOX_KIND_LABELS[sandbox.kind]}</dd>
-				<dt className={dt}>Size</dt>
-				<dd className={dd}>
-					{sizeText(spec)}
-					{spec.diskGb > 0 ? `, ${spec.diskGb} GB disk` : ""}
-				</dd>
-				{sandbox.snapshot === undefined ? null : (
-					<>
-						<dt className={dt}>Snapshot</dt>
-						<dd className={dd}>{agoText(sandbox.snapshot.takenAt, now)}</dd>
-					</>
-				)}
-				<dt className={dt}>Created</dt>
-				<dd className={dd}>
-					{created === "now" ? "Just now" : `${created} ago`}
-					{sandbox.createdBy === "" ? "" : ` by ${sandbox.createdBy}`}
-				</dd>
-				{hosting === "hosted" && sandbox.costCents !== undefined ? (
-					<>
-						<dt className={dt}>Cost</dt>
-						<dd className={dd}>{costText(sandbox.costCents)} this period</dd>
-					</>
-				) : null}
-				{sandbox.hostId === undefined ? null : (
-					<>
-						<dt className={dt}>Host</dt>
-						<dd className={`${dd} truncate font-mono text-code`}>{sandbox.hostId}</dd>
-					</>
-				)}
-			</dl>
+		<dl className="m-0 grid grid-cols-[var(--kt-label-width)_minmax(0,1fr)] gap-x-4 gap-y-2.5 text-sm">
+			<dt className={dt}>ID</dt>
+			<dd className={`${dd} flex items-center gap-1`}>
+				<span className="truncate font-mono text-code">{sandbox.id}</span>
+				<CopyButton text={sandbox.id} iconOnly size="xs" variant="ghost" label="Copy ID" />
+			</dd>
+			<dt className={dt}>Type</dt>
+			<dd className={dd}>{SANDBOX_KIND_LABELS[sandbox.kind]}</dd>
+			<dt className={dt}>Size</dt>
+			<dd className={dd}>
+				{sizeText(spec)}
+				{spec.diskGb > 0 ? `, ${spec.diskGb} GB disk` : ""}
+			</dd>
+			{sandbox.snapshot === undefined ? null : (
+				<>
+					<dt className={dt}>Snapshot</dt>
+					<dd className={dd}>{agoText(sandbox.snapshot.takenAt, now)}</dd>
+				</>
+			)}
+			<dt className={dt}>Created</dt>
+			<dd className={dd}>
+				{created === "now" ? "Just now" : `${created} ago`}
+				{sandbox.createdBy === "" ? "" : ` by ${sandbox.createdBy}`}
+			</dd>
+			{hosting === "hosted" && sandbox.costCents !== undefined ? (
+				<>
+					<dt className={dt}>Cost</dt>
+					<dd className={dd}>{costText(sandbox.costCents)} this period</dd>
+				</>
+			) : null}
+			{sandbox.hostId === undefined ? null : (
+				<>
+					<dt className={dt}>Host</dt>
+					<dd className={`${dd} truncate font-mono text-code`}>{sandbox.hostId}</dd>
+				</>
+			)}
+		</dl>
 	);
 	// A phone folds it to one line: what it is and its size.
 	const details = narrow ? (

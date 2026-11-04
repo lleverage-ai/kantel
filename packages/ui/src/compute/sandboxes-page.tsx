@@ -36,6 +36,7 @@ import {
 	microvmsAvailable,
 	onGrid,
 	presetOf,
+	quietState,
 	SANDBOX_KIND_LABELS,
 	SANDBOX_STATE_LABELS,
 	SANDBOX_STATE_STATUS,
@@ -362,7 +363,11 @@ export function SandboxesPage({
 							label="Show sandboxes"
 							options={FILTERS.filter(
 								(option) => option.value !== "error" || counts.error > 0 || filter === "error",
-							).map((option) => ({ ...option, count: counts[option.value] }))}
+							).map((option) => ({
+								...option,
+								count: counts[option.value],
+								alert: option.value === "error" && counts.error > 0,
+							}))}
 							value={filter}
 							onChange={setFilter}
 						/>
@@ -718,10 +723,7 @@ function useRowActions(sandbox: Sandbox, calls: RowCalls) {
  * way up or down). Running, paused and stopped, most of a list, keep their words quiet.
  */
 const StateLabel = ({ state }: { state: SandboxState }) => (
-	<StatusLabel
-		status={SANDBOX_STATE_STATUS[state]}
-		quiet={state === "running" || state === "paused" || state === "stopped"}
-	>
+	<StatusLabel status={SANDBOX_STATE_STATUS[state]} quiet={quietState(state)}>
 		{SANDBOX_STATE_LABELS[state]}
 	</StatusLabel>
 );
@@ -763,6 +765,12 @@ function Cpu({
 			: `CPU ${series === undefined ? "lately" : "over the last 2 minutes"} for ${sandbox.name}, peak ${peak}%`;
 	return (
 		<span className="inline-flex items-center gap-2">
+			{compact ? (
+				// Named under a phone row's state, as the table's column head names it on a wide screen.
+				<span className="text-muted" aria-hidden="true">
+					CPU
+				</span>
+			) : null}
 			<Sparkline
 				size={compact ? "xs" : "sm"}
 				values={values}
@@ -971,7 +979,7 @@ function SandboxPhoneRow({
 			<div className="flex min-w-0 flex-1 flex-col gap-1">
 				<span className="min-w-0 truncate text-md font-medium text-fg">{sandbox.name}</span>
 				{sandbox.state === "error" && sandbox.error !== undefined ? (
-					<span className="line-clamp-2 text-sm text-fg">{sandbox.error}</span>
+					<span className="text-sm text-fg">{sandbox.error}</span>
 				) : (
 					// The machine on one line, then where it runs and when it stops on the next: the same lines on every card.
 					<span className="flex min-w-0 flex-col text-sm text-muted">
@@ -979,13 +987,9 @@ function SandboxPhoneRow({
 							{SANDBOX_KIND_LABELS[sandbox.kind]}, {sizeText(sandbox.resources ?? sandbox.size)}
 						</span>
 						<span className="flex min-w-0 gap-x-3 empty:hidden">
-							{sandbox.environment === undefined ? null : (
-								<span className="truncate">{sandbox.environment.name}</span>
-							)}
+							{sandbox.environment === undefined ? null : <span className="truncate">{sandbox.environment.name}</span>}
 							{stops === "–" ? null : (
-								<span className="flex-none">
-									{stops === "Always on" || stops === "Now" ? stops : `Stops ${stops}`}
-								</span>
+								<span className="flex-none">{stops === "Always on" || stops === "Now" ? stops : `Stops ${stops}`}</span>
 							)}
 						</span>
 					</span>

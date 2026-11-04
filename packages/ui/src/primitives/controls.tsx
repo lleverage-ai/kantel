@@ -360,6 +360,8 @@ export type SegmentOption<T extends string> = {
 	value: T;
 	label: string;
 	count?: number;
+	/** Its count is something to look at (sandboxes in error): the count in the error colour, so it's found from here. */
+	alert?: boolean;
 	disabled?: boolean;
 	tone?: SegmentTone;
 };
@@ -442,7 +444,11 @@ export function SegmentedControl<T extends string>({
 					>
 						{option.label}
 						{option.count === undefined ? null : (
-							<span className="kt-segment-count text-faint tabular-nums">{option.count}</span>
+							<span
+								className={`kt-segment-count tabular-nums ${option.alert === true ? "text-status-error" : "text-faint"}`}
+							>
+								{option.count}
+							</span>
 						)}
 					</button>
 				);

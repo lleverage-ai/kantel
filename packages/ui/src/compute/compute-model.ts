@@ -1468,6 +1468,13 @@ export const SANDBOX_STATE_STATUS: Readonly<Record<SandboxState, Status>> = {
 	error: "error",
 };
 
+/**
+ * The settled states, most of any list: their words stay quiet beside the coloured dot, so colour in words is left
+ * for an error or a change under way.
+ */
+export const quietState = (state: SandboxState): boolean =>
+	state === "running" || state === "paused" || state === "stopped";
+
 export const SANDBOX_KIND_LABELS: Readonly<Record<SandboxKind, string>> = {
 	isolate: "Isolate",
 	microvm: "MicroVM",

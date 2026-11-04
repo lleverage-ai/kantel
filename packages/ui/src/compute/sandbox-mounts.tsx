@@ -39,18 +39,21 @@ export function SandboxMounts({ mounts }: { mounts: readonly SandboxMount[] }) {
 		<section id="mounts" className="flex min-w-0 scroll-mt-4 flex-col gap-3" aria-labelledby="sandbox-mounts">
 			<SectionHeading id="sandbox-mounts" title="Mounts" />
 			<p className="m-0 text-sm text-muted">Read-only: the sandbox can read these files but not change them.</p>
-			<ul className="m-0 flex min-w-0 flex-col rounded-panel border border-border bg-raised px-4 py-1 text-sm">
+			<ul className="m-0 flex min-w-0 flex-col rounded-panel border border-border bg-raised p-0 text-sm">
 				{mounts.map((mount) => (
 					<li
 						key={mount.path}
-						className="flex min-w-0 flex-col gap-1 border-b border-border py-2.5 last:border-b-0"
+						// A failed mount has the failed sandbox row's light error ground and red edge: one failure look.
+						className={`flex min-w-0 flex-col gap-1 border-b border-border px-4 py-3 first:rounded-t-panel last:rounded-b-panel last:border-b-0 ${mount.status === "failed" ? "bg-status-error-soft/60 shadow-[inset_2px_0_0_var(--kt-status-error)]" : ""}`}
 						data-mount={mount.path}
 					>
 						<div className="flex min-w-0 items-baseline justify-between gap-3">
 							<span className="kt-selectable min-w-0 truncate font-mono text-code text-fg" title={mount.path}>
 								{mount.path}
 							</span>
-							<StatusLabel status={MOUNT_STATUS_STATUS[mount.status]}>{MOUNT_STATUS_LABELS[mount.status]}</StatusLabel>
+							<StatusLabel status={MOUNT_STATUS_STATUS[mount.status]} quiet={mount.status === "ready"}>
+								{MOUNT_STATUS_LABELS[mount.status]}
+							</StatusLabel>
 						</div>
 						<div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-sm text-muted">
 							<span>{MOUNT_KIND_LABELS[mount.source.kind]}</span>
