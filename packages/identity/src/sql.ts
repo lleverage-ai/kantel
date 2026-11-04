@@ -588,6 +588,9 @@ export function createSqlIdentity(options: SqlIdentityOptions): IdentityDirector
 		issuer: string,
 		options: { readonly audit?: boolean } = {},
 	): Promise<StoredUser> {
+		// Their own subject already: a first sign-in racing this one made them with it after this one's subject lookup.
+		// Never recorded twice, or the subject would match two rows and `canSignIn` would count it ambiguous.
+		if (user.user.externalSubject === externalSubject) return user;
 		try {
 			await driver.query(
 				"INSERT INTO identity_user_subjects (external_subject, user_id, issuer, created_at) VALUES (?, ?, ?, ?)",
