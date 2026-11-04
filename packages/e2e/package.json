@@ -12,6 +12,7 @@
 		"./chain": "./src/chain.ts",
 		"./noise": "./src/noise.ts",
 		"./session": "./src/session.ts",
+		"./device": "./src/device.ts",
 		"./responder": "./src/responder.ts",
 		"./testing": "./src/testing.ts"
 	}

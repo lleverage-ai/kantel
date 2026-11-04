@@ -45,6 +45,7 @@ import {
 	type WebhookDelivery,
 	type WebhookLastDelivery,
 } from "@kantel/api/sdk";
+import { DeviceTrustError } from "@kantel/e2e/device";
 import type {
 	AccountsSource,
 	ApiKeysSource,
@@ -70,6 +71,7 @@ import type {
 	EnvironmentVariable as UiVariable,
 	WebhooksSource,
 } from "@kantel/ui";
+import { type BrowserDevice, type BrowserDeviceOptions, browserDevice } from "./browser-device.ts";
 import type { HostCommand, HostCommandPage, LocalBridge } from "./local.ts";
 
 // `@kantel/ui` exports the sources but not every record they carry, so the records are read off the sources' methods.
@@ -107,6 +109,8 @@ export interface ComputeApiOptions {
 	readonly hosting?: HostingMode;
 	/** `kantel console`'s bridge, when it serves this page (local.ts). */
 	readonly local?: LocalBridge;
+	/** Where this browser keeps its device keys when the gateway serves the page (default IndexedDB), for tests. */
+	readonly browser?: Omit<BrowserDeviceOptions, "gateway" | "user">;
 }
 
 /** What every source shares: the client, how the console runs, and the domain sandbox addresses are under. */
@@ -126,6 +130,8 @@ interface Context {
 	/** Sandboxes' accounts by ID, as last read: which one's chain decides where its commands are read from. */
 	readonly sandboxAccounts: Map<string, string>;
 	readonly local?: LocalBridge;
+	/** This browser as a device of its own, when the gateway serves the page to a person (browser-device.ts). */
+	readonly browser?: BrowserDevice;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -407,27 +413,38 @@ function sandboxesSource(context: Context): SandboxesSource {
 			return { ssh: ssh.command, desktopUrl: desktop.url, desktopViewUrl: watch.url, browserUrl: browser.url };
 		},
 		history: async (id) => {
-			// End to end, the host keeps the history and the gateway has none of it: `kantel console` reads it there.
-			const { local } = context;
-			const account = context.sandboxAccounts.get(id);
+			// End to end, the host keeps the history and the gateway has none of it: `kantel console` reads it there, or
+			// this browser does over its own session once it is a device in the chain.
+			const { local, browser } = context;
+			let account = context.sandboxAccounts.get(id);
+			if (account === undefined && (local !== undefined || browser !== undefined)) {
+				account = (await api.getSandbox(id)).accountId;
+				context.sandboxAccounts.set(id, account);
+			}
 			if (local !== undefined && account !== undefined && local.mode(account) !== "off") {
-				// Every page the host keeps, by its cursor; the list shows no output, so none is carried.
-				const commands = await allPages(async (cursor) => {
-					const page = await local.call<HostCommandPage>(id, "sandbox.history", {
-						limit: 100,
-						output: false,
-						...(cursor === undefined ? {} : { before: cursor }),
-					});
-					return {
-						items: page.items,
-						...(page.next === undefined || page.next === "" ? {} : { nextCursor: page.next }),
-					};
-				});
-				return commands.map(hostCommandOf);
+				return hostHistory((params) => local.call<HostCommandPage>(id, "sandbox.history", params));
+			}
+			if (browser !== undefined && account !== undefined) {
+				// Where this browser trusts the space's chain, only the chain as it verifies from there decides: a gateway that
+				// answers no chain, or one that goes back on it, throws rather than reading as off. Where it trusts none yet,
+				// the gateway's word is all there is, and a space on E2E then gets the session's refusal to set it up.
+				const mode = (await browser.mode(account)) ?? (await chainMode(context, account));
+				if (mode !== "off") {
+					return hostHistory((params) => browser.call<HostCommandPage>(id, "sandbox.history", params));
+				}
 			}
 			return (await allPages((cursor) => api.listCommands(id, after(cursor)))).map(commandOf);
 		},
 	};
+}
+
+/** Every page of a sandbox's history its host keeps, by its cursor; the list shows no output, so none is carried. */
+async function hostHistory(read: (params: object) => Promise<HostCommandPage>): Promise<UiCommand[]> {
+	const commands = await allPages(async (cursor) => {
+		const page = await read({ limit: 100, output: false, ...(cursor === undefined ? {} : { before: cursor }) });
+		return { items: page.items, ...(page.next === undefined || page.next === "" ? {} : { nextCursor: page.next }) };
+	});
+	return commands.map(hostCommandOf);
 }
 
 function hostCommandOf(command: HostCommand): UiCommand {
@@ -1222,6 +1239,66 @@ const pageHost = (): string | undefined => {
 };
 
 /**
+ * This browser as `person`'s device, for as long as the session that found them is the tab's. Its gateway calls carry
+ * that session's headers as they were (`asThem`), never the tab's current ones, so one person's keys never go with
+ * another's credentials. Before each thing it does it checks the tab is still signed in as that session and the gateway
+ * still says it is that person; once either isn't so it is retired for good, and the page must be loaded again. Behind
+ * Cloudflare Access the credential is a cookie the page can't read and could change after that check, so the session's
+ * URL is asked for as `person` too: the gateway gives it only to that person's sign-in, in the same call.
+ */
+function sessionDevice(
+	person: string,
+	signedIn: { readonly [name: string]: string } | undefined,
+	options: ComputeApiOptions,
+	asThem: KantelClient,
+): BrowserDevice | undefined {
+	const credential = (headers: { readonly [name: string]: string } | undefined) =>
+		Object.entries(headers ?? {}).find(([name]) => name.toLowerCase() === "authorization")?.[1];
+	let retired: string | undefined;
+	const retire = (reason: string): never => {
+		retired ??= reason;
+		throw new DeviceTrustError("refused", retired);
+	};
+	const ENDED =
+		"This page's sign-in has ended or another has replaced it: load the page again to use this browser's keys";
+	const user = async () => {
+		if (retired !== undefined) retire(retired);
+		const now = options.headers === undefined ? undefined : await options.headers();
+		if (credential(now) !== credential(signedIn)) retire(ENDED);
+		let who: string | undefined;
+		try {
+			who = (await asThem.getCaller()).user?.id;
+		} catch (error) {
+			if (error instanceof KantelApiError && (error.status === 401 || error.status === 403)) retire(ENDED);
+			throw error;
+		}
+		if (who !== person) retire(ENDED);
+		return person;
+	};
+	const openE2E = async (id: string) => {
+		try {
+			return await asThem.openE2E(id, { user: person });
+		} catch (error) {
+			// Another sign-in than the one this device is for: the same as the check above failing.
+			if (error instanceof KantelApiError && (error.status === 401 || error.status === 403)) {
+				const now = await asThem.getCaller().then(
+					(caller) => caller.user?.id,
+					() => undefined,
+				);
+				if (now !== person) retire(ENDED);
+			}
+			throw error;
+		}
+	};
+	return browserDevice({
+		...options.browser,
+		// The chain is only data, verified from this browser's pin whoever asked for it; the session's URL is the grant.
+		gateway: { openE2E, getE2EChain: (space) => asThem.getE2EChain(space) },
+		user,
+	});
+}
+
+/**
  * The compute console on the gateway this console is served by. Asks who is calling first: a gateway that doesn't
  * serve the compute routes answers 404, this throws, and the console shows no compute pages. The
  * hosts source is there only for a deployment super-admin; billing isn't, as the API has no plans.
@@ -1238,8 +1315,16 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		...(options.headers === undefined ? {} : { headers: options.headers }),
 		fetch: watched,
 	});
-	// The probe: the routes are served, and who is calling.
-	const caller = await api.getCaller();
+	// The probe: the routes are served, and who is calling, with the session's headers as they are now, kept: what
+	// this browser does as a device it does as that session, and no later one.
+	const signedIn = options.headers === undefined ? undefined : await options.headers();
+	const asSignedIn = (fetch: typeof globalThis.fetch) =>
+		createKantelClient({
+			baseUrl: options.baseUrl ?? "/v1",
+			...(signedIn === undefined ? {} : { headers: () => signedIn }),
+			fetch,
+		});
+	const caller = await asSignedIn(watched).getCaller();
 
 	// The domain sandbox addresses are under. The API names no deployment domain: the caller has none, and a sandbox
 	// answers only its subdomain. The one hostname it does answer is its SSH gateway's, `ssh.<domain>` as the UI's
@@ -1248,6 +1333,13 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 	// a browser, as in tests, "localhost".
 	let learned: string | undefined;
 	const fallback = pageHost() ?? "localhost";
+	const { local } = options;
+	// Only a person has a device of their own here; `kantel console` uses the CLI's instead.
+	const person = caller.user?.id;
+	const browser =
+		local === undefined && person !== undefined
+			? sessionDevice(person, signedIn, options, asSignedIn(doFetch))
+			: undefined;
 	const context: Context = {
 		api,
 		hosting: options.hosting ?? "self-hosted",
@@ -1258,9 +1350,9 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		caller,
 		environmentNames: new Map(),
 		sandboxAccounts: new Map(),
-		...(options.local === undefined ? {} : { local: options.local }),
+		...(local === undefined ? {} : { local }),
+		...(browser === undefined ? {} : { browser }),
 	};
-	const { local } = options;
 
 	return {
 		hosting: context.hosting,
@@ -1285,7 +1377,11 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		...(caller.apiKey === undefined ? { devices: devicesSource(context) } : {}),
 		e2e:
 			local === undefined
-				? { served: "gateway", mode: (accountId) => chainMode(context, accountId) }
+				? {
+						served: "gateway",
+						mode: (accountId) => chainMode(context, accountId),
+						...(browser === undefined ? {} : { browser }),
+					}
 				: {
 						served: "local",
 						...(local.info.device === undefined ? {} : { device: local.info.device.label }),

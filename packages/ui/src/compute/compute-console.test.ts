@@ -95,4 +95,26 @@ describe("the end-to-end encryption strip", () => {
 		expect(e2eStrip(local, "on")).toMatchObject({ tone: "done", text: expect.stringContaining("Ada's laptop") });
 		expect(e2eStrip(local, "off")?.tone).toBe("idle");
 	});
+
+	it("offers to make this browser a device on the gateway's console, and says when it is one", () => {
+		const browser = { standing: async () => ({ kind: "unpinned" }) as const, trust: async () => undefined };
+		const hosted = { ...gateway, browser };
+		expect(e2eStrip(hosted, "on", { kind: "unpinned" })).toMatchObject({ tone: "waiting", setup: "Use this browser" });
+		expect(
+			e2eStrip(hosted, "on", { kind: "pending", command: "kantel e2e add-device x", fingerprint: "f" }),
+		).toMatchObject({ tone: "waiting", setup: "Waiting for an admin" });
+		expect(e2eStrip(hosted, "on", { kind: "ready", label: "Console in Firefox" })).toMatchObject({
+			tone: "done",
+			text: expect.stringContaining("(Console in Firefox)"),
+		});
+		const refused = e2eStrip(hosted, "on", { kind: "refused", reason: "This device's person isn't a member." });
+		expect(refused?.setup).toBeUndefined();
+		expect(refused?.text).toContain("isn't a member. Run kantel console");
+		// Strict lets no browser in, set up or not.
+		expect(e2eStrip(hosted, "strict", { kind: "ready", label: "Console in Firefox" })).toMatchObject({
+			tone: "waiting",
+			text: expect.stringContaining("kantel console"),
+		});
+		expect(e2eStrip(hosted, "strict")?.setup).toBeUndefined();
+	});
 });

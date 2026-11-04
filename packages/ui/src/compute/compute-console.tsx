@@ -20,7 +20,16 @@ import { AccountEgressPage, EGRESS_TABS, type EgressTab } from "./account-egress
 import { AccountSwitcher, CreateOrganisationDialog, JoinOrganisationDialog } from "./account-switcher.tsx";
 import { ComputeApiKeysPage } from "./api-keys-page.tsx";
 import { BillingPage } from "./billing-page.tsx";
-import type { ComputeAccount, ComputeSource, ComputeViewer, E2EMode, E2ESource, HostsSource } from "./compute-model.ts";
+import { BrowserDeviceDialog } from "./browser-device.tsx";
+import type {
+	BrowserStanding,
+	ComputeAccount,
+	ComputeSource,
+	ComputeViewer,
+	E2EMode,
+	E2ESource,
+	HostsSource,
+} from "./compute-model.ts";
 import { DeviceLoginPage } from "./device-page.tsx";
 import { EgressPage } from "./egress-page.tsx";
 import { EnvironmentPage, EnvironmentsPage } from "./environments-page.tsx";
@@ -177,12 +186,14 @@ const MAIN = "min-h-0 min-w-0 overflow-y-auto";
 
 /**
  * What the strip over the page says about end-to-end encryption in this account, and in which tone; undefined for
- * nothing (the gateway's console in an account without it says nothing).
+ * nothing (the gateway's console in an account without it says nothing). `setup` offers to make this browser a device
+ * in the chain (or show where it stands), from `standing`.
  */
 export function e2eStrip(
 	e2e: E2ESource | undefined,
 	mode: E2EMode | undefined,
-): { readonly text: string; readonly tone: "done" | "waiting" | "idle" } | undefined {
+	standing?: BrowserStanding,
+): { readonly text: string; readonly tone: "done" | "waiting" | "idle"; readonly setup?: string } | undefined {
 	if (e2e === undefined || mode === undefined) return undefined;
 	if (e2e.served === "local") {
 		if (mode === "off") {
@@ -198,9 +209,32 @@ export function e2eStrip(
 		};
 	}
 	if (mode === "off") return undefined;
+	if (mode === "on" && e2e.browser !== undefined && standing !== undefined) {
+		if (standing.kind === "ready") {
+			return {
+				tone: "done",
+				text: `End-to-end encryption is on here. This browser is a device in the chain (${standing.label}), so commands and their history go to each sandbox's host end to end.`,
+				setup: "About this browser",
+			};
+		}
+		if (standing.kind === "refused") {
+			return {
+				tone: "waiting",
+				text: `End-to-end encryption is on here. ${standing.reason.replace(/\.$/, "")}. Run kantel console on your computer to see commands and files.`,
+			};
+		}
+		return {
+			tone: "waiting",
+			text: "End-to-end encryption is on here. This console shows commands and files once this browser is a device in the chain, or run kantel console on your computer.",
+			setup: standing.kind === "pending" ? "Waiting for an admin" : "Use this browser",
+		};
+	}
 	return {
 		tone: "waiting",
-		text: "End-to-end encryption is on here, so this console can't show commands or files. Run kantel console on your computer to see them.",
+		text:
+			mode === "strict"
+				? "End-to-end encryption is strict here, so this console can't show commands or files and no browser is let in. Run kantel console on your computer to see them."
+				: "End-to-end encryption is on here, so this console can't show commands or files. Run kantel console on your computer to see them.",
 	};
 }
 
@@ -269,7 +303,20 @@ export function ComputeConsole({
 				: Promise.resolve(undefined),
 		[source, account?.id],
 	);
-	const strip = e2eStrip(source.e2e, e2eMode.state.status === "ready" ? e2eMode.state.value : undefined);
+	const mode = e2eMode.state.status === "ready" ? e2eMode.state.value : undefined;
+	const browserDevice = source.e2e?.browser;
+	const standing = useLoad(
+		() =>
+			browserDevice !== undefined && account !== undefined && mode === "on"
+				? browserDevice
+						.standing(account.id)
+						.catch((error: unknown): BrowserStanding => ({ kind: "refused", reason: messageOf(error, "Unknown") }))
+				: Promise.resolve(undefined),
+		[browserDevice, account?.id, mode],
+	);
+	const standingNow = standing.state.status === "ready" ? standing.state.value : undefined;
+	const strip = e2eStrip(source.e2e, mode, standingNow);
+	const [deviceOpen, setDeviceOpen] = useState(false);
 
 	const route = parseComputePath(pathname, base) ?? { page: "sandboxes" as const };
 	const me = viewer.state.status === "ready" ? viewer.state.value : undefined;
@@ -470,11 +517,29 @@ export function ComputeConsole({
 					</p>
 				) : null}
 				{strip === undefined ? null : (
-					<p
-						className={`kt-e2e-strip m-0 border-b border-border py-1.5 text-xs ${STRIP_TONES[strip.tone]} ${narrow ? "px-gutter-narrow" : "px-gutter"}`}
+					<div
+						className={`kt-e2e-strip flex items-center gap-3 border-b border-border py-1.5 text-xs ${STRIP_TONES[strip.tone]} ${narrow ? "px-gutter-narrow" : "px-gutter"}`}
 					>
-						{strip.text}
-					</p>
+						<p className="m-0 min-w-0 flex-1">{strip.text}</p>
+						{strip.setup === undefined ? null : (
+							<Button size="sm" onClick={() => setDeviceOpen(true)}>
+								{strip.setup}
+							</Button>
+						)}
+					</div>
+				)}
+				{browserDevice === undefined || account === undefined ? null : (
+					<BrowserDeviceDialog
+						open={deviceOpen}
+						accountName={account.name}
+						standing={standing.state.status === "loading" ? undefined : standingNow}
+						onTrust={async (genesis) => {
+							await browserDevice.trust(account.id, genesis);
+							standing.reload();
+						}}
+						onCheck={() => standing.reload()}
+						onClose={() => setDeviceOpen(false)}
+					/>
 				)}
 				{failed !== undefined ? (
 					<div className={`grid h-full place-items-center ${narrow ? "p-gutter-narrow" : "p-gutter"}`}>

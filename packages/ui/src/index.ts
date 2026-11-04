@@ -29,6 +29,8 @@ export type {
 	AccountsSource,
 	ApiKeysSource,
 	BillingSource,
+	BrowserDeviceSource,
+	BrowserStanding,
 	ComputeAccount,
 	ComputeSource,
 	ComputeViewer,
