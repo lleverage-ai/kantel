@@ -98,6 +98,10 @@ type Facts struct {
 // where they are bound, refuses an egress older than its Revision, and gives a fork the Env its ForkParams name.
 const FeatureEgressPolicy = "egress-policy"
 
+// FeatureCustomShapes: sandbox.create takes vcpus, memoryMiB and diskGiB for a microVM shape off the named sizes,
+// and memoryMiB for an isolate.
+const FeatureCustomShapes = "custom-shapes"
+
 // FeatureUsage: the host sends a "usage" message every tick (UsageSample) without being asked, so the control plane
 // needn't run a command in a sandbox to read its usage.
 const FeatureUsage = "usage"
@@ -154,8 +158,6 @@ type Welcome struct {
 	// automatic updates on fetches it from UpdateURL (with {version}, {os} and {arch} filled in).
 	DesiredVersion string `json:"desiredVersion,omitempty"`
 	UpdateURL      string `json:"updateUrl,omitempty"`
-	// Pools are the pre-warmed sandboxes Kantel wants per tier and size, such as {"microvm/default": 2}.
-	Pools map[string]int `json:"pools,omitempty"`
 	// Draining hosts take no new sandboxes.
 	Draining bool `json:"draining,omitempty"`
 	// Images are the host images Kantel wants hosts on: a host with image patching and automatic image updates on
@@ -166,12 +168,14 @@ type Welcome struct {
 
 // Capacity is what is free now.
 type Capacity struct {
-	FreeMemoryMiB int64          `json:"freeMemoryMiB"`
-	FreeDiskGiB   int64          `json:"freeDiskGiB"`
-	Running       int            `json:"running"`
-	Stopped       int            `json:"stopped"`
-	Load1         float64        `json:"load1"`
-	Warm          map[string]int `json:"warm"`
+	FreeMemoryMiB int64   `json:"freeMemoryMiB"`
+	FreeDiskGiB   int64   `json:"freeDiskGiB"`
+	Running       int     `json:"running"`
+	Stopped       int     `json:"stopped"`
+	Load1         float64 `json:"load1"`
+	// Warm is always empty: hosts keep no warm pools. It is sent for control planes from before they were removed,
+	// which refuse a capacity without it.
+	Warm map[string]int `json:"warm"`
 }
 
 type Heartbeat struct {
@@ -202,8 +206,8 @@ type SandboxInfo struct {
 	CreatedAt int64  `json:"createdAt"`
 	// Timings of the operation that answered with this, in milliseconds, by step.
 	Timings map[string]float64 `json:"timings,omitempty"`
-	// Source says how a create was served: "pool" (a pre-warmed sandbox), "snapshot" (restored from a snapshot) or
-	// "boot" (a cold boot).
+	// Source says how a create was served: "snapshot" (restored from a snapshot), "boot" (a cold boot), or for an
+	// isolate "pool" (an isolate its account's VM had pre-loaded) or "account" (its account's VM already ran).
 	Source string `json:"source,omitempty"`
 	// Owner is the account the sandbox belongs to (its create's Owner): the space whose E2E chain covers it.
 	Owner string `json:"owner,omitempty"`
@@ -391,6 +395,13 @@ type CreateParams struct {
 	// Owner is the organisation or account the sandbox belongs to; the isolate tier keeps each owner's sandboxes in
 	// their own VM.
 	Owner string `json:"owner,omitempty"`
+	// VCPUs, MemoryMiB and DiskGiB are, for a microVM, a shape off the host's named sizes (all three set, Size
+	// empty), which cold-boots: no warm pool or template is kept for it. For an isolate, MemoryMiB is the memory asked
+	// for, recorded and passed to the runtime but not enforced per isolate (workerd has no per-isolate memory limit;
+	// the account VM's memory is the bound).
+	VCPUs     int `json:"vcpus,omitempty"`
+	MemoryMiB int `json:"memoryMiB,omitempty"`
+	DiskGiB   int `json:"diskGiB,omitempty"`
 }
 
 type SandboxRef struct {
@@ -589,7 +600,6 @@ const (
 	MethodSnapshotRead = "snapshot.read"
 	MethodPortOpen     = "port.open"
 	MethodHostUpdate   = "host.update"
-	MethodHostPools    = "host.pools"
 	// MethodHostImages (Kantel → host, HostImagesParams; FeatureImagePatching) answers the host's HostImages as they
 	// are now, which a hello's facts can be behind: a restart on latest asks it before stopping the sandbox.
 	MethodHostImages = "host.images"

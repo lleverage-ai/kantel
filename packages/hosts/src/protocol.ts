@@ -117,6 +117,11 @@ export const HOST_FEATURES = {
 	 */
 	imagePatching: "image-patching",
 	/**
+	 * `sandbox.create` takes `vcpus`, `memoryMiB` and `diskGiB` for a microVM off the host's named sizes (it boots from
+	 * scratch), and an isolate's `memoryMiB` (recorded, not enforced).
+	 */
+	customShapes: "custom-shapes",
+	/**
 	 * The host sends a `usage` message every tick (`HostUsageReport`). Kantel then never reads a sandbox's usage by
 	 * running a command in it, which it still does for a host without it.
 	 */
@@ -137,8 +142,6 @@ export interface HostCapacity {
 	readonly running: number;
 	readonly stopped: number;
 	readonly load1: number;
-	/** Pre-warmed sandboxes ready, by `<tier>/<pool>`. */
-	readonly warm: { readonly [pool: string]: number };
 }
 
 export type SandboxState = "starting" | "running" | "stopping" | "stopped" | "error" | "deleted";
@@ -156,7 +159,10 @@ export interface HostSandbox {
 	readonly createdAt: number;
 	/** The operation's timings in milliseconds, by step. */
 	readonly timings?: { readonly [step: string]: number };
-	/** How a create was served: `pool`, `snapshot` or `boot`. */
+	/**
+	 * How a create was served: `snapshot` or `boot`; for an isolate, `pool` (one its account's VM had pre-loaded) or
+	 * `account` (its account's VM already ran).
+	 */
 	readonly source?: string;
 	/**
 	 * The host images version its root file system is; absent when unknown (images not versioned). One older than the
@@ -347,8 +353,11 @@ export interface HostWelcome {
 	readonly desiredVersion?: string;
 	/** With `{version}`, `{os}` and `{arch}` for the host to fill in. */
 	readonly updateUrl?: string;
-	/** Pre-warmed sandboxes wanted, by `<tier>/<pool>`, such as `{"microvm/default": 2}`. */
-	readonly pools?: { readonly [pool: string]: number };
+	/**
+	 * Always empty: hosts keep no warm pools. Sent so a host from before they were removed ends any it still keeps
+	 * (it reads `pools` as the warm machines wanted); a current host ignores it.
+	 */
+	readonly pools?: { readonly [pool: string]: never };
 	readonly draining?: boolean;
 	/**
 	 * The host images Kantel wants hosts on (image patching): a host with automatic image updates on fetches them, checks
@@ -431,9 +440,16 @@ export const HostMethods = {
 	snapshotRead: "snapshot.read",
 	portOpen: "port.open",
 	hostUpdate: "host.update",
-	hostPools: "host.pools",
-	/** Kantel to host (image patching): no params, answered with the host's `HostImages` as they are now. */
+	/**
+	 * Kantel to host (image patching): `{ sandboxId? }`, answered with the host's `HostImages` as they are now, and with
+	 * a `sandboxId` that sandbox's `state` on the host.
+	 */
 	hostImages: "host.images",
+	/**
+	 * Kantel to a host from before warm pools were removed, which still reports warm machines: `{}`, the pools it should
+	 * keep (none). A current host has no such method.
+	 */
+	legacyPools: "host.pools",
 	/** Kantel to host: a sandbox's protected values changed, `{ sandboxId, version }`; it drops its copy. Result `{}`. */
 	secrets: "sandbox.secrets",
 	/** Host to Kantel: `{ sandboxId }`, answered with `HostSecrets`, or `not_found` for a sandbox not on that host. */

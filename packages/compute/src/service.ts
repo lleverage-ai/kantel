@@ -9,8 +9,8 @@
  * after another. Every change is an event (`EVENT_TYPES`), stored, queued for the account's webhooks and exported as an
  * OpenTelemetry log record.
  *
- * Cost uses a per-type and per-size rate table; the default, `PLACEHOLDER_RATES`, is a placeholder until real pricing
- * exists. CPU seconds are estimated from the usage readings taken while a sandbox runs.
+ * Cost uses a rate table per vCPU and per GB of memory an hour; the default, `PLACEHOLDER_RATES`, is a placeholder until
+ * real pricing exists. CPU seconds are estimated from the usage readings taken while a sandbox runs.
  *
  * An environment is what a sandbox starts with: plain variables, protected ones, secret files, repositories and egress
  * grants. A protected variable's value is sealed (`secrets.ts`) and never answered: the sandbox gets a placeholder of
@@ -36,18 +36,22 @@ import {
 	requireScope,
 	roleIn,
 } from "./auth.ts";
-import type {
-	BackendCapabilities,
-	BackendEgress,
-	BackendEgressGrant,
-	BackendFileEntry,
-	BootOptions,
-	Placement,
-	SandboxBackend,
+import {
+	type BackendCapabilities,
+	type BackendEgress,
+	type BackendEgressGrant,
+	type BackendFileEntry,
+	type BackendHost,
+	type BackendSize,
+	type BootOptions,
+	CUSTOM_SHAPES_FEATURE,
+	type Placement,
+	type SandboxBackend,
 } from "./backend.ts";
 import type { BaseImageIndex, BaseImageVersion } from "./base-images.ts";
 import { type BaseImages, baseImageOf, baseStatus, HOST_BASE_IMAGE, hostImageChannel } from "./base-status.ts";
 import { createE2EChains } from "./e2e.ts";
+import { isPlaceholderName, personName } from "./names.ts";
 import { createEphemeralSealer, createSealer, type SealedValue, type Sealer, sealedAt } from "./secrets.ts";
 import type {
 	ComputeStore,
@@ -104,20 +108,43 @@ type EventData = computeSchema.Event["data"];
 /** What decides a sandbox's egress besides its account's proxy settings. */
 type EgressSubject = Pick<StoredSandbox, "environmentId" | "placeholders" | "grants" | "egressRevision">;
 
-/** What an hour of running costs, per type and microVM size. */
+/** What an hour of running costs: a microVM by its vCPUs and memory, an isolate by its memory (its CPU is shared). */
 export interface RateTable {
 	/** ISO 4217. */
 	readonly currency: string;
-	readonly isolate: number;
-	readonly microvm: { readonly [size in computeSchema.SandboxSizeName]: number };
+	readonly microvmPerVcpuHour: number;
+	readonly microvmPerGbHour: number;
+	readonly isolatePerGbHour: number;
 }
 
 /** A placeholder until real pricing exists: rough figures so the console has something to show. */
 export const PLACEHOLDER_RATES: RateTable = {
 	currency: "USD",
-	isolate: 0.01,
-	microvm: { small: 0.03, default: 0.06, large: 0.12, xlarge: 0.24 },
+	microvmPerVcpuHour: 0.0075,
+	microvmPerGbHour: 0.00125,
+	isolatePerGbHour: 0.02,
 };
+
+/** What an hour of a sandbox of `type` with these resources costs at `rates`. */
+export function hourlyRate(
+	rates: RateTable,
+	type: computeSchema.SandboxType,
+	resources: { readonly vcpus: number; readonly memoryMb: number },
+): number {
+	const gb = resources.memoryMb / 1024;
+	const rate =
+		type === "isolate"
+			? gb * rates.isolatePerGbHour
+			: resources.vcpus * rates.microvmPerVcpuHour + gb * rates.microvmPerGbHour;
+	return Math.round(rate * 1e6) / 1e6;
+}
+
+/** A microVM's memory may be this much per vCPU, at least and at most. */
+export const MEMORY_MB_PER_VCPU = { min: 512, max: 8192 } as const;
+/** A microVM's memory moves in steps of this. */
+const MICROVM_MEMORY_STEP_MB = 512;
+/** No host takes more vCPUs than this (Firecracker's limit). */
+const MAX_VCPUS = 32;
 
 /** Limits on every account, where the deployment sets any. */
 export interface ComputeLimits {
@@ -485,6 +512,146 @@ export const HOST_SEEN_PRECISION_MS = 60_000;
 /** "a" or "an" before a sandbox type: an isolate, a microvm. */
 function article(type: string): string {
 	return /^[aeiou]/i.test(type) ? "an" : "a";
+}
+
+/** What a named size stood for before hosts reported theirs (`kantel-host`'s defaults), to price an old sandbox by. */
+const LEGACY_SIZES: { readonly [size: string]: { readonly vcpus: number; readonly memoryMb: number } } & {
+	readonly default: { readonly vcpus: number; readonly memoryMb: number };
+} = {
+	small: { vcpus: 1, memoryMb: 1024 },
+	default: { vcpus: 4, memoryMb: 2048 },
+	large: { vcpus: 4, memoryMb: 8192 },
+	xlarge: { vcpus: 16, memoryMb: 32768 },
+};
+
+/** Whether a host makes microVMs of any shape, not only its named sizes. */
+const makesCustom = (host: BackendHost) => host.features?.includes(CUSTOM_SHAPES_FEATURE) === true;
+
+/** `value` down to a multiple of `step`. */
+const floorTo = (value: number, step: number) => Math.floor(value / step) * step;
+
+/**
+ * What a microVM may be on `hosts` (those the account may use that run microVMs): their presets, and, where a host
+ * makes custom shapes, any vCPUs and memory it has. Undefined with no such host.
+ *
+ * A preset is a name and its whole shape: hosts that give one name different shapes each keep theirs. No disk is said
+ * for a custom shape: it is the host's to give, and the sandbox's resources say what it got.
+ */
+export function microvmShapes(
+	hosts: readonly BackendHost[],
+	deploymentSizes: readonly BackendSize[],
+): computeSchema.SandboxShapes["microvm"] {
+	if (hosts.length === 0) return undefined;
+	const presets = new Map<string, computeSchema.ShapePreset>();
+	let maxVcpus = 1;
+	let maxMemory = MICROVM_MEMORY_STEP_MB;
+	for (const host of hosts) {
+		const sizes = host.sizes ?? deploymentSizes;
+		for (const size of sizes) {
+			const key = `${size.name}/${size.vcpus}/${size.memoryMb}/${size.diskGb}`;
+			presets.set(key, { name: size.name, vcpus: size.vcpus, memoryMb: size.memoryMb, diskGb: size.diskGb });
+			maxVcpus = Math.max(maxVcpus, size.vcpus);
+			maxMemory = Math.max(maxMemory, size.memoryMb);
+		}
+		if (makesCustom(host)) {
+			maxVcpus = Math.max(maxVcpus, Math.min(MAX_VCPUS, host.capacity.vcpus));
+			maxMemory = Math.max(maxMemory, floorTo(host.capacity.memoryMb, MICROVM_MEMORY_STEP_MB));
+		}
+	}
+	const list = [...presets.values()].sort(
+		(a, b) => a.vcpus - b.vcpus || a.memoryMb - b.memoryMb || a.diskGb - b.diskGb || a.name.localeCompare(b.name),
+	);
+	const preferred = list.find((preset) => preset.name === "default") ?? list[0];
+	const minMemory = Math.min(MEMORY_MB_PER_VCPU.min, ...list.map((preset) => preset.memoryMb));
+	return {
+		vcpus: { min: 1, max: maxVcpus, step: 1, default: preferred?.vcpus ?? Math.min(2, maxVcpus) },
+		memoryMb: {
+			min: minMemory,
+			max: maxMemory,
+			step: MICROVM_MEMORY_STEP_MB,
+			default: preferred?.memoryMb ?? Math.min(2048, maxMemory),
+		},
+		memoryMbPerVcpu: { ...MEMORY_MB_PER_VCPU },
+		presets: list,
+		custom: hosts.some(makesCustom),
+	};
+}
+
+/**
+ * Checks a create's `resources` for its type: an isolate's memory is 128 to 512 MB in steps of 64 and it has no vCPUs;
+ * a microVM's is whole vCPUs (at most 32) and memory in steps of 512 MB that its vCPUs may hold, unless it is one of
+ * the presets. Whether a host has room is placement's to say.
+ */
+export function checkShape(
+	type: computeSchema.SandboxType,
+	shape: computeSchema.SandboxShapeInput,
+	presets: readonly { readonly vcpus: number; readonly memoryMb: number }[] = [],
+): { readonly vcpus: number; readonly memoryMb: number } {
+	const { memoryMb } = shape;
+	if (type === "isolate") {
+		const range = computeSchema.ISOLATE_MEMORY_MB;
+		if (shape.vcpus !== undefined && shape.vcpus !== 0) {
+			throw new KantelError("invalid", "An isolate has no vCPUs of its own: it shares its account's VM's CPU");
+		}
+		if (memoryMb < range.min || memoryMb > range.max || memoryMb % range.step !== 0) {
+			throw new KantelError("invalid", "An isolate's memory is 128 to 512 MB in steps of 64");
+		}
+		return { vcpus: 0, memoryMb };
+	}
+	const vcpus = shape.vcpus;
+	if (vcpus === undefined) throw new KantelError("invalid", "A microVM's resources need vcpus as well as memoryMb");
+	if (vcpus < 1 || vcpus > MAX_VCPUS) throw new KantelError("invalid", `A microVM has 1 to ${MAX_VCPUS} vCPUs`);
+	if (presets.some((preset) => preset.vcpus === vcpus && preset.memoryMb === memoryMb)) return { vcpus, memoryMb };
+	if (memoryMb % MICROVM_MEMORY_STEP_MB !== 0) {
+		throw new KantelError("invalid", `A microVM's memory is in steps of ${MICROVM_MEMORY_STEP_MB} MB`);
+	}
+	if (memoryMb < vcpus * MEMORY_MB_PER_VCPU.min || memoryMb > vcpus * MEMORY_MB_PER_VCPU.max) {
+		throw new KantelError(
+			"invalid",
+			`A microVM's memory is ${MEMORY_MB_PER_VCPU.min} MB to ${MEMORY_MB_PER_VCPU.max / 1024} GB a vCPU`,
+		);
+	}
+	return { vcpus, memoryMb };
+}
+
+/** Whether `host` can make a microVM of `shape`: one of its named sizes, or any shape it has room for where it makes them. */
+function makesShape(
+	host: BackendHost,
+	deploymentSizes: readonly BackendSize[],
+	shape: { readonly vcpus: number; readonly memoryMb: number },
+): boolean {
+	if (!host.tiers.includes("microvm")) return false;
+	const named = (host.sizes ?? deploymentSizes).some(
+		(size) => size.vcpus === shape.vcpus && size.memoryMb === shape.memoryMb,
+	);
+	return named || (makesCustom(host) && shape.vcpus <= host.capacity.vcpus && shape.memoryMb <= host.capacity.memoryMb);
+}
+
+/**
+ * A create's shape, checked: what it asked for, against the hosts it may go to (`hosts`), however full they are now.
+ * An isolate that asks for nothing gets the default 256 MB; a microVM, its deployment's default size (undefined). A
+ * microVM shape none of them can make is `not_supported` before anything is stored, unless `checkHosts` is false (a
+ * create from a snapshot, which goes to the snapshot's host and boots as it was).
+ */
+export function shapeFor(
+	type: computeSchema.SandboxType,
+	resources: computeSchema.SandboxShapeInput | undefined,
+	hosts: readonly BackendHost[],
+	deploymentSizes: readonly BackendSize[],
+	checkHosts = true,
+): { readonly vcpus: number; readonly memoryMb: number } | undefined {
+	if (resources === undefined) {
+		return type === "isolate" ? { vcpus: 0, memoryMb: computeSchema.ISOLATE_MEMORY_MB.default } : undefined;
+	}
+	const presets = hosts.flatMap((host) => host.sizes ?? deploymentSizes);
+	const shape = checkShape(type, resources, presets);
+	if (type === "microvm" && checkHosts && !hosts.some((host) => makesShape(host, deploymentSizes, shape))) {
+		throw new KantelError(
+			"not_supported",
+			`No host this sandbox may use can make a microVM of ${shape.vcpus} vCPU and ${shape.memoryMb} MB; see getSandboxShapes`,
+		);
+	}
+	return shape;
 }
 
 function hostChanged(known: StoredHost, next: StoredHost): boolean {
@@ -1241,8 +1408,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	// Views: what the API answers for a record.
 
-	const rateOf = (sandbox: StoredSandbox) =>
-		sandbox.type === "isolate" ? rates.isolate : rates.microvm[sandbox.size ?? "default"];
+	/**
+	 * What an hour of it costs: by what its host gave it, else what it asked for, else its named size (an isolate made
+	 * before shapes counts as the default 256 MB).
+	 */
+	const rateOf = (sandbox: StoredSandbox) => {
+		const resources =
+			sandbox.resources ??
+			sandbox.shape ??
+			(sandbox.type === "isolate"
+				? { vcpus: 0, memoryMb: computeSchema.ISOLATE_MEMORY_MB.default }
+				: (LEGACY_SIZES[sandbox.size ?? "default"] ?? LEGACY_SIZES.default));
+		return hourlyRate(rates, sandbox.type, resources);
+	};
 
 	/** A sandbox's mean CPU: its kept 5-minute means and the one under way. */
 	const meanCpu = (sandbox: StoredSandbox) => {
@@ -1858,7 +2036,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			await mailing.send({
 				to,
 				organisation: account?.name ?? "an organisation",
-				invitedBy: inviter?.email || inviter?.name || "Someone",
+				// Never a user ID, which a record made before people were named by their names may still have.
+				invitedBy: inviter?.email || (isPlaceholderName(inviter?.name) ? undefined : inviter?.name) || "Someone",
 				link: inviteLink(consoleUrl, code),
 				expiresAt: invite.expiresAt,
 			});
@@ -1879,6 +2058,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		createdAt: invite.createdAt,
 	});
 
+	/**
+	 * A personal account named for its person (`name`) when it was made with their user ID for a name, as gateways named
+	 * people once; any other account as it is.
+	 */
+	const personalNamed = (account: StoredAccount, name: string | undefined): StoredAccount =>
+		account.kind === "personal" && name !== undefined && isPlaceholderName(account.name)
+			? { ...account, name }
+			: account;
+
 	const accountView = (account: StoredAccount, role: MemberRole): computeSchema.Account => ({
 		id: account.id,
 		kind: account.kind,
@@ -1890,11 +2078,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	async function hostView(host: StoredHost): Promise<computeSchema.Host> {
 		await catchUpUsage();
+		// Isolates share their owner's VM, so what one asked for isn't a share of the host: they count as sandboxes only.
 		const placed = (await store.sandboxes.list({ hostId: host.id })).filter(
 			(sandbox) => sandbox.state === "running" || sandbox.state === "starting" || sandbox.state === "paused",
 		);
+		const machines = placed.filter((sandbox) => sandbox.type !== "isolate");
 		const sum = (pickOf: (sandbox: StoredSandbox) => number) =>
-			placed.reduce((total, sandbox) => total + pickOf(sandbox), 0);
+			machines.reduce((total, sandbox) => total + pickOf(sandbox), 0);
 		return {
 			...host,
 			usage: hostSparklines(host.id),
@@ -1918,7 +2108,39 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const actorOf = (principal: Principal): Sandbox["createdBy"] =>
 		principal.kind === "key"
 			? { kind: "api_key", id: principal.keyId, name: principal.keyName }
-			: { kind: "user", id: principal.userId, name: principal.name };
+			: { kind: "user", id: principal.userId, name: personName(principal) };
+
+	/** What a person is called now, by user ID: undefined for someone the store doesn't know. */
+	async function nameOfUser(userId: string): Promise<string | undefined> {
+		const user = await store.users.get(userId);
+		return user === undefined ? undefined : personName({ userId: user.id, name: user.name, email: user.email });
+	}
+
+	/**
+	 * `items` with each person who made one named as they are now when their record names them by a user ID: gateways
+	 * named everyone that way once, and what they made then still says so. Each person is looked up once.
+	 */
+	async function withMakersNamed<T extends { readonly createdBy: Sandbox["createdBy"] }>(
+		items: readonly T[],
+	): Promise<T[]> {
+		const names = new Map<string, Promise<string | undefined>>();
+		return Promise.all(
+			items.map(async (item) => {
+				const maker = item.createdBy;
+				if (maker.kind !== "user" || !isPlaceholderName(maker.name, maker.id)) return item;
+				let name = names.get(maker.id);
+				if (name === undefined) {
+					name = nameOfUser(maker.id);
+					names.set(maker.id, name);
+				}
+				const named = await name;
+				return named === undefined || named === maker.name ? item : { ...item, createdBy: { ...maker, name: named } };
+			}),
+		);
+	}
+
+	const withMakerNamed = async <T extends { readonly createdBy: Sandbox["createdBy"] }>(item: T): Promise<T> =>
+		(await withMakersNamed([item]))[0] ?? item;
 
 	// Events.
 
@@ -2134,8 +2356,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/**
 	 * Boots a sandbox for a start or recovery with `boot`: `booted` where a backend has it, or, when it was never placed
-	 * (`neverPlaced`), made as its create would make it (from its source's snapshot, `latestRef`, or its image), placed
-	 * as a create is, since no backend has it to start.
+	 * (`neverPlaced`), made as its create would make it (from its source's snapshot, `latestRef`, or its image, at its own
+	 * size and shape), placed as a create is, since no backend has it to start. `sandbox` is the record as the boot moved
+	 * it (a restart's new size and shape included), and `boot` its sizing.
 	 */
 	function bootAgain(
 		sandbox: StoredSandbox,
@@ -2149,9 +2372,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			accountId: sandbox.accountId,
 			type: sandbox.type,
 			subdomain: sandbox.subdomain,
+			...(boot.shape === undefined ? {} : { shape: boot.shape }),
 			...(sandbox.image === undefined ? {} : { image: sandbox.image }),
 		});
 	}
+
+	/** A boot's sizing from the record as it moved: its named size and, where it has one, its shape. */
+	const sizingOf = (sandbox: StoredSandbox): Pick<BootOptions, "size" | "shape"> => ({
+		...(sandbox.size === undefined ? {} : { size: sandbox.size }),
+		...(sandbox.shape === undefined ? {} : { shape: sandbox.shape }),
+	});
 
 	/**
 	 * The environment `bootAgain` provisions a sandbox it makes from its image with (its create failed, so the files and
@@ -2223,6 +2453,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			withState(sandbox, "running", {
 				hostId: placement.hostId,
 				resources: placement.resources ?? sandbox.resources,
+				// A microVM's shape is what its machine runs as, where its backend says: a host that can't resize a stopped or
+				// live-forked machine keeps the one it had, and its next restart, fork or revival reads that, not a size it asked for.
+				...(sandbox.type === "microvm" && placement.resources !== undefined
+					? { shape: { vcpus: placement.resources.vcpus, memoryMb: placement.resources.memoryMb } }
+					: {}),
 				capabilities: placement.capabilities,
 				health: "ok",
 				// What its root file system is now (a rebase moves it on); a backend that doesn't say leaves what it was.
@@ -2896,7 +3131,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const user = await store.users.get(member.userId);
 			members.push({
 				userId: member.userId,
-				name: user?.name ?? member.userId,
+				// A record made while gateways named people by their user ID still has it: their email, then.
+				name: personName({ userId: member.userId, name: user?.name, email: user?.email }),
 				email: user?.email,
 				role: member.role,
 				joinedAt: member.joinedAt,
@@ -2909,12 +3145,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (principal.kind === "key") {
 			const account = await store.accounts.get(principal.accountId);
 			const role = await roleIn(store, principal, principal.accountId);
-			return account === undefined || role === undefined ? [] : [accountView(account, role)];
+			if (account === undefined || role === undefined) return [];
+			const named =
+				account.kind === "personal" && isPlaceholderName(account.name)
+					? personalNamed(account, await nameOfUser(principal.userId))
+					: account;
+			return [accountView(named, role)];
 		}
 		const accounts: computeSchema.Account[] = [];
 		for (const member of await store.members.list({ userId: principal.userId })) {
 			const account = await store.accounts.get(member.accountId);
-			if (account !== undefined) accounts.push(accountView(account, member.role));
+			if (account !== undefined) accounts.push(accountView(personalNamed(account, personName(principal)), member.role));
 		}
 		return accounts.sort((a, b) =>
 			a.id === principal.personalAccountId ? -1 : b.id === principal.personalAccountId ? 1 : a.createdAt - b.createdAt,
@@ -3072,7 +3313,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				};
 			}
 			return {
-				user: { id: principal.userId, name: principal.name, email: principal.email },
+				user: { id: principal.userId, name: personName(principal), email: principal.email },
 				accountId: principal.personalAccountId,
 				accounts,
 				superAdmin: principal.superAdmin,
@@ -3134,7 +3375,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		getAccount: async (principal, { params }) => {
 			const { account, role } = await accountById(store, principal, params.accountId);
 			requireScope(principal, "account:read", role);
-			return accountView(account, role);
+			if (account.kind !== "personal" || !isPlaceholderName(account.name)) return accountView(account, role);
+			// Only its person, or a key of theirs, gets here.
+			return accountView(personalNamed(account, await nameOfUser(principal.userId)), role);
 		},
 
 		updateAccount: async (principal, { params, body }) => {
@@ -3297,7 +3540,42 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (await canSee(principal, sandbox, role)) visible.push(sandbox);
 			}
 			const page = paginate(newestFirst(visible), query.limit, query.cursor);
-			return { items: page.items.map((sandbox) => sandboxView(sandbox, principal)), nextCursor: page.nextCursor };
+			return {
+				items: await withMakersNamed(page.items.map((sandbox) => sandboxView(sandbox, principal))),
+				nextCursor: page.nextCursor,
+			};
+		},
+
+		getSandboxShapes: async (principal, { query }) => {
+			const { account, role } = await actingAccount(store, principal, query.account);
+			requireScope(principal, "sandboxes:read", role);
+			const read = backend.capabilities();
+			const [records, capabilities, shared] = await Promise.all([ensureHosts(read), read, mayShare(principal)]);
+			const byId = new Map(capabilities.hosts.map((host) => [host.id, host]));
+			// requireHosts's rule, unlabelled: the account's own hosts that run microVMs, else the shared ones.
+			const running = records.filter((record) => record.state === "online" && record.tiers.includes("microvm"));
+			const own = running.filter((record) => record.accountId === account.id);
+			const usable = own.length > 0 ? own : shared ? running.filter((record) => record.accountId === undefined) : [];
+			const hosts = usable.flatMap((record) => {
+				const host = byId.get(record.id);
+				return host === undefined ? [] : [host];
+			});
+			const microvm = microvmShapes(hosts, capabilities.sizes);
+			return {
+				isolate: { memoryMb: { ...computeSchema.ISOLATE_MEMORY_MB }, enforced: false },
+				...(microvm === undefined ? {} : { microvm }),
+				// Self-hosted, a sandbox costs its operator nothing per hour, so New sandbox shows no price.
+				...(mode === "hosted"
+					? {
+							rates: {
+								currency: rates.currency,
+								microvmPerVcpuHour: rates.microvmPerVcpuHour,
+								microvmPerGbHour: rates.microvmPerGbHour,
+								isolatePerGbHour: rates.isolatePerGbHour,
+							},
+						}
+					: {}),
+			};
 		},
 
 		createSandbox: async (principal, { body, idempotencyKey }) => {
@@ -3345,6 +3623,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const capabilities = await read;
 				if (!capabilities.types.includes(type)) throw new KantelError("unavailable", `No host runs ${type} sandboxes`);
 				if (type === "isolate" && body.size !== undefined) throw new KantelError("invalid", "Isolates have no size");
+				if (body.size !== undefined && body.resources !== undefined) {
+					throw new KantelError("invalid", "Give resources or a size, not both");
+				}
 				if (body.size !== undefined && !capabilities.sizes.some((size) => size.name === body.size)) {
 					throw new KantelError("not_supported", `This deployment doesn't offer the size ${body.size}`);
 				}
@@ -3361,6 +3642,23 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					from !== undefined,
 					await mayShare(principal),
 				);
+				// Its shape is checked against the hosts it may go to, as placement will choose among them.
+				const eligible = new Set(hosts);
+				const shape = shapeFor(
+					type,
+					body.resources,
+					capabilities.hosts.filter((host) => eligible.has(host.id)),
+					capabilities.sizes,
+					from === undefined,
+				);
+				// The preset it matches, named, so a host restores that size's template snapshot rather than booting it.
+				const preset =
+					type === "microvm" && shape !== undefined
+						? capabilities.hosts
+								.filter((host) => eligible.has(host.id))
+								.flatMap((host) => host.sizes ?? capabilities.sizes)
+								.find((size) => size.vcpus === shape.vcpus && size.memoryMb === shape.memoryMb)?.name
+						: undefined;
 				const name = body.name ?? generatedName();
 				const sandbox: StoredSandbox = {
 					id: randomId("sbx"),
@@ -3368,7 +3666,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					name,
 					subdomain: subdomainFor(name),
 					type,
-					size: type === "microvm" ? (body.size ?? "default") : undefined,
+					size: type === "microvm" ? (shape === undefined ? (body.size ?? "default") : preset) : undefined,
+					...(shape === undefined ? {} : { shape }),
+					// An isolate's memory is what it asked for (its host has no say); a microVM's is what its host gives it.
+					...(type === "isolate" && shape !== undefined
+						? { resources: { vcpus: 0, memoryMb: shape.memoryMb, diskGb: 0 } }
+						: {}),
 					image: type === "microvm" ? (body.image ?? capabilities.defaultImage) : undefined,
 					state: "starting",
 					visibility: account.kind === "personal" ? "private" : (body.visibility ?? account.defaultVisibility),
@@ -3408,6 +3711,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								type,
 								subdomain: sandbox.subdomain,
 								size: sandbox.size,
+								...(sandbox.shape === undefined ? {} : { shape: sandbox.shape }),
 								image: sandbox.image,
 								env: sandbox.env,
 								eligibleHosts: hosts,
@@ -3438,7 +3742,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		getSandbox: async (principal, { params }) => {
 			await catchUpUsage();
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:read", true);
-			return sandboxView(sandbox, principal);
+			return withMakerNamed(sandboxView(sandbox, principal));
 		},
 
 		updateSandbox: async (principal, { params, body }) => {
@@ -3549,6 +3853,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						subdomain: subdomainFor(name),
 						type: current.type,
 						size: current.type === "microvm" ? (body.size ?? current.size) : undefined,
+						// A fork is its source's shape, unless it names a size.
+						...(current.shape === undefined || body.size !== undefined ? {} : { shape: current.shape }),
+						...(current.type === "isolate" && current.resources !== undefined ? { resources: current.resources } : {}),
 						image: current.image,
 						state: "starting",
 						visibility: account?.kind === "personal" ? "private" : (body.visibility ?? current.visibility),
@@ -3594,6 +3901,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 											type: fork.type,
 											subdomain: fork.subdomain,
 											size: fork.size,
+											...(fork.shape === undefined ? {} : { shape: fork.shape }),
 											image: fork.image,
 											env: fork.env,
 											eligibleHosts: hosts,
@@ -3641,8 +3949,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						current.id,
 						() =>
 							bootAgain(
-								current,
-								{ fromSnapshot, env: current.env, eligibleHosts: hosts, size: current.size, ...egress },
+								starting,
+								{ fromSnapshot, env: current.env, eligibleHosts: hosts, ...sizingOf(starting), ...egress },
 								(options) => backend.recover(current.id, options),
 							),
 						environment,
@@ -4310,7 +4618,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		listApiKeys: async (principal, { query }) => {
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "account:read", role);
-			return { items: newestFirst(await store.apiKeys.list({ accountId: account.id })).map(apiKeyView) };
+			return {
+				items: await withMakersNamed(newestFirst(await store.apiKeys.list({ accountId: account.id })).map(apiKeyView)),
+			};
 		},
 
 		createApiKey: async (principal, { body }) => {
@@ -4341,7 +4651,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return { key: apiKeyView(key), secret };
 		},
 
-		getApiKey: async (principal, { params }) => apiKeyView(await apiKeyFor(principal, params.apiKeyId, "account:read")),
+		getApiKey: async (principal, { params }) =>
+			withMakerNamed(apiKeyView(await apiKeyFor(principal, params.apiKeyId, "account:read"))),
 
 		rotateApiKey: async (principal, { params }) => {
 			const key = await apiKeyFor(principal, params.apiKeyId, "account:admin");
@@ -4975,7 +5286,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	async function personSummary(userId: string) {
 		const user = await store.users.get(userId);
-		return user === undefined ? undefined : { id: user.id, name: user.name, email: user.email };
+		return user === undefined
+			? undefined
+			: { id: user.id, name: personName({ userId: user.id, name: user.name, email: user.email }), email: user.email };
 	}
 
 	/** Starts (fresh from the newest snapshot) or resumes (from memory when paused) a sandbox. */
@@ -5000,6 +5313,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const began = await transition(current.id, current.state, (latest) =>
 			withState(latest, "starting", {
 				size: body.size ?? latest.size,
+				// A size it names replaces the shape it had; without one it keeps its shape.
+				shape: body.size === undefined ? latest.shape : undefined,
 				pausedSnapshotId: how === "resume" ? latest.pausedSnapshotId : undefined,
 				// Its egress is read afresh for the boot: a revision of its own, so an update read before (from when it last
 				// ran, still being retried) never equals it, and loses.
@@ -5014,7 +5329,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const starting = began.moved;
 		const bootOptions = {
 			fromSnapshot,
-			size: starting.size,
+			...sizingOf(starting),
 			env: current.env,
 			eligibleHosts: hosts,
 			// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
@@ -5024,7 +5339,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			bootProvisioned(
 				current.id,
 				() =>
-					bootAgain(current, bootOptions, (options) =>
+					bootAgain(starting, bootOptions, (options) =>
 						how === "start" ? backend.start(current.id, options) : backend.resume(current.id, options),
 					),
 				environment,
@@ -5058,7 +5373,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				principal = {
 					kind: "person",
 					userId: user.id,
-					name: user.name,
+					name: personName({ userId: user.id, name: user.name, email: user.email }),
 					superAdmin: user.superAdmin,
 					personalAccountId: user.personalAccountId,
 				};

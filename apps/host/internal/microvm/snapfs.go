@@ -335,19 +335,8 @@ func (m *Manager) SnapshotRead(id, p string) ([]byte, error) {
 	return nil, &proto.Error{Code: proto.ErrNotFound, Message: "no file " + p + " in snapshot " + id}
 }
 
-// ResetTemplates forgets every size's template snapshot and the warm pool (a benchmark's cold start).
+// ResetTemplates forgets every size's template snapshot (a benchmark's cold start).
 func (m *Manager) ResetTemplates() {
-	m.mu.Lock()
-	pools := m.pool
-	m.pool = map[string][]*warm{}
-	m.mu.Unlock()
-	for _, list := range pools {
-		for _, w := range list {
-			w.machine.Kill()
-			m.cfg.Network.Remove(w.link)
-			_ = os.RemoveAll(w.dir)
-		}
-	}
 	for _, size := range m.cfg.Sizes {
 		lock := m.templates[size.Name]
 		lock.Lock()

@@ -151,6 +151,11 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 * it is, as the API's `base` (image patching on). Absent: not reported.
 	 */
 	readonly base?: string;
+	/**
+	 * What it asked for at create: a microVM's vCPUs and memory, an isolate's memory (`vcpus` 0). Absent: made by a named
+	 * size, or before shapes. A fork asks for the same.
+	 */
+	readonly shape?: { readonly vcpus: number; readonly memoryMb: number };
 };
 
 export type StoredCommand = computeSchema.Command & { readonly accountId: string };

@@ -355,6 +355,7 @@ Every field is optional: `{}` makes a running isolate in the caller's account.
 | `name` | string | no | Default: a generated name, such as `brave-otter`. (at most 63 characters) |
 | `type` | [SandboxType](/api/reference/types/#sandboxtype) | no |  |
 | `size` | [SandboxSizeName](/api/reference/types/#sandboxsizename) | no |  |
+| `resources` | [SandboxShapeInput](/api/reference/types/#sandboxshapeinput) | no |  |
 | `image` | string | no | A microVM's base image. Default: the deployment's. |
 | `from` | string | no | Start from this snapshot: a snapshot's ID or a saved snapshot's name in the account. |
 | `autoStopMinutes` | integer or null | no | Default 60. `null`: never stop by itself. |
@@ -852,6 +853,13 @@ A way into an organisation: whoever joins with its code becomes a member.
 | --- | --- | --- | --- |
 | `items` | [Invite](/api/reference/types/#invite)[] | yes |  |
 
+### IsolateShapes
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `memoryMb` | [ShapeRange](/api/reference/types/#shaperange) | yes |  |
+| `enforced` | boolean | yes | Whether an isolate's memory is a hard limit. False today: the runtime records it, and the account VM's memory, shared by its isolates, is the limit. |
+
 ### IssuedApiKey
 
 | Field | Type | Required | Description |
@@ -886,6 +894,18 @@ A way into an organisation: whoever joins with its code becomes a member.
 `member`: uses the organisation's shared sandboxes and snapshots and makes their own. `admin`: also manages members, API keys, webhooks, telemetry and the proxy. `owner`: also renames or deletes the organisation. A personal account's person is its `owner`.
 
 One of: `"member"` or `"admin"` or `"owner"`.
+
+### MicrovmShapes
+
+Absent when no host the account may use runs microVMs.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `vcpus` | [ShapeRange](/api/reference/types/#shaperange) | yes |  |
+| `memoryMb` | [ShapeRange](/api/reference/types/#shaperange) | yes |  |
+| `memoryMbPerVcpu` | object | yes | Memory follows vCPUs: each vCPU has at least `min` and at most `max` MB. |
+| `presets` | [ShapePreset](/api/reference/types/#shapepreset)[] | yes | Each shape a host makes by name. Hosts may give one name different shapes: each is its own entry. |
+| `custom` | boolean | yes | Whether a host takes shapes off the presets; when false, only the presets. A shape's disk is its host's to give; the sandbox's `resources` say what it got. |
 
 ### PollDeviceLoginBody
 
@@ -1133,9 +1153,28 @@ A protected variable as one sandbox has it: never its value.
 | `cpu` | number | yes | CPU utilisation over the interval ending at `at`, 0 to 1 of the sandbox's own vCPUs. (minimum 0, maximum 1) |
 | `memUsedBytes` | integer | yes | Memory in use at `at`. (minimum 0) |
 
+### SandboxShapeInput
+
+What a new sandbox gets. A preset restores its size's template snapshot on the host; a shape off the presets boots from scratch.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `vcpus` | integer | no | A microVM's vCPUs. An isolate has none of its own: it shares its account's VM's CPU. (minimum 1) |
+| `memoryMb` | integer | yes | Memory in MB. An isolate takes 128 to 512 in steps of 64; a microVM up to what a host offers (`getSandboxShapes`). (minimum 128) |
+
+### SandboxShapes
+
+What a new sandbox in the account may be: the ranges its hosts offer, their presets and the rates.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `isolate` | [IsolateShapes](/api/reference/types/#isolateshapes) | yes |  |
+| `microvm` | [MicrovmShapes](/api/reference/types/#microvmshapes) | no |  |
+| `rates` | [ShapeRates](/api/reference/types/#shaperates) | no |  |
+
 ### SandboxSizeName
 
-A microVM's size; a deployment may offer fewer. Isolates have none.
+A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now.
 
 One of: `"small"` or `"default"` or `"large"` or `"xlarge"`.
 
@@ -1234,6 +1273,35 @@ One of: `"critical"` or `"high"` or `"medium"` or `"low"` or `"unknown"`.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `publicUrl` | string or null | yes | An http(s) origin, such as `https://kantel.example.com`; `null` goes back to the deployment's own. |
+
+### ShapePreset
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | [SandboxSizeName](/api/reference/types/#sandboxsizename) | yes |  |
+| `vcpus` | integer | yes |  |
+| `memoryMb` | integer | yes |  |
+| `diskGb` | integer | yes | The disk the host gives a fresh sandbox of this size. One made from a snapshot keeps that snapshot's disk. |
+
+### ShapeRange
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `min` | integer | yes |  |
+| `max` | integer | yes |  |
+| `step` | integer | yes |  |
+| `default` | integer | yes |  |
+
+### ShapeRates
+
+What an hour costs, per vCPU and GB; absent where it is free.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `currency` | string | yes |  |
+| `microvmPerVcpuHour` | number | yes |  |
+| `microvmPerGbHour` | number | yes |  |
+| `isolatePerGbHour` | number | yes |  |
 
 ### Snapshot
 

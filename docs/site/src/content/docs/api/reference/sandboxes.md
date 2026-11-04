@@ -36,7 +36,7 @@ The account's sandboxes the caller may see, newest first: by default the ones st
 
 `POST /v1/sandboxes` (SDK method `createSandbox`)
 
-Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. A key needs `sandboxes:write`.
+Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. A key needs `sandboxes:write`.
 
 **Header parameters**
 
@@ -51,6 +51,24 @@ Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a s
 - `201`: [Sandbox](/api/reference/types/#sandbox) (`application/json`). The sandbox.
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `429` exhausted, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Get the shapes a sandbox may be
+
+`GET /v1/sandbox-shapes` (SDK method `getSandboxShapes`)
+
+What a new sandbox in the account may be, from the hosts it may use: an isolate's memory, a microVM's vCPUs and memory, the hosts' presets and what an hour costs. A key needs `sandboxes:read`.
+
+**Query parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
+
+**Answers**
+
+- `200`: [SandboxShapes](/api/reference/types/#sandboxshapes) (`application/json`). The shapes.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
 ## Get a sandbox
 

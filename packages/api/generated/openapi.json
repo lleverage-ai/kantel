@@ -1339,7 +1339,7 @@
 			"post": {
 				"operationId": "createSandbox",
 				"summary": "Create a sandbox",
-				"description": "Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. A key needs `sandboxes:write`.",
+				"description": "Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. A key needs `sandboxes:write`.",
 				"tags": ["sandboxes"],
 				"parameters": [
 					{
@@ -1447,6 +1447,67 @@
 					},
 					"503": {
 						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sandbox-shapes": {
+			"get": {
+				"operationId": "getSandboxShapes",
+				"summary": "Get the shapes a sandbox may be",
+				"description": "What a new sandbox in the account may be, from the hosts it may use: an isolate's memory, a microVM's vCPUs and memory, the hosts' presets and what an hour costs. A key needs `sandboxes:read`.",
+				"tags": ["sandboxes"],
+				"parameters": [
+					{
+						"name": "account",
+						"in": "query",
+						"required": false,
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The shapes.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/SandboxShapes"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -9546,6 +9607,9 @@
 					"size": {
 						"$ref": "#/components/schemas/SandboxSizeName"
 					},
+					"resources": {
+						"$ref": "#/components/schemas/SandboxShapeInput"
+					},
 					"image": {
 						"type": "string",
 						"description": "A microVM's base image. Default: the deployment's."
@@ -11071,6 +11135,20 @@
 				},
 				"title": "InviteList"
 			},
+			"IsolateShapes": {
+				"type": "object",
+				"required": ["memoryMb", "enforced"],
+				"properties": {
+					"memoryMb": {
+						"$ref": "#/components/schemas/ShapeRange"
+					},
+					"enforced": {
+						"type": "boolean",
+						"description": "Whether an isolate's memory is a hard limit. False today: the runtime records it, and the account VM's memory, shared by its isolates, is the limit."
+					}
+				},
+				"title": "IsolateShapes"
+			},
 			"IssuedApiKey": {
 				"type": "object",
 				"required": ["key", "secret"],
@@ -11149,6 +11227,44 @@
 				],
 				"title": "MemberRole",
 				"description": "`member`: uses the organisation's shared sandboxes and snapshots and makes their own. `admin`: also manages members, API keys, webhooks, telemetry and the proxy. `owner`: also renames or deletes the organisation. A personal account's person is its `owner`."
+			},
+			"MicrovmShapes": {
+				"type": "object",
+				"required": ["vcpus", "memoryMb", "memoryMbPerVcpu", "presets", "custom"],
+				"properties": {
+					"vcpus": {
+						"$ref": "#/components/schemas/ShapeRange"
+					},
+					"memoryMb": {
+						"$ref": "#/components/schemas/ShapeRange"
+					},
+					"memoryMbPerVcpu": {
+						"type": "object",
+						"required": ["min", "max"],
+						"properties": {
+							"min": {
+								"type": "integer"
+							},
+							"max": {
+								"type": "integer"
+							}
+						},
+						"description": "Memory follows vCPUs: each vCPU has at least `min` and at most `max` MB."
+					},
+					"presets": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/ShapePreset"
+						},
+						"description": "Each shape a host makes by name. Hosts may give one name different shapes: each is its own entry."
+					},
+					"custom": {
+						"type": "boolean",
+						"description": "Whether a host takes shapes off the presets; when false, only the presets. A shape's disk is its host's to give; the sandbox's `resources` say what it got."
+					}
+				},
+				"title": "MicrovmShapes",
+				"description": "Absent when no host the account may use runs microVMs."
 			},
 			"PollDeviceLoginBody": {
 				"type": "object",
@@ -11939,6 +12055,41 @@
 				},
 				"title": "SandboxSeriesPoint"
 			},
+			"SandboxShapeInput": {
+				"type": "object",
+				"required": ["memoryMb"],
+				"properties": {
+					"vcpus": {
+						"type": "integer",
+						"minimum": 1,
+						"description": "A microVM's vCPUs. An isolate has none of its own: it shares its account's VM's CPU."
+					},
+					"memoryMb": {
+						"type": "integer",
+						"minimum": 128,
+						"description": "Memory in MB. An isolate takes 128 to 512 in steps of 64; a microVM up to what a host offers (`getSandboxShapes`)."
+					}
+				},
+				"title": "SandboxShapeInput",
+				"description": "What a new sandbox gets. A preset restores its size's template snapshot on the host; a shape off the presets boots from scratch."
+			},
+			"SandboxShapes": {
+				"type": "object",
+				"required": ["isolate"],
+				"properties": {
+					"isolate": {
+						"$ref": "#/components/schemas/IsolateShapes"
+					},
+					"microvm": {
+						"$ref": "#/components/schemas/MicrovmShapes"
+					},
+					"rates": {
+						"$ref": "#/components/schemas/ShapeRates"
+					}
+				},
+				"title": "SandboxShapes",
+				"description": "What a new sandbox in the account may be: the ranges its hosts offer, their presets and the rates."
+			},
 			"SandboxSizeName": {
 				"anyOf": [
 					{
@@ -11959,7 +12110,7 @@
 					}
 				],
 				"title": "SandboxSizeName",
-				"description": "A microVM's size; a deployment may offer fewer. Isolates have none."
+				"description": "A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now."
 			},
 			"SandboxSource": {
 				"type": "object",
@@ -12251,6 +12402,65 @@
 					}
 				},
 				"title": "SetPublicUrlBody"
+			},
+			"ShapePreset": {
+				"type": "object",
+				"required": ["name", "vcpus", "memoryMb", "diskGb"],
+				"properties": {
+					"name": {
+						"$ref": "#/components/schemas/SandboxSizeName"
+					},
+					"vcpus": {
+						"type": "integer"
+					},
+					"memoryMb": {
+						"type": "integer"
+					},
+					"diskGb": {
+						"type": "integer",
+						"description": "The disk the host gives a fresh sandbox of this size. One made from a snapshot keeps that snapshot's disk."
+					}
+				},
+				"title": "ShapePreset"
+			},
+			"ShapeRange": {
+				"type": "object",
+				"required": ["min", "max", "step", "default"],
+				"properties": {
+					"min": {
+						"type": "integer"
+					},
+					"max": {
+						"type": "integer"
+					},
+					"step": {
+						"type": "integer"
+					},
+					"default": {
+						"type": "integer"
+					}
+				},
+				"title": "ShapeRange"
+			},
+			"ShapeRates": {
+				"type": "object",
+				"required": ["currency", "microvmPerVcpuHour", "microvmPerGbHour", "isolatePerGbHour"],
+				"properties": {
+					"currency": {
+						"type": "string"
+					},
+					"microvmPerVcpuHour": {
+						"type": "number"
+					},
+					"microvmPerGbHour": {
+						"type": "number"
+					},
+					"isolatePerGbHour": {
+						"type": "number"
+					}
+				},
+				"title": "ShapeRates",
+				"description": "What an hour costs, per vCPU and GB; absent where it is free."
 			},
 			"Snapshot": {
 				"type": "object",

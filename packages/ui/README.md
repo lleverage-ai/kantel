@@ -86,6 +86,7 @@ centred on their text within 1px, and a story for every required state; `--only`
 | `SegmentedControl` | Two to five exclusive views or filters | More options (use a menu); a page's views with their own address (use `PageTabs`) |
 | `CheckboxField` | One on/off choice that takes effect with its form or decision | A setting that applies at once (use `Switch`) |
 | `Switch` | An on/off setting that applies the moment it changes | A choice that waits for a form's Save (use `CheckboxField`) |
+| `SliderField` | A number chosen along a range, with its value beside the label: a sandbox's vCPUs or memory | A few named choices (use `SegmentedControl` or `SelectField`); an exact figure to type (use `TextField`) |
 | `OneTimeSecret`, `CommandBlock` | A secret shown once when it is made (a host's join token, an API key) with Copy, the commands that use it and an "I've stored it"; a command to run, with its own Copy | Anything Kantel can show again (use `Code` or `FieldList`) |
 | `Spinner`, `Skeleton` | Loading, when the shape is known (skeleton) or not (spinner) | Loads under about 300ms |
 | `Kbd` | A key or chord in text | |

@@ -151,10 +151,9 @@ func benchTier(ctx context.Context, host *agent.Host, tier, size string, runs in
 		}
 		return nil
 	}
-	host.SetPools(map[string]int{})
 	host.ResetTemplates(tier)
 
-	// Cold create: nothing prepared (no template snapshot, no pool): the first sandbox of a fresh host.
+	// Cold create: nothing prepared (no template snapshot): the first sandbox of a fresh host.
 	var info proto.SandboxInfo
 	sid := id("cold", 0)
 	t, err := call(proto.MethodCreate, proto.CreateParams{SandboxID: sid, Tier: tier, Size: size}, &info)
@@ -167,7 +166,7 @@ func benchTier(ctx context.Context, host *agent.Host, tier, size string, runs in
 	}
 	out = append(out, summarise(tier, "create", "cold", "first sandbox on a fresh host: boots the template, then restores it ("+info.Source+")", []float64{t}, []map[string]float64{info.Timings}))
 
-	// Create from the template snapshot, no pool.
+	// Create from the template snapshot: how every create after the first is made (hosts keep no warm pools).
 	var samples []float64
 	var steps []map[string]float64
 	for i := 0; i < runs; i++ {
@@ -182,37 +181,7 @@ func benchTier(ctx context.Context, host *agent.Host, tier, size string, runs in
 			return out, err
 		}
 	}
-	out = append(out, summarise(tier, "create", "snapshot", "no warm pool: restores the template snapshot", samples, steps))
-
-	// Warm: from a pre-warmed pool.
-	pool := tier + "/" + size
-	if tier == "isolate" {
-		pool = tier + "/default"
-	}
-	host.SetPools(map[string]int{pool: runs})
-	deadline := time.Now().Add(5 * time.Minute)
-	for host.Warm()[pool] < runs && time.Now().Before(deadline) {
-		time.Sleep(200 * time.Millisecond)
-	}
-	samples, steps = nil, nil
-	for i := 0; i < runs; i++ {
-		sid := id("warm", i)
-		t, err := call(proto.MethodCreate, proto.CreateParams{SandboxID: sid, Tier: tier, Size: size}, &info)
-		if err != nil {
-			return out, fmt.Errorf("warm create: %w", err)
-		}
-		created = append(created, sid)
-		samples, steps = append(samples, t), append(steps, info.Timings)
-		if err := exec(sid); err != nil {
-			return out, err
-		}
-		// Let the pool refill between runs, as it would between real creates.
-		for host.Warm()[pool] < runs-i-1 && time.Now().Before(deadline) {
-			time.Sleep(50 * time.Millisecond)
-		}
-	}
-	host.SetPools(map[string]int{})
-	out = append(out, summarise(tier, "create", "warm", "claimed from the pre-warmed pool", samples, steps))
+	out = append(out, summarise(tier, "create", "snapshot", "restores the template snapshot", samples, steps))
 
 	// Stop and resume (with memory where the tier keeps it), then stop without memory and start (cold).
 	target := created[1]

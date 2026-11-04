@@ -18,6 +18,7 @@ import { ChevronRightIcon, GlobeIcon, PlusIcon, StopIcon } from "../primitives/i
 import { useLoad } from "../primitives/load.ts";
 import { DesktopIcon, EllipsisIcon, PlayIcon, ReconnectIcon, TrashIcon } from "../primitives/lucide.tsx";
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
+import { SliderField } from "../primitives/slider.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { SplitButton } from "../primitives/split-button.tsx";
 import { StatusLabel } from "../primitives/status.tsx";
@@ -27,22 +28,33 @@ import {
 	type ComputeAccount,
 	type CreateSandboxInput,
 	costText,
+	customShapes,
+	DEFAULT_SANDBOX_SHAPES,
 	type Environment,
+	fitMemory,
 	type HostingMode,
+	memoryRangeFor,
+	memoryText,
+	microvmsAvailable,
+	onGrid,
+	presetOf,
 	SANDBOX_KIND_LABELS,
-	SANDBOX_SIZES,
 	SANDBOX_STATE_LABELS,
 	SANDBOX_STATE_STATUS,
 	type Sandbox,
 	type SandboxesSource,
 	type SandboxKind,
-	type SandboxSize,
+	type SandboxShape,
+	type SandboxShapes,
 	type SandboxState,
 	type SavedSnapshot,
 	sandboxActions,
 	sandboxMoving,
+	shapeCentsPerHour,
+	shapeCreatable,
 	sizeText,
 	stopsInText,
+	vcpuRangeFor,
 } from "./compute-model.ts";
 import { lineOf, ROW_SPAN_MS, seriesOf, useLiveUsage } from "./live-usage.ts";
 import { computePage, messageOf, Sparkline, table } from "./parts.tsx";
@@ -95,8 +107,11 @@ export interface SandboxesPageProps {
 	readonly firstRun?: ReactNode;
 }
 
-/** What New makes without asking: New sandbox's own defaults, "MicroVM, Medium, stops after 1 hour". */
-export const QUICK_SANDBOX = { kind: "microvm", size: "medium", autoStopMinutes: 60 } as const satisfies Omit<
+/**
+ * What New makes without asking: "MicroVM, the deployment's default shape, stops after 1 hour". No shape: the API
+ * gives the default.
+ */
+export const QUICK_SANDBOX = { kind: "microvm", autoStopMinutes: 60 } as const satisfies Omit<
 	CreateSandboxInput,
 	"accountId"
 >;
@@ -236,7 +251,10 @@ export function SandboxesPage({
 			hostname: "",
 			accountId: input.accountId,
 			kind: input.kind,
-			size: input.size,
+			size: "medium",
+			...(input.shape === undefined
+				? {}
+				: { resources: { vcpus: input.shape.vcpus, memoryGb: input.shape.memoryMb / 1024, diskGb: 0 } }),
 			state: "starting",
 			createdAt: Date.now(),
 			createdBy: "",
@@ -384,7 +402,7 @@ export function SandboxesPage({
 				open={newOpen}
 				account={account}
 				hosting={hosting}
-				sizeFigures={source.sizeFigures ?? true}
+				{...(source.shapes === undefined ? {} : { shapes: () => readShapes(source, account.id) })}
 				{...(snapshots === undefined ? {} : { savedSnapshots: () => snapshots.saved(account.id) })}
 				{...(environments === undefined ? {} : { environments: () => environments(account.id) })}
 				onClose={() => setNewOpen(false)}
@@ -1016,11 +1034,137 @@ function SelectionBar({
 	);
 }
 
-function NewSandboxDialog({
+/** The account's shapes from its source; the dialog asks only where the source can say. */
+const readShapes = (source: SandboxesSource, accountId: string): Promise<SandboxShapes> =>
+	source.shapes === undefined ? Promise.resolve(DEFAULT_SANDBOX_SHAPES) : source.shapes(accountId);
+
+/**
+ * New sandbox's sliders. A microVM: vCPUs, then memory, which follows the vCPUs within what each may hold; a tick
+ * marks each shape the hosts offer by name. An isolate: memory alone, since it shares its account's VM's CPU. Under
+ * them, the shape in a line and its price where there is one (hosted). Where no host makes a shape off the presets
+ * (older hosts), a microVM is one of the presets, chosen from a list.
+ */
+export function ShapeFields({
+	kind,
+	shapes,
+	hosting,
+	shape,
+	onVcpus,
+	onMemory,
+	onPreset,
+}: {
+	kind: SandboxKind;
+	shapes: SandboxShapes;
+	hosting: HostingMode;
+	shape: SandboxShape;
+	onVcpus: (vcpus: number) => void;
+	onMemory: (memoryMb: number) => void;
+	/** A preset chosen whole, where only presets may be. */
+	onPreset: (shape: SandboxShape) => void;
+}) {
+	const cents = hosting === "hosted" ? shapeCentsPerHour(shapes, kind, shape) : undefined;
+	const price = cents === undefined ? "" : `, ${costText(cents)} an hour`;
+	if (kind === "isolate") {
+		const range = shapes.isolate.memoryMb;
+		return (
+			<div className="flex flex-col gap-4">
+				<SliderField
+					label="Memory"
+					value={shape.memoryMb}
+					min={range.min}
+					max={range.max}
+					step={range.step}
+					format={memoryText}
+					marks={[range.default]}
+					onChange={onMemory}
+				/>
+				<p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
+					<span>Shared CPU: an isolate runs on its account's VM and shares its CPU.</span>
+					{cents === undefined ? null : <span>{costText(cents)} an hour.</span>}
+				</p>
+			</div>
+		);
+	}
+	const { presets } = shapes.microvm;
+	const cpuRange = vcpuRangeFor(shapes);
+	const memory = memoryRangeFor(shapes, shape.vcpus);
+	// No disk is promised: it is the host's to give (by its sizes, or the snapshot it starts from), and the sandbox shows
+	// the disk it got once it runs.
+	const summary = (
+		<p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
+			<span>
+				{shape.vcpus} vCPU, {memoryText(shape.memoryMb)} memory
+				{price}
+			</span>
+		</p>
+	);
+	if (!customShapes(shapes)) {
+		// An option is a whole shape: hosts may give one name different shapes, and each submits its own.
+		const shapeKey = (entry: SandboxShape) => `${entry.vcpus}/${entry.memoryMb}`;
+		const options = [...new Map(presets.map((entry) => [shapeKey(entry), entry])).values()];
+		const chosen = presetOf(shapes, shape) ?? options[0];
+		if (chosen === undefined) {
+			return (
+				<Notice level="warning">
+					These hosts make only their named sizes, and name none this console knows, so no microVM can be made here.
+					Update kantel-host, or use an isolate.
+				</Notice>
+			);
+		}
+		return (
+			<div className="flex flex-col gap-4">
+				<SelectField
+					label="Size"
+					hint="These hosts make only their named sizes; update kantel-host for any vCPUs and memory."
+					value={shapeKey(chosen)}
+					onChange={(event) => {
+						const next = options.find((entry) => shapeKey(entry) === event.currentTarget.value);
+						if (next !== undefined) onPreset({ vcpus: next.vcpus, memoryMb: next.memoryMb });
+					}}
+					options={options.map((entry) => ({
+						value: shapeKey(entry),
+						label: `${entry.vcpus} vCPU, ${memoryText(entry.memoryMb)}`,
+					}))}
+				/>
+				{summary}
+			</div>
+		);
+	}
+	return (
+		<div className="flex flex-col gap-4">
+			<SliderField
+				label="vCPUs"
+				value={shape.vcpus}
+				min={cpuRange.min}
+				max={cpuRange.max}
+				step={cpuRange.step}
+				format={(value) => `${value} vCPU`}
+				marks={presets.map((entry) => entry.vcpus)}
+				onChange={onVcpus}
+			/>
+			<SliderField
+				label="Memory"
+				value={shape.memoryMb}
+				min={memory.min}
+				max={memory.max}
+				step={memory.step}
+				format={memoryText}
+				marks={presets.filter((entry) => entry.vcpus === shape.vcpus).map((entry) => entry.memoryMb)}
+				onChange={onMemory}
+			/>
+			{summary}
+		</div>
+	);
+}
+
+/** Where New sandbox's shapes are: read (or the source can't say, so the defaults stand), being read, or not read. */
+type ShapesRead = "ready" | "reading" | "failed";
+
+export function NewSandboxDialog({
 	open,
 	account,
 	hosting,
-	sizeFigures,
+	shapes: loadShapes,
 	savedSnapshots,
 	environments,
 	onClose,
@@ -1029,7 +1173,7 @@ function NewSandboxDialog({
 	open: boolean;
 	account: ComputeAccount;
 	hosting: HostingMode;
-	sizeFigures: boolean;
+	shapes?: () => Promise<SandboxShapes>;
 	savedSnapshots?: () => Promise<readonly SavedSnapshot[]>;
 	environments?: () => Promise<readonly Environment[]>;
 	onClose: () => void;
@@ -1037,28 +1181,66 @@ function NewSandboxDialog({
 }) {
 	const [name, setName] = useState("");
 	const [kind, setKind] = useState<SandboxKind>("microvm");
-	const [size, setSize] = useState<SandboxSize>("medium");
+	const [shapes, setShapes] = useState<SandboxShapes>(DEFAULT_SANDBOX_SHAPES);
+	const [vcpus, setVcpus] = useState(DEFAULT_SANDBOX_SHAPES.microvm.vcpus.default);
+	const [memoryMb, setMemoryMb] = useState(DEFAULT_SANDBOX_SHAPES.microvm.memoryMb.default);
+	const [isolateMb, setIsolateMb] = useState(DEFAULT_SANDBOX_SHAPES.isolate.memoryMb.default);
 	const [autoStop, setAutoStop] = useState("60");
 	const [from, setFrom] = useState("");
 	const [environment, setEnvironment] = useState("");
 	const [saved, setSaved] = useState<readonly SavedSnapshot[]>([]);
 	const [envs, setEnvs] = useState<readonly Environment[]>([]);
+	// A source that says what its hosts offer: nothing may be chosen or created until it has, so a create never goes
+	// with the sample's figures. One that can't say keeps the defaults.
+	const [shapesRead, setShapesRead] = useState<ShapesRead>(loadShapes === undefined ? "ready" : "reading");
 	const asked = useRef(false);
+	const readShapesNow = useCallback(() => {
+		if (loadShapes === undefined) return;
+		setShapesRead("reading");
+		loadShapes().then(
+			(read) => {
+				// Set once, before any slider can move: the controls show only once this lands.
+				const presets = read.microvm.presets;
+				const cpus = vcpuRangeFor(read).default;
+				const start = customShapes(read)
+					? { vcpus: cpus, memoryMb: fitMemory(read, cpus, read.microvm.memoryMb.default) }
+					: (presets.find(
+							(preset) =>
+								preset.vcpus === read.microvm.vcpus.default && preset.memoryMb === read.microvm.memoryMb.default,
+						) ?? presets[0]);
+				setShapes(read);
+				if (start !== undefined) {
+					setVcpus(start.vcpus);
+					setMemoryMb(start.memoryMb);
+				}
+				setIsolateMb(onGrid(read.isolate.memoryMb, read.isolate.memoryMb.default));
+				// No host runs microVMs: an isolate is all that can be made.
+				if (!microvmsAvailable(read)) setKind("isolate");
+				setShapesRead("ready");
+			},
+			() => setShapesRead("failed"),
+		);
+	}, [loadShapes]);
 	useEffect(() => {
 		if (!open || asked.current) return;
 		asked.current = true;
 		savedSnapshots?.().then(setSaved, () => setSaved([]));
 		environments?.().then(setEnvs, () => setEnvs([]));
-	}, [open, savedSnapshots, environments]);
+		readShapesNow();
+	}, [open, savedSnapshots, environments, readShapesNow]);
 	const valid = name === "" || /^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$/.test(name);
 	const fromOptions = saved.filter((entry) => entry.kind === kind);
+	const shape: SandboxShape = kind === "isolate" ? { vcpus: 0, memoryMb: isolateMb } : { vcpus, memoryMb };
+	// A microVM's shape is one the hosts can make: a preset, or one within both memory bounds.
+	const noMicrovms = shapesRead === "ready" && !microvmsAvailable(shapes);
+	const ready = valid && shapesRead === "ready" && shapeCreatable(shapes, kind, shape);
 	const submit = () => {
-		if (!valid) return;
+		if (!ready) return;
 		onCreate({
 			accountId: account.id,
 			...(name === "" ? {} : { name }),
 			kind,
-			size: kind === "isolate" ? "small" : size,
+			shape,
 			...(from === "" ? {} : { fromSnapshot: from }),
 			...(environment === "" ? {} : { environmentId: environment }),
 			...(autoStop === "never" ? {} : { autoStopMinutes: Number(autoStop) }),
@@ -1076,7 +1258,7 @@ function NewSandboxDialog({
 			actions={
 				<>
 					<Button onClick={onClose}>Cancel</Button>
-					<Button type="submit" variant="primary" disabled={!valid}>
+					<Button type="submit" variant="primary" disabled={!ready}>
 						Create
 					</Button>
 				</>
@@ -1096,35 +1278,52 @@ function NewSandboxDialog({
 					<SegmentedControl
 						label="Type"
 						options={[
-							{ value: "microvm", label: "MicroVM" },
+							{ value: "microvm", label: "MicroVM", ...(noMicrovms ? { disabled: true } : {}) },
 							{ value: "isolate", label: "Isolate" },
 						]}
 						value={kind}
 						onChange={setKind}
 					/>
 					<span className="text-xs text-muted">
-						{kind === "microvm"
-							? "A Firecracker microVM: root, Docker, systemd and /dev/kvm inside. Up in about a second."
-							: "A V8 isolate with a shell and JavaScript. Up in milliseconds, nearly free, no Docker."}
+						{noMicrovms
+							? "None of this organisation's hosts run microVMs, so only isolates can be made here."
+							: kind === "microvm"
+								? "A Firecracker microVM: root, Docker, systemd and /dev/kvm inside. Up in about a second."
+								: "A V8 isolate with a shell and JavaScript. Up in milliseconds, nearly free, no Docker."}
 					</span>
 				</div>
-				{kind === "microvm" ? (
-					<SelectField
-						label="Size"
-						value={size}
-						onChange={(event) => setSize(event.currentTarget.value as SandboxSize)}
-						options={SANDBOX_SIZES.map((spec) => ({
-							value: spec.size,
-							label: sizeFigures
-								? `${spec.label}: ${spec.vcpus} vCPU, ${spec.memoryGb} GB, ${spec.diskGb} GB disk${
-										hosting === "hosted" && spec.centsPerHour !== undefined
-											? `, ${costText(spec.centsPerHour)} an hour`
-											: ""
-									}`
-								: spec.label,
-						}))}
+				{shapesRead === "reading" ? (
+					<p className="text-xs text-muted" role="status">
+						Reading what the hosts offer…
+					</p>
+				) : shapesRead === "failed" ? (
+					<Notice
+						level="error"
+						action={
+							<Button size="sm" onClick={readShapesNow}>
+								Try again
+							</Button>
+						}
+					>
+						Kantel couldn't read what the hosts offer, so a size can't be chosen yet.
+					</Notice>
+				) : (
+					<ShapeFields
+						kind={kind}
+						shapes={shapes}
+						hosting={hosting}
+						shape={shape}
+						onVcpus={(next) => {
+							setVcpus(next);
+							setMemoryMb((current) => fitMemory(shapes, next, current));
+						}}
+						onMemory={(next) => (kind === "isolate" ? setIsolateMb(next) : setMemoryMb(next))}
+						onPreset={(next) => {
+							setVcpus(next.vcpus);
+							setMemoryMb(next.memoryMb);
+						}}
 					/>
-				) : null}
+				)}
 				{envs.length === 0 ? null : (
 					<SelectField
 						label="Environment"

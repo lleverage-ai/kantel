@@ -8,7 +8,7 @@ import { createTunnelTickets } from "@kantel/hosts/tunnel";
 import { createAuthenticator } from "@kantel/identity/authenticator";
 import { MemoryInviteMailer } from "@kantel/identity/invites";
 import { hashSessionToken, kantelSessionProvider } from "@kantel/identity/otp";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { bootstrap, createGatewayComponents } from "../../src/gateway/components.ts";
 import {
 	computeConfig,
@@ -153,6 +153,21 @@ describe("the compute plane on the gateway", () => {
 		expect(await ann.joinOrganisation({ code })).toMatchObject({ id: org.id, role: "member" });
 	});
 
+	it("names people in the compute plane as identity has them, never by their user ID", async () => {
+		const { client, person } = await serve(true);
+		const tom = client(await person("tom", "admin"));
+		const ann = client(await person("ann", "operator"));
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const invite = await tom.createInvite(org.id, { email: "ann@kantel.example.com", role: "member" });
+		await ann.joinOrganisation({ code: invite.code ?? "" });
+
+		const members = await tom.listMembers(org.id);
+		expect(members.items.map((member) => member.name).sort()).toEqual(["ann", "tom"]);
+		expect((await tom.getCaller()).user?.name).toBe("tom");
+		const sandbox = await ann.createSandbox({ account: org.id, wait: true });
+		expect(sandbox.createdBy).toMatchObject({ kind: "user", name: "ann" });
+	});
+
 	it("emails an organisation's invite with the deployment's mailer, linking to the console at its public URL", async () => {
 		const mailer = new MemoryInviteMailer();
 		const { client, person } = await serve(true, undefined, mailer);
@@ -202,15 +217,20 @@ describe("the compute plane on the gateway", () => {
 		);
 		expect(() => computeConfig({ KANTEL_COMPUTE_BACKEND: "hosts" })).toThrow(/KANTEL_PUBLIC_URL/);
 		expect(() => computeConfig({ KANTEL_COMPUTE_BACKEND: "cloud" })).toThrow();
-		expect(
-			computeConfig({
-				KANTEL_COMPUTE_BACKEND: "hosts",
-				KANTEL_PUBLIC_URL: "https://kantel.example.com/",
-				KANTEL_COMPUTE_POOLS: '{"microvm/default": 2}',
-			}),
-		).toEqual({
-			hosts: { publicUrl: "https://kantel.example.com", images: DEFAULT_HOST_IMAGES, pools: { "microvm/default": 2 } },
-		});
+		// Warm pools are gone: an install that still sets KANTEL_COMPUTE_POOLS starts, with a warning, and keeps none.
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			expect(
+				computeConfig({
+					KANTEL_COMPUTE_BACKEND: "hosts",
+					KANTEL_PUBLIC_URL: "https://kantel.example.com/",
+					KANTEL_COMPUTE_POOLS: '{"microvm/default": 2}',
+				}),
+			).toEqual({ hosts: { publicUrl: "https://kantel.example.com", images: DEFAULT_HOST_IMAGES } });
+			expect(warn).toHaveBeenCalledWith(expect.stringMatching(/KANTEL_COMPUTE_POOLS is ignored/));
+		} finally {
+			warn.mockRestore();
+		}
 	});
 
 	it("asks hosts to update only for KANTEL_HOST_VERSION, from its GitHub Release by default", () => {

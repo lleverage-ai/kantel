@@ -92,6 +92,14 @@ func TestInjectedAgent(t *testing.T) {
 			defer m.Close()
 			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 			defer cancel()
+			// A custom shape first, on a host with no template yet: its own cold boot asks the image what it has.
+			customID := fmt.Sprintf("sbx_injectc%d", i)
+			custom, err := m.Create(ctx, proto.CreateParams{SandboxID: customID, Tier: Tier, VCPUs: 1, MemoryMiB: 1024, DiskGiB: 4, Egress: &proto.Egress{Mode: network.EgressNone}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkReport(t, custom.Guest, want)
+			_ = m.Delete(context.Background(), customID)
 			id := fmt.Sprintf("sbx_inject%d", i)
 			began := time.Now()
 			info, err := m.Create(ctx, proto.CreateParams{SandboxID: id, Tier: Tier, Size: "default", Egress: &proto.Egress{Mode: network.EgressNone}})

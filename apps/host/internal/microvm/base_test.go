@@ -46,12 +46,11 @@ func TestBaseOfIsTheVersionItsRootfsLinks(t *testing.T) {
 	}
 }
 
-// What the tier's sandboxes, warm sandboxes, snapshots and templates are on is kept from a prune.
+// What the tier's sandboxes, snapshots and templates are on is kept from a prune.
 func TestBasesInUse(t *testing.T) {
 	root := t.TempDir()
 	images := "/var/lib/kantel-host/images/v/"
 	linkVM(t, filepath.Join(root, "sandboxes", "sbx_1", "vm"), images+"one/sandbox.ext4")
-	linkVM(t, filepath.Join(root, "pool", "default-1", "vm"), images+"two/sandbox.ext4")
 	linkVM(t, filepath.Join(root, "templates", "default.next.building", "vm"), images+"five/sandbox.ext4")
 	if err := os.MkdirAll(filepath.Join(root, "snapshots", "snap_1"), 0o700); err != nil {
 		t.Fatal(err)
@@ -75,12 +74,12 @@ func TestBasesInUse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, v := range []string{"one", "two", "three", "four", "five"} {
+	for _, v := range []string{"one", "three", "four", "five"} {
 		if !got[v] {
 			t.Errorf("%s isn't in use: %v", v, got)
 		}
 	}
-	if len(got) != 5 {
+	if len(got) != 4 {
 		t.Errorf("in use: %v", got)
 	}
 }
@@ -258,7 +257,6 @@ func TestAStaleTemplateIsUsedWhileOneRebuildRuns(t *testing.T) {
 		cfg:       Config{Root: root, BackgroundTemplates: true, Sizes: []proto.Size{size}},
 		log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		templates: map[string]*sync.Mutex{"default": &sync.Mutex{}},
-		pool:      map[string][]*warm{}, poolWant: map[string]int{}, filling: map[string]bool{},
 		rebuild: func(_ context.Context, s proto.Size) error {
 			started <- s
 			<-release

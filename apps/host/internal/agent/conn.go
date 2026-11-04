@@ -217,9 +217,6 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 }
 
 func (h *Host) applyWelcome(ctx context.Context, w *proto.Welcome, update Updater) {
-	if w.Pools != nil {
-		h.SetPools(w.Pools)
-	}
 	// Before the binary's update, which returns early for an E2E host; followImages has the same rule.
 	h.followImages(ctx, w.Images)
 	if update != nil && h.cfg.autoUpdate() && w.DesiredVersion != "" && w.DesiredVersion != h.version && w.UpdateURL != "" {

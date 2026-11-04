@@ -13,6 +13,15 @@
 import type { computeSchema } from "@kantel/api";
 import type { BackendUsageReport } from "./usage-series.ts";
 
+/** A sandbox's vCPUs (0 for an isolate, which shares its account's VM's CPU) and memory, as asked for. */
+export interface BackendShape {
+	readonly vcpus: number;
+	readonly memoryMb: number;
+}
+
+/** A host feature: it makes microVMs of any shape, not only its named sizes (`@kantel/hosts`'s `custom-shapes`). */
+export const CUSTOM_SHAPES_FEATURE = "custom-shapes";
+
 /** A size a deployment offers for microVMs, and the resources it stands for. */
 export interface BackendSize {
 	readonly name: computeSchema.SandboxSizeName;
@@ -37,6 +46,8 @@ export interface BackendHost {
 	 */
 	readonly features?: readonly string[];
 	readonly capacity: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number };
+	/** Its named microVM sizes (the presets). Absent: the deployment's `sizes`. */
+	readonly sizes?: readonly BackendSize[];
 	readonly labels: { readonly [key: string]: string };
 	/** Whether it is connected now; absent, it always is (the stub). A host that isn't is `unreachable`. */
 	readonly connected?: boolean;
@@ -61,6 +72,11 @@ export interface SandboxSpec {
 	/** Its name under the sandbox domain, which its port URLs start with. */
 	readonly subdomain: string;
 	readonly size?: computeSchema.SandboxSizeName;
+	/**
+	 * What it asked for: a microVM's vCPUs and memory (`size` is then the preset it matches, if any), or an isolate's
+	 * memory (`vcpus` 0). Absent: `size`, or the default.
+	 */
+	readonly shape?: BackendShape;
 	readonly image?: string;
 	/** Environment variables every command sees. */
 	readonly env: { readonly [name: string]: string };
@@ -132,6 +148,11 @@ export interface BootOptions {
 	/** The disk to boot from: the sandbox's newest snapshot. Absent, an empty disk. */
 	readonly fromSnapshot?: string;
 	readonly size?: computeSchema.SandboxSizeName;
+	/**
+	 * A microVM's vCPUs and memory as it now is: kept on a restart, absent once a restart names another size (then it is
+	 * that size). A backend that can change a stopped machine's shape boots it as this.
+	 */
+	readonly shape?: BackendShape;
 	readonly env: { readonly [name: string]: string };
 	readonly eligibleHosts: readonly string[];
 	readonly egress?: BackendEgress;

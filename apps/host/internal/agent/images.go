@@ -70,8 +70,8 @@ type imageTier interface {
 	// BasesInUse are the versions its sandboxes, snapshots and templates are on; an error when a reference couldn't be
 	// read, so the answer may be missing one.
 	BasesInUse() (map[string]bool, error)
-	// LockBases holds off every new or moving reference to a version (a create, a template swap, a warm sandbox's move,
-	// a snapshot's save) until unlock: a prune holds it from BasesInUse until its removals are done.
+	// LockBases holds off every new or moving reference to a version (a create, a template swap, a snapshot's save, a
+	// rebase) until unlock: a prune holds it from BasesInUse until its removals are done.
 	LockBases() (unlock func())
 	// ImagesChanged says a new version is current, so stale templates start rebuilding.
 	ImagesChanged()

@@ -24,8 +24,8 @@ import (
 // filesystem of one version, whatever is current.
 //
 // The base lock (Manager.bases) keeps a prune of old versions from missing a reference in flight: every step that
-// reads a reference to a version and writes another (a create linking its template's or snapshot's base, a warm
-// sandbox's move into sandboxes/, a template's build and swap, a snapshot's save, a rebase) holds it to read, and a
+// reads a reference to a version and writes another (a create linking its template's or snapshot's base, a
+// template's build and swap, a snapshot's save, a rebase) holds it to read, and a
 // prune holds it to write from its walk of what is in use (BasesInUse) until it has removed what wasn't (LockBases).
 // Each is held only for those few file operations, never across a boot or a copy, so a waiting prune doesn't hold up
 // creates for long.
@@ -221,7 +221,7 @@ func (m *Manager) scanSnapshots() ([]snapshotMeta, error) {
 	return out, errors.Join(errs...)
 }
 
-// BasesInUse are the image versions the tier's sandboxes, warm sandboxes, snapshots and templates are on: what a
+// BasesInUse are the image versions the tier's sandboxes, snapshots and templates are on: what a
 // prune of old versions must keep. A reference it couldn't read is an error, and the caller keeps every version: a
 // partial answer would let a prune remove a version something still boots on.
 func (m *Manager) BasesInUse() (map[string]bool, error) {
@@ -239,12 +239,9 @@ func (m *Manager) BasesInUse() (map[string]bool, error) {
 		}
 		add(target)
 	}
-	// The pool before the sandboxes: a claim moves a warm sandbox from one to the other, so it is seen in either.
-	for _, pattern := range []string{filepath.Join(m.cfg.Root, "pool", "*", "vm"), filepath.Join(m.cfg.Root, "sandboxes", "*", "vm")} {
-		vms, _ := filepath.Glob(pattern)
-		for _, vm := range vms {
-			addVM(vm)
-		}
+	vms, _ := filepath.Glob(filepath.Join(m.cfg.Root, "sandboxes", "*", "vm"))
+	for _, vm := range vms {
+		addVM(vm)
 	}
 	snaps, err := m.scanSnapshots()
 	if err != nil {
@@ -405,7 +402,7 @@ func (m *Manager) useTemplate(size string) func() {
 }
 
 // ImagesChanged is called when the host's images move to another version: each size whose template was made on
-// others starts rebuilding in the background, and its warm pool is replaced once the new one is ready. Without
+// others starts rebuilding in the background. Without
 // BackgroundTemplates the next create rebuilds it, as before.
 func (m *Manager) ImagesChanged() {
 	if !m.cfg.BackgroundTemplates {
@@ -454,7 +451,6 @@ func (m *Manager) rebuildTemplate(size proto.Size) {
 			return
 		}
 		done()
-		m.renewPool(size.Name)
 	}()
 }
 
@@ -488,18 +484,4 @@ func (m *Manager) swapTemplate(ctx context.Context, size proto.Size) error {
 	_ = os.RemoveAll(old)
 	m.log.Info("template rebuilt on the current images", "size", size.Name)
 	return nil
-}
-
-// renewPool replaces a size's warm sandboxes, which were restored from the template just replaced.
-func (m *Manager) renewPool(sizeName string) {
-	m.mu.Lock()
-	stale := m.pool[sizeName]
-	delete(m.pool, sizeName)
-	m.mu.Unlock()
-	for _, w := range stale {
-		w.machine.Kill()
-		m.cfg.Network.Remove(w.link)
-		_ = os.RemoveAll(w.dir)
-	}
-	m.fill(sizeName)
 }
