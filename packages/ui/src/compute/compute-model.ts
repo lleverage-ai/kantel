@@ -866,13 +866,34 @@ export type E2EMode = "off" | "on" | "strict";
 /**
  * What end-to-end encryption means for the console's pages. `local`: `kantel console` serves it from the CLI's own
  * files, and its sandboxes' commands, files and history go to their host over sessions with the CLI's device key.
- * `gateway`: the gateway serves it, so in an end-to-end encrypted account it shows none of that.
+ * `gateway`: the gateway serves it, so in an end-to-end encrypted account it shows none of that unless this browser
+ * is a device in the account's chain (`browser`).
  */
 export interface E2ESource {
 	readonly served: "local" | "gateway";
 	/** This device's label in the chain, when local. */
 	readonly device?: string;
 	mode(accountId: string): Promise<E2EMode>;
+	/** This browser as a device of its own (a `web` device in the chain), when the gateway serves the console. */
+	readonly browser?: BrowserDeviceSource;
+}
+
+/**
+ * Where this browser stands in an account's chain. `unpinned`: it trusts no chain there yet, so it needs the genesis an
+ * admin gives out of band. `pending`: it trusts the chain but isn't in it; an admin adds it with `command` after
+ * checking `fingerprint` with its person. `ready`: it is in, as `label`. `refused`: it can't be (the space is strict,
+ * its person isn't a member, or the gateway's chain goes back on one it verified), for `reason`.
+ */
+export type BrowserStanding =
+	| { readonly kind: "unpinned" }
+	| { readonly kind: "pending"; readonly command: string; readonly fingerprint: string }
+	| { readonly kind: "ready"; readonly label: string }
+	| { readonly kind: "refused"; readonly reason: string };
+
+export interface BrowserDeviceSource {
+	standing(accountId: string): Promise<BrowserStanding>;
+	/** Trusts the chain from `genesis` (what `kantel e2e status` prints), making this browser's keys if it has none. */
+	trust(accountId: string, genesis: string): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

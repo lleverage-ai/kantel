@@ -12,7 +12,7 @@ import { chmod, link, mkdir, open, readdir, readFile, rename, rm, stat, writeFil
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { KantelApiError, type KantelClient } from "@kantel/api/sdk";
-import { fromBase64url, fromUtf8, toBase64url, utf8 } from "@kantel/e2e/bytes";
+import { fromBase64url, toBase64url, utf8 } from "@kantel/e2e/bytes";
 import {
 	type ChainDevice,
 	type ChainEntry,
@@ -26,6 +26,7 @@ import {
 	signEntry,
 	verifyChain,
 } from "@kantel/e2e/chain";
+import { parseCard, webSocketChannel } from "@kantel/e2e/device";
 import { fingerprint, type Identity, identityFromSeeds, type KeySeeds, keyId, randomSeed } from "@kantel/e2e/keys";
 import { type ByteChannel, type OpenedSession, openSession, type SessionOp } from "@kantel/e2e/session";
 
@@ -267,28 +268,8 @@ export async function deviceCard(device: Device, user: string, deviceClass: Devi
 	return toBase64url(utf8(JSON.stringify(await chainDevice(device.identity, user, deviceClass, device.label))));
 }
 
-export async function parseCard(word: string): Promise<ChainDevice> {
-	let value: Partial<ChainDevice>;
-	try {
-		value = JSON.parse(fromUtf8(fromBase64url(word.trim()))) as Partial<ChainDevice>;
-	} catch {
-		throw new Error("That isn't a device card: ask for what `kantel e2e device` prints");
-	}
-	const { id, user, sign, dh, label } = value;
-	const deviceClass = value.class;
-	if (
-		typeof id !== "string" ||
-		typeof user !== "string" ||
-		typeof sign !== "string" ||
-		typeof dh !== "string" ||
-		typeof label !== "string" ||
-		(deviceClass !== "cli" && deviceClass !== "web" && deviceClass !== "machine")
-	) {
-		throw new Error("That device card is missing a field");
-	}
-	if (id !== (await keyId("kd", fromBase64url(sign)))) throw new Error("The card's device ID isn't its key's");
-	return { id, user, sign, dh, class: deviceClass, label };
-}
+/** A device card (this CLI's, or the hosted console's for a browser) as the chain will list it. */
+export { parseCard };
 
 export async function cardFingerprint(device: ChainDevice): Promise<string> {
 	return fingerprint(fromBase64url(device.sign), fromBase64url(device.dh));
@@ -525,42 +506,8 @@ export async function hostTicket(device: Device, chain: VerifiedChain, name: str
 	return encodeJoinTicket(join);
 }
 
-/** A WebSocket as a session's channel: the relay's binary frames, which needn't line up with records. */
-export function webSocketChannel(url: string): Promise<ByteChannel> {
-	return new Promise((resolveChannel, reject) => {
-		const socket = new WebSocket(url);
-		socket.binaryType = "arraybuffer";
-		let listener: ((bytes: Uint8Array) => void) | undefined;
-		const pending: Uint8Array[] = [];
-		const closeListeners: ((reason: string) => void)[] = [];
-		let opened = false;
-		socket.onopen = () => {
-			opened = true;
-			resolveChannel({
-				send: (bytes) => socket.send(bytes),
-				onData: (next) => {
-					listener = next;
-					for (const bytes of pending.splice(0)) next(bytes);
-				},
-				onClose: (next) => closeListeners.push(next),
-				close: () => socket.close(1000, "closed by the device"),
-			});
-		};
-		socket.onmessage = (event) => {
-			const data = event.data;
-			const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : utf8(String(data));
-			if (listener === undefined) pending.push(bytes);
-			else listener(bytes);
-		};
-		socket.onerror = () => {
-			if (!opened) reject(new Error("Couldn't reach the host through the relay"));
-		};
-		socket.onclose = (event) => {
-			if (!opened) reject(new Error(`The relay refused the session: ${event.reason || `code ${event.code}`}`));
-			for (const close of closeListeners) close(event.reason || `code ${event.code}`);
-		};
-	});
-}
+/** A WebSocket as a session's channel, shared with the hosted console's browser device. */
+export { webSocketChannel };
 
 export interface OpenedE2E extends OpenedSession {
 	readonly space: string;

@@ -25,7 +25,7 @@
  * After every entry at least one admin must still have a device, so the chain can always move on.
  */
 import { concat, equalBytes, fromBase64url, fromUtf8, sha256, toBase64url, utf8 } from "./bytes.ts";
-import { type Identity, KEY_BYTES, keyId, randomSeed, type Signer, signerFromSeed, verifySignature } from "./keys.ts";
+import { type DeviceKeys, KEY_BYTES, keyId, randomSeed, type Signer, signerFromSeed, verifySignature } from "./keys.ts";
 
 export const CHAIN_VERSION = 1;
 
@@ -610,9 +610,9 @@ export async function signEntry(
 	};
 }
 
-/** A device as the chain lists it, from its identity. */
+/** A device as the chain lists it, from its keys. */
 export async function chainDevice(
-	identity: Identity,
+	identity: DeviceKeys,
 	user: string,
 	deviceClass: DeviceClass,
 	label: string,
@@ -687,7 +687,7 @@ export function ticketFor(join: HostJoinTicket): { space: string; genesis: strin
 export async function signHostEntry(
 	state: SpaceState,
 	join: HostJoinTicket,
-	host: { readonly id: string; readonly identity: Identity },
+	host: { readonly id: string; readonly identity: DeviceKeys },
 	at: number,
 ): Promise<ChainEntry> {
 	const { payload } = parseTicket(join.ticket);

@@ -16,6 +16,7 @@
 	"dependencies": {
 		"@kantel/api": "workspace:*",
 		"@kantel/contracts": "workspace:*",
+		"@kantel/e2e": "workspace:*",
 		"@kantel/identity": "workspace:*",
 		"@kantel/ui": "workspace:*",
 		"react": "19.3.1",

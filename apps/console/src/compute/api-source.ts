@@ -70,6 +70,7 @@ import type {
 	EnvironmentVariable as UiVariable,
 	WebhooksSource,
 } from "@kantel/ui";
+import { type BrowserDevice, type BrowserDeviceOptions, browserDevice } from "./browser-device.ts";
 import type { HostCommand, HostCommandPage, LocalBridge } from "./local.ts";
 
 // `@kantel/ui` exports the sources but not every record they carry, so the records are read off the sources' methods.
@@ -107,6 +108,8 @@ export interface ComputeApiOptions {
 	readonly hosting?: HostingMode;
 	/** `kantel console`'s bridge, when it serves this page (local.ts). */
 	readonly local?: LocalBridge;
+	/** Where this browser keeps its device keys when the gateway serves the page (default IndexedDB), for tests. */
+	readonly browser?: Omit<BrowserDeviceOptions, "gateway" | "user">;
 }
 
 /** What every source shares: the client, how the console runs, and the domain sandbox addresses are under. */
@@ -126,6 +129,8 @@ interface Context {
 	/** Sandboxes' accounts by ID, as last read: which one's chain decides where its commands are read from. */
 	readonly sandboxAccounts: Map<string, string>;
 	readonly local?: LocalBridge;
+	/** This browser as a device of its own, when the gateway serves the page to a person (browser-device.ts). */
+	readonly browser?: BrowserDevice;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -407,8 +412,9 @@ function sandboxesSource(context: Context): SandboxesSource {
 			return { ssh: ssh.command, desktopUrl: desktop.url, desktopViewUrl: watch.url, browserUrl: browser.url };
 		},
 		history: async (id) => {
-			// End to end, the host keeps the history and the gateway has none of it: `kantel console` reads it there.
-			const { local } = context;
+			// End to end, the host keeps the history and the gateway has none of it: `kantel console` reads it there, or
+			// this browser does over its own session once it is a device in the chain.
+			const { local, browser } = context;
 			const account = context.sandboxAccounts.get(id);
 			if (local !== undefined && account !== undefined && local.mode(account) !== "off") {
 				// Every page the host keeps, by its cursor; the list shows no output, so none is carried.
@@ -424,6 +430,10 @@ function sandboxesSource(context: Context): SandboxesSource {
 					};
 				});
 				return commands.map(hostCommandOf);
+			}
+			if (browser !== undefined && account !== undefined && (await chainMode(context, account)) !== "off") {
+				const page = await browser.call<HostCommandPage>(id, "sandbox.history", { limit: 100 });
+				return page.items.map(hostCommandOf);
 			}
 			return (await allPages((cursor) => api.listCommands(id, after(cursor)))).map(commandOf);
 		},
@@ -1254,6 +1264,17 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 	// a browser, as in tests, "localhost".
 	let learned: string | undefined;
 	const fallback = pageHost() ?? "localhost";
+	const { local } = options;
+	// Only a person has a device of their own here; `kantel console` uses the CLI's instead.
+	const person = caller.user?.id;
+	const browser =
+		local === undefined && person !== undefined
+			? browserDevice({
+					...options.browser,
+					gateway: { openE2E: (id) => api.openE2E(id, {}), getE2EChain: (space) => api.getE2EChain(space) },
+					user: async () => person,
+				})
+			: undefined;
 	const context: Context = {
 		api,
 		hosting: options.hosting ?? "self-hosted",
@@ -1264,9 +1285,9 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		caller,
 		environmentNames: new Map(),
 		sandboxAccounts: new Map(),
-		...(options.local === undefined ? {} : { local: options.local }),
+		...(local === undefined ? {} : { local }),
+		...(browser === undefined ? {} : { browser }),
 	};
-	const { local } = options;
 
 	return {
 		hosting: context.hosting,
@@ -1291,7 +1312,11 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		...(caller.apiKey === undefined ? { devices: devicesSource(context) } : {}),
 		e2e:
 			local === undefined
-				? { served: "gateway", mode: (accountId) => chainMode(context, accountId) }
+				? {
+						served: "gateway",
+						mode: (accountId) => chainMode(context, accountId),
+						...(browser === undefined ? {} : { browser }),
+					}
 				: {
 						served: "local",
 						...(local.info.device === undefined ? {} : { device: local.info.device.label }),
