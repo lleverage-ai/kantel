@@ -17,6 +17,7 @@ import {
 	type HostEgressRecord,
 	type HostFacts,
 	type HostHello,
+	type HostImageChannel,
 	HostMethods,
 	type HostSandbox,
 	type HostSecrets,
@@ -132,6 +133,12 @@ export interface HostComputeLink {
 			entries: readonly E2EChainEntry[],
 		): Promise<readonly E2EChainEntry[]>;
 	};
+	/**
+	 * The host images Kantel wants hosts on, for their welcome (image patching, experimental): from the base image index's
+	 * `host` entry, its `stable` version. Absent (the feature off), or undefined (no such version), the welcome has none
+	 * and hosts keep the images they have. A failure is logged and the welcome goes without, so a host still connects.
+	 */
+	images?(): Promise<HostImageChannel | undefined>;
 }
 
 /** A chain entry as the gateway passes it on: opaque to it, verified by hosts and devices (`@kantel/e2e`). */
@@ -324,14 +331,24 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		void work.catch((error) => log(`[hosts] ${error instanceof Error ? error.message : String(error)}`));
 	};
 
-	const welcomeFor = (host: HostRecord): HostWelcome => ({
-		hostId: host.id,
-		heartbeatSeconds: options.heartbeatSeconds ?? 15,
-		pools: host.draining ? {} : pools,
-		...(host.draining ? { draining: true } : {}),
-		...(options.desiredVersion === undefined ? {} : { desiredVersion: options.desiredVersion }),
-		...(options.updateUrl === undefined ? {} : { updateUrl: options.updateUrl }),
-	});
+	const welcomeFor = async (host: HostRecord): Promise<HostWelcome> => {
+		const images =
+			compute?.images === undefined
+				? undefined
+				: await compute.images().catch((error) => {
+						log(`[hosts] no images in host ${host.id}'s welcome: ${error instanceof Error ? error.message : String(error)}`);
+						return undefined;
+					});
+		return {
+			hostId: host.id,
+			heartbeatSeconds: options.heartbeatSeconds ?? 15,
+			pools: host.draining ? {} : pools,
+			...(host.draining ? { draining: true } : {}),
+			...(options.desiredVersion === undefined ? {} : { desiredVersion: options.desiredVersion }),
+			...(options.updateUrl === undefined ? {} : { updateUrl: options.updateUrl }),
+			...(images === undefined ? {} : { images }),
+		};
+	};
 
 	const hello = async (hostId: string, message: HostHello): Promise<HostWelcome> => {
 		const host = await store.getHost(hostId);
@@ -641,7 +658,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				...(change.draining === undefined ? {} : { draining: change.draining === true }),
 			};
 			await store.putHost(next);
-			if (change.draining !== undefined && change.draining !== host.draining) hub.rewelcome(hostId, welcomeFor(next));
+			if (change.draining !== undefined && change.draining !== host.draining) {
+				hub.rewelcome(hostId, await welcomeFor(next));
+			}
 			return view(next);
 		},
 		async revoke(hostId) {

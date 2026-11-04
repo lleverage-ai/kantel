@@ -29,6 +29,7 @@ import {
 	type SnapshotReason,
 	type SnapshotsSource,
 } from "./compute-model.ts";
+import { BaseOutdatedBadge } from "./base-outdated.tsx";
 import { cellSub, computePage, messageOf, rowHover, TableFrame, table, tableFrame, td, th } from "./parts.tsx";
 import { type FilesAt, filesRoot, SnapshotFiles } from "./snapshot-files.tsx";
 
@@ -366,6 +367,11 @@ function SavedList({
 								<tr key={entry.id} className={rowHover} data-snapshot={entry.id}>
 									<td className={td}>
 										<span className="block max-w-(--kt-card-width) truncate font-medium text-fg">{entry.name}</span>
+										{entry.base?.outdated === true ? (
+											<span className="mt-1 flex">
+												<BaseOutdatedBadge base={entry.base} now={now} subject="snapshot" />
+											</span>
+										) : null}
 									</td>
 									<td className={td}>
 										<span className="text-fg">{entry.sandboxName}</span>

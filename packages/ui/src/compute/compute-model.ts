@@ -154,6 +154,114 @@ export interface Sandbox {
 	readonly forkedFrom?: string;
 	/** The environment it was made from. */
 	readonly environment?: { readonly id: string; readonly name: string };
+	/**
+	 * The base image it runs on, and how far that is behind the latest on its channel. Kantel never patches a running
+	 * sandbox: it moves to the latest base when it restarts on it. Absent where Kantel doesn't say (an isolate).
+	 */
+	readonly base?: SandboxBase;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Base images
+
+/** A sandbox's, a saved snapshot's or a template's base image, against the latest version on its channel. */
+export interface SandboxBase {
+	/** The image's name: `sandbox`, `browser`. */
+	readonly image: string;
+	/** The version it is on, where Kantel knows it: `2026.11.03.811`. */
+	readonly version?: string;
+	/** A newer version is on its channel. */
+	readonly outdated: boolean;
+	/** The latest version on its channel, and when it was built. */
+	readonly latest?: { readonly version: string; readonly builtAt: number };
+	/** How far behind the latest it is, when outdated. */
+	readonly behind?: { readonly days: number; readonly versions: number };
+	/** The newer versions carry security fixes. */
+	readonly security?: boolean;
+}
+
+/** How bad a vulnerability a scan found is. */
+export type ImageSeverity = "critical" | "high" | "medium" | "low" | "unknown";
+
+/** One vulnerability a scan found in a base image's package. */
+export interface ImageFinding {
+	/** `CVE-2026-31789`, or the scanner's own ID. */
+	readonly id: string;
+	readonly severity: ImageSeverity;
+	readonly package: string;
+	/** The version in the image. */
+	readonly installed: string;
+	/** The version that fixes it; absent while there is no fix. */
+	readonly fixed?: string;
+	readonly title?: string;
+}
+
+/** What a vulnerability scan of one version of a base image found. */
+export interface ImageScan {
+	/** The scanner and its version: `trivy 0.67.2`. */
+	readonly scanner: string;
+	readonly scannedAt: number;
+	readonly counts: Readonly<Record<ImageSeverity, number>>;
+	/** Critical and high findings with a fix out: what makes Kantel rebuild the image. */
+	readonly fixable: { readonly critical: number; readonly high: number };
+	readonly findings: readonly ImageFinding[];
+}
+
+/** Why a version was built: the daily rebuild, a fixable vulnerability, by hand, or a change pushed to its recipe. */
+export type ImageBuildReason = "daily" | "cve" | "manual" | "push";
+
+export interface BaseImageVersion {
+	readonly version: string;
+	/** Its content digest: `sha256:` and 64 hex digits. */
+	readonly digest: string;
+	readonly builtAt: number;
+	/** Its signature checks out. */
+	readonly signed: boolean;
+	readonly reason?: ImageBuildReason;
+	/** Its latest scan; absent before the first. */
+	readonly scan?: ImageScan;
+}
+
+/** A base image Kantel builds sandboxes from, and its versions on the stable channel. */
+export interface BaseImage {
+	readonly name: string;
+	/** Where it's published: `ghcr.io/lleverage-ai/kantel-sandbox`. */
+	readonly repository: string;
+	readonly channel: "stable";
+	readonly latest?: BaseImageVersion;
+	/** Newest first. */
+	readonly versions: readonly BaseImageVersion[];
+}
+
+/** A template, a base image with a setup on top, and how far its base is behind. */
+export interface TemplateBase {
+	readonly id: string;
+	readonly name: string;
+	/** The base image it's built on. */
+	readonly image: string;
+	/** The channel it follows, when it follows one. */
+	readonly channel?: string;
+	/** The digest it's pinned to, when it's pinned rather than following a channel. */
+	readonly pinned?: string;
+	readonly base: SandboxBase;
+	/** Kantel is building it again on the latest base now. */
+	readonly rebuilding: boolean;
+}
+
+/** The deployment's base images and templates, as its image index says. */
+export interface BaseImagesOverview {
+	readonly images: readonly BaseImage[];
+	readonly templates: readonly TemplateBase[];
+	/** Where the image index is. */
+	readonly indexUrl: string;
+	/** When the index was made. */
+	readonly generatedAt?: number;
+	/** Why Kantel couldn't read the index, in words; what it has may then be old or empty. */
+	readonly error?: string;
+}
+
+export interface BaseImagesSource {
+	overview(): Promise<BaseImagesOverview>;
 }
 
 export interface CreateSandboxInput {
@@ -325,6 +433,11 @@ export interface SandboxesSource {
 	fork(id: string): Promise<Sandbox>;
 	/** Restarts a sandbox's machine that doesn't answer; the disk is kept. */
 	recover(id: string): Promise<Sandbox>;
+	/**
+	 * Restarts a sandbox on the latest version of its base image: Kantel saves its disk, stops it and starts it again,
+	 * so running processes and memory are lost and its files stay. Absent: the console doesn't offer it.
+	 */
+	restartOnLatest?(id: string): Promise<Sandbox>;
 	/** Deletes the sandbox and every snapshot of it, for good. */
 	remove(id: string): Promise<void>;
 	access(id: string): Promise<SandboxAccess>;
@@ -397,6 +510,11 @@ export interface SavedSnapshot {
 	readonly sizeBytes: number;
 	/** Sandboxes started from it. */
 	readonly uses: number;
+	/**
+	 * The base image it was saved on. Sandboxes started from an outdated one start on the old base; a snapshot saved
+	 * from a sandbox restarted on the latest refreshes it.
+	 */
+	readonly base?: SandboxBase;
 }
 
 /** A file or folder in a snapshot. */
@@ -1076,6 +1194,8 @@ export interface ComputeSource {
 	readonly telemetry: TelemetrySource;
 	/** The deployment's hosts: only for a super-admin. */
 	readonly hosts?: HostsSource;
+	/** The deployment's base images, their scans, and its templates: only for a super-admin. */
+	readonly images?: BaseImagesSource;
 	/**
 	 * An account's own hosts, which run only its sandboxes: for everyone else, where the deployment lets accounts add
 	 * machines of their own (experimental). Absent, it doesn't.

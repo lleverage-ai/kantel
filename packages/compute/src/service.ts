@@ -45,6 +45,8 @@ import type {
 	Placement,
 	SandboxBackend,
 } from "./backend.ts";
+import type { BaseImageIndex, BaseImageVersion } from "./base-images.ts";
+import { type BaseImages, baseImageOf, baseStatus } from "./base-status.ts";
 import { createE2EChains } from "./e2e.ts";
 import { createEphemeralSealer, createSealer, type SealedValue, type Sealer, sealedAt } from "./secrets.ts";
 import type {
@@ -154,6 +156,13 @@ export interface ComputeServiceOptions {
 	 * (`not_supported`), and plain variables still work. Not a key: the service refuses to start.
 	 */
 	readonly secretsKey?: string;
+	/**
+	 * Image patching (experimental): Kantel's base image index (`base-status.ts`), which sandboxes' and snapshots' `base`,
+	 * `restartSandboxOnLatest` and the admin's `listBaseImages` read. Absent, the feature is off: no `base` is answered
+	 * and those routes answer `not_supported`. The gateways set it with `KANTEL_IMAGE_PATCHING=experimental`, and cache
+	 * the index themselves.
+	 */
+	readonly baseImages?: BaseImages;
 }
 
 /** A destination a protected value may go to, as the host's proxy is given it: every list present, empty for any. */
@@ -287,6 +296,26 @@ export const MAX_FILE_BYTES = 1024 * 1024;
 export const MAX_OUTPUT_CHARS = 1024 * 1024;
 /** A command's default time limit. */
 export const DEFAULT_TIMEOUT_MS = 30_000;
+/** How many of each base image's versions the admin list answers, newest first. */
+export const BASE_IMAGE_VERSIONS_LISTED = 10;
+/** The routes whose answers carry a sandbox's or snapshot's `base`, which read the base image index first. */
+const BASE_ROUTES = [
+	"listSandboxes",
+	"createSandbox",
+	"getSandbox",
+	"updateSandbox",
+	"startSandbox",
+	"stopSandbox",
+	"resumeSandbox",
+	"forkSandbox",
+	"recoverSandbox",
+	"restartSandboxOnLatest",
+	"deleteSandbox",
+	"listSnapshots",
+	"takeSnapshot",
+	"saveSnapshot",
+	"getSnapshot",
+] as const satisfies readonly (keyof SignedInComputeRoutes)[];
 /** How long an automatic snapshot is kept. */
 export const AUTOMATIC_SNAPSHOT_TTL_MS = 7 * 24 * 3_600_000;
 /** The usage readings kept per sandbox: a day at one every 5 minutes. */
@@ -850,6 +879,26 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const rates = options.rates ?? PLACEHOLDER_RATES;
 	const limits = options.limits ?? {};
 	const mode = options.mode ?? "selfhosted";
+	/**
+	 * The base image index as last read (image patching on), for the views, which answer synchronously: the routes that
+	 * answer sandboxes or snapshots read it first (`BASE_ROUTES`). One that fails to read keeps the last one read.
+	 */
+	let baseIndex: BaseImageIndex | undefined;
+	const refreshBase = async (): Promise<void> => {
+		if (options.baseImages === undefined) return;
+		baseIndex = (await options.baseImages.index().catch(() => undefined)) ?? baseIndex;
+	};
+	const requireImagePatching = (): BaseImages => {
+		if (options.baseImages === undefined) {
+			throw new KantelError("not_supported", "Image patching is off on this deployment (KANTEL_IMAGE_PATCHING)");
+		}
+		return options.baseImages;
+	};
+	/** How far behind a recorded base is, while image patching is on and the index knows its image. */
+	const baseView = (base: string | undefined): computeSchema.SandboxBase | undefined =>
+		options.baseImages === undefined || baseIndex === undefined || base === undefined
+			? undefined
+			: baseStatus(baseIndex, baseImageOf(base), base, now());
 	// A key that isn't one throws here, so the deployment fails to start rather than on its first protected value.
 	const sealer: Sealer | undefined =
 		options.secretsKey !== undefined
@@ -1094,6 +1143,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				recentCpu: sandbox.samples.slice(-24).map((sample) => sample.cpu),
 			},
 			hostId: principal.superAdmin ? sandbox.hostId : undefined,
+			base: baseView(sandbox.base),
 		};
 	}
 
@@ -1111,6 +1161,34 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		sizeBytes: snapshot.sizeBytes,
 		createdAt: snapshot.createdAt,
 		expiresAt: snapshot.expiresAt,
+		base: baseView(snapshot.base),
+	});
+
+	/** A version of a base image as the admin list answers it: what the index says of it, its commit left out. */
+	const baseVersionView = (version: BaseImageVersion): computeSchema.BaseImageVersion => ({
+		version: version.version,
+		digest: version.digest,
+		builtAt: version.builtAt,
+		signed: version.signed,
+		...(version.reason === undefined ? {} : { reason: version.reason }),
+		...(version.scan === undefined
+			? {}
+			: {
+					scan: {
+						scanner: version.scan.scanner,
+						scannedAt: version.scan.scannedAt,
+						counts: { ...version.scan.counts },
+						fixable: { ...version.scan.fixable },
+						findings: version.scan.findings.map((finding) => ({
+							id: finding.id,
+							severity: finding.severity,
+							package: finding.package,
+							installed: finding.installed,
+							...(finding.fixed === undefined ? {} : { fixed: finding.fixed }),
+							...(finding.title === undefined ? {} : { title: finding.title }),
+						})),
+					},
+				}),
 	});
 
 	const commandView = (command: StoredCommand): computeSchema.Command => ({
@@ -1271,6 +1349,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									hostId: placement.hostId,
 									resources: placement.resources ?? current.resources,
 									capabilities: placement.capabilities,
+									...(placement.base === undefined ? {} : { base: placement.base }),
 								}),
 						stopsAt: at,
 						stopFor: reason,
@@ -1906,6 +1985,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				resources: placement.resources ?? sandbox.resources,
 				capabilities: placement.capabilities,
 				health: "ok",
+				// What its root file system is now (a rebase moves it on); a backend that doesn't say leaves what it was.
+				...(placement.base === undefined ? {} : { base: placement.base }),
 				...(applied === undefined || (sandbox.egressApplied ?? Number.NEGATIVE_INFINITY) >= applied
 					? {}
 					: { egressApplied: applied }),
@@ -2002,6 +2083,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					createdAt: at,
 					expiresAt: at + AUTOMATIC_SNAPSHOT_TTL_MS,
 					ref: taken.ref,
+					...(taken.base === undefined ? {} : { base: taken.base }),
 				};
 				await store.snapshots.put(snapshot);
 				const result = await transition(sandbox.id, "stopping", (current) =>
@@ -3130,6 +3212,77 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return sandboxView(starting, principal);
 		},
 
+		restartSandboxOnLatest: async (principal, { params }) => {
+			requireImagePatching();
+			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
+			let current = await settledFor(principal, sandbox.id);
+			if (
+				current.state !== "running" &&
+				current.state !== "stopped" &&
+				current.state !== "paused" &&
+				current.state !== "error"
+			) {
+				throw new KantelError("conflict", `The sandbox is ${current.state}`);
+			}
+			// A running one holds its place already; the hosts are checked before it is stopped, so a sandbox no host can
+			// take now is refused as it is, not left stopped.
+			if (current.state !== "running") await requireCapacity(current.accountId, 1);
+			const hosts = requireHosts(
+				await ensureHosts(),
+				current.accountId,
+				current.type,
+				current.hostLabels,
+				true,
+				await mayShare(principal),
+			);
+			if (current.state === "running") {
+				// Its disk is saved first, as a stop saves it (without its memory, which a new base can't take): the boot below
+				// starts from that snapshot. Waited for, as the boot needs it.
+				const { work } = await beginStop(current, false, undefined, principal);
+				await work;
+				current = await mustGetSandbox(current.id);
+				if (current.state !== "stopped") throw new KantelError("conflict", `The sandbox is ${current.state}`);
+			}
+			const fromSnapshot = await latestRef(current);
+			// A boot's egress is read afresh, so it gets a revision of its own, as a recovery's does. A paused sandbox's memory
+			// is let go: the machine boots cold on the new base.
+			const began = await transition(current.id, current.state, (latest) =>
+				withState(latest, "starting", {
+					ports: [],
+					pausedSnapshotId: undefined,
+					egressRevision: later(latest.egressRevision),
+				}),
+			);
+			if (!("moved" in began)) throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
+			const starting = began.moved;
+			const stopped = current;
+			// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
+			const egress = await egressFor(starting.accountId, starting);
+			keepGoing(
+				track([stopped.id], () =>
+					boot(
+						stopped.id,
+						() =>
+							bootAgain(
+								stopped,
+								{
+									fromSnapshot,
+									env: stopped.env,
+									eligibleHosts: hosts,
+									size: stopped.size,
+									...egress,
+									rebase: true,
+								},
+								(options) => backend.start(stopped.id, options),
+							),
+						undefined,
+						{ egressRevision: starting.egressRevision },
+					),
+				),
+			);
+			return sandboxView(starting, principal);
+		},
+
 		deleteSandbox: async (principal, { params }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:delete");
 			const current = await settledFor(principal, sandbox.id);
@@ -3552,6 +3705,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				createdAt: at,
 				expiresAt: at + AUTOMATIC_SNAPSHOT_TTL_MS,
 				ref: taken.ref,
+				...(taken.base === undefined ? {} : { base: taken.base }),
 			};
 			await store.snapshots.put(snapshot);
 			await patchSandbox(current.id, (latest) => ({ ...latest, latestSnapshotId: snapshot.id }));
@@ -3573,21 +3727,26 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			let ref: string;
 			let sizeBytes: number | undefined;
+			// The base its disk is on, from what it is saved from: kept so a template made from it shows how far behind it is.
+			let base: string | undefined;
 			if (body.snapshotId !== undefined) {
 				const source = await store.snapshots.get(body.snapshotId);
 				if (source === undefined || source.sandboxId !== current.id) throw notFound("snapshot of this sandbox");
 				ref = readyRef(source);
 				sizeBytes = source.sizeBytes;
+				base = source.base;
 			} else if (current.state === "running") {
 				const taken = await backend.takeSnapshot(current.id);
 				ref = taken.ref;
 				sizeBytes = taken.sizeBytes;
+				base = taken.base;
 			} else {
 				const latest =
 					current.latestSnapshotId === undefined ? undefined : await store.snapshots.get(current.latestSnapshotId);
 				if (latest === undefined) throw new KantelError("conflict", "The sandbox has no state to save yet");
 				ref = readyRef(latest);
 				sizeBytes = latest.sizeBytes;
+				base = latest.base;
 			}
 			const snapshot: StoredSnapshot = {
 				id: randomId("snap"),
@@ -3603,6 +3762,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				sizeBytes,
 				createdAt: now(),
 				ref,
+				...(base === undefined ? {} : { base }),
 			};
 			await store.snapshots.put(snapshot);
 			if (existing !== undefined) {
@@ -4251,6 +4411,39 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		revokeHost: async (principal, { params }) => revokeStoredHost(await hostFor(principal, params.hostId)),
 
+		// Base images (image patching, experimental).
+
+		listBaseImages: async (principal) => {
+			const baseImages = requireImagePatching();
+			requireScope(principal, "hosts:admin");
+			let index: BaseImageIndex | undefined;
+			let error: string | undefined;
+			try {
+				index = await baseImages.index();
+			} catch (failure) {
+				error = messageOf(failure);
+			}
+			return {
+				images: (index?.images ?? []).map((image) => {
+					const head = image.channels.stable;
+					const latest = head === undefined ? undefined : image.versions.find((version) => version.digest === head);
+					return {
+						name: image.name,
+						repository: image.repository,
+						channel: "stable" as const,
+						...(latest === undefined ? {} : { latest: baseVersionView(latest) }),
+						// The index keeps them newest first.
+						versions: image.versions.slice(0, BASE_IMAGE_VERSIONS_LISTED).map(baseVersionView),
+					};
+				}),
+				// Templates and their bases come with the templates feature; none until then.
+				templates: [],
+				indexUrl: baseImages.indexUrl,
+				...(index === undefined ? {} : { generatedAt: index.generatedAt }),
+				...(error === undefined ? {} : { error }),
+			};
+		},
+
 		// An account's own hosts.
 
 		createAccountJoinToken: async (principal, { body }, request) => {
@@ -4281,6 +4474,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		removeAccountHost: async (principal, { params }) =>
 			revokeStoredHost((await accountHostFor(principal, params.hostId, "account:admin")).host),
 	};
+
+	// With image patching on, the routes that answer sandboxes or snapshots read the base image index first, so their
+	// views (which answer synchronously) say how far behind each base is. The gateway caches the index; this only asks.
+	if (options.baseImages !== undefined) {
+		const wrapped = handlers as unknown as { [route: string]: (...args: never[]) => Promise<unknown> };
+		for (const route of BASE_ROUTES) {
+			const handler = wrapped[route];
+			if (handler === undefined) continue;
+			wrapped[route] = async (...args) => {
+				await refreshBase();
+				return handler(...args);
+			};
+		}
+	}
 
 	async function idle(): Promise<void> {
 		for (;;) {

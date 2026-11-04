@@ -20,6 +20,13 @@
  *   (`GET /v1/hosts/tunnel/{ticket}`), a desktop's page and stream (`/v1/hosts/desktop/{ticket}/`, `@kantel/hosts/desktop`,
  *   a view-only ticket's messages filtered), a browser's CDP (`/v1/hosts/tunnel/{ticket}/{path}`), and their exposed
  *   ports at `https://{port}-{subdomain}.{portsDomain}`, pages (`src/port-serving.ts`) and WebSockets alike.
+ * - **Image patching** (experimental, `imagePatching`, off by default): `KANTEL_IMAGE_PATCHING=experimental` reads
+ *   the base image index CI publishes, from `KANTEL_BASE_IMAGE_INDEX` (default the `base-images` GitHub Release's
+ *   index.json, `DEFAULT_BASE_IMAGE_INDEX`), at most every 5 minutes, a failure kept for a minute. Sandboxes and saved
+ *   snapshots then say which base they are on and how far behind it is (`base`; the stub reports none), `POST
+ *   /v1/sandboxes/{id}/restart-on-latest` moves one onto the newest, `GET /v1/admin/compute/images` lists the images
+ *   and their CVE scans, and account hosts are told the host images to fetch in their welcome. Off, there is no `base`
+ *   and those routes answer 501 not_supported.
  * - **People:** whoever the stack's authenticator signs in (Cloudflare Access, or an email code on the public origin)
  *   is a compute person under their user ID, and an admin of the deployment's own organisation (the bootstrap's) is the
  *   compute plane's super-admin, as self-hosted. With open sign-up everyone administers a personal space of their own;
@@ -33,12 +40,14 @@
  * Portable: no Cloudflare APIs, so the tests run it in Node over `node:sqlite`.
  */
 import {
+	baseImageIndexReader,
 	type Collection,
 	type ComputeApi,
 	type ComputeStore,
 	createComputeApi,
 	createMemoryStore,
 	createRoutedBackend,
+	hostImageChannel,
 	joinTokenSpender,
 	type PersonIdentity,
 	type SandboxBackend,
@@ -366,6 +375,8 @@ export interface StackComputeOptions {
 	readonly accountHosts?: { readonly publicUrl: string };
 	/** With account hosts on, how often sandboxes past their auto-stop time are stopped. Default `HOST_SWEEP_MS`. */
 	readonly hostSweepMs?: number;
+	/** Image patching (KANTEL_IMAGE_PATCHING=experimental): where the base image index is read. Absent, off. */
+	readonly imagePatching?: { readonly indexUrl: string };
 }
 
 /**
@@ -479,6 +490,15 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 					now,
 				);
 	const deploymentOrganisation = options.adminOrganisationId;
+	// One cached read of the index for the API and the hosts' welcome alike; the object keeps it between requests.
+	const baseImages =
+		options.imagePatching === undefined
+			? undefined
+			: baseImageIndexReader({
+					url: options.imagePatching.indexUrl,
+					...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+					now,
+				});
 	const api = createComputeApi({
 		store,
 		backend:
@@ -503,6 +523,7 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		...(options.fetch === undefined ? {} : { fetch: options.fetch }),
 		// Join commands name the address hosts dial, as tunnel URLs do, not the caller's origin.
 		...(own === undefined ? {} : { accountHosts: true, publicUrl: own.publicUrl }),
+		...(baseImages === undefined ? {} : { baseImages }),
 	});
 	if (own !== undefined) await grantPorts(store, await own.microvms());
 	own?.service.useJoinTokens(joinTokenSpender(store));
@@ -515,6 +536,14 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 			read: (hostId, space) => api.service.hostE2EChain(hostId, space),
 			append: (hostId, space, from, entries) => api.service.appendHostE2EChain(hostId, space, from, entries),
 		},
+		...(baseImages === undefined
+			? {}
+			: {
+					images: async () => {
+						const index = await baseImages.index();
+						return index === undefined ? undefined : hostImageChannel(index);
+					},
+				}),
 	});
 	own?.bind((grantee, sandboxId) => api.service.stillAllowed(grantee, sandboxId));
 	const timers = whileBusy(api, now);

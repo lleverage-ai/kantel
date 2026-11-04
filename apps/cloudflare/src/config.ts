@@ -2,6 +2,7 @@
  * The gateway's configuration, read from the Worker's vars. Nothing here is secret: the Access team domain and AUD tag
  * are what every visitor's token already names, and the admin email only invites someone Access must still let in.
  */
+import { DEFAULT_BASE_IMAGE_INDEX } from "@kantel/compute";
 import { KantelError } from "@kantel/contracts";
 
 export interface GatewayVars {
@@ -28,6 +29,14 @@ export interface GatewayVars {
 	 * the Worker changes.
 	 */
 	readonly KANTEL_ACCOUNT_HOSTS?: string;
+	/**
+	 * Image patching (experimental): `experimental` reads the base image index CI publishes, so sandboxes and saved
+	 * snapshots say how far behind their base is, `restart-on-latest` and the admin's image list are served, and account
+	 * hosts are told the host images to fetch. Unset, empty or `off`: off, and those routes answer not_supported.
+	 */
+	readonly KANTEL_IMAGE_PATCHING?: string;
+	/** With image patching: where the base image index is read, an http(s) URL. Default `DEFAULT_BASE_IMAGE_INDEX`. */
+	readonly KANTEL_BASE_IMAGE_INDEX?: string;
 }
 
 /**
@@ -81,6 +90,8 @@ export interface GatewayConfig {
 	readonly portsDomain?: string;
 	/** Account hosts, when on: where hosts reach this Worker. */
 	readonly accountHosts?: { readonly publicUrl: string };
+	/** Image patching, when on: where the base image index is read. */
+	readonly imagePatching?: { readonly indexUrl: string };
 	/**
 	 * Email-code sign-in and open sign-up on the public origin. Absent unless KANTEL_PUBLIC_URL and KANTEL_SIGN_IN_FROM
 	 * are both set; it then also needs the `SIGN_IN_MAIL` binding to send anything.
@@ -126,6 +137,7 @@ export function gatewayConfig(vars: GatewayVars): GatewayConfig {
 		throw new KantelError("invalid", "KANTEL_PUBLIC_URL can't be the ports domain or a name under it");
 	}
 	const accountHosts = accountHostsConfig(vars);
+	const imagePatching = imagePatchingConfig(vars);
 	// Set either way, the switch says the public origin may be for hosts alone: turning them off keeps it valid.
 	const emailSignIn = emailSignInConfig(vars, trimmed(vars.KANTEL_ACCOUNT_HOSTS) !== "");
 	return {
@@ -135,7 +147,25 @@ export function gatewayConfig(vars: GatewayVars): GatewayConfig {
 		...(adminEmail === "" ? {} : { adminEmail }),
 		...(adminName === "" ? {} : { adminName }),
 		...(accountHosts === undefined ? {} : { accountHosts }),
+		...(imagePatching === undefined ? {} : { imagePatching }),
 	};
+}
+
+/**
+ * KANTEL_IMAGE_PATCHING and KANTEL_BASE_IMAGE_INDEX. Off unless the switch says `experimental`; a typo in either is
+ * refused rather than leaving image patching silently off, as KANTEL_ACCOUNT_HOSTS is.
+ */
+function imagePatchingConfig(vars: GatewayVars): GatewayConfig["imagePatching"] {
+	const value = trimmed(vars.KANTEL_IMAGE_PATCHING).toLowerCase();
+	if (value === "" || value === "off") return undefined;
+	if (value !== "experimental") {
+		throw new KantelError("invalid", "KANTEL_IMAGE_PATCHING must be `experimental` or `off`");
+	}
+	const indexUrl = trimmed(vars.KANTEL_BASE_IMAGE_INDEX) || DEFAULT_BASE_IMAGE_INDEX;
+	if (!/^https?:\/\/\S+$/i.test(indexUrl)) {
+		throw new KantelError("invalid", "KANTEL_BASE_IMAGE_INDEX is an http(s) URL");
+	}
+	return { indexUrl };
 }
 
 /**

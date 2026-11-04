@@ -100,8 +100,17 @@ export const NotEndToEndFiles: Story = () => <Scenario e2e={false} view="files" 
 /** The same on hosted Kantel, with its cost. */
 export const Hosted: Story = () => <Scenario hosting="hosted" />;
 
-/** ⋯ open: Fork, Save snapshot, Auto-stop and Delete. */
+/** ⋯ open: Fork, Save snapshot, Auto-stop, Restart on latest base and Delete. */
 export const Menu: Story = () => <Scenario menuOpen />;
+
+/**
+ * On an outdated base with security fixes waiting: the notice with Restart on latest, and the base in Details. Restart
+ * asks first, then the sandbox starts again on the latest.
+ */
+export const BaseOutdated: Story = () => <Scenario />;
+
+/** A stopped one on an outdated base, with no security fixes waiting: amber. */
+export const BaseOutdatedStopped: Story = () => <Scenario sandboxId="sbx_2q8w5e1rz4" />;
 
 /** Logs: commands and what happened to it, newest first, the failed build open. */
 export const Logs: Story = () => <Scenario view="logs" />;

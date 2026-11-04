@@ -1,5 +1,6 @@
 // Sample data for the compute console's pages: a personal account and two organisations, sandboxes in every state on
-// both tiers, snapshots with a small file tree, keys, a proxy, webhooks, telemetry, three hosts and the hosted plans.
+// both tiers (some on an outdated base image), snapshots with a small file tree, keys, a proxy, webhooks, telemetry,
+// three hosts, the base images with their scans and templates, and the hosted plans.
 // `createComputeFixtures` serves it all from memory as a `ComputeSource`, so stories and the console's sample data can
 // create, stop, resume, fork and delete. Nothing leaves the page.
 
@@ -7,6 +8,9 @@ import { DAY, HOUR, MINUTE } from "../primitives/format.ts";
 import type {
 	ApiKey,
 	ApiScope,
+	BaseImage,
+	BaseImagesOverview,
+	BaseImageVersion,
 	BillingSummary,
 	ComputeAccount,
 	ComputeSource,
@@ -21,12 +25,17 @@ import type {
 	FileRange,
 	Host,
 	HostingMode,
+	ImageBuildReason,
+	ImageFinding,
+	ImageScan,
+	ImageSeverity,
 	OrganisationInvite,
 	OrganisationMember,
 	Plan,
 	ProxySettings,
 	PublicUrl,
 	Sandbox,
+	SandboxBase,
 	SandboxCommand,
 	SandboxEgress,
 	SandboxKind,
@@ -35,6 +44,7 @@ import type {
 	SavedSnapshot,
 	SnapshotEntry,
 	TelemetrySettings,
+	TemplateBase,
 	Webhook,
 	WebhookDelivery,
 } from "./compute-model.ts";
@@ -118,6 +128,28 @@ const sandbox = (
 	};
 };
 
+/** The latest `sandbox` base image on the stable channel: a rebuild for a fixable vulnerability, three hours ago. */
+export const SANDBOX_IMAGE_LATEST = { version: "2026.11.04.812", builtAt: FIXTURE_NOW - 3 * HOUR } as const;
+
+/** The latest `browser` base image: the daily rebuild, nine hours ago. */
+export const BROWSER_IMAGE_LATEST = { version: "2026.11.03.811", builtAt: FIXTURE_NOW - 9 * HOUR } as const;
+
+/** A base on `image` at `version`: the latest, or behind it by `behind`, with security fixes waiting if `security`. */
+const onBase = (
+	image: string,
+	latest: { readonly version: string; readonly builtAt: number },
+	version: string,
+	behind?: { readonly days: number; readonly versions: number },
+	security = false,
+): SandboxBase => ({
+	image,
+	version,
+	outdated: behind !== undefined,
+	latest,
+	...(behind === undefined ? {} : { behind }),
+	...(security ? { security: true } : {}),
+});
+
 export const API_SERVER = sandbox({
 	id: "sbx_7f3k2m9qa1",
 	name: "api-server",
@@ -135,6 +167,8 @@ export const API_SERVER = sandbox({
 	shared: true,
 	createdBy: "Alex Kemp",
 	environment: { id: "env_backend", name: "backend-dev" },
+	// Six days behind, with the openssl fix the latest was rebuilt for.
+	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, "2026.10.29.809", { days: 6, versions: 3 }, true),
 });
 
 export const DEV_STACK = sandbox({
@@ -152,6 +186,7 @@ export const DEV_STACK = sandbox({
 	hostId: "hst_hetzner_1",
 	shared: true,
 	environment: { id: "env_backend", name: "backend-dev" },
+	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, SANDBOX_IMAGE_LATEST.version),
 });
 
 export const SCRATCH = sandbox({
@@ -184,6 +219,7 @@ export const RENDER = sandbox({
 	hostId: "hst_hetzner_2",
 	shared: true,
 	createdBy: "Bethan Price",
+	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, "2026.11.02.811", { days: 2, versions: 1 }),
 });
 
 export const BROWSER_AGENT = sandbox({
@@ -260,6 +296,7 @@ export const PERSONAL_OLD = sandbox({
 	snapshot: { id: "snp_wine_4", takenAt: FIXTURE_NOW - 5 * DAY },
 	costCents: 96,
 	hostId: "hst_hetzner_2",
+	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, "2026.10.23.803", { days: 12, versions: 9 }),
 });
 
 export const SANDBOXES: readonly Sandbox[] = [
@@ -285,6 +322,7 @@ export const SAVED: readonly SavedSnapshot[] = [
 		createdBy: "Alex Kemp",
 		sizeBytes: 3.4 * 1024 ** 3,
 		uses: 214,
+		base: onBase("sandbox", SANDBOX_IMAGE_LATEST, "2026.10.22.802", { days: 13, versions: 10 }),
 	},
 	{
 		id: "ssn_dev_stack_warm",
@@ -309,6 +347,7 @@ export const SAVED: readonly SavedSnapshot[] = [
 		createdBy: "Bethan Price",
 		sizeBytes: 5.1 * 1024 ** 3,
 		uses: 9,
+		base: onBase("browser", BROWSER_IMAGE_LATEST, BROWSER_IMAGE_LATEST.version),
 	},
 	{
 		id: "ssn_py_tools",
@@ -997,6 +1036,161 @@ export const HOSTS: readonly Host[] = [
 	},
 ];
 
+/** A sample image digest: `sha256:` and 64 hex digits, the same for the same seed. Not a real image's. */
+export function sampleDigest(seed: string): string {
+	let hash = 2_166_136_261;
+	let hex = "";
+	for (let round = 0; hex.length < 64; round += 1) {
+		for (const char of `${seed}/${round}`) hash = Math.imul(hash ^ char.charCodeAt(0), 16_777_619) >>> 0;
+		hex += hash.toString(16).padStart(8, "0");
+	}
+	return `sha256:${hex.slice(0, 64)}`;
+}
+
+/** A scan that found `findings`, counted as a scanner counts them. */
+function sampleScan(scannedAt: number, findings: readonly ImageFinding[] = []): ImageScan {
+	const counts: Record<ImageSeverity, number> = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 };
+	for (const finding of findings) counts[finding.severity] += 1;
+	const fixable = (severity: ImageSeverity) =>
+		findings.filter((finding) => finding.severity === severity && finding.fixed !== undefined).length;
+	return {
+		scanner: "trivy 0.67.2",
+		scannedAt,
+		counts,
+		fixable: { critical: fixable("critical"), high: fixable("high") },
+		findings,
+	};
+}
+
+const imageVersion = (
+	image: string,
+	version: string,
+	builtAt: number,
+	reason: ImageBuildReason,
+	scan?: ImageScan,
+): BaseImageVersion => ({
+	version,
+	digest: sampleDigest(`${image}@${version}`),
+	builtAt,
+	signed: true,
+	reason,
+	...(scan === undefined ? {} : { scan }),
+});
+
+const baseImage = (name: string, versions: readonly BaseImageVersion[]): BaseImage => ({
+	name,
+	repository: `ghcr.io/lleverage-ai/kantel-${name}`,
+	channel: "stable",
+	...(versions[0] === undefined ? {} : { latest: versions[0] }),
+	versions,
+});
+
+/** What the browser image's latest scan found: a Critical in openssl with a fix out, and a High with none yet. */
+export const BROWSER_FINDINGS: readonly ImageFinding[] = [
+	{
+		id: "CVE-2026-31789",
+		severity: "critical",
+		package: "openssl",
+		installed: "3.0.13-0ubuntu3.5",
+		fixed: "3.0.13-0ubuntu3.6",
+		title: "openssl: heap overflow in X.509 name constraint checks",
+	},
+	{
+		id: "CVE-2026-28114",
+		severity: "high",
+		package: "libxml2",
+		installed: "2.9.14+dfsg-1.3ubuntu3.4",
+		title: "libxml2: use after free in xmlXIncludeCopyNode",
+	},
+	{
+		id: "CVE-2026-20417",
+		severity: "medium",
+		package: "curl",
+		installed: "8.5.0-2ubuntu10.6",
+		fixed: "8.5.0-2ubuntu10.7",
+		title: "curl: cookie leak across redirects to another port",
+	},
+	{
+		id: "GHSA-7q4v-9hx2-mq3c",
+		severity: "low",
+		package: "node-tar",
+		installed: "6.2.0",
+		fixed: "6.2.1",
+	},
+];
+
+/**
+ * The deployment's base images and templates, at `at` (the fixtures' clock): the sandbox image just rebuilt for a
+ * fixable vulnerability, the browser image's scan finding a fixable Critical, the rest clean; one template rebuilding,
+ * one pinned behind, one current.
+ */
+function sampleImages(at: (time: number) => number): BaseImagesOverview {
+	const ago = (ms: number) => at(FIXTURE_NOW - ms);
+	const latest = (image: { readonly version: string; readonly builtAt: number }) => ({
+		version: image.version,
+		builtAt: at(image.builtAt),
+	});
+	const sandboxLatest = latest(SANDBOX_IMAGE_LATEST);
+	const browserLatest = latest(BROWSER_IMAGE_LATEST);
+	const images: readonly BaseImage[] = [
+		baseImage("sandbox", [
+			imageVersion("sandbox", SANDBOX_IMAGE_LATEST.version, sandboxLatest.builtAt, "cve", sampleScan(ago(2 * HOUR))),
+			imageVersion("sandbox", "2026.11.02.811", ago(2 * DAY + 3 * HOUR), "daily"),
+			imageVersion("sandbox", "2026.10.31.810", ago(4 * DAY + 3 * HOUR), "daily"),
+		]),
+		baseImage("browser", [
+			imageVersion(
+				"browser",
+				BROWSER_IMAGE_LATEST.version,
+				browserLatest.builtAt,
+				"daily",
+				sampleScan(ago(HOUR), BROWSER_FINDINGS),
+			),
+			imageVersion("browser", "2026.11.02.810", ago(DAY + 9 * HOUR), "daily"),
+		]),
+		baseImage("isolate-host", [
+			imageVersion("isolate-host", "2026.11.04.812", ago(4 * HOUR), "daily", sampleScan(ago(3 * HOUR))),
+			imageVersion("isolate-host", "2026.11.03.811", ago(DAY + 4 * HOUR), "daily"),
+		]),
+		baseImage("host", [
+			imageVersion("host", "host-images-20261104.812", ago(5 * HOUR), "push", sampleScan(ago(4 * HOUR))),
+			imageVersion("host", "host-images-20261103.811", ago(DAY + 5 * HOUR), "daily"),
+		]),
+	];
+	const templates: readonly TemplateBase[] = [
+		{
+			id: "tpl_node22",
+			name: "node-22",
+			image: "sandbox",
+			channel: "stable",
+			base: onBase("sandbox", sandboxLatest, "2026.11.02.811", { days: 2, versions: 1 }, true),
+			rebuilding: true,
+		},
+		{
+			id: "tpl_python313",
+			name: "python-3.13",
+			image: "sandbox",
+			pinned: sampleDigest("sandbox@2026.10.31.810"),
+			base: onBase("sandbox", sandboxLatest, "2026.10.31.810", { days: 4, versions: 2 }, true),
+			rebuilding: false,
+		},
+		{
+			id: "tpl_browser_agent",
+			name: "browser-agent",
+			image: "browser",
+			channel: "stable",
+			base: onBase("browser", browserLatest, BROWSER_IMAGE_LATEST.version),
+			rebuilding: false,
+		},
+	];
+	return {
+		images,
+		templates,
+		indexUrl: "https://images.kantel.example.com/stable/index.json",
+		generatedAt: ago(20 * MINUTE),
+	};
+}
+
 export const PLANS: readonly Plan[] = [
 	{
 		id: "plan_hobby",
@@ -1131,7 +1325,7 @@ export interface ComputeFixtureOptions {
 	readonly hang?: boolean;
 	/** Every read fails: an error state. */
 	readonly fail?: boolean;
-	/** No sandboxes, snapshots, keys, webhooks or hosts: the empty states. */
+	/** No sandboxes, snapshots, keys, webhooks, hosts or images: the empty states. */
 	readonly empty?: boolean;
 	/** How long a sandbox takes to start or stop, in milliseconds. Default 1200. */
 	readonly settleMs?: number;
@@ -1181,17 +1375,23 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 		const { costCents: _, ...rest } = box;
 		return rest;
 	};
+	/** A record's base image with its latest's build time on `now` too. */
+	const movedBase = <T extends { readonly base?: SandboxBase }>(record: T): T => {
+		const latest = record.base?.latest;
+		if (record.base === undefined || latest === undefined) return record;
+		return { ...record, base: { ...record.base, latest: { ...latest, builtAt: at(latest.builtAt) } } };
+	};
 
 	const sandboxes = new Map<string, Sandbox>(
 		(empty || options.noHosts === true ? [] : SANDBOXES).map((box) => {
 			const copy = moved(box, ["createdAt", "stopsAt"]);
 			const snapshot =
 				box.snapshot === undefined ? {} : { snapshot: { ...box.snapshot, takenAt: at(box.snapshot.takenAt) } };
-			return [box.id, withCost({ ...copy, ...snapshot })];
+			return [box.id, withCost(movedBase({ ...copy, ...snapshot }))];
 		}),
 	);
 	const saved = new Map<string, SavedSnapshot>(
-		(empty ? [] : SAVED).map((entry) => [entry.id, moved(entry, ["createdAt"])]),
+		(empty ? [] : SAVED).map((entry) => [entry.id, movedBase(moved(entry, ["createdAt"]))]),
 	);
 	const history = new Map<string, SandboxSnapshot[]>(
 		[...sandboxes.values()].map((box) => [box.id, [...historyFor(box)]]),
@@ -1536,6 +1736,33 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					settle(id, (latest) => ({ ...latest, state: "running", stopsAt: now() + HOUR }));
 					return box;
 				}),
+			// As a recover, but it comes back on its base image's latest version: nothing outdated about it any more.
+			restartOnLatest: (id) =>
+				gate(() => {
+					const { error: _, base, ...current } = find(sandboxes, id, "sandbox");
+					const onLatest =
+						base === undefined
+							? {}
+							: {
+									base: {
+										image: base.image,
+										outdated: false,
+										...(base.latest === undefined
+											? base.version === undefined
+												? {}
+												: { version: base.version }
+											: { version: base.latest.version, latest: base.latest }),
+									},
+								};
+					const box = put({ ...current, ...onLatest, state: "starting" });
+					settle(id, (latest) => ({
+						...latest,
+						state: "running",
+						stopsAt: now() + HOUR,
+						usage: usageSeries(id.length + 5, 0.3),
+					}));
+					return box;
+				}),
 			remove: (id) =>
 				gate(() => {
 					find(sandboxes, id, "sandbox");
@@ -1649,6 +1876,8 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						createdBy: VIEWER.name,
 						sizeBytes: Math.round(sizeSpec(box.size).diskGb * 1024 ** 3 * 0.1),
 						uses: 0,
+						// Saved on the base the sandbox is on now.
+						...(box.base === undefined ? {} : { base: box.base }),
 					};
 					saved.set(entry.id, entry);
 					return entry;
@@ -2008,6 +2237,14 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 							gate(() => {
 								hosts.delete(id);
 							}),
+					},
+					images: {
+						overview: () =>
+							gate(() =>
+								empty
+									? { images: [], templates: [], indexUrl: "https://images.kantel.example.com/stable/index.json" }
+									: sampleImages(at),
+							),
 					},
 				}),
 		devices: {

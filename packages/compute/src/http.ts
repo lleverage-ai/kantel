@@ -16,6 +16,7 @@ import {
 import { isKantelError } from "@kantel/contracts";
 import { type AuthenticatePerson, authenticate, UnauthenticatedError } from "./auth.ts";
 import type { SandboxBackend } from "./backend.ts";
+import type { BaseImages } from "./base-status.ts";
 import { type ComputeLimits, type ComputeService, createComputeService, type RateTable } from "./service.ts";
 import { type ComputeStore, createMemoryStore } from "./store.ts";
 import { createTelemetryExporter, type TelemetryExporter } from "./telemetry.ts";
@@ -63,6 +64,11 @@ export interface ComputeApiOptions {
 	 * store makes one for the process and a persistent store refuses them. Not a key: `createComputeApi` throws.
 	 */
 	readonly secretsKey?: string;
+	/**
+	 * Image patching (experimental, `KANTEL_IMAGE_PATCHING`): Kantel's base image index, cached by the caller
+	 * (`baseImageIndexReader`). Absent, off: no `base` fields, and its routes answer `not_supported`.
+	 */
+	readonly baseImages?: BaseImages;
 }
 
 export interface ComputeApi {
@@ -128,6 +134,7 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 		...(options.sessionLive === undefined ? {} : { sessionLive: options.sessionLive }),
 		...(options.sharedHosts === undefined ? {} : { sharedHosts: options.sharedHosts }),
 		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
+		...(options.baseImages === undefined ? {} : { baseImages: options.baseImages }),
 	});
 	service = created;
 	const publicIds = new Set<string>(Object.keys(publicComputeRoutes));

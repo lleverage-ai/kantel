@@ -2,7 +2,8 @@
 // screen (name, with what went wrong under it, state, machine, environment, when it stops, its CPU over the last two
 // hours, when it was made) and rows on a phone; each row opens the sandbox's page. Browser and Desktop show on a
 // running microVM's row under the pointer and open in the console, Recover on a failed one's, and ⋯ has Stop, Fork,
-// Save snapshot, Auto-stop and Delete. New makes a sandbox at once with the defaults (a medium
+// Save snapshot, Auto-stop, Restart on latest base (beside the state, a sandbox on an outdated base says so) and
+// Delete. New makes a sandbox at once with the defaults (a medium
 // microVM that stops after an hour); its caret opens New sandbox to choose. Either way the new row shows at once,
 // starting, at the top, and the page follows it until it's running. Rows can be ticked (Select all is the table's head,
 // or over a phone's rows) to stop or delete several at once. Every call goes through the `SandboxesSource` the host
@@ -42,6 +43,7 @@ import {
 	sizeText,
 	stopsInText,
 } from "./compute-model.ts";
+import { BaseOutdatedBadge } from "./base-outdated.tsx";
 import { computePage, messageOf, Sparkline, table } from "./parts.tsx";
 import { AUTO_STOP_CHOICES, DeleteDialog, type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
 import { popOut } from "./sandbox-screen.tsx";
@@ -778,7 +780,14 @@ function SandboxRow({
 				) : null}
 			</td>
 			<td className={cell}>
-				<StateLabel state={sandbox.state} />
+				{sandbox.base?.outdated === true ? (
+					<span className="flex items-center gap-2">
+						<StateLabel state={sandbox.state} />
+						<BaseOutdatedBadge base={sandbox.base} now={now} />
+					</span>
+				) : (
+					<StateLabel state={sandbox.state} />
+				)}
 			</td>
 			<td className={cell}>
 				{SANDBOX_KIND_LABELS[sandbox.kind]}{" "}
@@ -867,6 +876,7 @@ function SandboxPhoneRow({
 					</span>
 					{sandbox.environment === undefined ? null : <span>{sandbox.environment.name}</span>}
 					{stops === "–" ? null : <span>{stops === "Always on" || stops === "Now" ? stops : `Stops ${stops}`}</span>}
+					<BaseOutdatedBadge base={sandbox.base} now={now} />
 				</span>
 			)}
 		</div>

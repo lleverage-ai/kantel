@@ -47,6 +47,12 @@ export const Hosted: Story = () => <Scenario hosting="hosted" />;
 /** A personal account's own sandboxes. */
 export const Personal: Story = () => <Scenario personal />;
 
+/**
+ * Sandboxes on an outdated base image: api-server's has security fixes waiting (red), render-farm's doesn't (amber).
+ * Each badge's tooltip has the versions; ⋯ has Restart on latest base.
+ */
+export const BaseOutdated: Story = () => <Scenario />;
+
 /** New's caret: New sandbox, open. */
 export const Create: Story = () => <Scenario creating />;
 

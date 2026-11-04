@@ -113,7 +113,16 @@ export function hostEgress(egress: BackendEgress | undefined, attributionKey?: s
 interface HostSnapshot {
 	readonly id: string;
 	readonly sizeBytes: number;
+	/** The host images version its root file system is (image patching); absent when unknown. */
+	readonly base?: string;
 }
+
+/** A snapshot as the compute service keeps it: its ref on its host, its size and its base when the host said. */
+const takenOn = (hostId: string, snap: HostSnapshot): TakenSnapshot => ({
+	ref: `${hostId}/${snap.id}`,
+	sizeBytes: snap.sizeBytes,
+	...(snap.base === undefined || snap.base === "" ? {} : { base: snap.base }),
+});
 
 interface HostFileEntry {
 	readonly name: string;
@@ -217,6 +226,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 						},
 					}),
 			capabilities: capabilitiesOf(tier, nested === true, options.ports !== undefined),
+			...(sandbox.base === undefined || sandbox.base === "" ? {} : { base: sandbox.base }),
 		};
 	}
 
@@ -248,6 +258,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		const sandbox = await call<HostSandbox>(sandboxId, method, {
 			...egressOf(how.egress),
 			...(revision === undefined ? {} : { revision }),
+			// Only a cold boot rebases; a host without image patching ignores the field.
+			...(method === "sandbox.start" && how.rebase === true ? { rebase: true } : {}),
 		});
 		return placed(sandboxId, sandbox, hostId);
 	}
@@ -366,7 +378,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				snapshotId: snapshotId(),
 				memory: keepMemory,
 			});
-			return { ref: `${hostId}/${snap.id}`, sizeBytes: snap.sizeBytes };
+			return takenOn(hostId, snap);
 		},
 		async fork(source, targets: readonly SandboxSpec[]): Promise<Placement[]> {
 			const out: Placement[] = [];
@@ -452,7 +464,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		async takeSnapshot(sandboxId): Promise<TakenSnapshot> {
 			const { hostId } = await tierOf(sandboxId);
 			const snap = await call<HostSnapshot>(sandboxId, "snapshot.save", { snapshotId: snapshotId() });
-			return { ref: `${hostId}/${snap.id}`, sizeBytes: snap.sizeBytes };
+			return takenOn(hostId, snap);
 		},
 		async listSnapshotFiles(ref, path) {
 			const { hostId, snapshotId: id } = parseRef(ref);

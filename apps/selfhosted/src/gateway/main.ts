@@ -163,6 +163,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		...(hosts === undefined ? {} : { hosts }),
 		...(components.computeStore === undefined ? {} : { store: components.computeStore }),
 		...(secretsKey === undefined ? {} : { secretsKey }),
+		...(cfg.compute.imagePatching === undefined ? {} : { imagePatching: cfg.compute.imagePatching }),
 	});
 	seeded = { ...seeded, computeKey: compute.superAdminKey };
 	console.log(

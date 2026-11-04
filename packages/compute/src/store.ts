@@ -95,7 +95,7 @@ export interface StoredSample {
 }
 
 /** A sandbox: its wire shape (but its cost and usage, worked out when answered) and what the service keeps besides. */
-export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "grants"> & {
+export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "grants" | "base"> & {
 	/** The person it belongs to: its maker, or the person whose key made it. */
 	readonly ownerUserId: string;
 	/** What every command sees: its environment's plain variables and placeholders, then the create's own. */
@@ -135,12 +135,21 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	readonly ports: readonly computeSchema.ExposedPort[];
 	/** The snapshot its memory was paused into, while `paused`. */
 	readonly pausedSnapshotId?: string;
+	/**
+	 * The base image version its root file system is, as its backend reported it (`Placement.base`): a host images
+	 * version such as `host-images-20261104.812`, or a container image's `sha256:` digest. Answered, with how far behind
+	 * it is, as the API's `base` (image patching on). Absent: not reported.
+	 */
+	readonly base?: string;
 };
 
 export type StoredCommand = computeSchema.Command & { readonly accountId: string };
 
-/** A snapshot and the backend's reference to its bytes (absent until it is ready). */
-export type StoredSnapshot = computeSchema.Snapshot & { readonly ref?: string };
+/**
+ * A snapshot and the backend's reference to its bytes (absent until it is ready), and the base image version its root
+ * file system is (`TakenSnapshot.base`), answered as the API's `base`.
+ */
+export type StoredSnapshot = Omit<computeSchema.Snapshot, "base"> & { readonly ref?: string; readonly base?: string };
 
 export type StoredApiKey = computeSchema.ApiKey & {
 	/** The SHA-256 hex of the secret. */

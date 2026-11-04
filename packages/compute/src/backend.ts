@@ -113,6 +113,12 @@ export interface Placement {
 	readonly hostId: string;
 	readonly resources?: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number };
 	readonly capabilities: computeSchema.SandboxCapabilities;
+	/**
+	 * The base image version its root file system is: a host images version (`host-images-20261104.812`) for a sandbox
+	 * on a host with image patching, or a container image's `sha256:` digest. Absent where the backend doesn't know (the
+	 * stub, a host whose images aren't versioned), and the sandbox's record keeps what it had.
+	 */
+	readonly base?: string;
 }
 
 /** How to boot a machine for a sandbox that has none. */
@@ -128,12 +134,20 @@ export interface BootOptions {
 	 * host's default), and an update read before it is refused as older.
 	 */
 	readonly egressRevision?: number;
+	/**
+	 * On `start` only (a cold boot): move the sandbox onto its host's current base images first, keeping its own disk
+	 * and dropping any memory it kept (image patching, `restartSandboxOnLatest`). A backend with no versioned images (the
+	 * stub) ignores it, and so does a host without the `image-patching` feature.
+	 */
+	readonly rebase?: boolean;
 }
 
 /** A snapshot the backend took: its opaque reference and how large it is. */
 export interface TakenSnapshot {
 	readonly ref: string;
 	readonly sizeBytes: number;
+	/** The base image version its root file system is, as `Placement.base`; absent where the backend doesn't know. */
+	readonly base?: string;
 }
 
 export interface ExecRequest {

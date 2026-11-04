@@ -47,6 +47,16 @@
  *                                of their own (`POST /v1/hosts/join-tokens`, `kantel hosts add`), which dial out to
  *                                this gateway like any host and run only that account's sandboxes. Default off: the
  *                                `/v1/hosts` routes for them answer 501 not_supported
+ *   KANTEL_IMAGE_PATCHING        `experimental` turns on image patching: sandboxes and saved snapshots say which base
+ *                                image they are on and how far behind it is (`base`), `POST
+ *                                /v1/sandboxes/{id}/restart-on-latest` moves one onto the newest, `GET
+ *                                /v1/admin/compute/images` lists the base images and their CVE scans, and hosts are
+ *                                told the host images to fetch in their welcome. Default off: no `base`, and those
+ *                                routes answer 501 not_supported
+ *   KANTEL_BASE_IMAGE_INDEX      with image patching: where the base image index CI publishes is read, an http(s) URL;
+ *                                default the `base-images` GitHub Release's index.json (DEFAULT_BASE_IMAGE_INDEX).
+ *                                Read at most every 5 minutes; a failure is kept for a minute and shown in the admin
+ *                                list
  *
  * An account's proxy settings (PUT /v1/proxy) reach its sandboxes as they boot (create, start, resume, fork): the host's
  * egress proxy applies the allow and deny rules, and with the host's --proxy-data-path switch on passes allowed
@@ -66,10 +76,14 @@ import type { IncomingMessage } from "node:http";
 import { join } from "node:path";
 import { type Duplex, Readable } from "node:stream";
 import {
+	baseImageIndexReader,
+	baseImageIndexUrl,
 	type ComputeApi,
 	type ComputeStore,
 	createComputeApi,
 	createMemoryStore,
+	hostImageChannel,
+	imagePatchingSwitch,
 	joinTokenSpender,
 	type PersonIdentity,
 	type SandboxBackend,
@@ -135,6 +149,8 @@ export interface ComputeHostsConfig {
 /** The compute plane's settings: `hosts` is set when sandboxes run on joined hosts, not the stub. */
 export interface ComputeConfig {
 	readonly hosts?: ComputeHostsConfig;
+	/** Image patching (KANTEL_IMAGE_PATCHING=experimental), and where the base image index is read. */
+	readonly imagePatching?: { readonly indexUrl: string };
 }
 
 /**
@@ -144,7 +160,11 @@ export interface ComputeConfig {
 export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 	const publicUrl = (env.KANTEL_COMPUTE_PUBLIC_URL?.trim() || env.KANTEL_PUBLIC_URL?.trim()) ?? "";
 	const backend = env.KANTEL_COMPUTE_BACKEND?.trim().toLowerCase() || (publicUrl === "" ? "stub" : "hosts");
-	if (backend === "stub") return {};
+	// Left out when off, so a config without it is as it was.
+	const patching = imagePatchingSwitch(env.KANTEL_IMAGE_PATCHING)
+		? { imagePatching: { indexUrl: baseImageIndexUrl(env.KANTEL_BASE_IMAGE_INDEX) } }
+		: {};
+	if (backend === "stub") return { ...patching };
 	if (backend !== "hosts") throw new Error("KANTEL_COMPUTE_BACKEND is `stub` or `hosts`");
 	if (!/^https?:\/\/[^/]+\/?$/.test(publicUrl)) {
 		throw new Error(
@@ -197,6 +217,7 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 			...(joinCommand === "" ? {} : { joinCommand }),
 			...(version === "" || updateUrl === "" ? {} : { desiredVersion: version, updateUrl }),
 		},
+		...patching,
 	};
 }
 
@@ -395,6 +416,10 @@ export async function gatewayCompute(options: {
 	 * Postgres store refuses them (a memory store seals with a key of its own, lost with the process).
 	 */
 	readonly secretsKey?: string;
+	/** Image patching (KANTEL_IMAGE_PATCHING=experimental), from `computeConfig`; absent, off. */
+	readonly imagePatching?: { readonly indexUrl: string };
+	/** The base image index's fetch, for tests; default the global one. */
+	readonly fetch?: typeof fetch;
 }): Promise<GatewayCompute> {
 	const store: ComputeStore = options.store ?? createMemoryStore();
 	const records = options.store === undefined ? "memory" : "postgres";
@@ -413,6 +438,15 @@ export async function gatewayCompute(options: {
 	// The API mints and keeps join tokens; the registry spends them when a host registers.
 	hosts?.service.useJoinTokens(joinTokenSpender(store));
 	const publicUrl = hosts?.config.publicUrl ?? options.publicUrl;
+	// One cached read of the index for the API and the hosts' welcome alike.
+	const baseImages =
+		options.imagePatching === undefined
+			? undefined
+			: baseImageIndexReader({
+					url: options.imagePatching.indexUrl,
+					...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+					...(options.now === undefined ? {} : { now: options.now }),
+				});
 	const api = createComputeApi({
 		store,
 		backend,
@@ -423,6 +457,7 @@ export async function gatewayCompute(options: {
 		...(hosts?.config.accountHosts === true ? { accountHosts: true } : {}),
 		...(options.now === undefined ? {} : { now: options.now }),
 		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
+		...(baseImages === undefined ? {} : { baseImages }),
 	});
 	// Hosts fetch their sandboxes' protected values, and report what their egress proxies did, over their link.
 	hosts?.service.useCompute({
@@ -432,6 +467,14 @@ export async function gatewayCompute(options: {
 			read: (hostId, space) => api.service.hostE2EChain(hostId, space),
 			append: (hostId, space, from, entries) => api.service.appendHostE2EChain(hostId, space, from, entries),
 		},
+		...(baseImages === undefined
+			? {}
+			: {
+					images: async () => {
+						const index = await baseImages.index();
+						return index === undefined ? undefined : hostImageChannel(index);
+					},
+				}),
 	});
 	const superAdminKey = await bootstrapSuperAdmin(api.store, options.superAdminKey, (options.now ?? Date.now)());
 	api.dispatcher.start(WEBHOOK_INTERVAL_MS);
