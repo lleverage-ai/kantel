@@ -1,6 +1,7 @@
-// Settings' own navigation (compute console): the account's settings pages, beside the page on a wide screen and in a
-// row over it on a phone. The sidebar's Settings opens the first; each page is the one it was before the redesign, at
-// the same address, so a link to one still works.
+// Settings (compute console): the title, Settings' own navigation and the page. On a wide screen the links sit beside
+// the page; on a phone they are a row over it. The sidebar's Settings opens the first account page; each page is at the
+// address it had before the redesign, so a link to one still works. A page heads itself with SettingsPageHeader: its
+// name and its one action on a wide screen, the action alone on a phone, where the selected link already names it.
 
 import type { ReactNode } from "react";
 
@@ -21,17 +22,27 @@ const linkState = {
 
 export interface SettingsFrameProps {
 	readonly items: readonly SettingsNavItem[];
+	/** The navigation's name: Settings, or Admin's on a phone. */
+	readonly label?: string;
+	/** The label as the title over the page: Settings has it; Admin's pages head themselves, so its row doesn't. */
+	readonly titled?: boolean;
 	/** A phone: the links in a row over the page, scrolling sideways when they don't fit. */
 	readonly narrow?: boolean;
 	/** The settings page shown. */
 	readonly children: ReactNode;
 }
 
-/** A settings page with Settings' navigation beside it, or over it on a phone. */
-export function SettingsFrame({ items, narrow = false, children }: SettingsFrameProps) {
+/** Settings' title, then a settings page with Settings' navigation beside it, or over it on a phone. */
+export function SettingsFrame({
+	items,
+	label = "Settings",
+	titled = true,
+	narrow = false,
+	children,
+}: SettingsFrameProps) {
 	const nav = (
 		<nav
-			aria-label="Settings"
+			aria-label={label}
 			className={
 				narrow
 					? "-mx-gutter-narrow flex min-w-0 gap-1 overflow-x-auto px-gutter-narrow"
@@ -53,9 +64,55 @@ export function SettingsFrame({ items, narrow = false, children }: SettingsFrame
 	// The same elements in both layouts, only their classes change: crossing the breakpoint (turning a phone) must not
 	// remount the page, which would lose a draft or a new key's secret that hasn't been copied yet.
 	return (
-		<div className={narrow ? "flex min-w-0 flex-col gap-4" : "flex min-w-0 items-start gap-8"}>
-			{nav}
-			<div className="min-w-0 flex-1">{children}</div>
+		<div className="flex min-w-0 flex-col gap-5">
+			{titled ? (
+				<header
+					className={`kt-page-header flex min-h-control-md min-w-0 items-center ${narrow ? "" : "border-b border-border pb-3"}`}
+				>
+					<h1
+						className={`kt-page-header-title m-0 truncate font-strong leading-tight text-fg ${narrow ? "text-lg" : "text-md"}`}
+					>
+						{label}
+					</h1>
+				</header>
+			) : null}
+			<div className={narrow ? "flex min-w-0 flex-col gap-4" : "flex min-w-0 items-start gap-8"}>
+				{nav}
+				<div className="min-w-0 flex-1">{children}</div>
+			</div>
+		</div>
+	);
+}
+
+/**
+ * A settings page's head: its name and its one action on a line. On a phone the name is for screen readers only, since
+ * the selected link over the page says it, and the action keeps the line's end.
+ */
+export function SettingsPageHeader({
+	title,
+	actions,
+	narrow = false,
+	id,
+}: {
+	title: ReactNode;
+	actions?: ReactNode;
+	narrow?: boolean;
+	/** For a section that labels itself by the title. */
+	id?: string;
+}) {
+	if (narrow && actions === undefined) {
+		return (
+			<h2 id={id} className="kt-sr-only">
+				{title}
+			</h2>
+		);
+	}
+	return (
+		<div className="flex min-h-control-md min-w-0 items-center justify-between gap-3">
+			<h2 id={id} className={narrow ? "kt-sr-only" : "m-0 truncate text-md font-strong leading-tight text-fg"}>
+				{title}
+			</h2>
+			{actions === undefined ? null : <div className="ml-auto flex flex-none items-center gap-2">{actions}</div>}
 		</div>
 	);
 }

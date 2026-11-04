@@ -10,13 +10,15 @@ export type Loaded<T> =
 
 /**
  * Reads `load()` when `deps` change and on `reload()`. A read that a newer one replaced, or that finishes after the
- * component unmounted, never touches the state. While a reload runs the last value stays on screen.
+ * component unmounted, never touches the state. While a reload runs the last value stays on screen, and `pending`
+ * says one is on its way, for a caller that polls and mustn't overtake it.
  */
 export function useLoad<T>(
 	load: () => Promise<T>,
 	deps: DependencyList,
-): { readonly state: Loaded<T>; readonly reload: () => void } {
+): { readonly state: Loaded<T>; readonly reload: () => void; readonly pending: boolean } {
 	const [state, setState] = useState<Loaded<T>>({ status: "loading" });
+	const [pending, setPending] = useState(true);
 	const [generation, setGeneration] = useState(0);
 	const latest = useRef(load);
 	latest.current = load;
@@ -28,12 +30,17 @@ export function useLoad<T>(
 		const reloading = seen.current !== undefined && seen.current !== generation;
 		if (seen.current !== undefined && !reloading) setState({ status: "loading" });
 		seen.current = generation;
+		setPending(true);
 		latest.current().then(
 			(value) => {
-				if (live) setState({ status: "ready", value });
+				if (!live) return;
+				setState({ status: "ready", value });
+				setPending(false);
 			},
 			(error: unknown) => {
-				if (live) setState({ status: "error", error });
+				if (!live) return;
+				setState({ status: "error", error });
+				setPending(false);
 			},
 		);
 		return () => {
@@ -41,5 +48,18 @@ export function useLoad<T>(
 		};
 	}, [...deps, generation]);
 	const reload = useCallback(() => setGeneration((value) => value + 1), []);
-	return { state, reload };
+	return { state, reload, pending };
+}
+
+/**
+ * Calls `reload` each time `key` changes after the first render, so a read that `useLoad` keeps on screen follows
+ * something its deps don't name (a sandbox's newest snapshot, a parent's poll) without showing the skeleton again.
+ */
+export function useReloadOn(key: unknown, reload: () => void): void {
+	const last = useRef(key);
+	useEffect(() => {
+		if (Object.is(last.current, key)) return;
+		last.current = key;
+		reload();
+	}, [key, reload]);
 }

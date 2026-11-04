@@ -18,7 +18,9 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/lleverage-ai/kantel/apps/host/internal/e2e"
 	"github.com/lleverage-ai/kantel/apps/host/internal/egress"
 	"github.com/lleverage-ai/kantel/apps/host/internal/egress/protect"
 	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
@@ -76,6 +78,17 @@ type Host struct {
 	egressLog *egressBatcher
 	// lifecycle is one CA-changing lifecycle call at a time per sandbox.
 	lifecycle sandboxLocks
+	// gate binds a gateway call's E2E check to the sandbox it reaches (e2e.go).
+	gate e2eGate
+	// plain are the gateway's plaintext calls and streams in flight, ended if their space turns E2E on (e2e.go).
+	plain        plainCalls
+	plainRecheck time.Duration
+	// e2eRevalidate is how often an open E2E session looks at the chain again (default every 3s).
+	e2eRevalidate time.Duration
+	// e2e is the host's E2E keys and the chains of the spaces it joined (Root/e2e; e2e.go).
+	e2e *e2e.Store
+	// commands is the history of commands devices ran in E2E sessions (history.go).
+	commands *commandLog
 	// floors are the latest egress revisions the host has taken (by sandbox ID), a null egress's too, so a stale update
 	// or boot arriving late is ignored; kept on disk too (floorDir), across restarts.
 	floorMu sync.Mutex
@@ -99,13 +112,19 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 	if err := os.MkdirAll(cfg.Root, 0o700); err != nil {
 		return nil, err
 	}
+	store, err := e2e.OpenStore(filepath.Join(cfg.Root, "e2e"))
+	if err != nil {
+		return nil, fmt.Errorf("e2e store: %w", err)
+	}
+	h.e2e = store
+	h.commands = newCommandLog(cfg.Root)
 	h.proxy = egress.New(log.With("part", "egress"))
 	h.secrets = protect.NewStore(h.fetchSecrets)
 	h.cas = egress.NewCAStore(filepath.Join(cfg.Root, "egress-ca"))
 	h.proxy.Secrets = h.secrets
 	h.proxy.CAs = h.cas
 	h.egressLog = newEgressBatcher(h.sendEgress, h.connected)
-	h.proxy.OnRecord = h.egressLog.add
+	h.proxy.OnRecord = h.recordEgress
 	dest, err := destinations(cfg)
 	if err != nil {
 		return nil, err
@@ -418,6 +437,14 @@ func (h *Host) tierOfNamed(id string) (Tier, string, error) {
 	return nil, "", &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("no sandbox %s on this host", id)}
 }
 
+// streamEncoding is how the tier holding a sandbox writes streamed output: the microVM guest's chunks are base64.
+func (h *Host) streamEncoding(id string) StreamEncoding {
+	if _, name, err := h.tierOfNamed(id); err == nil && name == microvm.Tier {
+		return StreamBase64
+	}
+	return StreamText
+}
+
 func (h *Host) tierOfSnapshot(id string) (Tier, error) {
 	for _, name := range h.order {
 		if h.tiers[name].HasSnapshot(id) {
@@ -616,6 +643,9 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			_ = h.cas.Forget(p.SandboxID)
 		}
 		h.forgetFloor(p.SandboxID)
+		if h.commands != nil {
+			h.commands.forget(p.SandboxID)
+		}
 		return map[string]bool{"ok": true}, nil
 	case proto.MethodGet:
 		p, err := decode[proto.SandboxRef](params)
@@ -740,6 +770,10 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if err != nil {
 			return nil, err
 		}
+		// E2E is judged on the snapshot in the tier this read uses, so a check can't pass on another tier's (e2e.go).
+		if space, covered := h.snapshotGuarded(t, p.SnapshotID); covered {
+			return nil, e2eRefusal(space)
+		}
 		entries, err := t.SnapshotFiles(p.SnapshotID, p.Path)
 		return map[string]any{"entries": entries}, err
 	case proto.MethodSnapshotRead:
@@ -750,6 +784,10 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		t, err := h.tierOfSnapshot(p.SnapshotID)
 		if err != nil {
 			return nil, err
+		}
+		// E2E is judged on the snapshot in the tier this read uses, so a check can't pass on another tier's (e2e.go).
+		if space, covered := h.snapshotGuarded(t, p.SnapshotID); covered {
+			return nil, e2eRefusal(space)
 		}
 		data, err := t.SnapshotRead(p.SnapshotID, p.Path)
 		if err != nil {

@@ -37,6 +37,10 @@ import {
 	DeviceLoginPath,
 	DeviceLoginRequest,
 	DeviceLoginResult,
+	E2EAccess,
+	E2EAccessBody,
+	E2EChain,
+	E2EChainAppend,
 	Environment,
 	EnvironmentFileQuery,
 	EnvironmentList,
@@ -72,6 +76,7 @@ import {
 	PollDeviceLoginBody,
 	PortPath,
 	ProxySettings,
+	PublicUrl,
 	PutEgressGrantsBody,
 	PutEnvironmentReposBody,
 	PutProxySettingsBody,
@@ -89,6 +94,7 @@ import {
 	SaveSnapshotBody,
 	SetEnvironmentFileBody,
 	SetEnvironmentVariableBody,
+	SetPublicUrlBody,
 	Snapshot,
 	SnapshotFilesQuery,
 	SnapshotPage,
@@ -738,7 +744,63 @@ export const openBrowser = defineRoute({
 	errors: [...changeErrors, "not_supported"],
 });
 
-export const accessRoutes = { listPorts, exposePort, hidePort, openSsh, openDesktop, openBrowser } as const;
+export const openE2E = defineRoute({
+	operationId: "openE2E",
+	method: "POST",
+	path: "/sandboxes/{sandboxId}/e2e",
+	tag: "access",
+	summary: "Open an end-to-end encrypted session",
+	description: describe(
+		"A short-lived WebSocket URL to the sandbox's host for a Noise session (`kantel e2e`), which the gateway relays and",
+		"can't read. In an organisation with end-to-end encryption on, the host runs commands, files and ports only in one.",
+		"It opens for a stopped or paused sandbox too, whose command history the host still has; what needs a running",
+		"guest is refused in the session.",
+		scope("access"),
+	),
+	params: SandboxPath,
+	body: E2EAccessBody,
+	answer: { status: 201, description: "Where to open it.", schema: E2EAccess },
+	errors: [...changeErrors, "not_supported"],
+});
+
+export const accessRoutes = { listPorts, exposePort, hidePort, openSsh, openDesktop, openBrowser, openE2E } as const;
+
+// The space chain: an organisation's signed members, devices, hosts and end-to-end mode. The gateway keeps it and
+// hands it out; hosts and devices verify it, so the gateway can't add a key to it.
+
+export const getE2EChain = defineRoute({
+	operationId: "getE2EChain",
+	method: "GET",
+	path: "/accounts/{accountId}/e2e/chain",
+	tag: "accounts",
+	summary: "Get an organisation's E2E chain",
+	description: describe(
+		"Its signed entries, oldest first: empty until an admin starts it with `kantel e2e init`.",
+		scope("account:read"),
+	),
+	params: AccountPath,
+	answer: { status: 200, description: "The chain.", schema: E2EChain },
+	errors: readErrors,
+});
+
+export const appendE2EChain = defineRoute({
+	operationId: "appendE2EChain",
+	method: "POST",
+	path: "/accounts/{accountId}/e2e/chain",
+	tag: "accounts",
+	summary: "Add entries to an organisation's E2E chain",
+	description: describe(
+		"Entries a member's device signed, from the chain's length. The whole chain must still verify; `conflict` when",
+		"another entry got there first. Only an admin starts a chain.",
+		scope("account:read"),
+	),
+	params: AccountPath,
+	body: E2EChainAppend,
+	answer: { status: 200, description: "The chain now.", schema: E2EChain },
+	errors: changeErrors,
+});
+
+export const e2eChainRoutes = { getE2EChain, appendE2EChain } as const;
 
 // Snapshots.
 
@@ -1027,12 +1089,13 @@ export const putProxySettings = defineRoute({
 	summary: "Set the proxy settings",
 	description: describe(
 		"Replaces them. Running sandboxes pick them up within a minute. An upstream's header values are kept encrypted",
-		"and never shown again; leave `upstream.headers` out to keep the ones it has.",
+		"and never shown again; leave `upstream.headers` out to keep the ones it has. With `expected`, the settings as you",
+		"read them, a write made from an older read is refused with `conflict`.",
 		scope("account:admin"),
 	),
 	body: PutProxySettingsBody,
 	answer: { status: 200, description: "The settings.", schema: ProxySettings },
-	errors: ["invalid", "forbidden", "not_supported"],
+	errors: ["invalid", "forbidden", "conflict", "not_supported"],
 });
 
 export const proxyRoutes = { getProxySettings, putProxySettings } as const;
@@ -1497,7 +1560,47 @@ export const createHostJoinToken = defineRoute({
 	errors: ["invalid", "forbidden"],
 });
 
-export const hostRoutes = { listHosts, createHostJoinToken, getHost, updateHost, revokeHost } as const;
+export const getPublicUrl = defineRoute({
+	operationId: "getPublicUrl",
+	method: "GET",
+	path: "/admin/public-url",
+	tag: "hosts",
+	summary: "Get the public URL",
+	description: describe(
+		"Where hosts reach this control plane: the address join commands give them, and whether only a host on the same",
+		"machine could use it.",
+		SUPER_ADMIN,
+	),
+	answer: { status: 200, description: "The public URL.", schema: PublicUrl },
+	errors: ["forbidden"],
+});
+
+export const setPublicUrl = defineRoute({
+	operationId: "setPublicUrl",
+	method: "PUT",
+	path: "/admin/public-url",
+	tag: "hosts",
+	summary: "Set the public URL",
+	description: describe(
+		"Sets where hosts reach this control plane, for the join commands made from now on, ahead of the deployment's own",
+		"`KANTEL_PUBLIC_URL`. `null` goes back to the deployment's own. Hosts that have joined keep the address they",
+		"joined with.",
+		SUPER_ADMIN,
+	),
+	body: SetPublicUrlBody,
+	answer: { status: 200, description: "The public URL.", schema: PublicUrl },
+	errors: ["invalid", "forbidden"],
+});
+
+export const hostRoutes = {
+	listHosts,
+	createHostJoinToken,
+	getHost,
+	updateHost,
+	revokeHost,
+	getPublicUrl,
+	setPublicUrl,
+} as const;
 
 // An account's own hosts, added by its people rather than by the deployment's super-admin. Only that account's
 // sandboxes run on them. Experimental: a deployment serves these only with KANTEL_ACCOUNT_HOSTS=experimental, and
@@ -1598,6 +1701,7 @@ export const computeRoutes = {
 	...commandRoutes,
 	...fileRoutes,
 	...accessRoutes,
+	...e2eChainRoutes,
 	...snapshotRoutes,
 	...apiKeyRoutes,
 	...deviceLoginRoutes,

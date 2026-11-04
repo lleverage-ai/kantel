@@ -382,6 +382,42 @@ export interface DeviceLoginResult {
 /** `pending`: no one has approved it yet. `approved`: the poll that sees it first gets the key; later polls are `expired`. `denied`: the person refused it. `expired`: too late, or already collected. */
 export type DeviceLoginState = "pending" | "approved" | "denied" | "expired";
 
+export interface E2EAccess {
+	/** A WebSocket URL to the sandbox's host that carries a Noise session as binary frames. The gateway relays it and can't read it: the device checks the host's key against the space's chain, and the host checks the device's. */
+	readonly url: string;
+	/** The host the sandbox is on: the chain's entry for it has its key. */
+	readonly hostId: string;
+	/** The sandbox's organisation: the space whose chain the session is in. */
+	readonly accountId: string;
+	/** Epoch milliseconds, UTC. */
+	readonly expiresAt: number;
+}
+
+export interface E2EAccessBody {
+	/** How long a session can be started with this URL; one started in time stays open. Default 10. */
+	readonly ttlMinutes?: number;
+	/** The person whose device will open the session. Refused (`forbidden`) unless the call is that person's, so a browser whose sign-in may have changed under it (a cookie it can't read) never gets a URL for someone else's sign-in to use with its keys. */
+	readonly user?: string;
+}
+
+export interface E2EChain {
+	/** Oldest first; an entry's `seq` is its index. */
+	readonly entries: readonly E2EEntry[];
+}
+
+export interface E2EChainAppend {
+	/** The seq of the first entry given: the chain's length as the caller last saw it. */
+	readonly from: number;
+	readonly entries: readonly E2EEntry[];
+}
+
+export interface E2EEntry {
+	/** Base64url of the entry's JSON, exactly the bytes that were signed. */
+	readonly payload: string;
+	/** Base64url of its Ed25519 signature. */
+	readonly sig: string;
+}
+
 /** One request or connection a sandbox made through its host's egress proxy. Never a value. */
 export interface EgressEntry {
 	/** The entry's ID. */
@@ -813,11 +849,35 @@ export interface ProxySettings {
 	readonly updatedAt: number;
 }
 
+/** The settings as you last read them: `GET /proxy`'s answer will do. Given, the write is refused with `conflict` if they have changed since, so an edit made from an older read can't undo someone else's: read them again and redo the edit. Left out, the settings are replaced whatever they hold. */
+export interface ProxySettingsExpected {
+	readonly enabled: boolean;
+	readonly defaultAction: "allow" | "deny";
+	readonly allow: readonly string[];
+	readonly deny: readonly string[];
+	readonly upstream?: {
+		readonly url: string;
+		readonly headerNames: readonly string[];
+	};
+	readonly attribution: boolean;
+}
+
 export interface ProxyUpstream {
 	/** Another proxy every allowed request goes on to, such as a Mehen. */
 	readonly url: string;
 	/** The names of the headers Kantel sends it; their values are never shown. */
 	readonly headerNames: readonly string[];
+}
+
+export interface PublicUrl {
+	/** Where hosts reach this control plane: the address in every join command, such as `https://kantel.example.com`. */
+	readonly publicUrl: string;
+	/** `console`: a super-admin set it here. `deployment`: the deployment's own (`KANTEL_PUBLIC_URL`, or the address the call came in at). */
+	readonly source: "console" | "deployment";
+	/** The deployment's own, which `publicUrl` goes back to when cleared. */
+	readonly deploymentUrl: string;
+	/** `publicUrl` is a loopback address (`127.0.0.1`, `localhost`): only a host on the same machine can join. */
+	readonly loopback: boolean;
 }
 
 export interface PutEgressGrantsBody {
@@ -847,6 +907,8 @@ export interface PutProxySettingsBody {
 		};
 	} | null;
 	readonly attribution?: boolean;
+	/** The settings as you last read them: `GET /proxy`'s answer will do. Given, the write is refused with `conflict` if they have changed since, so an edit made from an older read can't undo someone else's: read them again and redo the edit. Left out, the settings are replaced whatever they hold. */
+	readonly expected?: ProxySettingsExpected;
 }
 
 export interface PutTelemetryBody {
@@ -1090,6 +1152,11 @@ export interface SetEnvironmentVariableBody {
 	readonly value?: string;
 	/** A protected variable's destinations, at least one. Left out, a protected one keeps its own. */
 	readonly bindings?: readonly DestinationBinding[];
+}
+
+export interface SetPublicUrlBody {
+	/** An http(s) origin, such as `https://kantel.example.com`; `null` goes back to the deployment's own. */
+	readonly publicUrl: string | null;
 }
 
 export interface Snapshot {
@@ -1668,6 +1735,12 @@ export interface KantelClient {
 	openDesktop(sandboxId: string, body?: ViewAccessBody, options?: CallOptions): Promise<DesktopAccess>;
 	/** Open the browser. Starts the sandbox's Chromium if it isn't running, and answers a live view URL and a CDP URL for Playwright or Puppeteer. microVMs only. A key needs `access`. `POST /sandboxes/{sandboxId}/browser` */
 	openBrowser(sandboxId: string, body?: ViewAccessBody, options?: CallOptions): Promise<BrowserAccess>;
+	/** Open an end-to-end encrypted session. A short-lived WebSocket URL to the sandbox's host for a Noise session (`kantel e2e`), which the gateway relays and can't read. In an organisation with end-to-end encryption on, the host runs commands, files and ports only in one. It opens for a stopped or paused sandbox too, whose command history the host still has; what needs a running guest is refused in the session. A key needs `access`. `POST /sandboxes/{sandboxId}/e2e` */
+	openE2E(sandboxId: string, body?: E2EAccessBody, options?: CallOptions): Promise<E2EAccess>;
+	/** Get an organisation's E2E chain. Its signed entries, oldest first: empty until an admin starts it with `kantel e2e init`. A key needs `account:read`. `GET /accounts/{accountId}/e2e/chain` */
+	getE2EChain(accountId: string, options?: CallOptions): Promise<E2EChain>;
+	/** Add entries to an organisation's E2E chain. Entries a member's device signed, from the chain's length. The whole chain must still verify; `conflict` when another entry got there first. Only an admin starts a chain. A key needs `account:read`. `POST /accounts/{accountId}/e2e/chain` */
+	appendE2EChain(accountId: string, body: E2EChainAppend, options?: CallOptions): Promise<E2EChain>;
 	/** List snapshots. The account's snapshots, newest first: saved ones, one sandbox's history (`sandboxId`), or both. A key needs `snapshots:read`. `GET /snapshots` */
 	listSnapshots(query?: ListSnapshotsQuery, options?: CallOptions): Promise<SnapshotPage>;
 	/** Take a snapshot now. Adds a snapshot of the sandbox's disk to its history now, without stopping it. Kantel also takes them by itself. A key needs `snapshots:write`. `POST /sandboxes/{sandboxId}/snapshots` */
@@ -1708,7 +1781,7 @@ export interface KantelClient {
 	denyDeviceLogin(userCode: string, options?: CallOptions): Promise<DeviceLoginRequest>;
 	/** Get the proxy settings. Where the account's sandboxes' outbound traffic may go. A key needs `account:read`. `GET /proxy` */
 	getProxySettings(query?: AccountScopedQuery, options?: CallOptions): Promise<ProxySettings>;
-	/** Set the proxy settings. Replaces them. Running sandboxes pick them up within a minute. An upstream's header values are kept encrypted and never shown again; leave `upstream.headers` out to keep the ones it has. A key needs `account:admin`. `PUT /proxy` */
+	/** Set the proxy settings. Replaces them. Running sandboxes pick them up within a minute. An upstream's header values are kept encrypted and never shown again; leave `upstream.headers` out to keep the ones it has. With `expected`, the settings as you read them, a write made from an older read is refused with `conflict`. A key needs `account:admin`. `PUT /proxy` */
 	putProxySettings(body: PutProxySettingsBody, options?: CallOptions): Promise<ProxySettings>;
 	/** List environments. The account's environments, oldest first. A key needs `account:read`. `GET /environments` */
 	listEnvironments(query?: AccountScopedQuery, options?: CallOptions): Promise<EnvironmentList>;
@@ -1787,6 +1860,10 @@ export interface KantelClient {
 	updateHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
 	/** Revoke a host. Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. `unavailable`, and not revoked, when its credential is kept by a part of the deployment that is off (an account's own host, with account hosts switched off). A deployment super-admin only (a key needs `hosts:admin`). `DELETE /admin/hosts/{hostId}` */
 	revokeHost(hostId: string, options?: CallOptions): Promise<Host>;
+	/** Get the public URL. Where hosts reach this control plane: the address join commands give them, and whether only a host on the same machine could use it. A deployment super-admin only (a key needs `hosts:admin`). `GET /admin/public-url` */
+	getPublicUrl(options?: CallOptions): Promise<PublicUrl>;
+	/** Set the public URL. Sets where hosts reach this control plane, for the join commands made from now on, ahead of the deployment's own `KANTEL_PUBLIC_URL`. `null` goes back to the deployment's own. Hosts that have joined keep the address they joined with. A deployment super-admin only (a key needs `hosts:admin`). `PUT /admin/public-url` */
+	setPublicUrl(body: SetPublicUrlBody, options?: CallOptions): Promise<PublicUrl>;
 	/** Make a join token for one of your own hosts. A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it to the account (the caller's personal account unless `account` names an organisation). The host dials out to this deployment and keeps the connection open, so it needs no inbound port. Once it has joined, the account's new sandboxes go on its own hosts, and no other account's sandboxes ever do. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `POST /hosts/join-tokens` */
 	createAccountJoinToken(body?: CreateAccountJoinTokenBody, options?: CallOptions): Promise<AccountJoinToken>;
 	/** List an account's hosts. The hosts joined to the account, revoked ones included. The deployment's shared hosts aren't listed. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `GET /hosts` */
@@ -1939,6 +2016,16 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/desktop`, body }, callOptions),
 		openBrowser: (sandboxId, body = {}, callOptions) =>
 			send(options, { method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/browser`, body }, callOptions),
+		openE2E: (sandboxId, body = {}, callOptions) =>
+			send(options, { method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/e2e`, body }, callOptions),
+		getE2EChain: (accountId, callOptions) =>
+			send(options, { method: "GET", path: `/accounts/${encodeURIComponent(accountId)}/e2e/chain` }, callOptions),
+		appendE2EChain: (accountId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/accounts/${encodeURIComponent(accountId)}/e2e/chain`, body },
+				callOptions,
+			),
 		listSnapshots: (query, callOptions) => send(options, { method: "GET", path: "/snapshots", query }, callOptions),
 		takeSnapshot: (sandboxId, body = {}, callOptions) =>
 			send(
@@ -2068,6 +2155,8 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "PATCH", path: `/admin/hosts/${encodeURIComponent(hostId)}`, body }, callOptions),
 		revokeHost: (hostId, callOptions) =>
 			send(options, { method: "DELETE", path: `/admin/hosts/${encodeURIComponent(hostId)}` }, callOptions),
+		getPublicUrl: (callOptions) => send(options, { method: "GET", path: "/admin/public-url" }, callOptions),
+		setPublicUrl: (body, callOptions) => send(options, { method: "PUT", path: "/admin/public-url", body }, callOptions),
 		createAccountJoinToken: (body = {}, callOptions) =>
 			send(options, { method: "POST", path: "/hosts/join-tokens", body }, callOptions),
 		listAccountHosts: (query, callOptions) => send(options, { method: "GET", path: "/hosts", query }, callOptions),

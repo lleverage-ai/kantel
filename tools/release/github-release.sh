@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # github-release.sh [--dry-run] <version> [out]: makes Kantel's GitHub Release v<version>, at this checkout's commit,
 # with the files pack.sh wrote to out/github (default dist/release/github): kantel-host for Linux x86_64 and arm64,
-# kantel.js, kantel-admin.js, install.sh, install-cli.sh and SHA256SUMS.
+# kantel.js, kantel-admin.js, kantel-console.tar.gz, install.sh, install-cli.sh and SHA256SUMS.
 #
 # A version without a prerelease part (0.1.0) is marked the latest release, so
 # https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh, the host join command Kantel prints,
@@ -24,7 +24,8 @@ out=${2:-$root/dist/release}
 repo=${GITHUB_REPOSITORY:-lleverage-ai/kantel}
 tag="v$version"
 commit=$(git -C "$root" rev-parse HEAD)
-files=(kantel-host-linux-amd64 kantel-host-linux-arm64 kantel.js kantel-admin.js install.sh install-cli.sh SHA256SUMS)
+files=(kantel-host-linux-amd64 kantel-host-linux-arm64 kantel.js kantel-admin.js kantel-console.tar.gz install.sh
+	install-cli.sh SHA256SUMS)
 
 for file in "${files[@]}"; do
 	[[ -f "$out/github/$file" ]] || {
@@ -47,12 +48,16 @@ notes=$(
 	cat <<EOF
 Kantel $version.
 
-**Use sandboxes**: install the \`kantel\` command, and the operator's \`kantel-admin\`, for yourself (Linux or macOS, with
-Node.js 22 or later; no sudo). This installs this release; \`releases/latest/download/install-cli.sh\` installs the latest:
+**Use sandboxes**: install the \`kantel\` command for yourself (Linux or macOS, with Node.js 22 or later; no sudo). This
+installs this release (\`curl -fsSL https://kantel.dev/cli.sh | sh\` installs the latest), and \`sh -s -- --admin\` adds
+the operator's \`kantel-admin\`:
 
 \`\`\`sh
 curl -fsSL $base/install-cli.sh | sh
 \`\`\`
+
+It installs the console's files from \`kantel-console.tar.gz\` too: \`kantel console\` serves them on 127.0.0.1, so the
+console's code comes with this release, not from a gateway.
 
 **Add a host** (Linux, x86_64 or arm64, with /dev/kvm for microVMs): make a join token on the console's Hosts page or
 with \`kantel-admin host add\`, then run the command it prints on the machine. To install this release in particular:

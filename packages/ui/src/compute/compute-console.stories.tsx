@@ -50,8 +50,8 @@ export const Snapshots: Story = () => <Scenario page="snapshots" />;
 export const SnapshotsHosted: Story = () => <Scenario page="snapshots" hosting="hosted" />;
 export const ApiKeys: Story = () => <Scenario page="keys" />;
 export const ApiKeysHosted: Story = () => <Scenario page="keys" hosting="hosted" />;
-export const EgressProxy: Story = () => <Scenario page="proxy" />;
-export const EgressProxyHosted: Story = () => <Scenario page="proxy" hosting="hosted" />;
+export const Egress: Story = () => <Scenario page="egress" />;
+export const EgressHosted: Story = () => <Scenario page="egress" hosting="hosted" />;
 export const Webhooks: Story = () => <Scenario page="webhooks" />;
 export const WebhooksHosted: Story = () => <Scenario page="webhooks" hosting="hosted" />;
 export const Telemetry: Story = () => <Scenario page="telemetry" />;
@@ -60,6 +60,20 @@ export const Organisation: Story = () => <Scenario page="organisation" />;
 export const OrganisationHosted: Story = () => <Scenario page="organisation" hosting="hosted" />;
 export const Billing: Story = () => <Scenario page="billing" hosting="hosted" />;
 export const Hosts: Story = () => <Scenario page="hosts" />;
+/** Admin's Install: the public URL, a default install's loopback until one is set here. */
+export const Install: Story = () => <Scenario page="install" />;
+/** A new install's first run: no host yet, so Sandboxes leads with adding one, its address loopback. */
+export const FirstRun: Story = () => <Scenario options={{ noHosts: true }} />;
+/** The first run where the deployment already has an address hosts can reach. */
+export const FirstRunReachable: Story = () => (
+	<Scenario options={{ noHosts: true, publicUrl: "https://kantel.example.com" }} />
+);
+/** The first run on a phone. */
+export const MobileFirstRun: Story = () => <Scenario options={{ noHosts: true }} narrow />;
+MobileFirstRun.meta = { width: 390 };
+/** Admin's Install on a phone: Hosts and Install in a row over the page. */
+export const MobileInstall: Story = () => <Scenario page="install" narrow />;
+MobileInstall.meta = { width: 390 };
 export const HostsHosted: Story = () => <Scenario page="hosts" hosting="hosted" />;
 /** A member who isn't a super-admin has no Hosts. */
 export const NotSuperAdmin: Story = () => <Scenario options={{ notSuperAdmin: true }} />;
@@ -70,6 +84,9 @@ Mobile.meta = { width: 390 };
 /** Settings on a phone: its pages in a row over the page. */
 export const MobileSettings: Story = () => <Scenario page="keys" narrow />;
 MobileSettings.meta = { width: 390 };
+/** Egress on a phone: the log as two-line rows over the tab bar. */
+export const MobileEgress: Story = () => <Scenario page="egress" narrow />;
+MobileEgress.meta = { width: 390 };
 /** Admin on a phone: a way back to the console, and no tab bar. */
 export const MobileAdmin: Story = () => <Scenario page="hosts" narrow />;
 MobileAdmin.meta = { width: 390 };

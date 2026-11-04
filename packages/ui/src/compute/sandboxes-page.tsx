@@ -1,28 +1,21 @@
 // The Sandboxes page (compute console): an account's sandboxes, for finding one and seeing its state. A table on a wide
 // screen (name, with what went wrong under it, state, machine, environment, when it stops, its CPU over the last two
-// hours, when it was made) and rows on a phone. Browser and Desktop show on a running microVM's row under the pointer,
-// Recover on a failed one's, and the ⋯ menu has the rest. New makes a sandbox at once with the defaults (a medium
+// hours, when it was made) and rows on a phone; each row opens the sandbox's page. Browser and Desktop show on a
+// running microVM's row under the pointer and open in the console, Recover on a failed one's, and ⋯ has Stop, Fork,
+// Save snapshot, Auto-stop and Delete. New makes a sandbox at once with the defaults (a medium
 // microVM that stops after an hour); its caret opens New sandbox to choose. Either way the new row shows at once,
 // starting, at the top, and the page follows it until it's running. Rows can be ticked (Select all is the table's head,
 // or over a phone's rows) to stop or delete several at once. Every call goes through the `SandboxesSource` the host
 // binds; stories bind it to fixtures.
 
-import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { type MouseEvent, type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Button, buttonClass, buttonLabelClass } from "../primitives/button.tsx";
 import { SegmentedControl, SelectField, TextField } from "../primitives/controls.tsx";
 import { Dialog } from "../primitives/dialog.tsx";
-import { compactAge, duration } from "../primitives/format.ts";
-import { ForkIcon, GlobeIcon, PlusIcon, StopIcon, TerminalIcon } from "../primitives/icons.tsx";
+import { compactAge } from "../primitives/format.ts";
+import { ChevronRightIcon, GlobeIcon, PlusIcon, StopIcon } from "../primitives/icons.tsx";
 import { useLoad } from "../primitives/load.ts";
-import {
-	DesktopIcon,
-	EllipsisIcon,
-	PlayIcon,
-	ProxyIcon,
-	ReconnectIcon,
-	SnapshotIcon,
-	TrashIcon,
-} from "../primitives/lucide.tsx";
+import { DesktopIcon, EllipsisIcon, PlayIcon, ReconnectIcon, TrashIcon } from "../primitives/lucide.tsx";
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { SplitButton } from "../primitives/split-button.tsx";
@@ -39,7 +32,6 @@ import {
 	SANDBOX_STATE_LABELS,
 	SANDBOX_STATE_STATUS,
 	type Sandbox,
-	type SandboxCommand,
 	type SandboxesSource,
 	type SandboxKind,
 	type SandboxSize,
@@ -51,7 +43,12 @@ import {
 	stopsInText,
 } from "./compute-model.ts";
 import { computePage, messageOf, Sparkline, table } from "./parts.tsx";
-import { ChangeCounter, keepShown, retryTargets } from "./sandbox-selection.ts";
+import { AUTO_STOP_CHOICES, DeleteDialog, type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
+import { popOut } from "./sandbox-screen.tsx";
+import { ChangeCounter, changeTaken, keepShown, retryTargets } from "./sandbox-selection.ts";
+
+/** A view of one sandbox's page that a row links to. */
+export type SandboxRowView = "overview" | "desktop" | "browser";
 
 export type SandboxFilter = "all" | "running" | "stopped" | "error";
 
@@ -64,12 +61,12 @@ export interface SandboxesPageProps {
 		saved(accountId: string): Promise<readonly SavedSnapshot[]>;
 		save(sandboxId: string, name: string): Promise<SavedSnapshot>;
 	};
-	/** Opens a sandbox's snapshots on the Snapshots page. */
-	readonly onSnapshots?: (sandboxId: string) => void;
+	/** The address of a sandbox's page, or of its desktop or browser there. Without it rows open nothing. */
+	readonly sandboxHref?: (sandboxId: string, view?: SandboxRowView) => string;
+	/** Goes to a path in the app; without it a row's link is followed. */
+	readonly navigate?: (path: string) => void;
 	/** The account's environments, which New sandbox offers to start from. */
 	readonly environments?: (accountId: string) => Promise<readonly Environment[]>;
-	/** Opens a sandbox's egress page: its log, placeholders and grants. */
-	readonly onEgress?: (sandboxId: string) => void;
 	/** A fixed time, for stories. */
 	readonly now?: number;
 	/** How often the list is read again while a sandbox is starting or stopping, in milliseconds. Default 1000. */
@@ -88,6 +85,11 @@ export interface SandboxesPageProps {
 	 * account can use, so with no sandboxes New stays the action, with a link here to add a host beside it.
 	 */
 	readonly ownHostHref?: string;
+	/**
+	 * With `addHostHref`, what the page shows in place of its list while there are no sandboxes: the first run, which
+	 * adds the host right here. Without it, a link to Hosts' Add host.
+	 */
+	readonly firstRun?: ReactNode;
 }
 
 /** What New makes without asking: New sandbox's own defaults, "MicroVM, Medium, stops after 1 hour". */
@@ -95,14 +97,6 @@ export const QUICK_SANDBOX = { kind: "microvm", size: "medium", autoStopMinutes:
 	CreateSandboxInput,
 	"accountId"
 >;
-
-const AUTO_STOP_CHOICES = [
-	{ value: "15", label: "15 minutes" },
-	{ value: "60", label: "1 hour" },
-	{ value: "480", label: "8 hours" },
-	{ value: "1440", label: "1 day" },
-	{ value: "never", label: "Never" },
-] as const;
 
 const FILTERS: readonly { value: SandboxFilter; label: string }[] = [
 	{ value: "all", label: "All" },
@@ -158,15 +152,16 @@ export function SandboxesPage({
 	account,
 	hosting,
 	snapshots,
-	onSnapshots,
+	sandboxHref,
+	navigate,
 	environments,
-	onEgress,
 	now: fixedNow,
 	pollMs = 1000,
 	creating = false,
 	narrow = false,
 	addHostHref,
 	ownHostHref,
+	firstRun,
 }: SandboxesPageProps) {
 	const { state, reload } = useLoad(() => source.list(account.id), [source, account.id]);
 	// Sandboxes made or changed here, ahead of the next read: a new one shows the moment New is pressed.
@@ -174,7 +169,7 @@ export function SandboxesPage({
 	const [filter, setFilter] = useState<SandboxFilter>("all");
 	const [search, setSearch] = useState("");
 	const [newOpen, setNewOpen] = useState(creating);
-	const [notice, setNotice] = useState<{ level: "info" | "error"; text: string }>();
+	const [notice, setNotice] = useState<SandboxNotice>();
 	useTick(fixedNow === undefined, 30_000);
 	const now = fixedNow ?? Date.now();
 
@@ -217,9 +212,10 @@ export function SandboxesPage({
 	const changes = useRef(new ChangeCounter()).current;
 	const change = useCallback(
 		(box: Sandbox | null, id: string, asked?: number) => {
-			if (!changes.take(id, asked)) return;
-			setLocal((current) => new Map(current).set(id, box));
-			if (!id.startsWith("pending_")) reload();
+			// An answer overtaken by a later change isn't shown, but the list is still read again, so it catches up.
+			const taken = changeTaken(changes, id, asked);
+			if (taken.show) setLocal((current) => new Map(current).set(id, box));
+			if (taken.reload) reload();
 		},
 		[reload, changes],
 	);
@@ -314,6 +310,8 @@ export function SandboxesPage({
 				</Notice>
 			) : sandboxes === undefined ? (
 				<SandboxesSkeleton />
+			) : sandboxes.length === 0 && addHostHref !== undefined && firstRun !== undefined ? (
+				firstRun
 			) : sandboxes.length === 0 && addHostHref !== undefined ? (
 				<EmptyState
 					title="Add a host to run sandboxes on"
@@ -371,8 +369,8 @@ export function SandboxesPage({
 						narrow={narrow}
 						source={source}
 						{...(snapshots === undefined ? {} : { save: snapshots.save })}
-						{...(onSnapshots === undefined ? {} : { onSnapshots })}
-						{...(onEgress === undefined ? {} : { onEgress })}
+						{...(sandboxHref === undefined ? {} : { sandboxHref })}
+						{...(navigate === undefined ? {} : { navigate })}
 						onChange={change}
 						asked={(id) => changes.ask(id)}
 						onNotice={setNotice}
@@ -403,21 +401,18 @@ function SandboxesSkeleton() {
 	);
 }
 
-type NoticeSetter = (notice: { level: "info" | "error"; text: string } | undefined) => void;
-
 type RowCalls = {
 	source: SandboxesSource;
-	canSave: boolean;
-	onSnapshots?: (sandboxId: string) => void;
-	onEgress?: (sandboxId: string) => void;
+	save?: (sandboxId: string, name: string) => Promise<SavedSnapshot>;
+	sandboxHref?: (sandboxId: string, view?: SandboxRowView) => string;
+	navigate?: (path: string) => void;
 	onChange: (box: Sandbox | null, id: string, asked?: number) => void;
-	onNotice: NoticeSetter;
-	onHistory: (box: Sandbox) => void;
-	onDelete: (box: Sandbox) => void;
-	onSave: (box: Sandbox) => void;
+	/** What to pass `onChange` with a call's answer, read as the call is made, so a later change to it wins. */
+	asked?: (id: string) => number;
+	onNotice: (notice: SandboxNotice | undefined) => void;
 };
 
-/** The table on a wide screen, rows on a phone, what acts on the ticked ones, and the dialogs either opens. */
+/** The table on a wide screen, rows on a phone, and what acts on the ticked ones. */
 function SandboxList({
 	sandboxes,
 	hosting,
@@ -425,8 +420,8 @@ function SandboxList({
 	narrow,
 	source,
 	save,
-	onSnapshots,
-	onEgress,
+	sandboxHref,
+	navigate,
 	onChange,
 	asked,
 	onNotice,
@@ -435,18 +430,10 @@ function SandboxList({
 	hosting: HostingMode;
 	now: number;
 	narrow: boolean;
-	source: SandboxesSource;
-	save?: (sandboxId: string, name: string) => Promise<SavedSnapshot>;
-	onSnapshots?: (sandboxId: string) => void;
-	onEgress?: (sandboxId: string) => void;
-	onChange: (box: Sandbox | null, id: string, asked?: number) => void;
 	/** Where a sandbox's changes have got to, for `onChange` from an answer that may be overtaken. */
 	asked: (id: string) => number;
-	onNotice: NoticeSetter;
-}) {
-	const [history, setHistory] = useState<Sandbox>();
+} & RowCalls) {
 	const [deleting, setDeleting] = useState<readonly Sandbox[]>();
-	const [saving, setSaving] = useState<Sandbox>();
 	// The sandboxes ticked, by ID. One a search, a filter or a delete hides is dropped, so it can't come back ticked.
 	const [ticked, setTicked] = useState<ReadonlySet<string>>(new Set());
 	const selectable = sandboxes.filter((box) => !box.id.startsWith("pending_"));
@@ -483,15 +470,87 @@ function SandboxList({
 	}
 	const calls: RowCalls = {
 		source,
-		canSave: save !== undefined,
-		...(onSnapshots === undefined ? {} : { onSnapshots }),
-		...(onEgress === undefined ? {} : { onEgress }),
+		...(save === undefined ? {} : { save }),
+		...(sandboxHref === undefined ? {} : { sandboxHref }),
+		...(navigate === undefined ? {} : { navigate }),
 		onChange,
+		asked,
 		onNotice,
-		onHistory: setHistory,
-		onDelete: (box) => setDeleting([box]),
-		onSave: setSaving,
 	};
+	const list = narrow ? (
+		<ul className="kt-sandbox-rows m-0 flex list-none flex-col p-0">
+			{sandboxes.map((box) => (
+				<SandboxPhoneRow
+					key={box.id}
+					sandbox={box}
+					now={now}
+					calls={calls}
+					ticked={ticked.has(box.id)}
+					onTick={(on) => tick(box.id, on)}
+				/>
+			))}
+		</ul>
+	) : (
+		<div className="kt-compute-table min-w-0 overflow-x-auto">
+			<table className={table}>
+				<thead>
+					<tr>
+						<th className={`${head} w-0 pr-0`} scope="col">
+							<TickBox
+								label="Select all sandboxes"
+								checked={allTicked}
+								indeterminate={someTicked}
+								disabled={selectable.length === 0}
+								onChange={tickAll}
+							/>
+						</th>
+						<th className={head} scope="col">
+							Name
+						</th>
+						<th className={head} scope="col">
+							State
+						</th>
+						<th className={head} scope="col">
+							Machine
+						</th>
+						<th className={head} scope="col">
+							Environment
+						</th>
+						<th className={head} scope="col">
+							Stops
+						</th>
+						<th className={head} scope="col">
+							CPU
+						</th>
+						{hosting === "hosted" ? (
+							<th className={`${head} text-right`} scope="col">
+								Cost
+							</th>
+						) : null}
+						<th className={`${head} text-right`} scope="col">
+							Created
+						</th>
+						<th className={head} scope="col">
+							<span className="kt-sr-only">Actions</span>
+						</th>
+					</tr>
+				</thead>
+				<tbody>
+					{sandboxes.map((box) => (
+						<SandboxRow
+							key={box.id}
+							sandbox={box}
+							hosting={hosting}
+							now={now}
+							calls={calls}
+							ticked={ticked.has(box.id)}
+							onTick={(on) => tick(box.id, on)}
+						/>
+					))}
+				</tbody>
+			</table>
+		</div>
+	);
 	return (
 		<>
 			<SelectionBar
@@ -518,81 +577,7 @@ function SandboxList({
 					</>
 				}
 			/>
-			{narrow ? (
-				<ul className="kt-sandbox-rows m-0 flex list-none flex-col p-0">
-					{sandboxes.map((box) => (
-						<SandboxPhoneRow
-							key={box.id}
-							sandbox={box}
-							now={now}
-							calls={calls}
-							ticked={ticked.has(box.id)}
-							onTick={(on) => tick(box.id, on)}
-						/>
-					))}
-				</ul>
-			) : (
-				<div className="kt-compute-table min-w-0 overflow-x-auto">
-					<table className={table}>
-						<thead>
-							<tr>
-								<th className={`${head} w-0 pr-0`} scope="col">
-									<TickBox
-										label="Select all sandboxes"
-										checked={allTicked}
-										indeterminate={someTicked}
-										disabled={selectable.length === 0}
-										onChange={tickAll}
-									/>
-								</th>
-								<th className={head} scope="col">
-									Name
-								</th>
-								<th className={head} scope="col">
-									State
-								</th>
-								<th className={head} scope="col">
-									Machine
-								</th>
-								<th className={head} scope="col">
-									Environment
-								</th>
-								<th className={head} scope="col">
-									Stops
-								</th>
-								<th className={head} scope="col">
-									CPU
-								</th>
-								{hosting === "hosted" ? (
-									<th className={`${head} text-right`} scope="col">
-										Cost
-									</th>
-								) : null}
-								<th className={`${head} text-right`} scope="col">
-									Created
-								</th>
-								<th className={head} scope="col">
-									<span className="kt-sr-only">Actions</span>
-								</th>
-							</tr>
-						</thead>
-						<tbody>
-							{sandboxes.map((box) => (
-								<SandboxRow
-									key={box.id}
-									sandbox={box}
-									hosting={hosting}
-									now={now}
-									calls={calls}
-									ticked={ticked.has(box.id)}
-									onTick={(on) => tick(box.id, on)}
-								/>
-							))}
-						</tbody>
-					</table>
-				</div>
-			)}
-			<HistoryDialog sandbox={history} source={source} now={now} onClose={() => setHistory(undefined)} />
+			{list}
 			<DeleteDialog
 				sandboxes={deleting}
 				onClose={() => setDeleting(undefined)}
@@ -616,16 +601,6 @@ function SandboxList({
 					});
 				}}
 			/>
-			{save === undefined ? null : (
-				<SaveSnapshotDialog
-					sandbox={saving}
-					onClose={() => setSaving(undefined)}
-					onSave={async (box, name) => {
-						await save(box.id, name);
-						onNotice({ level: "info", text: `Saved ${box.name} as ${name}.` });
-					}}
-				/>
-			)}
 		</>
 	);
 }
@@ -634,34 +609,60 @@ function SandboxList({
 const head = "h-control-md border-b border-border px-2 py-0 text-xs font-medium whitespace-nowrap text-muted";
 const cell = "border-b border-border px-2 py-2.5 align-middle whitespace-nowrap";
 
-/** What a row can do, and the calls its buttons and menu make. */
+/** Follows a link in the app without reloading, unless it's a modified click (a new tab). */
+const follow = (navigate: ((path: string) => void) | undefined) => (event: LinkClick) => {
+	if (navigate === undefined || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey) return;
+	event.preventDefault();
+	navigate(event.currentTarget.getAttribute("href") ?? "");
+};
+
+/** The click on an anchor, as much of it as `follow` and `screenLink` read. */
+type LinkClick = Pick<
+	MouseEvent<HTMLAnchorElement>,
+	"button" | "metaKey" | "ctrlKey" | "shiftKey" | "preventDefault"
+> & {
+	readonly currentTarget: Pick<HTMLAnchorElement, "getAttribute">;
+};
+
+/**
+ * A row's Browser and Desktop: to the sandbox's page, or each to a tab of its own where the console can't frame them
+ * (`screens` "tab"), as on the sandbox's page. `openTab` runs during the click, so the browser lets the tab open.
+ */
+export function screenLink(
+	screens: SandboxesSource["screens"],
+	navigate: ((path: string) => void) | undefined,
+	openTab: (view: "browser" | "desktop") => void,
+): (view: "browser" | "desktop") => (event: LinkClick) => void {
+	if (screens !== "tab") return () => follow(navigate);
+	return (view) => (event) => {
+		if (event.button !== 0) return;
+		event.preventDefault();
+		openTab(view);
+	};
+}
+
+/** What a row can do: its buttons, and ⋯ with Stop and the sandbox menu's four. */
 function useRowActions(sandbox: Sandbox, calls: RowCalls) {
-	const { source, canSave, onSnapshots, onEgress, onChange, onNotice, onHistory, onDelete, onSave } = calls;
+	const { source, save, onChange, asked, onNotice } = calls;
 	const pending = sandbox.id.startsWith("pending_");
 	const can = sandboxActions(sandbox.state);
 	const windows = can.connect && sandbox.kind === "microvm";
+	const menu = useSandboxMenu(sandbox, {
+		source,
+		...(save === undefined ? {} : { save }),
+		onChange,
+		...(asked === undefined ? {} : { asked }),
+		onNotice,
+	});
 
-	const act = async (what: string, call: () => Promise<Sandbox>, then?: (box: Sandbox) => void) => {
+	const act = async (what: string, call: () => Promise<Sandbox>) => {
 		try {
+			// As the menu's: an answer overtaken by a later change to it (a Delete) is dropped.
+			const since = asked?.(sandbox.id);
 			const box = await call();
-			onChange(box, box.id);
-			then?.(box);
+			onChange(box, box.id, since);
 		} catch (caught) {
 			onNotice({ level: "error", text: messageOf(caught, `Kantel couldn't ${what} ${sandbox.name}. Try again.`) });
-		}
-	};
-	const open = async (which: "ssh" | "desktop" | "watch" | "browser") => {
-		try {
-			const access = await source.access(sandbox.id);
-			if (which === "ssh") {
-				await navigator.clipboard?.writeText(access.ssh);
-				onNotice({ level: "info", text: `Copied: ${access.ssh}` });
-			} else {
-				const url = { desktop: access.desktopUrl, watch: access.desktopViewUrl, browser: access.browserUrl }[which];
-				window.open(url, "_blank", "noopener");
-			}
-		} catch (caught) {
-			onNotice({ level: "error", text: messageOf(caught, "Kantel couldn't reach the sandbox. Try again.") });
 		}
 	};
 	const resume = () => void act("resume", () => source.resume(sandbox.id));
@@ -670,121 +671,29 @@ function useRowActions(sandbox: Sandbox, calls: RowCalls) {
 	const entries: MenuEntry[] = [
 		{
 			kind: "item",
-			id: "browser",
-			label: "Browser",
-			icon: <GlobeIcon size="sm" />,
-			disabled: !windows,
-			onSelect: () => void open("browser"),
+			id: "stop",
+			label: "Stop",
+			icon: <StopIcon size="sm" />,
+			disabled: !can.stop,
+			onSelect: () => void act("stop", () => source.stop(sandbox.id)),
 		},
-		{
-			kind: "item",
-			id: "desktop",
-			label: "Desktop",
-			icon: <DesktopIcon />,
-			disabled: !windows,
-			onSelect: () => void open("desktop"),
-		},
-		{
-			kind: "item",
-			id: "watch",
-			label: "Watch",
-			disabled: !windows,
-			onSelect: () => void open("watch"),
-		},
-		{
-			kind: "item",
-			id: "ssh",
-			label: "Copy SSH command",
-			icon: <TerminalIcon size="sm" />,
-			disabled: !can.connect,
-			onSelect: () => void open("ssh"),
-		},
-		{ kind: "item", id: "history", label: "Command history", onSelect: () => onHistory(sandbox) },
-		...(onEgress === undefined || pending
-			? []
-			: [
-					{
-						kind: "item" as const,
-						id: "egress",
-						label: "Egress",
-						icon: <ProxyIcon />,
-						onSelect: () => onEgress(sandbox.id),
-					},
-				]),
-		...(onSnapshots === undefined || pending
-			? []
-			: [
-					{
-						kind: "item" as const,
-						id: "snapshots",
-						label: "Snapshots",
-						icon: <SnapshotIcon />,
-						onSelect: () => onSnapshots(sandbox.id),
-					},
-				]),
-		{ kind: "separator", id: "sep-power" },
-		can.stop
-			? {
-					kind: "item",
-					id: "stop",
-					label: "Stop",
-					icon: <StopIcon size="sm" />,
-					onSelect: () => void act("stop", () => source.stop(sandbox.id)),
-				}
-			: {
-					kind: "item",
-					id: "resume",
-					label: "Resume",
-					icon: <PlayIcon />,
-					disabled: !can.resume,
-					onSelect: resume,
-				},
-		{
-			kind: "item",
-			id: "fork",
-			label: "Fork",
-			icon: <ForkIcon size="sm" />,
-			disabled: !can.fork || sandbox.snapshot === undefined,
-			onSelect: () =>
-				void act(
-					"fork",
-					() => source.fork(sandbox.id),
-					(box) => onNotice({ level: "info", text: `Forked ${sandbox.name} as ${box.name}.` }),
-				),
-		},
-		{
-			kind: "item",
-			id: "recover",
-			label: "Recover",
-			icon: <ReconnectIcon />,
-			disabled: !can.recover,
-			onSelect: recover,
-		},
-		...(canSave
-			? [
-					{
-						kind: "item" as const,
-						id: "save",
-						label: "Save snapshot",
-						disabled: sandbox.snapshot === undefined,
-						onSelect: () => onSave(sandbox),
-					},
-				]
-			: []),
-		{ kind: "separator", id: "sep-delete" },
-		{
-			kind: "item",
-			id: "delete",
-			label: "Delete",
-			icon: <TrashIcon />,
-			danger: true,
-			onSelect: () => onDelete(sandbox),
-		},
+		{ kind: "separator", id: "sep-stop" },
+		...menu.entries,
 	];
-	const menu = pending ? null : (
-		<Menu label={`Actions for ${sandbox.name}`} icon={<EllipsisIcon />} entries={entries} align="end" />
+	const actions = pending ? null : (
+		<>
+			<Menu label={`Actions for ${sandbox.name}`} icon={<EllipsisIcon />} entries={entries} align="end" />
+			{menu.dialogs}
+		</>
 	);
-	return { pending, can, windows, open, resume, recover, menu };
+	const { sandboxHref } = calls;
+	const href =
+		pending || sandboxHref === undefined ? undefined : (view?: SandboxRowView) => sandboxHref(sandbox.id, view);
+	const onLink = follow(calls.navigate);
+	const onScreen = screenLink(source.screens, calls.navigate, (view) =>
+		popOut(view, undefined, () => source.access(sandbox.id)),
+	);
+	return { pending, can, windows, resume, recover, actions, href, onLink, onScreen };
 }
 
 /** The state, in its colour. */
@@ -816,6 +725,9 @@ function Cpu({ sandbox, percent = false }: { sandbox: Sandbox; percent?: boolean
 const onHover =
 	"opacity-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100 pointer-coarse:opacity-100 transition-opacity";
 
+/** A link styled as a ghost button: Browser and Desktop open in the console. */
+const ghostLink = `${buttonClass("ghost", "sm")} relative no-underline`;
+
 function SandboxRow({
 	sandbox,
 	hosting,
@@ -831,18 +743,34 @@ function SandboxRow({
 	ticked: boolean;
 	onTick: (on: boolean) => void;
 }) {
-	const { pending, can, windows, open, resume, recover, menu } = useRowActions(sandbox, calls);
+	const { pending, can, windows, resume, recover, actions, href, onLink, onScreen } = useRowActions(sandbox, calls);
 	const stops = stopsText(sandbox, now);
 	return (
-		<tr className={`kt-sandbox-row group/row ${ticked ? "bg-selected" : "hover:bg-hover"}`} data-sandbox={sandbox.id}>
+		// The name's link covers the row (its ::after), so anywhere on it opens the sandbox; the tick box and the buttons
+		// sit above it.
+		<tr
+			className={`kt-sandbox-row group/row relative ${ticked ? "bg-selected" : "hover:bg-hover"}`}
+			data-sandbox={sandbox.id}
+		>
 			<td className={`${cell} w-0 pr-0`}>
 				<TickBox label={`Select ${sandbox.name}`} checked={ticked} disabled={pending} onChange={onTick} />
 			</td>
 			{/* The name takes the room the other columns leave, and truncates, so the row's actions never go off the edge. */}
 			<td className={`${cell} w-full min-w-40 max-w-0`}>
-				<span className="block truncate font-medium text-fg" title={sandbox.name}>
-					{sandbox.name}
-				</span>
+				{href === undefined ? (
+					<span className="block truncate font-medium text-fg" title={sandbox.name}>
+						{sandbox.name}
+					</span>
+				) : (
+					<a
+						className="kt-focusable block truncate font-medium text-fg no-underline after:absolute after:inset-0"
+						href={href()}
+						title={sandbox.name}
+						onClick={onLink}
+					>
+						{sandbox.name}
+					</a>
+				)}
 				{sandbox.state === "error" && sandbox.error !== undefined ? (
 					<span className="block truncate text-xs text-status-error" title={sandbox.error}>
 						{sandbox.error}
@@ -874,15 +802,17 @@ function SandboxRow({
 				</span>
 			</td>
 			<td className={`${cell} w-0 text-right`}>
-				<span className="flex items-center justify-end gap-1">
-					{windows ? (
+				<span className="relative flex items-center justify-end gap-1">
+					{windows && href !== undefined ? (
 						<span className={`flex gap-1 ${onHover}`}>
-							<Button size="sm" variant="ghost" icon={<GlobeIcon size="sm" />} onClick={() => void open("browser")}>
-								Browser
-							</Button>
-							<Button size="sm" variant="ghost" icon={<DesktopIcon size="sm" />} onClick={() => void open("desktop")}>
-								Desktop
-							</Button>
+							<a className={ghostLink} href={href("browser")} onClick={onScreen("browser")}>
+								<GlobeIcon size="sm" />
+								<span className={buttonLabelClass}>Browser</span>
+							</a>
+							<a className={ghostLink} href={href("desktop")} onClick={onScreen("desktop")}>
+								<DesktopIcon size="sm" />
+								<span className={buttonLabelClass}>Desktop</span>
+							</a>
 						</span>
 					) : can.recover ? (
 						<Button size="sm" icon={<ReconnectIcon size="sm" />} onClick={recover}>
@@ -895,14 +825,17 @@ function SandboxRow({
 							</Button>
 						</span>
 					) : null}
-					{menu}
+					{actions}
 				</span>
 			</td>
 		</tr>
 	);
 }
 
-/** A phone's row: the name with its CPU and state beside it, the machine and when it stops under it, and ⋯. */
+/**
+ * A phone's row, all of it a link to the sandbox's page: the name with its CPU and state beside it, the machine and
+ * when it stops under it, and a chevron. The page has the actions. The tick box is beside the link, not in it.
+ */
 function SandboxPhoneRow({
 	sandbox,
 	now,
@@ -916,34 +849,140 @@ function SandboxPhoneRow({
 	ticked: boolean;
 	onTick: (on: boolean) => void;
 }) {
-	const { pending, menu } = useRowActions(sandbox, calls);
+	const { pending, href, actions } = useRowActions(sandbox, calls);
 	const stops = stopsText(sandbox, now);
+	const body = (
+		<div className="flex min-w-0 flex-1 flex-col gap-1">
+			<div className="flex min-w-0 items-center gap-3">
+				<span className="min-w-0 flex-1 truncate text-md font-medium text-fg">{sandbox.name}</span>
+				<Cpu sandbox={sandbox} />
+				<StateLabel state={sandbox.state} />
+			</div>
+			{sandbox.state === "error" && sandbox.error !== undefined ? (
+				<span className="truncate text-sm text-status-error">{sandbox.error}</span>
+			) : (
+				<span className="flex min-w-0 flex-wrap gap-x-3 text-sm text-muted">
+					<span>
+						{SANDBOX_KIND_LABELS[sandbox.kind]}, {sizeText(sandbox.resources ?? sandbox.size)}
+					</span>
+					{sandbox.environment === undefined ? null : <span>{sandbox.environment.name}</span>}
+					{stops === "–" ? null : <span>{stops === "Always on" || stops === "Now" ? stops : `Stops ${stops}`}</span>}
+				</span>
+			)}
+		</div>
+	);
 	return (
 		<li
-			className={`kt-sandbox-row flex min-w-0 items-center gap-3 border-b border-border py-3 ${ticked ? "bg-selected" : ""}`}
+			className={`kt-sandbox-row flex min-w-0 items-center gap-3 border-b border-border ${ticked ? "bg-selected" : ""}`}
 			data-sandbox={sandbox.id}
 		>
 			<TickBox label={`Select ${sandbox.name}`} checked={ticked} disabled={pending} onChange={onTick} />
-			<div className="flex min-w-0 flex-1 flex-col gap-1">
-				<div className="flex min-w-0 items-center gap-3">
-					<span className="min-w-0 flex-1 truncate text-md font-medium text-fg">{sandbox.name}</span>
-					<Cpu sandbox={sandbox} />
-					<StateLabel state={sandbox.state} />
+			{href === undefined ? (
+				<div className="flex min-w-0 flex-1 items-center gap-2 py-3">
+					{body}
+					{actions}
 				</div>
-				{sandbox.state === "error" && sandbox.error !== undefined ? (
-					<span className="truncate text-sm text-status-error">{sandbox.error}</span>
-				) : (
-					<span className="flex min-w-0 flex-wrap gap-x-3 text-sm text-muted">
-						<span>
-							{SANDBOX_KIND_LABELS[sandbox.kind]}, {sizeText(sandbox.resources ?? sandbox.size)}
-						</span>
-						{sandbox.environment === undefined ? null : <span>{sandbox.environment.name}</span>}
-						{stops === "–" ? null : <span>{stops === "Always on" || stops === "Now" ? stops : `Stops ${stops}`}</span>}
-					</span>
-				)}
-			</div>
-			{menu}
+			) : (
+				<a
+					className="kt-focusable flex min-w-0 flex-1 items-center gap-2 py-3 text-inherit no-underline"
+					href={href()}
+					onClick={follow(calls.navigate)}
+				>
+					{body}
+					<ChevronRightIcon size="sm" className="flex-none text-faint" />
+				</a>
+			)}
 		</li>
+	);
+}
+
+/** A row's checkbox, or the head's for all of them: `indeterminate` when some are ticked. Above a row's link. */
+function TickBox({
+	id,
+	label,
+	checked,
+	indeterminate = false,
+	disabled = false,
+	onChange,
+}: {
+	id?: string;
+	label: string;
+	checked: boolean;
+	indeterminate?: boolean;
+	disabled?: boolean;
+	onChange: (on: boolean) => void;
+}) {
+	const ref = useRef<HTMLInputElement>(null);
+	useEffect(() => {
+		if (ref.current !== null) ref.current.indeterminate = indeterminate;
+	}, [indeterminate]);
+	return (
+		<input
+			ref={ref}
+			id={id}
+			type="checkbox"
+			className="kt-checkbox kt-focusable relative z-1 m-0 block size-3.5 flex-none cursor-pointer accent-accent disabled:cursor-default"
+			aria-label={label}
+			checked={checked}
+			disabled={disabled}
+			onChange={(event) => onChange(event.target.checked)}
+		/>
+	);
+}
+
+/**
+ * Over the list: what acts on the ticked sandboxes, once any are, and on a phone Select all, which the table's head has
+ * on a wide screen. Nothing on a wide screen until something is ticked.
+ */
+function SelectionBar({
+	narrow,
+	count,
+	all,
+	some,
+	disabled,
+	onAll,
+	actions,
+}: {
+	narrow: boolean;
+	count: number;
+	all: boolean;
+	some: boolean;
+	disabled: boolean;
+	onAll: (on: boolean) => void;
+	actions: ReactNode;
+}) {
+	const allId = useId();
+	if (!narrow && count === 0) return null;
+	return (
+		<div className="kt-selection-bar flex min-h-control-sm flex-wrap items-center gap-x-3 gap-y-2">
+			{narrow ? (
+				<span className="flex items-center gap-3 text-sm text-muted">
+					<TickBox
+						id={allId}
+						label="Select all"
+						checked={all}
+						indeterminate={some}
+						disabled={disabled}
+						onChange={onAll}
+					/>
+					<label htmlFor={allId} className="cursor-pointer">
+						{count === 0 ? "Select all" : `${count} selected`}
+					</label>
+				</span>
+			) : (
+				<span className="text-sm text-fg tabular-nums" aria-live="polite">
+					{count} selected
+				</span>
+			)}
+			{count === 0 ? null : (
+				<span className="ml-auto flex flex-wrap items-center gap-2">
+					{actions}
+					<Button size="sm" variant="ghost" onClick={() => onAll(false)}>
+						Clear
+					</Button>
+				</span>
+			)}
+		</div>
 	);
 }
 
@@ -1082,283 +1121,6 @@ function NewSandboxDialog({
 					/>
 				)}
 			</div>
-		</Dialog>
-	);
-}
-
-function HistoryDialog({
-	sandbox,
-	source,
-	now,
-	onClose,
-}: {
-	sandbox: Sandbox | undefined;
-	source: SandboxesSource;
-	now: number;
-	onClose: () => void;
-}) {
-	const [commands, setCommands] = useState<readonly SandboxCommand[] | "loading" | Error>("loading");
-	useEffect(() => {
-		if (sandbox === undefined) return;
-		let live = true;
-		setCommands("loading");
-		source.history(sandbox.id).then(
-			(list) => live && setCommands(list),
-			(caught: unknown) => live && setCommands(caught instanceof Error ? caught : new Error(String(caught))),
-		);
-		return () => {
-			live = false;
-		};
-	}, [sandbox, source]);
-	let body: ReactNode;
-	if (commands === "loading") body = <Skeleton />;
-	else if (commands instanceof Error) body = <p className="kt-dialog-error">{commands.message}</p>;
-	else if (commands.length === 0) body = <p>No commands have run in it yet.</p>;
-	else
-		body = (
-			<ol className="m-0 flex max-h-(--kt-popover-height) list-none flex-col divide-y divide-border overflow-y-auto p-0">
-				{commands.map((command) => (
-					<li key={command.id} className="flex flex-col gap-0.5 py-2">
-						<code className="font-mono text-code text-fg break-all">{command.command}</code>
-						<span className="text-xs text-muted">
-							{compactAge(command.startedAt, now)} ago by {command.by}
-							{command.durationMs === undefined ? ", running" : `, took ${duration(command.durationMs)}`}
-							{command.exitCode === undefined ? "" : `, exit ${command.exitCode}`}
-						</span>
-					</li>
-				))}
-			</ol>
-		);
-	return (
-		<Dialog
-			open={sandbox !== undefined}
-			title={sandbox === undefined ? "Command history" : `Command history of ${sandbox.name}`}
-			onClose={onClose}
-			actions={<Button onClick={onClose}>Close</Button>}
-		>
-			<div className="w-(--kt-card-width) max-w-full">{body}</div>
-		</Dialog>
-	);
-}
-
-/** A row's checkbox, or the head's for all of them: `indeterminate` when some are ticked. */
-function TickBox({
-	id,
-	label,
-	checked,
-	indeterminate = false,
-	disabled = false,
-	onChange,
-}: {
-	id?: string;
-	label: string;
-	checked: boolean;
-	indeterminate?: boolean;
-	disabled?: boolean;
-	onChange: (on: boolean) => void;
-}) {
-	const ref = useRef<HTMLInputElement>(null);
-	useEffect(() => {
-		if (ref.current !== null) ref.current.indeterminate = indeterminate;
-	}, [indeterminate]);
-	return (
-		<input
-			ref={ref}
-			id={id}
-			type="checkbox"
-			className="kt-checkbox kt-focusable m-0 block size-3.5 flex-none cursor-pointer accent-accent disabled:cursor-default"
-			aria-label={label}
-			checked={checked}
-			disabled={disabled}
-			onChange={(event) => onChange(event.target.checked)}
-		/>
-	);
-}
-
-/**
- * Over the list: what acts on the ticked sandboxes, once any are, and on a phone Select all, which the table's head has
- * on a wide screen. Nothing on a wide screen until something is ticked.
- */
-function SelectionBar({
-	narrow,
-	count,
-	all,
-	some,
-	disabled,
-	onAll,
-	actions,
-}: {
-	narrow: boolean;
-	count: number;
-	all: boolean;
-	some: boolean;
-	disabled: boolean;
-	onAll: (on: boolean) => void;
-	actions: ReactNode;
-}) {
-	const allId = useId();
-	if (!narrow && count === 0) return null;
-	return (
-		<div className="kt-selection-bar flex min-h-control-sm flex-wrap items-center gap-x-3 gap-y-2">
-			{narrow ? (
-				<span className="flex items-center gap-3 text-sm text-muted">
-					<TickBox
-						id={allId}
-						label="Select all"
-						checked={all}
-						indeterminate={some}
-						disabled={disabled}
-						onChange={onAll}
-					/>
-					<label htmlFor={allId} className="cursor-pointer">
-						{count === 0 ? "Select all" : `${count} selected`}
-					</label>
-				</span>
-			) : (
-				<span className="text-sm text-fg tabular-nums" aria-live="polite">
-					{count} selected
-				</span>
-			)}
-			{count === 0 ? null : (
-				<span className="ml-auto flex flex-wrap items-center gap-2">
-					{actions}
-					<Button size="sm" variant="ghost" onClick={() => onAll(false)}>
-						Clear
-					</Button>
-				</span>
-			)}
-		</div>
-	);
-}
-
-function DeleteDialog({
-	sandboxes,
-	onClose,
-	onDelete,
-}: {
-	sandboxes: readonly Sandbox[] | undefined;
-	onClose: () => void;
-	onDelete: (boxes: readonly Sandbox[]) => Promise<void>;
-}) {
-	const sandbox = sandboxes?.length === 1 ? sandboxes[0] : undefined;
-	const [busy, setBusy] = useState(false);
-	const [failure, setFailure] = useState<string>();
-	// Which attempt the dialog is showing: one that settles after the dialog closed (or was opened again) leaves it be.
-	const attempt = useRef(0);
-	const close = () => {
-		attempt.current += 1;
-		setBusy(false);
-		setFailure(undefined);
-		onClose();
-	};
-	return (
-		<Dialog
-			open={sandboxes !== undefined && sandboxes.length > 0}
-			title="Delete permanently?"
-			onClose={close}
-			actions={
-				<>
-					<Button onClick={close}>Cancel</Button>
-					<Button
-						variant="danger"
-						busy={busy}
-						onClick={() => {
-							if (sandboxes === undefined) return;
-							const mine = ++attempt.current;
-							setBusy(true);
-							setFailure(undefined);
-							onDelete(sandboxes).then(
-								() => {
-									if (attempt.current === mine) close();
-								},
-								(caught: unknown) => {
-									if (attempt.current !== mine) return;
-									setBusy(false);
-									setFailure(messageOf(caught, "Kantel couldn't delete it. Try again."));
-								},
-							);
-						}}
-					>
-						Delete
-					</Button>
-				</>
-			}
-		>
-			{sandbox !== undefined || sandboxes === undefined ? (
-				<p>
-					<strong>{sandbox?.name}</strong> and every snapshot of it go for good. Saved snapshots made from it stay.
-				</p>
-			) : (
-				<p>
-					<strong>{sandboxes.length} sandboxes</strong> and every snapshot of them go for good. Saved snapshots made
-					from them stay.
-				</p>
-			)}
-			{failure === undefined ? null : <p className="kt-dialog-error">{failure}</p>}
-		</Dialog>
-	);
-}
-
-function SaveSnapshotDialog({
-	sandbox,
-	onClose,
-	onSave,
-}: {
-	sandbox: Sandbox | undefined;
-	onClose: () => void;
-	onSave: (box: Sandbox, name: string) => Promise<void>;
-}) {
-	const [name, setName] = useState("");
-	const [busy, setBusy] = useState(false);
-	const [failure, setFailure] = useState<string>();
-	const close = () => {
-		setName("");
-		setFailure(undefined);
-		onClose();
-	};
-	const submit = () => {
-		if (sandbox === undefined || name.trim() === "") return;
-		setBusy(true);
-		onSave(sandbox, name.trim()).then(
-			() => {
-				setBusy(false);
-				close();
-			},
-			(caught: unknown) => {
-				setBusy(false);
-				setFailure(messageOf(caught, "Kantel couldn't save it. Try again."));
-			},
-		);
-	};
-	return (
-		<Dialog
-			open={sandbox !== undefined}
-			title="Save snapshot"
-			onClose={close}
-			onSubmit={submit}
-			actions={
-				<>
-					<Button onClick={close}>Cancel</Button>
-					<Button type="submit" variant="primary" busy={busy} disabled={name.trim() === ""}>
-						Save
-					</Button>
-				</>
-			}
-		>
-			<p>
-				Keeps <strong>{sandbox?.name}</strong>'s latest snapshot under a name until you delete it. New sandboxes can
-				start from it.
-			</p>
-			<div className="pt-2">
-				<TextField
-					label="Name"
-					value={name}
-					onChange={(event) => setName(event.currentTarget.value)}
-					placeholder="node22-base"
-					mono
-				/>
-			</div>
-			{failure === undefined ? null : <p className="kt-dialog-error">{failure}</p>}
 		</Dialog>
 	);
 }

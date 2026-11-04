@@ -67,11 +67,14 @@ export interface Signer {
 
 export async function signerFromSeed(seed: Uint8Array): Promise<Signer> {
 	const pair = await importSeed("Ed25519", seed, ["sign"]);
-	const publicKey = await rawPublic(pair.publicKey);
+	return signerOf(pair.privateKey, await rawPublic(pair.publicKey));
+}
+
+function signerOf(privateKey: WebKey, publicKey: Uint8Array): Signer {
 	return {
 		publicKey,
 		async sign(message) {
-			return new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, pair.privateKey, own(message)));
+			return new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, privateKey, own(message)));
 		},
 	};
 }
@@ -100,7 +103,10 @@ export interface DhKeyPair {
 
 export async function dhFromSeed(seed: Uint8Array): Promise<DhKeyPair> {
 	const pair = await importSeed("X25519", seed, ["deriveBits"]);
-	const publicKey = await rawPublic(pair.publicKey);
+	return dhOf(pair.privateKey, await rawPublic(pair.publicKey));
+}
+
+function dhOf(privateKey: WebKey, publicKey: Uint8Array): DhKeyPair {
 	return {
 		publicKey,
 		async dh(remote) {
@@ -110,7 +116,7 @@ export async function dhFromSeed(seed: Uint8Array): Promise<DhKeyPair> {
 				// Cast: Workers' types spell the standard `public` member `$public`; the runtime takes `public`.
 				await crypto.subtle.deriveBits(
 					{ name: "X25519", public: key } as unknown as Parameters<typeof crypto.subtle.deriveBits>[0],
-					pair.privateKey,
+					privateKey,
 					256,
 				),
 			);
@@ -133,10 +139,46 @@ export interface KeySeeds {
 	readonly dh: string;
 }
 
-export interface Identity {
+/** A device's keys as sessions and the chain use them: what signs, and the Noise key. */
+export interface DeviceKeys {
 	readonly signer: Signer;
 	readonly static: DhKeyPair;
+}
+
+export interface Identity extends DeviceKeys {
 	readonly seeds: KeySeeds;
+}
+
+/** A key pair as WebCrypto holds it. */
+export interface WebKeyPair {
+	readonly privateKey: WebKey;
+	readonly publicKey: WebKey;
+}
+
+/**
+ * A browser device's keys, as it keeps them (IndexedDB stores WebCrypto keys as they are). The private halves are made
+ * non-extractable: script on the page can use them while it runs, but nothing can read them out, so a copy of the
+ * keys can't be taken away and used elsewhere.
+ */
+export interface WebKeyPairs {
+	readonly sign: WebKeyPair;
+	readonly dh: WebKeyPair;
+}
+
+export async function generateWebKeys(): Promise<WebKeyPairs> {
+	const pair = async (curve: Curve, usages: Usage[]): Promise<WebKeyPair> => {
+		// Cast: generateKey's answer is typed for every algorithm; an Ed25519 or X25519 one is a pair.
+		const made = (await crypto.subtle.generateKey({ name: curve }, false, usages)) as unknown as WebKeyPair;
+		return { privateKey: made.privateKey, publicKey: made.publicKey };
+	};
+	return { sign: await pair("Ed25519", ["sign", "verify"]), dh: await pair("X25519", ["deriveBits"]) };
+}
+
+export async function keysFromWebKeys(pairs: WebKeyPairs): Promise<DeviceKeys> {
+	return {
+		signer: signerOf(pairs.sign.privateKey, await rawPublic(pairs.sign.publicKey)),
+		static: dhOf(pairs.dh.privateKey, await rawPublic(pairs.dh.publicKey)),
+	};
 }
 
 export async function identityFromSeeds(seeds: KeySeeds): Promise<Identity> {

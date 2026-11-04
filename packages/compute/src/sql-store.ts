@@ -66,6 +66,10 @@ export function computeStoreSchema(dialect: SqlDriver["dialect"]): string[] {
 		dialect === "postgres"
 			? "CREATE INDEX IF NOT EXISTS compute_api_records_egress ON compute_api_records (((data::jsonb ->> 'sandboxId')), seq) WHERE kind = 'egress'"
 			: "CREATE INDEX IF NOT EXISTS compute_api_records_by_sandbox ON compute_api_records (kind, json_extract(data, '$.sandboxId'), seq)",
+		// One space's E2E chain, as `list({ space })` reads it on every chain read and append, without other spaces'.
+		dialect === "postgres"
+			? "CREATE INDEX IF NOT EXISTS compute_api_records_e2e_chain ON compute_api_records (((data::jsonb ->> 'space')), seq) WHERE kind = 'e2eChain'"
+			: "CREATE INDEX IF NOT EXISTS compute_api_records_by_space ON compute_api_records (kind, json_extract(data, '$.space'), seq)",
 		// No two environments of an account share a name (`environmentNameKey`): the write that would make two fails, in
 		// the database, whichever gateway makes it and however long after it read.
 		dialect === "postgres"
@@ -210,5 +214,7 @@ export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 		deviceLogins: sqlCollection(driver, "deviceLogins"),
 		environments: sqlCollection(driver, "environments"),
 		egress: sqlCollection(driver, "egress"),
+		e2eChain: sqlCollection(driver, "e2eChain"),
+		settings: sqlCollection(driver, "settings"),
 	};
 }

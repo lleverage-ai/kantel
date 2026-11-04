@@ -30,8 +30,7 @@ function Scenario({
 			account={personal ? PERSONAL : LLEVERAGE}
 			hosting={hosting}
 			now={FIXTURE_NOW}
-			onSnapshots={() => {}}
-			onEgress={() => {}}
+			sandboxHref={(id, view) => `#sandbox/${id}${view === undefined || view === "overview" ? "" : `/${view}`}`}
 			creating={creating}
 			narrow={narrow}
 			{...(noHosts ? { addHostHref: "#add-host" } : {})}

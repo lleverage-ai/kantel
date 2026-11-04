@@ -1,3 +1,6 @@
 # Copied from docs/site by scripts/sync-docs.mjs on every dev and build.
 src/content/docs/docs/
+# Copied from packages/cli/install-cli.sh by scripts/sync-installers.mjs on every dev and build.
+public/cli.sh
+public/install-cli.sh
 .astro/

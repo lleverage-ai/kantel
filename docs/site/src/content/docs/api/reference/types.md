@@ -344,6 +344,42 @@ With `approved`, the new key and its secret, shown this once.
 
 One of: `"pending"` or `"approved"` or `"denied"` or `"expired"`.
 
+### E2EAccess
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `url` | string | yes | A WebSocket URL to the sandbox's host that carries a Noise session as binary frames. The gateway relays it and can't read it: the device checks the host's key against the space's chain, and the host checks the device's. |
+| `hostId` | string | yes | The host the sandbox is on: the chain's entry for it has its key. |
+| `accountId` | string | yes | The sandbox's organisation: the space whose chain the session is in. |
+| `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### E2EAccessBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `ttlMinutes` | integer | no | How long a session can be started with this URL; one started in time stays open. Default 10. (minimum 1, maximum 60) |
+| `user` | string | no | The person whose device will open the session. Refused (`forbidden`) unless the call is that person's, so a browser whose sign-in may have changed under it (a cookie it can't read) never gets a URL for someone else's sign-in to use with its keys. |
+
+### E2EChain
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `entries` | [E2EEntry](/api/reference/types/#e2eentry)[] | yes | Oldest first; an entry's `seq` is its index. |
+
+### E2EChainAppend
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `from` | integer | yes | The seq of the first entry given: the chain's length as the caller last saw it. (minimum 0) |
+| `entries` | [E2EEntry](/api/reference/types/#e2eentry)[] | yes |  (at most 100 items) |
+
+### E2EEntry
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `payload` | string | yes | Base64url of the entry's JSON, exactly the bytes that were signed. |
+| `sig` | string | yes | Base64url of its Ed25519 signature. |
+
 ### EgressEntry
 
 One request or connection a sandbox made through its host's egress proxy. Never a value.
@@ -703,12 +739,34 @@ Where sandboxes' outbound traffic may go, and through what, for one account. Exp
 | `attribution` | boolean | yes | Tell the upstream which sandbox and account each request came from, in signed `Kantel-Sandbox` and `Kantel-Account` headers. |
 | `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
 
+### ProxySettingsExpected
+
+The settings as you last read them: `GET /proxy`'s answer will do. Given, the write is refused with `conflict` if they have changed since, so an edit made from an older read can't undo someone else's: read them again and redo the edit. Left out, the settings are replaced whatever they hold.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `enabled` | boolean | yes |  |
+| `defaultAction` | `"allow"` or `"deny"` | yes |  |
+| `allow` | string[] | yes |  |
+| `deny` | string[] | yes |  |
+| `upstream` | object | no |  |
+| `attribution` | boolean | yes |  |
+
 ### ProxyUpstream
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `url` | string | yes | Another proxy every allowed request goes on to, such as a Mehen. |
 | `headerNames` | string[] | yes | The names of the headers Kantel sends it; their values are never shown. |
+
+### PublicUrl
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `publicUrl` | string | yes | Where hosts reach this control plane: the address in every join command, such as `https://kantel.example.com`. |
+| `source` | `"console"` or `"deployment"` | yes | `console`: a super-admin set it here. `deployment`: the deployment's own (`KANTEL_PUBLIC_URL`, or the address the call came in at). |
+| `deploymentUrl` | string | yes | The deployment's own, which `publicUrl` goes back to when cleared. |
+| `loopback` | boolean | yes | `publicUrl` is a loopback address (`127.0.0.1`, `localhost`): only a host on the same machine can join. |
 
 ### PutEgressGrantsBody
 
@@ -735,6 +793,7 @@ Where sandboxes' outbound traffic may go, and through what, for one account. Exp
 | `deny` | string[] | no |  |
 | `upstream` | object or null | no |  |
 | `attribution` | boolean | no |  |
+| `expected` | [ProxySettingsExpected](/api/reference/types/#proxysettingsexpected) | no |  |
 
 ### PutTelemetryBody
 
@@ -944,6 +1003,12 @@ One of: `"private"` or `"organisation"`.
 | `protected` | boolean | no | Default false. |
 | `value` | string | no | Required for a new variable and when it becomes protected or plain. Left out on a protected one, it keeps its value (to change its bindings); a new value for a protected one is a rotation. (at most 32768 characters) |
 | `bindings` | [DestinationBinding](/api/reference/types/#destinationbinding)[] | no | A protected variable's destinations, at least one. Left out, a protected one keeps its own. (at most 32 items) |
+
+### SetPublicUrlBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `publicUrl` | string or null | yes | An http(s) origin, such as `https://kantel.example.com`; `null` goes back to the deployment's own. |
 
 ### Snapshot
 

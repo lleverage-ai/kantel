@@ -11,6 +11,7 @@ import { parseHostCapacity, parseHostFacts, storedCapacity, storedFacts } from "
 import { type CallOptions, createHostHub, HostCallError, type HostHub, type PortSink, type PortStream } from "./hub.ts";
 import {
 	HOST_CLOSE_REVOKED,
+	HOST_E2E_PORT,
 	HOST_FEATURES,
 	type HostEgress,
 	type HostEgressRecord,
@@ -121,6 +122,22 @@ export interface HostComputeLink {
 	/** A sandbox's protected values, or `undefined` unless the sandbox is on `hostId`. */
 	secrets(hostId: string, sandboxId: string): Promise<HostSecrets | undefined>;
 	recordEgress(hostId: string, records: readonly HostEgressRecord[]): Promise<void>;
+	/** An organisation's E2E chain for the host (`ComputeService.hostE2EChain`), and the host's own entries to it. */
+	readonly e2eChain?: {
+		read(hostId: string, space: string): Promise<readonly E2EChainEntry[]>;
+		append(
+			hostId: string,
+			space: string,
+			from: number,
+			entries: readonly E2EChainEntry[],
+		): Promise<readonly E2EChainEntry[]>;
+	};
+}
+
+/** A chain entry as the gateway passes it on: opaque to it, verified by hosts and devices (`@kantel/e2e`). */
+export interface E2EChainEntry {
+	readonly payload: string;
+	readonly sig: string;
 }
 
 export interface HostsServiceOptions {
@@ -180,6 +197,14 @@ export interface HostsService {
 	}): Promise<{ readonly hostId: string; readonly credential: string }>;
 	/** The host a credential is for, unless it is unknown or revoked. */
 	authenticate(credential: string): Promise<HostRecord | undefined>;
+	/** A space's E2E chain, for a host (`HostComputeLink.e2eChain`); `unavailable` before the compute plane is linked. */
+	e2eChain(hostId: string, space: string): Promise<readonly E2EChainEntry[]>;
+	appendE2EChain(
+		hostId: string,
+		space: string,
+		from: number,
+		entries: readonly E2EChainEntry[],
+	): Promise<readonly E2EChainEntry[]>;
 	/**
 	 * Every host. With `allocations: false` no placements are read and `allocated` is all zero: for a caller that needs
 	 * only what the hosts are (the compute backend's capabilities), at one statement rather than one per host.
@@ -580,6 +605,14 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			log(`[hosts] host ${hostId} (${name}) joined with token ${token.id}${into}`);
 			return { hostId, credential };
 		},
+		async e2eChain(hostId, space) {
+			if (compute?.e2eChain === undefined) throw new KantelError("unavailable", "This gateway keeps no E2E chains");
+			return compute.e2eChain.read(hostId, space);
+		},
+		async appendE2EChain(hostId, space, from, entries) {
+			if (compute?.e2eChain === undefined) throw new KantelError("unavailable", "This gateway keeps no E2E chains");
+			return compute.e2eChain.append(hostId, space, from, entries);
+		},
 		async authenticate(credential) {
 			if (!credential.startsWith(HOST_CREDENTIAL_PREFIX)) return undefined;
 			const host = await store.hostByCredential(await hashSecret(credential));
@@ -778,7 +811,10 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				return store.getPlacement(sandboxId);
 			},
 			async openPort(sandboxId, port, sink) {
-				if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new KantelError("invalid", "Not a port");
+				// Port 0 is the host's E2E responder for the sandbox (`HOST_E2E_PORT`), which only the host can read.
+				if (!Number.isInteger(port) || port < HOST_E2E_PORT || port > 65_535) {
+					throw new KantelError("invalid", "Not a port");
+				}
 				const placement = await placementOf(sandboxId);
 				try {
 					return await hub.openPort(placement.hostId, sandboxId, port, sink);

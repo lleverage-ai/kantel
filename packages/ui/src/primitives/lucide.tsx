@@ -3,6 +3,7 @@ import {
 	AppWindow,
 	Archive,
 	ArchiveRestore,
+	ArrowUp,
 	Blocks,
 	BookOpen,
 	Bot,
@@ -17,7 +18,9 @@ import {
 	ChevronsDownUp,
 	ChevronsUpDown,
 	CircleAlert,
+	CircleDot,
 	CreditCard,
+	Download,
 	Ellipsis,
 	ExternalLink,
 	Eye,
@@ -33,9 +36,11 @@ import {
 	KeyRound,
 	Laptop,
 	Layers,
+	Link,
 	ListFilter,
 	LogOut,
 	type LucideIcon,
+	Maximize2,
 	Monitor,
 	Moon,
 	Network,
@@ -64,6 +69,7 @@ import {
 	UserX,
 	WandSparkles,
 	Webhook,
+	X,
 	Zap,
 } from "lucide-react";
 import type { IconProps } from "./icons.tsx";
@@ -123,6 +129,11 @@ export const ReplayIcon = lucide(RotateCcw, "ReplayIcon");
 export const PreviousStepIcon = lucide(SkipBack, "PreviousStepIcon");
 export const NextStepIcon = lucide(SkipForward, "NextStepIcon");
 export const ExternalLinkIcon = lucide(ExternalLink, "ExternalLinkIcon");
+export const FullScreenIcon = lucide(Maximize2, "FullScreenIcon");
+/** A new link, with a token of its own, to something private: a sandbox's port. */
+export const NewLinkIcon = lucide(Link, "NewLinkIcon");
+/** Something that happened to a sandbox, in its log: started, a snapshot taken, stopped. */
+export const EventIcon = lucide(CircleDot, "EventIcon");
 // File types, for attachment cards (`file-icons.ts`).
 export const LucideFileIcon = lucide(File, "LucideFileIcon");
 export const FileTextIcon = lucide(FileText, "FileTextIcon");
@@ -174,3 +185,8 @@ export const ProxyIcon = lucide(Network, "ProxyIcon");
 export const WebhookIcon = lucide(Webhook, "WebhookIcon");
 export const TelemetryIcon = lucide(Activity, "TelemetryIcon");
 export const BillingIcon = lucide(CreditCard, "BillingIcon");
+/** The file browser (compute/snapshot-files.tsx) and its preview (preview/file-preview.tsx). */
+export const FolderUpIcon = lucide(ArrowUp, "FolderUpIcon");
+export const LucideFolderIcon = lucide(FolderClosed, "LucideFolderIcon");
+export const DownloadIcon = lucide(Download, "DownloadIcon");
+export const CloseIcon = lucide(X, "CloseIcon");

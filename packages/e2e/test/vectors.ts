@@ -31,6 +31,7 @@ export interface StateSummary {
 	readonly head: string;
 	readonly seq: number;
 	readonly mode: string;
+	readonly onSince: string;
 	readonly members: { readonly [user: string]: string };
 	readonly devices: readonly string[];
 	readonly hosts: readonly string[];
@@ -57,6 +58,7 @@ export function summary(state: SpaceState): StateSummary {
 		head: state.head,
 		seq: state.seq,
 		mode: state.mode,
+		onSince: state.onSince,
 		members: Object.fromEntries([...state.members].sort(([a], [b]) => a.localeCompare(b))),
 		devices: [...state.devices.keys()].sort(),
 		hosts: [...state.hosts.keys()].sort(),
@@ -253,6 +255,41 @@ export async function chainVectors(): Promise<{ readonly cases: readonly ChainCa
 		entries: [...base, strict, await signAs(strictState, f.tomPhone, { type: "mode", body: { mode: "off" } }, at + 1)],
 	});
 	cases.push({
+		name: "in a strict space, the admin removes their last CLI device, leaving only the hosted console's",
+		entries: [
+			...base,
+			strict,
+			await signAs(strictState, f.tom, { type: "device.remove", body: { id: f.tomId } }, at + 1),
+		],
+	});
+	cases.push({
+		name: "a strict genesis whose only device is the hosted console's",
+		entries: [
+			await signAs(
+				undefined,
+				f.tomPhone,
+				{
+					type: "genesis",
+					body: { mode: "strict", device: await chainDevice(f.tomPhone, "usr_tom", "web", "console") },
+				},
+				T0,
+			),
+		],
+	});
+	const off = await signAs(f.state, f.tom, { type: "mode", body: { mode: "off" } }, at);
+	const offState = await verifyChain([...base, off]);
+	const onAgain = await signAs(offState, f.tom, { type: "mode", body: { mode: "on" } }, at + 1);
+	const onState = await verifyChain([...base, off, onAgain]);
+	cases.push({ name: "E2E turned off: nothing is on since", entries: [...base, off] });
+	cases.push({
+		name: "E2E turned off and on again: on since the entry that turned it on",
+		entries: [...base, off, onAgain],
+	});
+	cases.push({
+		name: "on to strict keeps when E2E came on",
+		entries: [...base, off, onAgain, await signAs(onState, f.tom, { type: "mode", body: { mode: "strict" } }, at + 2)],
+	});
+	cases.push({
 		name: "a second genesis",
 		entries: [
 			...base,
@@ -368,6 +405,13 @@ export interface JoinVector {
 	readonly word: string;
 	/** Another space's chain: a gateway that hands the host this instead. */
 	readonly otherEntries: readonly ChainEntry[];
+	/**
+	 * An admin's entry the gateway took at the seq the host's host.add was for, so that host.add lost; and a new ticket
+	 * for rack-9 made after it, with which the host joins the chain as it now is.
+	 */
+	readonly race: { readonly entry: ChainEntry; readonly word: string };
+	/** A ticket for rack-9 that runs out ten years after the fixture, half as long as `word`. */
+	readonly shortWord: string;
 }
 
 /** A ticket for a second host, which the Go host's join must turn into a host.add the chain takes. */
@@ -389,7 +433,34 @@ export async function joinVector(): Promise<JoinVector> {
 		{ id: await keyId("kd", other.signer.publicKey), signer: other.signer },
 		T0,
 	);
-	return { entries: f.entries, word: encodeJoinTicket(join), otherEntries: [otherGenesis] };
+	const won = await signAs(
+		f.state,
+		f.tom,
+		{ type: "member.add", body: { user: "usr_ann", role: "member" } },
+		T0 + 600_000,
+	);
+	const after = await verifyChain([...f.entries, won]);
+	const again = await createHostTicket(
+		after,
+		{ id: f.tomId, signer: f.tom.signer },
+		"rack-9",
+		T0 + 20 * 365 * 24 * 3_600_000,
+		await seed("ticket-9-again"),
+	);
+	const short = await createHostTicket(
+		f.state,
+		{ id: f.tomId, signer: f.tom.signer },
+		"rack-9",
+		T0 + 10 * 365 * 24 * 3_600_000,
+		await seed("ticket-9-short"),
+	);
+	return {
+		entries: f.entries,
+		word: encodeJoinTicket(join),
+		otherEntries: [otherGenesis],
+		race: { entry: won, word: encodeJoinTicket(again) },
+		shortWord: encodeJoinTicket(short),
+	};
 }
 
 const here = (name: string) => fileURLToPath(new URL(`../vectors/${name}`, import.meta.url));

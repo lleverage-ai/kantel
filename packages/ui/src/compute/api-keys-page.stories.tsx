@@ -27,10 +27,14 @@ function Scenario({
 	options,
 	creating = false,
 	created,
+	narrow = false,
+	revokedOpen = false,
 }: {
 	options?: ComputeFixtureOptions;
 	creating?: boolean;
 	created?: CreatedApiKey;
+	narrow?: boolean;
+	revokedOpen?: boolean;
 }) {
 	const [source] = useState(() => createComputeFixtures(options));
 	return (
@@ -39,18 +43,23 @@ function Scenario({
 			account={LLEVERAGE}
 			now={FIXTURE_NOW}
 			creating={creating}
+			narrow={narrow}
+			revokedOpen={revokedOpen}
 			{...(created === undefined ? {} : { created })}
 		/>
 	);
 }
 
-/** An organisation's keys: a preset, a custom set, one never used, one revoked at the end. */
+/** An organisation's keys: a preset, a custom set, one never used; the revoked one folded away. */
 export const Default: Story = () => <Scenario />;
 
-/** New key, open, with the Agent preset ticked. */
+/** The revoked keys unfolded under the live ones. */
+export const Revoked: Story = () => <Scenario revokedOpen />;
+
+/** New key, open, with the Agent preset chosen. */
 export const Create: Story = () => <Scenario creating />;
 
-/** A key just made: its secret once, with the commands that use it. */
+/** A key just made: its secret once, in a dialog only Done closes. */
 export const Created: Story = () => <Scenario created={JUST_MADE} />;
 
 /** No keys yet. */
@@ -62,6 +71,10 @@ export const Loading: Story = () => <Scenario options={{ hang: true }} />;
 /** The list when Kantel can't be reached. */
 export const Failed: Story = () => <Scenario options={{ fail: true }} />;
 
-/** On a phone: the table scrolls sideways. */
-export const Mobile: Story = () => <Scenario />;
-Mobile.meta = { width: 420 };
+/** On a phone: two-line rows. */
+export const Mobile: Story = () => <Scenario narrow />;
+Mobile.meta = { width: 390 };
+
+/** A key just made, on a phone. */
+export const MobileCreated: Story = () => <Scenario narrow created={JUST_MADE} />;
+MobileCreated.meta = { width: 390 };

@@ -3,6 +3,8 @@
  *
  *   POST   /v1/hosts/register                   a host trades its join token for its credential (no sign-in: the
  *                                               token is the authority)
+ *   GET    /v1/hosts/e2e/chain?space=…          with the host's credential: a space's E2E chain, and the host's own
+ *   POST   /v1/hosts/e2e/chain                  host.add to it (`kantel-host e2e join`)
  *   GET    /v1/admin/hosts                      the operator's: hosts, join tokens, drain and revoke, as in
  *   POST   /v1/admin/hosts/join-tokens          docs/site/src/content/docs/api/reference/hosts.md
  *   GET    /v1/admin/hosts/{id}
@@ -20,6 +22,7 @@ import type { HostEgress, SandboxTier } from "./protocol.ts";
 import type { HostsService } from "./service.ts";
 
 export const HOSTS_REGISTER_PATH = "/v1/hosts/register";
+export const HOSTS_E2E_CHAIN_PATH = "/v1/hosts/e2e/chain";
 export const HOSTS_CONNECT_PATH = "/v1/hosts/connect";
 /** `GET /v1/hosts/images/{file}`: the host images `kantel-host install` fetches from the control plane. */
 export const HOSTS_IMAGES_PATH = "/v1/hosts/images";
@@ -36,6 +39,7 @@ const ADMIN_SANDBOXES = "/v1/admin/compute/sandboxes";
 export function isHostsPath(path: string): boolean {
 	return (
 		path === HOSTS_REGISTER_PATH ||
+		path === HOSTS_E2E_CHAIN_PATH ||
 		path === ADMIN_HOSTS ||
 		path.startsWith(`${ADMIN_HOSTS}/`) ||
 		path === ADMIN_SANDBOXES ||
@@ -184,6 +188,38 @@ export function createHostsApi(options: HostsApiOptions) {
 		return undefined;
 	};
 
+	const isEntries = (value: unknown): value is { payload: string; sig: string }[] =>
+		Array.isArray(value) &&
+		value.length > 0 &&
+		value.length <= 100 &&
+		value.every(
+			(entry) =>
+				isObject(entry) &&
+				isString((entry as { payload?: unknown }).payload) &&
+				isString((entry as { sig?: unknown }).sig),
+		);
+	/** The chain routes, for the host whose credential the request carries. */
+	const chain = async (request: Request): Promise<Response> => {
+		const credential = /^Bearer\s+(\S+)$/i.exec(request.headers.get("authorization") ?? "")?.[1];
+		const host = credential === undefined ? undefined : await hosts.authenticate(credential);
+		if (host === undefined) {
+			return json({ error: { code: "unauthenticated", message: "This needs a host's credential" } }, 401);
+		}
+		if (request.method === "GET") {
+			const space = new URL(request.url).searchParams.get("space");
+			if (space === null || space === "") throw new KantelError("invalid", "space is required");
+			return json({ entries: await hosts.e2eChain(host.id, space) });
+		}
+		if (request.method === "POST") {
+			const input = await body(request);
+			if (!isString(input.space) || !isNumber(input.from) || !isEntries(input.entries)) {
+				throw new KantelError("invalid", "The body is { space, from, entries }");
+			}
+			return json({ entries: await hosts.appendE2EChain(host.id, input.space, input.from, input.entries) });
+		}
+		return json({ error: { code: "invalid", message: "GET or POST" } }, 405);
+	};
+
 	return {
 		async fetch(request: Request): Promise<Response | undefined> {
 			const path = new URL(request.url).pathname;
@@ -206,6 +242,7 @@ export function createHostsApi(options: HostsApiOptions) {
 						201,
 					);
 				}
+				if (path === HOSTS_E2E_CHAIN_PATH) return await chain(request);
 				if (!isHostsPath(path)) return undefined;
 				return await admin(request, path);
 			} catch (error) {

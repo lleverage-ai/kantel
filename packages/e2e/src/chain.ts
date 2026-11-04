@@ -25,7 +25,7 @@
  * After every entry at least one admin must still have a device, so the chain can always move on.
  */
 import { concat, equalBytes, fromBase64url, fromUtf8, sha256, toBase64url, utf8 } from "./bytes.ts";
-import { type Identity, KEY_BYTES, keyId, randomSeed, type Signer, signerFromSeed, verifySignature } from "./keys.ts";
+import { type DeviceKeys, KEY_BYTES, keyId, randomSeed, type Signer, signerFromSeed, verifySignature } from "./keys.ts";
 
 export const CHAIN_VERSION = 1;
 
@@ -112,6 +112,11 @@ export interface SpaceState {
 	readonly head: string;
 	readonly seq: number;
 	readonly mode: SpaceMode;
+	/**
+	 * The hash of the entry from which E2E has been on (or strict) without a break: the genesis, or the mode entry that
+	 * last turned it on; "" while it is off. Hosts trust only sandboxes they made under the current one.
+	 */
+	readonly onSince: string;
 	readonly members: ReadonlyMap<string, MemberRole>;
 	/** Devices that are in, by ID. */
 	readonly devices: ReadonlyMap<string, ChainDevice>;
@@ -349,6 +354,7 @@ interface MutableState {
 	head: string;
 	seq: number;
 	mode: SpaceMode;
+	onSince: string;
 	members: Map<string, MemberRole>;
 	devices: Map<string, ChainDevice>;
 	hosts: Map<string, ChainHost>;
@@ -363,6 +369,7 @@ const copy = (state: SpaceState): MutableState => ({
 	head: state.head,
 	seq: state.seq,
 	mode: state.mode,
+	onSince: state.onSince,
 	members: new Map(state.members),
 	devices: new Map(state.devices),
 	hosts: new Map(state.hosts),
@@ -404,6 +411,7 @@ async function apply(state: MutableState | undefined, entry: ChainEntry, pin?: s
 			head: hash,
 			seq: 0,
 			mode: payload.body.mode,
+			onSince: payload.body.mode === "off" ? "" : hash,
 			members: new Map([[device.user, "admin"]]),
 			devices: new Map([[device.id, device]]),
 			hosts: new Map(),
@@ -412,6 +420,7 @@ async function apply(state: MutableState | undefined, entry: ChainEntry, pin?: s
 			at: payload.at,
 		};
 		spendDevice(next, device);
+		if (!adminCanSign(next)) throw new Error("No admin would have a device left that may sign in this mode");
 		return next;
 	}
 	if (payload.space !== state.space) throw new Error("The entry is for another space");
@@ -503,12 +512,14 @@ async function apply(state: MutableState | undefined, entry: ChainEntry, pin?: s
 				break;
 			case "mode":
 				needAdmin();
+				if (payload.body.mode === "off") next.onSince = "";
+				else if (next.mode === "off") next.onSince = hash;
 				next.mode = payload.body.mode;
 				break;
 		}
 	}
-	if (![...next.devices.values()].some((device) => next.members.get(device.user) === "admin")) {
-		throw new Error("No admin would have a device left");
+	if (!adminCanSign(next)) {
+		throw new Error("No admin would have a device left that may sign in this mode");
 	}
 	next.seq = payload.seq;
 	next.head = hash;
@@ -523,6 +534,16 @@ const freeze = (state: MutableState): SpaceState => state;
  * The state after `entries`, from the genesis. With `pin`, the genesis must be the one pinned. Throws `ChainError` on
  * the first entry that doesn't verify.
  */
+/**
+ * Whether an admin keeps a device that may sign the chain's next entries: in a strict space a web device's entries
+ * aren't taken, so one that only the hosted console could change could never be changed again.
+ */
+function adminCanSign(state: MutableState): boolean {
+	return [...state.devices.values()].some(
+		(device) => state.members.get(device.user) === "admin" && (state.mode !== "strict" || device.class !== "web"),
+	);
+}
+
 export async function verifyChain(entries: readonly ChainEntry[], pin?: string): Promise<SpaceState> {
 	if (entries.length === 0) throw new ChainError(0, "The chain is empty");
 	let state: MutableState | undefined;
@@ -589,9 +610,9 @@ export async function signEntry(
 	};
 }
 
-/** A device as the chain lists it, from its identity. */
+/** A device as the chain lists it, from its keys. */
 export async function chainDevice(
-	identity: Identity,
+	identity: DeviceKeys,
 	user: string,
 	deviceClass: DeviceClass,
 	label: string,
@@ -656,11 +677,17 @@ export function decodeJoinTicket(word: string): HostJoinTicket {
 	return { ticket, seed: key32(t.seed, "seed") };
 }
 
+/** What a join ticket says it is for (unverified: the host checks it against the chain it fetches). */
+export function ticketFor(join: HostJoinTicket): { space: string; genesis: string; name: string; exp: number } {
+	const { payload } = parseTicket(join.ticket);
+	return { space: payload.space, genesis: payload.genesis, name: payload.name, exp: payload.exp };
+}
+
 /** The `host.add` a host signs with its ticket's one-off key (the Go host does the same; this is for tests). */
 export async function signHostEntry(
 	state: SpaceState,
 	join: HostJoinTicket,
-	host: { readonly id: string; readonly identity: Identity },
+	host: { readonly id: string; readonly identity: DeviceKeys },
 	at: number,
 ): Promise<ChainEntry> {
 	const { payload } = parseTicket(join.ticket);

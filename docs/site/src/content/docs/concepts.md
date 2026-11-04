@@ -8,7 +8,7 @@ sidebar:
 ---
 
 :::caution[Experimental]
-These are the parts of the compute plane Kantel is becoming. The pages for each part say what works today.
+Kantel is still being built. The pages for each part say what works today.
 :::
 
 ## The control plane and hosts
