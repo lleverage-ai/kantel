@@ -100,8 +100,9 @@ func install(args []string) error {
 	cfg.ControlPlane = *controlPlane
 	// The installer's own files go back to where it puts them, under the new root; an operator's own sandbox image or
 	// guest agent (a custom image, see docs/sandboxes/custom-images) is kept, and fetchImages leaves it alone. Which
-	// is which is by the root the settings were loaded with.
+	// is which is decided here alone, by the root the settings were loaded with.
 	image, agentBin := custom(cfg.Root, cfg.SandboxImage, "sandbox.ext4"), custom(cfg.Root, cfg.GuestAgent, "kantel-guest")
+	keep := kept{image: image != "", agent: agentBin != ""}
 	cfg.Root = *root
 	if *name != "" {
 		cfg.Name = *name
@@ -151,7 +152,7 @@ func install(args []string) error {
 	if source == "" {
 		source = cfg.ControlPlane + "/v1/hosts/images"
 	}
-	if err := fetchImages(cfg, source, kvm); err != nil {
+	if err := fetchImages(cfg, source, kvm, keep); err != nil {
 		return err
 	}
 
@@ -360,15 +361,19 @@ func custom(root, configured, name string) string {
 	return configured
 }
 
-func fetchImages(cfg agent.Config, source string, kvm bool) error {
+// kept is which of the operator's own files install keeps (custom): fetchImages fetches none of them, wherever they
+// are, even at the path the installer would use.
+type kept struct{ image, agent bool }
+
+func fetchImages(cfg agent.Config, source string, kvm bool, keep kept) error {
 	arch := archName()
 	// An operator's own sandbox image or guest agent: theirs to keep, not a release's to replace.
-	mine := func(dst, name string) (bool, error) {
-		if custom(cfg.Root, dst, name) == "" {
+	mine := func(own bool, dst, setting string) (bool, error) {
+		if !own {
 			return false, nil
 		}
 		if _, err := os.Stat(dst); err != nil {
-			return true, fmt.Errorf("the configured %s: %w", name, err)
+			return true, fmt.Errorf("the configured %s: %w", setting, err)
 		}
 		return true, nil
 	}
@@ -404,7 +409,7 @@ func fetchImages(cfg agent.Config, source string, kvm bool) error {
 		if err := get("vmlinux-"+arch, cfg.Kernel, 0o644, true); err != nil {
 			return err
 		}
-		if own, err := mine(cfg.SandboxImage, "sandbox.ext4"); err != nil {
+		if own, err := mine(keep.image, cfg.SandboxImage, "sandboxImage"); err != nil {
 			return err
 		} else if !own {
 			if err := get("sandbox-"+arch+".ext4", cfg.SandboxImage, 0o644, true); err != nil {
@@ -415,7 +420,7 @@ func fetchImages(cfg agent.Config, source string, kvm bool) error {
 			return err
 		}
 		// The static agent the initramfs is made from (injectGuestAgent); required only when that's on.
-		if own, err := mine(cfg.GuestAgent, "kantel-guest"); err != nil {
+		if own, err := mine(keep.agent, cfg.GuestAgent, "guestAgent"); err != nil {
 			return err
 		} else if !own {
 			if err := get("kantel-guest-"+arch, cfg.GuestAgent, 0o755, cfg.InjectGuestAgent); err != nil {
