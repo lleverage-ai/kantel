@@ -248,6 +248,8 @@ describe("the compute API on kantel-host hosts", () => {
 		await expect(service.register({ token: token.token, facts })).rejects.toThrow(/unknown, used or expired/);
 		const host = new FakeHost(service, hostId);
 		host.connect();
+		// Its hello is answered once Kantel has read it back (async): it is online once welcomed.
+		while (!service.hub.connected(hostId)) await new Promise((resolve) => setTimeout(resolve, 1));
 
 		const listed = (await root.listHosts()).items;
 		expect(listed).toHaveLength(1);

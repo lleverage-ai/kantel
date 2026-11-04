@@ -8,7 +8,7 @@ import { createTunnelTickets } from "@kantel/hosts/tunnel";
 import { createAuthenticator } from "@kantel/identity/authenticator";
 import { MemoryInviteMailer } from "@kantel/identity/invites";
 import { hashSessionToken, kantelSessionProvider } from "@kantel/identity/otp";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { bootstrap, createGatewayComponents } from "../../src/gateway/components.ts";
 import {
 	computeConfig,
@@ -202,15 +202,20 @@ describe("the compute plane on the gateway", () => {
 		);
 		expect(() => computeConfig({ KANTEL_COMPUTE_BACKEND: "hosts" })).toThrow(/KANTEL_PUBLIC_URL/);
 		expect(() => computeConfig({ KANTEL_COMPUTE_BACKEND: "cloud" })).toThrow();
-		expect(
-			computeConfig({
-				KANTEL_COMPUTE_BACKEND: "hosts",
-				KANTEL_PUBLIC_URL: "https://kantel.example.com/",
-				KANTEL_COMPUTE_POOLS: '{"microvm/default": 2}',
-			}),
-		).toEqual({
-			hosts: { publicUrl: "https://kantel.example.com", images: DEFAULT_HOST_IMAGES, pools: { "microvm/default": 2 } },
-		});
+		// Warm pools are gone: an install that still sets KANTEL_COMPUTE_POOLS starts, with a warning, and keeps none.
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			expect(
+				computeConfig({
+					KANTEL_COMPUTE_BACKEND: "hosts",
+					KANTEL_PUBLIC_URL: "https://kantel.example.com/",
+					KANTEL_COMPUTE_POOLS: '{"microvm/default": 2}',
+				}),
+			).toEqual({ hosts: { publicUrl: "https://kantel.example.com", images: DEFAULT_HOST_IMAGES } });
+			expect(warn).toHaveBeenCalledWith(expect.stringMatching(/KANTEL_COMPUTE_POOLS is ignored/));
+		} finally {
+			warn.mockRestore();
+		}
 	});
 
 	it("asks hosts to update only for KANTEL_HOST_VERSION, from its GitHub Release by default", () => {

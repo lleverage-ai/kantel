@@ -22,8 +22,8 @@
  *   KANTEL_COMPUTE_PUBLIC_URL    with `hosts`: where hosts and clients reach this gateway (join commands, desktop,
  *                                browser and SSH tunnels); default KANTEL_PUBLIC_URL, one of which `hosts` needs.
  *                                deploy/compose/compose.yaml sets it to the gateway's local address by default
- *   KANTEL_COMPUTE_POOLS         warm sandboxes per host, as JSON such as {"microvm/default": 2}; default one
- *                                default-size microVM
+ *   KANTEL_COMPUTE_POOLS         no longer read: hosts keep no warm pools (a create restores a snapshot); set, it is
+ *                                ignored with a warning
  *   KANTEL_COMPUTE_JOIN_COMMAND  the join command shown with a token, with {url} and {token}; default the host
  *                                installer from Kantel's latest GitHub Release (DEFAULT_HOST_JOIN_COMMAND)
  *   KANTEL_HOST_VERSION, KANTEL_HOST_UPDATE_URL
@@ -130,7 +130,6 @@ const COMPUTE_SWEEP_MS = 5_000;
 /** The `hosts` backend's settings. */
 export interface ComputeHostsConfig {
 	readonly publicUrl: string;
-	readonly pools?: { readonly [pool: string]: number };
 	readonly joinCommand?: string;
 	readonly desiredVersion?: string;
 	readonly updateUrl?: string;
@@ -161,20 +160,9 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 			"KANTEL_COMPUTE_BACKEND=hosts needs KANTEL_COMPUTE_PUBLIC_URL or KANTEL_PUBLIC_URL: where hosts reach this gateway",
 		);
 	}
-	let pools: { [pool: string]: number } | undefined;
-	const rawPools = env.KANTEL_COMPUTE_POOLS?.trim() ?? "";
-	if (rawPools !== "") {
-		const parsed: unknown = JSON.parse(rawPools);
-		if (
-			typeof parsed !== "object" ||
-			parsed === null ||
-			Object.entries(parsed).some(
-				([key, value]) => !/^(microvm|isolate)\/[a-z0-9-]+$/.test(key) || !Number.isInteger(value) || value < 0,
-			)
-		) {
-			throw new Error('KANTEL_COMPUTE_POOLS is JSON such as {"microvm/default": 2}');
-		}
-		pools = parsed as { [pool: string]: number };
+	if ((env.KANTEL_COMPUTE_POOLS?.trim() ?? "") !== "") {
+		// An install from before warm pools were removed may still set it: it starts, without them.
+		console.warn("[compute] KANTEL_COMPUTE_POOLS is ignored: hosts keep no warm pools, a create restores a snapshot");
 	}
 	const version = env.KANTEL_HOST_VERSION?.trim() ?? "";
 	const updateUrl = env.KANTEL_HOST_UPDATE_URL?.trim() || DEFAULT_HOST_UPDATE_URL;
@@ -203,7 +191,6 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 			...(portsDomain === "" ? {} : { portsDomain }),
 			...(attributionKey === "" ? {} : { attributionKey }),
 			...(images === "" ? {} : { images }),
-			...(pools === undefined ? {} : { pools }),
 			...(joinCommand === "" ? {} : { joinCommand }),
 			...(version === "" || updateUrl === "" ? {} : { desiredVersion: version, updateUrl }),
 		},
@@ -232,7 +219,6 @@ export function gatewayHosts(
 		store,
 		...(cluster === undefined ? {} : { cluster }),
 		publicUrl: config.publicUrl,
-		...(config.pools === undefined ? {} : { pools: config.pools }),
 		...(config.joinCommand === undefined ? {} : { joinCommand: config.joinCommand }),
 		...(config.desiredVersion === undefined ? {} : { desiredVersion: config.desiredVersion }),
 		...(config.updateUrl === undefined ? {} : { updateUrl: config.updateUrl }),

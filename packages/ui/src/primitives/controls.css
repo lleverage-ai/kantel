@@ -10,3 +10,63 @@
 	outline: var(--kt-ring) solid var(--kt-focus);
 	outline-offset: var(--kt-hairline);
 }
+
+/*
+ * SliderField's range input (slider.tsx). Kept here because a range is drawn by its track and thumb pseudo-elements,
+ * which differ by engine (-webkit-, -moz-), and Chromium has no pseudo-element for the filled part: the fill is a
+ * gradient up to `--kt-slider-fill`, which the component sets inline. Utilities on these would be long arbitrary
+ * variants on every one of them.
+ */
+.kt-slider {
+	appearance: none;
+	background: transparent;
+	--kt-slider-track: var(--kt-step-1);
+	--kt-slider-thumb: var(--kt-step-4);
+}
+
+.kt-slider::-webkit-slider-runnable-track {
+	height: var(--kt-slider-track);
+	border-radius: var(--kt-radius-full);
+	background: linear-gradient(
+		to right,
+		var(--kt-accent) var(--kt-slider-fill, 0%),
+		var(--kt-border-strong) var(--kt-slider-fill, 0%)
+	);
+}
+
+.kt-slider::-webkit-slider-thumb {
+	appearance: none;
+	width: var(--kt-slider-thumb);
+	height: var(--kt-slider-thumb);
+	margin-top: calc((var(--kt-slider-track) - var(--kt-slider-thumb)) / 2);
+	border: calc(var(--kt-hairline) * 2) solid var(--kt-raised);
+	border-radius: var(--kt-radius-full);
+	background: var(--kt-accent);
+	box-shadow: var(--kt-shadow-raised);
+	transition: transform var(--kt-duration-fast) ease;
+}
+
+.kt-slider:not(:disabled):active::-webkit-slider-thumb {
+	transform: scale(1.15);
+}
+
+.kt-slider::-moz-range-track {
+	height: var(--kt-slider-track);
+	border-radius: var(--kt-radius-full);
+	background: var(--kt-border-strong);
+}
+
+.kt-slider::-moz-range-progress {
+	height: var(--kt-slider-track);
+	border-radius: var(--kt-radius-full);
+	background: var(--kt-accent);
+}
+
+.kt-slider::-moz-range-thumb {
+	width: var(--kt-slider-thumb);
+	height: var(--kt-slider-thumb);
+	border: calc(var(--kt-hairline) * 2) solid var(--kt-raised);
+	border-radius: var(--kt-radius-full);
+	background: var(--kt-accent);
+	box-shadow: var(--kt-shadow-raised);
+}

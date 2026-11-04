@@ -15,7 +15,7 @@ import { createStubBackend, STUB_HOST_ID } from "@kantel/compute/stub";
 import { KantelError } from "@kantel/contracts";
 import { type ComputeSource, FilesRefusedError } from "@kantel/ui";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiCompute, SCREENS_NOT_END_TO_END, SCREENS_NOT_SERVED } from "./api-source.ts";
+import { apiCompute, SCREENS_NOT_END_TO_END, SCREENS_NOT_SERVED, shapesOf } from "./api-source.ts";
 import { localBridge } from "./local.ts";
 
 const ORIGIN = "https://kantel.test";
@@ -132,7 +132,7 @@ describe("sandboxes", () => {
 		const source = await open(fetchApi);
 		const accountId = await personalAccount(source);
 
-		const made = await source.sandboxes.create({ accountId, name: "lab", kind: "isolate", size: "small" });
+		const made = await source.sandboxes.create({ accountId, name: "lab", kind: "isolate" });
 		expect(made).toMatchObject({ name: "lab", accountId, kind: "isolate", state: "starting", createdBy: "Ada" });
 		expect(made.stopsAt).toBeUndefined();
 		await api.service.idle();
@@ -164,7 +164,7 @@ describe("sandboxes", () => {
 		const { api, fetchApi } = setup();
 		const plain = await open(fetchApi);
 		const accountId = await personalAccount(plain);
-		const made = await plain.sandboxes.create({ accountId, kind: "isolate", size: "small" });
+		const made = await plain.sandboxes.create({ accountId, kind: "isolate" });
 		await api.service.idle();
 		expect(await plain.e2e?.mode(accountId)).toBe("off");
 		expect(plain.e2e?.served).toBe("gateway");
@@ -238,7 +238,7 @@ describe("sandboxes", () => {
 		const { api, fetchApi } = setup();
 		const source = await open(fetchApi);
 		const accountId = await personalAccount(source);
-		const made = await source.sandboxes.create({ accountId, kind: "microvm", size: "small" });
+		const made = await source.sandboxes.create({ accountId, kind: "microvm" });
 		await api.service.idle();
 		const access = await source.sandboxes.access(made.id);
 		expect(access.unavailable).toBeUndefined();
@@ -255,7 +255,6 @@ describe("sandboxes", () => {
 		const box = await there.sandboxes.create({
 			accountId: await personalAccount(there),
 			kind: "microvm",
-			size: "small",
 		});
 		await refusing.api.service.idle();
 		const refused = await there.sandboxes.access(box.id);
@@ -311,7 +310,6 @@ describe("sandboxes", () => {
 		const made = await source.sandboxes.create({
 			accountId: await personalAccount(source),
 			kind: "microvm",
-			size: "small",
 		});
 		await api.service.idle();
 
@@ -349,7 +347,7 @@ describe("sandboxes", () => {
 		const { api, fetchApi } = setup();
 		const plain = await open(fetchApi);
 		const accountId = await personalAccount(plain);
-		const made = await plain.sandboxes.create({ accountId, kind: "isolate", size: "small" });
+		const made = await plain.sandboxes.create({ accountId, kind: "isolate" });
 		await api.service.idle();
 		const calls: { sandboxId: string; method: string; params: object }[] = [];
 		const gatewayFiles: string[] = [];
@@ -416,7 +414,7 @@ describe("sandboxes", () => {
 		const { api, fetchApi } = setup();
 		const plain = await open(fetchApi);
 		const accountId = await personalAccount(plain);
-		const made = await plain.sandboxes.create({ accountId, kind: "microvm", size: "small" });
+		const made = await plain.sandboxes.create({ accountId, kind: "microvm" });
 		await api.service.idle();
 		// What `kantel console` answers: the host's own refusal with its code, else a session that didn't get there.
 		const localFetch: typeof fetch = async (input, init) => {
@@ -460,19 +458,54 @@ describe("sandboxes", () => {
 		const { api, fetchApi } = setup();
 		const source = await open(fetchApi);
 		const accountId = await personalAccount(source);
-		expect(source.sandboxes.sizeFigures).toBe(false);
-		const made = await source.sandboxes.create({ accountId, kind: "microvm", size: "medium" });
+		const made = await source.sandboxes.create({ accountId, kind: "microvm" });
 		await api.service.idle();
 		const [listed] = await source.sandboxes.list(accountId);
 		// The stub backend's "default" is 2 vCPU and 4 GB, not the sample catalogue's 4 and 8.
 		expect(listed).toMatchObject({ id: made.id, size: "medium", resources: { vcpus: 2, memoryGb: 4, diskGb: 20 } });
 	});
 
+	it("keeps whether hosts make shapes off the presets, as the API says", () => {
+		const microvm = {
+			vcpus: { min: 1, max: 8, step: 1, default: 2 },
+			memoryMb: { min: 512, max: 16_384, step: 512, default: 4096 },
+			memoryMbPerVcpu: { min: 512, max: 8192 },
+			presets: [{ name: "default" as const, vcpus: 2, memoryMb: 4096, diskGb: 20 }],
+		};
+		const isolate = { memoryMb: { min: 128, max: 512, step: 64, default: 256 }, enforced: false };
+		// Older hosts only: the presets alone.
+		const older = shapesOf({ isolate, microvm: { ...microvm, custom: false } });
+		expect(older.microvm.custom).toBe(false);
+		const current = shapesOf({ isolate, microvm: { ...microvm, custom: true } });
+		expect(current.microvm.custom).toBe(true);
+		expect(current.microvm.available).toBeUndefined();
+		// No host for microVMs: the sample's ranges stand in, but no microVM may be made from them.
+		const none = shapesOf({ isolate });
+		expect(none.microvm.available).toBe(false);
+		expect(none.isolate.memoryMb).toEqual(isolate.memoryMb);
+	});
+
+	it("asks for the shape the sliders chose, and reads what may be chosen from the API", async () => {
+		const { api, fetchApi } = setup();
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const shapes = await source.sandboxes.shapes?.(accountId);
+		expect(shapes?.isolate.memoryMb).toEqual({ min: 128, max: 512, step: 64, default: 256 });
+		expect(shapes?.microvm.presets.map((preset) => preset.name)).toEqual(["small", "default", "large", "xlarge"]);
+		// Self-hosted: no price.
+		expect(shapes?.rates).toBeUndefined();
+		const custom = await source.sandboxes.create({ accountId, kind: "microvm", shape: { vcpus: 3, memoryMb: 6144 } });
+		const isolate = await source.sandboxes.create({ accountId, kind: "isolate", shape: { vcpus: 0, memoryMb: 384 } });
+		await api.service.idle();
+		expect(await source.sandboxes.get(custom.id)).toMatchObject({ resources: { vcpus: 3, memoryGb: 6 } });
+		expect(await source.sandboxes.get(isolate.id)).toMatchObject({ resources: { vcpus: 0, memoryGb: 0.375 } });
+	});
+
 	it("reads one for its page, sets its auto-stop, and reads its live files and a failed command's output", async () => {
 		const { api, fetchApi } = setup();
 		const source = await open(fetchApi);
 		const accountId = await personalAccount(source);
-		const made = await source.sandboxes.create({ accountId, name: "page", kind: "isolate", size: "small" });
+		const made = await source.sandboxes.create({ accountId, name: "page", kind: "isolate" });
 		await api.service.idle();
 
 		expect(await source.sandboxes.get(made.id)).toMatchObject({ id: made.id, name: "page", state: "running" });
@@ -521,7 +554,7 @@ describe("sandboxes", () => {
 		const { api, fetchApi } = setup();
 		const plain = await open(fetchApi);
 		const accountId = await personalAccount(plain);
-		const made = await plain.sandboxes.create({ accountId, kind: "isolate", size: "small" });
+		const made = await plain.sandboxes.create({ accountId, kind: "isolate" });
 		await api.service.idle();
 		// The host's answers for an isolate, as the gateway passes them on: `invalid` for a path outside /workspace,
 		// `not_found` for one that isn't there, and `unavailable` when it can't reach the host.
@@ -554,7 +587,7 @@ describe("snapshots", () => {
 		const { api, fetchApi } = setup();
 		const source = await open(fetchApi);
 		const accountId = await personalAccount(source);
-		const sandbox = await source.sandboxes.create({ accountId, kind: "isolate", size: "small" });
+		const sandbox = await source.sandboxes.create({ accountId, kind: "isolate" });
 		await api.service.idle();
 		// The UI source runs no commands, so the SDK writes the files.
 		const sdk = createKantelClient({ baseUrl: "/v1", token: "person-ada", fetch: fetchApi });
@@ -589,7 +622,7 @@ describe("snapshots", () => {
 		const { api, fetchApi } = setup();
 		const source = await open(fetchApi);
 		const accountId = await personalAccount(source);
-		const sandbox = await source.sandboxes.create({ accountId, kind: "isolate", size: "small" });
+		const sandbox = await source.sandboxes.create({ accountId, kind: "isolate" });
 		await api.service.idle();
 		await source.sandboxes.stop(sandbox.id);
 		await api.service.idle();
@@ -930,7 +963,6 @@ describe("egress", () => {
 		const sandbox = await source.sandboxes.create({
 			accountId,
 			kind: "isolate",
-			size: "small",
 			environmentId: environment.id,
 		});
 		expect(sandbox.environment).toEqual({ id: environment.id, name: "backend" });
@@ -1061,14 +1093,14 @@ describe("hosts", () => {
 		const { api, fetchApi } = setup();
 		const source = await open(fetchApi);
 		const accountId = await personalAccount(source);
-		const made = await source.sandboxes.create({ accountId, kind: "microvm", size: "small" });
+		const made = await source.sandboxes.create({ accountId, kind: "microvm", shape: { vcpus: 3, memoryMb: 6144 } });
 		await api.service.idle();
 
 		const read = source.sandboxes.usageSeries;
 		if (read === undefined) throw new Error("No live sandbox usage");
-		// Just booted, so no readings yet, but its limit is its size's memory.
+		// Just booted, so no readings yet, but its limit is its own shape's memory, not a size preset's.
 		const sandbox = await read(made.id, Date.now() - 600_000);
-		expect(sandbox).toEqual({ intervalMs: expect.any(Number), memLimitBytes: 1024 ** 3, points: [] });
+		expect(sandbox).toEqual({ intervalMs: expect.any(Number), memLimitBytes: 6144 * 1024 ** 2, points: [] });
 
 		const host = source.hosts?.usage;
 		if (host === undefined) throw new Error("No live host usage for a super-admin");

@@ -42,7 +42,10 @@ import type {
 import {
 	cliLoginCommand,
 	cliSshCommand,
+	DEFAULT_SANDBOX_SHAPES,
 	FilesRefusedError,
+	presetOf,
+	type SandboxSize,
 	sameProxySettings,
 	sizeSpec,
 	sshWithoutCliCommand,
@@ -106,6 +109,12 @@ export function usageSeries(seed: number, busy = 0.5, points = 30): readonly num
 }
 
 const flat = (points = 30): readonly number[] => Array.from({ length: points }, () => 0);
+
+/** The sample hosts' disk for a microVM of `memoryMb`: the first preset's with at least that memory, else the last's. */
+const sampleDisk = (memoryMb: number): number => {
+	const presets = DEFAULT_SANDBOX_SHAPES.microvm.presets;
+	return (presets.find((preset) => preset.memoryMb >= memoryMb) ?? presets.at(-1))?.diskGb ?? 0;
+};
 
 const sandbox = (
 	fields: Omit<Sandbox, "hostname" | "usage" | "createdBy"> &
@@ -253,6 +262,7 @@ export const SCRATCH = sandbox({
 	accountId: LLEVERAGE.id,
 	kind: "isolate",
 	size: "small",
+	resources: { vcpus: 0, memoryGb: 0.25, diskGb: 0 },
 	state: "running",
 	createdAt: FIXTURE_NOW - 6 * MINUTE,
 	stopsAt: FIXTURE_NOW + 9 * MINUTE,
@@ -317,6 +327,7 @@ export const NEW_ONE = sandbox({
 	accountId: LLEVERAGE.id,
 	kind: "isolate",
 	size: "small",
+	resources: { vcpus: 0, memoryGb: 0.25, diskGb: 0 },
 	state: "starting",
 	createdAt: FIXTURE_NOW - 2_000,
 	stopsAt: FIXTURE_NOW + HOUR,
@@ -1552,6 +1563,14 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 				}),
 		},
 		sandboxes: {
+			shapes: () =>
+				gate(() => ({
+					isolate: DEFAULT_SANDBOX_SHAPES.isolate,
+					microvm: DEFAULT_SANDBOX_SHAPES.microvm,
+					...(hosting === "hosted" && DEFAULT_SANDBOX_SHAPES.rates !== undefined
+						? { rates: DEFAULT_SANDBOX_SHAPES.rates }
+						: {}),
+				})),
 			list: (accountId) =>
 				gate(() =>
 					[...sandboxes.values()]
@@ -1568,7 +1587,20 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						hostname: `${name}.${slugOf(input.accountId)}.kantel.example.com`,
 						accountId: input.accountId,
 						kind: input.kind,
-						size: input.size,
+						size:
+							input.shape === undefined
+								? "medium"
+								: ((presetOf(DEFAULT_SANDBOX_SHAPES, input.shape)?.name ?? "medium") as SandboxSize),
+						...(input.shape === undefined
+							? {}
+							: {
+									resources: {
+										vcpus: input.shape.vcpus,
+										memoryGb: input.shape.memoryMb / 1024,
+										// As a host gives it: a preset's own, else the smallest preset's with at least its memory.
+										diskGb: input.kind === "isolate" ? 0 : sampleDisk(input.shape.memoryMb),
+									},
+								}),
 						state: "starting",
 						createdAt: now(),
 						createdBy: VIEWER.name,

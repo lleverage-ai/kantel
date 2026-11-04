@@ -61,8 +61,15 @@ export const Hosted: Story = () => <Scenario hosting="hosted" />;
 /** A personal account's own sandboxes. */
 export const Personal: Story = () => <Scenario personal />;
 
-/** New's caret: New sandbox, open. */
+/** New's caret: New sandbox, open, with its vCPU and memory sliders. Choose Isolate for its memory slider. */
 export const Create: Story = () => <Scenario creating />;
+
+/** New sandbox on hosted Kantel: the price follows the vCPUs and memory chosen. */
+export const CreateHosted: Story = () => <Scenario hosting="hosted" creating />;
+
+/** New sandbox on a phone. */
+export const CreateMobile: Story = () => <Scenario creating narrow />;
+CreateMobile.meta = { width: 390 };
 
 /** No sandboxes yet. */
 export const Empty: Story = () => <Scenario options={{ empty: true }} />;

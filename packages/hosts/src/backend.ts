@@ -307,7 +307,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		const { sandbox, hostId, ...known } = await hosts.sandboxes.create({
 			sandboxId: spec.sandboxId,
 			tier: spec.type,
-			...(spec.type === "microvm" && spec.size !== undefined ? { size: spec.size } : {}),
+			...(spec.type === "microvm" && spec.size !== undefined && spec.shape === undefined ? { size: spec.size } : {}),
+			// A shape is placed as one: on a host with that named size (restored from its template snapshot), or as a custom shape.
+			...(spec.shape === undefined ? {} : { shape: { vcpus: spec.shape.vcpus, memoryMiB: spec.shape.memoryMb } }),
 			owner: spec.accountId,
 			env: spec.env,
 			hostIds: from === undefined ? spec.eligibleHosts : [from.hostId],
@@ -326,14 +328,17 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			const backendHosts: BackendHost[] = [];
 			for (const host of views) {
 				for (const tier of host.tiers) types.add(tier);
+				const own: BackendSize[] = [];
 				for (const size of host.sizes ?? []) {
-					if (!SIZE_NAMES.has(size.name) || sizes.has(size.name)) continue;
-					sizes.set(size.name, {
+					if (!SIZE_NAMES.has(size.name)) continue;
+					const named = {
 						name: size.name as BackendSize["name"],
 						vcpus: size.vcpus,
 						memoryMb: size.memoryMiB,
 						diskGb: size.diskGiB,
-					});
+					};
+					own.push(named);
+					if (!sizes.has(size.name)) sizes.set(size.name, named);
 				}
 				backendHosts.push({
 					id: host.id,
@@ -346,6 +351,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					nestedVirtualisation: host.nestedVirtualisation,
 					features: [...host.features],
 					capacity: { ...host.capacity },
+					sizes: own,
 					labels: { ...host.labels },
 					connected: host.state === "online" || host.state === "draining",
 					...(host.lastSeenAt === undefined ? {} : { lastSeenAt: host.lastSeenAt }),

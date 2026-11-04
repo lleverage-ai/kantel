@@ -1099,6 +1099,8 @@ export function revivingStub(stub: SandboxBackend, sandboxes: Collection<StoredS
 			type: record.type,
 			subdomain: record.subdomain,
 			...(record.size === undefined ? {} : { size: record.size }),
+			// What it asked for, so it revives as the shape it was made.
+			...(record.shape === undefined ? {} : { shape: record.shape }),
 			...(record.image === undefined ? {} : { image: record.image }),
 			env: record.env,
 			eligibleHosts: [STUB_HOST_ID],

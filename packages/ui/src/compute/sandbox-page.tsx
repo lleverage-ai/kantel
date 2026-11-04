@@ -37,6 +37,7 @@ import {
 	sandboxMoving,
 	screenUnavailable,
 	sizeSpec,
+	sizeText,
 	stopsInText,
 } from "./compute-model.ts";
 import { EgressPage } from "./egress-page.tsx";
@@ -720,7 +721,8 @@ function Overview({
 				<dd className={dd}>{SANDBOX_KIND_LABELS[sandbox.kind]}</dd>
 				<dt className={dt}>Size</dt>
 				<dd className={dd}>
-					{spec.vcpus} vCPU, {spec.memoryGb} GB, {spec.diskGb} GB disk
+					{sizeText(spec)}
+					{spec.diskGb > 0 ? `, ${spec.diskGb} GB disk` : ""}
 				</dd>
 				{sandbox.snapshot === undefined ? null : (
 					<>

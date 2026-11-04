@@ -6,8 +6,7 @@
 //   - Template snapshots. For each size the host cold-boots one VM once, waits until every service is up, and
 //     snapshots it (memory and disk). A new sandbox restores that snapshot instead of booting: the memory file is
 //     mapped copy-on-write (MAP_PRIVATE), so every sandbox shares its unchanged pages.
-//   - A warm pool. The host keeps a few sandboxes already restored and idle (no network, no identity). Creating one
-//     claims it: it gets its own name, address, keys and entropy over vsock, and is running.
+//   - No warm pool. The host keeps no idle running VMs waiting for a create: a create restores a snapshot.
 //   - Stop keeps memory. A stop snapshots memory and disk, so resume is a restore, not a boot, and the sandbox's
 //     processes carry on.
 //
@@ -19,7 +18,6 @@
 //	sandboxes/<id>/vm/                        Firecracker's working directory: rootfs.ext4 (a link to the image),
 //	                                          disk.ext4 (the sandbox's own disk), state and mem after a stop
 //	snapshots/<id>/{meta.json,disk.ext4,...}  automatic and saved snapshots
-//	pool/<n>/                                 pre-warmed sandboxes, moved to sandboxes/<id> when claimed
 package microvm
 
 import (
@@ -35,6 +33,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -47,6 +46,7 @@ import (
 	"github.com/lleverage-ai/kantel/apps/host/internal/fsutil"
 	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
 	"github.com/lleverage-ai/kantel/apps/host/internal/guestinit"
+	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
 	"github.com/lleverage-ai/kantel/apps/host/internal/network"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
@@ -61,6 +61,61 @@ var DefaultSizes = []proto.Size{
 	{Name: "small", VCPUs: 1, MemoryMiB: 1024, DiskGiB: 10},
 	{Name: "default", VCPUs: 4, MemoryMiB: 2048, DiskGiB: 20},
 	{Name: "large", VCPUs: 4, MemoryMiB: 8192, DiskGiB: 50},
+}
+
+// A custom size is a shape off the named sizes, named custom-<vcpus>c-<memoryMiB>m-<diskGiB>g (such as
+// custom-5c-8192m-60g); names starting custom- are kept for them. It cold-boots: the host keeps no template or warm
+// pool for it.
+const (
+	customPrefix       = "custom-"
+	maxCustomVCPUs     = 32
+	minCustomMemoryMiB = 128
+	maxCustomDiskGiB   = 4096
+)
+
+// CustomSizeName is the size name of a custom shape.
+func CustomSizeName(vcpus, memoryMiB, diskGiB int) string {
+	return fmt.Sprintf("%s%dc-%dm-%dg", customPrefix, vcpus, memoryMiB, diskGiB)
+}
+
+// isCustom says a size name is a custom shape's, not one of the host's named sizes.
+func isCustom(name string) bool {
+	return strings.HasPrefix(name, customPrefix)
+}
+
+// parseCustomSize reads a name as CustomSizeName writes it; ok is false for anything else (signs, leading zeros,
+// other units).
+func parseCustomSize(name string) (vcpus, memoryMiB, diskGiB int, ok bool) {
+	rest, found := strings.CutPrefix(name, customPrefix)
+	if !found {
+		return 0, 0, 0, false
+	}
+	parts := strings.Split(rest, "-")
+	if len(parts) != 3 {
+		return 0, 0, 0, false
+	}
+	var n [3]int
+	for i, unit := range []string{"c", "m", "g"} {
+		digits, found := strings.CutSuffix(parts[i], unit)
+		if !found || digits == "" || len(digits) > 9 {
+			return 0, 0, 0, false
+		}
+		for _, r := range digits {
+			if r < '0' || r > '9' {
+				return 0, 0, 0, false
+			}
+		}
+		v, err := strconv.Atoi(digits)
+		if err != nil {
+			return 0, 0, 0, false
+		}
+		n[i] = v
+	}
+	// One name per shape: custom-05c-... isn't custom-5c-....
+	if CustomSizeName(n[0], n[1], n[2]) != name {
+		return 0, 0, 0, false
+	}
+	return n[0], n[1], n[2], true
 }
 
 // Config is the tier's setup.
@@ -125,33 +180,27 @@ type sandbox struct {
 
 func (s *sandbox) vmDir() string { return filepath.Join(s.dir, "vm") }
 
-type warm struct {
-	dir     string
-	size    string
-	machine *fc.Machine
-	guest   *guest.Client
-	link    network.Link
-	cid     uint32
-}
-
 // Manager runs the tier.
 type Manager struct {
 	cfg       Config
 	log       *slog.Logger
 	mu        sync.Mutex
 	sandboxes map[string]*sandbox
-	pool      map[string][]*warm
-	poolWant  map[string]int
-	filling   map[string]bool
+	// templates are keyed by size name, and only the named sizes have one. Fast cold starts for custom shapes (a
+	// per-shape template, or a snapshot to restore) would need templates keyed by the shape's fingerprint and a
+	// bounded cache, since a template's memory file is as large as the shape's memory: future work.
 	templates map[string]*sync.Mutex
 	nextCID   atomic.Uint32
 	closed    atomic.Bool
 	spool     *spool
+	// hostMemoryMiB is the machine's memory, a custom shape's ceiling (0: unknown, no ceiling but the sanity cap).
+	hostMemoryMiB int64
 	// guest is what the image has, as a template's agent reported it (guestFile); every sandbox shares the image.
 	guest atomic.Pointer[proto.GuestCapabilities]
 }
 
-// guestFile, in a template, is its agent's capability report.
+// guestFile, in a template, is its agent's capability report. The manager's root keeps the latest report too, from a
+// template or a custom shape's boot (which has no template), so a host that restarts still has it.
 const guestFile = "guest.json"
 
 // bootConfig is a cold boot of size: through Kantel's initramfs when the host injects the agent.
@@ -167,6 +216,22 @@ func (m *Manager) bootConfig(size proto.Size, tap, mac string, cid uint32) fc.Bo
 func (m *Manager) noteGuest(dir string, caps *proto.GuestCapabilities) {
 	// Even nil: a template with no report mustn't keep the one before it (another image's).
 	m.guest.Store(caps)
+	for _, d := range []string{dir, m.cfg.Root} {
+		writeGuest(d, caps)
+	}
+}
+
+// noteBootGuest keeps what a custom shape's boot reported: there is no template to keep it in, so the root does.
+func (m *Manager) noteBootGuest(caps *proto.GuestCapabilities) {
+	m.guest.Store(caps)
+	writeGuest(m.cfg.Root, caps)
+}
+
+// writeGuest puts a report in dir's guestFile, or removes it for nil. No dir: kept in memory only.
+func writeGuest(dir string, caps *proto.GuestCapabilities) {
+	if dir == "" {
+		return
+	}
 	if caps == nil {
 		_ = os.Remove(filepath.Join(dir, guestFile))
 		return
@@ -176,7 +241,7 @@ func (m *Manager) noteGuest(dir string, caps *proto.GuestCapabilities) {
 	}
 }
 
-// loadGuest reads a ready template's report, for a host that restarted (its templates are kept).
+// loadGuest reads a kept report (the root's, else a ready template's), for a host that restarted.
 func (m *Manager) loadGuest(dir string) {
 	if m.guest.Load() != nil {
 		return
@@ -197,20 +262,23 @@ func New(cfg Config) (*Manager, error) {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
-	for _, dir := range []string{"templates", "sandboxes", "snapshots", "pool"} {
+	for _, dir := range []string{"templates", "sandboxes", "snapshots"} {
 		if err := os.MkdirAll(filepath.Join(cfg.Root, dir), 0o700); err != nil {
 			return nil, err
 		}
 	}
-	m := &Manager{cfg: cfg, log: cfg.Log.With("tier", Tier), sandboxes: map[string]*sandbox{}, pool: map[string][]*warm{}, poolWant: map[string]int{}, filling: map[string]bool{}, templates: map[string]*sync.Mutex{}}
+	m := &Manager{cfg: cfg, log: cfg.Log.With("tier", Tier), sandboxes: map[string]*sandbox{}, templates: map[string]*sync.Mutex{}}
+	m.hostMemoryMiB = hostinfo.MemoryMiB()
 	m.nextCID.Store(uint32(time.Now().UnixMilli()%100000) + 100)
 	m.spool = newSpool(cfg.SpoolDir, cfg.SpoolMaxMiB<<20, m.log)
+	// The latest report, a custom shape's boot's included; a host from before the root kept one has its templates'.
+	m.loadGuest(cfg.Root)
 	for _, size := range cfg.Sizes {
 		m.templates[size.Name] = &sync.Mutex{}
 		// What the image has, before any sandbox needs a template: from one made before a restart.
 		m.loadGuest(filepath.Join(cfg.Root, "templates", size.Name))
 	}
-	// Leftover pool VMs from a previous run aren't adopted: they are cheap to make again.
+	// Warm VMs a host before warm pools were removed left behind: ended, with their directory.
 	entries, _ := os.ReadDir(filepath.Join(cfg.Root, "pool"))
 	for _, e := range entries {
 		dir := filepath.Join(cfg.Root, "pool", e.Name())
@@ -218,6 +286,7 @@ func New(cfg Config) (*Manager, error) {
 		fc.KillLeftover(dir)
 		_ = os.RemoveAll(dir)
 	}
+	_ = os.Remove(filepath.Join(cfg.Root, "pool"))
 	if err := m.adopt(); err != nil {
 		return nil, err
 	}
@@ -257,6 +326,17 @@ func (m *Manager) size(name string) (proto.Size, error) {
 		if s.Name == name {
 			return s, nil
 		}
+	}
+	if vcpus, memoryMiB, diskGiB, ok := parseCustomSize(name); ok {
+		maxVCPUs := min(maxCustomVCPUs, runtime.NumCPU())
+		maxMemoryMiB := 1 << 20
+		if m.hostMemoryMiB > 0 {
+			maxMemoryMiB = int(min(m.hostMemoryMiB, 1<<20))
+		}
+		if vcpus < 1 || vcpus > maxVCPUs || memoryMiB < minCustomMemoryMiB || memoryMiB > maxMemoryMiB || diskGiB < 1 || diskGiB > maxCustomDiskGiB {
+			return proto.Size{}, &proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("a custom size on this host is 1 to %d vCPUs, %d to %d MiB of memory and 1 to %d GiB of disk", maxVCPUs, minCustomMemoryMiB, maxMemoryMiB, maxCustomDiskGiB)}
+		}
+		return proto.Size{Name: name, VCPUs: vcpus, MemoryMiB: memoryMiB, DiskGiB: diskGiB}, nil
 	}
 	return proto.Size{}, &proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("no size %q on this host", name)}
 }
@@ -500,6 +580,10 @@ func (t timings) step(name string, since *time.Time) {
 // template returns the size's template snapshot, cold-booting one if there is none.
 func (m *Manager) template(ctx context.Context, size proto.Size) (string, timings, error) {
 	lock := m.templates[size.Name]
+	if lock == nil {
+		// A custom shape (or a size this host doesn't have): templates are kept for the named sizes only.
+		return "", nil, &proto.Error{Code: proto.ErrInternal, Message: fmt.Sprintf("no template is kept for size %q", size.Name)}
+	}
 	lock.Lock()
 	defer lock.Unlock()
 	dir := filepath.Join(m.cfg.Root, "templates", size.Name)
@@ -560,15 +644,9 @@ func (m *Manager) template(ctx context.Context, size proto.Size) (string, timing
 	t.step("agent", &start)
 	// What the image has, which detection reads from its files: so before the service wait, whose timeout would
 	// otherwise cancel this too.
-	capsCtx, capsCancel := context.WithTimeout(ctx, 30*time.Second)
-	caps, err := client.Capabilities(capsCtx)
-	capsCancel()
-	if err != nil && m.cfg.Initrd != "" {
-		// An injected agent always reports: a template without its report would offer what the image may lack.
-		return "", nil, fmt.Errorf("template boot: the guest agent's capabilities: %w", err)
-	}
+	caps, err := m.guestReport(ctx, client, size)
 	if err != nil {
-		m.log.Warn("guest agent's capabilities", "size", size.Name, "error", err)
+		return "", nil, fmt.Errorf("template boot: %w", err)
 	}
 	// What the image says it runs (/etc/kantel/ready), else the desktop, browser and Docker. Not SSH: the image has
 	// no host keys, so sshd starts only once a sandbox has its identity.
@@ -601,6 +679,22 @@ func (m *Manager) template(ctx context.Context, size proto.Size) (string, timing
 	return dir, t, nil
 }
 
+// guestReport asks a freshly booted guest's agent what its image has. An injected agent always reports, so its failing
+// to is an error: a sandbox without the report would be offered what the image may lack. An older agent that can't
+// say gives nil, logged.
+func (m *Manager) guestReport(ctx context.Context, client *guest.Client, size proto.Size) (*proto.GuestCapabilities, error) {
+	capsCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	caps, err := client.Capabilities(capsCtx)
+	if err != nil && m.cfg.Initrd != "" {
+		return nil, fmt.Errorf("the guest agent's capabilities: %w", err)
+	}
+	if err != nil {
+		m.log.Warn("guest agent's capabilities", "size", size.Name, "error", err)
+	}
+	return caps, nil
+}
+
 func tail(path string) string {
 	raw, _ := os.ReadFile(path)
 	if len(raw) > 1500 {
@@ -627,115 +721,6 @@ func (m *Manager) restore(ctx context.Context, vmDir, statePath, memPath string,
 		return nil, nil, err
 	}
 	return machine, client, nil
-}
-
-// SetPools sets how many warm sandboxes to keep per size, and starts filling.
-func (m *Manager) SetPools(want map[string]int) {
-	m.mu.Lock()
-	m.poolWant = map[string]int{}
-	for size, n := range want {
-		m.poolWant[size] = n
-	}
-	m.mu.Unlock()
-	for size := range want {
-		m.fill(size)
-	}
-}
-
-func (m *Manager) fill(sizeName string) {
-	m.mu.Lock()
-	if m.filling[sizeName] || m.closed.Load() {
-		m.mu.Unlock()
-		return
-	}
-	m.filling[sizeName] = true
-	m.mu.Unlock()
-	go func() {
-		defer func() {
-			m.mu.Lock()
-			m.filling[sizeName] = false
-			m.mu.Unlock()
-		}()
-		for !m.closed.Load() {
-			m.mu.Lock()
-			short := len(m.pool[sizeName]) < m.poolWant[sizeName]
-			m.mu.Unlock()
-			if !short {
-				return
-			}
-			w, err := m.warmOne(context.Background(), sizeName)
-			if err != nil {
-				m.log.Error("warm pool fill failed", "size", sizeName, "error", err)
-				time.Sleep(10 * time.Second)
-				continue
-			}
-			m.mu.Lock()
-			m.pool[sizeName] = append(m.pool[sizeName], w)
-			m.mu.Unlock()
-		}
-	}()
-}
-
-func (m *Manager) warmOne(ctx context.Context, sizeName string) (*warm, error) {
-	size, err := m.size(sizeName)
-	if err != nil {
-		return nil, err
-	}
-	tpl, _, err := m.template(ctx, size)
-	if err != nil {
-		return nil, err
-	}
-	dir, err := os.MkdirTemp(filepath.Join(m.cfg.Root, "pool"), sizeName+"-")
-	if err != nil {
-		return nil, err
-	}
-	vm := filepath.Join(dir, "vm")
-	if err := os.MkdirAll(vm, 0o700); err != nil {
-		return nil, err
-	}
-	if err := os.Symlink(m.cfg.Rootfs, filepath.Join(vm, fc.RootfsFile)); err != nil {
-		return nil, err
-	}
-	if err := copySparse(filepath.Join(tpl, fc.DiskFile), filepath.Join(vm, fc.DiskFile)); err != nil {
-		os.RemoveAll(dir)
-		return nil, err
-	}
-	link, err := m.cfg.Network.Add(network.EgressNone)
-	if err != nil {
-		os.RemoveAll(dir)
-		return nil, err
-	}
-	machine, client, err := m.restore(ctx, vm, filepath.Join(tpl, "state"), filepath.Join(tpl, "mem"), link)
-	if err != nil {
-		m.cfg.Network.Remove(link)
-		os.RemoveAll(dir)
-		return nil, err
-	}
-	return &warm{dir: dir, size: sizeName, machine: machine, guest: client, link: link}, nil
-}
-
-func (m *Manager) claim(sizeName string) *warm {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	list := m.pool[sizeName]
-	if len(list) == 0 {
-		return nil
-	}
-	w := list[0]
-	m.pool[sizeName] = list[1:]
-	go m.fill(sizeName)
-	return w
-}
-
-// Warm is how many pre-warmed sandboxes each size has.
-func (m *Manager) Warm() map[string]int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := map[string]int{}
-	for size, list := range m.pool {
-		out[size] = len(list)
-	}
-	return out
 }
 
 func (m *Manager) get(id string) (*sandbox, error) {
@@ -776,16 +761,25 @@ func validID(id string) bool {
 	return true
 }
 
-// Create makes a sandbox: from a warm sandbox when the pool has one, else by restoring the size's template (or
-// p.From, a snapshot).
+// Create makes a sandbox by restoring the size's template (or p.From, a snapshot). A custom shape (p.VCPUs, p.MemoryMiB and p.DiskGiB with no p.Size) cold-boots unless it is
+// made from a snapshot.
 func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.SandboxInfo, error) {
 	if !validID(p.SandboxID) {
 		return proto.SandboxInfo{}, &proto.Error{Code: proto.ErrInvalid, Message: "bad sandbox ID"}
 	}
-	size, err := m.size(p.Size)
+	sizeName := p.Size
+	if sizeName == "" && (p.VCPUs != 0 || p.MemoryMiB != 0 || p.DiskGiB != 0) {
+		if p.VCPUs <= 0 || p.MemoryMiB <= 0 || p.DiskGiB <= 0 {
+			return proto.SandboxInfo{}, &proto.Error{Code: proto.ErrInvalid, Message: "a custom size needs vcpus, memoryMiB and diskGiB"}
+		}
+		sizeName = CustomSizeName(p.VCPUs, p.MemoryMiB, p.DiskGiB)
+	}
+	size, err := m.size(sizeName)
 	if err != nil {
 		return proto.SandboxInfo{}, err
 	}
+	// A named size keeps a template; a custom one has none.
+	custom := isCustom(size.Name)
 	t := timings{}
 	start := time.Now()
 	began := start
@@ -807,22 +801,8 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 		m.unregister(p.SandboxID)
 		return proto.SandboxInfo{}, err
 	}
-	source := "pool"
-	if p.From == "" {
-		if w := m.claim(size.Name); w != nil {
-			if err := os.Rename(w.dir, dir); err != nil {
-				w.machine.Kill()
-				m.cfg.Network.Remove(w.link)
-				return fail(err)
-			}
-			s.machine, s.link = fc.Moved(w.machine, filepath.Join(dir, "vm")), &w.link
-			w.guest.Close()
-			s.guest = guest.NewClient(filepath.Join(dir, "vm", fc.VsockSocket))
-			s.meta.CID = w.cid
-			t.step("claim", &start)
-		}
-	}
-	if s.machine == nil {
+	source := "snapshot"
+	{
 		vm := filepath.Join(dir, "vm")
 		if err := os.MkdirAll(vm, 0o700); err != nil {
 			return fail(err)
@@ -845,6 +825,9 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 				statePath, memPath = filepath.Join(sdir, "state"), filepath.Join(sdir, "mem")
 			}
 			source = "snapshot"
+		} else if custom {
+			// No template: a fresh disk, then a cold boot below.
+			source = "boot"
 		} else {
 			tpl, tt, err := m.template(ctx, size)
 			if err != nil {
@@ -860,7 +843,11 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 			}
 		}
 		start = time.Now()
-		if err := copySparse(diskPath, filepath.Join(vm, fc.DiskFile)); err != nil {
+		if diskPath != "" {
+			if err := copySparse(diskPath, filepath.Join(vm, fc.DiskFile)); err != nil {
+				return fail(err)
+			}
+		} else if err := newDisk(filepath.Join(vm, fc.DiskFile), size.DiskGiB); err != nil {
 			return fail(err)
 		}
 		t.step("disk", &start)
@@ -883,6 +870,18 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 			}
 			source = "boot"
 			t.step("boot", &start)
+			if custom && p.From == "" {
+				// No template asked the image what it has, so this boot does, as a template's would: what a sandbox
+				// reports doesn't depend on whether its shape has a template. Every sandbox shares the image.
+				caps, err := m.guestReport(ctx, s.guest, size)
+				if err != nil {
+					return fail(fmt.Errorf("boot: %w", err))
+				}
+				if caps != nil {
+					m.noteBootGuest(caps)
+				}
+				t.step("capabilities", &start)
+			}
 		}
 	}
 	if err := m.cfg.Network.SetEgress(s.link, egressMode(p.Egress)); err != nil {
@@ -1512,20 +1511,9 @@ func (m *Manager) DialPort(ctx context.Context, id string, port int) (net.Conn, 
 	return client.DialPort(ctx, port)
 }
 
-// Close stops filling the pool and ends the warm VMs. Sandboxes keep running.
+// Close stops the tier taking work. Sandboxes keep running.
 func (m *Manager) Close() {
 	m.closed.Store(true)
-	m.mu.Lock()
-	pools := m.pool
-	m.pool = map[string][]*warm{}
-	m.mu.Unlock()
-	for _, list := range pools {
-		for _, w := range list {
-			w.machine.Kill()
-			m.cfg.Network.Remove(w.link)
-			_ = os.RemoveAll(w.dir)
-		}
-	}
 }
 
 // Usage is the memory the tier's running sandboxes were given, and how many run and are stopped.

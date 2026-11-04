@@ -6,14 +6,19 @@ import type { SandboxBackend } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createRoutedBackend, NOT_HELD } from "../src/routed-backend.ts";
 import {
+	checkShape,
+	hourlyRate,
 	type InviteMail,
 	inviteForSomeoneElse,
 	inviteLink,
 	isLoopbackUrl,
+	microvmShapes,
 	NEVER_MADE,
+	PLACEHOLDER_RATES,
 	publicOrigin,
 	SHARED_HOSTS_REFUSED,
 	SHARED_KEY_REFUSED,
+	shapeFor,
 } from "../src/service.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 
@@ -222,6 +227,142 @@ describe("sandboxes", () => {
 		expect(port.url).toBe(`http://3000-${vm.subdomain}.sandbox.localhost`);
 		const paused = await tom.stopSandbox(vm.id, { keepMemory: true, wait: true });
 		expect(paused.state).toBe("paused");
+	});
+
+	it("says what shapes may be asked for: an isolate's memory and, on a host that makes them, any microVM", async () => {
+		const { tom } = setup();
+		const shapes = await tom.getSandboxShapes();
+		expect(shapes.isolate).toEqual({ memoryMb: { min: 128, max: 512, step: 64, default: 256 }, enforced: false });
+		expect(shapes.microvm).toMatchObject({
+			vcpus: { min: 1, max: 32, step: 1, default: 2 },
+			memoryMb: { min: 512, step: 512, default: 4096 },
+			memoryMbPerVcpu: { min: 512, max: 8192 },
+			custom: true,
+		});
+		expect(shapes.microvm?.presets.map((preset) => preset.name)).toEqual(["small", "default", "large", "xlarge"]);
+		// Hosts keep no warm pools, so no preset says it is warm.
+		expect(shapes.microvm?.presets.some((preset) => "warm" in preset)).toBe(false);
+		// Self-hosted, sandboxes have no price.
+		expect(shapes.rates).toBeUndefined();
+	});
+
+	it("makes a microVM of any shape, matching a preset by its numbers, and an isolate of the memory it asks", async () => {
+		const { tom } = setup();
+		const custom = await tom.createSandbox({ type: "microvm", resources: { vcpus: 3, memoryMb: 6144 }, wait: true });
+		expect(custom.size).toBeUndefined();
+		expect(custom.resources).toMatchObject({ vcpus: 3, memoryMb: 6144 });
+		expect(custom.cost.ratePerHour).toBe(hourlyRate(PLACEHOLDER_RATES, "microvm", { vcpus: 3, memoryMb: 6144 }));
+		// A fork is its source's shape.
+		const [fork] = (await tom.forkSandbox(custom.id, { wait: true })).items;
+		expect(fork?.resources).toMatchObject({ vcpus: 3, memoryMb: 6144 });
+
+		const preset = await tom.createSandbox({ type: "microvm", resources: { vcpus: 4, memoryMb: 8192 }, wait: true });
+		expect(preset.size).toBe("large");
+
+		const isolate = await tom.createSandbox({ resources: { memoryMb: 384 }, wait: true });
+		expect(isolate.resources).toMatchObject({ vcpus: 0, memoryMb: 384 });
+		expect(isolate.cost.ratePerHour).toBe(hourlyRate(PLACEHOLDER_RATES, "isolate", { vcpus: 0, memoryMb: 384 }));
+		const plain = await tom.createSandbox({ wait: true });
+		expect(plain.resources).toMatchObject({ memoryMb: 256 });
+	});
+
+	it("refuses a shape it can't make", async () => {
+		const { tom } = setup();
+		const refusals = [
+			{ resources: { memoryMb: 600 } },
+			{ resources: { memoryMb: 1024 } },
+			{ resources: { vcpus: 2, memoryMb: 256 } },
+			{ type: "microvm", resources: { memoryMb: 2048 } },
+			{ type: "microvm", resources: { vcpus: 1, memoryMb: 16_384 } },
+			{ type: "microvm", resources: { vcpus: 2, memoryMb: 3000 } },
+			{ type: "microvm", resources: { vcpus: 2, memoryMb: 2048 }, size: "small" },
+		] as const;
+		for (const body of refusals) expect((await failure(tom.createSandbox(body))).code).toBe("invalid");
+	});
+
+	it("prices by vCPU and GB an hour", () => {
+		const rates = { currency: "USD", microvmPerVcpuHour: 0.01, microvmPerGbHour: 0.002, isolatePerGbHour: 0.02 };
+		expect(hourlyRate(rates, "microvm", { vcpus: 2, memoryMb: 4096 })).toBe(0.028);
+		expect(hourlyRate(rates, "isolate", { vcpus: 0, memoryMb: 512 })).toBe(0.01);
+		expect(checkShape("microvm", { vcpus: 2, memoryMb: 768 }, [{ vcpus: 2, memoryMb: 768 }])).toEqual({
+			vcpus: 2,
+			memoryMb: 768,
+		});
+	});
+
+	it("offers a host's presets, and any shape where it makes them, promising no disk for one", () => {
+		const host = {
+			id: "h",
+			name: "h",
+			version: "1",
+			os: "linux",
+			arch: "x86_64",
+			tiers: ["microvm"],
+			kvm: true,
+			nestedVirtualisation: false,
+			capacity: { vcpus: 8, memoryMb: 16_384, diskGb: 200 },
+			labels: {},
+		} as const;
+		const sizes = [{ name: "default", vcpus: 2, memoryMb: 2048, diskGb: 20 }] as const;
+		const named = microvmShapes([host], sizes);
+		expect(named).toMatchObject({ vcpus: { max: 2 }, memoryMb: { max: 2048 }, custom: false });
+		const custom = microvmShapes([{ ...host, features: ["custom-shapes"] }], sizes);
+		expect(custom).toMatchObject({ vcpus: { max: 8 }, memoryMb: { max: 16_384 }, custom: true });
+		expect(custom?.presets).toEqual([{ name: "default", vcpus: 2, memoryMb: 2048, diskGb: 20 }]);
+		// A custom shape's disk is its host's to give (and a snapshot's to keep): none is said ahead.
+		expect(custom).not.toHaveProperty("customDisk");
+		expect(microvmShapes([], sizes)).toBeUndefined();
+	});
+
+	it("keeps hosts' different shapes under one name apart", () => {
+		const host = {
+			id: "a",
+			name: "a",
+			version: "1",
+			os: "linux",
+			arch: "x86_64",
+			tiers: ["microvm"],
+			kvm: true,
+			nestedVirtualisation: false,
+			capacity: { vcpus: 8, memoryMb: 16_384, diskGb: 200 },
+			labels: {},
+			features: ["custom-shapes"],
+		} as const;
+		const four = { ...host, sizes: [{ name: "default" as const, vcpus: 4, memoryMb: 2048, diskGb: 20 }] };
+		const two = { ...host, id: "b", sizes: [{ name: "default" as const, vcpus: 2, memoryMb: 4096, diskGb: 40 }] };
+		const shapes = microvmShapes([four, two], []);
+		expect(shapes?.presets).toEqual([
+			{ name: "default", vcpus: 2, memoryMb: 4096, diskGb: 40 },
+			{ name: "default", vcpus: 4, memoryMb: 2048, diskGb: 20 },
+		]);
+		// The same shape on both: one entry.
+		const same = microvmShapes([four, { ...four, id: "c" }], []);
+		expect(same?.presets).toEqual([{ name: "default", vcpus: 4, memoryMb: 2048, diskGb: 20 }]);
+	});
+
+	it("checks a shape against the hosts this create may use only, however full they are", () => {
+		const host = {
+			id: "named",
+			name: "named",
+			version: "1",
+			os: "linux",
+			arch: "x86_64",
+			tiers: ["microvm"],
+			kvm: true,
+			nestedVirtualisation: false,
+			capacity: { vcpus: 8, memoryMb: 16_384, diskGb: 200 },
+			labels: {},
+		} as const;
+		const sizes = [{ name: "default", vcpus: 2, memoryMb: 2048, diskGb: 20 }] as const;
+		const custom = { vcpus: 3, memoryMb: 6144 };
+		// Only named sizes where it may go: another account's upgraded host doesn't count.
+		expect(() => shapeFor("microvm", custom, [host], sizes)).toThrow(/No host this sandbox may use/);
+		expect(shapeFor("microvm", { vcpus: 2, memoryMb: 2048 }, [host], sizes)).toEqual({ vcpus: 2, memoryMb: 2048 });
+		expect(shapeFor("microvm", custom, [{ ...host, features: ["custom-shapes"] }], sizes)).toEqual(custom);
+		// From a snapshot it boots on the snapshot's host as it was.
+		expect(shapeFor("microvm", custom, [host], sizes, false)).toEqual(custom);
+		expect(shapeFor("isolate", undefined, [], sizes)).toEqual({ vcpus: 0, memoryMb: 256 });
+		expect(shapeFor("microvm", undefined, [], sizes)).toBeUndefined();
 	});
 
 	it("refuses a screen the image reports it lacks once placed, even when asked for before then", async () => {
@@ -656,6 +797,52 @@ describe("organisations", () => {
 			expect(await failure(call)).toMatchObject({ code: "conflict", message: NEVER_MADE });
 		}
 		expect((await tom.getSandbox(fork?.id ?? "")).state).toBe("error");
+
+		// One of a shape of its own is made again as that shape; a size named on its start replaces it.
+		failing = true;
+		const shaped = await tom.createSandbox({
+			type: "microvm",
+			from: snapshotId,
+			resources: { vcpus: 3, memoryMb: 6144 },
+			wait: true,
+		});
+		const sized = await tom.createSandbox({
+			type: "microvm",
+			from: snapshotId,
+			resources: { vcpus: 3, memoryMb: 6144 },
+			wait: true,
+		});
+		failing = false;
+		const again = await tom.startSandbox(shaped.id, { wait: true });
+		expect(again.resources).toMatchObject({ vcpus: 3, memoryMb: 6144 });
+		const large = await tom.startSandbox(sized.id, { size: "large", wait: true });
+		expect(large).toMatchObject({ size: "large", resources: { vcpus: 4, memoryMb: 8192 } });
+	});
+
+	it("runs a restart that names a size as that size, even the name it had, and one that names none as it was", async () => {
+		const { tom } = setup();
+		const custom = { vcpus: 3, memoryMb: 6144 };
+		const made = await tom.createSandbox({ type: "microvm", resources: custom, wait: true });
+		const name = made.size ?? "default";
+		await tom.stopSandbox(made.id, { wait: true });
+		const kept = await tom.startSandbox(made.id, { wait: true });
+		expect(kept.resources).toMatchObject(custom);
+		// Its own size's name, given: that size, not the custom shape it had.
+		await tom.stopSandbox(made.id, { keepMemory: true, wait: true });
+		const named = await tom.resumeSandbox(made.id, { size: name, wait: true });
+		const size = (await tom.getSandboxShapes()).microvm?.presets.find((preset) => preset.name === name);
+		expect(named.resources).toMatchObject({ vcpus: size?.vcpus, memoryMb: size?.memoryMb });
+		expect(named.cost.ratePerHour).toBe(
+			hourlyRate(PLACEHOLDER_RATES, "microvm", { vcpus: size?.vcpus ?? 0, memoryMb: size?.memoryMb ?? 0 }),
+		);
+		// Another size, then a fork and a plain restart: each the size it now runs as.
+		await tom.stopSandbox(made.id, { wait: true });
+		const large = await tom.startSandbox(made.id, { size: "large", wait: true });
+		expect(large).toMatchObject({ size: "large", resources: { vcpus: 4, memoryMb: 8192 } });
+		const [fork] = (await tom.forkSandbox(made.id, { wait: true })).items;
+		expect(fork?.resources).toMatchObject({ vcpus: 4, memoryMb: 8192 });
+		await tom.stopSandbox(made.id, { wait: true });
+		expect((await tom.startSandbox(made.id, { wait: true })).resources).toMatchObject({ vcpus: 4, memoryMb: 8192 });
 	});
 
 	it("makes a plain sandbox whose create failed again as its create would, on recover, start or resume", async () => {
@@ -689,6 +876,43 @@ describe("organisations", () => {
 			expect((await tom.runCommand(sandbox.id, { command: "echo hi" })).stdout).toBe("hi\n");
 		}
 		expect(creates.filter((id) => id === recovered)).toHaveLength(2);
+	});
+
+	it("makes a plain microVM of its own shape whose create failed again as that shape, on recover, start or resume", async () => {
+		const stub = createStubBackend();
+		let failing = true;
+		const creates: { readonly sandboxId: string; readonly size?: string; readonly shape?: unknown }[] = [];
+		const backend: SandboxBackend = {
+			...stub,
+			create: (spec) => {
+				creates.push({ sandboxId: spec.sandboxId, size: spec.size, shape: spec.shape });
+				return failing
+					? Promise.reject(new KantelError("unavailable", "The disk couldn't be made"))
+					: stub.create(spec);
+			},
+		};
+		const { api, tom } = setup(backend);
+		const custom = { vcpus: 3, memoryMb: 6144 };
+		const made = [];
+		for (let i = 0; i < 3; i++) made.push(await tom.createSandbox({ type: "microvm", resources: custom, wait: true }));
+		expect(made.map((sandbox) => sandbox.state)).toEqual(["error", "error", "error"]);
+		failing = false;
+
+		// Each is made again at the shape it asked for: no preset's size in its place.
+		const [recovered, started, resumed] = made.map((sandbox) => sandbox.id);
+		await tom.recoverSandbox(recovered ?? "");
+		await api.service.idle();
+		await tom.startSandbox(started ?? "", { wait: true });
+		await tom.resumeSandbox(resumed ?? "", { wait: true });
+		for (const sandbox of made) {
+			const again = await tom.getSandbox(sandbox.id);
+			expect(again.state).toBe("running");
+			expect(again.resources).toMatchObject(custom);
+			const remade = creates.filter((create) => create.sandboxId === sandbox.id);
+			expect(remade).toHaveLength(2);
+			expect(remade[1]).toMatchObject({ shape: custom });
+			expect(remade[1]?.size).toBeUndefined();
+		}
 	});
 
 	it("sends a sandbox the routed backend's fallback has just made its egress before it runs, and refuses one never made", async () => {
