@@ -417,27 +417,23 @@ function sandboxesSource(context: Context): SandboxesSource {
 			const { local, browser } = context;
 			const account = context.sandboxAccounts.get(id);
 			if (local !== undefined && account !== undefined && local.mode(account) !== "off") {
-				// Every page the host keeps, by its cursor; the list shows no output, so none is carried.
-				const commands = await allPages(async (cursor) => {
-					const page = await local.call<HostCommandPage>(id, "sandbox.history", {
-						limit: 100,
-						output: false,
-						...(cursor === undefined ? {} : { before: cursor }),
-					});
-					return {
-						items: page.items,
-						...(page.next === undefined || page.next === "" ? {} : { nextCursor: page.next }),
-					};
-				});
-				return commands.map(hostCommandOf);
+				return hostHistory((params) => local.call<HostCommandPage>(id, "sandbox.history", params));
 			}
 			if (browser !== undefined && account !== undefined && (await chainMode(context, account)) !== "off") {
-				const page = await browser.call<HostCommandPage>(id, "sandbox.history", { limit: 100 });
-				return page.items.map(hostCommandOf);
+				return hostHistory((params) => browser.call<HostCommandPage>(id, "sandbox.history", params));
 			}
 			return (await allPages((cursor) => api.listCommands(id, after(cursor)))).map(commandOf);
 		},
 	};
+}
+
+/** Every page of a sandbox's history its host keeps, by its cursor; the list shows no output, so none is carried. */
+async function hostHistory(read: (params: object) => Promise<HostCommandPage>): Promise<UiCommand[]> {
+	const commands = await allPages(async (cursor) => {
+		const page = await read({ limit: 100, output: false, ...(cursor === undefined ? {} : { before: cursor }) });
+		return { items: page.items, ...(page.next === undefined || page.next === "" ? {} : { nextCursor: page.next }) };
+	});
+	return commands.map(hostCommandOf);
 }
 
 function hostCommandOf(command: HostCommand): UiCommand {

@@ -131,7 +131,12 @@ describe("the hosted console's browser device", () => {
 		const framesBefore = s.host.frames.toGateway.length;
 		const history = await source.sandboxes.history(s.sandbox.id);
 		expect(history).toEqual([expect.objectContaining({ command: SECRET_COMMAND, exitCode: 0 })]);
-		expect(s.host.ran.at(-1)).toMatchObject({ device: card.id, method: "sandbox.history" });
+		// Asked as kantel console asks, by the host's cursor and without output.
+		expect(s.host.ran.at(-1)).toMatchObject({
+			device: card.id,
+			method: "sandbox.history",
+			params: { limit: 100, output: false },
+		});
 		// The host's answer went back through the hub as ciphertext.
 		const carried = joined(s.host.frames.toGateway.slice(framesBefore));
 		expect(carried.byteLength).toBeGreaterThan(0);
