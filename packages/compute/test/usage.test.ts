@@ -434,6 +434,15 @@ describe("a host's usage ticks, when things happen in between", () => {
 		const host = (await root.listHosts()).items.find((each) => each.id === STUB_HOST_ID);
 		expect(host?.usage?.recentCpu).toHaveLength(3);
 	});
+
+	it("from the stub give a microVM of its own shape that shape's memory limit, as its resources do", async () => {
+		let clock = T0;
+		const { tom } = setup(createStubBackend({ now: () => clock }), () => clock);
+		const vm = await tom.createSandbox({ type: "microvm", resources: { vcpus: 3, memoryMb: 6144 }, wait: true });
+		expect(vm.resources).toMatchObject({ memoryMb: 6144 });
+		clock = T0 + 3 * USAGE_INTERVAL_MS;
+		expect((await tom.getSandboxUsage(vm.id)).memLimitBytes).toBe(6144 * MIB);
+	});
 });
 
 describe("usage ticks across gateway replicas over one store", () => {

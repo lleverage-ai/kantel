@@ -620,14 +620,15 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 					.filter((machine) => machine.runningSince <= at)
 					.map((machine) => {
 						const reading = stubReading(machine.id, at, bases.get(machine.id) ?? 0);
-						const size = SIZES.find((entry) => entry.name === (machine.size ?? "default"));
+						// Its limit is the shape it runs as, as its placement says: a custom shape's, else its named size's.
+						const memoryMb = placement(machine).resources?.memoryMb;
 						return {
 							id: machine.id,
 							kind: machine.type,
 							cpu: reading.cpu,
 							memUsedBytes: reading.memUsedBytes,
 							memLimitBytes:
-								machine.type === "microvm" && size !== undefined ? size.memoryMb * MIB : ISOLATE_MEMORY_BYTES,
+								machine.type === "microvm" && memoryMb !== undefined ? memoryMb * MIB : ISOLATE_MEMORY_BYTES,
 						};
 					});
 				const ambient = stubReading(STUB_HOST_ID, at, STUB_HOST_BASE_BYTES);
