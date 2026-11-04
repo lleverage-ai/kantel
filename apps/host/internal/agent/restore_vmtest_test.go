@@ -131,6 +131,7 @@ func TestRestoreIdentity(t *testing.T) {
 				}
 				hostClock := time.Now().UnixMilli()
 				p := probeSandbox(t, h, id)
+				hostAfter := time.Now().UnixMilli()
 				size := c.size
 				if size == "" {
 					size = fmt.Sprintf("custom-%dc-%dm-%dg", c.vcpus, c.memoryMiB, c.diskGiB)
@@ -162,8 +163,10 @@ func TestRestoreIdentity(t *testing.T) {
 				if info.Source != "boot" && p["vmfork_reseeds"] == "0" {
 					t.Errorf("%s: the kernel didn't reseed its RNG on restore (no \"crng reseeded due to virtual machine fork\")", id)
 				}
-				if clock, _ := strconv.ParseInt(p["clock_ms"], 10, 64); math.Abs(float64(clock-hostClock)) > 5000 {
-					t.Errorf("%s: guest clock %d is %d ms off the host's", id, clock, clock-hostClock)
+				// The guest reads its clock somewhere in the probe, which a first restore from a template just written can take
+				// seconds to run (its memory still being read in): so between the host's clock before it and after it.
+				if clock, _ := strconv.ParseInt(p["clock_ms"], 10, 64); clock < hostClock-5000 || clock > hostAfter+5000 {
+					t.Errorf("%s: guest clock %d is off the host's (%d to %d)", id, clock, hostClock, hostAfter)
 				}
 				// The scheduler's clock (the kernel log's) didn't jump at the restore: it stays with the guest's uptime. Moved
 				// on by the time since the template was made, it charged that time to whatever the template's vCPU was running,
