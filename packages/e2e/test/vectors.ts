@@ -31,6 +31,7 @@ export interface StateSummary {
 	readonly head: string;
 	readonly seq: number;
 	readonly mode: string;
+	readonly onSince: string;
 	readonly members: { readonly [user: string]: string };
 	readonly devices: readonly string[];
 	readonly hosts: readonly string[];
@@ -57,6 +58,7 @@ export function summary(state: SpaceState): StateSummary {
 		head: state.head,
 		seq: state.seq,
 		mode: state.mode,
+		onSince: state.onSince,
 		members: Object.fromEntries([...state.members].sort(([a], [b]) => a.localeCompare(b))),
 		devices: [...state.devices.keys()].sort(),
 		hosts: [...state.hosts.keys()].sort(),
@@ -251,6 +253,41 @@ export async function chainVectors(): Promise<{ readonly cases: readonly ChainCa
 	cases.push({
 		name: "in a strict space, the hosted console's key turns E2E off",
 		entries: [...base, strict, await signAs(strictState, f.tomPhone, { type: "mode", body: { mode: "off" } }, at + 1)],
+	});
+	cases.push({
+		name: "in a strict space, the admin removes their last CLI device, leaving only the hosted console's",
+		entries: [
+			...base,
+			strict,
+			await signAs(strictState, f.tom, { type: "device.remove", body: { id: f.tomId } }, at + 1),
+		],
+	});
+	cases.push({
+		name: "a strict genesis whose only device is the hosted console's",
+		entries: [
+			await signAs(
+				undefined,
+				f.tomPhone,
+				{
+					type: "genesis",
+					body: { mode: "strict", device: await chainDevice(f.tomPhone, "usr_tom", "web", "console") },
+				},
+				T0,
+			),
+		],
+	});
+	const off = await signAs(f.state, f.tom, { type: "mode", body: { mode: "off" } }, at);
+	const offState = await verifyChain([...base, off]);
+	const onAgain = await signAs(offState, f.tom, { type: "mode", body: { mode: "on" } }, at + 1);
+	const onState = await verifyChain([...base, off, onAgain]);
+	cases.push({ name: "E2E turned off: nothing is on since", entries: [...base, off] });
+	cases.push({
+		name: "E2E turned off and on again: on since the entry that turned it on",
+		entries: [...base, off, onAgain],
+	});
+	cases.push({
+		name: "on to strict keeps when E2E came on",
+		entries: [...base, off, onAgain, await signAs(onState, f.tom, { type: "mode", body: { mode: "strict" } }, at + 2)],
 	});
 	cases.push({
 		name: "a second genesis",
