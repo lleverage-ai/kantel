@@ -278,6 +278,27 @@ func TestInstallDoesThePlan(t *testing.T) {
 	}
 }
 
+// Settings that couldn't be saved after registering would lose the host's credential, with the token used up: an
+// install that can't save them doesn't register.
+func TestNoRegisteringWithoutSavingTheSettings(t *testing.T) {
+	m := newFakeMachine(t)
+	o := m.options("kth_secret")
+	// A file where the settings' directory should be.
+	if err := os.MkdirAll(filepath.Join(m.dir, "etc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Dir(o.configPath), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := m.in.planInstall(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.in.doPlan(plan); err == nil || !strings.Contains(err.Error(), "not registering") || len(m.registered) != 0 {
+		t.Errorf("install: %v, registered %v", err, m.registered)
+	}
+}
+
 func TestDryRunNeedsRoot(t *testing.T) {
 	m := newFakeMachine(t)
 	m.in.euid = func() int { return 1000 }

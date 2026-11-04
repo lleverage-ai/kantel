@@ -168,14 +168,14 @@ The installer hands its options to `kantel-host install`, which:
 
 Without systemd, such as in a container, install stops after step 4: run `kantel-host run` as root under a supervisor of your own, and restart it when it exits.
 
-Install itself adds no users or groups, since `kantel-host` runs as root, and changes no sysctl settings or firewall rules. Once it runs, the service adds its own iptables chains (`KANTEL-INPUT` and `KANTEL-FORWARD`, jumped to from `INPUT`, `FORWARD` and, on a host with Docker, `DOCKER-USER`), ip6tables rules that drop its devices' traffic, and a TAP device for each microVM in `10.231.0.0/16`, with IPv6 off on it.
+Install adds no users or groups, since `kantel-host` runs as root, and changes no sysctl settings. For microVMs, `kantel-host` sets up its own network when it registers (it starts its tiers for a moment to report what the host can run) and each time the service starts: iptables chains `KANTEL-INPUT` and `KANTEL-FORWARD`, jumped to from `INPUT`, `FORWARD` and, on a host with Docker, `DOCKER-USER`, and ip6tables rules that drop its devices' traffic. The service adds a TAP device for each microVM in `10.231.0.0/16`, with IPv6 off on it.
 
 #### Running it again
 
 Every step can run again. A file already in place with the right digest is kept, a download goes to `<name>.part` and only replaces the file once its digest matches, and the settings and the unit are written whole. So if an install stops part way, run the same command again and it carries on:
 
 - Stopped before registering: the token hasn't been used, so the same command starts over and skips what it already fetched.
-- Stopped after registering: the host keeps the SHA-256 of the token it registered with (never the token), so the same command carries on without using the token again.
+- Stopped after registering: the host keeps the SHA-256 of the token it registered with (never the token), so the same command carries on without using the token again. Install checks that it can save its settings before it registers, since a registration it couldn't save would leave the token used up.
 - With the same `--url` and no token: install updates the binary, the images and the service, and keeps the registration.
 - With a different token: the machine registers again with that token.
 
@@ -205,9 +205,10 @@ curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/insta
   get    https://kantel.example.com/v1/hosts/images/sandbox-amd64.ext4.gz to /var/lib/kantel-host/images/sandbox.ext4 (sha256 8500…, unpacked as it downloads, mode 0644)
   get    https://kantel.example.com/v1/hosts/images/isolate-amd64.ext4.gz to /var/lib/kantel-host/images/isolate.ext4 (sha256 e670…, unpacked as it downloads, mode 0644)
 ==> Register with https://kantel.example.com
-  post   https://kantel.example.com/v1/hosts/register as "builder-1", which uses the token up
-==> Save the settings
   mkdir  /etc/kantel-host
+  post   https://kantel.example.com/v1/hosts/register as "builder-1", which uses the token up
+  note   to report what this host can run, registering starts its tiers for a moment, which makes their directories under /var/lib/kantel-host and, for microVMs, sets up the network rules below
+==> Save the settings
   write  /etc/kantel-host/config.json (mode 0600: the control plane, the host's ID and credential, and its settings)
 ==> Start the service
   write  /etc/systemd/system/kantel-host.service (the kantel-host systemd unit, mode 0644)

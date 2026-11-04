@@ -91,6 +91,11 @@ func TestInstallScriptDryRunAndCheck(t *testing.T) {
 		t.Errorf("--dry-run ran: %q", got)
 	}
 	nothingInstalled("--dry-run")
+	// Another way Go's flags spell true: still a dry run, with nothing installed first.
+	if out, code := run(true, "--url", "https://kantel.invalid", "--token", "kth_x", "--dry-run=1"); code != 0 || recorded() != "install --url https://kantel.invalid --token kth_x --dry-run=1" {
+		t.Errorf("--dry-run=1: exit %d, ran %q\n%s", code, recorded(), out)
+	}
+	nothingInstalled("--dry-run=1")
 
 	// --no-join --dry-run: says where the binary would go, and runs nothing.
 	out, code = run(false, "--no-join", "--dry-run")

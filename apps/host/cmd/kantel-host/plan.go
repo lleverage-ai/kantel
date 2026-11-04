@@ -237,7 +237,13 @@ func (in *installer) planInstall(o installOptions) (*installPlan, error) {
 			name, _ = in.hostname()
 		}
 		p.step("Register with " + cfg.ControlPlane)
+		// The settings are saved straight after: make sure they can be before the token is used up.
+		configDir := filepath.Dir(o.configPath)
+		p.mkdir(configDir)
 		p.add("post", fmt.Sprintf("%s/v1/hosts/register as %q%s, which uses the token up", cfg.ControlPlane, name, labelsText(cfg.Labels)), func() error {
+			if err := writable(configDir); err != nil {
+				return fmt.Errorf("not registering, since the settings couldn't be saved after: %w", err)
+			}
 			hostID, credential, err := in.register(*cfg, token)
 			if err != nil {
 				return err
@@ -246,6 +252,8 @@ func (in *installer) planInstall(o installOptions) (*installPlan, error) {
 			fmt.Fprintln(in.out, "  registered as", hostID)
 			return nil
 		})
+		// register reports the host's facts from its tiers, started for a moment (agent.New).
+		p.add("note", "to report what this host can run, registering starts its tiers for a moment, which makes their directories under "+cfg.Root+" and, for microVMs, sets up the network rules below", nil)
 		p.plan.usesToken = true
 	}
 	p.step("Save the settings")
@@ -271,11 +279,11 @@ func (in *installer) planInstall(o installOptions) (*installPlan, error) {
 
 	p.plan.after = append(p.plan.after,
 		"Each file it gets is written as <name>.part and renamed when its digest matches; an image's digest is kept beside it in <name>.sha256-source, so running install again keeps what's already there.",
-		"Install itself adds no users or groups (kantel-host runs as root), and changes no sysctl settings and no firewall rules.",
+		"Install adds no users or groups (kantel-host runs as root) and changes no sysctl settings.",
 		"Once it runs, the service keeps sandboxes, snapshots and templates under "+cfg.Root+", and memory snapshots in RAM at "+cfg.SpoolDir+" first.")
 	if kvm {
 		p.plan.after = append(p.plan.after,
-			"For microVMs it adds iptables chains KANTEL-INPUT and KANTEL-FORWARD, jumped to from INPUT, FORWARD and (on a host with Docker) DOCKER-USER, ip6tables rules that drop its devices' traffic, and a TAP device (kt0, kt1, …) in "+cfg.Subnet+" for each microVM, with IPv6 off on it. Its egress proxy takes port "+fmt.Sprint(cfg.ProxyPort)+" on those devices only.")
+			"For microVMs, kantel-host sets up its own network when it registers and each time the service starts: iptables chains KANTEL-INPUT and KANTEL-FORWARD, jumped to from INPUT, FORWARD and (on a host with Docker) DOCKER-USER, and ip6tables rules that drop its devices' traffic. The service adds a TAP device (kt0, kt1, …) in "+cfg.Subnet+" for each microVM, with IPv6 off on it, and its egress proxy takes port "+fmt.Sprint(cfg.ProxyPort)+" on those devices only.")
 	}
 	return &p.plan, nil
 }
@@ -521,6 +529,16 @@ func labelsText(labels map[string]string) string {
 		pairs[i] = k + "=" + labels[k]
 	}
 	return " with labels " + strings.Join(pairs, ", ")
+}
+
+// writable: a file can be made in dir.
+func writable(dir string) error {
+	f, err := os.CreateTemp(dir, ".kantel-host-*")
+	if err != nil {
+		return err
+	}
+	f.Close()
+	return os.Remove(f.Name())
 }
 
 func tokenSHA256(token string) string {

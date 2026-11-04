@@ -70,10 +70,13 @@ main() {
 		*) break ;;
 		esac
 	done
-	# --dry-run can come anywhere, and stays in the options for `kantel-host install --dry-run`.
+	# --dry-run can come anywhere, and stays in the options for `kantel-host install --dry-run`. Any value but a false
+	# one counts (Go's flags take 1, t, true and more), so a spelling this doesn't know installs nothing.
 	for arg in "$@"; do
 		case "$arg" in
-		--dry-run | -dry-run | --dry-run=true | -dry-run=true) dry_run=1 ;;
+		--dry-run=0 | -dry-run=0 | --dry-run=[fF] | -dry-run=[fF] | --dry-run=false | -dry-run=false | --dry-run=FALSE | \
+			-dry-run=FALSE | --dry-run=False | -dry-run=False) ;;
+		--dry-run | -dry-run | --dry-run=* | -dry-run=*) dry_run=1 ;;
 		--check) check=1 ;;
 		esac
 	done
