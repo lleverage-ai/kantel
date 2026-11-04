@@ -453,6 +453,25 @@ func TestRelayRefusesAnUnboundPlaceholder(t *testing.T) {
 	}
 }
 
+// A message carrying another sandbox's placeholder (a fork's parent's) closes the connection; nothing reaches the server.
+func TestRelayRefusesAnotherSandboxsPlaceholder(t *testing.T) {
+	h := startRelay(t, Extensions{})
+	h.fromClient(t, encodeFrame(true, false, opText, []byte("token "+phUnknown), true))
+	f := recvFrame(t, h.atClient)
+	if f.opcode != opClose || len(f.payload) < 2 || binary.BigEndian.Uint16(f.payload) != closePolicy {
+		t.Fatalf("the client got opcode %d %q, want close 1008", f.opcode, f.payload)
+	}
+	for f := range h.atServer {
+		if f.opcode != opClose {
+			t.Fatalf("the server got opcode %d %q, want only a close", f.opcode, f.payload)
+		}
+	}
+	var ref *Refusal
+	if err := h.wait(t); !errors.As(err, &ref) || ref.Code != CodeUnknown {
+		t.Fatalf("Relay answered %v, want a %s refusal", err, CodeUnknown)
+	}
+}
+
 func TestRelayClosesAMessageTooBig(t *testing.T) {
 	h := startRelay(t, Extensions{})
 	header := []byte{0x80 | opBinary, 0x80 | 127}

@@ -26,6 +26,13 @@ func testEntries() []Entry {
 	}
 }
 
+// noProtected is the provider for a sandbox with no protected variables, like the proxy's: nothing is its placeholder.
+type noProtected struct{}
+
+func (noProtected) Resolve(context.Context, string, string, Destination) (Resolution, error) {
+	return Resolution{}, ErrUnknown
+}
+
 func testStore() *Store {
 	return NewStore(func(context.Context, string) (Table, error) {
 		return Table{Version: 1, Entries: testEntries()}, nil
