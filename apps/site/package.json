@@ -3,7 +3,7 @@
 	"private": true,
 	"version": "0.0.0",
 	"type": "module",
-	"description": "kantel.dev: Kantel's marketing page, its install script and the docs, as one static site on Cloudflare Workers",
+	"description": "kantel.dev: Kantel's marketing page, its install scripts and the docs, as one static site on Cloudflare Workers",
 	"license": "Apache-2.0",
 	"packageManager": "pnpm@10.34.9",
 	"engines": {
@@ -17,13 +17,13 @@
 	},
 	"scripts": {
 		"sync-docs": "node scripts/sync-docs.mjs",
-		"predev": "node scripts/sync-docs.mjs",
+		"predev": "node scripts/sync-docs.mjs && node scripts/sync-installers.mjs",
 		"dev": "astro dev",
-		"prebuild": "node scripts/sync-docs.mjs",
+		"prebuild": "node scripts/sync-docs.mjs && node scripts/sync-installers.mjs",
 		"build": "astro build && node scripts/check-links.mjs && node scripts/llms-txt.mjs",
 		"preview": "wrangler dev",
 		"deploy:dry-run": "wrangler deploy --dry-run",
-		"lint:install": "sh -n public/install.sh"
+		"lint:install": "sh -n public/install.sh && sh -n ../../packages/cli/install-cli.sh"
 	},
 	"devDependencies": {
 		"@astrojs/starlight": "0.42.8",
