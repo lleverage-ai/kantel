@@ -89,6 +89,7 @@
 	--kt-text-sm: 13px;
 	--kt-text-md: 14px;
 	--kt-text-lg: 16px;
+	--kt-text-heading: 20px; /* a page's title, one clear step over everything under it */
 	--kt-text-code: 12.5px;
 	--kt-text-display: 24px; /* binding codes, nothing else */
 	--kt-text-title: 28px; /* a display heading in --kt-font-display: the brand's display face reads small, so a step up */

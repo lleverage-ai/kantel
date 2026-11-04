@@ -2052,8 +2052,8 @@ export const TelemetryExport = Type.Object(
 	{
 		title: "TelemetryExport",
 		description:
-			"Where an account's telemetry goes: sandbox metrics (`kantel.sandbox.running`, `kantel.sandbox.cpu.seconds`, " +
-			"`kantel.sandbox.cost`, …) every 60 seconds, and each lifecycle event as an OTLP log record when it happens.",
+			"Where an account's telemetry goes: sandbox metrics (`kantel.sandbox.cpu`, `kantel.sandbox.memory_bytes` and " +
+			"`kantel.sandbox.running_seconds`) every 60 seconds, and each lifecycle event as an OTLP log record when it happens.",
 	},
 );
 
