@@ -544,7 +544,7 @@ export function SettingsView({
 					>
 						<TextField
 							label="URL"
-							extra={<span className="text-xs text-faint">optional</span>}
+							extra={<span className="text-sm text-faint">optional</span>}
 							hint="An http or https proxy. Leave it empty to go straight out."
 							value={url}
 							onChange={(event) => setUrl(event.currentTarget.value)}

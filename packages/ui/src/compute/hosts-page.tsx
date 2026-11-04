@@ -79,7 +79,7 @@ export function parseLabels(text: string): { readonly labels: Record<string, str
 	return { labels };
 }
 
-const head = "h-control-md border-b border-border px-2 py-0 text-xs font-medium whitespace-nowrap text-muted";
+const head = "h-control-md border-b border-border px-2 py-0 text-sm font-medium whitespace-nowrap text-muted";
 const cell = "border-b border-border px-2 py-2.5 align-middle whitespace-nowrap";
 /** An opened row's cell: its graphs under it carry the hairline. */
 const cellOpen = "px-2 py-2.5 align-middle whitespace-nowrap";
@@ -393,7 +393,7 @@ function Machine({ host }: { host: Host }) {
 			<span className="text-fg">
 				{host.os} <span className="text-muted">{host.arch}</span>
 			</span>
-			{host.kvm ? null : <span className="text-xs text-muted">No KVM, isolates only</span>}
+			{host.kvm ? null : <span className="text-sm text-muted">No KVM, isolates only</span>}
 		</span>
 	);
 }

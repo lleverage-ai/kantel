@@ -26,7 +26,7 @@ export function CommandBlock({
 }) {
 	return (
 		<div className="kt-command-block flex min-w-0 flex-col gap-1">
-			{label === undefined ? null : <span className="text-xs text-muted">{label}</span>}
+			{label === undefined ? null : <span className="text-sm text-muted">{label}</span>}
 			<div className="flex min-w-0 items-center gap-2">
 				<pre className={codeFrame}>
 					<code>{command}</code>

@@ -362,7 +362,7 @@ function PhoneEntry({
 				</div>
 				{entry.decision === "denied" ? <Badge tone="error">Denied</Badge> : null}
 			</div>
-			<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted">
+			<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-sm text-muted">
 				<span title={new Date(entry.at).toLocaleString("en-GB")}>{age === "now" ? "now" : `${age} ago`}</span>
 				{sandboxColumn ? <span>{entry.sandboxName}</span> : null}
 				{entry.swapped.map((name) => (

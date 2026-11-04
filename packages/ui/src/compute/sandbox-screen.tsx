@@ -93,7 +93,7 @@ export function ScreenPreview({ kind, url, label }: { kind: "desktop" | "browser
 				)}
 			</div>
 			{url === undefined ? null : (
-				<span className="absolute right-2 bottom-2 inline-flex items-center gap-1.5 rounded-sm bg-glass px-1.5 py-0.5 text-2xs text-fg">
+				<span className="absolute right-2 bottom-2 inline-flex items-center gap-1.5 rounded-sm bg-glass px-1.5 py-0.5 text-xs text-fg">
 					<StatusDot status="done" />
 					Live
 				</span>

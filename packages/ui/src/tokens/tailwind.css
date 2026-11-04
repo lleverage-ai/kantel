@@ -137,7 +137,7 @@
 	--color-drop-fill: var(--kt-drop-fill);
 	--color-drop-line: var(--kt-drop-line);
 
-	/* Type: `font-sans`, `font-display`, `font-mono` (tokens.css); `text-2xs` to `text-lg`,
+	/* Type: `font-sans`, `font-display`, `font-mono` (tokens.css); `text-xs` to `text-lg`,
 	   `text-code`, `text-title` and the document sizes; `font-regular`, `font-medium`, `font-strong`; `leading-tight`,
 	   `leading-normal`, `leading-prose`. A size sets only the font-size: line height is its own utility, as in the CSS
 	   it replaces. */
@@ -148,7 +148,6 @@
 	--default-font-family: var(--kt-font-sans);
 	--default-mono-font-family: var(--kt-font-mono);
 
-	--text-2xs: var(--kt-text-2xs);
 	--text-xs: var(--kt-text-xs);
 	--text-sm: var(--kt-text-sm);
 	--text-md: var(--kt-text-md);

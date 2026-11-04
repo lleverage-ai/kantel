@@ -126,7 +126,7 @@ export function HostGraphs({ host, live, narrow = false }: { host: Host; live: L
 					label={`${host.name}'s disk over the last 10 minutes`}
 				/>
 			</div>
-			<p className="m-0 text-xs text-muted">
+			<p className="m-0 text-sm text-muted">
 				{down ? `No readings while it's ${host.state === "joining" ? "joining" : "offline"}. ` : "Last 10 minutes. "}
 				{`Given to sandboxes: ${host.used.vcpus} of ${host.vcpus} vCPU, ${gbText(gbBytes(host.used.memoryGb))} of ${gbText(gbBytes(host.memoryGb))} GB memory.`}
 			</p>

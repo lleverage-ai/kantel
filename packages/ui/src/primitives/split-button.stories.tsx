@@ -20,7 +20,7 @@ function Counting(props: { size?: "sm" | "md"; variant?: "primary" | "secondary"
 				onMore={() => setOpened((count) => count + 1)}
 				{...props}
 			/>
-			<span className="text-xs text-muted">
+			<span className="text-sm text-muted">
 				Made {made}, options {opened}
 			</span>
 		</span>

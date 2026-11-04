@@ -10,7 +10,7 @@ import { useThemeMenuEntry } from "../theme/theme-switch.tsx";
 
 /** Your initials in a circle. */
 const avatar =
-	"kt-user-avatar inline-grid size-control-sm flex-none place-items-center rounded-full border border-border-strong bg-raised text-2xs font-strong leading-none text-fg";
+	"kt-user-avatar inline-grid size-control-sm flex-none place-items-center rounded-full border border-border-strong bg-raised text-xs font-strong leading-none text-fg";
 
 /** The sidebar's row: avatar, name and the chevrons, the width of the sidebar. */
 const rowTrigger =

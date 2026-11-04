@@ -604,7 +604,7 @@ export function ComputeConsole({
 								{backToConsole}
 								<span className="flex flex-col gap-0.5 px-2.5 leading-tight">
 									<span className="text-sm font-strong">Admin</span>
-									<span className="text-xs text-faint">This whole install</span>
+									<span className="text-sm text-faint">This whole install</span>
 								</span>
 							</div>
 							<SidebarSection label="Admin" heading={false}>
@@ -651,14 +651,14 @@ export function ComputeConsole({
 			<main className={MAIN}>
 				{sample && failed === undefined ? (
 					<p
-						className={`kt-sample-banner m-0 border-b border-border bg-status-waiting-soft py-1.5 text-xs text-status-waiting ${narrow ? "px-gutter-narrow" : "px-gutter"}`}
+						className={`kt-sample-banner m-0 border-b border-border bg-status-waiting-soft py-1.5 text-sm text-status-waiting ${narrow ? "px-gutter-narrow" : "px-gutter"}`}
 					>
 						{source.hosting === "hosted" ? "Hosted demo on sample data." : "Sample data."} Nothing here is real.
 					</p>
 				) : null}
 				{strip === undefined ? null : (
 					<div
-						className={`kt-e2e-strip flex items-center gap-3 border-b border-border py-1.5 text-xs ${STRIP_TONES[strip.tone]} ${narrow ? "px-gutter-narrow" : "px-gutter"}`}
+						className={`kt-e2e-strip flex items-center gap-3 border-b border-border py-1.5 text-sm ${STRIP_TONES[strip.tone]} ${narrow ? "px-gutter-narrow" : "px-gutter"}`}
 					>
 						<p className="m-0 min-w-0 flex-1">{strip.text}</p>
 						{strip.setup === undefined ? null : (

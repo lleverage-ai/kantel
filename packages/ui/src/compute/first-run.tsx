@@ -24,7 +24,7 @@ function Step({ n, current, title, children }: { n: number; current: boolean; ti
 	return (
 		<li className="kt-first-run-step grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-x-4 gap-y-3 border-t border-border py-4">
 			<span
-				className={`grid size-control-xs place-items-center rounded-sm text-xs font-medium tabular-nums ${current ? "bg-primary text-primary-fg" : "bg-active text-muted"}`}
+				className={`grid size-control-xs place-items-center rounded-sm text-sm font-medium tabular-nums ${current ? "bg-primary text-primary-fg" : "bg-active text-muted"}`}
 				aria-hidden="true"
 			>
 				{n}

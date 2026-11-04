@@ -37,7 +37,7 @@ export function shellClasses({ narrow, collapsed, pane }: Shell) {
 		sidebar: `min-h-0 ${narrow ? "border-r-0! bg-canvas!" : ""} ${narrow && pane === "main" ? "hidden!" : ""}`,
 		main: `min-w-0 min-h-0 ${narrow && pane === "list" ? "hidden" : ""}`,
 		// Who the console acts as, at the foot of the sidebar, under the pages; centred on the rail.
-		actor: `flex items-center gap-1.5 pt-2 pb-0 border-t border-border text-muted text-xs ${collapsed ? "justify-center px-0" : "px-2.5"}`,
+		actor: `flex items-center gap-1.5 pt-2 pb-0 border-t border-border text-muted text-sm ${collapsed ? "justify-center px-0" : "px-2.5"}`,
 	};
 }
 

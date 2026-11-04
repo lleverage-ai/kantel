@@ -848,12 +848,12 @@ function FeatureRow({ label, feature }: { label: string; feature: SandboxFeature
 				</span>
 				{feature.available ? (
 					feature.detail === undefined ? null : (
-						<span className="truncate text-muted text-xs" title={feature.detail}>
+						<span className="truncate text-muted text-sm" title={feature.detail}>
 							{feature.detail}
 						</span>
 					)
 				) : (
-					<span className="text-muted text-xs">{feature.reason}</span>
+					<span className="text-muted text-sm">{feature.reason}</span>
 				)}
 			</span>
 		</li>
@@ -951,7 +951,7 @@ function Usage({ source, sandbox, refreshKey }: { source: SandboxesSource; sandb
 			<SectionHeading
 				id="sandbox-usage"
 				title="Usage"
-				actions={<span className="text-xs text-muted">{live.status === "off" ? "Recent" : "Last 10 minutes"}</span>}
+				actions={<span className="text-sm text-muted">{live.status === "off" ? "Recent" : "Last 10 minutes"}</span>}
 			/>
 			<div className="flex flex-col gap-4 text-sm">
 				<UsageGraph

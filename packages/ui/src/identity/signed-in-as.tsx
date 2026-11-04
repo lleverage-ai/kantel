@@ -9,7 +9,7 @@ import { Skeleton } from "../primitives/spinner.tsx";
 const row = "kt-signed-in-as flex min-w-0 flex-1 items-center gap-2";
 /** A 28px circle with the initials; a hairline border, fainter while loading. */
 const avatar =
-	"kt-signed-in-as-avatar inline-grid size-control-sm flex-none place-items-center rounded-full border bg-raised text-2xs font-strong leading-none text-fg";
+	"kt-signed-in-as-avatar inline-grid size-control-sm flex-none place-items-center rounded-full border bg-raised text-xs font-strong leading-none text-fg";
 /** The name over the email, each truncating to the row. */
 const text = "kt-signed-in-as-text flex min-w-0 flex-1 flex-col leading-tight";
 
@@ -66,7 +66,7 @@ export function SignedInAs({ name, email, badge, onSignOut, signingOut = false, 
 					{name}
 				</span>
 				{showEmail ? (
-					<span className="truncate text-xs text-faint" title={email}>
+					<span className="truncate text-sm text-faint" title={email}>
 						{email}
 					</span>
 				) : null}

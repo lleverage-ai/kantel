@@ -85,12 +85,10 @@
 	--kt-font-display: Abhaya Libre, Georgia, Times New Roman, serif;
 	--kt-font-mono: Roboto Mono Variable, Roboto Mono, ui-monospace, SF Mono, SFMono-Regular, Menlo, Consolas, monospace;
 	/*
-	 * Five steps: 12 for badges, captions and the tab bar's labels; 13 for secondary text, metadata and code; 14 for
-	 * body text; 16 for a section's heading; 20 for a page's title. `xs` and `sm` are the same step, so nothing
-	 * readable is set below 13px; `2xs` is the caption step.
+	 * Five steps: xs 12 for badges, captions and the tab bar's labels; sm 13 for secondary text, metadata and code; md
+	 * 14 for body text; lg 16 for a section's heading; heading 20 for a page's title. Nothing readable is set below 13.
 	 */
-	--kt-text-2xs: 12px;
-	--kt-text-xs: 13px;
+	--kt-text-xs: 12px;
 	--kt-text-sm: 13px;
 	--kt-text-md: 14px;
 	--kt-text-lg: 16px;

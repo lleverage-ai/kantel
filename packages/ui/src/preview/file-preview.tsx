@@ -193,7 +193,7 @@ function Body({
 				<Code code={body.text} language={languageForPath(path)} />
 			</pre>
 			{rest <= 0 ? null : (
-				<div className="flex flex-none items-center justify-between gap-3 border-t border-border px-3 py-1.5 text-xs text-muted">
+				<div className="flex flex-none items-center justify-between gap-3 border-t border-border px-3 py-1.5 text-sm text-muted">
 					<span className="min-w-0 truncate">
 						First {bytesText(body.shown)} of {bytesText(body.size)}
 					</span>

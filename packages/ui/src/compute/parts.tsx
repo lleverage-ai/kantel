@@ -21,13 +21,13 @@ export const tableFrame = "kt-compute-table min-w-0 overflow-x-auto";
 export const table = "w-full border-collapse text-left text-sm";
 /** A header cell: muted, small, on one line; the first and last sit on the page's edges. */
 export const th =
-	"h-control-md px-3 py-0 text-xs font-medium whitespace-nowrap text-muted border-b border-border first:pl-0 last:pr-0";
+	"h-control-md px-3 py-0 text-sm font-medium whitespace-nowrap text-muted border-b border-border first:pl-0 last:pr-0";
 /** A body cell: a hairline under every row; the first and last sit on the page's edges. */
 export const td = "px-3 py-2.5 align-middle whitespace-nowrap border-b border-border first:pl-0 last:pr-0";
 /** A row that opens something. */
 export const rowHover = "hover:bg-hover";
 /** A cell's second line: muted, smaller. */
-export const cellSub = "block text-xs text-muted";
+export const cellSub = "block text-sm text-muted";
 /** An id or a command in a cell. */
 export const cellMono = "font-mono text-code text-muted";
 
@@ -418,7 +418,7 @@ export function UsageGraph({
 				})}
 			</svg>
 			{ends === undefined ? null : (
-				<span className="flex justify-between text-2xs text-faint tabular-nums" aria-hidden="true">
+				<span className="flex justify-between text-xs text-faint tabular-nums" aria-hidden="true">
 					<span>{ends[0]}</span>
 					<span>{ends[1]}</span>
 				</span>
@@ -433,7 +433,7 @@ export function CapacityBar({ share, children }: { share: number; children: Reac
 	const tone = clamped >= 0.9 ? "bg-status-error" : clamped >= 0.75 ? "bg-status-approval" : "bg-status-done";
 	return (
 		<span className="kt-capacity flex min-w-0 flex-col gap-1">
-			<span className="text-xs text-muted">{children}</span>
+			<span className="text-sm text-muted">{children}</span>
 			<span className="block h-1 w-24 overflow-hidden rounded-full bg-active" aria-hidden="true">
 				<span className={`block h-full rounded-full ${tone}`} style={{ width: `${Math.round(clamped * 100)}%` }} />
 			</span>

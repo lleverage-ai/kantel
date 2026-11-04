@@ -52,12 +52,12 @@ export function SandboxMounts({ mounts }: { mounts: readonly SandboxMount[] }) {
 							</span>
 							<StatusLabel status={MOUNT_STATUS_STATUS[mount.status]}>{MOUNT_STATUS_LABELS[mount.status]}</StatusLabel>
 						</div>
-						<div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted">
+						<div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-sm text-muted">
 							<span>{MOUNT_KIND_LABELS[mount.source.kind]}</span>
 							<MountSourceText source={mount.source} />
 						</div>
 						{mount.status === "failed" && mount.error !== undefined ? (
-							<p className="m-0 text-xs text-status-error wrap-anywhere">{mount.error}</p>
+							<p className="m-0 text-sm text-status-error wrap-anywhere">{mount.error}</p>
 						) : null}
 					</li>
 				))}

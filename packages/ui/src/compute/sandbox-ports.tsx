@@ -26,7 +26,7 @@ type PortsSource = Required<Pick<SandboxesSource, "ports" | "exposePort" | "hide
 function Visibility({ isPublic }: { isPublic: boolean }) {
 	return (
 		<span
-			className={`inline-flex items-center gap-1 rounded-xs px-1.5 py-0.5 text-2xs font-medium whitespace-nowrap ${isPublic ? "bg-status-approval-soft text-status-approval" : "bg-active text-muted"}`}
+			className={`inline-flex items-center gap-1 rounded-xs px-1.5 py-0.5 text-xs font-medium whitespace-nowrap ${isPublic ? "bg-status-approval-soft text-status-approval" : "bg-active text-muted"}`}
 		>
 			{isPublic ? <GlobeIcon size="sm" /> : <LockIcon size="sm" />}
 			{isPublic ? "Public" : "Private"}

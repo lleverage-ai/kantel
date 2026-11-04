@@ -348,7 +348,7 @@ function AutoStopDialog({
 					onChange={(event) => setChoice(event.currentTarget.value)}
 					options={AUTO_STOP_CHOICES}
 				/>
-				<span className="text-xs text-muted">Counts from now.</span>
+				<span className="text-sm text-muted">Counts from now.</span>
 			</div>
 			{failure === undefined ? null : <p className="kt-dialog-error">{failure}</p>}
 		</Dialog>

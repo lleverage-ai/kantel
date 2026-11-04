@@ -82,7 +82,7 @@ export const Overview: Story = () => (
 				<span style={{ fontSize: "var(--kt-text-sm)", color: "var(--kt-text-muted)" }}>
 					Tool rows and secondary text, 13px
 				</span>
-				<span style={{ fontSize: "var(--kt-text-xs)", color: "var(--kt-text-faint)" }}>Metadata, 12px</span>
+				<span style={{ fontSize: "var(--kt-text-sm)", color: "var(--kt-text-faint)" }}>Metadata, 12px</span>
 				<span className="kt-mono">The theme's mono for code, paths and commands, 12.5px</span>
 			</div>
 		</Section>

@@ -14,8 +14,8 @@ const panelTone = {
 
 /** A panel's header and footer: one short row of small text, a hairline from the body. */
 const panelHeader =
-	"flex min-h-control-md min-w-0 items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted";
-const panelFooter = "flex min-w-0 items-center gap-2 border-t border-border px-3 py-1.5 text-xs text-faint";
+	"flex min-h-control-md min-w-0 items-center gap-2 border-b border-border px-3 py-1.5 text-sm text-muted";
+const panelFooter = "flex min-w-0 items-center gap-2 border-t border-border px-3 py-1.5 text-sm text-faint";
 
 /**
  * A bordered panel on the canvas: the frame for cards, settings groups and detail views. A header row, a body and

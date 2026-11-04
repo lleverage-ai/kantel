@@ -25,7 +25,7 @@ const buttonVariants: { readonly [variant in ButtonVariant]: string } = {
 
 /** Each size's height, inline padding and font size, for a button with words. Every button is fully round. */
 const buttonSizes: { readonly [size in ButtonSize]: string } = {
-	xs: "h-control-xs px-2.5 py-0 text-xs rounded-full",
+	xs: "h-control-xs px-2.5 py-0 text-sm rounded-full",
 	sm: "h-control-sm px-3 py-0 text-sm rounded-full",
 	md: "h-control-md px-3.5 py-0 text-sm rounded-full",
 	lg: "h-control-lg px-4.5 py-0 text-md rounded-full",
@@ -33,7 +33,7 @@ const buttonSizes: { readonly [size in ButtonSize]: string } = {
 
 /** The same for an icon-only button: round, no padding, and touch-wide as well as touch-tall on a coarse pointer. */
 const iconButtonSizes: { readonly [size in ButtonSize]: string } = {
-	xs: "size-control-xs p-0 text-xs rounded-full pointer-coarse:min-w-control-lg",
+	xs: "size-control-xs p-0 text-sm rounded-full pointer-coarse:min-w-control-lg",
 	sm: "size-control-sm p-0 text-sm rounded-full pointer-coarse:min-w-control-lg",
 	md: "size-control-md p-0 text-sm rounded-full pointer-coarse:min-w-control-lg",
 	lg: "size-control-lg p-0 text-md rounded-full pointer-coarse:min-w-control-lg",

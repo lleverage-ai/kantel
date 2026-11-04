@@ -45,7 +45,7 @@ export function Skeleton({ width = "100%", lines = 1 }: { width?: string; lines?
 /** A keyboard key or chord, as in "Press <Kbd>Enter</Kbd> to send". */
 export function Kbd({ children }: { children: string }) {
 	return (
-		<kbd className="kt-kbd inline-flex h-[calc(var(--kt-control-xs)-var(--kt-step-1))] min-w-control-xs items-center justify-center rounded-xs border border-border-strong bg-raised px-1 py-0 font-sans text-2xs leading-none text-muted">
+		<kbd className="kt-kbd inline-flex h-[calc(var(--kt-control-xs)-var(--kt-step-1))] min-w-control-xs items-center justify-center rounded-xs border border-border-strong bg-raised px-1 py-0 font-sans text-xs leading-none text-muted">
 			{children}
 		</kbd>
 	);

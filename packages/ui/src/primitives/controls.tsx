@@ -344,7 +344,7 @@ export function CheckboxField({
 				{label}
 			</label>
 			{hint === undefined ? null : (
-				<span id={`${id}-hint`} className="kt-checkbox-hint col-start-2 text-xs text-faint">
+				<span id={`${id}-hint`} className="kt-checkbox-hint col-start-2 text-sm text-faint">
 					{hint}
 				</span>
 			)}
@@ -377,7 +377,7 @@ const segmentTone: Record<SegmentTone, string> = {
 const segmentedClass = "kt-segmented inline-flex gap-0.5 rounded-full border border-border bg-sunken p-0.5";
 
 /** A segment: muted words, lit when it is the chosen one (`segmentLit`, or its tone's tint). */
-const segmentClass = `kt-segment kt-focusable inline-flex h-[calc(var(--kt-control-sm)_-_var(--kt-step-1))] cursor-pointer items-center gap-1.5 rounded-full border-0 bg-transparent px-2.5 py-0 text-xs text-muted ${inheritFont} [line-height:inherit] hover:not-disabled:text-fg disabled:cursor-default disabled:text-disabled`;
+const segmentClass = `kt-segment kt-focusable inline-flex h-[calc(var(--kt-control-sm)_-_var(--kt-step-1))] cursor-pointer items-center gap-1.5 rounded-full border-0 bg-transparent px-2.5 py-0 text-sm text-muted ${inheritFont} [line-height:inherit] hover:not-disabled:text-fg disabled:cursor-default disabled:text-disabled`;
 const segmentLit = "aria-checked:bg-active aria-checked:text-fg";
 
 /**

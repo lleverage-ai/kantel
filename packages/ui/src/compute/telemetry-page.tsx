@@ -483,7 +483,7 @@ function TelemetryForm({
 					<Button busy={testing} disabled={saved.endpoint === ""} onClick={() => void sendTest()}>
 						Send test
 					</Button>
-					{dirty ? <span className="text-xs text-muted">Send test uses the saved settings.</span> : null}
+					{dirty ? <span className="text-sm text-muted">Send test uses the saved settings.</span> : null}
 				</FormActions>
 			</FormLayout>
 		</form>
@@ -508,7 +508,7 @@ function LastExport({ settings, now }: { settings: TelemetrySettings; now: numbe
 				</StatusLabel>
 			</span>
 			{last.ok || last.message === undefined ? null : (
-				<span className="text-xs text-muted wrap-anywhere">{last.message}</span>
+				<span className="text-sm text-muted wrap-anywhere">{last.message}</span>
 			)}
 		</div>
 	);

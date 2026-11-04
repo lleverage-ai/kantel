@@ -749,7 +749,7 @@ function Cpu({ sandbox, source, percent = false }: { sandbox: Sandbox; source: S
 				{...(series === undefined ? {} : { timed: line.timed })}
 			/>
 			{percent && sandbox.state === "running" ? (
-				<span className="w-8 text-right text-xs text-muted tabular-nums">
+				<span className="w-8 text-right text-sm text-muted tabular-nums">
 					{latest === undefined ? <span className="text-faint">–</span> : `${Math.round(latest * 100)}%`}
 				</span>
 			) : null}
@@ -1091,7 +1091,7 @@ export function ShapeFields({
 					marks={[range.default]}
 					onChange={onMemory}
 				/>
-				<p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
+				<p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
 					<span>Shared CPU: an isolate runs on its account's VM and shares its CPU.</span>
 					{cents === undefined ? null : <span>{costText(cents)} an hour.</span>}
 				</p>
@@ -1104,7 +1104,7 @@ export function ShapeFields({
 	// No disk is promised: it is the host's to give (by its sizes, or the snapshot it starts from), and the sandbox shows
 	// the disk it got once it runs.
 	const summary = (
-		<p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
+		<p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
 			<span>
 				{shape.vcpus} vCPU, {memoryText(shape.memoryMb)} memory
 				{price}
@@ -1297,7 +1297,7 @@ export function NewSandboxDialog({
 						value={kind}
 						onChange={setKind}
 					/>
-					<span className="text-xs text-muted">
+					<span className="text-sm text-muted">
 						{noMicrovms
 							? "None of this organisation's hosts run microVMs, so only isolates can be made here."
 							: kind === "microvm"
@@ -1306,7 +1306,7 @@ export function NewSandboxDialog({
 					</span>
 				</div>
 				{shapesRead === "reading" ? (
-					<p className="text-xs text-muted" role="status">
+					<p className="text-sm text-muted" role="status">
 						Reading what the hosts offer…
 					</p>
 				) : shapesRead === "failed" ? (

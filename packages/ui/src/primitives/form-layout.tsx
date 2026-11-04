@@ -41,7 +41,7 @@ const fieldControl =
 	"kt-form-field-control flex min-w-0 flex-col items-stretch gap-1 [&>:is(.kt-segmented,.kt-form-inline)]:max-w-full [&>:is(.kt-segmented,.kt-form-inline)]:self-start";
 
 /** Help or an error under a field. */
-const fieldNote = "m-0 text-xs leading-normal";
+const fieldNote = "m-0 text-sm leading-normal";
 
 /** A row of controls inside one field: checkboxes, toggles. Keeps its own width in a field, like a segmented control. */
 export const formInline = "kt-form-inline flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1.5";
@@ -139,7 +139,7 @@ export function FormSection({
 						{title}
 					</Heading>
 					{description === undefined ? null : (
-						<p className="kt-form-section-description m-0 text-xs leading-normal text-muted">{description}</p>
+						<p className="kt-form-section-description m-0 text-sm leading-normal text-muted">{description}</p>
 					)}
 				</div>
 				{action === undefined ? null : (
@@ -196,7 +196,7 @@ export function FormField({
 	children: ReactNode;
 }) {
 	const labelId = `${id}-label`;
-	const labelClass = `kt-form-field-label${hideLabel ? " kt-sr-only" : ""} text-xs leading-normal text-muted`;
+	const labelClass = `kt-form-field-label${hideLabel ? " kt-sr-only" : ""} text-sm leading-normal text-muted`;
 	const labelElement =
 		htmlFor === undefined ? (
 			<span id={labelId} className={labelClass}>

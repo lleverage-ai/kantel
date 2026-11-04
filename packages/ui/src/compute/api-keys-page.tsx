@@ -202,7 +202,7 @@ function KeysSkeleton() {
 }
 
 /** The table: no frame round it, a hairline under the head and under every row. */
-const head = "h-control-md border-b border-border px-2 py-0 text-xs font-medium whitespace-nowrap text-muted";
+const head = "h-control-md border-b border-border px-2 py-0 text-sm font-medium whitespace-nowrap text-muted";
 const cell = "border-b border-border px-2 py-2.5 align-middle whitespace-nowrap";
 
 /** The live keys, then the revoked ones folded under a toggle. */
@@ -526,7 +526,7 @@ function NewKeyDialog({
 							))}
 						</div>
 					) : (
-						<p className="m-0 pt-1 text-xs text-muted">{scopes.map(scopeLabel).join(", ")}.</p>
+						<p className="m-0 pt-1 text-sm text-muted">{scopes.map(scopeLabel).join(", ")}.</p>
 					)}
 				</FormField>
 				<SelectField

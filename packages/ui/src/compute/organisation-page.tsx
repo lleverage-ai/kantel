@@ -167,7 +167,7 @@ function OrganisationRow({
 	const who = (
 		<span className="flex min-w-0 flex-1 flex-col gap-0.5">
 			<span className="truncate font-medium text-fg">{organisation.name}</span>
-			<span className="min-h-4 truncate text-xs text-muted">{members ?? ""}</span>
+			<span className="min-h-4 truncate text-sm text-muted">{members ?? ""}</span>
 		</span>
 	);
 	// A phone: the whole row switches, with a chevron, as a list of places to go.
@@ -511,7 +511,7 @@ function RowsSkeleton() {
 function PersonMark({ name }: { name: string }) {
 	return (
 		<span
-			className="inline-grid size-control-sm flex-none place-items-center rounded-full border border-border-strong bg-raised text-2xs font-strong leading-none text-fg"
+			className="inline-grid size-control-sm flex-none place-items-center rounded-full border border-border-strong bg-raised text-xs font-strong leading-none text-fg"
 			aria-hidden="true"
 		>
 			{initials(name)}

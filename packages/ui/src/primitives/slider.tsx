@@ -104,7 +104,7 @@ export function SliderField({
 					style={{ "--kt-slider-fill": `${sliderPercent(shown, min, max)}%` } as CSSProperties}
 					onChange={(event) => onChange(onStep(Number(event.currentTarget.value), min, max, step))}
 				/>
-				<div className="kt-slider-scale relative flex justify-between text-xs text-faint tabular-nums">
+				<div className="kt-slider-scale relative flex justify-between text-sm text-faint tabular-nums">
 					{/* Inset by half a thumb, as the thumb's centre is at either end. */}
 					<span aria-hidden="true" className="absolute inset-x-2 top-0">
 						{ticks.map((mark) => (

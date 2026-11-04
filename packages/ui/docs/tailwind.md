@@ -64,7 +64,7 @@ modifiers such as `bg-accent/50`.
 | `--kt-diff-add`, `-diff-del` | `text-diff-add`, `text-diff-del` |
 | `--kt-glass`, `-glass-outline`, `-thumb-scrim`, `-on-solid`, `-drop-fill`, `-drop-line` | `bg-glass`, `border-glass-outline`, `bg-thumb-scrim`, `text-on-solid`, `bg-drop-fill`, `border-drop-line` |
 | `--kt-font-sans`, `-font-mono` | `font-sans`, `font-mono` |
-| `--kt-text-2xs` … `-text-lg`, `-text-code`, `-text-display` | `text-2xs`, `text-xs`, `text-sm`, `text-md`, `text-lg`, `text-code`, `text-display` |
+| `--kt-text-xs` … `-text-lg`, `-text-heading`, `-text-code`, `-text-display` | `text-xs`, `text-sm`, `text-md`, `text-lg`, `text-heading`, `text-code`, `text-display` |
 | `--kt-doc-text`, `-doc-h1` … `-doc-h3` | `text-doc`, `text-doc-h1`, `text-doc-h2`, `text-doc-h3` |
 | `--kt-weight-regular`, `-medium`, `-strong` | `font-regular`, `font-medium`, `font-strong` |
 | `--kt-leading-tight`, `-leading`, `-leading-prose` | `leading-tight`, `leading-normal`, `leading-prose` (and Tailwind's `leading-none`) |

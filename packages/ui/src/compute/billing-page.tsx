@@ -161,7 +161,7 @@ function Meter({
 }) {
 	return (
 		<div className="flex min-w-0 flex-col gap-1">
-			<span className="text-xs text-muted">{label}</span>
+			<span className="text-sm text-muted">{label}</span>
 			<span className="text-lg font-medium leading-tight tabular-nums text-fg">{value}</span>
 			<CapacityBar share={share}>{children}</CapacityBar>
 		</div>
@@ -229,7 +229,7 @@ function DailySpend({ summary, days }: { summary: BillingSummary; days: number }
 	}, at most ${costText(Math.max(0, ...summary.daily))} in a day.`;
 	return (
 		<div className="flex min-w-0 flex-col gap-1.5 border-t border-border pt-3">
-			<span className="text-xs text-muted">Daily spend</span>
+			<span className="text-sm text-muted">Daily spend</span>
 			<div className="flex h-12 min-w-0 items-end gap-0.5" role="img" aria-label={label}>
 				{Array.from({ length: days }, (_, day) => {
 					const cents = summary.daily[day];
@@ -246,7 +246,7 @@ function DailySpend({ summary, days }: { summary: BillingSummary; days: number }
 					);
 				})}
 			</div>
-			<div className="flex justify-between text-xs text-faint">
+			<div className="flex justify-between text-sm text-faint">
 				<span>{dayText.format(summary.periodStart)}</span>
 				<span>{dayText.format(summary.periodEnd)}</span>
 			</div>
@@ -335,7 +335,7 @@ function SandboxRates() {
 					</tbody>
 				</table>
 			</TableFrame>
-			<p className="m-0 text-xs text-muted">
+			<p className="m-0 text-sm text-muted">
 				MicroVMs are billed at these rates while they run. Isolates are billed per CPU-second instead, at a small
 				fraction of them.
 			</p>

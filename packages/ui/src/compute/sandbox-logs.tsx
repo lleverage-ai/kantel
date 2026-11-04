@@ -80,7 +80,7 @@ const failed = (entry: LogEntry): boolean =>
 export const outputUnavailable = (entries: readonly LogEntry[], endToEnd: boolean): boolean =>
 	endToEnd && entries.some((entry) => failed(entry) && entry.kind === "command" && entry.command.output === undefined);
 
-const head = "h-control-md border-b border-border px-2 py-0 text-xs font-medium whitespace-nowrap text-muted";
+const head = "h-control-md border-b border-border px-2 py-0 text-sm font-medium whitespace-nowrap text-muted";
 const cell = "border-b border-border px-2 py-2 align-middle";
 
 export function SandboxLogs({

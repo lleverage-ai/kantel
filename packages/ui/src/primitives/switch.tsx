@@ -76,7 +76,7 @@ export function Switch({
 				{label}
 			</label>
 			{hint === undefined ? null : (
-				<span id={hintId} className="kt-switch-hint col-start-2 text-xs text-faint">
+				<span id={hintId} className="kt-switch-hint col-start-2 text-sm text-faint">
 					{hint}
 				</span>
 			)}

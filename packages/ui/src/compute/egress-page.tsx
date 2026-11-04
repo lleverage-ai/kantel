@@ -231,7 +231,7 @@ export function EgressPage({
 													<Badge tone="error">Denied</Badge>
 												)}
 												{entry.status === undefined ? null : (
-													<span className="text-xs text-muted tabular-nums">{entry.status}</span>
+													<span className="text-sm text-muted tabular-nums">{entry.status}</span>
 												)}
 											</span>
 											{entry.reason === undefined ? null : (
