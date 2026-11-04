@@ -405,7 +405,7 @@ export function UsageGraph({
 					return (
 						<g key={points[0]?.[0] ?? 0}>
 							{area === undefined ? null : (
-								<polygon points={area} fill="currentColor" fillOpacity="0.08" stroke="none" />
+								<polygon points={area} fill="currentColor" fillOpacity="0.14" stroke="none" />
 							)}
 							<polyline
 								points={pointsText(points)}
