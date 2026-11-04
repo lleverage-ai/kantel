@@ -7,7 +7,19 @@ import {
 	parseComputePath,
 	pathAfterAccountSwitch,
 	sandboxPath,
+	screenSearch,
 } from "./compute-console.tsx";
+
+describe("a screen's page in a new tab", () => {
+	it("keeps this address's query, without a file browser's place, and adds what the new tab needs", () => {
+		expect(screenSearch("")).toBe("");
+		expect(screenSearch("?theme=dark&path=/home/user&file=a.md", "source=recorded")).toBe(
+			"?theme=dark&source=recorded",
+		);
+		// The address's own wins over the tab's.
+		expect(screenSearch("?hosting=hosted", "hosting=self-hosted&data=sample")).toBe("?hosting=hosted&data=sample");
+	});
+});
 
 describe("Egress's tabs", () => {
 	it("names every tab in the address, Log too, keeping the rest of the query", () => {

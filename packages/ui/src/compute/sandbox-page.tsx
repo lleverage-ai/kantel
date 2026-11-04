@@ -107,6 +107,13 @@ export interface SandboxPageProps {
 	readonly sandboxId: string;
 	/** The account the console has selected: a sandbox of another one says so. */
 	readonly accountId?: string;
+	/** The viewer's accounts, for `onOpenAccount`. */
+	readonly accountIds?: ReadonlySet<string>;
+	/**
+	 * On a screen's page, which has no account switcher: moves this tab to the sandbox's account when it's another of
+	 * the viewer's (`accountIds`), rather than saying it's in another account.
+	 */
+	readonly onOpenAccount?: (accountId: string) => void;
 	/** The view the address names; the page keeps its own when absent. */
 	readonly view?: SandboxView;
 	/** Where to start, when the page keeps its own view. */
@@ -215,6 +222,8 @@ export function SandboxPage({
 	menuOpen = false,
 	filesAt,
 	filesHref,
+	accountIds,
+	onOpenAccount,
 }: SandboxPageProps) {
 	const { state, reload } = useLoad(() => source.get(sandboxId), [source, sandboxId]);
 	const [own, setOwn] = useState<SandboxView>(initialView);
@@ -290,6 +299,15 @@ export function SandboxPage({
 	// A screen's page for a sandbox that can't show one (stopped, an isolate, an image without it) goes to its Overview,
 	// in the console, rather than a bare page with nothing on it.
 	const fellBack = isScreen(asked) && !isScreen(view);
+	// A shared screen's link opened in a tab on another account: the tab moves to the sandbox's, if it's the viewer's.
+	const elsewhere =
+		sandbox !== undefined && accountId !== undefined && sandbox.accountId !== accountId ? sandbox.accountId : undefined;
+	const moves =
+		elsewhere !== undefined && isScreen(asked) && onOpenAccount !== undefined && accountIds?.has(elsewhere) === true;
+	// biome-ignore lint/correctness/useExhaustiveDependencies: only another account to move to moves the tab.
+	useEffect(() => {
+		if (moves && elsewhere !== undefined) onOpenAccount?.(elsewhere);
+	}, [moves, elsewhere]);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: only falling back moves the address.
 	useEffect(() => {
 		if (fellBack) navigate?.(href(view));
@@ -375,6 +393,13 @@ export function SandboxPage({
 				) : (
 					<Skeleton lines={4} />
 				)}
+			</div>
+		);
+	}
+	if (moves) {
+		return (
+			<div className={early}>
+				<Skeleton lines={4} />
 			</div>
 		);
 	}
