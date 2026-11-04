@@ -56,7 +56,7 @@ import { oauthClientsFromEnv } from "@kantel/identity/oauth";
 import { kantelSessionProvider } from "@kantel/identity/otp";
 import { replicaUrl } from "./cluster.ts";
 import { type Bootstrap, bootstrap, createGatewayComponents } from "./components.ts";
-import { computeConfig, gatewayCompute, gatewayRelay, withHostUpgrades } from "./compute.ts";
+import { computeConfig, computeInvites, gatewayCompute, gatewayRelay, withHostUpgrades } from "./compute.ts";
 import { createDurableGatewayComponents, type DurableConfig } from "./durable.ts";
 import { createGateway } from "./gateway.ts";
 import { createMailer, describeMail, mailConfig, plausibleAddress } from "./mail.ts";
@@ -180,6 +180,8 @@ export async function serveGateway(cfg = gatewayConfig()) {
 				);
 	const sessions = components.otp.sessions;
 	const secretsKey = process.env.KANTEL_SECRETS_KEY?.trim() || undefined;
+	// One mailer for sign-in codes and both kinds of invite: the deployment's organisation's and a compute organisation's.
+	const mailer = cfg.mail === undefined ? undefined : createMailer(cfg.mail);
 	const compute = await gatewayCompute({
 		authenticator,
 		identity: components.identity,
@@ -189,6 +191,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		...(hosts === undefined ? {} : { hosts }),
 		...(components.computeStore === undefined ? {} : { store: components.computeStore }),
 		...(secretsKey === undefined ? {} : { secretsKey }),
+		...(mailer === undefined ? {} : { invites: computeInvites(mailer, cfg.publicOrigin) }),
 	});
 	seeded = { ...seeded, computeKey: compute.superAdminKey };
 	console.log(
@@ -203,7 +206,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		...(compute.hostRoutes === undefined ? {} : { computeHosts: compute.hostRoutes }),
 		...(compute.portRoutes === undefined ? {} : { computePorts: compute.portRoutes }),
 		consoleDir: cfg.consoleDir,
-		...(cfg.mail === undefined ? {} : { mail: describeMail(cfg.mail), mailer: createMailer(cfg.mail) }),
+		...(cfg.mail === undefined || mailer === undefined ? {} : { mail: describeMail(cfg.mail), mailer }),
 		...(cfg.publicOrigin === undefined ? {} : { publicOrigin: cfg.publicOrigin }),
 		...(cfg.oauth === undefined ? {} : { oauth: cfg.oauth }),
 	});

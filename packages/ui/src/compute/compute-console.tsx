@@ -259,6 +259,10 @@ export interface ComputeConsoleProps {
 	readonly signedInAs?: { readonly name?: string; readonly email?: string };
 	/** The person chose a theme in their menu, which has applied it: the app keeps it for them. */
 	readonly onThemeChoose?: (preference: ThemePreference) => void;
+	/** An invite's code from its email's link: the console opens Join with it. */
+	readonly joinCode?: string;
+	/** The Join `joinCode` opened is done with, joined or closed: the app forgets the code. */
+	readonly onJoinCodeDone?: () => void;
 }
 
 /** A wide screen: the sidebar beside the page. A phone: the top bar, the page, and the tab bar under it. */
@@ -352,11 +356,17 @@ export function ComputeConsole({
 	onSignOut,
 	signedInAs,
 	onThemeChoose,
+	joinCode,
+	onJoinCodeDone,
 }: ComputeConsoleProps) {
 	const viewer = useLoad(() => source.accounts.viewer(), [source]);
 	const accounts = useLoad(() => source.accounts.list(), [source]);
 	const [accountId, setAccountId] = useState<string | undefined>(() => initialAccountId ?? keptAccount());
-	const [dialog, setDialog] = useState<"create" | "join">();
+	const [dialog, setDialog] = useState<"create" | "join" | undefined>(joinCode === undefined ? undefined : "join");
+	const closeJoin = () => {
+		setDialog(undefined);
+		onJoinCodeDone?.();
+	};
 
 	const list = accounts.state.status === "ready" ? accounts.state.value : undefined;
 	const account = useMemo(
@@ -746,13 +756,14 @@ export function ComputeConsole({
 			/>
 			<JoinOrganisationDialog
 				open={dialog === "join"}
-				onClose={() => setDialog(undefined)}
+				onClose={closeJoin}
 				{...(onSignOut === undefined ? {} : { onSignOut })}
+				{...(joinCode === undefined ? {} : { initialCode: joinCode })}
 				onJoin={async (code) => {
 					const joined = await source.accounts.join(code);
 					switchTo(joined);
 					accounts.reload();
-					setDialog(undefined);
+					closeJoin();
 				}}
 			/>
 		</div>

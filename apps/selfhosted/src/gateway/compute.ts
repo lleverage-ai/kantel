@@ -70,6 +70,7 @@ import {
 	type ComputeStore,
 	createComputeApi,
 	createMemoryStore,
+	type InviteMailing,
 	joinTokenSpender,
 	type PersonIdentity,
 	type SandboxBackend,
@@ -102,6 +103,7 @@ import type { RelayStore } from "@kantel/hosts/relay-store";
 import { createHostsService, type HostsService } from "@kantel/hosts/service";
 import type { HostStore } from "@kantel/hosts/store";
 import { createTunnelTickets, HOSTS_TUNNEL_PATH, type IssuedGrant, type TunnelTickets } from "@kantel/hosts/tunnel";
+import type { InviteMailer } from "@kantel/identity/invites";
 import { hashSessionToken, isSessionToken } from "@kantel/identity/otp";
 import { type WebSocket, WebSocketServer } from "ws";
 import { CLUSTER_PATH, type GatewayCluster } from "./cluster.ts";
@@ -382,6 +384,19 @@ async function personOf(
 	};
 }
 
+/**
+ * A compute organisation's invites, emailed with the deployment's mailer (the one that sends sign-in codes). The link
+ * opens the console at `publicOrigin` (KANTEL_PUBLIC_URL): the request URL here is always `http:`.
+ */
+export function computeInvites(mailer: InviteMailer, publicOrigin: string | undefined): InviteMailing {
+	return {
+		send: (mail) => mailer.sendInvite(mail),
+		...(publicOrigin === undefined ? {} : { consoleUrl: publicOrigin }),
+		onMailError: (error, to) =>
+			console.error(`[gateway] organisation invite mail to ${JSON.stringify(to)} failed:`, error),
+	};
+}
+
 /** What `personOf` asks identity: whether the person administers the organisation, and their email. */
 type PersonDirectory = Pick<IdentityDirectory, "authorize"> & Partial<Pick<IdentityDirectory, "getUser">>;
 
@@ -407,6 +422,8 @@ export async function gatewayCompute(options: {
 	 * Postgres store refuses them (a memory store seals with a key of its own, lost with the process).
 	 */
 	readonly secretsKey?: string;
+	/** Emails an organisation's invites, with a link to join, where the deployment has mail (KANTEL_SMTP_URL). */
+	readonly invites?: InviteMailing;
 }): Promise<GatewayCompute> {
 	const store: ComputeStore = options.store ?? createMemoryStore();
 	const records = options.store === undefined ? "memory" : "postgres";
@@ -435,6 +452,7 @@ export async function gatewayCompute(options: {
 		...(hosts?.config.accountHosts === true ? { accountHosts: true } : {}),
 		...(options.now === undefined ? {} : { now: options.now }),
 		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
+		...(options.invites === undefined ? {} : { invites: options.invites }),
 	});
 	// Hosts fetch their sandboxes' protected values, and report what their egress proxies did and their usage, over
 	// their link.

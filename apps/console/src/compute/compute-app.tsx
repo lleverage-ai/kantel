@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { navigate, searchWithout, useHash, usePathname, useSearch } from "../app/router.ts";
 import { NARROW_QUERY, useMedia } from "../app/use-media.ts";
 import { apiCompute } from "./api-source.ts";
+import { createJoinLink } from "./join-link.ts";
 import { localBridge } from "./local.ts";
 
 // The console: the compute plane's pages at the root of the app (`/sandboxes`, `/hosts` and the rest; `/` is
@@ -29,6 +30,9 @@ export function legacyComputePath(pathname: string): string | undefined {
 	if (pathname !== LEGACY_BASE && !pathname.startsWith(`${LEGACY_BASE}/`)) return undefined;
 	return pathname.slice(LEGACY_BASE.length) || "/";
 }
+
+/** An invite email's link's code, waiting for Join through a sign-in (join-link.ts). */
+export const joinLink = createJoinLink(() => sessionStorage);
 
 const HOSTING_KEY = "kantel.compute.hosting";
 
@@ -143,6 +147,8 @@ export function ComputeApp({
 	const search = useSearch();
 	const hash = useHash();
 	const narrow = useMedia(NARROW_QUERY);
+	// An invite link's code, waiting for Join (`keepJoinLink`).
+	const [joinCode] = useState(joinLink.pending);
 	// One source for the tab's life: what a person does on one page (a new sandbox, a revoked key) shows on the next.
 	const [sourced, setSourced] = useState<Sourced>();
 	// biome-ignore lint/correctness/useExhaustiveDependencies: chosen once; who is signed in doesn't change under it.
@@ -197,6 +203,7 @@ export function ComputeApp({
 			{...(signedInAs === undefined ? {} : { signedInAs })}
 			{...(onSignOut === undefined ? {} : { onSignOut })}
 			{...(onThemeChoose === undefined ? {} : { onThemeChoose })}
+			{...(joinCode === undefined ? {} : { joinCode, onJoinCodeDone: joinLink.forget })}
 		/>
 	);
 }
