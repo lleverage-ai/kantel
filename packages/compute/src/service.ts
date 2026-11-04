@@ -542,6 +542,11 @@ const MAX_CLOCK_SKEW_MS = 30_000;
 /** The most numbered ticks held for a host while they can't be taken: its own backlog's bound (kantel-host's). */
 export const MAX_HELD_USAGE = 120;
 const HOUR_MS = 3_600_000;
+/** The runs of a host's sampler whose taken ticks are kept (`takenSeq`): a restart or two, and a late tick of the last. */
+const MAX_RUNS_KEPT = 4;
+/** Expired usage claims removed at once, and the pause between batches (`sweepUsageClaims`). */
+const CLAIM_SWEEP_BATCH = 50;
+const CLAIM_SWEEP_PAUSE_MS = 50;
 
 /** A tick from a host with acknowledged ticks (`usage-acks`): its `seq` and `run` both there. */
 type NumberedUsage = ReportedUsage & { readonly seq: number; readonly run: string };
@@ -1327,10 +1332,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/** When each host's last tick arrived, by this process's clock: whether it is reporting. */
 	const tickArrivedAt = new Map<string, number>();
 	/**
-	 * The newest tick taken from each host that numbers them (`ReportedUsage.seq`, `usage-acks`), in its sampler's run:
-	 * one sent again after a reconnect, at or before it, is acknowledged without being taken twice.
+	 * The newest tick taken from each host that numbers them (`ReportedUsage.seq`, `usage-acks`), in each of its
+	 * sampler's recent runs (`MAX_RUNS_KEPT`, newest last): one sent again after a reconnect, at or before it, is
+	 * acknowledged without being taken twice. By run, so a late tick of a host's old run (passed on from another replica)
+	 * never moves its new run's back. A run's ticks are taken in order (`ingestInTurn`), so every one at or before it is in.
 	 */
-	const takenSeq = new Map<string, { readonly run: string; readonly seq: number }>();
+	const takenSeq = new Map<string, Map<string, number>>();
 	/**
 	 * Each host's numbered ticks that couldn't be taken (the store failing), oldest first, with every numbered tick after
 	 * them: taken in order before anything newer (`ingestInTurn`).
@@ -1344,6 +1351,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	/** This process, as the owner of the usage ticks it claims to export (`StoredUsageClaim.owner`). */
 	const usageOwner = crypto.randomUUID();
 	let claimsSweptAt = Number.NEGATIVE_INFINITY;
+	/** Set by `close`: a claim sweep under way stops. */
+	let closing = false;
 
 	/** A timestamp after `previous`, for a field that must move on with every write whatever the gateways' clocks say. */
 	const later = (previous: number | undefined) => Math.max(now(), (previous ?? 0) + 1);
@@ -3116,7 +3125,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// A host's backlog is minutes long: an hour without a tick, none of what it would send again is still to come.
 		for (const hostId of takenSeq.keys()) if (!tickArrivedAt.has(hostId)) takenSeq.delete(hostId);
 		for (const hostId of heldUsage.keys()) if (!tickArrivedAt.has(hostId)) heldUsage.delete(hostId);
-		await sweepUsageClaims().catch(() => undefined);
+		sweepUsageClaims();
 	}
 
 	/**
@@ -3192,8 +3201,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 */
 	const takenAlready = (hostId: string, report: ReportedUsage): boolean => {
 		if (report.seq === undefined || report.run === undefined) return false;
-		const taken = takenSeq.get(hostId);
-		return taken !== undefined && taken.run === report.run && report.seq <= taken.seq;
+		const taken = takenSeq.get(hostId)?.get(report.run);
+		return taken !== undefined && report.seq <= taken;
+	};
+
+	/** Notes a numbered tick as taken (`takenSeq`), its run as the host's newest. */
+	const noteTaken = (hostId: string, report: NumberedUsage): void => {
+		const runs = takenSeq.get(hostId) ?? new Map<string, number>();
+		const taken = runs.get(report.run);
+		if (taken !== undefined && taken >= report.seq) return;
+		runs.delete(report.run);
+		runs.set(report.run, report.seq);
+		for (const run of runs.keys()) if (runs.size > MAX_RUNS_KEPT) runs.delete(run);
+		takenSeq.set(hostId, runs);
 	};
 
 	/**
@@ -3215,13 +3235,24 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return false;
 	}
 
-	/** Removes the claims to ticks no host can send again, at most once an hour (`settleTaken`). */
-	async function sweepUsageClaims(): Promise<void> {
+	/**
+	 * Removes the claims to ticks no host can send again, at most once an hour (`settleTaken`): in the background, so no
+	 * tick and no export waits for it, a batch at a time, and stopped by `close`.
+	 */
+	function sweepUsageClaims(): void {
 		if (now() - claimsSweptAt < HOUR_MS) return;
 		claimsSweptAt = now();
-		for (const claim of await store.usageClaims.list()) {
-			if (claim.keepUntil < now()) await store.usageClaims.deleteIf(claim.id, (current) => current.keepUntil < now());
-		}
+		keepGoing(
+			(async () => {
+				const expired = (await store.usageClaims.list()).filter((claim) => claim.keepUntil < now());
+				for (let from = 0; from < expired.length && !closing; from += CLAIM_SWEEP_BATCH) {
+					const batch = expired.slice(from, from + CLAIM_SWEEP_BATCH);
+					await Promise.all(batch.map((claim) => store.usageClaims.delete(claim.id).catch(() => false)));
+					// Room for the ticks' own statements between batches.
+					await new Promise((resolve) => setTimeout(resolve, CLAIM_SWEEP_PAUSE_MS));
+				}
+			})(),
+		);
 	}
 
 	/**
@@ -3235,10 +3266,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return entry.exported;
 		};
 		await ingest(hostId, entry.report, entry.shared ? { shared: true } : { exports });
-		const taken = takenSeq.get(hostId);
-		if (taken === undefined || taken.run !== entry.report.run || entry.report.seq > taken.seq) {
-			takenSeq.set(hostId, { run: entry.report.run, seq: entry.report.seq });
-		}
+		noteTaken(hostId, entry.report);
 	}
 
 	/** Takes the host's held ticks, oldest first; one that fails again stays, with every one after it. */
@@ -6073,6 +6101,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		},
 
 		async close() {
+			closing = true;
 			for (const controller of runningCommands.values()) controller.abort();
 			await idle();
 		},

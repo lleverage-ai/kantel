@@ -4,7 +4,7 @@
 import { createKantelClient } from "@kantel/api/sdk";
 import type { SqlDriver } from "@kantel/sql";
 import { pgliteDatabase } from "@kantel/sql/testing";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
 import type { SandboxBackend, UsageSample } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
@@ -860,8 +860,27 @@ describe("numbered usage ticks sent again after a reconnect", () => {
 		// Over an hour on, the next tick sweeps them, keeping its own.
 		clock = T0 + 2 * 3_600_000;
 		await api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 4, RUN, clock));
-		await new Promise((resolve) => setTimeout(resolve, 10));
-		expect((await store.usageClaims.list()).map((each) => each.id)).toEqual([`${STUB_HOST_ID}:${RUN}:4`]);
+		// In the background: the tick doesn't wait for it.
+		await vi.waitFor(async () =>
+			expect((await store.usageClaims.list()).map((each) => each.id)).toEqual([`${STUB_HOST_ID}:${RUN}:4`]),
+		);
+	});
+
+	it("taken from a new run aren't taken again after a late tick of the old run is passed on", async () => {
+		let clock = T0;
+		const { api, tom } = setup(hostless(() => clock).backend, () => clock);
+		const box = await tom.createSandbox({ wait: true });
+		const NEW_RUN = "fedcba9876543210";
+		// The host restarted with its clock ahead: its new run's 1 is stamped on arrival.
+		const ahead = T0 + 3_600_000;
+		clock = T0 + USAGE_INTERVAL_MS;
+		await api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 1, NEW_RUN, ahead));
+		// Another replica passes on its old run's 9, late.
+		await api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 9, RUN, T0), { shared: true });
+		// The new run's 1 again, its ack lost: stamped on arrival again, it would be a second point.
+		clock = T0 + 2 * USAGE_INTERVAL_MS;
+		await api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 1, NEW_RUN, ahead));
+		expect((await api.service.sampleUsage()).map((each) => each.at)).toEqual([T0 + USAGE_INTERVAL_MS]);
 	});
 });
 
