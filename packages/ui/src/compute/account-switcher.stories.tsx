@@ -59,6 +59,7 @@ function Scenario({ open = false, opened, code }: { open?: boolean; opened?: Ope
 				open={dialog === "join"}
 				onClose={() => setDialog(undefined)}
 				onJoin={async (joinCode) => added(await source.accounts.join(joinCode))}
+				onSignOut={() => setDialog(undefined)}
 			/>
 		</div>
 	);
@@ -72,6 +73,9 @@ export const CreateOrganisation: Story = () => <Scenario opened="create" />;
 
 /** Join with an invite code, after a code that isn't right. */
 export const JoinOrganisation: Story = () => <Scenario opened="join" code="abc" />;
+
+/** Join with a code made for another email: it says which, and offers Sign out to sign in as them. */
+export const JoinAsSomeoneElse: Story = () => <Scenario opened="join" code="kji_otherPerson" />;
 
 /** On a phone. */
 export const Mobile: Story = () => <Scenario open />;

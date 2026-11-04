@@ -333,7 +333,7 @@ function General({
 					secret={invited.code}
 					secretLabel="Join code"
 					copyLabel="Copy code"
-					warning={`Kantel sends no email and shows this code only once. It works once, from the account menu's Join.`}
+					warning={`Kantel sends no email and shows this code only once. They join with it from the account menu, signed in as ${invited.email}.`}
 					acknowledgeLabel="Done"
 					onAcknowledge={() => setInvited(undefined)}
 				/>
