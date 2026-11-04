@@ -1,8 +1,10 @@
 // A key's use is recorded at most once a minute, off the call's path, and never over a newer use, a revoke or a
 // rotation (STATE-CONTRACT.md §2).
+import { pgliteDatabase } from "@kantel/sql/testing";
 import { describe, expect, it } from "vitest";
 import { API_KEY_PREFIX, authenticate, ensurePerson } from "../src/auth.ts";
-import { createMemoryStore, type StoredApiKey } from "../src/store.ts";
+import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
+import { type ComputeStore, createMemoryStore, type StoredAccount, type StoredApiKey } from "../src/store.ts";
 import { sha256Hex } from "../src/util.ts";
 
 const MINUTE = 60_000;
@@ -156,6 +158,56 @@ describe("a person's record", () => {
 		await ensurePerson(store, { userId: "usr_1", name: "Ann Lee" }, T + MINUTE);
 		expect((await store.accounts.get(user.personalAccountId))?.name).toBe("Ann's sandboxes");
 	});
+
+	it.each([
+		["memory", async () => ({ store: createMemoryStore(), close: async () => undefined })],
+		[
+			"SQL",
+			async () => {
+				const database = await pgliteDatabase.open();
+				await migrateComputeStore(database.driver);
+				return { store: createSqlComputeStore(database.driver), close: () => database.close() };
+			},
+		],
+	] as const)(
+		"keeps a name its person saves while a sign-in renames their personal account (%s)",
+		async (_kind, open) => {
+			const { store: inner, close } = await open();
+			try {
+				const legacy = await ensurePerson(inner, { userId: "usr_1", name: "usr_1" }, T);
+				// Between the sign-in deciding to rename the account and its write, the person saves a name of their own.
+				let raced = false;
+				const race = async () => {
+					if (raced) return;
+					raced = true;
+					await inner.accounts.update(legacy.personalAccountId, (current) => ({ ...current, name: "Ann's sandboxes" }));
+				};
+				const accounts = {
+					...inner.accounts,
+					put: async (record: StoredAccount) => {
+						await race();
+						return inner.accounts.put(record);
+					},
+					update: async (
+						id: string,
+						change: (current: StoredAccount) => StoredAccount | undefined,
+						expected?: StoredAccount,
+					) => {
+						await race();
+						return inner.accounts.update(id, change, expected);
+					},
+				};
+				const store: ComputeStore = { ...inner, accounts };
+				await ensurePerson(store, { userId: "usr_1", name: "Ann", email: "ann@example.com" }, T + MINUTE);
+				expect(raced).toBe(true);
+				expect((await inner.users.get("usr_1"))?.name).toBe("Ann");
+				expect((await inner.accounts.get(legacy.personalAccountId))?.name).toBe("Ann's sandboxes");
+			} finally {
+				await close();
+			}
+		},
+		pgliteDatabase.testTimeoutMs,
+	);
 
 	it("is signed in under their name, else their email, never a user ID while either is known", async () => {
 		const store = createMemoryStore();

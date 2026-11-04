@@ -177,12 +177,12 @@ export async function ensurePerson(store: ComputeStore, identity: PersonIdentity
 			};
 			await store.users.put(updated);
 			if (existing.name !== name) {
-				const personal = await store.accounts.get(existing.personalAccountId);
-				// Unless they renamed it themselves.
-				const named = personal?.name === existing.name || isPlaceholderName(personal?.name, existing.id);
-				if (personal !== undefined && personal.name !== name && named) {
-					await store.accounts.put({ ...personal, name });
-				}
+				// Unless they renamed it themselves, as the account is when the write lands: a name saved meanwhile stays.
+				await store.accounts.update(existing.personalAccountId, (personal) =>
+					personal.name !== name && (personal.name === existing.name || isPlaceholderName(personal.name, existing.id))
+						? { ...personal, name }
+						: undefined,
+				);
 			}
 			return updated;
 		}
