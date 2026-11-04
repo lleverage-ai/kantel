@@ -85,6 +85,7 @@ const SANDBOX: Sandbox = {
 	type: "isolate",
 	state: "running",
 	visibility: "private",
+	grants: [],
 	capabilities: {
 		exec: true,
 		files: true,

@@ -1,7 +1,7 @@
 // biome-ignore lint/correctness/noNodejsModules: the test reads the token files from disk, in Node, to check them.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { contrast, distance } from "./colour.ts";
+import { contrast, distance, hslToHex } from "./colour.ts";
 
 // Kantel's two themes are CSS: dark.css and light.css each set one palette, and tokens.css the formulas built on them.
 // This reads the files as the browser would apply them to <html> (tokens.css, then dark.css on :root, then light.css on
@@ -28,7 +28,8 @@ const themes: Record<"dark" | "light", Tokens> = {
 };
 
 /**
- * Follows `var(--kt-...)` references to a plain colour, for contrast checks. An opaque `color-mix(in srgb, <a> N%, <b>)`
+ * Follows `var(--kt-...)` references to a plain colour, `#rrggbb` (an opaque `hsl()`, as the palettes write their
+ * colours, is converted), for contrast checks. An opaque `color-mix(in srgb, <a> N%, <b>)`
  * of two such colours (the terminal's bright ANSI colours) is mixed as CSS mixes it.
  */
 function plain(theme: Tokens, value: string, depth = 0): string | undefined {
@@ -51,7 +52,8 @@ function plain(theme: Tokens, value: string, depth = 0): string | undefined {
 		const mixed = [1, 3, 5].map((at) => Math.round(channel(a, at) * share + channel(b, at) * (1 - share)));
 		return `#${mixed.map((part) => part.toString(16).padStart(2, "0")).join("")}`;
 	}
-	return /^#[0-9a-f]{6}$/i.test(value) ? value : undefined;
+	if (/^#[0-9a-f]{6}$/i.test(value)) return value;
+	return hslToHex(value);
 }
 
 const colour = (name: keyof typeof themes, token: string): string => {
@@ -68,7 +70,7 @@ const SYNTAX = ["comment", "keyword", "string", "number", "function", "type", "p
 const NAMES = ["dark", "light"] as const;
 
 /** A raw colour: a hex, an `rgb()`, or a mix with a raw colour in it. */
-const isRawColour = (value: string): boolean => /#[0-9a-f]{3,8}\b|rgba?\(/i.test(value);
+const isRawColour = (value: string): boolean => /#[0-9a-f]{3,8}\b|(rgba?|hsla?)\(/i.test(value);
 
 describe("the two themes", () => {
 	it("dark.css and light.css set the same tokens, so swapping either leaves nothing of the other", () => {
@@ -111,6 +113,8 @@ describe("the two themes", () => {
 		check("accent-text", "canvas", 4.5);
 		check("accent-text", "panel", 4.5);
 		check("accent-fg", "accent", 4.5);
+		check("primary-fg", "primary", 4.5);
+		check("primary-fg", "primary-hover", 4.5);
 		for (const status of [...STATUSES, "idle"]) {
 			check(`status-${status}`, "canvas", 4.5);
 			check(`status-${status}`, "panel", 4.5);

@@ -25,7 +25,7 @@ import type {
 	OrganisationInvite,
 	OrganisationMember,
 } from "./compute-model.ts";
-import { computePage, messageOf, SectionHeading, table, tableFrame, td, th } from "./parts.tsx";
+import { computePage, messageOf, SectionHeading, TableFrame, table, tableFrame, td, th } from "./parts.tsx";
 
 export interface OrganisationPageProps {
 	readonly source: AccountsSource;
@@ -371,7 +371,7 @@ function MembersTable({
 	const rank: Readonly<Record<AccountRole, number>> = { owner: 0, admin: 1, member: 2 };
 	const sorted = [...members].sort((a, b) => rank[a.role] - rank[b.role] || a.name.localeCompare(b.name, "en-GB"));
 	return (
-		<div className={tableFrame}>
+		<TableFrame>
 			<table className={table}>
 				<thead>
 					<tr>
@@ -446,7 +446,7 @@ function MembersTable({
 					})}
 				</tbody>
 			</table>
-		</div>
+		</TableFrame>
 	);
 }
 
@@ -462,7 +462,7 @@ function InvitesTable({
 	onRevoke: (invite: OrganisationInvite) => void;
 }) {
 	return (
-		<div className={tableFrame}>
+		<TableFrame>
 			<table className={table}>
 				<thead>
 					<tr>
@@ -513,7 +513,7 @@ function InvitesTable({
 					))}
 				</tbody>
 			</table>
-		</div>
+		</TableFrame>
 	);
 }
 

@@ -29,7 +29,18 @@ import {
 	type HostsSource,
 	usedShare,
 } from "./compute-model.ts";
-import { CapacityBar, cellSub, computePage, messageOf, rowHover, table, tableFrame, td, th } from "./parts.tsx";
+import {
+	CapacityBar,
+	cellSub,
+	computePage,
+	messageOf,
+	rowHover,
+	TableFrame,
+	table,
+	tableFrame,
+	td,
+	th,
+} from "./parts.tsx";
 
 export interface HostsPageProps {
 	readonly source: HostsSource;
@@ -184,7 +195,7 @@ export function HostsPage({ source, now: fixedNow, hosting, adding = false, owne
 			) : (
 				<>
 					<HostsSummary hosts={hosts} />
-					<div className={tableFrame}>
+					<TableFrame>
 						<table className={table}>
 							<thead>
 								<tr>
@@ -229,7 +240,7 @@ export function HostsPage({ source, now: fixedNow, hosting, adding = false, owne
 								))}
 							</tbody>
 						</table>
-					</div>
+					</TableFrame>
 				</>
 			)}
 			<AddHostDialog

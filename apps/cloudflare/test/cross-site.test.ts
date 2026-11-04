@@ -1,6 +1,7 @@
-// Cross-site writes and cookies on the Worker (TASK-4842), in Node over node:sqlite. Hosted ports live under
-// ports.kantel.dev; until it is on the Public Suffix List a port's page is the same site as a console under kantel.dev,
-// so SameSite stops nothing. These show what does: a cookie is never a Kantel session, whatever its name, and a write
+// Cross-site writes and cookies on the Worker (TASK-4842), in Node over node:sqlite. Hosted ports live under kantel.run,
+// a registrable domain apart from the console's, so a port's page there is cross-site to it. A deployment whose ports
+// domain shares the console's registrable domain is the worst case, and the one played here: a port's page is the same
+// site as the console, so SameSite stops nothing. These show what does: a cookie is never a Kantel session, whatever its name, and a write
 // that carries no bearer must come from the console's own origin, Access's cookie or not. Bearer calls (the CLI, the
 // SDK, MCP) pass unchanged, and the console's own sign-in, device approval and sandbox actions still work.
 import { DatabaseSync } from "node:sqlite";
@@ -20,7 +21,7 @@ const ADMIN = "tom@kantel.test";
 const ACCESS_HOST = "https://harbour.kantel.test";
 /** The public origin, as app.kantel.dev is: email codes, no Access. */
 const PUBLIC = "https://app.kantel.test";
-/** A sandbox's exposed port: the same site as PUBLIC until the ports domain is on the Public Suffix List. */
+/** A sandbox's exposed port on a ports domain under the console's registrable domain: the same site as PUBLIC. */
 const PORT_PAGE = "https://5173-k7xq2m.ports.kantel.test";
 const ELSEWHERE = "https://evil.example";
 

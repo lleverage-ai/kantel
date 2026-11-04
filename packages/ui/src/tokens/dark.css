@@ -2,18 +2,18 @@
    is editing this file alone; `pnpm --filter @kantel/ui test` (src/tokens/theme.test.ts) then checks it for WCAG AA
    body text, status colours that can be told apart and code that reads, and that light.css sets the same tokens.
 
-   Dark is the default: these are on :root, so a page paints in it before any script runs, and on
-   [data-kt-theme="dark"] (src/theme/controller.ts sets it), where the doubled attribute outweighs light.css's
-   portal rule. The formulas built on these (soft tints, the terminal, the derived syntax colours) are in tokens.css and
-   follow whichever palette is on the page.
+   Dark is :root, so a page paints in it before any script runs, and [data-kt-theme="dark"] (src/theme/controller.ts
+   sets it), where the doubled attribute outweighs light.css's portal rule. Which of the two a page shows follows the
+   device until the person chooses (src/theme/boot.ts). The formulas built on these (soft tints, the terminal, the
+   derived syntax colours) are in tokens.css and follow whichever palette is on the page.
 
-   Interim, 3 Nov 2026: the earlier midnight (#141e28) with its blue tint taken down toward neutral greys, about a fifth
-   of its chroma kept, at the same lightness: the surfaces, the disabled text and code comments. Paper text and borders,
-   the orange accent and the status and syntax colours are unchanged. To be replaced by the "less blue" dark of the
-   lleverage-mobile-prototype-v2 prototype.
+   Tom's palette, 3 Nov 2026: the Lleverage web "Bold" theme with the blue taken out of its surfaces, near-neutral
+   hsl(220 5-6%) greys, with the brand's orange as the primary. Each of his tokens is noted beside the one it sets
+   (`background`, `card`); values in hsl() are his, as given. The indigo status, the syntax colours and the effects
+   are Kantel's own, fitted to his surfaces.
 
    Outside CSS, only the browser's chrome repeats the canvas: the dark theme-color in apps/console/index.html and the
-   colours in apps/console/public/manifest.webmanifest. Change them with --kt-canvas. */
+   colours in apps/console/public/manifest.webmanifest (#1a1b1e, his background). Change them with --kt-canvas. */
 
 :root,
 .kt-theme,
@@ -21,60 +21,81 @@
 [data-kt-theme="dark"] .kt-theme {
 	color-scheme: dark;
 
-	/* Surfaces: a near-neutral dark grey, a panel and a raised card a step lighter, and a well a step darker. */
-	--kt-canvas: #1b1d1f;
-	--kt-panel: #202224;
-	--kt-raised: #27292b;
-	--kt-sunken: #151618;
-	--kt-hover: rgb(249 247 240 / 0.05);
-	--kt-active: rgb(249 247 240 / 0.08);
-	--kt-selected: rgb(249 247 240 / 0.07);
-	--kt-user-message: #323436; /* cards on dark surfaces */
-	--kt-code: #17181a;
-	--kt-scrim: rgb(10 11 12 / 0.6);
+	/* Surfaces: the canvas, a panel a step lighter (the sidebar, a table's frame), a raised card lighter again, and a
+	   well (a field, code) between them. */
+	--kt-canvas: hsl(220 6% 11%); /* background */
+	--kt-panel: hsl(220 5% 14%); /* surface-subtle */
+	--kt-raised: hsl(220 5% 15.5%); /* card */
+	--kt-sunken: hsl(220 5% 18%); /* muted */
+	--kt-hover: color-mix(in srgb, var(--kt-text) 5%, transparent);
+	--kt-active: color-mix(in srgb, var(--kt-text) 8%, transparent);
+	--kt-selected: color-mix(in srgb, var(--kt-text) 7%, transparent);
+	--kt-user-message: hsl(220 5% 20%); /* secondary */
+	--kt-code: hsl(220 5% 18%); /* muted */
+	--kt-scrim: hsl(210 40% 3% / 0.55); /* scrim */
+	/* A bar that stays over scrolling content (the phone's top bar), frosted. */
+	--kt-backdrop: hsl(220 6% 11% / 0.8); /* backdrop */
 
-	/* Lines: paper, faint. */
-	--kt-border: rgb(249 247 240 / 0.07);
-	--kt-border-strong: rgb(249 247 240 / 0.12);
-	--kt-border-input: rgb(249 247 240 / 0.13);
+	/* Filled controls that aren't the primary: a secondary button, and under the pointer. */
+	--kt-secondary: hsl(220 5% 20%); /* secondary */
+	--kt-secondary-hover: hsl(220 4% 26%); /* secondary-hover */
 
-	/* Text: paper, never pure white. All pass WCAG AA (4.5:1) on --kt-raised and darker. */
-	--kt-text: #f9f7f0;
-	--kt-text-muted: #bdbbb3;
-	--kt-text-faint: #9d9b94;
-	--kt-text-disabled: #636465;
+	/* Lines. */
+	--kt-border: hsl(220 4% 22%); /* border */
+	--kt-border-strong: hsl(220 4% 27%); /* input */
+	--kt-border-input: hsl(220 4% 27%); /* input */
 
-	/* The accent: the brand's orange, with the canvas on it, its warmer shade for hover. A host app rebrands by setting
-	   --kt-accent, --kt-accent-hover, --kt-accent-text and --kt-accent-fg on any ancestor. */
-	--kt-accent: #ec7523;
-	--kt-accent-hover: #ff9626;
-	--kt-accent-fg: #1b1d1f;
-	--kt-accent-text: #f08a47;
+	/* Text: never pure white. The disabled grey is his muted-fg-subtle, under AA (3.99:1 on the canvas) as disabled text
+	   may be; the faint text a step under the muted is a mix of the two that keeps AA. */
+	--kt-text: hsl(50 20% 93%); /* foreground */
+	--kt-text-muted: hsl(50 10% 62%); /* muted-fg */
+	--kt-text-faint: color-mix(in srgb, var(--kt-text-muted) 75%, var(--kt-text-disabled));
+	--kt-text-disabled: hsl(50 10% 45%); /* muted-fg-subtle */
 
-	/* Status: the brand's product set (info, success, warning, destructive) lifted to pass AA on the canvas, plus indigo.
-	   Their soft fills are formulas in tokens.css. */
-	--kt-status-working: #6aa6dc; /* blue: working */
+	/* The accent: his highlight, the brand's orange a little lighter than the primary, for what is pointed out rather
+	   than pressed (focus, where you are, links), with the canvas on it. A host app rebrands by setting --kt-accent,
+	   --kt-accent-hover, --kt-accent-text and --kt-accent-fg on any ancestor. */
+	--kt-accent: hsl(24 84% 57%); /* highlight */
+	--kt-accent-hover: hsl(24 84% 51%); /* highlight-hover */
+	--kt-accent-fg: hsl(220 6% 11%); /* on-primary */
+	--kt-accent-text: hsl(24 84% 57%); /* highlight */
+	/* The primary action (one per surface): the orange, with the canvas on it. */
+	--kt-primary: hsl(24 84% 53.1%); /* primary */
+	--kt-primary-hover: hsl(24 84% 47%); /* primary-hover */
+	--kt-primary-fg: hsl(220 6% 11%); /* on-primary */
+
+	/* Status text: info, success, warning and destructive as his text colours, plus Kantel's indigo for waiting. Their
+	   soft fills are formulas in tokens.css. */
+	--kt-status-working: hsl(210 55% 62%); /* info */
 	--kt-status-waiting: #a9a6f0; /* indigo: waiting on an answer from you */
-	--kt-status-approval: #d9b84a; /* ochre: waiting on your approval */
-	--kt-status-done: #5cbf8a; /* green: done */
-	--kt-status-error: #f07c74; /* red: failed */
-	--kt-status-idle: #9d9b94; /* neutral: nothing happening */
+	--kt-status-approval: hsl(48 70% 62%); /* warning-text */
+	/* His success, 45% light, is 4.42:1 on a card, under AA as text; his set has no success text shade, so the text is
+	   his hue five points lighter (5.4:1 on a card). Fills keep his success (--kt-success). */
+	--kt-status-done: hsl(145 35% 50%); /* success, lightened for text */
+	--kt-status-error: hsl(0 68% 68%); /* destructive-text */
+	--kt-status-idle: var(--kt-text-faint); /* nothing happening */
+	/* Solid fills: a destructive button (with --kt-on-solid on it), a bar or a dot that isn't text. */
+	--kt-destructive: hsl(0 55% 50%); /* destructive */
+	--kt-warning: hsl(48 65% 52%); /* warning */
+	--kt-success: hsl(145 35% 45%); /* success */
+	--kt-success-hover: hsl(145 35% 39%); /* success-hover */
 
 	/* Syntax: highlighted code (src/code/syntax.css). Each passes AA on --kt-code. */
-	--kt-syntax-comment: #909193;
+	--kt-syntax-comment: #9a9b9d;
 	--kt-syntax-keyword: #c3a6ff;
 	--kt-syntax-string: #a5d6a7;
 	--kt-syntax-number: #f5b97a;
 	--kt-syntax-function: #8fb4f5;
 	--kt-syntax-type: #6fd3e3;
 	--kt-syntax-property: #f0a6c8;
-	--kt-syntax-operator: #bdbbb3;
+	--kt-syntax-operator: var(--kt-text-muted);
 	--kt-syntax-tag: #f28b82;
 
-	/* Effects: shadows for things that float, the composer's glass, and service logos on a dark page. */
-	--kt-shadow-float: 0 12px 32px -12px rgb(0 0 0 / 0.75), 0 0 0 1px var(--kt-border-strong);
+	/* Effects: a card lifted off the page, things that float, the composer's glass, and service logos on a dark page. */
+	--kt-shadow-raised: 0 1px 3px rgb(0 0 0 / 0.4); /* shadow-raised */
+	--kt-shadow-float: 0 10px 30px rgb(0 0 0 / 0.45), 0 0 0 1px var(--kt-border-strong); /* shadow-float, and an edge */
 	--kt-shadow-composer: 0 14px 32px -18px rgb(0 0 0 / 0.75);
-	--kt-glass-outline: rgb(249 247 240 / 0.08);
+	--kt-glass-outline: color-mix(in srgb, var(--kt-text) 8%, transparent);
 	--kt-glass-highlight: inset 0 1px 0 0 rgb(255 255 255 / 0.03);
 	/* A service's logo, drawn with no tile: a hairline in the text's colour around it, so a dark logo keeps an edge. */
 	--kt-logo-edge: 0 0 1px color-mix(in srgb, var(--kt-text) 45%, transparent);

@@ -59,14 +59,20 @@ type Table struct {
 const fetchTimeout = 15 * time.Second
 
 // Store is the host's per-sandbox cache of protected values. It holds them in memory only, fetches a sandbox's on
-// first use, and refetches after Invalidate.
+// first use, and refetches after Invalidate or when Require advertises a newer version.
 type Store struct {
 	fetch func(ctx context.Context, sandboxID string) (Table, error)
 
 	mu       sync.Mutex
 	tables   map[string]*indexed
 	inflight map[string]*fetchCall
+	// minVersion is the newest version the control plane has advertised for each sandbox: a table older than it is
+	// never used.
+	minVersion map[string]int64
 }
+
+// ErrStale is a fetch that answered a table older than the version the control plane has advertised.
+var ErrStale = errors.New("protect: the fetched table is older than the advertised version")
 
 type indexed struct {
 	table Table
@@ -95,6 +101,34 @@ func (s *Store) Resolve(ctx context.Context, placeholder, sandboxID string, dest
 	if err != nil {
 		return Resolution{}, err
 	}
+	return t.resolve(placeholder, dest)
+}
+
+// Fixed is a Provider over one set of entries, for a single request: its placeholders are resolved from, and its
+// response scrubbed of, the same values, whatever rotates while it is under way.
+type Fixed struct {
+	ix *indexed
+}
+
+// NewFixed makes a Fixed provider over entries.
+func NewFixed(entries []Entry) *Fixed {
+	return &Fixed{ix: index(Table{Entries: entries})}
+}
+
+// Resolve implements Provider; sandboxID isn't consulted, as the entries are already the sandbox's.
+func (f *Fixed) Resolve(_ context.Context, placeholder, _ string, dest Destination) (Resolution, error) {
+	if !IsPlaceholder(placeholder) {
+		return Resolution{}, ErrUnknown
+	}
+	return f.ix.resolve(placeholder, dest)
+}
+
+// Entries answers the entries, to scrub what comes back.
+func (f *Fixed) Entries() []Entry {
+	return slices.Clone(f.ix.table.Entries)
+}
+
+func (t *indexed) resolve(placeholder string, dest Destination) (Resolution, error) {
 	i, ok := t.byPlaceholder[placeholder]
 	if !ok {
 		return Resolution{}, ErrUnknown
@@ -151,8 +185,34 @@ func (s *Store) Invalidate(sandboxID string) {
 	delete(s.inflight, sandboxID)
 }
 
+// Require records that the control plane has advertised version of a sandbox's table: a cached or in-flight table
+// older than it is dropped, and a fetch that answers an older one is refused rather than used. Versions only move
+// on; an older one than already required changes nothing.
+func (s *Store) Require(sandboxID string, version int64) {
+	if version <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.minVersion == nil {
+		s.minVersion = map[string]int64{}
+	}
+	if version <= s.minVersion[sandboxID] {
+		return
+	}
+	s.minVersion[sandboxID] = version
+	if t, ok := s.tables[sandboxID]; ok && t.table.Version < version {
+		delete(s.tables, sandboxID)
+	}
+	// A fetch under way may have been answered before the change: its result isn't cached.
+	delete(s.inflight, sandboxID)
+}
+
 // Forget drops everything held for a sandbox that has gone.
 func (s *Store) Forget(sandboxID string) {
+	s.mu.Lock()
+	delete(s.minVersion, sandboxID)
+	s.mu.Unlock()
 	s.Invalidate(sandboxID)
 }
 
@@ -189,6 +249,9 @@ func (s *Store) run(ctx context.Context, sandboxID string, c *fetchCall) {
 		t, err = s.fetch(ctx, sandboxID)
 	}
 	s.mu.Lock()
+	if err == nil && t.Version < s.minVersion[sandboxID] {
+		err = ErrStale
+	}
 	if err != nil {
 		// Never cached: the next caller tries again.
 		c.err = fmt.Errorf("%w: %w", ErrUnavailable, err)

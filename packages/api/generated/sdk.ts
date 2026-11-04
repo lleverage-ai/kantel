@@ -63,27 +63,6 @@ export interface AccountUsage {
 	readonly limits?: AccountLimits;
 }
 
-/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
-export type Actor =
-	| {
-			readonly kind: "human";
-			readonly userId: string;
-	  }
-	| {
-			readonly kind: "service";
-			readonly serviceId: string;
-			readonly keyId?: string;
-	  }
-	| {
-			readonly kind: "agent";
-			readonly agentId: string;
-			readonly sessionId: string;
-	  }
-	| {
-			readonly kind: "system";
-			readonly component: string;
-	  };
-
 /** A scoped API key. Its secret is never stored or shown after it is made. */
 export interface ApiKey {
 	/** The key's ID, such as `key_5n2p8r`. */
@@ -113,7 +92,7 @@ export interface ApiKeyList {
 /** A named set of scopes. `read-only`: the `:read` scopes. `agent`: what a coding agent needs to make and drive its own sandboxes, everything but `sandboxes:delete` and the account and host scopes. `ci`: `agent` plus `sandboxes:delete`. `admin`: every scope but `hosts:admin`. */
 export type ApiKeyPreset = "read-only" | "agent" | "ci" | "admin";
 
-/** What a key may do. `sandboxes:read`: list and inspect sandboxes, their usage and events. `sandboxes:write`: create, change, start, stop, pause, resume, fork and recover. `sandboxes:delete`: delete for good. `exec`: run commands. `files`: read and write files. `access`: SSH, desktop, browser and public ports. `snapshots:read`, `snapshots:write`: snapshots and saved snapshots. `account:read`: the account, its members and keys. `account:admin`: members, keys, webhooks, telemetry and the proxy. `hosts:admin`: the deployment's hosts, for a super-admin's key only. */
+/** What a key may do. `sandboxes:read`: list and inspect sandboxes, their usage and events. `sandboxes:write`: create, change, start, stop, pause, resume, fork and recover. `sandboxes:delete`: delete for good. `exec`: run commands. `files`: read and write files. `access`: SSH, desktop, browser and public ports. `snapshots:read`, `snapshots:write`: snapshots and saved snapshots. `account:read`: the account, its members, keys, environments and sandboxes' egress. `account:admin`: members, keys, webhooks, telemetry, the proxy, environments and sandboxes' grants. `hosts:admin`: the deployment's hosts, for a super-admin's key only. */
 export type ApiKeyScope =
 	| "sandboxes:read"
 	| "sandboxes:write"
@@ -261,23 +240,11 @@ export interface CreatedBy {
 }
 
 export interface CreateEnvironmentBody {
-	readonly projectId: string;
+	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
+	readonly account?: string;
+	/** Unique in the account: lower-case letters, digits and dashes, at most 63. */
 	readonly name: string;
-	readonly alias?: string;
 	readonly description?: string;
-	/** Who provides the machine. Only `boat` and `fake` are built yet. */
-	readonly provider?: EnvironmentProviderKind;
-	readonly size?: EnvironmentSizeName;
-	readonly definition?: {
-		readonly template?: string;
-		readonly repository?: string;
-		readonly setup?: string;
-		readonly composeFile?: string;
-		readonly readiness?: string;
-	};
-	readonly sharing?: EnvironmentSharing;
-	readonly projectWide?: boolean;
-	readonly idleTimeoutMs?: number;
 }
 
 export interface CreateHostJoinTokenBody {
@@ -331,10 +298,12 @@ export interface CreateSandboxBody {
 	readonly labels?: {
 		readonly [key: string]: string;
 	};
-	/** Environment variables every command sees. Not secrets: they are shown to anyone who may exec. */
+	/** Environment variables every command sees, after the environment's. Not secrets: they are shown to anyone who may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused. */
 	readonly env?: {
 		readonly [key: string]: string;
 	};
+	/** Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables. */
+	readonly environment?: string;
 	/** Place it only on a host with each label, such as `{ site: "home" }`. */
 	readonly hostLabels?: {
 		readonly [key: string]: string;
@@ -363,6 +332,16 @@ export interface DesktopAccess {
 	readonly viewOnly: boolean;
 	/** Epoch milliseconds, UTC. */
 	readonly expiresAt: number;
+}
+
+/** Where a protected variable's value may go: the host's egress proxy swaps the sandbox's placeholder for the value only on a request that matches, and refuses a request that carries the placeholder anywhere else. */
+export interface DestinationBinding {
+	/** The host, on port 443: `api.github.com`, or `*.example.com` for its subdomains (not `example.com` itself). */
+	readonly host: string;
+	/** Only paths under these, such as `/repos/`. Absent or empty: any path. */
+	readonly pathPrefixes?: readonly string[];
+	/** Only these methods. Absent or empty: any method. */
+	readonly methods?: readonly string[];
 }
 
 /** A sign-in in the browser under way, as RFC 8628's device authorisation grant. */
@@ -403,6 +382,60 @@ export interface DeviceLoginResult {
 /** `pending`: no one has approved it yet. `approved`: the poll that sees it first gets the key; later polls are `expired`. `denied`: the person refused it. `expired`: too late, or already collected. */
 export type DeviceLoginState = "pending" | "approved" | "denied" | "expired";
 
+/** One request or connection a sandbox made through its host's egress proxy. Never a value. */
+export interface EgressEntry {
+	/** The entry's ID. */
+	readonly id: string;
+	/** Epoch milliseconds, UTC. */
+	readonly at: number;
+	/** `CONNECT` for a tunnel the proxy didn't look inside. */
+	readonly method: string;
+	readonly host: string;
+	readonly port: number;
+	/** The path, when the proxy saw it (plain HTTP or inspected HTTPS); never the query. */
+	readonly path?: string;
+	readonly decision: "allowed" | "denied";
+	/** Why it was denied, or what failed, in words. */
+	readonly reason?: string;
+	/** The rule that decided it, such as `deny DELETE api.github.com /repos/*`. */
+	readonly rule?: string;
+	/** A refusal's `X-Kantel-Proxy-Error` code, such as `placeholder-unbound`. */
+	readonly code?: string;
+	/** The protected variables whose values the proxy put in, by name. */
+	readonly swapped: readonly string[];
+	/** Whether the proxy looked inside the HTTPS. */
+	readonly inspected: boolean;
+	/** The answer's status, when the proxy saw one. */
+	readonly status?: number;
+	readonly bytesUp: number;
+	readonly bytesDown: number;
+}
+
+/** An egress rule on top of the account's proxy settings: let a sandbox reach a host, or refuse it. Deny wins. A grant naming methods or paths makes the proxy look inside that host's HTTPS, as a protected variable's host does. */
+export interface EgressGrant {
+	/** The grant's ID, such as `grt_4kq9x2mt`. */
+	readonly id: string;
+	readonly action: "allow" | "deny";
+	/** The host: `api.github.com`, or `*.example.com` for its subdomains (not `example.com` itself). */
+	readonly host: string;
+	/** Only these methods. Absent or empty: every method. */
+	readonly methods?: readonly string[];
+	/** Path patterns, `*` one segment and `**` the rest, such as `/repos/lleverage-ai/*`. Absent or empty: every path. */
+	readonly paths?: readonly string[];
+}
+
+export interface EgressGrantInput {
+	/** Keep a grant's ID; absent, a new one is made. */
+	readonly id?: string;
+	readonly action: "allow" | "deny";
+	/** The host: `api.github.com`, or `*.example.com` for its subdomains (not `example.com` itself). */
+	readonly host: string;
+	/** Only these methods. Absent or empty: every method. */
+	readonly methods?: readonly string[];
+	/** Path patterns, `*` one segment and `**` the rest, such as `/repos/lleverage-ai/*`. Absent or empty: every path. */
+	readonly paths?: readonly string[];
+}
+
 export interface EmbedBrowserBody {
 	/** `live`: the open browser as it is now, watch-only. `replay`: its recording. */
 	readonly mode: "live" | "replay";
@@ -410,187 +443,71 @@ export interface EmbedBrowserBody {
 	readonly minutes?: number;
 }
 
-/** A long-lived machine owned by a project, by default by one person in it, that sessions attach to. */
+/** What a sandbox starts with: variables, secret files, repositories and egress grants. A change reaches sandboxes made after it, except a protected variable's value, bindings and the grants, which reach running ones at once. */
 export interface Environment {
-	/** The environment's ID, `env_…`. */
+	/** The environment's ID, such as `env_4kq9x2mt`. */
 	readonly id: string;
-	readonly organisationId: string;
-	readonly owner: EnvironmentOwner;
-	/** Unique in the project: `lleverage-dev`. */
+	readonly accountId: string;
 	readonly name: string;
-	/** The name sessions give `bash`'s `env`: `dev`. */
-	readonly alias: string;
 	readonly description?: string;
-	/** Who provides the machine. Only `boat` and `fake` are built yet. */
-	readonly provider: EnvironmentProviderKind;
-	readonly size: EnvironmentSize;
-	/** What a fresh machine starts with. */
-	readonly definition: EnvironmentDefinition;
-	readonly sharing: EnvironmentSharing;
-	/** `unmanaged`: Kantel doesn't run the machine's network, and code on it reaches the internet directly. */
-	readonly egress: EnvironmentEgress;
-	/** Whether connection placeholders work on it, through Kantel's proxy. */
-	readonly placeholders: boolean;
-	readonly idleTimeoutMs: number;
-	/** `running`: up with at least one session's lease. `idle`: up with none, stopping at `idleStopAt`. `stopped`: no machine running; the disk is kept. `error`: the last operation failed, and Start tries again. */
-	readonly state: EnvironmentState;
-	readonly error?: string;
+	readonly variables: readonly EnvironmentVariable[];
+	readonly files: readonly EnvironmentFile[];
+	readonly repos: readonly EnvironmentRepo[];
+	readonly grants: readonly EgressGrant[];
+	/** How many sandboxes were made from it and still exist. */
+	readonly sandboxCount: number;
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
-	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
-	readonly createdBy: Actor;
 	/** Epoch milliseconds, UTC. */
 	readonly updatedAt: number;
-	/** Epoch milliseconds, UTC. */
-	readonly lastStartedAt?: number;
-	/** Epoch milliseconds, UTC. */
-	readonly lastStoppedAt?: number;
-	/** Epoch milliseconds, UTC. */
-	readonly idleStopAt?: number;
-	/** Sessions holding it now. */
-	readonly leaseCount: number;
-	readonly resume?: EnvironmentResumeStats;
-	readonly runningMsThisMonth: number;
 }
 
-/** What a fresh machine starts with. */
-export interface EnvironmentDefinition {
-	readonly version: number;
-	/** A provider template, such as a boat saved snapshot. */
-	readonly template?: string;
-	/** A repository to keep a warm clone of: `owner/name`. */
-	readonly repository?: string;
-	/** Run once after the machine is first created. */
-	readonly setup?: string;
-	readonly composeFile?: string;
-	readonly readiness?: string;
+/** A secret file every new sandbox starts with. Its contents are write-only, and kept encrypted. */
+export interface EnvironmentFile {
+	/** Absolute, such as `/home/user/.npmrc`. */
+	readonly path: string;
+	/** Its permissions, such as 384 (0o600). */
+	readonly mode: number;
+	readonly sizeBytes: number;
+	/** Epoch milliseconds, UTC. */
+	readonly updatedAt: number;
 }
 
-/** An environment with the sessions holding it and its recent history. */
-export interface EnvironmentDetail {
-	/** A long-lived machine owned by a project, by default by one person in it, that sessions attach to. */
-	readonly environment: Environment;
-	readonly leases: readonly EnvironmentLease[];
-	readonly grants: readonly EnvironmentGrant[];
-	/** Newest first. */
-	readonly events: readonly EnvironmentEvent[];
-}
-
-/** `unmanaged`: Kantel doesn't run the machine's network, and code on it reaches the internet directly. */
-export type EnvironmentEgress = "managed" | "unmanaged";
-
-export interface EnvironmentEvent {
-	/** Epoch milliseconds, UTC. */
-	readonly at: number;
-	readonly kind:
-		| "created"
-		| "starting"
-		| "started"
-		| "stopping"
-		| "stopped"
-		| "failed"
-		| "destroyed"
-		| "lease.acquired"
-		| "lease.ended"
-		| "granted"
-		| "revoked";
-	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
-	readonly actor?: Actor;
-	readonly sessionId?: string;
-	readonly durationMs?: number;
-	readonly reason?: string;
-	readonly message?: string;
-}
-
-/** A session's permission to use an environment, by its alias. */
-export interface EnvironmentGrant {
-	/** The grant's ID, `eng_…`. */
-	readonly id: string;
-	readonly organisationId: string;
-	readonly environmentId: string;
-	readonly sessionId: string;
-	readonly alias: string;
-	readonly rights: "worktree" | "machine";
-	/** Who acted: a person, a host app's API key, an agent or Kantel itself. */
-	readonly grantedBy: Actor;
-	/** Epoch milliseconds, UTC. */
-	readonly createdAt: number;
-	readonly status: "active" | "revoked" | "ended";
-}
-
-/** A session's hold on a running environment. */
-export interface EnvironmentLease {
-	/** The lease's ID, `enl_…`. */
-	readonly id: string;
-	readonly environmentId: string;
-	readonly sessionId: string;
-	readonly grantId: string;
-	/** The session's own directory on the machine. */
-	readonly worktree: string;
-	/** The session's own `COMPOSE_PROJECT_NAME`. */
-	readonly composeProject: string;
-	/** The first of the session's ten ports. */
-	readonly portBase: number;
-	/** Epoch milliseconds, UTC. */
-	readonly acquiredAt: number;
-	/** Epoch milliseconds, UTC. */
-	readonly renewedAt: number;
-	/** Epoch milliseconds, UTC. */
-	readonly expiresAt: number;
-	/** Epoch milliseconds, UTC. */
-	readonly endedAt?: number;
-	readonly endReason?: "released" | "expired" | "session_ended" | "revoked" | "stopped";
-	readonly commands: number;
+export interface EnvironmentFileQuery {
+	readonly path: string;
 }
 
 export interface EnvironmentList {
 	readonly items: readonly Environment[];
 }
 
-export interface EnvironmentOwner {
-	readonly projectId: string;
-	/** Absent: every member's sessions in the project may attach. */
-	readonly userId?: string;
+/** A repository every new sandbox starts with, cloned through the egress proxy once it is running. */
+export interface EnvironmentRepo {
+	/** HTTPS with no credentials in it, such as `https://github.com/lleverage-ai/kantel`. */
+	readonly url: string;
+	/** Where it is cloned; default `~/<name>`. */
+	readonly path?: string;
+	/** A branch or tag; default the repository's default branch. */
+	readonly ref?: string;
 }
 
-/** Who provides the machine. Only `boat` and `fake` are built yet. */
-export type EnvironmentProviderKind = "boat" | "firecracker" | "byo" | "fake";
-
-export interface EnvironmentResumeStats {
-	/** The last start, from the start call to the machine up, in milliseconds. */
-	readonly lastMs: number;
-	/** The median of the recent starts. */
-	readonly p50Ms: number;
-	readonly samples: number;
+export interface EnvironmentVariable {
+	readonly name: string;
+	/** A protected variable is a `kph_` placeholder in the sandbox, its own per sandbox, which the host's egress proxy swaps for the value on requests to its bindings: the value never enters the sandbox. */
+	readonly protected: boolean;
+	/** A plain variable's value. Never answered for a protected one. */
+	readonly value?: string;
+	/** A protected variable's destinations, at least one. Empty for a plain one. */
+	readonly bindings: readonly DestinationBinding[];
+	/** Epoch milliseconds, UTC. */
+	readonly updatedAt: number;
 }
-
-export type EnvironmentSharing = "shared" | "exclusive";
-
-export interface EnvironmentSize {
-	readonly name: EnvironmentSizeName;
-	readonly vcpus: number;
-	readonly memoryGb: number;
-	readonly diskGb: number;
-}
-
-export type EnvironmentSizeName = "small" | "default" | "large" | "xlarge";
-
-/** `running`: up with at least one session's lease. `idle`: up with none, stopping at `idleStopAt`. `stopped`: no machine running; the disk is kept. `error`: the last operation failed, and Start tries again. */
-export type EnvironmentState =
-	| "creating"
-	| "stopped"
-	| "starting"
-	| "running"
-	| "idle"
-	| "stopping"
-	| "error"
-	| "destroyed";
 
 /** Something that happened in an account: what webhooks deliver and the history shows. */
 export interface Event {
 	/** The event's ID, such as `evt_8x7w6v`: a webhook's delivery ID, so deduplicate on it. */
 	readonly id: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call or its auto-stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call or its auto-stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly type: EventType;
 	readonly accountId: string;
 	/** Epoch milliseconds, UTC. */
@@ -616,7 +533,7 @@ export interface EventPage {
 	readonly nextCursor?: string;
 }
 
-/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call or its auto-stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call or its auto-stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 export type EventType =
 	| "sandbox.created"
 	| "sandbox.running"
@@ -701,12 +618,6 @@ export interface ForkSandboxBody {
 		readonly [key: string]: string;
 	};
 	readonly wait?: boolean;
-}
-
-export interface GrantEnvironmentBody {
-	readonly sessionId: string;
-	readonly alias?: string;
-	readonly rights?: "worktree" | "machine";
 }
 
 /** A machine that runs sandboxes. It dials out to the control plane; it takes no inbound ports. */
@@ -806,7 +717,7 @@ export interface ListEventsQuery {
 	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
 	readonly account?: string;
 	readonly sandboxId?: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call or its auto-stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call or its auto-stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly type?: EventType;
 	readonly since?: number;
 	/** At most this many; default 50. */
@@ -909,6 +820,18 @@ export interface ProxyUpstream {
 	readonly headerNames: readonly string[];
 }
 
+export interface PutEgressGrantsBody {
+	readonly grants: readonly EgressGrantInput[];
+	/** The list as you last read it. Given, the write is refused with `conflict` if the list has changed since, so an edit made from an older read can't undo someone else's: read it again and redo the edit. Left out, the list is replaced whatever it holds. */
+	readonly expected?: readonly EgressGrantInput[];
+}
+
+export interface PutEnvironmentReposBody {
+	readonly repos: readonly EnvironmentRepo[];
+	/** The list as you last read it. Given, the write is refused with `conflict` if the list has changed since, so an edit made from an older read can't undo someone else's: read it again and redo the edit. Left out, the list is replaced whatever it holds. */
+	readonly expected?: readonly EnvironmentRepo[];
+}
+
 export interface PutProxySettingsBody {
 	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
 	readonly account?: string;
@@ -1008,6 +931,10 @@ export interface Sandbox {
 	readonly latestSnapshotId?: string;
 	/** What it was made from. */
 	readonly source?: SandboxSource;
+	/** The environment it was made from. */
+	readonly environmentId?: string;
+	/** Its own egress grants, on top of its environment's. */
+	readonly grants: readonly EgressGrant[];
 	readonly createdBy: CreatedBy;
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
@@ -1037,6 +964,31 @@ export interface SandboxCapabilities {
 	readonly pause: boolean;
 }
 
+/** A sandbox's egress: what it was made with, its own grants and its log. */
+export interface SandboxEgress {
+	readonly sandboxId: string;
+	readonly sandboxName: string;
+	readonly accountId: string;
+	readonly environment?: SandboxEgressEnvironment;
+	readonly protectedVariables: readonly SandboxProtectedVariable[];
+	/** Its environment's grants, which it has too. */
+	readonly environmentGrants: readonly EgressGrant[];
+	/** Its own grants, on top of its environment's. */
+	readonly grants: readonly EgressGrant[];
+	/** Newest first; Kantel keeps the newest 1000. */
+	readonly entries: readonly EgressEntry[];
+}
+
+export interface SandboxEgressEnvironment {
+	readonly id: string;
+	readonly name: string;
+}
+
+export interface SandboxEgressQuery {
+	/** At most this many entries; default 100. */
+	readonly limit?: number;
+}
+
 /** `degraded`: the machine is up but its host can't fully reach it; it keeps running. */
 export type SandboxHealth = "ok" | "degraded";
 
@@ -1044,6 +996,14 @@ export interface SandboxPage {
 	readonly items: readonly Sandbox[];
 	/** Present when more items follow. */
 	readonly nextCursor?: string;
+}
+
+/** A protected variable as one sandbox has it: never its value. */
+export interface SandboxProtectedVariable {
+	readonly name: string;
+	/** The first 8 characters of its placeholder, such as `kph_7Qx2`. */
+	readonly placeholderPrefix: string;
+	readonly bindings: readonly DestinationBinding[];
 }
 
 export interface SandboxResources {
@@ -1110,6 +1070,26 @@ export interface SaveSnapshotBody {
 	readonly description?: string;
 	/** Replace a saved snapshot of the same name. */
 	readonly replace?: boolean;
+}
+
+/** `encoding` says how `content` is written: `utf8` (the default) or `base64`. */
+export interface SetEnvironmentFileBody {
+	/** Absolute, or relative to `/home/user`. */
+	readonly path: string;
+	/** Default 384 (0o600). */
+	readonly mode?: number;
+	/** At most 1 MiB, in `encoding`. Required for a new file; left out, the file keeps its contents. */
+	readonly content?: string;
+	readonly encoding?: FileEncoding;
+}
+
+export interface SetEnvironmentVariableBody {
+	/** Default false. */
+	readonly protected?: boolean;
+	/** Required for a new variable and when it becomes protected or plain. Left out on a protected one, it keeps its value (to change its bindings); a new value for a protected one is a rotation. */
+	readonly value?: string;
+	/** A protected variable's destinations, at least one. Left out, a protected one keeps its own. */
+	readonly bindings?: readonly DestinationBinding[];
 }
 
 export interface Snapshot {
@@ -1239,9 +1219,9 @@ export interface UpdateAccountBody {
 }
 
 export interface UpdateEnvironmentBody {
+	readonly name?: string;
+	/** Empty clears it. */
 	readonly description?: string;
-	readonly idleTimeoutMs?: number;
-	readonly size?: EnvironmentSizeName;
 }
 
 export interface UpdateHostBody {
@@ -1318,7 +1298,7 @@ export interface WebhookDelivery {
 	readonly id: string;
 	readonly webhookId: string;
 	readonly eventId: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call or its auto-stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call or its auto-stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly eventType: EventType;
 	readonly state: "pending" | "delivered" | "failed";
 	readonly attempts: number;
@@ -1610,29 +1590,6 @@ export interface KantelClient {
 	): Promise<BrowserEmbed>;
 	/** Create a project. Creates a project in the caller's organisation, which the `kantel-organisation` header names for a person in more than one. Needs an organisation-wide admin, or an organisation API key with the `create_projects` permission; a project key is refused, whatever its role. An organisation key holds its role on the new project at once. Audited as `identity.project.created`, with the caller as its actor. `POST /projects` */
 	createProject(body: CreateProjectBody, options?: CallOptions): Promise<Project>;
-	/** List environments. The environments of the projects the caller may view, by name; destroyed ones are left out. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`. `GET /environments` */
-	listEnvironments(
-		query?: {
-			readonly projectId?: string;
-		},
-		options?: CallOptions,
-	): Promise<EnvironmentList>;
-	/** Create an environment. Creates an environment and its machine; needs operator on the project. It belongs to the caller unless `projectWide`, and idles until a session uses it. The name is unique in the project (`conflict` otherwise). Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`. `POST /environments` */
-	createEnvironment(body: CreateEnvironmentBody, options?: CallOptions): Promise<Environment>;
-	/** Get an environment. The environment, the sessions holding it, its grants and its recent history. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`. `GET /environments/{environmentId}` */
-	getEnvironment(environmentId: string, options?: CallOptions): Promise<EnvironmentDetail>;
-	/** Change an environment. Changes its description, idle timeout or size; a new size applies at the next start. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`. `PATCH /environments/{environmentId}` */
-	updateEnvironment(environmentId: string, body?: UpdateEnvironmentBody, options?: CallOptions): Promise<Environment>;
-	/** Start an environment. Starts a stopped environment; answers as soon as the start is under way. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`. `POST /environments/{environmentId}/start` */
-	startEnvironment(environmentId: string, options?: CallOptions): Promise<Environment>;
-	/** Stop an environment. Stops it, keeping its disk; the sessions holding it let go. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`. `POST /environments/{environmentId}/stop` */
-	stopEnvironment(environmentId: string, options?: CallOptions): Promise<Environment>;
-	/** Destroy an environment. Removes its machine and disk, and revokes its grants; needs admin on the project. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`. `DELETE /environments/{environmentId}` */
-	destroyEnvironment(environmentId: string, options?: CallOptions): Promise<Environment>;
-	/** Grant a session an environment. Lets a session in the environment's project use it as `bash`'s `env`, by its alias; needs operator on the project. A session already granted it is answered with its grant. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`. `POST /environments/{environmentId}/grants` */
-	grantEnvironment(environmentId: string, body: GrantEnvironmentBody, options?: CallOptions): Promise<EnvironmentGrant>;
-	/** Revoke a session's grant. Ends the session's use of the environment, and its lease. Experimental: served only where the deployment sets `KANTEL_ENVIRONMENTS=experimental`. `DELETE /environments/{environmentId}/grants/{grantId}` */
-	revokeEnvironmentGrant(environmentId: string, grantId: string, options?: CallOptions): Promise<void>;
 	/** Who is calling. The person or key calling, the accounts they may act in (their personal account first), and the deployment's mode. Any key may call it. `GET /whoami` */
 	getCaller(options?: CallOptions): Promise<Caller>;
 	/** List accounts. The caller's personal account and every organisation they belong to; for a key, its own account. A key needs `account:read`. `GET /accounts` */
@@ -1753,6 +1710,45 @@ export interface KantelClient {
 	getProxySettings(query?: AccountScopedQuery, options?: CallOptions): Promise<ProxySettings>;
 	/** Set the proxy settings. Replaces them. Running sandboxes pick them up within a minute. An upstream's header values are kept encrypted and never shown again; leave `upstream.headers` out to keep the ones it has. A key needs `account:admin`. `PUT /proxy` */
 	putProxySettings(body: PutProxySettingsBody, options?: CallOptions): Promise<ProxySettings>;
+	/** List environments. The account's environments, oldest first. A key needs `account:read`. `GET /environments` */
+	listEnvironments(query?: AccountScopedQuery, options?: CallOptions): Promise<EnvironmentList>;
+	/** Create an environment. An empty environment, named uniquely in the account. A sandbox starts with it when its create names it. A key needs `account:admin`. `POST /environments` */
+	createEnvironment(body: CreateEnvironmentBody, options?: CallOptions): Promise<Environment>;
+	/** Get an environment. Never a protected variable's value nor a secret file's contents. A key needs `account:read`. `GET /environments/{environmentId}` */
+	getEnvironment(environmentId: string, options?: CallOptions): Promise<Environment>;
+	/** Change an environment. Renames it or changes its description. A key needs `account:admin`. `PATCH /environments/{environmentId}` */
+	updateEnvironment(environmentId: string, body?: UpdateEnvironmentBody, options?: CallOptions): Promise<Environment>;
+	/** Delete an environment. Sandboxes made from it keep what they started with, but their protected variables stop resolving at once. A key needs `account:admin`. `DELETE /environments/{environmentId}` */
+	deleteEnvironment(environmentId: string, options?: CallOptions): Promise<void>;
+	/** Set an environment variable. Adds or changes a variable. A protected one needs at least one binding, and its value is kept encrypted and never shown again; leave `value` out to change only its bindings. A new value for a protected variable is a rotation: sandboxes keep their placeholders, and their next request carries the new value. Running sandboxes made from it pick the change up at once. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused. Protected values need the deployment's secrets key (`not_supported` without one). A key needs `account:admin`. `PUT /environments/{environmentId}/variables/{name}` */
+	setEnvironmentVariable(
+		environmentId: string,
+		name: string,
+		body?: SetEnvironmentVariableBody,
+		options?: CallOptions,
+	): Promise<Environment>;
+	/** Delete an environment variable. A protected variable stops resolving in the sandboxes made from the environment at once. A key needs `account:admin`. `DELETE /environments/{environmentId}/variables/{name}` */
+	deleteEnvironmentVariable(environmentId: string, name: string, options?: CallOptions): Promise<Environment>;
+	/** Set a secret file. Adds or replaces a file new sandboxes start with, written once they are running. Its contents are kept encrypted and never shown again; leave `content` out to change only its mode. Needs the deployment's secrets key (`not_supported` without one). A key needs `account:admin`. `PUT /environments/{environmentId}/files` */
+	setEnvironmentFile(environmentId: string, body: SetEnvironmentFileBody, options?: CallOptions): Promise<Environment>;
+	/** Delete a secret file. Sandboxes made from the environment keep their copy. A key needs `account:admin`. `DELETE /environments/{environmentId}/files` */
+	deleteEnvironmentFile(
+		environmentId: string,
+		query: EnvironmentFileQuery,
+		options?: CallOptions,
+	): Promise<Environment>;
+	/** Set an environment's repositories. Replaces them. New sandboxes clone each once they are running (`git clone --depth 1`), through the egress proxy. A key needs `account:admin`. `PUT /environments/{environmentId}/repos` */
+	putEnvironmentRepos(
+		environmentId: string,
+		body: PutEnvironmentReposBody,
+		options?: CallOptions,
+	): Promise<Environment>;
+	/** Set an environment's egress grants. Replaces them. Running sandboxes made from it pick the change up at once. A key needs `account:admin`. `PUT /environments/{environmentId}/grants` */
+	putEnvironmentGrants(environmentId: string, body: PutEgressGrantsBody, options?: CallOptions): Promise<Environment>;
+	/** Get a sandbox's egress. Its environment, its protected variables (each placeholder's first 8 characters, never a value), its grants and the newest of its egress log: what its host's proxy let through or refused. A key needs `account:read`. `GET /sandboxes/{sandboxId}/egress` */
+	getSandboxEgress(sandboxId: string, query?: SandboxEgressQuery, options?: CallOptions): Promise<SandboxEgress>;
+	/** Set a sandbox's egress grants. Replaces its own grants, on top of its environment's. A running sandbox picks them up at once. A key needs `account:admin`. `PUT /sandboxes/{sandboxId}/grants` */
+	putSandboxGrants(sandboxId: string, body: PutEgressGrantsBody, options?: CallOptions): Promise<SandboxEgress>;
 	/** List events. The account's events, newest first: what webhooks deliver, and a sandbox's history with `sandboxId`. A key needs `sandboxes:read`. `GET /events` */
 	listEvents(query?: ListEventsQuery, options?: CallOptions): Promise<EventPage>;
 	/** List webhooks. A key needs `account:admin`. `GET /webhooks` */
@@ -1817,35 +1813,6 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 				callOptions,
 			),
 		createProject: (body, callOptions) => send(options, { method: "POST", path: "/projects", body }, callOptions),
-		listEnvironments: (query, callOptions) =>
-			send(options, { method: "GET", path: "/environments", query }, callOptions),
-		createEnvironment: (body, callOptions) =>
-			send(options, { method: "POST", path: "/environments", body }, callOptions),
-		getEnvironment: (environmentId, callOptions) =>
-			send(options, { method: "GET", path: `/environments/${encodeURIComponent(environmentId)}` }, callOptions),
-		updateEnvironment: (environmentId, body = {}, callOptions) =>
-			send(options, { method: "PATCH", path: `/environments/${encodeURIComponent(environmentId)}`, body }, callOptions),
-		startEnvironment: (environmentId, callOptions) =>
-			send(options, { method: "POST", path: `/environments/${encodeURIComponent(environmentId)}/start` }, callOptions),
-		stopEnvironment: (environmentId, callOptions) =>
-			send(options, { method: "POST", path: `/environments/${encodeURIComponent(environmentId)}/stop` }, callOptions),
-		destroyEnvironment: (environmentId, callOptions) =>
-			send(options, { method: "DELETE", path: `/environments/${encodeURIComponent(environmentId)}` }, callOptions),
-		grantEnvironment: (environmentId, body, callOptions) =>
-			send(
-				options,
-				{ method: "POST", path: `/environments/${encodeURIComponent(environmentId)}/grants`, body },
-				callOptions,
-			),
-		revokeEnvironmentGrant: (environmentId, grantId, callOptions) =>
-			send(
-				options,
-				{
-					method: "DELETE",
-					path: `/environments/${encodeURIComponent(environmentId)}/grants/${encodeURIComponent(grantId)}`,
-				},
-				callOptions,
-			),
 		getCaller: (callOptions) => send(options, { method: "GET", path: "/whoami" }, callOptions),
 		listAccounts: (callOptions) => send(options, { method: "GET", path: "/accounts" }, callOptions),
 		createOrganisation: (body, callOptions) => send(options, { method: "POST", path: "/accounts", body }, callOptions),
@@ -2012,6 +1979,63 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "POST", path: `/auth/device/${encodeURIComponent(userCode)}/deny` }, callOptions),
 		getProxySettings: (query, callOptions) => send(options, { method: "GET", path: "/proxy", query }, callOptions),
 		putProxySettings: (body, callOptions) => send(options, { method: "PUT", path: "/proxy", body }, callOptions),
+		listEnvironments: (query, callOptions) =>
+			send(options, { method: "GET", path: "/environments", query }, callOptions),
+		createEnvironment: (body, callOptions) =>
+			send(options, { method: "POST", path: "/environments", body }, callOptions),
+		getEnvironment: (environmentId, callOptions) =>
+			send(options, { method: "GET", path: `/environments/${encodeURIComponent(environmentId)}` }, callOptions),
+		updateEnvironment: (environmentId, body = {}, callOptions) =>
+			send(options, { method: "PATCH", path: `/environments/${encodeURIComponent(environmentId)}`, body }, callOptions),
+		deleteEnvironment: (environmentId, callOptions) =>
+			send(options, { method: "DELETE", path: `/environments/${encodeURIComponent(environmentId)}` }, callOptions),
+		setEnvironmentVariable: (environmentId, name, body = {}, callOptions) =>
+			send(
+				options,
+				{
+					method: "PUT",
+					path: `/environments/${encodeURIComponent(environmentId)}/variables/${encodeURIComponent(name)}`,
+					body,
+				},
+				callOptions,
+			),
+		deleteEnvironmentVariable: (environmentId, name, callOptions) =>
+			send(
+				options,
+				{
+					method: "DELETE",
+					path: `/environments/${encodeURIComponent(environmentId)}/variables/${encodeURIComponent(name)}`,
+				},
+				callOptions,
+			),
+		setEnvironmentFile: (environmentId, body, callOptions) =>
+			send(
+				options,
+				{ method: "PUT", path: `/environments/${encodeURIComponent(environmentId)}/files`, body },
+				callOptions,
+			),
+		deleteEnvironmentFile: (environmentId, query, callOptions) =>
+			send(
+				options,
+				{ method: "DELETE", path: `/environments/${encodeURIComponent(environmentId)}/files`, query },
+				callOptions,
+			),
+		putEnvironmentRepos: (environmentId, body, callOptions) =>
+			send(
+				options,
+				{ method: "PUT", path: `/environments/${encodeURIComponent(environmentId)}/repos`, body },
+				callOptions,
+			),
+		putEnvironmentGrants: (environmentId, body, callOptions) =>
+			send(
+				options,
+				{ method: "PUT", path: `/environments/${encodeURIComponent(environmentId)}/grants`, body },
+				callOptions,
+			),
+		getSandboxEgress: (sandboxId, query, callOptions) =>
+			send(options, { method: "GET", path: `/sandboxes/${encodeURIComponent(sandboxId)}/egress`, query }, callOptions),
+		putSandboxGrants: (sandboxId, body, callOptions) =>
+			send(options, { method: "PUT", path: `/sandboxes/${encodeURIComponent(sandboxId)}/grants`, body }, callOptions),
 		listEvents: (query, callOptions) => send(options, { method: "GET", path: "/events", query }, callOptions),
 		listWebhooks: (query, callOptions) => send(options, { method: "GET", path: "/webhooks", query }, callOptions),
 		createWebhook: (body, callOptions) => send(options, { method: "POST", path: "/webhooks", body }, callOptions),

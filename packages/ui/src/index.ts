@@ -122,6 +122,7 @@ export {
 	useSidebarCollapsed,
 } from "./primitives/sidebar.tsx";
 export { Kbd, Skeleton, Spinner } from "./primitives/spinner.tsx";
+export { SplitButton, type SplitButtonProps } from "./primitives/split-button.tsx";
 export {
 	isChunkLoadError,
 	type ReloadForNewBuildOptions,
@@ -140,6 +141,7 @@ export {
 	type PanelTone,
 } from "./primitives/surface.tsx";
 export { Switch, type SwitchProps } from "./primitives/switch.tsx";
+export { TabBar, type TabBarItem, type TabBarProps } from "./primitives/tab-bar.tsx";
 export { ClockTime, Elapsed, RelativeTime } from "./primitives/time.tsx";
 export { DEFAULT_THEME_PREFERENCE, THEME_STORAGE_KEY, themeBootScript } from "./theme/boot.ts";
 export {
@@ -152,6 +154,6 @@ export {
 	type ThemeState,
 	themeController,
 } from "./theme/controller.ts";
-export { ThemeMenu, ThemeSwitch, type ThemeSwitchProps, useThemeState } from "./theme/theme-switch.tsx";
+export { ThemeSwitch, type ThemeSwitchProps, useThemeMenuEntry, useThemeState } from "./theme/theme-switch.tsx";
 export { contrast, distance } from "./tokens/colour.ts";
 export { type Status, statusLabel, token } from "./tokens/tokens.ts";

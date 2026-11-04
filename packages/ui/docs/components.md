@@ -34,7 +34,25 @@ Decline, Copy link), `ghost` (inside dense rows and toolbars), `danger` (stoppin
 
 `IconButton` requires `label`, which becomes the accessible name and the tooltip.
 
+The primary variant is drawn in the `primary` tokens, not the accent: navy with white text in the light theme,
+orange with dark text in the dark one.
+
 **Cost:** none beyond the element.
+
+### SplitButton
+
+**For** an action done at once with the defaults, beside a caret for the same action with choices: the console's New
+makes a sandbox at once, and its caret opens New sandbox. Two buttons joined, each a Tab stop with its own name
+(`moreLabel` names the caret).
+
+**Not for** a list of different actions (use a `Menu`), or when the defaults are rarely what someone wants.
+
+### TabBar
+
+**For** a phone's main navigation: up to five pages along the bottom, each an icon over a short label, the page shown
+in full-strength text with its icon in the accent, and `aria-current="page"`. It sits above the home indicator (`env(safe-area-inset-bottom)`).
+
+**Not for** a wide screen (use `Sidebar`), more than five pages, or tabs inside a page (`SegmentedControl`).
 
 ### StatusLabel and StatusDot
 
@@ -89,6 +107,10 @@ console remembers it in localStorage and toggles it with Ctrl+B (⌘B on a Mac).
 component inside whether it is on the rail.
 
 **Not for** navigation inside a page (use `SegmentedControl` or a list).
+
+The compute console draws it `--kt-nav-width` wide with no rail: its pages, Settings, Admin for a super-admin, and
+the person's own menu (`UserMenu`: who they are, the theme, sign out) in the foot. On a phone it has a top bar and a
+`TabBar` instead.
 
 **Cost:** no timers or animation; the rail is a CSS state of the same elements, so collapsing mounts nothing new.
 

@@ -7,7 +7,7 @@ import { createKantelClient } from "@kantel/api/sdk";
 import type { PersonIdentity } from "@kantel/compute";
 import { createReplicaKey, createSqlClusterStore, signPeerRequest } from "@kantel/hosts/cluster";
 import { DESKTOP_PORT, DESKTOP_SOCKET, HOSTS_DESKTOP_PATH } from "@kantel/hosts/desktop";
-import { PORT_COOKIE } from "@kantel/hosts/ports";
+import { portCookieName } from "@kantel/hosts/ports";
 import { RELAY_CLOSE_REVOKED } from "@kantel/hosts/relay-access";
 import type { SqlDriver } from "@kantel/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -29,6 +29,8 @@ import {
 } from "./cluster-harness.ts";
 
 const REVOKED = `close ${RELAY_CLOSE_REVOKED}`;
+/** The gate cookie over plain http, as these gateways are reached: no `__Host-` prefix. */
+const PORT_COOKIE = portCookieName("http");
 const PORTS_HOST = (port: number, label: string) => `${port}-${label}.kantel-ports.test`;
 const tokenOf = (url: string) => new URL(url).searchParams.get("_token") ?? "";
 

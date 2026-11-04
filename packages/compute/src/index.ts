@@ -7,6 +7,7 @@ export * from "./auth.ts";
 export * from "./backend.ts";
 export * from "./http.ts";
 export * from "./routed-backend.ts";
+export * from "./secrets.ts";
 export * from "./service.ts";
 export * from "./store.ts";
 export * from "./stub-backend.ts";

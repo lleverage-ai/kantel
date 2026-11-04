@@ -3,8 +3,10 @@
  *
  * - every `/v1/*`: the identity and audit APIs, served by the `KantelStack` Durable Object (`gateway.ts`);
  * - `/healthz`: public liveness, the service name only. Access still guards it on the deployed hostname.
- * - everything else: the console (`apps/console`), as static assets with single-page-app fallback. Assets are served
- *   before the Worker runs, so only Access guards them; the APIs check the Access token (or an API key) themselves.
+ * - everything else: the console (`apps/console`), as static assets with single-page-app fallback, served through the
+ *   `ASSETS` binding (the Worker runs first for every path); Access guards them on its hostname, and the APIs check the
+ *   Access token (or an API key) themselves.
+ * - any name under the ports domain (`kantel.run`): an exposed port's page, relayed to the sandbox by the stack object.
  *
  * Kantel's agent plane (sessions, the vault, browsers, sandboxes, tool server tunnels) was removed; its code is kept on
  * the `agent-plane-archive` branch and the `agent-plane-archive-2026-11-03` tag (`e496aeb2`). Its Durable Object

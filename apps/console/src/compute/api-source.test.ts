@@ -325,6 +325,248 @@ describe("proxy", () => {
 	});
 });
 
+describe("environments", () => {
+	const SECRET = "ghp_CONSOLESECRET123";
+
+	it("creates one, sets its variables, files, repositories and grants, renames it and deletes it", async () => {
+		const { fetchApi } = setup();
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+
+		const made = await source.environments.create({ accountId, name: "backend", description: "The API's" });
+		expect(made).toMatchObject({
+			accountId,
+			name: "backend",
+			description: "The API's",
+			variables: [],
+			files: [],
+			repos: [],
+			grants: [],
+			sandboxCount: 0,
+		});
+		expect((await source.environments.list(accountId)).map((environment) => environment.id)).toEqual([made.id]);
+		expect((await source.environments.get(made.id)).name).toBe("backend");
+
+		await source.environments.setVariable(made.id, {
+			name: "LOG_LEVEL",
+			protected: false,
+			value: "debug",
+			bindings: [],
+		});
+		const withToken = await source.environments.setVariable(made.id, {
+			name: "GH_TOKEN",
+			protected: true,
+			value: SECRET,
+			bindings: [{ host: "api.github.com", pathPrefixes: ["/repos/"], methods: ["GET"] }],
+		});
+		expect(withToken.variables).toEqual([
+			{ name: "LOG_LEVEL", protected: false, value: "debug", bindings: [], updatedAt: expect.any(Number) },
+			{
+				name: "GH_TOKEN",
+				protected: true,
+				bindings: [{ host: "api.github.com", pathPrefixes: ["/repos/"], methods: ["GET"] }],
+				updatedAt: expect.any(Number),
+			},
+		]);
+		expect(JSON.stringify(withToken)).not.toContain(SECRET);
+		// New bindings without the value keep it; empty lists are any path and any method.
+		const rebound = await source.environments.setVariable(made.id, {
+			name: "GH_TOKEN",
+			protected: true,
+			bindings: [{ host: "*.github.com", pathPrefixes: [], methods: [] }],
+		});
+		expect(rebound.variables[1]?.bindings).toEqual([{ host: "*.github.com", pathPrefixes: [], methods: [] }]);
+		await expect(
+			source.environments.setVariable(made.id, { name: "NO_BINDINGS", protected: true, value: SECRET, bindings: [] }),
+		).rejects.toMatchObject({ code: "invalid" });
+
+		const npmrc = "//registry.npmjs.org/:_authToken=npm_x\n";
+		const withFile = await source.environments.setFile(made.id, {
+			path: "/home/user/.npmrc",
+			mode: 0o600,
+			content: npmrc,
+		});
+		expect(withFile.files).toEqual([
+			{ path: "/home/user/.npmrc", mode: 0o600, sizeBytes: npmrc.length, updatedAt: expect.any(Number) },
+		]);
+		// Left out, the contents are kept.
+		const chmod = await source.environments.setFile(made.id, { path: "/home/user/.npmrc", mode: 0o400 });
+		expect(chmod.files).toEqual([
+			{ path: "/home/user/.npmrc", mode: 0o400, sizeBytes: npmrc.length, updatedAt: expect.any(Number) },
+		]);
+
+		const withRepos = await source.environments.setRepos(made.id, [
+			{ url: "https://github.com/lleverage-ai/kantel", ref: "main" },
+			{ url: "https://github.com/lleverage-ai/docs", path: "/home/user/work/docs" },
+		]);
+		expect(withRepos.repos).toEqual([
+			{ url: "https://github.com/lleverage-ai/kantel", ref: "main" },
+			{ url: "https://github.com/lleverage-ai/docs", path: "/home/user/work/docs" },
+		]);
+
+		const withGrants = await source.environments.setGrants(made.id, [
+			{ id: "grt_new_1", action: "deny", host: "api.github.com", methods: ["DELETE"], paths: ["/repos/*"] },
+			{ id: "grt_new_2", action: "allow", host: "registry.npmjs.org", methods: [], paths: [] },
+		]);
+		expect(withGrants.grants).toEqual([
+			{
+				id: expect.stringMatching(/^grt_[a-z0-9]+$/),
+				action: "deny",
+				host: "api.github.com",
+				methods: ["DELETE"],
+				paths: ["/repos/*"],
+			},
+			{
+				id: expect.stringMatching(/^grt_[a-z0-9]+$/),
+				action: "allow",
+				host: "registry.npmjs.org",
+				methods: [],
+				paths: [],
+			},
+		]);
+		// Saved again as the page has them, they keep their IDs.
+		const again = await source.environments.setGrants(made.id, withGrants.grants);
+		expect(again.grants).toEqual(withGrants.grants);
+
+		const renamed = await source.environments.update(made.id, { name: "api", description: "" });
+		expect(renamed.name).toBe("api");
+		expect(renamed.description).toBeUndefined();
+
+		const fewer = await source.environments.removeVariable(made.id, "LOG_LEVEL");
+		expect(fewer.variables.map((variable) => variable.name)).toEqual(["GH_TOKEN"]);
+		expect((await source.environments.removeFile(made.id, "/home/user/.npmrc")).files).toEqual([]);
+
+		await source.environments.remove(made.id);
+		expect(await source.environments.list(accountId)).toEqual([]);
+	});
+});
+
+describe("egress", () => {
+	it("makes a sandbox from an environment and reads its protected variables, grants and log", async () => {
+		const { api, fetchApi } = setup();
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const environment = await source.environments.create({ accountId, name: "backend" });
+		await source.environments.setVariable(environment.id, {
+			name: "GH_TOKEN",
+			protected: true,
+			value: "ghp_CONSOLESECRET123",
+			bindings: [{ host: "api.github.com", pathPrefixes: [], methods: [] }],
+		});
+		await source.environments.setGrants(environment.id, [
+			{ id: "grt_new_1", action: "allow", host: "registry.npmjs.org", methods: [], paths: [] },
+		]);
+
+		const sandbox = await source.sandboxes.create({
+			accountId,
+			kind: "isolate",
+			size: "small",
+			environmentId: environment.id,
+		});
+		expect(sandbox.environment).toEqual({ id: environment.id, name: "backend" });
+		await api.service.idle();
+		const [listed] = await source.sandboxes.list(accountId);
+		expect(listed?.environment).toEqual({ id: environment.id, name: "backend" });
+		// A console that hasn't read the environment learns its name from the list.
+		const fresh = await open(fetchApi);
+		const [named] = await fresh.sandboxes.list(accountId);
+		expect(named?.environment).toEqual({ id: environment.id, name: "backend" });
+
+		await api.service.recordEgress(STUB_HOST_ID, [
+			{
+				at: 1000,
+				sandboxId: sandbox.id,
+				method: "GET",
+				host: "api.github.com",
+				port: 443,
+				path: "/user?per_page=1",
+				allowed: true,
+				swapped: ["GH_TOKEN"],
+				inspected: true,
+				status: 200,
+				bytesUp: 120,
+				bytesDown: 900,
+			},
+			{
+				at: 2000,
+				sandboxId: sandbox.id,
+				method: "POST",
+				host: "api.example.com",
+				port: 443,
+				path: "/upload",
+				allowed: false,
+				code: "placeholder-unbound",
+				swapped: [],
+				inspected: true,
+				bytesUp: 0,
+				bytesDown: 0,
+			},
+		]);
+		const egress = await source.egress.get(sandbox.id);
+		expect(egress).toMatchObject({
+			sandboxId: sandbox.id,
+			sandboxName: sandbox.name,
+			accountId,
+			environment: { id: environment.id, name: "backend" },
+			environmentGrants: [{ action: "allow", host: "registry.npmjs.org", methods: [], paths: [] }],
+			grants: [],
+		});
+		expect(egress.protectedVariables).toEqual([
+			{
+				name: "GH_TOKEN",
+				placeholderPrefix: expect.stringMatching(/^kph_[0-9A-Za-z]{4}$/),
+				bindings: [{ host: "api.github.com", pathPrefixes: [], methods: [] }],
+			},
+		]);
+		expect(egress.entries).toEqual([
+			{
+				id: expect.any(String),
+				at: 2000,
+				method: "POST",
+				host: "api.example.com",
+				port: 443,
+				path: "/upload",
+				decision: "denied",
+				// The refusal's code stands in for a reason.
+				reason: "placeholder-unbound",
+				swapped: [],
+				inspected: true,
+				bytesUp: 0,
+				bytesDown: 0,
+			},
+			{
+				id: expect.any(String),
+				at: 1000,
+				method: "GET",
+				host: "api.github.com",
+				port: 443,
+				path: "/user",
+				decision: "allowed",
+				swapped: ["GH_TOKEN"],
+				inspected: true,
+				status: 200,
+				bytesUp: 120,
+				bytesDown: 900,
+			},
+		]);
+		expect(JSON.stringify(egress)).not.toContain("ghp_CONSOLESECRET123");
+
+		const granted = await source.egress.setGrants(sandbox.id, [
+			{ id: "grt_new_1", action: "deny", host: "api.github.com", methods: ["DELETE"], paths: [] },
+		]);
+		expect(granted.grants).toEqual([
+			{
+				id: expect.stringMatching(/^grt_[a-z0-9]+$/),
+				action: "deny",
+				host: "api.github.com",
+				methods: ["DELETE"],
+				paths: [],
+			},
+		]);
+		expect(granted.environmentGrants).toEqual(egress.environmentGrants);
+	});
+});
+
 describe("hosts", () => {
 	it("makes a join token and lists the hosts for a super-admin", async () => {
 		const { fetchApi } = setup();

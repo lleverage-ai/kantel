@@ -27,7 +27,7 @@ import {
 	expiresText,
 	SCOPE_PRESETS,
 } from "./compute-model.ts";
-import { cellMono, cellSub, computePage, messageOf, table, tableFrame, td, th } from "./parts.tsx";
+import { cellMono, cellSub, computePage, messageOf, None, TableFrame, table, tableFrame, td, th } from "./parts.tsx";
 
 export interface ComputeApiKeysPageProps {
 	readonly source: ApiKeysSource;
@@ -209,7 +209,7 @@ function KeysSkeleton() {
 
 function KeyTable({ keys, now, onRevoke }: { keys: readonly ApiKey[]; now: number; onRevoke: (key: ApiKey) => void }) {
 	return (
-		<div className={tableFrame}>
+		<TableFrame>
 			<table className={table}>
 				<thead>
 					<tr>
@@ -245,7 +245,7 @@ function KeyTable({ keys, now, onRevoke }: { keys: readonly ApiKey[]; now: numbe
 					))}
 				</tbody>
 			</table>
-		</div>
+		</TableFrame>
 	);
 }
 
@@ -285,7 +285,7 @@ function KeyRow({ apiKey, now, onRevoke }: { apiKey: ApiKey; now: number; onRevo
 			</td>
 			<td className={td}>
 				{revoked ? (
-					<span className="text-faint">–</span>
+					<None className="text-faint" />
 				) : apiKey.expiresAt === undefined ? (
 					<span className="text-muted">Never</span>
 				) : (

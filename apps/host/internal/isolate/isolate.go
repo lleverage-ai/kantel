@@ -39,6 +39,7 @@ import (
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/egress"
 	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
+	"github.com/lleverage-ai/kantel/apps/host/internal/fsutil"
 	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
@@ -109,6 +110,16 @@ type sandbox struct {
 	// exec runs one command at a time (each takes the manifest the last one left). Held without mu, so the
 	// command's egress can look the sandbox up meanwhile.
 	exec sync.Mutex
+	// unsaved: meta differs from meta.json (a write failed). A call that would otherwise change nothing, a retried
+	// start, writes it before it answers.
+	unsaved bool
+}
+
+// saveMeta writes the sandbox's meta.json, noting whether it is behind meta. Held under mu.
+func (s *sandbox) saveMeta() error {
+	err := writeJSONFile(filepath.Join(s.dir, "meta.json"), s.meta)
+	s.unsaved = err != nil
+	return err
 }
 
 // Manager runs the tier.
@@ -208,11 +219,8 @@ func writeJSONFile(path string, v any) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	// Durably: a sandbox's meta.json (its egress, and that egress's revision) is what the host has acknowledged.
+	return fsutil.WriteFileDurably(path, raw, 0o600)
 }
 
 func readManifest(path string) (Manifest, error) {
@@ -949,7 +957,7 @@ func (m *Manager) Stop(ctx context.Context, p proto.StopParams) (proto.SnapshotI
 		return proto.SnapshotInfo{}, conflict("sandbox %s is %s, not running", s.meta.ID, s.meta.State)
 	}
 	s.meta.State = proto.StateStopped
-	if err := writeJSONFile(filepath.Join(s.dir, "meta.json"), s.meta); err != nil {
+	if err := s.saveMeta(); err != nil {
 		return proto.SnapshotInfo{}, err
 	}
 	m.emit(s)
@@ -971,12 +979,20 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, _ bool) (pro
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.meta.State == proto.StateRunning {
+		// Running already (a retry, say). What it holds is on disk before it says so: an earlier boot that couldn't
+		// write it failed, and a restart mustn't bring back the egress before it.
+		if s.unsaved {
+			if err := s.saveMeta(); err != nil {
+				return proto.SandboxInfo{}, err
+			}
+		}
 		return m.info(s), nil
 	}
 	t := timings{}
 	began := time.Now()
 	if p.Egress != nil {
 		s.meta.Egress = p.Egress
+		s.unsaved = true
 	}
 	source, err := m.load(ctx, s, t)
 	if err != nil {
@@ -984,7 +1000,7 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, _ bool) (pro
 	}
 	s.meta.State = proto.StateRunning
 	s.meta.Error = ""
-	if err := writeJSONFile(filepath.Join(s.dir, "meta.json"), s.meta); err != nil {
+	if err := s.saveMeta(); err != nil {
 		return proto.SandboxInfo{}, err
 	}
 	t["total"] = float64(time.Since(began).Microseconds()) / 1000
@@ -1008,6 +1024,10 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 	snap := proto.SnapshotInfo{ID: snapID, SandboxID: src.meta.ID, Kind: "auto", CreatedAt: time.Now().UnixMilli(), Tier: Tier}
 	err = m.saveSnapshot(src, &snap)
 	owner, env := src.meta.Owner, src.meta.Env
+	if p.Env != nil {
+		// The fork's own: its protected placeholders aren't its source's.
+		env = p.Env
+	}
 	eg := p.Egress
 	if eg == nil {
 		eg = src.meta.Egress
@@ -1494,6 +1514,21 @@ func (m *Manager) Close() {
 	}
 }
 
+// EgressOf answers a sandbox's egress as it keeps it in meta.json.
+func (m *Manager) EgressOf(id string) (*proto.Egress, error) {
+	s, err := m.get(id)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.meta.Egress == nil {
+		return nil, nil
+	}
+	e := *s.meta.Egress
+	return &e, nil
+}
+
 // SetEgress replaces a sandbox's egress; the worker's next request sees it.
 func (m *Manager) SetEgress(id string, e *proto.Egress) error {
 	s, err := m.get(id)
@@ -1503,5 +1538,5 @@ func (m *Manager) SetEgress(id string, e *proto.Egress) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.meta.Egress = e
-	return writeJSONFile(filepath.Join(s.dir, "meta.json"), s.meta)
+	return s.saveMeta()
 }

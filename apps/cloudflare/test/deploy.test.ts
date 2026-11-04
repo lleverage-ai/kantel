@@ -78,6 +78,31 @@ describe("deploy config", () => {
 		}
 	});
 
+	it("refuses an Access hostname under the ports domain, set or the default, and keeps one beside it", () => {
+		for (const mode of ["deploy", "dry-run"] as const) {
+			const refused: Record<string, string>[] = [
+				{ KANTEL_HOSTNAME: "harbour.myslop.app", KANTEL_COMPUTE_PORTS_DOMAIN: "myslop.app" },
+				{ KANTEL_HOSTNAME: "Console.Ports.Example.com", KANTEL_COMPUTE_PORTS_DOMAIN: "ports.example.com" },
+				{ KANTEL_HOSTNAME: "ports.example.com", KANTEL_COMPUTE_PORTS_DOMAIN: "ports.example.com" },
+				// Unset, the Worker's ports domain is kantel.run.
+				{ KANTEL_HOSTNAME: "console.kantel.run" },
+			];
+			for (const env of refused) {
+				expect(() => deployValues({ ...configured, ...env }, mode), JSON.stringify(env)).toThrow(
+					/KANTEL_HOSTNAME can't be the ports domain/,
+				);
+			}
+			const kept: Record<string, string>[] = [
+				{ KANTEL_HOSTNAME: "harbour.myslop.app" },
+				{ KANTEL_HOSTNAME: "harbour.myslop.app", KANTEL_COMPUTE_PORTS_DOMAIN: "kantel.run" },
+				{ KANTEL_HOSTNAME: "console.example.com", KANTEL_COMPUTE_PORTS_DOMAIN: "ports.example.com" },
+			];
+			for (const env of kept) {
+				expect(deployValues({ ...configured, ...env }, mode).hostname, JSON.stringify(env)).toBe(env.KANTEL_HOSTNAME);
+			}
+		}
+	});
+
 	it("adds the account, zone route, Access vars and the models VPC service to wrangler.jsonc", () => {
 		const config = deployConfig(rawConfig, deployValues(configured, "deploy"));
 		expect(config).toMatchObject({
@@ -124,15 +149,16 @@ describe("deploy config", () => {
 		expect(JSON.stringify(rawConfig)).not.toContain("KANTEL_CONNECTIONS_CIMD");
 	});
 
-	it("sets the ports domain only for a deployment whose variable names its own, and routes nothing for it", () => {
+	it("sets the ports domain only for a deployment whose variable names its own, and routes its names to the Worker", () => {
 		const config = (env: Record<string, string>) =>
 			deployConfig(rawConfig, deployValues({ ...configured, ...env }, "deploy"));
-		// Unset, the Worker's own default (ports.kantel.dev, src/config.ts) stands.
+		// Unset, the Worker's own default (kantel.run, src/config.ts) stands, and nothing is routed for it.
 		expect((config({}).vars as Record<string, string>).KANTEL_COMPUTE_PORTS_DOMAIN).toBeUndefined();
-		const own = config({ KANTEL_COMPUTE_PORTS_DOMAIN: "ports.example.com" });
-		expect((own.vars as Record<string, string>).KANTEL_COMPUTE_PORTS_DOMAIN).toBe("ports.example.com");
-		// Serving port names needs a wildcard route and DNS the deploy doesn't add: only the console's route is there.
-		expect(own.routes).toEqual([{ pattern: "harbour.myslop.app/*", zone_name: "myslop.app" }]);
+		expect(config({}).routes).toEqual([{ pattern: "harbour.myslop.app/*", zone_name: "myslop.app" }]);
+		const own = config({ KANTEL_COMPUTE_PORTS_DOMAIN: "kantel.run" });
+		expect((own.vars as Record<string, string>).KANTEL_COMPUTE_PORTS_DOMAIN).toBe("kantel.run");
+		// Port names, one label under the domain, as a bare pattern: wrangler finds the zone. The DNS is added outside.
+		expect(own.routes).toEqual([{ pattern: "harbour.myslop.app/*", zone_name: "myslop.app" }, "*.kantel.run/*"]);
 		for (const bad of ["*.ports.example.com", "https://ports.example.com", "ports"]) {
 			expect(() => deployValues({ ...configured, KANTEL_COMPUTE_PORTS_DOMAIN: bad }, "deploy")).toThrow(
 				"KANTEL_COMPUTE_PORTS_DOMAIN must be a lower-case DNS name",

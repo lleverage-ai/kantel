@@ -12,7 +12,7 @@ import { createSqlComputeStore, migrateComputeStore } from "@kantel/compute/sql"
 import { createStubBackend } from "@kantel/compute/stub";
 import { DESKTOP_PORT, DESKTOP_SOCKET, HOSTS_DESKTOP_PATH } from "@kantel/hosts/desktop";
 import type { PortSink } from "@kantel/hosts/hub";
-import { PORT_COOKIE } from "@kantel/hosts/ports";
+import { portCookieName } from "@kantel/hosts/ports";
 import { RELAY_CLOSE_REVOKED } from "@kantel/hosts/relay-access";
 import { createSqlRelayStore, migrateRelay } from "@kantel/hosts/relay-store";
 import type { HostsService } from "@kantel/hosts/service";
@@ -21,6 +21,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { type GatewayHostsBackend, gatewayRelay, withHostUpgrades } from "../../src/gateway/compute.ts";
 import { closeServer } from "./close-server.ts";
+
+/** The gate cookie over plain http, as this gateway is reached: no `__Host-` prefix. */
+const PORT_COOKIE = portCookieName("http");
 
 const cleanups: (() => Promise<void> | void)[] = [];
 const clients: WebSocket[] = [];

@@ -11,6 +11,11 @@
  *
  * Cost uses a per-type and per-size rate table; the default, `PLACEHOLDER_RATES`, is a placeholder until real pricing
  * exists. CPU seconds are estimated from the usage readings taken while a sandbox runs.
+ *
+ * An environment is what a sandbox starts with: plain variables, protected ones, secret files, repositories and egress
+ * grants. A protected variable's value is sealed (`secrets.ts`) and never answered: the sandbox gets a placeholder of
+ * its own, and only the sandbox's host is given the value (`protectedTable`, over its link), for its egress proxy to
+ * swap in on requests to the variable's bindings.
  */
 import { computeSchema, type PublicComputeRoutes, type RouteHandlers, type SignedInComputeRoutes } from "@kantel/api";
 import { KantelError } from "@kantel/contracts";
@@ -33,11 +38,13 @@ import {
 import type {
 	BackendCapabilities,
 	BackendEgress,
+	BackendEgressGrant,
 	BackendFileEntry,
 	BootOptions,
 	Placement,
 	SandboxBackend,
 } from "./backend.ts";
+import { createEphemeralSealer, createSealer, type SealedValue, type Sealer, sealedAt } from "./secrets.ts";
 import type {
 	ComputeStore,
 	RunPeriod,
@@ -45,6 +52,10 @@ import type {
 	StoredApiKey,
 	StoredCommand,
 	StoredDeviceLogin,
+	StoredEgressEntry,
+	StoredEnvironment,
+	StoredEnvironmentFile,
+	StoredEnvironmentVariable,
 	StoredHost,
 	StoredInvite,
 	StoredProxy,
@@ -53,6 +64,7 @@ import type {
 	StoredTelemetry,
 	StoredWebhook,
 } from "./store.ts";
+import { UniqueViolation } from "./store.ts";
 import type { TelemetryExporter, TelemetryUsageSample } from "./telemetry.ts";
 import {
 	base64ToBytes,
@@ -74,6 +86,8 @@ type SandboxType = computeSchema.SandboxType;
 type MemberRole = computeSchema.MemberRole;
 type EventType = computeSchema.EventType;
 type EventData = computeSchema.Event["data"];
+/** What decides a sandbox's egress besides its account's proxy settings. */
+type EgressSubject = Pick<StoredSandbox, "environmentId" | "placeholders" | "grants" | "egressRevision">;
 
 /** What an hour of running costs, per type and microVM size. */
 export interface RateTable {
@@ -132,6 +146,52 @@ export interface ComputeServiceOptions {
 	 * everyone may. The hosted gateway keeps its stub, in the stack object's memory, to the deployment's organisation.
 	 */
 	readonly sharedHosts?: (userId: string) => Promise<boolean>;
+	/**
+	 * The deployment's `KANTEL_SECRETS_KEY` (32 bytes, base64), which seals protected variable values and secret files.
+	 * Absent: a memory store seals with a key made at random for the process; a persistent store refuses them
+	 * (`not_supported`), and plain variables still work. Not a key: the service refuses to start.
+	 */
+	readonly secretsKey?: string;
+}
+
+/** A destination a protected value may go to, as the host's proxy is given it: every list present, empty for any. */
+export interface ProtectedBinding {
+	readonly host: string;
+	readonly pathPrefixes: readonly string[];
+	readonly methods: readonly string[];
+}
+
+/** One protected variable as a sandbox's host is given it: the sandbox's placeholder and the value it stands for. */
+export interface ProtectedEntry {
+	readonly placeholder: string;
+	readonly name: string;
+	readonly value: string;
+	readonly bindings: readonly ProtectedBinding[];
+}
+
+/** A sandbox's protected values, the answer to its host's `secrets.fetch`. */
+export interface ProtectedTable {
+	readonly version: number;
+	readonly entries: readonly ProtectedEntry[];
+}
+
+/** One request or connection a host's egress proxy reports for a sandbox: never a value nor a query string. */
+export interface ReportedEgress {
+	readonly at: number;
+	readonly sandboxId: string;
+	readonly method: string;
+	readonly host: string;
+	readonly port: number;
+	readonly path?: string;
+	readonly allowed: boolean;
+	readonly reason?: string;
+	readonly rule?: string;
+	readonly code?: string;
+	readonly swapped: readonly string[];
+	readonly inspected: boolean;
+	readonly status?: number;
+	readonly bytesUp: number;
+	readonly bytesDown: number;
 }
 
 /** What someone kept off the shared hosts is told about a sandbox on one. */
@@ -165,6 +225,17 @@ export interface ComputeService {
 	stillAllowed(grantee: string | undefined, sandboxId: string): Promise<boolean>;
 	/** Reads every running sandbox's usage, keeps it, and answers it for the metrics export. */
 	sampleUsage(): Promise<TelemetryUsageSample[]>;
+	/**
+	 * A sandbox's protected values, opened, for the host that asked over its link (`secrets.fetch`): `undefined` unless
+	 * the sandbox's recorded host is `hostId`, so a host learns only its own sandboxes' values. `unavailable` when a value
+	 * doesn't open.
+	 */
+	protectedTable(hostId: string, sandboxId: string): Promise<ProtectedTable | undefined>;
+	/**
+	 * Keeps what a host's egress proxy reported, in each sandbox's log (the newest `MAX_EGRESS_ENTRIES`). Records for a
+	 * sandbox not on `hostId` are dropped, and a path's query string is never kept.
+	 */
+	recordEgress(hostId: string, records: readonly ReportedEgress[]): Promise<void>;
 	/** Resolves once every lifecycle operation and detached command started so far has ended. */
 	idle(): Promise<void>;
 	/** Kills the detached commands and waits for the work under way. */
@@ -206,6 +277,27 @@ export const DEFAULT_TIMEOUT_MS = 30_000;
 export const AUTOMATIC_SNAPSHOT_TTL_MS = 7 * 24 * 3_600_000;
 /** The usage readings kept per sandbox: a day at one every 5 minutes. */
 export const MAX_SAMPLES = 288;
+/** The egress log entries kept per sandbox, newest first. */
+export const MAX_EGRESS_ENTRIES = 1000;
+/** How many of a placeholder's characters the API shows: `kph_` and 4 more, to tell it apart, never to use it. */
+export const PLACEHOLDER_PREFIX_CHARS = 8;
+/** An environment's limits: its variables, its secret files, and their bytes in all (one record must hold them). */
+export const MAX_ENVIRONMENT_VARIABLES = 200;
+export const MAX_ENVIRONMENT_FILES = 20;
+export const MAX_ENVIRONMENT_FILE_BYTES = 1024 * 1024;
+/** How long a repository's clone may take when a sandbox starts. */
+const CLONE_TIMEOUT_MS = 10 * 60_000;
+/** How many times a boot sends egress changed while it started (or tries again), before it is stopped instead. */
+const BOOT_RECONCILE_ROUNDS = 5;
+/**
+ * How long a gateway has to carry out a stop a sandbox was due for (`stopFor`) once it took it on, before the sweep
+ * takes it as abandoned (its gateway gone) and stops it again.
+ */
+const STOP_LEASE_MS = 5 * 60_000;
+/** Why a sandbox whose host can't enforce its egress grants or protected variables is stopped. */
+const UNENFORCED = "Its host doesn't enforce egress grants or protected variables";
+/** What a host reports when it enforces egress grants and protected variables (`HOST_FEATURES` in @kantel/hosts). */
+const EGRESS_POLICY_FEATURE = "egress-policy";
 /**
  * How long an idempotency key's claim lasts without a renewal: a gateway that dies mid-call frees its key within this,
  * and a retry then does the work. The holder renews it every `IDEMPOTENCY_RENEW_MS` while the work runs.
@@ -345,12 +437,315 @@ const truncate = (text: string): { text: string; truncated: boolean } =>
 		? { text: text.slice(0, MAX_OUTPUT_CHARS), truncated: true }
 		: { text, truncated: false };
 
+// Environments: names, destinations and grants, checked and kept in one form.
+
+const RESERVED_VARIABLES = new Set(["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"]);
+
+/** Whether Kantel keeps a variable's name for itself: `KANTEL_*` and the proxy's, in any case. */
+export function isReservedVariable(name: string): boolean {
+	const upper = name.toUpperCase();
+	return upper.startsWith("KANTEL_") || RESERVED_VARIABLES.has(upper);
+}
+
+function refuseReserved(name: string): void {
+	if (isReservedVariable(name)) {
+		throw new KantelError(
+			"invalid",
+			`${name} is Kantel's own (KANTEL_*, HTTP_PROXY, HTTPS_PROXY and NO_PROXY are); choose another name`,
+		);
+	}
+}
+
+const VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,254}$/;
+
+function checkVariableName(name: string): void {
+	if (!VARIABLE_NAME.test(name)) {
+		throw new KantelError("invalid", "A variable's name is letters, digits and underscores, not starting with a digit");
+	}
+	refuseReserved(name);
+}
+
+const HOST_LABEL = "[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?";
+const HOST_NAME = new RegExp(`^(\\*\\.)?(${HOST_LABEL}\\.)*${HOST_LABEL}$`);
+
+/** A host or a `*.` pattern, in lower case; `invalid` when it is neither. */
+function checkHost(host: string, what: string): string {
+	const lower = host.trim().toLowerCase();
+	if (lower.length > 253 || !HOST_NAME.test(lower)) {
+		throw new KantelError(
+			"invalid",
+			`${what} must be a host, such as api.github.com, or *.example.com for its subdomains`,
+		);
+	}
+	return lower;
+}
+
+function checkPaths(paths: readonly string[] | undefined, what: string): string[] {
+	const checked = unique(paths ?? []);
+	for (const path of checked) {
+		// Never a query: the proxy matches paths only, and a query could carry what shouldn't be kept.
+		if (!path.startsWith("/") || /[?#\s]/.test(path)) {
+			throw new KantelError("invalid", `${what} must start with / and have no query, fragment or spaces`);
+		}
+	}
+	return checked;
+}
+
+const methodsOf = (methods: readonly string[] | undefined): string[] =>
+	unique((methods ?? []).map((method) => method.toUpperCase()));
+
+/** A request body's binding (readonly) or a stored one. */
+type BindingInput = {
+	readonly host: string;
+	readonly pathPrefixes?: readonly string[];
+	readonly methods?: readonly string[];
+};
+
+function normaliseBinding(binding: BindingInput): computeSchema.DestinationBinding {
+	const pathPrefixes = checkPaths(binding.pathPrefixes, "A binding's path prefix");
+	const methods = methodsOf(binding.methods);
+	return {
+		host: checkHost(binding.host, "A binding's host"),
+		...(pathPrefixes.length === 0 ? {} : { pathPrefixes }),
+		...(methods.length === 0 ? {} : { methods }),
+	};
+}
+
+const copyBinding = (binding: computeSchema.DestinationBinding): computeSchema.DestinationBinding => ({
+	host: binding.host,
+	...(binding.pathPrefixes === undefined ? {} : { pathPrefixes: [...binding.pathPrefixes] }),
+	...(binding.methods === undefined ? {} : { methods: [...binding.methods] }),
+});
+
+const GRANT_ID = /^grt_[a-z0-9]{1,32}$/;
+
+/** Grants as given, checked: a well-formed ID is kept (so an edit keeps its grants'), anything else gets a new one. */
+function normaliseGrants(
+	inputs: readonly {
+		readonly id?: string;
+		readonly action: "allow" | "deny";
+		readonly host: string;
+		readonly methods?: readonly string[];
+		readonly paths?: readonly string[];
+	}[],
+): computeSchema.EgressGrant[] {
+	const ids = new Set<string>();
+	return inputs.map((input) => {
+		const id = input.id !== undefined && GRANT_ID.test(input.id) && !ids.has(input.id) ? input.id : randomId("grt", 8);
+		ids.add(id);
+		const methods = methodsOf(input.methods);
+		const paths = checkPaths(input.paths, "A grant's path");
+		return {
+			id,
+			action: input.action,
+			// `*` is every host, for a grant (never a binding: a value can't be allowed everywhere).
+			host: input.host.trim() === "*" ? "*" : checkHost(input.host, "A grant's host"),
+			...(methods.length === 0 ? {} : { methods }),
+			...(paths.length === 0 ? {} : { paths }),
+		};
+	});
+}
+
+const copyGrant = (grant: computeSchema.EgressGrant): computeSchema.EgressGrant => ({
+	id: grant.id,
+	action: grant.action,
+	host: grant.host,
+	...(grant.methods === undefined ? {} : { methods: [...grant.methods] }),
+	...(grant.paths === undefined ? {} : { paths: [...grant.paths] }),
+});
+
+/** A grant as the egress log names it, such as `deny DELETE api.github.com /repos/*`. */
+export function grantRule(grant: computeSchema.EgressGrant): string {
+	return [
+		grant.action,
+		...(grant.methods === undefined || grant.methods.length === 0 ? [] : [grant.methods.join(",")]),
+		grant.host,
+		...(grant.paths === undefined || grant.paths.length === 0 ? [] : [grant.paths.join(",")]),
+	].join(" ");
+}
+
+const backendGrant = (grant: computeSchema.EgressGrant): BackendEgressGrant => ({
+	action: grant.action,
+	host: grant.host,
+	...(grant.methods === undefined || grant.methods.length === 0 ? {} : { methods: [...grant.methods] }),
+	...(grant.paths === undefined || grant.paths.length === 0 ? {} : { paths: [...grant.paths] }),
+	rule: grantRule(grant),
+});
+
+/** A path in the sandbox: absolute, or from its user's home (`~/` or relative). */
+const sandboxPath = (path: string): string => resolvePath(path.startsWith("~/") ? path.slice(2) : path);
+
+const REPO_REF = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$/;
+
+function normaliseRepo(repo: computeSchema.EnvironmentRepo): computeSchema.EnvironmentRepo {
+	let url: URL;
+	try {
+		url = new URL(repo.url);
+	} catch {
+		throw new KantelError("invalid", "A repository's URL is not a URL");
+	}
+	if (url.protocol !== "https:") throw new KantelError("invalid", "A repository's URL must be HTTPS");
+	if (url.username !== "" || url.password !== "") {
+		throw new KantelError(
+			"invalid",
+			"A repository's URL may not carry credentials; keep them in a protected variable bound to its host",
+		);
+	}
+	if (url.search !== "" || url.hash !== "") {
+		throw new KantelError("invalid", "A repository's URL has no query or fragment");
+	}
+	// Starting with a letter or digit, a ref is never taken for one of git's options.
+	if (repo.ref !== undefined && !REPO_REF.test(repo.ref)) {
+		throw new KantelError("invalid", "A repository's ref must be a branch or tag name");
+	}
+	const path = repo.path === undefined ? undefined : sandboxPath(repo.path);
+	if (path === "/") throw new KantelError("invalid", "A repository can't be cloned into /");
+	return {
+		url: url.toString(),
+		...(path === undefined ? {} : { path }),
+		...(repo.ref === undefined ? {} : { ref: repo.ref }),
+	};
+}
+
+const copyRepo = (repo: computeSchema.EnvironmentRepo): computeSchema.EnvironmentRepo => ({
+	url: repo.url,
+	...(repo.path === undefined ? {} : { path: repo.path }),
+	...(repo.ref === undefined ? {} : { ref: repo.ref }),
+});
+
+/** Repositories as text that is the same when they are: for a write's `expected`. */
+const reposKey = (repos: readonly computeSchema.EnvironmentRepo[]): string =>
+	JSON.stringify(repos.map((repo) => [repo.url, repo.path ?? "", repo.ref ?? ""]));
+
+/** Grants as text that is the same when they are: for a write's `expected`. */
+const grantsKey = (
+	grants: readonly {
+		readonly id?: string;
+		readonly action: string;
+		readonly host: string;
+		readonly methods?: readonly string[];
+		readonly paths?: readonly string[];
+	}[],
+): string =>
+	JSON.stringify(
+		grants.map((grant) => [
+			grant.id ?? "",
+			grant.action,
+			grant.host.trim().toLowerCase(),
+			[...(grant.methods ?? [])].map((method) => method.toUpperCase()),
+			[...(grant.paths ?? [])],
+		]),
+	);
+
+/** Refuses a write made from a read of `what` that is out of date: `expected` isn't what is there now. */
+function requireUnchanged(expected: string | undefined, now: string, what: string): void {
+	if (expected !== undefined && expected !== now) {
+		throw new KantelError("conflict", `${what} changed since you read them; read them again and redo the change`);
+	}
+}
+
+/** Where a repository is cloned: its path, or `~/<name>` after the URL's last segment. */
+function clonePath(repo: computeSchema.EnvironmentRepo): string {
+	if (repo.path !== undefined) return repo.path;
+	const last =
+		new URL(repo.url).pathname
+			.split("/")
+			.filter((part) => part !== "")
+			.pop() ?? "";
+	const name = last.replace(/\.git$/, "").replace(/[^A-Za-z0-9._-]/g, "-");
+	return `${HOME}/${name === "" || name.startsWith(".") ? "repo" : name}`;
+}
+
+/** One word for `sh`, quoted. */
+const shellWord = (word: string): string => `'${word.replaceAll("'", `'\\''`)}'`;
+
+/** Whether a binding's host pattern (`example.com`, `*.example.com`) covers a host. */
+function coversHost(pattern: string, host: string): boolean {
+	const want = host.toLowerCase();
+	const have = pattern.toLowerCase();
+	return have.startsWith("*.") ? want.endsWith(have.slice(1)) : want === have;
+}
+
+/**
+ * The protected variable a repository's clone authenticates with: the environment's first one, which this sandbox has a
+ * placeholder for, whose bindings between them let its value go with each request a smart-HTTP clone makes (`GET
+ * <repo>/info/refs`, then `POST <repo>/git-upload-pack`), one binding or two. None: the clone is anonymous. The proxy
+ * still judges every request itself; this only decides whether Git is given the placeholder.
+ */
+export function repoCredential(
+	environment: Pick<StoredEnvironment, "variables">,
+	repo: computeSchema.EnvironmentRepo,
+	placeholders: { readonly [name: string]: string },
+): string | undefined {
+	const url = new URL(repo.url);
+	if (url.port !== "" && url.port !== "443") return undefined;
+	const base = url.pathname.replace(/\/+$/, "");
+	const requests = [
+		{ method: "GET", path: `${base}/info/refs` },
+		{ method: "POST", path: `${base}/git-upload-pack` },
+	];
+	const lets = (binding: computeSchema.DestinationBinding, request: { method: string; path: string }) =>
+		coversHost(binding.host, url.hostname) &&
+		(binding.pathPrefixes === undefined ||
+			binding.pathPrefixes.length === 0 ||
+			binding.pathPrefixes.some((prefix) => request.path.startsWith(prefix))) &&
+		(binding.methods === undefined ||
+			binding.methods.length === 0 ||
+			binding.methods.some((method) => method.toUpperCase() === request.method));
+	return environment.variables.find(
+		(variable) =>
+			variable.protected &&
+			placeholders[variable.name] !== undefined &&
+			requests.every((request) => variable.bindings.some((binding) => lets(binding, request))),
+	)?.name;
+}
+
+/**
+ * `git -c …` arguments that give Git the variable's placeholder as its HTTPS password (user `x-access-token`, which
+ * GitHub and most forges accept with a token), from the clone's environment: a helper, as Git reads no token from
+ * the environment itself, and none of the guest's own helpers. The name is a checked variable name, so plain.
+ */
+export function gitCredentialArgs(name: string): string[] {
+	const helper = `!f() { test "$1" = get || exit 0; echo username=x-access-token; echo "password=$${name}"; }; f`;
+	return ["-c", shellWord("credential.helper="), "-c", shellWord(`credential.helper=${helper}`)];
+}
+
+/** A protected variable's placeholder in one sandbox: `kph_` and 40 characters from the CSPRNG. */
+const newPlaceholder = (): string => randomSecret("kph_", 40);
+
+const variableAad = (environmentId: string, name: string) =>
+	sealedAt("environments", environmentId, `variables.${name}`);
+const fileAad = (environmentId: string, path: string) => sealedAt("environments", environmentId, `files.${path}`);
+
+/** An environment's protected values' next version: it only moves on, and a time keeps it so across a deletion. */
+const nextSecretsVersion = (previous: number, at: number) => Math.max(previous + 1, at);
+
+const clip = (text: string, length: number) => (text.length > length ? text.slice(0, length) : text);
+const whole = (value: unknown): number =>
+	typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+
 /** The compute plane's handlers over a store and a backend. */
 export function createComputeService(options: ComputeServiceOptions): ComputeService {
 	const { store, backend, dispatcher, exporter, now } = options;
 	const rates = options.rates ?? PLACEHOLDER_RATES;
 	const limits = options.limits ?? {};
 	const mode = options.mode ?? "selfhosted";
+	// A key that isn't one throws here, so the deployment fails to start rather than on its first protected value.
+	const sealer: Sealer | undefined =
+		options.secretsKey !== undefined
+			? createSealer(options.secretsKey)
+			: store.persistent === true
+				? undefined
+				: createEphemeralSealer();
+	const requireSealer = (): Sealer => {
+		if (sealer === undefined) {
+			throw new KantelError(
+				"not_supported",
+				"Protected variables and secret files need the deployment's secrets key: set KANTEL_SECRETS_KEY",
+			);
+		}
+		return sealer;
+	};
 
 	/** Each sandbox's queue of lifecycle work; settled promises, so a failure doesn't stop the next. */
 	const pending = new Map<string, Promise<void>>();
@@ -358,6 +753,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const runningCommands = new Map<string, AbortController>();
 	const background = new Set<Promise<unknown>>();
 	const inflight = new Map<string, Promise<unknown>>();
+
+	/** A timestamp after `previous`, for a field that must move on with every write whatever the gateways' clocks say. */
+	const later = (previous: number | undefined) => Math.max(now(), (previous ?? 0) + 1);
 
 	const keepGoing = (work: Promise<unknown>) => {
 		const tracked: Promise<unknown> = work.catch(() => undefined).finally(() => background.delete(tracked));
@@ -563,6 +961,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			stopsAt: sandbox.state === "running" ? sandbox.stopsAt : undefined,
 			latestSnapshotId: sandbox.latestSnapshotId,
 			source: sandbox.source,
+			environmentId: sandbox.environmentId,
+			grants: (sandbox.grants ?? []).map(copyGrant),
 			createdBy: sandbox.createdBy,
 			createdAt: sandbox.createdAt,
 			startedAt: sandbox.startedAt,
@@ -656,22 +1056,414 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		updatedAt: proxy.updatedAt,
 	});
 
-	/** The account's proxy settings for the backend, when they're on: `{ egress }` to spread into a spec. */
-	const egressFor = async (accountId: string): Promise<{ egress?: BackendEgress }> => {
-		const proxy = await store.proxies.get(accountId);
-		if (proxy === undefined || !proxy.enabled) return {};
+	/**
+	 * A sandbox's egress for the backend, `{ egress }` to spread into a spec: the account's proxy settings when they're
+	 * on, with its protected variables' hosts (never a value) and its environment's and its own grants. With the proxy
+	 * off, a sandbox with protected variables or grants still goes through it, open but for the grants, so its
+	 * placeholders are swapped. With neither, nothing.
+	 */
+	const egressFor = async (
+		accountId: string,
+		subject?: EgressSubject,
+	): Promise<{ egress?: BackendEgress; egressRevision?: number }> => {
+		// The revision goes with no egress too: a boot states its egress, none being the host's default, and an update
+		// read before it (an empty egress included) is then older and refused.
+		const revision = subject?.egressRevision === undefined ? {} : { egressRevision: subject.egressRevision };
+		const [proxy, environment] = await Promise.all([
+			store.proxies.get(accountId),
+			subject?.environmentId === undefined ? undefined : store.environments.get(subject.environmentId),
+		]);
+		const names = Object.keys(subject?.placeholders ?? {});
+		const bound = (environment?.variables ?? []).filter(
+			(variable) => variable.protected && variable.sealed !== undefined && names.includes(variable.name),
+		);
+		const grants = [...(environment?.grants ?? []), ...(subject?.grants ?? [])];
+		const on = proxy?.enabled;
+		if (!on && bound.length === 0 && grants.length === 0) return revision;
+		const base: BackendEgress = proxy?.enabled
+			? {
+					defaultAction: proxy.defaultAction,
+					allow: [...proxy.allow],
+					deny: [...proxy.deny],
+					...(proxy.upstream === undefined
+						? {}
+						: { upstream: { url: proxy.upstream.url, headers: { ...proxy.upstreamHeaders } } }),
+					attribution: proxy.attribution,
+				}
+			: { defaultAction: "allow", allow: [], deny: [], attribution: false };
 		return {
 			egress: {
-				defaultAction: proxy.defaultAction,
-				allow: [...proxy.allow],
-				deny: [...proxy.deny],
-				...(proxy.upstream === undefined
+				...base,
+				...(environment === undefined || bound.length === 0
 					? {}
-					: { upstream: { url: proxy.upstream.url, headers: { ...proxy.upstreamHeaders } } }),
-				attribution: proxy.attribution,
+					: {
+							protected: {
+								version: environment.secretsVersion,
+								intercept: unique(bound.flatMap((variable) => variable.bindings.map((binding) => binding.host))),
+							},
+						}),
+				...(grants.length === 0 ? {} : { grants: grants.map(backendGrant) }),
+				...(subject?.egressRevision === undefined ? {} : { revision: subject.egressRevision }),
 			},
+			...revision,
 		};
 	};
+
+	/**
+	 * Moves a sandbox's `egressRevision` on, after a change to what its egress is made of has been written: an egress
+	 * read after this has the change in it and a later revision than any read before, which its host then ignores.
+	 */
+	const bumpEgress = (sandboxId: string) =>
+		patchSandbox(sandboxId, (current) => ({ ...current, egressRevision: later(current.egressRevision) }));
+
+	/** A refusal by a host that can't enforce egress grants or protected variables. */
+	const unenforceable = (error: unknown) => error instanceof KantelError && error.code === "not_supported";
+
+	/**
+	 * Takes a starting or running sandbox out of service because its egress, as stored, isn't what its host enforces
+	 * (its host lacks the feature, or a boot couldn't get its egress there). It is first made due to stop now, durably
+	 * (`stopsAt`, with `stopFor` the reason), so that whatever happens next it is stopped: then it is stopped as the
+	 * sweep stops a sandbox past its time, and a stop that doesn't reach its host (its link lost) leaves it running and
+	 * due, for the sweep to stop once its host is connected (and one whose gateway went before it was carried out, once
+	 * its claim on it lapses, `STOP_LEASE_MS`).
+	 *
+	 * Only for what was found unenforceable: the sandbox in the state and at the `egressRevision` the refused delivery
+	 * (or the boot) was for. A newer egress (a clear, a boot's fresh revision) or another lifecycle step since leaves it
+	 * to its own delivery, and it answers `false`. A boot gives its `placement`, written with the intent, so the stop
+	 * and its retries know the host. `wait` awaits the stop (never from inside the sandbox's own queued work, which the
+	 * stop queues behind).
+	 */
+	async function enforceStop(
+		sandboxId: string,
+		reason: string,
+		wait: boolean,
+		evaluated: Pick<StoredSandbox, "state" | "egressRevision">,
+		placement?: Placement,
+	): Promise<boolean> {
+		const at = now();
+		const due = await patchSandbox(sandboxId, (current) =>
+			current.state === evaluated.state && current.egressRevision === evaluated.egressRevision
+				? {
+						...current,
+						...(placement === undefined
+							? {}
+							: {
+									hostId: placement.hostId,
+									resources: placement.resources ?? current.resources,
+									capabilities: placement.capabilities,
+								}),
+						stopsAt: at,
+						stopFor: reason,
+					}
+				: undefined,
+		);
+		if (due === undefined) return false;
+		const still = (current: StoredSandbox) => current.stopFor === reason;
+		const began = await beginStop(due, false, reason, undefined, still, true).catch(() => undefined);
+		if (began !== undefined) {
+			if (wait) await began.work.catch(() => undefined);
+			else keepGoing(began.work);
+		}
+		return true;
+	}
+
+	/** Records that a sandbox's backend took its egress at `revision`: `egressApplied` only moves on. */
+	const markApplied = (sandboxId: string, revision: number | undefined) =>
+		revision === undefined
+			? Promise.resolve(undefined)
+			: patchSandbox(sandboxId, (current) =>
+					(current.egressApplied ?? Number.NEGATIVE_INFINITY) >= revision
+						? undefined
+						: { ...current, egressApplied: revision },
+				);
+
+	/**
+	 * Sends a sandbox (as just read) its egress as it is now, and records the revision once its backend has taken it.
+	 * What its egress is made of is read after the sandbox, so the revision sent is never later than what was read with
+	 * it. A failure leaves `egressApplied` behind, for the sweep to send again.
+	 */
+	async function deliverEgress(sandbox: StoredSandbox): Promise<void> {
+		const update = backend.updateEgress?.bind(backend);
+		if (update === undefined) return;
+		const { egress } = await egressFor(sandbox.accountId, sandbox);
+		await update(sandbox.id, egress, sandbox.egressRevision);
+		await markApplied(sandbox.id, sandbox.egressRevision);
+	}
+
+	/** How many sends of each sandbox's egress are under way, by ID: the sweep leaves those sandboxes be. */
+	const delivering = new Map<string, number>();
+
+	/**
+	 * Sends each running sandbox its egress as it is now, to the backend, where it can take it while the sandbox runs:
+	 * the sandbox is read again first. A starting one is left to its boot, which reconciles before it runs; one whose
+	 * update fails (its host away) is sent again by the sweep, as it is then.
+	 */
+	const pushEgress = (sandboxes: readonly StoredSandbox[]) => {
+		if (backend.updateEgress === undefined) return;
+		for (const sandbox of sandboxes) {
+			delivering.set(sandbox.id, (delivering.get(sandbox.id) ?? 0) + 1);
+			const work = (async () => {
+				const current = await store.sandboxes.get(sandbox.id);
+				if (current === undefined || current.state !== "running") return;
+				try {
+					await deliverEgress(current);
+				} catch (error) {
+					if (!unenforceable(error)) throw error;
+					// Its host can't enforce what its egress now holds (a grant written as it was placed on a host without the
+					// feature): it doesn't run on without it. Stopped, its disk kept; it starts again only where it is enforced.
+					await enforceStop(current.id, UNENFORCED, true, current);
+				}
+			})();
+			keepGoing(
+				work.finally(() => {
+					const left = (delivering.get(sandbox.id) ?? 1) - 1;
+					if (left > 0) delivering.set(sandbox.id, left);
+					else delivering.delete(sandbox.id);
+				}),
+			);
+		}
+	};
+
+	/** The sandboxes made from an environment that run, or are starting (and will reconcile when they run). */
+	const liveFrom = async (environmentId: string) =>
+		(await store.sandboxes.list({ environmentId })).filter(
+			(sandbox) => sandbox.state === "running" || sandbox.state === "starting",
+		);
+
+	/**
+	 * Tells the hosts of an environment's running sandboxes that its protected values changed, so they drop what they
+	 * hold and fetch them again, and gives them its egress as it is now (the hosts to intercept, the grants). A starting
+	 * one's revision moves on too, so its boot sees the change and reconciles.
+	 */
+	async function pushEnvironment(environmentId: string, version: number | undefined): Promise<void> {
+		const live = await liveFrom(environmentId);
+		const bumped = (await Promise.all(live.map((sandbox) => bumpEgress(sandbox.id)))).filter(
+			(sandbox): sandbox is StoredSandbox => sandbox !== undefined,
+		);
+		const running = bumped.filter((sandbox) => sandbox.state === "running");
+		const updateSecrets = backend.updateSecrets?.bind(backend);
+		if (version !== undefined && updateSecrets !== undefined) {
+			for (const sandbox of running) keepGoing(updateSecrets(sandbox.id, version));
+		}
+		pushEgress(running);
+	}
+
+	/**
+	 * Refuses a change that needs its sandboxes' hosts to enforce egress grants or protected variables when one of them
+	 * says it doesn't: it would drop them and carry on, and the change would show as applied. A sandbox on no host yet
+	 * is placed only where they are enforced.
+	 */
+	async function requireEnforcing(sandboxes: readonly StoredSandbox[]): Promise<void> {
+		const placed = sandboxes.filter(
+			(sandbox) => sandbox.hostId !== undefined && (sandbox.state === "running" || sandbox.state === "starting"),
+		);
+		if (placed.length === 0) return;
+		const { hosts } = await backend.capabilities();
+		for (const sandbox of placed) {
+			const host = hosts.find((each) => each.id === sandbox.hostId);
+			// A backend that names no features (the stub) enforces what it is given however its sandboxes run.
+			if (host?.features === undefined || host.features.includes(EGRESS_POLICY_FEATURE)) continue;
+			throw new KantelError(
+				"not_supported",
+				`The sandbox ${sandbox.name}'s host (${host.name}) doesn't enforce egress grants or protected variables; upgrade its kantel-host first`,
+			);
+		}
+	}
+
+	const variableView = (variable: StoredEnvironmentVariable): computeSchema.EnvironmentVariable => ({
+		name: variable.name,
+		protected: variable.protected,
+		// Never a protected one's: it is kept sealed, and only its sandboxes' hosts are given it.
+		...(variable.protected || variable.value === undefined ? {} : { value: variable.value }),
+		bindings: variable.protected ? variable.bindings.map(copyBinding) : [],
+		updatedAt: variable.updatedAt,
+	});
+
+	const fileView = (file: StoredEnvironmentFile): computeSchema.EnvironmentFile => ({
+		path: file.path,
+		mode: file.mode,
+		sizeBytes: file.sizeBytes,
+		updatedAt: file.updatedAt,
+	});
+
+	async function environmentView(environment: StoredEnvironment): Promise<computeSchema.Environment> {
+		const made = await store.sandboxes.list({ environmentId: environment.id });
+		return {
+			id: environment.id,
+			accountId: environment.accountId,
+			name: environment.name,
+			...(environment.description === undefined ? {} : { description: environment.description }),
+			variables: environment.variables.map(variableView),
+			files: environment.files.map(fileView),
+			repos: environment.repos.map(copyRepo),
+			grants: environment.grants.map(copyGrant),
+			sandboxCount: made.filter((sandbox) => sandbox.state !== "deleted").length,
+			createdAt: environment.createdAt,
+			updatedAt: environment.updatedAt,
+		};
+	}
+
+	const egressEntryView = (entry: StoredEgressEntry): computeSchema.EgressEntry => ({
+		id: entry.id,
+		at: entry.at,
+		method: entry.method,
+		host: entry.host,
+		port: entry.port,
+		...(entry.path === undefined ? {} : { path: entry.path }),
+		decision: entry.decision,
+		...(entry.reason === undefined ? {} : { reason: entry.reason }),
+		...(entry.rule === undefined ? {} : { rule: entry.rule }),
+		...(entry.code === undefined ? {} : { code: entry.code }),
+		swapped: [...entry.swapped],
+		inspected: entry.inspected,
+		...(entry.status === undefined ? {} : { status: entry.status }),
+		bytesUp: entry.bytesUp,
+		bytesDown: entry.bytesDown,
+	});
+
+	/** A sandbox's egress log, newest first. */
+	async function egressLog(sandboxId: string): Promise<StoredEgressEntry[]> {
+		const entries = await store.egress.list({ sandboxId });
+		// Oldest first by arrival from the store; newest first by time, and the later arrival first of two at one time.
+		return entries
+			.map((entry, index) => ({ entry, index }))
+			.sort((a, b) => b.entry.at - a.entry.at || b.index - a.index)
+			.map(({ entry }) => entry);
+	}
+
+	async function sandboxEgressView(sandbox: StoredSandbox, limit: number): Promise<computeSchema.SandboxEgress> {
+		const [environment, log] = await Promise.all([
+			sandbox.environmentId === undefined ? undefined : store.environments.get(sandbox.environmentId),
+			egressLog(sandbox.id),
+		]);
+		const protectedVariables: computeSchema.SandboxProtectedVariable[] = [];
+		for (const [name, placeholder] of Object.entries(sandbox.placeholders ?? {})) {
+			const variable = environment?.variables.find((each) => each.name === name && each.protected);
+			// One whose variable is gone, or plain now, no longer resolves: it isn't protected any more.
+			if (variable === undefined) continue;
+			protectedVariables.push({
+				name,
+				placeholderPrefix: placeholder.slice(0, PLACEHOLDER_PREFIX_CHARS),
+				bindings: variable.bindings.map(copyBinding),
+			});
+		}
+		return {
+			sandboxId: sandbox.id,
+			sandboxName: sandbox.name,
+			accountId: sandbox.accountId,
+			...(environment === undefined ? {} : { environment: { id: environment.id, name: environment.name } }),
+			protectedVariables,
+			environmentGrants: (environment?.grants ?? []).map(copyGrant),
+			grants: (sandbox.grants ?? []).map(copyGrant),
+			entries: log.slice(0, limit).map(egressEntryView),
+		};
+	}
+
+	/** An environment the caller may act on with `scope`; `not_found` when it doesn't exist or isn't in their accounts. */
+	async function environmentFor(
+		principal: Principal,
+		environmentId: string,
+		scope: computeSchema.ApiKeyScope,
+	): Promise<StoredEnvironment> {
+		const environment = await store.environments.get(environmentId);
+		if (environment === undefined) throw notFound("environment");
+		const role = await roleIn(store, principal, environment.accountId);
+		if (role === undefined) throw notFound("environment");
+		requireScope(principal, scope, role);
+		return environment;
+	}
+
+	/** The environment a create names in an account: an environment's ID, or its name. */
+	async function environmentIn(accountId: string, ref: string): Promise<StoredEnvironment> {
+		const byId = await store.environments.get(ref);
+		if (byId !== undefined && byId.accountId === accountId) return byId;
+		const [byName] = await store.environments.list({ accountId, name: ref });
+		if (byName === undefined) throw notFound(`environment ${ref}`);
+		return byName;
+	}
+
+	const nameTaken = (name: string) => new KantelError("conflict", `The account has an environment named ${name}`);
+
+	/**
+	 * Makes a write that may give an environment `name`. The store refuses one that would give a second environment of
+	 * the account a name (`UniqueViolation`, a unique index in SQL), in the write itself: a create or rename, on any
+	 * gateway, however long after it read, never commits a name another holds, and nothing is left to recover if it
+	 * dies part-way. The refusal is `conflict`.
+	 */
+	async function naming<T>(name: string, write: () => Promise<T>): Promise<T> {
+		try {
+			return await write();
+		} catch (error) {
+			if (error instanceof UniqueViolation) throw nameTaken(name);
+			throw error;
+		}
+	}
+
+	/** Changes an environment with `update`, answering it as written; `not_found` when it went meanwhile. */
+	async function changeEnvironment(
+		environmentId: string,
+		change: (current: StoredEnvironment) => StoredEnvironment,
+	): Promise<StoredEnvironment> {
+		const changed = await store.environments.update(environmentId, change);
+		if (changed === undefined) throw notFound("environment");
+		return changed;
+	}
+
+	/**
+	 * Writes an environment's secret files into a sandbox that has just started, then clones its repositories (through
+	 * the sandbox's egress proxy, so a protected token bound to the repository's host is swapped in). A failure is an
+	 * event on the sandbox, which keeps running: what failed is named, never a file's contents.
+	 *
+	 * `authorised` is the environment as the create read it, when it checked that its caller may run commands (a clone
+	 * runs with the sandbox's env, which that caller chose): its repositories are cloned, not any added since, which no
+	 * one's authority covers. The files are the environment's as it is now (a rotation meanwhile is taken).
+	 */
+	async function provision(sandbox: StoredSandbox, authorised: StoredEnvironment): Promise<void> {
+		const latest = await store.environments.get(authorised.id);
+		if (latest === undefined) return;
+		const environment = { ...latest, repos: authorised.repos };
+		const degraded = (reason: string) =>
+			emit("sandbox.degraded", sandbox.accountId, { sandbox, data: { reason } }).catch(() => undefined);
+		for (const file of environment.files) {
+			try {
+				const bytes = await requireSealer().open(file.sealed, fileAad(environment.id, file.path));
+				await backend.writeFile(sandbox.id, file.path, bytes, file.mode);
+			} catch (error) {
+				await degraded(`The environment's secret file ${file.path} wasn't written: ${messageOf(error)}`);
+			}
+		}
+		for (const repo of environment.repos) {
+			const path = clonePath(repo);
+			// Git reads no token from the environment: a credential helper answers with the placeholder of the protected
+			// variable bound to the repository, which the host's proxy swaps for the token inside Basic auth.
+			const credential = repoCredential(environment, repo, sandbox.placeholders ?? {});
+			const command = [
+				"git",
+				...(credential === undefined ? [] : gitCredentialArgs(credential)),
+				"clone --depth 1",
+				...(repo.ref === undefined ? [] : [`--branch ${shellWord(repo.ref)}`]),
+				"--",
+				shellWord(repo.url),
+				shellWord(path),
+			].join(" ");
+			try {
+				const result = await backend.exec(sandbox.id, {
+					command,
+					// No terminal to ask on: a repository that wants a login fails at once, saying so.
+					env: { ...sandbox.env, GIT_TERMINAL_PROMPT: "0" },
+					timeoutMs: CLONE_TIMEOUT_MS,
+				});
+				if (result.exitCode !== 0 || result.timedOut) {
+					const why = result.timedOut
+						? "it took too long"
+						: clip(result.stderr.trim(), 500) || `exit ${result.exitCode}`;
+					await degraded(`The environment's repository ${repo.url} wasn't cloned into ${path}: ${why}`);
+				}
+			} catch (error) {
+				await degraded(`The environment's repository ${repo.url} wasn't cloned into ${path}: ${messageOf(error)}`);
+			}
+		}
+	}
 
 	const inviteView = (invite: StoredInvite, code?: string): computeSchema.Invite => ({
 		id: invite.id,
@@ -813,6 +1605,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			startedAt: running && !wasRunning ? at : sandbox.startedAt,
 			stoppedAt: state === "stopped" || state === "paused" ? at : sandbox.stoppedAt,
 			reason: extra.reason,
+			// A stop it was due for is done with once it boots again.
+			...(state === "starting" ? { stopFor: undefined } : {}),
 		};
 	}
 
@@ -946,6 +1740,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		sandboxId: string,
 		run: () => Promise<Placement>,
 		written?: StoredSandbox,
+		/** The `egressRevision` of the egress `run` sent, read before it. */
+		sent?: { readonly egressRevision: number | undefined },
 	): Promise<StoredSandbox | undefined> {
 		let placement: Placement;
 		try {
@@ -953,21 +1749,52 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		} catch (error) {
 			return fail(sandboxId, error, "starting");
 		}
-		const result = await transition(
-			sandboxId,
-			"starting",
-			(sandbox) =>
-				withState(sandbox, "running", {
-					hostId: placement.hostId,
-					resources: placement.resources ?? sandbox.resources,
-					capabilities: placement.capabilities,
-					health: "ok",
-				}),
-			undefined,
-			written,
-		);
+		// The revision its backend has: what the boot sent, or what reconciling sent since.
+		let applied = sent?.egressRevision;
+		const toRunning = (sandbox: StoredSandbox) =>
+			withState(sandbox, "running", {
+				hostId: placement.hostId,
+				resources: placement.resources ?? sandbox.resources,
+				capabilities: placement.capabilities,
+				health: "ok",
+				...(applied === undefined || (sandbox.egressApplied ?? Number.NEGATIVE_INFINITY) >= applied
+					? {}
+					: { egressApplied: applied }),
+			});
+		const reconciles = sent !== undefined && backend.updateEgress !== undefined;
+		// Running only if its egress is what its backend has (what the boot sent, at first), on every move to running:
+		// the usual case, in one write.
+		const upToDate = (sandbox: StoredSandbox) => !reconciles || sandbox.egressRevision === applied;
+		let result = await transition(sandboxId, "starting", toRunning, upToDate, written);
+		// What its egress is made of changed while it started (a grant, its environment, the proxy settings): a change
+		// skips a starting sandbox, so it is sent now, before it is running, and again for each change made while that
+		// was sent. One whose egress can't be got there (its host can't enforce it, or it fails or keeps changing for
+		// every round) never runs: it is stopped, as `enforceStop` does, never given up on.
+		for (let round = 0; "lost" in result && result.lost.state === "starting"; round++) {
+			const lost = result.lost;
+			if (round >= BOOT_RECONCILE_ROUNDS) {
+				const reason = "Its egress couldn't be applied to it while it started";
+				if (await enforceStop(sandboxId, reason, false, lost, placement)) return undefined;
+				result = await transition(sandboxId, "starting", toRunning, upToDate);
+				continue;
+			}
+			try {
+				await deliverEgress(lost);
+				applied = lost.egressRevision;
+			} catch (error) {
+				// Refused for the egress it has still: stopped. One changed since is sent next round.
+				if (unenforceable(error) && (await enforceStop(sandboxId, UNENFORCED, false, lost, placement))) {
+					return undefined;
+				}
+				// A call that didn't get through: tried again, a moment on.
+				await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** round));
+			}
+			result = await transition(sandboxId, "starting", toRunning, upToDate);
+		}
 		if (!("moved" in result)) return undefined;
 		const next = result.moved;
+		// Changed again while that was sent: now it runs, an ordinary update.
+		if (sent !== undefined && next.egressRevision !== applied) pushEgress([next]);
 		await emit("sandbox.running", next.accountId, { sandbox: next, data: { previousState: "starting" } });
 		return next;
 	}
@@ -1001,7 +1828,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		still?: (current: StoredSandbox) => boolean,
 		handBack = false,
 	): Promise<{ readonly work: Promise<void> }> {
-		const began = await transition(sandbox.id, sandbox.state, (current) => withState(current, "stopping"), still);
+		const began = await transition(
+			sandbox.id,
+			sandbox.state,
+			(current) => withState(current, "stopping", current.stopFor === undefined ? {} : { stopClaimedAt: now() }),
+			still,
+		);
 		if (!("moved" in began)) throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
 		const work = track([sandbox.id], async () => {
 			try {
@@ -1781,14 +2613,42 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return once(principal, "createSandbox", idempotencyKey, async () => {
 				const from = body.from === undefined ? undefined : await snapshotFrom(principal, account.id, body.from);
 				const type = body.type ?? from?.sandboxType ?? "isolate";
-				// The backend's hosts, the host records and the account's proxy settings, read at once: one round trip, not
-				// one each. The backend's hosts are read once, for the checks below and the host records alike.
+				const environment =
+					body.environment === undefined ? undefined : await environmentIn(account.id, body.environment);
+				// Its repositories are cloned with a command that runs with the env this call chooses (a shell reads functions
+				// from it): only a caller that may run commands may have them cloned.
+				if (environment !== undefined && environment.repos.length > 0) requireScope(principal, "exec", role);
+				const protectedNames = new Set(
+					(environment?.variables ?? []).filter((variable) => variable.protected).map((variable) => variable.name),
+				);
+				for (const name of Object.keys(body.env ?? {})) {
+					refuseReserved(name);
+					if (protectedNames.has(name)) {
+						throw new KantelError("invalid", `${name} is a protected variable of the environment; leave it out of env`);
+					}
+				}
+				// The sandbox's own placeholder for each protected variable, minted now and never changed (a rotation changes
+				// the value it stands for). Its env: the environment's plain variables, then the placeholders, then its own.
+				const placeholders: { [name: string]: string } = {};
+				for (const name of protectedNames) placeholders[name] = newPlaceholder();
+				const env: { [name: string]: string } = {};
+				for (const variable of environment?.variables ?? []) {
+					if (!variable.protected && variable.value !== undefined) env[variable.name] = variable.value;
+				}
+				Object.assign(env, placeholders, body.env);
+				const egressRevision = now();
+				const subject: EgressSubject = {
+					...(environment === undefined ? {} : { environmentId: environment.id }),
+					placeholders,
+					grants: [],
+					egressRevision,
+				};
+				// The backend's hosts and the host records, read at once: one round trip, not one each. The backend's hosts
+				// are read once, for the checks below and the host records alike.
 				const read = backend.capabilities();
 				const known = ensureHosts(read);
-				const egressRead = egressFor(account.id);
-				// A check below may refuse the call before these are awaited.
+				// A check below may refuse the call before this is awaited.
 				known.catch(() => undefined);
-				egressRead.catch(() => undefined);
 				const capabilities = await read;
 				if (!capabilities.types.includes(type)) throw new KantelError("unavailable", `No host runs ${type} sandboxes`);
 				if (type === "isolate" && body.size !== undefined) throw new KantelError("invalid", "Isolates have no size");
@@ -1826,7 +2686,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					createdBy: actorOf(principal),
 					createdAt: now(),
 					ownerUserId: principal.userId,
-					env: { ...body.env },
+					env,
+					...(environment === undefined ? {} : { environmentId: environment.id }),
+					grants: [],
+					placeholders,
+					egressRevision,
 					hostLabels,
 					runs: [],
 					samples: [],
@@ -1834,10 +2698,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				};
 				// The record before its event: who may see an event is decided by its sandbox, so the event is never stored
 				// (or delivered) before the sandbox is.
-				const [, egress] = await Promise.all([store.sandboxes.put(sandbox), egressRead]);
-				await emit("sandbox.created", account.id, { sandbox, data: { actor: actorOf(principal) } });
-				const work = track([sandbox.id], () =>
-					boot(
+				await store.sandboxes.put(sandbox);
+				// Its egress is read once it is stored: a change to its environment or the proxy settings from then on moves its
+				// revision on (and its boot reconciles), which one read before couldn't promise. Read with the event's write.
+				const [egress] = await Promise.all([
+					egressFor(account.id, subject),
+					emit("sandbox.created", account.id, { sandbox, data: { actor: actorOf(principal) } }),
+				]);
+				const work = track([sandbox.id], async () => {
+					const booted = await boot(
 						sandbox.id,
 						() =>
 							backend.create({
@@ -1853,8 +2722,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								...egress,
 							}),
 						sandbox,
-					),
-				);
+						{ egressRevision },
+					);
+					// Queued with the boot, so a call after the create (an exec, a stop) finds the files and repositories there.
+					if (booted?.state === "running" && environment !== undefined) {
+						// As read when the call was authorised, not as it may be now.
+						await provision(booted, environment).catch(() => undefined);
+					}
+					return booted;
+				});
 				if (body.wait !== true) {
 					keepGoing(work);
 					// As written: it is starting.
@@ -1955,7 +2831,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					await mayShare(principal),
 				);
 				const forks: StoredSandbox[] = [];
+				// One for them all, as their egress is read once for them all.
+				const egressRevision = now();
 				for (let index = 0; index < count; index++) {
+					// Fresh placeholders: the parent's may be on the copied disk, and they stand for nothing in the fork.
+					const placeholders: { [name: string]: string } = {};
+					const env: { [name: string]: string } = { ...current.env };
+					for (const [variable, parent] of Object.entries(current.placeholders ?? {})) {
+						const own = newPlaceholder();
+						placeholders[variable] = own;
+						if (env[variable] === parent) env[variable] = own;
+					}
 					const name =
 						body.name === undefined
 							? `${current.name}-fork-${randomSlug(4)}`
@@ -1979,7 +2865,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						createdBy: actorOf(principal),
 						createdAt: now(),
 						ownerUserId: principal.userId,
-						env: { ...current.env },
+						env,
+						...(current.environmentId === undefined ? {} : { environmentId: current.environmentId }),
+						grants: (current.grants ?? []).map(copyGrant),
+						placeholders,
+						egressRevision,
 						hostLabels: { ...current.hostLabels },
 						runs: [],
 						samples: [],
@@ -1990,33 +2880,39 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					await store.sandboxes.put(fork);
 					await emit("sandbox.created", fork.accountId, { sandbox: fork, data: { actor: actorOf(principal) } });
 				}
-				// Queued behind the source too, so it isn't stopped while its live disk is copied.
-				const egress = await egressFor(current.accountId);
+				// Queued behind the source too, so it isn't stopped while its live disk is copied. The forks' egress is alike:
+				// their placeholders differ, but not the variables they stand for.
+				const egress = await egressFor(current.accountId, forks[0] ?? current);
 				// One target at a time, each placement recorded as it lands: a backend makes a batch's targets one by one, so
 				// a failure part-way leaves the earlier ones made, and they must keep their host (a start or recovery uses that
 				// machine) rather than be taken for never made (`neverPlaced`).
 				const work = track([current.id, ...forks.map((fork) => fork.id)], async () => {
 					for (const fork of forks) {
-						await boot(fork.id, async () => {
-							const [placement] = await backend.fork(
-								{ sandboxId: current.id, ...(ref === undefined ? {} : { snapshot: ref }) },
-								[
-									{
-										sandboxId: fork.id,
-										accountId: fork.accountId,
-										type: fork.type,
-										subdomain: fork.subdomain,
-										size: fork.size,
-										image: fork.image,
-										env: fork.env,
-										eligibleHosts: hosts,
-										...egress,
-									},
-								],
-							);
-							if (placement === undefined) throw new KantelError("unavailable", "The fork was not placed");
-							return placement;
-						});
+						await boot(
+							fork.id,
+							async () => {
+								const [placement] = await backend.fork(
+									{ sandboxId: current.id, ...(ref === undefined ? {} : { snapshot: ref }) },
+									[
+										{
+											sandboxId: fork.id,
+											accountId: fork.accountId,
+											type: fork.type,
+											subdomain: fork.subdomain,
+											size: fork.size,
+											image: fork.image,
+											env: fork.env,
+											eligibleHosts: hosts,
+											...egress,
+										},
+									],
+								);
+								if (placement === undefined) throw new KantelError("unavailable", "The fork was not placed");
+								return placement;
+							},
+							undefined,
+							{ egressRevision },
+						);
 					}
 				});
 				if (body.wait === true) await work;
@@ -2042,20 +2938,27 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				await mayShare(principal),
 			);
 			const fromSnapshot = await latestRef(current);
+			// A boot's egress is read afresh, so it gets a revision of its own: an update read before (from when it last ran,
+			// say, still being retried) never equals it, and loses.
 			const began = await transition(current.id, current.state, (latest) =>
-				withState(latest, "starting", { ports: [] }),
+				withState(latest, "starting", { ports: [], egressRevision: later(latest.egressRevision) }),
 			);
 			if (!("moved" in began)) throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
 			const starting = began.moved;
-			const egress = await egressFor(current.accountId);
+			// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
+			const egress = await egressFor(starting.accountId, starting);
 			keepGoing(
 				track([current.id], () =>
-					boot(current.id, () =>
-						bootAgain(
-							current,
-							{ fromSnapshot, env: current.env, eligibleHosts: hosts, size: current.size, ...egress },
-							(options) => backend.recover(current.id, options),
-						),
+					boot(
+						current.id,
+						() =>
+							bootAgain(
+								current,
+								{ fromSnapshot, env: current.env, eligibleHosts: hosts, size: current.size, ...egress },
+								(options) => backend.recover(current.id, options),
+							),
+						undefined,
+						{ egressRevision: starting.egressRevision },
 					),
 				),
 			);
@@ -2662,16 +3565,283 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				updatedAt: now(),
 			};
 			await store.proxies.put(settings);
-			// Running sandboxes take them now where the backend can; the rest when they next boot.
-			const update = backend.updateEgress?.bind(backend);
-			if (update !== undefined) {
-				const { egress } = await egressFor(account.id);
-				const running = (await store.sandboxes.list({ accountId: account.id })).filter(
-					(sandbox) => sandbox.state === "running",
+			// Running sandboxes take them now where the backend can; the rest when they next boot. Each with its own
+			// protected hosts and grants.
+			if (backend.updateEgress !== undefined) {
+				// Each one's revision moves on first, so a boot under way reconciles, and an egress read before is ignored.
+				const live = (await store.sandboxes.list({ accountId: account.id })).filter(
+					(sandbox) => sandbox.state === "running" || sandbox.state === "starting",
 				);
-				for (const sandbox of running) keepGoing(update(sandbox.id, egress));
+				const bumped = await Promise.all(live.map((sandbox) => bumpEgress(sandbox.id)));
+				pushEgress(
+					bumped.filter((sandbox): sandbox is StoredSandbox => sandbox !== undefined && sandbox.state === "running"),
+				);
 			}
 			return proxyView(settings);
+		},
+
+		// Environments, and sandboxes' egress.
+
+		listEnvironments: async (principal, { query }) => {
+			const { account, role } = await actingAccount(store, principal, query.account);
+			requireScope(principal, "account:read", role);
+			const environments = await store.environments.list({ accountId: account.id });
+			return { items: await Promise.all(environments.map(environmentView)) };
+		},
+
+		createEnvironment: async (principal, { body }) => {
+			const { account, role } = await actingAccount(store, principal, body.account);
+			requireScope(principal, "account:admin", role);
+			const environmentId = randomId("env", 8);
+			const at = now();
+			const environment: StoredEnvironment = {
+				id: environmentId,
+				accountId: account.id,
+				name: body.name,
+				...(body.description === undefined || body.description === "" ? {} : { description: body.description }),
+				variables: [],
+				files: [],
+				repos: [],
+				grants: [],
+				secretsVersion: 1,
+				createdAt: at,
+				updatedAt: at,
+			};
+			// An insert: its ID is new, so it never overwrites; the name is the store's to refuse.
+			await naming(body.name, () => store.environments.insert(environment));
+			return environmentView(environment);
+		},
+
+		getEnvironment: async (principal, { params }) =>
+			environmentView(await environmentFor(principal, params.environmentId, "account:read")),
+
+		updateEnvironment: async (principal, { params, body }) => {
+			const environment = await environmentFor(principal, params.environmentId, "account:admin");
+			// Whatever name it writes (a new one, or the one it read, which it may no longer have), the store refuses it if
+			// another environment holds it by then.
+			const changed = await naming(body.name ?? environment.name, () =>
+				changeEnvironment(environment.id, (current) => {
+					const { description: _kept, ...rest } = current;
+					const description = body.description === undefined ? current.description : body.description;
+					return {
+						...rest,
+						name: body.name ?? current.name,
+						...(description === undefined || description === "" ? {} : { description }),
+						updatedAt: later(current.updatedAt),
+					};
+				}),
+			);
+			return environmentView(changed);
+		},
+
+		deleteEnvironment: async (principal, { params }) => {
+			const environment = await environmentFor(principal, params.environmentId, "account:admin");
+			await store.environments.delete(environment.id);
+			// Its sandboxes keep their env and files; their placeholders stop resolving at once, and its grants go.
+			await pushEnvironment(environment.id, nextSecretsVersion(environment.secretsVersion, now()));
+			return undefined;
+		},
+
+		setEnvironmentVariable: async (principal, { params, body }) => {
+			const environment = await environmentFor(principal, params.environmentId, "account:admin");
+			const name = params.name;
+			checkVariableName(name);
+			if (body.value === "" && body.protected === true) {
+				throw new KantelError("invalid", "A protected variable's value can't be empty");
+			}
+			const bindingsGiven = body.bindings?.map(normaliseBinding);
+			if ((body.protected ?? environment.variables.find((variable) => variable.name === name)?.protected) === true) {
+				await requireEnforcing(await liveFrom(environment.id));
+			}
+			// A value given is sealed up front (sealing is async; the change below isn't) when it will be protected, as far as
+			// the read above can tell; the change checks it again against the variable as it is.
+			const sealsUpFront =
+				body.value !== undefined &&
+				body.value !== "" &&
+				(body.protected ?? environment.variables.find((variable) => variable.name === name)?.protected) === true;
+			const sealedGiven = sealsUpFront
+				? await requireSealer().seal(body.value as string, variableAad(environment.id, name))
+				: undefined;
+			const at = now();
+			let touchesSecrets = false;
+			// Built from the variable as the store has it, each time the change runs: a field left out is kept as it is now,
+			// never as an earlier read had it (a bindings edit doesn't undo a rotation that landed meanwhile).
+			const changed = await changeEnvironment(environment.id, (current) => {
+				const existing = current.variables.find((variable) => variable.name === name);
+				if (existing === undefined && current.variables.length >= MAX_ENVIRONMENT_VARIABLES) {
+					throw new KantelError("invalid", `An environment has at most ${MAX_ENVIRONMENT_VARIABLES} variables`);
+				}
+				// Left out, a variable stays as protected as it is; a new one is plain.
+				const wantProtected = body.protected ?? existing?.protected ?? false;
+				const switching = existing !== undefined && existing.protected !== wantProtected;
+				if (body.value === undefined && (existing === undefined || switching)) {
+					throw new KantelError("invalid", "A new variable, or one turning protected or plain, needs a value");
+				}
+				let next: StoredEnvironmentVariable;
+				if (wantProtected) {
+					const bindings = bindingsGiven ?? (existing?.protected === true ? existing.bindings.map(copyBinding) : []);
+					if (bindings.length === 0) {
+						throw new KantelError("invalid", "A protected variable needs at least one binding: where its value may go");
+					}
+					if (body.value === "") throw new KantelError("invalid", "A protected variable's value can't be empty");
+					if (body.value !== undefined && sealedGiven === undefined) {
+						// It turned protected after the read above: the value wasn't sealed.
+						throw new KantelError("conflict", `${name} changed meanwhile; try again`);
+					}
+					const sealed = sealedGiven ?? existing?.sealed;
+					if (sealed === undefined) throw new KantelError("invalid", "The variable needs a value");
+					next = { name, protected: true, sealed, bindings, updatedAt: at };
+				} else {
+					if (sealedGiven !== undefined) {
+						// It turned plain after the read above: a value meant to be protected is never kept in the clear.
+						throw new KantelError("conflict", `${name} changed meanwhile; try again`);
+					}
+					if (bindingsGiven !== undefined && bindingsGiven.length > 0) {
+						throw new KantelError("invalid", "Only a protected variable has bindings");
+					}
+					next = { name, protected: false, value: body.value ?? existing?.value ?? "", bindings: [], updatedAt: at };
+				}
+				touchesSecrets = wantProtected || existing?.protected === true;
+				return {
+					...current,
+					// In its place, or last when it is new.
+					variables:
+						existing !== undefined
+							? current.variables.map((variable) => (variable.name === name ? next : variable))
+							: [...current.variables, next],
+					secretsVersion: touchesSecrets ? nextSecretsVersion(current.secretsVersion, at) : current.secretsVersion,
+					updatedAt: later(current.updatedAt),
+				};
+			});
+			if (touchesSecrets) await pushEnvironment(changed.id, changed.secretsVersion);
+			return environmentView(changed);
+		},
+
+		deleteEnvironmentVariable: async (principal, { params }) => {
+			const environment = await environmentFor(principal, params.environmentId, "account:admin");
+			const existing = environment.variables.find((variable) => variable.name === params.name);
+			if (existing === undefined) throw notFound("variable");
+			const at = now();
+			const changed = await changeEnvironment(environment.id, (current) => ({
+				...current,
+				variables: current.variables.filter((variable) => variable.name !== params.name),
+				secretsVersion: existing.protected ? nextSecretsVersion(current.secretsVersion, at) : current.secretsVersion,
+				updatedAt: at,
+			}));
+			if (existing.protected) await pushEnvironment(changed.id, changed.secretsVersion);
+			return environmentView(changed);
+		},
+
+		setEnvironmentFile: async (principal, { params, body }) => {
+			const environment = await environmentFor(principal, params.environmentId, "account:admin");
+			const path = sandboxPath(body.path);
+			if (path === "/") throw new KantelError("invalid", "A secret file needs a file's path");
+			// New contents are sealed up front (sealing is async; the change below isn't).
+			let given: { readonly sealed: SealedValue; readonly sizeBytes: number } | undefined;
+			if (body.content !== undefined) {
+				const bytes = body.encoding === "base64" ? base64ToBytes(body.content) : new TextEncoder().encode(body.content);
+				if (bytes.byteLength > MAX_ENVIRONMENT_FILE_BYTES) {
+					throw new KantelError("invalid", "An environment's secret files are at most 1 MiB in all");
+				}
+				given = {
+					sealed: await requireSealer().seal(bytes, fileAad(environment.id, path)),
+					sizeBytes: bytes.byteLength,
+				};
+			}
+			const at = now();
+			// Built from the file as the store has it, each time the change runs: a mode-only edit keeps the contents as they
+			// are now, and new contents keep the mode as it is now.
+			const changed = await changeEnvironment(environment.id, (current) => {
+				const existing = current.files.find((file) => file.path === path);
+				if (existing === undefined && current.files.length >= MAX_ENVIRONMENT_FILES) {
+					throw new KantelError("invalid", `An environment has at most ${MAX_ENVIRONMENT_FILES} secret files`);
+				}
+				const contents = given ?? existing;
+				if (contents === undefined) throw new KantelError("invalid", "A new secret file needs its contents");
+				const others = current.files
+					.filter((file) => file.path !== path)
+					.reduce((total, file) => total + file.sizeBytes, 0);
+				if (given !== undefined && others + given.sizeBytes > MAX_ENVIRONMENT_FILE_BYTES) {
+					throw new KantelError("invalid", "An environment's secret files are at most 1 MiB in all");
+				}
+				const file: StoredEnvironmentFile = {
+					path,
+					mode: body.mode ?? existing?.mode ?? 0o600,
+					sizeBytes: contents.sizeBytes,
+					sealed: contents.sealed,
+					updatedAt: at,
+				};
+				return {
+					...current,
+					files:
+						existing !== undefined
+							? current.files.map((each) => (each.path === path ? file : each))
+							: [...current.files, file],
+					updatedAt: later(current.updatedAt),
+				};
+			});
+			return environmentView(changed);
+		},
+
+		deleteEnvironmentFile: async (principal, { params, query }) => {
+			const environment = await environmentFor(principal, params.environmentId, "account:admin");
+			const path = sandboxPath(query.path);
+			if (!environment.files.some((file) => file.path === path)) throw notFound("secret file");
+			const changed = await changeEnvironment(environment.id, (current) => ({
+				...current,
+				files: current.files.filter((file) => file.path !== path),
+				updatedAt: now(),
+			}));
+			return environmentView(changed);
+		},
+
+		putEnvironmentRepos: async (principal, { params, body }) => {
+			const environment = await environmentFor(principal, params.environmentId, "account:admin");
+			const repos = body.repos.map(normaliseRepo);
+			const paths = repos.map(clonePath);
+			if (new Set(paths).size !== paths.length) {
+				throw new KantelError("invalid", "Two repositories would be cloned into one path; give one a path");
+			}
+			const expected = body.expected === undefined ? undefined : reposKey(body.expected);
+			const changed = await changeEnvironment(environment.id, (current) => {
+				requireUnchanged(expected, reposKey(current.repos), "The environment's repositories");
+				return { ...current, repos, updatedAt: now() };
+			});
+			return environmentView(changed);
+		},
+
+		putEnvironmentGrants: async (principal, { params, body }) => {
+			const environment = await environmentFor(principal, params.environmentId, "account:admin");
+			const grants = normaliseGrants(body.grants);
+			if (grants.length > 0) await requireEnforcing(await liveFrom(environment.id));
+			const expected = body.expected === undefined ? undefined : grantsKey(body.expected);
+			const changed = await changeEnvironment(environment.id, (current) => {
+				requireUnchanged(expected, grantsKey(current.grants), "The environment's grants");
+				return { ...current, grants, updatedAt: later(current.updatedAt) };
+			});
+			await pushEnvironment(changed.id, undefined);
+			return environmentView(changed);
+		},
+
+		getSandboxEgress: async (principal, { params, query }) => {
+			const { sandbox } = await sandboxFor(principal, params.sandboxId, "account:read", true);
+			return sandboxEgressView(sandbox, query.limit ?? 100);
+		},
+
+		putSandboxGrants: async (principal, { params, body }) => {
+			const { sandbox } = await sandboxFor(principal, params.sandboxId, "account:admin");
+			const grants = normaliseGrants(body.grants);
+			if (grants.length > 0) await requireEnforcing([sandbox]);
+			// Its revision moves on with them, in the one write: an egress read before has the older revision, which its host
+			// ignores once this one's has come; a boot under way sees it changed and reconciles.
+			const expected = body.expected === undefined ? undefined : grantsKey(body.expected);
+			const changed = await patchSandbox(sandbox.id, (current) => {
+				requireUnchanged(expected, grantsKey(current.grants ?? []), "The sandbox's grants");
+				return { ...current, grants, egressRevision: later(current.egressRevision) };
+			});
+			if (changed === undefined) throw notFound("sandbox");
+			if (changed.state === "running") pushEgress([changed]);
+			return sandboxEgressView(changed, 100);
 		},
 
 		// Events, webhooks and telemetry.
@@ -2915,6 +4085,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			withState(latest, "starting", {
 				size: body.size ?? latest.size,
 				pausedSnapshotId: how === "resume" ? latest.pausedSnapshotId : undefined,
+				// Its egress is read afresh for the boot: a revision of its own, so an update read before (from when it last
+				// ran, still being retried) never equals it, and loses.
+				egressRevision: later(latest.egressRevision),
 			}),
 		);
 		if (!("moved" in began)) {
@@ -2928,13 +4101,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			size: starting.size,
 			env: current.env,
 			eligibleHosts: hosts,
-			...(await egressFor(current.accountId)),
+			// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
+			...(await egressFor(starting.accountId, starting)),
 		};
 		const work = track([current.id], () =>
-			boot(current.id, () =>
-				bootAgain(current, bootOptions, (options) =>
-					how === "start" ? backend.start(current.id, options) : backend.resume(current.id, options),
-				),
+			boot(
+				current.id,
+				() =>
+					bootAgain(current, bootOptions, (options) =>
+						how === "start" ? backend.start(current.id, options) : backend.resume(current.id, options),
+					),
+				undefined,
+				{ egressRevision: starting.egressRevision },
 			),
 		);
 		if (body.wait === true) await work;
@@ -2984,14 +4162,54 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// away (or whose stop didn't get through, `beginStop`) stays running, and a later sweep, as on its host's
 			// reconnection, stops it.
 			let connected: Set<string> | undefined;
+			// A stop it was due for (`stopFor`) that a gateway went before carrying out: decided by a boot that went before
+			// taking it on (`starting`, since `stopsAt`), or taken on and never sent (`stopping`, since `stopClaimedAt`).
+			// Running again, where its machine may be, and due now, for the pass below to stop. One this gateway is still
+			// working on is left to it, as is one within its lease (its gateway may be at it).
+			for (const state of ["starting", "stopping"] as const) {
+				for (const sandbox of await store.sandboxes.list({ state })) {
+					const since = state === "stopping" ? sandbox.stopClaimedAt : sandbox.stopsAt;
+					if (sandbox.stopFor === undefined || since === undefined || pending.has(sandbox.id)) continue;
+					if (since + STOP_LEASE_MS > at) continue;
+					const marker = (current: StoredSandbox) =>
+						current.stopFor === sandbox.stopFor &&
+						(state === "stopping" ? current.stopClaimedAt : current.stopsAt) === since;
+					await transition(
+						sandbox.id,
+						state,
+						(current) => ({
+							...current,
+							state: "running",
+							stopsAt: at,
+							stopClaimedAt: undefined,
+							reason: undefined,
+						}),
+						marker,
+					).catch(() => undefined);
+				}
+			}
 			for (const sandbox of await store.sandboxes.list({ state: "running" })) {
-				if (sandbox.stopsAt === undefined || sandbox.stopsAt > at || pending.has(sandbox.id)) continue;
+				// An egress update that didn't get through (its host away, a call that failed) is sent again, as it is now,
+				// once its host is there: a later revision the host has taken already makes this one moot.
+				if (
+					backend.updateEgress !== undefined &&
+					sandbox.egressRevision !== undefined &&
+					(sandbox.egressApplied ?? Number.NEGATIVE_INFINITY) < sandbox.egressRevision &&
+					!delivering.has(sandbox.id)
+				) {
+					connected ??= await connectedHosts();
+					if (sandbox.hostId !== undefined && connected.has(sandbox.hostId)) pushEgress([sandbox]);
+				}
+				// Due: past its time, or owed a stop (`stopFor`), whatever its time says.
+				const due = (current: StoredSandbox) =>
+					current.stopFor !== undefined || (current.stopsAt !== undefined && current.stopsAt <= at);
+				if (!due(sandbox) || pending.has(sandbox.id)) continue;
 				connected ??= await connectedHosts();
 				if (sandbox.hostId === undefined || !connected.has(sandbox.hostId)) continue;
 				// Every gateway sweeps: `beginStop` moves it only while it is still running, so one of them stops it and the
 				// rest skip it.
-				const due = (current: StoredSandbox) => current.stopsAt !== undefined && current.stopsAt <= at;
-				const began = await beginStop(sandbox, false, "auto-stop", undefined, due, true).catch(() => undefined);
+				const reason = sandbox.stopFor ?? "auto-stop";
+				const began = await beginStop(sandbox, false, reason, undefined, due, true).catch(() => undefined);
 				if (began !== undefined) keepGoing(began.work);
 			}
 		},
@@ -3005,11 +4223,90 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return samples;
 		},
 
+		async protectedTable(hostId, sandboxId) {
+			const sandbox = await store.sandboxes.get(sandboxId);
+			// Only the host the sandbox is on: another host asking learns nothing, not even that it exists.
+			if (sandbox === undefined || sandbox.state === "deleted" || sandbox.hostId !== hostId) return undefined;
+			const environment =
+				sandbox.environmentId === undefined ? undefined : await store.environments.get(sandbox.environmentId);
+			// Its environment deleted: nothing resolves, at a version past any it was given.
+			if (environment === undefined) return { version: now(), entries: [] };
+			const entries: ProtectedEntry[] = [];
+			for (const [name, placeholder] of Object.entries(sandbox.placeholders ?? {})) {
+				const variable = environment.variables.find((each) => each.name === name);
+				if (variable === undefined || !variable.protected || variable.sealed === undefined) continue;
+				const value = await requireSealer().openText(variable.sealed, variableAad(environment.id, name));
+				entries.push({
+					placeholder,
+					name,
+					value,
+					bindings: variable.bindings.map((binding) => ({
+						host: binding.host,
+						pathPrefixes: [...(binding.pathPrefixes ?? [])],
+						methods: [...(binding.methods ?? [])],
+					})),
+				});
+			}
+			return { version: environment.secretsVersion, entries };
+		},
+
+		async recordEgress(hostId, records) {
+			const bySandbox = new Map<string, ReportedEgress[]>();
+			for (const record of records) {
+				if (typeof record?.sandboxId !== "string") continue;
+				const batch = bySandbox.get(record.sandboxId) ?? [];
+				batch.push(record);
+				bySandbox.set(record.sandboxId, batch);
+			}
+			for (const [sandboxId, batch] of bySandbox) {
+				const sandbox = await store.sandboxes.get(sandboxId);
+				// A host reports only its own sandboxes; anything else is dropped.
+				if (sandbox === undefined || sandbox.hostId !== hostId) continue;
+				for (const record of batch.slice(-MAX_EGRESS_ENTRIES)) {
+					await store.egress.put(egressEntryFrom(record, sandbox, now()));
+				}
+				const log = await egressLog(sandboxId);
+				for (const stale of log.slice(MAX_EGRESS_ENTRIES)) await store.egress.delete(stale.id);
+			}
+		},
+
 		async close() {
 			for (const controller of runningCommands.values()) controller.abort();
 			await idle();
 		},
 
 		idle,
+	};
+}
+
+/** A host's report as a log entry: checked field by field, as a host is trusted with no more than its own sandboxes. */
+function egressEntryFrom(record: ReportedEgress, sandbox: StoredSandbox, at: number): StoredEgressEntry {
+	const text = (value: unknown, length: number): string | undefined =>
+		typeof value === "string" && value !== "" ? clip(value, length) : undefined;
+	// Never a query string or a fragment, even when a host sends one.
+	const path = text(record.path, 2048)?.split(/[?#]/, 1)[0];
+	const reason = text(record.reason, 500);
+	const rule = text(record.rule, 500);
+	const code = text(record.code, 64);
+	const status = whole(record.status);
+	const swapped: unknown[] = Array.isArray(record.swapped) ? [...record.swapped] : [];
+	return {
+		id: randomId("egr", 12),
+		sandboxId: sandbox.id,
+		accountId: sandbox.accountId,
+		at: typeof record.at === "number" && Number.isFinite(record.at) ? record.at : at,
+		method: text(record.method, 16)?.toUpperCase() ?? "CONNECT",
+		host: text(record.host, 253) ?? "",
+		port: whole(record.port),
+		...(path === undefined || path === "" ? {} : { path }),
+		decision: record.allowed === true ? "allowed" : "denied",
+		...(reason === undefined ? {} : { reason }),
+		...(rule === undefined ? {} : { rule }),
+		...(code === undefined ? {} : { code }),
+		swapped: swapped.filter((name): name is string => typeof name === "string").map((name) => clip(name, 255)),
+		inspected: record.inspected === true,
+		...(status === 0 ? {} : { status }),
+		bytesUp: whole(record.bytesUp),
+		bytesDown: whole(record.bytesDown),
 	};
 }

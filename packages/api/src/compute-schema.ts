@@ -1,11 +1,12 @@
 /**
  * The compute plane's wire shapes: accounts and organisations, sandboxes and their commands, files, ports and access,
- * snapshots, scoped API keys, the egress proxy's settings, webhooks, OpenTelemetry export, events, and the
- * super-admin's hosts. The schemas are the contract: the types below are read from them (`Static`), and the SDK's types
+ * snapshots, scoped API keys, the egress proxy's settings, environments and sandboxes' egress, webhooks, OpenTelemetry
+ * export, events, and the super-admin's hosts. The schemas are the contract: the types below are read from them (`Static`), and the SDK's types
  * are generated from them, so there is one definition of each shape.
  *
  * No shape carries a host's address, a machine's provider ID or a credential, except a secret the caller is shown once
- * when it is made (an API key's, a webhook's signing secret, a host's join token).
+ * when it is made (an API key's, a webhook's signing secret, a host's join token). A protected variable's value and a
+ * secret file's contents are write-only: no shape answers them.
  */
 import Type, { type Static } from "typebox";
 import { Timestamp } from "./schema.ts";
@@ -46,8 +47,9 @@ export const ApiKeyScope = Type.Union(
 			"What a key may do. `sandboxes:read`: list and inspect sandboxes, their usage and events. `sandboxes:write`: " +
 			"create, change, start, stop, pause, resume, fork and recover. `sandboxes:delete`: delete for good. `exec`: run " +
 			"commands. `files`: read and write files. `access`: SSH, desktop, browser and public ports. `snapshots:read`, " +
-			"`snapshots:write`: snapshots and saved snapshots. `account:read`: the account, its members and keys. " +
-			"`account:admin`: members, keys, webhooks, telemetry and the proxy. `hosts:admin`: the deployment's hosts, for " +
+			"`snapshots:write`: snapshots and saved snapshots. `account:read`: the account, its members, keys, environments " +
+			"and sandboxes' egress. `account:admin`: members, keys, webhooks, telemetry, the proxy, environments and " +
+			"sandboxes' grants. `hosts:admin`: the deployment's hosts, for " +
 			"a super-admin's key only.",
 	},
 );
@@ -295,6 +297,60 @@ export const CreatedBy = Type.Object(
 	{ title: "CreatedBy" },
 );
 
+// Destinations and egress grants, which environments and sandboxes both carry.
+
+const HttpMethodName = Type.String({
+	pattern: "^[A-Z]{1,16}$",
+	description: "An HTTP method in capitals, such as `GET` or `POST`.",
+});
+const hostPattern = (what: string) =>
+	Type.String({
+		minLength: 1,
+		maxLength: 253,
+		description: `${what}: \`api.github.com\`, or \`*.example.com\` for its subdomains (not \`example.com\` itself).`,
+	});
+const pathList = (description: string) =>
+	Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 1024 }), { maxItems: 32, description }));
+const methodList = (description: string) => Type.Optional(Type.Array(HttpMethodName, { maxItems: 16, description }));
+
+export const DestinationBinding = Type.Object(
+	{
+		host: hostPattern("The host, on port 443"),
+		pathPrefixes: pathList("Only paths under these, such as `/repos/`. Absent or empty: any path."),
+		methods: methodList("Only these methods. Absent or empty: any method."),
+	},
+	{
+		title: "DestinationBinding",
+		description:
+			"Where a protected variable's value may go: the host's egress proxy swaps the sandbox's placeholder for the value " +
+			"only on a request that matches, and refuses a request that carries the placeholder anywhere else.",
+	},
+);
+
+const grantFields = {
+	action: Type.Union([Type.Literal("allow"), Type.Literal("deny")]),
+	host: hostPattern("The host"),
+	methods: methodList("Only these methods. Absent or empty: every method."),
+	paths: pathList(
+		"Path patterns, `*` one segment and `**` the rest, such as `/repos/lleverage-ai/*`. Absent or empty: every path.",
+	),
+};
+
+export const EgressGrant = Type.Object(
+	{ id: id("The grant's ID, such as `grt_4kq9x2mt`."), ...grantFields },
+	{
+		title: "EgressGrant",
+		description:
+			"An egress rule on top of the account's proxy settings: let a sandbox reach a host, or refuse it. Deny wins. A " +
+			"grant naming methods or paths makes the proxy look inside that host's HTTPS, as a protected variable's host does.",
+	},
+);
+
+export const EgressGrantInput = Type.Object(
+	{ id: Type.Optional(Type.String({ description: "Keep a grant's ID; absent, a new one is made." })), ...grantFields },
+	{ title: "EgressGrantInput" },
+);
+
 export const Sandbox = Type.Object(
 	{
 		id: id("The sandbox's ID, such as `sbx_4kq9x2mt`."),
@@ -331,6 +387,8 @@ export const Sandbox = Type.Object(
 				{ title: "SandboxSource", description: "What it was made from." },
 			),
 		),
+		environmentId: Type.Optional(Type.String({ description: "The environment it was made from." })),
+		grants: Type.Array(EgressGrant, { description: "Its own egress grants, on top of its environment's." }),
 		createdBy: CreatedBy,
 		createdAt: Timestamp,
 		startedAt: Type.Optional(Timestamp),
@@ -385,7 +443,17 @@ export const CreateSandboxBody = Type.Object(
 		labels: Type.Optional(Type.Record(Type.String(), Type.String())),
 		env: Type.Optional(
 			Type.Record(Type.String(), Type.String(), {
-				description: "Environment variables every command sees. Not secrets: they are shown to anyone who may exec.",
+				description:
+					"Environment variables every command sees, after the environment's. Not secrets: they are shown to anyone who " +
+					"may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused.",
+			}),
+		),
+		environment: Type.Optional(
+			Type.String({
+				description:
+					"Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder " +
+					"for each protected one, its secret files and repositories, and its grants. `env` may not name one of its " +
+					"protected variables.",
 			}),
 		),
 		hostLabels: Type.Optional(
@@ -1036,6 +1104,250 @@ export const PutProxySettingsBody = Type.Object(
 
 export const AccountScopedQuery = Type.Object({ account: accountQuery }, { title: "AccountScopedQuery" });
 
+// Environments: what a sandbox starts with. And a sandbox's egress.
+
+/** An environment's name: lower-case letters, digits and dashes, as a DNS label. */
+export const ENVIRONMENT_NAME_PATTERN = "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$";
+
+export const EnvironmentVariable = Type.Object(
+	{
+		name: Type.String(),
+		protected: Type.Boolean({
+			description:
+				"A protected variable is a `kph_` placeholder in the sandbox, its own per sandbox, which the host's egress proxy " +
+				"swaps for the value on requests to its bindings: the value never enters the sandbox.",
+		}),
+		value: Type.Optional(Type.String({ description: "A plain variable's value. Never answered for a protected one." })),
+		bindings: Type.Array(DestinationBinding, {
+			description: "A protected variable's destinations, at least one. Empty for a plain one.",
+		}),
+		updatedAt: Timestamp,
+	},
+	{ title: "EnvironmentVariable" },
+);
+
+export const EnvironmentFile = Type.Object(
+	{
+		path: Type.String({ description: "Absolute, such as `/home/user/.npmrc`." }),
+		mode: Type.Integer({ description: "Its permissions, such as 384 (0o600)." }),
+		sizeBytes: Type.Integer(),
+		updatedAt: Timestamp,
+	},
+	{
+		title: "EnvironmentFile",
+		description: "A secret file every new sandbox starts with. Its contents are write-only, and kept encrypted.",
+	},
+);
+
+export const EnvironmentRepo = Type.Object(
+	{
+		url: Type.String({
+			minLength: 1,
+			maxLength: 2048,
+			description: "HTTPS with no credentials in it, such as `https://github.com/lleverage-ai/kantel`.",
+		}),
+		path: Type.Optional(
+			Type.String({ minLength: 1, maxLength: 1024, description: "Where it is cloned; default `~/<name>`." }),
+		),
+		ref: Type.Optional(
+			Type.String({
+				minLength: 1,
+				maxLength: 255,
+				description: "A branch or tag; default the repository's default branch.",
+			}),
+		),
+	},
+	{
+		title: "EnvironmentRepo",
+		description: "A repository every new sandbox starts with, cloned through the egress proxy once it is running.",
+	},
+);
+
+export const Environment = Type.Object(
+	{
+		id: id("The environment's ID, such as `env_4kq9x2mt`."),
+		accountId: Type.String(),
+		name: Type.String(),
+		description: Type.Optional(Type.String()),
+		variables: Type.Array(EnvironmentVariable),
+		files: Type.Array(EnvironmentFile),
+		repos: Type.Array(EnvironmentRepo),
+		grants: Type.Array(EgressGrant),
+		sandboxCount: Type.Integer({ description: "How many sandboxes were made from it and still exist." }),
+		createdAt: Timestamp,
+		updatedAt: Timestamp,
+	},
+	{
+		title: "Environment",
+		description:
+			"What a sandbox starts with: variables, secret files, repositories and egress grants. A change reaches " +
+			"sandboxes made after it, except a protected variable's value, bindings and the grants, which reach running " +
+			"ones at once.",
+	},
+);
+
+export const EnvironmentList = Type.Object({ items: Type.Array(Environment) }, { title: "EnvironmentList" });
+
+export const EnvironmentPath = Type.Object(
+	{ environmentId: id("The environment's ID.") },
+	{ title: "EnvironmentPath" },
+);
+
+export const EnvironmentVariablePath = Type.Object(
+	{ environmentId: id("The environment's ID."), name: Type.String({ description: "The variable's name." }) },
+	{ title: "EnvironmentVariablePath" },
+);
+
+export const CreateEnvironmentBody = Type.Object(
+	{
+		account: accountQuery,
+		name: Type.String({
+			pattern: ENVIRONMENT_NAME_PATTERN,
+			description: "Unique in the account: lower-case letters, digits and dashes, at most 63.",
+		}),
+		description: Type.Optional(Type.String({ maxLength: 500 })),
+	},
+	{ title: "CreateEnvironmentBody" },
+);
+
+export const UpdateEnvironmentBody = Type.Object(
+	{
+		name: Type.Optional(Type.String({ pattern: ENVIRONMENT_NAME_PATTERN })),
+		description: Type.Optional(Type.String({ maxLength: 500, description: "Empty clears it." })),
+	},
+	{ title: "UpdateEnvironmentBody" },
+);
+
+export const SetEnvironmentVariableBody = Type.Object(
+	{
+		protected: Type.Optional(Type.Boolean({ description: "Default false." })),
+		value: Type.Optional(
+			Type.String({
+				maxLength: 32_768,
+				description:
+					"Required for a new variable and when it becomes protected or plain. Left out on a protected one, it keeps " +
+					"its value (to change its bindings); a new value for a protected one is a rotation.",
+			}),
+		),
+		bindings: Type.Optional(
+			Type.Array(DestinationBinding, {
+				maxItems: 32,
+				description: "A protected variable's destinations, at least one. Left out, a protected one keeps its own.",
+			}),
+		),
+	},
+	{ title: "SetEnvironmentVariableBody" },
+);
+
+export const SetEnvironmentFileBody = Type.Object(
+	{
+		path: Type.String({ minLength: 1, maxLength: 1024, description: "Absolute, or relative to `/home/user`." }),
+		mode: Type.Optional(Type.Integer({ minimum: 0, maximum: 4095, description: "Default 384 (0o600)." })),
+		content: Type.Optional(
+			Type.String({
+				description: "At most 1 MiB, in `encoding`. Required for a new file; left out, the file keeps its contents.",
+			}),
+		),
+		encoding: Type.Optional(FileEncoding),
+	},
+	{
+		title: "SetEnvironmentFileBody",
+		description: "`encoding` says how `content` is written: `utf8` (the default) or `base64`.",
+	},
+);
+
+export const EnvironmentFileQuery = Type.Object(
+	{ path: Type.String({ minLength: 1, maxLength: 1024 }) },
+	{ title: "EnvironmentFileQuery" },
+);
+
+const EXPECTED =
+	"The list as you last read it. Given, the write is refused with `conflict` if the list has changed since, so an " +
+	"edit made from an older read can't undo someone else's: read it again and redo the edit. Left out, the list is " +
+	"replaced whatever it holds.";
+
+export const PutEnvironmentReposBody = Type.Object(
+	{
+		repos: Type.Array(EnvironmentRepo, { maxItems: 20 }),
+		expected: Type.Optional(Type.Array(EnvironmentRepo, { maxItems: 20, description: EXPECTED })),
+	},
+	{ title: "PutEnvironmentReposBody" },
+);
+
+export const PutEgressGrantsBody = Type.Object(
+	{
+		grants: Type.Array(EgressGrantInput, { maxItems: 200 }),
+		expected: Type.Optional(Type.Array(EgressGrantInput, { maxItems: 200, description: EXPECTED })),
+	},
+	{ title: "PutEgressGrantsBody" },
+);
+
+export const EgressEntry = Type.Object(
+	{
+		id: id("The entry's ID."),
+		at: Timestamp,
+		method: Type.String({ description: "`CONNECT` for a tunnel the proxy didn't look inside." }),
+		host: Type.String(),
+		port: Type.Integer(),
+		path: Type.Optional(
+			Type.String({ description: "The path, when the proxy saw it (plain HTTP or inspected HTTPS); never the query." }),
+		),
+		decision: Type.Union([Type.Literal("allowed"), Type.Literal("denied")]),
+		reason: Type.Optional(Type.String({ description: "Why it was denied, or what failed, in words." })),
+		rule: Type.Optional(
+			Type.String({ description: "The rule that decided it, such as `deny DELETE api.github.com /repos/*`." }),
+		),
+		code: Type.Optional(
+			Type.String({ description: "A refusal's `X-Kantel-Proxy-Error` code, such as `placeholder-unbound`." }),
+		),
+		swapped: Type.Array(Type.String(), {
+			description: "The protected variables whose values the proxy put in, by name.",
+		}),
+		inspected: Type.Boolean({ description: "Whether the proxy looked inside the HTTPS." }),
+		status: Type.Optional(Type.Integer({ description: "The answer's status, when the proxy saw one." })),
+		bytesUp: Type.Integer(),
+		bytesDown: Type.Integer(),
+	},
+	{
+		title: "EgressEntry",
+		description: "One request or connection a sandbox made through its host's egress proxy. Never a value.",
+	},
+);
+
+export const SandboxProtectedVariable = Type.Object(
+	{
+		name: Type.String(),
+		placeholderPrefix: Type.String({ description: "The first 8 characters of its placeholder, such as `kph_7Qx2`." }),
+		bindings: Type.Array(DestinationBinding),
+	},
+	{ title: "SandboxProtectedVariable", description: "A protected variable as one sandbox has it: never its value." },
+);
+
+export const SandboxEgress = Type.Object(
+	{
+		sandboxId: Type.String(),
+		sandboxName: Type.String(),
+		accountId: Type.String(),
+		environment: Type.Optional(
+			Type.Object({ id: Type.String(), name: Type.String() }, { title: "SandboxEgressEnvironment" }),
+		),
+		protectedVariables: Type.Array(SandboxProtectedVariable),
+		environmentGrants: Type.Array(EgressGrant, { description: "Its environment's grants, which it has too." }),
+		grants: Type.Array(EgressGrant, { description: "Its own grants, on top of its environment's." }),
+		entries: Type.Array(EgressEntry, { description: "Newest first; Kantel keeps the newest 1000." }),
+	},
+	{ title: "SandboxEgress", description: "A sandbox's egress: what it was made with, its own grants and its log." },
+);
+
+export const SandboxEgressQuery = Type.Object(
+	{
+		limit: Type.Optional(
+			Type.Integer({ minimum: 1, maximum: 1000, description: "At most this many entries; default 100." }),
+		),
+	},
+	{ title: "SandboxEgressQuery" },
+);
+
 // Events and webhooks.
 
 export const EventType = Type.Union(
@@ -1056,7 +1368,9 @@ export const EventType = Type.Union(
 		description:
 			"`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork " +
 			"or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call or its auto-stop), or paused. " +
-			"`sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it. " +
+			"`sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; " +
+			"`sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason " +
+			"says which), which leaves it running. " +
 			"`sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.",
 	},
 );
@@ -1369,6 +1683,16 @@ export type ApiKeyScope = Static<typeof ApiKeyScope>;
 export type ApiKeyPreset = Static<typeof ApiKeyPreset>;
 export type ApiKey = Static<typeof ApiKey>;
 export type ProxySettings = Static<typeof ProxySettings>;
+export type DestinationBinding = Static<typeof DestinationBinding>;
+export type EgressGrant = Static<typeof EgressGrant>;
+export type EgressGrantInput = Static<typeof EgressGrantInput>;
+export type EnvironmentVariable = Static<typeof EnvironmentVariable>;
+export type EnvironmentFile = Static<typeof EnvironmentFile>;
+export type EnvironmentRepo = Static<typeof EnvironmentRepo>;
+export type Environment = Static<typeof Environment>;
+export type EgressEntry = Static<typeof EgressEntry>;
+export type SandboxProtectedVariable = Static<typeof SandboxProtectedVariable>;
+export type SandboxEgress = Static<typeof SandboxEgress>;
 export type EventType = Static<typeof EventType>;
 export type Event = Static<typeof Event>;
 export type Webhook = Static<typeof Webhook>;

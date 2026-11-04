@@ -145,11 +145,19 @@ To let sandboxes [expose ports](/sandboxes/public-ports/), give them a domain of
 echo 'KANTEL_COMPUTE_PORTS_DOMAIN=kantel-ports.example' >> ~/.kantel/src/deploy/compose/.env
 ```
 
-A port is then at `https://3000-<subdomain>.kantel-ports.example`. Use a domain of your own, not `ports.kantel.dev`, which is Kantel's hosted service's. Use a registrable domain that isn't the console's or a parent of it, so a page a sandbox serves can't set cookies the console reads; the control plane refuses the console's own name and its parents. To keep sandboxes' pages apart from each other too, add the domain to the Public Suffix List, as [Security model](/self-hosting/security/#the-ports-domain) explains. Without the setting, sandboxes expose no ports.
+A port is then at `https://3000-<subdomain>.kantel-ports.example`. Use a domain of your own, not `kantel.run`, which is Kantel's hosted service's. Use a registrable domain that isn't the console's or a parent of it, so a page a sandbox serves can't set cookies the console reads; the control plane refuses the console's own name and its parents. To keep sandboxes' pages apart from each other too, add the domain to the Public Suffix List, as [Security model](/self-hosting/security/#the-ports-domain) explains. Without the setting, sandboxes expose no ports.
 
 Desktop, browser, SSH and port URLs, and who may still use them, are kept in the database, so they keep working when the control plane restarts. With the database, you can run several gateways behind one load balancer: give each the same settings, and `KANTEL_REPLICA_URL`, the address on your private network where the others reach it (by default its first IPv4 address and port). A host connects to whichever gateway the balancer picks, and the others pass its sandboxes' requests on to that one. [Security model](/self-hosting/security/#several-gateways) says what they trust in each other.
 
 An account's [proxy settings](/sandboxes/egress-proxy/) (`PUT /v1/proxy`) reach its sandboxes on hosts, including running ones: allow and deny rules always, and the upstream proxy only on hosts installed with `--proxy-data-path`. The host adds the upstream's headers itself, so they never enter a sandbox. To have the host sign the `Kantel-Sandbox` and `Kantel-Account` headers it sends upstream, set `KANTEL_EGRESS_ATTRIBUTION_KEY` to a shared secret your proxy checks.
+
+[Environments](/sandboxes/environments/) keep protected variables' values and secret files encrypted in the database, with a key you give the control plane, `KANTEL_SECRETS_KEY`: 32 random bytes in base64. Make one and add it to your settings:
+
+```sh
+echo "KANTEL_SECRETS_KEY=$(openssl rand -base64 32)" >> ~/.kantel/src/deploy/compose/.env
+```
+
+Then run the installer with `--upgrade`, as in [Your own settings](#your-own-settings), to restart with it. Without the key, an install that keeps its data in a database refuses protected values and secret files, and plain variables still work. Keep a copy of the key somewhere safe, apart from the database's backups: without it, the protected values and secret files can't be read, and you have to set them again. Changing the key isn't supported yet, so set it once.
 
 ## Your own settings
 
@@ -168,6 +176,7 @@ The stack reads its settings from `~/.kantel/src/deploy/compose/.env`, which upg
 | `KANTEL_COMPUTE_PORTS_DOMAIN` | The domain sandboxes' [public ports](/sandboxes/public-ports/) are served under |
 | `KANTEL_COMPUTE_POOLS` | Warm sandboxes each host keeps ready, as JSON such as `{"microvm/default": 2}` |
 | `KANTEL_EGRESS_ATTRIBUTION_KEY` | The secret hosts sign the [`Kantel-Sandbox` and `Kantel-Account` headers](/sandboxes/egress-proxy/#send-traffic-through-your-own-proxy) with |
+| `KANTEL_SECRETS_KEY` | 32 random bytes in base64 (`openssl rand -base64 32`) that environments' [protected values and secret files](/sandboxes/environments/) are encrypted with. Without it, an install with a database refuses them. Losing it loses them, and changing it isn't supported yet |
 | `KANTEL_REPLICA_URL` | With several gateways, where the others reach this one on your private network, such as `http://10.0.3.7:8080` |
 | `KANTEL_HOST_VERSION`, `KANTEL_HOST_UPDATE_URL` | The `kantel-host` version hosts should run, and where they get it. See [Update a host](/hosts/#update-a-host) |
 

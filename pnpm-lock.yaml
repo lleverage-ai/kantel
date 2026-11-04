@@ -262,6 +262,8 @@ importers:
 
   packages/contracts: {}
 
+  packages/e2e: {}
+
   packages/environments:
     dependencies:
       "@earendil-works/pi-ai":
@@ -288,6 +290,9 @@ importers:
       "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
+      "@kantel/identity":
+        specifier: workspace:*
+        version: link:../identity
       "@kantel/sql":
         specifier: workspace:*
         version: link:../sql

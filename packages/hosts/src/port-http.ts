@@ -70,7 +70,11 @@ function cookieWithout(header: string, names: readonly string[]): string {
 }
 
 /** The request's head and body as the server should see them. */
-export async function requestBytes(request: Request, options: PortHttpOptions): Promise<Uint8Array> {
+export async function requestBytes(
+	request: Request,
+	options: PortHttpOptions,
+	signal?: AbortSignal,
+): Promise<Uint8Array> {
 	const url = new URL(request.url);
 	const path = options.path ?? `${url.pathname}${url.search}`;
 	if (!path.startsWith("/") || /[\s]/.test(path)) throw new PortHttpError(400, "Not a path");
@@ -91,15 +95,27 @@ export async function requestBytes(request: Request, options: PortHttpOptions): 
 		const reader = request.body.getReader();
 		const chunks: Uint8Array[] = [];
 		let size = 0;
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			size += value.length;
-			if (size > limit) {
-				await reader.cancel();
-				throw new PortHttpError(413, "The request body is too big");
+		// Given up on (the answer timed out, say): the body is cancelled and what was read let go.
+		const stop = () => void reader.cancel(signal?.reason).catch(() => undefined);
+		if (signal?.aborted) stop();
+		signal?.addEventListener("abort", stop, { once: true });
+		try {
+			for (;;) {
+				const { done, value } = await reader.read();
+				if (signal?.aborted) {
+					chunks.length = 0;
+					throw signal.reason instanceof Error ? signal.reason : new PortHttpError(504, "The request was given up on");
+				}
+				if (done) break;
+				size += value.length;
+				if (size > limit) {
+					await reader.cancel();
+					throw new PortHttpError(413, "The request body is too big");
+				}
+				chunks.push(value);
 			}
-			chunks.push(value);
+		} finally {
+			signal?.removeEventListener("abort", stop);
 		}
 		body = new Uint8Array(size);
 		let at = 0;
@@ -161,11 +177,15 @@ export function hostOnlyCookie(value: string): string {
 		.join(";");
 }
 
+/** The most a chunked answer's trailer section (dropped) may be. */
+const MAX_TRAILER_BYTES = 16 * 1024;
+
 /** Undoes `Transfer-Encoding: chunked` as bytes arrive. */
 function dechunker(emit: (bytes: Uint8Array) => void, done: () => void, fail: (error: Error) => void) {
 	let buffer: Uint8Array = new Uint8Array(0);
 	let remaining = -1; // -1: reading a size line; 0..n: bytes of the chunk left; -2: the CRLF after a chunk; -3: trailers
 	let finished = false;
+	let trailers = 0;
 	return (bytes: Uint8Array) => {
 		if (finished) return;
 		buffer = concat(buffer, bytes);
@@ -185,10 +205,23 @@ function dechunker(emit: (bytes: Uint8Array) => void, done: () => void, fail: (e
 				buffer = buffer.subarray(2);
 				remaining = -1;
 			} else if (remaining === -3) {
-				// Trailers, which are dropped, end at an empty line.
+				// Trailers, which are dropped, end at an empty line. They are never emitted, so they are bounded here.
 				const end = indexOfCrlf(buffer);
-				if (end < 0) return;
+				if (end < 0) {
+					if (trailers + buffer.length > MAX_TRAILER_BYTES) {
+						finished = true;
+						buffer = new Uint8Array(0);
+						fail(new PortHttpError(502, "The answer's trailers are too big"));
+					}
+					return;
+				}
+				trailers += end + 2;
 				buffer = buffer.subarray(end + 2);
+				if (trailers > MAX_TRAILER_BYTES) {
+					finished = true;
+					buffer = new Uint8Array(0);
+					return fail(new PortHttpError(502, "The answer's trailers are too big"));
+				}
 				if (end === 0) {
 					finished = true;
 					return done();
@@ -222,6 +255,8 @@ export function proxyHttp(
 		let feed: ((bytes: Uint8Array) => void) | undefined;
 		let settled = false;
 		let ended = false;
+		/** Aborted when the proxy fails: the request's body stops being read, and the request is never sent. */
+		const given = new AbortController();
 		/** Whether the body has a length or chunks, so the stream ending first means it was cut short. */
 		let framed = false;
 		const timer = setTimeout(
@@ -231,6 +266,7 @@ export function proxyHttp(
 
 		const fail = (error: Error) => {
 			clearTimeout(timer);
+			if (!given.signal.aborted) given.abort(error);
 			stream?.close();
 			if (!settled) {
 				settled = true;
@@ -342,12 +378,14 @@ export function proxyHttp(
 			},
 		};
 
-		void requestBytes(request, options).then(
-			(bytes) =>
-				open(sink).then(
+		void requestBytes(request, options, given.signal).then(
+			(bytes) => {
+				// Given up on while the body was read (timed out): nothing is sent.
+				if (given.signal.aborted) return;
+				return open(sink).then(
 					(opened) => {
 						stream = opened;
-						if (settled && ended) return opened.close();
+						if ((settled && ended) || given.signal.aborted) return opened.close();
 						opened.write(bytes);
 					},
 					(error: unknown) =>
@@ -357,7 +395,8 @@ export function proxyHttp(
 								`Couldn't reach the sandbox's port: ${error instanceof Error ? error.message : String(error)}`,
 							),
 						),
-				),
+				);
+			},
 			(error: unknown) => fail(error instanceof Error ? error : new Error(String(error))),
 		);
 	});

@@ -30,6 +30,11 @@ export interface BackendHost {
 	readonly tiers: readonly computeSchema.SandboxType[];
 	readonly kvm: boolean;
 	readonly nestedVirtualisation: boolean;
+	/**
+	 * What it does beyond what every host does; `egress-policy`: it enforces egress grants and protected variables.
+	 * Absent: what the backend's sandboxes get is enforced however they run (the stub).
+	 */
+	readonly features?: readonly string[];
 	readonly capacity: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number };
 	readonly labels: { readonly [key: string]: string };
 	/** Whether it is connected now; absent, it always is (the stub). A host that isn't is `unreachable`. */
@@ -67,8 +72,8 @@ export interface SandboxSpec {
 }
 
 /**
- * Where a sandbox's outbound traffic may go, from its account's proxy settings, as the backend applies them when it
- * boots the machine (create, start, resume, fork): a change reaches running sandboxes when they next boot.
+ * Where a sandbox's outbound traffic may go, from its account's proxy settings and its environment's and its own grants,
+ * as the backend applies them when it boots the machine (create, start, resume, fork), and on `updateEgress`.
  */
 export interface BackendEgress {
 	readonly defaultAction: "allow" | "deny";
@@ -78,6 +83,29 @@ export interface BackendEgress {
 	readonly upstream?: { readonly url: string; readonly headers: { readonly [name: string]: string } };
 	/** Tell the upstream which sandbox and account each request came from, signed. */
 	readonly attribution: boolean;
+	/**
+	 * Present only when the sandbox has protected variables: the hosts their bindings name (patterns, never a value),
+	 * which the host's proxy intercepts with a CA of the sandbox's own, and the version of the sandbox's protected values,
+	 * which the host fetches over its link to Kantel (`secrets.fetch`).
+	 */
+	readonly protected?: { readonly version: number; readonly intercept: readonly string[] };
+	/** The environment's grants, then the sandbox's own, on top of `allow` and `deny`; deny wins. */
+	readonly grants?: readonly BackendEgressGrant[];
+	/**
+	 * The sandbox's `egressRevision` when this was read: a backend that orders updates ignores one older than the egress
+	 * the sandbox has.
+	 */
+	readonly revision?: number;
+}
+
+/** An egress grant as the host's proxy applies it; one with methods or paths makes its host intercepted too. */
+export interface BackendEgressGrant {
+	readonly action: "allow" | "deny";
+	readonly host: string;
+	readonly methods?: readonly string[];
+	readonly paths?: readonly string[];
+	/** The rule as the egress log names it, such as `deny DELETE api.github.com /repos/*`. */
+	readonly rule: string;
 }
 
 /** Where a machine was placed, and what it can do. */
@@ -95,6 +123,11 @@ export interface BootOptions {
 	readonly env: { readonly [name: string]: string };
 	readonly eligibleHosts: readonly string[];
 	readonly egress?: BackendEgress;
+	/**
+	 * The revision of the sandbox's egress the boot carries, with no egress too: the boot states its egress (none is the
+	 * host's default), and an update read before it is refused as older.
+	 */
+	readonly egressRevision?: number;
 }
 
 /** A snapshot the backend took: its opaque reference and how large it is. */
@@ -236,7 +269,12 @@ export interface SandboxBackend {
 	 * The account's proxy settings changed: apply them to this running sandbox (undefined when they were turned off).
 	 * Absent, sandboxes get them when they next boot.
 	 */
-	updateEgress?(sandboxId: string, egress: BackendEgress | undefined): Promise<void>;
+	updateEgress?(sandboxId: string, egress: BackendEgress | undefined, revision?: number): Promise<void>;
+	/**
+	 * The sandbox's protected values changed (a rotation, a binding edit, a variable added or removed): the host drops
+	 * what it holds of them, and fetches them again on the sandbox's next request. Absent, nothing holds them.
+	 */
+	updateSecrets?(sandboxId: string, version: number): Promise<void>;
 	/** The super-admin revoked a host: refuse its credential and drop its connection. Absent, nothing to do. */
 	revokeHost?(hostId: string): Promise<void>;
 	/** The super-admin renamed, relabelled or drained a host. Absent, nothing to do. */

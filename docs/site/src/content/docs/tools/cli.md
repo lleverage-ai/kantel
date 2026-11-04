@@ -85,7 +85,7 @@ Created sbx_g2yy5jhyqr (fix-login-bug): microvm default, running.
   Stop it:        kantel stop sbx_g2yy5jhyqr
 ```
 
-It waits until the sandbox runs; add `--no-wait` to answer at once. Without `--type`, you get an isolate. See [Isolates and microVMs](/sandboxes/types/). `--from <snapshot>` starts it from a [saved snapshot](/snapshots/saved/), `--env K=V` sets a variable every command sees, and `--host 3000` gives a port a URL as soon as it runs.
+It waits until the sandbox runs; add `--no-wait` to answer at once. Without `--type`, you get an isolate. See [Isolates and microVMs](/sandboxes/types/). `--from <snapshot>` starts it from a [saved snapshot](/snapshots/saved/), `--env K=V` sets a variable every command sees, `--env <env>` starts it from an [environment](#environments-and-protected-variables), and `--host 3000` gives a port a URL as soon as it runs.
 
 Copy your project in, run its tests, and copy a result out:
 
@@ -171,6 +171,26 @@ kantel browser sbx_g2yy5jhyqr            # starts Chromium: opens its live view,
 - `ssh` makes a key pair the first time and keeps it under `~/.config/kantel/ssh/`. After `--` it runs that command instead of a shell; `--print` prints the `ssh` command that connects instead of running it. `--public-key ~/.ssh/id_ed25519.pub` lets in your own key. See [SSH](/sandboxes/ssh/).
 - `desktop` and `browser` open their page when you're at a terminal, and only print it otherwise or with `--print`. The URLs carry short-lived tokens. Drive the browser with [Playwright](/sandboxes/desktop-and-browser/#drive-it-with-playwright) and the CDP URL `browser` prints.
 
+## Environments and protected variables
+
+An [environment](/sandboxes/environments/) holds the variables, secret files, repositories and grants a new sandbox starts with. A protected variable never enters the sandbox: it gets a `kph_…` placeholder, which the egress proxy swaps for the value only in requests to the destinations you bind it to.
+
+```sh
+kantel env create work
+printf '%s' "$GH_TOKEN" | kantel env set work GH_TOKEN --value-stdin --protected --bind api.github.com
+kantel env set work NODE_ENV=development
+kantel new --env work
+```
+
+- `env set` takes the environment first, or as `--env <env>`. `--bind <host>[/path-prefix][:METHOD,METHOD]` says where a protected value may go, such as `api.openai.com/v1/:POST,GET`; repeat it for more. `--value-stdin` reads the value from stdin, which keeps it out of your shell's history and the process list.
+- Setting a protected variable again with a new value rotates it: running sandboxes keep their placeholder and send the new value. It stays protected unless you give `--plain`, and it keeps the bindings the variable has when the new value is written, including any changed since. If someone removed it or made it plain in the meantime, the rotation is refused rather than saving the new value unprotected. `--keep-value` with new `--bind`s changes where it may go without entering it again.
+- `env show <env>` shows a plain variable's value, but for a protected one only `protected` and its bindings. No command prints a protected value, with or without `--json`.
+- `env file <env> <path>` adds a secret file from `--from <file>` or stdin, with `--mode` (default `0600`), and `env file rm` removes one. `env repo add <env> <url> [--path] [--ref]` clones a repository into new sandboxes, and `env repo rm` stops it.
+- `env grant <env> allow|deny <host> [--method M]… [--path P]…` adds a [grant](/sandboxes/egress-proxy/#grants) for the environment's sandboxes, and `grant <sandbox> …` one for a single sandbox. `env grant rm` and `grant rm` remove one by its ID. Each of these edits sends the list as it read it, and Kantel refuses the write if the list changed in between, so the command reads it again and redoes the edit rather than undoing someone else's change. The host `*` is every host.
+- `egress <sandbox>` prints the sandbox's [egress log](/sandboxes/environments/#the-egress-log): each request's time, method, host and path, whether it was allowed, the refusal's code or the grant that decided, and the protected variables swapped in. `--denied` shows refusals only.
+
+An environment is named by its name or its `env_…` ID.
+
 ## Coding agents
 
 In a project, run:
@@ -211,6 +231,7 @@ In fish, use `set id (kantel new --type microvm --json | jq -r .id)`.
 | [Files](/sandboxes/commands-and-files/) | `scp [-r]`, `push`, `files ls`, `files cat`, `files put`, `files get`, `files rm` |
 | [Ports](/sandboxes/public-ports/), [SSH](/sandboxes/ssh/), [desktop and browser](/sandboxes/desktop-and-browser/) | `host <id> <port>`, `port list`, `port hide`, `ssh`, `desktop`, `browser` |
 | [Snapshots](/snapshots/history/) | `snapshot list`, `take`, `save <sandboxId> <name>`, `files`, `rm` |
+| [Environments](/sandboxes/environments/) and [egress](/sandboxes/egress-proxy/) | `env list`, `env create`, `env show`, `env delete`, `env set [--protected] [--bind …] [--value-stdin] [--keep-value]`, `env unset`, `env file`, `env file rm`, `env repo add`, `env repo rm`, `env grant`, `env grant rm`, `egress [--denied]`, `grant`, `grant rm` |
 | [API keys](/accounts/api-keys/) and [organisations](/accounts/organisations/) | `key list`, `key create`, `key rotate`, `key revoke`, `org list`, `org create`, `org join` |
 | [Webhooks](/monitoring/webhooks/), events and [OpenTelemetry](/monitoring/opentelemetry/) | `webhook list`, `webhook create`, `webhook rm`, `webhook test`, `events`, `telemetry get`, `telemetry set`, `telemetry rm` |
 | [Your own hosts](/own-hosts/) (experimental): machines of your own | `hosts add [name]`, `hosts list`, `hosts info`, `hosts drain [--off]`, `hosts rm` |
@@ -220,4 +241,4 @@ In fish, use `set id (kantel new --type microvm --json | jq -r .id)`.
 
 Listing and joining hosts moved to the operators' command: `kantel-admin host list` and `kantel-admin host add`. See [Hosts](/hosts/).
 
-<!-- Sources: packages/cli/src/commands.ts, packages/cli/src/login.ts, packages/cli/src/transfer.ts, packages/cli/src/agents.ts, packages/cli/src/config.ts, packages/cli/scripts/build.ts; device sign-in: packages/compute/src/service.ts (startDeviceLogin, approveDeviceLogin) -->
+<!-- Sources: packages/cli/src/commands.ts, packages/cli/src/environments.ts, packages/cli/src/login.ts, packages/cli/src/transfer.ts, packages/cli/src/agents.ts, packages/cli/src/config.ts, packages/cli/scripts/build.ts; device sign-in: packages/compute/src/service.ts (startDeviceLogin, approveDeviceLogin) -->

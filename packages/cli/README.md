@@ -54,7 +54,7 @@ flags. Every command takes `--json` to print Kantel's answer as it is, for scrip
 
 | Command | What it does |
 | --- | --- |
-| `new [--type isolate\|microvm] [--size] [--name] [--from <snapshot>] [--image] [--auto-stop <min>] [--label k=v]… [--env K=V]… [--host <port>]… [--no-wait]` | Create a sandbox and wait until it runs |
+| `new [--type isolate\|microvm] [--size] [--name] [--from <snapshot>] [--image] [--auto-stop <min>] [--label k=v]… [--env K=V]… [--env <env>] [--host <port>]… [--no-wait]` | Create a sandbox and wait until it runs; `--env` with no `=` names an environment to start from |
 | `list [--all]`, `info <id>` | List and show sandboxes |
 | `start\|stop\|resume\|recover <id>` | Its lifecycle; `stop --pause` keeps a microVM's memory |
 | `fork <id> [--count N]` | Copy it into new sandboxes |
@@ -67,6 +67,10 @@ flags. Every command takes `--json` to print Kantel's answer as it is, for scrip
 | `host <id> <port> [--public]`, `port list\|hide …` | HTTPS URLs for a sandbox's ports |
 | `ssh <id> [--print] [-- <command…>]`, `desktop <id>`, `browser <id>` | SSH (a shell, one command, or the ssh command printed), desktop and browser access to a microVM |
 | `snapshot list\|take\|save\|files\|rm …` | Snapshots, and saved snapshots to start sandboxes from |
+| `env list\|create\|show\|delete …` | Environments: the variables, secret files, repos and grants new sandboxes start with |
+| `env set <env> NAME=value [--protected --bind <host>[/path][:METHOD,…]]… [--value-stdin] [--keep-value]`, `env unset` | Plain and protected variables; a protected value never enters a sandbox, and is never printed |
+| `env file <env> <path> [--mode] [--from]`, `env file rm`, `env repo add\|rm`, `env grant <env> allow\|deny <host>`, `env grant rm` | Secret files, repositories to clone and grants |
+| `egress <sandbox> [--denied]`, `grant <sandbox> allow\|deny <host> [--method] [--path]`, `grant rm` | A sandbox's egress log, and its own grants |
 | `key list\|create\|rotate\|revoke …` | Scoped API keys; a new key's secret is shown once |
 | `org list\|create\|join …`, `webhook …`, `events`, `telemetry …` | Accounts, webhooks, events and OpenTelemetry |
 | `hosts add\|list\|info\|drain\|rm …` | Your own hosts (experimental): machines of your own that run only your account's sandboxes |
