@@ -90,6 +90,7 @@ import {
 	sshWithoutCliCommand,
 } from "@kantel/ui";
 import { type BrowserDevice, type BrowserDeviceOptions, browserDevice } from "./browser-device.ts";
+import { liveUsage, withUsage } from "./live-usage.ts";
 import type { HostCommand, HostCommandPage, LocalBridge } from "./local.ts";
 
 // `@kantel/ui` exports the sources but not every record they carry, so the records are read off the sources' methods.
@@ -1872,6 +1873,8 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		caller.superAdmin ? false : offersOwnHosts(context),
 		offersMounts(context),
 	]);
+	// The live graphs' reads, all in live-usage.ts.
+	const usage = liveUsage(api);
 
 	return {
 		hosting: context.hosting,
@@ -1879,7 +1882,7 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 			return context.domain();
 		},
 		accounts: accountsSource(context),
-		sandboxes: sandboxesSource(context),
+		sandboxes: withUsage(sandboxesSource(context), "usageSeries", usage.sandbox),
 		snapshots: snapshotsSource(context),
 		keys: keysSource(context),
 		proxy: proxySource(context),
@@ -1887,9 +1890,14 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		egress: egressSource(context),
 		webhooks: webhooksSource(context),
 		telemetry: telemetrySource(context),
-		...(caller.superAdmin ? { hosts: hostsSource(context) } : {}),
+		...(caller.superAdmin ? { hosts: withUsage(hostsSource(context), "usage", usage.host) } : {}),
 		// Anyone else manages their accounts' own hosts, where the deployment allows it.
-		...(ownHostsOffered ? { ownHosts: (accountId: string) => ownHostsSource(context, accountId) } : {}),
+		...(ownHostsOffered
+			? {
+					ownHosts: (accountId: string) =>
+						withUsage(ownHostsSource(context, accountId), "usage", usage.ownHost(accountId)),
+				}
+			: {}),
 		// Bundles and bucket sources, where the deployment has turned mounts on; absent, nothing about mounts is shown.
 		...(mountsOffered ? { mounts: mountsSource(context) } : {}),
 		// Only a person approves a device; a console signed in with a key has nothing to approve with.

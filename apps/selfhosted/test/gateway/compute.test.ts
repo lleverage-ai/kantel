@@ -131,6 +131,22 @@ describe("the compute plane on the gateway", () => {
 		expect((await failure(operator.listHosts())).code).toBe("forbidden");
 	});
 
+	it("lets the person an invite was made for join with its code, and nobody else (#657)", async () => {
+		const { client, person } = await serve(true);
+		const tom = client(await person("tom", "admin"));
+		const ann = client(await person("ann", "operator"));
+		const bob = client(await person("bob", "operator"));
+		const org = await tom.createOrganisation({ name: "Acme" });
+		// The address as someone might type it: the match ignores case.
+		const invite = await tom.createInvite(org.id, { email: "Ann@Kantel.Example.com", role: "member" });
+		const code = invite.code ?? "";
+
+		const refused = await failure(bob.joinOrganisation({ code }));
+		expect(refused.code).toBe("forbidden");
+		expect(refused.message).toBe("The invite is for someone else");
+		expect(await ann.joinOrganisation({ code })).toMatchObject({ id: org.id, role: "member" });
+	});
+
 	it("is always on: on joined hosts wherever it knows where hosts reach it, else on the stub", () => {
 		expect(computeConfig({})).toEqual({});
 		// The old switch is no longer read: off or on, the same.

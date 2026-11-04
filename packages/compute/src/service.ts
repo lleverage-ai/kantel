@@ -2013,26 +2013,47 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/**
 	 * The snapshot a start or recovery makes the sandbox from: its newest, or, when it was never placed (its create or
-	 * fork failed), the one it was to be made from. A sandbox made from another that has no such snapshot (a running
-	 * sandbox's fork) can't be made again here, so it is refused rather than started empty under its source's name; the
-	 * same keeps an account's own host's snapshot with the host (routed there, or refused while it is unreachable).
+	 * fork failed), the one it was to be made from (none for a plain create: its image, as its create had). A sandbox
+	 * made from another that has no such snapshot (a running sandbox's fork) can't be made again here, so it is refused
+	 * rather than started empty under its source's name; the same keeps an account's own host's snapshot with the host
+	 * (routed there, or refused while it is unreachable).
 	 */
 	async function latestRef(sandbox: StoredSandbox): Promise<string | undefined> {
 		if (sandbox.latestSnapshotId !== undefined) return (await store.snapshots.get(sandbox.latestSnapshotId))?.ref;
-		if (!neverPlaced(sandbox)) return undefined;
-		const from = sandbox.source?.snapshotId;
+		if (!neverPlaced(sandbox) || sandbox.source === undefined) return undefined;
+		const from = sandbox.source.snapshotId;
 		const source = from === undefined ? undefined : await store.snapshots.get(from);
 		if (source === undefined) throw new KantelError("conflict", NEVER_MADE);
 		return readyRef(source);
 	}
 
-	/** A sandbox made from another whose making failed: no backend has it, and it has no snapshot of its own. */
+	/**
+	 * A sandbox whose create or fork failed: it was never placed on a host, so no backend has it (a backend lets a failed
+	 * create's placement go), and it has no snapshot of its own. Made from a snapshot or not.
+	 */
 	const neverPlaced = (sandbox: StoredSandbox): boolean =>
-		sandbox.hostId === undefined && sandbox.latestSnapshotId === undefined && sandbox.source !== undefined;
+		sandbox.hostId === undefined && sandbox.latestSnapshotId === undefined;
+
+	/**
+	 * The hosts a start or recovery may boot the sandbox on: as for its create when it was never placed and isn't made
+	 * from a snapshot (the account's own hosts first, online ones only), else any qualifying host, so a backend that
+	 * holds its disk or snapshot finds its own host among them.
+	 */
+	async function hostsToBoot(principal: Principal, sandbox: StoredSandbox): Promise<string[]> {
+		return requireHosts(
+			await ensureHosts(),
+			sandbox.accountId,
+			sandbox.type,
+			sandbox.hostLabels,
+			!neverPlaced(sandbox) || sandbox.source !== undefined,
+			await mayShare(principal),
+		);
+	}
 
 	/**
 	 * Boots a sandbox for a start or recovery with `boot`: `booted` where a backend has it, or, when it was never placed
-	 * (`latestRef`), made as its create would make it, from its source's snapshot, since no backend has it to start.
+	 * (`neverPlaced`), made as its create would make it (from its source's snapshot, `latestRef`, or its image), placed
+	 * as a create is, since no backend has it to start.
 	 */
 	function bootAgain(
 		sandbox: StoredSandbox,
@@ -2048,6 +2069,36 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			subdomain: sandbox.subdomain,
 			...(sandbox.image === undefined ? {} : { image: sandbox.image }),
 		});
+	}
+
+	/**
+	 * The environment `bootAgain` provisions a sandbox it makes from its image with (its create failed, so the files and
+	 * repositories its create would have put there never were), checked as its create checks it: only a caller that may
+	 * run commands has repositories cloned. None for a sandbox on a disk of its own or made from a snapshot, which has them.
+	 */
+	async function provisionedAgain(
+		principal: Principal,
+		role: MemberRole,
+		sandbox: StoredSandbox,
+	): Promise<StoredEnvironment | undefined> {
+		if (!neverPlaced(sandbox) || sandbox.source !== undefined || sandbox.environmentId === undefined) return undefined;
+		const environment = await store.environments.get(sandbox.environmentId);
+		if (environment === undefined) return undefined;
+		if (environment.repos.length > 0) requireScope(principal, "exec", role);
+		return environment;
+	}
+
+	/** `boot`, then, once it runs, the provisioning its create would have done (`provisionedAgain`). */
+	async function bootProvisioned(
+		sandboxId: string,
+		run: () => Promise<Placement>,
+		environment: StoredEnvironment | undefined,
+		sent: { readonly egressRevision: number | undefined },
+	): Promise<StoredSandbox | undefined> {
+		const booted = await boot(sandboxId, run, undefined, sent);
+		if (booted?.state === "running" && environment !== undefined)
+			await provision(booted, environment).catch(() => undefined);
+		return booted;
 	}
 
 	/** Lets the backend drop a snapshot's bytes once no snapshot record shares them. */
@@ -3509,20 +3560,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		},
 
 		recoverSandbox: async (principal, { params }) => {
-			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
+			const { sandbox, role } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
 			const current = await settledFor(principal, sandbox.id);
 			if (current.state !== "running" && current.state !== "error") {
 				throw new KantelError("conflict", `A ${current.state} sandbox is started or resumed, not recovered`);
 			}
-			const hosts = requireHosts(
-				await ensureHosts(),
-				current.accountId,
-				current.type,
-				current.hostLabels,
-				true,
-				await mayShare(principal),
-			);
+			const hosts = await hostsToBoot(principal, current);
 			const fromSnapshot = await latestRef(current);
+			const environment = await provisionedAgain(principal, role, current);
 			// A boot's egress is read afresh, so it gets a revision of its own: an update read before (from when it last ran,
 			// say, still being retried) never equals it, and loses.
 			const began = await transition(current.id, current.state, (latest) =>
@@ -3538,7 +3583,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const egress = await egressFor(starting.accountId, starting);
 			keepGoing(
 				track([current.id], () =>
-					boot(
+					bootProvisioned(
 						current.id,
 						() =>
 							bootAgain(
@@ -3553,7 +3598,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								},
 								(options) => backend.recover(current.id, options),
 							),
-						undefined,
+						environment,
 						{ egressRevision: starting.egressRevision },
 					),
 				),
@@ -4756,7 +4801,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		body: { readonly size?: computeSchema.SandboxSizeName; readonly wait?: boolean },
 		how: "start" | "resume",
 	): Promise<Sandbox> {
-		const { sandbox } = await sandboxFor(principal, sandboxId, "sandboxes:write");
+		const { sandbox, role } = await sandboxFor(principal, sandboxId, "sandboxes:write");
 		const current = await settledFor(principal, sandbox.id);
 		if (current.state === "running") return sandboxView(current, principal);
 		if (current.state !== "stopped" && current.state !== "paused" && current.state !== "error") {
@@ -4765,15 +4810,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (current.type === "isolate" && body.size !== undefined)
 			throw new KantelError("invalid", "Isolates have no size");
 		await requireCapacity(current.accountId, 1);
-		const hosts = requireHosts(
-			await ensureHosts(),
-			current.accountId,
-			current.type,
-			current.hostLabels,
-			true,
-			await mayShare(principal),
-		);
+		const hosts = await hostsToBoot(principal, current);
 		const fromSnapshot = await latestRef(current);
+		const environment = await provisionedAgain(principal, role, current);
 		const began = await transition(current.id, current.state, (latest) =>
 			withState(latest, "starting", {
 				size: body.size ?? latest.size,
@@ -4800,13 +4839,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
 		};
 		const work = track([current.id], () =>
-			boot(
+			bootProvisioned(
 				current.id,
 				() =>
 					bootAgain(current, bootOptions, (options) =>
 						how === "start" ? backend.start(current.id, options) : backend.resume(current.id, options),
 					),
-				undefined,
+				environment,
 				{ egressRevision: starting.egressRevision },
 			),
 		);

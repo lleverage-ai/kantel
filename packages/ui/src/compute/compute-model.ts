@@ -433,6 +433,33 @@ export interface SandboxUsageNow {
 	readonly diskGb?: number;
 }
 
+/** What a sandbox or a host used over one interval. */
+export interface UsagePoint {
+	/** When the reading was taken, at the end of its interval, in ms since the epoch. */
+	readonly at: number;
+	/** CPU use over it, 0 to 1 of what it has: a sandbox's vCPUs, a host's. The unit of `Sandbox.usage`. */
+	readonly cpu: number;
+	readonly memUsedBytes: number;
+	/** A host's disk in use; a sandbox's points leave it out. */
+	readonly diskUsedBytes?: number;
+}
+
+/** Usage points at a steady interval, oldest first, with what they're measured against. */
+export interface UsageSeries {
+	readonly intervalMs: number;
+	/** The most memory there is: a sandbox's limit, a host's total. */
+	readonly memLimitBytes?: number;
+	/** A host's disk. */
+	readonly diskTotalBytes?: number;
+	readonly points: readonly UsagePoint[];
+}
+
+/**
+ * Reads the points newer than `since` (ms since the epoch). The live graphs call it every few seconds with the newest
+ * point they have, so an answer is only what's new.
+ */
+export type UsageRead = (id: string, since: number) => Promise<UsageSeries>;
+
 export interface SandboxesSource {
 	/**
 	 * Whether New sandbox can say what each size is. A deployment's hosts decide that, and the API has no list of them,
@@ -462,6 +489,8 @@ export interface SandboxesSource {
 	setAutoStop?(id: string, minutes: number | undefined): Promise<Sandbox>;
 	/** What a running sandbox is using now. Absent: its page shows CPU only. */
 	usageNow?(id: string): Promise<SandboxUsageNow>;
+	/** Its CPU and memory every few seconds, for the live graphs. Absent: they draw `usage` and don't move. */
+	readonly usageSeries?: UsageRead;
 	/** Its ports with a URL. Absent where the host can't list them: the page has no Ports. */
 	ports?(id: string): Promise<readonly SandboxPort[]>;
 	/** Gives a port a URL, or changes whether it's public. A private port's answer has its token in the URL, once. */
@@ -1109,6 +1138,8 @@ export interface PublicUrlSource {
 
 export interface HostsSource {
 	list(): Promise<readonly Host[]>;
+	/** A host's CPU, memory and disk every few seconds, for the live graphs. Absent: a row shows what's allocated. */
+	readonly usage?: UsageRead;
 	/** Where hosts reach the control plane, when this person may change it: the deployment's hosts, a super-admin's. */
 	readonly publicUrl?: PublicUrlSource;
 	/** A join token for a new host, and the command with it in. */
