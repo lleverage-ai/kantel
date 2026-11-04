@@ -40,29 +40,30 @@ Kantel Connect, a link through kantel.dev for hosts and self-hosted control plan
 
 ## Check a machine
 
-To check a machine before it joins, install only the binary, then run its checks:
+To check a machine before it joins, run the installer with `--check`. It downloads `kantel-host` into a temporary directory, checks it against `SHA256SUMS`, runs its `doctor` from there and installs nothing:
 
 ```sh
-curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --no-join
-sudo kantel-host doctor
+curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --check
 ```
 
 ```text
-ok    kvm                    /dev/kvm opens read-write
-ok    nested virtualisation  kvm_amd nested=1
-ok    root                   kantel-host runs as root (TAP devices, iptables, /dev/kvm)
-ok    ip                     ip
-ok    iptables               iptables
-ok    mkfs.ext4              mkfs.ext4
-ok    cp                     cp
-ok    tun                    /dev/net/tun
-ok    disk                   412 GiB free at /var/lib/kantel-host (20 GiB or more recommended)
-ok    memory                 128776 MiB (4 GiB or more recommended)
+ok      kvm                    /dev/kvm opens read-write
+ok      nested virtualisation  kvm_amd nested=1
+ok      root                   kantel-host runs as root (TAP devices, iptables, /dev/kvm)
+ok      ip                     ip
+ok      iptables               iptables
+ok      mkfs.ext4              mkfs.ext4
+ok      cp                     cp
+ok      tun                    /dev/net/tun
+ok      disk                   412 GiB free at /var/lib, which will hold /var/lib/kantel-host (20 GiB or more recommended)
+ok      memory                 128776 MiB (4 GiB or more recommended)
 
 This machine can run both tiers: microVMs (Firecracker) and isolates (workerd, inside a microVM).
 ```
 
-`kvm`, `root`, `ip`, `iptables`, `mkfs.ext4`, `cp` and `tun` decide whether the machine can run microVMs. `disk` and `memory` are advice. Before the first install, `disk` reads 0 GiB, because `/var/lib/kantel-host` doesn't exist yet. A machine that is itself a VM gets a `host is a VM` line too, which fails without nested virtualisation. `--json` prints the checks as JSON.
+On a machine that already has `kantel-host`, `sudo kantel-host doctor` runs the same checks.
+
+`kvm`, `root`, `ip`, `iptables`, `mkfs.ext4`, `cp` and `tun` are required for microVMs. `doctor` exits 0 only when every required check is `ok`: one that fails says `FAIL`, one it couldn't find out says `unknown`, and either exits 1, so a script can stop there. `disk`, `memory` and `nested virtualisation` are advice, and say `warn` when they're short. A machine that is itself a VM gets a `host is a VM` line too, which warns without nested virtualisation. With `--isolate-runtime native` (see [Without KVM](#without-kvm)), only `root` is required. `--json` prints the checks as JSON, each with its `state` and whether it's `required`. Options after `--check` that change the checks go on to `doctor`: `--root`, `--config`, `--isolate-runtime` and `--json`.
 
 ## Get kantel-host and the images
 
@@ -72,7 +73,7 @@ Each of Kantel's [GitHub Releases](https://github.com/lleverage-ai/kantel/releas
 curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url https://kantel.example.com --token kth_…
 ```
 
-The line works the same in bash, zsh and fish, since the script runs under `sh`. It picks the binary for the machine's architecture, downloads it with `SHA256SUMS` from the same release, refuses it if its SHA-256 doesn't match, and then runs `kantel-host install` with the options after `--`. Two options of its own come first: `--version 0.2.0` installs that release rather than the latest, and `--no-join` only puts the binary in `/usr/local/bin`. Every release file has a build provenance attestation too, which `gh attestation verify kantel-host-linux-amd64 --repo lleverage-ai/kantel` checks.
+The line works the same in bash, zsh and fish, since the script runs under `sh`. It picks the binary for the machine's architecture, downloads it with `SHA256SUMS` from the same release, refuses it if its SHA-256 doesn't match, and then runs `kantel-host install` with the options after `--`. Its own options come first: `--version 0.2.0` installs that release rather than the latest, `--no-join` only puts the binary in `/usr/local/bin`, and `--check` only [checks the machine](#check-a-machine). `--dry-run`, anywhere in the options, [shows what the install would do](#see-what-install-will-do) and changes nothing. Every release file has a build provenance attestation too, which `gh attestation verify kantel-host-linux-amd64 --repo lleverage-ai/kantel` checks.
 
 To build `kantel-host` yourself instead, with Go 1.26 or later:
 
@@ -165,7 +166,57 @@ The installer hands its options to `kantel-host install`, which:
 4. registers with the control plane, and saves the host's ID and credential in `/etc/kantel-host/config.json`;
 5. writes the `kantel-host` systemd unit, then enables and starts it.
 
-Without systemd, such as in a container, install stops after step 4: run `kantel-host run` as root under a supervisor of your own, and restart it when it exits. Running `install` again with the same `--url` and no token updates the install and keeps the registration.
+Without systemd, such as in a container, install stops after step 4: run `kantel-host run` as root under a supervisor of your own, and restart it when it exits.
+
+Install itself adds no users or groups, since `kantel-host` runs as root, and changes no sysctl settings or firewall rules. Once it runs, the service adds its own iptables chains (`KANTEL-INPUT` and `KANTEL-FORWARD`, jumped to from `INPUT`, `FORWARD` and, on a host with Docker, `DOCKER-USER`), ip6tables rules that drop its devices' traffic, and a TAP device for each microVM in `10.231.0.0/16`, with IPv6 off on it.
+
+#### Running it again
+
+Every step can run again. A file already in place with the right digest is kept, a download goes to `<name>.part` and only replaces the file once its digest matches, and the settings and the unit are written whole. So if an install stops part way, run the same command again and it carries on:
+
+- Stopped before registering: the token hasn't been used, so the same command starts over and skips what it already fetched.
+- Stopped after registering: the host keeps the SHA-256 of the token it registered with (never the token), so the same command carries on without using the token again.
+- With the same `--url` and no token: install updates the binary, the images and the service, and keeps the registration.
+- With a different token: the machine registers again with that token.
+
+#### See what install will do
+
+`--dry-run` prints every step: each download with its URL and expected SHA-256, each directory and file it writes with its mode, the systemd unit and the `systemctl` commands, and the registration. Then it exits without changing anything, and without using the token:
+
+```sh
+curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --dry-run --url https://kantel.example.com --token kth_…
+```
+
+```text
+==> Download kantel-host
+  get    https://github.com/lleverage-ai/kantel/releases/latest/download/kantel-host-linux-amd64 (sha256 4f1c…, from …/SHA256SUMS): downloaded and checked now, into a temporary directory
+==> Check this machine
+  check  kvm: /dev/kvm opens read-write
+  check  nested virtualisation: kvm_amd nested=1
+==> Install kantel-host 0.3.0
+  copy   /tmp/tmp.Xb2/kantel-host-linux-amd64 to /usr/local/bin/kantel-host (mode 0755)
+==> Fetch Firecracker and the sandbox images
+  check  images host-images-20261103.1 from https://kantel.example.com/v1/hosts/images/manifest.json
+  mkdir  /var/lib/kantel-host
+  mkdir  /var/lib/kantel-host/bin
+  get    https://github.com/firecracker-microvm/firecracker/releases/download/v1.17.0/firecracker-v1.17.0-x86_64.tgz (sha256 0609…, from firecracker-v1.17.0-x86_64.tgz.sha256.txt), its firecracker-v1.17.0-x86_64 to /var/lib/kantel-host/bin/firecracker (mode 0755)
+  mkdir  /var/lib/kantel-host/images
+  get    https://kantel.example.com/v1/hosts/images/vmlinux-x86_64 to /var/lib/kantel-host/images/vmlinux (sha256 6ae3…, mode 0644)
+  get    https://kantel.example.com/v1/hosts/images/sandbox-amd64.ext4.gz to /var/lib/kantel-host/images/sandbox.ext4 (sha256 8500…, unpacked as it downloads, mode 0644)
+  get    https://kantel.example.com/v1/hosts/images/isolate-amd64.ext4.gz to /var/lib/kantel-host/images/isolate.ext4 (sha256 e670…, unpacked as it downloads, mode 0644)
+==> Register with https://kantel.example.com
+  post   https://kantel.example.com/v1/hosts/register as "builder-1", which uses the token up
+==> Save the settings
+  mkdir  /etc/kantel-host
+  write  /etc/kantel-host/config.json (mode 0600: the control plane, the host's ID and credential, and its settings)
+==> Start the service
+  write  /etc/systemd/system/kantel-host.service (the kantel-host systemd unit, mode 0644)
+  run    systemctl daemon-reload
+  run    systemctl enable --now kantel-host
+  run    systemctl restart kantel-host
+```
+
+It ends with what install leaves to the service, as above. The real output has the full digests. To read the plan, the dry run downloads only the images' `manifest.json` and Firecracker's digest. It needs root, like the install, to see `/dev/kvm` and the settings as the install would. A dry run fails where the install would, such as with no usable `/dev/kvm` or images it can't reach. The plan and the install come from the same list of steps, and the install prints each line as it does it. `sudo kantel-host install --dry-run …` does the same on a machine that already has `kantel-host`.
 
 | Flag | What it does |
 | --- | --- |
@@ -181,6 +232,7 @@ Without systemd, such as in a container, install stops after step 4: run `kantel
 | `--root DIR` | Where sandboxes live. Default `/var/lib/kantel-host` |
 | `--config FILE` | The settings file. Default `/etc/kantel-host/config.json` |
 | `--no-start` | Install and register, but don't start the service |
+| `--dry-run` | Print what the install would do, and change nothing. See [See what install will do](#see-what-install-will-do) |
 
 Put any of these after the token in the join command. `sudo kantel-admin host join --url … --token …` on the machine runs the same installer, and `kantel-admin host add --ssh root@builder-1` runs the printed command on the machine over SSH.
 

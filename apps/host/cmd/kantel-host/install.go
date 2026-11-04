@@ -83,121 +83,23 @@ func install(args []string) error {
 	proxyDataPath := fs.Bool("proxy-data-path", false, "turn on the egress data path (experimental): sandboxes' traffic goes through the control plane's proxy settings")
 	injectGuestAgent := fs.Bool("inject-guest-agent", false, "boot microVMs through Kantel's initramfs, which puts the guest agent into any Linux image (experimental)")
 	noStart := fs.Bool("no-start", false, "install and register, but don't start the service")
+	dryRun := fs.Bool("dry-run", false, "print every download, file, directory, unit, command and registration install would make, and change nothing (the token isn't used)")
 	_ = fs.Parse(args)
-	if os.Geteuid() != 0 {
-		return errors.New("install needs root: run it with sudo (sudo kantel-host install …)")
-	}
-	if *controlPlane == "" {
-		return errors.New("--url is required: Kantel's URL, such as https://kantel.example.com")
-	}
-	*controlPlane = strings.TrimRight(*controlPlane, "/")
-	cfg, _ := agent.LoadConfig(*configPath)
-	if cfg.Credential != "" && cfg.ControlPlane == *controlPlane && *token == "" {
-		fmt.Println("Already registered with", cfg.ControlPlane, "as", cfg.HostID, "; updating the install.")
-	} else if *token == "" {
-		return errors.New("--token is required: make one on Kantel's Hosts page (a kth_ token)")
-	}
-	cfg.ControlPlane = *controlPlane
-	// The installer's own files go back to where it puts them, under the new root; an operator's own sandbox image or
-	// guest agent (a custom image, see docs/sandboxes/custom-images) is kept, and fetchImages leaves it alone. Which
-	// is which is decided here alone (keptFiles).
-	image, agentBin, keep, err := keptFiles(cfg, *root)
+	in := thisMachine()
+	plan, err := in.planInstall(installOptions{
+		controlPlane: *controlPlane, token: *token, name: *name, images: *images, root: *root, configPath: *configPath,
+		tiers: *tiers, isolateRuntime: *isolateRuntime, labels: labels, proxyDataPath: *proxyDataPath,
+		injectGuestAgent: *injectGuestAgent, noStart: *noStart, dryRun: *dryRun,
+	})
 	if err != nil {
 		return err
 	}
-	cfg.Root = *root
-	if *name != "" {
-		cfg.Name = *name
-	}
-	if len(labels) > 0 {
-		cfg.Labels = labels
-	}
-	if *tiers != "" {
-		cfg.Tiers = strings.Split(*tiers, ",")
-	}
-	if *isolateRuntime != "" {
-		cfg.IsolateRuntime = *isolateRuntime
-	}
-	if *proxyDataPath {
-		cfg.ProxyDataPath = true
-	}
-	if *injectGuestAgent {
-		cfg.InjectGuestAgent = true
-	}
-	cfg.Kernel, cfg.SandboxImage, cfg.IsolateImage, cfg.Firecracker, cfg.Workerd, cfg.IsolateBundle, cfg.GuestAgent = "", image, "", "", "", "", agentBin
-	cfg.Defaults()
-
-	step("Checking this machine")
-	kvm, kvmDetail := hostinfo.KVM()
-	nested, nestedDetail := hostinfo.Nested()
-	fmt.Printf("  kvm: %v (%s)\n  nested virtualisation: %v (%s)\n", kvm, kvmDetail, nested, nestedDetail)
-	if !kvm && cfg.IsolateRuntime != "native" {
-		return errors.New("no usable /dev/kvm, so no microVMs and no isolate VMs: fix that (see `kantel-host doctor`), or install with --isolate-runtime native --tiers isolate to run isolates only, with workerd on this machine itself (trusted code only)")
-	}
-
-	step("Installing kantel-host " + version)
-	self, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	if self, err = filepath.EvalSymlinks(self); err != nil {
-		return err
-	}
-	if self != binPath {
-		if err := copyFile(self, binPath, 0o755); err != nil {
-			return err
-		}
-	}
-
-	step("Fetching Firecracker and the sandbox images")
-	source := *images
-	if source == "" {
-		source = cfg.ControlPlane + "/v1/hosts/images"
-	}
-	if err := fetchImages(cfg, source, kvm, keep); err != nil {
-		return err
-	}
-
-	if *token != "" {
-		step("Registering with " + cfg.ControlPlane)
-		hostID, credential, err := register(cfg, *token)
-		if err != nil {
-			return err
-		}
-		cfg.HostID, cfg.Credential = hostID, credential
-		fmt.Println("  registered as", hostID)
-	}
-	if err := cfg.Save(*configPath); err != nil {
-		return err
-	}
-
-	step("Starting the service")
-	if _, err := os.Stat("/run/systemd/system"); err != nil {
-		// A container, WSL without systemd, or another init: the install is done, the supervising is theirs.
-		fmt.Println("  no systemd on this machine: run `kantel-host run` under your own supervisor (as root, restarted when it exits)")
+	if *dryRun {
+		printPlan(in.out, plan)
 		return nil
 	}
-	if err := os.WriteFile(unitPath, []byte(unit), 0o644); err != nil {
-		return err
-	}
-	if out, err := runOutput("systemctl", "daemon-reload"); err != nil {
-		return fmt.Errorf("systemctl daemon-reload: %v: %s", err, out)
-	}
-	if *noStart {
-		fmt.Println("  installed; start it with: sudo systemctl enable --now kantel-host")
-		return nil
-	}
-	if out, err := runOutput("systemctl", "enable", "--now", "kantel-host"); err != nil {
-		return fmt.Errorf("systemctl enable --now kantel-host: %v: %s", err, out)
-	}
-	if out, err := runOutput("systemctl", "restart", "kantel-host"); err != nil {
-		return fmt.Errorf("systemctl restart kantel-host: %v: %s", err, out)
-	}
-	fmt.Println("\nDone. This host is on Kantel's Hosts page; `kantel-host status` and `journalctl -u kantel-host` show it here.")
-	return nil
+	return in.doPlan(plan)
 }
-
-func step(s string) { fmt.Println("==> " + s) }
 
 func runOutput(name string, args ...string) (string, error) {
 	out, err := exec.Command(name, args...).CombinedOutput()
@@ -288,87 +190,6 @@ func keptFiles(loaded agent.Config, newRoot string) (image, agentBin string, kee
 	return image, agentBin, kept{image: image != "", agent: agentBin != ""}, nil
 }
 
-func fetchImages(cfg agent.Config, source string, kvm bool, keep kept) error {
-	arch := archName()
-	// An operator's own sandbox image or guest agent: theirs to keep, not a release's to replace.
-	mine := func(own bool, dst, setting string) (bool, error) {
-		if !own {
-			return false, nil
-		}
-		if _, err := os.Stat(dst); err != nil {
-			return true, fmt.Errorf("the configured %s: %w", setting, err)
-		}
-		return true, nil
-	}
-	in, err := open(source, "manifest.json")
-	if err != nil {
-		return fmt.Errorf("images manifest at %s: %w", source, err)
-	}
-	var manifest ImageManifest
-	err = json.NewDecoder(in).Decode(&manifest)
-	in.Close()
-	if err != nil {
-		return fmt.Errorf("images manifest: %w", err)
-	}
-	if kvm {
-		if err := checkArch(manifest, arch); err != nil {
-			return fmt.Errorf("images at %s: %w", source, err)
-		}
-	}
-	get := func(name, dst string, mode os.FileMode, required bool) error {
-		f, ok := manifest.Files[name]
-		if !ok {
-			if required {
-				return fmt.Errorf("the images manifest has no %s", name)
-			}
-			return nil
-		}
-		return fetch(source, f, dst, mode)
-	}
-	if kvm {
-		if err := fetchFirecracker(cfg.Firecracker); err != nil {
-			return err
-		}
-		if err := get("vmlinux-"+arch, cfg.Kernel, 0o644, true); err != nil {
-			return err
-		}
-		if own, err := mine(keep.image, cfg.SandboxImage, "sandboxImage"); err != nil {
-			return err
-		} else if !own {
-			if err := get("sandbox-"+arch+".ext4", cfg.SandboxImage, 0o644, true); err != nil {
-				return err
-			}
-		}
-		if err := get("isolate-"+arch+".ext4", cfg.IsolateImage, 0o644, false); err != nil {
-			return err
-		}
-		// The static agent the initramfs is made from (injectGuestAgent); required only when that's on.
-		if own, err := mine(keep.agent, cfg.GuestAgent, "guestAgent"); err != nil {
-			return err
-		} else if !own {
-			if err := get("kantel-guest-"+arch, cfg.GuestAgent, 0o755, cfg.InjectGuestAgent); err != nil {
-				return err
-			}
-		}
-	}
-	if cfg.IsolateRuntime == "native" {
-		if err := get("workerd-"+arch, cfg.Workerd, 0o755, true); err != nil {
-			return err
-		}
-		if f, ok := manifest.Files["isolate-bundle.tar.gz"]; ok {
-			r, err := open(source, f.Path)
-			if err != nil {
-				return err
-			}
-			defer r.Close()
-			if err := untar(r, cfg.IsolateBundle); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
 // checkArch says, before anything is downloaded, when the images are for other architectures only: one release holds
 // each architecture's kernel and sandbox image side by side (vmlinux-<arch>, sandbox-<arch>.ext4), and a host takes
 // its own.
@@ -393,13 +214,6 @@ func checkArch(manifest ImageManifest, arch string) error {
 			arch, strings.Join(missing, ", "), strings.Join(others, ", "), arch, arch)
 	}
 	return fmt.Errorf("the images manifest has no %s", strings.Join(missing, " or "))
-}
-
-// fetchFirecracker gets Firecracker's release from GitHub and checks it against the release's SHA256SUMS.
-func fetchFirecracker(dst string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer cancel()
-	return images.FetchFirecracker(ctx, dst, FirecrackerVersion)
 }
 
 func untar(r io.Reader, dir string) error {

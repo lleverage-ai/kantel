@@ -18,9 +18,12 @@ type Config struct {
 	ControlPlane string `json:"controlPlane"`
 	HostID       string `json:"hostId,omitempty"`
 	// Credential is the host's khc_ credential. Kept in this file, readable by root only.
-	Credential string            `json:"credential,omitempty"`
-	Name       string            `json:"name,omitempty"`
-	Labels     map[string]string `json:"labels,omitempty"`
+	Credential string `json:"credential,omitempty"`
+	// TokenSHA256 is the SHA-256 of the kth_ token the host registered with, so running the same join command again
+	// after an interruption carries on rather than trying to use the token a second time. Never the token itself.
+	TokenSHA256 string            `json:"tokenSha256,omitempty"`
+	Name        string            `json:"name,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
 
 	// Root holds sandboxes, snapshots and templates (default /var/lib/kantel-host).
 	Root string `json:"root,omitempty"`

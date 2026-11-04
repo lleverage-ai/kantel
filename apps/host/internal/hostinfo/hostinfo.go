@@ -4,9 +4,11 @@ package hostinfo
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -16,11 +18,35 @@ import (
 
 // Check is one prerequisite, as `kantel-host doctor` shows it.
 type Check struct {
-	Name   string `json:"name"`
-	OK     bool   `json:"ok"`
+	Name string `json:"name"`
+	// OK is State == StateOK.
+	OK bool `json:"ok"`
+	// State is ok, fail or unknown (it couldn't be found out, which never counts as ok).
+	State  string `json:"state"`
 	Detail string `json:"detail"`
 	// Needed for the microVM tier (the isolate tier runs without them, natively).
 	MicroVM bool `json:"microvm"`
+	// Required: kantel-host can't run what it's asked to without it. The others are advice.
+	Required bool `json:"required"`
+}
+
+// A check's states.
+const (
+	StateOK      = "ok"
+	StateFail    = "fail"
+	StateUnknown = "unknown"
+)
+
+func newCheck(name string, ok bool, detail string, microVM bool) Check {
+	state := StateFail
+	if ok {
+		state = StateOK
+	}
+	return Check{Name: name, OK: ok, State: state, Detail: detail, MicroVM: microVM}
+}
+
+func unknownCheck(name, detail string) Check {
+	return Check{Name: name, State: StateUnknown, Detail: detail}
 }
 
 // KVM reports whether /dev/kvm opens read-write.
@@ -114,6 +140,24 @@ func FreeDiskGiB(path string) int64 {
 	return int64(st.Bavail) * int64(st.Bsize) >> 30
 }
 
+// FreeDiskAt is the free space on the filesystem that will hold path: path's own, or, before it exists, that of its
+// nearest directory that does. at is the directory measured.
+func FreeDiskAt(path string) (gib int64, at string, err error) {
+	at = filepath.Clean(path)
+	for {
+		var st syscall.Statfs_t
+		err = syscall.Statfs(at, &st)
+		if err == nil {
+			return int64(st.Bavail) * int64(st.Bsize) >> 30, at, nil
+		}
+		parent := filepath.Dir(at)
+		if !errors.Is(err, os.ErrNotExist) || parent == at {
+			return 0, at, err
+		}
+		at = parent
+	}
+}
+
 // Load1 is the one-minute load average.
 func Load1() float64 {
 	raw, err := os.ReadFile("/proc/loadavg")
@@ -152,36 +196,63 @@ func Arch() string {
 	return "x86_64"
 }
 
-// Checks runs every prerequisite check.
-func Checks(root string) []Check {
+// Checks runs every prerequisite check. native is a host that runs isolates with workerd on itself (isolateRuntime
+// "native"), which needs root and Linux but none of the microVM tier's other checks.
+func Checks(root string, native bool) []Check {
 	var out []Check
 	ok, detail := KVM()
-	out = append(out, Check{Name: "kvm", OK: ok, Detail: detail, MicroVM: true})
+	out = append(out, newCheck("kvm", ok, detail, true))
 	nested, ndetail := Nested()
-	out = append(out, Check{Name: "nested virtualisation", OK: nested, Detail: ndetail})
+	out = append(out, newCheck("nested virtualisation", nested, ndetail, false))
 	if InVM() {
-		out = append(out, Check{Name: "host is a VM", OK: ok, Detail: "this host is itself a virtual machine: microVMs need its hypervisor to expose nested virtualisation"})
+		out = append(out, newCheck("host is a VM", ok, "this host is itself a virtual machine: microVMs need its hypervisor to expose nested virtualisation", false))
 	}
-	out = append(out, Check{Name: "root", OK: os.Geteuid() == 0, Detail: "kantel-host runs as root (TAP devices, iptables, /dev/kvm)", MicroVM: true})
+	out = append(out, newCheck("root", os.Geteuid() == 0, "kantel-host runs as root (TAP devices, iptables, /dev/kvm)", true))
 	for _, tool := range []string{"ip", "iptables", "mkfs.ext4", "cp"} {
 		_, err := lookPath(tool)
-		out = append(out, Check{Name: tool, OK: err == nil, Detail: pathDetail(tool, err), MicroVM: true})
+		out = append(out, newCheck(tool, err == nil, pathDetail(tool, err), true))
 	}
 	docker, ddetail := Docker()
-	out = append(out, Check{Name: "docker", OK: docker, Detail: ddetail})
+	// Advice: only template builds need Docker.
+	out = append(out, newCheck("docker", docker, ddetail, false))
 	if _, err := os.Stat("/dev/net/tun"); err != nil {
-		out = append(out, Check{Name: "tun", OK: false, Detail: "/dev/net/tun is missing (modprobe tun)", MicroVM: true})
+		out = append(out, newCheck("tun", false, "/dev/net/tun is missing (modprobe tun)", true))
 	} else {
-		out = append(out, Check{Name: "tun", OK: true, Detail: "/dev/net/tun", MicroVM: true})
+		out = append(out, newCheck("tun", true, "/dev/net/tun", true))
 	}
-	free := FreeDiskGiB(root)
-	out = append(out, Check{Name: "disk", OK: free >= 20, Detail: fmt.Sprintf("%d GiB free at %s (20 GiB or more recommended)", free, root)})
-	mem := MemoryMiB()
-	out = append(out, Check{Name: "memory", OK: mem >= 4096, Detail: fmt.Sprintf("%d MiB (4 GiB or more recommended)", mem)})
+	// Before the first install root doesn't exist: measure the filesystem it will be made on.
+	if free, at, err := FreeDiskAt(root); err != nil {
+		out = append(out, unknownCheck("disk", fmt.Sprintf("free space at %s: %v", at, err)))
+	} else {
+		where := at
+		if at != filepath.Clean(root) {
+			where = at + ", which will hold " + root
+		}
+		out = append(out, newCheck("disk", free >= 20, fmt.Sprintf("%d GiB free at %s (20 GiB or more recommended)", free, where), false))
+	}
+	if mem := MemoryMiB(); mem == 0 {
+		out = append(out, unknownCheck("memory", "couldn't read MemTotal from /proc/meminfo"))
+	} else {
+		out = append(out, newCheck("memory", mem >= 4096, fmt.Sprintf("%d MiB (4 GiB or more recommended)", mem), false))
+	}
 	if runtime.GOOS != "linux" {
-		out = append(out, Check{Name: "os", OK: false, Detail: runtime.GOOS + ": only Linux hosts run sandboxes for now", MicroVM: true})
+		out = append(out, newCheck("os", false, runtime.GOOS+": only Linux hosts run sandboxes for now", true))
+	}
+	for i := range out {
+		c := &out[i]
+		c.Required = c.MicroVM && (!native || c.Name == "root" || c.Name == "os")
 	}
 	return out
+}
+
+// Passed is whether every required check is ok: one that failed or couldn't be found out doesn't pass.
+func Passed(checks []Check) bool {
+	for _, c := range checks {
+		if c.Required && c.State != StateOK {
+			return false
+		}
+	}
+	return true
 }
 
 // Docker reports whether the host's Docker answers: templates' images are built with it. Only template builds need
