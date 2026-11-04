@@ -58,6 +58,7 @@ export type {
 } from "./compute/compute-model.ts";
 export {
 	DeviceSetupError,
+	FilesRefusedError,
 	FileTooLargeError,
 	sameProxySettings,
 } from "./compute/compute-model.ts";

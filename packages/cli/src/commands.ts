@@ -28,7 +28,7 @@ import {
 	type SandboxType,
 } from "@kantel/api/sdk";
 import type { EntryBody } from "@kantel/e2e/chain";
-import { type ByteChannel, SessionClient } from "@kantel/e2e/session";
+import { type ByteChannel, SessionClient, SessionError } from "@kantel/e2e/session";
 import {
 	AGENTS_BLOCK,
 	agentsGuide,
@@ -82,7 +82,7 @@ import {
 	parseGrant,
 	withoutProtectedValues,
 } from "./environments.ts";
-import { CliError, UsageError } from "./errors.ts";
+import { CliError, HostAnswerError, UsageError } from "./errors.ts";
 import { ago, bytes, duration, fields, money, table, timestamp, until } from "./format.ts";
 import { openInBrowser, type PendingLogin, readPendingLogin, startLogin, waitForLogin } from "./login.ts";
 import { createMcpServer, serveStdio } from "./mcp.ts";
@@ -1018,6 +1018,8 @@ async function e2eCall<T>(ctx: Context, sandboxId: string, method: string, param
 	try {
 		return await client.call<T>(method, params);
 	} catch (error) {
+		// The host's own refusal keeps its code, for `kantel console` to pass on (a path it won't read isn't a failure).
+		if (error instanceof SessionError && error.answered) throw new HostAnswerError(error.code, error.message);
 		throw e2eFailure(error);
 	} finally {
 		client.close();

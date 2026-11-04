@@ -355,6 +355,14 @@ export class DeviceSetupError extends Error {
 	override readonly name = "DeviceSetupError";
 }
 
+/**
+ * A folder or file the sandbox won't read: outside what it has (an isolate has only /workspace), or not there. Trying
+ * again won't change it, so the browser says so in a line, never as an error to try again.
+ */
+export class FilesRefusedError extends Error {
+	override readonly name = "FilesRefusedError";
+}
+
 export interface SnapshotsSource {
 	saved(accountId: string): Promise<readonly SavedSnapshot[]>;
 	/** Each sandbox's history, newest first. */
@@ -368,6 +376,11 @@ export interface SnapshotsSource {
 	read(snapshotId: string, path: string, range: FileRange): Promise<FilePart>;
 	/** A link to download a file or folder (as a tarball), or undefined where there is none: no Download then. */
 	downloadUrl(snapshotId: string, path: string): string | undefined;
+	/**
+	 * The kind of sandbox a snapshot is of, which says where its files start (an isolate's at /workspace), for a link to
+	 * its files that doesn't say. Absent: such a link shows the whole of the snapshot from its root.
+	 */
+	kindOf?(snapshotId: string): Promise<SandboxKind>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

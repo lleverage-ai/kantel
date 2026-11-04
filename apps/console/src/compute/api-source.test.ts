@@ -13,7 +13,7 @@ import {
 } from "@kantel/compute";
 import { createStubBackend, STUB_HOST_ID } from "@kantel/compute/stub";
 import { KantelError } from "@kantel/contracts";
-import type { ComputeSource } from "@kantel/ui";
+import { type ComputeSource, FilesRefusedError } from "@kantel/ui";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { apiCompute, SCREENS_NOT_END_TO_END, SCREENS_NOT_SERVED } from "./api-source.ts";
 import { localBridge } from "./local.ts";
@@ -358,6 +358,50 @@ describe("sandboxes", () => {
 		expect(gatewayFiles).toEqual([]);
 	});
 
+	it("tells a host's refusal of a path through `kantel console` from a session that failed", async () => {
+		const { api, fetchApi } = setup();
+		const plain = await open(fetchApi);
+		const accountId = await personalAccount(plain);
+		const made = await plain.sandboxes.create({ accountId, kind: "microvm", size: "small" });
+		await api.service.idle();
+		// What `kantel console` answers: the host's own refusal with its code, else a session that didn't get there.
+		const localFetch: typeof fetch = async (input, init) => {
+			const path = String(input);
+			if (path === "/local/info") return Response.json({ local: true, spaces: [{ id: accountId, mode: "on" }] });
+			if (path === "/local/e2e") {
+				const { params } = JSON.parse(String(init?.body)) as { params: { path: string } };
+				if (params.path === "/home/user") {
+					return Response.json(
+						{ error: { code: "e2e", message: "no such directory", hostCode: "not_found" } },
+						{ status: 502 },
+					);
+				}
+				if (params.path === "/home/user/secret") {
+					return Response.json({ error: { code: "e2e", message: "outside", hostCode: "invalid" } }, { status: 502 });
+				}
+				return Response.json({ error: { code: "e2e", message: "The relay closed the stream" } }, { status: 502 });
+			}
+			return fetchApi(input, init);
+		};
+		const local = await localBridge(localFetch, "127.0.0.1");
+		const source = await apiCompute({
+			headers: () => ({ authorization: "Bearer person-ada" }),
+			fetch: localFetch,
+			...(local === undefined ? {} : { local }),
+		});
+		const files = source.sandboxes.files;
+		if (files === undefined) throw new Error("No files");
+		// A start the image hasn't got, and a read the host won't do: refusals, with no Try again.
+		await expect(files.list(made.id, "home/user")).rejects.toBeInstanceOf(FilesRefusedError);
+		await expect(files.read(made.id, "home/user/secret", { offset: 0, length: 5 })).rejects.toBeInstanceOf(
+			FilesRefusedError,
+		);
+		// The session not getting there is a failure, to try again.
+		const dropped = await files.list(made.id, "tmp").catch((error: unknown) => error);
+		expect(dropped).toBeInstanceOf(Error);
+		expect(dropped).not.toBeInstanceOf(FilesRefusedError);
+	});
+
 	it("shows what the host gave a microVM, and names sizes without figures", async () => {
 		const { api, fetchApi } = setup();
 		const source = await open(fetchApi);
@@ -418,6 +462,37 @@ describe("sandboxes", () => {
 		expect(fine?.output).toBeUndefined();
 		expect(failed?.output).toContain("broken");
 	});
+
+	it("reads a path the sandbox refuses (outside an isolate's /workspace) as a refusal, and a failure as a failure", async () => {
+		const { api, fetchApi } = setup();
+		const plain = await open(fetchApi);
+		const accountId = await personalAccount(plain);
+		const made = await plain.sandboxes.create({ accountId, kind: "isolate", size: "small" });
+		await api.service.idle();
+		// The host's answers for an isolate, as the gateway passes them on: `invalid` for a path outside /workspace,
+		// `not_found` for one that isn't there, and `unavailable` when it can't reach the host.
+		const answers: Record<string, { status: number; code: string; message: string }> = {
+			"/": { status: 400, code: "invalid", message: "/ is outside /workspace, an isolate's only files" },
+			"/workspace/gone": { status: 404, code: "not_found", message: "no directory /workspace/gone" },
+			"/workspace": { status: 503, code: "unavailable", message: "The host isn't connected" },
+		};
+		const source = await open(async (input, init) => {
+			const url = new URL(input instanceof Request ? input.url : String(input), ORIGIN);
+			const answer = answers[url.searchParams.get("path") ?? ""];
+			if (!url.pathname.endsWith("/files/list") || answer === undefined) return fetchApi(input, init);
+			return Response.json({ error: { code: answer.code, message: answer.message } }, { status: answer.status });
+		});
+		const files = source.sandboxes.files;
+		if (files === undefined) throw new Error("No files");
+		const outside = await files.list(made.id, "").catch((error: unknown) => error);
+		expect(outside).toBeInstanceOf(FilesRefusedError);
+		expect((outside as Error).message).toBe("/ is outside /workspace, an isolate's only files");
+		await expect(files.list(made.id, "workspace/gone")).rejects.toBeInstanceOf(FilesRefusedError);
+		// A host that's away is worth trying again: not a refusal.
+		const away = await files.list(made.id, "workspace").catch((error: unknown) => error);
+		expect(away).toBeInstanceOf(Error);
+		expect(away).not.toBeInstanceOf(FilesRefusedError);
+	});
 });
 
 describe("snapshots", () => {
@@ -454,6 +529,21 @@ describe("snapshots", () => {
 
 		await source.snapshots.removeSaved(saved.id);
 		expect(await source.snapshots.saved(accountId)).toEqual([]);
+	});
+
+	it("says what kind of sandbox a snapshot is of, for a link to its files, and refuses a folder that isn't there", async () => {
+		const { api, fetchApi } = setup();
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const sandbox = await source.sandboxes.create({ accountId, kind: "isolate", size: "small" });
+		await api.service.idle();
+		await source.sandboxes.stop(sandbox.id);
+		await api.service.idle();
+		const [taken] = await source.snapshots.history(sandbox.id);
+		if (taken === undefined) throw new Error("No snapshot");
+		expect(await source.snapshots.kindOf?.(taken.id)).toBe("isolate");
+		const gone = await source.snapshots.list(taken.id, "home/user/nowhere").catch((error: unknown) => error);
+		expect(gone).toBeInstanceOf(FilesRefusedError);
 	});
 });
 

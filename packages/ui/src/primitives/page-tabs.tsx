@@ -1,14 +1,20 @@
 // Styled with Tailwind utilities (src/tokens/tailwind.css, docs/tailwind.md).
 
-/** The row: the tabs on one line over a hairline that runs the width of the page, scrolling sideways if they don't fit. */
-const row = "kt-page-tabs flex min-w-0 gap-5 overflow-x-auto border-b border-border";
+/**
+ * The row: the tabs on one line over a hairline that runs the width of the page, scrolling sideways (never up and down,
+ * and with no scrollbar) if they don't fit. The hairline is an inset shadow inside the row, not a border below it, so
+ * the shown tab's bar covers it without reaching past the row's box: a tab that did made the row scroll by a pixel, with
+ * a scrollbar to match.
+ */
+const row =
+	"kt-page-tabs flex min-w-0 gap-5 overflow-x-auto overflow-y-hidden shadow-[inset_0_-1px_0_var(--kt-border)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden";
 
 /**
  * A tab: a link the height of a control, its words muted until it is the view shown, which is in full-strength text
- * with a bar under it sitting on the row's hairline.
+ * with a bar under it over the row's hairline.
  */
 const tab =
-	"kt-page-tab kt-focusable relative -mb-px flex h-control-lg flex-none items-center gap-1.5 border-b-2 text-sm whitespace-nowrap no-underline focus-visible:-outline-offset-(--kt-ring)!";
+	"kt-page-tab kt-focusable relative flex h-control-lg flex-none items-center gap-1.5 border-b-2 text-sm whitespace-nowrap no-underline focus-visible:-outline-offset-(--kt-ring)!";
 const tabState = {
 	selected: "border-fg font-medium text-fg",
 	idle: "border-transparent text-muted hover:text-fg",

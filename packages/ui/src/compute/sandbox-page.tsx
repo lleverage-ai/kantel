@@ -43,7 +43,7 @@ import { SandboxLogs } from "./sandbox-logs.tsx";
 import { SandboxPorts } from "./sandbox-ports.tsx";
 import { embedUrl, popOut, SandboxViewer, ScreenPreview, type ScreenView } from "./sandbox-screen.tsx";
 import { showsCpu } from "./sandboxes-page.tsx";
-import { type FilesAt, SnapshotFiles } from "./snapshot-files.tsx";
+import { type FilesAt, filesRoot, SnapshotFiles } from "./snapshot-files.tsx";
 import { agoText, SandboxHistory } from "./snapshots-page.tsx";
 
 /** The page's tabs. */
@@ -195,9 +195,9 @@ export function SandboxPage({
 }: SandboxPageProps) {
 	const { state, reload } = useLoad(() => source.get(sandboxId), [source, sandboxId]);
 	const [own, setOwn] = useState<SandboxView>(initialView);
-	const [ownFiles, setOwnFiles] = useState<FilesAt>(filesAt ?? { path: "" });
+	const [ownFiles, setOwnFiles] = useState<FilesAt>(filesAt ?? {});
 	const routed = navigate !== undefined && filesHref !== undefined;
-	const files = routed ? (filesAt ?? { path: "" }) : ownFiles;
+	const files = routed ? (filesAt ?? {}) : ownFiles;
 	const goFiles = (at: FilesAt) => {
 		if (routed) navigate(filesHref(at, sealed));
 		else setOwnFiles(at);
@@ -886,6 +886,7 @@ function SnapshotsTab({
 					key={browsing.snapshotId}
 					source={source}
 					snapshotId={browsing.snapshotId}
+					root={filesRoot(sandbox.kind)}
 					at={browsing.at}
 					now={now}
 					backLabel="Back to snapshots"
@@ -901,7 +902,7 @@ function SnapshotsTab({
 				source={source}
 				sandbox={sandbox}
 				now={now}
-				onBrowse={(snap) => setBrowsing({ snapshotId: snap.id, at: { path: "" } })}
+				onBrowse={(snap) => setBrowsing({ snapshotId: snap.id, at: {} })}
 				onNotice={onNotice}
 			/>
 		</div>
@@ -950,7 +951,8 @@ function FilesTab({
 }) {
 	const shown = filesShown(sandbox, source, endToEnd);
 	const files = source.files;
-	const browse = { at, now, onNavigate, ...(href === undefined ? {} : { href }) };
+	// An isolate's files are its /workspace only; a microVM's open at /home/user and go up to /.
+	const browse = { at, now, onNavigate, root: filesRoot(sandbox.kind), ...(href === undefined ? {} : { href }) };
 	if (shown === "checking") return <Skeleton width="40%" />;
 	if (shown === "unchecked" && endToEnd.status === "error") {
 		return (
