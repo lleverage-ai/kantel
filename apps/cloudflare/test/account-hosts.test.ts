@@ -17,6 +17,7 @@ import { type ObjectSqlLike, objectSqlDriver } from "../src/audit-outbox.ts";
 import {
 	COMPUTE_MEMBERS_ONLY,
 	createStackCompute,
+	HOST_E2E_CHAIN_BODY_LIMIT,
 	HOST_REGISTER_BODY_LIMIT,
 	hostCredential,
 	type MessageSocket,
@@ -306,6 +307,26 @@ describe("Account hosts on the Worker", () => {
 		if (held === undefined) throw new Error("The host's credential was refused");
 		host.attach(held, hostId);
 		await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
+
+		// The host's E2E chain is served on its credential (`kantel-host e2e join`), and an append's body is bounded.
+		const account = (await call("GET", "/v1/whoami")).body.accountId as string;
+		const chainOf = (init: RequestInit, auth = credential) =>
+			hosts.fetch(
+				new Request(`${BASE}/v1/hosts/e2e/chain?space=${account}`, {
+					...init,
+					headers: { authorization: `Bearer ${auth}`, "content-type": "application/json" },
+				}),
+			);
+		const read = await chainOf({ method: "GET" });
+		expect(read?.status).toBe(200);
+		expect(await read?.json()).toEqual({ entries: [] });
+		expect((await chainOf({ method: "GET" }, "khc_wrong"))?.status).toBe(401);
+		const big = JSON.stringify({
+			space: account,
+			from: 0,
+			entries: [{ payload: "x".repeat(HOST_E2E_CHAIN_BODY_LIMIT), sig: "" }],
+		});
+		expect((await chainOf({ method: "POST", body: big }))?.status).toBe(413);
 
 		// New sandboxes go on the host; the old one starts again on the stub, where its disk is, and forks there.
 		const fresh = await call("POST", "/v1/sandboxes", { type: "microvm", wait: true });

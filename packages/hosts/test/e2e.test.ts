@@ -174,6 +174,7 @@ class E2EHost {
 }
 
 const ROOT = { userId: "usr_root", name: "Root", superAdmin: true };
+const BOB = { userId: "usr_bob", name: "Bob", superAdmin: false };
 const closers: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
 	for (const close of closers.splice(0).reverse()) await close();
@@ -184,7 +185,10 @@ async function setup() {
 	const tickets = createTunnelTickets(createMemoryRelayStore());
 	const api: ComputeApi = createComputeApi({
 		backend: createHostBackend({ hosts: service, publicUrl: "https://kantel.test", tickets, attributionKey: "k" }),
-		authenticatePerson: async (request) => (request.headers.get("authorization") === "Bearer root" ? ROOT : undefined),
+		authenticatePerson: async (request) => {
+			const authorization = request.headers.get("authorization");
+			return authorization === "Bearer root" ? ROOT : authorization === "Bearer bob" ? BOB : undefined;
+		},
 		fetch: async () => new Response(null, { status: 204 }),
 		publicUrl: "https://kantel.test",
 	});
@@ -202,12 +206,10 @@ async function setup() {
 		() => service.close(),
 		() => api.close(),
 	);
-	const root = createKantelClient({
-		baseUrl: "https://kantel.test/v1",
-		token: "root",
-		fetch: (input, init) =>
-			api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
-	});
+	const gatewayFetch = (input: string | URL | Request, init?: RequestInit) =>
+		api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 }));
+	const as = (token: string) => createKantelClient({ baseUrl: "https://kantel.test/v1", token, fetch: gatewayFetch });
+	const root = as("root");
 	const token = await root.createHostJoinToken({ name: "rack-1" });
 	const { hostId, credential } = await service.register({ token: token.token, facts });
 	const host = new E2EHost(service, hostId);
@@ -224,7 +226,7 @@ async function setup() {
 		);
 		return (await (response as Response).json()) as { entries: ChainEntry[] };
 	};
-	return { service, api, root, tickets, host, hostId, hostCall };
+	return { service, api, root, as, gatewayFetch, tickets, host, hostId, hostCall };
 }
 
 /** An organisation's E2E space through the API: Root's device starts it, the host joins it with Root's ticket. */
@@ -324,6 +326,81 @@ describe("E2E through the gateway", () => {
 			expect(contains(toGateway, utf8(secret))).toBe(false);
 		}
 		expect(contains(toHost, s.device.static.publicKey)).toBe(false);
+	});
+
+	it("takes a signed append from an account:read key as from its person, and nothing more", async () => {
+		const s = await setup();
+		const sandbox = await s.root.createSandbox({ type: "microvm", wait: true });
+		const accountId = sandbox.accountId;
+		const keyed = async (body: Parameters<typeof s.root.createApiKey>[0], by = s.root) =>
+			s.as((await by.createApiKey(body)).secret);
+		const device = await newIdentity();
+		const by = { id: await keyId("kd", device.signer.publicKey), signer: device.signer };
+		const genesisFor = async (user: string, signer = by) =>
+			signEntry(
+				undefined,
+				accountId,
+				{ type: "genesis", body: { mode: "on", device: await chainDevice(device, user, "cli", "laptop") } },
+				signer,
+				Date.now(),
+			);
+		const code = (call: Promise<unknown>) =>
+			call.then(
+				() => "ok",
+				(error: unknown) => (error as KantelApiError).code,
+			);
+		const genesis = await genesisFor(ROOT.userId);
+
+		// Refused: no account:read, a key limited to a sandbox, a genesis naming someone else, a forged signature.
+		const unscoped = await keyed({ name: "writer", scopes: ["sandboxes:write"] });
+		expect(await code(unscoped.appendE2EChain(accountId, { from: 0, entries: [genesis] }))).toBe("forbidden");
+		const limited = await keyed({ name: "one", scopes: ["account:read"], sandboxIds: [sandbox.id] });
+		expect(await code(limited.appendE2EChain(accountId, { from: 0, entries: [genesis] }))).toBe("forbidden");
+		const key = await keyed({ name: "laptop", scopes: ["account:read"] });
+		expect(await code(key.appendE2EChain(accountId, { from: 0, entries: [await genesisFor(BOB.userId)] }))).toBe(
+			"forbidden",
+		);
+		const other = await newIdentity();
+		const forged = await genesisFor(ROOT.userId, { id: by.id, signer: other.signer });
+		expect(await code(key.appendE2EChain(accountId, { from: 0, entries: [forged] }))).toBe("invalid");
+		// Bob's key acts only in his own account.
+		const bobs = await keyed({ name: "bob", scopes: ["account:read"] }, s.as("bob"));
+		expect(await code(bobs.appendE2EChain(accountId, { from: 0, entries: [genesis] }))).not.toBe("ok");
+		expect((await s.root.getE2EChain(accountId)).entries).toEqual([]);
+
+		// Taken: Root's own key, with the genesis listing Root's device.
+		expect((await key.appendE2EChain(accountId, { from: 0, entries: [genesis] })).entries).toEqual([genesis]);
+		const state = await verifyChain([genesis]);
+		const mode = await signEntry(state, accountId, { type: "mode", body: { mode: "strict" } }, by, Date.now());
+		expect((await key.appendE2EChain(accountId, { from: 1, entries: [mode] })).entries).toHaveLength(2);
+	});
+
+	it("lets a shared host read a space's chain only while it holds one of its sandboxes or is enrolled", async () => {
+		const s = await space();
+		const bob = s.as("bob");
+		const bobs = (await bob.getCaller()).accountId as string;
+		const refused = { error: { code: "not_found" } };
+		// Nothing of Bob's is on it.
+		expect(await s.hostCall("GET", bobs)).toMatchObject(refused);
+		// A sandbox of his, running or stopped (its disk is there), lets it.
+		const box = await bob.createSandbox({ type: "microvm", wait: true });
+		expect(await s.hostCall("GET", bobs)).toEqual({ entries: [] });
+		// The records as stop and delete leave them (this host's twin, joined to an E2E space, takes no gateway call):
+		// a deleted sandbox's keeps its hostId.
+		const as = async (id: string, state: "stopped" | "deleted") => {
+			const stored = await s.api.store.sandboxes.get(id);
+			if (stored === undefined) throw new Error(`No record of ${id}`);
+			await s.api.store.sandboxes.put({ ...stored, state });
+		};
+		await as(box.id, "stopped");
+		expect(await s.hostCall("GET", bobs)).toEqual({ entries: [] });
+		// Deleted, that is no longer enough.
+		await as(box.id, "deleted");
+		expect((await s.api.store.sandboxes.get(box.id))?.hostId).toBe(s.hostId);
+		expect(await s.hostCall("GET", bobs)).toMatchObject(refused);
+		// Enrolled in Root's space, it still reads it once Root's sandbox there is gone.
+		await as(s.sandbox.id, "deleted");
+		expect((await s.hostCall("GET", s.accountId)).entries).toHaveLength(2);
 	});
 
 	it("keeps no chain that wouldn't verify, and no second entry at one seq", async () => {

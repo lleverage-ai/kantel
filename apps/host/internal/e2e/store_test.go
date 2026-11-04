@@ -12,6 +12,71 @@ type joinVector struct {
 	Entries      []Entry `json:"entries"`
 	Word         string  `json:"word"`
 	OtherEntries []Entry `json:"otherEntries"`
+	Race         struct {
+		Entry Entry  `json:"entry"`
+		Word  string `json:"word"`
+	} `json:"race"`
+}
+
+// A host.add the gateway refused because another append took its seq first isn't kept as the chain: the host joins
+// the chain the gateway took, and what it accepted before stays fork- and rollback-protected.
+func TestAHostAddThatLostItsSeqIsDroppedOnTheNextJoin(t *testing.T) {
+	var v joinVector
+	readVector(t, "join.json", &v)
+	store, _ := OpenStore(t.TempDir())
+	join, _ := DecodeJoinTicket(v.Word)
+	lost, _, err := store.Join(join, v.Entries, "host_two", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The gateway answered conflict: an admin's member.add went in at that seq.
+	canonical := append(append([]Entry{}, v.Entries...), v.Race.Entry)
+	again, _ := DecodeJoinTicket(v.Race.Word)
+	entry, st, err := store.Join(again, canonical, "host_two", time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatalf("the host couldn't follow the chain the gateway took: %v", err)
+	}
+	if entry == lost || entry.Payload == "" {
+		t.Fatal("the host published its lost host.add again rather than one on the chain as it is")
+	}
+	if _, ok := st.Hosts["host_two"]; !ok || st.Seq != len(canonical) {
+		t.Fatalf("seq %d, hosts %v", st.Seq, st.Hosts)
+	}
+	if _, err := VerifyChain(append(append([]Entry{}, canonical...), entry), ""); err != nil {
+		t.Fatal(err)
+	}
+	got := store.Space(st.Space).Entries(0)
+	if len(got) != len(canonical)+1 || got[len(v.Entries)] != v.Race.Entry {
+		t.Fatalf("the host holds %d entries", len(got))
+	}
+	// Published, that host.add is the chain: the gateway's going back to the lost one, or before it, is refused.
+	if _, _, err := store.Join(join, append(append([]Entry{}, v.Entries...), lost), "host_two", time.Now()); err == nil {
+		t.Fatal("the host went back to the host.add it dropped")
+	}
+	if _, _, err := store.Join(again, v.Entries, "host_two", time.Now()); err == nil {
+		t.Fatal("the host's chain was rolled back past the member.add")
+	}
+}
+
+// Only this host's own last, unaccepted host.add is dropped: a chain the gateway forks anywhere else is still refused.
+func TestAForkBeforeTheHostAddIsStillRefused(t *testing.T) {
+	var v joinVector
+	readVector(t, "join.json", &v)
+	store, _ := OpenStore(t.TempDir())
+	join, _ := DecodeJoinTicket(v.Word)
+	if _, _, err := store.Join(join, v.Entries, "host_two", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	// The gateway drops the chain's last device.add and puts the member.add there instead (its seq is wrong for it,
+	// so it doesn't verify either way): refused as a fork, not followed.
+	forked := append(append([]Entry{}, v.Entries[:len(v.Entries)-1]...), v.Race.Entry)
+	again, _ := DecodeJoinTicket(v.Race.Word)
+	if _, _, err := store.Join(again, forked, "host_two", time.Now()); err == nil {
+		t.Fatal("the host followed a chain that forks before its host.add")
+	}
+	if got := store.Space("acc_org").Entries(0); len(got) != len(v.Entries)+1 {
+		t.Fatalf("the host's chain has %d entries", len(got))
+	}
 }
 
 func TestJoinSignsAHostAddTheChainTakes(t *testing.T) {

@@ -516,6 +516,12 @@ func (s *Store) join(join *JoinTicket, entries []Entry, hostID string, now time.
 		if cur.Genesis != genesis {
 			return Entry{}, nil, fmt.Errorf("this host already holds another chain for %s", space)
 		}
+		if !samePrefix(have, entries) && lostHostAdd(have, entries, cur, hostID, id.DHPublic()) {
+			// This host's own last host.add lost its seq to another entry the gateway took: it was never in the chain
+			// anyone else follows, so it is dropped, and the host joins the chain as it is (with a new ticket, if the
+			// chain spent the old one). Nothing anyone else signed is gone back on.
+			have = have[:len(have)-1]
+		}
 		if !samePrefix(have, entries) {
 			if samePrefix(entries, have) {
 				// The gateway is behind: if what it lacks starts with this host's own host.add, publish that again.
@@ -615,6 +621,17 @@ func samePrefix(prefix, entries []Entry) bool {
 }
 
 // isHostAdd reports whether e is a host.add of hostID.
+// lostHostAdd is whether the only entry of have that entries doesn't carry on is have's last, this host's own host.add
+// (with these keys), and entries holds another entry at its seq: an append the gateway refused for that one.
+func lostHostAdd(have, entries []Entry, cur *State, hostID string, dh []byte) bool {
+	n := len(have) - 1
+	if n < 1 || len(entries) <= n || !isHostAdd(have[n], hostID) || !samePrefix(have[:n], entries) {
+		return false
+	}
+	h, ok := cur.Hosts[hostID]
+	return ok && h.DH == B64(dh) && EntryHash(entries[n]) != EntryHash(have[n])
+}
+
 func isHostAdd(e Entry, hostID string) bool {
 	raw, err := FromB64(e.Payload)
 	if err != nil {

@@ -755,7 +755,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (host.accountId !== space) throw refuse();
 			return;
 		}
-		if ((await store.sandboxes.list({ hostId })).some((sandbox) => sandbox.accountId === space)) return;
+		// A sandbox it runs now (stopped counts: its disk is there); a deleted one's record keeps its hostId, but not this.
+		const placed = await store.sandboxes.list({ hostId });
+		if (placed.some((sandbox) => sandbox.accountId === space && sandbox.state !== "deleted")) return;
 		const state = await e2eChains.state(space).catch(() => undefined);
 		if (state?.hosts.has(hostId) !== true) throw refuse();
 	};
@@ -3305,7 +3307,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		appendE2EChain: async (principal, { params, body }) => {
 			const { account, role } = await accountById(store, principal, params.accountId);
 			requireScope(principal, "account:read", role);
-			const person = requirePerson(principal);
+			// A person, or a key acting for one (`kantel login`'s is a key): the entries are their devices' to sign either way.
+			// A key limited to some sandboxes isn't the account's, and the chain is.
+			if (principal.kind === "key" && principal.limits.sandboxIds !== undefined) {
+				throw new KantelError("forbidden", "A key limited to some sandboxes can't change the account's E2E chain");
+			}
+			const person = { userId: principal.userId };
 			const entries = await e2eChains.append(account.id, body.from, body.entries, async (payload) => {
 				if (payload.type === "genesis") {
 					// What it starts with is its admin: an admin of the organisation, starting it on their own device.
