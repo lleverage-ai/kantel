@@ -177,6 +177,7 @@ Without systemd, such as in a container, install stops after step 4: run `kantel
 | `--tiers LIST` | `microvm`, `isolate` or both, comma-separated. Default: what the machine can run |
 | `--isolate-runtime native` | Run isolates with workerd on the host itself, with no KVM. For trusted code only |
 | `--proxy-data-path` | Send sandboxes' traffic on to the account's [upstream proxy](/sandboxes/egress-proxy/#send-traffic-through-your-own-proxy). Experimental |
+| `--inject-guest-agent` | Boot microVMs through Kantel's initramfs, which puts the guest agent into [any Linux image](/sandboxes/custom-images/). Experimental |
 | `--root DIR` | Where sandboxes live. Default `/var/lib/kantel-host` |
 | `--config FILE` | The settings file. Default `/etc/kantel-host/config.json` |
 | `--no-start` | Install and register, but don't start the service |
@@ -296,6 +297,7 @@ Uninstalling doesn't tell the control plane, so revoke the host as well.
 | `egress` | `open` | A sandbox's network when its account has no [proxy settings](/sandboxes/egress-proxy/) turned on: `open` (through the egress proxy, with no rules), `proxy`, or `none` (no network at all) |
 | `egressAllowCIDRs` | none | Private ranges the egress proxy may connect to anyway, such as `["192.168.10.0/24"]` for a package mirror on your network |
 | `proxyDataPath` | `false` | What `--proxy-data-path` sets |
+| `injectGuestAgent` | `false` | What `--inject-guest-agent` sets: `sandboxImage` may be [any Linux image](/sandboxes/custom-images/) |
 | `proxyPort` | `3129` | The egress proxy's port, on each sandbox's gateway address |
 | `subnet` | `10.231.0.0/16` | Where sandboxes' addresses come from. Each microVM gets a `/30` of it |
 | `tiers` | what the machine can run | `["microvm"]`, `["isolate"]` or both |

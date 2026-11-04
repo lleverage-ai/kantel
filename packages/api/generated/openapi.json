@@ -10052,6 +10052,145 @@
 				},
 				"title": "ForkSandboxBody"
 			},
+			"GuestAgent": {
+				"type": "object",
+				"required": ["version", "injected"],
+				"properties": {
+					"version": {
+						"type": "string"
+					},
+					"injected": {
+						"type": "boolean",
+						"description": "Kantel put its guest agent into the image at boot (any Linux image), rather than the image shipping it."
+					}
+				},
+				"title": "GuestAgent"
+			},
+			"GuestCapabilities": {
+				"type": "object",
+				"required": ["reportedAt", "agent", "os", "arch", "libc", "init", "desktop", "browser", "docker"],
+				"properties": {
+					"reportedAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					},
+					"agent": {
+						"$ref": "#/components/schemas/GuestAgent"
+					},
+					"os": {
+						"$ref": "#/components/schemas/GuestOs"
+					},
+					"arch": {
+						"type": "string",
+						"description": "The machine, as `uname -m` says it: `x86_64` or `aarch64`."
+					},
+					"libc": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "glibc"
+							},
+							{
+								"type": "string",
+								"const": "musl"
+							},
+							{
+								"type": "string",
+								"const": "none"
+							}
+						],
+						"description": "The image's C library; `none` for a static userland such as busybox's."
+					},
+					"shell": {
+						"type": "string",
+						"description": "The shell a `command` runs in, such as `/bin/bash`; absent: `argv` only."
+					},
+					"init": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "systemd"
+							},
+							{
+								"type": "string",
+								"const": "kantel"
+							}
+						],
+						"description": "PID 1: the image's systemd, or Kantel's own init when the image has none."
+					},
+					"desktop": {
+						"$ref": "#/components/schemas/GuestFeature"
+					},
+					"browser": {
+						"$ref": "#/components/schemas/GuestFeature"
+					},
+					"docker": {
+						"$ref": "#/components/schemas/GuestDocker"
+					}
+				},
+				"title": "GuestCapabilities",
+				"description": "What a microVM's image has, as its guest agent found it when it last started: its OS, and whether it has a desktop, a browser and Docker."
+			},
+			"GuestDocker": {
+				"type": "object",
+				"required": ["available", "kvm"],
+				"properties": {
+					"available": {
+						"type": "boolean"
+					},
+					"detail": {
+						"type": "string",
+						"description": "What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`."
+					},
+					"reason": {
+						"type": "string",
+						"description": "Why it isn't available, in words, such as `No desktop in this image`."
+					},
+					"kvm": {
+						"type": "boolean",
+						"description": "`/dev/kvm` opens inside, so containers and VMs in it can nest."
+					}
+				},
+				"title": "GuestDocker"
+			},
+			"GuestFeature": {
+				"type": "object",
+				"required": ["available"],
+				"properties": {
+					"available": {
+						"type": "boolean"
+					},
+					"detail": {
+						"type": "string",
+						"description": "What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`."
+					},
+					"reason": {
+						"type": "string",
+						"description": "Why it isn't available, in words, such as `No desktop in this image`."
+					}
+				},
+				"title": "GuestFeature",
+				"description": "One thing a microVM's image has or lacks."
+			},
+			"GuestOs": {
+				"type": "object",
+				"required": ["id", "name"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "`/etc/os-release`'s `ID`, such as `debian`, `alpine` or `ubuntu`."
+					},
+					"name": {
+						"type": "string",
+						"description": "Its pretty name, such as `Debian GNU/Linux 13 (trixie)`."
+					},
+					"version": {
+						"type": "string",
+						"description": "`VERSION_ID`, such as `13` or `3.22.2`."
+					}
+				},
+				"title": "GuestOs"
+			},
 			"Host": {
 				"type": "object",
 				"required": [
@@ -10918,10 +11057,13 @@
 					"pause": {
 						"type": "boolean",
 						"description": "Whether it can be paused with its memory kept."
+					},
+					"guest": {
+						"$ref": "#/components/schemas/GuestCapabilities"
 					}
 				},
 				"title": "SandboxCapabilities",
-				"description": "What this sandbox can do, from its type and its host."
+				"description": "What this sandbox can do, from its type and its host, and for a microVM from what its guest agent found in its image (`guest`): `desktop`, `browser`, `docker` and `kvm` are false where the image lacks them."
 			},
 			"SandboxEgress": {
 				"type": "object",

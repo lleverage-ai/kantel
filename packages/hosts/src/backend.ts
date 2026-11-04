@@ -24,7 +24,14 @@ import type {
 import { KantelError } from "@kantel/contracts";
 import { DESKTOP_PORT, desktopPath } from "./desktop.ts";
 import type { PortRouter } from "./ports.ts";
-import { HOST_E2E_PORT, type HostEgress, HostMethods, type HostSandbox, type SandboxTier } from "./protocol.ts";
+import {
+	HOST_E2E_PORT,
+	type HostEgress,
+	type HostGuest,
+	HostMethods,
+	type HostSandbox,
+	type SandboxTier,
+} from "./protocol.ts";
 import type { HostsService, SandboxPlacement } from "./service.ts";
 import { type DesktopMode, HOSTS_TUNNEL_PATH, MAX_TUNNEL_MINUTES, type TunnelTickets } from "./tunnel.ts";
 
@@ -55,6 +62,9 @@ const SSH_ACCESS_SCRIPT = [
 	`echo ${FINGERPRINT_MARK}`,
 	"ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub | cut -d' ' -f2",
 ].join("\n");
+
+/** Where Kantel's initramfs puts the guest agent in an image (apps/host/internal/guest.InjectedBin). */
+const INJECTED_AGENT = "/.kantel/bin/kantel-guest";
 
 const SIZE_NAMES = new Set(["small", "default", "large", "xlarge"]);
 
@@ -152,18 +162,25 @@ function fileEntry(entry: HostFileEntry): BackendFileEntry {
 	};
 }
 
-function capabilitiesOf(tier: SandboxTier, nested: boolean, ports: boolean) {
+/**
+ * What a sandbox can do. A microVM's guest report, where its host sent one, says what its image has: an image without
+ * a desktop, a browser or Docker can't offer them, and `/dev/kvm` must open inside for nesting. With no report (a host
+ * from before the guest agent said), a microVM is Kantel's own image, which has them all.
+ */
+export function capabilitiesOf(tier: SandboxTier, nested: boolean, ports: boolean, guest?: HostGuest) {
 	const vm = tier === "microvm";
+	const report = vm ? guest : undefined;
 	return {
 		exec: true,
 		files: true,
 		ssh: vm,
-		desktop: vm,
-		browser: vm,
+		desktop: vm && (report?.desktop.available ?? true),
+		browser: vm && (report?.browser.available ?? true),
 		ports: vm && ports,
-		docker: vm,
-		kvm: vm && nested,
+		docker: vm && (report?.docker.available ?? true),
+		kvm: vm && nested && (report?.docker.kvm ?? true),
 		pause: vm,
+		...(report === undefined ? {} : { guest: report }),
 	};
 }
 
@@ -216,7 +233,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 							diskGb: placement.diskGiB,
 						},
 					}),
-			capabilities: capabilitiesOf(tier, nested === true, options.ports !== undefined),
+			capabilities: capabilitiesOf(tier, nested === true, options.ports !== undefined, sandbox.guest),
 		};
 	}
 
@@ -491,10 +508,17 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			const key = publicKey?.trim();
 			if (key !== undefined && !PUBLIC_KEY.test(key))
 				throw new KantelError("invalid", "publicKey is one OpenSSH public key");
-			const run = await call<{ exitCode: number; stdout: string; stderr: string }>(sandboxId, "sandbox.exec", {
-				command: SSH_ACCESS_SCRIPT,
-				env: { KANTEL_PUBLIC_KEY: key ?? "" },
-			});
+			const env = { KANTEL_PUBLIC_KEY: key ?? "" };
+			type Run = { exitCode: number; stdout: string; stderr: string };
+			// An injected agent serves SSH itself, with its own host key, and needs neither a shell nor ssh-keygen: its
+			// ssh-access step first. An image that ships its agent (and sshd) has no /.kantel, so the script runs.
+			const injected = await call<Run>(sandboxId, "sandbox.exec", { argv: [INJECTED_AGENT, "ssh-access"], env }).catch(
+				() => undefined,
+			);
+			const run =
+				injected?.exitCode === 0
+					? injected
+					: await call<Run>(sandboxId, "sandbox.exec", { command: SSH_ACCESS_SCRIPT, env });
 			if (run.exitCode !== 0)
 				throw new KantelError("unavailable", `The sandbox could not let the key in: ${run.stderr}`);
 			const [privateKey = "", fingerprint = ""] = run.stdout.split(`${FINGERPRINT_MARK}\n`);

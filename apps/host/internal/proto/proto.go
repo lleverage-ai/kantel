@@ -172,6 +172,48 @@ type SandboxInfo struct {
 	Source string `json:"source,omitempty"`
 	// Owner is the account the sandbox belongs to (its create's Owner): the space whose E2E chain covers it.
 	Owner string `json:"owner,omitempty"`
+	// Guest is what the microVM's image has, as its guest agent found it (absent from an agent too old to say).
+	Guest *GuestCapabilities `json:"guest,omitempty"`
+}
+
+// GuestCapabilities is a guest agent's report on its image: what it is, and whether it has a desktop, a browser and
+// Docker that Kantel can open. The compute API passes it on as a sandbox's capabilities.guest.
+type GuestCapabilities struct {
+	ReportedAt int64 `json:"reportedAt"`
+	Agent      struct {
+		Version string `json:"version"`
+		// Injected: Kantel put the agent in at boot (any Linux image), rather than the image shipping it.
+		Injected bool `json:"injected"`
+	} `json:"agent"`
+	OS struct {
+		ID      string `json:"id"`
+		Name    string `json:"name"`
+		Version string `json:"version,omitempty"`
+	} `json:"os"`
+	// Arch is uname -m's: x86_64 or aarch64.
+	Arch string `json:"arch"`
+	// Libc is "glibc", "musl" or "none".
+	Libc string `json:"libc"`
+	// Shell runs a command's string; empty: argv only.
+	Shell string `json:"shell,omitempty"`
+	// Init is PID 1: "systemd" (the image's) or "kantel" (the agent's own, for an image without systemd).
+	Init    string       `json:"init"`
+	Desktop GuestFeature `json:"desktop"`
+	Browser GuestFeature `json:"browser"`
+	Docker  GuestDocker  `json:"docker"`
+}
+
+// GuestFeature is one thing an image has or lacks: what was found, or why it isn't there.
+type GuestFeature struct {
+	Available bool   `json:"available"`
+	Detail    string `json:"detail,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// GuestDocker is Docker's GuestFeature, with whether /dev/kvm opens inside (nested virtualisation for containers).
+type GuestDocker struct {
+	GuestFeature
+	KVM bool `json:"kvm"`
 }
 
 // SnapshotInfo is one snapshot of a sandbox's disk (and, for a stop that kept it, its memory).
