@@ -458,6 +458,17 @@ func (s *State) spendDevice(d Device) error {
 	return nil
 }
 
+// adminCanSign reports whether an admin keeps a device that may sign the chain's next entries: in a strict space a web
+// device's entries aren't taken, so a chain only the hosted console could change could never be changed again.
+func (s *State) adminCanSign() bool {
+	for _, d := range s.Devices {
+		if s.Members[d.User] == "admin" && (s.Mode != ModeStrict || d.Class != ClassWeb) {
+			return true
+		}
+	}
+	return false
+}
+
 func apply(state *State, e Entry, pin string) (*State, error) {
 	p, b, err := parseEntry(e)
 	if err != nil {
@@ -495,6 +506,9 @@ func apply(state *State, e Entry, pin string) (*State, error) {
 		}
 		if err := next.spendDevice(d); err != nil {
 			return nil, err
+		}
+		if !next.adminCanSign() {
+			return nil, errors.New("no admin would have a device left that may sign in this mode")
 		}
 		return next, nil
 	}
@@ -628,15 +642,8 @@ func apply(state *State, e Entry, pin string) (*State, error) {
 			next.Mode = p.mode
 		}
 	}
-	adminLeft := false
-	for _, d := range next.Devices {
-		if next.Members[d.User] == "admin" {
-			adminLeft = true
-			break
-		}
-	}
-	if !adminLeft {
-		return nil, errors.New("no admin would have a device left")
+	if !next.adminCanSign() {
+		return nil, errors.New("no admin would have a device left that may sign in this mode")
 	}
 	next.Seq = p.seq
 	next.Head = hash

@@ -355,10 +355,24 @@ func (g *e2eGate) use(ctx context.Context, keys []string, cancellable bool) (con
 // using them and waits for those to end, and keeps new ones out until release. A claim is taken whole or not at all,
 // and waits only on calls past their own claims, which wait on nothing in the gate, so claims can't deadlock.
 func (g *e2eGate) claim(keys []string) (release func()) {
+	release, _ = g.claimIf(keys, true)
+	return release
+}
+
+// tryClaim is claim, but false at once (rather than waiting) when another claim holds one of keys: for a second claim
+// made holding a first, which waiting could deadlock.
+func (g *e2eGate) tryClaim(keys []string) (func(), bool) {
+	return g.claimIf(keys, false)
+}
+
+func (g *e2eGate) claimIf(keys []string, wait bool) (func(), bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.init()
 	for slices.ContainsFunc(keys, func(key string) bool { return g.claimed[key] > 0 }) {
+		if !wait {
+			return func() {}, false
+		}
 		g.cond.Wait()
 	}
 	for _, key := range keys {
@@ -380,7 +394,20 @@ func (g *e2eGate) claim(keys []string) (release func()) {
 		}
 		g.cond.Broadcast()
 		g.mu.Unlock()
+	}, true
+}
+
+// sandboxOf is the sandbox a stop, save, fork, start or resume acts on.
+func sandboxOf(method string, params json.RawMessage) (string, bool) {
+	switch method {
+	case proto.MethodStop, proto.MethodSnapshotSave, proto.MethodFork, proto.MethodStart, proto.MethodResume:
+		var p struct {
+			SandboxID string `json:"sandboxId"`
+		}
+		_ = json.Unmarshal(params, &p)
+		return p.SandboxID, p.SandboxID != ""
 	}
+	return "", false
 }
 
 // gateKeys are the IDs a gateway call uses and claims (e2eGate).
@@ -443,18 +470,37 @@ func (h *Host) gatewayGuard(ctx context.Context, method string, params json.RawM
 	if len(claims) > 0 {
 		release = h.gate.claim(claims)
 	}
-	// A sandbox's own snapshots too: a start, resume or fork of a stopped sandbox restores the newest of them, which
-	// mustn't be deleted and made again from another sandbox's disk while it does. They are listed once the call holds
-	// the sandbox's lifecycle claim, so no stop or save of it can add one the list missed until the call ends.
-	restores := method == proto.MethodStart || method == proto.MethodResume || method == proto.MethodFork
-	for _, key := range slices.Clone(uses) {
-		if id, ok := strings.CutPrefix(key, "sandbox:"); ok && restores {
-			for _, name := range h.order {
-				for _, snap := range h.tiers[name].Snapshots(id) {
-					uses = append(uses, "snapshot:"+snap.ID)
-				}
+	// A sandbox's own snapshots too, listed once the call holds the sandbox's lifecycle claim (so no stop or save of it
+	// can add one the list missed): a start, resume or fork of a stopped sandbox restores the newest of them, which
+	// mustn't be deleted and made again from another sandbox's disk while it does; and a stop, save or fork deletes
+	// the oldest automatic ones, so it claims them all, as a snapshot.delete would.
+	var own []string
+	if id, ok := sandboxOf(method, params); ok {
+		for _, name := range h.order {
+			for _, snap := range h.tiers[name].Snapshots(id) {
+				own = append(own, "snapshot:"+snap.ID)
 			}
 		}
+	}
+	switch method {
+	case proto.MethodStart, proto.MethodResume:
+		uses = append(uses, own...)
+	case proto.MethodStop, proto.MethodSnapshotSave, proto.MethodFork:
+		more := slices.DeleteFunc(own, func(k string) bool { return slices.Contains(claims, k) })
+		if len(more) > 0 {
+			slices.Sort(more)
+			releaseMore, ok := h.gate.tryClaim(slices.Compact(more))
+			if !ok {
+				release()
+				return ctx, func() {}, &proto.Error{Code: proto.ErrConflict, Message: "a snapshot of this sandbox is being made or deleted: try again"}
+			}
+			first := release
+			release = func() {
+				releaseMore()
+				first()
+			}
+		}
+		claims = append(claims, more...)
 	}
 	slices.Sort(uses)
 	uses = slices.DeleteFunc(slices.Compact(uses), func(k string) bool { return slices.Contains(claims, k) })
@@ -510,6 +556,16 @@ func (h *Host) serveE2E(ctx context.Context, conn net.Conn, sandboxID string) er
 			if !slices.Contains(sessionMethods, method) {
 				return nil, &e2e.Error{Code: proto.ErrUnsupported, Message: "not in an E2E session: " + method}
 			}
+			// Like a gateway call, a device's holds its sandbox until it ends (e2eGate), and finds it still in the session's
+			// space: a delete cancels it, and an ID made again elsewhere isn't this session's.
+			ctx, leave, ok := h.gate.use(ctx, []string{"sandbox:" + sandbox}, true)
+			if !ok {
+				return nil, &e2e.Error{Code: proto.ErrConflict, Message: "This sandbox is being made or deleted"}
+			}
+			defer leave()
+			if h.ownerOf(sandbox) != space {
+				return nil, &e2e.Error{Code: proto.ErrNotFound, Message: "No such sandbox in this space"}
+			}
 			var p map[string]any
 			if len(params) > 0 && string(params) != "null" {
 				if err := json.Unmarshal(params, &p); err != nil {
@@ -536,6 +592,15 @@ func (h *Host) serveE2E(ctx context.Context, conn net.Conn, sandboxID string) er
 			return result, nil
 		},
 		Port: func(ctx context.Context, _ e2e.Device, sandbox string, port int) (net.Conn, error) {
+			// Held until it connects, as a gateway port is.
+			_, leave, ok := h.gate.use(ctx, []string{"sandbox:" + sandbox}, true)
+			if !ok {
+				return nil, &e2e.Error{Code: proto.ErrConflict, Message: "This sandbox is being made or deleted"}
+			}
+			defer leave()
+			if h.ownerOf(sandbox) != space {
+				return nil, &e2e.Error{Code: proto.ErrNotFound, Message: "No such sandbox in this space"}
+			}
 			return h.DialPort(ctx, sandbox, port)
 		},
 		OnOpen: func(d e2e.Device, hello e2e.Hello) {

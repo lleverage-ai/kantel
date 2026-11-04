@@ -692,3 +692,62 @@ func TestDeletingAnOldSnapshotLeavesACommandRunning(t *testing.T) {
 		t.Fatal("the command was cancelled")
 	}
 }
+
+// A stop deletes its sandbox's oldest automatic snapshots: it claims them all, so a read of one ends first.
+func TestAStopClaimsItsSandboxsSnapshots(t *testing.T) {
+	h, vm, _ := e2eHost(t)
+	vm.snaps = append(vm.snaps, proto.SnapshotInfo{ID: "snap_o", SandboxID: "sbx_other", Kind: "auto"})
+	read, _ := json.Marshal(map[string]any{"snapshotId": "snap_o", "path": "/"})
+	ctx, done, err := h.gatewayGuard(context.Background(), proto.MethodSnapshotRead, read)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopped := make(chan func(), 1)
+	go func() {
+		stop, _ := json.Marshal(map[string]any{"sandboxId": "sbx_other", "snapshotId": "snap_o2"})
+		_, release, err := h.gatewayGuard(context.Background(), proto.MethodStop, stop)
+		if err != nil {
+			t.Error(err)
+		}
+		stopped <- release
+	}()
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stop didn't cancel the read of a snapshot it may prune")
+	}
+	select {
+	case <-stopped:
+		t.Fatal("the stop went ahead while the read ran")
+	case <-time.After(100 * time.Millisecond):
+	}
+	done()
+	(<-stopped)()
+}
+
+// A session's calls find their sandbox still in the session's space: an ID made again in another space isn't reached.
+func TestASessionDoesntReachItsSandboxsIDInAnotherSpace(t *testing.T) {
+	h, tier, v := e2eHost(t)
+	hostSide, deviceSide := net.Pipe()
+	if err := h.serveE2E(context.Background(), hostSide, "sbx_one"); err != nil {
+		t.Fatal(err)
+	}
+	_ = deviceSide.SetDeadline(time.Now().Add(10 * time.Second))
+	c, err := e2e.OpenClient(deviceSide, key(t, v.DeviceStatic), key(t, v.HostStatic).PublicKey().Bytes(), v.Space, v.HostID, "sbx_one", v.Entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := c.Call(proto.MethodExec, map[string]any{"command": "id"}); err != nil {
+		t.Fatal(err)
+	}
+	tier.mu.Lock()
+	tier.owners["sbx_one"] = "acc_plain"
+	tier.mu.Unlock()
+	if _, err := c.Call(proto.MethodExec, map[string]any{"command": "cat /home/user/.env"}); err == nil || !strings.Contains(err.Error(), "No such sandbox in this space") {
+		t.Fatalf("the session reached another space's sandbox: %v", err)
+	}
+	if len(tier.execs) != 1 {
+		t.Fatalf("%d commands ran", len(tier.execs))
+	}
+}

@@ -253,6 +253,28 @@ export async function chainVectors(): Promise<{ readonly cases: readonly ChainCa
 		entries: [...base, strict, await signAs(strictState, f.tomPhone, { type: "mode", body: { mode: "off" } }, at + 1)],
 	});
 	cases.push({
+		name: "in a strict space, the admin removes their last CLI device, leaving only the hosted console's",
+		entries: [
+			...base,
+			strict,
+			await signAs(strictState, f.tom, { type: "device.remove", body: { id: f.tomId } }, at + 1),
+		],
+	});
+	cases.push({
+		name: "a strict genesis whose only device is the hosted console's",
+		entries: [
+			await signAs(
+				undefined,
+				f.tomPhone,
+				{
+					type: "genesis",
+					body: { mode: "strict", device: await chainDevice(f.tomPhone, "usr_tom", "web", "console") },
+				},
+				T0,
+			),
+		],
+	});
+	cases.push({
 		name: "a second genesis",
 		entries: [
 			...base,

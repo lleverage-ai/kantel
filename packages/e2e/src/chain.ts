@@ -412,6 +412,7 @@ async function apply(state: MutableState | undefined, entry: ChainEntry, pin?: s
 			at: payload.at,
 		};
 		spendDevice(next, device);
+		if (!adminCanSign(next)) throw new Error("No admin would have a device left that may sign in this mode");
 		return next;
 	}
 	if (payload.space !== state.space) throw new Error("The entry is for another space");
@@ -507,8 +508,8 @@ async function apply(state: MutableState | undefined, entry: ChainEntry, pin?: s
 				break;
 		}
 	}
-	if (![...next.devices.values()].some((device) => next.members.get(device.user) === "admin")) {
-		throw new Error("No admin would have a device left");
+	if (!adminCanSign(next)) {
+		throw new Error("No admin would have a device left that may sign in this mode");
 	}
 	next.seq = payload.seq;
 	next.head = hash;
@@ -523,6 +524,16 @@ const freeze = (state: MutableState): SpaceState => state;
  * The state after `entries`, from the genesis. With `pin`, the genesis must be the one pinned. Throws `ChainError` on
  * the first entry that doesn't verify.
  */
+/**
+ * Whether an admin keeps a device that may sign the chain's next entries: in a strict space a web device's entries
+ * aren't taken, so one that only the hosted console could change could never be changed again.
+ */
+function adminCanSign(state: MutableState): boolean {
+	return [...state.devices.values()].some(
+		(device) => state.members.get(device.user) === "admin" && (state.mode !== "strict" || device.class !== "web"),
+	);
+}
+
 export async function verifyChain(entries: readonly ChainEntry[], pin?: string): Promise<SpaceState> {
 	if (entries.length === 0) throw new ChainError(0, "The chain is empty");
 	let state: MutableState | undefined;
