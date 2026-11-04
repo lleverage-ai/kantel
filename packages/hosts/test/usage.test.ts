@@ -21,6 +21,15 @@ describe("parseHostUsage", () => {
 		expect(parseHostUsage(TICK)).toEqual({ ok: true, value: TICK });
 	});
 
+	it("takes the frame kantel-host's Go side marshals, with sandboxes or with none (a nil slice)", () => {
+		// As in usage-compat.test.ts, from TestUsageEventWireShape in apps/host/internal/agent/usage_test.go.
+		const frame = JSON.parse(
+			'{"type":"usage","usage":{"at":1,"intervalMs":5000,"host":{"cpu":0.25,"memUsedBytes":1,"memTotalBytes":2,"diskUsedBytes":3,"diskTotalBytes":4},"sandboxes":[{"id":"sbx_a","kind":"microvm","cpu":0.5,"memUsedBytes":5,"memLimitBytes":6}]}}',
+		) as { usage: { sandboxes: unknown } };
+		expect(parseHostUsage(frame.usage)).toEqual({ ok: true, value: frame.usage });
+		expect(parseHostUsage({ ...frame.usage, sandboxes: null })).toMatchObject({ ok: true, value: { sandboxes: [] } });
+	});
+
 	it("takes CPU above 1 as 1, null sandboxes as none, and leaves out a kind it doesn't know", () => {
 		const parsed = parseHostUsage({
 			...TICK,
