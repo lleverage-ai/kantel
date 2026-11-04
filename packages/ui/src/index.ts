@@ -52,6 +52,7 @@ export type {
 	ProxySource,
 	SandboxEgress,
 	SandboxesSource,
+	SandboxImage,
 	SnapshotsSource,
 	TelemetrySource,
 	WebhooksSource,

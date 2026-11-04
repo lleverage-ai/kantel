@@ -249,6 +249,68 @@ export const SandboxResources = Type.Object(
 	{ title: "SandboxResources" },
 );
 
+export const GuestFeature = Type.Object(
+	{
+		available: Type.Boolean(),
+		detail: Type.Optional(
+			Type.String({ description: "What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`." }),
+		),
+		reason: Type.Optional(
+			Type.String({ description: "Why it isn't available, in words, such as `No desktop in this image`." }),
+		),
+	},
+	{ title: "GuestFeature", description: "One thing a microVM's image has or lacks." },
+);
+
+export const GuestCapabilities = Type.Object(
+	{
+		reportedAt: Timestamp,
+		agent: Type.Object(
+			{
+				version: Type.String(),
+				injected: Type.Boolean({
+					description:
+						"Kantel put its guest agent into the image at boot (any Linux image), rather than the image shipping it.",
+				}),
+			},
+			{ title: "GuestAgent" },
+		),
+		os: Type.Object(
+			{
+				id: Type.String({ description: "`/etc/os-release`'s `ID`, such as `debian`, `alpine` or `ubuntu`." }),
+				name: Type.String({ description: "Its pretty name, such as `Debian GNU/Linux 13 (trixie)`." }),
+				version: Type.Optional(Type.String({ description: "`VERSION_ID`, such as `13` or `3.22.2`." })),
+			},
+			{ title: "GuestOs" },
+		),
+		arch: Type.String({ description: "The machine, as `uname -m` says it: `x86_64` or `aarch64`." }),
+		libc: Type.Union([Type.Literal("glibc"), Type.Literal("musl"), Type.Literal("none")], {
+			description: "The image's C library; `none` for a static userland such as busybox's.",
+		}),
+		shell: Type.Optional(
+			Type.String({ description: "The shell a `command` runs in, such as `/bin/bash`; absent: `argv` only." }),
+		),
+		init: Type.Union([Type.Literal("systemd"), Type.Literal("kantel")], {
+			description: "PID 1: the image's systemd, or Kantel's own init when the image has none.",
+		}),
+		desktop: GuestFeature,
+		browser: GuestFeature,
+		docker: Type.Object(
+			{
+				...GuestFeature.properties,
+				kvm: Type.Boolean({ description: "`/dev/kvm` opens inside, so containers and VMs in it can nest." }),
+			},
+			{ title: "GuestDocker" },
+		),
+	},
+	{
+		title: "GuestCapabilities",
+		description:
+			"What a microVM's image has, as its guest agent found it when it last started: its OS, and whether it has a " +
+			"desktop, a browser and Docker.",
+	},
+);
+
 export const SandboxCapabilities = Type.Object(
 	{
 		exec: Type.Boolean(),
@@ -260,8 +322,14 @@ export const SandboxCapabilities = Type.Object(
 		docker: Type.Boolean(),
 		kvm: Type.Boolean({ description: "`/dev/kvm` inside, for nested virtualisation." }),
 		pause: Type.Boolean({ description: "Whether it can be paused with its memory kept." }),
+		guest: Type.Optional(GuestCapabilities),
 	},
-	{ title: "SandboxCapabilities", description: "What this sandbox can do, from its type and its host." },
+	{
+		title: "SandboxCapabilities",
+		description:
+			"What this sandbox can do, from its type and its host, and for a microVM from what its guest agent found in its " +
+			"image (`guest`): `desktop`, `browser`, `docker` and `kvm` are false where the image lacks them.",
+	},
 );
 
 export const Cost = Type.Object(
@@ -1751,6 +1819,8 @@ export type SandboxState = Static<typeof SandboxState>;
 export type SandboxVisibility = Static<typeof SandboxVisibility>;
 export type SandboxSizeName = Static<typeof SandboxSizeName>;
 export type SandboxCapabilities = Static<typeof SandboxCapabilities>;
+export type GuestCapabilities = Static<typeof GuestCapabilities>;
+export type GuestFeature = Static<typeof GuestFeature>;
 export type Sandbox = Static<typeof Sandbox>;
 export type CreateSandboxBody = Static<typeof CreateSandboxBody>;
 export type Command = Static<typeof Command>;

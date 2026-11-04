@@ -656,6 +656,61 @@ export interface ForkSandboxBody {
 	readonly wait?: boolean;
 }
 
+export interface GuestAgent {
+	readonly version: string;
+	/** Kantel put its guest agent into the image at boot (any Linux image), rather than the image shipping it. */
+	readonly injected: boolean;
+}
+
+/** What a microVM's image has, as its guest agent found it when it last started: its OS, and whether it has a desktop, a browser and Docker. */
+export interface GuestCapabilities {
+	/** Epoch milliseconds, UTC. */
+	readonly reportedAt: number;
+	readonly agent: GuestAgent;
+	readonly os: GuestOs;
+	/** The machine, as `uname -m` says it: `x86_64` or `aarch64`. */
+	readonly arch: string;
+	/** The image's C library; `none` for a static userland such as busybox's. */
+	readonly libc: "glibc" | "musl" | "none";
+	/** The shell a `command` runs in, such as `/bin/bash`; absent: `argv` only. */
+	readonly shell?: string;
+	/** PID 1: the image's systemd, or Kantel's own init when the image has none. */
+	readonly init: "systemd" | "kantel";
+	/** One thing a microVM's image has or lacks. */
+	readonly desktop: GuestFeature;
+	/** One thing a microVM's image has or lacks. */
+	readonly browser: GuestFeature;
+	readonly docker: GuestDocker;
+}
+
+export interface GuestDocker {
+	readonly available: boolean;
+	/** What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`. */
+	readonly detail?: string;
+	/** Why it isn't available, in words, such as `No desktop in this image`. */
+	readonly reason?: string;
+	/** `/dev/kvm` opens inside, so containers and VMs in it can nest. */
+	readonly kvm: boolean;
+}
+
+/** One thing a microVM's image has or lacks. */
+export interface GuestFeature {
+	readonly available: boolean;
+	/** What the guest agent found, such as `Xtigervnc, xfce4-session, Selkies`. */
+	readonly detail?: string;
+	/** Why it isn't available, in words, such as `No desktop in this image`. */
+	readonly reason?: string;
+}
+
+export interface GuestOs {
+	/** `/etc/os-release`'s `ID`, such as `debian`, `alpine` or `ubuntu`. */
+	readonly id: string;
+	/** Its pretty name, such as `Debian GNU/Linux 13 (trixie)`. */
+	readonly name: string;
+	/** `VERSION_ID`, such as `13` or `3.22.2`. */
+	readonly version?: string;
+}
+
 /** A machine that runs sandboxes. It dials out to the control plane; it takes no inbound ports. */
 export interface Host {
 	/** The host's ID, such as `host_6t5r4e`. */
@@ -968,7 +1023,7 @@ export interface Sandbox {
 	readonly reason?: string;
 	/** `private`: only the person who made it (and API keys of theirs) may see or use it. `organisation`: every member of its organisation may. A personal account's sandboxes are always `private`. */
 	readonly visibility: SandboxVisibility;
-	/** What this sandbox can do, from its type and its host. */
+	/** What this sandbox can do, from its type and its host, and for a microVM from what its guest agent found in its image (`guest`): `desktop`, `browser`, `docker` and `kvm` are false where the image lacks them. */
 	readonly capabilities: SandboxCapabilities;
 	/** The caller's own labels. */
 	readonly labels: {
@@ -1000,7 +1055,7 @@ export interface Sandbox {
 	readonly hostId?: string;
 }
 
-/** What this sandbox can do, from its type and its host. */
+/** What this sandbox can do, from its type and its host, and for a microVM from what its guest agent found in its image (`guest`): `desktop`, `browser`, `docker` and `kvm` are false where the image lacks them. */
 export interface SandboxCapabilities {
 	readonly exec: boolean;
 	readonly files: boolean;
@@ -1013,6 +1068,8 @@ export interface SandboxCapabilities {
 	readonly kvm: boolean;
 	/** Whether it can be paused with its memory kept. */
 	readonly pause: boolean;
+	/** What a microVM's image has, as its guest agent found it when it last started: its OS, and whether it has a desktop, a browser and Docker. */
+	readonly guest?: GuestCapabilities;
 }
 
 /** A sandbox's egress: what it was made with, its own grants and its log. */
