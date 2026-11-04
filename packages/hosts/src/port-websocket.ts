@@ -10,6 +10,8 @@ export interface PortWebSocketHandlers {
 	message(data: Uint8Array, binary: boolean): void;
 	/** The server closed, the stream ended or the handshake failed. */
 	close(code: number, reason: string): void;
+	/** The server accepted the handshake: what `send` writes now goes straight to it rather than waiting here. */
+	open?(): void;
 }
 
 export interface PortWebSocket {
@@ -173,6 +175,7 @@ export function openPortWebSocket(
 			buffer = buffer.slice(end);
 			handshaken = true;
 			for (const bytes of pending.splice(0)) stream?.write(bytes);
+			handlers.open?.();
 		}
 		frames();
 	};

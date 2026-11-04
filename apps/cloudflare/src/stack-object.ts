@@ -146,14 +146,22 @@ export abstract class KantelStackBase extends DurableObject<Env> {
 			);
 		}
 		const url = new URL(request.url);
-		// An exposed port's name (`src/route.ts` sends every one here): only the sandbox's page answers there.
-		if (stack.compute.isPortName(url.hostname)) return stack.compute.servePort(request);
 		const hosts = stack.compute.hosts;
+		// An exposed port's name (`src/route.ts` sends every one here): only the sandbox's page and its WebSockets answer.
+		if (stack.compute.isPortName(url.hostname)) {
+			if (hosts !== undefined && isWebSocket(request)) return (await relaySocket(hosts, request)) ?? notFound();
+			return stack.compute.servePort(request);
+		}
 		if (hosts !== undefined) {
 			const path = url.pathname;
 			if (path === HOSTS_CONNECT_PATH) return hostConnection(hosts, request);
 			const ticket = tunnelTicket(path);
 			if (ticket !== undefined) return rawTunnel(hosts, ticket, request);
+			// A desktop's stream, a browser's CDP: passed through to the sandbox's port.
+			if (isWebSocket(request)) {
+				const relayed = await relaySocket(hosts, request);
+				if (relayed !== undefined) return relayed;
+			}
 		}
 		return gateway.fetch(request);
 	}
@@ -179,6 +187,41 @@ async function hostConnection(hosts: StackHosts, request: Request): Promise<Resp
 		server.addEventListener("close", (event) => held.closed(event.code, event.reason));
 		server.addEventListener("error", () => held.closed(1011, "The host's connection failed"));
 	}
+	return new Response(null, { status: 101, webSocket: client });
+}
+
+const isWebSocket = (request: Request) =>
+	request.method === "GET" && request.headers.get("upgrade")?.toLowerCase() === "websocket";
+
+const notFound = () => Response.json({ error: { code: "not_found", message: "No such route" } }, { status: 404 });
+
+/**
+ * A WebSocket passed through to a sandbox's port (`StackHosts.socketTarget`): a desktop's stream, a browser's CDP, an
+ * exposed port's. Accepted first, so a refusal is a close with a code saying why (4003 for a wrong or expired ticket,
+ * 4000 plus the HTTP status for a port's), as self-hosted does. Undefined for an upgrade that is none of these.
+ */
+async function relaySocket(hosts: StackHosts, request: Request): Promise<Response | undefined> {
+	let target: Awaited<ReturnType<StackHosts["socketTarget"]>>;
+	try {
+		target = await hosts.socketTarget(request);
+	} catch (error) {
+		console.error("kantel: a WebSocket's target could not be checked", error);
+		target = { refused: { code: 4502, reason: "The gateway could not check the URL" } };
+	}
+	if (target === undefined) return undefined;
+	const { 0: client, 1: server } = new WebSocketPair();
+	server.accept();
+	if ("refused" in target) {
+		server.close(target.refused.code, target.refused.reason);
+		return new Response(null, { status: 101, webSocket: client });
+	}
+	const relayed = hosts.relay(target, {
+		send: (data) => server.send(data),
+		close: (code, reason) => server.close(code, reason),
+	});
+	onMessages(server, (frame) => relayed.send(frame));
+	server.addEventListener("close", () => relayed.close());
+	server.addEventListener("error", () => relayed.close());
 	return new Response(null, { status: 101, webSocket: client });
 }
 

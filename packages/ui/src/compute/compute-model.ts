@@ -193,7 +193,16 @@ export interface SandboxAccess {
 	 * console draws a stand-in.
 	 */
 	readonly embed?: { readonly desktop: string; readonly watch: string; readonly browser: string };
+	/**
+	 * Why Desktop or Browser can't open for this sandbox yet, in a few words ("Not available here yet"). Absent, it can.
+	 * One that can't is shown disabled with its reason, never opened onto an error page; its URLs are then unused.
+	 */
+	readonly unavailable?: { readonly desktop?: string; readonly browser?: string };
 }
+
+/** Why a screen can't open, from its access: the desktop's reason for Watch too. Undefined when it can. */
+export const screenUnavailable = (access: SandboxAccess, view: "desktop" | "watch" | "browser"): string | undefined =>
+	access.unavailable?.[view === "browser" ? "browser" : "desktop"];
 
 /** A port in a sandbox with an HTTPS URL of its own. */
 export interface SandboxPort {

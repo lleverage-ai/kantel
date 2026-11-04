@@ -4,11 +4,18 @@
 // looks at a settled state.
 
 import { createKantelClient } from "@kantel/api/sdk";
-import { type AuthenticatePerson, type ComputeApi, createComputeApi, type PersonIdentity } from "@kantel/compute";
+import {
+	type AuthenticatePerson,
+	type ComputeApi,
+	createComputeApi,
+	type PersonIdentity,
+	type SandboxBackend,
+} from "@kantel/compute";
 import { createStubBackend, STUB_HOST_ID } from "@kantel/compute/stub";
+import { KantelError } from "@kantel/contracts";
 import type { ComputeSource } from "@kantel/ui";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiCompute } from "./api-source.ts";
+import { apiCompute, SCREENS_NOT_END_TO_END, SCREENS_NOT_SERVED } from "./api-source.ts";
 import { localBridge } from "./local.ts";
 
 const ORIGIN = "https://kantel.test";
@@ -35,11 +42,12 @@ const notFound = (): Response =>
 	});
 
 /** A fresh API, and a `fetch` that hands each call to it. */
-function setup(options: { accountHosts?: boolean } = {}) {
+function setup(options: { accountHosts?: boolean; backend?: SandboxBackend } = {}) {
+	const { backend = createStubBackend(), ...rest } = options;
 	const api = createComputeApi({
-		backend: createStubBackend(),
+		backend,
 		authenticatePerson,
-		...options,
+		...rest,
 		// Webhook deliveries and telemetry exports: every endpoint takes them.
 		fetch: async () => new Response(null, { status: 204 }),
 	});
@@ -224,6 +232,63 @@ describe("sandboxes", () => {
 			{ sandboxId: made.id, method: "sandbox.history", params: { limit: 100, output: false } },
 			{ sandboxId: made.id, method: "sandbox.history", params: { limit: 100, output: false, before: "c2" } },
 		]);
+	});
+
+	it("opens a microVM's desktop and browser, and says why not where the gateway refuses them or E2E is on", async () => {
+		const { api, fetchApi } = setup();
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const made = await source.sandboxes.create({ accountId, kind: "microvm", size: "small" });
+		await api.service.idle();
+		const access = await source.sandboxes.access(made.id);
+		expect(access.unavailable).toBeUndefined();
+		expect(access.embed?.desktop).toMatch(/embed=1$/);
+		expect(access.browserUrl).not.toBe("");
+
+		// A deployment that doesn't serve this sandbox's screens refuses them: SSH stays, the screens say why.
+		const stub = createStubBackend();
+		const refuse = async (): Promise<never> => {
+			throw new KantelError("not_supported", "Not served here");
+		};
+		const refusing = setup({ backend: { ...stub, openDesktop: refuse, openBrowser: refuse } });
+		const there = await open(refusing.fetchApi);
+		const box = await there.sandboxes.create({
+			accountId: await personalAccount(there),
+			kind: "microvm",
+			size: "small",
+		});
+		await refusing.api.service.idle();
+		const refused = await there.sandboxes.access(box.id);
+		expect(refused.ssh).toContain("ssh");
+		expect(refused.unavailable).toEqual({ desktop: SCREENS_NOT_SERVED, browser: SCREENS_NOT_SERVED });
+		expect([refused.desktopUrl, refused.desktopViewUrl, refused.browserUrl]).toEqual(["", "", ""]);
+
+		// An end-to-end space: its host refuses the gateway's desktop, so neither is asked for.
+		const local = await localBridge(async (input, init) => {
+			if (String(input) === "/local/info") {
+				return Response.json({
+					local: true,
+					device: { id: "d1", label: "Ada's laptop" },
+					spaces: [{ id: accountId, mode: "strict" }],
+				});
+			}
+			return fetchApi(input, init);
+		}, "127.0.0.1");
+		const asked: string[] = [];
+		const e2e = await apiCompute({
+			headers: () => ({ authorization: "Bearer person-ada" }),
+			fetch: async (input, init) => {
+				const url = input instanceof Request ? input.url : String(input);
+				asked.push(new URL(url, ORIGIN).pathname);
+				return fetchApi(input, init);
+			},
+			...(local === undefined ? {} : { local }),
+		});
+		const inSpace = await e2e.sandboxes.access(made.id);
+		expect(inSpace.unavailable).toEqual({ desktop: SCREENS_NOT_END_TO_END, browser: SCREENS_NOT_END_TO_END });
+		// SSH is E2E v1's own: the host refuses the gateway's, which lets a key in with a command.
+		expect(inSpace.ssh).toBe(`kantel e2e ssh ${made.id}`);
+		expect(asked.filter((path) => /\/(desktop|browser|ssh)$/.test(path))).toEqual([]);
 	});
 
 	it("shows what the host gave a microVM, and names sizes without figures", async () => {

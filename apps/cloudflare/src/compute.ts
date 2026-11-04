@@ -16,9 +16,10 @@
  *   `GET /v1/hosts/connect` and keeps that WebSocket open to the stack object (`src/stack-object.ts`), which holds the
  *   one hub (`@kantel/hosts`), as a self-hosted gateway does. The registry of hosts and placements is in the object's
  *   SQLite. Sandboxes of an account with a host of its own go there (`createRoutedBackend`); everyone else's stay on
- *   the stub. SSH to those sandboxes is served (`GET /v1/hosts/tunnel/{ticket}`, over the host's connection), and so
- *   are their exposed ports' pages, at `https://{port}-{subdomain}.{portsDomain}` (`src/port-serving.ts`), over HTTP; their
- *   desktops, browsers' CDP and WebSockets to exposed ports aren't yet.
+ *   the stub. Their tunnels are served over the host's connection as the self-hosted gateway serves them: SSH
+ *   (`GET /v1/hosts/tunnel/{ticket}`), a desktop's page and stream (`/v1/hosts/desktop/{ticket}/`, `@kantel/hosts/desktop`,
+ *   a view-only ticket's messages filtered), a browser's CDP (`/v1/hosts/tunnel/{ticket}/{path}`), and their exposed
+ *   ports at `https://{port}-{subdomain}.{portsDomain}`, pages (`src/port-serving.ts`) and WebSockets alike.
  * - **People:** whoever the stack's authenticator signs in (Cloudflare Access, or an email code on the public origin)
  *   is a compute person under their user ID, and an admin of the deployment's own organisation (the bootstrap's) is the
  *   compute plane's super-admin, as self-hosted. With open sign-up everyone administers a personal space of their own;
@@ -53,7 +54,8 @@ import {
 	KantelError,
 	systemContext,
 } from "@kantel/contracts";
-import { createHostBackend } from "@kantel/hosts/backend";
+import { BROWSER_PORT, createHostBackend, SSH_PORT } from "@kantel/hosts/backend";
+import { createDesktopRoutes, HOSTS_DESKTOP_PATH } from "@kantel/hosts/desktop";
 import {
 	createHostsApi,
 	DEFAULT_HOST_IMAGES,
@@ -63,6 +65,7 @@ import {
 	HOSTS_REGISTER_PATH,
 } from "@kantel/hosts/http";
 import { type AcceptedHost, closeQuietly, type HostSocket } from "@kantel/hosts/hub";
+import { openPortWebSocket, type PortWebSocket } from "@kantel/hosts/port-websocket";
 import { createPortRouter, type PortRouter } from "@kantel/hosts/ports";
 import { HOST_CLOSE_REVOKED } from "@kantel/hosts/protocol";
 import { createRelayAccess, RELAY_CLOSE_REVOKED, RELAY_REVOKED_REASON } from "@kantel/hosts/relay-access";
@@ -115,7 +118,8 @@ export interface StackCompute {
 	/**
 	 * The answer on an exposed port's name: the sandbox's own page, relayed over its host's connection, with the port's
 	 * token unless it was exposed public (`@kantel/hosts/ports`). A 404 for a name nobody exposed, and for every name
-	 * while account hosts are off; a 501 for a WebSocket, which isn't relayed here yet.
+	 * while account hosts are off. A WebSocket there is the stack object's (`StackHosts.socketTarget`) with account
+	 * hosts on; this answers one only with them off.
 	 */
 	servePort(request: Request): Promise<Response>;
 	close(): Promise<void>;
@@ -141,7 +145,57 @@ export interface StackHosts {
 	 * access. Undefined, with the socket closed, when it was refused.
 	 */
 	tunnel(ticket: string, client: TunnelClient): Promise<{ write(bytes: Uint8Array): void; close(): void } | undefined>;
+	/**
+	 * Where a WebSocket upgrade goes, as the self-hosted gateway decides it (`withHostUpgrades`): a desktop's stream
+	 * (`/v1/hosts/desktop/{ticket}/api/websockets`), a tunnel with a path (`/v1/hosts/tunnel/{ticket}/{path}`: Chromium's
+	 * DevTools, for CDP clients), or an exposed port's name. A refusal says how to close the socket, or undefined for an
+	 * upgrade that is none of these (SSH's raw tunnel and a host's connection have their own).
+	 */
+	socketTarget(request: Request): Promise<SocketTarget | SocketRefusal | undefined>;
+	/**
+	 * Opens `target`'s WebSocket on the sandbox's port, over its host's connection, and passes messages both ways; held
+	 * in the relay's access while open and closed with 4003 once its holder loses access to the sandbox.
+	 */
+	relay(target: SocketTarget, client: SocketClient): RelayedSocket;
 }
+
+/** A WebSocket to pass through to a sandbox's port. */
+export interface SocketTarget {
+	readonly sandboxId: string;
+	readonly port: number;
+	/** Path and query on the port. */
+	readonly path: string;
+	/** The Host it is opened with: an exposed port's public name; absent, `127.0.0.1:{port}` (DevTools wants that). */
+	readonly host?: string;
+	/** Whether a client message may pass (a view-only desktop's filter); absent, all do. */
+	readonly accept?: (data: string | Uint8Array, binary: boolean) => boolean;
+	/** What the relay's access log calls it: `desktop`, `cdp`, `port 3000`. */
+	readonly kind: string;
+	readonly grantee?: string;
+}
+
+/** A WebSocket upgrade refused: accepted, then closed with this, as self-hosted does. */
+export interface SocketRefusal {
+	readonly refused: { readonly code: number; readonly reason: string };
+}
+
+/** The client's side of a relayed WebSocket. */
+export interface SocketClient {
+	send(data: string | Uint8Array): void;
+	close(code: number, reason: string): void;
+}
+
+/** What the client sends, to the sandbox. */
+export interface RelayedSocket {
+	send(data: string | Uint8Array): void;
+	close(): void;
+}
+
+/** `/v1/hosts/tunnel/{ticket}[/{path}]`: a sandbox's port, as the ticket grants. */
+const TUNNEL_PATH = new RegExp(`^${HOSTS_TUNNEL_PATH}/([A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+)(/.*)?$`);
+
+/** The close code standing for an HTTP refusal of an upgrade, as self-hosted's (4000 plus the status). */
+const refusalCode = (status: number) => 4000 + status;
 
 /** The client's side of a raw tunnel. */
 export interface TunnelClient {
@@ -469,8 +523,8 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 
 /**
  * Account hosts' host side: the registry (in `sql`, else memory), the backend over it, and what hosts and tunnel
- * clients reach. Of the tunnels the backend issues tickets for, raw ones (SSH) are served; desktops and a browser's CDP
- * aren't yet. Exposed ports are, over HTTP, on `portsDomain`'s names (`servePort`).
+ * clients reach: every tunnel the backend issues tickets for (SSH, desktops, a browser's CDP), with the self-hosted
+ * gateway's ticket and access checks, and exposed ports on `portsDomain`'s names, pages (`servePort`) and WebSockets.
  */
 async function accountHostsSide(
 	config: { readonly publicUrl: string; readonly portsDomain: string },
@@ -511,6 +565,34 @@ async function accountHostsSide(
 		now,
 	});
 	const backend = createHostBackend({ hosts: service, publicUrl: config.publicUrl, tickets, ports, now });
+	// A desktop's page and Selkies' files (`openDesktop`'s URL), for a live desktop ticket whose holder still has access.
+	const desktops = createDesktopRoutes({
+		tickets,
+		allowed: (grant) => access.allowed(grant.grantee, grant.sandboxId),
+		openPort: (sandboxId, port, sink) => service.sandboxes.openPort(sandboxId, port, sink),
+		now,
+	});
+	const refused = (code: number, reason: string): SocketRefusal => ({ refused: { code, reason } });
+	/** Holds a session in the relay's access while it is open; the answer lets go of it. */
+	const held = (
+		session: { sandboxId: string; kind: string; grantee?: string | undefined },
+		end: (reason: string) => void,
+	) => {
+		const release = access.track({
+			sandboxId: session.sandboxId,
+			kind: session.kind,
+			...(session.grantee === undefined ? {} : { grantee: session.grantee }),
+			end,
+		});
+		access.start();
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			release();
+			if (access.size === 0) access.stop();
+		};
+	};
 	// Registration and a host's E2E chain only: the compute API serves hosts' management, so the registry's own admin
 	// routes refuse everyone.
 	const register = createHostsApi({
@@ -548,7 +630,137 @@ async function accountHostsSide(
 					return bounded instanceof Response ? bounded : register.fetch(bounded);
 				}
 				if (path.startsWith(`${HOSTS_IMAGES_PATH}/`)) return hostImage(request, path);
+				// A desktop's page, on its ticket: no sign-in, as the frame and a new tab open it alike.
+				if (path.startsWith(`${HOSTS_DESKTOP_PATH}/`)) return desktops.fetch(request);
 				return undefined;
+			},
+			async socketTarget(request) {
+				const url = new URL(request.url);
+				if (isPortName(url.hostname, config.portsDomain)) {
+					// An exposed port's name (a dev server's hot reload, an app's own WebSocket): only with its token, as its
+					// pages, and its cookie only from the port's own pages or the same sandbox's (by Origin).
+					const origin = request.headers.get("origin");
+					const cookie = request.headers.get("cookie");
+					const port = await ports.upgrade(
+						request.headers.get("host") ?? url.host,
+						`${url.pathname}${url.search}`,
+						cookie ?? undefined,
+						{ origin: origin ?? undefined },
+					);
+					if (port === undefined) return refused(refusalCode(404), "No sandbox port is exposed here");
+					if (!port.ok) return refused(refusalCode(port.status), port.reason);
+					return {
+						sandboxId: port.sandboxId,
+						port: port.port,
+						path: port.path,
+						host: port.host,
+						kind: `port ${port.port}`,
+						...(port.grantee === undefined ? {} : { grantee: port.grantee }),
+					};
+				}
+				if (url.pathname.startsWith(`${HOSTS_DESKTOP_PATH}/`)) {
+					const target = await desktops.socket(`${url.pathname}${url.search}`);
+					// Refused too when the ticket's holder has lost access.
+					if (target === undefined || target === "refused") {
+						return refused(HOST_CLOSE_REVOKED, "The desktop URL is wrong or has expired");
+					}
+					return {
+						sandboxId: target.sandboxId,
+						port: target.port,
+						path: target.path,
+						...(target.accept === undefined ? {} : { accept: target.accept }),
+						kind: "desktop",
+						...(target.grant.grantee === undefined ? {} : { grantee: target.grant.grantee }),
+					};
+				}
+				const tunnel = TUNNEL_PATH.exec(url.pathname);
+				// A raw tunnel (no path) is `tunnel`'s.
+				if (tunnel?.[1] === undefined || tunnel[2] === undefined) return undefined;
+				const grant = await tickets.verify(tunnel[1], now());
+				// A desktop's ticket opens only the desktop's route, where its mode is enforced.
+				if (grant === undefined || grant.desktop !== undefined) {
+					return refused(HOST_CLOSE_REVOKED, "The tunnel URL is wrong or has expired");
+				}
+				if (!(await access.allowed(grant.grantee, grant.sandboxId))) {
+					return refused(RELAY_CLOSE_REVOKED, RELAY_REVOKED_REASON);
+				}
+				return {
+					sandboxId: grant.sandboxId,
+					port: grant.port,
+					// A tunnel's path takes the request's query.
+					path: `${tunnel[2]}${url.search}`,
+					kind: sessionKind(grant.port, tunnel[2]),
+					...(grant.grantee === undefined ? {} : { grantee: grant.grantee }),
+				};
+			},
+			relay(target, client) {
+				// What the client sends before the port's server has answered the handshake waits in `openPortWebSocket`;
+				// the one stack object holds every relay, so that is bounded as a raw tunnel's is (`TUNNEL_PENDING_LIMIT`).
+				let open = false;
+				let waiting = 0;
+				let waitingMessages = 0;
+				let ended = false;
+				const decoder = new TextDecoder();
+				let inner: PortWebSocket | undefined;
+				const release = held(target, (reason) => {
+					// The client hears why first; closing the port's side then ends it there too.
+					ended = true;
+					closeQuietly(client, RELAY_CLOSE_REVOKED, reason);
+					inner?.close();
+				});
+				const finish = () => {
+					ended = true;
+					release();
+				};
+				inner = openPortWebSocket(
+					(sink) => service.sandboxes.openPort(target.sandboxId, target.port, sink),
+					target.port,
+					target.path,
+					{
+						open: () => {
+							open = true;
+						},
+						// Never throws into the host's connection: a client that can't take a message is closed instead.
+						message: (data, binary) => {
+							if (ended) return;
+							try {
+								client.send(binary ? data : decoder.decode(data));
+							} catch {
+								finish();
+								closeQuietly(client, 1011, "The client is gone");
+								inner?.close();
+							}
+						},
+						close: (code, reason) => {
+							finish();
+							closeQuietly(client, sendableCode(code), reason);
+						},
+					},
+					...(target.host === undefined ? [] : [target.host]),
+				);
+				const opened = inner;
+				return {
+					send(data) {
+						if (ended) return;
+						const binary = typeof data !== "string";
+						if (target.accept !== undefined && !target.accept(data, binary)) return;
+						if (!open) {
+							waiting += typeof data === "string" ? data.length * 3 : data.byteLength;
+							waitingMessages += 1;
+							if (waiting > TUNNEL_PENDING_LIMIT || waitingMessages > TUNNEL_PENDING_MESSAGES) {
+								finish();
+								closeQuietly(client, 1009, "Too much sent before the sandbox answered");
+								opened.close();
+								return;
+							}
+						}
+						opened.send(data, binary);
+					},
+					close() {
+						finish();
+						opened.close();
+					},
+				};
 			},
 			async connect(credential, socket) {
 				const host = credential === undefined ? undefined : await service.authenticate(credential);
@@ -618,6 +830,16 @@ async function accountHostsSide(
 		},
 	};
 }
+
+/** What a relayed WebSocket's session is, for the access log, as self-hosted names it. */
+function sessionKind(port: number, path: string | undefined): string {
+	if (port === SSH_PORT) return "ssh";
+	if (port === BROWSER_PORT) return "cdp";
+	return path === undefined ? `tunnel ${port}` : `port ${port}`;
+}
+
+/** A close code a client may be sent: the port's own, or 1011 for one only a runtime may use. */
+const sendableCode = (code: number) => (code >= 1000 && code < 5000 && code !== 1005 && code !== 1006 ? code : 1011);
 
 /** How often issuing a ticket also forgets long-expired ones. */
 const TICKET_SWEEP_MS = 10 * 60_000;
