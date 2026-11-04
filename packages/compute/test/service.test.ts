@@ -43,7 +43,7 @@ function setup(
 	backend: SandboxBackend = createStubBackend(),
 	extra: Pick<
 		Parameters<typeof createComputeApi>[0],
-		"sharedHosts" | "invites" | "limits" | "startHoldMs" | "startPollMs"
+		"sharedHosts" | "invites" | "limits" | "startHoldMs" | "startPollMs" | "store"
 	> = {},
 ) {
 	const api = createComputeApi({
@@ -1536,6 +1536,26 @@ describe("hosts", () => {
 		}
 		const deleted = await tom.deleteSandbox(running.id);
 		expect(deleted.state).toBe("deleted");
+	});
+
+	it("doesn't run a first create on a host revoked while the host made it", async () => {
+		const stub = createStubBackend();
+		let revokeMeanwhile: (() => Promise<unknown>) | undefined;
+		const { tom, root } = setup({
+			...stub,
+			// Where it is placed while it boots, as a host backend records it before asking the host.
+			placedOn: async () => STUB_HOST_ID,
+			// The host makes it, and before its record names the host, the host is revoked and its sandboxes scanned.
+			async create(spec) {
+				const placement = await stub.create(spec);
+				await revokeMeanwhile?.();
+				return placement;
+			},
+		});
+		revokeMeanwhile = () => root.revokeHost(STUB_HOST_ID);
+		const sandbox = await tom.createSandbox({ wait: true });
+		expect(sandbox).toMatchObject({ state: "error", reason: HOST_REVOKED_REASON });
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("error");
 	});
 
 	it("keeps a revocation that lands while a drain is in flight", async () => {

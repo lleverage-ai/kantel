@@ -39,6 +39,14 @@ export const NOT_HELD =
 	"No backend holds this sandbox: it isn't on one of the account's own hosts or on the deployment's shared hosts " +
 	"(it was never placed, if its create failed)";
 
+/**
+ * What a create made again is refused with when `primary` holds the sandbox but can't take it now: it stays placed on
+ * one of the account's own hosts until that host says what it has, or the sandbox is deleted.
+ */
+export const HELD_ELSEWHERE =
+	"It is placed on one of the account's own hosts, none of which may take it now; it stays there until that host " +
+	"says whether it has it, or until it is deleted";
+
 export function createRoutedBackend(options: RoutedBackendOptions): SandboxBackend {
 	const { primary, fallback, fallbackHolds } = options;
 	/** Sandboxes `fallback` made here whose placement `fallbackHolds` doesn't see yet; each goes once it does. */
@@ -127,6 +135,17 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 				}
 			: {};
 
+	/** A create made again for a sandbox `primary` holds: on `primary`'s eligible hosts, refused when it has none now. */
+	async function heldBy(spec: SandboxSpec): Promise<SandboxSpec> {
+		if (spec.fromSnapshot !== undefined && !options.holdsSnapshot(spec.fromSnapshot)) {
+			throw new KantelError("conflict", HELD_ELSEWHERE);
+		}
+		const own = new Set((await primary.capabilities()).hosts.map((host) => host.id));
+		const eligibleHosts = spec.eligibleHosts.filter((id) => own.has(id));
+		if (eligibleHosts.length === 0) throw new KantelError("unavailable", HELD_ELSEWHERE);
+		return { ...spec, eligibleHosts };
+	}
+
 	return {
 		...templates,
 		async capabilities(): Promise<BackendCapabilities> {
@@ -140,6 +159,10 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 			};
 		},
 		async create(spec): Promise<Placement> {
+			// One `primary` holds already is a create made again (its first went unanswered, and is kept placed there until
+			// its host says): it stays with `primary`, whose own checks decide it (refused while unsettled or there, made
+			// again once lost). It never goes to `fallback` too, which would leave two backends holding one ID.
+			if (await options.holds(spec.sandboxId)) return primary.create(await heldBy(spec));
 			const placed = await placeNew(spec);
 			const placement = await placed.backend.create(placed.spec);
 			made(placed.backend, [spec.sandboxId]);
@@ -211,6 +234,14 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 							fallback.usageReports?.(since, until) ?? [],
 						]);
 						return [...first, ...second].sort((a, b) => a.at - b.at);
+					},
+				}),
+		...(primary.placedOn === undefined && fallback.placedOn === undefined
+			? {}
+			: {
+					// Where the backend holding it placed it, even while it boots there.
+					async placedOn(id: string) {
+						return ((await options.holds(id)) ? primary : fallback).placedOn?.(id);
 					},
 				}),
 		async updateEgress(id, egress, revision) {

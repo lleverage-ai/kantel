@@ -3143,14 +3143,30 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * left to its delete.
 	 */
 	async function strandOn(hostId: string): Promise<void> {
-		for (const sandbox of await store.sandboxes.list({ hostId })) {
+		// Its own, by their record; and a first create or fork whose boot hasn't written the host into it yet (that comes
+		// with `running`), by where its backend placed it, recorded before the host is asked to make it. A boot that
+		// writes `running` before this scan is in the first list; one that writes it after finds it `error` already.
+		const unattributed =
+			backend.placedOn === undefined
+				? []
+				: (await store.sandboxes.list({ state: "starting" })).filter((sandbox) => sandbox.hostId === undefined);
+		const placedHere: StoredSandbox[] = [];
+		for (const sandbox of unattributed) {
+			if ((await backend.placedOn?.(sandbox.id).catch(() => undefined)) === hostId) placedHere.push(sandbox);
+		}
+		for (const sandbox of [...(await store.sandboxes.list({ hostId })), ...placedHere]) {
 			// From whatever live state it is in when written, not as listed: a boot or stop that lands in between doesn't
-			// leave it running or stopped on a host that is gone.
+			// leave it running or stopped on a host that is gone. One its boot has put on another host since is left.
 			let previous: SandboxState = sandbox.state;
-			const result = await transition(sandbox.id, STRANDABLE, (current) => {
-				previous = current.state;
-				return withState(current, "error", { reason: HOST_REVOKED_REASON, ports: [] });
-			}).catch(() => undefined);
+			const result = await transition(
+				sandbox.id,
+				STRANDABLE,
+				(current) => {
+					previous = current.state;
+					return withState(current, "error", { reason: HOST_REVOKED_REASON, ports: [] });
+				},
+				(current) => current.hostId === undefined || current.hostId === hostId,
+			).catch(() => undefined);
 			if (result === undefined || !("moved" in result)) continue;
 			await emit("sandbox.error", result.moved.accountId, {
 				sandbox: result.moved,

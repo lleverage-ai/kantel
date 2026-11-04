@@ -1,10 +1,14 @@
 // A host lost in the middle of a call: Kantel claims no more than the host has said. A create or fork it never answered
 // stays placed on it, counted there, until it reconnects and says what it holds; one it refused, or that never left, is
 // gone. A sandbox on a revoked host is written off by its delete, without asking a host that never comes back.
+import { createRoutedBackend, createStubBackend, HELD_ELSEWHERE, STUB_HOST_ID } from "@kantel/compute";
 import { isKantelError } from "@kantel/contracts";
 import { afterEach, describe, expect, it } from "vitest";
+import { createHostBackend } from "../src/backend.ts";
+import { createMemoryRelayStore } from "../src/relay-store.ts";
 import { createHostsService, type HostsService, unanswered } from "../src/service.ts";
 import { createMemoryHostStore } from "../src/store.ts";
+import { createTunnelTickets } from "../src/tunnel.ts";
 import { FakeHost, facts } from "./fake-host.ts";
 
 const services: HostsService[] = [];
@@ -187,5 +191,77 @@ describe("a host lost mid-call", () => {
 		expect(await store.getPlacement("sbx-stranded")).toBeUndefined();
 		expect(host.calls.some((call) => call.method === "sandbox.delete")).toBe(false);
 		expect(logs.join("\n")).toMatch(/sbx-stranded written off: its host .* is revoked/);
+	});
+});
+
+describe("a create made again over two backends", () => {
+	/** An account's host as `primary` and the stub as `fallback`, routed as a hosted deployment does. */
+	async function routed() {
+		const { store, service, hostId, host } = await setup();
+		const primary = createHostBackend({
+			hosts: service,
+			publicUrl: "https://kantel.test",
+			tickets: createTunnelTickets(createMemoryRelayStore()),
+		});
+		const fallback = createStubBackend();
+		const backend = createRoutedBackend({
+			primary,
+			fallback,
+			holds: async (sandboxId) => (await service.sandboxes.placement(sandboxId)) !== undefined,
+			holdsSnapshot: (ref) => ref.startsWith(`${hostId}/`),
+		});
+		const spec = (sandboxId: string, eligibleHosts: readonly string[]) => ({
+			sandboxId,
+			accountId: "acc_1",
+			type: "microvm" as const,
+			subdomain: sandboxId,
+			env: {},
+			eligibleHosts,
+		});
+		/** A create whose link drops before the host answers: kept placed on the host. */
+		const unansweredCreate = async (sandboxId: string) => {
+			host.hold = (method) => (method === "sandbox.create" ? never() : undefined);
+			const creating = backend.create(spec(sandboxId, [hostId, STUB_HOST_ID]));
+			await tick();
+			host.connection.closed(1006, "gone");
+			await expect(creating).rejects.toSatisfy(unanswered);
+		};
+		return { store, service, hostId, backend, spec, fallback, unansweredCreate };
+	}
+
+	it("never makes on the fallback a sandbox the account's host still holds", async () => {
+		const { store, backend, spec, fallback, unansweredCreate } = await routed();
+		await unansweredCreate("sbx-retry");
+		// Its host away, only the stub may take it now: the retry is refused rather than made there too.
+		const error = await backend.create(spec("sbx-retry", [STUB_HOST_ID])).catch((caught: unknown) => caught);
+		expect(isKantelError(error, "unavailable")).toBe(true);
+		expect((error as Error).message).toBe(HELD_ELSEWHERE);
+		expect((await store.getPlacement("sbx-retry"))?.state).toBe("starting");
+		await expect(fallback.usage("sbx-retry")).rejects.toThrow();
+	});
+
+	it("makes it again on the account's host once that host says it lost it, and routes there after", async () => {
+		const { store, service, hostId, backend, spec, unansweredCreate } = await routed();
+		await unansweredCreate("sbx-again");
+		const back = new FakeHost(service, hostId);
+		back.connect();
+		await tick();
+		expect((await store.getPlacement("sbx-again"))?.state).toBe("lost");
+		const placed = await backend.create(spec("sbx-again", [hostId, STUB_HOST_ID]));
+		expect(placed.hostId).toBe(hostId);
+		expect((await store.getPlacement("sbx-again"))?.state).toBe("running");
+		await backend.destroy("sbx-again");
+		expect(back.calls.some((call) => call.method === "sandbox.delete")).toBe(true);
+	});
+
+	it("refuses a create made again while its first is unsettled, even with the account's host eligible", async () => {
+		const { service, hostId, backend, spec, unansweredCreate } = await routed();
+		await unansweredCreate("sbx-wait");
+		new FakeHost(service, hostId).connect([
+			{ id: "sbx-wait", tier: "microvm", size: "default", state: "running", createdAt: 1 },
+		]);
+		await tick();
+		const error = await backend.create(spec("sbx-wait", [hostId, STUB_HOST_ID])).catch((caught: unknown) => caught);
+		expect(isKantelError(error, "conflict")).toBe(true);
 	});
 });
