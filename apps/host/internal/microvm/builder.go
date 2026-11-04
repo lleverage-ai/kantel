@@ -485,7 +485,8 @@ func (m *Manager) bootBuilder(ctx context.Context, job builderJob) (builderOutpu
 		<-machine.Done()
 	}()
 	// Never snapshotted or resized: its machine's own memory, none hotpluggable.
-	cfg := m.bootConfig(shape{Size: job.size}, kernel, link.Tap, link.MAC, m.cid())
+	// No bundle drives: its only extra drive is its writable output.
+	cfg := m.bootConfig(shape{Size: job.size}, kernel, link.Tap, link.MAC, m.cid(), 0)
 	cfg.Drives = []fc.Drive{{ID: "out", Path: builderOutputDrive}}
 	if err := machine.Boot(ctx, cfg); err != nil {
 		return builderOutput{}, err

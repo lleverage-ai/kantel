@@ -152,7 +152,10 @@ old images for them.
 netfilter and nftables, bridge, veth, VXLAN, IPVS) and KVM, so a sandbox runs its own VMs: on a host whose KVM has
 nested virtualisation on (`kvm_amd nested=1` or `kvm_intel nested=1`), `/dev/kvm` is there in every sandbox.
 `kernel/kantel-<arch>.config` adds what only one architecture has (x86_64's Intel and AMD KVM). FUSE (bucket mounts)
-is in Firecracker's config already; `kantel.config` names it so the build fails if it ever isn't.
+is in Firecracker's config already; `kantel.config` names it so the build fails if it ever isn't. It has erofs too,
+for bundle mounts: the host attaches each bundle a sandbox mounts as an erofs image on a read-only drive (`/dev/vdc`
+on), which the guest agent mounts read-only where asked (`POST /bundles`). An image whose kernel or guest agent
+predates them says so in each bundle mount's status.
 
 The host also relies on two drivers the Firecracker config already has built in, and `build.sh` fails if either is
 missing: vsock, for the guest agent, and `virtio_balloon`. Every microVM gets a balloon that never takes memory and only

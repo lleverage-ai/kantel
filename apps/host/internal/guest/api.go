@@ -182,3 +182,25 @@ type ManifestEntry struct {
 // RefreshXattr is an extended attribute on a bucket mount's root: reading it (getfattr -n user.kantel.refresh
 // <mount>) lists the prefix again now and answers the new manifest version.
 const RefreshXattr = "user.kantel.refresh"
+
+// BundleMount is one bundle the host has the guest mount (POST /bundles, all of a sandbox's at once: a bundle mount
+// the list doesn't name is unmounted). The host has already attached the bundle's erofs image to the drive.
+type BundleMount struct {
+	Path string `json:"path"`
+	// Drive is the bundle drive's index: drive 0 is /dev/vdc, after the root image (vda) and the sandbox's disk (vdb).
+	Drive int `json:"drive"`
+	// Digest names the bundle: a mount already at Path with the same digest is kept.
+	Digest string `json:"digest"`
+	// Bytes is the image's size: the guest waits for the device to be that size (the host has just pointed the drive
+	// at it) before it mounts.
+	Bytes int64 `json:"bytes"`
+}
+
+// BundleResult is how mounting one BundleMount went: an empty Error is mounted.
+type BundleResult struct {
+	Path  string `json:"path"`
+	Error string `json:"error,omitempty"`
+}
+
+// BundleDevice is the guest's device for bundle drive i.
+func BundleDevice(i int) string { return "/dev/vd" + string(rune('c'+i)) }

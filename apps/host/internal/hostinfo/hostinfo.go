@@ -220,6 +220,12 @@ func Checks(root string, native bool) []Check {
 	} else {
 		out = append(out, newCheck("tun", true, "/dev/net/tun", true))
 	}
+	// Advice: without it, the host offers no bundle mounts (experimental).
+	if _, err := lookPath("mkfs.erofs"); err != nil {
+		out = append(out, newCheck("mkfs.erofs", false, "mkfs.erofs not found on PATH: install erofs-utils for bundle mounts (experimental)", false))
+	} else {
+		out = append(out, newCheck("mkfs.erofs", true, "mkfs.erofs (bundle mounts)", false))
+	}
 	// Before the first install root doesn't exist: measure the filesystem it will be made on.
 	if free, at, err := FreeDiskAt(root); err != nil {
 		out = append(out, unknownCheck("disk", fmt.Sprintf("free space at %s: %v", at, err)))

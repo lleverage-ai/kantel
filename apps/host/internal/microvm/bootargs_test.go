@@ -14,7 +14,7 @@ func TestBootTellsTheGuestItsBrowserSurfaceIsForwarded(t *testing.T) {
 	sh := shape{HotplugMiB: 1024}
 	for _, m := range []*Manager{{}, {cfg: Config{Initrd: "/var/lib/kantel-host/initramfs.cpio"}}} {
 		for _, s := range []shape{{}, sh} {
-			args := m.bootConfig(s, "vmlinux", "", "", 3).BootArgs
+			args := m.bootConfig(s, "vmlinux", "", "", 3, 0).BootArgs
 			if !slices.Contains(strings.Fields(args), guest.BrowserSurfaceBootArg) {
 				t.Errorf("initrd %q, hotplug %d: %q", m.cfg.Initrd, s.HotplugMiB, args)
 			}

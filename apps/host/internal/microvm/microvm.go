@@ -18,7 +18,9 @@
 //	sandboxes/<id>/meta.json                  the sandbox's record
 //	sandboxes/<id>/vm/                        Firecracker's working directory: rootfs.ext4 (a link to the image),
 //	                                          disk.ext4 (the sandbox's own disk), state and mem after a stop
-//	snapshots/<id>/{meta.json,disk.ext4,...}  automatic and saved snapshots
+//	                                          bundle<n>.erofs (its bundle drives: an empty file, or a link to a bundle's
+//	                                          image in the host's bundle cache; bundles.go)
+//	snapshots/<id>/{meta.json,disk.ext4,...}  automatic and saved snapshots, with links to the bundle images attached
 //	images/templates/<key>.ext4               templates' root filesystems, made from their pulled bases (rootfs.go)
 //	template-snapshots/<id>/                  templates' snapshots (templates.go), never under snapshots/
 package microvm
@@ -46,6 +48,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lleverage-ai/kantel/apps/host/internal/bundles"
 	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
 	"github.com/lleverage-ai/kantel/apps/host/internal/fsutil"
 	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
@@ -185,6 +188,15 @@ type Config struct {
 	Budget func() (memoryMiB, diskGiB int64)
 	// Mounts serves sandboxes' read-only bucket mounts; nil refuses a create with mounts.
 	Mounts *mounts.Manager
+	// Bundles is the host's cache of bundle images, for bundle mounts (bundles.go); nil, or BundleDrives 0, refuses
+	// them. BundleDrives is how many every microVM has. FetchBundle opens a bundle's tar from the control plane for a
+	// sandbox that mounts it. BundleWait is how long a call waits for an image being built (default DefaultBundleWait).
+	Bundles      *bundles.Cache
+	BundleDrives int
+	FetchBundle  func(ctx context.Context, sandboxID, digest string) (io.ReadCloser, error)
+	BundleWait   time.Duration
+	// MountEvents receives a sandbox whose mounts changed status after its call answered.
+	MountEvents func(proto.SandboxInfo)
 }
 
 type meta struct {
@@ -212,8 +224,14 @@ type meta struct {
 	// template's agent reported it (nil: an agent too old to say). Other sandboxes of the host's image have none and
 	// report the shared Manager.guest instead. Its snapshots keep it.
 	Guest *proto.GuestCapabilities `json:"guest,omitempty"`
-	// Mounts are the sandbox's read-only mounts as created (no credentials: the host resolves those).
-	Mounts []proto.Mount `json:"mounts,omitempty"`
+	// Mounts are the sandbox's read-only mounts as created, bundles and buckets in one list (no credentials: the host
+	// resolves those). MountStatus is how each bundle mount is doing; a bucket mount's is its mounts.Sandbox's.
+	Mounts      []proto.Mount       `json:"mounts,omitempty"`
+	MountStatus []proto.MountStatus `json:"mountStatus,omitempty"`
+	// BundleDrives is how many bundle drives its VM has (fixed by the template or snapshot it came from), and
+	// BundleSlots the digest of the bundle attached to each ("" none).
+	BundleDrives int      `json:"bundleDrives,omitempty"`
+	BundleSlots  []string `json:"bundleSlots,omitempty"`
 }
 
 type sandbox struct {
@@ -309,12 +327,13 @@ const (
 	guestsDir = "guests"
 )
 
-// bootConfig is a cold boot of a shape on kernel (kernelFor: its root filesystem's version's): through Kantel's
-// initramfs when the host injects the agent, with its hotpluggable memory when it has some (a shared template).
-func (m *Manager) bootConfig(sh shape, kernel, tap, mac string, cid uint32) fc.BootConfig {
+// bootConfig is a cold boot of a shape on kernel (kernelFor: its root filesystem's version's), with drives bundle
+// drives: through Kantel's initramfs when the host injects the agent, with its hotpluggable memory when it has some
+// (a shared template).
+func (m *Manager) bootConfig(sh shape, kernel, tap, mac string, cid uint32, drives int) fc.BootConfig {
 	cfg := fc.BootConfig{
 		VCPUs: sh.VCPUs, MemoryMiB: sh.MemoryMiB, Kernel: kernel, BootArgs: bootArgs, TapDevice: tap, MAC: mac, GuestCID: cid,
-		HotplugMiB: sh.HotplugMiB, BalloonStatsSeconds: balloonStatsSeconds,
+		HotplugMiB: sh.HotplugMiB, BalloonStatsSeconds: balloonStatsSeconds, Drives: bundleDrives(drives),
 	}
 	if m.cfg.Initrd != "" {
 		cfg.Initrd, cfg.BootArgs = m.cfg.Initrd, guestinit.BootArgs
@@ -627,19 +646,56 @@ func (m *Manager) info(s *sandbox) proto.SandboxInfo {
 	// Its own image's report: its template's, else its version's (a template rebuilt on a newer version doesn't change
 	// what this one boots).
 	info.Guest = m.sandboxGuest(s)
-	if mt := m.mountsOf(s); mt != nil {
-		info.Mounts = mt.Status()
-	}
+	info.Mounts = m.mountStatus(s)
 	return info
 }
 
-// mountsOf is the sandbox's mounts on the host (nil when it has none, or is deleted: its mounts were forgotten, and
-// aren't made again for its last event).
-func (m *Manager) mountsOf(s *sandbox) *mounts.Sandbox {
-	if m.cfg.Mounts == nil || len(s.meta.Mounts) == 0 || s.meta.State == proto.StateDeleted {
+// mountStatus is how each of the sandbox's mounts is doing, in the order it was created with: a bundle mount's from
+// its meta (bundles.go), a bucket mount's from its mounts.Sandbox.
+func (m *Manager) mountStatus(s *sandbox) []proto.MountStatus {
+	if len(s.meta.Mounts) == 0 {
 		return nil
 	}
-	return m.cfg.Mounts.Sandbox(s.meta.ID, s.meta.Mounts)
+	byPath := map[string]proto.MountStatus{}
+	for _, st := range s.meta.MountStatus {
+		byPath[st.Path] = st
+	}
+	if mt := m.mountsOf(s); mt != nil {
+		for _, st := range mt.Status() {
+			byPath[st.Path] = st
+		}
+	}
+	var out []proto.MountStatus
+	for _, mt := range s.meta.Mounts {
+		if st, ok := byPath[mt.Path]; ok {
+			out = append(out, st)
+		}
+	}
+	return out
+}
+
+// bucketMounts are the sandbox's bucket mounts: the part of its one list of mounts the host's mounts.Manager serves.
+func bucketMounts(s *sandbox) []proto.Mount {
+	var out []proto.Mount
+	for _, mt := range s.meta.Mounts {
+		if mt.Kind == proto.MountBucket {
+			out = append(out, mt)
+		}
+	}
+	return out
+}
+
+// mountsOf is the sandbox's bucket mounts on the host (nil when it has none, or is deleted: its mounts were forgotten,
+// and aren't made again for its last event).
+func (m *Manager) mountsOf(s *sandbox) *mounts.Sandbox {
+	if m.cfg.Mounts == nil || s.meta.State == proto.StateDeleted {
+		return nil
+	}
+	buckets := bucketMounts(s)
+	if len(buckets) == 0 {
+		return nil
+	}
+	return m.cfg.Mounts.Sandbox(s.meta.ID, buckets)
 }
 
 // applyMounts serves a running sandbox's mounts to it and has its guest mount them: listing each prefix that has no
@@ -746,8 +802,28 @@ func (m *Manager) reconcileMounts(ctx context.Context, s *sandbox) (done bool) {
 	return true
 }
 
-// MountsSupported says this tier takes CreateParams.Mounts.
-func (m *Manager) MountsSupported() bool { return m.cfg.Mounts != nil }
+// SupportsMount says which mounts this tier takes on this host: bundles while the host can build their images and its
+// microVMs have drives for them, buckets while it has a mounts.Manager.
+func (m *Manager) SupportsMount(kind string) bool {
+	switch kind {
+	case proto.MountBundle:
+		return m.cfg.Bundles != nil && m.cfg.BundleDrives > 0
+	case proto.MountBucket:
+		return m.cfg.Mounts != nil
+	}
+	return false
+}
+
+// validateMounts checks a create's mounts, bundles and buckets in one list, before anything is made: each is of a kind
+// this host takes, and the list keeps mounts.Validate's rules (paths, overlaps, how many, each kind's fields).
+func (m *Manager) validateMounts(ms []proto.Mount) error {
+	for _, mt := range ms {
+		if !m.SupportsMount(mt.Kind) {
+			return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("this host has no %s mounts", mt.Kind)}
+		}
+	}
+	return mounts.Validate(ms)
+}
 
 func (m *Manager) emit(s *sandbox) {
 	if m.cfg.Events != nil {
@@ -792,6 +868,8 @@ func (m *Manager) adopt() error {
 					s.adoptedMounts.Store(true)
 				}
 				m.sandboxes[s.meta.ID] = s
+				// A bundle still being built when the host stopped: build it again, and attach it then.
+				m.finishBundles(s)
 				m.log.Info("adopted running sandbox", "sandbox", s.meta.ID, "pid", s.meta.Pid)
 				if s.meta.GrowDisk {
 					// The previous run answered its create but restarted before growing its disk.
@@ -1010,12 +1088,16 @@ func templateShape(size proto.Size) string {
 	return fmt.Sprintf(" size=%d/%d/%d", size.VCPUs, size.MemoryMiB, size.DiskGiB)
 }
 
-// shapeKey is a shape's part of its template's fingerprint: the size's, and a shared template's hotpluggable memory
-// and the boot arguments its guest needs to plug it.
+// shapeKey is a shape's part of its template's fingerprint: the size's, its bundle drives (a VM restored from it has
+// the drives it was made with, so a template with another number is rebuilt, not reused while a background rebuild
+// runs), and a shared template's hotpluggable memory and the boot arguments its guest needs to plug it.
 func (m *Manager) shapeKey(sh shape) string {
 	key := templateShape(sh.Size)
+	if m.cfg.BundleDrives > 0 {
+		key += fmt.Sprintf(" bundles=%d", m.cfg.BundleDrives)
+	}
 	if sh.HotplugMiB > 0 {
-		key += fmt.Sprintf(" hotplug=%d args=%q", sh.HotplugMiB, m.bootConfig(sh, "", "", "", 0).BootArgs)
+		key += fmt.Sprintf(" hotplug=%d args=%q", sh.HotplugMiB, m.bootConfig(sh, "", "", "", 0, 0).BootArgs)
 	}
 	return key
 }
@@ -1159,6 +1241,10 @@ func (m *Manager) bootSnapshot(ctx context.Context, b snapshotBoot) (timings, *p
 	if err := newDisk(filepath.Join(vm, fc.DiskFile), b.size.DiskGiB); err != nil {
 		return nil, nil, "", err
 	}
+	// Every snapshot has the host's bundle drives, empty: a VM restored from it has the devices it was made with.
+	if err := emptyDrives(vm, m.cfg.BundleDrives); err != nil {
+		return nil, nil, "", err
+	}
 	t.step("disk", &start)
 	link, err := m.cfg.Network.Add(b.egress)
 	if err != nil {
@@ -1179,7 +1265,7 @@ func (m *Manager) bootSnapshot(ctx context.Context, b snapshotBoot) (timings, *p
 		<-machine.Done()
 	}()
 	t.step("launch", &start)
-	if err := machine.Boot(ctx, m.bootConfig(shape{Size: b.size, HotplugMiB: b.hotplugMiB}, kernel, link.Tap, link.MAC, m.cid())); err != nil {
+	if err := machine.Boot(ctx, m.bootConfig(shape{Size: b.size, HotplugMiB: b.hotplugMiB}, kernel, link.Tap, link.MAC, m.cid(), m.cfg.BundleDrives)); err != nil {
 		return nil, nil, "", err
 	}
 	client := guest.NewClient(filepath.Join(vm, fc.VsockSocket))
@@ -1229,6 +1315,10 @@ func (m *Manager) bootSnapshot(ctx context.Context, b snapshotBoot) (timings, *p
 		return nil, nil, "", err
 	}
 	_ = os.RemoveAll(vm)
+	// How many bundle drives it was made with: a VM restored from it has those (startMachine).
+	if err := writeSnapshotDriveCount(building, m.cfg.BundleDrives); err != nil {
+		return nil, nil, "", err
+	}
 	// Its record of its base moves with it: not while a prune walks the references.
 	unhold = m.holdBases()
 	err = os.Rename(building, b.dir)
@@ -1547,6 +1637,12 @@ type sandboxOrigin struct {
 	// reshape is the shared template's shape when it restores one (shared.go): the sandbox is grown from it, its
 	// memory plugged and its disk grown, to its own size.
 	reshape *shape
+	// snapshotDir, bundleDrives and bundleSlots are a sandbox snapshot's bundle drives when it restores one with memory
+	// (p.From): the same images on the same drives (bundles.go). A template snapshot's drives are empty, as many as its
+	// directory says; a boot has the host's BundleDrives.
+	snapshotDir  string
+	bundleDrives int
+	bundleSlots  []string
 }
 
 // startOf is a new sandbox's origin as a machine of size: p.From, a snapshot; p.Template, a template's snapshot or its
@@ -1570,6 +1666,9 @@ func (m *Manager) startOf(ctx context.Context, p proto.CreateParams, size proto.
 		origin := sandboxOrigin{rootfs: m.snapshotRootfs(snap), disk: filepath.Join(sdir, fc.DiskFile), source: "snapshot", guest: snap.Guest, unhold: unhold}
 		if snap.Memory {
 			origin.state, origin.mem = filepath.Join(sdir, "state"), filepath.Join(sdir, "mem")
+			// Its memory holds the guest's mounts of the bundles on its drives then: the same images, on the same drives.
+			origin.snapshotDir, origin.bundleDrives = sdir, snap.BundleDrives
+			origin.bundleSlots = append([]string(nil), snap.BundleSlots...)
 		}
 		return origin, nil
 	}
@@ -1622,13 +1721,8 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 	if err != nil {
 		return proto.SandboxInfo{}, err
 	}
-	if len(p.Mounts) > 0 {
-		if m.cfg.Mounts == nil {
-			return proto.SandboxInfo{}, &proto.Error{Code: proto.ErrUnsupported, Message: "this host has no bucket mounts"}
-		}
-		if err := mounts.Validate(p.Mounts); err != nil {
-			return proto.SandboxInfo{}, err
-		}
+	if err := m.validateMounts(p.Mounts); err != nil {
+		return proto.SandboxInfo{}, err
 	}
 	t := timings{}
 	start := time.Now()
@@ -1640,6 +1734,8 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 	if err := m.register(s, size); err != nil {
 		return proto.SandboxInfo{}, err
 	}
+	// While the VM starts.
+	m.prefetchBundles(s)
 	fail := func(err error) (proto.SandboxInfo, error) {
 		if s.machine != nil {
 			s.machine.Kill()
@@ -1722,6 +1818,13 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 		}
 		t.step("setup", &start)
 	}
+	// Its mounts, from the one list: bundles on their drives, then the bucket mounts. A mount that fails says so in its
+	// status; the sandbox runs without it.
+	pending := false
+	if len(bundleMounts(s)) > 0 || anyAttached(s.meta.BundleSlots) {
+		pending = m.attachBundles(ctx, s, m.bundleWait())
+		t.step("bundles", &start)
+	}
 	if len(s.meta.Mounts) > 0 || p.From != "" {
 		m.applyMounts(ctx, s, p.From != "")
 		t.step("mounts", &start)
@@ -1738,6 +1841,9 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 		go m.growDisk(s, size.DiskGiB)
 	}
 	m.watch(s, s.machine)
+	if pending {
+		m.finishBundles(s)
+	}
 	t.step("finish", &start)
 	t["total"] = float64(time.Since(began).Microseconds()) / 1000
 	info := m.info(s)
@@ -1853,6 +1959,21 @@ func (m *Manager) startMachine(ctx context.Context, s *sandbox, origin sandboxOr
 	if err != nil {
 		return err
 	}
+	// Its bundle drives, before it boots or restores: a restored VM has the devices its snapshot was made with.
+	s.meta.BundleDrives, s.meta.BundleSlots = m.cfg.BundleDrives, nil
+	switch {
+	case origin.state == "":
+		err = emptyDrives(vm, s.meta.BundleDrives)
+	case origin.snapshotDir != "":
+		s.meta.BundleDrives, s.meta.BundleSlots = origin.bundleDrives, append([]string(nil), origin.bundleSlots...)
+		err = snapshotDrives(vm, origin.snapshotDir, origin.bundleDrives, origin.bundleSlots)
+	default:
+		s.meta.BundleDrives = snapshotDriveCount(filepath.Dir(origin.state))
+		err = emptyDrives(vm, s.meta.BundleDrives)
+	}
+	if err != nil {
+		return err
+	}
 	if origin.reshape != nil {
 		// The disk, the network and the Firecracker process side by side: none needs another. Its record (meta.json,
 		// starting, with its slot) is written once the link is made, before the snapshot is loaded.
@@ -1915,7 +2036,19 @@ func (m *Manager) boot(ctx context.Context, s *sandbox, size proto.Size) error {
 		return err
 	}
 	s.meta.CID = m.cid()
-	if err := machine.Boot(ctx, m.bootConfig(shape{Size: size}, kernel, s.link.Tap, s.link.MAC, s.meta.CID)); err != nil {
+	// Its bundle drives as they are: the guest mounts what is on them once it's up. A drive whose file is gone is empty.
+	for i := 0; i < s.meta.BundleDrives; i++ {
+		if _, err := os.Stat(filepath.Join(vm, bundleDriveFile(i))); err != nil {
+			if err := os.WriteFile(filepath.Join(vm, bundleDriveFile(i)), nil, 0o600); err != nil {
+				machine.Kill()
+				return err
+			}
+			if i < len(s.meta.BundleSlots) {
+				s.meta.BundleSlots[i] = ""
+			}
+		}
+	}
+	if err := machine.Boot(ctx, m.bootConfig(shape{Size: size}, kernel, s.link.Tap, s.link.MAC, s.meta.CID, s.meta.BundleDrives)); err != nil {
 		machine.Kill()
 		return err
 	}
@@ -2120,6 +2253,12 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 		return proto.SandboxInfo{}, fmt.Errorf("identity: %w", err)
 	}
 	t.step("identity", &start)
+	pending := false
+	if len(bundleMounts(s)) > 0 || anyAttached(s.meta.BundleSlots) {
+		// Restored, its mounts are there still; cold-booted, it mounts its drives' bundles anew.
+		pending = m.attachBundles(ctx, s, m.bundleWait())
+		t.step("bundles", &start)
+	}
 	if len(s.meta.Mounts) > 0 {
 		// Restored, its FUSE mounts are still there and reach the host again; cold-booted, it mounts them anew.
 		m.applyMounts(ctx, s, false)
@@ -2137,6 +2276,9 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 		go m.growDisk(s, size.DiskGiB)
 	}
 	m.watch(s, s.machine)
+	if pending {
+		m.finishBundles(s)
+	}
 	t["total"] = float64(time.Since(began).Microseconds()) / 1000
 	info := m.info(s)
 	info.Timings, info.Source = t, source
@@ -2244,6 +2386,10 @@ func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.Snap
 		os.RemoveAll(sdir)
 		return err
 	}
+	if err := keepDrives(s.vmDir(), sdir, s.meta.BundleSlots); err != nil {
+		os.RemoveAll(sdir)
+		return err
+	}
 	t.step("disk", &start)
 	snap.SizeBytes = diskUsage(filepath.Join(sdir, fc.DiskFile)) + diskUsage(filepath.Join(sdir, "mem"))
 	return m.writeSnapshotMeta(s, snap)
@@ -2257,6 +2403,10 @@ type snapshotMeta struct {
 	Rootfs string `json:"rootfs,omitempty"`
 	// Guest is what its sandbox's template image has (meta's), which a sandbox made from it reports too.
 	Guest *proto.GuestCapabilities `json:"guest,omitempty"`
+	// BundleDrives and BundleSlots are the sandbox's bundle drives when its memory was taken (bundles.go): a sandbox
+	// restored from it gets the same, from the links in the snapshot's directory.
+	BundleDrives int      `json:"bundleDrives,omitempty"`
+	BundleSlots  []string `json:"bundleSlots,omitempty"`
 }
 
 func (m *Manager) snapshotDir(id string) string {
@@ -2268,7 +2418,11 @@ func (m *Manager) writeSnapshotMeta(s *sandbox, snap *proto.SnapshotInfo) error 
 	defer m.holdBases()()
 	rootfs, base := rootfsOf(s.vmDir())
 	snap.Base = base
-	raw, _ := json.MarshalIndent(snapshotMeta{SnapshotInfo: *snap, Size: s.meta.Size, Rootfs: rootfs, Guest: s.meta.Guest}, "", "  ")
+	sm := snapshotMeta{SnapshotInfo: *snap, Size: s.meta.Size, Rootfs: rootfs, Guest: s.meta.Guest}
+	if snap.Memory {
+		sm.BundleDrives, sm.BundleSlots = s.meta.BundleDrives, s.meta.BundleSlots
+	}
+	raw, _ := json.MarshalIndent(sm, "", "  ")
 	return os.WriteFile(filepath.Join(m.snapshotDir(snap.ID), "meta.json"), raw, 0o600)
 }
 
@@ -2303,6 +2457,9 @@ func (m *Manager) saveSnapshot(s *sandbox, snap *proto.SnapshotInfo, fromStop bo
 		if err := os.Link(filepath.Join(vm, "state"), filepath.Join(sdir, "state")); err != nil {
 			snap.Memory = false
 		} else if err := m.spool.link(filepath.Join(vm, "mem"), filepath.Join(sdir, "mem")); err != nil {
+			snap.Memory = false
+		} else if err := keepDrives(vm, sdir, s.meta.BundleSlots); err != nil {
+			dropDrives(sdir)
 			snap.Memory = false
 		}
 	}
@@ -2352,6 +2509,9 @@ func (m *Manager) pruneAuto(sandboxID string) {
 		if auto > 1 && snap.Memory {
 			_ = os.Remove(filepath.Join(dir, "mem"))
 			_ = os.Remove(filepath.Join(dir, "state"))
+			// Without its memory it needs no bundle images: a sandbox made from it boots and mounts its own.
+			dropDrives(dir)
+			snap.BundleDrives, snap.BundleSlots = 0, nil
 			snap.Memory = false
 			raw, _ := json.MarshalIndent(snap, "", "  ")
 			_ = fsutil.WriteFileDurably(filepath.Join(dir, "meta.json"), raw, 0o600)
@@ -2398,6 +2558,7 @@ func (m *Manager) DeleteSnapshot(id string) error {
 	if _, err := m.readSnapshot(id); err != nil {
 		return err
 	}
+	defer m.evictBundles()
 	return os.RemoveAll(m.snapshotDir(id))
 }
 
@@ -2433,6 +2594,8 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	if err := os.RemoveAll(s.dir); err != nil {
 		return err
 	}
+	// Its bundle images may be in use by no one now.
+	m.evictBundles()
 	m.unregister(id)
 	s.meta.State = proto.StateDeleted
 	m.emit(s)

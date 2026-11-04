@@ -34,7 +34,7 @@ Kantel Connect, a link through kantel.dev for hosts and self-hosted control plan
 | KVM | `/dev/kvm`, readable and writable by root. A cloud VM needs nested virtualisation from its provider. Without KVM a host runs isolates only, and only for code you trust (see [Without KVM](#without-kvm)) |
 | Nested virtualisation | Optional. With `kvm_intel nested=1` or `kvm_amd nested=1`, every sandbox gets a `/dev/kvm` of its own |
 | Root | `kantel-host` makes TAP devices and iptables rules |
-| Tools | `ip`, `iptables`, `mkfs.ext4`, `cp`, and `/dev/net/tun` (`modprobe tun`) |
+| Tools | `ip`, `iptables`, `mkfs.ext4`, `cp`, and `/dev/net/tun` (`modprobe tun`). For bundle mounts (experimental), `mkfs.erofs` from erofs-utils too |
 | Disk and memory | 20 GiB free under `/var/lib/kantel-host` and 4 GiB of memory, or more |
 | Network | Outbound to the control plane's public URL. When installing, also to GitHub, for `kantel-host`, Firecracker and the images |
 
@@ -56,6 +56,7 @@ ok      mkfs.ext4              mkfs.ext4
 ok      cp                     cp
 ok      docker                 Docker 28.5.1 builds templates' images
 ok      tun                    /dev/net/tun
+ok      mkfs.erofs             mkfs.erofs (bundle mounts)
 ok      disk                   412 GiB free at /var/lib, which will hold /var/lib/kantel-host (20 GiB or more recommended)
 ok      memory                 128776 MiB (4 GiB or more recommended)
 
@@ -64,7 +65,7 @@ This machine can run both tiers: microVMs (Firecracker) and isolates (workerd, i
 
 On a machine that already has `kantel-host`, `sudo kantel-host doctor` runs the same checks.
 
-`kvm`, `root`, `ip`, `iptables`, `mkfs.ext4`, `cp` and `tun` are required for microVMs. `doctor` exits 0 only when every required check is `ok`: one that fails says `FAIL`, one it couldn't find out says `unknown`, and either exits 1, so a script can stop there. `disk`, `memory`, `nested virtualisation` and `docker` (which only template builds need) are advice, and say `warn` when they're short. A machine that is itself a VM gets a `host is a VM` line too, which warns without nested virtualisation. With `--isolate-runtime native` (see [Without KVM](#without-kvm)), only `root` is required. `--json` prints the checks as JSON, each with its `state` and whether it's `required`. Options after `--check` that change the checks go on to `doctor`: `--root`, `--config`, `--isolate-runtime` and `--json`.
+`kvm`, `root`, `ip`, `iptables`, `mkfs.ext4`, `cp` and `tun` are required for microVMs. `doctor` exits 0 only when every required check is `ok`: one that fails says `FAIL`, one it couldn't find out says `unknown`, and either exits 1, so a script can stop there. `disk`, `memory`, `nested virtualisation`, `docker` (which only template builds need) and `mkfs.erofs` (without it, the host offers no bundle mounts) are advice, and say `warn` when they're short. A machine that is itself a VM gets a `host is a VM` line too, which warns without nested virtualisation. With `--isolate-runtime native` (see [Without KVM](#without-kvm)), only `root` is required. `--json` prints the checks as JSON, each with its `state` and whether it's `required`. Options after `--check` that change the checks go on to `doctor`: `--root`, `--config`, `--isolate-runtime` and `--json`.
 
 ## Get kantel-host and the images
 
@@ -369,5 +370,7 @@ Uninstalling doesn't tell the control plane, so revoke the host as well.
 | `autoUpdate` | `true` | Whether the control plane may move the host to another version |
 | `usageIntervalSeconds` | `5` | How often the host sends its and its sandboxes' usage, up to `300`. Below `0`, never |
 | `microvm.sharedTemplate` | `true` | One template snapshot per vCPU count, serving every memory and disk, rather than one per size (see above) |
+| `bundleCacheMiB` | `10240` | The bundle images the host keeps for bundle mounts (experimental) that no sandbox uses now, in MiB, under `bundleCacheDir` (default `/var/lib/kantel-host/bundles`). Images in use are never removed. `-1` turns bundle mounts off |
+| `bundleDrives` | `8` | How many different bundles one microVM can mount, at most 12. Every microVM has that many empty read-only drives for them |
 
 <!-- Sources (00d22cc): apps/selfhosted/src/gateway/compute.ts:1-45,100-140, deploy/compose/compose.yaml:325-340, packages/admin/src/admin.ts:404-430. (5be456c): apps/host/cmd/kantel-host/install.go:30-190,366-460,600-660, apps/host/cmd/kantel-host/main.go:60-215, apps/host/cmd/kantel-host/manifest.go, apps/host/internal/hostinfo (Checks), apps/host/internal/agent/config.go:20-120, apps/host/internal/agent/conn.go:194-210, apps/host/internal/microvm/microvm.go:55-60, apps/host/guest/README.md, apps/host/guest/rootfs.sh, packages/hosts/src/scheduler.ts:1-115, packages/hosts/src/service.ts:300-340, packages/compute/src/service.ts:334-347, packages/api/src/compute-schema.ts:391-395, apps/selfhosted/src/gateway/compute.ts:15-40,183-190, deploy/compose/compose.yaml:325-338 -->

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/bucket"
+	"github.com/lleverage-ai/kantel/apps/host/internal/bundles"
 	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
@@ -124,7 +125,9 @@ func New(cfg Config) *Manager {
 // Cache is the host's read cache.
 func (m *Manager) Cache() *Cache { return m.cfg.Cache }
 
-// Validate checks a create's mounts before anything is made.
+// Validate checks a create's mounts, bundles and buckets in one list, before anything is made: how many, their paths
+// (the guest's CheckMountPath), that none overlaps another, and each kind's own fields. Which kinds a host takes is
+// its tier's to say (SupportsMount).
 func Validate(mounts []proto.Mount) error {
 	if len(mounts) > MaxMounts {
 		return &proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("a sandbox has at most %d mounts", MaxMounts)}
@@ -147,6 +150,10 @@ func Validate(mounts []proto.Mount) error {
 			}
 			if ttl := mt.RefreshTTLSeconds; ttl != nil && (*ttl < 0 || *ttl > 86400) {
 				return &proto.Error{Code: proto.ErrInvalid, Message: "refreshTtlSeconds is 0 to 86400"}
+			}
+		case proto.MountBundle:
+			if !bundles.ValidDigest(mt.Digest) {
+				return &proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("the bundle mount at %s has no digest (sha256:<64 hex digits>)", mt.Path)}
 			}
 		default:
 			return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("this host has no %q mounts", mt.Kind)}

@@ -193,11 +193,13 @@ type BootConfig struct {
 	// ReadBalloonStats. A snapshot keeps the device, so every VM restored from one made with it reports too.
 	BalloonStatsSeconds int
 	// Drives are attached after rootfs (/dev/vda) and disk (/dev/vdb), in order, as /dev/vdc on: a template builder's
-	// output drive. Their paths are relative to the VM's directory, as the others' are.
+	// output drive, or a sandbox's read-only bundle drives. Their paths are relative to the VM's directory, as the
+	// others' are.
 	Drives []Drive
 }
 
-// Drive is an extra block device.
+// Drive is an extra block device. Path is relative to the VM's directory, as rootfs.ext4 is, so a snapshot of the VM
+// restores beside any number of clones, each with its own file there.
 type Drive struct {
 	ID       string
 	Path     string
@@ -223,7 +225,14 @@ const HotplugSlotMiB = 128
 // HotplugBlockMiB is the virtio-mem block size: what is plugged is a multiple of it.
 const HotplugBlockMiB = 2
 
-// Boot configures the VM (rootfs.ext4 read-only, disk.ext4 writable, eth0, vsock) and starts it.
+// UpdateDrive points a running VM's drive at another file (PATCH /drives/{id}): Firecracker opens path and tells the
+// guest its size changed, which the guest's kernel picks up as a capacity change of the device.
+func (m *Machine) UpdateDrive(ctx context.Context, id, path string) error {
+	return m.call(ctx, http.MethodPatch, "/drives/"+id, map[string]any{"drive_id": id, "path_on_host": path})
+}
+
+// Boot configures the VM (rootfs.ext4 read-only, disk.ext4 writable, any extra drives, eth0, vsock) and
+// starts it.
 func (m *Machine) Boot(ctx context.Context, cfg BootConfig) error {
 	type step struct {
 		path string
@@ -235,6 +244,7 @@ func (m *Machine) Boot(ctx context.Context, cfg BootConfig) error {
 		{"/drives/rootfs", map[string]any{"drive_id": "rootfs", "path_on_host": RootfsFile, "is_root_device": true, "is_read_only": true}},
 		{"/drives/disk", map[string]any{"drive_id": "disk", "path_on_host": DiskFile, "is_root_device": false, "is_read_only": false}},
 	}
+	// Block devices are attached in the order they're configured, so these are vdc, vdd, ... after vda and vdb.
 	for _, d := range cfg.Drives {
 		steps = append(steps, step{"/drives/" + d.ID, map[string]any{"drive_id": d.ID, "path_on_host": d.Path, "is_root_device": false, "is_read_only": d.ReadOnly}})
 	}

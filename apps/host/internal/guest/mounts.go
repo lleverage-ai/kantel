@@ -40,12 +40,13 @@ var reservedDirs = []string{
 	"/var/lib/docker", "/var/run",
 }
 
-// CheckMountPath says whether a mount may be at p: an absolute, clean path, not the system's own directories.
+// CheckMountPath says whether a mount, a bucket's or a bundle's, may be at p: an absolute, clean path with no control
+// characters, not the system's own directories.
 func CheckMountPath(p string) error {
 	if !strings.HasPrefix(p, "/") || path.Clean(p) != p || p == "/" {
 		return fmt.Errorf("a mount's path must be absolute and clean, not %q", p)
 	}
-	if len(p) > 1024 || strings.ContainsRune(p, 0) {
+	if len(p) > 1024 || strings.ContainsFunc(p, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
 		return fmt.Errorf("bad mount path %q", p)
 	}
 	for _, dir := range reservedDirs {

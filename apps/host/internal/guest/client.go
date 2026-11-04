@@ -416,6 +416,19 @@ func (c *Client) ListFiles(ctx context.Context, path string) ([]FileEntry, error
 	return out.Entries, err
 }
 
+// MountBundles has the guest mount these bundles (and unmount any other bundle it has mounted), answering how each
+// went. A guest agent from before bundle mounts answers 404 (IsNotFound).
+func (c *Client) MountBundles(ctx context.Context, mounts []BundleMount) ([]BundleResult, error) {
+	if mounts == nil {
+		mounts = []BundleMount{}
+	}
+	var out struct {
+		Mounts []BundleResult `json:"mounts"`
+	}
+	_, err := c.do(ctx, http.MethodPost, "/bundles", jsonBody(map[string]any{"mounts": mounts}), &out)
+	return out.Mounts, err
+}
+
 // DialPort opens a byte stream to a TCP port on the guest's loopback.
 func (c *Client) DialPort(ctx context.Context, port int) (net.Conn, error) {
 	conn, err := vsock.Dial(ctx, c.udsPath, vsock.AgentPort)

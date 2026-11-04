@@ -22,7 +22,8 @@ import (
 
 // mounter is a tier that takes read-only mounts (the microVM tier); the others refuse them as unsupported.
 type mounter interface {
-	MountsSupported() bool
+	// SupportsMount says whether the tier takes mounts of a kind (proto.MountBundle, proto.MountBucket) on this host.
+	SupportsMount(kind string) bool
 	RefreshMounts(ctx context.Context, p proto.MountsRefreshParams) ([]proto.MountStatus, error)
 	// ReconcileMounts confirms the mounts of sandboxes adopted at start, now that their sources can be resolved.
 	ReconcileMounts(ctx context.Context)
@@ -31,15 +32,25 @@ type mounter interface {
 // reconcileMounts runs each tier's ReconcileMounts for the connection ctx: bucket.fetch reaches Kantel now.
 func (h *Host) reconcileMounts(ctx context.Context) {
 	for _, t := range h.tiers {
-		if m, ok := t.(mounter); ok && m.MountsSupported() {
+		if m, ok := t.(mounter); ok && m.SupportsMount(proto.MountBucket) {
 			m.ReconcileMounts(ctx)
 		}
 	}
 }
 
-func supportsMounts(t Tier) bool {
+// supportsMounts says whether a tier takes every one of mounts, by kind: one CreateParams.Mounts list holds both
+// bundle and bucket mounts.
+func supportsMounts(t Tier, mounts ...proto.Mount) bool {
 	m, ok := t.(mounter)
-	return ok && m.MountsSupported()
+	if !ok {
+		return false
+	}
+	for _, mt := range mounts {
+		if !m.SupportsMount(mt.Kind) {
+			return false
+		}
+	}
+	return true
 }
 
 // DefaultMountCacheMiB is the host's read cache for bucket mounts unless configured.
@@ -171,8 +182,8 @@ func (h *Host) refreshMounts(ctx context.Context, p proto.MountsRefreshParams) (
 		return nil, err
 	}
 	m, ok := t.(mounter)
-	if !ok || !m.MountsSupported() {
-		return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "this sandbox's tier has no mounts"}
+	if !ok || !m.SupportsMount(proto.MountBucket) {
+		return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "this sandbox's tier has no bucket mounts"}
 	}
 	return m.RefreshMounts(ctx, p)
 }
