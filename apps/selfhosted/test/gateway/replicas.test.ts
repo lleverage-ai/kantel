@@ -124,7 +124,11 @@ describe("gateway replicas behind a load balancer", { timeout: 30_000 }, () => {
 			sandboxes: [{ id: "sbx-1", kind: "microvm", cpu: 0.5, memUsedBytes: 5, memLimitBytes: 6 }],
 		};
 		host.socket.send(JSON.stringify({ type: "usage", usage }));
-		await vi.waitFor(() => expect(recorded.b).toHaveBeenCalledTimes(1));
+		// Polled by hand: `bun test`, which main's self-hosted job runs this under, has no `vi.waitFor`.
+		for (const deadline = Date.now() + 5000; recorded.b.mock.calls.length === 0 && Date.now() < deadline; ) {
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		}
+		expect(recorded.b).toHaveBeenCalledTimes(1);
 		expect(recorded.a).toHaveBeenCalledWith(hostId, usage);
 		expect(recorded.b).toHaveBeenCalledWith(hostId, usage, { shared: true });
 
