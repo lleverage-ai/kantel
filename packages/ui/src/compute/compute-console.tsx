@@ -688,7 +688,7 @@ export function ComputeConsole({
 						/>
 					</div>
 				) : account === undefined || me === undefined ? (
-					<ConsoleLoading narrow={narrow} />
+					<ConsoleLoading narrow={narrow} title={inSettings ? "Settings" : pages.find((each) => each.on)?.label} />
 				) : (
 					<div className={narrow ? "p-gutter-narrow" : "p-gutter"}>
 						<SettingsFrameFor
@@ -1107,7 +1107,7 @@ function SettingsFrameFor({
  * The console while its first read is on its way: the page's own shape (a title, the filters, a few rows) in
  * placeholders, so the page that arrives lands where the eye already is. Announced once, as a status.
  */
-function ConsoleLoading({ narrow }: { narrow: boolean }) {
+function ConsoleLoading({ narrow, title }: { narrow: boolean; title: string | undefined }) {
 	const rows = narrow ? 6 : 8;
 	return (
 		<div
@@ -1116,12 +1116,16 @@ function ConsoleLoading({ narrow }: { narrow: boolean }) {
 			aria-label="Opening the console"
 		>
 			<div className="flex items-center justify-between gap-4 border-b border-border pb-4">
-				<span className={`${skeletonClass} h-(--kt-text-heading) w-32`} />
+				{title === undefined ? (
+					<span className={`${skeletonClass} h-(--kt-text-heading) w-32`} />
+				) : (
+					<p className="m-0 truncate text-heading font-strong leading-tight text-fg">{title}</p>
+				)}
 				<span className={`${skeletonClass} h-(--kt-control-md) w-20 rounded-control`} />
 			</div>
-			<div className="flex items-center justify-between gap-4">
-				<span className={`${skeletonClass} h-(--kt-control-md) ${narrow ? "w-full" : "w-72"} rounded-full`} />
-				{narrow ? null : <span className={`${skeletonClass} h-(--kt-control-md) w-80 rounded-control`} />}
+			<div className={`flex gap-3 ${narrow ? "flex-col" : "items-center justify-between"}`}>
+				<span className={`${skeletonClass} h-(--kt-control-md) w-72 max-w-full rounded-full`} />
+				<span className={`${skeletonClass} h-(--kt-control-md) ${narrow ? "w-full" : "w-80"} rounded-control`} />
 			</div>
 			<div className="flex flex-col">
 				{Array.from({ length: rows }, (_, row) => (
@@ -1164,8 +1168,13 @@ function ConsoleUnavailable({ message, onRetry }: { message: string; onRetry: ()
 			<div className="flex flex-col gap-1.5">
 				<h1 className="m-0 text-heading font-strong leading-tight text-fg">Kantel can't open the console</h1>
 				<p className="m-0 text-md leading-normal text-muted">{message}</p>
+				<p className="m-0 text-sm leading-normal text-faint">
+					If it keeps happening, check that the Kantel server is running and that this device is online.
+				</p>
 			</div>
-			<Button onClick={onRetry}>Try again</Button>
+			<Button variant="primary" onClick={onRetry}>
+				Try again
+			</Button>
 		</div>
 	);
 }

@@ -624,7 +624,7 @@ function People({
 								{member.name}
 								{you ? <span className="font-regular text-muted"> you</span> : null}
 							</span>
-							{member.email === "" ? null : <span className="truncate text-xs text-muted">{member.email}</span>}
+							{member.email === "" ? null : <span className="truncate text-sm text-muted">{member.email}</span>}
 						</span>
 						<span className={status} />
 						<span className="flex flex-none justify-end">

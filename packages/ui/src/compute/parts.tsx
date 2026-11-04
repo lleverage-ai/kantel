@@ -10,7 +10,7 @@ import "./table.css";
  * centred in the room beside the sidebar. The header's title and actions sit on its edges, and its tables fill it.
  */
 export const computePage =
-	"kt-compute-page mx-auto flex w-full max-w-page min-w-0 flex-col gap-5 text-sm leading-normal text-fg";
+	"kt-compute-page mx-auto flex w-full max-w-page min-w-0 flex-col gap-5 text-md leading-normal text-fg";
 
 /**
  * A table's frame: a hairline round it. Where it's too narrow for its columns it scrolls sideways; in a phone's
@@ -20,7 +20,7 @@ export const computePage =
 export const tableFrame = "kt-compute-table min-w-0 overflow-x-auto rounded-panel border border-border bg-panel";
 export const table = "w-full border-collapse text-left text-sm";
 /** A header cell: muted, small, on one line. */
-export const th = "h-control-md px-3 py-0 text-xs font-medium whitespace-nowrap text-muted border-b border-border";
+export const th = "h-control-md px-3 py-0 text-sm font-medium whitespace-nowrap text-muted border-b border-border";
 /** A body cell: a hairline under every row but the last. */
 export const td =
 	"px-3 py-2 align-middle whitespace-nowrap [tr:not(:last-child)>&]:border-b [tr:not(:last-child)>&]:border-border";
@@ -330,6 +330,7 @@ export function UsageGraph({
 	max = 1,
 	tone = "done",
 	loading = false,
+	ends,
 }: {
 	title: ReactNode;
 	/** The latest figure, beside the title: "12%", "1.2 of 8 GB". */
@@ -345,6 +346,8 @@ export function UsageGraph({
 	max?: number;
 	tone?: LineTone;
 	loading?: boolean;
+	/** The times at its two edges, under it: "10m ago" and "Now". */
+	ends?: readonly [ReactNode, ReactNode];
 }) {
 	const width = 320;
 	const height = 64;
@@ -414,6 +417,12 @@ export function UsageGraph({
 					);
 				})}
 			</svg>
+			{ends === undefined ? null : (
+				<span className="flex justify-between text-2xs text-faint tabular-nums" aria-hidden="true">
+					<span>{ends[0]}</span>
+					<span>{ends[1]}</span>
+				</span>
+			)}
 		</figure>
 	);
 }

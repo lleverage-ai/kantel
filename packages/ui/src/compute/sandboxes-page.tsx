@@ -55,7 +55,7 @@ import {
 	vcpuRangeFor,
 } from "./compute-model.ts";
 import { lineOf, ROW_SPAN_MS, seriesOf, useLiveUsage } from "./live-usage.ts";
-import { computePage, messageOf, Sparkline, table } from "./parts.tsx";
+import { computePage, messageOf, Sparkline } from "./parts.tsx";
 import { AUTO_STOP_CHOICES, DeleteDialog, type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
 import { popOut } from "./sandbox-screen.tsx";
 import { ChangeCounter, changeTaken, keepShown, retryTargets } from "./sandbox-selection.ts";
@@ -507,7 +507,7 @@ function SandboxList({
 		</ul>
 	) : (
 		<div className="kt-compute-table min-w-0 overflow-x-auto">
-			<table className={table}>
+			<table className="w-full border-collapse text-left text-md">
 				<thead>
 					<tr>
 						<th className={`${head} w-0 pr-0`} scope="col">
@@ -622,8 +622,8 @@ function SandboxList({
 }
 
 /** The table: no frame round it, a hairline under the head and under every row. */
-const head = "h-control-md border-b border-border px-2 py-0 text-xs font-medium whitespace-nowrap text-muted";
-const cell = "border-b border-border px-2 py-2.5 align-middle whitespace-nowrap";
+const head = "h-control-md border-b border-border px-2 py-0 text-sm font-medium whitespace-nowrap text-muted";
+const cell = "border-b border-border px-2 py-3 align-middle whitespace-nowrap";
 
 /** Follows a link in the app without reloading, unless it's a modified click (a new tab). */
 const follow = (navigate: ((path: string) => void) | undefined) => (event: LinkClick) => {
@@ -838,15 +838,19 @@ function SandboxRow({
 			<td className={`${cell} w-0 text-right`}>
 				<span className="relative flex items-center justify-end gap-1">
 					{windows && href !== undefined ? (
-						<span className={`flex gap-1 ${onHover}`}>
-							<a className={ghostLink} href={href("browser")} onClick={onScreen("browser")}>
-								<GlobeIcon size="sm" />
-								<span className={buttonLabelClass}>Browser</span>
-							</a>
-							<a className={ghostLink} href={href("desktop")} onClick={onScreen("desktop")}>
-								<DesktopIcon size="sm" />
-								<span className={buttonLabelClass}>Desktop</span>
-							</a>
+						// Over the columns to its left while shown, so the hidden buttons take no width from every row. The
+						// canvas under the row's own hover tint matches the row it sits on.
+						<span className={`absolute right-full mr-1 rounded-control bg-canvas ${onHover}`}>
+							<span className="flex gap-1 rounded-control bg-hover pl-2">
+								<a className={ghostLink} href={href("browser")} onClick={onScreen("browser")}>
+									<GlobeIcon size="sm" />
+									<span className={buttonLabelClass}>Browser</span>
+								</a>
+								<a className={ghostLink} href={href("desktop")} onClick={onScreen("desktop")}>
+									<DesktopIcon size="sm" />
+									<span className={buttonLabelClass}>Desktop</span>
+								</a>
+							</span>
 						</span>
 					) : can.recover ? (
 						<Button size="sm" icon={<ReconnectIcon size="sm" />} onClick={recover}>
@@ -904,7 +908,7 @@ function SandboxPhoneRow({
 		<div className="flex min-w-0 flex-1 flex-col gap-1">
 			<div className="flex min-w-0 items-center gap-3">
 				<span className="min-w-0 flex-1 truncate text-md font-medium text-fg">{sandbox.name}</span>
-				<Cpu sandbox={sandbox} source={calls.source} />
+				<Cpu sandbox={sandbox} source={calls.source} percent />
 				<StateLabel state={sandbox.state} />
 			</div>
 			{sandbox.state === "error" && sandbox.error !== undefined ? (

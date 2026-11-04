@@ -181,6 +181,9 @@ function useAccess(source: SandboxesSource, sandboxId: string, reachable: boolea
 	return { access, read, fresh, stale };
 }
 
+/** The live graphs' edges: they span the last ten minutes. */
+const GRAPH_ENDS = ["10m ago", "Now"] as const;
+
 export function SandboxPage({
 	source,
 	snapshots,
@@ -948,6 +951,7 @@ function Usage({ source, sandbox, refreshKey }: { source: SandboxesSource; sandb
 					{...(series === undefined ? { slots: cpu.length } : { timed: liveCpu.timed })}
 					tone={sandbox.state === "error" ? "error" : "done"}
 					loading={loading}
+					{...(series === undefined ? {} : { ends: GRAPH_ENDS })}
 					label={cpu.length === 0 ? "No CPU readings yet" : `CPU ${span}, peak ${peak}%`}
 				/>
 				{live.status === "off" ? (
@@ -963,6 +967,7 @@ function Usage({ source, sandbox, refreshKey }: { source: SandboxesSource; sandb
 						timed={liveMemory.timed}
 						tone="working"
 						loading={loading}
+						ends={GRAPH_ENDS}
 						label={
 							latestMemory === undefined
 								? "No memory readings yet"
