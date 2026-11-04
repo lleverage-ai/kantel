@@ -288,6 +288,9 @@ importers:
       "@kantel/contracts":
         specifier: workspace:*
         version: link:../contracts
+      "@kantel/identity":
+        specifier: workspace:*
+        version: link:../identity
       "@kantel/sql":
         specifier: workspace:*
         version: link:../sql

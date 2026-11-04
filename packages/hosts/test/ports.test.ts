@@ -1,10 +1,11 @@
 // Exposed ports through the gateway: a port's name answers only what was exposed, only with its token unless public,
 // and the server in the sandbox sees the request as sent, less Kantel's token and cookie, over HTTP/1.1 on the port's
-// stream.
+// stream. The cookie is `__Host-` and counts only from the port's own pages, the person, or the same sandbox's other
+// ports (TASK-4887).
 import { describe, expect, it } from "vitest";
 import type { PortSink, PortStream } from "../src/hub.ts";
 import { proxyHttp, requestBytes } from "../src/port-http.ts";
-import { createPortRouter, PORT_COOKIE } from "../src/ports.ts";
+import { createPortRouter, PORT_COOKIE, portCookieName } from "../src/ports.ts";
 import { createMemoryRelayStore, type RelayStore } from "../src/relay-store.ts";
 import { sha256Hex } from "../src/tunnel.ts";
 
@@ -85,7 +86,7 @@ describe("an exposed port's name", () => {
 		expect((await router.fetch(new Request(url)))?.status).toBe(200);
 		allowed = false;
 		expect((await router.fetch(new Request(url)))?.status).toBe(403);
-		expect(await router.upgrade("3000-brave-otter-ab12cd.kantel-ports.test", "/", undefined)).toMatchObject({
+		expect(await router.upgrade("3000-brave-otter-ab12cd.kantel-ports.test", "/", undefined, {})).toMatchObject({
 			ok: false,
 			status: 403,
 		});
@@ -113,7 +114,8 @@ describe("an exposed port's name", () => {
 		expect(first?.status).toBe(303);
 		expect(first?.headers.get("location")).toBe("/?page=2");
 		const cookie = first?.headers.get("set-cookie") ?? "";
-		expect(cookie).toBe(`${PORT_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Secure`);
+		expect(PORT_COOKIE).toBe("__Host-kantel_port");
+		expect(cookie).toBe(`__Host-kantel_port=${token}; Path=/; HttpOnly; Secure; SameSite=Lax`);
 		expect(cookie).not.toMatch(/Domain=/i);
 		expect(opened).toEqual([]);
 
@@ -180,27 +182,246 @@ describe("an exposed port's name", () => {
 		const { url } = await router.expose("sbx_1", 5173, { public: false, subdomain: "brave-otter-ab12cd" });
 		const token = new URL(url).searchParams.get("_token") ?? "";
 		const host = "5173-brave-otter-ab12cd.kantel-ports.test";
-		expect(await router.upgrade(host, "/hmr", undefined)).toEqual({
+		expect(await router.upgrade(host, "/hmr", undefined, {})).toEqual({
 			ok: false,
 			status: 401,
 			reason: "This port needs its token",
 		});
-		expect(await router.upgrade(host, "/hmr", `${PORT_COOKIE}=nope`)).toMatchObject({ ok: false, status: 401 });
-		expect(await router.upgrade(host, "/hmr?x=1", `${PORT_COOKIE}=${token}`)).toEqual({
+		expect(await router.upgrade(host, "/hmr", `${PORT_COOKIE}=nope`, {})).toMatchObject({ ok: false, status: 401 });
+		expect(await router.upgrade(host, "/hmr?x=1", `${PORT_COOKIE}=${token}`, {})).toEqual({
 			ok: true,
 			sandboxId: "sbx_1",
 			port: 5173,
 			path: "/hmr?x=1",
 			host,
 		});
-		expect(await router.upgrade(`${host}:443`, `/hmr?_token=${token}`, undefined)).toMatchObject({
+		expect(await router.upgrade(`${host}:443`, `/hmr?_token=${token}`, undefined, {})).toMatchObject({
 			ok: true,
 			path: "/hmr",
 		});
-		expect(await router.upgrade("5174-brave-otter-ab12cd.kantel-ports.test", "/", undefined)).toMatchObject({
+		expect(await router.upgrade("5174-brave-otter-ab12cd.kantel-ports.test", "/", undefined, {})).toMatchObject({
 			status: 404,
 		});
-		expect(await router.upgrade("kantel.test", "/v1/hosts/connect", undefined)).toBeUndefined();
+		expect(await router.upgrade("kantel.test", "/v1/hosts/connect", undefined, {})).toBeUndefined();
+	});
+});
+
+describe("an exposed port's cookie", () => {
+	const DOMAIN = "kantel-ports.test";
+	const VICTIM = `https://3000-brave-otter-ab12cd.${DOMAIN}`;
+	/** The same sandbox's frontend, on another port. */
+	const FRONTEND = `https://5173-brave-otter-ab12cd.${DOMAIN}`;
+	/** Another sandbox's port: the same site to a browser, under the same domain. */
+	const SIBLING = `https://5173-sly-fox-zz99yy.${DOMAIN}`;
+
+	const setup = async (scheme: "https" | "http" = "https") => {
+		const port = fakePort(() => OK);
+		const router = createPortRouter({
+			domain: DOMAIN,
+			scheme,
+			openPort: port.openPort,
+			store: createMemoryRelayStore(),
+		});
+		const { url } = await router.expose("sbx_1", 3000, { public: false, subdomain: "brave-otter-ab12cd" });
+		await router.expose("sbx_1", 5173, { public: false, subdomain: "brave-otter-ab12cd" });
+		await router.expose("sbx_2", 5173, { public: false, subdomain: "sly-fox-zz99yy" });
+		const token = new URL(url).searchParams.get("_token") ?? "";
+		const cookie = `${portCookieName(scheme)}=${token}`;
+		/** The status for a request to the victim's port with its cookie and `headers`. */
+		const status = async (headers: Record<string, string>, init: RequestInit = {}) =>
+			(await router.fetch(new Request(`${VICTIM}/api/me`, { ...init, headers: { cookie, ...headers } })))?.status;
+		return { router, token, cookie, status, opened: port.opened };
+	};
+
+	it("isn't used by another sandbox's page for a fetch or XHR, an image or script, or a form post", async () => {
+		const { status, opened } = await setup();
+		// fetch() or XHR: same-site, with Origin.
+		expect(await status({ "sec-fetch-site": "same-site", "sec-fetch-mode": "cors", origin: SIBLING })).toBe(401);
+		expect(
+			await status(
+				{ "sec-fetch-site": "same-site", "sec-fetch-mode": "cors", origin: SIBLING },
+				{ method: "POST", body: "{}" },
+			),
+		).toBe(401);
+		// <img> or <script>: no Origin, a Referer, or neither.
+		expect(await status({ "sec-fetch-site": "same-site", "sec-fetch-mode": "no-cors", referer: `${SIBLING}/` })).toBe(
+			401,
+		);
+		expect(await status({ "sec-fetch-site": "same-site", "sec-fetch-dest": "script" })).toBe(401);
+		// A form posted to the victim's port as a top-level navigation: it changes something, so the cookie doesn't count.
+		const form = { "sec-fetch-site": "same-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" };
+		expect(await status({ ...form, origin: SIBLING }, { method: "POST", body: "x=1" })).toBe(401);
+		// A frame of the victim's port in the sibling's page.
+		expect(await status({ ...form, "sec-fetch-dest": "iframe" })).toBe(401);
+		// A browser without Sec-Fetch-* still sends Origin.
+		expect(await status({ origin: SIBLING })).toBe(401);
+		expect(opened).toEqual([]);
+	});
+
+	it("isn't used by another site, nor an opaque origin", async () => {
+		const { status, opened } = await setup();
+		expect(await status({ "sec-fetch-site": "cross-site", origin: "https://evil.example" })).toBe(401);
+		expect(await status({ "sec-fetch-site": "cross-site", referer: "https://evil.example/page" })).toBe(401);
+		expect(await status({ "sec-fetch-site": "cross-site" })).toBe(401);
+		expect(await status({ origin: "null" })).toBe(401);
+		// A look-alike name that isn't under the ports domain.
+		expect(await status({ origin: `https://3000-brave-otter-ab12cd.evil${DOMAIN}` })).toBe(401);
+		expect(opened).toEqual([]);
+	});
+
+	it("is used by the port's own pages, the person, and the same sandbox's other ports", async () => {
+		const { status, opened } = await setup();
+		// The port's own page: fetch, XHR, a form.
+		expect(await status({ "sec-fetch-site": "same-origin", origin: VICTIM }, { method: "POST", body: "{}" })).toBe(200);
+		expect(await status({ "sec-fetch-site": "same-origin", "sec-fetch-dest": "image" })).toBe(200);
+		// A typed URL or a bookmark.
+		expect(await status({ "sec-fetch-site": "none", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" })).toBe(
+			200,
+		);
+		// A link followed from anywhere (SameSite=Lax would send it too): a GET that changes nothing.
+		const link = { "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" };
+		expect(await status({ ...link, "sec-fetch-site": "same-site" })).toBe(200);
+		expect(await status({ ...link, "sec-fetch-site": "cross-site" })).toBe(200);
+		// The same sandbox's frontend on another port calling this one: by Origin, or Referer for an <img>.
+		expect(await status({ "sec-fetch-site": "same-site", origin: FRONTEND }, { method: "POST", body: "{}" })).toBe(200);
+		expect(await status({ "sec-fetch-site": "same-site", referer: `${FRONTEND}/page` })).toBe(200);
+		expect(await status({ origin: FRONTEND })).toBe(200);
+		// A script or an API client, which says nothing about where it comes from.
+		expect(await status({})).toBe(200);
+		expect(opened).toHaveLength(9);
+	});
+
+	it("answers a cookie it doesn't count as no cookie, and still takes the token from anywhere", async () => {
+		const { router, token, status } = await setup();
+		const refused = await router.fetch(
+			new Request(`${VICTIM}/`, { headers: { cookie: "x=1", "sec-fetch-site": "same-site", origin: SIBLING } }),
+		);
+		const cross = await router.fetch(
+			new Request(`${VICTIM}/`, {
+				headers: { cookie: `${PORT_COOKIE}=${token}`, "sec-fetch-site": "same-site", origin: SIBLING },
+			}),
+		);
+		expect(cross?.status).toBe(401);
+		expect(await cross?.text()).toBe(await refused?.text());
+		// The token in the query is the capability: whoever has it may use it.
+		const withToken = await router.fetch(
+			new Request(`${VICTIM}/?_token=${token}`, {
+				method: "POST",
+				body: "x=1",
+				headers: { "sec-fetch-site": "cross-site", origin: "https://evil.example" },
+			}),
+		);
+		expect(withToken?.status).toBe(200);
+		// The name before TASK-4887 is no longer read; nor is a bare name without the prefix over https.
+		expect(await status({ cookie: `_kantel_port=${token}` })).toBe(401);
+		expect(await status({ cookie: `kantel_port=${token}` })).toBe(401);
+		// A planted cookie of the same name beside the real one doesn't hide it.
+		expect(await status({ cookie: `${PORT_COOKIE}=planted; ${PORT_COOKIE}=${token}` })).toBe(200);
+	});
+
+	it("trades the token for the cookie only where the redirected request may use it, else serves it directly", async () => {
+		const { router, token, opened } = await setup();
+		const withToken = (headers: Record<string, string>) =>
+			router.fetch(new Request(`${VICTIM}/page?_token=${token}`, { headers }));
+		const frame = { "sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe" };
+
+		// A top-level navigation (typed, or a link from anywhere), the port's own page, or a script: the 303 and cookie.
+		const trading: Record<string, string>[] = [
+			{ "sec-fetch-site": "none", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" },
+			{ "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" },
+			{ "sec-fetch-site": "same-origin", ...frame },
+			{},
+		];
+		for (const headers of trading) {
+			const traded = await withToken(headers);
+			expect(traded?.status).toBe(303);
+			expect(traded?.headers.get("location")).toBe("/page");
+			expect(traded?.headers.get("set-cookie")).toMatch(/^__Host-kantel_port=/);
+		}
+		expect(opened).toEqual([]);
+
+		// A frame of the port in another sandbox's page or the same sandbox's (whose Referer the redirect would drop), or
+		// another page's fetch: served directly, the token taken off, no cookie set.
+		const direct: Record<string, string>[] = [
+			{ "sec-fetch-site": "same-site", ...frame, referer: `${SIBLING}/` },
+			{ "sec-fetch-site": "same-site", ...frame, referer: `${FRONTEND}/` },
+			{ "sec-fetch-site": "cross-site", "sec-fetch-mode": "cors", origin: "https://evil.example" },
+		];
+		for (const headers of direct) {
+			const served = await withToken(headers);
+			expect(served?.status).toBe(200);
+			expect(served?.headers.getSetCookie()).toEqual(["a=1", "b=2"]);
+		}
+		expect(opened).toHaveLength(direct.length);
+		for (const { request } of opened) {
+			expect(request).toMatch(/^GET \/page HTTP\/1\.1\r\n/);
+			expect(request).not.toContain(token);
+		}
+		// The same frames without the token still get nothing, cookie or not.
+		const bare = await router.fetch(
+			new Request(`${VICTIM}/page`, {
+				headers: { cookie: `${PORT_COOKIE}=${token}`, "sec-fetch-site": "same-site", ...frame },
+			}),
+		);
+		expect(bare?.status).toBe(401);
+	});
+
+	it("keeps every name the cookie has had from the sandbox's server, whatever the scheme", async () => {
+		const all = (token: string) => `theme=dark; _kantel_port=old; kantel_port=${token}; __Host-kantel_port=${token}`;
+		for (const scheme of ["https", "http"] as const) {
+			const { status, token, opened } = await setup(scheme);
+			expect(await status({ cookie: all(token) })).toBe(200);
+			expect(opened[0]?.request).toContain("Cookie: theme=dark\r\n");
+			expect(opened[0]?.request).not.toContain("kantel_port");
+			expect(opened[0]?.request).not.toContain(token);
+		}
+	});
+
+	it("makes a token-gated port's answers revalidate through the gate, and leaves a public port's alone", async () => {
+		const cacheable =
+			'HTTP/1.1 200 OK\r\nCache-Control: public, max-age=3600\r\nETag: "v1"\r\nContent-Length: 2\r\n\r\nok';
+		const port = fakePort(() => cacheable);
+		const router = createPortRouter({ domain: DOMAIN, openPort: port.openPort, store: createMemoryRelayStore() });
+		const { url } = await router.expose("sbx_1", 3000, { public: false, subdomain: "brave-otter-ab12cd" });
+		const token = new URL(url).searchParams.get("_token") ?? "";
+		const gated = await router.fetch(
+			new Request(`${VICTIM}/config.js`, {
+				headers: { cookie: `${PORT_COOKIE}=${token}`, "sec-fetch-site": "same-origin" },
+			}),
+		);
+		expect(gated?.status).toBe(200);
+		expect(gated?.headers.get("cache-control")).toBe("private, no-cache");
+		expect(gated?.headers.get("etag")).toBe('"v1"');
+		const { url: open } = await router.expose("sbx_1", 4000, { public: true, subdomain: "brave-otter-ab12cd" });
+		const publicAnswer = await router.fetch(new Request(`${open}config.js`));
+		expect(publicAnswer?.headers.get("cache-control")).toBe("public, max-age=3600");
+	});
+
+	it("has no prefix and no Secure over plain http, where a browser refuses __Host-", async () => {
+		const { router, token, cookie, status } = await setup("http");
+		expect(cookie).toBe(`kantel_port=${token}`);
+		const traded = await router.fetch(new Request(`http://3000-brave-otter-ab12cd.${DOMAIN}/?_token=${token}`));
+		expect(traded?.headers.get("set-cookie")).toBe(`kantel_port=${token}; Path=/; HttpOnly; SameSite=Lax`);
+		expect(await status({ "sec-fetch-site": "same-site", origin: SIBLING.replace("https:", "http:") })).toBe(401);
+		expect(await status({ "sec-fetch-site": "same-site", origin: FRONTEND.replace("https:", "http:") })).toBe(200);
+	});
+
+	it("is used for a WebSocket upgrade only from the port's own name or the same sandbox's, by Origin", async () => {
+		const { router, token, cookie } = await setup();
+		const host = `3000-brave-otter-ab12cd.${DOMAIN}`;
+		const upgrade = (origin?: string) => router.upgrade(host, "/ws", cookie, { origin });
+		expect(await upgrade(SIBLING)).toEqual({ ok: false, status: 401, reason: "This port needs its token" });
+		expect(await upgrade("https://evil.example")).toMatchObject({ ok: false, status: 401 });
+		expect(await upgrade("null")).toMatchObject({ ok: false, status: 401 });
+		expect(await upgrade(VICTIM)).toMatchObject({ ok: true, sandboxId: "sbx_1", port: 3000 });
+		expect(await upgrade(FRONTEND)).toMatchObject({ ok: true, sandboxId: "sbx_1", port: 3000 });
+		// No Origin: not a browser's page.
+		expect(await upgrade()).toMatchObject({ ok: true });
+		// The token in the URL opens it from anywhere.
+		expect(await router.upgrade(host, `/ws?_token=${token}`, undefined, { origin: SIBLING })).toMatchObject({
+			ok: true,
+			path: "/ws",
+		});
 	});
 });
 
