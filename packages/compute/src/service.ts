@@ -2312,6 +2312,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						: at + autoStop * 60_000,
 			startedAt: running && !wasRunning ? at : sandbox.startedAt,
 			stoppedAt: state === "stopped" || state === "paused" ? at : sandbox.stoppedAt,
+			lifecycle: (sandbox.lifecycle ?? 0) + 1,
 			reason: extra.reason,
 			// A stop it was due for is done with once it boots again.
 			...(state === "starting" ? { stopFor: undefined } : {}),
@@ -2637,7 +2638,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		actor: Principal | undefined,
 		still?: (current: StoredSandbox) => boolean,
 		handBack = false,
-	): Promise<{ readonly work: Promise<void> }> {
+	): Promise<{ readonly work: Promise<void>; readonly stopping: StoredSandbox }> {
 		const began = await transition(
 			sandbox.id,
 			sandbox.state,
@@ -2703,7 +2704,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				throw error;
 			}
 		});
-		return { work };
+		return { work, stopping: began.moved };
 	}
 
 	/** The backend's connected hosts now: the stub's always are. */
@@ -4147,6 +4148,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			) {
 				throw new KantelError("conflict", `The sandbox is ${current.state}`);
 			}
+			// Its lifecycle as checked here: the stop and the boot below are claimed only while nothing else (another restart, a
+			// recovery, on any gateway) has moved it since, even if it is back in the state read.
+			const unmoved = (seen: StoredSandbox) => (latest: StoredSandbox) =>
+				(latest.lifecycle ?? 0) === (seen.lifecycle ?? 0);
 			// A running one holds its place already; the hosts are checked before it is stopped, so a sandbox no host can
 			// take now is refused as it is, not left stopped.
 			if (current.state !== "running") await requireCapacity(current.accountId, 1);
@@ -4175,20 +4180,29 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (current.state === "running" || (current.state === "error" && prepared?.running === true)) {
 				// Its disk is saved first, as a stop saves it (without its memory, which a new base can't take): the boot below
 				// starts from that snapshot. Waited for, as the boot needs it.
-				const { work } = await beginStop(current, false, undefined, principal);
+				const { work, stopping } = await beginStop(current, false, undefined, principal, unmoved(current));
 				await work;
 				current = await mustGetSandbox(current.id);
-				if (current.state !== "stopped") throw new KantelError("conflict", `The sandbox is ${current.state}`);
+				// Stopped by this stop and nothing since: one step on from the `stopping` it wrote.
+				if (current.state !== "stopped" || (current.lifecycle ?? 0) !== (stopping.lifecycle ?? 0) + 1) {
+					throw new KantelError("conflict", `The sandbox is ${current.state}`);
+				}
 			}
 			const fromSnapshot = await latestRef(current);
 			// A boot's egress is read afresh, so it gets a revision of its own, as a recovery's does. A paused sandbox's memory
 			// is let go: the machine boots cold on the new base.
-			const began = await transition(current.id, current.state, (latest) =>
-				withState(latest, "starting", {
-					ports: [],
-					pausedSnapshotId: undefined,
-					egressRevision: later(latest.egressRevision),
-				}),
+			const began = await transition(
+				current.id,
+				current.state,
+				(latest) =>
+					withState(latest, "starting", {
+						ports: [],
+						pausedSnapshotId: undefined,
+						egressRevision: later(latest.egressRevision),
+						// Its mounts go with it, as a start's do, each pending until the boot says.
+						...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts) }),
+					}),
+				unmoved(current),
 			);
 			if (!("moved" in began)) throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
 			const starting = began.moved;
@@ -4209,6 +4223,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									// Its size and shape as recorded, as a start keeps them: only its base changes.
 									...sizingOf(stopped),
 									...egress,
+									...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
 									rebase: true,
 									...(rebaseTo === undefined ? {} : { rebaseTo }),
 								},

@@ -205,8 +205,10 @@ func entriesOf(dir string) ([]string, error) {
 // which snapshotsOf passes over: a prune or a pinning pass that went ahead without one would miss the base it is on.
 // A snapshot whose directory or metadata isn't there (deleted, or not yet written, when its sandbox still names the
 // base) is no reference.
-func (m *Manager) scanSnapshots() ([]snapshotMeta, error) {
-	root := filepath.Join(m.cfg.Root, "snapshots")
+func (m *Manager) scanSnapshots() ([]snapshotMeta, error) { return scanSnapshotsIn(m.cfg.Root) }
+
+func scanSnapshotsIn(tierRoot string) ([]snapshotMeta, error) {
+	root := filepath.Join(tierRoot, "snapshots")
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		if gone(err) {
@@ -240,7 +242,13 @@ func (m *Manager) scanSnapshots() ([]snapshotMeta, error) {
 // BasesInUse are the image versions the tier's sandboxes, snapshots and templates are on: what a
 // prune of old versions must keep. A reference it couldn't read is an error, and the caller keeps every version: a
 // partial answer would let a prune remove a version something still boots on.
-func (m *Manager) BasesInUse() (map[string]bool, error) {
+func (m *Manager) BasesInUse() (map[string]bool, error) { return BasesUnder(m.cfg.Root) }
+
+// BasesUnder is BasesInUse for the tier's state under root (its Config.Root) without a Manager: what a host whose
+// microVM tier didn't start this time (turned off, or KVM or an image missing) still keeps there, so a prune doesn't
+// remove the versions its saved sandboxes, snapshots and templates boot on. With no Manager, nothing makes or moves a
+// reference beside it.
+func BasesUnder(root string) (map[string]bool, error) {
 	in := map[string]bool{}
 	var errs []error
 	add := func(p string) {
@@ -255,21 +263,21 @@ func (m *Manager) BasesInUse() (map[string]bool, error) {
 		}
 		add(target)
 	}
-	sandboxes, err := entriesOf(filepath.Join(m.cfg.Root, "sandboxes"))
+	sandboxes, err := entriesOf(filepath.Join(root, "sandboxes"))
 	if err != nil {
 		errs = append(errs, err)
 	}
 	for _, dir := range sandboxes {
 		addVM(filepath.Join(dir, "vm"))
 	}
-	snaps, err := m.scanSnapshots()
+	snaps, err := scanSnapshotsIn(root)
 	if err != nil {
 		errs = append(errs, err)
 	}
 	for _, snap := range snaps {
 		add(snap.Rootfs)
 	}
-	templates, err := entriesOf(filepath.Join(m.cfg.Root, "templates"))
+	templates, err := entriesOf(filepath.Join(root, "templates"))
 	if err != nil {
 		errs = append(errs, err)
 	}

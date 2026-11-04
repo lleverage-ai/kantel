@@ -341,6 +341,27 @@ func (m *Manager) guestOf(base string) *proto.GuestCapabilities {
 	return m.guests[base]
 }
 
+// rebasedGuest asks the guest a rebase has just booted what its image has, unless image version base's report is kept
+// already (a template built on it, or an earlier boot): a host on custom shapes alone may have no template on it, and a
+// sandbox without its version's report would be offered what that image may lack. An injected agent that can't say
+// fails the boot, as for a custom shape's create.
+func (m *Manager) rebasedGuest(ctx context.Context, client *guest.Client, base string, size proto.Size) error {
+	m.guestsMu.Lock()
+	_, known := m.guests[base]
+	m.guestsMu.Unlock()
+	if known {
+		return nil
+	}
+	caps, err := m.guestReport(ctx, client, size)
+	if err != nil {
+		return err
+	}
+	if caps != nil {
+		m.noteBootGuest(base, caps)
+	}
+	return nil
+}
+
 // ForgetGuests drops the reports kept for image versions a prune removed.
 func (m *Manager) ForgetGuests(versions []string) {
 	m.guestsMu.Lock()
@@ -1264,6 +1285,15 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 		}
 		source = "boot"
 		t.step("boot", &start)
+		if coldBoot && p.Rebase {
+			if err := m.rebasedGuest(ctx, s.guest, baseOf(vm), size); err != nil {
+				s.machine.Kill()
+				m.cfg.Network.Remove(link)
+				s.machine, s.link = nil, nil
+				return proto.SandboxInfo{}, fmt.Errorf("boot: %w", err)
+			}
+			t.step("capabilities", &start)
+		}
 	}
 	m.attach(s, link.Slot)
 	// A cold boot needs the sandbox's identity like a fresh one, but keeps its SSH host keys.

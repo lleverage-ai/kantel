@@ -194,6 +194,60 @@ func TestAPruneHoldsTheBasesUntilItHasRemoved(t *testing.T) {
 	}
 }
 
+// A microVM tier that didn't start this time still keeps its saved sandboxes', snapshots' and templates' versions: a
+// prune reads them from its directory, beside what the running tiers use, and an unreadable one stops the prune.
+func TestAPruneKeepsTheBasesOfAMicroVMTierThatDidNotStart(t *testing.T) {
+	h := newLifecycleHost(t, newLifecycleTier())
+	store := images.Store{Dir: filepath.Join(h.cfg.Root, "images")}
+	first := time.Now().Add(-time.Hour)
+	for i, v := range []string{"a", "b", "c", "d", "e", "f", "g"} {
+		dir := filepath.Join(store.Dir, "v", v)
+		writeFile(t, filepath.Join(dir, "manifest.json"), "{}")
+		writeFile(t, filepath.Join(dir, "sandbox.ext4"), "x")
+		at := first.Add(time.Duration(i) * time.Minute)
+		if err := os.Chtimes(dir, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Activate("g"); err != nil {
+		t.Fatal(err)
+	}
+	// What the microVM tier saved when it last ran: a stopped sandbox on a, a snapshot on b, a template on c.
+	mv := filepath.Join(h.cfg.Root, "microvm")
+	vm := filepath.Join(mv, "sandboxes", "sbx_1", "vm")
+	if err := os.MkdirAll(vm, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(store.Dir, "v", "a", "sandbox.ext4"), filepath.Join(vm, "rootfs.ext4")); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(mv, "snapshots", "snap_1", "meta.json"),
+		`{"rootfs":"`+filepath.Join(store.Dir, "v", "b", "sandbox.ext4")+`"}`)
+	writeFile(t, filepath.Join(mv, "templates", "default", "rootfs"), filepath.Join(store.Dir, "v", "c", "sandbox.ext4")+"\n")
+	// Only another tier runs, on d.
+	tier := &baseTier{inUse: map[string]bool{"d": true}}
+	h.tiers = map[string]Tier{"isolate": tier}
+	h.order = []string{"isolate"}
+	h.patching.updater = &images.Updater{Store: store, Log: h.log}
+
+	// One of its snapshots unreadable: nothing goes.
+	bad := filepath.Join(mv, "snapshots", "snap_2", "meta.json")
+	writeFile(t, bad, "{not json")
+	if removed := h.pruneImages(); len(removed) != 0 {
+		t.Fatalf("a prune with an unread reference of the stopped tier's removed %v", removed)
+	}
+	if err := os.Remove(bad); err != nil {
+		t.Fatal(err)
+	}
+	removed := h.pruneImages()
+	if !slices.Equal(removed, []string{"e"}) {
+		t.Fatalf("removed %v, want [e]", removed)
+	}
+	if tier.locked || tier.unlocks != 2 {
+		t.Fatalf("still locked %v, unlocked %d times", tier.locked, tier.unlocks)
+	}
+}
+
 // A tier that couldn't read every reference to a version (a snapshot's metadata it couldn't read) stops the prune:
 // nothing is removed, the lock is let go, and the next prune, once it can read them, removes only what is unused.
 func TestAPruneRemovesNothingWhenAReferenceCannotBeRead(t *testing.T) {

@@ -26,7 +26,7 @@ afterEach(async () => {
  * `rebase` moves it onto `HOST_LATEST`. What each start was asked is kept in `starts`, and the order of stops and starts
  * in `calls`; the preflight says whether the machine is running, as a host does.
  */
-function versionedStub(ready?: () => void) {
+function versionedStub(ready?: () => void | Promise<void>) {
 	const stub = createStubBackend();
 	const bases = new Map<string, { base: string; baseAt: number }>();
 	let clock = 1_000;
@@ -42,7 +42,7 @@ function versionedStub(ready?: () => void) {
 		...stub,
 		async prepareRebase(sandboxId, how) {
 			prepared.push(how);
-			ready?.();
+			await ready?.();
 			return { running: running.has(sandboxId) };
 		},
 		async create(spec) {
@@ -72,7 +72,7 @@ function versionedStub(ready?: () => void) {
 	return { backend, starts, prepared, calls };
 }
 
-function setup(baseImages?: BaseImages, ready?: () => void) {
+function setup(baseImages?: BaseImages, ready?: () => void | Promise<void>) {
 	const { backend, starts, prepared, calls } = versionedStub(ready);
 	const api = createComputeApi({
 		backend,
@@ -327,6 +327,71 @@ describe("image patching on", () => {
 		expect(after.base?.version).toBe(HOST_BEHIND);
 		expect(starts).toEqual([]);
 		expect((await tom.listSnapshots({ sandboxId: sandbox.id })).items).toEqual([]);
+	});
+
+	it("refuses a restart on latest that another restart overtook, without stopping or booting it again", async () => {
+		let release: () => void = () => {};
+		let held = false;
+		const { api, tom, calls } = setup(indexed, async () => {
+			if (held) return;
+			held = true;
+			await new Promise<void>((resolve) => {
+				release = resolve;
+			});
+		});
+		const sandbox = await tom.createSandbox({ wait: true });
+		// Held at its preflight, after it read the sandbox running.
+		const stale = failure(tom.restartSandboxOnLatest(sandbox.id));
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		// Meanwhile it is stopped and started again: running once more, on a new run.
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		await tom.startSandbox(sandbox.id, { wait: true });
+		calls.length = 0;
+		release();
+		expect((await stale).code).toBe("conflict");
+		await api.service.idle();
+		expect(calls).toEqual([]);
+		const after = await tom.getSandbox(sandbox.id);
+		expect(after.state).toBe("running");
+		expect(after.base?.version).toBe(HOST_BEHIND);
+	});
+
+	it("refuses a restart on latest of a stopped sandbox that was started and stopped again meanwhile", async () => {
+		let release: () => void = () => {};
+		let held = false;
+		const { api, tom, starts } = setup(indexed, async () => {
+			if (held) return;
+			held = true;
+			await new Promise<void>((resolve) => {
+				release = resolve;
+			});
+		});
+		const sandbox = await tom.createSandbox({ wait: true });
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		const stale = failure(tom.restartSandboxOnLatest(sandbox.id));
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		await tom.startSandbox(sandbox.id, { wait: true });
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		starts.length = 0;
+		release();
+		expect((await stale).code).toBe("conflict");
+		await api.service.idle();
+		expect(starts).toEqual([]);
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("stopped");
+	});
+
+	it("carries a sandbox's mounts through its restart on latest, pending until the boot says", async () => {
+		const { api, tom, starts } = setup(indexed);
+		const sandbox = await tom.createSandbox({ wait: true });
+		const digest = `sha256:${"a".repeat(64)}`;
+		await api.store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			mounts: [{ path: "/mnt/skills", source: { kind: "bundle", digest }, status: "ready" }],
+		}));
+		const restarting = await tom.restartSandboxOnLatest(sandbox.id);
+		expect(restarting.mounts).toEqual([{ path: "/mnt/skills", source: { kind: "bundle", digest }, status: "pending" }]);
+		await api.service.idle();
+		expect(starts.map((how) => how.mounts)).toEqual([[{ path: "/mnt/skills", source: { kind: "bundle", digest } }]]);
 	});
 
 	it("refuses a sandbox being deleted", async () => {

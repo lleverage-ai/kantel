@@ -1,14 +1,22 @@
 package microvm
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 
+	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
@@ -109,6 +117,90 @@ func TestNewClearsAnOldWarmPool(t *testing.T) {
 	defer m.Close()
 	if _, err := os.Stat(filepath.Join(root, "pool")); !os.IsNotExist(err) {
 		t.Fatalf("pool/ is still there: %v", err)
+	}
+}
+
+// fakeAgent answers a guest agent's /capabilities through a Firecracker-style vsock socket with caps (nil: fails),
+// counting the asks.
+func fakeAgent(t *testing.T, caps *proto.GuestCapabilities) (string, *atomic.Int32) {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "vsock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	uds := filepath.Join(dir, "v.sock")
+	ln, err := net.Listen("unix", uds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asked := &atomic.Int32{}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			r := bufio.NewReader(conn)
+			if _, err := r.ReadString('\n'); err != nil {
+				conn.Close()
+				continue
+			}
+			fmt.Fprint(conn, "OK 1\n")
+			go func() {
+				defer conn.Close()
+				for {
+					req, err := http.ReadRequest(r)
+					if err != nil {
+						return
+					}
+					asked.Add(1)
+					res := &http.Response{StatusCode: 500, ProtoMajor: 1, ProtoMinor: 1, Header: http.Header{}, Request: req}
+					body := `{"error":"no"}`
+					if caps != nil {
+						raw, _ := json.Marshal(caps)
+						res.StatusCode, body = 200, string(raw)
+					}
+					res.Header.Set("content-type", "application/json")
+					res.ContentLength = int64(len(body))
+					res.Body = io.NopCloser(strings.NewReader(body))
+					if err := res.Write(conn); err != nil {
+						return
+					}
+				}
+			}()
+		}
+	}()
+	t.Cleanup(func() { ln.Close() })
+	return uds, asked
+}
+
+// A rebase boots an image version no template may be on (a host on custom shapes alone): the boot asks the guest what
+// it has and keeps it as that version's, so the sandbox doesn't report the old image's, or none. A version whose
+// report is kept isn't asked again, and an injected agent that can't say fails the boot.
+func TestARebaseBootAsksTheGuestOfAVersionWithNoReport(t *testing.T) {
+	const next = "host-images-20261105.813"
+	m := &Manager{cfg: Config{Root: t.TempDir()}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	m.noteBootGuest("host-images-20261104.812", &proto.GuestCapabilities{Arch: "x86_64", Desktop: proto.GuestFeature{Available: true}})
+	uds, asked := fakeAgent(t, &proto.GuestCapabilities{Arch: "x86_64"})
+	client := guest.NewClient(uds)
+	defer client.Close()
+	if err := m.rebasedGuest(context.Background(), client, next, proto.Size{Name: "default"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := m.guestOf(next); got == nil || got.Arch != "x86_64" || got.Desktop.Available {
+		t.Fatalf("the rebased version's report is %+v, want what its guest said", got)
+	}
+	if err := m.rebasedGuest(context.Background(), client, next, proto.Size{Name: "default"}); err != nil || asked.Load() != 1 {
+		t.Fatalf("a version with a report was asked again: %v, asked %d times", err, asked.Load())
+	}
+
+	injected := &Manager{cfg: Config{Root: t.TempDir(), Initrd: "/initramfs"}, log: m.log}
+	failing, _ := fakeAgent(t, nil)
+	broken := guest.NewClient(failing)
+	defer broken.Close()
+	if err := injected.rebasedGuest(context.Background(), broken, next, proto.Size{Name: "default"}); err == nil {
+		t.Fatal("an injected agent that couldn't say what its image has didn't fail the rebase boot")
 	}
 }
 

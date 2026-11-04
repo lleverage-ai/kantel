@@ -13,6 +13,7 @@ import (
 	"github.com/lleverage-ai/kantel/apps/host/internal/e2e"
 	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
 	"github.com/lleverage-ai/kantel/apps/host/internal/images"
+	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
@@ -347,6 +348,15 @@ func (h *Host) pruneImages() []string {
 				for v := range bases {
 					used[v] = true
 				}
+			}
+		}
+		// A microVM tier that didn't start this time (turned off, or KVM or an image missing) still has what it saved: its
+		// sandboxes, snapshots and templates keep their versions for when it starts again.
+		if _, ok := h.tiers[microvm.Tier]; !ok {
+			bases, err := microvm.BasesUnder(filepath.Join(h.cfg.Root, "microvm"))
+			errs = append(errs, err)
+			for v := range bases {
+				used[v] = true
 			}
 		}
 		release := func() {

@@ -128,6 +128,12 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 */
 	readonly baseAt?: number;
 	/**
+	 * Moves on by one with every change of its state (`withState`), so a lifecycle step that read it earlier can claim
+	 * the next only while nothing else has moved it since, even if it is back in the state it read (a restart in
+	 * between). Absent: 0, a record from before it was kept.
+	 */
+	readonly lifecycle?: number;
+	/**
 	 * Why it is due to stop at `stopsAt`, when that isn't its auto-stop: its host can't enforce its egress as stored. The
 	 * sweep stops it with this reason, as many times as it takes.
 	 */
