@@ -141,6 +141,11 @@ export interface SandboxViewerProps {
 	readonly onView?: (view: ScreenView) => void;
 	/** Reads the access again, after it failed. */
 	readonly onRetry: () => void;
+	/**
+	 * Access young enough for a new connection, read again when the page's is old, for the pop-out. The screen already
+	 * open keeps its own. Without it the pop-out uses `access`.
+	 */
+	readonly freshAccess?: () => Promise<SandboxAccess>;
 	/** A phone: the controls wrap under the trail. */
 	readonly narrow?: boolean;
 }
@@ -159,6 +164,7 @@ export function SandboxViewer({
 	viewHref,
 	onView,
 	onRetry,
+	freshAccess,
 	narrow = false,
 }: SandboxViewerProps) {
 	const frame = useRef<HTMLDivElement>(null);
@@ -253,7 +259,19 @@ export function SandboxViewer({
 						icon={<ExternalLinkIcon size="sm" />}
 						disabled={ready === undefined}
 						onClick={() => {
-							if (ready !== undefined) window.open(popOutUrl(ready, view), "_blank", "noopener");
+							if (ready === undefined) return;
+							if (freshAccess === undefined) {
+								window.open(popOutUrl(ready, view), "_blank", "noopener");
+								return;
+							}
+							// The tab opens now, while the click allows it, and goes to the screen once its access is read.
+							const tab = window.open("about:blank", "_blank");
+							if (tab === null) return;
+							tab.opener = null;
+							freshAccess().then(
+								(fresh) => tab.location.replace(popOutUrl(fresh, view)),
+								() => tab.close(),
+							);
 						}}
 					/>
 				</div>

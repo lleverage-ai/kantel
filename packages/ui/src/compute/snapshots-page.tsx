@@ -11,7 +11,7 @@ import { Dialog } from "../primitives/dialog.tsx";
 import { PageHeader } from "../primitives/form-layout.tsx";
 import { compactAge } from "../primitives/format.ts";
 import { FolderIcon, PlusIcon } from "../primitives/icons.tsx";
-import { useLoad } from "../primitives/load.ts";
+import { useLoad, useReloadOn } from "../primitives/load.ts";
 import { EllipsisIcon, TrashIcon } from "../primitives/lucide.tsx";
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
@@ -427,6 +427,8 @@ export function SandboxHistory({
 	onNotice: NoticeSetter;
 }) {
 	const { state, reload } = useLoad(() => source.history(sandbox.id), [source, sandbox.id]);
+	// A stop or a save while it's shown adds a snapshot: read the history again.
+	useReloadOn(sandbox.snapshot?.id, reload);
 	const [removed, setRemoved] = useState<ReadonlySet<string>>(new Set());
 	const [deleting, setDeleting] = useState<SandboxSnapshot>();
 

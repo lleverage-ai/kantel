@@ -43,3 +43,16 @@ export function useLoad<T>(
 	const reload = useCallback(() => setGeneration((value) => value + 1), []);
 	return { state, reload };
 }
+
+/**
+ * Calls `reload` each time `key` changes after the first render, so a read that `useLoad` keeps on screen follows
+ * something its deps don't name (a sandbox's newest snapshot, a parent's poll) without showing the skeleton again.
+ */
+export function useReloadOn(key: unknown, reload: () => void): void {
+	const last = useRef(key);
+	useEffect(() => {
+		if (Object.is(last.current, key)) return;
+		last.current = key;
+		reload();
+	}, [key, reload]);
+}

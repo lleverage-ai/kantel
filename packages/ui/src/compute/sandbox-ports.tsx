@@ -1,6 +1,8 @@
 // A sandbox's ports with an HTTPS URL of their own, on its Overview: each private (only with the token from when it
 // was exposed) or public (anyone with the URL). Expose gives a port a URL; a private port's link carries its token and
-// is shown once, to copy. Every call goes through the `SandboxesSource` the host binds.
+// is shown once, to copy. A private port's listed address has no token, so it's shown as an address, not a link: New
+// link gives it another. One change to a port at a time, so a later Hide can't be undone by an earlier change landing
+// after it. Every call goes through the `SandboxesSource` the host binds.
 
 import { useState } from "react";
 import { Button } from "../primitives/button.tsx";
@@ -8,7 +10,7 @@ import { CheckboxField, CopyButton, TextField } from "../primitives/controls.tsx
 import { Dialog } from "../primitives/dialog.tsx";
 import { GlobeIcon, LockIcon, PlusIcon } from "../primitives/icons.tsx";
 import { useLoad } from "../primitives/load.ts";
-import { EllipsisIcon, TrashIcon } from "../primitives/lucide.tsx";
+import { EllipsisIcon, NewLinkIcon, TrashIcon } from "../primitives/lucide.tsx";
 import { Menu } from "../primitives/menu.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { Notice } from "../primitives/surface.tsx";
@@ -32,6 +34,27 @@ function Visibility({ isPublic }: { isPublic: boolean }) {
 
 const cell = "border-b border-border px-2 py-2 align-middle";
 
+/**
+ * One change at a time to each port: `run` refuses a port with one on its way, and frees it once that answers, either
+ * way. `onChange` hears the ports changing after each. Other ports go on as they like.
+ */
+export function portChanges(onChange: (changing: ReadonlySet<number>) => void) {
+	const changing = new Set<number>();
+	return {
+		async run<T>(port: number, call: () => Promise<T>): Promise<T> {
+			if (changing.has(port)) throw new Error(`Port ${port} is still changing. Try again in a moment.`);
+			changing.add(port);
+			onChange(new Set(changing));
+			try {
+				return await call();
+			} finally {
+				changing.delete(port);
+				onChange(new Set(changing));
+			}
+		},
+	};
+}
+
 export function SandboxPorts({
 	source,
 	sandboxId,
@@ -45,21 +68,26 @@ export function SandboxPorts({
 	const [exposing, setExposing] = useState(false);
 	// A private port's URL with its token, as exposing it answered: shown once.
 	const [issued, setIssued] = useState<SandboxPort>();
+	// The ports with a change on its way: another to the same port waits for it to answer.
+	const [busy, setBusy] = useState<ReadonlySet<number>>(new Set());
+	const [changes] = useState(() => portChanges(setBusy));
+	const one = <T,>(port: number, call: () => Promise<T>): Promise<T> => changes.run(port, call);
 
-	const expose = async (port: number, isPublic: boolean) => {
-		const made = await source.exposePort(sandboxId, port, isPublic);
-		setIssued(made.public ? undefined : made);
-		reload();
-	};
+	const expose = (port: number, isPublic: boolean) =>
+		one(port, async () => {
+			const made = await source.exposePort(sandboxId, port, isPublic);
+			setIssued(made.public ? (current) => (current?.port === port ? undefined : current) : made);
+			reload();
+		});
 	const change = (port: SandboxPort, isPublic: boolean) => {
 		expose(port.port, isPublic).catch((caught: unknown) =>
 			onNotice({ level: "error", text: messageOf(caught, `Kantel couldn't change port ${port.port}. Try again.`) }),
 		);
 	};
 	const hide = (port: SandboxPort) => {
-		source.hidePort(sandboxId, port.port).then(
+		one(port.port, () => source.hidePort(sandboxId, port.port)).then(
 			() => {
-				if (issued?.port === port.port) setIssued(undefined);
+				setIssued((current) => (current?.port === port.port ? undefined : current));
 				onNotice({ level: "info", text: `Port ${port.port}'s URL no longer works.` });
 				reload();
 			},
@@ -113,60 +141,98 @@ export function SandboxPorts({
 			) : (
 				<table className={`${table} table-fixed`}>
 					<tbody>
-						{state.value.map((port) => (
-							<tr key={port.port} data-port={port.port}>
-								<td className={`${cell} w-16 font-mono text-code tabular-nums`}>{port.port}</td>
-								<td className={`${cell} truncate font-mono text-code`}>
-									<a
-										className="text-fg no-underline hover:underline"
-										href={port.url}
-										target="_blank"
-										rel="noopener noreferrer"
-									>
-										{port.url.replace(/^https:\/\//, "")}
-									</a>
-								</td>
-								<td className={`${cell} w-24`}>
-									<Visibility isPublic={port.public} />
-								</td>
-								<td className={`${cell} w-20 text-right`}>
-									<span className="inline-flex items-center gap-0.5">
-										<CopyButton text={port.url} iconOnly size="xs" variant="ghost" label="Copy URL" />
-										<Menu
-											label={`Actions for port ${port.port}`}
-											icon={<EllipsisIcon />}
-											align="end"
-											entries={[
-												port.public
-													? {
-															kind: "item",
-															id: "private",
-															label: "Make private",
-															icon: <LockIcon size="sm" />,
-															onSelect: () => change(port, false),
-														}
-													: {
-															kind: "item",
-															id: "public",
-															label: "Make public",
-															icon: <GlobeIcon size="sm" />,
-															onSelect: () => change(port, true),
-														},
-												{ kind: "separator", id: "sep-hide" },
-												{
-													kind: "item",
-													id: "hide",
-													label: "Hide",
-													icon: <TrashIcon />,
-													danger: true,
-													onSelect: () => hide(port),
-												},
-											]}
-										/>
-									</span>
-								</td>
-							</tr>
-						))}
+						{state.value.map((port) => {
+							// A link that opens it: the listed URL for a public port, the one just issued for a private one.
+							const link = port.public ? port.url : issued?.port === port.port ? issued.url : undefined;
+							const address = port.url.replace(/^https:\/\//, "").replace(/\?.*$/, "");
+							const pending = busy.has(port.port);
+							return (
+								<tr key={port.port} data-port={port.port}>
+									<td className={`${cell} w-16 font-mono text-code tabular-nums`}>{port.port}</td>
+									<td className={`${cell} truncate font-mono text-code`}>
+										{link === undefined ? (
+											<span
+												className="kt-selectable text-muted"
+												title="Private: it opens only with a link's token. New link gives it one."
+											>
+												{address}
+											</span>
+										) : (
+											<a
+												className="text-fg no-underline hover:underline"
+												href={link}
+												target="_blank"
+												rel="noopener noreferrer"
+											>
+												{address}
+											</a>
+										)}
+									</td>
+									<td className={`${cell} w-24`}>
+										<Visibility isPublic={port.public} />
+									</td>
+									<td className={`${cell} w-20 text-right`}>
+										<span className="inline-flex items-center gap-0.5">
+											{link === undefined ? null : (
+												<CopyButton
+													text={link}
+													iconOnly
+													size="xs"
+													variant="ghost"
+													label={port.public ? "Copy URL" : "Copy link"}
+												/>
+											)}
+											<Menu
+												label={`Actions for port ${port.port}`}
+												icon={<EllipsisIcon />}
+												align="end"
+												entries={[
+													...(port.public
+														? [
+																{
+																	kind: "item" as const,
+																	id: "private",
+																	label: "Make private",
+																	icon: <LockIcon size="sm" />,
+																	disabled: pending,
+																	onSelect: () => change(port, false),
+																},
+															]
+														: [
+																{
+																	kind: "item" as const,
+																	id: "link",
+																	label: "New link",
+																	icon: <NewLinkIcon size="sm" />,
+																	disabled: pending,
+																	onSelect: () => change(port, false),
+																},
+																{
+																	kind: "item" as const,
+																	id: "public",
+																	label: "Make public",
+																	icon: <GlobeIcon size="sm" />,
+																	disabled: pending,
+																	onSelect: () => change(port, true),
+																},
+															]),
+													{ kind: "separator", id: "sep-hide" },
+													{
+														kind: "item",
+														id: "hide",
+														label: "Hide",
+														icon: <TrashIcon />,
+														danger: true,
+														disabled: pending,
+														onSelect: () => hide(port),
+													},
+												]}
+											/>
+										</span>
+									</td>
+								</tr>
+							);
+						})}
 					</tbody>
 				</table>
 			)}

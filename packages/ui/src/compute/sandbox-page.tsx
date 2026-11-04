@@ -12,7 +12,7 @@ import { Button, buttonClass, buttonLabelClass } from "../primitives/button.tsx"
 import { CopyButton } from "../primitives/controls.tsx";
 import { compactAge } from "../primitives/format.ts";
 import { ClockIcon, EyeIcon, GlobeIcon, StopIcon } from "../primitives/icons.tsx";
-import { useLoad } from "../primitives/load.ts";
+import { useLoad, useReloadOn } from "../primitives/load.ts";
 import { DesktopIcon, EllipsisIcon, EnvironmentIcon, PlayIcon, ReconnectIcon } from "../primitives/lucide.tsx";
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
 import { PageTabs } from "../primitives/page-tabs.tsx";
@@ -103,9 +103,25 @@ const StateLabel = ({ state }: { state: Sandbox["state"] }) => (
 	<StatusLabel status={SANDBOX_STATE_STATUS[state]}>{SANDBOX_STATE_LABELS[state]}</StatusLabel>
 );
 
-/** Reads a sandbox's access while it can be reached, and again on asking. */
+type HeldAccess = { readonly value: SandboxAccess | "loading" | Error; readonly at: number };
+
+const youngAccess = (held: HeldAccess | undefined): SandboxAccess | undefined =>
+	held !== undefined &&
+	held.value !== "loading" &&
+	!(held.value instanceof Error) &&
+	Date.now() - held.at <= ACCESS_FRESH_MS
+		? held.value
+		: undefined;
+
+/**
+ * Reads a sandbox's access while it can be reached, and again on asking. `fresh` answers access young enough for a
+ * new connection (an SSH command to copy, a pop-out) without replacing what the screens on show use.
+ */
 function useAccess(source: SandboxesSource, sandboxId: string, reachable: boolean) {
-	const [access, setAccess] = useState<{ readonly value: SandboxAccess | "loading" | Error; readonly at: number }>();
+	const [access, setAccess] = useState<HeldAccess>();
+	const held = useRef<HeldAccess | undefined>(undefined);
+	held.current = access;
+	const spare = useRef<HeldAccess | undefined>(undefined);
 	const generation = useRef(0);
 	const read = useCallback(() => {
 		generation.current += 1;
@@ -128,7 +144,16 @@ function useAccess(source: SandboxesSource, sandboxId: string, reachable: boolea
 			generation.current += 1;
 		};
 	}, [reachable, read]);
-	return { access, read };
+	const fresh = useCallback(async (): Promise<SandboxAccess> => {
+		const young = youngAccess(held.current) ?? youngAccess(spare.current);
+		if (young !== undefined) return young;
+		const value = await source.access(sandboxId);
+		spare.current = { value, at: Date.now() };
+		return value;
+	}, [source, sandboxId]);
+	// Old access, or none that worked, when a new screen or preview is about to open.
+	const stale = () => access !== undefined && access.value !== "loading" && youngAccess(access) === undefined;
+	return { access, read, fresh, stale };
 }
 
 export function SandboxPage({
@@ -177,7 +202,7 @@ export function SandboxPage({
 	}, [moving, running, pollMs, fixedNow, reload, state]);
 
 	const windows = running && sandbox?.kind === "microvm";
-	const { access, read: readAccess } = useAccess(source, sandboxId, windows);
+	const { access, read: readAccess, fresh: freshAccess, stale: accessStale } = useAccess(source, sandboxId, windows);
 
 	const tabsShown: readonly SandboxTab[] = [
 		"overview",
@@ -191,11 +216,18 @@ export function SandboxPage({
 		(isScreen(asked) && !windows && sandbox !== undefined) || (!isScreen(asked) && !tabsShown.includes(asked))
 			? "overview"
 			: asked;
+	// A screen, or Overview's previews, mount new connections: old access is read again first.
+	const opensScreens = (next: SandboxView) => isScreen(next) || next === "overview";
 	const go = (next: SandboxView) => {
-		if (isScreen(next) && access !== undefined && Date.now() - access.at > ACCESS_FRESH_MS) readAccess();
+		if (opensScreens(next) && next !== view && accessStale()) readAccess();
 		if (navigate === undefined) setOwn(next);
 		else navigate(href(next));
 	};
+	// The same when the address changes the view (Back and Forward), not this page.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: only a change of view opens new connections.
+	useEffect(() => {
+		if (opensScreens(view) && accessStale()) readAccess();
+	}, [view]);
 
 	const counts = useLoad(async () => {
 		const [history, log] = await Promise.all([
@@ -204,6 +236,8 @@ export function SandboxPage({
 		]);
 		return { snapshots: history?.length, egress: log?.entries.length };
 	}, [snapshots, egress, sandboxId]);
+	// A stop or a save adds a snapshot to count.
+	useReloadOn(sandbox?.snapshot?.id, counts.reload);
 
 	const menu = useSandboxMenu(sandbox, {
 		source,
@@ -287,6 +321,7 @@ export function SandboxPage({
 				viewHref={href}
 				onView={go}
 				onRetry={readAccess}
+				freshAccess={freshAccess}
 				narrow={narrow}
 			/>
 		);
@@ -450,10 +485,12 @@ export function SandboxPage({
 					narrow={narrow}
 					windows={windows}
 					access={access?.value}
+					freshAccess={freshAccess}
 					onAccessRetry={readAccess}
 					onOpen={go}
 					screenHref={href}
 					onNotice={setNotice}
+					usageKey={state}
 				/>
 			) : view === "logs" ? (
 				<SandboxLogs source={source} snapshots={snapshots} sandbox={sandbox} now={now} narrow={narrow} />
@@ -485,10 +522,12 @@ function Overview({
 	narrow,
 	windows,
 	access,
+	freshAccess,
 	onAccessRetry,
 	onOpen,
 	screenHref,
 	onNotice,
+	usageKey,
 }: {
 	source: SandboxesSource;
 	sandbox: Sandbox;
@@ -497,10 +536,14 @@ function Overview({
 	narrow: boolean;
 	windows: boolean;
 	access: SandboxAccess | "loading" | Error | undefined;
+	/** Access young enough for a new connection: the SSH command copied. */
+	freshAccess: () => Promise<SandboxAccess>;
 	onAccessRetry: () => void;
 	onOpen: (view: ScreenView) => void;
 	screenHref: (view: ScreenView) => string;
 	onNotice: (notice: SandboxNotice | undefined) => void;
+	/** Changes with each read of the sandbox, so memory and disk are read again with its CPU. */
+	usageKey: unknown;
 }) {
 	const ready = access !== undefined && access !== "loading" && !(access instanceof Error) ? access : undefined;
 	const spec = sandbox.resources ?? sizeSpec(sandbox.size);
@@ -579,13 +622,15 @@ function Overview({
 							{ready.ssh}
 						</code>
 					)}
-					{ready === undefined ? null : <CopyButton text={ready.ssh} size="sm" variant="ghost" />}
+					{ready === undefined ? null : (
+						<CopyButton text={async () => (await freshAccess()).ssh} size="sm" variant="ghost" />
+					)}
 				</div>
 			)}
 		</section>
 	);
 
-	const usage = showsCpu(sandbox) ? <Usage source={source} sandbox={sandbox} /> : null;
+	const usage = showsCpu(sandbox) ? <Usage source={source} sandbox={sandbox} refreshKey={usageKey} /> : null;
 
 	const created = compactAge(sandbox.createdAt, now);
 	const details = (
@@ -677,12 +722,14 @@ function Overview({
 }
 
 /** CPU over the last two hours, larger than a row's, and memory and disk where the host says. */
-function Usage({ source, sandbox }: { source: SandboxesSource; sandbox: Sandbox }) {
+function Usage({ source, sandbox, refreshKey }: { source: SandboxesSource; sandbox: Sandbox; refreshKey: unknown }) {
 	const { usageNow } = source;
-	const { state } = useLoad(
+	const { state, reload } = useLoad(
 		() => (usageNow === undefined ? Promise.resolve(undefined) : usageNow(sandbox.id)),
 		[usageNow, sandbox.id],
 	);
+	// Each read of the sandbox brings new CPU samples: memory and disk follow, keeping the last while they're read.
+	useReloadOn(refreshKey, reload);
 	const spec = sandbox.resources ?? sizeSpec(sandbox.size);
 	const latest = Math.round((sandbox.usage.at(-1) ?? 0) * 100);
 	const peak = Math.round(Math.max(0, ...sandbox.usage) * 100);

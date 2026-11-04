@@ -6,7 +6,7 @@ import { Fragment, useEffect, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { CopyButton, SegmentedControl } from "../primitives/controls.tsx";
 import { duration } from "../primitives/format.ts";
-import { useLoad } from "../primitives/load.ts";
+import { useLoad, useReloadOn } from "../primitives/load.ts";
 import { EventIcon } from "../primitives/lucide.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
@@ -100,11 +100,14 @@ export function SandboxLogs({
 	// Failed commands opened by the person; the newest failure starts open.
 	const [opened, setOpened] = useState<ReadonlySet<string>>();
 	const following = follow && sandbox.state === "running";
+	// The next read is asked for only once the last has answered, so a slow one isn't overtaken and only one runs.
 	useEffect(() => {
-		if (!following) return;
-		const timer = setInterval(reload, FOLLOW_MS);
-		return () => clearInterval(timer);
-	}, [following, reload]);
+		if (!following || state.status !== "ready") return;
+		const timer = setTimeout(reload, FOLLOW_MS);
+		return () => clearTimeout(timer);
+	}, [following, state, reload]);
+	// A stop (or a save) adds a snapshot, and its event, after Follow has ended: read again when it does.
+	useReloadOn(sandbox.snapshot?.id, reload);
 
 	if (state.status === "error") {
 		return (
