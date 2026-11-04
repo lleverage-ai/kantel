@@ -10930,11 +10930,28 @@
 			},
 			"BrowserAccess": {
 				"type": "object",
-				"required": ["url", "cdpUrl", "viewOnly", "expiresAt"],
+				"required": ["url", "embedUrl", "surface", "cdpUrl", "viewOnly", "expiresAt"],
 				"properties": {
 					"url": {
 						"type": "string",
-						"description": "Watch and drive the sandbox's Chromium in a browser."
+						"description": "Watch and drive the sandbox's Chromium in a browser: the browser alone where `surface` is `browser`, else the desktop it runs on."
+					},
+					"embedUrl": {
+						"type": "string",
+						"description": "The same view, for an `<iframe>` in your own app."
+					},
+					"surface": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "browser"
+							},
+							{
+								"type": "string",
+								"const": "desktop"
+							}
+						],
+						"description": "Experimental. What `url` shows: `browser`, the browser alone on a display of its own, sized to the viewer and streamed only while someone watches; `desktop`, the sandbox's desktop with Chromium on it (an image without a browser surface)."
 					},
 					"cdpUrl": {
 						"type": "string",
@@ -12890,12 +12907,15 @@
 					"browser": {
 						"$ref": "#/components/schemas/GuestFeature"
 					},
+					"browserSurface": {
+						"$ref": "#/components/schemas/GuestFeature"
+					},
 					"docker": {
 						"$ref": "#/components/schemas/GuestDocker"
 					}
 				},
 				"title": "GuestCapabilities",
-				"description": "What a microVM's image has, as its guest agent found it when it last started: its OS, and whether it has a desktop, a browser and Docker."
+				"description": "What a microVM's image has, as its guest agent found it when it last started: its OS, and whether it has a desktop, a browser (and `browserSurface`, the browser alone on a display of its own) and Docker."
 			},
 			"GuestDocker": {
 				"type": "object",
@@ -14072,6 +14092,10 @@
 					},
 					"browser": {
 						"type": "boolean"
+					},
+					"browserSurface": {
+						"type": "boolean",
+						"description": "Experimental. Whether `openBrowser`'s `url` shows the browser alone rather than the desktop it runs on: the image has a display and a stream for its browser. Absent: false."
 					},
 					"ports": {
 						"type": "boolean"

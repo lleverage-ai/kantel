@@ -1,8 +1,8 @@
 # The microVM sandbox's default image: Ubuntu 26.04 LTS with systemd, SSH, Docker and containerd, git, curl, jq,
-# build tools, Node, Python and Go, an XFCE desktop on a TigerVNC display, Chromium with its DevTools port, and
-# Selkies streaming that desktop to a browser, plus Kantel's guest agent. apps/host/guest/rootfs.sh turns it into a
-# read-only ext4 image that every sandbox on a host shares; each sandbox writes to its own disk through an overlay
-# (kantel-init). apps/host/guest/README.md says what listens where and how custom images layer on top.
+# build tools, Node, Python and Go, an XFCE desktop on a TigerVNC display, Chromium with its DevTools port on a display
+# of its own, and Selkies streaming the desktop and, on demand, the browser alone, plus Kantel's guest agent.
+# apps/host/guest/rootfs.sh turns it into a read-only ext4 image that every sandbox on a host shares; each sandbox
+# writes to its own disk through an overlay (kantel-init). apps/host/guest/README.md says what listens where and how custom images layer on top.
 #
 # Build context: apps/host, with the guest agent already built at dist/kantel-guest-<arch> (rootfs.sh does both).
 #
@@ -137,8 +137,8 @@ RUN chmod -R u+rwX,go+rX-w /tmp/kantel-rootfs /usr/local/bin/kantel-guest \
 # fetch things on a timer, and SSH keys only per sandbox (the guest agent makes them after every create and fork).
 # sshd runs as a plain service rather than Ubuntu's socket activation (see ssh.service.d/kantel.conf).
 RUN systemctl disable ssh.socket && rm -f /etc/systemd/system/ssh.service.requires/ssh.socket \
-	&& systemctl enable kantel-guest.service kantel-desktop.service kantel-browser.service kantel-stream.service \
-		ssh.service docker.service containerd.service \
+	&& systemctl enable kantel-guest.service kantel-desktop.service kantel-browser-display.service kantel-browser.service \
+		kantel-stream.service ssh.service docker.service containerd.service \
 	&& systemctl mask serial-getty@ttyS0.service getty@tty1.service systemd-timesyncd.service apt-daily.timer \
 		apt-daily-upgrade.timer e2scrub_all.timer fstrim.timer man-db.timer motd-news.timer dpkg-db-backup.timer \
 		systemd-networkd-wait-online.service NetworkManager-wait-online.service \

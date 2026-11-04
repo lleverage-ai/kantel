@@ -735,7 +735,7 @@ export function withHostUpgrades(
 						if (target === undefined || target === "refused") {
 							return refuse(HOST_CLOSE_REVOKED, "The desktop URL is wrong or has expired");
 						}
-						const held = sessionOf(target.grant, "desktop");
+						const held = sessionOf(target.grant, target.surface);
 						return passThrough(target.sandboxId, target.port, target.path, undefined, held, target);
 					},
 					() => refuse(1011, "The gateway could not check the desktop URL"),

@@ -79,7 +79,7 @@ When a microVM starts, its agent looks at the image and the host passes on what 
 {
   "capabilities": {
     "exec": true, "files": true, "ssh": true, "ports": true, "pause": true,
-    "desktop": false, "browser": false, "docker": false, "kvm": true,
+    "desktop": false, "browser": false, "browserSurface": false, "docker": false, "kvm": true,
     "guest": {
       "reportedAt": 1793796229126,
       "agent": { "version": "1.18.0", "injected": true },
@@ -90,11 +90,14 @@ When a microVM starts, its agent looks at the image and the host passes on what 
       "init": "kantel",
       "desktop": { "available": false, "reason": "No desktop in this image" },
       "browser": { "available": false, "reason": "No browser in this image" },
+      "browserSurface": { "available": false, "reason": "No browser in this image" },
       "docker": { "available": false, "reason": "No Docker in this image", "kvm": true }
     }
   }
 }
 ```
+
+`browserSurface` is the browser alone, on a display of its own with its own stream (see [the browser alone](/sandboxes/desktop-and-browser/#the-browser-alone)); an image whose browser is on the desktop has `browser` but not `browserSurface`, and its browser view is the desktop.
 
 Opening the desktop or browser of a sandbox whose image has none answers `501` with `not_supported` and the reason. A sandbox on a host from before the guest agent reported has no `guest`, and Kantel's own image's capabilities.
 

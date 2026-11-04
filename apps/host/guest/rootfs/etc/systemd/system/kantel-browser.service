@@ -1,7 +1,8 @@
 [Unit]
-Description=Kantel browser: Chromium on the desktop, DevTools (CDP) on 127.0.0.1:9222
-After=kantel-desktop.service
-Wants=kantel-desktop.service
+Description=Kantel browser: Chromium on its own display :2, DevTools (CDP) on 127.0.0.1:9222
+# Its display; and the desktop's, for an image that puts it there (KANTEL_BROWSER_DISPLAY=:1).
+After=kantel-browser-display.service kantel-desktop.service
+Wants=kantel-browser-display.service
 
 [Service]
 User=user

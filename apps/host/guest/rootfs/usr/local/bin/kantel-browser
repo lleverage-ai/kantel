@@ -1,11 +1,15 @@
 #!/bin/sh
-# The sandbox's browser: Chromium (Debian's build) on the desktop, with its DevTools port (CDP) on loopback port 9222 for
-# connectOverCDP through the host. Closing its window brings it back (the unit restarts it), so CDP stays reachable.
+# The sandbox's browser: Chromium (Debian's build) on its own display (:2, kantel-browser-display), with its DevTools
+# port (CDP) on loopback port 9222 for connectOverCDP through the host. The browser's stream (kantel-browser-stream)
+# shows that display, so a viewer sees the browser alone, apart from the desktop. KANTEL_BROWSER_DISPLAY=:1 in
+# /etc/kantel/desktop.env puts it back on the desktop (and the browser's own stream then shows nothing worth
+# watching: the guest agent says so, and the console opens the desktop for it). Closing its window brings it back
+# (the unit restarts it), so CDP stays reachable.
 # Its proxy is the guest agent's local forwarder, which follows the sandbox's egress proxy through forks and restores
 # (Chromium reads its proxy once, at start). Chrome is looked for first only so that a custom image which installs it
 # gets it; the default image has Chromium alone.
-export DISPLAY=:1
-for _ in $(seq 200); do [ -e /tmp/.X11-unix/X1 ] && break; sleep 0.05; done
+export DISPLAY="${KANTEL_BROWSER_DISPLAY:-:2}"
+for _ in $(seq 200); do [ -e "/tmp/.X11-unix/X${DISPLAY#:}" ] && break; sleep 0.05; done
 browser=$(command -v google-chrome-stable || command -v chromium || command -v chromium-browser) || {
 	echo "no browser in this image" >&2
 	exec sleep infinity

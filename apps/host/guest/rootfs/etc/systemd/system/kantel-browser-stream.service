@@ -1,0 +1,16 @@
+[Unit]
+Description=Kantel browser stream: Selkies on the browser's display :2 (web client and WebSocket on 127.0.0.1:6081)
+After=kantel-browser-display.service
+Wants=kantel-browser-display.service
+
+# Not enabled: the guest agent starts it when the host first opens port 6081 and stops it once nobody has been
+# connected for a while (/etc/kantel/on-demand).
+[Service]
+User=user
+Environment=HOME=/home/user XDG_RUNTIME_DIR=/run/user/1000
+EnvironmentFile=-/etc/kantel/desktop.env
+ExecStart=/usr/local/bin/kantel-browser-stream
+# Started means listening, so the agent's first connection (the viewer's page) isn't refused while Selkies loads.
+ExecStartPost=/bin/sh -c 'for _ in $$(seq 300); do curl -fso /dev/null --max-time 1 http://127.0.0.1:6081/ && exit 0; sleep 0.1; done; exit 1'
+Restart=on-failure
+RestartSec=1s

@@ -1,0 +1,4 @@
+# Services the guest agent starts when the host first opens their port, and stops once nothing has been connected to
+# the port for the idle time (a Go duration; 0 never stops it). One per line: port, unit, idle time. A custom image
+# without the browser's stream removes its line (or the file).
+6081 kantel-browser-stream.service 5m

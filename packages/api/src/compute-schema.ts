@@ -412,6 +412,9 @@ export const GuestCapabilities = Type.Object(
 		}),
 		desktop: GuestFeature,
 		browser: GuestFeature,
+		// The browser alone: Chromium on a display of its own, with a stream of just that display, apart from the
+		// desktop. Absent from a guest agent too old to say.
+		browserSurface: Type.Optional(GuestFeature),
 		docker: Type.Object(
 			{
 				...GuestFeature.properties,
@@ -424,7 +427,7 @@ export const GuestCapabilities = Type.Object(
 		title: "GuestCapabilities",
 		description:
 			"What a microVM's image has, as its guest agent found it when it last started: its OS, and whether it has a " +
-			"desktop, a browser and Docker.",
+			"desktop, a browser (and `browserSurface`, the browser alone on a display of its own) and Docker.",
 	},
 );
 
@@ -435,6 +438,13 @@ export const SandboxCapabilities = Type.Object(
 		ssh: Type.Boolean(),
 		desktop: Type.Boolean(),
 		browser: Type.Boolean(),
+		browserSurface: Type.Optional(
+			Type.Boolean({
+				description:
+					"Experimental. Whether `openBrowser`'s `url` shows the browser alone rather than the desktop it runs on: the image " +
+					"has a display and a stream for its browser. Absent: false.",
+			}),
+		),
 		ports: Type.Boolean(),
 		docker: Type.Boolean(),
 		kvm: Type.Boolean({ description: "`/dev/kvm` inside, for nested virtualisation." }),
@@ -1302,7 +1312,18 @@ export const DesktopAccess = Type.Object(
 
 export const BrowserAccess = Type.Object(
 	{
-		url: Type.String({ description: "Watch and drive the sandbox's Chromium in a browser." }),
+		url: Type.String({
+			description:
+				"Watch and drive the sandbox's Chromium in a browser: the browser alone where `surface` is `browser`, else the " +
+				"desktop it runs on.",
+		}),
+		embedUrl: Type.String({ description: "The same view, for an `<iframe>` in your own app." }),
+		surface: Type.Union([Type.Literal("browser"), Type.Literal("desktop")], {
+			description:
+				"Experimental. What `url` shows: `browser`, the browser alone on a display of its own, sized to the viewer and " +
+				"streamed only while someone watches; `desktop`, the sandbox's desktop with Chromium on it (an image without a " +
+				"browser surface).",
+		}),
 		cdpUrl: Type.String({
 			description: "A Chrome DevTools Protocol WebSocket URL, for Playwright's `connectOverCDP` or Puppeteer.",
 		}),

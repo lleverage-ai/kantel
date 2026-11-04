@@ -33,7 +33,7 @@ import type {
 	TemplateRuntime,
 } from "@kantel/compute";
 import { type ErrorCode, isKantelError, KantelError } from "@kantel/contracts";
-import { DESKTOP_PORT, desktopPath } from "./desktop.ts";
+import { BROWSER_STREAM_PORT, DESKTOP_PORT, desktopPath } from "./desktop.ts";
 import type { FileStreamHandle, PortSink } from "./hub.ts";
 import type { PortRouter } from "./ports.ts";
 import {
@@ -60,7 +60,7 @@ import {
 } from "./service.ts";
 import { type DesktopMode, HOSTS_TUNNEL_PATH, MAX_TUNNEL_MINUTES, type TunnelTickets } from "./tunnel.ts";
 
-export { DESKTOP_PORT } from "./desktop.ts";
+export { BROWSER_STREAM_PORT, DESKTOP_PORT } from "./desktop.ts";
 /** Where the guest image's Chromium (CDP) and sshd listen; its desktop stream is `DESKTOP_PORT`. */
 export const BROWSER_PORT = 9222;
 export const SSH_PORT = 22;
@@ -268,7 +268,8 @@ export function fileStreamEnd(reason: string): { readonly size: number } | Kante
 /**
  * What a sandbox can do. A microVM's guest report, where its host sent one, says what its image has: an image without
  * a desktop, a browser or Docker can't offer them, and `/dev/kvm` must open inside for nesting. With no report (a host
- * from before the guest agent said), a microVM is Kantel's own image, which has them all.
+ * from before the guest agent said), a microVM is Kantel's own image, which has them all. The browser alone
+ * (`browserSurface`) only where the report says so: images from before it show the browser on the desktop.
  */
 export function capabilitiesOf(tier: SandboxTier, nested: boolean, ports: boolean, guest?: HostGuest) {
 	const vm = tier === "microvm";
@@ -279,6 +280,7 @@ export function capabilitiesOf(tier: SandboxTier, nested: boolean, ports: boolea
 		ssh: vm,
 		desktop: vm && (report?.desktop.available ?? true),
 		browser: vm && (report?.browser.available ?? true),
+		browserSurface: vm && report?.browserSurface?.available === true,
 		ports: vm && ports,
 		docker: vm && (report?.docker.available ?? true),
 		kvm: vm && nested && (report?.docker.kvm ?? true),
@@ -427,15 +429,19 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		});
 	}
 
-	/** The desktop's Selkies page (desktop.ts); view-only is the ticket's, kept in its row, so the gateway enforces it. */
+	/**
+	 * A Selkies page (desktop.ts): the desktop's, or with `port` the browser's alone. View-only is the ticket's, kept in
+	 * its row, so the gateway enforces it; so is the stream it opens.
+	 */
 	async function desktopPage(
 		sandboxId: string,
 		ttlMinutes: number,
 		viewOnly: boolean,
 		grantee: string | undefined,
+		port: number = DESKTOP_PORT,
 	): Promise<string> {
 		const mode: DesktopMode = viewOnly ? "view" : "control";
-		return `${httpBase}${desktopPath(await ticketFor(sandboxId, DESKTOP_PORT, ttlMinutes, grantee, mode), mode)}`;
+		return `${httpBase}${desktopPath(await ticketFor(sandboxId, port, ttlMinutes, grantee, mode), mode)}`;
 	}
 
 	async function tunnel(sandboxId: string, port: number, ttlMinutes: number, grantee: string | undefined) {
@@ -955,7 +961,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			const url = await desktopPage(sandboxId, ttlMinutes, viewOnly, grantee);
 			return { url, embedUrl: url };
 		},
-		async openBrowser(sandboxId, { ttlMinutes, viewOnly, grantee }) {
+		async openBrowser(sandboxId, { ttlMinutes, viewOnly, grantee, surface }) {
 			const { tier } = await tierOf(sandboxId);
 			if (tier !== "microvm") throw new KantelError("not_supported", "An isolate has no browser");
 			// Chromium's browser-wide DevTools target, passed through the tunnel with its path.
@@ -973,8 +979,13 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				throw new KantelError("unavailable", "The sandbox's browser isn't up yet");
 			}
 			const cdpUrl = `${await tunnel(sandboxId, BROWSER_PORT, ttlMinutes, grantee)}${target}`;
-			// People watch and drive Chromium where it runs: on the desktop.
-			return { url: await desktopPage(sandboxId, ttlMinutes, viewOnly, grantee), cdpUrl };
+			// People watch and drive Chromium where it runs: on its own display, whose stream the guest starts for the first
+			// viewer, or, in an image without one, on the desktop.
+			if (surface === "browser") {
+				const url = await desktopPage(sandboxId, ttlMinutes, viewOnly, grantee, BROWSER_STREAM_PORT);
+				return { url, cdpUrl, surface };
+			}
+			return { url: await desktopPage(sandboxId, ttlMinutes, viewOnly, grantee), cdpUrl, surface: "desktop" };
 		},
 		async revokeHost(hostId) {
 			await hosts.revoke(hostId).catch((error: unknown) => {

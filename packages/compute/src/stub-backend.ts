@@ -115,6 +115,7 @@ const ISOLATE_CAPABILITIES: computeSchema.SandboxCapabilities = {
 	docker: false,
 	kvm: false,
 	pause: false,
+	browserSurface: false,
 };
 
 const MICROVM_CAPABILITIES: computeSchema.SandboxCapabilities = {
@@ -127,6 +128,8 @@ const MICROVM_CAPABILITIES: computeSchema.SandboxCapabilities = {
 	docker: true,
 	kvm: true,
 	pause: true,
+	// The stub's browser view is its own page, apart from its desktop's.
+	browserSurface: true,
 };
 
 /** just-bash's own directories, which a snapshot leaves out. */
@@ -674,7 +677,11 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 		async openBrowser(sandboxId) {
 			const machine = running(sandboxId);
 			microvmOnly(machine, "The browser");
-			return { url: viewUrl(sandboxId, "browser"), cdpUrl: `wss://stub.kantel.invalid/cdp/${sandboxId}` };
+			return {
+				url: viewUrl(sandboxId, "browser"),
+				cdpUrl: `wss://stub.kantel.invalid/cdp/${sandboxId}`,
+				surface: "browser",
+			};
 		},
 
 		async usage(sandboxId): Promise<UsageSample> {

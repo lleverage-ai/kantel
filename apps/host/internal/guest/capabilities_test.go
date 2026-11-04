@@ -66,6 +66,73 @@ func TestDetectKantelImage(t *testing.T) {
 	}
 }
 
+func TestDetectBrowserSurface(t *testing.T) {
+	files := map[string]string{
+		"etc/os-release":                                    "ID=ubuntu\n",
+		"usr/bin/Xtigervnc":                                 "",
+		"usr/bin/xfce4-session":                             "",
+		"usr/bin/selkies":                                   "",
+		"usr/bin/chromium":                                  "",
+		"usr/local/bin/kantel-desktop":                      "",
+		"usr/local/bin/kantel-browser":                      "",
+		"usr/local/bin/kantel-browser-display":              "",
+		"usr/local/bin/kantel-browser-stream":               "",
+		"etc/systemd/system/kantel-desktop.service":         "",
+		"etc/systemd/system/kantel-browser.service":         "",
+		"etc/systemd/system/kantel-browser-display.service": "",
+		"etc/systemd/system/kantel-browser-stream.service":  "",
+	}
+	c := Detect(image(t, files), "v", "systemd", false)
+	if !c.BrowserSurface.Available || c.BrowserSurface.Detail != "Xtigervnc, Selkies" || !c.Browser.Available {
+		t.Errorf("Kantel's image: browser %+v, surface %+v", c.Browser, c.BrowserSurface)
+	}
+
+	// Its own display doesn't need the desktop.
+	noDesktop := map[string]string{}
+	for path, content := range files {
+		if !strings.Contains(path, "kantel-desktop") {
+			noDesktop[path] = content
+		}
+	}
+	if c := Detect(image(t, noDesktop), "v", "systemd", false); c.Desktop.Available || !c.Browser.Available || !c.BrowserSurface.Available {
+		t.Errorf("no desktop: desktop %+v, browser %+v, surface %+v", c.Desktop, c.Browser, c.BrowserSurface)
+	}
+
+	// Put back on the desktop: a browser, but nothing to show of it alone.
+	onDesktop := map[string]string{"etc/kantel/desktop.env": "KANTEL_DESKTOP_SIZE=1280x720\nKANTEL_BROWSER_DISPLAY=':1'\n"}
+	for path, content := range files {
+		onDesktop[path] = content
+	}
+	if c := Detect(image(t, onDesktop), "v", "systemd", false); !c.Browser.Available || c.BrowserSurface.Available ||
+		c.BrowserSurface.Reason != "The image runs its browser on the desktop" {
+		t.Errorf("on the desktop: browser %+v, surface %+v", c.Browser, c.BrowserSurface)
+	}
+
+	// An image from before the browser had a display of its own.
+	old := map[string]string{}
+	for path, content := range files {
+		if !strings.Contains(path, "kantel-browser-") {
+			old[path] = content
+		}
+	}
+	if c := Detect(image(t, old), "v", "systemd", false); !c.Browser.Available || c.BrowserSurface.Available ||
+		c.BrowserSurface.Reason != "The image runs its browser on the desktop" {
+		t.Errorf("an older image: browser %+v, surface %+v", c.Browser, c.BrowserSurface)
+	}
+
+	// A display but no stream of it.
+	noStream := map[string]string{}
+	for path, content := range files {
+		if !strings.Contains(path, "kantel-browser-stream") {
+			noStream[path] = content
+		}
+	}
+	if c := Detect(image(t, noStream), "v", "systemd", false); c.BrowserSurface.Available ||
+		c.BrowserSurface.Reason != "No stream of the browser's display in this image" {
+		t.Errorf("no stream: %+v", c.BrowserSurface)
+	}
+}
+
 func TestDetectAlpine(t *testing.T) {
 	root := image(t, map[string]string{
 		"etc/os-release":          "NAME=\"Alpine Linux\"\nID=alpine\nVERSION_ID=3.22.7\nPRETTY_NAME=\"Alpine Linux v3.22\"\n",

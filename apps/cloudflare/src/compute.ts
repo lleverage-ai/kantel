@@ -772,7 +772,7 @@ async function accountHostsSide(
 						port: target.port,
 						path: target.path,
 						...(target.accept === undefined ? {} : { accept: target.accept }),
-						kind: "desktop",
+						kind: target.surface,
 						...(target.grant.grantee === undefined ? {} : { grantee: target.grant.grantee }),
 					};
 				}

@@ -473,10 +473,20 @@ export interface SandboxBackend {
 		sandboxId: string,
 		options: { readonly viewOnly: boolean; readonly ttlMinutes: number; readonly grantee?: string },
 	): Promise<{ readonly url: string; readonly embedUrl: string }>;
+	/**
+	 * The browser's live view and CDP URLs. With `surface: "browser"` (the sandbox's image has a browser surface), `url`
+	 * shows the browser alone, apart from the desktop; the answer's `surface` says what `url` shows, `desktop` when a
+	 * backend has nothing else to show (absent: `desktop`).
+	 */
 	openBrowser(
 		sandboxId: string,
-		options: { readonly viewOnly: boolean; readonly ttlMinutes: number; readonly grantee?: string },
-	): Promise<{ readonly url: string; readonly cdpUrl: string }>;
+		options: {
+			readonly viewOnly: boolean;
+			readonly ttlMinutes: number;
+			readonly grantee?: string;
+			readonly surface?: "browser" | "desktop";
+		},
+	): Promise<{ readonly url: string; readonly cdpUrl: string; readonly surface?: "browser" | "desktop" }>;
 	/**
 	 * A tunnel to the host's E2E responder for the sandbox (`@kantel/e2e`), whose bytes the relay passes on unread, and
 	 * the host's ID. Absent when sandboxes aren't on hosts (the stub).

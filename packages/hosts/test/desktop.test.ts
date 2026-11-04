@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+	BROWSER_STREAM_PORT,
 	type ClientFiles,
 	createDesktopRoutes,
 	DESKTOP_PORT,
@@ -117,7 +118,7 @@ describe("the desktop's page", () => {
 		expect((await desktop.fetch(get(`${page}index.html`, "POST")))?.status).toBe(405);
 	});
 
-	it("answers only a live desktop ticket for the desktop's port", async () => {
+	it("answers only a live desktop ticket for a stream's port", async () => {
 		const { desktop, opened } = routes();
 		const refused = {
 			"a tunnel's ticket": await ticket(undefined),
@@ -141,6 +142,21 @@ describe("the desktop's page", () => {
 		const redirect = await desktop.fetch(get(bare));
 		expect(redirect?.status).toBe(308);
 		expect(redirect?.headers.get("location")).toBe(`${bare}/`);
+	});
+
+	it("serves the browser's own stream for its ticket, from the browser's port, and no other", async () => {
+		const { desktop, opened } = routes();
+		const page = `${HOSTS_DESKTOP_PATH}/${await ticket("control", { port: BROWSER_STREAM_PORT })}/`;
+		const index = await desktop.fetch(get(page));
+		expect(index?.status).toBe(200);
+		expect(await index?.text()).toBe(served["/index.html"]);
+		// Asked of the browser's stream (which the guest starts for it), not the desktop's.
+		expect(opened.map((open) => open.port)).toEqual([BROWSER_STREAM_PORT]);
+		expect(opened[0]?.request).toContain(`Host: 127.0.0.1:${BROWSER_STREAM_PORT}\r\n`);
+		// Chromium's DevTools port isn't a stream, whatever the ticket's mode.
+		const cdp = await ticket("control", { port: 9222 });
+		expect((await desktop.fetch(get(`${HOSTS_DESKTOP_PATH}/${cdp}/`)))?.status).toBe(404);
+		expect(await desktop.socket(`${HOSTS_DESKTOP_PATH}/${cdp}${DESKTOP_SOCKET}`)).toBe("refused");
 	});
 
 	it("answers nothing for a ticket whose holder has lost access, page or stream", async () => {
@@ -376,6 +392,27 @@ describe("the desktop's socket", () => {
 		}
 		expect(await desktop.socket(`${HOSTS_DESKTOP_PATH}/${await ticket(undefined)}${DESKTOP_SOCKET}`)).toBe("refused");
 		expect(await desktop.socket("/v1/hosts/tunnel/a.b")).toBeUndefined();
+	});
+
+	it("opens the browser's stream for its ticket, view-only enforced the same", async () => {
+		const { desktop } = routes();
+		const view = await ticket("view", { port: BROWSER_STREAM_PORT });
+		expect(await desktop.socket(`${HOSTS_DESKTOP_PATH}/${view}${DESKTOP_SOCKET}?role=controller`)).toMatchObject({
+			port: BROWSER_STREAM_PORT,
+			surface: "browser",
+			path: `${DESKTOP_SOCKET}?role=viewer`,
+			accept: viewerMessage,
+		});
+		const control = await ticket("control", { port: BROWSER_STREAM_PORT });
+		expect(await desktop.socket(`${HOSTS_DESKTOP_PATH}/${control}${DESKTOP_SOCKET}`)).toMatchObject({
+			port: BROWSER_STREAM_PORT,
+			surface: "browser",
+			path: DESKTOP_SOCKET,
+		});
+		expect(await desktop.socket(`${HOSTS_DESKTOP_PATH}/${await ticket("control")}${DESKTOP_SOCKET}`)).toMatchObject({
+			port: DESKTOP_PORT,
+			surface: "desktop",
+		});
 	});
 
 	it("lets a viewer send only what watching needs", () => {

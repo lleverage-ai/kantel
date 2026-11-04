@@ -225,8 +225,12 @@ export interface BaseImageVersion {
 }
 
 export interface BrowserAccess {
-	/** Watch and drive the sandbox's Chromium in a browser. */
+	/** Watch and drive the sandbox's Chromium in a browser: the browser alone where `surface` is `browser`, else the desktop it runs on. */
 	readonly url: string;
+	/** The same view, for an `<iframe>` in your own app. */
+	readonly embedUrl: string;
+	/** Experimental. What `url` shows: `browser`, the browser alone on a display of its own, sized to the viewer and streamed only while someone watches; `desktop`, the sandbox's desktop with Chromium on it (an image without a browser surface). */
+	readonly surface: "browser" | "desktop";
 	/** A Chrome DevTools Protocol WebSocket URL, for Playwright's `connectOverCDP` or Puppeteer. */
 	readonly cdpUrl: string;
 	readonly viewOnly: boolean;
@@ -920,7 +924,7 @@ export interface GuestAgent {
 	readonly injected: boolean;
 }
 
-/** What a microVM's image has, as its guest agent found it when it last started: its OS, and whether it has a desktop, a browser and Docker. */
+/** What a microVM's image has, as its guest agent found it when it last started: its OS, and whether it has a desktop, a browser (and `browserSurface`, the browser alone on a display of its own) and Docker. */
 export interface GuestCapabilities {
 	/** Epoch milliseconds, UTC. */
 	readonly reportedAt: number;
@@ -938,6 +942,8 @@ export interface GuestCapabilities {
 	readonly desktop: GuestFeature;
 	/** One thing a microVM's image has or lacks. */
 	readonly browser: GuestFeature;
+	/** One thing a microVM's image has or lacks. */
+	readonly browserSurface?: GuestFeature;
 	readonly docker: GuestDocker;
 }
 
@@ -1448,13 +1454,15 @@ export interface SandboxCapabilities {
 	readonly ssh: boolean;
 	readonly desktop: boolean;
 	readonly browser: boolean;
+	/** Experimental. Whether `openBrowser`'s `url` shows the browser alone rather than the desktop it runs on: the image has a display and a stream for its browser. Absent: false. */
+	readonly browserSurface?: boolean;
 	readonly ports: boolean;
 	readonly docker: boolean;
 	/** `/dev/kvm` inside, for nested virtualisation. */
 	readonly kvm: boolean;
 	/** Whether it can be paused with its memory kept. */
 	readonly pause: boolean;
-	/** What a microVM's image has, as its guest agent found it when it last started: its OS, and whether it has a desktop, a browser and Docker. */
+	/** What a microVM's image has, as its guest agent found it when it last started: its OS, and whether it has a desktop, a browser (and `browserSurface`, the browser alone on a display of its own) and Docker. */
 	readonly guest?: GuestCapabilities;
 }
 
