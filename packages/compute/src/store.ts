@@ -37,6 +37,12 @@ export interface Collection<T extends { readonly id: string }> {
 	update(id: string, change: (current: T) => T | undefined, expected?: T): Promise<T | undefined>;
 	/** Whether there was one to delete. */
 	delete(id: string): Promise<boolean>;
+	/**
+	 * Deletes the record only when `should` approves it as it is now, with nothing written between the read and the
+	 * delete (the SQL store deletes only the version it read, and reads again when another writer got there first), and
+	 * answers whether it did. `should` may run more than once.
+	 */
+	deleteIf(id: string, should: (current: T) => boolean): Promise<boolean>;
 	/** The records whose fields equal each defined field of `where`, oldest first. */
 	list(where?: Partial<T>): Promise<T[]>;
 }
@@ -291,11 +297,70 @@ export interface StoredJoinToken {
 export type StoredEvent = computeSchema.Event;
 
 /**
- * A deployment-wide setting a super-admin changed in the console, by name: `publicUrl`, where hosts reach the control
- * plane, ahead of the deployment's own.
+ * A delete's claim on a record (mounts): while it is fresh, a create mounting the source refuses, so the delete's count
+ * of sandboxes mounting it can't miss one. A claim older than a minute is a delete that never finished, and ignored.
+ */
+export interface DeleteClaim {
+	readonly token: string;
+	readonly at: number;
+}
+
+/**
+ * A bundle an account uploaded (mounts): its ID is `<accountId>/<digest>`, so an account has a digest once. Its bytes
+ * are the bundle store's, kept as `generation` of the digest, which this record alone owns: they are kept before it is
+ * published and removed only once it is gone, so they are there for as long as it is.
+ */
+export interface StoredBundle {
+	readonly id: string;
+	readonly accountId: string;
+	/** `sha256:<hex>`. */
+	readonly digest: string;
+	readonly sizeBytes: number;
+	readonly createdAt: number;
+	readonly createdBy?: string;
+	/** The generation of the digest its bytes are kept as (`BundleBlobStore`). Absent: 0, from before generations. */
+	readonly generation?: number;
+	readonly deleting?: DeleteClaim;
+}
+
+/** A bucket an account's sandboxes may mount prefixes of (mounts). Its credentials are sealed, and never answered. */
+export interface StoredBucketSource {
+	readonly id: string;
+	readonly accountId: string;
+	readonly name: string;
+	readonly provider: computeSchema.BucketProvider;
+	readonly bucket: string;
+	readonly endpoint?: string;
+	readonly region?: string;
+	/** The credentials' JSON, sealed at `bucketSources:<id>:credentials`. */
+	readonly credentials?: SealedValue;
+	readonly createdAt: number;
+	readonly deleting?: DeleteClaim;
+}
+
+/**
+ * A signed file URL (mounts): its ID is the SHA-256 hex of its token, which only its answer shows. It is for one file
+ * of one sandbox, one way, until `expiresAt`.
+ */
+export interface StoredFileUrl {
+	readonly id: string;
+	readonly sandboxId: string;
+	readonly accountId: string;
+	/** Absolute. */
+	readonly path: string;
+	/** `GET` downloads the file, `PUT` uploads it. */
+	readonly method: "GET" | "PUT";
+	readonly expiresAt: number;
+	readonly createdAt: number;
+}
+
+/**
+ * A deployment-wide setting, by name: `publicUrl`, where hosts reach the control plane, ahead of the deployment's own,
+ * as a super-admin changed it in the console; `bundleStore`, the mark the first gateway to keep a bundle left in its
+ * bundle store, which any gateway's must hold for it to keep, serve or remove bundles' bytes (`BundleBlobStore.mark`).
  */
 export interface StoredSetting {
-	readonly id: "publicUrl";
+	readonly id: "publicUrl" | "bundleStore";
 	readonly value: string;
 	readonly updatedAt: number;
 	readonly updatedBy: string;
@@ -364,6 +429,10 @@ export interface ComputeStore {
 	readonly egress: Collection<StoredEgressEntry>;
 	/** Each organisation's E2E chain, an entry a record (`e2e.ts`). */
 	readonly e2eChain: Collection<StoredE2EEntry>;
+	/** Mounts' bundles, bucket sources and signed file URLs (experimental). */
+	readonly bundles: Collection<StoredBundle>;
+	readonly bucketSources: Collection<StoredBucketSource>;
+	readonly fileUrls: Collection<StoredFileUrl>;
 	readonly settings: Collection<StoredSetting>;
 }
 
@@ -417,6 +486,11 @@ export function memoryCollection<T extends { readonly id: string }>(unique?: (re
 		async delete(id) {
 			return records.delete(id);
 		},
+		async deleteIf(id, should) {
+			const current = records.get(id);
+			if (current === undefined || !should(structuredClone(current))) return false;
+			return records.delete(id);
+		},
 		async list(where) {
 			return [...records.values()].filter((record) => matches(record, where)).map((record) => structuredClone(record));
 		},
@@ -446,6 +520,9 @@ export function createMemoryStore(): ComputeStore {
 		environments: memoryCollection<StoredEnvironment>(environmentNameKey),
 		egress: memoryCollection(),
 		e2eChain: memoryCollection(),
+		bundles: memoryCollection(),
+		bucketSources: memoryCollection(),
+		fileUrls: memoryCollection(),
 		settings: memoryCollection(),
 	};
 }

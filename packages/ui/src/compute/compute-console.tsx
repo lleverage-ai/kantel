@@ -39,6 +39,7 @@ import { FirstRun } from "./first-run.tsx";
 import { HostsPage } from "./hosts-page.tsx";
 import { ImagesPage } from "./images-page.tsx";
 import { InstallPage } from "./install-page.tsx";
+import { MountsPage } from "./mounts-page.tsx";
 import { OrganisationPage } from "./organisation-page.tsx";
 import { messageOf } from "./parts.tsx";
 import { ProfilePage } from "./profile-page.tsx";
@@ -71,6 +72,7 @@ export type ComputePage =
 	| "profile"
 	| "billing"
 	| "hosts"
+	| "mounts"
 	| "install"
 	| "images"
 	| "device";
@@ -87,6 +89,7 @@ export const COMPUTE_PAGES: readonly ComputePage[] = [
 	"profile",
 	"billing",
 	"hosts",
+	"mounts",
 	"install",
 	"images",
 	"device",
@@ -342,6 +345,7 @@ const SETTINGS_PAGES: ReadonlySet<ComputePage> = new Set([
 	"keys",
 	"webhooks",
 	"telemetry",
+	"mounts",
 	"billing",
 ]);
 
@@ -454,6 +458,8 @@ export function ComputeConsole({
 	const billingShown = source.hosting === "hosted" && source.billing !== undefined;
 	// The deployment's base images and templates: a super-admin's, beside Hosts.
 	const imagesShown = superAdmin && source.images !== undefined;
+	// Read-only mounts' bundles and bucket sources, where the deployment has turned mounts on (experimental).
+	const mountsShown = source.mounts !== undefined;
 	// A page this person can't open goes to Sandboxes rather than showing nothing. Device sign-in has no sidebar item:
 	// a terminal running `kantel login` opens it.
 	// Install, the deployment's public URL, is a super-admin's, where the API can set it.
@@ -463,6 +469,7 @@ export function ComputeConsole({
 		(route.page === "install" && me !== undefined && installSource === undefined) ||
 		(route.page === "images" && me !== undefined && !imagesShown) ||
 		(route.page === "billing" && !billingShown) ||
+		(route.page === "mounts" && !mountsShown) ||
 		(route.page === "device" && source.devices === undefined)
 			? "sandboxes"
 			: route.page;
@@ -492,6 +499,7 @@ export function ComputeConsole({
 		{ id: "keys", label: "API keys" },
 		{ id: "webhooks", label: "Webhooks" },
 		{ id: "telemetry", label: "OpenTelemetry" },
+		...(mountsShown ? [{ id: "mounts", label: "Mounts" }] : []),
 		...(ownHostsShown ? [{ id: "hosts", label: "Hosts" }] : []),
 		...(billingShown ? [{ id: "billing", label: "Plan and billing" }] : []),
 	].map((item) => ({ ...item, href: computePath(item.id as ComputePage, base), selected: page === item.id }));
@@ -988,6 +996,10 @@ function PageFor({
 		case "billing":
 			return source.billing === undefined ? null : (
 				<BillingPage source={source.billing} account={account} narrow={narrow} {...timing} />
+			);
+		case "mounts":
+			return source.mounts === undefined ? null : (
+				<MountsPage key={account.id} source={source.mounts} account={account} {...timing} />
 			);
 		case "hosts":
 			return hosts === undefined ? null : (

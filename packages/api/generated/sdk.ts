@@ -244,6 +244,86 @@ export interface BrowserEmbed {
 	readonly endMessage?: string;
 }
 
+/** An S3 access key, or a GCS HMAC key. */
+export interface BucketAccessKey {
+	readonly accessKeyId: string;
+	readonly secretAccessKey: string;
+	readonly sessionToken?: string;
+}
+
+/** Write-only: kept encrypted, given only to the host of a sandbox that mounts the bucket, never answered. */
+export type BucketCredentials = BucketAccessKey | BucketServiceAccountKey;
+
+/** An object-store prefix, through a bucket source the account holds. The host reads objects as they are opened; the bucket source's credentials stay on the host, never in the sandbox. */
+export interface BucketMountSource {
+	readonly kind: "bucket";
+	/** A bucket source of the sandbox's account, such as `bks_4kq9x2mt`. */
+	readonly bucketSourceId: string;
+	/** The objects under this key prefix, such as `org/42/skills/`; empty for the whole bucket. */
+	readonly prefix: string;
+	/** How long the host trusts its listing of the prefix before it looks again, so objects added later appear. 0: never look again. Default: the host's. */
+	readonly refreshTtlSeconds?: number;
+}
+
+/** `s3`: Amazon S3 or an S3-compatible store (with `endpoint`). `gcs`: Google Cloud Storage. */
+export type BucketProvider = "s3" | "gcs";
+
+export interface BucketServiceAccountKey {
+	/** A GCS service account's JSON key, as Google gives it. */
+	readonly serviceAccountKey: string;
+}
+
+/** A bucket an account's sandboxes may mount prefixes of, with the credentials that read it. The credentials are write-only. */
+export interface BucketSource {
+	/** The bucket source's ID, such as `bks_4kq9x2mt`. */
+	readonly id: string;
+	readonly accountId: string;
+	/** A name for people, such as `org files`. */
+	readonly name: string;
+	/** `s3`: Amazon S3 or an S3-compatible store (with `endpoint`). `gcs`: Google Cloud Storage. */
+	readonly provider: BucketProvider;
+	/** The bucket's name. */
+	readonly bucket: string;
+	/** An S3-compatible store's HTTPS endpoint, such as `https://<account>.r2.cloudflarestorage.com`. */
+	readonly endpoint?: string;
+	/** Such as `eu-west-1`. */
+	readonly region?: string;
+	/** Whether it was given credentials; they are never answered. */
+	readonly hasCredentials: boolean;
+	/** How many of the account's sandboxes that still exist mount it. */
+	readonly mountedBy: number;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+}
+
+export interface BucketSourceList {
+	readonly items: readonly BucketSource[];
+}
+
+/** A tar of files uploaded to an account once, named by its digest, which sandboxes mount read-only. It never changes: other files are another bundle. */
+export interface Bundle {
+	/** `sha256:` and the hex SHA-256 of the tar: the bundle's name and its ID. */
+	readonly digest: string;
+	readonly accountId: string;
+	/** The tar's size. */
+	readonly sizeBytes: number;
+	/** How many of the account's sandboxes that still exist mount it. */
+	readonly mountedBy: number;
+	/** Epoch milliseconds, UTC. */
+	readonly createdAt: number;
+}
+
+export interface BundleList {
+	readonly items: readonly Bundle[];
+}
+
+/** A bundle's files: the tar the account uploaded (`POST /bundles`), unpacked read-only at the mount's path. */
+export interface BundleMountSource {
+	readonly kind: "bundle";
+	/** A bundle uploaded to the sandbox's account, by its digest: `sha256:` and 64 hex digits. */
+	readonly digest: string;
+}
+
 /** Who is calling, the accounts they may act in, and the deployment's mode. */
 export interface Caller {
 	readonly user?: CallerUser;
@@ -340,6 +420,23 @@ export interface CreateApiKeyBody {
 	readonly expiresInDays?: number;
 }
 
+export interface CreateBucketSourceBody {
+	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
+	readonly account?: string;
+	/** A name for people, such as `org files`. */
+	readonly name: string;
+	/** `s3`: Amazon S3 or an S3-compatible store (with `endpoint`). `gcs`: Google Cloud Storage. */
+	readonly provider: BucketProvider;
+	/** The bucket's name. */
+	readonly bucket: string;
+	/** An S3-compatible store's HTTPS endpoint, such as `https://<account>.r2.cloudflarestorage.com`. */
+	readonly endpoint?: string;
+	/** Such as `eu-west-1`. */
+	readonly region?: string;
+	/** Write-only: kept encrypted, given only to the host of a sandbox that mounts the bucket, never answered. */
+	readonly credentials?: BucketCredentials;
+}
+
 export interface CreatedBy {
 	readonly kind: "user" | "api_key";
 	/** The user's or the API key's ID. */
@@ -418,6 +515,8 @@ export interface CreateSandboxBody {
 	readonly hostLabels?: {
 		readonly [key: string]: string;
 	};
+	/** Files from outside the sandbox, read-only inside it: at most 16, at paths that don't overlap. A bundle or bucket source it names must be the account's. microVMs only: an isolate is refused (`not_supported`). A host that can't mount a source marks that mount `failed`, and the sandbox runs without it. A fork keeps its source's mounts. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). */
+	readonly mounts?: readonly Mount[];
 	/** Answer once it is `running` (or `error`) rather than as soon as it is placed. */
 	readonly wait?: boolean;
 }
@@ -711,6 +810,24 @@ export interface ExposePortBody {
 	readonly public?: boolean;
 }
 
+export interface ExtractArchiveQuery {
+	/** The directory to extract into, made if missing: absolute, or relative to the user's home. Not in or over a mount. */
+	readonly path: string;
+}
+
+export interface ExtractedArchive {
+	/** The absolute directory it was extracted into. */
+	readonly path: string;
+	/** Files written. */
+	readonly files: number;
+	/** Directories made. */
+	readonly directories: number;
+	/** Symbolic links made. */
+	readonly symlinks: number;
+	/** Bytes of the files written. */
+	readonly bytes: number;
+}
+
 /** A file of at most 1 MiB, or a part of at most 1 MiB of a larger one, read with `offset` and `length`. */
 export interface FileContent {
 	readonly path: string;
@@ -744,6 +861,25 @@ export interface FileList {
 export interface FilePathQuery {
 	/** An absolute path, or one relative to the user's home. */
 	readonly path: string;
+}
+
+/** A short-lived URL for one file of one sandbox, streamed to or from the sandbox's host, so a file of any size moves without base64. */
+export interface FileUrl {
+	/** The signed URL. Send the request straight to it, with no `Authorization` header. Treat it as a secret until it expires. */
+	readonly url: string;
+	/** `GET` downloads the file. `PUT` uploads the request's raw body as the file. */
+	readonly method: "GET" | "PUT";
+	/** The absolute path the URL is bound to. */
+	readonly path: string;
+	/** Epoch milliseconds, UTC. */
+	readonly expiresAt: number;
+}
+
+export interface FileUrlBody {
+	/** An absolute path, or one relative to the user's home. */
+	readonly path: string;
+	/** How long the URL may be used: default 900 (15 minutes), at most 3600. */
+	readonly ttlSeconds?: number;
 }
 
 export interface ForkedSandboxes {
@@ -1034,6 +1170,18 @@ export interface MicrovmShapes {
 	readonly custom: boolean;
 }
 
+/** Files from outside the sandbox, read-only inside it: nothing in the sandbox can change them. */
+export interface Mount {
+	/** Where it appears in the sandbox: absolute and normalised, not `/`, not at or under a system directory (`/proc`, `/sys`, `/dev`, `/etc`, `/usr`, `/bin`, `/lib` and the like), and not overlapping another mount. */
+	readonly path: string;
+	readonly source: MountSource;
+}
+
+export type MountSource = BundleMountSource | BucketMountSource;
+
+/** `pending`: its host is still putting it in place. `ready`: its files are there. `failed`: they aren't, and `error` says why; the sandbox runs without it. */
+export type MountStatus = "pending" | "ready" | "failed";
+
 export interface PollDeviceLoginBody {
 	readonly deviceCode: string;
 }
@@ -1214,6 +1362,8 @@ export interface Sandbox {
 	readonly environmentId?: string;
 	/** Its own egress grants, on top of its environment's. */
 	readonly grants: readonly EgressGrant[];
+	/** Its read-only mounts, as its create named them, each with its status. Absent: none. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). */
+	readonly mounts?: readonly SandboxMount[];
 	readonly createdBy: CreatedBy;
 	/** Epoch milliseconds, UTC. */
 	readonly createdAt: number;
@@ -1305,6 +1455,16 @@ export interface SandboxEgressQuery {
 
 /** `degraded`: the machine is up but its host can't fully reach it; it keeps running. */
 export type SandboxHealth = "ok" | "degraded";
+
+/** A mount of a sandbox's, and whether its files are in place. */
+export interface SandboxMount {
+	readonly path: string;
+	readonly source: MountSource;
+	/** `pending`: its host is still putting it in place. `ready`: its files are there. `failed`: they aren't, and `error` says why; the sandbox runs without it. */
+	readonly status: MountStatus;
+	/** Why it is `failed`, in words. */
+	readonly error?: string;
+}
 
 export interface SandboxPage {
 	readonly items: readonly Sandbox[];
@@ -1643,6 +1803,13 @@ export interface UpdateWebhookBody {
 	readonly enabled?: boolean;
 }
 
+export interface UploadBundleQuery {
+	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
+	readonly account?: string;
+	/** The digest the tar should have: an upload whose bytes don't match is refused (`invalid`). */
+	readonly digest?: string;
+}
+
 export interface UsageQuery {
 	/** From this time; default 24 hours ago. `series` then holds only the points after it, so a client polls with the last point's `at`. */
 	readonly since?: number;
@@ -1816,6 +1983,9 @@ export class KantelApiError extends Error {
 	}
 }
 
+/** A raw request body: bytes, a `Blob` (such as a `File`), or a stream of bytes. */
+export type RawBody = Blob | ArrayBuffer | Uint8Array<ArrayBuffer> | ReadableStream<Uint8Array>;
+
 /** One call, as the generated methods describe it. */
 export interface ApiCall {
 	readonly method: string;
@@ -1824,6 +1994,8 @@ export interface ApiCall {
 	/** Query parameters; a record value, such as `label`, is sent as `label.<key>=<value>`. */
 	readonly query?: object;
 	readonly body?: unknown;
+	/** A raw body, such as a tar, sent as it is with this media type rather than as JSON. */
+	readonly raw?: { readonly body: RawBody; readonly type: string };
 	readonly headers?: { readonly [name: string]: string | undefined };
 	/** The answer is bytes, such as an image, not JSON: the call resolves with a `Blob`. */
 	readonly binary?: boolean;
@@ -1873,6 +2045,7 @@ export async function send<T>(options: KantelClientOptions, call: ApiCall, callO
 	const token = typeof options.token === "function" ? await options.token() : options.token;
 	if (token !== undefined) headers.authorization = `Bearer ${token}`;
 	if (call.body !== undefined) headers["content-type"] = "application/json";
+	if (call.raw !== undefined) headers["content-type"] = call.raw.type;
 	if (callOptions.requestId !== undefined) headers["kantel-request-id"] = callOptions.requestId;
 	if (callOptions.idempotencyKey !== undefined) headers["idempotency-key"] = callOptions.idempotencyKey;
 	for (const [name, value] of Object.entries(call.headers ?? {})) if (value !== undefined) headers[name] = value;
@@ -1882,6 +2055,12 @@ export async function send<T>(options: KantelClientOptions, call: ApiCall, callO
 		method: call.method,
 		headers,
 		...(call.body === undefined ? {} : { body: JSON.stringify(call.body) }),
+		// A stream is sent as it comes (`duplex: "half"`, which fetch needs for one).
+		...(call.raw === undefined
+			? {}
+			: call.raw.body instanceof ReadableStream
+				? { body: call.raw.body, duplex: "half" }
+				: { body: call.raw.body }),
 		...(callOptions.signal === undefined ? {} : { signal: callOptions.signal }),
 	});
 	if (!response.ok) throw await errorOf(response);
@@ -2017,7 +2196,7 @@ export interface KantelClient {
 	listSandboxes(query?: ListSandboxesQuery, options?: CallOptions): Promise<SandboxPage>;
 	/** Get the shapes a sandbox may be. What a new sandbox in the account may be, from the hosts it may use: an isolate's memory, a microVM's vCPUs and memory, the hosts' presets and what an hour costs. A key needs `sandboxes:read`. `GET /sandbox-shapes` */
 	getSandboxShapes(query?: AccountScopedQuery, options?: CallOptions): Promise<SandboxShapes>;
-	/** Create a sandbox. Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes` */
+	/** Create a sandbox. Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. `mounts` (experimental) are for microVMs only: an isolate's are refused (`not_supported`), because an isolate is a JavaScript shell over files the host keeps, with no file system of its own to mount a drive or a bucket into. A mount whose bundle or bucket source isn't the account's is `not_found`; with the deployment's `KANTEL_MOUNTS` switch off, any `mounts` are `not_supported`. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes` */
 	createSandbox(body?: CreateSandboxBody, options?: CallOptions): Promise<Sandbox>;
 	/** Get a sandbox. A key needs `sandboxes:read`. `GET /sandboxes/{sandboxId}` */
 	getSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
@@ -2055,6 +2234,17 @@ export interface KantelClient {
 	deleteFile(sandboxId: string, query: FilePathQuery, options?: CallOptions): Promise<void>;
 	/** List a directory. A key needs `files`. `GET /sandboxes/{sandboxId}/files/list` */
 	listFiles(sandboxId: string, query?: ListFilesQuery, options?: CallOptions): Promise<FileList>;
+	/** Get an upload URL for a file. A short-lived URL on the API, streamed straight to the sandbox's host: `PUT` the file to it as the raw request body, of any size, with no `Authorization` header; the answer is `{ path, size }`. Missing directories are made, and a file already there is replaced only once the upload is complete. The URL is bound to this sandbox and path, and expires after `ttlSeconds`. A path in a read-only mount is refused (`conflict`). The sandbox must be running when the URL is used. Treat it as a secret. A key needs `files`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `POST /sandboxes/{sandboxId}/files/upload-url` */
+	createUploadUrl(sandboxId: string, body: FileUrlBody, options?: CallOptions): Promise<FileUrl>;
+	/** Get a download URL for a file. A short-lived URL on the API, streamed straight from the sandbox's host: `GET` it, with no `Authorization` header, for the file's bytes as they are when it is fetched, whatever its size (`HEAD` for its size alone). The URL is bound to this sandbox and path, and expires after `ttlSeconds`. The sandbox must be running when the URL is used. Treat it as a secret. A key needs `files`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `POST /sandboxes/{sandboxId}/files/download-url` */
+	createDownloadUrl(sandboxId: string, body: FileUrlBody, options?: CallOptions): Promise<FileUrl>;
+	/** Extract an archive into a directory. Writes every file, directory and symbolic link of a tar (or a gzipped tar) into `path`, in one call. An entry whose name is absolute or climbs out of `path` (`..`), a link that points out of it, an entry under such a link, and hard links, devices and FIFOs are refused (`invalid`) before anything is written. A `path` in a read-only mount, or with one under it, is refused (`conflict`). Files are owned by the sandbox's user, with their modes from the tar. A key needs `files`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `PUT /sandboxes/{sandboxId}/files/archive` */
+	extractArchive(
+		sandboxId: string,
+		body: RawBody,
+		query: ExtractArchiveQuery,
+		options?: CallOptions,
+	): Promise<ExtractedArchive>;
 	/** List a sandbox's public ports. A key needs `access`. `GET /sandboxes/{sandboxId}/ports` */
 	listPorts(sandboxId: string, options?: CallOptions): Promise<ExposedPortList>;
 	/** Expose a port. Gives a port in the sandbox an HTTPS URL through its host's tunnel. The app must listen on the port; on `0.0.0.0` or `localhost` both work. Exposing it again answers its URL. A key needs `access`. `POST /sandboxes/{sandboxId}/ports` */
@@ -2212,6 +2402,22 @@ export interface KantelClient {
 	updateAccountHost(hostId: string, body?: UpdateHostBody, options?: CallOptions): Promise<Host>;
 	/** Remove one of an account's hosts. Revokes its credential and closes its connection. Its sandboxes keep their disks but can't be reached until it joins again. Run `sudo kantel-host uninstall` on the machine to take the agent off it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `DELETE /hosts/{hostId}` */
 	removeAccountHost(hostId: string, options?: CallOptions): Promise<Host>;
+	/** Upload a bundle. Stores a tar of files once in the account (the caller's personal account unless `account` names an organisation), named by its SHA-256, for sandboxes to mount read-only (`mounts` on create). Uploading a tar the account has already is answered with that bundle (200), and stores nothing again. With `digest`, bytes that don't match are refused. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `POST /bundles` */
+	uploadBundle(body: RawBody, query?: UploadBundleQuery, options?: CallOptions): Promise<Bundle>;
+	/** List bundles. The account's bundles, newest first. A key needs `sandboxes:read`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `GET /bundles` */
+	listBundles(query?: AccountScopedQuery, options?: CallOptions): Promise<BundleList>;
+	/** Get a bundle. A key needs `sandboxes:read`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `GET /bundles/{digest}` */
+	getBundle(digest: string, query?: AccountScopedQuery, options?: CallOptions): Promise<Bundle>;
+	/** Delete a bundle. Removes it from the account. Refused (`conflict`) while a sandbox of the account that still exists mounts it, stopped ones included, since they mount it again when they start: delete those sandboxes first. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `DELETE /bundles/{digest}` */
+	deleteBundle(digest: string, query?: AccountScopedQuery, options?: CallOptions): Promise<void>;
+	/** Create a bucket source. A bucket the account's sandboxes may mount prefixes of (`mounts` on create), with the credentials that read it. The credentials are kept encrypted and never shown again; only the host of a sandbox that mounts the bucket is given them, and never the sandbox. Credentials need the deployment's secrets key (`not_supported` without one). A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `POST /bucket-sources` */
+	createBucketSource(body: CreateBucketSourceBody, options?: CallOptions): Promise<BucketSource>;
+	/** List bucket sources. The account's bucket sources, oldest first. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `GET /bucket-sources` */
+	listBucketSources(query?: AccountScopedQuery, options?: CallOptions): Promise<BucketSourceList>;
+	/** Get a bucket source. Never its credentials. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `GET /bucket-sources/{bucketSourceId}` */
+	getBucketSource(bucketSourceId: string, options?: CallOptions): Promise<BucketSource>;
+	/** Delete a bucket source. Removes it and its credentials. Refused (`conflict`) while a sandbox of the account that still exists mounts it, stopped ones included: delete those sandboxes first. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `DELETE /bucket-sources/{bucketSourceId}` */
+	deleteBucketSource(bucketSourceId: string, options?: CallOptions): Promise<void>;
 }
 
 /** A client for Kantel's public API over `fetch`. */
@@ -2344,6 +2550,29 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(
 				options,
 				{ method: "GET", path: `/sandboxes/${encodeURIComponent(sandboxId)}/files/list`, query },
+				callOptions,
+			),
+		createUploadUrl: (sandboxId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/files/upload-url`, body },
+				callOptions,
+			),
+		createDownloadUrl: (sandboxId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/files/download-url`, body },
+				callOptions,
+			),
+		extractArchive: (sandboxId, body, query, callOptions) =>
+			send(
+				options,
+				{
+					method: "PUT",
+					path: `/sandboxes/${encodeURIComponent(sandboxId)}/files/archive`,
+					query,
+					raw: { body, type: "application/x-tar" },
+				},
 				callOptions,
 			),
 		listPorts: (sandboxId, callOptions) =>
@@ -2517,5 +2746,20 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "PATCH", path: `/hosts/${encodeURIComponent(hostId)}`, body }, callOptions),
 		removeAccountHost: (hostId, callOptions) =>
 			send(options, { method: "DELETE", path: `/hosts/${encodeURIComponent(hostId)}` }, callOptions),
+		uploadBundle: (body, query, callOptions) =>
+			send(options, { method: "POST", path: "/bundles", query, raw: { body, type: "application/x-tar" } }, callOptions),
+		listBundles: (query, callOptions) => send(options, { method: "GET", path: "/bundles", query }, callOptions),
+		getBundle: (digest, query, callOptions) =>
+			send(options, { method: "GET", path: `/bundles/${encodeURIComponent(digest)}`, query }, callOptions),
+		deleteBundle: (digest, query, callOptions) =>
+			send(options, { method: "DELETE", path: `/bundles/${encodeURIComponent(digest)}`, query }, callOptions),
+		createBucketSource: (body, callOptions) =>
+			send(options, { method: "POST", path: "/bucket-sources", body }, callOptions),
+		listBucketSources: (query, callOptions) =>
+			send(options, { method: "GET", path: "/bucket-sources", query }, callOptions),
+		getBucketSource: (bucketSourceId, callOptions) =>
+			send(options, { method: "GET", path: `/bucket-sources/${encodeURIComponent(bucketSourceId)}` }, callOptions),
+		deleteBucketSource: (bucketSourceId, callOptions) =>
+			send(options, { method: "DELETE", path: `/bucket-sources/${encodeURIComponent(bucketSourceId)}` }, callOptions),
 	};
 }

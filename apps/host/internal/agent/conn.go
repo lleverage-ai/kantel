@@ -200,18 +200,31 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 		if err := json.Unmarshal(raw, &m); err != nil {
 			continue
 		}
-		switch m.Type {
-		case "call":
-			go s.call(ctx, m, update)
-		case "result":
-			// The answer to one of the host's own calls (secrets.fetch).
-			s.calls.deliver(m)
-		case "welcome":
-			if m.Welcome != nil {
-				h.applyWelcome(ctx, m.Welcome, update)
-			}
-		case "stream.close":
-			s.closeStream(m.Stream)
+		s.text(ctx, m, update)
+	}
+}
+
+// text handles a text message from Kantel.
+func (s *session) text(ctx context.Context, m proto.Message, update Updater) {
+	switch m.Type {
+	case "call":
+		go s.call(ctx, m, update)
+	case "result":
+		// The answer to one of the host's own calls (secrets.fetch).
+		s.calls.deliver(m)
+	case "welcome":
+		if m.Welcome != nil {
+			s.host.applyWelcome(ctx, m.Welcome, update)
+		}
+	case "stream.close":
+		s.closeStream(m.Stream)
+	case "stream.ack":
+		// Kantel's reader of a file read stream has taken this much: its window moves on.
+		s.mu.Lock()
+		conn := s.streams[m.Stream]
+		s.mu.Unlock()
+		if fc, ok := conn.(*fileConn); ok {
+			fc.ack(m.Acked)
 		}
 	}
 }
@@ -256,11 +269,22 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 		}
 		return
 	}
+	// start, when set, begins what follows the answer (a file stream's transfer), so nothing of it comes before it.
+	var start func()
 	switch m.Method {
 	case proto.MethodPortOpen:
 		// The stream outlives the call, so it runs on the session's context; the gate holds until it is connected.
 		result, err = s.openPort(ctx, callCtx, m.Params)
 		done()
+	case proto.MethodFileOpen:
+		// As a port's, the stream outlives the call: it runs on the session's context. The gate holds until its transfer
+		// has ended, not only until it is set up: a write finds its sandbox only once it starts, so a claim on the
+		// sandbox (its delete, or another made with its ID) ends the transfer and waits for it, and the bytes can never
+		// reach a sandbox the gateway may not write to. openFile releases it (done) once the transfer is over.
+		result, start, err = s.openFile(ctx, callCtx, m.Params, done)
+		if err != nil {
+			done()
+		}
 	case proto.MethodHostUpdate:
 		var p proto.UpdateParams
 		if err = json.Unmarshal(m.Params, &p); err == nil {
@@ -293,6 +317,9 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 	}
 	if err := s.send(ctx, reply); err != nil {
 		s.host.log.Warn("couldn't answer a call", "method", m.Method, "error", err)
+	}
+	if start != nil {
+		start()
 	}
 }
 
@@ -377,6 +404,11 @@ func (s *session) binary(frame []byte) {
 		return
 	}
 	if _, err := conn.Write(frame[4:]); err != nil {
+		// A file write whose tier gave up on its input still owns its stream: its transfer reports how it went.
+		var input *errFileInput
+		if errors.As(err, &input) {
+			return
+		}
 		s.closeStream(id)
 	}
 }

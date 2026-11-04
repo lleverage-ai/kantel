@@ -1,6 +1,7 @@
 // Sample data for the compute console's pages: a personal account and two organisations, sandboxes in every state on
 // both tiers (some on an outdated base image), snapshots with a small file tree, keys, a proxy, webhooks, telemetry,
-// three hosts, the base images with their scans and templates, and the hosted plans.
+// three hosts, the base images with their scans and templates, the hosted plans, and the bundles and bucket sources
+// two sandboxes mount read-only.
 // `createComputeFixtures` serves it all from memory as a `ComputeSource`, so stories and the console's sample data can
 // create, stop, resume, fork and delete. Nothing leaves the page.
 
@@ -12,6 +13,8 @@ import type {
 	BaseImagesOverview,
 	BaseImageVersion,
 	BillingSummary,
+	BucketSource,
+	Bundle,
 	ComputeAccount,
 	ComputeSource,
 	ComputeViewer,
@@ -29,6 +32,7 @@ import type {
 	ImageFinding,
 	ImageScan,
 	ImageSeverity,
+	MountSource,
 	OrganisationInvite,
 	OrganisationMember,
 	Plan,
@@ -60,6 +64,7 @@ import {
 	sizeSpec,
 	sshWithoutCliCommand,
 } from "./compute-model.ts";
+import { inUseText } from "./mounts.ts";
 import { stubUsage } from "./usage-stub.ts";
 
 /** The code the fixtures' waiting command line showed. */
@@ -160,6 +165,14 @@ const onBase = (
 	...(behind === undefined ? {} : { behind }),
 	...(security ? { security: true } : {}),
 });
+/** The sample bundles' digests: the tars' SHA-256s. */
+export const SKILLS_DIGEST = "sha256:3f2a7c1e9b4d8a6f0e5c2b7a9d1f4e8c6b3a0d7f2e9c5b1a8d4f6e0c3b7a9c01";
+export const ATTACHMENTS_DIGEST = "sha256:a41c9e075d2b8f36e1a7c4d90b6f3e28c75a1d94f2e08b6c3d9a7e15b4c62f8e";
+export const MODELS_DIGEST = "sha256:7e09b3d52c8f1a649b5e0d7ca3f6248e1d7c9b05e8a2f63d4c0b7e91d5a3c8f2";
+
+/** The sample bucket sources' IDs. */
+export const ORG_FILES_ID = "bks_4kq9x2mt";
+export const DATASETS_ID = "bks_7hp3w8rn";
 
 /** Kantel's own image: a desktop, Chromium and Docker, with its agent built in. */
 export const KANTEL_IMAGE: SandboxImage = {
@@ -228,6 +241,27 @@ export const API_SERVER = sandbox({
 	environment: { id: "env_backend", name: "backend-dev" },
 	// Six days behind, with the openssl fix the latest was rebuilt for.
 	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, "2026.10.29.809", { days: 6, versions: 3 }, true),
+	mounts: [
+		{ path: "/mnt/skills", source: { kind: "bundle", digest: SKILLS_DIGEST }, status: "ready" },
+		{
+			path: "/mnt/org-files",
+			source: {
+				kind: "bucket",
+				bucketSourceId: ORG_FILES_ID,
+				prefix: "org/42/",
+				refreshTtlSeconds: 60,
+				bucketSourceName: "org files",
+				bucket: "lleverage-org-files",
+			},
+			status: "ready",
+		},
+		{
+			path: "/mnt/attachments",
+			source: { kind: "bundle", digest: ATTACHMENTS_DIGEST },
+			status: "failed",
+			error: "This host can't mount bundles yet",
+		},
+	],
 	image: KANTEL_IMAGE,
 });
 
@@ -247,6 +281,20 @@ export const DEV_STACK = sandbox({
 	shared: true,
 	environment: { id: "env_backend", name: "backend-dev" },
 	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, SANDBOX_IMAGE_LATEST.version),
+	mounts: [
+		{ path: "/mnt/skills", source: { kind: "bundle", digest: SKILLS_DIGEST }, status: "ready" },
+		{
+			path: "/mnt/shared",
+			source: {
+				kind: "bucket",
+				bucketSourceId: ORG_FILES_ID,
+				prefix: "shared/",
+				bucketSourceName: "org files",
+				bucket: "lleverage-org-files",
+			},
+			status: "pending",
+		},
+	],
 	image: KANTEL_IMAGE,
 });
 
@@ -476,6 +524,61 @@ export const SAVED: readonly SavedSnapshot[] = [
 		createdBy: "Tom Davies",
 		sizeBytes: 7.2 * 1024 ** 3,
 		uses: 2,
+	},
+];
+
+/**
+ * Lleverage's bundles, newest first: skills its agents read, the attachments a host couldn't mount, and model weights no
+ * sandbox mounts any more, which can go. `mountedBy` is what the sample sandboxes mount; the source counts it again as
+ * they come and go.
+ */
+export const BUNDLES: readonly Bundle[] = [
+	{
+		digest: SKILLS_DIGEST,
+		accountId: LLEVERAGE.id,
+		sizeBytes: 4.2 * 1024 ** 2,
+		mountedBy: 2,
+		createdAt: FIXTURE_NOW - 3 * HOUR,
+	},
+	{
+		digest: ATTACHMENTS_DIGEST,
+		accountId: LLEVERAGE.id,
+		sizeBytes: 118 * 1024 ** 2,
+		mountedBy: 1,
+		createdAt: FIXTURE_NOW - 2 * DAY,
+	},
+	{
+		digest: MODELS_DIGEST,
+		accountId: LLEVERAGE.id,
+		sizeBytes: 1.3 * 1024 ** 3,
+		mountedBy: 0,
+		createdAt: FIXTURE_NOW - 9 * DAY,
+	},
+];
+
+/** Lleverage's bucket sources, oldest first: its own files in R2, with credentials, and a public GCS bucket. */
+export const BUCKET_SOURCES: readonly BucketSource[] = [
+	{
+		id: ORG_FILES_ID,
+		accountId: LLEVERAGE.id,
+		name: "org files",
+		provider: "s3",
+		bucket: "lleverage-org-files",
+		endpoint: "https://acct.r2.cloudflarestorage.com",
+		region: "auto",
+		hasCredentials: true,
+		mountedBy: 2,
+		createdAt: FIXTURE_NOW - 20 * DAY,
+	},
+	{
+		id: DATASETS_ID,
+		accountId: LLEVERAGE.id,
+		name: "public datasets",
+		provider: "gcs",
+		bucket: "kantel-public-datasets",
+		hasCredentials: false,
+		mountedBy: 0,
+		createdAt: FIXTURE_NOW - 6 * DAY,
 	},
 ];
 
@@ -1434,8 +1537,10 @@ export interface ComputeFixtureOptions {
 	readonly hang?: boolean;
 	/** Every read fails: an error state. */
 	readonly fail?: boolean;
-	/** No sandboxes, snapshots, keys, webhooks, hosts or images: the empty states. */
+	/** No sandboxes, snapshots, keys, webhooks, hosts, images, bundles or bucket sources: the empty states. */
 	readonly empty?: boolean;
+	/** The deployment hasn't turned mounts on: no Mounts page, and no sandbox mounts anything. */
+	readonly noMounts?: boolean;
 	/** How long a sandbox takes to start or stop, in milliseconds. Default 1200. */
 	readonly settleMs?: number;
 	/** The viewer is not a super-admin. */
@@ -1470,6 +1575,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 	const now = (): number => (options.now === undefined ? base : Date.now());
 	const settleMs = options.settleMs ?? 1200;
 	const empty = options.empty === true;
+	const mountsOn = options.noMounts !== true;
 
 	const moved = <T extends object>(record: T, keys: readonly (keyof T)[]): T => {
 		const copy = { ...record } as Record<string, unknown>;
@@ -1491,13 +1597,30 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 		return { ...record, base: { ...record.base, latest: { ...latest, builtAt: at(latest.builtAt) } } };
 	};
 
+	const withMounts = (box: Sandbox): Sandbox => {
+		if (mountsOn) return box;
+		const { mounts: _, ...rest } = box;
+		return rest;
+	};
+
 	const sandboxes = new Map<string, Sandbox>(
 		(empty || options.noHosts === true ? [] : SANDBOXES).map((box) => {
 			const copy = moved(box, ["createdAt", "stopsAt"]);
 			const snapshot =
 				box.snapshot === undefined ? {} : { snapshot: { ...box.snapshot, takenAt: at(box.snapshot.takenAt) } };
-			return [box.id, withCost(movedBase({ ...copy, ...snapshot }))];
+			return [box.id, withMounts(withCost(movedBase({ ...copy, ...snapshot })))];
 		}),
+	);
+	// Bundles by account and digest: a digest names a bundle only within its account.
+	const bundleKey = (accountId: string, digest: string) => `${accountId} ${digest}`;
+	const bundles = new Map<string, Bundle>(
+		(empty || !mountsOn ? [] : BUNDLES).map((bundle) => [
+			bundleKey(bundle.accountId, bundle.digest),
+			moved(bundle, ["createdAt"]),
+		]),
+	);
+	const bucketSources = new Map<string, BucketSource>(
+		(empty || !mountsOn ? [] : BUCKET_SOURCES).map((bucket) => [bucket.id, moved(bucket, ["createdAt"])]),
 	);
 	const saved = new Map<string, SavedSnapshot>(
 		(empty ? [] : SAVED).map((entry) => [entry.id, movedBase(moved(entry, ["createdAt"]))]),
@@ -1668,6 +1791,18 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 		return snap;
 	};
 	const slugOf = (accountId: string) => accounts.find((account) => account.id === accountId)?.slug ?? "you";
+	/** How many of the account's sandboxes mount what `uses` picks: what Kantel counts as `mountedBy`. */
+	const mountCount = (accountId: string, uses: (from: MountSource) => boolean): number =>
+		[...sandboxes.values()].filter(
+			(box) => box.accountId === accountId && (box.mounts ?? []).some((mount) => uses(mount.source)),
+		).length;
+	const bundleUses = (digest: string) => (from: MountSource) => from.kind === "bundle" && from.digest === digest;
+	const bucketUses = (id: string) => (from: MountSource) => from.kind === "bucket" && from.bucketSourceId === id;
+	/** Refuses a delete while a sandbox that still exists mounts it, as Kantel's API does with `conflict`. */
+	const requireUnmounted = (count: number) => {
+		const refusal = inUseText(count);
+		if (refusal !== undefined) throw Object.assign(new Error(`${refusal}.`), { code: "conflict" });
+	};
 
 	const source: ComputeSource = {
 		hosting,
@@ -2347,6 +2482,39 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					return { ok: true, message: "Sent a test metric and event. The collector answered 200 in 182 ms." };
 				}),
 		},
+		...(mountsOn
+			? {
+					mounts: {
+						bundles: (accountId) =>
+							gate(() =>
+								[...bundles.values()]
+									.filter((bundle) => bundle.accountId === accountId)
+									.map((bundle) => ({ ...bundle, mountedBy: mountCount(accountId, bundleUses(bundle.digest)) }))
+									.sort((a, b) => b.createdAt - a.createdAt),
+							),
+						removeBundle: (accountId, digest) =>
+							gate(() => {
+								const key = bundleKey(accountId, digest);
+								if (!bundles.has(key)) throw new Error(`No bundle ${digest}.`);
+								requireUnmounted(mountCount(accountId, bundleUses(digest)));
+								bundles.delete(key);
+							}),
+						bucketSources: (accountId) =>
+							gate(() =>
+								[...bucketSources.values()]
+									.filter((bucket) => bucket.accountId === accountId)
+									.map((bucket) => ({ ...bucket, mountedBy: mountCount(accountId, bucketUses(bucket.id)) }))
+									.sort((a, b) => a.createdAt - b.createdAt),
+							),
+						removeBucketSource: (id) =>
+							gate(() => {
+								const bucket = find(bucketSources, id, "bucket source");
+								requireUnmounted(mountCount(bucket.accountId, bucketUses(id)));
+								bucketSources.delete(id);
+							}),
+					},
+				}
+			: {}),
 		...(options.notSuperAdmin === true
 			? {}
 			: {

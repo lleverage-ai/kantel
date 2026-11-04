@@ -215,6 +215,95 @@ One build of a base image.
 | `viewOnly` | boolean | yes |  |
 | `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
 
+### BucketAccessKey
+
+An S3 access key, or a GCS HMAC key.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `accessKeyId` | string | yes |  (at most 256 characters) |
+| `secretAccessKey` | string | yes |  (at most 1024 characters) |
+| `sessionToken` | string | no |  (at most 8192 characters) |
+
+### BucketCredentials
+
+Write-only: kept encrypted, given only to the host of a sandbox that mounts the bucket, never answered.
+
+One of: [BucketAccessKey](/api/reference/types/#bucketaccesskey) or [BucketServiceAccountKey](/api/reference/types/#bucketserviceaccountkey).
+
+### BucketMountSource
+
+An object-store prefix, through a bucket source the account holds. The host reads objects as they are opened; the bucket source's credentials stay on the host, never in the sandbox.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"bucket"` | yes |  |
+| `bucketSourceId` | string | yes | A bucket source of the sandbox's account, such as `bks_4kq9x2mt`. |
+| `prefix` | string | yes | The objects under this key prefix, such as `org/42/skills/`; empty for the whole bucket. (at most 1024 characters) |
+| `refreshTtlSeconds` | integer | no | How long the host trusts its listing of the prefix before it looks again, so objects added later appear. 0: never look again. Default: the host's. (minimum 0, maximum 86400) |
+
+### BucketProvider
+
+`s3`: Amazon S3 or an S3-compatible store (with `endpoint`). `gcs`: Google Cloud Storage.
+
+One of: `"s3"` or `"gcs"`.
+
+### BucketServiceAccountKey
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `serviceAccountKey` | string | yes | A GCS service account's JSON key, as Google gives it. (at least 2 characters, at most 16384 characters) |
+
+### BucketSource
+
+A bucket an account's sandboxes may mount prefixes of, with the credentials that read it. The credentials are write-only.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | string | yes | The bucket source's ID, such as `bks_4kq9x2mt`. |
+| `accountId` | string | yes |  |
+| `name` | string | yes | A name for people, such as `org files`. (at most 100 characters) |
+| `provider` | [BucketProvider](/api/reference/types/#bucketprovider) | yes |  |
+| `bucket` | string | yes | The bucket's name. (at most 255 characters) |
+| `endpoint` | string | no | An S3-compatible store's HTTPS endpoint, such as `https://<account>.r2.cloudflarestorage.com`. (at most 2048 characters) |
+| `region` | string | no | Such as `eu-west-1`. (at most 64 characters) |
+| `hasCredentials` | boolean | yes | Whether it was given credentials; they are never answered. |
+| `mountedBy` | integer | yes | How many of the account's sandboxes that still exist mount it. |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### BucketSourceList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [BucketSource](/api/reference/types/#bucketsource)[] | yes |  |
+
+### Bundle
+
+A tar of files uploaded to an account once, named by its digest, which sandboxes mount read-only. It never changes: other files are another bundle.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `digest` | string | yes | `sha256:` and the hex SHA-256 of the tar: the bundle's name and its ID. |
+| `accountId` | string | yes |  |
+| `sizeBytes` | integer | yes | The tar's size. |
+| `mountedBy` | integer | yes | How many of the account's sandboxes that still exist mount it. |
+| `createdAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### BundleList
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `items` | [Bundle](/api/reference/types/#bundle)[] | yes |  |
+
+### BundleMountSource
+
+A bundle's files: the tar the account uploaded (`POST /bundles`), unpacked read-only at the mount's path.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"bundle"` | yes |  |
+| `digest` | string | yes | A bundle uploaded to the sandbox's account, by its digest: `sha256:` and 64 hex digits. |
+
 ### Caller
 
 Who is calling, the accounts they may act in, and the deployment's mode.
@@ -306,6 +395,18 @@ Give `scopes` or a `preset` (or both, which adds them). A key can't hold a scope
 | `sandboxIds` | string[] | no |  |
 | `expiresInDays` | integer | no | Absent: it never expires. (minimum 1, maximum 3650) |
 
+### CreateBucketSourceBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `account` | string | no | The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. |
+| `name` | string | yes | A name for people, such as `org files`. (at most 100 characters) |
+| `provider` | [BucketProvider](/api/reference/types/#bucketprovider) | yes |  |
+| `bucket` | string | yes | The bucket's name. (at most 255 characters) |
+| `endpoint` | string | no | An S3-compatible store's HTTPS endpoint, such as `https://<account>.r2.cloudflarestorage.com`. (at most 2048 characters) |
+| `region` | string | no | Such as `eu-west-1`. (at most 64 characters) |
+| `credentials` | [BucketCredentials](/api/reference/types/#bucketcredentials) | no |  |
+
 ### CreatedBy
 
 | Field | Type | Required | Description |
@@ -364,6 +465,7 @@ Every field is optional: `{}` makes a running isolate in the caller's account.
 | `env` | Record&lt;string, string&gt; | no | Environment variables every command sees, after the environment's. Not secrets: they are shown to anyone who may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused. |
 | `environment` | string | no | Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables. |
 | `hostLabels` | Record&lt;string, string&gt; | no | Place it only on a host with each label, such as `{ site: "home" }`. |
+| `mounts` | [Mount](/api/reference/types/#mount)[] | no | Files from outside the sandbox, read-only inside it: at most 16, at paths that don't overlap. A bundle or bucket source it names must be the account's. microVMs only: an isolate is refused (`not_supported`). A host that can't mount a source marks that mount `failed`, and the sandbox runs without it. A fork keeps its source's mounts. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). (at most 16 items) |
 | `wait` | boolean | no | Answer once it is `running` (or `error`) rather than as soon as it is placed. |
 
 ### CreateWebhookBody
@@ -646,6 +748,16 @@ One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"s
 | `port` | integer | yes |  (minimum 1, maximum 65535) |
 | `public` | boolean | no | Anyone with the URL may open it, with no token. Default false. |
 
+### ExtractedArchive
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes | The absolute directory it was extracted into. |
+| `files` | integer | yes | Files written. |
+| `directories` | integer | yes | Directories made. |
+| `symlinks` | integer | yes | Symbolic links made. |
+| `bytes` | integer | yes | Bytes of the files written. |
+
 ### FileContent
 
 A file of at most 1 MiB, or a part of at most 1 MiB of a larger one, read with `offset` and `length`.
@@ -679,6 +791,24 @@ One of: `"utf8"` or `"base64"`.
 | `path` | string | yes |  |
 | `items` | [FileEntry](/api/reference/types/#fileentry)[] | yes |  |
 | `nextCursor` | string | no | Present when more items follow. |
+
+### FileUrl
+
+A short-lived URL for one file of one sandbox, streamed to or from the sandbox's host, so a file of any size moves without base64.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `url` | string | yes | The signed URL. Send the request straight to it, with no `Authorization` header. Treat it as a secret until it expires. |
+| `method` | `"GET"` or `"PUT"` | yes | `GET` downloads the file. `PUT` uploads the request's raw body as the file. |
+| `path` | string | yes | The absolute path the URL is bound to. |
+| `expiresAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### FileUrlBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes | An absolute path, or one relative to the user's home. (at most 4096 characters) |
+| `ttlSeconds` | integer | no | How long the URL may be used: default 900 (15 minutes), at most 3600. (minimum 1, maximum 3600) |
 
 ### ForkedSandboxes
 
@@ -907,6 +1037,25 @@ Absent when no host the account may use runs microVMs.
 | `presets` | [ShapePreset](/api/reference/types/#shapepreset)[] | yes | Each shape a host makes by name. Hosts may give one name different shapes: each is its own entry. |
 | `custom` | boolean | yes | Whether a host takes shapes off the presets; when false, only the presets. A shape's disk is its host's to give; the sandbox's `resources` say what it got. |
 
+### Mount
+
+Files from outside the sandbox, read-only inside it: nothing in the sandbox can change them.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes | Where it appears in the sandbox: absolute and normalised, not `/`, not at or under a system directory (`/proc`, `/sys`, `/dev`, `/etc`, `/usr`, `/bin`, `/lib` and the like), and not overlapping another mount. (at least 2 characters, at most 1024 characters) |
+| `source` | [MountSource](/api/reference/types/#mountsource) | yes |  |
+
+### MountSource
+
+One of: [BundleMountSource](/api/reference/types/#bundlemountsource) or [BucketMountSource](/api/reference/types/#bucketmountsource).
+
+### MountStatus
+
+`pending`: its host is still putting it in place. `ready`: its files are there. `failed`: they aren't, and `error` says why; the sandbox runs without it.
+
+One of: `"pending"` or `"ready"` or `"failed"`.
+
 ### PollDeviceLoginBody
 
 | Field | Type | Required | Description |
@@ -1035,6 +1184,7 @@ The settings as you last read them: `GET /proxy`'s answer will do. Given, the wr
 | `source` | [SandboxSource](/api/reference/types/#sandboxsource) | no |  |
 | `environmentId` | string | no | The environment it was made from. |
 | `grants` | [EgressGrant](/api/reference/types/#egressgrant)[] | yes | Its own egress grants, on top of its environment's. |
+| `mounts` | [SandboxMount](/api/reference/types/#sandboxmount)[] | no | Its read-only mounts, as its create named them, each with its status. Absent: none. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). |
 | `createdBy` | [CreatedBy](/api/reference/types/#createdby) | yes |  |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 | `startedAt` | integer | no | Epoch milliseconds, UTC. |
@@ -1119,6 +1269,17 @@ A sandbox's egress: what it was made with, its own grants and its log.
 `degraded`: the machine is up but its host can't fully reach it; it keeps running.
 
 One of: `"ok"` or `"degraded"`.
+
+### SandboxMount
+
+A mount of a sandbox's, and whether its files are in place.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes |  |
+| `source` | [MountSource](/api/reference/types/#mountsource) | yes |  |
+| `status` | [MountStatus](/api/reference/types/#mountstatus) | yes |  |
+| `error` | string | no | Why it is `failed`, in words. |
 
 ### SandboxPage
 

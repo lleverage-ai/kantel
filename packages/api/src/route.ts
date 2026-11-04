@@ -36,6 +36,11 @@ export interface RouteDefinition {
 	readonly query?: TObject;
 	/** A JSON object body. A route with a body still takes an empty one when every property is optional. */
 	readonly body?: TObject;
+	/**
+	 * The body is bytes of one of these media types rather than JSON, such as a tar, of any size: the router leaves it
+	 * unread for the handler to stream from the request. The SDK's method takes a `RawBody`. Not with `body`.
+	 */
+	readonly rawBody?: { readonly media: readonly string[]; readonly description: string };
 	readonly answer: RouteAnswer;
 	/**
 	 * Other successful answers, each with its own status, such as a result route's 202 while the run is still going. The

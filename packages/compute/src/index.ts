@@ -8,6 +8,7 @@ export * from "./backend.ts";
 export * from "./base-images.ts";
 export * from "./base-status.ts";
 export * from "./http.ts";
+export * from "./mounts.ts";
 export * from "./names.ts";
 export * from "./routed-backend.ts";
 export * from "./secrets.ts";

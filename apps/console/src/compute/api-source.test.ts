@@ -1173,3 +1173,144 @@ describe("hosts", () => {
 		expect(ada.ownHosts).toBeUndefined();
 	});
 });
+
+describe("mounts", () => {
+	const DIGEST = `sha256:${"3f2a".repeat(15)}9c01`;
+	const json = (body: unknown): Response =>
+		new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+
+	it("has none where the deployment has mounts off", async () => {
+		const { fetchApi } = setup();
+		expect((await open(fetchApi)).mounts).toBeUndefined();
+		expect((await open(fetchApi, "person-bob")).mounts).toBeUndefined();
+	});
+
+	it("has none behind a gateway from before mounts, which answers 404", async () => {
+		const { fetchApi } = setup();
+		const older: typeof fetch = async (input, init) => {
+			const url = new URL(input instanceof Request ? input.url : input, ORIGIN);
+			return url.pathname.startsWith("/v1/bundles") ? notFound() : fetchApi(input, init);
+		};
+		expect((await open(older)).mounts).toBeUndefined();
+	});
+
+	it("lists and deletes bundles and bucket sources, and names a sandbox's bucket mounts", async () => {
+		const { api, fetchApi } = setup();
+		// The stub API has mounts off, so these routes answer here, and a sandbox's read gains mounts.
+		const calls: string[] = [];
+		let accountId = "";
+		let sandboxId = "";
+		const withMounts: typeof fetch = async (input, init) => {
+			const request = input instanceof Request ? input : new Request(new URL(input, ORIGIN), init);
+			const url = new URL(request.url);
+			const path = decodeURIComponent(url.pathname);
+			if (path.startsWith("/v1/bundles") || path.startsWith("/v1/bucket-sources")) {
+				calls.push(`${request.method} ${path}${url.search}`);
+				if (request.method === "DELETE") return new Response(null, { status: 204 });
+				if (path === "/v1/bundles") {
+					return json({
+						items: [{ digest: DIGEST, accountId, sizeBytes: 4_404_019, mountedBy: 1, createdAt: 1_000 }],
+					});
+				}
+				return json({
+					items: [
+						{
+							id: "bks_4kq9x2mt",
+							accountId,
+							name: "org files",
+							provider: "s3",
+							bucket: "org-files",
+							endpoint: "https://acct.r2.cloudflarestorage.com",
+							region: "auto",
+							hasCredentials: true,
+							mountedBy: 1,
+							createdAt: 2_000,
+						},
+						{
+							id: "bks_7hp3w8rn",
+							accountId,
+							name: "public datasets",
+							provider: "gcs",
+							bucket: "datasets",
+							hasCredentials: false,
+							mountedBy: 0,
+							createdAt: 3_000,
+						},
+					],
+				});
+			}
+			const response = await fetchApi(input, init);
+			if (request.method !== "GET" || sandboxId === "" || path !== `/v1/sandboxes/${sandboxId}`) return response;
+			const sandbox = (await response.json()) as object;
+			return json({
+				...sandbox,
+				mounts: [
+					{ path: "/mnt/skills", source: { kind: "bundle", digest: DIGEST }, status: "ready" },
+					{
+						path: "/mnt/org-files",
+						source: { kind: "bucket", bucketSourceId: "bks_4kq9x2mt", prefix: "org/42/", refreshTtlSeconds: 60 },
+						status: "failed",
+						error: "This host can't mount buckets yet",
+					},
+					{
+						path: "/mnt/new",
+						source: { kind: "bucket", bucketSourceId: "bks_unknown", prefix: "" },
+						status: "pending",
+					},
+				],
+			});
+		};
+
+		const source = await open(withMounts);
+		const mounts = source.mounts;
+		if (mounts === undefined) throw new Error("No mounts where the deployment has them on");
+		accountId = await personalAccount(source);
+
+		expect(await mounts.bundles(accountId)).toEqual([
+			{ digest: DIGEST, accountId, sizeBytes: 4_404_019, mountedBy: 1, createdAt: 1_000 },
+		]);
+		const sources = await mounts.bucketSources(accountId);
+		expect(sources.map((bucket) => bucket.name)).toEqual(["org files", "public datasets"]);
+		expect(sources[0]).toMatchObject({ endpoint: "https://acct.r2.cloudflarestorage.com", region: "auto" });
+		expect(sources[1]).not.toHaveProperty("endpoint");
+		expect(sources[1]).not.toHaveProperty("credentials");
+		await mounts.removeBundle(accountId, DIGEST);
+		await mounts.removeBucketSource("bks_7hp3w8rn");
+		expect(calls).toEqual([
+			// The probe, in the caller's own account.
+			"GET /v1/bundles",
+			`GET /v1/bundles?account=${accountId}`,
+			`GET /v1/bucket-sources?account=${accountId}`,
+			`DELETE /v1/bundles/${DIGEST}?account=${accountId}`,
+			"DELETE /v1/bucket-sources/bks_7hp3w8rn",
+		]);
+
+		const made = await source.sandboxes.create({ accountId, name: "lab", kind: "isolate" });
+		await api.service.idle();
+		sandboxId = made.id;
+		calls.length = 0;
+		expect((await source.sandboxes.get(made.id)).mounts).toEqual([
+			{ path: "/mnt/skills", source: { kind: "bundle", digest: DIGEST }, status: "ready" },
+			{
+				path: "/mnt/org-files",
+				source: {
+					kind: "bucket",
+					bucketSourceId: "bks_4kq9x2mt",
+					prefix: "org/42/",
+					refreshTtlSeconds: 60,
+					bucketSourceName: "org files",
+					bucket: "org-files",
+				},
+				status: "failed",
+				error: "This host can't mount buckets yet",
+			},
+			// One the console hasn't read, after reading them again: by its ID.
+			{
+				path: "/mnt/new",
+				source: { kind: "bucket", bucketSourceId: "bks_unknown", prefix: "" },
+				status: "pending",
+			},
+		]);
+		expect(calls).toEqual([`GET /v1/bucket-sources?account=${accountId}`]);
+	});
+});

@@ -252,6 +252,20 @@ func (h *Host) makeFacts() proto.Facts {
 		reserve = max(2048, total/10)
 	}
 	features := []string{proto.FeatureEgressPolicy, proto.FeatureCustomShapes}
+	// File streams are served for a tier's sandboxes only when it streams files (the microVM tier); a call for another's
+	// is refused as unsupported.
+	for _, name := range h.order {
+		if _, ok := h.tiers[name].(FileStreamer); ok {
+			features = append(features, proto.FeatureFileStreams)
+			break
+		}
+	}
+	for _, name := range h.order {
+		if _, ok := h.tiers[name].(ArchiveExtractor); ok {
+			features = append(features, proto.FeatureFilesExtract)
+			break
+		}
+	}
 	if h.cfg.usageInterval() > 0 {
 		features = append(features, proto.FeatureUsage)
 	}
@@ -722,6 +736,19 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			return nil, invalid("data isn't base64")
 		}
 		return map[string]bool{"ok": true}, t.WriteFile(ctx, p, data)
+	case proto.MethodFileExtract:
+		p, err := decode[proto.FileExtractParams](params)
+		if err != nil {
+			return nil, err
+		}
+		if !filepath.IsAbs(p.Archive) || !filepath.IsAbs(p.Target) {
+			return nil, invalid("sandbox.files.extract needs an absolute archive and target")
+		}
+		extractor, err := h.archiveExtractor(p.SandboxID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]bool{"ok": true}, extractor.ExtractArchive(ctx, p)
 	case proto.MethodFileDelete:
 		p, err := decode[proto.FileParams](params)
 		if err != nil {

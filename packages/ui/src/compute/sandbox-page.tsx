@@ -1,10 +1,11 @@
 // A sandbox's page (compute console): everything about one sandbox and every way into it. The header has its name and
 // state, Browser, Desktop and Stop, and ⋯ for Fork, Save snapshot, Auto-stop and Delete; under it its address, its
 // environment and when it stops. Five tabs follow. Overview: live previews of its desktop and browser (which open in
-// the console, full size), SSH (sandbox-ssh.tsx), its ports, its CPU and memory, and its details. Logs: commands
-// and what happened to it, in one timeline. Egress: its egress log. Snapshots: its own history. Files: what's in it
-// now, or in its latest snapshot while it's stopped. On a phone the previews and Stop go (Stop is in ⋯) and the
-// sections stack. Every call goes through the sources the host binds; stories bind them to fixtures.
+// the console, full size), SSH (sandbox-ssh.tsx), its ports, its CPU and memory, its details and its read-only
+// mounts, where it has any. Logs: commands and what happened to it, in one timeline. Egress: its egress log.
+// Snapshots: its own history. Files: what's in it now, or in its latest snapshot while it's stopped. On a phone the
+// previews and Stop go (Stop is in ⋯) and the sections stack. Every call goes through the sources the host binds;
+// stories bind them to fixtures.
 
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { Breadcrumbs } from "../primitives/breadcrumbs.tsx";
@@ -46,6 +47,7 @@ import { gbBytes, gbText, lineOf, seriesOf, USAGE_KEEP_MS, useLiveUsage } from "
 import { computePage, messageOf, SectionHeading, UsageGraph } from "./parts.tsx";
 import { type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
 import { SandboxLogs } from "./sandbox-logs.tsx";
+import { SandboxMounts } from "./sandbox-mounts.tsx";
 import { SandboxPorts } from "./sandbox-ports.tsx";
 import { embedUrl, popOut, SandboxViewer, ScreenPreview, type ScreenView } from "./sandbox-screen.tsx";
 import { SandboxSsh } from "./sandbox-ssh.tsx";
@@ -785,6 +787,10 @@ function Overview({
 		</section>
 	);
 
+	// Its read-only mounts (experimental), only where it has any.
+	const mounts =
+		sandbox.mounts === undefined || sandbox.mounts.length === 0 ? null : <SandboxMounts mounts={sandbox.mounts} />;
+
 	const portsSection =
 		// A port's URL reaches a running microVM only.
 		portsShown && windows ? (
@@ -810,6 +816,7 @@ function Overview({
 				{usage}
 				{image}
 				{details}
+				{mounts}
 			</div>
 		);
 	}
@@ -826,6 +833,7 @@ function Overview({
 				{usage}
 				{image}
 				{details}
+				{mounts}
 			</aside>
 		</div>
 	);

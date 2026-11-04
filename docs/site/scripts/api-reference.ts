@@ -171,6 +171,13 @@ const TAGS: {
 			"An account's own hosts: add a machine to your personal account or an organisation, list, drain and remove them.",
 		note: "Experimental: a deployment serves these only with `KANTEL_ACCOUNT_HOSTS=experimental`.",
 	},
+	mounts: {
+		title: "Mounts",
+		order: 14,
+		about:
+			"What sandboxes mount read-only: bundles (tars stored once, by digest) and bucket sources (object-store buckets, with write-only credentials).",
+		note: "Experimental: a deployment serves these only with `KANTEL_MOUNTS=experimental`.",
+	},
 };
 
 const document = JSON.parse(readFileSync(source, "utf8")) as Document;

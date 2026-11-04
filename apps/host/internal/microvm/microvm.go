@@ -1685,6 +1685,50 @@ func (m *Manager) WriteFile(ctx context.Context, p proto.FileParams, data []byte
 	return client.WriteFile(ctx, p.Path, data, p.Mode)
 }
 
+// ReadFileStream opens a running sandbox's file to be streamed whole (sandbox.files.open): its bytes, which the caller
+// closes, and its size. A missing file is not_found, as ReadFile's is.
+func (m *Manager) ReadFileStream(ctx context.Context, p proto.FileParams) (io.ReadCloser, int64, error) {
+	client, err := m.running(p.SandboxID)
+	if err != nil {
+		return nil, 0, err
+	}
+	body, size, _, err := client.ReadFileStream(ctx, p.Path)
+	if guest.IsNotFound(err) {
+		return nil, 0, &proto.Error{Code: proto.ErrNotFound, Message: err.Error()}
+	}
+	return body, size, err
+}
+
+// WriteFileStream writes what r gives to a running sandbox's file, which the guest moves into place only once r has
+// ended (io.EOF); a read error from r, or a cancelled ctx, leaves the file as it was. It answers the size written.
+func (m *Manager) WriteFileStream(ctx context.Context, p proto.FileParams, r io.Reader) (int64, error) {
+	client, err := m.running(p.SandboxID)
+	if err != nil {
+		return 0, err
+	}
+	return client.WriteFileStream(ctx, p.Path, r, p.Mode)
+}
+
+// ExtractArchive has a running sandbox's guest agent extract the tar at p.Archive into p.Target with its own code
+// (sandbox.files.extract), never the sandbox's tar or shell. An archive it refuses is invalid; a guest image from
+// before it, unsupported.
+func (m *Manager) ExtractArchive(ctx context.Context, p proto.FileExtractParams) error {
+	client, err := m.running(p.SandboxID)
+	if err != nil {
+		return err
+	}
+	err = client.ExtractArchive(ctx, p.Archive, p.Target)
+	switch {
+	case err == nil:
+		return nil
+	case guest.IsRefused(err):
+		return &proto.Error{Code: proto.ErrInvalid, Message: guest.RefusalMessage(err)}
+	case guest.IsUnknownRoute(err):
+		return &proto.Error{Code: proto.ErrUnsupported, Message: "this sandbox's image predates archive extraction; make it from a newer image"}
+	}
+	return err
+}
+
 func (m *Manager) DeleteFile(ctx context.Context, p proto.FileParams) error {
 	client, err := m.running(p.SandboxID)
 	if err != nil {

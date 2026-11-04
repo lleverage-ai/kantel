@@ -321,6 +321,8 @@ export interface Sandbox {
 	 * sandbox: it moves to the latest base when it restarts on it. Absent where Kantel doesn't say (an isolate).
 	 */
 	readonly base?: SandboxBase;
+	/** Its read-only mounts (experimental), each with whether its files are in place. Absent: none. */
+	readonly mounts?: readonly SandboxMount[];
 	/** What a microVM's image has, as its guest agent found it; absent until one has said (an older host or image). */
 	readonly image?: SandboxImage;
 }
@@ -426,6 +428,71 @@ export interface BaseImagesOverview {
 
 export interface BaseImagesSource {
 	overview(): Promise<BaseImagesOverview>;
+}
+
+// Read-only mounts (experimental: a deployment shows them only with `KANTEL_MOUNTS=experimental`)
+
+/** `pending`: its host is still putting it in place. `ready`: its files are there. `failed`: they aren't. */
+export type MountStatus = "pending" | "ready" | "failed";
+
+/** What a mount's files come from: a bundle by digest, or a prefix of a bucket source. */
+export type MountSource =
+	| { readonly kind: "bundle"; readonly digest: string }
+	| {
+			readonly kind: "bucket";
+			readonly bucketSourceId: string;
+			readonly prefix: string;
+			readonly refreshTtlSeconds?: number;
+			/** The bucket source's name and bucket, where the console knows them. */
+			readonly bucketSourceName?: string;
+			readonly bucket?: string;
+	  };
+
+export interface SandboxMount {
+	/** Where it appears in the sandbox, absolute. */
+	readonly path: string;
+	readonly source: MountSource;
+	readonly status: MountStatus;
+	/** Why it is `failed`. */
+	readonly error?: string;
+}
+
+/** A tar of files uploaded to an account once, named by its digest, which sandboxes mount read-only. */
+export interface Bundle {
+	/** `sha256:` and 64 hex digits: its name and its ID. */
+	readonly digest: string;
+	readonly accountId: string;
+	readonly sizeBytes: number;
+	/** How many of the account's sandboxes that still exist mount it: it can't be deleted while any do. */
+	readonly mountedBy: number;
+	readonly createdAt: number;
+}
+
+export type BucketProvider = "s3" | "gcs";
+
+/** A bucket an account's sandboxes may mount prefixes of. Its credentials are write-only: never shown. */
+export interface BucketSource {
+	readonly id: string;
+	readonly accountId: string;
+	readonly name: string;
+	readonly provider: BucketProvider;
+	readonly bucket: string;
+	readonly endpoint?: string;
+	readonly region?: string;
+	/** Whether it was given credentials. */
+	readonly hasCredentials: boolean;
+	/** How many of the account's sandboxes that still exist mount it: it can't be deleted while any do. */
+	readonly mountedBy: number;
+	readonly createdAt: number;
+}
+
+export interface MountsSource {
+	bundles(accountId: string): Promise<readonly Bundle[]>;
+	/** Refused (`conflict`) while a sandbox that still exists mounts it. */
+	removeBundle(accountId: string, digest: string): Promise<void>;
+	bucketSources(accountId: string): Promise<readonly BucketSource[]>;
+	/** Refused (`conflict`) while a sandbox that still exists mounts it. */
+	removeBucketSource(id: string): Promise<void>;
 }
 
 /** One thing an image has or lacks: what the guest agent found, or why it isn't there. */
@@ -1452,6 +1519,8 @@ export interface ComputeSource {
 	 * machines of their own (experimental). Absent, it doesn't.
 	 */
 	readonly ownHosts?: (accountId: string) => HostsSource;
+	/** Read-only mounts' bundles and bucket sources (experimental). Absent, the deployment hasn't turned mounts on. */
+	readonly mounts?: MountsSource;
 	/** Only when hosted. */
 	readonly billing?: BillingSource;
 	/** Approving a command line's sign-in, at `/device`. Absent where nothing can sign in that way. */

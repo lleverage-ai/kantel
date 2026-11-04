@@ -57,6 +57,13 @@
  *                                default the `base-images` GitHub Release's index.json (DEFAULT_BASE_IMAGE_INDEX).
  *                                Read at most every 5 minutes; a failure is kept for a minute and shown in the admin
  *                                list
+ *   KANTEL_MOUNTS                `experimental` turns on read-only mounts (bundles and bucket prefixes in a sandbox),
+ *                                bundles (`POST /v1/bundles`), bucket sources, signed file URLs (`/v1/file-urls/...`)
+ *                                and archive extraction, with either backend. A bundle's tar is kept once per account under
+ *                                `bundles/` beside the bootstrap file (KANTEL_BOOTSTRAP_FILE, a volume in Compose), or
+ *                                in KANTEL_BUNDLES_DIR, which replicas over one database must share: one whose store
+ *                                isn't the deployment's refuses bundles' bytes (`BundleBlobStore.mark`).
+ *                                Default off: their routes answer 501 not_supported
  *
  * An account's proxy settings (PUT /v1/proxy) reach its sandboxes as they boot (create, start, resume, fork): the host's
  * egress proxy applies the allow and deny rules, and with the host's --proxy-data-path switch on passes allowed
@@ -90,6 +97,7 @@ import {
 	personName,
 	type SandboxBackend,
 } from "@kantel/compute";
+import { createDirBundleStore, createMemoryBundleStore } from "@kantel/compute/bundles";
 import { bootstrapSuperAdmin } from "@kantel/compute/serve";
 import { createStubBackend } from "@kantel/compute/stub";
 import {
@@ -98,6 +106,7 @@ import {
 	EMAIL_OTP_ISSUER,
 	type IdentityDirectory,
 	KantelError,
+	MOUNTS_SWITCH,
 	normaliseEmail,
 	systemContext,
 } from "@kantel/contracts";
@@ -107,6 +116,7 @@ import { createDesktopRoutes, type DesktopSocket, HOSTS_DESKTOP_PATH } from "@ka
 import {
 	createHostsApi,
 	DEFAULT_HOST_IMAGES,
+	HOSTS_BUNDLES_PATH,
 	HOSTS_CONNECT_PATH,
 	HOSTS_E2E_CHAIN_PATH,
 	HOSTS_IMAGES_PATH,
@@ -161,6 +171,8 @@ export interface ComputeConfig {
 	readonly hosts?: ComputeHostsConfig;
 	/** Image patching (KANTEL_IMAGE_PATCHING=experimental), and where the base image index is read. */
 	readonly imagePatching?: { readonly indexUrl: string };
+	/** Mounts, bundles and signed file URLs (KANTEL_MOUNTS=experimental), on either backend. */
+	readonly mounts?: boolean;
 }
 
 /**
@@ -174,7 +186,9 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 	const patching = imagePatchingSwitch(env.KANTEL_IMAGE_PATCHING)
 		? { imagePatching: { indexUrl: baseImageIndexUrl(env.KANTEL_BASE_IMAGE_INDEX) } }
 		: {};
-	if (backend === "stub") return { ...patching };
+	// Read whatever the backend, so a typo stops the gateway on the stub too.
+	const mounts = mountsSwitch(env[MOUNTS_SWITCH]);
+	if (backend === "stub") return { ...(mounts ? { mounts } : {}), ...patching };
 	if (backend !== "hosts") throw new Error("KANTEL_COMPUTE_BACKEND is `stub` or `hosts`");
 	if (!/^https?:\/\/[^/]+\/?$/.test(publicUrl)) {
 		throw new Error(
@@ -206,6 +220,7 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 		}
 	}
 	return {
+		...(mounts ? { mounts } : {}),
 		hosts: {
 			publicUrl: new URL(publicUrl).origin,
 			...(accountHosts ? { accountHosts } : {}),
@@ -228,6 +243,17 @@ export function accountHostsSwitch(raw: string | undefined): boolean {
 	if (value === "" || value === "off") return false;
 	if (value === "experimental") return true;
 	throw new Error("KANTEL_ACCOUNT_HOSTS is `experimental` or `off`");
+}
+
+/**
+ * KANTEL_MOUNTS: `experimental` turns mounts, bundles and signed file URLs on; unset, empty or `off` leaves them off.
+ * Anything else stops the gateway, as for KANTEL_ACCOUNT_HOSTS.
+ */
+export function mountsSwitch(raw: string | undefined): boolean {
+	const value = raw?.trim().toLowerCase() ?? "";
+	if (value === "" || value === "off") return false;
+	if (value === "experimental") return true;
+	throw new Error(`${MOUNTS_SWITCH} is \`experimental\` or \`off\``);
 }
 
 /** The registry of hosts (`@kantel/hosts`) the `hosts` backend places sandboxes on. */
@@ -468,6 +494,11 @@ export async function gatewayCompute(options: {
 	readonly imagePatching?: { readonly indexUrl: string };
 	/** The base image index's fetch, for tests; default the global one. */
 	readonly fetch?: typeof fetch;
+	/**
+	 * Mounts, bundles and signed file URLs (KANTEL_MOUNTS=experimental); absent, off. Bundles' tars are kept in
+	 * `bundlesDir`, or in memory without one (gone with the process, though the API's records may outlast it).
+	 */
+	readonly mounts?: { readonly bundlesDir?: string };
 	/** Emails an organisation's invites, with a link to join, where the deployment has mail (KANTEL_SMTP_URL). */
 	readonly invites?: InviteMailing;
 }): Promise<GatewayCompute> {
@@ -497,6 +528,13 @@ export async function gatewayCompute(options: {
 					...(options.fetch === undefined ? {} : { fetch: options.fetch }),
 					...(options.now === undefined ? {} : { now: options.now }),
 				});
+	const bundlesDir = options.mounts?.bundlesDir;
+	const bundleStore =
+		options.mounts === undefined
+			? undefined
+			: bundlesDir === undefined
+				? createMemoryBundleStore()
+				: createDirBundleStore(bundlesDir);
 	const api = createComputeApi({
 		store,
 		backend,
@@ -508,10 +546,12 @@ export async function gatewayCompute(options: {
 		...(options.now === undefined ? {} : { now: options.now }),
 		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
 		...(baseImages === undefined ? {} : { baseImages }),
+		...(bundleStore === undefined ? {} : { mounts: { bundles: bundleStore } }),
 		...(options.invites === undefined ? {} : { invites: options.invites }),
 	});
-	// Hosts fetch their sandboxes' protected values, and report what their egress proxies did and their usage, over
-	// their link.
+	// Hosts fetch their sandboxes' protected values, bundles and bucket sources, and report what their egress proxies
+	// did, their usage and how their mounts went, over their link. (With mounts off, the service answers nothing for
+	// either source.)
 	hosts?.service.useCompute({
 		secrets: (hostId, sandboxId) => api.service.protectedTable(hostId, sandboxId),
 		recordEgress: (hostId, records) => api.service.recordEgress(hostId, records),
@@ -529,6 +569,9 @@ export async function gatewayCompute(options: {
 					},
 					recordBases: (hostId, reports) => api.service.recordBases(hostId, reports),
 				}),
+		bundle: (hostId, sandboxId, digest) => api.service.bundleForHost(hostId, sandboxId, digest),
+		bucketSource: (hostId, sandboxId, id) => api.service.bucketSourceForHost(hostId, sandboxId, id),
+		reportMounts: (hostId, sandboxId, mounts) => api.service.reportMounts(hostId, sandboxId, mounts),
 	});
 	// With several gateways, the one holding a host's connection passes its usage ticks on, so a poll on any has them.
 	if (hosts !== undefined) hosts.cluster?.useUsage((hostId, usage) => hosts.service.recordSharedUsage(hostId, usage));
@@ -550,8 +593,8 @@ export async function gatewayCompute(options: {
 	sweepCompute.unref();
 	let hostRoutes: GatewayCompute["hostRoutes"];
 	if (hosts !== undefined) {
-		// Registration and a host's E2E chain (on its credential) only: the API serves the operator's routes, so the
-		// registry's own admin routes refuse everyone.
+		// Registration, and a host's E2E chain and its sandboxes' bundles (on its credential), only: the API serves the
+		// operator's routes, so the registry's own admin routes refuse everyone.
 		const register = createHostsApi({
 			hosts: hosts.service,
 			authorizeAdmin: () => Promise.reject(new KantelError("not_found", "Not found")),
@@ -566,6 +609,8 @@ export async function gatewayCompute(options: {
 		hostRoutes = async (request) => {
 			const path = new URL(request.url).pathname;
 			if (path === HOSTS_REGISTER_PATH || path === HOSTS_E2E_CHAIN_PATH) return register.fetch(request);
+			// A bundle's tar for a sandbox the host runs, on the host's credential.
+			if (path.startsWith(`${HOSTS_BUNDLES_PATH}/`)) return register.fetch(request);
 			if (path.startsWith(`${CLUSTER_PATH}/`)) {
 				return (await hosts.cluster?.peerRoutes(request)) ?? new Response("Not found", { status: 404 });
 			}
@@ -580,7 +625,9 @@ export async function gatewayCompute(options: {
 	return {
 		api,
 		superAdminKey,
-		binding: `${records}, ${hosts === undefined ? "stub backend" : "kantel-host hosts"} (experimental)`,
+		binding:
+			`${records}, ${hosts === undefined ? "stub backend" : "kantel-host hosts"} (experimental)` +
+			(bundleStore === undefined ? "" : `, mounts on with bundles in ${bundlesDir ?? "memory"} (experimental)`),
 		...(hostRoutes === undefined ? {} : { hostRoutes }),
 		...(hosts?.ports === undefined ? {} : { portRoutes: hosts.ports.fetch }),
 		async close() {
@@ -730,10 +777,21 @@ export function withHostUpgrades(
 				(host) => {
 					if (host === undefined) return refuse(HOST_CLOSE_REVOKED, "The host credential is unknown or revoked");
 					sockets.handleUpgrade(incoming, socket, head, (accepted) => {
+						// The bytes of binary frames sent but not yet written out, counted from each send's callback. Not the
+						// socket's own `bufferedAmount`: under Bun, ws's never comes down again, so a file stream waiting on it
+						// would stall for good once it had sent FILE_STREAM_BUFFER_BYTES.
+						let unsent = 0;
 						const held = compute.hub.accept(host.id, {
 							sendText: (text) => accepted.send(text),
-							sendBinary: (bytes) => accepted.send(bytes, { binary: true }),
+							sendBinary: (bytes) => {
+								unsent += bytes.byteLength;
+								accepted.send(bytes, { binary: true }, () => {
+									unsent -= bytes.byteLength;
+								});
+							},
 							close: (code, reason) => accepted.close(code, reason),
+							// How far behind the socket is, so a file stream to the host waits rather than queues without end.
+							bufferedAmount: () => unsent,
 						});
 						// The hub's receive closes a connection whose frame it can't handle; this catch is the last line, so
 						// nothing a host sends (anyone's, with account hosts) escapes into the gateway process.

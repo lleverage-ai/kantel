@@ -16,13 +16,17 @@
 import {
 	type Account,
 	type DestinationBinding as ApiBinding,
+	type BucketSource as ApiBucketSource,
+	type Bundle as ApiBundle,
 	type ApiCall,
 	type EgressEntry as ApiEgressEntry,
 	type Environment as ApiEnvironment,
 	type EgressGrant as ApiGrant,
 	type ApiKey,
+	type MountSource as ApiMountSource,
 	type EnvironmentRepo as ApiRepo,
 	type SandboxEgress as ApiSandboxEgress,
+	type SandboxMount as ApiSandboxMount,
 	type SandboxShapes as ApiSandboxShapes,
 	type EnvironmentVariable as ApiVariable,
 	type Caller,
@@ -187,6 +191,10 @@ interface ApiImagesOverview {
 	readonly generatedAt?: string;
 	readonly error?: string;
 }
+type UiMounts = NonNullable<ComputeSource["mounts"]>;
+type UiBundle = Awaited<ReturnType<UiMounts["bundles"]>>[number];
+type UiBucketSource = Awaited<ReturnType<UiMounts["bucketSources"]>>[number];
+type UiSandboxMount = NonNullable<UiSandbox["mounts"]>[number];
 
 export interface ComputeApiOptions {
 	/** Default `/v1`, on this origin. */
@@ -222,6 +230,11 @@ interface Context {
 	readonly sandboxAccounts: Map<string, string>;
 	/** One raw call with the client's options, for a route the generated SDK doesn't have yet. */
 	readonly call: <T>(call: ApiCall) => Promise<T>;
+	/**
+	 * Bucket sources' names and buckets by ID, as last read: a sandbox's bucket mount names only its source's ID, and the
+	 * UI shows the name and the bucket where it knows them. Every bucket source the console reads goes in.
+	 */
+	readonly bucketSources: Map<string, { readonly name: string; readonly bucket: string }>;
 	readonly local?: LocalBridge;
 	/** This browser as a device of its own, when the gateway serves the page to a person (browser-device.ts). */
 	readonly browser?: BrowserDevice;
@@ -422,6 +435,55 @@ function baseFieldOf(record: object): { readonly base?: UiSandboxBase } {
 }
 
 /**
+ * Reads the account's bucket sources' names when a sandbox mounts a bucket source the console hasn't read. Like an
+ * environment's name, only shown: a caller that can't list them (a key without `account:read`) still gets its sandboxes,
+ * their bucket mounts named by ID.
+ */
+async function learnBucketSources(context: Context, accountId: string, sandboxes: readonly Sandbox[]): Promise<void> {
+	const unknown = sandboxes.some((sandbox) =>
+		(sandbox.mounts ?? []).some(
+			(mount) => mount.source.kind === "bucket" && !context.bucketSources.has(mount.source.bucketSourceId),
+		),
+	);
+	if (!unknown) return;
+	try {
+		for (const source of (await context.api.listBucketSources({ account: accountId })).items) {
+			context.bucketSources.set(source.id, { name: source.name, bucket: source.bucket });
+		}
+	} catch {
+		// Shown by their bucket source's ID.
+	}
+}
+
+/** What a mount's files come from; a bucket source's name and bucket where the console has read them. */
+function mountSourceOf(source: ApiMountSource, context: Context): UiSandboxMount["source"] {
+	if (source.kind === "bundle") return { kind: "bundle", digest: source.digest };
+	const known = context.bucketSources.get(source.bucketSourceId);
+	return {
+		kind: "bucket",
+		bucketSourceId: source.bucketSourceId,
+		prefix: source.prefix,
+		...(source.refreshTtlSeconds === undefined ? {} : { refreshTtlSeconds: source.refreshTtlSeconds }),
+		...(known === undefined ? {} : { bucketSourceName: known.name, bucket: known.bucket }),
+	};
+}
+
+function mountOf(mount: ApiSandboxMount, context: Context): UiSandboxMount {
+	return {
+		path: mount.path,
+		source: mountSourceOf(mount.source, context),
+		status: mount.status,
+		...(mount.error === undefined ? {} : { error: mount.error }),
+	};
+}
+
+/** A sandbox's read-only mounts (experimental); none where it has none, or the deployment has mounts off. */
+function mountsOf(sandbox: Sandbox, context: Context): { readonly mounts?: readonly UiSandboxMount[] } {
+	if (sandbox.mounts === undefined || sandbox.mounts.length === 0) return {};
+	return { mounts: sandbox.mounts.map((mount) => mountOf(mount, context)) };
+}
+
+/**
  * What New sandbox's sliders may choose, as the API says. With no host for microVMs, the sample's microVM ranges stand
  * in, marked unavailable, so the page offers no microVM; the API's rates are a currency's units an hour, the page's
  * US cents.
@@ -523,6 +585,7 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 		...(sandbox.source?.sandboxId === undefined ? {} : { forkedFrom: sandbox.source.sandboxId }),
 		...environmentRefOf(sandbox, context),
 		...baseFieldOf(sandbox),
+		...mountsOf(sandbox, context),
 		...imageOf(sandbox),
 	};
 }
@@ -573,7 +636,10 @@ function sandboxesSource(context: Context): SandboxesSource {
 			const sandboxes = await allPages((cursor) =>
 				api.listSandboxes({ account: accountId, all: true, ...after(cursor) }),
 			);
-			await learnEnvironmentNames(context, accountId, sandboxes);
+			await Promise.all([
+				learnEnvironmentNames(context, accountId, sandboxes),
+				learnBucketSources(context, accountId, sandboxes),
+			]);
 			return sandboxes.map(view);
 		},
 		shapes: async (accountId) => shapesOf(await api.getSandboxShapes({ account: accountId })),
@@ -710,7 +776,10 @@ function sandboxesSource(context: Context): SandboxesSource {
 		},
 		get: async (id) => {
 			const sandbox = await api.getSandbox(id);
-			await learnEnvironmentNames(context, sandbox.accountId, [sandbox]);
+			await Promise.all([
+				learnEnvironmentNames(context, sandbox.accountId, [sandbox]),
+				learnBucketSources(context, sandbox.accountId, [sandbox]),
+			]);
 			return view(sandbox);
 		},
 		// The API's `null` is always on.
@@ -1835,6 +1904,62 @@ async function offersOwnHosts({ api }: Context): Promise<boolean> {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// Read-only mounts (experimental): bundles and bucket sources. Both are made with the API; the console lists and
+// deletes them. A digest names a bundle only within its account, so a bundle's delete names the account too.
+
+const bundleOf = (bundle: ApiBundle): UiBundle => ({
+	digest: bundle.digest,
+	accountId: bundle.accountId,
+	sizeBytes: bundle.sizeBytes,
+	mountedBy: bundle.mountedBy,
+	createdAt: bundle.createdAt,
+});
+
+const bucketSourceOf = (source: ApiBucketSource): UiBucketSource => ({
+	id: source.id,
+	accountId: source.accountId,
+	name: source.name,
+	provider: source.provider,
+	bucket: source.bucket,
+	...(source.endpoint === undefined ? {} : { endpoint: source.endpoint }),
+	...(source.region === undefined ? {} : { region: source.region }),
+	// Whether it has credentials, never what they are: the API never answers them.
+	hasCredentials: source.hasCredentials,
+	mountedBy: source.mountedBy,
+	createdAt: source.createdAt,
+});
+
+function mountsSource(context: Context): UiMounts {
+	const { api } = context;
+	return {
+		bundles: async (accountId) => (await api.listBundles({ account: accountId })).items.map(bundleOf),
+		removeBundle: (accountId, digest) => api.deleteBundle(digest, { account: accountId }),
+		bucketSources: async (accountId) =>
+			(await api.listBucketSources({ account: accountId })).items.map((source) => {
+				context.bucketSources.set(source.id, { name: source.name, bucket: source.bucket });
+				return bucketSourceOf(source);
+			}),
+		removeBucketSource: async (id) => {
+			await api.deleteBucketSource(id);
+			context.bucketSources.delete(id);
+		},
+	};
+}
+
+/**
+ * Whether the deployment has turned mounts on: it answers `not_supported` when it hasn't, and a gateway from before
+ * mounts answers 404. Any other answer (a key that can't read sandboxes) leaves them on, as with account hosts.
+ */
+async function offersMounts({ api }: Context): Promise<boolean> {
+	try {
+		await api.listBundles({});
+		return true;
+	} catch (caught) {
+		return !(caught instanceof KantelApiError && (caught.code === "not_supported" || caught.status === 404));
+	}
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // Everything
 
 /** The page's own host, outside a browser none. */
@@ -1957,9 +2082,16 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		environmentNames: new Map(),
 		sandboxAccounts: new Map(),
 		call: <T>(call: ApiCall) => send<T>(clientOptions, call),
+		bucketSources: new Map(),
 		...(local === undefined ? {} : { local }),
 		...(browser === undefined ? {} : { browser }),
 	};
+	// What the deployment offers beyond the core, each asked once: an account's own hosts, for anyone but a super-admin,
+	// and read-only mounts.
+	const [ownHostsOffered, mountsOffered] = await Promise.all([
+		caller.superAdmin ? false : offersOwnHosts(context),
+		offersMounts(context),
+	]);
 	// The live graphs' reads, all in live-usage.ts.
 	const usage = liveUsage(api);
 
@@ -1980,12 +2112,14 @@ export async function apiCompute(options: ComputeApiOptions = {}): Promise<Compu
 		...(caller.superAdmin ? { hosts: withUsage(hostsSource(context), "usage", usage.host) } : {}),
 		...(caller.superAdmin && (await offersImages(context)) ? { images: imagesSource(context) } : {}),
 		// Anyone else manages their accounts' own hosts, where the deployment allows it.
-		...(!caller.superAdmin && (await offersOwnHosts(context))
+		...(ownHostsOffered
 			? {
 					ownHosts: (accountId: string) =>
 						withUsage(ownHostsSource(context, accountId), "usage", usage.ownHost(accountId)),
 				}
 			: {}),
+		// Bundles and bucket sources, where the deployment has turned mounts on; absent, nothing about mounts is shown.
+		...(mountsOffered ? { mounts: mountsSource(context) } : {}),
 		// Only a person approves a device; a console signed in with a key has nothing to approve with.
 		...(caller.apiKey === undefined ? { devices: devicesSource(context) } : {}),
 		e2e:
