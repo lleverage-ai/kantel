@@ -133,7 +133,7 @@ Running time and cost since `since`, and the account's limits. A key needs `acco
 
 | Name | Type | Required | Description |
 | --- | --- | --- | --- |
-| `since` | integer | no | From this time; default 24 hours ago. |
+| `since` | integer | no | From this time; default 24 hours ago. `series` then holds only the points after it, so a client polls with the last point's `at`. |
 | `intervalSeconds` | integer | no | Default 300. (minimum 60, maximum 86400) |
 
 **Answers**

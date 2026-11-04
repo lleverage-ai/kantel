@@ -1036,6 +1036,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				runningSeconds: round(seconds),
 				cpuSeconds: round(seconds * meanCpu(sandbox)),
 				recentCpu: sandbox.samples.slice(-24).map((sample) => sample.cpu),
+				recentMemory: sandbox.samples.slice(-24).map((sample) => Math.round(sample.memoryMb * 1024 * 1024)),
 			},
 			hostId: principal.superAdmin ? sandbox.hostId : undefined,
 		};
@@ -3130,6 +3131,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					cpuSeconds: round(seconds * meanCpu(current)),
 					cost: { currency: rates.currency, total: round((seconds / 3600) * rate), ratePerHour: rate },
 				},
+				series: {
+					intervalMs: 60_000,
+					points: current.samples
+						.filter((sample) => query.since === undefined || sample.at > query.since)
+						.map((sample) => ({
+							at: sample.at,
+							cpu: sample.cpu,
+							memUsedBytes: Math.round(sample.memoryMb * 1024 * 1024),
+						})),
+				},
 			};
 		},
 
@@ -4156,6 +4167,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		getHost: async (principal, { params }) => hostView(await hostFor(principal, params.hostId)),
 
+		getHostUsage: async (principal, { params }) => {
+			const host = await hostFor(principal, params.hostId);
+			return { hostId: host.id, intervalMs: 5000, memTotalBytes: 0, diskTotalBytes: 0, points: [] };
+		},
+
 		updateHost: async (principal, { params, body }) => changeHost(await hostFor(principal, params.hostId), body),
 
 		revokeHost: async (principal, { params }) => revokeStoredHost(await hostFor(principal, params.hostId)),
@@ -4183,6 +4199,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		getAccountHost: async (principal, { params }) =>
 			hostView((await accountHostFor(principal, params.hostId, "account:read")).host),
+
+		getAccountHostUsage: async (principal, { params }) => {
+			const { host } = await accountHostFor(principal, params.hostId, "account:read");
+			return { hostId: host.id, intervalMs: 5000, memTotalBytes: 0, diskTotalBytes: 0, points: [] };
+		},
 
 		updateAccountHost: async (principal, { params, body }) =>
 			changeHost((await accountHostFor(principal, params.hostId, "account:admin")).host, body),
