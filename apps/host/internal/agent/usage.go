@@ -20,6 +20,9 @@ const (
 	usageBacklog = 120
 	// maxUsageSandboxes is the most sandboxes one tick names.
 	maxUsageSandboxes = 4096
+	// guestMemoryTimeout bounds asking one microVM's Firecracker for its guest's memory, which it answers from what it
+	// holds (it never waits on the guest): past it, that VM's reading is its resident memory.
+	guestMemoryTimeout = time.Second
 )
 
 // usageInterval is how often the host samples usage, 1 s to 5 minutes (the range the control plane takes); 0 is
@@ -137,7 +140,8 @@ func (s *usageSampler) take() (proto.UsageSample, bool) {
 }
 
 // sandboxes reads every running sandbox the control plane may see (not one in an E2E space), answering those with
-// a figure: a microVM's Firecracker process, and each account's isolate runtime shared out among its sandboxes.
+// a figure: a microVM's Firecracker process (and its guest's own memory figures), and each account's isolate runtime
+// shared out among its sandboxes.
 func (s *usageSampler) sandboxes(procs []usage.Process, mem usage.Memory) []proto.SandboxUsage {
 	out := []proto.SandboxUsage{}
 	s.taken = map[string]string{}
@@ -163,14 +167,31 @@ func (s *usageSampler) sandboxes(procs []usage.Process, mem usage.Memory) []prot
 		if !ok {
 			continue
 		}
-		rss, _ := s.readRSS(p.Pid)
+		used, source := s.microVMMemory(p)
 		s.taken[p.SandboxID] = p.Owner
 		out = append(out, proto.SandboxUsage{
 			ID: p.SandboxID, Kind: microvm.Tier, CPU: usage.Utilisation(grew, over, p.CPUs),
-			MemUsedBytes: rss, MemLimitBytes: p.MemLimitBytes,
+			MemUsedBytes: used, MemLimitBytes: p.MemLimitBytes, MemSource: source,
 		})
 	}
 	return out
+}
+
+// microVMMemory is a microVM's used memory and where it came from: the guest's own MemTotal - MemAvailable (its
+// balloon statistics), so its page cache isn't counted and the figure falls when it frees memory; else, for a VM
+// without them (restored from a snapshot made before the balloon, or a kernel without virtio_balloon) or one whose
+// figures are missing or make no sense, its Firecracker process's resident memory.
+func (s *usageSampler) microVMMemory(p usage.Process) (int64, string) {
+	if p.ReadGuest != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), guestMemoryTimeout)
+		guest, err := p.ReadGuest(ctx)
+		cancel()
+		if err == nil && guest.Total > 0 && guest.Available >= 0 && guest.Available <= guest.Total {
+			return guest.Used(), proto.MemSourceGuest
+		}
+	}
+	rss, _ := s.readRSS(p.Pid)
+	return rss, proto.MemSourceRSS
 }
 
 // isolates shares out an account's runtime among its running sandboxes: CPU by the time each spent running commands
@@ -236,7 +257,7 @@ func (s *usageSampler) isolates(mem usage.Memory, sh usage.Shared) []proto.Sandb
 		s.taken[b.SandboxID] = b.Owner
 		out = append(out, proto.SandboxUsage{
 			ID: b.SandboxID, Kind: isolate.Tier, CPU: usage.Utilisation(given[b.SandboxID], over, sh.CPUs),
-			MemUsedBytes: rss / n, MemLimitBytes: limit / n,
+			MemUsedBytes: rss / n, MemLimitBytes: limit / n, MemSource: proto.MemSourceRSS,
 		})
 	}
 	return out

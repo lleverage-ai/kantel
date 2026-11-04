@@ -96,6 +96,10 @@ netfilter and nftables, bridge, veth, VXLAN, IPVS) and KVM, so a sandbox runs it
 nested virtualisation on (`kvm_amd nested=1` or `kvm_intel nested=1`), `/dev/kvm` is there in every sandbox.
 `kernel/kantel-<arch>.config` adds what only one architecture has (x86_64's Intel and AMD KVM).
 
+The host also relies on two drivers the Firecracker config already has built in, and `build.sh` fails if either is
+missing: vsock, for the guest agent, and `virtio_balloon`. Every microVM gets a balloon that never takes memory and only
+reports the guest's own memory figures, which the host reads from Firecracker as the sandbox's memory.
+
 ## arm64
 
 The same Dockerfile, kernel config and scripts build arm64 (aarch64) images: Firecracker's aarch64 guest config, and

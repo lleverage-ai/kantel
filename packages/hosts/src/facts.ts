@@ -9,6 +9,7 @@ import type {
 	HostCapacity,
 	HostFacts,
 	HostImages,
+	HostMemorySource,
 	HostMountStatus,
 	HostSandboxUsage,
 	HostSize,
@@ -164,17 +165,25 @@ function usageTotals(value: unknown): HostUsageTotals {
 	};
 }
 
+const MEMORY_SOURCES: ReadonlySet<string> = new Set<HostMemorySource>(["guest", "rss"]);
+
 /** One sandbox's reading, or undefined for one of a kind this control plane doesn't know (left out, not refused). */
 function sandboxUsage(value: unknown, at: number): HostSandboxUsage | undefined {
 	if (!isObject(value)) throw new FactsError(`usage.sandboxes[${at}] is an object`);
 	const kind = text(value.kind, `usage.sandboxes[${at}].kind`);
 	if (!TIERS.has(kind)) return undefined;
+	// A source this control plane doesn't know (a newer host's) is left out, not refused: the figure still stands.
+	const memSource =
+		typeof value.memSource === "string" && MEMORY_SOURCES.has(value.memSource)
+			? (value.memSource as HostMemorySource)
+			: undefined;
 	return {
 		id: text(value.id, `usage.sandboxes[${at}].id`),
 		kind: kind as SandboxTier,
 		cpu: utilisation(value.cpu, `usage.sandboxes[${at}].cpu`),
 		memUsedBytes: count(value.memUsedBytes, `usage.sandboxes[${at}].memUsedBytes`),
 		memLimitBytes: count(value.memLimitBytes, `usage.sandboxes[${at}].memLimitBytes`),
+		...(memSource === undefined ? {} : { memSource }),
 	};
 }
 

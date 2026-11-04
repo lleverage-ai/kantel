@@ -221,7 +221,8 @@ A host is `online`, `draining`, `unreachable` (registered, but not connected now
 
 Every 5 seconds a host also sends Kantel its CPU, memory and disk, and each running sandbox's CPU and memory. It measures them from its own side and runs nothing in a sandbox to do it:
 
-- A microVM's CPU is its Firecracker process's CPU time as a share of its vCPUs. Its memory is that process's resident memory: the guest memory the VM has touched, page cache included. A microVM doesn't give memory back, so the figure stays near its high point after a spike.
+- A microVM's CPU is its Firecracker process's CPU time as a share of its vCPUs. Its memory is what the guest itself counts as used, its total less its available memory, as `free -m` shows it in the guest. The guest's kernel reports those figures to Firecracker through a virtio-balloon device that only reports (it never takes memory from the guest), and the host reads them from Firecracker, so nothing runs in the sandbox. Page cache isn't counted, and the figure falls when the guest frees memory.
+- A microVM restored from a snapshot made before the host had that device (or one on a kernel without `virtio_balloon`) can't report, so its memory is its Firecracker process's resident memory instead: the guest memory the VM has touched, page cache included. A microVM doesn't give that memory back to the host, so that figure stays near its high point after a spike. Each reading says which it is (`memSource`, `guest` or `rss`, on the host's link).
 - An account's isolates share one runtime, so the host measures the runtime and shares it out. Each isolate's CPU is its part of the runtime's CPU time, split by how long each spent running commands, as a share of one CPU. The runtime's memory is split evenly.
 - The disk is the file system the host's data directory (`/var/lib/kantel-host`) is on.
 

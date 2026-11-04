@@ -301,7 +301,10 @@ const (
 // bootConfig is a cold boot of a shape on kernel (kernelFor: its root filesystem's version's): through Kantel's
 // initramfs when the host injects the agent, with its hotpluggable memory when it has some (a shared template).
 func (m *Manager) bootConfig(sh shape, kernel, tap, mac string, cid uint32) fc.BootConfig {
-	cfg := fc.BootConfig{VCPUs: sh.VCPUs, MemoryMiB: sh.MemoryMiB, Kernel: kernel, BootArgs: bootArgs, TapDevice: tap, MAC: mac, GuestCID: cid, HotplugMiB: sh.HotplugMiB}
+	cfg := fc.BootConfig{
+		VCPUs: sh.VCPUs, MemoryMiB: sh.MemoryMiB, Kernel: kernel, BootArgs: bootArgs, TapDevice: tap, MAC: mac, GuestCID: cid,
+		HotplugMiB: sh.HotplugMiB, BalloonStatsSeconds: balloonStatsSeconds,
+	}
 	if m.cfg.Initrd != "" {
 		cfg.Initrd, cfg.BootArgs = m.cfg.Initrd, guestinit.BootArgs
 	}
@@ -819,6 +822,15 @@ func diskUsage(path string) int64 {
 	return st.Blocks * 512
 }
 
+// balloonStatsSeconds is how often a VM's balloon has its guest's memory figures from the guest's driver, for the usage
+// samples (every 5 s by default): so a reading is at most this old.
+const balloonStatsSeconds = 1
+
+// templateDevices is the devices' part of a template's fingerprint: a snapshot keeps the devices it was made with, so
+// a template from before the reporting balloon is made again, and the sandboxes restored from it report their guest's
+// memory.
+const templateDevices = " devices=balloon-stats"
+
 const bootArgs = "console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda ro init=/usr/sbin/kantel-init quiet loglevel=3 systemd.show_status=false"
 
 // Since is a timer for step timings.
@@ -861,13 +873,14 @@ func (m *Manager) shapeKey(sh shape) string {
 
 // templateFingerprint is what a shape's template is made with: Firecracker, the kernel, the images, Kernel's
 // initramfs when it injects the guest agent (its name has the agent's digest: another agent, or turning injection on
-// or off, makes a new template) and the shape.
+// or off, makes a new template), the devices and the shape. The shape stays last: a template of the same shape on
+// other images (or devices) is still used while its replacement builds, with BackgroundTemplates.
 func (m *Manager) templateFingerprint(sh shape) string {
 	images := []string{m.cfg.Firecracker, m.cfg.Kernel, m.cfg.Rootfs}
 	if m.cfg.Initrd != "" {
 		images = append(images, m.cfg.Initrd)
 	}
-	return fc.Fingerprint(images...) + m.shapeKey(sh)
+	return fc.Fingerprint(images...) + templateDevices + m.shapeKey(sh)
 }
 
 // templateReady says whether the shape's template can be restored now without making it: made for these images, or,

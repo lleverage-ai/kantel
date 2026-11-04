@@ -1331,7 +1331,7 @@ A protected variable as one sandbox has it: never its value.
 | --- | --- | --- | --- |
 | `at` | integer | yes | Epoch milliseconds, UTC. |
 | `cpu` | number | yes | CPU utilisation over the interval ending at `at`, 0 to 1 of the sandbox's own vCPUs. (minimum 0, maximum 1) |
-| `memUsedBytes` | integer | yes | Memory in use at `at`. (minimum 0) |
+| `memUsedBytes` | integer | yes | Memory in use at `at`. For a microVM, what its guest counts as used (total less available, page cache not counted), so it falls when the guest frees memory; from a host or VM that can't report that, the memory the VM holds on its host, which stays near its high point. For an isolate, its share of its account's runtime. (minimum 0) |
 
 ### SandboxShapeInput
 

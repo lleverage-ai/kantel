@@ -188,6 +188,15 @@ type BootConfig struct {
 	// HotplugMiB, when set, adds a virtio-mem device with that much hotpluggable memory, all of it unplugged at boot
 	// (a multiple of HotplugSlotMiB). PlugMemory plugs it later, on this VM or on one restored from its snapshot.
 	HotplugMiB int
+	// BalloonStatsSeconds, above 0, adds a virtio-balloon device that only reports: no memory taken (a target of 0
+	// MiB, deflate_on_oom in case one is ever set), its guest driver's memory statistics refreshed this often, for
+	// ReadBalloonStats. A snapshot keeps the device, so every VM restored from one made with it reports too.
+	BalloonStatsSeconds int
+}
+
+// balloon is the reporting-only balloon BootConfig.BalloonStatsSeconds asks for.
+func balloon(statsSeconds int) map[string]any {
+	return map[string]any{"amount_mib": 0, "deflate_on_oom": true, "stats_polling_interval_s": statsSeconds}
 }
 
 func bootSource(cfg BootConfig) map[string]any {
@@ -218,13 +227,14 @@ func (m *Machine) Boot(ctx context.Context, cfg BootConfig) error {
 		{"/vsock", map[string]any{"guest_cid": cfg.GuestCID, "uds_path": VsockSocket}},
 		{"/entropy", map[string]any{}},
 		{"/hotplug/memory", map[string]any{"total_size_mib": cfg.HotplugMiB, "block_size_mib": HotplugBlockMiB, "slot_size_mib": HotplugSlotMiB}},
+		{"/balloon", balloon(cfg.BalloonStatsSeconds)},
 	}
 	for _, step := range steps {
 		if step.path == "/network-interfaces/eth0" && cfg.TapDevice == "" {
 			// No network device (the isolate tier's VM talks to the host over vsock only).
 			continue
 		}
-		if step.path == "/hotplug/memory" && cfg.HotplugMiB <= 0 {
+		if step.path == "/hotplug/memory" && cfg.HotplugMiB <= 0 || step.path == "/balloon" && cfg.BalloonStatsSeconds <= 0 {
 			continue
 		}
 		if err := m.call(ctx, http.MethodPut, step.path, step.body); err != nil {
@@ -304,6 +314,52 @@ func (m *Machine) Hotplug(ctx context.Context) (HotplugStatus, error) {
 // signals the guest, which sees the new capacity.
 func (m *Machine) RescanDrive(ctx context.Context, id, path string) error {
 	return m.call(ctx, http.MethodPatch, "/drives/"+id, map[string]string{"drive_id": id, "path_on_host": path})
+}
+
+// BalloonStats is what GET /balloon/statistics answers that the host reads: the guest's own count of its memory, as its
+// virtio_balloon driver last reported it (MemTotal, MemAvailable and MemFree, in bytes). A figure the driver hasn't
+// reported yet is nil.
+type BalloonStats struct {
+	TotalMemory     *int64 `json:"total_memory"`
+	AvailableMemory *int64 `json:"available_memory"`
+	FreeMemory      *int64 `json:"free_memory"`
+}
+
+// ReadBalloonStats asks the Firecracker running in dir for its balloon's statistics. It fails for a VM booted without
+// the balloon (or restored from a snapshot made without it): Firecracker answers 400.
+//
+// It opens its own connection to the API socket and closes it, so it needs no Machine (and none of its locks).
+func ReadBalloonStats(ctx context.Context, dir string) (BalloonStats, error) {
+	socket := filepath.Join(dir, APISocket)
+	client := &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", socket)
+		},
+		DisableKeepAlives: true,
+	}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://firecracker/balloon/statistics", nil)
+	if err != nil {
+		return BalloonStats{}, err
+	}
+	req.Header.Set("accept", "application/json")
+	res, err := client.Do(req)
+	if err != nil {
+		return BalloonStats{}, fmt.Errorf("firecracker GET /balloon/statistics: %w", err)
+	}
+	defer res.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(res.Body, 64<<10))
+	if err != nil {
+		return BalloonStats{}, err
+	}
+	if res.StatusCode >= 300 {
+		return BalloonStats{}, fmt.Errorf("firecracker GET /balloon/statistics: %d %s", res.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	var stats BalloonStats
+	if err := json.Unmarshal(raw, &stats); err != nil {
+		return BalloonStats{}, fmt.Errorf("firecracker GET /balloon/statistics: %w", err)
+	}
+	return stats, nil
 }
 
 // Kill ends the process and waits for it.
