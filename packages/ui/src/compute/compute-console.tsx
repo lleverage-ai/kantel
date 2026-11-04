@@ -39,6 +39,7 @@ import { HostsPage } from "./hosts-page.tsx";
 import { InstallPage } from "./install-page.tsx";
 import { OrganisationPage } from "./organisation-page.tsx";
 import { messageOf } from "./parts.tsx";
+import { ProfilePage } from "./profile-page.tsx";
 import { SANDBOX_VIEWS, SandboxPage, type SandboxView } from "./sandbox-page.tsx";
 import { SandboxesPage } from "./sandboxes-page.tsx";
 import { SettingsFrame, type SettingsNavItem } from "./settings-nav.tsx";
@@ -65,6 +66,7 @@ export type ComputePage =
 	| "webhooks"
 	| "telemetry"
 	| "organisation"
+	| "profile"
 	| "billing"
 	| "hosts"
 	| "install"
@@ -79,6 +81,7 @@ export const COMPUTE_PAGES: readonly ComputePage[] = [
 	"webhooks",
 	"telemetry",
 	"organisation",
+	"profile",
 	"billing",
 	"hosts",
 	"install",
@@ -324,8 +327,15 @@ const STRIP_TONES = {
 	idle: "text-muted",
 } as const;
 
-/** The pages under Settings: the account's own settings, each at the address it had before. */
-const SETTINGS_PAGES: ReadonlySet<ComputePage> = new Set(["organisation", "keys", "webhooks", "telemetry", "billing"]);
+/** The pages under Settings: your profile and the account's own settings, each at the address it had before. */
+const SETTINGS_PAGES: ReadonlySet<ComputePage> = new Set([
+	"profile",
+	"organisation",
+	"keys",
+	"webhooks",
+	"telemetry",
+	"billing",
+]);
 
 /** The compute console: the sidebar with the account switcher and its pages, and the page the path names. */
 export function ComputeConsole({
@@ -451,8 +461,11 @@ export function ComputeConsole({
 	// An account's own hosts, where the deployment lets it add them, are one of its settings.
 	const ownHostsShown = hostsShown && !superAdmin;
 	const inSettings = SETTINGS_PAGES.has(page) || (ownHostsShown && page === "hosts");
+	// Your profile is the personal account's first setting; from an organisation, your menu opens it.
+	const personal = account?.kind === "personal";
 	const settingsItems: SettingsNavItem[] = [
-		{ id: "organisation", label: account?.kind === "personal" ? "Organisations" : "General" },
+		...(personal || page === "profile" ? [{ id: "profile", label: "Profile" }] : []),
+		{ id: "organisation", label: personal ? "Organisations" : "General" },
 		{ id: "keys", label: "API keys" },
 		{ id: "webhooks", label: "Webhooks" },
 		{ id: "telemetry", label: "OpenTelemetry" },
@@ -492,6 +505,7 @@ export function ComputeConsole({
 			{...(name === undefined ? {} : { name })}
 			{...(email === undefined ? {} : { email })}
 			{...(compact && adminShown && !inAdmin ? { onAdmin: () => navigate(adminHref) } : {})}
+			onProfile={() => navigate(computePath("profile", base))}
 			{...(onSignOut === undefined ? {} : { onSignOut })}
 			{...(onThemeChoose === undefined ? {} : { onThemeChoose })}
 		/>
@@ -670,6 +684,7 @@ export function ComputeConsole({
 							shown={inSettings || (inAdmin && narrow && adminItems.length > 1)}
 							items={inAdmin ? adminItems : settingsItems}
 							label={inAdmin ? "Admin" : "Settings"}
+							titled={!inAdmin}
 							narrow={narrow}
 						>
 							<PageFor
@@ -689,6 +704,11 @@ export function ComputeConsole({
 								narrow={narrow}
 								hosts={hostsSource}
 								ownHosts={!superAdmin}
+								accounts={list ?? []}
+								onSwitch={switchTo}
+								onRenamed={() => accounts.reload()}
+								you={{ name: name ?? me.name, email: email ?? me.email }}
+								{...(onThemeChoose === undefined ? {} : { onThemeChoose })}
 								onHostJoined={hosts.reload}
 								onCreate={() => setDialog("create")}
 								onJoin={() => setDialog("join")}
@@ -753,6 +773,11 @@ function PageFor({
 	narrow,
 	hosts,
 	ownHosts,
+	accounts,
+	onSwitch,
+	onRenamed,
+	you,
+	onThemeChoose,
 	onHostJoined,
 	onCreate,
 	onJoin,
@@ -776,6 +801,14 @@ function PageFor({
 	hosts: HostsSource | undefined;
 	/** They are the account's own, not the deployment's. */
 	ownHosts: boolean;
+	/** Every account the viewer has: the personal account's Organisations lists them. */
+	accounts: readonly ComputeAccount[];
+	onSwitch: (account: ComputeAccount) => void;
+	/** The organisation was renamed: the switcher reads the accounts again. */
+	onRenamed: () => void;
+	/** Who is signed in, for Profile. */
+	you: { readonly name: string; readonly email?: string };
+	onThemeChoose?: (preference: ThemePreference) => void;
 	/** The first run's host joined: the console reads the hosts again. */
 	onHostJoined: () => void;
 	onCreate: () => void;
@@ -889,26 +922,39 @@ function PageFor({
 			);
 		}
 		case "keys":
-			return <ComputeApiKeysPage source={source.keys} account={account} {...timing} />;
+			return <ComputeApiKeysPage source={source.keys} account={account} narrow={narrow} {...timing} />;
 		case "webhooks":
-			return <WebhooksPage source={source.webhooks} account={account} {...timing} />;
+			return <WebhooksPage source={source.webhooks} account={account} narrow={narrow} {...timing} />;
 		case "telemetry":
-			return <TelemetryPage source={source.telemetry} account={account} {...timing} />;
+			return <TelemetryPage source={source.telemetry} account={account} narrow={narrow} {...timing} />;
 		case "organisation":
 			return (
 				<OrganisationPage
 					source={source.accounts}
 					account={account}
 					viewerId={viewer.id}
+					accounts={accounts}
+					narrow={narrow}
+					onSwitch={onSwitch}
+					onRenamed={onRenamed}
 					onCreate={onCreate}
 					onJoin={onJoin}
 					onLeft={onLeft}
 					{...timing}
 				/>
 			);
+		case "profile":
+			return (
+				<ProfilePage
+					name={you.name}
+					narrow={narrow}
+					{...(you.email === undefined ? {} : { email: you.email })}
+					{...(onThemeChoose === undefined ? {} : { onThemeChoose })}
+				/>
+			);
 		case "billing":
 			return source.billing === undefined ? null : (
-				<BillingPage source={source.billing} account={account} {...timing} />
+				<BillingPage source={source.billing} account={account} narrow={narrow} {...timing} />
 			);
 		case "hosts":
 			return hosts === undefined ? null : (
@@ -1020,17 +1066,19 @@ function SettingsFrameFor({
 	shown,
 	items,
 	label,
+	titled,
 	narrow,
 	children,
 }: {
 	shown: boolean;
 	items: readonly SettingsNavItem[];
 	label: string;
+	titled: boolean;
 	narrow: boolean;
 	children: ReactNode;
 }): ReactNode {
 	return shown ? (
-		<SettingsFrame items={items} label={label} narrow={narrow}>
+		<SettingsFrame items={items} label={label} titled={titled} narrow={narrow}>
 			{children}
 		</SettingsFrame>
 	) : (
