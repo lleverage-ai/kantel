@@ -145,7 +145,9 @@ export interface HostHubOptions {
 	/**
 	 * A welcomed host's usage tick (a `usage` message), as it came: the service checks it. A promise answered is the tick
 	 * being taken: once it resolves, on a connection whose welcome had `usageAcks`, the hub acknowledges the tick's `seq`
-	 * (`usage.ack`). Nothing answered, or a promise that rejects, acknowledges nothing.
+	 * (`usage.ack`). Nothing answered, or a promise that rejects, acknowledges nothing. An ack covers every earlier tick
+	 * too, so the promise must resolve only once this tick and every one the host sent before it are taken (the compute
+	 * plane holds a tick it couldn't take, and every one after it, until they can be: `ComputeService.recordUsage`).
 	 */
 	onUsage?(hostId: string, usage: unknown): Promise<unknown> | undefined;
 	/** A sandbox changed state (an event not tied to a call). */
@@ -224,11 +226,6 @@ interface Connection {
 	usageAcks: boolean;
 	/** The newest `seq` acknowledged on it, so acks only go forward. */
 	usageAcked: number;
-	/**
-	 * The first `seq` on it the service failed to take: an ack covers every tick before the one it names, so none on this
-	 * connection reaches it; the host sends it again on its next.
-	 */
-	usageFailed: number;
 }
 
 const DEFAULT_CALL_TIMEOUT_MS = 120_000;
@@ -484,7 +481,7 @@ export function createHostHub(options: HostHubOptions): HostHub {
 		}
 		taken.then(
 			() => {
-				if (connection.closed || seq <= connection.usageAcked || seq >= connection.usageFailed) return;
+				if (connection.closed || seq <= connection.usageAcked) return;
 				connection.usageAcked = seq;
 				try {
 					send(connection, { type: "usage.ack", acked: seq });
@@ -492,9 +489,7 @@ export function createHostHub(options: HostHubOptions): HostHub {
 					// A socket gone meanwhile: the host sends the tick again on its next connection.
 				}
 			},
-			() => {
-				connection.usageFailed = Math.min(connection.usageFailed, seq);
-			},
+			() => undefined,
 		);
 	};
 
@@ -537,7 +532,6 @@ export function createHostHub(options: HostHubOptions): HostHub {
 				acks: new Map(),
 				usageAcks: false,
 				usageAcked: 0,
-				usageFailed: Number.POSITIVE_INFINITY,
 			};
 			const older = held.get(hostId);
 			held.set(hostId, connection);

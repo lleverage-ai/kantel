@@ -650,6 +650,110 @@ describe("numbered usage ticks sent again after a reconnect", () => {
 			expect((await api.tom.getSandboxUsage(box.id)).series.points.map((each) => each.at)).toEqual(every);
 		}
 	});
+
+	/** A memory store whose sandbox lookups (which every tick with readings makes) fail while `down` is set. */
+	function flaky() {
+		const inner = createMemoryStore();
+		const state = { down: false };
+		const store: ComputeStore = {
+			...inner,
+			sandboxes: {
+				...inner.sandboxes,
+				list: async (where) => {
+					if (state.down) throw new Error("store down");
+					return inner.sandboxes.list(where);
+				},
+			},
+		};
+		return { store, state };
+	}
+
+	it("that failed are taken when sent again, though one after it was taken first, and none after it is taken ahead", async () => {
+		let clock = T0;
+		const { store, state } = flaky();
+		const { api, tom } = setup(hostless(() => clock).backend, () => clock, store);
+		const box = await tom.createSandbox({ wait: true });
+		clock = T0 + USAGE_INTERVAL_MS;
+		await api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 1));
+		// 2 fails: the host isn't told it is in.
+		state.down = true;
+		clock = T0 + 2 * USAGE_INTERVAL_MS;
+		await expect(api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 2))).rejects.toThrow("store down");
+		// 3 comes on the same connection once the store is back: it is in only with 2 before it, so its ack is true of 2.
+		state.down = false;
+		clock = T0 + 3 * USAGE_INTERVAL_MS;
+		await api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 3));
+		// The host sends 2 and 3 again after a reconnect all the same (an ack it lost): neither is taken twice.
+		await api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 2));
+		await api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 3));
+		const every = [1, 2, 3].map((seq) => T0 + seq * USAGE_INTERVAL_MS);
+		const points = (await tom.getSandboxUsage(box.id)).series.points;
+		expect(points.map((each) => each.at)).toEqual(every);
+		expect(points.map((each) => each.cpu)).toEqual([0.01, 0.02, 0.03]);
+		expect((await api.service.sampleUsage()).map((each) => each.at)).toEqual(every);
+	});
+
+	it("that failed are taken when only sent again, whatever came after them meanwhile", async () => {
+		let clock = T0;
+		const { store, state } = flaky();
+		const { api, tom } = setup(hostless(() => clock).backend, () => clock, store);
+		const box = await tom.createSandbox({ wait: true });
+		clock = T0 + USAGE_INTERVAL_MS;
+		await api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 1));
+		state.down = true;
+		for (const seq of [2, 3, 4]) {
+			clock = T0 + seq * USAGE_INTERVAL_MS;
+			await expect(api.service.recordUsage(STUB_HOST_ID, numbered(box.id, seq))).rejects.toThrow("store down");
+		}
+		state.down = false;
+		// The host reconnects and sends again all it has unacknowledged, oldest first.
+		clock = T0 + 5 * USAGE_INTERVAL_MS;
+		for (const seq of [2, 3, 4, 5]) await api.service.recordUsage(STUB_HOST_ID, numbered(box.id, seq));
+		const every = [1, 2, 3, 4, 5].map((seq) => T0 + seq * USAGE_INTERVAL_MS);
+		expect((await tom.getSandboxUsage(box.id)).series.points.map((each) => each.at)).toEqual(every);
+		expect((await api.service.sampleUsage()).map((each) => each.at)).toEqual(every);
+	});
+
+	it("held while the store failed are in the next export, with no tick after them to bring them in", async () => {
+		let clock = T0;
+		const { store, state } = flaky();
+		const { api, tom } = setup(hostless(() => clock).backend, () => clock, store);
+		const box = await tom.createSandbox({ wait: true });
+		clock = T0 + USAGE_INTERVAL_MS;
+		await api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 1));
+		state.down = true;
+		clock = T0 + 2 * USAGE_INTERVAL_MS;
+		await expect(api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 2))).rejects.toThrow("store down");
+		state.down = false;
+		const every = [1, 2].map((seq) => T0 + seq * USAGE_INTERVAL_MS);
+		expect((await api.service.sampleUsage()).map((each) => each.at)).toEqual(every);
+		// Sent again later, it isn't taken twice.
+		await api.service.recordUsage(STUB_HOST_ID, numbered(box.id, 2));
+		expect((await tom.getSandboxUsage(box.id)).series.points.map((each) => each.at)).toEqual(every);
+		expect(await api.service.sampleUsage()).toEqual([]);
+	});
+
+	it("to the replica the host moved to, of ticks the first took but hadn't passed on, are exported once", async () => {
+		let clock = T0;
+		const store = createMemoryStore();
+		const a = setup(hostless(() => clock).backend, () => clock, store);
+		const b = setup(hostless(() => clock).backend, () => clock, store);
+		const box = await a.tom.createSandbox({ wait: true });
+		// A takes 1 to 3; the connection dies with their acks, and B hasn't had them passed on yet.
+		for (let seq = 1; seq <= 3; seq += 1) {
+			clock = T0 + seq * USAGE_INTERVAL_MS;
+			await a.api.service.recordUsage(STUB_HOST_ID, numbered(box.id, seq));
+		}
+		// The host reconnects to B and sends 1 to 4 again.
+		clock = T0 + 4 * USAGE_INTERVAL_MS;
+		for (let seq = 1; seq <= 4; seq += 1) await b.api.service.recordUsage(STUB_HOST_ID, numbered(box.id, seq));
+		const fromA = (await a.api.service.sampleUsage()).map((each) => each.at);
+		const fromB = (await b.api.service.sampleUsage()).map((each) => each.at);
+		expect(fromA).toEqual([1, 2, 3].map((seq) => T0 + seq * USAGE_INTERVAL_MS));
+		expect(fromB).toEqual([T0 + 4 * USAGE_INTERVAL_MS]);
+		// B still draws all four.
+		expect((await b.tom.getSandboxUsage(box.id)).series.points).toHaveLength(4);
+	});
 });
 
 describe("the stub's replay", () => {

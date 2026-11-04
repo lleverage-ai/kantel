@@ -776,10 +776,20 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				return undefined;
 			}
 			// Taken here, by the replica holding the host's connection, which exports it: what the hub acknowledges once
-			// it resolves. Passing it on to the other replicas is for their graphs, and isn't waited for.
+			// it resolves. Passing it on to the other replicas is for their graphs, and isn't waited for; it goes once the
+			// tick is taken here (in the order taken), so a replica that has a tick passed on has it from one that took it.
 			const taken = compute?.recordUsage?.(hostId, parsed.value);
-			if (taken !== undefined) report(taken);
-			cluster?.shareUsage(hostId, parsed.value);
+			if (taken === undefined) {
+				cluster?.shareUsage(hostId, parsed.value);
+				return undefined;
+			}
+			report(taken);
+			if (cluster !== undefined) {
+				taken.then(
+					() => cluster.shareUsage(hostId, parsed.value),
+					() => undefined,
+				);
+			}
 			return taken;
 		},
 		onDisconnected(hostId) {

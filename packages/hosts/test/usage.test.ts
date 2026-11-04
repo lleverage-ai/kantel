@@ -142,7 +142,7 @@ describe("acknowledged usage ticks (usage-acks)", () => {
 		}
 	});
 
-	it("are acknowledged once compute has taken them, in order, and never one compute failed to take or after it", async () => {
+	it("are acknowledged once compute has taken them, in order, and never one compute failed to take", async () => {
 		const holds = new Map<number, { resolve: () => void; reject: (error: Error) => void }>();
 		const { service, hostId } = await linked(
 			(_, usage) =>
@@ -160,11 +160,11 @@ describe("acknowledged usage ticks (usage-acks)", () => {
 		expect(acks(host)).toEqual([]);
 		holds.get(1)?.resolve();
 		await vi.waitFor(() => expect(acks(host)).toEqual([1]));
-		// 2 fails: neither it nor anything after it is acknowledged on this connection, so the host sends it again.
+		// 2 fails, and compute fails those after it too (it holds them until 2 is in): none is acknowledged, so the host
+		// sends them again.
 		holds.get(2)?.reject(new Error("store down"));
-		await new Promise((resolve) => setTimeout(resolve, 5));
-		holds.get(3)?.resolve();
-		holds.get(4)?.resolve();
+		holds.get(3)?.reject(new Error("store down"));
+		holds.get(4)?.reject(new Error("store down"));
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		expect(acks(host)).toEqual([1]);
 

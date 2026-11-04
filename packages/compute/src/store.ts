@@ -479,6 +479,19 @@ export interface StoredSetting {
 	readonly updatedBy: string;
 }
 
+/**
+ * The newest numbered usage tick (`ReportedUsage.seq` in its `run`) a gateway replica has claimed to export, for the host
+ * that is its ID. A replica that takes a tick straight from its host claims it first, and only the replica whose claim
+ * moves the mark on exports it: a tick the host sends again to another replica after a reconnect, which the first
+ * already claimed, is only drawn there, so it is exported once however the replicas pass ticks on to each other.
+ */
+export interface StoredUsageMark {
+	readonly id: string;
+	readonly run: string;
+	readonly seq: number;
+	readonly updatedAt: number;
+}
+
 /** A device sign-in (`kantel login` in a browser); its ID is the SHA-256 hex of its device code. */
 export interface StoredDeviceLogin {
 	readonly id: string;
@@ -558,6 +571,8 @@ export interface ComputeStore {
 	/** Template snapshots: a cache, apart from `snapshots`, which the template code never reads or writes. */
 	readonly templateSnapshots: Collection<StoredTemplateSnapshot>;
 	readonly templateBases: Collection<StoredTemplateBase>;
+	/** Which replica exports each host's numbered usage ticks (`StoredUsageMark`): one record per host. */
+	readonly usageMarks: Collection<StoredUsageMark>;
 }
 
 /**
@@ -694,6 +709,7 @@ export function createMemoryStore(): ComputeStore {
 		bucketSources: memoryCollection(),
 		fileUrls: memoryCollection(),
 		settings: memoryCollection(),
+		usageMarks: memoryCollection(),
 		templates: templates.collection,
 		templateVersions: templateVersions.collection,
 		templateWrites: memoryTemplateWrites(templates, templateVersions),
