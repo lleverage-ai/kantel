@@ -37,7 +37,13 @@ import type {
 	Webhook,
 	WebhookDelivery,
 } from "./compute-model.ts";
-import { FilesRefusedError, sameProxySettings, sizeSpec } from "./compute-model.ts";
+import {
+	cliSshCommand,
+	FilesRefusedError,
+	sameProxySettings,
+	sizeSpec,
+	sshWithoutCliCommand,
+} from "./compute-model.ts";
 
 /** The code the fixtures' waiting command line showed. */
 export const FIXTURE_DEVICE_CODE = "BCDF-GHJK";
@@ -1499,10 +1505,34 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					const box = find(sandboxes, id, "sandbox");
 					const token = fakeSecret("").slice(0, 16);
 					return {
-						ssh: `ssh ${box.id}@ssh.kantel.example.com`,
+						ssh: cliSshCommand(box.id),
+						sshWithoutCli: true,
 						desktopUrl: `https://${box.hostname}/desktop?token=${token}`,
 						desktopViewUrl: `https://${box.hostname}/desktop?token=${token}#shared`,
 						browserUrl: `https://${box.hostname}/browser?token=${token}`,
+					};
+				}),
+			sshKey: (id, publicKey) =>
+				gate(() => {
+					const box = find(sandboxes, id, "sandbox");
+					const target = {
+						sandboxId: box.id,
+						user: "user",
+						host: "kantel.example.com",
+						port: 443,
+						proxyUrl: `wss://kantel.example.com/v1/hosts/tunnel/${fakeSecret("").slice(0, 24)}`,
+					};
+					const shown = {
+						hostKeyFingerprint: "SHA256:q8Yf3uZb1nO0xT4rWk7mJcVd2sLhP9aE6gRiKy5tBvU",
+						expiresAt: now() + 10 * MINUTE,
+					};
+					if (publicKey !== undefined) return { command: sshWithoutCliCommand(target), ...shown };
+					const keyFile = { name: `kantel-${box.id}`, path: `~/Downloads/kantel-${box.id}` };
+					return {
+						command: sshWithoutCliCommand(target, keyFile.path),
+						privateKey: `-----BEGIN OPENSSH PRIVATE KEY-----\n${fakeSecret("sample")}\n-----END OPENSSH PRIVATE KEY-----\n`,
+						keyFile,
+						...shown,
 					};
 				}),
 			history: (id) =>

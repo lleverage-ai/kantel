@@ -259,7 +259,7 @@ describe("sandboxes", () => {
 		});
 		await refusing.api.service.idle();
 		const refused = await there.sandboxes.access(box.id);
-		expect(refused.ssh).toContain("ssh");
+		expect(refused.ssh).toBe(`kantel ssh ${box.id}`);
 		expect(refused.unavailable).toEqual({ desktop: SCREENS_NOT_SERVED, browser: SCREENS_NOT_SERVED });
 		expect([refused.desktopUrl, refused.desktopViewUrl, refused.browserUrl]).toEqual(["", "", ""]);
 
@@ -288,7 +288,45 @@ describe("sandboxes", () => {
 		expect(inSpace.unavailable).toEqual({ desktop: SCREENS_NOT_END_TO_END, browser: SCREENS_NOT_END_TO_END });
 		// SSH is E2E v1's own: the host refuses the gateway's, which lets a key in with a command.
 		expect(inSpace.ssh).toBe(`kantel e2e ssh ${made.id}`);
+		expect(inSpace.sshWithoutCli).toBe(false);
 		expect(asked.filter((path) => /\/(desktop|browser|ssh)$/.test(path))).toEqual([]);
+	});
+
+	it("shows the CLI's ssh and lets a key in for plain ssh only when asked, with the private key Kantel made", async () => {
+		const { api, fetchApi } = setup();
+		const asked: string[] = [];
+		const source = await open(async (input, init) => {
+			asked.push(new URL(input instanceof Request ? input.url : String(input), ORIGIN).pathname);
+			return fetchApi(input, init);
+		});
+		const made = await source.sandboxes.create({
+			accountId: await personalAccount(source),
+			kind: "microvm",
+			size: "small",
+		});
+		await api.service.idle();
+
+		// Opening the page lets no key in: the CLI's command needs nothing from the API.
+		const access = await source.sandboxes.access(made.id);
+		expect(access.ssh).toBe(`kantel ssh ${made.id}`);
+		expect(access.sshWithoutCli).toBe(true);
+		expect(asked.filter((path) => path.endsWith("/ssh"))).toEqual([]);
+
+		// Without a public key, Kantel makes a pair: its private half is the download, and the command uses its file.
+		const generated = await source.sandboxes.sshKey?.(made.id);
+		expect(generated?.privateKey).toMatch(/^-----BEGIN OPENSSH PRIVATE KEY-----\n[\s\S]*\n$/);
+		expect(generated?.keyFile).toEqual({ name: `kantel-${made.id}`, path: `~/Downloads/kantel-${made.id}` });
+		expect(generated?.command).toBe(
+			`chmod 600 ~/Downloads/kantel-${made.id} && ssh -i ~/Downloads/kantel-${made.id} -o IdentitiesOnly=yes -p 2222 ${made.id}@ssh.stub.kantel.invalid`,
+		);
+		expect(generated?.hostKeyFingerprint).toBe("SHA256:stub");
+
+		// With one, it's let in as it is and nothing private comes back.
+		const given = await source.sandboxes.sshKey?.(made.id, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample ada@laptop");
+		expect(given?.privateKey).toBeUndefined();
+		expect(given?.keyFile).toBeUndefined();
+		expect(given?.command).toBe(`ssh -p 2222 ${made.id}@ssh.stub.kantel.invalid`);
+		expect(asked.filter((path) => path.endsWith("/ssh"))).toHaveLength(2);
 	});
 
 	it("lists and reads an E2E sandbox's files over the console's own session, never the gateway's file routes", async () => {
