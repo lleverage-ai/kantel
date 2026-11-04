@@ -14,7 +14,7 @@ import { useLoad } from "../primitives/load.ts";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
 import { bytesText, type SnapshotEntry, type SnapshotsSource } from "./compute-model.ts";
-import { cellSub, messageOf, rowHover, table, tableFrame, td, th } from "./parts.tsx";
+import { cellSub, messageOf, None, rowHover, TableFrame, table, tableFrame, td, th } from "./parts.tsx";
 
 export interface SnapshotFilesProps {
 	readonly source: Pick<SnapshotsSource, "list" | "read" | "downloadUrl">;
@@ -145,7 +145,7 @@ function EntryTable({
 	onOpen: (entry: SnapshotEntry) => void;
 }) {
 	return (
-		<div className={tableFrame}>
+		<TableFrame>
 			<table className={table}>
 				<thead>
 					<tr>
@@ -164,7 +164,12 @@ function EntryTable({
 					{entries.map((entry) => {
 						const current = entry.path === open;
 						return (
-							<tr key={entry.path} className={current ? "bg-selected" : rowHover} data-entry={entry.path}>
+							<tr
+								key={entry.path}
+								className={current ? "bg-selected" : rowHover}
+								data-entry={entry.path}
+								data-row={current ? "selected" : undefined}
+							>
 								<td className={`${td} w-full max-w-0`}>
 									<button
 										type="button"
@@ -179,17 +184,17 @@ function EntryTable({
 									</button>
 								</td>
 								<td className={`${td} text-right text-muted tabular-nums`}>
-									{entry.sizeBytes === undefined ? "–" : bytesText(entry.sizeBytes)}
+									{entry.sizeBytes === undefined ? <None /> : bytesText(entry.sizeBytes)}
 								</td>
 								<td className={`${td} text-muted`}>
-									{entry.modifiedAt === undefined ? "–" : compactAge(entry.modifiedAt, now)}
+									{entry.modifiedAt === undefined ? <None /> : compactAge(entry.modifiedAt, now)}
 								</td>
 							</tr>
 						);
 					})}
 				</tbody>
 			</table>
-		</div>
+		</TableFrame>
 	);
 }
 

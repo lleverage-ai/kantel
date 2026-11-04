@@ -23,7 +23,7 @@ import {
 	sizeSpec,
 	usedShare,
 } from "./compute-model.ts";
-import { CapacityBar, computePage, messageOf, SectionHeading, table, tableFrame, td, th } from "./parts.tsx";
+import { CapacityBar, computePage, messageOf, None, SectionHeading, TableFrame, table, td, th } from "./parts.tsx";
 
 export interface BillingPageProps {
 	readonly source: BillingSource;
@@ -304,12 +304,7 @@ function SandboxRates() {
 		<section className="flex min-w-0 flex-col gap-2" aria-label="Sandbox rates">
 			<SectionHeading title="Sandbox rates" />
 			{/* Nothing in it takes focus, so the frame does: on a phone it scrolls sideways, and the keyboard must reach it. */}
-			<section
-				className={`kt-focusable ${tableFrame}`}
-				// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling region must be reachable to scroll by keyboard.
-				tabIndex={0}
-				aria-label="Sandbox rates table"
-			>
+			<TableFrame className="kt-focusable" role="region" tabIndex={0} aria-label="Sandbox rates table">
 				<table className={table}>
 					<thead>
 						<tr>
@@ -338,13 +333,13 @@ function SandboxRates() {
 								<td className={`${td} text-right tabular-nums`}>{spec.memoryGb} GB</td>
 								<td className={`${td} text-right tabular-nums`}>{spec.diskGb} GB</td>
 								<td className={`${td} text-right tabular-nums`}>
-									{spec.centsPerHour === undefined ? "–" : costText(spec.centsPerHour)}
+									{spec.centsPerHour === undefined ? <None /> : costText(spec.centsPerHour)}
 								</td>
 							</tr>
 						))}
 					</tbody>
 				</table>
-			</section>
+			</TableFrame>
 			<p className="m-0 text-xs text-muted">
 				MicroVMs are billed at these rates while they run. Isolates are billed per CPU-second instead, at a small
 				fraction of them.

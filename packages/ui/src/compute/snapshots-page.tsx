@@ -28,7 +28,7 @@ import {
 	type SnapshotReason,
 	type SnapshotsSource,
 } from "./compute-model.ts";
-import { cellSub, computePage, messageOf, rowHover, table, tableFrame, td, th } from "./parts.tsx";
+import { cellSub, computePage, messageOf, rowHover, TableFrame, table, tableFrame, td, th } from "./parts.tsx";
 import { SnapshotFiles } from "./snapshot-files.tsx";
 
 /** Where the page is: the saved snapshots, one sandbox's history, or the files in a snapshot. */
@@ -245,7 +245,7 @@ function SavedList({
 	}
 	return (
 		<>
-			<div className={tableFrame}>
+			<TableFrame>
 				<table className={table}>
 					<thead>
 						<tr>
@@ -333,7 +333,7 @@ function SavedList({
 						})}
 					</tbody>
 				</table>
-			</div>
+			</TableFrame>
 			<DeleteDialog
 				open={deleting !== undefined}
 				title="Delete saved snapshot?"
@@ -445,7 +445,7 @@ function SandboxHistory({
 	}
 	return (
 		<>
-			<div className={tableFrame}>
+			<TableFrame>
 				<table className={table}>
 					<thead>
 						<tr>
@@ -509,7 +509,7 @@ function SandboxHistory({
 						})}
 					</tbody>
 				</table>
-			</div>
+			</TableFrame>
 			<DeleteDialog
 				open={deleting !== undefined}
 				title="Delete snapshot?"

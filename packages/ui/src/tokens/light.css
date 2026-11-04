@@ -1,56 +1,73 @@
 /* The light theme's palette: every colour the light theme sets, and the one place to change it. It sets the same
    tokens as dark.css (src/tokens/theme.test.ts holds the two together), so nothing of the dark palette shows through.
 
-   Lleverage's "Crisp": paper (#f9f7f0), the brand's page ground, with white for things raised above it; midnight text
-   and a midnight (navy) primary action; the orange kept as the highlight (focus, where you are), with links in a
-   darker cut of it so they pass AA on paper. On [data-kt-theme="light"], which
-   src/theme/controller.ts sets on <html> when a person chooses Light, or System on a light device. The doubled attribute
-   outweighs dark.css's :root and portal rules. */
+   Tom's palette, 3 Nov 2026: the Lleverage web "Crisp" theme. A warm off-white page with white cards on it, deep navy
+   for the primary and the brand's orange as the highlight. Each of his tokens is noted beside the one it sets; values
+   in hsl() are his, as given. The indigo status, the syntax colours and the effects are Kantel's own, fitted to his
+   surfaces. On [data-kt-theme="light"], which src/theme/controller.ts sets on <html> when a person chooses Light, or
+   System on a light device. The doubled attribute outweighs dark.css's :root and portal rules.
+
+   Outside CSS, the light theme-color in apps/console/index.html (#faf9f5, his background) repeats the canvas. */
 
 [data-kt-theme="light"][data-kt-theme],
 [data-kt-theme="light"] .kt-theme {
 	color-scheme: light;
 
-	/* Surfaces. */
-	--kt-canvas: #f9f7f0;
-	--kt-panel: #f3f1e9;
-	--kt-raised: #ffffff;
-	--kt-sunken: #efede4;
+	/* Surfaces: the canvas, a panel a shade under it (the sidebar, a table's frame), white cards, and a well (a field,
+	   code) a shade under the panel. */
+	--kt-canvas: hsl(48 33% 97%); /* background */
+	--kt-panel: hsl(50 20% 95%); /* surface-subtle */
+	--kt-raised: hsl(0 0% 100%); /* card */
+	--kt-sunken: hsl(50 18% 93%); /* muted */
 	--kt-hover: color-mix(in srgb, var(--kt-text) 5%, transparent);
 	--kt-active: color-mix(in srgb, var(--kt-text) 9%, transparent);
 	--kt-selected: color-mix(in srgb, var(--kt-text) 7%, transparent);
-	--kt-user-message: #ecebe1;
-	--kt-code: #f3f1ea;
-	--kt-scrim: rgb(0 0 0 / 0.3);
+	--kt-user-message: hsl(60 32% 91.4%); /* secondary */
+	--kt-code: hsl(50 18% 93%); /* muted */
+	--kt-scrim: hsl(60 10% 10% / 0.28); /* scrim */
+	/* A bar that stays over scrolling content (the phone's top bar), frosted. */
+	--kt-backdrop: hsl(48 20% 97% / 0.8); /* backdrop */
 
-	/* Lines: midnight, faint. */
-	--kt-border: color-mix(in srgb, var(--kt-text) 10%, transparent);
-	--kt-border-strong: color-mix(in srgb, var(--kt-text) 16%, transparent);
-	--kt-border-input: color-mix(in srgb, var(--kt-text) 18%, transparent);
+	/* Filled controls that aren't the primary: a secondary button, and under the pointer. */
+	--kt-secondary: hsl(60 32% 91.4%); /* secondary */
+	--kt-secondary-hover: hsl(60 35% 85%); /* secondary-hover */
 
-	/* Text: midnight. */
-	--kt-text: #141e28;
-	--kt-text-muted: #4f4f4c;
-	--kt-text-faint: #656563;
-	--kt-text-disabled: #abaca7;
+	/* Lines. */
+	--kt-border: hsl(48 22% 87%); /* border */
+	--kt-border-strong: hsl(48 22% 84%); /* input */
+	--kt-border-input: hsl(48 22% 84%); /* input */
 
-	/* The accent. */
-	--kt-accent: #ec7523;
-	--kt-accent-hover: #d9661a;
-	--kt-accent-fg: #141e28;
-	--kt-accent-text: #a84d0c;
-	/* The primary action (one per surface): Crisp's navy, with white on it. */
-	--kt-primary: #141e28;
-	--kt-primary-hover: #2c353e;
-	--kt-primary-fg: #ffffff;
+	/* Text. The disabled grey is his muted-fg-subtle, under AA (2.51:1 on the canvas) as disabled text may be; the faint
+	   text a step under the muted is a mix of the two that keeps AA. */
+	--kt-text: hsl(83 11% 14.1%); /* foreground */
+	--kt-text-muted: hsl(60 7% 40%); /* muted-fg */
+	--kt-text-faint: color-mix(in srgb, var(--kt-text-muted) 95%, var(--kt-text-disabled));
+	--kt-text-disabled: hsl(60 7% 60%); /* muted-fg-subtle */
 
-	/* Status. */
-	--kt-status-working: #2f6a9f;
-	--kt-status-waiting: #5650b8;
-	--kt-status-approval: #7f6200;
-	--kt-status-done: #2f7650;
-	--kt-status-error: #b3312b;
-	--kt-status-idle: #656563;
+	/* The accent: his highlight, the brand's orange, for what is pointed out rather than pressed (focus, where you are),
+	   with his foreground on it. It is under AA as text on the canvas (2.82:1), so links are a darker cut of the same
+	   hue that passes on the canvas and the panel. */
+	--kt-accent: hsl(24 84% 53.1%); /* highlight */
+	--kt-accent-hover: hsl(24 84% 47%); /* highlight-hover */
+	--kt-accent-fg: hsl(83 11% 14.1%); /* foreground */
+	--kt-accent-text: hsl(24 84% 36%); /* highlight, darkened for text */
+	/* The primary action (one per surface): deep navy, with white on it. */
+	--kt-primary: hsl(230 35% 15%); /* primary */
+	--kt-primary-hover: hsl(230 35% 22%); /* primary-hover */
+	--kt-primary-fg: hsl(0 0% 100%); /* on-primary */
+
+	/* Status text: info, success, warning and destructive as his text colours, plus Kantel's indigo for waiting. */
+	--kt-status-working: hsl(210 45% 45%); /* info */
+	--kt-status-waiting: #5650b8; /* indigo: waiting on an answer from you */
+	--kt-status-approval: hsl(40 70% 30%); /* warning-text */
+	--kt-status-done: hsl(145 35% 35%); /* success */
+	--kt-status-error: hsl(0 55% 40%); /* destructive-text */
+	--kt-status-idle: var(--kt-text-faint); /* nothing happening */
+	/* Solid fills: a destructive button (with --kt-on-solid on it), a bar or a dot that isn't text. */
+	--kt-destructive: hsl(0 55% 40%); /* destructive */
+	--kt-warning: hsl(48 65% 42%); /* warning */
+	--kt-success: hsl(145 35% 35%); /* success */
+	--kt-success-hover: hsl(145 35% 29%); /* success-hover */
 
 	/* Syntax. */
 	--kt-syntax-comment: #636b78;
@@ -60,11 +77,13 @@
 	--kt-syntax-function: #1d4ed8;
 	--kt-syntax-type: #0e7490;
 	--kt-syntax-property: #be185d;
-	--kt-syntax-operator: #4f4f4c;
+	--kt-syntax-operator: var(--kt-text-muted);
 	--kt-syntax-tag: #b91c1c;
 
 	/* Effects. */
-	--kt-shadow-float: 0 12px 32px -12px rgb(0 0 0 / 0.2), 0 0 0 1px var(--kt-border-strong);
+	--kt-shadow-raised: 0 1px 3px rgb(0 0 0 / 0.1); /* shadow-raised */
+	--kt-shadow-float:
+		0 10px 30px rgb(30 30 20 / 0.12), 0 1px 3px rgb(30 30 20 / 0.06), 0 0 0 1px var(--kt-border); /* shadow-float, and an edge */
 	--kt-shadow-composer: 0 14px 32px -18px rgb(0 0 0 / 0.22);
 	--kt-glass-outline: color-mix(in srgb, var(--kt-text) 12%, transparent);
 	--kt-glass-highlight: inset 0 1px 0 0 rgb(255 255 255 / 0.6);
@@ -73,6 +92,6 @@
 	--kt-logo-dark-mark: none;
 	--kt-logo-light-mark: invert(1) hue-rotate(180deg);
 
-	/* The Kantel mark's ink: the approved artwork's grey 900 on a light page. */
+	/* The Kantel mark's ink: the approved artwork's grey 900 on a light page, his foreground. */
 	--kt-brand-ink: #252820;
 }

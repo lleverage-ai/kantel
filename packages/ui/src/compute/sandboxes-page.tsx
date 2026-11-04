@@ -3,10 +3,11 @@
 // hours, when it was made) and rows on a phone. Browser and Desktop show on a running microVM's row under the pointer,
 // Recover on a failed one's, and the ⋯ menu has the rest. New makes a sandbox at once with the defaults (a medium
 // microVM that stops after an hour); its caret opens New sandbox to choose. Either way the new row shows at once,
-// starting, at the top, and the page follows it until it's running. Every call goes through the `SandboxesSource` the
-// host binds; stories bind it to fixtures.
+// starting, at the top, and the page follows it until it's running. Rows can be ticked (Select all is the table's head,
+// or over a phone's rows) to stop or delete several at once. Every call goes through the `SandboxesSource` the host
+// binds; stories bind it to fixtures.
 
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Button, buttonClass, buttonLabelClass } from "../primitives/button.tsx";
 import { SegmentedControl, SelectField, TextField } from "../primitives/controls.tsx";
 import { Dialog } from "../primitives/dialog.tsx";
@@ -50,6 +51,7 @@ import {
 	stopsInText,
 } from "./compute-model.ts";
 import { computePage, messageOf, Sparkline, table } from "./parts.tsx";
+import { ChangeCounter, keepShown, retryTargets } from "./sandbox-selection.ts";
 
 export type SandboxFilter = "all" | "running" | "stopped" | "error";
 
@@ -210,13 +212,16 @@ export function SandboxesPage({
 		});
 	}, [listed]);
 
-	// What this page changed shows at once, and the list is read again behind it.
+	// What this page changed shows at once, and the list is read again behind it. A bulk stop's answer passes what it
+	// asked, so it doesn't undo a change (a delete) that came after it.
+	const changes = useRef(new ChangeCounter()).current;
 	const change = useCallback(
-		(box: Sandbox | null, id: string) => {
+		(box: Sandbox | null, id: string, asked?: number) => {
+			if (!changes.take(id, asked)) return;
 			setLocal((current) => new Map(current).set(id, box));
 			if (!id.startsWith("pending_")) reload();
 		},
-		[reload],
+		[reload, changes],
 	);
 
 	const create = async (input: CreateSandboxInput) => {
@@ -369,6 +374,7 @@ export function SandboxesPage({
 						{...(onSnapshots === undefined ? {} : { onSnapshots })}
 						{...(onEgress === undefined ? {} : { onEgress })}
 						onChange={change}
+						asked={(id) => changes.ask(id)}
 						onNotice={setNotice}
 					/>
 				</>
@@ -404,14 +410,14 @@ type RowCalls = {
 	canSave: boolean;
 	onSnapshots?: (sandboxId: string) => void;
 	onEgress?: (sandboxId: string) => void;
-	onChange: (box: Sandbox | null, id: string) => void;
+	onChange: (box: Sandbox | null, id: string, asked?: number) => void;
 	onNotice: NoticeSetter;
 	onHistory: (box: Sandbox) => void;
 	onDelete: (box: Sandbox) => void;
 	onSave: (box: Sandbox) => void;
 };
 
-/** The table on a wide screen, rows on a phone, and the dialogs either opens. */
+/** The table on a wide screen, rows on a phone, what acts on the ticked ones, and the dialogs either opens. */
 function SandboxList({
 	sandboxes,
 	hosting,
@@ -422,6 +428,7 @@ function SandboxList({
 	onSnapshots,
 	onEgress,
 	onChange,
+	asked,
 	onNotice,
 }: {
 	sandboxes: readonly Sandbox[];
@@ -432,12 +439,45 @@ function SandboxList({
 	save?: (sandboxId: string, name: string) => Promise<SavedSnapshot>;
 	onSnapshots?: (sandboxId: string) => void;
 	onEgress?: (sandboxId: string) => void;
-	onChange: (box: Sandbox | null, id: string) => void;
+	onChange: (box: Sandbox | null, id: string, asked?: number) => void;
+	/** Where a sandbox's changes have got to, for `onChange` from an answer that may be overtaken. */
+	asked: (id: string) => number;
 	onNotice: NoticeSetter;
 }) {
 	const [history, setHistory] = useState<Sandbox>();
-	const [deleting, setDeleting] = useState<Sandbox>();
+	const [deleting, setDeleting] = useState<readonly Sandbox[]>();
 	const [saving, setSaving] = useState<Sandbox>();
+	// The sandboxes ticked, by ID. One a search, a filter or a delete hides is dropped, so it can't come back ticked.
+	const [ticked, setTicked] = useState<ReadonlySet<string>>(new Set());
+	const selectable = sandboxes.filter((box) => !box.id.startsWith("pending_"));
+	const shownIds = selectable.map((box) => box.id).join(" ");
+	useEffect(() => setTicked((current) => keepShown(current, shownIds.split(" "))), [shownIds]);
+	const selected = selectable.filter((box) => ticked.has(box.id));
+	const allTicked = selectable.length > 0 && selected.length === selectable.length;
+	const someTicked = selected.length > 0 && !allTicked;
+	const tickAll = (on: boolean) => setTicked(on ? new Set(selectable.map((box) => box.id)) : new Set());
+	const tick = (id: string, on: boolean) =>
+		setTicked((current) => {
+			const next = new Set(current);
+			if (on) next.add(id);
+			else next.delete(id);
+			return next;
+		});
+	const stoppable = selected.filter((box) => sandboxActions(box.state).stop);
+	const [stopping, setStopping] = useState(false);
+	const stopSelected = async () => {
+		setStopping(true);
+		// Each answer shows as it comes, unless that sandbox changed since (a row's own stop or delete).
+		const results = await Promise.allSettled(
+			stoppable.map(async (box) => {
+				const since = asked(box.id);
+				onChange(await source.stop(box.id), box.id, since);
+			}),
+		);
+		setStopping(false);
+		const failed = results.filter((result) => result.status === "rejected").length;
+		if (failed > 0) onNotice({ level: "error", text: `Kantel couldn't stop ${failed} of them. Try again.` });
+	};
 	if (sandboxes.length === 0) {
 		return <p className="m-0 text-sm text-muted">No sandboxes match.</p>;
 	}
@@ -449,15 +489,46 @@ function SandboxList({
 		onChange,
 		onNotice,
 		onHistory: setHistory,
-		onDelete: setDeleting,
+		onDelete: (box) => setDeleting([box]),
 		onSave: setSaving,
 	};
 	return (
 		<>
+			<SelectionBar
+				narrow={narrow}
+				count={selected.length}
+				all={allTicked}
+				some={someTicked}
+				disabled={selectable.length === 0}
+				onAll={tickAll}
+				actions={
+					<>
+						<Button
+							size="sm"
+							icon={<StopIcon size="sm" />}
+							disabled={stoppable.length === 0}
+							busy={stopping}
+							onClick={() => void stopSelected()}
+						>
+							Stop
+						</Button>
+						<Button size="sm" variant="danger" icon={<TrashIcon />} onClick={() => setDeleting(selected)}>
+							Delete
+						</Button>
+					</>
+				}
+			/>
 			{narrow ? (
 				<ul className="kt-sandbox-rows m-0 flex list-none flex-col p-0">
 					{sandboxes.map((box) => (
-						<SandboxPhoneRow key={box.id} sandbox={box} now={now} calls={calls} />
+						<SandboxPhoneRow
+							key={box.id}
+							sandbox={box}
+							now={now}
+							calls={calls}
+							ticked={ticked.has(box.id)}
+							onTick={(on) => tick(box.id, on)}
+						/>
 					))}
 				</ul>
 			) : (
@@ -465,6 +536,15 @@ function SandboxList({
 					<table className={table}>
 						<thead>
 							<tr>
+								<th className={`${head} w-0 pr-0`} scope="col">
+									<TickBox
+										label="Select all sandboxes"
+										checked={allTicked}
+										indeterminate={someTicked}
+										disabled={selectable.length === 0}
+										onChange={tickAll}
+									/>
+								</th>
 								<th className={head} scope="col">
 									Name
 								</th>
@@ -498,7 +578,15 @@ function SandboxList({
 						</thead>
 						<tbody>
 							{sandboxes.map((box) => (
-								<SandboxRow key={box.id} sandbox={box} hosting={hosting} now={now} calls={calls} />
+								<SandboxRow
+									key={box.id}
+									sandbox={box}
+									hosting={hosting}
+									now={now}
+									calls={calls}
+									ticked={ticked.has(box.id)}
+									onTick={(on) => tick(box.id, on)}
+								/>
 							))}
 						</tbody>
 					</table>
@@ -506,12 +594,26 @@ function SandboxList({
 			)}
 			<HistoryDialog sandbox={history} source={source} now={now} onClose={() => setHistory(undefined)} />
 			<DeleteDialog
-				sandbox={deleting}
+				sandboxes={deleting}
 				onClose={() => setDeleting(undefined)}
-				onDelete={async (box) => {
-					await source.remove(box.id);
-					onChange(null, box.id);
-					onNotice({ level: "info", text: `Deleted ${box.name} and its snapshots.` });
+				onDelete={async (boxes) => {
+					const results = await Promise.allSettled(boxes.map((box) => source.remove(box.id)));
+					const gone = boxes.filter((_, at) => results[at]?.status === "fulfilled");
+					for (const box of gone) onChange(null, box.id);
+					const failure = results.find((result) => result.status === "rejected");
+					if (failure !== undefined) {
+						// The dialog stays open on the ones that are left, so Delete again doesn't retry the deleted, unless it was
+						// closed meanwhile or opened again on others.
+						setDeleting((current) => retryTargets(current, boxes, results));
+						throw failure.reason;
+					}
+					onNotice({
+						level: "info",
+						text:
+							gone.length === 1
+								? `Deleted ${gone[0]?.name} and its snapshots.`
+								: `Deleted ${gone.length} sandboxes and their snapshots.`,
+					});
 				}}
 			/>
 			{save === undefined ? null : (
@@ -719,20 +821,30 @@ function SandboxRow({
 	hosting,
 	now,
 	calls,
+	ticked,
+	onTick,
 }: {
 	sandbox: Sandbox;
 	hosting: HostingMode;
 	now: number;
 	calls: RowCalls;
+	ticked: boolean;
+	onTick: (on: boolean) => void;
 }) {
-	const { can, windows, open, resume, recover, menu } = useRowActions(sandbox, calls);
+	const { pending, can, windows, open, resume, recover, menu } = useRowActions(sandbox, calls);
 	const stops = stopsText(sandbox, now);
 	return (
-		<tr className="kt-sandbox-row group/row hover:bg-hover" data-sandbox={sandbox.id}>
-			<td className={cell}>
-				<span className="block max-w-(--kt-popover-width) truncate font-medium text-fg">{sandbox.name}</span>
+		<tr className={`kt-sandbox-row group/row ${ticked ? "bg-selected" : "hover:bg-hover"}`} data-sandbox={sandbox.id}>
+			<td className={`${cell} w-0 pr-0`}>
+				<TickBox label={`Select ${sandbox.name}`} checked={ticked} disabled={pending} onChange={onTick} />
+			</td>
+			{/* The name takes the room the other columns leave, and truncates, so the row's actions never go off the edge. */}
+			<td className={`${cell} w-full min-w-40 max-w-0`}>
+				<span className="block truncate font-medium text-fg" title={sandbox.name}>
+					{sandbox.name}
+				</span>
 				{sandbox.state === "error" && sandbox.error !== undefined ? (
-					<span className="block max-w-(--kt-popover-width) truncate text-xs text-status-error" title={sandbox.error}>
+					<span className="block truncate text-xs text-status-error" title={sandbox.error}>
 						{sandbox.error}
 					</span>
 				) : null}
@@ -791,14 +903,27 @@ function SandboxRow({
 }
 
 /** A phone's row: the name with its CPU and state beside it, the machine and when it stops under it, and ⋯. */
-function SandboxPhoneRow({ sandbox, now, calls }: { sandbox: Sandbox; now: number; calls: RowCalls }) {
-	const { menu } = useRowActions(sandbox, calls);
+function SandboxPhoneRow({
+	sandbox,
+	now,
+	calls,
+	ticked,
+	onTick,
+}: {
+	sandbox: Sandbox;
+	now: number;
+	calls: RowCalls;
+	ticked: boolean;
+	onTick: (on: boolean) => void;
+}) {
+	const { pending, menu } = useRowActions(sandbox, calls);
 	const stops = stopsText(sandbox, now);
 	return (
 		<li
-			className="kt-sandbox-row flex min-w-0 items-center gap-2 border-b border-border py-3"
+			className={`kt-sandbox-row flex min-w-0 items-center gap-3 border-b border-border py-3 ${ticked ? "bg-selected" : ""}`}
 			data-sandbox={sandbox.id}
 		>
+			<TickBox label={`Select ${sandbox.name}`} checked={ticked} disabled={pending} onChange={onTick} />
 			<div className="flex min-w-0 flex-1 flex-col gap-1">
 				<div className="flex min-w-0 items-center gap-3">
 					<span className="min-w-0 flex-1 truncate text-md font-medium text-fg">{sandbox.name}</span>
@@ -1016,24 +1141,119 @@ function HistoryDialog({
 	);
 }
 
+/** A row's checkbox, or the head's for all of them: `indeterminate` when some are ticked. */
+function TickBox({
+	id,
+	label,
+	checked,
+	indeterminate = false,
+	disabled = false,
+	onChange,
+}: {
+	id?: string;
+	label: string;
+	checked: boolean;
+	indeterminate?: boolean;
+	disabled?: boolean;
+	onChange: (on: boolean) => void;
+}) {
+	const ref = useRef<HTMLInputElement>(null);
+	useEffect(() => {
+		if (ref.current !== null) ref.current.indeterminate = indeterminate;
+	}, [indeterminate]);
+	return (
+		<input
+			ref={ref}
+			id={id}
+			type="checkbox"
+			className="kt-checkbox kt-focusable m-0 block size-3.5 flex-none cursor-pointer accent-accent disabled:cursor-default"
+			aria-label={label}
+			checked={checked}
+			disabled={disabled}
+			onChange={(event) => onChange(event.target.checked)}
+		/>
+	);
+}
+
+/**
+ * Over the list: what acts on the ticked sandboxes, once any are, and on a phone Select all, which the table's head has
+ * on a wide screen. Nothing on a wide screen until something is ticked.
+ */
+function SelectionBar({
+	narrow,
+	count,
+	all,
+	some,
+	disabled,
+	onAll,
+	actions,
+}: {
+	narrow: boolean;
+	count: number;
+	all: boolean;
+	some: boolean;
+	disabled: boolean;
+	onAll: (on: boolean) => void;
+	actions: ReactNode;
+}) {
+	const allId = useId();
+	if (!narrow && count === 0) return null;
+	return (
+		<div className="kt-selection-bar flex min-h-control-sm flex-wrap items-center gap-x-3 gap-y-2">
+			{narrow ? (
+				<span className="flex items-center gap-3 text-sm text-muted">
+					<TickBox
+						id={allId}
+						label="Select all"
+						checked={all}
+						indeterminate={some}
+						disabled={disabled}
+						onChange={onAll}
+					/>
+					<label htmlFor={allId} className="cursor-pointer">
+						{count === 0 ? "Select all" : `${count} selected`}
+					</label>
+				</span>
+			) : (
+				<span className="text-sm text-fg tabular-nums" aria-live="polite">
+					{count} selected
+				</span>
+			)}
+			{count === 0 ? null : (
+				<span className="ml-auto flex flex-wrap items-center gap-2">
+					{actions}
+					<Button size="sm" variant="ghost" onClick={() => onAll(false)}>
+						Clear
+					</Button>
+				</span>
+			)}
+		</div>
+	);
+}
+
 function DeleteDialog({
-	sandbox,
+	sandboxes,
 	onClose,
 	onDelete,
 }: {
-	sandbox: Sandbox | undefined;
+	sandboxes: readonly Sandbox[] | undefined;
 	onClose: () => void;
-	onDelete: (box: Sandbox) => Promise<void>;
+	onDelete: (boxes: readonly Sandbox[]) => Promise<void>;
 }) {
+	const sandbox = sandboxes?.length === 1 ? sandboxes[0] : undefined;
 	const [busy, setBusy] = useState(false);
 	const [failure, setFailure] = useState<string>();
+	// Which attempt the dialog is showing: one that settles after the dialog closed (or was opened again) leaves it be.
+	const attempt = useRef(0);
 	const close = () => {
+		attempt.current += 1;
+		setBusy(false);
 		setFailure(undefined);
 		onClose();
 	};
 	return (
 		<Dialog
-			open={sandbox !== undefined}
+			open={sandboxes !== undefined && sandboxes.length > 0}
 			title="Delete permanently?"
 			onClose={close}
 			actions={
@@ -1043,14 +1263,16 @@ function DeleteDialog({
 						variant="danger"
 						busy={busy}
 						onClick={() => {
-							if (sandbox === undefined) return;
+							if (sandboxes === undefined) return;
+							const mine = ++attempt.current;
 							setBusy(true);
-							onDelete(sandbox).then(
+							setFailure(undefined);
+							onDelete(sandboxes).then(
 								() => {
-									setBusy(false);
-									close();
+									if (attempt.current === mine) close();
 								},
 								(caught: unknown) => {
+									if (attempt.current !== mine) return;
 									setBusy(false);
 									setFailure(messageOf(caught, "Kantel couldn't delete it. Try again."));
 								},
@@ -1062,9 +1284,16 @@ function DeleteDialog({
 				</>
 			}
 		>
-			<p>
-				<strong>{sandbox?.name}</strong> and every snapshot of it go for good. Saved snapshots made from it stay.
-			</p>
+			{sandbox !== undefined || sandboxes === undefined ? (
+				<p>
+					<strong>{sandbox?.name}</strong> and every snapshot of it go for good. Saved snapshots made from it stay.
+				</p>
+			) : (
+				<p>
+					<strong>{sandboxes.length} sandboxes</strong> and every snapshot of them go for good. Saved snapshots made
+					from them stay.
+				</p>
+			)}
 			{failure === undefined ? null : <p className="kt-dialog-error">{failure}</p>}
 		</Dialog>
 	);

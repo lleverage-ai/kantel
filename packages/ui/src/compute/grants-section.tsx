@@ -12,7 +12,7 @@ import { TrashIcon } from "../primitives/lucide.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { type EgressGrant, HTTP_METHODS, type HttpMethod } from "./compute-model.ts";
 import { hostProblem, pathProblem, splitList } from "./egress-rules.ts";
-import { cellMono, cellSub, messageOf, SectionHeading, table, tableFrame, td, th } from "./parts.tsx";
+import { cellMono, cellSub, messageOf, SectionHeading, TableFrame, table, td, th } from "./parts.tsx";
 
 let newGrants = 0;
 
@@ -76,12 +76,7 @@ export function GrantsSection({
 				<p className="m-0 text-sm text-muted">No grants: the account's proxy settings decide.</p>
 			) : (
 				// The frame takes focus: inherited rows have nothing that does, and on a phone it scrolls sideways.
-				<section
-					className={`kt-focusable ${tableFrame}`}
-					// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling region must be reachable to scroll by keyboard.
-					tabIndex={0}
-					aria-label={`${title} table`}
-				>
+				<TableFrame className="kt-focusable" role="region" tabIndex={0} aria-label={`${title} table`}>
 					<table className={table}>
 						<thead>
 							<tr>
@@ -142,7 +137,7 @@ export function GrantsSection({
 							))}
 						</tbody>
 					</table>
-				</section>
+				</TableFrame>
 			)}
 			{adding ? (
 				<GrantDialog

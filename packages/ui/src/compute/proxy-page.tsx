@@ -26,7 +26,7 @@ import {
 	type ProxySettingsChange,
 	type ProxySource,
 } from "./compute-model.ts";
-import { cellMono, computePage, messageOf, SectionHeading, table, tableFrame, td, th } from "./parts.tsx";
+import { cellMono, computePage, messageOf, SectionHeading, TableFrame, table, tableFrame, td, th } from "./parts.tsx";
 
 export interface ProxyPageProps {
 	readonly source: ProxySource;
@@ -534,7 +534,7 @@ function HeadersEditor({
 			{headers.length === 0 ? (
 				<p className="m-0 text-sm text-muted">No headers added.</p>
 			) : (
-				<div className={tableFrame}>
+				<TableFrame>
 					<table className={table}>
 						<thead>
 							<tr>
@@ -580,7 +580,7 @@ function HeadersEditor({
 							))}
 						</tbody>
 					</table>
-				</div>
+				</TableFrame>
 			)}
 			{tlsInspection || headers.length === 0 ? null : (
 				<p className="m-0 text-xs text-muted">
@@ -631,8 +631,7 @@ function HeadersEditor({
 function RequestsTable({ requests, now }: { requests: readonly ProxyRequest[]; now: number }) {
 	return (
 		// Nothing in it takes focus, so the frame does: a narrow screen scrolls it sideways with the arrow keys.
-		// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling region must be reachable by keyboard.
-		<section className={`${tableFrame} kt-focusable`} tabIndex={0} aria-labelledby="proxy-recent-title">
+		<TableFrame className="kt-focusable" role="region" tabIndex={0} aria-labelledby="proxy-recent-title">
 			<table className={table}>
 				<thead>
 					<tr>
@@ -689,6 +688,6 @@ function RequestsTable({ requests, now }: { requests: readonly ProxyRequest[]; n
 					})}
 				</tbody>
 			</table>
-		</section>
+		</TableFrame>
 	);
 }
