@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -70,8 +71,8 @@ func (s *SSHServer) config() (*ssh.ServerConfig, error) {
 	return cfg, nil
 }
 
-// authorized reports whether key is a line of an authorized_keys file (options before the key are allowed, and
-// ignored).
+// authorized reports whether key is a line of an authorized_keys file with no options: an entry with options is
+// refused, since this server enforces none of them.
 func authorized(path string, key ssh.PublicKey) bool {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -79,11 +80,13 @@ func authorized(path string, key ssh.PublicKey) bool {
 	}
 	want := key.Marshal()
 	for len(raw) > 0 {
-		pub, _, _, rest, err := ssh.ParseAuthorizedKey(raw)
+		pub, _, options, rest, err := ssh.ParseAuthorizedKey(raw)
 		if err != nil {
 			return false
 		}
-		if bytes.Equal(pub.Marshal(), want) {
+		// An entry with options (command=, restrict, from=, expiry-time=…) limits what its key may do, and this server
+		// enforces none of them: such an entry lets nothing in, rather than everything.
+		if len(options) == 0 && bytes.Equal(pub.Marshal(), want) {
 			return true
 		}
 		raw = rest
@@ -176,8 +179,11 @@ type session struct {
 }
 
 func (s *SSHServer) session(username string, ch ssh.Channel, reqs <-chan *ssh.Request) {
-	defer ch.Close()
 	sess := &session{env: map[string]string{}}
+	defer func() {
+		ch.Close()
+		sess.hangUp()
+	}()
 	for req := range reqs {
 		ok := false
 		switch req.Type {
@@ -260,7 +266,11 @@ func (s *SSHServer) start(sess *session, username string, ch ssh.Channel, argv [
 	if err != nil {
 		return err
 	}
-	sh := loginShell(u)
+	sh, denied := loginShell(u)
+	if denied && argv == nil {
+		// As sshd: an account whose shell is nologin or false gets no shell and runs no command.
+		return fmt.Errorf("%s may not log in", u.Username)
+	}
 	if sh == "" && argv == nil {
 		return errors.New("this image has no shell (/bin/sh)")
 	}
@@ -316,8 +326,9 @@ func (s *SSHServer) start(sess *session, username string, ch ssh.Channel, argv [
 		sess.tty, sess.cmd = ptmx, cmd
 		go func() { _, _ = io.Copy(ptmx, ch) }()
 		go func() {
-			_, _ = io.Copy(ch, ptmx) // until the terminal's last holder closes it (EIO)
+			_, _ = io.Copy(ch, ptmx) // until the terminal's last holder closes it (EIO), or hangUp closes it
 			code := wait(cmd)
+			sess.finished()
 			ptmx.Close()
 			exit(ch, code)
 		}()
@@ -333,8 +344,52 @@ func (s *SSHServer) start(sess *session, username string, ch ssh.Channel, argv [
 	}
 	sess.cmd = cmd
 	go func() { _, _ = io.Copy(stdin, ch); stdin.Close() }()
-	go func() { exit(ch, wait(cmd)) }()
+	go func() {
+		code := wait(cmd)
+		sess.finished()
+		exit(ch, code)
+	}()
 	return nil
+}
+
+func (sess *session) finished() {
+	sess.mu.Lock()
+	sess.done = true
+	sess.mu.Unlock()
+}
+
+// hangUp ends what a session started when its channel ends before it did (a closed terminal window, a lost
+// connection): it closes the terminal, which hangs it up, and sends the session's process group SIGHUP, then SIGKILL
+// after three seconds. Processes a command put in a session of their own (setsid, a daemon) are left running.
+func (sess *session) hangUp() {
+	sess.mu.Lock()
+	cmd, tty, done := sess.cmd, sess.tty, sess.done
+	sess.mu.Unlock()
+	if cmd == nil || cmd.Process == nil || done {
+		return
+	}
+	if tty != nil {
+		_ = tty.Close()
+	}
+	// Its process group is its own (Setsid with a terminal, Setpgid without), led by it, and not reaped while !done.
+	pgid := cmd.Process.Pid
+	_ = syscall.Kill(-pgid, syscall.SIGHUP)
+	go func() {
+		for range 30 {
+			time.Sleep(100 * time.Millisecond)
+			sess.mu.Lock()
+			done := sess.done
+			sess.mu.Unlock()
+			if done {
+				return
+			}
+		}
+		sess.mu.Lock()
+		defer sess.mu.Unlock()
+		if !sess.done {
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		}
+	}()
 }
 
 func wait(cmd *exec.Cmd) int {
@@ -358,19 +413,28 @@ func exit(ch ssh.Channel, code int) {
 	ch.Close()
 }
 
-// loginShell is the user's shell from /etc/passwd where the image has it, else the image's shell.
-func loginShell(u *user.User) string {
-	if raw, err := os.ReadFile("/etc/passwd"); err == nil {
+// loginShell is the user's shell from /etc/passwd where the image has it, else the image's shell. denied is an
+// account whose shell says it may not log in (nologin, false).
+func loginShell(u *user.User) (sh string, denied bool) {
+	return loginShellIn("/", u.Username)
+}
+
+func loginShellIn(root, username string) (string, bool) {
+	if raw, err := os.ReadFile(filepath.Join(root, "/etc/passwd")); err == nil {
 		for _, line := range strings.Split(string(raw), "\n") {
 			fields := strings.Split(line, ":")
-			if len(fields) >= 7 && fields[0] == u.Username {
-				if sh := fields[6]; sh != "" && !strings.HasSuffix(sh, "nologin") && !strings.HasSuffix(sh, "false") && executable("/", sh) {
-					return sh
+			if len(fields) >= 7 && fields[0] == username {
+				sh := fields[6]
+				if base := filepath.Base(sh); base == "nologin" || base == "false" {
+					return "", true
+				}
+				if sh != "" && executable(root, sh) {
+					return sh, false
 				}
 			}
 		}
 	}
-	return Shell("/")
+	return Shell(root), false
 }
 
 // EnsureHostKey makes the SSH host key when the image has none yet (a fresh identity replaces it).

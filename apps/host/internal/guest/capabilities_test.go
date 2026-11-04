@@ -145,9 +145,10 @@ func TestAuthorized(t *testing.T) {
 		k, _ := ssh.NewPublicKey(pub)
 		return k
 	}
-	yes, no := key(), key()
+	yes, no, limited, forced := key(), key(), key(), key()
 	path := filepath.Join(t.TempDir(), "authorized_keys")
-	lines := "# a comment\n" + `restrict,command="true" ` + string(ssh.MarshalAuthorizedKey(key())) + string(ssh.MarshalAuthorizedKey(yes))
+	lines := "# a comment\n" + `restrict,command="true" ` + string(ssh.MarshalAuthorizedKey(limited)) +
+		`command="/usr/bin/backup" ` + string(ssh.MarshalAuthorizedKey(forced)) + string(ssh.MarshalAuthorizedKey(yes))
 	if err := os.WriteFile(path, []byte(lines), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +158,41 @@ func TestAuthorized(t *testing.T) {
 	if authorized(path, no) {
 		t.Error("an unlisted key is let in")
 	}
+	// Options this server doesn't enforce: such a key gets nothing, not everything.
+	if authorized(path, limited) || authorized(path, forced) {
+		t.Error("a key restricted by its options is let in unrestricted")
+	}
 	if authorized(filepath.Join(t.TempDir(), "none"), yes) {
 		t.Error("no file lets a key in")
+	}
+}
+
+func TestLoginShell(t *testing.T) {
+	root := image(t, map[string]string{
+		"bin/bash": "",
+		"bin/sh":   "",
+		"etc/passwd": "root:x:0:0:root:/root:/bin/bash\n" +
+			"daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n" +
+			"sync:x:4:65534:sync:/bin:/bin/false\n" +
+			"user:x:1000:1000::/home/user:/bin/zsh\n",
+	})
+	for _, c := range []struct {
+		name, shell string
+		denied      bool
+	}{
+		{"root", "/bin/bash", false},
+		{"daemon", "", true},
+		{"sync", "", true},
+		{"user", "/bin/bash", false}, // its shell isn't in the image: the image's shell
+		{"nobody", "/bin/bash", false},
+	} {
+		sh, denied := loginShellIn(root, c.name)
+		if sh != c.shell || denied != c.denied {
+			t.Errorf("%s: shell %q denied %v, want %q %v", c.name, sh, denied, c.shell, c.denied)
+		}
+	}
+	// No /etc/passwd at all (a bare image): the image's shell, never a refusal.
+	if sh, denied := loginShellIn(image(t, map[string]string{"bin/sh": ""}), "root"); sh != "/bin/sh" || denied {
+		t.Errorf("no passwd: %q %v", sh, denied)
 	}
 }

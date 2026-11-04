@@ -30,11 +30,12 @@ It was tested on Kantel's own image, `debian:trixie`, `alpine:3.22` and `busybox
 | Commands as `argv` | The program you run |
 | Commands as a `command` string | `/bin/sh` (or `bash`, which is used where the image has it). A busybox `sh` is enough |
 | Files and ports | Nothing |
-| SSH: shells and commands | A shell, as for a `command`. Keys go in the user's `~/.ssh/authorized_keys`, as [Kantel's SSH access](/sandboxes/ssh/) puts them |
+| SSH: shells and commands | A shell, as for a `command`. Keys go in the user's `~/.ssh/authorized_keys`, as [Kantel's SSH access](/sandboxes/ssh/) puts them. The agent enforces no key options, so it refuses a key whose line has any (`command=`, `restrict`, `from=`), and an account whose shell is `nologin` or `false` can't log in |
 | SFTP, and `scp` (which uses SFTP) | OpenSSH's `sftp-server`, such as Debian's `openssh-sftp-server` or Alpine's `openssh-sftp-server` |
 | Docker | `dockerd`, and systemd as the image's init to start it |
 | `/dev/kvm` inside | Nothing in the image; the host must allow [nested virtualisation](/hosts/) |
 | The desktop and browser | Kantel's desktop stack: TigerVNC, XFCE and Selkies, with Kantel's `kantel-desktop` and `kantel-browser` services and systemd. Today only Kantel's own image has them |
+| Reading a snapshot's files without starting it | Nothing in the image. On the host: `debugfs` for an ext4 image, as for Kantel's own; `unsquashfs` (`squashfs-tools` 4.6 or later) for a squashfs one. An erofs image's snapshot files can't be read this way: start the sandbox to read them |
 
 Commands and SSH run as `user` where the image has that account, as Kantel's image does, and as `root` where it doesn't. An image without `/etc/passwd` runs everything as root, with `/root` as home.
 
@@ -42,7 +43,7 @@ Kantel's kernel is used, so the image's `/boot` and `/lib/modules` are ignored. 
 
 ### systemd or not
 
-When the image's `/sbin/init` is systemd (Debian and Ubuntu images that install it, Kantel's own), the initramfs adds a unit for the agent and hands over to systemd, which then starts the image's own services too. Otherwise Kantel's agent is PID 1: it mounts `/proc`, `/sys`, `/dev/pts`, `/run` and `/tmp`, reaps orphaned processes, and on a stop ends every process before the machine shuts down. Stock `debian:trixie`, `alpine` and `busybox` images have no systemd, so they run this way, and their services (Docker included) don't start on their own.
+When the image's `/sbin/init` is systemd (Debian and Ubuntu images that install it, Kantel's own), the initramfs adds a unit for the agent to systemd's runtime units in `/run`, for that boot only, and hands over to systemd, which then starts the image's own services too. Otherwise Kantel's agent is PID 1: it mounts `/proc`, `/sys`, `/dev/pts`, `/run` and `/tmp`, reaps orphaned processes, and on a stop ends every process before the machine shuts down. Stock `debian:trixie`, `alpine` and `busybox` images have no systemd, so they run this way, and their services (Docker included) don't start on their own.
 
 ## Turn an image into a root filesystem
 
@@ -68,7 +69,7 @@ Add `--inject-guest-agent` to the host's join command, or set `injectGuestAgent`
 }
 ```
 
-The installer fetches the agent (`kantel-guest-amd64` or `kantel-guest-arm64`) with the other images; `guestAgent` names another one. The host builds its initramfs from the agent and makes its templates again when the agent changes. A host runs one image, so to offer several, run a host per image and choose between them with [labels](/hosts/).
+The installer fetches the agent (`kantel-guest-amd64` or `kantel-guest-arm64`) with the other images; `guestAgent` names another one. Running the installer again (an upgrade, say) keeps a `sandboxImage` or `guestAgent` of your own and fetches only the files it put there itself. The host builds its initramfs from the agent and makes its templates again when the agent changes. A host runs one image, so to offer several, run a host per image and choose between them with [labels](/hosts/).
 
 ## What a sandbox says its image has
 

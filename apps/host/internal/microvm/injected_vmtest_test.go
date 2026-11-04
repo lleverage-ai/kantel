@@ -146,6 +146,10 @@ func TestInjectedAgent(t *testing.T) {
 			if res := exec(proto.ExecParams{Command: "cat /opt/kantel-test/hello.txt"}); res.Stdout != data {
 				t.Errorf("cat: %q", res.Stdout)
 			}
+			// Written for the account commands run as, whatever its uid.
+			if res := exec(proto.ExecParams{Command: "stat -c '%u:%g' /opt/kantel-test/hello.txt; echo $(id -u):$(id -g)"}); len(strings.Fields(res.Stdout)) != 2 || strings.Fields(res.Stdout)[0] != strings.Fields(res.Stdout)[1] {
+				t.Errorf("a written file's owner and the login account: %q %q", res.Stdout, res.Stderr)
+			}
 			entries, err := m.ListFiles(ctx, proto.FileParams{SandboxID: id, Path: "/opt/kantel-test"})
 			if err != nil || len(entries) != 1 {
 				t.Errorf("list: %v %v", entries, err)
@@ -241,7 +245,40 @@ func TestInjectedAgent(t *testing.T) {
 				t.Errorf("terminal: tty %v, answer %v", sawTTY, sawAnswer)
 			}
 			portOK(func() (io.ReadWriteCloser, error) { return client.Dial("tcp", "127.0.0.1:8000") })
+
+			// A lost connection hangs up its terminal: the shell and what runs in it end, rather than linger.
+			session, _ = client.NewSession()
+			if err := session.RequestPty("xterm", 40, 100, ssh.TerminalModes{}); err != nil {
+				t.Fatal(err)
+			}
+			stdin, _ = session.StdinPipe()
+			if err := session.Shell(); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.WriteString(stdin, "sleep 4242\n")
+			sleeping := func() string {
+				return strings.TrimSpace(exec(proto.ExecParams{Command: `for p in /proc/[0-9]*; do tr '\0' ' ' < $p/cmdline 2>/dev/null; echo; done | grep -c '^sleep 4242' || true`}).Stdout)
+			}
+			for deadline := time.Now().Add(5 * time.Second); sleeping() != "1"; {
+				if time.Now().After(deadline) {
+					t.Fatalf("the terminal's sleep never started: %s", sleeping())
+				}
+				time.Sleep(200 * time.Millisecond)
+			}
 			client.Close()
+			for deadline := time.Now().Add(8 * time.Second); sleeping() != "0"; {
+				if time.Now().After(deadline) {
+					t.Fatalf("a dropped SSH terminal's job outlives it: %s left", sleeping())
+				}
+				time.Sleep(200 * time.Millisecond)
+			}
+
+			// systemd's unit for the injected agent is this boot's alone, in /run: nothing on the sandbox's disk.
+			if want.init == "systemd" {
+				if res := exec(proto.ExecParams{Command: "ls -d /run/systemd/system/kantel-guest.service* && ! ls -d /etc/systemd/system/kantel-guest.service.d/50-kantel-injected.conf /etc/systemd/system/sysinit.target.wants/kantel-guest.service 2>/dev/null", User: "root"}); res.ExitCode != 0 {
+					t.Errorf("the agent's unit: %+v", res)
+				}
+			}
 
 			// Stop (no memory) and a cold boot from the sandbox's own disk, through the initramfs again.
 			noMemory := false

@@ -165,11 +165,12 @@ func (m *Manager) bootConfig(size proto.Size, tap, mac string, cid uint32) fc.Bo
 
 // noteGuest keeps what a template's agent reported (nil: an agent too old to say).
 func (m *Manager) noteGuest(dir string, caps *proto.GuestCapabilities) {
+	// Even nil: a template with no report mustn't keep the one before it (another image's).
+	m.guest.Store(caps)
 	if caps == nil {
 		_ = os.Remove(filepath.Join(dir, guestFile))
 		return
 	}
-	m.guest.Store(caps)
 	if raw, err := json.Marshal(caps); err == nil {
 		_ = os.WriteFile(filepath.Join(dir, guestFile), raw, 0o600)
 	}
@@ -557,16 +558,24 @@ func (m *Manager) template(ctx context.Context, size proto.Size) (string, timing
 		return "", nil, fmt.Errorf("template boot: %w (firecracker log: %s)", err, tail(filepath.Join(vm, fc.LogFile)))
 	}
 	t.step("agent", &start)
+	// What the image has, which detection reads from its files: so before the service wait, whose timeout would
+	// otherwise cancel this too.
+	capsCtx, capsCancel := context.WithTimeout(ctx, 30*time.Second)
+	caps, err := client.Capabilities(capsCtx)
+	capsCancel()
+	if err != nil && m.cfg.Initrd != "" {
+		// An injected agent always reports: a template without its report would offer what the image may lack.
+		return "", nil, fmt.Errorf("template boot: the guest agent's capabilities: %w", err)
+	}
+	if err != nil {
+		m.log.Warn("guest agent's capabilities", "size", size.Name, "error", err)
+	}
 	// What the image says it runs (/etc/kantel/ready), else the desktop, browser and Docker. Not SSH: the image has
 	// no host keys, so sshd starts only once a sandbox has its identity.
 	if _, err := client.WaitExpected(bootCtx, "desktop", "browser", "docker"); err != nil {
 		m.log.Warn("template services not all ready; snapshotting anyway", "size", size.Name, "error", err)
 	}
 	t.step("services", &start)
-	caps, err := client.Capabilities(bootCtx)
-	if err != nil {
-		m.log.Warn("guest agent's capabilities", "size", size.Name, "error", err)
-	}
 	_ = client.Sync(ctx)
 	client.Close()
 	if err := machine.Pause(ctx); err != nil {

@@ -74,6 +74,12 @@ func Stage1() error {
 	}
 	systemd := SystemdPath("/newroot")
 	if systemd != "" {
+		// /run, a tmpfs mounted here, which systemd keeps (it mounts only what isn't mounted): the agent's unit goes in
+		// its runtime units, which last this boot only, so nothing on the sandbox's disk needs /.kantel, which a boot
+		// without the initramfs doesn't have.
+		if err := unix.Mount("tmpfs", "/newroot/run", "tmpfs", unix.MS_NOSUID|unix.MS_NODEV, "mode=0755"); err != nil {
+			return fmt.Errorf("mount /run: %w", err)
+		}
 		if err := WriteUnit("/newroot"); err != nil {
 			return fmt.Errorf("agent unit: %w", err)
 		}
@@ -193,33 +199,30 @@ ExecStart=
 ExecStart=` + agentPath + ` serve --injected --init systemd
 `
 
-// WriteUnit makes root's systemd start the injected agent: a drop-in over the image's own unit when it has one, else
-// a unit of its own, wanted by sysinit.target.
+// WriteUnit makes root's systemd start the injected agent, for this boot only: in its runtime units
+// (/run/systemd/system), a drop-in over the image's own unit when it has one, else a unit of its own, wanted by
+// sysinit.target. Nothing is written to the image's /etc.
 func WriteUnit(root string) error {
-	etc := filepath.Join(root, "etc/systemd/system")
-	for _, dir := range []string{etc, "/usr/lib/systemd/system", "/lib/systemd/system"} {
-		base := dir
-		if dir != etc {
-			base = filepath.Join(root, dir)
-		}
-		if _, err := os.Stat(filepath.Join(base, unitName)); err == nil {
-			d := filepath.Join(etc, unitName+".d")
+	run := filepath.Join(root, "run/systemd/system")
+	for _, dir := range []string{"/etc/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system"} {
+		if _, err := os.Stat(filepath.Join(root, dir, unitName)); err == nil {
+			d := filepath.Join(run, unitName+".d")
 			if err := os.MkdirAll(d, 0o755); err != nil {
 				return err
 			}
 			return os.WriteFile(filepath.Join(d, "50-kantel-injected.conf"), []byte(dropIn), 0o644)
 		}
 	}
-	wants := filepath.Join(etc, "sysinit.target.wants")
+	wants := filepath.Join(run, "sysinit.target.wants")
 	if err := os.MkdirAll(wants, 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(etc, unitName), []byte(unit), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(run, unitName), []byte(unit), 0o644); err != nil {
 		return err
 	}
 	link := filepath.Join(wants, unitName)
 	_ = os.Remove(link)
-	return os.Symlink("/etc/systemd/system/"+unitName, link)
+	return os.Symlink("/run/systemd/system/"+unitName, link)
 }
 
 // Stage2 is PID 1 in an image without systemd: it mounts what a Linux userland expects, runs the agent (again

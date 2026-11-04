@@ -117,7 +117,10 @@ func install(args []string) error {
 	if *injectGuestAgent {
 		cfg.InjectGuestAgent = true
 	}
-	cfg.Kernel, cfg.SandboxImage, cfg.IsolateImage, cfg.Firecracker, cfg.Workerd, cfg.IsolateBundle, cfg.GuestAgent = "", "", "", "", "", "", ""
+	// The installer's own files go back to where it puts them; an operator's own sandbox image or guest agent (a
+	// custom image, see docs/sandboxes/custom-images) is kept, and fetchImages leaves it alone.
+	image, agentBin := custom(cfg.Root, cfg.SandboxImage, "sandbox.ext4"), custom(cfg.Root, cfg.GuestAgent, "kantel-guest")
+	cfg.Kernel, cfg.SandboxImage, cfg.IsolateImage, cfg.Firecracker, cfg.Workerd, cfg.IsolateBundle, cfg.GuestAgent = "", image, "", "", "", "", agentBin
 	cfg.Defaults()
 
 	step("Checking this machine")
@@ -345,8 +348,29 @@ func fileSHA256(p string) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
+// custom is a configured image path when it isn't the installer's own (images/<name> under root), else "".
+func custom(root, configured, name string) string {
+	if root == "" {
+		root = agent.DefaultRoot
+	}
+	if configured == "" || filepath.Clean(configured) == filepath.Join(root, "images", name) {
+		return ""
+	}
+	return configured
+}
+
 func fetchImages(cfg agent.Config, source string, kvm bool) error {
 	arch := archName()
+	// An operator's own sandbox image or guest agent: theirs to keep, not a release's to replace.
+	mine := func(dst, name string) (bool, error) {
+		if custom(cfg.Root, dst, name) == "" {
+			return false, nil
+		}
+		if _, err := os.Stat(dst); err != nil {
+			return true, fmt.Errorf("the configured %s: %w", name, err)
+		}
+		return true, nil
+	}
 	in, err := open(source, "manifest.json")
 	if err != nil {
 		return fmt.Errorf("images manifest at %s: %w", source, err)
@@ -379,15 +403,23 @@ func fetchImages(cfg agent.Config, source string, kvm bool) error {
 		if err := get("vmlinux-"+arch, cfg.Kernel, 0o644, true); err != nil {
 			return err
 		}
-		if err := get("sandbox-"+arch+".ext4", cfg.SandboxImage, 0o644, true); err != nil {
+		if own, err := mine(cfg.SandboxImage, "sandbox.ext4"); err != nil {
 			return err
+		} else if !own {
+			if err := get("sandbox-"+arch+".ext4", cfg.SandboxImage, 0o644, true); err != nil {
+				return err
+			}
 		}
 		if err := get("isolate-"+arch+".ext4", cfg.IsolateImage, 0o644, false); err != nil {
 			return err
 		}
 		// The static agent the initramfs is made from (injectGuestAgent); required only when that's on.
-		if err := get("kantel-guest-"+arch, cfg.GuestAgent, 0o755, cfg.InjectGuestAgent); err != nil {
+		if own, err := mine(cfg.GuestAgent, "kantel-guest"); err != nil {
 			return err
+		} else if !own {
+			if err := get("kantel-guest-"+arch, cfg.GuestAgent, 0o755, cfg.InjectGuestAgent); err != nil {
+				return err
+			}
 		}
 	}
 	if cfg.IsolateRuntime == "native" {

@@ -368,6 +368,24 @@ func trustCA(pemCert string) {
 // systemCABundle is where Debian, Ubuntu and Alpine keep the trust store programs read.
 const systemCABundle = "/etc/ssl/certs/ca-certificates.crt"
 
+// owner is who a file written for name ("" or "user": the login account; "root") belongs to: Kantel's image's user
+// (1000), or in an injected image the account LoginUser resolves name to, as commands and SSH run as.
+func (s *Server) owner(name string) (uid, gid int) {
+	if name == "root" {
+		return 0, 0
+	}
+	if !s.Injected {
+		return 1000, 1000
+	}
+	u, err := LoginUser(name)
+	if err != nil {
+		return 0, 0
+	}
+	uid, _ = strconv.Atoi(u.Uid)
+	gid, _ = strconv.Atoi(u.Gid)
+	return uid, gid
+}
+
 // APIHome is where Kantel's API starts a command and the console's file browser: Kantel's image's user's home.
 const APIHome = "/home/user"
 
@@ -560,7 +578,8 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 		logPath := fmt.Sprintf("/tmp/kantel-detached-%d.log", time.Now().UnixNano())
 		if f, err := os.Create(logPath); err == nil {
 			cmd.Stdout, cmd.Stderr = f, f
-			_ = os.Chown(logPath, 1000, 1000)
+			uid, gid := s.owner(req.User)
+			_ = os.Chown(logPath, uid, gid)
 		}
 		cmd.Cancel = nil
 		if err := cmd.Start(); err != nil {
@@ -761,10 +780,7 @@ func (s *Server) writeFile(w http.ResponseWriter, r *http.Request) {
 			mode = os.FileMode(n)
 		}
 	}
-	owner := 1000
-	if r.URL.Query().Get("user") == "root" {
-		owner = 0
-	}
+	uid, gid := s.owner(r.URL.Query().Get("user"))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		fail(w, 500, err)
 		return
@@ -781,7 +797,7 @@ func (s *Server) writeFile(w http.ResponseWriter, r *http.Request) {
 	}
 	if err == nil {
 		_ = os.Chmod(tmp, mode)
-		_ = os.Chown(tmp, owner, owner)
+		_ = os.Chown(tmp, uid, gid)
 		err = os.Rename(tmp, path)
 	}
 	if err != nil {

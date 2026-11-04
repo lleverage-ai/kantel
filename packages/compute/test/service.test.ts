@@ -214,6 +214,56 @@ describe("sandboxes", () => {
 		expect(paused.state).toBe("paused");
 	});
 
+	it("refuses a screen the image reports it lacks once placed, even when asked for before then", async () => {
+		const stub = createStubBackend();
+		const reason = "No desktop in this image: it has no Xvfb";
+		let screens = 0;
+		const backend: SandboxBackend = {
+			...stub,
+			// An injected Alpine image: it says what it has when it boots, after the create returned.
+			create: async (spec) => {
+				const placement = await stub.create(spec);
+				await new Promise((resolve) => setTimeout(resolve, 20));
+				const unavailable = { available: false, reason };
+				return {
+					...placement,
+					capabilities: {
+						...placement.capabilities,
+						desktop: false,
+						browser: false,
+						guest: {
+							reportedAt: Date.now(),
+							os: { id: "alpine", name: "Alpine Linux v3.22", version: "3.22.0" },
+							arch: "x86_64",
+							libc: "musl",
+							shell: "/bin/sh",
+							init: "kantel",
+							agent: { version: "test", injected: true },
+							desktop: unavailable,
+							browser: { available: false, reason: "No browser in this image" },
+							docker: { available: false, reason: "No Docker in this image", kvm: false },
+						},
+					},
+				};
+			},
+			openDesktop: async (...args) => {
+				screens++;
+				return stub.openDesktop(...args);
+			},
+			openBrowser: async (...args) => {
+				screens++;
+				return stub.openBrowser(...args);
+			},
+		};
+		const { tom } = setup(backend);
+		const vm = await tom.createSandbox({ type: "microvm" });
+		const desktop = await failure(tom.openDesktop(vm.id, {}));
+		expect(desktop.code).toBe("not_supported");
+		expect(desktop.message).toBe(reason);
+		expect((await failure(tom.openBrowser(vm.id, {}))).code).toBe("not_supported");
+		expect(screens).toBe(0);
+	});
+
 	it("extends a running sandbox's stop time and stops it once that passes", async () => {
 		let clock = Date.UTC(2026, 0, 1);
 		const api = createComputeApi({
