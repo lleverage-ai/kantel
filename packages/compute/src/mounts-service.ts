@@ -286,7 +286,9 @@ export function createMounts(deps: MountsDeps) {
 	 * Deletes a source (a bundle record, a bucket source) unless a sandbox mounts it, without a create slipping in
 	 * between: the delete first claims the record, then counts the sandboxes mounting it, while a create stores its
 	 * sandbox first, then looks for a claim (`holdSources`). Whichever goes second sees the other, so either the delete
-	 * counts the sandbox, or the create sees the claim and refuses.
+	 * counts the sandbox, or the create sees the claim and refuses. A create that finds the claim lapsed clears it before
+	 * going on (`holdRecord`), and the delete removes the record only while its own claim is still on it, so a delete
+	 * slow enough for its claim to lapse can't remove a source a create has since taken.
 	 */
 	async function deleteUnlessMounted<T extends { readonly id: string; readonly deleting?: DeleteClaim }>(
 		collection: Collection<T>,
@@ -322,7 +324,30 @@ export function createMounts(deps: MountsDeps) {
 				`${count} of the account's sandboxes mount this ${kind}; delete them first (a stopped one counts, as it mounts it again when it starts)`,
 			);
 		}
-		await collection.delete(record.id);
+		if (!(await collection.deleteIf(record.id, (current) => current.deleting?.token === token))) {
+			// Its claim lapsed and a create took the record over (or another delete went first): it stays.
+			if ((await collection.get(record.id)) === undefined) throw new KantelError("not_found", `No such ${kind}`);
+			throw new KantelError("unavailable", `Deleting this ${kind} took too long; try again`);
+		}
+	}
+
+	/**
+	 * A source as a sandbox now holding it sees it: `undefined` when it is gone or a delete's claim on it is fresh. A
+	 * lapsed claim is cleared first, with nothing written between, so the delete that made it, should it still be going,
+	 * finds its claim gone and leaves the record (`deleteUnlessMounted`).
+	 */
+	async function holdRecord<T extends { readonly id: string; readonly deleting?: DeleteClaim }>(
+		collection: Collection<T>,
+		id: string,
+	): Promise<T | undefined> {
+		const current = await collection.get(id);
+		if (current === undefined || claimed(current)) return undefined;
+		if (current.deleting === undefined) return current;
+		return collection.update(id, (latest) => {
+			if (claimed(latest)) return undefined;
+			const { deleting: _lapsed, ...rest } = latest;
+			return rest as T;
+		});
 	}
 
 	async function unclaim<T extends { readonly id: string; readonly deleting?: DeleteClaim }>(
@@ -791,13 +816,13 @@ export function createMounts(deps: MountsDeps) {
 		async holdSources(sandbox: StoredSandbox): Promise<void> {
 			for (const mount of sandbox.mounts ?? []) {
 				if (mount.source.kind === "bundle") {
-					const bundle = await store.bundles.get(bundleKey(sandbox.accountId, mount.source.digest));
-					if (bundle === undefined || claimed(bundle)) {
+					const bundle = await holdRecord(store.bundles, bundleKey(sandbox.accountId, mount.source.digest));
+					if (bundle === undefined) {
 						throw new KantelError("conflict", `The bundle ${mount.source.digest} was deleted as the sandbox was made`);
 					}
 				} else {
-					const source = await store.bucketSources.get(mount.source.bucketSourceId);
-					if (source === undefined || source.accountId !== sandbox.accountId || claimed(source)) {
+					const source = await holdRecord(store.bucketSources, mount.source.bucketSourceId);
+					if (source === undefined || source.accountId !== sandbox.accountId) {
 						throw new KantelError(
 							"conflict",
 							`The bucket source ${mount.source.bucketSourceId} was deleted as the sandbox was made`,

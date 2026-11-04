@@ -798,6 +798,46 @@ describe.each(STORES)("sources and the sandboxes mounting them, stored $name", s
 		expect(await bundles.open(bundle.digest)).toBeDefined();
 	});
 
+	it("stay when a delete's final removal is held past its claim's lapse while a create takes them, for either kind", async () => {
+		let clock = 1_000_000;
+		const { tom, store, bundles } = await on({ now: () => clock });
+		const bundle = await tom.uploadBundle(SKILLS.slice().buffer);
+		const source = await tom.createBucketSource({ name: "org", provider: "s3", bucket: "org" });
+		const cases = [
+			{
+				collection: store.bundles as { deleteIf: unknown },
+				mount: { path: "/mnt/s", source: { kind: "bundle" as const, digest: bundle.digest } },
+				remove: () => tom.deleteBundle(bundle.digest),
+				there: async () => (await store.bundles.list()).some((record) => record.digest === bundle.digest),
+			},
+			{
+				collection: store.bucketSources as { deleteIf: unknown },
+				mount: { path: "/mnt/b", source: { kind: "bucket" as const, bucketSourceId: source.id, prefix: "" } },
+				remove: () => tom.deleteBucketSource(source.id),
+				there: async () => (await store.bucketSources.get(source.id)) !== undefined,
+			},
+		];
+		for (const { collection, mount, remove, there } of cases) {
+			// The delete has claimed the source and counted no sandboxes; its removal is held until the claim has lapsed and
+			// a create has taken the source.
+			let made: string | undefined;
+			once(collection, "deleteIf", async () => {
+				clock += 61_000;
+				made = (await tom.createSandbox({ type: "microvm", mounts: [mount], wait: true })).id;
+			});
+			const refused = await failure(remove());
+			expect(refused.code).toBe("unavailable");
+			expect(made).toBeDefined();
+			expect(await there()).toBe(true);
+			// The sandbox holds it: a later delete counts it, and once it's gone the source can go.
+			expect((await failure(remove())).code).toBe("conflict");
+			if (made !== undefined) await tom.deleteSandbox(made);
+			await remove();
+			expect(await there()).toBe(false);
+		}
+		expect(await bundles.open(bundle.digest)).toBeUndefined();
+	});
+
 	it("are given to the host the scheduler placed a starting sandbox on, and no other", async () => {
 		let release: () => void = () => undefined;
 		const booting = new Promise<void>((resolve) => {

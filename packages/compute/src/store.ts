@@ -37,6 +37,12 @@ export interface Collection<T extends { readonly id: string }> {
 	update(id: string, change: (current: T) => T | undefined, expected?: T): Promise<T | undefined>;
 	/** Whether there was one to delete. */
 	delete(id: string): Promise<boolean>;
+	/**
+	 * Deletes the record only when `should` approves it as it is now, with nothing written between the read and the
+	 * delete (the SQL store deletes only the version it read, and reads again when another writer got there first), and
+	 * answers whether it did. `should` may run more than once.
+	 */
+	deleteIf(id: string, should: (current: T) => boolean): Promise<boolean>;
 	/** The records whose fields equal each defined field of `where`, oldest first. */
 	list(where?: Partial<T>): Promise<T[]>;
 }
@@ -468,6 +474,11 @@ export function memoryCollection<T extends { readonly id: string }>(unique?: (re
 			return structuredClone(next);
 		},
 		async delete(id) {
+			return records.delete(id);
+		},
+		async deleteIf(id, should) {
+			const current = records.get(id);
+			if (current === undefined || !should(structuredClone(current))) return false;
 			return records.delete(id);
 		},
 		async list(where) {

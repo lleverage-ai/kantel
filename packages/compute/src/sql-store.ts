@@ -45,6 +45,8 @@ const UPDATE_VERSIONED =
 const UPDATE_IF_SAME =
 	"UPDATE compute_api_records SET data = ?, version = version + 1 WHERE kind = ? AND id = ? AND data = ? RETURNING id";
 const DELETE_ONE = "DELETE FROM compute_api_records WHERE kind = ? AND id = ? RETURNING id";
+/** Deletes only the version that was read, and answers a row only when it did. */
+const DELETE_VERSIONED = "DELETE FROM compute_api_records WHERE kind = ? AND id = ? AND version = ? RETURNING id";
 
 /** The store's table, sequence and index. Every statement is `IF NOT EXISTS`, so migrating again is harmless. */
 export function computeStoreSchema(dialect: SqlDriver["dialect"]): string[] {
@@ -166,6 +168,15 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 		async delete(id) {
 			const rows = await driver.query(DELETE_ONE, [kind, id]);
 			return rows.length > 0;
+		},
+		async deleteIf(id, should) {
+			for (let attempt = 0; attempt < UPDATE_ATTEMPTS; attempt++) {
+				const [row] = await driver.query(SELECT_VERSIONED, [kind, id]);
+				if (row === undefined || !should(parse<T>(row))) return false;
+				const deleted = await driver.query(DELETE_VERSIONED, [kind, id, sqlNumber(row.version)]);
+				if (deleted.length > 0) return true;
+			}
+			throw new Error(`The ${kind} record kept changing while it was deleted; gave up after ${UPDATE_ATTEMPTS} tries`);
 		},
 		async list(where) {
 			// String fields narrow the rows in SQL; the rest (booleans, numbers) only in the check below, which every row

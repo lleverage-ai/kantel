@@ -125,6 +125,22 @@ function behaves(open: () => Promise<Opened>, sql: boolean) {
 		expect(await items.list()).toEqual([]);
 	});
 
+	it("deletes only a record its check approves as it is now", async () => {
+		const { items } = await open();
+		await items.put(item("a", "a", false, 1));
+		expect(await items.deleteIf("a", (current) => current.count === 2)).toBe(false);
+		expect(await items.get("a")).toEqual(item("a", "a", false, 1));
+		expect(await items.deleteIf("never", () => true)).toBe(false);
+		// Written over since the caller looked: the check sees it as it is now.
+		await items.update("a", (latest) => ({ ...latest, count: 2 }));
+		expect(await items.deleteIf("a", (current) => current.count === 1)).toBe(false);
+		expect(await items.deleteIf("a", (current) => current.count === 2)).toBe(true);
+		expect(await items.get("a")).toBeUndefined();
+		await items.put(item("b"));
+		expect(await items.deleteIf("b", (current) => current.group === "a")).toBe(true);
+		expect(await items.get("b")).toBeUndefined();
+	});
+
 	it("copies records in and out", async () => {
 		const { items } = await open();
 		const mine: Mutable = { id: "a", group: "a", done: false, count: 0, tags: ["x"] };
