@@ -54,6 +54,8 @@ export interface EgressOverview {
 	readonly sandboxes: readonly SandboxEgress[];
 	/** The sandboxes whose egress Kantel couldn't read, by name: the log is missing theirs. */
 	readonly unread: readonly string[];
+	/** The same sandboxes, by ID. */
+	readonly unreadIds: readonly string[];
 }
 
 export type EgressOverviewSources = Pick<ComputeSource, "proxy" | "environments" | "sandboxes" | "egress">;
@@ -68,11 +70,24 @@ export async function loadEgressOverview(source: EgressOverviewSources, accountI
 	const read = await Promise.allSettled(sandboxes.map((sandbox) => source.egress.get(sandbox.id)));
 	const egress: SandboxEgress[] = [];
 	const unread: string[] = [];
+	const unreadIds: string[] = [];
 	read.forEach((result, at) => {
 		if (result.status === "fulfilled") egress.push(result.value);
-		else unread.push(sandboxes[at]?.name ?? "a sandbox");
+		else {
+			unread.push(sandboxes[at]?.name ?? "a sandbox");
+			if (sandboxes[at] !== undefined) unreadIds.push(sandboxes[at].id);
+		}
 	});
-	return { proxy, environments, sandboxes: egress, unread };
+	return { proxy, environments, sandboxes: egress, unread, unreadIds };
+}
+
+/**
+ * A read of the account's egress over `known`, what the page had: a sandbox the read couldn't get keeps what the page
+ * knew of it, such as the grants a write just answered with, and stays named as unread.
+ */
+export function overRead(known: EgressOverview, read: EgressOverview): EgressOverview {
+	const kept = known.sandboxes.filter((box) => read.unreadIds.includes(box.sandboxId));
+	return kept.length === 0 ? read : { ...read, sandboxes: [...read.sandboxes, ...kept] };
 }
 
 const grantRule = (grant: EgressGrant, scope: RuleScope): EgressRule => ({

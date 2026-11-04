@@ -21,6 +21,7 @@ const OVERVIEW: EgressOverview = {
 		},
 	],
 	unread: [],
+	unreadIds: [],
 };
 
 const RULES = rulesOf(OVERVIEW);

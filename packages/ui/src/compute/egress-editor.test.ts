@@ -3,7 +3,7 @@ import type { ComputeSource, EgressGrant, ProxySettings, ProxySettingsChange } f
 import { EgressEditor } from "./egress-editor.ts";
 import { type EgressOverview, loadEgressOverview, type RuleScope, rulesOf } from "./egress-overview.ts";
 import { accountHostProblem, hostProblem } from "./egress-rules.ts";
-import { createComputeFixtures, LLEVERAGE } from "./fixtures.ts";
+import { createComputeFixtures, DEV_STACK, LLEVERAGE } from "./fixtures.ts";
 
 const BACKEND: RuleScope = { kind: "environment", id: "env_backend", name: "backend-dev" };
 
@@ -119,6 +119,37 @@ describe("the Egress page's changes", () => {
 		// The next change is written from what the first answered, so it doesn't bring grt_gh back.
 		await editor.removeRule(backendRule(editor.current, "grt_npm"));
 		expect(h.sent.at(-1)?.map((grant) => grant.id)).toEqual(["grt_gh_delete", "grt_tracker"]);
+	});
+
+	it("keeps a sandbox's written grants when only that sandbox can't be read again", async () => {
+		const source = createComputeFixtures();
+		let failDevStack = false;
+		const wrapped: ComputeSource = {
+			...source,
+			egress: {
+				...source.egress,
+				get: (id) => (failDevStack && id === DEV_STACK.id ? Promise.reject(new Error("down")) : source.egress.get(id)),
+			},
+		};
+		const editor = new EgressEditor({
+			source: wrapped,
+			accountId: LLEVERAGE.id,
+			initial: await loadEgressOverview(wrapped, LLEVERAGE.id),
+			publish: () => {},
+		});
+		failDevStack = true;
+		const scope: RuleScope = { kind: "sandbox", id: DEV_STACK.id, name: DEV_STACK.name };
+		expect((await editor.addRule({ action: "allow", host: "crates.io", methods: [], paths: [], scope })).status).toBe(
+			"saved",
+		);
+		const devStack = editor.current.sandboxes.find((box) => box.sandboxId === DEV_STACK.id);
+		expect(devStack?.grants.map((grant) => grant.host)).toEqual(["pypi.org", "crates.io"]);
+		expect(editor.current.unread).toEqual([DEV_STACK.name]);
+		expect(
+			rulesOf(editor.current)
+				.filter((rule) => rule.scope.kind === "sandbox")
+				.map((rule) => rule.host),
+		).toEqual(["pypi.org", "crates.io"]);
 	});
 
 	it("leaves the snapshot as it was when a write fails", async () => {

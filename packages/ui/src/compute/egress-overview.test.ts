@@ -62,6 +62,7 @@ describe("the account's egress", () => {
 		};
 		const overview = await loadEgressOverview(broken, LLEVERAGE.id);
 		expect(overview.unread).toEqual(["scratch"]);
+		expect(overview.unreadIds).toEqual([SCRATCH.id]);
 		expect(logOf(overview).some((entry) => entry.sandboxId === SCRATCH.id)).toBe(false);
 	});
 

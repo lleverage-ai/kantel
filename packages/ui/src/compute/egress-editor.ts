@@ -9,6 +9,7 @@ import {
 	type EgressOverviewSources,
 	type EgressRule,
 	loadEgressOverview,
+	overRead,
 	type RuleScope,
 } from "./egress-overview.ts";
 
@@ -201,7 +202,8 @@ export class EgressEditor {
 			const written = await write();
 			this.#publish(apply(this.#current, written));
 			try {
-				this.#publish(await loadEgressOverview(this.#options.source, this.#options.accountId));
+				// A sandbox this read can't get keeps what the write answered for it.
+				this.#publish(overRead(this.#current, await loadEgressOverview(this.#options.source, this.#options.accountId)));
 				return { status: "saved" };
 			} catch (error) {
 				return { status: "saved-unrefreshed", error };
