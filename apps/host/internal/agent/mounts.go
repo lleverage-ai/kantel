@@ -41,7 +41,7 @@ func (h *Host) reconcileMounts(ctx context.Context) {
 // supportsMounts says whether a tier takes every one of mounts, by kind: one CreateParams.Mounts list holds both
 // bundle and bucket mounts.
 func supportsMounts(t Tier, mounts ...proto.Mount) bool {
-	m, ok := t.(mounter)
+	m, ok := t.(interface{ SupportsMount(kind string) bool })
 	if !ok {
 		return false
 	}

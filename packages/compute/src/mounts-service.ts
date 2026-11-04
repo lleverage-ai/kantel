@@ -138,7 +138,9 @@ export const unanswered = (mount: computeSchema.Mount): string =>
 
 /**
  * A sandbox's mounts once its backend placed it: each the status the backend answered for its path, or `failed` when
- * it answered none, so a backend that predates mounts never leaves one looking mounted.
+ * it answered none, so a backend that predates mounts never leaves one looking mounted. Every boot sets its mounts
+ * `pending` first, so one already `ready` or `failed` here was settled by its host's report (`reportMountStatuses`)
+ * during this boot, which can land before the boot's own answer is written: an answer of `pending` doesn't undo it.
  */
 export function mountsAfter(
 	mounts: readonly computeSchema.SandboxMount[] | undefined,
@@ -150,6 +152,7 @@ export function mountsAfter(
 		const status = byPath.get(mount.path);
 		const { error: _old, ...rest } = mount;
 		if (status === undefined) return { ...rest, status: "failed", error: unanswered(mount) };
+		if (status.status === "pending" && (mount.status === "ready" || mount.status === "failed")) return { ...mount };
 		return { ...rest, status: status.status, ...(status.error === undefined ? {} : { error: status.error }) };
 	});
 }
@@ -173,7 +176,10 @@ const mountsOfSource = (sandbox: StoredSandbox, matches: (source: computeSchema.
 
 /**
  * A host's later word on a sandbox's mounts (`ComputeService.reportMounts`): each status replaces the one at its path.
- * Dropped unless the sandbox is on `hostId`; a path it doesn't mount is ignored.
+ * Dropped unless the sandbox is on `hostId`; a path it doesn't mount is ignored. While it is `starting`, the host that
+ * reports may be the one it is being placed on (not yet recorded here: a first create has no host yet, a restart may
+ * move it), which the caller has checked against the host's own placement record, so a report that lands before the
+ * boot's answer is written is kept, and that answer's `pending` doesn't undo it (`mountsAfter`).
  */
 export async function reportMountStatuses(
 	store: ComputeStore,
@@ -183,7 +189,8 @@ export async function reportMountStatuses(
 ): Promise<void> {
 	const byPath = new Map(reported.map((status) => [status.path, status]));
 	await store.sandboxes.update(sandboxId, (current) => {
-		if (current.hostId !== hostId || current.state === "deleted" || current.mounts === undefined) return undefined;
+		if (current.state === "deleted" || current.mounts === undefined) return undefined;
+		if (current.hostId !== hostId && current.state !== "starting") return undefined;
 		let changed = false;
 		const mounts = current.mounts.map((mount) => {
 			const status = byPath.get(mount.path);

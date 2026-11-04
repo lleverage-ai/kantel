@@ -255,7 +255,10 @@ export interface HostComputeLink {
 	 * `hostId` and mounts it (`ComputeService.bucketSourceForHost`).
 	 */
 	bucketSource?(hostId: string, sandboxId: string, bucketSourceId: string): Promise<HostBucketSource | undefined>;
-	/** A host's later word on a sandbox's mounts, a `sandbox.mounts` event (`ComputeService.reportMounts`). */
+	/**
+	 * A host's later word on a sandbox's mounts, a `sandbox.mounts` event (`ComputeService.reportMounts`): only for a
+	 * sandbox whose placement is on that host.
+	 */
 	reportMounts?(hostId: string, sandboxId: string, mounts: readonly HostMountStatus[]): Promise<void>;
 	/**
 	 * A bundle's tar for a host, or `undefined` unless the sandbox is on `hostId` and mounts it
@@ -780,7 +783,15 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		onMounts(hostId, sandboxId, mounts) {
 			const link = compute;
 			if (link?.reportMounts === undefined) return;
-			report((async () => link.reportMounts?.(hostId, sandboxId, mounts))());
+			// Only for a sandbox placed on this host, by its placement record, which is written before the host is asked
+			// to boot it: a report can come before the compute plane has recorded the boot's host (a first create's, or a
+			// restart's on another host), and that plane takes a starting sandbox's report from the host this names.
+			report(
+				(async () => {
+					if ((await store.getPlacement(sandboxId))?.hostId !== hostId) return;
+					await link.reportMounts?.(hostId, sandboxId, mounts);
+				})(),
+			);
 		},
 		onUsage(hostId, reported): Promise<void> | undefined {
 			if (compute?.recordUsage === undefined && cluster === undefined) return undefined;

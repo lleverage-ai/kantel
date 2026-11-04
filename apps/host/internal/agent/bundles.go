@@ -96,3 +96,25 @@ func (h *Host) mountsEvent(info proto.SandboxInfo) {
 		fn(proto.Event{Kind: proto.EventMounts, Sandbox: &info})
 	}
 }
+
+// replayMounts sends, once a connection can carry events, every sandbox's mounts that are settled (ready or failed).
+// A sandbox.mounts event is sent once, so one sent while the host had no connection (a bundle finishing while it was
+// away, or one adopt() finished before the first connection) is otherwise lost, and its mount looks pending for good.
+// The sandboxes are read after events are wired, so a mount settled during the handshake is in it. Pending mounts
+// aren't replayed: Kantel has them as pending already, and a pending read before a mount settles must never overwrite
+// the event that settled it.
+func (h *Host) replayMounts() {
+	for _, info := range h.List() {
+		var settled []proto.MountStatus
+		for _, m := range info.Mounts {
+			if m.State == proto.MountReady || m.State == proto.MountFailed {
+				settled = append(settled, m)
+			}
+		}
+		if len(settled) == 0 {
+			continue
+		}
+		info.Mounts = settled
+		h.mountsEvent(info)
+	}
+}

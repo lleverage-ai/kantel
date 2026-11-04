@@ -57,6 +57,39 @@ func TestFetchBundle(t *testing.T) {
 }
 
 // bundleTier is a tier that takes bundle mounts.
+// listTier lists fixed sandboxes.
+type listTier struct {
+	Tier
+	list []proto.SandboxInfo
+}
+
+func (l listTier) List() []proto.SandboxInfo { return l.list }
+
+// A connection replays the mounts that settled while no connection carried their events, and only those: a pending
+// one Kantel has already, and replaying it could overwrite the event that settles it.
+func TestReplayMountsSendsSettledOnes(t *testing.T) {
+	h := newLifecycleHost(t, newLifecycleTier())
+	h.tiers["microvm"] = listTier{list: []proto.SandboxInfo{
+		{ID: "a", Mounts: []proto.MountStatus{
+			{Path: "/x", Kind: proto.MountBundle, State: proto.MountReady},
+			{Path: "/y", Kind: proto.MountBundle, State: proto.MountPending},
+			{Path: "/z", Kind: proto.MountBundle, State: proto.MountFailed, Error: "404"},
+		}},
+		{ID: "b", Mounts: []proto.MountStatus{{Path: "/x", Kind: proto.MountBundle, State: proto.MountPending}}},
+		{ID: "c"},
+	}}
+	h.order = []string{"microvm"}
+	var got []proto.Event
+	h.events = func(e proto.Event) { got = append(got, e) }
+	h.replayMounts()
+	if len(got) != 1 || got[0].Kind != proto.EventMounts || got[0].Sandbox == nil || got[0].Sandbox.ID != "a" {
+		t.Fatalf("one event, for the sandbox with settled mounts: %+v", got)
+	}
+	if m := got[0].Sandbox.Mounts; len(m) != 2 || m[0].Path != "/x" || m[1].Path != "/z" || m[1].Error != "404" {
+		t.Fatalf("its ready and failed mounts, not the pending one: %+v", m)
+	}
+}
+
 type bundleTier struct{ *lifecycleTier }
 
 func (bundleTier) SupportsMount(kind string) bool { return kind == proto.MountBundle }
@@ -79,7 +112,7 @@ func TestMountsATierCantTakeAreRefused(t *testing.T) {
 	if err := call(t, h, proto.MethodCreate, proto.CreateParams{SandboxID: "sb", Tier: "microvm", Mounts: bucket}); !errors.As(err, &pe) || pe.Code != proto.ErrUnsupported {
 		t.Fatalf("a bucket mount on a bundles-only tier: %v", err)
 	}
-	if !mountsSupported(h.tiers["microvm"], bundle) || mountsSupported(h.tiers["microvm"], append(bundle, bucket...)) {
-		t.Fatal("mountsSupported takes a list only when it takes every kind in it")
+	if !supportsMounts(h.tiers["microvm"], bundle...) || supportsMounts(h.tiers["microvm"], append(bundle, bucket...)...) {
+		t.Fatal("supportsMounts takes a list only when it takes every kind in it")
 	}
 }

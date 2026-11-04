@@ -170,6 +170,9 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 	h.mu.Unlock()
 	// Mounts of sandboxes adopted at start can resolve their bucket sources now.
 	go h.reconcileMounts(ctx)
+	// Mounts that settled while no connection carried their event. In the background: a sandbox's lock can be held
+	// for a while (one mounting its bundles), and the connection's messages mustn't wait for it.
+	go h.replayMounts()
 	beat := welcome.Welcome.HeartbeatSeconds
 	if beat <= 0 {
 		beat = 15

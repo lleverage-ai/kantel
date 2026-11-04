@@ -564,6 +564,66 @@ describe("a sandbox's mounts", () => {
 	});
 });
 
+describe("a host's report that lands before its boot's answer is written", () => {
+	it("is kept on a first create and on a restart, and the answer's pending doesn't undo it", async () => {
+		// The host settles the mount (its sandbox.mounts event) before the compute plane writes the boot's answer, which
+		// still says pending: the order a bundle that finishes just after the create's wait gives.
+		let service: { reportMounts: ComputeApi["service"]["reportMounts"] } | undefined;
+		const early = (sandboxId: string) =>
+			service?.reportMounts(STUB_HOST_ID, sandboxId, [{ path: "/mnt/skills", status: "ready" }]);
+		const pendingAnswer = { mounts: [{ path: "/mnt/skills", status: "pending" as const }] };
+		const { api, tom } = setup({
+			backend: (stub) => ({
+				create: async (spec) => {
+					const placed = await stub.create(spec);
+					await early(spec.sandboxId);
+					return { ...placed, ...pendingAnswer };
+				},
+				start: async (sandboxId, options) => {
+					const placed = await stub.start(sandboxId, options);
+					await early(sandboxId);
+					return { ...placed, ...pendingAnswer };
+				},
+			}),
+		});
+		service = api.service;
+		const bundle = await tom.uploadBundle(SKILLS.slice().buffer);
+		const sandbox = await tom.createSandbox({
+			type: "microvm",
+			mounts: [{ path: "/mnt/skills", source: { kind: "bundle", digest: bundle.digest } }],
+			wait: true,
+		});
+		expect(sandbox.mounts?.map((mount) => mount.status)).toEqual(["ready"]);
+		expect((await tom.getSandbox(sandbox.id)).mounts?.map((mount) => mount.status)).toEqual(["ready"]);
+
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		const started = await tom.startSandbox(sandbox.id, { wait: true });
+		expect(started.mounts?.map((mount) => mount.status)).toEqual(["ready"]);
+
+		// A host the sandbox isn't on, once it runs: still dropped.
+		await api.service.reportMounts("host_other", sandbox.id, [{ path: "/mnt/skills", status: "failed", error: "x" }]);
+		expect((await tom.getSandbox(sandbox.id)).mounts?.map((mount) => mount.status)).toEqual(["ready"]);
+	});
+
+	it("leaves a mount pending when no report came, and a boot sets a settled one pending again", async () => {
+		const { tom } = setup({
+			backend: (stub) => ({
+				create: async (spec) => ({
+					...(await stub.create(spec)),
+					mounts: [{ path: "/mnt/skills", status: "pending" }],
+				}),
+			}),
+		});
+		const bundle = await tom.uploadBundle(SKILLS.slice().buffer);
+		const sandbox = await tom.createSandbox({
+			type: "microvm",
+			mounts: [{ path: "/mnt/skills", source: { kind: "bundle", digest: bundle.digest } }],
+			wait: true,
+		});
+		expect(sandbox.mounts?.map((mount) => mount.status)).toEqual(["pending"]);
+	});
+});
+
 describe("signed file URLs", () => {
 	it("download and upload a file with no credential, bound to their path and method, until they expire", async () => {
 		const { tom, fetchApi } = setup();

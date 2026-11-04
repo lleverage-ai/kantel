@@ -454,7 +454,8 @@ export interface ComputeService {
 	): Promise<ResolvedBucketSource | undefined>;
 	/**
 	 * A host's later word on a sandbox's mounts (a `sandbox.mounts` event): each status replaces the one at its path.
-	 * Dropped unless the sandbox is on `hostId`; a path the sandbox doesn't mount is ignored.
+	 * Dropped unless the sandbox is on `hostId`, or is starting (its boot's host not recorded yet: the caller checks that
+	 * `hostId` holds its placement); a path the sandbox doesn't mount is ignored.
 	 */
 	reportMounts(hostId: string, sandboxId: string, mounts: readonly BackendMountStatus[]): Promise<void>;
 	/**

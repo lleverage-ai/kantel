@@ -359,8 +359,9 @@ describe("the hub's bucket.fetch", () => {
 
 /** A hosts service with one host joined (not yet connected) and a backend over it. */
 async function setup(features?: readonly string[]) {
+	const store = createMemoryHostStore();
 	const service = createHostsService({
-		store: createMemoryHostStore(),
+		store,
 		publicUrl: "https://kantel.test",
 		log: () => undefined,
 	});
@@ -377,11 +378,26 @@ async function setup(features?: readonly string[]) {
 		service.useCompute({ secrets: async () => undefined, recordEgress: async () => undefined, ...more });
 	return {
 		service,
+		store,
 		host,
 		hostId,
 		credential,
 		backend,
 		link,
+		/** Records a microVM sandbox as placed on `on` (as a create does before it asks the host). */
+		place: (sandboxId: string, on: string) =>
+			store.putPlacement({
+				sandboxId,
+				hostId: on,
+				tier: "microvm",
+				size: "default",
+				vcpus: 2,
+				memoryMiB: 1024,
+				diskGiB: 10,
+				state: "starting",
+				createdAt: 1,
+				updatedAt: 1,
+			}),
 		/** Connects the host and waits for its welcome (its features are recorded by then). */
 		async connect() {
 			host.connect();
@@ -417,8 +433,11 @@ describe("a host's calls and events about mounts, through the service", () => {
 	});
 
 	it("hands a sandbox.mounts event, checked and clipped, to reportMounts, and drops a malformed one", async () => {
-		const { service, host, hostId, link, connect } = await setup([HOST_FEATURES.mountsBundle]);
+		const { service, host, hostId, link, connect, place } = await setup([HOST_FEATURES.mountsBundle]);
 		await connect();
+		await place("sbx_a", hostId);
+		await place("sbx_b", hostId);
+		await place("sbx_other", "host_other");
 		const reportMounts = vi.fn(
 			async (_hostId: string, _sandboxId: string, _mounts: readonly HostMountStatus[]): Promise<void> => undefined,
 		);
@@ -443,6 +462,25 @@ describe("a host's calls and events about mounts, through the service", () => {
 			{ path: "/mnt/data", status: "failed", error: "x".repeat(512) },
 		]);
 
+		// About a sandbox placed on another host, or on none: dropped.
+		host.send({
+			type: "event",
+			event: {
+				kind: "sandbox.mounts",
+				at: 1,
+				sandboxId: "sbx_other",
+				mounts: [{ path: "/mnt/skills", status: "ready" }],
+			},
+		});
+		host.send({
+			type: "event",
+			event: {
+				kind: "sandbox.mounts",
+				at: 1,
+				sandboxId: "sbx_none",
+				mounts: [{ path: "/mnt/skills", status: "ready" }],
+			},
+		});
 		// More mounts than a sandbox may have, none at all, or no sandbox: dropped.
 		const many = Array.from({ length: 17 }, (_, at) => ({ path: `/mnt/${at}`, status: "ready" }));
 		host.send({ type: "event", event: { kind: "sandbox.mounts", at: 2, sandboxId: "sbx_a", mounts: many } });
