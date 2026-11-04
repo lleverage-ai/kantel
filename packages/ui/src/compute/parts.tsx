@@ -157,7 +157,7 @@ export function TableFrame({ children, bar, className, ...rest }: ComponentProps
 export const messageOf = (caught: unknown, fallback: string): string =>
 	caught instanceof Error ? caught.message : fallback;
 
-type LineTone = "done" | "idle" | "working" | "muted" | "error";
+type LineTone = "done" | "idle" | "working" | "muted" | "error" | "warning";
 
 const lineColour: Record<LineTone, string> = {
 	done: "text-status-done",
@@ -165,6 +165,7 @@ const lineColour: Record<LineTone, string> = {
 	muted: "text-muted",
 	working: "text-status-working",
 	error: "text-status-error",
+	warning: "text-status-approval",
 };
 
 /**

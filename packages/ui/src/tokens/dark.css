@@ -48,7 +48,7 @@
 	/* Text: never pure white. The disabled grey is his muted-fg-subtle, under AA (3.99:1 on the canvas) as disabled text
 	   may be; the faint text a step under the muted is a mix of the two that keeps AA. */
 	--kt-text: hsl(50 20% 93%); /* foreground */
-	--kt-text-muted: hsl(50 10% 62%); /* muted-fg */
+	--kt-text-muted: hsl(50 10% 67%); /* muted-fg, a step lighter so secondary columns read on the dark card */
 	--kt-text-faint: color-mix(in srgb, var(--kt-text-muted) 85%, var(--kt-text-disabled));
 	--kt-text-disabled: hsl(50 10% 45%); /* muted-fg-subtle */
 
@@ -67,6 +67,8 @@
 	/* Status text: info, success, warning and destructive as his text colours, plus Kantel's plum for waiting (the brand has no indigo). Their
 	   soft fills are formulas in tokens.css. */
 	--kt-status-working: hsl(210 55% 62%); /* info */
+	/* The error tint a shade lighter than in light: at 10% on the dark card it reads brown, not red. */
+	--kt-status-error-soft: color-mix(in srgb, var(--kt-status-error) 7%, transparent);
 	--kt-status-waiting: hsl(280 32% 72%); /* plum, lifted to pass AA on the panel: waiting on an answer from you */
 	--kt-status-approval: hsl(48 70% 62%); /* warning-text */
 	/* His success, 45% light, is 4.42:1 on a card, under AA as text; his set has no success text shade, so the text is

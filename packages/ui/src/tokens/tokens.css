@@ -25,7 +25,6 @@
 	--kt-status-waiting-soft: color-mix(in srgb, var(--kt-status-waiting) 12%, transparent);
 	--kt-status-approval-soft: color-mix(in srgb, var(--kt-status-approval) 10%, transparent);
 	--kt-status-done-soft: color-mix(in srgb, var(--kt-status-done) 10%, transparent);
-	--kt-status-error-soft: color-mix(in srgb, var(--kt-status-error) 10%, transparent);
 	--kt-status-approval-line: color-mix(in srgb, var(--kt-status-approval) 35%, transparent);
 	--kt-status-error-line: color-mix(in srgb, var(--kt-status-error) 35%, transparent);
 

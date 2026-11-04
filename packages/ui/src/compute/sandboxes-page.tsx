@@ -734,6 +734,7 @@ function Cpu({ sandbox, source, percent = false }: { sandbox: Sandbox; source: S
 	const values = series === undefined ? (live.status === "off" ? sandbox.usage : []) : line.values;
 	const loading = live.status === "loading";
 	const latest = values.at(-1);
+	const busy = latest !== undefined && latest >= 0.8;
 	const peak = Math.round(Math.max(0, ...values) * 100);
 	const label =
 		values.length === 0
@@ -743,13 +744,14 @@ function Cpu({ sandbox, source, percent = false }: { sandbox: Sandbox; source: S
 		<span className="inline-flex items-center gap-2">
 			<Sparkline
 				values={values}
-				tone="done"
+				// Busy past 80%: the line and its figure turn the caution colour, so a glance finds the loaded ones.
+				tone={busy ? "warning" : "done"}
 				label={loading ? `Reading ${sandbox.name}'s CPU` : label}
 				loading={loading}
 				{...(series === undefined ? {} : { timed: line.timed })}
 			/>
 			{percent && sandbox.state === "running" ? (
-				<span className="w-8 text-right text-sm text-muted tabular-nums">
+				<span className={`w-8 text-right text-sm tabular-nums ${busy ? "text-status-approval" : "text-muted"}`}>
 					{latest === undefined ? <span className="text-faint">–</span> : `${Math.round(latest * 100)}%`}
 				</span>
 			) : null}
