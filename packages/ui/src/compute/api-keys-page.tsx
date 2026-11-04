@@ -407,20 +407,21 @@ function KeyPhoneRow({ apiKey, now, onRevoke }: { apiKey: ApiKey; now: number; o
 			<span className="font-mono text-code text-muted">{apiKey.prefix}…</span>
 			{/* Two fixed lines on every card, so the cards share one shape: what it may do and when it ends, then when it was
 			    last used and who made it. */}
-			<dl className="m-0 flex min-w-0 flex-col gap-1 text-sm">
-				<div className="flex min-w-0 gap-x-4">
+			<div className="flex min-w-0 flex-col gap-1 text-sm">
+				{/* Each line its own list, so every name and value pair sits directly in a dl. */}
+				<dl className="m-0 flex min-w-0 gap-x-4">
 					<MetaPair label="Access">{accessText(apiKey.scopes)}</MetaPair>
 					<MetaPair label={ending.label} title={ends.title}>
 						{ending.value}
 					</MetaPair>
-				</div>
-				<div className="flex min-w-0 gap-x-4">
+				</dl>
+				<dl className="m-0 flex min-w-0 gap-x-4">
 					<MetaPair label="Used">
 						{apiKey.lastUsedAt === undefined ? "Never" : `${compactAge(apiKey.lastUsedAt, now)} ago`}
 					</MetaPair>
 					{apiKey.createdBy === "" ? null : <MetaPair label="By">{apiKey.createdBy}</MetaPair>}
-				</div>
-			</dl>
+				</dl>
+			</div>
 		</li>
 	);
 }
