@@ -811,6 +811,8 @@ export interface Invite {
 	readonly email?: string;
 	/** The join code, such as `kji_…`. Shown once, when the invite is made. */
 	readonly code?: string;
+	/** Only when the invite is made: whether Kantel emailed it, with a link that joins with its code. False without an email, where the deployment sends no mail, or when the send failed. */
+	readonly emailed?: boolean;
 	/** Epoch milliseconds, UTC. */
 	readonly expiresAt: number;
 	/** Epoch milliseconds, UTC. */

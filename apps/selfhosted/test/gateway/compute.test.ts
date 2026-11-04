@@ -6,11 +6,13 @@ import { createMemoryRelayStore } from "@kantel/hosts/relay-store";
 import { createMemoryHostStore } from "@kantel/hosts/store";
 import { createTunnelTickets } from "@kantel/hosts/tunnel";
 import { createAuthenticator } from "@kantel/identity/authenticator";
+import { MemoryInviteMailer } from "@kantel/identity/invites";
 import { hashSessionToken, kantelSessionProvider } from "@kantel/identity/otp";
 import { afterEach, describe, expect, it } from "vitest";
 import { bootstrap, createGatewayComponents } from "../../src/gateway/components.ts";
 import {
 	computeConfig,
+	computeInvites,
 	DEFAULT_HOST_IMAGES,
 	gatewayCompute,
 	gatewayHosts,
@@ -24,7 +26,7 @@ afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup().catch(() => undefined);
 });
 
-async function serve(on: boolean, superAdminKey?: string) {
+async function serve(on: boolean, superAdminKey?: string, mailer?: MemoryInviteMailer) {
 	const components = createGatewayComponents();
 	cleanups.push(() => components.close());
 	const seeded = await bootstrap(components, { organisation: "Compute", project: "compute" });
@@ -37,6 +39,9 @@ async function serve(on: boolean, superAdminKey?: string) {
 				authenticator,
 				identity: components.identity,
 				...(superAdminKey === undefined ? {} : { superAdminKey }),
+				...(mailer === undefined
+					? {}
+					: { invites: computeInvites(mailer, "https://kantel.example.com", components.identity) }),
 			})
 		: undefined;
 	if (compute !== undefined) cleanups.push(() => compute.close());
@@ -146,6 +151,38 @@ describe("the compute plane on the gateway", () => {
 			"This invite is for ann@kantel.example.com, but you're signed in as bob@kantel.example.com. Sign in as ann@kantel.example.com to join.",
 		);
 		expect(await ann.joinOrganisation({ code })).toMatchObject({ id: org.id, role: "member" });
+	});
+
+	it("emails an organisation's invite with the deployment's mailer, linking to the console at its public URL", async () => {
+		const mailer = new MemoryInviteMailer();
+		const { client, person } = await serve(true, undefined, mailer);
+		const tom = client(await person("tom", "admin"));
+		await person("ann", "viewer");
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const invite = await tom.createInvite(org.id, { email: "ann@kantel.example.com" });
+		expect(invite.emailed).toBe(true);
+		expect(mailer.sent).toEqual([
+			{
+				to: "ann@kantel.example.com",
+				organisation: "Acme",
+				invitedBy: "tom@kantel.example.com",
+				link: `https://kantel.example.com/organisation#join=${invite.code}`,
+				expiresAt: invite.expiresAt,
+			},
+		]);
+	});
+
+	it("doesn't email an invite to someone who can't sign in to the deployment, and shows its code instead", async () => {
+		// Sign-in is invite-only here: a stranger gets no sign-in code, so a link would lead nowhere. Letting them in is
+		// the deployment's admins' call; an organisation's invite doesn't.
+		const mailer = new MemoryInviteMailer();
+		const { client, person } = await serve(true, undefined, mailer);
+		const tom = client(await person("tom", "admin"));
+		const org = await tom.createOrganisation({ name: "Acme" });
+		const invite = await tom.createInvite(org.id, { email: "stranger@kantel.example.com" });
+		expect(invite).toMatchObject({ email: "stranger@kantel.example.com", emailed: false });
+		expect(invite.code).toMatch(/^kji_/);
+		expect(mailer.sent).toEqual([]);
 	});
 
 	it("is always on: on joined hosts wherever it knows where hosts reach it, else on the stub", () => {

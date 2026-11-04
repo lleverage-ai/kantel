@@ -39,6 +39,7 @@ import {
 	createComputeApi,
 	createMemoryStore,
 	createRoutedBackend,
+	type InviteMailing,
 	joinTokenSpender,
 	type PersonIdentity,
 	type SandboxBackend,
@@ -366,6 +367,8 @@ export interface StackComputeOptions {
 	readonly accountHosts?: { readonly publicUrl: string };
 	/** With account hosts on, how often sandboxes past their auto-stop time are stopped. Default `HOST_SWEEP_MS`. */
 	readonly hostSweepMs?: number;
+	/** Emails an organisation's invites, with a link to join, where the deployment has mail. Absent, none. */
+	readonly invites?: InviteMailing;
 }
 
 /**
@@ -514,6 +517,7 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 		...(options.fetch === undefined ? {} : { fetch: options.fetch }),
 		// Join commands name the address hosts dial, as tunnel URLs do, not the caller's origin.
 		...(own === undefined ? {} : { accountHosts: true, publicUrl: own.publicUrl }),
+		...(options.invites === undefined ? {} : { invites: options.invites }),
 	});
 	if (own !== undefined) await grantPorts(store, await own.microvms());
 	own?.service.useJoinTokens(joinTokenSpender(store));
