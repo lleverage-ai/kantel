@@ -13,7 +13,7 @@ import { Badge } from "../primitives/status.tsx";
 import { type DestinationBinding, type EgressGrant, HTTP_METHODS, type HttpMethod } from "./compute-model.ts";
 import { type EgressRule, methodsAndPaths, type ProtectedVariableRow, type RuleScope } from "./egress-overview.ts";
 import { hostProblem, pathProblem, splitList } from "./egress-rules.ts";
-import { cellMono, messageOf, table, tableFrame, td, th } from "./parts.tsx";
+import { cellMono, messageOf, TableFrame, table, td, th } from "./parts.tsx";
 
 /** "Every sandbox", or the environment's or sandbox's name with its icon. */
 export function ScopeText({ scope, href }: { scope: RuleScope; href?: string }) {
@@ -100,12 +100,7 @@ export function EgressRulesTable({ rules, narrow = false, scopeHref, onRemove, b
 		);
 	}
 	return (
-		<section
-			className={`kt-focusable ${tableFrame}`}
-			// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling region must be reachable to scroll by keyboard.
-			tabIndex={0}
-			aria-label="Rules"
-		>
+		<TableFrame className="kt-focusable" role="region" tabIndex={0} aria-label="Rules">
 			<table className={table}>
 				<thead>
 					<tr>
@@ -151,7 +146,7 @@ export function EgressRulesTable({ rules, narrow = false, scopeHref, onRemove, b
 					})}
 				</tbody>
 			</table>
-		</section>
+		</TableFrame>
 	);
 }
 
@@ -200,12 +195,7 @@ export function ProtectedVariablesTable({ variables, narrow = false, environment
 		);
 	}
 	return (
-		<section
-			className={`kt-focusable ${tableFrame}`}
-			// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling region must be reachable to scroll by keyboard.
-			tabIndex={0}
-			aria-label="Protected variables"
-		>
+		<TableFrame className="kt-focusable" role="region" tabIndex={0} aria-label="Protected variables">
 			<table className={table}>
 				<thead>
 					<tr>
@@ -239,7 +229,7 @@ export function ProtectedVariablesTable({ variables, narrow = false, environment
 					})}
 				</tbody>
 			</table>
-		</section>
+		</TableFrame>
 	);
 }
 

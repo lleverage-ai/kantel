@@ -13,7 +13,7 @@ import { ChevronDownIcon, ChevronRightIcon } from "../primitives/icons.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { bytesText } from "./compute-model.ts";
 import { type DenialFix, denialFixes, type LoggedEntry, type ProtectedVariableRow } from "./egress-overview.ts";
-import { cellMono, table, tableFrame, td, th } from "./parts.tsx";
+import { cellMono, TableFrame, table, td, th } from "./parts.tsx";
 
 export type EgressLogFilter = "all" | "denied" | "swapped";
 
@@ -162,12 +162,7 @@ export function EgressLog({
 			</ul>
 		) : (
 			// Nothing in a row but a denial takes focus, so the frame does: it scrolls sideways on a narrow window.
-			<section
-				className={`kt-focusable ${tableFrame}`}
-				// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling region must be reachable to scroll by keyboard.
-				tabIndex={0}
-				aria-label="Egress log"
-			>
+			<TableFrame className="kt-focusable" role="region" tabIndex={0} aria-label="Egress log">
 				<table className={table}>
 					<thead>
 						<tr>
@@ -207,7 +202,7 @@ export function EgressLog({
 						))}
 					</tbody>
 				</table>
-			</section>
+			</TableFrame>
 		);
 
 	return (
