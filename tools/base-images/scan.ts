@@ -115,7 +115,11 @@ export interface CommandResult {
 }
 
 /** The command, without its side effects: `read` reads a file, and `now` is the scan's time (ISO 8601). */
-export function scanCommand(argv: readonly string[], read: (path: string) => string, now: string): CommandResult {
+export function scanCommand(
+	argv: readonly string[],
+	read: (path: string) => string | undefined,
+	now: string,
+): CommandResult {
 	let args: ScanArgs;
 	try {
 		args = parseScanArgs(argv);
@@ -124,7 +128,9 @@ export function scanCommand(argv: readonly string[], read: (path: string) => str
 	}
 	let report: unknown;
 	try {
-		report = JSON.parse(read(args.report));
+		const text = read(args.report);
+		if (text === undefined) throw new Error("no such file");
+		report = JSON.parse(text);
 	} catch (error) {
 		return { code: 1, stdout: "", stderr: `can't read ${args.report}: ${(error as Error).message}\n`, summary: "" };
 	}
