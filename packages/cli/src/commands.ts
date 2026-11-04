@@ -664,7 +664,9 @@ async function browserLogin(ctx: Context, url: string): Promise<IssuedApiKey | u
 		say(`  ${pending.verificationUrlComplete}`);
 	}
 	if (!waiting) {
-		if (!ctx.json) ctx.note("Then run: kantel login --wait");
+		// The same --url, or --wait would sign in to the saved or default URL, where this code isn't known.
+		const flagUrl = ctx.string("url");
+		if (!ctx.json) ctx.note(`Then run: kantel login --wait${flagUrl === undefined ? "" : ` --url ${originOf(url)}`}`);
 		return undefined;
 	}
 	if (interactive && !ctx.boolean("no-browser") && !hasValue(ctx.io.env.KANTEL_NO_BROWSER)) {

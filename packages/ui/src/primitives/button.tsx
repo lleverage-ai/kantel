@@ -15,7 +15,7 @@ const buttonBase =
 
 /** Each variant's border colour, background and text colour, and its hover (never while disabled). */
 const buttonVariants: { readonly [variant in ButtonVariant]: string } = {
-	primary: "border-transparent bg-accent text-accent-fg hover:not-disabled:bg-accent-hover",
+	primary: "border-transparent bg-primary text-primary-fg hover:not-disabled:bg-primary-hover",
 	secondary: "border-border-strong bg-raised text-fg hover:not-disabled:bg-active",
 	ghost: "border-transparent bg-transparent text-muted hover:not-disabled:bg-hover hover:not-disabled:text-fg",
 	danger: "border-status-error-line bg-status-error-soft text-status-error hover:not-disabled:bg-status-error-line",

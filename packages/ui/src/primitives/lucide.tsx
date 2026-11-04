@@ -4,18 +4,19 @@ import {
 	Archive,
 	ArchiveRestore,
 	Blocks,
+	BookOpen,
 	Bot,
 	Box,
 	Braces,
 	Building2,
 	Camera,
 	Check,
+	ChevronDown,
 	ChevronLeft,
 	ChevronRight,
 	ChevronsDownUp,
 	ChevronsUpDown,
 	CircleAlert,
-	Container,
 	CreditCard,
 	Ellipsis,
 	ExternalLink,
@@ -30,10 +31,14 @@ import {
 	FileText,
 	FolderClosed,
 	KeyRound,
+	Laptop,
+	Layers,
 	ListFilter,
+	LogOut,
 	type LucideIcon,
+	Monitor,
+	Moon,
 	Network,
-	Palette,
 	Pause,
 	Pencil,
 	Pin,
@@ -51,6 +56,7 @@ import {
 	SkipForward,
 	SquareCode,
 	SquareTerminal,
+	Sun,
 	Trash2,
 	Unplug,
 	User,
@@ -97,7 +103,17 @@ export const RenameIcon = lucide(Pencil, "RenameIcon");
 export const PinIcon = lucide(Pin, "PinIcon");
 export const UnpinIcon = lucide(PinOff, "UnpinIcon");
 export const TrashIcon = lucide(Trash2, "TrashIcon");
-export const PaletteIcon = lucide(Palette, "PaletteIcon");
+/** The theme switch's three choices: follow the device, light, dark. */
+export const SystemThemeIcon = lucide(Laptop, "SystemThemeIcon");
+export const LightThemeIcon = lucide(Sun, "LightThemeIcon");
+export const DarkThemeIcon = lucide(Moon, "DarkThemeIcon");
+/** Your menu: the docs, and signing out. */
+export const DocsIcon = lucide(BookOpen, "DocsIcon");
+export const SignOutIcon = lucide(LogOut, "SignOutIcon");
+/** A split button's caret: more ways to do its action. */
+export const CaretIcon = lucide(ChevronDown, "CaretIcon");
+/** A sandbox's desktop. */
+export const DesktopIcon = lucide(Monitor, "DesktopIcon");
 /** A subagent: the bot in T3 Code's subagent avatar. */
 export const BotIcon = lucide(Bot, "BotIcon");
 // A player's controls (a browser's replay) and a link that opens in a new tab.
@@ -130,7 +146,7 @@ export const UnplugIcon = lucide(Unplug, "UnplugIcon");
 export const CatalogueIcon = lucide(Blocks, "CatalogueIcon");
 export const ServerIcon = lucide(Server, "ServerIcon");
 // An environment: a long-lived machine sessions attach to (sandbox tier 3).
-export const EnvironmentIcon = lucide(Container, "EnvironmentIcon");
+export const EnvironmentIcon = lucide(Layers, "EnvironmentIcon");
 export const KeyRoundIcon = lucide(KeyRound, "KeyRoundIcon");
 export const AppWindowIcon = lucide(AppWindow, "AppWindowIcon");
 export const LucideSearchIcon = lucide(Search, "LucideSearchIcon");

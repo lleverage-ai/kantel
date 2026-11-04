@@ -1,8 +1,7 @@
 import type { ThemePreference } from "@kantel/contracts";
 import { useSyncExternalStore } from "react";
 import { SegmentedControl, type SegmentOption } from "../primitives/controls.tsx";
-import { PaletteIcon } from "../primitives/lucide.tsx";
-import { Menu } from "../primitives/menu.tsx";
+import type { MenuEntry } from "../primitives/menu.tsx";
 import { type ThemeController, type ThemeState, themeController } from "./controller.ts";
 
 // The theme switch: System, Light or Dark, as a segmented control (a radio group: Tab reaches the chosen one, arrows
@@ -42,27 +41,19 @@ export function ThemeSwitch({ onChoose, controller = themeController() }: ThemeS
 	);
 }
 
-/** The same three choices behind an icon button, where there is no room for the switch: a sidebar's rail. */
-export function ThemeMenu({
-	onChoose,
-	controller = themeController(),
-	align = "start",
-}: ThemeSwitchProps & { readonly align?: "start" | "end" }) {
+/**
+ * The same three choices as a row in a menu, "Theme  System", whose options open to the side: the console's own menu,
+ * under your name. A hook, so the row follows the theme while the menu is open.
+ */
+export function useThemeMenuEntry({ onChoose, controller = themeController() }: ThemeSwitchProps = {}): MenuEntry {
 	const { preference } = useThemeState(controller);
 	const choose = chooser(controller, onChoose);
-	return (
-		<Menu
-			label="Theme"
-			icon={<PaletteIcon />}
-			size="sm"
-			align={align}
-			entries={OPTIONS.map((option) => ({
-				kind: "item" as const,
-				id: option.value,
-				label: option.label,
-				checked: option.value === preference,
-				onSelect: () => choose(option.value),
-			}))}
-		/>
-	);
+	return {
+		kind: "choices",
+		id: "theme",
+		label: "Theme",
+		choices: OPTIONS,
+		value: preference,
+		onChoose: (value) => choose(value as ThemePreference),
+	};
 }

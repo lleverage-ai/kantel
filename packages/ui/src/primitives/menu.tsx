@@ -80,6 +80,8 @@ export type MenuEntry =
 			readonly onSelect: () => void;
 	  }
 	| { readonly kind: "separator"; readonly id: string }
+	/** Words that aren't a choice, at the top of a menu: who is signed in, over their own menu. */
+	| { readonly kind: "label"; readonly id: string; readonly label: string; readonly detail?: string }
 	| {
 			readonly kind: "choices";
 			readonly id: string;
@@ -352,6 +354,16 @@ export function Menu({
 			>
 				{entries.map((entry) => {
 					if (entry.kind === "separator") return <hr key={entry.id} className={separatorClass} />;
+					if (entry.kind === "label") {
+						return (
+							<div key={entry.id} className="kt-menu-label flex min-w-0 flex-col gap-0.5 px-2 pt-1.5 pb-1">
+								<span className="truncate font-strong">{entry.label}</span>
+								{entry.detail === undefined ? null : (
+									<span className="truncate text-sm text-faint">{entry.detail}</span>
+								)}
+							</div>
+						);
+					}
 					if (entry.kind === "choices") {
 						const chosen = entry.choices.find((choice) => choice.value === entry.value);
 						return (

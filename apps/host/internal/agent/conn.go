@@ -42,6 +42,8 @@ type session struct {
 	mu      sync.Mutex
 	streams map[uint32]net.Conn
 	cancel  context.CancelFunc
+	// calls are the host's own calls to Kantel on this connection.
+	calls *caller
 }
 
 func (s *session) send(ctx context.Context, m proto.Message) error {
@@ -118,16 +120,22 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 	}
 	ws.SetReadLimit(64 << 20)
 	s := &session{host: h, ws: ws, streams: map[uint32]net.Conn{}, cancel: cancel}
+	s.calls = newCaller(s.send)
 	defer func() {
+		h.mu.Lock()
+		h.events = nil
+		if h.link == s.calls {
+			h.link = nil
+		}
+		h.mu.Unlock()
+		// Calls waiting on this connection fail now rather than at their timeout.
+		s.calls.close()
 		ws.Close(websocket.StatusGoingAway, "host stopping")
 		s.mu.Lock()
 		for _, c := range s.streams {
 			c.Close()
 		}
 		s.mu.Unlock()
-		h.mu.Lock()
-		h.events = nil
-		h.mu.Unlock()
 	}()
 	hello := proto.Message{Type: "hello", Hello: &proto.Hello{HostID: h.cfg.HostID, Facts: h.facts, Sandboxes: h.List(), Capacity: h.Capacity()}}
 	if err := s.send(ctx, hello); err != nil {
@@ -151,6 +159,7 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 		e.At = time.Now().UnixMilli()
 		_ = s.send(ctx, proto.Message{Type: "event", Event: &e})
 	}
+	h.link = s.calls
 	h.mu.Unlock()
 	beat := welcome.Welcome.HeartbeatSeconds
 	if beat <= 0 {
@@ -190,6 +199,9 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 		switch m.Type {
 		case "call":
 			go s.call(ctx, m, update)
+		case "result":
+			// The answer to one of the host's own calls (secrets.fetch).
+			s.calls.deliver(m)
 		case "welcome":
 			if m.Welcome != nil {
 				h.applyWelcome(ctx, m.Welcome, update)

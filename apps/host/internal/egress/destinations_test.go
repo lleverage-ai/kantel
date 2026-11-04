@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"sync"
 	"testing"
 )
 
@@ -69,8 +70,14 @@ func TestProxyWontConnectToPrivateAddresses(t *testing.T) {
 
 	p := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	p.Destinations.Deny = []netip.Prefix{netip.MustParsePrefix("10.231.0.0/16")}
+	// The proxy may record after it has answered, on the connection's goroutine.
+	var mu sync.Mutex
 	var records []Record
-	p.OnRecord = func(r Record) { records = append(records, r) }
+	p.OnRecord = func(r Record) {
+		mu.Lock()
+		defer mu.Unlock()
+		records = append(records, r)
+	}
 	p.Resolve = func(a netip.Addr) (Rules, bool) { return Rules{SandboxID: "sbx_1", Mode: "open"}, true }
 	if err := p.Listen("127.0.0.1:0"); err != nil {
 		t.Fatal(err)
@@ -99,6 +106,8 @@ func TestProxyWontConnectToPrivateAddresses(t *testing.T) {
 		t.Fatal("the proxy connected to the host's loopback for a sandbox")
 	default:
 	}
+	mu.Lock()
+	defer mu.Unlock()
 	for _, r := range records {
 		if r.Allowed {
 			t.Errorf("recorded %s %s:%d as allowed", r.Method, r.Host, r.Port)

@@ -1,7 +1,7 @@
 // Grants and protected variables go only to hosts that enforce them (`egress-policy` in their facts), and a fork is
 // given its own environment: its own placeholders, never its source's.
 import { createKantelClient, KantelApiError } from "@kantel/api/sdk";
-import { createComputeApi, joinTokenSpender } from "@kantel/compute";
+import { type ComputeStore, createComputeApi, joinTokenSpender } from "@kantel/compute";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHostBackend } from "../src/backend.ts";
 import { HOST_FEATURES } from "../src/protocol.ts";
@@ -21,16 +21,22 @@ afterEach(async () => {
 
 async function setup(features?: readonly string[]) {
 	const service = createHostsService({ store: createMemoryHostStore(), publicUrl: "https://kantel.test" });
-	const api = createComputeApi({
-		backend: createHostBackend({
-			hosts: service,
+	/** A gateway on the hosts and, given one, another's store; `now`, its clock. */
+	const gateway = (store?: ComputeStore, now?: () => number) =>
+		createComputeApi({
+			backend: createHostBackend({
+				hosts: service,
+				publicUrl: "https://kantel.test",
+				tickets: createTunnelTickets(createMemoryRelayStore()),
+			}),
+			...(store === undefined ? {} : { store }),
+			...(now === undefined ? {} : { now }),
+			authenticatePerson: async (request) =>
+				request.headers.get("authorization") === "Bearer root" ? ROOT : undefined,
+			fetch: async () => new Response(null, { status: 204 }),
 			publicUrl: "https://kantel.test",
-			tickets: createTunnelTickets(createMemoryRelayStore()),
-		}),
-		authenticatePerson: async (request) => (request.headers.get("authorization") === "Bearer root" ? ROOT : undefined),
-		fetch: async () => new Response(null, { status: 204 }),
-		publicUrl: "https://kantel.test",
-	});
+		});
+	const api = gateway();
 	service.useJoinTokens(joinTokenSpender(api.store));
 	closers.push(
 		() => service.close(),
@@ -46,7 +52,13 @@ async function setup(features?: readonly string[]) {
 	const { hostId } = await service.register({ token: token.token });
 	const host = new FakeHost(service, hostId, features);
 	host.connect();
-	return { api, root, host };
+	/** Another gateway, on the same store, its clock `aheadMs` on. */
+	const another = (aheadMs: number) => {
+		const other = gateway(api.store, () => Date.now() + aheadMs);
+		closers.push(() => other.close());
+		return other;
+	};
+	return { api, root, host, another };
 }
 
 const UNENFORCED = "Its host doesn't enforce egress grants or protected variables";
@@ -411,40 +423,71 @@ describe("a running sandbox whose host turns out not to enforce its egress", () 
 		expect((await historyOf(root, sandbox.id)).at(-1)).toBe(`sandbox.stopped: ${UNENFORCED}`);
 	});
 
-	it("is stopped by another gateway's sweep, when the one that took the stop on went before carrying it out", async () => {
-		const { api, root, host } = await setup();
+	// A gateway takes on the stop (its own sweep, the real `beginStop`), then goes before its stop reaches the host.
+	for (const retry of ["is refused again", "gets through"] as const) {
+		it(`is stopped by another gateway once its claim lapses, though its egress retry ${retry}`, async () => {
+			const supports = retry === "gets through";
+			const { api, root, host, another } = await setup(supports ? [HOST_FEATURES.egressPolicy] : undefined);
+			const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+			let gone = () => {};
+			const goneStop = new Promise<void>((resolve) => {
+				gone = resolve;
+			});
+			let stops = 0;
+			host.hold = (method) => (method === "sandbox.stop" && stops++ === 0 ? goneStop : undefined);
+			await api.store.sandboxes.update(sandbox.id, (current) => ({
+				...current,
+				grants: [{ id: "grt_1", action: "deny", host: "evil.example", createdAt: 1 }],
+				egressRevision: (current.egressRevision ?? 0) + 1,
+				// Due to stop for a reason of its own, when its host can enforce the grant.
+				...(supports ? { stopsAt: Date.now(), stopFor: "Its egress couldn't be applied to it while it started" } : {}),
+			}));
+			const reason = supports ? "Its egress couldn't be applied to it while it started" : UNENFORCED;
+			void api.service.sweep();
+			await vi.waitFor(async () => {
+				const claimed = await api.store.sandboxes.get(sandbox.id);
+				expect(claimed?.state).toBe("stopping");
+				expect(claimed?.stopClaimedAt).toBeDefined();
+			});
+			// Another gateway, within the claim, leaves it be.
+			const soon = another(60_000);
+			await soon.service.sweep();
+			await soon.service.idle();
+			expect((await api.store.sandboxes.get(sandbox.id))?.state).toBe("stopping");
+			expect(stops).toBe(1);
+			// Once it lapses, another gateway stops it, whether its egress retry is refused or taken.
+			const later = another(10 * 60_000);
+			await vi.waitFor(async () => {
+				await later.service.sweep();
+				await later.service.idle();
+				expect((await root.getSandbox(sandbox.id)).state).toBe("stopped");
+			});
+			expect(stops).toBe(2);
+			expect((await historyOf(root, sandbox.id)).at(-1)).toBe(`sandbox.stopped: ${reason}`);
+			gone();
+		});
+	}
+
+	it("is stopped by another gateway, when the boot that decided its stop went before taking it on", async () => {
+		const { api, root, host, another } = await setup();
 		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
-		// What a gateway that went leaves: the stop taken on, never sent.
-		const claimedAt = Date.now() - 10 * 60_000;
+		// What enforceStop's first write leaves, its gateway gone before beginStop: starting, placed, due.
 		await api.store.sandboxes.update(sandbox.id, (current) => ({
 			...current,
-			state: "stopping",
-			stopsAt: claimedAt,
+			state: "starting",
+			stopsAt: Date.now(),
 			stopFor: UNENFORCED,
-			stopClaimedAt: claimedAt,
 		}));
-		await api.service.sweep();
-		await api.service.idle();
+		const soon = another(60_000);
+		await soon.service.sweep();
+		await soon.service.idle();
+		expect((await api.store.sandboxes.get(sandbox.id))?.state).toBe("starting");
+		const later = another(10 * 60_000);
+		await later.service.sweep();
+		await later.service.idle();
 		expect((await root.getSandbox(sandbox.id)).state).toBe("stopped");
 		expect(host.calls.some((call) => call.method === "sandbox.stop")).toBe(true);
 		expect((await historyOf(root, sandbox.id)).at(-1)).toBe(`sandbox.stopped: ${UNENFORCED}`);
-	});
-
-	it("is left to the gateway carrying out its stop, within its claim", async () => {
-		const { api, root, host } = await setup();
-		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
-		const claimedAt = Date.now();
-		await api.store.sandboxes.update(sandbox.id, (current) => ({
-			...current,
-			state: "stopping",
-			stopsAt: claimedAt,
-			stopFor: UNENFORCED,
-			stopClaimedAt: claimedAt,
-		}));
-		await api.service.sweep();
-		await api.service.idle();
-		expect((await root.getSandbox(sandbox.id)).state).toBe("stopping");
-		expect(host.calls.some((call) => call.method === "sandbox.stop")).toBe(false);
 	});
 
 	it("is stopped once its host is back, when the stop didn't reach it", async () => {

@@ -25,7 +25,8 @@ type Message struct {
 	// heartbeat (host → Kantel) every HeartbeatSeconds.
 	Heartbeat *Heartbeat `json:"heartbeat,omitempty"`
 
-	// call (Kantel → host) and result (host → Kantel), matched by ID.
+	// call and result, matched by ID. Calls go both ways: Kantel's to the host, and the host's to Kantel (such as
+	// secrets.fetch), whose IDs start with "h" so they never clash with Kantel's.
 	ID     string          `json:"id,omitempty"`
 	Method string          `json:"method,omitempty"`
 	Params json.RawMessage `json:"params,omitempty"`
@@ -83,7 +84,14 @@ type Facts struct {
 	Labels map[string]string `json:"labels,omitempty"`
 	// Egress is how sandboxes reach the internet: "open" (NAT), "proxy" (only through the egress proxy) or "none".
 	Egress string `json:"egress"`
+	// Features are what the host does beyond protocol 1 as first released (FeatureEgressPolicy). The control plane
+	// sends a sandbox a policy it must enforce only when its host reports the feature that enforces it.
+	Features []string `json:"features,omitempty"`
 }
+
+// FeatureEgressPolicy: the host enforces egress Grants (methods and paths too), swaps Protected placeholders only
+// where they are bound, refuses an egress older than its Revision, and gives a fork the Env its ForkParams name.
+const FeatureEgressPolicy = "egress-policy"
 
 // Size is a sandbox shape.
 type Size struct {
@@ -188,11 +196,91 @@ type Egress struct {
 	// Headers go on every request the host passes to the upstream (an account's upstream settings, such as a
 	// Mehen's key). The host holds them; the sandbox never sees them. Kantel-* names are the host's own and ignored.
 	Headers map[string]string `json:"headers,omitempty"`
+	// Protected is present when the sandbox has protected variables: the host mints a CA for the sandbox and
+	// intercepts these hosts to swap placeholders for values. It holds no value.
+	Protected *Protected `json:"protected,omitempty"`
+	// Grants are the environment's then the sandbox's grants, applied on top of Allow and Deny (deny wins). A grant
+	// with methods or paths makes its host intercepted too.
+	Grants []Grant `json:"grants,omitempty"`
+	// Revision orders the control plane's egress updates for a sandbox: one older than the egress the host holds is
+	// stale (it was read before a later change) and is ignored. 0 is unordered and always taken.
+	Revision int64 `json:"revision,omitempty"`
 	// Allow and Deny are host patterns (`example.com`, `*.example.com`); deny wins. DefaultDeny refuses a host no
 	// rule names. They apply on the host's proxy, so to "proxy" sandboxes (an "open" one has its own way out).
 	Allow       []string `json:"allow,omitempty"`
 	Deny        []string `json:"deny,omitempty"`
 	DefaultDeny bool     `json:"defaultDeny,omitempty"`
+}
+
+// Protected is a sandbox's protected variables as the host's proxy needs to know them up front: no values.
+type Protected struct {
+	// Version is the control plane's version of the sandbox's table.
+	Version int64 `json:"version"`
+	// Intercept are the host patterns the variables are bound to (`api.github.com`, `*.example.com`).
+	Intercept []string `json:"intercept"`
+}
+
+// Grant is one allow or deny rule. Paths are globs: `*` is one segment, `**` the rest.
+type Grant struct {
+	Action  string   `json:"action"`
+	Host    string   `json:"host"`
+	Methods []string `json:"methods,omitempty"`
+	Paths   []string `json:"paths,omitempty"`
+	// Rule is the grant as text, for the log and refusals: `deny DELETE api.github.com /repos/*`.
+	Rule string `json:"rule"`
+}
+
+// DestinationBinding is one destination a protected variable may be sent to (always port 443).
+type DestinationBinding struct {
+	Host         string   `json:"host"`
+	PathPrefixes []string `json:"pathPrefixes,omitempty"`
+	Methods      []string `json:"methods,omitempty"`
+}
+
+// SecretEntry is one protected variable in a secrets.fetch answer. Value is the real value: it lives only in the
+// host's memory, and never goes into a log, an error, meta.json or anything the sandbox is sent.
+type SecretEntry struct {
+	Placeholder string               `json:"placeholder"`
+	Name        string               `json:"name"`
+	Value       string               `json:"value"`
+	Bindings    []DestinationBinding `json:"bindings"`
+}
+
+// SecretsTable is secrets.fetch's result (host → Kantel call, params SandboxRef).
+type SecretsTable struct {
+	Version int64         `json:"version"`
+	Entries []SecretEntry `json:"entries"`
+}
+
+// SecretsParams is sandbox.secrets (Kantel → host): the sandbox's table changed, so the host drops its copy.
+type SecretsParams struct {
+	SandboxID string `json:"sandboxId"`
+	Version   int64  `json:"version"`
+}
+
+// EgressRecord is one decision of the host's egress proxy, in an "egress" event. It never holds a value or a query
+// string.
+type EgressRecord struct {
+	// At is in milliseconds.
+	At        int64  `json:"at"`
+	SandboxID string `json:"sandboxId"`
+	// Method is "CONNECT" for a tunnel.
+	Method  string `json:"method"`
+	Host    string `json:"host"`
+	Port    int    `json:"port"`
+	Path    string `json:"path,omitempty"`
+	Allowed bool   `json:"allowed"`
+	Reason  string `json:"reason,omitempty"`
+	Rule    string `json:"rule,omitempty"`
+	// Code is the X-Kantel-Proxy-Error code of a refusal.
+	Code string `json:"code,omitempty"`
+	// Swapped are the names of the variables swapped in.
+	Swapped []string `json:"swapped"`
+	// Inspected says the proxy read the request (plain HTTP, proxy-form https or an intercepted host).
+	Inspected bool  `json:"inspected"`
+	Status    int   `json:"status,omitempty"`
+	BytesUp   int64 `json:"bytesUp"`
+	BytesDown int64 `json:"bytesDown"`
 }
 
 // CreateParams is sandbox.create.
@@ -227,6 +315,10 @@ type StopParams struct {
 type ResumeParams struct {
 	SandboxID string  `json:"sandboxId"`
 	Egress    *Egress `json:"egress,omitempty"`
+	// Revision orders the call's egress, as Egress.Revision does, null egress too: one older than the sandbox's is
+	// ignored. A call with a Revision states the sandbox's egress: on sandbox.start and sandbox.resume, no Egress
+	// with a Revision is the host's default (a clear), while no Egress without one keeps the egress it has.
+	Revision int64 `json:"revision,omitempty"`
 }
 
 // ForkParams is sandbox.fork: a new sandbox from the source's current state (running: a live snapshot; stopped: its
@@ -237,6 +329,8 @@ type ForkParams struct {
 	Egress    *Egress `json:"egress,omitempty"`
 	// SnapshotID names the snapshot a running source's fork takes (kept as an automatic snapshot of the source).
 	SnapshotID string `json:"snapshotId,omitempty"`
+	// Env is the fork's own environment (its own protected placeholders); absent, it has its source's.
+	Env map[string]string `json:"env,omitempty"`
 }
 
 // ExecParams is sandbox.exec. With Stream, output comes as events on the call before its result.
@@ -317,6 +411,8 @@ type Event struct {
 	Stdout string `json:"stdout,omitempty"`
 	Stderr string `json:"stderr,omitempty"`
 	At     int64  `json:"at"`
+	// Egress, for "egress" events: the proxy's decisions, at most 100 to an event.
+	Egress []EgressRecord `json:"egress,omitempty"`
 }
 
 // Methods.
@@ -344,4 +440,8 @@ const (
 	MethodHostPools    = "host.pools"
 	// MethodEgress replaces a sandbox's egress (ResumeParams: sandboxId, egress; null egress is the host's default).
 	MethodEgress = "sandbox.egress"
+	// MethodSecrets (Kantel → host, SecretsParams) says a sandbox's protected variables changed; the result is {}.
+	MethodSecrets = "sandbox.secrets"
+	// MethodSecretsFetch (host → Kantel, SandboxRef) answers a SecretsTable.
+	MethodSecretsFetch = "secrets.fetch"
 )
