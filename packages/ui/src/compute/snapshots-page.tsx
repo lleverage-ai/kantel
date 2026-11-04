@@ -29,7 +29,13 @@ import {
 	type SnapshotsSource,
 } from "./compute-model.ts";
 import { cellSub, computePage, messageOf, rowHover, TableFrame, table, tableFrame, td, th } from "./parts.tsx";
-import { SnapshotFiles } from "./snapshot-files.tsx";
+import { type FilesAt, SnapshotFiles } from "./snapshot-files.tsx";
+
+/** The files view at another place in the same snapshot. */
+const filesView = (view: Extract<SnapshotsView, { name: "files" }>, at: FilesAt): SnapshotsView => {
+	const { file: _file, path: _path, ...rest } = view;
+	return { ...rest, ...(at.path === "" ? {} : { path: at.path }), ...(at.file === undefined ? {} : { file: at.file }) };
+};
 
 /** Where the page is: the saved snapshots, one sandbox's history, or the files in a snapshot. */
 export type SnapshotsView =
@@ -38,10 +44,15 @@ export type SnapshotsView =
 	| {
 			readonly name: "files";
 			readonly snapshotId: string;
-			/** The heading over the files: a saved snapshot's name, or a sandbox's and when it was taken. */
-			readonly label: string;
+			/**
+			 * The heading over the files: a saved snapshot's name, or a sandbox's and when it was taken. None where it isn't
+			 * known (the page opened from a link to the files).
+			 */
+			readonly label?: string;
 			/** The open folder from the snapshot's root; the root when absent. */
 			readonly path?: string;
+			/** The file open in that folder's preview. */
+			readonly file?: string;
 			/** Where the back button goes; the saved snapshots when absent. */
 			readonly back?: SnapshotsView;
 	  };
@@ -59,6 +70,8 @@ export interface SnapshotsPageProps {
 	readonly initialView?: SnapshotsView;
 	/** Starts a new sandbox from a saved snapshot; without it the menu doesn't offer one. */
 	readonly onStartFrom?: (saved: SavedSnapshot) => void;
+	/** The address of a view, so a snapshot's folders and files are links. */
+	readonly viewHref?: (view: SnapshotsView) => string;
 }
 
 const SNAPSHOT_REASON_LABELS: Readonly<Record<SnapshotReason, string>> = {
@@ -85,7 +98,7 @@ const backLabel = (back: SnapshotsView): string =>
 		? "Back to saved snapshots"
 		: back.name === "sandbox"
 			? "Back to history"
-			: `Back to ${back.label}`;
+			: `Back to ${back.label ?? "the snapshot"}`;
 
 export function SnapshotsPage({
 	source,
@@ -96,6 +109,7 @@ export function SnapshotsPage({
 	onViewChange,
 	initialView = { name: "saved" },
 	onStartFrom,
+	viewHref,
 }: SnapshotsPageProps) {
 	const [own, setOwn] = useState<SnapshotsView>(initialView);
 	const view = controlled ?? own;
@@ -117,12 +131,13 @@ export function SnapshotsPage({
 					key={view.snapshotId}
 					source={source}
 					snapshotId={view.snapshotId}
-					label={view.label}
-					path={view.path ?? ""}
+					{...(view.label === undefined ? {} : { label: view.label })}
+					at={{ path: view.path ?? "", ...(view.file === undefined ? {} : { file: view.file }) }}
 					now={now}
 					backLabel={backLabel(back)}
 					onBack={() => go(back)}
-					onOpenFolder={(path) => go({ ...view, path })}
+					onNavigate={(at) => go(filesView(view, at))}
+					{...(viewHref === undefined ? {} : { href: (at: FilesAt) => viewHref(filesView(view, at)) })}
 				/>
 			</div>
 		);

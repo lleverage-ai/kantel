@@ -45,6 +45,8 @@ export type {
 	Environment,
 	EnvironmentsSource,
 	EnvironmentVariable,
+	FilePart,
+	FileRange,
 	HostingMode,
 	HostsSource,
 	ProxySource,
@@ -53,6 +55,11 @@ export type {
 	SnapshotsSource,
 	TelemetrySource,
 	WebhooksSource,
+} from "./compute/compute-model.ts";
+export {
+	DeviceSetupError,
+	FileTooLargeError,
+	sameProxySettings,
 } from "./compute/compute-model.ts";
 // Identity: who is signed in, and Kantel's own email-code sign-in.
 export { SignInScreen, type SignInScreenProps } from "./identity/sign-in.tsx";

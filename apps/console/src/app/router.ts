@@ -32,13 +32,17 @@ export function navigationTarget(path: string, search: string): string {
 }
 
 /**
- * Goes to `path`, keeping the query string unless `path` has its own (`/hosts?add`); a hash on `path` follows it.
- * `replace` swaps the current history entry instead of adding one.
+ * Goes to `path`, keeping the query string unless `path` has its own (`/hosts?add`), less the parameters in `drop`; a
+ * hash on `path` follows it. `replace` swaps the current history entry instead of adding one.
  */
-export function navigate(path: string, { replace = false }: { replace?: boolean } = {}): void {
-	const hashAt = path.indexOf("#");
-	const target = navigationTarget(path, location.search);
-	if (`${location.pathname}${location.search}${hashAt === -1 ? "" : location.hash}` === target) return;
+export function navigate(
+	path: string,
+	{ replace = false, drop = [] }: { replace?: boolean; drop?: readonly string[] } = {},
+): void {
+	const target = navigationTarget(path, searchWithout(location.search, drop));
+	// The same place, fragment and all, adds no entry; a path without the fragment it's at moves off it (a file browser's
+	// `#path=`), as a link would.
+	if (`${location.pathname}${location.search}${location.hash}` === target) return;
 	if (replace) history.replaceState(null, "", target);
 	else history.pushState(null, "", target);
 	notify();
@@ -57,6 +61,15 @@ export function useSearch(): string {
 	return useSyncExternalStore(
 		subscribe,
 		() => location.search,
+		() => "",
+	);
+}
+
+/** The page's fragment, with its `#`, following `navigate` and the browser's back and forward. */
+export function useHash(): string {
+	return useSyncExternalStore(
+		subscribe,
+		() => location.hash,
 		() => "",
 	);
 }

@@ -261,11 +261,13 @@ export interface SandboxesSource {
 	exposePort?(id: string, port: number, isPublic: boolean): Promise<SandboxPort>;
 	/** Its URL stops working at once. */
 	hidePort?(id: string, port: number): Promise<void>;
-	/** A running sandbox's files: folders first, then files, by name. Absent: the Files tab shows its latest snapshot. */
+	/**
+	 * A running sandbox's files, read from its host on demand: one folder's entries at a time (folders first, then files,
+	 * by name), and one part of a file at a time. Absent: the Files tab shows its latest snapshot.
+	 */
 	files?: {
 		list(id: string, path: string): Promise<SandboxFolder>;
-		/** A text file's content; undefined for a binary or a file too big to show. */
-		read(id: string, path: string): Promise<string | undefined>;
+		read(id: string, path: string, range: FileRange): Promise<FilePart>;
 	};
 	/**
 	 * Where Browser and Desktop open: on the sandbox's page ("console", when left out), or each in a tab of its own
@@ -322,6 +324,37 @@ export interface SnapshotEntry {
 	readonly modifiedAt?: number;
 }
 
+/** Where a part of a file starts, and the most it holds, in bytes. */
+export interface FileRange {
+	readonly offset: number;
+	readonly length: number;
+}
+
+/**
+ * A part of a file as read: its bytes from the range's offset, and the whole file's size. It may hold more than the
+ * range asked for where the file can only be read whole (a snapshot's, up to 1 MiB).
+ */
+export interface FilePart {
+	readonly bytes: Uint8Array;
+	readonly size: number;
+}
+
+/** A file the source won't read for a preview (a snapshot's over the API's 1 MiB): its name and size, no contents. */
+export class FileTooLargeError extends Error {
+	override readonly name = "FileTooLargeError";
+	constructor(readonly size?: number) {
+		super("This file is too big to show here.");
+	}
+}
+
+/**
+ * A read that needs this browser set up as a device first: an end-to-end space's files are read only over a session
+ * of its own, and the gateway, which only relays it, can't. The message says how, in a line.
+ */
+export class DeviceSetupError extends Error {
+	override readonly name = "DeviceSetupError";
+}
+
 export interface SnapshotsSource {
 	saved(accountId: string): Promise<readonly SavedSnapshot[]>;
 	/** Each sandbox's history, newest first. */
@@ -331,8 +364,8 @@ export interface SnapshotsSource {
 	removeSnapshot(id: string): Promise<void>;
 	/** A folder in a snapshot, saved or historical: folders first, then files, by name. */
 	list(snapshotId: string, path: string): Promise<readonly SnapshotEntry[]>;
-	/** A text file's content; undefined for a binary or a file too big to show. */
-	read(snapshotId: string, path: string): Promise<string | undefined>;
+	/** A part of a file, read when it's opened. */
+	read(snapshotId: string, path: string, range: FileRange): Promise<FilePart>;
 	/** A link to download a file or folder (as a tarball), or undefined where there is none: no Download then. */
 	downloadUrl(snapshotId: string, path: string): string | undefined;
 }
@@ -478,8 +511,29 @@ export interface ProxySettings {
 export type ProxySettingsChange = Partial<
 	Omit<ProxySettings, "accountId" | "upstream"> & {
 		readonly upstream: { readonly url: string; readonly auth?: string } | null;
+		/**
+		 * The settings as read, which the change was made from. Given, the change is refused with `conflict` if they have
+		 * changed since, for the caller to make again on a fresh read. Left out, the change is made on the settings as
+		 * they are when it is written.
+		 */
+		readonly expected: ProxySettings;
 	}
 >;
+
+/** Whether two reads of an account's proxy settings are the same: for a change's `expected`. */
+export const sameProxySettings = (a: ProxySettings, b: ProxySettings): boolean => {
+	const key = (settings: ProxySettings) =>
+		JSON.stringify([
+			settings.accountId,
+			settings.enabled,
+			settings.policy,
+			settings.allow,
+			settings.deny,
+			settings.upstream === undefined ? null : [settings.upstream.url, settings.upstream.authSet],
+			settings.logRequests ?? null,
+		]);
+	return key(a) === key(b);
+};
 
 /** An account's proxy settings. Its log is each sandbox's (`EgressSource`), read together on the Egress page. */
 export interface ProxySource {
@@ -1011,18 +1065,7 @@ export function costText(cents: number): string {
 /** "$20", "$100": a plan's price, with no pence. */
 export const priceText = (cents: number): string => (cents % 100 === 0 ? `$${cents / 100}` : costText(cents));
 
-/** "1.2 GB", "340 MB", "12 KB". */
-export function bytesText(bytes: number): string {
-	if (bytes < 1024) return `${bytes} B`;
-	const units = ["KB", "MB", "GB", "TB"];
-	let value = bytes / 1024;
-	let unit = 0;
-	while (value >= 1024 && unit < units.length - 1) {
-		value /= 1024;
-		unit += 1;
-	}
-	return `${value >= 10 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
-}
+export { bytesText } from "../primitives/format.ts";
 
 /** "Expires in 3 days", "Expires in 5h", "Expired". */
 export function expiresText(expiresAt: number, now: number): string {

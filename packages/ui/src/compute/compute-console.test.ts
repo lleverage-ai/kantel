@@ -74,6 +74,9 @@ describe("the compute console's paths", () => {
 		expect(pathAfterAccountSwitch("/compute/egress")).toBeUndefined();
 		expect(pathAfterAccountSwitch("/compute/environments")).toBeUndefined();
 		expect(pathAfterAccountSwitch("/compute/keys")).toBeUndefined();
+		// A snapshot's files (`?snapshot=`) or a sandbox's history are the last account's: the new one's saved list.
+		expect(pathAfterAccountSwitch("/compute/snapshots")).toBe("/compute/snapshots");
+		expect(pathAfterAccountSwitch("/compute/snapshots/sbx_4d8n")).toBe("/compute/snapshots");
 		expect(pathAfterAccountSwitch("/environments/env_backend", "")).toBe("/environments");
 	});
 

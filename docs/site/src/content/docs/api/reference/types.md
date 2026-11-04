@@ -739,6 +739,19 @@ Where sandboxes' outbound traffic may go, and through what, for one account. Exp
 | `attribution` | boolean | yes | Tell the upstream which sandbox and account each request came from, in signed `Kantel-Sandbox` and `Kantel-Account` headers. |
 | `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
 
+### ProxySettingsExpected
+
+The settings as you last read them: `GET /proxy`'s answer will do. Given, the write is refused with `conflict` if they have changed since, so an edit made from an older read can't undo someone else's: read them again and redo the edit. Left out, the settings are replaced whatever they hold.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `enabled` | boolean | yes |  |
+| `defaultAction` | `"allow"` or `"deny"` | yes |  |
+| `allow` | string[] | yes |  |
+| `deny` | string[] | yes |  |
+| `upstream` | object | no |  |
+| `attribution` | boolean | yes |  |
+
 ### ProxyUpstream
 
 | Field | Type | Required | Description |
@@ -771,6 +784,7 @@ Where sandboxes' outbound traffic may go, and through what, for one account. Exp
 | `deny` | string[] | no |  |
 | `upstream` | object or null | no |  |
 | `attribution` | boolean | no |  |
+| `expected` | [ProxySettingsExpected](/api/reference/types/#proxysettingsexpected) | no |  |
 
 ### PutTelemetryBody
 

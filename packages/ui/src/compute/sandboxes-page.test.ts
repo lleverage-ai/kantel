@@ -125,20 +125,27 @@ describe("a sandbox's page", () => {
 		expect([went, tabs]).toEqual([["/sandboxes/sbx_a/desktop", "/sandboxes/sbx_a/desktop"], ["desktop"]]);
 	});
 
-	it("reads no live files until it knows they aren't end to end, and says so for one that is", () => {
-		const source = { files: { list: async () => ({ entries: [], more: false }), read: async () => undefined } };
+	it("reads a running sandbox's files (over E2E where it is), and no snapshot of an end-to-end one", () => {
+		const source = {
+			files: {
+				list: async () => ({ entries: [], more: false }),
+				read: async () => ({ bytes: new Uint8Array(), size: 0 }),
+			},
+		};
 		const running = { state: "running" as const };
 		const snapshot = { id: "snap_1", takenAt: 0 };
 		const yes = { status: "ready", value: true } as const;
 		const no = { status: "ready", value: false } as const;
-		// Non-E2E, on the gateway's console or kantel console: its files, as ever.
+		const stopped = { ...running, state: "stopped" as const, snapshot };
+		// Running, its files from the host; the source reads them over the space's E2E session where it has one.
 		expect(filesShown(running, source, no)).toBe("live");
-		// While the console asks (the gateway's console may read the chain), nothing is read.
-		expect(filesShown(running, source, { status: "loading" })).toBe("checking");
-		expect(filesShown(running, source, { status: "error", error: new Error("no chain") })).toBe("unchecked");
-		expect(filesShown(running, source, yes)).toBe("end-to-end");
-		// Stopped, its latest snapshot as before.
-		expect(filesShown({ ...running, state: "stopped", snapshot }, source, yes)).toBe("snapshot");
+		expect(filesShown(running, source, yes)).toBe("live");
+		expect(filesShown(running, source, { status: "loading" })).toBe("live");
+		// Stopped, its latest snapshot, but only once it's known it isn't end to end: the host serves those to no one.
+		expect(filesShown(stopped, source, no)).toBe("snapshot");
+		expect(filesShown(stopped, source, { status: "loading" })).toBe("checking");
+		expect(filesShown(stopped, source, { status: "error", error: new Error("no chain") })).toBe("unchecked");
+		expect(filesShown(stopped, source, yes)).toBe("sealed");
 		expect(filesShown({ ...running, state: "stopped" }, source, no)).toBe("none");
 		expect(filesShown(running, {}, no)).toBe("none");
 	});

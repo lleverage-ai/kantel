@@ -43,7 +43,7 @@ import { SandboxLogs } from "./sandbox-logs.tsx";
 import { SandboxPorts } from "./sandbox-ports.tsx";
 import { embedUrl, popOut, SandboxViewer, ScreenPreview, type ScreenView } from "./sandbox-screen.tsx";
 import { showsCpu } from "./sandboxes-page.tsx";
-import { SnapshotFiles } from "./snapshot-files.tsx";
+import { type FilesAt, SnapshotFiles } from "./snapshot-files.tsx";
 import { agoText, SandboxHistory } from "./snapshots-page.tsx";
 
 /** The page's tabs. */
@@ -109,6 +109,10 @@ export interface SandboxPageProps {
 	readonly narrow?: boolean;
 	/** Open ⋯ on mount, for a story. */
 	readonly menuOpen?: boolean;
+	/** Where the Files tab is, as the address names it: its folder and open file. The page keeps its own when absent. */
+	readonly filesAt?: FilesAt;
+	/** The address of the Files tab at a folder and file; with `navigate`, the tab moves through the address. */
+	readonly filesHref?: (at: FilesAt, sealed: boolean) => string;
 }
 
 /** The state, in its colour. */
@@ -186,9 +190,18 @@ export function SandboxPage({
 	pollMs = 1000,
 	narrow = false,
 	menuOpen = false,
+	filesAt,
+	filesHref,
 }: SandboxPageProps) {
 	const { state, reload } = useLoad(() => source.get(sandboxId), [source, sandboxId]);
 	const [own, setOwn] = useState<SandboxView>(initialView);
+	const [ownFiles, setOwnFiles] = useState<FilesAt>(filesAt ?? { path: "" });
+	const routed = navigate !== undefined && filesHref !== undefined;
+	const files = routed ? (filesAt ?? { path: "" }) : ownFiles;
+	const goFiles = (at: FilesAt) => {
+		if (routed) navigate(filesHref(at, sealed));
+		else setOwnFiles(at);
+	};
 	const asked = controlled ?? own;
 	// What this page changed, ahead of the next read.
 	const [local, setLocal] = useState<Sandbox>();
@@ -250,6 +263,9 @@ export function SandboxPage({
 		async () => (source.endToEnd === undefined ? false : source.endToEnd(sandboxId)),
 		[source, sandboxId],
 	);
+	// Its file browser's place goes in the address's fragment unless it's known not to be end to end: a fragment never
+	// reaches the gateway, so neither do the names of the files it reads over its own session.
+	const sealed = !(e2e.state.status === "ready" && !e2e.state.value);
 
 	const counts = useLoad(async () => {
 		const [history, log] = await Promise.all([
@@ -556,6 +572,9 @@ export function SandboxPage({
 					now={now}
 					endToEnd={e2e.state}
 					onRecheck={e2e.reload}
+					at={files}
+					onNavigate={goFiles}
+					{...(filesHref === undefined ? {} : { href: (at: FilesAt) => filesHref(at, sealed) })}
 				/>
 			)}
 		</div>
@@ -859,7 +878,7 @@ function SnapshotsTab({
 	now: number;
 	onNotice: (notice: SandboxNotice | undefined) => void;
 }) {
-	const [browsing, setBrowsing] = useState<{ snapshotId: string; label: string; path: string }>();
+	const [browsing, setBrowsing] = useState<{ snapshotId: string; at: FilesAt }>();
 	if (browsing !== undefined) {
 		return (
 			<div className="flex min-w-0 flex-col gap-4">
@@ -867,11 +886,11 @@ function SnapshotsTab({
 					key={browsing.snapshotId}
 					source={source}
 					snapshotId={browsing.snapshotId}
-					path={browsing.path}
+					at={browsing.at}
 					now={now}
 					backLabel="Back to snapshots"
 					onBack={() => setBrowsing(undefined)}
-					onOpenFolder={(path) => setBrowsing({ ...browsing, path })}
+					onNavigate={(at) => setBrowsing({ ...browsing, at })}
 				/>
 			</div>
 		);
@@ -882,7 +901,7 @@ function SnapshotsTab({
 				source={source}
 				sandbox={sandbox}
 				now={now}
-				onBrowse={(snap) => setBrowsing({ snapshotId: snap.id, label: agoText(snap.takenAt, now), path: "" })}
+				onBrowse={(snap) => setBrowsing({ snapshotId: snap.id, at: { path: "" } })}
 				onNotice={onNotice}
 			/>
 		</div>
@@ -890,21 +909,21 @@ function SnapshotsTab({
 }
 
 /**
- * What the Files tab shows: what's in it now while it runs, or one line where its files can't be read end to end yet;
- * its latest snapshot's files while it's stopped, or nothing before it has one.
+ * What the Files tab shows: what's in it now while it runs, read from its host (over an E2E session where its space
+ * has one: the source decides); its latest snapshot's files while it's stopped, or nothing before it has one. An
+ * end-to-end sandbox's snapshots can't be read here (the host serves their contents to no one): one line says so, and
+ * no snapshot is read until it's known whether it is one.
  */
 export function filesShown(
 	sandbox: Pick<Sandbox, "state" | "snapshot">,
 	source: Pick<SandboxesSource, "files">,
 	endToEnd: Loaded<boolean>,
-): "live" | "checking" | "unchecked" | "end-to-end" | "snapshot" | "none" {
-	if (sandbox.state === "running" && source.files !== undefined) {
-		// Nothing is read until it's known whether the gateway may read them.
-		if (endToEnd.status === "loading") return "checking";
-		if (endToEnd.status === "error") return "unchecked";
-		return endToEnd.value ? "end-to-end" : "live";
-	}
-	return sandbox.snapshot === undefined ? "none" : "snapshot";
+): "live" | "checking" | "unchecked" | "sealed" | "snapshot" | "none" {
+	if (sandbox.state === "running" && source.files !== undefined) return "live";
+	if (sandbox.snapshot === undefined) return "none";
+	if (endToEnd.status === "loading") return "checking";
+	if (endToEnd.status === "error") return "unchecked";
+	return endToEnd.value ? "sealed" : "snapshot";
 }
 
 /** What's in it now, while it runs; its latest snapshot's files while it's stopped. */
@@ -915,6 +934,9 @@ function FilesTab({
 	now,
 	endToEnd,
 	onRecheck,
+	at,
+	onNavigate,
+	href,
 }: {
 	source: SandboxesSource;
 	snapshots: SnapshotsSource;
@@ -922,11 +944,14 @@ function FilesTab({
 	now: number;
 	endToEnd: Loaded<boolean>;
 	onRecheck: () => void;
+	at: FilesAt;
+	onNavigate: (at: FilesAt) => void;
+	href?: (at: FilesAt) => string;
 }) {
-	const [path, setPath] = useState("");
 	const shown = filesShown(sandbox, source, endToEnd);
 	const files = source.files;
-	if (shown === "checking") return <Skeleton lines={4} />;
+	const browse = { at, now, onNavigate, ...(href === undefined ? {} : { href }) };
+	if (shown === "checking") return <Skeleton width="40%" />;
 	if (shown === "unchecked" && endToEnd.status === "error") {
 		return (
 			<Notice
@@ -941,27 +966,23 @@ function FilesTab({
 			</Notice>
 		);
 	}
-	if (shown === "end-to-end") return <p className="m-0 text-sm text-muted">Files aren't available end to end yet.</p>;
+	if (shown === "sealed") {
+		return <p className="m-0 text-sm text-muted">End-to-end encrypted: start it to see its files.</p>;
+	}
 	if (shown === "live" && files !== undefined) {
 		return (
-			<div className="flex min-w-0 flex-col gap-4">
-				<SnapshotFiles
-					source={{ list: files.list, read: files.read, downloadUrl: () => undefined }}
-					snapshotId={sandbox.id}
-					path={path}
-					now={now}
-					onOpenFolder={setPath}
-				/>
+			<div className="flex min-w-0 flex-col gap-3">
+				<SnapshotFiles source={files} snapshotId={sandbox.id} {...browse} />
 			</div>
 		);
 	}
 	if (sandbox.snapshot === undefined) {
-		return <EmptyState title="No files to show yet">Its files show here once it's running.</EmptyState>;
+		return <p className="m-0 text-sm text-muted">No files yet: they show here once it's running.</p>;
 	}
 	return (
-		<div className="flex min-w-0 flex-col gap-4">
+		<div className="flex min-w-0 flex-col gap-3">
 			<p className="m-0 text-sm text-muted">From its snapshot {agoText(sandbox.snapshot.takenAt, now)}.</p>
-			<SnapshotFiles source={snapshots} snapshotId={sandbox.snapshot.id} path={path} now={now} onOpenFolder={setPath} />
+			<SnapshotFiles source={snapshots} snapshotId={sandbox.snapshot.id} {...browse} />
 		</div>
 	);
 }
