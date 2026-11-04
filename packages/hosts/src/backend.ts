@@ -63,6 +63,9 @@ const SSH_ACCESS_SCRIPT = [
 	"ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub | cut -d' ' -f2",
 ].join("\n");
 
+/** Where Kantel's initramfs puts the guest agent in an image (apps/host/internal/guest.InjectedBin). */
+const INJECTED_AGENT = "/.kantel/bin/kantel-guest";
+
 const SIZE_NAMES = new Set(["small", "default", "large", "xlarge"]);
 
 export interface HostBackendOptions {
@@ -505,10 +508,17 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			const key = publicKey?.trim();
 			if (key !== undefined && !PUBLIC_KEY.test(key))
 				throw new KantelError("invalid", "publicKey is one OpenSSH public key");
-			const run = await call<{ exitCode: number; stdout: string; stderr: string }>(sandboxId, "sandbox.exec", {
-				command: SSH_ACCESS_SCRIPT,
-				env: { KANTEL_PUBLIC_KEY: key ?? "" },
-			});
+			const env = { KANTEL_PUBLIC_KEY: key ?? "" };
+			type Run = { exitCode: number; stdout: string; stderr: string };
+			// An injected agent serves SSH itself, with its own host key, and needs neither a shell nor ssh-keygen: its
+			// ssh-access step first. An image that ships its agent (and sshd) has no /.kantel, so the script runs.
+			const injected = await call<Run>(sandboxId, "sandbox.exec", { argv: [INJECTED_AGENT, "ssh-access"], env }).catch(
+				() => undefined,
+			);
+			const run =
+				injected?.exitCode === 0
+					? injected
+					: await call<Run>(sandboxId, "sandbox.exec", { command: SSH_ACCESS_SCRIPT, env });
 			if (run.exitCode !== 0)
 				throw new KantelError("unavailable", `The sandbox could not let the key in: ${run.stderr}`);
 			const [privateKey = "", fingerprint = ""] = run.stdout.split(`${FINGERPRINT_MARK}\n`);

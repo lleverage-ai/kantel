@@ -111,7 +111,8 @@ func TestInjectedAgent(t *testing.T) {
 				}
 				return res
 			}
-			res := exec(proto.ExecParams{Command: "id -un; uname -m; echo $SHELL"})
+			// In /home/user, as the compute API sends every command: the agent makes it in a stock image.
+			res := exec(proto.ExecParams{Command: "id -un; uname -m; echo $SHELL", Cwd: "/home/user"})
 			t.Logf("exec: %q %q", res.Stdout, res.Stderr)
 			if res.ExitCode != 0 || !strings.Contains(res.Stdout, "x86_64") {
 				t.Fatalf("exec: %+v", res)
@@ -125,6 +126,11 @@ func TestInjectedAgent(t *testing.T) {
 			}
 			if res := exec(proto.ExecParams{Argv: []string{"/bin/sh", "-c", "exit 7"}}); res.ExitCode != 7 {
 				t.Errorf("argv exit code %d, want 7", res.ExitCode)
+			}
+			if res, err := m.Exec(ctx, proto.ExecParams{SandboxID: id, Command: "true", Cwd: "/nowhere"}, nil); err == nil && !strings.Contains(res.Stderr+fmt.Sprint(err), "no directory /nowhere") {
+				t.Errorf("a missing cwd: %+v", res)
+			} else if err != nil && !strings.Contains(err.Error(), "no directory /nowhere") {
+				t.Errorf("a missing cwd: %v", err)
 			}
 
 			// Files.

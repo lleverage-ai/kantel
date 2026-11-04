@@ -125,6 +125,14 @@ class FakeHost {
 			case "sandbox.egress":
 				return sandbox === undefined ? fail("not_found", "no such sandbox") : answer({ ok: true });
 			case "sandbox.exec": {
+				const argv = p.argv as string[] | undefined;
+				if (argv?.[0] === "/.kantel/bin/kantel-guest") {
+					// Only an injected agent is there.
+					if (this.guest?.agent.injected !== true) {
+						return answer({ exitCode: 1, stdout: "", stderr: "guest agent 500: fork/exec: no such file\n" });
+					}
+					return answer({ exitCode: 0, stdout: "--kantel-host-key--\nSHA256:injected\n", stderr: "" });
+				}
 				const command = String(p.command);
 				if (command.startsWith("curl") && command.includes("9222/json/version")) {
 					return answer({
@@ -478,6 +486,14 @@ describe("the compute API on kantel-host hosts", () => {
 		});
 		const desktop = await failure(root.openDesktop(sandbox.id, {}));
 		expect(desktop).toMatchObject({ code: "not_supported", message: "No desktop in this image" });
+		// SSH is the injected agent's own, with its own host key, let in by the agent rather than a shell script.
+		const key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM me@laptop";
+		expect(await root.openSsh(sandbox.id, { publicKey: key })).toMatchObject({ hostKeyFingerprint: "SHA256:injected" });
+		const ssh = host.params.filter((call) => call.method === "sandbox.exec").at(-1);
+		expect(ssh?.params).toMatchObject({
+			argv: ["/.kantel/bin/kantel-guest", "ssh-access"],
+			env: { KANTEL_PUBLIC_KEY: key },
+		});
 		expect(await failure(root.openBrowser(sandbox.id, {}))).toMatchObject({ code: "not_supported" });
 
 		// It keeps the report through a stop and a start.

@@ -206,6 +206,9 @@ func (s *Server) setIdentity(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) applyIdentity(id *Identity) error {
+	if s.Injected {
+		ensureAPIHome()
+	}
 	if id.Entropy != "" {
 		if raw, err := base64.StdEncoding.DecodeString(id.Entropy); err == nil {
 			_ = addEntropy(raw)
@@ -365,6 +368,25 @@ func trustCA(pemCert string) {
 // systemCABundle is where Debian, Ubuntu and Alpine keep the trust store programs read.
 const systemCABundle = "/etc/ssl/certs/ca-certificates.crt"
 
+// APIHome is where Kantel's API starts a command and the console's file browser: Kantel's image's user's home.
+const APIHome = "/home/user"
+
+// ensureAPIHome makes APIHome in an image that lacks it (a stock image, whose account is root), owned by the account
+// commands run as, so the API's commands and files work there as they do on Kantel's image.
+func ensureAPIHome() {
+	if _, err := os.Stat(APIHome); err == nil {
+		return
+	}
+	if err := os.MkdirAll(APIHome, 0o755); err != nil {
+		return
+	}
+	if u, err := LoginUser(""); err == nil {
+		uid, _ := strconv.Atoi(u.Uid)
+		gid, _ := strconv.Atoi(u.Gid)
+		_ = os.Chown(APIHome, uid, gid)
+	}
+}
+
 // LoginUser is the account a command or SSH session runs as: name, or `user` when name is empty; and where an image
 // has no `user` (a stock image), root.
 func LoginUser(name string) (*user.User, error) {
@@ -456,7 +478,12 @@ func (s *Server) buildCommand(ctx context.Context, req *ExecRequest) (*exec.Cmd,
 	}
 	cmd.Env = s.commandEnv(req, u.HomeDir, username)
 	cmd.Dir = req.Cwd
-	if cmd.Dir == "" {
+	if cmd.Dir != "" {
+		// Said here, as otherwise the failed chdir reads as the shell missing ("fork/exec /bin/sh: no such file").
+		if info, err := os.Stat(cmd.Dir); err != nil || !info.IsDir() {
+			return nil, fmt.Errorf("no directory %s in the sandbox", cmd.Dir)
+		}
+	} else {
 		cmd.Dir = u.HomeDir
 		if _, err := os.Stat(cmd.Dir); err != nil {
 			// A stock image's account whose home was never made.
