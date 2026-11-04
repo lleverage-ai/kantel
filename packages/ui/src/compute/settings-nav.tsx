@@ -50,13 +50,10 @@ export function SettingsFrame({ items, narrow = false, children }: SettingsFrame
 			))}
 		</nav>
 	);
-	return narrow ? (
-		<div className="flex min-w-0 flex-col gap-4">
-			{nav}
-			{children}
-		</div>
-	) : (
-		<div className="flex min-w-0 items-start gap-8">
+	// The same elements in both layouts, only their classes change: crossing the breakpoint (turning a phone) must not
+	// remount the page, which would lose a draft or a new key's secret that hasn't been copied yet.
+	return (
+		<div className={narrow ? "flex min-w-0 flex-col gap-4" : "flex min-w-0 items-start gap-8"}>
 			{nav}
 			<div className="min-w-0 flex-1">{children}</div>
 		</div>

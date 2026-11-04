@@ -116,6 +116,19 @@ const bucket = (state: SandboxState): Exclude<SandboxFilter, "all"> =>
 const matches = (box: Sandbox, filter: SandboxFilter): boolean => filter === "all" || bucket(box.state) === filter;
 
 /**
+ * The sandboxes the list shows: those in the filter whose name has the search in it. A phone has no search field, so the
+ * page passes no search there: one typed on a wider window mustn't hide rows on a phone with no way to clear it.
+ */
+export const sandboxesShown = (
+	sandboxes: readonly Sandbox[],
+	filter: SandboxFilter,
+	search: string,
+): readonly Sandbox[] => {
+	const needle = search.trim().toLowerCase();
+	return sandboxes.filter((box) => matches(box, filter) && box.name.toLowerCase().includes(needle));
+};
+
+/**
  * Whether a row draws its CPU line: only while the sandbox runs, or has just stopped answering, and has samples to draw.
  * A stopped, paused or starting one shows nothing rather than a flat line.
  */
@@ -246,8 +259,7 @@ export function SandboxesPage({
 			FILTERS.map((option) => [option.value, all.filter((box) => matches(box, option.value)).length]),
 		) as Record<SandboxFilter, number>;
 	}, [sandboxes]);
-	const needle = search.trim().toLowerCase();
-	const shown = sandboxes?.filter((box) => matches(box, filter) && box.name.toLowerCase().includes(needle));
+	const shown = sandboxes === undefined ? undefined : sandboxesShown(sandboxes, filter, narrow ? "" : search);
 
 	// With no host anywhere, nothing could run a new sandbox: no New until one is added.
 	const newButton =
