@@ -241,6 +241,13 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 	reply := proto.Message{Type: "result", ID: m.ID}
 	var result any
 	var err error
+	if err = s.host.gatewayMayCall(m.Method, m.Params); err != nil {
+		reply.Error = toError(err)
+		if err := s.send(ctx, reply); err != nil {
+			s.host.log.Warn("couldn't answer a call", "method", m.Method, "error", err)
+		}
+		return
+	}
 	switch m.Method {
 	case proto.MethodPortOpen:
 		result, err = s.openPort(ctx, m.Params)
@@ -270,17 +277,29 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 	}
 }
 
-// openPort connects a stream the control plane named to a port of a sandbox; binary frames carry it both ways.
+// openPort connects a stream the control plane named to a port of a sandbox, or for port 0 to an E2E session with the
+// host (e2e.go); binary frames carry it both ways.
 func (s *session) openPort(ctx context.Context, raw json.RawMessage) (any, error) {
 	var p proto.PortParams
-	if err := json.Unmarshal(raw, &p); err != nil || p.Stream == 0 || p.Port <= 0 || p.Port > 65535 {
+	if err := json.Unmarshal(raw, &p); err != nil || p.Stream == 0 || p.Port < 0 || p.Port > 65535 {
 		return nil, invalid("bad port.open")
 	}
-	dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	conn, err := s.host.DialPort(dialCtx, p.SandboxID, p.Port)
-	if err != nil {
-		return nil, err
+	var conn net.Conn
+	if p.Port == proto.PortE2E {
+		var session net.Conn
+		conn, session = net.Pipe()
+		if err := s.host.serveE2E(ctx, session, p.SandboxID); err != nil {
+			conn.Close()
+			session.Close()
+			return nil, err
+		}
+	} else {
+		dialCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+		var err error
+		if conn, err = s.host.DialPort(dialCtx, p.SandboxID, p.Port); err != nil {
+			return nil, err
+		}
 	}
 	s.mu.Lock()
 	if old, ok := s.streams[p.Stream]; ok {

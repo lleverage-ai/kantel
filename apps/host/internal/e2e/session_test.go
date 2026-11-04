@@ -1,0 +1,180 @@
+package e2e
+
+import (
+	"context"
+	"encoding/json"
+	"net"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+)
+
+type memChain struct {
+	mu    sync.Mutex
+	state *State
+}
+
+func (c *memChain) State() *State {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.state
+}
+
+func (c *memChain) Extend(from int, entries []Entry) (*State, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	next, err := ExtendChain(c.state, entries, from)
+	if err != nil {
+		return nil, err
+	}
+	c.state = next
+	return next, nil
+}
+
+type sessionVector struct {
+	Space           string   `json:"space"`
+	HostID          string   `json:"hostId"`
+	HostStatic      string   `json:"hostStatic"`
+	HostEphemeral   string   `json:"hostEphemeral"`
+	DeviceStatic    string   `json:"deviceStatic"`
+	DeviceEphemeral string   `json:"deviceEphemeral"`
+	Entries         []Entry  `json:"entries"`
+	HostSeq         int      `json:"hostSeq"`
+	Device          []string `json:"device"`
+	Host            []string `json:"host"`
+	HostPlaintexts  []string `json:"hostPlaintexts"`
+	DeviceID        string   `json:"deviceId"`
+}
+
+func unb64(t *testing.T, s string) []byte {
+	t.Helper()
+	b, err := FromB64(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// The Go host, fed the device's records from a TypeScript session, answers with the same bytes the TypeScript host did.
+func TestSessionReplaysTheTypeScriptOne(t *testing.T) {
+	var v sessionVector
+	readVector(t, "session.json", &v)
+	known, err := VerifyChain(v.Entries[:v.HostSeq+1], "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	chain := &memChain{state: known}
+	host, relay := net.Pipe()
+	var gotDevice Device
+	var gotParams json.RawMessage
+	served := make(chan error, 1)
+	go func() {
+		served <- Serve(context.Background(), host, ServeOptions{
+			Static: x25519(t, unb64(t, v.HostStatic)), HostID: v.HostID, Chain: chain,
+			Ephemeral: x25519(t, unb64(t, v.HostEphemeral)),
+			RPC: func(_ context.Context, d Device, sandbox, method string, params json.RawMessage, _ func(any)) (any, error) {
+				gotDevice, gotParams = d, params
+				if sandbox != "sbx_one" || method != "sandbox.exec" {
+					t.Errorf("called %s on %s", method, sandbox)
+				}
+				return json.RawMessage(`{"exitCode":0,"stdout":"hi\n","stderr":"","durationMs":3}`), nil
+			},
+		})
+	}()
+	_ = relay.SetDeadline(time.Now().Add(10 * time.Second))
+	send := func(i int) {
+		if _, err := relay.Write(frame2(unb64(t, v.Device[i]))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	expect := func(i int) {
+		rec, err := readRecord(relay)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if B64(rec) != v.Host[i] {
+			t.Fatalf("host record %d differs from the TypeScript host's", i)
+		}
+	}
+	send(0)
+	expect(0)
+	send(1)
+	expect(1)
+	send(2)
+	expect(2)
+	relay.Close()
+	<-served
+	if gotDevice.ID != v.DeviceID || string(gotParams) != `{"command":"echo hi"}` {
+		t.Fatalf("device %s, params %s", gotDevice.ID, gotParams)
+	}
+	if chain.State().Seq != len(v.Entries)-1 {
+		t.Fatalf("the host didn't take the device's newer entries: seq %d", chain.State().Seq)
+	}
+}
+
+// A device whose key isn't in the chain (one the gateway made) gets a refusal, and nothing runs.
+func TestSessionRefusesAKeyNotInTheChain(t *testing.T) {
+	var v sessionVector
+	readVector(t, "session.json", &v)
+	state, err := VerifyChain(v.Entries, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ran := false
+	host, relay := net.Pipe()
+	go Serve(context.Background(), host, ServeOptions{
+		Static: x25519(t, unb64(t, v.HostStatic)), HostID: v.HostID, Chain: &memChain{state: state},
+		RPC: func(context.Context, Device, string, string, json.RawMessage, func(any)) (any, error) {
+			ran = true
+			return nil, nil
+		},
+	})
+	_ = relay.SetDeadline(time.Now().Add(10 * time.Second))
+	rogue := NewSeeds()
+	id, _ := IdentityFromSeeds(rogue)
+	in := &Initiator{Prologue: Prologue(v.Space, v.HostID), Static: id.Static, RemoteStatic: x25519(t, unb64(t, v.HostStatic)).PublicKey().Bytes()}
+	m1, _ := in.WriteMessage1([]byte(`{"v":1,"sandbox":"sbx_one","op":"rpc"}`))
+	relay.Write(frame2(m1))
+	m2, _ := readRecord(relay)
+	_, tr, err := in.ReadMessage2(m2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &secure{conn: relay, t: tr}
+	if err := s.send(map[string]string{"type": "open"}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := s.next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"refused"`) || !strings.Contains(string(raw), "isn't in the space's chain") {
+		t.Fatalf("answer %s", raw)
+	}
+	if ran {
+		t.Fatal("a call ran")
+	}
+}
+
+// The gateway can't answer as the host: it doesn't hold the host's static key, so the device's first message is
+// unreadable to it, and a second message it makes up fails at the device.
+func TestSessionAnsweredByTheWrongKeyFails(t *testing.T) {
+	var v sessionVector
+	readVector(t, "session.json", &v)
+	state, _ := VerifyChain(v.Entries, "")
+	impostor, _ := IdentityFromSeeds(NewSeeds())
+	host, relay := net.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(context.Background(), host, ServeOptions{Static: impostor.Static, HostID: v.HostID, Chain: &memChain{state: state}})
+	}()
+	_ = relay.SetDeadline(time.Now().Add(10 * time.Second))
+	relay.Write(frame2(unb64(t, v.Device[0])))
+	if err := <-done; err == nil || !strings.Contains(err.Error(), "handshake") {
+		t.Fatalf("served: %v", err)
+	}
+	if _, err := readRecord(relay); err == nil {
+		t.Fatal("the impostor answered")
+	}
+}

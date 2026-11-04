@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/lleverage-ai/kantel/apps/host/internal/e2e"
 	"github.com/lleverage-ai/kantel/apps/host/internal/egress"
 	"github.com/lleverage-ai/kantel/apps/host/internal/egress/protect"
 	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
@@ -76,6 +77,8 @@ type Host struct {
 	egressLog *egressBatcher
 	// lifecycle is one CA-changing lifecycle call at a time per sandbox.
 	lifecycle sandboxLocks
+	// e2e is the host's E2E keys and the chains of the spaces it joined (Root/e2e; e2e.go).
+	e2e *e2e.Store
 	// floors are the latest egress revisions the host has taken (by sandbox ID), a null egress's too, so a stale update
 	// or boot arriving late is ignored; kept on disk too (floorDir), across restarts.
 	floorMu sync.Mutex
@@ -99,6 +102,11 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 	if err := os.MkdirAll(cfg.Root, 0o700); err != nil {
 		return nil, err
 	}
+	store, err := e2e.OpenStore(filepath.Join(cfg.Root, "e2e"))
+	if err != nil {
+		return nil, fmt.Errorf("e2e store: %w", err)
+	}
+	h.e2e = store
 	h.proxy = egress.New(log.With("part", "egress"))
 	h.secrets = protect.NewStore(h.fetchSecrets)
 	h.cas = egress.NewCAStore(filepath.Join(cfg.Root, "egress-ca"))
