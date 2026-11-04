@@ -71,7 +71,7 @@ func (m *Manager) Shared() []usage.Shared {
 			continue
 		}
 		if s.meta.State == proto.StateRunning {
-			byOwner[s.meta.Owner] = append(byOwner[s.meta.Owner], usage.Busy{SandboxID: s.meta.ID, Seconds: s.busySeconds(now)})
+			byOwner[s.meta.Owner] = append(byOwner[s.meta.Owner], usage.Busy{SandboxID: s.meta.ID, Owner: s.meta.Owner, Seconds: s.busySeconds(now)})
 			running[s.meta.ID] = s.meta.Owner
 		}
 		s.mu.Unlock()

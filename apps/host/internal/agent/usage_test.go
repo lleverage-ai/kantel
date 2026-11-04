@@ -13,11 +13,12 @@ import (
 
 // fakeProc is a machine whose /proc a test writes.
 type fakeProc struct {
-	host    usage.HostCPU
-	procs   map[int]usage.ProcCPU
-	rss     map[int]int64
-	vms     []usage.Process
-	shared  []usage.Shared
+	host   usage.HostCPU
+	procs  map[int]usage.ProcCPU
+	rss    map[int]int64
+	vms    []usage.Process
+	shared []usage.Shared
+	// private are E2E spaces: their sandboxes aren't the control plane's to see.
 	private map[string]bool
 }
 
@@ -25,7 +26,7 @@ func (f *fakeProc) sampler() *usageSampler {
 	return &usageSampler{
 		processes:   func() []usage.Process { return f.vms },
 		shared:      func() []usage.Shared { return f.shared },
-		public:      func(id string) bool { return !f.private[id] },
+		public:      func(owner string) bool { return !f.private[owner] },
 		readHostCPU: func() (usage.HostCPU, error) { return f.host, nil },
 		readMemory:  func() (usage.Memory, error) { return usage.Memory{Total: 64 << 30, Available: 48 << 30}, nil },
 		readDisk:    func() (usage.Disk, error) { return usage.Disk{Total: 1 << 40, Used: 1 << 38}, nil },
@@ -216,10 +217,16 @@ func TestUsageSampleIsolatesShareTheirRuntime(t *testing.T) {
 
 func TestUsageSampleLeavesOutE2ESpaces(t *testing.T) {
 	f := &fakeProc{
-		host:    usage.HostCPU{Total: 1_000, Idle: 500},
-		procs:   map[int]usage.ProcCPU{100: {Ticks: 1, Start: 1}, 200: {Ticks: 1, Start: 1}},
-		vms:     []usage.Process{{SandboxID: "sbx_open", Pid: 100, CPUs: 1}, {SandboxID: "sbx_e2e", Pid: 200, CPUs: 1}},
-		private: map[string]bool{"sbx_e2e": true},
+		host:  usage.HostCPU{Total: 1_000, Idle: 500},
+		procs: map[int]usage.ProcCPU{100: {Ticks: 1, Start: 1}, 200: {Ticks: 1, Start: 1}},
+		vms: []usage.Process{
+			{SandboxID: "sbx_open", Owner: "acct_open", Pid: 100, CPUs: 1},
+			{SandboxID: "sbx_e2e", Owner: "acct_e2e", Pid: 200, CPUs: 1},
+		},
+		shared: []usage.Shared{{Key: "isolate/rt", Pid: 0, CPUs: 1, Sandboxes: []usage.Busy{
+			{SandboxID: "iso_open", Owner: "acct_open"}, {SandboxID: "iso_e2e", Owner: "acct_e2e"},
+		}}},
+		private: map[string]bool{"acct_e2e": true},
 	}
 	s := f.sampler()
 	t0 := time.Unix(10_000, 0)
@@ -227,8 +234,42 @@ func TestUsageSampleLeavesOutE2ESpaces(t *testing.T) {
 	f.host = usage.HostCPU{Total: 2_000, Idle: 1_000}
 	sample, _ := s.sample(t0.Add(5 * time.Second))
 	got := byID(sample)
-	if _, ok := got["sbx_e2e"]; ok || len(got) != 1 {
+	_, vm := got["sbx_e2e"]
+	_, iso := got["iso_e2e"]
+	if vm || iso || len(got) != 2 {
 		t.Fatalf("sandboxes %+v: an E2E space's aren't the gateway's to see", sample.Sandboxes)
+	}
+	// Queued, each keeps the owner it was read with, for the check as it leaves.
+	s.keep(sample)
+	if owner, ok := s.ownerOf("iso_open"); !ok || owner != "acct_open" {
+		t.Fatalf("iso_open's owner %q %v", owner, ok)
+	}
+	if _, ok := s.ownerOf("sbx_e2e"); ok {
+		t.Fatal("an owner kept for a sandbox not in the queue")
+	}
+}
+
+// As a queued sample leaves, a sandbox whose space turned E2E on while it waited is taken out, by the owner it was
+// read with: sending never looks a sandbox up (and waits on its lock).
+func TestUsageSendChecksOwnersAgain(t *testing.T) {
+	f := &fakeProc{}
+	s := f.sampler()
+	s.taken = map[string]string{"sbx_a": "acct_a", "sbx_b": "acct_b"}
+	s.keep(proto.UsageSample{At: 1, Sandboxes: []proto.SandboxUsage{{ID: "sbx_a"}, {ID: "sbx_b"}, {ID: "sbx_unknown"}}})
+	// acct_b turned E2E on; sbx_unknown's owner isn't known, so it doesn't go either.
+	out := s.leaving(s.queue[0], func(owner string) bool { return owner != "acct_b" })
+	if len(out.Sandboxes) != 1 || out.Sandboxes[0].ID != "sbx_a" {
+		t.Fatalf("sent %+v", out.Sandboxes)
+	}
+	if len(s.queue[0].Sandboxes) != 3 {
+		t.Fatal("leaving changed the queued sample")
+	}
+	// Once sent, its owners go.
+	s.flush(func(proto.UsageSample) error { return nil })
+	s.taken = nil
+	s.keep(proto.UsageSample{At: 2})
+	if _, ok := s.ownerOf("sbx_a"); ok {
+		t.Fatal("an owner kept after its sample went")
 	}
 }
 
@@ -371,7 +412,7 @@ func TestUsageEventWireShape(t *testing.T) {
 		t.Fatalf("got  %s\nwant %s", raw, want)
 	}
 	// A host with no running sandbox sends [], not null.
-	empty, _ := json.Marshal((&fakeProc{}).sampler().sandboxes(nil, nil, usage.Memory{}))
+	empty, _ := json.Marshal((&fakeProc{}).sampler().sandboxes(nil, usage.Memory{}))
 	if string(empty) != "[]" {
 		t.Fatalf("no sandboxes: %s", empty)
 	}

@@ -27,7 +27,7 @@ func (m *Manager) Processes() []usage.Process {
 			continue
 		}
 		running := s.meta.State == proto.StateRunning && s.machine != nil
-		id, sizeName, pid := s.meta.ID, s.meta.Size, 0
+		id, owner, sizeName, pid := s.meta.ID, s.meta.Owner, s.meta.Size, 0
 		if running {
 			pid = s.machine.Pid()
 		}
@@ -35,7 +35,7 @@ func (m *Manager) Processes() []usage.Process {
 		if !running || pid <= 0 {
 			continue
 		}
-		p := usage.Process{SandboxID: id, Pid: pid}
+		p := usage.Process{SandboxID: id, Owner: owner, Pid: pid}
 		if size, err := m.size(sizeName); err == nil {
 			p.CPUs = float64(size.VCPUs)
 			p.MemLimitBytes = int64(size.MemoryMiB) << 20
