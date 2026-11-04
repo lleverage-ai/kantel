@@ -131,6 +131,10 @@ type sandbox struct {
 	// unsaved: meta differs from meta.json (a write failed). A call that would otherwise change nothing, a retried
 	// start, writes it before it answers.
 	unsaved bool
+	// busy is the time the sandbox's commands have run in its runtime so far, and busySince when the one running now
+	// began (zero when none is), for the host's usage samples (usage.go). Under mu.
+	busy      time.Duration
+	busySince time.Time
 }
 
 // saveMeta writes the sandbox's meta.json, noting whether it is behind meta. Held under mu.
@@ -151,6 +155,9 @@ type Manager struct {
 	template sync.Mutex
 	closed   atomic.Bool
 	stopReap chan struct{}
+	// usageOwners is the account of each sandbox running at the last usage reading (Shared), under usageMu.
+	usageMu     sync.Mutex
+	usageOwners map[string]string
 }
 
 func New(cfg Config) (*Manager, error) {
@@ -1134,7 +1141,9 @@ func (m *Manager) Exec(ctx context.Context, p proto.ExecParams, onOutput func(st
 	if strings.HasPrefix(cwd, "/workspace") {
 		cwd = strings.TrimPrefix(strings.TrimPrefix(cwd, "/workspace"), "/")
 	}
+	done := s.markBusy()
 	err = r.call(callCtx, "/exec", map[string]any{"sandboxId": p.SandboxID, "command": command, "cwd": cwd, "env": env, "manifest": manifest, "timeoutMs": timeout.Milliseconds()}, &res)
+	done()
 	if errors.Is(callCtx.Err(), context.DeadlineExceeded) {
 		return proto.ExecResult{ExitCode: 124, TimedOut: true, DurationMs: time.Since(started).Milliseconds()}, nil
 	}

@@ -41,6 +41,9 @@ type Message struct {
 	// stream.close (either way): a port stream ended; Reason says why.
 	Stream uint32 `json:"stream,omitempty"`
 	Reason string `json:"reason,omitempty"`
+
+	// usage (host → Kantel): one tick of the host's and its sandboxes' readings.
+	Usage *UsageSample `json:"usage,omitempty"`
 }
 
 // Error codes a call can fail with.
@@ -96,6 +99,10 @@ const FeatureEgressPolicy = "egress-policy"
 // FeatureCustomShapes: sandbox.create takes vcpus, memoryMiB and diskGiB for a microVM shape off the named sizes,
 // and memoryMiB for an isolate.
 const FeatureCustomShapes = "custom-shapes"
+
+// FeatureUsage: the host sends a "usage" message every tick (UsageSample) without being asked, so the control plane
+// needn't run a command in a sandbox to read its usage.
+const FeatureUsage = "usage"
 
 // Size is a sandbox shape.
 type Size struct {
@@ -431,6 +438,46 @@ type Event struct {
 	At     int64  `json:"at"`
 	// Egress, for "egress" events: the proxy's decisions, at most 100 to an event.
 	Egress []EgressRecord `json:"egress,omitempty"`
+}
+
+// UsageSample is a "usage" message's (host → Kantel, once welcomed, every UsageIntervalSeconds; FeatureUsage): the
+// host's and its running sandboxes' CPU and memory over one interval, measured from the host's side, with no command
+// run in a sandbox. packages/hosts/src/protocol.ts calls it HostUsageReport. A control plane that predates it ignores
+// the message (its hub drops a type it doesn't know).
+//
+// CPU is utilisation over the interval that ended at At, 0 to 1, as the API's usage.recentCpu: the host's of all its
+// CPUs; a microVM's of its vCPUs (its Firecracker process's CPU time over vCPUs × interval); an isolate's of one CPU
+// (its JavaScript runs on one thread), as its share of its account's runtime's CPU time.
+type UsageSample struct {
+	// At is when it was taken, in milliseconds; IntervalMs is the span its CPU figures cover.
+	At         int64          `json:"at"`
+	IntervalMs int64          `json:"intervalMs"`
+	Host       HostUsage      `json:"host"`
+	Sandboxes  []SandboxUsage `json:"sandboxes"`
+}
+
+// HostUsage is the whole machine: CPU from /proc/stat, memory from /proc/meminfo (used is MemTotal - MemAvailable)
+// and the disk holding the host's data directory.
+type HostUsage struct {
+	CPU            float64 `json:"cpu"`
+	MemUsedBytes   int64   `json:"memUsedBytes"`
+	MemTotalBytes  int64   `json:"memTotalBytes"`
+	DiskUsedBytes  int64   `json:"diskUsedBytes"`
+	DiskTotalBytes int64   `json:"diskTotalBytes"`
+}
+
+// SandboxUsage is one running sandbox. A sandbox appears from its second sample on (CPU needs two readings).
+type SandboxUsage struct {
+	ID string `json:"id"`
+	// Kind is the tier: "microvm" or "isolate".
+	Kind string  `json:"kind"`
+	CPU  float64 `json:"cpu"`
+	// MemUsedBytes, for a microVM, is its Firecracker process's resident memory: the guest memory the VM has touched
+	// (the guest's page cache too, and nothing is given back without a balloon) and the VMM's own. MemLimitBytes is its
+	// size's memory. An isolate gets an even share of its account's runtime's resident memory and memory (workerd
+	// says nothing of an isolate's own).
+	MemUsedBytes  int64 `json:"memUsedBytes"`
+	MemLimitBytes int64 `json:"memLimitBytes"`
 }
 
 // Methods.
