@@ -9,7 +9,7 @@ import { Button } from "../primitives/button.tsx";
 import { CopyButton, Disclosure, TextAreaField } from "../primitives/controls.tsx";
 import { clockTime } from "../primitives/format.ts";
 import { DownloadIcon } from "../primitives/lucide.tsx";
-import { BreakableCommand, CommandBlock, commandTextClass } from "../primitives/one-time-secret.tsx";
+import { BreakableCommand, CommandBlock, commandFrameClass, commandPromptClass, commandTextClass } from "../primitives/one-time-secret.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { Notice } from "../primitives/surface.tsx";
 import { CLI_INSTALL_COMMAND, type SandboxAccess, type SandboxesSource, type SandboxSshKey } from "./compute-model.ts";
@@ -33,12 +33,12 @@ export function publicKeyProblem(text: string): string | undefined {
  */
 function CommandLine({ command, copyLabel }: { command: string | undefined; copyLabel: string }) {
 	return (
-		<div className="flex min-h-control-lg min-w-0 items-start gap-2 rounded-panel border border-border bg-sunken py-1 pr-1 pl-3 font-mono text-code">
-			<span className="flex-none py-1 leading-normal text-faint" aria-hidden="true">
+		<div className={commandFrameClass}>
+			<span className={commandPromptClass} aria-hidden="true">
 				$
 			</span>
 			{command === undefined ? (
-				<span className="flex-1">
+				<span className="flex min-h-control-sm flex-1 items-center">
 					<Skeleton />
 				</span>
 			) : (

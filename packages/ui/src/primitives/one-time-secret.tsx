@@ -14,6 +14,13 @@ const codeFrame =
  * A command's text inside its field: all of it on screen, wrapping only between words and after a slash (a URL's
  * parts), never inside a token unless one is longer than the line.
  */
+/** A command's field: one frame for every command in the console, an install line or a sandbox's SSH. */
+export const commandFrameClass =
+	"flex min-w-0 items-start gap-2 rounded-control border border-border-input bg-sunken py-1 pr-1 pl-2.5";
+
+/** The shell's "$" before a command, quieter than the command and never copied. */
+export const commandPromptClass = "flex-none py-1 font-mono text-code leading-normal text-faint select-none";
+
 export const commandTextClass =
 	"m-0 min-w-0 flex-1 py-1 font-mono text-code leading-normal text-fg whitespace-pre-wrap wrap-break-word";
 
@@ -23,8 +30,19 @@ export const commandTextClass =
  */
 export function BreakableCommand({ command }: { command: string }) {
 	// Each word kept whole (a flag such as --url never splits at its hyphens); a line breaks between words, or after a
-	// single slash between two other characters inside a long one: a path's parts, never inside "https://".
-	const words = command.split(/( +)/);
+	// single slash between two other characters inside a long one: a path's parts, never inside "https://". A shell
+	// operator stays with the word after it, so "| sh" never leaves "sh" alone on a line.
+	const words: string[] = [];
+	const split = command.split(/( +)/);
+	for (let at = 0; at < split.length; at++) {
+		const word = split[at] ?? "";
+		const space = split[at + 1];
+		const next = split[at + 2];
+		if (/^(\||\|\||&&|;|>|>>)$/.test(word) && space !== undefined && next !== undefined && next !== "") {
+			words.push(`${word}${space}${next}`);
+			at += 2;
+		} else words.push(word);
+	}
 	return (
 		<>
 			{words.map((word, index) => {
@@ -68,12 +86,9 @@ export function CommandBlock({
 		<div className="kt-command-block flex min-w-0 flex-col gap-1">
 			{label === undefined ? null : <span className="text-sm text-muted">{label}</span>}
 			{/* One field with Copy pinned inside it, as a sandbox's SSH command has it. */}
-			<div className="flex min-w-0 items-start gap-2 rounded-control border border-border-input bg-sunken py-1 pr-1 pl-2.5">
+			<div className={commandFrameClass}>
 				{prompt ? (
-					<span
-						className="flex-none py-1 font-mono text-code leading-normal text-faint"
-						aria-hidden="true"
-					>
+					<span className={commandPromptClass} aria-hidden="true">
 						$
 					</span>
 				) : null}
