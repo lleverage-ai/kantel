@@ -44,6 +44,9 @@ gateway could reach them while it was off.
 Run the printed command on the host. A self-hosted host with no route to the gateway's chain API can join offline
 with `kantel-host e2e join --chain chain.json <ticket>`, which prints its signed entry for you to publish.
 
+The host's entry counts once the gateway has taken it. If someone else's change lands first, the join fails. Run it
+again, with a new ticket if the old one has run out, and the host signs a new entry on the chain as it is now.
+
 Each member trusts the genesis and sends their device's card to an admin, who checks its fingerprint with them:
 
 ```sh
