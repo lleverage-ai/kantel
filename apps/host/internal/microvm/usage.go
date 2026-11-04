@@ -8,16 +8,24 @@ import (
 // Processes are the running sandboxes' Firecracker processes, each with the vCPUs and memory its size gives it, for
 // the host's usage samples. A Firecracker process is the whole VM, its vCPU threads and the VMM's own, so its CPU
 // and resident memory are what the sandbox costs the host.
+//
+// It never waits on a sandbox: one whose lock a create, snapshot or stop holds (for minutes, at a cold boot) is
+// answered Held, unread this time, so the samples go on.
 func (m *Manager) Processes() []usage.Process {
 	m.mu.Lock()
+	ids := make([]string, 0, len(m.sandboxes))
 	list := make([]*sandbox, 0, len(m.sandboxes))
-	for _, s := range m.sandboxes {
+	for id, s := range m.sandboxes {
+		ids = append(ids, id)
 		list = append(list, s)
 	}
 	m.mu.Unlock()
 	out := make([]usage.Process, 0, len(list))
-	for _, s := range list {
-		s.mu.Lock()
+	for i, s := range list {
+		if !s.mu.TryLock() {
+			out = append(out, usage.Process{SandboxID: ids[i], Held: true})
+			continue
+		}
 		running := s.meta.State == proto.StateRunning && s.machine != nil
 		id, sizeName, pid := s.meta.ID, s.meta.Size, 0
 		if running {

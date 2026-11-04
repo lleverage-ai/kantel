@@ -46,6 +46,8 @@ type usageSampler struct {
 	readDisk    func() (usage.Disk, error)
 	readCPU     func(pid int) (usage.ProcCPU, error)
 	readRSS     func(pid int) (int64, error)
+	// now is the clock each reading is stamped with as it is taken (time.Now; a test's).
+	now func() time.Time
 
 	counters *usage.Counters
 	hostCPU  usage.HostCPU
@@ -65,6 +67,7 @@ func (h *Host) newUsageSampler() *usageSampler {
 		readDisk:    func() (usage.Disk, error) { return usage.ReadDisk(h.cfg.Root) },
 		readCPU:     usage.ReadProcCPU,
 		readRSS:     usage.ReadRSS,
+		now:         time.Now,
 		counters:    usage.NewCounters(),
 	}
 	s.processes = func() []usage.Process {
@@ -82,11 +85,17 @@ func (h *Host) newUsageSampler() *usageSampler {
 	return s
 }
 
-// sample takes one reading of everything. ok is false for the host's first (CPU is a difference, so the first
+// take takes one reading of everything. ok is false for the host's first (CPU is a difference, so the first
 // reading only sets where it starts) and when /proc/stat can't be read. A sandbox appears from its second reading.
-func (s *usageSampler) sample(now time.Time) (proto.UsageSample, bool) {
+//
+// Each counter is stamped when it is read, not when the tick was due: a tick late after a slow send, or one that
+// waited on the tiers, still divides each CPU time by the time it took.
+func (s *usageSampler) take() (proto.UsageSample, bool) {
 	defer s.counters.Sweep()
+	// What runs first: listing it is what may take a while, and the readings come after.
+	procs, shared := s.processes(), s.shared()
 	cpu, err := s.readHostCPU()
+	now := s.now()
 	if err != nil {
 		return proto.UsageSample{}, false
 	}
@@ -94,12 +103,12 @@ func (s *usageSampler) sample(now time.Time) (proto.UsageSample, bool) {
 	s.hostCPU, s.hostAt = cpu, now
 	if prevAt.IsZero() {
 		// The sandboxes' counters start here too, so they have a figure at the next sample.
-		s.sandboxes(now, usage.Memory{})
+		s.sandboxes(procs, shared, usage.Memory{})
 		return proto.UsageSample{}, false
 	}
 	busy, ok := usage.HostCPUBusy(prev, cpu)
 	if !ok || !now.After(prevAt) {
-		s.sandboxes(now, usage.Memory{})
+		s.sandboxes(procs, shared, usage.Memory{})
 		return proto.UsageSample{}, false
 	}
 	// The interval as measured, in the 1 s to 5 minutes the control plane takes (a tick a little early, or one after the
@@ -113,7 +122,7 @@ func (s *usageSampler) sample(now time.Time) (proto.UsageSample, bool) {
 	if disk, err := s.readDisk(); err == nil {
 		out.Host.DiskUsedBytes, out.Host.DiskTotalBytes = disk.Used, disk.Total
 	}
-	out.Sandboxes = s.sandboxes(now, mem)
+	out.Sandboxes = s.sandboxes(procs, shared, mem)
 	if len(out.Sandboxes) > maxUsageSandboxes {
 		// The control plane refuses a tick with more (packages/hosts/src/facts.ts, MAX_USAGE_SANDBOXES).
 		out.Sandboxes = out.Sandboxes[:maxUsageSandboxes]
@@ -123,17 +132,21 @@ func (s *usageSampler) sample(now time.Time) (proto.UsageSample, bool) {
 
 // sandboxes reads every running sandbox the control plane may see (not one in an E2E space), answering those with
 // a figure: a microVM's Firecracker process, and each account's isolate runtime shared out among its sandboxes.
-func (s *usageSampler) sandboxes(now time.Time, mem usage.Memory) []proto.SandboxUsage {
+func (s *usageSampler) sandboxes(procs []usage.Process, shared []usage.Shared, mem usage.Memory) []proto.SandboxUsage {
 	out := []proto.SandboxUsage{}
-	for _, p := range s.processes() {
+	for _, p := range procs {
 		if !s.public(p.SandboxID) {
+			continue
+		}
+		if p.Held {
+			s.counters.Keep("microvm/" + p.SandboxID)
 			continue
 		}
 		cpu, err := s.readCPU(p.Pid)
 		if err != nil {
 			continue
 		}
-		grew, over, ok := s.counters.Delta("microvm/"+p.SandboxID, cpu.Epoch(p.Pid), cpu.Seconds(), now)
+		grew, over, ok := s.counters.Delta("microvm/"+p.SandboxID, cpu.Epoch(p.Pid), cpu.Seconds(), s.now())
 		if !ok {
 			continue
 		}
@@ -143,8 +156,8 @@ func (s *usageSampler) sandboxes(now time.Time, mem usage.Memory) []proto.Sandbo
 			MemUsedBytes: rss, MemLimitBytes: p.MemLimitBytes,
 		})
 	}
-	for _, sh := range s.shared() {
-		out = append(out, s.isolates(now, mem, sh)...)
+	for _, sh := range shared {
+		out = append(out, s.isolates(mem, sh)...)
 	}
 	return out
 }
@@ -152,7 +165,23 @@ func (s *usageSampler) sandboxes(now time.Time, mem usage.Memory) []proto.Sandbo
 // isolates shares out an account's runtime among its running sandboxes: CPU by the time each spent running commands
 // over the interval (usage.Attribute), as a share of one CPU (sh.CPUs); memory evenly, the runtime's resident memory
 // and its limit alike, since workerd says nothing of an isolate's own.
-func (s *usageSampler) isolates(now time.Time, mem usage.Memory, sh usage.Shared) []proto.SandboxUsage {
+func (s *usageSampler) isolates(mem usage.Memory, sh usage.Shared) []proto.SandboxUsage {
+	for _, id := range sh.Held {
+		s.counters.Keep("isolate-busy/" + id)
+	}
+	if len(sh.Held) > 0 {
+		// A held sandbox's command time is unknown this time, so the runtime's CPU can't be shared out: keep
+		// following it, and give its sandboxes figures from the next reading.
+		s.counters.Keep(sh.Key)
+		for _, b := range sh.Sandboxes {
+			s.counters.Keep("isolate-busy/" + b.SandboxID)
+		}
+		return nil
+	}
+	at := sh.At
+	if at.IsZero() {
+		at = s.now()
+	}
 	busy := map[string]float64{}
 	var shown []string
 	for _, b := range sh.Sandboxes {
@@ -160,7 +189,7 @@ func (s *usageSampler) isolates(now time.Time, mem usage.Memory, sh usage.Shared
 			continue
 		}
 		// The runtime is part of the epoch: a sandbox moved to another runtime starts again.
-		grew, _, ok := s.counters.Delta("isolate-busy/"+b.SandboxID, sh.Key, b.Seconds, now)
+		grew, _, ok := s.counters.Delta("isolate-busy/"+b.SandboxID, sh.Key, b.Seconds, at)
 		if ok {
 			busy[b.SandboxID] = grew
 			shown = append(shown, b.SandboxID)
@@ -178,7 +207,7 @@ func (s *usageSampler) isolates(now time.Time, mem usage.Memory, sh usage.Shared
 			return nil
 		}
 		var ok bool
-		cpuSeconds, over, ok = s.counters.Delta(sh.Key, cpu.Epoch(sh.Pid), cpu.Seconds(), now)
+		cpuSeconds, over, ok = s.counters.Delta(sh.Key, cpu.Epoch(sh.Pid), cpu.Seconds(), s.now())
 		if !ok {
 			return nil
 		}
@@ -250,15 +279,16 @@ func (h *Host) RunUsage(ctx context.Context) {
 	h.mu.Lock()
 	h.usage = s
 	h.mu.Unlock()
-	s.sample(time.Now())
+	s.take()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case now := <-ticker.C:
-			if sample, ok := s.sample(now); ok {
+		case <-ticker.C:
+			// The tick only wakes the sampler: each reading is stamped as it is taken.
+			if sample, ok := s.take(); ok {
 				s.keep(sample)
 			}
 			if !h.connected() {

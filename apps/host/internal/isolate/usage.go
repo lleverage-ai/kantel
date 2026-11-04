@@ -38,11 +38,16 @@ func (s *sandbox) busySeconds(now time.Time) float64 {
 // running sandboxes, for the host's usage samples. workerd keeps no account of CPU or memory per isolate that the
 // host can read (its WorkerLoader limits only cap a request's CPU), so the runtime's process is measured and shared
 // out among its sandboxes (usage.Attribute).
+//
+// It never waits on a sandbox: one whose lock an operation holds is left out of its account's share this time (Held),
+// so the samples go on.
 func (m *Manager) Shared() []usage.Shared {
 	now := time.Now()
 	m.mu.Lock()
+	ids := make([]string, 0, len(m.sandboxes))
 	list := make([]*sandbox, 0, len(m.sandboxes))
-	for _, s := range m.sandboxes {
+	for id, s := range m.sandboxes {
+		ids = append(ids, id)
 		list = append(list, s)
 	}
 	runtimes := map[string]*runtime{}
@@ -51,16 +56,35 @@ func (m *Manager) Shared() []usage.Shared {
 	}
 	m.mu.Unlock()
 	byOwner := map[string][]usage.Busy{}
-	for _, s := range list {
-		s.mu.Lock()
+	held := map[string][]string{}
+	// Only the sampler calls Shared, one at a time; usageOwners is the account of each sandbox that was running at the
+	// last call, for one whose lock is taken now.
+	m.usageMu.Lock()
+	defer m.usageMu.Unlock()
+	running := make(map[string]string, len(list))
+	for i, s := range list {
+		if !s.mu.TryLock() {
+			if owner, ok := m.usageOwners[ids[i]]; ok {
+				held[owner] = append(held[owner], ids[i])
+				running[ids[i]] = owner
+			}
+			continue
+		}
 		if s.meta.State == proto.StateRunning {
 			byOwner[s.meta.Owner] = append(byOwner[s.meta.Owner], usage.Busy{SandboxID: s.meta.ID, Seconds: s.busySeconds(now)})
+			running[s.meta.ID] = s.meta.Owner
 		}
 		s.mu.Unlock()
 	}
+	m.usageOwners = running
 	owners := make([]string, 0, len(byOwner))
 	for owner := range byOwner {
 		owners = append(owners, owner)
+	}
+	for owner := range held {
+		if _, ok := byOwner[owner]; !ok {
+			owners = append(owners, owner)
+		}
 	}
 	sort.Strings(owners)
 	out := make([]usage.Shared, 0, len(owners))
@@ -69,7 +93,7 @@ func (m *Manager) Shared() []usage.Shared {
 		sort.Slice(busy, func(i, j int) bool { return busy[i].SandboxID < busy[j].SandboxID })
 		// An isolate's JavaScript runs on one thread, so one CPU of its runtime is all a sandbox can use: its CPU is a
 		// share of one, whatever the VM's vCPUs.
-		sh := usage.Shared{Key: "isolate/" + owner, CPUs: 1, Sandboxes: busy}
+		sh := usage.Shared{Key: "isolate/" + owner, CPUs: 1, Sandboxes: busy, At: now, Held: held[owner]}
 		if m.cfg.Runtime != "native" {
 			sh.MemLimitBytes = int64(m.cfg.MemoryMiB) << 20
 		}

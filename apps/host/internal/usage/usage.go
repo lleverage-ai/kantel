@@ -258,7 +258,10 @@ func (c *Counters) Delta(key, epoch string, value float64, at time.Time) (grew f
 	return value - prev.value, at.Sub(prev.at), true
 }
 
-// Sweep forgets every key not read since the last Sweep: sandboxes that went away, so one that comes back later with
+// Keep marks key as still followed without a reading (a sandbox that couldn't be read this time), so Sweep keeps it.
+func (c *Counters) Keep(key string) { c.seen[key] = true }
+
+// Sweep forgets every key not read or kept since the last Sweep: sandboxes that went away, so one that comes back later with
 // the same ID starts again rather than being measured across the gap.
 func (c *Counters) Sweep() {
 	for key := range c.last {

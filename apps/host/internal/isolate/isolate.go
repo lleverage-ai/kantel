@@ -140,6 +140,9 @@ type Manager struct {
 	template  sync.Mutex
 	closed    atomic.Bool
 	stopReap  chan struct{}
+	// usageOwners is the account of each sandbox running at the last usage reading (Shared), under usageMu.
+	usageMu     sync.Mutex
+	usageOwners map[string]string
 }
 
 func New(cfg Config) (*Manager, error) {

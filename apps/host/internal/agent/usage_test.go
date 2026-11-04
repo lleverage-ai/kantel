@@ -41,6 +41,12 @@ func (f *fakeProc) sampler() *usageSampler {
 	}
 }
 
+// sample takes a reading with the clock stopped at now: every counter is stamped now.
+func (s *usageSampler) sample(now time.Time) (proto.UsageSample, bool) {
+	s.now = func() time.Time { return now }
+	return s.take()
+}
+
 func approx(t *testing.T, what string, got, want float64) {
 	t.Helper()
 	if math.Abs(got-want) > 1e-6 {
@@ -260,6 +266,75 @@ func TestUsageBacklogIsBoundedAndKeepsOrder(t *testing.T) {
 	}
 }
 
+// A tick that comes late (a slow send before it, or the tiers slow to list) is stamped when its counters were read,
+// so CPU time is divided by the time it really took.
+func TestUsageStampsReadingsWhenTaken(t *testing.T) {
+	f := &fakeProc{
+		host:  usage.HostCPU{Total: 10_000, Idle: 9_000},
+		procs: map[int]usage.ProcCPU{100: {Ticks: 0, Start: 7}},
+		vms:   []usage.Process{{SandboxID: "sbx_a", Pid: 100, CPUs: 1}},
+	}
+	s := f.sampler()
+	t0 := time.Unix(10_000, 0)
+	clock := t0
+	s.now = func() time.Time { return clock }
+	listed, slow := s.processes, false
+	s.processes = func() []usage.Process {
+		if slow {
+			// Listing the tiers took 10 s: the tick was due at t0+5s, the readings were taken at t0+15s.
+			clock = clock.Add(10 * time.Second)
+		}
+		return listed()
+	}
+	s.take()
+	clock, slow = t0.Add(5*time.Second), true
+	// 15 s after the first reading, sbx_a used 3.75 s: 25% of its one vCPU.
+	f.procs[100] = usage.ProcCPU{Ticks: 375, Start: 7}
+	f.host.Total += 1_000
+	sample, ok := s.take()
+	if !ok {
+		t.Fatal("want a sample")
+	}
+	if sample.At != t0.Add(15*time.Second).UnixMilli() || sample.IntervalMs != 15_000 {
+		t.Fatalf("at %d interval %d", sample.At-t0.UnixMilli(), sample.IntervalMs)
+	}
+	approx(t, "sbx_a", byID(sample)["sbx_a"].CPU, 0.25)
+}
+
+// A sandbox mid-operation (its lock held) is skipped that time but still followed: the next reading has its figure,
+// over both intervals, rather than starting again.
+func TestUsageHeldSandboxKeepsItsCounters(t *testing.T) {
+	f := &fakeProc{
+		host:  usage.HostCPU{Total: 10_000, Idle: 9_000},
+		procs: map[int]usage.ProcCPU{100: {Ticks: 0, Start: 7}, 500: {Ticks: 0, Start: 3}},
+		vms:   []usage.Process{{SandboxID: "sbx_a", Pid: 100, CPUs: 1}},
+		shared: []usage.Shared{{Key: "isolate/acct/rt", Pid: 500, CPUs: 1, MemLimitBytes: 1 << 30,
+			Sandboxes: []usage.Busy{{SandboxID: "iso_a", Seconds: 0}}}},
+	}
+	s := f.sampler()
+	t0 := time.Unix(10_000, 0)
+	s.sample(t0)
+	// At 5 s both are mid-operation: no figures, the host's still goes.
+	f.vms = []usage.Process{{SandboxID: "sbx_a", Held: true}}
+	f.shared = []usage.Shared{{Key: "isolate/acct/rt", Pid: 500, CPUs: 1, Held: []string{"iso_a"}}}
+	f.host.Total += 1_000
+	sample, ok := s.sample(t0.Add(5 * time.Second))
+	if !ok || len(sample.Sandboxes) != 0 {
+		t.Fatalf("held: ok %v, %+v", ok, sample.Sandboxes)
+	}
+	// At 10 s: sbx_a used 5 s and the runtime 2 s, all iso_a's, over the 10 s.
+	f.vms = []usage.Process{{SandboxID: "sbx_a", Pid: 100, CPUs: 1}}
+	f.procs[100] = usage.ProcCPU{Ticks: 500, Start: 7}
+	f.procs[500] = usage.ProcCPU{Ticks: 200, Start: 3}
+	f.shared = []usage.Shared{{Key: "isolate/acct/rt", Pid: 500, CPUs: 1, MemLimitBytes: 1 << 30,
+		Sandboxes: []usage.Busy{{SandboxID: "iso_a", Seconds: 4}}}}
+	f.host.Total += 1_000
+	sample, _ = s.sample(t0.Add(10 * time.Second))
+	got := byID(sample)
+	approx(t, "sbx_a", got["sbx_a"].CPU, 0.5)
+	approx(t, "iso_a", got["iso_a"].CPU, 0.2)
+}
+
 // The control plane takes an interval of 1 s to 5 minutes: a tick a little early, or the first after the host was
 // paused, still goes.
 func TestUsageIntervalInRange(t *testing.T) {
@@ -296,7 +371,7 @@ func TestUsageEventWireShape(t *testing.T) {
 		t.Fatalf("got  %s\nwant %s", raw, want)
 	}
 	// A host with no running sandbox sends [], not null.
-	empty, _ := json.Marshal((&fakeProc{}).sampler().sandboxes(time.Now(), usage.Memory{}))
+	empty, _ := json.Marshal((&fakeProc{}).sampler().sandboxes(nil, nil, usage.Memory{}))
 	if string(empty) != "[]" {
 		t.Fatalf("no sandboxes: %s", empty)
 	}
