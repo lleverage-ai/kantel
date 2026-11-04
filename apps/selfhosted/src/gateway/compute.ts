@@ -532,10 +532,13 @@ export function withHostUpgrades(
 		const refuse = (code: number, reason: string) =>
 			sockets.handleUpgrade(incoming, socket, head, (accepted) => accepted.close(code, reason));
 		if (hosts.ports !== undefined) {
-			// An exposed port's name (a dev server's hot reload, an app's own WebSocket): only with its token, as its pages.
+			// An exposed port's name (a dev server's hot reload, an app's own WebSocket): only with its token, as its pages,
+			// and its cookie only from the port's own pages or the same sandbox's (by Origin).
 			const ports = hosts.ports;
 			void (async () => {
-				const port = await ports.upgrade(incoming.headers.host ?? "", incoming.url ?? "/", incoming.headers.cookie);
+				const port = await ports.upgrade(incoming.headers.host ?? "", incoming.url ?? "/", incoming.headers.cookie, {
+					origin: incoming.headers.origin,
+				});
 				if (port === undefined) return gatewayUpgrade();
 				if (!port.ok) return refuseUpgrade(incoming, socket, head, port.status, port.reason, sockets);
 				const held = { sandboxId: port.sandboxId, kind: `port ${port.port}`, grantee: port.grantee };

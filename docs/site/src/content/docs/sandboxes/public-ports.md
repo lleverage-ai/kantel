@@ -33,7 +33,7 @@ console.log(url);
 
 The answer is an [ExposedPort](/api/reference/types/#exposedport) with the URL. Its host name is the port and the sandbox's `subdomain` under the deployment's ports domain: `ports.kantel.dev` on Kantel's hosted service, as in `https://3000-brave-otter-ab12cd.ports.kantel.dev`, or the domain you set on your own install. Exposing a port that's already exposed answers the URL it has.
 
-Every port name under one ports domain is the same site to browsers until the domain is on the Public Suffix List, and `ports.kantel.dev` isn't yet. So a page one sandbox serves can set cookies another sandbox's pages receive: don't rely on cookies being private between sandboxes. [Security model](/self-hosting/security/#the-ports-domain) has the details.
+Every port name under one ports domain is the same site to browsers until the domain is on the Public Suffix List, and `ports.kantel.dev` isn't yet. So a page one sandbox serves can set cookies another sandbox's pages receive: don't rely on your app's own cookies being private between sandboxes. Kantel's token cookie is protected from that: another sandbox's page can't use it, plant it or shadow it ([the port's own cookie](/self-hosting/security/#the-ports-own-cookie)). [Security model](/self-hosting/security/#the-ports-domain) has the details.
 
 The same goes for a console under the same registrable domain, such as `app.kantel.dev`: a port's page is the same site to it. The console doesn't depend on cookies or `SameSite` to stay safe from that. Its session is never a cookie, and it refuses a browser's changes from any origin but its own ([the console and the ports domain](/self-hosting/security/#the-console-and-the-ports-domain)). Listing `ports.kantel.dev` on the Public Suffix List, or giving hosted ports a domain of their own, is still to come.
 
@@ -41,7 +41,9 @@ The same goes for a console under the same registrable domain, such as `app.kant
 
 By default the URL carries a token (`?_token=...`), and anyone holding the whole URL can open it. Treat it like a password: share it only with people who should see the app. A request without the token is refused with `401` and never reaches the sandbox.
 
-Opening the URL in a browser trades the token for a cookie on that one host name and takes it out of the address bar, so the app's own links and requests work. A script or test runner can send the token in the query each time, or as the `_kantel_port` cookie. Kantel takes the token and its cookie off before the request reaches the app.
+Opening the URL in a browser trades the token for a cookie on that one host name and takes it out of the address bar, so the app's own links and requests work. A script or test runner can send the token in the query each time, or as the `__Host-kantel_port` cookie (`kantel_port` on an install served over plain http). Kantel takes the token and its cookie off before the request reaches the app.
+
+The cookie works for the app's own pages, for a link followed to it, and for the same sandbox's other ports: a frontend on port 5173 can call its API on port 8080, `fetch` and WebSockets included, once 8080's URL has been opened in that browser. A page on another sandbox's port, or on any other site, can't use it; its requests get `401` as if they had no cookie. To frame one port in another, put the token in the frame's URL. The cookie was called `_kantel_port` before and that name is no longer read: open the URL with its token again.
 
 To end a token, hide the port: exposing it afterwards gives it a new one. Stopping or deleting the sandbox ends its ports too.
 
