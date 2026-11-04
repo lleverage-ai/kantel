@@ -100,8 +100,9 @@ const CHEAT_SHEET = `- Create one: \`id=$(kantel new --type microvm --json | jq 
   isolate: it starts in milliseconds but runs JavaScript only; a microVM is a full Linux with root and Docker.
 - Run a command: \`kantel exec "$id" -- npm test\`. Its output and exit code are the command's (30 s limit;
   \`--timeout 0\` = no limit, following its output).
-- A server or a long job: \`kantel exec "$id" --detach -- npm run dev\` prints the command's ID; then
-  \`kantel attach "$id" <command>\` follows its output, and \`kantel kill "$id" <command>\` stops it.
+- A job you don't wait for: \`kantel exec "$id" --detach -- npm run build\` prints the command's ID; then
+  \`kantel attach "$id" <command>\` follows its output. For now a host still ends it after about 2 minutes on a
+  microVM, and \`kantel kill "$id" <command>\` marks it killed but may not stop it (\`pkill -f\` does).
 - Copy files: \`kantel push "$id" .\` (git-tracked files, to /home/user/<dir>), or
   \`kantel scp ./file "$id":/home/user/\` and \`kantel scp "$id":/home/user/out.zip .\` (\`-r\` for a directory).
 - A URL for a port: \`kantel host "$id" 3000\` (private, with a token; \`--public\` for none).

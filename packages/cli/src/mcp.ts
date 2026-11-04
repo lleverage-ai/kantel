@@ -20,8 +20,8 @@ export const INSTRUCTIONS =
 	"Docker, a desktop and a browser) and keep its id. Run commands in it with sandbox_exec, and move files with " +
 	"file_write, file_read and file_list. port_expose gives a server in it a URL; snapshot_save keeps its state to " +
 	"start new sandboxes from. Stop it with sandbox_stop when you are done: a stopped sandbox keeps its disk and costs " +
-	"nothing to run, and sandbox_resume brings it back. For a server or a job longer than a minute or two, run " +
-	"sandbox_exec with detached, then wait for it and read its output with command_get.";
+	"nothing to run, and sandbox_resume brings it back. If a command may take longer than your MCP client waits " +
+	"for a call, run sandbox_exec with detached, then wait for it with command_get; for now a host still ends it after about 2 minutes on a microVM (30 s on an isolate).";
 
 /** How often a tool call that waits tells the client it is still working. */
 export const PROGRESS_INTERVAL_MS = 15_000;
@@ -262,12 +262,13 @@ export function commandResult(command: Command): ToolResult {
 			lines.push(`The command ${command.id} is still running. ${pickUp(command)}`);
 			break;
 		case "timed_out":
-			lines.push(
-				"The command timed out and was killed. For a longer job, run it with detached and wait for it with command_get.",
-			);
+			lines.push(`The command timed out and was killed. Give it a longer timeoutMs, up to ${MAX_WAIT_MS}.`);
 			break;
 		case "killed":
-			lines.push("The command was killed.");
+			lines.push(
+				"The command is marked killed, but its process may still run: to be sure, end it with sandbox_exec, such " +
+					"as pkill -f.",
+			);
 			break;
 		default:
 			lines.push(`The command exited with code ${command.exitCode ?? "unknown"}.`);
@@ -438,9 +439,9 @@ const TOOLS: readonly Tool[] = [
 		description:
 			"Run a shell command line in a running sandbox (bash -lc on a microVM) and wait for it to end; answers its " +
 			"exit code, stdout and stderr, each cut to about 64 KiB. Default timeout 30 s, at most 10 minutes: past it the " +
-			"command is killed. With detached it starts and answers its commandId at once, with no time limit: for servers " +
-			"and long jobs, or when your MCP client gives up on a call sooner than the command takes. Then wait for it " +
-			"with command_get.",
+			"command is killed. With detached it starts and answers its commandId at once, for when your MCP client " +
+			"gives up on a call sooner than the command takes; then wait for it with command_get. A detached command has " +
+			"no timeoutMs, but for now a host still ends it after about 2 minutes on a microVM (30 s on an isolate).",
 		inputSchema: schema(
 			{
 				sandboxId,
@@ -454,7 +455,8 @@ const TOOLS: readonly Tool[] = [
 				},
 				detached: {
 					type: "boolean",
-					description: "Start it and answer at once; it runs until it ends or command_kill ends it.",
+					description:
+						"Start it and answer its commandId at once; for now a host still ends it after about 2 minutes on a microVM (30 s on an isolate).",
 				},
 				env: strings("Environment variables for this command."),
 			},
@@ -464,7 +466,7 @@ const TOOLS: readonly Tool[] = [
 		async call(args, { client, signal }) {
 			const detached = optionalBoolean(args, "detached") === true;
 			if (detached && args.timeoutMs !== undefined) {
-				throw new ArgumentError("a detached command has no timeout: leave out timeoutMs, and end it with command_kill");
+				throw new ArgumentError("a detached command takes no timeoutMs: leave it out");
 			}
 			const command = await client.runCommand(
 				text(args, "sandboxId"),
@@ -478,10 +480,7 @@ const TOOLS: readonly Tool[] = [
 				{ signal },
 			);
 			if (!detached || command.state !== "running") return commandResult(command);
-			return json(
-				{ commandId: command.id, state: command.state },
-				`Started ${command.id}; it runs until it ends or is killed. ${pickUp(command)}`,
-			);
+			return json({ commandId: command.id, state: command.state }, `Started ${command.id}. ${pickUp(command)}`);
 		},
 	},
 	{
@@ -555,7 +554,9 @@ const TOOLS: readonly Tool[] = [
 	},
 	{
 		name: "command_kill",
-		description: "End a running command, such as a detached server. One that has ended is answered as it is.",
+		description:
+			"Mark a running command killed. For now its process may keep running on a host: to be sure, end it with " +
+			"sandbox_exec too, such as pkill -f. One that has ended is answered as it is.",
 		inputSchema: schema({ sandboxId, commandId }, ["sandboxId", "commandId"]),
 		annotations: { title: "Kill a command", readOnlyHint: false, destructiveHint: false, idempotentHint: true },
 		async call(args, { client, signal }) {

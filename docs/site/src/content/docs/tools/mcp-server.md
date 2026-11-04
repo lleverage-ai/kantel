@@ -86,7 +86,7 @@ pi doesn't take MCP servers. It uses the `kantel` command through its shell inst
 | `sandbox_fork` | Copies of a sandbox, `count` at a time |
 | `sandbox_delete` | Delete one for good. An `agent` key isn't allowed to |
 | `sandbox_exec` | Run a command line and wait for it: its exit code, stdout and stderr, each cut to about 64 KiB. With `detached`, start it and answer its ID at once |
-| `command_get`, `command_list`, `command_kill` | A command's state and output, waiting up to `waitMs` for it to end; a sandbox's commands, a page at a time with `cursor`; end one |
+| `command_get`, `command_list`, `command_kill` | A command's state and output, waiting up to `waitMs` for it to end; a sandbox's commands, a page at a time with `cursor`; mark one killed |
 | `file_read`, `file_write`, `file_list` | A sandbox's files, up to 1 MiB each, as text or base64 |
 | `port_expose` | An HTTPS URL for a port in the sandbox |
 | `snapshot_save`, `snapshot_list` | Save a sandbox's state under a name, and list saved snapshots or one sandbox's history |
@@ -100,7 +100,12 @@ When Kantel refuses a call, such as `sandbox_delete` with an `agent` key or `bro
 
 While a call waits, the server sends the client a progress notification every 15 seconds if the request asked for them with a progress token. Claude Code counts these against its idle timeout, but not its tool timeout. When the client cancels a call, the server stops waiting and sends no answer. What it started carries on: a command runs to its own timeout.
 
-For a server, or a job that might outlast the client's tool timeout, the agent runs `sandbox_exec` with `detached`. It answers the command's ID at once, and the command runs until it ends or `command_kill` ends it. `command_get` with `waitMs` then waits up to that long for it to end, and answers its exit code and output. If it's still running, the answer says so and tells the agent to call `command_get` again. `command_list` finds a command whose call the client gave up on.
+For a command that might outlast the client's tool timeout, the agent runs `sandbox_exec` with `detached`, which answers the command's ID at once. `command_get` with `waitMs` then waits up to that long for it to end, and answers its exit code and output. If it's still running, the answer says so and tells the agent to call `command_get` again. `command_list` finds a command whose call the client gave up on.
+
+For now, two limits apply on a Kantel host:
+
+- A detached command has no `timeoutMs`, but the host still ends it after about 2 minutes on a microVM, or 30 seconds on an isolate. A longer job runs without `detached`, with a `timeoutMs` of up to 10 minutes, and needs the client's tool timeout raised to match.
+- `command_kill` marks the command killed, but its process may keep running. To be sure it has stopped, end it with `sandbox_exec` too, such as `pkill -f`.
 
 ## Check it by hand
 

@@ -422,7 +422,11 @@ describe("the MCP server", () => {
 			),
 		);
 		expect(both.isError).toBe(true);
-		expect(both.content[0]?.text).toContain("no timeout");
+		expect(both.content[0]?.text).toContain("takes no timeoutMs");
+		// What a host does today: a detached command is still ended, and a kill may not stop its process.
+		const described = new Map(TOOL_DEFINITIONS.map((tool) => [tool.name, tool.description]));
+		expect(described.get("sandbox_exec")).toContain("about 2 minutes on a microVM (30 s on an isolate)");
+		expect(described.get("command_kill")).toContain("its process may keep running");
 	});
 
 	it("gets a command, waiting for it to end with waitMs", async () => {
@@ -502,7 +506,7 @@ describe("the MCP server", () => {
 			),
 		);
 		expect(killed.structuredContent).toMatchObject({ state: "killed" });
-		expect(killed.content[0]?.text).toContain("was killed");
+		expect(killed.content[0]?.text).toContain("marked killed, but its process may still run");
 		expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
 			"GET /v1/sandboxes/sbx_mcp1/commands",
 			"DELETE /v1/sandboxes/sbx_mcp1/commands/cmd_long",
