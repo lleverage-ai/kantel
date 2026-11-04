@@ -314,6 +314,20 @@ func (m *Manager) PinBases() error {
 	return nil
 }
 
+// PinBasesUnder is PinBases for the tier's state under root (its Config.Root) without a Manager, for a host whose
+// microVM tier didn't start this time (turned off, or KVM or an image missing): what it saved before the images were
+// versioned still names rootfs (its Config.Rootfs), and would follow an update to whatever is current when it starts
+// again. A pass that fails is said, so the update or prune doesn't go ahead. Nothing remembers a success: it is run
+// before each, and finds nothing left to pin after the first. With no Manager, nothing makes or moves a reference
+// beside it.
+func PinBasesUnder(root, rootfs string) error {
+	m := &Manager{cfg: Config{Root: root, Rootfs: rootfs, PinBase: true}}
+	if err := m.pinBasesLocked(); err != nil {
+		return fmt.Errorf("pinning what the microVM tier (not started) made before its images were versioned: %w", err)
+	}
+	return nil
+}
+
 func (m *Manager) pinBasesLocked() error {
 	base := m.baseRootfs()
 	if !m.cfg.PinBase || base == m.cfg.Rootfs {

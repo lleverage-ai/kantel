@@ -243,8 +243,60 @@ func TestAPruneKeepsTheBasesOfAMicroVMTierThatDidNotStart(t *testing.T) {
 	if !slices.Equal(removed, []string{"e"}) {
 		t.Fatalf("removed %v, want [e]", removed)
 	}
-	if tier.locked || tier.unlocks != 2 {
+	// The unreadable one stopped the first prune at pinning, before any walk: only the second took the lock.
+	if tier.locked || tier.unlocks != 1 {
 		t.Fatalf("still locked %v, unlocked %d times", tier.locked, tier.unlocks)
+	}
+}
+
+// An update or prune on a host whose microVM tier didn't start pins what that tier made before the images were
+// versioned first, as a running tier's would be, and doesn't go ahead while one of its references can't be read.
+func TestAnUpdateWaitsForAMicroVMTierThatDidNotStartToBePinned(t *testing.T) {
+	h := newLifecycleHost(t, newLifecycleTier())
+	store := images.Store{Dir: filepath.Join(h.cfg.Root, "images")}
+	first := time.Now().Add(-time.Hour)
+	for i, v := range []string{"a", "b", "c"} {
+		dir := filepath.Join(store.Dir, "v", v)
+		writeFile(t, filepath.Join(dir, "manifest.json"), "{}")
+		writeFile(t, filepath.Join(dir, "sandbox.ext4"), "x")
+		at := first.Add(time.Duration(i) * time.Minute)
+		if err := os.Chtimes(dir, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Activate("c"); err != nil {
+		t.Fatal(err)
+	}
+	h.cfg.SandboxImage = filepath.Join(store.Dir, "current", "sandbox.ext4")
+	// A stopped sandbox from before the images were versioned: it names the sandbox image itself.
+	vm := filepath.Join(h.cfg.Root, "microvm", "sandboxes", "sbx_1", "vm")
+	if err := os.MkdirAll(vm, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(h.cfg.SandboxImage, filepath.Join(vm, "rootfs.ext4")); err != nil {
+		t.Fatal(err)
+	}
+	bad := filepath.Join(h.cfg.Root, "microvm", "snapshots", "snap_2", "meta.json")
+	writeFile(t, bad, "{not json")
+	h.tiers = map[string]Tier{"isolate": &baseTier{inUse: map[string]bool{}}}
+	h.order = []string{"isolate"}
+	h.patching.updater = &images.Updater{Store: store, Log: h.log}
+
+	if err := h.checkImages(context.Background(), h.patching.updater, proto.ImageChannel{Version: "d"}); err == nil || !strings.Contains(err.Error(), "snap_2") {
+		t.Fatalf("an update went ahead with an unreadable reference of the stopped tier's: %v", err)
+	}
+	if removed := h.pruneImages(); len(removed) != 0 {
+		t.Fatalf("a prune went ahead with an unreadable reference of the stopped tier's: removed %v", removed)
+	}
+	if err := os.Remove(bad); err != nil {
+		t.Fatal(err)
+	}
+	removed := h.pruneImages()
+	if !slices.Equal(removed, []string{"a"}) {
+		t.Fatalf("removed %v, want [a]", removed)
+	}
+	if got, _ := os.Readlink(filepath.Join(vm, "rootfs.ext4")); got != filepath.Join(store.Dir, "v", "c", "sandbox.ext4") {
+		t.Fatalf("the stopped tier's legacy sandbox links %q, want the version it was made on", got)
 	}
 }
 

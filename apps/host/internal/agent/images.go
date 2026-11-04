@@ -91,8 +91,18 @@ func (h *Host) pinBases() error {
 			}
 		}
 	}
+	// A microVM tier that didn't start this time still has what it saved: what names the sandbox image itself is pinned
+	// too, and a reference it can't read stops the update or prune, as for a running tier.
+	if _, ok := h.tiers[microvm.Tier]; !ok {
+		if err := microvm.PinBasesUnder(h.microvmRoot(), h.cfg.SandboxImage); err != nil {
+			errs = append(errs, err)
+		}
+	}
 	return errors.Join(errs...)
 }
+
+// microvmRoot is where the microVM tier keeps its sandboxes, snapshots and templates, whether or not it started.
+func (h *Host) microvmRoot() string { return filepath.Join(h.cfg.Root, "microvm") }
 
 // configuredVersions are the store versions the host config's image and kernel paths resolve to: one pinned by path
 // to an older version's file is in use for as long as the config names it (the defaults, through current, are the
@@ -353,7 +363,7 @@ func (h *Host) pruneImages() []string {
 		// A microVM tier that didn't start this time (turned off, or KVM or an image missing) still has what it saved: its
 		// sandboxes, snapshots and templates keep their versions for when it starts again.
 		if _, ok := h.tiers[microvm.Tier]; !ok {
-			bases, err := microvm.BasesUnder(filepath.Join(h.cfg.Root, "microvm"))
+			bases, err := microvm.BasesUnder(h.microvmRoot())
 			errs = append(errs, err)
 			for v := range bases {
 				used[v] = true
