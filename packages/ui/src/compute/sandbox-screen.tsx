@@ -29,6 +29,24 @@ export const embedUrl = (access: SandboxAccess, view: ScreenView): string | unde
 export const popOutUrl = (access: SandboxAccess, view: ScreenView): string =>
 	view === "desktop" ? access.desktopUrl : view === "watch" ? access.desktopViewUrl : access.browserUrl;
 
+/**
+ * Opens `view` in a tab of its own. Call it from a click: the tab opens at once, while the click allows it, and goes
+ * to the screen once fresh access is read (or closes if that fails). With no `fresh`, it goes straight to `ready`'s.
+ */
+export function popOut(view: ScreenView, ready: SandboxAccess | undefined, fresh?: () => Promise<SandboxAccess>) {
+	if (fresh === undefined) {
+		if (ready !== undefined) window.open(popOutUrl(ready, view), "_blank", "noopener");
+		return;
+	}
+	const tab = window.open("about:blank", "_blank");
+	if (tab === null) return;
+	tab.opener = null;
+	fresh().then(
+		(access) => tab.location.replace(popOutUrl(access, view)),
+		() => tab.close(),
+	);
+}
+
 /** Tracks an element's size, for scaling what's inside it. */
 function useSize<T extends HTMLElement>(): [RefObject<T | null>, { width: number; height: number }] {
 	const ref = useRef<T>(null);
@@ -259,19 +277,7 @@ export function SandboxViewer({
 						icon={<ExternalLinkIcon size="sm" />}
 						disabled={ready === undefined}
 						onClick={() => {
-							if (ready === undefined) return;
-							if (freshAccess === undefined) {
-								window.open(popOutUrl(ready, view), "_blank", "noopener");
-								return;
-							}
-							// The tab opens now, while the click allows it, and goes to the screen once its access is read.
-							const tab = window.open("about:blank", "_blank");
-							if (tab === null) return;
-							tab.opener = null;
-							freshAccess().then(
-								(fresh) => tab.location.replace(popOutUrl(fresh, view)),
-								() => tab.close(),
-							);
+							if (ready !== undefined) popOut(view, ready, freshAccess);
 						}}
 					/>
 				</div>

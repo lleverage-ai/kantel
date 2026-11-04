@@ -2,7 +2,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { Sandbox, SandboxState } from "./compute-model.ts";
-import { sandboxTimeline } from "./sandbox-logs.tsx";
+import { outputUnavailable, sandboxTimeline } from "./sandbox-logs.tsx";
+import { filesShown, type SandboxTab, sandboxViewShown } from "./sandbox-page.tsx";
 import { QUICK_SANDBOX, sandboxesShown, showsCpu } from "./sandboxes-page.tsx";
 import { SettingsFrame } from "./settings-nav.tsx";
 
@@ -57,6 +58,53 @@ describe("a sandbox's logs", () => {
 		expect(made({ forkedFrom: "sbx_parent" })).toBe("Forked from sbx_parent");
 		expect(made({ environment: dev })).toBe("Started from dev");
 		expect(made({})).toBe("Created");
+	});
+
+	it("says a failed command's output isn't available only for an end-to-end sandbox's failure with none", () => {
+		const failedBare = { id: "c1", command: "make", startedAt: 1, exitCode: 2, by: "" };
+		const entries = (command: typeof failedBare & { output?: string }) =>
+			sandboxTimeline(box("api", "running"), [command], []);
+		expect(outputUnavailable(entries(failedBare), true)).toBe(true);
+		// The hosted console reads output, and says nothing.
+		expect(outputUnavailable(entries(failedBare), false)).toBe(false);
+		expect(outputUnavailable(entries({ ...failedBare, output: "error" }), true)).toBe(false);
+		expect(outputUnavailable(entries({ ...failedBare, exitCode: 0 }), true)).toBe(false);
+	});
+});
+
+describe("a sandbox's page", () => {
+	const tabs: readonly SandboxTab[] = ["overview", "logs", "snapshots", "files"];
+
+	it("shows Browser and Desktop in the console, and on Overview where they open in a tab of their own", () => {
+		const running = { inTab: false, windows: true, known: true, tabs };
+		for (const screen of ["desktop", "watch", "browser"] as const) {
+			expect(sandboxViewShown(screen, running)).toBe(screen);
+			// kantel console can't frame them: an address for one shows Overview, and they open in a tab.
+			expect(sandboxViewShown(screen, { ...running, inTab: true })).toBe("overview");
+			// Nothing to show once it's known to have none.
+			expect(sandboxViewShown(screen, { ...running, windows: false })).toBe("overview");
+			expect(sandboxViewShown(screen, { ...running, windows: false, known: false })).toBe(screen);
+		}
+		expect(sandboxViewShown("logs", running)).toBe("logs");
+		expect(sandboxViewShown("egress", running)).toBe("overview");
+	});
+
+	it("reads no live files until it knows they aren't end to end, and says so for one that is", () => {
+		const source = { files: { list: async () => [], read: async () => undefined } };
+		const running = { state: "running" as const };
+		const snapshot = { id: "snap_1", takenAt: 0 };
+		const yes = { status: "ready", value: true } as const;
+		const no = { status: "ready", value: false } as const;
+		// Non-E2E, on the gateway's console or kantel console: its files, as ever.
+		expect(filesShown(running, source, no)).toBe("live");
+		// While the console asks (the gateway's console may read the chain), nothing is read.
+		expect(filesShown(running, source, { status: "loading" })).toBe("checking");
+		expect(filesShown(running, source, { status: "error", error: new Error("no chain") })).toBe("unchecked");
+		expect(filesShown(running, source, yes)).toBe("end-to-end");
+		// Stopped, its latest snapshot as before.
+		expect(filesShown({ ...running, state: "stopped", snapshot }, source, yes)).toBe("snapshot");
+		expect(filesShown({ ...running, state: "stopped" }, source, no)).toBe("none");
+		expect(filesShown(running, {}, no)).toBe("none");
 	});
 });
 

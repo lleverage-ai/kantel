@@ -385,6 +385,10 @@ function sandboxesSource(context: Context): SandboxesSource {
 	return {
 		// The backend decides what each size is, and the API doesn't list them.
 		sizeFigures: false,
+		// `kantel console`'s page frames nothing from the gateway, so Browser and Desktop open in tabs of their own.
+		screens: context.local === undefined ? "console" : "tab",
+		// End to end, the host refuses the gateway's file reads, and the history it keeps carries no output yet.
+		endToEnd: async (id) => (await endToEndHost(context, id)) !== undefined,
 		list: async (accountId) => {
 			const sandboxes = await allPages((cursor) =>
 				api.listSandboxes({ account: accountId, all: true, ...after(cursor) }),
@@ -446,26 +450,9 @@ function sandboxesSource(context: Context): SandboxesSource {
 			};
 		},
 		history: async (id) => {
-			// End to end, the host keeps the history and the gateway has none of it: `kantel console` reads it there, or
-			// this browser does over its own session once it is a device in the chain.
-			const { local, browser } = context;
-			let account = context.sandboxAccounts.get(id);
-			if (account === undefined && (local !== undefined || browser !== undefined)) {
-				account = (await api.getSandbox(id)).accountId;
-				context.sandboxAccounts.set(id, account);
-			}
-			if (local !== undefined && account !== undefined && local.mode(account) !== "off") {
-				return hostHistory((params) => local.call<HostCommandPage>(id, "sandbox.history", params));
-			}
-			if (browser !== undefined && account !== undefined) {
-				// Where this browser trusts the space's chain, only the chain as it verifies from there decides: a gateway that
-				// answers no chain, or one that goes back on it, throws rather than reading as off. Where it trusts none yet,
-				// the gateway's word is all there is, and a space on E2E then gets the session's refusal to set it up.
-				const mode = (await browser.mode(account)) ?? (await chainMode(context, account));
-				if (mode !== "off") {
-					return hostHistory((params) => browser.call<HostCommandPage>(id, "sandbox.history", params));
-				}
-			}
+			// End to end, the host keeps the history and the gateway has none of it.
+			const host = await endToEndHost(context, id);
+			if (host !== undefined) return hostHistory((params) => host.call<HostCommandPage>(id, "sandbox.history", params));
 			return (await allPages((cursor) => api.listCommands(id, after(cursor)))).map(commandOf);
 		},
 		get: async (id) => {
@@ -500,6 +487,33 @@ function sandboxesSource(context: Context): SandboxesSource {
 			},
 		},
 	};
+}
+
+/**
+ * How this console reaches an end-to-end sandbox's host, or undefined for a sandbox it reads through the gateway (its
+ * account has E2E off, or this console has no keys). `kantel console` reaches it through the CLI's device; the gateway's
+ * console through this browser's own, once it's a device in the chain.
+ */
+async function endToEndHost(
+	context: Context,
+	id: string,
+): Promise<{ call<T>(sandboxId: string, method: string, params?: object): Promise<T> } | undefined> {
+	const { local, browser } = context;
+	if (local === undefined && browser === undefined) return undefined;
+	let account = context.sandboxAccounts.get(id);
+	if (account === undefined) {
+		account = (await context.api.getSandbox(id)).accountId;
+		context.sandboxAccounts.set(id, account);
+	}
+	if (local !== undefined && local.mode(account) !== "off") return local;
+	if (browser !== undefined) {
+		// Where this browser trusts the space's chain, only the chain as it verifies from there decides: a gateway that
+		// answers no chain, or one that goes back on it, throws rather than reading as off. Where it trusts none yet,
+		// the gateway's word is all there is, and a space on E2E then gets the session's refusal to set it up.
+		const mode = (await browser.mode(account)) ?? (await chainMode(context, account));
+		if (mode !== "off") return browser;
+	}
+	return undefined;
 }
 
 /** Every page of a sandbox's history its host keeps, by its cursor; the list shows no output, so none is carried. */

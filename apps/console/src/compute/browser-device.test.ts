@@ -130,6 +130,10 @@ describe("the hosted console's browser device", () => {
 		if (browser === undefined) throw new Error("The console offered no browser device");
 		expect(await source.e2e?.mode(s.org.id)).toBe("on");
 		await source.sandboxes.list(s.org.id);
+		// The sandbox page frames its screens as ever, but says its files and output aren't available end to end yet,
+		// rather than asking the gateway for them.
+		expect(source.sandboxes.screens).toBe("console");
+		expect(await source.sandboxes.endToEnd?.(s.sandbox.id)).toBe(true);
 
 		// Until it trusts the genesis Bob was given, and an admin adds it, it reads nothing.
 		expect(await browser.standing(s.org.id)).toEqual({ kind: "unpinned" });
@@ -370,6 +374,8 @@ describe("the hosted console's browser device", () => {
 		for (const [what, rewrite, refusal] of forged) {
 			forge = rewrite;
 			await expect(source.sandboxes.history(s.sandbox.id), what).rejects.toThrow(refusal);
+			// Nor does the sandbox page take it as off and read its files through the gateway.
+			await expect(source.sandboxes.endToEnd?.(s.sandbox.id), what).rejects.toThrow(refusal);
 			expect(askedGateway, what).toEqual([]);
 		}
 
@@ -378,6 +384,8 @@ describe("the hosted console's browser device", () => {
 		await s.append({ type: "mode", body: { mode: "off" } });
 		await source.sandboxes.history(s.sandbox.id);
 		expect(askedGateway).toEqual([`/v1/sandboxes/${s.sandbox.id}/commands`]);
+		// Off, its page reads files and output through the gateway as for any other sandbox.
+		expect(await source.sandboxes.endToEnd?.(s.sandbox.id)).toBe(false);
 	});
 
 	it("keeps one set of keys when tabs make them at once, and every tab shows that set", async () => {

@@ -12,7 +12,7 @@ import { Button, buttonClass, buttonLabelClass } from "../primitives/button.tsx"
 import { CopyButton } from "../primitives/controls.tsx";
 import { compactAge } from "../primitives/format.ts";
 import { ClockIcon, EyeIcon, GlobeIcon, StopIcon } from "../primitives/icons.tsx";
-import { useLoad, useReloadOn } from "../primitives/load.ts";
+import { type Loaded, useLoad, useReloadOn } from "../primitives/load.ts";
 import { DesktopIcon, EllipsisIcon, EnvironmentIcon, PlayIcon, ReconnectIcon } from "../primitives/lucide.tsx";
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
 import { PageTabs } from "../primitives/page-tabs.tsx";
@@ -40,7 +40,7 @@ import { computePage, messageOf, SectionHeading, Sparkline } from "./parts.tsx";
 import { type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
 import { SandboxLogs } from "./sandbox-logs.tsx";
 import { SandboxPorts } from "./sandbox-ports.tsx";
-import { embedUrl, SandboxViewer, ScreenPreview, type ScreenView } from "./sandbox-screen.tsx";
+import { embedUrl, popOut, SandboxViewer, ScreenPreview, type ScreenView } from "./sandbox-screen.tsx";
 import { showsCpu } from "./sandboxes-page.tsx";
 import { SnapshotFiles } from "./snapshot-files.tsx";
 import { agoText, SandboxHistory } from "./snapshots-page.tsx";
@@ -64,6 +64,18 @@ export const SANDBOX_VIEWS: readonly SandboxView[] = [
 
 const isScreen = (view: SandboxView): view is ScreenView =>
 	view === "desktop" || view === "watch" || view === "browser";
+
+/**
+ * The view the page shows for the one asked for. A screen goes to Overview where it opens in a tab of its own instead
+ * (`inTab`) or has nothing to show (a known sandbox without one: stopped, or an isolate), as does a tab it hasn't.
+ */
+export function sandboxViewShown(
+	asked: SandboxView,
+	{ inTab, windows, known, tabs }: { inTab: boolean; windows: boolean; known: boolean; tabs: readonly SandboxTab[] },
+): SandboxView {
+	if (isScreen(asked)) return inTab || (!windows && known) ? "overview" : asked;
+	return tabs.includes(asked) ? asked : "overview";
+}
 
 /** Access older than this is read again before a screen opens: its tokens last ten minutes. */
 const ACCESS_FRESH_MS = 5 * 60_000;
@@ -211,14 +223,17 @@ export function SandboxPage({
 		"snapshots",
 		"files",
 	];
-	// A screen with nothing to show (stopped, or an isolate) goes to Overview, as does a tab the page hasn't.
-	const view: SandboxView =
-		(isScreen(asked) && !windows && sandbox !== undefined) || (!isScreen(asked) && !tabsShown.includes(asked))
-			? "overview"
-			: asked;
+	// Browser and Desktop each in a tab of their own, where the page can't frame them (`kantel console`).
+	const inTab = source.screens === "tab";
+	const view = sandboxViewShown(asked, { inTab, windows, known: sandbox !== undefined, tabs: tabsShown });
 	// A screen, or Overview's previews, mount new connections: old access is read again first.
 	const opensScreens = (next: SandboxView) => isScreen(next) || next === "overview";
 	const go = (next: SandboxView) => {
+		if (inTab && isScreen(next)) {
+			// The tab opens now and goes to the screen once fresh access is read.
+			popOut(next, undefined, freshAccess);
+			return;
+		}
 		if (opensScreens(next) && next !== view && accessStale()) readAccess();
 		if (navigate === undefined) setOwn(next);
 		else navigate(href(next));
@@ -228,6 +243,12 @@ export function SandboxPage({
 	useEffect(() => {
 		if (opensScreens(view) && accessStale()) readAccess();
 	}, [view]);
+
+	// Whether its files and output can be read here, or only end to end; the gateway's console may ask its chain.
+	const e2e = useLoad(
+		async () => (source.endToEnd === undefined ? false : source.endToEnd(sandboxId)),
+		[source, sandboxId],
+	);
 
 	const counts = useLoad(async () => {
 		const [history, log] = await Promise.all([
@@ -493,7 +514,14 @@ export function SandboxPage({
 					usageKey={state}
 				/>
 			) : view === "logs" ? (
-				<SandboxLogs source={source} snapshots={snapshots} sandbox={sandbox} now={now} narrow={narrow} />
+				<SandboxLogs
+					source={source}
+					snapshots={snapshots}
+					sandbox={sandbox}
+					now={now}
+					narrow={narrow}
+					endToEnd={e2e.state.status === "ready" && e2e.state.value}
+				/>
 			) : view === "egress" && egress !== undefined ? (
 				<EgressPage
 					source={egress}
@@ -505,7 +533,14 @@ export function SandboxPage({
 			) : view === "snapshots" ? (
 				<SnapshotsTab source={snapshots} sandbox={sandbox} now={now} onNotice={setNotice} />
 			) : (
-				<FilesTab source={source} snapshots={snapshots} sandbox={sandbox} now={now} />
+				<FilesTab
+					source={source}
+					snapshots={snapshots}
+					sandbox={sandbox}
+					now={now}
+					endToEnd={e2e.state}
+					onRecheck={e2e.reload}
+				/>
 			)}
 		</div>
 	);
@@ -546,6 +581,8 @@ function Overview({
 	usageKey: unknown;
 }) {
 	const ready = access !== undefined && access !== "loading" && !(access instanceof Error) ? access : undefined;
+	// Where the page can't frame a screen, its tile is the drawing and opens the screen in a tab.
+	const framed = ready !== undefined && source.screens !== "tab" ? ready : undefined;
 	const spec = sandbox.resources ?? sizeSpec(sandbox.size);
 	const { ports, exposePort, hidePort } = source;
 	const portsShown = ports !== undefined && exposePort !== undefined && hidePort !== undefined;
@@ -565,10 +602,10 @@ function Overview({
 				<ScreenPreview
 					kind={kind}
 					label={kind === "desktop" ? `${sandbox.name}'s desktop` : `${sandbox.name}'s browser`}
-					{...(ready === undefined
+					{...(framed === undefined
 						? {}
 						: (() => {
-								const url = embedUrl(ready, kind === "desktop" ? "watch" : "browser");
+								const url = embedUrl(framed, kind === "desktop" ? "watch" : "browser");
 								return url === undefined ? {} : { url };
 							})())}
 				/>
@@ -819,22 +856,60 @@ function SnapshotsTab({
 	);
 }
 
+/**
+ * What the Files tab shows: what's in it now while it runs, or one line where its files can't be read end to end yet;
+ * its latest snapshot's files while it's stopped, or nothing before it has one.
+ */
+export function filesShown(
+	sandbox: Pick<Sandbox, "state" | "snapshot">,
+	source: Pick<SandboxesSource, "files">,
+	endToEnd: Loaded<boolean>,
+): "live" | "checking" | "unchecked" | "end-to-end" | "snapshot" | "none" {
+	if (sandbox.state === "running" && source.files !== undefined) {
+		// Nothing is read until it's known whether the gateway may read them.
+		if (endToEnd.status === "loading") return "checking";
+		if (endToEnd.status === "error") return "unchecked";
+		return endToEnd.value ? "end-to-end" : "live";
+	}
+	return sandbox.snapshot === undefined ? "none" : "snapshot";
+}
+
 /** What's in it now, while it runs; its latest snapshot's files while it's stopped. */
 function FilesTab({
 	source,
 	snapshots,
 	sandbox,
 	now,
+	endToEnd,
+	onRecheck,
 }: {
 	source: SandboxesSource;
 	snapshots: SnapshotsSource;
 	sandbox: Sandbox;
 	now: number;
+	endToEnd: Loaded<boolean>;
+	onRecheck: () => void;
 }) {
 	const [path, setPath] = useState("");
-	const live = sandbox.state === "running" && source.files !== undefined;
+	const shown = filesShown(sandbox, source, endToEnd);
 	const files = source.files;
-	if (live && files !== undefined) {
+	if (shown === "checking") return <Skeleton lines={4} />;
+	if (shown === "unchecked" && endToEnd.status === "error") {
+		return (
+			<Notice
+				level="error"
+				action={
+					<Button size="sm" onClick={onRecheck}>
+						Try again
+					</Button>
+				}
+			>
+				{messageOf(endToEnd.error, "Kantel couldn't check how to read its files.")}
+			</Notice>
+		);
+	}
+	if (shown === "end-to-end") return <p className="m-0 text-sm text-muted">Files aren't available end to end yet.</p>;
+	if (shown === "live" && files !== undefined) {
 		return (
 			<div className="flex min-w-0 flex-col gap-4">
 				<SnapshotFiles

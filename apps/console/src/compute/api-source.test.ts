@@ -160,6 +160,10 @@ describe("sandboxes", () => {
 		await api.service.idle();
 		expect(await plain.e2e?.mode(accountId)).toBe("off");
 		expect(plain.e2e?.served).toBe("gateway");
+		// The gateway's console frames Browser and Desktop on the page, and reads files and output as ever.
+		expect(plain.sandboxes.screens).toBe("console");
+		await plain.sandboxes.list(accountId);
+		expect(await plain.sandboxes.endToEnd?.(made.id)).toBe(false);
 
 		const calls: { sandboxId: string; method: string; params: { before?: string } }[] = [];
 		// The host's history, newest first, in pages of one: a console that drops the cursor sees only the newest.
@@ -205,7 +209,13 @@ describe("sandboxes", () => {
 			...(local === undefined ? {} : { local }),
 		});
 		expect(source.e2e).toMatchObject({ served: "local", device: "Ada's laptop" });
+		// kantel console's page frames nothing from the gateway: Browser and Desktop open in tabs of their own.
+		expect(source.sandboxes.screens).toBe("tab");
+		// Its files and output can't be read end to end yet; the page says so. Opened straight from its address, the
+		// console reads which account it's in first.
+		expect(await source.sandboxes.endToEnd?.(made.id)).toBe(true);
 		await source.sandboxes.list(accountId);
+		expect(await source.sandboxes.endToEnd?.(made.id)).toBe(true);
 		expect(await source.sandboxes.history(made.id)).toEqual([
 			{ id: "c2", command: "make test", startedAt: 2000, durationMs: 100, by: "Ada's laptop" },
 			{ id: "c1", command: "make", startedAt: 1000, durationMs: 250, exitCode: 0, by: "Ada's laptop" },

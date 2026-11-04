@@ -252,6 +252,16 @@ export interface SandboxesSource {
 		/** A text file's content; undefined for a binary or a file too big to show. */
 		read(id: string, path: string): Promise<string | undefined>;
 	};
+	/**
+	 * Where Browser and Desktop open: on the sandbox's page ("console", when left out), or each in a tab of its own
+	 * ("tab") where the page can't frame them, as `kantel console`'s page can't.
+	 */
+	readonly screens?: "console" | "tab";
+	/**
+	 * True for a sandbox this console can't yet read files or command output from end to end: its Files tab and a failed
+	 * command say so, and its files aren't read until this answers. False, or absent, for the rest.
+	 */
+	endToEnd?(id: string): Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
