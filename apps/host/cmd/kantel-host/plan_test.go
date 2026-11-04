@@ -312,6 +312,10 @@ func TestInstallRefusesStrayArguments(t *testing.T) {
 			t.Errorf("%v: %v", stray, err)
 		}
 	}
+	// The token after the stray operand isn't read, and isn't shown either: it's still unused.
+	if err := runInstall(m.in, []string{"--no-start", "false", "--dry-run", "--url", "https://kantel.example.com", "--token", "kth_secret"}); err == nil || strings.Contains(err.Error(), "kth_secret") {
+		t.Errorf("the error shows the token: %v", err)
+	}
 	after := tree(t, m.dir)
 	for p, sum := range before {
 		if after[p] != sum {

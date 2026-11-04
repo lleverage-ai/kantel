@@ -91,7 +91,8 @@ func parseInstall(args []string) (installOptions, error) {
 	// install takes no operands. Go's flags stop at the first one, so anything after it (`--no-start false
 	// --dry-run`) would go unread: a dry run that was asked for must never become an install.
 	if fs.NArg() > 0 {
-		return installOptions{}, fmt.Errorf("install takes options only, but got %q, and nothing from there on was read: give a true or false flag its value with =, as in --no-start=false", strings.Join(fs.Args(), " "))
+		// Not echoed: what's left may hold the token, still unused.
+		return installOptions{}, errors.New("install takes options only, and stopped reading at an argument that isn't one (such as false after --no-start), so nothing from there on was read and nothing was done: give a true or false flag its value with =, as in --no-start=false")
 	}
 	return installOptions{
 		controlPlane: *controlPlane, token: *token, name: *name, images: *images, root: *root, configPath: *configPath,
