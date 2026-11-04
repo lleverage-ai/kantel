@@ -1351,3 +1351,36 @@ func TestCommandHistoryReadsEveryRecordItWrites(t *testing.T) {
 		t.Fatalf("kept %d", len(kept))
 	}
 }
+
+// Params that don't decode are refused before anything runs, whichever way the host would have run the command; and a
+// command run streamed for its tail goes with the device's own params, its env and user included.
+func TestCommandHistoryRefusesParamsThatDontDecode(t *testing.T) {
+	l := newCommandLog(t.TempDir())
+	ran := 0
+	run := func([]byte, func(proto.Event)) (any, error) { ran++; return proto.ExecResult{}, nil }
+	for _, enc := range []StreamEncoding{StreamText, StreamBase64} {
+		for _, bad := range []string{`{"command":"sleep 60","timeoutMs":"1000"}`, `{"command":"env","env":{"A":1}}`, `{"command":`} {
+			_, err := l.runLogged("sbx", HistoryEntry{}, []byte(bad), enc, run, func(proto.Event) {})
+			var pe *proto.Error
+			if !errors.As(err, &pe) || pe.Code != proto.ErrInvalid {
+				t.Fatalf("%s: %v", bad, err)
+			}
+		}
+	}
+	if ran != 0 || len(l.read("sbx")) != 0 {
+		t.Fatalf("ran %d, kept %d", ran, len(l.read("sbx")))
+	}
+	var got map[string]any
+	keep := func(params []byte, _ func(proto.Event)) (any, error) {
+		_ = json.Unmarshal(params, &got)
+		return proto.ExecResult{}, nil
+	}
+	params := []byte(`{"sandboxId":"sbx","command":"env","env":{"A":"1"},"user":"root","timeoutMs":5000}`)
+	if _, err := l.runLogged("sbx", HistoryEntry{}, params, StreamBase64, keep, func(proto.Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"sandboxId": "sbx", "command": "env", "env": map[string]any{"A": "1"}, "user": "root", "timeoutMs": float64(5000), "stream": true}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("ran with %v", got)
+	}
+}

@@ -310,8 +310,11 @@ func historyID() string {
 // device as the tier would have, with the first historyAnswer bytes. The exit code is kept only for a command that
 // finished: not for one that failed to run, nor a detached one, which has only started.
 func (l *commandLog) runLogged(sandboxID string, by HistoryEntry, params []byte, enc StreamEncoding, run func(params []byte, onEvent func(proto.Event)) (any, error), emit func(proto.Event)) (any, error) {
-	var p proto.ExecParams
-	_ = json.Unmarshal(params, &p)
+	// Params that don't decode are refused here, as the tier's call would: never run with what half-decoded.
+	p, err := decode[proto.ExecParams](params)
+	if err != nil {
+		return nil, err
+	}
 	e := by
 	e.ID, e.Cwd, e.User, e.Detached = historyID(), p.Cwd, p.User, p.Detached
 	var cut bool
@@ -326,8 +329,15 @@ func (l *commandLog) runLogged(sandboxID string, by HistoryEntry, params []byte,
 	var headOut, headErr outputHead
 	if quiet {
 		headOut.max, headErr.max = historyAnswer, historyAnswer
-		p.Stream = true
-		params, _ = json.Marshal(p)
+		// The device's own params with stream set, nothing else changed: not re-encoded from the struct.
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(params, &fields); err != nil {
+			return nil, invalid("bad params: %v", err)
+		}
+		fields["stream"] = json.RawMessage("true")
+		if params, err = json.Marshal(fields); err != nil {
+			return nil, err
+		}
 	}
 	result, err := run(params, func(ev proto.Event) {
 		if ev.Kind == "exec.output" {
