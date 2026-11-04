@@ -237,8 +237,8 @@ describe("email-code sign-in on the public origin", () => {
 		await close();
 	});
 
-	it("lets the person a compute invite was made for join with its code, and nobody else (#657)", async () => {
-		const { call, signIn, close } = await start({ KANTEL_ACCOUNT_HOSTS: "experimental" });
+	it("emails a compute invite with a link, which only the person it was made for can join with (#657)", async () => {
+		const { call, signIn, sent, close } = await start({ KANTEL_ACCOUNT_HOSTS: "experimental" });
 		const ada = await signIn("ada@example.test");
 		const ann = await signIn("ann@example.test");
 		const bob = await signIn("bob@example.test");
@@ -249,7 +249,13 @@ describe("email-code sign-in on the public origin", () => {
 			body: { email: "Ann@Example.test", role: "member" },
 		});
 		expect(invite.status).toBe(201);
-		const join = { body: { code: invite.body.code } };
+		expect(invite.body.emailed).toBe(true);
+		// Sent through the sign-in mail binding: the console's link, the code in its fragment.
+		const mail = sent.findLast((message) => message.to === "ann@example.test");
+		expect(mail?.subject).toBe("ada@example.test invited you to Acme on Kantel");
+		const link = /https:\S+/.exec(mail?.text ?? "")?.[0] ?? "";
+		expect(link).toBe(`${PUBLIC}/organisation#join=${invite.body.code}`);
+		const join = { body: { code: decodeURIComponent(new URL(link).hash.slice("#join=".length)) } };
 
 		const refused = await call(PUBLIC, "POST", "/v1/accounts/join", { token: bob, ...join });
 		expect(refused.status).toBe(403);
@@ -261,6 +267,29 @@ describe("email-code sign-in on the public origin", () => {
 		const joined = await call(PUBLIC, "POST", "/v1/accounts/join", { token: ann, ...join });
 		expect(joined.status).toBe(200);
 		expect(joined.body).toMatchObject({ id: org.body.id, role: "member" });
+		await close();
+	});
+
+	it("names the people in a compute organisation as they signed up, never by their user ID", async () => {
+		const { call, signIn, close } = await start({ KANTEL_ACCOUNT_HOSTS: "experimental" });
+		const ada = await signIn("ada@example.test");
+		const ann = await signIn("ann@example.test");
+		const org = await call(PUBLIC, "POST", "/v1/accounts", { token: ada, body: { name: "Acme" } });
+		const invite = await call(PUBLIC, "POST", `/v1/accounts/${org.body.id}/invites`, {
+			token: ada,
+			body: { email: "ann@example.test", role: "member" },
+		});
+		expect(
+			(await call(PUBLIC, "POST", "/v1/accounts/join", { token: ann, body: { code: invite.body.code } })).status,
+		).toBe(200);
+
+		const members = await call(PUBLIC, "GET", `/v1/accounts/${org.body.id}/members`, { token: ada });
+		expect(members.status).toBe(200);
+		// An email code's sign-up is named by the address.
+		expect((members.body.items as { name: string }[]).map((member) => member.name).sort()).toEqual([
+			"ada@example.test",
+			"ann@example.test",
+		]);
 		await close();
 	});
 });

@@ -46,7 +46,7 @@ import {
 	needsEgressPolicy,
 	type SandboxTier,
 } from "./protocol.ts";
-import { type Candidate, isRefusal, place, sizeOn } from "./scheduler.ts";
+import { type Candidate, isRefusal, makesCustomShapes, place, type Shape, sizeOn } from "./scheduler.ts";
 import type { HostRecord, HostStore, PlacementRecord } from "./store.ts";
 
 /** Whether a host reports enforcing egress grants and protected variables. */
@@ -146,8 +146,13 @@ export interface JoinTokenView {
 export interface CreateSandboxInput {
 	readonly sandboxId?: string;
 	readonly tier: SandboxTier;
-	/** Default `default` (microVMs); isolates have one size. */
+	/** A microVM's named size, as asked for before shapes. Default `default`; `shape` wins. */
 	readonly size?: string;
+	/**
+	 * A microVM's vCPUs and memory, or an isolate's memory (`vcpus` 0). A shape off the host's named sizes boots from
+	 * scratch; an isolate's memory is recorded on its host, not enforced.
+	 */
+	readonly shape?: Shape;
 	/**
 	 * The organisation or account; isolates of one owner share a VM. An account's own host takes only that
 	 * owner's sandboxes, so a sandbox with no owner never goes on one.
@@ -243,8 +248,6 @@ export interface HostsServiceOptions {
 	 * `curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url {url} --token {token}`.
 	 */
 	readonly joinCommand?: string;
-	/** Warm sandboxes wanted on every host, by `<tier>/<size>`. Default `{"microvm/default": 1}`. */
-	readonly pools?: { readonly [pool: string]: number };
 	/** The version hosts should run, and where they get it (`{version}`, `{os}`, `{arch}`). */
 	readonly desiredVersion?: string;
 	readonly updateUrl?: string;
@@ -393,6 +396,18 @@ function labelsOf(value: unknown): { [key: string]: string } {
 
 const SANDBOX_ID = /^[a-z0-9][a-z0-9_-]{2,62}$/;
 
+/** A shape as asked: whole vCPUs (0 for an isolate) and memory in MiB, at least 128. */
+function shapeIn(shape: Shape, tier: SandboxTier): Shape {
+	const { vcpus, memoryMiB } = shape;
+	if (!Number.isInteger(vcpus) || !Number.isInteger(memoryMiB) || memoryMiB < 128) {
+		throw new KantelError("invalid", "A shape is whole vCPUs and at least 128 MiB of memory");
+	}
+	if (tier === "microvm" ? vcpus < 1 : vcpus !== 0) {
+		throw new KantelError("invalid", tier === "microvm" ? "A microVM has at least 1 vCPU" : "An isolate has no vCPUs");
+	}
+	return { vcpus, memoryMiB };
+}
+
 /** A host's error as Kantel's: the codes line up where they can. */
 export function kantelErrorFromHost(error: unknown): unknown {
 	if (!(error instanceof HostCallError)) return error;
@@ -411,7 +426,6 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	const { store } = options;
 	const clock = options.clock ?? systemClock;
 	const log = options.log ?? ((message: string) => console.error(message));
-	const pools = options.pools ?? { "microvm/default": 1 };
 	let joinTokens: ExternalJoinTokens = store;
 	let compute: HostComputeLink | undefined;
 	/**
@@ -441,13 +455,14 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	const welcomeFor = (host: HostRecord): HostWelcome => ({
 		hostId: host.id,
 		heartbeatSeconds: options.heartbeatSeconds ?? 15,
-		pools: host.draining ? {} : pools,
+		// Hosts keep no warm pools; an older one that keeps some makes no more on this (see `endLegacyPools`).
+		pools: {},
 		...(host.draining ? { draining: true } : {}),
 		...(options.desiredVersion === undefined ? {} : { desiredVersion: options.desiredVersion }),
 		...(options.updateUrl === undefined ? {} : { updateUrl: options.updateUrl }),
 	});
 
-	const hello = async (hostId: string, message: HostHello): Promise<HostWelcome> => {
+	const hello = async (hostId: string, message: HostHello): Promise<void> => {
 		const host = await store.getHost(hostId);
 		if (host === undefined || host.revoked) throw new Error("This host is revoked");
 		const facts = parseHostFacts(message.facts);
@@ -458,7 +473,14 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			throw new Error("The hello's sandboxes aren't a list");
 		}
 		const now = clock.now();
-		await store.putHost({ ...host, facts: facts.value, capacity: capacity.value, lastSeenAt: now });
+		// Only what the host reports: what an operator set meanwhile (its name, labels, drain) stands.
+		const reported = await store.updateHost(hostId, (latest) => ({
+			...latest,
+			facts: facts.value,
+			capacity: capacity.value,
+			lastSeenAt: now,
+		}));
+		if (reported === undefined || reported.revoked) throw new Error("This host is revoked");
 		reserved.delete(hostId);
 		// Reconcile: what the host holds is the truth about state; a placement the host no longer has is lost.
 		// Go marshals an empty list as null (kantel-host 0.1.0-dev on a host with no sandboxes).
@@ -474,16 +496,53 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			log(`[hosts] host ${hostId} holds sandboxes Kantel didn't place: ${[...held.keys()].slice(0, 10).join(", ")}`);
 		}
 		log(`[hosts] host ${hostId} connected (${facts.value.version}, ${sandboxes.length} sandboxes)`);
-		return welcomeFor({ ...host, facts: facts.value });
+	};
+
+	/**
+	 * A welcome is the host as written once it is claimed, with a drain an operator set while it reconciled; one set
+	 * after this read reaches the hub's `rewelcome` (routed here, now it is claimed), which reads it again after this one.
+	 */
+	const welcomeNow = async (hostId: string): Promise<HostWelcome> => {
+		const latest = await store.getHost(hostId);
+		if (latest === undefined || latest.revoked) throw new Error("This host is revoked");
+		return welcomeFor(latest);
+	};
+
+	/** When each host still reporting warm machines was last told to keep none. */
+	const poolsEnded = new Map<string, number>();
+	/**
+	 * A host from before warm pools were removed that still reports warm machines is told to keep none, by the call it
+	 * knows, not only by its welcome: its pools may come from a welcome sent before this control plane, on a connection
+	 * still open. Once a minute at most, until it reports none. That kantel-host has no call that ends an idle warm VM:
+	 * told this, it makes no more, its next create of that size takes the one it has, and its update (a version that
+	 * clears its old pool directory on start) or restart ends the rest.
+	 */
+	const endLegacyPools = (hostId: string, reported: unknown) => {
+		const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
+		const warm = isRecord(reported) ? reported.warm : undefined;
+		const keeps = isRecord(warm) && Object.values(warm).some((count) => typeof count === "number" && count > 0);
+		if (!keeps) {
+			poolsEnded.delete(hostId);
+			return;
+		}
+		const at = clock.now();
+		if (at - (poolsEnded.get(hostId) ?? Number.NEGATIVE_INFINITY) < 60_000) return;
+		poolsEnded.set(hostId, at);
+		log(`[hosts] host ${hostId} still keeps warm machines; telling it to keep none`);
+		report(local.call(hostId, HostMethods.legacyPools, {}));
 	};
 
 	const cluster = options.cluster;
 	const local = createHostHub({
 		async onHello(hostId, message) {
-			const welcome = await hello(hostId, message);
+			await hello(hostId, message);
 			// Recorded before the welcome, so no replica routes elsewhere once the host takes calls here.
 			await cluster?.claim(hostId);
-			return welcome;
+			return welcomeNow(hostId);
+		},
+		// A change of settings is sent as read afresh, so an older one never lands after a newer.
+		welcomeNow(hostId) {
+			return welcomeNow(hostId);
 		},
 		onHeartbeat(hostId, reported) {
 			const parsed = parseHostCapacity(reported);
@@ -491,12 +550,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				log(`[hosts] host ${hostId} sent a heartbeat that isn't valid (${parsed.reason}); ignored`);
 				return;
 			}
+			endLegacyPools(hostId, reported);
 			const capacity = parsed.value;
 			reserved.delete(hostId);
 			report(
 				(async () => {
-					const host = await store.getHost(hostId);
-					if (host !== undefined) await store.putHost({ ...host, capacity, lastSeenAt: clock.now() });
+					await store.updateHost(hostId, (host) => ({ ...host, capacity, lastSeenAt: clock.now() }));
 				})(),
 			);
 		},
@@ -548,11 +607,11 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		},
 		onDisconnected(hostId) {
 			log(`[hosts] host ${hostId} disconnected`);
+			poolsEnded.delete(hostId);
 			cluster?.release(hostId);
 			report(
 				(async () => {
-					const host = await store.getHost(hostId);
-					if (host !== undefined) await store.putHost({ ...host, lastSeenAt: clock.now() });
+					await store.updateHost(hostId, (host) => ({ ...host, lastSeenAt: clock.now() }));
 				})(),
 			);
 		},
@@ -782,14 +841,18 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			) {
 				throw new KantelError("invalid", "A host's name is 1 to 100 characters");
 			}
-			const next: HostRecord = {
-				...host,
+			const labels = change.labels === undefined ? undefined : labelsOf(change.labels);
+			// On the host as stored now, so a report that lands meanwhile neither undoes this nor is undone by it.
+			const next = await store.updateHost(hostId, (latest) => ({
+				...latest,
 				...(change.name === undefined ? {} : { name: change.name }),
-				...(change.labels === undefined ? {} : { labels: labelsOf(change.labels) }),
+				...(labels === undefined ? {} : { labels }),
 				...(change.draining === undefined ? {} : { draining: change.draining === true }),
-			};
-			await store.putHost(next);
-			if (change.draining !== undefined && change.draining !== host.draining) hub.rewelcome(hostId, welcomeFor(next));
+			}));
+			if (next === undefined) throw new KantelError("not_found", "No such host");
+			if (next.revoked) throw new KantelError("conflict", "The host is revoked");
+			const redrained = change.draining !== undefined && change.draining !== host.draining;
+			if (redrained) hub.rewelcome(hostId, welcomeFor(next));
 			return view(next);
 		},
 		async revoke(hostId) {
@@ -805,7 +868,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				if (tier !== "microvm" && tier !== "isolate") throw new KantelError("invalid", "tier is microvm or isolate");
 				const sandboxId = input.sandboxId ?? shortId("sbx");
 				if (!SANDBOX_ID.test(sandboxId)) throw new KantelError("invalid", "Not a valid sandbox ID");
-				const sizeName = tier === "isolate" ? "isolate" : (input.size ?? "default");
+				const shape = input.shape === undefined ? undefined : shapeIn(input.shape, tier);
 				const only = input.hostIds === undefined ? undefined : new Set(input.hostIds);
 				if (input.from !== undefined && only?.size !== 1) {
 					throw new KantelError("invalid", "A sandbox made from a snapshot goes on the snapshot's host");
@@ -846,7 +909,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				const chosen = place(
 					{
 						tier,
-						size: sizeName,
+						...(input.size === undefined ? {} : { size: input.size }),
+						...(shape === undefined ? {} : { shape }),
 						...(input.owner === undefined ? {} : { owner: input.owner }),
 						...(input.labels === undefined ? {} : { labels: input.labels }),
 					},
@@ -877,7 +941,15 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 						{
 							sandboxId,
 							tier,
-							size: tier === "isolate" ? "" : chosen.size.name,
+							// A custom shape goes as its numbers (the host names it); a named size by its name.
+							size: tier === "isolate" || chosen.custom ? "" : chosen.size.name,
+							...(chosen.custom
+								? { vcpus: chosen.size.vcpus, memoryMiB: chosen.size.memoryMiB, diskGiB: chosen.size.diskGiB }
+								: {}),
+							// What an isolate asked for, recorded by a host that knows of it.
+							...(tier === "isolate" && shape !== undefined && makesCustomShapes(chosen.host)
+								? { memoryMiB: shape.memoryMiB }
+								: {}),
 							...(input.from === undefined ? {} : { from: input.from }),
 							...(input.owner === undefined ? {} : { owner: input.owner }),
 							...(input.env === undefined ? {} : { env: input.env }),

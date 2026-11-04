@@ -41,7 +41,6 @@ export class FakeHost {
 	closedWith: { code: number; reason: string } | undefined;
 	connection!: AcceptedHost;
 	freeMemoryMiB = 20_000;
-	warm: { [pool: string]: number } = {};
 	/** Every call's method and params, as sent. */
 	readonly calls: { readonly method: string; readonly params: { readonly [key: string]: unknown } }[] = [];
 	/** For a test: a call of a method it answers a promise for is answered once that settles (a slow host). */
@@ -98,7 +97,6 @@ export class FakeHost {
 					running: 0,
 					stopped: 0,
 					load1: 0.1,
-					warm: this.warm,
 				},
 			},
 		});

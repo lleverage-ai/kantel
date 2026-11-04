@@ -515,7 +515,10 @@ export function createHostCluster(options: HostClusterOptions): HostCluster {
 					});
 				},
 				rewelcome(hostId, welcome) {
-					if (local.connected(hostId)) return local.rewelcome(hostId, welcome);
+					// Here it is sent, or held for after the welcome of a hello still being answered (which `ownerOf`, naming
+					// another replica only, wouldn't reach); elsewhere, its owner sends it.
+					local.rewelcome(hostId, welcome);
+					if (local.connected(hostId)) return;
 					safely(
 						`welcoming host ${hostId} again`,
 						ownerOf(hostId).then((peer) => peer && transport.rewelcome(peer, hostId, welcome)),

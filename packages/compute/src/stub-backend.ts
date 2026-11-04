@@ -9,20 +9,22 @@
 import type { computeSchema } from "@kantel/api";
 import { KantelError } from "@kantel/contracts";
 import { Bash, InMemoryFs } from "just-bash";
-import type {
-	BackendCapabilities,
-	BackendFileEntry,
-	BackendHost,
-	BackendSize,
-	BootOptions,
-	ExecRequest,
-	ExecResult,
-	Placement,
-	SandboxBackend,
-	SandboxSpec,
-	SshGrant,
-	TakenSnapshot,
-	UsageSample,
+import {
+	type BackendCapabilities,
+	type BackendFileEntry,
+	type BackendHost,
+	type BackendShape,
+	type BackendSize,
+	type BootOptions,
+	CUSTOM_SHAPES_FEATURE,
+	type ExecRequest,
+	type ExecResult,
+	type Placement,
+	type SandboxBackend,
+	type SandboxSpec,
+	type SshGrant,
+	type TakenSnapshot,
+	type UsageSample,
 } from "./backend.ts";
 import { type BackendUsageReport, RAW_WINDOW_MS, USAGE_INTERVAL_MS } from "./usage-series.ts";
 import { baseName, HOME, randomId, randomSecret, sliceRange } from "./util.ts";
@@ -131,6 +133,8 @@ interface Machine {
 	readonly id: string;
 	readonly type: computeSchema.SandboxType;
 	size: computeSchema.SandboxSizeName | undefined;
+	/** A microVM's vCPUs and memory as asked for, off the sizes or on them. */
+	shape: BackendShape | undefined;
 	env: { readonly [name: string]: string };
 	/** The disk while it runs or is paused (its memory); absent while stopped. */
 	fs: InMemoryFs | undefined;
@@ -250,6 +254,9 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 		kvm: types.includes("microvm"),
 		nestedVirtualisation: false,
 		capacity: { vcpus: 64, memoryMb: 262_144, diskGb: 2048 },
+		// It enforces what its sandboxes get however they run, makes any shape, and keeps no warm machines.
+		features: ["egress-policy", CUSTOM_SHAPES_FEATURE],
+		sizes: SIZES,
 		labels: { site: "local" },
 	};
 
@@ -280,8 +287,18 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 		);
 	};
 	const placement = (machine: Machine): Placement => {
-		const size =
-			machine.type === "microvm" ? SIZES.find((entry) => entry.name === (machine.size ?? "default")) : undefined;
+		const named = SIZES.find((entry) => entry.name === (machine.size ?? "default"));
+		const shape = machine.shape;
+		// A shape off the sizes gets the disk of the smallest size with at least its memory, as kantel-host's do.
+		const shaped =
+			shape === undefined
+				? named
+				: {
+						vcpus: shape.vcpus,
+						memoryMb: shape.memoryMb,
+						diskGb: (SIZES.find((entry) => entry.memoryMb >= shape.memoryMb) ?? SIZES.at(-1))?.diskGb ?? 20,
+					};
+		const size = machine.type === "microvm" ? shaped : undefined;
 		return {
 			hostId: STUB_HOST_ID,
 			...(size === undefined ? {} : { resources: { vcpus: size.vcpus, memoryMb: size.memoryMb, diskGb: size.diskGb } }),
@@ -315,6 +332,7 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			id: spec.sandboxId,
 			type: spec.type,
 			size: spec.size,
+			shape: spec.type === "microvm" ? spec.shape : undefined,
 			env: { ...spec.env },
 			fs: undefined,
 			bash: undefined,
@@ -331,6 +349,8 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 		const machine = machineOf(sandboxId);
 		placeable(options.eligibleHosts, machine.type);
 		if (machine.state === "running") return placement(machine);
+		// The boot states its sizing: its shape where it has one, else its named size, even one the machine already had.
+		if (machine.type === "microvm") machine.shape = options.shape;
 		machine.size = options.size ?? machine.size;
 		machine.env = { ...options.env };
 		if (keepMemory && machine.state === "paused" && machine.fs !== undefined) boot(machine, machine.fs);
@@ -600,14 +620,15 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 					.filter((machine) => machine.runningSince <= at)
 					.map((machine) => {
 						const reading = stubReading(machine.id, at, bases.get(machine.id) ?? 0);
-						const size = SIZES.find((entry) => entry.name === (machine.size ?? "default"));
+						// Its limit is the shape it runs as, as its placement says: a custom shape's, else its named size's.
+						const memoryMb = placement(machine).resources?.memoryMb;
 						return {
 							id: machine.id,
 							kind: machine.type,
 							cpu: reading.cpu,
 							memUsedBytes: reading.memUsedBytes,
 							memLimitBytes:
-								machine.type === "microvm" && size !== undefined ? size.memoryMb * MIB : ISOLATE_MEMORY_BYTES,
+								machine.type === "microvm" && memoryMb !== undefined ? memoryMb * MIB : ISOLATE_MEMORY_BYTES,
 						};
 					});
 				const ambient = stubReading(STUB_HOST_ID, at, STUB_HOST_BASE_BYTES);

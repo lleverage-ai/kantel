@@ -53,8 +53,6 @@ type Tier interface {
 	HasSnapshot(id string) bool
 	SnapshotFiles(id, path string) ([]proto.FileEntry, error)
 	SnapshotRead(id, path string) ([]byte, error)
-	SetPools(want map[string]int)
-	Warm() map[string]int
 	ResetTemplates()
 	SetEgress(id string, e *proto.Egress) error
 	Usage() (memoryMiB int64, running int, stopped int)
@@ -103,15 +101,14 @@ type Host struct {
 	// events go to the control plane while connected.
 	events func(proto.Event)
 	// link makes calls to the control plane while connected.
-	link  *caller
-	pools map[string]int
+	link *caller
 	// usage samples the host and its sandboxes while RunUsage runs (usage.go).
 	usage *usageSampler
 }
 
 // New starts the tiers the host can run.
 func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
-	h := &Host{cfg: cfg, version: version, log: log, tiers: map[string]Tier{}, bySlot: map[int]egress.Rules{}, pools: map[string]int{}}
+	h := &Host{cfg: cfg, version: version, log: log, tiers: map[string]Tier{}, bySlot: map[int]egress.Rules{}}
 	if err := os.MkdirAll(cfg.Root, 0o700); err != nil {
 		return nil, err
 	}
@@ -243,7 +240,7 @@ func (h *Host) makeFacts() proto.Facts {
 	if reserve == 0 {
 		reserve = max(2048, total/10)
 	}
-	features := []string{proto.FeatureEgressPolicy}
+	features := []string{proto.FeatureEgressPolicy, proto.FeatureCustomShapes}
 	// File streams are served for a tier's sandboxes only when it streams files (the microVM tier); a call for another's
 	// is refused as unsupported.
 	for _, name := range h.order {
@@ -282,41 +279,12 @@ func (h *Host) Capacity() proto.Capacity {
 		c.Running += running
 		c.Stopped += stopped
 	}
-	c.Warm = h.Warm()
 	budget := int64(float64(h.facts.MemoryMiB) * h.cfg.OvercommitMemory)
 	c.FreeMemoryMiB = max(0, budget-used)
 	return c
 }
 
-// SetPools sets the warm pools, as "<tier>/<pool>": n ("microvm/default": 2 is two warm default-size microVMs;
-// "isolate/default": 1 one spare isolate runtime). A tier gets its own pools without the prefix.
-func (h *Host) SetPools(want map[string]int) {
-	h.mu.Lock()
-	h.pools = want
-	h.mu.Unlock()
-	for name, t := range h.tiers {
-		mine := map[string]int{}
-		for key, n := range want {
-			if tier, pool, ok := strings.Cut(key, "/"); ok && tier == name {
-				mine[pool] = n
-			}
-		}
-		t.SetPools(mine)
-	}
-}
-
-// Warm is every tier's ready pool, as "<tier>/<pool>": n.
-func (h *Host) Warm() map[string]int {
-	out := map[string]int{}
-	for name, t := range h.tiers {
-		for k, v := range t.Warm() {
-			out[name+"/"+k] = v
-		}
-	}
-	return out
-}
-
-// ResetTemplates drops a tier's templates and pools (a benchmark's cold start).
+// ResetTemplates drops a tier's templates (a benchmark's cold start).
 func (h *Host) ResetTemplates(tier string) {
 	if t, ok := h.tiers[tier]; ok {
 		t.ResetTemplates()
@@ -836,13 +804,6 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			return nil, err
 		}
 		return map[string]any{"data": base64.StdEncoding.EncodeToString(data), "size": len(data)}, nil
-	case proto.MethodHostPools:
-		var want map[string]int
-		if err := json.Unmarshal(params, &want); err != nil {
-			return nil, invalid("bad pools")
-		}
-		h.SetPools(want)
-		return map[string]bool{"ok": true}, nil
 	}
 	return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "unknown method " + method}
 }

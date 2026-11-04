@@ -186,6 +186,13 @@ export const Invite = Type.Object(
 		code: Type.Optional(
 			Type.String({ description: "The join code, such as `kji_…`. Shown once, when the invite is made." }),
 		),
+		emailed: Type.Optional(
+			Type.Boolean({
+				description:
+					"Only when the invite is made: whether Kantel emailed it, with a link that joins with its code. False " +
+					"without an email, where the deployment sends no mail, or when the send failed.",
+			}),
+		),
 		expiresAt: Timestamp,
 		createdAt: Timestamp,
 	},
@@ -243,7 +250,109 @@ export const SandboxHealth = Type.Union([Type.Literal("ok"), Type.Literal("degra
 
 export const SandboxSizeName = Type.Union(
 	[Type.Literal("small"), Type.Literal("default"), Type.Literal("large"), Type.Literal("xlarge")],
-	{ title: "SandboxSizeName", description: "A microVM's size; a deployment may offer fewer. Isolates have none." },
+	{
+		title: "SandboxSizeName",
+		description:
+			"A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: " +
+			"a named size is still taken for now.",
+	},
+);
+
+/** An isolate's memory: 128 to 512 MB in steps of 64, 256 by default. */
+export const ISOLATE_MEMORY_MB = { min: 128, max: 512, step: 64, default: 256 } as const;
+
+export const SandboxShapeInput = Type.Object(
+	{
+		vcpus: Type.Optional(
+			Type.Integer({
+				minimum: 1,
+				description: "A microVM's vCPUs. An isolate has none of its own: it shares its account's VM's CPU.",
+			}),
+		),
+		memoryMb: Type.Integer({
+			minimum: ISOLATE_MEMORY_MB.min,
+			description:
+				"Memory in MB. An isolate takes 128 to 512 in steps of 64; a microVM up to what a host offers " +
+				"(`getSandboxShapes`).",
+		}),
+	},
+	{
+		title: "SandboxShapeInput",
+		description:
+			"What a new sandbox gets. A preset restores its size's template snapshot on the host; a shape off the " +
+			"presets boots from scratch.",
+	},
+);
+
+export const ShapeRange = Type.Object(
+	{ min: Type.Integer(), max: Type.Integer(), step: Type.Integer(), default: Type.Integer() },
+	{ title: "ShapeRange" },
+);
+
+export const ShapePreset = Type.Object(
+	{
+		name: SandboxSizeName,
+		vcpus: Type.Integer(),
+		memoryMb: Type.Integer(),
+		diskGb: Type.Integer({
+			description:
+				"The disk the host gives a fresh sandbox of this size. One made from a snapshot keeps that snapshot's disk.",
+		}),
+	},
+	{ title: "ShapePreset" },
+);
+
+export const SandboxShapes = Type.Object(
+	{
+		isolate: Type.Object(
+			{
+				memoryMb: ShapeRange,
+				enforced: Type.Boolean({
+					description:
+						"Whether an isolate's memory is a hard limit. False today: the runtime records it, and the account VM's " +
+						"memory, shared by its isolates, is the limit.",
+				}),
+			},
+			{ title: "IsolateShapes" },
+		),
+		microvm: Type.Optional(
+			Type.Object(
+				{
+					vcpus: ShapeRange,
+					memoryMb: ShapeRange,
+					memoryMbPerVcpu: Type.Object(
+						{ min: Type.Integer(), max: Type.Integer() },
+						{ description: "Memory follows vCPUs: each vCPU has at least `min` and at most `max` MB." },
+					),
+					presets: Type.Array(ShapePreset, {
+						description:
+							"Each shape a host makes by name. Hosts may give one name different shapes: each is its own entry.",
+					}),
+					custom: Type.Boolean({
+						description:
+							"Whether a host takes shapes off the presets; when false, only the presets. A shape's disk is its " +
+							"host's to give; the sandbox's `resources` say what it got.",
+					}),
+				},
+				{ title: "MicrovmShapes", description: "Absent when no host the account may use runs microVMs." },
+			),
+		),
+		rates: Type.Optional(
+			Type.Object(
+				{
+					currency: Type.String(),
+					microvmPerVcpuHour: Type.Number(),
+					microvmPerGbHour: Type.Number(),
+					isolatePerGbHour: Type.Number(),
+				},
+				{ title: "ShapeRates", description: "What an hour costs, per vCPU and GB; absent where it is free." },
+			),
+		),
+	},
+	{
+		title: "SandboxShapes",
+		description: "What a new sandbox in the account may be: the ranges its hosts offer, their presets and the rates.",
+	},
 );
 
 export const SandboxResources = Type.Object(
@@ -609,6 +718,7 @@ export const CreateSandboxBody = Type.Object(
 		),
 		type: Type.Optional(SandboxType),
 		size: Type.Optional(SandboxSizeName),
+		resources: Type.Optional(SandboxShapeInput),
 		image: Type.Optional(Type.String({ description: "A microVM's base image. Default: the deployment's." })),
 		from: Type.Optional(
 			Type.String({
@@ -2236,6 +2346,9 @@ export type SandboxType = Static<typeof SandboxType>;
 export type SandboxState = Static<typeof SandboxState>;
 export type SandboxVisibility = Static<typeof SandboxVisibility>;
 export type SandboxSizeName = Static<typeof SandboxSizeName>;
+export type SandboxShapeInput = Static<typeof SandboxShapeInput>;
+export type SandboxShapes = Static<typeof SandboxShapes>;
+export type ShapePreset = Static<typeof ShapePreset>;
 export type SandboxCapabilities = Static<typeof SandboxCapabilities>;
 export type GuestCapabilities = Static<typeof GuestCapabilities>;
 export type GuestFeature = Static<typeof GuestFeature>;

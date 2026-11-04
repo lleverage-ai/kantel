@@ -162,6 +162,12 @@ export interface HostHubOptions {
 	bucketSource?(hostId: string, sandboxId: string, bucketSourceId: string): Promise<HostBucketSource | undefined>;
 	/** A sandbox's mounts changed status (a `sandbox.mounts` event), checked and clipped. */
 	onMounts?(hostId: string, sandboxId: string, mounts: readonly HostMountStatus[]): void | Promise<void>;
+	/**
+	 * The host's welcome as its record says now. Given, `rewelcome` sends this, read afresh (one read at a time per
+	 * connection, each after the last was sent), not the welcome it was handed, which may be older; and settings changed
+	 * while a hello is being answered are read again once it is welcomed.
+	 */
+	welcomeNow?(hostId: string): Promise<HostWelcome>;
 	/** Default 120 s: a cold boot and a template build are slow. */
 	readonly callTimeoutMs?: number;
 	/** How long a host may take to say hello. Default 30 s. */
@@ -181,7 +187,7 @@ export interface HostHub {
 	 * either way the host's `stream.close` reason (`ok <size>` or `error <code>: <message>`) at `sink.end`.
 	 */
 	openFile(hostId: string, params: FileOpenParams, sink: PortSink): Promise<OpenedFile>;
-	/** Sends a welcome again, such as with new pools or a desired version. */
+	/** Sends a welcome again, such as with a drain or a desired version. */
 	rewelcome(hostId: string, welcome: HostWelcome): void;
 	disconnect(hostId: string, code: number, reason: string): void;
 	closeAll(code: number, reason: string): void;
@@ -199,6 +205,13 @@ interface Connection {
 	readonly socket: HostSocket;
 	welcomed: boolean;
 	closed: boolean;
+	/**
+	 * Settings changed while its hello was still being answered, which that answer may have read before: with
+	 * `welcomeNow`, `true` (read again once welcomed); without, the newest welcome handed over, sent after.
+	 */
+	later?: HostWelcome | true;
+	/** The rewelcomes read and sent in turn. */
+	rewelcoming?: Promise<void>;
 	readonly pending: Map<string, Pending>;
 	readonly streams: Map<number, PortSink>;
 	/** A file write stream's `stream.ack`s: how much of it the sandbox has taken. */
@@ -268,6 +281,24 @@ export function createHostHub(options: HostHubOptions): HostHub {
 
 	const send = (connection: Connection, message: object) => {
 		if (!connection.closed) connection.socket.sendText(JSON.stringify(message));
+	};
+
+	/**
+	 * Sends the host its welcome as its record says now (`welcomeNow`), one read at a time per connection, each after
+	 * the last was sent: the last sent was read after the last change that asked for it.
+	 */
+	const refresh = (connection: Connection) => {
+		const read = options.welcomeNow;
+		if (read === undefined) return;
+		connection.rewelcoming = (connection.rewelcoming ?? Promise.resolve()).then(async () => {
+			if (connection.closed) return;
+			try {
+				const welcome = await read(connection.hostId);
+				send(connection, { type: "welcome", welcome });
+			} catch {
+				// A host revoked meanwhile is disconnected by its revoke.
+			}
+		});
 	};
 
 	/** Closes the socket and forgets the connection; a socket that is already gone (`close` throws) is the same. */
@@ -441,6 +472,10 @@ export function createHostHub(options: HostHubOptions): HostHub {
 			if (connection.closed) return;
 			connection.welcomed = true;
 			send(connection, { type: "welcome", welcome });
+			const later = connection.later;
+			connection.later = undefined;
+			if (later === true) refresh(connection);
+			else if (later !== undefined) send(connection, { type: "welcome", welcome: later });
 		} catch (error) {
 			shut(connection, HOST_CLOSE_PROTOCOL, error instanceof Error ? error.message : "The hello was refused");
 		}
@@ -711,7 +746,12 @@ export function createHostHub(options: HostHubOptions): HostHub {
 		},
 		rewelcome(hostId, welcome) {
 			const connection = held.get(hostId);
-			if (connection?.welcomed) send(connection, { type: "welcome", welcome });
+			if (connection === undefined || connection.closed) return;
+			// Mid-hello it waits for the welcome, not dropped: the hello's own may be older.
+			const read = options.welcomeNow !== undefined;
+			if (!connection.welcomed) connection.later = read ? true : welcome;
+			else if (read) refresh(connection);
+			else send(connection, { type: "welcome", welcome });
 		},
 		disconnect(hostId, code, reason) {
 			const connection = held.get(hostId);

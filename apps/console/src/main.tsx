@@ -13,7 +13,7 @@ import {
 	storageChoice,
 	storageTokens,
 } from "./api/identity.ts";
-import { ComputeApp, legacyComputePath } from "./compute/compute-app.tsx";
+import { ComputeApp, joinLink, legacyComputePath } from "./compute/compute-app.tsx";
 import { orderedSaves, syncTheme } from "./state/theme-sync.ts";
 import { BOOT } from "./ui/shell-styles.ts";
 import "./ui/styles.css";
@@ -38,6 +38,9 @@ themeController();
 // `kantel login`'s device page) go to the same page here.
 const moved = legacyComputePath(location.pathname);
 if (moved !== undefined) history.replaceState(null, "", `${moved}${location.search}${location.hash}`);
+
+// An invite email's link (`/organisation#join=kji_…`): its code waits, through a sign-in if need be, for Join.
+if (joinLink.take(location.hash)) history.replaceState(null, "", `${location.pathname}${location.search}`);
 
 const params = new URLSearchParams(location.search);
 const SOURCE_KEY = "kantel.console.source";

@@ -101,16 +101,13 @@ function facts(value: unknown): HostFacts {
 
 function capacity(value: unknown): HostCapacity {
 	if (!isObject(value)) throw new FactsError("capacity is an object");
-	const warm: { [pool: string]: number } = {};
-	for (const [pool, n] of Object.entries(record(value.warm, "warm")))
-		warm[text(pool, "a pool")] = count(n, `warm.${pool}`);
+	// A host from before warm pools were removed also sends `warm`, its ready pool counts: ignored.
 	return {
 		freeMemoryMiB: count(value.freeMemoryMiB, "freeMemoryMiB"),
 		freeDiskGiB: count(value.freeDiskGiB, "freeDiskGiB"),
 		running: count(value.running, "running"),
 		stopped: count(value.stopped, "stopped"),
 		load1: count(value.load1, "load1"),
-		warm,
 	};
 }
 

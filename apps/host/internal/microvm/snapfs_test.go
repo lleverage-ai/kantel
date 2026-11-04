@@ -142,15 +142,23 @@ func TestImageFormat(t *testing.T) {
 }
 
 func TestNoteGuestForgetsTheLastReport(t *testing.T) {
-	dir := t.TempDir()
-	m := &Manager{}
-	m.noteGuest(dir, &proto.GuestCapabilities{Arch: "x86_64"})
-	if _, err := os.Stat(filepath.Join(dir, guestFile)); err != nil || m.guest.Load() == nil {
-		t.Fatalf("a report isn't kept: %v", err)
+	root := t.TempDir()
+	dir := filepath.Join(root, "templates", "default")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	// A template with no report (an older agent): nothing of the one before it stays.
+	m := &Manager{cfg: Config{Root: root}}
+	m.noteGuest(dir, &proto.GuestCapabilities{Arch: "x86_64"})
+	for _, d := range []string{dir, root} {
+		if _, err := os.Stat(filepath.Join(d, guestFile)); err != nil || m.guest.Load() == nil {
+			t.Fatalf("a report isn't kept in %s: %v", d, err)
+		}
+	}
+	// A template with no report (an older agent): nothing of the one before it stays, in the template or the root.
 	m.noteGuest(dir, nil)
-	if _, err := os.Stat(filepath.Join(dir, guestFile)); !os.IsNotExist(err) || m.guest.Load() != nil {
-		t.Errorf("the last template's report outlives it: %v, %v", err, m.guest.Load())
+	for _, d := range []string{dir, root} {
+		if _, err := os.Stat(filepath.Join(d, guestFile)); !os.IsNotExist(err) || m.guest.Load() != nil {
+			t.Errorf("the last template's report outlives it in %s: %v, %v", d, err, m.guest.Load())
+		}
 	}
 }

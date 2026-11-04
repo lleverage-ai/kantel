@@ -22,7 +22,13 @@ import { isKantelError } from "@kantel/contracts";
 import { type AuthenticatePerson, authenticate, UnauthenticatedError } from "./auth.ts";
 import type { SandboxBackend } from "./backend.ts";
 import { FILE_URL_PATH, type MountsOptions } from "./mounts.ts";
-import { type ComputeLimits, type ComputeService, createComputeService, type RateTable } from "./service.ts";
+import {
+	type ComputeLimits,
+	type ComputeService,
+	createComputeService,
+	type InviteMailing,
+	type RateTable,
+} from "./service.ts";
 import { type ComputeStore, createMemoryStore } from "./store.ts";
 import { createTelemetryExporter, type TelemetryExporter } from "./telemetry.ts";
 import { createWebhookDispatcher, type WebhookDispatcher } from "./webhooks.ts";
@@ -75,6 +81,8 @@ export interface ComputeApiOptions {
 	readonly secretsKey?: string;
 	/** Mounts, bundles and signed file URLs (`KANTEL_MOUNTS=experimental`), with where bundles are kept. Default off. */
 	readonly mounts?: MountsOptions;
+	/** Emails an invite made for an address, with a link to join (`ComputeServiceOptions.invites`); absent, none. */
+	readonly invites?: InviteMailing;
 }
 
 export interface ComputeApi {
@@ -142,6 +150,7 @@ export function createComputeApi(options: ComputeApiOptions): ComputeApi {
 		...(options.sharedHosts === undefined ? {} : { sharedHosts: options.sharedHosts }),
 		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
 		...(options.mounts === undefined ? {} : { mounts: options.mounts }),
+		...(options.invites === undefined ? {} : { invites: options.invites }),
 	});
 	service = created;
 	const publicIds = new Set<string>(Object.keys(publicComputeRoutes));

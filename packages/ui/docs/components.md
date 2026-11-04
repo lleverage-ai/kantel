@@ -248,6 +248,20 @@ several (use a `SegmentedControl`).
 
 **Cost:** none beyond the element; the busy thumb's breathing is an opacity animation, off under reduced motion.
 
+### SliderField
+
+**For** a number chosen along a range, where the position matters more than typing it: a new sandbox's vCPUs and
+memory. The browser's range input, so arrow keys move a step, Page Up and Down further and Home and End to the ends,
+and a screen reader reads `format`'s words ("4 vCPU", "256 MB") as its value. The value shows beside the label, the
+range's ends under the track, and a tick at each of `marks` (the shapes a host offers by name). `onChange` gets a
+value already on a step and within `min` and `max`; the owner may narrow `min` and `max` as other fields change (memory
+follows vCPUs). Its track and thumb are drawn in controls.css, since they are engine pseudo-elements.
+
+**Not for** a few named choices (use a `SegmentedControl` or a `SelectField`), or an exact figure to type (use a
+`TextField`).
+
+**Cost:** none beyond the element.
+
 ### OneTimeSecret and CommandBlock
 
 **For** a secret shown once, when it is made: a tunnel token, an API key. `OneTimeSecret` is a panel in the approval

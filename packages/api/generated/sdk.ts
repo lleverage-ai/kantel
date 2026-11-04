@@ -382,8 +382,10 @@ export interface CreateSandboxBody {
 	readonly name?: string;
 	/** `isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
 	readonly type?: SandboxType;
-	/** A microVM's size; a deployment may offer fewer. Isolates have none. */
+	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now. */
 	readonly size?: SandboxSizeName;
+	/** What a new sandbox gets. A preset restores its size's template snapshot on the host; a shape off the presets boots from scratch. */
+	readonly resources?: SandboxShapeInput;
 	/** A microVM's base image. Default: the deployment's. */
 	readonly image?: string;
 	/** Start from this snapshot: a snapshot's ID or a saved snapshot's name in the account. */
@@ -780,7 +782,7 @@ export interface ForkSandboxBody {
 	readonly name?: string;
 	/** Fork from this snapshot of the sandbox. Default: its newest, or its live state. */
 	readonly snapshotId?: string;
-	/** A microVM's size; a deployment may offer fewer. Isolates have none. */
+	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now. */
 	readonly size?: SandboxSizeName;
 	/** How many copies; default 1. */
 	readonly count?: number;
@@ -947,6 +949,8 @@ export interface Invite {
 	readonly email?: string;
 	/** The join code, such as `kji_…`. Shown once, when the invite is made. */
 	readonly code?: string;
+	/** Only when the invite is made: whether Kantel emailed it, with a link that joins with its code. False without an email, where the deployment sends no mail, or when the send failed. */
+	readonly emailed?: boolean;
 	/** Epoch milliseconds, UTC. */
 	readonly expiresAt: number;
 	/** Epoch milliseconds, UTC. */
@@ -955,6 +959,12 @@ export interface Invite {
 
 export interface InviteList {
 	readonly items: readonly Invite[];
+}
+
+export interface IsolateShapes {
+	readonly memoryMb: ShapeRange;
+	/** Whether an isolate's memory is a hard limit. False today: the runtime records it, and the account VM's memory, shared by its isolates, is the limit. */
+	readonly enforced: boolean;
 }
 
 export interface IssuedApiKey {
@@ -1036,6 +1046,21 @@ export interface MemberList {
 
 /** `member`: uses the organisation's shared sandboxes and snapshots and makes their own. `admin`: also manages members, API keys, webhooks, telemetry and the proxy. `owner`: also renames or deletes the organisation. A personal account's person is its `owner`. */
 export type MemberRole = "member" | "admin" | "owner";
+
+/** Absent when no host the account may use runs microVMs. */
+export interface MicrovmShapes {
+	readonly vcpus: ShapeRange;
+	readonly memoryMb: ShapeRange;
+	/** Memory follows vCPUs: each vCPU has at least `min` and at most `max` MB. */
+	readonly memoryMbPerVcpu: {
+		readonly min: number;
+		readonly max: number;
+	};
+	/** Each shape a host makes by name. Hosts may give one name different shapes: each is its own entry. */
+	readonly presets: readonly ShapePreset[];
+	/** Whether a host takes shapes off the presets; when false, only the presets. A shape's disk is its host's to give; the sandbox's `resources` say what it got. */
+	readonly custom: boolean;
+}
 
 /** Files from outside the sandbox, read-only inside it: nothing in the sandbox can change them. */
 export interface Mount {
@@ -1168,7 +1193,7 @@ export interface ReadSnapshotFileQuery {
 }
 
 export interface ResumeSandboxBody {
-	/** A microVM's size; a deployment may offer fewer. Isolates have none. */
+	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now. */
 	readonly size?: SandboxSizeName;
 	/** Answer once it is `running` (or `error`). */
 	readonly wait?: boolean;
@@ -1198,7 +1223,7 @@ export interface Sandbox {
 	readonly subdomain: string;
 	/** `isolate`: a workerd isolate with a JavaScript shell over the sandbox's files. Starts in milliseconds and costs almost nothing, but runs no native binaries, has no desktop and no SSH. `microvm`: a Firecracker microVM with a full Linux, root, Docker and `/dev/kvm` inside, a desktop, a browser and SSH. */
 	readonly type: SandboxType;
-	/** A microVM's size; a deployment may offer fewer. Isolates have none. */
+	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now. */
 	readonly size?: SandboxSizeName;
 	readonly resources?: SandboxResources;
 	/** The base image a microVM was made from, such as `ubuntu-24.04`. */
@@ -1329,7 +1354,24 @@ export interface SandboxSeriesPoint {
 	readonly memUsedBytes: number;
 }
 
-/** A microVM's size; a deployment may offer fewer. Isolates have none. */
+/** What a new sandbox gets. A preset restores its size's template snapshot on the host; a shape off the presets boots from scratch. */
+export interface SandboxShapeInput {
+	/** A microVM's vCPUs. An isolate has none of its own: it shares its account's VM's CPU. */
+	readonly vcpus?: number;
+	/** Memory in MB. An isolate takes 128 to 512 in steps of 64; a microVM up to what a host offers (`getSandboxShapes`). */
+	readonly memoryMb: number;
+}
+
+/** What a new sandbox in the account may be: the ranges its hosts offer, their presets and the rates. */
+export interface SandboxShapes {
+	readonly isolate: IsolateShapes;
+	/** Absent when no host the account may use runs microVMs. */
+	readonly microvm?: MicrovmShapes;
+	/** What an hour costs, per vCPU and GB; absent where it is free. */
+	readonly rates?: ShapeRates;
+}
+
+/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now. */
 export type SandboxSizeName = "small" | "default" | "large" | "xlarge";
 
 /** What it was made from. */
@@ -1424,6 +1466,30 @@ export interface SetEnvironmentVariableBody {
 export interface SetPublicUrlBody {
 	/** An http(s) origin, such as `https://kantel.example.com`; `null` goes back to the deployment's own. */
 	readonly publicUrl: string | null;
+}
+
+export interface ShapePreset {
+	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now. */
+	readonly name: SandboxSizeName;
+	readonly vcpus: number;
+	readonly memoryMb: number;
+	/** The disk the host gives a fresh sandbox of this size. One made from a snapshot keeps that snapshot's disk. */
+	readonly diskGb: number;
+}
+
+export interface ShapeRange {
+	readonly min: number;
+	readonly max: number;
+	readonly step: number;
+	readonly default: number;
+}
+
+/** What an hour costs, per vCPU and GB; absent where it is free. */
+export interface ShapeRates {
+	readonly currency: string;
+	readonly microvmPerVcpuHour: number;
+	readonly microvmPerGbHour: number;
+	readonly isolatePerGbHour: number;
 }
 
 export interface Snapshot {
@@ -1983,7 +2049,9 @@ export interface KantelClient {
 	revokeInvite(accountId: string, inviteId: string, options?: CallOptions): Promise<void>;
 	/** List sandboxes. The account's sandboxes the caller may see, newest first: by default the ones starting, running or stopping; `all` adds stopped, paused and errored ones. Deleted ones are left out. A key needs `sandboxes:read`. `GET /sandboxes` */
 	listSandboxes(query?: ListSandboxesQuery, options?: CallOptions): Promise<SandboxPage>;
-	/** Create a sandbox. Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. `mounts` (experimental) are for microVMs only: an isolate's are refused (`not_supported`), because an isolate is a JavaScript shell over files the host keeps, with no file system of its own to mount a drive or a bucket into. A mount whose bundle or bucket source isn't the account's is `not_found`; with the deployment's `KANTEL_MOUNTS` switch off, any `mounts` are `not_supported`. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes` */
+	/** Get the shapes a sandbox may be. What a new sandbox in the account may be, from the hosts it may use: an isolate's memory, a microVM's vCPUs and memory, the hosts' presets and what an hour costs. A key needs `sandboxes:read`. `GET /sandbox-shapes` */
+	getSandboxShapes(query?: AccountScopedQuery, options?: CallOptions): Promise<SandboxShapes>;
+	/** Create a sandbox. Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. `mounts` (experimental) are for microVMs only: an isolate's are refused (`not_supported`), because an isolate is a JavaScript shell over files the host keeps, with no file system of its own to mount a drive or a bucket into. A mount whose bundle or bucket source isn't the account's is `not_found`; with the deployment's `KANTEL_MOUNTS` switch off, any `mounts` are `not_supported`. A key needs `sandboxes:write`. Idempotent with `options.idempotencyKey`. `POST /sandboxes` */
 	createSandbox(body?: CreateSandboxBody, options?: CallOptions): Promise<Sandbox>;
 	/** Get a sandbox. A key needs `sandboxes:read`. `GET /sandboxes/{sandboxId}` */
 	getSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
@@ -2262,6 +2330,8 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 				callOptions,
 			),
 		listSandboxes: (query, callOptions) => send(options, { method: "GET", path: "/sandboxes", query }, callOptions),
+		getSandboxShapes: (query, callOptions) =>
+			send(options, { method: "GET", path: "/sandbox-shapes", query }, callOptions),
 		createSandbox: (body = {}, callOptions) => send(options, { method: "POST", path: "/sandboxes", body }, callOptions),
 		getSandbox: (sandboxId, callOptions) =>
 			send(options, { method: "GET", path: `/sandboxes/${encodeURIComponent(sandboxId)}` }, callOptions),

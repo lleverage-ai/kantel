@@ -113,6 +113,46 @@ describe("the console's files", () => {
 		expect(asked).toEqual(["GET /", "GET /"]);
 	});
 
+	it("passes sign-in's GETs (GitHub and Google's start and callback) to the stack, and still bounds a POST's body", async () => {
+		const { ASSETS } = assets();
+		const stacked: string[] = [];
+		const STACK = {
+			idFromName: () => "x",
+			get: () => ({
+				fetch: async (request: Request) => {
+					const url = new URL(request.url);
+					stacked.push(`${request.method} ${url.pathname}${url.search} ${await request.text()}`);
+					return new Response(null, { status: 302, headers: { location: "https://github.com/login/oauth/authorize" } });
+				},
+			}),
+		};
+		for (const path of ["/auth/oauth/github/start", "/auth/oauth/google/callback?code=c&state=s"]) {
+			const response = await routeRequest(new Request(`${BASE}${path}`), { STACK, ASSETS });
+			expect(response.status).toBe(302);
+		}
+		const head = await routeRequest(new Request(`${BASE}/auth/oauth/github/start`, { method: "HEAD" }), {
+			STACK,
+			ASSETS,
+		});
+		expect(head.status).toBe(302);
+		const post = await routeRequest(
+			new Request(`${BASE}/auth/otp/start`, { method: "POST", body: '{"email":"ada@example.test"}' }),
+			{ STACK, ASSETS },
+		);
+		expect(post.status).toBe(302);
+		const huge = await routeRequest(
+			new Request(`${BASE}/auth/otp/start`, { method: "POST", body: "x".repeat(64 * 1024) }),
+			{ STACK, ASSETS },
+		);
+		expect(huge.status).toBe(413);
+		expect(stacked).toEqual([
+			"GET /auth/oauth/github/start ",
+			"GET /auth/oauth/google/callback?code=c&state=s ",
+			"HEAD /auth/oauth/github/start ",
+			'POST /auth/otp/start {"email":"ada@example.test"}',
+		]);
+	});
+
 	it("doesn't answer a write to a page path with the page", async () => {
 		const { ASSETS } = assets();
 		const response = await consoleAsset(new Request(`${BASE}/projects/p1`, { method: "POST", body: "x" }), { ASSETS });

@@ -23,6 +23,7 @@ import {
 	type EnvironmentRepo as ApiRepo,
 	type SandboxEgress as ApiSandboxEgress,
 	type SandboxMount as ApiSandboxMount,
+	type SandboxShapes as ApiSandboxShapes,
 	type EnvironmentVariable as ApiVariable,
 	type Caller,
 	type Command,
@@ -77,12 +78,14 @@ import type {
 	EgressGrant as UiGrant,
 	SandboxEgress as UiSandboxEgress,
 	SandboxImage as UiSandboxImage,
+	SandboxShapes as UiSandboxShapes,
 	EnvironmentVariable as UiVariable,
 	WebhooksSource,
 } from "@kantel/ui";
 import {
 	cliLoginCommand,
 	cliSshCommand,
+	DEFAULT_SANDBOX_SHAPES,
 	DeviceSetupError,
 	FilesRefusedError,
 	FileTooLargeError,
@@ -249,6 +252,7 @@ function inviteOf(invite: Invite): UiInvite {
 		sentAt: invite.createdAt,
 		// Only the invite just made has its code; the page shows it once.
 		...(invite.code === undefined ? {} : { code: invite.code }),
+		...(invite.emailed === undefined ? {} : { emailed: invite.emailed }),
 	};
 }
 
@@ -281,13 +285,6 @@ function accountsSource({ api, caller }: Context): AccountsSource {
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Sandboxes
-
-const API_SIZES: Readonly<Record<UiSandboxSize, SandboxSizeName>> = {
-	small: "small",
-	medium: "default",
-	large: "large",
-	xlarge: "xlarge",
-};
 
 const UI_SIZES: Readonly<Record<SandboxSizeName, UiSandboxSize>> = {
 	small: "small",
@@ -389,6 +386,38 @@ function mountsOf(sandbox: Sandbox, context: Context): { readonly mounts?: reado
 	return { mounts: sandbox.mounts.map((mount) => mountOf(mount, context)) };
 }
 
+/**
+ * What New sandbox's sliders may choose, as the API says. With no host for microVMs, the sample's microVM ranges stand
+ * in, marked unavailable, so the page offers no microVM; the API's rates are a currency's units an hour, the page's
+ * US cents.
+ */
+export function shapesOf(shapes: ApiSandboxShapes): UiSandboxShapes {
+	const microvm = shapes.microvm;
+	return {
+		isolate: { memoryMb: { ...shapes.isolate.memoryMb } },
+		microvm:
+			microvm === undefined
+				? { ...DEFAULT_SANDBOX_SHAPES.microvm, available: false }
+				: {
+						vcpus: { ...microvm.vcpus },
+						memoryMb: { ...microvm.memoryMb },
+						memoryMbPerVcpu: { ...microvm.memoryMbPerVcpu },
+						presets: microvm.presets.map((preset) => ({ ...preset })),
+						// Older hosts only: then just the presets may be chosen.
+						custom: microvm.custom,
+					},
+		...(shapes.rates === undefined
+			? {}
+			: {
+					rates: {
+						microvmCentsPerVcpuHour: shapes.rates.microvmPerVcpuHour * 100,
+						microvmCentsPerGbHour: shapes.rates.microvmPerGbHour * 100,
+						isolateCentsPerGbHour: shapes.rates.isolatePerGbHour * 100,
+					},
+				}),
+	};
+}
+
 /** What the guest agent found in a microVM's image, where it has said (a newer host and agent). */
 function imageOf(sandbox: Sandbox): { image?: UiSandboxImage } {
 	const guest = sandbox.capabilities.guest;
@@ -432,7 +461,8 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 			: {
 					resources: {
 						vcpus: sandbox.resources.vcpus,
-						memoryGb: Math.round(sandbox.resources.memoryMb / 1024),
+						// Unrounded: an isolate's 384 MB is 0.375 GB, which the page shows as MB.
+						memoryGb: sandbox.resources.memoryMb / 1024,
 						diskGb: sandbox.resources.diskGb,
 					},
 				}),
@@ -500,8 +530,6 @@ function sandboxesSource(context: Context): SandboxesSource {
 		return sandboxOf(sandbox, context);
 	};
 	return {
-		// The backend decides what each size is, and the API doesn't list them.
-		sizeFigures: false,
 		// `kantel console`'s page frames nothing from the gateway, so Browser and Desktop open in tabs of their own.
 		screens: context.local === undefined ? "console" : "tab",
 		// End to end, the host refuses the gateway's file reads, and the history it keeps carries no output yet.
@@ -516,12 +544,20 @@ function sandboxesSource(context: Context): SandboxesSource {
 			]);
 			return sandboxes.map(view);
 		},
+		shapes: async (accountId) => shapesOf(await api.getSandboxShapes({ account: accountId })),
 		create: async (input) => {
 			const made = await api.createSandbox({
 				account: input.accountId,
 				type: input.kind,
-				// Isolates have no size: the API refuses one.
-				...(input.kind === "microvm" ? { size: API_SIZES[input.size] } : {}),
+				// An isolate asks for memory alone: it shares its account's VM's CPU.
+				...(input.shape === undefined
+					? {}
+					: {
+							resources:
+								input.kind === "isolate"
+									? { memoryMb: input.shape.memoryMb }
+									: { vcpus: input.shape.vcpus, memoryMb: input.shape.memoryMb },
+						}),
 				...(input.name === undefined || input.name === "" ? {} : { name: input.name }),
 				...(input.fromSnapshot === undefined ? {} : { from: input.fromSnapshot }),
 				// The API takes an environment's ID or its name; the UI picks by ID.

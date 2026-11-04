@@ -229,7 +229,7 @@ While the host can't reach Kantel it keeps the last 120 readings (10 minutes' wo
 
 ## Where sandboxes go
 
-Kantel picks a host when a sandbox is created. A host can take the sandbox if it is connected, not draining or revoked, runs the sandbox's type, offers its size, has every label the sandbox asks for, and has the memory and disk free. Among those, Kantel prefers a host with a warm sandbox of that type and size ready, because a create there is a restore rather than a boot. Next it prefers, for an isolate, a host already running the account's isolates, then the most free memory, then the lowest load.
+Kantel picks a host when a sandbox is created. A host can take the sandbox if it is connected, not draining or revoked, runs the sandbox's type, offers its size, has every label the sandbox asks for, and has the memory and disk free. Among those, Kantel prefers, for an isolate, a host already running the account's isolates, then the most free memory, then the lowest load.
 
 Once placed, a sandbox stays on its host. Stop, start, resume and fork all happen there, and so does a sandbox made from one of its snapshots.
 
@@ -251,7 +251,11 @@ A host offers three microVM sizes unless its settings say otherwise:
 | `default` | 4 | 2 GiB | 20 GiB |
 | `large` | 4 | 8 GiB | 50 GiB |
 
-Each host keeps one warm `default` microVM ready. `KANTEL_COMPUTE_POOLS` on the control plane changes that for every host, as JSON such as `{"microvm/default": 2, "microvm/large": 1}`.
+A create can also ask for any vCPUs and memory with `resources`, such as `{"type": "microvm", "resources": {"vcpus": 3, "memoryMb": 6144}}`. A shape that matches a size goes as that size; any other goes only to a host whose `kantel-host` makes custom shapes, and boots from scratch. Its disk is the smallest size's with at least its memory, unless it starts from a snapshot, which keeps that snapshot's disk; the sandbox's `resources` say what it got. `GET /v1/sandbox-shapes` says what the hosts you may use offer.
+
+Hosts keep no warm microVMs waiting for a create, hosted or self-hosted: an idle VM holds its memory, and the machine may be doing other things. A create of one of the sizes restores that size's template snapshot on the host; the host makes the template the first time the size is asked for. `KANTEL_COMPUTE_POOLS`, which once set warm pools, is ignored with a warning. A `kantel-host` from before then is told to keep none, so it makes no more. It can't end a warm VM it already has: its next create of that size takes it, and updating the host (the new version clears them when it starts) ends the rest.
+
+An isolate's `resources` is its memory alone, 128 to 512 MB in steps of 64 (256 by default); it shares its account's VM's CPU. Kantel records what it asked for, but workerd can't hold one isolate to a memory limit yet: the account's VM's memory is the limit its isolates share.
 
 ## Update a host
 

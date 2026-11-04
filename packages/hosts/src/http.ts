@@ -129,6 +129,9 @@ export function createHostsApi(options: HostsApiOptions) {
 				const name = optional(input.name, isString, "name");
 				const labels = optional(input.labels, isRecord, "labels");
 				const draining = optional(input.draining, isBoolean, "draining");
+				if (input.pools !== undefined && input.pools !== null) {
+					throw new KantelError("invalid", "Hosts keep no warm pools: a create restores a snapshot");
+				}
 				return json(
 					await hosts.update(hostId, {
 						...(name === undefined ? {} : { name }),
@@ -145,6 +148,8 @@ export function createHostsApi(options: HostsApiOptions) {
 			if (tier !== "microvm" && tier !== "isolate") throw new KantelError("invalid", "tier is microvm or isolate");
 			const sandboxId = optional(input.sandboxId, isString, "sandboxId");
 			const size = optional(input.size, isString, "size");
+			const vcpus = optional(input.vcpus, isNumber, "vcpus");
+			const memoryMiB = optional(input.memoryMiB, isNumber, "memoryMiB");
 			const owner = optional(input.owner, isString, "owner");
 			const labels = optional(input.labels, isRecord, "labels");
 			const env = optional(input.env, isRecord, "env");
@@ -155,6 +160,7 @@ export function createHostsApi(options: HostsApiOptions) {
 					tier: tier as SandboxTier,
 					...(sandboxId === undefined ? {} : { sandboxId }),
 					...(size === undefined ? {} : { size }),
+					...(memoryMiB === undefined ? {} : { shape: { vcpus: vcpus ?? 0, memoryMiB } }),
 					...(owner === undefined ? {} : { owner }),
 					...(labels === undefined ? {} : { labels }),
 					...(env === undefined ? {} : { env }),

@@ -22,8 +22,8 @@
  *   KANTEL_COMPUTE_PUBLIC_URL    with `hosts`: where hosts and clients reach this gateway (join commands, desktop,
  *                                browser and SSH tunnels); default KANTEL_PUBLIC_URL, one of which `hosts` needs.
  *                                deploy/compose/compose.yaml sets it to the gateway's local address by default
- *   KANTEL_COMPUTE_POOLS         warm sandboxes per host, as JSON such as {"microvm/default": 2}; default one
- *                                default-size microVM
+ *   KANTEL_COMPUTE_POOLS         no longer read: hosts keep no warm pools (a create restores a snapshot); set, it is
+ *                                ignored with a warning
  *   KANTEL_COMPUTE_JOIN_COMMAND  the join command shown with a token, with {url} and {token}; default the host
  *                                installer from Kantel's latest GitHub Release (DEFAULT_HOST_JOIN_COMMAND)
  *   KANTEL_HOST_VERSION, KANTEL_HOST_UPDATE_URL
@@ -77,8 +77,10 @@ import {
 	type ComputeStore,
 	createComputeApi,
 	createMemoryStore,
+	type InviteMailing,
 	joinTokenSpender,
 	type PersonIdentity,
+	personName,
 	type SandboxBackend,
 } from "@kantel/compute";
 import { createDirBundleStore, createMemoryBundleStore } from "@kantel/compute/bundles";
@@ -87,9 +89,12 @@ import { createStubBackend } from "@kantel/compute/stub";
 import {
 	type Authenticator,
 	callContextFor,
+	EMAIL_OTP_ISSUER,
 	type IdentityDirectory,
 	KantelError,
 	MOUNTS_SWITCH,
+	normaliseEmail,
+	systemContext,
 } from "@kantel/contracts";
 import { BROWSER_PORT, createHostBackend, SSH_PORT } from "@kantel/hosts/backend";
 import type { HostCluster } from "@kantel/hosts/cluster";
@@ -117,6 +122,7 @@ import type { RelayStore } from "@kantel/hosts/relay-store";
 import { createHostsService, type HostsService } from "@kantel/hosts/service";
 import type { HostStore } from "@kantel/hosts/store";
 import { createTunnelTickets, HOSTS_TUNNEL_PATH, type IssuedGrant, type TunnelTickets } from "@kantel/hosts/tunnel";
+import type { InviteMailer } from "@kantel/identity/invites";
 import { hashSessionToken, isSessionToken } from "@kantel/identity/otp";
 import { type WebSocket, WebSocketServer } from "ws";
 import { CLUSTER_PATH, type GatewayCluster } from "./cluster.ts";
@@ -135,7 +141,6 @@ const COMPUTE_SWEEP_MS = 5_000;
 /** The `hosts` backend's settings. */
 export interface ComputeHostsConfig {
 	readonly publicUrl: string;
-	readonly pools?: { readonly [pool: string]: number };
 	readonly joinCommand?: string;
 	readonly desiredVersion?: string;
 	readonly updateUrl?: string;
@@ -170,20 +175,9 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 			"KANTEL_COMPUTE_BACKEND=hosts needs KANTEL_COMPUTE_PUBLIC_URL or KANTEL_PUBLIC_URL: where hosts reach this gateway",
 		);
 	}
-	let pools: { [pool: string]: number } | undefined;
-	const rawPools = env.KANTEL_COMPUTE_POOLS?.trim() ?? "";
-	if (rawPools !== "") {
-		const parsed: unknown = JSON.parse(rawPools);
-		if (
-			typeof parsed !== "object" ||
-			parsed === null ||
-			Object.entries(parsed).some(
-				([key, value]) => !/^(microvm|isolate)\/[a-z0-9-]+$/.test(key) || !Number.isInteger(value) || value < 0,
-			)
-		) {
-			throw new Error('KANTEL_COMPUTE_POOLS is JSON such as {"microvm/default": 2}');
-		}
-		pools = parsed as { [pool: string]: number };
+	if ((env.KANTEL_COMPUTE_POOLS?.trim() ?? "") !== "") {
+		// An install from before warm pools were removed may still set it: it starts, without them.
+		console.warn("[compute] KANTEL_COMPUTE_POOLS is ignored: hosts keep no warm pools, a create restores a snapshot");
 	}
 	const version = env.KANTEL_HOST_VERSION?.trim() ?? "";
 	const updateUrl = env.KANTEL_HOST_UPDATE_URL?.trim() || DEFAULT_HOST_UPDATE_URL;
@@ -213,7 +207,6 @@ export function computeConfig(env: NodeJS.ProcessEnv): ComputeConfig {
 			...(portsDomain === "" ? {} : { portsDomain }),
 			...(attributionKey === "" ? {} : { attributionKey }),
 			...(images === "" ? {} : { images }),
-			...(pools === undefined ? {} : { pools }),
 			...(joinCommand === "" ? {} : { joinCommand }),
 			...(version === "" || updateUrl === "" ? {} : { desiredVersion: version, updateUrl }),
 		},
@@ -253,7 +246,6 @@ export function gatewayHosts(
 		store,
 		...(cluster === undefined ? {} : { cluster }),
 		publicUrl: config.publicUrl,
-		...(config.pools === undefined ? {} : { pools: config.pools }),
 		...(config.joinCommand === undefined ? {} : { joinCommand: config.joinCommand }),
 		...(config.desiredVersion === undefined ? {} : { desiredVersion: config.desiredVersion }),
 		...(config.updateUrl === undefined ? {} : { updateUrl: config.updateUrl }),
@@ -375,8 +367,8 @@ export interface GatewayCompute {
  * The person a gateway sign-in is, or undefined for a key or no sign-in (a `ksk_` key is the compute API's own). A
  * person who is admin across the deployment's organisation is the compute plane's super-admin, who sees and adds
  * hosts. (A person's sign-in carries no role of its own: roles are held per project or organisation, so it asks
- * `identity`.) Their email comes from `identity` too, with `getUser`: an invite made for an address is joined by
- * matching it, so without it no such invite could be.
+ * `identity`.) Their name and email come from `identity` too, with `getUser`: an invite made for an address is joined
+ * by matching it, so without it no such invite could be, and the members list and "created by" name them so.
  */
 async function personOf(
 	authenticator: Authenticator,
@@ -406,14 +398,53 @@ async function personOf(
 	const session = bearer !== undefined && isSessionToken(bearer) ? await hashSessionToken(bearer) : undefined;
 	return {
 		userId: caller.actor.userId,
-		name: caller.actor.userId,
+		// As they are known everywhere else: their name, else their email, never their user ID while either is known.
+		name: personName({ userId: caller.actor.userId, name: user?.name, email }),
 		...(email === undefined ? {} : { email }),
 		superAdmin,
 		...(session === undefined ? {} : { session }),
 	};
 }
 
-/** What `personOf` asks identity: whether the person administers the organisation, and their email. */
+/**
+ * A compute organisation's invites, emailed with the deployment's mailer (the one that sends sign-in codes). The link
+ * opens the console at `publicOrigin` (KANTEL_PUBLIC_URL): the request URL here is always `http:`.
+ *
+ * Sign-in here is invite-only: someone the deployment doesn't know yet can't get a sign-in code, and an organisation's
+ * invite doesn't change that (letting someone into the deployment is its admins' call, with the deployment's own
+ * invites). So with `identity`, an invite is emailed only to an address that can sign in by email code; for anyone
+ * else the console shows the code, and an admin invites them to the deployment first.
+ */
+export function computeInvites(
+	mailer: InviteMailer,
+	publicOrigin: string | undefined,
+	identity?: Pick<IdentityDirectory, "canSignIn">,
+): InviteMailing {
+	return {
+		send: (mail) => mailer.sendInvite(mail),
+		...(identity === undefined
+			? {}
+			: {
+					canSignIn: (email: string) => {
+						const normalised = normaliseEmail(email);
+						return identity.canSignIn(INVITE_MAIL, {
+							issuer: EMAIL_OTP_ISSUER,
+							subject: normalised,
+							email: normalised,
+							emailVerified: true,
+						});
+					},
+				}),
+		...(publicOrigin === undefined ? {} : { consoleUrl: publicOrigin }),
+		onMailError: (error, to) =>
+			console.error(`[gateway] organisation invite mail to ${JSON.stringify(to)} failed:`, error),
+	};
+}
+
+/** The context `computeInvites` asks identity whether an invite's address can sign in under. */
+const INVITE_MAIL = systemContext("gateway.compute-invites");
+
+/** What `personOf` asks identity: whether the person administers the organisation, and their name and email. */
 type PersonDirectory = Pick<IdentityDirectory, "authorize"> & Partial<Pick<IdentityDirectory, "getUser">>;
 
 /** The compute API over the stub, or over joined hosts with `hosts`, signed in with the gateway's `authenticator`. */
@@ -421,7 +452,7 @@ export async function gatewayCompute(options: {
 	readonly authenticator: Authenticator;
 	/**
 	 * Who holds which role (an organisation admin who signs in is the compute plane's super-admin) and, with `getUser`,
-	 * each person's email.
+	 * each person's name and email.
 	 */
 	readonly identity?: PersonDirectory;
 	/** The super-admin key's secret from an earlier start, if any. */
@@ -443,6 +474,8 @@ export async function gatewayCompute(options: {
 	 * `bundlesDir`, or in memory without one (gone with the process, though the API's records may outlast it).
 	 */
 	readonly mounts?: { readonly bundlesDir?: string };
+	/** Emails an organisation's invites, with a link to join, where the deployment has mail (KANTEL_SMTP_URL). */
+	readonly invites?: InviteMailing;
 }): Promise<GatewayCompute> {
 	const store: ComputeStore = options.store ?? createMemoryStore();
 	const records = options.store === undefined ? "memory" : "postgres";
@@ -479,6 +512,7 @@ export async function gatewayCompute(options: {
 		...(options.now === undefined ? {} : { now: options.now }),
 		...(options.secretsKey === undefined ? {} : { secretsKey: options.secretsKey }),
 		...(bundleStore === undefined ? {} : { mounts: { bundles: bundleStore } }),
+		...(options.invites === undefined ? {} : { invites: options.invites }),
 	});
 	// Hosts fetch their sandboxes' protected values, bundles and bucket sources, and report what their egress proxies
 	// did, their usage and how their mounts went, over their link. (With mounts off, the service answers nothing for
