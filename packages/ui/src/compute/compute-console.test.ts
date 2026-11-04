@@ -1,5 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { COMPUTE_PAGES, computePath, e2eStrip, parseComputePath, pathAfterAccountSwitch } from "./compute-console.tsx";
+import {
+	COMPUTE_PAGES,
+	computePath,
+	e2eStrip,
+	egressTabPath,
+	parseComputePath,
+	pathAfterAccountSwitch,
+} from "./compute-console.tsx";
+
+describe("Egress's tabs", () => {
+	it("names every tab in the address, Log too, keeping the rest of the query", () => {
+		expect(egressTabPath("log", "?tab=rules")).toBe("/compute/egress?tab=log");
+		expect(egressTabPath("settings", "")).toBe("/compute/egress?tab=settings");
+		expect(egressTabPath("rules", "?hosting=hosted&tab=log", "")).toBe("/egress?hosting=hosted&tab=rules");
+	});
+});
 
 describe("the compute console's paths", () => {
 	it("opens on Sandboxes at its base", () => {

@@ -114,6 +114,17 @@ export function computePath(page: ComputePage, base = "/compute", id?: string): 
 	return id === undefined ? `${base}/${page}` : `${base}/${page}/${encodeURIComponent(id)}`;
 }
 
+/**
+ * The address of the account's Egress on `tab`. Every tab names itself, Log too: an address with a query of its own
+ * replaces the current one (`?tab=rules`) when the console navigates, so one without would keep it. The rest of
+ * `search` (`?hosting`) is kept.
+ */
+export function egressTabPath(tab: EgressTab, search: string, base = "/compute"): string {
+	const params = new URLSearchParams(search);
+	params.set("tab", tab);
+	return `${computePath("egress", base)}?${params}`;
+}
+
 const ACCOUNT_KEY = "kantel.compute.account";
 
 function keptAccount(): string | undefined {
@@ -649,8 +660,7 @@ function PageFor({
 			if (route.sandboxId === undefined) {
 				const asked = new URLSearchParams(search).get("tab");
 				const tab = (EGRESS_TABS as readonly string[]).includes(asked ?? "") ? (asked as EgressTab) : "log";
-				const tabHref = (each: EgressTab) =>
-					each === "log" ? computePath("egress", base) : `${computePath("egress", base)}?tab=${each}`;
+				const tabHref = (each: EgressTab) => egressTabPath(each, search, base);
 				return (
 					<AccountEgressPage
 						source={source}

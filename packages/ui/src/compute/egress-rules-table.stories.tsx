@@ -74,6 +74,16 @@ export const AddRuleForEnvironment: Story = () => (
 	/>
 );
 
+/** Allowed hosts chosen with no host allowed for every sandbox: the first is asked for, and sent with the policy. */
+export const FirstHost: Story = () => (
+	<AddRuleDialog scopes={SCOPES} firstHost onClose={() => {}} onAdd={async () => {}} />
+);
+
+/** While sandboxes may reach nothing, a rule allowing a host for every sandbox makes it Allowed hosts. */
+export const AddRuleWhileClosed: Story = () => (
+	<AddRuleDialog scopes={SCOPES} closed onClose={() => {}} onAdd={async () => {}} />
+);
+
 /** Allowing a denied request's host, from the log: for the sandbox that asked. */
 export const AllowFromLog: Story = () => (
 	<AddRuleDialog

@@ -385,6 +385,24 @@ describe("proxy", () => {
 		// The API keeps each sandbox's log, with no switch to stop it.
 		await expect(source.proxy.update(accountId, { logRequests: false })).rejects.toThrow(/always keeps/);
 	});
+
+	it("goes from Nothing to Allowed hosts with the first host in one change, an IPv4 address included", async () => {
+		const { fetchApi } = setup();
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+
+		const closed = await source.proxy.update(accountId, { policy: "closed" });
+		expect(closed).toMatchObject({ policy: "closed", allow: [] });
+		// Allowed hosts alone can't be had: with nothing allowed the API reads it back as Nothing.
+		expect(await source.proxy.update(accountId, { policy: "allowlist" })).toMatchObject({ policy: "closed" });
+
+		const opened = await source.proxy.update(accountId, { policy: "allowlist", allow: ["1.1.1.1"] });
+		expect(opened).toMatchObject({ policy: "allowlist", allow: ["1.1.1.1"] });
+		expect(await source.proxy.get(accountId)).toMatchObject({ policy: "allowlist", allow: ["1.1.1.1"] });
+
+		// Removing the last host for every sandbox is Nothing again.
+		expect(await source.proxy.update(accountId, { allow: [] })).toMatchObject({ policy: "closed" });
+	});
 });
 
 describe("environments", () => {

@@ -108,10 +108,31 @@ describe("a denial's fixes", () => {
 		]);
 	});
 
-	it("allows a host no rule allows, and offers nothing for a deny rule or the metadata address", () => {
-		expect(denialFixes({ ...base, reason: "not on the proxy settings' allow list" }, [])).toEqual([{ kind: "allow" }]);
-		expect(denialFixes({ ...base, rule: "deny webhook.site" }, [])).toEqual([]);
-		expect(denialFixes({ ...base, host: "169.254.169.254" }, [])).toEqual([]);
+	it("allows a host no rule allows, as the host records it", () => {
+		// apps/host/internal/egress: `Decide`'s reason, recorded with the code `denied`.
+		const miss = { ...base, code: "denied", reason: "not on the proxy settings' allow list" };
+		expect(denialFixes(miss, [])).toEqual([{ kind: "allow" }]);
+		// Sample data with no code.
+		expect(denialFixes({ ...base, reason: "webhook.site isn't on the proxy settings' allow list." }, [])).toEqual([
+			{ kind: "allow" },
+		]);
+		expect(denialFixes(base, [])).toEqual([{ kind: "allow" }]);
+	});
+
+	it("offers no allow where an allow rule wouldn't help", () => {
+		const denied = { ...base, code: "denied" };
+		expect(
+			denialFixes({ ...denied, reason: "denied by a grant (deny webhook.site)", rule: "deny webhook.site" }, []),
+		).toEqual([]);
+		// The account's deny list: deny wins over an allow.
+		expect(denialFixes({ ...denied, reason: "denied by the proxy settings (webhook.site)" }, [])).toEqual([]);
+		expect(denialFixes({ ...denied, reason: "this sandbox has no network" }, [])).toEqual([]);
+		expect(
+			denialFixes({ ...denied, host: "169.254.169.254", reason: "not on the proxy settings' allow list" }, []),
+		).toEqual([]);
+		expect(denialFixes({ ...base, code: "protected-unavailable", reason: "can't be fetched right now" }, [])).toEqual(
+			[],
+		);
 		expect(denialFixes({ ...base, decision: "allowed" }, [])).toEqual([]);
 	});
 

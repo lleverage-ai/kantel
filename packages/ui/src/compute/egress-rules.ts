@@ -20,6 +20,14 @@ export function hostProblem(host: string): string | undefined {
 	return undefined;
 }
 
+/** A dotted IPv4 address: the account's allow and deny lists match one exactly. */
+const IPV4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+
+/** Why `host` can't go on the account's allow or deny list, or undefined when it can: a host name, or an address. */
+export function accountHostProblem(host: string): string | undefined {
+	return IPV4.test(host.trim()) ? undefined : hostProblem(host);
+}
+
 /** Why `prefix` can't be a path prefix, or undefined when it can. */
 export function pathProblem(prefix: string): string | undefined {
 	if (!prefix.startsWith("/")) return "A path starts with /.";

@@ -6,7 +6,7 @@
 // no setting: the proxy looks inside the HTTPS of the hosts protected variables and method or path rules name, which
 // they need. Credentials go on requests as protected variables, bound to hosts; the proxy adds no headers of its own.
 
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { SegmentedControl, TextField } from "../primitives/controls.tsx";
 import { Dialog } from "../primitives/dialog.tsx";
@@ -18,7 +18,8 @@ import { Skeleton } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { Notice } from "../primitives/surface.tsx";
 import { Switch } from "../primitives/switch.tsx";
-import type { ComputeAccount, EgressGrant, EgressPolicy, ProxySettings, ProxySettingsChange } from "./compute-model.ts";
+import type { ComputeAccount, EgressPolicy, ProxySettings, ProxySettingsChange } from "./compute-model.ts";
+import { BUSY_TEXT, type ChangeResult, EgressEditor } from "./egress-editor.ts";
 import { EgressLog } from "./egress-log.tsx";
 import {
 	type EgressOverview,
@@ -75,8 +76,13 @@ export interface AccountEgressPageProps {
 
 type Dialogs =
 	| { readonly kind: "add"; readonly initial?: Partial<Pick<NewRule, "action" | "host" | "scope">> }
+	| { readonly kind: "first" }
 	| { readonly kind: "closed" }
 	| { readonly kind: "off" };
+
+/** Said when a change was saved but the account's egress couldn't be read again after it. */
+const UNREFRESHED_TEXT =
+	"Saved. Kantel couldn't read the rest of the account's egress again, so some of the page may be out of date.";
 
 export function AccountEgressPage({
 	source,
@@ -90,16 +96,29 @@ export function AccountEgressPage({
 	now: fixedNow,
 }: AccountEgressPageProps) {
 	const { state, reload } = useLoad(() => loadEgressOverview(source, account.id), [source, account.id]);
-	// What a change answered with, ahead of the first read's: the page shows the newest.
-	const [latest, setLatest] = useState<EgressOverview>();
+	const loaded = state.status === "ready" ? state.value : undefined;
+	const [busy, setBusy] = useState<string>();
+	// What the editor has published, with the editor that published it: another account's, or an earlier read's, is old.
+	const [latest, setLatest] = useState<{ readonly editor: EgressEditor; readonly overview: EgressOverview }>();
+	// Every change goes through one editor, one at a time, each written from the newest snapshot.
+	const editor = useMemo(() => {
+		if (loaded === undefined) return undefined;
+		const made: EgressEditor = new EgressEditor({
+			source,
+			accountId: account.id,
+			initial: loaded,
+			publish: (overview) => setLatest({ editor: made, overview }),
+			onBusy: setBusy,
+		});
+		return made;
+	}, [source, account.id, loaded]);
 	const [tab, setTab] = useState<EgressTab>(initialTab);
 	// The address's tab wins when it changes, as with Back.
 	useEffect(() => setTab(initialTab), [initialTab]);
 	const [dialog, setDialog] = useState<Dialogs>();
-	const [busy, setBusy] = useState<string>();
 	const [notice, setNotice] = useState<{ level: "info" | "warning" | "error"; text: string }>();
 	const now = fixedNow ?? Date.now();
-	const overview = latest ?? (state.status === "ready" ? state.value : undefined);
+	const overview = latest !== undefined && latest.editor === editor ? latest.overview : loaded;
 
 	const header = (
 		<PageHeader
@@ -107,7 +126,13 @@ export function AccountEgressPage({
 			actions={
 				// On a phone, only over the rules: the log and settings keep the screen for themselves.
 				overview === undefined || (narrow && tab !== "rules") ? undefined : (
-					<Button variant="primary" size="md" icon={<PlusIcon size="sm" />} onClick={() => setDialog({ kind: "add" })}>
+					<Button
+						variant="primary"
+						size="md"
+						icon={<PlusIcon size="sm" />}
+						disabled={busy !== undefined}
+						onClick={() => setDialog({ kind: "add" })}
+					>
 						Add rule
 					</Button>
 				)
@@ -115,7 +140,7 @@ export function AccountEgressPage({
 		/>
 	);
 
-	if (overview === undefined) {
+	if (overview === undefined || editor === undefined) {
 		return (
 			<div className={computePage}>
 				{header}
@@ -145,25 +170,27 @@ export function AccountEgressPage({
 	const variables = protectedVariablesOf(overview);
 	const log = logOf(overview);
 
-	/** Runs a change, then reads the account's egress again: a rule from any level changes what the page shows. */
-	const change = async (what: string, run: () => Promise<unknown>, done?: string): Promise<boolean> => {
-		setBusy(what);
+	/** Says how a change went: saved, saved with the page partly out of date, or not run as another was. */
+	const report = (result: ChangeResult, done?: string): boolean => {
+		if (result.status === "busy") setNotice({ level: "warning", text: BUSY_TEXT });
+		else if (result.status === "saved-unrefreshed") setNotice({ level: "warning", text: UNREFRESHED_TEXT });
+		else if (done !== undefined) setNotice({ level: "info", text: done });
+		return result.status !== "busy";
+	};
+
+	/** Runs one of the editor's changes from the page, saying on the page what went wrong. */
+	const change = async (run: () => Promise<ChangeResult>, done?: string): Promise<boolean> => {
 		setNotice(undefined);
 		try {
-			await run();
-			setLatest(await loadEgressOverview(source, account.id));
-			if (done !== undefined) setNotice({ level: "info", text: done });
-			return true;
+			return report(await run(), done);
 		} catch (caught) {
 			setNotice({ level: "error", text: messageOf(caught, "Kantel couldn't save the change. Try again.") });
 			return false;
-		} finally {
-			setBusy(undefined);
 		}
 	};
 
 	const updateProxy = (what: string, update: ProxySettingsChange, done?: string) =>
-		change(what, () => source.proxy.update(account.id, update), done);
+		change(() => editor.updateProxy(what, update), done);
 
 	const choosePolicy = (policy: EgressPolicy) => {
 		if (policy === proxy.policy || busy !== undefined) return;
@@ -171,73 +198,26 @@ export function AccountEgressPage({
 			setDialog({ kind: "closed" });
 			return;
 		}
-		void change("policy", async () => {
-			const next = await source.proxy.update(account.id, { policy });
-			// With no host allowed for every sandbox, Kantel's API reads allowed hosts back as nothing.
-			if (next.policy !== policy) throw new Error("Add a rule allowing a host for every sandbox first.");
-		});
+		// With no host allowed for every sandbox, Kantel's API reads Allowed hosts back as Nothing: ask for the first.
+		if (policy === "allowlist" && proxy.allow.length === 0) {
+			setDialog({ kind: "first" });
+			return;
+		}
+		void change(() => editor.choosePolicy(policy));
 	};
 
-	const grantsOf = (scope: RuleScope): readonly EgressGrant[] =>
-		scope.kind === "environment"
-			? (overview.environments.find((env) => env.id === scope.id)?.grants ?? [])
-			: scope.kind === "sandbox"
-				? (overview.sandboxes.find((box) => box.sandboxId === scope.id)?.grants ?? [])
-				: [];
+	const removeRule = (rule: EgressRule) => void change(() => editor.removeRule(rule));
 
-	const setGrants = (scope: RuleScope, grants: readonly EgressGrant[]): Promise<unknown> =>
-		scope.kind === "environment"
-			? source.environments.setGrants(scope.id, grants)
-			: scope.kind === "sandbox"
-				? source.egress.setGrants(scope.id, grants)
-				: Promise.resolve();
-
-	const removeRule = (rule: EgressRule) => {
-		const { scope } = rule;
-		void change(rule.key, () => {
-			if (scope.kind === "account") {
-				return source.proxy.update(
-					account.id,
-					rule.action === "allow"
-						? { allow: proxy.allow.filter((host) => host !== rule.host) }
-						: { deny: proxy.deny.filter((host) => host !== rule.host) },
-				);
-			}
-			return setGrants(
-				scope,
-				grantsOf(scope).filter((grant) => grant.id !== rule.grant?.id),
-			);
-		});
-	};
-
-	let newRules = 0;
-	const addRule = async (rule: NewRule): Promise<void> => {
-		const { scope } = rule;
-		const run = (): Promise<unknown> => {
-			if (scope.kind === "account") {
-				const list = rule.action === "allow" ? proxy.allow : proxy.deny;
-				if (list.includes(rule.host)) return Promise.resolve();
-				return source.proxy.update(
-					account.id,
-					rule.action === "allow" ? { allow: [...list, rule.host] } : { deny: [...list, rule.host] },
-				);
-			}
-			newRules += 1;
-			return setGrants(scope, [
-				...grantsOf(scope),
-				{
-					id: `grt_new_${Date.now()}_${newRules}`,
-					action: rule.action,
-					host: rule.host,
-					methods: rule.methods,
-					paths: rule.paths,
-				},
-			]);
-		};
-		// The dialog says why it failed and stays open; the page doesn't repeat it.
-		await run();
-		setLatest(await loadEgressOverview(source, account.id));
+	/** A dialog's change: what went wrong stays in the dialog, which stays open. */
+	const fromDialog = async (run: () => Promise<ChangeResult>): Promise<void> => {
+		const result = await run();
+		if (result.status === "busy") throw new Error(BUSY_TEXT);
+		report(result);
 		setDialog(undefined);
+	};
+
+	const addRule = async (rule: NewRule): Promise<void> => {
+		await fromDialog(() => editor.addRule(rule));
 		setTab("rules");
 		onTab?.("rules");
 	};
@@ -316,7 +296,7 @@ export function AccountEgressPage({
 							<Notice
 								level="warning"
 								action={
-									<Button size="sm" onClick={() => void change("reload", () => Promise.resolve())}>
+									<Button size="sm" disabled={busy !== undefined} onClick={() => void change(() => editor.refresh())}>
 										Try again
 									</Button>
 								}
@@ -384,6 +364,14 @@ export function AccountEgressPage({
 					{...(dialog.initial === undefined ? {} : { initial: dialog.initial })}
 					onClose={() => setDialog(undefined)}
 					onAdd={addRule}
+				/>
+			) : null}
+			{dialog?.kind === "first" ? (
+				<AddRuleDialog
+					scopes={scopes}
+					firstHost
+					onClose={() => setDialog(undefined)}
+					onAdd={(rule) => fromDialog(() => editor.choosePolicy("allowlist", rule.host))}
 				/>
 			) : null}
 			{dialog?.kind === "closed" ? (

@@ -11,9 +11,12 @@ import { EllipsisIcon, EnvironmentIcon, SandboxIcon, TrashIcon } from "../primit
 import { Menu, type MenuEntry } from "../primitives/menu.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { type DestinationBinding, type EgressGrant, HTTP_METHODS, type HttpMethod } from "./compute-model.ts";
+import type { NewRule } from "./egress-editor.ts";
 import { type EgressRule, methodsAndPaths, type ProtectedVariableRow, type RuleScope } from "./egress-overview.ts";
-import { hostProblem, pathProblem, splitList } from "./egress-rules.ts";
+import { accountHostProblem, hostProblem, pathProblem, splitList } from "./egress-rules.ts";
 import { cellMono, messageOf, TableFrame, table, td, th } from "./parts.tsx";
+
+export type { NewRule };
 
 /** "Every sandbox", or the environment's or sandbox's name with its icon. */
 export function ScopeText({ scope, href }: { scope: RuleScope; href?: string }) {
@@ -233,15 +236,6 @@ export function ProtectedVariablesTable({ variables, narrow = false, environment
 	);
 }
 
-/** A rule to add: what it allows or denies and what it applies to. */
-export interface NewRule {
-	readonly action: EgressGrant["action"];
-	readonly host: string;
-	readonly methods: readonly HttpMethod[];
-	readonly paths: readonly string[];
-	readonly scope: RuleScope;
-}
-
 const scopeValue = (scope: RuleScope): string => (scope.kind === "account" ? "account" : `${scope.kind}:${scope.id}`);
 
 export interface AddRuleDialogProps {
@@ -249,8 +243,13 @@ export interface AddRuleDialogProps {
 	readonly scopes: readonly RuleScope[];
 	/** What the dialog opens with, such as a denied request's host. */
 	readonly initial?: Partial<Pick<NewRule, "action" | "host" | "scope">>;
-	/** The account's policy allows nothing: a rule for every sandbox can't allow a host. */
+	/** The account's policy allows nothing: a rule allowing a host for every sandbox makes it Allowed hosts. */
 	readonly closed?: boolean;
+	/**
+	 * Allowed hosts was chosen with no host allowed for every sandbox: the dialog asks for the first, which is sent with
+	 * the policy in one change. Only the host is asked for.
+	 */
+	readonly firstHost?: boolean;
 	readonly onClose: () => void;
 	readonly onAdd: (rule: NewRule) => Promise<void>;
 }
@@ -259,10 +258,19 @@ export interface AddRuleDialogProps {
  * Add rule: allow or deny, a host, what it applies to and, for an environment or a sandbox, optionally methods and
  * paths. A rule for every sandbox is for a whole host: the account's rules name hosts only.
  */
-export function AddRuleDialog({ scopes, initial, closed = false, onClose, onAdd }: AddRuleDialogProps) {
-	const [action, setAction] = useState<EgressGrant["action"]>(initial?.action ?? "allow");
+export function AddRuleDialog({
+	scopes,
+	initial,
+	closed = false,
+	firstHost = false,
+	onClose,
+	onAdd,
+}: AddRuleDialogProps) {
+	const [action, setAction] = useState<EgressGrant["action"]>(firstHost ? "allow" : (initial?.action ?? "allow"));
 	const [host, setHost] = useState(initial?.host ?? "");
-	const [scope, setScope] = useState(scopeValue(initial?.scope ?? { kind: "account" }));
+	const [scope, setScope] = useState(
+		scopeValue(firstHost ? { kind: "account" } : (initial?.scope ?? { kind: "account" })),
+	);
 	const [methods, setMethods] = useState<readonly HttpMethod[]>([]);
 	const [paths, setPaths] = useState("");
 	const [tried, setTried] = useState(false);
@@ -270,16 +278,14 @@ export function AddRuleDialog({ scopes, initial, closed = false, onClose, onAdd 
 	const [failure, setFailure] = useState<string>();
 	const chosen = scopes.find((each) => scopeValue(each) === scope) ?? scopes[0] ?? { kind: "account" };
 	const everySandbox = chosen.kind === "account";
-	const hostError = hostProblem(host);
+	// The account's lists take an address as well as a host name; an environment's and a sandbox's grants, names only.
+	const hostError = everySandbox ? accountHostProblem(host) : hostProblem(host);
 	const pathList = everySandbox ? [] : splitList(paths);
 	const pathError = pathList.map(pathProblem).find((problem) => problem !== undefined);
-	const scopeError =
-		closed && everySandbox && action === "allow"
-			? "Sandboxes may reach nothing, so a rule for every sandbox can't allow a host. Choose Allowed hosts first, or apply it to an environment or a sandbox."
-			: undefined;
+	const opens = !firstHost && closed && everySandbox && action === "allow";
 	const submit = () => {
 		setTried(true);
-		if (hostError !== undefined || pathError !== undefined || scopeError !== undefined || busy) return;
+		if (hostError !== undefined || pathError !== undefined || busy) return;
 		setBusy(true);
 		setFailure(undefined);
 		onAdd({
@@ -296,6 +302,45 @@ export function AddRuleDialog({ scopes, initial, closed = false, onClose, onAdd 
 			},
 		);
 	};
+	const hostField = (
+		<TextField
+			label="Host"
+			hint="*.example.com covers every subdomain."
+			value={host}
+			onChange={(event) => setHost(event.currentTarget.value)}
+			placeholder="api.github.com"
+			mono
+			spellCheck={false}
+			{...(tried && hostError !== undefined ? { error: hostError } : {})}
+		/>
+	);
+	if (firstHost) {
+		return (
+			<Dialog
+				open
+				title="Allow which host?"
+				onClose={onClose}
+				onSubmit={submit}
+				actions={
+					<>
+						<Button onClick={onClose}>Cancel</Button>
+						<Button type="submit" variant="primary" busy={busy}>
+							Allow it
+						</Button>
+					</>
+				}
+			>
+				<div className="flex w-(--kt-card-width) max-w-full flex-col gap-4 pt-2">
+					<p className="m-0 text-sm text-muted">
+						With Allowed hosts, sandboxes may reach the hosts allowed for every sandbox, and those an environment's or a
+						sandbox's own rule allows. Name the first: Kantel changes the policy and allows it together.
+					</p>
+					{hostField}
+				</div>
+				{failure === undefined ? null : <p className="kt-dialog-error">{failure}</p>}
+			</Dialog>
+		);
+	}
 	return (
 		<Dialog
 			open
@@ -323,16 +368,7 @@ export function AddRuleDialog({ scopes, initial, closed = false, onClose, onAdd 
 						onChange={setAction}
 					/>
 				</FormField>
-				<TextField
-					label="Host"
-					hint="*.example.com covers every subdomain."
-					value={host}
-					onChange={(event) => setHost(event.currentTarget.value)}
-					placeholder="api.github.com"
-					mono
-					spellCheck={false}
-					{...(tried && hostError !== undefined ? { error: hostError } : {})}
-				/>
+				{hostField}
 				<SelectField
 					label="Applies to"
 					value={scope}
@@ -344,13 +380,14 @@ export function AddRuleDialog({ scopes, initial, closed = false, onClose, onAdd 
 								? "Every sandbox"
 								: `${each.kind === "environment" ? "Environment" : "Sandbox"}: ${each.name}`,
 					}))}
-					{...(tried && scopeError !== undefined ? { error: scopeError } : {})}
 					hint={
-						everySandbox
-							? "Every sandbox in the account. For whole hosts: to allow or deny some methods or paths only, apply it to an environment or a sandbox."
-							: chosen.kind === "environment"
-								? "Every sandbox made from this environment, from its next request."
-								: "This sandbox only, from its next request."
+						opens
+							? "Sandboxes may reach nothing now: this makes it Allowed hosts, with this host the first."
+							: everySandbox
+								? "Every sandbox in the account. For whole hosts: to allow or deny some methods or paths only, apply it to an environment or a sandbox."
+								: chosen.kind === "environment"
+									? "Every sandbox made from this environment, from its next request."
+									: "This sandbox only, from its next request."
 					}
 				/>
 				{everySandbox ? null : (

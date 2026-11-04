@@ -157,10 +157,18 @@ export function denialFixes(entry: LoggedEntry, variables: readonly ProtectedVar
 		);
 		return [{ kind: "bind", environment: env, ...(named === undefined ? {} : { variable: named.name }) }];
 	}
-	if (entry.rule !== undefined || entry.code !== undefined) return [];
-	if (isMetadataHost(entry.host)) return [];
+	// The host records every policy refusal as `denied`, its reason saying which. Only a host no rule allows can be let
+	// through by allowing it: a deny rule wins over an allow, and a sandbox with no network has none to allow.
+	if (entry.code !== undefined && entry.code !== DENIED_CODE) return [];
+	if (entry.rule !== undefined || isMetadataHost(entry.host)) return [];
+	if (entry.reason !== undefined && !ALLOW_LIST_MISS.test(entry.reason)) return [];
 	return [{ kind: "allow" }];
 }
+
+/** The host's code for a request its rules refused. */
+const DENIED_CODE = "denied";
+/** The host's reason for a host no allow list or grant names (apps/host/internal/egress, `Decide`). */
+const ALLOW_LIST_MISS = /allow list/i;
 
 /** The cloud metadata address, which is always blocked. */
 const isMetadataHost = (host: string): boolean => host === "169.254.169.254";

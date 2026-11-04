@@ -606,6 +606,7 @@ export const EGRESS_LOG: readonly EgressEntry[] = [
 		host: "api.github.com",
 		path: "/repos/lleverage-ai/kantel/branches/old",
 		decision: "denied",
+		code: "denied",
 		reason: "Denied by the environment's grant.",
 		rule: "deny DELETE api.github.com /repos/*",
 		inspected: true,
@@ -634,6 +635,7 @@ export const EGRESS_LOG: readonly EgressEntry[] = [
 		method: "CONNECT",
 		host: "collect.example-tracker.io",
 		decision: "denied",
+		code: "denied",
 		reason: "Denied by the environment's grant.",
 		rule: "deny *.example-tracker.io",
 	}),
@@ -682,6 +684,8 @@ export const SCRATCH_EGRESS_LOG: readonly EgressEntry[] = [
 		method: "CONNECT",
 		host: "example-tracker.io",
 		decision: "denied",
+		// As the host records it: every refusal by the rules is `denied`, its reason saying which.
+		code: "denied",
 		reason: "example-tracker.io isn't on the proxy settings' allow list.",
 	}),
 	egressEntry("egr_s1", 5 * MINUTE, {
@@ -1439,8 +1443,14 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					const current = proxies.get(accountId) ?? (await source.proxy.get(accountId));
 					const { upstream, ...rest } = change;
 					const merged: ProxySettings = { ...current, ...rest };
-					// As with Kantel's API, nothing allowed is closed: closing empties the allow list.
-					const next: ProxySettings = merged.policy === "closed" ? { ...merged, allow: [] } : merged;
+					// As with Kantel's API, nothing allowed is closed: closing empties the allow list, and Allowed hosts with
+					// none allowed reads back as closed.
+					const next: ProxySettings =
+						merged.policy === "closed"
+							? { ...merged, allow: [] }
+							: merged.policy === "allowlist" && merged.allow.length === 0
+								? { ...merged, policy: "closed" }
+								: merged;
 					const withUpstream: ProxySettings =
 						upstream === undefined
 							? next
