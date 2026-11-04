@@ -16,11 +16,18 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 	return { promise, resolve };
 }
 
-/** Sample data, with a hold on environment grant writes and a switch that fails reading environments. */
+/**
+ * Sample data, with a hold on environment grant writes, a switch that fails reading environments, and a write someone
+ * else makes once, just before the next proxy write.
+ */
 function harness() {
 	const source = createComputeFixtures();
 	const sent: (readonly EgressGrant[])[] = [];
+	/** Each proxy change, without its `expected`. */
 	const proxyChanges: ProxySettingsChange[] = [];
+	/** Each proxy change's `expected`. */
+	const proxyExpected: (ProxySettings | undefined)[] = [];
+	let meanwhile: (() => Promise<unknown>) | undefined;
 	let hold: Promise<void> | undefined;
 	let failReads = false;
 	const wrapped: ComputeSource = {
@@ -37,8 +44,13 @@ function harness() {
 		},
 		proxy: {
 			...source.proxy,
-			update: (accountId, change) => {
-				proxyChanges.push(change);
+			update: async (accountId, change) => {
+				const { expected, ...rest } = change;
+				proxyChanges.push(rest);
+				proxyExpected.push(expected);
+				const other = meanwhile;
+				meanwhile = undefined;
+				if (other !== undefined) await other();
 				return source.proxy.update(accountId, change);
 			},
 		},
@@ -54,8 +66,13 @@ function harness() {
 	return {
 		make,
 		sent,
+		source,
 		proxyChanges,
+		proxyExpected,
 		published,
+		meanwhile: (other: () => Promise<unknown>) => {
+			meanwhile = other;
+		},
 		holdWrites: () => {
 			const gate = deferred();
 			hold = gate.promise;
@@ -274,6 +291,62 @@ describe("changes made somewhere else meanwhile", () => {
 		await theirs.addRule({ action: "deny", host: "*.ru", methods: [], paths: [], scope: every });
 		await mine.addRule({ action: "deny", host: "registry", methods: [], paths: [], scope: every });
 		expect(mine.current.proxy.deny).toEqual([...denyBefore, "*.ru", "registry"]);
+	});
+
+	it("keeps an account rule added between its read and its write: the stale write is refused and made again", async () => {
+		const h = harness();
+		const mine = await h.make();
+		const every: RuleScope = { kind: "account" };
+		const denyBefore = mine.current.proxy.deny;
+		h.meanwhile(async () => {
+			const theirs = await h.source.proxy.get(LLEVERAGE.id);
+			await h.source.proxy.update(LLEVERAGE.id, { deny: [...theirs.deny, "*.ru"] });
+		});
+		expect(
+			(await mine.addRule({ action: "deny", host: "registry", methods: [], paths: [], scope: every })).status,
+		).toBe("saved");
+		expect(mine.current.proxy.deny).toEqual([...denyBefore, "*.ru", "registry"]);
+		// The first write was made from the read before *.ru, and refused; the second from the read after it.
+		expect(h.proxyChanges).toEqual([
+			{ deny: [...denyBefore, "registry"] },
+			{ deny: [...denyBefore, "*.ru", "registry"] },
+		]);
+		expect(h.proxyExpected.map((read) => read?.deny)).toEqual([denyBefore, [...denyBefore, "*.ru"]]);
+	});
+
+	it("doesn't bring back an account rule removed between its read and its write", async () => {
+		const h = harness();
+		const mine = await h.make();
+		const every: RuleScope = { kind: "account" };
+		const [first, ...rest] = mine.current.proxy.allow;
+		if (first === undefined) throw new Error("No host allowed for every sandbox");
+		h.meanwhile(() => h.source.proxy.update(LLEVERAGE.id, { allow: rest }));
+		await mine.addRule({ action: "allow", host: "crates.io", methods: [], paths: [], scope: every });
+		expect(mine.current.proxy.allow).toEqual([...rest, "crates.io"]);
+	});
+
+	it("gives up after three refusals, with the conflict, and writes nothing", async () => {
+		const h = harness();
+		const mine = await h.make();
+		const every: RuleScope = { kind: "account" };
+		const before = await h.source.proxy.get(LLEVERAGE.id);
+		let n = 0;
+		const another = async () => {
+			n += 1;
+			const theirs = await h.source.proxy.get(LLEVERAGE.id);
+			await h.source.proxy.update(LLEVERAGE.id, { deny: [...theirs.deny, `x${n}.example`] });
+			if (n < 3) h.meanwhile(another);
+		};
+		h.meanwhile(another);
+		await expect(
+			mine.addRule({ action: "deny", host: "registry", methods: [], paths: [], scope: every }),
+		).rejects.toMatchObject({ code: "conflict" });
+		expect((await h.source.proxy.get(LLEVERAGE.id)).deny).toEqual([
+			...before.deny,
+			"x1.example",
+			"x2.example",
+			"x3.example",
+		]);
 	});
 });
 

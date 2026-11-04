@@ -13,8 +13,16 @@ These routes are part of Kantel's API, which every control plane serves. Their s
 
 Everything in Kantel belongs to an account: sandboxes, snapshots, API keys, webhooks and settings. There are two kinds.
 
-- Your **personal account** is made the first time you sign in. What you create there is yours alone.
-- An **organisation** is an account people create or join to share sandboxes and snapshots. You can belong to any number.
+- Your **personal account**, your personal space, is made the first time you sign in. What you create there, hosts included, is yours alone.
+- An **organisation** is an account people create or join to share hosts, sandboxes and snapshots. You can belong to any number.
+
+## In the console
+
+- **Create an organisation**: open the account switcher and select **Create an organisation**. You become its owner, and the console switches to it.
+- **Invite someone**: on the organisation's **Organisation** page, select **Invite people**, enter their email address and a role, and pass on the join code it shows. The code is shown once.
+- **Join one**: open the account switcher, select **Join with an invite code**, and enter the code you were given. Sign in first with the email address the invite was made for.
+
+The account switcher also moves you between your personal space and your organisations. The rest of this page does the same over the API.
 
 The examples use `KANTEL_URL` and `KANTEL_API_KEY` as set in [Create and manage sandboxes](/sandboxes/lifecycle/#before-you-start).
 

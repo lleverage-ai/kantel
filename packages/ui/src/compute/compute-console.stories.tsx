@@ -64,6 +64,20 @@ export const Mounts: Story = () => <Scenario page="mounts" />;
 /** Mounts off: no Mounts in Settings, and its address opens Sandboxes. */
 export const MountsOff: Story = () => <Scenario page="mounts" options={{ noMounts: true }} />;
 export const Hosts: Story = () => <Scenario page="hosts" />;
+/** Admin's Install: the public URL, a default install's loopback until one is set here. */
+export const Install: Story = () => <Scenario page="install" />;
+/** A new install's first run: no host yet, so Sandboxes leads with adding one, its address loopback. */
+export const FirstRun: Story = () => <Scenario options={{ noHosts: true }} />;
+/** The first run where the deployment already has an address hosts can reach. */
+export const FirstRunReachable: Story = () => (
+	<Scenario options={{ noHosts: true, publicUrl: "https://kantel.example.com" }} />
+);
+/** The first run on a phone. */
+export const MobileFirstRun: Story = () => <Scenario options={{ noHosts: true }} narrow />;
+MobileFirstRun.meta = { width: 390 };
+/** Admin's Install on a phone: Hosts and Install in a row over the page. */
+export const MobileInstall: Story = () => <Scenario page="install" narrow />;
+MobileInstall.meta = { width: 390 };
 export const HostsHosted: Story = () => <Scenario page="hosts" hosting="hosted" />;
 /** A member who isn't a super-admin has no Hosts. */
 export const NotSuperAdmin: Story = () => <Scenario options={{ notSuperAdmin: true }} />;

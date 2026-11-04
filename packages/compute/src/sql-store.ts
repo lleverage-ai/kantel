@@ -218,5 +218,6 @@ export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 		bundles: sqlCollection(driver, "bundles"),
 		bucketSources: sqlCollection(driver, "bucketSources"),
 		fileUrls: sqlCollection(driver, "fileUrls"),
+		settings: sqlCollection(driver, "settings"),
 	};
 }

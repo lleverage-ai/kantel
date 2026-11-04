@@ -1,0 +1,57 @@
+---
+// The console's Hosts page (Settings, Hosts), cut down: Add a host with its one-line command and one-time token, and
+// machines showing up online once they've joined. The command is the one the console shows.
+import { CONSOLE_URL, HOST_INSTALL_URL } from "../../site.mjs";
+import Icon from "./Icon.astro";
+import Mock from "./Mock.astro";
+
+interface Props {
+	class?: string;
+}
+const { class: className } = Astro.props;
+
+const hosts = [
+	{ name: "home-server", system: "Debian 13, x86_64" },
+	{ name: "build-01", system: "Ubuntu 24.04, x86_64" },
+];
+---
+
+<Mock
+	class={className}
+	label="Adding a host in Kantel's console: a one-line command with a one-time token to run on a Linux machine, and two hosts online, home-server and build-01."
+>
+	<div class="flex flex-col gap-4">
+		<div class="flex items-baseline justify-between gap-4">
+			<p class="m-title">Hosts</p>
+			<span class="m-xs m-faint">Token expires in 59m</span>
+		</div>
+		<div class="m-well flex items-start gap-3 px-3 py-2.5">
+			<code class="min-w-0 flex-1 m-mono break-words whitespace-normal"
+				>curl -fsSL {HOST_INSTALL_URL} | sudo sh -s -- --url {CONSOLE_URL} --token kth_8Hq2vX4mP0cR7tLw</code
+			>
+			<Icon name="copy" class="m-icon-sm m-faint" />
+		</div>
+		<div class="m-card m-rows m-sm">
+			{
+				hosts.map((host) => (
+					<div class="flex items-center gap-3 px-3 py-2.5">
+						<span class="min-w-0 flex-1">
+							<span class="block truncate m-strong">{host.name}</span>
+							<span class="block truncate m-xs m-muted">{host.system}</span>
+						</span>
+						<span class="flex items-center gap-1.5 tone-done">
+							<span class="m-dot" />
+							<span class="m-fg">Online</span>
+						</span>
+					</div>
+				))
+			}
+		</div>
+	</div>
+</Mock>
+
+<style>
+	.tone-done {
+		color: var(--kt-status-done);
+	}
+</style>

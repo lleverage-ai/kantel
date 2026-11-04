@@ -1,35 +1,64 @@
 ---
-// Signing in: the console's code step (@kantel/ui identity/sign-in.tsx), with the six digits typed.
-import Icon from "./Icon.astro";
+// Signing in to the hosted console: the code step (@kantel/ui identity/sign-in.tsx) with the six digits typed, and the
+// personal space that's ready on the first sign-in.
 import Mock from "./Mock.astro";
+
+interface Props {
+	class?: string;
+}
+const { class: className } = Astro.props;
 ---
 
 <Mock
-	class="py-12"
-	label="Kantel's sign-in: we sent a code to you@example.com, the six-digit code typed in, and a Sign in button."
+	class:list={["flex flex-col justify-center", className]}
+	label="Kantel's sign-in: a code sent to ada@example.com, typed in, a Sign in button, and below it the personal space that is ready after signing in, with an option to create an organisation."
 >
-	<div class="mx-auto flex max-w-sm flex-col gap-4">
-		<div class="flex items-center gap-2 m-faint m-sm"><Icon name="lock" class="m-icon-sm" />127.0.0.1:58090</div>
-		<h3 class="m-title">Check your email</h3>
-		<p class="m-muted m-sm">
-			We sent a code to <span class="m-strong m-fg">you@example.com</span>. It works until 09:42.
-		</p>
-		<div class="flex flex-col gap-1.5">
-			<span class="m-sm m-strong">Code</span>
-			<span class="code m-raised">481 027</span>
-			<span class="m-xs m-faint">The code is in the email we just sent.</span>
-		</div>
+	<div class="mx-auto flex w-full max-w-xs flex-col gap-3">
+		<p class="m-title">Check your email</p>
+		<p class="m-muted m-sm">We sent a code to <span class="m-strong m-fg">ada@example.com</span>.</p>
+		<span class="code m-raised">481 027</span>
 		<span class="m-button m-primary justify-center">Sign in</span>
+		<div class="m-card m-rows mt-2 m-sm">
+			<div class="flex items-center gap-2 px-3 py-2.5">
+				<span class="avatar">A</span>
+				<span class="min-w-0 flex-1 truncate">Ada</span>
+				<span class="m-badge m-done">Personal</span>
+			</div>
+			<div class="flex items-center gap-2 px-3 py-2.5 m-muted">
+				<span class="avatar avatar-org">+</span>
+				<span class="min-w-0 flex-1 truncate">Create an organisation</span>
+			</div>
+		</div>
 	</div>
 </Mock>
 
 <style>
 	.code {
 		font-family: var(--kt-font-mono);
-		font-size: var(--kt-text-display);
+		font-size: var(--kt-text-lg);
 		letter-spacing: 0.2em;
 		padding: var(--kt-step-2) var(--kt-step-3);
 		border-color: var(--kt-focus);
 		border-radius: var(--kt-radius-control);
+	}
+
+	.avatar {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: var(--kt-step-5);
+		height: var(--kt-step-5);
+		flex: none;
+		border-radius: var(--kt-radius-full);
+		background: var(--kt-accent-soft);
+		color: var(--kt-accent-text);
+		font-size: var(--kt-text-xs);
+		font-weight: var(--kt-weight-strong);
+	}
+
+	.avatar-org {
+		border-radius: var(--kt-radius-xs);
+		background: var(--kt-active);
+		color: var(--kt-text-muted);
 	}
 </style>

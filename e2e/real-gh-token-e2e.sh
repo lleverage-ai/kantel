@@ -10,7 +10,8 @@
 #   - the placeholder sent to another host is refused with 403 placeholder-unbound;
 #   - a rotation reaches the running sandbox at once with the same placeholder (real token: real, fake, real again);
 #   - kantel-doctor, built from the same source, says the CA is trusted and GH_TOKEN would be swapped;
-#   - a live fork has a placeholder of its own that works, and the parent's placeholder isn't swapped there;
+#   - a live fork has a placeholder of its own that works, and the parent's placeholder sent from it is refused with
+#     403 placeholder-unknown and logged as denied, never swapped;
 #   - a pause (memory kept) and resume keeps the placeholder working;
 #   - the token is in no sandbox's environment or /proc, nowhere in the host's state (the sandboxes' disks, the
 #     snapshots, the memory files, the fork, the RAM spool; a canary the sandbox writes proves the scan reads them),
@@ -547,25 +548,26 @@ else
 		die "the fork's GH_TOKEN isn't a placeholder of its own"
 	gh_user "$FORK" "$MODE"
 	egress_swapped "$FORK" /user || die "the fork's egress log has no GET api.github.com/user with GH_TOKEN swapped"
-	parent_in_fork=$(sx "$FORK" "curl -sS -o /dev/null -D - -H 'Authorization: Bearer $placeholder' https://api.github.com/user" | jq -r '.stdout + .stderr')
-	# The fork's egress log, newest first, must show that second GET /user with nothing swapped.
+	# The parent's placeholder sent from the fork, to the host GH_TOKEN is bound to: refused by the fork's proxy, never
+	# swapped nor sent on. The status is curl's -w %{http_code}, the answer's own: with -D -, curl also prints the
+	# proxy's "HTTP/1.1 200 Connection established" for the tunnel, which isn't GitHub's answer.
+	parent_in_fork=$(sx "$FORK" "curl -sS -o /tmp/parent-refused.txt -D - -w 'final=%{http_code}\n' -H 'Authorization: Bearer $placeholder' https://api.github.com/user; cat /tmp/parent-refused.txt" | jq -r '.stdout + .stderr')
+	parent_status=$(grep -o '^final=[0-9]*' <<<"$parent_in_fork" | tail -1 | cut -d= -f2)
+	if [[ "$parent_status" != 403 ]] || ! grep -qi '^X-Kantel-Proxy-Error: placeholder-unknown' <<<"$parent_in_fork"; then
+		die "the parent's placeholder sent from the fork wasn't refused with 403 placeholder-unknown (the answer: ${parent_status:-none}): $(grep -i '^HTTP/\|^X-Kantel\|^kantel' <<<"$parent_in_fork" | tr -d '\r' | tr '\n' ' ' | head -c 400)"
+	fi
+	# The fork's egress log has it as denied, with nothing swapped.
 	parent_note=""
 	for _ in $(seq 1 20); do
-		if api GET "/v1/sandboxes/$FORK/egress" |
-			jq -e '[.entries[] | select(.host == "api.github.com" and .path == "/user")] | length >= 2 and .[0].swapped == []' >/dev/null; then
-			parent_note="not swapped (the egress log shows nothing swapped; GitHub answered $(grep -o '^HTTP/[0-9.]* [0-9]*' <<<"$parent_in_fork" | tail -1 | cut -d' ' -f2))"
+		if api GET "/v1/sandboxes/$FORK/egress" | jq -e 'any(.entries[]; .host == "api.github.com" and .path == "/user" and
+			.decision == "denied" and .code == "placeholder-unknown" and .swapped == [])' >/dev/null; then
+			parent_note="refused, 403 placeholder-unknown, logged as denied with nothing swapped"
 			break
 		fi
 		sleep 1
 	done
-	if [[ -z "$parent_note" ]] && grep -qi 'X-Kantel-Proxy-Error: placeholder-unbound' <<<"$parent_in_fork"; then
-		parent_note="refused, 403 placeholder-unbound"
-	fi
-	[[ -n "$parent_note" ]] ||
-		die "the parent's placeholder sent from the fork was neither refused nor left unswapped: $(head -c 300 <<<"$parent_in_fork")"
-	if [[ "$MODE" == real ]] && grep -q '^HTTP/[0-9.]* 200' <<<"$parent_in_fork"; then
-		die "the parent's placeholder sent from the fork got GitHub's 200: it was swapped"
-	fi
+	[[ -n "$parent_note" ]] || die "the fork's egress log has no denied GET api.github.com/user for the parent's placeholder"
+	info "$(grep '^kantel egress' <<<"$parent_in_fork" | head -1 | cut -c1-160)"
 	ok "fork $FORK ($fork_kind): its own placeholder (${fork_placeholder:0:8}…) works; the parent's: $parent_note"
 	results+=("fork ($fork_kind): own placeholder, gh api user $([[ "$MODE" == real ]] && echo "$LOGIN" || echo 401), parent's placeholder $parent_note")
 	sx_ok "$FORK" 'sync' >/dev/null

@@ -16,14 +16,20 @@ type Resolution struct {
 
 // Provider decides a swap: resolve(placeholder, sandbox, destination) -> value | deny.
 type Provider interface {
-	// Resolve answers the value for placeholder on a request from sandboxID to dest, ErrUnknown if it isn't one of
-	// the sandbox's placeholders, *UnboundError if dest isn't one of its bindings, or ErrUnavailable.
+	// Resolve answers the value for placeholder on a request from sandboxID to dest, ErrUnknown if it isn't a
+	// placeholder at all (or the sandbox has no protected variables), ErrForeign if it is a placeholder but not one of
+	// the sandbox's, *UnboundError if dest isn't one of its bindings, or ErrUnavailable.
 	Resolve(ctx context.Context, placeholder, sandboxID string, dest Destination) (Resolution, error)
 }
 
 var (
-	// ErrUnknown is text that looks like a placeholder but isn't one of this sandbox's: it is left as it is.
+	// ErrUnknown is text that isn't a placeholder of this sandbox, nor refused for being someone else's: it is left
+	// as it is.
 	ErrUnknown = errors.New("protect: not a placeholder of this sandbox")
+	// ErrForeign is a placeholder that isn't one of this sandbox's: another sandbox's, such as a fork's parent's. It is
+	// never swapped, and the request carrying it is refused rather than sent on, so
+	// the sandbox learns why instead of getting the destination's 401. It is also ErrUnknown.
+	ErrForeign = fmt.Errorf("%w: a placeholder, but not one of this sandbox's", ErrUnknown)
 	// ErrUnavailable is a placeholder whose value can't be fetched now: the request is refused rather than sent
 	// with the placeholder, so the caller sees why.
 	ErrUnavailable = errors.New("protect: protected values are unavailable")
@@ -131,7 +137,8 @@ func (f *Fixed) Entries() []Entry {
 func (t *indexed) resolve(placeholder string, dest Destination) (Resolution, error) {
 	i, ok := t.byPlaceholder[placeholder]
 	if !ok {
-		return Resolution{}, ErrUnknown
+		// Only a sandbox's own placeholders are in its table, so the lookup is by sandbox and placeholder together.
+		return Resolution{}, ErrForeign
 	}
 	e := t.table.Entries[i]
 	for _, b := range e.Bindings {

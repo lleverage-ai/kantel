@@ -1305,6 +1305,24 @@ export const ProxySettings = Type.Object(
 	},
 );
 
+export const ProxySettingsExpected = Type.Object(
+	{
+		enabled: Type.Boolean(),
+		defaultAction: Type.Union([Type.Literal("allow"), Type.Literal("deny")]),
+		allow: Type.Array(Type.String()),
+		deny: Type.Array(Type.String()),
+		upstream: Type.Optional(Type.Object({ url: Type.String(), headerNames: Type.Array(Type.String()) })),
+		attribution: Type.Boolean(),
+	},
+	{
+		title: "ProxySettingsExpected",
+		description:
+			"The settings as you last read them: `GET /proxy`'s answer will do. Given, the write is refused with `conflict` " +
+			"if they have changed since, so an edit made from an older read can't undo someone else's: read them again and " +
+			"redo the edit. Left out, the settings are replaced whatever they hold.",
+	},
+);
+
 export const PutProxySettingsBody = Type.Object(
 	{
 		account: accountQuery,
@@ -1324,6 +1342,7 @@ export const PutProxySettingsBody = Type.Object(
 			]),
 		),
 		attribution: Type.Optional(Type.Boolean()),
+		expected: Type.Optional(ProxySettingsExpected),
 	},
 	{ title: "PutProxySettingsBody" },
 );
@@ -1977,6 +1996,36 @@ export const CreateBucketSourceBody = Type.Object(
 	{ title: "CreateBucketSourceBody" },
 );
 
+// Where hosts reach the control plane: the address in every join command.
+
+export const PublicUrl = Type.Object(
+	{
+		publicUrl: Type.String({
+			description:
+				"Where hosts reach this control plane: the address in every join command, such as `https://kantel.example.com`.",
+		}),
+		source: Type.Union([Type.Literal("console"), Type.Literal("deployment")], {
+			description:
+				"`console`: a super-admin set it here. `deployment`: the deployment's own (`KANTEL_PUBLIC_URL`, or the address the call came in at).",
+		}),
+		deploymentUrl: Type.String({ description: "The deployment's own, which `publicUrl` goes back to when cleared." }),
+		loopback: Type.Boolean({
+			description:
+				"`publicUrl` is a loopback address (`127.0.0.1`, `localhost`): only a host on the same machine can join.",
+		}),
+	},
+	{ title: "PublicUrl" },
+);
+
+export const SetPublicUrlBody = Type.Object(
+	{
+		publicUrl: Type.Union([Type.String({ maxLength: 2048 }), Type.Null()], {
+			description: "An http(s) origin, such as `https://kantel.example.com`; `null` goes back to the deployment's own.",
+		}),
+	},
+	{ title: "SetPublicUrlBody" },
+);
+
 // An account's own hosts (experimental, behind the deployment's KANTEL_ACCOUNT_HOSTS switch).
 
 export const CreateAccountJoinTokenBody = Type.Object(
@@ -2041,6 +2090,7 @@ export type ApiKeyScope = Static<typeof ApiKeyScope>;
 export type ApiKeyPreset = Static<typeof ApiKeyPreset>;
 export type ApiKey = Static<typeof ApiKey>;
 export type ProxySettings = Static<typeof ProxySettings>;
+export type ProxySettingsExpected = Static<typeof ProxySettingsExpected>;
 export type DestinationBinding = Static<typeof DestinationBinding>;
 export type EgressGrant = Static<typeof EgressGrant>;
 export type EgressGrantInput = Static<typeof EgressGrantInput>;
@@ -2059,6 +2109,7 @@ export type TelemetryExport = Static<typeof TelemetryExport>;
 export type Host = Static<typeof Host>;
 export type HostState = Static<typeof HostState>;
 export type HostJoinToken = Static<typeof HostJoinToken>;
+export type PublicUrl = Static<typeof PublicUrl>;
 export type AccountJoinToken = Static<typeof AccountJoinToken>;
 export type DeviceLogin = Static<typeof DeviceLogin>;
 export type DeviceLoginState = Static<typeof DeviceLoginState>;

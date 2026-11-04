@@ -675,7 +675,7 @@ export function createHostHub(options: HostHubOptions): HostHub {
 						let timer: ReturnType<typeof setTimeout> | undefined;
 						const check = () => {
 							if (waiting()) return;
-							clearTimeout(timer);
+							if (timer !== undefined) clearTimeout(timer);
 							wake = undefined;
 							resolve();
 						};

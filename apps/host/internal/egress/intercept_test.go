@@ -375,6 +375,62 @@ func TestInterceptRefusesAnUnboundPlaceholder(t *testing.T) {
 	}
 }
 
+// A fork is a sandbox of its own, with its own placeholders for the parent's variables. The parent's placeholder sent
+// from the fork, even to the variable's bound host, is refused and logged, never swapped nor sent on; the fork's own
+// is swapped as usual.
+func TestInterceptRefusesTheParentsPlaceholderInAFork(t *testing.T) {
+	env := newProtectedEnv(t) // the client is the fork, testSandbox
+	const forkPlaceholder = "kph_F0rkF0rkF0rkF0rkF0rkF0rkF0rkF0rkF0rkF0rk"
+	parent := "sbx_parent"
+	env.proxy.Secrets = protect.NewStore(func(_ context.Context, sandboxID string) (protect.Table, error) {
+		ph := forkPlaceholder
+		if sandboxID == parent {
+			ph = ghPlaceholder
+		}
+		return protect.Table{Version: 1, Entries: []protect.Entry{
+			{Placeholder: ph, Name: "GITHUB_TOKEN", Value: "ghs_realValue_1", Bindings: []protect.Binding{{Host: "api.example.com"}}},
+		}}, nil
+	})
+
+	for _, where := range []string{"header", "body"} {
+		req := newRequest(t, http.MethodPost, "https://api.example.com/user", "")
+		if where == "header" {
+			req.Header.Set("Authorization", "Bearer "+ghPlaceholder)
+		} else {
+			req = newRequest(t, http.MethodPost, "https://api.example.com/user", `{"token":"`+ghPlaceholder+`"}`)
+			req.Header.Set("Content-Type", "application/json")
+		}
+		res, body := env.do(req)
+		if res.StatusCode != http.StatusForbidden || res.Header.Get(ErrorHeader) != protect.CodeUnknown {
+			t.Fatalf("the parent's placeholder in the fork's %s: %d %s %q: %s", where, res.StatusCode, ErrorHeader, res.Header.Get(ErrorHeader), body)
+		}
+		if !strings.Contains(body, ghPlaceholder[:8]+"… isn't one of this sandbox's placeholders") || strings.Contains(body, ghPlaceholder) {
+			t.Errorf("body %q: want the reason, naming the placeholder by its start only", body)
+		}
+		if _, n := env.lastSeen(); n != 0 {
+			t.Fatalf("the request with the parent's placeholder in its %s reached the destination", where)
+		}
+	}
+	recs := env.recordsAtLeast(2)
+	for _, r := range recs[:2] {
+		if r.Allowed || r.Code != protect.CodeUnknown || len(r.Swapped) != 0 || r.Path != "/user" || !strings.Contains(r.Reason, "isn't one of this sandbox's placeholders") {
+			t.Fatalf("record %+v: want a denial for the parent's placeholder", r)
+		}
+	}
+
+	// The fork's own placeholder goes as usual.
+	req := newRequest(t, http.MethodGet, "https://api.example.com/user", "")
+	req.Header.Set("Authorization", "Bearer "+forkPlaceholder)
+	if res, body := env.do(req); res.StatusCode != 200 {
+		t.Fatalf("the fork's own placeholder: %d %s", res.StatusCode, body)
+	}
+	if got, _ := env.lastSeen(); got.auth != "Bearer ghs_realValue_1" {
+		t.Fatalf("the destination got %+v", got)
+	}
+	env.noValues("the records", fmt.Sprintf("%+v", env.recordsCopy()))
+	env.noValues("the log", env.log.String())
+}
+
 func TestInterceptAppliesGrants(t *testing.T) {
 	rule := "deny DELETE api.example.com /repos/**"
 	env := newProtectedEnv(t, Grant{Action: "deny", Host: "api.example.com", Methods: []string{"DELETE"}, Paths: []string{"/repos/**"}, Rule: rule})

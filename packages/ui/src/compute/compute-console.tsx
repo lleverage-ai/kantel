@@ -29,14 +29,18 @@ import type {
 	E2EMode,
 	E2ESource,
 	HostsSource,
+	SandboxKind,
 } from "./compute-model.ts";
 import { DeviceLoginPage } from "./device-page.tsx";
 import { EgressPage } from "./egress-page.tsx";
 import { EnvironmentPage, EnvironmentsPage } from "./environments-page.tsx";
+import { FirstRun } from "./first-run.tsx";
 import { HostsPage } from "./hosts-page.tsx";
+import { InstallPage } from "./install-page.tsx";
 import { MountsPage } from "./mounts-page.tsx";
 import { OrganisationPage } from "./organisation-page.tsx";
 import { messageOf } from "./parts.tsx";
+import { ProfilePage } from "./profile-page.tsx";
 import { SANDBOX_VIEWS, SandboxPage, type SandboxView } from "./sandbox-page.tsx";
 import { SandboxesPage } from "./sandboxes-page.tsx";
 import { SettingsFrame, type SettingsNavItem } from "./settings-nav.tsx";
@@ -49,10 +53,10 @@ import { WebhooksPage } from "./webhooks-page.tsx";
 // The compute console: the shell around the compute plane's pages. On a wide screen, a sidebar with the account
 // switcher, the account's five pages (Sandboxes, Snapshots, Environments, Egress, Settings), Admin for a super-admin
 // and your menu at its foot; on a phone, a top bar with the switcher and your initials, and the five pages in a tab bar
-// along the bottom. Admin is its own area, outside the accounts: a super-admin's Hosts, with its own sidebar and a way
-// back. It routes on the path under `base` (the root of the console app, `""`) and leaves where the data comes from to
-// its `source`: the sample data in fixtures.ts, or the API. A super-admin on a deployment with no host yet is shown the
-// way to add one first.
+// along the bottom. Admin is its own area, outside the accounts: a super-admin's Hosts and Install, with its own
+// sidebar and a way back. It routes on the path under `base` (the root of the console app, `""`) and leaves where the
+// data comes from to its `source`: the sample data in fixtures.ts, or the API. A super-admin on a deployment with no
+// host yet is shown the first run: Sandboxes leads with adding one, right there.
 
 export type ComputePage =
 	| "sandboxes"
@@ -63,9 +67,11 @@ export type ComputePage =
 	| "webhooks"
 	| "telemetry"
 	| "organisation"
+	| "profile"
 	| "billing"
 	| "hosts"
 	| "mounts"
+	| "install"
 	| "device";
 
 export const COMPUTE_PAGES: readonly ComputePage[] = [
@@ -77,9 +83,11 @@ export const COMPUTE_PAGES: readonly ComputePage[] = [
 	"webhooks",
 	"telemetry",
 	"organisation",
+	"profile",
 	"billing",
 	"hosts",
 	"mounts",
+	"install",
 	"device",
 ];
 
@@ -144,25 +152,31 @@ const FILES_PARAMS = ["path", "file", "snapshot"] as const;
 
 /**
  * Where a file browser is, from the address: its query, `?path=/home/user&file=notes.md`, or for an end-to-end sandbox
- * its fragment, `#path=/home/user&file=notes.md`, which the fragment wins. The root without `path`.
+ * its fragment, `#path=/home/user&file=notes.md`, which the fragment wins. `path=/` is the root; without `path`, where
+ * the browser starts (an isolate's /workspace, a microVM's /home/user).
  */
 export function filesAtOf(search: string, hash = ""): FilesAt {
 	const fragment = new URLSearchParams(hash.replace(/^#/, ""));
 	const params = fragment.has("path") || fragment.has("file") ? fragment : new URLSearchParams(search);
-	const path = (params.get("path") ?? "").replace(/^\/+|\/+$/g, "");
+	const named = params.get("path");
+	const folder = named === null ? {} : { path: named.replace(/^\/+|\/+$/g, "") };
 	const file = params.get("file") ?? "";
-	return file === "" || file.includes("/") ? { path } : { path, file };
+	return file === "" || file.includes("/") ? folder : { ...folder, file };
 }
+
+/** A place's folder as the address has it: the API's absolute path, `/home/user`, and `/` for the root. */
+const pathParam = (at: FilesAt): string | undefined => (at.path === undefined ? undefined : `/${at.path}`);
 
 /**
  * `search` with a file browser's place in it (`snapshot`, when given, says whose files), the rest kept (`?hosting`).
- * The folder is the API's absolute path, `/home/user`; the root has none.
+ * The folder is the API's absolute path, `/home/user`; where the browser starts has none.
  */
 export function filesSearch(search: string, at: FilesAt, snapshot?: string): string {
 	const params = new URLSearchParams(search);
 	for (const name of FILES_PARAMS) params.delete(name);
 	if (snapshot !== undefined) params.set("snapshot", snapshot);
-	if (at.path !== "") params.set("path", `/${at.path}`);
+	const path = pathParam(at);
+	if (path !== undefined) params.set("path", path);
 	if (at.file !== undefined) params.set("file", at.file);
 	// The slashes in a path read as they are.
 	const query = params.toString().replaceAll("%2F", "/");
@@ -171,7 +185,7 @@ export function filesSearch(search: string, at: FilesAt, snapshot?: string): str
 
 /** `search` without a file browser's place, with its `?` when anything is left. */
 export function searchWithoutFiles(search: string): string {
-	return filesSearch(search, { path: "" });
+	return filesSearch(search, {});
 }
 
 /**
@@ -181,7 +195,8 @@ export function searchWithoutFiles(search: string): string {
  */
 export function filesHash(at: FilesAt): string {
 	const params = new URLSearchParams();
-	if (at.path !== "") params.set("path", `/${at.path}`);
+	const path = pathParam(at);
+	if (path !== undefined) params.set("path", path);
 	if (at.file !== undefined) params.set("file", at.file);
 	const fragment = params.toString().replaceAll("%2F", "/");
 	return fragment === "" ? "" : `#${fragment}`;
@@ -315,8 +330,9 @@ const STRIP_TONES = {
 	idle: "text-muted",
 } as const;
 
-/** The pages under Settings: the account's own settings, each at the address it had before. */
+/** The pages under Settings: your profile and the account's own settings, each at the address it had before. */
 const SETTINGS_PAGES: ReadonlySet<ComputePage> = new Set([
+	"profile",
 	"organisation",
 	"keys",
 	"webhooks",
@@ -426,8 +442,11 @@ export function ComputeConsole({
 	const mountsShown = source.mounts !== undefined;
 	// A page this person can't open goes to Sandboxes rather than showing nothing. Device sign-in has no sidebar item:
 	// a terminal running `kantel login` opens it.
+	// Install, the deployment's public URL, is a super-admin's, where the API can set it.
+	const installSource = superAdmin ? hostsSource?.publicUrl : undefined;
 	const page =
 		(route.page === "hosts" && me !== undefined && !hostsShown) ||
+		(route.page === "install" && me !== undefined && installSource === undefined) ||
 		(route.page === "billing" && !billingShown) ||
 		(route.page === "mounts" && !mountsShown) ||
 		(route.page === "device" && source.devices === undefined)
@@ -439,13 +458,21 @@ export function ComputeConsole({
 
 	// Admin is the deployment's, not an account's: a super-admin's Hosts, outside the switcher, with a way back.
 	const adminShown = hostsShown && superAdmin;
-	const inAdmin = adminShown && page === "hosts";
+	const inAdmin = adminShown && (page === "hosts" || page === "install");
 	const adminHref = computePath("hosts", base);
+	const adminItems: SettingsNavItem[] = [
+		{ id: "hosts", label: "Hosts" },
+		...(installSource === undefined ? [] : [{ id: "install", label: "Install" }]),
+	].map((item) => ({ ...item, href: computePath(item.id as ComputePage, base), selected: page === item.id }));
+	const hostCount = hosts.state.status === "ready" ? hosts.state.value?.length : undefined;
 	// An account's own hosts, where the deployment lets it add them, are one of its settings.
 	const ownHostsShown = hostsShown && !superAdmin;
 	const inSettings = SETTINGS_PAGES.has(page) || (ownHostsShown && page === "hosts");
+	// Your profile is the personal account's first setting; from an organisation, your menu opens it.
+	const personal = account?.kind === "personal";
 	const settingsItems: SettingsNavItem[] = [
-		{ id: "organisation", label: account?.kind === "personal" ? "Organisations" : "General" },
+		...(personal || page === "profile" ? [{ id: "profile", label: "Profile" }] : []),
+		{ id: "organisation", label: personal ? "Organisations" : "General" },
 		{ id: "keys", label: "API keys" },
 		{ id: "webhooks", label: "Webhooks" },
 		{ id: "telemetry", label: "OpenTelemetry" },
@@ -486,6 +513,7 @@ export function ComputeConsole({
 			{...(name === undefined ? {} : { name })}
 			{...(email === undefined ? {} : { email })}
 			{...(compact && adminShown && !inAdmin ? { onAdmin: () => navigate(adminHref) } : {})}
+			onProfile={() => navigate(computePath("profile", base))}
 			{...(onSignOut === undefined ? {} : { onSignOut })}
 			{...(onThemeChoose === undefined ? {} : { onThemeChoose })}
 		/>
@@ -562,7 +590,18 @@ export function ComputeConsole({
 								</span>
 							</div>
 							<SidebarSection label="Admin" heading={false}>
-								<SidebarItem icon={<ServerIcon />} label="Hosts" href={adminHref} selected />
+								{adminItems.map((item) => (
+									<SidebarItem
+										key={item.id}
+										icon={item.id === "hosts" ? <ServerIcon /> : <SettingsIcon />}
+										label={item.label}
+										href={item.href}
+										selected={item.selected ?? false}
+										{...(item.id === "hosts" && hostCount !== undefined && hostCount > 0
+											? { trailing: String(hostCount) }
+											: {})}
+									/>
+								))}
 							</SidebarSection>
 						</>
 					) : (
@@ -649,7 +688,13 @@ export function ComputeConsole({
 					</div>
 				) : (
 					<div className={narrow ? "p-gutter-narrow" : "p-gutter"}>
-						<SettingsFrameFor shown={inSettings} items={settingsItems} narrow={narrow}>
+						<SettingsFrameFor
+							shown={inSettings || (inAdmin && narrow && adminItems.length > 1)}
+							items={inAdmin ? adminItems : settingsItems}
+							label={inAdmin ? "Admin" : "Settings"}
+							titled={!inAdmin}
+							narrow={narrow}
+						>
 							<PageFor
 								// A new account or page starts afresh: nothing of the last one's dialogs or filters carries over.
 								key={`${account.id}/${page}/${route.sandboxId ?? route.environmentId ?? ""}`}
@@ -667,6 +712,12 @@ export function ComputeConsole({
 								narrow={narrow}
 								hosts={hostsSource}
 								ownHosts={!superAdmin}
+								accounts={list ?? []}
+								onSwitch={switchTo}
+								onRenamed={() => accounts.reload()}
+								you={{ name: name ?? me.name, email: email ?? me.email }}
+								{...(onThemeChoose === undefined ? {} : { onThemeChoose })}
+								onHostJoined={hosts.reload}
 								onCreate={() => setDialog("create")}
 								onJoin={() => setDialog("join")}
 								onLeft={() => {
@@ -730,6 +781,12 @@ function PageFor({
 	narrow,
 	hosts,
 	ownHosts,
+	accounts,
+	onSwitch,
+	onRenamed,
+	you,
+	onThemeChoose,
+	onHostJoined,
 	onCreate,
 	onJoin,
 	onLeft,
@@ -752,6 +809,16 @@ function PageFor({
 	hosts: HostsSource | undefined;
 	/** They are the account's own, not the deployment's. */
 	ownHosts: boolean;
+	/** Every account the viewer has: the personal account's Organisations lists them. */
+	accounts: readonly ComputeAccount[];
+	onSwitch: (account: ComputeAccount) => void;
+	/** The organisation was renamed: the switcher reads the accounts again. */
+	onRenamed: () => void;
+	/** Who is signed in, for Profile. */
+	you: { readonly name: string; readonly email?: string };
+	onThemeChoose?: (preference: ThemePreference) => void;
+	/** The first run's host joined: the console reads the hosts again. */
+	onHostJoined: () => void;
 	onCreate: () => void;
 	onJoin: () => void;
 	onLeft: () => void;
@@ -794,6 +861,9 @@ function PageFor({
 					creating={new URLSearchParams(search).has("new")}
 					narrow={narrow}
 					{...(noHosts ? { [ownHosts ? "ownHostHref" : "addHostHref"]: `${computePath("hosts", base)}?add` } : {})}
+					{...(noHosts && !ownHosts && hosts !== undefined
+						? { firstRun: <FirstRun source={hosts} onJoined={onHostJoined} {...timing} /> }
+						: {})}
 					{...timing}
 				/>
 			);
@@ -860,26 +930,39 @@ function PageFor({
 			);
 		}
 		case "keys":
-			return <ComputeApiKeysPage source={source.keys} account={account} {...timing} />;
+			return <ComputeApiKeysPage source={source.keys} account={account} narrow={narrow} {...timing} />;
 		case "webhooks":
-			return <WebhooksPage source={source.webhooks} account={account} {...timing} />;
+			return <WebhooksPage source={source.webhooks} account={account} narrow={narrow} {...timing} />;
 		case "telemetry":
-			return <TelemetryPage source={source.telemetry} account={account} {...timing} />;
+			return <TelemetryPage source={source.telemetry} account={account} narrow={narrow} {...timing} />;
 		case "organisation":
 			return (
 				<OrganisationPage
 					source={source.accounts}
 					account={account}
 					viewerId={viewer.id}
+					accounts={accounts}
+					narrow={narrow}
+					onSwitch={onSwitch}
+					onRenamed={onRenamed}
 					onCreate={onCreate}
 					onJoin={onJoin}
 					onLeft={onLeft}
 					{...timing}
 				/>
 			);
+		case "profile":
+			return (
+				<ProfilePage
+					name={you.name}
+					narrow={narrow}
+					{...(you.email === undefined ? {} : { email: you.email })}
+					{...(onThemeChoose === undefined ? {} : { onThemeChoose })}
+				/>
+			);
 		case "billing":
 			return source.billing === undefined ? null : (
-				<BillingPage source={source.billing} account={account} {...timing} />
+				<BillingPage source={source.billing} account={account} narrow={narrow} {...timing} />
 			);
 		case "mounts":
 			return source.mounts === undefined ? null : (
@@ -892,8 +975,13 @@ function PageFor({
 					hosting={source.hosting}
 					{...(ownHosts ? { owner: account } : {})}
 					adding={new URLSearchParams(search).has("add")}
+					narrow={narrow}
 					{...timing}
 				/>
+			);
+		case "install":
+			return hosts?.publicUrl === undefined || ownHosts ? null : (
+				<InstallPage source={hosts.publicUrl} narrow={narrow} />
 			);
 		case "device": {
 			const code = new URLSearchParams(search).get("code") ?? undefined;
@@ -934,9 +1022,12 @@ function SnapshotsRoute({
 	const [list, setList] = useState<SnapshotsView>(listed);
 	// What each snapshot was called where it was opened, for its heading; a link to its files has none.
 	const [labels] = useState(() => new Map<string, string>());
+	// And the kind of sandbox it's of, which says where its files start; the page asks for it where a link doesn't say.
+	const [kinds] = useState(() => new Map<string, SandboxKind>());
 	const snapshot = new URLSearchParams(search).get("snapshot") ?? "";
 	const at = filesAtOf(search);
 	const label = labels.get(snapshot);
+	const kind = kinds.get(snapshot);
 	const view: SnapshotsView =
 		snapshot === ""
 			? list
@@ -944,7 +1035,8 @@ function SnapshotsRoute({
 					name: "files",
 					snapshotId: snapshot,
 					...(label === undefined ? {} : { label }),
-					...(at.path === "" ? {} : { path: at.path }),
+					...(kind === undefined ? {} : { kind }),
+					...(at.path === undefined ? {} : { path: at.path }),
 					...(at.file === undefined ? {} : { file: at.file }),
 					back: list,
 				};
@@ -952,7 +1044,10 @@ function SnapshotsRoute({
 	const hrefOf = (next: SnapshotsView): string => {
 		const path = computePath("snapshots", base, page);
 		if (next.name !== "files") return `${path}${searchWithoutFiles(search)}`;
-		const place = { path: next.path ?? "", ...(next.file === undefined ? {} : { file: next.file }) };
+		const place = {
+			...(next.path === undefined ? {} : { path: next.path }),
+			...(next.file === undefined ? {} : { file: next.file }),
+		};
 		return `${path}${filesSearch(search, place, next.snapshotId)}`;
 	};
 	return (
@@ -964,6 +1059,7 @@ function SnapshotsRoute({
 			onViewChange={(next) => {
 				if (next.name === "files") {
 					if (next.label !== undefined) labels.set(next.snapshotId, next.label);
+					if (next.kind !== undefined) kinds.set(next.snapshotId, next.kind);
 					navigate(hrefOf(next));
 					return;
 				}
@@ -981,16 +1077,20 @@ function SnapshotsRoute({
 function SettingsFrameFor({
 	shown,
 	items,
+	label,
+	titled,
 	narrow,
 	children,
 }: {
 	shown: boolean;
 	items: readonly SettingsNavItem[];
+	label: string;
+	titled: boolean;
 	narrow: boolean;
 	children: ReactNode;
 }): ReactNode {
 	return shown ? (
-		<SettingsFrame items={items} narrow={narrow}>
+		<SettingsFrame items={items} label={label} titled={titled} narrow={narrow}>
 			{children}
 		</SettingsFrame>
 	) : (

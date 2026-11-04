@@ -75,6 +75,10 @@ func (h *Host) Run(ctx context.Context, update Updater) error {
 	if h.cfg.ControlPlane == "" || h.cfg.Credential == "" {
 		return errors.New("not registered: run `kantel-host join`")
 	}
+	// Usage samples go out on whichever connection is up, and wait (a bounded few) while none is.
+	usageCtx, stopUsage := context.WithCancel(ctx)
+	defer stopUsage()
+	go h.RunUsage(usageCtx)
 	backoff := time.Second
 	for {
 		started := time.Now()

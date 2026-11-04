@@ -1,7 +1,7 @@
 // A sandbox's page (compute console): everything about one sandbox and every way into it. The header has its name and
 // state, Browser, Desktop and Stop, and ⋯ for Fork, Save snapshot, Auto-stop and Delete; under it its address, its
 // environment and when it stops. Five tabs follow. Overview: live previews of its desktop and browser (which open in
-// the console, full size), the SSH command in full, its ports, its CPU and memory, its details and its read-only
+// the console, full size), SSH (sandbox-ssh.tsx), its ports, its CPU and memory, its details and its read-only
 // mounts, where it has any. Logs: commands and what happened to it, in one timeline. Egress: its egress log.
 // Snapshots: its own history. Files: what's in it now, or in its latest snapshot while it's stopped. On a phone the
 // previews and Stop go (Stop is in ⋯) and the sections stack. Every call goes through the sources the host binds;
@@ -33,6 +33,7 @@ import {
 	type SnapshotsSource,
 	sandboxActions,
 	sandboxMoving,
+	screenUnavailable,
 	sizeSpec,
 	stopsInText,
 } from "./compute-model.ts";
@@ -43,8 +44,9 @@ import { SandboxLogs } from "./sandbox-logs.tsx";
 import { SandboxMounts } from "./sandbox-mounts.tsx";
 import { SandboxPorts } from "./sandbox-ports.tsx";
 import { embedUrl, popOut, SandboxViewer, ScreenPreview, type ScreenView } from "./sandbox-screen.tsx";
+import { SandboxSsh } from "./sandbox-ssh.tsx";
 import { showsCpu } from "./sandboxes-page.tsx";
-import { type FilesAt, SnapshotFiles } from "./snapshot-files.tsx";
+import { type FilesAt, filesRoot, SnapshotFiles } from "./snapshot-files.tsx";
 import { agoText, SandboxHistory } from "./snapshots-page.tsx";
 
 /** The page's tabs. */
@@ -196,9 +198,9 @@ export function SandboxPage({
 }: SandboxPageProps) {
 	const { state, reload } = useLoad(() => source.get(sandboxId), [source, sandboxId]);
 	const [own, setOwn] = useState<SandboxView>(initialView);
-	const [ownFiles, setOwnFiles] = useState<FilesAt>(filesAt ?? { path: "" });
+	const [ownFiles, setOwnFiles] = useState<FilesAt>(filesAt ?? {});
 	const routed = navigate !== undefined && filesHref !== undefined;
-	const files = routed ? (filesAt ?? { path: "" }) : ownFiles;
+	const files = routed ? (filesAt ?? {}) : ownFiles;
 	const goFiles = (at: FilesAt) => {
 		if (routed) navigate(filesHref(at, sealed));
 		else setOwnFiles(at);
@@ -376,21 +378,36 @@ export function SandboxPage({
 					...menu.entries,
 				]
 			: menu.entries;
+	const held = access?.value;
+	const readyAccess = held !== undefined && held !== "loading" && !(held instanceof Error) ? held : undefined;
 	const screenLink = (to: ScreenView, label: string, icon: ReactNode) => {
-		const link = (
-			<a
-				className={`${buttonClass("secondary", narrow ? "md" : "sm")} no-underline ${narrow ? "w-full" : ""}`}
-				href={href(to)}
-				onClick={(event) => {
-					if (event.metaKey || event.ctrlKey || event.shiftKey) return;
-					event.preventDefault();
-					go(to);
-				}}
-			>
-				{icon}
-				<span className={buttonLabelClass}>{label}</span>
-			</a>
-		);
+		// One that can't open here is shown disabled with its reason, never opened onto an error page.
+		const unavailable = readyAccess === undefined ? undefined : screenUnavailable(readyAccess, to);
+		const link =
+			unavailable !== undefined ? (
+				<Button
+					size={narrow ? "md" : "sm"}
+					icon={icon}
+					disabled
+					title={unavailable}
+					className={narrow ? "w-full" : undefined}
+				>
+					{label}
+				</Button>
+			) : (
+				<a
+					className={`${buttonClass("secondary", narrow ? "md" : "sm")} no-underline ${narrow ? "w-full" : ""}`}
+					href={href(to)}
+					onClick={(event) => {
+						if (event.metaKey || event.ctrlKey || event.shiftKey) return;
+						event.preventDefault();
+						go(to);
+					}}
+				>
+					{icon}
+					<span className={buttonLabelClass}>{label}</span>
+				</a>
+			);
 		// A button doesn't grow; on a phone its wrapper does, so the two share the row.
 		return narrow ? <span className="flex min-w-0 flex-1">{link}</span> : link;
 	};
@@ -524,7 +541,6 @@ export function SandboxPage({
 					narrow={narrow}
 					windows={windows}
 					access={access?.value}
-					freshAccess={freshAccess}
 					onAccessRetry={readAccess}
 					onOpen={go}
 					screenHref={href}
@@ -578,7 +594,6 @@ function Overview({
 	narrow,
 	windows,
 	access,
-	freshAccess,
 	onAccessRetry,
 	onOpen,
 	screenHref,
@@ -592,8 +607,6 @@ function Overview({
 	narrow: boolean;
 	windows: boolean;
 	access: SandboxAccess | "loading" | Error | undefined;
-	/** Access young enough for a new connection: the SSH command copied. */
-	freshAccess: () => Promise<SandboxAccess>;
 	onAccessRetry: () => void;
 	onOpen: (view: ScreenView) => void;
 	screenHref: (view: ScreenView) => string;
@@ -608,84 +621,70 @@ function Overview({
 	const { ports, exposePort, hidePort } = source;
 	const portsShown = ports !== undefined && exposePort !== undefined && hidePort !== undefined;
 
-	const tile = (kind: "desktop" | "browser") => (
-		<div className="kt-sandbox-tile flex min-w-0 flex-col overflow-hidden rounded-panel border border-border bg-panel">
-			<a
-				className="kt-focusable block"
-				href={screenHref(kind)}
-				aria-label={kind === "desktop" ? "Open the desktop" : "Open the browser"}
-				onClick={(event) => {
-					if (event.metaKey || event.ctrlKey || event.shiftKey) return;
-					event.preventDefault();
-					onOpen(kind);
-				}}
-			>
-				<ScreenPreview
-					kind={kind}
-					label={kind === "desktop" ? `${sandbox.name}'s desktop` : `${sandbox.name}'s browser`}
-					{...(framed === undefined
-						? {}
-						: (() => {
-								const url = embedUrl(framed, kind === "desktop" ? "watch" : "browser");
-								return url === undefined ? {} : { url };
-							})())}
-				/>
-			</a>
-			<div className="flex h-control-lg items-center gap-2 border-t border-border px-3">
-				<span className="font-medium text-fg">{kind === "desktop" ? "Desktop" : "Browser"}</span>
-				<span className="flex-1" />
-				{kind === "desktop" ? (
-					<a
-						className={`${buttonClass("ghost", "xs")} no-underline`}
-						href={screenHref("watch")}
-						onClick={(event) => {
-							if (event.metaKey || event.ctrlKey || event.shiftKey) return;
-							event.preventDefault();
-							onOpen("watch");
-						}}
-					>
-						<EyeIcon size="sm" />
-						<span className={buttonLabelClass}>Watch</span>
-					</a>
-				) : null}
+	const tile = (kind: "desktop" | "browser") => {
+		const unavailable = ready === undefined ? undefined : screenUnavailable(ready, kind);
+		if (unavailable !== undefined) {
+			// Nothing to open: the drawing, dimmed, and why under it.
+			return (
+				<div className="kt-sandbox-tile flex min-w-0 flex-col overflow-hidden rounded-panel border border-border bg-panel">
+					<div className="opacity-50">
+						<ScreenPreview kind={kind} label={kind === "desktop" ? "Desktop" : "Browser"} />
+					</div>
+					<div className="flex h-control-lg items-center gap-2 border-t border-border px-3">
+						<span className="font-medium text-fg">{kind === "desktop" ? "Desktop" : "Browser"}</span>
+						<span className="flex-1" />
+						<span className="truncate text-muted text-sm">{unavailable}</span>
+					</div>
+				</div>
+			);
+		}
+		return (
+			<div className="kt-sandbox-tile flex min-w-0 flex-col overflow-hidden rounded-panel border border-border bg-panel">
+				<a
+					className="kt-focusable block"
+					href={screenHref(kind)}
+					aria-label={kind === "desktop" ? "Open the desktop" : "Open the browser"}
+					onClick={(event) => {
+						if (event.metaKey || event.ctrlKey || event.shiftKey) return;
+						event.preventDefault();
+						onOpen(kind);
+					}}
+				>
+					<ScreenPreview
+						kind={kind}
+						label={kind === "desktop" ? `${sandbox.name}'s desktop` : `${sandbox.name}'s browser`}
+						{...(framed === undefined
+							? {}
+							: (() => {
+									const url = embedUrl(framed, kind === "desktop" ? "watch" : "browser");
+									return url === undefined ? {} : { url };
+								})())}
+					/>
+				</a>
+				<div className="flex h-control-lg items-center gap-2 border-t border-border px-3">
+					<span className="font-medium text-fg">{kind === "desktop" ? "Desktop" : "Browser"}</span>
+					<span className="flex-1" />
+					{kind === "desktop" ? (
+						<a
+							className={`${buttonClass("ghost", "xs")} no-underline`}
+							href={screenHref("watch")}
+							onClick={(event) => {
+								if (event.metaKey || event.ctrlKey || event.shiftKey) return;
+								event.preventDefault();
+								onOpen("watch");
+							}}
+						>
+							<EyeIcon size="sm" />
+							<span className={buttonLabelClass}>Watch</span>
+						</a>
+					) : null}
+				</div>
 			</div>
-		</div>
-	);
+		);
+	};
 
 	const ssh = !windows ? null : (
-		<section className="flex min-w-0 flex-col gap-2" aria-labelledby="sandbox-ssh">
-			<SectionHeading id="sandbox-ssh" title="SSH" />
-			{access instanceof Error ? (
-				<Notice
-					level="error"
-					action={
-						<Button size="sm" onClick={onAccessRetry}>
-							Try again
-						</Button>
-					}
-				>
-					{messageOf(access, "Kantel couldn't reach the sandbox.")}
-				</Notice>
-			) : (
-				<div className="flex min-h-control-lg min-w-0 items-center gap-2 rounded-panel border border-border bg-sunken py-1 pr-1 pl-3 font-mono text-code">
-					<span className="flex-none text-faint" aria-hidden="true">
-						$
-					</span>
-					{ready === undefined ? (
-						<span className="flex-1">
-							<Skeleton />
-						</span>
-					) : (
-						<code className="kt-selectable min-w-0 flex-1 truncate text-fg" title={ready.ssh}>
-							{ready.ssh}
-						</code>
-					)}
-					{ready === undefined ? null : (
-						<CopyButton text={async () => (await freshAccess()).ssh} size="sm" variant="ghost" />
-					)}
-				</div>
-			)}
-		</section>
+		<SandboxSsh source={source} sandboxId={sandbox.id} access={access} onAccessRetry={onAccessRetry} now={now} />
 	);
 
 	const usage = showsCpu(sandbox) ? <Usage source={source} sandbox={sandbox} refreshKey={usageKey} /> : null;
@@ -860,6 +859,7 @@ function SnapshotsTab({
 					key={browsing.snapshotId}
 					source={source}
 					snapshotId={browsing.snapshotId}
+					root={filesRoot(sandbox.kind)}
 					at={browsing.at}
 					now={now}
 					backLabel="Back to snapshots"
@@ -875,7 +875,7 @@ function SnapshotsTab({
 				source={source}
 				sandbox={sandbox}
 				now={now}
-				onBrowse={(snap) => setBrowsing({ snapshotId: snap.id, at: { path: "" } })}
+				onBrowse={(snap) => setBrowsing({ snapshotId: snap.id, at: {} })}
 				onNotice={onNotice}
 			/>
 		</div>
@@ -924,7 +924,8 @@ function FilesTab({
 }) {
 	const shown = filesShown(sandbox, source, endToEnd);
 	const files = source.files;
-	const browse = { at, now, onNavigate, ...(href === undefined ? {} : { href }) };
+	// An isolate's files are its /workspace only; a microVM's open at /home/user and go up to /.
+	const browse = { at, now, onNavigate, root: filesRoot(sandbox.kind), ...(href === undefined ? {} : { href }) };
 	if (shown === "checking") return <Skeleton width="40%" />;
 	if (shown === "unchecked" && endToEnd.status === "error") {
 		return (

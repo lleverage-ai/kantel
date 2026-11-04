@@ -79,6 +79,10 @@ export interface AccountsSource {
 	revokeInvite(accountId: string, inviteId: string): Promise<void>;
 	removeMember(accountId: string, memberId: string): Promise<void>;
 	leave(accountId: string): Promise<void>;
+	/** Renames an organisation; needs admin. Absent where the source can't. */
+	rename?(accountId: string, name: string): Promise<ComputeAccount>;
+	/** Changes a member's role; needs admin, and only an owner makes or unmakes an owner. Absent where it can't. */
+	setRole?(accountId: string, memberId: string, role: AccountRole): Promise<OrganisationMember>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -248,8 +252,21 @@ export interface SandboxCommand {
 
 /** How to reach a sandbox, made when asked for: tokens in it are short-lived. */
 export interface SandboxAccess {
-	/** The ssh command for this sandbox. */
+	/**
+	 * The Kantel CLI's command that SSHes in: `kantel ssh <id>`, which lets a key of its own in and needs nothing else,
+	 * or `kantel e2e ssh <id>` end to end. It has no token, so it works whenever it's run.
+	 */
 	readonly ssh: string;
+	/**
+	 * Signs the CLI in to the Kantel this console belongs to, once, before `ssh` works: `kantel login --url <gateway>`.
+	 * Absent where the CLI already is (`kantel console` serves the page).
+	 */
+	readonly cliLogin?: string;
+	/**
+	 * Whether plain `ssh` can get in without the CLI, through `SandboxesSource.sshKey`: not end to end, where the host
+	 * refuses the gateway's SSH. Absent: no.
+	 */
+	readonly sshWithoutCli?: boolean;
 	/** Its desktop in the browser. */
 	readonly desktopUrl: string;
 	/** The same desktop to watch only: Kantel drops the viewer's keyboard and mouse. */
@@ -261,7 +278,79 @@ export interface SandboxAccess {
 	 * console draws a stand-in.
 	 */
 	readonly embed?: { readonly desktop: string; readonly watch: string; readonly browser: string };
+	/**
+	 * Why Desktop or Browser can't open for this sandbox yet, in a few words ("Not available here yet"). Absent, it can.
+	 * One that can't is shown disabled with its reason, never opened onto an error page; its URLs are then unused.
+	 */
+	readonly unavailable?: { readonly desktop?: string; readonly browser?: string };
 }
+
+/** The one line that installs the Kantel CLI (`kantel`), from kantel.dev: it pastes the same into bash, zsh and fish. */
+export const CLI_INSTALL_COMMAND = "curl -fsSL https://kantel.dev/cli.sh | sh";
+
+/** Signs the CLI in to the Kantel at `url` (its gateway's public origin, such as https://app.kantel.dev). */
+export function cliLoginCommand(url: string): string {
+	return `kantel login --url ${url}`;
+}
+
+/** The CLI's command that SSHes into a sandbox. */
+export const cliSshCommand = (sandboxId: string, endToEnd = false): string =>
+	`kantel ${endToEnd ? "e2e ssh" : "ssh"} ${sandboxId}`;
+
+/** SSH without the CLI: a key let in for a while, and the plain `ssh` command that connects with it. */
+export interface SandboxSshKey {
+	/** The command that connects, with the key's file in it when Kantel made the key. */
+	readonly command: string;
+	/** The private half of a key pair Kantel made, shown once: absent when a public key was given. */
+	readonly privateKey?: string;
+	/** Where the command expects the private key, and the name it downloads as. */
+	readonly keyFile?: { readonly name: string; readonly path: string };
+	/** The sandbox's SSH host key, as ssh shows it the first time (`SHA256:…`). */
+	readonly hostKeyFingerprint?: string;
+	/** The time a connection must start by; one started stays open. */
+	readonly expiresAt?: number;
+}
+
+/** Where `sshWithoutCliCommand` connects: the API's answer to `POST /v1/sandboxes/{id}/ssh`. */
+export interface SshTarget {
+	readonly sandboxId: string;
+	readonly user: string;
+	/** The relay's WebSocket URL, when there's no SSH gateway to dial. */
+	readonly proxyUrl?: string;
+	readonly host: string;
+	readonly port: number;
+}
+
+/** A word as a POSIX shell (and fish) reads it back unchanged. */
+const shellWord = (word: string): string =>
+	/^[\w@%+=:,./~-]+$/.test(word) ? word : `'${word.replaceAll("'", `'\\''`)}'`;
+
+/**
+ * The plain `ssh` command for a sandbox, for someone without the CLI: through the relay with websocat as its
+ * ProxyCommand (any WebSocket client that pipes stdin and stdout as binary frames does), or to the SSH gateway. With
+ * `identityFile`, ssh offers that key only; a downloaded key is readable by others, which ssh refuses, so its mode is
+ * set first. It reads the same in bash, zsh and fish.
+ */
+export function sshWithoutCliCommand(target: SshTarget, identityFile?: string): string {
+	const key = identityFile === undefined ? [] : ["-i", identityFile, "-o", "IdentitiesOnly=yes"];
+	const ssh =
+		target.proxyUrl === undefined
+			? ["ssh", ...key, "-p", String(target.port), `${target.user}@${target.host}`]
+			: [
+					"ssh",
+					...key,
+					"-o",
+					// ssh expands %-tokens in a ProxyCommand: a literal % is %%.
+					`ProxyCommand=websocat --binary ${target.proxyUrl.replaceAll("%", "%%")}`,
+					`${target.user}@${target.sandboxId}`,
+				];
+	const line = ssh.map(shellWord).join(" ");
+	return identityFile === undefined ? line : `chmod 600 ${shellWord(identityFile)} && ${line}`;
+}
+
+/** Why a screen can't open, from its access: the desktop's reason for Watch too. Undefined when it can. */
+export const screenUnavailable = (access: SandboxAccess, view: "desktop" | "watch" | "browser"): string | undefined =>
+	access.unavailable?.[view === "browser" ? "browser" : "desktop"];
 
 /** A port in a sandbox with an HTTPS URL of its own. */
 export interface SandboxPort {
@@ -307,6 +396,11 @@ export interface SandboxesSource {
 	/** Deletes the sandbox and every snapshot of it, for good. */
 	remove(id: string): Promise<void>;
 	access(id: string): Promise<SandboxAccess>;
+	/**
+	 * SSH without the CLI: lets `publicKey` (one OpenSSH public key) in, or, without one, a key pair Kantel makes and
+	 * answers once. Absent: the page offers the CLI's command only.
+	 */
+	sshKey?(id: string, publicKey?: string): Promise<SandboxSshKey>;
 	history(id: string): Promise<readonly SandboxCommand[]>;
 	/** One sandbox, for its page. */
 	get(id: string): Promise<Sandbox>;
@@ -414,6 +508,14 @@ export class DeviceSetupError extends Error {
 	override readonly name = "DeviceSetupError";
 }
 
+/**
+ * A folder or file the sandbox won't read: outside what it has (an isolate has only /workspace), or not there. Trying
+ * again won't change it, so the browser says so in a line, never as an error to try again.
+ */
+export class FilesRefusedError extends Error {
+	override readonly name = "FilesRefusedError";
+}
+
 export interface SnapshotsSource {
 	saved(accountId: string): Promise<readonly SavedSnapshot[]>;
 	/** Each sandbox's history, newest first. */
@@ -427,6 +529,11 @@ export interface SnapshotsSource {
 	read(snapshotId: string, path: string, range: FileRange): Promise<FilePart>;
 	/** A link to download a file or folder (as a tarball), or undefined where there is none: no Download then. */
 	downloadUrl(snapshotId: string, path: string): string | undefined;
+	/**
+	 * The kind of sandbox a snapshot is of, which says where its files start (an isolate's at /workspace), for a link to
+	 * its files that doesn't say. Absent: such a link shows the whole of the snapshot from its root.
+	 */
+	kindOf?(snapshotId: string): Promise<SandboxKind>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -570,8 +677,29 @@ export interface ProxySettings {
 export type ProxySettingsChange = Partial<
 	Omit<ProxySettings, "accountId" | "upstream"> & {
 		readonly upstream: { readonly url: string; readonly auth?: string } | null;
+		/**
+		 * The settings as read, which the change was made from. Given, the change is refused with `conflict` if they have
+		 * changed since, for the caller to make again on a fresh read. Left out, the change is made on the settings as
+		 * they are when it is written.
+		 */
+		readonly expected: ProxySettings;
 	}
 >;
+
+/** Whether two reads of an account's proxy settings are the same: for a change's `expected`. */
+export const sameProxySettings = (a: ProxySettings, b: ProxySettings): boolean => {
+	const key = (settings: ProxySettings) =>
+		JSON.stringify([
+			settings.accountId,
+			settings.enabled,
+			settings.policy,
+			settings.allow,
+			settings.deny,
+			settings.upstream === undefined ? null : [settings.upstream.url, settings.upstream.authSet],
+			settings.logRequests ?? null,
+		]);
+	return key(a) === key(b);
+};
 
 /** An account's proxy settings. Its log is each sandbox's (`EgressSource`), read together on the Egress page. */
 export interface ProxySource {
@@ -907,8 +1035,28 @@ export interface HostJoin {
 	readonly command: string;
 }
 
+/** Where hosts reach the control plane: the address in every join command. */
+export interface PublicUrl {
+	readonly publicUrl: string;
+	/** A super-admin set it in the console, ahead of the deployment's own. */
+	readonly setHere: boolean;
+	/** The deployment's own, which clearing the console's goes back to. */
+	readonly deploymentUrl: string;
+	/** Only a host on the same machine can reach it: `127.0.0.1`, `localhost`. */
+	readonly loopback: boolean;
+}
+
+/** Reads and sets where hosts reach the control plane: a super-admin's. */
+export interface PublicUrlSource {
+	get(): Promise<PublicUrl>;
+	/** An http(s) origin, or null for the deployment's own. */
+	set(url: string | null): Promise<PublicUrl>;
+}
+
 export interface HostsSource {
 	list(): Promise<readonly Host[]>;
+	/** Where hosts reach the control plane, when this person may change it: the deployment's hosts, a super-admin's. */
+	readonly publicUrl?: PublicUrlSource;
 	/** A join token for a new host, and the command with it in. */
 	join(input: { readonly name?: string; readonly labels?: Readonly<Record<string, string>> }): Promise<HostJoin>;
 	/** Stops new sandboxes landing on it; running ones keep running. */
@@ -1109,11 +1257,17 @@ export { bytesText } from "../primitives/format.ts";
 
 /** "Expires in 3 days", "Expires in 5h", "Expired". */
 export function expiresText(expiresAt: number, now: number): string {
-	const left = expiresAt - now;
-	if (left <= 0) return "Expired";
-	if (left >= 2 * DAY) return `Expires in ${Math.floor(left / DAY)} days`;
-	if (left >= HOUR) return `Expires in ${Math.floor(left / HOUR)}h`;
-	return `Expires in ${Math.max(1, Math.floor(left / MINUTE))}m`;
+	const left = untilText(expiresAt, now);
+	return left === undefined ? "Expired" : `Expires ${left}`;
+}
+
+/** "in 69 days", "in 5h", "in 3m": how long until `at`, or undefined once it has passed. */
+export function untilText(at: number, now: number): string | undefined {
+	const left = at - now;
+	if (left <= 0) return undefined;
+	if (left >= 2 * DAY) return `in ${Math.floor(left / DAY)} days`;
+	if (left >= HOUR) return `in ${Math.floor(left / HOUR)}h`;
+	return `in ${Math.max(1, Math.floor(left / MINUTE))}m`;
 }
 
 /** The ssh command for a sandbox, by its id, through the account's gateway. */

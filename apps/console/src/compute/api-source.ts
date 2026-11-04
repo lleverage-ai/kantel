@@ -39,6 +39,7 @@ import {
 	type KantelClientOptions,
 	type Member,
 	type ProxySettings,
+	type PublicUrl,
 	type PutProxySettingsBody,
 	type PutTelemetryBody,
 	type Sandbox,
@@ -78,7 +79,15 @@ import type {
 	EnvironmentVariable as UiVariable,
 	WebhooksSource,
 } from "@kantel/ui";
-import { DeviceSetupError, FileTooLargeError } from "@kantel/ui";
+import {
+	cliLoginCommand,
+	cliSshCommand,
+	DeviceSetupError,
+	FilesRefusedError,
+	FileTooLargeError,
+	sameProxySettings,
+	sshWithoutCliCommand,
+} from "@kantel/ui";
 import { type BrowserDevice, type BrowserDeviceOptions, browserDevice } from "./browser-device.ts";
 import type { HostCommand, HostCommandPage, LocalBridge } from "./local.ts";
 
@@ -96,12 +105,14 @@ type UiSavedSnapshot = Awaited<ReturnType<SnapshotsSource["saved"]>>[number];
 type UiSnapshotEntry = Awaited<ReturnType<SnapshotsSource["list"]>>[number];
 type UiApiKey = Awaited<ReturnType<ApiKeysSource["list"]>>[number];
 type UiProxySettings = Awaited<ReturnType<ProxySource["get"]>>;
+type UiProxyChange = Parameters<ProxySource["update"]>[1];
 type UiEgressPolicy = UiProxySettings["policy"];
 type UiWebhook = Awaited<ReturnType<WebhooksSource["list"]>>[number];
 type UiWebhookDelivery = Awaited<ReturnType<WebhooksSource["test"]>>;
 type UiTelemetrySettings = Awaited<ReturnType<TelemetrySource["get"]>>;
 type UiHost = Awaited<ReturnType<HostsSource["list"]>>[number];
 type UiHostState = UiHost["state"];
+type UiPublicUrl = Awaited<ReturnType<NonNullable<HostsSource["publicUrl"]>["get"]>>;
 type UiEnvironmentFile = UiEnvironment["files"][number];
 type UiRepo = UiEnvironment["repos"][number];
 type UiMethod = UiBinding["methods"][number];
@@ -261,6 +272,8 @@ function accountsSource({ api, caller }: Context): AccountsSource {
 			if (userId === undefined) throw notYet("An API key belongs to its account and can't leave it.");
 			await api.removeMember(accountId, userId);
 		},
+		rename: async (accountId, name) => accountOf(await api.updateAccount(accountId, { name })),
+		setRole: async (accountId, memberId, role) => memberOf(await api.updateMember(accountId, memberId, { role })),
 	};
 }
 
@@ -502,27 +515,84 @@ function sandboxesSource(context: Context): SandboxesSource {
 			await api.deleteSandbox(id);
 		},
 		access: async (id) => {
-			// microVMs only: an isolate's `not_supported` rejects the lot. SSH's private key, when Kantel makes one, has no
-			// place in the UI's access and is dropped. The browser is driven where it runs, on the desktop, so its page is a
-			// desktop page too; while Chromium is still starting, the API refuses it and the desktop's stands in.
-			const [ssh, desktop, watch, browser] = await Promise.all([
-				api.openSsh(id),
-				api.openDesktop(id),
-				api.openDesktop(id, { viewOnly: true }),
-				api.openBrowser(id).catch((error: unknown) => {
-					if (isCode(error, "unavailable")) return undefined;
+			// microVMs only: an isolate's `not_supported` rejects the lot. SSH is the CLI's `kantel ssh`, which lets a key of
+			// its own in when it's run, so nothing is asked for it here: a key for plain ssh is `sshKey`'s, made only when
+			// someone asks. The browser is driven where it runs, on the desktop, so its page is a desktop page too; while
+			// Chromium is still starting, the API refuses it and the desktop's stands in.
+			//
+			// Desktop and Browser that can't open are said so rather than opened onto an error page: in an end-to-end space
+			// (its host refuses the gateway's plaintext desktop; E2E sessions carry commands and files only so far), and
+			// where the gateway refuses them (`not_supported`: a deployment that doesn't serve this sandbox's desktop).
+			const endToEnd = await spaceEndToEnd(context, id);
+			const screen = async <T>(open: () => Promise<T>): Promise<Opened<T>> => {
+				if (endToEnd) return { refused: SCREENS_NOT_END_TO_END };
+				try {
+					return { value: await open() };
+				} catch (error) {
+					if (isCode(error, "not_supported")) return { refused: SCREENS_NOT_SERVED };
 					throw error;
-				}),
+				}
+			};
+			const [desktop, watch, browser] = await Promise.all([
+				screen(() => api.openDesktop(id)),
+				screen(() => api.openDesktop(id, { viewOnly: true })),
+				screen(() =>
+					api.openBrowser(id).catch((error: unknown) => {
+						if (isCode(error, "unavailable")) return undefined;
+						throw error;
+					}),
+				),
 			]);
-			context.learnHost(ssh.host);
-			const browserUrl = browser?.url ?? desktop.url;
+			const desktopRefused = desktop.refused ?? watch.refused;
+			const desktopUrl = desktopRefused === undefined ? desktop.value?.url : undefined;
+			// While Chromium starts, the desktop's page stands in for the browser's, and its reason when it has one.
+			const browserUrl = browser.value?.url ?? desktopUrl;
+			const browserRefused = browser.refused ?? (browserUrl === undefined ? desktopRefused : undefined);
+			const unavailable = {
+				...(desktopRefused === undefined ? {} : { desktop: desktopRefused }),
+				...(browserRefused === undefined ? {} : { browser: browserRefused }),
+			};
 			return {
-				ssh: ssh.command,
-				desktopUrl: desktop.url,
-				desktopViewUrl: watch.url,
-				browserUrl,
+				// SSH there is E2E v1's own, over a session from the person's device; the gateway's (which lets a key in with a
+				// command) the host refuses, so there's no plain ssh either.
+				ssh: cliSshCommand(id, endToEnd),
+				// The CLI signs in to the gateway that serves this page, under /v1 on its origin. `kantel console`'s page is the
+				// CLI's own, signed in already, and its loopback origin isn't a gateway.
+				...(context.local === undefined && globalThis.location?.origin !== undefined
+					? { cliLogin: cliLoginCommand(globalThis.location.origin) }
+					: {}),
+				sshWithoutCli: !endToEnd,
+				// What can't open has no address: nothing links or frames it.
+				desktopUrl: desktopUrl ?? "",
+				desktopViewUrl: (desktopRefused === undefined ? watch.value?.url : undefined) ?? "",
+				browserUrl: browserUrl ?? "",
 				// The browser's page is a desktop page, which a frame can show as it is.
-				embed: { desktop: desktop.embedUrl, watch: watch.embedUrl, browser: browserUrl },
+				embed: {
+					desktop: (desktopRefused === undefined ? desktop.value?.embedUrl : undefined) ?? "",
+					watch: (desktopRefused === undefined ? watch.value?.embedUrl : undefined) ?? "",
+					browser: browserUrl ?? "",
+				},
+				...(Object.keys(unavailable).length === 0 ? {} : { unavailable }),
+			};
+		},
+		sshKey: async (id, publicKey) => {
+			const grant = await api.openSsh(id, publicKey === undefined ? {} : { publicKey });
+			context.learnHost(grant.host);
+			const target = { sandboxId: id, user: grant.user, host: grant.host, port: grant.port };
+			const routed = grant.proxyUrl === undefined ? target : { ...target, proxyUrl: grant.proxyUrl };
+			const privateKey = grant.privateKey?.trim();
+			const shown = {
+				...(grant.hostKeyFingerprint === undefined ? {} : { hostKeyFingerprint: grant.hostKeyFingerprint }),
+				expiresAt: grant.expiresAt,
+			};
+			if (privateKey === undefined || privateKey === "") return { command: sshWithoutCliCommand(routed), ...shown };
+			// The key Kantel made downloads under the sandbox's name, where a browser saves it by default.
+			const keyFile = { name: `kantel-${id}`, path: `~/Downloads/kantel-${id}` };
+			return {
+				command: sshWithoutCliCommand(routed, keyFile.path),
+				privateKey: `${privateKey}\n`,
+				keyFile,
+				...shown,
 			};
 		},
 		history: async (id) => {
@@ -554,40 +624,106 @@ function sandboxesSource(context: Context): SandboxesSource {
 		// browser's own on the gateway's console), which the gateway only relays as ciphertext; it can read none of it
 		// itself, and the host would refuse it if it asked. Otherwise the gateway's API reads them from the host.
 		files: {
-			list: async (id, path) => {
-				const host = await filesHost(context, id);
-				if (host !== undefined) {
-					const { entries } = await host.call<{ entries: HostFileEntry[] | null }>(id, "sandbox.files.list", {
-						path: absolute(path),
-					});
-					return { entries: (entries ?? []).map(hostEntryOf).sort(foldersFirst), more: false };
-				}
-				const { items, more } = await firstPages((cursor) =>
-					api.listFiles(id, { path: absolute(path), ...after(cursor) }),
-				);
-				return { entries: items.map(entryOf).sort(foldersFirst), more };
-			},
-			read: async (id, path, range) => {
-				const host = await filesHost(context, id);
-				if (host !== undefined) {
-					const answer = await host.call<{ data: string; fileSize?: number }>(id, "sandbox.files.read", {
-						path: absolute(path),
-						offset: range.offset,
-						length: range.length,
-					});
-					return hostPart(fromBase64(answer.data), answer.fileSize, range);
-				}
-				// Base64, so a binary's first bytes come back as they are and the UI decides what it can show.
-				const file = await api.readFile(id, {
-					path: absolute(path),
-					encoding: "base64",
-					offset: range.offset,
-					length: Math.min(range.length, MAX_READ_BYTES),
-				});
-				return { bytes: contentBytes(file), size: file.size };
-			},
+			list: (id, path) =>
+				refusing(async () => {
+					const host = await filesHost(context, id);
+					if (host !== undefined) {
+						const { entries } = await host.call<{ entries: HostFileEntry[] | null }>(id, "sandbox.files.list", {
+							path: absolute(path),
+						});
+						return { entries: (entries ?? []).map(hostEntryOf).sort(foldersFirst), more: false };
+					}
+					const { items, more } = await firstPages((cursor) =>
+						api.listFiles(id, { path: absolute(path), ...after(cursor) }),
+					);
+					return { entries: items.map(entryOf).sort(foldersFirst), more };
+				}),
+			read: (id, path, range) => refusing(() => readSandboxFile(context, id, path, range)),
 		},
 	};
+}
+
+/** A part of a running sandbox's file: over its host's E2E session where its space has one, else through the API. */
+async function readSandboxFile(context: Context, id: string, path: string, range: FileRange): Promise<FilePart> {
+	const host = await filesHost(context, id);
+	if (host !== undefined) {
+		const answer = await host.call<{ data: string; fileSize?: number }>(id, "sandbox.files.read", {
+			path: absolute(path),
+			offset: range.offset,
+			length: range.length,
+		});
+		return hostPart(fromBase64(answer.data), answer.fileSize, range);
+	}
+	// Base64, so a binary's first bytes come back as they are and the UI decides what it can show.
+	const file = await context.api.readFile(id, {
+		path: absolute(path),
+		encoding: "base64",
+		offset: range.offset,
+		length: Math.min(range.length, MAX_READ_BYTES),
+	});
+	return { bytes: contentBytes(file), size: file.size };
+}
+
+/**
+ * A read whose refusal (a path outside what the sandbox has, such as anything but an isolate's /workspace, or one that
+ * isn't there) is the UI's refusal, which it shows as a line and never offers to try again. Anything else (the host
+ * unreachable, a dropped session) is as it was, for Try again.
+ */
+async function refusing<T>(read: () => Promise<T>): Promise<T> {
+	try {
+		return await read();
+	} catch (error) {
+		if (refusedPath(error)) throw new FilesRefusedError(error.message);
+		throw error;
+	}
+}
+
+/**
+ * The API's and a host's codes for a path a sandbox won't read: `invalid` outside it, `not_found` absent. A host's is its
+ * own answer to the call, over this browser's session or `kantel console`'s (`answered`); a session that failed to open,
+ * with the same codes for a host not in the chain, is a failure, not a refusal.
+ */
+const refusedPath = (error: unknown): error is Error & { readonly code: string } =>
+	error instanceof Error &&
+	"code" in error &&
+	(error.code === "invalid" || error.code === "not_found") &&
+	(error instanceof KantelApiError ||
+		(error.name === "SessionError" && "answered" in error && error.answered === true));
+
+/** Desktop and Browser where the gateway refuses them: this deployment doesn't serve the sandbox's screens yet. */
+export const SCREENS_NOT_SERVED = "Not available here yet";
+/** Desktop and Browser in an end-to-end space: its E2E sessions carry commands and files, not screens, so far. */
+export const SCREENS_NOT_END_TO_END = "Not end to end yet";
+
+/** A screen's access, or why it can't open. */
+type Opened<T> =
+	| { readonly value: T; readonly refused?: undefined }
+	| { readonly refused: string; readonly value?: undefined };
+
+/** The account a sandbox is in, as last read, else asked for. */
+async function sandboxAccount(context: Context, id: string): Promise<string> {
+	let account = context.sandboxAccounts.get(id);
+	if (account === undefined) {
+		account = (await context.api.getSandbox(id)).accountId;
+		context.sandboxAccounts.set(id, account);
+	}
+	return account;
+}
+
+/**
+ * Whether a sandbox's space is end to end (E2E on or strict), where its host refuses the gateway's plaintext desktop:
+ * as this console's keys have its chain, else as the gateway has it. A chain that can't be read counts as off: the
+ * screens are then tried, and their host's refusal shown.
+ */
+async function spaceEndToEnd(context: Context, id: string): Promise<boolean> {
+	try {
+		const account = await sandboxAccount(context, id);
+		if (context.local !== undefined) return context.local.mode(account) !== "off";
+		const mode = (await context.browser?.mode(account)) ?? (await chainMode(context, account));
+		return mode !== "off";
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -601,11 +737,7 @@ async function endToEndHost(
 ): Promise<{ call<T>(sandboxId: string, method: string, params?: object): Promise<T> } | undefined> {
 	const { local, browser } = context;
 	if (local === undefined && browser === undefined) return undefined;
-	let account = context.sandboxAccounts.get(id);
-	if (account === undefined) {
-		account = (await context.api.getSandbox(id)).accountId;
-		context.sandboxAccounts.set(id, account);
-	}
+	const account = await sandboxAccount(context, id);
 	if (local !== undefined && local.mode(account) !== "off") return local;
 	if (browser !== undefined) {
 		// Where this browser trusts the space's chain, only the chain as it verifies from there decides: a gateway that
@@ -821,10 +953,12 @@ function snapshotsSource({ api }: Context): SnapshotsSource {
 		},
 		removeSaved: (id) => api.deleteSnapshot(id),
 		removeSnapshot: (id) => api.deleteSnapshot(id),
-		list: async (snapshotId, path) =>
-			(await allPages((cursor) => api.listSnapshotFiles(snapshotId, { path: absolute(path), ...after(cursor) })))
-				.map(entryOf)
-				.sort(foldersFirst),
+		list: (snapshotId, path) =>
+			refusing(async () =>
+				(await allPages((cursor) => api.listSnapshotFiles(snapshotId, { path: absolute(path), ...after(cursor) })))
+					.map(entryOf)
+					.sort(foldersFirst),
+			),
 		// A snapshot's file comes whole, up to the API's 1 MiB, however little the preview asks for; a larger one is
 		// `invalid`, and shows with its name and size only. Nothing is kept: a second look reads it again.
 		read: async (snapshotId, path) => {
@@ -833,11 +967,15 @@ function snapshotsSource({ api }: Context): SnapshotsSource {
 				return { bytes: contentBytes(file), size: file.size };
 			} catch (error) {
 				if (isCode(error, "invalid")) throw new FileTooLargeError();
+				// One that isn't there (any more) is a refusal, not worth trying again.
+				if (refusedPath(error)) throw new FilesRefusedError(error.message);
 				throw error;
 			}
 		},
 		// The API has no download route, and a link can't carry the bearer a read needs: no Download.
 		downloadUrl: () => undefined,
+		// Where a link to a snapshot's files doesn't say, the API does: an isolate's start at /workspace.
+		kindOf: async (snapshotId) => (await api.getSnapshot(snapshotId)).sandboxType,
 	};
 }
 
@@ -928,37 +1066,63 @@ function proxyAuthorisation(auth: string): string {
 	return `Basic ${btoa(String.fromCharCode(...bytes))}`;
 }
 
+/** How many times a change is made on a fresh read when Kantel says the settings changed since it read them. */
+const PROXY_ATTEMPTS = 3;
+
+/**
+ * A PUT replaces the settings, so what a change leaves out is sent as it is now: as read just before, and sent with
+ * that read as the API's `expected`, so a change someone made in between is never undone. Kantel refuses such a write
+ * with `conflict`, and a change with no `expected` of its own is made again on a fresh read. One made from the caller's
+ * own read (`change.expected`) is refused when the settings no longer are that read, for the caller to redo.
+ */
 function proxySource({ api }: Context): ProxySource {
 	return {
 		get: async (accountId) => proxyOf(await api.getProxySettings({ account: accountId })),
 		update: async (accountId, change) => {
 			if (change.logRequests === false) throw notYet("Kantel's API always keeps each sandbox's newest requests.");
-			// A PUT replaces the settings, so what the change leaves out is sent as it is now.
-			const current = await api.getProxySettings({ account: accountId });
-			const policy = change.policy ?? policyOf(current);
-			let upstream: PutProxySettingsBody["upstream"];
-			if (change.upstream === null) upstream = null;
-			else if (change.upstream !== undefined) {
-				const { url, auth } = change.upstream;
-				// No `auth` keeps the upstream's credentials; an empty one removes them.
-				upstream =
-					auth === undefined
-						? { url }
-						: { url, headers: auth === "" ? {} : { "Proxy-Authorization": proxyAuthorisation(auth) } };
-			} else if (current.upstream !== undefined) upstream = { url: current.upstream.url };
-			const body: PutProxySettingsBody = {
-				account: accountId,
-				enabled: change.enabled ?? current.enabled,
-				defaultAction: policy === "open" ? "allow" : "deny",
-				// Closed is deny with nothing allowed.
-				allow: policy === "closed" ? [] : (change.allow ?? current.allow),
-				deny: change.deny ?? current.deny,
-				...(upstream === undefined ? {} : { upstream }),
-				// The UI has no attribution switch: it stays as it is.
-				attribution: current.attribution,
-			};
-			return proxyOf(await api.putProxySettings(body));
+			for (let attempt = 1; ; attempt++) {
+				const current = await api.getProxySettings({ account: accountId });
+				if (change.expected !== undefined && !sameProxySettings(change.expected, proxyOf(current))) {
+					throw new KantelApiError(
+						409,
+						"conflict",
+						"The proxy settings changed since you read them; read them again and redo the change",
+					);
+				}
+				try {
+					return proxyOf(await api.putProxySettings(proxyBody(accountId, change, current)));
+				} catch (error) {
+					if (change.expected !== undefined || attempt >= PROXY_ATTEMPTS || !isCode(error, "conflict")) throw error;
+				}
+			}
 		},
+	};
+}
+
+/** The PUT that makes `change` of `current`, the settings as read, with them as its `expected`. */
+function proxyBody(accountId: string, change: UiProxyChange, current: ProxySettings): PutProxySettingsBody {
+	const policy = change.policy ?? policyOf(current);
+	let upstream: PutProxySettingsBody["upstream"];
+	if (change.upstream === null) upstream = null;
+	else if (change.upstream !== undefined) {
+		const { url, auth } = change.upstream;
+		// No `auth` keeps the upstream's credentials; an empty one removes them.
+		upstream =
+			auth === undefined
+				? { url }
+				: { url, headers: auth === "" ? {} : { "Proxy-Authorization": proxyAuthorisation(auth) } };
+	} else if (current.upstream !== undefined) upstream = { url: current.upstream.url };
+	return {
+		account: accountId,
+		enabled: change.enabled ?? current.enabled,
+		defaultAction: policy === "open" ? "allow" : "deny",
+		// Closed is deny with nothing allowed.
+		allow: policy === "closed" ? [] : (change.allow ?? current.allow),
+		deny: change.deny ?? current.deny,
+		...(upstream === undefined ? {} : { upstream }),
+		// The UI has no attribution switch: it stays as it is.
+		attribution: current.attribution,
+		expected: current,
 	};
 }
 
@@ -1444,6 +1608,19 @@ function hostsSource({ api }: Context): HostsSource {
 		remove: async (id) => {
 			await api.revokeHost(id);
 		},
+		publicUrl: {
+			get: async () => publicUrlOf(await api.getPublicUrl()),
+			set: async (url) => publicUrlOf(await api.setPublicUrl({ publicUrl: url })),
+		},
+	};
+}
+
+function publicUrlOf(made: PublicUrl): UiPublicUrl {
+	return {
+		publicUrl: made.publicUrl,
+		setHere: made.source === "console",
+		deploymentUrl: made.deploymentUrl,
+		loopback: made.loopback,
 	};
 }
 

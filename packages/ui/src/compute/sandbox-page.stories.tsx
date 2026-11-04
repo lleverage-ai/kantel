@@ -3,6 +3,7 @@ import type { Story, StoryDefault } from "../workbench/ladle.ts";
 import type { HostingMode } from "./compute-model.ts";
 import { type ComputeFixtureOptions, createComputeFixtures, FIXTURE_NOW } from "./fixtures.ts";
 import { SandboxPage, type SandboxView } from "./sandbox-page.tsx";
+import type { FilesAt } from "./snapshot-files.tsx";
 
 export default { title: "Compute/Sandbox page" } satisfies StoryDefault;
 
@@ -16,8 +17,12 @@ function Scenario({
 	menuOpen = false,
 	local,
 	e2e,
+	filesAt,
+	unavailable,
 }: {
 	sandboxId?: string;
+	/** Where the Files tab opens, as the address would say. */
+	filesAt?: FilesAt;
 	view?: SandboxView;
 	hosting?: HostingMode;
 	options?: ComputeFixtureOptions;
@@ -27,12 +32,22 @@ function Scenario({
 	local?: boolean;
 	/** An end-to-end account; "pending" while the console is still checking its chain, which never answers here. */
 	e2e?: boolean | "pending";
+	/** Why Desktop and Browser can't open, as the console says it. */
+	unavailable?: string;
 }) {
 	const [source] = useState(() => createComputeFixtures({ hosting, ...options }));
 	const [sandboxes] = useState(() => {
-		if (local !== true && e2e === undefined) return source.sandboxes;
+		if (local !== true && e2e === undefined && unavailable === undefined) return source.sandboxes;
 		return {
 			...source.sandboxes,
+			...(unavailable === undefined
+				? {}
+				: {
+						access: async (id: string) => ({
+							...(await source.sandboxes.access(id)),
+							unavailable: { desktop: unavailable, browser: unavailable },
+						}),
+					}),
 			...(local === true ? { screens: "tab" as const } : {}),
 			endToEnd: () => (e2e === "pending" ? new Promise<boolean>(() => {}) : Promise.resolve(e2e === true)),
 			// The host keeps no output end to end yet.
@@ -56,6 +71,7 @@ function Scenario({
 			now={FIXTURE_NOW}
 			narrow={narrow}
 			menuOpen={menuOpen}
+			{...(filesAt === undefined ? {} : { filesAt })}
 		/>
 	);
 }
@@ -114,6 +130,15 @@ export const Desktop: Story = () => <Scenario view="desktop" />;
 /** Its browser, full size in the console. */
 export const Browser: Story = () => <Scenario view="browser" />;
 
+/** Where Desktop and Browser can't open yet: disabled, with why, and no frame onto an error. */
+export const ScreensUnavailable: Story = () => <Scenario unavailable="Not available here yet" />;
+
+/** The same full size, reached from its address. */
+export const DesktopUnavailable: Story = () => <Scenario unavailable="Not available here yet" view="desktop" />;
+
+/** An end-to-end space: its E2E sessions don't carry the screens yet. */
+export const ScreensNotEndToEnd: Story = () => <Scenario unavailable="Not end to end yet" />;
+
 /** A stopped microVM: no previews, Resume, and its files from its last snapshot. */
 export const Stopped: Story = () => <Scenario sandboxId="sbx_2q8w5e1rz4" />;
 
@@ -125,6 +150,23 @@ export const Failed: Story = () => <Scenario sandboxId="sbx_1o9p4a7se6" />;
 
 /** An isolate: no desktop, browser or SSH. */
 export const Isolate: Story = () => <Scenario sandboxId="sbx_9a2b6c4dq3" />;
+
+/** An isolate's Files: its /workspace, its only files, where the crumbs start and Up stops. */
+export const IsolateFiles: Story = () => <Scenario sandboxId="sbx_9a2b6c4dq3" view="files" />;
+
+/** An isolate's Files from an address above /workspace (`?path=/`): clamped to /workspace, never refused. */
+export const IsolateFilesFromRoot: Story = () => (
+	<Scenario sandboxId="sbx_9a2b6c4dq3" view="files" filesAt={{ path: "" }} />
+);
+
+/** An isolate's folder that isn't there (an old link): a line and the way back to /workspace, not Try again. */
+export const IsolateFilesGone: Story = () => (
+	<Scenario sandboxId="sbx_9a2b6c4dq3" view="files" filesAt={{ path: "workspace/gone" }} />
+);
+
+/** An isolate's Files on a phone. */
+export const MobileIsolateFiles: Story = () => <Scenario sandboxId="sbx_9a2b6c4dq3" view="files" narrow />;
+MobileIsolateFiles.meta = { width: 390 };
 
 /** While it loads. */
 export const Loading: Story = () => <Scenario options={{ hang: true }} />;

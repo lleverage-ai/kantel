@@ -6,6 +6,7 @@
 // Served by the gateway, there is no `/local/`: the console asks only on 127.0.0.1, and anything but the CLI's answer
 // means it isn't local.
 
+import { SessionError } from "@kantel/e2e/session";
 import type { E2EMode } from "@kantel/ui";
 
 export interface LocalInfo {
@@ -68,10 +69,14 @@ export async function localBridge(
 			});
 			const body = (await answer.json().catch(() => ({}))) as {
 				readonly result?: T;
-				readonly error?: { readonly message?: string };
+				readonly error?: { readonly message?: string; readonly hostCode?: unknown };
 			};
 			if (!answer.ok || body.error !== undefined) {
-				throw new Error(body.error?.message ?? `kantel console answered ${answer.status}`);
+				const message = body.error?.message ?? `kantel console answered ${answer.status}`;
+				// The host's own answer, as a browser's session would have it: a path it won't read is the call's, not a
+				// failure to reach it.
+				if (typeof body.error?.hostCode === "string") throw new SessionError(body.error.hostCode, message, true);
+				throw new Error(message);
 			}
 			return body.result as T;
 		},

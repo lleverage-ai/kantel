@@ -87,6 +87,7 @@ import {
 	PollDeviceLoginBody,
 	PortPath,
 	ProxySettings,
+	PublicUrl,
 	PutEgressGrantsBody,
 	PutEnvironmentReposBody,
 	PutProxySettingsBody,
@@ -104,6 +105,7 @@ import {
 	SaveSnapshotBody,
 	SetEnvironmentFileBody,
 	SetEnvironmentVariableBody,
+	SetPublicUrlBody,
 	Snapshot,
 	SnapshotFilesQuery,
 	SnapshotPage,
@@ -1180,12 +1182,13 @@ export const putProxySettings = defineRoute({
 	summary: "Set the proxy settings",
 	description: describe(
 		"Replaces them. Running sandboxes pick them up within a minute. An upstream's header values are kept encrypted",
-		"and never shown again; leave `upstream.headers` out to keep the ones it has.",
+		"and never shown again; leave `upstream.headers` out to keep the ones it has. With `expected`, the settings as you",
+		"read them, a write made from an older read is refused with `conflict`.",
 		scope("account:admin"),
 	),
 	body: PutProxySettingsBody,
 	answer: { status: 200, description: "The settings.", schema: ProxySettings },
-	errors: ["invalid", "forbidden", "not_supported"],
+	errors: ["invalid", "forbidden", "conflict", "not_supported"],
 });
 
 export const proxyRoutes = { getProxySettings, putProxySettings } as const;
@@ -1650,7 +1653,47 @@ export const createHostJoinToken = defineRoute({
 	errors: ["invalid", "forbidden"],
 });
 
-export const hostRoutes = { listHosts, createHostJoinToken, getHost, updateHost, revokeHost } as const;
+export const getPublicUrl = defineRoute({
+	operationId: "getPublicUrl",
+	method: "GET",
+	path: "/admin/public-url",
+	tag: "hosts",
+	summary: "Get the public URL",
+	description: describe(
+		"Where hosts reach this control plane: the address join commands give them, and whether only a host on the same",
+		"machine could use it.",
+		SUPER_ADMIN,
+	),
+	answer: { status: 200, description: "The public URL.", schema: PublicUrl },
+	errors: ["forbidden"],
+});
+
+export const setPublicUrl = defineRoute({
+	operationId: "setPublicUrl",
+	method: "PUT",
+	path: "/admin/public-url",
+	tag: "hosts",
+	summary: "Set the public URL",
+	description: describe(
+		"Sets where hosts reach this control plane, for the join commands made from now on, ahead of the deployment's own",
+		"`KANTEL_PUBLIC_URL`. `null` goes back to the deployment's own. Hosts that have joined keep the address they",
+		"joined with.",
+		SUPER_ADMIN,
+	),
+	body: SetPublicUrlBody,
+	answer: { status: 200, description: "The public URL.", schema: PublicUrl },
+	errors: ["invalid", "forbidden"],
+});
+
+export const hostRoutes = {
+	listHosts,
+	createHostJoinToken,
+	getHost,
+	updateHost,
+	revokeHost,
+	getPublicUrl,
+	setPublicUrl,
+} as const;
 
 // An account's own hosts, added by its people rather than by the deployment's super-admin. Only that account's
 // sandboxes run on them. Experimental: a deployment serves these only with KANTEL_ACCOUNT_HOSTS=experimental, and

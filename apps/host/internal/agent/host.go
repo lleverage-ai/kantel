@@ -104,6 +104,8 @@ type Host struct {
 	// link makes calls to the control plane while connected.
 	link  *caller
 	pools map[string]int
+	// usage samples the host and its sandboxes while RunUsage runs (usage.go).
+	usage *usageSampler
 }
 
 // New starts the tiers the host can run.
@@ -240,6 +242,9 @@ func (h *Host) makeFacts() proto.Facts {
 			features = append(features, proto.FeatureFileStreams)
 			break
 		}
+	}
+	if h.cfg.usageInterval() > 0 {
+		features = append(features, proto.FeatureUsage)
 	}
 	return proto.Facts{
 		Version: h.version, Protocol: proto.ProtocolVersion, OS: runtime.GOOS, Arch: hostinfo.Arch(), Kernel: hostinfo.Kernel(),

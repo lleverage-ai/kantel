@@ -503,6 +503,62 @@ function checkUrl(url: string, what: string): void {
 	}
 }
 
+/**
+ * A host the join command can carry as plain data: a DNS name (an international one in its punycode form, as the URL
+ * parser writes it) or an IPv4 address, or an IPv6 literal in brackets. The URL parser alone lets through hosts such as
+ * `$(id).example.com`, which a shell would run when the command is pasted.
+ */
+const PLAIN_HOST = /^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*\.?$|^\[[0-9a-f:.]+\]$/;
+
+/**
+ * A public URL as an origin, `https://kantel.example.com`: http(s), with nothing after the host but a trailing slash,
+ * and a host that's a DNS name or an IP address, so the origin goes into a shell command as data.
+ */
+export function publicOrigin(url: string): string {
+	let parsed: URL;
+	try {
+		parsed = new URL(url.trim());
+	} catch {
+		throw new KantelError("invalid", "The public URL is not a URL, such as https://kantel.example.com");
+	}
+	if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+		throw new KantelError("invalid", "The public URL starts with https:// or http://");
+	}
+	if (
+		parsed.username !== "" ||
+		parsed.password !== "" ||
+		parsed.pathname !== "/" ||
+		parsed.search !== "" ||
+		parsed.hash !== ""
+	) {
+		throw new KantelError("invalid", "The public URL is an origin, with no path, such as https://kantel.example.com");
+	}
+	if (!PLAIN_HOST.test(parsed.hostname)) {
+		throw new KantelError(
+			"invalid",
+			"The public URL's host is a domain name or an IP address, such as kantel.example.com",
+		);
+	}
+	return parsed.origin;
+}
+
+/** Whether only a host on the same machine could reach `url`: `127.0.0.1`, `localhost`, `::1` or `0.0.0.0`. */
+export function isLoopbackUrl(url: string): boolean {
+	let host: string;
+	try {
+		host = new URL(url).hostname.toLowerCase();
+	} catch {
+		return false;
+	}
+	return (
+		host === "localhost" ||
+		host.endsWith(".localhost") ||
+		/^127\.\d+\.\d+\.\d+$/.test(host) ||
+		host === "[::1]" ||
+		host === "0.0.0.0"
+	);
+}
+
 function decodeUtf8(bytes: Uint8Array, path: string): string {
 	try {
 		// `ignoreBOM` is the default, given because workers-types requires it (apps/cloudflare serves this API).
@@ -716,6 +772,36 @@ const grantsKey = (
 			[...(grant.paths ?? [])],
 		]),
 	);
+
+/** An account's proxy settings before any are written: off, everything allowed. */
+const unsetProxy = (account: StoredAccount): StoredProxy => ({
+	id: account.id,
+	accountId: account.id,
+	enabled: false,
+	defaultAction: "allow",
+	allow: [],
+	deny: [],
+	attribution: false,
+	updatedAt: account.createdAt,
+});
+
+/** Proxy settings as text that is the same when they are: for a write's `expected`. Header values aren't in it. */
+const proxyKey = (settings: {
+	readonly enabled: boolean;
+	readonly defaultAction: string;
+	readonly allow: readonly string[];
+	readonly deny: readonly string[];
+	readonly upstream?: { readonly url: string; readonly headerNames: readonly string[] };
+	readonly attribution: boolean;
+}): string =>
+	JSON.stringify([
+		settings.enabled,
+		settings.defaultAction,
+		settings.allow,
+		settings.deny,
+		settings.upstream === undefined ? null : [settings.upstream.url, [...settings.upstream.headerNames].sort()],
+		settings.attribution,
+	]);
 
 /** Refuses a write made from a read of `what` that is out of date: `expected` isn't what is there now. */
 function requireUnchanged(expected: string | undefined, now: string, what: string): void {
@@ -1502,6 +1588,35 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 	}
 
+	/**
+	 * Replaces an account's proxy settings with `replacing` of them, only while they are still `expected` (`proxyKey`):
+	 * otherwise `conflict`. Settings never written read as `unsetProxy`'s, and the first write inserts them; another
+	 * writer's insert meanwhile is read and compared like any change. The settings appearing and going again and again
+	 * meanwhile is a `conflict` too.
+	 */
+	async function replaceProxyAsRead(
+		account: StoredAccount,
+		expected: string,
+		replacing: (existing: StoredProxy | undefined) => StoredProxy,
+	): Promise<StoredProxy> {
+		const what = "The proxy settings";
+		for (let attempt = 0; attempt < 3; attempt++) {
+			const existing = await store.proxies.get(account.id);
+			if (existing === undefined) {
+				requireUnchanged(expected, proxyKey(proxyView(unsetProxy(account))), what);
+				const settings = replacing(undefined);
+				if (await store.proxies.insert(settings)) return settings;
+				continue;
+			}
+			const changed = await store.proxies.update(account.id, (current) => {
+				requireUnchanged(expected, proxyKey(proxyView(current)), what);
+				return replacing(current);
+			});
+			if (changed !== undefined) return changed;
+		}
+		throw new KantelError("conflict", `${what} keep changing; read them again and redo the change`);
+	}
+
 	/** Changes an environment with `update`, answering it as written; `not_found` when it went meanwhile. */
 	async function changeEnvironment(
 		environmentId: string,
@@ -2117,6 +2232,22 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/** A join token, shown once, and its command; an account's joins the host to `owner.accountId`. */
+	/**
+	 * Where hosts reach this control plane: the URL a super-admin set in the console, else the deployment's own
+	 * (`publicUrl`, or the address the call came in at).
+	 */
+	async function publicUrlView(request: Request): Promise<computeSchema.PublicUrl> {
+		const deploymentUrl = (options.publicUrl ?? new URL(request.url).origin).replace(/\/+$/, "");
+		const set = await store.settings.get("publicUrl");
+		const publicUrl = set?.value ?? deploymentUrl;
+		return {
+			publicUrl,
+			source: set === undefined ? "deployment" : "console",
+			deploymentUrl,
+			loopback: isLoopbackUrl(publicUrl),
+		};
+	}
+
 	async function mintJoinToken(
 		body: {
 			readonly name?: string;
@@ -2138,7 +2269,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			createdAt: now(),
 			...(owner === undefined ? {} : { accountId: owner.accountId, createdBy: owner.createdBy }),
 		});
-		const publicUrl = (options.publicUrl ?? new URL(request.url).origin).replace(/\/+$/, "");
+		const { publicUrl } = await publicUrlView(request);
 		return {
 			id,
 			token,
@@ -3738,45 +3869,42 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "account:read", role);
 			const stored = await store.proxies.get(account.id);
-			return proxyView(
-				stored ?? {
-					id: account.id,
-					accountId: account.id,
-					enabled: false,
-					defaultAction: "allow",
-					allow: [],
-					deny: [],
-					attribution: false,
-					updatedAt: account.createdAt,
-				},
-			);
+			return proxyView(stored ?? unsetProxy(account));
 		},
 
 		putProxySettings: async (principal, { body }) => {
 			const { account, role } = await actingAccount(store, principal, body.account);
 			requireScope(principal, "account:admin", role);
-			const existing = await store.proxies.get(account.id);
-			let upstream: StoredProxy["upstream"];
-			let upstreamHeaders: StoredProxy["upstreamHeaders"];
-			if (body.upstream !== undefined && body.upstream !== null) {
-				checkUrl(body.upstream.url, "The upstream");
-				upstreamHeaders =
-					body.upstream.headers === undefined ? (existing?.upstreamHeaders ?? {}) : { ...body.upstream.headers };
-				upstream = { url: body.upstream.url, headerNames: Object.keys(upstreamHeaders) };
-			}
-			const settings: StoredProxy = {
-				id: account.id,
-				accountId: account.id,
-				enabled: body.enabled,
-				defaultAction: body.defaultAction ?? "allow",
-				allow: [...(body.allow ?? [])],
-				deny: [...(body.deny ?? [])],
-				upstream,
-				upstreamHeaders,
-				attribution: body.attribution === true,
-				updatedAt: now(),
+			if (body.upstream !== undefined && body.upstream !== null) checkUrl(body.upstream.url, "The upstream");
+			/** The settings the body makes of `existing`, which keeps its upstream's header values when none are given. */
+			const replacing = (existing: StoredProxy | undefined): StoredProxy => {
+				let upstream: StoredProxy["upstream"];
+				let upstreamHeaders: StoredProxy["upstreamHeaders"];
+				if (body.upstream !== undefined && body.upstream !== null) {
+					upstreamHeaders =
+						body.upstream.headers === undefined ? (existing?.upstreamHeaders ?? {}) : { ...body.upstream.headers };
+					upstream = { url: body.upstream.url, headerNames: Object.keys(upstreamHeaders) };
+				}
+				return {
+					id: account.id,
+					accountId: account.id,
+					enabled: body.enabled,
+					defaultAction: body.defaultAction ?? "allow",
+					allow: [...(body.allow ?? [])],
+					deny: [...(body.deny ?? [])],
+					upstream,
+					upstreamHeaders,
+					attribution: body.attribution === true,
+					updatedAt: now(),
+				};
 			};
-			await store.proxies.put(settings);
+			let settings: StoredProxy;
+			if (body.expected === undefined) {
+				settings = replacing(await store.proxies.get(account.id));
+				await store.proxies.put(settings);
+			} else {
+				settings = await replaceProxyAsRead(account, proxyKey(body.expected), replacing);
+			}
 			// Running sandboxes take them now where the backend can; the rest when they next boot. Each with its own
 			// protected hosts and grants.
 			if (backend.updateEgress !== undefined) {
@@ -4216,6 +4344,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		createHostJoinToken: async (principal, { body }, request) => {
 			requireScope(principal, "hosts:admin");
 			return mintJoinToken(body, request);
+		},
+
+		getPublicUrl: async (principal, _input, request) => {
+			requireScope(principal, "hosts:admin");
+			return publicUrlView(request);
+		},
+
+		setPublicUrl: async (principal, { body }, request) => {
+			requireScope(principal, "hosts:admin");
+			if (body.publicUrl === null) await store.settings.delete("publicUrl");
+			else {
+				await store.settings.put({
+					id: "publicUrl",
+					value: publicOrigin(body.publicUrl),
+					updatedAt: now(),
+					updatedBy: principal.userId,
+				});
+			}
+			return publicUrlView(request);
 		},
 
 		getHost: async (principal, { params }) => hostView(await hostFor(principal, params.hostId)),

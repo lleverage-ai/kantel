@@ -310,6 +310,17 @@ export interface StoredFileUrl {
 	readonly createdAt: number;
 }
 
+/**
+ * A deployment-wide setting a super-admin changed in the console, by name: `publicUrl`, where hosts reach the control
+ * plane, ahead of the deployment's own.
+ */
+export interface StoredSetting {
+	readonly id: "publicUrl";
+	readonly value: string;
+	readonly updatedAt: number;
+	readonly updatedBy: string;
+}
+
 /** A device sign-in (`kantel login` in a browser); its ID is the SHA-256 hex of its device code. */
 export interface StoredDeviceLogin {
 	readonly id: string;
@@ -377,6 +388,7 @@ export interface ComputeStore {
 	readonly bundles: Collection<StoredBundle>;
 	readonly bucketSources: Collection<StoredBucketSource>;
 	readonly fileUrls: Collection<StoredFileUrl>;
+	readonly settings: Collection<StoredSetting>;
 }
 
 /**
@@ -461,6 +473,7 @@ export function createMemoryStore(): ComputeStore {
 		bundles: memoryCollection(),
 		bucketSources: memoryCollection(),
 		fileUrls: memoryCollection(),
+		settings: memoryCollection(),
 	};
 }
 
