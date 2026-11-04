@@ -742,13 +742,22 @@ const whole = (value: unknown): number =>
 export function createComputeService(options: ComputeServiceOptions): ComputeService {
 	const { store, backend, dispatcher, exporter, now } = options;
 	const e2eChains = createE2EChains(store.e2eChain, now);
-	/** A host's own account's chain, or any for a shared host; the same `not_found` for a space it may not read. */
+	/**
+	 * A host's own account's chain; for a shared host, the chain of a space it runs a sandbox of or is enrolled in
+	 * already (not every account's). The same `not_found` for a space it may not read.
+	 */
 	const hostMayUseChain = async (hostId: string, space: string) => {
 		const host = (await ensureHosts()).find((known) => known.id === hostId);
 		const account = await store.accounts.get(space);
-		if (host === undefined || account === undefined || (host.accountId !== undefined && host.accountId !== space)) {
-			throw new KantelError("not_found", "No such space");
+		const refuse = () => new KantelError("not_found", "No such space");
+		if (host === undefined || account === undefined) throw refuse();
+		if (host.accountId !== undefined) {
+			if (host.accountId !== space) throw refuse();
+			return;
 		}
+		if ((await store.sandboxes.list({ hostId })).some((sandbox) => sandbox.accountId === space)) return;
+		const state = await e2eChains.state(space).catch(() => undefined);
+		if (state?.hosts.has(hostId) !== true) throw refuse();
 	};
 	const rates = options.rates ?? PLACEHOLDER_RATES;
 	const limits = options.limits ?? {};

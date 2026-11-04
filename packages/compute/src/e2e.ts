@@ -8,6 +8,7 @@
  * copy never forks.
  */
 import { KantelError } from "@kantel/contracts";
+import { fromBase64url, fromUtf8 } from "@kantel/e2e/bytes";
 import { type ChainEntry, ChainError, parseEntry, type SpaceState, verifyChain } from "@kantel/e2e/chain";
 import type { Collection } from "./store.ts";
 
@@ -24,6 +25,18 @@ export interface StoredE2EEntry {
 
 /** The longest chain one append may add to. */
 export const MAX_CHAIN_ENTRIES = 10_000;
+/** A host.add's ticket's expiry (the chain has checked it is a ticket by the time this matters: 0 if it isn't). */
+function ticketExpiry(ticket: { readonly payload: string }): number {
+	try {
+		const exp = (JSON.parse(fromUtf8(fromBase64url(ticket.payload))) as { exp?: unknown }).exp;
+		return typeof exp === "number" ? exp : 0;
+	} catch {
+		return 0;
+	}
+}
+
+/** How far ahead of the gateway's clock an entry may be dated. */
+const MAX_CLOCK_SKEW_MS = 5 * 60_000;
 
 const entryId = (space: string, seq: number) => `${space}#${String(seq).padStart(10, "0")}`;
 
@@ -74,6 +87,12 @@ export function createE2EChains(collection: Collection<StoredE2EEntry>, now: () 
 					throw new KantelError("invalid", error instanceof Error ? error.message : "Not an entry");
 				}
 				if (payload.space !== space) throw new KantelError("invalid", "An entry is for another space");
+				// The chain can only check a ticket's expiry against the time its host.add claims; here, at admission, it is
+				// checked against now, so an unused ticket that ran out can't be backdated in.
+				if (payload.at > now() + MAX_CLOCK_SKEW_MS) throw new KantelError("invalid", "An entry is dated in the future");
+				if (payload.type === "host.add" && ticketExpiry(payload.body.ticket) < now()) {
+					throw new KantelError("expired", "The host's join ticket has expired: make another");
+				}
 				await check?.(payload);
 			}
 			try {
