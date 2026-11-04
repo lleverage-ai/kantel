@@ -677,6 +677,12 @@ export function decodeJoinTicket(word: string): HostJoinTicket {
 	return { ticket, seed: key32(t.seed, "seed") };
 }
 
+/** What a join ticket says it is for (unverified: the host checks it against the chain it fetches). */
+export function ticketFor(join: HostJoinTicket): { space: string; genesis: string; name: string; exp: number } {
+	const { payload } = parseTicket(join.ticket);
+	return { space: payload.space, genesis: payload.genesis, name: payload.name, exp: payload.exp };
+}
+
 /** The `host.add` a host signs with its ticket's one-off key (the Go host does the same; this is for tests). */
 export async function signHostEntry(
 	state: SpaceState,

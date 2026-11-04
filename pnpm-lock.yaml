@@ -240,6 +240,9 @@ importers:
       "@kantel/api":
         specifier: workspace:*
         version: link:../api
+      "@kantel/e2e":
+        specifier: workspace:*
+        version: link:../e2e
     devDependencies:
       esbuild:
         specifier: 0.28.2
@@ -303,6 +306,9 @@ importers:
       "@kantel/api":
         specifier: workspace:*
         version: link:../api
+      "@kantel/cli":
+        specifier: workspace:*
+        version: link:../cli
       "@kantel/e2e":
         specifier: workspace:*
         version: link:../e2e

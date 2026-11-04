@@ -15,7 +15,8 @@
 		"build": "node scripts/build.ts"
 	},
 	"dependencies": {
-		"@kantel/api": "workspace:*"
+		"@kantel/api": "workspace:*",
+		"@kantel/e2e": "workspace:*"
 	},
 	"devDependencies": {
 		"esbuild": "0.28.2"
