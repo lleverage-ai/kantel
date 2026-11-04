@@ -56,7 +56,7 @@ Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a s
 
 `GET /v1/sandbox-shapes` (SDK method `getSandboxShapes`)
 
-What a new sandbox in the account may be, from the hosts it may use: an isolate's memory, a microVM's vCPUs and memory, the hosts' presets (and which a host keeps warm) and what an hour costs. A key needs `sandboxes:read`.
+What a new sandbox in the account may be, from the hosts it may use: an isolate's memory, a microVM's vCPUs and memory, the hosts' presets and what an hour costs. A key needs `sandboxes:read`.
 
 **Query parameters**
 

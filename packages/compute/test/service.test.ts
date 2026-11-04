@@ -235,12 +235,9 @@ describe("sandboxes", () => {
 			memoryMbPerVcpu: { min: 512, max: 8192 },
 			custom: true,
 		});
-		expect(shapes.microvm?.presets.map((preset) => [preset.name, preset.warm])).toEqual([
-			["small", false],
-			["default", false],
-			["large", false],
-			["xlarge", false],
-		]);
+		expect(shapes.microvm?.presets.map((preset) => preset.name)).toEqual(["small", "default", "large", "xlarge"]);
+		// Hosts keep no warm pools, so no preset says it is warm.
+		expect(shapes.microvm?.presets.some((preset) => "warm" in preset)).toBe(false);
 		// Self-hosted, sandboxes have no price.
 		expect(shapes.rates).toBeUndefined();
 	});
@@ -289,7 +286,7 @@ describe("sandboxes", () => {
 		});
 	});
 
-	it("puts no warm presets on offer where no host keeps a pool, and marks the ones it does", () => {
+	it("offers a host's presets, and any shape where it makes them, with the disk its sizes give", () => {
 		const host = {
 			id: "h",
 			name: "h",
@@ -305,15 +302,34 @@ describe("sandboxes", () => {
 		const sizes = [{ name: "default", vcpus: 2, memoryMb: 2048, diskGb: 20 }] as const;
 		const named = microvmShapes([host], sizes);
 		expect(named).toMatchObject({ vcpus: { max: 2 }, memoryMb: { max: 2048 }, custom: false });
-		const warm = microvmShapes([{ ...host, features: ["custom-shapes"], pools: { "microvm/default": 1 } }], sizes);
-		expect(warm).toMatchObject({ vcpus: { max: 8 }, memoryMb: { max: 16_384 }, custom: true });
-		expect(warm?.presets).toEqual([{ name: "default", vcpus: 2, memoryMb: 2048, diskGb: 20, warm: true }]);
-		expect(warm?.customDisk).toEqual([{ memoryMb: 2048, diskGb: 20 }]);
+		const custom = microvmShapes([{ ...host, features: ["custom-shapes"] }], sizes);
+		expect(custom).toMatchObject({ vcpus: { max: 8 }, memoryMb: { max: 16_384 }, custom: true });
+		expect(custom?.presets).toEqual([{ name: "default", vcpus: 2, memoryMb: 2048, diskGb: 20 }]);
+		expect(custom?.customDisk).toEqual([{ vcpus: 2, memoryMb: 2048, diskGb: 20 }]);
 		expect(named?.customDisk).toBeUndefined();
+		// A size by a name the API doesn't know still sets disks: the host picks a custom shape's from all its sizes.
+		const odd = microvmShapes(
+			[
+				{
+					...host,
+					features: ["custom-shapes"],
+					diskSizes: [
+						{ vcpus: 2, memoryMb: 2048, diskGb: 20 },
+						{ vcpus: 4, memoryMb: 8192, diskGb: 100 },
+					],
+				},
+			],
+			sizes,
+		);
+		expect(odd?.presets).toHaveLength(1);
+		expect(odd?.customDisk).toEqual([
+			{ vcpus: 2, memoryMb: 2048, diskGb: 20 },
+			{ vcpus: 4, memoryMb: 8192, diskGb: 100 },
+		]);
 		expect(microvmShapes([], sizes)).toBeUndefined();
 	});
 
-	it("keeps hosts' different shapes under one name apart, warm only where that very shape is kept warm", () => {
+	it("keeps hosts' different shapes under one name apart", () => {
 		const host = {
 			id: "a",
 			name: "a",
@@ -327,23 +343,19 @@ describe("sandboxes", () => {
 			labels: {},
 			features: ["custom-shapes"],
 		} as const;
-		const warmFour = {
-			...host,
-			sizes: [{ name: "default" as const, vcpus: 4, memoryMb: 2048, diskGb: 20 }],
-			pools: { "microvm/default": 2 },
-		};
-		const coldTwo = { ...host, id: "b", sizes: [{ name: "default" as const, vcpus: 2, memoryMb: 4096, diskGb: 40 }] };
-		const shapes = microvmShapes([warmFour, coldTwo], []);
+		const four = { ...host, sizes: [{ name: "default" as const, vcpus: 4, memoryMb: 2048, diskGb: 20 }] };
+		const two = { ...host, id: "b", sizes: [{ name: "default" as const, vcpus: 2, memoryMb: 4096, diskGb: 40 }] };
+		const shapes = microvmShapes([four, two], []);
 		expect(shapes?.presets).toEqual([
-			{ name: "default", vcpus: 2, memoryMb: 4096, diskGb: 40, warm: false },
-			{ name: "default", vcpus: 4, memoryMb: 2048, diskGb: 20, warm: true },
+			{ name: "default", vcpus: 2, memoryMb: 4096, diskGb: 40 },
+			{ name: "default", vcpus: 4, memoryMb: 2048, diskGb: 20 },
 		]);
 		// Their custom shapes' disks differ, so none is promised.
 		expect(shapes?.customDisk).toBeUndefined();
-		// The same shape on both: one entry, warm if either keeps it.
-		const same = microvmShapes([warmFour, { ...warmFour, id: "c", pools: {} }], []);
-		expect(same?.presets).toEqual([{ name: "default", vcpus: 4, memoryMb: 2048, diskGb: 20, warm: true }]);
-		expect(same?.customDisk).toEqual([{ memoryMb: 2048, diskGb: 20 }]);
+		// The same shape on both: one entry.
+		const same = microvmShapes([four, { ...four, id: "c" }], []);
+		expect(same?.presets).toEqual([{ name: "default", vcpus: 4, memoryMb: 2048, diskGb: 20 }]);
+		expect(same?.customDisk).toEqual([{ vcpus: 4, memoryMb: 2048, diskGb: 20 }]);
 	});
 
 	it("checks a shape against the hosts this create may use only, however full they are", () => {

@@ -88,7 +88,7 @@ describe("hosts service", () => {
 		expect(host.welcomed()).toBe(true);
 		expect(host.sent[0]).toMatchObject({
 			type: "welcome",
-			// No warm pools unless asked for: a host may be doing other things.
+			// No warm pools: hosts keep none.
 			welcome: { hostId: a.hostId, heartbeatSeconds: 15, pools: {} },
 		});
 		expect((await store.getPlacement("lost-one"))?.state).toBe("lost");
@@ -163,8 +163,7 @@ describe("hosts service", () => {
 		hostA.freeMemoryMiB = 3_000;
 		hostA.connect();
 		const hostB = new FakeHost(service, b.hostId);
-		hostB.freeMemoryMiB = 3_000;
-		hostB.warm = { "microvm/default": 1 };
+		hostB.freeMemoryMiB = 3_500;
 		hostB.connect();
 		await tick();
 		expect((await service.sandboxes.create({ tier: "microvm" })).hostId).toBe(b.hostId);
@@ -231,7 +230,7 @@ describe("hosts service", () => {
 		});
 	});
 
-	it("keeps no warm machines unless a host is given pools, and goes back to the deployment's", async () => {
+	it("asks every host for no warm machines, so an older one that keeps some ends them", async () => {
 		const { service, join } = await setup();
 		const a = await join("a");
 		const host = new FakeHost(service, a.hostId);
@@ -239,23 +238,31 @@ describe("hosts service", () => {
 		await tick();
 		const welcomes = () => host.sent.filter((message) => message.type === "welcome");
 		expect(welcomes().at(-1)?.welcome).toMatchObject({ pools: {} });
-		const updated = await service.update(a.hostId, { pools: { "microvm/default": 2 } });
-		expect(updated.pools).toEqual({ "microvm/default": 2 });
-		expect(welcomes().at(-1)?.welcome).toMatchObject({ pools: { "microvm/default": 2 } });
-		await expect(service.update(a.hostId, { pools: { "microvm/default": 99 } })).rejects.toSatisfy((error) =>
-			isKantelError(error, "invalid"),
-		);
-		const reset = await service.update(a.hostId, { pools: null });
-		expect(reset.pools).toEqual({});
-		expect(welcomes().at(-1)?.welcome).toMatchObject({ pools: {} });
+		const drained = await service.update(a.hostId, { draining: true });
+		expect(drained).not.toHaveProperty("pools");
+		expect(welcomes().at(-1)?.welcome).toMatchObject({ pools: {}, draining: true });
 	});
 
-	it("ends a host's hello on the pools set while it was answered: a target, none, or the deployment's", async () => {
-		const deployment = { "microvm/default": 1 };
-		for (const [set, want] of [
-			[{ "microvm/default": 3 }, { "microvm/default": 3 }],
-			[{}, {}],
-			[null, deployment],
+	it("sends settings changed in a burst as they are last, never an older one after a newer", async () => {
+		const { service, join } = await setup();
+		const a = await join("a");
+		const host = new FakeHost(service, a.hostId);
+		host.connect();
+		await tick();
+		await Promise.all([
+			service.update(a.hostId, { draining: true }),
+			service.update(a.hostId, { draining: false }),
+			service.update(a.hostId, { draining: true }),
+		]);
+		await tick();
+		const welcomes = host.sent.filter((message) => message.type === "welcome");
+		expect(welcomes.at(-1)?.welcome?.draining).toBe(true);
+	});
+
+	it("ends a host's hello on a drain set or lifted while it was answered", async () => {
+		for (const [before, set] of [
+			[false, true],
+			[true, false],
 		] as const) {
 			// The hello's last read of the host (after it reconciles) is taken, then held: an update lands between that read
 			// and its welcome.
@@ -277,17 +284,12 @@ describe("hosts service", () => {
 					return read;
 				},
 			};
-			const service = createHostsService({
-				store,
-				publicUrl: "https://kantel.example.com/",
-				pools: deployment,
-				log: () => {},
-			});
+			const service = createHostsService({ store, publicUrl: "https://kantel.example.com/", log: () => {} });
 			services.push(service);
 			const token = await service.createJoinToken({ name: "a" });
 			const { hostId } = await service.register({ token: token.token, facts: facts() });
-			// Its last setting before this hello: something else, so the hello's first read is older than what is set.
-			await service.update(hostId, { pools: { "microvm/default": 2 } });
+			// Its setting before this hello, so the hello's read is older than what is set during it.
+			await service.update(hostId, { draining: before });
 
 			let open = () => {};
 			gate = new Promise((resolve) => {
@@ -297,12 +299,12 @@ describe("hosts service", () => {
 			host.connect();
 			await tick();
 			expect(host.welcomed()).toBe(false);
-			await service.update(hostId, { pools: set });
+			await service.update(hostId, { draining: set });
 			open();
 			await tick();
 			const welcomes = host.sent.filter((message) => message.type === "welcome");
 			expect(welcomes.length).toBeGreaterThan(0);
-			expect(welcomes.at(-1)?.welcome?.pools).toEqual(want);
+			expect(welcomes.at(-1)?.welcome?.draining === true).toBe(set);
 		}
 	});
 

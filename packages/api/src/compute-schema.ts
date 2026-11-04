@@ -266,8 +266,8 @@ export const SandboxShapeInput = Type.Object(
 	{
 		title: "SandboxShapeInput",
 		description:
-			"What a new sandbox gets. A shape off the hosts' presets boots from scratch where a preset may come from a " +
-			"host's warm pool.",
+			"What a new sandbox gets. A preset restores its size's template snapshot on the host; a shape off the " +
+			"presets boots from scratch.",
 	},
 );
 
@@ -282,9 +282,6 @@ export const ShapePreset = Type.Object(
 		vcpus: Type.Integer(),
 		memoryMb: Type.Integer(),
 		diskGb: Type.Integer(),
-		warm: Type.Boolean({
-			description: "A host the account may use keeps machines of it ready (a warm pool); off by default.",
-		}),
 	},
 	{ title: "ShapePreset" },
 );
@@ -313,8 +310,7 @@ export const SandboxShapes = Type.Object(
 					),
 					presets: Type.Array(ShapePreset, {
 						description:
-							"Each shape a host makes by name. Hosts may give one name different shapes: each is its own entry, warm " +
-							"only where a host keeps that very shape warm.",
+							"Each shape a host makes by name. Hosts may give one name different shapes: each is its own entry.",
 					}),
 					custom: Type.Boolean({
 						description: "Whether a host takes shapes off the presets; when false, only the presets.",
@@ -1749,20 +1745,6 @@ export const HostState = Type.Union(
 	},
 );
 
-export const HostPools = Type.Union(
-	[
-		Type.Record(Type.String({ pattern: "^(microvm|isolate)/[a-z0-9-]+$" }), Type.Integer({ minimum: 0, maximum: 16 })),
-		Type.Null(),
-	],
-	{
-		title: "HostPools",
-		description:
-			'Warm machines the host keeps ready, by `<type>/<size>`, such as `{"microvm/default": 1}`: a create of that ' +
-			"shape is then a restore. They hold memory while idle, so a host keeps none unless asked. `null`: the " +
-			"deployment's default (none unless its operator set `KANTEL_COMPUTE_POOLS`).",
-	},
-);
-
 export const Host = Type.Object(
 	{
 		id: id("The host's ID, such as `host_6t5r4e`."),
@@ -1793,12 +1775,6 @@ export const Host = Type.Object(
 			{ title: "HostAllocated" },
 		),
 		labels: Type.Record(Type.String(), Type.String()),
-		pools: Type.Optional(
-			Type.Record(Type.String(), Type.Integer(), {
-				description:
-					"The warm machines it keeps ready, by `<type>/<size>`: its own setting, else the deployment's. Empty: none.",
-			}),
-		),
 		accountId: Type.Optional(
 			id(
 				"The account the host belongs to, when it was added to one by its people: only that account's " +
@@ -1824,7 +1800,6 @@ export const UpdateHostBody = Type.Object(
 		name: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
 		labels: Type.Optional(Type.Record(Type.String(), Type.String())),
 		draining: Type.Optional(Type.Boolean({ description: "Stop placing new sandboxes on it." })),
-		pools: Type.Optional(HostPools),
 	},
 	{ title: "UpdateHostBody" },
 );
@@ -1920,7 +1895,6 @@ export type SandboxSizeName = Static<typeof SandboxSizeName>;
 export type SandboxShapeInput = Static<typeof SandboxShapeInput>;
 export type SandboxShapes = Static<typeof SandboxShapes>;
 export type ShapePreset = Static<typeof ShapePreset>;
-export type HostPools = Static<typeof HostPools>;
 export type SandboxCapabilities = Static<typeof SandboxCapabilities>;
 export type Sandbox = Static<typeof Sandbox>;
 export type CreateSandboxBody = Static<typeof CreateSandboxBody>;

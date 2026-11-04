@@ -52,8 +52,6 @@ export interface BackendHost {
 	 * gives any other shape's disk from. Absent: `sizes`.
 	 */
 	readonly diskSizes?: readonly { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number }[];
-	/** The warm machines it keeps, by `<type>/<size>`. Absent or empty: none. */
-	readonly pools?: { readonly [pool: string]: number };
 	readonly labels: { readonly [key: string]: string };
 	/** Whether it is connected now; absent, it always is (the stub). A host that isn't is `unreachable`. */
 	readonly connected?: boolean;
@@ -313,15 +311,13 @@ export interface SandboxBackend {
 	updateSecrets?(sandboxId: string, version: number): Promise<void>;
 	/** The super-admin revoked a host: refuse its credential and drop its connection. Absent, nothing to do. */
 	revokeHost?(hostId: string): Promise<void>;
-	/** The super-admin renamed, relabelled, drained or set the warm pools of a host. Absent, nothing to do. */
+	/** The super-admin renamed, relabelled or drained a host. Absent, nothing to do. */
 	updateHost?(
 		hostId: string,
 		change: {
 			readonly name?: string;
 			readonly labels?: { readonly [key: string]: string };
 			readonly draining?: boolean;
-			/** Its own warm pools; null goes back to the deployment's. */
-			readonly pools?: { readonly [pool: string]: number } | null;
 		},
 	): Promise<void>;
 }

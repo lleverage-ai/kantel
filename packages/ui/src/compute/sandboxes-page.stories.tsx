@@ -53,14 +53,6 @@ export const Create: Story = () => <Scenario creating />;
 /** New sandbox on hosted Kantel: the price follows the vCPUs and memory chosen. */
 export const CreateHosted: Story = () => <Scenario hosting="hosted" creating />;
 
-/**
- * New sandbox where a host keeps warm machines of two presets (small and medium): a shape off them says it boots cold.
- * Move a slider off a tick to see it.
- */
-export const CreateWarmPools: Story = () => (
-	<Scenario hosting="hosted" creating options={{ warmPresets: ["small", "medium"] }} />
-);
-
 /** New sandbox on a phone. */
 export const CreateMobile: Story = () => <Scenario creating narrow />;
 CreateMobile.meta = { width: 390 };

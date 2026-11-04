@@ -8,12 +8,11 @@
  *
  * A microVM is asked for by shape (vCPUs and memory) or, as before shapes, by a size's name. A shape one of the host's
  * named sizes has is that size; another is a custom shape, which a host makes only if it reports `custom-shapes` and
- * has the vCPUs and memory, and which boots from scratch (no warm pool or template is kept for it).
+ * has the vCPUs and memory, and which boots from scratch (no template is kept for it).
  *
- * Among those, a host with a warm sandbox of that tier and shape ready wins (a create there is a restore, a few hundred
- * milliseconds, not a boot); then, for the isolate tier, a host already holding the owner's runtime (isolates of one
- * owner share a VM); then the most free memory, the least loaded. Warm pools are off unless a host is given some, and
- * placement needs none: with no pool anywhere, the warm step decides nothing.
+ * Among those, for the isolate tier, a host already holding the owner's runtime wins (isolates of one owner share a
+ * VM); then the most free memory, the least loaded. Hosts keep no warm pools of running sandboxes, so no host is
+ * preferred for having one ready: a create restores a snapshot wherever it lands.
  */
 import { HOST_FEATURES, type HostSize, type SandboxTier } from "./protocol.ts";
 import type { HostRecord } from "./store.ts";
@@ -50,7 +49,6 @@ export interface Placement {
 	readonly size: HostSize;
 	/** A shape off the host's named sizes: sent to it as vCPUs, memory and disk, and booted from scratch. */
 	readonly custom: boolean;
-	readonly warm: boolean;
 }
 
 export type Refusal = { readonly reason: string };
@@ -125,7 +123,6 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 		candidate: Candidate;
 		size: HostSize;
 		custom: boolean;
-		warm: boolean;
 		free: number;
 		owner: boolean;
 	}[] = [];
@@ -173,13 +170,10 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 			reasons.add("full");
 			continue;
 		}
-		// Pools are kept for named sizes only, so a custom shape is never warm.
-		const pool = `${request.tier}/${request.tier === "isolate" ? "default" : size.name}`;
 		fits.push({
 			candidate,
 			size,
 			custom: shaped.custom,
-			warm: !shaped.custom && (capacity.warm[pool] ?? 0) > 0,
 			free: freeMemory,
 			owner: request.owner !== undefined && candidate.owners.has(request.owner),
 		});
@@ -190,7 +184,6 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 	}
 	fits.sort(
 		(a, b) =>
-			Number(b.warm) - Number(a.warm) ||
 			Number(b.owner) - Number(a.owner) ||
 			b.free - a.free ||
 			(a.candidate.host.capacity?.load1 ?? 0) - (b.candidate.host.capacity?.load1 ?? 0) ||
@@ -198,7 +191,7 @@ export function place(request: PlacementRequest, candidates: readonly Candidate[
 	);
 	const best = fits[0];
 	if (best === undefined) return { reason: "No host" };
-	return { host: best.candidate.host, size: best.size, custom: best.custom, warm: best.warm };
+	return { host: best.candidate.host, size: best.size, custom: best.custom };
 }
 
 export function isRefusal(value: Placement | Refusal): value is Refusal {

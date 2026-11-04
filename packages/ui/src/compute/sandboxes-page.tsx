@@ -25,7 +25,6 @@ import { EmptyState, Notice } from "../primitives/surface.tsx";
 import {
 	type ComputeAccount,
 	type CreateSandboxInput,
-	coldStart,
 	costText,
 	customShapes,
 	DEFAULT_SANDBOX_SHAPES,
@@ -1011,9 +1010,8 @@ const readShapes = (source: SandboxesSource, accountId: string): Promise<Sandbox
 /**
  * New sandbox's sliders. A microVM: vCPUs, then memory, which follows the vCPUs within what each may hold; a tick
  * marks each shape the hosts offer by name. An isolate: memory alone, since it shares its account's VM's CPU. Under
- * them, the shape in a line, its price where there is one (hosted), and, only where some host keeps warm machines
- * and this shape isn't one of them, that it boots cold. Where no host makes a shape off the presets (older hosts),
- * a microVM is one of the presets, chosen from a list.
+ * them, the shape in a line and its price where there is one (hosted). Where no host makes a shape off the presets
+ * (older hosts), a microVM is one of the presets, chosen from a list.
  */
 export function ShapeFields({
 	kind,
@@ -1060,16 +1058,12 @@ export function ShapeFields({
 	const cpuRange = vcpuRangeFor(shapes);
 	const memory = memoryRangeFor(shapes, shape.vcpus);
 	const disk = diskFor(shapes, shape);
-	const cold = coldStart(shapes, shape);
 	const summary = (
 		<p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
 			<span>
 				{shape.vcpus} vCPU, {memoryText(shape.memoryMb)} memory{disk === undefined ? "" : `, ${disk} GB disk`}
 				{price}
 			</span>
-			{cold ? (
-				<span className="text-faint">Cold start: no host keeps this shape warm, so it boots from scratch.</span>
-			) : null}
 		</p>
 	);
 	if (!customShapes(shapes)) {

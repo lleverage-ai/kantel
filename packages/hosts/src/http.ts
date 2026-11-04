@@ -124,14 +124,14 @@ export function createHostsApi(options: HostsApiOptions) {
 				const name = optional(input.name, isString, "name");
 				const labels = optional(input.labels, isRecord, "labels");
 				const draining = optional(input.draining, isBoolean, "draining");
-				// Checked by the service; null goes back to the deployment's.
-				const pools = input.pools as { [pool: string]: number } | null | undefined;
+				if (input.pools !== undefined && input.pools !== null) {
+					throw new KantelError("invalid", "Hosts keep no warm pools: a create restores a snapshot");
+				}
 				return json(
 					await hosts.update(hostId, {
 						...(name === undefined ? {} : { name }),
 						...(labels === undefined ? {} : { labels }),
 						...(draining === undefined ? {} : { draining }),
-						...(pools === undefined ? {} : { pools }),
 					}),
 				);
 			}

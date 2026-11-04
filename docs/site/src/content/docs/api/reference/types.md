@@ -280,6 +280,14 @@ Every field is optional: `{}` makes a running isolate in the caller's account.
 | `url` | string | yes | HTTPS; a self-hosted install may allow `http://` to a private address. |
 | `events` | [EventType](/api/reference/types/#eventtype)[] | yes |  |
 
+### CustomDiskStep
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `vcpus` | integer | yes |  |
+| `memoryMb` | integer | yes |  |
+| `diskGb` | integer | yes |  |
+
 ### DeploymentMode
 
 `selfhosted`: an install someone runs for themselves. `hosted`: a hosted service with plans.
@@ -622,7 +630,6 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | `capacity` | [HostCapacity](/api/reference/types/#hostcapacity) | yes |  |
 | `allocated` | [HostAllocated](/api/reference/types/#hostallocated) | yes |  |
 | `labels` | Record&lt;string, string&gt; | yes |  |
-| `pools` | Record&lt;string, integer&gt; | no | The warm machines it keeps ready, by `<type>/<size>`: its own setting, else the deployment's. Empty: none. |
 | `accountId` | string | no | The account the host belongs to, when it was added to one by its people: only that account's sandboxes run on it. Absent for a host the deployment's super-admin joined, which any account's sandboxes may use. |
 | `joinedAt` | integer | yes | Epoch milliseconds, UTC. |
 | `lastSeenAt` | integer | no | Epoch milliseconds, UTC. |
@@ -658,12 +665,6 @@ A machine that runs sandboxes. It dials out to the control plane; it takes no in
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `items` | [Host](/api/reference/types/#host)[] | yes |  |
-
-### HostPools
-
-Warm machines the host keeps ready, by `<type>/<size>`, such as `{"microvm/default": 1}`: a create of that shape is then a restore. They hold memory while idle, so a host keeps none unless asked. `null`: the deployment's default (none unless its operator set `KANTEL_COMPUTE_POOLS`).
-
-One of: Record&lt;string, integer&gt; or null.
 
 ### HostState
 
@@ -742,8 +743,9 @@ Absent when no host the account may use runs microVMs.
 | `vcpus` | [ShapeRange](/api/reference/types/#shaperange) | yes |  |
 | `memoryMb` | [ShapeRange](/api/reference/types/#shaperange) | yes |  |
 | `memoryMbPerVcpu` | object | yes | Memory follows vCPUs: each vCPU has at least `min` and at most `max` MB. |
-| `presets` | [ShapePreset](/api/reference/types/#shapepreset)[] | yes |  |
+| `presets` | [ShapePreset](/api/reference/types/#shapepreset)[] | yes | Each shape a host makes by name. Hosts may give one name different shapes: each is its own entry. |
 | `custom` | boolean | yes | Whether a host takes shapes off the presets; when false, only the presets. |
+| `customDisk` | [CustomDiskStep](/api/reference/types/#customdiskstep)[] | no | The sizes of the hosts that make shapes off the presets, by memory: a shape that is one of them gets its disk; any other, the first's with at least its memory, else the last's. Only where every such host has the same; absent where the disk depends on the host. |
 
 ### PollDeviceLoginBody
 
@@ -952,7 +954,7 @@ A protected variable as one sandbox has it: never its value.
 
 ### SandboxShapeInput
 
-What a new sandbox gets. A shape off the hosts' presets boots from scratch where a preset may come from a host's warm pool.
+What a new sandbox gets. A preset restores its size's template snapshot on the host; a shape off the presets boots from scratch.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -1050,6 +1052,12 @@ One of: `"private"` or `"organisation"`.
 | `value` | string | no | Required for a new variable and when it becomes protected or plain. Left out on a protected one, it keeps its value (to change its bindings); a new value for a protected one is a rotation. (at most 32768 characters) |
 | `bindings` | [DestinationBinding](/api/reference/types/#destinationbinding)[] | no | A protected variable's destinations, at least one. Left out, a protected one keeps its own. (at most 32 items) |
 
+### SetPublicUrlBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `publicUrl` | string or null | yes | An http(s) origin, such as `https://kantel.example.com`; `null` goes back to the deployment's own. |
+
 ### ShapePreset
 
 | Field | Type | Required | Description |
@@ -1058,7 +1066,6 @@ One of: `"private"` or `"organisation"`.
 | `vcpus` | integer | yes |  |
 | `memoryMb` | integer | yes |  |
 | `diskGb` | integer | yes |  |
-| `warm` | boolean | yes | A host the account may use keeps machines of it ready (a warm pool); off by default. |
 
 ### ShapeRange
 
@@ -1079,12 +1086,6 @@ What an hour costs, per vCPU and GB; absent where it is free.
 | `microvmPerVcpuHour` | number | yes |  |
 | `microvmPerGbHour` | number | yes |  |
 | `isolatePerGbHour` | number | yes |  |
-
-### SetPublicUrlBody
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `publicUrl` | string or null | yes | An http(s) origin, such as `https://kantel.example.com`; `null` goes back to the deployment's own. |
 
 ### Snapshot
 
@@ -1220,7 +1221,6 @@ What the collector answered to an empty export sent on save.
 | `name` | string | no |  (at most 100 characters) |
 | `labels` | Record&lt;string, string&gt; | no |  |
 | `draining` | boolean | no | Stop placing new sandboxes on it. |
-| `pools` | [HostPools](/api/reference/types/#hostpools) | no |  |
 
 ### UpdateMemberBody
 

@@ -33,7 +33,7 @@ const candidate = (id: string, change: Partial<HostRecord> = {}, extra: Partial<
 		draining: false,
 		joinedAt: 1,
 		facts,
-		capacity: { freeMemoryMiB: 16_000, freeDiskGiB: 400, running: 0, stopped: 0, load1: 0.5, warm: {} },
+		capacity: { freeMemoryMiB: 16_000, freeDiskGiB: 400, running: 0, stopped: 0, load1: 0.5 },
 		...change,
 	},
 	connected: true,
@@ -52,18 +52,22 @@ const custom = (of: Candidate): Candidate => ({
 	},
 });
 
-const capacity = (freeMemoryMiB: number, warm: { [pool: string]: number } = {}, load1 = 0.5) => ({
-	capacity: { freeMemoryMiB, freeDiskGiB: 400, running: 0, stopped: 0, load1, warm },
+const capacity = (freeMemoryMiB: number, load1 = 0.5) => ({
+	capacity: { freeMemoryMiB, freeDiskGiB: 400, running: 0, stopped: 0, load1 },
 });
 
 describe("place", () => {
-	it("prefers a host with a warm sandbox of the size, then the most free memory", () => {
+	it("prefers the most free memory, then the least loaded, whatever warm machines an older host reports", () => {
 		const roomy = candidate("roomy", capacity(30_000));
-		const warm = candidate("warm", capacity(4_000, { "microvm/default": 1 }));
-		const chosen = place({ tier: "microvm", size: "default" }, [roomy, warm]);
-		expect(isRefusal(chosen) ? chosen.reason : chosen.host.id).toBe("warm");
-		const large = place({ tier: "microvm", size: "large" }, [roomy, warm]);
-		expect(isRefusal(large) ? large.reason : large.host.id).toBe("roomy");
+		// A host from before warm pools were removed still reports them: placement no longer looks.
+		const older = candidate("older", {
+			capacity: { ...capacity(4_000).capacity, warm: { "microvm/default": 3 } } as HostRecord["capacity"],
+		});
+		const chosen = place({ tier: "microvm", size: "default" }, [older, roomy]);
+		expect(isRefusal(chosen) ? chosen.reason : chosen.host.id).toBe("roomy");
+		const idle = candidate("idle", capacity(30_000, 0.1));
+		const busy = place({ tier: "microvm", size: "default" }, [roomy, idle]);
+		expect(isRefusal(busy) ? busy.reason : busy.host.id).toBe("idle");
 	});
 
 	it("counts what was placed since a host's last report", () => {
@@ -99,7 +103,7 @@ describe("place", () => {
 		expect(isRefusal(other) ? other.reason : other.host.id).toBe("roomy");
 	});
 
-	it("places with no warm pools anywhere: the most free memory wins", () => {
+	it("places a named size and a shape alike: the most free memory wins", () => {
 		const a = candidate("a", capacity(8_000));
 		const b = candidate("b", capacity(12_000));
 		for (const request of [
@@ -109,37 +113,31 @@ describe("place", () => {
 		] as const) {
 			const chosen = place(request, [a, custom(b)]);
 			expect(isRefusal(chosen) ? chosen.reason : chosen.host.id).toBe("b");
-			if (!isRefusal(chosen)) expect(chosen.warm).toBe(false);
 		}
 	});
 
-	it("takes a shape a named size has as that size, so its warm pool serves it", () => {
-		const warm = custom(candidate("warm", capacity(9_000, { "microvm/large": 1 })));
+	it("takes a shape a named size has as that size, so the host restores its template", () => {
+		const small = custom(candidate("small", capacity(9_000)));
 		const roomy = custom(candidate("roomy", capacity(30_000)));
-		const chosen = place({ tier: "microvm", shape: { vcpus: 4, memoryMiB: 8192 } }, [roomy, warm]);
-		expect(isRefusal(chosen) ? chosen.reason : [chosen.host.id, chosen.size.name, chosen.custom, chosen.warm]).toEqual([
-			"warm",
+		const chosen = place({ tier: "microvm", shape: { vcpus: 4, memoryMiB: 8192 } }, [small, roomy]);
+		expect(isRefusal(chosen) ? chosen.reason : [chosen.host.id, chosen.size.name, chosen.custom]).toEqual([
+			"roomy",
 			"large",
 			false,
-			true,
 		]);
-		// The pool is of another shape: no help to this one, which goes where there's most room.
-		const other = place({ tier: "microvm", shape: { vcpus: 2, memoryMiB: 2048 } }, [roomy, warm]);
-		expect(isRefusal(other) ? other.reason : [other.host.id, other.warm]).toEqual(["roomy", false]);
 	});
 
-	it("makes a custom shape on a host that makes them, never from a warm pool", () => {
+	it("makes a custom shape on a host that makes them", () => {
 		const shape = { vcpus: 5, memoryMiB: 10_240 };
 		// A host that makes only its named sizes can't take it.
-		const named = candidate("named", capacity(30_000, { "microvm/default": 2 }));
+		const named = candidate("named", capacity(30_000));
 		const refused = place({ tier: "microvm", shape }, [named]);
 		expect(isRefusal(refused) && refused.reason).toMatch(/5 vCPU and 10240 MiB.*only its named sizes/);
-		const makes = custom(candidate("makes", capacity(20_000, { "microvm/default": 2 })));
+		const makes = custom(candidate("makes", capacity(20_000)));
 		const chosen = place({ tier: "microvm", shape }, [named, makes]);
 		if (isRefusal(chosen)) throw new Error(chosen.reason);
 		expect(chosen.host.id).toBe("makes");
 		expect(chosen.custom).toBe(true);
-		expect(chosen.warm).toBe(false);
 		// Its disk is the smallest named size's with at least its memory, else the largest's.
 		expect(chosen.size).toEqual({ name: "custom-5c-10240m-50g", vcpus: 5, memoryMiB: 10_240, diskGiB: 50 });
 		expect(diskFor(facts.sizes, 1024)).toBe(20);

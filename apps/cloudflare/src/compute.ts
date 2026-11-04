@@ -590,12 +590,7 @@ async function accountHostsSide(
 		await migrateRelay(sql);
 	}
 	const hostStore = sql === undefined ? createMemoryHostStore() : createSqlHostStore(sql);
-	// Hosted hosts run sandboxes only, so each keeps one warm `default` microVM (self-hosted, they keep none unless asked).
-	const service = createHostsService({
-		store: hostStore,
-		publicUrl: config.publicUrl,
-		pools: { "microvm/default": 1 },
-	});
+	const service = createHostsService({ store: hostStore, publicUrl: config.publicUrl });
 	const relay = sql === undefined ? createMemoryRelayStore() : createSqlRelayStore(sql);
 	const tickets = sweptAsUsed(createTunnelTickets(relay, now), now);
 	let check: ((grantee: string | undefined, sandboxId: string) => Promise<boolean>) | undefined;

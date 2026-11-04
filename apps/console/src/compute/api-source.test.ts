@@ -15,7 +15,7 @@ import { createStubBackend, STUB_HOST_ID } from "@kantel/compute/stub";
 import { KantelError } from "@kantel/contracts";
 import { type ComputeSource, FilesRefusedError } from "@kantel/ui";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiCompute, SCREENS_NOT_END_TO_END, SCREENS_NOT_SERVED } from "./api-source.ts";
+import { apiCompute, SCREENS_NOT_END_TO_END, SCREENS_NOT_SERVED, shapesOf } from "./api-source.ts";
 import { localBridge } from "./local.ts";
 
 const ORIGIN = "https://kantel.test";
@@ -463,6 +463,24 @@ describe("sandboxes", () => {
 		const [listed] = await source.sandboxes.list(accountId);
 		// The stub backend's "default" is 2 vCPU and 4 GB, not the sample catalogue's 4 and 8.
 		expect(listed).toMatchObject({ id: made.id, size: "medium", resources: { vcpus: 2, memoryGb: 4, diskGb: 20 } });
+	});
+
+	it("keeps whether hosts make shapes off the presets, and their disk rule, as the API says", () => {
+		const microvm = {
+			vcpus: { min: 1, max: 8, step: 1, default: 2 },
+			memoryMb: { min: 512, max: 16_384, step: 512, default: 4096 },
+			memoryMbPerVcpu: { min: 512, max: 8192 },
+			presets: [{ name: "default" as const, vcpus: 2, memoryMb: 4096, diskGb: 20 }],
+		};
+		const isolate = { memoryMb: { min: 128, max: 512, step: 64, default: 256 }, enforced: false };
+		// Older hosts only: the presets alone, and no disk rule to promise.
+		const older = shapesOf({ isolate, microvm: { ...microvm, custom: false } });
+		expect(older.microvm.custom).toBe(false);
+		expect(older.microvm.customDisk).toBeUndefined();
+		const steps = [{ vcpus: 2, memoryMb: 4096, diskGb: 20 }];
+		const current = shapesOf({ isolate, microvm: { ...microvm, custom: true, customDisk: steps } });
+		expect(current.microvm.custom).toBe(true);
+		expect(current.microvm.customDisk).toEqual(steps);
 	});
 
 	it("asks for the shape the sliders chose, and reads what may be chosen from the API", async () => {

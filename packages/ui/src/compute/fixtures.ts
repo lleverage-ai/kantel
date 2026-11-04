@@ -1458,13 +1458,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 			shapes: () =>
 				gate(() => ({
 					isolate: DEFAULT_SANDBOX_SHAPES.isolate,
-					microvm: {
-						...DEFAULT_SANDBOX_SHAPES.microvm,
-						presets: DEFAULT_SANDBOX_SHAPES.microvm.presets.map((preset) => ({
-							...preset,
-							warm: options.warmPresets?.includes(preset.name) === true,
-						})),
-					},
+					microvm: DEFAULT_SANDBOX_SHAPES.microvm,
 					...(hosting === "hosted" && DEFAULT_SANDBOX_SHAPES.rates !== undefined
 						? { rates: DEFAULT_SANDBOX_SHAPES.rates }
 						: {}),

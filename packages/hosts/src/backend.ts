@@ -291,7 +291,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			sandboxId: spec.sandboxId,
 			tier: spec.type,
 			...(spec.type === "microvm" && spec.size !== undefined && spec.shape === undefined ? { size: spec.size } : {}),
-			// A shape is placed as one: on a host with that named size (where a warm pool may hold one), or as a custom shape.
+			// A shape is placed as one: on a host with that named size (restored from its template snapshot), or as a custom shape.
 			...(spec.shape === undefined ? {} : { shape: { vcpus: spec.shape.vcpus, memoryMiB: spec.shape.memoryMb } }),
 			owner: spec.accountId,
 			env: spec.env,
@@ -341,7 +341,6 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 						memoryMb: size.memoryMiB,
 						diskGb: size.diskGiB,
 					})),
-					pools: { ...host.pools },
 					labels: { ...host.labels },
 					connected: host.state === "online" || host.state === "draining",
 					...(host.lastSeenAt === undefined ? {} : { lastSeenAt: host.lastSeenAt }),

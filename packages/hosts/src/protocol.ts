@@ -105,8 +105,6 @@ export interface HostCapacity {
 	readonly running: number;
 	readonly stopped: number;
 	readonly load1: number;
-	/** Pre-warmed sandboxes ready, by `<tier>/<pool>`: a pool is one of the host's named sizes. */
-	readonly warm: { readonly [pool: string]: number };
 }
 
 export type SandboxState = "starting" | "running" | "stopping" | "stopped" | "error" | "deleted";
@@ -124,7 +122,10 @@ export interface HostSandbox {
 	readonly createdAt: number;
 	/** The operation's timings in milliseconds, by step. */
 	readonly timings?: { readonly [step: string]: number };
-	/** How a create was served: `pool`, `snapshot` or `boot`. */
+	/**
+	 * How a create was served: `snapshot` or `boot`; for an isolate, `pool` (one its account's VM had pre-loaded) or
+	 * `account` (its account's VM already ran).
+	 */
 	readonly source?: string;
 }
 
@@ -240,10 +241,10 @@ export interface HostWelcome {
 	/** With `{version}`, `{os}` and `{arch}` for the host to fill in. */
 	readonly updateUrl?: string;
 	/**
-	 * Pre-warmed sandboxes wanted, by `<tier>/<pool>`, such as `{"microvm/default": 2}`: the host's own setting, else the
-	 * deployment's, which is none by default. Every create of another shape boots, so none is needed.
+	 * Always empty: hosts keep no warm pools. Sent so a host from before they were removed ends any it still keeps
+	 * (it reads `pools` as the warm machines wanted); a current host ignores it.
 	 */
-	readonly pools?: { readonly [pool: string]: number };
+	readonly pools?: { readonly [pool: string]: never };
 	readonly draining?: boolean;
 }
 
@@ -304,7 +305,6 @@ export const HostMethods = {
 	snapshotRead: "snapshot.read",
 	portOpen: "port.open",
 	hostUpdate: "host.update",
-	hostPools: "host.pools",
 	/** Kantel to host: a sandbox's protected values changed, `{ sandboxId, version }`; it drops its copy. Result `{}`. */
 	secrets: "sandbox.secrets",
 	/** Host to Kantel: `{ sandboxId }`, answered with `HostSecrets`, or `not_found` for a sandbox not on that host. */

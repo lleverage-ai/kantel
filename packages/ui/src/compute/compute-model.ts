@@ -130,11 +130,10 @@ export interface ShapeRange {
 	readonly default: number;
 }
 
-/** A shape the hosts offer by name. `warm`: a host keeps machines of it ready, so a create there is a restore. */
+/** A shape the hosts offer by name. */
 export interface ShapePreset extends SandboxShape {
 	readonly name: string;
 	readonly diskGb: number;
-	readonly warm: boolean;
 }
 
 /** What New sandbox's sliders may choose. */
@@ -169,7 +168,7 @@ export interface SandboxShapes {
 /** Isolates: 128 to 512 MB in 64 MB steps, 256 by default. */
 export const ISOLATE_MEMORY: ShapeRange = { min: 128, max: 512, step: 64, default: 256 };
 
-/** The sample data's shapes: its sizes as presets, none kept warm (a self-hosted host keeps none unless asked). */
+/** The sample data's shapes: its sizes as presets. */
 export const DEFAULT_SANDBOX_SHAPES: SandboxShapes = {
 	isolate: { memoryMb: ISOLATE_MEMORY },
 	microvm: {
@@ -177,10 +176,10 @@ export const DEFAULT_SANDBOX_SHAPES: SandboxShapes = {
 		memoryMb: { min: 512, max: 32768, step: 512, default: 8192 },
 		memoryMbPerVcpu: { min: 512, max: 8192 },
 		presets: [
-			{ name: "small", vcpus: 2, memoryMb: 4096, diskGb: 40, warm: false },
-			{ name: "medium", vcpus: 4, memoryMb: 8192, diskGb: 60, warm: false },
-			{ name: "large", vcpus: 8, memoryMb: 16384, diskGb: 120, warm: false },
-			{ name: "xlarge", vcpus: 16, memoryMb: 32768, diskGb: 240, warm: false },
+			{ name: "small", vcpus: 2, memoryMb: 4096, diskGb: 40 },
+			{ name: "medium", vcpus: 4, memoryMb: 8192, diskGb: 60 },
+			{ name: "large", vcpus: 8, memoryMb: 16384, diskGb: 120 },
+			{ name: "xlarge", vcpus: 16, memoryMb: 32768, diskGb: 240 },
 		],
 		customDisk: [
 			{ vcpus: 2, memoryMb: 4096, diskGb: 40 },
@@ -241,15 +240,6 @@ export function fitMemory(shapes: SandboxShapes, vcpus: number, memoryMb: number
 /** The preset a microVM shape is, if it is one. */
 export function presetOf(shapes: SandboxShapes, shape: SandboxShape): ShapePreset | undefined {
 	return shapes.microvm.presets.find((preset) => preset.vcpus === shape.vcpus && preset.memoryMb === shape.memoryMb);
-}
-
-/**
- * Whether New sandbox says a microVM of `shape` boots cold: only where some host keeps warm machines (a self-hosted
- * host keeps none unless its operator asks) and this shape isn't one of them.
- */
-export function coldStart(shapes: SandboxShapes, shape: SandboxShape): boolean {
-	if (!shapes.microvm.presets.some((preset) => preset.warm)) return false;
-	return presetOf(shapes, shape)?.warm !== true;
 }
 
 /**

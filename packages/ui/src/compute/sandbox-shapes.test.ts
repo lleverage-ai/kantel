@@ -3,7 +3,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { onStep, sliderPercent } from "../primitives/slider.tsx";
 import {
-	coldStart,
 	customShapes,
 	DEFAULT_SANDBOX_SHAPES,
 	diskFor,
@@ -18,14 +17,6 @@ import {
 	vcpuRangeFor,
 } from "./compute-model.ts";
 import { NewSandboxDialog, ShapeFields } from "./sandboxes-page.tsx";
-
-const warm = (names: readonly string[]): SandboxShapes => ({
-	...DEFAULT_SANDBOX_SHAPES,
-	microvm: {
-		...DEFAULT_SANDBOX_SHAPES.microvm,
-		presets: DEFAULT_SANDBOX_SHAPES.microvm.presets.map((preset) => ({ ...preset, warm: names.includes(preset.name) })),
-	},
-});
 
 describe("sandbox shapes", () => {
 	it("isolates take 128 to 512 MB in 64 MB steps, 256 by default", () => {
@@ -51,14 +42,9 @@ describe("sandbox shapes", () => {
 		expect(shapeCentsPerHour(free, "microvm", { vcpus: 4, memoryMb: 8192 })).toBeUndefined();
 	});
 
-	it("says a shape boots cold only where some host keeps warm machines and it isn't one", () => {
+	it("names a shape that is a preset, and no other", () => {
 		const medium = { vcpus: 4, memoryMb: 8192 };
 		const custom = { vcpus: 5, memoryMb: 8192 };
-		// No warm pools (a self-hosted host's default): nothing to say.
-		expect(coldStart(DEFAULT_SANDBOX_SHAPES, custom)).toBe(false);
-		expect(coldStart(warm(["medium"]), medium)).toBe(false);
-		expect(coldStart(warm(["medium"]), custom)).toBe(true);
-		expect(coldStart(warm(["small"]), medium)).toBe(true);
 		expect(presetOf(DEFAULT_SANDBOX_SHAPES, medium)?.name).toBe("medium");
 		expect(presetOf(DEFAULT_SANDBOX_SHAPES, custom)).toBeUndefined();
 	});
@@ -111,16 +97,32 @@ describe("New sandbox's shapes, as the hosts make them", () => {
 		const { customDisk: _, ...varied } = DEFAULT_SANDBOX_SHAPES.microvm;
 		const mixed: SandboxShapes = { ...DEFAULT_SANDBOX_SHAPES, microvm: varied };
 		expect(diskFor(mixed, { vcpus: 2, memoryMb: 2048 })).toBeUndefined();
-		expect(diskFor(mixed, { vcpus: 4, memoryMb: 8192 })).toBe(60);
+		// Even a preset: a host making custom shapes without it gives that shape its own rule's disk.
+		expect(diskFor(mixed, { vcpus: 4, memoryMb: 8192 })).toBeUndefined();
+		// Where every host makes only its presets, a preset's disk is its own.
+		const presetsAlone: SandboxShapes = { ...DEFAULT_SANDBOX_SHAPES, microvm: { ...varied, custom: false } };
+		expect(diskFor(presetsAlone, { vcpus: 4, memoryMb: 8192 })).toBe(60);
 		// Nor for a preset two hosts give different disks.
 		const twice: SandboxShapes = {
 			...mixed,
 			microvm: {
 				...varied,
-				presets: [...varied.presets, { name: "m", vcpus: 4, memoryMb: 8192, diskGb: 80, warm: false }],
+				custom: false,
+				presets: [...varied.presets, { name: "m", vcpus: 4, memoryMb: 8192, diskGb: 80 }],
 			},
 		};
 		expect(diskFor(twice, { vcpus: 4, memoryMb: 8192 })).toBeUndefined();
+		// An older host's preset (20 GB) beside a host making custom shapes whose rule gives that shape 40 GB: it depends
+		// on where it lands, so none is promised; a shape only the custom host can make keeps its disk.
+		const older: SandboxShapes = {
+			...DEFAULT_SANDBOX_SHAPES,
+			microvm: {
+				...DEFAULT_SANDBOX_SHAPES.microvm,
+				presets: [{ name: "default", vcpus: 2, memoryMb: 2048, diskGb: 20 }, ...DEFAULT_SANDBOX_SHAPES.microvm.presets],
+			},
+		};
+		expect(diskFor(older, { vcpus: 2, memoryMb: 2048 })).toBeUndefined();
+		expect(diskFor(older, { vcpus: 3, memoryMb: 2048 })).toBe(40);
 		expect(fields(DEFAULT_SANDBOX_SHAPES, { vcpus: 1, memoryMb: 512 })).toContain("40 GB disk");
 		expect(fields(mixed, { vcpus: 2, memoryMb: 2048 })).not.toContain("GB disk");
 	});
@@ -156,8 +158,8 @@ describe("New sandbox's shapes, as the hosts make them", () => {
 				...DEFAULT_SANDBOX_SHAPES.microvm,
 				custom: false,
 				presets: [
-					{ name: "default", vcpus: 2, memoryMb: 4096, diskGb: 20, warm: false },
-					{ name: "default", vcpus: 4, memoryMb: 2048, diskGb: 20, warm: true },
+					{ name: "default", vcpus: 2, memoryMb: 4096, diskGb: 20 },
+					{ name: "default", vcpus: 4, memoryMb: 2048, diskGb: 20 },
 				],
 			},
 		};
@@ -165,8 +167,6 @@ describe("New sandbox's shapes, as the hosts make them", () => {
 		expect(html.match(/<option/g)).toHaveLength(2);
 		expect(html).toContain('value="2/4096"');
 		expect(html).toContain('value="4/2048"');
-		expect(coldStart(shared, { vcpus: 4, memoryMb: 2048 })).toBe(false);
-		expect(coldStart(shared, { vcpus: 2, memoryMb: 4096 })).toBe(true);
 		expect(shapeAllowed(shared, { vcpus: 3, memoryMb: 4096 })).toBe(false);
 	});
 
@@ -177,6 +177,11 @@ describe("New sandbox's shapes, as the hosts make them", () => {
 		expect(html).not.toContain('type="range"');
 		expect(html.match(/<option/g)).toHaveLength(DEFAULT_SANDBOX_SHAPES.microvm.presets.length);
 		expect(fields(DEFAULT_SANDBOX_SHAPES, { vcpus: 4, memoryMb: 8192 })).toContain('type="range"');
+	});
+
+	it("never says a shape boots cold or comes from a warm pool: hosts keep none", () => {
+		const html = fields(DEFAULT_SANDBOX_SHAPES, { vcpus: 5, memoryMb: 8192 });
+		expect(html).not.toMatch(/warm|cold start/i);
 	});
 
 	it("can't create until a source that says what its hosts offer has said", () => {

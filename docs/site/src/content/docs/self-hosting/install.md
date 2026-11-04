@@ -174,7 +174,6 @@ The stack reads its settings from `~/.kantel/src/deploy/compose/.env`, which upg
 | `KANTEL_COMPUTE_BACKEND` | `stub` runs sandboxes on a built-in stand-in instead of your hosts. See [Add a host](#add-a-host) |
 | `KANTEL_COMPUTE_IMAGES` | An http(s) URL with the kernel and images hosts install from, instead of Kantel's published ones, or `off`. See [Hosts](/hosts/#get-kantel-host-and-the-images) |
 | `KANTEL_COMPUTE_PORTS_DOMAIN` | The domain sandboxes' [public ports](/sandboxes/public-ports/) are served under |
-| `KANTEL_COMPUTE_POOLS` | Warm sandboxes each host keeps ready, as JSON such as `{"microvm/default": 2}`; none by default |
 | `KANTEL_EGRESS_ATTRIBUTION_KEY` | The secret hosts sign the [`Kantel-Sandbox` and `Kantel-Account` headers](/sandboxes/egress-proxy/#send-traffic-through-your-own-proxy) with |
 | `KANTEL_SECRETS_KEY` | 32 random bytes in base64 (`openssl rand -base64 32`) that environments' [protected values and secret files](/sandboxes/environments/) are encrypted with. Without it, an install with a database refuses them. Losing it loses them, and changing it isn't supported yet |
 | `KANTEL_REPLICA_URL` | With several gateways, where the others reach this one on your private network, such as `http://10.0.3.7:8080` |

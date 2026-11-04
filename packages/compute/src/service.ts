@@ -383,9 +383,8 @@ const diskSteps = (sizes: readonly { readonly vcpus: number; readonly memoryMb: 
  * What a microVM may be on `hosts` (those the account may use that run microVMs): their presets, and, where a host
  * makes custom shapes, any vCPUs and memory it has. Undefined with no such host.
  *
- * A preset is a name and its whole shape: hosts that give one name different shapes each keep theirs, and only a host
- * keeping that very shape warm makes it warm. A custom shape's disk is said only where every host that makes them
- * would give the same.
+ * A preset is a name and its whole shape: hosts that give one name different shapes each keep theirs. A custom shape's
+ * disk is said only where every host that makes them would give the same.
  */
 export function microvmShapes(
 	hosts: readonly BackendHost[],
@@ -399,16 +398,8 @@ export function microvmShapes(
 	for (const host of hosts) {
 		const sizes = host.sizes ?? deploymentSizes;
 		for (const size of sizes) {
-			const warm = (host.pools?.[`microvm/${size.name}`] ?? 0) > 0;
 			const key = `${size.name}/${size.vcpus}/${size.memoryMb}/${size.diskGb}`;
-			const known = presets.get(key);
-			presets.set(key, {
-				name: size.name,
-				vcpus: size.vcpus,
-				memoryMb: size.memoryMb,
-				diskGb: size.diskGb,
-				warm: warm || known?.warm === true,
-			});
+			presets.set(key, { name: size.name, vcpus: size.vcpus, memoryMb: size.memoryMb, diskGb: size.diskGb });
 			maxVcpus = Math.max(maxVcpus, size.vcpus);
 			maxMemory = Math.max(maxMemory, size.memoryMb);
 		}
@@ -1122,7 +1113,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						kvm: host.kvm,
 						nestedVirtualisation: host.nestedVirtualisation,
 						capacity: { ...host.capacity },
-						...(host.pools === undefined ? {} : { pools: { ...host.pools } }),
 						lastSeenAt: host.lastSeenAt ?? (reachable ? now() : current.lastSeenAt),
 					};
 				};
@@ -1149,7 +1139,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					capacity: { ...host.capacity },
 					allocated: { sandboxes: 0, vcpus: 0, memoryMb: 0, diskGb: 0 },
 					labels: { ...host.labels },
-					...(host.pools === undefined ? {} : { pools: { ...host.pools } }),
 					...(accountId === undefined ? {} : { accountId }),
 					joinedAt: now(),
 					lastSeenAt: now(),
@@ -2402,24 +2391,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			readonly name?: string;
 			readonly labels?: { readonly [key: string]: string };
 			readonly draining?: boolean;
-			readonly pools?: { readonly [pool: string]: number } | null;
 		},
 	): Promise<computeSchema.Host> {
 		if (host.state === "revoked") throw new KantelError("conflict", "The host is revoked");
-		if (body.pools !== undefined && backend.updateHost === undefined) {
-			throw new KantelError("not_supported", "This deployment's sandboxes don't run on hosts with warm pools");
-		}
 		await backend.updateHost?.(host.id, {
 			...(body.name === undefined ? {} : { name: body.name }),
 			...(body.labels === undefined ? {} : { labels: { ...body.labels } }),
 			...(body.draining === undefined ? {} : { draining: body.draining }),
-			...(body.pools === undefined ? {} : { pools: body.pools === null ? null : { ...body.pools } }),
 		});
-		// The pools as the backend has them now: the host's own, or the deployment's when they were reset.
-		const pools =
-			body.pools === undefined
-				? undefined
-				: (await backend.capabilities()).hosts.find((known) => known.id === host.id)?.pools;
 		// On the record as it is now: a revocation that landed meanwhile stays (and the change is refused).
 		let revoked = false;
 		const updated = await store.hosts.update(host.id, (current) => {
@@ -2432,7 +2411,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				...current,
 				name: body.name ?? current.name,
 				labels: body.labels === undefined ? current.labels : { ...body.labels },
-				...(pools === undefined ? {} : { pools: { ...pools } }),
 				state,
 			};
 		});
@@ -3098,7 +3076,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					capabilities.sizes,
 					from === undefined,
 				);
-				// The preset it matches, named, so a host with a warm pool of it can serve it.
+				// The preset it matches, named, so a host restores that size's template snapshot rather than booting it.
 				const preset =
 					type === "microvm" && shape !== undefined
 						? capabilities.hosts

@@ -115,7 +115,7 @@ export interface HostHub {
 	call<T = unknown>(hostId: string, method: string, params: unknown, options?: CallOptions): Promise<T>;
 	/** Connects a stream to a port of a sandbox on the host. */
 	openPort(hostId: string, sandboxId: string, port: number, sink: PortSink): Promise<PortStream>;
-	/** Sends a welcome again, such as with new pools or a desired version. */
+	/** Sends a welcome again, such as with a drain or a desired version. */
 	rewelcome(hostId: string, welcome: HostWelcome): void;
 	disconnect(hostId: string, code: number, reason: string): void;
 	closeAll(code: number, reason: string): void;

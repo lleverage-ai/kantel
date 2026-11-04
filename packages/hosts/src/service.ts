@@ -59,8 +59,6 @@ export interface HostView {
 		readonly diskGb: number;
 	};
 	readonly labels: { readonly [key: string]: string };
-	/** The warm machines it keeps, by `<tier>/<size>`: its own setting, else the deployment's. Empty: none. */
-	readonly pools: { readonly [pool: string]: number };
 	/** The account whose own host it is, which alone may use it; absent for a shared host. */
 	readonly accountId?: string;
 	readonly joinedAt: number;
@@ -157,11 +155,6 @@ export interface HostsServiceOptions {
 	 * `curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install.sh | sudo sh -s -- --url {url} --token {token}`.
 	 */
 	readonly joinCommand?: string;
-	/**
-	 * Warm sandboxes wanted on every host without a setting of its own, by `<tier>/<size>`. Default none: a warm
-	 * machine holds its memory while idle, and a self-hosted machine may be doing other things.
-	 */
-	readonly pools?: { readonly [pool: string]: number };
 	/** The version hosts should run, and where they get it (`{version}`, `{os}`, `{arch}`). */
 	readonly desiredVersion?: string;
 	readonly updateUrl?: string;
@@ -227,8 +220,6 @@ export interface HostsService {
 			readonly name?: string;
 			readonly labels?: { readonly [key: string]: string };
 			readonly draining?: boolean;
-			/** The host's own warm pools; null goes back to the deployment's. */
-			readonly pools?: { readonly [pool: string]: number } | null;
 		},
 	): Promise<HostView>;
 	revoke(hostId: string): Promise<HostView>;
@@ -292,26 +283,6 @@ function labelsOf(value: unknown): { [key: string]: string } {
 }
 
 const SANDBOX_ID = /^[a-z0-9][a-z0-9_-]{2,62}$/;
-const POOL = /^(microvm|isolate)\/[a-z0-9-]+$/;
-/** At most this many warm machines of one shape on a host. */
-const MAX_POOL = 16;
-
-/** Warm pools as given: `<tier>/<size>` to a count from 0 to 16. */
-function poolsIn(value: unknown): { [pool: string]: number } {
-	if (typeof value !== "object" || value === null || Array.isArray(value)) {
-		throw new KantelError("invalid", "pools is an object of counts by `<tier>/<size>`");
-	}
-	const out: { [pool: string]: number } = {};
-	for (const [pool, count] of Object.entries(value)) {
-		if (!POOL.test(pool))
-			throw new KantelError("invalid", `${pool} isn't a pool: it is <tier>/<size>, such as microvm/default`);
-		if (typeof count !== "number" || !Number.isInteger(count) || count < 0 || count > MAX_POOL) {
-			throw new KantelError("invalid", `A pool keeps 0 to ${MAX_POOL} warm machines`);
-		}
-		if (count > 0) out[pool] = count;
-	}
-	return out;
-}
 
 /** A shape as asked: whole vCPUs (0 for an isolate) and memory in MiB, at least 128. */
 function shapeIn(shape: Shape, tier: SandboxTier): Shape {
@@ -343,9 +314,6 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	const { store } = options;
 	const clock = options.clock ?? systemClock;
 	const log = options.log ?? ((message: string) => console.error(message));
-	const pools = options.pools ?? {};
-	/** The warm pools a host is to keep: its own, else the deployment's. */
-	const poolsOf = (host: HostRecord) => host.pools ?? pools;
 	let joinTokens: ExternalJoinTokens = store;
 	let compute: HostComputeLink | undefined;
 	/**
@@ -373,7 +341,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	const welcomeFor = (host: HostRecord): HostWelcome => ({
 		hostId: host.id,
 		heartbeatSeconds: options.heartbeatSeconds ?? 15,
-		pools: host.draining ? {} : poolsOf(host),
+		// Hosts keep no warm pools; an older one still running some ends them on this.
+		pools: {},
 		...(host.draining ? { draining: true } : {}),
 		...(options.desiredVersion === undefined ? {} : { desiredVersion: options.desiredVersion }),
 		...(options.updateUrl === undefined ? {} : { updateUrl: options.updateUrl }),
@@ -390,7 +359,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			throw new Error("The hello's sandboxes aren't a list");
 		}
 		const now = clock.now();
-		// Only what the host reports: what an operator set meanwhile (its pools, name, labels, drain) stands.
+		// Only what the host reports: what an operator set meanwhile (its name, labels, drain) stands.
 		const reported = await store.updateHost(hostId, (latest) => ({
 			...latest,
 			facts: facts.value,
@@ -416,8 +385,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	};
 
 	/**
-	 * A welcome is the host as written once it is claimed, with any pools an operator set while it reconciled; one set
-	 * after this read reaches the hub's `rewelcome` (routed here, now it is claimed), which holds it for after this one.
+	 * A welcome is the host as written once it is claimed, with a drain an operator set while it reconciled; one set
+	 * after this read reaches the hub's `rewelcome` (routed here, now it is claimed), which reads it again after this one.
 	 */
 	const welcomeNow = async (hostId: string): Promise<HostWelcome> => {
 		const latest = await store.getHost(hostId);
@@ -523,7 +492,6 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				diskGb: placements.reduce((sum, placement) => sum + placement.diskGiB, 0),
 			},
 			labels: { ...facts?.labels, ...host.labels },
-			pools: { ...poolsOf(host) },
 			...(host.accountId === undefined ? {} : { accountId: host.accountId }),
 			joinedAt: host.joinedAt,
 			...(host.lastSeenAt === undefined ? {} : { lastSeenAt: host.lastSeenAt }),
@@ -700,23 +668,17 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				throw new KantelError("invalid", "A host's name is 1 to 100 characters");
 			}
 			const labels = change.labels === undefined ? undefined : labelsOf(change.labels);
-			const pools = change.pools === undefined || change.pools === null ? undefined : poolsIn(change.pools);
 			// On the host as stored now, so a report that lands meanwhile neither undoes this nor is undone by it.
-			const next = await store.updateHost(hostId, (latest) => {
-				const { pools: kept, ...rest } = latest;
-				const nextPools = change.pools === undefined ? kept : change.pools === null ? undefined : pools;
-				return {
-					...rest,
-					...(change.name === undefined ? {} : { name: change.name }),
-					...(labels === undefined ? {} : { labels }),
-					...(change.draining === undefined ? {} : { draining: change.draining === true }),
-					...(nextPools === undefined ? {} : { pools: nextPools }),
-				};
-			});
+			const next = await store.updateHost(hostId, (latest) => ({
+				...latest,
+				...(change.name === undefined ? {} : { name: change.name }),
+				...(labels === undefined ? {} : { labels }),
+				...(change.draining === undefined ? {} : { draining: change.draining === true }),
+			}));
 			if (next === undefined) throw new KantelError("not_found", "No such host");
 			if (next.revoked) throw new KantelError("conflict", "The host is revoked");
 			const redrained = change.draining !== undefined && change.draining !== host.draining;
-			if (redrained || change.pools !== undefined) hub.rewelcome(hostId, welcomeFor(next));
+			if (redrained) hub.rewelcome(hostId, welcomeFor(next));
 			return view(next);
 		},
 		async revoke(hostId) {

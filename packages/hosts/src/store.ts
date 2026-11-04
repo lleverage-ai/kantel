@@ -28,11 +28,6 @@ export interface HostRecord {
 	 * the operator joined, which every account shares.
 	 */
 	readonly accountId?: string;
-	/**
-	 * The warm machines it is to keep, by `<tier>/<size>`, set on the host itself; absent, the deployment's (none unless
-	 * its operator set some). A self-hosted machine may be doing other things, so none is the default.
-	 */
-	readonly pools?: { readonly [pool: string]: number };
 }
 
 export interface JoinTokenRecord {
@@ -78,7 +73,7 @@ export interface HostStore {
 	/**
 	 * Changes a host as it is now, atomically: `change` is given the stored record and answers the next (undefined
 	 * leaves it). A write that raced another is redone on the newer record, so a report never undoes an operator's
-	 * change (its pools, name, labels, drain) or a revocation. Resolves what was written, or undefined.
+	 * change (its name, labels, drain) or a revocation. Resolves what was written, or undefined.
 	 */
 	updateHost(id: string, change: (host: HostRecord) => HostRecord | undefined): Promise<HostRecord | undefined>;
 	putPlacement(placement: PlacementRecord): Promise<void>;
