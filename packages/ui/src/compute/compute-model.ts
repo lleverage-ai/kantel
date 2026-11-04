@@ -1771,6 +1771,18 @@ export const SANDBOX_KIND_LABELS: Readonly<Record<SandboxKind, string>> = {
 export const sizeSpec = (size: SandboxSize): SandboxSizeSpec =>
 	SANDBOX_SIZES.find((spec) => spec.size === size) ?? (SANDBOX_SIZES[1] as SandboxSizeSpec);
 
+/**
+ * What a sandbox was given: what its host said, else its size's usual figures. An isolate made before shapes says
+ * nothing and has no size, so it counts as the default isolate (shared CPU, 256 MB, no disk), as Kantel bills it.
+ */
+export const sandboxSpec = (
+	sandbox: Pick<Sandbox, "kind" | "size" | "resources">,
+): { readonly vcpus: number; readonly memoryGb: number; readonly diskGb: number } =>
+	sandbox.resources ??
+	(sandbox.kind === "isolate"
+		? { vcpus: 0, memoryGb: ISOLATE_MEMORY.default / 1024, diskGb: 0 }
+		: sizeSpec(sandbox.size));
+
 /** "4 vCPU, 8 GB" ("Shared CPU, 256 MB" for an isolate): a size, or what a sandbox was given, in a line. */
 export const sizeText = (size: SandboxSize | { readonly vcpus: number; readonly memoryGb: number }): string => {
 	const spec = typeof size === "string" ? sizeSpec(size) : size;
