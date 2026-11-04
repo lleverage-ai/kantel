@@ -452,10 +452,29 @@ export const UsageSummary = Type.Object(
 		runningSeconds: Type.Number(),
 		cpuSeconds: Type.Number(),
 		recentCpu: Type.Array(Type.Number({ minimum: 0, maximum: 1 }), {
-			description: "CPU utilisation, 0 to 1, over the last 24 intervals of 5 minutes, oldest first: a sparkline.",
+			description:
+				"CPU utilisation, 0 to 1, over the last 24 intervals of 5 minutes, oldest first: a sparkline. The last may be " +
+				"the interval under way.",
+		}),
+		recentMemory: Type.Array(Type.Number({ minimum: 0 }), {
+			description: "Memory in use, in bytes, over the same intervals as `recentCpu` (the same length), oldest first.",
 		}),
 	},
 	{ title: "UsageSummary" },
+);
+
+export const UsageSparklines = Type.Object(
+	{
+		recentCpu: Type.Array(Type.Number({ minimum: 0, maximum: 1 }), {
+			description:
+				"CPU utilisation, 0 to 1, over the last 24 intervals of 5 minutes, oldest first. The last may be the interval " +
+				"under way.",
+		}),
+		recentMemory: Type.Array(Type.Number({ minimum: 0 }), {
+			description: "Memory in use, in bytes, over the same intervals as `recentCpu` (the same length), oldest first.",
+		}),
+	},
+	{ title: "UsageSparklines", description: "A host's recent CPU and memory, for sparklines." },
 );
 
 export const CreatedBy = Type.Object(
@@ -703,19 +722,61 @@ export const SandboxUsagePoint = Type.Object(
 	{ title: "SandboxUsagePoint" },
 );
 
+export const SandboxSeriesPoint = Type.Object(
+	{
+		at: Timestamp,
+		cpu: Type.Number({
+			minimum: 0,
+			maximum: 1,
+			description: "CPU utilisation over the interval ending at `at`, 0 to 1 of the sandbox's own vCPUs.",
+		}),
+		memUsedBytes: Type.Integer({ minimum: 0, description: "Memory in use at `at`." }),
+	},
+	{ title: "SandboxSeriesPoint" },
+);
+
+export const SandboxUsageSeries = Type.Object(
+	{
+		intervalMs: Type.Integer({
+			minimum: 1,
+			description:
+				"How far apart the points are: 5000 from a host that sends its readings, longer from one that doesn't yet.",
+		}),
+		points: Type.Array(SandboxSeriesPoint, {
+			description: "Oldest first, at most the last hour; with `since`, only those after it.",
+		}),
+	},
+	{
+		title: "SandboxUsageSeries",
+		description:
+			"The sandbox's readings as they came, for a live graph: poll with `since` set to the last point's `at` for only " +
+			"the newer ones.",
+	},
+);
+
 export const SandboxUsage = Type.Object(
 	{
 		sandboxId: Type.String(),
 		intervalSeconds: Type.Integer(),
 		points: Type.Array(SandboxUsagePoint),
 		totals: Type.Object({ runningSeconds: Type.Number(), cpuSeconds: Type.Number(), cost: Cost }),
+		memLimitBytes: Type.Optional(
+			Type.Integer({ minimum: 0, description: "The memory it may use, when its host reports it or its size sets it." }),
+		),
+		series: SandboxUsageSeries,
 	},
 	{ title: "SandboxUsage" },
 );
 
 export const UsageQuery = Type.Object(
 	{
-		since: Type.Optional(Type.Integer({ description: "From this time; default 24 hours ago." })),
+		since: Type.Optional(
+			Type.Integer({
+				description:
+					"From this time; default 24 hours ago. `series` then holds only the points after it, so a client polls with " +
+					"the last point's `at`.",
+			}),
+		),
 		intervalSeconds: Type.Optional(Type.Integer({ minimum: 60, maximum: 86400, description: "Default 300." })),
 	},
 	{ title: "UsageQuery" },
@@ -1843,6 +1904,7 @@ export const Host = Type.Object(
 		),
 		joinedAt: Timestamp,
 		lastSeenAt: Type.Optional(Timestamp),
+		usage: Type.Optional(UsageSparklines),
 	},
 	{
 		title: "Host",
@@ -1853,6 +1915,47 @@ export const Host = Type.Object(
 export const HostList = Type.Object({ items: Type.Array(Host) }, { title: "HostList" });
 
 export const HostPath = Type.Object({ hostId: id("The host's ID.") }, { title: "HostPath" });
+
+export const HostUsagePoint = Type.Object(
+	{
+		at: Timestamp,
+		cpu: Type.Number({
+			minimum: 0,
+			maximum: 1,
+			description: "CPU utilisation over the interval ending at `at`, 0 to 1 of all the host's CPUs.",
+		}),
+		memUsedBytes: Type.Integer({ minimum: 0 }),
+		diskUsedBytes: Type.Integer({ minimum: 0 }),
+	},
+	{ title: "HostUsagePoint" },
+);
+
+export const HostUsage = Type.Object(
+	{
+		hostId: Type.String(),
+		intervalMs: Type.Integer({ minimum: 1, description: "How far apart the points are: 5000 from a current host." }),
+		memTotalBytes: Type.Integer({ minimum: 0, description: "0 until the host has sent a reading." }),
+		diskTotalBytes: Type.Integer({ minimum: 0, description: "0 until the host has sent a reading." }),
+		points: Type.Array(HostUsagePoint, {
+			description:
+				"Oldest first, at most the last hour; with `since`, only those after it. Empty for a host that doesn't send " +
+				"its readings yet (an older kantel-host).",
+		}),
+	},
+	{
+		title: "HostUsage",
+		description:
+			"A host's readings as they came, for a live graph: poll with `since` set to the last point's `at` for only the " +
+			"newer ones.",
+	},
+);
+
+export const HostUsageQuery = Type.Object(
+	{
+		since: Type.Optional(Type.Integer({ description: "Only the points after this time (epoch milliseconds)." })),
+	},
+	{ title: "HostUsageQuery" },
+);
 
 export const UpdateHostBody = Type.Object(
 	{
@@ -1985,6 +2088,11 @@ export type Webhook = Static<typeof Webhook>;
 export type WebhookDelivery = Static<typeof WebhookDelivery>;
 export type TelemetryExport = Static<typeof TelemetryExport>;
 export type Host = Static<typeof Host>;
+export type HostUsage = Static<typeof HostUsage>;
+export type HostUsagePoint = Static<typeof HostUsagePoint>;
+export type SandboxUsage = Static<typeof SandboxUsage>;
+export type SandboxSeriesPoint = Static<typeof SandboxSeriesPoint>;
+export type UsageSparklines = Static<typeof UsageSparklines>;
 export type HostState = Static<typeof HostState>;
 export type HostJoinToken = Static<typeof HostJoinToken>;
 export type PublicUrl = Static<typeof PublicUrl>;

@@ -511,6 +511,10 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 	own?.service.useCompute({
 		secrets: async () => undefined,
 		recordEgress: (hostId, records) => api.service.recordEgress(hostId, records),
+		recordUsage: (hostId, usage) => {
+			timers.touchUsage();
+			return api.service.recordUsage(hostId, usage);
+		},
 		e2eChain: {
 			read: (hostId, space) => api.service.hostE2EChain(hostId, space),
 			append: (hostId, space, from, entries) => api.service.appendHostE2EChain(hostId, space, from, entries),
@@ -987,31 +991,54 @@ function hostImage(request: Request, path: string): Response {
 	return new Response(null, { status: 302, headers: { location: `${DEFAULT_HOST_IMAGES}/${name}` } });
 }
 
-/** Runs the API's timers from a request until `IDLE_MS` after the last one, then sends what telemetry is queued. */
-function whileBusy(api: ComputeApi, now: () => number): { touch(): void; stop(): void } {
-	let last = 0;
+/**
+ * Runs the API's timers from a request until `IDLE_MS` after the last one, then sends what telemetry is queued. A host's
+ * usage tick (`touchUsage`) keeps the telemetry export's timer going too, as the metrics export is fed from the ticks.
+ */
+export function whileBusy(
+	api: Pick<ComputeApi, "dispatcher" | "exporter">,
+	now: () => number,
+): { touch(): void; touchUsage(): void; stop(): void } {
+	let lastRequest = Number.NEGATIVE_INFINITY;
+	let lastUsage = Number.NEGATIVE_INFINITY;
+	let dispatching = false;
 	let check: ReturnType<typeof setTimeout> | undefined;
+	const idle = (since: number) => now() - since >= IDLE_MS;
 	const stop = () => {
 		if (check === undefined) return;
 		clearTimeout(check);
 		check = undefined;
+		dispatching = false;
 		api.dispatcher.stop();
 		api.exporter.stop();
 	};
 	const watch = () => {
 		check = setTimeout(() => {
-			if (now() - last < IDLE_MS) return watch();
+			if (dispatching && idle(lastRequest)) {
+				dispatching = false;
+				api.dispatcher.stop();
+			}
+			if (!idle(lastRequest) || !idle(lastUsage)) return watch();
 			stop();
 			api.exporter.flush().catch(() => undefined);
 		}, IDLE_MS / 5);
 	};
+	const running = () => {
+		api.exporter.start(TELEMETRY_INTERVAL_MS);
+		if (check === undefined) watch();
+	};
 	return {
 		touch() {
-			last = now();
-			if (check !== undefined) return;
-			api.dispatcher.start(WEBHOOK_INTERVAL_MS);
-			api.exporter.start(TELEMETRY_INTERVAL_MS);
-			watch();
+			lastRequest = now();
+			if (!dispatching) {
+				dispatching = true;
+				api.dispatcher.start(WEBHOOK_INTERVAL_MS);
+			}
+			running();
+		},
+		touchUsage() {
+			lastUsage = now();
+			running();
 		},
 		stop,
 	};

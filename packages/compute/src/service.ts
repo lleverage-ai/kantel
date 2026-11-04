@@ -64,6 +64,7 @@ import type {
 	StoredHost,
 	StoredInvite,
 	StoredProxy,
+	StoredSample,
 	StoredSandbox,
 	StoredSnapshot,
 	StoredTelemetry,
@@ -71,6 +72,16 @@ import type {
 } from "./store.ts";
 import { UniqueViolation } from "./store.ts";
 import type { TelemetryExporter, TelemetryUsageSample } from "./telemetry.ts";
+import {
+	type BackendUsageReport,
+	createUsageSeries,
+	RAW_WINDOW_MS,
+	type ReportedUsage,
+	ROLLUP_MS,
+	type Rollup,
+	SPARKLINE_POINTS,
+	USAGE_INTERVAL_MS,
+} from "./usage-series.ts";
 import {
 	base64ToBytes,
 	bytesToBase64,
@@ -251,8 +262,18 @@ export interface ComputeService {
 	 * it carries lasts. No grantee named: true.
 	 */
 	stillAllowed(grantee: string | undefined, sandboxId: string): Promise<boolean>;
-	/** Reads every running sandbox's usage, keeps it, and answers it for the metrics export. */
+	/**
+	 * The running sandboxes' readings since the last call, for the metrics export: what their hosts reported
+	 * (`recordUsage`), and for a host that doesn't report, one read now by running a command in the sandbox.
+	 */
 	sampleUsage(): Promise<TelemetryUsageSample[]>;
+	/**
+	 * Takes a host's usage tick (`HostUsageReport` in @kantel/hosts): its own readings and its sandboxes', kept in
+	 * memory for an hour as they came and as 5-minute means, a sandbox's in its record. Readings for a sandbox not on
+	 * `hostId` are dropped. A host's ticks are taken in the order they came. `shared`: another gateway replica, the one
+	 * holding the host's connection, passed it on; that one exports it to telemetry, so this one doesn't.
+	 */
+	recordUsage(hostId: string, report: ReportedUsage, how?: { readonly shared?: boolean }): Promise<void>;
 	/**
 	 * A sandbox's protected values, opened, for the host that asked over its link (`secrets.fetch`): `undefined` unless
 	 * the sandbox's recorded host is `hostId`, so a host learns only its own sandboxes' values. `unavailable` when a value
@@ -315,8 +336,50 @@ export const MAX_OUTPUT_CHARS = 1024 * 1024;
 export const DEFAULT_TIMEOUT_MS = 30_000;
 /** How long an automatic snapshot is kept. */
 export const AUTOMATIC_SNAPSHOT_TTL_MS = 7 * 24 * 3_600_000;
-/** The usage readings kept per sandbox: a day at one every 5 minutes. */
+/** The usage readings kept per sandbox: a day of 5-minute means. */
 export const MAX_SAMPLES = 288;
+/** How far apart readings are taken by running a command in a sandbox, for a host that doesn't send its own. */
+export const FALLBACK_INTERVAL_MS = 60_000;
+/** How often a read may run that command at most, per sandbox. */
+export const FALLBACK_READ_GAP_MS = 15_000;
+/** How often a host's tick also closes the 5-minute means of sandboxes that stopped reporting. */
+const SETTLE_EVERY_MS = 60_000;
+/** How far ahead of the control plane's a host's clock may be before its ticks are stamped on arrival instead. */
+const MAX_CLOCK_SKEW_MS = 30_000;
+/** A host is reporting while its last tick came within this, or 3 of its intervals if longer. */
+const REPORTING_WITHIN_MS = 15_000;
+/** How far back the metrics export reaches for a sandbox it hasn't exported before. */
+const EXPORT_LOOKBACK_MS = 5 * 60_000;
+
+/**
+ * The mean CPU and memory over `[from, to)` of a sandbox's kept samples, each weighted by how much of the span it
+ * covers. A 5-minute mean (one with `readings`, what hosts' ticks are kept as) covers its 5 minutes, the one under way
+ * included; a single reading (kept before ticks, a minute apart) counts for a minute when it falls in the span, wherever
+ * it was taken. A response interval that isn't on a 5-minute boundary so gets the means it overlaps.
+ */
+export function spanMean(
+	samples: readonly StoredSample[],
+	from: number,
+	to: number,
+): { cpu: number; memoryMb: number } {
+	let weight = 0;
+	let cpu = 0;
+	let memoryMb = 0;
+	for (const sample of samples) {
+		const covered =
+			sample.readings !== undefined
+				? Math.min(to, sample.at + ROLLUP_MS) - Math.max(from, sample.at)
+				: sample.at >= from && sample.at < to
+					? FALLBACK_INTERVAL_MS
+					: 0;
+		if (covered <= 0) continue;
+		weight += covered;
+		cpu += covered * sample.cpu;
+		memoryMb += covered * sample.memoryMb;
+	}
+	return weight === 0 ? { cpu: 0, memoryMb: 0 } : { cpu: cpu / weight, memoryMb: memoryMb / weight };
+}
+const MIB = 1024 * 1024;
 /** The egress log entries kept per sandbox, newest first. */
 export const MAX_EGRESS_ENTRIES = 1000;
 /** How many of a placeholder's characters the API shows: `kph_` and 4 more, to tell it apart, never to use it. */
@@ -1039,6 +1102,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const runningCommands = new Map<string, AbortController>();
 	const background = new Set<Promise<unknown>>();
 	const inflight = new Map<string, Promise<unknown>>();
+	/** Each sandbox's readings, and each host's, as they came (`recordUsage`); in this process's memory. */
+	const sandboxSeries = createUsageSeries();
+	const hostSeries = createUsageSeries();
+	/** When each sandbox was last read by running a command in it (the fallback, `readUsage`). */
+	const fallbackReadAt = new Map<string, number>();
+	/** The newest point of each sandbox's series the metrics export has looked at (taking those not passed on). */
+	const exportedUntil = new Map<string, number>();
+	/** When each host's last tick arrived, by this process's clock: whether it is reporting. */
+	const tickArrivedAt = new Map<string, number>();
+	/** Up to when the backend's own ticks (the stub's) are in. */
+	let pulledUntil = Number.NEGATIVE_INFINITY;
+	/** The stub's past ticks being taken (`catchUpUsage`), if they are. */
+	let replaying: Promise<void> | undefined;
+	let settledAt = Number.NEGATIVE_INFINITY;
 
 	/** A timestamp after `previous`, for a field that must move on with every write whatever the gateways' clocks say. */
 	const later = (previous: number | undefined) => Math.max(now(), (previous ?? 0) + 1);
@@ -1231,10 +1308,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return hourlyRate(rates, sandbox.type, resources);
 	};
 
-	const meanCpu = (sandbox: StoredSandbox) =>
-		sandbox.samples.length === 0
-			? 0
-			: sandbox.samples.reduce((total, sample) => total + sample.cpu, 0) / sandbox.samples.length;
+	/** A sandbox's mean CPU: its kept 5-minute means and the one under way. */
+	const meanCpu = (sandbox: StoredSandbox) => {
+		const samples = withPartial(sandbox);
+		return samples.length === 0 ? 0 : samples.reduce((total, sample) => total + sample.cpu, 0) / samples.length;
+	};
 
 	function sandboxView(sandbox: StoredSandbox, principal: Principal): Sandbox {
 		const seconds = runningMs(sandbox.runs, 0, now()) / 1000;
@@ -1268,7 +1346,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			usage: {
 				runningSeconds: round(seconds),
 				cpuSeconds: round(seconds * meanCpu(sandbox)),
-				recentCpu: sandbox.samples.slice(-24).map((sample) => sample.cpu),
+				...sparklines(sandbox),
 			},
 			hostId: principal.superAdmin ? sandbox.hostId : undefined,
 		};
@@ -1811,6 +1889,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	});
 
 	async function hostView(host: StoredHost): Promise<computeSchema.Host> {
+		await catchUpUsage();
 		// Isolates share their owner's VM, so what one asked for isn't a share of the host: they count as sandboxes only.
 		const placed = (await store.sandboxes.list({ hostId: host.id })).filter(
 			(sandbox) => sandbox.state === "running" || sandbox.state === "starting" || sandbox.state === "paused",
@@ -1820,6 +1899,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			machines.reduce((total, sandbox) => total + pickOf(sandbox), 0);
 		return {
 			...host,
+			usage: hostSparklines(host.id),
 			allocated: {
 				sandboxes: placed.length,
 				vcpus: sum((sandbox) => sandbox.resources?.vcpus ?? 0),
@@ -2514,32 +2594,235 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 	}
 
-	async function recordSample(sandboxId: string): Promise<TelemetryUsageSample | undefined> {
-		const sandbox = await store.sandboxes.get(sandboxId);
-		if (sandbox === undefined || sandbox.state !== "running") return undefined;
-		const reading = await backend.usage(sandboxId).catch(() => undefined);
-		if (reading === undefined) return undefined;
-		const at = now();
-		const written = await patchSandbox(sandboxId, (latest) =>
-			latest.state !== "running"
-				? undefined
-				: {
-						...latest,
-						samples: [...latest.samples, { at, cpu: reading.cpu, memoryMb: reading.memoryBytes / (1024 * 1024) }].slice(
-							-MAX_SAMPLES,
-						),
-					},
+	// Usage: what hosts report every tick (`recordUsage`), kept in `sandboxSeries` and `hostSeries` (usage-series.ts).
+	// A sandbox's 5-minute means go into its record's `samples`, which its sparkline and `points` are read from.
+
+	/**
+	 * Keeps a sandbox's closed 5-minute mean in its record, oldest first, at most `MAX_SAMPLES`. Only a replica that took
+	 * some of its readings itself keeps one: one that was only passed them on may have joined part way through. Of two
+	 * for the same 5 minutes (the host moved replica within them, and each kept what it had), the one of more readings.
+	 */
+	async function keepRollup(sandboxId: string, rollup: Rollup): Promise<void> {
+		if (!rollup.local) return;
+		await patchSandbox(sandboxId, (latest) => {
+			if (latest.state === "deleted") return undefined;
+			const sample = { at: rollup.at, cpu: rollup.cpu, memoryMb: rollup.memUsedBytes / MIB, readings: rollup.readings };
+			const index = latest.samples.findIndex((each) => each.at >= rollup.at);
+			if (index === -1) return { ...latest, samples: [...latest.samples, sample].slice(-MAX_SAMPLES) };
+			const there = latest.samples[index];
+			if (there?.at !== rollup.at || (there.readings ?? Number.POSITIVE_INFINITY) >= rollup.readings) return undefined;
+			return { ...latest, samples: latest.samples.map((each, at) => (at === index ? sample : each)) };
+		});
+	}
+
+	/**
+	 * Keeps the 5-minute means that ended with no point to close them (a sandbox that stopped), once every tick that
+	 * could be in them is: the stub's are taken in first (`catchUpUsage`), and nothing is settled past the time they are
+	 * in to (`settleTaken`), so a 5 minutes is never closed with its later ticks still to come. The one way to settle, but
+	 * for the replay's own once its ticks are in (`replay`).
+	 */
+	async function settleUsage(): Promise<void> {
+		await catchUpUsage();
+		// A replay begun meanwhile settles when it ends.
+		if (replaying !== undefined) return;
+		await settleTaken();
+	}
+
+	/**
+	 * Settles what the series hold, as of the time the backend's own ticks are in to (`pulledUntil`, for a backend that
+	 * makes them; else now), however long taking them in took: a 5 minutes ending after that may have ticks still to
+	 * fetch. Only after the stub's ticks are in (`settleUsage`, `replay`).
+	 */
+	async function settleTaken(): Promise<void> {
+		settledAt = now();
+		const asOf = backend.usageReports === undefined ? now() : Math.min(now(), pulledUntil);
+		hostSeries.settle(asOf);
+		for (const { key, rollup } of sandboxSeries.settle(asOf)) await keepRollup(key, rollup).catch(() => undefined);
+		for (const [hostId, at] of tickArrivedAt) if (at < now() - RAW_WINDOW_MS) tickArrivedAt.delete(hostId);
+	}
+
+	/**
+	 * Takes a tick from `hostId`: its own readings, and those of its sandboxes it holds. Every reading goes into its
+	 * series before anything is written, so a slow write can't let the next tick in ahead of this one; `recordUsage`
+	 * takes a host's ticks one at a time. `settle`: close what stopped reporting, now and then (not while replaying the
+	 * stub's past ticks, whose later ones would find their 5 minutes already closed). `shared`: it came from the replica
+	 * holding the host, which exports it, so this one doesn't (`UsagePoint.shared`).
+	 */
+	async function ingest(
+		hostId: string,
+		report: ReportedUsage,
+		how: { readonly known?: ReadonlySet<string>; readonly settle?: boolean; readonly shared?: boolean } = {},
+	): Promise<void> {
+		const meta = { intervalMs: report.intervalMs };
+		// The host's own time, unless its clock runs ahead: a reading stamped in the future would hold back every one after
+		// it (a series takes only newer points).
+		const received = now();
+		const at = report.at - received > MAX_CLOCK_SKEW_MS ? received : report.at;
+		// Whether the host is reporting goes by when its ticks arrive, not by its clock.
+		tickArrivedAt.set(hostId, received);
+		hostSeries.add(
+			hostId,
+			{
+				at,
+				cpu: report.host.cpu,
+				memUsedBytes: report.host.memUsedBytes,
+				diskUsedBytes: report.host.diskUsedBytes,
+			},
+			{ ...meta, memTotalBytes: report.host.memTotalBytes, diskTotalBytes: report.host.diskTotalBytes },
 		);
-		if (written === undefined) return undefined;
+		if (report.sandboxes.length > 0) {
+			// A host reports only its own sandboxes: one statement for all of them, not one per sandbox.
+			const held = how.known ?? (await sandboxesOn(hostId));
+			const closed: { readonly id: string; readonly rollup: Rollup }[] = [];
+			for (const reading of report.sandboxes) {
+				if (!held.has(reading.id)) continue;
+				const rollup = sandboxSeries.add(
+					reading.id,
+					{
+						at,
+						cpu: reading.cpu,
+						memUsedBytes: reading.memUsedBytes,
+						diskUsedBytes: 0,
+						...(how.shared === true ? { shared: true } : {}),
+					},
+					{ ...meta, memLimitBytes: reading.memLimitBytes },
+				);
+				if (rollup !== undefined) closed.push({ id: reading.id, rollup });
+			}
+			for (const { id, rollup } of closed) await keepRollup(id, rollup).catch(() => undefined);
+		}
+		if (how.settle !== false && now() - settledAt >= SETTLE_EVERY_MS) await settleUsage();
+	}
+
+	/** Each host's tick being taken, so the next waits for it (`recordUsage`). */
+	const ingesting = new Map<string, Promise<void>>();
+
+	/** Takes a host's tick after the one before it from the same host. */
+	function ingestInTurn(hostId: string, report: ReportedUsage, shared: boolean): Promise<void> {
+		const before = ingesting.get(hostId) ?? Promise.resolve();
+		const turn = before.then(() => ingest(hostId, report, { shared }));
+		const settled = turn.catch(() => undefined);
+		ingesting.set(hostId, settled);
+		void settled.then(() => {
+			if (ingesting.get(hostId) === settled) ingesting.delete(hostId);
+		});
+		return turn;
+	}
+
+	/**
+	 * Brings in the ticks a backend makes itself (the stub's), since the last time: at most once per tick's interval,
+	 * on reads, so its graphs move with no timer running.
+	 */
+	async function catchUpUsage(): Promise<void> {
+		const reportsOf = backend.usageReports;
+		if (reportsOf === undefined) return;
+		// One at a time: a caller while one is under way waits for it, so none reads (or settles) half a replay.
+		if (replaying !== undefined) return replaying;
+		const until = now();
+		if (until - pulledUntil < USAGE_INTERVAL_MS) return;
+		const since = pulledUntil;
+		pulledUntil = until;
+		const run = replay(() => reportsOf(since, until)).finally(() => {
+			if (replaying === run) replaying = undefined;
+		});
+		replaying = run;
+		return run;
+	}
+
+	/** Takes the stub's past ticks in order, then settles what they left closed. */
+	async function replay(reportsOf: () => Promise<readonly BackendUsageReport[]>): Promise<void> {
+		const reports = await reportsOf().catch(() => []);
+		const held = new Map<string, ReadonlySet<string>>();
+		for (const report of reports) {
+			let known = held.get(report.hostId);
+			if (known === undefined) {
+				known = await sandboxesOn(report.hostId).catch(() => new Set<string>());
+				held.set(report.hostId, known);
+			}
+			await ingest(report.hostId, report, { known, settle: false }).catch(() => undefined);
+		}
+		// Once every past tick is in: only now can a 5 minutes be closed for want of more.
+		if (reports.length > 0 && now() - settledAt >= SETTLE_EVERY_MS) await settleTaken();
+	}
+
+	/** The sandboxes placed on a host and not deleted. */
+	async function sandboxesOn(hostId: string): Promise<ReadonlySet<string>> {
+		return new Set(
+			(await store.sandboxes.list({ hostId }))
+				.filter((sandbox) => sandbox.state !== "deleted" && sandbox.state !== "deleting")
+				.map((sandbox) => sandbox.id),
+		);
+	}
+
+	/** Whether a sandbox's host sends its readings: then none is read by running a command in the sandbox. */
+	const hostReports = (hostId: string | undefined) => {
+		const arrived = hostId === undefined ? undefined : tickArrivedAt.get(hostId);
+		if (hostId === undefined || arrived === undefined) return false;
+		const intervalMs = hostSeries.meta(hostId)?.intervalMs ?? USAGE_INTERVAL_MS;
+		return now() - arrived <= Math.max(3 * intervalMs, REPORTING_WITHIN_MS);
+	};
+
+	/**
+	 * The fallback for a host that doesn't send its readings (an older kantel-host): one reading by running a command in
+	 * the sandbox, at most once per `minGapMs`, added to its series as a host's tick would be.
+	 */
+	async function readUsage(sandbox: StoredSandbox, minGapMs: number): Promise<void> {
+		if (sandbox.state !== "running" || hostReports(sandbox.hostId)) return;
+		const at = now();
+		if (at - (fallbackReadAt.get(sandbox.id) ?? Number.NEGATIVE_INFINITY) < minGapMs) return;
+		fallbackReadAt.set(sandbox.id, at);
+		const reading = await backend.usage(sandbox.id).catch(() => undefined);
+		if (reading === undefined) return;
+		const limit = sandbox.resources?.memoryMb === undefined ? {} : { memLimitBytes: sandbox.resources.memoryMb * MIB };
+		const closed = sandboxSeries.add(
+			sandbox.id,
+			{ at, cpu: reading.cpu, memUsedBytes: reading.memoryBytes, diskUsedBytes: 0 },
+			{ intervalMs: FALLBACK_INTERVAL_MS, ...limit },
+		);
+		if (closed !== undefined) await keepRollup(sandbox.id, closed);
+	}
+
+	/**
+	 * A sandbox's sparklines: its kept 5-minute means and the one under way, the newest `SPARKLINE_POINTS`.
+	 */
+	function sparklines(sandbox: StoredSandbox): { recentCpu: number[]; recentMemory: number[] } {
+		const recent = withPartial(sandbox).slice(-SPARKLINE_POINTS);
 		return {
-			accountId: sandbox.accountId,
-			sandboxId,
-			sandboxType: sandbox.type,
-			cpu: reading.cpu,
-			memoryBytes: reading.memoryBytes,
-			runningSeconds: runningMs(sandbox.runs, 0, at) / 1000,
-			at,
-			startedAt: sandbox.startedAt,
+			recentCpu: recent.map((sample) => sample.cpu),
+			recentMemory: recent.map((sample) => Math.round(sample.memoryMb * MIB)),
+		};
+	}
+
+	/** A sandbox's kept 5-minute means, and the one under way in this process's memory, if any. */
+	function withPartial(sandbox: StoredSandbox): readonly StoredSample[] {
+		const partial = sandbox.state === "deleted" ? undefined : sandboxSeries.partial(sandbox.id);
+		const last = sandbox.samples[sandbox.samples.length - 1];
+		if (partial === undefined || (last !== undefined && partial.at <= last.at)) return sandbox.samples;
+		return [
+			...sandbox.samples,
+			{ at: partial.at, cpu: partial.cpu, memoryMb: partial.memUsedBytes / MIB, readings: partial.readings },
+		];
+	}
+
+	function hostSparklines(hostId: string): computeSchema.UsageSparklines {
+		const recent = hostSeries.rollups(hostId, SPARKLINE_POINTS);
+		return { recentCpu: recent.map((point) => point.cpu), recentMemory: recent.map((point) => point.memUsedBytes) };
+	}
+
+	async function hostUsage(hostId: string, since: number | undefined): Promise<computeSchema.HostUsage> {
+		await catchUpUsage();
+		const { meta, points } = hostSeries.read(hostId, since);
+		return {
+			hostId,
+			intervalMs: meta?.intervalMs ?? USAGE_INTERVAL_MS,
+			memTotalBytes: Math.round(meta?.memTotalBytes ?? 0),
+			diskTotalBytes: Math.round(meta?.diskTotalBytes ?? 0),
+			points: points.map((point) => ({
+				at: point.at,
+				cpu: point.cpu,
+				memUsedBytes: point.memUsedBytes,
+				diskUsedBytes: point.diskUsedBytes,
+			})),
 		};
 	}
 
@@ -2956,6 +3239,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// Sandboxes.
 
 		listSandboxes: async (principal, { query }) => {
+			await catchUpUsage();
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "sandboxes:read", role);
 			const active: readonly SandboxState[] = ["starting", "running", "stopping"];
@@ -3169,6 +3453,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		},
 
 		getSandbox: async (principal, { params }) => {
+			await catchUpUsage();
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:read", true);
 			return sandboxView(sandbox, principal);
 		},
@@ -3435,8 +3720,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		getSandboxUsage: async (principal, { params, query }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:read", true);
-			if (sandbox.state === "running") await recordSample(sandbox.id);
+			await catchUpUsage();
+			await readUsage(sandbox, FALLBACK_READ_GAP_MS);
 			const current = await mustGetSandbox(sandbox.id);
+			const kept = withPartial(current);
 			const at = now();
 			const intervalMs = (query.intervalSeconds ?? 300) * 1000;
 			const since = Math.max(query.since ?? at - DAY_MS, current.createdAt - intervalMs);
@@ -3446,18 +3733,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			for (let from = start; from < at; from += intervalMs) {
 				const to = Math.min(from + intervalMs, at);
 				const seconds = runningMs(current.runs, from, to) / 1000;
-				const samples = current.samples.filter((sample) => sample.at >= from && sample.at < to);
-				const mean = (values: readonly number[]) =>
-					values.length === 0 ? 0 : values.reduce((total, value) => total + value, 0) / values.length;
+				const mean = spanMean(kept, from, to);
 				points.push({
 					at: from,
-					cpu: Math.min(1, mean(samples.map((sample) => sample.cpu))),
-					memoryMb: round(mean(samples.map((sample) => sample.memoryMb))),
+					cpu: Math.min(1, mean.cpu),
+					memoryMb: round(mean.memoryMb),
 					runningSeconds: round(seconds),
 					cost: round((seconds / 3600) * rate),
 				});
 			}
 			const seconds = runningMs(current.runs, since, at) / 1000;
+			const series = sandboxSeries.read(current.id, query.since);
+			const memLimit =
+				series.meta?.memLimitBytes ??
+				(current.resources?.memoryMb === undefined ? undefined : current.resources.memoryMb * MIB);
 			return {
 				sandboxId: current.id,
 				intervalSeconds: intervalMs / 1000,
@@ -3466,6 +3755,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					runningSeconds: round(seconds),
 					cpuSeconds: round(seconds * meanCpu(current)),
 					cost: { currency: rates.currency, total: round((seconds / 3600) * rate), ratePerHour: rate },
+				},
+				...(memLimit === undefined ? {} : { memLimitBytes: Math.round(memLimit) }),
+				series: {
+					intervalMs:
+						series.meta?.intervalMs ?? (hostReports(current.hostId) ? USAGE_INTERVAL_MS : FALLBACK_INTERVAL_MS),
+					points: series.points.map((point) => ({ at: point.at, cpu: point.cpu, memUsedBytes: point.memUsedBytes })),
 				},
 			};
 		},
@@ -4511,6 +4806,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		getHost: async (principal, { params }) => hostView(await hostFor(principal, params.hostId)),
 
+		getHostUsage: async (principal, { params, query }) =>
+			hostUsage((await hostFor(principal, params.hostId)).id, query.since),
+
 		updateHost: async (principal, { params, body }) => changeHost(await hostFor(principal, params.hostId), body),
 
 		revokeHost: async (principal, { params }) => revokeStoredHost(await hostFor(principal, params.hostId)),
@@ -4538,6 +4836,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		getAccountHost: async (principal, { params }) =>
 			hostView((await accountHostFor(principal, params.hostId, "account:read")).host),
+
+		getAccountHostUsage: async (principal, { params, query }) =>
+			hostUsage((await accountHostFor(principal, params.hostId, "account:read")).host.id, query.since),
 
 		updateAccountHost: async (principal, { params, body }) =>
 			changeHost((await accountHostFor(principal, params.hostId, "account:admin")).host, body),
@@ -4720,12 +5021,50 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		},
 
 		async sampleUsage() {
+			await catchUpUsage();
 			const samples: TelemetryUsageSample[] = [];
-			for (const sandbox of await store.sandboxes.list({ state: "running" })) {
-				const sample = await recordSample(sandbox.id);
-				if (sample !== undefined) samples.push(sample);
+			const running = await store.sandboxes.list({ state: "running" });
+			// The export's own timer is the fallback's pace: one read per flush for a host that doesn't send its own.
+			for (const sandbox of running) await readUsage(sandbox, 0);
+			const byId = new Map(running.map((sandbox) => [sandbox.id, sandbox]));
+			// Every reading not yet taken, whatever the sandbox's state now: one that stopped since still sends what it had.
+			for (const id of sandboxSeries.keys()) {
+				// A sandbox the export hasn't taken from yet (this process just began exporting): its last few minutes, not
+				// the hour kept.
+				const from = exportedUntil.get(id) ?? now() - EXPORT_LOOKBACK_MS;
+				const { points } = sandboxSeries.read(id, from);
+				const last = points[points.length - 1];
+				if (last === undefined) continue;
+				exportedUntil.set(id, last.at);
+				// What another replica passed on, the one holding the host exports. A host that moved between replicas leaves
+				// each its own points to send, and a newer passed-on point doesn't skip an older one taken here.
+				const taken = points.filter((point) => point.shared !== true);
+				if (taken.length === 0) continue;
+				const sandbox = byId.get(id) ?? (await store.sandboxes.get(id));
+				if (sandbox === undefined) continue;
+				for (const point of taken) {
+					samples.push({
+						accountId: sandbox.accountId,
+						sandboxId: sandbox.id,
+						sandboxType: sandbox.type,
+						cpu: point.cpu,
+						memoryBytes: point.memUsedBytes,
+						runningSeconds: runningMs(sandbox.runs, 0, point.at) / 1000,
+						at: point.at,
+						startedAt: sandbox.startedAt,
+					});
+				}
 			}
+			await settleUsage();
+			// A cursor lasts as long as its series' points, so a sandbox resumed within the hour doesn't send them again.
+			const kept = new Set(sandboxSeries.keys());
+			for (const id of exportedUntil.keys()) if (!kept.has(id)) exportedUntil.delete(id);
+			for (const id of fallbackReadAt.keys()) if (!byId.has(id)) fallbackReadAt.delete(id);
 			return samples;
+		},
+
+		recordUsage(hostId, report, how) {
+			return ingestInTurn(hostId, report, how?.shared === true);
 		},
 
 		async hostE2EChain(hostId, space) {

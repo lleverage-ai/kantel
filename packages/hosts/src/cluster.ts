@@ -210,6 +210,8 @@ export interface PeerTransport {
 	openPort(peer: ReplicaRecord, hostId: string, sandboxId: string, port: number, sink: PortSink): Promise<PortStream>;
 	rewelcome(peer: ReplicaRecord, hostId: string, welcome: HostWelcome): Promise<void>;
 	disconnect(peer: ReplicaRecord, hostId: string, code: number, reason: string): Promise<void>;
+	/** Passes a usage tick from a host connected here on to a peer, which keeps it too (`HostCluster.shareUsage`). */
+	usage?(peer: ReplicaRecord, hostId: string, usage: unknown): Promise<void>;
 }
 
 /** This replica's signing key: the private half never leaves the process. */
@@ -361,7 +363,15 @@ export interface HostCluster {
 	stop(): Promise<void>;
 	/** Refreshes now: the heartbeat, the hosts' owners, and stale connections closed. */
 	tick(): Promise<void>;
+	/**
+	 * Passes a usage tick from a host connected here on to every other live replica, without waiting: usage series are
+	 * kept in each replica's memory, and a poll may land on any of them.
+	 */
+	shareUsage(hostId: string, usage: unknown): void;
 }
+
+/** The usage ticks waiting for one peer at most: a minute of 12 hosts' 5-second ticks. */
+export const MAX_USAGE_QUEUE = 144;
 
 const NOT_CONNECTED = (hostId: string) =>
 	new HostCallError({ code: "unavailable", message: `Host ${hostId} is not connected` });
@@ -378,6 +388,8 @@ export function createHostCluster(options: HostClusterOptions): HostCluster {
 	const claims = new Map<string, number>();
 	/** Hosts held by other live replicas, as last read. */
 	let remote = new Map<string, ReplicaRecord>();
+	/** The other live replicas, as last read. */
+	let peers: ReplicaRecord[] = [];
 	let timer: ReturnType<typeof setInterval> | undefined;
 	let stopped = false;
 
@@ -417,6 +429,7 @@ export function createHostCluster(options: HostClusterOptions): HostCluster {
 			if (owner.replicaId !== replicaId && replica !== undefined) next.set(owner.hostId, replica);
 		}
 		remote = next;
+		peers = [...live.values()].filter((replica) => replica.id !== replicaId);
 		const local = localHub;
 		if (local === undefined) return;
 		for (const owner of owners) {
@@ -450,6 +463,26 @@ export function createHostCluster(options: HostClusterOptions): HostCluster {
 
 	const safely = (what: string, work: Promise<unknown>) => {
 		void work.catch((error) => log(`[cluster] ${what}: ${error instanceof Error ? error.message : String(error)}`));
+	};
+
+	/**
+	 * Usage ticks waiting to go to each peer, oldest first. One goes at a time, so a peer takes a host's ticks in the order
+	 * they came (a series keeps only newer points); past `MAX_USAGE_QUEUE` the oldest is dropped.
+	 */
+	const usageQueues = new Map<string, { hostId: string; usage: unknown }[]>();
+	const drainUsage = async (peer: ReplicaRecord, queue: { hostId: string; usage: unknown }[]) => {
+		const send = transport.usage;
+		try {
+			for (let next = queue.shift(); next !== undefined && send !== undefined; next = queue.shift()) {
+				await send(peer, next.hostId, next.usage).catch((error) =>
+					log(
+						`[cluster] sharing host ${next?.hostId}'s usage: ${error instanceof Error ? error.message : String(error)}`,
+					),
+				);
+			}
+		} finally {
+			if (usageQueues.get(peer.id) === queue) usageQueues.delete(peer.id);
+		}
 	};
 
 	return {
@@ -509,8 +542,24 @@ export function createHostCluster(options: HostClusterOptions): HostCluster {
 			timer = setInterval(() => safely("heartbeat", tick()), heartbeatMs);
 			(timer as { unref?: () => void }).unref?.();
 		},
+		shareUsage(hostId, usage) {
+			const send = transport.usage;
+			if (send === undefined || stopped) return;
+			for (const peer of peers) {
+				const queue = usageQueues.get(peer.id);
+				if (queue !== undefined) {
+					queue.push({ hostId, usage });
+					if (queue.length > MAX_USAGE_QUEUE) queue.shift();
+					continue;
+				}
+				const fresh = [{ hostId, usage }];
+				usageQueues.set(peer.id, fresh);
+				void drainUsage(peer, fresh);
+			}
+		},
 		async stop() {
 			stopped = true;
+			peers = [];
 			if (timer !== undefined) clearInterval(timer);
 			timer = undefined;
 			claims.clear();
