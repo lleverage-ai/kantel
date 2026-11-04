@@ -243,6 +243,41 @@ describe("hosts service", () => {
 		expect(welcomes().at(-1)?.welcome).toMatchObject({ pools: {}, draining: true });
 	});
 
+	it("tells an older host still reporting warm machines to keep none, once a minute until it reports none", async () => {
+		let now = 1_000;
+		const { service, join } = await setup({ now: () => now });
+		const a = await join("a");
+		const host = new FakeHost(service, a.hostId);
+		host.connect();
+		await tick();
+		const beat = (warm: { [pool: string]: number }) =>
+			host.send({
+				type: "heartbeat",
+				heartbeat: { capacity: { freeMemoryMiB: 10_000, freeDiskGiB: 400, running: 0, stopped: 0, load1: 0, warm } },
+			});
+		const asked = () => host.calls.filter((call) => call.method === "host.pools");
+		beat({});
+		beat({ "microvm/default": 0 });
+		await tick();
+		expect(asked()).toHaveLength(0);
+		beat({ "microvm/default": 2 });
+		await tick();
+		expect(asked()).toEqual([{ method: "host.pools", params: {} }]);
+		now += 30_000;
+		beat({ "microvm/default": 1 });
+		await tick();
+		expect(asked()).toHaveLength(1);
+		now += 30_000;
+		beat({ "microvm/default": 1 });
+		await tick();
+		expect(asked()).toHaveLength(2);
+		// Once it reports none it is left be; should it keep some again, it is told again at once.
+		beat({});
+		beat({ "microvm/default": 1 });
+		await tick();
+		expect(asked()).toHaveLength(3);
+	});
+
 	it("sends settings changed in a burst as they are last, never an older one after a newer", async () => {
 		const { service, join } = await setup();
 		const a = await join("a");

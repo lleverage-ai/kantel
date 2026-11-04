@@ -5,10 +5,10 @@ import { onStep, sliderPercent } from "../primitives/slider.tsx";
 import {
 	customShapes,
 	DEFAULT_SANDBOX_SHAPES,
-	diskFor,
 	fitMemory,
 	memoryRangeFor,
 	memoryText,
+	onGrid,
 	presetOf,
 	type SandboxShapes,
 	shapeAllowed,
@@ -87,44 +87,36 @@ describe("New sandbox's shapes, as the hosts make them", () => {
 			}),
 		);
 
-	it("gives a shape the disk the hosts would: a preset's own, else the first step with its memory", () => {
-		// A preset, then below, between and above the steps.
-		expect(diskFor(DEFAULT_SANDBOX_SHAPES, { vcpus: 4, memoryMb: 8192 })).toBe(60);
-		expect(diskFor(DEFAULT_SANDBOX_SHAPES, { vcpus: 1, memoryMb: 512 })).toBe(40);
-		expect(diskFor(DEFAULT_SANDBOX_SHAPES, { vcpus: 5, memoryMb: 10_240 })).toBe(120);
-		expect(diskFor(DEFAULT_SANDBOX_SHAPES, { vcpus: 16, memoryMb: 65_536 })).toBe(240);
-		// Hosts that would give different disks: none is promised off the presets.
-		const { customDisk: _, ...varied } = DEFAULT_SANDBOX_SHAPES.microvm;
-		const mixed: SandboxShapes = { ...DEFAULT_SANDBOX_SHAPES, microvm: varied };
-		expect(diskFor(mixed, { vcpus: 2, memoryMb: 2048 })).toBeUndefined();
-		// Even a preset: a host making custom shapes without it gives that shape its own rule's disk.
-		expect(diskFor(mixed, { vcpus: 4, memoryMb: 8192 })).toBeUndefined();
-		// Where every host makes only its presets, a preset's disk is its own.
-		const presetsAlone: SandboxShapes = { ...DEFAULT_SANDBOX_SHAPES, microvm: { ...varied, custom: false } };
-		expect(diskFor(presetsAlone, { vcpus: 4, memoryMb: 8192 })).toBe(60);
-		// Nor for a preset two hosts give different disks.
-		const twice: SandboxShapes = {
-			...mixed,
-			microvm: {
-				...varied,
-				custom: false,
-				presets: [...varied.presets, { name: "m", vcpus: 4, memoryMb: 8192, diskGb: 80 }],
-			},
-		};
-		expect(diskFor(twice, { vcpus: 4, memoryMb: 8192 })).toBeUndefined();
-		// An older host's preset (20 GB) beside a host making custom shapes whose rule gives that shape 40 GB: it depends
-		// on where it lands, so none is promised; a shape only the custom host can make keeps its disk.
-		const older: SandboxShapes = {
+	it("promises no disk: it is the host's to give, and a snapshot's to keep", () => {
+		expect(fields(DEFAULT_SANDBOX_SHAPES, { vcpus: 4, memoryMb: 8192 })).not.toMatch(/GB disk/);
+		expect(fields(DEFAULT_SANDBOX_SHAPES, { vcpus: 3, memoryMb: 6144 })).not.toMatch(/GB disk/);
+		expect(fields(presetsOnly, { vcpus: 4, memoryMb: 8192 })).not.toMatch(/GB disk/);
+	});
+
+	it("keeps memory on the slider's grid, so what is sent is what is shown", () => {
+		// A host's default preset off the 512 MB grid (2 vCPU, 1280 MB): the dialog starts on the grid, not at 1280.
+		const offGrid: SandboxShapes = {
 			...DEFAULT_SANDBOX_SHAPES,
 			microvm: {
 				...DEFAULT_SANDBOX_SHAPES.microvm,
-				presets: [{ name: "default", vcpus: 2, memoryMb: 2048, diskGb: 20 }, ...DEFAULT_SANDBOX_SHAPES.microvm.presets],
+				vcpus: { min: 1, max: 8, step: 1, default: 2 },
+				memoryMb: { min: 768, max: 16_000, step: 512, default: 1280 },
+				presets: [{ name: "default", vcpus: 2, memoryMb: 1280, diskGb: 20 }],
 			},
 		};
-		expect(diskFor(older, { vcpus: 2, memoryMb: 2048 })).toBeUndefined();
-		expect(diskFor(older, { vcpus: 3, memoryMb: 2048 })).toBe(40);
-		expect(fields(DEFAULT_SANDBOX_SHAPES, { vcpus: 1, memoryMb: 512 })).toContain("40 GB disk");
-		expect(fields(mixed, { vcpus: 2, memoryMb: 2048 })).not.toContain("GB disk");
+		const range = memoryRangeFor(offGrid, 2);
+		// Both ends on the grid, the top under the hosts' 16,000 MB.
+		expect(range).toMatchObject({ min: 1024, max: 15_872 });
+		const start = fitMemory(offGrid, 2, offGrid.microvm.memoryMb.default);
+		expect(start % 512).toBe(0);
+		// The slider shows the very value kept.
+		expect(onStep(start, range.min, range.max, range.step)).toBe(start);
+		for (const memory of [700, 1280, 5000, 99_999]) {
+			const kept = fitMemory(offGrid, 3, memory);
+			const shown = memoryRangeFor(offGrid, 3);
+			expect(onStep(kept, shown.min, shown.max, shown.step)).toBe(kept);
+		}
+		expect(onGrid({ min: 128, max: 512, step: 64 }, 300)).toBe(320);
 	});
 
 	it("keeps vCPUs to what the memory's top can hold, and memory under it", () => {
@@ -143,6 +135,9 @@ describe("New sandbox's shapes, as the hosts make them", () => {
 		expect(memoryRangeFor(small, 32).max).toBe(8192);
 		expect(memoryRangeFor(small, 32).min).toBeGreaterThan(memoryRangeFor(small, 32).max);
 		expect(fitMemory(small, 16, 4096)).toBe(8192);
+		// Where a count of vCPUs can't be had, memory still never goes past the hosts' top, and the shape isn't allowed.
+		expect(fitMemory(small, 32, 4096)).toBe(8192);
+		expect(shapeAllowed(small, { vcpus: 32, memoryMb: fitMemory(small, 32, 4096) })).toBe(false);
 		expect(shapeAllowed(small, { vcpus: 16, memoryMb: 8192 })).toBe(true);
 		expect(shapeAllowed(small, { vcpus: 32, memoryMb: 16_384 })).toBe(false);
 		expect(shapeAllowed(small, { vcpus: 2, memoryMb: 16_384 })).toBe(false);

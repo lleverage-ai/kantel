@@ -373,18 +373,12 @@ const makesCustom = (host: BackendHost) => host.features?.includes(CUSTOM_SHAPES
 /** `value` down to a multiple of `step`. */
 const floorTo = (value: number, step: number) => Math.floor(value / step) * step;
 
-/** A host's sizes as the disk rule reads them, ordered as `@kantel/hosts`' `diskFor` orders them. */
-const diskSteps = (sizes: readonly { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number }[]) =>
-	[...sizes]
-		.sort((a, b) => a.memoryMb - b.memoryMb || a.diskGb - b.diskGb || a.vcpus - b.vcpus)
-		.map((size) => ({ vcpus: size.vcpus, memoryMb: size.memoryMb, diskGb: size.diskGb }));
-
 /**
  * What a microVM may be on `hosts` (those the account may use that run microVMs): their presets, and, where a host
  * makes custom shapes, any vCPUs and memory it has. Undefined with no such host.
  *
- * A preset is a name and its whole shape: hosts that give one name different shapes each keep theirs. A custom shape's
- * disk is said only where every host that makes them would give the same.
+ * A preset is a name and its whole shape: hosts that give one name different shapes each keep theirs. No disk is said
+ * for a custom shape: it is the host's to give, and the sandbox's resources say what it got.
  */
 export function microvmShapes(
 	hosts: readonly BackendHost[],
@@ -392,7 +386,6 @@ export function microvmShapes(
 ): computeSchema.SandboxShapes["microvm"] {
 	if (hosts.length === 0) return undefined;
 	const presets = new Map<string, computeSchema.ShapePreset>();
-	const customDisks = new Set<string>();
 	let maxVcpus = 1;
 	let maxMemory = MICROVM_MEMORY_STEP_MB;
 	for (const host of hosts) {
@@ -406,16 +399,12 @@ export function microvmShapes(
 		if (makesCustom(host)) {
 			maxVcpus = Math.max(maxVcpus, Math.min(MAX_VCPUS, host.capacity.vcpus));
 			maxMemory = Math.max(maxMemory, floorTo(host.capacity.memoryMb, MICROVM_MEMORY_STEP_MB));
-			customDisks.add(JSON.stringify(diskSteps(host.diskSizes ?? sizes)));
 		}
 	}
 	const list = [...presets.values()].sort(
 		(a, b) => a.vcpus - b.vcpus || a.memoryMb - b.memoryMb || a.diskGb - b.diskGb || a.name.localeCompare(b.name),
 	);
 	const preferred = list.find((preset) => preset.name === "default") ?? list[0];
-	const [customDisk] = customDisks;
-	const disk: { vcpus: number; memoryMb: number; diskGb: number }[] | undefined =
-		customDisks.size === 1 && customDisk !== undefined ? JSON.parse(customDisk) : undefined;
 	const minMemory = Math.min(MEMORY_MB_PER_VCPU.min, ...list.map((preset) => preset.memoryMb));
 	return {
 		vcpus: { min: 1, max: maxVcpus, step: 1, default: preferred?.vcpus ?? Math.min(2, maxVcpus) },
@@ -428,7 +417,6 @@ export function microvmShapes(
 		memoryMbPerVcpu: { ...MEMORY_MB_PER_VCPU },
 		presets: list,
 		custom: hosts.some(makesCustom),
-		...(disk === undefined || disk.length === 0 ? {} : { customDisk: disk }),
 	};
 }
 
@@ -2103,6 +2091,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			withState(sandbox, "running", {
 				hostId: placement.hostId,
 				resources: placement.resources ?? sandbox.resources,
+				// A microVM's shape is what its machine runs as, where its backend says: a host that can't resize a stopped or
+				// live-forked machine keeps the one it had, and its next restart, fork or revival reads that, not a size it asked for.
+				...(sandbox.type === "microvm" && placement.resources !== undefined
+					? { shape: { vcpus: placement.resources.vcpus, memoryMb: placement.resources.memoryMb } }
+					: {}),
 				capabilities: placement.capabilities,
 				health: "ok",
 				...(applied === undefined || (sandbox.egressApplied ?? Number.NEGATIVE_INFINITY) >= applied

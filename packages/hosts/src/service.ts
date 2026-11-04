@@ -394,6 +394,28 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		return welcomeFor(latest);
 	};
 
+	/** When each host still reporting warm machines was last told to keep none. */
+	const poolsEnded = new Map<string, number>();
+	/**
+	 * A host from before warm pools were removed that still reports warm machines is told to keep none, by the call it
+	 * knows, not only by its welcome: its pools may come from a welcome sent before this control plane, on a connection
+	 * still open. Once a minute at most, until it reports none.
+	 */
+	const endLegacyPools = (hostId: string, reported: unknown) => {
+		const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
+		const warm = isRecord(reported) ? reported.warm : undefined;
+		const keeps = isRecord(warm) && Object.values(warm).some((count) => typeof count === "number" && count > 0);
+		if (!keeps) {
+			poolsEnded.delete(hostId);
+			return;
+		}
+		const at = clock.now();
+		if (at - (poolsEnded.get(hostId) ?? Number.NEGATIVE_INFINITY) < 60_000) return;
+		poolsEnded.set(hostId, at);
+		log(`[hosts] host ${hostId} still keeps warm machines; telling it to keep none`);
+		report(local.call(hostId, HostMethods.legacyPools, {}));
+	};
+
 	const cluster = options.cluster;
 	const local = createHostHub({
 		async onHello(hostId, message) {
@@ -412,6 +434,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				log(`[hosts] host ${hostId} sent a heartbeat that isn't valid (${parsed.reason}); ignored`);
 				return;
 			}
+			endLegacyPools(hostId, reported);
 			const capacity = parsed.value;
 			reserved.delete(hostId);
 			report(
@@ -444,6 +467,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		},
 		onDisconnected(hostId) {
 			log(`[hosts] host ${hostId} disconnected`);
+			poolsEnded.delete(hostId);
 			cluster?.release(hostId);
 			report(
 				(async () => {

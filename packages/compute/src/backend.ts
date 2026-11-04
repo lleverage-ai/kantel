@@ -47,11 +47,6 @@ export interface BackendHost {
 	readonly capacity: { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number };
 	/** Its named microVM sizes (the presets). Absent: the deployment's `sizes`. */
 	readonly sizes?: readonly BackendSize[];
-	/**
-	 * Every size it has, by a name the API knows or not: what it makes a shape that is one of them as, and what it
-	 * gives any other shape's disk from. Absent: `sizes`.
-	 */
-	readonly diskSizes?: readonly { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number }[];
 	readonly labels: { readonly [key: string]: string };
 	/** Whether it is connected now; absent, it always is (the stub). A host that isn't is `unreachable`. */
 	readonly connected?: boolean;

@@ -42,7 +42,6 @@ import {
 	cliLoginCommand,
 	cliSshCommand,
 	DEFAULT_SANDBOX_SHAPES,
-	diskFor,
 	FilesRefusedError,
 	presetOf,
 	type SandboxSize,
@@ -108,6 +107,12 @@ export function usageSeries(seed: number, busy = 0.5, points = 30): readonly num
 }
 
 const flat = (points = 30): readonly number[] => Array.from({ length: points }, () => 0);
+
+/** The sample hosts' disk for a microVM of `memoryMb`: the first preset's with at least that memory, else the last's. */
+const sampleDisk = (memoryMb: number): number => {
+	const presets = DEFAULT_SANDBOX_SHAPES.microvm.presets;
+	return (presets.find((preset) => preset.memoryMb >= memoryMb) ?? presets.at(-1))?.diskGb ?? 0;
+};
 
 const sandbox = (
 	fields: Omit<Sandbox, "hostname" | "usage" | "createdBy"> &
@@ -1489,8 +1494,8 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 									resources: {
 										vcpus: input.shape.vcpus,
 										memoryGb: input.shape.memoryMb / 1024,
-										// Off the presets, the hosts' rule: the smallest preset's disk with at least its memory.
-										diskGb: input.kind === "isolate" ? 0 : (diskFor(DEFAULT_SANDBOX_SHAPES, input.shape) ?? 0),
+										// As a host gives it: a preset's own, else the smallest preset's with at least its memory.
+										diskGb: input.kind === "isolate" ? 0 : sampleDisk(input.shape.memoryMb),
 									},
 								}),
 						state: "starting",

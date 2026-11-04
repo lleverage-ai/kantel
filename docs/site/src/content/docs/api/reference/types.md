@@ -280,14 +280,6 @@ Every field is optional: `{}` makes a running isolate in the caller's account.
 | `url` | string | yes | HTTPS; a self-hosted install may allow `http://` to a private address. |
 | `events` | [EventType](/api/reference/types/#eventtype)[] | yes |  |
 
-### CustomDiskStep
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `vcpus` | integer | yes |  |
-| `memoryMb` | integer | yes |  |
-| `diskGb` | integer | yes |  |
-
 ### DeploymentMode
 
 `selfhosted`: an install someone runs for themselves. `hosted`: a hosted service with plans.
@@ -744,8 +736,7 @@ Absent when no host the account may use runs microVMs.
 | `memoryMb` | [ShapeRange](/api/reference/types/#shaperange) | yes |  |
 | `memoryMbPerVcpu` | object | yes | Memory follows vCPUs: each vCPU has at least `min` and at most `max` MB. |
 | `presets` | [ShapePreset](/api/reference/types/#shapepreset)[] | yes | Each shape a host makes by name. Hosts may give one name different shapes: each is its own entry. |
-| `custom` | boolean | yes | Whether a host takes shapes off the presets; when false, only the presets. |
-| `customDisk` | [CustomDiskStep](/api/reference/types/#customdiskstep)[] | no | The sizes of the hosts that make shapes off the presets, by memory: a shape that is one of them gets its disk; any other, the first's with at least its memory, else the last's. Only where every such host has the same; absent where the disk depends on the host. |
+| `custom` | boolean | yes | Whether a host takes shapes off the presets; when false, only the presets. A shape's disk is its host's to give; the sandbox's `resources` say what it got. |
 
 ### PollDeviceLoginBody
 
@@ -1065,7 +1056,7 @@ One of: `"private"` or `"organisation"`.
 | `name` | [SandboxSizeName](/api/reference/types/#sandboxsizename) | yes |  |
 | `vcpus` | integer | yes |  |
 | `memoryMb` | integer | yes |  |
-| `diskGb` | integer | yes |  |
+| `diskGb` | integer | yes | The disk the host gives a fresh sandbox of this size. One made from a snapshot keeps that snapshot's disk. |
 
 ### ShapeRange
 

@@ -323,12 +323,6 @@ export interface CreateWebhookBody {
 	readonly events: readonly EventType[];
 }
 
-export interface CustomDiskStep {
-	readonly vcpus: number;
-	readonly memoryMb: number;
-	readonly diskGb: number;
-}
-
 /** `selfhosted`: an install someone runs for themselves. `hosted`: a hosted service with plans. */
 export type DeploymentMode = "selfhosted" | "hosted";
 
@@ -842,10 +836,8 @@ export interface MicrovmShapes {
 	};
 	/** Each shape a host makes by name. Hosts may give one name different shapes: each is its own entry. */
 	readonly presets: readonly ShapePreset[];
-	/** Whether a host takes shapes off the presets; when false, only the presets. */
+	/** Whether a host takes shapes off the presets; when false, only the presets. A shape's disk is its host's to give; the sandbox's `resources` say what it got. */
 	readonly custom: boolean;
-	/** The sizes of the hosts that make shapes off the presets, by memory: a shape that is one of them gets its disk; any other, the first's with at least its memory, else the last's. Only where every such host has the same; absent where the disk depends on the host. */
-	readonly customDisk?: readonly CustomDiskStep[];
 }
 
 export interface PollDeviceLoginBody {
@@ -1212,6 +1204,7 @@ export interface ShapePreset {
 	readonly name: SandboxSizeName;
 	readonly vcpus: number;
 	readonly memoryMb: number;
+	/** The disk the host gives a fresh sandbox of this size. One made from a snapshot keeps that snapshot's disk. */
 	readonly diskGb: number;
 }
 

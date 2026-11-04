@@ -286,7 +286,7 @@ describe("sandboxes", () => {
 		});
 	});
 
-	it("offers a host's presets, and any shape where it makes them, with the disk its sizes give", () => {
+	it("offers a host's presets, and any shape where it makes them, promising no disk for one", () => {
 		const host = {
 			id: "h",
 			name: "h",
@@ -305,27 +305,8 @@ describe("sandboxes", () => {
 		const custom = microvmShapes([{ ...host, features: ["custom-shapes"] }], sizes);
 		expect(custom).toMatchObject({ vcpus: { max: 8 }, memoryMb: { max: 16_384 }, custom: true });
 		expect(custom?.presets).toEqual([{ name: "default", vcpus: 2, memoryMb: 2048, diskGb: 20 }]);
-		expect(custom?.customDisk).toEqual([{ vcpus: 2, memoryMb: 2048, diskGb: 20 }]);
-		expect(named?.customDisk).toBeUndefined();
-		// A size by a name the API doesn't know still sets disks: the host picks a custom shape's from all its sizes.
-		const odd = microvmShapes(
-			[
-				{
-					...host,
-					features: ["custom-shapes"],
-					diskSizes: [
-						{ vcpus: 2, memoryMb: 2048, diskGb: 20 },
-						{ vcpus: 4, memoryMb: 8192, diskGb: 100 },
-					],
-				},
-			],
-			sizes,
-		);
-		expect(odd?.presets).toHaveLength(1);
-		expect(odd?.customDisk).toEqual([
-			{ vcpus: 2, memoryMb: 2048, diskGb: 20 },
-			{ vcpus: 4, memoryMb: 8192, diskGb: 100 },
-		]);
+		// A custom shape's disk is its host's to give (and a snapshot's to keep): none is said ahead.
+		expect(custom).not.toHaveProperty("customDisk");
 		expect(microvmShapes([], sizes)).toBeUndefined();
 	});
 
@@ -350,12 +331,9 @@ describe("sandboxes", () => {
 			{ name: "default", vcpus: 2, memoryMb: 4096, diskGb: 40 },
 			{ name: "default", vcpus: 4, memoryMb: 2048, diskGb: 20 },
 		]);
-		// Their custom shapes' disks differ, so none is promised.
-		expect(shapes?.customDisk).toBeUndefined();
 		// The same shape on both: one entry.
 		const same = microvmShapes([four, { ...four, id: "c" }], []);
 		expect(same?.presets).toEqual([{ name: "default", vcpus: 4, memoryMb: 2048, diskGb: 20 }]);
-		expect(same?.customDisk).toEqual([{ vcpus: 4, memoryMb: 2048, diskGb: 20 }]);
 	});
 
 	it("checks a shape against the hosts this create may use only, however full they are", () => {
@@ -682,6 +660,32 @@ describe("organisations", () => {
 		expect(again.resources).toMatchObject({ vcpus: 3, memoryMb: 6144 });
 		const large = await tom.startSandbox(sized.id, { size: "large", wait: true });
 		expect(large).toMatchObject({ size: "large", resources: { vcpus: 4, memoryMb: 8192 } });
+	});
+
+	it("runs a restart that names a size as that size, even the name it had, and one that names none as it was", async () => {
+		const { tom } = setup();
+		const custom = { vcpus: 3, memoryMb: 6144 };
+		const made = await tom.createSandbox({ type: "microvm", resources: custom, wait: true });
+		const name = made.size ?? "default";
+		await tom.stopSandbox(made.id, { wait: true });
+		const kept = await tom.startSandbox(made.id, { wait: true });
+		expect(kept.resources).toMatchObject(custom);
+		// Its own size's name, given: that size, not the custom shape it had.
+		await tom.stopSandbox(made.id, { keepMemory: true, wait: true });
+		const named = await tom.resumeSandbox(made.id, { size: name, wait: true });
+		const size = (await tom.getSandboxShapes()).microvm?.presets.find((preset) => preset.name === name);
+		expect(named.resources).toMatchObject({ vcpus: size?.vcpus, memoryMb: size?.memoryMb });
+		expect(named.cost.ratePerHour).toBe(
+			hourlyRate(PLACEHOLDER_RATES, "microvm", { vcpus: size?.vcpus ?? 0, memoryMb: size?.memoryMb ?? 0 }),
+		);
+		// Another size, then a fork and a plain restart: each the size it now runs as.
+		await tom.stopSandbox(made.id, { wait: true });
+		const large = await tom.startSandbox(made.id, { size: "large", wait: true });
+		expect(large).toMatchObject({ size: "large", resources: { vcpus: 4, memoryMb: 8192 } });
+		const [fork] = (await tom.forkSandbox(made.id, { wait: true })).items;
+		expect(fork?.resources).toMatchObject({ vcpus: 4, memoryMb: 8192 });
+		await tom.stopSandbox(made.id, { wait: true });
+		expect((await tom.startSandbox(made.id, { wait: true })).resources).toMatchObject({ vcpus: 4, memoryMb: 8192 });
 	});
 
 	it("keeps an overdue sandbox whose host is away running, and auto-stops it once its host is back", async () => {

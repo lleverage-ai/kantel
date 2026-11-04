@@ -9114,22 +9114,6 @@
 				},
 				"title": "CreateWebhookBody"
 			},
-			"CustomDiskStep": {
-				"type": "object",
-				"required": ["vcpus", "memoryMb", "diskGb"],
-				"properties": {
-					"vcpus": {
-						"type": "integer"
-					},
-					"memoryMb": {
-						"type": "integer"
-					},
-					"diskGb": {
-						"type": "integer"
-					}
-				},
-				"title": "CustomDiskStep"
-			},
 			"DeploymentMode": {
 				"anyOf": [
 					{
@@ -10487,14 +10471,7 @@
 					},
 					"custom": {
 						"type": "boolean",
-						"description": "Whether a host takes shapes off the presets; when false, only the presets."
-					},
-					"customDisk": {
-						"type": "array",
-						"items": {
-							"$ref": "#/components/schemas/CustomDiskStep"
-						},
-						"description": "The sizes of the hosts that make shapes off the presets, by memory: a shape that is one of them gets its disk; any other, the first's with at least its memory, else the last's. Only where every such host has the same; absent where the disk depends on the host."
+						"description": "Whether a host takes shapes off the presets; when false, only the presets. A shape's disk is its host's to give; the sandbox's `resources` say what it got."
 					}
 				},
 				"title": "MicrovmShapes",
@@ -11507,7 +11484,8 @@
 						"type": "integer"
 					},
 					"diskGb": {
-						"type": "integer"
+						"type": "integer",
+						"description": "The disk the host gives a fresh sandbox of this size. One made from a snapshot keeps that snapshot's disk."
 					}
 				},
 				"title": "ShapePreset"

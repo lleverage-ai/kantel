@@ -28,12 +28,12 @@ import {
 	costText,
 	customShapes,
 	DEFAULT_SANDBOX_SHAPES,
-	diskFor,
 	type Environment,
 	fitMemory,
 	type HostingMode,
 	memoryRangeFor,
 	memoryText,
+	onGrid,
 	presetOf,
 	SANDBOX_KIND_LABELS,
 	SANDBOX_STATE_LABELS,
@@ -1057,11 +1057,12 @@ export function ShapeFields({
 	const { presets } = shapes.microvm;
 	const cpuRange = vcpuRangeFor(shapes);
 	const memory = memoryRangeFor(shapes, shape.vcpus);
-	const disk = diskFor(shapes, shape);
+	// No disk is promised: it is the host's to give (by its sizes, or the snapshot it starts from), and the sandbox shows
+	// the disk it got once it runs.
 	const summary = (
 		<p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
 			<span>
-				{shape.vcpus} vCPU, {memoryText(shape.memoryMb)} memory{disk === undefined ? "" : `, ${disk} GB disk`}
+				{shape.vcpus} vCPU, {memoryText(shape.memoryMb)} memory
 				{price}
 			</span>
 		</p>
@@ -1181,7 +1182,7 @@ export function NewSandboxDialog({
 					setVcpus(start.vcpus);
 					setMemoryMb(start.memoryMb);
 				}
-				setIsolateMb(read.isolate.memoryMb.default);
+				setIsolateMb(onGrid(read.isolate.memoryMb, read.isolate.memoryMb.default));
 				setShapesRead("ready");
 			},
 			() => setShapesRead("failed"),

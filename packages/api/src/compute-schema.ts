@@ -281,7 +281,10 @@ export const ShapePreset = Type.Object(
 		name: SandboxSizeName,
 		vcpus: Type.Integer(),
 		memoryMb: Type.Integer(),
-		diskGb: Type.Integer(),
+		diskGb: Type.Integer({
+			description:
+				"The disk the host gives a fresh sandbox of this size. One made from a snapshot keeps that snapshot's disk.",
+		}),
 	},
 	{ title: "ShapePreset" },
 );
@@ -313,22 +316,10 @@ export const SandboxShapes = Type.Object(
 							"Each shape a host makes by name. Hosts may give one name different shapes: each is its own entry.",
 					}),
 					custom: Type.Boolean({
-						description: "Whether a host takes shapes off the presets; when false, only the presets.",
+						description:
+							"Whether a host takes shapes off the presets; when false, only the presets. A shape's disk is its " +
+							"host's to give; the sandbox's `resources` say what it got.",
 					}),
-					customDisk: Type.Optional(
-						Type.Array(
-							Type.Object(
-								{ vcpus: Type.Integer(), memoryMb: Type.Integer(), diskGb: Type.Integer() },
-								{ title: "CustomDiskStep" },
-							),
-							{
-								description:
-									"The sizes of the hosts that make shapes off the presets, by memory: a shape that is one of them gets " +
-									"its disk; any other, the first's with at least its memory, else the last's. Only where every such host " +
-									"has the same; absent where the disk depends on the host.",
-							},
-						),
-					),
 				},
 				{ title: "MicrovmShapes", description: "Absent when no host the account may use runs microVMs." },
 			),

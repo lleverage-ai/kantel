@@ -465,7 +465,7 @@ describe("sandboxes", () => {
 		expect(listed).toMatchObject({ id: made.id, size: "medium", resources: { vcpus: 2, memoryGb: 4, diskGb: 20 } });
 	});
 
-	it("keeps whether hosts make shapes off the presets, and their disk rule, as the API says", () => {
+	it("keeps whether hosts make shapes off the presets, as the API says", () => {
 		const microvm = {
 			vcpus: { min: 1, max: 8, step: 1, default: 2 },
 			memoryMb: { min: 512, max: 16_384, step: 512, default: 4096 },
@@ -473,14 +473,11 @@ describe("sandboxes", () => {
 			presets: [{ name: "default" as const, vcpus: 2, memoryMb: 4096, diskGb: 20 }],
 		};
 		const isolate = { memoryMb: { min: 128, max: 512, step: 64, default: 256 }, enforced: false };
-		// Older hosts only: the presets alone, and no disk rule to promise.
+		// Older hosts only: the presets alone.
 		const older = shapesOf({ isolate, microvm: { ...microvm, custom: false } });
 		expect(older.microvm.custom).toBe(false);
-		expect(older.microvm.customDisk).toBeUndefined();
-		const steps = [{ vcpus: 2, memoryMb: 4096, diskGb: 20 }];
-		const current = shapesOf({ isolate, microvm: { ...microvm, custom: true, customDisk: steps } });
+		const current = shapesOf({ isolate, microvm: { ...microvm, custom: true } });
 		expect(current.microvm.custom).toBe(true);
-		expect(current.microvm.customDisk).toEqual(steps);
 	});
 
 	it("asks for the shape the sliders chose, and reads what may be chosen from the API", async () => {

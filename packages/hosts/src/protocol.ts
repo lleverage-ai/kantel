@@ -305,6 +305,11 @@ export const HostMethods = {
 	snapshotRead: "snapshot.read",
 	portOpen: "port.open",
 	hostUpdate: "host.update",
+	/**
+	 * Kantel to a host from before warm pools were removed, which still reports warm machines: `{}`, the pools it should
+	 * keep (none). A current host has no such method.
+	 */
+	legacyPools: "host.pools",
 	/** Kantel to host: a sandbox's protected values changed, `{ sandboxId, version }`; it drops its copy. Result `{}`. */
 	secrets: "sandbox.secrets",
 	/** Host to Kantel: `{ sandboxId }`, answered with `HostSecrets`, or `not_found` for a sandbox not on that host. */
