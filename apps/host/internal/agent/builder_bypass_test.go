@@ -30,9 +30,11 @@ import (
 // that proxy, since the microVM's link reaches nothing else (package network); the client here stands in for them.
 //
 // A "public" registry listens on 127.0.0.2, which the proxy's destinations allow as the stand-in for a public address,
-// and a "private" endpoint on 127.0.0.1, the host's loopback, on the same port, counting what reaches it. Its names
-// are allowed by the build's rules, so only the proxy's address check stands between the build and it: each test
-// requires it refused and the private endpoint never reached.
+// and a "private" endpoint on 127.0.0.1, the host's loopback, on the same port, counting what reaches it. The
+// operator lets ordinary sandboxes reach 127.0.0.1 (egressAllowCIDRs, as for a LAN mirror), and the build's rules
+// allow its names, so only the build's public-only address check stands between the build and it: each test requires
+// it refused and the private endpoint never reached, and TestBuilderIgnoresTheOperatorsPrivateRanges shows an
+// ordinary sandbox does reach it.
 
 // builderNet is the test's network: the private endpoint, the public registry, a DNS server, and the proxy.
 type builderNet struct {
@@ -43,6 +45,8 @@ type builderNet struct {
 	proxy    *url.URL
 	refusals atomic.Int64
 	client   *http.Client
+	// ordinary is a client of the same proxy under an ordinary sandbox's rules.
+	ordinary *http.Client
 }
 
 func newBuilderNet(t *testing.T, registry http.Handler) *builderNet {
@@ -73,8 +77,11 @@ func newBuilderNet(t *testing.T, registry http.Handler) *builderNet {
 	n.dns = startTestDNS(t)
 	p := egress.New(slog.New(slog.DiscardHandler))
 	// 127.0.0.2 stands for a public address; everything else is judged as on a real host (loopback, private and
-	// link-local refused, the host's own networks too).
-	p.Destinations = egress.Destinations{Allow: []netip.Prefix{netip.MustParsePrefix("127.0.0.2/32")}}
+	// link-local refused, the host's own networks too). The operator opens 127.0.0.1 to ordinary sandboxes, as
+	// egressAllowCIDRs does a LAN range; a build's public-only check never takes it.
+	publicStandIn := netip.MustParsePrefix("127.0.0.2/32")
+	p.Destinations = egress.Destinations{Allow: []netip.Prefix{publicStandIn, netip.MustParsePrefix("127.0.0.1/32")}}
+	p.PublicDestinations = &egress.Destinations{Allow: []netip.Prefix{publicStandIn}}
 	p.UseResolver(n.dns.resolver())
 	p.OnRecord = func(rec egress.Record) {
 		if !rec.Allowed || rec.Status >= 400 || rec.Code != "" {
@@ -85,26 +92,78 @@ func newBuilderNet(t *testing.T, registry http.Handler) *builderNet {
 	builder := &microvm.TemplateBuilderConfig{Registries: []string{"*.test", "localhost", "127.0.0.1"}}
 	h := &Host{cfg: Config{Egress: "open"}}
 	rules := h.egressRules("tsn_1", "acc_1", microvm.BuilderEgress(&proto.Egress{Mode: "open"}, builder, "", false))
-	if rules.Mode != "proxy" || !rules.DefaultDeny {
+	if rules.Mode != "proxy" || !rules.DefaultDeny || !rules.PublicOnly {
 		t.Fatalf("the build microVM's rules %+v", rules)
 	}
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { l.Close() })
-	go func() {
-		for {
-			conn, err := l.Accept()
-			if err != nil {
-				return
-			}
-			go p.ServeConn(conn, func(*http.Request) (egress.Rules, bool) { return rules, true })
+	// An ordinary sandbox's rules, allowing the same names, on the same proxy.
+	ordinary := h.egressRules("sbx_1", "acc_1", &proto.Egress{Mode: "proxy", Allow: builder.Registries, DefaultDeny: true})
+	serve := func(r egress.Rules) *url.URL {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
 		}
-	}()
-	n.proxy = &url.URL{Scheme: "http", Host: l.Addr().String()}
+		t.Cleanup(func() { l.Close() })
+		go func() {
+			for {
+				conn, err := l.Accept()
+				if err != nil {
+					return
+				}
+				go p.ServeConn(conn, func(*http.Request) (egress.Rules, bool) { return r, true })
+			}
+		}()
+		return &url.URL{Scheme: "http", Host: l.Addr().String()}
+	}
+	n.proxy = serve(rules)
 	n.client = &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{Proxy: http.ProxyURL(n.proxy), DisableKeepAlives: true}}
+	n.ordinary = &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{Proxy: http.ProxyURL(serve(ordinary)), DisableKeepAlives: true}}
 	return n
+}
+
+// The operator's private ranges (egressAllowCIDRs) are for ordinary sandboxes: one reaches the private endpoint
+// through them, by address, by a name and by a redirect, while the build, with the same names allowed, never does,
+// even after the ordinary sandbox's connections have been made (a build's requests never share its pool).
+func TestBuilderIgnoresTheOperatorsPrivateRanges(t *testing.T) {
+	var port string
+	n := newBuilderNet(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://internal.test:"+port+"/blob", http.StatusTemporaryRedirect)
+	}))
+	port = n.port
+	n.dns.answer("registry.test", "127.0.0.2")
+	n.dns.answer("internal.test", "127.0.0.1")
+	for _, u := range []string{
+		"http://127.0.0.1:" + n.port + "/",
+		"http://internal.test:" + n.port + "/",
+		"http://registry.test:" + n.port + "/v2/app/blobs/x",
+	} {
+		res, err := n.ordinary.Get(u)
+		if err != nil {
+			t.Fatalf("an ordinary sandbox's %s: %v", u, err)
+		}
+		res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("an ordinary sandbox's %s answered %d", u, res.StatusCode)
+		}
+	}
+	reached := n.private.Load()
+	if reached != 3 {
+		t.Fatalf("the ordinary sandbox reached the private endpoint %d times", reached)
+	}
+	for _, u := range []string{
+		"http://127.0.0.1:" + n.port + "/",
+		"http://internal.test:" + n.port + "/",
+		"http://registry.test:" + n.port + "/v2/app/blobs/x",
+	} {
+		if got := n.get(t, u); got == http.StatusOK || got == http.StatusTemporaryRedirect {
+			t.Errorf("the build's %s answered %d", u, got)
+		}
+	}
+	if got := n.connect(t, "internal.test:"+n.port); got == http.StatusOK {
+		t.Errorf("the build's tunnel to internal.test opened")
+	}
+	if got := n.private.Load(); got != reached {
+		t.Fatalf("the build reached the private endpoint %d times", got-reached)
+	}
 }
 
 // get fetches u through the proxy, following redirects as Docker does, and answers the final status.

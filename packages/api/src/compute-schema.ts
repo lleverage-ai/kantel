@@ -699,7 +699,7 @@ export const SandboxTemplate = Type.Object(
 		start: Type.Union([Type.Literal("snapshot"), Type.Literal("boot")], {
 			description:
 				"`snapshot`: it started from the template's built snapshot. `boot`: none was ready, so it booted the template's " +
-				"image and ran its setup itself.",
+				"image and ran its setup itself (a custom image: the one its build made).",
 		}),
 	},
 	{ title: "SandboxTemplate", description: "The template a sandbox was made from." },
@@ -823,7 +823,8 @@ export const CreateSandboxBody = Type.Object(
 				description:
 					"Make a microVM from this template, a template's ID or name in the account (experimental, " +
 					"`KANTEL_TEMPLATES`): from its newest built snapshot when one is ready, else by booting its image and running " +
-					"its setup. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with " +
+					"its setup. A Dockerfile or image reference boots only once its current version's image is built (`unavailable` " +
+					"until then), on the host that built it. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with " +
 					"`size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with " +
 					"them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it " +
 					"fresh whatever its snapshot, running the setup with the sandbox's variables.",
@@ -2202,7 +2203,9 @@ export const TemplateBuildStatus = Type.Object(
 				description:
 					"`none`: nothing built yet; sandboxes boot fresh. `stale`: what is built is for an older key, and used until " +
 					"its replacement is ready if it is of the template's current version. A `ready` snapshot of an older version " +
-					"starts no sandbox: they boot fresh until the current version's is ready.",
+					"starts no sandbox: they boot fresh until the current version's is ready. A template with a Dockerfile or " +
+					"image reference doesn't boot fresh before its current version's image is built: its sandboxes wait for that " +
+					"build (`unavailable` until then).",
 			},
 		),
 		ready: Type.Optional(TemplateSnapshot),

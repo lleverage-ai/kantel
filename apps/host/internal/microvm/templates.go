@@ -237,8 +237,9 @@ func (m *Manager) BuildTemplate(ctx context.Context, p proto.TemplateBuildParams
 	}
 	// Its machine's memory and disk, admitted beside the sandboxes and the other builds and held until it has ended,
 	// its image pull included: whether its control plane still waits or not, and whether its snapshot was deleted
-	// meanwhile or not.
-	release, err := m.holdBuild(p.SnapshotID, size)
+	// meanwhile or not. A custom image's build microVM writes two drives of the machine's disk size (Docker's storage,
+	// and the image's root filesystem), so twice its disk is held.
+	release, err := m.holdBuild(p.SnapshotID, buildHold(size, p.Image != nil))
 	if err != nil {
 		return proto.TemplateBuildResult{}, err
 	}

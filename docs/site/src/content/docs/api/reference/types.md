@@ -464,7 +464,7 @@ Every field is optional: `{}` makes a running isolate in the caller's account.
 | `labels` | Record&lt;string, string&gt; | no |  |
 | `env` | Record&lt;string, string&gt; | no | Environment variables every command sees, after the environment's. Not secrets: they are shown to anyone who may exec. Kantel's own names (`KANTEL_*`, `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, in any case) are refused. |
 | `environment` | string | no | Start with this environment, an environment's ID or name in the account: its plain variables, a placeholder for each protected one, its secret files and repositories, and its grants. `env` may not name one of its protected variables. |
-| `template` | string | no | Make a microVM from this template, a template's ID or name in the account (experimental, `KANTEL_TEMPLATES`): from its newest built snapshot when one is ready, else by booting its image and running its setup. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with `size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it fresh whatever its snapshot, running the setup with the sandbox's variables. |
+| `template` | string | no | Make a microVM from this template, a template's ID or name in the account (experimental, `KANTEL_TEMPLATES`): from its newest built snapshot when one is ready, else by booting its image and running its setup. A Dockerfile or image reference boots only once its current version's image is built (`unavailable` until then), on the host that built it. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with `size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it fresh whatever its snapshot, running the setup with the sandbox's variables. |
 | `hostLabels` | Record&lt;string, string&gt; | no | Place it only on a host with each label, such as `{ site: "home" }`. |
 | `mounts` | [Mount](/api/reference/types/#mount)[] | no | Files from outside the sandbox, read-only inside it: at most 16, at paths that don't overlap. A bundle or bucket source it names must be the account's. microVMs only: an isolate is refused (`not_supported`). A host that can't mount a source marks that mount `failed`, and the sandbox runs without it. A fork keeps its source's mounts. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). (at most 16 items) |
 | `wait` | boolean | no | Answer once it is `running` (or `error`) rather than as soon as it is placed. |
@@ -1383,7 +1383,7 @@ The template a sandbox was made from.
 | `name` | string | yes |  |
 | `version` | integer | yes | The template's version it was made from. |
 | `snapshotId` | string | no | The template snapshot it started from, `tsn_…`; absent for a fresh boot. |
-| `start` | `"snapshot"` or `"boot"` | yes | `snapshot`: it started from the template's built snapshot. `boot`: none was ready, so it booted the template's image and ran its setup itself. |
+| `start` | `"snapshot"` or `"boot"` | yes | `snapshot`: it started from the template's built snapshot. `boot`: none was ready, so it booted the template's image and ran its setup itself (a custom image: the one its build made). |
 
 ### SandboxType
 
@@ -1692,7 +1692,7 @@ How far a pinned base is behind its channel.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `state` | `"none"` or `"building"` or `"ready"` or `"stale"` or `"failed"` | yes | `none`: nothing built yet; sandboxes boot fresh. `stale`: what is built is for an older key, and used until its replacement is ready if it is of the template's current version. A `ready` snapshot of an older version starts no sandbox: they boot fresh until the current version's is ready. |
+| `state` | `"none"` or `"building"` or `"ready"` or `"stale"` or `"failed"` | yes | `none`: nothing built yet; sandboxes boot fresh. `stale`: what is built is for an older key, and used until its replacement is ready if it is of the template's current version. A `ready` snapshot of an older version starts no sandbox: they boot fresh until the current version's is ready. A template with a Dockerfile or image reference doesn't boot fresh before its current version's image is built: its sandboxes wait for that build (`unavailable` until then). |
 | `ready` | [TemplateSnapshot](/api/reference/types/#templatesnapshot) | no |  |
 | `building` | [TemplateSnapshot](/api/reference/types/#templatesnapshot) | no |  |
 | `error` | string | no |  |

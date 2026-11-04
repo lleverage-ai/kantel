@@ -1503,6 +1503,8 @@ export const createTemplate = defineRoute({
 	description: describe(
 		"A template at version 1, named uniquely in the account. Its snapshot builds in the background on each kind of",
 		"host the account may use; until one is ready, sandboxes made from it boot its image and run its setup themselves.",
+		"A Dockerfile or image reference is built first, on a host that builds custom images: its sandboxes wait for that",
+		"build (`unavailable` until then), as nothing else holds the image.",
 		scope("account:admin"),
 		TEMPLATES,
 	),
@@ -1531,7 +1533,8 @@ export const updateTemplate = defineRoute({
 	summary: "Change a template",
 	description: describe(
 		"Renames it or changes its description; a new `spec` makes the next version, which builds in the background.",
-		"Sandboxes start only from a snapshot of the template's current version, so they boot fresh until it's ready.",
+		"Sandboxes start only from a snapshot of the template's current version, so they boot fresh until it's ready; a",
+		"Dockerfile's or image reference's wait for the new version's image to build.",
 		scope("account:admin"),
 		TEMPLATES,
 	),
@@ -1594,7 +1597,7 @@ export const rebuildTemplate = defineRoute({
 	description: describe(
 		"Builds its snapshots again, failed ones included. A ready one is kept, stale, and sandboxes go on starting from",
 		"it until its replacement is ready, and after a rebuild that fails; with none, they boot fresh until the new ones",
-		"are ready.",
+		"are ready, or, for a Dockerfile or image reference, wait for its image to build.",
 		scope("account:admin"),
 		TEMPLATES,
 	),

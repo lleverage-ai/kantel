@@ -968,6 +968,85 @@ describe("a template's custom image", () => {
 		expect(specOf(created, sandbox.id).eligibleHosts).toEqual(["hst_two"]);
 	});
 
+	it("is built again on an eligible host when the host holding it can't serve it, the old entry kept for its bytes", async () => {
+		const { api, tom, build, builds, customImageHosts, created, bytesOnHosts } = setup({ moreHosts: ["hst_two"] });
+		const template = await tom.createTemplate({ name: "rg", spec: dockerfileSpec() });
+		const first = await build(0);
+		expect(first.spec.hostId).toBe(STUB_HOST_ID);
+		first.release();
+		await api.service.idle();
+		const held = (await tom.getTemplate(template.id)).build.ready;
+		expect(held).toMatchObject({ state: "ready", hostId: STUB_HOST_ID });
+		// A Kantel-base template on the same host is kept as it is when its host goes: a create boots its base elsewhere.
+		const plain = await tom.createTemplate({ name: "plain", spec: SPEC });
+		(await build(1)).release();
+		await api.service.idle();
+
+		// Its host stops building custom images (its builder switched off): another host with the same runtime builds
+		// the image again, as a new attempt, while the old entry keeps its ID and host.
+		customImageHosts.delete(STUB_HOST_ID);
+		await api.service.sweep();
+		const again = await build(2);
+		expect(again.spec).toMatchObject({ hostId: "hst_two", templateId: template.id });
+		expect(again.spec.snapshotId).not.toBe(held?.id);
+		expect(await api.store.templateSnapshots.get(held?.id ?? "")).toMatchObject({
+			state: "stale",
+			hostId: STUB_HOST_ID,
+		});
+		// Nothing serves it meanwhile: the old host can't, and the new one hasn't the image yet.
+		expect((await failure(tom.createSandbox({ template: "rg" }))).code).toBe("unavailable");
+		again.release();
+		await api.service.idle();
+		await api.service.sweep();
+		await api.service.idle();
+		expect((await tom.getTemplate(template.id)).build.ready).toMatchObject({
+			id: again.spec.snapshotId,
+			hostId: "hst_two",
+		});
+		// The replaced entry's bytes are deleted on its own host, by its own ID.
+		expect(bytesOnHosts.has(`${STUB_HOST_ID} ${held?.id}`)).toBe(false);
+		expect(bytesOnHosts.has(`hst_two ${again.spec.snapshotId}`)).toBe(true);
+		const sandbox = await tom.createSandbox({ template: "rg", wait: true });
+		expect(specOf(created, sandbox.id).eligibleHosts).toEqual(["hst_two"]);
+		// The Kantel-base template was never built again.
+		expect(builds.filter((each) => each.spec.templateId === plain.id)).toHaveLength(1);
+		expect(builds).toHaveLength(3);
+	});
+
+	it("is never reclaimed by another gateway while its build may still run, and is once its lease has lapsed", async () => {
+		const store = createMemoryStore();
+		const bytesOnHosts: BytesOnHosts = new Set();
+		const first = setup({ store, bytesOnHosts });
+		const template = await first.tom.createTemplate({ name: "rg", spec: dockerfileSpec() });
+		const running = await first.build(0);
+		const id = running.spec.snapshotId;
+
+		// Another gateway sweeps at the last moment the hosts service still waits for a custom image's build
+		// (TEMPLATE_IMAGE_BUILD_TIMEOUT_MS, 100 minutes): the build is left alone.
+		const second = setup({ store, bytesOnHosts });
+		second.clock.skip = 100 * 60_000;
+		await second.api.service.sweep();
+		await second.api.service.idle();
+		expect(second.builds).toHaveLength(0);
+		expect(await store.templateSnapshots.get(id)).toMatchObject({ state: "building" });
+
+		// Its lease lapsed (its gateway taken to have died with it): another attempt, with a new ID, replaces it, and the
+		// abandoned one is thrown away with its ID and host kept for its bytes.
+		second.clock.skip = TEMPLATE_BUILD_LEASE_MS;
+		await second.api.service.sweep();
+		const again = await second.build(0);
+		expect(again.spec.snapshotId).not.toBe(id);
+		const abandoned = await store.templateSnapshots.get(id);
+		expect(abandoned).toMatchObject({ hostId: STUB_HOST_ID });
+		expect(["deleting", "discarded"]).toContain(abandoned?.state);
+		again.release();
+		await second.api.service.idle();
+		// The first gateway's build answers at last: its result isn't used.
+		running.release();
+		await first.api.service.idle();
+		expect((await second.tom.getTemplate(template.id)).build.ready?.id).toBe(again.spec.snapshotId);
+	});
+
 	it("boots fresh, at another shape, only on a host holding the image, from its root filesystem", async () => {
 		const { api, tom, build, created } = setup();
 		await tom.createTemplate({ name: "rg", spec: dockerfileSpec() });

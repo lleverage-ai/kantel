@@ -410,6 +410,7 @@ func (h *Host) egressRules(sandboxID, account string, e *proto.Egress) egress.Ru
 		r.Mode = e.Mode
 	}
 	r.Allow, r.Deny, r.DefaultDeny = e.Allow, e.Deny, e.DefaultDeny
+	r.PublicOnly = e.PublicOnly
 	// Protected variables and grants apply whatever the data path: a placeholder is worthless unless swapped, and a
 	// grant restricts.
 	if e.Protected != nil {

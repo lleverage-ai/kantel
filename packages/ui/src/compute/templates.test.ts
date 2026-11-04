@@ -27,6 +27,7 @@ import {
 	resourcesText,
 	shortFreshnessText,
 	templatePickHint,
+	waitsForImage,
 } from "./templates-page.tsx";
 
 const MINUTE = 60_000;
@@ -109,6 +110,50 @@ describe("what the console says about a template", () => {
 		const rust = byName("rust-ci");
 		expect(templatePickHint(rust, FIXTURE_NOW, { vcpus: 2, memoryMb: rust.spec.memoryMb })).toMatch(
 			/^At 2 vCPU, .* rather than its own/,
+		);
+	});
+});
+
+describe("a custom image's availability", () => {
+	const python = byName("python-data");
+	const ready = python.build.ready;
+	if (ready === undefined) throw new Error("python-data has no snapshot");
+	const dockerfile = { ...python.spec, image: { kind: "dockerfile" as const, dockerfile: "FROM alpine\n" } };
+	const unbuilt = { ...python, spec: dockerfile, version: 4, build: { state: "building" as const, ready } };
+
+	it("never promises a fresh boot before its current version's image is built", () => {
+		expect(waitsForImage(unbuilt)).toBe(true);
+		expect(waitsForImage(python)).toBe(false);
+		const said = [
+			freshnessText(unbuilt, FIXTURE_NOW),
+			freshnessText({ ...unbuilt, build: { state: "none" } }, FIXTURE_NOW),
+			freshnessText({ ...unbuilt, build: { state: "failed", ready } }, FIXTURE_NOW),
+			shortFreshnessText(unbuilt, FIXTURE_NOW),
+			shortFreshnessText({ ...unbuilt, build: { state: "failed" } }, FIXTURE_NOW),
+			rebuildText(unbuilt),
+			templatePickHint(unbuilt, FIXTURE_NOW),
+			templatePickHint(unbuilt, FIXTURE_NOW, { vcpus: 8, memoryMb: 16384 }),
+		];
+		for (const text of said) expect(text).not.toMatch(/fresh|boots the image/i);
+		expect(freshnessText(unbuilt, FIXTURE_NOW)).toBe("Building v4; new sandboxes wait for its image to build");
+		expect(shortFreshnessText(unbuilt, FIXTURE_NOW)).toBe("Waits for its image");
+		expect(rebuildText(unbuilt)).toBe("Rebuilding. New sandboxes can't start from it until its image is built.");
+		expect(templatePickHint(unbuilt, FIXTURE_NOW)).toMatch(/^v4's image isn't built yet/);
+	});
+
+	it("still serves a built image: its snapshot, a stale one during a rebuild, and a fresh boot at another shape", () => {
+		const built = { ...python, spec: dockerfile };
+		expect(freshnessText(built, FIXTURE_NOW)).toBe("Snapshot built 2h ago");
+		const stale = { ...ready, state: "stale" as const };
+		const rebuilding = { ...built, build: { state: "building" as const, ready: stale } };
+		expect(shortFreshnessText(rebuilding, FIXTURE_NOW)).toBe(`v${ready.version} serves while it rebuilds`);
+		expect(rebuildText(rebuilding)).toMatch(/current snapshot until the new one is ready/);
+		expect(templatePickHint(built, FIXTURE_NOW, { vcpus: 8, memoryMb: 16384 })).toMatch(
+			/boots the built image and runs the setup itself/,
+		);
+		// A Kantel base with nothing built still boots fresh.
+		expect(freshnessText({ ...python, version: 4, build: { state: "none" } }, FIXTURE_NOW)).toMatch(
+			/boot the image fresh/,
 		);
 	});
 });

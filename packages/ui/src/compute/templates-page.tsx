@@ -131,17 +131,33 @@ const SNAPSHOT_STATUS: Readonly<Record<TemplateSnapshotState, { status: Status; 
 /** A stale entry of an older version: kept in the cache, but no new sandbox starts from it. */
 const STALE_UNUSED: { status: Status; label: string } = { status: "idle", label: "Stale, not used" };
 
+/** A template as the availability texts read it: its spec's image tells a Kantel base from a custom image. */
+type Availability = Pick<Template, "version" | "build"> & { readonly spec?: Pick<TemplateSpec, "image"> };
+
 /**
- * What new sandboxes made from it start from now, in one line: the snapshot they restore (and how old it is), or a
- * fresh boot of the image while none of its current version is built.
+ * Whether its sandboxes need its current version's image built first: a Dockerfile or image reference is only on the
+ * host that built it, so nothing boots it fresh before then; a Kantel base boots anywhere.
  */
-export function freshnessText(template: Pick<Template, "version" | "build">, now: number): string {
+export function waitsForImage(template: Availability): boolean {
+	const kind = template.spec?.image.kind;
+	return kind !== undefined && kind !== "kantel-base";
+}
+
+/** What new sandboxes do while none of its current version is built: boot fresh, or wait for its image. */
+const unbuiltText = (template: Availability): string =>
+	waitsForImage(template) ? "new sandboxes wait for its image to build" : "new sandboxes boot the image fresh";
+
+/**
+ * What new sandboxes made from it start from now, in one line: the snapshot they restore (and how old it is), or, while
+ * none of its current version is built, a fresh boot of the image (a Kantel base) or a wait for its image (a custom one).
+ */
+export function freshnessText(template: Availability, now: number): string {
 	const { build } = template;
 	const ready = build.ready;
 	const start = startingSnapshot(template);
 	const serving =
 		start === undefined
-			? "new sandboxes boot the image fresh"
+			? unbuiltText(template)
 			: `new sandboxes start from its snapshot, built ${agoText(start.readyAt ?? start.startedAt, now)}`;
 	switch (build.state) {
 		case "ready":
@@ -153,46 +169,57 @@ export function freshnessText(template: Pick<Template, "version" | "build">, now
 		case "failed":
 			return `Build failed; ${serving}`;
 		case "none":
-			return "Not built yet; new sandboxes boot the image fresh";
+			return `Not built yet; ${unbuiltText(template)}`;
 	}
 }
 
 /**
  * What Rebuild says once Kantel has started it, from the template it answers: a snapshot of its current version goes on
- * serving, stale, until the rebuild's replaces it, and after a rebuild that fails; with none, sandboxes boot fresh until
- * it's ready.
+ * serving, stale, until the rebuild's replaces it, and after a rebuild that fails; with none, sandboxes boot fresh (a
+ * Kantel base) or wait for its image (a custom one) until it's ready.
  */
-export function rebuildText(template: Pick<Template, "version" | "build">): string {
+export function rebuildText(template: Availability): string {
 	const start = startingSnapshot(template);
-	return start === undefined
-		? "Rebuilding. New sandboxes boot the image fresh until it's ready."
-		: `Rebuilding. New sandboxes start from v${start.version}'s current snapshot until the new one is ready, and still do if the rebuild fails.`;
+	if (start === undefined) {
+		return waitsForImage(template)
+			? "Rebuilding. New sandboxes can't start from it until its image is built."
+			: "Rebuilding. New sandboxes boot the image fresh until it's ready.";
+	}
+	return `Rebuilding. New sandboxes start from v${start.version}'s current snapshot until the new one is ready, and still do if the rebuild fails.`;
 }
 
 /**
  * What picking a template in New sandbox means for how it starts, at `shape` (the template's own vCPUs and memory when
- * none is given). A snapshot restores only into the machine it was built as, so at another shape it boots fresh.
+ * none is given). A snapshot restores only into the machine it was built as, so at another shape it boots fresh: a
+ * custom image only once its current version is built.
  */
 export function templatePickHint(
 	template: Pick<Template, "version" | "build" | "spec">,
 	now: number,
 	shape: Pick<TemplateSpec, "vcpus" | "memoryMb"> = template.spec,
 ): string {
-	if (shape.vcpus !== template.spec.vcpus || shape.memoryMb !== template.spec.memoryMb)
-		return `At ${resourcesText(shape)} rather than its own ${resourcesText(template.spec)}, it boots the image and runs the setup itself, which takes longer.`;
 	const start = startingSnapshot(template);
+	if (waitsForImage(template) && start === undefined)
+		return `v${template.version}'s image isn't built yet: a sandbox can't start from it until its build finishes.`;
+	if (shape.vcpus !== template.spec.vcpus || shape.memoryMb !== template.spec.memoryMb)
+		return `At ${resourcesText(shape)} rather than its own ${resourcesText(template.spec)}, it boots the ${waitsForImage(template) ? "built " : ""}image and runs the setup itself, which takes longer.`;
 	if (start !== undefined) return `Starts from its snapshot, built ${agoText(start.readyAt ?? start.startedAt, now)}.`;
 	return template.build.ready === undefined
 		? "Nothing built yet: it boots the image and runs the setup itself, which takes longer."
 		: `v${template.version} isn't built yet: it boots the image and runs the setup itself, which takes longer.`;
 }
 
-/** The same, in a few words for the list: "Built 2h ago", "v3 serves while it rebuilds", "Boots fresh until built". */
-export function shortFreshnessText(template: Pick<Template, "version" | "build">, now: number): string {
+/**
+ * The same, in a few words for the list: "Built 2h ago", "v3 serves while it rebuilds", "Boots fresh until built", or a
+ * custom image's "Waits for its image".
+ */
+export function shortFreshnessText(template: Availability, now: number): string {
 	const { build } = template;
 	const ready = build.ready;
 	if (build.state === "ready" && ready !== undefined) return `Built ${agoText(ready.readyAt ?? ready.startedAt, now)}`;
 	const start = startingSnapshot(template);
+	if (start === undefined && waitsForImage(template))
+		return build.state === "failed" ? "Can't start until built" : "Waits for its image";
 	if (start === undefined) return build.state === "failed" ? "Boots fresh" : "Boots fresh until built";
 	if (build.state === "building") return `v${start.version} serves while it rebuilds`;
 	return `v${start.version}'s snapshot serves`;
@@ -493,7 +520,11 @@ export function TemplatePage({
 				{back}
 				<PageHeader
 					title={`Edit ${edited.name}`}
-					lede={`Saving a change to the definition makes v${edited.version + 1}. It builds in the background; until it's ready, new sandboxes boot the image fresh and run its setup.`}
+					lede={`Saving a change to the definition makes v${edited.version + 1}. It builds in the background; until it's ready, ${
+						draft.imageKind !== "kantel-base"
+							? "new sandboxes can't start from it: a Dockerfile or image is built before anything boots it."
+							: "new sandboxes boot the image fresh and run its setup."
+					}`}
 					actions={experimental}
 				/>
 				<TemplateEditor
@@ -632,7 +663,9 @@ export function TemplatePage({
 					</Field>
 					<Field label="New sandboxes">
 						{start === undefined
-							? "Boot the image and run its setup (a fresh boot)"
+							? waitsForImage(template)
+								? "None yet: they wait for its image to build"
+								: "Boot the image and run its setup (a fresh boot)"
 							: `Restore v${start.version}'s snapshot on ${start.hostId ?? "its host"}`}
 					</Field>
 					{start === undefined ? null : (
@@ -727,7 +760,11 @@ export function TemplatePage({
 				</p>
 				{live.length === 0 ? (
 					<Panel>
-						<EmptyState title="Nothing built">New sandboxes boot the image fresh until a snapshot is ready.</EmptyState>
+						<EmptyState title="Nothing built">
+							{waitsForImage(template)
+								? "New sandboxes can't start from it until its image is built."
+								: "New sandboxes boot the image fresh until a snapshot is ready."}
+						</EmptyState>
 					</Panel>
 				) : (
 					<SnapshotTable template={template} snapshots={live} now={now} />

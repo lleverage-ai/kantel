@@ -36,7 +36,7 @@ The account's templates, oldest first, each with its build. With `baseDigest`, o
 
 `POST /v1/templates` (SDK method `createTemplate`)
 
-A template at version 1, named uniquely in the account. Its snapshot builds in the background on each kind of host the account may use; until one is ready, sandboxes made from it boot its image and run its setup themselves. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).
+A template at version 1, named uniquely in the account. Its snapshot builds in the background on each kind of host the account may use; until one is ready, sandboxes made from it boot its image and run its setup themselves. A Dockerfile or image reference is built first, on a host that builds custom images: its sandboxes wait for that build (`unavailable` until then), as nothing else holds the image. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).
 
 **Body**: [CreateTemplateBody](/api/reference/types/#createtemplatebody)
 
@@ -68,7 +68,7 @@ With its build, and how far behind a pinned base is. A key needs `account:read`.
 
 `PATCH /v1/templates/{templateId}` (SDK method `updateTemplate`)
 
-Renames it or changes its description; a new `spec` makes the next version, which builds in the background. Sandboxes start only from a snapshot of the template's current version, so they boot fresh until it's ready. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).
+Renames it or changes its description; a new `spec` makes the next version, which builds in the background. Sandboxes start only from a snapshot of the template's current version, so they boot fresh until it's ready; a Dockerfile's or image reference's wait for the new version's image to build. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).
 
 **Path parameters**
 
@@ -142,7 +142,7 @@ Its built snapshots and builds, newest first, discarded ones included: a cache, 
 
 `POST /v1/templates/{templateId}/rebuild` (SDK method `rebuildTemplate`)
 
-Builds its snapshots again, failed ones included. A ready one is kept, stale, and sandboxes go on starting from it until its replacement is ready, and after a rebuild that fails; with none, they boot fresh until the new ones are ready. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).
+Builds its snapshots again, failed ones included. A ready one is kept, stale, and sandboxes go on starting from it until its replacement is ready, and after a rebuild that fails; with none, they boot fresh until the new ones are ready, or, for a Dockerfile or image reference, wait for its image to build. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).
 
 **Path parameters**
 

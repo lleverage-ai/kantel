@@ -98,9 +98,11 @@ export const DEFAULT_TEMPLATE_RESOURCES = { vcpus: 2, memoryMb: 4096 } as const;
 export const MAX_TEMPLATE_BASE_HISTORY = 100;
 /**
  * A build `queued` or `building` this long without this gateway working on it is taken to have died with its gateway,
- * and another may claim it again.
+ * and another may claim it again. It outlasts the longest a build may take, a custom image's (the hosts service's
+ * `TEMPLATE_IMAGE_BUILD_TIMEOUT_MS`, 100 minutes), with a margin, so no gateway reclaims or deletes a build still
+ * within its time.
  */
-export const TEMPLATE_BUILD_LEASE_MS = 60 * 60_000;
+export const TEMPLATE_BUILD_LEASE_MS = 120 * 60_000;
 /** A build its host had no room for (`exhausted`) is tried again by the first reconcile this long after. */
 export const TEMPLATE_BUILD_RETRY_MS = 60_000;
 
@@ -381,18 +383,31 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 	 * A custom image's are only hosts that build custom images (`customImages`).
 	 */
 	async function runtimesFor(template: StoredTemplate, given: Fleet, shape: BackendShape): Promise<TemplateRuntime[]> {
-		const hosts = new Set(await options.buildHosts(template.accountId, template.ownerUserId));
-		const custom = (template.spec.image ?? DEFAULT_TEMPLATE_IMAGE).kind !== "kantel-base";
 		const distinct = new Map<string, TemplateRuntime>();
-		for (const runtime of given.runtimes) {
-			if (!hosts.has(runtime.hostId)) continue;
-			if (custom && runtime.customImages !== true) continue;
-			const host = given.hosts.find((each) => each.id === runtime.hostId);
-			if (host === undefined || !makesShape(host, given.sizes, shape)) continue;
+		for (const runtime of await eligibleRuntimes(template, given, shape)) {
 			const key = JSON.stringify([runtime.kernel, runtime.firecracker]);
 			if (!distinct.has(key)) distinct.set(key, runtime);
 		}
 		return [...distinct.values()];
+	}
+
+	/**
+	 * Every host a template's builds may use now, with its runtime: connected with a runtime, one the template's account
+	 * may build on, making its shape, and building custom images when its image is one. `runtimesFor` is one a runtime.
+	 */
+	async function eligibleRuntimes(
+		template: StoredTemplate,
+		given: Fleet,
+		shape: BackendShape,
+	): Promise<TemplateRuntime[]> {
+		const hosts = new Set(await options.buildHosts(template.accountId, template.ownerUserId));
+		const custom = (template.spec.image ?? DEFAULT_TEMPLATE_IMAGE).kind !== "kantel-base";
+		return given.runtimes.filter((runtime) => {
+			if (!hosts.has(runtime.hostId)) return false;
+			if (custom && runtime.customImages !== true) return false;
+			const host = given.hosts.find((each) => each.id === runtime.hostId);
+			return host !== undefined && makesShape(host, given.sizes, shape);
+		});
 	}
 
 	async function resolveBase(spec: TemplateSpec): Promise<ResolvedBase> {
@@ -695,6 +710,12 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 	 * (which has no bytes) whose lease lapsed, or deferred long enough, is claimed again in place. One `building` whose
 	 * lease lapsed is taken to have died with its gateway: it is thrown away (its bytes, which its host may have made or
 	 * be making, deleted by its ID there) and the key's next attempt claimed, so its ID and host stay its bytes' name.
+	 *
+	 * A custom image is only on the host that built it, and nothing boots it elsewhere (`startCustom`), so a ready or
+	 * stale one whose host can't serve the template now (`servedBy` false: disconnected, draining, no longer one the
+	 * account may use) doesn't satisfy its key: it is set aside (stale, its ID and host kept for its bytes, replaced and
+	 * deleted once the next attempt is ready) and the next attempt claimed on an eligible host. A Kantel base's entry is
+	 * kept whatever its host: a create boots its base fresh on another.
 	 */
 	async function claim(
 		template: StoredTemplate,
@@ -703,6 +724,7 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 		wanted: TemplateCacheKeyHash,
 		shape: BackendShape,
 		custom: CustomSource | undefined,
+		servedBy: (entry: StoredTemplateSnapshot) => boolean,
 	): Promise<void> {
 		const at = now();
 		const fresh = (id: string): StoredTemplateSnapshot => ({
@@ -742,6 +764,15 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 			} else if (thrownAway(existing)) {
 				attempt += 1;
 				continue;
+			} else if (
+				custom !== undefined &&
+				(existing.state === "ready" || existing.state === "stale") &&
+				!servedBy(existing)
+			) {
+				// A custom image on a host that can't serve it: kept for its bytes, and built again on one that can.
+				if (existing.state === "ready") await setAside(existing);
+				attempt += 1;
+				continue;
 			} else if (existing.state === "stale") {
 				// Wanted again (a host back on its old runtime): ready as it is.
 				await store.templateSnapshots.update(id, (current) =>
@@ -772,11 +803,21 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 		}
 		const resources = template.spec.resources ?? DEFAULT_TEMPLATE_RESOURCES;
 		const shape: BackendShape = { vcpus: resources.vcpus, memoryMb: resources.memoryMb };
-		const [base, hostRuntimes, custom] = await Promise.all([
+		const hosts = given ?? (await fleet());
+		const [base, hostRuntimes, eligible, custom] = await Promise.all([
 			resolveBase(template.spec),
-			runtimesFor(template, given ?? (await fleet()), shape),
+			runtimesFor(template, hosts, shape),
+			eligibleRuntimes(template, hosts, shape),
 			customSource(template.spec.image),
 		]);
+		// Whether an entry's host may serve creates from it now, on the runtime it was built for.
+		const servedBy = (entry: StoredTemplateSnapshot) =>
+			eligible.some(
+				(runtime) =>
+					runtime.hostId === entry.hostId &&
+					runtime.kernel === entry.key.kernel &&
+					runtime.firecracker === entry.key.firecracker,
+			);
 		// By each wanted key's hash (a custom image's as it is claimed, before its build names its digest); none while no
 		// host can make its shape.
 		const wanted = new Map<string, { runtime: TemplateRuntime; key: TemplateCacheKeyHash }>();
@@ -814,7 +855,7 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 				await setAside(entry);
 			}
 		}
-		for (const each of wanted.values()) await claim(template, base, each.runtime, each.key, shape, custom);
+		for (const each of wanted.values()) await claim(template, base, each.runtime, each.key, shape, custom, servedBy);
 		// A stale entry goes once a ready one wanted now (of this rebuild, so never itself) has replaced it: on its
 		// runtime, or its host.
 		const entries = await store.templateSnapshots.list({ templateId });

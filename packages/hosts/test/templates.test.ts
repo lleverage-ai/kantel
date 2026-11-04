@@ -2,7 +2,13 @@
 // deleted on the host a build names (an account's own host only for that account), and a sandbox made from one placed
 // on the host holding it, with its template relayed, as the shape it asks for. Only a host that reports templates gets
 // either, and a build is admitted and holds its machine's memory and disk as a create does.
-import type { BackendEgress, SandboxBackend, SandboxSpec, TemplateBuildSpec } from "@kantel/compute";
+import {
+	type BackendEgress,
+	type SandboxBackend,
+	type SandboxSpec,
+	TEMPLATE_BUILD_LEASE_MS,
+	type TemplateBuildSpec,
+} from "@kantel/compute";
 import { isKantelError } from "@kantel/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHostBackend } from "../src/backend.ts";
@@ -10,7 +16,12 @@ import { parseHostFacts } from "../src/facts.ts";
 import { HOST_FEATURES } from "../src/protocol.ts";
 import { createMemoryRelayStore } from "../src/relay-store.ts";
 import { customSizeName } from "../src/scheduler.ts";
-import { createHostsService, type HostsService } from "../src/service.ts";
+import {
+	createHostsService,
+	type HostsService,
+	TEMPLATE_BUILD_TIMEOUT_MS,
+	TEMPLATE_IMAGE_BUILD_TIMEOUT_MS,
+} from "../src/service.ts";
 import { createMemoryHostStore, type HostStore } from "../src/store.ts";
 import { createTunnelTickets } from "../src/tunnel.ts";
 import { FakeHost, facts } from "./fake-host.ts";
@@ -471,6 +482,14 @@ describe("hosts from before templates", () => {
 		);
 		expect(older.calls.map((call) => call.method)).toEqual(["sandbox.create"]);
 		expect(older.calls.some((call) => "template" in call.params)).toBe(false);
+	});
+});
+
+describe("a template build's time", () => {
+	it("ends, a custom image's too, well within the stored build's lease, so no other gateway reclaims it while it may run", () => {
+		for (const timeout of [TEMPLATE_BUILD_TIMEOUT_MS, TEMPLATE_IMAGE_BUILD_TIMEOUT_MS]) {
+			expect(TEMPLATE_BUILD_LEASE_MS - timeout).toBeGreaterThanOrEqual(15 * 60_000);
+		}
 	});
 });
 

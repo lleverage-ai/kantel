@@ -76,8 +76,8 @@ func TestACustomImageIsBuiltInABuildMicroVMNeverOnTheHost(t *testing.T) {
 		t.Fatalf("job %+v", job)
 	}
 	e := job.egress
-	if e.Mode != network.EgressProxy || !e.DefaultDeny {
-		t.Fatalf("the build microVM's egress is %q (default deny %v), not the proxy refusing what no rule allows", e.Mode, e.DefaultDeny)
+	if e.Mode != network.EgressProxy || !e.DefaultDeny || !e.PublicOnly {
+		t.Fatalf("the build microVM's egress is %q (default deny %v, public only %v), not the proxy refusing what no rule allows", e.Mode, e.DefaultDeny, e.PublicOnly)
 	}
 	if !reflect.DeepEqual(e.Allow, []string{"pypi.org", "registry-1.docker.io", "*.docker.io"}) || !reflect.DeepEqual(e.Grants, grants) {
 		t.Fatalf("the build microVM's rules %+v", e)
@@ -86,7 +86,7 @@ func TestACustomImageIsBuiltInABuildMicroVMNeverOnTheHost(t *testing.T) {
 		t.Fatalf("the template's egress was changed: %+v", p.Egress)
 	}
 	key := customImageKey("acc_1", testDockerfile, templateImage{BaseImage: "kantel/sandbox"})
-	path, rec, ok := m.tpl.rootfs.cached(key)
+	path, rec, ok := customCached(m.tpl.rootfs, key)
 	if !ok || rec.ImageDigest != b.digest || !strings.HasPrefix(rec.BuiltFrom, "dockerfile sha256:") {
 		t.Fatalf("the image's root filesystem %s %+v %v", path, rec, ok)
 	}
@@ -114,6 +114,106 @@ func TestADockerfileOnAPinnedBaseFetchesItInTheMicroVM(t *testing.T) {
 	}
 	if !slices.Contains(b.jobs[0].egress.Allow, "ghcr.io") {
 		t.Fatalf("the microVM may not reach the operator's registry: %v", b.jobs[0].egress.Allow)
+	}
+}
+
+// An image reference never builds on the template's base, so it needs no templateRegistry even when the base is a
+// published digest; a Dockerfile on one does.
+func TestAnImageReferenceNeedsNoTemplateRegistry(t *testing.T) {
+	m, _, b := builderManager(t)
+	ref := &proto.TemplateImage{Kind: proto.TemplateImageRef, Ref: "python:3.13-slim", Scope: "tpl_1@1#0"}
+	_, _ = m.BuildTemplate(context.Background(), proto.TemplateBuildParams{SnapshotID: "tsn_1", KeyHash: "k1", BaseImage: "kantel/sandbox", BaseDigest: testDigest, Image: ref, VCPUs: 2, MemoryMiB: 4096, DiskGiB: 20})
+	if len(b.jobs) != 1 || b.jobs[0].baseRef != "" {
+		t.Fatalf("an image reference on a published base: jobs %+v", b.jobs)
+	}
+	_, err := m.BuildTemplate(context.Background(), proto.TemplateBuildParams{SnapshotID: "tsn_2", KeyHash: "k2", BaseImage: "kantel/sandbox", BaseDigest: testDigest, Image: testDockerfile, VCPUs: 2, MemoryMiB: 4096, DiskGiB: 20})
+	var pe *proto.Error
+	if !errors.As(err, &pe) || pe.Code != proto.ErrUnsupported || !strings.Contains(pe.Message, "templateRegistry") || len(b.jobs) != 1 {
+		t.Fatalf("a Dockerfile on a published base with no templateRegistry: %v (%d jobs)", err, len(b.jobs))
+	}
+}
+
+// A custom image's entry is reused only once its record, naming its digest, is committed after it: a rootfs left
+// with no record, or a malformed one, is built again, and a record that can't be written fails the build and leaves
+// no entry.
+func TestACustomImagesEntryIsCompleteOrBuiltAgain(t *testing.T) {
+	m, _, b := builderManager(t)
+	p := proto.TemplateBuildParams{SnapshotID: "tsn_1", KeyHash: "k1", BaseImage: "kantel/sandbox", Image: testDockerfile, VCPUs: 2, MemoryMiB: 4096, DiskGiB: 20, Owner: "acc_1"}
+	key := customImageKey("acc_1", testDockerfile, templateImage{BaseImage: "kantel/sandbox"})
+	dir := m.tpl.rootfs.dir
+	record := filepath.Join(dir, key+".json")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, leftover := range map[string]func(){
+		"no record":        func() { _ = os.Remove(record) },
+		"malformed record": func() { _ = os.WriteFile(record, []byte("{"), 0o600) },
+		"no digest":        func() { _ = os.WriteFile(record, []byte(`{"builtFrom":"dockerfile x"}`), 0o600) },
+	} {
+		b.jobs = nil
+		if err := os.WriteFile(m.tpl.rootfs.path(key), []byte("cut short"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		leftover()
+		_, _ = m.BuildTemplate(context.Background(), p)
+		if len(b.jobs) != 1 {
+			t.Fatalf("%s: %d builds", name, len(b.jobs))
+		}
+		path, rec, ok := customCached(m.tpl.rootfs, key)
+		raw, _ := os.ReadFile(path)
+		if !ok || rec.ImageDigest != b.digest || string(raw) != "ext4 made in the microVM" {
+			t.Fatalf("%s: entry %s %+v %v %q", name, path, rec, ok, raw)
+		}
+	}
+	// Complete: reused, not built again.
+	b.jobs = nil
+	_, _ = m.BuildTemplate(context.Background(), p)
+	if len(b.jobs) != 0 {
+		t.Fatalf("a complete entry was built again")
+	}
+	// A record that can't be published (its name taken by a directory): the build fails, with no entry left.
+	_ = os.Remove(record)
+	_ = os.Remove(m.tpl.rootfs.path(key))
+	if err := os.MkdirAll(filepath.Join(record, "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, err := m.BuildTemplate(context.Background(), p)
+	if err == nil || !strings.Contains(err.Error(), "keeping the template's built image") {
+		t.Fatalf("an unpublishable record: %v", err)
+	}
+	if _, err := os.Stat(m.tpl.rootfs.path(key)); !os.IsNotExist(err) {
+		t.Fatalf("an entry with no record was left: %v", err)
+	}
+	if _, _, ok := customCached(m.tpl.rootfs, key); ok {
+		t.Fatal("an incomplete entry is served")
+	}
+	// A build that names no digest leaves no entry either.
+	_ = os.RemoveAll(record)
+	b.digest = ""
+	if _, err := m.BuildTemplate(context.Background(), p); err == nil {
+		t.Fatal("a build with no digest succeeded")
+	}
+	if _, err := os.Stat(m.tpl.rootfs.path(key)); !os.IsNotExist(err) {
+		t.Fatalf("a build with no digest left an entry: %v", err)
+	}
+}
+
+// A custom image's build holds both of its microVM's drives' disk, so a build whose machine's disk fits once but not
+// twice is refused before anything runs, where a Kantel-base build of the same size is admitted.
+func TestACustomImageBuildHoldsBothItsDrives(t *testing.T) {
+	size := proto.Size{Name: "template", VCPUs: 2, MemoryMiB: 1024, DiskGiB: 30}
+	if got := buildHold(size, true); got.DiskGiB != 60 || got.MemoryMiB != 1024 {
+		t.Fatalf("a custom image's hold %+v", got)
+	}
+	if got := buildHold(size, false); got != size {
+		t.Fatalf("a Kantel base's hold %+v", got)
+	}
+	m, _, b := builderManager(t)
+	m.cfg.Budget = func() (int64, int64) { return 8192, 50 }
+	_, err := m.BuildTemplate(context.Background(), proto.TemplateBuildParams{SnapshotID: "tsn_1", KeyHash: "k1", BaseImage: "kantel/sandbox", Image: testDockerfile, VCPUs: 2, MemoryMiB: 1024, DiskGiB: 30})
+	var pe *proto.Error
+	if !errors.As(err, &pe) || pe.Code != proto.ErrCapacity || len(b.jobs) != 0 {
+		t.Fatalf("a custom image's build of twice the free disk: %v (%d jobs)", err, len(b.jobs))
 	}
 }
 
@@ -271,6 +371,13 @@ func TestTheBuildScriptBuildsWithNoContextIntoTheOutputDrive(t *testing.T) {
 		if !strings.Contains(builderScript, want) {
 			t.Errorf("the build script has no %q", want)
 		}
+	}
+	// The imported Kantel base keeps its standard directories, /tmp world-writable and sticky, before the Dockerfile
+	// builds on it.
+	fixup := strings.Index(builderScript, "chmod 1777 /tmp")
+	build := strings.Index(builderScript, "-t kantel-template:build")
+	if fixup < 0 || build < 0 || fixup > build || !strings.Contains(builderScript, "--exclude='./tmp/*'") || strings.Contains(builderScript, "--exclude=./tmp ") {
+		t.Errorf("the imported base's /tmp isn't kept before the build (%d, %d)", fixup, build)
 	}
 	for _, never := range []string{"--privileged", " -v ", "--mount", "docker.sock", "insecure-registr"} {
 		if strings.Contains(builderScript, never) {

@@ -465,6 +465,9 @@ type Egress struct {
 	Allow       []string `json:"allow,omitempty"`
 	Deny        []string `json:"deny,omitempty"`
 	DefaultDeny bool     `json:"defaultDeny,omitempty"`
+	// PublicOnly is the host's own, never sent or kept (a template's build microVM): its proxy connections reach
+	// public addresses only, whatever private ranges egressAllowCIDRs opens to ordinary sandboxes.
+	PublicOnly bool `json:"-"`
 }
 
 // Protected is a sandbox's protected variables as the host's proxy needs to know them up front: no values.

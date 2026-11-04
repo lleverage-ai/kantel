@@ -51,6 +51,15 @@ type TemplateBuilderConfig struct {
 // 100 minutes: this, the snapshot's boot and its setup).
 const builderTimeout = 45 * time.Minute
 
+// buildHold is what a template build of machine size holds against the host's budget: the machine, and for a custom
+// image's build microVM a second drive of its disk size, the output drive (the VM's own disk is unchanged).
+func buildHold(size proto.Size, customImage bool) proto.Size {
+	if customImage {
+		size.DiskGiB *= 2
+	}
+	return size
+}
+
 // builderOutputDrive is the build microVM's third drive (/dev/vdc), the image's root filesystem being made.
 const builderOutputDrive = "out.ext4"
 
@@ -127,6 +136,8 @@ func BuilderEgress(e *proto.Egress, builder *TemplateBuilderConfig, templateRegi
 		out.Grants = slices.Clone(e.Grants)
 	}
 	out.Mode, out.DefaultDeny = network.EgressProxy, true
+	// Public addresses only, for every connection the proxy makes for it (egressAllowCIDRs is for ordinary sandboxes).
+	out.PublicOnly = true
 	if builder != nil {
 		out.Allow = append(out.Allow, builder.Registries...)
 	}
@@ -195,14 +206,15 @@ func (m *Manager) customRootfs(ctx context.Context, build, owner string, img *pr
 	b := m.tpl.rootfs
 	key := customImageKey(owner, img, base)
 	defer b.locks.lock(key)()
-	if path, rec, ok := b.cached(key); ok {
+	if path, rec, ok := customCached(b, key); ok {
 		return path, rec.ImageDigest, key, nil
 	}
 	if err := os.MkdirAll(b.dir, 0o700); err != nil {
 		return "", "", "", err
 	}
 	baseRef := ""
-	if base.BaseDigest != "" {
+	// Only a Dockerfile builds on the template's base (KANTEL_BASE); an image reference's base is unused.
+	if img.Kind == proto.TemplateImageDockerfile && base.BaseDigest != "" {
 		if m.cfg.TemplateRegistry == "" {
 			return "", "", "", &proto.Error{Code: proto.ErrUnsupported, Message: "this host can't build from a published base image: its settings name no templateRegistry"}
 		}
@@ -222,17 +234,101 @@ func (m *Manager) customRootfs(ctx context.Context, build, owner string, img *pr
 	if err != nil {
 		return "", "", "", err
 	}
-	path := b.path(key)
-	if err := os.Rename(out.rootfs, path); err != nil {
-		return "", "", "", err
-	}
 	builtFrom := img.Ref
 	if img.Kind == proto.TemplateImageDockerfile {
 		builtFrom = "dockerfile " + dockerfileDigest(img.Dockerfile)
 	}
-	raw, _ := json.Marshal(builtRootfs{ImageDigest: out.imageDigest, BuiltFrom: builtFrom})
-	_ = os.WriteFile(filepath.Join(b.dir, key+".json"), raw, 0o600)
+	path, err := commitCustomRootfs(b, key, out.rootfs, builtRootfs{ImageDigest: out.imageDigest, BuiltFrom: builtFrom})
+	if err != nil {
+		return "", "", "", err
+	}
 	return path, out.imageDigest, key, nil
+}
+
+// A custom image's cache entry is images/templates/<key>.ext4 and, as its completion record, <key>.json naming the
+// digest it was built as. The record is written last, so an entry with no valid record is one whose publication was
+// cut short: nothing booted it (customRootfs hadn't answered), so it is thrown away and built again rather than
+// served without a digest.
+
+// customCached answers a custom image's committed root filesystem and its record; an incomplete entry is removed.
+func customCached(b *rootfsBuilder, key string) (string, builtRootfs, bool) {
+	var rec builtRootfs
+	path := b.path(key)
+	if _, err := os.Stat(path); err != nil {
+		return "", rec, false
+	}
+	raw, err := os.ReadFile(filepath.Join(b.dir, key+".json"))
+	if err == nil && json.Unmarshal(raw, &rec) == nil && digestOnly(rec.ImageDigest) != "" && rec.BuiltFrom != "" {
+		return path, rec, true
+	}
+	_ = os.Remove(filepath.Join(b.dir, key+".json"))
+	_ = os.Remove(path)
+	return "", builtRootfs{}, false
+}
+
+// commitCustomRootfs publishes a built root filesystem as key's entry: the file in place and synced, then its record
+// (written to a temporary file, synced and renamed), so the entry is complete or, after a failure, absent.
+func commitCustomRootfs(b *rootfsBuilder, key, built string, rec builtRootfs) (string, error) {
+	if digestOnly(rec.ImageDigest) == "" {
+		return "", fmt.Errorf("the build microVM didn't say what it built")
+	}
+	raw, err := json.Marshal(rec)
+	if err != nil {
+		return "", err
+	}
+	path := b.path(key)
+	record := filepath.Join(b.dir, key+".json")
+	fail := func(err error) (string, error) {
+		_ = os.Remove(record)
+		_ = os.Remove(path)
+		return "", fmt.Errorf("keeping the template's built image: %w", err)
+	}
+	if err := syncFile(built); err != nil {
+		return fail(err)
+	}
+	if err := os.Rename(built, path); err != nil {
+		return fail(err)
+	}
+	tmp := record + ".tmp"
+	if err := writeSynced(tmp, raw); err != nil {
+		_ = os.Remove(tmp)
+		return fail(err)
+	}
+	if err := os.Rename(tmp, record); err != nil {
+		_ = os.Remove(tmp)
+		return fail(err)
+	}
+	if err := syncFile(b.dir); err != nil {
+		return fail(err)
+	}
+	return path, nil
+}
+
+// syncFile flushes a file or directory to disk.
+func syncFile(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
+}
+
+// writeSynced writes data to path (0600) and flushes it.
+func writeSynced(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // builderScript runs as root in the build microVM, once Docker is up (its proxy is the guest agent's forwarder to the
@@ -255,11 +351,16 @@ dockerfile)
 	printf '%s' "$KANTEL_DOCKERFILE" | base64 -d > /tmp/kantel.Dockerfile
 	base="$KANTEL_BASE_REF"
 	if [ -z "$base" ]; then
-		# The Kantel base is this microVM's own image (the host's): imported, not pulled.
+		# The Kantel base is this microVM's own image (the host's): imported, not pulled, without what's live in it
+		# (mounts, temporary files, the agent, Docker's own storage), then its standard directories put back empty.
 		tar -C / --one-file-system --numeric-owner \
-			--exclude=./proc --exclude=./sys --exclude=./dev --exclude=./run --exclude=./tmp --exclude=./disk \
-			--exclude=./mnt --exclude=./.kantel --exclude=./var/lib/docker --exclude=./var/lib/containerd -c . \
-			| docker import - kantel-base:local >/dev/null
+			--exclude='./proc/*' --exclude='./sys/*' --exclude='./dev/*' --exclude='./run/*' --exclude='./tmp/*' \
+			--exclude=./disk --exclude='./mnt/*' --exclude=./.kantel \
+			--exclude='./var/lib/docker/*' --exclude='./var/lib/containerd/*' -c . \
+			| docker import - kantel-base:raw >/dev/null
+		printf '%s\n' 'FROM kantel-base:raw' \
+			'RUN mkdir -p /proc /sys /dev /run /tmp /mnt /var/lib/docker /var/lib/containerd && chmod 1777 /tmp' \
+			| docker build --network=none -q -t kantel-base:local - >/dev/null
 		base=kantel-base:local
 	fi
 	docker build --network=host --build-arg "KANTEL_BASE=$base" \

@@ -7116,7 +7116,7 @@
 			"post": {
 				"operationId": "createTemplate",
 				"summary": "Create a template",
-				"description": "A template at version 1, named uniquely in the account. Its snapshot builds in the background on each kind of host the account may use; until one is ready, sandboxes made from it boot its image and run its setup themselves. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
+				"description": "A template at version 1, named uniquely in the account. Its snapshot builds in the background on each kind of host the account may use; until one is ready, sandboxes made from it boot its image and run its setup themselves. A Dockerfile or image reference is built first, on a host that builds custom images: its sandboxes wait for that build (`unavailable` until then), as nothing else holds the image. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
 				"tags": ["templates"],
 				"requestBody": {
 					"required": true,
@@ -7275,7 +7275,7 @@
 			"patch": {
 				"operationId": "updateTemplate",
 				"summary": "Change a template",
-				"description": "Renames it or changes its description; a new `spec` makes the next version, which builds in the background. Sandboxes start only from a snapshot of the template's current version, so they boot fresh until it's ready. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
+				"description": "Renames it or changes its description; a new `spec` makes the next version, which builds in the background. Sandboxes start only from a snapshot of the template's current version, so they boot fresh until it's ready; a Dockerfile's or image reference's wait for the new version's image to build. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
 				"tags": ["templates"],
 				"parameters": [
 					{
@@ -7610,7 +7610,7 @@
 			"post": {
 				"operationId": "rebuildTemplate",
 				"summary": "Rebuild a template",
-				"description": "Builds its snapshots again, failed ones included. A ready one is kept, stale, and sandboxes go on starting from it until its replacement is ready, and after a rebuild that fails; with none, they boot fresh until the new ones are ready. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
+				"description": "Builds its snapshots again, failed ones included. A ready one is kept, stale, and sandboxes go on starting from it until its replacement is ready, and after a rebuild that fails; with none, they boot fresh until the new ones are ready, or, for a Dockerfile or image reference, wait for its image to build. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned templates on (`KANTEL_TEMPLATES`).",
 				"tags": ["templates"],
 				"parameters": [
 					{
@@ -11660,7 +11660,7 @@
 					},
 					"template": {
 						"type": "string",
-						"description": "Make a microVM from this template, a template's ID or name in the account (experimental, `KANTEL_TEMPLATES`): from its newest built snapshot when one is ready, else by booting its image and running its setup. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with `size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it fresh whatever its snapshot, running the setup with the sandbox's variables."
+						"description": "Make a microVM from this template, a template's ID or name in the account (experimental, `KANTEL_TEMPLATES`): from its newest built snapshot when one is ready, else by booting its image and running its setup. A Dockerfile or image reference boots only once its current version's image is built (`unavailable` until then), on the host that built it. Its variables go under the environment's and `env`, its grants with the sandbox's own, and with `size` left out its resources are the machine's, exactly (`resources`), named by the smallest size with them. Not with `from` or `image`. A template with setup needs a key with `exec` too: a host may boot it fresh whatever its snapshot, running the setup with the sandbox's variables."
 					},
 					"hostLabels": {
 						"type": "object",
@@ -14412,7 +14412,7 @@
 								"const": "boot"
 							}
 						],
-						"description": "`snapshot`: it started from the template's built snapshot. `boot`: none was ready, so it booted the template's image and ran its setup itself."
+						"description": "`snapshot`: it started from the template's built snapshot. `boot`: none was ready, so it booted the template's image and ran its setup itself (a custom image: the one its build made)."
 					}
 				},
 				"title": "SandboxTemplate",
@@ -15241,7 +15241,7 @@
 								"const": "failed"
 							}
 						],
-						"description": "`none`: nothing built yet; sandboxes boot fresh. `stale`: what is built is for an older key, and used until its replacement is ready if it is of the template's current version. A `ready` snapshot of an older version starts no sandbox: they boot fresh until the current version's is ready."
+						"description": "`none`: nothing built yet; sandboxes boot fresh. `stale`: what is built is for an older key, and used until its replacement is ready if it is of the template's current version. A `ready` snapshot of an older version starts no sandbox: they boot fresh until the current version's is ready. A template with a Dockerfile or image reference doesn't boot fresh before its current version's image is built: its sandboxes wait for that build (`unavailable` until then)."
 					},
 					"ready": {
 						"$ref": "#/components/schemas/TemplateSnapshot"
