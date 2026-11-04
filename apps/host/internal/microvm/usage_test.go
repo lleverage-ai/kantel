@@ -76,14 +76,14 @@ func TestTemplateFromBeforeTheBalloonIsMadeAgain(t *testing.T) {
 	m := &Manager{cfg: Config{Firecracker: "/nonexistent/firecracker", Kernel: "/nonexistent/vmlinux", Rootfs: "/nonexistent/sandbox.ext4"}}
 	size := DefaultSizes[1]
 	before := fc.Fingerprint(m.cfg.Firecracker, m.cfg.Kernel, m.cfg.Rootfs) + templateShape(size)
-	now := m.templateFingerprint(size)
+	now := m.templateFingerprint(shape{Size: size})
 	if now == before {
 		t.Fatal("a template from before the balloon still counts as current")
 	}
 	if !strings.HasSuffix(now, templateShape(size)) || !strings.HasSuffix(before, templateShape(size)) {
 		t.Fatalf("the shape must stay last: %q", now)
 	}
-	if cfg := m.bootConfig(size, "vmlinux", "tap0", "06:00:00:00:00:01", 3); cfg.BalloonStatsSeconds <= 0 {
+	if cfg := m.bootConfig(shape{Size: size}, "vmlinux", "tap0", "06:00:00:00:00:01", 3); cfg.BalloonStatsSeconds <= 0 {
 		t.Fatal("a microVM boots without the reporting balloon")
 	}
 }

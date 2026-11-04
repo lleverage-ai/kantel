@@ -492,7 +492,7 @@ export interface CreateSandboxBody {
 	readonly type?: SandboxType;
 	/** A microVM's named size; a deployment may offer fewer. Isolates have none. Superseded by `resources` on create: a named size is still taken for now. */
 	readonly size?: SandboxSizeName;
-	/** What a new sandbox gets. A preset restores its size's template snapshot on the host; a shape off the presets boots from scratch. */
+	/** What a new sandbox gets. A microVM restores a template snapshot on its host: by default the one its host keeps for its vCPU count, whatever its memory, so a shape off the presets is as fast as a preset once that count's template is made. A host with shared templates turned off keeps one per preset, and a shape off the presets boots from scratch. */
 	readonly resources?: SandboxShapeInput;
 	/** A microVM's base image. Default: the deployment's. */
 	readonly image?: string;
@@ -1525,7 +1525,7 @@ export interface SandboxSeriesPoint {
 	readonly memUsedBytes: number;
 }
 
-/** What a new sandbox gets. A preset restores its size's template snapshot on the host; a shape off the presets boots from scratch. */
+/** What a new sandbox gets. A microVM restores a template snapshot on its host: by default the one its host keeps for its vCPU count, whatever its memory, so a shape off the presets is as fast as a preset once that count's template is made. A host with shared templates turned off keeps one per preset, and a shape off the presets boots from scratch. */
 export interface SandboxShapeInput {
 	/** A microVM's vCPUs. An isolate has none of its own: it shares its account's VM's CPU. */
 	readonly vcpus?: number;

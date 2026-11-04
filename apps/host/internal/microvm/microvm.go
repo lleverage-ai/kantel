@@ -160,6 +160,19 @@ type Config struct {
 	// agent into the image, so Rootfs may be any Linux root filesystem (injectGuestAgent, experimental). Empty boots
 	// the image's own kantel-init and agent.
 	Initrd string
+	// SharedTemplate: a template snapshot per vCPU count, each serving every memory and disk of that count (named
+	// sizes and custom shapes alike), instead of one per named size, so any shape the sliders pick restores in a
+	// fraction of a second (shared.go). After a restore the sandbox's extra memory is plugged (virtio-mem) and its
+	// disk grown. The named sizes' counts are made in the background when the tier starts; a create of a count with
+	// no template yet cold-boots while its template is made. A shape that doesn't fit (more vCPUs than
+	// TemplateVCPUs, less memory than its count boots with or more than it grows to, a smaller disk) cold-boots.
+	// Unset, the Template fields default as sharedShape says. Off: a template per named size, and custom shapes
+	// cold-boot.
+	SharedTemplate       bool
+	TemplateVCPUs        int
+	TemplateMemoryMiB    int
+	TemplateMaxMemoryMiB int
+	TemplateDiskGiB      int
 	// TemplateRegistry is the operator's registry templates' Kantel base images are pulled from by digest, such as
 	// ghcr.io/lleverage-ai (rootfs.go). Empty: templates are made only from Rootfs, the host's own image.
 	TemplateRegistry string
@@ -185,6 +198,10 @@ type meta struct {
 	SSHKeys   []string          `json:"sshKeys,omitempty"`
 	Owner     string            `json:"owner,omitempty"`
 	Error     string            `json:"error,omitempty"`
+	// GrowDisk: the disk (its file, or the guest's file system) may still be smaller than the size's, as a sandbox
+	// restored from a shared template's or a snapshot's disk starts. Set until growDisk has made it the size's, so a
+	// stop, a host restart or a snapshot before then doesn't leave it smaller for good.
+	GrowDisk bool `json:"growDisk,omitempty"`
 	// Rootfs is the root filesystem when it isn't the host's image: a template's (images/templates/<key>.ext4). Its
 	// snapshots keep it, so a sandbox made from one reads the same.
 	Rootfs string `json:"rootfs,omitempty"`
@@ -219,20 +236,38 @@ type Manager struct {
 	log       *slog.Logger
 	mu        sync.Mutex
 	sandboxes map[string]*sandbox
-	// templates are keyed by size name, and only the named sizes have one. Fast cold starts for custom shapes (a
-	// per-shape template, or a snapshot to restore) would need templates keyed by the shape's fingerprint and a
-	// bounded cache, since a template's memory file is as large as the shape's memory: future work.
+	// templates are the template directories' locks, by name: a named size's (with shared templates off) or a
+	// shared template's (shared-<n>vcpu, made on first use).
 	templates map[string]*sync.Mutex
-	nextCID   atomic.Uint32
-	closed    atomic.Bool
-	spool     *spool
-	// inUse is held (read) from picking a size's template until restoring it, so a background rebuild swaps it in
-	// between creates (base.go).
+	// shared is the shared templates' shape when Config.SharedTemplate is on, and sharedOff set once the guest
+	// kernel turns out unable to grow one. preparing are the vCPU counts whose template is being made in the
+	// background, sharedFailed when a count's last failed.
+	shared       *sharedConfig
+	sharedOff    atomic.Bool
+	preparing    map[int]bool
+	sharedFailed map[int]time.Time
+	// sharedDeferred: until when a count whose template had no room on the host waits (holdOwnBuild).
+	sharedDeferred map[int]time.Time
+	// sizeTemplatesDropped: the named sizes' templates (from shared templates off, or a host from before them) are
+	// removed once, when a shared template is first ready.
+	sizeTemplatesDropped sync.Once
+	nextCID              atomic.Uint32
+	closed               atomic.Bool
+	// bg is the background template builds' context, ended by Close, which waits for builders (counted, under mu, only
+	// while not closed) to settle: their VMs are disposable, unlike sandboxes', which outlive the daemon.
+	bg       context.Context
+	bgStop   context.CancelFunc
+	builders sync.WaitGroup
+	// holdGrowth (tests) makes growDisk give up as a stop or a restart before it would: the growth stays pending.
+	holdGrowth atomic.Bool
+	spool      *spool
+	// inUse is held (read) from picking a template until restoring it, so a background rebuild swaps it in between
+	// creates (base.go): a named size's (made in New) or a shared template's (made on first use), by name.
 	inUse map[string]*sync.RWMutex
-	// rebuilding are the sizes whose template is being rebuilt in the background; rebuild does it (swapTemplate when
-	// nil, tests replace it).
+	// rebuilding are the templates being rebuilt in the background, by name; rebuild does it (swapTemplate when nil,
+	// tests replace it).
 	rebuilding map[string]bool
-	rebuild    func(ctx context.Context, size proto.Size) error
+	rebuild    func(ctx context.Context, sh shape) error
 	// bases is the base lock: read while a reference to an image version is made or moved, written by a prune from its
 	// walk of what is in use until its removals (base.go).
 	bases sync.RWMutex
@@ -254,6 +289,13 @@ type Manager struct {
 	// resuming are the stopped sandboxes admitted to start again (Resume) and not yet running, by ID, with the memory
 	// and disk each holds meanwhile (holdResume): guarded by mu, as builds are.
 	resuming map[string]proto.Size
+	// ownBuilds are the tier's own background template builds (a shared template's, or a template's rebuild on new
+	// images) admitted and not yet ended, with their machines (holdOwnBuild): held as builds are, but no control plane
+	// asked for them, so TemplateBuilds counts them without naming them. Guarded by mu; ownBuildSeq names them.
+	ownBuilds   map[int]proto.Size
+	ownBuildSeq int
+	// prepareOnce starts the shared templates' preparation once (PrepareTemplates).
+	prepareOnce sync.Once
 }
 
 // guestFile, in a template, is its agent's capability report. The manager's root keeps each image's too (guestPath),
@@ -264,15 +306,18 @@ const (
 	guestsDir = "guests"
 )
 
-// bootConfig is a cold boot of size on kernel (kernelFor: its root filesystem's version's): through Kantel's
-// initramfs when the host injects the agent.
-func (m *Manager) bootConfig(size proto.Size, kernel, tap, mac string, cid uint32) fc.BootConfig {
+// bootConfig is a cold boot of a shape on kernel (kernelFor: its root filesystem's version's): through Kantel's
+// initramfs when the host injects the agent, with its hotpluggable memory when it has some (a shared template).
+func (m *Manager) bootConfig(sh shape, kernel, tap, mac string, cid uint32) fc.BootConfig {
 	cfg := fc.BootConfig{
-		VCPUs: size.VCPUs, MemoryMiB: size.MemoryMiB, Kernel: kernel, BootArgs: bootArgs, TapDevice: tap, MAC: mac, GuestCID: cid,
-		BalloonStatsSeconds: balloonStatsSeconds,
+		VCPUs: sh.VCPUs, MemoryMiB: sh.MemoryMiB, Kernel: kernel, BootArgs: bootArgs, TapDevice: tap, MAC: mac, GuestCID: cid,
+		HotplugMiB: sh.HotplugMiB, BalloonStatsSeconds: balloonStatsSeconds,
 	}
 	if m.cfg.Initrd != "" {
 		cfg.Initrd, cfg.BootArgs = m.cfg.Initrd, guestinit.BootArgs
+	}
+	if sh.HotplugMiB > 0 {
+		cfg.BootArgs += hotplugBootArgs
 	}
 	return cfg
 }
@@ -452,8 +497,11 @@ func New(cfg Config) (*Manager, error) {
 			return nil, err
 		}
 	}
-	m := &Manager{cfg: cfg, log: cfg.Log.With("tier", Tier), sandboxes: map[string]*sandbox{}, templates: map[string]*sync.Mutex{}, inUse: map[string]*sync.RWMutex{}, rebuilding: map[string]bool{}}
+	m := &Manager{cfg: cfg, log: cfg.Log.With("tier", Tier), sandboxes: map[string]*sandbox{}, templates: map[string]*sync.Mutex{}, inUse: map[string]*sync.RWMutex{}, rebuilding: map[string]bool{}, preparing: map[int]bool{}, sharedFailed: map[int]time.Time{}}
+	m.bg, m.bgStop = context.WithCancel(context.Background())
+	// Template builds a previous run left (it stopped or crashed mid-build) are ended by reapInterruptedBuilds, below.
 	m.hostMemoryMiB = hostinfo.MemoryMiB()
+	m.shared = sharedShape(cfg, m.hostMemoryMiB, defaultCPUs())
 	m.nextCID.Store(uint32(time.Now().UnixMilli()%100000) + 100)
 	m.spool = newSpool(cfg.SpoolDir, cfg.SpoolMaxMiB<<20, m.log)
 	// Each image's report, a custom shape's boot's included; a host from before the root kept them has its templates'.
@@ -489,6 +537,11 @@ func New(cfg Config) (*Manager, error) {
 	for _, size := range cfg.Sizes {
 		m.loadGuest(filepath.Join(cfg.Root, "templates", size.Name))
 	}
+	if m.shared != nil && cfg.Budget == nil {
+		// Made now, on disk, so the first create restores one rather than booting: they cost disk, not memory. With a
+		// budget, once it can say what is free (PrepareTemplates).
+		m.PrepareTemplates()
+	}
 	// Memory files a previous run spooled and hadn't yet moved to disk.
 	vmMems, _ := filepath.Glob(filepath.Join(cfg.Root, "sandboxes", "*", "vm", "mem"))
 	snapMems, _ := filepath.Glob(filepath.Join(cfg.Root, "snapshots", "*", "mem"))
@@ -510,7 +563,7 @@ func (m *Manager) memFile(sizeName, path string) (write string, done func(ok boo
 	}
 	return spooled, func(ok bool) error {
 		if !ok {
-			m.spool.cancel(spooled, n)
+			m.spool.cancel(spooled)
 			return nil
 		}
 		return m.spool.place(spooled, path)
@@ -736,6 +789,12 @@ func (m *Manager) adopt() error {
 				}
 				m.sandboxes[s.meta.ID] = s
 				m.log.Info("adopted running sandbox", "sandbox", s.meta.ID, "pid", s.meta.Pid)
+				if s.meta.GrowDisk {
+					// The previous run answered its create but restarted before growing its disk.
+					if size, err := m.size(s.meta.Size); err == nil {
+						go m.growDisk(s, size.DiskGiB)
+					}
+				}
 				continue
 			}
 		}
@@ -814,6 +873,7 @@ func (m *Manager) identity(s *sandbox, fresh bool) guest.Identity {
 		SandboxID:  s.meta.ID,
 		Hostname:   hostname(s.meta.ID),
 		Address:    s.link.GuestCIDR(),
+		MAC:        s.link.MAC,
 		Gateway:    s.link.HostIP.String(),
 		Entropy:    randomEntropy(),
 		UnixTimeMs: time.Now().UnixMilli(),
@@ -920,28 +980,64 @@ func (t timings) step(name string, since *time.Time) {
 	*since = now
 }
 
+// templateLock is the lock a template's directory is made under: a named size's, or a shared template's (made on
+// first use). nil for any other name: no template is kept for a custom shape.
+func (m *Manager) templateLock(name string) *sync.Mutex {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	lock := m.templates[name]
+	if lock == nil && strings.HasPrefix(name, sharedPrefix) {
+		lock = &sync.Mutex{}
+		m.templates[name] = lock
+	}
+	return lock
+}
+
 // templateShape is the size's part of a template's fingerprint: a snapshot restores the vCPUs and memory it was made
 // with, so a size that changes (a new default, or the host's settings) needs a new template.
 func templateShape(size proto.Size) string {
 	return fmt.Sprintf(" size=%d/%d/%d", size.VCPUs, size.MemoryMiB, size.DiskGiB)
 }
 
-// templateFingerprint is what a size's template is made with: Firecracker, the kernel, the images, Kernel's
+// shapeKey is a shape's part of its template's fingerprint: the size's, and a shared template's hotpluggable memory
+// and the boot arguments its guest needs to plug it.
+func (m *Manager) shapeKey(sh shape) string {
+	key := templateShape(sh.Size)
+	if sh.HotplugMiB > 0 {
+		key += fmt.Sprintf(" hotplug=%d args=%q", sh.HotplugMiB, m.bootConfig(sh, "", "", "", 0).BootArgs)
+	}
+	return key
+}
+
+// templateFingerprint is what a shape's template is made with: Firecracker, the kernel, the images, Kernel's
 // initramfs when it injects the guest agent (its name has the agent's digest: another agent, or turning injection on
 // or off, makes a new template), the devices and the shape. The shape stays last: a template of the same shape on
 // other images (or devices) is still used while its replacement builds, with BackgroundTemplates.
-func (m *Manager) templateFingerprint(size proto.Size) string {
+func (m *Manager) templateFingerprint(sh shape) string {
 	images := []string{m.cfg.Firecracker, m.cfg.Kernel, m.cfg.Rootfs}
 	if m.cfg.Initrd != "" {
 		images = append(images, m.cfg.Initrd)
 	}
-	return fc.Fingerprint(images...) + templateDevices + templateShape(size)
+	return fc.Fingerprint(images...) + templateDevices + m.shapeKey(sh)
 }
 
-// template returns the size's template snapshot, cold-booting one if there is none. With BackgroundTemplates, one
-// made with other images (but the same shape) is still returned while its replacement builds (base.go).
-func (m *Manager) template(ctx context.Context, size proto.Size) (string, timings, error) {
-	lock := m.templates[size.Name]
+// templateReady says whether the shape's template can be restored now without making it: made for these images, or,
+// with BackgroundTemplates, for others but the same shape (template then starts its rebuild and returns it meanwhile).
+func (m *Manager) templateReady(sh shape) bool {
+	dir := filepath.Join(m.cfg.Root, "templates", sh.Name)
+	if _, err := os.Stat(filepath.Join(dir, "ready")); err != nil {
+		return false
+	}
+	made, _ := os.ReadFile(filepath.Join(dir, "images"))
+	return string(made) == m.templateFingerprint(sh) || m.cfg.BackgroundTemplates && strings.HasSuffix(string(made), m.shapeKey(sh))
+}
+
+// template returns the shape's template snapshot (a named size's, or a shared one), cold-booting one if there is none.
+// With BackgroundTemplates, one made with other images (but the same shape) is still returned while its replacement
+// builds (base.go).
+func (m *Manager) template(ctx context.Context, sh shape) (string, timings, error) {
+	size := sh.Size
+	lock := m.templateLock(size.Name)
 	if lock == nil {
 		// A custom shape (or a size this host doesn't have): templates are kept for the named sizes only.
 		return "", nil, &proto.Error{Code: proto.ErrInternal, Message: fmt.Sprintf("no template is kept for size %q", size.Name)}
@@ -951,32 +1047,33 @@ func (m *Manager) template(ctx context.Context, size proto.Size) (string, timing
 	dir := filepath.Join(m.cfg.Root, "templates", size.Name)
 	if _, err := os.Stat(filepath.Join(dir, "ready")); err == nil {
 		made, _ := os.ReadFile(filepath.Join(dir, "images"))
-		if string(made) == m.templateFingerprint(size) {
+		if string(made) == m.templateFingerprint(sh) {
 			m.loadGuest(dir)
 			return dir, nil, nil
 		}
-		if m.cfg.BackgroundTemplates && strings.HasSuffix(string(made), templateShape(size)) {
+		if m.cfg.BackgroundTemplates && strings.HasSuffix(string(made), m.shapeKey(sh)) {
 			// Sandboxes made from it meanwhile are on its images, as their Base says.
-			m.rebuildTemplate(size)
+			m.rebuildTemplate(sh)
 			return dir, nil, nil
 		}
 		// Made with other images (an update) or another shape: running sandboxes keep their mapping of the old memory file.
 		m.log.Info("template is for other images or another shape; rebuilding", "size", size.Name)
 	}
-	t, err := m.buildTemplate(ctx, size, dir)
+	t, err := m.buildTemplate(ctx, sh, dir)
 	if err != nil {
 		return "", nil, err
 	}
 	return dir, t, nil
 }
 
-// buildTemplate cold-boots a VM of the size on the current images, waits for its services, and snapshots it into
+// buildTemplate cold-boots a VM of the shape on the current images, waits for its services, and snapshots it into
 // dir (replacing what is there), recording the images it was made with and the root filesystem it is over (rootfs).
-func (m *Manager) buildTemplate(ctx context.Context, size proto.Size, dir string) (timings, error) {
-	fingerprint := m.templateFingerprint(size)
+func (m *Manager) buildTemplate(ctx context.Context, sh shape, dir string) (timings, error) {
+	size := sh.Size
+	fingerprint := m.templateFingerprint(sh)
 	_ = os.RemoveAll(dir)
 	t, caps, _, err := m.bootSnapshot(ctx, snapshotBoot{
-		dir: dir, name: size.Name, rootfs: m.cfg.Rootfs, size: size, egress: network.EgressNone,
+		dir: dir, name: size.Name, rootfs: m.cfg.Rootfs, size: size, hotplugMiB: sh.HotplugMiB, egress: network.EgressNone,
 		record: func(building, rootfs string) error {
 			return os.WriteFile(filepath.Join(building, "rootfs"), []byte(rootfs), 0o600)
 		},
@@ -984,7 +1081,13 @@ func (m *Manager) buildTemplate(ctx context.Context, size proto.Size, dir string
 	if err != nil {
 		return nil, err
 	}
-	raw, _ := json.Marshal(map[string]any{"size": size, "timings": t, "at": time.Now().UnixMilli()})
+	start := time.Now()
+	if sh.HotplugMiB > 0 {
+		// The memory file holds every page of the boot memory, most of them never touched (zero): holes cost no disk.
+		_ = exec.Command("fallocate", "--dig-holes", filepath.Join(dir, "mem")).Run()
+		t.step("holes", &start)
+	}
+	raw, _ := json.Marshal(map[string]any{"size": size, "hotplugMiB": sh.HotplugMiB, "timings": t, "at": time.Now().UnixMilli()})
 	m.noteGuest(dir, caps)
 	_ = os.WriteFile(filepath.Join(dir, "images"), []byte(fingerprint), 0o600)
 	_ = os.WriteFile(filepath.Join(dir, "ready"), raw, 0o600)
@@ -1001,6 +1104,8 @@ type snapshotBoot struct {
 	// rootfs is the root filesystem it boots: Rootfs, the host's image, boots the version it resolves to (pinRootfs).
 	rootfs string
 	size   proto.Size
+	// hotplugMiB is the memory it can have plugged after a restore, beyond size's (virtio-mem: a shared template's).
+	hotplugMiB int
 	// egress is the boot's network mode.
 	egress string
 	// record writes, in the building directory, the snapshot's own reference to the root filesystem it boots, which
@@ -1019,6 +1124,8 @@ func (m *Manager) bootSnapshot(ctx context.Context, b snapshotBoot) (timings, *p
 	t := timings{}
 	start := time.Now()
 	building := b.dir + ".building"
+	// A boot this run abandoned may still have its VM: its PID file goes with the directory.
+	fc.KillLeftover(filepath.Join(building, "vm"))
 	_ = os.RemoveAll(building)
 	defer os.RemoveAll(building)
 	vm := filepath.Join(building, "vm")
@@ -1061,7 +1168,7 @@ func (m *Manager) bootSnapshot(ctx context.Context, b snapshotBoot) (timings, *p
 		<-machine.Done()
 	}()
 	t.step("launch", &start)
-	if err := machine.Boot(ctx, m.bootConfig(b.size, kernel, link.Tap, link.MAC, m.cid())); err != nil {
+	if err := machine.Boot(ctx, m.bootConfig(shape{Size: b.size, HotplugMiB: b.hotplugMiB}, kernel, link.Tap, link.MAC, m.cid())); err != nil {
 		return nil, nil, "", err
 	}
 	client := guest.NewClient(filepath.Join(vm, fc.VsockSocket))
@@ -1072,6 +1179,11 @@ func (m *Manager) bootSnapshot(ctx context.Context, b snapshotBoot) (timings, *p
 		return nil, nil, "", fmt.Errorf("template boot: %w (firecracker log: %s)", err, tail(filepath.Join(vm, fc.LogFile)))
 	}
 	t.step("agent", &start)
+	if b.hotplugMiB > 0 {
+		if err := checkVirtioMem(bootCtx, client); err != nil {
+			return nil, nil, "", fmt.Errorf("template boot: %w", err)
+		}
+	}
 	// What the image has, which detection reads from its files: so before the service wait, whose timeout would
 	// otherwise cancel this too.
 	caps, err := m.guestReport(ctx, client, b.name)
@@ -1309,6 +1421,10 @@ func (m *Manager) heldLocked() (memoryMiB, diskGiB int64) {
 		memoryMiB += int64(build.MemoryMiB)
 		diskGiB += int64(build.DiskGiB)
 	}
+	for _, build := range m.ownBuilds {
+		memoryMiB += int64(build.MemoryMiB)
+		diskGiB += int64(build.DiskGiB)
+	}
 	return memoryMiB, diskGiB
 }
 
@@ -1346,8 +1462,35 @@ func (m *Manager) TemplateBuilds() (ids []string, memoryMiB, diskGiB int64) {
 		memoryMiB += int64(size.MemoryMiB)
 		diskGiB += int64(size.DiskGiB)
 	}
+	for _, size := range m.ownBuilds {
+		memoryMiB += int64(size.MemoryMiB)
+		diskGiB += int64(size.DiskGiB)
+	}
 	slices.Sort(ids)
 	return ids, memoryMiB, diskGiB
+}
+
+// holdOwnBuild admits one of the tier's own background template builds, of shape sh, and holds the memory and disk its
+// machine boots with until release, which its builder calls once the machine has exited (buildTemplate waits for it):
+// a create, a resume or another build can't take that room meanwhile. A shared template's hotplug range takes no
+// memory until a sandbox restored from it is given some.
+func (m *Manager) holdOwnBuild(sh shape) (release func(), err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.admit(sh.Size, "template build"); err != nil {
+		return nil, err
+	}
+	if m.ownBuilds == nil {
+		m.ownBuilds = map[int]proto.Size{}
+	}
+	m.ownBuildSeq++
+	id := m.ownBuildSeq
+	m.ownBuilds[id] = sh.Size
+	return func() {
+		m.mu.Lock()
+		delete(m.ownBuilds, id)
+		m.mu.Unlock()
+	}, nil
 }
 
 func (m *Manager) unregister(id string) {
@@ -1389,11 +1532,15 @@ type sandboxOrigin struct {
 	// machine's agent is asked once it is up.
 	guest    *proto.GuestCapabilities
 	askGuest bool
+	// reshape is the shared template's shape when it restores one (shared.go): the sandbox is grown from it, its
+	// memory plugged and its disk grown, to its own size.
+	reshape *shape
 }
 
 // startOf is a new sandbox's origin as a machine of size: p.From, a snapshot; p.Template, a template's snapshot or its
-// image booted fresh; else the size's template, or for a custom shape (which has none) the host's image booted on a new
-// disk. Its rootfs is the images the snapshot or template it starts from is over, so its memory matches its disk; it is
+// image booted fresh; else, with shared templates on, its vCPU count's shared template (or, while that is made or for a
+// shape it can't make, the host's image booted on a new disk); else the size's template, or for a custom shape (which
+// has none) the host's image booted on a new disk. Its rootfs is the images the snapshot or template it starts from is over, so its memory matches its disk; it is
 // read with the base lock held (origin.unhold), which startMachine releases once it has linked it.
 func (m *Manager) startOf(ctx context.Context, p proto.CreateParams, size proto.Size) (sandboxOrigin, error) {
 	if p.From != "" {
@@ -1417,14 +1564,27 @@ func (m *Manager) startOf(ctx context.Context, p proto.CreateParams, size proto.
 	if p.Template != nil {
 		return m.templateOrigin(ctx, *p.Template, size)
 	}
-	if isCustom(size.Name) {
-		// No template: a fresh disk, then a cold boot, on the current images as they resolve now (the version itself with
-		// PinBase, so a later update doesn't move it: pinRootfs).
+	sh, fits, ready := m.sharedPlan(size)
+	if ready {
+		// Until it is restored (release, once started): a background rebuild swaps the template in between creates.
+		unuse := m.useTemplate(sh.Name)
+		tpl, tt, err := m.template(ctx, sh)
+		if err != nil {
+			unuse()
+			return sandboxOrigin{}, err
+		}
+		unhold := m.holdBases()
+		return sandboxOrigin{rootfs: m.sizeTemplateRootfs(tpl), state: filepath.Join(tpl, "state"), mem: filepath.Join(tpl, "mem"), disk: filepath.Join(tpl, fc.DiskFile), source: "snapshot", timings: tt, release: unuse, unhold: unhold, reshape: &sh}, nil
+	}
+	if isCustom(size.Name) || fits || m.sharedOn() {
+		// No template: a fresh disk, then a cold boot (and, when it fits, its shared template is being made), on the
+		// current images as they resolve now (the version itself with PinBase, so a later update doesn't move it:
+		// pinRootfs). No template asked the image what it has, so this boot does, as a template's would.
 		return sandboxOrigin{rootfs: m.cfg.Rootfs, source: "boot", askGuest: true, unhold: m.holdBases()}, nil
 	}
 	// Until it is restored (release, once started): a background rebuild swaps the template in between creates.
 	unuse := m.useTemplate(size.Name)
-	tpl, tt, err := m.template(ctx, size)
+	tpl, tt, err := m.template(ctx, shape{Size: size})
 	if err != nil {
 		unuse()
 		return sandboxOrigin{}, err
@@ -1437,21 +1597,16 @@ func (m *Manager) startOf(ctx context.Context, p proto.CreateParams, size proto.
 	return origin, nil
 }
 
-// Create makes a sandbox by restoring the size's template (or p.From, a snapshot; or p.Template, a template's). A custom
-// shape (p.VCPUs, p.MemoryMiB and p.DiskGiB with no p.Size) cold-boots unless it is made from a snapshot or from a
-// template snapshot built as that shape.
+// Create makes a sandbox by restoring a template (or p.From, a snapshot; or p.Template, a template's). With shared
+// templates on, any shape (a named size, or a custom one: p.VCPUs, p.MemoryMiB and p.DiskGiB with no p.Size) restores
+// its vCPU count's template, and cold-boots while that is being made. With them off, a named size restores its own
+// template and a custom shape cold-boots unless it is made from a snapshot or from a template snapshot built as that
+// shape.
 func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.SandboxInfo, error) {
 	if !validID(p.SandboxID) {
 		return proto.SandboxInfo{}, &proto.Error{Code: proto.ErrInvalid, Message: "bad sandbox ID"}
 	}
-	sizeName := p.Size
-	if sizeName == "" && (p.VCPUs != 0 || p.MemoryMiB != 0 || p.DiskGiB != 0) {
-		if p.VCPUs <= 0 || p.MemoryMiB <= 0 || p.DiskGiB <= 0 {
-			return proto.SandboxInfo{}, &proto.Error{Code: proto.ErrInvalid, Message: "a custom size needs vcpus, memoryMiB and diskGiB"}
-		}
-		sizeName = CustomSizeName(p.VCPUs, p.MemoryMiB, p.DiskGiB)
-	}
-	size, err := m.size(sizeName)
+	size, err := m.createSize(p)
 	if err != nil {
 		return proto.SandboxInfo{}, err
 	}
@@ -1514,10 +1669,41 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 		return fail(err)
 	}
 	m.attach(s, s.link.Slot)
-	if err := s.guest.SetIdentity(ctx, m.identity(s, true)); err != nil {
+	t.step("attach", &start)
+	var reshaped chan reshapeResult
+	if reshape := origin.reshape; reshape != nil {
+		// Beside the identity: the memory is Firecracker's and the guest kernel's to plug, the identity the agent's.
+		reshaped = make(chan reshapeResult, 1)
+		machine := s.machine
+		go func() { reshaped <- m.reshape(ctx, machine, size, *reshape) }()
+	}
+	steps, err := s.guest.SetIdentitySteps(ctx, m.identity(s, true))
+	for k, v := range steps {
+		t["identity."+k] = v
+	}
+	if err != nil {
+		if reshaped != nil {
+			<-reshaped
+		}
 		return fail(fmt.Errorf("identity: %w", err))
 	}
 	t.step("identity", &start)
+	if reshaped != nil {
+		r := <-reshaped
+		for k, v := range r.timings {
+			t["reshape."+k] = v
+		}
+		if r.err != nil {
+			return fail(fmt.Errorf("memory: %w", r.err))
+		}
+		t.step("reshape", &start)
+		if size.DiskGiB > origin.reshape.DiskGiB {
+			s.meta.GrowDisk = true
+		}
+	} else if p.From != "" {
+		// The snapshot's may be from before its sandbox's disk was grown (or of another size, made without memory).
+		s.meta.GrowDisk = true
+	}
 	if setup != "" {
 		if err := runSetup(ctx, s.guest, setup, s.meta.Env); err != nil {
 			return fail(err)
@@ -1534,12 +1720,39 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 	if err := m.writeMeta(s); err != nil {
 		return fail(err)
 	}
+	if s.meta.GrowDisk {
+		// Once this answers (it holds the sandbox's lock until then): growing ext4 online takes a while, and
+		// nothing fills the template's disk (gigabytes) in that time.
+		go m.growDisk(s, size.DiskGiB)
+	}
 	m.watch(s, s.machine)
+	t.step("finish", &start)
 	t["total"] = float64(time.Since(began).Microseconds()) / 1000
 	info := m.info(s)
 	info.Timings, info.Source = t, source
 	m.emit(s)
+	m.log.Debug("create", "sandbox", s.meta.ID, "size", size.Name, "source", source, "timings", t)
 	return info, nil
+}
+
+// createSize is the size a create asks for: a named one (p.Size), or a custom shape.
+func (m *Manager) createSize(p proto.CreateParams) (proto.Size, error) {
+	sizeName := p.Size
+	if sizeName == "" && (p.VCPUs != 0 || p.MemoryMiB != 0 || p.DiskGiB != 0) {
+		if p.VCPUs <= 0 || p.MemoryMiB <= 0 || p.DiskGiB <= 0 {
+			return proto.Size{}, &proto.Error{Code: proto.ErrInvalid, Message: "a custom size needs vcpus, memoryMiB and diskGiB"}
+		}
+		sizeName = CustomSizeName(p.VCPUs, p.MemoryMiB, p.DiskGiB)
+	}
+	return m.size(sizeName)
+}
+
+// sharedPlan is sharedFor when shared templates are on; nothing fits when they're off.
+func (m *Manager) sharedPlan(size proto.Size) (sh shape, fits, ready bool) {
+	if !m.sharedOn() {
+		return shape{}, false, false
+	}
+	return m.sharedFor(size)
 }
 
 // keepAskedGuest keeps what a new sandbox's agent answered when its origin had no report (askGuest). A sandbox made
@@ -1628,6 +1841,20 @@ func (m *Manager) startMachine(ctx context.Context, s *sandbox, origin sandboxOr
 	if err != nil {
 		return err
 	}
+	if origin.reshape != nil {
+		// The disk, the network and the Firecracker process side by side: none needs another. Its record (meta.json,
+		// starting, with its slot) is written once the link is made, before the snapshot is loaded.
+		machine, client, link, err := m.restoreParallel(ctx, vm, origin.disk, origin.state, origin.mem, egressMode(e), t, func(link network.Link) error {
+			s.meta.Slot = link.Slot
+			return m.writeMeta(s)
+		})
+		s.link = link
+		if err != nil {
+			return err
+		}
+		s.machine, s.guest = machine, client
+		return nil
+	}
 	start := time.Now()
 	if origin.disk == "" {
 		err = newDisk(filepath.Join(vm, fc.DiskFile), size.DiskGiB)
@@ -1676,7 +1903,7 @@ func (m *Manager) boot(ctx context.Context, s *sandbox, size proto.Size) error {
 		return err
 	}
 	s.meta.CID = m.cid()
-	if err := machine.Boot(ctx, m.bootConfig(size, kernel, s.link.Tap, s.link.MAC, s.meta.CID)); err != nil {
+	if err := machine.Boot(ctx, m.bootConfig(shape{Size: size}, kernel, s.link.Tap, s.link.MAC, s.meta.CID)); err != nil {
 		machine.Kill()
 		return err
 	}
@@ -1892,6 +2119,10 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 	s.meta.Error = ""
 	if err := m.writeMeta(s); err != nil {
 		return proto.SandboxInfo{}, err
+	}
+	if s.meta.GrowDisk {
+		// Stopped (or snapshotted) before its disk was grown: grown now, as a create would.
+		go m.growDisk(s, size.DiskGiB)
 	}
 	m.watch(s, s.machine)
 	t["total"] = float64(time.Since(began).Microseconds()) / 1000
@@ -2383,7 +2614,36 @@ func (m *Manager) DialPort(ctx context.Context, id string, port int) (net.Conn, 
 
 // Close stops the tier taking work. Sandboxes keep running.
 func (m *Manager) Close() {
+	m.mu.Lock()
 	m.closed.Store(true)
+	m.mu.Unlock()
+	if m.bgStop != nil {
+		m.bgStop()
+	}
+	// Ending their context kills their VMs (buildTemplate's deferred Kill): a moment, unless one is stuck.
+	settled := make(chan struct{})
+	go func() {
+		m.builders.Wait()
+		close(settled)
+	}()
+	select {
+	case <-settled:
+	case <-time.After(20 * time.Second):
+		m.log.Warn("a background template build hasn't stopped; the next start ends its VM")
+	}
+}
+
+// startBuilder counts a background template build in, with the context it runs under, unless the tier is closing.
+// Call it with mu held; the build calls m.builders.Done when it ends.
+func (m *Manager) startBuilder() (context.Context, bool) {
+	if m.closed.Load() {
+		return nil, false
+	}
+	m.builders.Add(1)
+	if m.bg == nil {
+		return context.Background(), true // a Manager made without New (tests)
+	}
+	return m.bg, true
 }
 
 // Usage is the memory the tier's running sandboxes were given, and how many run and are stopped.

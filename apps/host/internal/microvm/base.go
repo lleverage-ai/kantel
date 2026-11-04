@@ -8,13 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/fc"
 	"github.com/lleverage-ai/kantel/apps/host/internal/fsutil"
 	"github.com/lleverage-ai/kantel/apps/host/internal/images"
-	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
 // A sandbox's base is the root filesystem its disk is a layer over. With versioned images (package images) Rootfs is
@@ -494,9 +494,9 @@ func (m *Manager) RebaseVersion() string {
 	return images.VersionOf(m.baseRootfs())
 }
 
-// useTemplate holds a size's template in use until the returned func is called.
-func (m *Manager) useTemplate(size string) func() {
-	l := m.inUse[size]
+// useTemplate holds a template (a size's or a shared one, by name) in use until the returned func is called.
+func (m *Manager) useTemplate(name string) func() {
+	l := m.useLock(name)
 	if l == nil {
 		return func() {}
 	}
@@ -504,33 +504,73 @@ func (m *Manager) useTemplate(size string) func() {
 	return l.RUnlock
 }
 
-// ImagesChanged is called when the host's images move to another version: each size whose template was made on
-// others starts rebuilding in the background. Without
-// BackgroundTemplates the next create rebuilds it, as before.
+// useLock is a template's use lock: a named size's (made in New), or a shared template's (made on first use).
+func (m *Manager) useLock(name string) *sync.RWMutex {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l := m.inUse[name]
+	if l == nil && strings.HasPrefix(name, sharedPrefix) {
+		if m.inUse == nil {
+			m.inUse = map[string]*sync.RWMutex{}
+		}
+		l = &sync.RWMutex{}
+		m.inUse[name] = l
+	}
+	return l
+}
+
+// keptShapes are the shapes the tier keeps templates of: its named sizes, and each shared template on disk.
+func (m *Manager) keptShapes() []shape {
+	var shapes []shape
+	for _, size := range m.cfg.Sizes {
+		shapes = append(shapes, shape{Size: size})
+	}
+	if m.shared == nil {
+		return shapes
+	}
+	entries, _ := os.ReadDir(filepath.Join(m.cfg.Root, "templates"))
+	for _, e := range entries {
+		var n int
+		if _, err := fmt.Sscanf(e.Name(), sharedPrefix+"%dvcpu", &n); err == nil && e.Name() == m.shared.shape(n).Name {
+			shapes = append(shapes, m.shared.shape(n))
+		}
+	}
+	return shapes
+}
+
+// ImagesChanged is called when the host's images move to another version: each template (a size's or a shared one)
+// made on others starts rebuilding in the background. Without BackgroundTemplates the next create rebuilds it, as
+// before.
 func (m *Manager) ImagesChanged() {
 	if !m.cfg.BackgroundTemplates {
 		return
 	}
-	for _, size := range m.cfg.Sizes {
-		dir := filepath.Join(m.cfg.Root, "templates", size.Name)
+	for _, sh := range m.keptShapes() {
+		dir := filepath.Join(m.cfg.Root, "templates", sh.Name)
 		if _, err := os.Stat(filepath.Join(dir, "ready")); err != nil {
 			continue // none yet: the first create builds it on the new images
 		}
-		if made, _ := os.ReadFile(filepath.Join(dir, "images")); string(made) == m.templateFingerprint(size) {
+		if made, _ := os.ReadFile(filepath.Join(dir, "images")); string(made) == m.templateFingerprint(sh) {
 			continue
 		}
-		m.rebuildTemplate(size)
+		m.rebuildTemplate(sh)
 	}
 }
 
-// rebuildTemplate starts a size's background rebuild, unless one is running (or failed within the minute) or the
+// rebuildTemplate starts a template's background rebuild, unless one is running (or failed within the minute) or the
 // tier is closing.
-func (m *Manager) rebuildTemplate(size proto.Size) {
+func (m *Manager) rebuildTemplate(sh shape) {
+	size := sh.Size
 	m.mu.Lock()
 	if m.rebuilding == nil {
 		m.rebuilding = map[string]bool{}
 	}
-	if m.rebuilding[size.Name] || m.closed.Load() {
+	if m.rebuilding[size.Name] {
+		m.mu.Unlock()
+		return
+	}
+	ctx, ok := m.startBuilder()
+	if !ok {
 		m.mu.Unlock()
 		return
 	}
@@ -538,6 +578,7 @@ func (m *Manager) rebuildTemplate(size proto.Size) {
 	m.mu.Unlock()
 	m.log.Info("template is for other images; rebuilding it in the background", "size", size.Name)
 	go func() {
+		defer m.builders.Done()
 		done := func() {
 			m.mu.Lock()
 			delete(m.rebuilding, size.Name)
@@ -547,7 +588,17 @@ func (m *Manager) rebuildTemplate(size proto.Size) {
 		if run == nil {
 			run = m.swapTemplate
 		}
-		if err := run(context.Background(), size); err != nil {
+		// Its machine's room, held until it has exited. With none free creates keep the old template, and the next create
+		// after a while tries again.
+		release, err := m.holdOwnBuild(sh)
+		if err != nil {
+			m.log.Info("no room to rebuild the template now; creates use the old template", "size", size.Name, "error", err)
+			time.AfterFunc(time.Minute, done)
+			return
+		}
+		err = run(ctx, sh)
+		release()
+		if err != nil {
 			m.log.Error("background template rebuild failed; creates use the old template", "size", size.Name, "error", err)
 			// Not again at once: every create would start one.
 			time.AfterFunc(time.Minute, done)
@@ -557,21 +608,22 @@ func (m *Manager) rebuildTemplate(size proto.Size) {
 	}()
 }
 
-// swapTemplate builds a size's template into templates/<size>.next and renames it into place. Sandboxes restored
-// from the old one mapped its memory file already, which outlives its name.
-func (m *Manager) swapTemplate(ctx context.Context, size proto.Size) error {
+// swapTemplate builds a template into templates/<name>.next and renames it into place. Sandboxes restored from the
+// old one mapped its memory file already, which outlives its name.
+func (m *Manager) swapTemplate(ctx context.Context, sh shape) error {
+	size := sh.Size
 	dir := filepath.Join(m.cfg.Root, "templates", size.Name)
 	next, old := dir+".next", dir+".old"
-	if _, err := m.buildTemplate(ctx, size, next); err != nil {
+	if _, err := m.buildTemplate(ctx, sh, next); err != nil {
 		_ = os.RemoveAll(next)
 		return err
 	}
 	// The use lock before the template's, the order a create takes them in.
-	if use := m.inUse[size.Name]; use != nil {
+	if use := m.useLock(size.Name); use != nil {
 		use.Lock()
 		defer use.Unlock()
 	}
-	lock := m.templates[size.Name]
+	lock := m.templateLock(size.Name)
 	lock.Lock()
 	defer lock.Unlock()
 	// The template's base moves from next to dir: not while a prune walks the templates.

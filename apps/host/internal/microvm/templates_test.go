@@ -271,7 +271,7 @@ func testManager(t *testing.T) (*Manager, *fakeDocker) {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		_ = os.WriteFile(filepath.Join(dir, "images"), []byte(m.templateFingerprint(size)), 0o600)
+		_ = os.WriteFile(filepath.Join(dir, "images"), []byte(m.templateFingerprint(shape{Size: size})), 0o600)
 		_ = os.WriteFile(filepath.Join(dir, "ready"), []byte("{}"), 0o600)
 	}
 	return m, docker

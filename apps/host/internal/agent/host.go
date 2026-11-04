@@ -179,9 +179,12 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 			Root: cfg.Root + "/microvm", Firecracker: cfg.Firecracker, Kernel: cfg.Kernel, Rootfs: cfg.SandboxImage,
 			Sizes: sizes, Network: netm, ProxyPort: cfg.ProxyPort, DNS: cfg.DNS, Log: log,
 			PinBase: cfg.ImagePatching, BackgroundTemplates: cfg.ImagePatching,
-			Events: h.sandboxEvent,
-			Attach: h.attachSlot,
-			Detach: h.detachSlot,
+			Events:         h.sandboxEvent,
+			Attach:         h.attachSlot,
+			Detach:         h.detachSlot,
+			SharedTemplate: cfg.MicroVM.SharedTemplates(), TemplateVCPUs: cfg.MicroVM.TemplateVCPUs,
+			TemplateMemoryMiB: cfg.MicroVM.TemplateMemoryMiB, TemplateMaxMemoryMiB: cfg.MicroVM.TemplateMaxMemoryMiB,
+			TemplateDiskGiB: cfg.MicroVM.TemplateDiskGiB,
 			// Creates, starts, resumes and template builds are admitted against the host's budget, as Capacity reports it.
 			Budget: h.budgetBeside(microvm.Tier),
 		})
@@ -223,6 +226,10 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 		h.startImagePatching(kvm)
 	}
 	h.facts = h.withRuntime(h.makeFacts())
+	if mv, ok := h.tiers[microvm.Tier].(*microvm.Manager); ok {
+		// Its shared templates, now the budget their builds are admitted against knows the host's memory.
+		mv.PrepareTemplates()
+	}
 	go h.egressLog.run()
 	return h, nil
 }
@@ -350,6 +357,18 @@ func (h *Host) ResetTemplates(tier string) {
 	if t, ok := h.tiers[tier]; ok {
 		t.ResetTemplates()
 	}
+}
+
+// WaitTemplate waits until the template a create of the params would restore is made, where the tier keeps templates
+// (a benchmark measuring creates after a host's templates are ready).
+func (h *Host) WaitTemplate(ctx context.Context, tier string, p proto.CreateParams) error {
+	t, ok := h.tiers[tier].(interface {
+		WaitTemplate(context.Context, proto.CreateParams) error
+	})
+	if !ok {
+		return nil
+	}
+	return t.WaitTemplate(ctx, p)
 }
 
 func (h *Host) Close() {

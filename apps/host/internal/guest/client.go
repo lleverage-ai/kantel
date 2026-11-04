@@ -171,7 +171,24 @@ func (c *Client) Capabilities(ctx context.Context) (*proto.GuestCapabilities, er
 }
 
 func (c *Client) SetIdentity(ctx context.Context, id Identity) error {
-	_, err := c.do(ctx, http.MethodPost, "/identity", jsonBody(id), &map[string]any{})
+	_, err := c.SetIdentitySteps(ctx, id)
+	return err
+}
+
+// SetIdentitySteps is SetIdentity, answering how long the guest took over each part (ms; none from an older agent).
+func (c *Client) SetIdentitySteps(ctx context.Context, id Identity) (map[string]float64, error) {
+	var out struct {
+		StepsMs map[string]float64 `json:"stepsMs"`
+	}
+	_, err := c.do(ctx, http.MethodPost, "/identity", jsonBody(id), &out)
+	return out.StepsMs, err
+}
+
+// GrowDisk grows the file system on the sandbox's disk (/dev/vdb) to fill the device, online, after the host made the
+// device bytes long: the agent first waits until the guest kernel sees that capacity. An older agent answers 404
+// (IsNotFound).
+func (c *Client) GrowDisk(ctx context.Context, bytes int64) error {
+	_, err := c.do(ctx, http.MethodPost, "/disk/grow?bytes="+strconv.FormatInt(bytes, 10), nil, &map[string]any{})
 	return err
 }
 

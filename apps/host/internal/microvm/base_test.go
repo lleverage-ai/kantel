@@ -342,20 +342,20 @@ func TestAStaleTemplateIsUsedWhileOneRebuildRuns(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	started := make(chan proto.Size, 4)
+	started := make(chan shape, 4)
 	release := make(chan struct{})
 	m := &Manager{
 		cfg:       Config{Root: root, BackgroundTemplates: true, Sizes: []proto.Size{size}},
 		log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 		templates: map[string]*sync.Mutex{"default": &sync.Mutex{}},
-		rebuild: func(_ context.Context, s proto.Size) error {
+		rebuild: func(_ context.Context, s shape) error {
 			started <- s
 			<-release
 			return errors.New("no VMs in a unit test")
 		},
 	}
 	for range 3 {
-		got, built, err := m.template(context.Background(), size)
+		got, built, err := m.template(context.Background(), shape{Size: size})
 		if err != nil || got != dir || built != nil {
 			t.Fatalf("template = %s, %v, %v; want the old one, at once", got, built, err)
 		}
@@ -368,7 +368,7 @@ func TestAStaleTemplateIsUsedWhileOneRebuildRuns(t *testing.T) {
 		t.Fatal("no rebuild started")
 	}
 	// The failed rebuild holds off the next for a minute, so creates don't start one each.
-	if _, _, err := m.template(context.Background(), size); err != nil {
+	if _, _, err := m.template(context.Background(), shape{Size: size}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -378,6 +378,49 @@ func TestAStaleTemplateIsUsedWhileOneRebuildRuns(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "ready")); err != nil {
 		t.Fatalf("the old template went: %v", err)
+	}
+}
+
+// A shared template made on other images still counts as ready with background templates (creates restore it, not
+// cold-boot), and an image change rebuilds it as it does a size's.
+func TestAStaleSharedTemplateServesWhileItRebuilds(t *testing.T) {
+	root := t.TempDir()
+	cfg := Config{Root: root, BackgroundTemplates: true, SharedTemplate: true, Sizes: DefaultSizes}
+	m := &Manager{cfg: cfg, log: slog.New(slog.NewTextHandler(io.Discard, nil)), templates: map[string]*sync.Mutex{}}
+	m.shared = sharedShape(cfg, 16384, 8)
+	sh := m.shared.shape(2)
+	dir := filepath.Join(root, "templates", sh.Name)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"ready": "{}", "images": "made on older images;" + m.shapeKey(sh)} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !m.templateReady(sh) {
+		t.Fatal("a stale shared template of the same shape isn't ready with background templates")
+	}
+	if other := m.shared.shape(3); m.templateReady(other) {
+		t.Fatal("another count's template is ready")
+	}
+	started := make(chan shape, 4)
+	m.rebuild = func(_ context.Context, s shape) error {
+		started <- s
+		return errors.New("no VMs in a unit test")
+	}
+	m.ImagesChanged()
+	select {
+	case s := <-started:
+		if s.Name != sh.Name || s.HotplugMiB != sh.HotplugMiB {
+			t.Fatalf("rebuilt %+v, want %+v", s, sh)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no rebuild started")
+	}
+	m.cfg.BackgroundTemplates = false
+	if m.templateReady(sh) {
+		t.Fatal("a stale template is ready without background templates")
 	}
 }
 
@@ -617,4 +660,35 @@ func TestPinBasesKeepsSnapshotMetadataThroughAFailedPass(t *testing.T) {
 	if snap.Base != "new" || snap.Rootfs != filepath.Join(images, "v", "new", "sandbox.ext4") || snap.Name != "before" || snap.SandboxID != "sbx_1" || snap.Size != "small" || snap.Kind != "saved" || snap.CreatedAt != 1793491200000 {
 		t.Fatalf("pinned snapshot = %+v", snap)
 	}
+}
+
+// Close ends the background template builds (their VMs are disposable) and waits for them; none starts after.
+func TestCloseEndsBackgroundBuilds(t *testing.T) {
+	m := &Manager{log: slog.New(slog.NewTextHandler(io.Discard, nil)), templates: map[string]*sync.Mutex{}, rebuilding: map[string]bool{}}
+	m.bg, m.bgStop = context.WithCancel(context.Background())
+	started, ended := make(chan struct{}), make(chan error, 1)
+	m.rebuild = func(ctx context.Context, _ shape) error {
+		close(started)
+		<-ctx.Done()
+		time.Sleep(50 * time.Millisecond) // the VM being killed
+		ended <- ctx.Err()
+		return ctx.Err()
+	}
+	m.rebuildTemplate(shape{Size: proto.Size{Name: "default"}})
+	<-started
+	m.Close()
+	select {
+	case err := <-ended:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("the build ended with %v, want its context cancelled", err)
+		}
+	default:
+		t.Fatal("Close returned before the build ended")
+	}
+	m.rebuild = func(context.Context, shape) error {
+		t.Error("a build started after Close")
+		return nil
+	}
+	m.rebuildTemplate(shape{Size: proto.Size{Name: "large"}})
+	time.Sleep(50 * time.Millisecond)
 }

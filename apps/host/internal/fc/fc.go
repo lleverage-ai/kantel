@@ -185,6 +185,9 @@ type BootConfig struct {
 	MAC       string
 	// GuestCID is the vsock context ID (3 or more).
 	GuestCID uint32
+	// HotplugMiB, when set, adds a virtio-mem device with that much hotpluggable memory, all of it unplugged at boot
+	// (a multiple of HotplugSlotMiB). PlugMemory plugs it later, on this VM or on one restored from its snapshot.
+	HotplugMiB int
 	// BalloonStatsSeconds, above 0, adds a virtio-balloon device that only reports: no memory taken (a target of 0
 	// MiB, deflate_on_oom in case one is ever set), its guest driver's memory statistics refreshed this often, for
 	// ReadBalloonStats. A snapshot keeps the device, so every VM restored from one made with it reports too.
@@ -204,6 +207,12 @@ func bootSource(cfg BootConfig) map[string]any {
 	return source
 }
 
+// HotplugSlotMiB is the virtio-mem slot size Firecracker uses by default; the hotpluggable total is a multiple of it.
+const HotplugSlotMiB = 128
+
+// HotplugBlockMiB is the virtio-mem block size: what is plugged is a multiple of it.
+const HotplugBlockMiB = 2
+
 // Boot configures the VM (rootfs.ext4 read-only, disk.ext4 writable, eth0, vsock) and starts it.
 func (m *Machine) Boot(ctx context.Context, cfg BootConfig) error {
 	steps := []struct {
@@ -217,6 +226,7 @@ func (m *Machine) Boot(ctx context.Context, cfg BootConfig) error {
 		{"/network-interfaces/eth0", map[string]any{"iface_id": "eth0", "host_dev_name": cfg.TapDevice, "guest_mac": cfg.MAC}},
 		{"/vsock", map[string]any{"guest_cid": cfg.GuestCID, "uds_path": VsockSocket}},
 		{"/entropy", map[string]any{}},
+		{"/hotplug/memory", map[string]any{"total_size_mib": cfg.HotplugMiB, "block_size_mib": HotplugBlockMiB, "slot_size_mib": HotplugSlotMiB}},
 		{"/balloon", balloon(cfg.BalloonStatsSeconds)},
 	}
 	for _, step := range steps {
@@ -224,7 +234,7 @@ func (m *Machine) Boot(ctx context.Context, cfg BootConfig) error {
 			// No network device (the isolate tier's VM talks to the host over vsock only).
 			continue
 		}
-		if step.path == "/balloon" && cfg.BalloonStatsSeconds <= 0 {
+		if step.path == "/hotplug/memory" && cfg.HotplugMiB <= 0 || step.path == "/balloon" && cfg.BalloonStatsSeconds <= 0 {
 			continue
 		}
 		if err := m.call(ctx, http.MethodPut, step.path, step.body); err != nil {
@@ -266,6 +276,44 @@ func (m *Machine) Load(ctx context.Context, statePath, memPath, tap string) erro
 		body["network_overrides"] = []map[string]string{{"iface_id": "eth0", "host_dev_name": tap}}
 	}
 	return m.call(ctx, http.MethodPut, "/snapshot/load", body)
+}
+
+// HotplugStatus is the virtio-mem device's state (GET /hotplug/memory).
+type HotplugStatus struct {
+	TotalMiB     int `json:"total_size_mib"`
+	PluggedMiB   int `json:"plugged_size_mib"`
+	RequestedMiB int `json:"requested_size_mib"`
+}
+
+// PlugMemory asks the guest to plug mib of the VM's hotpluggable memory (a multiple of HotplugBlockMiB). The guest
+// driver plugs it asynchronously: Hotplug says how far it has got.
+func (m *Machine) PlugMemory(ctx context.Context, mib int) error {
+	return m.call(ctx, http.MethodPatch, "/hotplug/memory", map[string]int{"requested_size_mib": mib})
+}
+
+// Hotplug reads the virtio-mem device's state.
+func (m *Machine) Hotplug(ctx context.Context) (HotplugStatus, error) {
+	var out HotplugStatus
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://firecracker/hotplug/memory", nil)
+	if err != nil {
+		return out, err
+	}
+	res, err := m.http.Do(req)
+	if err != nil {
+		return out, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 300 {
+		raw, _ := io.ReadAll(res.Body)
+		return out, fmt.Errorf("firecracker GET /hotplug/memory: %d %s", res.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	return out, json.NewDecoder(res.Body).Decode(&out)
+}
+
+// RescanDrive tells the guest a drive's file changed size (after the host grew it): Firecracker re-reads it and
+// signals the guest, which sees the new capacity.
+func (m *Machine) RescanDrive(ctx context.Context, id, path string) error {
+	return m.call(ctx, http.MethodPatch, "/drives/"+id, map[string]string{"drive_id": id, "path_on_host": path})
 }
 
 // BalloonStats is what GET /balloon/statistics answers that the host reads: the guest's own count of its memory, as its

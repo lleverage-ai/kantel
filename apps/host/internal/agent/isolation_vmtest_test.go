@@ -82,7 +82,7 @@ func lan(t *testing.T) {
 	}
 }
 
-// vmCall is a call that must succeed, answering its result (lifecycle_test.go's call answers only the error).
+// vmCall is a host call that must succeed, answering its result. (Not call: lifecycle_test.go has one.)
 func vmCall[T any](t *testing.T, h *Host, method string, params any) T {
 	t.Helper()
 	raw, _ := json.Marshal(params)

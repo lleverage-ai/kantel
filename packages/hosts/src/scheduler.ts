@@ -8,7 +8,8 @@
  *
  * A microVM is asked for by shape (vCPUs and memory) or, as before shapes, by a size's name. A shape one of the host's
  * named sizes has is that size; another is a custom shape, which a host makes only if it reports `custom-shapes` and
- * has the vCPUs and memory, and which boots from scratch (no template is kept for it).
+ * has the vCPUs and memory. The host restores it from the template it keeps for its vCPU count (or boots it from
+ * scratch while that's being made, or when the host keeps templates per size).
  *
  * Among those, for the isolate tier, a host already holding the owner's runtime wins (isolates of one owner share a
  * VM); then the most free memory, the least loaded. Hosts keep no warm pools of running sandboxes, so no host is
