@@ -20,10 +20,12 @@ export interface PortHttpOptions {
 	/** The largest request body passed on (default 32 MiB). */
 	readonly maxBodyBytes?: number;
 	/**
-	 * Asked about each piece of the answer's body as it arrives, before it is queued for the reader: false, and the
-	 * answer fails (502) and its stream is closed, so what a sandbox pushes is held only as far as this lets it.
+	 * Takes the answer's body as it arrives instead of the `Response`'s stream, which then carries no bytes and only
+	 * ends (or errors) when the body does. Each piece is the caller's to copy into what it owns, and nothing of it is
+	 * kept here or queued, so what a sandbox sends is held only as the caller holds it. False, and the answer fails
+	 * (502) and its stream is closed.
 	 */
-	readonly admit?: (bytes: number) => boolean;
+	readonly take?: (bytes: Uint8Array) => boolean;
 }
 
 const HOP_BY_HOP = new Set([
@@ -332,11 +334,11 @@ export function proxyHttp(
 			});
 			const emit = (bytes: Uint8Array) => {
 				if (ended || bytes.length === 0) return;
-				if (options.admit !== undefined && !options.admit(bytes.length)) {
+				if (options.take === undefined) return controller?.enqueue(bytes);
+				if (!options.take(bytes)) {
 					ended = true;
-					return fail(new PortHttpError(502, "The sandbox's server sent more than was expected"));
+					fail(new PortHttpError(502, "The sandbox's server sent more than was expected"));
 				}
-				controller?.enqueue(bytes);
 			};
 			if (chunked) {
 				feed = dechunker(emit, close, fail);

@@ -443,9 +443,10 @@ describe("HTTP over a port's stream", () => {
 		expect(await answer.text()).toBe("hello, world");
 	});
 
-	it("asks `admit` about each piece of the body before queueing it, and fails at the first it refuses", async () => {
+	it("hands each piece of the body to `take` instead of queueing it, and fails at the first it refuses", async () => {
 		let closed = 0;
 		let admitted = 0;
+		const taken: string[] = [];
 		const pieces = Array.from({ length: 200 }, () => "4\r\nabcd\r\n").join("");
 		const answer = await proxyHttp(
 			async (sink) => ({
@@ -460,17 +461,34 @@ describe("HTTP over a port's stream", () => {
 			new Request("https://p.test/"),
 			{
 				host: "p.test",
-				admit: (bytes) => {
-					if (admitted + bytes > 10) return false;
-					admitted += bytes;
+				take: (bytes) => {
+					if (admitted + bytes.length > 10) return false;
+					admitted += bytes.length;
+					taken.push(decoder.decode(bytes));
 					return true;
 				},
 			},
 		);
 		expect(answer.status).toBe(200);
-		await expect(answer.text()).rejects.toMatchObject({ status: 502 });
-		expect(admitted).toBe(8);
+		// The stream carries none of it: it only fails, once `take` refused.
+		const reader = answer.body?.getReader();
+		await expect(reader?.read()).rejects.toMatchObject({ status: 502 });
+		expect(taken).toEqual(["abcd", "abcd"]);
 		expect(closed).toBeGreaterThan(0);
+
+		// One it takes whole ends the stream with nothing in it.
+		const whole: string[] = [];
+		const done = await proxyHttp(
+			async (sink) => ({
+				stream: 2,
+				write: () => sink.data(encoder.encode("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello")),
+				close: () => undefined,
+			}),
+			new Request("https://p.test/"),
+			{ host: "p.test", take: (bytes) => whole.push(decoder.decode(bytes)) > 0 },
+		);
+		expect(await done.text()).toBe("");
+		expect(whole).toEqual(["hello"]);
 	});
 
 	it("reads a body to the end of the stream when it has no length", async () => {

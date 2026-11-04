@@ -261,22 +261,30 @@ describe("the desktop's page", () => {
 		expect(closedInPush).toBe(true);
 	});
 
-	it("holds at most its budget of files still arriving across sandboxes, and lets it go however they end", async () => {
+	it("holds at most its budget of files still arriving across sandboxes, one-byte pieces or not", async () => {
 		const body = served["/assets/index.js"] ?? "";
-		const stalled = new Set<string>();
+		const sinks = new Map<string, PortSink>();
 		const desktop = createDesktopRoutes({
 			tickets,
 			client,
-			fileTimeoutMs: 50,
+			// Long enough that nothing here ends by timing out.
+			fileTimeoutMs: 60_000,
 			// Room for two of the file's 22 bytes in flight, not three.
 			fetchBudgetBytes: 2 * body.length + 4,
 			async openPort(sandboxId: string, _port: number, sink: PortSink) {
 				return {
 					stream: 1,
-					write() {
-						// All but the last byte, then nothing while stalled.
-						const sent = stalled.has(sandboxId) ? body.slice(0, -1) : body;
-						sink.data(encoder.encode(`HTTP/1.1 200 OK\r\nContent-Length: ${body.length}\r\n\r\n${sent}`));
+					write(bytes: Uint8Array) {
+						const path = /^GET (\S+) /.exec(new TextDecoder().decode(bytes))?.[1] ?? "";
+						const full = served[path] ?? "";
+						if (path !== "/assets/index.js") {
+							sink.data(encoder.encode(`HTTP/1.1 200 OK\r\nContent-Length: ${full.length}\r\n\r\n${full}`));
+							return;
+						}
+						// All but the last byte, each in a chunk of its own, in one push; then nothing until the test says.
+						sinks.set(sandboxId, sink);
+						const pieces = [...full.slice(0, -1)].map((char) => `1\r\n${char}\r\n`).join("");
+						sink.data(encoder.encode(`HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n${pieces}`));
 					},
 					close() {},
 				};
@@ -284,17 +292,61 @@ describe("the desktop's page", () => {
 		});
 		const issue = (sandboxId: string) =>
 			tickets.issue({ sandboxId, port: DESKTOP_PORT, expiresAt: Date.now() + 60_000, desktop: "control" });
-		for (const id of ["sbx_a", "sbx_b", "sbx_c"]) stalled.add(id);
-		const a = desktop.fetch(get(`${HOSTS_DESKTOP_PATH}/${await issue("sbx_a")}/assets/index.js`));
-		const b = desktop.fetch(get(`${HOSTS_DESKTOP_PATH}/${await issue("sbx_b")}/assets/index.js`));
-		// The third doesn't fit beside them: refused at once rather than held.
-		const c = await desktop.fetch(get(`${HOSTS_DESKTOP_PATH}/${await issue("sbx_c")}/assets/index.js`));
+		const settled = new Set<string>();
+		const file = async (sandboxId: string, path = "assets/index.js") => {
+			const answer = await desktop.fetch(get(`${HOSTS_DESKTOP_PATH}/${await issue(sandboxId)}/${path}`));
+			settled.add(sandboxId);
+			return answer;
+		};
+		const a = file("sbx_a");
+		const b = file("sbx_b");
+		await expect.poll(() => sinks.size).toBe(2);
+		// The third doesn't fit beside them: refused at once, while the other two are still waiting.
+		const c = await file("sbx_c");
 		expect(c?.status).toBe(502);
-		expect((await a)?.status).toBe(502);
-		expect((await b)?.status).toBe(502);
-		// Given up on, they let their share go: a healthy sandbox's file is fetched and checked as before.
-		const ok = await desktop.fetch(get(`${HOSTS_DESKTOP_PATH}/${await issue("sbx_ok")}/assets/index.js`));
-		expect(await ok?.text()).toBe(body);
+		expect([...settled]).toEqual(["sbx_c"]);
+		// The two held finish, and are checked and served as any other.
+		for (const id of ["sbx_a", "sbx_b"]) sinks.get(id)?.data(encoder.encode(`1\r\n${body.slice(-1)}\r\n0\r\n\r\n`));
+		expect(await (await a)?.text()).toBe(body);
+		expect(await (await b)?.text()).toBe(body);
+		// What they held is let go of: the refused sandbox's next file (37 bytes) fits where it couldn't before.
+		const index = await file("sbx_c", "");
+		expect(await index?.text()).toBe(served["/index.html"]);
+	});
+
+	it("lets go of what a refused or timed-out file held", async () => {
+		const body = served["/assets/index.js"] ?? "";
+		let mode: "stall" | "flood" | "serve" = "stall";
+		const desktop = createDesktopRoutes({
+			tickets,
+			client,
+			fileTimeoutMs: 30,
+			// Room for one file only.
+			fetchBudgetBytes: body.length + 2,
+			async openPort(_sandboxId: string, _port: number, sink: PortSink) {
+				return {
+					stream: 1,
+					write() {
+						const sent = mode === "stall" ? body.slice(0, -1) : mode === "flood" ? `${body}${body}` : body;
+						sink.data(encoder.encode(`HTTP/1.1 200 OK\r\n\r\n${sent}`));
+						if (mode !== "stall") sink.end("done");
+					},
+					close() {},
+				};
+			},
+		});
+		const fetchIn = async (sandboxId: string) =>
+			desktop.fetch(
+				get(
+					`${HOSTS_DESKTOP_PATH}/${await tickets.issue({ sandboxId, port: DESKTOP_PORT, expiresAt: Date.now() + 60_000, desktop: "control" })}/assets/index.js`,
+				),
+			);
+		expect((await fetchIn("sbx_slow"))?.status).toBe(502);
+		mode = "flood";
+		expect((await fetchIn("sbx_flood"))?.status).toBe(502);
+		// Had either kept its share, there would be no room for this one.
+		mode = "serve";
+		expect(await (await fetchIn("sbx_ok"))?.text()).toBe(body);
 	});
 
 	it("puts view-only in the URL's fragment for Selkies' own viewer page, and in the ticket for the gateway", () => {

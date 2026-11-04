@@ -141,10 +141,11 @@ export function createDesktopRoutes(options: DesktopRoutesOptions): DesktopRoute
 	}
 
 	/**
-	 * A file of the client from the sandbox, if it is byte for byte the one Kantel knows. What the sandbox sends is
-	 * counted as it arrives, before it is queued (`admit`): never past the file's own size, nor past what every file
-	 * still arriving may hold together; either, and the answer fails and its stream is closed. Given up on once the
-	 * time is up.
+	 * A file of the client from the sandbox, if it is byte for byte the one Kantel knows. Its bytes go straight into one
+	 * buffer of this fetch's own as the parser reads them (`take`): nothing else of the answer is kept or queued,
+	 * however it is split. The buffer grows only as bytes come, never past the file's size, and what it has allocated is
+	 * what is charged against the budget every file still arriving shares; past either, the answer fails and its stream
+	 * is closed. Given up on once the time is up, and its charge let go of however it ends.
 	 */
 	async function fetchFile(
 		sandboxId: string,
@@ -152,53 +153,51 @@ export function createDesktopRoutes(options: DesktopRoutesOptions): DesktopRoute
 		sha256: string,
 		size: number,
 	): Promise<Uint8Array | undefined> {
-		let held = 0;
+		let data = new Uint8Array(0);
+		let length = 0;
 		let finished = false;
-		const admit = (bytes: number) => {
-			if (finished || held + bytes > size || budget.held + bytes > budget.limit) return false;
-			held += bytes;
-			budget.held += bytes;
+		const take = (bytes: Uint8Array) => {
+			if (finished || length + bytes.length > size) return false;
+			if (length + bytes.length > data.length) {
+				const capacity = Math.min(size, Math.max(length + bytes.length, data.length * 2));
+				if (budget.held + capacity - data.length > budget.limit) return false;
+				budget.held += capacity - data.length;
+				const grown = new Uint8Array(capacity);
+				grown.set(data.subarray(0, length));
+				data = grown;
+			}
+			data.set(bytes, length);
+			length += bytes.length;
 			return true;
 		};
+		let timer: ReturnType<typeof setTimeout> | undefined;
 		try {
 			const answer = await proxyHttp(
 				(sink) => options.openPort(sandboxId, DESKTOP_PORT, sink),
 				new Request(`http://127.0.0.1:${DESKTOP_PORT}/${file}`),
-				{ host: `127.0.0.1:${DESKTOP_PORT}`, path: `/${file}`, headTimeoutMs: fileTimeout, admit },
+				{ host: `127.0.0.1:${DESKTOP_PORT}`, path: `/${file}`, headTimeoutMs: fileTimeout, take },
 			);
-			const length = answer.headers.get("content-length");
-			if (answer.status !== 200 || answer.body === null || (length !== null && Number(length) !== size)) {
+			const declared = answer.headers.get("content-length");
+			if (answer.status !== 200 || answer.body === null || (declared !== null && Number(declared) !== size)) {
 				await answer.body?.cancel().catch(() => undefined);
 				return undefined;
 			}
+			// The stream carries no bytes (they are `take`'s): it only says when the body ends, or that it failed.
 			const reader = answer.body.getReader();
-			const chunks: Uint8Array[] = [];
-			const timer = setTimeout(() => void reader.cancel().catch(() => undefined), fileTimeout);
+			timer = setTimeout(() => void reader.cancel().catch(() => undefined), fileTimeout);
 			try {
-				for (;;) {
-					const { done, value } = await reader.read();
-					if (done) break;
-					chunks.push(value);
-				}
+				while (!(await reader.read()).done) {}
 			} catch {
 				return undefined;
-			} finally {
-				clearTimeout(timer);
 			}
-			if (held !== size) return undefined;
-			const bytes = new Uint8Array(size);
-			let at = 0;
-			for (const chunk of chunks) {
-				bytes.set(chunk, at);
-				at += chunk.length;
-			}
-			if (at !== size || hex(await crypto.subtle.digest("SHA-256", bytes)) !== sha256) return undefined;
-			return bytes;
+			if (finished || length !== size) return undefined;
+			if (hex(await crypto.subtle.digest("SHA-256", data)) !== sha256) return undefined;
+			return data;
 		} finally {
-			// Read, failed or given up on: what it held is let go of (the verified copy is the cache's).
+			if (timer !== undefined) clearTimeout(timer);
+			// Read, failed or given up on: its charge is let go of (a verified copy is the cache's, bounded by the client).
 			finished = true;
-			budget.held -= held;
-			held = 0;
+			budget.held -= data.length;
 		}
 	}
 
