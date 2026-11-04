@@ -11,6 +11,7 @@
  * existing disks are. For those calls the service passes every qualifying host the account may use (online, the
  * type, the labels), and the backend that answers gets the ones among them that are its own.
  */
+import { KantelError } from "@kantel/contracts";
 import type { BackendCapabilities, BackendSize, Placement, SandboxBackend, SandboxSpec } from "./backend.ts";
 
 export interface RoutedBackendOptions {
@@ -96,6 +97,13 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		openSsh: async (id, how) => (await on(id)).openSsh(id, how),
 		openDesktop: async (id, how) => (await on(id)).openDesktop(id, how),
 		openBrowser: async (id, how) => (await on(id)).openBrowser(id, how),
+		async openE2E(id, how) {
+			const backend = await on(id);
+			if (backend.openE2E === undefined) {
+				throw new KantelError("not_supported", "This sandbox isn't on a host that E2E sessions reach");
+			}
+			return backend.openE2E(id, how);
+		},
 		usage: async (id) => (await on(id)).usage(id),
 		async updateEgress(id, egress, revision) {
 			await (await on(id)).updateEgress?.(id, egress, revision);

@@ -22,6 +22,7 @@ import (
 //	owners.json          the sandbox IDs seen in E2E spaces, so their snapshots stay covered when an ID is reused
 //	born.json            the sandboxes made while their space was E2E (Born): the only ones a device's session reaches
 //	spaces/<space>.json  each space's chain: the genesis the host pinned when it joined, and the entries
+//	proposals/<space>.json  the host.add a join signed that the host hasn't yet seen the gateway take (proposal)
 //
 // A chain file is verified from its pinned genesis whenever it is read, and kept only once extended entries verify, so
 // a file someone edits can't make the host trust a key: it would fail and leave the space refusing every session.
@@ -55,6 +56,9 @@ func OpenStore(dir string) (*Store, error) {
 		return nil, err
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "spaces"), 0o700); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "proposals"), 0o700); err != nil {
 		return nil, err
 	}
 	return &Store{dir: dir, spaces: map[string]*spaceChain{}}, nil
@@ -444,8 +448,10 @@ func (c *spaceChain) Entries(from int) []Entry {
 }
 
 // Join adds the host to the space the ticket is for: entries are the space's chain as the gateway gave it, which must
-// start at the genesis the ticket pins; the host signs its host.add, keeps the chain with it, and gives the entry back
-// to publish. The host's ID is the one the gateway knows it by.
+// start at the genesis the ticket pins. The host keeps that chain, signs its host.add onto it and gives the entry back
+// to publish; the host.add is only a proposal until Confirm (the gateway took it) or a chain that has it, so a host.add
+// that loses its seq to another append is never part of the chain the host holds to. The host's ID is the one the
+// gateway knows it by.
 func (s *Store) Join(join *JoinTicket, entries []Entry, hostID string, now time.Time) (e Entry, st *State, err error) {
 	// No gateway update runs across a join (Unenrolled).
 	if eerr := s.enrolling(func() error {
@@ -529,25 +535,127 @@ func (s *Store) join(join *JoinTicket, entries []Entry, hostID string, now time.
 	}
 	if h, ok := st.Hosts[hostID]; ok {
 		if h.DH == B64(id.DHPublic()) {
-			// Joined before (the publish may have failed): keep the chain and publish nothing new.
-			return Entry{}, st, s.save(space, genesis, entries)
+			// Joined: the gateway took the host.add (its answer may have been lost). Keep the chain; nothing is left to
+			// publish.
+			if err := s.save(space, genesis, entries); err != nil {
+				return Entry{}, nil, err
+			}
+			s.dropProposal(space)
+			return Entry{}, st, nil
 		}
 		return Entry{}, nil, fmt.Errorf("the chain has host %s with other keys", hostID)
 	}
+	// A proposal is never part of the chain the host holds to, so it is only kept while it can still be taken: one this
+	// host made on the chain as the gateway still has it (its publish failed), with the ticket given now, which hasn't
+	// expired, is published again rather than a second signed onto the same head. Anything else (the chain went past
+	// it, or a new ticket because the old one ran out) gets a host.add signed with this ticket, which replaces it.
+	if p, ok := s.proposal(space); ok && p.Seq == len(entries) && proposedWith(p.Entry, join) && join.Usable(now.UnixMilli()) {
+		if next, err := VerifyChain(append(append([]Entry{}, entries...), p.Entry), genesis); err == nil {
+			if err := s.save(space, genesis, entries); err != nil {
+				return Entry{}, nil, err
+			}
+			return p.Entry, next, nil
+		}
+	}
+	// None, or one the gateway's chain went past without (another append took its seq): a host.add on the chain as it
+	// is, with this ticket.
 	at := max(now.UnixMilli(), st.At)
 	e, err := SignHostAdd(st, join, hostID, id, at)
 	if err != nil {
 		return Entry{}, nil, err
 	}
-	all := append(append([]Entry{}, entries...), e)
-	next, err := VerifyChain(all, genesis)
+	next, err := VerifyChain(append(append([]Entry{}, entries...), e), genesis)
 	if err != nil {
 		return Entry{}, nil, err
 	}
-	if err := s.save(space, genesis, all); err != nil {
+	// The proposal before the chain, so a join that stops between the two publishes this one when it is run again.
+	if err := writeFile(s.proposalPath(space), proposal{Seq: len(entries), Entry: e}); err != nil {
+		return Entry{}, nil, err
+	}
+	if err := s.save(space, genesis, entries); err != nil {
 		return Entry{}, nil, err
 	}
 	return e, next, nil
+}
+
+// Confirm adds the host.add Join gave to the chain the host holds, once the gateway has taken it. A chain that
+// already has it (a device's session brought it) is left as it is; one with another entry at its seq is refused,
+// and the host joins again.
+func (s *Store) Confirm(space string, e Entry) error {
+	if !validSpace(space) {
+		return errors.New("no such space")
+	}
+	return s.enrolling(func() error {
+		return s.locked(func() error {
+			c := s.Space(space)
+			if c == nil {
+				return fmt.Errorf("this host hasn't joined %s", space)
+			}
+			c.mu.Lock()
+			c.state = nil
+			c.mu.Unlock()
+			cur, err := c.load()
+			if err != nil {
+				return fmt.Errorf("this host's chain for %s doesn't verify: %w", space, err)
+			}
+			have := c.Entries(0)
+			p, ok := s.proposal(space)
+			if !ok || p.Entry != e {
+				// Already in the chain (a host.add the gateway was behind on, published again): nothing to add.
+				for _, held := range have {
+					if held == e {
+						return nil
+					}
+				}
+				return fmt.Errorf("this host has no host.add for %s waiting to be confirmed", space)
+			}
+			switch {
+			case len(have) == p.Seq:
+				all := append(append([]Entry{}, have...), e)
+				if _, err := VerifyChain(all, cur.Genesis); err != nil {
+					return err
+				}
+				if err := s.save(space, cur.Genesis, all); err != nil {
+					return err
+				}
+			case len(have) > p.Seq && have[p.Seq] == e:
+			default:
+				return fmt.Errorf("this host's chain for %s has another entry at seq %d: join again", space, p.Seq)
+			}
+			s.dropProposal(space)
+			return nil
+		})
+	})
+}
+
+// proposal is a host.add a join signed onto the chain's first seq Seq entries.
+type proposal struct {
+	Seq   int   `json:"seq"`
+	Entry Entry `json:"entry"`
+}
+
+func (s *Store) proposalPath(space string) string {
+	return filepath.Join(s.dir, "proposals", space+".json")
+}
+
+func (s *Store) proposal(space string) (proposal, bool) {
+	raw, err := os.ReadFile(s.proposalPath(space))
+	if err != nil {
+		return proposal{}, false
+	}
+	var p proposal
+	if json.Unmarshal(raw, &p) != nil || p.Entry.Payload == "" {
+		return proposal{}, false
+	}
+	return p, true
+}
+
+func (s *Store) dropProposal(space string) { _ = os.Remove(s.proposalPath(space)) }
+
+// proposedWith says whether host.add e was signed with join's ticket.
+func proposedWith(e Entry, join *JoinTicket) bool {
+	t, ok := hostAddTicket(e)
+	return ok && t == join.Ticket
 }
 
 // save writes a joined space's chain. The first time, the chain is staged in pending/ before the space is marked

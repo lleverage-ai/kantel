@@ -9,11 +9,13 @@
 		".": "./src/index.ts",
 		"./stub": "./src/stub-backend.ts",
 		"./serve": "./src/serve.ts",
-		"./sql": "./src/sql-store.ts"
+		"./sql": "./src/sql-store.ts",
+		"./e2e": "./src/e2e.ts"
 	},
 	"dependencies": {
 		"@kantel/api": "workspace:*",
 		"@kantel/contracts": "workspace:*",
+		"@kantel/e2e": "workspace:*",
 		"@kantel/sql": "workspace:*",
 		"just-bash": "3.6.0"
 	}

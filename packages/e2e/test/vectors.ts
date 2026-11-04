@@ -405,6 +405,13 @@ export interface JoinVector {
 	readonly word: string;
 	/** Another space's chain: a gateway that hands the host this instead. */
 	readonly otherEntries: readonly ChainEntry[];
+	/**
+	 * An admin's entry the gateway took at the seq the host's host.add was for, so that host.add lost; and a new ticket
+	 * for rack-9 made after it, with which the host joins the chain as it now is.
+	 */
+	readonly race: { readonly entry: ChainEntry; readonly word: string };
+	/** A ticket for rack-9 that runs out ten years after the fixture, half as long as `word`. */
+	readonly shortWord: string;
 }
 
 /** A ticket for a second host, which the Go host's join must turn into a host.add the chain takes. */
@@ -426,7 +433,34 @@ export async function joinVector(): Promise<JoinVector> {
 		{ id: await keyId("kd", other.signer.publicKey), signer: other.signer },
 		T0,
 	);
-	return { entries: f.entries, word: encodeJoinTicket(join), otherEntries: [otherGenesis] };
+	const won = await signAs(
+		f.state,
+		f.tom,
+		{ type: "member.add", body: { user: "usr_ann", role: "member" } },
+		T0 + 600_000,
+	);
+	const after = await verifyChain([...f.entries, won]);
+	const again = await createHostTicket(
+		after,
+		{ id: f.tomId, signer: f.tom.signer },
+		"rack-9",
+		T0 + 20 * 365 * 24 * 3_600_000,
+		await seed("ticket-9-again"),
+	);
+	const short = await createHostTicket(
+		f.state,
+		{ id: f.tomId, signer: f.tom.signer },
+		"rack-9",
+		T0 + 10 * 365 * 24 * 3_600_000,
+		await seed("ticket-9-short"),
+	);
+	return {
+		entries: f.entries,
+		word: encodeJoinTicket(join),
+		otherEntries: [otherGenesis],
+		race: { entry: won, word: encodeJoinTicket(again) },
+		shortWord: encodeJoinTicket(short),
+	};
 }
 
 const here = (name: string) => fileURLToPath(new URL(`../vectors/${name}`, import.meta.url));

@@ -819,6 +819,60 @@ export const BrowserAccess = Type.Object(
 	{ title: "BrowserAccess" },
 );
 
+// End-to-end encryption (`@kantel/e2e`).
+
+export const E2EAccessBody = Type.Object(
+	{
+		ttlMinutes: Type.Optional(
+			Type.Integer({
+				minimum: 1,
+				maximum: 60,
+				description: "How long a session can be started with this URL; one started in time stays open. Default 10.",
+			}),
+		),
+	},
+	{ title: "E2EAccessBody" },
+);
+
+export const E2EAccess = Type.Object(
+	{
+		url: Type.String({
+			description:
+				"A WebSocket URL to the sandbox's host that carries a Noise session as binary frames. The gateway relays it and can't read it: the device checks the host's key against the space's chain, and the host checks the device's.",
+		}),
+		hostId: Type.String({ description: "The host the sandbox is on: the chain's entry for it has its key." }),
+		accountId: Type.String({ description: "The sandbox's organisation: the space whose chain the session is in." }),
+		expiresAt: Timestamp,
+	},
+	{ title: "E2EAccess" },
+);
+
+export const E2EEntry = Type.Object(
+	{
+		payload: Type.String({ description: "Base64url of the entry's JSON, exactly the bytes that were signed." }),
+		sig: Type.String({ description: "Base64url of its Ed25519 signature." }),
+	},
+	{ title: "E2EEntry" },
+);
+
+export const E2EChain = Type.Object(
+	{
+		entries: Type.Array(E2EEntry, { description: "Oldest first; an entry's `seq` is its index." }),
+	},
+	{ title: "E2EChain" },
+);
+
+export const E2EChainAppend = Type.Object(
+	{
+		from: Type.Integer({
+			minimum: 0,
+			description: "The seq of the first entry given: the chain's length as the caller last saw it.",
+		}),
+		entries: Type.Array(E2EEntry, { minItems: 1, maxItems: 100 }),
+	},
+	{ title: "E2EChainAppend" },
+);
+
 // Snapshots.
 
 export const SnapshotKind = Type.Union([Type.Literal("automatic"), Type.Literal("saved")], {

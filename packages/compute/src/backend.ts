@@ -263,6 +263,14 @@ export interface SandboxBackend {
 		sandboxId: string,
 		options: { readonly viewOnly: boolean; readonly ttlMinutes: number; readonly grantee?: string },
 	): Promise<{ readonly url: string; readonly cdpUrl: string }>;
+	/**
+	 * A tunnel to the host's E2E responder for the sandbox (`@kantel/e2e`), whose bytes the relay passes on unread, and
+	 * the host's ID. Absent when sandboxes aren't on hosts (the stub).
+	 */
+	openE2E?(
+		sandboxId: string,
+		options: { readonly ttlMinutes: number; readonly grantee?: string },
+	): Promise<{ readonly url: string; readonly hostId: string }>;
 	/** A CPU and memory reading of a running sandbox. */
 	usage(sandboxId: string): Promise<UsageSample>;
 	/**

@@ -58,6 +58,7 @@ import {
 	createHostsApi,
 	DEFAULT_HOST_IMAGES,
 	HOSTS_CONNECT_PATH,
+	HOSTS_E2E_CHAIN_PATH,
 	HOSTS_IMAGES_PATH,
 	HOSTS_REGISTER_PATH,
 } from "@kantel/hosts/http";
@@ -411,6 +412,10 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 	own?.service.useCompute({
 		secrets: async () => undefined,
 		recordEgress: (hostId, records) => api.service.recordEgress(hostId, records),
+		e2eChain: {
+			read: (hostId, space) => api.service.hostE2EChain(hostId, space),
+			append: (hostId, space, from, entries) => api.service.appendHostE2EChain(hostId, space, from, entries),
+		},
 	});
 	own?.bind((grantee, sandboxId) => api.service.stillAllowed(grantee, sandboxId));
 	const timers = whileBusy(api, now);
@@ -506,7 +511,8 @@ async function accountHostsSide(
 		now,
 	});
 	const backend = createHostBackend({ hosts: service, publicUrl: config.publicUrl, tickets, ports, now });
-	// Registration only: the compute API serves hosts' management, so the registry's own admin routes refuse everyone.
+	// Registration and a host's E2E chain only: the compute API serves hosts' management, so the registry's own admin
+	// routes refuse everyone.
 	const register = createHostsApi({
 		hosts: service,
 		authorizeAdmin: () => Promise.reject(new KantelError("not_found", "Not found")),
@@ -533,6 +539,12 @@ async function accountHostsSide(
 					if (request.method !== "POST") return register.fetch(request);
 					// Anyone can reach it (past Access), so its body is counted as it comes, before any of it is parsed.
 					const bounded = await buffered(request, HOST_REGISTER_BODY_LIMIT);
+					return bounded instanceof Response ? bounded : register.fetch(bounded);
+				}
+				// A host's space chain (`kantel-host e2e join`), on its credential; an append's body is bounded the same way.
+				if (path === HOSTS_E2E_CHAIN_PATH) {
+					if (request.method !== "POST") return register.fetch(request);
+					const bounded = await buffered(request, HOST_E2E_CHAIN_BODY_LIMIT);
 					return bounded instanceof Response ? bounded : register.fetch(bounded);
 				}
 				if (path.startsWith(`${HOSTS_IMAGES_PATH}/`)) return hostImage(request, path);
@@ -649,6 +661,9 @@ export async function grantPorts(store: ComputeStore, sandboxIds: readonly strin
 
 /** A registration is a token, a name, labels and facts: a few kilobytes. */
 export const HOST_REGISTER_BODY_LIMIT = 64 * 1024;
+
+/** A host's chain append is its one signed host.add, with room for a few more entries. */
+export const HOST_E2E_CHAIN_BODY_LIMIT = 256 * 1024;
 
 /** `GET /v1/hosts/images/{file}`: Kantel's published images, as a self-hosted gateway serves them by default. */
 function hostImage(request: Request, path: string): Response {
