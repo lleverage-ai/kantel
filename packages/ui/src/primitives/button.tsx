@@ -20,7 +20,7 @@ const buttonVariants: { readonly [variant in ButtonVariant]: string } = {
 	ghost: "border-transparent bg-transparent text-muted hover:not-disabled:bg-hover hover:not-disabled:text-fg",
 	danger: "border-transparent bg-destructive text-on-solid hover:not-disabled:bg-destructive/85",
 	/** A destructive action that isn't the page's point (Leave): the secondary ground, in the danger colour. */
-	"danger-quiet": "border-transparent bg-secondary text-destructive hover:not-disabled:bg-secondary-hover",
+	"danger-quiet": "border-transparent bg-secondary text-status-error hover:not-disabled:bg-secondary-hover",
 };
 
 /** Each size's height, inline padding and font size, for a button with words. Every button has the control radius, as the Lleverage app's. */

@@ -8,7 +8,7 @@ import { Notice, Panel } from "./surface.tsx";
 
 /** Text to copy, in code's font on the sunken ground: one click selects all of it. */
 const codeFrame =
-	"m-0 min-w-0 flex-1 overflow-x-auto rounded-control border border-border-input bg-sunken px-2.5 py-2 font-mono text-code leading-normal text-fg select-all whitespace-pre [scrollbar-width:none] mask-r-from-92% mask-r-to-100%";
+	"m-0 min-w-0 flex-1 rounded-control border border-border-input bg-sunken px-2.5 py-2 font-mono text-code leading-normal text-fg select-all whitespace-pre-wrap wrap-anywhere";
 
 /**
  * A command's text inside its field: all of it on screen, wrapping only between words and after a slash (a URL's

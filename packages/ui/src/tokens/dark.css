@@ -49,7 +49,7 @@
 	   may be; the faint text a step under the muted is a mix of the two that keeps AA. */
 	--kt-text: hsl(50 20% 93%); /* foreground */
 	--kt-text-muted: hsl(50 10% 62%); /* muted-fg */
-	--kt-text-faint: color-mix(in srgb, var(--kt-text-muted) 75%, var(--kt-text-disabled));
+	--kt-text-faint: color-mix(in srgb, var(--kt-text-muted) 85%, var(--kt-text-disabled));
 	--kt-text-disabled: hsl(50 10% 45%); /* muted-fg-subtle */
 
 	/* The accent: his highlight, the brand's orange a little lighter than the primary, for what is pointed out rather
@@ -72,7 +72,7 @@
 	/* His success, 45% light, is 4.42:1 on a card, under AA as text; his set has no success text shade, so the text is
 	   his hue five points lighter (5.4:1 on a card). Fills keep his success (--kt-success). */
 	--kt-status-done: hsl(145 35% 50%); /* success, lightened for text */
-	--kt-status-error: hsl(0 68% 68%); /* destructive-text */
+	--kt-status-error: hsl(0 72% 73%); /* destructive-text, lifted to pass AA on its own soft tint and a white-on-dark card */
 	--kt-status-idle: var(--kt-text-faint); /* nothing happening */
 	/* Solid fills: a destructive button (with --kt-on-solid on it), a bar or a dot that isn't text. */
 	--kt-destructive: hsl(0 55% 50%); /* destructive */
