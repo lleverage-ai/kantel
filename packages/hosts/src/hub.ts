@@ -142,8 +142,14 @@ export interface HostHubOptions {
 	 */
 	onHello(hostId: string, hello: HostHello): Promise<HostWelcome>;
 	onHeartbeat?(hostId: string, capacity: HostCapacity): void;
-	/** A welcomed host's usage tick (a `usage` message), as it came: the service checks it. */
-	onUsage?(hostId: string, usage: unknown): void;
+	/**
+	 * A welcomed host's usage tick (a `usage` message), as it came: the service checks it. A promise answered is the tick
+	 * being taken: once it resolves, on a connection whose welcome had `usageAcks`, the hub acknowledges the tick's `seq`
+	 * (`usage.ack`). Nothing answered, or a promise that rejects, acknowledges nothing. An ack covers every earlier tick
+	 * too, so the promise must resolve only once this tick and every one the host sent before it are taken (the compute
+	 * plane holds a tick it couldn't take, and every one after it, until they can be: `ComputeService.recordUsage`).
+	 */
+	onUsage?(hostId: string, usage: unknown): Promise<unknown> | undefined;
 	/** A sandbox changed state (an event not tied to a call). */
 	onEvent?(hostId: string, event: HostEvent): void;
 	/** The host's current connection ended. */
@@ -216,6 +222,10 @@ interface Connection {
 	readonly streams: Map<number, PortSink>;
 	/** A file write stream's `stream.ack`s: how much of it the sandbox has taken. */
 	readonly acks: Map<number, (taken: number) => void>;
+	/** Its first welcome had `usageAcks`: usage ticks taken are acknowledged (`usage.ack`). */
+	usageAcks: boolean;
+	/** The newest `seq` acknowledged on it, so acks only go forward. */
+	usageAcked: number;
 }
 
 const DEFAULT_CALL_TIMEOUT_MS = 120_000;
@@ -457,6 +467,32 @@ export function createHostHub(options: HostHubOptions): HostHub {
 		}
 	};
 
+	/**
+	 * A usage tick, to the service; with acks on, its `seq` acknowledged once the service has taken it. The service takes
+	 * a host's ticks in the order they came, so acks go out in order too; one that would go back is left out.
+	 */
+	const takeUsage = (connection: Connection, report: object) => {
+		const taken = options.onUsage?.(connection.hostId, report);
+		const seq = (report as { readonly seq?: unknown }).seq;
+		if (!connection.usageAcks || !(taken instanceof Promise)) return;
+		if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1) {
+			taken.catch(() => undefined);
+			return;
+		}
+		taken.then(
+			() => {
+				if (connection.closed || seq <= connection.usageAcked) return;
+				connection.usageAcked = seq;
+				try {
+					send(connection, { type: "usage.ack", acked: seq });
+				} catch {
+					// A socket gone meanwhile: the host sends the tick again on its next connection.
+				}
+			},
+			() => undefined,
+		);
+	};
+
 	const hello = async (connection: Connection, message: HostHello | undefined) => {
 		try {
 			if (message === undefined) throw new Error("The first message must be a hello");
@@ -471,6 +507,9 @@ export function createHostHub(options: HostHubOptions): HostHub {
 			const welcome = await options.onHello(connection.hostId, message);
 			if (connection.closed) return;
 			connection.welcomed = true;
+			// The first welcome decides it for the connection, as it does on the host: a rewelcome forwarded by an older
+			// replica, without it, changes nothing.
+			connection.usageAcks = welcome.usageAcks === true;
 			send(connection, { type: "welcome", welcome });
 			const later = connection.later;
 			connection.later = undefined;
@@ -491,6 +530,8 @@ export function createHostHub(options: HostHubOptions): HostHub {
 				pending: new Map(),
 				streams: new Map(),
 				acks: new Map(),
+				usageAcks: false,
+				usageAcked: 0,
 			};
 			const older = held.get(hostId);
 			held.set(hostId, connection);
@@ -545,7 +586,7 @@ export function createHostHub(options: HostHubOptions): HostHub {
 						if (isObject(message.heartbeat)) options.onHeartbeat?.(hostId, message.heartbeat.capacity);
 						return;
 					case "usage":
-						if (connection.welcomed && isObject(message.usage)) options.onUsage?.(hostId, message.usage);
+						if (connection.welcomed && isObject(message.usage)) takeUsage(connection, message.usage);
 						return;
 					case "result": {
 						const id = typeof message.id === "string" ? message.id : undefined;

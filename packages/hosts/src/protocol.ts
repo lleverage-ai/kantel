@@ -158,6 +158,13 @@ export const HOST_FEATURES = {
 	 * default image as if it had made the sandbox from it.
 	 */
 	templates: "template-build",
+	/**
+	 * Acknowledged usage ticks: each tick carries `run` and `seq` (`HostUsageReport`), and on a connection whose welcome
+	 * has `usageAcks` the host keeps every tick until a `usage.ack` covers it, sending again on its next connection what
+	 * wasn't, so a tick written into a connection that then dies isn't lost. Without the welcome's `usageAcks` (an older
+	 * Kantel), a tick is done with once written, as before.
+	 */
+	usageAcks: "usage-acks",
 } as const;
 
 /**
@@ -427,6 +434,17 @@ export interface HostEgressRecord {
  * host's of all its CPUs. Above 1 is taken as 1.
  */
 export interface HostUsageReport {
+	/**
+	 * From a host with `usage-acks`: the tick's place in its `run`, from 1 up by one per tick taken (a tick the host's
+	 * bounded backlog dropped leaves a gap). Kantel acknowledges a tick by it (`usage.ack`), and takes a tick at most once
+	 * by it: a tick sent again after a reconnect whose `seq` it has taken already is acknowledged and not taken again.
+	 */
+	readonly seq?: number;
+	/**
+	 * With `seq`: which run of the host's sampler it counts in, chosen when kantel-host starts, so a restarted host's
+	 * `seq` starting again at 1 isn't taken for ticks Kantel has already had.
+	 */
+	readonly run?: string;
 	/** When the readings were taken, epoch milliseconds. */
 	readonly at: number;
 	/** The tick, 1000 to 300000; 5000 by default. */
@@ -494,6 +512,12 @@ export interface HostWelcome {
 	 * `sandbox.start` with `rebase`.
 	 */
 	readonly images?: HostImageChannel;
+	/**
+	 * This Kantel acknowledges usage ticks (`HOST_FEATURES.usageAcks`): once the gateway holding the host's connection
+	 * has taken a tick into its series it answers `{ "type": "usage.ack", "acked": seq }`, covering that tick and every
+	 * earlier one. A connection's first welcome decides it for the connection.
+	 */
+	readonly usageAcks?: boolean;
 }
 
 /**
@@ -530,6 +554,7 @@ export interface HostMessage {
 		| "welcome"
 		| "heartbeat"
 		| "usage"
+		| "usage.ack"
 		| "call"
 		| "result"
 		| "event"
@@ -553,7 +578,8 @@ export interface HostMessage {
 	readonly reason?: string;
 	/**
 	 * For `stream.ack`: the bytes of a file stream its receiver has taken so far, the sandbox's of a write (host →
-	 * Kantel), Kantel's reader's of a read (Kantel → host).
+	 * Kantel), Kantel's reader's of a read (Kantel → host). For `usage.ack` (Kantel → host): the `seq` of the newest
+	 * usage tick taken, which covers every earlier one of the run.
 	 */
 	readonly acked?: number;
 }

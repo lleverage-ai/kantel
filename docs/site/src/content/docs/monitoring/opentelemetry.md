@@ -74,7 +74,7 @@ Then set `"endpoint": "http://<collector-address>:4318"`, at an address your con
 
 ## Metrics
 
-Every 60 seconds Kantel sends each reading of the account's sandboxes taken since the last export, so one export can hold several data points per sandbox. A sandbox that stopped since still sends the readings it had.
+Every 60 seconds Kantel sends each reading of the account's sandboxes taken since the last export, so one export can hold several data points per sandbox. A sandbox that stopped since still sends the readings it had. Readings a host sends again after its connection to Kantel dropped [go in the next export](/hosts/#check-on-a-host), each only once.
 
 | Metric | Type | Unit | What it is |
 | --- | --- | --- | --- |

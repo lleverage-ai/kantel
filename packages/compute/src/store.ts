@@ -479,6 +479,24 @@ export interface StoredSetting {
 	readonly updatedBy: string;
 }
 
+/**
+ * A gateway replica's claim to export one numbered usage tick: its ID is `usageClaimId` of the host, the tick's `run`
+ * and its `seq`. A replica taking a tick straight from its host claims it (`insert`) once nothing can stop the tick
+ * going into its series, and exports it only if the claim is its own (`owner`, that process's): a tick the host sends
+ * again to another replica after a reconnect, which the first claimed, is only drawn there. So each tick is exported
+ * once however the replicas pass ticks on to each other, and a claim whose answer was lost is still known as its own.
+ * Removed once `keepUntil` has passed, when the host can no longer send it again.
+ */
+export interface StoredUsageClaim {
+	readonly id: string;
+	readonly hostId: string;
+	readonly owner: string;
+	readonly keepUntil: number;
+}
+
+/** The ID of the claim to tick `seq` of `run` from `hostId` (`StoredUsageClaim`). */
+export const usageClaimId = (hostId: string, run: string, seq: number): string => `${hostId}:${run}:${seq}`;
+
 /** A device sign-in (`kantel login` in a browser); its ID is the SHA-256 hex of its device code. */
 export interface StoredDeviceLogin {
 	readonly id: string;
@@ -558,6 +576,8 @@ export interface ComputeStore {
 	/** Template snapshots: a cache, apart from `snapshots`, which the template code never reads or writes. */
 	readonly templateSnapshots: Collection<StoredTemplateSnapshot>;
 	readonly templateBases: Collection<StoredTemplateBase>;
+	/** Which replica exports each numbered usage tick (`StoredUsageClaim`). */
+	readonly usageClaims: Collection<StoredUsageClaim>;
 }
 
 /**
@@ -694,6 +714,7 @@ export function createMemoryStore(): ComputeStore {
 		bucketSources: memoryCollection(),
 		fileUrls: memoryCollection(),
 		settings: memoryCollection(),
+		usageClaims: memoryCollection(),
 		templates: templates.collection,
 		templateVersions: templateVersions.collection,
 		templateWrites: memoryTemplateWrites(templates, templateVersions),

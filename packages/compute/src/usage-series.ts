@@ -25,6 +25,12 @@ export const SPARKLINE_POINTS = 24;
 
 /** A host's usage tick as the compute plane takes it: checked and clamped (`parseHostUsage` in @kantel/hosts). */
 export interface ReportedUsage {
+	/**
+	 * From a host with acknowledged ticks (`usage-acks`): the tick's place in its sampler's `run`. A tick whose `seq` the
+	 * series have taken already (one sent again after a reconnect) isn't taken again.
+	 */
+	readonly seq?: number;
+	readonly run?: string;
 	readonly at: number;
 	readonly intervalMs: number;
 	readonly host: {

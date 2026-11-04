@@ -129,7 +129,7 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 		h.mu.Lock()
 		h.events = nil
 		if h.link == s.calls {
-			h.link = nil
+			h.link, h.usageAcks = nil, false
 		}
 		h.mu.Unlock()
 		// Calls waiting on this connection fail now rather than at their timeout.
@@ -164,6 +164,9 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 		_ = s.send(ctx, proto.Message{Type: "event", Event: &e})
 	}
 	h.link = s.calls
+	// The first welcome decides it for the connection, as on Kantel's side (a rewelcome forwarded by an older gateway
+	// replica may lack it).
+	h.usageAcks = welcome.Welcome.UsageAcks
 	h.mu.Unlock()
 	// Mounts of sandboxes adopted at start can resolve their bucket sources now.
 	go h.reconcileMounts(ctx)
@@ -218,6 +221,9 @@ func (s *session) text(ctx context.Context, m proto.Message, update Updater) {
 		if m.Welcome != nil {
 			s.host.applyWelcome(ctx, m.Welcome, update)
 		}
+	case "usage.ack":
+		// Kantel has taken the usage ticks up to this one: the backlog lets them go.
+		s.host.usageAcked(uint64(max(m.Acked, 0)))
 	case "stream.close":
 		s.closeStream(m.Stream)
 	case "stream.ack":
