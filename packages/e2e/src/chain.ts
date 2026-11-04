@@ -427,6 +427,9 @@ async function apply(state: MutableState | undefined, entry: ChainEntry, pin?: s
 		if (t.space !== state.space || t.genesis !== state.genesis) throw new Error("The ticket is for another space");
 		if (!isAdminDevice(next, t.by)) throw new Error("The ticket wasn't signed by an admin's device");
 		const admin = next.devices.get(t.by);
+		if (state.mode === "strict" && admin?.class === "web") {
+			throw new Error("This space is strict: a web device's ticket isn't taken");
+		}
 		if (
 			admin === undefined ||
 			!(await verifySignature(
@@ -452,6 +455,11 @@ async function apply(state: MutableState | undefined, entry: ChainEntry, pin?: s
 	} else {
 		const signer = next.devices.get(payload.by);
 		if (signer === undefined) throw new Error(`The signer ${payload.by} isn't a device in the chain`);
+		// In a strict space the hosted console can't open sessions, so it can't change the chain either: else its key
+		// (served by the gateway's code) could add a CLI device of its own, or turn E2E off.
+		if (state.mode === "strict" && signer.class === "web") {
+			throw new Error("This space is strict: a web device's entries aren't taken");
+		}
 		if (!(await verifySignature(fromBase64url(signer.sign), signedBytes(ENTRY_CONTEXT, bytes), sig))) {
 			throw new Error("The entry's signature is wrong");
 		}

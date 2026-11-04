@@ -232,9 +232,25 @@ export async function chainVectors(): Promise<{ readonly cases: readonly ChainCa
 			await signAs(afterPhone, f.tom, { type: "device.remove", body: { id: f.tomId } }, at + 1),
 		],
 	});
+	const strict = await signAs(f.state, f.tom, { type: "mode", body: { mode: "strict" } }, at);
+	cases.push({ name: "a strict space refuses the hosted console's device", entries: [...base, strict] });
+	const strictState = await verifyChain([...base, strict]);
 	cases.push({
-		name: "a strict space refuses the hosted console's device",
-		entries: [...base, await signAs(f.state, f.tom, { type: "mode", body: { mode: "strict" } }, at)],
+		name: "in a strict space, the hosted console's key adds a CLI device of its own",
+		entries: [
+			...base,
+			strict,
+			await signAs(
+				strictState,
+				f.tomPhone,
+				{ type: "device.add", body: { device: await chainDevice(eve, "usr_tom", "cli", "kantel on tom-laptop") } },
+				at + 1,
+			),
+		],
+	});
+	cases.push({
+		name: "in a strict space, the hosted console's key turns E2E off",
+		entries: [...base, strict, await signAs(strictState, f.tomPhone, { type: "mode", body: { mode: "off" } }, at + 1)],
 	});
 	cases.push({
 		name: "a second genesis",
