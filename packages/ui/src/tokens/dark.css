@@ -72,7 +72,9 @@
 	/* His success, 45% light, is 4.42:1 on a card, under AA as text; his set has no success text shade, so the text is
 	   his hue five points lighter (5.4:1 on a card). Fills keep his success (--kt-success). */
 	--kt-status-done: hsl(145 35% 50%); /* success, lightened for text */
-	--kt-status-error: hsl(0 72% 73%); /* destructive-text, lifted to pass AA on its own soft tint and a white-on-dark card */
+	--kt-status-error: hsl(
+		0 72% 73%
+	); /* destructive-text, lifted to pass AA on its own soft tint and a white-on-dark card */
 	--kt-status-idle: var(--kt-text-faint); /* nothing happening */
 	/* Solid fills: a destructive button (with --kt-on-solid on it), a bar or a dot that isn't text. */
 	--kt-destructive: hsl(0 55% 50%); /* destructive */

@@ -816,8 +816,8 @@ function SandboxRow({
 				<StateLabel state={sandbox.state} />
 			</td>
 			<td className={cell}>
-				{SANDBOX_KIND_LABELS[sandbox.kind]}{" "}
-				<span className="text-faint">{sizeText(sandbox.resources ?? sandbox.size)}</span>
+				{SANDBOX_KIND_LABELS[sandbox.kind]}
+				<span className="text-faint">, {sizeText(sandbox.resources ?? sandbox.size)}</span>
 			</td>
 			<td className={cell}>
 				{sandbox.environment === undefined ? <span className="text-faint">–</span> : sandbox.environment.name}
@@ -1371,7 +1371,7 @@ export function NewSandboxDialog({
 }
 
 /** The loaded table's columns, as placeholder widths: name, state, machine, environment, stops, CPU, created. */
-const SKELETON_WIDTHS = ["w-40", "w-16", "w-36", "w-24", "w-16", "w-24", "w-10"] as const;
+const SKELETON_WIDTHS = ["w-32", "w-15", "w-44", "w-20", "w-16", "w-24", "w-10"] as const;
 
 /**
  * The sandboxes table while the console's first read is on its way: the same frame, header and row cells as the loaded

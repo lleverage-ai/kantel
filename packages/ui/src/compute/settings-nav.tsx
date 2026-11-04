@@ -45,8 +45,8 @@ export function SettingsFrame({
 			aria-label={label}
 			className={
 				narrow
-					? // On a phone the pages wrap onto a second line rather than run off the edge: every one in sight, none cut.
-						"flex min-w-0 flex-wrap gap-1"
+					? // On a phone the pages sit in a grid of three equal cells: every one in sight, none cut or left alone.
+						"grid min-w-0 grid-cols-3 gap-1 [&>a]:justify-center [&>a]:text-center"
 					: "sticky top-0 flex w-(--kt-menu-width) flex-none flex-col gap-0.5"
 			}
 		>
@@ -84,22 +84,23 @@ export function SettingsFrame({
 }
 
 /**
- * A settings page's head: its name and its one action on a line. On a phone with no action the name is for screen
- * readers only, since the selected link over the page says it; with an action, the name stays beside it.
+ * A settings page's head: its name and its one action on a line. With no action the name is for screen readers only,
+ * since the selected link beside or over the page says it; with an action, the name stays beside it.
  */
 export function SettingsPageHeader({
 	title,
 	actions,
-	narrow = false,
 	id,
 }: {
 	title: ReactNode;
 	actions?: ReactNode;
+	/** A phone. The head is the same at every width; kept for callers. */
 	narrow?: boolean;
 	/** For a section that labels itself by the title. */
 	id?: string;
 }) {
-	if (narrow && actions === undefined) {
+	// With no action the selected link beside the page already names it, so the heading is for screen readers only.
+	if (actions === undefined) {
 		return (
 			<h2 id={id} className="kt-sr-only">
 				{title}
@@ -109,7 +110,7 @@ export function SettingsPageHeader({
 	return (
 		<div className="flex min-h-control-md min-w-0 items-center justify-between gap-3">
 			{/* On a phone with an action, the name stays visible beside it, so the action isn't left on its own. */}
-			<h2 id={id} className="m-0 truncate text-md font-strong leading-tight text-fg">
+			<h2 id={id} className="m-0 truncate text-lg font-strong leading-tight text-fg">
 				{title}
 			</h2>
 			{actions === undefined ? null : <div className="ml-auto flex flex-none items-center gap-2">{actions}</div>}

@@ -757,7 +757,15 @@ function Overview({
 	const failedMounts = sandbox.mounts?.filter((mount) => mount.status === "failed") ?? [];
 	const mountNotice =
 		failedMounts.length === 0 ? null : (
-			<Notice level="error" announce={false}>
+			<Notice
+				level="error"
+				announce={false}
+				action={
+					<a className={`${buttonClass("secondary", "sm")} no-underline`} href="#mounts">
+						<span className={buttonLabelClass}>{failedMounts.length === 1 ? "See the mount" : "See mounts"}</span>
+					</a>
+				}
+			>
 				{failedMounts.length === 1
 					? `${failedMounts[0]?.path} didn't mount.`
 					: `${failedMounts.length} mounts didn't mount.`}{" "}

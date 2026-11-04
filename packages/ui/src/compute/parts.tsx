@@ -447,7 +447,7 @@ export function CapacityBar({ share, children }: { share: number; children: Reac
 export function SectionHeading({ title, actions, id }: { title: ReactNode; actions?: ReactNode; id?: string }) {
 	return (
 		<div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
-			<h2 id={id} className="m-0 text-md font-strong leading-tight text-fg">
+			<h2 id={id} className="m-0 text-lg font-strong leading-tight text-fg">
 				{title}
 			</h2>
 			{actions === undefined ? null : <div className="flex flex-wrap items-center gap-2">{actions}</div>}

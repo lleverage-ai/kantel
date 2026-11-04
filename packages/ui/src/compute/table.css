@@ -54,7 +54,7 @@
 	}
 
 	/* A row, as a phone's lists have them: the checkbox, the name and the menu on its first line; every other value
-	   under them, two to a line, each with its heading over it. A hairline between rows, no card. The
+	   under them, three to a line, each with its heading over it. A hairline between rows, no card. The
 	   empty ::after, flex-basis 100% and ordered between the two, is what breaks the line. */
 	.kt-table-cards > .kt-compute-table > table > tbody > tr {
 		display: flex;
@@ -81,12 +81,12 @@
 		background: var(--kt-hover);
 	}
 
-	/* The values under the name, two to a line in fixed halves, each its heading over its value, so the same fact sits
-	   in the same place on every row. */
+	/* The values under the name, three to a line in fixed thirds, each its heading over its value, so the same fact sits
+	   in the same place on every row and a short list of facts doesn't leave one alone on a line. */
 	.kt-table-cards > .kt-compute-table > table > tbody > tr > td {
 		order: 4;
 		display: block;
-		flex: 0 0 calc(50% - var(--kt-step-3) / 2);
+		flex: 0 0 calc((100% - 2 * var(--kt-step-3)) / 3);
 		/* The table's own widths (a checkbox or menu column's w-0, a long cell's max-w-0) don't apply here. */
 		width: auto;
 		min-width: 0;

@@ -36,14 +36,14 @@ function MountSourceText({ source }: { source: MountSource }) {
 
 export function SandboxMounts({ mounts }: { mounts: readonly SandboxMount[] }) {
 	return (
-		<section className="flex min-w-0 flex-col gap-3" aria-labelledby="sandbox-mounts">
+		<section id="mounts" className="flex min-w-0 scroll-mt-4 flex-col gap-3" aria-labelledby="sandbox-mounts">
 			<SectionHeading id="sandbox-mounts" title="Mounts" />
 			<p className="m-0 text-sm text-muted">Read-only: the sandbox can read these files but not change them.</p>
-			<ul className="m-0 flex min-w-0 flex-col p-0 text-sm">
+			<ul className="m-0 flex min-w-0 flex-col rounded-panel border border-border bg-raised px-4 py-1 text-sm">
 				{mounts.map((mount) => (
 					<li
 						key={mount.path}
-						className="flex min-w-0 flex-col gap-1 border-b border-border py-2 first:pt-0 last:border-b-0 last:pb-0"
+						className="flex min-w-0 flex-col gap-1 border-b border-border py-2.5 last:border-b-0"
 						data-mount={mount.path}
 					>
 						<div className="flex min-w-0 items-baseline justify-between gap-3">

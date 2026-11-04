@@ -514,7 +514,7 @@ export function ComputeConsole({
 		{
 			id: "environments",
 			label: "Environments",
-			short: "Envs",
+			short: "Environments",
 			icon: <EnvironmentIcon />,
 			on: page === "environments",
 		},

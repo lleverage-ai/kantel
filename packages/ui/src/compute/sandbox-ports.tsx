@@ -149,106 +149,122 @@ export function SandboxPorts({
 			) : state.value.length === 0 ? (
 				<p className="m-0 text-sm text-muted">No ports yet. Expose one to give it an HTTPS URL.</p>
 			) : (
-				<table className={`${table} table-fixed`}>
-					<tbody>
-						{state.value.map((port) => {
-							// A link that opens it: the listed URL for a public port, the one just issued for a private one.
-							const link = port.public ? port.url : issued?.port === port.port ? issued.url : undefined;
-							const address = port.url.replace(/^https:\/\//, "").replace(/\?.*$/, "");
-							const pending = busy.has(port.port);
-							return (
-								<tr key={port.port} data-port={port.port}>
-									<td className={`${cell} w-16 font-mono text-code tabular-nums`}>{port.port}</td>
-									{/* On a phone the whole address shows, wrapping at its dots; a wide screen has the room for one line. */}
-									<td className={`${cell} font-mono text-code wrap-break-word sm:truncate`}>
-										{link === undefined ? (
-											<span
-												className="kt-selectable text-muted"
-												title="Private: it opens only with a link's token. New link gives it one."
-											>
-												<Address address={address} />
-											</span>
-										) : (
-											<a
-												className="text-fg no-underline hover:underline"
-												href={link}
-												target="_blank"
-												rel="noopener noreferrer"
-											>
-												<Address address={address} />
-											</a>
-										)}
-									</td>
-									<td className={`${cell} w-24`}>
-										<Visibility isPublic={port.public} />
-									</td>
-									<td className={`${cell} w-20 text-right`}>
-										<span className="inline-flex items-center gap-0.5">
-											{/* The copy slot is kept on every row, so the menus line up. */}
+				// On a phone each port is two lines, its number, visibility and actions over its whole address.
+				<div className="sm:rounded-panel sm:border sm:border-border sm:bg-raised sm:px-4 sm:[&_tr:last-child>td]:border-b-0">
+					<table className={`${table} table-fixed max-sm:block`}>
+						<tbody className="max-sm:block">
+							{state.value.map((port) => {
+								// A link that opens it: the listed URL for a public port, the one just issued for a private one.
+								const link = port.public ? port.url : issued?.port === port.port ? issued.url : undefined;
+								const address = port.url.replace(/^https:\/\//, "").replace(/\?.*$/, "");
+								const pending = busy.has(port.port);
+								return (
+									<tr
+										key={port.port}
+										data-port={port.port}
+										className="max-sm:grid max-sm:grid-cols-[auto_minmax(0,1fr)_auto] max-sm:items-center max-sm:gap-x-3 max-sm:gap-y-1 max-sm:border-b max-sm:border-border max-sm:py-2.5"
+									>
+										<td
+											className={`${cell} w-16 font-mono text-code tabular-nums max-sm:col-start-1 max-sm:row-start-1 max-sm:w-auto max-sm:border-0 max-sm:p-0`}
+										>
+											{port.port}
+										</td>
+										<td
+											className={`${cell} truncate font-mono text-code max-sm:col-span-3 max-sm:row-start-2 max-sm:border-0 max-sm:p-0 max-sm:whitespace-normal max-sm:wrap-break-word`}
+										>
 											{link === undefined ? (
-												<span className="inline-block size-control-xs" aria-hidden="true" />
+												<span
+													className="kt-selectable text-muted"
+													title="Private: it opens only with a link's token. New link gives it one."
+												>
+													<Address address={address} />
+												</span>
 											) : (
-												<CopyButton
-													text={link}
-													iconOnly
-													size="xs"
-													variant="ghost"
-													label={port.public ? "Copy URL" : "Copy link"}
-												/>
+												<a
+													className="text-fg no-underline hover:underline"
+													href={link}
+													target="_blank"
+													rel="noopener noreferrer"
+												>
+													<Address address={address} />
+												</a>
 											)}
-											<Menu
-												label={`Actions for port ${port.port}`}
-												icon={<EllipsisIcon />}
-												align="end"
-												entries={[
-													...(port.public
-														? [
-																{
-																	kind: "item" as const,
-																	id: "private",
-																	label: "Make private",
-																	icon: <LockIcon size="sm" />,
-																	disabled: pending,
-																	onSelect: () => change(port, false),
-																},
-															]
-														: [
-																{
-																	kind: "item" as const,
-																	id: "link",
-																	label: "New link",
-																	icon: <NewLinkIcon size="sm" />,
-																	disabled: pending,
-																	onSelect: () => change(port, false),
-																},
-																{
-																	kind: "item" as const,
-																	id: "public",
-																	label: "Make public",
-																	icon: <GlobeIcon size="sm" />,
-																	disabled: pending,
-																	onSelect: () => change(port, true),
-																},
-															]),
-													{ kind: "separator", id: "sep-hide" },
-													{
-														kind: "item",
-														id: "hide",
-														label: "Hide",
-														icon: <TrashIcon />,
-														danger: true,
-														disabled: pending,
-														onSelect: () => hide(port),
-													},
-												]}
-											/>
-										</span>
-									</td>
-								</tr>
-							);
-						})}
-					</tbody>
-				</table>
+										</td>
+										<td
+											className={`${cell} w-24 max-sm:col-start-2 max-sm:row-start-1 max-sm:w-auto max-sm:border-0 max-sm:p-0`}
+										>
+											<Visibility isPublic={port.public} />
+										</td>
+										<td
+											className={`${cell} w-20 text-right max-sm:col-start-3 max-sm:row-start-1 max-sm:w-auto max-sm:border-0 max-sm:p-0`}
+										>
+											<span className="inline-flex items-center gap-0.5">
+												{/* The copy slot is kept on every row, so the menus line up. */}
+												{link === undefined ? (
+													<span className="inline-block size-control-xs" aria-hidden="true" />
+												) : (
+													<CopyButton
+														text={link}
+														iconOnly
+														size="xs"
+														variant="ghost"
+														label={port.public ? "Copy URL" : "Copy link"}
+													/>
+												)}
+												<Menu
+													label={`Actions for port ${port.port}`}
+													icon={<EllipsisIcon />}
+													align="end"
+													entries={[
+														...(port.public
+															? [
+																	{
+																		kind: "item" as const,
+																		id: "private",
+																		label: "Make private",
+																		icon: <LockIcon size="sm" />,
+																		disabled: pending,
+																		onSelect: () => change(port, false),
+																	},
+																]
+															: [
+																	{
+																		kind: "item" as const,
+																		id: "link",
+																		label: "New link",
+																		icon: <NewLinkIcon size="sm" />,
+																		disabled: pending,
+																		onSelect: () => change(port, false),
+																	},
+																	{
+																		kind: "item" as const,
+																		id: "public",
+																		label: "Make public",
+																		icon: <GlobeIcon size="sm" />,
+																		disabled: pending,
+																		onSelect: () => change(port, true),
+																	},
+																]),
+														{ kind: "separator", id: "sep-hide" },
+														{
+															kind: "item",
+															id: "hide",
+															label: "Hide",
+															icon: <TrashIcon />,
+															danger: true,
+															disabled: pending,
+															onSelect: () => hide(port),
+														},
+													]}
+												/>
+											</span>
+										</td>
+									</tr>
+								);
+							})}
+						</tbody>
+					</table>
+				</div>
 			)}
 			<ExposeDialog open={exposing} onClose={() => setExposing(false)} onExpose={expose} />
 		</section>

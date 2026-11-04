@@ -365,7 +365,7 @@ function General({
 					title="Members"
 					actions={
 						manager ? (
-							<Button icon={<PlusIcon size="sm" />} onClick={() => setInviting(true)}>
+							<Button variant="primary" icon={<PlusIcon size="sm" />} onClick={() => setInviting(true)}>
 								Invite
 							</Button>
 						) : undefined
@@ -607,12 +607,15 @@ function People({
 	const manager = canManage(viewerRole);
 	const rank: Readonly<Record<AccountRole, number>> = { owner: 0, admin: 1, member: 2 };
 	const sorted = [...members].sort((a, b) => rank[a.role] - rank[b.role] || a.name.localeCompare(b.name, "en-GB"));
-	const row = `flex min-w-0 items-center gap-3 border-b border-border py-2.5 text-sm last:border-b-0 ${narrow ? "px-3" : "px-4"}`;
+	// In a card on a wide screen; on a phone a list like every other, hairlines between rows and none round it.
+	const row = `flex min-w-0 items-center gap-3 border-b border-border py-2.5 text-sm ${narrow ? "" : "px-4 last:border-b-0"}`;
 	// The role is a fixed column, so a role in words and a role's menu start at the same edge in every row.
 	const roleColumn = "flex w-28 flex-none justify-start";
 	return (
 		// In a white card, as every list in the console is.
-		<ul className="kt-member-rows m-0 flex list-none flex-col rounded-panel border border-border bg-raised p-0">
+		<ul
+			className={`kt-member-rows m-0 flex list-none flex-col p-0 ${narrow ? "" : "rounded-panel border border-border bg-raised"}`}
+		>
 			{sorted.map((member) => {
 				const you = member.id === viewerId;
 				const waiting = busy.has(member.id);
