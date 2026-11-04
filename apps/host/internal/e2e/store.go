@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +15,8 @@ import (
 // Store is what a host keeps of E2E, under its root (Root/e2e, root's only):
 //
 //	key.json            the host's seeds (Seeds), made on first use
+//	joined.json          every space the host has joined, so a chain file that goes missing locks its space
+//	owners.json          the sandbox IDs seen in E2E spaces, so their snapshots stay covered when an ID is reused
 //	spaces/<space>.json  each space's chain: the genesis the host pinned when it joined, and the entries
 //
 // A chain file is verified from its pinned genesis whenever it is read, and kept only once extended entries verify, so
@@ -97,14 +100,79 @@ func validSpace(space string) bool {
 	return idPattern.MatchString(space) && !strings.ContainsAny(space, "/\\")
 }
 
-// Space is the space's chain, or nil when the host hasn't joined it.
+// joined are the spaces the host has ever joined (joined.json). A space listed there whose chain file is missing or
+// unreadable is locked (strict), not off.
+func (s *Store) joined() map[string]bool {
+	out := map[string]bool{}
+	raw, err := os.ReadFile(filepath.Join(s.dir, "joined.json"))
+	if err != nil {
+		return out
+	}
+	var spaces []string
+	_ = json.Unmarshal(raw, &spaces)
+	for _, space := range spaces {
+		out[space] = true
+	}
+	return out
+}
+
+func (s *Store) markJoined(space string) error {
+	joined := s.joined()
+	if joined[space] {
+		return nil
+	}
+	joined[space] = true
+	spaces := make([]string, 0, len(joined))
+	for name := range joined {
+		spaces = append(spaces, name)
+	}
+	sort.Strings(spaces)
+	return writeFile(filepath.Join(s.dir, "joined.json"), spaces)
+}
+
+// RecordOwner keeps, for good, that sandboxID was a sandbox of space while E2E was on there (owners.json). Its
+// snapshots stay that space's even after the sandbox is deleted and its ID made again for someone else.
+func (s *Store) RecordOwner(sandboxID, space string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	owners := s.ownersLocked()
+	if owners[sandboxID] == space {
+		return nil
+	}
+	owners[sandboxID] = space
+	return writeFile(filepath.Join(s.dir, "owners.json"), owners)
+}
+
+// RecordedOwner is the E2E space sandboxID was recorded in, if any.
+func (s *Store) RecordedOwner(sandboxID string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	space, ok := s.ownersLocked()[sandboxID]
+	return space, ok
+}
+
+func (s *Store) ownersLocked() map[string]string {
+	owners := map[string]string{}
+	if raw, err := os.ReadFile(filepath.Join(s.dir, "owners.json")); err == nil {
+		_ = json.Unmarshal(raw, &owners)
+	}
+	return owners
+}
+
+// Space is the space's chain, or nil when the host hasn't joined it. A space the host joined whose file is gone is
+// still answered (its chain won't load, so it is strict).
 func (s *Store) Space(space string) *spaceChain {
 	if !validSpace(space) {
 		return nil
 	}
 	path := filepath.Join(s.dir, "spaces", space+".json")
 	if _, err := os.Stat(path); err != nil {
-		return nil
+		s.mu.Lock()
+		_, seen := s.spaces[space]
+		s.mu.Unlock()
+		if !seen && !s.joined()[space] {
+			return nil
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -119,10 +187,15 @@ func (s *Store) Space(space string) *spaceChain {
 // Spaces are the spaces the host has joined.
 func (s *Store) Spaces() []string {
 	names, _ := filepath.Glob(filepath.Join(s.dir, "spaces", "*.json"))
-	out := []string{}
+	all := s.joined()
 	for _, n := range names {
-		out = append(out, strings.TrimSuffix(filepath.Base(n), ".json"))
+		all[strings.TrimSuffix(filepath.Base(n), ".json")] = true
 	}
+	out := make([]string, 0, len(all))
+	for space := range all {
+		out = append(out, space)
+	}
+	sort.Strings(out)
 	return out
 }
 
@@ -242,6 +315,28 @@ func (s *Store) Join(join *JoinTicket, entries []Entry, hostID string, now time.
 	if err != nil {
 		return Entry{}, nil, err
 	}
+	// A chain the host holds already: the gateway's must carry it on, not go back on it or fork from it (an older
+	// prefix would bring back removed devices, and signing a host.add onto it would fork the chain).
+	if c := s.Space(space); c != nil {
+		cur, err := c.load()
+		if err != nil {
+			return Entry{}, nil, fmt.Errorf("this host's chain for %s doesn't verify, so it can't be joined again: %w", space, err)
+		}
+		if cur.Genesis != genesis {
+			return Entry{}, nil, fmt.Errorf("this host already holds another chain for %s", space)
+		}
+		have := c.Entries(0)
+		if !samePrefix(have, entries) {
+			if samePrefix(entries, have) {
+				// The gateway is behind: if what it lacks starts with this host's own host.add, publish that again.
+				if h, ok := cur.Hosts[hostID]; ok && h.DH == B64(id.DHPublic()) && isHostAdd(have[len(entries)], hostID) {
+					return have[len(entries)], cur, nil
+				}
+				return Entry{}, nil, fmt.Errorf("the gateway's chain for %s is behind the one this host holds (seq %d, not %d)", space, len(entries)-1, cur.Seq)
+			}
+			return Entry{}, nil, fmt.Errorf("the gateway's chain for %s forks from the one this host holds", space)
+		}
+	}
 	if h, ok := st.Hosts[hostID]; ok {
 		if h.DH == B64(id.DHPublic()) {
 			// Joined before (the publish may have failed): keep the chain and publish nothing new.
@@ -266,5 +361,38 @@ func (s *Store) Join(join *JoinTicket, entries []Entry, hostID string, now time.
 }
 
 func (s *Store) save(space, genesis string, entries []Entry) error {
+	if err := s.markJoined(space); err != nil {
+		return err
+	}
 	return writeFile(filepath.Join(s.dir, "spaces", space+".json"), spaceFile{Genesis: genesis, Entries: entries})
+}
+
+// samePrefix reports whether prefix is the start of entries.
+func samePrefix(prefix, entries []Entry) bool {
+	if len(prefix) > len(entries) {
+		return false
+	}
+	for i, e := range prefix {
+		if entries[i] != e {
+			return false
+		}
+	}
+	return true
+}
+
+// isHostAdd reports whether e is a host.add of hostID.
+func isHostAdd(e Entry, hostID string) bool {
+	raw, err := FromB64(e.Payload)
+	if err != nil {
+		return false
+	}
+	var p struct {
+		Type string `json:"type"`
+		Body struct {
+			Host struct {
+				ID string `json:"id"`
+			} `json:"host"`
+		} `json:"body"`
+	}
+	return json.Unmarshal(raw, &p) == nil && p.Type == "host.add" && p.Body.Host.ID == hostID
 }

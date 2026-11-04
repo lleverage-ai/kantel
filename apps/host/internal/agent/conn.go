@@ -217,6 +217,10 @@ func (h *Host) applyWelcome(ctx context.Context, w *proto.Welcome, update Update
 		h.SetPools(w.Pools)
 	}
 	if update != nil && h.cfg.autoUpdate() && w.DesiredVersion != "" && w.DesiredVersion != h.version && w.UpdateURL != "" {
+		if h.anyE2E() {
+			h.log.Info("not updating from the gateway: this host holds E2E spaces, so it is updated on the machine", "to", w.DesiredVersion)
+			return
+		}
 		h.log.Info("updating", "from", h.version, "to", w.DesiredVersion)
 		go func() {
 			if err := update(ctx, proto.UpdateParams{Version: w.DesiredVersion, URL: w.UpdateURL}); err != nil {

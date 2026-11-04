@@ -47,6 +47,19 @@ func TestJoinSignsAHostAddTheChainTakes(t *testing.T) {
 	if err != nil || again.Payload != "" {
 		t.Fatalf("again: %v", err)
 	}
+	// Again, with the gateway's chain from before the host.add (its publish was lost): the same entry, not a new one
+	// signed onto the old head, which would fork the chain.
+	resent, _, err := store.Join(join, v.Entries, "host_two", time.Now().Add(time.Minute))
+	if err != nil || resent != entry {
+		t.Fatalf("resent %+v, %v", resent, err)
+	}
+	// The gateway's chain from further back, without entries the host holds: refused, not taken.
+	if _, _, err := store.Join(join, v.Entries[:len(v.Entries)-1], "host_two", time.Now()); err == nil {
+		t.Fatal("a rejoin rolled the host's chain back")
+	}
+	if got := store.Space(st.Space).Entries(0); len(got) != len(v.Entries)+1 {
+		t.Fatalf("the host's chain has %d entries", len(got))
+	}
 	// A second host with the same ticket is refused: it was spent.
 	other, _ := OpenStore(t.TempDir())
 	if _, _, err := other.Join(join, append(append([]Entry{}, v.Entries...), entry), "host_three", time.Now()); err == nil {
@@ -73,5 +86,14 @@ func TestAChainFileThatDoesntVerifyShutsPlaintextOut(t *testing.T) {
 	_ = os.Chtimes(path, later, later)
 	if store.Mode(st.Space) != ModeStrict || store.Space(st.Space).State() != nil {
 		t.Fatalf("mode %s after the file changed", store.Mode(st.Space))
+	}
+	// Someone deletes it: still locked, here and in a new process, rather than off.
+	_ = os.Remove(path)
+	if store.Mode(st.Space) != ModeStrict {
+		t.Fatalf("mode %s after the file went", store.Mode(st.Space))
+	}
+	fresh, _ := OpenStore(dir)
+	if fresh.Mode(st.Space) != ModeStrict || len(fresh.Spaces()) != 1 {
+		t.Fatalf("a new process: mode %s, spaces %v", fresh.Mode(st.Space), fresh.Spaces())
 	}
 }

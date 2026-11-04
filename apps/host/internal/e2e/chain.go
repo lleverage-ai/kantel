@@ -22,6 +22,9 @@ const (
 	ModeOff    = "off"
 	ModeOn     = "on"
 	ModeStrict = "strict"
+
+	// ClassWeb is the hosted console's devices: let in with E2E on, kept out (and its entries refused) when strict.
+	ClassWeb = "web"
 )
 
 var (
@@ -519,6 +522,9 @@ func apply(state *State, e Entry, pin string) (*State, error) {
 		if !next.isAdminDevice(t.by) {
 			return nil, errors.New("the ticket wasn't signed by an admin's device")
 		}
+		if state.Mode == ModeStrict && next.Devices[t.by].Class == ClassWeb {
+			return nil, errors.New("this space is strict: a web device's ticket isn't taken")
+		}
 		tsig, err := FromB64(p.ticket.Sig)
 		if err != nil {
 			return nil, errors.New("the ticket's signature is not base64url")
@@ -549,6 +555,10 @@ func apply(state *State, e Entry, pin string) (*State, error) {
 		signer, ok := next.Devices[p.by]
 		if !ok {
 			return nil, fmt.Errorf("the signer %s isn't a device in the chain", p.by)
+		}
+		// In a strict space the hosted console can't open sessions, so it can't change the chain either.
+		if state.Mode == ModeStrict && signer.Class == ClassWeb {
+			return nil, errors.New("this space is strict: a web device's entries aren't taken")
 		}
 		if !verify(mustKey(signer.Sign), signed(entryContext, b), sig) {
 			return nil, errors.New("the entry's signature is wrong")
@@ -681,7 +691,7 @@ func (s *State) Allowed(deviceID string) string {
 	if _, ok := s.Members[d.User]; !ok {
 		return "This device's person isn't a member"
 	}
-	if s.Mode == ModeStrict && d.Class == "web" {
+	if s.Mode == ModeStrict && d.Class == ClassWeb {
 		return "This space is strict: the hosted console isn't let in"
 	}
 	return ""

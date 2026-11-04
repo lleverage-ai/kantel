@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"strings"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/e2e"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
@@ -37,18 +38,35 @@ func (h *Host) ownerOf(sandboxID string) string {
 	return info.Owner
 }
 
-// snapshotOwner is the space of the sandbox a snapshot is of, when that sandbox is still on the host.
+// snapshotOwner is the space of the sandbox a snapshot is of, when that sandbox is still on the host. A sandbox ID once
+// seen in an E2E space keeps that space, whoever has the ID now.
 func (h *Host) snapshotOwner(snapshotID string) (string, bool) {
 	for _, info := range h.List() {
 		for _, name := range h.order {
 			for _, snap := range h.tiers[name].Snapshots(info.ID) {
 				if snap.ID == snapshotID {
+					if h.e2e != nil {
+						if space, ok := h.e2e.RecordedOwner(info.ID); ok {
+							return space, true
+						}
+					}
 					return info.Owner, true
 				}
 			}
 		}
 	}
 	return "", false
+}
+
+// recordE2E keeps that sandboxID is in space when E2E is on there, before the gateway can delete it and reuse its ID.
+func (h *Host) recordE2E(sandboxID, space string) error {
+	if h.e2e == nil || sandboxID == "" || space == "" || h.e2eMode(space) == e2e.ModeOff {
+		return nil
+	}
+	if err := h.e2e.RecordOwner(sandboxID, space); err != nil {
+		return &proto.Error{Code: proto.ErrInternal, Message: "couldn't record an E2E sandbox: " + err.Error()}
+	}
+	return nil
 }
 
 // anyE2E reports whether the host holds an E2E chain that is on (or one it can't verify).
@@ -81,6 +99,13 @@ func (h *Host) e2eMode(space string) string {
 	return h.e2e.Mode(space)
 }
 
+func (h *Host) recordedOwner(sandboxID string) (string, bool) {
+	if h.e2e == nil || sandboxID == "" {
+		return "", false
+	}
+	return h.e2e.RecordedOwner(sandboxID)
+}
+
 func e2eRefusal(space string) error {
 	return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("%s is end-to-end encrypted: its sandboxes' content is reachable only in an E2E session (kantel e2e)", space)}
 }
@@ -88,13 +113,25 @@ func e2eRefusal(space string) error {
 // gatewayMayCall refuses a call from the control plane that would reach the content of a sandbox in an E2E space.
 func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 	var p struct {
-		SandboxID  string `json:"sandboxId"`
-		SnapshotID string `json:"snapshotId"`
-		Port       int    `json:"port"`
-		From       string `json:"from"`
-		Owner      string `json:"owner"`
+		SandboxID         string            `json:"sandboxId"`
+		NewID             string            `json:"newId"`
+		SnapshotID        string            `json:"snapshotId"`
+		Port              int               `json:"port"`
+		From              string            `json:"from"`
+		Owner             string            `json:"owner"`
+		Env               map[string]string `json:"env"`
+		SSHAuthorizedKeys []string          `json:"sshAuthorizedKeys"`
 	}
 	_ = json.Unmarshal(params, &p)
+	if method == proto.MethodHostUpdate && h.anyE2E() {
+		// A binary the gateway picks could read every session: with E2E on, the host is updated on the machine.
+		return &proto.Error{Code: proto.ErrUnsupported, Message: "this host holds E2E spaces: it is updated on the machine, not by the gateway"}
+	}
+	if method != proto.MethodCreate {
+		if err := h.recordE2E(p.SandboxID, h.ownerOf(p.SandboxID)); err != nil {
+			return err
+		}
+	}
 	space := ""
 	switch {
 	case slices.Contains(contentMethods, method):
@@ -106,11 +143,38 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 			return e2eRefusal(s)
 		}
 		return nil
-	case method == proto.MethodCreate && p.From != "":
-		// A sandbox made from an E2E sandbox's snapshot stays in that space, or its content would be plaintext.
-		owner, known := h.snapshotOwner(p.From)
-		if s, covered := h.snapshotGuarded(p.From); covered && (!known || owner != p.Owner) {
-			return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("a sandbox made from a snapshot in %s, which is end-to-end encrypted, must be in that space", s)}
+	case method == proto.MethodCreate:
+		// An ID once used in an E2E space isn't given to another space: its snapshots would follow it.
+		if was, ok := h.recordedOwner(p.SandboxID); ok && was != p.Owner {
+			return &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("sandbox ID %s was used in %s, which is end-to-end encrypted", p.SandboxID, was)}
+		}
+		if p.From != "" {
+			// A sandbox made from an E2E sandbox's snapshot stays in that space, or its content would be plaintext; and the
+			// gateway can't give it environment variables or SSH keys of its own.
+			owner, known := h.snapshotOwner(p.From)
+			if s, covered := h.snapshotGuarded(p.From); covered {
+				if !known || owner != p.Owner {
+					return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("a sandbox made from a snapshot in %s, which is end-to-end encrypted, must be in that space", s)}
+				}
+				if len(p.Env) > 0 || len(p.SSHAuthorizedKeys) > 0 {
+					return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("%s is end-to-end encrypted: a sandbox made from its snapshot takes no environment variables or SSH keys from the gateway", s)}
+				}
+			}
+		}
+		return h.recordE2E(p.SandboxID, p.Owner)
+	case method == proto.MethodFork:
+		owner := h.ownerOf(p.SandboxID)
+		if h.e2eMode(owner) != e2e.ModeOff {
+			if len(p.Env) > 0 {
+				return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("%s is end-to-end encrypted: a fork takes no environment variables from the gateway", owner)}
+			}
+			if was, ok := h.recordedOwner(p.NewID); ok && was != owner {
+				return &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("sandbox ID %s was used in %s", p.NewID, was)}
+			}
+			return h.recordE2E(p.NewID, owner)
+		}
+		if was, ok := h.recordedOwner(p.NewID); ok && was != owner {
+			return &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("sandbox ID %s was used in %s, which is end-to-end encrypted", p.NewID, was)}
 		}
 		return nil
 	default:
@@ -165,7 +229,13 @@ func (h *Host) serveE2E(ctx context.Context, conn net.Conn, sandboxID string) er
 			if p == nil {
 				p = map[string]any{}
 			}
-			// The session's sandbox, whatever the params say.
+			// The session's sandbox, whatever the params say: every spelling Go's case-insensitive decoding would take
+			// for sandboxId goes, or {"sandboxid": "another"} would win over the one set here.
+			for key := range p {
+				if strings.EqualFold(key, "sandboxId") {
+					delete(p, key)
+				}
+			}
 			p["sandboxId"] = sandbox
 			raw, _ := json.Marshal(p)
 			result, err := h.Call(ctx, method, raw, func(e proto.Event) { emit(e) })
