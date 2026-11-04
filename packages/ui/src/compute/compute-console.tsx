@@ -16,10 +16,20 @@ import { Sidebar, SidebarBrand, SidebarItem, SidebarSection } from "../primitive
 import { Spinner } from "../primitives/spinner.tsx";
 import { Notice } from "../primitives/surface.tsx";
 import { TabBar } from "../primitives/tab-bar.tsx";
+import { AccountEgressPage, EGRESS_TABS, type EgressTab } from "./account-egress-page.tsx";
 import { AccountSwitcher, CreateOrganisationDialog, JoinOrganisationDialog } from "./account-switcher.tsx";
 import { ComputeApiKeysPage } from "./api-keys-page.tsx";
 import { BillingPage } from "./billing-page.tsx";
-import type { ComputeAccount, ComputeSource, ComputeViewer, HostsSource } from "./compute-model.ts";
+import { BrowserDeviceDialog } from "./browser-device.tsx";
+import type {
+	BrowserStanding,
+	ComputeAccount,
+	ComputeSource,
+	ComputeViewer,
+	E2EMode,
+	E2ESource,
+	HostsSource,
+} from "./compute-model.ts";
 import { DeviceLoginPage } from "./device-page.tsx";
 import { EgressPage } from "./egress-page.tsx";
 import { EnvironmentPage, EnvironmentsPage } from "./environments-page.tsx";
@@ -28,10 +38,11 @@ import { HostsPage } from "./hosts-page.tsx";
 import { InstallPage } from "./install-page.tsx";
 import { OrganisationPage } from "./organisation-page.tsx";
 import { messageOf } from "./parts.tsx";
-import { ProxyPage } from "./proxy-page.tsx";
+import { SANDBOX_VIEWS, SandboxPage, type SandboxView } from "./sandbox-page.tsx";
 import { SandboxesPage } from "./sandboxes-page.tsx";
 import { SettingsFrame, type SettingsNavItem } from "./settings-nav.tsx";
-import { SnapshotsPage } from "./snapshots-page.tsx";
+import type { FilesAt } from "./snapshot-files.tsx";
+import { SnapshotsPage, type SnapshotsView } from "./snapshots-page.tsx";
 import { TelemetryPage } from "./telemetry-page.tsx";
 import { UserMenu } from "./user-menu.tsx";
 import { WebhooksPage } from "./webhooks-page.tsx";
@@ -50,7 +61,6 @@ export type ComputePage =
 	| "environments"
 	| "egress"
 	| "keys"
-	| "proxy"
 	| "webhooks"
 	| "telemetry"
 	| "organisation"
@@ -65,7 +75,6 @@ export const COMPUTE_PAGES: readonly ComputePage[] = [
 	"environments",
 	"egress",
 	"keys",
-	"proxy",
 	"webhooks",
 	"telemetry",
 	"organisation",
@@ -76,12 +85,14 @@ export const COMPUTE_PAGES: readonly ComputePage[] = [
 ];
 
 /**
- * What a path under the console's base shows: a page, for Snapshots and Egress the sandbox it's about, and for
+ * What a path under the console's base shows: a page, for Sandboxes and Snapshots the sandbox it's about, for Egress
+ * the sandbox when it is one sandbox's rather than the account's, for a sandbox's page its tab or screen, and for
  * Environments the environment that's open.
  */
 export type ComputeRoute = {
 	readonly page: ComputePage;
 	readonly sandboxId?: string;
+	readonly sandboxView?: SandboxView;
 	readonly environmentId?: string;
 };
 
@@ -89,15 +100,22 @@ export type ComputeRoute = {
 export function parseComputePath(pathname: string, base = "/compute"): ComputeRoute | undefined {
 	if (pathname !== base && !pathname.startsWith(`${base}/`)) return undefined;
 	const parts = pathname.slice(base.length).split("/").filter(Boolean);
-	const [first, second] = parts;
+	const [first, second, third] = parts;
 	if (first === undefined) return { page: "sandboxes" };
+	// The Egress proxy page's address before Egress was one page: a link to it still opens Egress.
+	if (first === "proxy" && parts.length === 1) return { page: "egress" };
 	if (!(COMPUTE_PAGES as readonly string[]).includes(first)) return undefined;
 	const page = first as ComputePage;
+	// A sandbox's page, and its tab or screen: /sandboxes/<id>/<view>.
+	if (page === "sandboxes" && second !== undefined && parts.length <= 3) {
+		if (third !== undefined && !(SANDBOX_VIEWS as readonly string[]).includes(third)) return undefined;
+		return { page, sandboxId: decodeURIComponent(second), sandboxView: (third ?? "overview") as SandboxView };
+	}
 	if (parts.length > 2) return undefined;
 	if (page === "snapshots" && second !== undefined) return { page, sandboxId: decodeURIComponent(second) };
 	if (page === "environments" && second !== undefined) return { page, environmentId: decodeURIComponent(second) };
-	// Egress is always one sandbox's.
-	if (page === "egress") return second === undefined ? undefined : { page, sandboxId: decodeURIComponent(second) };
+	// Egress is the account's, or one sandbox's.
+	if (page === "egress" && second !== undefined) return { page, sandboxId: decodeURIComponent(second) };
 	return parts.length === 1 ? { page } : undefined;
 }
 
@@ -109,13 +127,81 @@ export function parseComputePath(pathname: string, base = "/compute"): ComputeRo
 export function pathAfterAccountSwitch(pathname: string, base = "/compute"): string | undefined {
 	const open = parseComputePath(pathname, base);
 	if (open?.page === "environments" && open.environmentId !== undefined) return computePath("environments", base);
-	if (open?.page === "egress") return computePath("sandboxes", base);
+	if ((open?.page === "egress" || open?.page === "sandboxes") && open.sandboxId !== undefined)
+		return computePath("sandboxes", base);
+	// A snapshot's files, or a sandbox's history, are the last account's: the new one's saved snapshots instead.
+	if (open?.page === "snapshots") return computePath("snapshots", base);
 	return undefined;
+}
+
+/** The path of a sandbox's page under `base`, or of one of its tabs or screens. */
+export function sandboxPath(base: string, sandboxId: string, view: SandboxView = "overview"): string {
+	const page = computePath("sandboxes", base, sandboxId);
+	return view === "overview" ? page : `${page}/${view}`;
+}
+
+/** The query parameters a file browser keeps in the address: the folder, the file open in it, and whose files. */
+const FILES_PARAMS = ["path", "file", "snapshot"] as const;
+
+/**
+ * Where a file browser is, from the address: its query, `?path=/home/user&file=notes.md`, or for an end-to-end sandbox
+ * its fragment, `#path=/home/user&file=notes.md`, which the fragment wins. The root without `path`.
+ */
+export function filesAtOf(search: string, hash = ""): FilesAt {
+	const fragment = new URLSearchParams(hash.replace(/^#/, ""));
+	const params = fragment.has("path") || fragment.has("file") ? fragment : new URLSearchParams(search);
+	const path = (params.get("path") ?? "").replace(/^\/+|\/+$/g, "");
+	const file = params.get("file") ?? "";
+	return file === "" || file.includes("/") ? { path } : { path, file };
+}
+
+/**
+ * `search` with a file browser's place in it (`snapshot`, when given, says whose files), the rest kept (`?hosting`).
+ * The folder is the API's absolute path, `/home/user`; the root has none.
+ */
+export function filesSearch(search: string, at: FilesAt, snapshot?: string): string {
+	const params = new URLSearchParams(search);
+	for (const name of FILES_PARAMS) params.delete(name);
+	if (snapshot !== undefined) params.set("snapshot", snapshot);
+	if (at.path !== "") params.set("path", `/${at.path}`);
+	if (at.file !== undefined) params.set("file", at.file);
+	// The slashes in a path read as they are.
+	const query = params.toString().replaceAll("%2F", "/");
+	return query === "" ? "" : `?${query}`;
+}
+
+/** `search` without a file browser's place, with its `?` when anything is left. */
+export function searchWithoutFiles(search: string): string {
+	return filesSearch(search, { path: "" });
+}
+
+/**
+ * An end-to-end sandbox's place in the file browser as the address's fragment, `#path=/home/user&file=notes.md`. A
+ * browser never sends a fragment, in a request or a `Referer`, so its folder and file names stay out of the gateway's
+ * sight as its files do; Back, Forward and copied links work as with the query.
+ */
+export function filesHash(at: FilesAt): string {
+	const params = new URLSearchParams();
+	if (at.path !== "") params.set("path", `/${at.path}`);
+	if (at.file !== undefined) params.set("file", at.file);
+	const fragment = params.toString().replaceAll("%2F", "/");
+	return fragment === "" ? "" : `#${fragment}`;
 }
 
 /** The path of a page under `base`, and of one sandbox's or environment's when `id` is given. */
 export function computePath(page: ComputePage, base = "/compute", id?: string): string {
 	return id === undefined ? `${base}/${page}` : `${base}/${page}/${encodeURIComponent(id)}`;
+}
+
+/**
+ * The address of the account's Egress on `tab`. Every tab names itself, Log too: an address with a query of its own
+ * replaces the current one (`?tab=rules`) when the console navigates, so one without would keep it. The rest of
+ * `search` (`?hosting`) is kept.
+ */
+export function egressTabPath(tab: EgressTab, search: string, base = "/compute"): string {
+	const params = new URLSearchParams(search);
+	params.set("tab", tab);
+	return `${computePath("egress", base)}?${params}`;
 }
 
 const ACCOUNT_KEY = "kantel.compute.account";
@@ -142,6 +228,8 @@ export interface ComputeConsoleProps {
 	readonly pathname: string;
 	/** The address's query: `?new` opens New sandbox. */
 	readonly search?: string;
+	/** The address's fragment, with its `#`: where an end-to-end sandbox's file browser is. */
+	readonly hash?: string;
 	/** Goes to a path in the app without reloading the page. */
 	readonly navigate: (path: string) => void;
 	/** Where the console lives. Default `/compute`. */
@@ -168,6 +256,66 @@ const SHELL_WIDE = "grid-cols-[var(--kt-nav-width)_minmax(0,1fr)]";
 const SHELL_NARROW = "grid-rows-[auto_minmax(0,1fr)_auto]";
 const MAIN = "min-h-0 min-w-0 overflow-y-auto";
 
+/**
+ * What the strip over the page says about end-to-end encryption in this account, and in which tone; undefined for
+ * nothing (the gateway's console in an account without it says nothing). `setup` offers to make this browser a device
+ * in the chain (or show where it stands), from `standing`.
+ */
+export function e2eStrip(
+	e2e: E2ESource | undefined,
+	mode: E2EMode | undefined,
+	standing?: BrowserStanding,
+): { readonly text: string; readonly tone: "done" | "waiting" | "idle"; readonly setup?: string } | undefined {
+	if (e2e === undefined || mode === undefined) return undefined;
+	if (e2e.served === "local") {
+		if (mode === "off") {
+			return {
+				tone: "idle",
+				text: "Served by kantel console on this computer. End-to-end encryption is off here.",
+			};
+		}
+		const device = e2e.device === undefined ? "this device's key" : `the key of ${e2e.device}`;
+		return {
+			tone: "done",
+			text: `Served by kantel console on this computer. Commands and their history go to each sandbox's host end to end, with ${device}.`,
+		};
+	}
+	if (mode === "off") return undefined;
+	if (mode === "on" && e2e.browser !== undefined && standing !== undefined) {
+		if (standing.kind === "ready") {
+			return {
+				tone: "done",
+				text: `End-to-end encryption is on here. This browser is a device in the chain (${standing.label}), so commands and their history go to each sandbox's host end to end.`,
+				setup: "About this browser",
+			};
+		}
+		if (standing.kind === "refused") {
+			return {
+				tone: "waiting",
+				text: `End-to-end encryption is on here. ${standing.reason.replace(/\.$/, "")}. Run kantel console on your computer to see commands and files.`,
+			};
+		}
+		return {
+			tone: "waiting",
+			text: "End-to-end encryption is on here. This console shows commands and files once this browser is a device in the chain, or run kantel console on your computer.",
+			setup: standing.kind === "pending" ? "Waiting for an admin" : "Use this browser",
+		};
+	}
+	return {
+		tone: "waiting",
+		text:
+			mode === "strict"
+				? "End-to-end encryption is strict here, so this console can't show commands or files and no browser is let in. Run kantel console on your computer to see them."
+				: "End-to-end encryption is on here, so this console can't show commands or files. Run kantel console on your computer to see them.",
+	};
+}
+
+const STRIP_TONES = {
+	done: "bg-status-done-soft text-status-done",
+	waiting: "bg-status-waiting-soft text-status-waiting",
+	idle: "text-muted",
+} as const;
+
 /** The pages under Settings: the account's own settings, each at the address it had before. */
 const SETTINGS_PAGES: ReadonlySet<ComputePage> = new Set(["organisation", "keys", "webhooks", "telemetry", "billing"]);
 
@@ -176,6 +324,7 @@ export function ComputeConsole({
 	source,
 	pathname,
 	search = "",
+	hash = "",
 	navigate,
 	base = "/compute",
 	now,
@@ -219,6 +368,28 @@ export function ComputeConsole({
 		},
 		[base, navigate],
 	);
+
+	const e2eMode = useLoad(
+		() =>
+			source.e2e !== undefined && account !== undefined
+				? source.e2e.mode(account.id).catch(() => undefined)
+				: Promise.resolve(undefined),
+		[source, account?.id],
+	);
+	const mode = e2eMode.state.status === "ready" ? e2eMode.state.value : undefined;
+	const browserDevice = source.e2e?.browser;
+	const standing = useLoad(
+		() =>
+			browserDevice !== undefined && account !== undefined && mode === "on"
+				? browserDevice
+						.standing(account.id)
+						.catch((error: unknown): BrowserStanding => ({ kind: "refused", reason: messageOf(error, "Unknown") }))
+				: Promise.resolve(undefined),
+		[browserDevice, account?.id, mode],
+	);
+	const standingNow = standing.state.status === "ready" ? standing.state.value : undefined;
+	const strip = e2eStrip(source.e2e, mode, standingNow);
+	const [deviceOpen, setDeviceOpen] = useState(false);
 
 	const route = parseComputePath(pathname, base) ?? { page: "sandboxes" as const };
 	const me = viewer.state.status === "ready" ? viewer.state.value : undefined;
@@ -281,15 +452,16 @@ export function ComputeConsole({
 		...(billingShown ? [{ id: "billing", label: "Plan and billing" }] : []),
 	].map((item) => ({ ...item, href: computePath(item.id as ComputePage, base), selected: page === item.id }));
 
-	// The five pages: the sidebar's on a wide screen, the tab bar's on a phone. Egress is the account's egress proxy
-	// until its own page comes; a sandbox's egress log is still one of the sandbox's.
+	// The five pages: the sidebar's on a wide screen, the tab bar's on a phone. A sandbox's egress log is still one of
+	// the sandbox's until the sandbox has a page of its own.
+	const sandboxEgress = page === "egress" && route.sandboxId !== undefined;
 	const pages = [
 		{
 			id: "sandboxes",
 			label: "Sandboxes",
 			short: "Sandboxes",
 			icon: <SandboxIcon />,
-			on: page === "sandboxes" || page === "egress",
+			on: page === "sandboxes" || sandboxEgress,
 		},
 		{ id: "snapshots", label: "Snapshots", short: "Snapshots", icon: <SnapshotIcon />, on: page === "snapshots" },
 		{
@@ -299,7 +471,7 @@ export function ComputeConsole({
 			icon: <EnvironmentIcon />,
 			on: page === "environments",
 		},
-		{ id: "proxy", label: "Egress", short: "Egress", icon: <ProxyIcon />, on: page === "proxy" },
+		{ id: "egress", label: "Egress", short: "Egress", icon: <ProxyIcon />, on: page === "egress" && !sandboxEgress },
 		{ id: "organisation", label: "Settings", short: "Settings", icon: <SettingsIcon />, on: inSettings },
 	] as const;
 	const href = (id: string) => computePath(id as ComputePage, base);
@@ -436,6 +608,31 @@ export function ComputeConsole({
 						{source.hosting === "hosted" ? "Hosted demo on sample data." : "Sample data."} Nothing here is real.
 					</p>
 				) : null}
+				{strip === undefined ? null : (
+					<div
+						className={`kt-e2e-strip flex items-center gap-3 border-b border-border py-1.5 text-xs ${STRIP_TONES[strip.tone]} ${narrow ? "px-gutter-narrow" : "px-gutter"}`}
+					>
+						<p className="m-0 min-w-0 flex-1">{strip.text}</p>
+						{strip.setup === undefined ? null : (
+							<Button size="sm" onClick={() => setDeviceOpen(true)}>
+								{strip.setup}
+							</Button>
+						)}
+					</div>
+				)}
+				{browserDevice === undefined || account === undefined ? null : (
+					<BrowserDeviceDialog
+						open={deviceOpen}
+						accountName={account.name}
+						standing={standing.state.status === "loading" ? undefined : standingNow}
+						onTrust={async (genesis) => {
+							await browserDevice.trust(account.id, genesis);
+							standing.reload();
+						}}
+						onCheck={() => standing.reload()}
+						onClose={() => setDeviceOpen(false)}
+					/>
+				)}
 				{failed !== undefined ? (
 					<div className={`grid h-full place-items-center ${narrow ? "p-gutter-narrow" : "p-gutter"}`}>
 						<Notice
@@ -478,6 +675,7 @@ export function ComputeConsole({
 								now={now}
 								base={base}
 								search={search}
+								hash={hash}
 								navigate={navigate}
 								noHosts={noHosts}
 								narrow={narrow}
@@ -541,6 +739,7 @@ function PageFor({
 	now,
 	base,
 	search,
+	hash,
 	navigate,
 	noHosts,
 	narrow,
@@ -559,6 +758,7 @@ function PageFor({
 	now: number | undefined;
 	base: string;
 	search: string;
+	hash: string;
 	navigate: (path: string) => void;
 	/** There's no host yet: the deployment's, for a super-admin, or the account's own. */
 	noHosts: boolean;
@@ -577,15 +777,38 @@ function PageFor({
 	const timing = now === undefined ? {} : { now };
 	switch (page) {
 		case "sandboxes":
-			return (
+			return route.sandboxId !== undefined ? (
+				<SandboxPage
+					source={source.sandboxes}
+					snapshots={source.snapshots}
+					egress={source.egress}
+					hosting={source.hosting}
+					sandboxId={route.sandboxId}
+					accountId={account.id}
+					view={route.sandboxView ?? "overview"}
+					href={(view) => sandboxPath(base, route.sandboxId ?? "", view)}
+					sandboxesHref={computePath("sandboxes", base)}
+					environmentHref={(id) => computePath("environments", base, id)}
+					navigate={navigate}
+					narrow={narrow}
+					{...(route.sandboxView === "files" ? { filesAt: filesAtOf(search, hash) } : {})}
+					filesHref={(at, sealed) => {
+						const files = sandboxPath(base, route.sandboxId ?? "", "files");
+						return sealed
+							? `${files}${searchWithoutFiles(search)}${filesHash(at)}`
+							: `${files}${filesSearch(search, at)}`;
+					}}
+					{...timing}
+				/>
+			) : (
 				<SandboxesPage
 					source={source.sandboxes}
 					snapshots={source.snapshots}
 					account={account}
 					hosting={source.hosting}
-					onSnapshots={(sandboxId) => navigate(computePath("snapshots", base, sandboxId))}
+					sandboxHref={(sandboxId, view) => sandboxPath(base, sandboxId, view)}
+					navigate={navigate}
 					environments={(accountId) => source.environments.list(accountId)}
-					onEgress={(sandboxId) => navigate(computePath("egress", base, sandboxId))}
 					creating={new URLSearchParams(search).has("new")}
 					narrow={narrow}
 					{...(noHosts ? { [ownHosts ? "ownHostHref" : "addHostHref"]: `${computePath("hosts", base)}?add` } : {})}
@@ -597,15 +820,14 @@ function PageFor({
 			);
 		case "snapshots":
 			return (
-				<SnapshotsPage
-					source={source.snapshots}
-					sandboxes={source.sandboxes}
+				<SnapshotsRoute
+					source={source}
 					account={account}
-					initialView={
-						route.sandboxId === undefined ? { name: "saved" } : { name: "sandbox", sandboxId: route.sandboxId }
-					}
-					onStartFrom={() => navigate(`${computePath("sandboxes", base)}?new`)}
-					{...timing}
+					sandboxId={route.sandboxId}
+					base={base}
+					search={search}
+					navigate={navigate}
+					timing={timing}
 				/>
 			);
 		case "environments":
@@ -628,8 +850,26 @@ function PageFor({
 					{...timing}
 				/>
 			);
-		case "egress":
-			return route.sandboxId === undefined ? null : (
+		case "egress": {
+			if (route.sandboxId === undefined) {
+				const asked = new URLSearchParams(search).get("tab");
+				const tab = (EGRESS_TABS as readonly string[]).includes(asked ?? "") ? (asked as EgressTab) : "log";
+				const tabHref = (each: EgressTab) => egressTabPath(each, search, base);
+				return (
+					<AccountEgressPage
+						source={source}
+						account={account}
+						tab={tab}
+						tabHref={tabHref}
+						onTab={(each) => navigate(tabHref(each))}
+						environmentHref={(id) => computePath("environments", base, id)}
+						sandboxHref={(id) => computePath("egress", base, id)}
+						narrow={narrow}
+						{...timing}
+					/>
+				);
+			}
+			return (
 				<EgressPage
 					source={source.egress}
 					sandboxId={route.sandboxId}
@@ -639,10 +879,9 @@ function PageFor({
 					navigate={navigate}
 				/>
 			);
+		}
 		case "keys":
 			return <ComputeApiKeysPage source={source.keys} account={account} {...timing} />;
-		case "proxy":
-			return <ProxyPage source={source.proxy} account={account} {...timing} />;
 		case "webhooks":
 			return <WebhooksPage source={source.webhooks} account={account} {...timing} />;
 		case "telemetry":
@@ -690,6 +929,74 @@ function PageFor({
 			);
 		}
 	}
+}
+
+/**
+ * The Snapshots page, with a snapshot's files in the address (`?snapshot=ssn_1&path=/home/user&file=notes.md`), so Back,
+ * Forward and links reach them. The saved list and a sandbox's history are the page's own, under `/snapshots[/<id>]`.
+ */
+function SnapshotsRoute({
+	source,
+	account,
+	sandboxId,
+	base,
+	search,
+	navigate,
+	timing,
+}: {
+	source: ComputeSource;
+	account: ComputeAccount;
+	sandboxId: string | undefined;
+	base: string;
+	search: string;
+	navigate: (path: string) => void;
+	timing: { now?: number };
+}) {
+	const listed: SnapshotsView = sandboxId === undefined ? { name: "saved" } : { name: "sandbox", sandboxId };
+	const [list, setList] = useState<SnapshotsView>(listed);
+	// What each snapshot was called where it was opened, for its heading; a link to its files has none.
+	const [labels] = useState(() => new Map<string, string>());
+	const snapshot = new URLSearchParams(search).get("snapshot") ?? "";
+	const at = filesAtOf(search);
+	const label = labels.get(snapshot);
+	const view: SnapshotsView =
+		snapshot === ""
+			? list
+			: {
+					name: "files",
+					snapshotId: snapshot,
+					...(label === undefined ? {} : { label }),
+					...(at.path === "" ? {} : { path: at.path }),
+					...(at.file === undefined ? {} : { file: at.file }),
+					back: list,
+				};
+	const page = list.name === "sandbox" && list.sandboxId !== undefined ? list.sandboxId : undefined;
+	const hrefOf = (next: SnapshotsView): string => {
+		const path = computePath("snapshots", base, page);
+		if (next.name !== "files") return `${path}${searchWithoutFiles(search)}`;
+		const place = { path: next.path ?? "", ...(next.file === undefined ? {} : { file: next.file }) };
+		return `${path}${filesSearch(search, place, next.snapshotId)}`;
+	};
+	return (
+		<SnapshotsPage
+			source={source.snapshots}
+			sandboxes={source.sandboxes}
+			account={account}
+			view={view}
+			onViewChange={(next) => {
+				if (next.name === "files") {
+					if (next.label !== undefined) labels.set(next.snapshotId, next.label);
+					navigate(hrefOf(next));
+					return;
+				}
+				setList(next);
+				if (snapshot !== "") navigate(hrefOf(next));
+			}}
+			viewHref={hrefOf}
+			onStartFrom={() => navigate(`${computePath("sandboxes", base)}?new`)}
+			{...timing}
+		/>
+	);
 }
 
 /** Settings' navigation around a settings page; any other page as it is. */

@@ -47,3 +47,17 @@ func TestARetriedBootSavesWhatTheFailedOneCouldNot(t *testing.T) {
 		t.Fatalf("a no-op retry wrote meta.json: %v", err)
 	}
 }
+
+func TestLiveSnapshotRefusesABadIDBeforeWriting(t *testing.T) {
+	root := t.TempDir()
+	m := &Manager{cfg: Config{Root: root}}
+	for _, id := range []string{"../sandboxes/plain/vm", "a/b", "..", ""} {
+		snap := proto.SnapshotInfo{ID: id}
+		if err := m.liveSnapshot(context.Background(), nil, &snap, timings{}); err == nil {
+			t.Fatalf("liveSnapshot(%q) took it", id)
+		}
+	}
+	if entries, _ := os.ReadDir(root); len(entries) != 0 {
+		t.Fatalf("liveSnapshot wrote %v before refusing", entries)
+	}
+}

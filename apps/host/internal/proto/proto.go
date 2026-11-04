@@ -163,6 +163,8 @@ type SandboxInfo struct {
 	// Source says how a create was served: "pool" (a pre-warmed sandbox), "snapshot" (restored from a snapshot) or
 	// "boot" (a cold boot).
 	Source string `json:"source,omitempty"`
+	// Owner is the account the sandbox belongs to (its create's Owner): the space whose E2E chain covers it.
+	Owner string `json:"owner,omitempty"`
 }
 
 // SnapshotInfo is one snapshot of a sandbox's disk (and, for a stop that kept it, its memory).
@@ -392,9 +394,14 @@ type SnapshotParams struct {
 // PortParams is port.open: binary frames on Stream carry the bytes both ways.
 type PortParams struct {
 	SandboxID string `json:"sandboxId"`
-	Port      int    `json:"port"`
-	Stream    uint32 `json:"stream"`
+	// Port is the sandbox's TCP port, or PortE2E: the stream is an E2E session with the host (package e2e), which
+	// names what it wants inside its encryption.
+	Port   int    `json:"port"`
+	Stream uint32 `json:"stream"`
 }
+
+// PortE2E is the port.open target that is an E2E session with the host rather than a sandbox port.
+const PortE2E = 0
 
 // UpdateParams is host.update.
 type UpdateParams struct {

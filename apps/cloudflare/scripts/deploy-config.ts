@@ -35,6 +35,7 @@ import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import { isPortName, portsDomainOf } from "../src/config.ts";
 import { VAULT_SECRETS } from "./vault-secrets.ts";
 
 export const DEPLOY_VARIABLES = [
@@ -73,8 +74,9 @@ export const OPTIONAL_DEPLOY_VARIABLES = [
 	// `{ templateId?, issuer?, clientId, secretEnv?, scopes?, label? }`. Public clients need nothing else; a confidential
 	// one's secret is a Worker secret named by its `secretEnv`, never in this variable.
 	"KANTEL_OAUTH_CLIENTS",
-	// The domain sandboxes' port URLs are under (src/config.ts). Unset, the Worker's default, ports.kantel.dev, Kantel's
-	// hosted ports domain; a deployment on another domain sets its own.
+	// The domain sandboxes' port URLs are under (src/config.ts), routed to the Worker (`*.{domain}/*`, `deployConfig`).
+	// Unset, the Worker's default, kantel.run, Kantel's hosted ports domain, and no route: a deployment on another domain
+	// sets its own.
 	"KANTEL_COMPUTE_PORTS_DOMAIN",
 	// The public origin (such as https://app.kantel.dev): a custom domain on the Worker with no Access in front, where
 	// people sign in with an email code and anyone may sign up into a personal space (src/sign-up.ts). It needs
@@ -370,6 +372,13 @@ export function deployValues(env: Readonly<Record<string, string | undefined>>, 
 	) {
 		invalid.push("KANTEL_PUBLIC_URL must be another hostname than KANTEL_HOSTNAME, which Access guards");
 	}
+	// Every name under the ports domain is a port's (`src/route.ts`, before anything else): the Access hostname under it
+	// would serve no console, API or health check. The domain is the Worker's own default when the variable isn't set.
+	const accessHost = (env.KANTEL_HOSTNAME ?? "").trim().toLowerCase().replace(/\.$/, "");
+	const ports = portsDomainOf({ KANTEL_COMPUTE_PORTS_DOMAIN: optional("KANTEL_COMPUTE_PORTS_DOMAIN") });
+	if (accessHost !== "" && (accessHost === ports || isPortName(accessHost, ports))) {
+		invalid.push(`KANTEL_HOSTNAME can't be the ports domain (${ports}) or a name under it`);
+	}
 	if (accountHostsSwitch === "experimental" && publicUrl === undefined) {
 		invalid.push("KANTEL_ACCOUNT_HOSTS needs KANTEL_PUBLIC_URL: the origin hosts dial, with no Access in front");
 	}
@@ -470,7 +479,15 @@ export function deployConfig(raw: RawConfig, values: DeployValues): Record<strin
 		// The public origin (KANTEL_PUBLIC_URL) is a Workers custom domain attached once outside the deploy (README,
 		// "The public origin"): the deploy's token edits routes on KANTEL_HOSTNAME's zone only, and a deploy that names no
 		// custom domain leaves the Worker's custom domains as they are.
-		routes: [{ pattern: `${values.hostname}/*`, zone_name: zoneOf(values.hostname) }],
+		//
+		// Exposed ports' names (`*.{KANTEL_COMPUTE_PORTS_DOMAIN}`, set), each one label under it so the zone's Universal SSL
+		// wildcard covers it: a bare pattern, whose zone wrangler finds as the longest suffix of the name that is a zone on
+		// the account. A proxied wildcard DNS record (`*`) points the names at Cloudflare; it is added once outside the
+		// deploy (README, "Exposed ports").
+		routes: [
+			{ pattern: `${values.hostname}/*`, zone_name: zoneOf(values.hostname) },
+			...(values.portsDomain === undefined ? [] : [`*.${values.portsDomain}/*`]),
+		],
 		// Sign-in codes and invites, sent only from the one address (Cloudflare Email Sending).
 		...(values.emailSignIn === undefined
 			? {}

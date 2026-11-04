@@ -5,10 +5,11 @@
 #
 # The same line works in bash, zsh and fish: the script runs under sh whatever your shell is. It
 #   1. checks Node.js 22 or later is installed: both commands are one JavaScript file each, for Linux and macOS alike;
-#   2. downloads kantel.js, kantel-admin.js and SHA256SUMS from the release this script came from, and checks each
-#      file's SHA-256;
-#   3. puts them in ~/.local/share/kantel (KANTEL_HOME) as kantel.mjs and kantel-admin.mjs, links ~/.local/bin/kantel
-#      and ~/.local/bin/kantel-admin to them, and says how to put ~/.local/bin on your PATH if it isn't.
+#   2. downloads kantel.js, kantel-admin.js, kantel-console.tar.gz and SHA256SUMS from the release this script came
+#      from, and checks each file's SHA-256;
+#   3. puts them in ~/.local/share/kantel (KANTEL_HOME) as kantel.mjs, kantel-admin.mjs and console/ (the files
+#      `kantel console` serves), links ~/.local/bin/kantel and ~/.local/bin/kantel-admin to them, and says how to put
+#      ~/.local/bin on your PATH if it isn't.
 # Run it again to update; a running command keeps its file.
 #
 # Options, after `sh -s --` (as in `curl -fsSL …/install-cli.sh | sh -s -- --dir ~/bin`):
@@ -28,6 +29,11 @@ say() { printf '%s\n' "$*" >&2; }
 die() {
 	say "kantel install-cli.sh: $*"
 	exit 1
+}
+
+# listed FILE: SHA256SUMS's SHA-256 for FILE, or nothing.
+listed() {
+	awk -v f="$1" '$2 == f || $2 == "*" f { print $1 }' "$work/SHA256SUMS"
 }
 
 sha256() {
@@ -86,6 +92,7 @@ main() {
 	*) say "warning: Kantel's commands are tested on Linux and macOS, not $(uname -s)" ;;
 	esac
 	command -v curl >/dev/null 2>&1 || die "needs curl"
+	command -v tar >/dev/null 2>&1 || die "needs tar"
 	command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 ||
 		die "needs sha256sum (coreutils) or shasum to check the download"
 	command -v node >/dev/null 2>&1 ||
@@ -109,16 +116,28 @@ main() {
 	trap 'rm -rf "$work"; exit 130' INT
 	trap 'rm -rf "$work"; exit 143' TERM
 	curl -fsSL --retry 3 -o "$work/SHA256SUMS" "$base/SHA256SUMS" || die "couldn't download $base/SHA256SUMS"
-	for command in $commands; do
-		asset="$command.js"
+	assets=""
+	for command in $commands; do assets="$assets $command.js"; done
+	# The console's files, which `kantel console` serves: a release from before it had them installs without.
+	console=0
+	if [ -n "$(listed kantel-console.tar.gz)" ]; then
+		console=1
+		assets="$assets kantel-console.tar.gz"
+	fi
+	for asset in $assets; do
 		say "Downloading $asset from $base"
 		curl -fsSL --retry 3 -o "$work/$asset" "$base/$asset" || die "couldn't download $base/$asset"
-		want=$(awk -v f="$asset" '$2 == f || $2 == "*" f { print $1 }' "$work/SHA256SUMS")
+		want=$(listed "$asset")
 		[ -n "$want" ] || die "SHA256SUMS has no line for $asset"
 		got=$(sha256 "$work/$asset")
 		[ "$got" = "$want" ] || die "$asset's SHA-256 is $got, but SHA256SUMS says $want; not installing it"
 	done
 	say "Checked the download against SHA256SUMS"
+	if [ "$console" = 1 ]; then
+		mkdir "$work/unpacked"
+		tar -xzf "$work/kantel-console.tar.gz" -C "$work/unpacked" || die "couldn't unpack kantel-console.tar.gz"
+		[ -f "$work/unpacked/console/index.html" ] || die "kantel-console.tar.gz has no console/index.html"
+	fi
 
 	# Each file goes in as <command>.mjs, so Node runs it as an ES module whatever its version and whatever
 	# package.json is above it, and the command on the PATH is a link to it (Node follows the link to the .mjs). A
@@ -129,6 +148,17 @@ main() {
 		fi
 	done
 	mkdir -p "$lib" "$bin"
+	# The console goes in first, so the kantel that finds it is this release's. A rename into place, as the commands.
+	if [ "$console" = 1 ]; then
+		rm -rf "$lib/console.new" "$lib/console.old"
+		mv "$work/unpacked/console" "$lib/console.new"
+		[ -d "$lib/console" ] && mv "$lib/console" "$lib/console.old"
+		mv "$lib/console.new" "$lib/console"
+		rm -rf "$lib/console.old"
+		say "Installed the console in $lib/console, for kantel console"
+	else
+		say "This release has no console files: kantel console needs --dir"
+	fi
 	for command in $commands; do
 		cp "$work/$command.js" "$lib/$command.mjs.new"
 		chmod 0755 "$lib/$command.mjs.new"

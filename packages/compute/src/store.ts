@@ -11,6 +11,7 @@
  * (AES-256-GCM, `secrets.ts`), and opened only to send them to a sandbox's host.
  */
 import type { computeSchema } from "@kantel/api";
+import type { StoredE2EEntry } from "./e2e.ts";
 import type { SealedValue } from "./secrets.ts";
 
 /** One kind of record. */
@@ -337,6 +338,8 @@ export interface ComputeStore {
 	/** No two with one account and name (`environmentNameKey`): a write that would make two throws. */
 	readonly environments: Collection<StoredEnvironment>;
 	readonly egress: Collection<StoredEgressEntry>;
+	/** Each organisation's E2E chain, an entry a record (`e2e.ts`). */
+	readonly e2eChain: Collection<StoredE2EEntry>;
 	readonly settings: Collection<StoredSetting>;
 }
 
@@ -418,6 +421,7 @@ export function createMemoryStore(): ComputeStore {
 		deviceLogins: memoryCollection(),
 		environments: memoryCollection<StoredEnvironment>(environmentNameKey),
 		egress: memoryCollection(),
+		e2eChain: memoryCollection(),
 		settings: memoryCollection(),
 	};
 }

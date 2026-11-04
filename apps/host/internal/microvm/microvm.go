@@ -236,7 +236,7 @@ func (m *Manager) writeMeta(s *sandbox) error {
 }
 
 func (m *Manager) info(s *sandbox) proto.SandboxInfo {
-	info := proto.SandboxInfo{ID: s.meta.ID, Tier: Tier, Size: s.meta.Size, State: s.meta.State, Memory: s.meta.Memory, Error: s.meta.Error, CreatedAt: s.meta.CreatedAt}
+	info := proto.SandboxInfo{ID: s.meta.ID, Tier: Tier, Size: s.meta.Size, State: s.meta.State, Memory: s.meta.Memory, Error: s.meta.Error, CreatedAt: s.meta.CreatedAt, Owner: s.meta.Owner}
 	if s.link != nil {
 		info.Address = s.link.GuestIP.String()
 	}
@@ -1088,6 +1088,11 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 
 // liveSnapshot snapshots a running sandbox (memory and disk) and lets it carry on. Called with s.mu held.
 func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.SnapshotInfo, t timings) error {
+	// Before anything is written: the ID is joined under snapshots/, so one such as ../sandboxes/<id>/vm would put this
+	// sandbox's disk into another's.
+	if !validID(snap.ID) {
+		return &proto.Error{Code: proto.ErrInvalid, Message: "bad snapshot ID"}
+	}
 	start := time.Now()
 	sdir := m.snapshotDir(snap.ID)
 	if err := os.MkdirAll(sdir, 0o700); err != nil {

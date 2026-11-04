@@ -267,6 +267,12 @@ export interface HostMessage {
 	readonly reason?: string;
 }
 
+/**
+ * `port.open`'s port for an E2E session with the host about a sandbox (the host's `proto.PortE2E`): its bytes are a
+ * Noise session (`@kantel/e2e`) the gateway relays and can't read.
+ */
+export const HOST_E2E_PORT = 0;
+
 export const HostMethods = {
 	create: "sandbox.create",
 	stop: "sandbox.stop",

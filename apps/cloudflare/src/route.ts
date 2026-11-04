@@ -2,13 +2,17 @@
  * Which part of the Worker answers a request. Portable (no `cloudflare:workers`), so the tests route through it in
  * Node with stand-in namespaces.
  *
+ * - Any name under the ports domain (KANTEL_COMPUTE_PORTS_DOMAIN, default `kantel.run`): an exposed port's page, which
+ *   the stack object relays to the sandbox (`src/compute.ts` `servePort`), whatever the path. Nothing else answers
+ *   there, the console's files included: `run_worker_first` is `true` in wrangler.jsonc, since assets match by path on
+ *   every name the Worker is routed, and a sandbox's `/` or `/assets/…` must never be the console's.
  * - `/healthz`: public liveness, the service name only. Access still guards it on the deployed hostname.
  * - Every `/v1/…`: the identity and audit APIs, served by the `KantelStack` Durable Object (`src/gateway.ts`); any other
  *   API path is a 404 there.
  * - `/auth/…`: email-code sign-in, also the stack object's, which answers it only on the public origin
  *   (KANTEL_PUBLIC_URL) and 404s it elsewhere.
- * - Everything else: the console's static assets (`consoleAsset`). A file the build holds is served without the Worker;
- *   a miss reaches it (`not_found_handling: "none"` in wrangler.jsonc). A miss under `/assets/` is a real 404: a chunk
+ * - Everything else: the console's static assets (`consoleAsset`), through the `ASSETS` binding. A file the build holds
+ *   is served as it is; a miss comes back as a 404 (`not_found_handling: "none"` in wrangler.jsonc). A miss under `/assets/` is a real 404: a chunk
  *   an older build named, which a tab opened before a deploy still asks for, must fail as a missing script, not load
  *   the console's page as one (`'text/html' is not a valid JavaScript MIME type`). Any other miss is the
  *   console's page, the single-page app's fallback.
@@ -20,6 +24,7 @@
  */
 import { API_KEYS_PATH, INVITES_PATH, KantelError } from "@kantel/contracts";
 import { API_KEY_BODY_LIMIT } from "@kantel/identity/http";
+import { type GatewayVars, isPortName, portsDomainOf } from "./config.ts";
 
 /** The one stack object's name. */
 export const STACK_NAME = "m1";
@@ -126,7 +131,7 @@ export async function readLimited(request: Request, limit: number): Promise<Uint
 }
 
 /** What routing needs from the Worker's bindings. */
-export interface RouteEnv<StackId = unknown> extends PlacementVars {
+export interface RouteEnv<StackId = unknown> extends PlacementVars, Pick<GatewayVars, "KANTEL_COMPUTE_PORTS_DOMAIN"> {
 	readonly STACK: NamedObjects<StackId>;
 	readonly ASSETS: Answers;
 }
@@ -176,7 +181,10 @@ export async function routeRequest<StackId>(request: Request, env: RouteEnv<Stac
 }
 
 async function routeOnce<StackId>(request: Request, env: RouteEnv<StackId>): Promise<Response> {
-	const path = new URL(request.url).pathname;
+	const url = new URL(request.url);
+	const path = url.pathname;
+	// An exposed port's page: its body streams through to the sandbox, bounded there (`proxyHttp`).
+	if (isPortName(url.hostname, portsDomainOf(env))) return namedObject(env.STACK, STACK_NAME, env).fetch(request);
 	if (path === "/healthz") return Response.json({ ok: true, service: "kantel" });
 	const stack = namedObject(env.STACK, STACK_NAME, env);
 	// Email-code sign-in: the stack answers it on the public origin only, and 404s it anywhere else.

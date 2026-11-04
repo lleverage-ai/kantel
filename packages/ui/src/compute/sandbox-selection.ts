@@ -21,6 +21,18 @@ export class ChangeCounter {
 	}
 }
 
+/**
+ * What the list does with a change's answer: shows it unless a later change came first, and reads the list again
+ * either way (a new sandbox's placeholder apart), so an answer overtaken by another still ends with what's there now.
+ */
+export function changeTaken(
+	changes: ChangeCounter,
+	id: string,
+	asked?: number,
+): { readonly show: boolean; readonly reload: boolean } {
+	return { show: changes.take(id, asked), reload: !id.startsWith("pending_") };
+}
+
 /** The ticked IDs still shown: one a search, a filter or a delete hides is dropped, not kept for when it's back. */
 export function keepShown(ticked: ReadonlySet<string>, shown: Iterable<string>): ReadonlySet<string> {
 	const showing = new Set(shown);

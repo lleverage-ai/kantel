@@ -13,7 +13,7 @@ import "./tokens/tailwind.css";
 // The brand: Kantel's mark, wordmark and lockups, in the theme's ink.
 export { KantelLockup, KantelMark, KantelWordmark } from "./brand/kantel.tsx";
 // The compute console (experimental, the compute plane): sandboxes, snapshots, environments and their protected
-// variables, each sandbox's egress log and grants, keys, the egress proxy, webhooks,
+// variables, the account's egress (its log, rules and proxy settings) and each sandbox's, keys, webhooks,
 // OpenTelemetry, organisations, billing on hosted Kantel and a super-admin's hosts, through one `ComputeSource`. Its
 // sample data is `@kantel/ui/compute/fixtures` until the public API lands.
 export {
@@ -29,18 +29,24 @@ export type {
 	AccountsSource,
 	ApiKeysSource,
 	BillingSource,
+	BrowserDeviceSource,
+	BrowserStanding,
 	ComputeAccount,
 	ComputeSource,
 	ComputeViewer,
 	DestinationBinding,
 	DeviceLogin,
 	DeviceLoginsSource,
+	E2EMode,
+	E2ESource,
 	EgressEntry,
 	EgressGrant,
 	EgressSource,
 	Environment,
 	EnvironmentsSource,
 	EnvironmentVariable,
+	FilePart,
+	FileRange,
 	HostingMode,
 	HostsSource,
 	ProxySource,
@@ -50,6 +56,11 @@ export type {
 	SnapshotsSource,
 	TelemetrySource,
 	WebhooksSource,
+} from "./compute/compute-model.ts";
+export {
+	DeviceSetupError,
+	FileTooLargeError,
+	sameProxySettings,
 } from "./compute/compute-model.ts";
 // Identity: who is signed in, and Kantel's own email-code sign-in.
 export { SignInScreen, type SignInScreenProps } from "./identity/sign-in.tsx";
@@ -108,6 +119,7 @@ export { ListRow, type ListRowProps } from "./primitives/list-row.tsx";
 export * from "./primitives/lucide.tsx";
 export { Menu, type MenuChoice, type MenuEntry, type MenuProps } from "./primitives/menu.tsx";
 export { CommandBlock, OneTimeSecret, type OneTimeSecretProps } from "./primitives/one-time-secret.tsx";
+export { type PageTab, PageTabs, type PageTabsProps } from "./primitives/page-tabs.tsx";
 export {
 	Sidebar,
 	SidebarBrand,

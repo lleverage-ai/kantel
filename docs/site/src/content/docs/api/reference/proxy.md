@@ -31,7 +31,7 @@ Where the account's sandboxes' outbound traffic may go. A key needs `account:rea
 
 `PUT /v1/proxy` (SDK method `putProxySettings`)
 
-Replaces them. Running sandboxes pick them up within a minute. An upstream's header values are kept encrypted and never shown again; leave `upstream.headers` out to keep the ones it has. A key needs `account:admin`.
+Replaces them. Running sandboxes pick them up within a minute. An upstream's header values are kept encrypted and never shown again; leave `upstream.headers` out to keep the ones it has. With `expected`, the settings as you read them, a write made from an older read is refused with `conflict`. A key needs `account:admin`.
 
 **Body**: [PutProxySettingsBody](/api/reference/types/#putproxysettingsbody)
 
@@ -39,4 +39,4 @@ Replaces them. Running sandboxes pick them up within a minute. An upstream's hea
 
 - `200`: [ProxySettings](/api/reference/types/#proxysettings) (`application/json`). The settings.
 
-**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `501` not_supported. Each is an [ErrorBody](/api/reference/types/#errorbody).
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `409` conflict, `501` not_supported. Each is an [ErrorBody](/api/reference/types/#errorbody).

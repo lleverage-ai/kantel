@@ -4,11 +4,19 @@
 // looks at a settled state.
 
 import { createKantelClient } from "@kantel/api/sdk";
-import { type AuthenticatePerson, type ComputeApi, createComputeApi, type PersonIdentity } from "@kantel/compute";
+import {
+	type AuthenticatePerson,
+	type ComputeApi,
+	createComputeApi,
+	type PersonIdentity,
+	type SandboxBackend,
+} from "@kantel/compute";
 import { createStubBackend, STUB_HOST_ID } from "@kantel/compute/stub";
+import { KantelError } from "@kantel/contracts";
 import type { ComputeSource } from "@kantel/ui";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiCompute } from "./api-source.ts";
+import { apiCompute, SCREENS_NOT_END_TO_END, SCREENS_NOT_SERVED } from "./api-source.ts";
+import { localBridge } from "./local.ts";
 
 const ORIGIN = "https://kantel.test";
 
@@ -34,11 +42,12 @@ const notFound = (): Response =>
 	});
 
 /** A fresh API, and a `fetch` that hands each call to it. */
-function setup(options: { accountHosts?: boolean } = {}) {
+function setup(options: { accountHosts?: boolean; backend?: SandboxBackend } = {}) {
+	const { backend = createStubBackend(), ...rest } = options;
 	const api = createComputeApi({
-		backend: createStubBackend(),
+		backend,
 		authenticatePerson,
-		...options,
+		...rest,
 		// Webhook deliveries and telemetry exports: every endpoint takes them.
 		fetch: async () => new Response(null, { status: 204 }),
 	});
@@ -151,6 +160,204 @@ describe("sandboxes", () => {
 		expect((await source.sandboxes.list(accountId)).map((sandbox) => sandbox.id)).toEqual([made.id]);
 	});
 
+	it("reads an E2E sandbox's history from its host through kantel console, and others' from the gateway", async () => {
+		const { api, fetchApi } = setup();
+		const plain = await open(fetchApi);
+		const accountId = await personalAccount(plain);
+		const made = await plain.sandboxes.create({ accountId, kind: "isolate", size: "small" });
+		await api.service.idle();
+		expect(await plain.e2e?.mode(accountId)).toBe("off");
+		expect(plain.e2e?.served).toBe("gateway");
+		// The gateway's console frames Browser and Desktop on the page, and reads files and output as ever.
+		expect(plain.sandboxes.screens).toBe("console");
+		await plain.sandboxes.list(accountId);
+		expect(await plain.sandboxes.endToEnd?.(made.id)).toBe(false);
+
+		const calls: { sandboxId: string; method: string; params: { before?: string } }[] = [];
+		// The host's history, newest first, in pages of one: a console that drops the cursor sees only the newest.
+		const kept = [
+			{ id: "c2", command: "make test", startedAt: 2000, endedAt: 2100, device: "d1", deviceLabel: "Ada's laptop" },
+			{
+				id: "c1",
+				command: "make",
+				startedAt: 1000,
+				endedAt: 1250,
+				exitCode: 0,
+				device: "d1",
+				deviceLabel: "Ada's laptop",
+			},
+		];
+		const localFetch: typeof fetch = async (input, init) => {
+			const path = String(input);
+			if (path === "/local/info") {
+				return Response.json({
+					local: true,
+					device: { id: "d1", label: "Ada's laptop" },
+					spaces: [{ id: accountId, mode: "on" }],
+				});
+			}
+			if (path === "/local/e2e") {
+				const call = JSON.parse(String(init?.body)) as (typeof calls)[number];
+				calls.push(call);
+				const from = call.params.before === undefined ? 0 : kept.findIndex((c) => c.id === call.params.before) + 1;
+				const items = kept.slice(from, from + 1);
+				const next = from + 1 < kept.length ? items.at(-1)?.id : undefined;
+				return Response.json({ result: { items, ...(next === undefined ? {} : { next }) } });
+			}
+			return fetchApi(input, init);
+		};
+		// Only on 127.0.0.1 does the console ask for kantel console's bridge.
+		expect(await localBridge(localFetch, "kantel.example.com")).toBeUndefined();
+		const local = await localBridge(localFetch, "127.0.0.1");
+		expect(local?.mode(accountId)).toBe("on");
+		expect(local?.mode("acct_elsewhere")).toBe("off");
+		const source = await apiCompute({
+			headers: () => ({ authorization: "Bearer person-ada" }),
+			fetch: fetchApi,
+			...(local === undefined ? {} : { local }),
+		});
+		expect(source.e2e).toMatchObject({ served: "local", device: "Ada's laptop" });
+		// kantel console's page frames nothing from the gateway: Browser and Desktop open in tabs of their own.
+		expect(source.sandboxes.screens).toBe("tab");
+		// Its files and output can't be read end to end yet; the page says so. Opened straight from its address, the
+		// console reads which account it's in first.
+		expect(await source.sandboxes.endToEnd?.(made.id)).toBe(true);
+		await source.sandboxes.list(accountId);
+		expect(await source.sandboxes.endToEnd?.(made.id)).toBe(true);
+		expect(await source.sandboxes.history(made.id)).toEqual([
+			{ id: "c2", command: "make test", startedAt: 2000, durationMs: 100, by: "Ada's laptop" },
+			{ id: "c1", command: "make", startedAt: 1000, durationMs: 250, exitCode: 0, by: "Ada's laptop" },
+		]);
+		expect(calls).toEqual([
+			{ sandboxId: made.id, method: "sandbox.history", params: { limit: 100, output: false } },
+			{ sandboxId: made.id, method: "sandbox.history", params: { limit: 100, output: false, before: "c2" } },
+		]);
+	});
+
+	it("opens a microVM's desktop and browser, and says why not where the gateway refuses them or E2E is on", async () => {
+		const { api, fetchApi } = setup();
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const made = await source.sandboxes.create({ accountId, kind: "microvm", size: "small" });
+		await api.service.idle();
+		const access = await source.sandboxes.access(made.id);
+		expect(access.unavailable).toBeUndefined();
+		expect(access.embed?.desktop).toMatch(/embed=1$/);
+		expect(access.browserUrl).not.toBe("");
+
+		// A deployment that doesn't serve this sandbox's screens refuses them: SSH stays, the screens say why.
+		const stub = createStubBackend();
+		const refuse = async (): Promise<never> => {
+			throw new KantelError("not_supported", "Not served here");
+		};
+		const refusing = setup({ backend: { ...stub, openDesktop: refuse, openBrowser: refuse } });
+		const there = await open(refusing.fetchApi);
+		const box = await there.sandboxes.create({
+			accountId: await personalAccount(there),
+			kind: "microvm",
+			size: "small",
+		});
+		await refusing.api.service.idle();
+		const refused = await there.sandboxes.access(box.id);
+		expect(refused.ssh).toContain("ssh");
+		expect(refused.unavailable).toEqual({ desktop: SCREENS_NOT_SERVED, browser: SCREENS_NOT_SERVED });
+		expect([refused.desktopUrl, refused.desktopViewUrl, refused.browserUrl]).toEqual(["", "", ""]);
+
+		// An end-to-end space: its host refuses the gateway's desktop, so neither is asked for.
+		const local = await localBridge(async (input, init) => {
+			if (String(input) === "/local/info") {
+				return Response.json({
+					local: true,
+					device: { id: "d1", label: "Ada's laptop" },
+					spaces: [{ id: accountId, mode: "strict" }],
+				});
+			}
+			return fetchApi(input, init);
+		}, "127.0.0.1");
+		const asked: string[] = [];
+		const e2e = await apiCompute({
+			headers: () => ({ authorization: "Bearer person-ada" }),
+			fetch: async (input, init) => {
+				const url = input instanceof Request ? input.url : String(input);
+				asked.push(new URL(url, ORIGIN).pathname);
+				return fetchApi(input, init);
+			},
+			...(local === undefined ? {} : { local }),
+		});
+		const inSpace = await e2e.sandboxes.access(made.id);
+		expect(inSpace.unavailable).toEqual({ desktop: SCREENS_NOT_END_TO_END, browser: SCREENS_NOT_END_TO_END });
+		// SSH is E2E v1's own: the host refuses the gateway's, which lets a key in with a command.
+		expect(inSpace.ssh).toBe(`kantel e2e ssh ${made.id}`);
+		expect(asked.filter((path) => /\/(desktop|browser|ssh)$/.test(path))).toEqual([]);
+	});
+
+	it("lists and reads an E2E sandbox's files over the console's own session, never the gateway's file routes", async () => {
+		const { api, fetchApi } = setup();
+		const plain = await open(fetchApi);
+		const accountId = await personalAccount(plain);
+		const made = await plain.sandboxes.create({ accountId, kind: "isolate", size: "small" });
+		await api.service.idle();
+		const calls: { sandboxId: string; method: string; params: object }[] = [];
+		const gatewayFiles: string[] = [];
+		const bytes = new TextEncoder().encode("Hello, world");
+		const localFetch: typeof fetch = async (input, init) => {
+			const path = String(input);
+			if (path === "/local/info") {
+				return Response.json({
+					local: true,
+					device: { id: "d1", label: "Ada's laptop" },
+					spaces: [{ id: accountId, mode: "on" }],
+				});
+			}
+			if (path === "/local/e2e") {
+				const call = JSON.parse(String(init?.body)) as (typeof calls)[number] & {
+					params: { offset?: number; length?: number };
+				};
+				calls.push(call);
+				if (call.method === "sandbox.files.list") {
+					const entries = [
+						{ name: "readme.txt", path: "/home/user/readme.txt", type: "file", size: 12, modTimeMs: 5 },
+						{ name: "app", path: "/home/user/app", type: "dir", size: 4096 },
+					];
+					return Response.json({ result: { entries } });
+				}
+				const { offset = 0, length = bytes.byteLength } = call.params;
+				const data = btoa(String.fromCharCode(...bytes.subarray(offset, offset + length)));
+				return Response.json({ result: { data, fileSize: bytes.byteLength } });
+			}
+			if (new URL(path, ORIGIN).pathname.includes("/files")) gatewayFiles.push(path);
+			return fetchApi(input, init);
+		};
+		const local = await localBridge(localFetch, "127.0.0.1");
+		const source = await apiCompute({
+			headers: () => ({ authorization: "Bearer person-ada" }),
+			fetch: localFetch,
+			...(local === undefined ? {} : { local }),
+		});
+		const files = source.sandboxes.files;
+		if (files === undefined) throw new Error("No files");
+		const folder = await files.list(made.id, "home/user");
+		expect(folder).toEqual({
+			entries: [
+				{ name: "app", path: "home/user/app", kind: "folder" },
+				{ name: "readme.txt", path: "home/user/readme.txt", kind: "file", sizeBytes: 12, modifiedAt: 5 },
+			],
+			more: false,
+		});
+		const part = await files.read(made.id, "home/user/readme.txt", { offset: 7, length: 5 });
+		expect([new TextDecoder().decode(part.bytes), part.size]).toEqual(["world", 12]);
+		expect(calls).toEqual([
+			{ sandboxId: made.id, method: "sandbox.files.list", params: { path: "/home/user" } },
+			{
+				sandboxId: made.id,
+				method: "sandbox.files.read",
+				params: { path: "/home/user/readme.txt", offset: 7, length: 5 },
+			},
+		]);
+		// The gateway relays the session and serves none of the files.
+		expect(gatewayFiles).toEqual([]);
+	});
+
 	it("shows what the host gave a microVM, and names sizes without figures", async () => {
 		const { api, fetchApi } = setup();
 		const source = await open(fetchApi);
@@ -161,6 +368,55 @@ describe("sandboxes", () => {
 		const [listed] = await source.sandboxes.list(accountId);
 		// The stub backend's "default" is 2 vCPU and 4 GB, not the sample catalogue's 4 and 8.
 		expect(listed).toMatchObject({ id: made.id, size: "medium", resources: { vcpus: 2, memoryGb: 4, diskGb: 20 } });
+	});
+
+	it("reads one for its page, sets its auto-stop, and reads its live files and a failed command's output", async () => {
+		const { api, fetchApi } = setup();
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		const made = await source.sandboxes.create({ accountId, name: "page", kind: "isolate", size: "small" });
+		await api.service.idle();
+
+		expect(await source.sandboxes.get(made.id)).toMatchObject({ id: made.id, name: "page", state: "running" });
+		const set = source.sandboxes.setAutoStop;
+		if (set === undefined) throw new Error("No setAutoStop");
+		expect((await set(made.id, 60)).stopsAt).toBeGreaterThan(Date.now());
+		expect((await set(made.id, undefined)).stopsAt).toBeUndefined();
+
+		const sdk = createKantelClient({ baseUrl: "/v1", token: "person-ada", fetch: fetchApi });
+		await sdk.writeFile(made.id, { path: "work/readme.txt", content: "Hello" });
+		const files = source.sandboxes.files;
+		if (files === undefined) throw new Error("No files");
+		const folder = await files.list(made.id, "home/user/work");
+		expect(folder.entries.map((entry) => [entry.kind, entry.path])).toEqual([["file", "home/user/work/readme.txt"]]);
+		expect(folder.more).toBe(false);
+		// A folder that runs on past the pages it reads says so, rather than looking complete.
+		let pages = 0;
+		const endless = await open(async (input, init) => {
+			const url = input instanceof Request ? input.url : String(input);
+			if (!new URL(url, "https://kantel.test").pathname.endsWith("/files/list")) return fetchApi(input, init);
+			pages += 1;
+			const entry = { name: `f${pages}`, path: `/home/user/f${pages}`, kind: "file", size: 1 };
+			return Response.json({ items: [entry], nextCursor: `c${pages}` });
+		});
+		const cut = await endless.sandboxes.files?.list(made.id, "home/user");
+		expect(cut?.more).toBe(true);
+		expect(cut?.entries).toHaveLength(pages);
+		expect(pages).toBe(20);
+		// A part at a time, as the preview reads it: the bytes asked for, and the whole file's size.
+		const text = (part: { bytes: Uint8Array }) => new TextDecoder().decode(part.bytes);
+		const whole = await files.read(made.id, "home/user/work/readme.txt", { offset: 0, length: 256 * 1024 });
+		expect([text(whole), whole.size]).toEqual(["Hello", 5]);
+		const part = await files.read(made.id, "home/user/work/readme.txt", { offset: 1, length: 3 });
+		expect([text(part), part.size]).toEqual(["ell", 5]);
+
+		await sdk.runCommand(made.id, { command: "echo fine" });
+		await sdk.runCommand(made.id, { command: "echo broken >&2; exit 2" });
+		const commands = await source.sandboxes.history(made.id);
+		const failed = commands.find((command) => command.exitCode !== undefined && command.exitCode !== 0);
+		const fine = commands.find((command) => command.exitCode === 0);
+		expect(fine?.output).toBeUndefined();
+		expect(failed?.output).toContain("broken");
 	});
 });
 
@@ -189,7 +445,8 @@ describe("snapshots", () => {
 			["file", "home/user/work/readme.txt"],
 		]);
 		expect(entries[1]?.sizeBytes).toBe(5);
-		expect(await source.snapshots.read(taken.id, "home/user/work/readme.txt")).toBe("Hello");
+		const read = await source.snapshots.read(taken.id, "home/user/work/readme.txt", { offset: 0, length: 1024 });
+		expect([new TextDecoder().decode(read.bytes), read.size]).toEqual(["Hello", 5]);
 
 		const saved = await source.snapshots.save(sandbox.id, "golden");
 		expect(saved).toMatchObject({ name: "golden", accountId, sandboxId: sandbox.id, sandboxName: sandbox.name });
@@ -293,9 +550,6 @@ describe("proxy", () => {
 			policy: "open",
 			allow: [],
 			deny: [],
-			tlsInspection: false,
-			headers: [],
-			logRequests: false,
 		});
 
 		const updated = await source.proxy.update(accountId, {
@@ -320,8 +574,67 @@ describe("proxy", () => {
 		});
 		expect(removed.upstream).toEqual({ url: "http://upstream.example:3128", authSet: false });
 
-		await expect(source.proxy.update(accountId, { tlsInspection: true })).rejects.toThrow(/can't/);
-		await expect(source.proxy.recent(accountId)).rejects.toThrow(/proxy requests/);
+		// The API keeps each sandbox's log, with no switch to stop it.
+		await expect(source.proxy.update(accountId, { logRequests: false })).rejects.toThrow(/always keeps/);
+	});
+
+	it("goes from Nothing to Allowed hosts with the first host in one change, an IPv4 address included", async () => {
+		const { fetchApi } = setup();
+		const source = await open(fetchApi);
+		const accountId = await personalAccount(source);
+
+		const closed = await source.proxy.update(accountId, { policy: "closed" });
+		expect(closed).toMatchObject({ policy: "closed", allow: [] });
+		// Allowed hosts alone can't be had: with nothing allowed the API reads it back as Nothing.
+		expect(await source.proxy.update(accountId, { policy: "allowlist" })).toMatchObject({ policy: "closed" });
+
+		const opened = await source.proxy.update(accountId, { policy: "allowlist", allow: ["1.1.1.1"] });
+		expect(opened).toMatchObject({ policy: "allowlist", allow: ["1.1.1.1"] });
+		expect(await source.proxy.get(accountId)).toMatchObject({ policy: "allowlist", allow: ["1.1.1.1"] });
+
+		// Removing the last host for every sandbox is Nothing again.
+		expect(await source.proxy.update(accountId, { allow: [] })).toMatchObject({ policy: "closed" });
+	});
+
+	it("never undoes a change made between its read and its write: it is made again on a fresh read", async () => {
+		const { fetchApi } = setup();
+		let meanwhile: (() => Promise<unknown>) | undefined;
+		const puts: unknown[] = [];
+		// Someone else's write lands just before this source's next PUT.
+		const racing: typeof fetch = async (input, init) => {
+			if (init?.method === "PUT" && String(input).includes("/proxy")) {
+				puts.push(JSON.parse(String(init.body)));
+				const other = meanwhile;
+				meanwhile = undefined;
+				if (other !== undefined) await other();
+			}
+			return fetchApi(input, init);
+		};
+		const source = await open(racing);
+		const theirs = await open(fetchApi);
+		const accountId = await personalAccount(source);
+		await theirs.proxy.update(accountId, { enabled: true, policy: "allowlist", allow: ["api.github.com"] });
+
+		// A change with no `expected`: the settings form's. Made again over their deny.
+		meanwhile = () => theirs.proxy.update(accountId, { deny: ["evil.example"] });
+		const saved = await source.proxy.update(accountId, { upstream: { url: "http://upstream.example:3128" } });
+		expect(saved).toMatchObject({ deny: ["evil.example"], upstream: { url: "http://upstream.example:3128" } });
+		expect(puts).toHaveLength(2);
+		expect(puts[0]).toMatchObject({ deny: [], expected: { deny: [] } });
+
+		// A change made from the caller's own read, which someone changed since: refused, for the caller to redo.
+		const read = await source.proxy.get(accountId);
+		await theirs.proxy.update(accountId, { allow: ["api.github.com", "pypi.org"] });
+		await expect(
+			source.proxy.update(accountId, { allow: [...read.allow, "crates.io"], expected: read }),
+		).rejects.toMatchObject({ code: "conflict" });
+		// And when someone writes between its read and its write, Kantel refuses it.
+		const fresh = await source.proxy.get(accountId);
+		meanwhile = () => theirs.proxy.update(accountId, { deny: [] });
+		await expect(
+			source.proxy.update(accountId, { allow: [...fresh.allow, "crates.io"], expected: fresh }),
+		).rejects.toMatchObject({ code: "conflict" });
+		expect(await source.proxy.get(accountId)).toMatchObject({ allow: ["api.github.com", "pypi.org"], deny: [] });
 	});
 });
 
@@ -427,6 +740,19 @@ describe("environments", () => {
 		// Saved again as the page has them, they keep their IDs.
 		const again = await source.environments.setGrants(made.id, withGrants.grants);
 		expect(again.grants).toEqual(withGrants.grants);
+		// Written from an older read, Kantel refuses with `conflict` and the grants stay as they are.
+		const stale = [withGrants.grants[0]];
+		await expect(
+			source.environments.setGrants(
+				made.id,
+				[],
+				stale.filter((g) => g !== undefined),
+			),
+		).rejects.toMatchObject({ code: "conflict" });
+		expect((await source.environments.get(made.id)).grants).toEqual(withGrants.grants);
+		// Written from the current read, it's taken.
+		const kept = await source.environments.setGrants(made.id, withGrants.grants, withGrants.grants);
+		expect(kept.grants).toEqual(withGrants.grants);
 
 		const renamed = await source.environments.update(made.id, { name: "api", description: "" });
 		expect(renamed.name).toBe("api");
@@ -529,6 +855,7 @@ describe("egress", () => {
 				decision: "denied",
 				// The refusal's code stands in for a reason.
 				reason: "placeholder-unbound",
+				code: "placeholder-unbound",
 				swapped: [],
 				inspected: true,
 				bytesUp: 0,
@@ -564,6 +891,9 @@ describe("egress", () => {
 			},
 		]);
 		expect(granted.environmentGrants).toEqual(egress.environmentGrants);
+		// A write from the read before that grant was added is refused, so it can't take the grant away.
+		await expect(source.egress.setGrants(sandbox.id, [], egress.grants)).rejects.toMatchObject({ code: "conflict" });
+		expect((await source.egress.get(sandbox.id)).grants).toEqual(granted.grants);
 	});
 });
 

@@ -819,6 +819,66 @@ export const BrowserAccess = Type.Object(
 	{ title: "BrowserAccess" },
 );
 
+// End-to-end encryption (`@kantel/e2e`).
+
+export const E2EAccessBody = Type.Object(
+	{
+		ttlMinutes: Type.Optional(
+			Type.Integer({
+				minimum: 1,
+				maximum: 60,
+				description: "How long a session can be started with this URL; one started in time stays open. Default 10.",
+			}),
+		),
+		user: Type.Optional(
+			Type.String({
+				description:
+					"The person whose device will open the session. Refused (`forbidden`) unless the call is that person's, so a browser whose sign-in may have changed under it (a cookie it can't read) never gets a URL for someone else's sign-in to use with its keys.",
+			}),
+		),
+	},
+	{ title: "E2EAccessBody" },
+);
+
+export const E2EAccess = Type.Object(
+	{
+		url: Type.String({
+			description:
+				"A WebSocket URL to the sandbox's host that carries a Noise session as binary frames. The gateway relays it and can't read it: the device checks the host's key against the space's chain, and the host checks the device's.",
+		}),
+		hostId: Type.String({ description: "The host the sandbox is on: the chain's entry for it has its key." }),
+		accountId: Type.String({ description: "The sandbox's organisation: the space whose chain the session is in." }),
+		expiresAt: Timestamp,
+	},
+	{ title: "E2EAccess" },
+);
+
+export const E2EEntry = Type.Object(
+	{
+		payload: Type.String({ description: "Base64url of the entry's JSON, exactly the bytes that were signed." }),
+		sig: Type.String({ description: "Base64url of its Ed25519 signature." }),
+	},
+	{ title: "E2EEntry" },
+);
+
+export const E2EChain = Type.Object(
+	{
+		entries: Type.Array(E2EEntry, { description: "Oldest first; an entry's `seq` is its index." }),
+	},
+	{ title: "E2EChain" },
+);
+
+export const E2EChainAppend = Type.Object(
+	{
+		from: Type.Integer({
+			minimum: 0,
+			description: "The seq of the first entry given: the chain's length as the caller last saw it.",
+		}),
+		entries: Type.Array(E2EEntry, { minItems: 1, maxItems: 100 }),
+	},
+	{ title: "E2EChainAppend" },
+);
+
 // Snapshots.
 
 export const SnapshotKind = Type.Union([Type.Literal("automatic"), Type.Literal("saved")], {
@@ -1079,6 +1139,24 @@ export const ProxySettings = Type.Object(
 	},
 );
 
+export const ProxySettingsExpected = Type.Object(
+	{
+		enabled: Type.Boolean(),
+		defaultAction: Type.Union([Type.Literal("allow"), Type.Literal("deny")]),
+		allow: Type.Array(Type.String()),
+		deny: Type.Array(Type.String()),
+		upstream: Type.Optional(Type.Object({ url: Type.String(), headerNames: Type.Array(Type.String()) })),
+		attribution: Type.Boolean(),
+	},
+	{
+		title: "ProxySettingsExpected",
+		description:
+			"The settings as you last read them: `GET /proxy`'s answer will do. Given, the write is refused with `conflict` " +
+			"if they have changed since, so an edit made from an older read can't undo someone else's: read them again and " +
+			"redo the edit. Left out, the settings are replaced whatever they hold.",
+	},
+);
+
 export const PutProxySettingsBody = Type.Object(
 	{
 		account: accountQuery,
@@ -1098,6 +1176,7 @@ export const PutProxySettingsBody = Type.Object(
 			]),
 		),
 		attribution: Type.Optional(Type.Boolean()),
+		expected: Type.Optional(ProxySettingsExpected),
 	},
 	{ title: "PutProxySettingsBody" },
 );
@@ -1713,6 +1792,7 @@ export type ApiKeyScope = Static<typeof ApiKeyScope>;
 export type ApiKeyPreset = Static<typeof ApiKeyPreset>;
 export type ApiKey = Static<typeof ApiKey>;
 export type ProxySettings = Static<typeof ProxySettings>;
+export type ProxySettingsExpected = Static<typeof ProxySettingsExpected>;
 export type DestinationBinding = Static<typeof DestinationBinding>;
 export type EgressGrant = Static<typeof EgressGrant>;
 export type EgressGrantInput = Static<typeof EgressGrantInput>;

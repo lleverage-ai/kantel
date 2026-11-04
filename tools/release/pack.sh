@@ -6,12 +6,18 @@
 #                  kantel-host-linux-amd64, kantel-host-linux-arm64  the host agent (apps/host), static Go binaries
 #                  kantel.js                                        the user CLI (packages/cli), for Node 22+
 #                  kantel-admin.js                                  the operator CLI (packages/admin), for Node 22+
+#                  kantel-console.tar.gz                            the console's files (apps/console), which
+#                                                                   `kantel console` serves; install-cli.sh puts
+#                                                                   them beside kantel
 #                  install.sh                                       the host installer (apps/host/install.sh)
 #                  install-cli.sh                                   the CLIs' installer (packages/cli/install-cli.sh)
-#                  SHA256SUMS                                       sha256sum's lines for the six files above
+#                  SHA256SUMS                                       sha256sum's lines for the seven files above
 # It never publishes: publish.sh puts out/npm on npm and github-release.sh makes the release, and
 # .github/workflows/release.yml runs all three. It needs Node 22.14+, pnpm with the workspace installed (at least
-# `pnpm install --filter "@kantel/admin..."`), Go (apps/host/go.mod's version) and sha256sum.
+# `pnpm install --filter "@kantel/admin..." --filter "@kantel/console..."`), Go (apps/host/go.mod's version), GNU tar
+# and sha256sum.
+# The console is built from this checkout and goes in both the npm package and kantel-console.tar.gz: what
+# `kantel console` serves comes with the release, never from a gateway.
 set -euo pipefail
 
 version=${1:?usage: pack.sh <version> [out]}
@@ -54,9 +60,14 @@ done
 # kantel-admin and kantel: one bundled file each. kantel's dist/ is also the npm package.
 stamp admin
 cp "$root/packages/admin/dist/kantel-admin.js" "$github/kantel-admin.js"
-stamp cli
+# The console first, which kantel's build copies into its dist/console (and must, here).
+(cd "$root" && pnpm --filter @kantel/console build >/dev/null)
+KANTEL_CLI_CONSOLE=require stamp cli
 cp "$root/packages/cli/dist/kantel.js" "$github/kantel.js"
 chmod 0755 "$github/kantel-admin.js" "$github/kantel.js"
+# The console's files, the same each time from the same build: in name order, with no owner or times of the runner's.
+tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --mode=u+rw,go+r,go-w \
+	-C "$root/packages/cli/dist" -cf - console | gzip -n -9 >"$github/kantel-console.tar.gz"
 
 # The installers, pinned to this release: `curl …/releases/download/v<version>/install.sh` installs this version.
 # The copy at releases/latest/download is whichever release is marked latest, so it installs that one.
@@ -72,8 +83,8 @@ script() {
 script "$root/apps/host/install.sh" install.sh
 script "$root/packages/cli/install-cli.sh" install-cli.sh
 
-(cd "$github" && sha256sum kantel-host-linux-amd64 kantel-host-linux-arm64 kantel.js kantel-admin.js install.sh \
-	install-cli.sh >SHA256SUMS)
+(cd "$github" && sha256sum kantel-host-linux-amd64 kantel-host-linux-arm64 kantel.js kantel-admin.js \
+	kantel-console.tar.gz install.sh install-cli.sh >SHA256SUMS)
 
 # kantel, the npm package.
 (cd "$root/packages/cli/dist" && npm pack --silent --pack-destination "$out/npm" >/dev/null)

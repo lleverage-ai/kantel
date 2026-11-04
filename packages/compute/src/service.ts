@@ -19,6 +19,7 @@
  */
 import { computeSchema, type PublicComputeRoutes, type RouteHandlers, type SignedInComputeRoutes } from "@kantel/api";
 import { KantelError } from "@kantel/contracts";
+import type { ChainEntry } from "@kantel/e2e/chain";
 import {
 	type Acting,
 	accountById,
@@ -44,6 +45,7 @@ import type {
 	Placement,
 	SandboxBackend,
 } from "./backend.ts";
+import { createE2EChains } from "./e2e.ts";
 import { createEphemeralSealer, createSealer, type SealedValue, type Sealer, sealedAt } from "./secrets.ts";
 import type {
 	ComputeStore,
@@ -231,6 +233,18 @@ export interface ComputeService {
 	 * doesn't open.
 	 */
 	protectedTable(hostId: string, sandboxId: string): Promise<ProtectedTable | undefined>;
+	/**
+	 * An organisation's E2E chain, for a host that asked over its credential (`kantel-host e2e join`): an account's own
+	 * host reads only its account's, a shared host any. `not_found` otherwise.
+	 */
+	hostE2EChain(hostId: string, space: string): Promise<ChainEntry[]>;
+	/** Adds a host's own entries (a `host.add` naming it, signed with an admin's join ticket) to the chain. */
+	appendHostE2EChain(
+		hostId: string,
+		space: string,
+		from: number,
+		entries: readonly ChainEntry[],
+	): Promise<ChainEntry[]>;
 	/**
 	 * Keeps what a host's egress proxy reported, in each sandbox's log (the newest `MAX_EGRESS_ENTRIES`). Records for a
 	 * sandbox not on `hostId` are dropped, and a path's query string is never kept.
@@ -693,6 +707,36 @@ const grantsKey = (
 		]),
 	);
 
+/** An account's proxy settings before any are written: off, everything allowed. */
+const unsetProxy = (account: StoredAccount): StoredProxy => ({
+	id: account.id,
+	accountId: account.id,
+	enabled: false,
+	defaultAction: "allow",
+	allow: [],
+	deny: [],
+	attribution: false,
+	updatedAt: account.createdAt,
+});
+
+/** Proxy settings as text that is the same when they are: for a write's `expected`. Header values aren't in it. */
+const proxyKey = (settings: {
+	readonly enabled: boolean;
+	readonly defaultAction: string;
+	readonly allow: readonly string[];
+	readonly deny: readonly string[];
+	readonly upstream?: { readonly url: string; readonly headerNames: readonly string[] };
+	readonly attribution: boolean;
+}): string =>
+	JSON.stringify([
+		settings.enabled,
+		settings.defaultAction,
+		settings.allow,
+		settings.deny,
+		settings.upstream === undefined ? null : [settings.upstream.url, [...settings.upstream.headerNames].sort()],
+		settings.attribution,
+	]);
+
 /** Refuses a write made from a read of `what` that is out of date: `expected` isn't what is there now. */
 function requireUnchanged(expected: string | undefined, now: string, what: string): void {
 	if (expected !== undefined && expected !== now) {
@@ -783,6 +827,26 @@ const whole = (value: unknown): number =>
 /** The compute plane's handlers over a store and a backend. */
 export function createComputeService(options: ComputeServiceOptions): ComputeService {
 	const { store, backend, dispatcher, exporter, now } = options;
+	const e2eChains = createE2EChains(store.e2eChain, now);
+	/**
+	 * A host's own account's chain; for a shared host, the chain of a space it runs a sandbox of or is enrolled in
+	 * already (not every account's). The same `not_found` for a space it may not read.
+	 */
+	const hostMayUseChain = async (hostId: string, space: string) => {
+		const host = (await ensureHosts()).find((known) => known.id === hostId);
+		const account = await store.accounts.get(space);
+		const refuse = () => new KantelError("not_found", "No such space");
+		if (host === undefined || account === undefined) throw refuse();
+		if (host.accountId !== undefined) {
+			if (host.accountId !== space) throw refuse();
+			return;
+		}
+		// A sandbox it runs now (stopped counts: its disk is there); a deleted one's record keeps its hostId, but not this.
+		const placed = await store.sandboxes.list({ hostId });
+		if (placed.some((sandbox) => sandbox.accountId === space && sandbox.state !== "deleted")) return;
+		const state = await e2eChains.state(space).catch(() => undefined);
+		if (state?.hosts.has(hostId) !== true) throw refuse();
+	};
 	const rates = options.rates ?? PLACEHOLDER_RATES;
 	const limits = options.limits ?? {};
 	const mode = options.mode ?? "selfhosted";
@@ -1453,6 +1517,35 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (error instanceof UniqueViolation) throw nameTaken(name);
 			throw error;
 		}
+	}
+
+	/**
+	 * Replaces an account's proxy settings with `replacing` of them, only while they are still `expected` (`proxyKey`):
+	 * otherwise `conflict`. Settings never written read as `unsetProxy`'s, and the first write inserts them; another
+	 * writer's insert meanwhile is read and compared like any change. The settings appearing and going again and again
+	 * meanwhile is a `conflict` too.
+	 */
+	async function replaceProxyAsRead(
+		account: StoredAccount,
+		expected: string,
+		replacing: (existing: StoredProxy | undefined) => StoredProxy,
+	): Promise<StoredProxy> {
+		const what = "The proxy settings";
+		for (let attempt = 0; attempt < 3; attempt++) {
+			const existing = await store.proxies.get(account.id);
+			if (existing === undefined) {
+				requireUnchanged(expected, proxyKey(proxyView(unsetProxy(account))), what);
+				const settings = replacing(undefined);
+				if (await store.proxies.insert(settings)) return settings;
+				continue;
+			}
+			const changed = await store.proxies.update(account.id, (current) => {
+				requireUnchanged(expected, proxyKey(proxyView(current)), what);
+				return replacing(current);
+			});
+			if (changed !== undefined) return changed;
+		}
+		throw new KantelError("conflict", `${what} keep changing; read them again and redo the change`);
 	}
 
 	/** Changes an environment with `update`, answering it as written; `not_found` when it went meanwhile. */
@@ -3320,6 +3413,64 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return undefined;
 		},
 
+		openE2E: async (principal, { params, body }) => {
+			// The URL's grant is the caller's: it goes only to the person whose device asked for it.
+			if (body.user !== undefined && body.user !== principal.userId) {
+				throw new KantelError("forbidden", "This session was asked for as another person: the sign-in has changed");
+			}
+			const { sandbox } = await sandboxFor(principal, params.sandboxId, "access");
+			if (backend.openE2E === undefined) {
+				throw new KantelError("not_supported", "This gateway's sandboxes aren't on hosts it can open E2E sessions to");
+			}
+			// A session is with the host, not the guest: a stopped or paused sandbox's still is (its disk and its command
+			// history are there), and the host refuses what needs a running guest. One starting, stopping or failed waits.
+			const current = await settledFor(principal, sandbox.id);
+			if (current.state !== "running" && current.state !== "stopped" && current.state !== "paused") {
+				throw new KantelError("conflict", `The sandbox is ${current.state}; its host can't open a session for it`);
+			}
+			const ttlMinutes = body.ttlMinutes ?? ACCESS_TTL_MINUTES;
+			const access = await backend.openE2E(current.id, { ttlMinutes, grantee: encodeGrantee(principal) });
+			return {
+				url: access.url,
+				hostId: access.hostId,
+				accountId: current.accountId,
+				expiresAt: now() + ttlMinutes * 60_000,
+			};
+		},
+
+		getE2EChain: async (principal, { params }) => {
+			const { account, role } = await accountById(store, principal, params.accountId);
+			requireScope(principal, "account:read", role);
+			return { entries: await e2eChains.read(account.id) };
+		},
+
+		appendE2EChain: async (principal, { params, body }) => {
+			const { account, role } = await accountById(store, principal, params.accountId);
+			requireScope(principal, "account:read", role);
+			// A person, or a key acting for one (`kantel login`'s is a key): the entries are their devices' to sign either way.
+			// A key limited to some sandboxes isn't the account's, and the chain is.
+			if (principal.kind === "key" && principal.limits.sandboxIds !== undefined) {
+				throw new KantelError("forbidden", "A key limited to some sandboxes can't change the account's E2E chain");
+			}
+			const person = { userId: principal.userId };
+			const entries = await e2eChains.append(account.id, body.from, body.entries, async (payload) => {
+				if (payload.type === "genesis") {
+					// What it starts with is its admin: an admin of the organisation, starting it on their own device.
+					if (role === "member") throw new KantelError("forbidden", "Only an admin or owner starts the chain");
+					if (payload.body.device.user !== person.userId) {
+						throw new KantelError("forbidden", "The genesis lists the device of the person who starts it");
+					}
+				}
+				if (
+					payload.type === "member.add" &&
+					(await store.members.get(memberId(account.id, payload.body.user))) === undefined
+				) {
+					throw new KantelError("invalid", `${payload.body.user} isn't a member of the organisation`);
+				}
+			});
+			return { entries };
+		},
+
 		openSsh: async (principal, { params, body }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "access");
 			if (!sandbox.capabilities.ssh) throw new KantelError("not_supported", "SSH needs a microVM; this is an isolate");
@@ -3598,45 +3749,42 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "account:read", role);
 			const stored = await store.proxies.get(account.id);
-			return proxyView(
-				stored ?? {
-					id: account.id,
-					accountId: account.id,
-					enabled: false,
-					defaultAction: "allow",
-					allow: [],
-					deny: [],
-					attribution: false,
-					updatedAt: account.createdAt,
-				},
-			);
+			return proxyView(stored ?? unsetProxy(account));
 		},
 
 		putProxySettings: async (principal, { body }) => {
 			const { account, role } = await actingAccount(store, principal, body.account);
 			requireScope(principal, "account:admin", role);
-			const existing = await store.proxies.get(account.id);
-			let upstream: StoredProxy["upstream"];
-			let upstreamHeaders: StoredProxy["upstreamHeaders"];
-			if (body.upstream !== undefined && body.upstream !== null) {
-				checkUrl(body.upstream.url, "The upstream");
-				upstreamHeaders =
-					body.upstream.headers === undefined ? (existing?.upstreamHeaders ?? {}) : { ...body.upstream.headers };
-				upstream = { url: body.upstream.url, headerNames: Object.keys(upstreamHeaders) };
-			}
-			const settings: StoredProxy = {
-				id: account.id,
-				accountId: account.id,
-				enabled: body.enabled,
-				defaultAction: body.defaultAction ?? "allow",
-				allow: [...(body.allow ?? [])],
-				deny: [...(body.deny ?? [])],
-				upstream,
-				upstreamHeaders,
-				attribution: body.attribution === true,
-				updatedAt: now(),
+			if (body.upstream !== undefined && body.upstream !== null) checkUrl(body.upstream.url, "The upstream");
+			/** The settings the body makes of `existing`, which keeps its upstream's header values when none are given. */
+			const replacing = (existing: StoredProxy | undefined): StoredProxy => {
+				let upstream: StoredProxy["upstream"];
+				let upstreamHeaders: StoredProxy["upstreamHeaders"];
+				if (body.upstream !== undefined && body.upstream !== null) {
+					upstreamHeaders =
+						body.upstream.headers === undefined ? (existing?.upstreamHeaders ?? {}) : { ...body.upstream.headers };
+					upstream = { url: body.upstream.url, headerNames: Object.keys(upstreamHeaders) };
+				}
+				return {
+					id: account.id,
+					accountId: account.id,
+					enabled: body.enabled,
+					defaultAction: body.defaultAction ?? "allow",
+					allow: [...(body.allow ?? [])],
+					deny: [...(body.deny ?? [])],
+					upstream,
+					upstreamHeaders,
+					attribution: body.attribution === true,
+					updatedAt: now(),
+				};
 			};
-			await store.proxies.put(settings);
+			let settings: StoredProxy;
+			if (body.expected === undefined) {
+				settings = replacing(await store.proxies.get(account.id));
+				await store.proxies.put(settings);
+			} else {
+				settings = await replaceProxyAsRead(account, proxyKey(body.expected), replacing);
+			}
 			// Running sandboxes take them now where the backend can; the rest when they next boot. Each with its own
 			// protected hosts and grants.
 			if (backend.updateEgress !== undefined) {
@@ -4312,6 +4460,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (sample !== undefined) samples.push(sample);
 			}
 			return samples;
+		},
+
+		async hostE2EChain(hostId, space) {
+			await hostMayUseChain(hostId, space);
+			return e2eChains.read(space);
+		},
+
+		async appendHostE2EChain(hostId, space, from, entries) {
+			await hostMayUseChain(hostId, space);
+			return e2eChains.append(space, from, entries, (payload) => {
+				if (payload.type !== "host.add" || payload.body.host.id !== hostId) {
+					throw new KantelError("forbidden", "A host adds only its own host.add");
+				}
+			});
 		},
 
 		async protectedTable(hostId, sandboxId) {

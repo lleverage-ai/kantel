@@ -50,8 +50,8 @@ export const Snapshots: Story = () => <Scenario page="snapshots" />;
 export const SnapshotsHosted: Story = () => <Scenario page="snapshots" hosting="hosted" />;
 export const ApiKeys: Story = () => <Scenario page="keys" />;
 export const ApiKeysHosted: Story = () => <Scenario page="keys" hosting="hosted" />;
-export const EgressProxy: Story = () => <Scenario page="proxy" />;
-export const EgressProxyHosted: Story = () => <Scenario page="proxy" hosting="hosted" />;
+export const Egress: Story = () => <Scenario page="egress" />;
+export const EgressHosted: Story = () => <Scenario page="egress" hosting="hosted" />;
 export const Webhooks: Story = () => <Scenario page="webhooks" />;
 export const WebhooksHosted: Story = () => <Scenario page="webhooks" hosting="hosted" />;
 export const Telemetry: Story = () => <Scenario page="telemetry" />;
@@ -84,6 +84,9 @@ Mobile.meta = { width: 390 };
 /** Settings on a phone: its pages in a row over the page. */
 export const MobileSettings: Story = () => <Scenario page="keys" narrow />;
 MobileSettings.meta = { width: 390 };
+/** Egress on a phone: the log as two-line rows over the tab bar. */
+export const MobileEgress: Story = () => <Scenario page="egress" narrow />;
+MobileEgress.meta = { width: 390 };
 /** Admin on a phone: a way back to the console, and no tab bar. */
 export const MobileAdmin: Story = () => <Scenario page="hosts" narrow />;
 MobileAdmin.meta = { width: 390 };
