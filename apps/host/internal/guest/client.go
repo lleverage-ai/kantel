@@ -293,21 +293,27 @@ func (c *Client) DialPort(ctx context.Context, port int) (net.Conn, error) {
 	fmt.Fprintf(conn, "GET /ports/%d HTTP/1.1\r\nHost: guest\r\nConnection: Upgrade\r\nUpgrade: %s\r\n\r\n", port, PortUpgrade)
 	reader := bufio.NewReader(conn)
 	res, err := http.ReadResponse(reader, nil)
-	if !stop() {
+	if err != nil {
+		stop()
 		conn.Close()
-		if err == nil {
+		if ctx.Err() != nil {
 			err = ctx.Err()
 		}
 		return nil, err
 	}
-	if err != nil {
-		conn.Close()
-		return nil, err
-	}
 	if res.StatusCode != http.StatusSwitchingProtocols {
+		// Still armed while the refusal's body is read, which a guest could withhold too.
 		raw, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+		stop()
 		conn.Close()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, &apiError{Status: res.StatusCode, Message: strings.TrimSpace(string(raw))}
+	}
+	if !stop() {
+		conn.Close()
+		return nil, ctx.Err()
 	}
 	if reader.Buffered() > 0 {
 		return &readerConn{Conn: conn, reader: reader}, nil

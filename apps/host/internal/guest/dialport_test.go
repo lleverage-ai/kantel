@@ -11,7 +11,10 @@ import (
 )
 
 // guestPeer answers Firecracker's vsock handshake on a Unix socket, then answers a port's upgrade only if upgrade.
-func guestPeer(t *testing.T, upgrade bool) string {
+func guestPeer(t *testing.T, upgrade bool) string { return guestPeerSays(t, upgrade, false) }
+
+// guestPeerSays is guestPeer; refuse answers the upgrade with a 502's headers and withholds its body.
+func guestPeerSays(t *testing.T, upgrade, refuse bool) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "v.sock")
 	l, err := net.Listen("unix", path)
@@ -41,6 +44,9 @@ func guestPeer(t *testing.T, upgrade bool) string {
 						break
 					}
 				}
+				if refuse {
+					_, _ = io.WriteString(c, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 100\r\n\r\nno")
+				}
 				if !upgrade {
 					_, _ = io.Copy(io.Discard, r)
 					return
@@ -55,7 +61,12 @@ func guestPeer(t *testing.T, upgrade bool) string {
 
 // A guest that never answers a port's upgrade doesn't hold the dial once its context is cancelled.
 func TestDialPortEndsWhenCancelledBeforeTheUpgrade(t *testing.T) {
-	c := NewClient(guestPeer(t, false))
+	for _, refuse := range []bool{false, true} {
+		dialEndsWhenCancelled(t, NewClient(guestPeerSays(t, false, refuse)))
+	}
+}
+
+func dialEndsWhenCancelled(t *testing.T, c *Client) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errs := make(chan error, 1)
 	go func() {
