@@ -96,6 +96,13 @@ export function foldersBelow(root: FilesRoot, path: string): string[] {
 	return below.map((_, index) => join(root.top, below.slice(0, index + 1).join("/")));
 }
 
+/** A start folder that a read of it found refused: by the source and sandbox or snapshot it was read from. */
+interface MissingStart {
+	readonly source: FilesSource;
+	readonly snapshotId: string;
+	readonly start: string;
+}
+
 export interface SnapshotFilesProps {
 	readonly source: FilesSource;
 	/** Where it may go and where it starts: by the kind of sandbox the files are of. The whole filesystem without. */
@@ -189,19 +196,31 @@ export function SnapshotFiles({
 	onNavigate,
 	href,
 }: SnapshotFilesProps) {
-	// A start that isn't there (a microVM with no /home/user) opens at the top instead.
-	const [startMissing, setStartMissing] = useState(false);
+	// A start that isn't there (a microVM with no /home/user) opens at the top instead: known only from that sandbox's or
+	// snapshot's own read of its start, never from another folder's.
+	const [missingStart, setMissingStart] = useState<MissingStart | undefined>(undefined);
+	const startMissing =
+		missingStart !== undefined &&
+		missingStart.source === source &&
+		missingStart.snapshotId === snapshotId &&
+		missingStart.start === root.start;
 	const path = asked.path === undefined && startMissing ? root.top : folderIn(root, asked.path);
+	const readingStart = asked.path === undefined && path === root.start && root.start !== root.top;
 	// A file named beside a folder that isn't shown isn't opened.
 	const at: FilesAt =
 		asked.file === undefined || (asked.path !== undefined && asked.path !== path)
 			? { path }
 			: { path, file: asked.file };
-	const { state, reload } = useLoad(() => source.list(snapshotId, path), [source, snapshotId, path]);
-	const refused = state.status === "error" && state.error instanceof FilesRefusedError;
-	useEffect(() => {
-		if (refused && asked.path === undefined && path === root.start && root.start !== root.top) setStartMissing(true);
-	}, [refused, asked.path, path, root]);
+	const { state, reload } = useLoad(() => {
+		const read = source.list(snapshotId, path);
+		if (!readingStart) return read;
+		// What this read was of, as it was asked: its refusal is about this start and nothing shown since.
+		const of: MissingStart = { source, snapshotId, start: path };
+		return read.catch((error: unknown) => {
+			if (error instanceof FilesRefusedError) setMissingStart(of);
+			throw error;
+		});
+	}, [source, snapshotId, path, readingStart]);
 	const folder: SandboxFolder | undefined =
 		state.status !== "ready" ? undefined : isFolder(state.value) ? state.value : { entries: state.value, more: false };
 	const entries = folder === undefined ? undefined : sortEntries(folder.entries);

@@ -572,12 +572,17 @@ async function refusing<T>(read: () => Promise<T>): Promise<T> {
 	}
 }
 
-/** The API's and a host's (over E2E) codes for a path a sandbox won't read: `invalid` outside it, `not_found` absent. */
+/**
+ * The API's and a host's codes for a path a sandbox won't read: `invalid` outside it, `not_found` absent. A host's is its
+ * own answer to the call, over this browser's session or `kantel console`'s (`answered`); a session that failed to open,
+ * with the same codes for a host not in the chain, is a failure, not a refusal.
+ */
 const refusedPath = (error: unknown): error is Error & { readonly code: string } =>
 	error instanceof Error &&
 	"code" in error &&
 	(error.code === "invalid" || error.code === "not_found") &&
-	(error instanceof KantelApiError || error.name === "SessionError");
+	(error instanceof KantelApiError ||
+		(error.name === "SessionError" && "answered" in error && error.answered === true));
 
 /** Desktop and Browser where the gateway refuses them: this deployment doesn't serve the sandbox's screens yet. */
 export const SCREENS_NOT_SERVED = "Not available here yet";

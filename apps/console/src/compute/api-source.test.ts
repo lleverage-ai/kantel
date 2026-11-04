@@ -358,6 +358,50 @@ describe("sandboxes", () => {
 		expect(gatewayFiles).toEqual([]);
 	});
 
+	it("tells a host's refusal of a path through `kantel console` from a session that failed", async () => {
+		const { api, fetchApi } = setup();
+		const plain = await open(fetchApi);
+		const accountId = await personalAccount(plain);
+		const made = await plain.sandboxes.create({ accountId, kind: "microvm", size: "small" });
+		await api.service.idle();
+		// What `kantel console` answers: the host's own refusal with its code, else a session that didn't get there.
+		const localFetch: typeof fetch = async (input, init) => {
+			const path = String(input);
+			if (path === "/local/info") return Response.json({ local: true, spaces: [{ id: accountId, mode: "on" }] });
+			if (path === "/local/e2e") {
+				const { params } = JSON.parse(String(init?.body)) as { params: { path: string } };
+				if (params.path === "/home/user") {
+					return Response.json(
+						{ error: { code: "e2e", message: "no such directory", hostCode: "not_found" } },
+						{ status: 502 },
+					);
+				}
+				if (params.path === "/home/user/secret") {
+					return Response.json({ error: { code: "e2e", message: "outside", hostCode: "invalid" } }, { status: 502 });
+				}
+				return Response.json({ error: { code: "e2e", message: "The relay closed the stream" } }, { status: 502 });
+			}
+			return fetchApi(input, init);
+		};
+		const local = await localBridge(localFetch, "127.0.0.1");
+		const source = await apiCompute({
+			headers: () => ({ authorization: "Bearer person-ada" }),
+			fetch: localFetch,
+			...(local === undefined ? {} : { local }),
+		});
+		const files = source.sandboxes.files;
+		if (files === undefined) throw new Error("No files");
+		// A start the image hasn't got, and a read the host won't do: refusals, with no Try again.
+		await expect(files.list(made.id, "home/user")).rejects.toBeInstanceOf(FilesRefusedError);
+		await expect(files.read(made.id, "home/user/secret", { offset: 0, length: 5 })).rejects.toBeInstanceOf(
+			FilesRefusedError,
+		);
+		// The session not getting there is a failure, to try again.
+		const dropped = await files.list(made.id, "tmp").catch((error: unknown) => error);
+		expect(dropped).toBeInstanceOf(Error);
+		expect(dropped).not.toBeInstanceOf(FilesRefusedError);
+	});
+
 	it("shows what the host gave a microVM, and names sizes without figures", async () => {
 		const { api, fetchApi } = setup();
 		const source = await open(fetchApi);
