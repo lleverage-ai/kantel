@@ -29,7 +29,7 @@ import {
 import { HostJoinCommand, type HostJoinInput, JoinWaiting } from "./host-join.tsx";
 import { HostCpu, HostGraphs, HostMemory, useHostUsage } from "./host-usage.tsx";
 import { lineOf, ROW_SPAN_MS, seriesOf } from "./live-usage.ts";
-import { computePage, messageOf, Sparkline, tableFrame } from "./parts.tsx";
+import { computePage, messageOf, Sparkline, table, tableFrame } from "./parts.tsx";
 
 export interface HostsPageProps {
 	readonly source: HostsSource;
@@ -218,7 +218,7 @@ export function HostsPage({
 						</ul>
 					) : (
 						<div className={tableFrame}>
-							<table className="w-full border-collapse text-left text-sm">
+							<table className={table}>
 								<thead>
 									<tr>
 										<th className={head} scope="col">

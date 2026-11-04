@@ -54,14 +54,14 @@
 	}
 
 	/* A row, as a phone's lists have them: the checkbox, the name and the menu on its first line; every other value
-	   after them on a wrapping line of its own, each with its heading before it. A hairline between rows, no card. The
+	   under them, two to a line, each with its heading over it. A hairline between rows, no card. The
 	   empty ::after, flex-basis 100% and ordered between the two, is what breaks the line. */
 	.kt-table-cards > .kt-compute-table > table > tbody > tr {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
 		column-gap: var(--kt-step-3);
-		row-gap: var(--kt-step-1);
+		row-gap: var(--kt-step-2);
 		padding: var(--kt-step-3) 0;
 		border-bottom: var(--kt-hairline) solid var(--kt-border);
 	}
@@ -81,11 +81,12 @@
 		background: var(--kt-hover);
 	}
 
-	/* A value on the second line: its heading, then the value, in the secondary size. */
+	/* The values under the name, two to a line in fixed halves, each its heading over its value, so the same fact sits
+	   in the same place on every row. */
 	.kt-table-cards > .kt-compute-table > table > tbody > tr > td {
 		order: 4;
 		display: block;
-		flex: none;
+		flex: 0 0 calc(50% - var(--kt-step-3) / 2);
 		/* The table's own widths (a checkbox or menu column's w-0, a long cell's max-w-0) don't apply here. */
 		width: auto;
 		min-width: 0;
@@ -101,8 +102,9 @@
 
 	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-label]::before {
 		content: attr(data-label);
-		margin-right: var(--kt-step-1);
+		display: block;
 		color: var(--kt-text-faint);
+		font-size: var(--kt-text-xs);
 	}
 
 	/* A value laid out as a row of its own (a status with its code, a sparkline with its figure) stays inline. */
@@ -121,6 +123,7 @@
 
 	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-cell="select"] {
 		order: 0;
+		flex: none;
 	}
 
 	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-cell="primary"] {
@@ -133,6 +136,7 @@
 
 	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-cell="actions"] {
 		order: 2;
+		flex: none;
 	}
 
 	/* A row that is one cell across the table (a note, an expanded detail) reads as text across the row. */

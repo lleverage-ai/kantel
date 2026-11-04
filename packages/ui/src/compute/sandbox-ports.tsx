@@ -159,13 +159,14 @@ export function SandboxPorts({
 							return (
 								<tr key={port.port} data-port={port.port}>
 									<td className={`${cell} w-16 font-mono text-code tabular-nums`}>{port.port}</td>
-									<td className={`${cell} truncate font-mono text-code`}>
+									{/* On a phone the whole address shows, wrapping at its dots; a wide screen has the room for one line. */}
+									<td className={`${cell} font-mono text-code wrap-break-word sm:truncate`}>
 										{link === undefined ? (
 											<span
 												className="kt-selectable text-muted"
 												title="Private: it opens only with a link's token. New link gives it one."
 											>
-												{address}
+												<Address address={address} />
 											</span>
 										) : (
 											<a
@@ -174,7 +175,7 @@ export function SandboxPorts({
 												target="_blank"
 												rel="noopener noreferrer"
 											>
-												{address}
+												<Address address={address} />
 											</a>
 										)}
 									</td>
@@ -183,7 +184,10 @@ export function SandboxPorts({
 									</td>
 									<td className={`${cell} w-20 text-right`}>
 										<span className="inline-flex items-center gap-0.5">
-											{link === undefined ? null : (
+											{/* The copy slot is kept on every row, so the menus line up. */}
+											{link === undefined ? (
+												<span className="inline-block size-control-xs" aria-hidden="true" />
+											) : (
 												<CopyButton
 													text={link}
 													iconOnly
@@ -320,5 +324,21 @@ function ExposeDialog({
 			</div>
 			{failure === undefined ? null : <p className="kt-dialog-error">{failure}</p>}
 		</Dialog>
+	);
+}
+
+/** A port's address with a break opportunity after each dot, so it wraps at its labels rather than mid-word. */
+function Address({ address }: { address: string }) {
+	const parts = address.split(/(?<=\.)/);
+	return (
+		<>
+			{parts.map((part, index) => (
+				// biome-ignore lint/suspicious/noArrayIndexKey: a fixed split of one string.
+				<span key={index}>
+					{part}
+					{index < parts.length - 1 ? <wbr /> : null}
+				</span>
+			))}
+		</>
 	);
 }

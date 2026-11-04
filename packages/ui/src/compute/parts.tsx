@@ -20,10 +20,10 @@ export const computePage =
  */
 export const tableFrame =
 	"kt-compute-table min-w-0 overflow-x-auto rounded-panel border border-border bg-raised [&_:is(th,td):first-child]:pl-4 [&_:is(th,td):last-child]:pr-4 [&_tbody>tr:last-child>td]:border-b-0";
-export const table = "w-full border-collapse text-left text-sm";
+/** A table: body text at the body size, as every list in the console. */
+export const table = "w-full border-collapse text-left text-md";
 /** A header cell: muted, small, on one line. */
-export const th =
-	"h-control-md px-3 py-0 text-sm font-medium whitespace-nowrap text-muted border-b border-border first:pl-0 last:pr-0";
+export const th = "h-control-md px-3 py-0 text-sm font-medium whitespace-nowrap text-muted border-b border-border";
 /** A body cell: a hairline under every row (the frame drops the last). */
 export const td = "px-3 py-2.5 align-middle whitespace-nowrap border-b border-border";
 /** A row that opens something. */
