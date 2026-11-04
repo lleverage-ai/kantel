@@ -1,15 +1,15 @@
-// A sandbox's screen in the console: its desktop or its browser, as a live preview on its page and full size in the
-// viewer, with Control and Watch, full screen and a pop-out to a tab of its own. Where there's nothing real to show
-// (the sample data) a drawing of a desktop or a browser in the theme's colours stands in.
+// A sandbox's screen in the console: its desktop or its browser, on a page of its own (/sandboxes/<id>/desktop, /watch
+// or /browser) that the sandbox's page opens in a new tab, with Control and Watch and full screen. Nothing streams
+// anywhere else: the stream is this page's frame, and it goes when the page closes or has been hidden a while. Where
+// there's nothing real to show (the sample data) a drawing of a desktop or a browser in the theme's colours stands in.
 
 import { type ReactNode, type RefObject, useEffect, useRef, useState } from "react";
 import { Breadcrumbs } from "../primitives/breadcrumbs.tsx";
 import { Button, buttonClass, buttonLabelClass, IconButton } from "../primitives/button.tsx";
 import { SegmentedControl } from "../primitives/controls.tsx";
 import { GlobeIcon } from "../primitives/icons.tsx";
-import { DesktopIcon, ExternalLinkIcon, FullScreenIcon } from "../primitives/lucide.tsx";
+import { DesktopIcon, FullScreenIcon } from "../primitives/lucide.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
-import { StatusDot } from "../primitives/status.tsx";
 import { Notice } from "../primitives/surface.tsx";
 import { type SandboxAccess, screenUnavailable } from "./compute-model.ts";
 import { messageOf } from "./parts.tsx";
@@ -17,7 +17,7 @@ import { messageOf } from "./parts.tsx";
 /** What the viewer shows: the desktop to use, the desktop to watch only, or the browser. */
 export type ScreenView = "desktop" | "watch" | "browser";
 
-/** The size a preview is drawn at before it's scaled down to its tile, so the sandbox's screen isn't resized to it. */
+/** The size the stand-in is drawn at before it's scaled to fit. */
 const PREVIEW_WIDTH = 1280;
 const PREVIEW_HEIGHT = 800;
 
@@ -65,41 +65,44 @@ function useSize<T extends HTMLElement>(): [RefObject<T | null>, { width: number
 	return [ref, size];
 }
 
+/** How long the page may be hidden before its stream is closed; it opens again when the page is shown. */
+export const HIDDEN_CLOSE_MS = 30_000;
+
 /**
- * A screen drawn at 1280 by 800 and scaled to fit the width it's given: a live frame, view only, or the stand-in. The
- * frame takes no pointer or keyboard, so a click lands on what wraps it.
+ * Whether the page has been hidden for `afterMs`: true from then until it's shown again, when `onShown` runs. Selkies'
+ * own page stops its video the moment the tab hides; this closes the connection too, so nothing is held open for a
+ * tab left in the background.
  */
-export function ScreenPreview({ kind, url, label }: { kind: "desktop" | "browser"; url?: string; label: string }) {
-	const [ref, { width }] = useSize<HTMLDivElement>();
-	const scale = width / PREVIEW_WIDTH;
-	return (
-		<div ref={ref} className="kt-screen-preview relative aspect-[16/10] w-full overflow-hidden bg-sunken">
-			<div
-				className="absolute top-0 left-0 origin-top-left"
-				style={{ width: PREVIEW_WIDTH, height: PREVIEW_HEIGHT, transform: `scale(${scale})` }}
-				aria-hidden={url === undefined ? true : undefined}
-			>
-				{url === undefined ? (
-					<StandIn kind={kind} />
-				) : (
-					<iframe
-						className="pointer-events-none size-full border-0"
-						src={url}
-						title={label}
-						tabIndex={-1}
-						width={PREVIEW_WIDTH}
-						height={PREVIEW_HEIGHT}
-					/>
-				)}
-			</div>
-			{url === undefined ? null : (
-				<span className="absolute right-2 bottom-2 inline-flex items-center gap-1.5 rounded-sm bg-glass px-1.5 py-0.5 text-2xs text-fg">
-					<StatusDot status="done" />
-					Live
-				</span>
-			)}
-		</div>
-	);
+export function useHiddenFor(afterMs: number, onShown?: () => void): boolean {
+	const [asleep, setAsleep] = useState(false);
+	const shown = useRef(onShown);
+	shown.current = onShown;
+	useEffect(() => {
+		if (typeof document === "undefined") return;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		let slept = false;
+		const change = () => {
+			if (timer !== undefined) clearTimeout(timer);
+			timer = undefined;
+			if (document.visibilityState === "hidden") {
+				timer = setTimeout(() => {
+					slept = true;
+					setAsleep(true);
+				}, afterMs);
+			} else if (slept) {
+				slept = false;
+				shown.current?.();
+				setAsleep(false);
+			}
+		};
+		change();
+		document.addEventListener("visibilitychange", change);
+		return () => {
+			if (timer !== undefined) clearTimeout(timer);
+			document.removeEventListener("visibilitychange", change);
+		};
+	}, [afterMs]);
+	return asleep;
 }
 
 /** A drawing of a desktop (a terminal and a window) or a browser (a page), in the theme's colours. */
@@ -160,18 +163,18 @@ export interface SandboxViewerProps {
 	/** Reads the access again, after it failed. */
 	readonly onRetry: () => void;
 	/**
-	 * Access young enough for a new connection, read again when the page's is old, for the pop-out. The screen already
-	 * open keeps its own. Without it the pop-out uses `access`.
+	 * The page is shown again after its stream was closed while it was hidden (`HIDDEN_CLOSE_MS`): access that's too old
+	 * for a new connection is read again here.
 	 */
-	readonly freshAccess?: () => Promise<SandboxAccess>;
+	readonly onWake?: () => void;
 	/** A phone: the controls wrap under the trail. */
 	readonly narrow?: boolean;
 }
 
 /**
- * The desktop or the browser full size in the console, as tall as the window allows. Control and Watch switch the
- * desktop between using it and watching only; the other screen is a button away; Full screen fills the display and
- * the pop-out opens it in a tab of its own.
+ * The desktop or the browser as a page of its own, the whole window. Control and Watch switch the desktop between
+ * using it and watching only; Full screen fills the display. From the browser the desktop is a button away; not the
+ * other way, since the browser runs on the desktop and shows the same picture there.
  */
 export function SandboxViewer({
 	name,
@@ -182,10 +185,12 @@ export function SandboxViewer({
 	viewHref,
 	onView,
 	onRetry,
-	freshAccess,
+	onWake,
 	narrow = false,
 }: SandboxViewerProps) {
 	const frame = useRef<HTMLDivElement>(null);
+	// A tab left hidden lets its stream go, and opens it again when it's shown.
+	const asleep = useHiddenFor(HIDDEN_CLOSE_MS, onWake);
 	const ready = access !== "loading" && !(access instanceof Error) ? access : undefined;
 	const unavailable = ready === undefined ? undefined : screenUnavailable(ready, view);
 	const url = ready === undefined || unavailable !== undefined ? undefined : embedUrl(ready, view);
@@ -193,7 +198,7 @@ export function SandboxViewer({
 	const other: ScreenView = view === "browser" ? "desktop" : "browser";
 	const otherUnavailable = ready === undefined ? undefined : screenUnavailable(ready, other);
 	const otherButton =
-		otherUnavailable !== undefined ? (
+		view !== "browser" ? null : otherUnavailable !== undefined ? (
 			<Button
 				size="sm"
 				variant="ghost"
@@ -218,7 +223,13 @@ export function SandboxViewer({
 			</a>
 		);
 	let body: ReactNode;
-	if (access === "loading") body = <Skeleton lines={3} />;
+	if (asleep)
+		body = (
+			<div className="flex size-full items-center justify-center p-4 text-muted" role="status">
+				Paused while this tab is hidden
+			</div>
+		);
+	else if (access === "loading") body = <Skeleton lines={3} />;
 	else if (access instanceof Error)
 		body = (
 			<div className="p-4">
@@ -252,10 +263,9 @@ export function SandboxViewer({
 			/>
 		);
 	return (
-		// As tall as the window less the console's bars and padding: the top bar's height twice on a wide screen, and on a
-		// phone four times, for its top bar, its tab bar and the trail's own line.
+		// The whole window: the page has no console bars around it.
 		<div
-			className={`kt-sandbox-viewer flex min-h-0 w-full min-w-0 flex-col gap-3 ${narrow ? "h-[calc(100dvh_-_var(--kt-topbar-height)_*_4)]" : "h-[calc(100dvh_-_var(--kt-topbar-height)_*_2)]"}`}
+			className={`kt-sandbox-viewer flex h-dvh min-h-0 w-full min-w-0 flex-col gap-3 ${narrow ? "p-gutter-narrow" : "px-gutter py-3"}`}
 		>
 			<div className={`flex min-w-0 items-center gap-2 ${narrow ? "flex-wrap" : ""}`}>
 				{/* On a phone the trail has a line of its own, the controls under it. */}
@@ -289,16 +299,6 @@ export function SandboxViewer({
 						icon={<FullScreenIcon size="sm" />}
 						disabled={unavailable !== undefined}
 						onClick={() => void frame.current?.requestFullscreen?.()}
-					/>
-					<IconButton
-						size="sm"
-						variant="ghost"
-						label="Open in a new tab"
-						icon={<ExternalLinkIcon size="sm" />}
-						disabled={ready === undefined || unavailable !== undefined}
-						onClick={() => {
-							if (ready !== undefined) popOut(view, ready, freshAccess);
-						}}
 					/>
 				</div>
 			</div>

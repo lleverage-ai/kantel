@@ -100,7 +100,7 @@ describe("a sandbox's page", () => {
 		expect(sandboxViewShown("egress", running)).toBe("overview");
 	});
 
-	it("opens a row's Browser and Desktop in a tab where the console can't frame them, and on its page elsewhere", () => {
+	it("opens a row's Desktop in a tab where the console can't frame it, and leaves its link's new tab elsewhere", () => {
 		const click = (button = 0) => {
 			const event = {
 				button,
@@ -115,25 +115,24 @@ describe("a sandbox's page", () => {
 			};
 			return event;
 		};
-		const went: string[] = [];
 		const tabs: string[] = [];
-		const navigate = (path: string) => went.push(path);
 		const openTab = (view: string) => tabs.push(view);
 
 		const local = click();
-		screenLink("tab", navigate, openTab)("desktop")(local);
-		expect([local.prevented, tabs, went]).toEqual([true, ["desktop"], []]);
+		screenLink("tab", openTab)("desktop")(local);
+		expect([local.prevented, tabs]).toEqual([true, ["desktop"]]);
 		// Not a primary click: left to the browser.
 		const middle = click(1);
-		screenLink("tab", navigate, openTab)("browser")(middle);
+		screenLink("tab", openTab)("browser")(middle);
 		expect([middle.prevented, tabs]).toEqual([false, ["desktop"]]);
 
+		// The console's screen page, in the new tab its link opens: the click is the browser's.
 		for (const screens of ["console", undefined] as const) {
 			const hosted = click();
-			screenLink(screens, navigate, openTab)("desktop")(hosted);
-			expect(hosted.prevented).toBe(true);
+			screenLink(screens, openTab)("desktop")(hosted);
+			expect(hosted.prevented).toBe(false);
 		}
-		expect([went, tabs]).toEqual([["/sandboxes/sbx_a/desktop", "/sandboxes/sbx_a/desktop"], ["desktop"]]);
+		expect(tabs).toEqual(["desktop"]);
 	});
 
 	it("reads a running sandbox's files (over E2E where it is), and no snapshot of an end-to-end one", () => {

@@ -1,18 +1,18 @@
 // A sandbox's page (compute console): everything about one sandbox and every way into it. The header has its name and
-// state, Browser, Desktop and Stop, and ⋯ for Fork, Save snapshot, Auto-stop and Delete; under it its address, its
-// environment and when it stops. Five tabs follow. Overview: live previews of its desktop and browser (which open in
-// the console, full size), SSH (sandbox-ssh.tsx), its ports, its CPU and memory, its details and its read-only
-// mounts, where it has any. Logs: commands and what happened to it, in one timeline. Egress: its egress log.
-// Snapshots: its own history. Files: what's in it now, or in its latest snapshot while it's stopped. On a phone the
-// previews and Stop go (Stop is in ⋯) and the sections stack. Every call goes through the sources the host binds;
-// stories bind them to fixtures.
+// state, its one screen (Desktop, or Browser where there's no desktop) and Stop, and ⋯ for Fork, Save snapshot,
+// Auto-stop and Delete; under it its address, its environment and when it stops. Five tabs follow. Overview: SSH
+// (sandbox-ssh.tsx), its ports, its CPU and memory, its details and its read-only mounts, where it has any; no screen
+// streams until Desktop or Browser opens it. Logs: commands and what happened to it, in one timeline. Egress: its
+// egress log. Snapshots: its own history. Files: what's in it now, or in its latest snapshot while it's stopped. On a
+// phone Stop goes (Stop is in ⋯) and the sections stack. Every call goes through the sources the host binds; stories
+// bind them to fixtures.
 
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { Breadcrumbs } from "../primitives/breadcrumbs.tsx";
 import { Button, buttonClass, buttonLabelClass } from "../primitives/button.tsx";
 import { CopyButton } from "../primitives/controls.tsx";
 import { compactAge } from "../primitives/format.ts";
-import { CheckIcon, ClockIcon, EyeIcon, GlobeIcon, MinusCircleIcon, StopIcon } from "../primitives/icons.tsx";
+import { CheckIcon, ClockIcon, GlobeIcon, MinusCircleIcon, StopIcon } from "../primitives/icons.tsx";
 import { type Loaded, useLoad, useReloadOn } from "../primitives/load.ts";
 import {
 	DesktopIcon,
@@ -44,6 +44,7 @@ import {
 	type SnapshotsSource,
 	sandboxActions,
 	sandboxMoving,
+	sandboxScreen,
 	sandboxSpec,
 	screenUnavailable,
 	sizeText,
@@ -56,7 +57,7 @@ import { type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
 import { SandboxLogs } from "./sandbox-logs.tsx";
 import { SandboxMounts } from "./sandbox-mounts.tsx";
 import { SandboxPorts } from "./sandbox-ports.tsx";
-import { embedUrl, popOut, SandboxViewer, ScreenPreview, type ScreenView } from "./sandbox-screen.tsx";
+import { popOut, SandboxViewer, type ScreenView } from "./sandbox-screen.tsx";
 import { SandboxSsh } from "./sandbox-ssh.tsx";
 import { showsCpu } from "./sandboxes-page.tsx";
 import { type FilesAt, filesRoot, SnapshotFiles } from "./snapshot-files.tsx";
@@ -269,8 +270,8 @@ export function SandboxPage({
 	const view = lacked
 		? "overview"
 		: sandboxViewShown(asked, { inTab, windows, known: sandbox !== undefined, tabs: tabsShown });
-	// A screen, or Overview's previews, mount new connections: old access is read again first.
-	const opensScreens = (next: SandboxView) => isScreen(next) || next === "overview";
+	// A screen mounts a new connection: old access is read again first. Overview shows none.
+	const opensScreens = isScreen;
 	const go = (next: SandboxView) => {
 		if (inTab && isScreen(next)) {
 			// The tab opens now and goes to the screen once fresh access is read.
@@ -286,6 +287,13 @@ export function SandboxPage({
 	useEffect(() => {
 		if (opensScreens(view) && accessStale()) readAccess();
 	}, [view]);
+	// A screen's page for a sandbox that can't show one (stopped, an isolate, an image without it) goes to its Overview,
+	// in the console, rather than a bare page with nothing on it.
+	const fellBack = isScreen(asked) && !isScreen(view);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: only falling back moves the address.
+	useEffect(() => {
+		if (fellBack) navigate?.(href(view));
+	}, [fellBack]);
 
 	// Whether its files and output can be read here, or only end to end; the gateway's console may ask its chain.
 	const e2e = useLoad(
@@ -338,10 +346,12 @@ export function SandboxPage({
 			current={current}
 		/>
 	);
+	// A screen's page has no console around it, so no padding either: these states bring their own.
+	const early = isScreen(asked) ? `${computePage} p-gutter` : computePage;
 
 	if (deleted) {
 		return (
-			<div className={computePage}>
+			<div className={early}>
 				{crumbs(<span>{sandbox?.name ?? sandboxId}</span>)}
 				<EmptyState title="Deleted">{notice?.text}</EmptyState>
 			</div>
@@ -349,7 +359,7 @@ export function SandboxPage({
 	}
 	if (sandbox === undefined) {
 		return (
-			<div className={computePage}>
+			<div className={early}>
 				{crumbs(<span>{sandboxId}</span>)}
 				{state.status === "error" ? (
 					<Notice
@@ -370,7 +380,7 @@ export function SandboxPage({
 	}
 	if (accountId !== undefined && sandbox.accountId !== accountId) {
 		return (
-			<div className={computePage}>
+			<div className={early}>
 				{crumbs(<span>{sandbox.name}</span>)}
 				<Notice level="error">This sandbox belongs to another account. Switch to that account to open it.</Notice>
 			</div>
@@ -388,7 +398,9 @@ export function SandboxPage({
 				viewHref={href}
 				onView={go}
 				onRetry={readAccess}
-				freshAccess={freshAccess}
+				onWake={() => {
+					if (accessStale()) readAccess();
+				}}
 				narrow={narrow}
 			/>
 		);
@@ -423,11 +435,14 @@ export function SandboxPage({
 					{label}
 				</Button>
 			) : (
+				// A page of its own in a new tab, its address to share; where the console can't frame it, the screen itself.
 				<a
 					className={`${buttonClass("secondary", narrow ? "md" : "sm")} no-underline ${narrow ? "w-full" : ""}`}
 					href={href(to)}
+					target="_blank"
+					rel="noopener"
 					onClick={(event) => {
-						if (event.metaKey || event.ctrlKey || event.shiftKey) return;
+						if (!inTab || event.metaKey || event.ctrlKey || event.shiftKey) return;
 						event.preventDefault();
 						go(to);
 					}}
@@ -439,14 +454,15 @@ export function SandboxPage({
 		// A button doesn't grow; on a phone its wrapper does, so the two share the row.
 		return narrow ? <span className="flex min-w-0 flex-1">{link}</span> : link;
 	};
+	// One screen: the browser runs on the desktop, so where there's a desktop, Browser would show the same picture.
+	const screen = sandboxScreen(sandbox);
 	const actions = (
 		<>
-			{windows ? (
-				<>
-					{screenLink("browser", "Browser", <GlobeIcon size="sm" />)}
-					{screenLink("desktop", "Desktop", <DesktopIcon size="sm" />)}
-				</>
-			) : null}
+			{!windows || screen === undefined
+				? null
+				: screen === "desktop"
+					? screenLink("desktop", "Desktop", <DesktopIcon size="sm" />)
+					: screenLink("browser", "Browser", <GlobeIcon size="sm" />)}
 			{can.recover ? (
 				<Button
 					size={narrow ? "md" : "sm"}
@@ -612,8 +628,6 @@ export function SandboxPage({
 					windows={windows}
 					access={access?.value}
 					onAccessRetry={readAccess}
-					onOpen={go}
-					screenHref={href}
 					onNotice={setNotice}
 					usageKey={state}
 				/>
@@ -665,8 +679,6 @@ function Overview({
 	windows,
 	access,
 	onAccessRetry,
-	onOpen,
-	screenHref,
 	onNotice,
 	usageKey,
 }: {
@@ -678,85 +690,16 @@ function Overview({
 	windows: boolean;
 	access: SandboxAccess | "loading" | Error | undefined;
 	onAccessRetry: () => void;
-	onOpen: (view: ScreenView) => void;
-	screenHref: (view: ScreenView) => string;
 	onNotice: (notice: SandboxNotice | undefined) => void;
 	/** Changes with each read of the sandbox, so memory and disk are read again with its CPU. */
 	usageKey: unknown;
 }) {
-	const ready = access !== undefined && access !== "loading" && !(access instanceof Error) ? access : undefined;
-	// Where the page can't frame a screen, its tile is the drawing and opens the screen in a tab.
-	const framed = ready !== undefined && source.screens !== "tab" ? ready : undefined;
 	const spec = sandboxSpec(sandbox);
 	const { ports, exposePort, hidePort } = source;
 	const portsShown = ports !== undefined && exposePort !== undefined && hidePort !== undefined;
 
-	const lacks = { desktop: imageLacks(sandbox, "desktop"), browser: imageLacks(sandbox, "browser") };
-	const tiles = (["desktop", "browser"] as const).filter(
-		(kind) => lacks[kind] === undefined || lacks.desktop === undefined || lacks.browser === undefined,
-	);
-	const tile = (kind: "desktop" | "browser") => {
-		// What the image lacks first: no access makes a desktop the image doesn't have.
-		const unavailable = lacks[kind] ?? (ready === undefined ? undefined : screenUnavailable(ready, kind));
-		if (unavailable !== undefined) {
-			// Nothing to open: the drawing, dimmed, and why under it.
-			return (
-				<div className="kt-sandbox-tile flex min-w-0 flex-col overflow-hidden rounded-panel border border-border bg-panel">
-					<div className="opacity-50">
-						<ScreenPreview kind={kind} label={kind === "desktop" ? "Desktop" : "Browser"} />
-					</div>
-					<div className="flex h-control-lg items-center gap-2 border-t border-border px-3">
-						<span className="font-medium text-fg">{kind === "desktop" ? "Desktop" : "Browser"}</span>
-						<span className="flex-1" />
-						<span className="truncate text-muted text-sm">{unavailable}</span>
-					</div>
-				</div>
-			);
-		}
-		return (
-			<div className="kt-sandbox-tile flex min-w-0 flex-col overflow-hidden rounded-panel border border-border bg-panel">
-				<a
-					className="kt-focusable block"
-					href={screenHref(kind)}
-					aria-label={kind === "desktop" ? "Open the desktop" : "Open the browser"}
-					onClick={(event) => {
-						if (event.metaKey || event.ctrlKey || event.shiftKey) return;
-						event.preventDefault();
-						onOpen(kind);
-					}}
-				>
-					<ScreenPreview
-						kind={kind}
-						label={kind === "desktop" ? `${sandbox.name}'s desktop` : `${sandbox.name}'s browser`}
-						{...(framed === undefined
-							? {}
-							: (() => {
-									const url = embedUrl(framed, kind === "desktop" ? "watch" : "browser");
-									return url === undefined ? {} : { url };
-								})())}
-					/>
-				</a>
-				<div className="flex h-control-lg items-center gap-2 border-t border-border px-3">
-					<span className="font-medium text-fg">{kind === "desktop" ? "Desktop" : "Browser"}</span>
-					<span className="flex-1" />
-					{kind === "desktop" ? (
-						<a
-							className={`${buttonClass("ghost", "xs")} no-underline`}
-							href={screenHref("watch")}
-							onClick={(event) => {
-								if (event.metaKey || event.ctrlKey || event.shiftKey) return;
-								event.preventDefault();
-								onOpen("watch");
-							}}
-						>
-							<EyeIcon size="sm" />
-							<span className={buttonLabelClass}>Watch</span>
-						</a>
-					) : null}
-				</div>
-			</div>
-		);
-	};
+	// No screen is shown here, so nothing streams until Desktop (or Browser) opens one in a tab of its own.
+	const screen = sandboxScreen(sandbox);
 
 	const ssh = !windows ? null : (
 		<SandboxSsh source={source} sandboxId={sandbox.id} access={access} onAccessRetry={onAccessRetry} now={now} />
@@ -838,9 +781,9 @@ function Overview({
 		sandbox.kind === "isolate"
 			? "An isolate has no desktop, browser or SSH."
 			: sandboxActions(sandbox.state).resume
-				? tiles.length === 0
+				? screen === undefined
 					? "Resume it to use SSH."
-					: "Resume it to use its desktop, browser and SSH."
+					: `Resume it to use its ${screen} and SSH.`
 				: undefined;
 
 	if (narrow) {
@@ -860,8 +803,6 @@ function Overview({
 	return (
 		<div className="grid min-w-0 items-start gap-10 xl:grid-cols-[minmax(0,1fr)_var(--kt-popover-width)]">
 			<div className="flex min-w-0 flex-col gap-8">
-				{windows && tiles.length > 0 ? <div className="grid grid-cols-2 gap-4">{tiles.map(tile)}</div> : null}
-				{windows && tiles.length === 0 ? <NoScreens /> : null}
 				{ssh}
 				{portsSection}
 				{hint === undefined ? null : <p className="m-0 text-sm text-muted">{hint}</p>}
@@ -872,21 +813,6 @@ function Overview({
 				{details}
 				{mounts}
 			</aside>
-		</div>
-	);
-}
-
-/** Where the previews would be, for an image with neither a desktop nor a browser: said once, plainly. */
-function NoScreens() {
-	return (
-		<div className="flex min-w-0 items-start gap-3 rounded-panel border border-border border-dashed px-4 py-3 text-sm">
-			<span className="mt-0.5 flex-none text-faint" aria-hidden="true">
-				<DesktopIcon size="sm" />
-			</span>
-			<span className="flex min-w-0 flex-col gap-0.5">
-				<span className="text-fg">No desktop or browser in this image</span>
-				<span className="text-muted">Commands, files, ports and SSH work as in any sandbox.</span>
-			</span>
 		</div>
 	);
 }

@@ -15,10 +15,12 @@ export const DEFAULT_THEME_PREFERENCE = "system" as const;
  * page's stylesheet (dark.css, light.css), so that is all it does. Nothing remembered, or anything unexpected, and the
  * page follows the device, the default (`DEFAULT_THEME_PREFERENCE`). A few hundred bytes, no network.
  *
+ * An address with `?theme=light`, `dark` or `system` paints that instead, for that page only (`themeInAddress`).
+ *
  * A choice remembered before Kantel had only light and dark (version 1, a theme's ID with its CSS) paints as the kind
  * of theme it was, by the `color-scheme` in that CSS; the controller then migrates it for good (`themePreference`).
  *
  * The console adds it with a Vite plugin (apps/console/vite.config.ts). Another host can do the same, or write
  * `<script>${themeBootScript}</script>` into its HTML.
  */
-export const themeBootScript = `(function(){var p=${JSON.stringify(DEFAULT_THEME_PREFERENCE)};try{var r=localStorage.getItem(${JSON.stringify(THEME_STORAGE_KEY)});if(r===null)r=localStorage.getItem(${JSON.stringify(LEGACY_THEME_STORAGE_KEY)});var c=JSON.parse(r||"null");if(c&&c.v===2&&(c.preference==="light"||c.preference==="dark"||c.preference==="system"))p=c.preference;else if(c&&c.v===1&&typeof c.preference==="string"){if(c.preference==="system")p="system";else{var css=c.css&&c.css[c.preference];if(typeof css==="string")p=/color-scheme:\\s*light/.test(css)?"light":"dark"}}}catch(e){}try{if(p==="system")p=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";document.documentElement.setAttribute("data-kt-theme",p)}catch(e){}})();`;
+export const themeBootScript = `(function(){var p=${JSON.stringify(DEFAULT_THEME_PREFERENCE)};try{var r=localStorage.getItem(${JSON.stringify(THEME_STORAGE_KEY)});if(r===null)r=localStorage.getItem(${JSON.stringify(LEGACY_THEME_STORAGE_KEY)});var c=JSON.parse(r||"null");if(c&&c.v===2&&(c.preference==="light"||c.preference==="dark"||c.preference==="system"))p=c.preference;else if(c&&c.v===1&&typeof c.preference==="string"){if(c.preference==="system")p="system";else{var css=c.css&&c.css[c.preference];if(typeof css==="string")p=/color-scheme:\\s*light/.test(css)?"light":"dark"}}}catch(e){}try{var q=/[?&]theme=(light|dark|system)(?:[&#]|$)/.exec(location.search);if(q)p=q[1]}catch(e){}try{if(p==="system")p=matchMedia("(prefers-color-scheme: light)").matches?"light":"dark";document.documentElement.setAttribute("data-kt-theme",p)}catch(e){}})();`;

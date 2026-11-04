@@ -581,6 +581,61 @@ export function ComputeConsole({
 		</a>
 	);
 
+	// A sandbox's desktop or browser is a page of its own, the whole window, without the console around it: the sandbox's
+	// page opens it in a new tab, and its address is one to share.
+	const screenPage =
+		page === "sandboxes" &&
+		route.sandboxId !== undefined &&
+		(route.sandboxView === "desktop" || route.sandboxView === "watch" || route.sandboxView === "browser");
+	if (screenPage) {
+		return (
+			// biome-ignore lint/a11y/noStaticElementInteractions: delegates clicks on the links inside; each link is focusable.
+			// biome-ignore lint/a11y/useKeyWithClickEvents: a link's Enter is a click, so the keyboard takes the same path.
+			<div className="kt-screen-page h-dvh min-h-0 min-w-0 bg-canvas text-fg" onClick={onClick}>
+				{failed !== undefined ? (
+					<div className="grid h-full place-items-center p-gutter">
+						<ConsoleUnavailable
+							message={messageOf(failed.error, "Try again in a moment.")}
+							onRetry={() => {
+								viewer.reload();
+								accounts.reload();
+							}}
+						/>
+					</div>
+				) : account === undefined || me === undefined ? (
+					<div className="p-gutter">
+						<Skeleton lines={3} />
+					</div>
+				) : (
+					<PageFor
+						page={page}
+						route={route}
+						source={source}
+						account={account}
+						viewer={me}
+						now={now}
+						base={base}
+						search={search}
+						hash={hash}
+						navigate={navigate}
+						noHosts={noHosts}
+						narrow={narrow}
+						hosts={hostsSource}
+						ownHosts={!superAdmin}
+						accounts={list ?? []}
+						onSwitch={switchTo}
+						onRenamed={() => accounts.reload()}
+						you={{ name: name ?? me.name, email: email ?? me.email }}
+						onHostJoined={hosts.reload}
+						onCreate={() => setDialog("create")}
+						onJoin={() => setDialog("join")}
+						onLeft={() => accounts.reload()}
+					/>
+				)}
+			</div>
+		);
+	}
+
 	return (
 		// biome-ignore lint/a11y/noStaticElementInteractions: delegates clicks on the links inside; each link is focusable.
 		// biome-ignore lint/a11y/useKeyWithClickEvents: a link's Enter is a click, so the keyboard takes the same path.

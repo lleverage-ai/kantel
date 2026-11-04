@@ -50,6 +50,7 @@ import {
 	type SavedSnapshot,
 	sandboxActions,
 	sandboxMoving,
+	sandboxScreen,
 	sandboxSpec,
 	shapeCentsPerHour,
 	shapeCreatable,
@@ -656,15 +657,16 @@ type LinkClick = Pick<
 };
 
 /**
- * A row's Browser and Desktop: to the sandbox's page, or each to a tab of its own where the console can't frame them
- * (`screens` "tab"), as on the sandbox's page. `openTab` runs during the click, so the browser lets the tab open.
+ * A row's Desktop (or Browser): its page of its own, which the link opens in a new tab, or the screen itself in a tab
+ * where the console can't frame it (`screens` "tab"), as on the sandbox's page. `openTab` runs during the click, so
+ * the browser lets the tab open.
  */
 export function screenLink(
 	screens: SandboxesSource["screens"],
-	navigate: ((path: string) => void) | undefined,
 	openTab: (view: "browser" | "desktop") => void,
 ): (view: "browser" | "desktop") => (event: LinkClick) => void {
-	if (screens !== "tab") return () => follow(navigate);
+	// The link's own new tab.
+	if (screens !== "tab") return () => () => {};
 	return (view) => (event) => {
 		if (event.button !== 0) return;
 		event.preventDefault();
@@ -678,6 +680,8 @@ function useRowActions(sandbox: Sandbox, calls: RowCalls) {
 	const pending = sandbox.id.startsWith("pending_");
 	const can = sandboxActions(sandbox.state);
 	const windows = can.connect && sandbox.kind === "microvm";
+	// Its one screen: the desktop, where it has one (the browser runs on it), or else its browser.
+	const screen = sandboxScreen(sandbox);
 	const menu = useSandboxMenu(sandbox, {
 		source,
 		...(save === undefined ? {} : { save }),
@@ -721,10 +725,8 @@ function useRowActions(sandbox: Sandbox, calls: RowCalls) {
 	const href =
 		pending || sandboxHref === undefined ? undefined : (view?: SandboxRowView) => sandboxHref(sandbox.id, view);
 	const onLink = follow(calls.navigate);
-	const onScreen = screenLink(source.screens, calls.navigate, (view) =>
-		popOut(view, undefined, () => source.access(sandbox.id)),
-	);
-	return { pending, can, windows, resume, recover, actions, href, onLink, onScreen };
+	const onScreen = screenLink(source.screens, (view) => popOut(view, undefined, () => source.access(sandbox.id)));
+	return { pending, can, windows, screen, resume, recover, actions, href, onLink, onScreen };
 }
 
 /** The state, in its colour. */
@@ -794,7 +796,10 @@ function SandboxRow({
 	ticked: boolean;
 	onTick: (on: boolean) => void;
 }) {
-	const { pending, can, windows, resume, recover, actions, href, onLink, onScreen } = useRowActions(sandbox, calls);
+	const { pending, can, windows, screen, resume, recover, actions, href, onLink, onScreen } = useRowActions(
+		sandbox,
+		calls,
+	);
 	const stops = stopsText(sandbox, now);
 	// What went wrong gets a line of its own under the row, across the columns, rather than truncating in the name's.
 	const failure = sandbox.state === "error" ? sandbox.error : undefined;
@@ -858,19 +863,34 @@ function SandboxRow({
 			</td>
 			<td className={`${cell} w-0 text-right`}>
 				<span className="relative flex items-center justify-end gap-1">
-					{windows && href !== undefined ? (
+					{windows && screen !== undefined && href !== undefined ? (
 						// Over the columns to its left while shown, so the hidden buttons take no width from every row. The
 						// canvas under the row's own hover tint matches the row it sits on.
 						<span className={`absolute right-full mr-1 rounded-control bg-canvas ${onHover}`}>
 							<span className="flex gap-1 rounded-control bg-hover pl-2">
-								<a className={ghostLink} href={href("browser")} onClick={onScreen("browser")}>
-									<GlobeIcon size="sm" />
-									<span className={buttonLabelClass}>Browser</span>
-								</a>
-								<a className={ghostLink} href={href("desktop")} onClick={onScreen("desktop")}>
-									<DesktopIcon size="sm" />
-									<span className={buttonLabelClass}>Desktop</span>
-								</a>
+								{screen === "desktop" ? (
+									<a
+										className={ghostLink}
+										href={href("desktop")}
+										target="_blank"
+										rel="noopener"
+										onClick={onScreen("desktop")}
+									>
+										<DesktopIcon size="sm" />
+										<span className={buttonLabelClass}>Desktop</span>
+									</a>
+								) : (
+									<a
+										className={ghostLink}
+										href={href("browser")}
+										target="_blank"
+										rel="noopener"
+										onClick={onScreen("browser")}
+									>
+										<GlobeIcon size="sm" />
+										<span className={buttonLabelClass}>Browser</span>
+									</a>
+								)}
 							</span>
 						</span>
 					) : can.recover ? (

@@ -554,6 +554,16 @@ export function imageLacks(
 	return found.reason ?? IMAGE_LACKS[feature];
 }
 
+/**
+ * The one screen a sandbox offers: its desktop, where its image has one, since its browser runs on that desktop and
+ * shows the same picture; otherwise its browser, where it has one; undefined for neither. Unknown counts as there.
+ */
+export function sandboxScreen(sandbox: Pick<Sandbox, "image">): "desktop" | "browser" | undefined {
+	if (imageLacks(sandbox, "desktop") === undefined) return "desktop";
+	if (imageLacks(sandbox, "browser") === undefined) return "browser";
+	return undefined;
+}
+
 export interface CreateSandboxInput {
 	readonly accountId: string;
 	readonly name?: string;
