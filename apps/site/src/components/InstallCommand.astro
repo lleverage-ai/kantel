@@ -1,19 +1,25 @@
 ---
-// The one-line install on a midnight plate, with a copy button. The command is plain `curl … | sh`, which pastes the
-// same into bash, zsh and fish.
+// A one-line install on a midnight plate, with a copy button. The commands are plain `curl … | sh`, which paste the
+// same into bash, zsh and fish. `next` adds the commands to run after it, under the line, to read or select: the copy
+// button copies the install alone, since the next ones need it to have finished.
 import { INSTALL_COMMAND } from "../site.mjs";
 
 interface Props {
 	id: string;
+	/** The command to show and copy. Default: the self-hosted install. */
+	command?: string;
 	/** For a narrow column: small text that wraps at every width. Otherwise it wraps only on a phone. */
 	compact?: boolean;
+	/** Commands to run next, each with a short note. */
+	next?: readonly { command: string; note: string }[];
 }
-const { id, compact = false } = Astro.props;
+const { id, command = INSTALL_COMMAND, compact = false, next = [] } = Astro.props;
 ---
 
+<div class="w-full max-w-(--container-hero) rounded-card bg-midnight text-paper">
 <div
 	class:list={[
-		"flex w-full max-w-(--container-hero) items-start gap-3 rounded-card bg-midnight py-3 pr-3 pl-5 text-paper",
+		"flex w-full items-start gap-3 py-3 pr-3 pl-5",
 		!compact && "sm:items-center",
 	]}
 >
@@ -25,7 +31,7 @@ const { id, compact = false } = Astro.props;
 		class:list={[
 			"min-w-0 flex-1 py-2 font-mono text-sm break-all",
 			!compact && "sm:overflow-x-auto sm:py-0 sm:text-base sm:break-normal sm:whitespace-nowrap",
-		]}>{INSTALL_COMMAND}</code
+		]}>{command}</code
 	>
 	<button
 		type="button"
@@ -34,6 +40,22 @@ const { id, compact = false } = Astro.props;
 	>
 		<span data-label>Copy</span>
 	</button>
+</div>
+{
+	next.length > 0 && (
+		<ol class="space-y-2 border-t border-midnight-2 py-4 pr-5 pl-5 font-mono text-sm">
+			{next.map((step) => (
+				<li class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+					<span class="text-faint select-none" aria-hidden="true">
+						$
+					</span>
+					<code class="min-w-0 break-all">{step.command}</code>
+					<span class="text-faint"># {step.note}</span>
+				</li>
+			))}
+		</ol>
+	)
+}
 </div>
 
 <script>

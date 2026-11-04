@@ -112,7 +112,7 @@ The compute API keeps its records in memory for now, so sandboxes, snapshots, or
 
 Sandboxes run on hosts you add. Until one joins, the console's **Sandboxes** page says so and its **Add a host** button opens the join command on the **Hosts** page.
 
-A host is a Linux machine with `/dev/kvm` that runs `kantel-host`: Firecracker microVMs and workerd isolates. It dials out to the control plane over a WebSocket, so it needs no open port. [Quickstart](/quickstart/) joins one on the control plane's own machine, and [Hosts](/hosts/) covers it in full. A host on the control plane's own machine joins at `http://127.0.0.1:58090`, which the stack uses by default. For hosts on other machines, set where they reach the control plane and upgrade:
+A host is a Linux machine with `/dev/kvm` that runs `kantel-host`: Firecracker microVMs and workerd isolates. It dials out to the control plane over a WebSocket, so it needs no open port. [Self-host quick start](/self-hosting/quickstart/) joins one on the control plane's own machine, and [Hosts](/hosts/) covers it in full. A host on the control plane's own machine joins at `http://127.0.0.1:58090`, which the stack uses by default. For hosts on other machines, set where they reach the control plane and upgrade:
 
 ```sh
 echo 'KANTEL_PUBLIC_URL=https://kantel.example.com' >> ~/.kantel/src/deploy/compose/.env

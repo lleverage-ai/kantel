@@ -7,7 +7,7 @@ import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Button } from "../primitives/button.tsx";
 import { CheckboxField, TextField } from "../primitives/controls.tsx";
 import { Dialog } from "../primitives/dialog.tsx";
-import { FormField, PageHeader } from "../primitives/form-layout.tsx";
+import { FormField } from "../primitives/form-layout.tsx";
 import { compactAge } from "../primitives/format.ts";
 import { ChevronRightIcon, PencilIcon, PlusIcon, SendIcon } from "../primitives/icons.tsx";
 import { useLoad } from "../primitives/load.ts";
@@ -28,10 +28,13 @@ import {
 	type WebhooksSource,
 } from "./compute-model.ts";
 import { cellMono, cellSub, computePage, messageOf, TableFrame, table, tableFrame, td, th } from "./parts.tsx";
+import { SettingsPageHeader } from "./settings-nav.tsx";
 
 export interface WebhooksPageProps {
 	readonly source: WebhooksSource;
 	readonly account: ComputeAccount;
+	/** A phone, inside Settings: the page's name is left to the selected link. */
+	readonly narrow?: boolean;
 	/** A fixed time, for stories. */
 	readonly now?: number;
 	/** The endpoint whose deliveries show when the page opens, by id. */
@@ -76,7 +79,7 @@ function urlError(url: string): string | undefined {
 	}
 }
 
-export function WebhooksPage({ source, account, now: fixedNow, initialOpen }: WebhooksPageProps) {
+export function WebhooksPage({ source, account, now: fixedNow, initialOpen, narrow = false }: WebhooksPageProps) {
 	const { state, reload } = useLoad(() => source.list(account.id), [source, account.id]);
 	// Endpoints made, changed or deleted here, ahead of the next read.
 	const [local, setLocal] = useState<ReadonlyMap<string, Webhook | null>>(new Map());
@@ -111,11 +114,7 @@ export function WebhooksPage({ source, account, now: fixedNow, initialOpen }: We
 
 	return (
 		<div className={computePage}>
-			<PageHeader
-				title="Webhooks"
-				lede="Kantel posts an event to your endpoint when a sandbox changes state. Each delivery is signed with the endpoint's secret, and retried with backoff if it fails."
-				actions={addButton}
-			/>
+			<SettingsPageHeader title="Webhooks" actions={addButton} narrow={narrow} />
 			{created === undefined ? null : (
 				<OneTimeSecret
 					title={`Copy the signing secret for ${hostOf(created.webhook.url)} now`}

@@ -104,6 +104,8 @@ type Host struct {
 	// link makes calls to the control plane while connected.
 	link  *caller
 	pools map[string]int
+	// usage samples the host and its sandboxes while RunUsage runs (usage.go).
+	usage *usageSampler
 }
 
 // New starts the tiers the host can run.
@@ -232,11 +234,15 @@ func (h *Host) makeFacts() proto.Facts {
 	if reserve == 0 {
 		reserve = max(2048, total/10)
 	}
+	features := []string{proto.FeatureEgressPolicy}
+	if h.cfg.usageInterval() > 0 {
+		features = append(features, proto.FeatureUsage)
+	}
 	return proto.Facts{
 		Version: h.version, Protocol: proto.ProtocolVersion, OS: runtime.GOOS, Arch: hostinfo.Arch(), Kernel: hostinfo.Kernel(),
 		Hostname: name, CPUs: runtime.NumCPU(), MemoryMiB: max(0, total-reserve), DiskGiB: hostinfo.FreeDiskGiB(h.cfg.Root),
 		KVM: kvm, Nested: nested && kvm, Tiers: h.Tiers(), Sizes: sizes, Labels: h.cfg.Labels, Egress: h.cfg.Egress,
-		Features: []string{proto.FeatureEgressPolicy},
+		Features: features,
 	}
 }
 
