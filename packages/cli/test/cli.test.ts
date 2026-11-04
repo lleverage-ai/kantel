@@ -1,5 +1,6 @@
 // The kantel command line, through `run`, with a fake Kantel behind an injected fetch and a temporary config directory.
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Caller, Command, Host, Sandbox, SandboxPage } from "@kantel/api/sdk";
@@ -145,6 +146,8 @@ interface KantelOptions {
 	readonly cwd?: string;
 	/** This CLI by its full paths, for `agents` when `kantel` isn't on the PATH. */
 	readonly self?: readonly string[];
+	/** Kantel's config directory; default the temporary one. */
+	readonly configDir?: string;
 }
 
 /** The `self` every run gets unless it says otherwise: Node and the installed CLI's link. */
@@ -162,7 +165,7 @@ async function kantel(argv: readonly string[], options: KantelOptions = {}) {
 		stdout,
 		stderr,
 		stdin: options.stdin ?? input(undefined, true),
-		configDir,
+		configDir: options.configDir ?? configDir,
 		cwd: options.cwd ?? configDir,
 		home: join(configDir, "home"),
 		self: options.self ?? SELF,
@@ -874,6 +877,7 @@ describe("copying files", () => {
 		await chmod(join(dir, "run.sh"), 0o755);
 		const written: Written[] = [];
 		const result = await kantel(["push", "sbx_test1", "app"], {
+			configDir: join(configDir, "kantel"),
 			routes: {
 				"PUT /v1/sandboxes/sbx_test1/files": (call) => {
 					written.push(call.body as Written);
@@ -889,6 +893,177 @@ describe("copying files", () => {
 		expect(byPath["app/src/a.ts"]).toEqual({ path: "app/src/a.ts", content: "export {};\n", encoding: "utf8" });
 		expect(byPath["app/logo.bin"]).toMatchObject({ encoding: "base64", content: "/wD+" });
 		expect(byPath["app/run.sh"]?.mode).toBe("0755");
+	});
+
+	/** Pushes with `args`, answering the paths it wrote. */
+	async function pushed(args: readonly string[], options: KantelOptions = {}) {
+		const written: string[] = [];
+		const result = await kantel(["push", "sbx_test1", ...args], {
+			configDir: join(configDir, "kantel"),
+			...options,
+			routes: {
+				"PUT /v1/sandboxes/sbx_test1/files": (call) => {
+					written.push((call.body as Written).path);
+					return { path: (call.body as Written).path, size: 1 };
+				},
+			},
+		});
+		return { ...result, written: written.sort() };
+	}
+
+	/** Writes each file under `dir`, making its directories. */
+	async function files(dir: string, paths: readonly string[]): Promise<void> {
+		for (const path of paths) {
+			await mkdir(join(dir, path, ".."), { recursive: true });
+			await writeFile(join(dir, path), `${path}\n`);
+		}
+	}
+
+	it("push leaves credentials, agents' sign-ins and .env files behind, naming each", async () => {
+		const dir = join(configDir, "app");
+		await files(dir, [
+			"src/a.ts",
+			".env",
+			".env.local",
+			".env.example",
+			".npmrc",
+			"deep/.ssh/id_ed25519",
+			"deep/.aws/credentials",
+			".docker/config.json",
+			".docker/daemon.json",
+			".claude/settings.json",
+			"pkg/.netrc",
+			"loud/.SSH/id_rsa",
+		]);
+		const result = await pushed(["app"]);
+		expect(result.code).toBe(0);
+		expect(result.written).toEqual(["app/.docker/daemon.json", "app/.env.example", "app/src/a.ts"]);
+		for (const line of [
+			"kantel: left out .claude (an agent's sign-in and settings)",
+			"kantel: left out .docker/config.json (credentials)",
+			"kantel: left out .env (an environment file)",
+			"kantel: left out .env.local (an environment file)",
+			"kantel: left out .npmrc (it can hold a registry token)",
+			"kantel: left out deep/.aws (credentials)",
+			"kantel: left out deep/.ssh (credentials)",
+			"kantel: left out pkg/.netrc (credentials)",
+			"kantel: left out loud/.SSH (credentials)",
+			"kantel: --no-default-excludes sends",
+		]) {
+			expect(result.stderr).toContain(line);
+		}
+
+		const all = await pushed(["app", "--no-default-excludes"]);
+		expect(all.code).toBe(0);
+		expect(all.written).toContain("app/deep/.ssh/id_ed25519");
+		expect(all.written).toContain("app/.env");
+		expect(all.stderr).not.toContain("left out");
+	});
+
+	it("push in git sends tracked agent settings and .env, never credentials or links out of the tree", async () => {
+		const dir = join(configDir, "repo");
+		await files(dir, [
+			".claude/settings.json",
+			".claude/settings.local.json",
+			".env",
+			".env.local",
+			".ssh/config",
+			"a.ts",
+		]);
+		await files(join(configDir, "elsewhere"), ["x"]);
+		await symlink(join(configDir, "elsewhere", "x"), join(dir, "x-link"));
+		await symlink(join(dir, ".ssh", "config"), join(dir, "ssh-link"));
+		await symlink(join(dir, ".env.local"), join(dir, "env-link"));
+		await symlink(join(dir, "a.ts"), join(dir, "a-link.ts"));
+		const inRepo = (...args: string[]) => execFileSync("git", args, { cwd: dir, stdio: "ignore" });
+		inRepo("init", "-q");
+		inRepo(
+			"add",
+			"a.ts",
+			".claude/settings.json",
+			".env",
+			".ssh/config",
+			"x-link",
+			"ssh-link",
+			"env-link",
+			"a-link.ts",
+		);
+		const result = await pushed(["repo"]);
+		expect(result.code).toBe(0);
+		expect(result.written).toEqual(["repo/.claude/settings.json", "repo/.env", "repo/a-link.ts", "repo/a.ts"]);
+		expect(result.stderr).toContain("kantel: left out .claude/settings.local.json (an agent's sign-in and settings)");
+		expect(result.stderr).toContain("kantel: left out .ssh (credentials)");
+		expect(result.stderr).toContain("kantel: left out x-link (a link to outside the directory)");
+		expect(result.stderr).toContain("kantel: left out ssh-link (a link to .ssh, credentials)");
+		// Git tracks the link, not the untracked file it points to.
+		expect(result.stderr).toContain("kantel: left out env-link (a link to .env.local, an environment file)");
+
+		// A directory in the repository named like one push leaves out is pushed by its tracked files.
+		const claude = await pushed(["repo/.claude"]);
+		expect(claude.code).toBe(0);
+		expect(claude.written).toEqual([".claude/settings.json"]);
+		expect(claude.stderr).toContain("kantel: left out settings.local.json (an agent's sign-in and settings)");
+
+		// A link out of the tree stays here even for someone who means the rest.
+		const all = await pushed(["repo", "--no-default-excludes"]);
+		expect(all.written).toContain("repo/.ssh/config");
+		expect(all.written).not.toContain("repo/x-link");
+	});
+
+	it("push refuses the home directory, or one holding it or Kantel's config, without --allow-home", async () => {
+		await files(join(configDir, "home"), ["notes.txt", ".ssh/id_ed25519"]);
+		const home = await pushed(["home"]);
+		expect(home.code).toBe(1);
+		expect(home.stderr).toContain("is your home directory: push a project directory, or add --allow-home");
+		expect(home.written).toEqual([]);
+		const above = await pushed(["."]);
+		expect(above.code).toBe(1);
+		expect(above.stderr).toContain("holds your home directory");
+
+		const allowed = await pushed(["home", "--allow-home"]);
+		expect(allowed.code).toBe(0);
+		expect(allowed.written).toEqual(["home/notes.txt"]);
+
+		const tree = join(configDir, "tree");
+		const config = join(tree, ".config", "kantel");
+		await files(tree, ["a.txt", ".config/other.json"]);
+		await files(config, ["e2e/device.json"]);
+		await writeFile(join(config, "config.json"), "{}\n");
+		const holding = await pushed(["tree"], { configDir: config });
+		expect(holding.code).toBe(1);
+		expect(holding.stderr).toContain("holds Kantel's config directory");
+		const rest = await pushed(["tree", "--allow-home", "--no-default-excludes"], { configDir: config });
+		expect(rest.code).toBe(0);
+		expect(rest.written).toEqual(["tree/.config/other.json", "tree/a.txt"]);
+		expect(rest.stderr).toContain("kantel: left out .config/kantel (Kantel's config, with your API key)");
+		const inside = await pushed(["tree/.config/kantel", "--allow-home", "--no-default-excludes"], {
+			configDir: config,
+		});
+		expect(inside.code).toBe(1);
+		expect(inside.stderr).toContain("is in Kantel's config directory");
+		expect(inside.written).toEqual([]);
+	});
+
+	it("push refuses a directory inside one it leaves out, and keeps a root's own name in mind", async () => {
+		await files(join(configDir, "elsewhere"), [
+			".ssh/id_ed25519",
+			".ssh/keys/old",
+			".docker/config.json",
+			".docker/a.json",
+		]);
+		for (const dir of ["elsewhere/.ssh", "elsewhere/.ssh/keys"]) {
+			const refused = await pushed([dir]);
+			expect(refused.code).toBe(1);
+			expect(refused.stderr).toContain("one push leaves out (credentials): add --no-default-excludes");
+			expect(refused.written).toEqual([]);
+		}
+		expect((await pushed(["elsewhere/.ssh", "--no-default-excludes"])).written).toEqual([
+			".ssh/id_ed25519",
+			".ssh/keys/old",
+		]);
+		const docker = await pushed(["elsewhere/.docker"]);
+		expect(docker.written).toEqual([".docker/a.json"]);
+		expect(docker.stderr).toContain("kantel: left out config.json (credentials)");
 	});
 
 	it("scp sends a file over 1 MiB in parts and joins them with one command", async () => {
@@ -944,6 +1119,28 @@ describe("copying files", () => {
 		const tree = await kantel(["scp", "-r", "sbx_test1:out", "."], { routes });
 		expect(tree.code).toBe(0);
 		expect(await readFile(join(configDir, "out", "a.txt"), "utf8")).toBe("out/a.txt!");
+	});
+
+	it("scp -r refuses a listing that names a file outside the directory, writing nothing", async () => {
+		const result = await kantel(["scp", "-r", "sbx_test1:out", "got"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1/files/list": (call: Call) =>
+					call.query.get("path") === "out"
+						? {
+								path: "/home/user/out",
+								items: [
+									{ name: "a.txt", path: "/home/user/out/a.txt", kind: "file", size: 2 },
+									{ name: "../../evil.txt", path: "/home/evil.txt", kind: "file", size: 2 },
+								],
+							}
+						: { path: "/home/user", items: [{ name: "out", path: "/home/user/out", kind: "directory", size: 0 }] },
+				"GET /v1/sandboxes/sbx_test1/files": () => ({ path: "x", content: "eA==", encoding: "base64", size: 1 }),
+			},
+		});
+		expect(result.code).toBe(1);
+		expect(result.stderr).toContain("which isn't safe here");
+		await expect(stat(join(configDir, "evil.txt"))).rejects.toThrow();
+		await expect(stat(join(configDir, "got"))).rejects.toThrow();
 	});
 
 	it("scp reads a file over 1 MiB in ranged reads, with no command in the sandbox", async () => {

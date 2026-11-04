@@ -88,11 +88,13 @@ import { openInBrowser, type PendingLogin, readPendingLogin, startLogin, waitFor
 import { createMcpServer, serveStdio } from "./mcp.ts";
 import { pipeTunnel, proxyUrlOf, SSH_URL_ENV, tunnelSshArgs, tunnelSshCommand } from "./ssh-proxy.ts";
 import {
+	checkPushRoot,
 	downloadTree,
 	getBytes,
 	getFile,
 	gitFiles,
 	parseRemote,
+	pushPlan,
 	remoteIsDirectory,
 	remoteJoin,
 	remotePath,
@@ -2110,23 +2112,53 @@ const SECTIONS: readonly Section[] = [
 				args: [{ name: "id" }, { name: "dir", optional: true }],
 				flags: {
 					to: { type: "string", value: "<path>", description: "Where in the sandbox (default /home/user/<dir name>)" },
+					"allow-home": {
+						type: "boolean",
+						description: "Push your home directory, or one holding it, leaving Kantel's config out",
+					},
+					"no-default-excludes": {
+						type: "boolean",
+						description: "Send credentials, agents' sign-ins and .env files too",
+					},
 				},
 				details:
 					"In a git repository it sends the files git tracks and the new ones .gitignore doesn't leave out, so\n" +
 					"node_modules, build output and .git stay here. Elsewhere it sends everything but .git. Files already\n" +
-					"there are replaced; files you deleted here stay there. Executable bits are kept.",
+					"there are replaced; files you deleted here stay there. Executable bits are kept.\n" +
+					"It leaves out, at any depth, .ssh, .gnupg, .aws, .azure, .kube, .netrc, .pypirc and .docker/config.json,\n" +
+					"and, unless git tracks them, .claude, .codex, .cursor, .npmrc and .env files (not .env.example),\n" +
+					"naming each on stderr; --no-default-excludes sends them. Links to outside the directory stay here.\n" +
+					"It refuses your home directory, or a directory holding it or Kantel's config, without --allow-home,\n" +
+					"and a directory inside one it leaves out, such as ~/.ssh, without --no-default-excludes.",
 				async run(ctx) {
 					const sandboxId = ctx.arg(0);
 					const root = resolve(ctx.io.cwd, ctx.optional(1) ?? ".");
 					if (!(await isDirectory(root))) throw new UsageError(`${root} isn't a directory: use kantel scp for a file`);
-					const files = (await gitFiles(root)) ?? (await walk(root));
+					const git = await gitFiles(root);
+					const defaultExcludes = !ctx.boolean("no-default-excludes");
+					const config = await checkPushRoot(root, {
+						home: ctx.io.home,
+						configDir: ctx.io.configDir,
+						allowHome: ctx.boolean("allow-home"),
+						defaultExcludes,
+						inRepository: git !== undefined,
+					});
+					const plan = await pushPlan(root, git?.files ?? (await walk(root)), {
+						tracked: git?.tracked,
+						defaultExcludes,
+						keep: config === undefined ? [] : [config],
+					});
+					for (const skipped of plan.skipped) ctx.note(`kantel: left out ${skipped.path} (${skipped.why})`);
+					if (plan.skipped.some((skipped) => skipped.byDefault === true) && !ctx.json) {
+						ctx.note("kantel: --no-default-excludes sends credentials, sign-ins and .env files too");
+					}
 					const target = remotePath(ctx.string("to") ?? basename(root));
-					const copied = await uploadTree(await ctx.client(), sandboxId, root, files, target, (path) => {
+					const copied = await uploadTree(await ctx.client(), sandboxId, root, plan.files, target, (path) => {
 						if (!ctx.json) ctx.note(path);
 					});
 					const where = target.startsWith("/") ? target : `/home/user/${target}`;
 					ctx.emit(
-						{ ...copied, to: where },
+						{ ...copied, to: where, skipped: plan.skipped },
 						() => `Pushed ${fileCount(copied.files)} (${bytes(copied.bytes)}) to ${where}.`,
 					);
 				},
