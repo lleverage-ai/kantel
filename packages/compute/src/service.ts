@@ -18,7 +18,7 @@
  * swap in on requests to the variable's bindings.
  */
 import { computeSchema, type PublicComputeRoutes, type RouteHandlers, type SignedInComputeRoutes } from "@kantel/api";
-import { KantelError } from "@kantel/contracts";
+import { INVITE_EMAIL_MAX_LENGTH, KantelError, normaliseEmail } from "@kantel/contracts";
 import type { ChainEntry } from "@kantel/e2e/chain";
 import {
 	type Acting,
@@ -231,6 +231,24 @@ export const HOST_NOT_REVOCABLE =
 /** What someone kept off the shared hosts is told when they rotate a key that isn't. */
 export const SHARED_KEY_REFUSED =
 	"This key may use the deployment's shared hosts, which you may not, so you can't take its secret; revoke it instead";
+
+/**
+ * What someone joining with an invite made for another email is told: both emails, so they can sign in as the one it
+ * was made for. Whoever holds the code was given it, so naming the invited email tells them nothing new.
+ */
+export function inviteForSomeoneElse(invited: string, signedInAs: string | undefined): string {
+	const as = signedInAs === undefined || signedInAs === "" ? "with no email" : `as ${normaliseEmail(signedInAs)}`;
+	return `This invite is for ${normaliseEmail(invited)}, but you're signed in ${as}. Sign in as ${normaliseEmail(invited)} to join.`;
+}
+
+/** An invite's email as it is kept: trimmed and lower-cased, so it matches the email the person signs in with. */
+function inviteEmail(email: string): string {
+	const normalised = normaliseEmail(email);
+	if (normalised.length > INVITE_EMAIL_MAX_LENGTH || !/^[^\s@]+@[^\s@]+$/.test(normalised)) {
+		throw new KantelError("invalid", "The invite's email is not an email address");
+	}
+	return normalised;
+}
 
 export interface ComputeService {
 	/** A handler for every compute route that signs the caller in, given the signed-in caller. */
@@ -3024,8 +3042,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (invite.revokedAt !== undefined || invite.usedAt !== undefined || invite.expiresAt <= now()) {
 				throw new KantelError("expired", "The invite has expired or been used");
 			}
-			if (invite.email !== undefined && invite.email.toLowerCase() !== (person.email ?? "").toLowerCase()) {
-				throw new KantelError("forbidden", "The invite is for someone else");
+			if (invite.email !== undefined && normaliseEmail(invite.email) !== normaliseEmail(person.email ?? "")) {
+				throw new KantelError("forbidden", inviteForSomeoneElse(invite.email, person.email));
 			}
 			const account = await store.accounts.get(invite.accountId);
 			if (account === undefined) throw notFound("organisation");
@@ -3164,12 +3182,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (role === "owner" && acting.role !== "owner") {
 				throw new KantelError("forbidden", "Only an owner invites an owner");
 			}
+			const email = body.email === undefined ? undefined : inviteEmail(body.email);
 			const code = randomSecret("kji_", 32);
 			const invite: StoredInvite = {
 				id: randomId("inv"),
 				accountId: params.accountId,
 				role,
-				email: body.email,
+				...(email === undefined ? {} : { email }),
 				codeHash: await sha256Hex(code),
 				expiresAt: now() + (body.expiresInHours ?? 168) * 3_600_000,
 				createdAt: now(),

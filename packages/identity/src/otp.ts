@@ -268,23 +268,30 @@ export interface EmailOtp {
 	endSession(token: string): Promise<void>;
 }
 
-export function createEmailOtp(options: EmailOtpOptions): EmailOtp {
-	const { identity, codes, sessions, mailer, audit } = options;
+export interface SessionStarterOptions {
+	readonly sessions: SessionStore;
+	readonly clock?: Clock;
+	/** Where `identity.session.started` and `identity.session.ended` go. */
+	readonly audit?: AuditSink;
+	/** How long a session lasts. Defaults to `DEFAULT_SESSION_TTL_MILLISECONDS`. */
+	readonly sessionTtlMilliseconds?: number;
+}
+
+/** Starts and audits Kantel sessions: for email codes here, and for GitHub and Google (`oauth.ts`). */
+export interface SessionStarter {
+	/** A new session for the person `signedIn` resolved `external` to. */
+	start(external: ExternalIdentity, signedIn: SignIn): Promise<StartedSession>;
+	/** Audits `identity.session.ended` for `session` in each of `organisationIds`. */
+	ended(session: SessionRecord, organisationIds: readonly string[]): Promise<void>;
+}
+
+export function createSessionStarter(options: SessionStarterOptions): SessionStarter {
+	const { sessions, audit } = options;
 	const clock = options.clock ?? systemClock;
 	const sessionTtl = options.sessionTtlMilliseconds ?? DEFAULT_SESSION_TTL_MILLISECONDS;
 	if (!(Number.isFinite(sessionTtl) && sessionTtl > 0)) {
 		throw new KantelError("invalid", "sessionTtlMilliseconds must be a positive number");
 	}
-	const onMailError =
-		options.onMailError ??
-		((error: unknown) => {
-			console.error("kantel: a sign-in code could not be sent", error instanceof Error ? error.message : error);
-		});
-	const defer =
-		options.defer ??
-		((work: Promise<unknown>) => {
-			void work;
-		});
 
 	async function auditSession(
 		type: "identity.session.started" | "identity.session.ended",
@@ -304,6 +311,49 @@ export function createEmailOtp(options: EmailOtpOptions): EmailOtp {
 		}));
 		await audit.append(OTP_CONTEXT, events);
 	}
+
+	return {
+		async start(external, signedIn) {
+			const now = clock.now();
+			const token = `${SESSION_TOKEN_PREFIX}${base64url(randomBytes(32))}`;
+			const email = typeof external.email === "string" ? normaliseEmail(external.email) : undefined;
+			const session: SessionRecord = {
+				id: `ses_${crypto.randomUUID()}`,
+				tokenHash: await hashSessionToken(token),
+				userId: signedIn.user.id,
+				issuer: external.issuer,
+				subject: external.subject,
+				...(email === undefined || external.emailVerified !== true ? {} : { email }),
+				createdAt: now,
+				expiresAt: now + sessionTtl,
+			};
+			await sessions.create(session);
+			await auditSession("identity.session.started", session, signedIn.organisationIds);
+			return { token, expiresAt: session.expiresAt, signIn: signedIn };
+		},
+		ended: (session, organisationIds) => auditSession("identity.session.ended", session, organisationIds),
+	};
+}
+
+export function createEmailOtp(options: EmailOtpOptions): EmailOtp {
+	const { identity, codes, sessions, mailer } = options;
+	const clock = options.clock ?? systemClock;
+	const starter = createSessionStarter({
+		sessions,
+		clock,
+		...(options.audit === undefined ? {} : { audit: options.audit }),
+		...(options.sessionTtlMilliseconds === undefined ? {} : { sessionTtlMilliseconds: options.sessionTtlMilliseconds }),
+	});
+	const onMailError =
+		options.onMailError ??
+		((error: unknown) => {
+			console.error("kantel: a sign-in code could not be sent", error instanceof Error ? error.message : error);
+		});
+	const defer =
+		options.defer ??
+		((work: Promise<unknown>) => {
+			void work;
+		});
 
 	const invalidCode = () => authenticationError("invalid", INVALID_CODE_MESSAGE);
 
@@ -353,20 +403,7 @@ export function createEmailOtp(options: EmailOtpOptions): EmailOtp {
 				if (isKantelError(error, "forbidden")) throw invalidCode();
 				throw error;
 			}
-			const token = `${SESSION_TOKEN_PREFIX}${base64url(randomBytes(32))}`;
-			const session: SessionRecord = {
-				id: `ses_${crypto.randomUUID()}`,
-				tokenHash: await hashSessionToken(token),
-				userId: signedIn.user.id,
-				issuer: external.issuer,
-				subject: external.subject,
-				email,
-				createdAt: now,
-				expiresAt: now + sessionTtl,
-			};
-			await sessions.create(session);
-			await auditSession("identity.session.started", session, signedIn.organisationIds);
-			return { token, expiresAt: session.expiresAt, signIn: signedIn };
+			return starter.start(external, signedIn);
 		},
 
 		async endSession(token) {
@@ -386,7 +423,7 @@ export function createEmailOtp(options: EmailOtpOptions): EmailOtp {
 				// A user who can no longer sign in still has their session ended; there is no organisation to audit in.
 				if (!isKantelError(error, "forbidden")) throw error;
 			}
-			await auditSession("identity.session.ended", ended, organisationIds);
+			await starter.ended(ended, organisationIds);
 		},
 	};
 }

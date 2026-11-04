@@ -78,6 +78,15 @@ services:
       # behind a TLS proxy: invites link to it, and hosts on other machines
       # reach the gateway there.
       KANTEL_PUBLIC_URL: ${KANTEL_PUBLIC_URL:-}
+      # Sign-in with GitHub and Google beside email codes: an OAuth client
+      # of each, made by you, with its callback at
+      # KANTEL_PUBLIC_URL/auth/oauth/<github|google>/callback. A provider
+      # is on with both its ID and secret and KANTEL_PUBLIC_URL; empty, off.
+      # Invite-only as email codes are.
+      KANTEL_GITHUB_CLIENT_ID: ${KANTEL_GITHUB_CLIENT_ID:-}
+      KANTEL_GITHUB_CLIENT_SECRET: ${KANTEL_GITHUB_CLIENT_SECRET:-}
+      KANTEL_GOOGLE_CLIENT_ID: ${KANTEL_GOOGLE_CLIENT_ID:-}
+      KANTEL_GOOGLE_CLIENT_SECRET: ${KANTEL_GOOGLE_CLIENT_SECRET:-}
       # The compute plane's API (@kantel/compute), which the console runs
       # on: sandboxes, snapshots, scoped keys, webhooks and hosts under /v1,
       # its records in memory for now. Sandboxes run on the machines you add
