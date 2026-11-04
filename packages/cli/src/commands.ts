@@ -837,16 +837,31 @@ async function e2eChainOf(ctx: Context): Promise<{ chain: e2e.VerifiedChain; dev
 	}
 }
 
+/**
+ * Signs `body` with this device after `checked`'s head (the chain whatever decided on it was read from) and adds it.
+ * If another entry got there first, the gateway refuses it: nothing decided on an older chain is signed onto a newer
+ * one.
+ */
+async function e2eSign(
+	ctx: Context,
+	checked: { chain: e2e.VerifiedChain; device: e2e.Device },
+	body: EntryBody,
+): Promise<e2e.VerifiedChain> {
+	return e2e.appendEntry(await ctx.client(), ctx.io.configDir, checked.device, checked.chain, body).catch((error) => {
+		if (error instanceof KantelApiError && error.code === "conflict") {
+			throw new CliError("The chain changed while this ran (another change got there first): run it again");
+		}
+		if (error instanceof KantelApiError) throw error;
+		throw e2eFailure(error);
+	});
+}
+
+const emitChain = (ctx: Context, chain: e2e.VerifiedChain, done: string) =>
+	ctx.emit({ space: chain.state.space, seq: chain.state.seq, head: chain.state.head }, () => done);
+
 /** Signs and adds one entry with this device, and says what the chain is now. */
 async function e2eAppend(ctx: Context, body: EntryBody, done: string): Promise<void> {
-	const { chain, device } = await e2eChainOf(ctx);
-	const next = await e2e
-		.appendEntry(await ctx.client(), ctx.io.configDir, device, chain, body)
-		.catch((error: unknown) => {
-			if (error instanceof KantelApiError) throw error;
-			throw e2eFailure(error);
-		});
-	ctx.emit({ space: next.state.space, seq: next.state.seq, head: next.state.head }, () => done);
+	emitChain(ctx, await e2eSign(ctx, await e2eChainOf(ctx), body), done);
 }
 
 /** Every sandbox in the space now, stopped ones too: those turning E2E on retires. */
@@ -880,6 +895,15 @@ async function confirmRetiring(ctx: Context, space: string, again: string): Prom
 			"Nothing is deleted: kantel delete <id> --yes removes them when you're done. " +
 			`To go ahead, run: ${again} --yes`,
 	);
+}
+
+/** What `kantel e2e ssh-proxy` is run with: the gateway, credential and account this invocation resolved. */
+export function proxyEnv(config: ResolvedConfig): Record<string, string> {
+	return {
+		KANTEL_URL: config.url,
+		...(config.apiKey === undefined ? {} : { KANTEL_API_KEY: config.apiKey }),
+		...(config.account === undefined ? {} : { KANTEL_ACCOUNT: config.account }),
+	};
 }
 
 /** An `rpc` session's call, with its error as the CLI's. */
@@ -1063,16 +1087,17 @@ const E2E_COMMANDS: readonly CommandSpec[] = [
 			});
 			const print = await e2e.cardFingerprint(device);
 			ctx.note(`Adding ${device.id} (${device.label}) for ${device.user}, fingerprint ${print}: check it with them.`);
-			if (ctx.boolean("member")) {
-				const { chain } = await e2eChainOf(ctx);
-				if (!chain.state.members.has(device.user)) {
-					await e2eAppend(ctx, { type: "member.add", body: { user: device.user, role: "member" } }, "");
-				}
+			// Whether they are a member is read from the chain the member.add is signed onto, so an admin made one in the
+			// meantime is never made a member again.
+			const checked = await e2eChainOf(ctx);
+			let { chain } = checked;
+			if (ctx.boolean("member") && !chain.state.members.has(device.user)) {
+				chain = await e2eSign(ctx, checked, { type: "member.add", body: { user: device.user, role: "member" } });
 			}
-			const { chain } = await e2eChainOf(ctx);
-			await e2eAppend(
+			chain = await e2eSign(ctx, { chain, device: checked.device }, { type: "device.add", body: { device } });
+			emitChain(
 				ctx,
-				{ type: "device.add", body: { device } },
+				chain,
 				`Added ${device.id}. They trust the chain with: kantel e2e join ${chain.state.space} ${chain.state.genesis}`,
 			);
 		},
@@ -1140,15 +1165,17 @@ const E2E_COMMANDS: readonly CommandSpec[] = [
 			"sandboxes made while E2E is on, and turning it off and on again retires those too.",
 		async run(ctx) {
 			const mode = choice(ctx.arg(0), ["off", "on", "strict"] as const, "The mode") ?? "on";
-			if (mode !== "off") {
-				const { chain } = await e2eChainOf(ctx);
-				if (chain.state.mode === "off") await confirmRetiring(ctx, chain.state.space, `kantel e2e mode ${mode}`);
+			// Signed onto the chain it was checked against: if it was turned off meanwhile, this is refused rather than
+			// turning it on again without the confirmation.
+			const checked = await e2eChainOf(ctx);
+			if (mode !== "off" && checked.chain.state.mode === "off") {
+				await confirmRetiring(ctx, checked.chain.state.space, `kantel e2e mode ${mode}`);
 			}
 			const done =
 				mode === "off"
 					? "E2E is off; hosts take it at their next session. Turning it on again retires every sandbox the space has then."
 					: `E2E is ${mode}; hosts take it at their next session.`;
-			await e2eAppend(ctx, { type: "mode", body: { mode } }, done);
+			emitChain(ctx, await e2eSign(ctx, checked, { type: "mode", body: { mode } }), done);
 		},
 	},
 	{
@@ -1236,6 +1263,9 @@ const E2E_COMMANDS: readonly CommandSpec[] = [
 			const self = ctx.io.self ?? thisCli() ?? ["kantel"];
 			const proxy = [...self, "e2e", "ssh-proxy", sandboxId].map(shellQuote).join(" ").replaceAll("%", "%%");
 			const remote = ctx.rest ?? [];
+			// The proxy is another kantel, which hasn't this one's flags: it gets the gateway and credential this one
+			// resolved through its environment, not on ssh's command line.
+			const env = proxyEnv(await ctx.config());
 			return runSsh(
 				[
 					"-i",
@@ -1252,6 +1282,7 @@ const E2E_COMMANDS: readonly CommandSpec[] = [
 					...(remote.length === 0 ? [] : ["--", commandLine(remote)]),
 				],
 				ctx.io,
+				env,
 			);
 		},
 	},
