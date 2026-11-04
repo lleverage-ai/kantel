@@ -173,6 +173,14 @@ host_u7nfa06bgsim  builder-1  online  dev      microvm  1          just now
 
 A host is `online`, `draining`, `unreachable` (registered, but not connected now) or `revoked`. `host info` adds its machine, whether it has KVM, its labels and when it joined.
 
+Every 5 seconds a host also sends Kantel its CPU, memory and disk, and each running sandbox's CPU and memory. It measures them from its own side and runs nothing in a sandbox to do it:
+
+- A microVM's CPU is its Firecracker process's CPU time as a share of its vCPUs. Its memory is that process's resident memory: the guest memory the VM has touched, page cache included. A microVM doesn't give memory back, so the figure stays near its high point after a spike.
+- An account's isolates share one runtime, so the host measures the runtime and shares it out. Each isolate's CPU is its part of the runtime's CPU time, split by how long each spent running commands, as a share of one CPU. The runtime's memory is split evenly.
+- The disk is the file system the host's data directory (`/var/lib/kantel-host`) is on.
+
+While the host can't reach Kantel it keeps the last 120 readings (10 minutes' worth at the default interval) and sends them when it reconnects.
+
 ## Where sandboxes go
 
 Kantel picks a host when a sandbox is created. A host can take the sandbox if it is connected, not draining or revoked, runs the sandbox's type, offers its size, has every label the sandbox asks for, and has the memory and disk free. Among those, Kantel prefers a host with a warm sandbox of that type and size ready, because a create there is a restore rather than a boot. Next it prefers, for an isolate, a host already running the account's isolates, then the most free memory, then the lowest load.
@@ -248,5 +256,6 @@ Uninstalling doesn't tell the control plane, so revoke the host as well.
 | `tiers` | what the machine can run | `["microvm"]`, `["isolate"]` or both |
 | `overcommitMemory` | `1.5` | How much more memory running sandboxes may be given than the host has, as a ratio. Restored sandboxes share their template's unchanged memory |
 | `autoUpdate` | `true` | Whether the control plane may move the host to another version |
+| `usageIntervalSeconds` | `5` | How often the host sends its and its sandboxes' usage, up to `300`. Below `0`, never |
 
 <!-- Sources (00d22cc): apps/selfhosted/src/gateway/compute.ts:1-45,100-140, deploy/compose/compose.yaml:325-340, packages/admin/src/admin.ts:404-430. (5be456c): apps/host/cmd/kantel-host/install.go:30-190,366-460,600-660, apps/host/cmd/kantel-host/main.go:60-215, apps/host/cmd/kantel-host/manifest.go, apps/host/internal/hostinfo (Checks), apps/host/internal/agent/config.go:20-120, apps/host/internal/agent/conn.go:194-210, apps/host/internal/microvm/microvm.go:55-60, apps/host/guest/README.md, apps/host/guest/rootfs.sh, packages/hosts/src/scheduler.ts:1-115, packages/hosts/src/service.ts:300-340, packages/compute/src/service.ts:334-347, packages/api/src/compute-schema.ts:391-395, apps/selfhosted/src/gateway/compute.ts:15-40,183-190, deploy/compose/compose.yaml:325-338 -->
