@@ -37,6 +37,7 @@ import { EnvironmentPage, EnvironmentsPage } from "./environments-page.tsx";
 import { FirstRun } from "./first-run.tsx";
 import { HostsPage } from "./hosts-page.tsx";
 import { InstallPage } from "./install-page.tsx";
+import { MountsPage } from "./mounts-page.tsx";
 import { OrganisationPage } from "./organisation-page.tsx";
 import { messageOf } from "./parts.tsx";
 import { ProfilePage } from "./profile-page.tsx";
@@ -69,6 +70,7 @@ export type ComputePage =
 	| "profile"
 	| "billing"
 	| "hosts"
+	| "mounts"
 	| "install"
 	| "device";
 
@@ -84,6 +86,7 @@ export const COMPUTE_PAGES: readonly ComputePage[] = [
 	"profile",
 	"billing",
 	"hosts",
+	"mounts",
 	"install",
 	"device",
 ];
@@ -338,6 +341,7 @@ const SETTINGS_PAGES: ReadonlySet<ComputePage> = new Set([
 	"keys",
 	"webhooks",
 	"telemetry",
+	"mounts",
 	"billing",
 ]);
 
@@ -448,6 +452,8 @@ export function ComputeConsole({
 	// shared hosts, so none of its own only adds a link to Add a host beside New sandbox (PageFor).
 	const noHosts = hosts.state.status === "ready" && hosts.state.value?.length === 0;
 	const billingShown = source.hosting === "hosted" && source.billing !== undefined;
+	// Read-only mounts' bundles and bucket sources, where the deployment has turned mounts on (experimental).
+	const mountsShown = source.mounts !== undefined;
 	// A page this person can't open goes to Sandboxes rather than showing nothing. Device sign-in has no sidebar item:
 	// a terminal running `kantel login` opens it.
 	// Install, the deployment's public URL, is a super-admin's, where the API can set it.
@@ -456,6 +462,7 @@ export function ComputeConsole({
 		(route.page === "hosts" && me !== undefined && !hostsShown) ||
 		(route.page === "install" && me !== undefined && installSource === undefined) ||
 		(route.page === "billing" && !billingShown) ||
+		(route.page === "mounts" && !mountsShown) ||
 		(route.page === "device" && source.devices === undefined)
 			? "sandboxes"
 			: route.page;
@@ -483,6 +490,7 @@ export function ComputeConsole({
 		{ id: "keys", label: "API keys" },
 		{ id: "webhooks", label: "Webhooks" },
 		{ id: "telemetry", label: "OpenTelemetry" },
+		...(mountsShown ? [{ id: "mounts", label: "Mounts" }] : []),
 		...(ownHostsShown ? [{ id: "hosts", label: "Hosts" }] : []),
 		...(billingShown ? [{ id: "billing", label: "Plan and billing" }] : []),
 	].map((item) => ({ ...item, href: computePath(item.id as ComputePage, base), selected: page === item.id }));
@@ -971,6 +979,10 @@ function PageFor({
 		case "billing":
 			return source.billing === undefined ? null : (
 				<BillingPage source={source.billing} account={account} narrow={narrow} {...timing} />
+			);
+		case "mounts":
+			return source.mounts === undefined ? null : (
+				<MountsPage key={account.id} source={source.mounts} account={account} {...timing} />
 			);
 		case "hosts":
 			return hosts === undefined ? null : (

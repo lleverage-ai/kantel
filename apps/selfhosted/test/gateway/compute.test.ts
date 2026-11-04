@@ -18,6 +18,7 @@ import {
 	gatewayHosts,
 	gatewayRelay,
 	hostImages,
+	mountsSwitch,
 } from "../../src/gateway/compute.ts";
 import { createGateway } from "../../src/gateway/gateway.ts";
 
@@ -367,6 +368,48 @@ describe("the compute plane on the gateway", () => {
 		expect(() => computeConfig({ ...env, KANTEL_ACCOUNT_HOSTS: "on" })).toThrow(/KANTEL_ACCOUNT_HOSTS/);
 		// On the stub there are no hosts to add: nothing to turn on.
 		expect(computeConfig({ KANTEL_ACCOUNT_HOSTS: "experimental" })).toEqual({});
+	});
+
+	it("turns mounts on only for KANTEL_MOUNTS=experimental, with either backend", () => {
+		const env = { KANTEL_COMPUTE_BACKEND: "hosts", KANTEL_PUBLIC_URL: "https://kantel.example.com" };
+		expect(computeConfig(env).mounts).toBeUndefined();
+		expect(computeConfig({ ...env, KANTEL_MOUNTS: "off" }).mounts).toBeUndefined();
+		expect(computeConfig({ ...env, KANTEL_MOUNTS: "" }).mounts).toBeUndefined();
+		expect(computeConfig({ ...env, KANTEL_MOUNTS: " Experimental " }).mounts).toBe(true);
+		expect(() => computeConfig({ ...env, KANTEL_MOUNTS: "on" })).toThrow(/KANTEL_MOUNTS/);
+		// On the stub too: bundles, file URLs and archives work there.
+		expect(computeConfig({ KANTEL_MOUNTS: "experimental" })).toEqual({ mounts: true });
+		expect(computeConfig({ KANTEL_COMPUTE_BACKEND: "stub", KANTEL_MOUNTS: "OFF" })).toEqual({});
+		expect(() => computeConfig({ KANTEL_MOUNTS: "yes" })).toThrow(/KANTEL_MOUNTS/);
+		expect(mountsSwitch(undefined)).toBe(false);
+		expect(mountsSwitch("experimental")).toBe(true);
+	});
+
+	it("serves mounts' routes only when they are on", async () => {
+		const components = createGatewayComponents();
+		cleanups.push(() => components.close());
+		const authenticator = createAuthenticator({
+			identity: components.identity,
+			providers: [kantelSessionProvider({ sessions: components.otp.sessions })],
+		});
+		const bundles = async (on: boolean) => {
+			const compute = await gatewayCompute({ authenticator, ...(on ? { mounts: {} } : {}) });
+			cleanups.push(() => compute.close());
+			const gateway = createGateway({ components, authenticator, compute: compute.api });
+			cleanups.push(() => gateway.close());
+			const response = await gateway.fetch(
+				new Request("http://gateway.test/v1/bundles", {
+					headers: { authorization: `Bearer ${compute.superAdminKey}` },
+				}),
+			);
+			return { status: response.status, binding: compute.binding };
+		};
+		const off = await bundles(false);
+		expect(off.status).toBe(501);
+		expect(off.binding).not.toContain("mounts");
+		const on = await bundles(true);
+		expect(on.binding).toContain("mounts on with bundles in memory");
+		expect(on.status).not.toBe(501);
 	});
 
 	it("lets a signed-in person who isn't a super-admin add a host of their own, with account hosts on", async () => {

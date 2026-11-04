@@ -214,7 +214,9 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 	}
 	space := ""
 	switch {
-	case slices.Contains(contentMethods, method):
+	case slices.Contains(contentMethods, method), method == proto.MethodFileOpen, method == proto.MethodFileExtract:
+		// A file stream (or an archive's extraction) reads or writes what the file calls do, so it is refused exactly when
+		// they are.
 		space = h.ownerOf(p.SandboxID)
 	case method == proto.MethodPortOpen && p.Port != proto.PortE2E:
 		space = h.ownerOf(p.SandboxID)
@@ -563,7 +565,7 @@ func (h *Host) gatewayGuard(ctx context.Context, method string, params json.RawM
 	slices.Sort(uses)
 	uses = slices.DeleteFunc(slices.Compact(uses), func(k string) bool { return slices.Contains(claims, k) })
 	cancellable := slices.Contains(contentMethods, method) || method == proto.MethodPortOpen ||
-		method == proto.MethodSnapshotRead || method == proto.MethodSnapshotTree
+		method == proto.MethodFileOpen || method == proto.MethodSnapshotRead || method == proto.MethodSnapshotTree
 	ctx, leave, ok := h.gate.use(ctx, uses, cancellable)
 	if !ok {
 		release()

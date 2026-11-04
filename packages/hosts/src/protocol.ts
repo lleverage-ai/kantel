@@ -85,6 +85,24 @@ export const HOST_FEATURES = {
 	 */
 	egressPolicy: "egress-policy",
 	/**
+	 * Bundle mounts (`HostMount` of kind `bundle` in a create, start, resume, fork or recover): the host fetches the
+	 * bundle's tar (`GET /v1/hosts/bundles/{digest}`), mounts it read-only, and answers each mount's status in the
+	 * sandbox it returns (`HostSandbox.mounts`). Without it, Kantel sends no mounts and marks them `failed`.
+	 */
+	mountsBundle: "mounts-bundle",
+	/**
+	 * Bucket mounts (`HostMount` of kind `bucket`): the host fetches the bucket source with `bucket.fetch`, mounts the
+	 * prefix read-only, and answers its status as for bundles.
+	 */
+	mountsBucket: "mounts-bucket",
+	/** `sandbox.files.open`: a file's bytes streamed both ways on a port stream (signed file URLs, archives). */
+	fileStreams: "file-streams",
+	/**
+	 * `sandbox.files.extract`: a tar in the sandbox extracted by the host's own code, never the sandbox's `tar` or shell
+	 * (archives).
+	 */
+	filesExtract: "files-extract",
+	/**
 	 * `sandbox.create` takes `vcpus`, `memoryMiB` and `diskGiB` for a microVM off the host's named sizes (it boots from
 	 * scratch), and an isolate's `memoryMiB` (recorded, not enforced).
 	 */
@@ -95,6 +113,86 @@ export const HOST_FEATURES = {
 	 */
 	usage: "usage",
 } as const;
+
+/**
+ * How far either end of a file stream may get ahead of the other's `stream.ack`: a write's sender (Kantel) of what
+ * the sandbox has taken, a read's sender (the host) of what Kantel's reader has taken. The host's
+ * `proto.FileStreamWindowBytes`.
+ */
+export const FILE_STREAM_WINDOW_BYTES = 4 * 1024 * 1024;
+/** How often a file stream's receiver acknowledges what it has taken: each this many bytes. */
+export const FILE_STREAM_ACK_BYTES = 1024 * 1024;
+/**
+ * The largest frame of a file a read's host sends (the host's are 32 KiB, `sendFile`'s buffer). With the window, what
+ * Kantel holds of a read for its reader is bounded however the host behaves: a host is an account's own machine, so a
+ * frame past this, or one sent once `FILE_STREAM_WINDOW_BYTES` are unacked, ends the read rather than being kept.
+ */
+export const FILE_STREAM_FRAME_MAX_BYTES = 1024 * 1024;
+
+/** The largest message a host reads from Kantel (`ws.SetReadLimit` in the host's `conn.go`): it drops the link past it. */
+export const HOST_MESSAGE_LIMIT_BYTES = 64 * 1024 * 1024;
+/**
+ * The largest file `sandbox.files.write` takes, whose bytes go in its message as base64 (four bytes for each three):
+ * what fits HOST_MESSAGE_LIMIT_BYTES with a mebibyte to spare for the rest of the message. A larger one needs the host
+ * to stream files (`file-streams`).
+ */
+export const HOST_WRITE_FILE_MAX_BYTES = Math.floor(((HOST_MESSAGE_LIMIT_BYTES - 1024 * 1024) * 3) / 4);
+
+/**
+ * A read-only mount, as a create (and every boot after it) carries it in `mounts`. Never a credential: a bucket's
+ * settings and credentials are fetched with `bucket.fetch`, and a bundle's tar over HTTP, by the host that needs them.
+ */
+export type HostMount =
+	| { readonly path: string; readonly kind: "bundle"; readonly digest: string }
+	| {
+			readonly path: string;
+			readonly kind: "bucket";
+			readonly bucketSourceId: string;
+			readonly prefix: string;
+			readonly refreshTtlSeconds?: number;
+	  };
+
+/** A mount's status as the host reports it, by path. */
+export interface HostMountStatus {
+	readonly path: string;
+	readonly status: "pending" | "ready" | "failed";
+	readonly error?: string;
+}
+
+/** The answer to a host's `bucket.fetch` `{ sandboxId, bucketSourceId }`: what reads the bucket, in host memory only. */
+export interface HostBucketSource {
+	readonly id: string;
+	readonly provider: "s3" | "gcs";
+	readonly bucket: string;
+	readonly endpoint?: string;
+	readonly region?: string;
+	readonly credentials?:
+		| { readonly accessKeyId: string; readonly secretAccessKey: string; readonly sessionToken?: string }
+		| { readonly serviceAccountKey: string };
+}
+
+/**
+ * `sandbox.files.open`'s params: a file of a sandbox on a port stream (`HOST_FEATURES.fileStreams`). `read`: the host
+ * answers `{ size }`, sends the file's bytes on the stream and closes it. `write`: Kantel sends the bytes, then an
+ * empty frame for the end; the host writes them beside the file, moves them over it once all have arrived, and closes
+ * the stream with a reason of `ok <size>`, or `error <code>: <message>` (nothing is moved then).
+ *
+ * Both ways the receiver sends `stream.ack`s of how much it has taken, and the sender stays within
+ * `FILE_STREAM_WINDOW_BYTES` of them, so neither end buffers a file whatever the other's speed.
+ */
+export interface HostFileOpen {
+	readonly sandboxId: string;
+	readonly stream: number;
+	readonly path: string;
+	readonly op: "read" | "write";
+	/** For a write: the file's permissions, such as 0o644 (the default). */
+	readonly mode?: number;
+	/**
+	 * For a read: Kantel acks what its reader takes (`stream.ack`), so the host stays within `FILE_STREAM_WINDOW_BYTES`
+	 * of it. Absent (an older Kantel), the host sends as fast as it can.
+	 */
+	readonly acks?: boolean;
+}
 
 /** Whether an egress needs the `egress-policy` feature to be enforced: it has grants or protected variables. */
 export function needsEgressPolicy(egress: HostEgress | null | undefined): boolean {
@@ -132,6 +230,8 @@ export interface HostSandbox {
 	 * `account` (its account's VM already ran).
 	 */
 	readonly source?: string;
+	/** Its mounts' statuses, from a host with a mounts feature. */
+	readonly mounts?: readonly HostMountStatus[];
 	/** What a microVM's image has, as its guest agent found it; absent from a host too old to say. */
 	readonly guest?: HostGuest;
 }
@@ -326,10 +426,23 @@ export interface HostEvent {
 	readonly at: number;
 	/** For `egress`: a batch, at most 100 records or 2 seconds' worth. */
 	readonly egress?: readonly HostEgressRecord[];
+	/** For `sandbox.mounts` (`HOST_EVENT_MOUNTS`): the sandbox, and its mounts' statuses now. */
+	readonly sandboxId?: string;
+	readonly mounts?: readonly HostMountStatus[];
 }
 
 export interface HostMessage {
-	readonly type: "hello" | "welcome" | "heartbeat" | "usage" | "call" | "result" | "event" | "stream.close" | string;
+	readonly type:
+		| "hello"
+		| "welcome"
+		| "heartbeat"
+		| "usage"
+		| "call"
+		| "result"
+		| "event"
+		| "stream.close"
+		| "stream.ack"
+		| string;
 	readonly hello?: HostHello;
 	readonly welcome?: HostWelcome;
 	readonly heartbeat?: { readonly capacity: HostCapacity };
@@ -345,6 +458,11 @@ export interface HostMessage {
 	readonly call?: string;
 	readonly stream?: number;
 	readonly reason?: string;
+	/**
+	 * For `stream.ack`: the bytes of a file stream its receiver has taken so far, the sandbox's of a write (host →
+	 * Kantel), Kantel's reader's of a read (Kantel → host).
+	 */
+	readonly acked?: number;
 }
 
 /**
@@ -385,7 +503,22 @@ export const HostMethods = {
 	secrets: "sandbox.secrets",
 	/** Host to Kantel: `{ sandboxId }`, answered with `HostSecrets`, or `not_found` for a sandbox not on that host. */
 	secretsFetch: "secrets.fetch",
+	/** A file's bytes on a port stream, `HostFileOpen`; answered `{ size? }` once it is open. */
+	fileOpen: "sandbox.files.open",
+	/**
+	 * `{ sandboxId, archive, target }` (`HOST_FEATURES.filesExtract`): the tar at `archive` extracted into the directory
+	 * `target` by the host's own code, as the sandbox's root, files owned by its user, then deleted. Answered `{}`.
+	 */
+	fileExtract: "sandbox.files.extract",
+	/**
+	 * Host to Kantel: `{ sandboxId, bucketSourceId }`, answered with `HostBucketSource`, or `not_found` unless the
+	 * sandbox is on that host and mounts that bucket source.
+	 */
+	bucketFetch: "bucket.fetch",
 } as const;
+
+/** An event a host sends when a sandbox's mounts change status after its create answered: `HostSandbox.mounts`. */
+export const HOST_EVENT_MOUNTS = "sandbox.mounts";
 
 export type HostMethod = (typeof HostMethods)[keyof typeof HostMethods];
 

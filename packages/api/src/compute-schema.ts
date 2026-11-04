@@ -8,6 +8,12 @@
  * when it is made (an API key's, a webhook's signing secret, a host's join token). A protected variable's value and a
  * secret file's contents are write-only: no shape answers them.
  */
+import {
+	BUNDLE_DIGEST_PATTERN,
+	DEFAULT_FILE_URL_TTL_SECONDS,
+	MAX_FILE_URL_TTL_SECONDS,
+	MAX_MOUNTS,
+} from "@kantel/contracts/mounts";
 import Type, { type Static } from "typebox";
 import { Timestamp } from "./schema.ts";
 
@@ -547,6 +553,89 @@ export const EgressGrantInput = Type.Object(
 	{ title: "EgressGrantInput" },
 );
 
+// Read-only mounts (experimental, behind the deployment's KANTEL_MOUNTS switch): what a sandbox's create names, and
+// what its record answers.
+
+const MOUNTS_EXPERIMENTAL =
+	"Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).";
+
+export const BundleMountSource = Type.Object(
+	{
+		kind: Type.Literal("bundle"),
+		digest: Type.String({
+			pattern: BUNDLE_DIGEST_PATTERN,
+			description: "A bundle uploaded to the sandbox's account, by its digest: `sha256:` and 64 hex digits.",
+		}),
+	},
+	{
+		title: "BundleMountSource",
+		description:
+			"A bundle's files: the tar the account uploaded (`POST /bundles`), unpacked read-only at the mount's path.",
+	},
+);
+
+export const BucketMountSource = Type.Object(
+	{
+		kind: Type.Literal("bucket"),
+		bucketSourceId: Type.String({ description: "A bucket source of the sandbox's account, such as `bks_4kq9x2mt`." }),
+		prefix: Type.String({
+			maxLength: 1024,
+			description: "The objects under this key prefix, such as `org/42/skills/`; empty for the whole bucket.",
+		}),
+		refreshTtlSeconds: Type.Optional(
+			Type.Integer({
+				minimum: 0,
+				maximum: 86400,
+				description:
+					"How long the host trusts its listing of the prefix before it looks again, so objects added later appear. " +
+					"0: never look again. Default: the host's.",
+			}),
+		),
+	},
+	{
+		title: "BucketMountSource",
+		description:
+			"An object-store prefix, through a bucket source the account holds. The host reads objects as they are opened; " +
+			"the bucket source's credentials stay on the host, never in the sandbox.",
+	},
+);
+
+export const MountSource = Type.Union([BundleMountSource, BucketMountSource], { title: "MountSource" });
+
+export const Mount = Type.Object(
+	{
+		path: Type.String({
+			minLength: 2,
+			maxLength: 1024,
+			description:
+				"Where it appears in the sandbox: absolute and normalised, not `/`, not at or under a system directory " +
+				"(`/proc`, `/sys`, `/dev`, `/etc`, `/usr`, `/bin`, `/lib` and the like), and not overlapping another mount.",
+		}),
+		source: MountSource,
+	},
+	{
+		title: "Mount",
+		description: "Files from outside the sandbox, read-only inside it: nothing in the sandbox can change them.",
+	},
+);
+
+export const MountStatus = Type.Union([Type.Literal("pending"), Type.Literal("ready"), Type.Literal("failed")], {
+	title: "MountStatus",
+	description:
+		"`pending`: its host is still putting it in place. `ready`: its files are there. `failed`: they aren't, and " +
+		"`error` says why; the sandbox runs without it.",
+});
+
+export const SandboxMount = Type.Object(
+	{
+		path: Type.String(),
+		source: MountSource,
+		status: MountStatus,
+		error: Type.Optional(Type.String({ description: "Why it is `failed`, in words." })),
+	},
+	{ title: "SandboxMount", description: "A mount of a sandbox's, and whether its files are in place." },
+);
+
 export const Sandbox = Type.Object(
 	{
 		id: id("The sandbox's ID, such as `sbx_4kq9x2mt`."),
@@ -585,6 +674,11 @@ export const Sandbox = Type.Object(
 		),
 		environmentId: Type.Optional(Type.String({ description: "The environment it was made from." })),
 		grants: Type.Array(EgressGrant, { description: "Its own egress grants, on top of its environment's." }),
+		mounts: Type.Optional(
+			Type.Array(SandboxMount, {
+				description: `Its read-only mounts, as its create named them, each with its status. Absent: none. ${MOUNTS_EXPERIMENTAL}`,
+			}),
+		),
 		createdBy: CreatedBy,
 		createdAt: Timestamp,
 		startedAt: Type.Optional(Timestamp),
@@ -656,6 +750,16 @@ export const CreateSandboxBody = Type.Object(
 		hostLabels: Type.Optional(
 			Type.Record(Type.String(), Type.String(), {
 				description: 'Place it only on a host with each label, such as `{ site: "home" }`.',
+			}),
+		),
+		mounts: Type.Optional(
+			Type.Array(Mount, {
+				maxItems: MAX_MOUNTS,
+				description:
+					`Files from outside the sandbox, read-only inside it: at most ${MAX_MOUNTS}, at paths that don't overlap. ` +
+					"A bundle or bucket source it names must be the account's. microVMs only: an isolate is refused " +
+					"(`not_supported`). A host that can't mount a source marks that mount `failed`, and the sandbox runs " +
+					`without it. A fork keeps its source's mounts. ${MOUNTS_EXPERIMENTAL}`,
 			}),
 		),
 		wait: Type.Optional(
@@ -946,6 +1050,68 @@ export const FileList = Type.Object(
 export const ListFilesQuery = Type.Object(
 	{ path: Type.Optional(Type.String({ description: "Default: the user's home." })), limit, cursor },
 	{ title: "ListFilesQuery" },
+);
+
+export const FileUrlBody = Type.Object(
+	{
+		path: Type.String({
+			minLength: 1,
+			maxLength: 4096,
+			description: "An absolute path, or one relative to the user's home.",
+		}),
+		ttlSeconds: Type.Optional(
+			Type.Integer({
+				minimum: 1,
+				maximum: MAX_FILE_URL_TTL_SECONDS,
+				description: `How long the URL may be used: default ${DEFAULT_FILE_URL_TTL_SECONDS} (15 minutes), at most ${MAX_FILE_URL_TTL_SECONDS}.`,
+			}),
+		),
+	},
+	{ title: "FileUrlBody" },
+);
+
+export const FileUrl = Type.Object(
+	{
+		url: Type.String({
+			description:
+				"The signed URL. Send the request straight to it, with no `Authorization` header. Treat it as a secret until " +
+				"it expires.",
+		}),
+		method: Type.Union([Type.Literal("GET"), Type.Literal("PUT")], {
+			description: "`GET` downloads the file. `PUT` uploads the request's raw body as the file.",
+		}),
+		path: Type.String({ description: "The absolute path the URL is bound to." }),
+		expiresAt: Timestamp,
+	},
+	{
+		title: "FileUrl",
+		description:
+			"A short-lived URL for one file of one sandbox, streamed to or from the sandbox's host, so a file of any " +
+			"size moves without base64.",
+	},
+);
+
+export const ExtractArchiveQuery = Type.Object(
+	{
+		path: Type.String({
+			minLength: 1,
+			maxLength: 4096,
+			description:
+				"The directory to extract into, made if missing: absolute, or relative to the user's home. Not in or over a mount.",
+		}),
+	},
+	{ title: "ExtractArchiveQuery" },
+);
+
+export const ExtractedArchive = Type.Object(
+	{
+		path: Type.String({ description: "The absolute directory it was extracted into." }),
+		files: Type.Integer({ description: "Files written." }),
+		directories: Type.Integer({ description: "Directories made." }),
+		symlinks: Type.Integer({ description: "Symbolic links made." }),
+		bytes: Type.Integer({ description: "Bytes of the files written." }),
+	},
+	{ title: "ExtractedArchive" },
 );
 
 // Ports, desktop, browser and SSH.
@@ -1992,6 +2158,125 @@ export const HostJoinToken = Type.Object(
 	{ title: "HostJoinToken" },
 );
 
+// Bundles and bucket sources: what mounts are made from (experimental, behind the deployment's KANTEL_MOUNTS switch).
+
+export const Bundle = Type.Object(
+	{
+		digest: Type.String({ description: "`sha256:` and the hex SHA-256 of the tar: the bundle's name and its ID." }),
+		accountId: Type.String(),
+		sizeBytes: Type.Integer({ description: "The tar's size." }),
+		mountedBy: Type.Integer({ description: "How many of the account's sandboxes that still exist mount it." }),
+		createdAt: Timestamp,
+	},
+	{
+		title: "Bundle",
+		description:
+			"A tar of files uploaded to an account once, named by its digest, which sandboxes mount read-only. It never " +
+			"changes: other files are another bundle.",
+	},
+);
+
+export const BundleList = Type.Object({ items: Type.Array(Bundle) }, { title: "BundleList" });
+
+export const BundlePath = Type.Object(
+	{ digest: Type.String({ pattern: BUNDLE_DIGEST_PATTERN, description: "The bundle's digest, `sha256:<hex>`." }) },
+	{ title: "BundlePath" },
+);
+
+export const UploadBundleQuery = Type.Object(
+	{
+		account: accountQuery,
+		digest: Type.Optional(
+			Type.String({
+				pattern: BUNDLE_DIGEST_PATTERN,
+				description: "The digest the tar should have: an upload whose bytes don't match is refused (`invalid`).",
+			}),
+		),
+	},
+	{ title: "UploadBundleQuery" },
+);
+
+export const BucketProvider = Type.Union([Type.Literal("s3"), Type.Literal("gcs")], {
+	title: "BucketProvider",
+	description: "`s3`: Amazon S3 or an S3-compatible store (with `endpoint`). `gcs`: Google Cloud Storage.",
+});
+
+export const BucketCredentials = Type.Union(
+	[
+		Type.Object(
+			{
+				accessKeyId: Type.String({ minLength: 1, maxLength: 256 }),
+				secretAccessKey: Type.String({ minLength: 1, maxLength: 1024 }),
+				sessionToken: Type.Optional(Type.String({ maxLength: 8192 })),
+			},
+			{ title: "BucketAccessKey", description: "An S3 access key, or a GCS HMAC key." },
+		),
+		Type.Object(
+			{
+				serviceAccountKey: Type.String({
+					minLength: 2,
+					maxLength: 16384,
+					description: "A GCS service account's JSON key, as Google gives it.",
+				}),
+			},
+			{ title: "BucketServiceAccountKey" },
+		),
+	],
+	{
+		title: "BucketCredentials",
+		description:
+			"Write-only: kept encrypted, given only to the host of a sandbox that mounts the bucket, never answered.",
+	},
+);
+
+const bucketFields = {
+	name: Type.String({ minLength: 1, maxLength: 100, description: "A name for people, such as `org files`." }),
+	provider: BucketProvider,
+	bucket: Type.String({ minLength: 1, maxLength: 255, description: "The bucket's name." }),
+	endpoint: Type.Optional(
+		Type.String({
+			minLength: 1,
+			maxLength: 2048,
+			description: "An S3-compatible store's HTTPS endpoint, such as `https://<account>.r2.cloudflarestorage.com`.",
+		}),
+	),
+	region: Type.Optional(Type.String({ minLength: 1, maxLength: 64, description: "Such as `eu-west-1`." })),
+};
+
+export const BucketSource = Type.Object(
+	{
+		id: id("The bucket source's ID, such as `bks_4kq9x2mt`."),
+		accountId: Type.String(),
+		...bucketFields,
+		hasCredentials: Type.Boolean({ description: "Whether it was given credentials; they are never answered." }),
+		mountedBy: Type.Integer({ description: "How many of the account's sandboxes that still exist mount it." }),
+		createdAt: Timestamp,
+	},
+	{
+		title: "BucketSource",
+		description:
+			"A bucket an account's sandboxes may mount prefixes of, with the credentials that read it. The credentials " +
+			"are write-only.",
+	},
+);
+
+export const BucketSourceList = Type.Object({ items: Type.Array(BucketSource) }, { title: "BucketSourceList" });
+
+export const BucketSourcePath = Type.Object(
+	{ bucketSourceId: id("The bucket source's ID.") },
+	{ title: "BucketSourcePath" },
+);
+
+export const CreateBucketSourceBody = Type.Object(
+	{
+		account: accountQuery,
+		...bucketFields,
+		// What reads the bucket; absent for a public one. Needs the deployment's secrets key (`not_supported` without).
+		credentials: Type.Optional(BucketCredentials),
+	},
+	{ title: "CreateBucketSourceBody" },
+);
+
 // Where hosts reach the control plane: the address in every join command.
 
 export const PublicUrl = Type.Object(
@@ -2069,6 +2354,19 @@ export type GuestCapabilities = Static<typeof GuestCapabilities>;
 export type GuestFeature = Static<typeof GuestFeature>;
 export type Sandbox = Static<typeof Sandbox>;
 export type CreateSandboxBody = Static<typeof CreateSandboxBody>;
+export type BundleMountSource = Static<typeof BundleMountSource>;
+export type BucketMountSource = Static<typeof BucketMountSource>;
+export type MountSource = Static<typeof MountSource>;
+export type Mount = Static<typeof Mount>;
+export type MountStatus = Static<typeof MountStatus>;
+export type SandboxMount = Static<typeof SandboxMount>;
+export type Bundle = Static<typeof Bundle>;
+export type BucketProvider = Static<typeof BucketProvider>;
+export type BucketCredentials = Static<typeof BucketCredentials>;
+export type BucketSource = Static<typeof BucketSource>;
+export type CreateBucketSourceBody = Static<typeof CreateBucketSourceBody>;
+export type FileUrl = Static<typeof FileUrl>;
+export type ExtractedArchive = Static<typeof ExtractedArchive>;
 export type Command = Static<typeof Command>;
 export type FileEntry = Static<typeof FileEntry>;
 export type ExposedPort = Static<typeof ExposedPort>;

@@ -61,22 +61,28 @@ func (c *Client) do(ctx context.Context, method, path string, body io.Reader, ou
 		return nil, err
 	}
 	if res.StatusCode >= 300 {
-		defer res.Body.Close()
-		var e struct {
-			Error string `json:"error"`
-		}
-		raw, _ := io.ReadAll(res.Body)
-		_ = json.Unmarshal(raw, &e)
-		if e.Error == "" {
-			e.Error = strings.TrimSpace(string(raw))
-		}
-		return nil, &apiError{Status: res.StatusCode, Message: e.Error}
+		return nil, refusal(res)
 	}
 	if out != nil {
 		defer res.Body.Close()
 		return res, json.NewDecoder(res.Body).Decode(out)
 	}
 	return res, nil
+}
+
+// refusal is the agent's answer of 300 or more as an apiError, with its JSON error or else its text. It closes the
+// body.
+func refusal(res *http.Response) error {
+	defer res.Body.Close()
+	var e struct {
+		Error string `json:"error"`
+	}
+	raw, _ := io.ReadAll(res.Body)
+	_ = json.Unmarshal(raw, &e)
+	if e.Error == "" {
+		e.Error = strings.TrimSpace(string(raw))
+	}
+	return &apiError{Status: res.StatusCode, Message: e.Error}
 }
 
 func jsonBody(v any) io.Reader {
@@ -275,6 +281,95 @@ func (c *Client) WriteFile(ctx context.Context, path string, data []byte, mode u
 		return &apiError{Status: res.StatusCode, Message: strings.TrimSpace(string(raw))}
 	}
 	return nil
+}
+
+// ReadFileStream opens the whole file at path to be read as the guest sends it, so a large file is never held in the
+// host's memory. It answers the body (the caller closes it), the file's size and its mode; a missing file is the
+// agent's 404, as ReadFile's is (IsNotFound).
+func (c *Client) ReadFileStream(ctx context.Context, path string) (io.ReadCloser, int64, uint32, error) {
+	res, err := c.do(ctx, http.MethodGet, "/files?"+url.Values{"path": {path}}.Encode(), nil, nil)
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	mode, _ := strconv.ParseUint(res.Header.Get("x-file-mode"), 8, 32)
+	size := res.ContentLength
+	if header := res.Header.Get("x-file-size"); size < 0 && header != "" {
+		if size, err = strconv.ParseInt(header, 10, 64); err != nil {
+			res.Body.Close()
+			return nil, 0, 0, fmt.Errorf("guest agent: x-file-size %q", header)
+		}
+	}
+	if size < 0 {
+		// The size is answered before the first byte is sent on, so a read without one can't be streamed.
+		res.Body.Close()
+		return nil, 0, 0, errors.New("guest agent: a file read answered without its size")
+	}
+	return res.Body, size, uint32(mode), nil
+}
+
+// WriteFileStream writes what r gives to the file at path as it comes, with mode (0 is the agent's default, 0644). The
+// agent writes beside the file and renames it into place only once the body has ended, so a read error from r (or a
+// cancelled ctx) leaves the file as it was. It answers the size the agent wrote.
+func (c *Client) WriteFileStream(ctx context.Context, path string, r io.Reader, mode uint32) (int64, error) {
+	q := url.Values{"path": {path}}
+	if mode != 0 {
+		q.Set("mode", strconv.FormatUint(uint64(mode), 8))
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, "http://guest/files?"+q.Encode(), r)
+	if err != nil {
+		return 0, err
+	}
+	// Unknown until the last byte has come: the body goes chunked, and only a body that ended properly is complete.
+	req.ContentLength = -1
+	res, err := c.http.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	if res.StatusCode >= 300 {
+		return 0, refusal(res)
+	}
+	defer res.Body.Close()
+	var out struct {
+		Size int64 `json:"size"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		return 0, fmt.Errorf("guest agent: a write's answer: %w", err)
+	}
+	return out.Size, nil
+}
+
+// ExtractArchive has the agent extract the tar at archive into the directory target with its own code (ExtractTar),
+// then delete the tar. An archive it won't extract is the agent's 400 (IsRefused); an agent from before it, 404 or
+// 405 (IsUnknownRoute).
+func (c *Client) ExtractArchive(ctx context.Context, archive, target string) error {
+	q := url.Values{"archive": {archive}, "target": {target}}
+	res, err := c.do(ctx, http.MethodPost, "/files/extract?"+q.Encode(), nil, nil)
+	if err != nil {
+		return err
+	}
+	res.Body.Close()
+	return nil
+}
+
+// IsRefused reports a 400 from the agent: what it was asked can't be done as asked.
+func IsRefused(err error) bool {
+	var api *apiError
+	return errors.As(err, &api) && api.Status == 400
+}
+
+// IsUnknownRoute reports the agent not serving what it was asked for at all: one from before it.
+func IsUnknownRoute(err error) bool {
+	var api *apiError
+	return errors.As(err, &api) && (api.Status == 404 || api.Status == 405)
+}
+
+// RefusalMessage is the agent's own words for a refusal, without the status.
+func RefusalMessage(err error) string {
+	var api *apiError
+	if errors.As(err, &api) {
+		return api.Message
+	}
+	return err.Error()
 }
 
 func (c *Client) DeleteFile(ctx context.Context, path string, recursive bool) error {

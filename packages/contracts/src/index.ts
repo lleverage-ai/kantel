@@ -7,6 +7,7 @@ export * from "./environments.ts";
 export * from "./identity.ts";
 export * from "./legacy-names.ts";
 export * from "./models.ts";
+export * from "./mounts.ts";
 export * from "./sandbox.ts";
 export * from "./session.ts";
 export * from "./sharing.ts";

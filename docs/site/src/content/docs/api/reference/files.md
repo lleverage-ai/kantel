@@ -105,3 +105,67 @@ A key needs `files`.
 - `200`: [FileList](/api/reference/types/#filelist) (`application/json`). The directory's entries.
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Get an upload URL for a file
+
+`POST /v1/sandboxes/{sandboxId}/files/upload-url` (SDK method `createUploadUrl`)
+
+A short-lived URL on the API, streamed straight to the sandbox's host: `PUT` the file to it as the raw request body, of any size, with no `Authorization` header; the answer is `{ path, size }`. Missing directories are made, and a file already there is replaced only once the upload is complete. The URL is bound to this sandbox and path, and expires after `ttlSeconds`. A path in a read-only mount is refused (`conflict`). The sandbox must be running when the URL is used. Treat it as a secret. A key needs `files`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sandboxId` | string | yes | The sandbox's ID. |
+
+**Body**: [FileUrlBody](/api/reference/types/#fileurlbody)
+
+**Answers**
+
+- `200`: [FileUrl](/api/reference/types/#fileurl) (`application/json`). The URL.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Get a download URL for a file
+
+`POST /v1/sandboxes/{sandboxId}/files/download-url` (SDK method `createDownloadUrl`)
+
+A short-lived URL on the API, streamed straight from the sandbox's host: `GET` it, with no `Authorization` header, for the file's bytes as they are when it is fetched, whatever its size (`HEAD` for its size alone). The URL is bound to this sandbox and path, and expires after `ttlSeconds`. The sandbox must be running when the URL is used. Treat it as a secret. A key needs `files`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sandboxId` | string | yes | The sandbox's ID. |
+
+**Body**: [FileUrlBody](/api/reference/types/#fileurlbody)
+
+**Answers**
+
+- `200`: [FileUrl](/api/reference/types/#fileurl) (`application/json`). The URL.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Extract an archive into a directory
+
+`PUT /v1/sandboxes/{sandboxId}/files/archive` (SDK method `extractArchive`)
+
+Writes every file, directory and symbolic link of a tar (or a gzipped tar) into `path`, in one call. An entry whose name is absolute or climbs out of `path` (`..`), a link that points out of it, an entry under such a link, and hard links, devices and FIFOs are refused (`invalid`) before anything is written. A `path` in a read-only mount, or with one under it, is refused (`conflict`). Files are owned by the sandbox's user, with their modes from the tar. A key needs `files`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sandboxId` | string | yes | The sandbox's ID. |
+
+**Query parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes | The directory to extract into, made if missing: absolute, or relative to the user's home. Not in or over a mount. (at most 4096 characters) |
+
+**Answers**
+
+- `200`: [ExtractedArchive](/api/reference/types/#extractedarchive) (`application/json`). What was extracted.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).

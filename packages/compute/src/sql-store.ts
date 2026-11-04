@@ -38,13 +38,21 @@ const FIELD_NAME = /^[A-Za-z][A-Za-z0-9_]*$/;
 
 const SELECT_DATA = "SELECT data FROM compute_api_records WHERE kind = ? AND id = ?";
 const SELECT_VERSIONED = "SELECT data, version FROM compute_api_records WHERE kind = ? AND id = ?";
-/** Writes only over the version that was read, and answers a row only when it did. */
+/**
+ * Writes only over the record as it was read, its version and its data both, and answers a row only when it did. The
+ * version alone isn't enough: a record deleted and inserted again starts at version 1 again, so a write that read the
+ * first could land on the second, computed from what the first held (a bundle's deleted generation, say). With its data
+ * too, the record it lands on holds exactly what was read, so the write is the one it would have made reading that.
+ */
 const UPDATE_VERSIONED =
-	"UPDATE compute_api_records SET data = ?, version = version + 1 WHERE kind = ? AND id = ? AND version = ? RETURNING id";
+	"UPDATE compute_api_records SET data = ?, version = version + 1 WHERE kind = ? AND id = ? AND version = ? AND data = ? RETURNING id";
 /** Writes only over the record exactly as the caller expected it, and answers a row only when it did. */
 const UPDATE_IF_SAME =
 	"UPDATE compute_api_records SET data = ?, version = version + 1 WHERE kind = ? AND id = ? AND data = ? RETURNING id";
 const DELETE_ONE = "DELETE FROM compute_api_records WHERE kind = ? AND id = ? RETURNING id";
+/** Deletes only the record as it was read, its version and its data both (`UPDATE_VERSIONED`), and answers a row only when it did. */
+const DELETE_VERSIONED =
+	"DELETE FROM compute_api_records WHERE kind = ? AND id = ? AND version = ? AND data = ? RETURNING id";
 
 /** The store's table, sequence and index. Every statement is `IF NOT EXISTS`, so migrating again is harmless. */
 export function computeStoreSchema(dialect: SqlDriver["dialect"]): string[] {
@@ -157,7 +165,7 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 				const next = change(parse<T>(row));
 				if (next === undefined) return undefined;
 				const data = JSON.stringify(next);
-				const written = await write(UPDATE_VERSIONED, [data, kind, id, sqlNumber(row.version)]);
+				const written = await write(UPDATE_VERSIONED, [data, kind, id, sqlNumber(row.version), String(row.data)]);
 				// Answered as a later `get` would read it.
 				if (written.length > 0) return JSON.parse(data) as T;
 			}
@@ -166,6 +174,15 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 		async delete(id) {
 			const rows = await driver.query(DELETE_ONE, [kind, id]);
 			return rows.length > 0;
+		},
+		async deleteIf(id, should) {
+			for (let attempt = 0; attempt < UPDATE_ATTEMPTS; attempt++) {
+				const [row] = await driver.query(SELECT_VERSIONED, [kind, id]);
+				if (row === undefined || !should(parse<T>(row))) return false;
+				const deleted = await driver.query(DELETE_VERSIONED, [kind, id, sqlNumber(row.version), String(row.data)]);
+				if (deleted.length > 0) return true;
+			}
+			throw new Error(`The ${kind} record kept changing while it was deleted; gave up after ${UPDATE_ATTEMPTS} tries`);
 		},
 		async list(where) {
 			// String fields narrow the rows in SQL; the rest (booleans, numbers) only in the check below, which every row
@@ -215,6 +232,9 @@ export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 		environments: sqlCollection(driver, "environments"),
 		egress: sqlCollection(driver, "egress"),
 		e2eChain: sqlCollection(driver, "e2eChain"),
+		bundles: sqlCollection(driver, "bundles"),
+		bucketSources: sqlCollection(driver, "bucketSources"),
+		fileUrls: sqlCollection(driver, "fileUrls"),
 		settings: sqlCollection(driver, "settings"),
 	};
 }
