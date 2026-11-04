@@ -1838,26 +1838,47 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/**
 	 * The snapshot a start or recovery makes the sandbox from: its newest, or, when it was never placed (its create or
-	 * fork failed), the one it was to be made from. A sandbox made from another that has no such snapshot (a running
-	 * sandbox's fork) can't be made again here, so it is refused rather than started empty under its source's name; the
-	 * same keeps an account's own host's snapshot with the host (routed there, or refused while it is unreachable).
+	 * fork failed), the one it was to be made from (none for a plain create: its image, as its create had). A sandbox
+	 * made from another that has no such snapshot (a running sandbox's fork) can't be made again here, so it is refused
+	 * rather than started empty under its source's name; the same keeps an account's own host's snapshot with the host
+	 * (routed there, or refused while it is unreachable).
 	 */
 	async function latestRef(sandbox: StoredSandbox): Promise<string | undefined> {
 		if (sandbox.latestSnapshotId !== undefined) return (await store.snapshots.get(sandbox.latestSnapshotId))?.ref;
-		if (!neverPlaced(sandbox)) return undefined;
-		const from = sandbox.source?.snapshotId;
+		if (!neverPlaced(sandbox) || sandbox.source === undefined) return undefined;
+		const from = sandbox.source.snapshotId;
 		const source = from === undefined ? undefined : await store.snapshots.get(from);
 		if (source === undefined) throw new KantelError("conflict", NEVER_MADE);
 		return readyRef(source);
 	}
 
-	/** A sandbox made from another whose making failed: no backend has it, and it has no snapshot of its own. */
+	/**
+	 * A sandbox whose create or fork failed: it was never placed on a host, so no backend has it (a backend lets a failed
+	 * create's placement go), and it has no snapshot of its own. Made from a snapshot or not.
+	 */
 	const neverPlaced = (sandbox: StoredSandbox): boolean =>
-		sandbox.hostId === undefined && sandbox.latestSnapshotId === undefined && sandbox.source !== undefined;
+		sandbox.hostId === undefined && sandbox.latestSnapshotId === undefined;
+
+	/**
+	 * The hosts a start or recovery may boot the sandbox on: as for its create when it was never placed and isn't made
+	 * from a snapshot (the account's own hosts first, online ones only), else any qualifying host, so a backend that
+	 * holds its disk or snapshot finds its own host among them.
+	 */
+	async function hostsToBoot(principal: Principal, sandbox: StoredSandbox): Promise<string[]> {
+		return requireHosts(
+			await ensureHosts(),
+			sandbox.accountId,
+			sandbox.type,
+			sandbox.hostLabels,
+			!neverPlaced(sandbox) || sandbox.source !== undefined,
+			await mayShare(principal),
+		);
+	}
 
 	/**
 	 * Boots a sandbox for a start or recovery with `boot`: `booted` where a backend has it, or, when it was never placed
-	 * (`latestRef`), made as its create would make it, from its source's snapshot, since no backend has it to start.
+	 * (`neverPlaced`), made as its create would make it (from its source's snapshot, `latestRef`, or its image), placed
+	 * as a create is, since no backend has it to start.
 	 */
 	function bootAgain(
 		sandbox: StoredSandbox,
@@ -3105,14 +3126,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (current.state !== "running" && current.state !== "error") {
 				throw new KantelError("conflict", `A ${current.state} sandbox is started or resumed, not recovered`);
 			}
-			const hosts = requireHosts(
-				await ensureHosts(),
-				current.accountId,
-				current.type,
-				current.hostLabels,
-				true,
-				await mayShare(principal),
-			);
+			const hosts = await hostsToBoot(principal, current);
 			const fromSnapshot = await latestRef(current);
 			// A boot's egress is read afresh, so it gets a revision of its own: an update read before (from when it last ran,
 			// say, still being retried) never equals it, and loses.
@@ -4321,14 +4335,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (current.type === "isolate" && body.size !== undefined)
 			throw new KantelError("invalid", "Isolates have no size");
 		await requireCapacity(current.accountId, 1);
-		const hosts = requireHosts(
-			await ensureHosts(),
-			current.accountId,
-			current.type,
-			current.hostLabels,
-			true,
-			await mayShare(principal),
-		);
+		const hosts = await hostsToBoot(principal, current);
 		const fromSnapshot = await latestRef(current);
 		const began = await transition(current.id, current.state, (latest) =>
 			withState(latest, "starting", {

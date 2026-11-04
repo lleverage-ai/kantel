@@ -545,6 +545,39 @@ describe("organisations", () => {
 		expect((await tom.getSandbox(fork?.id ?? "")).state).toBe("error");
 	});
 
+	it("makes a plain sandbox whose create failed again as its create would, on recover, start or resume", async () => {
+		const stub = createStubBackend();
+		let failing = true;
+		const creates: string[] = [];
+		const backend: SandboxBackend = {
+			...stub,
+			create: (spec) => {
+				creates.push(spec.sandboxId);
+				return failing
+					? Promise.reject(new KantelError("unavailable", "The disk couldn't be made"))
+					: stub.create(spec);
+			},
+		};
+		const { api, tom } = setup(backend);
+		// Made from no snapshot, each create fails: no backend has them, and they have no snapshot of their own.
+		const made = [];
+		for (let i = 0; i < 3; i++) made.push(await tom.createSandbox({ type: "microvm", wait: true }));
+		expect(made.map((sandbox) => sandbox.state)).toEqual(["error", "error", "error"]);
+		failing = false;
+
+		// Each is made again with the backend's create, as its create made it, rather than asked of a backend without it.
+		const [recovered, started, resumed] = made.map((sandbox) => sandbox.id);
+		await tom.recoverSandbox(recovered ?? "");
+		await api.service.idle();
+		expect((await tom.startSandbox(started ?? "", { wait: true })).state).toBe("running");
+		expect((await tom.resumeSandbox(resumed ?? "", { wait: true })).state).toBe("running");
+		for (const sandbox of made) {
+			expect((await tom.getSandbox(sandbox.id)).state).toBe("running");
+			expect((await tom.runCommand(sandbox.id, { command: "echo hi" })).stdout).toBe("hi\n");
+		}
+		expect(creates.filter((id) => id === recovered)).toHaveLength(2);
+	});
+
 	it("keeps an overdue sandbox whose host is away running, and auto-stops it once its host is back", async () => {
 		let clock = 1_000_000;
 		const stub = createStubBackend();
