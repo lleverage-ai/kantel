@@ -1950,3 +1950,26 @@ for (const kind of [pgliteDatabase, nodeSqliteDatabase]) {
 		});
 	});
 }
+
+describe("The stub's create of a template sandbox", () => {
+	it("is the only one for its sandbox while its setup runs: a second create of it is a conflict, not a replacement", async () => {
+		const stub = createStubBackend();
+		const spec = {
+			sandboxId: "sbx_once",
+			accountId: "acc_a",
+			type: "microvm" as const,
+			subdomain: "once",
+			env: {},
+			eligibleHosts: [STUB_HOST_ID],
+			template: { baseImage: "kantel/sandbox", baseDigest: "", setup: "echo one > /root/marker" },
+		};
+		const [first, second] = await Promise.allSettled([stub.create(spec), stub.create(spec)]);
+		expect(first.status).toBe("fulfilled");
+		expect(second).toMatchObject({ status: "rejected", reason: { code: "conflict" } });
+		// Once it's made, it is still the one machine, and one that failed lets a later create of its ID through.
+		await expect(stub.create(spec)).rejects.toMatchObject({ code: "conflict" });
+		const failing = { ...spec, sandboxId: "sbx_failed", template: { ...spec.template, setup: "exit 1" } };
+		await expect(stub.create(failing)).rejects.toMatchObject({ code: "invalid" });
+		await expect(stub.create({ ...failing, template: spec.template })).resolves.toMatchObject({});
+	});
+});

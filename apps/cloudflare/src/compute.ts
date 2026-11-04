@@ -1125,7 +1125,22 @@ export function revivingStub(stub: SandboxBackend, sandboxes: Collection<StoredS
 	const refuseHostSnapshot = (ref: string | undefined) => {
 		if (ref !== undefined && isHostSnapshotRef(ref)) throw onHost();
 	};
-	const revive = async (sandboxId: string, cause: KantelError): Promise<void> => {
+	/**
+	 * Revivals under way, by sandbox: every call that finds the sandbox's machine gone while one runs waits for it, so a
+	 * sandbox has one creation attempt at a time and no later one replaces a machine already answered. It goes once that
+	 * attempt ends, made or failed, so a failed one (its template's setup, say) can be tried again.
+	 */
+	const reviving = new Map<string, Promise<void>>();
+	const revive = (sandboxId: string, cause: KantelError): Promise<void> => {
+		const under = reviving.get(sandboxId);
+		if (under !== undefined) return under;
+		const attempt = reviveOnce(sandboxId, cause).finally(() => {
+			if (reviving.get(sandboxId) === attempt) reviving.delete(sandboxId);
+		});
+		reviving.set(sandboxId, attempt);
+		return attempt;
+	};
+	const reviveOnce = async (sandboxId: string, cause: KantelError): Promise<void> => {
 		const record = await sandboxes.get(sandboxId);
 		if (record === undefined || record.state === "deleted") throw cause;
 		if (record.hostId !== undefined && record.hostId !== STUB_HOST_ID) throw onHost();

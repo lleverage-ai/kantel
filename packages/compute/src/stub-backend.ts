@@ -253,6 +253,8 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 	/** When the stub host came up: it reports nothing before. */
 	const upSince = now();
 	const machines = new Map<string, Machine>();
+	/** Sandboxes a create is making now (booting, restoring, running a template's setup). */
+	const creating = new Set<string>();
 	const snapshots = new Map<string, Tree>();
 	/** Template snapshots by ref: a cache apart from `snapshots`, which `deleteSnapshot` never touches. */
 	const templateSnapshots = new Map<string, Tree>();
@@ -351,10 +353,24 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 
 	const create = async (spec: SandboxSpec): Promise<Placement> => {
 		placeable(spec.eligibleHosts, spec.type);
-		if (machines.has(spec.sandboxId)) throw new KantelError("conflict", `${spec.sandboxId} already has a machine`);
+		if (machines.has(spec.sandboxId) || creating.has(spec.sandboxId)) {
+			throw new KantelError("conflict", `${spec.sandboxId} already has a machine`);
+		}
 		if (spec.template !== undefined && spec.type !== "microvm") {
 			throw new KantelError("not_supported", "A template makes microVMs; this is an isolate");
 		}
+		// Held from here until it is made or has failed, so a second create of it, while a setup runs, is a conflict and
+		// never replaces the machine this one makes.
+		creating.add(spec.sandboxId);
+		try {
+			return await made(spec);
+		} finally {
+			creating.delete(spec.sandboxId);
+		}
+	};
+
+	/** Makes the machine `create` has checked and holds. */
+	const made = async (spec: SandboxSpec): Promise<Placement> => {
 		const machine: Machine = {
 			id: spec.sandboxId,
 			type: spec.type,
