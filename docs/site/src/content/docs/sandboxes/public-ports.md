@@ -43,7 +43,7 @@ By default the URL carries a token (`?_token=...`), and anyone holding the whole
 
 Opening the URL in a browser trades the token for a cookie on that one host name and takes it out of the address bar, so the app's own links and requests work. A script or test runner can send the token in the query each time, or as the `__Host-kantel_port` cookie (`kantel_port` on an install served over plain http). Kantel takes the token and its cookie off before the request reaches the app.
 
-The cookie works for the app's own pages, for a link followed to it, and for the same sandbox's other ports: a frontend on port 5173 can call its API on port 8080, `fetch` and WebSockets included, once 8080's URL has been opened in that browser. A page on another sandbox's port, or on any other site, can't use it; its requests get `401` as if they had no cookie. To frame one port in another, put the token in the frame's URL. The cookie was called `_kantel_port` before and that name is no longer read: open the URL with its token again.
+The cookie works for the app's own pages, for a link followed to it, and for the same sandbox's other ports: a frontend on port 5173 can call its API on port 8080, `fetch` and WebSockets included, once 8080's URL has been opened in that browser. A page on another sandbox's port, or on any other site, can't use it; its requests get `401` as if they had no cookie. To frame one port in another, put the token in the frame's URL: the frame is served directly, without trading the token for the cookie. The cookie was called `_kantel_port` before and that name is no longer read: open the URL with its token again.
 
 To end a token, hide the port: exposing it afterwards gives it a new one. Stopping or deleting the sandbox ends its ports too.
 

@@ -319,6 +319,53 @@ describe("an exposed port's cookie", () => {
 		expect(await status({ cookie: `${PORT_COOKIE}=planted; ${PORT_COOKIE}=${token}` })).toBe(200);
 	});
 
+	it("trades the token for the cookie only where the redirected request may use it, else serves it directly", async () => {
+		const { router, token, opened } = await setup();
+		const withToken = (headers: Record<string, string>) =>
+			router.fetch(new Request(`${VICTIM}/page?_token=${token}`, { headers }));
+		const frame = { "sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe" };
+
+		// A top-level navigation (typed, or a link from anywhere), the port's own page, or a script: the 303 and cookie.
+		const trading: Record<string, string>[] = [
+			{ "sec-fetch-site": "none", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" },
+			{ "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" },
+			{ "sec-fetch-site": "same-origin", ...frame },
+			{},
+		];
+		for (const headers of trading) {
+			const traded = await withToken(headers);
+			expect(traded?.status).toBe(303);
+			expect(traded?.headers.get("location")).toBe("/page");
+			expect(traded?.headers.get("set-cookie")).toMatch(/^__Host-kantel_port=/);
+		}
+		expect(opened).toEqual([]);
+
+		// A frame of the port in another sandbox's page or the same sandbox's (whose Referer the redirect would drop), or
+		// another page's fetch: served directly, the token taken off, no cookie set.
+		const direct: Record<string, string>[] = [
+			{ "sec-fetch-site": "same-site", ...frame, referer: `${SIBLING}/` },
+			{ "sec-fetch-site": "same-site", ...frame, referer: `${FRONTEND}/` },
+			{ "sec-fetch-site": "cross-site", "sec-fetch-mode": "cors", origin: "https://evil.example" },
+		];
+		for (const headers of direct) {
+			const served = await withToken(headers);
+			expect(served?.status).toBe(200);
+			expect(served?.headers.getSetCookie()).toEqual(["a=1", "b=2"]);
+		}
+		expect(opened).toHaveLength(direct.length);
+		for (const { request } of opened) {
+			expect(request).toMatch(/^GET \/page HTTP\/1\.1\r\n/);
+			expect(request).not.toContain(token);
+		}
+		// The same frames without the token still get nothing, cookie or not.
+		const bare = await router.fetch(
+			new Request(`${VICTIM}/page`, {
+				headers: { cookie: `${PORT_COOKIE}=${token}`, "sec-fetch-site": "same-site", ...frame },
+			}),
+		);
+		expect(bare?.status).toBe(401);
+	});
+
 	it("keeps the old cookie and its own from the sandbox's server", async () => {
 		const { status, token, opened } = await setup();
 		expect(await status({ cookie: `theme=dark; _kantel_port=old; ${PORT_COOKIE}=${token}` })).toBe(200);

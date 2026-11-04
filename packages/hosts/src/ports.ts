@@ -21,7 +21,9 @@
  *   same sandbox, so a frontend on one port can call its API on another. A WebSocket upgrade has only its `Origin` to
  *   go on. Otherwise the request is answered as if it had no cookie (401). A request that says nothing about where it
  *   comes from (no `Sec-Fetch-Site`, `Origin` or `Referer`) is not a browser's page, so the cookie counts.
- * - The token in the query always counts: it is the capability itself, which no other page knows.
+ * - The token in the query always counts: it is the capability itself, which no other page knows. A GET with it is
+ *   traded for the cookie (a 303 to the address without it) only where the redirected request may use the cookie
+ *   (`tradesForCookie`); elsewhere, such as another page's frame of the port, it is served directly, token taken off.
  * - Every cookie of that name is tried against the token's hash, so one planted under it can't open a port, nor stop
  *   the real one being read.
  *
@@ -137,6 +139,15 @@ const SAFE_METHODS: ReadonlySet<string> = new Set(["GET", "HEAD"]);
 
 const lowered = (value: string | null): string | null => (value === null ? null : value.trim().toLowerCase());
 
+/** A top-level navigation that changes nothing: a link followed, from anywhere, as SameSite=Lax lets through. */
+function topLevelRead(request: Request): boolean {
+	return (
+		lowered(request.headers.get("sec-fetch-mode")) === "navigate" &&
+		lowered(request.headers.get("sec-fetch-dest")) === "document" &&
+		SAFE_METHODS.has(request.method.toUpperCase())
+	);
+}
+
 /** The origin of a `Referer`, or undefined when there's none or it isn't a URL. */
 function referrerOrigin(value: string | null): string | undefined {
 	if (value === null || value.trim() === "") return undefined;
@@ -207,19 +218,24 @@ export function createPortRouter(options: PortRouterOptions): PortRouter {
 	async function cookieHonoured(exposure: ExposureRecord, request: Request, ownHostname: string): Promise<boolean> {
 		const headers = request.headers;
 		const site = lowered(headers.get("sec-fetch-site"));
-		if (site === "same-origin" || site === "none") return true;
-		if (
-			lowered(headers.get("sec-fetch-mode")) === "navigate" &&
-			lowered(headers.get("sec-fetch-dest")) === "document" &&
-			SAFE_METHODS.has(request.method.toUpperCase())
-		) {
-			return true;
-		}
+		if (site === "same-origin" || site === "none" || topLevelRead(request)) return true;
 		const source = headers.get("origin") ?? referrerOrigin(headers.get("referer"));
 		// Nothing says where it came from: a script or an API client, not a page (a browser too old for Sec-Fetch-Site
 		// and asked for a page's subresource with no Referer too).
 		if (source === undefined) return site === null;
 		return sameSandbox(exposure, ownHostname, source);
+	}
+
+	/**
+	 * Whether a GET or HEAD with the token in its query may trade it for the cookie: only when the redirected request,
+	 * which has no token and (by the redirect's `no-referrer`) no `Referer`, will be let in by its cookie. Anything else
+	 * with a good token (another sandbox's frame of the port, say) is served directly, the token taken off, so the token
+	 * works from anywhere whether or not its context may use the cookie.
+	 */
+	function tradesForCookie(request: Request): boolean {
+		const site = lowered(request.headers.get("sec-fetch-site"));
+		if (site === "same-origin" || site === "none" || topLevelRead(request)) return true;
+		return site === null && request.headers.get("origin") === null;
 	}
 
 	return {
@@ -266,7 +282,11 @@ export function createPortRouter(options: PortRouterOptions): PortRouter {
 			}
 			if (query !== null) {
 				url.searchParams.delete(PORT_TOKEN_PARAM);
-				if (exposure.tokenHash !== undefined && (request.method === "GET" || request.method === "HEAD")) {
+				if (
+					exposure.tokenHash !== undefined &&
+					(request.method === "GET" || request.method === "HEAD") &&
+					tradesForCookie(request)
+				) {
 					// Trade the token for a cookie on this one name, and take it out of the address bar and history.
 					return new Response(null, {
 						status: 303,
