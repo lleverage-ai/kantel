@@ -2,15 +2,38 @@
 // the API takes. Variables are rows of a name and a value, each value kept exactly as read or typed (line breaks,
 // spaces at either end, `=` and quotes, or empty), so saving a template whose variables nobody touched sends them as
 // they were, and editing one variable leaves the others alone. The base is one the deployment publishes: an image, a
-// channel of it to follow, or a digest from that channel's history to pin.
+// channel of it to follow, or a digest from that channel's history to pin. The image is that base, a Dockerfile built
+// on it (`FROM $KANTEL_BASE`), or an image reference; the Dockerfile and reference are kept as typed while another kind
+// is picked, so switching back loses nothing, and only the picked kind's is saved.
 
-import type { EgressGrant, Template, TemplateBaseChannel, TemplateChange, TemplateSpec } from "./compute-model.ts";
+import type {
+	EgressGrant,
+	Template,
+	TemplateBaseChannel,
+	TemplateChange,
+	TemplateImage,
+	TemplateSpec,
+} from "./compute-model.ts";
 import { variableNameProblem } from "./egress-rules.ts";
 
 /** The base a new template follows, and the one the API falls back to: published or not, every host has it. */
 export const DEFAULT_TEMPLATE_BASE = { image: "kantel/sandbox", channel: "stable" } as const;
 
 const NAME = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+
+/**
+ * An image reference as the API takes one (`TEMPLATE_IMAGE_REF_PATTERN`): `[registry[:port]/]repository[:tag][@digest]`,
+ * its repository lower case.
+ */
+const IMAGE_REF =
+	/^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*(?::[0-9]{1,5})?\/)?[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:\/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(?:@sha256:[0-9a-f]{64})?$/;
+
+/** A Dockerfile a new one starts from: the template's base, then what it adds. */
+export const DOCKERFILE_EXAMPLE =
+	"ARG KANTEL_BASE\nFROM $KANTEL_BASE\nRUN apt-get update && apt-get install -y --no-install-recommends ripgrep jq\n";
+
+/** The longest Dockerfile the API takes. */
+const MAX_DOCKERFILE = 65_536;
 
 /** One variable's row. `key` keeps a row's inputs with it as rows above it are added or removed. */
 export interface TemplateVariableDraft {
@@ -23,6 +46,10 @@ export interface TemplateVariableDraft {
 export interface TemplateDraft {
 	readonly name: string;
 	readonly description: string;
+	/** What its machines boot: the base, a Dockerfile on it, or an image reference. */
+	readonly imageKind: TemplateImage["kind"];
+	readonly dockerfile: string;
+	readonly imageRef: string;
 	readonly baseImage: string;
 	readonly baseMode: "channel" | "digest";
 	/** The channel followed, or the one whose history the pinned digest is picked from. */
@@ -60,6 +87,9 @@ export function templateDraft(template?: Template): TemplateDraft {
 	return {
 		name: template?.name ?? "",
 		description: template?.description ?? "",
+		imageKind: spec?.image.kind ?? "kantel-base",
+		dockerfile: spec?.image.kind === "dockerfile" ? spec.image.dockerfile : "",
+		imageRef: spec?.image.kind === "image" ? spec.image.ref : "",
 		baseImage: spec?.base.image ?? DEFAULT_TEMPLATE_BASE.image,
 		baseMode: spec?.base.digest === undefined ? "channel" : "digest",
 		channel: spec?.base.channel ?? DEFAULT_TEMPLATE_BASE.channel,
@@ -172,22 +202,49 @@ export function templateEnv(variables: readonly TemplateVariableDraft[]): Record
 /** What's wrong with a draft, field by field, and whether it can be saved. */
 export function templateDraftProblems(draft: TemplateDraft): {
 	readonly name?: string;
+	readonly dockerfile?: string;
+	readonly imageRef?: string;
 	readonly variables: readonly (string | undefined)[];
 	readonly ready: boolean;
 } {
 	const name = draft.name === "" || NAME.test(draft.name) ? undefined : "Use lowercase letters, digits and dashes.";
 	const variables = templateVariableProblems(draft.variables);
+	const ref = draft.imageRef.trim();
+	const dockerfile =
+		draft.imageKind !== "dockerfile" || draft.dockerfile.length <= MAX_DOCKERFILE
+			? undefined
+			: `At most ${MAX_DOCKERFILE.toLocaleString("en-GB")} characters.`;
+	const imageRef =
+		draft.imageKind !== "image" || ref === "" || (IMAGE_REF.test(ref) && ref.length <= 512)
+			? undefined
+			: "Not an image reference: registry/repository:tag or @sha256:…, the repository in lowercase.";
+	const imageReady =
+		draft.imageKind === "dockerfile"
+			? draft.dockerfile.trim() !== "" && dockerfile === undefined
+			: draft.imageKind === "image"
+				? ref !== "" && imageRef === undefined
+				: true;
 	const ready =
 		draft.name !== "" &&
 		name === undefined &&
 		variables.every((problem) => problem === undefined) &&
+		imageReady &&
 		draft.baseImage !== "" &&
 		(draft.baseMode === "channel" ? draft.channel !== "" : draft.digest !== "");
 	return {
 		...(name === undefined ? {} : { name }),
+		...(dockerfile === undefined ? {} : { dockerfile }),
+		...(imageRef === undefined ? {} : { imageRef }),
 		variables,
 		ready,
 	};
+}
+
+/** The image a draft saves: only the picked kind's Dockerfile or reference. */
+function templateImageOf(draft: TemplateDraft): TemplateImage {
+	if (draft.imageKind === "dockerfile") return { kind: "dockerfile", dockerfile: draft.dockerfile };
+	if (draft.imageKind === "image") return { kind: "image", ref: draft.imageRef.trim() };
+	return { kind: "kantel-base" };
 }
 
 let grantCount = 0;
@@ -217,7 +274,7 @@ export function templateEditorInput(draft: TemplateDraft, kept: readonly EgressG
 		name: draft.name,
 		description: draft.description.trim(),
 		spec: {
-			image: { kind: "kantel-base" },
+			image: templateImageOf(draft),
 			base:
 				draft.baseMode === "channel"
 					? { image: draft.baseImage, channel: draft.channel }

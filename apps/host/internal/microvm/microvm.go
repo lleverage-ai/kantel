@@ -176,6 +176,9 @@ type Config struct {
 	// TemplateRegistry is the operator's registry templates' Kantel base images are pulled from by digest, such as
 	// ghcr.io/lleverage-ai (rootfs.go). Empty: templates are made only from Rootfs, the host's own image.
 	TemplateRegistry string
+	// TemplateBuilder switches on templates' custom images, built in a build microVM (builder.go); nil: off. It
+	// needs Initrd too, which boots an image that isn't Kantel's with the guest agent put in.
+	TemplateBuilder *TemplateBuilderConfig
 	// Budget is what the tier may use now: the host's memory budget less what its other tiers use, and its free disk.
 	// Each create, start or resume and template build is admitted against it (admit), beside what the tier holds. It is
 	// called with the tier's lock held, so it mustn't call the tier. Nil admits everything.
@@ -1257,6 +1260,7 @@ func (m *Manager) reapInterruptedBuilds() {
 		}
 		m.log.Info("ended a snapshot boot the host's previous run left", "dir", dir)
 	}
+	m.reapInterruptedBuilders(adopted)
 	if m.tpl != nil {
 		m.tpl.rootfs.reap()
 	}

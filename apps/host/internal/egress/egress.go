@@ -171,6 +171,13 @@ func New(log *slog.Logger) *Proxy {
 	return p
 }
 
+// UseResolver makes the proxy look names up with r rather than the host's resolver (a test's own DNS server), still
+// checking every address it connects to, after DNS, as it connects (control).
+func (p *Proxy) UseResolver(r *net.Resolver) {
+	d := &net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second, Control: p.control, Resolver: r}
+	p.Dial = d.Dial
+}
+
 // directTransport is the transport for proxy-form requests, trusting RootCAs once they are set.
 func (p *Proxy) directTransport() *http.Transport {
 	p.transportOnce.Do(func() {

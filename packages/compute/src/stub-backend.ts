@@ -32,7 +32,7 @@ import {
 	type UsageSample,
 } from "./backend.ts";
 import { type BackendUsageReport, RAW_WINDOW_MS, USAGE_INTERVAL_MS } from "./usage-series.ts";
-import { baseName, HOME, randomId, randomSecret, sliceRange } from "./util.ts";
+import { baseName, HOME, randomId, randomSecret, sha256Hex, sliceRange } from "./util.ts";
 
 /** The stub's one host. */
 export const STUB_HOST_ID = "host_stub";
@@ -611,7 +611,8 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 		},
 
 		async templateRuntimes(): Promise<TemplateRuntime[]> {
-			return types.includes("microvm") ? [{ hostId: STUB_HOST_ID, ...STUB_RUNTIME }] : [];
+			// It "builds" custom images too: it runs nothing of them, and names a digest for each.
+			return types.includes("microvm") ? [{ hostId: STUB_HOST_ID, ...STUB_RUNTIME, customImages: true }] : [];
 		},
 
 		async buildTemplate(spec: TemplateBuildSpec): Promise<BuiltTemplate> {
@@ -624,7 +625,19 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			const tree = await capture(fs);
 			const ref = `${STUB_TEMPLATE_REF_PREFIX}${spec.snapshotId}`;
 			templateSnapshots.set(ref, tree);
-			// It boots no image: the base's digest stands for the one a host pulls (none for its own sandbox image).
+			// It boots no image: the base's digest stands for the one a host pulls (none for its own sandbox image), and a
+			// custom image's for the one a build microVM makes (a pinned reference's own).
+			if (spec.image !== undefined) {
+				const source = spec.image.kind === "dockerfile" ? spec.image.dockerfile : spec.image.ref;
+				const pinned = spec.image.kind === "image" ? /@(sha256:[0-9a-f]{64})$/.exec(spec.image.ref)?.[1] : undefined;
+				return {
+					ref,
+					hostId: STUB_HOST_ID,
+					imageDigest: pinned ?? `sha256:${await sha256Hex(`${spec.image.scope}\n${source}`)}`,
+					rootfsKey: await sha256Hex(`${spec.accountId}\n${spec.image.scope}\n${source}`),
+					sizeBytes: treeSize(tree),
+				};
+			}
 			return {
 				ref,
 				hostId: STUB_HOST_ID,

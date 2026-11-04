@@ -76,6 +76,18 @@ export const BuildFailed: Story = () => <One templateId="tpl_rust" />;
 /** Edit python-data: saving makes v4. */
 export const Editing: Story = () => <One templateId="tpl_python" editing />;
 
+/** ci-tools: a Dockerfile on the stable base, built in an isolated build microVM; the Dockerfile and its built digest. */
+export const DockerfileImage: Story = () => <One templateId="tpl_ci" />;
+
+/** python-slim: an image reference, pulled in a build microVM; its resolved digest. */
+export const ImageReference: Story = () => <One templateId="tpl_slim" />;
+
+/** Edit ci-tools: its Dockerfile, the base it builds on and the hosts its build may reach. */
+export const EditingDockerfile: Story = () => <One templateId="tpl_ci" editing />;
+
+/** Edit python-slim: its image reference. */
+export const EditingImageReference: Story = () => <One templateId="tpl_slim" editing />;
+
 /** New sandbox with the template picker: python-data picked, its size and how it will start. */
 export const NewSandboxPicker: Story = () => {
 	const { source, templates } = useSource();

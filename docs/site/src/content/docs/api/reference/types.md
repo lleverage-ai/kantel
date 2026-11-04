@@ -1708,7 +1708,10 @@ What a template snapshot was built from.
 | `channel` | string | no | The channel it followed; absent when pinned. |
 | `baseDigest` | string | yes | Empty while the channel has no published digest. |
 | `pinned` | boolean | yes |  |
-| `imageDigest` | string | no | The digest of the image its host booted, as the host reported it. |
+| `imageDigest` | string | no | The digest of the image its host booted, as the host reported it: for an `image`, the digest the reference resolved to; for a `dockerfile`, the built image's ID. |
+| `source` | `"kantel-base"` or `"dockerfile"` or `"image"` | no | The template image's kind it was built from. Absent: `kantel-base`. |
+| `dockerfileDigest` | string | no | For a `dockerfile`, the SHA-256 of the Dockerfile built, `sha256:…`. |
+| `imageRef` | string | no | For an `image`, the reference pulled. |
 | `kernel` | string | yes |  |
 | `firecracker` | string | yes |  |
 
@@ -1720,16 +1723,36 @@ What a template snapshot is for: a change to any part builds another. A create s
 | --- | --- | --- | --- |
 | `templateVersion` | string | yes | `<templateId>@<version>`. |
 | `baseDigest` | string | yes |  |
+| `source` | string | no | A custom image's source: `dockerfile:sha256:…` (the Dockerfile's digest) or `image:<ref>`. Absent for `kantel-base`. |
+| `imageDigest` | string | no | A custom image's digest: the one an `image` pins from the start, else the one its build made or resolved, recorded once the build answers. Absent for `kantel-base`. |
 | `kernel` | string | yes |  |
 | `firecracker` | string | yes |  |
 | `vcpus` | integer | yes |  |
 | `memoryMb` | integer | yes | With `vcpus`, the machine it was built as: the template's resources, which a fresh boot from it gets too. |
 
+### TemplateDockerfileImage
+
+Built in an isolated build microVM whose only way out is the sandbox egress proxy: its pulls, `RUN` steps and remote `ADD`s reach the template's egress grants and the registries the host's operator allows, and never a host, private or metadata address.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"dockerfile"` | yes |  |
+| `dockerfile` | string | yes | A Dockerfile, built with no build context. `ARG KANTEL_BASE` then `FROM $KANTEL_BASE` starts from the template's `base`; any other `FROM` image is pulled. (at most 65536 characters) |
+
 ### TemplateImage
 
-What a template's machines boot. Only `kantel-base` for now: Kantel's base image, customised by the setup script, which runs in the VM behind the template's egress grants. Default: `kantel-base`.
+What a template's machines boot: `kantel-base`, Kantel's base image customised by the setup script; a `dockerfile`; or an `image` reference. Custom images are built only on hosts that build them in a build microVM. Default: `kantel-base`.
 
-One of: [TemplateKantelBaseImage](/api/reference/types/#templatekantelbaseimage).
+One of: [TemplateKantelBaseImage](/api/reference/types/#templatekantelbaseimage) or [TemplateDockerfileImage](/api/reference/types/#templatedockerfileimage) or [TemplateImageRef](/api/reference/types/#templateimageref).
+
+### TemplateImageRef
+
+Pulled in an isolated build microVM, as a Dockerfile's images are. The template's `base` isn't used. An image that isn't one of Kantel's boots through the guest agent the host injects.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"image"` | yes |  |
+| `ref` | string | yes | An image reference, such as `python:3.13-slim` or `ghcr.io/acme/ci@sha256:…`. A tag is resolved when the template is built, and again on a rebuild. (at most 512 characters) |
 
 ### TemplateKantelBaseImage
 

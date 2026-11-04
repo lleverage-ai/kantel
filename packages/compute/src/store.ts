@@ -348,6 +348,14 @@ export type StoredTemplateSnapshot = Omit<computeSchema.TemplateSnapshot, "state
 	 * gateway is taken to have died with it, and a sweep deletes them by its ID.
 	 */
 	readonly buildLeaseEnds?: number;
+	/**
+	 * A custom image's: the key's hash it was claimed under, before its build named the image's digest. Its `keyHash`
+	 * covers the digest once its build has answered (`key.imageDigest`); a reconcile wants it by this one. Absent, its
+	 * `keyHash`.
+	 */
+	readonly claimHash?: string;
+	/** A custom image's root filesystem on its host, which a fresh boot there boots (`SandboxTemplateBoot.rootfsKey`). */
+	readonly rootfsKey?: string;
 };
 
 /** A template as `TemplateWrites.update` changes it, and the version the change makes when it makes one. */

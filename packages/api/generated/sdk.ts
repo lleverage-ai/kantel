@@ -1894,8 +1894,14 @@ export interface TemplateBuiltFrom {
 	/** Empty while the channel has no published digest. */
 	readonly baseDigest: string;
 	readonly pinned: boolean;
-	/** The digest of the image its host booted, as the host reported it. */
+	/** The digest of the image its host booted, as the host reported it: for an `image`, the digest the reference resolved to; for a `dockerfile`, the built image's ID. */
 	readonly imageDigest?: string;
+	/** The template image's kind it was built from. Absent: `kantel-base`. */
+	readonly source?: "kantel-base" | "dockerfile" | "image";
+	/** For a `dockerfile`, the SHA-256 of the Dockerfile built, `sha256:…`. */
+	readonly dockerfileDigest?: string;
+	/** For an `image`, the reference pulled. */
+	readonly imageRef?: string;
 	readonly kernel: string;
 	readonly firecracker: string;
 }
@@ -1905,6 +1911,10 @@ export interface TemplateCacheKey {
 	/** `<templateId>@<version>`. */
 	readonly templateVersion: string;
 	readonly baseDigest: string;
+	/** A custom image's source: `dockerfile:sha256:…` (the Dockerfile's digest) or `image:<ref>`. Absent for `kantel-base`. */
+	readonly source?: string;
+	/** A custom image's digest: the one an `image` pins from the start, else the one its build made or resolved, recorded once the build answers. Absent for `kantel-base`. */
+	readonly imageDigest?: string;
 	readonly kernel: string;
 	readonly firecracker: string;
 	readonly vcpus: number;
@@ -1912,8 +1922,22 @@ export interface TemplateCacheKey {
 	readonly memoryMb: number;
 }
 
-/** What a template's machines boot. Only `kantel-base` for now: Kantel's base image, customised by the setup script, which runs in the VM behind the template's egress grants. Default: `kantel-base`. */
-export type TemplateImage = TemplateKantelBaseImage;
+/** Built in an isolated build microVM whose only way out is the sandbox egress proxy: its pulls, `RUN` steps and remote `ADD`s reach the template's egress grants and the registries the host's operator allows, and never a host, private or metadata address. */
+export interface TemplateDockerfileImage {
+	readonly kind: "dockerfile";
+	/** A Dockerfile, built with no build context. `ARG KANTEL_BASE` then `FROM $KANTEL_BASE` starts from the template's `base`; any other `FROM` image is pulled. */
+	readonly dockerfile: string;
+}
+
+/** What a template's machines boot: `kantel-base`, Kantel's base image customised by the setup script; a `dockerfile`; or an `image` reference. Custom images are built only on hosts that build them in a build microVM. Default: `kantel-base`. */
+export type TemplateImage = TemplateKantelBaseImage | TemplateDockerfileImage | TemplateImageRef;
+
+/** Pulled in an isolated build microVM, as a Dockerfile's images are. The template's `base` isn't used. An image that isn't one of Kantel's boots through the guest agent the host injects. */
+export interface TemplateImageRef {
+	readonly kind: "image";
+	/** An image reference, such as `python:3.13-slim` or `ghcr.io/acme/ci@sha256:…`. A tag is resolved when the template is built, and again on a rebuild. */
+	readonly ref: string;
+}
 
 /** The template's `base` itself, as its deployment publishes it; the setup script adds the rest. */
 export interface TemplateKantelBaseImage {
@@ -1970,7 +1994,7 @@ export type TemplateSnapshotState = "queued" | "building" | "ready" | "stale" | 
 
 /** A template version's definition, never changed once made. Answered with every default filled in. */
 export interface TemplateSpec {
-	/** What a template's machines boot. Only `kantel-base` for now: Kantel's base image, customised by the setup script, which runs in the VM behind the template's egress grants. Default: `kantel-base`. */
+	/** What a template's machines boot: `kantel-base`, Kantel's base image customised by the setup script; a `dockerfile`; or an `image` reference. Custom images are built only on hosts that build them in a build microVM. Default: `kantel-base`. */
 	readonly image?: TemplateImage;
 	/** The Kantel base image it boots: a channel the deployment publishes (`/v1/template-bases`), or a digest one published. Default: `kantel/sandbox`'s `stable` channel; until that channel publishes a digest, each host's own sandbox image. */
 	readonly base?: TemplateBase;

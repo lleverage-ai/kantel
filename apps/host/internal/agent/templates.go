@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
 	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
@@ -13,6 +14,9 @@ import (
 type templateTier interface {
 	// CanBuildTemplates says whether the tier can build templates' images now (Docker on the host, answering).
 	CanBuildTemplates(ctx context.Context) error
+	// CanBuildTemplateImages says whether it builds templates' custom images in a build microVM (templateBuilder on,
+	// and the guest agent injected). Facts report FeatureTemplateImageBuild while it does.
+	CanBuildTemplateImages() error
 	// TemplateBuildMachine is the machine a build boots; ErrInvalid for one beyond the tier's custom shapes' limits.
 	TemplateBuildMachine(p proto.TemplateBuildParams) (proto.Size, error)
 	// BuildTemplate builds one, admitted against the host's budget (ErrCapacity without room) and counted in
@@ -43,6 +47,38 @@ func (h *Host) canBuildTemplates(ctx context.Context) error {
 	return t.CanBuildTemplates(ctx)
 }
 
+// TemplateBuilderConfig is the host's templateBuilder setting.
+type TemplateBuilderConfig struct {
+	// Registries are host patterns a custom image's build may reach besides the template's grants: the registries an
+	// operator allows (`registry-1.docker.io`, `auth.docker.io`, `ghcr.io`) and the hosts their blobs redirect to
+	// (`production.cloudflare.docker.com`, `pkg-containers.githubusercontent.com`). Every connection still goes through
+	// the egress proxy, which refuses any address that isn't public.
+	Registries []string `json:"registries,omitempty"`
+}
+
+// templateBuilder is the microVM tier's builder setting: nil while it is off.
+func templateBuilder(c *TemplateBuilderConfig) *microvm.TemplateBuilderConfig {
+	if c == nil {
+		return nil
+	}
+	registries := []string{}
+	for _, r := range c.Registries {
+		if r = strings.TrimSpace(r); r != "" {
+			registries = append(registries, r)
+		}
+	}
+	return &microvm.TemplateBuilderConfig{Registries: registries}
+}
+
+// canBuildTemplateImages says whether the host builds templates' custom images in a build microVM now.
+func (h *Host) canBuildTemplateImages() error {
+	t, err := h.templateTier()
+	if err != nil {
+		return err
+	}
+	return t.CanBuildTemplateImages()
+}
+
 func (h *Host) templateTier() (templateTier, error) {
 	t, ok := h.tiers[microvm.Tier].(templateTier)
 	if !ok {
@@ -66,7 +102,12 @@ func (h *Host) templateCall(ctx context.Context, method string, params json.RawM
 		if err != nil {
 			return nil, err
 		}
-		if err := t.CanBuildTemplates(ctx); err != nil {
+		// A custom image is built in a build microVM, which runs its own Docker: the host's isn't needed, or used.
+		if p.Image != nil {
+			if err := t.CanBuildTemplateImages(); err != nil {
+				return nil, err
+			}
+		} else if err := t.CanBuildTemplates(ctx); err != nil {
 			return nil, err
 		}
 		if _, err := t.TemplateBuildMachine(p); err != nil {

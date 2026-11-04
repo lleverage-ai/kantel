@@ -1204,8 +1204,15 @@ export interface EnvironmentsSource {
 // ---------------------------------------------------------------------------------------------------------------------
 // Templates (experimental)
 
-/** What a template's machines boot: Kantel's base image, customised by the setup script. */
-export type TemplateImage = { readonly kind: "kantel-base" };
+/**
+ * What a template's machines boot: Kantel's base image, customised by the setup script; a Dockerfile (no build context,
+ * `FROM $KANTEL_BASE` for the base); or an image reference. A Dockerfile or reference is built or pulled in an isolated
+ * build microVM whose only way out is the template's egress grants, and only on hosts that build custom images.
+ */
+export type TemplateImage =
+	| { readonly kind: "kantel-base" }
+	| { readonly kind: "dockerfile"; readonly dockerfile: string }
+	| { readonly kind: "image"; readonly ref: string };
 
 /**
  * The Kantel base image it boots, as the deployment publishes it: a channel it follows (rebuilt when it publishes), or
@@ -1263,6 +1270,10 @@ export interface TemplateSnapshot {
 	readonly key: {
 		readonly templateVersion: string;
 		readonly baseDigest: string;
+		/** A custom image's source: `dockerfile:sha256:…` or `image:<ref>`. */
+		readonly source?: string;
+		/** A custom image's digest, once its build made or resolved it. */
+		readonly imageDigest?: string;
 		readonly kernel: string;
 		readonly firecracker: string;
 		readonly vcpus: number;
@@ -1276,6 +1287,10 @@ export interface TemplateSnapshot {
 		readonly baseDigest: string;
 		readonly pinned: boolean;
 		readonly imageDigest?: string;
+		/** The image's kind it was built from; absent, `kantel-base`. */
+		readonly source?: "kantel-base" | "dockerfile" | "image";
+		readonly dockerfileDigest?: string;
+		readonly imageRef?: string;
 	};
 	readonly startedAt: number;
 	readonly readyAt?: number;

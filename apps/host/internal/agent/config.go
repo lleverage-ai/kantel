@@ -79,6 +79,9 @@ type Config struct {
 	// ghcr.io/lleverage-ai (no default). Unset, the host makes templates only from SandboxImage, and refuses a template
 	// whose base is pinned to a digest.
 	TemplateRegistry string `json:"templateRegistry,omitempty"`
+	// TemplateBuilder switches on templates' custom images (a Dockerfile, or an image reference), built in a build
+	// microVM whose only network is the sandbox egress proxy (experimental; needs injectGuestAgent). Unset: off.
+	TemplateBuilder *TemplateBuilderConfig `json:"templateBuilder,omitempty"`
 	// UsageIntervalSeconds is how often the host samples its own and its sandboxes' CPU and memory and pushes them to
 	// the control plane (a "usage" event; default 5, below 0 never).
 	UsageIntervalSeconds int `json:"usageIntervalSeconds,omitempty"`

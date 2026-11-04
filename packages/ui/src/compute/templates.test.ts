@@ -9,6 +9,7 @@ import {
 	templateBasePicked,
 	templateDraft,
 	templateDraftProblems,
+	templateEditorChange,
 	templateEditorInput,
 	templateEnv,
 	templateVariableDraft,
@@ -19,6 +20,7 @@ import { buildPollMs } from "./template-view.ts";
 import {
 	baseText,
 	behindText,
+	builtFromText,
 	freshnessText,
 	imageText,
 	rebuildText,
@@ -282,14 +284,73 @@ describe("the template editor's base", () => {
 });
 
 describe("the sample templates' setup scripts", () => {
-	it("allow every host their scripts fetch from", () => {
+	it("allow every host their scripts and Dockerfiles fetch from", () => {
+		const kinds = new Set<string>();
 		for (const template of sampleTemplates(FIXTURE_NOW)) {
 			const { image, setup = "", grants } = template.spec;
-			expect(image, template.name).toEqual({ kind: "kantel-base" });
+			kinds.add(image.kind);
+			// A Dockerfile's RUN steps fetch behind the same grants, in the build microVM.
+			const fetches = `${setup}\n${image.kind === "dockerfile" ? image.dockerfile : ""}`;
 			const hosts = grants.map((grant) => grant.host);
-			for (const [, host] of setup.matchAll(/https:\/\/([^/\s]+)/g)) expect(hosts, template.name).toContain(host);
-			if (/\bapt-get\b/.test(setup)) expect(hosts, template.name).toContain("snapshot.ubuntu.com");
+			for (const [, host] of fetches.matchAll(/https:\/\/([^/\s]+)/g)) expect(hosts, template.name).toContain(host);
+			if (/\bapt-get\b/.test(fetches)) expect(hosts, template.name).toContain("snapshot.ubuntu.com");
 		}
+		expect([...kinds].sort()).toEqual(["dockerfile", "image", "kantel-base"]);
+	});
+});
+
+describe("a template's custom image", () => {
+	it("is read into the draft and saved back as the kind picked, the others' text kept but not sent", () => {
+		const ci = byName("ci-tools");
+		const draft = templateDraft(ci);
+		expect(draft).toMatchObject({ imageKind: "dockerfile", imageRef: "" });
+		expect(draft.dockerfile).toContain("FROM $KANTEL_BASE");
+		expect(templateEditorChange(ci, draft)).toEqual({});
+		const ref = { ...draft, imageKind: "image" as const, imageRef: " ghcr.io/acme/ci:1.8 " };
+		expect(templateEditorChange(ci, ref).spec?.image).toEqual({ kind: "image", ref: "ghcr.io/acme/ci:1.8" });
+		// Back to the Dockerfile: it is as it was, and nothing changed.
+		expect(templateEditorChange(ci, { ...ref, imageKind: "dockerfile" })).toEqual({});
+		const base = templateEditorChange(ci, { ...draft, imageKind: "kantel-base" });
+		expect(base.spec?.image).toEqual({ kind: "kantel-base" });
+		expect(templateDraft(byName("python-slim"))).toMatchObject({ imageKind: "image", imageRef: "python:3.13-slim" });
+	});
+
+	it("can't be saved blank, too long, or as a reference that isn't one", () => {
+		const draft = { ...templateDraft(), name: "custom" };
+		expect(templateDraftProblems({ ...draft, imageKind: "dockerfile", dockerfile: "  \n" }).ready).toBe(false);
+		const long = templateDraftProblems({ ...draft, imageKind: "dockerfile", dockerfile: "#".repeat(65_537) });
+		expect(long.ready).toBe(false);
+		expect(long.dockerfile).toContain("65,536");
+		expect(templateDraftProblems({ ...draft, imageKind: "dockerfile", dockerfile: "FROM alpine\n" }).ready).toBe(true);
+		expect(templateDraftProblems({ ...draft, imageKind: "image", imageRef: "" }).ready).toBe(false);
+		for (const bad of ["Python:3", "python:3 ; curl 169.254.169.254", "-v/:/host", `python@sha256:${"z".repeat(64)}`]) {
+			const problems = templateDraftProblems({ ...draft, imageKind: "image", imageRef: bad });
+			expect(problems.ready, bad).toBe(false);
+			expect(problems.imageRef, bad).toBeDefined();
+		}
+		for (const good of [
+			"python:3.13-slim",
+			"ghcr.io/acme/ci:1.8",
+			`registry.example.com:5000/a/b@sha256:${"0".repeat(64)}`,
+		]) {
+			expect(templateDraftProblems({ ...draft, imageKind: "image", imageRef: good }).ready, good).toBe(true);
+		}
+	});
+
+	it("says what it is and what a snapshot was built from", () => {
+		const ci = byName("ci-tools");
+		const slim = byName("python-slim");
+		expect(imageText(ci.spec)).toBe("Dockerfile on kantel/sandbox");
+		expect(imageText(slim.spec)).toBe("Image python:3.13-slim");
+		const ciReady = ci.build.ready as NonNullable<typeof ci.build.ready>;
+		expect(builtFromText(ciReady)).toMatch(/^Dockerfile [0-9a-f]{12}, built [0-9a-f]{12}$/);
+		expect(builtFromText(slim.build.ready as NonNullable<typeof slim.build.ready>)).toMatch(
+			/^python:3\.13-slim@[0-9a-f]{12}$/,
+		);
+		expect(ciReady.key.imageDigest).toBe(ciReady.builtFrom.imageDigest);
+		expect(builtFromText(byName("python-data").build.ready as NonNullable<Template["build"]["ready"]>)).toMatch(
+			/^kantel\/sandbox:stable@[0-9a-f]{12}$/,
+		);
 	});
 });
 

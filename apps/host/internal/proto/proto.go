@@ -175,6 +175,28 @@ const FeatureTemplateBuild = "template-build"
 // answers sandbox.mounts.refresh. Experimental: the control plane sends mounts only behind its switch.
 const FeatureBucketMounts = "mounts-bucket"
 
+// FeatureTemplateImageBuild: the host builds templates' custom images (a Dockerfile, or an image reference) in a build
+// microVM whose only network is the sandbox egress proxy, and boots them through Kantel's initramfs (the injected
+// guest agent). Reported only when its settings switch the builder on (templateBuilder) and it injects the agent. A
+// host without it is never sent a TemplateImage, in a build or a boot.
+const FeatureTemplateImageBuild = "template-image-build"
+
+// Template image kinds besides a Kantel base (the default, which has no TemplateImage).
+const (
+	TemplateImageDockerfile = "dockerfile"
+	TemplateImageRef        = "image"
+)
+
+// TemplateImage is a template's custom image: a Dockerfile built with no build context, or an image reference pulled,
+// in a build microVM. Scope names the build the image belongs to (the template, its version and its rebuild), so a
+// rebuild builds or pulls it again, and no other account's or template's build shares it.
+type TemplateImage struct {
+	Kind       string `json:"kind"`
+	Dockerfile string `json:"dockerfile,omitempty"`
+	Ref        string `json:"ref,omitempty"`
+	Scope      string `json:"scope"`
+}
+
 // Size is a sandbox shape.
 type Size struct {
 	Name      string `json:"name"`
@@ -554,6 +576,9 @@ type TemplateBoot struct {
 	// its channel has none published), the template is the host's own sandbox image.
 	BaseImage  string `json:"baseImage"`
 	BaseDigest string `json:"baseDigest,omitempty"`
+	// Image is the template's custom image (FeatureTemplateImageBuild); nil for a Kantel base. A fresh boot of one
+	// boots the root filesystem RootfsKey names, which a build on this host made; it is never built in a create.
+	Image *TemplateImage `json:"image,omitempty"`
 	// Setup is run as root in a sandbox that boots fresh (no Snapshot), once it has its identity.
 	Setup string `json:"setup,omitempty"`
 	// Snapshot is a template snapshot on this host (a template.build's Ref) to restore; empty: boot fresh. It is
@@ -572,12 +597,15 @@ type TemplateBoot struct {
 type TemplateBuildParams struct {
 	SnapshotID string `json:"snapshotId"`
 	// BaseImage and BaseDigest are the template's Kantel base, as TemplateBoot's.
-	BaseImage  string            `json:"baseImage"`
-	BaseDigest string            `json:"baseDigest,omitempty"`
-	Setup      string            `json:"setup,omitempty"`
-	Env        map[string]string `json:"env,omitempty"`
-	VCPUs      int               `json:"vcpus"`
-	MemoryMiB  int               `json:"memoryMiB"`
+	BaseImage  string `json:"baseImage"`
+	BaseDigest string `json:"baseDigest,omitempty"`
+	// Image is the template's custom image (FeatureTemplateImageBuild): built or pulled in a build microVM, under
+	// Egress with the operator's registries, then booted as the snapshot's root filesystem. Nil: the Kantel base.
+	Image     *TemplateImage    `json:"image,omitempty"`
+	Setup     string            `json:"setup,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
+	VCPUs     int               `json:"vcpus"`
+	MemoryMiB int               `json:"memoryMiB"`
 	// DiskGiB is the snapshot's disk: that of the named size with these vCPUs and memory, else the custom shape's
 	// (the control plane's diskFor), so a create of the same shape gets the same disk.
 	DiskGiB int    `json:"diskGiB"`
@@ -591,10 +619,19 @@ type TemplateBuildParams struct {
 // TemplateBuildResult is template.build's answer. Ref names the snapshot on this host (its ID).
 type TemplateBuildResult struct {
 	Ref string `json:"ref"`
-	// ImageDigest is the pulled base's image ID, as Docker answers it; empty for the host's own image.
-	ImageDigest string             `json:"imageDigest,omitempty"`
-	SizeBytes   int64              `json:"sizeBytes"`
-	Timings     map[string]float64 `json:"timings,omitempty"`
+	// ImageDigest is the pulled base's image ID, as Docker answers it; empty for the host's own image. For a custom
+	// image, the digest the build microVM reported: an image reference's resolved digest, a Dockerfile's built image ID.
+	ImageDigest string `json:"imageDigest,omitempty"`
+	// RootfsKey names a custom image's root filesystem on this host (images/templates/<key>.ext4), which a create's
+	// fresh boot of the template names (TemplateBoot.RootfsKey). Empty for a Kantel base.
+	RootfsKey string `json:"rootfsKey,omitempty"`
+	// Source is the custom image's kind, and DockerfileDigest (sha256: of the Dockerfile built) or ImageRef (the
+	// reference pulled) what it was: the build's provenance. Empty for a Kantel base.
+	Source           string             `json:"source,omitempty"`
+	DockerfileDigest string             `json:"dockerfileDigest,omitempty"`
+	ImageRef         string             `json:"imageRef,omitempty"`
+	SizeBytes        int64              `json:"sizeBytes"`
+	Timings          map[string]float64 `json:"timings,omitempty"`
 }
 
 // TemplateDeleteParams is template.delete: the template snapshot's directory goes; nothing else does.

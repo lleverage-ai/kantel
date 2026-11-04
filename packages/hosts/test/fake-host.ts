@@ -73,6 +73,8 @@ export class FakeHost {
 	createSource = "pool";
 	/** For a test: a call of a method it answers an error for fails with it. */
 	refuse?: (method: string) => { readonly code: string; readonly message: string } | undefined;
+	/** For a test: what a call of a method it answers a result for is answered, instead of the usual. */
+	answer?: (method: string) => unknown;
 	/** Facts it reports beyond the usual: its Firecracker and guest kernel, say. */
 	moreFacts: Partial<HostFacts> = {};
 
@@ -217,6 +219,8 @@ export class FakeHost {
 			this.mountStatus === undefined ? sandbox : { ...sandbox, mounts: this.mountStatus(params.mounts ?? []) };
 		const refused = this.refuse?.(message.method ?? "");
 		if (refused !== undefined) return fail(refused.code, refused.message);
+		const answered = this.answer?.(message.method ?? "");
+		if (answered !== undefined) return answer(answered);
 		switch (message.method) {
 			case "sandbox.create":
 			case "sandbox.fork": {

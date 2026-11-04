@@ -15278,7 +15278,32 @@
 					},
 					"imageDigest": {
 						"type": "string",
-						"description": "The digest of the image its host booted, as the host reported it."
+						"description": "The digest of the image its host booted, as the host reported it: for an `image`, the digest the reference resolved to; for a `dockerfile`, the built image's ID."
+					},
+					"source": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "kantel-base"
+							},
+							{
+								"type": "string",
+								"const": "dockerfile"
+							},
+							{
+								"type": "string",
+								"const": "image"
+							}
+						],
+						"description": "The template image's kind it was built from. Absent: `kantel-base`."
+					},
+					"dockerfileDigest": {
+						"type": "string",
+						"description": "For a `dockerfile`, the SHA-256 of the Dockerfile built, `sha256:…`."
+					},
+					"imageRef": {
+						"type": "string",
+						"description": "For an `image`, the reference pulled."
 					},
 					"kernel": {
 						"type": "string"
@@ -15301,6 +15326,14 @@
 					"baseDigest": {
 						"type": "string"
 					},
+					"source": {
+						"type": "string",
+						"description": "A custom image's source: `dockerfile:sha256:…` (the Dockerfile's digest) or `image:<ref>`. Absent for `kantel-base`."
+					},
+					"imageDigest": {
+						"type": "string",
+						"description": "A custom image's digest: the one an `image` pins from the start, else the one its build made or resolved, recorded once the build answers. Absent for `kantel-base`."
+					},
 					"kernel": {
 						"type": "string"
 					},
@@ -15318,14 +15351,57 @@
 				"title": "TemplateCacheKey",
 				"description": "What a template snapshot is for: a change to any part builds another. A create starts from it only when it gets the same vCPUs and memory."
 			},
+			"TemplateDockerfileImage": {
+				"type": "object",
+				"required": ["kind", "dockerfile"],
+				"properties": {
+					"kind": {
+						"type": "string",
+						"const": "dockerfile"
+					},
+					"dockerfile": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 65536,
+						"description": "A Dockerfile, built with no build context. `ARG KANTEL_BASE` then `FROM $KANTEL_BASE` starts from the template's `base`; any other `FROM` image is pulled."
+					}
+				},
+				"title": "TemplateDockerfileImage",
+				"description": "Built in an isolated build microVM whose only way out is the sandbox egress proxy: its pulls, `RUN` steps and remote `ADD`s reach the template's egress grants and the registries the host's operator allows, and never a host, private or metadata address."
+			},
 			"TemplateImage": {
 				"anyOf": [
 					{
 						"$ref": "#/components/schemas/TemplateKantelBaseImage"
+					},
+					{
+						"$ref": "#/components/schemas/TemplateDockerfileImage"
+					},
+					{
+						"$ref": "#/components/schemas/TemplateImageRef"
 					}
 				],
 				"title": "TemplateImage",
-				"description": "What a template's machines boot. Only `kantel-base` for now: Kantel's base image, customised by the setup script, which runs in the VM behind the template's egress grants. Default: `kantel-base`."
+				"description": "What a template's machines boot: `kantel-base`, Kantel's base image customised by the setup script; a `dockerfile`; or an `image` reference. Custom images are built only on hosts that build them in a build microVM. Default: `kantel-base`."
+			},
+			"TemplateImageRef": {
+				"type": "object",
+				"required": ["kind", "ref"],
+				"properties": {
+					"kind": {
+						"type": "string",
+						"const": "image"
+					},
+					"ref": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 512,
+						"pattern": "^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)*(?::[0-9]{1,5})?/)?[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?:/[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(?:@sha256:[0-9a-f]{64})?$",
+						"description": "An image reference, such as `python:3.13-slim` or `ghcr.io/acme/ci@sha256:…`. A tag is resolved when the template is built, and again on a rebuild."
+					}
+				},
+				"title": "TemplateImageRef",
+				"description": "Pulled in an isolated build microVM, as a Dockerfile's images are. The template's `base` isn't used. An image that isn't one of Kantel's boots through the guest agent the host injects."
 			},
 			"TemplateKantelBaseImage": {
 				"type": "object",

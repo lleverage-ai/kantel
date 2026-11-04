@@ -42,6 +42,8 @@ const setupTimeout = 30 * time.Minute
 type templateCache struct {
 	rootfs    *rootfsBuilder
 	snapshots keyedLocks
+	// runBuilder builds a custom image in a build microVM (bootBuilder; tests replace it).
+	runBuilder func(ctx context.Context, job builderJob) (builderOutput, error)
 }
 
 func newTemplateCache(root string, run runner, registry string) *templateCache {
@@ -51,6 +53,19 @@ func newTemplateCache(root string, run runner, registry string) *templateCache {
 // CanBuildTemplates says whether this host can build templates' images now: Docker installed and its daemon
 // answering. Restoring a built template, or booting one whose root filesystem is made, doesn't need it.
 func (m *Manager) CanBuildTemplates(ctx context.Context) error { return m.tpl.rootfs.ready(ctx) }
+
+// CanBuildTemplateImages says whether this host builds templates' custom images (a Dockerfile, an image reference): its
+// settings switch the builder on, and it boots images through Kantel's initramfs, which puts the guest agent into an
+// image that isn't Kantel's. The host's Docker isn't needed, or used: the build microVM runs its own.
+func (m *Manager) CanBuildTemplateImages() error {
+	if m.cfg.TemplateBuilder == nil {
+		return &proto.Error{Code: proto.ErrUnsupported, Message: "this host doesn't build templates' custom images: its settings don't switch templateBuilder on"}
+	}
+	if m.cfg.Initrd == "" {
+		return &proto.Error{Code: proto.ErrUnsupported, Message: "this host doesn't build templates' custom images: they boot through the injected guest agent (injectGuestAgent), which is off"}
+	}
+	return nil
+}
 
 // templateRootfs is a template's root filesystem and its image's ID: the host's own image (Config.Rootfs, which a boot
 // links as the version it resolves to then, pinRootfs) for a base with no digest, which the control plane sends only
@@ -65,19 +80,26 @@ func (m *Manager) templateRootfs(ctx context.Context, img templateImage) (string
 	return m.tpl.rootfs.rootfs(ctx, img)
 }
 
-// templateImageKind is what a template snapshot's builtFrom.image says it was made of: a Kantel base.
+// templateImageKind is what a template snapshot's builtFrom.image says it was made of: a Kantel base. A custom image's
+// is its kind (proto.TemplateImageDockerfile, proto.TemplateImageRef).
 const templateImageKind = "kantel-base"
 
-// templateBuiltFrom is what a template snapshot was made of.
+// templateBuiltFrom is what a template snapshot was made of: its provenance.
 type templateBuiltFrom struct {
-	// Image is templateImageKind.
+	// Image is templateImageKind, or a custom image's kind.
 	Image       string `json:"image"`
 	BaseImage   string `json:"baseImage,omitempty"`
 	BaseDigest  string `json:"baseDigest,omitempty"`
 	ImageDigest string `json:"imageDigest,omitempty"`
-	// RootfsKey names the pulled base's root filesystem; empty for the host's own image.
+	// RootfsKey names the pulled base's or custom image's root filesystem; empty for the host's own image.
 	RootfsKey string `json:"rootfsKey,omitempty"`
+	// DockerfileDigest (a Dockerfile's sha256:) or ImageRef (the reference pulled), for a custom image.
+	DockerfileDigest string `json:"dockerfileDigest,omitempty"`
+	ImageRef         string `json:"imageRef,omitempty"`
 }
+
+// custom says whether it was made of a custom image.
+func (b templateBuiltFrom) custom() bool { return b.Image != "" && b.Image != templateImageKind }
 
 // templateSnapshotMeta is a template snapshot's meta.json, written last: a directory without one isn't whole.
 type templateSnapshotMeta struct {
@@ -105,7 +127,12 @@ type templateSnapshotMeta struct {
 }
 
 func (k templateSnapshotMeta) result() proto.TemplateBuildResult {
-	return proto.TemplateBuildResult{Ref: k.SnapshotID, ImageDigest: k.BuiltFrom.ImageDigest, SizeBytes: k.SizeBytes, Timings: k.Timings}
+	res := proto.TemplateBuildResult{Ref: k.SnapshotID, ImageDigest: k.BuiltFrom.ImageDigest, SizeBytes: k.SizeBytes, Timings: k.Timings}
+	if k.BuiltFrom.custom() {
+		res.RootfsKey, res.Source = k.BuiltFrom.RootfsKey, k.BuiltFrom.Image
+		res.DockerfileDigest, res.ImageRef = k.BuiltFrom.DockerfileDigest, k.BuiltFrom.ImageRef
+	}
+	return res
 }
 
 func (m *Manager) templateSnapshotDir(id string) string {
@@ -195,6 +222,14 @@ func (m *Manager) BuildTemplate(ctx context.Context, p proto.TemplateBuildParams
 	if err := img.validate(); err != nil {
 		return proto.TemplateBuildResult{}, err
 	}
+	if p.Image != nil {
+		if err := m.CanBuildTemplateImages(); err != nil {
+			return proto.TemplateBuildResult{}, err
+		}
+		if err := validateTemplateImage(p.Image); err != nil {
+			return proto.TemplateBuildResult{}, err
+		}
+	}
 	defer m.tpl.snapshots.lock(p.SnapshotID)()
 	dir := m.templateSnapshotDir(p.SnapshotID)
 	if kept, err := m.readTemplateSnapshot(p.SnapshotID); err == nil && kept.KeyHash == p.KeyHash {
@@ -214,11 +249,34 @@ func (m *Manager) BuildTemplate(ctx context.Context, p proto.TemplateBuildParams
 	}
 	t := timings{}
 	start := time.Now()
-	rootfs, imageDigest, err := m.templateRootfs(ctx, img)
-	if err != nil {
-		return proto.TemplateBuildResult{}, err
+	builtFrom := templateBuiltFrom{Image: templateImageKind, BaseImage: p.BaseImage, BaseDigest: p.BaseDigest}
+	var rootfs, imageDigest string
+	if p.Image != nil {
+		// Built or pulled in a build microVM, under the template's egress with the operator's registries: never on the
+		// host's Docker.
+		var key string
+		rootfs, imageDigest, key, err = m.customRootfs(ctx, p.SnapshotID, p.Owner, p.Image, img, size, p.Egress, p.Env)
+		if err != nil {
+			return proto.TemplateBuildResult{}, err
+		}
+		builtFrom.Image, builtFrom.RootfsKey = p.Image.Kind, key
+		if p.Image.Kind == proto.TemplateImageDockerfile {
+			builtFrom.DockerfileDigest = dockerfileDigest(p.Image.Dockerfile)
+		} else {
+			builtFrom.ImageRef = p.Image.Ref
+		}
+		t.step("image", &start)
+	} else {
+		rootfs, imageDigest, err = m.templateRootfs(ctx, img)
+		if err != nil {
+			return proto.TemplateBuildResult{}, err
+		}
+		if img.BaseDigest != "" {
+			builtFrom.RootfsKey = img.key()
+		}
+		t.step("rootfs", &start)
 	}
-	t.step("rootfs", &start)
+	builtFrom.ImageDigest = imageDigest
 	// The build is a sandbox to the egress proxy while its setup runs, named after the snapshot, with the template's
 	// grants; it has no network once the setup is done.
 	build := &sandbox{meta: meta{ID: p.SnapshotID, Env: p.Env, Egress: p.Egress, Owner: p.Owner}}
@@ -243,13 +301,9 @@ func (m *Manager) BuildTemplate(ctx context.Context, p proto.TemplateBuildParams
 	for k, v := range booted {
 		t["boot."+k] = v
 	}
-	rootfsKey := ""
-	if img.BaseDigest != "" {
-		rootfsKey = img.key()
-	}
 	kept := templateSnapshotMeta{
 		SnapshotID: p.SnapshotID, KeyHash: p.KeyHash, Rootfs: booting, Runtime: m.runtimeFingerprint(booting),
-		BuiltFrom: templateBuiltFrom{Image: templateImageKind, BaseImage: p.BaseImage, BaseDigest: p.BaseDigest, ImageDigest: imageDigest, RootfsKey: rootfsKey},
+		BuiltFrom: builtFrom,
 		VCPUs:     size.VCPUs, MemoryMiB: size.MemoryMiB, DiskGiB: size.DiskGiB, CreatedAt: time.Now().UnixMilli(), Timings: t,
 		Guest: caps,
 	}
@@ -294,6 +348,24 @@ func (m *Manager) templateOrigin(ctx context.Context, t proto.TemplateBoot, size
 	tt := timings{}
 	start := time.Now()
 	rootfs := ""
+	if t.Image != nil {
+		// A custom image boots only the root filesystem a build on this host made: a create never builds one.
+		if err := m.CanBuildTemplateImages(); err != nil {
+			return sandboxOrigin{}, err
+		}
+		if err := validateTemplateImage(t.Image); err != nil {
+			return sandboxOrigin{}, err
+		}
+		var path string
+		ok := false
+		if validKey(t.RootfsKey) {
+			path, _, ok = m.tpl.rootfs.cached(t.RootfsKey)
+		}
+		if !ok {
+			return sandboxOrigin{}, &proto.Error{Code: proto.ErrNotFound, Message: "the template's image isn't built on this host"}
+		}
+		return sandboxOrigin{rootfs: path, setup: t.Setup, source: "boot", timings: tt, askGuest: true, unhold: m.holdBases()}, nil
+	}
 	if t.RootfsKey != "" {
 		if !validKey(t.RootfsKey) {
 			return sandboxOrigin{}, &proto.Error{Code: proto.ErrInvalid, Message: "bad template root filesystem key"}

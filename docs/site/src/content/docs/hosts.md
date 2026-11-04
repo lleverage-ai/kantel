@@ -309,6 +309,7 @@ Uninstalling doesn't tell the control plane, so revoke the host as well.
 | `tiers` | what the machine can run | `["microvm"]`, `["isolate"]` or both |
 | `overcommitMemory` | `1.5` | How much more memory running sandboxes may be given than the host has, as a ratio. Restored sandboxes share their template's unchanged memory |
 | `templateRegistry` | none | The registry the host pulls templates' base images from, by digest, such as `ghcr.io/lleverage-ai`. Without it, the host makes templates only from its own sandbox image, and refuses a template whose base is a published digest. Templates are experimental (`KANTEL_TEMPLATES`) |
+| `templateBuilder` | off | Builds templates' custom images (a Dockerfile, or an image reference) in a build microVM whose only network is the egress proxy, never with the host's Docker. `{ "registries": ["registry-1.docker.io", "auth.docker.io", "production.cloudflare.docker.com"] }` names the registries, and the hosts their blobs redirect to, a build may reach besides the template's grants. Needs `injectGuestAgent`. See [Custom images](/sandboxes/custom-images/#a-templates-custom-image). Experimental |
 | `autoUpdate` | `true` | Whether the control plane may move the host to another version |
 | `usageIntervalSeconds` | `5` | How often the host sends its and its sandboxes' usage, up to `300`. Below `0`, never |
 | `microvm.sharedTemplate` | `true` | One template snapshot per vCPU count, serving every memory and disk, rather than one per size (see above) |
