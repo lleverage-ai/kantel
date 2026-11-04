@@ -1,7 +1,7 @@
 // Package fc runs Firecracker microVMs through Firecracker's REST API on its Unix socket.
 //
 // We call the API directly rather than through firecracker-go-sdk: the SDK's last release (v1.0.0, 2022) predates the
-// snapshot API this host relies on (`mem_backend`, `network_overrides`, `vsock_override`, `clock_realtime`).
+// snapshot API this host relies on (`mem_backend`, `network_overrides`, `vsock_override`).
 //
 // Every VM runs with its own directory as the working directory, and its drives and vsock socket are given by
 // relative paths (rootfs.ext4, disk.ext4, v.sock). A snapshot records those relative paths, so any number of clones
@@ -263,12 +263,19 @@ func (m *Machine) Snapshot(ctx context.Context, statePath, memPath string) error
 }
 
 // Load restores a snapshot into this (fresh) process and resumes it. tap replaces the snapshot's eth0 device.
+//
+// kvmclock resumes where it was when the snapshot was taken (clock_realtime off). Advancing it by the time since
+// (clock_realtime) moves only the guest's scheduler clock, which reads kvmclock, and not its time of day, which reads
+// the TSC: the scheduler then charges the whole gap to the task each vCPU was running when the snapshot was taken,
+// which waits behind every other task until it has caught up. On a 1-vCPU template that task is a kworker, and the
+// guest agent answered 4-20 s late, or not within a restore's wait (TASK-5137). The guest's time of day is set by its
+// agent instead, from the identity every restore sends (microvm and isolate alike).
 func (m *Machine) Load(ctx context.Context, statePath, memPath, tap string) error {
 	body := map[string]any{
 		"snapshot_path":     statePath,
 		"mem_backend":       map[string]string{"backend_type": "File", "backend_path": memPath},
 		"resume_vm":         true,
-		"clock_realtime":    true,
+		"clock_realtime":    false,
 		"vsock_override":    map[string]string{"uds_path": VsockSocket},
 		"track_dirty_pages": false,
 	}
