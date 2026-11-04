@@ -14,6 +14,12 @@ describe("a new tab's query", () => {
 		expect(tabQueryOf("?hosting=self-hosted", undefined)).toBe("hosting=self-hosted");
 	});
 
+	it("takes what the address asks for over what this tab kept, as the app does when it starts", () => {
+		const kept = session({ [SOURCE_KEY]: "api", [HOSTING_KEY]: "hosted" });
+		expect(tabQueryOf("?hosting=self-hosted&source=recorded", kept)).toBe("source=recorded&hosting=self-hosted");
+		expect(tabQueryOf("?hosting=other", kept)).toBe("source=api&hosting=hosted");
+	});
+
 	it("ignores what it doesn't know, and storage that can't be read", () => {
 		expect(tabQueryOf("?data=other", session({ [SOURCE_KEY]: "x", [HOSTING_KEY]: "y" }))).toBe("");
 		const blocked = {

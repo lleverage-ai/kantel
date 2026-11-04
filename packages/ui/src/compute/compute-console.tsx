@@ -160,13 +160,14 @@ export function sandboxPath(base: string, sandboxId: string, view: SandboxView =
 }
 
 /**
- * The query of a screen's page, which opens in a new tab: this address's (`?theme`, `?hosting`), without a file
- * browser's place, and `tabQuery`'s where it has none of its own, so the tab shows the same data as this one.
+ * The query of a screen's page, which opens in a new tab: `tabQuery`, what this tab runs on (its source and hosting,
+ * as the app chose them when it started), and this address's `?theme`. Nothing of this page's own (`?new`, a file
+ * browser's place, Egress's tab) goes with it.
  */
 export function screenSearch(search: string, tabQuery = ""): string {
-	const params = new URLSearchParams(search);
-	for (const name of FILES_PARAMS) params.delete(name);
-	for (const [name, value] of new URLSearchParams(tabQuery)) if (!params.has(name)) params.set(name, value);
+	const params = new URLSearchParams(tabQuery);
+	const theme = new URLSearchParams(search).get("theme");
+	if (theme !== null) params.set("theme", theme);
 	const query = params.toString();
 	return query === "" ? "" : `?${query}`;
 }

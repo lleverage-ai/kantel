@@ -17,8 +17,9 @@ export function safeSession(): Pick<Storage, "getItem"> | undefined {
 }
 
 /**
- * The query for a new tab: the source and hosting this tab keeps in `session`, the hosting `search` asks for when it
- * keeps none, and the sample data `?data=` asked for. Empty when this tab shows the defaults.
+ * The query for a new tab: the source and hosting this tab runs on, as main.tsx and `hostingMode` choose them (what
+ * `search` asks for first, then what this tab keeps in `session`), and the sample data `?data=` asked for. Empty when
+ * this tab shows the defaults. It's read as the app starts, before `hostingMode` has stored what the address asked.
  */
 export function tabQueryOf(search: string, session: Pick<Storage, "getItem"> | undefined): string {
 	const asked = new URLSearchParams(search);
@@ -30,10 +31,13 @@ export function tabQueryOf(search: string, session: Pick<Storage, "getItem"> | u
 		}
 	};
 	const params = new URLSearchParams();
-	const source = kept(SOURCE_KEY);
-	if (source === "api" || source === "recorded") params.set("source", source);
-	const hosting = kept(HOSTING_KEY) ?? asked.get("hosting");
-	if (hosting === "hosted" || hosting === "self-hosted") params.set("hosting", hosting);
+	const pick = (name: string, key: string, known: readonly string[]): void => {
+		const inAddress = asked.get(name);
+		const value = inAddress !== null && known.includes(inAddress) ? inAddress : kept(key);
+		if (value !== undefined && known.includes(value)) params.set(name, value);
+	};
+	pick("source", SOURCE_KEY, ["api", "recorded"]);
+	pick("hosting", HOSTING_KEY, ["hosted", "self-hosted"]);
 	const data = asked.get("data");
 	if (data === "sample" || data === "empty") params.set("data", data);
 	return params.toString();

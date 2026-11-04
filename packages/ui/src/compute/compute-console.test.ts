@@ -11,13 +11,13 @@ import {
 } from "./compute-console.tsx";
 
 describe("a screen's page in a new tab", () => {
-	it("keeps this address's query, without a file browser's place, and adds what the new tab needs", () => {
+	it("carries what this tab runs on and the address's theme, and nothing of the page's own", () => {
 		expect(screenSearch("")).toBe("");
-		expect(screenSearch("?theme=dark&path=/home/user&file=a.md", "source=recorded")).toBe(
-			"?theme=dark&source=recorded",
+		expect(screenSearch("?theme=dark&path=/home/user&file=a.md&new", "source=recorded")).toBe(
+			"?source=recorded&theme=dark",
 		);
-		// The address's own wins over the tab's.
-		expect(screenSearch("?hosting=hosted", "hosting=self-hosted&data=sample")).toBe("?hosting=hosted&data=sample");
+		// What the tab runs on, not what the address says now: it was chosen once, when the app started.
+		expect(screenSearch("?hosting=hosted", "hosting=self-hosted&data=sample")).toBe("?hosting=self-hosted&data=sample");
 	});
 });
 
