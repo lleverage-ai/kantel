@@ -4,7 +4,7 @@
 import type { PortSink, PortStream } from "@kantel/hosts/hub";
 import { createPortRouter } from "@kantel/hosts/ports";
 import { createMemoryRelayStore } from "@kantel/hosts/relay-store";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPortServing } from "../src/port-serving.ts";
 
 const DOMAIN = "kantel.run";
@@ -31,8 +31,34 @@ async function exposed(serve: (request: string, sink: PortSink) => void) {
 	};
 	const router = createPortRouter({ domain: DOMAIN, openPort, store: createMemoryRelayStore() });
 	const { url } = await router.expose("sbx_1", 3000, { public: true, subdomain: "brave-otter-ab12cd" });
-	return { router, url, closed, opened: () => opened };
+	const gated = await router.expose("sbx_1", 4000, { public: false, subdomain: "brave-otter-ab12cd" });
+	return { router, url, gatedUrl: gated.url, closed, opened: () => opened };
 }
+
+/** A body that counts how often it is read from and whether it was cancelled, and sends `first` then waits. */
+function watchedBody(first: string) {
+	const seen = { pulls: 0, cancelled: false };
+	let sent = false;
+	const body = new ReadableStream<Uint8Array>(
+		{
+			pull(controller) {
+				seen.pulls += 1;
+				if (!sent) controller.enqueue(encoder.encode(first));
+				sent = true;
+				return new Promise(() => undefined);
+			},
+			cancel() {
+				seen.cancelled = true;
+			},
+		},
+		{ highWaterMark: 0 },
+	);
+	return { body, seen };
+}
+
+afterEach(() => {
+	vi.useRealTimers();
+});
 
 const head = (length: number, extra = "") => `HTTP/1.1 200 OK\r\nContent-Length: ${length}\r\n${extra}\r\n`;
 
@@ -114,6 +140,73 @@ describe("exposed ports in the stack object", () => {
 		expect((await serve(post(url, "d"))).status).toBe(200);
 		second.finish();
 		expect((await answers[1])?.status).toBe(200);
+	});
+
+	it("reads no body of a request the router refuses, and takes no upload place for it", async () => {
+		const { router, gatedUrl } = await exposed((_request, sink) => {
+			sink.data(encoder.encode(`${head(2)}ok`));
+			sink.end("done");
+		});
+		const serve = createPortServing(router, { uploads: 1 });
+		const nobody = watchedBody("x");
+		expect((await serve(post("https://3000-nobody.kantel.run/", nobody.body))).status).toBe(404);
+		const wrong = watchedBody("x");
+		const bare = new URL(gatedUrl);
+		bare.searchParams.set("_token", "A".repeat(43));
+		expect((await serve(post(bare.href, wrong.body))).status).toBe(401);
+		for (const refused of [nobody, wrong]) {
+			expect(refused.seen.pulls).toBe(0);
+			expect(refused.seen.cancelled).toBe(true);
+		}
+		const url = gatedUrl.replace("4000-", "3000-").replace(/\?.*$/, "");
+		expect((await serve(post(url, "fine"))).status).toBe(200);
+	});
+
+	it("frees an upload's place when it fails, and holds one past the answer timeout until its read is cancelled", async () => {
+		const { router, url, opened } = await exposed((_request, sink) => {
+			sink.data(encoder.encode(`${head(2)}ok`));
+			sink.end("done");
+		});
+		const serve = createPortServing(router, { uploads: 1, bodyLimit: 8 });
+		expect((await serve(post(url, "far too long for it"))).status).toBe(413);
+		expect((await serve(post(url, "fits"))).status).toBe(200);
+
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		const held = watchedBody("half");
+		const answer = serve(post(url, held.body));
+		await vi.advanceTimersByTimeAsync(10);
+		expect(held.seen.pulls).toBeGreaterThan(0);
+		// Its place is held while it is read: another upload waits its turn.
+		expect((await serve(post(url, "busy"))).status).toBe(503);
+		await vi.advanceTimersByTimeAsync(30_000);
+		expect((await answer).status).toBe(504);
+		expect(held.seen.cancelled).toBe(true);
+		// Nothing of it (nor of the 413 or the 503) reached the sandbox: only "fits" did. And its place is free again.
+		expect(opened()).toBe(1);
+		vi.useRealTimers();
+		expect((await serve(post(url, "next"))).status).toBe(200);
+	});
+
+	it("fails an answer whose trailers never end, and closes its host stream; split trailers still complete", async () => {
+		let stage = 0;
+		const { router, url, closed } = await exposed((_request, sink) => {
+			stage += 1;
+			sink.data(encoder.encode("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n"));
+			if (stage === 1) {
+				sink.data(encoder.encode("X-Check: a"));
+				sink.data(encoder.encode("bc\r\n\r\n"));
+				sink.end("done");
+				return;
+			}
+			for (let i = 0; i < 40; i++) sink.data(encoder.encode("x".repeat(1024)));
+		});
+		const serve = createPortServing(router);
+		const whole = await serve(new Request(url));
+		expect(await whole.text()).toBe("hello");
+		expect(whole.headers.get("x-check")).toBeNull();
+		const endless = await serve(new Request(url));
+		await expect(endless.text()).rejects.toThrow(/trailers are too big/);
+		expect(closed).toContain(2);
 	});
 
 	it("cuts off an answer its client has fallen too far behind, and closes its host stream", async () => {

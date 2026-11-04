@@ -78,6 +78,31 @@ describe("deploy config", () => {
 		}
 	});
 
+	it("refuses an Access hostname under the ports domain, set or the default, and keeps one beside it", () => {
+		for (const mode of ["deploy", "dry-run"] as const) {
+			const refused: Record<string, string>[] = [
+				{ KANTEL_HOSTNAME: "harbour.myslop.app", KANTEL_COMPUTE_PORTS_DOMAIN: "myslop.app" },
+				{ KANTEL_HOSTNAME: "Console.Ports.Example.com", KANTEL_COMPUTE_PORTS_DOMAIN: "ports.example.com" },
+				{ KANTEL_HOSTNAME: "ports.example.com", KANTEL_COMPUTE_PORTS_DOMAIN: "ports.example.com" },
+				// Unset, the Worker's ports domain is kantel.run.
+				{ KANTEL_HOSTNAME: "console.kantel.run" },
+			];
+			for (const env of refused) {
+				expect(() => deployValues({ ...configured, ...env }, mode), JSON.stringify(env)).toThrow(
+					/KANTEL_HOSTNAME can't be the ports domain/,
+				);
+			}
+			const kept: Record<string, string>[] = [
+				{ KANTEL_HOSTNAME: "harbour.myslop.app" },
+				{ KANTEL_HOSTNAME: "harbour.myslop.app", KANTEL_COMPUTE_PORTS_DOMAIN: "kantel.run" },
+				{ KANTEL_HOSTNAME: "console.example.com", KANTEL_COMPUTE_PORTS_DOMAIN: "ports.example.com" },
+			];
+			for (const env of kept) {
+				expect(deployValues({ ...configured, ...env }, mode).hostname, JSON.stringify(env)).toBe(env.KANTEL_HOSTNAME);
+			}
+		}
+	});
+
 	it("adds the account, zone route, Access vars and the models VPC service to wrangler.jsonc", () => {
 		const config = deployConfig(rawConfig, deployValues(configured, "deploy"));
 		expect(config).toMatchObject({

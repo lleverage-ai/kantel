@@ -6,7 +6,8 @@
  *
  * - **Uploads.** The router's proxy reads a request's whole body before sending it on (`proxyHttp`), so a body is at
  *   most `PORT_BODY_LIMIT` (413 past it, declared or counted), and at most `PORT_UPLOADS` are read at once (503, with
- *   `Retry-After`, past that).
+ *   `Retry-After`, past that). A body is read only once the router has let the request in, and its place is held until
+ *   its reading has ended and the proxy has sent it or given up (a timed-out proxy cancels it and sends nothing).
  * - **Answers.** Host frames arrive as fast as the sandbox sends them, with no backpressure to the host, and the proxy
  *   queues them for the client. They are taken off that queue as they come and held here, counted: once a client has
  *   fallen `PORT_ANSWER_QUEUE_LIMIT` bytes behind, or all answers together `PORT_ANSWER_QUEUE_BUDGET`, that answer is
@@ -54,7 +55,17 @@ export function createPortServing(
 		budget: limits.answerQueueBudget ?? PORT_ANSWER_QUEUE_BUDGET,
 		queued: 0,
 	};
-	let uploads = 0;
+	const slots = {
+		taken: 0,
+		take: () => {
+			if (slots.taken >= maxUploads) return false;
+			slots.taken += 1;
+			return true;
+		},
+		release: () => {
+			slots.taken -= 1;
+		},
+	};
 
 	return async (request) => {
 		if (request.headers.get("upgrade")?.toLowerCase() === "websocket") {
@@ -67,22 +78,18 @@ export function createPortServing(
 				await request.body?.cancel().catch(() => undefined);
 				return text(413, "The request body is too big");
 			}
-			if (uploads >= maxUploads) {
-				await request.body?.cancel().catch(() => undefined);
-				return text(503, "Too many uploads to exposed ports at once; try again shortly.", { "retry-after": "1" });
-			}
-			uploads += 1;
 		}
 		const address = request.headers.get("cf-connecting-ip");
+		const body = upload ? gatedBody(request, bodyLimit, slots) : undefined;
 		let answer: Response | undefined;
 		try {
-			// The body is read in full before the answer's head can come (`proxyHttp`), so its place is free after.
-			answer = await ports.fetch(
-				upload ? withBodyLimit(request, bodyLimit) : request,
-				address === null ? undefined : { address },
-			);
+			answer = await ports.fetch(body?.request ?? request, address === null ? undefined : { address });
 		} finally {
-			if (upload) uploads -= 1;
+			// Answered or given up on: a body still unread is cancelled, and its place is free once its reading has ended.
+			body?.settled();
+		}
+		if (body?.refused()) {
+			return text(503, "Too many uploads to exposed ports at once; try again shortly.", { "retry-after": "1" });
 		}
 		if (answer === undefined) return text(404, "No sandbox port is exposed here.");
 		const encoded = answer.headers.has("content-encoding");
@@ -97,26 +104,92 @@ export function createPortServing(
 	};
 }
 
-/** The request with its body counted as it is read: past `limit`, reading it fails with a 413 the router answers. */
-function withBodyLimit(request: Request, limit: number): Request {
+/**
+ * The request with a body read only as the router's proxy asks for it, so nothing is read for a request the router
+ * refuses first (a name nobody exposed, a wrong token). Its first read takes one of `slots` (refused, with a 503, when
+ * none is free), every read is counted against `limit` (past it, a 413), and the place is held until both the body's
+ * reading has ended (read to the end, failed, or cancelled) and the request is `settled`: the proxy holds what it
+ * read until it has sent it or given up. `settled` cancels a body still unread.
+ */
+function gatedBody(
+	request: Request,
+	limit: number,
+	slots: { take(): boolean; release(): void },
+): { request: Request; settled(): void; refused(): boolean } {
+	const source = (request.body as ReadableStream<Uint8Array>).getReader();
 	let size = 0;
-	const counted = (request.body as ReadableStream<Uint8Array>).pipeThrough(
-		new TransformStream<Uint8Array, Uint8Array>({
-			transform(chunk, controller) {
-				size += chunk.byteLength;
-				if (size > limit) controller.error(new PortHttpError(413, "The request body is too big"));
-				else controller.enqueue(chunk);
+	let holding = false;
+	let refused = false;
+	let read = false;
+	let answered = false;
+	const release = () => {
+		if (holding && read && answered) {
+			holding = false;
+			slots.release();
+		}
+	};
+	const ended = (cancel: boolean) => {
+		if (read) return;
+		read = true;
+		if (cancel) void source.cancel().catch(() => undefined);
+		release();
+	};
+	const body = new ReadableStream<Uint8Array>(
+		{
+			async pull(controller) {
+				if (!holding) {
+					if (!slots.take()) {
+						refused = true;
+						ended(true);
+						return controller.error(new PortHttpError(503, "Too many uploads to exposed ports at once"));
+					}
+					holding = true;
+				}
+				let chunk: ReadableStreamReadResult<Uint8Array>;
+				try {
+					chunk = await source.read();
+				} catch (error) {
+					ended(false);
+					return controller.error(error);
+				}
+				if (chunk.done) {
+					ended(false);
+					try {
+						controller.close();
+					} catch {
+						// Cancelled while it read.
+					}
+					return;
+				}
+				size += chunk.value.byteLength;
+				if (size > limit) {
+					ended(true);
+					return controller.error(new PortHttpError(413, "The request body is too big"));
+				}
+				controller.enqueue(chunk.value);
 			},
-		}),
+			cancel() {
+				ended(true);
+			},
+		},
+		{ highWaterMark: 0 },
 	);
 	const init: RequestInit & { duplex: "half" } = {
 		method: request.method,
 		headers: request.headers,
-		body: counted,
+		body,
 		redirect: "manual",
 		duplex: "half",
 	};
-	return new Request(request.url, init);
+	return {
+		request: new Request(request.url, init),
+		settled() {
+			answered = true;
+			ended(true);
+			release();
+		},
+		refused: () => refused,
+	};
 }
 
 /**

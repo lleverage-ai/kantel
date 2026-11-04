@@ -35,6 +35,7 @@ import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
+import { isPortName, portsDomainOf } from "../src/config.ts";
 import { VAULT_SECRETS } from "./vault-secrets.ts";
 
 export const DEPLOY_VARIABLES = [
@@ -370,6 +371,13 @@ export function deployValues(env: Readonly<Record<string, string | undefined>>, 
 		new URL(publicUrl).hostname.toLowerCase() === (env.KANTEL_HOSTNAME ?? "").trim().toLowerCase()
 	) {
 		invalid.push("KANTEL_PUBLIC_URL must be another hostname than KANTEL_HOSTNAME, which Access guards");
+	}
+	// Every name under the ports domain is a port's (`src/route.ts`, before anything else): the Access hostname under it
+	// would serve no console, API or health check. The domain is the Worker's own default when the variable isn't set.
+	const accessHost = (env.KANTEL_HOSTNAME ?? "").trim().toLowerCase().replace(/\.$/, "");
+	const ports = portsDomainOf({ KANTEL_COMPUTE_PORTS_DOMAIN: optional("KANTEL_COMPUTE_PORTS_DOMAIN") });
+	if (accessHost !== "" && (accessHost === ports || isPortName(accessHost, ports))) {
+		invalid.push(`KANTEL_HOSTNAME can't be the ports domain (${ports}) or a name under it`);
 	}
 	if (accountHostsSwitch === "experimental" && publicUrl === undefined) {
 		invalid.push("KANTEL_ACCOUNT_HOSTS needs KANTEL_PUBLIC_URL: the origin hosts dial, with no Access in front");
