@@ -507,6 +507,7 @@ function RoleControl({
 			triggerClassName="kt-focusable inline-flex cursor-pointer items-center gap-1 rounded-control border-0 bg-transparent px-1.5 py-1 [font-family:inherit] text-sm text-muted hover:bg-hover hover:text-fg aria-expanded:bg-hover"
 			trigger={
 				<>
+					<span className="kt-sr-only">{member.name}'s role: </span>
 					{label}
 					<ChevronDownIcon size="sm" />
 				</>
