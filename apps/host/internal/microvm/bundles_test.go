@@ -240,6 +240,78 @@ head -c $(wc -c < "$5") /dev/zero > "$4"
 	}
 }
 
+// TestAnAdoptedSandboxsPendingBundleIsReservedBeforeItsWait: after a host restart, adopt() finds a running sandbox
+// whose bundle mount is still pending and has finishBundles build it, with no reservation from a create. The finish
+// reserves the image before it waits, so a full cache of images in use doesn't evict it as it is built (one build).
+func TestAnAdoptedSandboxsPendingBundleIsReservedBeforeItsWait(t *testing.T) {
+	dir := t.TempDir()
+	count := filepath.Join(dir, "builds")
+	mkfs := filepath.Join(dir, "mkfs.erofs")
+	script := fmt.Sprintf(`#!/bin/sh
+case "$1" in --help) echo "--tar"; exit 0;; -V) echo "mkfs.erofs (fake)"; exit 0;; esac
+echo x >> %q
+sleep 0.3
+head -c $(wc -c < "$5") /dev/zero > "$4"
+`, count)
+	if err := os.WriteFile(mkfs, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cache, err := bundles.New(bundles.Config{Dir: filepath.Join(dir, "cache"), MaxBytes: 12 << 10, Mkfs: mkfs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tars := map[string][]byte{}
+	bundle := func(size int) string {
+		raw := []byte(strings.Repeat("a", size))
+		sum := sha256.Sum256(raw)
+		d := "sha256:" + hex.EncodeToString(sum[:])
+		tars[d] = raw
+		return d
+	}
+	pinned, fresh := bundle(11<<10), bundle(9<<10)
+	m := &Manager{cfg: Config{Bundles: cache, BundleDrives: 2, FetchBundle: func(_ context.Context, _, digest string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(string(tars[digest]))), nil
+	}}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	builds := func() int {
+		raw, _ := os.ReadFile(count)
+		return strings.Count(string(raw), "x")
+	}
+	if _, _, err := cache.Link(context.Background(), pinned, filepath.Join(dir, "other-drive"), m.fetchFor("sbx_other")); err != nil {
+		t.Fatal(err)
+	}
+
+	// As adopt() leaves it: running, its mount pending, nothing reserved.
+	s := &sandbox{meta: meta{ID: "sbx_adopted", State: proto.StateRunning,
+		Mounts:      []proto.Mount{{Path: "/workspace/skills", Kind: proto.MountBundle, Digest: fresh}},
+		MountStatus: []proto.MountStatus{{Path: "/workspace/skills", Kind: proto.MountBundle, State: proto.MountPending}}}}
+	m.finishBundles(s)
+	waitFor := func(what string, ok func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for !ok() {
+			if time.Now().After(deadline) {
+				t.Fatal(what)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	waitFor("reserved before its wait", func() bool { return cache.Reserved(fresh) })
+	// Held here, the finish can't attach (or give up) once the build is done: the image must survive the build's trim.
+	s.mu.Lock()
+	waitFor("built", func() bool { return builds() == 2 && cache.Has(fresh) })
+	cache.Evict()
+	if !cache.Has(fresh) || !cache.Has(pinned) || builds() != 2 {
+		t.Fatalf("kept, built once: has=%v pinned=%v builds=%d", cache.Has(fresh), cache.Has(pinned), builds())
+	}
+	s.mu.Unlock()
+	// It has no machine (this test has none), so the finish gives it up, and it can be reclaimed.
+	waitFor("released", func() bool { return !cache.Reserved(fresh) })
+	cache.Evict()
+	if cache.Has(fresh) || !cache.Has(pinned) || builds() != 2 {
+		t.Fatalf("given up: reclaimed, no rebuild: has=%v pinned=%v builds=%d", cache.Has(fresh), cache.Has(pinned), builds())
+	}
+}
+
 // TestDriveSetupNeverTruncatesAnImage: a VM directory left with a drive that is a link to a shared image (a create
 // interrupted by a host restart, retried): setting up its drives fails, and the image keeps its bytes.
 func TestDriveSetupNeverTruncatesAnImage(t *testing.T) {

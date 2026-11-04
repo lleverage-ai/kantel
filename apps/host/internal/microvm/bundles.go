@@ -543,12 +543,16 @@ func (m *Manager) finishBundles(s *sandbox) {
 				}
 			}
 		}
+		// Reserved before the wait, whoever started this (a create's or resume's pending mount, reserved already, or
+		// one adopt() found after a restart, not yet): kept until attachBundles links them or the sandbox gives them up.
+		for _, digest := range digests {
+			m.reserveBundle(s, digest)
+		}
 		id := s.meta.ID
 		s.mu.Unlock()
 		if len(digests) == 0 {
 			return
 		}
-		// Their images stay reserved (attachBundles) while this waits, and until they are linked or given up.
 		for _, digest := range digests {
 			// The build carries on whoever waits; an error is the mount's, found again by attachBundles.
 			_, _ = m.cfg.Bundles.Get(context.Background(), digest, m.fetchFor(id))
