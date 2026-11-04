@@ -313,8 +313,9 @@ func (g *e2eGate) init() {
 	}
 }
 
-// use puts a call on keys; false when one of them is claimed. leave is to be called when the call ends.
-func (g *e2eGate) use(ctx context.Context, keys []string) (context.Context, func(), bool) {
+// use puts a call on keys; false when one of them is claimed. leave is to be called when the call ends. A claim cancels
+// a cancellable call (one reading or running something); others (lifecycle calls) are let finish.
+func (g *e2eGate) use(ctx context.Context, keys []string, cancellable bool) (context.Context, func(), bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.init()
@@ -326,11 +327,15 @@ func (g *e2eGate) use(ctx context.Context, keys []string) (context.Context, func
 	ctx, cancel := context.WithCancel(ctx)
 	g.next++
 	n := g.next
+	onClaim := cancel
+	if !cancellable {
+		onClaim = func() {}
+	}
 	for _, key := range keys {
 		if g.calls[key] == nil {
 			g.calls[key] = map[int]context.CancelFunc{}
 		}
-		g.calls[key][n] = cancel
+		g.calls[key][n] = onClaim
 	}
 	return ctx, func() {
 		g.mu.Lock()
@@ -426,11 +431,26 @@ func gateKeys(method string, params json.RawMessage) (uses, claims []string) {
 // is called when the call has ended.
 func (h *Host) gatewayGuard(ctx context.Context, method string, params json.RawMessage) (context.Context, func(), error) {
 	uses, claims := gateKeys(method, params)
+	// A sandbox's own snapshots too: a start, resume or fork of a stopped sandbox restores the newest of them, which
+	// mustn't be deleted and made again from another sandbox's disk while it does.
+	for _, key := range slices.Clone(uses) {
+		if id, ok := strings.CutPrefix(key, "sandbox:"); ok {
+			for _, name := range h.order {
+				for _, snap := range h.tiers[name].Snapshots(id) {
+					uses = append(uses, "snapshot:"+snap.ID)
+				}
+			}
+		}
+	}
+	slices.Sort(uses)
+	uses = slices.DeleteFunc(slices.Compact(uses), func(k string) bool { return slices.Contains(claims, k) })
 	release := func() {}
 	if len(claims) > 0 {
 		release = h.gate.claim(claims)
 	}
-	ctx, leave, ok := h.gate.use(ctx, uses)
+	cancellable := slices.Contains(contentMethods, method) || method == proto.MethodPortOpen ||
+		method == proto.MethodSnapshotRead || method == proto.MethodSnapshotTree
+	ctx, leave, ok := h.gate.use(ctx, uses, cancellable)
 	if !ok {
 		release()
 		return ctx, func() {}, &proto.Error{Code: proto.ErrConflict, Message: "a sandbox or snapshot this call names is being made or deleted: try again"}

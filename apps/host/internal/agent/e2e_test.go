@@ -496,7 +496,7 @@ func TestAnIDCantChangeUnderAGatewayCall(t *testing.T) {
 		raw, _ := json.Marshal(params)
 		return h.gatewayGuard(context.Background(), method, raw)
 	}
-	waits := func(what string, ctx context.Context, done func(), method string, params any) {
+	waits := func(what string, ctx context.Context, done func(), cancelled bool, method string, params any) {
 		t.Helper()
 		finished := make(chan func(), 1)
 		go func() {
@@ -506,15 +506,20 @@ func TestAnIDCantChangeUnderAGatewayCall(t *testing.T) {
 			}
 			finished <- release
 		}()
-		select {
-		case <-ctx.Done():
-		case <-time.After(5 * time.Second):
-			t.Fatalf("%s didn't cancel %s", method, what)
+		if cancelled {
+			select {
+			case <-ctx.Done():
+			case <-time.After(5 * time.Second):
+				t.Fatalf("%s didn't cancel %s", method, what)
+			}
 		}
 		select {
 		case <-finished:
 			t.Fatalf("%s went ahead while %s ran", method, what)
 		case <-time.After(100 * time.Millisecond):
+		}
+		if !cancelled && ctx.Err() != nil {
+			t.Fatalf("%s cancelled %s, a lifecycle call", method, what)
 		}
 		done()
 		(<-finished)()
@@ -524,13 +529,13 @@ func TestAnIDCantChangeUnderAGatewayCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the first tier's snap_two is plaintext: %v", err)
 	}
-	waits("a snapshot read", ctx, done, proto.MethodSnapshotDel, map[string]any{"snapshotId": "snap_two"})
+	waits("a snapshot read", ctx, done, true, proto.MethodSnapshotDel, map[string]any{"snapshotId": "snap_two"})
 	// A fork checked as a plaintext sandbox's: its delete waits for it.
 	ctx, done, err = guard(proto.MethodFork, map[string]any{"sandboxId": "sbx_other", "newId": "sbx_f1", "snapshotId": "snap_f1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	waits("a fork", ctx, done, proto.MethodDelete, map[string]any{"sandboxId": "sbx_other"})
+	waits("a fork", ctx, done, false, proto.MethodDelete, map[string]any{"sandboxId": "sbx_other"})
 	// A new snapshot can't take an ID another tier has.
 	if _, _, err := guard(proto.MethodStop, map[string]any{"sandboxId": "sbx_one", "snapshotId": "snap_one"}); err == nil {
 		t.Fatal("a stop took a snapshot ID that exists")
@@ -583,4 +588,33 @@ func TestClaimsOnOneIDTakeTurns(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the second claim never went ahead")
 	}
+}
+
+// A resume (or fork) of a stopped sandbox restores its newest snapshot: that snapshot can't be deleted, or its ID saved
+// again from another sandbox, while the call runs.
+func TestASandboxsSnapshotsAreHeldWhileItRestores(t *testing.T) {
+	h, _, _ := e2eHost(t)
+	guard := func(method string, params any) (context.Context, func(), error) {
+		raw, _ := json.Marshal(params)
+		return h.gatewayGuard(context.Background(), method, raw)
+	}
+	ctx, done, err := guard(proto.MethodResume, map[string]any{"sandboxId": "sbx_one"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished := make(chan func(), 1)
+	go func() {
+		_, release, _ := guard(proto.MethodSnapshotDel, map[string]any{"snapshotId": "snap_one"})
+		finished <- release
+	}()
+	select {
+	case <-finished:
+		t.Fatal("the snapshot was deleted while the resume ran")
+	case <-time.After(200 * time.Millisecond):
+	}
+	if ctx.Err() != nil {
+		t.Fatal("a lifecycle call was cancelled rather than let finish")
+	}
+	done()
+	(<-finished)()
 }
