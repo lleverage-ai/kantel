@@ -35,6 +35,7 @@ import {
 	type KantelClientOptions,
 	type Member,
 	type ProxySettings,
+	type PublicUrl,
 	type PutProxySettingsBody,
 	type PutTelemetryBody,
 	type Sandbox,
@@ -108,6 +109,7 @@ type UiWebhookDelivery = Awaited<ReturnType<WebhooksSource["test"]>>;
 type UiTelemetrySettings = Awaited<ReturnType<TelemetrySource["get"]>>;
 type UiHost = Awaited<ReturnType<HostsSource["list"]>>[number];
 type UiHostState = UiHost["state"];
+type UiPublicUrl = Awaited<ReturnType<NonNullable<HostsSource["publicUrl"]>["get"]>>;
 type UiEnvironmentFile = UiEnvironment["files"][number];
 type UiRepo = UiEnvironment["repos"][number];
 type UiMethod = UiBinding["methods"][number];
@@ -258,6 +260,8 @@ function accountsSource({ api, caller }: Context): AccountsSource {
 			if (userId === undefined) throw notYet("An API key belongs to its account and can't leave it.");
 			await api.removeMember(accountId, userId);
 		},
+		rename: async (accountId, name) => accountOf(await api.updateAccount(accountId, { name })),
+		setRole: async (accountId, memberId, role) => memberOf(await api.updateMember(accountId, memberId, { role })),
 	};
 }
 
@@ -1565,6 +1569,19 @@ function hostsSource({ api }: Context): HostsSource {
 		remove: async (id) => {
 			await api.revokeHost(id);
 		},
+		publicUrl: {
+			get: async () => publicUrlOf(await api.getPublicUrl()),
+			set: async (url) => publicUrlOf(await api.setPublicUrl({ publicUrl: url })),
+		},
+	};
+}
+
+function publicUrlOf(made: PublicUrl): UiPublicUrl {
+	return {
+		publicUrl: made.publicUrl,
+		setHere: made.source === "console",
+		deploymentUrl: made.deploymentUrl,
+		loopback: made.loopback,
 	};
 }
 

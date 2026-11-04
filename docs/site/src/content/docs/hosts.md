@@ -100,6 +100,8 @@ kantel-admin compute enable --public-url https://kantel.example.com --apply
 
 That sets `KANTEL_PUBLIC_URL`. The same URL goes into every join command and every desktop, browser and SSH link, so your users' browsers need to reach it as well as your hosts. Behind a TLS proxy it is `https://`, and the relay links are then `wss://`. To give hosts a different address from the console's, set `KANTEL_COMPUTE_PUBLIC_URL` instead.
 
+A super-admin can also set the address hosts join at in the console, under **Admin**, **Install**, or in **Add host** when its command shows the loopback address, or with [`PUT /v1/admin/public-url`](/api/reference/hosts/). It goes ahead of the deployment's own for the join commands made from then on, with no restart, and clearing it goes back to the deployment's. It changes only join commands: desktop, browser and SSH links still use `KANTEL_PUBLIC_URL`.
+
 Then make a join token, with [`kantel-admin`](/self-hosting/admin-cli/), on the console's **Hosts** page (shown to a deployment's admins) or with [`POST /v1/admin/hosts/join-tokens`](/api/reference/hosts/):
 
 ```sh

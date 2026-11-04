@@ -7740,6 +7740,104 @@
 				}
 			}
 		},
+		"/admin/public-url": {
+			"get": {
+				"operationId": "getPublicUrl",
+				"summary": "Get the public URL",
+				"description": "Where hosts reach this control plane: the address join commands give them, and whether only a host on the same machine could use it. A deployment super-admin only (a key needs `hosts:admin`).",
+				"tags": ["hosts"],
+				"responses": {
+					"200": {
+						"description": "The public URL.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/PublicUrl"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"put": {
+				"operationId": "setPublicUrl",
+				"summary": "Set the public URL",
+				"description": "Sets where hosts reach this control plane, for the join commands made from now on, ahead of the deployment's own `KANTEL_PUBLIC_URL`. `null` goes back to the deployment's own. Hosts that have joined keep the address they joined with. A deployment super-admin only (a key needs `hosts:admin`).",
+				"tags": ["hosts"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/SetPublicUrlBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The public URL.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/PublicUrl"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/hosts/join-tokens": {
 			"post": {
 				"operationId": "createAccountJoinToken",
@@ -10560,6 +10658,38 @@
 				},
 				"title": "ProxyUpstream"
 			},
+			"PublicUrl": {
+				"type": "object",
+				"required": ["publicUrl", "source", "deploymentUrl", "loopback"],
+				"properties": {
+					"publicUrl": {
+						"type": "string",
+						"description": "Where hosts reach this control plane: the address in every join command, such as `https://kantel.example.com`."
+					},
+					"source": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "console"
+							},
+							{
+								"type": "string",
+								"const": "deployment"
+							}
+						],
+						"description": "`console`: a super-admin set it here. `deployment`: the deployment's own (`KANTEL_PUBLIC_URL`, or the address the call came in at)."
+					},
+					"deploymentUrl": {
+						"type": "string",
+						"description": "The deployment's own, which `publicUrl` goes back to when cleared."
+					},
+					"loopback": {
+						"type": "boolean",
+						"description": "`publicUrl` is a loopback address (`127.0.0.1`, `localhost`): only a host on the same machine can join."
+					}
+				},
+				"title": "PublicUrl"
+			},
 			"PutEgressGrantsBody": {
 				"type": "object",
 				"required": ["grants"],
@@ -11311,6 +11441,25 @@
 					}
 				},
 				"title": "SetEnvironmentVariableBody"
+			},
+			"SetPublicUrlBody": {
+				"type": "object",
+				"required": ["publicUrl"],
+				"properties": {
+					"publicUrl": {
+						"anyOf": [
+							{
+								"type": "string",
+								"maxLength": 2048
+							},
+							{
+								"type": "null"
+							}
+						],
+						"description": "An http(s) origin, such as `https://kantel.example.com`; `null` goes back to the deployment's own."
+					}
+				},
+				"title": "SetPublicUrlBody"
 			},
 			"Snapshot": {
 				"type": "object",

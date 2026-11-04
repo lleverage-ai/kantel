@@ -79,6 +79,10 @@ export interface AccountsSource {
 	revokeInvite(accountId: string, inviteId: string): Promise<void>;
 	removeMember(accountId: string, memberId: string): Promise<void>;
 	leave(accountId: string): Promise<void>;
+	/** Renames an organisation; needs admin. Absent where the source can't. */
+	rename?(accountId: string, name: string): Promise<ComputeAccount>;
+	/** Changes a member's role; needs admin, and only an owner makes or unmakes an owner. Absent where it can't. */
+	setRole?(accountId: string, memberId: string, role: AccountRole): Promise<OrganisationMember>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1017,8 +1021,28 @@ export interface HostJoin {
 	readonly command: string;
 }
 
+/** Where hosts reach the control plane: the address in every join command. */
+export interface PublicUrl {
+	readonly publicUrl: string;
+	/** A super-admin set it in the console, ahead of the deployment's own. */
+	readonly setHere: boolean;
+	/** The deployment's own, which clearing the console's goes back to. */
+	readonly deploymentUrl: string;
+	/** Only a host on the same machine can reach it: `127.0.0.1`, `localhost`. */
+	readonly loopback: boolean;
+}
+
+/** Reads and sets where hosts reach the control plane: a super-admin's. */
+export interface PublicUrlSource {
+	get(): Promise<PublicUrl>;
+	/** An http(s) origin, or null for the deployment's own. */
+	set(url: string | null): Promise<PublicUrl>;
+}
+
 export interface HostsSource {
 	list(): Promise<readonly Host[]>;
+	/** Where hosts reach the control plane, when this person may change it: the deployment's hosts, a super-admin's. */
+	readonly publicUrl?: PublicUrlSource;
 	/** A join token for a new host, and the command with it in. */
 	join(input: { readonly name?: string; readonly labels?: Readonly<Record<string, string>> }): Promise<HostJoin>;
 	/** Stops new sandboxes landing on it; running ones keep running. */
@@ -1217,11 +1241,17 @@ export { bytesText } from "../primitives/format.ts";
 
 /** "Expires in 3 days", "Expires in 5h", "Expired". */
 export function expiresText(expiresAt: number, now: number): string {
-	const left = expiresAt - now;
-	if (left <= 0) return "Expired";
-	if (left >= 2 * DAY) return `Expires in ${Math.floor(left / DAY)} days`;
-	if (left >= HOUR) return `Expires in ${Math.floor(left / HOUR)}h`;
-	return `Expires in ${Math.max(1, Math.floor(left / MINUTE))}m`;
+	const left = untilText(expiresAt, now);
+	return left === undefined ? "Expired" : `Expires ${left}`;
+}
+
+/** "in 69 days", "in 5h", "in 3m": how long until `at`, or undefined once it has passed. */
+export function untilText(at: number, now: number): string | undefined {
+	const left = at - now;
+	if (left <= 0) return undefined;
+	if (left >= 2 * DAY) return `in ${Math.floor(left / DAY)} days`;
+	if (left >= HOUR) return `in ${Math.floor(left / HOUR)}h`;
+	return `in ${Math.max(1, Math.floor(left / MINUTE))}m`;
 }
 
 /** The ssh command for a sandbox, by its id, through the account's gateway. */

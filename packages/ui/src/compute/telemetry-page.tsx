@@ -8,7 +8,7 @@
 import { useId, useState } from "react";
 import { Button, IconButton } from "../primitives/button.tsx";
 import { CheckboxField, SegmentedControl, TextField } from "../primitives/controls.tsx";
-import { FormActions, FormField, FormLayout, FormSection, PageHeader } from "../primitives/form-layout.tsx";
+import { FormActions, FormField, FormLayout, FormSection } from "../primitives/form-layout.tsx";
 import { compactAge } from "../primitives/format.ts";
 import { PlusIcon, XIcon } from "../primitives/icons.tsx";
 import { useLoad } from "../primitives/load.ts";
@@ -24,10 +24,13 @@ import type {
 	TelemetrySource,
 } from "./compute-model.ts";
 import { computePage, messageOf } from "./parts.tsx";
+import { SettingsPageHeader } from "./settings-nav.tsx";
 
 export interface TelemetryPageProps {
 	readonly source: TelemetrySource;
 	readonly account: ComputeAccount;
+	/** A phone, inside Settings: the page's name is left to the selected link. */
+	readonly narrow?: boolean;
 	/** A fixed time, for stories. */
 	readonly now?: number;
 }
@@ -186,15 +189,12 @@ const agoText = (at: number, now: number): string => {
 	return age === "now" ? "just now" : `${age} ago`;
 };
 
-export function TelemetryPage({ source, account, now: fixedNow }: TelemetryPageProps) {
+export function TelemetryPage({ source, account, now: fixedNow, narrow = false }: TelemetryPageProps) {
 	const { state, reload } = useLoad(() => source.get(account.id), [source, account.id]);
 	const now = fixedNow ?? Date.now();
 	return (
 		<div className={computePage}>
-			<PageHeader
-				title="OpenTelemetry"
-				lede="Export sandbox metrics (CPU, memory, disk, network and how many are running) and lifecycle events to any OTLP collector."
-			/>
+			<SettingsPageHeader title="OpenTelemetry" narrow={narrow} />
 			{state.status === "error" ? (
 				<Notice
 					level="error"
