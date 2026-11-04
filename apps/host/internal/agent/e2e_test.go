@@ -618,3 +618,32 @@ func TestASandboxsSnapshotsAreHeldWhileItRestores(t *testing.T) {
 	done()
 	(<-finished)()
 }
+
+// A stop of a sandbox can't add a snapshot while a fork of it restores the newest: the two take turns.
+func TestAStopAndAForkOfOneSandboxTakeTurns(t *testing.T) {
+	h, _, _ := e2eHost(t)
+	guard := func(method string, params any) (func(), error) {
+		raw, _ := json.Marshal(params)
+		_, done, err := h.gatewayGuard(context.Background(), method, raw)
+		return done, err
+	}
+	done, err := guard(proto.MethodFork, map[string]any{"sandboxId": "sbx_other", "newId": "sbx_f2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopped := make(chan func(), 1)
+	go func() {
+		release, err := guard(proto.MethodStop, map[string]any{"sandboxId": "sbx_other", "snapshotId": "snap_new"})
+		if err != nil {
+			t.Error(err)
+		}
+		stopped <- release
+	}()
+	select {
+	case <-stopped:
+		t.Fatal("a stop ran while a fork of the same sandbox did")
+	case <-time.After(150 * time.Millisecond):
+	}
+	done()
+	(<-stopped)()
+}

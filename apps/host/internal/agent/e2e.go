@@ -394,6 +394,9 @@ func gateKeys(method string, params json.RawMessage) (uses, claims []string) {
 	_ = json.Unmarshal(params, &p)
 	sandbox := func(id string) string { return "sandbox:" + id }
 	snapshot := func(id string) string { return "snapshot:" + id }
+	// A sandbox's snapshot-making and -restoring calls (stop, save, fork, start, resume) take turns, so one restoring
+	// the newest snapshot holds all of them (gatewayGuard).
+	lifecycle := func(id string) string { return "lifecycle:" + id }
 	add := func(list *[]string, key, id string) {
 		if id != "" {
 			*list = append(*list, key)
@@ -407,12 +410,17 @@ func gateKeys(method string, params json.RawMessage) (uses, claims []string) {
 		add(&claims, sandbox(p.SandboxID), p.SandboxID)
 	case proto.MethodFork:
 		add(&uses, sandbox(p.SandboxID), p.SandboxID)
+		add(&claims, lifecycle(p.SandboxID), p.SandboxID)
 		add(&claims, sandbox(p.NewID), p.NewID)
 		add(&claims, snapshot(p.SnapshotID), p.SnapshotID)
 		// The isolate tier names a fork's snapshot after the fork when the call doesn't.
 		add(&claims, snapshot("fork-"+p.NewID), p.NewID)
 	case proto.MethodStop, proto.MethodSnapshotSave:
 		add(&uses, sandbox(p.SandboxID), p.SandboxID)
+		add(&claims, lifecycle(p.SandboxID), p.SandboxID)
+	case proto.MethodStart, proto.MethodResume:
+		add(&uses, sandbox(p.SandboxID), p.SandboxID)
+		add(&claims, lifecycle(p.SandboxID), p.SandboxID)
 		add(&claims, snapshot(p.SnapshotID), p.SnapshotID)
 	case proto.MethodSnapshotDel:
 		add(&claims, snapshot(p.SnapshotID), p.SnapshotID)
@@ -431,8 +439,13 @@ func gateKeys(method string, params json.RawMessage) (uses, claims []string) {
 // is called when the call has ended.
 func (h *Host) gatewayGuard(ctx context.Context, method string, params json.RawMessage) (context.Context, func(), error) {
 	uses, claims := gateKeys(method, params)
+	release := func() {}
+	if len(claims) > 0 {
+		release = h.gate.claim(claims)
+	}
 	// A sandbox's own snapshots too: a start, resume or fork of a stopped sandbox restores the newest of them, which
-	// mustn't be deleted and made again from another sandbox's disk while it does.
+	// mustn't be deleted and made again from another sandbox's disk while it does. They are listed once the call holds
+	// the sandbox's lifecycle claim, so no stop or save of it can add one the list missed until the call ends.
 	for _, key := range slices.Clone(uses) {
 		if id, ok := strings.CutPrefix(key, "sandbox:"); ok {
 			for _, name := range h.order {
@@ -444,10 +457,6 @@ func (h *Host) gatewayGuard(ctx context.Context, method string, params json.RawM
 	}
 	slices.Sort(uses)
 	uses = slices.DeleteFunc(slices.Compact(uses), func(k string) bool { return slices.Contains(claims, k) })
-	release := func() {}
-	if len(claims) > 0 {
-		release = h.gate.claim(claims)
-	}
 	cancellable := slices.Contains(contentMethods, method) || method == proto.MethodPortOpen ||
 		method == proto.MethodSnapshotRead || method == proto.MethodSnapshotTree
 	ctx, leave, ok := h.gate.use(ctx, uses, cancellable)
