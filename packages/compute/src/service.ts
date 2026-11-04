@@ -3150,9 +3150,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			backend.placedOn === undefined
 				? []
 				: (await store.sandboxes.list({ state: "starting" })).filter((sandbox) => sandbox.hostId === undefined);
+		// A lookup that fails fails the revocation, which may be made again: none is taken as "placed elsewhere".
 		const placedHere: StoredSandbox[] = [];
 		for (const sandbox of unattributed) {
-			if ((await backend.placedOn?.(sandbox.id).catch(() => undefined)) === hostId) placedHere.push(sandbox);
+			if ((await backend.placedOn?.(sandbox.id)) === hostId) placedHere.push(sandbox);
 		}
 		for (const sandbox of [...(await store.sandboxes.list({ hostId })), ...placedHere]) {
 			// From whatever live state it is in when written, not as listed: a boot or stop that lands in between doesn't
@@ -3166,7 +3167,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					return withState(current, "error", { reason: HOST_REVOKED_REASON, ports: [] });
 				},
 				(current) => current.hostId === undefined || current.hostId === hostId,
-			).catch(() => undefined);
+			).catch((error: unknown) => {
+				// Gone since it was listed (a delete finished) needs nothing; a write that failed fails the revocation, which
+				// may be made again to finish, its host revoked already.
+				if (error instanceof KantelError && error.code === "not_found") return undefined;
+				throw error;
+			});
 			if (result === undefined || !("moved" in result)) continue;
 			await emit("sandbox.error", result.moved.accountId, {
 				sandbox: result.moved,

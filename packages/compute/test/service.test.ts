@@ -1558,6 +1558,35 @@ describe("hosts", () => {
 		expect((await tom.getSandbox(sandbox.id)).state).toBe("error");
 	});
 
+	it("fails a revocation whose sandbox write failed, and finishes it when it is made again", async () => {
+		const store = createMemoryStore();
+		const sandboxes = store.sandboxes;
+		let failNext = false;
+		const { tom, root } = setup(createStubBackend(), {
+			store: {
+				...store,
+				sandboxes: {
+					...sandboxes,
+					async update(id, change, expected) {
+						if (failNext) {
+							failNext = false;
+							throw new Error("The database is away");
+						}
+						return sandboxes.update(id, change, expected);
+					},
+				},
+			},
+		});
+		const sandbox = await tom.createSandbox({ wait: true });
+		failNext = true;
+		await failure(root.revokeHost(STUB_HOST_ID));
+		// Not claimed done: it still says what it was, and the host is revoked.
+		expect((await tom.getSandbox(sandbox.id)).state).toBe("running");
+		expect((await root.listHosts()).items.find((host) => host.id === STUB_HOST_ID)?.state).toBe("revoked");
+		await root.revokeHost(STUB_HOST_ID);
+		expect(await tom.getSandbox(sandbox.id)).toMatchObject({ state: "error", reason: HOST_REVOKED_REASON });
+	});
+
 	it("keeps a revocation that lands while a drain is in flight", async () => {
 		const stub = createStubBackend();
 		let revokeMeanwhile: (() => Promise<unknown>) | undefined;
