@@ -1069,12 +1069,20 @@ export function ShapeFields({
 		const shapeKey = (entry: SandboxShape) => `${entry.vcpus}/${entry.memoryMb}`;
 		const options = [...new Map(presets.map((entry) => [shapeKey(entry), entry])).values()];
 		const chosen = presetOf(shapes, shape) ?? options[0];
+		if (chosen === undefined) {
+			return (
+				<Notice level="warning">
+					These hosts make only their named sizes, and name none this console knows, so no microVM can be made here.
+					Update kantel-host, or use an isolate.
+				</Notice>
+			);
+		}
 		return (
 			<div className="flex flex-col gap-4">
 				<SelectField
 					label="Size"
 					hint="These hosts make only their named sizes; update kantel-host for any vCPUs and memory."
-					value={chosen === undefined ? "" : shapeKey(chosen)}
+					value={shapeKey(chosen)}
 					onChange={(event) => {
 						const next = options.find((entry) => shapeKey(entry) === event.currentTarget.value);
 						if (next !== undefined) onPreset({ vcpus: next.vcpus, memoryMb: next.memoryMb });

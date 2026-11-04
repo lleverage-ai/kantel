@@ -6,8 +6,7 @@
 //   - Template snapshots. For each size the host cold-boots one VM once, waits until every service is up, and
 //     snapshots it (memory and disk). A new sandbox restores that snapshot instead of booting: the memory file is
 //     mapped copy-on-write (MAP_PRIVATE), so every sandbox shares its unchanged pages.
-//   - A warm pool. The host keeps a few sandboxes already restored and idle (no network, no identity). Creating one
-//     claims it: it gets its own name, address, keys and entropy over vsock, and is running.
+//   - No warm pool. The host keeps no idle running VMs waiting for a create: a create restores a snapshot.
 //   - Stop keeps memory. A stop snapshots memory and disk, so resume is a restore, not a boot, and the sandbox's
 //     processes carry on.
 //
@@ -19,7 +18,6 @@
 //	sandboxes/<id>/vm/                        Firecracker's working directory: rootfs.ext4 (a link to the image),
 //	                                          disk.ext4 (the sandbox's own disk), state and mem after a stop
 //	snapshots/<id>/{meta.json,disk.ext4,...}  automatic and saved snapshots
-//	pool/<n>/                                 pre-warmed sandboxes, moved to sandboxes/<id> when claimed
 package microvm
 
 import (
@@ -177,24 +175,12 @@ type sandbox struct {
 
 func (s *sandbox) vmDir() string { return filepath.Join(s.dir, "vm") }
 
-type warm struct {
-	dir     string
-	size    string
-	machine *fc.Machine
-	guest   *guest.Client
-	link    network.Link
-	cid     uint32
-}
-
 // Manager runs the tier.
 type Manager struct {
 	cfg       Config
 	log       *slog.Logger
 	mu        sync.Mutex
 	sandboxes map[string]*sandbox
-	pool      map[string][]*warm
-	poolWant  map[string]int
-	filling   map[string]bool
 	// templates are keyed by size name, and only the named sizes have one. Fast cold starts for custom shapes (a
 	// per-shape template, or a snapshot to restore) would need templates keyed by the shape's fingerprint and a
 	// bounded cache, since a template's memory file is as large as the shape's memory: future work.
@@ -216,19 +202,19 @@ func New(cfg Config) (*Manager, error) {
 	if cfg.Log == nil {
 		cfg.Log = slog.Default()
 	}
-	for _, dir := range []string{"templates", "sandboxes", "snapshots", "pool"} {
+	for _, dir := range []string{"templates", "sandboxes", "snapshots"} {
 		if err := os.MkdirAll(filepath.Join(cfg.Root, dir), 0o700); err != nil {
 			return nil, err
 		}
 	}
-	m := &Manager{cfg: cfg, log: cfg.Log.With("tier", Tier), sandboxes: map[string]*sandbox{}, pool: map[string][]*warm{}, poolWant: map[string]int{}, filling: map[string]bool{}, templates: map[string]*sync.Mutex{}}
+	m := &Manager{cfg: cfg, log: cfg.Log.With("tier", Tier), sandboxes: map[string]*sandbox{}, templates: map[string]*sync.Mutex{}}
 	m.hostMemoryMiB = hostinfo.MemoryMiB()
 	m.nextCID.Store(uint32(time.Now().UnixMilli()%100000) + 100)
 	m.spool = newSpool(cfg.SpoolDir, cfg.SpoolMaxMiB<<20, m.log)
 	for _, size := range cfg.Sizes {
 		m.templates[size.Name] = &sync.Mutex{}
 	}
-	// Leftover pool VMs from a previous run aren't adopted: they are cheap to make again.
+	// Warm VMs a host before warm pools were removed left behind: ended, with their directory.
 	entries, _ := os.ReadDir(filepath.Join(cfg.Root, "pool"))
 	for _, e := range entries {
 		dir := filepath.Join(cfg.Root, "pool", e.Name())
@@ -236,6 +222,7 @@ func New(cfg Config) (*Manager, error) {
 		fc.KillLeftover(dir)
 		_ = os.RemoveAll(dir)
 	}
+	_ = os.Remove(filepath.Join(cfg.Root, "pool"))
 	if err := m.adopt(); err != nil {
 		return nil, err
 	}
@@ -642,180 +629,6 @@ func (m *Manager) restore(ctx context.Context, vmDir, statePath, memPath string,
 	return machine, client, nil
 }
 
-// SetPools sets how many warm sandboxes to keep per size, and starts filling. Pools are kept for the named sizes
-// only: a custom shape cold-boots.
-//
-// A lower target (0 included, as when an operator turns pools off) ends the surplus idle VMs now, freeing their
-// memory; claimed ones are sandboxes and aren't touched.
-func (m *Manager) SetPools(want map[string]int) {
-	m.mu.Lock()
-	m.poolWant = map[string]int{}
-	for size, n := range want {
-		if isCustom(size) {
-			m.log.Warn("no warm pool is kept for a custom size; ignoring it", "size", size)
-			continue
-		}
-		m.poolWant[size] = n
-	}
-	var surplus []*warm
-	m.pool, surplus = trimPools(m.pool, m.poolWant)
-	m.mu.Unlock()
-	for _, w := range surplus {
-		m.discard(w)
-	}
-	for size := range want {
-		if !isCustom(size) {
-			m.fill(size)
-		}
-	}
-}
-
-func (m *Manager) fill(sizeName string) {
-	if isCustom(sizeName) {
-		m.log.Warn("no warm pool is kept for a custom size", "size", sizeName)
-		return
-	}
-	m.mu.Lock()
-	if m.filling[sizeName] || m.closed.Load() {
-		m.mu.Unlock()
-		return
-	}
-	m.filling[sizeName] = true
-	m.mu.Unlock()
-	go func() {
-		defer func() {
-			m.mu.Lock()
-			m.filling[sizeName] = false
-			m.mu.Unlock()
-		}()
-		for !m.closed.Load() {
-			m.mu.Lock()
-			short := len(m.pool[sizeName]) < m.poolWant[sizeName]
-			m.mu.Unlock()
-			if !short {
-				return
-			}
-			w, err := m.warmOne(context.Background(), sizeName)
-			if err != nil {
-				m.log.Error("warm pool fill failed", "size", sizeName, "error", err)
-				time.Sleep(10 * time.Second)
-				continue
-			}
-			if !m.admit(sizeName, w) {
-				return
-			}
-		}
-	}()
-}
-
-// admit puts a warm VM a fill made into its pool if the pool still wants one, checked now, under the lock: the
-// target may have dropped while it warmed, and then it is ended, not kept. It answers whether it was kept.
-func (m *Manager) admit(sizeName string, w *warm) bool {
-	m.mu.Lock()
-	wanted := len(m.pool[sizeName]) < m.poolWant[sizeName] && !m.closed.Load()
-	if wanted {
-		m.pool[sizeName] = append(m.pool[sizeName], w)
-	}
-	m.mu.Unlock()
-	if !wanted {
-		m.discard(w)
-	}
-	return wanted
-}
-
-// trimPools keeps at most want[size] idle VMs of each size (none of a size not wanted), oldest first, and answers
-// the rest to end.
-func trimPools(pool map[string][]*warm, want map[string]int) (map[string][]*warm, []*warm) {
-	kept := map[string][]*warm{}
-	var surplus []*warm
-	for size, list := range pool {
-		n := max(0, min(len(list), want[size]))
-		if n > 0 {
-			kept[size] = list[:n]
-		}
-		surplus = append(surplus, list[n:]...)
-	}
-	return kept, surplus
-}
-
-// discard ends an idle warm VM: its process, its network link and its files.
-func (m *Manager) discard(w *warm) {
-	if w.machine != nil {
-		w.machine.Kill()
-	}
-	if m.cfg.Network != nil {
-		m.cfg.Network.Remove(w.link)
-	}
-	if w.dir != "" {
-		_ = os.RemoveAll(w.dir)
-	}
-}
-
-func (m *Manager) warmOne(ctx context.Context, sizeName string) (*warm, error) {
-	if isCustom(sizeName) {
-		return nil, fmt.Errorf("no warm pool is kept for custom size %s", sizeName)
-	}
-	size, err := m.size(sizeName)
-	if err != nil {
-		return nil, err
-	}
-	tpl, _, err := m.template(ctx, size)
-	if err != nil {
-		return nil, err
-	}
-	dir, err := os.MkdirTemp(filepath.Join(m.cfg.Root, "pool"), sizeName+"-")
-	if err != nil {
-		return nil, err
-	}
-	vm := filepath.Join(dir, "vm")
-	if err := os.MkdirAll(vm, 0o700); err != nil {
-		return nil, err
-	}
-	if err := os.Symlink(m.cfg.Rootfs, filepath.Join(vm, fc.RootfsFile)); err != nil {
-		return nil, err
-	}
-	if err := copySparse(filepath.Join(tpl, fc.DiskFile), filepath.Join(vm, fc.DiskFile)); err != nil {
-		os.RemoveAll(dir)
-		return nil, err
-	}
-	link, err := m.cfg.Network.Add(network.EgressNone)
-	if err != nil {
-		os.RemoveAll(dir)
-		return nil, err
-	}
-	machine, client, err := m.restore(ctx, vm, filepath.Join(tpl, "state"), filepath.Join(tpl, "mem"), link)
-	if err != nil {
-		m.cfg.Network.Remove(link)
-		os.RemoveAll(dir)
-		return nil, err
-	}
-	return &warm{dir: dir, size: sizeName, machine: machine, guest: client, link: link}, nil
-}
-
-func (m *Manager) claim(sizeName string) *warm {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	list := m.pool[sizeName]
-	if len(list) == 0 {
-		return nil
-	}
-	w := list[0]
-	m.pool[sizeName] = list[1:]
-	go m.fill(sizeName)
-	return w
-}
-
-// Warm is how many pre-warmed sandboxes each size has.
-func (m *Manager) Warm() map[string]int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := map[string]int{}
-	for size, list := range m.pool {
-		out[size] = len(list)
-	}
-	return out
-}
-
 func (m *Manager) get(id string) (*sandbox, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -854,8 +667,7 @@ func validID(id string) bool {
 	return true
 }
 
-// Create makes a sandbox: from a warm sandbox when the pool has one, else by restoring the size's template (or
-// p.From, a snapshot). A custom shape (p.VCPUs, p.MemoryMiB and p.DiskGiB with no p.Size) cold-boots unless it is
+// Create makes a sandbox by restoring the size's template (or p.From, a snapshot). A custom shape (p.VCPUs, p.MemoryMiB and p.DiskGiB with no p.Size) cold-boots unless it is
 // made from a snapshot.
 func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.SandboxInfo, error) {
 	if !validID(p.SandboxID) {
@@ -872,7 +684,7 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 	if err != nil {
 		return proto.SandboxInfo{}, err
 	}
-	// A named size keeps its warm pool and template; a custom one has neither.
+	// A named size keeps a template; a custom one has none.
 	custom := isCustom(size.Name)
 	t := timings{}
 	start := time.Now()
@@ -895,22 +707,8 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 		m.unregister(p.SandboxID)
 		return proto.SandboxInfo{}, err
 	}
-	source := "pool"
-	if p.From == "" && !custom {
-		if w := m.claim(size.Name); w != nil {
-			if err := os.Rename(w.dir, dir); err != nil {
-				w.machine.Kill()
-				m.cfg.Network.Remove(w.link)
-				return fail(err)
-			}
-			s.machine, s.link = fc.Moved(w.machine, filepath.Join(dir, "vm")), &w.link
-			w.guest.Close()
-			s.guest = guest.NewClient(filepath.Join(dir, "vm", fc.VsockSocket))
-			s.meta.CID = w.cid
-			t.step("claim", &start)
-		}
-	}
-	if s.machine == nil {
+	source := "snapshot"
+	{
 		vm := filepath.Join(dir, "vm")
 		if err := os.MkdirAll(vm, 0o700); err != nil {
 			return fail(err)
@@ -1607,18 +1405,9 @@ func (m *Manager) DialPort(ctx context.Context, id string, port int) (net.Conn, 
 	return client.DialPort(ctx, port)
 }
 
-// Close stops filling the pool and ends the warm VMs. Sandboxes keep running.
+// Close stops the tier taking work. Sandboxes keep running.
 func (m *Manager) Close() {
 	m.closed.Store(true)
-	m.mu.Lock()
-	pools := m.pool
-	m.pool = map[string][]*warm{}
-	m.mu.Unlock()
-	for _, list := range pools {
-		for _, w := range list {
-			m.discard(w)
-		}
-	}
 }
 
 // Usage is the memory the tier's running sandboxes were given, and how many run and are stopped.

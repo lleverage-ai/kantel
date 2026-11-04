@@ -92,86 +92,22 @@ func TestCreateRefusesABadCustomShape(t *testing.T) {
 	}
 }
 
-func TestPoolsAreKeptForNamedSizesOnly(t *testing.T) {
-	m := &Manager{log: slog.New(slog.NewTextHandler(io.Discard, nil)), pool: map[string][]*warm{}, poolWant: map[string]int{}, filling: map[string]bool{}}
-	m.SetPools(map[string]int{CustomSizeName(2, 2048, 20): 2})
-	if len(m.poolWant) != 0 || len(m.filling) != 0 {
-		t.Fatalf("a custom size got a pool: want %v, filling %v", m.poolWant, m.filling)
-	}
-	if _, err := m.warmOne(context.Background(), CustomSizeName(2, 2048, 20)); err == nil {
-		t.Fatal("warmOne made a warm sandbox of a custom size")
-	}
-	if _, _, err := m.template(context.Background(), proto.Size{Name: CustomSizeName(2, 2048, 20), VCPUs: 2, MemoryMiB: 2048, DiskGiB: 20}); err == nil {
-		t.Fatal("template made one for a custom size")
-	}
-}
-
-// A lower pool target ends the surplus idle VMs at once (their files go), keeping the oldest; 0 ends them all.
-func TestSetPoolsEndsSurplusWarmVMs(t *testing.T) {
+// Hosts keep no warm pool: the idle VMs an older host left in pool/ are ended and the directory is removed on start.
+func TestNewClearsAnOldWarmPool(t *testing.T) {
 	root := t.TempDir()
-	idle := func(name string) *warm {
-		dir := filepath.Join(root, name)
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		return &warm{dir: dir, size: "default"}
+	old := filepath.Join(root, "pool", "default-123", "vm")
+	if err := os.MkdirAll(old, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	a, b, c, d := idle("a"), idle("b"), idle("c"), idle("d")
-	m := &Manager{
-		log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
-		pool:     map[string][]*warm{"default": {a, b, c}, "large": {d}},
-		poolWant: map[string]int{"default": 3, "large": 1},
-		filling:  map[string]bool{},
+	if err := os.WriteFile(filepath.Join(old, "disk.ext4"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	m.SetPools(map[string]int{"default": 1})
-	if got := m.Warm(); got["default"] != 1 || got["large"] != 0 {
-		t.Fatalf("Warm() = %v, want default 1 and large 0", got)
+	m, err := New(Config{Root: root, Sizes: DefaultSizes, SpoolMaxMiB: -1, Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if m.pool["default"][0] != a {
-		t.Fatal("the oldest warm VM wasn't the one kept")
-	}
-	for _, gone := range []*warm{b, c, d} {
-		if _, err := os.Stat(gone.dir); !os.IsNotExist(err) {
-			t.Fatalf("%s is still there: %v", gone.dir, err)
-		}
-	}
-	m.SetPools(map[string]int{})
-	if len(m.pool) != 0 {
-		t.Fatalf("pools left after turning them off: %v", m.Warm())
-	}
-	if _, err := os.Stat(a.dir); !os.IsNotExist(err) {
-		t.Fatal("the last warm VM's files are still there")
-	}
-}
-
-// A fill that finishes after the target dropped is ended, not kept; one still wanted is kept.
-func TestAFillLandingAfterADropIsEnded(t *testing.T) {
-	root := t.TempDir()
-	idle := func(name string) *warm {
-		dir := filepath.Join(root, name)
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		return &warm{dir: dir, size: "default"}
-	}
-	m := &Manager{
-		log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
-		pool:     map[string][]*warm{"default": {idle("a")}},
-		poolWant: map[string]int{"default": 1},
-		filling:  map[string]bool{},
-	}
-	late := idle("late")
-	if m.admit("default", late) {
-		t.Fatal("a warm VM past the target was kept")
-	}
-	if _, err := os.Stat(late.dir); !os.IsNotExist(err) {
-		t.Fatal("the late warm VM's files are still there")
-	}
-	m.mu.Lock()
-	m.poolWant["default"] = 2
-	m.mu.Unlock()
-	wanted := idle("wanted")
-	if !m.admit("default", wanted) || m.Warm()["default"] != 2 {
-		t.Fatalf("a wanted warm VM wasn't kept: %v", m.Warm())
+	defer m.Close()
+	if _, err := os.Stat(filepath.Join(root, "pool")); !os.IsNotExist(err) {
+		t.Fatalf("pool/ is still there: %v", err)
 	}
 }

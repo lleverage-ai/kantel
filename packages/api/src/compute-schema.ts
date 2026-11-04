@@ -320,11 +320,18 @@ export const SandboxShapes = Type.Object(
 						description: "Whether a host takes shapes off the presets; when false, only the presets.",
 					}),
 					customDisk: Type.Optional(
-						Type.Array(Type.Object({ memoryMb: Type.Integer(), diskGb: Type.Integer() }, { title: "CustomDiskStep" }), {
-							description:
-								"The disk a shape off the presets gets: the first step, by memory, with at least its memory, else the " +
-								"last. Only where every host that makes such shapes gives the same; absent where it depends on the host.",
-						}),
+						Type.Array(
+							Type.Object(
+								{ vcpus: Type.Integer(), memoryMb: Type.Integer(), diskGb: Type.Integer() },
+								{ title: "CustomDiskStep" },
+							),
+							{
+								description:
+									"The sizes of the hosts that make shapes off the presets, by memory: a shape that is one of them gets " +
+									"its disk; any other, the first's with at least its memory, else the last's. Only where every such host " +
+									"has the same; absent where the disk depends on the host.",
+							},
+						),
 					),
 				},
 				{ title: "MicrovmShapes", description: "Absent when no host the account may use runs microVMs." },

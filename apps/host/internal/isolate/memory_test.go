@@ -3,8 +3,6 @@ package isolate
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
@@ -25,58 +23,5 @@ func TestCreateRefusesAnIsolateMemoryOffTheSteps(t *testing.T) {
 		if !errors.As(err, &perr) || perr.Code != proto.ErrInvalid {
 			t.Fatalf("Create with %d MiB = %v, want %s", memoryMiB, err, proto.ErrInvalid)
 		}
-	}
-}
-
-// A lower spare target ends the surplus spare runtimes at once; account runtimes stay.
-func TestSetPoolsEndsSurplusSpares(t *testing.T) {
-	root := t.TempDir()
-	spare := func(name string) *runtime {
-		dir := filepath.Join(root, name)
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		return &runtime{dir: dir}
-	}
-	a, b, owned := spare("a"), spare("b"), spare("owned")
-	m := &Manager{spare: []*runtime{a, b}, spareWant: 2, runtimes: map[string]*runtime{"acct": owned}}
-	m.closed.Store(true) // no filler: this checks only what is ended
-	m.SetPools(map[string]int{"default": 1})
-	if got := m.Warm()["default"]; got != 1 {
-		t.Fatalf("%d spares, want 1", got)
-	}
-	if _, err := os.Stat(b.dir); !os.IsNotExist(err) {
-		t.Fatal("the surplus spare's files are still there")
-	}
-	m.SetPools(map[string]int{})
-	if got := m.Warm()["default"]; got != 0 {
-		t.Fatalf("%d spares, want 0", got)
-	}
-	if _, err := os.Stat(owned.dir); err != nil {
-		t.Fatalf("an account's runtime was ended: %v", err)
-	}
-}
-
-// A spare that finishes starting after the target dropped is ended, not kept; one still wanted is kept.
-func TestASpareLandingAfterADropIsEnded(t *testing.T) {
-	root := t.TempDir()
-	spare := func(name string) *runtime {
-		dir := filepath.Join(root, name)
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		return &runtime{dir: dir}
-	}
-	m := &Manager{spareWant: 0}
-	late := spare("late")
-	if m.admitSpare(late) {
-		t.Fatal("a spare past the target was kept")
-	}
-	if _, err := os.Stat(late.dir); !os.IsNotExist(err) {
-		t.Fatal("the late spare's files are still there")
-	}
-	m.spareWant = 1
-	if !m.admitSpare(spare("wanted")) || m.Warm()["default"] != 1 {
-		t.Fatalf("a wanted spare wasn't kept: %v", m.Warm())
 	}
 }

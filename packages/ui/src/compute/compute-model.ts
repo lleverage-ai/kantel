@@ -148,10 +148,11 @@ export interface SandboxShapes {
 		 */
 		readonly custom?: boolean;
 		/**
-		 * The disk a shape off the presets gets: the first step, by memory, with at least its memory, else the last. Absent
-		 * where it depends on the host it lands on: then none is promised.
+		 * The sizes of the hosts that make custom shapes, by memory: a shape that is one of them gets its disk; any other,
+		 * the first's with at least its memory, else the last's. Absent where it depends on the host it lands on: then none
+		 * is promised.
 		 */
-		readonly customDisk?: readonly { readonly memoryMb: number; readonly diskGb: number }[];
+		readonly customDisk?: readonly { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number }[];
 	};
 	/** Hosted only: US cents an hour while it runs, per vCPU and per GB of memory. */
 	readonly rates?: {
@@ -178,10 +179,10 @@ export const DEFAULT_SANDBOX_SHAPES: SandboxShapes = {
 			{ name: "xlarge", vcpus: 16, memoryMb: 32768, diskGb: 240, warm: false },
 		],
 		customDisk: [
-			{ memoryMb: 4096, diskGb: 40 },
-			{ memoryMb: 8192, diskGb: 60 },
-			{ memoryMb: 16384, diskGb: 120 },
-			{ memoryMb: 32768, diskGb: 240 },
+			{ vcpus: 2, memoryMb: 4096, diskGb: 40 },
+			{ vcpus: 4, memoryMb: 8192, diskGb: 60 },
+			{ vcpus: 8, memoryMb: 16384, diskGb: 120 },
+			{ vcpus: 16, memoryMb: 32768, diskGb: 240 },
 		],
 	},
 	rates: { microvmCentsPerVcpuHour: 0.75, microvmCentsPerGbHour: 0.125, isolateCentsPerGbHour: 2 },
@@ -248,25 +249,26 @@ export function coldStart(shapes: SandboxShapes, shape: SandboxShape): boolean {
 }
 
 /**
- * The disk a microVM of `shape` gets, in GB, by the hosts' rule: a preset's own (where every host with that shape
- * gives the same); off them, `customDisk`'s first step with at least its memory, else its last. Undefined where it
- * depends on the host, so nothing is promised.
+ * The disk a microVM of `shape` gets, in GB, by the hosts' rule, wherever it lands: a host with it as a preset gives
+ * that preset's; one that makes custom shapes gives its own size's where it has the shape, else the first of its sizes
+ * with at least its memory, else the last (`customDisk`). Undefined where those differ, or where the hosts that make
+ * custom shapes differ (no `customDisk`), so nothing is promised.
  */
 export function diskFor(shapes: SandboxShapes, shape: SandboxShape): number | undefined {
-	const own = new Set(
-		shapes.microvm.presets
-			.filter((preset) => preset.vcpus === shape.vcpus && preset.memoryMb === shape.memoryMb)
-			.map((preset) => preset.diskGb),
-	);
-	if (own.size > 0) return own.size === 1 ? [...own][0] : undefined;
-	const steps = shapes.microvm.customDisk;
-	if (steps === undefined) return undefined;
-	return (steps.find((step) => step.memoryMb >= shape.memoryMb) ?? steps.at(-1))?.diskGb;
+	const { presets, customDisk } = shapes.microvm;
+	const same = (size: SandboxShape) => size.vcpus === shape.vcpus && size.memoryMb === shape.memoryMb;
+	const disks = new Set(presets.filter(same).map((preset) => preset.diskGb));
+	if (customShapes(shapes)) {
+		if (customDisk === undefined) return undefined;
+		const custom =
+			customDisk.find(same) ?? customDisk.find((size) => size.memoryMb >= shape.memoryMb) ?? customDisk.at(-1);
+		if (custom !== undefined) disks.add(custom.diskGb);
+	}
+	return disks.size === 1 ? [...disks][0] : undefined;
 }
 
-/** Whether New sandbox offers any vCPUs and memory, or only the presets (no host makes custom shapes). */
-export const customShapes = (shapes: SandboxShapes): boolean =>
-	shapes.microvm.custom !== false || shapes.microvm.presets.length === 0;
+/** Whether New sandbox offers any vCPUs and memory, or only the presets (no host makes custom shapes; maybe none). */
+export const customShapes = (shapes: SandboxShapes): boolean => shapes.microvm.custom !== false;
 
 /** US cents an hour for a sandbox of `shape`, at the shapes' rates; undefined where there are none (self-hosted). */
 export function shapeCentsPerHour(shapes: SandboxShapes, kind: SandboxKind, shape: SandboxShape): number | undefined {

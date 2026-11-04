@@ -335,6 +335,12 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 					features: [...host.features],
 					capacity: { ...host.capacity },
 					sizes: own,
+					// All of them, a name the API doesn't know too: placement makes shapes and picks disks from these.
+					diskSizes: (host.sizes ?? []).map((size) => ({
+						vcpus: size.vcpus,
+						memoryMb: size.memoryMiB,
+						diskGb: size.diskGiB,
+					})),
 					pools: { ...host.pools },
 					labels: { ...host.labels },
 					connected: host.state === "online" || host.state === "draining",

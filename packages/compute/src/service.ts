@@ -373,11 +373,11 @@ const makesCustom = (host: BackendHost) => host.features?.includes(CUSTOM_SHAPES
 /** `value` down to a multiple of `step`. */
 const floorTo = (value: number, step: number) => Math.floor(value / step) * step;
 
-/** A host's named sizes as the disk rule reads them, ordered as `@kantel/hosts`' `diskFor` orders them. */
-const diskSteps = (sizes: readonly BackendSize[]) =>
+/** A host's sizes as the disk rule reads them, ordered as `@kantel/hosts`' `diskFor` orders them. */
+const diskSteps = (sizes: readonly { readonly vcpus: number; readonly memoryMb: number; readonly diskGb: number }[]) =>
 	[...sizes]
-		.sort((a, b) => a.memoryMb - b.memoryMb || a.diskGb - b.diskGb)
-		.map((size) => ({ memoryMb: size.memoryMb, diskGb: size.diskGb }));
+		.sort((a, b) => a.memoryMb - b.memoryMb || a.diskGb - b.diskGb || a.vcpus - b.vcpus)
+		.map((size) => ({ vcpus: size.vcpus, memoryMb: size.memoryMb, diskGb: size.diskGb }));
 
 /**
  * What a microVM may be on `hosts` (those the account may use that run microVMs): their presets, and, where a host
@@ -415,7 +415,7 @@ export function microvmShapes(
 		if (makesCustom(host)) {
 			maxVcpus = Math.max(maxVcpus, Math.min(MAX_VCPUS, host.capacity.vcpus));
 			maxMemory = Math.max(maxMemory, floorTo(host.capacity.memoryMb, MICROVM_MEMORY_STEP_MB));
-			customDisks.add(JSON.stringify(diskSteps(sizes)));
+			customDisks.add(JSON.stringify(diskSteps(host.diskSizes ?? sizes)));
 		}
 	}
 	const list = [...presets.values()].sort(
@@ -423,7 +423,7 @@ export function microvmShapes(
 	);
 	const preferred = list.find((preset) => preset.name === "default") ?? list[0];
 	const [customDisk] = customDisks;
-	const disk: { memoryMb: number; diskGb: number }[] | undefined =
+	const disk: { vcpus: number; memoryMb: number; diskGb: number }[] | undefined =
 		customDisks.size === 1 && customDisk !== undefined ? JSON.parse(customDisk) : undefined;
 	const minMemory = Math.min(MEMORY_MB_PER_VCPU.min, ...list.map((preset) => preset.memoryMb));
 	return {

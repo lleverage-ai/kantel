@@ -213,9 +213,6 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 }
 
 func (h *Host) applyWelcome(ctx context.Context, w *proto.Welcome, update Updater) {
-	if w.Pools != nil {
-		h.SetPools(w.Pools)
-	}
 	if update != nil && h.cfg.autoUpdate() && w.DesiredVersion != "" && w.DesiredVersion != h.version && w.UpdateURL != "" {
 		if h.e2e != nil && h.e2e.Enrolled() {
 			h.log.Info("not updating from the gateway: this host has joined an E2E space, so it is updated on the machine", "to", w.DesiredVersion)

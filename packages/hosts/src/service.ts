@@ -433,6 +433,10 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			await cluster?.claim(hostId);
 			return welcomeNow(hostId);
 		},
+		// A change of settings is sent as read afresh, so an older one never lands after a newer.
+		welcomeNow(hostId) {
+			return welcomeNow(hostId);
+		},
 		onHeartbeat(hostId, reported) {
 			const parsed = parseHostCapacity(reported);
 			if (!parsed.ok) {

@@ -12,8 +12,8 @@
 // sandbox costs nothing.
 //
 // Fast acquisition: isolate VMs are restored from a template snapshot taken with workerd up and isolates
-// pre-loaded; spare VMs wait in a pool for an account's first sandbox, and each VM keeps isolates pre-loaded for its
-// account's next ones.
+// pre-loaded, and each VM keeps isolates pre-loaded for its account's next ones. No idle VM waits for an account:
+// an account's first sandbox restores the template.
 package isolate
 
 import (
@@ -146,14 +146,11 @@ type Manager struct {
 	log       *slog.Logger
 	mu        sync.Mutex
 	sandboxes map[string]*sandbox
-	// runtimes by account, and spare ones not yet given to an account.
-	runtimes  map[string]*runtime
-	spare     []*runtime
-	spareWant int
-	filling   bool
-	template  sync.Mutex
-	closed    atomic.Bool
-	stopReap  chan struct{}
+	// runtimes by account.
+	runtimes map[string]*runtime
+	template sync.Mutex
+	closed   atomic.Bool
+	stopReap chan struct{}
 }
 
 func New(cfg Config) (*Manager, error) {
@@ -724,7 +721,7 @@ func (m *Manager) startVM(ctx context.Context, r *runtime) error {
 	return r.waitWorker(readyCtx)
 }
 
-// runtimeFor is the account's runtime: its own, a spare one, or a new one.
+// runtimeFor is the account's runtime: its own, or a new one.
 func (m *Manager) runtimeFor(ctx context.Context, account string) (*runtime, string, error) {
 	m.mu.Lock()
 	if r, ok := m.runtimes[account]; ok && r.alive() {
@@ -735,42 +732,21 @@ func (m *Manager) runtimeFor(ctx context.Context, account string) (*runtime, str
 		delete(m.runtimes, account)
 		go r.close()
 	}
-	var r *runtime
-	for len(m.spare) > 0 && r == nil {
-		r = m.spare[0]
-		m.spare = m.spare[1:]
-		if !r.alive() {
-			go r.close()
-			r = nil
-		}
-	}
 	m.mu.Unlock()
-	source := "spare"
-	if r == nil {
-		var err error
-		r, err = m.start(ctx)
-		if err != nil {
-			return nil, "", err
-		}
-		source = "new"
-	} else {
-		go m.fillSpare()
+	r, err := m.start(ctx)
+	if err != nil {
+		return nil, "", err
 	}
+	source := "new"
 	acct := account
 	r.account.Store(&acct)
 	r.lastUsed.Store(time.Now().UnixMilli())
 	m.mu.Lock()
 	if existing, ok := m.runtimes[account]; ok && existing.alive() {
-		// Another create for the account won the race: use its runtime, keep this one spare if a spare is wanted.
+		// Another create for the account won the race: use its runtime, and end this one.
 		r.account.Store(nil)
-		keep := len(m.spare) < m.spareWant
-		if keep {
-			m.spare = append(m.spare, r)
-		}
 		m.mu.Unlock()
-		if !keep {
-			r.close()
-		}
+		r.close()
 		return existing, "account", nil
 	}
 	m.runtimes[account] = r
@@ -778,89 +754,13 @@ func (m *Manager) runtimeFor(ctx context.Context, account string) (*runtime, str
 	return r, source, nil
 }
 
-// SetPools sets how many spare runtimes to keep ("isolate/default": n).
-// A lower target (0 included) ends the surplus spares now; account runtimes aren't touched.
-func (m *Manager) SetPools(want map[string]int) {
-	m.mu.Lock()
-	m.spareWant = max(0, want["default"])
-	var surplus []*runtime
-	if len(m.spare) > m.spareWant {
-		surplus = append(surplus, m.spare[m.spareWant:]...)
-		m.spare = m.spare[:m.spareWant]
-	}
-	m.mu.Unlock()
-	for _, r := range surplus {
-		r.close()
-	}
-	go m.fillSpare()
-}
-
-func (m *Manager) fillSpare() {
-	m.mu.Lock()
-	if m.filling || m.closed.Load() {
-		m.mu.Unlock()
-		return
-	}
-	m.filling = true
-	m.mu.Unlock()
-	defer func() {
-		m.mu.Lock()
-		m.filling = false
-		m.mu.Unlock()
-	}()
-	for !m.closed.Load() {
-		m.mu.Lock()
-		short := len(m.spare) < m.spareWant
-		m.mu.Unlock()
-		if !short {
-			return
-		}
-		r, err := m.start(context.Background())
-		if err != nil {
-			m.log.Error("isolate spare runtime failed", "error", err)
-			time.Sleep(10 * time.Second)
-			continue
-		}
-		if !m.admitSpare(r) {
-			return
-		}
-	}
-}
-
-// admitSpare keeps a runtime a fill started as a spare if one is still wanted, checked now, under the lock: the
-// target may have dropped while it started, and then it is ended, not kept. It answers whether it was kept.
-func (m *Manager) admitSpare(r *runtime) bool {
-	m.mu.Lock()
-	wanted := len(m.spare) < m.spareWant && !m.closed.Load()
-	if wanted {
-		m.spare = append(m.spare, r)
-	}
-	m.mu.Unlock()
-	if !wanted {
-		r.close()
-	}
-	return wanted
-}
-
-// Warm is how many spare runtimes are ready.
-func (m *Manager) Warm() map[string]int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return map[string]int{"default": len(m.spare)}
-}
-
 // ResetTemplates forgets the template snapshot and every runtime (a benchmark's cold start).
 func (m *Manager) ResetTemplates() {
 	m.mu.Lock()
 	rts := m.runtimes
 	m.runtimes = map[string]*runtime{}
-	spare := m.spare
-	m.spare = nil
 	m.mu.Unlock()
 	for _, r := range rts {
-		r.close()
-	}
-	for _, r := range spare {
 		r.close()
 	}
 	m.template.Lock()
@@ -1169,7 +1069,7 @@ func (m *Manager) Usage() (memoryMiB int64, running int, stopped int) {
 			stopped++
 		}
 	}
-	memoryMiB = int64(len(m.runtimes)+len(m.spare)) * int64(m.cfg.MemoryMiB)
+	memoryMiB = int64(len(m.runtimes)) * int64(m.cfg.MemoryMiB)
 	return
 }
 
@@ -1563,13 +1463,9 @@ func (m *Manager) Close() {
 	close(m.stopReap)
 	m.mu.Lock()
 	rts := m.runtimes
-	spare := m.spare
-	m.runtimes, m.spare = map[string]*runtime{}, nil
+	m.runtimes = map[string]*runtime{}
 	m.mu.Unlock()
 	for _, r := range rts {
-		r.close()
-	}
-	for _, r := range spare {
 		r.close()
 	}
 }
