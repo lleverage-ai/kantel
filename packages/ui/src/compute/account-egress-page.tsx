@@ -422,9 +422,9 @@ export function AccountEgressPage({
 	);
 }
 
-/** The settings form starts again from what was saved. */
-const settingsKey = (proxy: ProxySettings): string =>
-	`${proxy.upstream?.url ?? ""}|${proxy.upstream?.authSet === true}|${proxy.logRequests ?? ""}|${proxy.enabled}`;
+/** The settings form starts again from what was saved. Not on `enabled`: turning the proxy on or off keeps the draft. */
+export const settingsKey = (proxy: ProxySettings): string =>
+	`${proxy.upstream?.url ?? ""}|${proxy.upstream?.authSet === true}|${proxy.logRequests ?? ""}`;
 
 /** "Sandboxes may reach": the policy, applied the moment it is chosen. */
 function PolicyControl({

@@ -819,6 +819,10 @@ const grantInput = (grant: UiGrant): EgressGrantInput => ({
 	...(grant.paths.length === 0 ? {} : { paths: grant.paths }),
 });
 
+/** A grant write's `expected`: the grants as read, so Kantel refuses the write if they have changed since. */
+const expectedOf = (expected: readonly UiGrant[] | undefined): { expected?: EgressGrantInput[] } =>
+	expected === undefined ? {} : { expected: expected.map(grantInput) };
+
 const environmentOf = (environment: ApiEnvironment): UiEnvironment => ({
 	id: environment.id,
 	accountId: environment.accountId,
@@ -924,7 +928,8 @@ function environmentsSource(context: Context): EnvironmentsSource {
 			),
 		removeFile: async (id, path) => view(await api.deleteEnvironmentFile(id, { path })),
 		setRepos: async (id, repos) => view(await api.putEnvironmentRepos(id, { repos: repos.map(apiRepo) })),
-		setGrants: async (id, grants) => view(await api.putEnvironmentGrants(id, { grants: grants.map(grantInput) })),
+		setGrants: async (id, grants, expected) =>
+			view(await api.putEnvironmentGrants(id, { grants: grants.map(grantInput), ...expectedOf(expected) })),
 	};
 }
 
@@ -936,8 +941,8 @@ function egressSource(context: Context): EgressSource {
 	};
 	return {
 		get: async (sandboxId) => view(await api.getSandboxEgress(sandboxId)),
-		setGrants: async (sandboxId, grants) =>
-			view(await api.putSandboxGrants(sandboxId, { grants: grants.map(grantInput) })),
+		setGrants: async (sandboxId, grants, expected) =>
+			view(await api.putSandboxGrants(sandboxId, { grants: grants.map(grantInput), ...expectedOf(expected) })),
 	};
 }
 

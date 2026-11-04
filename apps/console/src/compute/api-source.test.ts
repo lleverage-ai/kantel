@@ -507,6 +507,19 @@ describe("environments", () => {
 		// Saved again as the page has them, they keep their IDs.
 		const again = await source.environments.setGrants(made.id, withGrants.grants);
 		expect(again.grants).toEqual(withGrants.grants);
+		// Written from an older read, Kantel refuses with `conflict` and the grants stay as they are.
+		const stale = [withGrants.grants[0]];
+		await expect(
+			source.environments.setGrants(
+				made.id,
+				[],
+				stale.filter((g) => g !== undefined),
+			),
+		).rejects.toMatchObject({ code: "conflict" });
+		expect((await source.environments.get(made.id)).grants).toEqual(withGrants.grants);
+		// Written from the current read, it's taken.
+		const kept = await source.environments.setGrants(made.id, withGrants.grants, withGrants.grants);
+		expect(kept.grants).toEqual(withGrants.grants);
 
 		const renamed = await source.environments.update(made.id, { name: "api", description: "" });
 		expect(renamed.name).toBe("api");
@@ -645,6 +658,9 @@ describe("egress", () => {
 			},
 		]);
 		expect(granted.environmentGrants).toEqual(egress.environmentGrants);
+		// A write from the read before that grant was added is refused, so it can't take the grant away.
+		await expect(source.egress.setGrants(sandbox.id, [], egress.grants)).rejects.toMatchObject({ code: "conflict" });
+		expect((await source.egress.get(sandbox.id)).grants).toEqual(granted.grants);
 	});
 });
 

@@ -29,10 +29,10 @@ function harness() {
 			...source.environments,
 			list: (accountId) =>
 				failReads ? Promise.reject(new Error("Kantel can't be reached.")) : source.environments.list(accountId),
-			setGrants: async (id, grants) => {
+			setGrants: async (id, grants, expected) => {
 				sent.push(grants);
 				if (hold !== undefined) await hold;
-				return source.environments.setGrants(id, grants);
+				return source.environments.setGrants(id, grants, expected);
 			},
 		},
 		proxy: {
@@ -230,6 +230,53 @@ describe("the Egress page's changes", () => {
 	});
 });
 
+describe("changes made somewhere else meanwhile", () => {
+	it("keeps an environment's grants another page changed: the stale write is refused and made again", async () => {
+		const h = harness();
+		const mine = await h.make();
+		const theirs = await h.make();
+		expect((await theirs.removeRule(backendRule(theirs.current, "grt_gh"))).status).toBe("saved");
+
+		// Mine still has grt_gh, but its addition doesn't bring it back.
+		expect(backendGrants(mine.current)).toContain("grt_gh");
+		const added = await mine.addRule({ action: "allow", host: "pypi.org", methods: [], paths: [], scope: BACKEND });
+		expect(added.status).toBe("saved");
+		const hosts = mine.current.environments.find((env) => env.id === "env_backend")?.grants.map((g) => g.host);
+		expect(hosts).toEqual(["api.github.com", "registry.npmjs.org", "*.example-tracker.io", "pypi.org"]);
+		expect(backendGrants(mine.current)).not.toContain("grt_gh");
+		expect(h.sent).toHaveLength(3);
+	});
+
+	it("doesn't restore a sandbox grant another page removed", async () => {
+		const h = harness();
+		const mine = await h.make();
+		const theirs = await h.make();
+		const pypi = (editor: EgressEditor) => {
+			const rule = rulesOf(editor.current).find((each) => each.grant?.id === "grt_dev_pypi");
+			if (rule === undefined) throw new Error("No grt_dev_pypi");
+			return rule;
+		};
+		expect((await theirs.removeRule(pypi(theirs))).status).toBe("saved");
+		const scope: RuleScope = { kind: "sandbox", id: DEV_STACK.id, name: DEV_STACK.name };
+		expect((await mine.addRule({ action: "allow", host: "crates.io", methods: [], paths: [], scope })).status).toBe(
+			"saved",
+		);
+		const devStack = mine.current.sandboxes.find((box) => box.sandboxId === DEV_STACK.id);
+		expect(devStack?.grants.map((grant) => grant.host)).toEqual(["crates.io"]);
+	});
+
+	it("keeps an account rule another page added: the list is changed as read just before writing", async () => {
+		const h = harness();
+		const mine = await h.make();
+		const theirs = await h.make();
+		const every: RuleScope = { kind: "account" };
+		const denyBefore = mine.current.proxy.deny;
+		await theirs.addRule({ action: "deny", host: "*.ru", methods: [], paths: [], scope: every });
+		await mine.addRule({ action: "deny", host: "registry", methods: [], paths: [], scope: every });
+		expect(mine.current.proxy.deny).toEqual([...denyBefore, "*.ru", "registry"]);
+	});
+});
+
 describe("hosts for the account's lists", () => {
 	it("takes an IPv4 address there, and only there", () => {
 		expect(accountHostProblem("1.1.1.1")).toBeUndefined();
@@ -241,5 +288,18 @@ describe("hosts for the account's lists", () => {
 		expect(accountHostProblem("256.1.1.1")).toBeDefined();
 		// Grants and bindings keep names only.
 		expect(hostProblem("1.1.1.1")).toBeDefined();
+	});
+
+	it("takes one label and a top-level wildcard there, as the old list editor did", () => {
+		expect(accountHostProblem("*.ru")).toBeUndefined();
+		expect(accountHostProblem("*.internal")).toBeUndefined();
+		expect(accountHostProblem("registry")).toBeUndefined();
+		expect(accountHostProblem("registry:5000")).toBeDefined();
+		expect(accountHostProblem("*")).toBeDefined();
+		expect(accountHostProblem("bad_host")).toBeDefined();
+		expect(accountHostProblem("1.2.3")).toBeDefined();
+		// Grants and bindings still want a dotted name.
+		expect(hostProblem("*.ru")).toBeDefined();
+		expect(hostProblem("registry")).toBeDefined();
 	});
 });

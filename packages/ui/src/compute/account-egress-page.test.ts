@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { SettingsView } from "./account-egress-page.tsx";
+import { SettingsView, settingsKey } from "./account-egress-page.tsx";
 import type { ProxySettings } from "./compute-model.ts";
 
 const proxy = (authSet: boolean): ProxySettings => ({
@@ -55,5 +55,21 @@ describe("Egress's settings while a save runs", () => {
 			expect(buttonTag(html, "Replace")).toMatch(/^<button/);
 			expect(buttonTag(html, "Replace")).not.toMatch(DISABLED);
 		}
+	});
+});
+
+describe("the settings form's identity", () => {
+	it("stays when only the proxy is turned on or off, so the draft survives", () => {
+		const on = proxy(true);
+		expect(settingsKey({ ...on, enabled: false })).toBe(settingsKey(on));
+	});
+
+	it("changes when a saved setting does, so a save starts the form again", () => {
+		const base = proxy(true);
+		expect(settingsKey({ ...base, upstream: { url: "https://other.example.com", authSet: true } })).not.toBe(
+			settingsKey(base),
+		);
+		expect(settingsKey(proxy(false))).not.toBe(settingsKey(base));
+		expect(settingsKey({ ...base, logRequests: false })).not.toBe(settingsKey(base));
 	});
 });

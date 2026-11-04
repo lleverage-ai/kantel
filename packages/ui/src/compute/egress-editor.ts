@@ -1,9 +1,17 @@
-// What the Egress page changes, one change at a time. Each change is written from the newest snapshot the page has,
-// what the write answers with goes into that snapshot straight away, and only then is the account's egress read
-// again. So a read that fails can't undo a change Kantel accepted, and two changes never replace a list from the same
-// stale copy: the API's lists and grants are replaced whole, with no check of what they replace.
+// What the Egress page changes, one change at a time. What a write answers with goes into the page's snapshot straight
+// away, and only then is the account's egress read again, so a read that fails can't undo a change Kantel accepted.
+// Grants are written with the API's `expected`, the grants as read: if someone changed them since (another page, the
+// CLI), Kantel refuses with `conflict` and the change is made again on a fresh read, as the CLI does. The account's
+// lists have no `expected`, so an add or remove there is made on the settings read just before it is written.
 
-import type { EgressGrant, EgressPolicy, Environment, ProxySettingsChange, SandboxEgress } from "./compute-model.ts";
+import type {
+	EgressGrant,
+	EgressPolicy,
+	Environment,
+	ProxySettings,
+	ProxySettingsChange,
+	SandboxEgress,
+} from "./compute-model.ts";
 import {
 	type EgressOverview,
 	type EgressOverviewSources,
@@ -42,6 +50,28 @@ export interface EgressEditorOptions {
 }
 
 export const BUSY_TEXT = "Another change is still being saved. Try again when it finishes.";
+
+/** How many times a grant change is made on a fresh read when Kantel says the grants changed since: the CLI's too. */
+const ATTEMPTS = 3;
+
+const isConflict = (error: unknown): boolean =>
+	typeof error === "object" && error !== null && (error as { readonly code?: unknown }).code === "conflict";
+
+/** Writes from `grants`, the grants as read; on `conflict`, reads them again and writes again, up to ATTEMPTS. */
+async function asRead<T>(
+	grants: readonly EgressGrant[],
+	reread: () => Promise<readonly EgressGrant[]>,
+	write: (grants: readonly EgressGrant[]) => Promise<T>,
+): Promise<T> {
+	for (let attempt = 1; ; attempt++) {
+		try {
+			return await write(grants);
+		} catch (error) {
+			if (attempt >= ATTEMPTS || !isConflict(error)) throw error;
+		}
+		grants = await reread();
+	}
+}
 
 export class EgressEditor {
 	#current: EgressOverview;
@@ -84,37 +114,22 @@ export class EgressEditor {
 	 * back as Nothing, so `firstHost` is sent with it in one write, and nothing is open in between.
 	 */
 	choosePolicy(policy: EgressPolicy, firstHost?: string): Promise<ChangeResult> {
-		const allow = this.#current.proxy.allow;
-		const change: ProxySettingsChange =
-			policy === "allowlist" && firstHost !== undefined && !allow.includes(firstHost)
-				? { policy, allow: [...allow, firstHost] }
-				: { policy };
-		return this.updateProxy("policy", change);
+		if (policy !== "allowlist" || firstHost === undefined) return this.updateProxy("policy", { policy });
+		return this.#editProxy("policy", (proxy) =>
+			proxy.allow.includes(firstHost) ? { policy } : { policy, allow: [...proxy.allow, firstHost] },
+		);
 	}
 
 	/** Adds a rule where it applies. One for every sandbox while sandboxes may reach nothing makes it Allowed hosts. */
 	addRule(rule: NewRule): Promise<ChangeResult> {
 		const { scope } = rule;
 		if (scope.kind === "account") {
-			return this.#run(
-				"add",
-				() => {
-					const proxy = this.#current.proxy;
-					if (rule.action === "allow" && proxy.policy === "closed") {
-						return this.#options.source.proxy.update(this.#options.accountId, {
-							policy: "allowlist",
-							allow: [rule.host],
-						});
-					}
-					const list = rule.action === "allow" ? proxy.allow : proxy.deny;
-					if (list.includes(rule.host)) return Promise.resolve(proxy);
-					return this.#options.source.proxy.update(
-						this.#options.accountId,
-						rule.action === "allow" ? { allow: [...list, rule.host] } : { deny: [...list, rule.host] },
-					);
-				},
-				(base, proxy) => ({ ...base, proxy }),
-			);
+			return this.#editProxy("add", (proxy) => {
+				if (rule.action === "allow" && proxy.policy === "closed") return { policy: "allowlist", allow: [rule.host] };
+				const list = rule.action === "allow" ? proxy.allow : proxy.deny;
+				if (list.includes(rule.host)) return undefined;
+				return rule.action === "allow" ? { allow: [...list, rule.host] } : { deny: [...list, rule.host] };
+			});
 		}
 		return this.#replaceGrants("add", scope, (grants) => {
 			this.#grants += 1;
@@ -136,18 +151,10 @@ export class EgressEditor {
 	removeRule(rule: EgressRule): Promise<ChangeResult> {
 		const { scope } = rule;
 		if (scope.kind === "account") {
-			return this.#run(
-				rule.key,
-				() => {
-					const proxy = this.#current.proxy;
-					return this.#options.source.proxy.update(
-						this.#options.accountId,
-						rule.action === "allow"
-							? { allow: proxy.allow.filter((host) => host !== rule.host) }
-							: { deny: proxy.deny.filter((host) => host !== rule.host) },
-					);
-				},
-				(base, proxy) => ({ ...base, proxy }),
+			return this.#editProxy(rule.key, (proxy) =>
+				rule.action === "allow"
+					? { allow: proxy.allow.filter((host) => host !== rule.host) }
+					: { deny: proxy.deny.filter((host) => host !== rule.host) },
 			);
 		}
 		return this.#replaceGrants(rule.key, scope, (grants) => grants.filter((grant) => grant.id !== rule.grant?.id));
@@ -162,7 +169,24 @@ export class EgressEditor {
 		);
 	}
 
-	/** Replaces an environment's or a sandbox's grants with `next` of the newest ones. */
+	/** Changes the account's lists with `edit` of the settings read just now; `undefined` writes nothing. */
+	#editProxy(what: string, edit: (proxy: ProxySettings) => ProxySettingsChange | undefined): Promise<ChangeResult> {
+		const { source, accountId } = this.#options;
+		return this.#run(
+			what,
+			async () => {
+				const proxy = await source.proxy.get(accountId);
+				const change = edit(proxy);
+				return change === undefined ? proxy : source.proxy.update(accountId, change);
+			},
+			(base, proxy) => ({ ...base, proxy }),
+		);
+	}
+
+	/**
+	 * Replaces an environment's or a sandbox's grants with `next` of the newest ones, sent with those as `expected`. On
+	 * `conflict` someone changed them since: `next` is made again on a fresh read of them.
+	 */
 	#replaceGrants(
 		what: string,
 		scope: Exclude<RuleScope, { kind: "account" }>,
@@ -172,19 +196,23 @@ export class EgressEditor {
 		if (scope.kind === "environment") {
 			return this.#run(
 				what,
-				() => {
-					const grants = this.#current.environments.find((env) => env.id === scope.id)?.grants ?? [];
-					return source.environments.setGrants(scope.id, next(grants));
-				},
+				() =>
+					asRead(
+						this.#current.environments.find((env) => env.id === scope.id)?.grants ?? [],
+						async () => (await source.environments.get(scope.id)).grants,
+						(grants) => source.environments.setGrants(scope.id, next(grants), grants),
+					),
 				withEnvironment,
 			);
 		}
 		return this.#run(
 			what,
-			() => {
-				const grants = this.#current.sandboxes.find((box) => box.sandboxId === scope.id)?.grants ?? [];
-				return source.egress.setGrants(scope.id, next(grants));
-			},
+			() =>
+				asRead(
+					this.#current.sandboxes.find((box) => box.sandboxId === scope.id)?.grants ?? [],
+					async () => (await source.egress.get(scope.id)).grants,
+					(grants) => source.egress.setGrants(scope.id, next(grants), grants),
+				),
 			withSandbox,
 		);
 	}

@@ -52,7 +52,7 @@ makes a sandbox at once, and its caret opens New sandbox. Two buttons joined, ea
 **For** a phone's main navigation: up to five pages along the bottom, each an icon over a short label, the page shown
 in full-strength text with its icon in the accent, and `aria-current="page"`. It sits above the home indicator (`env(safe-area-inset-bottom)`).
 
-**Not for** a wide screen (use `Sidebar`), more than five pages, or tabs inside a page (`SegmentedControl`).
+**Not for** a wide screen (use `Sidebar`), more than five pages, or tabs inside a page (`PageTabs`).
 
 ### StatusLabel and StatusDot
 
@@ -106,7 +106,7 @@ headings are hidden. The host owns the state, the width (`--kt-sidebar-width` or
 console remembers it in localStorage and toggles it with Ctrl+B (⌘B on a Mac). `useSidebarCollapsed()` tells a
 component inside whether it is on the rail.
 
-**Not for** navigation inside a page (use `SegmentedControl` or a list).
+**Not for** navigation inside a page (use `PageTabs`, `SegmentedControl` or a list).
 
 The compute console draws it `--kt-nav-width` wide with no rail: its pages, Settings, Admin for a super-admin, and
 the person's own menu (`UserMenu`: who they are, the theme, sign out) in the foot. On a phone it has a top bar and a
@@ -123,7 +123,7 @@ a link. Slashes in the faint colour separate them and are hidden from screen rea
 baseline. The current item takes the room that's left and truncates first; a parent keeps at least a few letters.
 Modelled on T3 Code's `WorkspaceBreadcrumb` and its chat header's project / parent / thread trail.
 
-**Not for** tabs or switching between peers (use `SegmentedControl`), or a path inside a file tree.
+**Not for** tabs or switching between peers (use `PageTabs` or `SegmentedControl`), or a path inside a file tree.
 
 **Cost:** memoised on its props; pass a stable `parents` array.
 
@@ -203,6 +203,17 @@ hint and error as `TextField`; its height follows `rows` and the person can drag
 
 **Not for** the composer, which sends on Enter and has attachments.
 
+### PageTabs
+
+**For** a page's own views, one shown at a time, each with its address: Egress's Log, Rules and Settings. Each tab is
+a link (`href`), so a view can be reloaded, shared and opened in a new tab; the one shown (`selected`) is in
+full-strength text with a bar on the row's hairline and `aria-current="page"`. `onSelect` shows a tab in place of
+following its link (the host navigates); a modified click still follows it. A tab's `count` follows its label. The
+row scrolls sideways when the tabs don't fit, as on a phone.
+
+**Not for** the app's pages (use `Sidebar` or `TabBar`), or filters and views within one view that need no address
+(use `SegmentedControl`).
+
 ### SegmentedControl
 
 **For** two to five exclusive views or filters: Unified or Split, All, Working or Done. A radio group: Tab reaches
@@ -212,7 +223,7 @@ option is lit until then, rather than lighting one and moving off it (the Connec
 `tone` (`done`, `approval`, `error`) colours it when it's chosen, for a choice that is itself a status: Allow, Ask,
 Block in a connection's policy grid. The label still says it; the colour only repeats it.
 
-**Not for** more than five options, or for actions.
+**Not for** more than five options, for actions, or for a page's views that each have an address (use `PageTabs`).
 
 ### CheckboxField
 

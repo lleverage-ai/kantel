@@ -1113,6 +1113,16 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 		await new Promise((resolve) => setTimeout(resolve, 60));
 		return make();
 	};
+	/** Refuses a grant write made from an older read, as Kantel's API does with `conflict`. */
+	const requireGrants = (expected: readonly EgressGrant[] | undefined, now: readonly EgressGrant[], what: string) => {
+		const key = (grants: readonly EgressGrant[]) =>
+			JSON.stringify(grants.map((grant) => [grant.id, grant.action, grant.host, grant.methods, grant.paths]));
+		if (expected !== undefined && key(expected) !== key(now)) {
+			throw Object.assign(new Error(`${what} changed since you read them; read them again and redo the change`), {
+				code: "conflict",
+			});
+		}
+	};
 	const find = <T>(map: Map<string, T>, id: string, what: string): T => {
 		const found = map.get(id);
 		if (found === undefined) throw new Error(`No ${what} ${id}.`);
@@ -1578,13 +1588,19 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					if (twice !== undefined) throw new Error(`${twice} is in the list twice.`);
 					return putEnvironment({ ...env, repos });
 				}),
-			setGrants: (id, grants) => gate(() => putEnvironment({ ...find(environments, id, "environment"), grants })),
+			setGrants: (id, grants, expected) =>
+				gate(() => {
+					const env = find(environments, id, "environment");
+					requireGrants(expected, env.grants, "The environment's grants");
+					return putEnvironment({ ...env, grants });
+				}),
 		},
 		egress: {
 			get: (sandboxId) => gate(() => egressOf(sandboxId)),
-			setGrants: (sandboxId, grants) =>
+			setGrants: (sandboxId, grants, expected) =>
 				gate(() => {
 					find(sandboxes, sandboxId, "sandbox");
+					requireGrants(expected, sandboxGrants.get(sandboxId) ?? [], "The sandbox's grants");
 					sandboxGrants.set(sandboxId, grants);
 					return egressOf(sandboxId);
 				}),

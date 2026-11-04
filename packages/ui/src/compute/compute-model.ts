@@ -531,7 +531,8 @@ export interface EnvironmentsSource {
 	setFile(id: string, input: FileInput): Promise<Environment>;
 	removeFile(id: string, path: string): Promise<Environment>;
 	setRepos(id: string, repos: readonly EnvironmentRepo[]): Promise<Environment>;
-	setGrants(id: string, grants: readonly EgressGrant[]): Promise<Environment>;
+	/** Replaces its grants. With `expected`, refused with `conflict` if they are no longer those. */
+	setGrants(id: string, grants: readonly EgressGrant[], expected?: readonly EgressGrant[]): Promise<Environment>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -590,8 +591,12 @@ export interface SandboxEgress {
 
 export interface EgressSource {
 	get(sandboxId: string): Promise<SandboxEgress>;
-	/** Replaces the sandbox's own grants; they apply to its next request. */
-	setGrants(sandboxId: string, grants: readonly EgressGrant[]): Promise<SandboxEgress>;
+	/** Replaces the sandbox's own grants; they apply to its next request. With `expected`, as for an environment's. */
+	setGrants(
+		sandboxId: string,
+		grants: readonly EgressGrant[],
+		expected?: readonly EgressGrant[],
+	): Promise<SandboxEgress>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
