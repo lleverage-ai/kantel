@@ -130,7 +130,8 @@ kantel delete sbx_4kq9x2mt --yes    # or delete it for good
 ## Next
 
 - [Hosts](/hosts/): more machines, labels, where sandboxes go, updates and removing a host.
-- [Egress proxy](/sandboxes/egress-proxy/): allow and deny lists, and your own upstream proxy.
+- [Egress proxy](/sandboxes/egress-proxy/): allow and deny lists, grants, and your own upstream proxy.
+- [Environments and protected variables](/sandboxes/environments/): give sandboxes credentials they can use but never read.
 - [Command line](/tools/cli/): everything `kantel` does.
 - [Install Kantel](/self-hosting/install/#your-own-settings): sign-in email, a TLS address and the other settings.
 

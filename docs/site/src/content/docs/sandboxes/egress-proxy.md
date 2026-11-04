@@ -1,6 +1,6 @@
 ---
 title: Egress proxy
-description: How a sandbox on your hosts reaches the internet, and how to limit it. Set an account's allow and deny lists, send its traffic on through a proxy of your own with credentials the sandbox never sees, and recognise a refusal.
+description: How a sandbox on your hosts reaches the internet, and how to limit it. Set an account's allow and deny lists, narrow them by method and path with grants, send its traffic on through a proxy of your own with credentials the sandbox never sees, and recognise a refusal.
 sidebar:
   badge:
     text: Experimental
@@ -11,7 +11,9 @@ sidebar:
 The proxy settings are part of Kantel's API, which every control plane serves. They apply to sandboxes on [your own hosts](/hosts/), not the built-in stand-in (`KANTEL_COMPUTE_BACKEND=stub`). Their shapes may still change.
 :::
 
-Every sandbox on a host goes out through one door: the egress proxy that `kantel-host` runs. An account's proxy settings decide which sites the door opens to, and can send what goes through on to a proxy of your own.
+Every sandbox on a host goes out through one door: the egress proxy that `kantel-host` runs. An account's proxy settings decide which sites the door opens to, and can send what goes through on to a proxy of your own. [Grants](#grants) narrow that by method and path for the sandboxes of one environment, or for one sandbox.
+
+The same proxy puts [protected variables](/sandboxes/environments/) into requests: the sandbox holds a placeholder, and the proxy swaps in the real value only for the destinations it is bound to.
 
 ## How a sandbox gets out
 
@@ -20,8 +22,8 @@ A microVM's network reaches one address, its host's egress proxy on port 3129. T
 The sandbox is set up to use the proxy. Shells and commands get the usual variables:
 
 ```text
-HTTP_PROXY=http://sandbox@10.231.0.9:3129
-HTTPS_PROXY=http://sandbox@10.231.0.9:3129
+HTTP_PROXY=http://sandbox:@10.231.0.9:3129
+HTTPS_PROXY=http://sandbox:@10.231.0.9:3129
 NO_PROXY=localhost,127.0.0.1,::1
 ```
 
@@ -78,7 +80,43 @@ A rule is a host name:
 - `*.github.com` matches every name under `github.com`, but not `github.com` itself, so list both if you want both;
 - `*` matches every name.
 
-Names are compared without regard to case. A rule doesn't name a port, a path or an address range: `10.0.0.0/8` is accepted, but it matches only a request for the literal name `10.0.0.0/8`, which never happens. Rules apply to the name a program asks the proxy for, before it is resolved. To allow private addresses, use the host's `egressAllowCIDRs` instead.
+Names are compared without regard to case. A rule doesn't name a port, a path or an address range: `10.0.0.0/8` is accepted, but it matches only a request for the literal name `10.0.0.0/8`, which never happens. Rules apply to the name a program asks the proxy for, before it is resolved. To allow private addresses, use the host's `egressAllowCIDRs` instead. To decide by method or path, use a grant.
+
+## Grants
+
+A grant allows or refuses requests to a host, optionally only those with certain methods or paths. An [environment](/sandboxes/environments/) has grants for every sandbox made from it, and a sandbox can have grants of its own.
+
+```sh
+kantel env grant work deny api.github.com --method DELETE --path '/repos/**'
+kantel grant sbx_4kq9x2mt allow uploads.example.com --method PUT --path '/incoming/*'
+kantel egress sbx_4kq9x2mt    # the sandbox's grants and its log
+kantel grant rm sbx_4kq9x2mt grt_8f2k
+```
+
+| Part | What it matches |
+| --- | --- |
+| Host | A name, as in a [rule](#rules): `api.github.com`, or `*.github.com` for the names under it |
+| Methods | Any of these methods, such as `DELETE`. None: every method |
+| Paths | Any of these path patterns. `*` matches one segment and `**` the rest, so `/repos/*` matches `/repos/app` but not `/repos/app/issues`, and `/repos/**` matches both. None: every path. The query isn't part of the path |
+
+Grants apply on top of the account's allow and deny rules: the environment's first, then the sandbox's own. Where a deny and an allow both match a request, the deny wins. Running sandboxes pick up a change within seconds.
+
+The proxy refuses a request a grant denies with status 403 and two headers, `X-Kantel-Proxy-Error: denied` and `X-Kantel-Proxy-Rule`, which names the grant:
+
+```text
+HTTP/1.1 403 Forbidden
+Content-Type: text/plain
+X-Kantel-Proxy-Error: denied
+X-Kantel-Proxy-Rule: deny DELETE api.github.com /repos/**
+```
+
+[Environments and protected variables](/sandboxes/environments/#refusals) lists the other codes.
+
+### Which HTTPS the proxy reads
+
+To match a method or a path in an HTTPS request, the proxy has to read it. It does that only for the hosts that need it: a host with a grant that names methods or paths, and a host a protected variable is bound to. For those, it ends TLS with a certificate from a certificate authority of the sandbox's own, which can sign only for those hosts and whose certificate is in the sandbox's trust store, and opens its own verified TLS connection to the real host.
+
+HTTPS to every other host stays a tunnel the proxy passes on without reading. A grant with only a host decides on the tunnel as a whole, as a rule does. The proxy reads only port 443, so a tunnel to another port of a host that a method or path deny grant covers is refused: the proxy couldn't check what goes through it. The same applies to a deny grant with methods or paths on `*`, which no certificate can be made for. Every request on a connection the proxy reads is checked against the sandbox's grants at the time it is sent, so a grant changed while a connection is open applies to that connection's next request. A client that pins certificates refuses the proxy's certificate for an intercepted host, so give method and path grants only to hosts where that is acceptable.
 
 ## What a refusal looks like
 
@@ -111,7 +149,7 @@ The host logs every decision, allowed or refused, in its journal (`journalctl -u
 level=INFO msg=egress part=egress sandbox=sbx_4kq9x2mt method=CONNECT host=www.iana.org port=443 allowed=false reason="not on the proxy settings' allow list" via=direct attribution="" up=0 down=0
 ```
 
-Refusals aren't [events](/api/reference/events/) yet, so webhooks, OpenTelemetry and the console don't see them.
+Each sandbox also keeps its newest 1,000 requests, allowed and refused, in its [egress log](/sandboxes/environments/#the-egress-log), which `kantel egress <sandbox>` and `GET /v1/sandboxes/{sandboxId}/egress` show. Refusals aren't [events](/api/reference/events/) yet, so webhooks and OpenTelemetry don't see them.
 
 ## Send traffic through your own proxy
 

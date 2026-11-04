@@ -10019,6 +10019,14 @@
 							"$ref": "#/components/schemas/EgressGrantInput"
 						},
 						"maxItems": 200
+					},
+					"expected": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/EgressGrantInput"
+						},
+						"maxItems": 200,
+						"description": "The list as you last read it. Given, the write is refused with `conflict` if the list has changed since, so an edit made from an older read can't undo someone else's: read it again and redo the edit. Left out, the list is replaced whatever it holds."
 					}
 				},
 				"title": "PutEgressGrantsBody"
@@ -10033,6 +10041,14 @@
 							"$ref": "#/components/schemas/EnvironmentRepo"
 						},
 						"maxItems": 20
+					},
+					"expected": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/EnvironmentRepo"
+						},
+						"maxItems": 20,
+						"description": "The list as you last read it. Given, the write is refused with `conflict` if the list has changed since, so an edit made from an older read can't undo someone else's: read it again and redo the edit. Left out, the list is replaced whatever it holds."
 					}
 				},
 				"title": "PutEnvironmentReposBody"

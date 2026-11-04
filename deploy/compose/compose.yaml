@@ -93,6 +93,10 @@ services:
       KANTEL_HOST_UPDATE_URL: ${KANTEL_HOST_UPDATE_URL:-}
       KANTEL_COMPUTE_PORTS_DOMAIN: ${KANTEL_COMPUTE_PORTS_DOMAIN:-}
       KANTEL_EGRESS_ATTRIBUTION_KEY: ${KANTEL_EGRESS_ATTRIBUTION_KEY:-}
+      # Seals environments' protected values and secret files in the
+      # database: 32 random bytes in base64. Left empty, protected values
+      # and secret files are refused; plain variables still work.
+      KANTEL_SECRETS_KEY: ${KANTEL_SECRETS_KEY:-}
       KANTEL_ACCOUNT_HOSTS: ${KANTEL_ACCOUNT_HOSTS:-}
     ports: ["127.0.0.1:${KANTEL_GATEWAY_PORT:-${HARBOUR_GATEWAY_PORT:-58090}}:8080"]
     networks: [control]

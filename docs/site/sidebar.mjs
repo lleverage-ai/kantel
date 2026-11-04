@@ -21,6 +21,7 @@ export const sidebar = [
 			"sandboxes/desktop-and-browser",
 			"sandboxes/ssh",
 			"sandboxes/egress-proxy",
+			"sandboxes/environments",
 		],
 	},
 	{

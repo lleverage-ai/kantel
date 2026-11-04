@@ -62,6 +62,21 @@ import {
 	resolveConfig,
 	writeStoredConfig,
 } from "./config.ts";
+import {
+	type Binding,
+	bindingsText,
+	describeEgress,
+	describeEnvironment,
+	type Environment,
+	environmentTable,
+	type GrantInput,
+	grantText,
+	mergeBindings,
+	octal,
+	parseBinding,
+	parseGrant,
+	withoutProtectedValues,
+} from "./environments.ts";
 import { CliError, UsageError } from "./errors.ts";
 import { ago, bytes, duration, fields, money, table, timestamp, until } from "./format.ts";
 import { openInBrowser, type PendingLogin, readPendingLogin, startLogin, waitForLogin } from "./login.ts";
@@ -196,6 +211,8 @@ interface CommandSpec {
 	/** Its words, such as `sandbox create`. */
 	readonly name: string;
 	readonly summary: string;
+	/** Its usage line, when its arguments say it badly, such as `env set <env> <NAME>[=<value>]`. */
+	readonly usage?: string;
 	/** Left out of `kantel help`'s list: an older spelling kept working, such as `sandbox create` for `new`. */
 	readonly hidden?: boolean;
 	readonly args?: readonly Arg[];
@@ -660,6 +677,128 @@ async function browserLogin(ctx: Context, url: string): Promise<IssuedApiKey | u
 	return waitForLogin(client, pending, ctx.io.configDir, ctx.io.sleep, now);
 }
 
+// Environments and egress.
+
+/** An environment's ID: `<env>` itself when it is one (`env_…`), else the ID of the one with that name in the account. */
+async function environmentIdOf(ctx: Context, client: KantelClient, ref: string): Promise<string> {
+	if (ref.startsWith("env_")) return ref;
+	const config = await ctx.config();
+	const list = await client.listEnvironments(config.account === undefined ? {} : { account: config.account });
+	const found = list.items.find((environment) => environment.name === ref);
+	if (found === undefined) throw new CliError(`there is no environment called "${ref}": kantel env list shows them`);
+	return found.id;
+}
+
+async function loadEnvironment(ctx: Context, client: KantelClient, ref: string): Promise<Environment> {
+	return client.getEnvironment(await environmentIdOf(ctx, client, ref));
+}
+
+/** A value from stdin, less one final newline, for `env set --value-stdin`. It is never printed. */
+async function valueFromStdin(ctx: Context): Promise<string> {
+	const stdin = ctx.io.stdin();
+	if (stdin.isTTY === true) ctx.note("kantel: reading the value from stdin; end it with Ctrl-D");
+	const value = new TextDecoder().decode(await readAll(stdin)).replace(/\r?\n$/, "");
+	if (value === "") throw new UsageError("there was no value on stdin");
+	return value;
+}
+
+/** `--mode 0600`: a file mode in octal. */
+function modeOf(value: string | undefined): number | undefined {
+	if (value === undefined) return undefined;
+	if (!/^0?[0-7]{3}$/.test(value)) throw new UsageError(`--mode takes an octal mode such as 0600, not "${value}"`);
+	return Number.parseInt(value, 8);
+}
+
+/** The grant flags `env grant` and `grant` share. */
+const GRANT_FLAGS: FlagSpecs = {
+	method: {
+		type: "string",
+		multiple: true,
+		value: "<METHOD>",
+		description: "Only requests with this method, such as DELETE; repeat it",
+	},
+	path: {
+		type: "string",
+		multiple: true,
+		value: "<pattern>",
+		description: "Only these paths: * is one segment, ** the rest; repeat it",
+	},
+};
+
+const GRANT_DETAILS =
+	"Grants apply on top of the account's proxy settings: the environment's, then the sandbox's own, and deny wins.\n" +
+	"A grant with --method or --path has the egress proxy open that host's HTTPS to read each request.\n" +
+	"Quote a pattern so your shell leaves its * alone:";
+
+/** Where a new grant went: the grant in `after` whose ID wasn't in `before`. */
+function addedGrantId(before: readonly { readonly id: string }[], after: readonly { readonly id: string }[]): string {
+	const known = new Set(before.map((grant) => grant.id));
+	const added = after.find((grant) => !known.has(grant.id));
+	return added === undefined ? "" : ` (${added.id})`;
+}
+
+/** The other grants: all but `id`, or a `CliError` when there is none with that ID. */
+function withoutGrant<T extends { readonly id: string }>(grants: readonly T[], id: string, where: string): T[] {
+	const kept = grants.filter((grant) => grant.id !== id);
+	if (kept.length === grants.length) throw new CliError(`${where} has no grant ${id}`);
+	return kept;
+}
+
+/** How many times an edit of a list is read and written again when the list changed in between. */
+const EDIT_ATTEMPTS = 3;
+
+/**
+ * Runs `edit`, which reads a list, changes it and writes it with `expected` the list as read: Kantel refuses the write
+ * with `conflict` when the list changed in between, and the edit is made again on what is there now, so no one
+ * else's change is lost. Answers the last attempt's result.
+ */
+async function editAsRead<T>(edit: () => Promise<T>): Promise<T> {
+	for (let attempt = 1; ; attempt++) {
+		try {
+			return await edit();
+		} catch (error) {
+			if (attempt >= EDIT_ATTEMPTS || !(error instanceof KantelApiError) || error.code !== "conflict") throw error;
+		}
+	}
+}
+
+/** A variable as Kantel answered it, when the answer is an environment holding it. */
+function variableIn(
+	answer: unknown,
+	name: string,
+): { readonly protected: boolean; readonly bindings: readonly Binding[] } | undefined {
+	if (typeof answer !== "object" || answer === null) return undefined;
+	const variables = (answer as { readonly variables?: unknown }).variables;
+	if (!Array.isArray(variables)) return undefined;
+	const found = variables.find(
+		(variable): variable is { name: string; protected: boolean; bindings: Binding[] } =>
+			typeof variable === "object" &&
+			variable !== null &&
+			variable.name === name &&
+			typeof variable.protected === "boolean" &&
+			Array.isArray(variable.bindings),
+	);
+	return found === undefined ? undefined : { protected: found.protected, bindings: found.bindings };
+}
+
+/** A secret file as Kantel answered it, when the answer is an environment holding it at `path`. */
+function fileIn(answer: unknown, path: string): { readonly mode: number; readonly sizeBytes: number } | undefined {
+	if (typeof answer !== "object" || answer === null) return undefined;
+	const files = (answer as { readonly files?: unknown }).files;
+	if (!Array.isArray(files)) return undefined;
+	// Kantel answers the path as it keeps it, absolute under /home/user (`~/` is there too); the command has it as typed.
+	const wanted = new Set([path, posix.resolve("/home/user", path.startsWith("~/") ? path.slice(2) : path)]);
+	const found = files.find(
+		(file): file is { path: string; mode: number; sizeBytes: number } =>
+			typeof file === "object" &&
+			file !== null &&
+			wanted.has(file.path) &&
+			typeof file.mode === "number" &&
+			typeof file.sizeBytes === "number",
+	);
+	return found === undefined ? undefined : { mode: found.mode, sizeBytes: found.sizeBytes };
+}
+
 // The commands.
 
 const SECTIONS: readonly Section[] = [
@@ -793,8 +932,9 @@ const SECTIONS: readonly Section[] = [
 						type: "string",
 						short: "e",
 						multiple: true,
-						value: "<K=V>",
-						description: "An environment variable every command sees (not a secret); repeat it",
+						value: "<K=V|env>",
+						description:
+							"K=V: a variable every command sees (not a secret), repeatable; or an environment to start from",
 					},
 					host: {
 						type: "string",
@@ -804,10 +944,22 @@ const SECTIONS: readonly Section[] = [
 					},
 					"no-wait": noWait,
 				},
+				details:
+					"--env takes a variable (K=V) or an environment (its name or env_… ID; kantel env list shows them). An\n" +
+					"environment gives the sandbox its variables, secret files, repos and grants: a protected variable arrives\n" +
+					"as a kph_… placeholder that the egress proxy swaps for the value only where it is bound.",
 				async run(ctx) {
 					const hosts = ctx.list("host").map(hostedPort);
 					if (hosts.length > 0 && ctx.boolean("no-wait")) throw new UsageError("--host needs the sandbox running");
+					// A variable has an =; an environment's name or ID never does.
+					const envs = ctx.list("env");
+					const environments = envs.filter((item) => !item.includes("="));
+					if (environments.length > 1) {
+						throw new UsageError("a sandbox starts from one environment: give --env <env> once");
+					}
+					const [environment] = environments;
 					const body = {
+						...(environment === undefined ? {} : { environment }),
 						name: ctx.string("name"),
 						type: choice(ctx.string("type"), SANDBOX_TYPES, "--type"),
 						size: choice(ctx.string("size"), SIZES, "--size"),
@@ -815,7 +967,10 @@ const SECTIONS: readonly Section[] = [
 						from: ctx.string("from"),
 						autoStopMinutes: autoStopOf(ctx.string("auto-stop")),
 						labels: pairs(ctx.list("label"), "--label"),
-						env: pairs(ctx.list("env"), "--env"),
+						env: pairs(
+							envs.filter((item) => item.includes("=")),
+							"--env",
+						),
 						wait: !ctx.boolean("no-wait"),
 					};
 					const config = await ctx.config();
@@ -1574,6 +1729,401 @@ const SECTIONS: readonly Section[] = [
 		],
 	},
 	{
+		title: "Environments and egress",
+		commands: [
+			{
+				name: "env list",
+				summary: "The account's environments",
+				async run(ctx) {
+					const config = await ctx.config();
+					const list = await (await ctx.client()).listEnvironments(
+						config.account === undefined ? {} : { account: config.account },
+					);
+					ctx.emit(withoutProtectedValues(list), () =>
+						list.items.length === 0
+							? "No environments. Make one: kantel env create <name>"
+							: environmentTable(list.items),
+					);
+				},
+			},
+			{
+				name: "env create",
+				summary: "Make an environment: variables, secret files, repos and grants for new sandboxes",
+				args: [{ name: "name" }],
+				flags: { description: { type: "string", value: "<text>", description: "What it is for" } },
+				details: "A name is lower-case letters, digits and hyphens, unique in the account.",
+				async run(ctx) {
+					const config = await ctx.config();
+					const description = ctx.string("description");
+					const environment = await (await ctx.client()).createEnvironment({
+						...(config.account === undefined ? {} : { account: config.account }),
+						name: ctx.arg(0),
+						...(description === undefined ? {} : { description }),
+					});
+					ctx.emit(withoutProtectedValues(environment), () =>
+						[
+							`Created ${environment.id} (${environment.name}).`,
+							`  Add a variable:  kantel env set ${environment.name} NAME=value`,
+							`  Use it:          kantel new --env ${environment.name}`,
+						].join("\n"),
+					);
+				},
+			},
+			{
+				name: "env show",
+				summary: "Show an environment: its variables (never a protected one's value), files, repos and grants",
+				args: [{ name: "env" }],
+				async run(ctx) {
+					const environment = await loadEnvironment(ctx, await ctx.client(), ctx.arg(0));
+					ctx.emit(withoutProtectedValues(environment), () => describeEnvironment(environment));
+				},
+			},
+			{
+				name: "env delete",
+				summary: "Delete an environment, with its sealed values and files",
+				args: [{ name: "env" }],
+				async run(ctx) {
+					const client = await ctx.client();
+					const environmentId = await environmentIdOf(ctx, client, ctx.arg(0));
+					await client.deleteEnvironment(environmentId);
+					ctx.emit({ deleted: environmentId }, () => `Deleted ${environmentId}.`);
+				},
+			},
+			{
+				name: "env set",
+				usage: "env set <env> <NAME>[=<value>]",
+				summary: "Set a variable: plain, or protected so sandboxes get a placeholder and never the value",
+				args: [
+					{ name: "env", optional: true },
+					{ name: "NAME=value", optional: true },
+				],
+				flags: {
+					env: { type: "string", value: "<env>", description: "The environment, instead of the first argument" },
+					protected: {
+						type: "boolean",
+						description: "Keep the value out of sandboxes: each gets a kph_… placeholder instead",
+					},
+					bind: {
+						type: "string",
+						multiple: true,
+						value: "<host>[/path][:METHOD,…]",
+						description: "Where a protected value may be sent; repeat it",
+					},
+					"value-stdin": {
+						type: "boolean",
+						description: "Read the value from stdin, which keeps it out of your shell history",
+					},
+					"keep-value": {
+						type: "boolean",
+						description: "Change a protected variable's --bind without entering its value again",
+					},
+					plain: { type: "boolean", description: "Make a protected variable plain: sandboxes then get its value" },
+				},
+				details:
+					"A protected variable's value never enters a sandbox. Each sandbox gets a kph_… placeholder in its place,\n" +
+					"which the host's egress proxy swaps for the value only in requests to a --bind destination:\n" +
+					"<host>[/path-prefix][:METHOD,…], such as api.github.com or api.openai.com/v1/:POST,GET.\n" +
+					"\n" +
+					"--value-stdin reads the value from stdin, which keeps it out of your shell history and the process list:\n" +
+					'  printf %s "$GH_TOKEN" | kantel env set work GH_TOKEN --value-stdin --protected --bind api.github.com\n' +
+					"\n" +
+					"Setting a protected variable again with a new value rotates it: running sandboxes keep their placeholder\n" +
+					"and send the new value from their next request. It stays protected unless you give --plain.\n" +
+					"--keep-value with --bind changes where it may go without entering it again.",
+				async run(ctx) {
+					const flagEnv = ctx.string("env");
+					const expected = flagEnv === undefined ? 2 : 1;
+					if (ctx.positionals.length !== expected) {
+						throw new UsageError(
+							flagEnv === undefined
+								? "give the environment and the variable: kantel env set <env> NAME=value"
+								: "give the variable once: kantel env set --env <env> NAME=value",
+						);
+					}
+					const ref = flagEnv ?? ctx.arg(0);
+					const assignment = ctx.arg(expected - 1);
+					const eq = assignment.indexOf("=");
+					const name = eq === -1 ? assignment : assignment.slice(0, eq);
+					const inline = eq === -1 ? undefined : assignment.slice(eq + 1);
+					// Never put the assignment in a message: it may hold the value.
+					if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+						throw new UsageError("a variable's name is letters, digits and _, such as GH_TOKEN, before any =");
+					}
+					const fromStdin = ctx.boolean("value-stdin");
+					const keep = ctx.boolean("keep-value");
+					const plain = ctx.boolean("plain");
+					const asked = ctx.boolean("protected");
+					const ways = [inline !== undefined, fromStdin, keep].filter((given) => given).length;
+					if (ways === 0) {
+						throw new UsageError(
+							`give ${name} a value: ${name}=<value>, --value-stdin, or --keep-value to re-bind a protected one`,
+						);
+					}
+					if (ways > 1) throw new UsageError("give the value one way: NAME=value, --value-stdin or --keep-value");
+					if (plain && (asked || keep)) {
+						throw new UsageError("--plain makes the variable plain: leave out --protected and --keep-value");
+					}
+					const bindings = mergeBindings(ctx.list("bind").map(parseBinding));
+					if (plain && bindings.length > 0)
+						throw new UsageError("--bind is for a protected variable, not a --plain one");
+					if (keep && bindings.length === 0) {
+						throw new UsageError("--keep-value changes where the value may go: give the new --bind");
+					}
+					const value = fromStdin ? await valueFromStdin(ctx) : inline;
+					const client = await ctx.client();
+					const environment = await loadEnvironment(ctx, client, ref);
+					const existing = environment.variables.find((variable) => variable.name === name);
+					const wasProtected = existing?.protected === true;
+					if (keep && !wasProtected) {
+						throw new CliError(`${name} isn't protected in ${environment.name}, so there is no value to keep`);
+					}
+					// Its bindings are sent only when --bind gives them, so a rotation never undoes a change to them made since
+					// the read above. Its mode is sent when a flag gives it, and for a rotation of one read as protected: that
+					// value is meant to be sealed, so if the variable was removed or made plain meanwhile, Kantel refuses the
+					// write (a protected variable needs a binding) rather than keeping the new value in the clear. Read as plain
+					// or new, a value alone leaves the mode as Kantel has it: one protected meanwhile stays so.
+					const mode = plain ? false : asked || keep || bindings.length > 0 || wasProtected ? true : undefined;
+					if (mode === true && bindings.length === 0 && !wasProtected) {
+						throw new UsageError("a protected variable needs --bind <host>: where its value may be sent");
+					}
+					const answer: unknown = await client.setEnvironmentVariable(environment.id, name, {
+						...(mode === undefined ? {} : { protected: mode }),
+						...(value === undefined ? {} : { value }),
+						...(bindings.length === 0 ? {} : { bindings }),
+					});
+					// What it is now, as Kantel answers; failing that, what was sent on what was read.
+					const written = variableIn(answer, name);
+					const isProtected = written?.protected ?? mode ?? wasProtected;
+					const sent =
+						written?.bindings ?? (bindings.length > 0 ? bindings : wasProtected ? (existing?.bindings ?? []) : []);
+					const shown = answer ?? { environmentId: environment.id, name, protected: isProtected };
+					const live = wasProtected && isProtected;
+					const verb = live && value !== undefined ? "Rotated" : "Set";
+					const where = isProtected ? `: protected, sent only to ${bindingsText(sent)}` : "";
+					ctx.emit(withoutProtectedValues(shown), () =>
+						[
+							`${verb} ${name} in ${environment.name}${where}.`,
+							live
+								? "Running sandboxes use it from their next request, with the same placeholder."
+								: "Sandboxes made from now on get it.",
+						].join("\n"),
+					);
+				},
+			},
+			{
+				name: "env unset",
+				summary: "Remove a variable from an environment",
+				args: [{ name: "env" }, { name: "NAME" }],
+				async run(ctx) {
+					const client = await ctx.client();
+					const environmentId = await environmentIdOf(ctx, client, ctx.arg(0));
+					const name = ctx.arg(1);
+					await client.deleteEnvironmentVariable(environmentId, name);
+					ctx.emit({ deleted: name, environmentId }, () => `Removed ${name} from ${ctx.arg(0)}.`);
+				},
+			},
+			{
+				name: "env file",
+				summary: "Add or replace a secret file, written into each new sandbox once it runs",
+				args: [{ name: "env" }, { name: "path" }],
+				flags: {
+					mode: { type: "string", value: "<octal>", description: "Its mode in the sandbox (default 0600)" },
+					from: { type: "string", value: "<file>", description: "Read it from this local file; default stdin" },
+				},
+				details:
+					"<path> is where it goes in the sandbox. Its content is sealed at rest and never shown again: kantel env\n" +
+					"show lists its path, mode and size. A secret file is in the sandbox, so anything there can read it.\n" +
+					"  kantel env file work /home/user/.npmrc --from ~/.npmrc\n" +
+					"kantel env file rm <env> <path> removes one.",
+				async run(ctx) {
+					const path = ctx.arg(1);
+					const mode = modeOf(ctx.string("mode"));
+					const from = ctx.string("from");
+					let content: Uint8Array;
+					if (from === undefined) {
+						const stdin = ctx.io.stdin();
+						if (stdin.isTTY === true) throw new UsageError("give the content with --from <file>, or pipe it in");
+						content = await readAll(stdin);
+					} else content = await readFile(resolve(ctx.io.cwd, from));
+					const client = await ctx.client();
+					const environmentId = await environmentIdOf(ctx, client, ctx.arg(0));
+					const answer: unknown = await client.setEnvironmentFile(environmentId, {
+						path,
+						...(mode === undefined ? {} : { mode }),
+						content: Buffer.from(content).toString("base64"),
+						encoding: "base64",
+					});
+					const size = content.length;
+					// The mode it has now, as Kantel answers: new contents without --mode keep the file's.
+					const saved = fileIn(answer, path);
+					const shownMode = saved?.mode ?? mode ?? 0o600;
+					ctx.emit(withoutProtectedValues(answer ?? { environmentId, path, sizeBytes: size }), () =>
+						[
+							`Saved ${path} (${bytes(saved?.sizeBytes ?? size)}, mode ${octal(shownMode)}) in ${ctx.arg(0)}.`,
+							"Sandboxes made from now on get it.",
+						].join("\n"),
+					);
+				},
+			},
+			{
+				name: "env file rm",
+				summary: "Remove a secret file from an environment",
+				args: [{ name: "env" }, { name: "path" }],
+				async run(ctx) {
+					const client = await ctx.client();
+					const environmentId = await environmentIdOf(ctx, client, ctx.arg(0));
+					const path = ctx.arg(1);
+					await client.deleteEnvironmentFile(environmentId, { path });
+					ctx.emit({ deleted: path, environmentId }, () => `Removed ${path} from ${ctx.arg(0)}.`);
+				},
+			},
+			{
+				name: "env repo add",
+				summary: "Clone a git repository into each new sandbox once it runs",
+				args: [{ name: "env" }, { name: "url" }],
+				flags: {
+					path: { type: "string", value: "<dir>", description: "Where in the sandbox to clone it" },
+					ref: { type: "string", value: "<ref>", description: "The branch or tag (default the repository's default)" },
+				},
+				details:
+					"The URL is https://. It is cloned through the egress proxy, after the secret files are written, and a\n" +
+					"failed clone is an event on the sandbox, not an error. Adding a URL again replaces its --path and --ref.",
+				async run(ctx) {
+					const url = ctx.arg(1);
+					if (!url.startsWith("https://")) throw new UsageError("a repository's URL starts with https://");
+					const path = ctx.string("path");
+					const ref = ctx.string("ref");
+					const client = await ctx.client();
+					const repo = {
+						url,
+						...(path === undefined ? {} : { path }),
+						...(ref === undefined ? {} : { ref }),
+					};
+					const { environment, updated } = await editAsRead(async () => {
+						const environment = await loadEnvironment(ctx, client, ctx.arg(0));
+						const repos = [...environment.repos.filter((item) => item.url !== url), repo];
+						const expected = environment.repos;
+						return { environment, updated: await client.putEnvironmentRepos(environment.id, { repos, expected }) };
+					});
+					ctx.emit(withoutProtectedValues(updated), () => `Added ${url} to ${environment.name}.`);
+				},
+			},
+			{
+				name: "env repo rm",
+				summary: "Stop cloning a repository into new sandboxes",
+				args: [{ name: "env" }, { name: "url" }],
+				async run(ctx) {
+					const url = ctx.arg(1);
+					const client = await ctx.client();
+					const { environment, updated } = await editAsRead(async () => {
+						const environment = await loadEnvironment(ctx, client, ctx.arg(0));
+						const repos = environment.repos.filter((item) => item.url !== url);
+						if (repos.length === environment.repos.length) {
+							throw new CliError(`${url} isn't one of ${environment.name}'s repositories`);
+						}
+						const expected = environment.repos;
+						return { environment, updated: await client.putEnvironmentRepos(environment.id, { repos, expected }) };
+					});
+					ctx.emit(withoutProtectedValues(updated), () => `Removed ${url} from ${environment.name}.`);
+				},
+			},
+			{
+				name: "env grant",
+				summary: "Allow or refuse requests to a host, by method and path, for every sandbox made from it",
+				args: [{ name: "env" }, { name: "allow|deny" }, { name: "host" }],
+				flags: GRANT_FLAGS,
+				details: `${GRANT_DETAILS}\n  kantel env grant work deny api.github.com --method DELETE --path '/repos/**'`,
+				async run(ctx) {
+					const grant = parseGrant(ctx.arg(1), ctx.arg(2), ctx.list("method"), ctx.list("path"));
+					const client = await ctx.client();
+					const { environment, updated } = await editAsRead(async () => {
+						const environment = await loadEnvironment(ctx, client, ctx.arg(0));
+						const grants: GrantInput[] = [...environment.grants, grant];
+						const expected = environment.grants;
+						return { environment, updated: await client.putEnvironmentGrants(environment.id, { grants, expected }) };
+					});
+					const id = addedGrantId(environment.grants, updated.grants);
+					ctx.emit(withoutProtectedValues(updated), () => `Added "${grantText(grant)}"${id} to ${environment.name}.`);
+				},
+			},
+			{
+				name: "env grant rm",
+				summary: "Remove one of an environment's grants",
+				args: [{ name: "env" }, { name: "grant-id" }],
+				async run(ctx) {
+					const client = await ctx.client();
+					const { environment, updated } = await editAsRead(async () => {
+						const environment = await loadEnvironment(ctx, client, ctx.arg(0));
+						const grants = withoutGrant(environment.grants, ctx.arg(1), environment.name);
+						const expected = environment.grants;
+						return { environment, updated: await client.putEnvironmentGrants(environment.id, { grants, expected }) };
+					});
+					ctx.emit(withoutProtectedValues(updated), () => `Removed ${ctx.arg(1)} from ${environment.name}.`);
+				},
+			},
+			{
+				name: "egress",
+				summary: "A sandbox's outbound requests: allowed or refused, and which protected variables were swapped in",
+				args: [{ name: "sandbox" }],
+				flags: {
+					denied: { type: "boolean", description: "Only the refused requests" },
+					limit: { type: "string", value: "<n>", description: "At most this many, newest first (Kantel keeps 1000)" },
+				},
+				details:
+					"CODE/RULE is the X-Kantel-Proxy-Error code the sandbox saw, and the grant or setting that decided.\n" +
+					"Paths are kept without their query. An HTTPS tunnel the proxy doesn't open shows as one CONNECT.",
+				async run(ctx) {
+					const limit = whole(ctx.string("limit"), "--limit");
+					const client = await ctx.client();
+					const egress = await client.getSandboxEgress(ctx.arg(0), limit === undefined ? undefined : { limit });
+					const denied = ctx.boolean("denied");
+					const entries = denied ? egress.entries.filter((entry) => entry.decision === "denied") : egress.entries;
+					ctx.emit(withoutProtectedValues(denied ? { ...egress, entries } : egress), () =>
+						describeEgress(egress, entries, denied),
+					);
+				},
+			},
+			{
+				name: "grant",
+				summary: "Allow or refuse one sandbox's requests to a host, by method and path",
+				args: [{ name: "sandbox" }, { name: "allow|deny" }, { name: "host" }],
+				flags: GRANT_FLAGS,
+				details: [
+					GRANT_DETAILS,
+					"  kantel grant sbx_123 deny api.github.com --method DELETE --path '/repos/**'",
+					"A running sandbox picks it up within seconds. kantel egress <sandbox> shows its grants.",
+				].join("\n"),
+				async run(ctx) {
+					const grant = parseGrant(ctx.arg(1), ctx.arg(2), ctx.list("method"), ctx.list("path"));
+					const client = await ctx.client();
+					const { sandbox, updated } = await editAsRead(async () => {
+						const sandbox = await client.getSandbox(ctx.arg(0));
+						const grants: GrantInput[] = [...sandbox.grants, grant];
+						const expected = sandbox.grants;
+						return { sandbox, updated: await client.putSandboxGrants(sandbox.id, { grants, expected }) };
+					});
+					const id = addedGrantId(sandbox.grants, updated.grants);
+					ctx.emit(updated, () => `Added "${grantText(grant)}"${id} to ${sandbox.id}.`);
+				},
+			},
+			{
+				name: "grant rm",
+				summary: "Remove one of a sandbox's own grants",
+				args: [{ name: "sandbox" }, { name: "grant-id" }],
+				async run(ctx) {
+					const client = await ctx.client();
+					const { sandbox, updated } = await editAsRead(async () => {
+						const sandbox = await client.getSandbox(ctx.arg(0));
+						const grants = withoutGrant(sandbox.grants, ctx.arg(1), sandbox.id);
+						const expected = sandbox.grants;
+						return { sandbox, updated: await client.putSandboxGrants(sandbox.id, { grants, expected }) };
+					});
+					ctx.emit(updated, () => `Removed ${ctx.arg(1)} from ${sandbox.id}.`);
+				},
+			},
+		],
+	},
+	{
 		title: "API keys and organisations",
 		commands: [
 			{
@@ -2074,6 +2624,7 @@ const GROUPS: { readonly [name: string]: string } = {
 	files: "Read, write and list a sandbox's files",
 	port: "Give a sandbox's ports HTTPS URLs",
 	snapshot: "Take, save, browse and delete snapshots",
+	env: "Environments: the variables, protected secrets, files, repos and grants new sandboxes start with",
 	key: "Make, rotate and revoke scoped API keys",
 	org: "Your organisations",
 	webhook: "Send the account's events to a URL",
@@ -2121,7 +2672,7 @@ const argUsage = (arg: Arg): string => {
 };
 
 function synopsis(command: CommandSpec): string {
-	const parts = [command.name, ...(command.args ?? []).map(argUsage)];
+	const parts = [command.usage ?? [command.name, ...(command.args ?? []).map(argUsage)].join(" ")];
 	if (command.rest !== undefined) {
 		parts.push(command.restOptional === true ? `[-- <${command.rest}>]` : `-- <${command.rest}>`);
 	}
@@ -2211,10 +2762,13 @@ type Resolution =
 	| { readonly kind: "moved"; readonly name: string; readonly to: string }
 	| { readonly kind: "unknown"; readonly word?: string };
 
-/** The command `argv` names in its first one or two words (flags may come before them), and the rest of `argv`. */
+/**
+ * The command `argv` names in its first one, two or three words (flags may come before them), and the rest of `argv`.
+ * The longest name wins: `env file rm` over `env file`, and `grant rm` over `grant`.
+ */
 function resolveCommand(argv: readonly string[]): Resolution {
 	const words: number[] = [];
-	for (let index = 0; index < argv.length && words.length < 2; index++) {
+	for (let index = 0; index < argv.length && words.length < 3; index++) {
 		const token = argv[index] ?? "";
 		if (token === "--") break;
 		if (token.startsWith("-") && token !== "-") {
@@ -2225,7 +2779,7 @@ function resolveCommand(argv: readonly string[]): Resolution {
 		}
 		words.push(index);
 	}
-	const [firstIndex, secondIndex] = words;
+	const [firstIndex, secondIndex, thirdIndex] = words;
 	if (firstIndex === undefined) return { kind: "unknown" };
 	const typed = argv[firstIndex] ?? "";
 	const first = GROUP_ALIASES[typed] ?? typed;
@@ -2233,13 +2787,29 @@ function resolveCommand(argv: readonly string[]): Resolution {
 	const second = secondIndex === undefined ? undefined : (argv[secondIndex] ?? "");
 	const pair = second === undefined ? undefined : `${first} ${second}`;
 	if (pair !== undefined && MOVED[pair] !== undefined) return { kind: "moved", name: pair, to: MOVED[pair] };
-	const single = BY_NAME.get(ALIASES[first] ?? first);
-	if (single !== undefined) return { kind: "command", command: single, argv: without(firstIndex) };
+	const named = (name: string): CommandSpec | undefined => BY_NAME.get(ALIASES[name] ?? name);
+	/** `prefix word`, or `prefix` and the word's other spelling (`rm` for `delete`). */
+	const sub = (prefix: string, word: string): CommandSpec | undefined => {
+		const alias = SUBCOMMAND_ALIASES[word];
+		return named(`${prefix} ${word}`) ?? (alias === undefined ? undefined : named(`${prefix} ${alias}`));
+	};
+	if (pair !== undefined && secondIndex !== undefined && thirdIndex !== undefined) {
+		const triple = sub(pair, argv[thirdIndex] ?? "");
+		if (triple !== undefined)
+			return { kind: "command", command: triple, argv: without(firstIndex, secondIndex, thirdIndex) };
+	}
+	const single = named(first);
+	if (single !== undefined) {
+		// A command of its own may have subcommands too: `grant rm` beside `grant`.
+		const double = second === undefined || secondIndex === undefined ? undefined : sub(first, second);
+		if (double !== undefined && secondIndex !== undefined) {
+			return { kind: "command", command: double, argv: without(firstIndex, secondIndex) };
+		}
+		return { kind: "command", command: single, argv: without(firstIndex) };
+	}
 	if (GROUPS[first] === undefined) return { kind: "unknown", word: typed };
 	if (second === undefined || secondIndex === undefined) return { kind: "group", group: first };
-	const alias = SUBCOMMAND_ALIASES[second];
-	const named = (name: string): CommandSpec | undefined => BY_NAME.get(ALIASES[name] ?? name);
-	const command = named(`${first} ${second}`) ?? named(`${first} ${alias ?? second}`);
+	const command = sub(first, second);
 	if (command === undefined) return { kind: "group", group: first, unknown: second };
 	return { kind: "command", command, argv: without(firstIndex, secondIndex) };
 }

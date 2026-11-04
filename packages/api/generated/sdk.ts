@@ -822,10 +822,14 @@ export interface ProxyUpstream {
 
 export interface PutEgressGrantsBody {
 	readonly grants: readonly EgressGrantInput[];
+	/** The list as you last read it. Given, the write is refused with `conflict` if the list has changed since, so an edit made from an older read can't undo someone else's: read it again and redo the edit. Left out, the list is replaced whatever it holds. */
+	readonly expected?: readonly EgressGrantInput[];
 }
 
 export interface PutEnvironmentReposBody {
 	readonly repos: readonly EnvironmentRepo[];
+	/** The list as you last read it. Given, the write is refused with `conflict` if the list has changed since, so an edit made from an older read can't undo someone else's: read it again and redo the edit. Left out, the list is replaced whatever it holds. */
+	readonly expected?: readonly EnvironmentRepo[];
 }
 
 export interface PutProxySettingsBody {

@@ -1,11 +1,16 @@
 // Environments and their protected variables: sealing, the routes, what a sandbox made from one is given (a placeholder
 // of its own for each protected value, never the value), rotation, forks, grants, the host-facing `protectedTable` and
 // `recordEgress`, and that no answer, event, webhook payload or error ever carries a protected value.
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { computeSchema } from "@kantel/api";
 import { createKantelClient, KantelApiError, type KantelClient } from "@kantel/api/sdk";
 import { KantelError } from "@kantel/contracts";
 import { pgliteDatabase } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
+// The command line, against this service: its edits are checked end to end.
+import { run as runCli } from "../../cli/src/commands.ts";
 import type { PersonIdentity } from "../src/auth.ts";
 import type { BackendEgress, ExecRequest, ExecResult, SandboxBackend, SandboxSpec } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
@@ -835,6 +840,303 @@ describe("grants", () => {
 		await tom.putSandboxGrants(sandbox.id, { grants: [] });
 		await api.service.idle();
 		expect(last(recorded.egress)).toEqual({ sandboxId: sandbox.id, egress: undefined, revision: expect.any(Number) });
+	});
+
+	it("take `*` for every host, beside a host and the names under one; a binding never does", async () => {
+		const { api, tom, recorded } = setup({ secretsKey: KEY });
+		const environment = await tom.createEnvironment({ name: "every-host" });
+		const withGrants = await tom.putEnvironmentGrants(environment.id, {
+			grants: [
+				{ action: "deny", host: "*", methods: ["DELETE"] },
+				{ action: "allow", host: "*.example.com" },
+				{ action: "allow", host: "registry.npmjs.org" },
+			],
+		});
+		expect(withGrants.grants.map((grant) => grant.host)).toEqual(["*", "*.example.com", "registry.npmjs.org"]);
+		const sandbox = await tom.createSandbox({ environment: environment.id, wait: true });
+		const own = await tom.putSandboxGrants(sandbox.id, { grants: [{ action: "deny", host: " * " }] });
+		expect(own.grants.map((grant) => grant.host)).toEqual(["*"]);
+		await api.service.idle();
+		// What the host enforces: its proxy takes `*` as every host.
+		expect(last(recorded.egress)?.egress?.grants).toEqual([
+			{ action: "deny", host: "*", methods: ["DELETE"], rule: "deny DELETE *" },
+			{ action: "allow", host: "*.example.com", rule: "allow *.example.com" },
+			{ action: "allow", host: "registry.npmjs.org", rule: "allow registry.npmjs.org" },
+			{ action: "deny", host: "*", rule: "deny *" },
+		]);
+		for (const host of ["*.", "**", "*example.com", "a.*.com"]) {
+			const refused = await failure(tom.putSandboxGrants(sandbox.id, { grants: [{ action: "deny", host }] }));
+			expect(refused.code, host).toBe("invalid");
+		}
+		const everywhere = await failure(
+			tom.setEnvironmentVariable(environment.id, "GH_TOKEN", {
+				protected: true,
+				value: SECRET,
+				bindings: [{ host: "*" }],
+			}),
+		);
+		expect(everywhere.code).toBe("invalid");
+		expect(everywhere.message).not.toContain(SECRET);
+	});
+});
+
+describe("an edit made from an older read", () => {
+	it("of the repositories, grants or a sandbox's grants is refused, and one made from the list as it is goes through", async () => {
+		const { tom } = setup();
+		const environment = await tom.createEnvironment({ name: "lists" });
+		const app = { url: "https://github.com/acme/app" };
+		const web = { url: "https://github.com/acme/web", path: "/home/user/web" };
+		const docs = { url: "https://github.com/acme/docs", ref: "main" };
+
+		// Two adds from the one read: the second is refused, not written over the first.
+		const read = await tom.getEnvironment(environment.id);
+		await tom.putEnvironmentRepos(environment.id, { repos: [...read.repos, app], expected: read.repos });
+		const stale = await failure(
+			tom.putEnvironmentRepos(environment.id, { repos: [...read.repos, web], expected: read.repos }),
+		);
+		expect(stale.code).toBe("conflict");
+		expect((await tom.getEnvironment(environment.id)).repos).toEqual([app]);
+		// Redone on the list as it is, both are kept; the list as answered is what it compares (a path as made absolute).
+		const fresh = await tom.getEnvironment(environment.id);
+		const both = await tom.putEnvironmentRepos(environment.id, { repos: [...fresh.repos, web], expected: fresh.repos });
+		expect(both.repos).toEqual([app, web]);
+		// A remove from an older read can't bring back what it read.
+		const removing = await failure(tom.putEnvironmentRepos(environment.id, { repos: [], expected: fresh.repos }));
+		expect(removing.code).toBe("conflict");
+		const withDocs = await tom.putEnvironmentRepos(environment.id, {
+			repos: [...both.repos, docs],
+			expected: both.repos,
+		});
+		expect(withDocs.repos).toEqual([app, web, docs]);
+		// Left out, the list is replaced whatever it holds, as the console does.
+		expect((await tom.putEnvironmentRepos(environment.id, { repos: [docs] })).repos).toEqual([docs]);
+
+		const npm = { action: "allow" as const, host: "registry.npmjs.org" };
+		const deny = { action: "deny" as const, host: "api.github.com", methods: ["DELETE"] };
+		const grantsRead = await tom.getEnvironment(environment.id);
+		const first = await tom.putEnvironmentGrants(environment.id, {
+			grants: [...grantsRead.grants, deny],
+			expected: grantsRead.grants,
+		});
+		const lost = await failure(
+			tom.putEnvironmentGrants(environment.id, { grants: [...grantsRead.grants, npm], expected: grantsRead.grants }),
+		);
+		expect(lost.code).toBe("conflict");
+		// The answered grants, IDs and all, are the list to expect; the deny stays.
+		const second = await tom.putEnvironmentGrants(environment.id, {
+			grants: [...first.grants, npm],
+			expected: first.grants,
+		});
+		expect(second.grants.map((grant) => grant.host)).toEqual(["api.github.com", "registry.npmjs.org"]);
+		expect(second.grants[0]?.id).toBe(first.grants[0]?.id);
+
+		// A sandbox's own grants, apart from its environment's.
+		const sandbox = await tom.createSandbox({ environment: environment.id, wait: true });
+		const sandboxRead = await tom.getSandbox(sandbox.id);
+		const denied = await tom.putSandboxGrants(sandbox.id, {
+			grants: [...sandboxRead.grants, deny],
+			expected: sandboxRead.grants,
+		});
+		const allowedOverIt = await failure(
+			tom.putSandboxGrants(sandbox.id, { grants: [...sandboxRead.grants, npm], expected: sandboxRead.grants }),
+		);
+		expect(allowedOverIt.code).toBe("conflict");
+		expect((await tom.getSandbox(sandbox.id)).grants).toEqual(denied.grants);
+		const removed = await tom.putSandboxGrants(sandbox.id, { grants: [], expected: denied.grants });
+		expect(removed.grants).toEqual([]);
+		expect(removed.environmentGrants.map((grant) => grant.host)).toEqual(["api.github.com", "registry.npmjs.org"]);
+	});
+
+	it("through the command line keeps the other change: each list edit redone, a rotation on what is there", async () => {
+		const store = createMemoryStore();
+		const { api, tom } = setup({ secretsKey: KEY, store });
+		const environment = await tom.createEnvironment({ name: "cli" });
+		await tom.setEnvironmentVariable(environment.id, "GH_TOKEN", { protected: true, value: SECRET, bindings: GITHUB });
+		await tom.setEnvironmentVariable(environment.id, "NPM_TOKEN", { value: "plain-at-first" });
+		const sandbox = await tom.createSandbox({ environment: environment.id, wait: true });
+
+		/** The command line against this service; `meanwhile` runs once, after its read and before its first write. */
+		async function cli(argv: readonly string[], meanwhile: () => Promise<unknown>, stdin?: string, exits = 0) {
+			let pending: (() => Promise<unknown>) | undefined = meanwhile;
+			const writes: unknown[] = [];
+			const out: string[] = [];
+			const output = {
+				isTTY: false,
+				write(chunk: string | Uint8Array) {
+					out.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+					return true;
+				},
+			};
+			const code = await runCli(argv, {
+				fetch: async (input, init) => {
+					const request = new Request(input, init);
+					if (request.method === "PUT") {
+						writes.push(JSON.parse(await request.clone().text()));
+						const now = pending;
+						pending = undefined;
+						await now?.();
+					}
+					return (await api.fetch(request)) ?? new Response(null, { status: 404 });
+				},
+				env: { KANTEL_URL: BASE_URL.replace(/\/v1$/, ""), KANTEL_API_KEY: "tom-token" },
+				stdout: output,
+				stderr: output,
+				stdin: {
+					isTTY: stdin === undefined,
+					async *[Symbol.asyncIterator]() {
+						if (stdin !== undefined) yield stdin;
+					},
+				},
+				configDir: cliDir,
+				cwd: cliDir,
+				home: cliDir,
+				self: ["/usr/local/bin/node", "/usr/local/bin/kantel"],
+				openUrl: () => {},
+				sleep: async () => {},
+			});
+			const text = out.join("");
+			expect(text).not.toContain(SECRET);
+			if (stdin !== undefined) expect(text).not.toContain(stdin);
+			expect(code, text).toBe(exits);
+			return { writes, text };
+		}
+		const cliDir = await mkdtemp(join(tmpdir(), "kantel-cli-edit-"));
+		cleanups.push(() => rm(cliDir, { recursive: true, force: true }));
+
+		// Two adds from the one read: both repositories are kept.
+		const app = { url: "https://github.com/acme/app" };
+		const repo = await cli(["env", "repo", "add", "cli", "https://github.com/acme/web"], () =>
+			tom.putEnvironmentRepos(environment.id, { repos: [app] }),
+		);
+		expect(repo.writes).toHaveLength(2);
+		expect((await tom.getEnvironment(environment.id)).repos.map((each) => each.url)).toEqual([
+			"https://github.com/acme/app",
+			"https://github.com/acme/web",
+		]);
+		// A remove and someone's add: the add stays.
+		await cli(["env", "repo", "rm", "cli", "https://github.com/acme/app"], async () => {
+			const now = await tom.getEnvironment(environment.id);
+			await tom.putEnvironmentRepos(environment.id, { repos: [...now.repos, { url: "https://github.com/acme/docs" }] });
+		});
+		expect((await tom.getEnvironment(environment.id)).repos.map((each) => each.url)).toEqual([
+			"https://github.com/acme/web",
+			"https://github.com/acme/docs",
+		]);
+
+		// An environment's grants: an allow added never erases a deny added meanwhile.
+		await cli(["env", "grant", "cli", "allow", "registry.npmjs.org"], () =>
+			tom.putEnvironmentGrants(environment.id, { grants: [{ action: "deny", host: "*", methods: ["DELETE"] }] }),
+		);
+		const envGrants = (await tom.getEnvironment(environment.id)).grants;
+		expect(envGrants.map((grant) => `${grant.action} ${grant.host}`)).toEqual(["deny *", "allow registry.npmjs.org"]);
+		const denyId = envGrants[0]?.id ?? "";
+		await cli(["env", "grant", "rm", "cli", denyId], async () => {
+			const now = await tom.getEnvironment(environment.id);
+			await tom.putEnvironmentGrants(environment.id, {
+				grants: [...now.grants, { action: "allow", host: "*.example.com" }],
+			});
+		});
+		expect((await tom.getEnvironment(environment.id)).grants.map((grant) => grant.host)).toEqual([
+			"registry.npmjs.org",
+			"*.example.com",
+		]);
+
+		// A sandbox's grants: the same.
+		await cli(["grant", sandbox.id, "allow", "api.openai.com"], () =>
+			tom.putSandboxGrants(sandbox.id, { grants: [{ action: "deny", host: "*" }] }),
+		);
+		const own = (await tom.getSandbox(sandbox.id)).grants;
+		expect(own.map((grant) => `${grant.action} ${grant.host}`)).toEqual(["deny *", "allow api.openai.com"]);
+		await cli(["grant", "rm", sandbox.id, own[1]?.id ?? ""], async () => {
+			const now = await tom.getSandbox(sandbox.id);
+			await tom.putSandboxGrants(sandbox.id, { grants: [...now.grants, { action: "deny", host: "api.github.com" }] });
+		});
+		expect((await tom.getSandbox(sandbox.id)).grants.map((grant) => `${grant.action} ${grant.host}`)).toEqual([
+			"deny *",
+			"deny api.github.com",
+		]);
+
+		// A rotation never restores bindings narrowed after its read.
+		const narrowed = [{ host: "api.github.com", pathPrefixes: ["/repos/acme/"], methods: ["GET"] }];
+		const rotated = await cli(
+			["env", "set", "cli", "GH_TOKEN", "--value-stdin"],
+			() => tom.setEnvironmentVariable(environment.id, "GH_TOKEN", { bindings: narrowed }),
+			"ghp_rotatedValue",
+		);
+		// Protected intent and the value; no bindings from the read.
+		expect(rotated.writes).toEqual([{ protected: true, value: "ghp_rotatedValue" }]);
+		expect(rotated.text).toContain("sent only to api.github.com/repos/acme/:GET");
+		const variableOf = async (name: string) =>
+			(await tom.getEnvironment(environment.id)).variables.find((each) => each.name === name);
+		expect(await variableOf("GH_TOKEN")).toMatchObject({ protected: true, bindings: narrowed });
+		expect(await variableOf("GH_TOKEN")).not.toHaveProperty("value");
+		/** That `value` is nowhere in the environment as stored, nor in any answer about it. */
+		const nowhere = async (value: string) => {
+			expect(JSON.stringify(await store.environments.get(environment.id))).not.toContain(value);
+			expect(JSON.stringify(await tom.getEnvironment(environment.id))).not.toContain(value);
+		};
+		await nowhere("ghp_rotatedValue");
+
+		// A rotation of one read as protected, removed meanwhile: refused, never made again as plain.
+		const afterRemoval = await cli(
+			["env", "set", "cli", "GH_TOKEN", "--value-stdin"],
+			() => tom.deleteEnvironmentVariable(environment.id, "GH_TOKEN"),
+			"ghp_afterRemoval",
+			1,
+		);
+		expect(afterRemoval.writes).toEqual([{ protected: true, value: "ghp_afterRemoval" }]);
+		expect(await variableOf("GH_TOKEN")).toBeUndefined();
+		await nowhere("ghp_afterRemoval");
+
+		// …and made plain meanwhile: refused, the plain value someone else set stays, the new one is nowhere.
+		await tom.setEnvironmentVariable(environment.id, "GH_TOKEN", { protected: true, value: SECRET, bindings: GITHUB });
+		const afterPlain = await cli(
+			["env", "set", "cli", "GH_TOKEN", "--value-stdin"],
+			() => tom.setEnvironmentVariable(environment.id, "GH_TOKEN", { protected: false, value: "made-plain" }),
+			"ghp_afterPlain",
+			1,
+		);
+		expect(afterPlain.writes).toEqual([{ protected: true, value: "ghp_afterPlain" }]);
+		expect(await variableOf("GH_TOKEN")).toMatchObject({ protected: false, value: "made-plain" });
+		await nowhere("ghp_afterPlain");
+
+		// A value set on what read as plain, protected meanwhile: the value alone is sent, so it stays protected and
+		// the value is sealed; never plain again.
+		const npm = await cli(
+			["env", "set", "cli", "NPM_TOKEN", "--value-stdin"],
+			() =>
+				tom.setEnvironmentVariable(environment.id, "NPM_TOKEN", {
+					protected: true,
+					value: "npm_sealedNow",
+					bindings: [{ host: "registry.npmjs.org" }],
+				}),
+			"npm_valueAfterRead",
+		);
+		expect(npm.writes).toEqual([{ value: "npm_valueAfterRead" }]);
+		expect(await variableOf("NPM_TOKEN")).toMatchObject({
+			protected: true,
+			bindings: [{ host: "registry.npmjs.org" }],
+		});
+		await nowhere("npm_valueAfterRead");
+
+		// --keep-value --bind re-binds and keeps a value rotated meanwhile; --plain still makes one plain.
+		const rebound = await cli(
+			["env", "set", "cli", "NPM_TOKEN", "--keep-value", "--bind", "registry.npmjs.org/-/:GET"],
+			() => tom.setEnvironmentVariable(environment.id, "NPM_TOKEN", { value: "npm_rotatedMeanwhile" }),
+		);
+		expect(rebound.writes).toEqual([
+			{ protected: true, bindings: [{ host: "registry.npmjs.org", pathPrefixes: ["/-/"], methods: ["GET"] }] },
+		]);
+		const storedNpm = (await store.environments.get(environment.id))?.variables.find(
+			(each) => each.name === "NPM_TOKEN",
+		);
+		const aad = sealedAt("environments", environment.id, "variables.NPM_TOKEN");
+		const sealed = storedNpm?.sealed;
+		expect(storedNpm?.protected).toBe(true);
+		const opened = sealed === undefined ? "" : await createSealer(KEY).openText(sealed, aad);
+		expect(opened).toBe("npm_rotatedMeanwhile");
+		await cli(["env", "set", "cli", "NPM_TOKEN=public-now", "--plain"], async () => {});
+		expect(await variableOf("NPM_TOKEN")).toMatchObject({ protected: false, value: "public-now" });
 	});
 });
 

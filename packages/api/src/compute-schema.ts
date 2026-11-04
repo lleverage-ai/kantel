@@ -1261,13 +1261,24 @@ export const EnvironmentFileQuery = Type.Object(
 	{ title: "EnvironmentFileQuery" },
 );
 
+const EXPECTED =
+	"The list as you last read it. Given, the write is refused with `conflict` if the list has changed since, so an " +
+	"edit made from an older read can't undo someone else's: read it again and redo the edit. Left out, the list is " +
+	"replaced whatever it holds.";
+
 export const PutEnvironmentReposBody = Type.Object(
-	{ repos: Type.Array(EnvironmentRepo, { maxItems: 20 }) },
+	{
+		repos: Type.Array(EnvironmentRepo, { maxItems: 20 }),
+		expected: Type.Optional(Type.Array(EnvironmentRepo, { maxItems: 20, description: EXPECTED })),
+	},
 	{ title: "PutEnvironmentReposBody" },
 );
 
 export const PutEgressGrantsBody = Type.Object(
-	{ grants: Type.Array(EgressGrantInput, { maxItems: 200 }) },
+	{
+		grants: Type.Array(EgressGrantInput, { maxItems: 200 }),
+		expected: Type.Optional(Type.Array(EgressGrantInput, { maxItems: 200, description: EXPECTED })),
+	},
 	{ title: "PutEgressGrantsBody" },
 );
 

@@ -538,7 +538,8 @@ function normaliseGrants(
 		return {
 			id,
 			action: input.action,
-			host: checkHost(input.host, "A grant's host"),
+			// `*` is every host, for a grant (never a binding: a value can't be allowed everywhere).
+			host: input.host.trim() === "*" ? "*" : checkHost(input.host, "A grant's host"),
 			...(methods.length === 0 ? {} : { methods }),
 			...(paths.length === 0 ? {} : { paths }),
 		};
@@ -611,6 +612,37 @@ const copyRepo = (repo: computeSchema.EnvironmentRepo): computeSchema.Environmen
 	...(repo.path === undefined ? {} : { path: repo.path }),
 	...(repo.ref === undefined ? {} : { ref: repo.ref }),
 });
+
+/** Repositories as text that is the same when they are: for a write's `expected`. */
+const reposKey = (repos: readonly computeSchema.EnvironmentRepo[]): string =>
+	JSON.stringify(repos.map((repo) => [repo.url, repo.path ?? "", repo.ref ?? ""]));
+
+/** Grants as text that is the same when they are: for a write's `expected`. */
+const grantsKey = (
+	grants: readonly {
+		readonly id?: string;
+		readonly action: string;
+		readonly host: string;
+		readonly methods?: readonly string[];
+		readonly paths?: readonly string[];
+	}[],
+): string =>
+	JSON.stringify(
+		grants.map((grant) => [
+			grant.id ?? "",
+			grant.action,
+			grant.host.trim().toLowerCase(),
+			[...(grant.methods ?? [])].map((method) => method.toUpperCase()),
+			[...(grant.paths ?? [])],
+		]),
+	);
+
+/** Refuses a write made from a read of `what` that is out of date: `expected` isn't what is there now. */
+function requireUnchanged(expected: string | undefined, now: string, what: string): void {
+	if (expected !== undefined && expected !== now) {
+		throw new KantelError("conflict", `${what} changed since you read them; read them again and redo the change`);
+	}
+}
 
 /** Where a repository is cloned: its path, or `~/<name>` after the URL's last segment. */
 function clonePath(repo: computeSchema.EnvironmentRepo): string {
@@ -3770,11 +3802,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (new Set(paths).size !== paths.length) {
 				throw new KantelError("invalid", "Two repositories would be cloned into one path; give one a path");
 			}
-			const changed = await changeEnvironment(environment.id, (current) => ({
-				...current,
-				repos,
-				updatedAt: now(),
-			}));
+			const expected = body.expected === undefined ? undefined : reposKey(body.expected);
+			const changed = await changeEnvironment(environment.id, (current) => {
+				requireUnchanged(expected, reposKey(current.repos), "The environment's repositories");
+				return { ...current, repos, updatedAt: now() };
+			});
 			return environmentView(changed);
 		},
 
@@ -3782,11 +3814,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const environment = await environmentFor(principal, params.environmentId, "account:admin");
 			const grants = normaliseGrants(body.grants);
 			if (grants.length > 0) await requireEnforcing(await liveFrom(environment.id));
-			const changed = await changeEnvironment(environment.id, (current) => ({
-				...current,
-				grants,
-				updatedAt: later(current.updatedAt),
-			}));
+			const expected = body.expected === undefined ? undefined : grantsKey(body.expected);
+			const changed = await changeEnvironment(environment.id, (current) => {
+				requireUnchanged(expected, grantsKey(current.grants), "The environment's grants");
+				return { ...current, grants, updatedAt: later(current.updatedAt) };
+			});
 			await pushEnvironment(changed.id, undefined);
 			return environmentView(changed);
 		},
@@ -3802,11 +3834,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (grants.length > 0) await requireEnforcing([sandbox]);
 			// Its revision moves on with them, in the one write: an egress read before has the older revision, which its host
 			// ignores once this one's has come; a boot under way sees it changed and reconciles.
-			const changed = await patchSandbox(sandbox.id, (current) => ({
-				...current,
-				grants,
-				egressRevision: later(current.egressRevision),
-			}));
+			const expected = body.expected === undefined ? undefined : grantsKey(body.expected);
+			const changed = await patchSandbox(sandbox.id, (current) => {
+				requireUnchanged(expected, grantsKey(current.grants ?? []), "The sandbox's grants");
+				return { ...current, grants, egressRevision: later(current.egressRevision) };
+			});
 			if (changed === undefined) throw notFound("sandbox");
 			if (changed.state === "running") pushEgress([changed]);
 			return sandboxEgressView(changed, 100);
