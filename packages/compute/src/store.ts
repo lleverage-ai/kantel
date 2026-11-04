@@ -92,6 +92,11 @@ export interface StoredSample {
 	readonly at: number;
 	readonly cpu: number;
 	readonly memoryMb: number;
+	/**
+	 * A 5-minute mean's (what hosts' ticks are kept as, `at` its start): how many readings it is the mean of. Absent on a
+	 * single reading, as samples were kept before hosts sent ticks.
+	 */
+	readonly readings?: number;
 }
 
 /** A sandbox: its wire shape (but its cost and usage, worked out when answered) and what the service keeps besides. */

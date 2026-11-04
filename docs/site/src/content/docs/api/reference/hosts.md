@@ -103,6 +103,30 @@ Revokes its credential and closes its connection. Its sandboxes keep their disks
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
+## Get a host's usage
+
+`GET /v1/admin/hosts/{hostId}/usage` (SDK method `getHostUsage`)
+
+Its CPU, memory and disk as it reported them, every 5 seconds over the last hour. Poll with `since` set to the last point's `at` for only the newer points. A deployment super-admin only (a key needs `hosts:admin`).
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hostId` | string | yes | The host's ID. |
+
+**Query parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `since` | integer | no | Only the points after this time (epoch milliseconds). |
+
+**Answers**
+
+- `200`: [HostUsage](/api/reference/types/#hostusage) (`application/json`). The host's readings.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
 ## Get the public URL
 
 `GET /v1/admin/public-url` (SDK method `getPublicUrl`)

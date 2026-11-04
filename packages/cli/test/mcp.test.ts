@@ -39,7 +39,7 @@ const SANDBOX: Sandbox = {
 	createdBy: { kind: "api_key", id: "key_1" },
 	createdAt: 0,
 	cost: { currency: "USD", total: 0, ratePerHour: 0 },
-	usage: { runningSeconds: 0, cpuSeconds: 0, recentCpu: [] },
+	usage: { runningSeconds: 0, cpuSeconds: 0, recentCpu: [], recentMemory: [] },
 };
 
 const COMMAND: Command = {

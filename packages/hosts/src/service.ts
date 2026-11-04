@@ -7,7 +7,7 @@
  */
 import { type Clock, KantelError, systemClock } from "@kantel/contracts";
 import type { HostCluster } from "./cluster.ts";
-import { parseHostCapacity, parseHostFacts, storedCapacity, storedFacts } from "./facts.ts";
+import { parseHostCapacity, parseHostFacts, parseHostUsage, storedCapacity, storedFacts } from "./facts.ts";
 import { type CallOptions, createHostHub, HostCallError, type HostHub, type PortSink, type PortStream } from "./hub.ts";
 import {
 	HOST_CLOSE_REVOKED,
@@ -20,8 +20,10 @@ import {
 	type HostImageChannel,
 	HostMethods,
 	type HostSandbox,
+	type HostSandboxUsage,
 	type HostSecrets,
 	type HostSize,
+	type HostUsageReport,
 	type HostWelcome,
 	needsEgressPolicy,
 	type SandboxTier,
@@ -135,6 +137,15 @@ export interface HostComputeLink {
 			readonly snapshots?: readonly { readonly ref: string; readonly base: string }[];
 		},
 	): Promise<void>;
+	/**
+	 * Keeps a host's usage tick, checked (`parseHostUsage`). `shared`: it came from the replica holding the host's
+	 * connection, not from the host (`recordSharedUsage`). Absent: ticks are dropped.
+	 */
+	recordUsage?(
+		hostId: string,
+		usage: HostUsageReport & { readonly sandboxes: readonly HostSandboxUsage[] },
+		options?: { readonly shared?: boolean },
+	): Promise<void>;
 	/** An organisation's E2E chain for the host (`ComputeService.hostE2EChain`), and the host's own entries to it. */
 	readonly e2eChain?: {
 		read(hostId: string, space: string): Promise<readonly E2EChainEntry[]>;
@@ -202,6 +213,11 @@ export interface HostsService {
 	 * a backend made from it. Before, a fetch is answered `unavailable` and a report is dropped.
 	 */
 	useCompute(link: HostComputeLink): void;
+	/**
+	 * A usage tick another replica passed on, from a host connected to it (`HostCluster.shareUsage`): checked, and kept
+	 * as `shared`. The caller has checked that the replica holds the host.
+	 */
+	recordSharedUsage(hostId: string, usage: unknown): Promise<void>;
 	createJoinToken(input: {
 		readonly name?: string;
 		readonly labels?: { readonly [key: string]: string };
@@ -341,6 +357,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			diskGiB: live.reduce((sum, entry) => sum + entry.diskGiB, 0),
 		};
 	};
+	/** When each host's last invalid usage tick was logged. */
+	const badUsageLogged = new Map<string, number>();
 	const report = (work: Promise<unknown>) => {
 		void work.catch((error) => log(`[hosts] ${error instanceof Error ? error.message : String(error)}`));
 	};
@@ -515,6 +533,21 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		onEgress(hostId, records) {
 			if (compute !== undefined) report(compute.recordEgress(hostId, records));
 		},
+		onUsage(hostId, reported) {
+			if (compute?.recordUsage === undefined && cluster === undefined) return;
+			const parsed = parseHostUsage(reported);
+			if (!parsed.ok) {
+				// A tick comes every few seconds: say so once an hour per host, not every time.
+				const at = clock.now();
+				if (at - (badUsageLogged.get(hostId) ?? Number.NEGATIVE_INFINITY) >= 3_600_000) {
+					badUsageLogged.set(hostId, at);
+					log(`[hosts] host ${hostId} sent a usage tick that isn't valid (${parsed.reason}); ignored`);
+				}
+				return;
+			}
+			if (compute?.recordUsage !== undefined) report(compute.recordUsage(hostId, parsed.value));
+			cluster?.shareUsage(hostId, parsed.value);
+		},
 		onDisconnected(hostId) {
 			log(`[hosts] host ${hostId} disconnected`);
 			imagesToldAt.delete(hostId);
@@ -684,6 +717,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		},
 		useCompute(link) {
 			compute = link;
+		},
+		async recordSharedUsage(hostId, usage) {
+			if (compute?.recordUsage === undefined) return;
+			const parsed = parseHostUsage(usage);
+			if (!parsed.ok) throw new KantelError("invalid", `The usage tick isn't valid: ${parsed.reason}`);
+			await compute.recordUsage(hostId, parsed.value, { shared: true });
 		},
 		async register(input) {
 			if (typeof input.token !== "string" || !input.token.startsWith(JOIN_TOKEN_PREFIX)) {
