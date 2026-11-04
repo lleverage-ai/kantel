@@ -139,10 +139,18 @@ curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/insta
 
 ### Over a private network
 
-A self-hosted control plane can stay off the internet and reach its hosts over a private network, such as a Tailscale tailnet that the control plane's machine, the hosts and your own computer are all on. Use its address on that network as the public URL:
+A self-hosted control plane can stay off the internet and reach its hosts over a private network, such as a Tailscale tailnet that the control plane's machine, the hosts and your own computer are all on.
+
+The Compose stack publishes the gateway on `127.0.0.1:58090` only, so first put a proxy in front of it that listens on the private network and nowhere else. On a tailnet, Tailscale Serve does that, and gives it an HTTPS name on the tailnet (the tailnet needs HTTPS certificates turned on):
 
 ```sh
-kantel-admin compute enable --public-url http://kantel.your-tailnet.ts.net:58090 --apply
+sudo tailscale serve --bg 58090
+```
+
+Check it from another machine on the tailnet: `curl https://kantel.your-tailnet.ts.net/healthz` should answer `{"ok":true}`. Then use that URL as the public URL:
+
+```sh
+kantel-admin compute enable --public-url https://kantel.your-tailnet.ts.net --apply
 ```
 
 Join commands then carry that address, and hosts connect to it over the tailnet. Your browser needs to reach it too, for desktop, browser and SSH links. To keep the console on another address and give only hosts the tailnet one, set `KANTEL_COMPUTE_PUBLIC_URL` to it instead.

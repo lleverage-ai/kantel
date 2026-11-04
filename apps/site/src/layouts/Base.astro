@@ -36,9 +36,9 @@ const lockup = lockupEndorsed.replace("<svg ", '<svg class="h-full w-auto" ');
 			>Skip to the content</a
 		>
 		<header class="sticky top-0 z-20 border-b border-transparent bg-paper/90 backdrop-blur-sm">
-			<nav class="mx-auto flex max-w-(--container-page) items-center justify-between gap-6 px-6 py-4 lg:px-12">
+			<nav class="mx-auto flex max-w-(--container-page) items-center justify-between gap-4 px-6 py-4 sm:gap-6 lg:px-12">
 				<a href="/" class="block h-7 text-ink sm:h-8" aria-label="Kantel, by Lleverage: home" set:html={lockup} />
-				<ul class="flex items-center gap-5 text-sm font-semibold sm:gap-8 sm:text-base">
+				<ul class="flex items-center gap-4 text-sm font-semibold sm:gap-8 sm:text-base">
 					<li><a class="hover:text-label" href="/docs/">Docs</a></li>
 					<li class="hidden sm:block"><a class="hover:text-label" href={GITHUB_URL}>GitHub</a></li>
 					<li>

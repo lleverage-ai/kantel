@@ -17,7 +17,7 @@ To run the control plane yourself as well, see [Self-host quick start](/self-hos
 
 ## What you need
 
-- A Linux machine on x86_64 or aarch64 that you have root on. It needs `/dev/kvm` for microVMs (bare metal, or a cloud VM with nested virtualisation turned on); isolates run without it. Plan for at least 20 GiB of free disk and 4 GiB of memory. It needs outbound HTTPS only: no open ports.
+- A Linux machine on x86_64 or aarch64, with `/dev/kvm` and root. Bare metal works, and so does a cloud VM with nested virtualisation turned on. Plan for at least 20 GiB of free disk and 4 GiB of memory. It needs outbound HTTPS only: no open ports. (A machine without KVM can run isolates only, for code you trust, with extra setup: see [Without KVM](/hosts/#without-kvm).)
 - Node.js 22 or later and `curl` on the machine you work from, for the `kantel` command, on Linux or macOS.
 
 ## 1. Sign in
