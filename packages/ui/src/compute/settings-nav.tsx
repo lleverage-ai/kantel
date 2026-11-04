@@ -21,6 +21,8 @@ const linkState = {
 
 export interface SettingsFrameProps {
 	readonly items: readonly SettingsNavItem[];
+	/** The navigation's name: Settings, or Admin's on a phone. */
+	readonly label?: string;
 	/** A phone: the links in a row over the page, scrolling sideways when they don't fit. */
 	readonly narrow?: boolean;
 	/** The settings page shown. */
@@ -28,10 +30,10 @@ export interface SettingsFrameProps {
 }
 
 /** A settings page with Settings' navigation beside it, or over it on a phone. */
-export function SettingsFrame({ items, narrow = false, children }: SettingsFrameProps) {
+export function SettingsFrame({ items, label = "Settings", narrow = false, children }: SettingsFrameProps) {
 	const nav = (
 		<nav
-			aria-label="Settings"
+			aria-label={label}
 			className={
 				narrow
 					? "-mx-gutter-narrow flex min-w-0 gap-1 overflow-x-auto px-gutter-narrow"

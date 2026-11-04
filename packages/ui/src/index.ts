@@ -50,6 +50,7 @@ export type {
 	HostingMode,
 	HostsSource,
 	ProxySource,
+	PublicUrlSource,
 	SandboxEgress,
 	SandboxesSource,
 	SandboxSshKey,

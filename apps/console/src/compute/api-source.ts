@@ -35,6 +35,7 @@ import {
 	type KantelClientOptions,
 	type Member,
 	type ProxySettings,
+	type PublicUrl,
 	type PutProxySettingsBody,
 	type PutTelemetryBody,
 	type Sandbox,
@@ -107,6 +108,7 @@ type UiWebhookDelivery = Awaited<ReturnType<WebhooksSource["test"]>>;
 type UiTelemetrySettings = Awaited<ReturnType<TelemetrySource["get"]>>;
 type UiHost = Awaited<ReturnType<HostsSource["list"]>>[number];
 type UiHostState = UiHost["state"];
+type UiPublicUrl = Awaited<ReturnType<NonNullable<HostsSource["publicUrl"]>["get"]>>;
 type UiEnvironmentFile = UiEnvironment["files"][number];
 type UiRepo = UiEnvironment["repos"][number];
 type UiMethod = UiBinding["methods"][number];
@@ -1535,6 +1537,19 @@ function hostsSource({ api }: Context): HostsSource {
 		remove: async (id) => {
 			await api.revokeHost(id);
 		},
+		publicUrl: {
+			get: async () => publicUrlOf(await api.getPublicUrl()),
+			set: async (url) => publicUrlOf(await api.setPublicUrl({ publicUrl: url })),
+		},
+	};
+}
+
+function publicUrlOf(made: PublicUrl): UiPublicUrl {
+	return {
+		publicUrl: made.publicUrl,
+		setHere: made.source === "console",
+		deploymentUrl: made.deploymentUrl,
+		loopback: made.loopback,
 	};
 }
 
