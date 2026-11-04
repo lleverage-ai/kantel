@@ -13,7 +13,7 @@ These routes are part of Kantel's API, which every control plane serves. Their s
 
 Kantel can send an account's telemetry to an OpenTelemetry collector over OTLP/HTTP:
 
-- **Metrics** about its sandboxes, such as `kantel.sandbox.running`, `kantel.sandbox.cpu.seconds` and `kantel.sandbox.cost`, every 60 seconds.
+- **Metrics** about its sandboxes: their CPU, memory and running time, every 60 seconds. They're listed [below](#metrics).
 - **Logs**: each lifecycle event, the same ones [webhooks](/monitoring/webhooks/#events) deliver, as an OTLP log record when it happens.
 
 Each account has one export. The examples use `KANTEL_URL` and `KANTEL_API_KEY` as set in [Create and manage sandboxes](/sandboxes/lifecycle/#before-you-start), and need a key with `account:admin`.
@@ -72,6 +72,25 @@ docker run --rm -p 4318:4318 -v "$PWD/otel-collector.yaml:/etc/otelcol/config.ya
 
 Then set `"endpoint": "http://<collector-address>:4318"`, at an address your control plane can reach. Swap the `debug` exporter for your backend's when you're happy with what you see.
 
+## Metrics
+
+Every 60 seconds Kantel sends each reading of the account's sandboxes taken since the last export, so one export can hold several data points per sandbox. A sandbox that stopped since still sends the readings it had.
+
+| Metric | Type | Unit | What it is |
+| --- | --- | --- | --- |
+| `kantel.sandbox.cpu` | Gauge | `1` | CPU utilisation, from 0 to 1. |
+| `kantel.sandbox.memory_bytes` | Gauge | `By` | Memory in use, in bytes. |
+| `kantel.sandbox.running_seconds` | Sum, cumulative and monotonic | `s` | The sandbox's running time so far, over all its runs. Its start time is when the sandbox started. |
+
+Each data point has these attributes:
+
+| Attribute | Value |
+| --- | --- |
+| `kantel.sandbox.id` | The sandbox's ID, such as `sbx_4d8n1x7pe2`. |
+| `kantel.sandbox.type` | `isolate` or `microvm`. |
+
+Metrics and logs share one resource and scope. The resource has `service.name` set to `kantel` and `kantel.account.id` set to the account's ID. The scope is `kantel.compute`.
+
 ## Check the export
 
 ```sh
@@ -99,4 +118,4 @@ curl -s -X DELETE "$KANTEL_URL/v1/telemetry" -H "authorization: Bearer $KANTEL_A
 
 Kantel stops sending the account's telemetry.
 
-<!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:1047-1098, packages/api/src/compute-schema.ts:1033-1083 -->
+<!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:1047-1098, packages/api/src/compute-schema.ts:1033-1083; (d98df8d7): packages/compute/src/telemetry.ts:84-169, packages/compute/src/service.ts:5390-5428 -->
