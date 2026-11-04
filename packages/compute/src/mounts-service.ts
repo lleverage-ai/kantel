@@ -294,13 +294,17 @@ export function createMounts(deps: MountsDeps) {
 	 * counts the sandbox, or the create sees the claim and refuses. A create that finds the claim lapsed clears it before
 	 * going on (`holdRecord`), and the delete removes the record only while its own claim is still on it, so a delete
 	 * slow enough for its claim to lapse can't remove a source a create has since taken.
+	 *
+	 * Answers the record it removed, as it claimed it: that may not be `record`, which was read before, should `record`
+	 * have been deleted and another made with its ID since. Only the record it claimed carries its claim, so that is the
+	 * one removed.
 	 */
 	async function deleteUnlessMounted<T extends { readonly id: string; readonly deleting?: DeleteClaim }>(
 		collection: Collection<T>,
 		record: T,
 		using: () => Promise<number>,
 		kind: string,
-	): Promise<void> {
+	): Promise<T> {
 		const token = randomSlug(12);
 		const started = now();
 		const marked = await collection.update(record.id, (current) => {
@@ -334,6 +338,7 @@ export function createMounts(deps: MountsDeps) {
 			if ((await collection.get(record.id)) === undefined) throw new KantelError("not_found", `No such ${kind}`);
 			throw new KantelError("unavailable", `Deleting this ${kind} took too long; try again`);
 		}
+		return marked;
 	}
 
 	/**
@@ -627,14 +632,16 @@ export function createMounts(deps: MountsDeps) {
 
 		deleteBundle: async (principal, { params, query }) => {
 			const bundle = await bundleFor(principal, query.account, params.digest, "sandboxes:write");
-			await deleteUnlessMounted(
+			const removed = await deleteUnlessMounted(
 				store.bundles,
 				bundle,
 				() => mountedBy(bundle.accountId, bundleMatches(bundle.digest)),
 				"bundle",
 			);
-			// Its record is gone, so its bytes, which no other record reads, go too. Should that fail, they are only spare.
-			await options.bundles.delete(bundle.digest, generationOf(bundle)).catch(() => undefined);
+			// The record it removed is gone, so its bytes, which no other record reads, go too: that record's, which are
+			// another upload's than `bundle`'s should the bundle have been deleted and uploaded again since it was read.
+			// Should that fail, they are only spare.
+			await options.bundles.delete(removed.digest, generationOf(removed)).catch(() => undefined);
 			return undefined;
 		},
 

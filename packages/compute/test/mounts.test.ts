@@ -901,6 +901,24 @@ describe.each(STORES)("sources and the sandboxes mounting them, stored $name", s
 		await bundles.consistent();
 	});
 
+	it("remove the bytes of the record a delete removed, when it was deleted and uploaded again since the delete read it", async () => {
+		const { tom, store, bundles } = await on();
+		const digest = digestOf(SKILLS);
+		await tom.uploadBundle(SKILLS.slice().buffer);
+		const first = (await store.bundles.list())[0]?.generation;
+		// This delete has read the bundle and goes to claim it; first, another deletes it, and it is uploaded again.
+		once(store.bundles, "update", async () => {
+			await tom.deleteBundle(digest);
+			await tom.uploadBundle(SKILLS.slice().buffer);
+			expect((await store.bundles.list())[0]?.generation).not.toBe(first);
+		});
+		await tom.deleteBundle(digest);
+		// It removed the record there now, and that record's bytes with it: none are left without a record.
+		expect(await store.bundles.list()).toEqual([]);
+		await bundles.consistent();
+		expect(await bundles.open(digest)).toBeUndefined();
+	});
+
 	it("keep a record's bytes when its insert threw but went in", async () => {
 		const { ann, store, bundles } = await on();
 		const insert = store.bundles.insert.bind(store.bundles);
