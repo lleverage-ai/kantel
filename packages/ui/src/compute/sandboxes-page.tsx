@@ -1,6 +1,6 @@
 // The Sandboxes page (compute console): an account's sandboxes, for finding one and seeing its state. A table on a wide
-// screen (name, with what went wrong under it, state, machine, environment, when it stops, its CPU over the last two
-// hours, when it was made) and rows on a phone; each row opens the sandbox's page. Browser and Desktop show on a
+// screen (name, with what went wrong under it, state, machine, environment, when it stops, its CPU live over the last
+// two minutes, when it was made) and rows on a phone; each row opens the sandbox's page. Browser and Desktop show on a
 // running microVM's row under the pointer and open in the console, Recover on a failed one's, and ⋯ has Stop, Fork,
 // Save snapshot, Auto-stop, Restart on latest base (beside the state, a sandbox on an outdated base says so) and
 // Delete. New makes a sandbox at once with the defaults (a medium
@@ -44,6 +44,7 @@ import {
 	sizeText,
 	stopsInText,
 } from "./compute-model.ts";
+import { lineOf, ROW_SPAN_MS, seriesOf, useLiveUsage } from "./live-usage.ts";
 import { computePage, messageOf, Sparkline, table } from "./parts.tsx";
 import { AUTO_STOP_CHOICES, DeleteDialog, type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
 import { popOut } from "./sandbox-screen.tsx";
@@ -127,11 +128,11 @@ export const sandboxesShown = (
 };
 
 /**
- * Whether a row draws its CPU line: only while the sandbox runs, or has just stopped answering, and has samples to draw.
- * A stopped, paused or starting one shows nothing rather than a flat line.
+ * Whether a row draws its CPU line: only while the sandbox runs, or has just stopped answering. A stopped, paused or
+ * starting one shows nothing rather than a flat line. One with no samples yet draws a faint flat line.
  */
-export const showsCpu = (box: Pick<Sandbox, "state" | "usage">): boolean =>
-	(box.state === "running" || box.state === "stopping" || box.state === "error") && box.usage.length > 1;
+export const showsCpu = (box: Pick<Sandbox, "state">): boolean =>
+	box.state === "running" || box.state === "stopping" || box.state === "error";
 
 /** "in 52m", "Always on", "Now", or a dash: when auto-stop stops it. */
 function stopsText(box: Sandbox, now: number): string {
@@ -703,20 +704,39 @@ const StateLabel = ({ state }: { state: SandboxState }) => (
 	<StatusLabel status={SANDBOX_STATE_STATUS[state]}>{SANDBOX_STATE_LABELS[state]}</StatusLabel>
 );
 
-/** CPU over the last two hours, as a line, or nothing when it isn't running. */
-function Cpu({ sandbox, percent = false }: { sandbox: Sandbox; percent?: boolean }) {
-	if (!showsCpu(sandbox)) return null;
-	const peak = Math.round(Math.max(0, ...sandbox.usage) * 100);
+/**
+ * CPU over the last two minutes, as a line read again every few seconds, or nothing when it isn't running. Without a
+ * live source it's the sandbox's recent CPU as listed, which doesn't move.
+ */
+function Cpu({ sandbox, source, percent = false }: { sandbox: Sandbox; source: SandboxesSource; percent?: boolean }) {
+	const shown = showsCpu(sandbox);
+	const live = useLiveUsage(shown && sandbox.state !== "error" ? source.usageSeries : undefined, sandbox.id, {
+		keepMs: ROW_SPAN_MS,
+	});
+	if (!shown) return null;
+	const series = seriesOf(live);
+	const line = lineOf(series, (point) => point.cpu, ROW_SPAN_MS);
+	// Without a live source, its recent CPU as listed, untimed.
+	const values = series === undefined ? (live.status === "off" ? sandbox.usage : []) : line.values;
+	const loading = live.status === "loading";
+	const latest = values.at(-1);
+	const peak = Math.round(Math.max(0, ...values) * 100);
+	const label =
+		values.length === 0
+			? `No CPU readings for ${sandbox.name} yet`
+			: `CPU ${series === undefined ? "lately" : "over the last 2 minutes"} for ${sandbox.name}, peak ${peak}%`;
 	return (
 		<span className="inline-flex items-center gap-2">
 			<Sparkline
-				values={sandbox.usage}
+				values={values}
 				tone={sandbox.state === "error" ? "error" : "done"}
-				label={`CPU over the last two hours for ${sandbox.name}, peak ${peak}%`}
+				label={loading ? `Reading ${sandbox.name}'s CPU` : label}
+				loading={loading}
+				{...(series === undefined ? {} : { timed: line.timed })}
 			/>
 			{percent && sandbox.state === "running" ? (
 				<span className="w-8 text-right text-xs text-muted tabular-nums">
-					{Math.round((sandbox.usage.at(-1) ?? 0) * 100)}%
+					{latest === undefined ? <span className="text-faint">–</span> : `${Math.round(latest * 100)}%`}
 				</span>
 			) : null}
 		</span>
@@ -800,7 +820,7 @@ function SandboxRow({
 				<span className={stops === "–" ? "text-faint" : stops === "Always on" ? "text-fg" : "text-muted"}>{stops}</span>
 			</td>
 			<td className={cell}>
-				<Cpu sandbox={sandbox} percent />
+				<Cpu sandbox={sandbox} source={calls.source} percent />
 			</td>
 			{hosting === "hosted" ? (
 				<td className={`${cell} text-right tabular-nums`}>{costText(sandbox.costCents ?? 0)}</td>
@@ -864,7 +884,7 @@ function SandboxPhoneRow({
 		<div className="flex min-w-0 flex-1 flex-col gap-1">
 			<div className="flex min-w-0 items-center gap-3">
 				<span className="min-w-0 flex-1 truncate text-md font-medium text-fg">{sandbox.name}</span>
-				<Cpu sandbox={sandbox} />
+				<Cpu sandbox={sandbox} source={calls.source} />
 				<StateLabel state={sandbox.state} />
 			</div>
 			{sandbox.state === "error" && sandbox.error !== undefined ? (

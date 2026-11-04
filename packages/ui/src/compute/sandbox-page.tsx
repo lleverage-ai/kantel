@@ -41,7 +41,8 @@ import {
 	stopsInText,
 } from "./compute-model.ts";
 import { EgressPage } from "./egress-page.tsx";
-import { computePage, messageOf, SectionHeading, Sparkline } from "./parts.tsx";
+import { gbBytes, gbText, lineOf, seriesOf, USAGE_KEEP_MS, useLiveUsage } from "./live-usage.ts";
+import { computePage, messageOf, SectionHeading, UsageGraph } from "./parts.tsx";
 import { type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
 import { SandboxLogs } from "./sandbox-logs.tsx";
 import { SandboxPorts } from "./sandbox-ports.tsx";
@@ -912,8 +913,9 @@ export function ImageSection({ image }: { image: SandboxImage }) {
 }
 
 /**
- * Its recent CPU, larger than a row's, and memory and disk where the host says. The samples carry no times, and the
- * host takes one on each usage read, so the line claims no fixed window.
+ * Its CPU and its memory against its limit as live graphs over the last 10 minutes, read again every few seconds while
+ * the page is visible, and its disk where the host says. Without a live source, the CPU line is its recent CPU as
+ * listed and memory is a meter, as the host last said.
  */
 function Usage({ source, sandbox, refreshKey }: { source: SandboxesSource; sandbox: Sandbox; refreshKey: unknown }) {
 	const { usageNow } = source;
@@ -921,11 +923,22 @@ function Usage({ source, sandbox, refreshKey }: { source: SandboxesSource; sandb
 		() => (usageNow === undefined ? Promise.resolve(undefined) : usageNow(sandbox.id)),
 		[usageNow, sandbox.id],
 	);
-	// Each read of the sandbox brings new CPU samples: memory and disk follow, keeping the last while they're read.
+	// Each read of the sandbox: disk follows, keeping the last while it's read.
 	useReloadOn(refreshKey, reload);
+	const live = useLiveUsage(sandbox.state === "error" ? undefined : source.usageSeries, sandbox.id);
+	const series = seriesOf(live);
+	const loading = live.status === "loading";
 	const spec = sandbox.resources ?? sizeSpec(sandbox.size);
-	const latest = Math.round((sandbox.usage.at(-1) ?? 0) * 100);
-	const peak = Math.round(Math.max(0, ...sandbox.usage) * 100);
+	const liveCpu = lineOf(series, (point) => point.cpu, USAGE_KEEP_MS);
+	const liveMemory = lineOf(series, (point) => point.memUsedBytes, USAGE_KEEP_MS);
+	// Without a live source, its recent CPU as listed, untimed.
+	const cpu = series !== undefined ? liveCpu.values : live.status === "off" ? sandbox.usage : [];
+	const memory = liveMemory.values;
+	const limit = series?.memLimitBytes ?? gbBytes(spec.memoryGb);
+	const latestCpu = cpu.at(-1);
+	const latestMemory = memory.at(-1);
+	const peak = Math.round(Math.max(0, ...cpu) * 100);
+	const span = series === undefined ? "lately" : "over the last 10 minutes";
 	const now = state.status === "ready" ? state.value : undefined;
 	const meter = (label: string, used: number, total: number) => (
 		<div className="flex flex-col gap-1.5">
@@ -945,21 +958,41 @@ function Usage({ source, sandbox, refreshKey }: { source: SandboxesSource; sandb
 	);
 	return (
 		<section className="flex min-w-0 flex-col gap-3" aria-labelledby="sandbox-usage">
-			<SectionHeading id="sandbox-usage" title="Usage" actions={<span className="text-xs text-muted">Recent</span>} />
+			<SectionHeading
+				id="sandbox-usage"
+				title="Usage"
+				actions={<span className="text-xs text-muted">{live.status === "off" ? "Recent" : "Last 10 minutes"}</span>}
+			/>
 			<div className="flex flex-col gap-4 text-sm">
-				<div className="flex flex-col gap-1.5">
-					<div className="flex justify-between gap-3">
-						<span className="text-muted">CPU</span>
-						<span className="tabular-nums">{latest}%</span>
-					</div>
-					<Sparkline
-						size="lg"
-						values={sandbox.usage}
-						tone={sandbox.state === "error" ? "error" : "done"}
-						label={`Recent CPU, peak ${peak}%`}
+				<UsageGraph
+					title="CPU"
+					{...(latestCpu === undefined ? {} : { value: `${Math.round(latestCpu * 100)}%` })}
+					values={cpu}
+					{...(series === undefined ? { slots: cpu.length } : { timed: liveCpu.timed })}
+					tone={sandbox.state === "error" ? "error" : "done"}
+					loading={loading}
+					label={cpu.length === 0 ? "No CPU readings yet" : `CPU ${span}, peak ${peak}%`}
+				/>
+				{live.status === "off" ? (
+					now?.memoryGb === undefined ? null : (
+						meter("Memory", now.memoryGb, spec.memoryGb)
+					)
+				) : (
+					<UsageGraph
+						title="Memory"
+						{...(latestMemory === undefined ? {} : { value: `${gbText(latestMemory)} of ${gbText(limit)} GB` })}
+						values={memory}
+						max={limit}
+						timed={liveMemory.timed}
+						tone="working"
+						loading={loading}
+						label={
+							latestMemory === undefined
+								? "No memory readings yet"
+								: `Memory over the last 10 minutes, ${gbText(latestMemory)} of ${gbText(limit)} GB now`
+						}
 					/>
-				</div>
-				{now?.memoryGb === undefined ? null : meter("Memory", now.memoryGb, spec.memoryGb)}
+				)}
 				{now?.diskGb === undefined ? null : meter("Disk", now.diskGb, spec.diskGb)}
 			</div>
 		</section>
