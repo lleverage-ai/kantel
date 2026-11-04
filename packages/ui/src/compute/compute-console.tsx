@@ -125,6 +125,8 @@ export function pathAfterAccountSwitch(pathname: string, base = "/compute"): str
 	if (open?.page === "environments" && open.environmentId !== undefined) return computePath("environments", base);
 	if ((open?.page === "egress" || open?.page === "sandboxes") && open.sandboxId !== undefined)
 		return computePath("sandboxes", base);
+	// A snapshot's files, or a sandbox's history, are the last account's: the new one's saved snapshots instead.
+	if (open?.page === "snapshots") return computePath("snapshots", base);
 	return undefined;
 }
 
@@ -137,9 +139,13 @@ export function sandboxPath(base: string, sandboxId: string, view: SandboxView =
 /** The query parameters a file browser keeps in the address: the folder, the file open in it, and whose files. */
 const FILES_PARAMS = ["path", "file", "snapshot"] as const;
 
-/** Where a file browser is, from the address's query: `?path=/home/user&file=notes.md`. The root without `path`. */
-export function filesAtOf(search: string): FilesAt {
-	const params = new URLSearchParams(search);
+/**
+ * Where a file browser is, from the address: its query, `?path=/home/user&file=notes.md`, or for an end-to-end sandbox
+ * its fragment, `#path=/home/user&file=notes.md`, which the fragment wins. The root without `path`.
+ */
+export function filesAtOf(search: string, hash = ""): FilesAt {
+	const fragment = new URLSearchParams(hash.replace(/^#/, ""));
+	const params = fragment.has("path") || fragment.has("file") ? fragment : new URLSearchParams(search);
 	const path = (params.get("path") ?? "").replace(/^\/+|\/+$/g, "");
 	const file = params.get("file") ?? "";
 	return file === "" || file.includes("/") ? { path } : { path, file };
@@ -163,6 +169,19 @@ export function filesSearch(search: string, at: FilesAt, snapshot?: string): str
 /** `search` without a file browser's place, with its `?` when anything is left. */
 export function searchWithoutFiles(search: string): string {
 	return filesSearch(search, { path: "" });
+}
+
+/**
+ * An end-to-end sandbox's place in the file browser as the address's fragment, `#path=/home/user&file=notes.md`. A
+ * browser never sends a fragment, in a request or a `Referer`, so its folder and file names stay out of the gateway's
+ * sight as its files do; Back, Forward and copied links work as with the query.
+ */
+export function filesHash(at: FilesAt): string {
+	const params = new URLSearchParams();
+	if (at.path !== "") params.set("path", `/${at.path}`);
+	if (at.file !== undefined) params.set("file", at.file);
+	const fragment = params.toString().replaceAll("%2F", "/");
+	return fragment === "" ? "" : `#${fragment}`;
 }
 
 /** The path of a page under `base`, and of one sandbox's or environment's when `id` is given. */
@@ -205,6 +224,8 @@ export interface ComputeConsoleProps {
 	readonly pathname: string;
 	/** The address's query: `?new` opens New sandbox. */
 	readonly search?: string;
+	/** The address's fragment, with its `#`: where an end-to-end sandbox's file browser is. */
+	readonly hash?: string;
 	/** Goes to a path in the app without reloading the page. */
 	readonly navigate: (path: string) => void;
 	/** Where the console lives. Default `/compute`. */
@@ -299,6 +320,7 @@ export function ComputeConsole({
 	source,
 	pathname,
 	search = "",
+	hash = "",
 	navigate,
 	base = "/compute",
 	now,
@@ -625,6 +647,7 @@ export function ComputeConsole({
 								now={now}
 								base={base}
 								search={search}
+								hash={hash}
 								navigate={navigate}
 								noHosts={noHosts}
 								narrow={narrow}
@@ -687,6 +710,7 @@ function PageFor({
 	now,
 	base,
 	search,
+	hash,
 	navigate,
 	noHosts,
 	narrow,
@@ -704,6 +728,7 @@ function PageFor({
 	now: number | undefined;
 	base: string;
 	search: string;
+	hash: string;
 	navigate: (path: string) => void;
 	/** There's no host yet: the deployment's, for a super-admin, or the account's own. */
 	noHosts: boolean;
@@ -734,8 +759,13 @@ function PageFor({
 					environmentHref={(id) => computePath("environments", base, id)}
 					navigate={navigate}
 					narrow={narrow}
-					{...(route.sandboxView === "files" ? { filesAt: filesAtOf(search) } : {})}
-					filesHref={(at) => `${sandboxPath(base, route.sandboxId ?? "", "files")}${filesSearch(search, at)}`}
+					{...(route.sandboxView === "files" ? { filesAt: filesAtOf(search, hash) } : {})}
+					filesHref={(at, sealed) => {
+						const files = sandboxPath(base, route.sandboxId ?? "", "files");
+						return sealed
+							? `${files}${searchWithoutFiles(search)}${filesHash(at)}`
+							: `${files}${filesSearch(search, at)}`;
+					}}
 					{...timing}
 				/>
 			) : (

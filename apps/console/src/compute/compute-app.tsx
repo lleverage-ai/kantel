@@ -3,7 +3,7 @@ import type { ThemePreference } from "@kantel/contracts";
 import { Button, ComputeConsole, type ComputeSource, type HostingMode, Notice } from "@kantel/ui";
 import { createComputeFixtures } from "@kantel/ui/compute/fixtures";
 import { useEffect, useState } from "react";
-import { navigate, searchWithout, usePathname, useSearch } from "../app/router.ts";
+import { navigate, searchWithout, useHash, usePathname, useSearch } from "../app/router.ts";
 import { NARROW_QUERY, useMedia } from "../app/use-media.ts";
 import { apiCompute } from "./api-source.ts";
 import { localBridge } from "./local.ts";
@@ -141,6 +141,7 @@ export function ComputeApp({
 	const pathname = usePathname();
 	// Egress's tab is in the query: Back from Rules to Log moves only that.
 	const search = useSearch();
+	const hash = useHash();
 	const narrow = useMedia(NARROW_QUERY);
 	// One source for the tab's life: what a person does on one page (a new sandbox, a revoked key) shows on the next.
 	const [sourced, setSourced] = useState<Sourced>();
@@ -188,6 +189,7 @@ export function ComputeApp({
 			source={sourced.source}
 			pathname={pathname}
 			search={search}
+			hash={hash}
 			navigate={go}
 			base={COMPUTE_BASE}
 			narrow={narrow}

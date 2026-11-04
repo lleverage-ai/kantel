@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { filesAtOf, filesSearch, searchWithoutFiles } from "./compute-console.tsx";
+import { filesAtOf, filesHash, filesSearch, searchWithoutFiles } from "./compute-console.tsx";
 import type { FilePart, FileRange, SnapshotEntry } from "./compute-model.ts";
 import { samplePart } from "./fixtures.ts";
 import {
 	binaryByName,
+	changedUnder,
 	DOWNLOAD_MAX_BYTES,
 	PREVIEW_PART_BYTES,
 	parentOf,
@@ -44,6 +45,17 @@ describe("the file browser", () => {
 		expect(filesAtOf(odd)).toEqual({ path: "home/my files", file: "a & b.txt" });
 		expect(filesAtOf("?path=/home/user/&file=../x")).toEqual({ path: "home/user" });
 		expect(filesAtOf("")).toEqual({ path: "" });
+	});
+
+	it("keeps an end-to-end sandbox's place in the fragment, which never reaches the gateway", () => {
+		const at = { path: "home/user/secret plans", file: "q3.md" };
+		const hash = filesHash(at);
+		expect(hash).toBe("#path=/home/user/secret+plans&file=q3.md");
+		expect(filesAtOf("?hosting=1", hash)).toEqual(at);
+		expect(filesHash({ path: "" })).toBe("");
+		// The fragment wins over a query; a fragment that isn't the browser's leaves the query be.
+		expect(filesAtOf("?path=/etc", "#path=/home")).toEqual({ path: "home" });
+		expect(filesAtOf("?path=/etc", "#top")).toEqual({ path: "etc" });
 	});
 });
 
@@ -86,5 +98,59 @@ describe("the file preview", () => {
 
 		const huge = async (): Promise<FilePart> => ({ bytes: new Uint8Array(8), size: DOWNLOAD_MAX_BYTES + 1 });
 		await expect(readWhole({ read: huge }, "sbx_1", "big.iso")).rejects.toThrow(/too big/);
+
+		// An empty file, and a snapshot's that comes whole whatever was asked.
+		const empty = async (): Promise<FilePart> => ({ bytes: new Uint8Array(), size: 0 });
+		expect((await readWhole({ read: empty }, "sbx_1", "empty")).byteLength).toBe(0);
+		const once = async (): Promise<FilePart> => ({ bytes: new Uint8Array(5), size: 5 });
+		expect((await readWhole({ read: once }, "ssn_1", "five")).byteLength).toBe(5);
+	});
+
+	it("sees a file change under Load more: shrunk, or ended before its size; not grown", () => {
+		const part = (length: number, size: number): FilePart => ({ bytes: new Uint8Array(length), size });
+		const shown = 256 * 1024;
+		expect(changedUnder(shown, 2_000_000, part(shown, 2_000_000))).toBe(false);
+		expect(changedUnder(shown, 2_000_000, part(shown, 2_100_000))).toBe(false);
+		expect(changedUnder(shown, 2_000_000, part(0, 100_000))).toBe(true);
+		expect(changedUnder(shown, 2_000_000, part(1000, 1_999_000))).toBe(true);
+		expect(changedUnder(shown, 2_000_000, part(0, 2_000_000))).toBe(true);
+	});
+
+	it("fails a download whose file shrinks or ends early under it, rather than saving a stale part", async () => {
+		// A ranged backend over a file that's truncated after its first part, as a rotated log is; offsets past its end
+		// read nothing, as the hosts' readers do.
+		const ranged = (file: { bytes: Uint8Array }, after?: (calls: number) => void) => {
+			let calls = 0;
+			return async (_id: string, _path: string, range: FileRange): Promise<FilePart> => {
+				const start = Math.min(range.offset, file.bytes.byteLength);
+				const part = {
+					bytes: file.bytes.slice(start, start + range.length),
+					size: file.bytes.byteLength,
+				};
+				calls += 1;
+				after?.(calls);
+				return part;
+			};
+		};
+		const log = { bytes: new Uint8Array(2_500_000).fill(65) };
+		const truncated = ranged(log, (calls) => {
+			if (calls === 1) log.bytes = new Uint8Array(128 * 1024).fill(66);
+		});
+		await expect(readWhole({ read: truncated }, "sbx_1", "app.log")).rejects.toThrow(/changed/);
+
+		// A part that ends before the size it gave, with the size the same.
+		let asked = 0;
+		const early = async (): Promise<FilePart> => {
+			asked += 1;
+			return { bytes: asked === 1 ? new Uint8Array(1024 * 1024) : new Uint8Array(), size: 2 * 1024 * 1024 };
+		};
+		await expect(readWhole({ read: early }, "sbx_1", "short")).rejects.toThrow(/changed/);
+
+		// One that grows as it's read (a log being written) reads on to its new end.
+		const growing = { bytes: new Uint8Array(1_500_000) };
+		const grows = ranged(growing, (calls) => {
+			if (calls === 1) growing.bytes = new Uint8Array(1_600_000);
+		});
+		expect((await readWhole({ read: grows }, "sbx_1", "app.log")).byteLength).toBe(1_600_000);
 	});
 });

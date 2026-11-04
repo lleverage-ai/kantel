@@ -111,7 +111,7 @@ export interface SandboxPageProps {
 	/** Where the Files tab is, as the address names it: its folder and open file. The page keeps its own when absent. */
 	readonly filesAt?: FilesAt;
 	/** The address of the Files tab at a folder and file; with `navigate`, the tab moves through the address. */
-	readonly filesHref?: (at: FilesAt) => string;
+	readonly filesHref?: (at: FilesAt, sealed: boolean) => string;
 }
 
 /** The state, in its colour. */
@@ -198,7 +198,7 @@ export function SandboxPage({
 	const routed = navigate !== undefined && filesHref !== undefined;
 	const files = routed ? (filesAt ?? { path: "" }) : ownFiles;
 	const goFiles = (at: FilesAt) => {
-		if (routed) navigate(filesHref(at));
+		if (routed) navigate(filesHref(at, sealed));
 		else setOwnFiles(at);
 	};
 	const asked = controlled ?? own;
@@ -262,6 +262,9 @@ export function SandboxPage({
 		async () => (source.endToEnd === undefined ? false : source.endToEnd(sandboxId)),
 		[source, sandboxId],
 	);
+	// Its file browser's place goes in the address's fragment unless it's known not to be end to end: a fragment never
+	// reaches the gateway, so neither do the names of the files it reads over its own session.
+	const sealed = !(e2e.state.status === "ready" && !e2e.state.value);
 
 	const counts = useLoad(async () => {
 		const [history, log] = await Promise.all([
@@ -555,7 +558,7 @@ export function SandboxPage({
 					onRecheck={e2e.reload}
 					at={files}
 					onNavigate={goFiles}
-					{...(filesHref === undefined ? {} : { href: filesHref })}
+					{...(filesHref === undefined ? {} : { href: (at: FilesAt) => filesHref(at, sealed) })}
 				/>
 			)}
 		</div>

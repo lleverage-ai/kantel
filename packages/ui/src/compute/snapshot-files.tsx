@@ -210,7 +210,12 @@ export function SnapshotFiles({
 						)}
 					</div>
 					{state.status === "error" && state.error instanceof DeviceSetupError ? (
-						<p className="m-0 px-3 py-2 text-sm text-muted">{state.error.message}</p>
+						<div className="flex min-w-0 items-center justify-between gap-3 px-3 py-1">
+							<p className="m-0 min-w-0 text-sm text-muted">{state.error.message}</p>
+							<Button size="xs" variant="ghost" onClick={reload}>
+								Try again
+							</Button>
+						</div>
 					) : state.status === "error" ? (
 						<Notice
 							level="error"
@@ -416,6 +421,11 @@ export function useFileReading(
 		source.read(id, entry.path, { offset: now.bytes.byteLength, length: PREVIEW_PART_BYTES }).then(
 			(part) => {
 				if (!live.current || latest.current.status !== "text" || latest.current.bytes !== now.bytes) return;
+				// A file that shrank since its first part (a log rotated or truncated): what's shown is no longer its start.
+				if (changedUnder(now.bytes.byteLength, now.size, part)) {
+					setReading({ status: "error", error: new Error(FILE_CHANGED) });
+					return;
+				}
 				const bytes = new Uint8Array(now.bytes.byteLength + part.bytes.byteLength);
 				bytes.set(now.bytes);
 				bytes.set(part.bytes, now.bytes.byteLength);
@@ -430,6 +440,16 @@ export function useFileReading(
 	}, [source, id, entry.path]);
 
 	return { reading, more, retry: () => setAttempt((value) => value + 1) };
+}
+
+const FILE_CHANGED = "This file changed while Kantel was reading it.";
+
+/**
+ * Whether a file changed under a read of its parts: it's now shorter than it was, or than what was read of it, or it
+ * ended before the size it says. A file that grew is read on (a log written to as it's read).
+ */
+export function changedUnder(read: number, size: number, part: FilePart): boolean {
+	return part.size < size || part.size < read || (part.bytes.byteLength === 0 && read < part.size);
 }
 
 function readingOf(bytes: Uint8Array, size: number): Reading {
@@ -449,12 +469,17 @@ function readingOf(bytes: Uint8Array, size: number): Reading {
 export async function readWhole(source: Pick<FilesSource, "read">, id: string, path: string): Promise<Uint8Array> {
 	const parts: Uint8Array[] = [];
 	let offset = 0;
-	let size = Number.POSITIVE_INFINITY;
-	while (offset < size) {
+	let size: number | undefined;
+	while (size === undefined || offset < size) {
 		const part = await source.read(id, path, { offset, length: DOWNLOAD_PART_BYTES });
+		// Never a stale prefix saved as the file: one that shrank or ended early fails, to be downloaded again.
+		if (size !== undefined && changedUnder(offset, size, part)) throw new Error(FILE_CHANGED);
 		size = part.size;
 		if (size > DOWNLOAD_MAX_BYTES) throw new Error(`At ${bytesText(size)}, it's too big to download here.`);
-		if (part.bytes.byteLength === 0) break;
+		if (part.bytes.byteLength === 0) {
+			if (offset < size) throw new Error(FILE_CHANGED);
+			break;
+		}
 		parts.push(part.bytes);
 		offset += part.bytes.byteLength;
 	}
@@ -512,7 +537,7 @@ function FileView({
 			: reading.status === "loading"
 				? { status: "loading" }
 				: reading.status === "error" && reading.error instanceof DeviceSetupError
-					? { status: "error", message: reading.error.message }
+					? { status: "error", message: reading.error.message, onRetry: retry }
 					: reading.status === "error"
 						? { status: "error", message: messageOf(reading.error, "Kantel couldn't read this file."), onRetry: retry }
 						: reading.status === "none"
