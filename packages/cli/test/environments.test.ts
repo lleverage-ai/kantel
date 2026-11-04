@@ -296,9 +296,29 @@ describe("env set", () => {
 			stdin: input(SECRET),
 		});
 		expect(result.code).toBe(0);
-		expect(result.calls[2]?.body).toEqual({ protected: true, value: SECRET, bindings: [{ host: "api.github.com" }] });
+		// The value alone: its mode and bindings stay as Kantel has them when it is written, not as they were read.
+		expect(result.calls[2]?.body).toEqual({ value: SECRET });
 		expect(result.stdout).toContain("Rotated GH_TOKEN in work");
 		expect(result.stdout).toContain("same placeholder");
+		expect(result.stdout + result.stderr).not.toContain(SECRET);
+	});
+
+	it("says what Kantel has after a rotation, not what it read before", async () => {
+		// Someone narrowed GH_TOKEN's bindings after the read: the answer has them, and so does what is printed.
+		const narrowed = [{ host: "api.github.com", pathPrefixes: ["/repos/acme/"], methods: ["GET"] }];
+		const answer = {
+			...ENVIRONMENT,
+			variables: ENVIRONMENT.variables.map((variable) =>
+				variable.name === "GH_TOKEN" ? { ...variable, bindings: narrowed } : variable,
+			),
+		};
+		const result = await kantel(["env", "set", "work", "GH_TOKEN", "--value-stdin"], {
+			routes: setRoutes(() => answer),
+			stdin: input(SECRET),
+		});
+		expect(result.code).toBe(0);
+		expect(result.calls[2]?.body).toEqual({ value: SECRET });
+		expect(result.stdout).toContain("Rotated GH_TOKEN in work: protected, sent only to api.github.com/repos/acme/:GET");
 		expect(result.stdout + result.stderr).not.toContain(SECRET);
 	});
 
@@ -322,7 +342,7 @@ describe("env set", () => {
 	it("sets a plain variable, and --plain makes a protected one plain", async () => {
 		const plain = await kantel(["env", "set", "work", "NODE_ENV=test"], { routes: setRoutes(leaky) });
 		expect(plain.code).toBe(0);
-		expect(plain.calls[2]?.body).toEqual({ protected: false, value: "test" });
+		expect(plain.calls[2]?.body).toEqual({ value: "test" });
 		const unprotected = await kantel(["env", "set", "work", "GH_TOKEN=public", "--plain"], {
 			routes: setRoutes(leaky),
 		});
@@ -446,11 +466,58 @@ describe("env files, repos and grants", () => {
 			routes,
 		});
 		expect(added.code).toBe(0);
-		expect(added.calls.at(-1)?.body).toEqual({ repos: [{ url: "https://github.com/acme/app", ref: "main" }] });
+		// With the list as read, so Kantel refuses the write when it has changed since.
+		expect(added.calls.at(-1)?.body).toEqual({
+			repos: [{ url: "https://github.com/acme/app", ref: "main" }],
+			expected: ENVIRONMENT.repos,
+		});
 		const removed = await kantel(["env", "repo", "rm", "work", "https://github.com/acme/app"], { routes });
-		expect(removed.calls.at(-1)?.body).toEqual({ repos: [] });
+		expect(removed.calls.at(-1)?.body).toEqual({ repos: [], expected: ENVIRONMENT.repos });
 		const notHttps = await kantel(["env", "repo", "add", "work", "git@github.com:acme/app.git"], { routes });
 		expect(notHttps.code).toBe(2);
+	});
+
+	it("reads the list again and redoes the edit when Kantel says it changed since it was read", async () => {
+		const theirs = { id: "grt_7", action: "allow", host: "registry.npmjs.org" };
+		let reads = 0;
+		const routes = {
+			...ENVIRONMENT_ROUTES,
+			// Someone else's grant lands between the first read and its write.
+			"GET /v1/environments/env_work1": () => {
+				reads++;
+				return reads === 1 ? ENVIRONMENT : { ...ENVIRONMENT, grants: [...ENVIRONMENT.grants, theirs] };
+			},
+			"PUT /v1/environments/env_work1/grants": (call: Call) => {
+				const body = call.body as { grants: unknown[]; expected: unknown[] };
+				if (body.expected.length !== 2) {
+					return json({ error: { code: "conflict", message: "The environment's grants changed" } }, 409);
+				}
+				return {
+					...ENVIRONMENT,
+					grants: body.grants.map((grant, index) => ({ id: `grt_${index}`, ...(grant as object) })),
+				};
+			},
+		};
+		const result = await kantel(["env", "grant", "env_work1", "deny", "*", "--method", "DELETE"], { routes });
+		expect(result.code).toBe(0);
+		const puts = result.calls.filter((call) => call.method === "PUT");
+		expect(puts).toHaveLength(2);
+		// The second write is made on the list as it is now: their grant is kept.
+		expect(puts[1]?.body).toEqual({
+			grants: [...ENVIRONMENT.grants, theirs, { action: "deny", host: "*", methods: ["DELETE"] }],
+			expected: [...ENVIRONMENT.grants, theirs],
+		});
+
+		// One that keeps changing is a conflict in the end, not a write over it.
+		const busy = {
+			...ENVIRONMENT_ROUTES,
+			"PUT /v1/environments/env_work1/repos": () =>
+				json({ error: { code: "conflict", message: "The environment's repositories changed" } }, 409),
+		};
+		const refused = await kantel(["env", "repo", "add", "env_work1", "https://github.com/acme/web"], { routes: busy });
+		expect(refused.code).toBe(1);
+		expect(refused.calls.filter((call) => call.method === "PUT")).toHaveLength(3);
+		expect(refused.stderr).toContain("changed");
 	});
 
 	it("adds an environment grant beside the ones it has, and removes one by ID", async () => {
@@ -468,11 +535,12 @@ describe("env files, repos and grants", () => {
 		expect(result.code).toBe(0);
 		expect(result.calls.at(-1)?.body).toEqual({
 			grants: [ENVIRONMENT.grants[0], { action: "allow", host: "api.github.com", methods: ["GET"] }],
+			expected: ENVIRONMENT.grants,
 		});
 		expect(result.stdout).toContain('Added "allow GET api.github.com" (grt_2) to work.');
 		const removed = await kantel(["env", "grant", "rm", "work", "grt_1"], { routes });
 		expect(removed.code).toBe(0);
-		expect(removed.calls.at(-1)?.body).toEqual({ grants: [] });
+		expect(removed.calls.at(-1)?.body).toEqual({ grants: [], expected: ENVIRONMENT.grants });
 		const unknown = await kantel(["env", "grant", "rm", "work", "grt_9"], { routes });
 		expect(unknown.code).toBe(1);
 		expect(unknown.stderr).toContain("work has no grant grt_9");
@@ -510,12 +578,13 @@ describe("sandboxes", () => {
 				{ id: "grt_5", action: "allow", host: "*" },
 				{ action: "deny", host: "api.github.com", methods: ["DELETE"], paths: ["/repos/**"] },
 			],
+			expected: [{ id: "grt_5", action: "allow", host: "*" }],
 		});
 		expect(added.stdout).toContain('Added "deny DELETE api.github.com /repos/**" (grt_6) to sbx_test1.');
 		const removed = await kantel(["grant", "rm", "sbx_test1", "grt_5"], { routes });
 		expect(removed.code).toBe(0);
 		expect(removed.calls.map(routeOf)).toEqual(["GET /v1/sandboxes/sbx_test1", "PUT /v1/sandboxes/sbx_test1/grants"]);
-		expect(removed.calls.at(-1)?.body).toEqual({ grants: [] });
+		expect(removed.calls.at(-1)?.body).toEqual({ grants: [], expected: [{ id: "grt_5", action: "allow", host: "*" }] });
 		const badPath = await kantel(["grant", "sbx_test1", "deny", "api.github.com", "--path", "repos"], { routes });
 		expect(badPath.code).toBe(2);
 		expect(badPath.calls).toEqual([]);

@@ -183,10 +183,10 @@ kantel new --env work
 ```
 
 - `env set` takes the environment first, or as `--env <env>`. `--bind <host>[/path-prefix][:METHOD,METHOD]` says where a protected value may go, such as `api.openai.com/v1/:POST,GET`; repeat it for more. `--value-stdin` reads the value from stdin, which keeps it out of your shell's history and the process list.
-- Setting a protected variable again with a new value rotates it: running sandboxes keep their placeholder and send the new value. It stays protected unless you give `--plain`. `--keep-value` with new `--bind`s changes where it may go without entering it again.
+- Setting a protected variable again with a new value rotates it: running sandboxes keep their placeholder and send the new value. It stays protected unless you give `--plain`, and a new value alone sends only the value, so it keeps the bindings the variable has when it is written, including any changed since. `--keep-value` with new `--bind`s changes where it may go without entering it again.
 - `env show <env>` shows a plain variable's value, but for a protected one only `protected` and its bindings. No command prints a protected value, with or without `--json`.
 - `env file <env> <path>` adds a secret file from `--from <file>` or stdin, with `--mode` (default `0600`), and `env file rm` removes one. `env repo add <env> <url> [--path] [--ref]` clones a repository into new sandboxes, and `env repo rm` stops it.
-- `env grant <env> allow|deny <host> [--method M]… [--path P]…` adds a [grant](/sandboxes/egress-proxy/#grants) for the environment's sandboxes, and `grant <sandbox> …` one for a single sandbox. `env grant rm` and `grant rm` remove one by its ID.
+- `env grant <env> allow|deny <host> [--method M]… [--path P]…` adds a [grant](/sandboxes/egress-proxy/#grants) for the environment's sandboxes, and `grant <sandbox> …` one for a single sandbox. `env grant rm` and `grant rm` remove one by its ID. Each of these edits sends the list as it read it, and Kantel refuses the write if the list changed in between, so the command reads it again and redoes the edit rather than undoing someone else's change. The host `*` is every host.
 - `egress <sandbox>` prints the sandbox's [egress log](/sandboxes/environments/#the-egress-log): each request's time, method, host and path, whether it was allowed, the refusal's code or the grant that decided, and the protected variables swapped in. `--denied` shows refusals only.
 
 An environment is named by its name or its `env_…` ID.

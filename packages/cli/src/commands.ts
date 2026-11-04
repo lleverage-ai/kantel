@@ -63,6 +63,7 @@ import {
 	writeStoredConfig,
 } from "./config.ts";
 import {
+	type Binding,
 	bindingsText,
 	describeEgress,
 	describeEnvironment,
@@ -741,6 +742,43 @@ function withoutGrant<T extends { readonly id: string }>(grants: readonly T[], i
 	const kept = grants.filter((grant) => grant.id !== id);
 	if (kept.length === grants.length) throw new CliError(`${where} has no grant ${id}`);
 	return kept;
+}
+
+/** How many times an edit of a list is read and written again when the list changed in between. */
+const EDIT_ATTEMPTS = 3;
+
+/**
+ * Runs `edit`, which reads a list, changes it and writes it with `expected` the list as read: Kantel refuses the write
+ * with `conflict` when the list changed in between, and the edit is made again on what is there now, so no one
+ * else's change is lost. Answers the last attempt's result.
+ */
+async function editAsRead<T>(edit: () => Promise<T>): Promise<T> {
+	for (let attempt = 1; ; attempt++) {
+		try {
+			return await edit();
+		} catch (error) {
+			if (attempt >= EDIT_ATTEMPTS || !(error instanceof KantelApiError) || error.code !== "conflict") throw error;
+		}
+	}
+}
+
+/** A variable as Kantel answered it, when the answer is an environment holding it. */
+function variableIn(
+	answer: unknown,
+	name: string,
+): { readonly protected: boolean; readonly bindings: readonly Binding[] } | undefined {
+	if (typeof answer !== "object" || answer === null) return undefined;
+	const variables = (answer as { readonly variables?: unknown }).variables;
+	if (!Array.isArray(variables)) return undefined;
+	const found = variables.find(
+		(variable): variable is { name: string; protected: boolean; bindings: Binding[] } =>
+			typeof variable === "object" &&
+			variable !== null &&
+			variable.name === name &&
+			typeof variable.protected === "boolean" &&
+			Array.isArray(variable.bindings),
+	);
+	return found === undefined ? undefined : { protected: found.protected, bindings: found.bindings };
 }
 
 // The commands.
@@ -1821,17 +1859,23 @@ const SECTIONS: readonly Section[] = [
 					if (keep && !wasProtected) {
 						throw new CliError(`${name} isn't protected in ${environment.name}, so there is no value to keep`);
 					}
-					// A protected variable stays so unless --plain says otherwise, so a rotation never makes it plain.
-					const isProtected = !plain && (asked || keep || bindings.length > 0 || wasProtected);
-					const sent = bindings.length > 0 ? bindings : wasProtected ? (existing?.bindings ?? []) : [];
-					if (isProtected && sent.length === 0) {
+					// Only what the command changes is sent: its mode when a flag gives it, its bindings when --bind does. A
+					// value alone leaves both as Kantel has them when it is written, so a rotation never undoes a change to
+					// them made since the read above (and a protected variable never turns plain).
+					const mode = plain ? false : asked || keep || bindings.length > 0 ? true : undefined;
+					if (mode === true && bindings.length === 0 && !wasProtected) {
 						throw new UsageError("a protected variable needs --bind <host>: where its value may be sent");
 					}
 					const answer: unknown = await client.setEnvironmentVariable(environment.id, name, {
-						protected: isProtected,
+						...(mode === undefined ? {} : { protected: mode }),
 						...(value === undefined ? {} : { value }),
-						...(isProtected ? { bindings: sent } : {}),
+						...(bindings.length === 0 ? {} : { bindings }),
 					});
+					// What it is now, as Kantel answers; failing that, what was sent on what was read.
+					const written = variableIn(answer, name);
+					const isProtected = written?.protected ?? mode ?? wasProtected;
+					const sent =
+						written?.bindings ?? (bindings.length > 0 ? bindings : wasProtected ? (existing?.bindings ?? []) : []);
 					const shown = answer ?? { environmentId: environment.id, name, protected: isProtected };
 					const live = wasProtected && isProtected;
 					const verb = live && value !== undefined ? "Rotated" : "Set";
@@ -1927,14 +1971,17 @@ const SECTIONS: readonly Section[] = [
 					const path = ctx.string("path");
 					const ref = ctx.string("ref");
 					const client = await ctx.client();
-					const environment = await loadEnvironment(ctx, client, ctx.arg(0));
 					const repo = {
 						url,
 						...(path === undefined ? {} : { path }),
 						...(ref === undefined ? {} : { ref }),
 					};
-					const repos = [...environment.repos.filter((item) => item.url !== url), repo];
-					const updated = await client.putEnvironmentRepos(environment.id, { repos });
+					const { environment, updated } = await editAsRead(async () => {
+						const environment = await loadEnvironment(ctx, client, ctx.arg(0));
+						const repos = [...environment.repos.filter((item) => item.url !== url), repo];
+						const expected = environment.repos;
+						return { environment, updated: await client.putEnvironmentRepos(environment.id, { repos, expected }) };
+					});
 					ctx.emit(withoutProtectedValues(updated), () => `Added ${url} to ${environment.name}.`);
 				},
 			},
@@ -1945,12 +1992,15 @@ const SECTIONS: readonly Section[] = [
 				async run(ctx) {
 					const url = ctx.arg(1);
 					const client = await ctx.client();
-					const environment = await loadEnvironment(ctx, client, ctx.arg(0));
-					const repos = environment.repos.filter((item) => item.url !== url);
-					if (repos.length === environment.repos.length) {
-						throw new CliError(`${url} isn't one of ${environment.name}'s repositories`);
-					}
-					const updated = await client.putEnvironmentRepos(environment.id, { repos });
+					const { environment, updated } = await editAsRead(async () => {
+						const environment = await loadEnvironment(ctx, client, ctx.arg(0));
+						const repos = environment.repos.filter((item) => item.url !== url);
+						if (repos.length === environment.repos.length) {
+							throw new CliError(`${url} isn't one of ${environment.name}'s repositories`);
+						}
+						const expected = environment.repos;
+						return { environment, updated: await client.putEnvironmentRepos(environment.id, { repos, expected }) };
+					});
 					ctx.emit(withoutProtectedValues(updated), () => `Removed ${url} from ${environment.name}.`);
 				},
 			},
@@ -1963,9 +2013,12 @@ const SECTIONS: readonly Section[] = [
 				async run(ctx) {
 					const grant = parseGrant(ctx.arg(1), ctx.arg(2), ctx.list("method"), ctx.list("path"));
 					const client = await ctx.client();
-					const environment = await loadEnvironment(ctx, client, ctx.arg(0));
-					const grants: GrantInput[] = [...environment.grants, grant];
-					const updated = await client.putEnvironmentGrants(environment.id, { grants });
+					const { environment, updated } = await editAsRead(async () => {
+						const environment = await loadEnvironment(ctx, client, ctx.arg(0));
+						const grants: GrantInput[] = [...environment.grants, grant];
+						const expected = environment.grants;
+						return { environment, updated: await client.putEnvironmentGrants(environment.id, { grants, expected }) };
+					});
 					const id = addedGrantId(environment.grants, updated.grants);
 					ctx.emit(withoutProtectedValues(updated), () => `Added "${grantText(grant)}"${id} to ${environment.name}.`);
 				},
@@ -1976,9 +2029,12 @@ const SECTIONS: readonly Section[] = [
 				args: [{ name: "env" }, { name: "grant-id" }],
 				async run(ctx) {
 					const client = await ctx.client();
-					const environment = await loadEnvironment(ctx, client, ctx.arg(0));
-					const grants = withoutGrant(environment.grants, ctx.arg(1), environment.name);
-					const updated = await client.putEnvironmentGrants(environment.id, { grants });
+					const { environment, updated } = await editAsRead(async () => {
+						const environment = await loadEnvironment(ctx, client, ctx.arg(0));
+						const grants = withoutGrant(environment.grants, ctx.arg(1), environment.name);
+						const expected = environment.grants;
+						return { environment, updated: await client.putEnvironmentGrants(environment.id, { grants, expected }) };
+					});
 					ctx.emit(withoutProtectedValues(updated), () => `Removed ${ctx.arg(1)} from ${environment.name}.`);
 				},
 			},
@@ -2017,9 +2073,12 @@ const SECTIONS: readonly Section[] = [
 				async run(ctx) {
 					const grant = parseGrant(ctx.arg(1), ctx.arg(2), ctx.list("method"), ctx.list("path"));
 					const client = await ctx.client();
-					const sandbox = await client.getSandbox(ctx.arg(0));
-					const grants: GrantInput[] = [...sandbox.grants, grant];
-					const updated = await client.putSandboxGrants(sandbox.id, { grants });
+					const { sandbox, updated } = await editAsRead(async () => {
+						const sandbox = await client.getSandbox(ctx.arg(0));
+						const grants: GrantInput[] = [...sandbox.grants, grant];
+						const expected = sandbox.grants;
+						return { sandbox, updated: await client.putSandboxGrants(sandbox.id, { grants, expected }) };
+					});
 					const id = addedGrantId(sandbox.grants, updated.grants);
 					ctx.emit(updated, () => `Added "${grantText(grant)}"${id} to ${sandbox.id}.`);
 				},
@@ -2030,9 +2089,12 @@ const SECTIONS: readonly Section[] = [
 				args: [{ name: "sandbox" }, { name: "grant-id" }],
 				async run(ctx) {
 					const client = await ctx.client();
-					const sandbox = await client.getSandbox(ctx.arg(0));
-					const grants = withoutGrant(sandbox.grants, ctx.arg(1), sandbox.id);
-					const updated = await client.putSandboxGrants(sandbox.id, { grants });
+					const { sandbox, updated } = await editAsRead(async () => {
+						const sandbox = await client.getSandbox(ctx.arg(0));
+						const grants = withoutGrant(sandbox.grants, ctx.arg(1), sandbox.id);
+						const expected = sandbox.grants;
+						return { sandbox, updated: await client.putSandboxGrants(sandbox.id, { grants, expected }) };
+					});
 					ctx.emit(updated, () => `Removed ${ctx.arg(1)} from ${sandbox.id}.`);
 				},
 			},

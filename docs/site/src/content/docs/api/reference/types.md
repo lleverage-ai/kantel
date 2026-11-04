@@ -715,12 +715,14 @@ Where sandboxes' outbound traffic may go, and through what, for one account. Exp
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `grants` | [EgressGrantInput](/api/reference/types/#egressgrantinput)[] | yes |  (at most 200 items) |
+| `expected` | [EgressGrantInput](/api/reference/types/#egressgrantinput)[] | no | The list as you last read it. Given, the write is refused with `conflict` if the list has changed since, so an edit made from an older read can't undo someone else's: read it again and redo the edit. Left out, the list is replaced whatever it holds. (at most 200 items) |
 
 ### PutEnvironmentReposBody
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `repos` | [EnvironmentRepo](/api/reference/types/#environmentrepo)[] | yes |  (at most 20 items) |
+| `expected` | [EnvironmentRepo](/api/reference/types/#environmentrepo)[] | no | The list as you last read it. Given, the write is refused with `conflict` if the list has changed since, so an edit made from an older read can't undo someone else's: read it again and redo the edit. Left out, the list is replaced whatever it holds. (at most 20 items) |
 
 ### PutProxySettingsBody
 
