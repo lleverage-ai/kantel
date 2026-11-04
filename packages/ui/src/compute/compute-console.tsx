@@ -19,7 +19,7 @@ import { TabBar } from "../primitives/tab-bar.tsx";
 import { AccountSwitcher, CreateOrganisationDialog, JoinOrganisationDialog } from "./account-switcher.tsx";
 import { ComputeApiKeysPage } from "./api-keys-page.tsx";
 import { BillingPage } from "./billing-page.tsx";
-import type { ComputeAccount, ComputeSource, ComputeViewer, HostsSource } from "./compute-model.ts";
+import type { ComputeAccount, ComputeSource, ComputeViewer, E2EMode, E2ESource, HostsSource } from "./compute-model.ts";
 import { DeviceLoginPage } from "./device-page.tsx";
 import { EgressPage } from "./egress-page.tsx";
 import { EnvironmentPage, EnvironmentsPage } from "./environments-page.tsx";
@@ -164,6 +164,41 @@ const SHELL_WIDE = "grid-cols-[var(--kt-nav-width)_minmax(0,1fr)]";
 const SHELL_NARROW = "grid-rows-[auto_minmax(0,1fr)_auto]";
 const MAIN = "min-h-0 min-w-0 overflow-y-auto";
 
+/**
+ * What the strip over the page says about end-to-end encryption in this account, and in which tone; undefined for
+ * nothing (the gateway's console in an account without it says nothing).
+ */
+export function e2eStrip(
+	e2e: E2ESource | undefined,
+	mode: E2EMode | undefined,
+): { readonly text: string; readonly tone: "done" | "waiting" | "idle" } | undefined {
+	if (e2e === undefined || mode === undefined) return undefined;
+	if (e2e.served === "local") {
+		if (mode === "off") {
+			return {
+				tone: "idle",
+				text: "Served by kantel console on this computer. End-to-end encryption is off here.",
+			};
+		}
+		const device = e2e.device === undefined ? "this device's key" : `the key of ${e2e.device}`;
+		return {
+			tone: "done",
+			text: `Served by kantel console on this computer. Commands and their history go to each sandbox's host end to end, with ${device}.`,
+		};
+	}
+	if (mode === "off") return undefined;
+	return {
+		tone: "waiting",
+		text: "End-to-end encryption is on here, so this console can't show commands or files. Run kantel console on your computer to see them.",
+	};
+}
+
+const STRIP_TONES = {
+	done: "bg-status-done-soft text-status-done",
+	waiting: "bg-status-waiting-soft text-status-waiting",
+	idle: "text-muted",
+} as const;
+
 /** The pages under Settings: the account's own settings, each at the address it had before. */
 const SETTINGS_PAGES: ReadonlySet<ComputePage> = new Set(["organisation", "keys", "webhooks", "telemetry", "billing"]);
 
@@ -215,6 +250,15 @@ export function ComputeConsole({
 		},
 		[base, navigate],
 	);
+
+	const e2eMode = useLoad(
+		() =>
+			source.e2e !== undefined && account !== undefined
+				? source.e2e.mode(account.id).catch(() => undefined)
+				: Promise.resolve(undefined),
+		[source, account?.id],
+	);
+	const strip = e2eStrip(source.e2e, e2eMode.state.status === "ready" ? e2eMode.state.value : undefined);
 
 	const route = parseComputePath(pathname, base) ?? { page: "sandboxes" as const };
 	const me = viewer.state.status === "ready" ? viewer.state.value : undefined;
@@ -413,6 +457,13 @@ export function ComputeConsole({
 						{source.hosting === "hosted" ? "Hosted demo on sample data." : "Sample data."} Nothing here is real.
 					</p>
 				) : null}
+				{strip === undefined ? null : (
+					<p
+						className={`kt-e2e-strip m-0 border-b border-border py-1.5 text-xs ${STRIP_TONES[strip.tone]} ${narrow ? "px-gutter-narrow" : "px-gutter"}`}
+					>
+						{strip.text}
+					</p>
+				)}
 				{failed !== undefined ? (
 					<div className={`grid h-full place-items-center ${narrow ? "p-gutter-narrow" : "p-gutter"}`}>
 						<Notice

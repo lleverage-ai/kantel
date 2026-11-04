@@ -2,7 +2,10 @@
 // with a ticket, adds a member's device from its card, and both run commands and read files in a sandbox over Noise
 // sessions the hub relays as stream frames. The CLI talks to the real compute API, and the host is kantel-host's
 // TypeScript twin (e2e-host.ts). What the hub carried is checked for the command, its output and the file's bytes.
-import { mkdtemp, rm } from "node:fs/promises";
+
+import { createHash } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type RunOptions, run } from "@kantel/cli";
@@ -176,6 +179,130 @@ describe("kantel e2e", () => {
 		const status = await root("e2e", "status");
 		expect(status.code).not.toBe(0);
 		expect(status.stderr).toMatch(/goes back on what this device verified/);
+	});
+
+	it("kantel console serves its own files, lets in only the browser with its link, and runs E2E calls itself", async () => {
+		const s = await organisation();
+		const seen: { url: string; authorization: string | null }[] = [];
+		const watched = (input: string | URL | Request, init?: RequestInit) => {
+			const req = new Request(input, init);
+			seen.push({ url: req.url, authorization: req.headers.get("authorization") });
+			return s.gatewayFetch(req);
+		};
+		const bundle = await mkdtemp(join(tmpdir(), "kantel-console-"));
+		dirs.push(bundle);
+		const theme = "document.documentElement.dataset.theme='dark'";
+		await writeFile(
+			join(bundle, "index.html"),
+			`<!doctype html><title>Kantel</title><script>${theme}</script><script type="module" src="/assets/a.js"></script>`,
+		);
+		// What a browser does while the console runs; the console stops when it is done.
+		let checked: (() => Promise<void>) | undefined;
+		let opened: { url: string; origin: string } | undefined;
+		const root = await cli(s, "root", s.org.id, watched, {
+			served: async (c) => {
+				opened = c;
+				await checked?.();
+			},
+			openUrl: () => {
+				throw new Error("--no-browser opened a browser");
+			},
+		});
+		expect((await root("e2e", "init", "--label", "root's laptop", "--yes")).code).toBe(0);
+		const ticket = await root("e2e", "host-ticket", "rack-1", "--json");
+		await hostJoins(s, (JSON.parse(ticket.stdout) as { ticket: string }).ticket);
+		const sandbox = await s.root.createSandbox({ account: s.org.id, type: "microvm", wait: true });
+
+		/** A raw request, so the Host header and the path go as given. */
+		const raw = (url: string, path: string, headers: Record<string, string> = {}) =>
+			new Promise<{ status: number; headers: Record<string, unknown>; body: string }>((done, failed) => {
+				const { hostname, port } = new URL(url);
+				const req = httpRequest({ hostname, port, path, headers }, (res) => {
+					let body = "";
+					res.on("data", (chunk) => {
+						body += chunk;
+					});
+					res.on("end", () => done({ status: res.statusCode ?? 0, headers: res.headers, body }));
+				});
+				req.on("error", failed);
+				req.end();
+			});
+		checked = async () => {
+			const c = opened as { url: string; origin: string };
+			expect(c.origin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+			const key = new URL(c.url).searchParams.get("k") as string;
+			// Without the link's key, or with another, nothing is served; nor to a page on another name (DNS rebinding).
+			expect((await fetch(`${c.origin}/`)).status).toBe(403);
+			expect((await fetch(`${c.origin}/?k=wrong`, { redirect: "manual" })).status).toBe(403);
+			expect((await raw(c.origin, "/", { host: "evil.test" })).status).toBe(421);
+			// The link swaps its key for a cookie.
+			const entry = await fetch(c.url, { redirect: "manual" });
+			expect(entry.status).toBe(303);
+			const cookie = (entry.headers.get("set-cookie") ?? "").split(";")[0] as string;
+			expect(entry.headers.get("set-cookie")).toMatch(/HttpOnly; SameSite=Strict/);
+			expect(cookie).toBe(`kantel_console=${key}`);
+			const page = await fetch(`${c.origin}/sandboxes`, { headers: { cookie } });
+			expect(page.status).toBe(200);
+			expect(await page.text()).toContain("<title>Kantel</title>");
+			// Its own inline script runs by its hash; no other.
+			const hash = createHash("sha256").update(theme).digest("base64");
+			expect(page.headers.get("content-security-policy")).toContain(`script-src 'self' 'sha256-${hash}';`);
+			// A path can't climb out of the console's files: it is one of its pages, or not found.
+			for (const path of [
+				"/%2e%2e/%2e%2e/etc/passwd",
+				"/..%2f..%2f..%2fetc%2fpasswd",
+				"/assets/..%2f..%2fpackage.json",
+			]) {
+				const climbed = await raw(c.origin, path, { cookie });
+				expect(climbed.body).not.toMatch(/root:|"name"/);
+			}
+
+			// The API goes to the gateway with the CLI's key, never the browser's.
+			const list = await fetch(`${c.origin}/v1/sandboxes?account=${s.org.id}`, {
+				headers: { cookie, authorization: "Bearer bob" },
+			});
+			expect(list.status).toBe(200);
+			expect(seen.at(-1)).toMatchObject({ authorization: "Bearer root" });
+			expect(seen.at(-1)?.url).toBe(`https://kantel.test/v1/sandboxes?account=${s.org.id}`);
+
+			// What the page knows of E2E here.
+			const info = (await (await fetch(`${c.origin}/local/info`, { headers: { cookie } })).json()) as {
+				local: boolean;
+				device: { label: string };
+				spaces: { id: string; mode: string }[];
+			};
+			expect(info).toMatchObject({ local: true, device: { label: "root's laptop" } });
+			expect(info.spaces).toEqual([{ id: s.org.id, mode: "on" }]);
+
+			// A call over a session must come from the console's own origin, and be one the console makes.
+			const call = (body: object, origin: string | undefined = c.origin) =>
+				fetch(`${c.origin}/local/e2e`, {
+					method: "POST",
+					headers: { cookie, "content-type": "application/json", ...(origin === undefined ? {} : { origin }) },
+					body: JSON.stringify(body),
+				});
+			const exec = { sandboxId: sandbox.id, method: "sandbox.exec", params: { command: SECRET_COMMAND } };
+			expect((await call(exec, "https://evil.test")).status).toBe(403);
+			expect((await call({ ...exec, method: "sandbox.delete" })).status).toBe(400);
+			const ran = await call(exec);
+			expect(ran.status).toBe(200);
+			expect(((await ran.json()) as { result: { stdout: string } }).result.stdout).toBe(`${SECRET_OUTPUT}\n`);
+			expect(s.host.ran.at(-1)).toMatchObject({ method: "sandbox.exec", params: { command: SECRET_COMMAND } });
+			const history = await call({ sandboxId: sandbox.id, method: "sandbox.history", params: {} });
+			expect(((await history.json()) as { result: { items: { command: string }[] } }).result.items[0]?.command).toBe(
+				SECRET_COMMAND,
+			);
+			// And none of it went through the gateway's API in the clear.
+			expect(seen.some((call) => call.url.includes("exec") || call.url.includes("commands"))).toBe(false);
+			const carried = joined([...s.host.frames.toHost, ...s.host.frames.toGateway]);
+			for (const secret of [SECRET_COMMAND, SECRET_OUTPUT]) expect(contains(carried, utf8(secret))).toBe(false);
+		};
+		const ran = await root("console", "--no-browser", "--dir", bundle);
+		expect(ran.stderr).toBe("");
+		expect(ran.code).toBe(0);
+		expect(ran.stdout).toContain("The console is at http://127.0.0.1:");
+		// Stopped: it no longer answers.
+		await expect(fetch(`${(opened as { origin: string }).origin}/`)).rejects.toThrow();
 	});
 
 	it("turning E2E off and on again wants --yes, as it retires the space's sandboxes again", async () => {

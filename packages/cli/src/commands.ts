@@ -8,6 +8,7 @@ import { constants } from "node:fs";
 import { access, chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, posix, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
 	type ApiKey,
 	type ApiKeyPreset,
@@ -64,6 +65,7 @@ import {
 	resolveConfig,
 	writeStoredConfig,
 } from "./config.ts";
+import { type LocalConsole, type LocalInfo, serveLocalConsole } from "./console.ts";
 import * as e2e from "./e2e.ts";
 import {
 	type Binding,
@@ -136,6 +138,8 @@ export interface RunOptions {
 	readonly self?: readonly string[];
 	/** Opens the relay's WebSocket for an E2E session (`kantel e2e`); default a WebSocket to the URL. */
 	readonly connect?: (url: string) => Promise<ByteChannel>;
+	/** `kantel console` is serving: resolves when it should stop; default on Ctrl-C (SIGINT) or SIGTERM. */
+	readonly served?: (console: LocalConsole) => Promise<void>;
 }
 
 interface Io {
@@ -151,6 +155,69 @@ interface Io {
 	readonly home: string;
 	readonly self: readonly string[] | undefined;
 	readonly connect: (url: string) => Promise<ByteChannel>;
+	readonly served: (console: LocalConsole) => Promise<void>;
+}
+
+/** Until Ctrl-C or SIGTERM. */
+function untilSignalled(): Promise<void> {
+	return new Promise((done) => {
+		const stop = () => {
+			process.off("SIGINT", stop);
+			process.off("SIGTERM", stop);
+			done();
+		};
+		process.on("SIGINT", stop);
+		process.on("SIGTERM", stop);
+	});
+}
+
+/**
+ * Where the console's built files are: `--dir`, `KANTEL_CONSOLE_DIR`, `console/` beside the bundled CLI (its npm
+ * package), or the console's build in this checkout.
+ */
+async function consoleDir(ctx: Context): Promise<string> {
+	const here = dirname(fileURLToPath(import.meta.url));
+	const given = ctx.string("dir") ?? ctx.io.env.KANTEL_CONSOLE_DIR;
+	const candidates =
+		given === undefined
+			? [join(here, "console"), join(here, "..", "..", "..", "apps", "console", "dist")]
+			: [resolve(ctx.io.cwd, given)];
+	for (const candidate of candidates) {
+		if (
+			await access(join(candidate, "index.html")).then(
+				() => true,
+				() => false,
+			)
+		) {
+			return candidate;
+		}
+	}
+	throw new CliError(
+		given === undefined
+			? "This CLI has no console files: install the kantel package, or build them with pnpm --filter @kantel/console build"
+			: `There is no console in ${candidates[0]} (no index.html)`,
+	);
+}
+
+/** What `kantel console` tells its page about E2E: this device, and each space it pinned, verified now. */
+async function localInfo(ctx: Context): Promise<LocalInfo> {
+	const device = await e2e.loadDevice(ctx.io.configDir).catch(() => undefined);
+	const spaces = await Promise.all(
+		(await e2e.pinnedSpaces(ctx.io.configDir)).map(async (id) => {
+			try {
+				const chain = await e2e.verifiedChain(await ctx.client(), ctx.io.configDir, id);
+				return { id, mode: chain.state.mode };
+			} catch (error) {
+				// A chain this device can't verify is treated as E2E: the page never falls back to the gateway for it.
+				return { id, mode: "strict" as const, error: error instanceof Error ? error.message : String(error) };
+			}
+		}),
+	);
+	return {
+		local: true,
+		...(device === undefined ? {} : { device: { id: device.id, label: device.label } }),
+		spaces,
+	};
 }
 
 /** Whether an executable `name` is in one of the PATH's directories. */
@@ -964,6 +1031,47 @@ const E2E_DETAILS =
 
 const E2E_COMMANDS: readonly CommandSpec[] = [
 	{
+		name: "console",
+		summary: "Open the console from this CLI on 127.0.0.1, with E2E sandboxes' commands and history",
+		flags: {
+			port: { type: "string", value: "<port>", description: "Where it listens on 127.0.0.1 (default a free port)" },
+			"no-browser": { type: "boolean", description: "Only print the link (also KANTEL_NO_BROWSER)" },
+			dir: { type: "string", value: "<dir>", description: "The console's built files, if not this CLI's own" },
+		},
+		details:
+			"The console's code comes from this CLI's release, not from the gateway, so the gateway can't change what runs\n" +
+			"it. Its API calls go to the gateway with this CLI's key, which stays here. In an end-to-end encrypted\n" +
+			"organisation, commands, files and history go to the sandbox's host over sessions with this device's key.\n" +
+			"Only the browser that opens the printed link gets in. Ctrl-C stops it.",
+		async run(ctx) {
+			const config = await ctx.config();
+			if (config.apiKey === undefined) throw new CliError("Sign in first: kantel login");
+			const portFlag = ctx.string("port");
+			const port = portFlag === undefined ? 0 : Number(portFlag);
+			if (!Number.isInteger(port) || port < 0 || port > 65_535) throw new UsageError("--port is a port number");
+			const served = await serveLocalConsole({
+				dir: await consoleDir(ctx),
+				gateway: config.url,
+				apiKey: config.apiKey,
+				fetch: ctx.io.fetch,
+				userAgent: `kantel-cli/${VERSION} (console)`,
+				port,
+				info: () => localInfo(ctx),
+				e2eCall: (sandboxId, method, params) => e2eCall(ctx, sandboxId, method, params),
+			});
+			try {
+				ctx.emit(
+					{ url: served.url },
+					() => `The console is at ${served.url}\nOnly this link lets a browser in. Ctrl-C stops it.`,
+				);
+				if (!ctx.boolean("no-browser") && !hasValue(ctx.io.env.KANTEL_NO_BROWSER)) ctx.io.openUrl(served.url);
+				await ctx.io.served(served);
+			} finally {
+				await served.close();
+			}
+		},
+	},
+	{
 		name: "e2e status",
 		summary: "This device, and the organisation's chain as this device verifies it",
 		details: E2E_DETAILS,
@@ -1251,7 +1359,8 @@ const E2E_COMMANDS: readonly CommandSpec[] = [
 			"while the host is offline.",
 		async run(ctx) {
 			const limit = Number(ctx.string("limit") ?? "20");
-			if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new UsageError("--limit is a number from 1 to 100");
+			if (!Number.isInteger(limit) || limit < 1 || limit > 100)
+				throw new UsageError("--limit is a number from 1 to 100");
 			const before = ctx.string("before");
 			const page = await e2eCall<E2EHistoryPage>(ctx, ctx.arg(0), "sandbox.history", {
 				limit,
@@ -1260,8 +1369,7 @@ const E2E_COMMANDS: readonly CommandSpec[] = [
 			ctx.emit(page, () => {
 				if (page.items.length === 0) return "No commands yet.";
 				const lines = page.items.map((entry) => {
-					const status =
-						entry.exitCode === undefined ? (entry.error ?? "didn't finish") : `exit ${entry.exitCode}`;
+					const status = entry.exitCode === undefined ? (entry.error ?? "didn't finish") : `exit ${entry.exitCode}`;
 					const who = entry.deviceLabel ?? entry.device;
 					const head = `${entry.id}  ${new Date(entry.startedAt).toISOString()}  ${status}  ${who}\n  ${entry.command ?? (entry.argv ?? []).join(" ")}`;
 					if (!ctx.boolean("output")) return head;
@@ -3567,6 +3675,7 @@ export async function run(argv: readonly string[], options: RunOptions = {}): Pr
 		home: options.home ?? homedir(),
 		self: options.self ?? thisCli(),
 		connect: options.connect ?? e2e.webSocketChannel,
+		served: options.served ?? untilSignalled,
 	};
 	try {
 		return await dispatch(argv, io);

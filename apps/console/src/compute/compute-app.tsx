@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { navigate, searchWithout, usePathname } from "../app/router.ts";
 import { NARROW_QUERY, useMedia } from "../app/use-media.ts";
 import { apiCompute } from "./api-source.ts";
+import { localBridge } from "./local.ts";
 
 // The console: the compute plane's pages at the root of the app (`/sandboxes`, `/hosts` and the rest; `/` is
 // Sandboxes).
@@ -105,7 +106,10 @@ async function sourceFor(
 	const wantsSample = hosting === "hosted" || new URLSearchParams(location.search).get("data") === "sample";
 	if (api !== undefined && !wantsSample) {
 		try {
-			return { source: namedFor(await apiCompute({ ...api, hosting }), signedInAs), sample: false };
+			// Served by `kantel console`: its bridge reads E2E sandboxes' history from their hosts (local.ts).
+			const local = await localBridge();
+			const options = { ...api, hosting, ...(local === undefined ? {} : { local }) };
+			return { source: namedFor(await apiCompute(options), signedInAs), sample: false };
 		} catch (error) {
 			if (error instanceof KantelApiError && error.status === 403) return { refused: error.message };
 			console.info("kantel: the compute API isn't served here, so the console shows sample data:", error);

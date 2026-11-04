@@ -35,6 +35,8 @@ export type {
 	DestinationBinding,
 	DeviceLogin,
 	DeviceLoginsSource,
+	E2EMode,
+	E2ESource,
 	EgressEntry,
 	EgressGrant,
 	EgressSource,

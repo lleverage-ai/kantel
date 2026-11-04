@@ -8,7 +8,7 @@
  * adds, or a chain it makes up, is refused here as it is on the host.
  */
 import { randomBytes } from "node:crypto";
-import { chmod, link, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { KantelApiError, type KantelClient } from "@kantel/api/sdk";
@@ -304,6 +304,16 @@ interface SpaceFile {
 /** The genesis this device trusts for `space`, if it has one. */
 export async function pinnedGenesis(configDir: string, space: string): Promise<string | undefined> {
 	return (await readJson<SpaceFile>(spacePath(configDir, space)))?.genesis;
+}
+
+/** The spaces this device has pinned a genesis for (made or joined), by ID. */
+export async function pinnedSpaces(configDir: string): Promise<readonly string[]> {
+	try {
+		const names = await readdir(join(configDir, "e2e", "spaces"));
+		return names.filter((name) => name.endsWith(".json")).map((name) => name.slice(0, -".json".length));
+	} catch {
+		return [];
+	}
 }
 
 /** Trusts `genesis` for `space`, under the space file's lock: never over another genesis, nor over a checkpoint. */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { COMPUTE_PAGES, computePath, parseComputePath, pathAfterAccountSwitch } from "./compute-console.tsx";
+import { COMPUTE_PAGES, computePath, e2eStrip, parseComputePath, pathAfterAccountSwitch } from "./compute-console.tsx";
 
 describe("the compute console's paths", () => {
 	it("opens on Sandboxes at its base", () => {
@@ -50,5 +50,30 @@ describe("the compute console's paths", () => {
 	it("follows another base", () => {
 		expect(computePath("hosts", "/admin/compute")).toBe("/admin/compute/hosts");
 		expect(parseComputePath("/admin/compute/hosts", "/admin/compute")).toEqual({ page: "hosts" });
+	});
+});
+
+describe("the end-to-end encryption strip", () => {
+	const gateway = { served: "gateway" as const, mode: async () => "off" as const };
+	const local = { served: "local" as const, device: "Ada's laptop", mode: async () => "on" as const };
+
+	it("says nothing on the gateway's console where E2E is off, or with no source", () => {
+		expect(e2eStrip(gateway, "off")).toBeUndefined();
+		expect(e2eStrip(undefined, "on")).toBeUndefined();
+		expect(e2eStrip(local, undefined)).toBeUndefined();
+	});
+
+	it("tells the gateway's console that it can't show commands, and where they are", () => {
+		for (const mode of ["on", "strict"] as const) {
+			expect(e2eStrip(gateway, mode)).toMatchObject({
+				tone: "waiting",
+				text: expect.stringContaining("kantel console"),
+			});
+		}
+	});
+
+	it("names the device whose key kantel console uses", () => {
+		expect(e2eStrip(local, "on")).toMatchObject({ tone: "done", text: expect.stringContaining("Ada's laptop") });
+		expect(e2eStrip(local, "off")?.tone).toBe("idle");
 	});
 });

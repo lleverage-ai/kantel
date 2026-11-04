@@ -856,6 +856,23 @@ export interface ComputeSource {
 	readonly billing?: BillingSource;
 	/** Approving a command line's sign-in, at `/device`. Absent where nothing can sign in that way. */
 	readonly devices?: DeviceLoginsSource;
+	/** Where this console's code came from, and each account's end-to-end encryption. Absent, nothing is said. */
+	readonly e2e?: E2ESource;
+}
+
+/** An account's end-to-end encryption, as its signed chain says: off, on, or strict (no hosted console at all). */
+export type E2EMode = "off" | "on" | "strict";
+
+/**
+ * What end-to-end encryption means for the console's pages. `local`: `kantel console` serves it from the CLI's own
+ * files, and its sandboxes' commands, files and history go to their host over sessions with the CLI's device key.
+ * `gateway`: the gateway serves it, so in an end-to-end encrypted account it shows none of that.
+ */
+export interface E2ESource {
+	readonly served: "local" | "gateway";
+	/** This device's label in the chain, when local. */
+	readonly device?: string;
+	mode(accountId: string): Promise<E2EMode>;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
