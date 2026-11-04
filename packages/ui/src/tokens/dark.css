@@ -13,7 +13,7 @@
    are Kantel's own, fitted to his surfaces.
 
    Outside CSS, only the browser's chrome repeats the canvas: the dark theme-color in apps/console/index.html and the
-   colours in apps/console/public/manifest.webmanifest (#1a1b1e, his background). Change them with --kt-canvas. */
+   colours in apps/console/public/manifest.webmanifest (#1c1d20, the canvas). Change them with --kt-canvas. */
 
 :root,
 .kt-theme,
@@ -23,27 +23,27 @@
 
 	/* Surfaces: the canvas, a panel a step lighter (the sidebar, a table's frame), a raised card lighter again, and a
 	   well (a field, code) between them. */
-	--kt-canvas: hsl(220 6% 11%); /* background */
-	--kt-panel: hsl(220 5% 14%); /* surface-subtle */
-	--kt-raised: hsl(220 5% 15.5%); /* card */
-	--kt-sunken: hsl(220 5% 18%); /* muted */
+	--kt-canvas: hsl(220 6% 11.8%); /* background */
+	--kt-panel: hsl(220 5% 15%); /* surface-subtle */
+	--kt-raised: hsl(220 5% 16.1%); /* card */
+	--kt-sunken: hsl(220 5% 18.4%); /* muted */
 	--kt-hover: color-mix(in srgb, var(--kt-text) 5%, transparent);
 	--kt-active: color-mix(in srgb, var(--kt-text) 8%, transparent);
 	--kt-selected: color-mix(in srgb, var(--kt-text) 7%, transparent);
-	--kt-user-message: hsl(220 5% 20%); /* secondary */
-	--kt-code: hsl(220 5% 18%); /* muted */
+	--kt-user-message: hsl(220 5% 20.8%); /* secondary */
+	--kt-code: hsl(220 5% 18.4%); /* muted */
 	--kt-scrim: hsl(210 40% 3% / 0.55); /* scrim */
 	/* A bar that stays over scrolling content (the phone's top bar), frosted. */
 	--kt-backdrop: hsl(220 6% 11% / 0.8); /* backdrop */
 
 	/* Filled controls that aren't the primary: a secondary button, and under the pointer. */
-	--kt-secondary: hsl(220 5% 20%); /* secondary */
-	--kt-secondary-hover: hsl(220 4% 26%); /* secondary-hover */
+	--kt-secondary: hsl(220 5% 20.8%); /* secondary */
+	--kt-secondary-hover: hsl(220 4% 27%); /* secondary-hover */
 
 	/* Lines. */
-	--kt-border: hsl(220 4% 22%); /* border */
-	--kt-border-strong: hsl(220 4% 27%); /* input */
-	--kt-border-input: hsl(220 4% 27%); /* input */
+	--kt-border: hsl(220 4% 22.4%); /* border */
+	--kt-border-strong: hsl(220 4% 27%); /* a step over the input */
+	--kt-border-input: hsl(220 4% 25.4%); /* input */
 
 	/* Text: never pure white. The disabled grey is his muted-fg-subtle, under AA (3.99:1 on the canvas) as disabled text
 	   may be; the faint text a step under the muted is a mix of the two that keeps AA. */
@@ -64,10 +64,10 @@
 	--kt-primary-hover: hsl(24 84% 47%); /* primary-hover */
 	--kt-primary-fg: hsl(220 6% 11%); /* on-primary */
 
-	/* Status text: info, success, warning and destructive as his text colours, plus Kantel's indigo for waiting. Their
+	/* Status text: info, success, warning and destructive as his text colours, plus Kantel's plum for waiting (the brand has no indigo). Their
 	   soft fills are formulas in tokens.css. */
 	--kt-status-working: hsl(210 55% 62%); /* info */
-	--kt-status-waiting: #a9a6f0; /* indigo: waiting on an answer from you */
+	--kt-status-waiting: hsl(280 32% 72%); /* plum, lifted to pass AA on the panel: waiting on an answer from you */
 	--kt-status-approval: hsl(48 70% 62%); /* warning-text */
 	/* His success, 45% light, is 4.42:1 on a card, under AA as text; his set has no success text shade, so the text is
 	   his hue five points lighter (5.4:1 on a card). Fills keep his success (--kt-success). */

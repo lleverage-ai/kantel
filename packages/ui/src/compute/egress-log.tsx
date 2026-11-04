@@ -9,6 +9,13 @@ import { Fragment, type ReactNode, useId, useState } from "react";
 import { Button, buttonClass, buttonLabelClass } from "../primitives/button.tsx";
 import { SegmentedControl, SelectField, TextField } from "../primitives/controls.tsx";
 import { compactAge } from "../primitives/format.ts";
+
+/** "now" or "3m ago": the log's one way of saying when, at every width. */
+const agoText = (at: number, now: number): string => {
+	const age = compactAge(at, now);
+	return age === "now" ? "now" : `${age} ago`;
+};
+
 import { ChevronDownIcon, ChevronRightIcon } from "../primitives/icons.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { bytesText } from "./compute-model.ts";
@@ -270,7 +277,8 @@ function RequestCell({
 function Decision({ entry }: { entry: LoggedEntry }) {
 	return (
 		<span className="flex items-center gap-2">
-			{entry.decision === "allowed" ? <span className="text-fg">Allowed</span> : <Badge tone="error">Denied</Badge>}
+			{/* Both decisions as a badge, so every row in the log is the same height and reads the same way. */}
+			{entry.decision === "allowed" ? <Badge tone="neutral">Allowed</Badge> : <Badge tone="error">Denied</Badge>}
 			{entry.status === undefined ? null : <span className="text-muted tabular-nums">{entry.status}</span>}
 		</span>
 	);
@@ -298,7 +306,7 @@ function WideEntry({
 			<tr data-egress={entry.id} data-decision={entry.decision} className={expanded ? "bg-hover" : undefined}>
 				<td className={td}>
 					<span className="text-muted tabular-nums" title={new Date(entry.at).toLocaleString("en-GB")}>
-						{compactAge(entry.at, now)}
+						{agoText(entry.at, now)}
 					</span>
 				</td>
 				{sandboxColumn ? (
@@ -349,7 +357,6 @@ function PhoneEntry({
 }) {
 	const detailId = useId();
 	const expanded = open && opens(entry);
-	const age = compactAge(entry.at, now);
 	return (
 		<li
 			className="flex min-w-0 flex-col gap-1 border-b border-border py-3"
@@ -360,16 +367,22 @@ function PhoneEntry({
 				<div className="min-w-0 flex-1">
 					<RequestCell entry={entry} open={expanded} detailId={detailId} onToggle={onToggle} />
 				</div>
-				{entry.decision === "denied" ? <Badge tone="error">Denied</Badge> : null}
+				<Decision entry={entry} />
 			</div>
+			{/* What the wide log's columns say, in a line: when, which sandbox, what was swapped in, and how much moved. */}
 			<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-sm text-muted">
-				<span title={new Date(entry.at).toLocaleString("en-GB")}>{age === "now" ? "now" : `${age} ago`}</span>
+				<span className="tabular-nums" title={new Date(entry.at).toLocaleString("en-GB")}>
+					{agoText(entry.at, now)}
+				</span>
 				{sandboxColumn ? <span>{entry.sandboxName}</span> : null}
-				{entry.swapped.map((name) => (
-					<span key={name} className="font-mono">
-						{name}
+				{entry.swapped.length === 0 ? null : (
+					<span>
+						Swapped <span className="font-mono text-code text-fg">{entry.swapped.join(", ")}</span>
 					</span>
-				))}
+				)}
+				<span className="tabular-nums">
+					{sizeText(entry.bytesUp)} sent, {sizeText(entry.bytesDown)} received
+				</span>
 			</div>
 			{expanded ? (
 				<div id={detailId} className="pt-1">

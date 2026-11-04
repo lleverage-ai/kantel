@@ -927,7 +927,7 @@ function SandboxPhoneRow({
 	);
 	return (
 		<li
-			className={`kt-sandbox-row flex min-w-0 flex-wrap items-center gap-x-3 border-b border-border ${ticked ? "bg-selected" : ""}`}
+			className={`kt-sandbox-row flex min-w-0 flex-wrap items-center gap-x-3 border-b border-border ${ticked ? "bg-selected" : sandbox.state === "error" ? "-mx-gutter-narrow bg-status-error-soft px-gutter-narrow" : ""}`}
 			data-sandbox={sandbox.id}
 		>
 			<TickBox label={`Select ${sandbox.name}`} checked={ticked} disabled={pending} onChange={onTick} />
