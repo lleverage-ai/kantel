@@ -2414,9 +2414,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/**
 	 * Keeps the 5-minute means that ended with no point to close them (a sandbox that stopped), once every tick that
-	 * could be in them is: the stub's are taken in first (`catchUpUsage`), so a 5 minutes is never closed with its later
-	 * ticks still to come. What that leaves untaken is under a tick old, and a 5 minutes closes only `2 *
-	 * USAGE_INTERVAL_MS` after it ends. The one way to settle, but for the replay's own once its ticks are in (`replay`).
+	 * could be in them is: the stub's are taken in first (`catchUpUsage`), and nothing is settled past the time they are
+	 * in to (`settleTaken`), so a 5 minutes is never closed with its later ticks still to come. The one way to settle, but
+	 * for the replay's own once its ticks are in (`replay`).
 	 */
 	async function settleUsage(): Promise<void> {
 		await catchUpUsage();
@@ -2425,11 +2425,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		await settleTaken();
 	}
 
-	/** Settles what the series hold now: only after the stub's ticks are in (`settleUsage`, `replay`). */
+	/**
+	 * Settles what the series hold, as of the time the backend's own ticks are in to (`pulledUntil`, for a backend that
+	 * makes them; else now), however long taking them in took: a 5 minutes ending after that may have ticks still to
+	 * fetch. Only after the stub's ticks are in (`settleUsage`, `replay`).
+	 */
 	async function settleTaken(): Promise<void> {
 		settledAt = now();
-		hostSeries.settle(now());
-		for (const { key, rollup } of sandboxSeries.settle(now())) await keepRollup(key, rollup).catch(() => undefined);
+		const asOf = backend.usageReports === undefined ? now() : Math.min(now(), pulledUntil);
+		hostSeries.settle(asOf);
+		for (const { key, rollup } of sandboxSeries.settle(asOf)) await keepRollup(key, rollup).catch(() => undefined);
 		for (const [hostId, at] of tickArrivedAt) if (at < now() - RAW_WINDOW_MS) tickArrivedAt.delete(hostId);
 	}
 

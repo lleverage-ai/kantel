@@ -526,6 +526,50 @@ describe("usage ticks across gateway replicas over one store", () => {
 });
 
 describe("the stub's replay", () => {
+	it("settles no further than the ticks it took in, however long it took", async () => {
+		const T0 = Date.UTC(2026, 10, 4, 16, 0, 0);
+		let clock = T0;
+		const base = createMemoryStore();
+		let hold: { held: () => void; release: Promise<void> } | undefined;
+		const store: ComputeStore = {
+			...base,
+			sandboxes: {
+				...base.sandboxes,
+				update: async (id, change) => {
+					const once = hold;
+					hold = undefined;
+					if (once !== undefined) {
+						once.held();
+						await once.release;
+					}
+					return base.sandboxes.update(id, change);
+				},
+			},
+		};
+		const { api, tom } = setup(createStubBackend({ now: () => clock }), () => clock, store);
+		const box = await tom.createSandbox({ wait: true });
+		let release: () => void = () => undefined;
+		const held = new Promise<void>((resolve) => {
+			hold = { held: resolve, release: new Promise<void>((done) => (release = done)) };
+		});
+		// A replay to 10 s before the third 5 minutes end, held at its first write until well past their end.
+		clock = T0 + 3 * ROLLUP_MS - 10_000;
+		const read = tom.getSandbox(box.id);
+		await held;
+		clock = T0 + 3 * ROLLUP_MS + 30_000;
+		release();
+		await read;
+		// Its third 5 minutes are still open, for the ticks it hadn't fetched; the next settle takes them in first.
+		expect((await api.store.sandboxes.get(box.id))?.samples.map((sample) => sample.at)).toEqual([T0, T0 + ROLLUP_MS]);
+		await api.service.sampleUsage();
+		const samples = (await api.store.sandboxes.get(box.id))?.samples ?? [];
+		expect(samples.map((sample) => [sample.at, sample.readings])).toEqual([
+			[T0, ROLLUP_MS / USAGE_INTERVAL_MS],
+			[T0 + ROLLUP_MS, ROLLUP_MS / USAGE_INTERVAL_MS],
+			[T0 + 2 * ROLLUP_MS, ROLLUP_MS / USAGE_INTERVAL_MS],
+		]);
+	});
+
 	it("is taken in before a live host's tick settles anything", async () => {
 		const T0 = Date.UTC(2026, 10, 4, 15, 0, 0);
 		let clock = T0;
