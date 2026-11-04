@@ -28,7 +28,7 @@ import {
 	SCOPE_PRESETS,
 	untilText,
 } from "./compute-model.ts";
-import { computePage, MetaPair, messageOf, metaLineClass, table, tableFrame } from "./parts.tsx";
+import { computePage, MetaPair, messageOf, table, tableFrame } from "./parts.tsx";
 import { SettingsPageHeader } from "./settings-nav.tsx";
 
 export interface ComputeApiKeysPageProps {
@@ -386,12 +386,15 @@ function KeyPhoneRow({ apiKey, now, onRevoke }: { apiKey: ApiKey; now: number; o
 		apiKey.revokedAt !== undefined
 			? { label: "Revoked", value: `${compactAge(apiKey.revokedAt, now)} ago` }
 			: apiKey.expiresAt === undefined
-				? undefined
+				? { label: "Expires", value: "Never" }
 				: ends.done
 					? { label: "Expired", value: `${compactAge(apiKey.expiresAt, now)} ago` }
 					: { label: "Expires", value: ends.text };
 	return (
-		<li className="kt-key-row flex min-w-0 flex-col gap-1 border-b border-border px-3 py-3 last:border-b-0" data-key={apiKey.id}>
+		<li
+			className="kt-key-row flex min-w-0 flex-col gap-1 border-b border-border px-3 py-3 last:border-b-0"
+			data-key={apiKey.id}
+		>
 			{/* The name with its menu on one line, so the action sits with what it acts on. */}
 			<div className="flex min-w-0 items-center gap-2">
 				<span className={`min-w-0 flex-1 truncate text-md font-medium ${muted ? "text-muted" : "text-fg"}`}>
@@ -402,18 +405,21 @@ function KeyPhoneRow({ apiKey, now, onRevoke }: { apiKey: ApiKey; now: number; o
 				</span>
 			</div>
 			<span className="font-mono text-code text-muted">{apiKey.prefix}…</span>
-			{/* Each fact with its label before it, in one wrapping line: as quick to scan as the table, a line or two tall. */}
-			<dl className={metaLineClass}>
-				<MetaPair label="Access">{accessText(apiKey.scopes)}</MetaPair>
-				<MetaPair label="Used">
-					{apiKey.lastUsedAt === undefined ? "Never" : `${compactAge(apiKey.lastUsedAt, now)} ago`}
-				</MetaPair>
-				{ending === undefined ? null : (
+			{/* Two fixed lines on every card, so the cards share one shape: what it may do and when it ends, then when it was
+			    last used and who made it. */}
+			<dl className="m-0 flex min-w-0 flex-col gap-1 text-sm">
+				<div className="flex min-w-0 gap-x-4">
+					<MetaPair label="Access">{accessText(apiKey.scopes)}</MetaPair>
 					<MetaPair label={ending.label} title={ends.title}>
 						{ending.value}
 					</MetaPair>
-				)}
-				{apiKey.createdBy === "" ? null : <MetaPair label="By">{apiKey.createdBy}</MetaPair>}
+				</div>
+				<div className="flex min-w-0 gap-x-4">
+					<MetaPair label="Used">
+						{apiKey.lastUsedAt === undefined ? "Never" : `${compactAge(apiKey.lastUsedAt, now)} ago`}
+					</MetaPair>
+					{apiKey.createdBy === "" ? null : <MetaPair label="By">{apiKey.createdBy}</MetaPair>}
+				</div>
 			</dl>
 		</li>
 	);

@@ -17,6 +17,7 @@ const agoText = (at: number, now: number): string => {
 };
 
 import { ChevronDownIcon, ChevronRightIcon } from "../primitives/icons.tsx";
+import { BreakableCommand } from "../primitives/one-time-secret.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { bytesText } from "./compute-model.ts";
 import { type DenialFix, denialFixes, type LoggedEntry, type ProtectedVariableRow } from "./egress-overview.ts";
@@ -226,12 +227,15 @@ const opens = (entry: LoggedEntry): boolean =>
 	entry.decision === "denied" && (entry.reason !== undefined || entry.rule !== undefined);
 
 /** `GET api.github.com/user`: the method muted, the host in full strength, the path muted. */
-function RequestText({ entry }: { entry: LoggedEntry }) {
+function RequestText({ entry, wrap = false }: { entry: LoggedEntry; wrap?: boolean }) {
 	return (
 		<>
 			<span className="text-muted">{entry.method} </span>
-			<span className="text-fg">{hostText(entry)}</span>
-			<span className="text-muted">{entry.path ?? ""}</span>
+			{/* Wrapped, the host stays whole and the path breaks only after a slash, never inside a name. */}
+			<span className={`text-fg${wrap ? " whitespace-nowrap" : ""}`}>{hostText(entry)}</span>
+			<span className="text-muted">
+				{wrap && entry.path !== undefined ? <BreakableCommand command={entry.path} /> : (entry.path ?? "")}
+			</span>
 		</>
 	);
 }
@@ -253,8 +257,11 @@ function RequestCell({
 	const text = `${entry.method} ${hostText(entry)}${entry.path ?? ""}`;
 	if (!opens(entry)) {
 		return (
-			<span className={`${cellMono} block ${wrap ? "wrap-anywhere" : "max-w-(--kt-card-width) truncate"}`} title={text}>
-				<RequestText entry={entry} />
+			<span
+				className={`${cellMono} block ${wrap ? "wrap-break-word" : "max-w-(--kt-card-width) truncate"}`}
+				title={text}
+			>
+				<RequestText entry={entry} wrap={wrap} />
 			</span>
 		);
 	}
@@ -268,8 +275,8 @@ function RequestCell({
 			title={text}
 			onClick={onToggle}
 		>
-			<span className={`${cellMono} block min-w-0 ${wrap ? "wrap-anywhere" : "max-w-(--kt-card-width) truncate"}`}>
-				<RequestText entry={entry} />
+			<span className={`${cellMono} block min-w-0 ${wrap ? "wrap-break-word" : "max-w-(--kt-card-width) truncate"}`}>
+				<RequestText entry={entry} wrap={wrap} />
 			</span>
 			{/* Wrapped, as on a phone's card, the chevron keeps to the card's right edge, wherever the request ends. */}
 			<Chevron size="sm" className={`flex-none text-faint${wrap ? " ml-auto self-start mt-0.5" : ""}`} />

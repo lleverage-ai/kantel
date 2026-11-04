@@ -77,10 +77,13 @@
 		border-bottom: 0;
 	}
 
+	/* Its own line of no height, so it takes back one of the two row gaps around it: the name sits as close to the
+	   lines under it as they sit to each other. */
 	.kt-table-cards > .kt-compute-table > table > tbody > tr::after {
 		content: "";
 		order: 3;
 		flex-basis: 100%;
+		margin-top: calc(var(--kt-step-1) * -1);
 	}
 
 	/* A row picked out in the table (the file being previewed, an open webhook) stays picked out. */

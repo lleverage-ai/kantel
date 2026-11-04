@@ -448,8 +448,8 @@ export function CapacityBar({ share, children }: { share: number; children: Reac
 
 /** A heading over a section of a page, with its own actions on the right. */
 /**
- * A label and its value side by side, one of a wrapping line of them in a `<dl>`: a phone card's facts, each named,
- * a line or two tall rather than a row per fact.
+ * A label and its value side by side, in a `<dl>`: a phone card's facts, each named, two or so to a line rather than
+ * a row per fact.
  */
 export function MetaPair({ label, title, children }: { label: string; title?: string; children: ReactNode }) {
 	return (
@@ -459,9 +459,6 @@ export function MetaPair({ label, title, children }: { label: string; title?: st
 		</div>
 	);
 }
-
-/** The line of MetaPairs on a phone card. */
-export const metaLineClass = "m-0 flex min-w-0 flex-wrap gap-x-4 gap-y-1 text-sm";
 
 /**
  * A section a phone keeps folded: the heading is the button, with a one-line summary of what's inside while closed, so
@@ -495,7 +492,10 @@ export function FoldSection({
 						<span>{title}</span>
 						{open ? null : <span className="truncate font-normal text-muted text-sm">{summary}</span>}
 					</span>
-					<ChevronDownIcon size="sm" className={`flex-none text-faint transition-transform${open ? " rotate-180" : ""}`} />
+					<ChevronDownIcon
+						size="sm"
+						className={`flex-none text-faint transition-transform${open ? " rotate-180" : ""}`}
+					/>
 				</button>
 			</h2>
 			{open ? (
