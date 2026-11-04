@@ -1,8 +1,8 @@
 name: kantel.dev deploy
 
-# Deploys apps/site (kantel.dev: the marketing page, install.sh and the docs from docs/site) to its `kantel-site`
-# Worker, a static-assets Worker on the kantel.dev custom domain (apps/site/wrangler.jsonc). It runs on every push to
-# main that changes the site, the docs or the design tokens the site paints with.
+# Deploys apps/site (kantel.dev: the marketing page, install.sh, the CLI's installer cli.sh and the docs from docs/site)
+# to its `kantel-site` Worker, a static-assets Worker on the kantel.dev custom domain (apps/site/wrangler.jsonc). It runs
+# on every push to main that changes the site, the docs, the CLI's installer or the design tokens the site paints with.
 #
 # Not called from main.yml: main.yml skips pushes that only change Markdown, and most docs changes are only Markdown.
 # The site's own build is its check: it fails on a broken internal link or a sidebar entry with no page, and nothing
@@ -27,6 +27,7 @@ on:
     paths:
       - "apps/site/**"
       - "docs/site/**"
+      - "packages/cli/install-cli.sh"
       - "packages/ui/src/tokens/**"
       - ".github/workflows/site-deploy.yml"
   workflow_dispatch: {}
@@ -91,10 +92,11 @@ jobs:
       - name: Install
         run: pnpm --dir apps/site install --frozen-lockfile --ignore-workspace
 
-      # Syncs the docs in, builds, checks every internal link and writes llms.txt.
+      # Syncs the docs and the CLI's installer in, builds, checks every internal link and writes llms.txt.
       - name: Build
         run: |
           sh -n apps/site/public/install.sh
+          sh -n packages/cli/install-cli.sh
           pnpm --dir apps/site build
 
       # Always, before a real deploy too: checks the config and the assets without contacting Cloudflare.

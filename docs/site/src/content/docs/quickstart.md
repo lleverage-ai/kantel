@@ -29,10 +29,10 @@ The console is then at <http://127.0.0.1:58090/>. [Install Kantel](/self-hosting
 
 ## 2. Install the commands
 
-`kantel` drives sandboxes, and `kantel-admin` runs the install and its hosts. Both need Node.js 22 or later, and come from Kantel's [GitHub Releases](https://github.com/lleverage-ai/kantel/releases) with one installer, which needs no sudo and works in bash, zsh and fish:
+`kantel` drives sandboxes, and `kantel-admin` runs the install and its hosts. Both need Node.js 22 or later, and come from Kantel's [GitHub Releases](https://github.com/lleverage-ai/kantel/releases) with one installer, which needs no sudo and works in bash, zsh and fish. `--admin` adds `kantel-admin` to `kantel`:
 
 ```sh
-curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/install-cli.sh | sh
+curl -fsSL https://kantel.dev/cli.sh | sh -s -- --admin
 kantel version
 kantel-admin version
 ```

@@ -131,13 +131,21 @@ if [[ "$(id -u)" != 0 ]]; then
 fi
 
 # install-cli.sh: for a user of its own, whose HOME has a package.json without "type" (the commands must still run as
-# ES modules), with curl reading the files from disk. It installs, and installs again over the first (an update).
+# ES modules), with curl reading the files from disk. It installs kantel alone, then kantel-admin with --admin, then
+# again with no flag (an update), which keeps kantel-admin up to date.
 cli_home="$work/cli-home"
 mkdir -p "$cli_home"
 echo '{}' >"$cli_home/package.json"
-for run in install update; do
-	HOME="$cli_home" sh "$github/install-cli.sh" 2>"$work/err" || fail "install-cli.sh ($run) failed: $(cat "$work/err")"
-done
+HOME="$cli_home" sh "$github/install-cli.sh" 2>"$work/err" || fail "install-cli.sh failed: $(cat "$work/err")"
+expect "install-cli.sh, then kantel" "$cli_home/.local/bin/kantel" --version
+[[ ! -e "$cli_home/.local/bin/kantel-admin" ]] || fail "install-cli.sh installed kantel-admin without --admin"
+HOME="$cli_home" sh "$github/install-cli.sh" --admin 2>"$work/err" ||
+	fail "install-cli.sh --admin failed: $(cat "$work/err")"
+touch -d 2000-01-01 "$cli_home/.local/share/kantel/kantel-admin.mjs"
+touch -d 2001-01-01 "$work/before-update"
+HOME="$cli_home" sh "$github/install-cli.sh" 2>"$work/err" || fail "install-cli.sh (update) failed: $(cat "$work/err")"
+[[ "$cli_home/.local/share/kantel/kantel-admin.mjs" -nt "$work/before-update" ]] ||
+	fail "install-cli.sh (update) didn't update the kantel-admin it installed before"
 grep -q "isn't on your PATH" "$work/err" || fail "install-cli.sh didn't say ~/.local/bin isn't on the PATH"
 expect "install-cli.sh, then kantel" "$cli_home/.local/bin/kantel" --version
 expect "install-cli.sh, then kantel-admin" "$cli_home/.local/bin/kantel-admin" --version
