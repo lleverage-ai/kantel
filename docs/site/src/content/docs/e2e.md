@@ -49,10 +49,14 @@ kantel e2e status
 ```
 
 While E2E is on, the host refuses the gateway's own command, file, port and snapshot-read calls for the
-organisation's sandboxes; starting, stopping and deleting them still go through the gateway.
+organisation's sandboxes; starting, stopping and deleting them still go through the gateway. The gateway can't give
+those sandboxes environment variables, SSH keys, an upstream proxy, a CA or intercepting egress rules (any of these
+could read what runs there), so set variables in a session with `kantel e2e exec` or `kantel e2e put`. Hosts holding
+an E2E space are updated on the machine, not by the gateway.
 
 ## Take access away
 
 `kantel e2e remove-device <device>`, `kantel e2e remove-member <user>` and `kantel e2e remove-host <host>` add a signed
-entry; hosts refuse the device or person from their next session. `kantel e2e mode strict` also keeps out devices of
+entry. A host takes it with the next session that brings it (your own next `kantel e2e` command does); from then on
+it refuses the device or person's calls, open sessions included, and closes their open ports within a few seconds. `kantel e2e mode strict` also keeps out devices of
 the `web` class (the hosted console); `kantel e2e mode off` turns enforcement off.
