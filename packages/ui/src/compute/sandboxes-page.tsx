@@ -783,7 +783,8 @@ function SandboxRow({
 	const stops = stopsText(sandbox, now);
 	// What went wrong gets a line of its own under the row, across the columns, rather than truncating in the name's.
 	const failure = sandbox.state === "error" ? sandbox.error : undefined;
-	const tone = ticked ? "bg-selected" : "hover:bg-hover";
+	// A failed sandbox's two rows share a faint error ground, so the row and what went wrong read as one.
+	const tone = ticked ? "bg-selected" : failure === undefined ? "hover:bg-hover" : "bg-status-error-soft";
 	const row = (
 		// The name's link covers the row (its ::after), so anywhere on it opens the sandbox; the tick box and the buttons
 		// sit above it.
@@ -853,7 +854,7 @@ function SandboxRow({
 							</span>
 						</span>
 					) : can.recover ? (
-						<Button size="sm" icon={<ReconnectIcon size="sm" />} onClick={recover}>
+						<Button size="sm" variant="primary" icon={<ReconnectIcon size="sm" />} onClick={recover}>
 							Recover
 						</Button>
 					) : can.resume ? (
@@ -872,7 +873,7 @@ function SandboxRow({
 	return (
 		<>
 			{row}
-			<tr className={`kt-sandbox-row-failure ${ticked ? "bg-selected" : ""}`}>
+			<tr className={`kt-sandbox-row-failure ${ticked ? "bg-selected" : "bg-status-error-soft"}`}>
 				<td className="border-b border-border p-0" />
 				<td
 					className="border-b border-border px-2 pt-0 pb-2.5 text-sm text-status-error"
@@ -947,7 +948,7 @@ function SandboxPhoneRow({
 			)}
 			{can.recover && href !== undefined ? (
 				<div className="basis-full pb-3 pl-6.5">
-					<Button size="sm" icon={<ReconnectIcon size="sm" />} onClick={recover}>
+					<Button size="sm" variant="primary" icon={<ReconnectIcon size="sm" />} onClick={recover}>
 						Recover
 					</Button>
 				</div>

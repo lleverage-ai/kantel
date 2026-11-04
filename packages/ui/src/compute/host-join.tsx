@@ -6,7 +6,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Button } from "../primitives/button.tsx";
-import { Disclosure, TextField } from "../primitives/controls.tsx";
+import { TextField } from "../primitives/controls.tsx";
 import { useLoad } from "../primitives/load.ts";
 import { CommandBlock } from "../primitives/one-time-secret.tsx";
 import { Skeleton, Spinner } from "../primitives/spinner.tsx";
@@ -81,8 +81,8 @@ export function HostJoinCommand({ source, input, now: fixedNow, onJoined, poll =
 	useJoinWait(source, waiting ? baseline.known : undefined, onJoined);
 
 	const now = fixedNow ?? Date.now();
-	// While other machines can't reach the console, the address comes first: the command made for it works only on this
-	// machine, so it waits behind a disclosure rather than looking ready to copy.
+	// While other machines can't reach the console, the command works only on this machine: say so under it, with the
+	// field that fixes it.
 	const unreachable = url?.loopback === true && source.publicUrl !== undefined;
 	const command =
 		baseline.error !== undefined && baseline.known === undefined ? (
@@ -115,6 +115,9 @@ export function HostJoinCommand({ source, input, now: fixedNow, onJoined, poll =
 	);
 	return (
 		<div className="kt-host-join flex min-w-0 flex-col gap-3">
+			{command}
+			{requirements}
+			{/* Under the command, not instead of it: it runs as it is on this machine, and the field fixes it for others. */}
 			{unreachable ? (
 				<LoopbackWarning
 					url={url}
@@ -125,19 +128,6 @@ export function HostJoinCommand({ source, input, now: fixedNow, onJoined, poll =
 					}}
 				/>
 			) : null}
-			{unreachable ? (
-				<Disclosure summary="The command for a host on this machine">
-					<div className="flex min-w-0 flex-col gap-3 pt-2">
-						{command}
-						{requirements}
-					</div>
-				</Disclosure>
-			) : (
-				<>
-					{command}
-					{requirements}
-				</>
-			)}
 		</div>
 	);
 }

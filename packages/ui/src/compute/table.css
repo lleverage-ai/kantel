@@ -1,4 +1,4 @@
-/* A compute table as stacked cards in a phone's column; the table itself is Tailwind utilities (parts.tsx).
+/* A compute table as a phone's list rows in a phone's column; the table itself is Tailwind utilities (parts.tsx).
 
    CSS, not utilities, for three reasons utilities are worse at: it is a container query, and the closed theme has no
    container sizes (a `@max-[40rem]/kt-table:` variant is a raw size, which the token lint refuses); it restyles the
@@ -21,7 +21,7 @@
 		display: flex;
 	}
 
-	/* No frame round the table: each row is its own card. Nothing scrolls sideways. */
+	/* No frame round the table: rows are a list. Nothing scrolls sideways. */
 	.kt-table-cards > .kt-compute-table {
 		overflow: visible;
 		border: 0;
@@ -51,23 +51,28 @@
 	.kt-table-cards > .kt-compute-table > table > tbody {
 		display: flex;
 		flex-direction: column;
-		gap: var(--kt-gap-within);
 	}
 
-	/* A card: the checkbox, the name and the menu on its first row; every other value on a row of its own under them. */
+	/* A row, as a phone's lists have them: the checkbox, the name and the menu on its first line; every other value
+	   after them on a wrapping line of its own, each with its heading before it. A hairline between rows, no card. The
+	   empty ::after, flex-basis 100% and ordered between the two, is what breaks the line. */
 	.kt-table-cards > .kt-compute-table > table > tbody > tr {
-		display: grid;
-		grid-template-columns: auto minmax(0, 1fr) auto;
+		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
-		row-gap: var(--kt-step-1_5);
-		padding: var(--kt-step-3) var(--kt-step-4);
-		border: var(--kt-hairline) solid var(--kt-border);
-		border-radius: var(--kt-radius);
-		background: var(--kt-raised);
-		box-shadow: var(--kt-shadow-raised);
+		column-gap: var(--kt-step-3);
+		row-gap: var(--kt-step-1);
+		padding: var(--kt-step-3) 0;
+		border-bottom: var(--kt-hairline) solid var(--kt-border);
 	}
 
-	/* A row picked out in the table (the file being previewed, an open webhook) stays picked out as a card. */
+	.kt-table-cards > .kt-compute-table > table > tbody > tr::after {
+		content: "";
+		order: 3;
+		flex-basis: 100%;
+	}
+
+	/* A row picked out in the table (the file being previewed, an open webhook) stays picked out. */
 	.kt-table-cards > .kt-compute-table > table > tbody > tr[data-row="selected"] {
 		background: var(--kt-selected);
 	}
@@ -76,64 +81,65 @@
 		background: var(--kt-hover);
 	}
 
-	/* A value: its heading on the left, the value on the right, wrapping rather than running off the card. */
+	/* A value on the second line: its heading, then the value, in the secondary size. */
 	.kt-table-cards > .kt-compute-table > table > tbody > tr > td {
-		grid-column: 1 / -1;
+		order: 4;
 		display: block;
-		/* The table's own widths (a checkbox or menu column's w-0, a long cell's max-w-0) don't apply to a card. */
+		flex: none;
+		/* The table's own widths (a checkbox or menu column's w-0, a long cell's max-w-0) don't apply here. */
 		width: auto;
 		min-width: 0;
-		max-width: none;
+		max-width: 100%;
 		padding: 0;
 		border: 0;
 		white-space: normal;
-		text-align: right;
+		text-align: left;
 		overflow-wrap: anywhere;
+		color: var(--kt-text-muted);
+		font-size: var(--kt-text-sm);
 	}
 
 	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-label]::before {
 		content: attr(data-label);
-		float: left;
-		margin-right: var(--kt-step-4);
-		color: var(--kt-text-muted);
-		font-size: var(--kt-text-xs);
-		line-height: inherit;
-		text-align: left;
+		margin-right: var(--kt-step-1);
+		color: var(--kt-text-faint);
 	}
 
-	/* A value laid out as a row of its own (a status with its code, a sparkline with its figure) keeps to the right. */
+	/* A value laid out as a row of its own (a status with its code, a sparkline with its figure) stays inline. */
 	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-label] > .flex {
-		justify-content: flex-end;
+		display: inline-flex;
 	}
 
-	/* A value over a bar (a host's capacity) keeps both to the right. */
-	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-label] > .flex-col {
-		align-items: flex-end;
+	/* A value with a second line (a date over who made it) runs on as one phrase: "8h by Bethan Price". */
+	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-label] > :is(.flex-col, .block) {
+		display: inline;
+	}
+
+	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-label] > * + * {
+		margin-left: var(--kt-step-1);
 	}
 
 	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-cell="select"] {
-		grid-column: 1;
-		grid-row: 1;
-		margin-right: var(--kt-step-3);
-		text-align: left;
+		order: 0;
 	}
 
 	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-cell="primary"] {
-		grid-column: 2;
-		grid-row: 1;
-		text-align: left;
+		order: 1;
+		flex: 1 1 0%;
+		color: var(--kt-text);
+		font-size: var(--kt-text-md);
 		font-weight: var(--kt-weight-medium);
 	}
 
 	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-cell="actions"] {
-		grid-column: 3;
-		grid-row: 1;
-		margin-left: var(--kt-step-2);
+		order: 2;
 	}
 
-	/* A row that is one cell across the table (a note, an expanded detail) reads as text. */
+	/* A row that is one cell across the table (a note, an expanded detail) reads as text across the row. */
 	.kt-table-cards > .kt-compute-table > table > tbody > tr > td[data-cell="whole"] {
-		text-align: left;
+		order: 1;
+		flex: 1 1 100%;
+		color: var(--kt-text);
 	}
 
 	/* Nothing to show: left out, not a lone dash. */

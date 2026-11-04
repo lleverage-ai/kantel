@@ -526,6 +526,7 @@ export function ComputeConsole({
 			compact={compact}
 			{...(name === undefined ? {} : { name })}
 			{...(email === undefined ? {} : { email })}
+			unavailable={failed !== undefined}
 			{...(compact && adminShown && !inAdmin ? { onAdmin: () => navigate(adminHref) } : {})}
 			onProfile={() => navigate(computePath("profile", base))}
 			{...(onSignOut === undefined ? {} : { onSignOut })}
@@ -541,6 +542,9 @@ export function ComputeConsole({
 				onCreate={() => setDialog("create")}
 				onJoin={() => setDialog("join")}
 			/>
+		) : failed === undefined ? (
+			// While the accounts are read, the switcher's shape, so the pages under it don't move when it arrives.
+			<span className={`${skeletonClass} h-control-md w-full rounded-control`} />
 		) : (
 			<span className="block h-control-md" />
 		);
@@ -645,7 +649,7 @@ export function ComputeConsole({
 				</Sidebar>
 			)}
 			<main className={MAIN}>
-				{sample ? (
+				{sample && failed === undefined ? (
 					<p
 						className={`kt-sample-banner m-0 border-b border-border bg-status-waiting-soft py-1.5 text-xs text-status-waiting ${narrow ? "px-gutter-narrow" : "px-gutter"}`}
 					>
@@ -678,8 +682,9 @@ export function ComputeConsole({
 					/>
 				)}
 				{failed !== undefined ? (
-					<div className={`grid h-full place-items-center ${narrow ? "p-gutter-narrow" : "p-gutter"}`}>
+					<div className={narrow ? "p-gutter-narrow" : "p-gutter"}>
 						<ConsoleUnavailable
+							title={inSettings ? "Settings" : pages.find((each) => each.on)?.label}
 							message={messageOf(failed.error, "Try again in a moment.")}
 							onRetry={() => {
 								viewer.reload();
@@ -1103,6 +1108,9 @@ function SettingsFrameFor({
 	);
 }
 
+/** The loaded table's columns after the name (state, machine, environment, stops, CPU, created), as placeholders. */
+const LOADING_COLUMNS = ["w-16", "w-36", "w-24", "w-20", "w-24", "w-12"] as const;
+
 /**
  * The console while its first read is on its way: the page's own shape (a title, the filters, a few rows) in
  * placeholders, so the page that arrives lands where the eye already is. Announced once, as a status.
@@ -1132,23 +1140,30 @@ function ConsoleLoading({ narrow, title }: { narrow: boolean; title: string | un
 					<div
 						// biome-ignore lint/suspicious/noArrayIndexKey: identical placeholder rows.
 						key={row}
-						className="flex items-center gap-6 border-b border-border py-4"
+						className={`flex items-center border-b border-border ${narrow ? "gap-3 py-4" : "gap-4 py-3.5"}`}
 					>
-						<div className="flex min-w-0 flex-1 flex-col gap-2">
-							<Skeleton width={`${40 + ((row * 17) % 30)}%`} />
-							{narrow ? <Skeleton width={`${55 + ((row * 11) % 25)}%`} /> : null}
-						</div>
-						{narrow ? null : (
+						<span className={`${skeletonClass} size-3.5 flex-none`} />
+						{narrow ? (
 							<>
-								<div className="w-24">
-									<Skeleton width="70%" />
+								<div className="flex min-w-0 flex-1 flex-col gap-2">
+									<Skeleton width={`${40 + ((row * 17) % 30)}%`} />
+									<Skeleton width={`${55 + ((row * 11) % 25)}%`} />
 								</div>
-								<div className="w-40">
-									<Skeleton width="80%" />
+								<div className="w-16 flex-none">
+									<Skeleton />
 								</div>
-								<div className="w-24">
-									<Skeleton width="60%" />
+							</>
+						) : (
+							<>
+								<div className="min-w-0 flex-1">
+									<Skeleton width={`${30 + ((row * 17) % 30)}%`} />
 								</div>
+								{LOADING_COLUMNS.map((width, column) => (
+									// biome-ignore lint/suspicious/noArrayIndexKey: fixed placeholder columns, some the same width.
+									<div key={column} className={`${width} flex-none`}>
+										<Skeleton width="75%" />
+									</div>
+								))}
 							</>
 						)}
 					</div>
@@ -1159,22 +1174,37 @@ function ConsoleLoading({ narrow, title }: { narrow: boolean; title: string | un
 }
 
 /** The console can't read what it needs: what happened, in a sentence, and the one thing to do about it. */
-function ConsoleUnavailable({ message, onRetry }: { message: string; onRetry: () => void }) {
+function ConsoleUnavailable({
+	title,
+	message,
+	onRetry,
+}: {
+	title: string | undefined;
+	message: string;
+	onRetry: () => void;
+}) {
 	return (
-		<div className="flex max-w-md flex-col items-center gap-4 text-center" role="alert">
-			<span className="grid size-12 place-items-center rounded-full bg-status-error-soft text-status-error">
-				<AlertIcon />
-			</span>
-			<div className="flex flex-col gap-1.5">
-				<h1 className="m-0 text-heading font-strong leading-tight text-fg">Kantel can't open the console</h1>
-				<p className="m-0 text-md leading-normal text-muted">{message}</p>
-				<p className="m-0 text-sm leading-normal text-faint">
-					If it keeps happening, check that the Kantel server is running and that this device is online.
-				</p>
+		<div className="flex w-full flex-col gap-6">
+			{/* The page keeps its title, so the failure reads as this page's, not a blank takeover. */}
+			{title === undefined ? null : (
+				<p className="m-0 border-b border-border pb-4 text-heading font-strong leading-tight text-fg">{title}</p>
+			)}
+			<div className="flex flex-col items-center gap-4 py-16 text-center" role="alert">
+				<span className="grid size-12 place-items-center rounded-full bg-status-error-soft text-status-error">
+					<AlertIcon />
+				</span>
+				<div className="flex max-w-md flex-col gap-1.5">
+					<h1 className="m-0 text-lg font-strong leading-tight text-fg">
+						{title === undefined ? "Can't load the console" : `Can't load ${title.toLowerCase()}`}
+					</h1>
+					<p className="m-0 text-md leading-normal text-muted">
+						{message} Check that the Kantel server is running and that this device is online.
+					</p>
+				</div>
+				<Button variant="primary" size="md" onClick={onRetry}>
+					Try again
+				</Button>
 			</div>
-			<Button variant="primary" onClick={onRetry}>
-				Try again
-			</Button>
 		</div>
 	);
 }

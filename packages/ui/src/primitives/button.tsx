@@ -3,7 +3,7 @@ import { Spinner } from "./spinner.tsx";
 
 // Styled with Tailwind utilities (src/tokens/tailwind.css, docs/tailwind.md).
 
-export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
+export type ButtonVariant = "primary" | "secondary" | "ghost" | "danger" | "danger-quiet";
 export type ButtonSize = "xs" | "sm" | "md" | "lg";
 
 /**
@@ -19,6 +19,8 @@ const buttonVariants: { readonly [variant in ButtonVariant]: string } = {
 	secondary: "border-transparent bg-secondary text-fg hover:not-disabled:bg-secondary-hover",
 	ghost: "border-transparent bg-transparent text-muted hover:not-disabled:bg-hover hover:not-disabled:text-fg",
 	danger: "border-transparent bg-destructive text-on-solid hover:not-disabled:bg-destructive/85",
+	/** A destructive action that isn't the page's point (Leave): the secondary ground, in the danger colour. */
+	"danger-quiet": "border-transparent bg-secondary text-destructive hover:not-disabled:bg-secondary-hover",
 };
 
 /** Each size's height, inline padding and font size, for a button with words. Every button is fully round. */

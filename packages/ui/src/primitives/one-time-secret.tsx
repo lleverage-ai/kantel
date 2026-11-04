@@ -8,11 +8,11 @@ import { Notice, Panel } from "./surface.tsx";
 
 /** Text to copy, in code's font on the sunken ground: one click selects all of it. */
 const codeFrame =
-	"m-0 min-w-0 flex-1 rounded-control border border-border-input bg-sunken px-2.5 py-2 font-mono text-code leading-normal text-fg select-all wrap-anywhere whitespace-pre-wrap";
+	"m-0 min-w-0 flex-1 overflow-x-auto rounded-control border border-border-input bg-sunken px-2.5 py-2 font-mono text-code leading-normal text-fg select-all whitespace-pre [scrollbar-width:none] mask-r-from-92% mask-r-to-100%";
 
 /**
- * A command to run, in code's font, with its own Copy. It wraps anywhere rather than scroll, so the whole command is
- * on screen at 420px.
+ * A command to run, in code's font, with its own Copy. It stays on one line and scrolls sideways where it is wider
+ * than its box, fading at the edge it continues past, so no part of a copyable string is ever broken.
  */
 export function CommandBlock({
 	command,
@@ -27,7 +27,7 @@ export function CommandBlock({
 	return (
 		<div className="kt-command-block flex min-w-0 flex-col gap-1">
 			{label === undefined ? null : <span className="text-xs text-muted">{label}</span>}
-			<div className="flex min-w-0 items-start gap-2 max-sm:flex-col max-sm:items-stretch">
+			<div className="flex min-w-0 items-center gap-2">
 				<pre className={codeFrame}>
 					<code>{command}</code>
 				</pre>

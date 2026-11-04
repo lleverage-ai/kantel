@@ -372,9 +372,7 @@ function SavedList({
 										{entry.sandboxId === undefined ? <span className={cellSub}>Since deleted</span> : null}
 									</td>
 									<td className={td}>
-										<Badge tone={entry.kind === "microvm" ? "accent" : "neutral"}>
-											{SANDBOX_KIND_LABELS[entry.kind]}
-										</Badge>
+										<Badge tone="neutral">{SANDBOX_KIND_LABELS[entry.kind]}</Badge>
 									</td>
 									<td className={`${td} text-right tabular-nums`}>{bytesText(entry.sizeBytes)}</td>
 									<td className={td}>

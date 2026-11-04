@@ -412,7 +412,8 @@ function General({
 						<p className="m-0 min-w-0 text-sm text-muted">
 							You lose access to {account.name}'s sandboxes, snapshots and keys.
 						</p>
-						<Button variant="danger" onClick={() => setLeaving(true)}>
+						{/* Quiet until it's asked for: the confirming dialog has the solid red button. */}
+						<Button variant="danger-quiet" onClick={() => setLeaving(true)}>
 							Leave {account.name}
 						</Button>
 					</div>
@@ -606,7 +607,8 @@ function People({
 	const rank: Readonly<Record<AccountRole, number>> = { owner: 0, admin: 1, member: 2 };
 	const sorted = [...members].sort((a, b) => rank[a.role] - rank[b.role] || a.name.localeCompare(b.name, "en-GB"));
 	const row = `flex min-w-0 items-center gap-3 border-b border-border py-2.5 text-sm ${narrow ? "" : "px-2"}`;
-	const status = narrow ? "hidden" : "w-32 flex-none text-muted";
+	// The role is a fixed column, so a role in words and a role's menu start at the same edge in every row.
+	const roleColumn = "flex w-28 flex-none justify-start";
 	return (
 		<ul className="kt-member-rows m-0 flex list-none flex-col p-0">
 			{sorted.map((member) => {
@@ -626,8 +628,7 @@ function People({
 							</span>
 							{member.email === "" ? null : <span className="truncate text-sm text-muted">{member.email}</span>}
 						</span>
-						<span className={status} />
-						<span className="flex flex-none justify-end">
+						<span className={roleColumn}>
 							<RoleControl
 								member={member}
 								viewerRole={viewerRole}
@@ -664,10 +665,9 @@ function People({
 						<PersonMark name={invite.email === "" ? "?" : invite.email} />
 						<span className="flex min-w-0 flex-1 flex-col gap-0.5">
 							<span className="truncate font-medium text-fg">{name}</span>
-							{narrow ? <span className="truncate text-xs text-muted">{sent}</span> : null}
+							<span className="truncate text-sm text-muted">{sent}</span>
 						</span>
-						<span className={status}>{narrow ? null : sent}</span>
-						<span className="flex flex-none justify-end">
+						<span className={roleColumn}>
 							<RoleText role={invite.role} />
 						</span>
 						{manager ? (

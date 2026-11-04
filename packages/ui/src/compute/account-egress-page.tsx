@@ -126,8 +126,8 @@ export function AccountEgressPage({
 		<PageHeader
 			title="Egress"
 			actions={
-				// On a phone, only over the rules: the log and settings keep the screen for themselves.
-				overview === undefined || (narrow && tab !== "rules") ? undefined : (
+				// On every tab and at every width: a rule is what the log most often asks for.
+				overview === undefined ? undefined : (
 					<Button
 						variant="primary"
 						size="md"

@@ -385,14 +385,7 @@ export function SandboxPage({
 
 	const can = sandboxActions(sandbox.state);
 	const stop = () => act("stop", () => source.stop(sandbox.id));
-	const entries: readonly MenuEntry[] =
-		narrow && can.stop
-			? [
-					{ kind: "item", id: "stop", label: "Stop", icon: <StopIcon size="sm" />, onSelect: stop },
-					{ kind: "separator", id: "sep-stop" },
-					...menu.entries,
-				]
-			: menu.entries;
+	const entries: readonly MenuEntry[] = menu.entries;
 	const held = access?.value;
 	const readyAccess = held !== undefined && held !== "loading" && !(held instanceof Error) ? held : undefined;
 	const screenLink = (to: ScreenView, label: string, icon: ReactNode) => {
@@ -455,8 +448,9 @@ export function SandboxPage({
 					Resume
 				</Button>
 			) : null}
-			{can.stop && !narrow ? (
-				<Button size="sm" icon={<StopIcon size="sm" />} onClick={stop}>
+			{/* Stop stays in sight on a phone too, beside the ways in. */}
+			{can.stop ? (
+				<Button size={narrow ? "md" : "sm"} icon={<StopIcon size="sm" />} onClick={stop}>
 					Stop
 				</Button>
 			) : null}
@@ -759,6 +753,19 @@ function Overview({
 	// Its read-only mounts (experimental), only where it has any.
 	const mounts =
 		sandbox.mounts === undefined || sandbox.mounts.length === 0 ? null : <SandboxMounts mounts={sandbox.mounts} />;
+	// A mount that failed is a problem with this sandbox: said at the top of the page, not only at the end of its list.
+	const failedMounts = sandbox.mounts?.filter((mount) => mount.status === "failed") ?? [];
+	const mountNotice =
+		failedMounts.length === 0 ? null : (
+			<Notice level="error" announce={false}>
+				{failedMounts.length === 1
+					? `${failedMounts[0]?.path} didn't mount.`
+					: `${failedMounts.length} mounts didn't mount.`}{" "}
+				{failedMounts.length === 1 && failedMounts[0]?.error !== undefined
+					? failedMounts[0].error
+					: "Mounts, below, says why."}
+			</Notice>
+		);
 
 	const portsSection =
 		// A port's URL reaches a running microVM only.
@@ -779,31 +786,34 @@ function Overview({
 	if (narrow) {
 		return (
 			<div className="flex min-w-0 flex-col gap-8">
+				{mountNotice}
 				{windows || hint === undefined ? null : <p className="m-0 text-sm text-muted">{hint}</p>}
-				{/* How it's doing first, on a phone, where the side column would otherwise come after the way in. */}
-				{usage}
+				{/* The way in first, as on a wide screen, then how it's doing. */}
 				{ssh}
+				{usage}
 				{portsSection}
+				{mounts}
 				{image}
 				{details}
-				{mounts}
 			</div>
 		);
 	}
 	return (
 		<div className="grid min-w-0 items-start gap-10 xl:grid-cols-[minmax(0,1fr)_var(--kt-popover-width)]">
 			<div className="flex min-w-0 flex-col gap-8">
+				{mountNotice}
 				{windows && tiles.length > 0 ? <div className="grid grid-cols-2 gap-4">{tiles.map(tile)}</div> : null}
 				{windows && tiles.length === 0 ? <NoScreens /> : null}
 				{ssh}
 				{portsSection}
+				{/* Mounts are about using the sandbox, beside the ways in: the side column keeps what it is and how it's doing. */}
+				{mounts}
 				{hint === undefined ? null : <p className="m-0 text-sm text-muted">{hint}</p>}
 			</div>
 			<aside className="flex min-w-0 flex-col gap-8">
 				{usage}
 				{image}
 				{details}
-				{mounts}
 			</aside>
 		</div>
 	);

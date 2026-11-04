@@ -105,11 +105,12 @@ export function EgressLog({
 				value={filter}
 				onChange={setFilter}
 			/>
-			{choosing && !narrow ? (
+			{/* On a phone the sandbox and the search keep their place, each a line of its own under the filter. */}
+			{choosing ? (
 				<SelectField
 					label="Sandbox"
 					hideLabel
-					width="short"
+					{...(narrow ? { className: "w-full" } : { width: "short" as const })}
 					value={sandbox}
 					onChange={(event) => setSandbox(event.currentTarget.value)}
 					options={[
@@ -118,19 +119,19 @@ export function EgressLog({
 					]}
 				/>
 			) : null}
-			{narrow ? null : (
+			{
 				<TextField
-					className="ml-auto"
+					className={narrow ? "w-full" : "ml-auto"}
 					label="Search the log"
 					hideLabel
-					width="short"
+					{...(narrow ? {} : { width: "short" as const })}
 					type="search"
 					placeholder="Host or path"
 					value={query}
 					onChange={(event) => setQuery(event.currentTarget.value)}
 					spellCheck={false}
 				/>
-			)}
+			}
 		</div>
 	);
 
@@ -362,7 +363,7 @@ function PhoneEntry({
 				{entry.decision === "denied" ? <Badge tone="error">Denied</Badge> : null}
 			</div>
 			<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted">
-				<span title={new Date(entry.at).toLocaleString("en-GB")}>{age === "now" ? "Now" : `${age} ago`}</span>
+				<span title={new Date(entry.at).toLocaleString("en-GB")}>{age === "now" ? "now" : `${age} ago`}</span>
 				{sandboxColumn ? <span>{entry.sandboxName}</span> : null}
 				{entry.swapped.map((name) => (
 					<span key={name} className="font-mono">

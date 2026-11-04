@@ -13,17 +13,17 @@ export const computePage =
 	"kt-compute-page mx-auto flex w-full max-w-page min-w-0 flex-col gap-5 text-md leading-normal text-fg";
 
 /**
- * A table's frame: a hairline round it. Where it's too narrow for its columns it scrolls sideways; in a phone's
- * column (table.css) TableFrame's rows become stacked cards instead. For a placeholder in a table's place (a skeleton);
- * a real table goes in TableFrame.
+ * A table's frame: open on the page, as every list in the console is, with hairlines between rows and none round it.
+ * Where it's too narrow for its columns it scrolls sideways; in a phone's column (table.css) TableFrame's rows become
+ * list rows instead. For a placeholder in a table's place (a skeleton); a real table goes in TableFrame.
  */
-export const tableFrame = "kt-compute-table min-w-0 overflow-x-auto rounded-panel border border-border bg-panel";
+export const tableFrame = "kt-compute-table min-w-0 overflow-x-auto";
 export const table = "w-full border-collapse text-left text-sm";
-/** A header cell: muted, small, on one line. */
-export const th = "h-control-md px-3 py-0 text-sm font-medium whitespace-nowrap text-muted border-b border-border";
-/** A body cell: a hairline under every row but the last. */
-export const td =
-	"px-3 py-2 align-middle whitespace-nowrap [tr:not(:last-child)>&]:border-b [tr:not(:last-child)>&]:border-border";
+/** A header cell: muted, small, on one line; the first and last sit on the page's edges. */
+export const th =
+	"h-control-md px-3 py-0 text-xs font-medium whitespace-nowrap text-muted border-b border-border first:pl-0 last:pr-0";
+/** A body cell: a hairline under every row; the first and last sit on the page's edges. */
+export const td = "px-3 py-2.5 align-middle whitespace-nowrap border-b border-border first:pl-0 last:pr-0";
 /** A row that opens something. */
 export const rowHover = "hover:bg-hover";
 /** A cell's second line: muted, smaller. */

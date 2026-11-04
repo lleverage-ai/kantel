@@ -28,9 +28,13 @@ export function publicKeyProblem(text: string): string | undefined {
 }
 
 /**
- * A command in code's font, with a Copy: on one line where it fits, wrapping where it doesn't (a phone), so all of
- * it can be read before it is copied.
+ * A command in code's font, with a Copy: always one line, never broken inside a token. Where it is wider than its
+ * box (a phone) it scrolls sideways, fading at the edge it continues past, and Copy stays put.
  */
+/** One line that scrolls sideways when it must, with no visible scrollbar and a fade at its right edge. */
+const scrollLine =
+	"min-w-0 flex-1 overflow-x-auto py-1 leading-normal whitespace-nowrap [scrollbar-width:none] mask-r-from-90% mask-r-to-100%";
+
 function CommandLine({ command, copyLabel }: { command: string | undefined; copyLabel: string }) {
 	return (
 		<div className="flex min-h-control-lg min-w-0 items-center gap-2 rounded-panel border border-border bg-sunken py-1 pr-1 pl-3 font-mono text-code">
@@ -42,7 +46,7 @@ function CommandLine({ command, copyLabel }: { command: string | undefined; copy
 					<Skeleton />
 				</span>
 			) : (
-				<code className="kt-selectable min-w-0 flex-1 py-1 leading-normal break-all text-fg">{command}</code>
+				<code className={`kt-selectable ${scrollLine} text-fg`}>{command}</code>
 			)}
 			{command === undefined ? null : <CopyButton text={command} label={copyLabel} size="sm" variant="ghost" />}
 		</div>

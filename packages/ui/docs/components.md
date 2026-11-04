@@ -26,7 +26,7 @@ component should use one of them:
 ### Button and IconButton
 
 **For** actions. Variants: `primary` (one per surface: Approve, Send, New session), `secondary` (the alternatives:
-Decline, Copy link), `ghost` (inside dense rows and toolbars), `danger` (stopping or refusing something). Sizes `xs`
+Decline, Copy link), `ghost` (inside dense rows and toolbars), `danger` (stopping or refusing something), `danger-quiet` (a destructive action that isn't the page's point, such as Leave, whose confirming dialog has the solid `danger`). Sizes `xs`
 24px, `sm` 28px (default), `md` 32px, `lg` 36px; under a coarse pointer every button is at least 36px.
 `busy` swaps the icon for a spinner and blocks clicks without changing the width.
 
