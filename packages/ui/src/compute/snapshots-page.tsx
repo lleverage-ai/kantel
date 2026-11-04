@@ -23,19 +23,26 @@ import {
 	expiresText,
 	SANDBOX_KIND_LABELS,
 	type Sandbox,
+	type SandboxKind,
 	type SandboxSnapshot,
 	type SavedSnapshot,
 	type SnapshotReason,
 	type SnapshotsSource,
 } from "./compute-model.ts";
 import { cellSub, computePage, messageOf, rowHover, TableFrame, table, tableFrame, td, th } from "./parts.tsx";
-import { type FilesAt, SnapshotFiles } from "./snapshot-files.tsx";
+import { type FilesAt, filesRoot, SnapshotFiles } from "./snapshot-files.tsx";
 
 /** The files view at another place in the same snapshot. */
-const filesView = (view: Extract<SnapshotsView, { name: "files" }>, at: FilesAt): SnapshotsView => {
+const filesView = (view: FilesView, at: FilesAt): SnapshotsView => {
 	const { file: _file, path: _path, ...rest } = view;
-	return { ...rest, ...(at.path === "" ? {} : { path: at.path }), ...(at.file === undefined ? {} : { file: at.file }) };
+	return {
+		...rest,
+		...(at.path === undefined ? {} : { path: at.path }),
+		...(at.file === undefined ? {} : { file: at.file }),
+	};
 };
+
+type FilesView = Extract<SnapshotsView, { name: "files" }>;
 
 /** Where the page is: the saved snapshots, one sandbox's history, or the files in a snapshot. */
 export type SnapshotsView =
@@ -49,7 +56,12 @@ export type SnapshotsView =
 			 * known (the page opened from a link to the files).
 			 */
 			readonly label?: string;
-			/** The open folder from the snapshot's root; the root when absent. */
+			/**
+			 * The kind of sandbox it's of, which says where its files start (an isolate's at /workspace). Asked of the source
+			 * where it isn't known (the page opened from a link to the files).
+			 */
+			readonly kind?: SandboxKind;
+			/** The open folder from the filesystem's root ("" is /); where its files start when absent. */
 			readonly path?: string;
 			/** The file open in that folder's preview. */
 			readonly file?: string;
@@ -72,6 +84,24 @@ export interface SnapshotsPageProps {
 	readonly onStartFrom?: (saved: SavedSnapshot) => void;
 	/** The address of a view, so a snapshot's folders and files are links. */
 	readonly viewHref?: (view: SnapshotsView) => string;
+}
+
+/**
+ * The files of a snapshot whose kind of sandbox a link didn't say, once the source says: until then a line's skeleton,
+ * and where it can't, the whole snapshot from its root.
+ */
+function KindOf({
+	source,
+	snapshotId,
+	children,
+}: {
+	source: SnapshotsSource;
+	snapshotId: string;
+	children: (kind: SandboxKind | undefined) => ReactNode;
+}) {
+	const { state } = useLoad(() => source.kindOf?.(snapshotId) ?? Promise.resolve(undefined), [source, snapshotId]);
+	if (state.status === "loading") return <Skeleton width="40%" />;
+	return children(state.status === "ready" ? state.value : undefined);
 }
 
 const SNAPSHOT_REASON_LABELS: Readonly<Record<SnapshotReason, string>> = {
@@ -125,25 +155,39 @@ export function SnapshotsPage({
 
 	if (view.name === "files") {
 		const back = view.back ?? { name: "saved" };
+		const files = (kind: SandboxKind | undefined) => (
+			<SnapshotFiles
+				key={view.snapshotId}
+				source={source}
+				snapshotId={view.snapshotId}
+				root={filesRoot(kind)}
+				{...(view.label === undefined ? {} : { label: view.label })}
+				at={{
+					...(view.path === undefined ? {} : { path: view.path }),
+					...(view.file === undefined ? {} : { file: view.file }),
+				}}
+				now={now}
+				backLabel={backLabel(back)}
+				onBack={() => go(back)}
+				onNavigate={(at) => go(filesView(view, at))}
+				{...(viewHref === undefined ? {} : { href: (at: FilesAt) => viewHref(filesView(view, at)) })}
+			/>
+		);
 		return (
 			<div className={computePage}>
-				<SnapshotFiles
-					key={view.snapshotId}
-					source={source}
-					snapshotId={view.snapshotId}
-					{...(view.label === undefined ? {} : { label: view.label })}
-					at={{ path: view.path ?? "", ...(view.file === undefined ? {} : { file: view.file }) }}
-					now={now}
-					backLabel={backLabel(back)}
-					onBack={() => go(back)}
-					onNavigate={(at) => go(filesView(view, at))}
-					{...(viewHref === undefined ? {} : { href: (at: FilesAt) => viewHref(filesView(view, at)) })}
-				/>
+				{view.kind !== undefined || source.kindOf === undefined ? (
+					files(view.kind)
+				) : (
+					<KindOf source={source} snapshotId={view.snapshotId}>
+						{files}
+					</KindOf>
+				)}
 			</div>
 		);
 	}
 
-	const browse = (snapshotId: string, label: string) => go({ name: "files", snapshotId, label, back: view });
+	const browse = (snapshotId: string, label: string, kind: SandboxKind) =>
+		go({ name: "files", snapshotId, label, kind, back: view });
 	return (
 		<div className={computePage}>
 			<PageHeader
@@ -179,7 +223,7 @@ export function SnapshotsPage({
 					account={account}
 					now={now}
 					{...(onStartFrom === undefined ? {} : { onStartFrom })}
-					onBrowse={(saved) => browse(saved.id, saved.name)}
+					onBrowse={(saved) => browse(saved.id, saved.name, saved.kind)}
 					onNotice={setNotice}
 				/>
 			) : (
@@ -190,7 +234,7 @@ export function SnapshotsPage({
 					sandboxId={view.sandboxId}
 					now={now}
 					onPick={(sandboxId) => go({ name: "sandbox", sandboxId })}
-					onBrowse={(box, snap) => browse(snap.id, `${box.name}, ${agoText(snap.takenAt, now)}`)}
+					onBrowse={(box, snap) => browse(snap.id, `${box.name}, ${agoText(snap.takenAt, now)}`, box.kind)}
 					onNotice={setNotice}
 				/>
 			)}

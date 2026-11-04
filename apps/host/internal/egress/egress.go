@@ -347,7 +347,7 @@ func rewriteRefusal(err error) refusal {
 		switch ref.Code {
 		case protect.CodeUnbound:
 			return refusal{status: http.StatusForbidden, code: ref.Code, variable: ref.Variable, message: ref.Message}
-		case protect.CodeTooLarge:
+		case protect.CodeUnknown, protect.CodeTooLarge:
 			return refusal{status: http.StatusForbidden, code: ref.Code, message: ref.Message}
 		case protect.CodeUnreadableResponse:
 			return refusal{status: http.StatusBadGateway, code: ref.Code, message: ref.Message}

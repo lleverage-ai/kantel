@@ -18,6 +18,7 @@ import { readFile, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { extname, join, normalize, resolve, sep } from "node:path";
+import { HostAnswerError } from "./errors.ts";
 
 /** What `/local/info` answers: that this console is local, who this device is, and each E2E space it is in. */
 export interface LocalInfo {
@@ -303,7 +304,12 @@ export async function serveLocalConsole(options: LocalConsoleOptions): Promise<L
 			try {
 				return sendJson(response, 200, { result: await options.e2eCall(sandboxId, method, params) });
 			} catch (error) {
-				return sendJson(response, 502, refusal("e2e", error instanceof Error ? error.message : String(error)));
+				const message = error instanceof Error ? error.message : String(error);
+				// The host's own answer, with its code: the console tells a path it won't read from a session that failed.
+				if (error instanceof HostAnswerError) {
+					return sendJson(response, 502, { error: { code: "e2e", message, hostCode: error.code } });
+				}
+				return sendJson(response, 502, refusal("e2e", message));
 			}
 		}
 		return sendJson(response, 404, refusal("not_found", "No such call"));

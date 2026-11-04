@@ -28,6 +28,7 @@ import type {
 	Sandbox,
 	SandboxCommand,
 	SandboxEgress,
+	SandboxKind,
 	SandboxPort,
 	SandboxSnapshot,
 	SavedSnapshot,
@@ -37,12 +38,16 @@ import type {
 	WebhookDelivery,
 } from "./compute-model.ts";
 import {
+	cliLoginCommand,
+	cliSshCommand,
 	DEFAULT_SANDBOX_SHAPES,
 	diskFor,
+	FilesRefusedError,
 	presetOf,
 	type SandboxSize,
 	sameProxySettings,
 	sizeSpec,
+	sshWithoutCliCommand,
 } from "./compute-model.ts";
 
 /** The code the fixtures' waiting command line showed. */
@@ -431,7 +436,64 @@ const TREE: Readonly<Record<string, readonly SnapshotEntry[]>> = {
 	],
 };
 
+/**
+ * An isolate's files: its workspace and nothing else. The host refuses any other path ("/ is outside /workspace, an
+ * isolate's only files"), as the fixtures do.
+ */
+const WORKSPACE_TREE: Readonly<Record<string, readonly SnapshotEntry[]>> = {
+	workspace: [
+		{ name: "src", path: "workspace/src", kind: "folder" },
+		{
+			name: ".gitignore",
+			path: "workspace/.gitignore",
+			kind: "file",
+			sizeBytes: 24,
+			modifiedAt: FIXTURE_NOW - 5 * MINUTE,
+		},
+		{
+			name: "README.md",
+			path: "workspace/README.md",
+			kind: "file",
+			sizeBytes: 214,
+			modifiedAt: FIXTURE_NOW - 4 * MINUTE,
+		},
+		{
+			name: "package.json",
+			path: "workspace/package.json",
+			kind: "file",
+			sizeBytes: 168,
+			modifiedAt: FIXTURE_NOW - 4 * MINUTE,
+		},
+	],
+	"workspace/src": [
+		{
+			name: "index.ts",
+			path: "workspace/src/index.ts",
+			kind: "file",
+			sizeBytes: 96,
+			modifiedAt: FIXTURE_NOW - 2 * MINUTE,
+		},
+	],
+};
+
+/** A folder of a sample sandbox or snapshot of this kind: an isolate's refuses anything outside /workspace. */
+export function sampleFolder(kind: SandboxKind | undefined, path: string): readonly SnapshotEntry[] {
+	const key = path.replace(/^\/+|\/+$/g, "");
+	if (kind !== "isolate") return TREE[key] ?? [];
+	if (key !== "workspace" && !key.startsWith("workspace/")) {
+		throw new FilesRefusedError(`/${key} is outside /workspace, an isolate's only files`);
+	}
+	const entries = WORKSPACE_TREE[key];
+	if (entries === undefined) throw new FilesRefusedError(`There's no folder /${key}.`);
+	return entries;
+}
+
 const FILES: Readonly<Record<string, string>> = {
+	"workspace/.gitignore": "node_modules\ndist\n.env\n",
+	"workspace/README.md":
+		"# scratch\n\nA quick place to try things. Everything here is in /workspace, the only files an isolate has.\n",
+	"workspace/package.json": '{\n  "name": "scratch",\n  "private": true,\n  "type": "module"\n}\n',
+	"workspace/src/index.ts": 'console.log("hello from an isolate");\n',
 	"etc/hostname": "api-server\n",
 	"etc/os-release": 'PRETTY_NAME="Ubuntu 24.04.3 LTS"\nNAME="Ubuntu"\nVERSION_ID="24.04"\nID=ubuntu\n',
 	"home/user/.bashrc": "# ~/.bashrc\nexport PATH=$HOME/.local/bin:$PATH\nalias ll='ls -la'\n",
@@ -1137,6 +1199,17 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 	const history = new Map<string, SandboxSnapshot[]>(
 		[...sandboxes.values()].map((box) => [box.id, [...historyFor(box)]]),
 	);
+	/** The kind of sandbox a snapshot is of: a saved one's own, or its sandbox's. */
+	const snapshotKind = (snapshotId: string): SandboxKind | undefined => {
+		const named = saved.get(snapshotId);
+		if (named !== undefined) return named.kind;
+		for (const box of sandboxes.values()) {
+			if (box.snapshot?.id === snapshotId || history.get(box.id)?.some((snap) => snap.id === snapshotId)) {
+				return box.kind;
+			}
+		}
+		return undefined;
+	};
 	const keys = new Map<string, ApiKey>(
 		(empty ? [] : KEYS).map((key) => [key.id, moved(key, ["createdAt", "lastUsedAt", "expiresAt", "revokedAt"])]),
 	);
@@ -1471,10 +1544,35 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					const box = find(sandboxes, id, "sandbox");
 					const token = fakeSecret("").slice(0, 16);
 					return {
-						ssh: `ssh ${box.id}@ssh.kantel.example.com`,
+						ssh: cliSshCommand(box.id),
+						cliLogin: cliLoginCommand("https://kantel.example.com"),
+						sshWithoutCli: true,
 						desktopUrl: `https://${box.hostname}/desktop?token=${token}`,
 						desktopViewUrl: `https://${box.hostname}/desktop?token=${token}#shared`,
 						browserUrl: `https://${box.hostname}/browser?token=${token}`,
+					};
+				}),
+			sshKey: (id, publicKey) =>
+				gate(() => {
+					const box = find(sandboxes, id, "sandbox");
+					const target = {
+						sandboxId: box.id,
+						user: "user",
+						host: "kantel.example.com",
+						port: 443,
+						proxyUrl: `wss://kantel.example.com/v1/hosts/tunnel/${fakeSecret("").slice(0, 24)}`,
+					};
+					const shown = {
+						hostKeyFingerprint: "SHA256:q8Yf3uZb1nO0xT4rWk7mJcVd2sLhP9aE6gRiKy5tBvU",
+						expiresAt: now() + 10 * MINUTE,
+					};
+					if (publicKey !== undefined) return { command: sshWithoutCliCommand(target), ...shown };
+					const keyFile = { name: `kantel-${box.id}`, path: `~/Downloads/kantel-${box.id}` };
+					return {
+						command: sshWithoutCliCommand(target, keyFile.path),
+						privateKey: `-----BEGIN OPENSSH PRIVATE KEY-----\n${fakeSecret("sample")}\n-----END OPENSSH PRIVATE KEY-----\n`,
+						keyFile,
+						...shown,
 					};
 				}),
 			history: (id) =>
@@ -1515,9 +1613,9 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					);
 				}),
 			files: {
-				list: (_id, path) =>
+				list: (id, path) =>
 					gate(() => ({
-						entries: (TREE[path.replace(/^\/+|\/+$/g, "")] ?? []).map((entry) => moved(entry, ["modifiedAt"])),
+						entries: sampleFolder(sandboxes.get(id)?.kind, path).map((entry) => moved(entry, ["modifiedAt"])),
 						more: false,
 					})),
 				read: (_id, path, range) => gate(() => samplePart(path, range)),
@@ -1565,8 +1663,9 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						);
 					}
 				}),
-			list: (_snapshotId, path) =>
-				gate(() => (TREE[path.replace(/^\/+|\/+$/g, "")] ?? []).map((entry) => moved(entry, ["modifiedAt"]))),
+			list: (snapshotId, path) =>
+				gate(() => sampleFolder(snapshotKind(snapshotId), path).map((entry) => moved(entry, ["modifiedAt"]))),
+			kindOf: (snapshotId) => gate(() => snapshotKind(snapshotId) ?? "microvm"),
 			read: (_snapshotId, path, range) => gate(() => samplePart(path, range)),
 			downloadUrl: (snapshotId, path) =>
 				`https://kantel.example.com/v1/snapshots/${encodeURIComponent(snapshotId)}/download?path=${encodeURIComponent(path)}`,

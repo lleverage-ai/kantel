@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { afterEach, describe, expect, it } from "vitest";
 import { gatewayType, type LocalConsole, serveLocalConsole } from "../src/console.ts";
+import { CliError, HostAnswerError } from "../src/errors.ts";
 
 const CHROMIUM = process.env.CHROMIUM ?? "/usr/bin/chromium";
 
@@ -52,7 +53,7 @@ describe("kantel console and a hostile gateway", () => {
 	});
 
 	/** The console with a bundle of its own: its inline theme, and a script that reads the gateway's data. */
-	async function serve() {
+	async function serve(answer?: (method: string) => Promise<unknown>) {
 		const dir = await mkdtemp(join(tmpdir(), "kantel-console-"));
 		dirs.push(dir);
 		await mkdir(join(dir, "assets"));
@@ -81,6 +82,7 @@ describe("kantel console and a hostile gateway", () => {
 			info: async () => ({ local: true, spaces: [] }),
 			e2eCall: async (sandboxId, method, params) => {
 				e2eCalls.push({ sandboxId, method, params });
+				if (answer !== undefined) return answer(method);
 				return { exitCode: 0, stdout: "", stderr: "" };
 			},
 		});
@@ -111,6 +113,29 @@ describe("kantel console and a hostile gateway", () => {
 		expect(policy).toMatch(new RegExp(`script-src ${c.origin}/assets/ 'sha256-[^']+';`));
 		expect(policy).not.toContain("'self' 'sha256");
 		expect(policy).toContain(`worker-src ${c.origin}/assets/`);
+	});
+
+	it("passes on a host's refusal of a call with its code, and a session that failed without one", async () => {
+		const c = await serve(async (method) => {
+			if (method === "sandbox.files.list") throw new HostAnswerError("not_found", "no such directory");
+			throw new CliError("The relay closed the stream before the host answered");
+		});
+		const call = async (method: string) => {
+			const answer = await fetch(`${c.origin}/local/e2e`, {
+				method: "POST",
+				headers: { cookie: c.cookie, origin: c.origin, "content-type": "application/json" },
+				body: JSON.stringify({ sandboxId: "sbx_one", method, params: { path: "/home/user" } }),
+			});
+			return { status: answer.status, body: await answer.json() };
+		};
+		expect(await call("sandbox.files.list")).toEqual({
+			status: 502,
+			body: { error: { code: "e2e", message: "no such directory", hostCode: "not_found" } },
+		});
+		expect(await call("sandbox.files.read")).toEqual({
+			status: 502,
+			body: { error: { code: "e2e", message: "The relay closed the stream before the host answered" } },
+		});
 	});
 
 	it("keeps data types and a plain charset, and turns every other type to bytes", () => {

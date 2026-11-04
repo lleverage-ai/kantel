@@ -122,8 +122,8 @@ func TestStoreErrors(t *testing.T) {
 		dest  Destination
 		check func(error) bool
 	}{
-		{"unknown placeholder", phUnknown, githubDest, func(err error) bool { return errors.Is(err, ErrUnknown) }},
-		{"not a placeholder", "hello", githubDest, func(err error) bool { return errors.Is(err, ErrUnknown) }},
+		{"unknown placeholder", phUnknown, githubDest, func(err error) bool { return errors.Is(err, ErrForeign) && errors.Is(err, ErrUnknown) }},
+		{"not a placeholder", "hello", githubDest, func(err error) bool { return errors.Is(err, ErrUnknown) && !errors.Is(err, ErrForeign) }},
 		{"bound elsewhere", phNPM, githubDest, unboundAs("NPM_TOKEN")},
 		{"another port", phGitHub, Destination{Host: "api.github.com", Port: 8443, Method: "GET", Path: "/"}, unboundAs("GITHUB_TOKEN")},
 	}
@@ -137,6 +137,43 @@ func TestStoreErrors(t *testing.T) {
 				t.Fatalf("the error %q holds a value", msg)
 			}
 		})
+	}
+}
+
+// A fork has placeholders of its own for the same variables and values. Each sandbox's placeholders resolve for it
+// alone: the parent's sent from the fork (or the fork's from the parent) is denied, whatever the destination.
+func TestStoreResolvesOnlyTheCallingSandboxsPlaceholders(t *testing.T) {
+	phFork := "kph_" + strings.Repeat("f0", 20)
+	s := NewStore(func(_ context.Context, sandboxID string) (Table, error) {
+		entries := testEntries()
+		switch sandboxID {
+		case "sbx-parent":
+		case "sbx-fork":
+			entries[0].Placeholder = phFork
+		default:
+			return Table{}, errors.New("no such sandbox")
+		}
+		return Table{Version: 1, Entries: entries}, nil
+	})
+	ctx := context.Background()
+	for _, c := range []struct{ ph, sandbox string }{{phGitHub, "sbx-parent"}, {phFork, "sbx-fork"}} {
+		if r, err := s.Resolve(ctx, c.ph, c.sandbox, githubDest); err != nil || r.Value != githubValue || r.Name != "GITHUB_TOKEN" {
+			t.Fatalf("%s's own placeholder: %v", c.sandbox, err)
+		}
+	}
+	for _, c := range []struct{ ph, sandbox string }{{phGitHub, "sbx-fork"}, {phFork, "sbx-parent"}} {
+		r, err := s.Resolve(ctx, c.ph, c.sandbox, githubDest)
+		if !errors.Is(err, ErrForeign) || r.Value != "" {
+			t.Fatalf("the other sandbox's placeholder from %s: %q, %v; want ErrForeign and no value", c.sandbox, r.Value, err)
+		}
+	}
+	// Fixed, a request's view of one sandbox's entries, denies the other's too.
+	entries, err := s.Values(ctx, "sbx-fork")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewFixed(entries).Resolve(ctx, phGitHub, "sbx-fork", githubDest); !errors.Is(err, ErrForeign) {
+		t.Fatalf("Fixed: %v, want ErrForeign", err)
 	}
 }
 

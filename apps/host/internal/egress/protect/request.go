@@ -20,7 +20,9 @@ const MaxBufferedBody = 16 << 20
 
 // Refusal codes, for the proxy's answer and the control plane's events.
 const (
-	CodeUnbound     = "placeholder-unbound"
+	CodeUnbound = "placeholder-unbound"
+	// CodeUnknown is a placeholder that isn't one of the sandbox's: another sandbox's, such as a fork's parent's.
+	CodeUnknown     = "placeholder-unknown"
 	CodeUnavailable = "secret-unavailable"
 	CodeTooLarge    = "body-too-large"
 
@@ -48,9 +50,9 @@ func (r *Refusal) Error() string {
 // header value (inside the credentials of "Authorization: Basic" too), the URL's query and the body. It answers the
 // names of the variables it swapped, sorted.
 //
-// Every placeholder found is resolved before anything changes, so a refusal (*Refusal: an unbound placeholder, or
-// values that can't be fetched) leaves req as it came, body included. Text that looks like a placeholder but isn't
-// one of the sandbox's is left as it is. The path isn't searched, and req.RequestURI is left alone (the proxy clears
+// Every placeholder found is resolved before anything changes, so a refusal (*Refusal: an unbound placeholder, one
+// that isn't the sandbox's, or values that can't be fetched) leaves req as it came, body included. A placeholder
+// is left as it is only where the Provider answers plain ErrUnknown (a sandbox with no protected variables). The path isn't searched, and req.RequestURI is left alone (the proxy clears
 // it before passing the request on).
 //
 // A body is read as http.ReadRequest gives it (already de-chunked). Identity, gzip and deflate bodies up to
@@ -158,6 +160,8 @@ func (s *swapper) resolve(ph string) *Refusal {
 		s.resolved[ph] = r
 	case errors.As(err, &unbound) && unbound != nil:
 		return &Refusal{Code: CodeUnbound, Variable: unbound.Name, Message: unbound.Name + " may not be sent to " + s.dest.Host + ", which isn't one of its destinations"}
+	case errors.Is(err, ErrForeign):
+		return foreignRefusal(ph)
 	case errors.Is(err, ErrUnknown):
 		s.unknown[ph] = true
 	default:
@@ -165,6 +169,13 @@ func (s *swapper) resolve(ph string) *Refusal {
 		return &Refusal{Code: CodeUnavailable, Message: "protected environment variables can't be fetched right now"}
 	}
 	return nil
+}
+
+// foreignRefusal refuses a placeholder that isn't the sandbox's. It names the placeholder by its first characters only,
+// as kantel-doctor does: enough to tell which variable in the sandbox's environment it is.
+func foreignRefusal(ph string) *Refusal {
+	return &Refusal{Code: CodeUnknown, Message: ph[:min(len(ph), 8)] + "… isn't one of this sandbox's placeholders, so it is never swapped. " +
+		"A fork has placeholders of its own: a process started before the fork still holds its parent's and needs restarting"}
 }
 
 // apply swaps the resolved placeholders among matches, escaping each value; it answers b itself when none was.

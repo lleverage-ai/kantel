@@ -54,16 +54,23 @@ export type {
 	SandboxesSource,
 	SandboxShape,
 	SandboxShapes,
+	SandboxSshKey,
 	ShapePreset,
 	SnapshotsSource,
+	SshTarget,
 	TelemetrySource,
 	WebhooksSource,
 } from "./compute/compute-model.ts";
 export {
+	CLI_INSTALL_COMMAND,
+	cliLoginCommand,
+	cliSshCommand,
 	DEFAULT_SANDBOX_SHAPES,
 	DeviceSetupError,
+	FilesRefusedError,
 	FileTooLargeError,
 	sameProxySettings,
+	sshWithoutCliCommand,
 } from "./compute/compute-model.ts";
 // Identity: who is signed in, and Kantel's own email-code sign-in.
 export { SignInScreen, type SignInScreenProps } from "./identity/sign-in.tsx";

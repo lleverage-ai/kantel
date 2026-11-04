@@ -266,10 +266,16 @@ export class ControlStream {
 /** A call the host refused or failed. */
 export class SessionError extends Error {
 	readonly code: string;
-	constructor(code: string, message: string) {
+	/**
+	 * Whether this is the host's own answer to a call (a path it won't read, say), rather than the session failing to
+	 * open or closing: only an answer's code is the call's.
+	 */
+	readonly answered: boolean;
+	constructor(code: string, message: string, answered = false) {
 		super(message);
 		this.name = "SessionError";
 		this.code = code;
+		this.answered = answered;
 	}
 }
 
@@ -417,7 +423,7 @@ export class SessionClient {
 			this.#waiting.delete(message.id);
 			if (isObject(message.error)) {
 				const { code, message: text } = message.error;
-				waiting.reject(new SessionError(typeof code === "string" ? code : "internal", String(text ?? "failed")));
+				waiting.reject(new SessionError(typeof code === "string" ? code : "internal", String(text ?? "failed"), true));
 			} else waiting.resolve(message.result);
 		});
 		this.#stream.onClose((reason) => {
