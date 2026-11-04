@@ -418,10 +418,10 @@ func gateKeys(method string, params json.RawMessage) (uses, claims []string) {
 	case proto.MethodStop, proto.MethodSnapshotSave:
 		add(&uses, sandbox(p.SandboxID), p.SandboxID)
 		add(&claims, lifecycle(p.SandboxID), p.SandboxID)
+		add(&claims, snapshot(p.SnapshotID), p.SnapshotID)
 	case proto.MethodStart, proto.MethodResume:
 		add(&uses, sandbox(p.SandboxID), p.SandboxID)
 		add(&claims, lifecycle(p.SandboxID), p.SandboxID)
-		add(&claims, snapshot(p.SnapshotID), p.SnapshotID)
 	case proto.MethodSnapshotDel:
 		add(&claims, snapshot(p.SnapshotID), p.SnapshotID)
 	case proto.MethodSnapshotRead, proto.MethodSnapshotTree:
@@ -446,8 +446,9 @@ func (h *Host) gatewayGuard(ctx context.Context, method string, params json.RawM
 	// A sandbox's own snapshots too: a start, resume or fork of a stopped sandbox restores the newest of them, which
 	// mustn't be deleted and made again from another sandbox's disk while it does. They are listed once the call holds
 	// the sandbox's lifecycle claim, so no stop or save of it can add one the list missed until the call ends.
+	restores := method == proto.MethodStart || method == proto.MethodResume || method == proto.MethodFork
 	for _, key := range slices.Clone(uses) {
-		if id, ok := strings.CutPrefix(key, "sandbox:"); ok {
+		if id, ok := strings.CutPrefix(key, "sandbox:"); ok && restores {
 			for _, name := range h.order {
 				for _, snap := range h.tiers[name].Snapshots(id) {
 					uses = append(uses, "snapshot:"+snap.ID)

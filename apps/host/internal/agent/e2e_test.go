@@ -647,3 +647,48 @@ func TestAStopAndAForkOfOneSandboxTakeTurns(t *testing.T) {
 	done()
 	(<-stopped)()
 }
+
+// gateKeys: what each call holds and claims.
+func TestGateKeys(t *testing.T) {
+	for _, c := range []struct {
+		method       string
+		params       map[string]any
+		uses, claims []string
+	}{
+		{proto.MethodStop, map[string]any{"sandboxId": "x", "snapshotId": "s"}, []string{"sandbox:x"}, []string{"lifecycle:x", "snapshot:s"}},
+		{proto.MethodSnapshotSave, map[string]any{"sandboxId": "x", "snapshotId": "s"}, []string{"sandbox:x"}, []string{"lifecycle:x", "snapshot:s"}},
+		{proto.MethodResume, map[string]any{"sandboxId": "x"}, []string{"sandbox:x"}, []string{"lifecycle:x"}},
+		{proto.MethodFork, map[string]any{"sandboxId": "x", "newId": "y", "snapshotId": "s"}, []string{"sandbox:x"}, []string{"lifecycle:x", "sandbox:y", "snapshot:fork-y", "snapshot:s"}},
+		{proto.MethodCreate, map[string]any{"sandboxId": "x", "from": "s"}, []string{"snapshot:s"}, []string{"sandbox:x"}},
+		{proto.MethodDelete, map[string]any{"sandboxId": "x"}, nil, []string{"sandbox:x"}},
+		{proto.MethodSnapshotDel, map[string]any{"snapshotId": "s"}, nil, []string{"snapshot:s"}},
+		{proto.MethodExec, map[string]any{"sandboxId": "x"}, []string{"sandbox:x"}, nil},
+	} {
+		raw, _ := json.Marshal(c.params)
+		uses, claims := gateKeys(c.method, raw)
+		if !slices.Equal(uses, c.uses) || !slices.Equal(claims, c.claims) {
+			t.Errorf("%s: uses %v claims %v", c.method, uses, claims)
+		}
+	}
+}
+
+// A command running in a sandbox isn't cancelled by deleting one of the sandbox's old snapshots, which it doesn't use.
+func TestDeletingAnOldSnapshotLeavesACommandRunning(t *testing.T) {
+	h, vm, _ := e2eHost(t)
+	vm.snaps = append(vm.snaps, proto.SnapshotInfo{ID: "snap_old", SandboxID: "sbx_other"})
+	exec, _ := json.Marshal(map[string]any{"sandboxId": "sbx_other", "command": "sleep 60"})
+	ctx, done, err := h.gatewayGuard(context.Background(), proto.MethodExec, exec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer done()
+	del, _ := json.Marshal(map[string]any{"snapshotId": "snap_old"})
+	_, release, err := h.gatewayGuard(context.Background(), proto.MethodSnapshotDel, del)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	if ctx.Err() != nil {
+		t.Fatal("the command was cancelled")
+	}
+}
