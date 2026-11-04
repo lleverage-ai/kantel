@@ -750,6 +750,10 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if err != nil {
 			return nil, err
 		}
+		// E2E is judged on the snapshot in the tier this read uses, so a check can't pass on another tier's (e2e.go).
+		if space, covered := h.snapshotGuarded(t, p.SnapshotID); covered {
+			return nil, e2eRefusal(space)
+		}
 		entries, err := t.SnapshotFiles(p.SnapshotID, p.Path)
 		return map[string]any{"entries": entries}, err
 	case proto.MethodSnapshotRead:
@@ -760,6 +764,10 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		t, err := h.tierOfSnapshot(p.SnapshotID)
 		if err != nil {
 			return nil, err
+		}
+		// E2E is judged on the snapshot in the tier this read uses, so a check can't pass on another tier's (e2e.go).
+		if space, covered := h.snapshotGuarded(t, p.SnapshotID); covered {
+			return nil, e2eRefusal(space)
 		}
 		data, err := t.SnapshotRead(p.SnapshotID, p.Path)
 		if err != nil {

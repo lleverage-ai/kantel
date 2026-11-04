@@ -547,3 +547,40 @@ func TestAnIDCantChangeUnderAGatewayCall(t *testing.T) {
 		t.Fatal("an E2E create took the ID of a deleted plaintext sandbox whose snapshots remain")
 	}
 }
+
+// The read itself judges the snapshot in the tier it reads: one that passed a check on another tier's is refused.
+func TestASnapshotReadIsJudgedWhereItReads(t *testing.T) {
+	h, vm, v := e2eHost(t)
+	vm.snaps = []proto.SnapshotInfo{{ID: "snap_s", SandboxID: "sbx_gone_e2e"}}
+	if err := h.e2e.RecordOwner("sbx_gone_e2e", v.Space); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []string{proto.MethodSnapshotRead, proto.MethodSnapshotTree} {
+		raw, _ := json.Marshal(map[string]any{"snapshotId": "snap_s", "path": "/"})
+		_, err := h.Call(context.Background(), m, raw, nil)
+		var pe *proto.Error
+		if !errors.As(err, &pe) || !strings.Contains(pe.Message, "end-to-end encrypted") {
+			t.Fatalf("%s: %v", m, err)
+		}
+	}
+}
+
+// Two creates of one ID (one plaintext, one E2E) take turns, so the second sees the first's sandbox.
+func TestClaimsOnOneIDTakeTurns(t *testing.T) {
+	var g e2eGate
+	release := g.claim([]string{"sandbox:x"})
+	second := make(chan func(), 1)
+	go func() { second <- g.claim([]string{"sandbox:y", "sandbox:x"}) }()
+	select {
+	case <-second:
+		t.Fatal("two claims of one ID at once")
+	case <-time.After(100 * time.Millisecond):
+	}
+	release()
+	select {
+	case r := <-second:
+		r()
+	case <-time.After(5 * time.Second):
+		t.Fatal("the second claim never went ahead")
+	}
+}

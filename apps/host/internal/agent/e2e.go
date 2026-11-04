@@ -346,12 +346,16 @@ func (g *e2eGate) use(ctx context.Context, keys []string) (context.Context, func
 	}, true
 }
 
-// claim cancels the calls using keys and waits for them to end, keeping new ones out until release. A claim waits only
-// on calls past their own claims, which wait on nothing in the gate, so claims can't deadlock.
+// claim takes keys for one call at a time (waiting for another claim of any of them to be done), cancels the calls
+// using them and waits for those to end, and keeps new ones out until release. A claim is taken whole or not at all,
+// and waits only on calls past their own claims, which wait on nothing in the gate, so claims can't deadlock.
 func (g *e2eGate) claim(keys []string) (release func()) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.init()
+	for slices.ContainsFunc(keys, func(key string) bool { return g.claimed[key] > 0 }) {
+		g.cond.Wait()
+	}
 	for _, key := range keys {
 		g.claimed[key]++
 		for _, cancel := range g.calls[key] {
@@ -369,6 +373,7 @@ func (g *e2eGate) claim(keys []string) (release func()) {
 				delete(g.claimed, key)
 			}
 		}
+		g.cond.Broadcast()
 		g.mu.Unlock()
 	}
 }
