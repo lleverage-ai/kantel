@@ -2,6 +2,8 @@
 // and the server in the sandbox sees the request as sent, less Kantel's token and cookie, over HTTP/1.1 on the port's
 // stream. The cookie is `__Host-` and counts only from the port's own pages, the person, or the same sandbox's other
 // ports (TASK-4887).
+import v8 from "node:v8";
+import vm from "node:vm";
 import { describe, expect, it } from "vitest";
 import type { PortSink, PortStream } from "../src/hub.ts";
 import { proxyHttp, requestBytes } from "../src/port-http.ts";
@@ -489,6 +491,51 @@ describe("HTTP over a port's stream", () => {
 		);
 		expect(await done.text()).toBe("");
 		expect(whole).toEqual(["hello"]);
+	});
+
+	it("keeps no push it has read alive while an answer `take` is given stalls, chunked or not", async () => {
+		v8.setFlagsFromString("--expose-gc");
+		const gc = vm.runInNewContext("gc") as () => void;
+		for (const framing of ["chunked", "length"] as const) {
+			let sink: PortSink | undefined;
+			let pushed: WeakRef<ArrayBuffer> | undefined;
+			let taken = 0;
+			const answer = await proxyHttp(
+				async (given) => {
+					sink = given;
+					return {
+						stream: 1,
+						write: () => {
+							// One big push: the head, then 100,000 one-byte chunks (or 100,000 bytes of a longer body),
+							// then a size line cut short, so the parser has something it must keep.
+							const body = framing === "chunked" ? `${"1\r\nx\r\n".repeat(100_000)}1` : "x".repeat(100_000);
+							const head = framing === "chunked" ? "Transfer-Encoding: chunked\r\n" : "Content-Length: 100001\r\n";
+							const bytes = encoder.encode(`HTTP/1.1 200 OK\r\n${head}\r\n${body}`);
+							pushed = new WeakRef(bytes.buffer);
+							given.data(bytes);
+						},
+						close: () => undefined,
+					};
+				},
+				new Request("https://p.test/"),
+				{
+					host: "p.test",
+					take: (bytes) => {
+						taken += bytes.length;
+						return true;
+					},
+				},
+			);
+			expect(taken).toBe(100_000);
+			// Stalled: the answer and its parser are still alive, the push long read.
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			gc();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			gc();
+			expect({ framing, kept: pushed?.deref() !== undefined }).toEqual({ framing, kept: false });
+			expect(answer.status).toBe(200);
+			sink?.end("done");
+		}
 	});
 
 	it("reads a body to the end of the stream when it has no length", async () => {

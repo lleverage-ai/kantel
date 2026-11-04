@@ -187,7 +187,11 @@ export function hostOnlyCookie(value: string): string {
 /** The most a chunked answer's trailer section (dropped) may be. */
 const MAX_TRAILER_BYTES = 16 * 1024;
 
-/** Undoes `Transfer-Encoding: chunked` as bytes arrive. */
+/**
+ * Undoes `Transfer-Encoding: chunked` as bytes arrive. Chunk data is passed on as it comes (a copy); all that is kept
+ * between pushes is what can't be passed on yet (part of a size line, a chunk's CRLF, trailers: each bounded), and that
+ * is copied out, so no push it has read is kept alive by a view of it.
+ */
 function dechunker(emit: (bytes: Uint8Array) => void, done: () => void, fail: (error: Error) => void) {
 	let buffer: Uint8Array = new Uint8Array(0);
 	let remaining = -1; // -1: reading a size line; 0..n: bytes of the chunk left; -2: the CRLF after a chunk; -3: trailers
@@ -196,6 +200,10 @@ function dechunker(emit: (bytes: Uint8Array) => void, done: () => void, fail: (e
 	return (bytes: Uint8Array) => {
 		if (finished) return;
 		buffer = concat(buffer, bytes);
+		step();
+		buffer = finished || buffer.length === 0 ? new Uint8Array(0) : buffer.slice();
+	};
+	function step() {
 		for (;;) {
 			if (remaining === -1) {
 				const end = indexOfCrlf(buffer);
@@ -242,7 +250,7 @@ function dechunker(emit: (bytes: Uint8Array) => void, done: () => void, fail: (e
 				if (remaining === 0) remaining = -2;
 			}
 		}
-	};
+	}
 }
 
 /**
@@ -378,7 +386,10 @@ export function proxyHttp(
 					// 100 Continue and other interim answers: the real one follows.
 					if (parsed.status >= 100 && parsed.status < 200 && parsed.status !== 101) continue;
 					head = parsed;
-					return answer(head, buffer);
+					// The head's buffer is done with: the rest is the body's, and nothing here keeps the push alive.
+					const rest = buffer;
+					buffer = new Uint8Array(0);
+					return answer(head, rest);
 				}
 			},
 			end(reason) {
