@@ -1106,7 +1106,8 @@ const NO_SNAPSHOT = "The stub has no snapshot ";
 
 /**
  * The stub, for a stub whose memory can go while the records stay. A call for a sandbox it has no machine for gives that
- * sandbox a fresh machine (an empty disk, its type, size and environment from the record) and is made again; a boot
+ * sandbox a fresh machine (an empty disk, or its template's setup run on one, its type, size and environment from the
+ * record) and is made again; a boot
  * from a snapshot it no longer holds boots from an empty disk. Anything else, and a sandbox the records don't have,
  * fails as the stub does.
  */
@@ -1137,6 +1138,9 @@ export function revivingStub(stub: SandboxBackend, sandboxes: Collection<StoredS
 			// What it asked for, so it revives as the shape it was made.
 			...(record.shape === undefined ? {} : { shape: record.shape }),
 			...(record.image === undefined ? {} : { image: record.image }),
+			// One made from a template is made again from the base and setup its create resolved, booted fresh, as `bootAgain`
+			// makes it: what its template is now, or whether it still is, doesn't matter.
+			...(record.templateBoot === undefined ? {} : { template: { ...record.templateBoot } }),
 			env: record.env,
 			eligibleHosts: [STUB_HOST_ID],
 		});

@@ -197,6 +197,13 @@ const messageOf = (error: unknown): string => (error instanceof Error ? error.me
 export type TemplateHandlers = Pick<RouteHandlers<SignedInComputeRoutes, Principal>, keyof typeof templateRoutes>;
 
 /** How a sandbox made from a template starts: what `createSandbox` gives the backend and records. */
+/** A sandbox's `image` for a template base: `<image>@<digest>`, or the image's name alone with no digest published. */
+export const templateBootImage = ({
+	baseImage,
+	baseDigest,
+}: Pick<SandboxTemplateBoot, "baseImage" | "baseDigest">): string =>
+	baseDigest === "" ? baseImage : `${baseImage}@${baseDigest}`;
+
 export interface TemplateStart {
 	/**
 	 * Every host the create may use that can boot templates: the snapshot's host first, when it has room (the backend
@@ -205,7 +212,10 @@ export interface TemplateStart {
 	readonly eligibleHosts: readonly string[];
 	readonly boot: SandboxTemplateBoot;
 	readonly record: computeSchema.SandboxTemplate;
-	/** The sandbox's `image`: its base, `<image>@<digest>`, or the image's name alone with no digest published. */
+	/**
+	 * The sandbox's `image` (`templateBootImage`): the base its snapshot was built from when it starts from one, else the
+	 * base `boot` boots fresh.
+	 */
 	readonly image: string;
 }
 
@@ -983,7 +993,12 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 			...(spec.setup === undefined ? {} : { setup: spec.setup }),
 			...(snapshot?.ref === undefined ? {} : { snapshot: snapshot.ref }),
 		};
-		const image = base.digest === "" ? base.image : `${base.image}@${base.digest}`;
+		// What it starts on: the base its snapshot was built from (a stale one's may be a release behind the channel), or the
+		// resolved base a fresh boot boots. A snapshot that can't be restored boots fresh, and records `templateBootImage`.
+		const image =
+			snapshot === undefined
+				? templateBootImage(boot)
+				: templateBootImage({ baseImage: snapshot.builtFrom.baseImage, baseDigest: snapshot.builtFrom.baseDigest });
 		return {
 			eligibleHosts: eligible,
 			boot,

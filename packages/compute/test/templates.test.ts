@@ -18,6 +18,7 @@ import {
 	type SandboxSpec,
 	type TemplateBuildSpec,
 } from "../src/backend.ts";
+import type { BaseImages } from "../src/base-status.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
 import {
@@ -30,6 +31,7 @@ import {
 } from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 import { TEMPLATE_BUILD_LEASE_MS, TEMPLATE_BUILD_RETRY_MS, templateCacheKey } from "../src/templates.ts";
+import { INDEX } from "./base-index-fixture.ts";
 
 const BASE_URL = "http://compute.test/v1";
 
@@ -230,6 +232,8 @@ function setup(
 		readonly sizes?: readonly BackendSize[];
 		readonly moreHosts?: readonly string[];
 		readonly bytesOnHosts?: BytesOnHosts;
+		/** Image patching on, with this index. */
+		readonly baseImages?: BaseImages;
 	} = {},
 ) {
 	const fake = controllableBackend({
@@ -245,6 +249,7 @@ function setup(
 		templates: options.templates ?? true,
 		now: () => Date.now() + clock.skip,
 		...(options.store === undefined ? {} : { store: options.store }),
+		...(options.baseImages === undefined ? {} : { baseImages: options.baseImages }),
 		authenticatePerson: async (request) => {
 			const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
 			return token === undefined ? undefined : PEOPLE[token];
@@ -657,6 +662,94 @@ describe("a template sandbox whose create failed", () => {
 		await api.service.idle();
 		expect(created).toHaveLength(made);
 		expect((await tom.getSandbox(started)).state).toBe("running");
+	});
+
+	it("is made again by a restart on latest only for a caller that may run its setup, refused before anything moves", async () => {
+		const { api, tom, build, created, refuse, client } = setup({
+			baseImages: { indexUrl: "https://example.test/index.json", index: async () => INDEX },
+		});
+		const writer = client(
+			(await tom.createApiKey({ name: "writer", scopes: ["sandboxes:read", "sandboxes:write"] })).secret,
+		);
+		const runner = client(
+			(await tom.createApiKey({ name: "runner", scopes: ["sandboxes:read", "sandboxes:write", "exec"] })).secret,
+		);
+		await tom.createTemplate({ name: "web", spec: SPEC });
+		await tom.createTemplate({ name: "bare", spec: { env: { APP_MODE: "bare" } } });
+		(await build(0)).release();
+		(await build(1)).release();
+		await api.service.idle();
+		refuse.creates = true;
+		const withSetup = await tom.createSandbox({ template: "web", wait: true });
+		const bare = await tom.createSandbox({ template: "bare", wait: true });
+		expect([withSetup.state, bare.state]).toEqual(["error", "error"]);
+		refuse.creates = false;
+
+		// Its setup would run: a caller who may not run commands is refused, its record as it was, nothing made.
+		const asked = created.length;
+		const before = await api.store.sandboxes.get(withSetup.id);
+		expect((await failure(writer.restartSandboxOnLatest(withSetup.id))).code).toBe("forbidden");
+		await api.service.idle();
+		expect(await api.store.sandboxes.get(withSetup.id)).toEqual(before);
+		expect(created).toHaveLength(asked);
+		// One who may has it made again, its setup run.
+		await runner.restartSandboxOnLatest(withSetup.id);
+		await api.service.idle();
+		expect((await tom.getSandbox(withSetup.id)).state).toBe("running");
+		expect((await tom.runCommand(withSetup.id, { command: "cat /opt/app/marker" })).stdout).toBe("ready\n");
+
+		// A template without setup runs nothing: sandboxes:write is enough.
+		await writer.restartSandboxOnLatest(bare.id);
+		await api.service.idle();
+		expect((await tom.getSandbox(bare.id)).state).toBe("running");
+
+		// Placed now, a restart boots its own disk: its setup isn't run again, and needs no more than sandboxes:write.
+		const placed = created.length;
+		await writer.restartSandboxOnLatest(withSetup.id);
+		await api.service.idle();
+		expect(created).toHaveLength(placed);
+		expect((await tom.getSandbox(withSetup.id)).state).toBe("running");
+	});
+});
+
+describe("a template sandbox's image", () => {
+	it("is the base its snapshot was built from when restored, a release behind while its rebuild runs, and the resolved base when booted fresh", async () => {
+		const { api, tom, root, build, refuse } = setup();
+		await root.publishTemplateBase({ image: "kantel/sandbox", channel: "stable", digest: D1 });
+		await tom.createTemplate({ name: "web", spec: SPEC });
+		(await build(0)).release();
+		await api.service.idle();
+		await root.publishTemplateBase({ image: "kantel/sandbox", channel: "stable", digest: D2 });
+		const rebuild = await build(1);
+
+		// While D2's snapshot builds, a create restores D1's, stale: it runs D1, and says so.
+		const restored = await tom.createSandbox({ template: "web", wait: true });
+		expect(restored).toMatchObject({ image: `kantel/sandbox@${D1}`, template: { start: "snapshot" } });
+		// A live fork is its source's machine, image and all.
+		const {
+			items: [live],
+		} = await tom.forkSandbox(restored.id, { wait: true });
+		expect(live?.image).toBe(`kantel/sandbox@${D1}`);
+
+		// Its snapshot's host with no room: booted fresh from the channel's D2.
+		refuse.snapshotHost = true;
+		const fresh = await tom.createSandbox({ template: "web", wait: true });
+		expect(fresh).toMatchObject({ image: `kantel/sandbox@${D2}`, template: { start: "boot" } });
+		refuse.snapshotHost = false;
+
+		// A create that failed is made again from its fresh-boot recipe, D2, not the snapshot it was to restore.
+		refuse.creates = true;
+		const failed = await tom.createSandbox({ template: "web", wait: true });
+		expect(failed).toMatchObject({ state: "error", template: { start: "snapshot" } });
+		refuse.creates = false;
+		const retried = await tom.startSandbox(failed.id, { wait: true });
+		expect(retried).toMatchObject({ state: "running", image: `kantel/sandbox@${D2}`, template: { start: "boot" } });
+
+		// D2's snapshot ready, a create restores it.
+		rebuild.release();
+		await api.service.idle();
+		const current = await tom.createSandbox({ template: "web", wait: true });
+		expect(current).toMatchObject({ image: `kantel/sandbox@${D2}`, template: { start: "snapshot" } });
 	});
 });
 

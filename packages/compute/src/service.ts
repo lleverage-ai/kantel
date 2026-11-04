@@ -97,7 +97,7 @@ import type {
 } from "./store.ts";
 import { UniqueViolation } from "./store.ts";
 import type { TelemetryExporter, TelemetryUsageSample } from "./telemetry.ts";
-import { createTemplateService, DEFAULT_TEMPLATE_RESOURCES } from "./templates.ts";
+import { createTemplateService, DEFAULT_TEMPLATE_RESOURCES, templateBootImage } from "./templates.ts";
 import {
 	type BackendUsageReport,
 	createUsageSeries,
@@ -2546,8 +2546,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/**
-	 * Refuses a start or recovery that makes a sandbox again from its template (`bootAgain`), running the template's
-	 * setup with its env, to a caller that may not run commands, as its create does.
+	 * Refuses a start, recovery or restart on latest that makes a sandbox again from its template (`bootAgain`), running
+	 * the template's setup with its env, to a caller that may not run commands, as its create does.
 	 */
 	function requireSetupScope(principal: Principal, role: MemberRole, sandbox: StoredSandbox): void {
 		if (!neverPlaced(sandbox) || sandbox.source !== undefined || sandbox.templateBoot?.setup === undefined) return;
@@ -2619,6 +2619,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					: {}),
 				...(placement.bootedFresh === true && sandbox.template !== undefined
 					? { template: bootedFresh(sandbox.template) }
+					: {}),
+				// Its image is the base it booted, not the one its snapshot (perhaps a release behind) was built from.
+				...(placement.bootedFresh === true && sandbox.templateBoot !== undefined
+					? { image: templateBootImage(sandbox.templateBoot) }
 					: {}),
 				capabilities: placement.capabilities,
 				health: "ok",
@@ -4239,7 +4243,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		restartSandboxOnLatest: async (principal, { params }) => {
 			requireImagePatching();
-			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
+			const { sandbox, role } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
 			// Mid-lifecycle (another restart's boot, a stop, a delete): refused as it is, rather than waited for and then
 			// restarted again over what that work did.
 			if (sandbox.state === "starting" || sandbox.state === "stopping" || sandbox.state === "deleting") {
@@ -4254,6 +4258,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			) {
 				throw new KantelError("conflict", `The sandbox is ${current.state}`);
 			}
+			// One never placed is made again from its template (`bootAgain`), its setup run: checked before anything moves.
+			requireSetupScope(principal, role, current);
 			// Its lifecycle as checked here: the stop and the boot below are claimed only while nothing else (another restart, a
 			// recovery, on any gateway) has moved it since, even if it is back in the state read.
 			const unmoved = (seen: StoredSandbox) => (latest: StoredSandbox) =>
