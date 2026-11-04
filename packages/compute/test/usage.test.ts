@@ -729,6 +729,40 @@ describe("a host that says it sends ticks (`usage`)", () => {
 		);
 		expect(reads).toEqual([]);
 	});
+
+	it("isn't read by running a command while the hosts can't be read either", async () => {
+		let clock = Date.UTC(2026, 10, 4, 12, 0, 0);
+		const { backend: stub, reads } = hostless(() => clock);
+		let failing = false;
+		const backend: SandboxBackend = {
+			...stub,
+			capabilities: async () => {
+				if (failing) throw new Error("the host list is out of reach");
+				return stub.capabilities();
+			},
+		};
+		const { api, tom } = setup(backend, () => clock);
+		const box = await tom.createSandbox({ type: "microvm", size: "small", wait: true });
+		const reading = [{ id: box.id, kind: "microvm" as const, cpu: 0.5, memUsedBytes: MIB, memLimitBytes: MIB }];
+		const first = clock;
+		await api.service.recordUsage(STUB_HOST_ID, tick(first, reading));
+		failing = true;
+		for (let index = 1; index <= 12; index += 1) {
+			clock = first + index * USAGE_INTERVAL_MS;
+			await tom.getSandboxUsage(box.id);
+			if (index % 6 === 0) await api.service.sampleUsage();
+		}
+		expect(reads).toEqual([]);
+		for (let index = 1; index <= 12; index += 1) {
+			await api.service.recordUsage(STUB_HOST_ID, tick(first + index * USAGE_INTERVAL_MS, reading));
+		}
+		expect((await tom.getSandboxUsage(box.id)).series.points).toHaveLength(13);
+		// Once they can be read again and the host turns out not to send ticks (the stub names no features), it is.
+		failing = false;
+		clock += 60_000;
+		await tom.getSandboxUsage(box.id);
+		expect(reads).toEqual([box.id]);
+	});
 });
 
 describe("the stub's own ticks", () => {

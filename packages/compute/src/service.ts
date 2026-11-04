@@ -2946,13 +2946,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return now() - arrived <= Math.max(3 * intervalMs, REPORTING_WITHIN_MS);
 	};
 
-	/** The hosts the backend names, read once however many sandboxes ask (`readUsage`). */
-	function hostsOnce(): () => Promise<readonly BackendHost[]> {
-		let hosts: Promise<readonly BackendHost[]> | undefined;
+	/**
+	 * The hosts the backend names, read once however many sandboxes ask (`readUsage`); `undefined` when they can't be read.
+	 */
+	function hostsOnce(): () => Promise<readonly BackendHost[] | undefined> {
+		let hosts: Promise<readonly BackendHost[] | undefined> | undefined;
 		return () => {
 			hosts ??= backend.capabilities().then(
 				(capabilities) => capabilities.hosts,
-				() => [],
+				() => undefined,
 			);
 			return hosts;
 		};
@@ -2963,18 +2965,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * the sandbox, at most once per `minGapMs`, added to its series as a host's tick would be. Never for a host that says
 	 * it sends them (`usage`), even while its ticks are late: they wait on the host while it can't reach the control plane
 	 * and come when it can, and a reading here, stamped later than they are, would keep them out of the series (it takes
-	 * only newer points).
+	 * only newer points). Nor when the hosts can't be read: the host may well be one that sends them.
 	 */
 	async function readUsage(
 		sandbox: StoredSandbox,
 		minGapMs: number,
-		hosts: () => Promise<readonly BackendHost[]> = hostsOnce(),
+		hosts: () => Promise<readonly BackendHost[] | undefined> = hostsOnce(),
 	): Promise<void> {
 		if (sandbox.state !== "running" || hostReports(sandbox.hostId)) return;
 		const at = now();
 		if (at - (fallbackReadAt.get(sandbox.id) ?? Number.NEGATIVE_INFINITY) < minGapMs) return;
 		fallbackReadAt.set(sandbox.id, at);
-		const host = (await hosts()).find((each) => each.id === sandbox.hostId);
+		const known = await hosts();
+		if (known === undefined) return;
+		const host = known.find((each) => each.id === sandbox.hostId);
 		if (host?.features?.includes(USAGE_FEATURE) === true) return;
 		const reading = await backend.usage(sandbox.id).catch(() => undefined);
 		if (reading === undefined) return;
