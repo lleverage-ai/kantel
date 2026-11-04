@@ -3,8 +3,9 @@
 // `recordEgress`, and that no answer, event, webhook payload or error ever carries a protected value.
 import type { computeSchema } from "@kantel/api";
 import { createKantelClient, KantelApiError, type KantelClient } from "@kantel/api/sdk";
+import { KantelError } from "@kantel/contracts";
 import { pgliteDatabase } from "@kantel/sql/testing";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
 import type { BackendEgress, ExecRequest, ExecResult, SandboxBackend, SandboxSpec } from "../src/backend.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
@@ -57,6 +58,7 @@ type ExecHook = (request: ExecRequest) => ExecResult | undefined;
 function recordingBackend(
 	execHook?: ExecHook,
 	beforeCreate?: (spec: SandboxSpec) => Promise<void>,
+	egressHook?: (egress: BackendEgress | undefined) => Promise<void>,
 ): { readonly backend: SandboxBackend; readonly recorded: Recorded } {
 	const stub = createStubBackend();
 	const recorded: Recorded = { specs: [], egress: [], secrets: [], execs: [] };
@@ -76,6 +78,7 @@ function recordingBackend(
 			return stub.fork(source, targets);
 		},
 		updateEgress: async (sandboxId, egress, revision) => {
+			await egressHook?.(egress);
 			recorded.egress.push({ sandboxId, egress, ...(revision === undefined ? {} : { revision }) });
 		},
 		updateSecrets: async (sandboxId, version) => {
@@ -92,10 +95,12 @@ function setup(
 		readonly exec?: ExecHook;
 		/** Awaited inside the backend's create, before the machine is made. */
 		readonly beforeCreate?: (spec: SandboxSpec) => Promise<void>;
+		/** Awaited inside the backend's egress update, before it is taken: throwing refuses it. */
+		readonly onEgress?: (egress: BackendEgress | undefined) => Promise<void>;
 		readonly now?: () => number;
 	} = {},
 ) {
-	const { backend, recorded } = recordingBackend(options.exec, options.beforeCreate);
+	const { backend, recorded } = recordingBackend(options.exec, options.beforeCreate, options.onEgress);
 	/** The bodies of the webhook requests sent. */
 	const sent: string[] = [];
 	const api = createComputeApi({
@@ -1214,6 +1219,33 @@ describe("egress updates", () => {
 		expect(booted?.state).toBe("running");
 		expect(booted?.egressRevision).toBeGreaterThan(before);
 		expect(booted?.egressApplied).toBe(booted?.egressRevision);
+	});
+});
+
+describe("a refusal for an egress since superseded", () => {
+	it("stops nothing: the newer egress, taken, stands", async () => {
+		let refuse = () => {};
+		const refused = new Promise<void>((resolve) => {
+			refuse = resolve;
+		});
+		// A grant's push waits (its host's features looked up slowly), then is refused; a clear is taken at once.
+		const { api, tom, recorded } = setup({
+			onEgress: async (egress) => {
+				if ((egress?.grants?.length ?? 0) === 0) return;
+				await refused;
+				throw new KantelError("not_supported", "The host doesn't enforce egress grants");
+			},
+		});
+		const sandbox = await tom.createSandbox({ wait: true });
+		await tom.putSandboxGrants(sandbox.id, { grants: [{ action: "deny", host: "evil.example" }] });
+		await tom.putSandboxGrants(sandbox.id, { grants: [] });
+		await vi.waitFor(() => expect(last(recorded.egress)?.egress).toBeUndefined());
+		refuse();
+		await api.service.idle();
+		const after = await api.store.sandboxes.get(sandbox.id);
+		expect(after?.state).toBe("running");
+		expect(after?.stopFor).toBeUndefined();
+		expect(after?.egressApplied).toBe(after?.egressRevision);
 	});
 });
 

@@ -229,6 +229,43 @@ describe("a sandbox given a grant while it starts", () => {
 		expect(host.calls.some((call) => call.method === "sandbox.stop")).toBe(true);
 	});
 
+	it("is stopped once its host is back, though the stop didn't reach it as it was made", async () => {
+		const { api, root, host } = await setup();
+		const holding = new Set(["sandbox.create"]);
+		let release = () => {};
+		host.hold = (method) => {
+			if (method === "sandbox.stop") {
+				// The link drops as the stop is sent.
+				host.connection.closed(1006, "gone");
+				return new Promise<void>(() => {});
+			}
+			if (!holding.delete(method)) return undefined;
+			return new Promise<void>((resolve) => {
+				release = resolve;
+			});
+		};
+		const sandbox = await root.createSandbox({ type: "microvm" });
+		await vi.waitFor(() => expect(host.calls.some((call) => call.method === "sandbox.create")).toBe(true));
+		await root.putSandboxGrants(sandbox.id, { grants: [{ action: "deny", host: "evil.example" }] });
+		release();
+		await vi.waitFor(async () => {
+			await api.service.idle();
+			const away = await api.store.sandboxes.get(sandbox.id);
+			// Handed back where its machine is, due to stop: its host recorded with the intent, for the sweep.
+			expect(away?.state).toBe("running");
+			expect(away?.hostId).toBe(host.hostId);
+			expect(away?.stopFor).toBe(UNENFORCED);
+		});
+		host.hold = undefined;
+		host.connect();
+		await vi.waitFor(async () => {
+			await api.service.sweep();
+			await api.service.idle();
+			expect((await root.getSandbox(sandbox.id)).state).toBe("stopped");
+		});
+		expect(await historyOf(root, sandbox.id)).not.toContain("sandbox.running");
+	});
+
 	it("runs only once its host has the latest, though it changes again while that is sent", async () => {
 		const { api, root, host } = await setup([HOST_FEATURES.egressPolicy]);
 		const gates = new Map<string, () => void>();
@@ -372,6 +409,42 @@ describe("a running sandbox whose host turns out not to enforce its egress", () 
 		expect(host.calls.filter((call) => call.method === "sandbox.egress")).toEqual([]);
 		expect(host.calls.some((call) => call.method === "sandbox.stop")).toBe(true);
 		expect((await historyOf(root, sandbox.id)).at(-1)).toBe(`sandbox.stopped: ${UNENFORCED}`);
+	});
+
+	it("is stopped by another gateway's sweep, when the one that took the stop on went before carrying it out", async () => {
+		const { api, root, host } = await setup();
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		// What a gateway that went leaves: the stop taken on, never sent.
+		const claimedAt = Date.now() - 10 * 60_000;
+		await api.store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			state: "stopping",
+			stopsAt: claimedAt,
+			stopFor: UNENFORCED,
+			stopClaimedAt: claimedAt,
+		}));
+		await api.service.sweep();
+		await api.service.idle();
+		expect((await root.getSandbox(sandbox.id)).state).toBe("stopped");
+		expect(host.calls.some((call) => call.method === "sandbox.stop")).toBe(true);
+		expect((await historyOf(root, sandbox.id)).at(-1)).toBe(`sandbox.stopped: ${UNENFORCED}`);
+	});
+
+	it("is left to the gateway carrying out its stop, within its claim", async () => {
+		const { api, root, host } = await setup();
+		const sandbox = await root.createSandbox({ type: "microvm", wait: true });
+		const claimedAt = Date.now();
+		await api.store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			state: "stopping",
+			stopsAt: claimedAt,
+			stopFor: UNENFORCED,
+			stopClaimedAt: claimedAt,
+		}));
+		await api.service.sweep();
+		await api.service.idle();
+		expect((await root.getSandbox(sandbox.id)).state).toBe("stopping");
+		expect(host.calls.some((call) => call.method === "sandbox.stop")).toBe(false);
 	});
 
 	it("is stopped once its host is back, when the stop didn't reach it", async () => {

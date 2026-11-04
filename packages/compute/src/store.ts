@@ -115,6 +115,11 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 * sweep stops it with this reason, as many times as it takes.
 	 */
 	readonly stopFor?: string;
+	/**
+	 * When a gateway took on its `stopFor` stop (moved it to `stopping`). One still `stopping` `STOP_LEASE_MS` on (its
+	 * gateway gone before the stop was carried out) is handed back, running and due, for a sweep to stop.
+	 */
+	readonly stopClaimedAt?: number;
 	/** Its own egress grants. Absent on a sandbox made before there were any: none. */
 	readonly grants?: readonly computeSchema.EgressGrant[];
 	/**

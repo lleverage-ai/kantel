@@ -289,6 +289,11 @@ export const MAX_ENVIRONMENT_FILE_BYTES = 1024 * 1024;
 const CLONE_TIMEOUT_MS = 10 * 60_000;
 /** How many times a boot sends egress changed while it started (or tries again), before it is stopped instead. */
 const BOOT_RECONCILE_ROUNDS = 5;
+/**
+ * How long a gateway has to carry out a stop a sandbox was due for (`stopFor`) once it took it on, before the sweep
+ * takes it as abandoned (its gateway gone) and stops it again.
+ */
+const STOP_LEASE_MS = 5 * 60_000;
 /** Why a sandbox whose host can't enforce its egress grants or protected variables is stopped. */
 const UNENFORCED = "Its host doesn't enforce egress grants or protected variables";
 /** What a host reports when it enforces egress grants and protected variables (`HOST_FEATURES` in @kantel/hosts). */
@@ -1082,22 +1087,47 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * (its host lacks the feature, or a boot couldn't get its egress there). It is first made due to stop now, durably
 	 * (`stopsAt`, with `stopFor` the reason), so that whatever happens next it is stopped: then it is stopped as the
 	 * sweep stops a sandbox past its time, and a stop that doesn't reach its host (its link lost) leaves it running and
-	 * due, for the sweep to stop once its host is connected. `wait` awaits the stop (never from inside the sandbox's own
-	 * queued work, which the stop queues behind).
+	 * due, for the sweep to stop once its host is connected (and one whose gateway went before it was carried out, once
+	 * its claim on it lapses, `STOP_LEASE_MS`).
+	 *
+	 * Only for what was found unenforceable: the sandbox in the state and at the `egressRevision` the refused delivery
+	 * (or the boot) was for. A newer egress (a clear, a boot's fresh revision) or another lifecycle step since leaves it
+	 * to its own delivery, and it answers `false`. A boot gives its `placement`, written with the intent, so the stop
+	 * and its retries know the host. `wait` awaits the stop (never from inside the sandbox's own queued work, which the
+	 * stop queues behind).
 	 */
-	async function enforceStop(sandboxId: string, reason: string, wait: boolean): Promise<void> {
+	async function enforceStop(
+		sandboxId: string,
+		reason: string,
+		wait: boolean,
+		evaluated: Pick<StoredSandbox, "state" | "egressRevision">,
+		placement?: Placement,
+	): Promise<boolean> {
 		const at = now();
 		const due = await patchSandbox(sandboxId, (current) =>
-			current.state === "running" || current.state === "starting"
-				? { ...current, stopsAt: at, stopFor: reason }
+			current.state === evaluated.state && current.egressRevision === evaluated.egressRevision
+				? {
+						...current,
+						...(placement === undefined
+							? {}
+							: {
+									hostId: placement.hostId,
+									resources: placement.resources ?? current.resources,
+									capabilities: placement.capabilities,
+								}),
+						stopsAt: at,
+						stopFor: reason,
+					}
 				: undefined,
 		);
-		if (due === undefined) return;
+		if (due === undefined) return false;
 		const still = (current: StoredSandbox) => current.stopFor === reason;
 		const began = await beginStop(due, false, reason, undefined, still, true).catch(() => undefined);
-		if (began === undefined) return;
-		if (wait) await began.work.catch(() => undefined);
-		else keepGoing(began.work);
+		if (began !== undefined) {
+			if (wait) await began.work.catch(() => undefined);
+			else keepGoing(began.work);
+		}
+		return true;
 	}
 
 	/** Records that a sandbox's backend took its egress at `revision`: `egressApplied` only moves on. */
@@ -1144,7 +1174,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					if (!unenforceable(error)) throw error;
 					// Its host can't enforce what its egress now holds (a grant written as it was placed on a host without the
 					// feature): it doesn't run on without it. Stopped, its disk kept; it starts again only where it is enforced.
-					await enforceStop(current.id, UNENFORCED, true);
+					await enforceStop(current.id, UNENFORCED, true, current);
 				}
 			})();
 			keepGoing(
@@ -1704,16 +1734,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// was sent. One whose egress can't be got there (its host can't enforce it, or it fails or keeps changing for
 		// every round) never runs: it is stopped, as `enforceStop` does, never given up on.
 		for (let round = 0; "lost" in result && result.lost.state === "starting"; round++) {
+			const lost = result.lost;
 			if (round >= BOOT_RECONCILE_ROUNDS) {
-				await enforceStop(sandboxId, "Its egress couldn't be applied to it while it started", false);
-				return undefined;
+				const reason = "Its egress couldn't be applied to it while it started";
+				if (await enforceStop(sandboxId, reason, false, lost, placement)) return undefined;
+				result = await transition(sandboxId, "starting", toRunning, upToDate);
+				continue;
 			}
 			try {
-				await deliverEgress(result.lost);
-				applied = result.lost.egressRevision;
+				await deliverEgress(lost);
+				applied = lost.egressRevision;
 			} catch (error) {
-				if (unenforceable(error)) {
-					await enforceStop(sandboxId, UNENFORCED, false);
+				// Refused for the egress it has still: stopped. One changed since is sent next round.
+				if (unenforceable(error) && (await enforceStop(sandboxId, UNENFORCED, false, lost, placement))) {
 					return undefined;
 				}
 				// A call that didn't get through: tried again, a moment on.
@@ -1758,7 +1791,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		still?: (current: StoredSandbox) => boolean,
 		handBack = false,
 	): Promise<{ readonly work: Promise<void> }> {
-		const began = await transition(sandbox.id, sandbox.state, (current) => withState(current, "stopping"), still);
+		const began = await transition(
+			sandbox.id,
+			sandbox.state,
+			(current) => withState(current, "stopping", current.stopFor === undefined ? {} : { stopClaimedAt: now() }),
+			still,
+		);
 		if (!("moved" in began)) throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
 		const work = track([sandbox.id], async () => {
 			try {
@@ -4087,6 +4125,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// away (or whose stop didn't get through, `beginStop`) stays running, and a later sweep, as on its host's
 			// reconnection, stops it.
 			let connected: Set<string> | undefined;
+			// A stop it was due for, taken on by a gateway that went before carrying it out: running again as it was, and
+			// due, for the pass below to stop. One this gateway is carrying out is left to it.
+			for (const sandbox of await store.sandboxes.list({ state: "stopping" })) {
+				const claimed = sandbox.stopClaimedAt;
+				if (sandbox.stopFor === undefined || claimed === undefined || pending.has(sandbox.id)) continue;
+				if (claimed + STOP_LEASE_MS > at) continue;
+				await transition(
+					sandbox.id,
+					"stopping",
+					(current) => ({ ...current, state: "running", stopClaimedAt: undefined, reason: undefined }),
+					(current) => current.stopClaimedAt === claimed,
+				).catch(() => undefined);
+			}
 			for (const sandbox of await store.sandboxes.list({ state: "running" })) {
 				// An egress update that didn't get through (its host away, a call that failed) is sent again, as it is now,
 				// once its host is there: a later revision the host has taken already makes this one moot.
