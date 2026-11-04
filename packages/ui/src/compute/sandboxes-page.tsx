@@ -45,7 +45,7 @@ import {
 import { computePage, messageOf, Sparkline, table } from "./parts.tsx";
 import { AUTO_STOP_CHOICES, DeleteDialog, type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
 import { popOut } from "./sandbox-screen.tsx";
-import { ChangeCounter, keepShown, retryTargets } from "./sandbox-selection.ts";
+import { ChangeCounter, changeTaken, keepShown, retryTargets } from "./sandbox-selection.ts";
 
 /** A view of one sandbox's page that a row links to. */
 export type SandboxRowView = "overview" | "desktop" | "browser";
@@ -206,9 +206,10 @@ export function SandboxesPage({
 	const changes = useRef(new ChangeCounter()).current;
 	const change = useCallback(
 		(box: Sandbox | null, id: string, asked?: number) => {
-			if (!changes.take(id, asked)) return;
-			setLocal((current) => new Map(current).set(id, box));
-			if (!id.startsWith("pending_")) reload();
+			// An answer overtaken by a later change isn't shown, but the list is still read again, so it catches up.
+			const taken = changeTaken(changes, id, asked);
+			if (taken.show) setLocal((current) => new Map(current).set(id, box));
+			if (taken.reload) reload();
 		},
 		[reload, changes],
 	);

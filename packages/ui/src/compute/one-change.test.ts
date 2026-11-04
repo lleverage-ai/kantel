@@ -2,20 +2,26 @@ import { describe, expect, it } from "vitest";
 import type { Sandbox, SandboxesSource } from "./compute-model.ts";
 import { autoStopChanges } from "./one-change.ts";
 import { setAutoStop } from "./sandbox-actions.tsx";
-import { ChangeCounter } from "./sandbox-selection.ts";
+import { ChangeCounter, changeTaken } from "./sandbox-selection.ts";
 
-/** The list's change path: its counter, and the rows it shows (null for a deleted one). */
+/** The list's change path: its counter, the rows it shows (null for a deleted one), and how often it reads again. */
 function list() {
 	const changes = new ChangeCounter();
 	const rows = new Map<string, Sandbox | null>();
+	const read = { count: 0 };
 	return {
 		rows,
+		read,
 		asked: (id: string) => changes.ask(id),
 		onChange: (box: Sandbox | null, id: string, asked?: number) => {
-			if (changes.take(id, asked)) rows.set(id, box);
+			const taken = changeTaken(changes, id, asked);
+			if (taken.show) rows.set(id, box);
+			if (taken.reload) read.count += 1;
 		},
 	};
 }
+
+const running = (id: string, state = "running") => ({ id, state }) as unknown as Sandbox;
 
 /** A source whose auto-stop answers only when the test says. */
 function slowAutoStop() {
@@ -60,9 +66,12 @@ describe("a sandbox's auto-stop", () => {
 		const late = slowAutoStop();
 		const second = setAutoStop({ source: late.source, ...shown }, "sbx_d", undefined);
 		shown.onChange(null, "sbx_d");
+		const reads = shown.read.count;
 		late.answer();
 		await second;
 		expect(shown.rows.get("sbx_d")).toBeNull();
+		// Read again all the same: the list, not this answer, says what's there.
+		expect(shown.read.count).toBe(reads + 1);
 
 		// The sandbox page's menu has no counter: its answer applies, as before.
 		const page = slowAutoStop();
@@ -71,6 +80,30 @@ describe("a sandbox's auto-stop", () => {
 		page.answer();
 		await third;
 		expect(applied).toEqual(["sbx_e"]);
+	});
+
+	it("reads the list again when an auto-stop and a row's Stop overlap, whichever answers first", async () => {
+		for (const first of ["auto-stop", "stop"] as const) {
+			const shown = list();
+			const id = `sbx_${first}`;
+			const slow = slowAutoStop();
+			const saving = setAutoStop({ source: slow.source, ...shown }, id, 15);
+			// The row's Stop, asked meanwhile, as the row asks it.
+			const stopAsked = shown.asked(id);
+			const stopped = () => shown.onChange(running(id, "stopping"), id, stopAsked);
+			if (first === "auto-stop") {
+				slow.answer();
+				await saving;
+				stopped();
+			} else {
+				stopped();
+				slow.answer();
+				await saving;
+			}
+			// The one answering second is overtaken and not shown, but each was followed by a fresh read of the list,
+			// so a Stop that answered second still ends with the list as it is now (stopping), not Running.
+			expect(shown.read.count, first).toBe(2);
+		}
 	});
 
 	it("frees a sandbox once a change fails, for another try", async () => {
