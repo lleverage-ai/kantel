@@ -36,6 +36,8 @@ echo random=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
 echo vmgenid_bound=$(ls /sys/bus/acpi/drivers/vmgenid 2>/dev/null | grep -c :)
 echo vmfork_reseeds=$(dmesg | grep -c 'crng reseeded due to virtual machine fork')
 echo clock_ms=$(date +%s%3N)
+up=$(cut -d' ' -f1 /proc/uptime); echo kantel-probe-$$ > /dev/kmsg
+echo sched_skew_ms=$(dmesg | grep kantel-probe-$$ | tail -1 | sed 's/^\[ *\([0-9.]*\)\].*/\1/' | awk -v up=$up '{printf "%d", ($1-up)*1000}')
 echo vcpus=$(nproc)
 echo mem_kib=$(awk '/MemTotal/ {print $2}' /proc/meminfo)
 echo disk_gib=$(df -BG --output=size /disk | tail -1 | tr -dc 0-9)
@@ -129,6 +131,7 @@ func TestRestoreIdentity(t *testing.T) {
 				}
 				hostClock := time.Now().UnixMilli()
 				p := probeSandbox(t, h, id)
+				hostAfter := time.Now().UnixMilli()
 				size := c.size
 				if size == "" {
 					size = fmt.Sprintf("custom-%dc-%dm-%dg", c.vcpus, c.memoryMiB, c.diskGiB)
@@ -160,8 +163,16 @@ func TestRestoreIdentity(t *testing.T) {
 				if info.Source != "boot" && p["vmfork_reseeds"] == "0" {
 					t.Errorf("%s: the kernel didn't reseed its RNG on restore (no \"crng reseeded due to virtual machine fork\")", id)
 				}
-				if clock, _ := strconv.ParseInt(p["clock_ms"], 10, 64); math.Abs(float64(clock-hostClock)) > 5000 {
-					t.Errorf("%s: guest clock %d is %d ms off the host's", id, clock, clock-hostClock)
+				// The guest reads its clock somewhere in the probe, which a first restore from a template just written can take
+				// seconds to run (its memory still being read in): so between the host's clock before it and after it.
+				if clock, _ := strconv.ParseInt(p["clock_ms"], 10, 64); clock < hostClock-5000 || clock > hostAfter+5000 {
+					t.Errorf("%s: guest clock %d is off the host's (%d to %d)", id, clock, hostClock, hostAfter)
+				}
+				// The scheduler's clock (the kernel log's) didn't jump at the restore: it stays with the guest's uptime. Moved
+				// on by the time since the template was made, it charged that time to whatever the template's vCPU was running,
+				// and a 1-vCPU restore's agent answered seconds late (TASK-5137).
+				if skew, err := strconv.Atoi(p["sched_skew_ms"]); err != nil || math.Abs(float64(skew)) > 2000 {
+					t.Errorf("%s: the kernel log's clock is %q ms off the guest's uptime", id, p["sched_skew_ms"])
 				}
 				// Nested virtualisation, when this machine has it.
 				if h.Facts().Nested && p["kvm"] != "ok" {

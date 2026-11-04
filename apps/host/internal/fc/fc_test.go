@@ -90,6 +90,23 @@ func TestBootWithoutBalloonStats(t *testing.T) {
 	}
 }
 
+// A restore leaves kvmclock where the snapshot had it: advanced by the time since (clock_realtime), it jumps the
+// guest's scheduler clock, and a 1-vCPU guest's agent answered seconds late (TASK-5137).
+func TestLoadDoesNotAdvanceKvmclock(t *testing.T) {
+	dir, api := serveFake(t, "")
+	m := &Machine{Dir: dir, http: apiClient(dir)}
+	if err := m.Load(context.Background(), "state", "mem", "tap0"); err != nil {
+		t.Fatal(err)
+	}
+	body, ok := api.puts["/snapshot/load"]
+	if !ok {
+		t.Fatalf("no snapshot load: %v", api.order)
+	}
+	if body["clock_realtime"] != false || body["resume_vm"] != true {
+		t.Fatalf("snapshot load %v", body)
+	}
+}
+
 func TestReadBalloonStats(t *testing.T) {
 	// What Firecracker v1.17 answers (sizes in bytes, the balloon's in pages and MiB).
 	dir, _ := serveFake(t, `{"target_pages":0,"actual_pages":0,"target_mib":0,"actual_mib":0,"swap_in":0,"swap_out":0,`+
