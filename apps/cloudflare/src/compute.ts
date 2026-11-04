@@ -42,6 +42,7 @@ import {
 	type InviteMailing,
 	joinTokenSpender,
 	type PersonIdentity,
+	personName,
 	type SandboxBackend,
 	type StoredSandbox,
 } from "@kantel/compute";
@@ -396,8 +397,8 @@ export const COMPUTE_MEMBERS_ONLY =
  * hosts on (`accountHosts`) they are let in, never as a super-admin, to add and use hosts of their own: `sharedHosts`
  * (`membersOf`) keeps them, and their keys, off the stub, with account hosts on or off.
  *
- * Their email comes from `identity` too (a sign-in carries none): an invite made for an address is joined by matching
- * it, so without it no such invite could be.
+ * Their name and email come from `identity` too (a sign-in carries neither): an invite made for an address is joined
+ * by matching it, so without it no such invite could be, and the members list and "created by" name them so.
  */
 async function personOf(
 	authenticator: Authenticator,
@@ -431,7 +432,8 @@ async function personOf(
 	const session = bearer !== undefined && isSessionToken(bearer) ? await hashSessionToken(bearer) : undefined;
 	return {
 		userId: caller.actor.userId,
-		name: caller.actor.userId,
+		// As they are known everywhere else: their name, else their email, never their user ID while either is known.
+		name: personName({ userId: caller.actor.userId, name: user?.name, email }),
 		...(email === undefined ? {} : { email }),
 		superAdmin,
 		...(session === undefined ? {} : { session }),

@@ -269,6 +269,29 @@ describe("email-code sign-in on the public origin", () => {
 		expect(joined.body).toMatchObject({ id: org.body.id, role: "member" });
 		await close();
 	});
+
+	it("names the people in a compute organisation as they signed up, never by their user ID", async () => {
+		const { call, signIn, close } = await start({ KANTEL_ACCOUNT_HOSTS: "experimental" });
+		const ada = await signIn("ada@example.test");
+		const ann = await signIn("ann@example.test");
+		const org = await call(PUBLIC, "POST", "/v1/accounts", { token: ada, body: { name: "Acme" } });
+		const invite = await call(PUBLIC, "POST", `/v1/accounts/${org.body.id}/invites`, {
+			token: ada,
+			body: { email: "ann@example.test", role: "member" },
+		});
+		expect(
+			(await call(PUBLIC, "POST", "/v1/accounts/join", { token: ann, body: { code: invite.body.code } })).status,
+		).toBe(200);
+
+		const members = await call(PUBLIC, "GET", `/v1/accounts/${org.body.id}/members`, { token: ada });
+		expect(members.status).toBe(200);
+		// An email code's sign-up is named by the address.
+		expect((members.body.items as { name: string }[]).map((member) => member.name).sort()).toEqual([
+			"ada@example.test",
+			"ann@example.test",
+		]);
+		await close();
+	});
 });
 
 describe("a sign-up that stopped part-way", () => {

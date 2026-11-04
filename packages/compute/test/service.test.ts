@@ -20,6 +20,7 @@ import {
 	SHARED_KEY_REFUSED,
 	shapeFor,
 } from "../src/service.ts";
+import { createMemoryStore } from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 
 const BASE_URL = "http://compute.test/v1";
@@ -1229,5 +1230,111 @@ describe("hosts", () => {
 		expect(listed.items.find((host) => host.id === STUB_HOST_ID)?.state).toBe("revoked");
 		// And the next capabilities refresh doesn't bring it back.
 		expect((await ops.listHosts()).items.find((host) => host.id === STUB_HOST_ID)?.state).toBe("revoked");
+	});
+});
+
+describe("people's names", () => {
+	it("shows a person whose record has their user ID for a name by their email, without them signing in again", async () => {
+		// Gateways once named everyone by their user ID, and wrote it back on every sign-in.
+		const store = createMemoryStore();
+		const legacy = "usr_4e473b3d-2b96-4bbf-9427-98be4e40ecff";
+		const api = createComputeApi({
+			backend: createStubBackend(),
+			store,
+			authenticatePerson: async (request) => {
+				const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+				return token === undefined ? undefined : PEOPLE[token];
+			},
+			fetch: async () => new Response(null, { status: 204 }),
+		});
+		opened.push(api);
+		const tom = createKantelClient({
+			baseUrl: BASE_URL,
+			token: "tom-token",
+			fetch: (input, init) =>
+				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+		const org = await tom.createOrganisation({ name: "Acme" });
+		await store.accounts.put({
+			id: "acc_alex",
+			kind: "personal",
+			name: legacy,
+			defaultVisibility: "private",
+			createdAt: 1,
+		});
+		await store.users.put({
+			id: legacy,
+			name: legacy,
+			email: "alex@example.com",
+			superAdmin: false,
+			personalAccountId: "acc_alex",
+			createdAt: 1,
+		});
+		await store.members.put({
+			id: `${org.id}:${legacy}`,
+			accountId: org.id,
+			userId: legacy,
+			role: "owner",
+			joinedAt: 2,
+		});
+		await store.apiKeys.put({
+			id: "key_alex",
+			accountId: org.id,
+			name: "alex's",
+			prefix: "ksk_abcd",
+			scopes: ["sandboxes:read"],
+			createdBy: { kind: "user", id: legacy, name: legacy },
+			createdAt: 3,
+			secretHash: "0".repeat(64),
+			ownerUserId: legacy,
+		});
+
+		const members = await tom.listMembers(org.id);
+		expect(members.items.map((member) => [member.userId, member.name])).toEqual(
+			expect.arrayContaining([
+				["usr_tom", "Tom"],
+				[legacy, "alex@example.com"],
+			]),
+		);
+		const keys = await tom.listApiKeys({ account: org.id });
+		expect(keys.items.find((key) => key.id === "key_alex")?.createdBy).toEqual({
+			kind: "user",
+			id: legacy,
+			name: "alex@example.com",
+		});
+		expect((await tom.getApiKey("key_alex")).createdBy.name).toBe("alex@example.com");
+		// What Tom makes says who he is, and so does what he made while his record said only his user ID.
+		const sandbox = await tom.createSandbox({ account: org.id, wait: true });
+		expect(sandbox.createdBy).toEqual({ kind: "user", id: "usr_tom", name: "Tom" });
+		await store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			createdBy: { kind: "user", id: "usr_tom", name: "usr_tom" },
+		}));
+		expect((await tom.getSandbox(sandbox.id)).createdBy.name).toBe("Tom");
+		const listed = await tom.listSandboxes({ account: org.id });
+		expect(listed.items.find((item) => item.id === sandbox.id)?.createdBy.name).toBe("Tom");
+	});
+
+	it("names a personal account made with its person's user ID as they are now", async () => {
+		const store = createMemoryStore();
+		const api = createComputeApi({
+			backend: createStubBackend(),
+			store,
+			authenticatePerson: async () => PEOPLE["ann-token"],
+			fetch: async () => new Response(null, { status: 204 }),
+		});
+		opened.push(api);
+		const ann = createKantelClient({
+			baseUrl: BASE_URL,
+			token: "ann-token",
+			fetch: (input, init) =>
+				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+		const caller = await ann.getCaller();
+		const personal = caller.accounts.find((account) => account.kind === "personal");
+		if (personal === undefined) throw new Error("no personal account");
+		await store.accounts.update(personal.id, (current) => ({ ...current, name: "usr_ann" }));
+		expect((await ann.getCaller()).accounts.find((account) => account.id === personal.id)?.name).toBe("Ann");
+		expect((await ann.getAccount(personal.id)).name).toBe("Ann");
 	});
 });
