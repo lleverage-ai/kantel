@@ -194,9 +194,7 @@ function Overview({
 					<section className="flex min-w-0 flex-col gap-3" aria-labelledby="images-base">
 						<SectionHeading id="images-base" title="Base images" />
 						{images.length === 0 ? (
-							<EmptyState title="No base images yet">
-								They show here once the image index lists one.
-							</EmptyState>
+							<EmptyState title="No base images yet">They show here once the image index lists one.</EmptyState>
 						) : (
 							<ImagesTable images={images} now={now} initiallyOpen={initiallyOpen} />
 						)}
@@ -283,7 +281,9 @@ function ImagesTable({
 											/>
 											<span className="flex min-w-0 flex-col">
 												<span className="block max-w-(--kt-card-width) truncate font-medium text-fg">{image.name}</span>
-												<span className={`${cellSub} max-w-(--kt-card-width) truncate font-mono`}>{image.repository}</span>
+												<span className={`${cellSub} max-w-(--kt-card-width) truncate font-mono`}>
+													{image.repository}
+												</span>
 											</span>
 										</button>
 									</td>

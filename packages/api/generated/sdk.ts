@@ -116,6 +116,114 @@ export interface ApproveDeviceLoginBody {
 	readonly expiresInDays?: number;
 }
 
+export interface BaseImage {
+	/** `sandbox`, `browser`, `isolate-host`, or `host` for the microVM host images. */
+	readonly name: string;
+	/** Where it is pulled from, such as `ghcr.io/lleverage-ai/kantel-sandbox`; for `host`, the release's. */
+	readonly repository: string;
+	/** The channel `latest` is of. */
+	readonly channel: "stable";
+	/** One build of a base image. */
+	readonly latest?: BaseImageVersion;
+	/** Its newest versions, newest first, at most 10. */
+	readonly versions: readonly BaseImageVersion[];
+}
+
+/** One vulnerability a scan found in an image. */
+export interface BaseImageFinding {
+	/** `CVE-2026-1234`, or the scanner's own ID where there is no CVE. */
+	readonly id: string;
+	readonly severity: ScanSeverity;
+	/** The package it is in, such as `openssl`. */
+	readonly package: string;
+	/** The package's version in the image. */
+	readonly installed: string;
+	/** The version that fixes it, where one is out. */
+	readonly fixed?: string;
+	readonly title?: string;
+}
+
+/** Kantel's base images as the index CI publishes them: each image's latest version, its newest versions and what their CVE scans found. */
+export interface BaseImageList {
+	readonly images: readonly BaseImage[];
+	/** Templates and their bases; empty until templates exist. */
+	readonly templates: readonly BaseImageTemplate[];
+	/** Where the deployment reads the base image index (`KANTEL_BASE_IMAGE_INDEX`). */
+	readonly indexUrl: string;
+	/** When the index was last written, ISO 8601. */
+	readonly generatedAt?: string;
+	/** Why the index couldn't be read; `images` is empty then. It is tried again soon. */
+	readonly error?: string;
+}
+
+/** What the newest CVE scan of a version found. */
+export interface BaseImageScan {
+	/** What scanned it, such as `trivy 0.68.1`. */
+	readonly scanner: string;
+	/** When, ISO 8601. */
+	readonly scannedAt: string;
+	/** Every finding, by severity. */
+	readonly counts: BaseImageScanCounts;
+	/** Critical and High findings with a fix out: what makes Kantel rebuild the image at once. */
+	readonly fixable: BaseImageScanFixable;
+	/** The Critical and High findings, most severe first, at most 50. */
+	readonly findings: readonly BaseImageFinding[];
+}
+
+/** Every finding, by severity. */
+export interface BaseImageScanCounts {
+	/** Critical findings. */
+	readonly critical: number;
+	/** High findings. */
+	readonly high: number;
+	/** Medium findings. */
+	readonly medium: number;
+	/** Low findings. */
+	readonly low: number;
+	/** Findings of no known severity. */
+	readonly unknown: number;
+}
+
+/** Critical and High findings with a fix out: what makes Kantel rebuild the image at once. */
+export interface BaseImageScanFixable {
+	/** Critical findings with a fix out. */
+	readonly critical: number;
+	/** High findings with a fix out. */
+	readonly high: number;
+}
+
+/** A template and the base it is built on. */
+export interface BaseImageTemplate {
+	readonly id: string;
+	readonly name: string;
+	/** The base image it is built on. */
+	readonly image: string;
+	/** The channel it follows, such as `stable`. */
+	readonly channel?: string;
+	/** The digest it is pinned to, when it doesn't follow a channel. */
+	readonly pinned?: string;
+	/** The base image a sandbox's (or a snapshot's) root file system is, and how far behind it is. A running sandbox is never patched underneath: an outdated one stays on its base until it is restarted on the latest (`restartSandboxOnLatest`) or made again. Experimental: present only where the deployment has image patching on (`KANTEL_IMAGE_PATCHING`) and knows the version. */
+	readonly base: SandboxBase;
+	/** Whether it is being rebuilt on the latest base now. */
+	readonly rebuilding: boolean;
+}
+
+/** One build of a base image. */
+export interface BaseImageVersion {
+	/** Its tag, such as `2026.11.04.1`. */
+	readonly version: string;
+	/** `sha256:…`: the digest it is pulled by. A version's digest never changes. */
+	readonly digest: string;
+	/** When it was built, ISO 8601. */
+	readonly builtAt: string;
+	/** Signed with cosign, keyless, by Kantel's build. */
+	readonly signed: boolean;
+	/** Why it was built: the daily build, a fixable Critical or High finding, by hand, or a change. */
+	readonly reason?: "daily" | "cve" | "manual" | "push";
+	/** What the newest CVE scan of a version found. */
+	readonly scan?: BaseImageScan;
+}
+
 export interface BrowserAccess {
 	/** Watch and drive the sandbox's Chromium in a browser. */
 	readonly url: string;
@@ -1009,6 +1117,39 @@ export interface Sandbox {
 	readonly usage: UsageSummary;
 	/** The host it runs on; only a super-admin is shown it. */
 	readonly hostId?: string;
+	/** The base image a sandbox's (or a snapshot's) root file system is, and how far behind it is. A running sandbox is never patched underneath: an outdated one stays on its base until it is restarted on the latest (`restartSandboxOnLatest`) or made again. Experimental: present only where the deployment has image patching on (`KANTEL_IMAGE_PATCHING`) and knows the version. */
+	readonly base?: SandboxBase;
+}
+
+/** The base image a sandbox's (or a snapshot's) root file system is, and how far behind it is. A running sandbox is never patched underneath: an outdated one stays on its base until it is restarted on the latest (`restartSandboxOnLatest`) or made again. Experimental: present only where the deployment has image patching on (`KANTEL_IMAGE_PATCHING`) and knows the version. */
+export interface SandboxBase {
+	/** The base image it is on, by its name in Kantel's base image index: `host` for a microVM (the host images: kernel and root file system), `sandbox` for the container tier. */
+	readonly image: string;
+	/** The version of the base it is on, such as `host-images-20261104.812`. */
+	readonly version?: string;
+	/** Its base isn't the version its channel (`stable`) names now. */
+	readonly outdated: boolean;
+	/** The version its channel names now. */
+	readonly latest?: SandboxBaseLatest;
+	/** How far behind its channel it is, while outdated. */
+	readonly behind?: SandboxBaseBehind;
+	/** A newer version fixes Critical or High vulnerabilities this one has: restart it on the latest. */
+	readonly security?: boolean;
+}
+
+/** How far behind its channel it is, while outdated. */
+export interface SandboxBaseBehind {
+	/** Whole days since the version after its own was built: how long it has been superseded. */
+	readonly days: number;
+	/** How many versions are newer. */
+	readonly versions: number;
+}
+
+/** The version its channel names now. */
+export interface SandboxBaseLatest {
+	readonly version: string;
+	/** When it was built, ISO 8601. */
+	readonly builtAt: string;
 }
 
 /** What this sandbox can do, from its type and its host. */
@@ -1134,6 +1275,8 @@ export interface SaveSnapshotBody {
 	readonly replace?: boolean;
 }
 
+export type ScanSeverity = "critical" | "high" | "medium" | "low" | "unknown";
+
 /** `encoding` says how `content` is written: `utf8` (the default) or `base64`. */
 export interface SetEnvironmentFileBody {
 	/** Absolute, or relative to `/home/user`. */
@@ -1182,6 +1325,8 @@ export interface Snapshot {
 	readonly createdAt: number;
 	/** Epoch milliseconds, UTC. */
 	readonly expiresAt?: number;
+	/** The base image a sandbox's (or a snapshot's) root file system is, and how far behind it is. A running sandbox is never patched underneath: an outdated one stays on its base until it is restarted on the latest (`restartSandboxOnLatest`) or made again. Experimental: present only where the deployment has image patching on (`KANTEL_IMAGE_PATCHING`) and knows the version. */
+	readonly base?: SandboxBase;
 }
 
 export interface SnapshotFilesQuery {
@@ -1703,6 +1848,8 @@ export interface KantelClient {
 	forkSandbox(sandboxId: string, body?: ForkSandboxBody, options?: CallOptions): Promise<ForkedSandboxes>;
 	/** Recover a sandbox. Restarts the machine of a sandbox that doesn't answer or is in `error`, on its disk as it is. Memory is lost. A key needs `sandboxes:write`. `POST /sandboxes/{sandboxId}/recover` */
 	recoverSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
+	/** Restart a sandbox on the latest base. Restarts the machine on the newest base image, on its disk as it is: a running sandbox's disk is saved and it is stopped first (as `stop` does, without its memory), then it boots cold on the latest base. Memory is lost, and so are running programs. A running sandbox is never patched underneath: this is how an outdated one (`base.outdated`) moves on. Answers once it is starting. A sandbox starting, stopping or being deleted is `conflict`. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`). `POST /sandboxes/{sandboxId}/restart-on-latest` */
+	restartSandboxOnLatest(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
 	/** Delete a sandbox permanently. Erases it and its automatic snapshots for good; saved snapshots of it stay. It can't be undone. A key needs `sandboxes:delete`. `DELETE /sandboxes/{sandboxId}` */
 	deleteSandbox(sandboxId: string, options?: CallOptions): Promise<Sandbox>;
 	/** Get a sandbox's usage. CPU, memory, running time and cost per interval. A key needs `sandboxes:read`. `GET /sandboxes/{sandboxId}/usage` */
@@ -1864,6 +2011,8 @@ export interface KantelClient {
 	getPublicUrl(options?: CallOptions): Promise<PublicUrl>;
 	/** Set the public URL. Sets where hosts reach this control plane, for the join commands made from now on, ahead of the deployment's own `KANTEL_PUBLIC_URL`. `null` goes back to the deployment's own. Hosts that have joined keep the address they joined with. A deployment super-admin only (a key needs `hosts:admin`). `PUT /admin/public-url` */
 	setPublicUrl(body: SetPublicUrlBody, options?: CallOptions): Promise<PublicUrl>;
+	/** List base images. Kantel's base images as the index its build publishes them: each image's latest version on the `stable` channel, its newest versions and what their CVE scans found, and the templates built on them. An index that can't be read is answered as `error`, with no images. A deployment super-admin only (a key needs `hosts:admin`). Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`). `GET /admin/compute/images` */
+	listBaseImages(options?: CallOptions): Promise<BaseImageList>;
 	/** Make a join token for one of your own hosts. A one-use token, shown once, and the one-line command that installs the host agent on a Linux machine and joins it to the account (the caller's personal account unless `account` names an organisation). The host dials out to this deployment and keeps the connection open, so it needs no inbound port. Once it has joined, the account's new sandboxes go on its own hosts, and no other account's sandboxes ever do. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `POST /hosts/join-tokens` */
 	createAccountJoinToken(body?: CreateAccountJoinTokenBody, options?: CallOptions): Promise<AccountJoinToken>;
 	/** List an account's hosts. The hosts joined to the account, revoked ones included. The deployment's shared hosts aren't listed. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `GET /hosts` */
@@ -1950,6 +2099,12 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/fork`, body }, callOptions),
 		recoverSandbox: (sandboxId, callOptions) =>
 			send(options, { method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/recover` }, callOptions),
+		restartSandboxOnLatest: (sandboxId, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/restart-on-latest` },
+				callOptions,
+			),
 		deleteSandbox: (sandboxId, callOptions) =>
 			send(options, { method: "DELETE", path: `/sandboxes/${encodeURIComponent(sandboxId)}` }, callOptions),
 		getSandboxUsage: (sandboxId, query, callOptions) =>
@@ -2157,6 +2312,7 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "DELETE", path: `/admin/hosts/${encodeURIComponent(hostId)}` }, callOptions),
 		getPublicUrl: (callOptions) => send(options, { method: "GET", path: "/admin/public-url" }, callOptions),
 		setPublicUrl: (body, callOptions) => send(options, { method: "PUT", path: "/admin/public-url", body }, callOptions),
+		listBaseImages: (callOptions) => send(options, { method: "GET", path: "/admin/compute/images" }, callOptions),
 		createAccountJoinToken: (body = {}, callOptions) =>
 			send(options, { method: "POST", path: "/hosts/join-tokens", body }, callOptions),
 		listAccountHosts: (query, callOptions) => send(options, { method: "GET", path: "/hosts", query }, callOptions),

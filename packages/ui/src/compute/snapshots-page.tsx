@@ -17,6 +17,7 @@ import { Menu, type MenuEntry } from "../primitives/menu.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { Badge } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
+import { BaseOutdatedBadge } from "./base-outdated.tsx";
 import {
 	bytesText,
 	type ComputeAccount,
@@ -29,7 +30,6 @@ import {
 	type SnapshotReason,
 	type SnapshotsSource,
 } from "./compute-model.ts";
-import { BaseOutdatedBadge } from "./base-outdated.tsx";
 import { cellSub, computePage, messageOf, rowHover, TableFrame, table, tableFrame, td, th } from "./parts.tsx";
 import { type FilesAt, filesRoot, SnapshotFiles } from "./snapshot-files.tsx";
 

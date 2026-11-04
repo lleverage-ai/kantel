@@ -22,6 +22,7 @@ import { Skeleton } from "../primitives/spinner.tsx";
 import { SplitButton } from "../primitives/split-button.tsx";
 import { StatusLabel } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
+import { BaseOutdatedBadge } from "./base-outdated.tsx";
 import {
 	type ComputeAccount,
 	type CreateSandboxInput,
@@ -43,7 +44,6 @@ import {
 	sizeText,
 	stopsInText,
 } from "./compute-model.ts";
-import { BaseOutdatedBadge } from "./base-outdated.tsx";
 import { computePage, messageOf, Sparkline, table } from "./parts.tsx";
 import { AUTO_STOP_CHOICES, DeleteDialog, type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
 import { popOut } from "./sandbox-screen.tsx";

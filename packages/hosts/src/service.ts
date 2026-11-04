@@ -336,7 +336,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			compute?.images === undefined
 				? undefined
 				: await compute.images().catch((error) => {
-						log(`[hosts] no images in host ${host.id}'s welcome: ${error instanceof Error ? error.message : String(error)}`);
+						log(
+							`[hosts] no images in host ${host.id}'s welcome: ${error instanceof Error ? error.message : String(error)}`,
+						);
 						return undefined;
 					});
 		return {

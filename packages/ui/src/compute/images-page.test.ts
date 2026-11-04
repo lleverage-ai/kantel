@@ -23,7 +23,9 @@ const outdated: SandboxBase = {
 describe("a base image's scan", () => {
 	it("says the worst it found first, a fixable one before one with no fix", () => {
 		const counts = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 };
-		expect(scanStatus(scan({ counts: { ...counts, critical: 1, high: 2 }, fixable: { critical: 1, high: 0 } }))).toEqual({
+		expect(
+			scanStatus(scan({ counts: { ...counts, critical: 1, high: 2 }, fixable: { critical: 1, high: 0 } })),
+		).toEqual({
 			tone: "error",
 			text: "1 critical fixable",
 		});

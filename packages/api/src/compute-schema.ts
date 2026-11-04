@@ -1888,7 +1888,9 @@ export const BaseImageTemplate = Type.Object(
 		name: Type.String(),
 		image: Type.String({ description: "The base image it is built on." }),
 		channel: Type.Optional(Type.String({ description: "The channel it follows, such as `stable`." })),
-		pinned: Type.Optional(Type.String({ description: "The digest it is pinned to, when it doesn't follow a channel." })),
+		pinned: Type.Optional(
+			Type.String({ description: "The digest it is pinned to, when it doesn't follow a channel." }),
+		),
 		base: SandboxBase,
 		rebuilding: Type.Boolean({ description: "Whether it is being rebuilt on the latest base now." }),
 	},
@@ -1898,8 +1900,12 @@ export const BaseImageTemplate = Type.Object(
 export const BaseImageList = Type.Object(
 	{
 		images: Type.Array(BaseImage),
-		templates: Type.Array(BaseImageTemplate, { description: "Templates and their bases; empty until templates exist." }),
-		indexUrl: Type.String({ description: "Where the deployment reads the base image index (`KANTEL_BASE_IMAGE_INDEX`)." }),
+		templates: Type.Array(BaseImageTemplate, {
+			description: "Templates and their bases; empty until templates exist.",
+		}),
+		indexUrl: Type.String({
+			description: "Where the deployment reads the base image index (`KANTEL_BASE_IMAGE_INDEX`).",
+		}),
 		generatedAt: Type.Optional(isoTime("When the index was last written")),
 		error: Type.Optional(
 			Type.String({ description: "Why the index couldn't be read; `images` is empty then. It is tried again soon." }),

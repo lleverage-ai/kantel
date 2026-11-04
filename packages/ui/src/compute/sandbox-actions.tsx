@@ -379,8 +379,8 @@ function RestartOnLatestDialog({
 		>
 			<p>
 				Kantel saves its disk, stops it and starts it again on{" "}
-				{latest === undefined ? "the latest base" : <strong className="font-mono">{latest}</strong>}. Running
-				processes and memory are lost; files on its disk stay. Nothing is patched while it runs.
+				{latest === undefined ? "the latest base" : <strong className="font-mono">{latest}</strong>}. Running processes
+				and memory are lost; files on its disk stay. Nothing is patched while it runs.
 			</p>
 			{failure === undefined ? null : <p className="kt-dialog-error">{failure}</p>}
 		</Dialog>

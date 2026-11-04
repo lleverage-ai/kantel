@@ -19,6 +19,7 @@ import { PageTabs } from "../primitives/page-tabs.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { StatusLabel } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
+import { BaseOutdatedBadge, behindText } from "./base-outdated.tsx";
 import {
 	costText,
 	type EgressSource,
@@ -36,7 +37,6 @@ import {
 	sizeSpec,
 	stopsInText,
 } from "./compute-model.ts";
-import { BaseOutdatedBadge, behindText } from "./base-outdated.tsx";
 import { EgressPage } from "./egress-page.tsx";
 import { computePage, messageOf, SectionHeading, Sparkline } from "./parts.tsx";
 import { type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";

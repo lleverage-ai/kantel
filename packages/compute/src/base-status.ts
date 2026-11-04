@@ -60,9 +60,7 @@ export function baseStatus(
 		image,
 		...(version === undefined ? {} : { version }),
 		outdated: fresh.outdated,
-		...(fresh.latest === undefined
-			? {}
-			: { latest: { version: fresh.latest.version, builtAt: fresh.latest.builtAt } }),
+		...(fresh.latest === undefined ? {} : { latest: { version: fresh.latest.version, builtAt: fresh.latest.builtAt } }),
 		...(fresh.behind === undefined ? {} : { behind: { days: fresh.behind.days, versions: fresh.behind.versions } }),
 		...(fresh.security === true ? { security: true } : {}),
 	};

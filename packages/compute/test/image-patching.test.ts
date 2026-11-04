@@ -131,7 +131,11 @@ describe("image patching on", () => {
 		// Its disk was saved without its memory, as a stop saves it, and the snapshot is on the base it was taken from.
 		const history = (await tom.listSnapshots({ sandboxId: sandbox.id })).items;
 		expect(history).toHaveLength(1);
-		expect(history[0]).toMatchObject({ trigger: "stop", memory: false, base: { version: HOST_BEHIND, outdated: true } });
+		expect(history[0]).toMatchObject({
+			trigger: "stop",
+			memory: false,
+			base: { version: HOST_BEHIND, outdated: true },
+		});
 		expect(starts[0]?.fromSnapshot).toBeDefined();
 		expect((await tom.readFile(sandbox.id, { path: "keep.txt" })).content).toBe("kept\n");
 	});

@@ -22,7 +22,11 @@ export function behindText(behind: { readonly days: number; readonly versions: n
  * The badge's tooltip: "On 2026.10.29.809; the latest is 2026.11.04.812, built 3h ago (6 days, 3 versions behind).
  * Restart on latest to move it." For a snapshot, what that means for sandboxes started from it.
  */
-export function baseOutdatedTitle(base: SandboxBase, subject: "sandbox" | "snapshot" = "sandbox", now?: number): string {
+export function baseOutdatedTitle(
+	base: SandboxBase,
+	subject: "sandbox" | "snapshot" = "sandbox",
+	now?: number,
+): string {
 	const on = `On ${base.version ?? `an older ${base.image}`}`;
 	const latest =
 		base.latest === undefined
