@@ -4037,7 +4037,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									fromSnapshot,
 									env: stopped.env,
 									eligibleHosts: hosts,
-									size: stopped.size,
+									// Its size and shape as recorded, as a start keeps them: only its base changes.
+									...sizingOf(stopped),
 									...egress,
 									rebase: true,
 									...(rebaseTo === undefined ? {} : { rebaseTo }),

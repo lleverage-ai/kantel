@@ -291,7 +291,8 @@ func writeGuest(file string, caps *proto.GuestCapabilities) {
 }
 
 // loadGuest reads a ready template's report, for a host that restarted (its templates are kept), unless its image's is
-// already known.
+// already known. A versioned image's is kept in the root too: a template from before reports were kept by version (one
+// PinBases has just pinned) would otherwise take its image's report with it when it is rebuilt on another.
 func (m *Manager) loadGuest(dir string) {
 	base := images.VersionOf(m.templateRootfs(dir))
 	m.guestsMu.Lock()
@@ -305,6 +306,9 @@ func (m *Manager) loadGuest(dir string) {
 			m.guests = map[string]*proto.GuestCapabilities{}
 		}
 		m.guests[base] = &caps
+		if base != "" && m.cfg.Root != "" {
+			writeGuest(m.guestPath(base), &caps)
+		}
 	}
 }
 
@@ -983,8 +987,10 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 			rootfs = m.snapshotRootfs(snap)
 			source = "snapshot"
 		} else if custom {
-			// No template: a fresh disk, then a cold boot below, on the current images (rootfs "").
+			// No template: a fresh disk, then a cold boot below, on the current images as they resolve now (the version
+			// itself with PinBase, so a later update doesn't move it), read under the base lock as a template's is.
 			unhold = m.holdBases()
+			rootfs = m.baseRootfs()
 			source = "boot"
 		} else {
 			// Until it is restored (the function's end): a background rebuild swaps the template in between creates.

@@ -87,6 +87,57 @@ func TestBasesInUse(t *testing.T) {
 // A snapshot whose metadata can't be read or decoded may be the only reference to a version: BasesInUse says so
 // rather than answering without it, and a pinning pass fails rather than being remembered as done. Once it can be
 // read, both go ahead and see its base.
+// A directory of references that can't be listed or looked into (here a link that loops, which even root can't
+// follow) stops a prune's walk and a pinning pass, as an unreadable snapshot does; once it can be, both go ahead and a
+// legacy sandbox is pinned. A glob would have passed over it.
+func TestAnUnlistableReferenceStopsPruningAndPinning(t *testing.T) {
+	for _, where := range []string{"sandboxes", filepath.Join("sandboxes", "sbx_2"), "templates", filepath.Join("templates", "large")} {
+		t.Run(where, func(t *testing.T) {
+			images := versionedImages(t)
+			root := t.TempDir()
+			m := &Manager{cfg: Config{Root: root, Rootfs: filepath.Join(images, "sandbox.ext4"), PinBase: true}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			legacy := filepath.Join(root, "sandboxes", "sbx_1", "vm")
+			linkVM(t, legacy, m.cfg.Rootfs)
+			if err := os.MkdirAll(filepath.Join(root, "templates", "default"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			broken := filepath.Join(root, where)
+			moved := broken + ".kept"
+			if err := os.Rename(broken, moved); err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Dir(broken), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Base(broken), broken); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := m.BasesInUse(); err == nil {
+				t.Fatalf("an unlistable %s was passed over: %v", where, got)
+			}
+			if err := m.PinBases(); err == nil || m.pinned.Load() {
+				t.Fatalf("a pinning pass that couldn't list %s succeeded: %v", where, err)
+			}
+			if err := os.Remove(broken); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(moved, broken); err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if err := m.PinBases(); err != nil || !m.pinned.Load() {
+				t.Fatalf("pinning once %s can be listed: %v", where, err)
+			}
+			if got := vmRootfs(legacy); got != filepath.Join(images, "v", "new", "sandbox.ext4") {
+				t.Fatalf("the legacy sandbox is on %q, want it pinned to new", got)
+			}
+			got, err := m.BasesInUse()
+			if err != nil || !got["new"] || len(got) != 1 {
+				t.Fatalf("in use = %v, %v; want new alone", got, err)
+			}
+		})
+	}
+}
+
 func TestAnUnreadableSnapshotStopsPruningAndPinning(t *testing.T) {
 	images := versionedImages(t)
 	root := t.TempDir()
@@ -193,6 +244,46 @@ func TestARebaseStartRefusesAMachineRunningOnOtherImages(t *testing.T) {
 
 // Each image version keeps its own guest report: a template rebuilt on a newer version doesn't change what a sandbox
 // still on the older one is told it has, a rebase does, and the reports outlive a restart and the older template.
+// A template from before reports were kept by version: once a start pins it, its report is kept as its version's, so
+// the sandboxes on that version keep it after the template is rebuilt on another and the host restarts.
+func TestALegacyTemplatesReportIsKeptAsItsVersions(t *testing.T) {
+	images := versionedImages(t)
+	root := t.TempDir()
+	tpl := filepath.Join(root, "templates", "default")
+	if err := os.MkdirAll(tpl, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{"ready": "{}", guestFile: `{"arch":"x86_64","reportedAt":1}`} {
+		if err := os.WriteFile(filepath.Join(tpl, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := Config{Root: root, Rootfs: filepath.Join(images, "sandbox.ext4"), PinBase: true, Sizes: DefaultSizes, SpoolMaxMiB: -1, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	m, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Close()
+	if got := m.guestOf("new"); got == nil || got.ReportedAt != 1 {
+		t.Fatalf("the pinned template's version has %+v", got)
+	}
+	// Rebuilt on another version (its report replaced), then a restart.
+	if err := os.WriteFile(filepath.Join(tpl, "rootfs"), []byte(filepath.Join(images, "v", "old", "sandbox.ext4")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tpl, guestFile), []byte(`{"arch":"x86_64","reportedAt":2}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	again, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer again.Close()
+	if got := again.guestOf("new"); got == nil || got.ReportedAt != 1 {
+		t.Fatalf("after its template was rebuilt and a restart, the version has %+v", got)
+	}
+}
+
 func TestGuestReportsFollowEachSandboxsBase(t *testing.T) {
 	images := versionedImages(t)
 	root := t.TempDir()

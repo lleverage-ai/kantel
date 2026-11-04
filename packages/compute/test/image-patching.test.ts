@@ -270,6 +270,17 @@ describe("image patching on", () => {
 		expect((await tom.getSandbox(sandbox.id)).base?.version).toBe(HOST_LATEST);
 	});
 
+	it("keeps a custom-shape sandbox's vCPUs and memory when it restarts on the latest base", async () => {
+		const { api, tom, starts } = setup(indexed);
+		const sandbox = await tom.createSandbox({ type: "microvm", resources: { vcpus: 3, memoryMb: 6144 }, wait: true });
+		await tom.restartSandboxOnLatest(sandbox.id);
+		await api.service.idle();
+		expect(starts[0]?.shape).toEqual({ vcpus: 3, memoryMb: 6144 });
+		const after = await tom.getSandbox(sandbox.id);
+		expect(after.resources).toMatchObject({ vcpus: 3, memoryMb: 6144 });
+		expect(after.base?.version).toBe(HOST_LATEST);
+	});
+
 	it("restarts a stopped sandbox on the latest base", async () => {
 		const { api, tom, starts } = setup(indexed);
 		const sandbox = await tom.createSandbox({ wait: true });

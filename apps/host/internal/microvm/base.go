@@ -169,11 +169,13 @@ func (m *Manager) snapshotLower(id string) string {
 // gone is whether a reference read failed only because it isn't there (deleted, or not yet written), rather than
 // because it couldn't be read: a walk of what is in use may pass over the first, never the second.
 func gone(err error) bool {
-	return errors.Is(err, os.ErrNotExist)
+	// ENOTDIR: a stray file where a directory would be, which holds nothing.
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
 }
 
 // vmRootfsChecked is vmRootfs for a walk of what is in use: "" for a VM directory with no root filesystem link (gone,
-// or one that isn't a link, which names no version), an error for one that couldn't be read.
+// or one that isn't a link, which names no version), an error for one that
+// couldn't be read.
 func vmRootfsChecked(vm string) (string, error) {
 	target, err := os.Readlink(filepath.Join(vm, fc.RootfsFile))
 	if err == nil {
@@ -183,6 +185,20 @@ func vmRootfsChecked(vm string) (string, error) {
 		return "", nil
 	}
 	return "", err
+}
+
+// entriesOf is what dir holds, as paths: none when dir isn't there. Unlike a glob, which passes over a directory it
+// can't read, a walk of what is in use is told: what it couldn't list may be references.
+func entriesOf(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, filepath.Join(dir, e.Name()))
+	}
+	if err != nil && !gone(err) {
+		return out, fmt.Errorf("listing %s: %w", dir, err)
+	}
+	return out, nil
 }
 
 // scanSnapshots is every snapshot's metadata, as snapshotsOf (unsorted), but says which couldn't be read or decoded,
@@ -239,9 +255,12 @@ func (m *Manager) BasesInUse() (map[string]bool, error) {
 		}
 		add(target)
 	}
-	vms, _ := filepath.Glob(filepath.Join(m.cfg.Root, "sandboxes", "*", "vm"))
-	for _, vm := range vms {
-		addVM(vm)
+	sandboxes, err := entriesOf(filepath.Join(m.cfg.Root, "sandboxes"))
+	if err != nil {
+		errs = append(errs, err)
+	}
+	for _, dir := range sandboxes {
+		addVM(filepath.Join(dir, "vm"))
 	}
 	snaps, err := m.scanSnapshots()
 	if err != nil {
@@ -250,12 +269,11 @@ func (m *Manager) BasesInUse() (map[string]bool, error) {
 	for _, snap := range snaps {
 		add(snap.Rootfs)
 	}
-	entries, err := os.ReadDir(filepath.Join(m.cfg.Root, "templates"))
-	if err != nil && !gone(err) {
-		errs = append(errs, fmt.Errorf("listing templates: %w", err))
+	templates, err := entriesOf(filepath.Join(m.cfg.Root, "templates"))
+	if err != nil {
+		errs = append(errs, err)
 	}
-	for _, e := range entries {
-		dir := filepath.Join(m.cfg.Root, "templates", e.Name())
+	for _, dir := range templates {
 		if raw, err := os.ReadFile(filepath.Join(dir, "rootfs")); err == nil {
 			add(strings.TrimSpace(string(raw)))
 		} else if !gone(err) {
@@ -294,8 +312,12 @@ func (m *Manager) pinBasesLocked() error {
 		return nil
 	}
 	var errs []error
-	vms, _ := filepath.Glob(filepath.Join(m.cfg.Root, "sandboxes", "*", "vm"))
-	for _, vm := range vms {
+	sandboxes, err := entriesOf(filepath.Join(m.cfg.Root, "sandboxes"))
+	if err != nil {
+		errs = append(errs, err)
+	}
+	for _, dir := range sandboxes {
+		vm := filepath.Join(dir, "vm")
 		target, err := vmRootfsChecked(vm)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", vm, err))
@@ -307,9 +329,18 @@ func (m *Manager) pinBasesLocked() error {
 			}
 		}
 	}
-	readies, _ := filepath.Glob(filepath.Join(m.cfg.Root, "templates", "*", "ready"))
-	for _, ready := range readies {
-		dir := filepath.Dir(ready)
+	templates, err := entriesOf(filepath.Join(m.cfg.Root, "templates"))
+	if err != nil {
+		errs = append(errs, err)
+	}
+	for _, dir := range templates {
+		// Only a ready one is used; one that couldn't be looked at may be.
+		if _, err := os.Stat(filepath.Join(dir, "ready")); err != nil {
+			if !gone(err) {
+				errs = append(errs, fmt.Errorf("%s: %w", dir, err))
+			}
+			continue
+		}
 		// One whose record can't be read isn't taken for one from before it was recorded: that would move it.
 		if _, err := os.ReadFile(filepath.Join(dir, "rootfs")); err != nil && !gone(err) {
 			errs = append(errs, fmt.Errorf("%s: %w", dir, err))
