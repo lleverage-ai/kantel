@@ -226,6 +226,73 @@ describe("sandboxes", () => {
 		]);
 	});
 
+	it("lists and reads an E2E sandbox's files over the console's own session, never the gateway's file routes", async () => {
+		const { api, fetchApi } = setup();
+		const plain = await open(fetchApi);
+		const accountId = await personalAccount(plain);
+		const made = await plain.sandboxes.create({ accountId, kind: "isolate", size: "small" });
+		await api.service.idle();
+		const calls: { sandboxId: string; method: string; params: object }[] = [];
+		const gatewayFiles: string[] = [];
+		const bytes = new TextEncoder().encode("Hello, world");
+		const localFetch: typeof fetch = async (input, init) => {
+			const path = String(input);
+			if (path === "/local/info") {
+				return Response.json({
+					local: true,
+					device: { id: "d1", label: "Ada's laptop" },
+					spaces: [{ id: accountId, mode: "on" }],
+				});
+			}
+			if (path === "/local/e2e") {
+				const call = JSON.parse(String(init?.body)) as (typeof calls)[number] & {
+					params: { offset?: number; length?: number };
+				};
+				calls.push(call);
+				if (call.method === "sandbox.files.list") {
+					const entries = [
+						{ name: "readme.txt", path: "/home/user/readme.txt", type: "file", size: 12, modTimeMs: 5 },
+						{ name: "app", path: "/home/user/app", type: "dir", size: 4096 },
+					];
+					return Response.json({ result: { entries } });
+				}
+				const { offset = 0, length = bytes.byteLength } = call.params;
+				const data = btoa(String.fromCharCode(...bytes.subarray(offset, offset + length)));
+				return Response.json({ result: { data, fileSize: bytes.byteLength } });
+			}
+			if (new URL(path, ORIGIN).pathname.includes("/files")) gatewayFiles.push(path);
+			return fetchApi(input, init);
+		};
+		const local = await localBridge(localFetch, "127.0.0.1");
+		const source = await apiCompute({
+			headers: () => ({ authorization: "Bearer person-ada" }),
+			fetch: localFetch,
+			...(local === undefined ? {} : { local }),
+		});
+		const files = source.sandboxes.files;
+		if (files === undefined) throw new Error("No files");
+		const folder = await files.list(made.id, "home/user");
+		expect(folder).toEqual({
+			entries: [
+				{ name: "app", path: "home/user/app", kind: "folder" },
+				{ name: "readme.txt", path: "home/user/readme.txt", kind: "file", sizeBytes: 12, modifiedAt: 5 },
+			],
+			more: false,
+		});
+		const part = await files.read(made.id, "home/user/readme.txt", { offset: 7, length: 5 });
+		expect([new TextDecoder().decode(part.bytes), part.size]).toEqual(["world", 12]);
+		expect(calls).toEqual([
+			{ sandboxId: made.id, method: "sandbox.files.list", params: { path: "/home/user" } },
+			{
+				sandboxId: made.id,
+				method: "sandbox.files.read",
+				params: { path: "/home/user/readme.txt", offset: 7, length: 5 },
+			},
+		]);
+		// The gateway relays the session and serves none of the files.
+		expect(gatewayFiles).toEqual([]);
+	});
+
 	it("shows what the host gave a microVM, and names sizes without figures", async () => {
 		const { api, fetchApi } = setup();
 		const source = await open(fetchApi);
@@ -271,7 +338,12 @@ describe("sandboxes", () => {
 		expect(cut?.more).toBe(true);
 		expect(cut?.entries).toHaveLength(pages);
 		expect(pages).toBe(20);
-		expect(await files.read(made.id, "home/user/work/readme.txt")).toBe("Hello");
+		// A part at a time, as the preview reads it: the bytes asked for, and the whole file's size.
+		const text = (part: { bytes: Uint8Array }) => new TextDecoder().decode(part.bytes);
+		const whole = await files.read(made.id, "home/user/work/readme.txt", { offset: 0, length: 256 * 1024 });
+		expect([text(whole), whole.size]).toEqual(["Hello", 5]);
+		const part = await files.read(made.id, "home/user/work/readme.txt", { offset: 1, length: 3 });
+		expect([text(part), part.size]).toEqual(["ell", 5]);
 
 		await sdk.runCommand(made.id, { command: "echo fine" });
 		await sdk.runCommand(made.id, { command: "echo broken >&2; exit 2" });
@@ -308,7 +380,8 @@ describe("snapshots", () => {
 			["file", "home/user/work/readme.txt"],
 		]);
 		expect(entries[1]?.sizeBytes).toBe(5);
-		expect(await source.snapshots.read(taken.id, "home/user/work/readme.txt")).toBe("Hello");
+		const read = await source.snapshots.read(taken.id, "home/user/work/readme.txt", { offset: 0, length: 1024 });
+		expect([new TextDecoder().decode(read.bytes), read.size]).toEqual(["Hello", 5]);
 
 		const saved = await source.snapshots.save(sandbox.id, "golden");
 		expect(saved).toMatchObject({ name: "golden", accountId, sandboxId: sandbox.id, sandboxName: sandbox.name });

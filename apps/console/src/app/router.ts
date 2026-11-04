@@ -32,12 +32,15 @@ export function navigationTarget(path: string, search: string): string {
 }
 
 /**
- * Goes to `path`, keeping the query string unless `path` has its own (`/hosts?add`); a hash on `path` follows it.
- * `replace` swaps the current history entry instead of adding one.
+ * Goes to `path`, keeping the query string unless `path` has its own (`/hosts?add`), less the parameters in `drop`; a
+ * hash on `path` follows it. `replace` swaps the current history entry instead of adding one.
  */
-export function navigate(path: string, { replace = false }: { replace?: boolean } = {}): void {
+export function navigate(
+	path: string,
+	{ replace = false, drop = [] }: { replace?: boolean; drop?: readonly string[] } = {},
+): void {
 	const hashAt = path.indexOf("#");
-	const target = navigationTarget(path, location.search);
+	const target = navigationTarget(path, searchWithout(location.search, drop));
 	if (`${location.pathname}${location.search}${hashAt === -1 ? "" : location.hash}` === target) return;
 	if (replace) history.replaceState(null, "", target);
 	else history.pushState(null, "", target);

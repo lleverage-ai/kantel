@@ -17,6 +17,8 @@ import type {
 	EgressEntry,
 	EgressGrant,
 	Environment,
+	FilePart,
+	FileRange,
 	Host,
 	HostingMode,
 	OrganisationInvite,
@@ -368,6 +370,21 @@ const TREE: Readonly<Record<string, readonly SnapshotEntry[]>> = {
 	],
 	"home/user/app": [
 		{ name: "src", path: "home/user/app/src", kind: "folder" },
+		{ name: "node_modules", path: "home/user/app/node_modules", kind: "folder", modifiedAt: FIXTURE_NOW - 2 * DAY },
+		{
+			name: "README.md",
+			path: "home/user/app/README.md",
+			kind: "file",
+			sizeBytes: 1_902,
+			modifiedAt: FIXTURE_NOW - 3 * DAY,
+		},
+		{
+			name: "tsconfig.json",
+			path: "home/user/app/tsconfig.json",
+			kind: "file",
+			sizeBytes: 318,
+			modifiedAt: FIXTURE_NOW - 2 * DAY,
+		},
 		{
 			name: "docker-compose.yml",
 			path: "home/user/app/docker-compose.yml",
@@ -417,7 +434,51 @@ const FILES: Readonly<Record<string, string>> = {
 		'{\n  "name": "app",\n  "private": true,\n  "type": "module",\n  "scripts": {\n    "dev": "node --watch src/server.ts"\n  }\n}\n',
 	"home/user/app/src/server.ts":
 		'import { createServer } from "node:http";\n\ncreateServer((_, res) => res.end("ok")).listen(3000);\n',
+	"home/user/app/README.md":
+		"# app\n\nA small API for the dev stack.\n\n## Run it\n\n```sh\npnpm install\npnpm dev\n```\n\nIt listens on 3000.\n",
+	"home/user/app/tsconfig.json":
+		'{\n  "compilerOptions": {\n    "target": "es2023",\n    "module": "nodenext",\n    "strict": true\n  }\n}\n',
 };
+
+const sampleText = new TextEncoder();
+let syslog: Uint8Array | undefined;
+
+/**
+ * A sample file's bytes: its text; for the screenshot, a PNG's signature and then zeros, to its size; for the syslog,
+ * lines written out to its size, so the preview reads a part of it.
+ */
+function sampleBytes(path: string): Uint8Array {
+	const key = path.replace(/^\/+/, "");
+	const text = FILES[key];
+	if (text !== undefined) return sampleText.encode(text);
+	if (key === "home/user/app/screenshot.png") {
+		const png = new Uint8Array(248_113);
+		png.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+		return png;
+	}
+	if (key === "var/log/syslog") {
+		if (syslog === undefined) {
+			const lines: string[] = [];
+			let size = 0;
+			for (let at = 0; size < 2_481_662; at += 1) {
+				const second = String(at % 60).padStart(2, "0");
+				const line = `Nov  4 09:${String(Math.floor(at / 60) % 60).padStart(2, "0")}:${second} api-server node[812]: GET /health 200 ${at % 7}ms\n`;
+				lines.push(line);
+				size += line.length;
+			}
+			syslog = sampleText.encode(lines.join("")).subarray(0, 2_481_662);
+		}
+		return syslog;
+	}
+	throw new Error(`There's no ${path} here.`);
+}
+
+/** The part of a sample file a range asks for, and its size. */
+export function samplePart(path: string, range: FileRange): FilePart {
+	const bytes = sampleBytes(path);
+	const start = Math.min(range.offset, bytes.byteLength);
+	return { bytes: bytes.subarray(start, Math.min(start + range.length, bytes.byteLength)), size: bytes.byteLength };
+}
 
 export const KEYS: readonly ApiKey[] = [
 	{
@@ -1418,7 +1479,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						entries: (TREE[path.replace(/^\/+|\/+$/g, "")] ?? []).map((entry) => moved(entry, ["modifiedAt"])),
 						more: false,
 					})),
-				read: (_id, path) => gate(() => FILES[path.replace(/^\/+/, "")]),
+				read: (_id, path, range) => gate(() => samplePart(path, range)),
 			},
 		},
 		snapshots: {
@@ -1465,7 +1526,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 				}),
 			list: (_snapshotId, path) =>
 				gate(() => (TREE[path.replace(/^\/+|\/+$/g, "")] ?? []).map((entry) => moved(entry, ["modifiedAt"]))),
-			read: (_snapshotId, path) => gate(() => FILES[path.replace(/^\/+/, "")]),
+			read: (_snapshotId, path, range) => gate(() => samplePart(path, range)),
 			downloadUrl: (snapshotId, path) =>
 				`https://kantel.example.com/v1/snapshots/${encodeURIComponent(snapshotId)}/download?path=${encodeURIComponent(path)}`,
 		},

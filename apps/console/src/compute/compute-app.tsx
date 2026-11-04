@@ -46,14 +46,15 @@ function hostingMode(): HostingMode {
 
 /**
  * Goes to a page of the compute console. The app's `navigate` keeps the query, which carries `?hosting`; `?new` (open
- * New sandbox) and `?add` (open Add a host) are for the one page they were given to, so they are dropped first.
+ * New sandbox) and `?add` (open Add a host) are for the one page they were given to, so they are dropped first. A file
+ * browser's place (`?path`, `?file`, `?snapshot`) isn't kept either, though Back still finds it where it was.
  */
 function go(path: string): void {
 	const search = new URLSearchParams(location.search);
 	if (!path.includes("?") && (search.has("new") || search.has("add"))) {
 		history.replaceState(null, "", `${location.pathname}${searchWithout(location.search, ["new", "add"])}`);
 	}
-	navigate(path);
+	navigate(path, { drop: ["path", "file", "snapshot"] });
 }
 
 /**
