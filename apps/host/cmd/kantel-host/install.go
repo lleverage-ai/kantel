@@ -68,8 +68,9 @@ func (l labelFlag) Set(v string) error {
 	return nil
 }
 
-func install(args []string) error {
-	fs := flag.NewFlagSet("install", flag.ExitOnError)
+// parseInstall reads install's options.
+func parseInstall(args []string) (installOptions, error) {
+	fs := flag.NewFlagSet("install", flag.ContinueOnError)
 	controlPlane := fs.String("url", os.Getenv("KANTEL_URL"), "Kantel's URL")
 	token := fs.String("token", os.Getenv("KANTEL_HOST_TOKEN"), "a kth_ registration token from Kantel's Hosts page")
 	name := fs.String("name", "", "the host's name in Kantel (default: its hostname)")
@@ -84,17 +85,40 @@ func install(args []string) error {
 	injectGuestAgent := fs.Bool("inject-guest-agent", false, "boot microVMs through Kantel's initramfs, which puts the guest agent into any Linux image (experimental)")
 	noStart := fs.Bool("no-start", false, "install and register, but don't start the service")
 	dryRun := fs.Bool("dry-run", false, "print every download, file, directory, unit, command and registration install would make, and change nothing (the token isn't used)")
-	_ = fs.Parse(args)
-	in := thisMachine()
-	plan, err := in.planInstall(installOptions{
+	if err := fs.Parse(args); err != nil {
+		return installOptions{}, err
+	}
+	// install takes no operands. Go's flags stop at the first one, so anything after it (`--no-start false
+	// --dry-run`) would go unread: a dry run that was asked for must never become an install.
+	if fs.NArg() > 0 {
+		return installOptions{}, fmt.Errorf("install takes options only, but got %q, and nothing from there on was read: give a true or false flag its value with =, as in --no-start=false", strings.Join(fs.Args(), " "))
+	}
+	return installOptions{
 		controlPlane: *controlPlane, token: *token, name: *name, images: *images, root: *root, configPath: *configPath,
 		tiers: *tiers, isolateRuntime: *isolateRuntime, labels: labels, proxyDataPath: *proxyDataPath,
 		injectGuestAgent: *injectGuestAgent, noStart: *noStart, dryRun: *dryRun,
-	})
+	}, nil
+}
+
+func install(args []string) error {
+	err := runInstall(thisMachine(), args)
+	if errors.Is(err, flag.ErrHelp) {
+		return nil
+	}
+	return err
+}
+
+// runInstall is `install`: its options read in full before anything else, then the plan, printed (--dry-run) or done.
+func runInstall(in *installer, args []string) error {
+	o, err := parseInstall(args)
 	if err != nil {
 		return err
 	}
-	if *dryRun {
+	plan, err := in.planInstall(o)
+	if err != nil {
+		return err
+	}
+	if o.dryRun {
 		printPlan(in.out, plan)
 		return nil
 	}

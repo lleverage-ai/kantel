@@ -197,15 +197,15 @@ curl -fsSL https://github.com/lleverage-ai/kantel/releases/latest/download/insta
   copy   /tmp/tmp.Xb2/kantel-host-linux-amd64 to /usr/local/bin/kantel-host (mode 0755)
 ==> Fetch Firecracker and the sandbox images
   check  images host-images-20261103.1 from https://kantel.example.com/v1/hosts/images/manifest.json
-  mkdir  /var/lib/kantel-host
-  mkdir  /var/lib/kantel-host/bin
+  mkdir  /var/lib/kantel-host (mode 0755)
+  mkdir  /var/lib/kantel-host/bin (mode 0755)
   get    https://github.com/firecracker-microvm/firecracker/releases/download/v1.17.0/firecracker-v1.17.0-x86_64.tgz (sha256 0609…, from firecracker-v1.17.0-x86_64.tgz.sha256.txt), its firecracker-v1.17.0-x86_64 to /var/lib/kantel-host/bin/firecracker (mode 0755)
-  mkdir  /var/lib/kantel-host/images
+  mkdir  /var/lib/kantel-host/images (mode 0755)
   get    https://kantel.example.com/v1/hosts/images/vmlinux-x86_64 to /var/lib/kantel-host/images/vmlinux (sha256 6ae3…, mode 0644)
   get    https://kantel.example.com/v1/hosts/images/sandbox-amd64.ext4.gz to /var/lib/kantel-host/images/sandbox.ext4 (sha256 8500…, unpacked as it downloads, mode 0644)
   get    https://kantel.example.com/v1/hosts/images/isolate-amd64.ext4.gz to /var/lib/kantel-host/images/isolate.ext4 (sha256 e670…, unpacked as it downloads, mode 0644)
 ==> Register with https://kantel.example.com
-  mkdir  /etc/kantel-host
+  mkdir  /etc/kantel-host (mode 0755)
   post   https://kantel.example.com/v1/hosts/register as "builder-1", which uses the token up
   note   to report what this host can run, registering starts its tiers for a moment, which makes their directories under /var/lib/kantel-host and, for microVMs, sets up the network rules below
 ==> Save the settings

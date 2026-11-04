@@ -299,6 +299,62 @@ func TestNoRegisteringWithoutSavingTheSettings(t *testing.T) {
 	}
 }
 
+// Go's flags stop at the first operand, so `--no-start false --dry-run` would leave --dry-run unread and install for
+// real. install refuses any operand before doing anything; every spelling of the flags it reads still works.
+func TestInstallRefusesStrayArguments(t *testing.T) {
+	m := newFakeMachine(t)
+	o := m.options("")
+	base := []string{"--url", "https://kantel.example.com", "--token", "kth_secret", "--images", o.images, "--root", o.root, "--config", o.configPath}
+	before := tree(t, m.dir)
+	for _, stray := range [][]string{{"--no-start", "false", "--dry-run"}, {"--", "--dry-run"}, {"builder-1", "--dry-run"}} {
+		err := runInstall(m.in, append(append([]string{}, base...), stray...))
+		if err == nil || !strings.Contains(err.Error(), "install takes options only") {
+			t.Errorf("%v: %v", stray, err)
+		}
+	}
+	after := tree(t, m.dir)
+	for p, sum := range before {
+		if after[p] != sum {
+			t.Errorf("a refused install changed %s", p)
+		}
+	}
+	if len(after) != len(before) || len(m.registered) != 0 || len(m.systemctl) != 0 {
+		t.Errorf("a refused install did something: %d paths, registered %v, systemctl %v", len(after)-len(before), m.registered, m.systemctl)
+	}
+
+	for _, args := range [][]string{
+		append([]string{"--dry-run=1", "--no-start=false"}, base...),
+		append(append([]string{"--no-start"}, base...), "--dry-run"),
+		append(append([]string{}, base...), "-dry-run=t"),
+	} {
+		got, err := parseInstall(args)
+		if err != nil || !got.dryRun || got.controlPlane != "https://kantel.example.com" || got.token != "kth_secret" {
+			t.Errorf("%v: %+v %v", args, got, err)
+		}
+	}
+	// The whole command, as a dry run: the plan, and nothing done.
+	if err := runInstall(m.in, append(append([]string{}, base...), "--label", "zone=ams", "--dry-run")); err != nil || len(m.registered) != 0 || !strings.Contains(m.out.String(), "Dry run: nothing has been changed") {
+		t.Errorf("a dry run: %v, registered %v\n%s", err, m.registered, m.out.String())
+	}
+}
+
+// With image patching on (#651), the plan says what the service does to the images at start.
+func TestDryRunWithImagePatching(t *testing.T) {
+	m := newFakeMachine(t)
+	o := m.options("kth_secret")
+	o.dryRun = true
+	if err := (agent.Config{ControlPlane: "https://kantel.example.com", ImagePatching: true}).Save(o.configPath); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := m.in.planInstall(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last := plan.after[len(plan.after)-1]; !strings.Contains(last, "With image patching on") || !strings.Contains(last, "fetches cosign") {
+		t.Errorf("image patching: %q", last)
+	}
+}
+
 func TestDryRunNeedsRoot(t *testing.T) {
 	m := newFakeMachine(t)
 	m.in.euid = func() int { return 1000 }

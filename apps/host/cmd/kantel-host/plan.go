@@ -1,9 +1,7 @@
 package main
 
 import (
-	"archive/tar"
-	"bytes"
-	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -14,12 +12,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/agent"
 	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
+	"github.com/lleverage-ai/kantel/apps/host/internal/images"
 )
 
 // An install is a list of steps, each a list of actions. planInstall makes the list, reading the machine but changing
@@ -94,7 +92,7 @@ func thisMachine() *installer {
 			return err == nil
 		},
 		systemctl: func(args ...string) (string, error) { return runOutput("systemctl", args...) },
-		get:       httpGet,
+		get:       func(u string) (io.ReadCloser, error) { return images.HTTPGet(context.Background(), u) },
 		register:  register,
 		hostname:  os.Hostname,
 		out:       os.Stdout,
@@ -133,9 +131,12 @@ func (p *planner) mkdir(dir string) {
 	}
 	for i := len(missing) - 1; i >= 0; i-- {
 		d := missing[i]
-		p.add("mkdir", d, func() error { return os.MkdirAll(d, 0o755) })
+		p.add("mkdir", fmt.Sprintf("%s (mode %04o)", d, dirMode), func() error { return os.MkdirAll(d, dirMode) })
 	}
 }
+
+// dirMode is every directory install makes: the plan shows it, and the action makes the directory with it.
+const dirMode os.FileMode = 0o755
 
 // planInstall checks the options and reads the machine, and says everything install would do, without changing a
 // thing: no file is written, nothing is downloaded but the images manifest and Firecracker's digest, and the token
@@ -285,6 +286,14 @@ func (in *installer) planInstall(o installOptions) (*installPlan, error) {
 		p.plan.after = append(p.plan.after,
 			"For microVMs, kantel-host sets up its own network when it registers and each time the service starts: iptables chains KANTEL-INPUT and KANTEL-FORWARD, jumped to from INPUT, FORWARD and (on a host with Docker) DOCKER-USER, and ip6tables rules that drop its devices' traffic. The service adds a TAP device (kt0, kt1, …) in "+cfg.Subnet+" for each microVM, with IPv6 off on it, and its egress proxy takes port "+fmt.Sprint(cfg.ProxyPort)+" on those devices only.")
 	}
+	if cfg.ImagePatching {
+		cosign := ""
+		if cfg.ImageSignatures != images.PolicyOff {
+			cosign = "fetches cosign to " + cfg.Cosign + " if it isn't there, to check the images' signatures, "
+		}
+		p.plan.after = append(p.plan.after,
+			"With image patching on, the service, each time it starts, "+cosign+"moves the images into versions under "+filepath.Join(cfg.ImagesDir, "v")+" with links to the current one, and keeps Firecracker at the version this binary pins.")
+	}
 	return &p.plan, nil
 }
 
@@ -413,13 +422,9 @@ func (p *planner) firecracker(dst string) error {
 		p.add("keep", fmt.Sprintf("%s (Firecracker %s, already there)", dst, FirecrackerVersion), nil)
 		return nil
 	}
-	arch := "x86_64"
-	if runtime.GOARCH == "arm64" {
-		arch = "aarch64"
-	}
-	base := "https://github.com/firecracker-microvm/firecracker/releases/download/" + FirecrackerVersion + "/"
-	name := fmt.Sprintf("firecracker-%s-%s.tgz", FirecrackerVersion, arch)
-	sums, err := p.in.get(base + name + ".sha256.txt")
+	// The release's digest is read now, for the plan, and the archive checked against that same digest when it's got.
+	rel := images.FirecrackerReleaseOf(FirecrackerVersion)
+	sums, err := p.in.get(rel.SumsURL)
 	if err != nil {
 		return err
 	}
@@ -430,70 +435,24 @@ func (p *planner) firecracker(dst string) error {
 	}
 	fields := strings.Fields(string(sumText))
 	if len(fields) == 0 || len(fields[0]) != 64 {
-		return fmt.Errorf("%s.sha256.txt has no SHA-256", name)
+		return fmt.Errorf("%s has no SHA-256", rel.SumsURL)
 	}
 	want := strings.ToLower(fields[0])
-	member := fmt.Sprintf("release-%s-%s/firecracker-%s-%s", FirecrackerVersion, arch, FirecrackerVersion, arch)
 	p.mkdir(filepath.Dir(dst))
-	p.add("get", fmt.Sprintf("%s (sha256 %s, from %s.sha256.txt), its %s to %s (mode 0755)", base+name, want, name, filepath.Base(member), dst), func() error {
-		return installFirecracker(p.in.get, base+name, want, member, dst)
+	p.add("get", fmt.Sprintf("%s (sha256 %s, from %s), its %s to %s (mode 0755)", rel.URL, want, filepath.Base(rel.SumsURL), filepath.Base(rel.Member), dst), func() error {
+		body, err := p.in.get(rel.URL)
+		if err != nil {
+			return err
+		}
+		defer body.Close()
+		return rel.Install(body, want, dst)
 	})
 	return nil
 }
 
-// installFirecracker downloads Firecracker's release archive, checks it against want and puts its binary at dst.
-func installFirecracker(get func(string) (io.ReadCloser, error), u, want, member, dst string) error {
-	body, err := get(u)
-	if err != nil {
-		return err
-	}
-	raw, err := io.ReadAll(body)
-	body.Close()
-	if err != nil {
-		return err
-	}
-	got := sha256.Sum256(raw)
-	if hex.EncodeToString(got[:]) != want {
-		return fmt.Errorf("%s: digest doesn't match the release's", u)
-	}
-	gz, err := gzip.NewReader(bytes.NewReader(raw))
-	if err != nil {
-		return err
-	}
-	tr := tar.NewReader(gz)
-	for {
-		h, err := tr.Next()
-		if err == io.EOF {
-			return fmt.Errorf("%s has no %s", u, member)
-		}
-		if err != nil {
-			return err
-		}
-		if h.Name != member {
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return err
-		}
-		out, err := os.OpenFile(dst+".part", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
-		if err != nil {
-			return err
-		}
-		if _, err := io.Copy(out, tr); err != nil {
-			out.Close()
-			return err
-		}
-		if err := out.Close(); err != nil {
-			return err
-		}
-		fmt.Printf("  firecracker %s\n", FirecrackerVersion)
-		return os.Rename(dst+".part", dst)
-	}
-}
-
 // upToDate: dst is there, and fetch recorded want as its digest when it downloaded it.
 func upToDate(dst, want string) bool {
-	sum, err := recordedSHA256(dst)
+	sum, err := images.RecordedSHA256(dst)
 	if err != nil || sum != want {
 		return false
 	}
