@@ -28,6 +28,37 @@ type imagePatching struct {
 	// busy is a check in flight: a welcome that arrives meanwhile doesn't queue another.
 	busy atomic.Bool
 	stop chan struct{}
+	// held are the image files a tier was given for the daemon's lifetime (the isolate VM tier's, isolateImages):
+	// their versions are kept by every prune.
+	held []string
+}
+
+// isolateImages are the kernel and root filesystem the isolate VM tier runs on, with image patching: the immutable
+// files the configured paths resolve to now, so its template and every runtime restored from it stay on one version
+// whatever an activation does to current. It takes new images when the daemon next starts (a self-update restarts
+// it), and rebuilds its template then, its fingerprint having changed. Without image patching, the paths as they are.
+func (h *Host) isolateImages(cfg Config) (kernel, rootfs string) {
+	if !cfg.ImagePatching {
+		return cfg.Kernel, cfg.IsolateImage
+	}
+	resolve := func(p string) string {
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			if abs, err := filepath.Abs(r); err == nil {
+				return abs
+			}
+			return r
+		}
+		return p
+	}
+	rootfs, kernel = resolve(cfg.IsolateImage), resolve(cfg.Kernel)
+	// One version's kernel with its root filesystem: an activation between the two resolutions can't pair them across.
+	if v := images.VersionOf(rootfs); v != "" && images.VersionOf(kernel) != "" && images.VersionOf(kernel) != v {
+		if same := filepath.Join(filepath.Dir(rootfs), filepath.Base(kernel)); fileExists(same) {
+			kernel = same
+		}
+	}
+	h.patching.held = append(h.patching.held, kernel, rootfs)
+	return kernel, rootfs
 }
 
 // imageTier is a tier whose sandboxes are pinned to image versions (microvm).
@@ -62,7 +93,7 @@ func (h *Host) pinBases() error {
 // current version's).
 func (h *Host) configuredVersions() map[string]bool {
 	in := map[string]bool{}
-	for _, p := range []string{h.cfg.Kernel, h.cfg.SandboxImage, h.cfg.IsolateImage} {
+	for _, p := range append([]string{h.cfg.Kernel, h.cfg.SandboxImage, h.cfg.IsolateImage}, h.patching.held...) {
 		if p == "" {
 			continue
 		}
@@ -204,24 +235,40 @@ func (h *Host) hostImages(params json.RawMessage) (any, error) {
 	if p.SandboxID == "" {
 		return answer, nil
 	}
-	t, name, err := h.tierOfNamed(p.SandboxID)
+	version, err := h.rebaseVersion(p.SandboxID)
 	if err != nil {
 		return nil, err
 	}
-	rt, ok := t.(rebaseTier)
-	if !ok {
-		return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "a " + name + " sandbox isn't moved onto other images"}
-	}
-	answer.Version = rt.RebaseVersion()
+	answer.Version = version
 	return answer, nil
 }
 
-// rebaseTarget refuses a sandbox.start whose rebase the gateway expects to land on to when this host's current images
-// are another version (or aren't versioned): the host hasn't taken that update, and a rebase would land elsewhere.
-func (h *Host) rebaseTarget(to string) error {
-	have := ""
-	if h.cfg.ImagePatching {
-		have, _ = imageStore(h.cfg).Current()
+// rebaseVersion is the one answer to where a rebase of a sandbox lands: its tier's RebaseVersion (what the tier's
+// root filesystem resolves to now, which a config naming it by path holds back from the store's current one). Both
+// host.images's preflight and sandbox.start's check ask it, so what the preflight passes the start takes. A sandbox
+// whose tier doesn't rebase, or a host without image patching, has none.
+func (h *Host) rebaseVersion(sandboxID string) (string, error) {
+	if !h.cfg.ImagePatching {
+		return "", &proto.Error{Code: proto.ErrUnsupported, Message: "image patching is off on this host (imagePatching in its config)"}
+	}
+	t, name, err := h.tierOfNamed(sandboxID)
+	if err != nil {
+		return "", err
+	}
+	rt, ok := t.(rebaseTier)
+	if !ok {
+		return "", &proto.Error{Code: proto.ErrUnsupported, Message: "a " + name + " sandbox isn't moved onto other images"}
+	}
+	return rt.RebaseVersion(), nil
+}
+
+// rebaseTarget refuses a sandbox.start whose rebase the gateway expects to land on to when the sandbox's rebase
+// would land on another version (rebaseVersion): the host hasn't taken that update, or its config holds the tier on
+// another, and a rebase would land elsewhere.
+func (h *Host) rebaseTarget(sandboxID, to string) error {
+	have, err := h.rebaseVersion(sandboxID)
+	if err != nil {
+		return err
 	}
 	if have != to {
 		return images.NotCurrent(have, to)

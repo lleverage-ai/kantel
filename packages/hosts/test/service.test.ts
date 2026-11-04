@@ -3,7 +3,7 @@
 import { isKantelError } from "@kantel/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHostsApi } from "../src/http.ts";
-import { HOST_CLOSE_REPLACED, HOST_CLOSE_REVOKED, type HostSandbox } from "../src/protocol.ts";
+import { HOST_CLOSE_REPLACED, HOST_CLOSE_REVOKED, HOST_FEATURES, type HostSandbox } from "../src/protocol.ts";
 import { createHostsService, type HostsService, IMAGES_REFRESH_MS } from "../src/service.ts";
 import { createMemoryHostStore } from "../src/store.ts";
 import { FakeHost, facts } from "./fake-host.ts";
@@ -238,7 +238,7 @@ describe("hosts service", () => {
 			secrets: async () => undefined,
 			recordEgress: async () => undefined,
 			recordBases: async (hostId, reports) => {
-				for (const report of reports) recorded.push({ hostId, ...report });
+				for (const report of reports.sandboxes ?? []) recorded.push({ hostId, ...report });
 			},
 		});
 		const a = await join("a");
@@ -277,6 +277,46 @@ describe("hosts service", () => {
 		});
 		await tick();
 		expect(recorded.at(-1)).toEqual({ hostId: a.hostId, sandboxId: "sbx-old", base: "host-images-2" });
+	});
+
+	it("passes on its snapshots' bases once a connection, from an image patching host only", async () => {
+		const { service, join } = await setup();
+		const recorded: { hostId: string; ref: string; base: string }[] = [];
+		service.useCompute({
+			secrets: async () => undefined,
+			recordEgress: async () => undefined,
+			recordBases: async (hostId, reports) => {
+				for (const report of reports.snapshots ?? []) recorded.push({ hostId, ...report });
+			},
+		});
+		const heartbeat = (host: FakeHost) =>
+			host.send({
+				type: "heartbeat",
+				heartbeat: {
+					capacity: { freeMemoryMiB: 10_000, freeDiskGiB: 400, running: 0, stopped: 0, load1: 0, warm: {} },
+				},
+			});
+		const older = new FakeHost(service, (await join("a")).hostId);
+		older.connect();
+		await tick();
+		heartbeat(older);
+		await tick();
+		expect(older.calls.map((c) => c.method)).not.toContain("snapshot.list");
+
+		const b = await join("b");
+		const host = new FakeHost(service, b.hostId, [HOST_FEATURES.imagePatching]);
+		host.snapshots = [
+			{ id: "snap-old", sandboxId: "sbx-1", base: "host-images-1" },
+			{ id: "snap-unversioned", sandboxId: "sbx-1" },
+		];
+		host.connect();
+		await tick();
+		heartbeat(host);
+		await tick();
+		heartbeat(host);
+		await tick();
+		expect(host.calls.filter((c) => c.method === "snapshot.list")).toHaveLength(1);
+		expect(recorded).toEqual([{ hostId: b.hostId, ref: `${b.hostId}/snap-old`, base: "host-images-1" }]);
 	});
 
 	it("reads no image index on a heartbeat with image patching off", async () => {

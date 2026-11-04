@@ -260,11 +260,13 @@ export interface ComputeService {
 	 */
 	recordEgress(hostId: string, records: readonly ReportedEgress[]): Promise<void>;
 	/**
-	 * Keeps the bases a host says its sandboxes' disks are on (image patching, experimental: its hello and its events), so
-	 * a sandbox made before the host versioned its images shows its base without another boot. Only a sandbox on
-	 * `hostId` is changed, and only to a base that looks like one (a host images version or a digest).
+	 * Fills in the bases a host says its sandboxes' disks and its snapshots are on (image patching, experimental: its
+	 * hello, its events and its snapshot list), so what was made before the host versioned its images shows its base
+	 * without another boot. Only a sandbox on `hostId`, or a snapshot whose ref is that host's, and only one with no base
+	 * recorded yet: a base changes only in a boot (a restart on latest), whose answer records it, so an observation that
+	 * arrives late never replaces a newer one. Only a base that looks like one (a host images version or a digest).
 	 */
-	recordBases(hostId: string, reports: readonly { readonly sandboxId: string; readonly base: string }[]): Promise<void>;
+	recordBases(hostId: string, reports: BaseReports): Promise<void>;
 	/** Resolves once every lifecycle operation and detached command started so far has ended. */
 	idle(): Promise<void>;
 	/** Kills the detached commands and waits for the work under way. */
@@ -3232,6 +3234,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		restartSandboxOnLatest: async (principal, { params }) => {
 			requireImagePatching();
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "sandboxes:write");
+			// Mid-lifecycle (another restart's boot, a stop, a delete): refused as it is, rather than waited for and then
+			// restarted again over what that work did.
+			if (sandbox.state === "starting" || sandbox.state === "stopping" || sandbox.state === "deleting") {
+				throw new KantelError("conflict", `The sandbox is ${sandbox.state}`);
+			}
 			let current = await settledFor(principal, sandbox.id);
 			if (
 				current.state !== "running" &&
@@ -4740,14 +4747,30 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		},
 
 		async recordBases(hostId, reports) {
-			for (const { sandboxId, base } of reports) {
-				if (typeof sandboxId !== "string" || typeof base !== "string" || !REPORTED_BASE.test(base)) continue;
+			const valid = (base: unknown): base is string => typeof base === "string" && REPORTED_BASE.test(base);
+			for (const { sandboxId, base } of reports.sandboxes ?? []) {
+				if (typeof sandboxId !== "string" || !valid(base)) continue;
 				const sandbox = await store.sandboxes.get(sandboxId);
-				if (sandbox === undefined || sandbox.hostId !== hostId || sandbox.base === base) continue;
-				if (sandbox.state === "deleted" || sandbox.state === "deleting") continue;
+				if (sandbox === undefined || sandbox.hostId !== hostId || sandbox.base !== undefined) continue;
+				// Decided on the record as it is when written (the SQL store's conditional update): a boot that recorded a base
+				// meanwhile wins.
 				await store.sandboxes.update(sandboxId, (current) =>
-					current.hostId === hostId && current.base !== base ? { ...current, base } : current,
+					current.hostId === hostId &&
+					current.base === undefined &&
+					current.state !== "deleted" &&
+					current.state !== "deleting"
+						? { ...current, base }
+						: undefined,
 				);
+			}
+			for (const { ref, base } of reports.snapshots ?? []) {
+				if (typeof ref !== "string" || !ref.startsWith(`${hostId}/`) || !valid(base)) continue;
+				for (const snapshot of await store.snapshots.list({ ref })) {
+					if (snapshot.base !== undefined) continue;
+					await store.snapshots.update(snapshot.id, (current) =>
+						current.ref === ref && current.base === undefined ? { ...current, base } : undefined,
+					);
+				}
 			}
 		},
 
@@ -4778,6 +4801,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		idle,
 	};
+}
+
+/** What a host says its sandboxes and snapshots are on (`ComputeService.recordBases`). */
+export interface BaseReports {
+	readonly sandboxes?: readonly { readonly sandboxId: string; readonly base: string }[];
+	/** By the snapshot's ref, `<hostId>/<snapshot ID on the host>`. */
+	readonly snapshots?: readonly { readonly ref: string; readonly base: string }[];
 }
 
 /** A base a host may report: a host images version (such as host-images-20261104.812) or an image digest. */

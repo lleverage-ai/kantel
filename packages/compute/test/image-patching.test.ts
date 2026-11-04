@@ -130,15 +130,63 @@ describe("image patching on", () => {
 		});
 		expect((await tom.getSandbox(sandbox.id)).base).toBeUndefined();
 		const hostId = (await api.store.sandboxes.get(sandbox.id))?.hostId ?? "";
-		await api.service.recordBases("host_someone_else", [{ sandboxId: sandbox.id, base: HOST_LATEST }]);
-		await api.service.recordBases(hostId, [{ sandboxId: sandbox.id, base: "not a base!" }]);
+		const report = (from: string, base: string) =>
+			api.service.recordBases(from, { sandboxes: [{ sandboxId: sandbox.id, base }] });
+		await report("host_someone_else", HOST_LATEST);
+		await report(hostId, "not a base!");
 		expect((await tom.getSandbox(sandbox.id)).base).toBeUndefined();
-		await api.service.recordBases(hostId, [{ sandboxId: sandbox.id, base: HOST_OLDEST }]);
+		await report(hostId, HOST_OLDEST);
 		expect((await tom.getSandbox(sandbox.id)).base).toMatchObject({
 			version: HOST_OLDEST,
 			outdated: true,
 			behind: { versions: 2 },
 		});
+	});
+
+	it("never lets a late report replace the base a boot recorded", async () => {
+		const { api, tom } = setup(indexed);
+		const sandbox = await tom.createSandbox({ wait: true });
+		await api.store.sandboxes.update(sandbox.id, (current) => {
+			const { base: _base, ...rest } = current;
+			return rest;
+		});
+		const hostId = (await api.store.sandboxes.get(sandbox.id))?.hostId ?? "";
+		// A hello's report of the old base, delayed past a restart on latest that records the new one.
+		await tom.restartSandboxOnLatest(sandbox.id);
+		await api.service.idle();
+		expect((await tom.getSandbox(sandbox.id)).base?.version).toBe(HOST_LATEST);
+		await api.service.recordBases(hostId, { sandboxes: [{ sandboxId: sandbox.id, base: HOST_OLDEST }] });
+		expect((await tom.getSandbox(sandbox.id)).base?.version).toBe(HOST_LATEST);
+	});
+
+	it("fills in the base of a snapshot saved before its host versioned its images", async () => {
+		const { api, tom } = setup(indexed);
+		const sandbox = await tom.createSandbox({ wait: true });
+		const saved = await tom.saveSnapshot({ name: "before", sandboxId: sandbox.id });
+		// As the hosts backend names it: `<hostId>/<snapshot ID on the host>`.
+		const hostId = "host_a";
+		const ref = `${hostId}/${saved.id}`;
+		await api.store.snapshots.update(saved.id, (current) => {
+			const { base: _base, ...rest } = current;
+			return { ...rest, ref };
+		});
+		await api.service.recordBases("host_someone_else", { snapshots: [{ ref, base: HOST_LATEST }] });
+		expect((await api.store.snapshots.get(saved.id))?.base).toBeUndefined();
+		await api.service.recordBases(hostId, { snapshots: [{ ref, base: HOST_OLDEST }] });
+		expect((await api.store.snapshots.get(saved.id))?.base).toBe(HOST_OLDEST);
+		// Filled once: a later report doesn't move it.
+		await api.service.recordBases(hostId, { snapshots: [{ ref, base: HOST_LATEST }] });
+		expect((await api.store.snapshots.get(saved.id))?.base).toBe(HOST_OLDEST);
+	});
+
+	it("refuses to restart on latest while the sandbox is mid-lifecycle", async () => {
+		const { api, tom, starts } = setup(indexed);
+		const sandbox = await tom.createSandbox({ wait: true });
+		for (const state of ["starting", "stopping", "deleting"] as const) {
+			await api.store.sandboxes.update(sandbox.id, (current) => ({ ...current, state }));
+			await expect(tom.restartSandboxOnLatest(sandbox.id)).rejects.toMatchObject({ code: "conflict" });
+		}
+		expect(starts).toHaveLength(0);
 	});
 
 	it("restarts a running sandbox on the latest base, from a snapshot of its disk", async () => {

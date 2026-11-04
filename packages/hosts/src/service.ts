@@ -124,12 +124,16 @@ export interface HostComputeLink {
 	secrets(hostId: string, sandboxId: string): Promise<HostSecrets | undefined>;
 	recordEgress(hostId: string, records: readonly HostEgressRecord[]): Promise<void>;
 	/**
-	 * Keeps the bases a host reports for its own sandboxes (`HostSandbox.base`, image patching), from its hello and its
-	 * events, so a sandbox's base is known without another boot (`ComputeService.recordBases`).
+	 * Fills in the bases a host reports for its own sandboxes (`HostSandbox.base`, image patching: its hello and events)
+	 * and snapshots (its snapshot list, read once a connection), so what was made before it versioned its images shows
+	 * its base without another boot (`ComputeService.recordBases`). A snapshot is named by its ref, `<hostId>/<id>`.
 	 */
 	recordBases?(
 		hostId: string,
-		reports: readonly { readonly sandboxId: string; readonly base: string }[],
+		reports: {
+			readonly sandboxes?: readonly { readonly sandboxId: string; readonly base: string }[];
+			readonly snapshots?: readonly { readonly ref: string; readonly base: string }[];
+		},
 	): Promise<void>;
 	/** An organisation's E2E chain for the host (`ComputeService.hostE2EChain`), and the host's own entries to it. */
 	readonly e2eChain?: {
@@ -370,6 +374,33 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	 * reaches it, and one it failed to take is tried again, without waiting for it to reconnect.
 	 */
 	const imagesToldAt = new Map<string, number>();
+	/** Hosts whose snapshot bases haven't been read on their connection yet (image patching hosts only). */
+	const snapshotBasesDue = new Set<string>();
+	/**
+	 * Reads a host's snapshots once a connection and passes on the bases they report: snapshots saved before the host
+	 * versioned its images have none recorded, and the host pins them when image patching starts.
+	 */
+	const readSnapshotBases = (hostId: string) => {
+		if (!snapshotBasesDue.delete(hostId) || compute?.recordBases === undefined) return;
+		const link = compute;
+		report(
+			(async () => {
+				const listed = await hub.call<{ snapshots?: readonly { id?: unknown; base?: unknown }[] | null }>(
+					hostId,
+					HostMethods.snapshotList,
+					{ sandboxId: "" },
+				);
+				const snapshots: { ref: string; base: string }[] = [];
+				for (const snap of listed.snapshots ?? []) {
+					if (typeof snap.id === "string" && typeof snap.base === "string" && snap.base !== "") {
+						snapshots.push({ ref: `${hostId}/${snap.id}`, base: snap.base });
+					}
+				}
+				if (snapshots.length > 0) await link.recordBases?.(hostId, { snapshots });
+			})(),
+		);
+	};
+
 	const refreshImages = (hostId: string) => {
 		if (compute?.images === undefined) return;
 		const now = clock.now();
@@ -419,7 +450,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			}
 			held.delete(placement.sandboxId);
 		}
-		if (bases.length > 0 && compute?.recordBases !== undefined) report(compute.recordBases(hostId, bases));
+		if (bases.length > 0 && compute?.recordBases !== undefined) {
+			report(compute.recordBases(hostId, { sandboxes: bases }));
+		}
+		// Its snapshots' bases, once it is welcomed (the hello doesn't carry them): on its first heartbeat.
+		if (facts.value.features?.includes(HOST_FEATURES.imagePatching) === true) snapshotBasesDue.add(hostId);
+		else snapshotBasesDue.delete(hostId);
 		if (held.size > 0) {
 			log(`[hosts] host ${hostId} holds sandboxes Kantel didn't place: ${[...held.keys()].slice(0, 10).join(", ")}`);
 		}
@@ -445,6 +481,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			const capacity = parsed.value;
 			reserved.delete(hostId);
 			refreshImages(hostId);
+			readSnapshotBases(hostId);
 			report(
 				(async () => {
 					const host = await store.getHost(hostId);
@@ -462,7 +499,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					if (placement === undefined || placement.hostId !== hostId) return;
 					const base = (sandbox as { base?: unknown }).base;
 					if (typeof base === "string" && base !== "" && sandbox.state !== "deleted") {
-						await compute?.recordBases?.(hostId, [{ sandboxId: sandbox.id, base }]);
+						await compute?.recordBases?.(hostId, { sandboxes: [{ sandboxId: sandbox.id, base }] });
 					}
 					// The call that caused the event usually recorded the state already (a create's `running`).
 					if (sandbox.state === placement.state) return;
@@ -481,6 +518,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		onDisconnected(hostId) {
 			log(`[hosts] host ${hostId} disconnected`);
 			imagesToldAt.delete(hostId);
+			snapshotBasesDue.delete(hostId);
 			cluster?.release(hostId);
 			report(
 				(async () => {

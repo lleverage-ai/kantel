@@ -248,18 +248,30 @@ func TestAPruneKeepsConfiguredVersionsAndWaitsForPinning(t *testing.T) {
 }
 
 // A start whose rebase the gateway expects on images this host hasn't taken is refused before anything changes; on
-// the images it has, it goes ahead.
+// the images it has, it goes ahead. What counts is where the sandbox's tier would land (its config can hold it on
+// another version than the store's current one), the same answer host.images's preflight gives.
 func TestARebaseOntoImagesTheHostHasNotTakenIsRefused(t *testing.T) {
 	tier := newLifecycleTier()
 	h := newLifecycleHost(t, tier)
 	h.cfg.ImagePatching, h.cfg.ImagesDir = true, filepath.Join(h.cfg.Root, "images")
 	store := images.Store{Dir: h.cfg.ImagesDir}
-	writeFile(t, filepath.Join(store.Dir, "v", "host-images-20261103", "manifest.json"), "{}")
-	if err := store.Activate("host-images-20261103"); err != nil {
+	// The store has moved on to 20261104; the tier's config holds it on 20261103.
+	for _, v := range []string{"host-images-20261103", "host-images-20261104"} {
+		writeFile(t, filepath.Join(store.Dir, "v", v, "manifest.json"), "{}")
+	}
+	if err := store.Activate("host-images-20261104"); err != nil {
 		t.Fatal(err)
 	}
+	h.tiers[microvm.Tier] = rebasingTier{tier, "host-images-20261103"}
 	tier.stopped["sbx_1"] = true
-	err := call(t, h, proto.MethodStart, proto.ResumeParams{SandboxID: "sbx_1", Rebase: true, RebaseTo: "host-images-20261104"})
+	preflight, err := h.Call(context.Background(), proto.MethodHostImages, json.RawMessage(`{"sandboxId":"sbx_1"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := preflight.(proto.HostImages).Version; got != "host-images-20261103" {
+		t.Fatalf("preflight says %s", got)
+	}
+	err = call(t, h, proto.MethodStart, proto.ResumeParams{SandboxID: "sbx_1", Rebase: true, RebaseTo: "host-images-20261104"})
 	if err == nil || !strings.Contains(err.Error(), "this host's images are host-images-20261103, not host-images-20261104; it hasn't taken the update yet") {
 		t.Fatalf("a rebase onto images the host hasn't taken: %v", err)
 	}
@@ -316,3 +328,48 @@ type rebasingTier struct {
 }
 
 func (r rebasingTier) RebaseVersion() string { return r.version }
+
+// With image patching the isolate VM tier is given the immutable files its configured paths resolve to at start: an
+// activation since doesn't move what its template and runtimes restore over, and a prune keeps that version.
+func TestTheIsolateTierStaysOnTheImagesItStartedWith(t *testing.T) {
+	h := newLifecycleHost(t, newLifecycleTier())
+	store := images.Store{Dir: filepath.Join(h.cfg.Root, "images")}
+	first := time.Now().Add(-time.Hour)
+	for i, v := range []string{"a", "b", "c", "d"} {
+		dir := filepath.Join(store.Dir, "v", v)
+		writeFile(t, filepath.Join(dir, "manifest.json"), "{}")
+		writeFile(t, filepath.Join(dir, "vmlinux"), v)
+		writeFile(t, filepath.Join(dir, "isolate.ext4"), v)
+		at := first.Add(time.Duration(i) * time.Minute)
+		if err := os.Chtimes(dir, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Activate("a"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"vmlinux", "isolate.ext4"} {
+		if err := os.Symlink(filepath.Join("current", name), filepath.Join(store.Dir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.cfg.ImagePatching = true
+	h.cfg.Kernel, h.cfg.IsolateImage = filepath.Join(store.Dir, "vmlinux"), filepath.Join(store.Dir, "isolate.ext4")
+	kernel, rootfs := h.isolateImages(h.cfg)
+	if images.VersionOf(kernel) != "a" || images.VersionOf(rootfs) != "a" {
+		t.Fatalf("isolate images %s, %s; want version a's", kernel, rootfs)
+	}
+	if err := store.Activate("d"); err != nil {
+		t.Fatal(err)
+	}
+	if raw, _ := os.ReadFile(rootfs); string(raw) != "a" {
+		t.Fatalf("after an activation the isolate root filesystem reads %q", raw)
+	}
+	h.tiers = map[string]Tier{microvm.Tier: &baseTier{inUse: map[string]bool{}}}
+	h.order = []string{microvm.Tier}
+	h.patching.updater = &images.Updater{Store: store, Log: h.log}
+	removed := h.pruneImages()
+	if slices.Contains(removed, "a") || !slices.Contains(removed, "b") {
+		t.Fatalf("removed %v: want b gone and a, which the isolate tier runs on, kept", removed)
+	}
+}

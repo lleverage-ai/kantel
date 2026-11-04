@@ -194,9 +194,14 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 		isolateReady = kvm && fileExists(cfg.Firecracker) && fileExists(cfg.Kernel) && fileExists(cfg.IsolateImage)
 	}
 	if (all || want[isolate.Tier]) && isolateReady {
+		// A VM runtime's images, held on one version for the daemon's lifetime (isolateImages); native uses none.
+		isoKernel, isoRootfs := cfg.Kernel, cfg.IsolateImage
+		if cfg.IsolateRuntime != "native" {
+			isoKernel, isoRootfs = h.isolateImages(cfg)
+		}
 		iso, err := isolate.New(isolate.Config{
-			Root: cfg.Root + "/isolate", Runtime: cfg.IsolateRuntime, Firecracker: cfg.Firecracker, Kernel: cfg.Kernel,
-			Rootfs: cfg.IsolateImage, Workerd: cfg.Workerd, Bundle: cfg.IsolateBundle, Egress: h.proxy,
+			Root: cfg.Root + "/isolate", Runtime: cfg.IsolateRuntime, Firecracker: cfg.Firecracker, Kernel: isoKernel,
+			Rootfs: isoRootfs, Workerd: cfg.Workerd, Bundle: cfg.IsolateBundle, Egress: h.proxy,
 			Rules: h.liveRules, Log: log, Events: h.sandboxEvent,
 		})
 		if err != nil {
@@ -585,7 +590,7 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		// A rebase onto images this host hasn't taken is refused before anything changes (the tier checks again as it
 		// relinks).
 		if method == proto.MethodStart && p.Rebase && p.RebaseTo != "" {
-			if err := h.rebaseTarget(p.RebaseTo); err != nil {
+			if err := h.rebaseTarget(p.SandboxID, p.RebaseTo); err != nil {
 				return nil, err
 			}
 		}
