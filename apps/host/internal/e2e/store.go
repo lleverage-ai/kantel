@@ -83,6 +83,43 @@ func (s *Store) locked(fn func() error) error {
 	return fn()
 }
 
+// ErrEnrolled refuses an update the gateway picks on a host that has joined a space.
+var ErrEnrolled = errors.New("this host has joined an E2E space: it is updated on the machine (kantel-host update), not by the gateway")
+
+// Enrolled says whether this host has ever joined a space, whatever the space's mode now: its host key stays trusted
+// while a space is off, so turning one off and on doesn't make the key safe to hand to a binary the gateway picked.
+func (s *Store) Enrolled() bool { return len(s.Spaces()) > 0 }
+
+// Unenrolled runs fn (a gateway-driven update: its download, the downloaded binary's version probe and the swap) only
+// on a host that hasn't joined a space, holding the enrolment lock that Join takes first: an update that started before
+// a join finishes, or is refused, before the join can make the host's key worth stealing.
+func (s *Store) Unenrolled(fn func() error) error {
+	return s.enrolling(func() error {
+		if s.Enrolled() {
+			return ErrEnrolled
+		}
+		return fn()
+	})
+}
+
+// enrolling holds <dir>/enrol, an flock apart from the store's lock so that a long update doesn't hold up sessions'
+// chain writes. It is taken before the store's lock, never under it.
+func (s *Store) enrolling(fn func() error) error {
+	if err := os.MkdirAll(s.dir, 0o700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(filepath.Join(s.dir, "enrol"), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }()
+	return fn()
+}
+
 // Identity is the host's keys, made the first time they are asked for (under the store's lock, so the daemon and the
 // CLI can't each make one). Not to be called holding the lock, unless the keys are already loaded.
 func (s *Store) Identity() (*Identity, error) {
@@ -406,6 +443,17 @@ func (c *spaceChain) Entries(from int) []Entry {
 // start at the genesis the ticket pins; the host signs its host.add, keeps the chain with it, and gives the entry back
 // to publish. The host's ID is the one the gateway knows it by.
 func (s *Store) Join(join *JoinTicket, entries []Entry, hostID string, now time.Time) (e Entry, st *State, err error) {
+	// No gateway update runs across a join (Unenrolled).
+	if eerr := s.enrolling(func() error {
+		e, st, err = s.joinEnrolling(join, entries, hostID, now)
+		return nil
+	}); eerr != nil {
+		return Entry{}, nil, eerr
+	}
+	return e, st, err
+}
+
+func (s *Store) joinEnrolling(join *JoinTicket, entries []Entry, hostID string, now time.Time) (e Entry, st *State, err error) {
 	// The keys first: they are made under the lock, which isn't reentrant.
 	if _, err := s.Identity(); err != nil {
 		return Entry{}, nil, err

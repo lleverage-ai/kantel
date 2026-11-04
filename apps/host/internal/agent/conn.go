@@ -217,13 +217,13 @@ func (h *Host) applyWelcome(ctx context.Context, w *proto.Welcome, update Update
 		h.SetPools(w.Pools)
 	}
 	if update != nil && h.cfg.autoUpdate() && w.DesiredVersion != "" && w.DesiredVersion != h.version && w.UpdateURL != "" {
-		if h.anyE2E() {
-			h.log.Info("not updating from the gateway: this host holds E2E spaces, so it is updated on the machine", "to", w.DesiredVersion)
+		if h.e2e != nil && h.e2e.Enrolled() {
+			h.log.Info("not updating from the gateway: this host has joined an E2E space, so it is updated on the machine", "to", w.DesiredVersion)
 			return
 		}
 		h.log.Info("updating", "from", h.version, "to", w.DesiredVersion)
 		go func() {
-			if err := update(ctx, proto.UpdateParams{Version: w.DesiredVersion, URL: w.UpdateURL}); err != nil {
+			if err := h.gatewayUpdate(ctx, proto.UpdateParams{Version: w.DesiredVersion, URL: w.UpdateURL}, update); err != nil {
 				h.log.Error("update failed", "error", err)
 			}
 		}()
@@ -264,7 +264,7 @@ func (s *session) call(ctx context.Context, m proto.Message, update Updater) {
 			if update == nil {
 				err = &proto.Error{Code: proto.ErrUnsupported, Message: "this host doesn't update itself"}
 			} else {
-				err = update(ctx, p)
+				err = s.host.gatewayUpdate(ctx, p, update)
 			}
 		}
 		result = map[string]bool{"ok": err == nil}

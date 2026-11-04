@@ -194,3 +194,53 @@ func TestTwoStoresMakeOneIdentity(t *testing.T) {
 		t.Fatal("two processes made two identities")
 	}
 }
+
+// A gateway update runs only on a host that hasn't joined a space, and never across a join: one that started first
+// finishes before the join goes ahead, and none runs after it.
+func TestAGatewayUpdateNeverCrossesAJoin(t *testing.T) {
+	var v joinVector
+	readVector(t, "join.json", &v)
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	join, err := DecodeJoinTicket(v.Word)
+	if err != nil {
+		t.Fatal(err)
+	}
+	running, release := make(chan struct{}), make(chan struct{})
+	updated := make(chan error, 1)
+	go func() {
+		updated <- store.Unenrolled(func() error {
+			close(running)
+			<-release
+			// The downloaded binary's version probe and the swap happen here: the host must not be in a space yet.
+			if store.Enrolled() {
+				t.Error("the update ran on a host that had joined")
+			}
+			return nil
+		})
+	}()
+	<-running
+	joined := make(chan error, 1)
+	go func() {
+		_, _, err := store.Join(join, v.Entries, "host_two", time.Now())
+		joined <- err
+	}()
+	select {
+	case err := <-joined:
+		t.Fatalf("the join went ahead while an update ran: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if err := <-updated; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-joined; err != nil {
+		t.Fatal(err)
+	}
+	ran := false
+	if err := store.Unenrolled(func() error { ran = true; return nil }); err != ErrEnrolled || ran {
+		t.Fatalf("an update ran after the join: %v", err)
+	}
+}

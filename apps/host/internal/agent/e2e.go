@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net"
@@ -76,6 +77,19 @@ func (h *Host) recordE2E(sandboxID, space string) error {
 }
 
 // anyE2E reports whether the host holds an E2E chain that is on (or one it can't verify).
+// gatewayUpdate runs an update the gateway asked for (host.update or a welcome's version), on a host that has never
+// joined a space only, and never across a join.
+func (h *Host) gatewayUpdate(ctx context.Context, p proto.UpdateParams, update Updater) error {
+	if h.e2e == nil {
+		return update(ctx, p)
+	}
+	err := h.e2e.Unenrolled(func() error { return update(ctx, p) })
+	if errors.Is(err, e2e.ErrEnrolled) {
+		return &proto.Error{Code: proto.ErrUnsupported, Message: err.Error()}
+	}
+	return err
+}
+
 func (h *Host) anyE2E() bool {
 	if h.e2e == nil {
 		return false
@@ -149,9 +163,20 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 		Egress            *proto.Egress     `json:"egress"`
 	}
 	_ = json.Unmarshal(params, &p)
-	if method == proto.MethodHostUpdate && h.anyE2E() {
-		// A binary the gateway picks could read every session: with E2E on, the host is updated on the machine.
-		return &proto.Error{Code: proto.ErrUnsupported, Message: "this host holds E2E spaces: it is updated on the machine, not by the gateway"}
+	// A create or fork reads its space's E2E epoch once, before any check (egress included): if E2E comes on while the
+	// checks run, the sandbox is recorded under the epoch before (none, or an older one), so it isn't trusted under the
+	// new one (markBorn, bornUnder).
+	var since string
+	switch method {
+	case proto.MethodCreate:
+		since = h.onSince(p.Owner)
+	case proto.MethodFork:
+		since = h.onSince(h.ownerOf(p.SandboxID))
+	}
+	if method == proto.MethodHostUpdate && h.e2e != nil && h.e2e.Enrolled() {
+		// A binary the gateway picks could read every session and take the host's key: a host that has joined a space,
+		// on or off now, is updated on the machine. gatewayUpdate checks again under the enrolment lock.
+		return &proto.Error{Code: proto.ErrUnsupported, Message: e2e.ErrEnrolled.Error()}
 	}
 	if method != proto.MethodCreate {
 		if err := h.recordE2E(p.SandboxID, h.ownerOf(p.SandboxID)); err != nil {
@@ -204,9 +229,6 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 		}
 		return nil
 	case method == proto.MethodCreate:
-		// The chain's E2E epoch is read once, before every check: if E2E comes on while they run, the sandbox is recorded
-		// under the epoch before (none), so it isn't trusted under the new one (markBorn).
-		since := h.onSince(p.Owner)
 		// An ID once used in an E2E space isn't given to another space: its snapshots would follow it.
 		if was, ok := h.recordedOwner(p.SandboxID); ok && was != p.Owner {
 			return &proto.Error{Code: proto.ErrConflict, Message: fmt.Sprintf("sandbox ID %s was used in %s, which is end-to-end encrypted", p.SandboxID, was)}
@@ -250,7 +272,6 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 		return h.markBorn(p.SandboxID, p.Owner, since)
 	case method == proto.MethodFork:
 		owner := h.ownerOf(p.SandboxID)
-		since := h.onSince(owner)
 		if h.e2eMode(owner) != e2e.ModeOff {
 			if len(p.Env) > 0 {
 				return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("%s is end-to-end encrypted: a fork takes no environment variables from the gateway", owner)}

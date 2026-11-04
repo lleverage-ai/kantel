@@ -1011,3 +1011,67 @@ func TestABirthIsBoundToTheEpochItsCreateRead(t *testing.T) {
 		t.Fatalf("a sandbox made under the current epoch isn't trusted: %v", err)
 	}
 }
+
+// A host that has joined a space takes no update from the gateway, by host.update or a welcome, while the space is on,
+// after it is turned off, or with its chain no longer verifying; a host that never joined still does.
+func TestAJoinedHostTakesNoGatewayUpdateWhateverItsMode(t *testing.T) {
+	h, _, v := e2eHost(t)
+	ran := 0
+	update := func(context.Context, proto.UpdateParams) error { ran++; return nil }
+	welcome := &proto.Welcome{DesiredVersion: "9.9.9", UpdateURL: "https://evil.test/kantel-host"}
+	raw, _ := json.Marshal(map[string]any{"version": "9.9.9", "url": "https://evil.test/kantel-host"})
+	check := func(when string) {
+		t.Helper()
+		if h.gatewayMayCall(proto.MethodHostUpdate, raw) == nil {
+			t.Errorf("%s: host.update wasn't refused", when)
+		}
+		if err := h.gatewayUpdate(context.Background(), proto.UpdateParams{Version: "9.9.9"}, update); err == nil {
+			t.Errorf("%s: the update ran", when)
+		}
+		h.applyWelcome(context.Background(), welcome, update)
+		time.Sleep(20 * time.Millisecond)
+		if ran != 0 {
+			t.Fatalf("%s: a gateway update ran %d times", when, ran)
+		}
+	}
+	check("on")
+	// Turned off: the host's key is still the one the space trusts.
+	off, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "packages", "e2e", "vectors", "chain.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vectors struct {
+		Cases []struct {
+			Name    string      `json:"name"`
+			Entries []e2e.Entry `json:"entries"`
+		} `json:"cases"`
+	}
+	_ = json.Unmarshal(off, &vectors)
+	for _, c := range vectors.Cases {
+		if strings.HasPrefix(c.Name, "E2E turned off and on again") {
+			if _, err := h.e2e.Space(v.Space).Extend(len(v.Entries), c.Entries[len(v.Entries):len(v.Entries)+1]); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if h.e2eMode(v.Space) != e2e.ModeOff || h.anyE2E() {
+		t.Fatalf("the space is %s", h.e2eMode(v.Space))
+	}
+	check("off")
+	// A chain file that no longer verifies.
+	if err := os.WriteFile(filepath.Join(h.cfg.Root, "e2e", "spaces", v.Space+".json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	check("with a broken chain")
+
+	fresh := newLifecycleHost(t, newLifecycleTier())
+	if fresh.e2e, err = e2e.OpenStore(filepath.Join(fresh.cfg.Root, "e2e")); err != nil {
+		t.Fatal(err)
+	}
+	if fresh.gatewayMayCall(proto.MethodHostUpdate, raw) != nil {
+		t.Error("a host that never joined refused host.update")
+	}
+	if err := fresh.gatewayUpdate(context.Background(), proto.UpdateParams{Version: "9.9.9"}, update); err != nil || ran != 1 {
+		t.Fatalf("a host that never joined didn't update: %v", err)
+	}
+}
