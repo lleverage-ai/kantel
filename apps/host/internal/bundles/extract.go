@@ -65,10 +65,11 @@ func Extract(tarPath, root string, maxBytes int64) error {
 			// Their modes last: a directory without write permission still takes its entries first.
 			dirs = append(dirs, dirMode{target, hdr})
 		case tar.TypeReg, tar.TypeGNUSparse:
-			written += hdr.Size
-			if written > maxBytes {
+			// Against what is left, so a huge size (a sparse file's is its logical one) can't overflow the sum.
+			if hdr.Size < 0 || hdr.Size > maxBytes-written {
 				return fmt.Errorf("the bundle's files are more than %d bytes", maxBytes)
 			}
+			written += hdr.Size
 			if err := replace(target); err != nil {
 				return err
 			}

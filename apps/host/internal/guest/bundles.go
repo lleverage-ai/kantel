@@ -84,20 +84,35 @@ func unmountBundle(path string) error {
 	return fmt.Errorf("unmount %s: %w", path, err)
 }
 
-// heldDrives are the bundle drives a file system is still mounted from, anywhere in the sandbox (a bundle mount, or a
-// bind mount of one): the host must not change their images.
+// heldDrives are the bundle drives a file system still uses, anywhere in the sandbox: the host must not change their
+// images. The kernel says so for every mount namespace (a container's private mount of a bundle, a process's
+// unshared one), a mount hidden under another and one lazily detached: a block device a file system is on can't be
+// opened exclusively (EBUSY). A drive whose device can't be checked counts as held, and so does one any mount in
+// the agent's own namespace is from.
 func heldDrives() []int {
 	sources := map[string]bool{}
-	for _, source := range mountPoints() {
+	for _, source := range mountSources() {
 		sources[source] = true
 	}
 	held := []int{}
 	for i := 0; i <= maxBundleDrive; i++ {
-		if sources[BundleDevice(i)] {
+		dev := BundleDevice(i)
+		if sources[dev] || claimed(dev) {
 			held = append(held, i)
 		}
 	}
 	return held
+}
+
+// claimed says whether a file system (or anything else) has dev: opening it exclusively fails. A device the sandbox
+// hasn't (no such drive) isn't.
+func claimed(dev string) bool {
+	fd, err := unix.Open(dev, unix.O_RDONLY|unix.O_EXCL|unix.O_CLOEXEC, 0)
+	if err == nil {
+		_ = unix.Close(fd)
+		return false
+	}
+	return !errors.Is(err, unix.ENOENT) && !errors.Is(err, unix.ENXIO) && !errors.Is(err, unix.ENODEV)
 }
 
 // maxBundleDrive is the highest bundle drive a sandbox may have.
@@ -174,8 +189,28 @@ func waitDeviceSize(dev string, size int64, timeout time.Duration) error {
 
 // mountPoints is what is mounted where, by mount point: the source of the topmost mount at each.
 func mountPoints() map[string]string {
-	raw, err := os.ReadFile("/proc/self/mountinfo")
 	out := map[string]string{}
+	for _, m := range mountinfo() {
+		out[m.target] = m.source
+	}
+	return out
+}
+
+// mountSources are the sources of every mount in the agent's namespace, those under another mount too.
+func mountSources() []string {
+	var out []string
+	for _, m := range mountinfo() {
+		out = append(out, m.source)
+	}
+	return out
+}
+
+type mountEntry struct{ target, source string }
+
+// mountinfo is the agent's mount namespace's mounts, in mount order.
+func mountinfo() []mountEntry {
+	raw, err := os.ReadFile("/proc/self/mountinfo")
+	var out []mountEntry
 	if err != nil {
 		return out
 	}
@@ -195,7 +230,7 @@ func mountPoints() map[string]string {
 		if sep < 0 || sep+2 >= len(fields) {
 			continue
 		}
-		out[unescapeMountinfo(fields[4])] = unescapeMountinfo(fields[sep+2])
+		out = append(out, mountEntry{target: unescapeMountinfo(fields[4]), source: unescapeMountinfo(fields[sep+2])})
 	}
 	return out
 }

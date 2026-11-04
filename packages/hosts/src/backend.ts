@@ -34,6 +34,7 @@ import type {
 } from "@kantel/compute";
 import { type ErrorCode, isKantelError, KantelError, placementError } from "@kantel/contracts";
 import { BROWSER_STREAM_PORT, DESKTOP_PORT, desktopPath } from "./desktop.ts";
+import { parseMountsAt } from "./facts.ts";
 import type { FileStreamHandle, PortSink } from "./hub.ts";
 import type { PortRouter } from "./ports.ts";
 import {
@@ -359,6 +360,9 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 						...(typeof sandbox.baseAt === "number" && sandbox.baseAt > 0 ? { baseAt: sandbox.baseAt } : {}),
 					}),
 			...(known.mounts === undefined ? {} : { mounts: known.mounts }),
+			...(known.mounts === undefined || parseMountsAt(sandbox.mountsAt) === undefined
+				? {}
+				: { mountsAt: parseMountsAt(sandbox.mountsAt) }),
 		};
 	}
 

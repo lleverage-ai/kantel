@@ -290,6 +290,80 @@ func TestLinkSurvivesAFullCache(t *testing.T) {
 	}
 }
 
+// TestAReservationHoldsAnImageFromTheFirstWait: a caller that reserves before it waits (Get) keeps the image a slow
+// build makes, in a cache full of images in use, through waits that time out and the build's own trim, until it links
+// it: one build. Released without a link, the image is reclaimed.
+func TestAReservationHoldsAnImageFromTheFirstWait(t *testing.T) {
+	release := make(chan struct{})
+	var builds atomic.Int32
+	c := fakeCache(t, 12<<10, func(ctx context.Context) error {
+		builds.Add(1)
+		<-release
+		return nil
+	})
+	vm := t.TempDir()
+	pinned := makeTar(t, entry{name: "f", body: strings.Repeat("p", 11<<10)})
+	close(release)
+	if _, _, err := c.Link(context.Background(), digestOf(pinned), filepath.Join(vm, "bundle0.erofs"), serve(pinned, nil)); err != nil {
+		t.Fatal(err)
+	}
+	release = make(chan struct{})
+	builds.Store(0)
+
+	fresh := makeTar(t, entry{name: "f", body: strings.Repeat("n", 9<<10)})
+	digest := digestOf(fresh)
+	unreserve := c.Reserve(digest)
+	if !c.Reserved(digest) {
+		t.Fatal("reserved before it is built")
+	}
+	// A wait that gives up while it builds (as a create's does, leaving the mount pending)...
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	if _, err := c.Get(ctx, digest, serve(fresh, nil)); err == nil {
+		t.Fatal("the wait ends with its context")
+	}
+	cancel()
+	// ...then the build finishes, and trims the cache, with no one waiting.
+	close(release)
+	deadline := time.Now().Add(2 * time.Second)
+	for c.bmuBuilding(digest) && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	c.Evict()
+	if !c.Has(digest) {
+		t.Fatal("a reserved image survives its build's trim and another")
+	}
+	// The next wait finds it, and the link needs no other build.
+	if cached, err := c.Get(context.Background(), digest, serve(fresh, nil)); err != nil || !cached {
+		t.Fatalf("found again: %v %v", cached, err)
+	}
+	if _, _, err := c.Link(context.Background(), digest, filepath.Join(vm, "bundle1.erofs"), serve(fresh, nil)); err != nil {
+		t.Fatal(err)
+	}
+	unreserve()
+	unreserve()
+	if c.Reserved(digest) || builds.Load() != 1 {
+		t.Fatalf("released once, built once: reserved=%v builds=%d", c.Reserved(digest), builds.Load())
+	}
+	if !c.Has(digest) {
+		t.Fatal("linked, so kept")
+	}
+
+	// Abandoned: reserved and built, never linked, then released: reclaimed.
+	other := makeTar(t, entry{name: "f", body: strings.Repeat("o", 5<<10)})
+	unreserve = c.Reserve(digestOf(other))
+	if _, err := c.Get(context.Background(), digestOf(other), serve(other, nil)); err != nil {
+		t.Fatal(err)
+	}
+	c.Evict()
+	if !c.Has(digestOf(other)) {
+		t.Fatal("kept while reserved")
+	}
+	unreserve()
+	if c.Has(digestOf(other)) {
+		t.Fatal("an abandoned image is reclaimed once released")
+	}
+}
+
 func (c *Cache) bmuBuilding(digest string) bool {
 	c.bmu.Lock()
 	defer c.bmu.Unlock()

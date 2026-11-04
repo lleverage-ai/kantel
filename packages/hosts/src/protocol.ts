@@ -307,6 +307,11 @@ export interface HostSandbox {
 	readonly baseAt?: number;
 	/** Its mounts' statuses, from a host with a mounts feature. */
 	readonly mounts?: readonly HostMountStatus[];
+	/**
+	 * With `mounts`: when the host last set them (unix milliseconds, the host's clock, later each time). Reports of a
+	 * sandbox's mounts (a call's answer, a `sandbox.mounts` event, the replay after a reconnect) are ordered by it.
+	 */
+	readonly mountsAt?: number;
 	/** What a microVM's image has, as its guest agent found it; absent from a host too old to say. */
 	readonly guest?: HostGuest;
 }

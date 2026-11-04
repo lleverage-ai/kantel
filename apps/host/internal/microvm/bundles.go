@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -83,31 +84,48 @@ func snapshotDriveCount(dir string) int {
 	return max(0, n)
 }
 
-// emptyDrives puts an empty file at each of a new VM's n bundle drives (before it boots or restores).
+// emptyDrives puts an empty file at each of a new VM's n bundle drives (before it boots or restores). A file there
+// already is an error, never truncated: it may be a link to a cached image other sandboxes and snapshots share.
 func emptyDrives(vm string, n int) error {
 	for i := 0; i < n; i++ {
-		if err := os.WriteFile(filepath.Join(vm, bundleDriveFile(i)), nil, 0o600); err != nil {
+		if err := newEmptyFile(filepath.Join(vm, bundleDriveFile(i))); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+// newEmptyFile makes an empty file at path, failing if anything is there.
+func newEmptyFile(path string) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("a bundle drive: %w", err)
+	}
+	return f.Close()
+}
+
 // snapshotDrives gives a new VM restoring a snapshot the bundle drives the snapshot was taken with: the same images
-// (linked from the snapshot's directory), empty files for the rest.
-func snapshotDrives(vm, sdir string, n int, slots []string) error {
+// (linked from the snapshot's directory), empty files for the rest, and answers the drives' slots as made (a slot
+// whose image the snapshot no longer has is empty). Like emptyDrives, it never writes to a file already there.
+func snapshotDrives(vm, sdir string, n int, slots []string) ([]string, error) {
+	made := make([]string, n)
 	for i := 0; i < n; i++ {
 		dst := filepath.Join(vm, bundleDriveFile(i))
 		if i < len(slots) && slots[i] != "" {
-			if err := os.Link(filepath.Join(sdir, bundleDriveFile(i)), dst); err == nil {
+			err := os.Link(filepath.Join(sdir, bundleDriveFile(i)), dst)
+			if err == nil {
+				made[i] = slots[i]
 				continue
 			}
+			if !errors.Is(err, fs.ErrNotExist) {
+				return nil, fmt.Errorf("a bundle drive: %w", err)
+			}
 		}
-		if err := os.WriteFile(dst, nil, 0o600); err != nil {
-			return err
+		if err := newEmptyFile(dst); err != nil {
+			return nil, err
 		}
 	}
-	return nil
+	return made, nil
 }
 
 // keepDrives links a sandbox's attached bundle images into a snapshot's directory, so they stay while it does.
@@ -154,12 +172,51 @@ func (m *Manager) prefetchBundles(s *sandbox) {
 		return
 	}
 	for _, mt := range bundleMounts(s) {
+		// Held from now until attachBundles links it or gives it up.
+		m.reserveBundle(s, mt.Digest)
 		if m.cfg.Bundles.Has(mt.Digest) {
 			continue
 		}
 		digest, fetch := mt.Digest, m.fetchFor(s.meta.ID)
 		go func() { _, _ = m.cfg.Bundles.Get(context.Background(), digest, fetch) }()
 	}
+}
+
+// reserveBundle keeps a bundle's image in the cache for the sandbox, from before it first waits for it (a build's own
+// trim, or another's, would otherwise evict an image made for it while images in use fill the cache) until
+// releaseBundles: once the image is linked to its drive (the link keeps it then), or the sandbox gives it up. Called
+// with s.mu held.
+func (m *Manager) reserveBundle(s *sandbox, digest string) {
+	if m.cfg.Bundles == nil {
+		return
+	}
+	if s.reserved == nil {
+		s.reserved = map[string]func(){}
+	}
+	if _, ok := s.reserved[digest]; !ok {
+		s.reserved[digest] = m.cfg.Bundles.Reserve(digest)
+	}
+}
+
+// releaseBundles lets go of the sandbox's reservations but those of the digests in keep. Called with s.mu held.
+func (m *Manager) releaseBundles(s *sandbox, keep map[string]bool) {
+	for digest, release := range s.reserved {
+		if !keep[digest] {
+			release()
+			delete(s.reserved, digest)
+		}
+	}
+}
+
+// setMountStatus records the sandbox's mount statuses, and when (MountsAt): always later than the last, so the
+// control plane orders what it is told of them. Called with s.mu held.
+func setMountStatus(s *sandbox, status []proto.MountStatus) {
+	s.meta.MountStatus = status
+	at := time.Now().UnixMilli()
+	if at <= s.meta.MountsAt {
+		at = s.meta.MountsAt + 1
+	}
+	s.meta.MountsAt = at
 }
 
 // attachBundles attaches a running sandbox's bundles to its drives and has its guest mount them, waiting up to wait
@@ -169,8 +226,13 @@ func (m *Manager) prefetchBundles(s *sandbox) {
 func (m *Manager) attachBundles(ctx context.Context, s *sandbox, wait time.Duration) (pending bool) {
 	mounts := bundleMounts(s)
 	if len(mounts) == 0 && !anyAttached(s.meta.BundleSlots) {
-		s.meta.MountStatus = nil
+		m.releaseBundles(s, nil)
+		setMountStatus(s, nil)
 		return false
+	}
+	// Each image is reserved from before its wait; those still pending at the end stay reserved, for finishBundles.
+	for _, mt := range mounts {
+		m.reserveBundle(s, mt.Digest)
 	}
 	status := map[string]proto.MountStatus{}
 	set := func(mt proto.Mount, state, msg string) {
@@ -372,15 +434,28 @@ func (m *Manager) attachBundles(ctx context.Context, s *sandbox, wait time.Durat
 			}
 		}
 	}
-	s.meta.MountStatus = nil
+	var statuses []proto.MountStatus
+	waiting := map[string]bool{}
 	for _, mt := range mounts {
 		st := status[mt.Path]
 		if st.State == proto.MountPending {
 			pending = true
+			waiting[mt.Digest] = true
 		}
-		s.meta.MountStatus = append(s.meta.MountStatus, st)
+		statuses = append(statuses, st)
 	}
+	setMountStatus(s, statuses)
+	m.releaseBundles(s, waiting)
 	return pending
+}
+
+func anyPending(status []proto.MountStatus) bool {
+	for _, st := range status {
+		if st.State == proto.MountPending {
+			return true
+		}
+	}
+	return false
 }
 
 func anyAttached(slots []string) bool {
@@ -418,7 +493,7 @@ func (m *Manager) releaseDrives(ctx context.Context, s *sandbox, keep []guest.Bu
 	sort.Strings(reasons)
 	why = strings.Join(reasons, "; ")
 	if why == "" {
-		why = "it is still mounted"
+		why = "something in the sandbox still has it mounted"
 	}
 	return func(i int) bool { return set[i] }, why
 }
@@ -473,6 +548,7 @@ func (m *Manager) finishBundles(s *sandbox) {
 		if len(digests) == 0 {
 			return
 		}
+		// Their images stay reserved (attachBundles) while this waits, and until they are linked or given up.
 		for _, digest := range digests {
 			// The build carries on whoever waits; an error is the mount's, found again by attachBundles.
 			_, _ = m.cfg.Bundles.Get(context.Background(), digest, m.fetchFor(id))
@@ -480,6 +556,13 @@ func (m *Manager) finishBundles(s *sandbox) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		if s.meta.State != proto.StateRunning || s.machine == nil || s.guest == nil {
+			// Stopped or gone meanwhile: its next start or resume reserves them again.
+			m.releaseBundles(s, nil)
+			return
+		}
+		if !anyPending(s.meta.MountStatus) {
+			// Another finish (from a later boot, or this one's before it) attached them already.
+			m.releaseBundles(s, nil)
 			return
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)

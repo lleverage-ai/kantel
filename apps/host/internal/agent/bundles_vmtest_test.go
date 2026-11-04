@@ -225,6 +225,40 @@ func TestBundles(t *testing.T) {
 		t.Fatalf("a: %+v", r)
 	}
 
+	// Nothing in the agent's mount namespace uses the old bundle, so its unmount there succeeds, but a file system on its
+	// drive lives on: in another mount namespace (a container's private mount: f), or as a bind mount hidden under another
+	// mount (g). Either way the drive is held, keeps its image, and the new bundle fails.
+	for _, held := range []struct{ id, setup, read, cleanup string }{
+		{"bundle-f",
+			"sudo systemd-run --unit=bundle-ns unshare --mount --propagation private sleep 3600 && sleep 0.5 && systemctl is-active bundle-ns",
+			"pid=$(systemctl show -p MainPID --value bundle-ns); sudo nsenter -t $pid -m cat /workspace/skills/skills/hello/data.txt",
+			"sudo systemctl stop bundle-ns; true"},
+		{"bundle-g",
+			// Private, so the tmpfs over it (and its unmount) isn't propagated to the bundle's own mount point.
+			"sudo mkdir -p /mnt/hidden && sudo mount --bind /workspace/skills /mnt/hidden && sudo mount --make-private /mnt/hidden && sudo mount -t tmpfs tmpfs /mnt/hidden && findmnt -rno FSTYPE /mnt/hidden | tail -1",
+			"sudo umount /mnt/hidden && cat /mnt/hidden/skills/hello/data.txt",
+			"sudo umount /mnt/hidden; sudo umount /mnt/hidden; true"},
+	} {
+		if r := sh("bundle-a", held.setup); r.ExitCode != 0 {
+			t.Fatalf("%s: hold the bundle: %+v", held.id, r)
+		}
+		snapID := "snap-" + held.id
+		vmCall[proto.SandboxInfo](t, h, proto.MethodFork, proto.ForkParams{SandboxID: "bundle-a", NewID: held.id + "-fork", SnapshotID: snapID})
+		got := vmCall[proto.SandboxInfo](t, h, proto.MethodCreate, proto.CreateParams{SandboxID: held.id, Tier: "microvm", From: snapID, Mounts: []proto.Mount{
+			{Path: "/workspace/skills", Kind: proto.MountBundle, Digest: otherDigest},
+		}})
+		t.Logf("%s: state %s, mounts %+v", held.id, got.State, got.Mounts)
+		if got.State != proto.StateRunning || len(got.Mounts) != 1 || got.Mounts[0].State != proto.MountFailed || !strings.Contains(got.Mounts[0].Error, "can't be unmounted") {
+			t.Fatalf("%s: the new bundle fails, the sandbox runs: %+v", held.id, got)
+		}
+		if r := sh(held.id, held.read); r.ExitCode != 0 || r.Stdout != "bundle data\n" {
+			t.Fatalf("%s: the old bundle's file system still reads the old bundle: %+v", held.id, r)
+		}
+		if r := sh("bundle-a", held.cleanup); r.ExitCode != 0 {
+			t.Fatalf("a: %+v", r)
+		}
+	}
+
 	// Two bundles, one at two paths, and one that can't be fetched: the sandbox runs, that mount fails.
 	c := vmCall[proto.SandboxInfo](t, h, proto.MethodCreate, proto.CreateParams{SandboxID: "bundle-c", Tier: "microvm", Mounts: []proto.Mount{
 		{Path: "/workspace/skills", Kind: proto.MountBundle, Digest: skillsDigest},

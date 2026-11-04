@@ -439,7 +439,12 @@ describe("a host's calls and events about mounts, through the service", () => {
 		await place("sbx_b", hostId);
 		await place("sbx_other", "host_other");
 		const reportMounts = vi.fn(
-			async (_hostId: string, _sandboxId: string, _mounts: readonly HostMountStatus[]): Promise<void> => undefined,
+			async (
+				_hostId: string,
+				_sandboxId: string,
+				_mounts: readonly HostMountStatus[],
+				_mountsAt?: number,
+			): Promise<void> => undefined,
 		);
 		link({ reportMounts });
 		host.send({
@@ -448,6 +453,7 @@ describe("a host's calls and events about mounts, through the service", () => {
 				kind: "sandbox.mounts",
 				at: 1,
 				sandboxId: "sbx_a",
+				mountsAt: 1_700_000_000_123,
 				mounts: [
 					{ path: "/mnt/skills", status: "ready" },
 					{ path: "/mnt/data", status: "failed", error: "x".repeat(2000) },
@@ -457,10 +463,15 @@ describe("a host's calls and events about mounts, through the service", () => {
 			},
 		});
 		await vi.waitFor(() => expect(reportMounts).toHaveBeenCalledTimes(1));
-		expect(reportMounts).toHaveBeenCalledWith(hostId, "sbx_a", [
-			{ path: "/mnt/skills", status: "ready" },
-			{ path: "/mnt/data", status: "failed", error: "x".repeat(512) },
-		]);
+		expect(reportMounts).toHaveBeenCalledWith(
+			hostId,
+			"sbx_a",
+			[
+				{ path: "/mnt/skills", status: "ready" },
+				{ path: "/mnt/data", status: "failed", error: "x".repeat(512) },
+			],
+			1_700_000_000_123,
+		);
 
 		// About a sandbox placed on another host, or on none: dropped.
 		host.send({
@@ -499,17 +510,25 @@ describe("a host's calls and events about mounts, through the service", () => {
 					state: "running",
 					createdAt: 1,
 					mounts: [{ path: "/mnt/skills", status: "pending" }],
+					mountsAt: 42,
 				},
 			},
 		});
 		await vi.waitFor(() => expect(reportMounts).toHaveBeenCalledTimes(2));
-		expect(reportMounts).toHaveBeenLastCalledWith(hostId, "sbx_b", [{ path: "/mnt/skills", status: "pending" }]);
+		expect(reportMounts).toHaveBeenLastCalledWith(hostId, "sbx_b", [{ path: "/mnt/skills", status: "pending" }], 42);
 
 		// One that fails to keep is no reason to drop the host.
 		reportMounts.mockRejectedValueOnce(new Error("the store is down"));
 		host.send({ type: "event", event: { kind: "sandbox.mounts", at: 6, sandboxId: "sbx_a", mounts: null } });
 		await vi.waitFor(() => expect(reportMounts).toHaveBeenCalledTimes(3));
-		expect(reportMounts).toHaveBeenLastCalledWith(hostId, "sbx_a", []);
+		// No mountsAt (a host too old to say), or one that isn't a time: none.
+		expect(reportMounts).toHaveBeenLastCalledWith(hostId, "sbx_a", [], undefined);
+		host.send({
+			type: "event",
+			event: { kind: "sandbox.mounts", at: 7, sandboxId: "sbx_a", mounts: [], mountsAt: "soon" },
+		});
+		await vi.waitFor(() => expect(reportMounts).toHaveBeenCalledTimes(4));
+		expect(reportMounts).toHaveBeenLastCalledWith(hostId, "sbx_a", [], undefined);
 		await pause(5);
 		expect(service.hub.connected(hostId)).toBe(true);
 	});
@@ -614,7 +633,11 @@ describe("the backend's mounts", () => {
 		const { host, hostId, backend, connect } = await setup([HOST_FEATURES.mountsBundle, HOST_FEATURES.mountsBucket]);
 		await connect();
 		host.mountStatus = (mounts) => mounts.map((mount) => ({ path: mount.path, status: "ready" }));
+		host.mountsAt = 1_700_000_000_500;
 		const created = await backend.create(spec("sbx_one", hostId, [BUNDLE, BUCKET]));
+		// When the host set them, for the compute plane to order its reports by.
+		expect(created.mountsAt).toBe(1_700_000_000_500);
+		host.mountsAt = undefined;
 		expect(host.calls.find((call) => call.method === "sandbox.create")?.params.mounts).toEqual([
 			{ path: "/mnt/skills", kind: "bundle", digest: DIGEST },
 			{ path: "/mnt/data", kind: "bucket", bucketSourceId: "bks_1", prefix: "org/42/", refreshTtlSeconds: 60 },

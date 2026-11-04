@@ -306,6 +306,10 @@ type SandboxInfo struct {
 	Guest *GuestCapabilities `json:"guest,omitempty"`
 	// Mounts are the sandbox's read-only mounts and how each is doing (FeatureBucketMounts, FeatureBundleMounts).
 	Mounts []MountStatus `json:"mounts,omitempty"`
+	// MountsAt, with Mounts, is when the host last set them (unix milliseconds, the host's clock, and always later
+	// than the sandbox's last MountsAt): reports of a sandbox's mounts, from a call's answer, an EventMounts or the
+	// replay after a reconnect, are ordered by it, so one read earlier never replaces a later one.
+	MountsAt int64 `json:"mountsAt,omitempty"`
 }
 
 // GuestCapabilities is a guest agent's report on its image: what it is, and whether it has a desktop, a browser and

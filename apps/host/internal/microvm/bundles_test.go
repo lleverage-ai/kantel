@@ -1,11 +1,18 @@
 package microvm
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/lleverage-ai/kantel/apps/host/internal/bundles"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
@@ -76,8 +83,9 @@ func TestBundleDriveFiles(t *testing.T) {
 	if err := keepDrives(vm, snap, slots); err != nil {
 		t.Fatal(err)
 	}
-	if err := snapshotDrives(next, snap, 3, slots); err != nil {
-		t.Fatal(err)
+	made, err := snapshotDrives(next, snap, 3, slots)
+	if err != nil || strings.Join(made, ",") != ",sha256:x," {
+		t.Fatal(made, err)
 	}
 	a, _ := os.Stat(image)
 	b, _ := os.Stat(filepath.Join(next, "bundle1.erofs"))
@@ -95,5 +103,189 @@ func TestBundleDriveFiles(t *testing.T) {
 	dropDrives(snap)
 	if left, _ := filepath.Glob(filepath.Join(snap, "bundle*")); len(left) != 0 {
 		t.Fatalf("the snapshot lets go of its images: %v", left)
+	}
+	// A snapshot that has lost an image: that drive is empty, and its slot says so.
+	lost := t.TempDir()
+	made, err = snapshotDrives(lost, snap, 3, slots)
+	if err != nil || strings.Join(made, ",") != ",," || imageBytes(lost, 1) != 0 {
+		t.Fatal(made, err)
+	}
+}
+
+// TestCreateLetsGoOfTheBaseLockWhenDrivesFail: a create from a snapshot (with its memory, or its disk only) whose
+// bundle drives can't be set up fails, keeps the shared image's bytes, and leaves the base lock free for a prune.
+func TestCreateLetsGoOfTheBaseLockWhenDrivesFail(t *testing.T) {
+	for _, memory := range []bool{true, false} {
+		root := t.TempDir()
+		m := &Manager{cfg: Config{Root: root, Sizes: DefaultSizes, BundleDrives: 2}, sandboxes: map[string]*sandbox{}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+		sdir := m.snapshotDir("snap-1")
+		if err := os.MkdirAll(sdir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		image := filepath.Join(sdir, "bundle0.erofs")
+		if err := os.WriteFile(image, []byte("erofs image"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		meta := fmt.Sprintf(`{"id":"snap-1","sandboxId":"sbx_0","memory":%v,"size":"default","bundleDrives":2,"bundleSlots":["sha256:x",""]}`, memory)
+		if err := os.WriteFile(filepath.Join(sdir, "meta.json"), []byte(meta), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// What an interrupted create left: its VM directory, with a drive that is a link to the image.
+		vm := filepath.Join(root, "sandboxes", "sbx_1", "vm")
+		if err := os.MkdirAll(vm, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Link(image, filepath.Join(vm, "bundle0.erofs")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.Create(context.Background(), proto.CreateParams{SandboxID: "sbx_1", Tier: Tier, Size: "default", From: "snap-1"}); err == nil {
+			t.Fatalf("memory %v: the create fails", memory)
+		}
+		if raw, err := os.ReadFile(image); err != nil || string(raw) != "erofs image" {
+			t.Fatalf("memory %v: the image keeps its bytes: %q %v", memory, raw, err)
+		}
+		locked := make(chan struct{})
+		go func() {
+			m.LockBases()()
+			close(locked)
+		}()
+		select {
+		case <-locked:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("memory %v: the base lock is still held", memory)
+		}
+		// Its leftovers are gone, so a retry starts clean.
+		if _, err := os.Stat(vm); !os.IsNotExist(err) {
+			t.Fatalf("memory %v: %v", memory, err)
+		}
+	}
+}
+
+// TestABundleIsReservedFromItsFirstWait: a create's prefetch reserves the image of each bundle it mounts, so one a
+// slow build makes while images in use fill the cache survives the build's own trim (one build); the pending mount's
+// background finish keeps it, and once that gives it up (the sandbox stopped) the image is reclaimed.
+func TestABundleIsReservedFromItsFirstWait(t *testing.T) {
+	dir := t.TempDir()
+	count := filepath.Join(dir, "builds")
+	mkfs := filepath.Join(dir, "mkfs.erofs")
+	script := fmt.Sprintf(`#!/bin/sh
+case "$1" in --help) echo "--tar"; exit 0;; -V) echo "mkfs.erofs (fake)"; exit 0;; esac
+# --force-uid=N --force-gid=N --tar=f OUT TAR
+echo x >> %q
+sleep 0.3
+head -c $(wc -c < "$5") /dev/zero > "$4"
+`, count)
+	if err := os.WriteFile(mkfs, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cache, err := bundles.New(bundles.Config{Dir: filepath.Join(dir, "cache"), MaxBytes: 12 << 10, Mkfs: mkfs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tars := map[string][]byte{}
+	bundle := func(size int) string {
+		raw := []byte(strings.Repeat("b", size))
+		sum := sha256.Sum256(raw)
+		d := "sha256:" + hex.EncodeToString(sum[:])
+		tars[d] = raw
+		return d
+	}
+	pinned, fresh := bundle(11<<10), bundle(9<<10)
+	m := &Manager{cfg: Config{Bundles: cache, BundleDrives: 2, FetchBundle: func(_ context.Context, _, digest string) (io.ReadCloser, error) {
+		return io.NopCloser(strings.NewReader(string(tars[digest]))), nil
+	}}, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	builds := func() int {
+		raw, _ := os.ReadFile(count)
+		return strings.Count(string(raw), "x")
+	}
+	// An image in use (linked by another sandbox's drive) fills the cache.
+	if _, _, err := cache.Link(context.Background(), pinned, filepath.Join(dir, "other-drive"), m.fetchFor("sbx_other")); err != nil {
+		t.Fatal(err)
+	}
+
+	s := &sandbox{meta: meta{ID: "sbx_1", State: proto.StateStarting, Mounts: []proto.Mount{{Path: "/workspace/skills", Kind: proto.MountBundle, Digest: fresh}}}}
+	s.mu.Lock()
+	m.prefetchBundles(s)
+	s.mu.Unlock()
+	if !cache.Reserved(fresh) {
+		t.Fatal("reserved from the prefetch")
+	}
+	if _, err := cache.Get(context.Background(), fresh, m.fetchFor(s.meta.ID)); err != nil {
+		t.Fatal(err)
+	}
+	cache.Evict()
+	if !cache.Has(fresh) || builds() != 2 {
+		t.Fatalf("the image built for it is kept, built once: has=%v builds=%d", cache.Has(fresh), builds())
+	}
+
+	// The create answered with the mount pending; the sandbox stops before the background finish attaches it.
+	s.mu.Lock()
+	s.meta.State = proto.StateStopped
+	s.meta.MountStatus = []proto.MountStatus{{Path: "/workspace/skills", Kind: proto.MountBundle, State: proto.MountPending}}
+	m.finishBundles(s)
+	s.mu.Unlock()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		s.mu.Lock()
+		left := len(s.reserved)
+		s.mu.Unlock()
+		if left == 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if cache.Reserved(fresh) || cache.Has(fresh) || !cache.Has(pinned) || builds() != 2 {
+		t.Fatalf("given up: released and reclaimed, the image in use kept: reserved=%v has=%v pinned=%v builds=%d",
+			cache.Reserved(fresh), cache.Has(fresh), cache.Has(pinned), builds())
+	}
+}
+
+// TestDriveSetupNeverTruncatesAnImage: a VM directory left with a drive that is a link to a shared image (a create
+// interrupted by a host restart, retried): setting up its drives fails, and the image keeps its bytes.
+func TestDriveSetupNeverTruncatesAnImage(t *testing.T) {
+	image := filepath.Join(t.TempDir(), "image.erofs")
+	if err := os.WriteFile(image, []byte("erofs image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snap := t.TempDir()
+	if err := os.Link(image, filepath.Join(snap, "bundle0.erofs")); err != nil {
+		t.Fatal(err)
+	}
+	for name, setup := range map[string]func(vm string) error{
+		"emptyDrives": func(vm string) error { return emptyDrives(vm, 2) },
+		"snapshotDrives, a slot with an image": func(vm string) error {
+			_, err := snapshotDrives(vm, snap, 2, []string{"sha256:x", ""})
+			return err
+		},
+		"snapshotDrives, an empty slot": func(vm string) error {
+			_, err := snapshotDrives(vm, snap, 2, []string{"", ""})
+			return err
+		},
+	} {
+		vm := t.TempDir()
+		if err := os.Link(image, filepath.Join(vm, "bundle0.erofs")); err != nil {
+			t.Fatal(err)
+		}
+		if err := setup(vm); err == nil {
+			t.Errorf("%s: a drive file already there is an error", name)
+		}
+		if raw, err := os.ReadFile(image); err != nil || string(raw) != "erofs image" {
+			t.Fatalf("%s: the shared image keeps its bytes: %q %v", name, raw, err)
+		}
+	}
+}
+
+// Each setting of a sandbox's mount statuses says a later MountsAt, even within one millisecond or after the clock
+// steps back, so the control plane can order reports of them.
+func TestMountsAtOnlyMovesOn(t *testing.T) {
+	s := &sandbox{}
+	s.meta.MountsAt = time.Now().Add(time.Hour).UnixMilli() // a clock stepped back since
+	last := s.meta.MountsAt
+	for i := 0; i < 5; i++ {
+		setMountStatus(s, []proto.MountStatus{{Path: "/mnt/a", Kind: proto.MountBundle, State: proto.MountReady}})
+		if s.meta.MountsAt <= last {
+			t.Fatalf("MountsAt %d isn't after %d", s.meta.MountsAt, last)
+		}
+		last = s.meta.MountsAt
 	}
 }

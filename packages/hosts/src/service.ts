@@ -257,9 +257,14 @@ export interface HostComputeLink {
 	bucketSource?(hostId: string, sandboxId: string, bucketSourceId: string): Promise<HostBucketSource | undefined>;
 	/**
 	 * A host's later word on a sandbox's mounts, a `sandbox.mounts` event (`ComputeService.reportMounts`): only for a
-	 * sandbox whose placement is on that host.
+	 * sandbox whose placement is on that host. `mountsAt` is when the host set them (absent from an older host).
 	 */
-	reportMounts?(hostId: string, sandboxId: string, mounts: readonly HostMountStatus[]): Promise<void>;
+	reportMounts?(
+		hostId: string,
+		sandboxId: string,
+		mounts: readonly HostMountStatus[],
+		mountsAt?: number,
+	): Promise<void>;
 	/**
 	 * A bundle's tar for a host, or `undefined` unless the sandbox is on `hostId` and mounts it
 	 * (`ComputeService.bundleForHost`).
@@ -780,7 +785,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			if (compute?.bucketSource === undefined) throw new Error("The compute plane keeps no bucket sources here");
 			return compute.bucketSource(hostId, sandboxId, bucketSourceId);
 		},
-		onMounts(hostId, sandboxId, mounts) {
+		onMounts(hostId, sandboxId, mounts, mountsAt) {
 			const link = compute;
 			if (link?.reportMounts === undefined) return;
 			// Only for a sandbox placed on this host, by its placement record, which is written before the host is asked
@@ -789,7 +794,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			report(
 				(async () => {
 					if ((await store.getPlacement(sandboxId))?.hostId !== hostId) return;
-					await link.reportMounts?.(hostId, sandboxId, mounts);
+					await link.reportMounts?.(hostId, sandboxId, mounts, mountsAt);
 				})(),
 			);
 		},

@@ -19,7 +19,7 @@
  *
  * Nothing here is Node-only: a Cloudflare Durable Object holding the socket can host it the same way.
  */
-import { parseMountStatuses } from "./facts.ts";
+import { parseMountStatuses, parseMountsAt } from "./facts.ts";
 import {
 	decodeStreamFrame,
 	encodeStreamFrame,
@@ -172,8 +172,16 @@ export interface HostHubOptions {
 	 * and mounts it (answered `not_found`). Absent, every fetch is answered `unavailable`.
 	 */
 	bucketSource?(hostId: string, sandboxId: string, bucketSourceId: string): Promise<HostBucketSource | undefined>;
-	/** A sandbox's mounts changed status (a `sandbox.mounts` event), checked and clipped. */
-	onMounts?(hostId: string, sandboxId: string, mounts: readonly HostMountStatus[]): void | Promise<void>;
+	/**
+	 * A sandbox's mounts changed status (a `sandbox.mounts` event), checked and clipped, with when the host set them
+	 * (`HostSandbox.mountsAt`; absent from a host too old to say).
+	 */
+	onMounts?(
+		hostId: string,
+		sandboxId: string,
+		mounts: readonly HostMountStatus[],
+		mountsAt?: number,
+	): void | Promise<void>;
 	/**
 	 * The host's welcome as its record says now. Given, `rewelcome` sends this, read afresh (one read at a time per
 	 * connection, each after the last was sent), not the welcome it was handed, which may be older; and settings changed
@@ -464,14 +472,19 @@ export function createHostHub(options: HostHubOptions): HostHub {
 	 */
 	const mounts = (hostId: string, event: HostEvent) => {
 		if (options.onMounts === undefined) return;
-		const fields: { readonly sandboxId?: unknown; readonly mounts?: unknown } = event;
-		const sandbox: { readonly id?: unknown; readonly mounts?: unknown } = isObject(event.sandbox) ? event.sandbox : {};
+		const fields: { readonly sandboxId?: unknown; readonly mounts?: unknown; readonly mountsAt?: unknown } = event;
+		const sandbox: { readonly id?: unknown; readonly mounts?: unknown; readonly mountsAt?: unknown } = isObject(
+			event.sandbox,
+		)
+			? event.sandbox
+			: {};
 		const sandboxId = typeof fields.sandboxId === "string" ? fields.sandboxId : sandbox.id;
 		if (typeof sandboxId !== "string" || sandboxId === "") return;
 		const statuses = parseMountStatuses(fields.mounts !== undefined ? fields.mounts : sandbox.mounts);
 		if (statuses === undefined) return;
+		const at = parseMountsAt(fields.mounts !== undefined ? fields.mountsAt : sandbox.mountsAt);
 		try {
-			const kept = options.onMounts(hostId, sandboxId, statuses);
+			const kept = options.onMounts(hostId, sandboxId, statuses, at);
 			if (kept instanceof Promise) kept.catch(() => undefined);
 		} catch {
 			// As for egress.

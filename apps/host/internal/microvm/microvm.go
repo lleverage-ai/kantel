@@ -228,6 +228,8 @@ type meta struct {
 	// resolves those). MountStatus is how each bundle mount is doing; a bucket mount's is its mounts.Sandbox's.
 	Mounts      []proto.Mount       `json:"mounts,omitempty"`
 	MountStatus []proto.MountStatus `json:"mountStatus,omitempty"`
+	// MountsAt is when MountStatus was last set (SandboxInfo.MountsAt).
+	MountsAt int64 `json:"mountsAt,omitempty"`
 	// BundleDrives is how many bundle drives its VM has (fixed by the template or snapshot it came from), and
 	// BundleSlots the digest of the bundle attached to each ("" none).
 	BundleDrives int      `json:"bundleDrives,omitempty"`
@@ -247,6 +249,11 @@ type sandbox struct {
 	// adoptedMounts: the host adopted the sandbox running, with mounts its guest still holds, whose status the host
 	// hasn't confirmed with the guest since (ReconcileMounts).
 	adoptedMounts atomic.Bool
+	// reserved are the bundle images the sandbox waits for, each reserved in the cache from its first wait until its
+	// drive links it or the sandbox gives it up (bundles.go: reserveBundles, releaseBundles).
+	reserved map[string]func()
+	// mountsSeen is what the sandbox last reported of its mounts' states (mountStatus), whose change moves MountsAt on.
+	mountsSeen string
 }
 
 func (s *sandbox) vmDir() string { return filepath.Join(s.dir, "vm") }
@@ -646,32 +653,50 @@ func (m *Manager) info(s *sandbox) proto.SandboxInfo {
 	// Its own image's report: its template's, else its version's (a template rebuilt on a newer version doesn't change
 	// what this one boots).
 	info.Guest = m.sandboxGuest(s)
-	info.Mounts = m.mountStatus(s)
+	info.Mounts, info.MountsAt = m.mountStatus(s)
 	return info
 }
 
-// mountStatus is how each of the sandbox's mounts is doing, in the order it was created with: a bundle mount's from
-// its meta (bundles.go), a bucket mount's from its mounts.Sandbox.
-func (m *Manager) mountStatus(s *sandbox) []proto.MountStatus {
+// mountStatus is how each of the sandbox's mounts is doing, in the order it was created with, and when the host set
+// that (MountsAt): a bundle mount's from its meta (bundles.go: setMountStatus stamps it), a bucket mount's from its
+// mounts.Sandbox, which changes on its own (a listing, the guest's answer). So a sandbox with bucket mounts has its
+// stamp moved on here too, whenever what it reports differs from what it last reported: one stamp for the one list,
+// always later than the last, so the control plane never drops a bucket mount's change as older than a bundle's.
+// Called with s.mu held.
+func (m *Manager) mountStatus(s *sandbox) ([]proto.MountStatus, int64) {
 	if len(s.meta.Mounts) == 0 {
-		return nil
+		return nil, 0
 	}
 	byPath := map[string]proto.MountStatus{}
 	for _, st := range s.meta.MountStatus {
 		byPath[st.Path] = st
 	}
-	if mt := m.mountsOf(s); mt != nil {
-		for _, st := range mt.Status() {
+	buckets := m.mountsOf(s)
+	if buckets != nil {
+		for _, st := range buckets.Status() {
 			byPath[st.Path] = st
 		}
 	}
 	var out []proto.MountStatus
+	var seen strings.Builder
 	for _, mt := range s.meta.Mounts {
 		if st, ok := byPath[mt.Path]; ok {
 			out = append(out, st)
+			fmt.Fprintf(&seen, "%q %s %q\n", st.Path, st.State, st.Error)
 		}
 	}
-	return out
+	if buckets != nil && seen.String() != s.mountsSeen {
+		s.mountsSeen = seen.String()
+		at := time.Now().UnixMilli()
+		if at <= s.meta.MountsAt {
+			at = s.meta.MountsAt + 1
+		}
+		s.meta.MountsAt = at
+	}
+	if len(out) == 0 {
+		return nil, 0
+	}
+	return out, s.meta.MountsAt
 }
 
 // bucketMounts are the sandbox's bucket mounts: the part of its one list of mounts the host's mounts.Manager serves.
@@ -1737,6 +1762,7 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 	// While the VM starts.
 	m.prefetchBundles(s)
 	fail := func(err error) (proto.SandboxInfo, error) {
+		m.releaseBundles(s, nil)
 		if s.machine != nil {
 			s.machine.Kill()
 		}
@@ -1888,6 +1914,28 @@ func (m *Manager) keepAskedGuest(s *sandbox, fromTemplate bool, origin sandboxOr
 	}
 }
 
+// makeDrives gives s's new VM its bundle drives, before it boots or restores, and records them in its meta: a restored
+// VM has the devices its snapshot was made with. A boot has the host's BundleDrives, empty; a sandbox snapshot's
+// restore its drives as they were, its images linked from the snapshot (bundles.go); a template snapshot's as many as
+// it was made with, empty.
+func (m *Manager) makeDrives(s *sandbox, origin sandboxOrigin) error {
+	vm := s.vmDir()
+	switch {
+	case origin.state == "":
+		s.meta.BundleDrives, s.meta.BundleSlots = m.cfg.BundleDrives, nil
+	case origin.snapshotDir != "":
+		slots, err := snapshotDrives(vm, origin.snapshotDir, origin.bundleDrives, origin.bundleSlots)
+		if err != nil {
+			return err
+		}
+		s.meta.BundleDrives, s.meta.BundleSlots = origin.bundleDrives, slots
+		return nil
+	default:
+		s.meta.BundleDrives, s.meta.BundleSlots = snapshotDriveCount(filepath.Dir(origin.state)), nil
+	}
+	return emptyDrives(vm, s.meta.BundleDrives)
+}
+
 // recordImage records in s's meta the image origin starts it from: its root filesystem when that is a template's
 // pulled base (pulledRootfs), not the host's image, and the report origin has (a template's, whatever its root
 // filesystem; none for the host's image's other sandboxes, which share their image version's, guestOf).
@@ -1954,23 +2002,11 @@ func (m *Manager) startMachine(ctx context.Context, s *sandbox, origin sandboxOr
 		}
 		origin.rootfs = m.pinRootfs(origin.rootfs)
 		m.recordImage(s, origin)
-		return m.linkRootfs(vm, origin.rootfs)
+		if err := m.linkRootfs(vm, origin.rootfs); err != nil {
+			return err
+		}
+		return m.makeDrives(s, origin)
 	}()
-	if err != nil {
-		return err
-	}
-	// Its bundle drives, before it boots or restores: a restored VM has the devices its snapshot was made with.
-	s.meta.BundleDrives, s.meta.BundleSlots = m.cfg.BundleDrives, nil
-	switch {
-	case origin.state == "":
-		err = emptyDrives(vm, s.meta.BundleDrives)
-	case origin.snapshotDir != "":
-		s.meta.BundleDrives, s.meta.BundleSlots = origin.bundleDrives, append([]string(nil), origin.bundleSlots...)
-		err = snapshotDrives(vm, origin.snapshotDir, origin.bundleDrives, origin.bundleSlots)
-	default:
-		s.meta.BundleDrives = snapshotDriveCount(filepath.Dir(origin.state))
-		err = emptyDrives(vm, s.meta.BundleDrives)
-	}
 	if err != nil {
 		return err
 	}
@@ -2125,6 +2161,8 @@ func (m *Manager) Stop(ctx context.Context, p proto.StopParams) (proto.SnapshotI
 		s.link = nil
 	}
 	s.meta.State = proto.StateStopped
+	// A bundle it was still waiting for is waited for again by its next start, which reserves it again.
+	m.releaseBundles(s, nil)
 	s.meta.Memory = keepMemory
 	s.meta.Pid = 0
 	s.meta.Error = ""
@@ -2269,6 +2307,7 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 	s.meta.Pid = s.machine.Pid()
 	s.meta.Error = ""
 	if err := m.writeMeta(s); err != nil {
+		m.releaseBundles(s, nil)
 		return proto.SandboxInfo{}, err
 	}
 	if s.meta.GrowDisk {
@@ -2591,6 +2630,8 @@ func (m *Manager) Delete(ctx context.Context, id string) error {
 	if m.cfg.Mounts != nil {
 		m.cfg.Mounts.Forget(id)
 	}
+	// A bundle it waited for is no longer its to keep.
+	m.releaseBundles(s, nil)
 	if err := os.RemoveAll(s.dir); err != nil {
 		return err
 	}

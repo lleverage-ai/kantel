@@ -605,6 +605,65 @@ describe("a host's report that lands before its boot's answer is written", () =>
 		expect((await tom.getSandbox(sandbox.id)).mounts?.map((mount) => mount.status)).toEqual(["ready"]);
 	});
 
+	it("is ordered by when the host set them: an earlier answer or replay never undoes a later report", async () => {
+		// The boot answers one mount failed and one pending at t=100; its background finish retries both and reports them
+		// ready at t=101. Whichever lands first, they end ready; a replay read at t=100 that lands last changes nothing.
+		let service: { reportMounts: ComputeApi["service"]["reportMounts"] } | undefined;
+		const both = ["/mnt/a", "/mnt/b"];
+		const answer = {
+			mounts: [
+				{ path: "/mnt/a", status: "failed" as const, error: "fetching bundle: 503" },
+				{ path: "/mnt/b", status: "pending" as const },
+			],
+			mountsAt: 100,
+		};
+		const ready = both.map((path) => ({ path, status: "ready" as const }));
+		const replay = [{ path: "/mnt/a", status: "failed" as const, error: "fetching bundle: 503" }];
+		let reportFirst = true;
+		const { api, tom } = setup({
+			backend: (stub) => ({
+				create: async (spec) => {
+					const placed = await stub.create(spec);
+					if (reportFirst) await service?.reportMounts(STUB_HOST_ID, spec.sandboxId, ready, 101);
+					return { ...placed, ...answer };
+				},
+				start: async (sandboxId, options) => ({ ...(await stub.start(sandboxId, options)), ...answer, mountsAt: 200 }),
+			}),
+		});
+		service = api.service;
+		const bundle = await tom.uploadBundle(SKILLS.slice().buffer);
+		const mounts = both.map((path) => ({ path, source: { kind: "bundle" as const, digest: bundle.digest } }));
+		const statuses = async (id: string) => (await tom.getSandbox(id)).mounts?.map((mount) => mount.status);
+
+		// The report first, then the answer set before it.
+		const first = await tom.createSandbox({ type: "microvm", mounts, wait: true });
+		expect(first.mounts?.map((mount) => mount.status)).toEqual(["ready", "ready"]);
+		// A replay of what the host had at t=100 (its settled one: a's failure), landing late: dropped.
+		await api.service.reportMounts(STUB_HOST_ID, first.id, replay, 100);
+		expect(await statuses(first.id)).toEqual(["ready", "ready"]);
+
+		// The answer first, then the report set after it.
+		reportFirst = false;
+		const second = await tom.createSandbox({ type: "microvm", mounts, wait: true });
+		expect(second.mounts?.map((mount) => mount.status)).toEqual(["failed", "pending"]);
+		await api.service.reportMounts(STUB_HOST_ID, second.id, ready, 101);
+		expect(await statuses(second.id)).toEqual(["ready", "ready"]);
+		await api.service.reportMounts(STUB_HOST_ID, second.id, replay, 100);
+		expect(await statuses(second.id)).toEqual(["ready", "ready"]);
+
+		// A restart starts the order again: its own answer, set later on the host, applies whole.
+		await tom.stopSandbox(second.id, { wait: true });
+		const started = await tom.startSandbox(second.id, { wait: true });
+		expect(started.mounts?.map((mount) => mount.status)).toEqual(["failed", "pending"]);
+		// And a report from before it (the last boot's, delayed) is older than what it has.
+		await api.service.reportMounts(STUB_HOST_ID, second.id, ready, 150);
+		expect(await statuses(second.id)).toEqual(["failed", "pending"]);
+
+		// A host too old to say when: its reports are taken as they come.
+		await api.service.reportMounts(STUB_HOST_ID, first.id, [{ path: "/mnt/a", status: "failed", error: "x" }]);
+		expect(await statuses(first.id)).toEqual(["failed", "ready"]);
+	});
+
 	it("leaves a mount pending when no report came, and a boot sets a settled one pending again", async () => {
 		const { tom } = setup({
 			backend: (stub) => ({

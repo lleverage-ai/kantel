@@ -59,6 +59,8 @@ export class FakeHost {
 	readonly aborted: number[] = [];
 	/** For a test: what a create, fork, start or resume answers of the mounts it was sent; absent, nothing. */
 	mountStatus?: (mounts: readonly HostMount[]) => HostMountStatus[];
+	/** For a test: the `mountsAt` answered with them; absent, none (a host too old to say). */
+	mountsAt?: number;
 	/** For a test: the socket's buffered bytes, as a WebSocket reports them; absent, it can't tell. */
 	buffered?: () => number;
 	/** For a test: a write's bytes aren't acked (`stream.ack`) as they arrive, as from a sandbox that takes none. */
@@ -216,7 +218,13 @@ export class FakeHost {
 			this.send({ type: "result", id: message.id, error: { code, message: text } });
 		/** A sandbox as answered: with its mounts' statuses when the test reports them. */
 		const withMounts = (sandbox: HostSandbox): HostSandbox =>
-			this.mountStatus === undefined ? sandbox : { ...sandbox, mounts: this.mountStatus(params.mounts ?? []) };
+			this.mountStatus === undefined
+				? sandbox
+				: {
+						...sandbox,
+						mounts: this.mountStatus(params.mounts ?? []),
+						...(this.mountsAt === undefined ? {} : { mountsAt: this.mountsAt }),
+					};
 		const refused = this.refuse?.(message.method ?? "");
 		if (refused !== undefined) return fail(refused.code, refused.message);
 		const answered = this.answer?.(message.method ?? "");

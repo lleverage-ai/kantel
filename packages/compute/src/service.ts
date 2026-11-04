@@ -72,6 +72,7 @@ import type { MountsOptions, ResolvedBucketSource, StoredBlob } from "./mounts.t
 import {
 	backendMounts,
 	createMounts,
+	laterMountsAt,
 	type MountHandlers,
 	mountsAfter,
 	pendingMounts,
@@ -455,9 +456,15 @@ export interface ComputeService {
 	/**
 	 * A host's later word on a sandbox's mounts (a `sandbox.mounts` event): each status replaces the one at its path.
 	 * Dropped unless the sandbox is on `hostId`, or is starting (its boot's host not recorded yet: the caller checks that
-	 * `hostId` holds its placement); a path the sandbox doesn't mount is ignored.
+	 * `hostId` holds its placement); a path the sandbox doesn't mount is ignored. `mountsAt` is when the host set them:
+	 * one set no later than the record's is dropped (`reportMountStatuses`).
 	 */
-	reportMounts(hostId: string, sandboxId: string, mounts: readonly BackendMountStatus[]): Promise<void>;
+	reportMounts(
+		hostId: string,
+		sandboxId: string,
+		mounts: readonly BackendMountStatus[],
+		mountsAt?: number,
+	): Promise<void>;
 	/**
 	 * Answers a signed file URL (`GET` or `PUT /v1/file-urls/{token}`), which takes no credential: the token is the
 	 * grant. Streams the file out, or the request's body in.
@@ -2799,7 +2806,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				health: "ok",
 				// What its root file system is now (a rebase moves it on); a backend that doesn't say leaves what it was.
 				...placedBase(placement),
-				...(sandbox.mounts === undefined ? {} : { mounts: mountsAfter(sandbox.mounts, placement.mounts) }),
+				...(sandbox.mounts === undefined
+					? {}
+					: {
+							mounts: mountsAfter(sandbox.mounts, placement.mounts, {
+								stored: sandbox.mountsAt,
+								reported: placement.mountsAt,
+							}),
+							mountsAt: laterMountsAt(sandbox.mountsAt, placement.mountsAt),
+						}),
 				...(applied === undefined || (sandbox.egressApplied ?? Number.NEGATIVE_INFINITY) >= applied
 					? {}
 					: { egressApplied: applied }),
@@ -4481,7 +4496,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						samples: [],
 						ports: [],
 						// A fork keeps its source's mounts, put in place afresh on its own machine.
-						...(current.mounts === undefined ? {} : { mounts: pendingMounts(current.mounts) }),
+						...(current.mounts === undefined ? {} : { mounts: pendingMounts(current.mounts), mountsAt: undefined }),
 					});
 				}
 				for (const fork of forks) await store.sandboxes.put(fork);
@@ -4560,7 +4575,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				withState(latest, "starting", {
 					ports: [],
 					egressRevision: later(latest.egressRevision),
-					...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts) }),
+					...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts), mountsAt: undefined }),
 				}),
 			);
 			if (!("moved" in began)) throw new KantelError("conflict", `The sandbox is ${began.lost.state}`);
@@ -4663,7 +4678,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						pausedSnapshotId: undefined,
 						egressRevision: later(latest.egressRevision),
 						// Its mounts go with it, as a start's do, each pending until the boot says.
-						...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts) }),
+						...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts), mountsAt: undefined }),
 					}),
 				unmoved(current),
 			);
@@ -6021,7 +6036,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// A size it names replaces the shape it had; without one it keeps its shape.
 				shape: body.size === undefined ? latest.shape : undefined,
 				pausedSnapshotId: how === "resume" ? latest.pausedSnapshotId : undefined,
-				...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts) }),
+				...(latest.mounts === undefined ? {} : { mounts: pendingMounts(latest.mounts), mountsAt: undefined }),
 				// Its egress is read afresh for the boot: a revision of its own, so an update read before (from when it last
 				// ran, still being retried) never equals it, and loses.
 				egressRevision: later(latest.egressRevision),
@@ -6322,9 +6337,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return mounts?.bucketSourceForHost(hostId, sandboxId, bucketSourceId);
 		},
 
-		async reportMounts(hostId, sandboxId, statuses) {
+		async reportMounts(hostId, sandboxId, statuses, mountsAt) {
 			// Kept even with mounts off now: a sandbox made while they were on still has them.
-			await reportMountStatuses(store, hostId, sandboxId, statuses);
+			await reportMountStatuses(store, hostId, sandboxId, statuses, mountsAt);
 		},
 
 		async serveFileUrl(token, request) {

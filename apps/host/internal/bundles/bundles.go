@@ -78,9 +78,9 @@ type Cache struct {
 	// mu is held while an image is linked or removed, so eviction never removes one between a sandbox finding it and
 	// linking it.
 	mu sync.Mutex
-	// acquiring counts, by image path, the Link calls under way for it (held under mu). Eviction never removes an
-	// image a Link is waiting for, so a new image survives until the sandbox that asked for it has linked it, even
-	// when images in use already fill the cache or the image alone is bigger than MaxBytes.
+	// acquiring counts, by image path, the reservations of it (Reserve, and each Link while it runs; held under mu).
+	// Eviction never removes a reserved image, so a new image survives until the sandbox that asked for it has linked
+	// it, even when images in use already fill the cache or the image alone is bigger than MaxBytes.
 	acquiring map[string]int
 	bmu       sync.Mutex
 	builds    map[string]*build
@@ -331,15 +331,9 @@ func (c *Cache) mkfsImage(ctx context.Context, tarPath, out, scratch string) err
 // its size.
 func (c *Cache) Link(ctx context.Context, digest, dst string, fetch Fetch) (cached bool, size int64, err error) {
 	image := c.Image(digest)
-	c.mu.Lock()
-	c.acquiring[image]++
-	c.mu.Unlock()
+	unreserve := c.reserve(image)
 	defer func() {
-		c.mu.Lock()
-		if c.acquiring[image]--; c.acquiring[image] <= 0 {
-			delete(c.acquiring, image)
-		}
-		c.mu.Unlock()
+		unreserve()
 		// Given up or failed: an image no sandbox took may go again, if the cache is over its bound.
 		if err != nil {
 			c.Evict()
@@ -360,6 +354,41 @@ func (c *Cache) Link(ctx context.Context, digest, dst string, fetch Fetch) (cach
 			continue
 		}
 		return cached, size, err
+	}
+}
+
+// Reserve keeps a bundle's image from being evicted, whether it is in the cache yet or still to be built, until
+// release is called (once is enough; more do nothing). A caller reserves before it first waits for the image (Get) and
+// releases once its drive links it (the link keeps it then) or it gives up, so an image built for a sandbox is never
+// evicted, by the build's own trim or another's, before that sandbox could link it. Release trims the cache.
+func (c *Cache) Reserve(digest string) (release func()) {
+	unreserve := c.reserve(c.Image(digest))
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			unreserve()
+			c.Evict()
+		})
+	}
+}
+
+// Reserved says whether a bundle's image is reserved (Reserve, or a Link under way).
+func (c *Cache) Reserved(digest string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.acquiring[c.Image(digest)] > 0
+}
+
+func (c *Cache) reserve(image string) (unreserve func()) {
+	c.mu.Lock()
+	c.acquiring[image]++
+	c.mu.Unlock()
+	return func() {
+		c.mu.Lock()
+		if c.acquiring[image]--; c.acquiring[image] <= 0 {
+			delete(c.acquiring, image)
+		}
+		c.mu.Unlock()
 	}
 }
 
