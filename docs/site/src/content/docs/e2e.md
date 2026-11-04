@@ -24,9 +24,22 @@ admin gave it. Both check each new entry before they use it.
 An organisation admin starts the chain and enrols a host:
 
 ```sh
-kantel e2e init --account <org>                # prints the genesis to give members
+kantel e2e init --account <org> --yes          # prints the genesis to give members
 kantel e2e host-ticket rack-1 --account <org>  # prints: sudo kantel-host e2e join <ticket>
 ```
+
+### Turning it on retires existing sandboxes
+
+A host opens E2E sessions only to sandboxes it made itself while the organisation's E2E was on. It keeps that record
+on the machine, so the gateway can't set or change it. A sandbox made earlier, or before the host joined the chain,
+was open to the gateway: it could have left a process running or changed files there. Such a sandbox is **retired**.
+No device's session reaches it, and the gateway can't reach its content either. Nothing is deleted. Stop or delete
+retired sandboxes as usual, and make new ones once the host has joined. Snapshots follow the same rule: a new sandbox
+is made only from a snapshot taken of one made under E2E.
+
+`kantel e2e init`, and `kantel e2e mode on` when E2E is off, list the sandboxes this retires and go ahead only with
+`--yes`. Turning E2E off and on again retires every sandbox again, including those made while it was on, because the
+gateway could reach them while it was off.
 
 Run the printed command on the host. A self-hosted host with no route to the gateway's chain API can join offline
 with `kantel-host e2e join --chain chain.json <ticket>`, which prints its signed entry for you to publish.
@@ -59,4 +72,5 @@ an E2E space are updated on the machine, not by the gateway.
 `kantel e2e remove-device <device>`, `kantel e2e remove-member <user>` and `kantel e2e remove-host <host>` add a signed
 entry. A host takes it with the next session that brings it (your own next `kantel e2e` command does); from then on
 it refuses the device or person's calls, open sessions included, and closes their open ports within a few seconds. `kantel e2e mode strict` also keeps out devices of
-the `web` class (the hosted console); `kantel e2e mode off` turns enforcement off.
+the `web` class (the hosted console); `kantel e2e mode off` turns enforcement off, and turning it on again retires the
+organisation's sandboxes (see above).

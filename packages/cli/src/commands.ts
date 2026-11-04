@@ -849,6 +849,39 @@ async function e2eAppend(ctx: Context, body: EntryBody, done: string): Promise<v
 	ctx.emit({ space: next.state.space, seq: next.state.seq, head: next.state.head }, () => done);
 }
 
+/** Every sandbox in the space now, stopped ones too: those turning E2E on retires. */
+async function spaceSandboxes(ctx: Context, space: string): Promise<string[]> {
+	const client = await ctx.client();
+	const ids: string[] = [];
+	let cursor: string | undefined;
+	do {
+		const page = await client.listSandboxes({ account: space, all: true, cursor });
+		ids.push(...page.items.map((item) => item.id));
+		cursor = page.nextCursor ?? undefined;
+	} while (cursor !== undefined);
+	return ids;
+}
+
+const RETIRE_FLAGS = {
+	yes: { type: "boolean", short: "y", description: "Yes, retire the space's existing sandboxes" },
+} as const;
+
+/**
+ * Turning E2E on retires every sandbox the space has: hosts give sessions only to sandboxes they make while E2E is on,
+ * as the gateway could have changed an older one. Without --yes this lists them and stops.
+ */
+async function confirmRetiring(ctx: Context, space: string, again: string): Promise<void> {
+	const ids = await spaceSandboxes(ctx, space);
+	if (ids.length === 0 || ctx.boolean("yes")) return;
+	const shown = ids.slice(0, 20).join(", ") + (ids.length > 20 ? ` and ${ids.length - 20} more` : "");
+	throw new UsageError(
+		`Turning E2E on retires ${space}'s ${ids.length} existing sandbox${ids.length === 1 ? "" : "es"}: ${shown}. ` +
+			"Hosts open E2E sessions only to sandboxes made while E2E is on, and the gateway can't reach these either. " +
+			"Nothing is deleted: kantel delete <id> --yes removes them when you're done. " +
+			`To go ahead, run: ${again} --yes`,
+	);
+}
+
 /** An `rpc` session's call, with its error as the CLI's. */
 async function e2eCall<T>(ctx: Context, sandboxId: string, method: string, params: object): Promise<T> {
 	let session: e2e.OpenedE2E;
@@ -952,12 +985,16 @@ const E2E_COMMANDS: readonly CommandSpec[] = [
 				value: "<label>",
 				description: "This device's name in the chain (default kantel on <host>)",
 			},
+			...RETIRE_FLAGS,
 		},
-		details: `${E2E_DETAILS}\nWith E2E on, the organisation's hosts in the chain run commands, files and ports only in sessions.`,
+		details:
+			`${E2E_DETAILS}\nWith E2E on, the organisation's hosts in the chain run commands, files and ports only in sessions, ` +
+			"and only in sandboxes they make while it is on: the space's existing sandboxes are retired (needs --yes).",
 		async run(ctx) {
 			const mode = choice(ctx.string("mode"), ["on", "strict"] as const, "--mode") ?? "on";
 			const device = await e2e.loadDevice(ctx.io.configDir, ctx.string("label") ?? `kantel on ${hostname()}`);
 			const space = await e2eSpace(ctx);
+			await confirmRetiring(ctx, space, `kantel e2e init${mode === "on" ? "" : ` --mode ${mode}`}`);
 			const chain = await e2e
 				.initChain(await ctx.client(), ctx.io.configDir, device, space, await e2eUser(ctx), mode)
 				.catch((error: unknown) => {
@@ -1097,9 +1134,21 @@ const E2E_COMMANDS: readonly CommandSpec[] = [
 		name: "e2e mode",
 		summary: "Turn E2E off, on, or strict (strict also keeps the hosted console out)",
 		args: [{ name: "mode" }],
+		flags: RETIRE_FLAGS,
+		details:
+			"Turning it on (from off) retires the space's existing sandboxes (needs --yes): hosts open sessions only to " +
+			"sandboxes made while E2E is on, and turning it off and on again retires those too.",
 		async run(ctx) {
 			const mode = choice(ctx.arg(0), ["off", "on", "strict"] as const, "The mode") ?? "on";
-			await e2eAppend(ctx, { type: "mode", body: { mode } }, `E2E is ${mode}; hosts take it at their next session.`);
+			if (mode !== "off") {
+				const { chain } = await e2eChainOf(ctx);
+				if (chain.state.mode === "off") await confirmRetiring(ctx, chain.state.space, `kantel e2e mode ${mode}`);
+			}
+			const done =
+				mode === "off"
+					? "E2E is off; hosts take it at their next session. Turning it on again retires every sandbox the space has then."
+					: `E2E is ${mode}; hosts take it at their next session.`;
+			await e2eAppend(ctx, { type: "mode", body: { mode } }, done);
 		},
 	},
 	{

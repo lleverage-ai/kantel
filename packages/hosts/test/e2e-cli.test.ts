@@ -64,8 +64,14 @@ describe("kantel e2e", () => {
 		const root = await cli(s, "root", s.org.id);
 		const bob = await cli(s, "bob", s.org.id);
 
+		// Turning E2E on retires the space's existing sandboxes: the CLI lists them and wants --yes.
+		const unconfirmed = await root("e2e", "init", "--label", "root's laptop");
+		expect(unconfirmed.code).not.toBe(0);
+		expect(unconfirmed.stderr).toContain(`retires ${s.org.id}'s 1 existing sandbox: ${s.sandbox.id}`);
+		expect(unconfirmed.stderr).toContain("kantel e2e init --yes");
+
 		// The admin starts the chain; the genesis goes to members out of band.
-		const init = await root("e2e", "init", "--label", "root's laptop", "--json");
+		const init = await root("e2e", "init", "--label", "root's laptop", "--yes", "--json");
 		expect(init.stderr).toBe("");
 		expect(init.code).toBe(0);
 		const { genesis } = JSON.parse(init.stdout) as { genesis: string };
@@ -75,9 +81,11 @@ describe("kantel e2e", () => {
 		expect(ticket.stderr).toBe("");
 		expect(ticket.code).toBe(0);
 		await hostJoins(s, (JSON.parse(ticket.stdout) as { ticket: string }).ticket);
+		// Sessions reach sandboxes made while E2E is on.
+		const sandbox = await s.root.createSandbox({ account: s.org.id, type: "microvm", wait: true });
 
 		// The admin's own command.
-		const exec = await root("e2e", "exec", s.sandbox.id, "--", "sh", "-c", SECRET_COMMAND);
+		const exec = await root("e2e", "exec", sandbox.id, "--", "sh", "-c", SECRET_COMMAND);
 		expect(exec.stderr).toBe("");
 		expect(exec.code).toBe(0);
 		expect(exec.stdout).toBe(`${SECRET_OUTPUT}\n`);
@@ -88,14 +96,14 @@ describe("kantel e2e", () => {
 		expect(joinedBob.stderr).toBe("");
 		expect(joinedBob.code).toBe(0);
 		const { card } = JSON.parse(joinedBob.stdout) as { card: string };
-		const early = await bob("e2e", "exec", s.sandbox.id, "--", "id");
+		const early = await bob("e2e", "exec", sandbox.id, "--", "id");
 		expect(early.code).not.toBe(0);
 		expect(early.stderr).toMatch(/isn't in the space's chain/);
 
 		const added = await root("e2e", "add-device", "--member", card);
 		expect(added.stderr).toMatch(/check it with them/);
 		expect(added.code).toBe(0);
-		const bobs = await bob("e2e", "cat", s.sandbox.id, "/home/user/.env");
+		const bobs = await bob("e2e", "cat", sandbox.id, "/home/user/.env");
 		expect(bobs.stderr).toBe("");
 		expect(bobs.code).toBe(0);
 		expect(bobs.stdout).toBe(`${SECRET_OUTPUT}\n`);
@@ -117,7 +125,7 @@ describe("kantel e2e", () => {
 
 		// Taking Bob out: the host refuses him at his next session.
 		expect((await root("e2e", "remove-member", PEOPLE.bob.userId)).code).toBe(0);
-		const after = await bob("e2e", "exec", s.sandbox.id, "--", "id");
+		const after = await bob("e2e", "exec", sandbox.id, "--", "id");
 		expect(after.code).not.toBe(0);
 		expect(after.stderr).toMatch(/isn't in the space's chain|isn't a member/);
 	});
@@ -125,12 +133,12 @@ describe("kantel e2e", () => {
 	it("won't let a member who isn't an admin start the chain, nor trust a chain from another genesis", async () => {
 		const s = await organisation();
 		const bob = await cli(s, "bob", s.org.id);
-		const started = await bob("e2e", "init");
+		const started = await bob("e2e", "init", "--yes");
 		expect(started.code).not.toBe(0);
 		expect(started.stderr).toMatch(/admin/);
 
 		const root = await cli(s, "root", s.org.id);
-		expect((await root("e2e", "init")).code).toBe(0);
+		expect((await root("e2e", "init", "--yes")).code).toBe(0);
 		// A genesis that isn't the gateway's chain's: every read fails rather than trusting what the gateway says.
 		const wrong = "a".repeat(43);
 		expect((await bob("e2e", "join", s.org.id, wrong)).code).toBe(0);
@@ -151,7 +159,7 @@ describe("kantel e2e", () => {
 			return Response.json({ entries: entries.slice(0, -1) });
 		};
 		const root = await cli(s, "root", s.org.id, fetch);
-		expect((await root("e2e", "init")).code).toBe(0);
+		expect((await root("e2e", "init", "--yes")).code).toBe(0);
 		// The admin takes Bob out (he was in); the gateway then hides that.
 		expect((await root("e2e", "add-member", PEOPLE.bob.userId)).code).toBe(0);
 		expect((await root("e2e", "remove-member", PEOPLE.bob.userId)).code).toBe(0);
@@ -159,5 +167,21 @@ describe("kantel e2e", () => {
 		const status = await root("e2e", "status");
 		expect(status.code).not.toBe(0);
 		expect(status.stderr).toMatch(/goes back on what this device verified/);
+	});
+
+	it("turning E2E off and on again wants --yes, as it retires the space's sandboxes again", async () => {
+		const s = await organisation();
+		const root = await cli(s, "root", s.org.id);
+		expect((await root("e2e", "init", "--yes")).code).toBe(0);
+		const off = await root("e2e", "mode", "off");
+		expect(off.code).toBe(0);
+		expect(off.stdout).toMatch(/Turning it on again retires every sandbox/);
+		const on = await root("e2e", "mode", "on");
+		expect(on.code).not.toBe(0);
+		expect(on.stderr).toContain(s.sandbox.id);
+		expect(on.stderr).toContain("kantel e2e mode on --yes");
+		expect((await root("e2e", "mode", "on", "--yes")).code).toBe(0);
+		// On to strict retires nothing more.
+		expect((await root("e2e", "mode", "strict")).code).toBe(0);
 	});
 });
