@@ -223,6 +223,16 @@ func (p *Proxy) serve(l net.Listener) {
 	}
 }
 
+// asciiHost says whether host is printable ASCII only, the form a name is checked and dialled in alike.
+func asciiHost(host string) bool {
+	for i := 0; i < len(host); i++ {
+		if c := host[i]; c <= ' ' || c >= 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
 func matchHost(pattern, host string) bool {
 	pattern = strings.ToLower(strings.TrimSpace(pattern))
 	if pattern == "*" {
@@ -550,6 +560,13 @@ func (p *Proxy) handleWith(conn net.Conn, resolve Resolver) {
 		if req.URL.Port() != "" {
 			port, _ = strconv.Atoi(req.URL.Port())
 		}
+	}
+	if !asciiHost(host) {
+		// The rules judge the name as it came, and Go's client dials its IDNA form, which can be another name
+		// ("ｂad.example.com" is dialled as bad.example.com): so only a name both see the same way goes on. Clients send
+		// an internationalised name in its xn-- form.
+		_ = refusal{status: http.StatusBadRequest, message: "the host must be an ASCII name (an internationalised one in its xn-- form)"}.write(conn)
+		return
 	}
 	rec := Record{At: started, SandboxID: rules.SandboxID, Account: rules.Account, Method: req.Method, Host: host, Port: port, Attribution: attribution, Via: "direct"}
 	if rules.Upstream != "" {
