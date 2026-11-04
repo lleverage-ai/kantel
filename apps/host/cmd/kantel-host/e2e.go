@@ -101,11 +101,16 @@ func e2eCmd(args []string) error {
 			return nil
 		}
 		if *chainFile != "" {
+			// Published by hand: the host takes it into its chain when a chain that has it comes back (join again with
+			// it, or a device's session).
 			out, _ := json.Marshal(entry)
 			fmt.Println(string(out))
 			return nil
 		}
-		return publish(cfg, space, len(entries), entry)
+		if err := publish(cfg, space, len(entries), entry); err != nil {
+			return err
+		}
+		return store.Confirm(space, entry)
 	}
 	return fmt.Errorf("e2e: unknown command %q", args[0])
 }
@@ -151,7 +156,7 @@ func publish(cfg agent.Config, space string, from int, entry e2e.Entry) error {
 	body, _ := json.Marshal(map[string]any{"space": space, "from": from, "entries": []e2e.Entry{entry}})
 	res, err := controlPlane(cfg, http.MethodPost, hostChainPath, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("the host joined, but publishing its entry failed (run join again): %w", err)
+		return fmt.Errorf("publishing the host's entry failed (run join again; with a conflict, it signs one on the chain as it is now): %w", err)
 	}
 	res.Body.Close()
 	return nil

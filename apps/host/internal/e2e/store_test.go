@@ -18,9 +18,14 @@ type joinVector struct {
 	} `json:"race"`
 }
 
-// A host.add the gateway refused because another append took its seq first isn't kept as the chain: the host joins
-// the chain the gateway took, and what it accepted before stays fork- and rollback-protected.
-func TestAHostAddThatLostItsSeqIsDroppedOnTheNextJoin(t *testing.T) {
+// entriesPlus is entries with more after them, in a new slice.
+func entriesPlus(entries []Entry, more ...Entry) []Entry {
+	return append(append([]Entry{}, entries...), more...)
+}
+
+// A host.add stays a proposal until the gateway takes it: one that loses its seq to another append is never part of
+// the host's chain, so the host joins the chain the gateway took; one it confirmed can't be gone back on.
+func TestAHostAddThatLostItsSeqIsReplacedOnTheNextJoin(t *testing.T) {
 	var v joinVector
 	readVector(t, "join.json", &v)
 	store, _ := OpenStore(t.TempDir())
@@ -29,8 +34,11 @@ func TestAHostAddThatLostItsSeqIsDroppedOnTheNextJoin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if got := store.Space("acc_org").Entries(0); len(got) != len(v.Entries) {
+		t.Fatalf("an unpublished host.add is in the host's chain (%d entries)", len(got))
+	}
 	// The gateway answered conflict: an admin's member.add went in at that seq.
-	canonical := append(append([]Entry{}, v.Entries...), v.Race.Entry)
+	canonical := entriesPlus(v.Entries, v.Race.Entry)
 	again, _ := DecodeJoinTicket(v.Race.Word)
 	entry, st, err := store.Join(again, canonical, "host_two", time.Now().Add(time.Minute))
 	if err != nil {
@@ -42,23 +50,93 @@ func TestAHostAddThatLostItsSeqIsDroppedOnTheNextJoin(t *testing.T) {
 	if _, ok := st.Hosts["host_two"]; !ok || st.Seq != len(canonical) {
 		t.Fatalf("seq %d, hosts %v", st.Seq, st.Hosts)
 	}
-	if _, err := VerifyChain(append(append([]Entry{}, canonical...), entry), ""); err != nil {
+	if _, err := VerifyChain(entriesPlus(canonical, entry), ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Confirm("acc_org", lost); err == nil {
+		t.Fatal("the lost host.add was confirmed")
+	}
+	// The gateway took it.
+	if err := store.Confirm("acc_org", entry); err != nil {
 		t.Fatal(err)
 	}
 	got := store.Space(st.Space).Entries(0)
-	if len(got) != len(canonical)+1 || got[len(v.Entries)] != v.Race.Entry {
+	if len(got) != len(canonical)+1 || got[len(v.Entries)] != v.Race.Entry || got[len(canonical)] != entry {
 		t.Fatalf("the host holds %d entries", len(got))
 	}
-	// Published, that host.add is the chain: the gateway's going back to the lost one, or before it, is refused.
-	if _, _, err := store.Join(join, append(append([]Entry{}, v.Entries...), lost), "host_two", time.Now()); err == nil {
-		t.Fatal("the host went back to the host.add it dropped")
+	if _, ok := store.proposal("acc_org"); ok {
+		t.Fatal("the confirmed proposal is still there")
 	}
-	if _, _, err := store.Join(again, v.Entries, "host_two", time.Now()); err == nil {
-		t.Fatal("the host's chain was rolled back past the member.add")
+	// Confirmed, that host.add is the chain: a competing branch at its seq, the lost one or anything before it is
+	// refused, whichever ticket comes with it.
+	for name, chain := range map[string][]Entry{
+		"the lost host.add":  entriesPlus(v.Entries, lost),
+		"before the member":  v.Entries,
+		"without a host.add": canonical,
+	} {
+		for _, ticket := range []*JoinTicket{join, again} {
+			if e, _, err := store.Join(ticket, chain, "host_two", time.Now()); err == nil && e != entry {
+				t.Fatalf("%s: the host left its confirmed host.add", name)
+			}
+		}
+	}
+	if got := store.Space(st.Space).Entries(0); len(got) != len(canonical)+1 || got[len(canonical)] != entry {
+		t.Fatalf("the confirmed chain changed: %d entries", len(got))
 	}
 }
 
-// Only this host's own last, unaccepted host.add is dropped: a chain the gateway forks anywhere else is still refused.
+// The gateway took the host.add but its answer was lost: the next join finds it in the chain and settles the proposal,
+// and a later one can't swap it for a competing entry.
+func TestAHostAddWhoseAnswerWasLostIsSettledByTheChain(t *testing.T) {
+	var v joinVector
+	readVector(t, "join.json", &v)
+	store, _ := OpenStore(t.TempDir())
+	join, _ := DecodeJoinTicket(v.Word)
+	entry, _, err := store.Join(join, v.Entries, "host_two", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, _, err := store.Join(join, entriesPlus(v.Entries, entry), "host_two", time.Now()); err != nil || again.Payload != "" {
+		t.Fatalf("again %+v: %v", again, err)
+	}
+	if _, ok := store.proposal("acc_org"); ok {
+		t.Fatal("the proposal outlived the chain that has it")
+	}
+	racer, _ := DecodeJoinTicket(v.Race.Word)
+	if _, _, err := store.Join(racer, entriesPlus(v.Entries, v.Race.Entry), "host_two", time.Now()); err == nil {
+		t.Fatal("the host swapped its accepted host.add for another entry at that seq")
+	}
+	// Confirm after the chain brought it in (a device's session, then the publish's answer) is a no-op.
+	if err := store.Confirm("acc_org", entry); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Space("acc_org").Entries(0); len(got) != len(v.Entries)+1 || got[len(v.Entries)] != entry {
+		t.Fatalf("%d entries", len(got))
+	}
+}
+
+// A device's session that brings the published host.add settles it as well; Confirm then has nothing to add.
+func TestADeviceSessionCanBringTheHostAddIn(t *testing.T) {
+	var v joinVector
+	readVector(t, "join.json", &v)
+	store, _ := OpenStore(t.TempDir())
+	join, _ := DecodeJoinTicket(v.Word)
+	entry, _, err := store.Join(join, v.Entries, "host_two", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Space("acc_org").Extend(len(v.Entries), []Entry{entry}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Confirm("acc_org", entry); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Space("acc_org").Entries(0); len(got) != len(v.Entries)+1 {
+		t.Fatalf("%d entries", len(got))
+	}
+}
+
+// Only this host's own unaccepted host.add gives way: a chain the gateway forks anywhere else is still refused.
 func TestAForkBeforeTheHostAddIsStillRefused(t *testing.T) {
 	var v joinVector
 	readVector(t, "join.json", &v)
@@ -74,7 +152,7 @@ func TestAForkBeforeTheHostAddIsStillRefused(t *testing.T) {
 	if _, _, err := store.Join(again, forked, "host_two", time.Now()); err == nil {
 		t.Fatal("the host followed a chain that forks before its host.add")
 	}
-	if got := store.Space("acc_org").Entries(0); len(got) != len(v.Entries)+1 {
+	if got := store.Space("acc_org").Entries(0); len(got) != len(v.Entries) {
 		t.Fatalf("the host's chain has %d entries", len(got))
 	}
 }
@@ -192,8 +270,12 @@ func TestAnInterruptedFirstJoinCanBeRetried(t *testing.T) {
 		t.Fatalf("after the failed join: joined %v, mode %s", store.joined()[space], store.Mode(space))
 	}
 	_, staged, err := store.staged(space)
-	if err != nil || len(staged) != len(v.Entries)+1 {
+	if err != nil || len(staged) != len(v.Entries) {
 		t.Fatalf("staged %d entries: %v", len(staged), err)
+	}
+	first, ok := store.proposal(space)
+	if !ok {
+		t.Fatal("the failed join kept no proposal")
 	}
 	if err := os.Remove(blocker); err != nil {
 		t.Fatal(err)
@@ -206,11 +288,14 @@ func TestAnInterruptedFirstJoinCanBeRetried(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if entry != staged[len(v.Entries)] {
+	if entry != first.Entry {
 		t.Fatal("the retry signed a new host.add rather than publishing the first")
 	}
 	if fresh.Mode(space) != ModeOn || st.Mode != ModeOn {
 		t.Fatalf("mode %s, chain says %s", fresh.Mode(space), st.Mode)
+	}
+	if err := fresh.Confirm(space, entry); err != nil {
+		t.Fatal(err)
 	}
 	if got := fresh.Space(space).Entries(0); len(got) != len(v.Entries)+1 {
 		t.Fatalf("the chain has %d entries", len(got))
