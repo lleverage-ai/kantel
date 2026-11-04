@@ -87,7 +87,10 @@ function Scenario({
 	);
 }
 
-/** A running microVM: previews of its desktop and browser, SSH, ports, live CPU and memory, and details. */
+/**
+ * A running microVM: previews of its desktop and browser, SSH, ports, live CPU and memory, details and its read-only
+ * mounts.
+ */
 export const Overview: Story = () => <Scenario />;
 
 /** Its CPU and memory while their first readings load. */
@@ -95,6 +98,15 @@ export const UsageLoading: Story = () => <Scenario usage="loading" />;
 
 /** Where the source has no live usage: its recent CPU as listed, and memory as a meter. */
 export const NoLiveUsage: Story = () => <Scenario usage="none" />;
+
+/** The same, for its mounts: a bundle and a bucket in place, and a bundle its host couldn't mount, with why. */
+export const Mounts: Story = () => <Scenario />;
+
+/** Another's mounts while one is still pending. */
+export const MountsPending: Story = () => <Scenario sandboxId="sbx_4d8n1x7pe2" />;
+
+/** Where the deployment hasn't turned mounts on: no Mounts at all. */
+export const MountsOff: Story = () => <Scenario options={{ noMounts: true }} />;
 
 /** Served by `kantel console`, which can't frame them: Browser, Desktop and the previews open each in a tab. */
 export const LocalConsole: Story = () => <Scenario local />;
@@ -117,8 +129,17 @@ export const NotEndToEndFiles: Story = () => <Scenario e2e={false} view="files" 
 /** The same on hosted Kantel, with its cost. */
 export const Hosted: Story = () => <Scenario hosting="hosted" />;
 
-/** ⋯ open: Fork, Save snapshot, Auto-stop and Delete. */
+/** ⋯ open: Fork, Save snapshot, Auto-stop, Restart on latest base and Delete. */
 export const Menu: Story = () => <Scenario menuOpen />;
+
+/**
+ * On an outdated base with security fixes waiting: the notice with Restart on latest, and the base in Details. Restart
+ * asks first, then the sandbox starts again on the latest.
+ */
+export const BaseOutdated: Story = () => <Scenario />;
+
+/** A stopped one on an outdated base, with no security fixes waiting: amber. */
+export const BaseOutdatedStopped: Story = () => <Scenario sandboxId="sbx_2q8w5e1rz4" />;
 
 /** Logs: commands and what happened to it, newest first, the failed build open. */
 export const Logs: Story = () => <Scenario view="logs" />;
@@ -194,7 +215,7 @@ export const Loading: Story = () => <Scenario options={{ hang: true }} />;
 /** When Kantel can't be reached. */
 export const Unreachable: Story = () => <Scenario options={{ fail: true }} />;
 
-/** On a phone: no previews, Stop in ⋯, the sections stacked. */
+/** On a phone: no previews, Stop in ⋯, the sections stacked, its mounts last. */
 export const Mobile: Story = () => <Scenario narrow />;
 Mobile.meta = { width: 390 };
 

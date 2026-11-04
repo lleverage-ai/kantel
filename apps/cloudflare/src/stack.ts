@@ -314,6 +314,7 @@ export async function createStack(options: StackOptions): Promise<Stack> {
 		...(storage.compute === undefined ? {} : { sql: storage.compute }),
 		...(options.config.portsDomain === undefined ? {} : { portsDomain: options.config.portsDomain }),
 		...(options.config.accountHosts === undefined ? {} : { accountHosts: options.config.accountHosts }),
+		...(options.config.imagePatching === undefined ? {} : { imagePatching: options.config.imagePatching }),
 		...(mail === undefined || emailConfig === undefined
 			? {}
 			: {

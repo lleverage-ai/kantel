@@ -12,8 +12,9 @@
 //
 // On disk (Root, default /var/lib/kantel-host):
 //
-//	images/vmlinux, images/sandbox.ext4      the kernel and the shared read-only root filesystem
-//	templates/<size>/{state,mem,disk.ext4}    each size's template snapshot
+//	images/vmlinux, images/sandbox.ext4      the kernel and the shared read-only root filesystem (with image
+//	                                          patching, links to images/current: package images, base.go)
+//	templates/<size>/{state,mem,disk.ext4}    each size's template snapshot (rootfs: the image it was made on)
 //	sandboxes/<id>/meta.json                  the sandbox's record
 //	sandboxes/<id>/vm/                        Firecracker's working directory: rootfs.ext4 (a link to the image),
 //	                                          disk.ext4 (the sandbox's own disk), state and mem after a stop
@@ -47,6 +48,7 @@ import (
 	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
 	"github.com/lleverage-ai/kantel/apps/host/internal/guestinit"
 	"github.com/lleverage-ai/kantel/apps/host/internal/hostinfo"
+	"github.com/lleverage-ai/kantel/apps/host/internal/images"
 	"github.com/lleverage-ai/kantel/apps/host/internal/network"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
@@ -144,6 +146,12 @@ type Config struct {
 	// for the disk; SpoolMaxMiB caps it. Empty: straight to disk.
 	SpoolDir    string
 	SpoolMaxMiB int64
+	// PinBase (image patching): each sandbox, snapshot and template links the file Rootfs resolves to when it is made,
+	// so an update that repoints Rootfs changes only what new ones start on (base.go).
+	PinBase bool
+	// BackgroundTemplates (image patching): a template made with other images is still used while its replacement
+	// builds in the background, rather than every create waiting for it.
+	BackgroundTemplates bool
 	// Initrd is Kantel's initramfs (guestinit.Build): when set, every cold boot goes through it, which puts the guest
 	// agent into the image, so Rootfs may be any Linux root filesystem (injectGuestAgent, experimental). Empty boots
 	// the image's own kantel-init and agent.
@@ -215,20 +223,40 @@ type Manager struct {
 	nextCID              atomic.Uint32
 	closed               atomic.Bool
 	spool                *spool
+	// inUse is held (read) from picking a template until restoring it, so a background rebuild swaps it in between
+	// creates (base.go): a named size's (made in New) or a shared template's (made on first use), by name.
+	inUse map[string]*sync.RWMutex
+	// rebuilding are the templates being rebuilt in the background, by name; rebuild does it (swapTemplate when nil,
+	// tests replace it).
+	rebuilding map[string]bool
+	rebuild    func(ctx context.Context, sh shape) error
+	// bases is the base lock: read while a reference to an image version is made or moved, written by a prune from its
+	// walk of what is in use until its removals (base.go).
+	bases sync.RWMutex
+	// pinning serialises PinBases; pinned is its first success (base.go).
+	pinning sync.Mutex
+	pinned  atomic.Bool
+	// guests are what each image has, as the agent in a template on it reported (guestFile), by that image's version
+	// ("" when the images aren't versioned); a nil report is an agent too old to say. A sandbox is told its own base's:
+	// with image patching, sandboxes on older versions run beside ones on the current version.
+	guestsMu sync.Mutex
+	guests   map[string]*proto.GuestCapabilities
 	// hostMemoryMiB is the machine's memory, a custom shape's ceiling (0: unknown, no ceiling but the sanity cap).
 	hostMemoryMiB int64
-	// guest is what the image has, as a template's agent reported it (guestFile); every sandbox shares the image.
-	guest atomic.Pointer[proto.GuestCapabilities]
 }
 
-// guestFile, in a template, is its agent's capability report. The manager's root keeps the latest report too, from a
-// template or a custom shape's boot (which has no template), so a host that restarts still has it.
-const guestFile = "guest.json"
+// guestFile, in a template, is its agent's capability report. The manager's root keeps each image's too (guestPath),
+// from a template or a custom shape's boot (which has no template), so a host that restarts still has them, and a
+// sandbox on an older version still has its own once its template has been rebuilt.
+const (
+	guestFile = "guest.json"
+	guestsDir = "guests"
+)
 
-// bootConfig is a cold boot of a shape: through Kantel's initramfs when the host injects the agent, with its
-// hotpluggable memory when it has some (a shared template).
-func (m *Manager) bootConfig(sh shape, tap, mac string, cid uint32) fc.BootConfig {
-	cfg := fc.BootConfig{VCPUs: sh.VCPUs, MemoryMiB: sh.MemoryMiB, Kernel: m.cfg.Kernel, BootArgs: bootArgs, TapDevice: tap, MAC: mac, GuestCID: cid, HotplugMiB: sh.HotplugMiB}
+// bootConfig is a cold boot of a shape on kernel (kernelFor: its root filesystem's version's): through Kantel's
+// initramfs when the host injects the agent, with its hotpluggable memory when it has some (a shared template).
+func (m *Manager) bootConfig(sh shape, kernel, tap, mac string, cid uint32) fc.BootConfig {
+	cfg := fc.BootConfig{VCPUs: sh.VCPUs, MemoryMiB: sh.MemoryMiB, Kernel: kernel, BootArgs: bootArgs, TapDevice: tap, MAC: mac, GuestCID: cid, HotplugMiB: sh.HotplugMiB}
 	if m.cfg.Initrd != "" {
 		cfg.Initrd, cfg.BootArgs = m.cfg.Initrd, guestinit.BootArgs
 	}
@@ -238,43 +266,137 @@ func (m *Manager) bootConfig(sh shape, tap, mac string, cid uint32) fc.BootConfi
 	return cfg
 }
 
-// noteGuest keeps what a template's agent reported (nil: an agent too old to say).
+// noteGuest keeps what a template's agent reported (nil: an agent too old to say), as what the image version the
+// template is on has.
 func (m *Manager) noteGuest(dir string, caps *proto.GuestCapabilities) {
-	// Even nil: a template with no report mustn't keep the one before it (another image's).
-	m.guest.Store(caps)
-	for _, d := range []string{dir, m.cfg.Root} {
-		writeGuest(d, caps)
+	// Even nil: a template with no report mustn't keep the one before it on the same image.
+	base := images.VersionOf(m.templateRootfs(dir))
+	m.keepGuest(base, caps)
+	writeGuest(filepath.Join(dir, guestFile), caps)
+}
+
+// noteBootGuest keeps what a custom shape's boot on image version base reported: there is no template to keep it in,
+// so the root does.
+func (m *Manager) noteBootGuest(base string, caps *proto.GuestCapabilities) {
+	m.keepGuest(base, caps)
+}
+
+// keepGuest is what image version base has, in memory and in the root (guestPath).
+func (m *Manager) keepGuest(base string, caps *proto.GuestCapabilities) {
+	m.guestsMu.Lock()
+	if m.guests == nil {
+		m.guests = map[string]*proto.GuestCapabilities{}
+	}
+	m.guests[base] = caps
+	m.guestsMu.Unlock()
+	if m.cfg.Root != "" {
+		writeGuest(m.guestPath(base), caps)
 	}
 }
 
-// noteBootGuest keeps what a custom shape's boot reported: there is no template to keep it in, so the root does.
-func (m *Manager) noteBootGuest(caps *proto.GuestCapabilities) {
-	m.guest.Store(caps)
-	writeGuest(m.cfg.Root, caps)
+// guestPath is where the root keeps image version base's report: guest.json for images that aren't versioned, as
+// before versions, and guests/<version>.json for each version.
+func (m *Manager) guestPath(base string) string {
+	if base == "" {
+		return filepath.Join(m.cfg.Root, guestFile)
+	}
+	return filepath.Join(m.cfg.Root, guestsDir, base+".json")
 }
 
-// writeGuest puts a report in dir's guestFile, or removes it for nil. No dir: kept in memory only.
-func writeGuest(dir string, caps *proto.GuestCapabilities) {
-	if dir == "" {
-		return
-	}
+// writeGuest puts a report in file, or removes it for nil.
+func writeGuest(file string, caps *proto.GuestCapabilities) {
 	if caps == nil {
-		_ = os.Remove(filepath.Join(dir, guestFile))
+		_ = os.Remove(file)
 		return
 	}
 	if raw, err := json.Marshal(caps); err == nil {
-		_ = os.WriteFile(filepath.Join(dir, guestFile), raw, 0o600)
+		_ = os.MkdirAll(filepath.Dir(file), 0o700)
+		_ = fsutil.WriteFileDurably(file, raw, 0o600)
 	}
 }
 
-// loadGuest reads a kept report (the root's, else a ready template's), for a host that restarted.
+// loadGuest reads a ready template's report, for a host that restarted (its templates are kept), unless its image's is
+// already known. A versioned image's is kept in the root too: a template from before reports were kept by version (one
+// PinBases has just pinned) would otherwise take its image's report with it when it is rebuilt on another.
 func (m *Manager) loadGuest(dir string) {
-	if m.guest.Load() != nil {
+	base := images.VersionOf(m.templateRootfs(dir))
+	m.guestsMu.Lock()
+	defer m.guestsMu.Unlock()
+	if _, known := m.guests[base]; known {
 		return
 	}
 	var caps proto.GuestCapabilities
 	if raw, err := os.ReadFile(filepath.Join(dir, guestFile)); err == nil && json.Unmarshal(raw, &caps) == nil {
-		m.guest.Store(&caps)
+		if m.guests == nil {
+			m.guests = map[string]*proto.GuestCapabilities{}
+		}
+		m.guests[base] = &caps
+		if base != "" && m.cfg.Root != "" {
+			writeGuest(m.guestPath(base), &caps)
+		}
+	}
+}
+
+// loadGuests reads the reports kept for each image version (guestsDir), for a host that restarted.
+func (m *Manager) loadGuests() {
+	bases := []string{""}
+	entries, _ := os.ReadDir(filepath.Join(m.cfg.Root, guestsDir))
+	for _, e := range entries {
+		if base, ok := strings.CutSuffix(e.Name(), ".json"); ok && images.ValidVersion(base) {
+			bases = append(bases, base)
+		}
+	}
+	m.guestsMu.Lock()
+	defer m.guestsMu.Unlock()
+	for _, base := range bases {
+		var caps proto.GuestCapabilities
+		if raw, err := os.ReadFile(m.guestPath(base)); err == nil && json.Unmarshal(raw, &caps) == nil {
+			if m.guests == nil {
+				m.guests = map[string]*proto.GuestCapabilities{}
+			}
+			m.guests[base] = &caps
+		}
+	}
+}
+
+// guestOf is what the image version base has, as its template's agent reported (nil when no report is known).
+func (m *Manager) guestOf(base string) *proto.GuestCapabilities {
+	m.guestsMu.Lock()
+	defer m.guestsMu.Unlock()
+	return m.guests[base]
+}
+
+// rebasedGuest asks the guest a rebase has just booted what its image has, unless image version base's report is kept
+// already (a template built on it, or an earlier boot): a host on custom shapes alone may have no template on it, and a
+// sandbox without its version's report would be offered what that image may lack. An injected agent that can't say
+// fails the boot, as for a custom shape's create.
+func (m *Manager) rebasedGuest(ctx context.Context, client *guest.Client, base string, size proto.Size) error {
+	m.guestsMu.Lock()
+	_, known := m.guests[base]
+	m.guestsMu.Unlock()
+	if known {
+		return nil
+	}
+	caps, err := m.guestReport(ctx, client, size)
+	if err != nil {
+		return err
+	}
+	if caps != nil {
+		m.noteBootGuest(base, caps)
+	}
+	return nil
+}
+
+// ForgetGuests drops the reports kept for image versions a prune removed.
+func (m *Manager) ForgetGuests(versions []string) {
+	m.guestsMu.Lock()
+	defer m.guestsMu.Unlock()
+	for _, v := range versions {
+		if !images.ValidVersion(v) {
+			continue
+		}
+		delete(m.guests, v)
+		_ = os.Remove(m.guestPath(v))
 	}
 }
 
@@ -293,15 +415,16 @@ func New(cfg Config) (*Manager, error) {
 			return nil, err
 		}
 	}
-	m := &Manager{cfg: cfg, log: cfg.Log.With("tier", Tier), sandboxes: map[string]*sandbox{}, templates: map[string]*sync.Mutex{}, preparing: map[int]bool{}, sharedFailed: map[int]time.Time{}}
+	m := &Manager{cfg: cfg, log: cfg.Log.With("tier", Tier), sandboxes: map[string]*sandbox{}, templates: map[string]*sync.Mutex{}, inUse: map[string]*sync.RWMutex{}, rebuilding: map[string]bool{}, preparing: map[int]bool{}, sharedFailed: map[int]time.Time{}}
 	m.hostMemoryMiB = hostinfo.MemoryMiB()
 	m.shared = sharedShape(cfg, m.hostMemoryMiB, defaultCPUs())
 	m.nextCID.Store(uint32(time.Now().UnixMilli()%100000) + 100)
 	m.spool = newSpool(cfg.SpoolDir, cfg.SpoolMaxMiB<<20, m.log)
-	// The latest report, a custom shape's boot's included; a host from before the root kept one has its templates'.
-	m.loadGuest(cfg.Root)
+	// Each image's report, a custom shape's boot's included; a host from before the root kept them has its templates'.
+	m.loadGuests()
 	for _, size := range cfg.Sizes {
 		m.templates[size.Name] = &sync.Mutex{}
+		m.inUse[size.Name] = &sync.RWMutex{}
 		// What the image has, before any sandbox needs a template: from one made before a restart.
 		m.loadGuest(filepath.Join(cfg.Root, "templates", size.Name))
 	}
@@ -316,6 +439,14 @@ func New(cfg Config) (*Manager, error) {
 	_ = os.Remove(filepath.Join(cfg.Root, "pool"))
 	if err := m.adopt(); err != nil {
 		return nil, err
+	}
+	if err := m.PinBases(); err != nil {
+		// Retried before each image update and prune, which wait for it.
+		m.log.Warn("couldn't pin everything to its images; image updates and prunes wait until it is", "error", err)
+	}
+	// A template from before its base was recorded is on a version now it is pinned: its report is that version's.
+	for _, size := range cfg.Sizes {
+		m.loadGuest(filepath.Join(cfg.Root, "templates", size.Name))
 	}
 	if m.shared != nil {
 		// Made now, on disk, so the first create restores one rather than booting: they cost disk, not memory.
@@ -392,11 +523,15 @@ func (m *Manager) writeMeta(s *sandbox) error {
 }
 
 func (m *Manager) info(s *sandbox) proto.SandboxInfo {
-	info := proto.SandboxInfo{ID: s.meta.ID, Tier: Tier, Size: s.meta.Size, State: s.meta.State, Memory: s.meta.Memory, Error: s.meta.Error, CreatedAt: s.meta.CreatedAt, Owner: s.meta.Owner}
+	info := proto.SandboxInfo{ID: s.meta.ID, Tier: Tier, Size: s.meta.Size, State: s.meta.State, Memory: s.meta.Memory, Error: s.meta.Error, CreatedAt: s.meta.CreatedAt, Owner: s.meta.Owner, Base: baseOf(s.vmDir())}
+	if info.Base != "" {
+		info.BaseAt = baseAtOf(s.vmDir())
+	}
 	if s.link != nil {
 		info.Address = s.link.GuestIP.String()
 	}
-	info.Guest = m.guest.Load()
+	// Its own image's report: a template rebuilt on a newer version doesn't change what this one boots.
+	info.Guest = m.guestOf(info.Base)
 	return info
 }
 
@@ -622,34 +757,47 @@ func (m *Manager) templateLock(name string) *sync.Mutex {
 	return lock
 }
 
-// templateFingerprint is what a shape's template is made of and with: a snapshot restores only onto the same
-// Firecracker, kernel and root filesystem, and with the vCPUs and memory it was made with, so a size that changes (a
-// new default, or the host's settings) needs a new template.
+// templateShape is the size's part of a template's fingerprint: a snapshot restores the vCPUs and memory it was made
+// with, so a size that changes (a new default, or the host's settings) needs a new template.
+func templateShape(size proto.Size) string {
+	return fmt.Sprintf(" size=%d/%d/%d", size.VCPUs, size.MemoryMiB, size.DiskGiB)
+}
+
+// shapeKey is a shape's part of its template's fingerprint: the size's, and a shared template's hotpluggable memory
+// and the boot arguments its guest needs to plug it.
+func (m *Manager) shapeKey(sh shape) string {
+	key := templateShape(sh.Size)
+	if sh.HotplugMiB > 0 {
+		key += fmt.Sprintf(" hotplug=%d args=%q", sh.HotplugMiB, m.bootConfig(sh, "", "", "", 0).BootArgs)
+	}
+	return key
+}
+
+// templateFingerprint is what a shape's template is made with: Firecracker, the kernel, the images, Kernel's
+// initramfs when it injects the guest agent (its name has the agent's digest: another agent, or turning injection on
+// or off, makes a new template) and the shape.
 func (m *Manager) templateFingerprint(sh shape) string {
 	images := []string{m.cfg.Firecracker, m.cfg.Kernel, m.cfg.Rootfs}
 	if m.cfg.Initrd != "" {
-		// Its name has the agent's digest: another agent (or turning injection on or off) makes a new template.
 		images = append(images, m.cfg.Initrd)
 	}
-	fingerprint := fc.Fingerprint(images...) +
-		fmt.Sprintf(" size=%d/%d/%d", sh.VCPUs, sh.MemoryMiB, sh.DiskGiB)
-	if sh.HotplugMiB > 0 {
-		fingerprint += fmt.Sprintf(" hotplug=%d args=%q", sh.HotplugMiB, m.bootConfig(sh, "", "", 0).BootArgs)
-	}
-	return fingerprint
+	return fc.Fingerprint(images...) + m.shapeKey(sh)
 }
 
-// templateReady says whether the shape's template is made, for these images, without making it.
+// templateReady says whether the shape's template can be restored now without making it: made for these images, or,
+// with BackgroundTemplates, for others but the same shape (template then starts its rebuild and returns it meanwhile).
 func (m *Manager) templateReady(sh shape) bool {
 	dir := filepath.Join(m.cfg.Root, "templates", sh.Name)
 	if _, err := os.Stat(filepath.Join(dir, "ready")); err != nil {
 		return false
 	}
 	made, _ := os.ReadFile(filepath.Join(dir, "images"))
-	return string(made) == m.templateFingerprint(sh)
+	return string(made) == m.templateFingerprint(sh) || m.cfg.BackgroundTemplates && strings.HasSuffix(string(made), m.shapeKey(sh))
 }
 
 // template returns the shape's template snapshot (a named size's, or a shared one), cold-booting one if there is none.
+// With BackgroundTemplates, one made with other images (but the same shape) is still returned while its replacement
+// builds (base.go).
 func (m *Manager) template(ctx context.Context, sh shape) (string, timings, error) {
 	size := sh.Size
 	lock := m.templateLock(size.Name)
@@ -660,15 +808,34 @@ func (m *Manager) template(ctx context.Context, sh shape) (string, timings, erro
 	lock.Lock()
 	defer lock.Unlock()
 	dir := filepath.Join(m.cfg.Root, "templates", size.Name)
-	fingerprint := m.templateFingerprint(sh)
-	if m.templateReady(sh) {
-		m.loadGuest(dir)
-		return dir, nil, nil
-	}
 	if _, err := os.Stat(filepath.Join(dir, "ready")); err == nil {
+		made, _ := os.ReadFile(filepath.Join(dir, "images"))
+		if string(made) == m.templateFingerprint(sh) {
+			m.loadGuest(dir)
+			return dir, nil, nil
+		}
+		if m.cfg.BackgroundTemplates && strings.HasSuffix(string(made), m.shapeKey(sh)) {
+			// Sandboxes made from it meanwhile are on its images, as their Base says.
+			m.rebuildTemplate(sh)
+			return dir, nil, nil
+		}
 		// Made with other images (an update) or another shape: running sandboxes keep their mapping of the old memory file.
 		m.log.Info("template is for other images or another shape; rebuilding", "size", size.Name)
 	}
+	t, err := m.buildTemplate(ctx, sh, dir)
+	if err != nil {
+		return "", nil, err
+	}
+	return dir, t, nil
+}
+
+// buildTemplate cold-boots a VM of the shape on the current images, waits for its services, and snapshots it into
+// dir (replacing what is there), recording the images it was made with. The kernel is the root filesystem's
+// version's (kernelFor), chosen with it, so an activation while it builds can't pair one version's kernel with
+// another's root filesystem.
+func (m *Manager) buildTemplate(ctx context.Context, sh shape, dir string) (timings, error) {
+	size := sh.Size
+	fingerprint := m.templateFingerprint(sh)
 	t := timings{}
 	start := time.Now()
 	building := dir + ".building"
@@ -676,47 +843,57 @@ func (m *Manager) template(ctx context.Context, sh shape) (string, timings, erro
 	_ = os.RemoveAll(dir)
 	vm := filepath.Join(building, "vm")
 	if err := os.MkdirAll(vm, 0o700); err != nil {
-		return "", nil, err
+		return nil, err
 	}
-	if err := os.Symlink(m.cfg.Rootfs, filepath.Join(vm, fc.RootfsFile)); err != nil {
-		return "", nil, err
+	// The base is picked and linked under the base lock, and recorded (rootfs) before the VM directory goes, so a prune
+	// finds it in the template from here on.
+	unhold := m.holdBases()
+	rootfs := m.baseRootfs()
+	err := m.linkRootfs(vm, rootfs)
+	if err == nil {
+		err = os.WriteFile(filepath.Join(building, "rootfs"), []byte(rootfs), 0o600)
 	}
+	unhold()
+	if err != nil {
+		return nil, err
+	}
+	kernel := m.kernelFor(rootfs)
 	if err := newDisk(filepath.Join(vm, fc.DiskFile), size.DiskGiB); err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	t.step("disk", &start)
 	link, err := m.cfg.Network.Add(network.EgressNone)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	defer m.cfg.Network.Remove(link)
 	machine, err := fc.Launch(ctx, m.cfg.Firecracker, vm)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	defer machine.Kill()
 	t.step("launch", &start)
-	if err := machine.Boot(ctx, m.bootConfig(sh, link.Tap, link.MAC, m.cid())); err != nil {
-		return "", nil, err
+	if err := machine.Boot(ctx, m.bootConfig(sh, kernel, link.Tap, link.MAC, m.cid())); err != nil {
+		return nil, err
 	}
 	client := guest.NewClient(filepath.Join(vm, fc.VsockSocket))
 	defer client.Close()
 	bootCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 	if _, err := client.WaitReady(bootCtx); err != nil {
-		return "", nil, fmt.Errorf("template boot: %w (firecracker log: %s)", err, tail(filepath.Join(vm, fc.LogFile)))
+		return nil, fmt.Errorf("template boot: %w (firecracker log: %s)", err, tail(filepath.Join(vm, fc.LogFile)))
 	}
 	t.step("agent", &start)
 	if sh.HotplugMiB > 0 {
 		if err := checkVirtioMem(bootCtx, client); err != nil {
-			return "", nil, fmt.Errorf("template boot: %w", err)
+			return nil, fmt.Errorf("template boot: %w", err)
 		}
 	}
 	// What the image has, which detection reads from its files: so before the service wait, whose timeout would
 	// otherwise cancel this too.
 	caps, err := m.guestReport(ctx, client, size)
 	if err != nil {
-		return "", nil, fmt.Errorf("template boot: %w", err)
+		return nil, fmt.Errorf("template boot: %w", err)
 	}
 	// What the image says it runs (/etc/kantel/ready), else the desktop, browser and Docker. Not SSH: the image has
 	// no host keys, so sshd starts only once a sandbox has its identity.
@@ -727,19 +904,23 @@ func (m *Manager) template(ctx context.Context, sh shape) (string, timings, erro
 	_ = client.Sync(ctx)
 	client.Close()
 	if err := machine.Pause(ctx); err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	if err := machine.Snapshot(ctx, filepath.Join(building, "state"), filepath.Join(building, "mem")); err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	t.step("snapshot", &start)
 	machine.Kill()
 	if err := os.Rename(filepath.Join(vm, fc.DiskFile), filepath.Join(building, fc.DiskFile)); err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	_ = os.RemoveAll(vm)
-	if err := os.Rename(building, dir); err != nil {
-		return "", nil, err
+	// Its rootfs (the root filesystem its memory state is over, which sandboxes restored from it link) moves with it.
+	unhold = m.holdBases()
+	err = os.Rename(building, dir)
+	unhold()
+	if err != nil {
+		return nil, err
 	}
 	if sh.HotplugMiB > 0 {
 		// The memory file holds every page of the boot memory, most of them never touched (zero): holes cost no disk.
@@ -751,7 +932,7 @@ func (m *Manager) template(ctx context.Context, sh shape) (string, timings, erro
 	_ = os.WriteFile(filepath.Join(dir, "images"), []byte(fingerprint), 0o600)
 	_ = os.WriteFile(filepath.Join(dir, "ready"), raw, 0o600)
 	m.log.Info("template ready", "size", size.Name, "timings", t)
-	return dir, t, nil
+	return t, nil
 }
 
 // guestReport asks a freshly booted guest's agent what its image has. An injected agent always reports, so its failing
@@ -881,16 +1062,19 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 		if err := os.MkdirAll(vm, 0o700); err != nil {
 			return fail(err)
 		}
-		if err := os.Symlink(m.cfg.Rootfs, filepath.Join(vm, fc.RootfsFile)); err != nil {
-			return fail(err)
-		}
-		var statePath, memPath, diskPath string
+		// rootfs is the images the snapshot or template it starts from is over, so its memory matches its disk. It is read
+		// from there and linked here under the base lock (unhold releases it), so a prune finds it in one or the other.
+		var statePath, memPath, diskPath, rootfs string
+		var unhold func()
 		if p.From != "" {
+			unhold = m.holdBases()
 			snap, err := m.readSnapshot(p.From)
 			if err != nil {
+				unhold()
 				return fail(err)
 			}
 			if snap.Size != size.Name && snap.Memory {
+				unhold()
 				return fail(&proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("snapshot %s is of a %s sandbox; a sandbox made from it is that size too", p.From, snap.Size)})
 			}
 			sdir := m.snapshotDir(p.From)
@@ -898,8 +1082,11 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 			if snap.Memory {
 				statePath, memPath = filepath.Join(sdir, "state"), filepath.Join(sdir, "mem")
 			}
+			rootfs = m.snapshotRootfs(snap)
 			source = "snapshot"
 		} else if sh, fits, ready := m.sharedPlan(size); ready {
+			// Until it is restored (the function's end): a background rebuild swaps the template in between creates.
+			defer m.useTemplate(sh.Name)()
 			tpl, tt, err := m.template(ctx, sh)
 			if err != nil {
 				return fail(err)
@@ -908,13 +1095,21 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 				t["template."+k] = v
 			}
 			statePath, memPath, diskPath = filepath.Join(tpl, "state"), filepath.Join(tpl, "mem"), filepath.Join(tpl, fc.DiskFile)
+			unhold = m.holdBases()
+			rootfs = m.templateRootfs(tpl)
 			source = "snapshot"
 			reshape = &sh
 		} else if custom || fits || m.sharedOn() {
-			// No template: a fresh disk, then a cold boot below (and, when it fits, its shared template is being made).
+			// No template: a fresh disk, then a cold boot below (and, when it fits, its shared template is being made), on
+			// the current images as they resolve now (the version itself with PinBase, so a later update doesn't move
+			// it), read under the base lock as a template's is.
+			unhold = m.holdBases()
+			rootfs = m.baseRootfs()
 			coldBoot = true
 			source = "boot"
 		} else {
+			// Until it is restored (the function's end): a background rebuild swaps the template in between creates.
+			defer m.useTemplate(size.Name)()
 			tpl, tt, err := m.template(ctx, shape{Size: size})
 			if err != nil {
 				return fail(err)
@@ -923,10 +1118,17 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 				t["template."+k] = v
 			}
 			statePath, memPath, diskPath = filepath.Join(tpl, "state"), filepath.Join(tpl, "mem"), filepath.Join(tpl, fc.DiskFile)
+			unhold = m.holdBases()
+			rootfs = m.templateRootfs(tpl)
 			source = "snapshot"
 			if tt != nil {
 				source = "boot"
 			}
+		}
+		err := m.linkRootfs(vm, rootfs)
+		unhold()
+		if err != nil {
+			return fail(err)
 		}
 		t.step("plan", &start)
 		if reshape != nil {
@@ -955,13 +1157,14 @@ func (m *Manager) Create(ctx context.Context, p proto.CreateParams) (proto.Sandb
 			t.step("boot", &start)
 			if coldBoot {
 				// No template asked the image what it has, so this boot does, as a template's would: what a sandbox
-				// reports doesn't depend on whether its shape has a template. Every sandbox shares the image.
+				// reports doesn't depend on whether its shape has a template. It is the report of the image version it
+				// booted on.
 				caps, err := m.guestReport(ctx, s.guest, size)
 				if err != nil {
 					return fail(fmt.Errorf("boot: %w", err))
 				}
 				if caps != nil {
-					m.noteBootGuest(caps)
+					m.noteBootGuest(baseOf(s.vmDir()), caps)
 				}
 				t.step("capabilities", &start)
 			}
@@ -1061,15 +1264,17 @@ func (m *Manager) prepare(s *sandbox, vm, diskPath string, size proto.Size, egre
 	return nil
 }
 
-// boot cold-boots s from its own disk (Start, or a snapshot with no memory).
+// boot cold-boots s from its own disk (Start, or a snapshot with no memory), on the kernel of the version its root
+// filesystem is (kernelFor): the one it was made on, or a rebase moved it to.
 func (m *Manager) boot(ctx context.Context, s *sandbox, size proto.Size) error {
 	vm := s.vmDir()
+	kernel := m.kernelFor(vmRootfs(vm))
 	machine, err := fc.Launch(ctx, m.cfg.Firecracker, vm)
 	if err != nil {
 		return err
 	}
 	s.meta.CID = m.cid()
-	if err := machine.Boot(ctx, m.bootConfig(shape{Size: size}, s.link.Tap, s.link.MAC, s.meta.CID)); err != nil {
+	if err := machine.Boot(ctx, m.bootConfig(shape{Size: size}, kernel, s.link.Tap, s.link.MAC, s.meta.CID)); err != nil {
 		machine.Kill()
 		return err
 	}
@@ -1171,6 +1376,17 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.meta.State == proto.StateRunning {
+		// A rebase is a cold boot on the target images: a machine running on others (one a gateway lost track of) isn't
+		// that, so it is refused rather than answered as done. One already on them is that boot, retried.
+		if coldBoot && p.Rebase {
+			target := p.RebaseTo
+			if target == "" {
+				target = images.VersionOf(m.baseRootfs())
+			}
+			if have := baseOf(s.vmDir()); have != target {
+				return proto.SandboxInfo{}, conflict("sandbox %s is running on images %q, not %q: stop it before restarting it on them", s.meta.ID, have, target)
+			}
+		}
 		// Running already (a retry, say). What it holds is on disk before it says so: an earlier boot that couldn't
 		// write it failed, and a restart mustn't bring back the egress before it.
 		if s.unsaved {
@@ -1187,9 +1403,21 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 	if err != nil {
 		return proto.SandboxInfo{}, err
 	}
+	// A rebase onto a version this host's images aren't on is refused before anything changes (rebase checks again as
+	// it relinks).
+	if coldBoot && p.Rebase {
+		if err := m.rebaseTarget(p.RebaseTo); err != nil {
+			return proto.SandboxInfo{}, err
+		}
+	}
 	if p.Egress != nil {
 		s.meta.Egress = p.Egress
 		s.unsaved = true
+	}
+	if coldBoot && p.Rebase {
+		if err := m.rebase(s, p.RebaseTo); err != nil {
+			return proto.SandboxInfo{}, err
+		}
 	}
 	t := timings{}
 	start := time.Now()
@@ -1220,6 +1448,15 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 		}
 		source = "boot"
 		t.step("boot", &start)
+		if coldBoot && p.Rebase {
+			if err := m.rebasedGuest(ctx, s.guest, baseOf(vm), size); err != nil {
+				s.machine.Kill()
+				m.cfg.Network.Remove(link)
+				s.machine, s.link = nil, nil
+				return proto.SandboxInfo{}, fmt.Errorf("boot: %w", err)
+			}
+			t.step("capabilities", &start)
+		}
 	}
 	m.attach(s, link.Slot)
 	// A cold boot needs the sandbox's identity like a fresh one, but keeps its SSH host keys.
@@ -1353,6 +1590,8 @@ func (m *Manager) liveSnapshot(ctx context.Context, s *sandbox, snap *proto.Snap
 type snapshotMeta struct {
 	proto.SnapshotInfo
 	Size string `json:"size"`
+	// Rootfs is the root filesystem its disk is a layer over (base.go); empty in snapshots from before it was kept.
+	Rootfs string `json:"rootfs,omitempty"`
 }
 
 func (m *Manager) snapshotDir(id string) string {
@@ -1360,7 +1599,11 @@ func (m *Manager) snapshotDir(id string) string {
 }
 
 func (m *Manager) writeSnapshotMeta(s *sandbox, snap *proto.SnapshotInfo) error {
-	raw, _ := json.MarshalIndent(snapshotMeta{SnapshotInfo: *snap, Size: s.meta.Size}, "", "  ")
+	// The sandbox's base is now the snapshot's too: recorded under the base lock.
+	defer m.holdBases()()
+	rootfs, base := rootfsOf(s.vmDir())
+	snap.Base = base
+	raw, _ := json.MarshalIndent(snapshotMeta{SnapshotInfo: *snap, Size: s.meta.Size, Rootfs: rootfs}, "", "  ")
 	return os.WriteFile(filepath.Join(m.snapshotDir(snap.ID), "meta.json"), raw, 0o600)
 }
 
@@ -1425,8 +1668,11 @@ func (m *Manager) latestSnapshot(sandboxID string) string {
 	return ""
 }
 
-// pruneAuto keeps the newest AutoSnapshots automatic snapshots of a sandbox, and memory only on the newest one.
+// pruneAuto keeps the newest AutoSnapshots automatic snapshots of a sandbox, and memory only on the newest one. It
+// rewrites snapshot metadata, which names each snapshot's base, so it holds the base lock to read (a prune's walk never
+// reads one half written) and replaces each meta.json by a rename rather than truncating it.
 func (m *Manager) pruneAuto(sandboxID string) {
+	defer m.holdBases()()
 	auto := 0
 	for _, snap := range m.snapshotsOf(sandboxID) {
 		if snap.Kind != "auto" {
@@ -1443,7 +1689,7 @@ func (m *Manager) pruneAuto(sandboxID string) {
 			_ = os.Remove(filepath.Join(dir, "state"))
 			snap.Memory = false
 			raw, _ := json.MarshalIndent(snap, "", "  ")
-			_ = os.WriteFile(filepath.Join(dir, "meta.json"), raw, 0o600)
+			_ = fsutil.WriteFileDurably(filepath.Join(dir, "meta.json"), raw, 0o600)
 		}
 	}
 }
@@ -1630,6 +1876,50 @@ func (m *Manager) WriteFile(ctx context.Context, p proto.FileParams, data []byte
 		return err
 	}
 	return client.WriteFile(ctx, p.Path, data, p.Mode)
+}
+
+// ReadFileStream opens a running sandbox's file to be streamed whole (sandbox.files.open): its bytes, which the caller
+// closes, and its size. A missing file is not_found, as ReadFile's is.
+func (m *Manager) ReadFileStream(ctx context.Context, p proto.FileParams) (io.ReadCloser, int64, error) {
+	client, err := m.running(p.SandboxID)
+	if err != nil {
+		return nil, 0, err
+	}
+	body, size, _, err := client.ReadFileStream(ctx, p.Path)
+	if guest.IsNotFound(err) {
+		return nil, 0, &proto.Error{Code: proto.ErrNotFound, Message: err.Error()}
+	}
+	return body, size, err
+}
+
+// WriteFileStream writes what r gives to a running sandbox's file, which the guest moves into place only once r has
+// ended (io.EOF); a read error from r, or a cancelled ctx, leaves the file as it was. It answers the size written.
+func (m *Manager) WriteFileStream(ctx context.Context, p proto.FileParams, r io.Reader) (int64, error) {
+	client, err := m.running(p.SandboxID)
+	if err != nil {
+		return 0, err
+	}
+	return client.WriteFileStream(ctx, p.Path, r, p.Mode)
+}
+
+// ExtractArchive has a running sandbox's guest agent extract the tar at p.Archive into p.Target with its own code
+// (sandbox.files.extract), never the sandbox's tar or shell. An archive it refuses is invalid; a guest image from
+// before it, unsupported.
+func (m *Manager) ExtractArchive(ctx context.Context, p proto.FileExtractParams) error {
+	client, err := m.running(p.SandboxID)
+	if err != nil {
+		return err
+	}
+	err = client.ExtractArchive(ctx, p.Archive, p.Target)
+	switch {
+	case err == nil:
+		return nil
+	case guest.IsRefused(err):
+		return &proto.Error{Code: proto.ErrInvalid, Message: guest.RefusalMessage(err)}
+	case guest.IsUnknownRoute(err):
+		return &proto.Error{Code: proto.ErrUnsupported, Message: "this sandbox's image predates archive extraction; make it from a newer image"}
+	}
+	return err
 }
 
 func (m *Manager) DeleteFile(ctx context.Context, p proto.FileParams) error {

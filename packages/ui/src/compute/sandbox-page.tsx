@@ -1,10 +1,11 @@
 // A sandbox's page (compute console): everything about one sandbox and every way into it. The header has its name and
 // state, Browser, Desktop and Stop, and ⋯ for Fork, Save snapshot, Auto-stop and Delete; under it its address, its
 // environment and when it stops. Five tabs follow. Overview: live previews of its desktop and browser (which open in
-// the console, full size), SSH (sandbox-ssh.tsx), its ports, its CPU and memory, and its details. Logs: commands
-// and what happened to it, in one timeline. Egress: its egress log. Snapshots: its own history. Files: what's in it
-// now, or in its latest snapshot while it's stopped. On a phone the previews and Stop go (Stop is in ⋯) and the
-// sections stack. Every call goes through the sources the host binds; stories bind them to fixtures.
+// the console, full size), SSH (sandbox-ssh.tsx), its ports, its CPU and memory, its details and its read-only
+// mounts, where it has any. Logs: commands and what happened to it, in one timeline. Egress: its egress log.
+// Snapshots: its own history. Files: what's in it now, or in its latest snapshot while it's stopped. On a phone the
+// previews and Stop go (Stop is in ⋯) and the sections stack. Every call goes through the sources the host binds;
+// stories bind them to fixtures.
 
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { Breadcrumbs } from "../primitives/breadcrumbs.tsx";
@@ -19,6 +20,7 @@ import { PageTabs } from "../primitives/page-tabs.tsx";
 import { Skeleton } from "../primitives/spinner.tsx";
 import { StatusLabel } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
+import { BaseOutdatedBadge, behindText } from "./base-outdated.tsx";
 import {
 	costText,
 	type EgressSource,
@@ -45,6 +47,7 @@ import { gbBytes, gbText, lineOf, seriesOf, USAGE_KEEP_MS, useLiveUsage } from "
 import { computePage, messageOf, SectionHeading, UsageGraph } from "./parts.tsx";
 import { type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
 import { SandboxLogs } from "./sandbox-logs.tsx";
+import { SandboxMounts } from "./sandbox-mounts.tsx";
 import { SandboxPorts } from "./sandbox-ports.tsx";
 import { embedUrl, popOut, SandboxViewer, ScreenPreview, type ScreenView } from "./sandbox-screen.tsx";
 import { SandboxSsh } from "./sandbox-ssh.tsx";
@@ -178,6 +181,9 @@ function useAccess(source: SandboxesSource, sandboxId: string, reachable: boolea
 	const stale = () => access !== undefined && access.value !== "loading" && youngAccess(access) === undefined;
 	return { access, read, fresh, stale };
 }
+
+/** The live graphs' edges: they span the last ten minutes. */
+const GRAPH_ENDS = ["10m ago", "Now"] as const;
 
 export function SandboxPage({
 	source,
@@ -486,7 +492,7 @@ export function SandboxPage({
 			{crumbs(<span>{sandbox.name}</span>)}
 			<header className="kt-sandbox-header flex min-w-0 flex-col gap-3">
 				<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-3">
-					<h1 className={`m-0 min-w-0 truncate font-strong leading-tight text-fg text-lg`}>{sandbox.name}</h1>
+					<h1 className="m-0 min-w-0 truncate text-heading font-strong leading-tight text-fg">{sandbox.name}</h1>
 					<StateLabel state={sandbox.state} />
 					<div className={`flex items-center gap-2 ${narrow ? "w-full" : "ml-auto"}`}>{actions}</div>
 				</div>
@@ -518,6 +524,25 @@ export function SandboxPage({
 				</div>
 			</header>
 			{sandbox.state === "error" && sandbox.error !== undefined ? <Notice level="error">{sandbox.error}</Notice> : null}
+			{sandbox.base?.outdated === true ? (
+				<Notice
+					level="warning"
+					{...(menu.restartOnLatest === undefined
+						? {}
+						: {
+								action: (
+									<Button size="xs" onClick={menu.restartOnLatest}>
+										Restart on latest
+									</Button>
+								),
+							})}
+				>
+					{sandbox.base.security === true
+						? "This sandbox is on an outdated base image with security fixes waiting."
+						: "This sandbox is on an outdated base image."}{" "}
+					Kantel never patches a running sandbox: restart it on the latest base to pick up the newer image.
+				</Notice>
+			) : null}
 			{notice === undefined ? null : (
 				<Notice
 					level={notice.level}
@@ -724,6 +749,20 @@ function Overview({
 					{sizeText(spec)}
 					{spec.diskGb > 0 ? `, ${spec.diskGb} GB disk` : ""}
 				</dd>
+				{sandbox.base === undefined ? null : (
+					<>
+						<dt className={dt}>Base</dt>
+						<dd className={`${dd} flex flex-wrap items-center gap-x-2 gap-y-1`}>
+							<span className="truncate font-mono text-code" title={sandbox.base.image}>
+								{sandbox.base.version ?? sandbox.base.image}
+							</span>
+							<BaseOutdatedBadge base={sandbox.base} now={now} />
+							{sandbox.base.outdated && sandbox.base.behind !== undefined ? (
+								<span className="text-muted">{behindText(sandbox.base.behind)}</span>
+							) : null}
+						</dd>
+					</>
+				)}
 				{sandbox.snapshot === undefined ? null : (
 					<>
 						<dt className={dt}>Snapshot</dt>
@@ -751,6 +790,10 @@ function Overview({
 		</section>
 	);
 
+	// Its read-only mounts (experimental), only where it has any.
+	const mounts =
+		sandbox.mounts === undefined || sandbox.mounts.length === 0 ? null : <SandboxMounts mounts={sandbox.mounts} />;
+
 	const portsSection =
 		// A port's URL reaches a running microVM only.
 		portsShown && windows ? (
@@ -771,11 +814,13 @@ function Overview({
 		return (
 			<div className="flex min-w-0 flex-col gap-8">
 				{windows || hint === undefined ? null : <p className="m-0 text-sm text-muted">{hint}</p>}
+				{/* How it's doing first, on a phone, where the side column would otherwise come after the way in. */}
+				{usage}
 				{ssh}
 				{portsSection}
-				{usage}
 				{image}
 				{details}
+				{mounts}
 			</div>
 		);
 	}
@@ -792,6 +837,7 @@ function Overview({
 				{usage}
 				{image}
 				{details}
+				{mounts}
 			</aside>
 		</div>
 	);
@@ -939,6 +985,7 @@ function Usage({ source, sandbox, refreshKey }: { source: SandboxesSource; sandb
 					{...(series === undefined ? { slots: cpu.length } : { timed: liveCpu.timed })}
 					tone={sandbox.state === "error" ? "error" : "done"}
 					loading={loading}
+					{...(series === undefined ? {} : { ends: GRAPH_ENDS })}
 					label={cpu.length === 0 ? "No CPU readings yet" : `CPU ${span}, peak ${peak}%`}
 				/>
 				{live.status === "off" ? (
@@ -954,6 +1001,7 @@ function Usage({ source, sandbox, refreshKey }: { source: SandboxesSource; sandb
 						timed={liveMemory.timed}
 						tone="working"
 						loading={loading}
+						ends={GRAPH_ENDS}
 						label={
 							latestMemory === undefined
 								? "No memory readings yet"

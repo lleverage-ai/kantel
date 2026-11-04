@@ -185,6 +185,17 @@ function operation(route: RouteDefinition, registry: SchemaRegistry): JsonSchema
 						content: { "application/json": { schema: registry.use(route.body) } },
 					},
 				}),
+		...(route.rawBody === undefined
+			? {}
+			: {
+					requestBody: {
+						required: true,
+						description: route.rawBody.description,
+						content: Object.fromEntries(
+							route.rawBody.media.map((type) => [type, { schema: { type: "string", format: "binary" } }]),
+						),
+					},
+				}),
 		responses,
 	};
 }

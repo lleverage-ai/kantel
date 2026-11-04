@@ -1339,7 +1339,7 @@
 			"post": {
 				"operationId": "createSandbox",
 				"summary": "Create a sandbox",
-				"description": "Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. A key needs `sandboxes:write`.",
+				"description": "Makes a sandbox and starts it: an isolate unless `type` says `microvm`, from a snapshot when `from` names one. `resources` sets its vCPUs and memory (`getSandboxShapes` says what may be asked); `size`, a named size, still works for now. Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no host able to run the type is `unavailable`. `mounts` (experimental) are for microVMs only: an isolate's are refused (`not_supported`), because an isolate is a JavaScript shell over files the host keeps, with no file system of its own to mount a drive or a bucket into. A mount whose bundle or bucket source isn't the account's is `not_found`; with the deployment's `KANTEL_MOUNTS` switch off, any `mounts` are `not_supported`. A key needs `sandboxes:write`.",
 				"tags": ["sandboxes"],
 				"parameters": [
 					{
@@ -2344,6 +2344,117 @@
 				}
 			}
 		},
+		"/sandboxes/{sandboxId}/restart-on-latest": {
+			"post": {
+				"operationId": "restartSandboxOnLatest",
+				"summary": "Restart a sandbox on the latest base",
+				"description": "Restarts the machine on the newest base image, on its disk as it is: a running sandbox's disk is saved and it is stopped first (as `stop` does, without its memory), then it boots cold on the latest base. Memory is lost, and so are running programs. A running sandbox is never patched underneath: this is how an outdated one (`base.outdated`) moves on. Answers once it is starting. A sandbox starting, stopping or being deleted is `conflict`. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`).",
+				"tags": ["sandboxes"],
+				"parameters": [
+					{
+						"name": "sandboxId",
+						"in": "path",
+						"required": true,
+						"description": "The sandbox's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The sandbox, starting.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Sandbox"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"429": {
+						"description": "`exhausted`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/sandboxes/{sandboxId}/usage": {
 			"get": {
 				"operationId": "getSandboxUsage",
@@ -3183,6 +3294,338 @@
 					},
 					"409": {
 						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sandboxes/{sandboxId}/files/upload-url": {
+			"post": {
+				"operationId": "createUploadUrl",
+				"summary": "Get an upload URL for a file",
+				"description": "A short-lived URL on the API, streamed straight to the sandbox's host: `PUT` the file to it as the raw request body, of any size, with no `Authorization` header; the answer is `{ path, size }`. Missing directories are made, and a file already there is replaced only once the upload is complete. The URL is bound to this sandbox and path, and expires after `ttlSeconds`. A path in a read-only mount is refused (`conflict`). The sandbox must be running when the URL is used. Treat it as a secret. A key needs `files`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).",
+				"tags": ["files"],
+				"parameters": [
+					{
+						"name": "sandboxId",
+						"in": "path",
+						"required": true,
+						"description": "The sandbox's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/FileUrlBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The URL.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/FileUrl"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sandboxes/{sandboxId}/files/download-url": {
+			"post": {
+				"operationId": "createDownloadUrl",
+				"summary": "Get a download URL for a file",
+				"description": "A short-lived URL on the API, streamed straight from the sandbox's host: `GET` it, with no `Authorization` header, for the file's bytes as they are when it is fetched, whatever its size (`HEAD` for its size alone). The URL is bound to this sandbox and path, and expires after `ttlSeconds`. The sandbox must be running when the URL is used. Treat it as a secret. A key needs `files`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).",
+				"tags": ["files"],
+				"parameters": [
+					{
+						"name": "sandboxId",
+						"in": "path",
+						"required": true,
+						"description": "The sandbox's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/FileUrlBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The URL.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/FileUrl"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/sandboxes/{sandboxId}/files/archive": {
+			"put": {
+				"operationId": "extractArchive",
+				"summary": "Extract an archive into a directory",
+				"description": "Writes every file, directory and symbolic link of a tar (or a gzipped tar) into `path`, in one call. An entry whose name is absolute or climbs out of `path` (`..`), a link that points out of it, an entry under such a link, and hard links, devices and FIFOs are refused (`invalid`) before anything is written. A `path` in a read-only mount, or with one under it, is refused (`conflict`). Files are owned by the sandbox's user, with their modes from the tar. A key needs `files`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).",
+				"tags": ["files"],
+				"parameters": [
+					{
+						"name": "sandboxId",
+						"in": "path",
+						"required": true,
+						"description": "The sandbox's ID.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "path",
+						"in": "query",
+						"required": true,
+						"description": "The directory to extract into, made if missing: absolute, or relative to the user's home. Not in or over a mount.",
+						"schema": {
+							"type": "string",
+							"minLength": 1,
+							"maxLength": 4096
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"description": "The archive: a tar (POSIX or GNU), gzipped or not.",
+					"content": {
+						"application/x-tar": {
+							"schema": {
+								"type": "string",
+								"format": "binary"
+							}
+						},
+						"application/gzip": {
+							"schema": {
+								"type": "string",
+								"format": "binary"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "What was extracted.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ExtractedArchive"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"503": {
+						"description": "`unavailable`",
 						"content": {
 							"application/json": {
 								"schema": {
@@ -7462,6 +7905,56 @@
 				}
 			}
 		},
+		"/admin/hosts/images": {
+			"get": {
+				"operationId": "listBaseImages",
+				"summary": "List base images",
+				"description": "Kantel's base images as the index its build publishes them: each image's latest version on the `stable` channel, its newest versions and what their CVE scans found, and the templates built on them. An index that can't be read is answered as `error`, with no images. A deployment super-admin only (a key needs `hosts:admin`). Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`).",
+				"tags": ["hosts"],
+				"responses": {
+					"200": {
+						"description": "The base images.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/BaseImageList"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/admin/hosts": {
 			"get": {
 				"operationId": "listHosts",
@@ -8468,6 +8961,663 @@
 					}
 				}
 			}
+		},
+		"/bundles": {
+			"post": {
+				"operationId": "uploadBundle",
+				"summary": "Upload a bundle",
+				"description": "Stores a tar of files once in the account (the caller's personal account unless `account` names an organisation), named by its SHA-256, for sandboxes to mount read-only (`mounts` on create). Uploading a tar the account has already is answered with that bundle (200), and stores nothing again. With `digest`, bytes that don't match are refused. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).",
+				"tags": ["mounts"],
+				"parameters": [
+					{
+						"name": "account",
+						"in": "query",
+						"required": false,
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "digest",
+						"in": "query",
+						"required": false,
+						"description": "The digest the tar should have: an upload whose bytes don't match is refused (`invalid`).",
+						"schema": {
+							"type": "string",
+							"pattern": "^sha256:[0-9a-f]{64}$"
+						}
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"description": "The tar, as it is: not gzipped.",
+					"content": {
+						"application/x-tar": {
+							"schema": {
+								"type": "string",
+								"format": "binary"
+							}
+						}
+					}
+				},
+				"responses": {
+					"200": {
+						"description": "The account had it already.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Bundle"
+								}
+							}
+						}
+					},
+					"201": {
+						"description": "The bundle, stored.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Bundle"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"get": {
+				"operationId": "listBundles",
+				"summary": "List bundles",
+				"description": "The account's bundles, newest first. A key needs `sandboxes:read`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).",
+				"tags": ["mounts"],
+				"parameters": [
+					{
+						"name": "account",
+						"in": "query",
+						"required": false,
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The bundles.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/BundleList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/bundles/{digest}": {
+			"get": {
+				"operationId": "getBundle",
+				"summary": "Get a bundle",
+				"description": "A key needs `sandboxes:read`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).",
+				"tags": ["mounts"],
+				"parameters": [
+					{
+						"name": "digest",
+						"in": "path",
+						"required": true,
+						"description": "The bundle's digest, `sha256:<hex>`.",
+						"schema": {
+							"type": "string",
+							"pattern": "^sha256:[0-9a-f]{64}$"
+						}
+					},
+					{
+						"name": "account",
+						"in": "query",
+						"required": false,
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The bundle.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/Bundle"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "deleteBundle",
+				"summary": "Delete a bundle",
+				"description": "Removes it from the account. Refused (`conflict`) while a sandbox of the account that still exists mounts it, stopped ones included, since they mount it again when they start: delete those sandboxes first. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).",
+				"tags": ["mounts"],
+				"parameters": [
+					{
+						"name": "digest",
+						"in": "path",
+						"required": true,
+						"description": "The bundle's digest, `sha256:<hex>`.",
+						"schema": {
+							"type": "string",
+							"pattern": "^sha256:[0-9a-f]{64}$"
+						}
+					},
+					{
+						"name": "account",
+						"in": "query",
+						"required": false,
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"204": {
+						"description": "Deleted."
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/bucket-sources": {
+			"post": {
+				"operationId": "createBucketSource",
+				"summary": "Create a bucket source",
+				"description": "A bucket the account's sandboxes may mount prefixes of (`mounts` on create), with the credentials that read it. The credentials are kept encrypted and never shown again; only the host of a sandbox that mounts the bucket is given them, and never the sandbox. Credentials need the deployment's secrets key (`not_supported` without one). A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).",
+				"tags": ["mounts"],
+				"requestBody": {
+					"required": true,
+					"content": {
+						"application/json": {
+							"schema": {
+								"$ref": "#/components/schemas/CreateBucketSourceBody"
+							}
+						}
+					}
+				},
+				"responses": {
+					"201": {
+						"description": "The bucket source.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/BucketSource"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"get": {
+				"operationId": "listBucketSources",
+				"summary": "List bucket sources",
+				"description": "The account's bucket sources, oldest first. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).",
+				"tags": ["mounts"],
+				"parameters": [
+					{
+						"name": "account",
+						"in": "query",
+						"required": false,
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The bucket sources.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/BucketSourceList"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
+		"/bucket-sources/{bucketSourceId}": {
+			"get": {
+				"operationId": "getBucketSource",
+				"summary": "Get a bucket source",
+				"description": "Never its credentials. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).",
+				"tags": ["mounts"],
+				"parameters": [
+					{
+						"name": "bucketSourceId",
+						"in": "path",
+						"required": true,
+						"description": "The bucket source's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The bucket source.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/BucketSource"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			},
+			"delete": {
+				"operationId": "deleteBucketSource",
+				"summary": "Delete a bucket source",
+				"description": "Removes it and its credentials. Refused (`conflict`) while a sandbox of the account that still exists mounts it, stopped ones included: delete those sandboxes first. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).",
+				"tags": ["mounts"],
+				"parameters": [
+					{
+						"name": "bucketSourceId",
+						"in": "path",
+						"required": true,
+						"description": "The bucket source's ID.",
+						"schema": {
+							"type": "string"
+						}
+					}
+				],
+				"responses": {
+					"204": {
+						"description": "Deleted."
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"501": {
+						"description": "`not_supported`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	},
 	"components": {
@@ -8763,6 +9913,260 @@
 				"title": "ApproveDeviceLoginBody",
 				"description": "The key the device gets, in the approver's personal account unless `account` names an organisation. Without `preset`, every scope the approver may grant there, `hosts:admin` included for a super-admin."
 			},
+			"BaseImage": {
+				"type": "object",
+				"required": ["name", "repository", "channel", "versions"],
+				"properties": {
+					"name": {
+						"type": "string",
+						"description": "`sandbox`, `browser`, `isolate-host`, or `host` for the microVM host images."
+					},
+					"repository": {
+						"type": "string",
+						"description": "Where it is pulled from, such as `ghcr.io/lleverage-ai/kantel-sandbox`; for `host`, the release's."
+					},
+					"channel": {
+						"type": "string",
+						"const": "stable",
+						"description": "The channel `latest` is of."
+					},
+					"latest": {
+						"$ref": "#/components/schemas/BaseImageVersion"
+					},
+					"versions": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/BaseImageVersion"
+						},
+						"description": "Its newest versions, newest first, at most 10."
+					}
+				},
+				"title": "BaseImage"
+			},
+			"BaseImageFinding": {
+				"type": "object",
+				"required": ["id", "severity", "package", "installed"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "`CVE-2026-1234`, or the scanner's own ID where there is no CVE."
+					},
+					"severity": {
+						"$ref": "#/components/schemas/ScanSeverity"
+					},
+					"package": {
+						"type": "string",
+						"description": "The package it is in, such as `openssl`."
+					},
+					"installed": {
+						"type": "string",
+						"description": "The package's version in the image."
+					},
+					"fixed": {
+						"type": "string",
+						"description": "The version that fixes it, where one is out."
+					},
+					"title": {
+						"type": "string"
+					}
+				},
+				"title": "BaseImageFinding",
+				"description": "One vulnerability a scan found in an image."
+			},
+			"BaseImageList": {
+				"type": "object",
+				"required": ["images", "templates", "indexUrl"],
+				"properties": {
+					"images": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/BaseImage"
+						}
+					},
+					"templates": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/BaseImageTemplate"
+						},
+						"description": "Templates and their bases; empty until templates exist."
+					},
+					"indexUrl": {
+						"type": "string",
+						"description": "Where the deployment reads the base image index (`KANTEL_BASE_IMAGE_INDEX`)."
+					},
+					"generatedAt": {
+						"type": "string",
+						"description": "When the index was last written, ISO 8601."
+					},
+					"error": {
+						"type": "string",
+						"description": "Why the index couldn't be read; `images` is empty then. It is tried again soon."
+					}
+				},
+				"title": "BaseImageList",
+				"description": "Kantel's base images as the index CI publishes them: each image's latest version, its newest versions and what their CVE scans found."
+			},
+			"BaseImageScan": {
+				"type": "object",
+				"required": ["scanner", "scannedAt", "counts", "fixable", "findings"],
+				"properties": {
+					"scanner": {
+						"type": "string",
+						"description": "What scanned it, such as `trivy 0.68.1`."
+					},
+					"scannedAt": {
+						"type": "string",
+						"description": "When, ISO 8601."
+					},
+					"counts": {
+						"$ref": "#/components/schemas/BaseImageScanCounts"
+					},
+					"fixable": {
+						"$ref": "#/components/schemas/BaseImageScanFixable"
+					},
+					"findings": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/BaseImageFinding"
+						},
+						"description": "The Critical and High findings, most severe first, at most 50."
+					}
+				},
+				"title": "BaseImageScan",
+				"description": "What the newest CVE scan of a version found."
+			},
+			"BaseImageScanCounts": {
+				"type": "object",
+				"required": ["critical", "high", "medium", "low", "unknown"],
+				"properties": {
+					"critical": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Critical findings."
+					},
+					"high": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "High findings."
+					},
+					"medium": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Medium findings."
+					},
+					"low": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Low findings."
+					},
+					"unknown": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Findings of no known severity."
+					}
+				},
+				"title": "BaseImageScanCounts",
+				"description": "Every finding, by severity."
+			},
+			"BaseImageScanFixable": {
+				"type": "object",
+				"required": ["critical", "high"],
+				"properties": {
+					"critical": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Critical findings with a fix out."
+					},
+					"high": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "High findings with a fix out."
+					}
+				},
+				"title": "BaseImageScanFixable",
+				"description": "Critical and High findings with a fix out: what makes Kantel rebuild the image at once."
+			},
+			"BaseImageTemplate": {
+				"type": "object",
+				"required": ["id", "name", "image", "base", "rebuilding"],
+				"properties": {
+					"id": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string"
+					},
+					"image": {
+						"type": "string",
+						"description": "The base image it is built on."
+					},
+					"channel": {
+						"type": "string",
+						"description": "The channel it follows, such as `stable`."
+					},
+					"pinned": {
+						"type": "string",
+						"description": "The digest it is pinned to, when it doesn't follow a channel."
+					},
+					"base": {
+						"$ref": "#/components/schemas/SandboxBase"
+					},
+					"rebuilding": {
+						"type": "boolean",
+						"description": "Whether it is being rebuilt on the latest base now."
+					}
+				},
+				"title": "BaseImageTemplate",
+				"description": "A template and the base it is built on."
+			},
+			"BaseImageVersion": {
+				"type": "object",
+				"required": ["version", "digest", "builtAt", "signed"],
+				"properties": {
+					"version": {
+						"type": "string",
+						"description": "Its tag, such as `2026.11.04.1`."
+					},
+					"digest": {
+						"type": "string",
+						"description": "`sha256:…`: the digest it is pulled by. A version's digest never changes."
+					},
+					"builtAt": {
+						"type": "string",
+						"description": "When it was built, ISO 8601."
+					},
+					"signed": {
+						"type": "boolean",
+						"description": "Signed with cosign, keyless, by Kantel's build."
+					},
+					"reason": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "daily"
+							},
+							{
+								"type": "string",
+								"const": "cve"
+							},
+							{
+								"type": "string",
+								"const": "manual"
+							},
+							{
+								"type": "string",
+								"const": "push"
+							}
+						],
+						"description": "Why it was built: the daily build, a fixable Critical or High finding, by hand, or a change."
+					},
+					"scan": {
+						"$ref": "#/components/schemas/BaseImageScan"
+					}
+				},
+				"title": "BaseImageVersion",
+				"description": "One build of a base image."
+			},
 			"BrowserAccess": {
 				"type": "object",
 				"required": ["url", "cdpUrl", "viewOnly", "expiresAt"],
@@ -8815,6 +10219,218 @@
 					}
 				},
 				"title": "BrowserEmbed"
+			},
+			"BucketAccessKey": {
+				"type": "object",
+				"required": ["accessKeyId", "secretAccessKey"],
+				"properties": {
+					"accessKeyId": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 256
+					},
+					"secretAccessKey": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 1024
+					},
+					"sessionToken": {
+						"type": "string",
+						"maxLength": 8192
+					}
+				},
+				"title": "BucketAccessKey",
+				"description": "An S3 access key, or a GCS HMAC key."
+			},
+			"BucketCredentials": {
+				"anyOf": [
+					{
+						"$ref": "#/components/schemas/BucketAccessKey"
+					},
+					{
+						"$ref": "#/components/schemas/BucketServiceAccountKey"
+					}
+				],
+				"title": "BucketCredentials",
+				"description": "Write-only: kept encrypted, given only to the host of a sandbox that mounts the bucket, never answered."
+			},
+			"BucketMountSource": {
+				"type": "object",
+				"required": ["kind", "bucketSourceId", "prefix"],
+				"properties": {
+					"kind": {
+						"type": "string",
+						"const": "bucket"
+					},
+					"bucketSourceId": {
+						"type": "string",
+						"description": "A bucket source of the sandbox's account, such as `bks_4kq9x2mt`."
+					},
+					"prefix": {
+						"type": "string",
+						"maxLength": 1024,
+						"description": "The objects under this key prefix, such as `org/42/skills/`; empty for the whole bucket."
+					},
+					"refreshTtlSeconds": {
+						"type": "integer",
+						"minimum": 0,
+						"maximum": 86400,
+						"description": "How long the host trusts its listing of the prefix before it looks again, so objects added later appear. 0: never look again. Default: the host's."
+					}
+				},
+				"title": "BucketMountSource",
+				"description": "An object-store prefix, through a bucket source the account holds. The host reads objects as they are opened; the bucket source's credentials stay on the host, never in the sandbox."
+			},
+			"BucketProvider": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "s3"
+					},
+					{
+						"type": "string",
+						"const": "gcs"
+					}
+				],
+				"title": "BucketProvider",
+				"description": "`s3`: Amazon S3 or an S3-compatible store (with `endpoint`). `gcs`: Google Cloud Storage."
+			},
+			"BucketServiceAccountKey": {
+				"type": "object",
+				"required": ["serviceAccountKey"],
+				"properties": {
+					"serviceAccountKey": {
+						"type": "string",
+						"minLength": 2,
+						"maxLength": 16384,
+						"description": "A GCS service account's JSON key, as Google gives it."
+					}
+				},
+				"title": "BucketServiceAccountKey"
+			},
+			"BucketSource": {
+				"type": "object",
+				"required": ["id", "accountId", "name", "provider", "bucket", "hasCredentials", "mountedBy", "createdAt"],
+				"properties": {
+					"id": {
+						"type": "string",
+						"description": "The bucket source's ID, such as `bks_4kq9x2mt`."
+					},
+					"accountId": {
+						"type": "string"
+					},
+					"name": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 100,
+						"description": "A name for people, such as `org files`."
+					},
+					"provider": {
+						"$ref": "#/components/schemas/BucketProvider"
+					},
+					"bucket": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 255,
+						"description": "The bucket's name."
+					},
+					"endpoint": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 2048,
+						"description": "An S3-compatible store's HTTPS endpoint, such as `https://<account>.r2.cloudflarestorage.com`."
+					},
+					"region": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 64,
+						"description": "Such as `eu-west-1`."
+					},
+					"hasCredentials": {
+						"type": "boolean",
+						"description": "Whether it was given credentials; they are never answered."
+					},
+					"mountedBy": {
+						"type": "integer",
+						"description": "How many of the account's sandboxes that still exist mount it."
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "BucketSource",
+				"description": "A bucket an account's sandboxes may mount prefixes of, with the credentials that read it. The credentials are write-only."
+			},
+			"BucketSourceList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/BucketSource"
+						}
+					}
+				},
+				"title": "BucketSourceList"
+			},
+			"Bundle": {
+				"type": "object",
+				"required": ["digest", "accountId", "sizeBytes", "mountedBy", "createdAt"],
+				"properties": {
+					"digest": {
+						"type": "string",
+						"description": "`sha256:` and the hex SHA-256 of the tar: the bundle's name and its ID."
+					},
+					"accountId": {
+						"type": "string"
+					},
+					"sizeBytes": {
+						"type": "integer",
+						"description": "The tar's size."
+					},
+					"mountedBy": {
+						"type": "integer",
+						"description": "How many of the account's sandboxes that still exist mount it."
+					},
+					"createdAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "Bundle",
+				"description": "A tar of files uploaded to an account once, named by its digest, which sandboxes mount read-only. It never changes: other files are another bundle."
+			},
+			"BundleList": {
+				"type": "object",
+				"required": ["items"],
+				"properties": {
+					"items": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/Bundle"
+						}
+					}
+				},
+				"title": "BundleList"
+			},
+			"BundleMountSource": {
+				"type": "object",
+				"required": ["kind", "digest"],
+				"properties": {
+					"kind": {
+						"type": "string",
+						"const": "bundle"
+					},
+					"digest": {
+						"type": "string",
+						"pattern": "^sha256:[0-9a-f]{64}$",
+						"description": "A bundle uploaded to the sandbox's account, by its digest: `sha256:` and 64 hex digits."
+					}
+				},
+				"title": "BundleMountSource",
+				"description": "A bundle's files: the tar the account uploaded (`POST /bundles`), unpacked read-only at the mount's path."
 			},
 			"Caller": {
 				"type": "object",
@@ -9056,6 +10672,47 @@
 				"title": "CreateApiKeyBody",
 				"description": "Give `scopes` or a `preset` (or both, which adds them). A key can't hold a scope its maker lacks."
 			},
+			"CreateBucketSourceBody": {
+				"type": "object",
+				"required": ["name", "provider", "bucket"],
+				"properties": {
+					"account": {
+						"type": "string",
+						"description": "The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`."
+					},
+					"name": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 100,
+						"description": "A name for people, such as `org files`."
+					},
+					"provider": {
+						"$ref": "#/components/schemas/BucketProvider"
+					},
+					"bucket": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 255,
+						"description": "The bucket's name."
+					},
+					"endpoint": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 2048,
+						"description": "An S3-compatible store's HTTPS endpoint, such as `https://<account>.r2.cloudflarestorage.com`."
+					},
+					"region": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 64,
+						"description": "Such as `eu-west-1`."
+					},
+					"credentials": {
+						"$ref": "#/components/schemas/BucketCredentials"
+					}
+				},
+				"title": "CreateBucketSourceBody"
+			},
 			"CreatedBy": {
 				"type": "object",
 				"required": ["kind", "id"],
@@ -9248,6 +10905,14 @@
 							}
 						},
 						"description": "Place it only on a host with each label, such as `{ site: \"home\" }`."
+					},
+					"mounts": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/Mount"
+						},
+						"maxItems": 16,
+						"description": "Files from outside the sandbox, read-only inside it: at most 16, at paths that don't overlap. A bundle or bucket source it names must be the account's. microVMs only: an isolate is refused (`not_supported`). A host that can't mount a source marks that mount `failed`, and the sandbox runs without it. A fork keeps its source's mounts. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`)."
 					},
 					"wait": {
 						"type": "boolean",
@@ -10141,6 +11806,33 @@
 				},
 				"title": "ExposePortBody"
 			},
+			"ExtractedArchive": {
+				"type": "object",
+				"required": ["path", "files", "directories", "symlinks", "bytes"],
+				"properties": {
+					"path": {
+						"type": "string",
+						"description": "The absolute directory it was extracted into."
+					},
+					"files": {
+						"type": "integer",
+						"description": "Files written."
+					},
+					"directories": {
+						"type": "integer",
+						"description": "Directories made."
+					},
+					"symlinks": {
+						"type": "integer",
+						"description": "Symbolic links made."
+					},
+					"bytes": {
+						"type": "integer",
+						"description": "Bytes of the files written."
+					}
+				},
+				"title": "ExtractedArchive"
+			},
 			"FileContent": {
 				"type": "object",
 				"required": ["path", "encoding", "content", "size"],
@@ -10235,6 +11927,58 @@
 					}
 				},
 				"title": "FileList"
+			},
+			"FileUrl": {
+				"type": "object",
+				"required": ["url", "method", "path", "expiresAt"],
+				"properties": {
+					"url": {
+						"type": "string",
+						"description": "The signed URL. Send the request straight to it, with no `Authorization` header. Treat it as a secret until it expires."
+					},
+					"method": {
+						"anyOf": [
+							{
+								"type": "string",
+								"const": "GET"
+							},
+							{
+								"type": "string",
+								"const": "PUT"
+							}
+						],
+						"description": "`GET` downloads the file. `PUT` uploads the request's raw body as the file."
+					},
+					"path": {
+						"type": "string",
+						"description": "The absolute path the URL is bound to."
+					},
+					"expiresAt": {
+						"type": "integer",
+						"description": "Epoch milliseconds, UTC."
+					}
+				},
+				"title": "FileUrl",
+				"description": "A short-lived URL for one file of one sandbox, streamed to or from the sandbox's host, so a file of any size moves without base64."
+			},
+			"FileUrlBody": {
+				"type": "object",
+				"required": ["path"],
+				"properties": {
+					"path": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 4096,
+						"description": "An absolute path, or one relative to the user's home."
+					},
+					"ttlSeconds": {
+						"type": "integer",
+						"minimum": 1,
+						"maximum": 3600,
+						"description": "How long the URL may be used: default 900 (15 minutes), at most 3600."
+					}
+				},
+				"title": "FileUrlBody"
 			},
 			"ForkedSandboxes": {
 				"type": "object",
@@ -10851,6 +12595,52 @@
 				"title": "MicrovmShapes",
 				"description": "Absent when no host the account may use runs microVMs."
 			},
+			"Mount": {
+				"type": "object",
+				"required": ["path", "source"],
+				"properties": {
+					"path": {
+						"type": "string",
+						"minLength": 2,
+						"maxLength": 1024,
+						"description": "Where it appears in the sandbox: absolute and normalised, not `/`, not at or under a system directory (`/proc`, `/sys`, `/dev`, `/etc`, `/usr`, `/bin`, `/lib` and the like), and not overlapping another mount."
+					},
+					"source": {
+						"$ref": "#/components/schemas/MountSource"
+					}
+				},
+				"title": "Mount",
+				"description": "Files from outside the sandbox, read-only inside it: nothing in the sandbox can change them."
+			},
+			"MountSource": {
+				"anyOf": [
+					{
+						"$ref": "#/components/schemas/BundleMountSource"
+					},
+					{
+						"$ref": "#/components/schemas/BucketMountSource"
+					}
+				],
+				"title": "MountSource"
+			},
+			"MountStatus": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "pending"
+					},
+					{
+						"type": "string",
+						"const": "ready"
+					},
+					{
+						"type": "string",
+						"const": "failed"
+					}
+				],
+				"title": "MountStatus",
+				"description": "`pending`: its host is still putting it in place. `ready`: its files are there. `failed`: they aren't, and `error` says why; the sandbox runs without it."
+			},
 			"PollDeviceLoginBody": {
 				"type": "object",
 				"required": ["deviceCode"],
@@ -11348,6 +13138,13 @@
 						},
 						"description": "Its own egress grants, on top of its environment's."
 					},
+					"mounts": {
+						"type": "array",
+						"items": {
+							"$ref": "#/components/schemas/SandboxMount"
+						},
+						"description": "Its read-only mounts, as its create named them, each with its status. Absent: none. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`)."
+					},
 					"createdBy": {
 						"$ref": "#/components/schemas/CreatedBy"
 					},
@@ -11372,9 +13169,75 @@
 					"hostId": {
 						"type": "string",
 						"description": "The host it runs on; only a super-admin is shown it."
+					},
+					"base": {
+						"$ref": "#/components/schemas/SandboxBase"
 					}
 				},
 				"title": "Sandbox"
+			},
+			"SandboxBase": {
+				"type": "object",
+				"required": ["image", "outdated"],
+				"properties": {
+					"image": {
+						"type": "string",
+						"description": "The base image it is on, by its name in Kantel's base image index: `host` for a microVM (the host images: kernel and root file system), `sandbox` for the container tier."
+					},
+					"version": {
+						"type": "string",
+						"description": "The version of the base it is on, such as `host-images-20261104.812`."
+					},
+					"outdated": {
+						"type": "boolean",
+						"description": "Its base isn't the version its channel (`stable`) names now."
+					},
+					"latest": {
+						"$ref": "#/components/schemas/SandboxBaseLatest"
+					},
+					"behind": {
+						"$ref": "#/components/schemas/SandboxBaseBehind"
+					},
+					"security": {
+						"type": "boolean",
+						"description": "A newer version fixes Critical or High vulnerabilities this one has: restart it on the latest."
+					}
+				},
+				"title": "SandboxBase",
+				"description": "The base image a sandbox's (or a snapshot's) root file system is, and how far behind it is. A running sandbox is never patched underneath: an outdated one stays on its base until it is restarted on the latest (`restartSandboxOnLatest`) or made again. Experimental: present only where the deployment has image patching on (`KANTEL_IMAGE_PATCHING`) and knows the version."
+			},
+			"SandboxBaseBehind": {
+				"type": "object",
+				"required": ["days", "versions"],
+				"properties": {
+					"days": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "Whole days since the version after its own was built: how long it has been superseded."
+					},
+					"versions": {
+						"type": "integer",
+						"minimum": 0,
+						"description": "How many versions are newer."
+					}
+				},
+				"title": "SandboxBaseBehind",
+				"description": "How far behind its channel it is, while outdated."
+			},
+			"SandboxBaseLatest": {
+				"type": "object",
+				"required": ["version", "builtAt"],
+				"properties": {
+					"version": {
+						"type": "string"
+					},
+					"builtAt": {
+						"type": "string",
+						"description": "When it was built, ISO 8601."
+					}
+				},
+				"title": "SandboxBaseLatest",
+				"description": "The version its channel names now."
 			},
 			"SandboxCapabilities": {
 				"type": "object",
@@ -11497,6 +13360,27 @@
 				],
 				"title": "SandboxHealth",
 				"description": "`degraded`: the machine is up but its host can't fully reach it; it keeps running."
+			},
+			"SandboxMount": {
+				"type": "object",
+				"required": ["path", "source", "status"],
+				"properties": {
+					"path": {
+						"type": "string"
+					},
+					"source": {
+						"$ref": "#/components/schemas/MountSource"
+					},
+					"status": {
+						"$ref": "#/components/schemas/MountStatus"
+					},
+					"error": {
+						"type": "string",
+						"description": "Why it is `failed`, in words."
+					}
+				},
+				"title": "SandboxMount",
+				"description": "A mount of a sandbox's, and whether its files are in place."
 			},
 			"SandboxPage": {
 				"type": "object",
@@ -11828,6 +13712,31 @@
 				},
 				"title": "SaveSnapshotBody"
 			},
+			"ScanSeverity": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "critical"
+					},
+					{
+						"type": "string",
+						"const": "high"
+					},
+					{
+						"type": "string",
+						"const": "medium"
+					},
+					{
+						"type": "string",
+						"const": "low"
+					},
+					{
+						"type": "string",
+						"const": "unknown"
+					}
+				],
+				"title": "ScanSeverity"
+			},
 			"SetEnvironmentFileBody": {
 				"type": "object",
 				"required": ["path"],
@@ -12022,6 +13931,9 @@
 					"expiresAt": {
 						"type": "integer",
 						"description": "Epoch milliseconds, UTC."
+					},
+					"base": {
+						"$ref": "#/components/schemas/SandboxBase"
 					}
 				},
 				"title": "Snapshot"
@@ -12209,7 +14121,7 @@
 					}
 				},
 				"title": "TelemetryExport",
-				"description": "Where an account's telemetry goes: sandbox metrics (`kantel.sandbox.running`, `kantel.sandbox.cpu.seconds`, `kantel.sandbox.cost`, …) every 60 seconds, and each lifecycle event as an OTLP log record when it happens."
+				"description": "Where an account's telemetry goes: sandbox metrics (`kantel.sandbox.cpu`, `kantel.sandbox.memory_bytes` and `kantel.sandbox.running_seconds`) every 60 seconds, and each lifecycle event as an OTLP log record when it happens."
 			},
 			"TelemetryLastExport": {
 				"type": "object",

@@ -64,6 +64,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /files", s.writeFile)
 	mux.HandleFunc("DELETE /files", s.deleteFile)
 	mux.HandleFunc("GET /files/list", s.listFiles)
+	mux.HandleFunc("POST /files/extract", s.extractArchive)
 	mux.HandleFunc("GET /ports/{port}", s.port)
 	return mux
 }
@@ -797,12 +798,14 @@ func (s *Server) writeFile(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, err)
 		return
 	}
-	tmp := path + ".kantel-tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
+	// Its own file beside the destination, so writes at once (a long streamed one, a short one) never share one: only
+	// a write that got all of its body moves its file into place, and nothing still writing has it open.
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".kantel-*")
 	if err != nil {
 		fail(w, 500, err)
 		return
 	}
+	tmp := f.Name()
 	n, err := io.Copy(f, r.Body)
 	if cerr := f.Close(); err == nil {
 		err = cerr

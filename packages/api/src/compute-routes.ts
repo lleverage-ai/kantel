@@ -19,13 +19,21 @@ import {
 	ApiKeyList,
 	ApiKeyPath,
 	ApproveDeviceLoginBody,
+	BaseImageList,
 	BrowserAccess,
+	BucketSource,
+	BucketSourceList,
+	BucketSourcePath,
+	Bundle,
+	BundleList,
+	BundlePath,
 	Caller,
 	Command,
 	CommandPage,
 	CommandPath,
 	CreateAccountJoinTokenBody,
 	CreateApiKeyBody,
+	CreateBucketSourceBody,
 	CreateEnvironmentBody,
 	CreateHostJoinTokenBody,
 	CreateInviteBody,
@@ -50,10 +58,14 @@ import {
 	ExposedPort,
 	ExposedPortList,
 	ExposePortBody,
+	ExtractArchiveQuery,
+	ExtractedArchive,
 	FileContent,
 	FileEntry,
 	FileList,
 	FilePathQuery,
+	FileUrl,
+	FileUrlBody,
 	ForkedSandboxes,
 	ForkSandboxBody,
 	Host,
@@ -115,6 +127,7 @@ import {
 	UpdateMemberBody,
 	UpdateSandboxBody,
 	UpdateWebhookBody,
+	UploadBundleQuery,
 	UsageQuery,
 	ViewAccessBody,
 	Webhook,
@@ -390,6 +403,10 @@ export const createSandbox = defineRoute({
 		"works for now.",
 		"Answers as soon as it is placed (`starting`), or once it runs with `wait`. A full deployment is `exhausted`; no",
 		"host able to run the type is `unavailable`.",
+		"`mounts` (experimental) are for microVMs only: an isolate's are refused (`not_supported`), because an isolate",
+		"is a JavaScript shell over files the host keeps, with no file system of its own to mount a drive or a bucket",
+		"into. A mount whose bundle or bucket source isn't the account's is `not_found`; with the deployment's",
+		"`KANTEL_MOUNTS` switch off, any `mounts` are `not_supported`.",
 		scope("sandboxes:write"),
 	),
 	body: CreateSandboxBody,
@@ -513,6 +530,29 @@ export const recoverSandbox = defineRoute({
 	errors: lifecycleErrors,
 });
 
+/** What the image patching routes say of their switch. */
+const IMAGE_PATCHING =
+	"Experimental: `not_supported` unless the deployment has turned image patching on (`KANTEL_IMAGE_PATCHING`).";
+
+export const restartSandboxOnLatest = defineRoute({
+	operationId: "restartSandboxOnLatest",
+	method: "POST",
+	path: "/sandboxes/{sandboxId}/restart-on-latest",
+	tag: "sandboxes",
+	summary: "Restart a sandbox on the latest base",
+	description: describe(
+		"Restarts the machine on the newest base image, on its disk as it is: a running sandbox's disk is saved and it is",
+		"stopped first (as `stop` does, without its memory), then it boots cold on the latest base. Memory is lost, and so",
+		"are running programs. A running sandbox is never patched underneath: this is how an outdated one (`base.outdated`)",
+		"moves on. Answers once it is starting. A sandbox starting, stopping or being deleted is `conflict`.",
+		scope("sandboxes:write"),
+		IMAGE_PATCHING,
+	),
+	params: SandboxPath,
+	answer: { status: 200, description: "The sandbox, starting.", schema: Sandbox },
+	errors: [...lifecycleErrors, "exhausted"],
+});
+
 export const deleteSandbox = defineRoute({
 	operationId: "deleteSandbox",
 	method: "DELETE",
@@ -557,6 +597,7 @@ export const sandboxRoutes = {
 	resumeSandbox,
 	forkSandbox,
 	recoverSandbox,
+	restartSandboxOnLatest,
 	deleteSandbox,
 	getSandboxUsage,
 } as const;
@@ -676,8 +717,85 @@ export const listFiles = defineRoute({
 	errors: ["invalid", "forbidden", "not_found", "conflict"],
 });
 
+// Signed file URLs and archives, with mounts (experimental, behind the deployment's KANTEL_MOUNTS switch).
+
+const MOUNTS =
+	"Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).";
+
+export const createUploadUrl = defineRoute({
+	operationId: "createUploadUrl",
+	method: "POST",
+	path: "/sandboxes/{sandboxId}/files/upload-url",
+	tag: "files",
+	summary: "Get an upload URL for a file",
+	description: describe(
+		"A short-lived URL on the API, streamed straight to the sandbox's host: `PUT` the file to it as the raw request",
+		"body, of any size, with no `Authorization` header; the answer is `{ path, size }`. Missing directories are made, and a file already there is replaced only once the upload",
+		"is complete. The URL is bound to this sandbox and path, and expires after `ttlSeconds`. A path in a read-only",
+		"mount is refused (`conflict`). The sandbox must be running when the URL is used. Treat it as a secret.",
+		scope("files"),
+		MOUNTS,
+	),
+	params: SandboxPath,
+	body: FileUrlBody,
+	answer: { status: 200, description: "The URL.", schema: FileUrl },
+	errors: ["invalid", "forbidden", "not_found", "conflict", "not_supported"],
+});
+
+export const createDownloadUrl = defineRoute({
+	operationId: "createDownloadUrl",
+	method: "POST",
+	path: "/sandboxes/{sandboxId}/files/download-url",
+	tag: "files",
+	summary: "Get a download URL for a file",
+	description: describe(
+		"A short-lived URL on the API, streamed straight from the sandbox's host: `GET` it, with no `Authorization`",
+		"header, for the file's bytes as they are when it is fetched, whatever its size (`HEAD` for its size alone). The URL is bound to this sandbox and path, and expires",
+		"after `ttlSeconds`. The sandbox must be running when the URL is used. Treat it as a secret.",
+		scope("files"),
+		MOUNTS,
+	),
+	params: SandboxPath,
+	body: FileUrlBody,
+	answer: { status: 200, description: "The URL.", schema: FileUrl },
+	errors: ["invalid", "forbidden", "not_found", "conflict", "not_supported"],
+});
+
+export const extractArchive = defineRoute({
+	operationId: "extractArchive",
+	method: "PUT",
+	path: "/sandboxes/{sandboxId}/files/archive",
+	tag: "files",
+	summary: "Extract an archive into a directory",
+	description: describe(
+		"Writes every file, directory and symbolic link of a tar (or a gzipped tar) into `path`, in one call. An entry",
+		"whose name is absolute or climbs out of `path` (`..`), a link that points out of it, an entry under such a link,",
+		"and hard links, devices and FIFOs are refused (`invalid`) before anything is written. A `path` in a read-only",
+		"mount, or with one under it, is refused (`conflict`). Files are owned by the sandbox's user, with their modes",
+		"from the tar.",
+		scope("files"),
+		MOUNTS,
+	),
+	params: SandboxPath,
+	query: ExtractArchiveQuery,
+	rawBody: {
+		media: ["application/x-tar", "application/gzip"],
+		description: "The archive: a tar (POSIX or GNU), gzipped or not.",
+	},
+	answer: { status: 200, description: "What was extracted.", schema: ExtractedArchive },
+	errors: ["invalid", "forbidden", "not_found", "conflict", "not_supported", "unavailable"],
+});
+
 export const commandRoutes = { runCommand, listCommands, getCommand, killCommand } as const;
-export const fileRoutes = { readFile, writeFile, deleteFile, listFiles } as const;
+export const fileRoutes = {
+	readFile,
+	writeFile,
+	deleteFile,
+	listFiles,
+	createUploadUrl,
+	createDownloadUrl,
+	extractArchive,
+} as const;
 
 // Ports, desktop, browser and SSH.
 
@@ -1647,6 +1765,27 @@ export const hostRoutes = {
 	setPublicUrl,
 } as const;
 
+// Kantel's base images and how far behind each is (image patching, experimental): the deployment's super-admins only.
+
+export const listBaseImages = defineRoute({
+	operationId: "listBaseImages",
+	method: "GET",
+	path: "/admin/hosts/images",
+	tag: "hosts",
+	summary: "List base images",
+	description: describe(
+		"Kantel's base images as the index its build publishes them: each image's latest version on the `stable` channel,",
+		"its newest versions and what their CVE scans found, and the templates built on them. An index that can't be read",
+		"is answered as `error`, with no images.",
+		SUPER_ADMIN,
+		IMAGE_PATCHING,
+	),
+	answer: { status: 200, description: "The base images.", schema: BaseImageList },
+	errors: ["forbidden", "not_supported"],
+});
+
+export const baseImageRoutes = { listBaseImages } as const;
+
 // An account's own hosts, added by its people rather than by the deployment's super-admin. Only that account's
 // sandboxes run on them. Experimental: a deployment serves these only with KANTEL_ACCOUNT_HOSTS=experimental, and
 // answers `not_supported` otherwise.
@@ -1749,6 +1888,142 @@ export const removeAccountHost = defineRoute({
 	errors: [...readErrors, "not_supported"],
 });
 
+// Bundles and bucket sources: what mounts are made from (experimental, behind the deployment's KANTEL_MOUNTS switch).
+
+export const uploadBundle = defineRoute({
+	operationId: "uploadBundle",
+	method: "POST",
+	path: "/bundles",
+	tag: "mounts",
+	summary: "Upload a bundle",
+	description: describe(
+		"Stores a tar of files once in the account (the caller's personal account unless `account` names an",
+		"organisation), named by its SHA-256, for sandboxes to mount read-only (`mounts` on create). Uploading a tar the",
+		"account has already is answered with that bundle (200), and stores nothing again. With `digest`, bytes that",
+		"don't match are refused.",
+		scope("sandboxes:write"),
+		MOUNTS,
+	),
+	query: UploadBundleQuery,
+	rawBody: { media: ["application/x-tar"], description: "The tar, as it is: not gzipped." },
+	answer: { status: 201, description: "The bundle, stored.", schema: Bundle },
+	otherAnswers: [{ status: 200, description: "The account had it already.", schema: Bundle }],
+	errors: ["invalid", "forbidden", "not_supported"],
+});
+
+export const listBundles = defineRoute({
+	operationId: "listBundles",
+	method: "GET",
+	path: "/bundles",
+	tag: "mounts",
+	summary: "List bundles",
+	description: describe("The account's bundles, newest first.", scope("sandboxes:read"), MOUNTS),
+	query: AccountScopedQuery,
+	answer: { status: 200, description: "The bundles.", schema: BundleList },
+	errors: ["invalid", "forbidden", "not_supported"],
+});
+
+export const getBundle = defineRoute({
+	operationId: "getBundle",
+	method: "GET",
+	path: "/bundles/{digest}",
+	tag: "mounts",
+	summary: "Get a bundle",
+	description: describe(scope("sandboxes:read"), MOUNTS),
+	params: BundlePath,
+	query: AccountScopedQuery,
+	answer: { status: 200, description: "The bundle.", schema: Bundle },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const deleteBundle = defineRoute({
+	operationId: "deleteBundle",
+	method: "DELETE",
+	path: "/bundles/{digest}",
+	tag: "mounts",
+	summary: "Delete a bundle",
+	description: describe(
+		"Removes it from the account. Refused (`conflict`) while a sandbox of the account that still exists mounts it,",
+		"stopped ones included, since they mount it again when they start: delete those sandboxes first.",
+		scope("sandboxes:write"),
+		MOUNTS,
+	),
+	params: BundlePath,
+	query: AccountScopedQuery,
+	answer: { status: 204, description: "Deleted." },
+	errors: [...changeErrors, "not_supported"],
+});
+
+export const createBucketSource = defineRoute({
+	operationId: "createBucketSource",
+	method: "POST",
+	path: "/bucket-sources",
+	tag: "mounts",
+	summary: "Create a bucket source",
+	description: describe(
+		"A bucket the account's sandboxes may mount prefixes of (`mounts` on create), with the credentials that read it.",
+		"The credentials are kept encrypted and never shown again; only the host of a sandbox that mounts the bucket is",
+		"given them, and never the sandbox. Credentials need the deployment's secrets key (`not_supported` without one).",
+		scope("account:admin"),
+		MOUNTS,
+	),
+	body: CreateBucketSourceBody,
+	answer: { status: 201, description: "The bucket source.", schema: BucketSource },
+	errors: ["invalid", "forbidden", "not_supported"],
+});
+
+export const listBucketSources = defineRoute({
+	operationId: "listBucketSources",
+	method: "GET",
+	path: "/bucket-sources",
+	tag: "mounts",
+	summary: "List bucket sources",
+	description: describe("The account's bucket sources, oldest first.", scope("account:read"), MOUNTS),
+	query: AccountScopedQuery,
+	answer: { status: 200, description: "The bucket sources.", schema: BucketSourceList },
+	errors: ["invalid", "forbidden", "not_supported"],
+});
+
+export const getBucketSource = defineRoute({
+	operationId: "getBucketSource",
+	method: "GET",
+	path: "/bucket-sources/{bucketSourceId}",
+	tag: "mounts",
+	summary: "Get a bucket source",
+	description: describe("Never its credentials.", scope("account:read"), MOUNTS),
+	params: BucketSourcePath,
+	answer: { status: 200, description: "The bucket source.", schema: BucketSource },
+	errors: [...readErrors, "not_supported"],
+});
+
+export const deleteBucketSource = defineRoute({
+	operationId: "deleteBucketSource",
+	method: "DELETE",
+	path: "/bucket-sources/{bucketSourceId}",
+	tag: "mounts",
+	summary: "Delete a bucket source",
+	description: describe(
+		"Removes it and its credentials. Refused (`conflict`) while a sandbox of the account that still exists mounts it,",
+		"stopped ones included: delete those sandboxes first.",
+		scope("account:admin"),
+		MOUNTS,
+	),
+	params: BucketSourcePath,
+	answer: { status: 204, description: "Deleted." },
+	errors: [...changeErrors, "not_supported"],
+});
+
+export const mountRoutes = {
+	uploadBundle,
+	listBundles,
+	getBundle,
+	deleteBundle,
+	createBucketSource,
+	listBucketSources,
+	getBucketSource,
+	deleteBucketSource,
+} as const;
+
 export const accountHostRoutes = {
 	createAccountJoinToken,
 	listAccountHosts,
@@ -1774,8 +2049,11 @@ export const computeRoutes = {
 	...eventRoutes,
 	...webhookRoutes,
 	...telemetryRoutes,
+	// Before the hosts' `/admin/hosts/{hostId}`, which would otherwise take `images` for a host's ID.
+	...baseImageRoutes,
 	...hostRoutes,
 	...accountHostRoutes,
+	...mountRoutes,
 } as const;
 
 export type ComputeRoutes = typeof computeRoutes;

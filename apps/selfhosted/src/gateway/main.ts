@@ -5,7 +5,11 @@
 //   HOST                        the address to listen on; default 0.0.0.0. 127.0.0.1 on the host's network
 //   KANTEL_CONSOLE_DIR          the console's build; default apps/console/dist in this checkout
 //   KANTEL_BOOTSTRAP_FILE       where the bootstrap's IDs and keys are written (mode 0600), and read back on the next
-//                               start; default .harbour/bootstrap.json under the working directory
+//                               start; default .harbour/bootstrap.json under the working directory. Its directory is
+//                               the gateway's on disk: with KANTEL_MOUNTS, bundles' tars are kept in `bundles/` there
+//   KANTEL_BUNDLES_DIR          with KANTEL_MOUNTS, where bundles' tars are kept instead. Gateway replicas over one
+//                               database must share one (a shared volume): a gateway whose directory isn't the one
+//                               the deployment's bundles are in refuses to upload, serve or delete them (503)
 //   KANTEL_DATABASE_URL         Postgres for identity, sign-in, audit, the compute API's records and the registry of
 //                               hosts (durable.ts), so they outlast a restart and gateways over one database share
 //                               them; unset, everything is in memory
@@ -49,7 +53,7 @@
 // First: HARBOUR_* settings from before the rename still count.
 import "@kantel/contracts/legacy-env";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAuthenticator } from "@kantel/identity/authenticator";
 import { oauthClientsFromEnv } from "@kantel/identity/oauth";
@@ -191,6 +195,18 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		...(hosts === undefined ? {} : { hosts }),
 		...(components.computeStore === undefined ? {} : { store: components.computeStore }),
 		...(secretsKey === undefined ? {} : { secretsKey }),
+		...(cfg.compute.imagePatching === undefined ? {} : { imagePatching: cfg.compute.imagePatching }),
+		// KANTEL_BUNDLES_DIR, else beside the bootstrap file: the directory the gateway keeps on disk (Compose's
+		// gatewaystate volume).
+		...(cfg.compute.mounts === true
+			? {
+					mounts: {
+						bundlesDir: process.env.KANTEL_BUNDLES_DIR?.trim()
+							? resolve(process.env.KANTEL_BUNDLES_DIR.trim())
+							: join(dirname(cfg.bootstrapFile), "bundles"),
+					},
+				}
+			: {}),
 		...(mailer === undefined ? {} : { invites: computeInvites(mailer, cfg.publicOrigin, components.identity) }),
 	});
 	seeded = { ...seeded, computeKey: compute.superAdminKey };

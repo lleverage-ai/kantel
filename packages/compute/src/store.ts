@@ -37,6 +37,12 @@ export interface Collection<T extends { readonly id: string }> {
 	update(id: string, change: (current: T) => T | undefined, expected?: T): Promise<T | undefined>;
 	/** Whether there was one to delete. */
 	delete(id: string): Promise<boolean>;
+	/**
+	 * Deletes the record only when `should` approves it as it is now, with nothing written between the read and the
+	 * delete (the SQL store deletes only the version it read, and reads again when another writer got there first), and
+	 * answers whether it did. `should` may run more than once.
+	 */
+	deleteIf(id: string, should: (current: T) => boolean): Promise<boolean>;
 	/** The records whose fields equal each defined field of `where`, oldest first. */
 	list(where?: Partial<T>): Promise<T[]>;
 }
@@ -100,7 +106,7 @@ export interface StoredSample {
 }
 
 /** A sandbox: its wire shape (but its cost and usage, worked out when answered) and what the service keeps besides. */
-export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "grants"> & {
+export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "grants" | "base"> & {
 	/** The person it belongs to: its maker, or the person whose key made it. */
 	readonly ownerUserId: string;
 	/** What every command sees: its environment's plain variables and placeholders, then the create's own. */
@@ -116,6 +122,17 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	 * `egressRevision`, an update didn't get through (its host away, say), and the sweep sends the egress as it is now.
 	 */
 	readonly egressApplied?: number;
+	/**
+	 * When its host put it on `base` (`Placement.baseAt`, the host's clock; 0 or absent: not said). A host's later report
+	 * of its base replaces `base` only when it says a later time (`ComputeService.recordBases`).
+	 */
+	readonly baseAt?: number;
+	/**
+	 * Moves on by one with every change of its state (`withState`), so a lifecycle step that read it earlier can claim
+	 * the next only while nothing else has moved it since, even if it is back in the state it read (a restart in
+	 * between). Absent: 0, a record from before it was kept.
+	 */
+	readonly lifecycle?: number;
 	/**
 	 * Why it is due to stop at `stopsAt`, when that isn't its auto-stop: its host can't enforce its egress as stored. The
 	 * sweep stops it with this reason, as many times as it takes.
@@ -141,6 +158,12 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 	/** The snapshot its memory was paused into, while `paused`. */
 	readonly pausedSnapshotId?: string;
 	/**
+	 * The base image version its root file system is, as its backend reported it (`Placement.base`): a host images
+	 * version such as `host-images-20261104.812`, or a container image's `sha256:` digest. Answered, with how far behind
+	 * it is, as the API's `base` (image patching on). Absent: not reported.
+	 */
+	readonly base?: string;
+	/**
 	 * What it asked for at create: a microVM's vCPUs and memory, an isolate's memory (`vcpus` 0). Absent: made by a named
 	 * size, or before shapes. A fork asks for the same.
 	 */
@@ -149,8 +172,11 @@ export type StoredSandbox = Omit<computeSchema.Sandbox, "cost" | "usage" | "gran
 
 export type StoredCommand = computeSchema.Command & { readonly accountId: string };
 
-/** A snapshot and the backend's reference to its bytes (absent until it is ready). */
-export type StoredSnapshot = computeSchema.Snapshot & { readonly ref?: string };
+/**
+ * A snapshot and the backend's reference to its bytes (absent until it is ready), and the base image version its root
+ * file system is (`TakenSnapshot.base`), answered as the API's `base`.
+ */
+export type StoredSnapshot = Omit<computeSchema.Snapshot, "base"> & { readonly ref?: string; readonly base?: string };
 
 export type StoredApiKey = computeSchema.ApiKey & {
 	/** The SHA-256 hex of the secret. */
@@ -277,11 +303,70 @@ export interface StoredJoinToken {
 export type StoredEvent = computeSchema.Event;
 
 /**
- * A deployment-wide setting a super-admin changed in the console, by name: `publicUrl`, where hosts reach the control
- * plane, ahead of the deployment's own.
+ * A delete's claim on a record (mounts): while it is fresh, a create mounting the source refuses, so the delete's count
+ * of sandboxes mounting it can't miss one. A claim older than a minute is a delete that never finished, and ignored.
+ */
+export interface DeleteClaim {
+	readonly token: string;
+	readonly at: number;
+}
+
+/**
+ * A bundle an account uploaded (mounts): its ID is `<accountId>/<digest>`, so an account has a digest once. Its bytes
+ * are the bundle store's, kept as `generation` of the digest, which this record alone owns: they are kept before it is
+ * published and removed only once it is gone, so they are there for as long as it is.
+ */
+export interface StoredBundle {
+	readonly id: string;
+	readonly accountId: string;
+	/** `sha256:<hex>`. */
+	readonly digest: string;
+	readonly sizeBytes: number;
+	readonly createdAt: number;
+	readonly createdBy?: string;
+	/** The generation of the digest its bytes are kept as (`BundleBlobStore`). Absent: 0, from before generations. */
+	readonly generation?: number;
+	readonly deleting?: DeleteClaim;
+}
+
+/** A bucket an account's sandboxes may mount prefixes of (mounts). Its credentials are sealed, and never answered. */
+export interface StoredBucketSource {
+	readonly id: string;
+	readonly accountId: string;
+	readonly name: string;
+	readonly provider: computeSchema.BucketProvider;
+	readonly bucket: string;
+	readonly endpoint?: string;
+	readonly region?: string;
+	/** The credentials' JSON, sealed at `bucketSources:<id>:credentials`. */
+	readonly credentials?: SealedValue;
+	readonly createdAt: number;
+	readonly deleting?: DeleteClaim;
+}
+
+/**
+ * A signed file URL (mounts): its ID is the SHA-256 hex of its token, which only its answer shows. It is for one file
+ * of one sandbox, one way, until `expiresAt`.
+ */
+export interface StoredFileUrl {
+	readonly id: string;
+	readonly sandboxId: string;
+	readonly accountId: string;
+	/** Absolute. */
+	readonly path: string;
+	/** `GET` downloads the file, `PUT` uploads it. */
+	readonly method: "GET" | "PUT";
+	readonly expiresAt: number;
+	readonly createdAt: number;
+}
+
+/**
+ * A deployment-wide setting, by name: `publicUrl`, where hosts reach the control plane, ahead of the deployment's own,
+ * as a super-admin changed it in the console; `bundleStore`, the mark the first gateway to keep a bundle left in its
+ * bundle store, which any gateway's must hold for it to keep, serve or remove bundles' bytes (`BundleBlobStore.mark`).
  */
 export interface StoredSetting {
-	readonly id: "publicUrl";
+	readonly id: "publicUrl" | "bundleStore";
 	readonly value: string;
 	readonly updatedAt: number;
 	readonly updatedBy: string;
@@ -350,6 +435,10 @@ export interface ComputeStore {
 	readonly egress: Collection<StoredEgressEntry>;
 	/** Each organisation's E2E chain, an entry a record (`e2e.ts`). */
 	readonly e2eChain: Collection<StoredE2EEntry>;
+	/** Mounts' bundles, bucket sources and signed file URLs (experimental). */
+	readonly bundles: Collection<StoredBundle>;
+	readonly bucketSources: Collection<StoredBucketSource>;
+	readonly fileUrls: Collection<StoredFileUrl>;
 	readonly settings: Collection<StoredSetting>;
 }
 
@@ -403,6 +492,11 @@ export function memoryCollection<T extends { readonly id: string }>(unique?: (re
 		async delete(id) {
 			return records.delete(id);
 		},
+		async deleteIf(id, should) {
+			const current = records.get(id);
+			if (current === undefined || !should(structuredClone(current))) return false;
+			return records.delete(id);
+		},
 		async list(where) {
 			return [...records.values()].filter((record) => matches(record, where)).map((record) => structuredClone(record));
 		},
@@ -432,6 +526,9 @@ export function createMemoryStore(): ComputeStore {
 		environments: memoryCollection<StoredEnvironment>(environmentNameKey),
 		egress: memoryCollection(),
 		e2eChain: memoryCollection(),
+		bundles: memoryCollection(),
+		bucketSources: memoryCollection(),
+		fileUrls: memoryCollection(),
 		settings: memoryCollection(),
 	};
 }

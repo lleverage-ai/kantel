@@ -7,32 +7,46 @@
  * desktop's Selkies stream at a page on the gateway (`desktop.ts`), view-only enforced there when the ticket says so, Chromium's
  * DevTools WebSocket passed through for `connectOverCDP`, and sshd as raw TCP for an `ssh -o ProxyCommand=…`. Exposed ports
  * are offered when the gateway has a wildcard name for them (`ports.ts`), token-gated unless exposed `public`.
+ *
+ * Mounts go to a host with every create, start, resume, fork and recover, but only those its features say it can do
+ * (`mountHandoff`); the others are answered `failed`. Large files stream over `sandbox.files.open` on a host that
+ * reports `file-streams`; on one that doesn't, `not_supported` sends the compute service back to `readFile` and
+ * `writeFile`.
  */
 import type {
 	BackendCapabilities,
 	BackendEgress,
 	BackendFileEntry,
 	BackendHost,
+	BackendMount,
 	BackendSize,
 	BootOptions,
 	ExecResult,
+	FileStream,
 	Placement,
 	SandboxBackend,
 	SandboxSpec,
 	TakenSnapshot,
 } from "@kantel/compute";
-import { KantelError } from "@kantel/contracts";
+import { type ErrorCode, isKantelError, KantelError } from "@kantel/contracts";
 import { DESKTOP_PORT, desktopPath } from "./desktop.ts";
+import type { FileStreamHandle, PortSink } from "./hub.ts";
 import type { PortRouter } from "./ports.ts";
 import {
+	FILE_STREAM_ACK_BYTES,
+	FILE_STREAM_FRAME_MAX_BYTES,
+	FILE_STREAM_WINDOW_BYTES,
 	HOST_E2E_PORT,
+	HOST_FEATURES,
+	HOST_WRITE_FILE_MAX_BYTES,
 	type HostEgress,
 	type HostGuest,
 	HostMethods,
+	type HostMount,
 	type HostSandbox,
 	type SandboxTier,
 } from "./protocol.ts";
-import type { HostsService, SandboxPlacement } from "./service.ts";
+import { type HostsService, kantelErrorFromHost, mountHandoff, type SandboxPlacement } from "./service.ts";
 import { type DesktopMode, HOSTS_TUNNEL_PATH, MAX_TUNNEL_MINUTES, type TunnelTickets } from "./tunnel.ts";
 
 export { DESKTOP_PORT } from "./desktop.ts";
@@ -123,7 +137,16 @@ export function hostEgress(egress: BackendEgress | undefined, attributionKey?: s
 interface HostSnapshot {
 	readonly id: string;
 	readonly sizeBytes: number;
+	/** The host images version its root file system is (image patching); absent when unknown. */
+	readonly base?: string;
 }
+
+/** A snapshot as the compute service keeps it: its ref on its host, its size and its base when the host said. */
+const takenOn = (hostId: string, snap: HostSnapshot): TakenSnapshot => ({
+	ref: `${hostId}/${snap.id}`,
+	sizeBytes: snap.sizeBytes,
+	...(snap.base === undefined || snap.base === "" ? {} : { base: snap.base }),
+});
 
 interface HostFileEntry {
 	readonly name: string;
@@ -160,6 +183,52 @@ function fileEntry(entry: HostFileEntry): BackendFileEntry {
 		size: entry.size,
 		...(entry.modTimeMs === undefined ? {} : { modifiedAt: entry.modTimeMs }),
 	};
+}
+
+/** A mount as a host is given it: its source by name only (a digest, a bucket source's ID), never a credential. */
+export function hostMount(mount: BackendMount): HostMount {
+	const { source } = mount;
+	if (source.kind === "bundle") return { path: mount.path, kind: "bundle", digest: source.digest };
+	return {
+		path: mount.path,
+		kind: "bucket",
+		bucketSourceId: source.bucketSourceId,
+		prefix: source.prefix,
+		...(source.refreshTtlSeconds === undefined ? {} : { refreshTtlSeconds: source.refreshTtlSeconds }),
+	};
+}
+
+/** A spec's or boot's mounts for the hosts service; absent when there are none. */
+const mountsOf = (mounts: readonly BackendMount[] | undefined): HostMount[] | undefined =>
+	mounts === undefined || mounts.length === 0 ? undefined : mounts.map(hostMount);
+
+const ERROR_CODES: ReadonlySet<string> = new Set<ErrorCode>([
+	"invalid",
+	"not_found",
+	"forbidden",
+	"conflict",
+	"expired",
+	"refused",
+	"exhausted",
+	"unavailable",
+	"aborted",
+	"not_supported",
+]);
+
+/**
+ * How a file stream ended, from the host's `stream.close` reason: `ok <size>`, the size; `error <code>: <message>`, the
+ * error, with its code when it is one of Kantel's, else `unavailable`. Any other end (the host gone, the stream cut
+ * short) is `unavailable`: the bytes didn't all arrive.
+ */
+export function fileStreamEnd(reason: string): { readonly size: number } | KantelError {
+	const ok = /^ok (\d+)$/.exec(reason);
+	if (ok?.[1] !== undefined) return { size: Number(ok[1]) };
+	const failed = /^error ([^:\s]+): ?([\s\S]*)$/.exec(reason);
+	if (failed?.[1] !== undefined) {
+		const code = ERROR_CODES.has(failed[1]) ? (failed[1] as ErrorCode) : "unavailable";
+		return new KantelError(code, failed[2] || "The sandbox's host couldn't stream the file");
+	}
+	return new KantelError("unavailable", `The file stream ended before it was done: ${reason}`);
 }
 
 /**
@@ -234,7 +303,35 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 						},
 					}),
 			capabilities: capabilitiesOf(tier, nested === true, options.ports !== undefined, sandbox.guest),
+			...(sandbox.base === undefined || sandbox.base === ""
+				? {}
+				: {
+						base: sandbox.base,
+						...(typeof sandbox.baseAt === "number" && sandbox.baseAt > 0 ? { baseAt: sandbox.baseAt } : {}),
+					}),
+			...(known.mounts === undefined ? {} : { mounts: known.mounts }),
 		};
+	}
+
+	/** What the host reports doing beyond protocol 1 (`HOST_FEATURES`). */
+	const featuresOf = async (hostId: string): Promise<readonly string[]> => (await hosts.get(hostId)).features;
+
+	/**
+	 * Refuses a file stream with `not_supported` unless the sandbox's host can stream files, so the compute service falls
+	 * back to `readFile` and `writeFile`.
+	 */
+	async function streamingHost(sandboxId: string): Promise<void> {
+		const { hostId } = await tierOf(sandboxId);
+		if (!(await featuresOf(hostId)).includes(HOST_FEATURES.fileStreams)) {
+			throw new KantelError("not_supported", "This sandbox's host can't stream files");
+		}
+	}
+
+	/** A read's bytes queued for its reader: kept at most `FILE_STREAM_WINDOW_BYTES` by the host's window. */
+	interface ReadQueue {
+		readonly chunks: Uint8Array[];
+		end?: { readonly error?: Error };
+		wake?: () => void;
 	}
 
 	const egressOf = (egress: BackendEgress | undefined) => {
@@ -260,13 +357,23 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		const { hostId } = await tierOf(sandboxId);
 		mayUse(hostId, how.eligibleHosts);
 		const revision = how.egressRevision ?? how.egress?.revision;
+		// Mounted again on the new machine, those its host can do; the host is read only when there are some.
+		const wanted = mountsOf(how.mounts);
+		const mounts = mountHandoff(wanted === undefined ? undefined : await featuresOf(hostId), wanted);
 		// With a revision the host takes the boot's egress as stated, none being its default (a clear); an update read
 		// before this boot, with an older revision, is refused after it.
 		const sandbox = await call<HostSandbox>(sandboxId, method, {
 			...egressOf(how.egress),
 			...(revision === undefined ? {} : { revision }),
+			// Only a cold boot rebases; a host without image patching ignores the fields. With `rebaseTo` the host refuses
+			// to land anywhere else.
+			...(method === "sandbox.start" && how.rebase === true
+				? { rebase: true, ...(how.rebaseTo === undefined ? {} : { rebaseTo: how.rebaseTo }) }
+				: {}),
+			...(mounts.send.length === 0 ? {} : { mounts: mounts.send }),
 		});
-		return placed(sandboxId, sandbox, hostId);
+		const statuses = mounts.status(sandbox);
+		return placed(sandboxId, sandbox, hostId, statuses === undefined ? {} : { mounts: statuses });
 	}
 
 	async function ticketFor(
@@ -304,6 +411,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	async function createOne(spec: SandboxSpec): Promise<Placement> {
 		const from = spec.fromSnapshot === undefined ? undefined : parseRef(spec.fromSnapshot);
 		if (from !== undefined) mayUse(from.hostId, spec.eligibleHosts);
+		const mounts = mountsOf(spec.mounts);
+		// The service sends the mounts the host it chooses can do, and answers each one's status.
 		const { sandbox, hostId, ...known } = await hosts.sandboxes.create({
 			sandboxId: spec.sandboxId,
 			tier: spec.type,
@@ -315,6 +424,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			hostIds: from === undefined ? spec.eligibleHosts : [from.hostId],
 			...(from === undefined ? {} : { from: from.snapshotId }),
 			...egressOf(spec.egress),
+			...(mounts === undefined ? {} : { mounts }),
 		});
 		return placed(spec.sandboxId, sandbox, hostId, known);
 	}
@@ -362,6 +472,40 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		},
 		create: createOne,
 		start: (sandboxId, how) => boot(sandboxId, "sandbox.start", how),
+		async prepareRebase(sandboxId, { eligibleHosts, rebaseTo }) {
+			const { hostId } = await tierOf(sandboxId);
+			mayUse(hostId, eligibleHosts);
+			// A host's sandbox is on host images: without a version to land on (the index unread, or naming no stable host
+			// release) a rebase would land on whatever the host has, so it's refused before the sandbox stops.
+			if (rebaseTo === undefined) {
+				throw new KantelError(
+					"unavailable",
+					"Kantel's base image index names no stable host images now, so there's no latest base to restart on: try again later",
+				);
+			}
+			// Asked now rather than read from the hello's facts, which an update since has left behind, and for this sandbox:
+			// its tier's images, which a host config naming its root filesystem by path can hold back.
+			const images = await hosts.hub
+				.call<{ version?: string; state?: string }>(hostId, HostMethods.hostImages, { sandboxId })
+				.catch((error: unknown) => {
+					const mapped = kantelErrorFromHost(error);
+					throw isKantelError(mapped, "not_supported")
+						? new KantelError(
+								"not_supported",
+								`The host its disk is on (${hostId}) doesn't patch its images: turn on imagePatching in its config, or update kantel-host`,
+							)
+						: mapped;
+				});
+			const have = images.version ?? "";
+			if (have !== rebaseTo) {
+				throw new KantelError(
+					"unavailable",
+					`The host its disk is on (${hostId}) has images ${have === "" ? "that aren't versioned" : have}, not ${rebaseTo}, yet: try again once it has taken the update`,
+				);
+			}
+			// Unknown when the host doesn't say: its start then refuses a machine still running on other images.
+			return images.state === undefined ? {} : { running: images.state === "running" };
+		},
 		resume: (sandboxId, how) => boot(sandboxId, "sandbox.resume", how),
 		// Recovering clears the sandbox's recorded ports (the compute API), so their exposures end with them: a URL the API
 		// no longer lists, and can't hide, must not still reach the machine.
@@ -389,7 +533,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				snapshotId: snapshotId(),
 				memory: keepMemory,
 			});
-			return { ref: `${hostId}/${snap.id}`, sizeBytes: snap.sizeBytes };
+			return takenOn(hostId, snap);
 		},
 		async fork(source, targets: readonly SandboxSpec[]): Promise<Placement[]> {
 			const out: Placement[] = [];
@@ -401,11 +545,13 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			const { hostId: sourceHost } = await tierOf(source.sandboxId);
 			for (const target of targets) mayUse(sourceHost, target.eligibleHosts);
 			for (const target of targets) {
+				const mounts = mountsOf(target.mounts);
 				const { sandbox, hostId, ...known } = await hosts.sandboxes.fork(source.sandboxId, {
 					newId: target.sandboxId,
 					...egressOf(target.egress),
 					// Its own placeholders, not its source's: the host gives the guest this environment.
 					env: target.env,
+					...(mounts === undefined ? {} : { mounts }),
 				});
 				out.push(await placed(target.sandboxId, sandbox, hostId, known));
 			}
@@ -458,12 +604,171 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			return { bytes, size: answer.fileSize };
 		},
 		async writeFile(sandboxId, path, content, mode) {
+			// Past the host's message limit the host would drop its whole link, every sandbox's calls and streams on it.
+			if (content.length > HOST_WRITE_FILE_MAX_BYTES) {
+				throw new KantelError(
+					"invalid",
+					`This sandbox's host takes files of at most ${HOST_WRITE_FILE_MAX_BYTES} bytes in one write; it can't stream larger ones`,
+				);
+			}
 			await call(sandboxId, "sandbox.files.write", {
 				path,
 				data: toBase64(content),
 				...(mode === undefined ? {} : { mode }),
 			});
 			return { name: path.split("/").pop() ?? path, path, kind: "file", size: content.length, modifiedAt: now() };
+		},
+		async readFileStream(sandboxId, path): Promise<FileStream> {
+			await streamingHost(sandboxId);
+			// The sink is made before the stream is opened: the host may send a small file whole before `openFile`
+			// resolves. What arrives waits here until the reader takes it, and the reader's takings go back to the host
+			// (`stream.ack`), which sends no more than FILE_STREAM_WINDOW_BYTES past them: a slow client holds the host
+			// back, not the gateway's memory. That isn't left to the host, an account's own machine: a frame it sends once
+			// the window is full, or one larger than FILE_STREAM_FRAME_MAX_BYTES, ends the read and frees what it holds, so
+			// at most the window and one frame are ever kept.
+			const queue: ReadQueue = { chunks: [] };
+			let handle: FileStreamHandle | undefined;
+			let cancelled = false;
+			let received = 0;
+			let taken = 0;
+			let acked = 0;
+			const ack = () => {
+				if (handle === undefined || taken - acked < FILE_STREAM_ACK_BYTES) return;
+				acked = taken;
+				handle.ack(taken);
+			};
+			const body = new ReadableStream<Uint8Array>(
+				{
+					async pull(controller) {
+						while (queue.chunks.length === 0 && queue.end === undefined) {
+							await new Promise<void>((resolve) => {
+								queue.wake = resolve;
+							});
+						}
+						const chunk = queue.chunks.shift();
+						if (chunk !== undefined) {
+							taken += chunk.byteLength;
+							controller.enqueue(chunk);
+							ack();
+							return;
+						}
+						if (queue.end?.error !== undefined) controller.error(queue.end.error);
+						else controller.close();
+					},
+					cancel() {
+						cancelled = true;
+						queue.chunks.length = 0;
+						handle?.close();
+					},
+				},
+				// Nothing pulled ahead of the reader, so what it has taken is what was handed to it.
+				{ highWaterMark: 0 },
+			);
+			let overran = false;
+			const sink: PortSink = {
+				data(bytes) {
+					if (cancelled || queue.end !== undefined) return;
+					// The host sends a frame only while less than its window is unacked: `acked` is the most it can know of.
+					if (received - acked >= FILE_STREAM_WINDOW_BYTES || bytes.byteLength > FILE_STREAM_FRAME_MAX_BYTES) {
+						overran = true;
+						queue.chunks.length = 0;
+						queue.end = {
+							error: new KantelError("unavailable", "The sandbox's host sent more of the file than it was asked for"),
+						};
+						handle?.close();
+						queue.wake?.();
+						return;
+					}
+					received += bytes.byteLength;
+					queue.chunks.push(bytes);
+					queue.wake?.();
+				},
+				end(reason) {
+					if (cancelled || queue.end !== undefined) return;
+					const end = fileStreamEnd(reason);
+					if (end instanceof KantelError) queue.end = { error: end };
+					else if (end.size !== received) {
+						queue.end = {
+							error: new KantelError(
+								"unavailable",
+								`The host sent ${received} bytes of a file it says has ${end.size}`,
+							),
+						};
+					} else queue.end = {};
+					queue.wake?.();
+				},
+			};
+			const opened = await hosts.sandboxes.openFile(sandboxId, { path, op: "read" }, sink);
+			handle = opened.stream;
+			if (overran) handle.close();
+			// What was taken before the handle came (nothing yet: no one had the body).
+			ack();
+			return { ...(opened.size === undefined ? {} : { size: opened.size }), body };
+		},
+		async extractArchive(sandboxId, archive, target) {
+			const { hostId } = await tierOf(sandboxId);
+			if (!(await featuresOf(hostId)).includes(HOST_FEATURES.filesExtract)) {
+				throw new KantelError("not_supported", "This sandbox's host can't extract archives; upgrade kantel-host");
+			}
+			// As long as a large archive takes to write out.
+			await call(sandboxId, HostMethods.fileExtract, { archive, target }, undefined, 30 * 60_000);
+		},
+		async placedOn(sandboxId) {
+			const placement = await hosts.sandboxes.placement(sandboxId);
+			return placement === undefined || placement.state === "deleted" ? undefined : placement.hostId;
+		},
+		async writeFileStream(sandboxId, path, body, mode) {
+			await streamingHost(sandboxId);
+			let settle: (reason: string) => void = () => undefined;
+			const ended = new Promise<string>((resolve) => {
+				settle = resolve;
+			});
+			let finished = false;
+			// The host may end the stream first (an error): then the rest of the body isn't waited for. Its one end
+			// handler cancels the body, which ends a read waiting on it, rather than each read racing the end: a race per
+			// chunk would keep every chunk's reaction on `ended` until the transfer is over.
+			let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+			let hostEnded = false;
+			const { stream: handle } = await hosts.sandboxes.openFile(
+				sandboxId,
+				{ path, op: "write", ...(mode === undefined ? {} : { mode }) },
+				{
+					data: () => undefined,
+					end: (reason) => {
+						hostEnded = true;
+						settle(reason);
+						if (!finished) reader?.cancel().catch(() => undefined);
+					},
+				},
+			);
+			reader = body.getReader();
+			try {
+				for (;;) {
+					const next = hostEnded ? undefined : await reader.read();
+					// Ended by the host (its end cancelled the read): not the body's own end, so nothing is finished.
+					if (next === undefined || hostEnded) {
+						reader.cancel().catch(() => undefined);
+						break;
+					}
+					if (next.done) {
+						handle.finish();
+						finished = true;
+						break;
+					}
+					// Not more than the socket's buffer ahead of the host: a 500 MB body isn't held in memory.
+					await handle.drained();
+					handle.write(next.value);
+				}
+			} catch (error) {
+				// The body failed (its client went away): nothing is moved into place.
+				handle.close();
+				throw error;
+			}
+			const end = fileStreamEnd(await ended);
+			if (end instanceof KantelError) throw end;
+			if (!finished)
+				throw new KantelError("unavailable", "The sandbox's host ended the write before all of it arrived");
+			return { size: end.size };
 		},
 		async deleteFile(sandboxId, path) {
 			await call(sandboxId, "sandbox.files.delete", { path, recursive: true });
@@ -475,7 +780,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		async takeSnapshot(sandboxId): Promise<TakenSnapshot> {
 			const { hostId } = await tierOf(sandboxId);
 			const snap = await call<HostSnapshot>(sandboxId, "snapshot.save", { snapshotId: snapshotId() });
-			return { ref: `${hostId}/${snap.id}`, sizeBytes: snap.sizeBytes };
+			return takenOn(hostId, snap);
 		},
 		async listSnapshotFiles(ref, path) {
 			const { hostId, snapshotId: id } = parseRef(ref);

@@ -94,6 +94,8 @@ type Host struct {
 	floors  map[string]int64
 	// durable is what of floors is on disk, so a retry of the same revision writes a floor an earlier write failed to.
 	durable map[string]int64
+	// patching is versioned host images, with Config.ImagePatching (images.go).
+	patching imagePatching
 
 	mu sync.Mutex
 	// bySlot is each running microVM's egress, by its network slot.
@@ -170,6 +172,7 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 			SpoolDir: spoolDir, SpoolMaxMiB: spoolMax, Initrd: initrd,
 			Root: cfg.Root + "/microvm", Firecracker: cfg.Firecracker, Kernel: cfg.Kernel, Rootfs: cfg.SandboxImage,
 			Sizes: sizes, Network: netm, ProxyPort: cfg.ProxyPort, DNS: cfg.DNS, Log: log,
+			PinBase: cfg.ImagePatching, BackgroundTemplates: cfg.ImagePatching,
 			Events:         h.sandboxEvent,
 			Attach:         h.attachSlot,
 			Detach:         h.detachSlot,
@@ -191,9 +194,14 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 		isolateReady = kvm && fileExists(cfg.Firecracker) && fileExists(cfg.Kernel) && fileExists(cfg.IsolateImage)
 	}
 	if (all || want[isolate.Tier]) && isolateReady {
+		// A VM runtime's images, held on one version for the daemon's lifetime (isolateImages); native uses none.
+		isoKernel, isoRootfs := cfg.Kernel, cfg.IsolateImage
+		if cfg.IsolateRuntime != "native" {
+			isoKernel, isoRootfs = h.isolateImages(cfg)
+		}
 		iso, err := isolate.New(isolate.Config{
-			Root: cfg.Root + "/isolate", Runtime: cfg.IsolateRuntime, Firecracker: cfg.Firecracker, Kernel: cfg.Kernel,
-			Rootfs: cfg.IsolateImage, Workerd: cfg.Workerd, Bundle: cfg.IsolateBundle, Egress: h.proxy,
+			Root: cfg.Root + "/isolate", Runtime: cfg.IsolateRuntime, Firecracker: cfg.Firecracker, Kernel: isoKernel,
+			Rootfs: isoRootfs, Workerd: cfg.Workerd, Bundle: cfg.IsolateBundle, Egress: h.proxy,
 			Rules: h.liveRules, Log: log, Events: h.sandboxEvent,
 		})
 		if err != nil {
@@ -205,6 +213,9 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 	}
 	if len(h.tiers) == 0 {
 		return nil, errors.New("this host can run no sandbox tier: run `kantel-host doctor`")
+	}
+	if cfg.ImagePatching {
+		h.startImagePatching(kvm)
 	}
 	h.facts = h.makeFacts()
 	go h.egressLog.run()
@@ -244,8 +255,25 @@ func (h *Host) makeFacts() proto.Facts {
 		reserve = max(2048, total/10)
 	}
 	features := []string{proto.FeatureEgressPolicy, proto.FeatureCustomShapes}
+	// File streams are served for a tier's sandboxes only when it streams files (the microVM tier); a call for another's
+	// is refused as unsupported.
+	for _, name := range h.order {
+		if _, ok := h.tiers[name].(FileStreamer); ok {
+			features = append(features, proto.FeatureFileStreams)
+			break
+		}
+	}
+	for _, name := range h.order {
+		if _, ok := h.tiers[name].(ArchiveExtractor); ok {
+			features = append(features, proto.FeatureFilesExtract)
+			break
+		}
+	}
 	if h.cfg.usageInterval() > 0 {
 		features = append(features, proto.FeatureUsage)
+	}
+	if h.cfg.ImagePatching {
+		features = append(features, proto.FeatureImagePatching)
 	}
 	return proto.Facts{
 		Version: h.version, Protocol: proto.ProtocolVersion, OS: runtime.GOOS, Arch: hostinfo.Arch(), Kernel: hostinfo.Kernel(),
@@ -256,7 +284,14 @@ func (h *Host) makeFacts() proto.Facts {
 }
 
 // Facts are what the host tells the control plane it is.
-func (h *Host) Facts() proto.Facts { return h.facts }
+func (h *Host) Facts() proto.Facts {
+	f := h.facts
+	if held := h.patching.facts.Load(); held != nil {
+		copied := *held
+		f.Images = &copied
+	}
+	return f
+}
 
 // Capacity is what is free now.
 func (h *Host) Capacity() proto.Capacity {
@@ -293,6 +328,7 @@ func (h *Host) WaitTemplate(ctx context.Context, tier string, p proto.CreatePara
 }
 
 func (h *Host) Close() {
+	h.stopImagePatching()
 	for _, t := range h.tiers {
 		t.Close()
 	}
@@ -548,6 +584,13 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		if err != nil {
 			return nil, err
 		}
+		// A rebase onto images this host hasn't taken is refused before anything changes (the tier checks again as it
+		// relinks).
+		if method == proto.MethodStart && p.Rebase && p.RebaseTo != "" {
+			if err := h.rebaseTarget(p.SandboxID, p.RebaseTo); err != nil {
+				return nil, err
+			}
+		}
 		revision := revisionOf(p)
 		// A boot with a revision states the sandbox's egress, none being the host's default; one without an egress
 		// and without a revision keeps the egress it has, CA certificate included.
@@ -708,6 +751,19 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			return nil, invalid("data isn't base64")
 		}
 		return map[string]bool{"ok": true}, t.WriteFile(ctx, p, data)
+	case proto.MethodFileExtract:
+		p, err := decode[proto.FileExtractParams](params)
+		if err != nil {
+			return nil, err
+		}
+		if !filepath.IsAbs(p.Archive) || !filepath.IsAbs(p.Target) {
+			return nil, invalid("sandbox.files.extract needs an absolute archive and target")
+		}
+		extractor, err := h.archiveExtractor(p.SandboxID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]bool{"ok": true}, extractor.ExtractArchive(ctx, p)
 	case proto.MethodFileDelete:
 		p, err := decode[proto.FileParams](params)
 		if err != nil {
@@ -792,6 +848,8 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			return nil, err
 		}
 		return map[string]any{"data": base64.StdEncoding.EncodeToString(data), "size": len(data)}, nil
+	case proto.MethodHostImages:
+		return h.hostImages(params)
 	}
 	return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "unknown method " + method}
 }

@@ -1,5 +1,7 @@
 // Sample data for the compute console's pages: a personal account and two organisations, sandboxes in every state on
-// both tiers, snapshots with a small file tree, keys, a proxy, webhooks, telemetry, three hosts and the hosted plans.
+// both tiers (some on an outdated base image), snapshots with a small file tree, keys, a proxy, webhooks, telemetry,
+// three hosts, the base images with their scans and templates, the hosted plans, and the bundles and bucket sources
+// two sandboxes mount read-only.
 // `createComputeFixtures` serves it all from memory as a `ComputeSource`, so stories and the console's sample data can
 // create, stop, resume, fork and delete. Nothing leaves the page.
 
@@ -7,7 +9,12 @@ import { DAY, HOUR, MINUTE } from "../primitives/format.ts";
 import type {
 	ApiKey,
 	ApiScope,
+	BaseImage,
+	BaseImagesOverview,
+	BaseImageVersion,
 	BillingSummary,
+	BucketSource,
+	Bundle,
 	ComputeAccount,
 	ComputeSource,
 	ComputeViewer,
@@ -21,12 +28,18 @@ import type {
 	FileRange,
 	Host,
 	HostingMode,
+	ImageBuildReason,
+	ImageFinding,
+	ImageScan,
+	ImageSeverity,
+	MountSource,
 	OrganisationInvite,
 	OrganisationMember,
 	Plan,
 	ProxySettings,
 	PublicUrl,
 	Sandbox,
+	SandboxBase,
 	SandboxCommand,
 	SandboxEgress,
 	SandboxImage,
@@ -36,6 +49,7 @@ import type {
 	SavedSnapshot,
 	SnapshotEntry,
 	TelemetrySettings,
+	TemplateBase,
 	Webhook,
 	WebhookDelivery,
 } from "./compute-model.ts";
@@ -50,6 +64,7 @@ import {
 	sizeSpec,
 	sshWithoutCliCommand,
 } from "./compute-model.ts";
+import { inUseText } from "./mounts.ts";
 import { stubUsage } from "./usage-stub.ts";
 
 /** The code the fixtures' waiting command line showed. */
@@ -129,6 +144,36 @@ const sandbox = (
 	};
 };
 
+/** The latest `sandbox` base image on the stable channel: a rebuild for a fixable vulnerability, three hours ago. */
+export const SANDBOX_IMAGE_LATEST = { version: "2026.11.04.812", builtAt: FIXTURE_NOW - 3 * HOUR } as const;
+
+/** The latest `browser` base image: the daily rebuild, nine hours ago. */
+export const BROWSER_IMAGE_LATEST = { version: "2026.11.03.811", builtAt: FIXTURE_NOW - 9 * HOUR } as const;
+
+/** A base on `image` at `version`: the latest, or behind it by `behind`, with security fixes waiting if `security`. */
+const onBase = (
+	image: string,
+	latest: { readonly version: string; readonly builtAt: number },
+	version: string,
+	behind?: { readonly days: number; readonly versions: number },
+	security = false,
+): SandboxBase => ({
+	image,
+	version,
+	outdated: behind !== undefined,
+	latest,
+	...(behind === undefined ? {} : { behind }),
+	...(security ? { security: true } : {}),
+});
+/** The sample bundles' digests: the tars' SHA-256s. */
+export const SKILLS_DIGEST = "sha256:3f2a7c1e9b4d8a6f0e5c2b7a9d1f4e8c6b3a0d7f2e9c5b1a8d4f6e0c3b7a9c01";
+export const ATTACHMENTS_DIGEST = "sha256:a41c9e075d2b8f36e1a7c4d90b6f3e28c75a1d94f2e08b6c3d9a7e15b4c62f8e";
+export const MODELS_DIGEST = "sha256:7e09b3d52c8f1a649b5e0d7ca3f6248e1d7c9b05e8a2f63d4c0b7e91d5a3c8f2";
+
+/** The sample bucket sources' IDs. */
+export const ORG_FILES_ID = "bks_4kq9x2mt";
+export const DATASETS_ID = "bks_7hp3w8rn";
+
 /** Kantel's own image: a desktop, Chromium and Docker, with its agent built in. */
 export const KANTEL_IMAGE: SandboxImage = {
 	os: "Ubuntu 26.04 LTS",
@@ -194,6 +239,29 @@ export const API_SERVER = sandbox({
 	shared: true,
 	createdBy: "Alex Kemp",
 	environment: { id: "env_backend", name: "backend-dev" },
+	// Six days behind, with the openssl fix the latest was rebuilt for.
+	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, "2026.10.29.809", { days: 6, versions: 3 }, true),
+	mounts: [
+		{ path: "/mnt/skills", source: { kind: "bundle", digest: SKILLS_DIGEST }, status: "ready" },
+		{
+			path: "/mnt/org-files",
+			source: {
+				kind: "bucket",
+				bucketSourceId: ORG_FILES_ID,
+				prefix: "org/42/",
+				refreshTtlSeconds: 60,
+				bucketSourceName: "org files",
+				bucket: "lleverage-org-files",
+			},
+			status: "ready",
+		},
+		{
+			path: "/mnt/attachments",
+			source: { kind: "bundle", digest: ATTACHMENTS_DIGEST },
+			status: "failed",
+			error: "This host can't mount bundles yet",
+		},
+	],
 	image: KANTEL_IMAGE,
 });
 
@@ -212,6 +280,21 @@ export const DEV_STACK = sandbox({
 	hostId: "hst_hetzner_1",
 	shared: true,
 	environment: { id: "env_backend", name: "backend-dev" },
+	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, SANDBOX_IMAGE_LATEST.version),
+	mounts: [
+		{ path: "/mnt/skills", source: { kind: "bundle", digest: SKILLS_DIGEST }, status: "ready" },
+		{
+			path: "/mnt/shared",
+			source: {
+				kind: "bucket",
+				bucketSourceId: ORG_FILES_ID,
+				prefix: "shared/",
+				bucketSourceName: "org files",
+				bucket: "lleverage-org-files",
+			},
+			status: "pending",
+		},
+	],
 	image: KANTEL_IMAGE,
 });
 
@@ -286,6 +369,7 @@ export const RENDER = sandbox({
 	hostId: "hst_hetzner_2",
 	shared: true,
 	createdBy: "Bethan Price",
+	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, "2026.11.02.811", { days: 2, versions: 1 }),
 });
 
 export const BROWSER_AGENT = sandbox({
@@ -363,6 +447,7 @@ export const PERSONAL_OLD = sandbox({
 	snapshot: { id: "snp_wine_4", takenAt: FIXTURE_NOW - 5 * DAY },
 	costCents: 96,
 	hostId: "hst_hetzner_2",
+	base: onBase("sandbox", SANDBOX_IMAGE_LATEST, "2026.10.23.803", { days: 12, versions: 9 }),
 });
 
 export const SANDBOXES: readonly Sandbox[] = [
@@ -390,6 +475,7 @@ export const SAVED: readonly SavedSnapshot[] = [
 		createdBy: "Alex Kemp",
 		sizeBytes: 3.4 * 1024 ** 3,
 		uses: 214,
+		base: onBase("sandbox", SANDBOX_IMAGE_LATEST, "2026.10.22.802", { days: 13, versions: 10 }),
 	},
 	{
 		id: "ssn_dev_stack_warm",
@@ -414,6 +500,7 @@ export const SAVED: readonly SavedSnapshot[] = [
 		createdBy: "Bethan Price",
 		sizeBytes: 5.1 * 1024 ** 3,
 		uses: 9,
+		base: onBase("browser", BROWSER_IMAGE_LATEST, BROWSER_IMAGE_LATEST.version),
 	},
 	{
 		id: "ssn_py_tools",
@@ -437,6 +524,61 @@ export const SAVED: readonly SavedSnapshot[] = [
 		createdBy: "Tom Davies",
 		sizeBytes: 7.2 * 1024 ** 3,
 		uses: 2,
+	},
+];
+
+/**
+ * Lleverage's bundles, newest first: skills its agents read, the attachments a host couldn't mount, and model weights no
+ * sandbox mounts any more, which can go. `mountedBy` is what the sample sandboxes mount; the source counts it again as
+ * they come and go.
+ */
+export const BUNDLES: readonly Bundle[] = [
+	{
+		digest: SKILLS_DIGEST,
+		accountId: LLEVERAGE.id,
+		sizeBytes: 4.2 * 1024 ** 2,
+		mountedBy: 2,
+		createdAt: FIXTURE_NOW - 3 * HOUR,
+	},
+	{
+		digest: ATTACHMENTS_DIGEST,
+		accountId: LLEVERAGE.id,
+		sizeBytes: 118 * 1024 ** 2,
+		mountedBy: 1,
+		createdAt: FIXTURE_NOW - 2 * DAY,
+	},
+	{
+		digest: MODELS_DIGEST,
+		accountId: LLEVERAGE.id,
+		sizeBytes: 1.3 * 1024 ** 3,
+		mountedBy: 0,
+		createdAt: FIXTURE_NOW - 9 * DAY,
+	},
+];
+
+/** Lleverage's bucket sources, oldest first: its own files in R2, with credentials, and a public GCS bucket. */
+export const BUCKET_SOURCES: readonly BucketSource[] = [
+	{
+		id: ORG_FILES_ID,
+		accountId: LLEVERAGE.id,
+		name: "org files",
+		provider: "s3",
+		bucket: "lleverage-org-files",
+		endpoint: "https://acct.r2.cloudflarestorage.com",
+		region: "auto",
+		hasCredentials: true,
+		mountedBy: 2,
+		createdAt: FIXTURE_NOW - 20 * DAY,
+	},
+	{
+		id: DATASETS_ID,
+		accountId: LLEVERAGE.id,
+		name: "public datasets",
+		provider: "gcs",
+		bucket: "kantel-public-datasets",
+		hasCredentials: false,
+		mountedBy: 0,
+		createdAt: FIXTURE_NOW - 6 * DAY,
 	},
 ];
 
@@ -1102,6 +1244,165 @@ export const HOSTS: readonly Host[] = [
 	},
 ];
 
+/** A sample image digest: `sha256:` and 64 hex digits, the same for the same seed. Not a real image's. */
+export function sampleDigest(seed: string): string {
+	let hash = 2_166_136_261;
+	let hex = "";
+	for (let round = 0; hex.length < 64; round += 1) {
+		for (const char of `${seed}/${round}`) hash = Math.imul(hash ^ char.charCodeAt(0), 16_777_619) >>> 0;
+		hex += hash.toString(16).padStart(8, "0");
+	}
+	return `sha256:${hex.slice(0, 64)}`;
+}
+
+/** A scan that found `findings`, counted as a scanner counts them. */
+function sampleScan(scannedAt: number, findings: readonly ImageFinding[] = []): ImageScan {
+	const counts: Record<ImageSeverity, number> = { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 };
+	for (const finding of findings) counts[finding.severity] += 1;
+	const fixable = (severity: ImageSeverity) =>
+		findings.filter((finding) => finding.severity === severity && finding.fixed !== undefined).length;
+	return {
+		scanner: "trivy 0.67.2",
+		scannedAt,
+		counts,
+		fixable: { critical: fixable("critical"), high: fixable("high") },
+		findings,
+	};
+}
+
+const imageVersion = (
+	image: string,
+	version: string,
+	builtAt: number,
+	reason: ImageBuildReason,
+	scan?: ImageScan,
+): BaseImageVersion => ({
+	version,
+	digest: sampleDigest(`${image}@${version}`),
+	builtAt,
+	signed: true,
+	reason,
+	...(scan === undefined ? {} : { scan }),
+});
+
+const baseImage = (name: string, versions: readonly BaseImageVersion[]): BaseImage => ({
+	name,
+	// The microVM host images are GitHub Releases; the others are containers on GHCR.
+	repository:
+		name === "host"
+			? `https://github.com/lleverage-ai/kantel/releases/download/${versions[0]?.version ?? "host-images"}`
+			: `ghcr.io/lleverage-ai/kantel-${name}`,
+	channel: "stable",
+	...(versions[0] === undefined ? {} : { latest: versions[0] }),
+	versions,
+});
+
+/** What the browser image's latest scan found: a Critical in openssl with a fix out, and a High with none yet. */
+export const BROWSER_FINDINGS: readonly ImageFinding[] = [
+	{
+		id: "CVE-2026-31789",
+		severity: "critical",
+		package: "openssl",
+		installed: "3.0.13-0ubuntu3.5",
+		fixed: "3.0.13-0ubuntu3.6",
+		title: "openssl: heap overflow in X.509 name constraint checks",
+	},
+	{
+		id: "CVE-2026-28114",
+		severity: "high",
+		package: "libxml2",
+		installed: "2.9.14+dfsg-1.3ubuntu3.4",
+		title: "libxml2: use after free in xmlXIncludeCopyNode",
+	},
+	{
+		id: "CVE-2026-20417",
+		severity: "medium",
+		package: "curl",
+		installed: "8.5.0-2ubuntu10.6",
+		fixed: "8.5.0-2ubuntu10.7",
+		title: "curl: cookie leak across redirects to another port",
+	},
+	{
+		id: "GHSA-7q4v-9hx2-mq3c",
+		severity: "low",
+		package: "node-tar",
+		installed: "6.2.0",
+		fixed: "6.2.1",
+	},
+];
+
+/**
+ * The deployment's base images and templates, at `at` (the fixtures' clock): the sandbox image just rebuilt for a
+ * fixable vulnerability, the browser image's scan finding a fixable Critical, the rest clean; one template rebuilding,
+ * one pinned behind, one current.
+ */
+function sampleImages(at: (time: number) => number): BaseImagesOverview {
+	const ago = (ms: number) => at(FIXTURE_NOW - ms);
+	const latest = (image: { readonly version: string; readonly builtAt: number }) => ({
+		version: image.version,
+		builtAt: at(image.builtAt),
+	});
+	const sandboxLatest = latest(SANDBOX_IMAGE_LATEST);
+	const browserLatest = latest(BROWSER_IMAGE_LATEST);
+	const images: readonly BaseImage[] = [
+		baseImage("sandbox", [
+			imageVersion("sandbox", SANDBOX_IMAGE_LATEST.version, sandboxLatest.builtAt, "cve", sampleScan(ago(2 * HOUR))),
+			imageVersion("sandbox", "2026.11.02.811", ago(2 * DAY + 3 * HOUR), "daily"),
+			imageVersion("sandbox", "2026.10.31.810", ago(4 * DAY + 3 * HOUR), "daily"),
+		]),
+		baseImage("browser", [
+			imageVersion(
+				"browser",
+				BROWSER_IMAGE_LATEST.version,
+				browserLatest.builtAt,
+				"daily",
+				sampleScan(ago(HOUR), BROWSER_FINDINGS),
+			),
+			imageVersion("browser", "2026.11.02.810", ago(DAY + 9 * HOUR), "daily"),
+		]),
+		baseImage("isolate-host", [
+			imageVersion("isolate-host", "2026.11.04.812", ago(4 * HOUR), "daily", sampleScan(ago(3 * HOUR))),
+			imageVersion("isolate-host", "2026.11.03.811", ago(DAY + 4 * HOUR), "daily"),
+		]),
+		baseImage("host", [
+			imageVersion("host", "host-images-20261104.812", ago(5 * HOUR), "push", sampleScan(ago(4 * HOUR))),
+			imageVersion("host", "host-images-20261103.811", ago(DAY + 5 * HOUR), "daily"),
+		]),
+	];
+	const templates: readonly TemplateBase[] = [
+		{
+			id: "tpl_node22",
+			name: "node-22",
+			image: "sandbox",
+			channel: "stable",
+			base: onBase("sandbox", sandboxLatest, "2026.11.02.811", { days: 2, versions: 1 }, true),
+			rebuilding: true,
+		},
+		{
+			id: "tpl_python313",
+			name: "python-3.13",
+			image: "sandbox",
+			pinned: sampleDigest("sandbox@2026.10.31.810"),
+			base: onBase("sandbox", sandboxLatest, "2026.10.31.810", { days: 4, versions: 2 }, true),
+			rebuilding: false,
+		},
+		{
+			id: "tpl_browser_agent",
+			name: "browser-agent",
+			image: "browser",
+			channel: "stable",
+			base: onBase("browser", browserLatest, BROWSER_IMAGE_LATEST.version),
+			rebuilding: false,
+		},
+	];
+	return {
+		images,
+		templates,
+		indexUrl: "https://github.com/lleverage-ai/kantel/releases/download/base-images/index.json",
+		generatedAt: ago(20 * MINUTE),
+	};
+}
+
 export const PLANS: readonly Plan[] = [
 	{
 		id: "plan_hobby",
@@ -1236,8 +1537,10 @@ export interface ComputeFixtureOptions {
 	readonly hang?: boolean;
 	/** Every read fails: an error state. */
 	readonly fail?: boolean;
-	/** No sandboxes, snapshots, keys, webhooks or hosts: the empty states. */
+	/** No sandboxes, snapshots, keys, webhooks, hosts, images, bundles or bucket sources: the empty states. */
 	readonly empty?: boolean;
+	/** The deployment hasn't turned mounts on: no Mounts page, and no sandbox mounts anything. */
+	readonly noMounts?: boolean;
 	/** How long a sandbox takes to start or stop, in milliseconds. Default 1200. */
 	readonly settleMs?: number;
 	/** The viewer is not a super-admin. */
@@ -1272,6 +1575,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 	const now = (): number => (options.now === undefined ? base : Date.now());
 	const settleMs = options.settleMs ?? 1200;
 	const empty = options.empty === true;
+	const mountsOn = options.noMounts !== true;
 
 	const moved = <T extends object>(record: T, keys: readonly (keyof T)[]): T => {
 		const copy = { ...record } as Record<string, unknown>;
@@ -1286,17 +1590,40 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 		const { costCents: _, ...rest } = box;
 		return rest;
 	};
+	/** A record's base image with its latest's build time on `now` too. */
+	const movedBase = <T extends { readonly base?: SandboxBase }>(record: T): T => {
+		const latest = record.base?.latest;
+		if (record.base === undefined || latest === undefined) return record;
+		return { ...record, base: { ...record.base, latest: { ...latest, builtAt: at(latest.builtAt) } } };
+	};
+
+	const withMounts = (box: Sandbox): Sandbox => {
+		if (mountsOn) return box;
+		const { mounts: _, ...rest } = box;
+		return rest;
+	};
 
 	const sandboxes = new Map<string, Sandbox>(
 		(empty || options.noHosts === true ? [] : SANDBOXES).map((box) => {
 			const copy = moved(box, ["createdAt", "stopsAt"]);
 			const snapshot =
 				box.snapshot === undefined ? {} : { snapshot: { ...box.snapshot, takenAt: at(box.snapshot.takenAt) } };
-			return [box.id, withCost({ ...copy, ...snapshot })];
+			return [box.id, withMounts(withCost(movedBase({ ...copy, ...snapshot })))];
 		}),
 	);
+	// Bundles by account and digest: a digest names a bundle only within its account.
+	const bundleKey = (accountId: string, digest: string) => `${accountId} ${digest}`;
+	const bundles = new Map<string, Bundle>(
+		(empty || !mountsOn ? [] : BUNDLES).map((bundle) => [
+			bundleKey(bundle.accountId, bundle.digest),
+			moved(bundle, ["createdAt"]),
+		]),
+	);
+	const bucketSources = new Map<string, BucketSource>(
+		(empty || !mountsOn ? [] : BUCKET_SOURCES).map((bucket) => [bucket.id, moved(bucket, ["createdAt"])]),
+	);
 	const saved = new Map<string, SavedSnapshot>(
-		(empty ? [] : SAVED).map((entry) => [entry.id, moved(entry, ["createdAt"])]),
+		(empty ? [] : SAVED).map((entry) => [entry.id, movedBase(moved(entry, ["createdAt"]))]),
 	);
 	const history = new Map<string, SandboxSnapshot[]>(
 		[...sandboxes.values()].map((box) => [box.id, [...historyFor(box)]]),
@@ -1464,6 +1791,18 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 		return snap;
 	};
 	const slugOf = (accountId: string) => accounts.find((account) => account.id === accountId)?.slug ?? "you";
+	/** How many of the account's sandboxes mount what `uses` picks: what Kantel counts as `mountedBy`. */
+	const mountCount = (accountId: string, uses: (from: MountSource) => boolean): number =>
+		[...sandboxes.values()].filter(
+			(box) => box.accountId === accountId && (box.mounts ?? []).some((mount) => uses(mount.source)),
+		).length;
+	const bundleUses = (digest: string) => (from: MountSource) => from.kind === "bundle" && from.digest === digest;
+	const bucketUses = (id: string) => (from: MountSource) => from.kind === "bucket" && from.bucketSourceId === id;
+	/** Refuses a delete while a sandbox that still exists mounts it, as Kantel's API does with `conflict`. */
+	const requireUnmounted = (count: number) => {
+		const refusal = inUseText(count);
+		if (refusal !== undefined) throw Object.assign(new Error(`${refusal}.`), { code: "conflict" });
+	};
 
 	const source: ComputeSource = {
 		hosting,
@@ -1671,6 +2010,33 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					settle(id, (latest) => ({ ...latest, state: "running", stopsAt: now() + HOUR }));
 					return box;
 				}),
+			// As a recover, but it comes back on its base image's latest version: nothing outdated about it any more.
+			restartOnLatest: (id) =>
+				gate(() => {
+					const { error: _, base, ...current } = find(sandboxes, id, "sandbox");
+					const onLatest =
+						base === undefined
+							? {}
+							: {
+									base: {
+										image: base.image,
+										outdated: false,
+										...(base.latest === undefined
+											? base.version === undefined
+												? {}
+												: { version: base.version }
+											: { version: base.latest.version, latest: base.latest }),
+									},
+								};
+					const box = put({ ...current, ...onLatest, state: "starting" });
+					settle(id, (latest) => ({
+						...latest,
+						state: "running",
+						stopsAt: now() + HOUR,
+						usage: usageSeries(id.length + 5, 0.3),
+					}));
+					return box;
+				}),
 			remove: (id) =>
 				gate(() => {
 					find(sandboxes, id, "sandbox");
@@ -1798,6 +2164,8 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						createdBy: VIEWER.name,
 						sizeBytes: Math.round(sizeSpec(box.size).diskGb * 1024 ** 3 * 0.1),
 						uses: 0,
+						// Saved on the base the sandbox is on now.
+						...(box.base === undefined ? {} : { base: box.base }),
 					};
 					saved.set(entry.id, entry);
 					return entry;
@@ -2114,6 +2482,39 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					return { ok: true, message: "Sent a test metric and event. The collector answered 200 in 182 ms." };
 				}),
 		},
+		...(mountsOn
+			? {
+					mounts: {
+						bundles: (accountId) =>
+							gate(() =>
+								[...bundles.values()]
+									.filter((bundle) => bundle.accountId === accountId)
+									.map((bundle) => ({ ...bundle, mountedBy: mountCount(accountId, bundleUses(bundle.digest)) }))
+									.sort((a, b) => b.createdAt - a.createdAt),
+							),
+						removeBundle: (accountId, digest) =>
+							gate(() => {
+								const key = bundleKey(accountId, digest);
+								if (!bundles.has(key)) throw new Error(`No bundle ${digest}.`);
+								requireUnmounted(mountCount(accountId, bundleUses(digest)));
+								bundles.delete(key);
+							}),
+						bucketSources: (accountId) =>
+							gate(() =>
+								[...bucketSources.values()]
+									.filter((bucket) => bucket.accountId === accountId)
+									.map((bucket) => ({ ...bucket, mountedBy: mountCount(accountId, bucketUses(bucket.id)) }))
+									.sort((a, b) => a.createdAt - b.createdAt),
+							),
+						removeBucketSource: (id) =>
+							gate(() => {
+								const bucket = find(bucketSources, id, "bucket source");
+								requireUnmounted(mountCount(bucket.accountId, bucketUses(id)));
+								bucketSources.delete(id);
+							}),
+					},
+				}
+			: {}),
 		...(options.notSuperAdmin === true
 			? {}
 			: {
@@ -2176,6 +2577,18 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 							gate(() => {
 								hosts.delete(id);
 							}),
+					},
+					images: {
+						overview: () =>
+							gate(() =>
+								empty
+									? {
+											images: [],
+											templates: [],
+											indexUrl: "https://github.com/lleverage-ai/kantel/releases/download/base-images/index.json",
+										}
+									: sampleImages(at),
+							),
 					},
 				}),
 		devices: {

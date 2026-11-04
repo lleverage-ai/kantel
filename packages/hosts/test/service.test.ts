@@ -4,7 +4,7 @@ import { isKantelError } from "@kantel/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHostsApi } from "../src/http.ts";
 import { HOST_CLOSE_REPLACED, HOST_CLOSE_REVOKED, HOST_FEATURES, type HostSandbox } from "../src/protocol.ts";
-import { createHostsService, type HostsService } from "../src/service.ts";
+import { createHostsService, type HostsService, IMAGES_REFRESH_MS } from "../src/service.ts";
 import { createMemoryHostStore } from "../src/store.ts";
 import { FakeHost, facts } from "./fake-host.ts";
 
@@ -189,6 +189,159 @@ describe("hosts service", () => {
 		});
 		expect((await service.get(a.hostId)).state).toBe("draining");
 		expect((await service.sandboxes.create({ tier: "microvm" })).hostId).toBe(b.hostId);
+	});
+
+	it("tells a host that stays connected which images to take, again on a heartbeat every so often", async () => {
+		let now = 1_000_000;
+		const { service, join } = await setup({ now: () => now });
+		let version = "host-images-20261103.1";
+		let reads = 0;
+		service.useCompute({
+			secrets: async () => undefined,
+			recordEgress: async () => undefined,
+			images: async () => {
+				reads += 1;
+				return { channel: "stable", version, url: `https://example.com/${version}` };
+			},
+		});
+		const a = await join("a");
+		const host = new FakeHost(service, a.hostId);
+		host.connect();
+		await tick();
+		const welcomes = () => host.sent.filter((message) => message.type === "welcome").map((message) => message.welcome);
+		expect(welcomes().at(-1)).toMatchObject({ images: { version: "host-images-20261103.1" } });
+		const heartbeat = () =>
+			host.send({
+				type: "heartbeat",
+				heartbeat: {
+					capacity: { freeMemoryMiB: 10_000, freeDiskGiB: 400, running: 0, stopped: 0, load1: 0, warm: {} },
+				},
+			});
+		// A release published since: not said on every heartbeat, only once the refresh interval has passed.
+		version = "host-images-20261104.2";
+		now += 60_000;
+		heartbeat();
+		await tick();
+		expect(welcomes()).toHaveLength(1);
+		expect(reads).toBe(1);
+		now += IMAGES_REFRESH_MS;
+		heartbeat();
+		await tick();
+		expect(welcomes()).toHaveLength(2);
+		expect(welcomes().at(-1)).toMatchObject({ images: { version: "host-images-20261104.2" } });
+	});
+
+	it("passes on the bases a host reports for its own sandboxes, from its hello and its events", async () => {
+		const { service, store, join } = await setup();
+		const recorded: { hostId: string; sandboxId: string; base: string; baseAt?: number }[] = [];
+		service.useCompute({
+			secrets: async () => undefined,
+			recordEgress: async () => undefined,
+			recordBases: async (hostId, reports) => {
+				for (const report of reports.sandboxes ?? []) recorded.push({ hostId, ...report });
+			},
+		});
+		const a = await join("a");
+		const placed = (sandboxId: string) =>
+			store.putPlacement({
+				sandboxId,
+				hostId: a.hostId,
+				tier: "microvm",
+				size: "default",
+				vcpus: 2,
+				memoryMiB: 2048,
+				diskGiB: 20,
+				state: "stopped",
+				createdAt: 1,
+				updatedAt: 1,
+			});
+		await placed("sbx-old");
+		await placed("sbx-unversioned");
+		const host = new FakeHost(service, a.hostId);
+		host.connect([
+			{
+				id: "sbx-old",
+				tier: "microvm",
+				size: "default",
+				state: "stopped",
+				createdAt: 1,
+				base: "host-images-1",
+				baseAt: 5,
+			},
+			// An older host's report: no base, so nothing is said (and nothing erased).
+			{ id: "sbx-unversioned", tier: "microvm", size: "default", state: "stopped", createdAt: 1 },
+			// Not Kantel's placement on this host: never passed on.
+			{ id: "stray", tier: "microvm", size: "default", state: "stopped", createdAt: 1, base: "host-images-1" },
+		]);
+		await tick();
+		expect(recorded).toEqual([{ hostId: a.hostId, sandboxId: "sbx-old", base: "host-images-1", baseAt: 5 }]);
+		// An event with the state unchanged still says its base.
+		host.send({
+			type: "event",
+			event: {
+				kind: "sandbox.state",
+				sandbox: { id: "sbx-old", tier: "microvm", state: "stopped", createdAt: 1, base: "host-images-2" },
+			},
+		});
+		await tick();
+		expect(recorded.at(-1)).toEqual({ hostId: a.hostId, sandboxId: "sbx-old", base: "host-images-2" });
+	});
+
+	it("passes on its snapshots' bases once a connection, from an image patching host only", async () => {
+		const { service, join } = await setup();
+		const recorded: { hostId: string; ref: string; base: string }[] = [];
+		service.useCompute({
+			secrets: async () => undefined,
+			recordEgress: async () => undefined,
+			recordBases: async (hostId, reports) => {
+				for (const report of reports.snapshots ?? []) recorded.push({ hostId, ...report });
+			},
+		});
+		const heartbeat = (host: FakeHost) =>
+			host.send({
+				type: "heartbeat",
+				heartbeat: {
+					capacity: { freeMemoryMiB: 10_000, freeDiskGiB: 400, running: 0, stopped: 0, load1: 0, warm: {} },
+				},
+			});
+		const older = new FakeHost(service, (await join("a")).hostId);
+		older.connect();
+		await tick();
+		heartbeat(older);
+		await tick();
+		expect(older.calls.map((c) => c.method)).not.toContain("snapshot.list");
+
+		const b = await join("b");
+		const host = new FakeHost(service, b.hostId, [HOST_FEATURES.imagePatching]);
+		host.snapshots = [
+			{ id: "snap-old", sandboxId: "sbx-1", base: "host-images-1" },
+			{ id: "snap-unversioned", sandboxId: "sbx-1" },
+		];
+		host.connect();
+		await tick();
+		heartbeat(host);
+		await tick();
+		heartbeat(host);
+		await tick();
+		expect(host.calls.filter((c) => c.method === "snapshot.list")).toHaveLength(1);
+		expect(recorded).toEqual([{ hostId: b.hostId, ref: `${b.hostId}/snap-old`, base: "host-images-1" }]);
+	});
+
+	it("reads no image index on a heartbeat with image patching off", async () => {
+		let now = 1_000_000;
+		const { service, join } = await setup({ now: () => now });
+		service.useCompute({ secrets: async () => undefined, recordEgress: async () => undefined });
+		const a = await join("a");
+		const host = new FakeHost(service, a.hostId);
+		host.connect();
+		await tick();
+		now += IMAGES_REFRESH_MS * 2;
+		host.send({
+			type: "heartbeat",
+			heartbeat: { capacity: { freeMemoryMiB: 10_000, freeDiskGiB: 400, running: 0, stopped: 0, load1: 0, warm: {} } },
+		});
+		await tick();
+		expect(host.sent.filter((message) => message.type === "welcome")).toHaveLength(1);
 	});
 
 	it("sends a custom shape as its numbers, only to a host that makes them, and a named one by its name", async () => {

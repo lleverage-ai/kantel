@@ -73,6 +73,9 @@ export class KantelApiError extends Error {
 	}
 }
 
+/** A raw request body: bytes, a `Blob` (such as a `File`), or a stream of bytes. */
+export type RawBody = Blob | ArrayBuffer | Uint8Array<ArrayBuffer> | ReadableStream<Uint8Array>;
+
 /** One call, as the generated methods describe it. */
 export interface ApiCall {
 	readonly method: string;
@@ -81,6 +84,8 @@ export interface ApiCall {
 	/** Query parameters; a record value, such as `label`, is sent as `label.<key>=<value>`. */
 	readonly query?: object;
 	readonly body?: unknown;
+	/** A raw body, such as a tar, sent as it is with this media type rather than as JSON. */
+	readonly raw?: { readonly body: RawBody; readonly type: string };
 	readonly headers?: { readonly [name: string]: string | undefined };
 	/** The answer is bytes, such as an image, not JSON: the call resolves with a `Blob`. */
 	readonly binary?: boolean;
@@ -130,6 +135,7 @@ export async function send<T>(options: KantelClientOptions, call: ApiCall, callO
 	const token = typeof options.token === "function" ? await options.token() : options.token;
 	if (token !== undefined) headers.authorization = `Bearer ${token}`;
 	if (call.body !== undefined) headers["content-type"] = "application/json";
+	if (call.raw !== undefined) headers["content-type"] = call.raw.type;
 	if (callOptions.requestId !== undefined) headers["kantel-request-id"] = callOptions.requestId;
 	if (callOptions.idempotencyKey !== undefined) headers["idempotency-key"] = callOptions.idempotencyKey;
 	for (const [name, value] of Object.entries(call.headers ?? {})) if (value !== undefined) headers[name] = value;
@@ -139,6 +145,12 @@ export async function send<T>(options: KantelClientOptions, call: ApiCall, callO
 		method: call.method,
 		headers,
 		...(call.body === undefined ? {} : { body: JSON.stringify(call.body) }),
+		// A stream is sent as it comes (`duplex: "half"`, which fetch needs for one).
+		...(call.raw === undefined
+			? {}
+			: call.raw.body instanceof ReadableStream
+				? { body: call.raw.body, duplex: "half" }
+				: { body: call.raw.body }),
 		...(callOptions.signal === undefined ? {} : { signal: callOptions.signal }),
 	});
 	if (!response.ok) throw await errorOf(response);

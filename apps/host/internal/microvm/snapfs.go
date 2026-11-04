@@ -80,31 +80,32 @@ func imageFormat(image string) string {
 	return ""
 }
 
-// imageList lists a directory of the sandbox's image (the overlay's lower layer), whichever file system it is:
-// found is whether the directory is there; an error is an image this host can't read, never an empty directory.
-func (m *Manager) imageList(dir string) (entries []dentry, found bool, err error) {
-	switch format := imageFormat(m.cfg.Rootfs); format {
+// imageList lists a directory of image, a sandbox's image (the overlay's lower layer: a snapshot's own base,
+// snapshotLower), whichever file system it is: found is whether the directory is there; an error is an image this
+// host can't read, never an empty directory.
+func imageList(image, dir string) (entries []dentry, found bool, err error) {
+	switch format := imageFormat(image); format {
 	case "ext4":
-		entries, found = debugfsList(m.cfg.Rootfs, dir)
+		entries, found = debugfsList(image, dir)
 		return entries, found, nil
 	case "squashfs":
-		return unsquashfsList(m.cfg.Rootfs, dir)
+		return unsquashfsList(image, dir)
 	default:
 		return nil, false, unreadable(format)
 	}
 }
 
-// imageRead reads a file of the image found by imageList.
-func (m *Manager) imageRead(p string, e dentry) ([]byte, error) {
-	if imageFormat(m.cfg.Rootfs) == "squashfs" {
+// imageRead reads a file of image found by imageList.
+func imageRead(image, p string, e dentry) ([]byte, error) {
+	if imageFormat(image) == "squashfs" {
 		// -no-wildcards: the path is a name, not a pattern (a file called "[ab].txt" beside a.txt).
-		out, err := exec.Command("unsquashfs", "-no-wildcards", "-cat", m.cfg.Rootfs, p).Output()
+		out, err := exec.Command("unsquashfs", "-no-wildcards", "-cat", image, p).Output()
 		if err != nil {
 			return nil, fmt.Errorf("unsquashfs -cat %s: %w", p, err)
 		}
 		return out, nil
 	}
-	return debugfsDump(m.cfg.Rootfs, e)
+	return debugfsDump(image, e)
 }
 
 func unreadable(format string) error {
@@ -272,7 +273,7 @@ func (m *Manager) SnapshotFiles(id, p string) ([]proto.FileEntry, error) {
 	lowerFound := false
 	if !opaque {
 		var lower []dentry
-		lower, lowerFound, err = m.imageList(p)
+		lower, lowerFound, err = imageList(m.snapshotLower(id), p)
 		if err != nil {
 			return nil, err
 		}
@@ -305,11 +306,12 @@ func (m *Manager) SnapshotRead(id, p string) ([]byte, error) {
 	}
 	p = path.Clean("/" + p)
 	parent, name := path.Dir(p), path.Base(p)
+	lower := m.snapshotLower(id)
 	for _, upper := range []bool{true, false} {
 		var entries []dentry
 		if upper {
 			entries, _ = debugfsList(disk, path.Join("/root", parent))
-		} else if entries, _, err = m.imageList(parent); err != nil {
+		} else if entries, _, err = imageList(lower, parent); err != nil {
 			return nil, err
 		}
 		for _, e := range entries {
@@ -328,7 +330,7 @@ func (m *Manager) SnapshotRead(id, p string) ([]byte, error) {
 			if upper {
 				return debugfsDump(disk, e)
 			}
-			return m.imageRead(p, e)
+			return imageRead(lower, p, e)
 		}
 	}
 	return nil, &proto.Error{Code: proto.ErrNotFound, Message: "no file " + p + " in snapshot " + id}

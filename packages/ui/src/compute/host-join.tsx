@@ -6,7 +6,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Button } from "../primitives/button.tsx";
-import { TextField } from "../primitives/controls.tsx";
+import { Disclosure, TextField } from "../primitives/controls.tsx";
 import { useLoad } from "../primitives/load.ts";
 import { CommandBlock } from "../primitives/one-time-secret.tsx";
 import { Skeleton, Spinner } from "../primitives/spinner.tsx";
@@ -81,9 +81,41 @@ export function HostJoinCommand({ source, input, now: fixedNow, onJoined, poll =
 	useJoinWait(source, waiting ? baseline.known : undefined, onJoined);
 
 	const now = fixedNow ?? Date.now();
+	// While other machines can't reach the console, the address comes first: the command made for it works only on this
+	// machine, so it waits behind a disclosure rather than looking ready to copy.
+	const unreachable = url?.loopback === true && source.publicUrl !== undefined;
+	const command =
+		baseline.error !== undefined && baseline.known === undefined ? (
+			<Notice level="error">{baseline.error}</Notice>
+		) : made.error !== undefined ? (
+			<Notice
+				level="error"
+				action={
+					<Button size="sm" onClick={() => setGeneration((value) => value + 1)}>
+						Try again
+					</Button>
+				}
+			>
+				{made.error}
+			</Notice>
+		) : made.join === undefined ? (
+			<div aria-busy="true">
+				<Skeleton lines={2} />
+			</div>
+		) : (
+			<CommandBlock command={made.join.command} copyLabel="Copy" />
+		);
+	const requirements = (
+		<p className="m-0 text-sm text-muted">
+			Linux on x86_64 or arm64, as root, with outbound HTTPS.{" "}
+			{made.join === undefined
+				? "The token works once."
+				: `The token works once and ${expiresText(made.join.expiresAt, now).toLowerCase()}.`}
+		</p>
+	);
 	return (
 		<div className="kt-host-join flex min-w-0 flex-col gap-3">
-			{url?.loopback === true && source.publicUrl !== undefined ? (
+			{unreachable ? (
 				<LoopbackWarning
 					url={url}
 					onSave={async (next) => {
@@ -93,32 +125,19 @@ export function HostJoinCommand({ source, input, now: fixedNow, onJoined, poll =
 					}}
 				/>
 			) : null}
-			{baseline.error !== undefined && baseline.known === undefined ? (
-				<Notice level="error">{baseline.error}</Notice>
-			) : made.error !== undefined ? (
-				<Notice
-					level="error"
-					action={
-						<Button size="sm" onClick={() => setGeneration((value) => value + 1)}>
-							Try again
-						</Button>
-					}
-				>
-					{made.error}
-				</Notice>
-			) : made.join === undefined ? (
-				<div aria-busy="true">
-					<Skeleton lines={2} />
-				</div>
+			{unreachable ? (
+				<Disclosure summary="The command for a host on this machine">
+					<div className="flex min-w-0 flex-col gap-3 pt-2">
+						{command}
+						{requirements}
+					</div>
+				</Disclosure>
 			) : (
-				<CommandBlock command={made.join.command} copyLabel="Copy" />
+				<>
+					{command}
+					{requirements}
+				</>
 			)}
-			<p className="m-0 text-sm text-muted">
-				Linux on x86_64 or arm64, as root, with outbound HTTPS.{" "}
-				{made.join === undefined
-					? "The token works once."
-					: `The token works once and ${expiresText(made.join.expiresAt, now).toLowerCase()}.`}
-			</p>
 		</div>
 	);
 }

@@ -28,6 +28,10 @@ export {
 export type {
 	AccountsSource,
 	ApiKeysSource,
+	BaseImage,
+	BaseImagesOverview,
+	BaseImagesSource,
+	BaseImageVersion,
 	BillingSource,
 	BrowserDeviceSource,
 	BrowserStanding,
@@ -49,8 +53,13 @@ export type {
 	FileRange,
 	HostingMode,
 	HostsSource,
+	ImageBuildReason,
+	ImageFinding,
+	ImageScan,
+	ImageSeverity,
 	ProxySource,
 	PublicUrlSource,
+	SandboxBase,
 	SandboxEgress,
 	SandboxesSource,
 	SandboxImage,
@@ -61,6 +70,7 @@ export type {
 	SnapshotsSource,
 	SshTarget,
 	TelemetrySource,
+	TemplateBase,
 	WebhooksSource,
 } from "./compute/compute-model.ts";
 export {

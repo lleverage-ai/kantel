@@ -1,12 +1,13 @@
-// What a sandbox's ⋯ menu does, on its page and on its row in the list: Fork, Save snapshot, Auto-stop and Delete, and
-// the dialogs they open. The ways in (Browser, Desktop, SSH), its logs, egress and snapshots are on its page, not here.
+// What a sandbox's ⋯ menu does, on its page and on its row in the list: Fork, Save snapshot, Auto-stop, Restart on
+// latest base (for one on an outdated base) and Delete, and the dialogs they open. The ways in (Browser, Desktop,
+// SSH), its logs, egress and snapshots are on its page, not here.
 
 import { type ReactNode, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "../primitives/button.tsx";
 import { SelectField, TextField } from "../primitives/controls.tsx";
 import { Dialog } from "../primitives/dialog.tsx";
 import { ClockIcon, ForkIcon } from "../primitives/icons.tsx";
-import { SnapshotIcon, TrashIcon } from "../primitives/lucide.tsx";
+import { ReplayIcon, SnapshotIcon, TrashIcon } from "../primitives/lucide.tsx";
 import type { MenuEntry } from "../primitives/menu.tsx";
 import { type Sandbox, type SandboxesSource, type SavedSnapshot, sandboxActions } from "./compute-model.ts";
 import { autoStopChanges } from "./one-change.ts";
@@ -52,19 +53,28 @@ export async function setAutoStop(
 	if (changed !== undefined) onChange(changed, changed.id, since);
 }
 
+/** Whether a sandbox can be restarted on the latest base now: it's on an outdated one, and running, stopped or failed. */
+export const canRestartOnLatest = (sandbox: Pick<Sandbox, "state" | "base">): boolean =>
+	sandbox.base?.outdated === true &&
+	(sandbox.state === "running" || sandbox.state === "stopped" || sandbox.state === "error");
+
 /**
- * The menu's four items for `sandbox`, and the dialogs they open (render `dialogs` once beside the menu). Each item is
- * there whatever the state, disabled when it can't be done now, so the menu doesn't change shape under the pointer.
+ * The menu's items for `sandbox`, and the dialogs they open (render `dialogs` once beside the menu). Each item is
+ * there whatever the state, disabled when it can't be done now, so the menu doesn't change shape under the pointer;
+ * Restart on latest base is there only for a sandbox on an outdated base that can restart now, where the source can
+ * do it. `restartOnLatest` opens its confirmation from elsewhere on the page (the sandbox page's notice), when offered.
  */
 export function useSandboxMenu(
 	sandbox: Sandbox | undefined,
 	calls: SandboxMenuCalls,
-): { entries: readonly MenuEntry[]; dialogs: ReactNode } {
-	const { source, save, onChange, onNotice } = calls;
-	const [open, setOpen] = useState<"delete" | "save" | "auto-stop">();
+): { entries: readonly MenuEntry[]; dialogs: ReactNode; restartOnLatest?: () => void } {
+	const { source, save, onChange, asked, onNotice } = calls;
+	const [open, setOpen] = useState<"delete" | "save" | "auto-stop" | "restart">();
 	const close = () => setOpen(undefined);
 	const can = sandboxActions(sandbox?.state ?? "stopped");
 	const running = sandbox?.state === "running" || sandbox?.state === "starting";
+	const { restartOnLatest } = source;
+	const restartable = sandbox !== undefined && restartOnLatest !== undefined && canRestartOnLatest(sandbox);
 
 	const entries: MenuEntry[] =
 		sandbox === undefined
@@ -114,6 +124,17 @@ export function useSandboxMenu(
 									onSelect: () => setOpen("auto-stop"),
 								},
 							]),
+					...(restartable
+						? [
+								{
+									kind: "item" as const,
+									id: "restart-on-latest",
+									label: "Restart on latest base",
+									icon: <ReplayIcon size="sm" />,
+									onSelect: () => setOpen("restart"),
+								},
+							]
+						: []),
 					{ kind: "separator", id: "sep-delete" },
 					{
 						kind: "item",
@@ -154,9 +175,26 @@ export function useSandboxMenu(
 					onSet={(box, minutes) => setAutoStop(calls, box.id, minutes)}
 				/>
 			)}
+			{restartOnLatest === undefined ? null : (
+				<RestartOnLatestDialog
+					sandbox={open === "restart" ? sandbox : undefined}
+					onClose={close}
+					onRestart={async (box) => {
+						// As the row's own calls: an answer overtaken by a later change to it (a Delete) is dropped.
+						const since = asked?.(box.id);
+						const restarted = await source.restartOnLatest?.(box.id);
+						if (restarted === undefined) return;
+						onChange(restarted, restarted.id, since);
+						onNotice({
+							level: "info",
+							text: `Restarting ${box.name} on ${box.base?.latest?.version ?? "the latest base"}.`,
+						});
+					}}
+				/>
+			)}
 		</>
 	);
-	return { entries, dialogs };
+	return { entries, dialogs, ...(restartable ? { restartOnLatest: () => setOpen("restart") } : {}) };
 }
 
 /** A dialog whose one action may fail: it stays open with the reason. */
@@ -297,6 +335,53 @@ function SaveSnapshotDialog({
 					mono
 				/>
 			</div>
+			{failure === undefined ? null : <p className="kt-dialog-error">{failure}</p>}
+		</Dialog>
+	);
+}
+
+/** Restart on latest base: what it keeps and what it loses, then Restart. */
+function RestartOnLatestDialog({
+	sandbox,
+	onClose,
+	onRestart,
+}: {
+	sandbox: Sandbox | undefined;
+	onClose: () => void;
+	onRestart: (box: Sandbox) => Promise<void>;
+}) {
+	const { busy, failure, setFailure, run } = useAttempt(onClose);
+	const close = () => {
+		setFailure(undefined);
+		onClose();
+	};
+	const latest = sandbox?.base?.latest?.version;
+	return (
+		<Dialog
+			open={sandbox !== undefined}
+			title="Restart on the latest base?"
+			onClose={close}
+			actions={
+				<>
+					<Button onClick={close}>Cancel</Button>
+					<Button
+						variant="primary"
+						busy={busy}
+						onClick={() => {
+							if (sandbox === undefined) return;
+							run(() => onRestart(sandbox), `Kantel couldn't restart ${sandbox.name}. Try again.`);
+						}}
+					>
+						Restart
+					</Button>
+				</>
+			}
+		>
+			<p>
+				Kantel saves its disk, stops it and starts it again on{" "}
+				{latest === undefined ? "the latest base" : <strong className="font-mono">{latest}</strong>}. Running processes
+				and memory are lost; files on its disk stay. Nothing is patched while it runs.
+			</p>
 			{failure === undefined ? null : <p className="kt-dialog-error">{failure}</p>}
 		</Dialog>
 	);

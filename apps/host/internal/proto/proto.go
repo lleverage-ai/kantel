@@ -41,10 +41,25 @@ type Message struct {
 	// stream.close (either way): a port stream ended; Reason says why.
 	Stream uint32 `json:"stream,omitempty"`
 	Reason string `json:"reason,omitempty"`
+	// stream.ack, on a file stream (FeatureFileStreams): the bytes of it its receiver has taken so far. Host → Kantel on
+	// a write, the sandbox's, sent every FileStreamAckBytes or so; Kantel → host on a read, its reader's. The sender
+	// keeps within FileStreamWindowBytes of it.
+	Acked int64 `json:"acked,omitempty"`
 
 	// usage (host → Kantel): one tick of the host's and its sandboxes' readings.
 	Usage *UsageSample `json:"usage,omitempty"`
 }
+
+// FileStreamAckBytes is about how often a host sends a file write stream's stream.ack.
+const FileStreamAckBytes = 512 << 10
+
+// FileStreamWindowBytes is how far a file stream's sender may get ahead of its receiver's stream.ack: a read's host of
+// what Kantel's reader has taken, so a slow download holds the host back rather than filling the gateway's memory.
+const FileStreamWindowBytes = 4 << 20
+
+// FileStreamFrameMaxBytes is the most of a file a read's host sends in one frame (Kantel's FILE_STREAM_FRAME_MAX_BYTES):
+// Kantel ends a read whose host sends a larger frame, or any frame once FileStreamWindowBytes are unacked.
+const FileStreamFrameMaxBytes = 1 << 20
 
 // Error codes a call can fail with.
 const (
@@ -90,11 +105,22 @@ type Facts struct {
 	// Features are what the host does beyond protocol 1 as first released (FeatureEgressPolicy). The control plane
 	// sends a sandbox a policy it must enforce only when its host reports the feature that enforces it.
 	Features []string `json:"features,omitempty"`
+	// Images is what the host boots new sandboxes on, and its image settings; present with FeatureImagePatching.
+	Images *HostImages `json:"images,omitempty"`
 }
 
 // FeatureEgressPolicy: the host enforces egress Grants (methods and paths too), swaps Protected placeholders only
 // where they are bound, refuses an egress older than its Revision, and gives a fork the Env its ForkParams name.
 const FeatureEgressPolicy = "egress-policy"
+
+// FeatureFileStreams: the host serves sandbox.files.open (FileOpenParams), a file's bytes on a port stream, for the
+// sandboxes of a tier that streams files (the microVM tier), and acks a write's bytes as the sandbox takes them
+// (stream.ack).
+const FeatureFileStreams = "file-streams"
+
+// FeatureFilesExtract: the host serves sandbox.files.extract (FileExtractParams) for the sandboxes of a tier that
+// extracts archives (the microVM tier), with its own code: never the sandbox's tar, shell or environment.
+const FeatureFilesExtract = "files-extract"
 
 // FeatureCustomShapes: sandbox.create takes vcpus, memoryMiB and diskGiB for a microVM shape off the named sizes,
 // and memoryMiB for an isolate.
@@ -103,6 +129,35 @@ const FeatureCustomShapes = "custom-shapes"
 // FeatureUsage: the host sends a "usage" message every tick (UsageSample) without being asked, so the control plane
 // needn't run a command in a sandbox to read its usage.
 const FeatureUsage = "usage"
+
+// FeatureImagePatching (experimental): the host keeps its host images by version, follows Welcome.Images, reports
+// each sandbox's and snapshot's Base, and restarts a sandbox on its current images when sandbox.start has Rebase.
+const FeatureImagePatching = "image-patching"
+
+// HostImages is a host's images: the version new sandboxes start on, and how it takes new ones.
+type HostImages struct {
+	// Version is the host images version new sandboxes boot on (empty when the images aren't versioned yet).
+	Version string `json:"version"`
+	// Firecracker is the Firecracker version the host runs, such as v1.17.0.
+	Firecracker string `json:"firecracker"`
+	// AutoUpdate says the host follows Welcome.Images.
+	AutoUpdate bool `json:"autoUpdate"`
+	// Signatures is the host's signature policy: "require", "warn" or "off".
+	Signatures string `json:"signatures"`
+	// State, when host.images is asked about a sandbox, is its state on this host (running, stopped, ...): a gateway
+	// whose record of it is `error` learns whether its machine is still running before it restarts it on new images.
+	State string `json:"state,omitempty"`
+}
+
+// ImageChannel is the host images Kantel wants hosts on.
+type ImageChannel struct {
+	// Channel names the channel, such as "stable".
+	Channel string `json:"channel"`
+	// Version is the release, such as host-images-20261103.
+	Version string `json:"version"`
+	// URL is the release's download base: it holds manifest.json and manifest.json.sigstore.json (a cosign bundle).
+	URL string `json:"url"`
+}
 
 // Size is a sandbox shape.
 type Size struct {
@@ -129,6 +184,10 @@ type Welcome struct {
 	UpdateURL      string `json:"updateUrl,omitempty"`
 	// Draining hosts take no new sandboxes.
 	Draining bool `json:"draining,omitempty"`
+	// Images are the host images Kantel wants hosts on: a host with image patching and automatic image updates on
+	// fetches them, checks their signature, and starts new sandboxes on them. Running and stopped sandboxes stay on
+	// theirs until a sandbox.start with Rebase.
+	Images *ImageChannel `json:"images,omitempty"`
 }
 
 // Capacity is what is free now.
@@ -176,6 +235,13 @@ type SandboxInfo struct {
 	Source string `json:"source,omitempty"`
 	// Owner is the account the sandbox belongs to (its create's Owner): the space whose E2E chain covers it.
 	Owner string `json:"owner,omitempty"`
+	// Base is the host images version the sandbox's root filesystem is (empty when unknown: images not versioned).
+	// One older than the host's HostImages.Version is outdated until restarted with Rebase.
+	Base string `json:"base,omitempty"`
+	// BaseAt is when the sandbox was put on Base (unix milliseconds: its root filesystem link's time, set by a create,
+	// a rebase or the first pinning); with Base only. Reports of one sandbox's base are ordered by it, so one read
+	// before a rebase never replaces what the rebase reported.
+	BaseAt int64 `json:"baseAt,omitempty"`
 	// Guest is what the microVM's image has, as its guest agent found it (absent from an agent too old to say).
 	Guest *GuestCapabilities `json:"guest,omitempty"`
 }
@@ -231,6 +297,8 @@ type SnapshotInfo struct {
 	SizeBytes int64  `json:"sizeBytes"`
 	Memory    bool   `json:"memory"`
 	Tier      string `json:"tier"`
+	// Base is the host images version the snapshot's root filesystem is (empty when unknown: images not versioned).
+	Base string `json:"base,omitempty"`
 }
 
 // Egress is a sandbox's way out, sent with create, resume and fork.
@@ -373,6 +441,11 @@ type StopParams struct {
 	Memory *bool `json:"memory,omitempty"`
 }
 
+// HostImagesParams is host.images's: with SandboxID, the answer's Version is where a rebase of that sandbox lands.
+type HostImagesParams struct {
+	SandboxID string `json:"sandboxId,omitempty"`
+}
+
 // ResumeParams is sandbox.resume and sandbox.start.
 type ResumeParams struct {
 	SandboxID string  `json:"sandboxId"`
@@ -381,6 +454,13 @@ type ResumeParams struct {
 	// ignored. A call with a Revision states the sandbox's egress: on sandbox.start and sandbox.resume, no Egress
 	// with a Revision is the host's default (a clear), while no Egress without one keeps the egress it has.
 	Revision int64 `json:"revision,omitempty"`
+	// Rebase, on sandbox.start (a cold boot), first moves the sandbox onto the host's current images: its own disk
+	// stays, its memory snapshot is dropped. sandbox.resume ignores it.
+	Rebase bool `json:"rebase,omitempty"`
+	// RebaseTo, with Rebase, is the host images version (HostImages.Version) the gateway expects the rebase to land on:
+	// a host whose current images are another refuses the start before it changes anything, as it hasn't taken that
+	// update. Empty: whatever is current.
+	RebaseTo string `json:"rebaseTo,omitempty"`
 }
 
 // ForkParams is sandbox.fork: a new sandbox from the source's current state (running: a live snapshot; stopped: its
@@ -433,6 +513,14 @@ type FileParams struct {
 	Length    int64  `json:"length,omitempty"`
 }
 
+// FileExtractParams is sandbox.files.extract's: the tar at Archive (absolute, already checked by Kantel) extracted
+// into the directory Target (absolute, made if missing), its entries owned by the sandbox's user, then deleted.
+type FileExtractParams struct {
+	SandboxID string `json:"sandboxId"`
+	Archive   string `json:"archive"`
+	Target    string `json:"target"`
+}
+
 type FileEntry struct {
 	Name    string `json:"name"`
 	Path    string `json:"path"`
@@ -462,6 +550,31 @@ type PortParams struct {
 
 // PortE2E is the port.open target that is an E2E session with the host rather than a sandbox port.
 const PortE2E = 0
+
+// FileOpenParams is sandbox.files.open: a file's bytes on Stream, in binary frames as port.open's.
+//
+// Op "read": the call is answered {"size": n}, the file's bytes follow on the stream, and a stream.close ends it with
+// the reason "ok <size>", or "error <code>: <message>". Op "write": the call is answered {} once the host is ready;
+// Kantel sends the bytes, then an empty frame for the end; the host writes them beside the file, moves them over it once
+// all have arrived, and ends the stream with a stream.close as for a read. A stream.close from Kantel aborts either
+// (for a write, nothing is moved into place).
+type FileOpenParams struct {
+	SandboxID string `json:"sandboxId"`
+	Stream    uint32 `json:"stream"`
+	Path      string `json:"path"`
+	Op        string `json:"op"`
+	// Mode is a write's permissions, such as 0o644 (the default).
+	Mode uint32 `json:"mode,omitempty"`
+	// Acks, on a read, is Kantel acking what its reader takes (stream.ack): the host keeps within FileStreamWindowBytes
+	// of it. False (an older Kantel), the host sends as fast as it can.
+	Acks bool `json:"acks,omitempty"`
+}
+
+// FileOpenParams' ops.
+const (
+	FileOpRead  = "read"
+	FileOpWrite = "write"
+)
 
 // UpdateParams is host.update.
 type UpdateParams struct {
@@ -544,10 +657,18 @@ const (
 	MethodSnapshotRead = "snapshot.read"
 	MethodPortOpen     = "port.open"
 	MethodHostUpdate   = "host.update"
+	// MethodHostImages (Kantel → host, HostImagesParams; FeatureImagePatching) answers the host's HostImages as they
+	// are now, which a hello's facts can be behind: a restart on latest asks it before stopping the sandbox.
+	MethodHostImages = "host.images"
 	// MethodEgress replaces a sandbox's egress (ResumeParams: sandboxId, egress; null egress is the host's default).
 	MethodEgress = "sandbox.egress"
 	// MethodSecrets (Kantel → host, SecretsParams) says a sandbox's protected variables changed; the result is {}.
 	MethodSecrets = "sandbox.secrets"
 	// MethodSecretsFetch (host → Kantel, SandboxRef) answers a SecretsTable.
 	MethodSecretsFetch = "secrets.fetch"
+	// MethodFileOpen (Kantel → host, FileOpenParams) streams a file's bytes on a port stream (FeatureFileStreams).
+	MethodFileOpen = "sandbox.files.open"
+	// MethodFileExtract (Kantel → host, FileExtractParams) extracts a tar in a sandbox into a directory with the host's
+	// own code (FeatureFilesExtract); the result is {}.
+	MethodFileExtract = "sandbox.files.extract"
 )

@@ -7,17 +7,37 @@
  */
 import { type Clock, KantelError, systemClock } from "@kantel/contracts";
 import type { HostCluster } from "./cluster.ts";
-import { parseHostCapacity, parseHostFacts, parseHostUsage, storedCapacity, storedFacts } from "./facts.ts";
-import { type CallOptions, createHostHub, HostCallError, type HostHub, type PortSink, type PortStream } from "./hub.ts";
+import {
+	parseHostCapacity,
+	parseHostFacts,
+	parseHostUsage,
+	parseMountStatuses,
+	storedCapacity,
+	storedFacts,
+} from "./facts.ts";
+import {
+	type CallOptions,
+	createHostHub,
+	type FileOpenParams,
+	HostCallError,
+	type HostHub,
+	type OpenedFile,
+	type PortSink,
+	type PortStream,
+} from "./hub.ts";
 import {
 	HOST_CLOSE_REVOKED,
 	HOST_E2E_PORT,
 	HOST_FEATURES,
+	type HostBucketSource,
 	type HostEgress,
 	type HostEgressRecord,
 	type HostFacts,
 	type HostHello,
+	type HostImageChannel,
 	HostMethods,
+	type HostMount,
+	type HostMountStatus,
 	type HostSandbox,
 	type HostSandboxUsage,
 	type HostSecrets,
@@ -33,6 +53,55 @@ import type { HostRecord, HostStore, PlacementRecord } from "./store.ts";
 /** Whether a host reports enforcing egress grants and protected variables. */
 export const enforcesPolicy = (host: HostRecord): boolean =>
 	storedFacts(host.facts)?.features?.includes(HOST_FEATURES.egressPolicy) === true;
+
+/** The feature a host needs to mount each kind of source, and what a mount it can't do says. */
+const MOUNT_KINDS = {
+	bundle: { feature: HOST_FEATURES.mountsBundle, refusal: "This host can't mount bundles yet" },
+	bucket: { feature: HOST_FEATURES.mountsBucket, refusal: "This host can't mount buckets yet" },
+} as const;
+
+/** A boot's mounts as a host with some features takes them. */
+export interface MountHandoff {
+	/** The mounts the host can do, for the call's `mounts` (sent only when there are some). */
+	readonly send: readonly HostMount[];
+	/**
+	 * Every mount's status once the host answered with `sandbox`, in the order given: `failed` for one it can't do, else
+	 * what it reported for that path, or `pending`. Undefined when there were no mounts.
+	 */
+	status(sandbox: HostSandbox | undefined): HostMountStatus[] | undefined;
+}
+
+/**
+ * Splits `mounts` by what a host with `features` can mount. A host that predates mounts would ignore the field and
+ * answer as if it had mounted them, so it is sent only those it reports doing, and the others are `failed` at once.
+ */
+export function mountHandoff(
+	features: readonly string[] | undefined,
+	mounts: readonly HostMount[] | undefined,
+): MountHandoff {
+	const all = mounts ?? [];
+	const can = (mount: HostMount) => features?.includes(MOUNT_KINDS[mount.kind].feature) === true;
+	return {
+		send: all.filter(can),
+		status(sandbox) {
+			if (all.length === 0) return undefined;
+			const reported = new Map((parseMountStatuses(sandbox?.mounts) ?? []).map((status) => [status.path, status]));
+			return all.map((mount): HostMountStatus => {
+				if (!can(mount)) return { path: mount.path, status: "failed", error: MOUNT_KINDS[mount.kind].refusal };
+				return reported.get(mount.path) ?? { path: mount.path, status: "pending" };
+			});
+		},
+	};
+}
+
+/** `mounts` for a call's params: present only when there are some. */
+const mountsParam = (handoff: MountHandoff) => (handoff.send.length === 0 ? {} : { mounts: handoff.send });
+
+/** A bundle's tar as the compute plane answers it for a host. */
+export interface HostBundle {
+	readonly sizeBytes: number;
+	readonly body: ReadableStream<Uint8Array>;
+}
 
 export const JOIN_TOKEN_PREFIX = "kth_";
 export const HOST_CREDENTIAL_PREFIX = "khc_";
@@ -98,6 +167,8 @@ export interface CreateSandboxInput {
 	readonly hostIds?: readonly string[];
 	/** Start from this snapshot, which is on the one host `hostIds` names. */
 	readonly from?: string;
+	/** Read-only mounts: those the chosen host can do are sent, the others answered `failed` (`mountHandoff`). */
+	readonly mounts?: readonly HostMount[];
 }
 
 /** Join tokens kept elsewhere, such as by the compute API, which mints them (`createHostJoinToken`). */
@@ -130,6 +201,30 @@ export interface HostComputeLink {
 	secrets(hostId: string, sandboxId: string): Promise<HostSecrets | undefined>;
 	recordEgress(hostId: string, records: readonly HostEgressRecord[]): Promise<void>;
 	/**
+	 * Fills in the bases a host reports for its own sandboxes (`HostSandbox.base`, image patching: its hello and events)
+	 * and snapshots (its snapshot list, read once a connection), so what was made before it versioned its images shows
+	 * its base without another boot (`ComputeService.recordBases`). A snapshot is named by its ref, `<hostId>/<id>`.
+	 */
+	recordBases?(
+		hostId: string,
+		reports: {
+			readonly sandboxes?: readonly { readonly sandboxId: string; readonly base: string; readonly baseAt?: number }[];
+			readonly snapshots?: readonly { readonly ref: string; readonly base: string }[];
+		},
+	): Promise<void>;
+	/**
+	 * A host's `bucket.fetch`: the bucket source with its credentials opened, or `undefined` unless the sandbox is on
+	 * `hostId` and mounts it (`ComputeService.bucketSourceForHost`).
+	 */
+	bucketSource?(hostId: string, sandboxId: string, bucketSourceId: string): Promise<HostBucketSource | undefined>;
+	/** A host's later word on a sandbox's mounts, a `sandbox.mounts` event (`ComputeService.reportMounts`). */
+	reportMounts?(hostId: string, sandboxId: string, mounts: readonly HostMountStatus[]): Promise<void>;
+	/**
+	 * A bundle's tar for a host, or `undefined` unless the sandbox is on `hostId` and mounts it
+	 * (`ComputeService.bundleForHost`).
+	 */
+	bundle?(hostId: string, sandboxId: string, digest: string): Promise<HostBundle | undefined>;
+	/**
 	 * Keeps a host's usage tick, checked (`parseHostUsage`). `shared`: it came from the replica holding the host's
 	 * connection, not from the host (`recordSharedUsage`). Absent: ticks are dropped.
 	 */
@@ -148,6 +243,12 @@ export interface HostComputeLink {
 			entries: readonly E2EChainEntry[],
 		): Promise<readonly E2EChainEntry[]>;
 	};
+	/**
+	 * The host images Kantel wants hosts on, for their welcome (image patching, experimental): from the base image index's
+	 * `host` entry, its `stable` version. Absent (the feature off), or undefined (no such version), the welcome has none
+	 * and hosts keep the images they have. A failure is logged and the welcome goes without, so a host still connects.
+	 */
+	images?(): Promise<HostImageChannel | undefined>;
 }
 
 /** A chain entry as the gateway passes it on: opaque to it, verified by hosts and devices (`@kantel/e2e`). */
@@ -186,6 +287,8 @@ export interface SandboxPlacement {
 	readonly placement?: PlacementRecord;
 	/** Whether the host offers nested virtualisation, so the caller needn't read the host for it. */
 	readonly nestedVirtualisation?: boolean;
+	/** Each of the input's mounts' status (`MountHandoff.status`); absent when it named none. */
+	readonly mounts?: readonly HostMountStatus[];
 }
 
 export interface HostsService {
@@ -225,6 +328,11 @@ export interface HostsService {
 		entries: readonly E2EChainEntry[],
 	): Promise<readonly E2EChainEntry[]>;
 	/**
+	 * A bundle's tar, for a host (`GET /v1/hosts/bundles/{digest}`): `undefined` unless the sandbox is on `hostId` and
+	 * mounts it; `unavailable` before the compute plane is linked.
+	 */
+	bundle(hostId: string, sandboxId: string, digest: string): Promise<HostBundle | undefined>;
+	/**
 	 * Every host. With `allocations: false` no placements are read and `allocated` is all zero: for a caller that needs
 	 * only what the hosts are (the compute backend's capabilities), at one statement rather than one per host.
 	 */
@@ -248,6 +356,8 @@ export interface HostsService {
 				readonly egress?: HostEgress;
 				/** The fork's own environment (its own protected placeholders); absent, its source's. */
 				readonly env?: { readonly [key: string]: string };
+				/** The fork's mounts, as for a create (`mountHandoff`, with its source's host). */
+				readonly mounts?: readonly HostMount[];
 			},
 		): Promise<SandboxPlacement>;
 		/** Any other method of a sandbox, on its host: stop, resume, exec, files, snapshots. */
@@ -255,6 +365,11 @@ export interface HostsService {
 		delete(sandboxId: string): Promise<void>;
 		placement(sandboxId: string): Promise<PlacementRecord | undefined>;
 		openPort(sandboxId: string, port: number, sink: PortSink): Promise<PortStream>;
+		/**
+		 * Opens a file of the sandbox as a stream on its host (`HostHub.openFile`). Not relayed between gateway replicas:
+		 * `unavailable` when the host is connected to another one.
+		 */
+		openFile(sandboxId: string, params: Omit<FileOpenParams, "sandboxId">, sink: PortSink): Promise<OpenedFile>;
 	};
 	close(): void;
 }
@@ -282,6 +397,8 @@ const DEFAULT_JOIN_COMMAND =
 const LABEL_KEY = /^[a-z0-9][a-z0-9._/-]{0,62}$/i;
 /** States that hold the sandbox's vCPUs and memory on its host; a stopped one holds only its disk. */
 const LIVE = new Set(["starting", "running", "stopping"]);
+/** How often a connected host is told again which images Kantel wants it on (image patching): 15 minutes. */
+export const IMAGES_REFRESH_MS = 15 * 60 * 1000;
 
 function labelsOf(value: unknown): { [key: string]: string } {
 	if (value === undefined) return {};
@@ -356,7 +473,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		void work.catch((error) => log(`[hosts] ${error instanceof Error ? error.message : String(error)}`));
 	};
 
-	const welcomeFor = (host: HostRecord): HostWelcome => ({
+	const baseWelcome = (host: HostRecord): HostWelcome => ({
 		hostId: host.id,
 		heartbeatSeconds: options.heartbeatSeconds ?? 15,
 		// Hosts keep no warm pools; an older one that keeps some makes no more on this (see `endLegacyPools`).
@@ -365,6 +482,77 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		...(options.desiredVersion === undefined ? {} : { desiredVersion: options.desiredVersion }),
 		...(options.updateUrl === undefined ? {} : { updateUrl: options.updateUrl }),
 	});
+	// With image patching off the welcome is made at once, as before: no await between a hello and its answer.
+	const welcomeFor = (host: HostRecord): HostWelcome | Promise<HostWelcome> => {
+		const base = baseWelcome(host);
+		if (compute?.images === undefined) return base;
+		return compute.images().then(
+			(images) => (images === undefined ? base : { ...base, images }),
+			(error) => {
+				log(
+					`[hosts] no images in host ${host.id}'s welcome: ${error instanceof Error ? error.message : String(error)}`,
+				);
+				return base;
+			},
+		);
+	};
+
+	/**
+	 * When each host connected here was last told the images Kantel wants it on (image patching). A host that stays
+	 * connected is told again on a heartbeat once `IMAGES_REFRESH_MS` have passed: a release published since its hello
+	 * reaches it, and one it failed to take is tried again, without waiting for it to reconnect.
+	 */
+	const imagesToldAt = new Map<string, number>();
+	/** A host sandbox's `baseAt`, when it says one. */
+	const baseAtOf = (sandbox: { baseAt?: unknown }): { baseAt?: number } =>
+		typeof sandbox.baseAt === "number" && sandbox.baseAt > 0 ? { baseAt: sandbox.baseAt } : {};
+	/** Hosts whose snapshot bases haven't been read on their connection yet (image patching hosts only). */
+	const snapshotBasesDue = new Set<string>();
+	/**
+	 * Reads a host's snapshots once a connection and passes on the bases they report: snapshots saved before the host
+	 * versioned its images have none recorded, and the host pins them when image patching starts.
+	 */
+	const readSnapshotBases = (hostId: string) => {
+		if (!snapshotBasesDue.delete(hostId) || compute?.recordBases === undefined) return;
+		const link = compute;
+		report(
+			(async () => {
+				const listed = await hub.call<{ snapshots?: readonly { id?: unknown; base?: unknown }[] | null }>(
+					hostId,
+					HostMethods.snapshotList,
+					{ sandboxId: "" },
+				);
+				const snapshots: { ref: string; base: string }[] = [];
+				for (const snap of listed.snapshots ?? []) {
+					if (typeof snap.id === "string" && typeof snap.base === "string" && snap.base !== "") {
+						snapshots.push({ ref: `${hostId}/${snap.id}`, base: snap.base });
+					}
+				}
+				if (snapshots.length > 0) await link.recordBases?.(hostId, { snapshots });
+			})(),
+		);
+	};
+
+	const refreshImages = (hostId: string) => {
+		if (compute?.images === undefined) return;
+		const now = clock.now();
+		const told = imagesToldAt.get(hostId);
+		if (told === undefined) {
+			imagesToldAt.set(hostId, now);
+			return;
+		}
+		if (now - told < IMAGES_REFRESH_MS) return;
+		imagesToldAt.set(hostId, now);
+		report(
+			(async () => {
+				const host = await store.getHost(hostId);
+				if (host === undefined || host.revoked) return;
+				const welcome = await welcomeFor(host);
+				// No images (the index can't be read): nothing new to say, and the host keeps what it has.
+				if (welcome.images !== undefined) hub.rewelcome(hostId, welcome);
+			})(),
+		);
+	};
 
 	const hello = async (hostId: string, message: HostHello): Promise<void> => {
 		const host = await store.getHost(hostId);
@@ -390,12 +578,23 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		// Go marshals an empty list as null (kantel-host 0.1.0-dev on a host with no sandboxes).
 		const sandboxes = message.sandboxes ?? [];
 		const held = new Map(sandboxes.map((sandbox) => [sandbox.id, sandbox]));
+		const bases: { sandboxId: string; base: string; baseAt?: number }[] = [];
 		for (const placement of await store.placementsOn(hostId)) {
 			const sandbox = held.get(placement.sandboxId);
 			const state = sandbox?.state ?? "lost";
 			if (state !== placement.state) await store.putPlacement({ ...placement, state, updatedAt: now });
+			// What its disk is on, where the host says (one without image patching doesn't, and nothing is erased).
+			if (typeof sandbox?.base === "string" && sandbox.base !== "") {
+				bases.push({ sandboxId: placement.sandboxId, base: sandbox.base, ...baseAtOf(sandbox) });
+			}
 			held.delete(placement.sandboxId);
 		}
+		if (bases.length > 0 && compute?.recordBases !== undefined) {
+			report(compute.recordBases(hostId, { sandboxes: bases }));
+		}
+		// Its snapshots' bases, once it is welcomed (the hello doesn't carry them): on its first heartbeat.
+		if (facts.value.features?.includes(HOST_FEATURES.imagePatching) === true) snapshotBasesDue.add(hostId);
+		else snapshotBasesDue.delete(hostId);
 		if (held.size > 0) {
 			log(`[hosts] host ${hostId} holds sandboxes Kantel didn't place: ${[...held.keys()].slice(0, 10).join(", ")}`);
 		}
@@ -440,6 +639,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	const local = createHostHub({
 		async onHello(hostId, message) {
 			await hello(hostId, message);
+			imagesToldAt.set(hostId, clock.now());
 			// Recorded before the welcome, so no replica routes elsewhere once the host takes calls here.
 			await cluster?.claim(hostId);
 			return welcomeNow(hostId);
@@ -457,6 +657,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			endLegacyPools(hostId, reported);
 			const capacity = parsed.value;
 			reserved.delete(hostId);
+			refreshImages(hostId);
+			readSnapshotBases(hostId);
 			report(
 				(async () => {
 					await store.updateHost(hostId, (host) => ({ ...host, capacity, lastSeenAt: clock.now() }));
@@ -471,6 +673,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				(async () => {
 					const placement = await store.getPlacement(sandbox.id);
 					if (placement === undefined || placement.hostId !== hostId) return;
+					const base = (sandbox as { base?: unknown }).base;
+					if (typeof base === "string" && base !== "" && sandbox.state !== "deleted") {
+						await compute?.recordBases?.(hostId, {
+							sandboxes: [{ sandboxId: sandbox.id, base, ...baseAtOf(sandbox as { baseAt?: unknown }) }],
+						});
+					}
 					// The call that caused the event usually recorded the state already (a create's `running`).
 					if (sandbox.state === placement.state) return;
 					if (sandbox.state === "deleted") await store.removePlacement(sandbox.id);
@@ -484,6 +692,15 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		},
 		onEgress(hostId, records) {
 			if (compute !== undefined) report(compute.recordEgress(hostId, records));
+		},
+		async bucketSource(hostId, sandboxId, bucketSourceId) {
+			if (compute?.bucketSource === undefined) throw new Error("The compute plane keeps no bucket sources here");
+			return compute.bucketSource(hostId, sandboxId, bucketSourceId);
+		},
+		onMounts(hostId, sandboxId, mounts) {
+			const link = compute;
+			if (link?.reportMounts === undefined) return;
+			report((async () => link.reportMounts?.(hostId, sandboxId, mounts))());
 		},
 		onUsage(hostId, reported) {
 			if (compute?.recordUsage === undefined && cluster === undefined) return;
@@ -502,6 +719,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		},
 		onDisconnected(hostId) {
 			log(`[hosts] host ${hostId} disconnected`);
+			imagesToldAt.delete(hostId);
+			snapshotBasesDue.delete(hostId);
 			poolsEnded.delete(hostId);
 			cluster?.release(hostId);
 			report(
@@ -711,6 +930,10 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			if (compute?.e2eChain === undefined) throw new KantelError("unavailable", "This gateway keeps no E2E chains");
 			return compute.e2eChain.append(hostId, space, from, entries);
 		},
+		async bundle(hostId, sandboxId, digest) {
+			if (compute?.bundle === undefined) throw new KantelError("unavailable", "This gateway keeps no bundles");
+			return compute.bundle(hostId, sandboxId, digest);
+		},
 		async authenticate(credential) {
 			if (!credential.startsWith(HOST_CREDENTIAL_PREFIX)) return undefined;
 			const host = await store.hostByCredential(await hashSecret(credential));
@@ -743,7 +966,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			if (next === undefined) throw new KantelError("not_found", "No such host");
 			if (next.revoked) throw new KantelError("conflict", "The host is revoked");
 			const redrained = change.draining !== undefined && change.draining !== host.draining;
-			if (redrained) hub.rewelcome(hostId, welcomeFor(next));
+			if (redrained) hub.rewelcome(hostId, await welcomeFor(next));
 			return view(next);
 		},
 		async revoke(hostId) {
@@ -824,6 +1047,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				};
 				await store.putPlacement(placement);
 				reserve(chosen.host.id, chosen.size.memoryMiB, chosen.size.diskGiB);
+				const mounts = mountHandoff(chosen.host.facts?.features, input.mounts);
 				try {
 					const sandbox = await onHost<HostSandbox>(
 						chosen.host.id,
@@ -845,16 +1069,19 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 							...(input.env === undefined ? {} : { env: input.env }),
 							...(input.sshAuthorizedKeys === undefined ? {} : { sshAuthorizedKeys: input.sshAuthorizedKeys }),
 							...(input.egress === undefined ? {} : { egress: input.egress }),
+							...mountsParam(mounts),
 						},
 						undefined,
 						chosen.host,
 					);
 					const settled = await settle(placement, sandbox);
+					const statuses = mounts.status(sandbox);
 					return {
 						sandbox,
 						hostId: chosen.host.id,
 						placement: settled,
 						nestedVirtualisation: chosen.host.facts?.nested ?? false,
+						...(statuses === undefined ? {} : { mounts: statuses }),
 					};
 				} catch (error) {
 					await store.removePlacement(sandboxId);
@@ -878,21 +1105,39 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				};
 				await store.putPlacement(placement);
 				try {
+					// The host is read only for a fork with mounts, to know which it can do.
+					const features =
+						(input.mounts?.length ?? 0) === 0
+							? undefined
+							: storedFacts((await store.getHost(source.hostId))?.facts)?.features;
+					const mounts = mountHandoff(features, input.mounts);
 					const sandbox = await onHost<HostSandbox>(source.hostId, HostMethods.fork, {
 						sandboxId,
 						newId,
 						snapshotId: shortId("snap"),
 						...(input.egress === undefined ? {} : { egress: input.egress }),
 						...(input.env === undefined ? {} : { env: input.env }),
+						...mountsParam(mounts),
 					});
-					return { sandbox, hostId: source.hostId, placement: await settle(placement, sandbox) };
+					const statuses = mounts.status(sandbox);
+					return {
+						sandbox,
+						hostId: source.hostId,
+						placement: await settle(placement, sandbox),
+						...(statuses === undefined ? {} : { mounts: statuses }),
+					};
 				} catch (error) {
 					await store.removePlacement(newId);
 					throw error;
 				}
 			},
 			async call<T>(sandboxId: string, method: string, params: object = {}, callOptions?: CallOptions) {
-				if (method === HostMethods.create || method === HostMethods.fork || method === HostMethods.portOpen) {
+				if (
+					method === HostMethods.create ||
+					method === HostMethods.fork ||
+					method === HostMethods.portOpen ||
+					method === HostMethods.fileOpen
+				) {
 					throw new KantelError("invalid", `${method} has its own entry point`);
 				}
 				if (method.startsWith("host.")) throw new KantelError("forbidden", "Host methods aren't a sandbox's");
@@ -929,6 +1174,20 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 				const placement = await placementOf(sandboxId);
 				try {
 					return await hub.openPort(placement.hostId, sandboxId, port, sink);
+				} catch (error) {
+					throw kantelErrorFromHost(error);
+				}
+			},
+			async openFile(sandboxId, params, sink) {
+				if (params.op !== "read" && params.op !== "write") throw new KantelError("invalid", "op is read or write");
+				const placement = await placementOf(sandboxId);
+				// A file stream's bytes aren't relayed between replicas (`cluster.ts` relays calls and port streams only): the
+				// compute service falls back to the file calls, which are.
+				if (!local.connected(placement.hostId) && hub.connected(placement.hostId)) {
+					throw new KantelError("not_supported", "File streams need the sandbox's host connected to this gateway");
+				}
+				try {
+					return await hub.openFile(placement.hostId, { ...params, sandboxId }, sink);
 				} catch (error) {
 					throw kantelErrorFromHost(error);
 				}

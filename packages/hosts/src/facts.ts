@@ -4,9 +4,12 @@
  * listing, which read every host's facts. So registration and hello refuse a report that isn't shaped as kantel-host
  * sends it, and reading a stored one that isn't (kept before this check) treats it as no report at all.
  */
+import { MAX_MOUNTS } from "@kantel/contracts";
 import type {
 	HostCapacity,
 	HostFacts,
+	HostImages,
+	HostMountStatus,
 	HostSandboxUsage,
 	HostSize,
 	HostUsageReport,
@@ -71,11 +74,31 @@ function labels(value: unknown): { [key: string]: string } {
 	return out;
 }
 
+/**
+ * A host's images (image patching), or undefined when it reports none or none shaped as kantel-host sends them: they are
+ * shown, never placed by, so a malformed report is dropped rather than refused.
+ */
+function images(value: unknown): HostImages | undefined {
+	if (!isObject(value)) return undefined;
+	try {
+		return {
+			version: text(value.version ?? "", "images.version"),
+			firecracker: text(value.firecracker ?? "", "images.firecracker"),
+			autoUpdate: value.autoUpdate === true,
+			signatures: text(value.signatures ?? "", "images.signatures"),
+		};
+	} catch (error) {
+		if (error instanceof FactsError) return undefined;
+		throw error;
+	}
+}
+
 function facts(value: unknown): HostFacts {
 	if (!isObject(value)) throw new FactsError("facts is an object");
 	const tiers = list(value.tiers, "tiers").map((tier, at) => text(tier, `tiers[${at}]`));
 	const features = list(value.features, "features").map((feature, at) => text(feature, `features[${at}]`));
 	const kept = labels(value.labels);
+	const hostImages = images(value.images);
 	return {
 		version: text(value.version, "version"),
 		protocol: count(value.protocol, "protocol"),
@@ -94,6 +117,7 @@ function facts(value: unknown): HostFacts {
 		...(Object.keys(kept).length === 0 ? {} : { labels: kept }),
 		egress: text(value.egress, "egress"),
 		...(features.length === 0 ? {} : { features }),
+		...(hostImages === undefined ? {} : { images: hostImages }),
 	};
 }
 
@@ -194,4 +218,32 @@ export function storedCapacity(value: unknown): HostCapacity | undefined {
 	if (value === undefined) return undefined;
 	const parsed = parseHostCapacity(value);
 	return parsed.ok ? parsed.value : undefined;
+}
+
+const MOUNT_STATUSES: ReadonlySet<string> = new Set<HostMountStatus["status"]>(["pending", "ready", "failed"]);
+/** As long as a mount's path may be. */
+const MAX_MOUNT_PATH = 1024;
+const MAX_MOUNT_ERROR = 512;
+
+/**
+ * Mounts' statuses as a host reports them (a `sandbox.mounts` event, or the sandbox a call answered): undefined unless
+ * they are a list of at most `MAX_MOUNTS` (null, Go's empty list, is none). An entry that isn't
+ * `{ path, status, error? }` is left out and long strings are clipped, so what any account's host says can't swell a
+ * sandbox's record.
+ */
+export function parseMountStatuses(value: unknown): HostMountStatus[] | undefined {
+	if (value === null) return [];
+	if (!Array.isArray(value) || value.length > MAX_MOUNTS) return undefined;
+	const out: HostMountStatus[] = [];
+	for (const entry of value as unknown[]) {
+		if (!isObject(entry)) continue;
+		const { path, status, error } = entry;
+		if (typeof path !== "string" || path === "" || typeof status !== "string" || !MOUNT_STATUSES.has(status)) continue;
+		out.push({
+			path: path.slice(0, MAX_MOUNT_PATH),
+			status: status as HostMountStatus["status"],
+			...(typeof error === "string" && error !== "" ? { error: error.slice(0, MAX_MOUNT_ERROR) } : {}),
+		});
+	}
+	return out;
 }

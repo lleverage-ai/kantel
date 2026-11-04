@@ -2,7 +2,8 @@
 // screen (name, with what went wrong under it, state, machine, environment, when it stops, its CPU live over the last
 // two minutes, when it was made) and rows on a phone; each row opens the sandbox's page. Browser and Desktop show on a
 // running microVM's row under the pointer and open in the console, Recover on a failed one's, and ⋯ has Stop, Fork,
-// Save snapshot, Auto-stop and Delete. New makes a sandbox at once with the defaults (a medium
+// Save snapshot, Auto-stop, Restart on latest base (beside the state, a sandbox on an outdated base says so) and
+// Delete. New makes a sandbox at once with the defaults (a medium
 // microVM that stops after an hour); its caret opens New sandbox to choose. Either way the new row shows at once,
 // starting, at the top, and the page follows it until it's running. Rows can be ticked (Select all is the table's head,
 // or over a phone's rows) to stop or delete several at once. Every call goes through the `SandboxesSource` the host
@@ -22,6 +23,7 @@ import { Skeleton } from "../primitives/spinner.tsx";
 import { SplitButton } from "../primitives/split-button.tsx";
 import { StatusLabel } from "../primitives/status.tsx";
 import { EmptyState, Notice } from "../primitives/surface.tsx";
+import { BaseOutdatedBadge } from "./base-outdated.tsx";
 import {
 	type ComputeAccount,
 	type CreateSandboxInput,
@@ -55,7 +57,7 @@ import {
 	vcpuRangeFor,
 } from "./compute-model.ts";
 import { lineOf, ROW_SPAN_MS, seriesOf, useLiveUsage } from "./live-usage.ts";
-import { computePage, messageOf, Sparkline, table } from "./parts.tsx";
+import { computePage, messageOf, Sparkline } from "./parts.tsx";
 import { AUTO_STOP_CHOICES, DeleteDialog, type SandboxNotice, useSandboxMenu } from "./sandbox-actions.tsx";
 import { popOut } from "./sandbox-screen.tsx";
 import { ChangeCounter, changeTaken, keepShown, retryTargets } from "./sandbox-selection.ts";
@@ -128,8 +130,8 @@ const bucket = (state: SandboxState): Exclude<SandboxFilter, "all"> =>
 const matches = (box: Sandbox, filter: SandboxFilter): boolean => filter === "all" || bucket(box.state) === filter;
 
 /**
- * The sandboxes the list shows: those in the filter whose name has the search in it. A phone has no search field, so the
- * page passes no search there: one typed on a wider window mustn't hide rows on a phone with no way to clear it.
+ * The sandboxes the list shows: those in the filter whose name has the search in it. The search field is there at every
+ * width, so a search typed on a wider window can be cleared on a phone too.
  */
 export const sandboxesShown = (
 	sandboxes: readonly Sandbox[],
@@ -279,7 +281,7 @@ export function SandboxesPage({
 			FILTERS.map((option) => [option.value, all.filter((box) => matches(box, option.value)).length]),
 		) as Record<SandboxFilter, number>;
 	}, [sandboxes]);
-	const shown = sandboxes === undefined ? undefined : sandboxesShown(sandboxes, filter, narrow ? "" : search);
+	const shown = sandboxes === undefined ? undefined : sandboxesShown(sandboxes, filter, search);
 
 	// With no host anywhere, nothing could run a new sandbox: no New until one is added.
 	const newButton =
@@ -297,9 +299,7 @@ export function SandboxesPage({
 		<div className={computePage}>
 			{/* The title and New on one line, on a phone too, where PageHeader would put New under the title. */}
 			<header className="kt-page-header flex min-h-control-md min-w-0 items-center justify-between gap-4 border-b border-border pb-3">
-				<h1
-					className={`kt-page-header-title m-0 truncate font-strong leading-tight text-fg ${narrow ? "text-lg" : "text-md"}`}
-				>
+				<h1 className={`kt-page-header-title m-0 truncate font-strong leading-tight text-fg text-heading`}>
 					Sandboxes
 				</h1>
 				{newButton}
@@ -368,18 +368,16 @@ export function SandboxesPage({
 							value={filter}
 							onChange={setFilter}
 						/>
-						{narrow ? null : (
-							<div className="w-(--kt-popover-width) max-w-full">
-								<TextField
-									label="Search sandboxes"
-									hideLabel
-									type="search"
-									placeholder="Search"
-									value={search}
-									onChange={(event) => setSearch(event.currentTarget.value)}
-								/>
-							</div>
-						)}
+						<div className={narrow ? "w-full" : "w-(--kt-popover-width) max-w-full"}>
+							<TextField
+								label="Search sandboxes"
+								hideLabel
+								type="search"
+								placeholder="Search"
+								value={search}
+								onChange={(event) => setSearch(event.currentTarget.value)}
+							/>
+						</div>
 					</div>
 					<SandboxList
 						sandboxes={shown ?? []}
@@ -511,7 +509,7 @@ function SandboxList({
 		</ul>
 	) : (
 		<div className="kt-compute-table min-w-0 overflow-x-auto">
-			<table className={table}>
+			<table className="w-full border-collapse text-left text-md">
 				<thead>
 					<tr>
 						<th className={`${head} w-0 pr-0`} scope="col">
@@ -571,7 +569,8 @@ function SandboxList({
 		</div>
 	);
 	return (
-		<>
+		// Select all sits right over the rows it ticks, closer to them than the page's gap.
+		<div className="flex min-w-0 flex-col gap-2">
 			<SelectionBar
 				narrow={narrow}
 				count={selected.length}
@@ -620,13 +619,13 @@ function SandboxList({
 					});
 				}}
 			/>
-		</>
+		</div>
 	);
 }
 
 /** The table: no frame round it, a hairline under the head and under every row. */
-const head = "h-control-md border-b border-border px-2 py-0 text-xs font-medium whitespace-nowrap text-muted";
-const cell = "border-b border-border px-2 py-2.5 align-middle whitespace-nowrap";
+const head = "h-control-md border-b border-border px-2 py-0 text-sm font-medium whitespace-nowrap text-muted";
+const cell = "border-b border-border px-2 py-3 align-middle whitespace-nowrap";
 
 /** Follows a link in the app without reloading, unless it's a modified click (a new tab). */
 const follow = (navigate: ((path: string) => void) | undefined) => (event: LinkClick) => {
@@ -722,11 +721,12 @@ const StateLabel = ({ state }: { state: SandboxState }) => (
 
 /**
  * CPU over the last two minutes, as a line read again every few seconds, or nothing when it isn't running. Without a
- * live source it's the sandbox's recent CPU as listed, which doesn't move.
+ * live source it's the sandbox's recent CPU as listed, which doesn't move. A row in error says what happened in words
+ * instead, so it draws no line.
  */
 function Cpu({ sandbox, source, percent = false }: { sandbox: Sandbox; source: SandboxesSource; percent?: boolean }) {
-	const shown = showsCpu(sandbox);
-	const live = useLiveUsage(shown && sandbox.state !== "error" ? source.usageSeries : undefined, sandbox.id, {
+	const shown = showsCpu(sandbox) && sandbox.state !== "error";
+	const live = useLiveUsage(shown ? source.usageSeries : undefined, sandbox.id, {
 		keepMs: ROW_SPAN_MS,
 	});
 	if (!shown) return null;
@@ -745,7 +745,7 @@ function Cpu({ sandbox, source, percent = false }: { sandbox: Sandbox; source: S
 		<span className="inline-flex items-center gap-2">
 			<Sparkline
 				values={values}
-				tone={sandbox.state === "error" ? "error" : "done"}
+				tone="done"
 				label={loading ? `Reading ${sandbox.name}'s CPU` : label}
 				loading={loading}
 				{...(series === undefined ? {} : { timed: line.timed })}
@@ -783,11 +783,14 @@ function SandboxRow({
 }) {
 	const { pending, can, windows, resume, recover, actions, href, onLink, onScreen } = useRowActions(sandbox, calls);
 	const stops = stopsText(sandbox, now);
-	return (
+	// What went wrong gets a line of its own under the row, across the columns, rather than truncating in the name's.
+	const failure = sandbox.state === "error" ? sandbox.error : undefined;
+	const tone = ticked ? "bg-selected" : "hover:bg-hover";
+	const row = (
 		// The name's link covers the row (its ::after), so anywhere on it opens the sandbox; the tick box and the buttons
 		// sit above it.
 		<tr
-			className={`kt-sandbox-row group/row relative ${ticked ? "bg-selected" : "hover:bg-hover"}`}
+			className={`kt-sandbox-row group/row relative ${tone} ${failure === undefined ? "" : "[&>td]:border-b-0 [&>td]:pb-1"}`}
 			data-sandbox={sandbox.id}
 		>
 			<td className={`${cell} w-0 pr-0`}>
@@ -809,14 +812,16 @@ function SandboxRow({
 						{sandbox.name}
 					</a>
 				)}
-				{sandbox.state === "error" && sandbox.error !== undefined ? (
-					<span className="block truncate text-xs text-status-error" title={sandbox.error}>
-						{sandbox.error}
-					</span>
-				) : null}
 			</td>
 			<td className={cell}>
-				<StateLabel state={sandbox.state} />
+				{sandbox.base?.outdated === true ? (
+					<span className="flex items-center gap-2">
+						<StateLabel state={sandbox.state} />
+						<BaseOutdatedBadge base={sandbox.base} now={now} />
+					</span>
+				) : (
+					<StateLabel state={sandbox.state} />
+				)}
 			</td>
 			<td className={cell}>
 				{SANDBOX_KIND_LABELS[sandbox.kind]}{" "}
@@ -842,15 +847,19 @@ function SandboxRow({
 			<td className={`${cell} w-0 text-right`}>
 				<span className="relative flex items-center justify-end gap-1">
 					{windows && href !== undefined ? (
-						<span className={`flex gap-1 ${onHover}`}>
-							<a className={ghostLink} href={href("browser")} onClick={onScreen("browser")}>
-								<GlobeIcon size="sm" />
-								<span className={buttonLabelClass}>Browser</span>
-							</a>
-							<a className={ghostLink} href={href("desktop")} onClick={onScreen("desktop")}>
-								<DesktopIcon size="sm" />
-								<span className={buttonLabelClass}>Desktop</span>
-							</a>
+						// Over the columns to its left while shown, so the hidden buttons take no width from every row. The
+						// canvas under the row's own hover tint matches the row it sits on.
+						<span className={`absolute right-full mr-1 rounded-control bg-canvas ${onHover}`}>
+							<span className="flex gap-1 rounded-control bg-hover pl-2">
+								<a className={ghostLink} href={href("browser")} onClick={onScreen("browser")}>
+									<GlobeIcon size="sm" />
+									<span className={buttonLabelClass}>Browser</span>
+								</a>
+								<a className={ghostLink} href={href("desktop")} onClick={onScreen("desktop")}>
+									<DesktopIcon size="sm" />
+									<span className={buttonLabelClass}>Desktop</span>
+								</a>
+							</span>
 						</span>
 					) : can.recover ? (
 						<Button size="sm" icon={<ReconnectIcon size="sm" />} onClick={recover}>
@@ -867,6 +876,21 @@ function SandboxRow({
 				</span>
 			</td>
 		</tr>
+	);
+	if (failure === undefined) return row;
+	return (
+		<>
+			{row}
+			<tr className={`kt-sandbox-row-failure ${ticked ? "bg-selected" : ""}`}>
+				<td className="border-b border-border p-0" />
+				<td
+					className="border-b border-border px-2 pt-0 pb-2.5 text-sm text-status-error"
+					colSpan={hosting === "hosted" ? 9 : 8}
+				>
+					{failure}
+				</td>
+			</tr>
+		</>
 	);
 }
 
@@ -887,17 +911,17 @@ function SandboxPhoneRow({
 	ticked: boolean;
 	onTick: (on: boolean) => void;
 }) {
-	const { pending, href, actions } = useRowActions(sandbox, calls);
+	const { pending, href, actions, can, recover } = useRowActions(sandbox, calls);
 	const stops = stopsText(sandbox, now);
 	const body = (
 		<div className="flex min-w-0 flex-1 flex-col gap-1">
 			<div className="flex min-w-0 items-center gap-3">
 				<span className="min-w-0 flex-1 truncate text-md font-medium text-fg">{sandbox.name}</span>
-				<Cpu sandbox={sandbox} source={calls.source} />
+				<Cpu sandbox={sandbox} source={calls.source} percent />
 				<StateLabel state={sandbox.state} />
 			</div>
 			{sandbox.state === "error" && sandbox.error !== undefined ? (
-				<span className="truncate text-sm text-status-error">{sandbox.error}</span>
+				<span className="line-clamp-2 text-sm text-status-error">{sandbox.error}</span>
 			) : (
 				<span className="flex min-w-0 flex-wrap gap-x-3 text-sm text-muted">
 					<span>
@@ -905,13 +929,14 @@ function SandboxPhoneRow({
 					</span>
 					{sandbox.environment === undefined ? null : <span>{sandbox.environment.name}</span>}
 					{stops === "–" ? null : <span>{stops === "Always on" || stops === "Now" ? stops : `Stops ${stops}`}</span>}
+					<BaseOutdatedBadge base={sandbox.base} now={now} />
 				</span>
 			)}
 		</div>
 	);
 	return (
 		<li
-			className={`kt-sandbox-row flex min-w-0 items-center gap-3 border-b border-border ${ticked ? "bg-selected" : ""}`}
+			className={`kt-sandbox-row flex min-w-0 flex-wrap items-center gap-x-3 border-b border-border ${ticked ? "bg-selected" : ""}`}
 			data-sandbox={sandbox.id}
 		>
 			<TickBox label={`Select ${sandbox.name}`} checked={ticked} disabled={pending} onChange={onTick} />
@@ -930,6 +955,13 @@ function SandboxPhoneRow({
 					<ChevronRightIcon size="sm" className="flex-none text-faint" />
 				</a>
 			)}
+			{can.recover && href !== undefined ? (
+				<div className="basis-full pb-3 pl-6.5">
+					<Button size="sm" icon={<ReconnectIcon size="sm" />} onClick={recover}>
+						Recover
+					</Button>
+				</div>
+			) : null}
 		</li>
 	);
 }

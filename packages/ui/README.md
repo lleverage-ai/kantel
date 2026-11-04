@@ -97,7 +97,9 @@ centred on their text within 1px, and a story for every required state; `--only`
 | Icons | 16px line icons in currentColor | Decoration |
 
 The compute console (`ComputeConsole` and its pages: sandboxes, snapshots, keys, the egress proxy, webhooks,
-OpenTelemetry, the organisation, billing, hosts and the device page) is in `src/compute/`. It calls a `ComputeSource`
+OpenTelemetry, the organisation, billing, hosts, base images and the device page) is in `src/compute/`. A sandbox or
+saved snapshot on an outdated base image shows `BaseOutdatedBadge` (`src/compute/base-outdated.tsx`) wherever it's
+listed. It calls a `ComputeSource`
 the host binds; `@kantel/ui/compute/fixtures` serves stories and the console's recorded mode.
 `SignInScreen` and `SignedInAs` are in `src/identity/`; they take the identity client's calls.
 The two themes (the colour tokens, the dark and light palettes, the switch, and how to change a palette) are in
