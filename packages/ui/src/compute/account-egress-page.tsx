@@ -117,6 +117,8 @@ export function AccountEgressPage({
 	useEffect(() => setTab(initialTab), [initialTab]);
 	const [dialog, setDialog] = useState<Dialogs>();
 	const [notice, setNotice] = useState<{ level: "info" | "warning" | "error"; text: string }>();
+	// Counts the settings saves, so each one empties the form's draft: replacing credentials changes nothing else.
+	const [settingsSaves, setSettingsSaves] = useState(0);
 	const now = fixedNow ?? Date.now();
 	const overview = latest !== undefined && latest.editor === editor ? latest.overview : loaded;
 
@@ -347,10 +349,14 @@ export function AccountEgressPage({
 					</div>
 				) : (
 					<SettingsView
-						key={settingsKey(proxy)}
+						key={`${settingsKey(proxy)}|${settingsSaves}`}
 						proxy={proxy}
 						busy={busy}
-						onSave={(update) => updateProxy("settings", update, "Saved. Every host has it within a few seconds.")}
+						onSave={async (update) => {
+							const ok = await updateProxy("settings", update, "Saved. Every host has it within a few seconds.");
+							if (ok) setSettingsSaves((count) => count + 1);
+							return ok;
+						}}
 						onTurnOff={() => setDialog({ kind: "off" })}
 						onTurnOn={() => void updateProxy("enabled", { enabled: true }, "The proxy is on.")}
 					/>
