@@ -112,6 +112,8 @@ function fakeHost(options: { readonly http?: boolean } = {}) {
 	const sockets = new Map<number, Uint8Array>();
 	/** Every WebSocket message the port's server heard, as `{request line} {opcode} {text}`. */
 	const heard: string[] = [];
+	/** Every WebSocket handshake's head, as the port's server got it. */
+	const handshakes: string[] = [];
 	const lines = new Map<number, string>();
 	const sandboxes = new Set<string>();
 	const calls: string[] = [];
@@ -162,6 +164,15 @@ function fakeHost(options: { readonly http?: boolean } = {}) {
 						receive(JSON.stringify({ type: "stream.close", stream: frame.stream, reason: "closed" }));
 						continue;
 					}
+					if (text === "huge") {
+						// Only the head of a 17 MiB binary message: the relay must refuse it on what it says it is.
+						const head = new Uint8Array(10);
+						head[0] = 0x82;
+						head[1] = 127;
+						new DataView(head.buffer).setBigUint64(2, BigInt(17 * 1024 * 1024));
+						receive(encodeStreamFrame(frame.stream, head));
+						continue;
+					}
 					const back = new TextEncoder().encode(text.toUpperCase());
 					receive(encodeStreamFrame(frame.stream, serverFrame(message.opcode, back)));
 				}
@@ -176,7 +187,14 @@ function fakeHost(options: { readonly http?: boolean } = {}) {
 				const host = headers.find((header) => /^host:/i.test(header)) ?? "";
 				lines.set(frame.stream, `${line.split(" ")[1]} ${host}`);
 				sockets.set(frame.stream, new Uint8Array(0));
-				const accepted = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n";
+				handshakes.push(head);
+				// The first subprotocol offered, if any, is the one chosen.
+				const offered = headers.find((header) => /^sec-websocket-protocol:/i.test(header));
+				const chosen = offered?.split(":")[1]?.split(",")[0]?.trim();
+				const accepted =
+					"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+					(chosen === undefined ? "" : `Sec-WebSocket-Protocol: ${chosen}\r\n`) +
+					"\r\n";
 				receive(encodeStreamFrame(frame.stream, new TextEncoder().encode(accepted)));
 				return;
 			}
@@ -230,6 +248,7 @@ function fakeHost(options: { readonly http?: boolean } = {}) {
 		sandboxes,
 		calls,
 		heard,
+		handshakes,
 		closed: () => closed,
 		/** Hands the hub's `receive` over, then says hello. */
 		attach(held: { receive(frame: string | Uint8Array): void }, hostId: string) {
@@ -824,12 +843,17 @@ describe("Account hosts on the Worker", () => {
 		expect([expired.status, expired.body]).toEqual([404, {}]);
 
 		// Its stream goes through to Selkies on port 6080, message by message, text and binary kept apart.
-		const upgrade = (url: string) => new Request(url.replace(/^wss:/, "https:"), { headers: { upgrade: "websocket" } });
+		// The console's own credentials, sent along by a browser, never reach the sandbox's desktop or DevTools.
+		const consoleCredentials = { cookie: "__Host-kantel_session=console", authorization: "Bearer console" };
+		const upgrade = (url: string) =>
+			new Request(url.replace(/^wss:/, "https:"), { headers: { upgrade: "websocket", ...consoleCredentials } });
 		const control = await hosts.socketTarget(upgrade(`${page.href}api/websockets?player=1`));
 		if (control === undefined || "refused" in control) throw new Error("The desktop's socket was refused");
 		expect(control).toMatchObject({ sandboxId, port: 6080, path: "/api/websockets?player=1", kind: "desktop" });
+		expect(control.headers).toBeUndefined();
 		const driver = socketClient();
 		const driving = hosts.relay(control, driver.client);
+		expect(await driving.ready).toEqual({});
 		driving.send("kd,65");
 		driving.send(new TextEncoder().encode("upload"));
 		await expect.poll(() => driver.got).toEqual(["text KD,65", "binary UPLOAD"]);
@@ -871,6 +895,8 @@ describe("Account hosts on the Worker", () => {
 		driven.send('{"id":1,"method":"Browser.getVersion"}');
 		await expect.poll(() => playwright.got).toEqual(['text {"ID":1,"METHOD":"BROWSER.GETVERSION"}']);
 		driven.close();
+		expect(cdp.headers).toBeUndefined();
+		for (const handshake of host.handshakes) expect(handshake).not.toMatch(/^(cookie|authorization):/im);
 		expect(host.heard).toContain('/devtools/browser/b-1 Host: 127.0.0.1:9222 1 {"id":1,"method":"Browser.getVersion"}');
 
 		// A ticket opens only its own route: a desktop's isn't a tunnel, a tunnel's isn't a desktop, a forged one neither.
@@ -995,10 +1021,33 @@ describe("Account hosts on the Worker", () => {
 		expect(withToken).toMatchObject({ path: "/hmr" });
 		const reloads = socketClient();
 		const reloading = hosts.relay(hmr, reloads.client);
+		expect(await reloading.ready).toEqual({});
 		reloading.send("ping");
 		await expect.poll(() => reloads.got).toEqual(["text PING"]);
 		expect(host.heard).toEqual([`/hmr?v=2 Host: ${name} 1 ping`]);
 		reloading.close();
+
+		// The application's own cookies and Authorization reach its server, Kantel's gate cookie (every name it has had)
+		// never; the client's subprotocol is offered, and the one the server chose is the client's to see in its 101.
+		const app = await upgrade("/hmr", {
+			cookie: `session=app-1; ${cookie}; kantel_port=old; _kantel_port=older; theme=dark`,
+			origin: `https://${name}`,
+			authorization: "Bearer app-token",
+			"sec-websocket-protocol": "vite-hmr",
+		});
+		if (app === undefined || "refused" in app) throw new Error("The port's socket was refused");
+		const vite = socketClient();
+		const hot = hosts.relay(app, vite.client, ["vite-hmr"]);
+		expect(await hot.ready).toEqual({ protocol: "vite-hmr" });
+		const handshake = host.handshakes.at(-1) ?? "";
+		expect(handshake).toContain("Sec-WebSocket-Protocol: vite-hmr\r\n");
+		expect(handshake).toContain("cookie: session=app-1; theme=dark\r\n");
+		expect(handshake).toContain("authorization: Bearer app-token\r\n");
+		expect(handshake).not.toMatch(/kantel_port/);
+		expect(handshake).not.toContain(portToken ?? "");
+		// A message from the sandbox bigger than the Worker holds is refused on its head, before its bytes arrive.
+		hot.send("huge");
+		await expect.poll(() => vite.closed()).toMatchObject({ code: 1009 });
 		// One that reaches the page server itself (account hosts off) is still refused.
 		expect((await page("/", { cookie, upgrade: "websocket" })).status).toBe(501);
 

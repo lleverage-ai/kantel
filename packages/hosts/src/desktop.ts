@@ -62,7 +62,12 @@ export interface DesktopSocket {
 	readonly grant: IssuedGrant;
 }
 
+/** How long a file of the client may take to come from the sandbox, head and body. */
+export const DESKTOP_FILE_TIMEOUT_MS = 30_000;
+
 export interface DesktopRoutesOptions {
+	/** How long a file may take to come from the sandbox (default `DESKTOP_FILE_TIMEOUT_MS`). */
+	readonly fileTimeoutMs?: number;
 	/** The relay's tickets, shared by every gateway replica. */
 	readonly tickets: Pick<TunnelTickets, "verify">;
 	/** Whether whoever was given the ticket may still use the sandbox (`relay-access.ts`); absent, everyone may. */
@@ -112,8 +117,14 @@ const notFound = (text = "Not found") =>
 export function createDesktopRoutes(options: DesktopRoutesOptions): DesktopRoutes {
 	const now = options.now ?? Date.now;
 	const client = options.client ?? SELKIES_WEB;
-	/** Checked files, by SHA-256: the same in every sandbox on the same Selkies, so fetched once per gateway. */
-	const verified = new Map<string, Promise<Uint8Array | undefined>>();
+	const fileTimeout = options.fileTimeoutMs ?? DESKTOP_FILE_TIMEOUT_MS;
+	/**
+	 * Checked files, by SHA-256: the same in every sandbox on the same Selkies, so fetched once per gateway. Only bytes
+	 * that matched are kept here, so one sandbox's slow or wrong answer never stands for another's.
+	 */
+	const verified = new Map<string, Uint8Array>();
+	/** Fetches under way, by sandbox and SHA-256: requests for the same file of the same sandbox share one. */
+	const fetching = new Map<string, Promise<Uint8Array | undefined>>();
 
 	async function grantOf(ticket: string): Promise<IssuedGrant | undefined> {
 		const grant = await options.tickets.verify(ticket, now());
@@ -131,14 +142,35 @@ export function createDesktopRoutes(options: DesktopRoutesOptions): DesktopRoute
 		const answer = await proxyHttp(
 			(sink) => options.openPort(sandboxId, DESKTOP_PORT, sink),
 			new Request(`http://127.0.0.1:${DESKTOP_PORT}/${file}`),
-			{ host: `127.0.0.1:${DESKTOP_PORT}`, path: `/${file}` },
+			{ host: `127.0.0.1:${DESKTOP_PORT}`, path: `/${file}`, headTimeoutMs: fileTimeout },
 		);
-		if (answer.status !== 200) {
+		if (answer.status !== 200 || answer.body === null) {
 			await answer.body?.cancel();
 			return undefined;
 		}
-		const bytes = new Uint8Array(await answer.arrayBuffer());
-		if (bytes.length !== size || hex(await crypto.subtle.digest("SHA-256", bytes)) !== sha256) return undefined;
+		// Read as it comes, never past the size Kantel knows (the stream is cancelled, which closes it at the host), and
+		// given up on once the time is up: what a sandbox sends is held only up to the file's own size.
+		const reader = answer.body.getReader();
+		const bytes = new Uint8Array(size);
+		let at = 0;
+		const timer = setTimeout(() => void reader.cancel().catch(() => undefined), fileTimeout);
+		try {
+			for (;;) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				if (at + value.length > size) {
+					await reader.cancel().catch(() => undefined);
+					return undefined;
+				}
+				bytes.set(value, at);
+				at += value.length;
+			}
+		} catch {
+			return undefined;
+		} finally {
+			clearTimeout(timer);
+		}
+		if (at !== size || hex(await crypto.subtle.digest("SHA-256", bytes)) !== sha256) return undefined;
 		return bytes;
 	}
 
@@ -157,15 +189,26 @@ export function createDesktopRoutes(options: DesktopRoutesOptions): DesktopRoute
 			const file = target.rest === "/" ? "index.html" : target.rest.slice(1);
 			const known = Object.hasOwn(client.files, file) ? client.files[file] : undefined;
 			if (known === undefined) return notFound();
-			let pending = verified.get(known.sha256);
-			if (pending === undefined) {
-				pending = fetchFile(grant.sandboxId, file, known.sha256, known.size).catch(() => undefined);
-				verified.set(known.sha256, pending);
+			let bytes = verified.get(known.sha256);
+			if (bytes === undefined) {
+				const key = `${grant.sandboxId}\n${known.sha256}`;
+				let pending = fetching.get(key);
+				if (pending === undefined) {
+					const started = fetchFile(grant.sandboxId, file, known.sha256, known.size)
+						.catch(() => undefined)
+						.then((fetched) => {
+							// Only this fetch's own entry is let go of; only checked bytes are kept.
+							if (fetching.get(key) === started) fetching.delete(key);
+							if (fetched !== undefined) verified.set(known.sha256, fetched);
+							return fetched;
+						});
+					pending = started;
+					fetching.set(key, started);
+				}
+				bytes = await pending;
 			}
-			const bytes = await pending;
 			if (bytes === undefined) {
 				// Not kept: the next request tries again, perhaps in a sandbox whose desktop is up by then.
-				verified.delete(known.sha256);
 				return new Response(`The sandbox's desktop isn't up, or isn't Selkies ${client.version} as Kantel ships it.`, {
 					status: 502,
 					headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },

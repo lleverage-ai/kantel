@@ -66,7 +66,13 @@ import {
 } from "@kantel/hosts/http";
 import { type AcceptedHost, closeQuietly, type HostSocket } from "@kantel/hosts/hub";
 import { openPortWebSocket, type PortWebSocket } from "@kantel/hosts/port-websocket";
-import { createPortRouter, type PortRouter } from "@kantel/hosts/ports";
+import {
+	createPortRouter,
+	LEGACY_PORT_COOKIE,
+	PORT_COOKIE,
+	PORT_COOKIE_BASE,
+	type PortRouter,
+} from "@kantel/hosts/ports";
 import { HOST_CLOSE_REVOKED } from "@kantel/hosts/protocol";
 import { createRelayAccess, RELAY_CLOSE_REVOKED, RELAY_REVOKED_REASON } from "@kantel/hosts/relay-access";
 import { createMemoryRelayStore, createSqlRelayStore, migrateRelay } from "@kantel/hosts/relay-store";
@@ -153,10 +159,29 @@ export interface StackHosts {
 	 */
 	socketTarget(request: Request): Promise<SocketTarget | SocketRefusal | undefined>;
 	/**
-	 * Opens `target`'s WebSocket on the sandbox's port, over its host's connection, and passes messages both ways; held
-	 * in the relay's access while open and closed with 4003 once its holder loses access to the sandbox.
+	 * Opens `target`'s WebSocket on the sandbox's port, over its host's connection, offering the client's `protocols`,
+	 * and passes messages both ways; held in the relay's access while open and closed with 4003 once its holder loses
+	 * access to the sandbox. What the sandbox sends is held only within `RelayLimits` while it arrives.
 	 */
-	relay(target: SocketTarget, client: SocketClient): RelayedSocket;
+	relay(target: SocketTarget, client: SocketClient, protocols?: readonly string[]): RelayedSocket;
+}
+
+/** The most of one message from a sandbox a relay holds while it arrives. */
+export const RELAY_MESSAGE_LIMIT = 16 * 1024 * 1024;
+/** The most every relay together holds of messages from sandboxes still arriving. */
+export const RELAY_BUDGET = 32 * 1024 * 1024;
+/** How long a sandbox's server has to answer a relayed WebSocket's handshake. */
+export const RELAY_HANDSHAKE_MS = 15_000;
+
+/**
+ * Bounds on relayed WebSockets in the one stack object (which also holds every account's API and host connection):
+ * a message from a sandbox past `messageBytes`, or one that would take every relay together past `budgetBytes`, closes
+ * its socket (1009) before more of it is held.
+ */
+export interface RelayLimits {
+	readonly messageBytes?: number;
+	readonly budgetBytes?: number;
+	readonly handshakeMs?: number;
 }
 
 /** A WebSocket to pass through to a sandbox's port. */
@@ -172,6 +197,11 @@ export interface SocketTarget {
 	/** What the relay's access log calls it: `desktop`, `cdp`, `port 3000`. */
 	readonly kind: string;
 	readonly grantee?: string;
+	/**
+	 * Headers for the sandbox's server: an exposed port's application cookies (Kantel's gate cookie taken out) and
+	 * `Authorization`, as its pages get them. None for a desktop or CDP, which never get the console's credentials.
+	 */
+	readonly headers?: Readonly<Record<string, string>>;
 }
 
 /** A WebSocket upgrade refused: accepted, then closed with this, as self-hosted does. */
@@ -187,6 +217,11 @@ export interface SocketClient {
 
 /** What the client sends, to the sandbox. */
 export interface RelayedSocket {
+	/**
+	 * Settles once the sandbox's server has answered the handshake, with the subprotocol it chose of those offered (the
+	 * client's 101 must carry it), or undefined when it refused, failed or took too long (the client is closed then).
+	 */
+	readonly ready: Promise<{ readonly protocol?: string } | undefined>;
 	send(data: string | Uint8Array): void;
 	close(): void;
 }
@@ -325,6 +360,8 @@ export interface StackComputeOptions {
 	readonly portsDomain?: string;
 	/** Bounds on exposed ports' traffic in this object (`src/port-serving.ts`). Default its constants. */
 	readonly portLimits?: PortServingLimits;
+	/** Bounds on relayed WebSockets (desktops, CDP, exposed ports) in this object. Default `RELAY_*`. */
+	readonly relayLimits?: RelayLimits;
 	/** Account hosts (KANTEL_ACCOUNT_HOSTS=experimental): where hosts reach this Worker. Absent, off. */
 	readonly accountHosts?: { readonly publicUrl: string };
 	/** With account hosts on, how often sandboxes past their auto-stop time are stopped. Default `HOST_SWEEP_MS`. */
@@ -432,7 +469,15 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 	const own =
 		options.accountHosts === undefined
 			? undefined
-			: await accountHostsSide({ ...options.accountHosts, portsDomain }, options.sql, now);
+			: await accountHostsSide(
+					{
+						...options.accountHosts,
+						portsDomain,
+						...(options.relayLimits === undefined ? {} : { relayLimits: options.relayLimits }),
+					},
+					options.sql,
+					now,
+				);
 	const deploymentOrganisation = options.adminOrganisationId;
 	const api = createComputeApi({
 		store,
@@ -527,7 +572,7 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
  * gateway's ticket and access checks, and exposed ports on `portsDomain`'s names, pages (`servePort`) and WebSockets.
  */
 async function accountHostsSide(
-	config: { readonly publicUrl: string; readonly portsDomain: string },
+	config: { readonly publicUrl: string; readonly portsDomain: string; readonly relayLimits?: RelayLimits },
 	sql: SqlDriver | undefined,
 	now: () => number,
 ): Promise<{
@@ -573,6 +618,9 @@ async function accountHostsSide(
 		now,
 	});
 	const refused = (code: number, reason: string): SocketRefusal => ({ refused: { code, reason } });
+	const relayLimits = config.relayLimits ?? {};
+	/** What every relay holds together of messages from sandboxes still arriving (`openPortWebSocket`'s budget). */
+	const relayBudget = { limit: relayLimits.budgetBytes ?? RELAY_BUDGET, held: 0 };
 	/** Holds a session in the relay's access while it is open; the answer lets go of it. */
 	const held = (
 		session: { sandboxId: string; kind: string; grantee?: string | undefined },
@@ -656,6 +704,7 @@ async function accountHostsSide(
 						host: port.host,
 						kind: `port ${port.port}`,
 						...(port.grantee === undefined ? {} : { grantee: port.grantee }),
+						headers: portSocketHeaders(request.headers, url),
 					};
 				}
 				if (url.pathname.startsWith(`${HOSTS_DESKTOP_PATH}/`)) {
@@ -693,7 +742,7 @@ async function accountHostsSide(
 					...(grant.grantee === undefined ? {} : { grantee: grant.grantee }),
 				};
 			},
-			relay(target, client) {
+			relay(target, client, protocols = []) {
 				// What the client sends before the port's server has answered the handshake waits in `openPortWebSocket`;
 				// the one stack object holds every relay, so that is bounded as a raw tunnel's is (`TUNNEL_PENDING_LIMIT`).
 				let open = false;
@@ -702,6 +751,10 @@ async function accountHostsSide(
 				let ended = false;
 				const decoder = new TextDecoder();
 				let inner: PortWebSocket | undefined;
+				let settle: (answer: { protocol?: string } | undefined) => void = () => undefined;
+				const ready = new Promise<{ protocol?: string } | undefined>((resolve) => {
+					settle = resolve;
+				});
 				const release = held(target, (reason) => {
 					// The client hears why first; closing the port's side then ends it there too.
 					ended = true;
@@ -710,15 +763,25 @@ async function accountHostsSide(
 				});
 				const finish = () => {
 					ended = true;
+					clearTimeout(handshake);
+					settle(undefined);
 					release();
 				};
+				const handshake = setTimeout(() => {
+					if (open || ended) return;
+					finish();
+					closeQuietly(client, 1011, "The sandbox's server didn't answer in time");
+					inner?.close();
+				}, relayLimits.handshakeMs ?? RELAY_HANDSHAKE_MS);
 				inner = openPortWebSocket(
 					(sink) => service.sandboxes.openPort(target.sandboxId, target.port, sink),
 					target.port,
 					target.path,
 					{
-						open: () => {
+						open: (protocol) => {
 							open = true;
+							clearTimeout(handshake);
+							settle(protocol === undefined ? {} : { protocol });
 						},
 						// Never throws into the host's connection: a client that can't take a message is closed instead.
 						message: (data, binary) => {
@@ -736,10 +799,17 @@ async function accountHostsSide(
 							closeQuietly(client, sendableCode(code), reason);
 						},
 					},
-					...(target.host === undefined ? [] : [target.host]),
+					target.host,
+					{
+						protocols,
+						...(target.headers === undefined ? {} : { headers: target.headers }),
+						maxMessageBytes: relayLimits.messageBytes ?? RELAY_MESSAGE_LIMIT,
+						budget: relayBudget,
+					},
 				);
 				const opened = inner;
 				return {
+					ready,
 					send(data) {
 						if (ended) return;
 						const binary = typeof data !== "string";
@@ -836,6 +906,28 @@ function sessionKind(port: number, path: string | undefined): string {
 	if (port === SSH_PORT) return "ssh";
 	if (port === BROWSER_PORT) return "cdp";
 	return path === undefined ? `tunnel ${port}` : `port ${port}`;
+}
+
+/**
+ * An exposed port's WebSocket handshake headers for the sandbox, as its pages get them (`@kantel/hosts/ports`): the
+ * application's cookies, less every name Kantel's gate cookie has had, its `Authorization`, and where it came from.
+ */
+export function portSocketHeaders(headers: Headers, url: URL): Record<string, string> {
+	const out: Record<string, string> = { "x-forwarded-proto": "https", "x-forwarded-host": url.host };
+	const gate = new Set([PORT_COOKIE, PORT_COOKIE_BASE, LEGACY_PORT_COOKIE]);
+	const cookie = (headers.get("cookie") ?? "")
+		.split(";")
+		.map((part) => part.trim())
+		.filter((part) => part !== "" && !gate.has(part.split("=")[0]?.trim() ?? ""))
+		.join("; ");
+	if (cookie !== "") out.cookie = cookie;
+	for (const name of ["authorization", "origin", "user-agent"]) {
+		const value = headers.get(name);
+		if (value !== null) out[name] = value;
+	}
+	const address = headers.get("cf-connecting-ip");
+	if (address !== null) out["x-forwarded-for"] = address;
+	return out;
 }
 
 /** A close code a client may be sent: the port's own, or 1011 for one only a runtime may use. */

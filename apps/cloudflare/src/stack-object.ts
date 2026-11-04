@@ -198,7 +198,9 @@ const notFound = () => Response.json({ error: { code: "not_found", message: "No 
 /**
  * A WebSocket passed through to a sandbox's port (`StackHosts.socketTarget`): a desktop's stream, a browser's CDP, an
  * exposed port's. Accepted first, so a refusal is a close with a code saying why (4003 for a wrong or expired ticket,
- * 4000 plus the HTTP status for a port's), as self-hosted does. Undefined for an upgrade that is none of these.
+ * 4000 plus the HTTP status for a port's), as self-hosted does. Undefined for an upgrade that is none of these. The
+ * client's subprotocols are offered to the sandbox's server, and the 101 waits for its answer so it carries the one it
+ * chose (a Vite dev server's `vite-hmr`, say).
  */
 async function relaySocket(hosts: StackHosts, request: Request): Promise<Response | undefined> {
 	let target: Awaited<ReturnType<StackHosts["socketTarget"]>>;
@@ -215,14 +217,31 @@ async function relaySocket(hosts: StackHosts, request: Request): Promise<Respons
 		server.close(target.refused.code, target.refused.reason);
 		return new Response(null, { status: 101, webSocket: client });
 	}
-	const relayed = hosts.relay(target, {
-		send: (data) => server.send(data),
-		close: (code, reason) => server.close(code, reason),
-	});
+	const offered = (request.headers.get("sec-websocket-protocol") ?? "")
+		.split(",")
+		.map((name) => name.trim())
+		.filter((name) => name !== "");
+	const relayed = hosts.relay(
+		target,
+		{
+			send: (data) => server.send(data),
+			close: (code, reason) => server.close(code, reason),
+		},
+		offered,
+	);
 	onMessages(server, (frame) => relayed.send(frame));
 	server.addEventListener("close", () => relayed.close());
 	server.addEventListener("error", () => relayed.close());
-	return new Response(null, { status: 101, webSocket: client });
+	// Refused, failed or too slow: the client is already closed with why, which it hears once this 101 is taken.
+	const answer = await relayed.ready;
+	const protocol = answer?.protocol;
+	return new Response(null, {
+		status: 101,
+		webSocket: client,
+		...(protocol !== undefined && offered.includes(protocol)
+			? { headers: { "sec-websocket-protocol": protocol } }
+			: {}),
+	});
 }
 
 /** A raw tunnel (SSH's ProxyCommand): the sandbox's port as binary frames, over the host's connection. */

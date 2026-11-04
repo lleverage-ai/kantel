@@ -158,6 +158,81 @@ describe("the desktop's page", () => {
 		expect(target === "refused" ? undefined : target?.grant.grantee).toBe(kept);
 	});
 
+	it("doesn't let one sandbox's unfinished file hold up another's, and keeps only checked bytes", async () => {
+		const body = served["/assets/index.js"] ?? "";
+		let stalled = true;
+		const closed: string[] = [];
+		const desktop = createDesktopRoutes({
+			tickets,
+			client,
+			fileTimeoutMs: 50,
+			async openPort(sandboxId: string, _port: number, sink: PortSink) {
+				return {
+					stream: 1,
+					write(bytes: Uint8Array) {
+						const path = /^GET (\S+) /.exec(new TextDecoder().decode(bytes))?.[1] ?? "";
+						const full = served[path] ?? "";
+						// The slow sandbox says 200 and sends half, then nothing more while it is stalled.
+						const sent = sandboxId === "sbx_slow" && stalled ? full.slice(0, 4) : full;
+						sink.data(encoder.encode(`HTTP/1.1 200 OK\r\nContent-Length: ${full.length}\r\n\r\n${sent}`));
+					},
+					close() {
+						closed.push(sandboxId);
+					},
+				};
+			},
+		});
+		const issue = (sandboxId: string) =>
+			tickets.issue({ sandboxId, port: DESKTOP_PORT, expiresAt: Date.now() + 60_000, desktop: "control" });
+		const slow = desktop.fetch(get(`${HOSTS_DESKTOP_PATH}/${await issue("sbx_slow")}/assets/index.js`));
+		const healthy = await desktop.fetch(get(`${HOSTS_DESKTOP_PATH}/${await issue("sbx_ok")}/assets/index.js`));
+		expect(await healthy?.text()).toBe(body);
+		// The slow one gives up on its own time, its stream closed, and nothing of it is kept.
+		expect((await slow)?.status).toBe(502);
+		expect(closed).toContain("sbx_slow");
+		// The checked bytes are reused by any sandbox; one that failed is tried again.
+		stalled = false;
+		const reused = await desktop.fetch(get(`${HOSTS_DESKTOP_PATH}/${await issue("sbx_slow")}/assets/index.js`));
+		expect(await reused?.text()).toBe(body);
+		const index = await desktop.fetch(get(`${HOSTS_DESKTOP_PATH}/${await issue("sbx_slow")}/`));
+		expect(await index?.text()).toBe(served["/index.html"]);
+	});
+
+	it("stops reading a file once it passes its known size, however it is split", async () => {
+		const closed: number[] = [];
+		let pushed = 0;
+		const desktop = createDesktopRoutes({
+			tickets,
+			client,
+			async openPort(_sandboxId: string, _port: number, sink: PortSink) {
+				let open = true;
+				return {
+					stream: 1,
+					write() {
+						// No length: read to the end, so only the gateway's own count can stop it. Small chunks, many of them.
+						sink.data(encoder.encode("HTTP/1.1 200 OK\r\n\r\n"));
+						const more = () => {
+							if (!open || pushed > 10_000) return;
+							pushed += 1;
+							sink.data(encoder.encode("x".repeat(16)));
+							setTimeout(more, 0);
+						};
+						more();
+					},
+					close() {
+						open = false;
+						closed.push(pushed);
+					},
+				};
+			},
+		});
+		const answer = await desktop.fetch(get(`${HOSTS_DESKTOP_PATH}/${await ticket("control")}/assets/index.js`));
+		expect(answer?.status).toBe(502);
+		// Closed after a few chunks: no more than the file's size (22 bytes) and one chunk was taken.
+		expect(closed.length).toBeGreaterThan(0);
+		expect(closed[0]).toBeLessThanOrEqual(3);
+	});
+
 	it("puts view-only in the URL's fragment for Selkies' own viewer page, and in the ticket for the gateway", () => {
 		expect(desktopPath("a.b", "view")).toBe(`${HOSTS_DESKTOP_PATH}/a.b/#shared`);
 		expect(desktopPath("a.b", "control")).toBe(`${HOSTS_DESKTOP_PATH}/a.b/`);
