@@ -261,16 +261,13 @@ func TestARemovalEndsAnOpenSession(t *testing.T) {
 
 // A port session is looked at again while it relays: a removal closes it.
 func TestARemovalClosesAnOpenPort(t *testing.T) {
-	old := revalidateEvery
-	revalidateEvery = 20 * time.Millisecond
-	defer func() { revalidateEvery = old }()
 	var v sessionVector
 	readVector(t, "session.json", &v)
 	state, _ := VerifyChain(v.Entries, "")
 	chain := &memChain{state: state}
 	target, app := net.Pipe()
 	defer app.Close()
-	_, served := openSession(t, chain, ServeOptions{Port: func(context.Context, Device, string, int) (net.Conn, error) {
+	_, served := openSession(t, chain, ServeOptions{Revalidate: 20 * time.Millisecond, Port: func(context.Context, Device, string, int) (net.Conn, error) {
 		return target, nil
 	}}, "port")
 	select {
@@ -300,5 +297,35 @@ func TestNoChainRefusesTheSession(t *testing.T) {
 	err := Serve(context.Background(), host, ServeOptions{Static: x25519(t, unb64(t, v.HostStatic)), HostID: v.HostID, Chain: &memChain{}})
 	if err == nil {
 		t.Fatal("a session was served without a chain")
+	}
+}
+
+// A removal ends a session while a call runs, with no further request: the call's context is cancelled.
+func TestARemovalEndsACallInFlight(t *testing.T) {
+	var v sessionVector
+	readVector(t, "session.json", &v)
+	state, _ := VerifyChain(v.Entries, "")
+	chain := &memChain{state: state}
+	started, stopped := make(chan struct{}), make(chan struct{})
+	s, served := openSession(t, chain, ServeOptions{Revalidate: 20 * time.Millisecond, RPC: func(ctx context.Context, _ Device, _, _ string, _ json.RawMessage, emit func(any)) (any, error) {
+		close(started)
+		<-ctx.Done()
+		close(stopped)
+		return nil, ctx.Err()
+	}}, "rpc")
+	if err := s.send(map[string]any{"id": 1, "method": "sandbox.exec"}); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	chain.mu.Lock()
+	chain.state = removed(state, v.DeviceID)
+	chain.mu.Unlock()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the call ran on after the removal")
+	}
+	if err := <-served; err == nil || !strings.Contains(err.Error(), "isn't in the space's chain") {
+		t.Fatalf("ended with %v", err)
 	}
 }

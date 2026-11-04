@@ -385,6 +385,13 @@ func TestSnapshotsAreJudgedInTheTierTheCallUses(t *testing.T) {
 	if err := call(proto.MethodCreate, map[string]any{"sandboxId": "sbx_c3", "tier": microvm.Tier, "from": "snap_s", "owner": v.Space}); err != nil {
 		t.Fatalf("a create in the snapshot's own space: %v", err)
 	}
+	// A plaintext snapshot (one the gateway could have prepared) isn't made into an E2E space's sandbox.
+	if call(proto.MethodCreate, map[string]any{"sandboxId": "sbx_c4", "tier": isolate.Tier, "from": "snap_p", "owner": v.Space}) == nil {
+		t.Fatal("an E2E sandbox was made from a plaintext snapshot")
+	}
+	if call(proto.MethodCreate, map[string]any{"sandboxId": "sbx_c5", "tier": isolate.Tier, "from": "snap_gone_nowhere", "owner": v.Space}) == nil {
+		t.Fatal("an E2E sandbox was made from a snapshot the host knows nothing of")
+	}
 }
 
 // The gateway can't give an E2E sandbox an upstream, a CA or interception of its own, on any call that carries egress.

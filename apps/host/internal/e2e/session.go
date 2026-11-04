@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -61,6 +62,8 @@ type ServeOptions struct {
 	Ephemeral *ecdh.PrivateKey
 	// OnOpen hears of each session that opens, for the host's log.
 	OnOpen func(d Device, h Hello)
+	// Revalidate is how often an open session looks at the chain again (default every 3s).
+	Revalidate time.Duration
 }
 
 func readRecord(r io.Reader) ([]byte, error) {
@@ -255,6 +258,35 @@ func Serve(ctx context.Context, conn io.ReadWriteCloser, o ServeOptions) error {
 	if o.OnOpen != nil {
 		o.OnOpen(device, hello)
 	}
+	// The session lasts only while the chain lets the device in: it is looked at again every few seconds, so a removal
+	// (or strict mode) that reaches the host from another session or a join ends this one, calls in flight included.
+	var revoked atomic.Pointer[string]
+	go func() {
+		every := o.Revalidate
+		if every <= 0 {
+			every = 3 * time.Second
+		}
+		tick := time.NewTicker(every)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				if why := stillAllowed(o, device); why != "" {
+					revoked.Store(&why)
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	ended := func(err error) error {
+		if why := revoked.Load(); why != nil {
+			return errors.New(*why)
+		}
+		return err
+	}
 	if hello.Op == "port" {
 		if o.Port == nil {
 			_ = s.send(refused{"refused", "This host has no ports"})
@@ -269,24 +301,7 @@ func Serve(ctx context.Context, conn io.ReadWriteCloser, o ServeOptions) error {
 		if err := s.send(ready{"ready"}); err != nil {
 			return err
 		}
-		done := make(chan error, 3)
-		// A port stays open only while the device may: the chain is looked at again every few seconds, so a removal
-		// (from another session, or a join on the host) ends it.
-		go func() {
-			tick := time.NewTicker(revalidateEvery)
-			defer tick.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-tick.C:
-					if why := stillAllowed(o, device); why != "" {
-						done <- errors.New(why)
-						return
-					}
-				}
-			}
-		}()
+		done := make(chan error, 2)
 		go func() {
 			_, err := io.Copy(target, s)
 			if c, ok := target.(interface{ CloseWrite() error }); ok {
@@ -310,7 +325,12 @@ func Serve(ctx context.Context, conn io.ReadWriteCloser, o ServeOptions) error {
 				}
 			}
 		}()
-		return <-done
+		select {
+		case err := <-done:
+			return ended(err)
+		case <-ctx.Done():
+			return ended(ctx.Err())
+		}
 	}
 	if err := s.send(ready{"ready"}); err != nil {
 		return err
@@ -325,7 +345,7 @@ func Serve(ctx context.Context, conn io.ReadWriteCloser, o ServeOptions) error {
 	for {
 		raw, err := s.next()
 		if err != nil {
-			return err
+			return ended(err)
 		}
 		var req struct {
 			ID     json.RawMessage `json:"id"`
@@ -375,9 +395,6 @@ func Serve(ctx context.Context, conn io.ReadWriteCloser, o ServeOptions) error {
 		}()
 	}
 }
-
-// revalidateEvery is how often an open port session looks at the chain again.
-var revalidateEvery = 3 * time.Second
 
 // stillAllowed says why device may no longer use its session under the chain as it is now, or "".
 func stillAllowed(o ServeOptions, device Device) string {

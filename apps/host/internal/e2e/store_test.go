@@ -173,3 +173,24 @@ func TestTwoStoresOnOneDirectoryTakeTurns(t *testing.T) {
 		t.Fatalf("%d entries", len(got))
 	}
 }
+
+// The daemon and the CLI asking for the host's keys at once, on a host without any, end up with one pair.
+func TestTwoStoresMakeOneIdentity(t *testing.T) {
+	dir := t.TempDir()
+	a, _ := OpenStore(dir)
+	b, _ := OpenStore(dir)
+	ids := make(chan *Identity, 2)
+	for _, s := range []*Store{a, b} {
+		go func() {
+			id, err := s.Identity()
+			if err != nil {
+				t.Error(err)
+			}
+			ids <- id
+		}()
+	}
+	one, two := <-ids, <-ids
+	if one == nil || two == nil || B64(one.DHPublic()) != B64(two.DHPublic()) {
+		t.Fatal("two processes made two identities")
+	}
+}

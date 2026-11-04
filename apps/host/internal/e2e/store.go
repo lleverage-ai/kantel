@@ -68,7 +68,7 @@ func writeFile(path string, v any) error {
 
 // locked runs fn holding the store's lock (an flock on <dir>/lock), which every writer of its files holds: the daemon
 // and `kantel-host e2e join` are separate processes, so a mutex can't keep one from writing over the other's chain
-// between its read and its write. It isn't reentrant.
+// between its read and its write. It isn't reentrant, and is taken before the store's mutexes, never under them.
 func (s *Store) locked(fn func() error) error {
 	f, err := os.OpenFile(filepath.Join(s.dir, "lock"), os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
@@ -82,35 +82,44 @@ func (s *Store) locked(fn func() error) error {
 	return fn()
 }
 
-// Identity is the host's keys, made the first time they are asked for.
+// Identity is the host's keys, made the first time they are asked for (under the store's lock, so the daemon and the
+// CLI can't each make one). Not to be called holding the lock, unless the keys are already loaded.
 func (s *Store) Identity() (*Identity, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.identity != nil {
-		return s.identity, nil
+	id := s.identity
+	s.mu.Unlock()
+	if id != nil {
+		return id, nil
 	}
 	path := filepath.Join(s.dir, "key.json")
 	var seeds Seeds
-	raw, err := os.ReadFile(path)
-	switch {
-	case err == nil:
-		if err := json.Unmarshal(raw, &seeds); err != nil {
-			return nil, fmt.Errorf("%s: %w", path, err)
+	err := s.locked(func() error {
+		raw, err := os.ReadFile(path)
+		switch {
+		case err == nil:
+			if err := json.Unmarshal(raw, &seeds); err != nil {
+				return fmt.Errorf("%s: %w", path, err)
+			}
+			return nil
+		case errors.Is(err, os.ErrNotExist):
+			seeds = NewSeeds()
+			return writeFile(path, seeds)
+		default:
+			return err
 		}
-	case errors.Is(err, os.ErrNotExist):
-		seeds = NewSeeds()
-		if err := writeFile(path, seeds); err != nil {
-			return nil, err
-		}
-	default:
+	})
+	if err != nil {
 		return nil, err
 	}
-	id, err := IdentityFromSeeds(seeds)
-	if err != nil {
+	if id, err = IdentityFromSeeds(seeds); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	s.identity = id
-	return id, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.identity == nil {
+		s.identity = id
+	}
+	return s.identity, nil
 }
 
 func validSpace(space string) bool {
@@ -150,9 +159,9 @@ func (s *Store) markJoined(space string) error {
 // RecordOwner keeps, for good, that sandboxID was a sandbox of space while E2E was on there (owners.json). Its
 // snapshots stay that space's even after the sandbox is deleted and its ID made again for someone else.
 func (s *Store) RecordOwner(sandboxID, space string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	return s.locked(func() error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
 		owners := s.ownersLocked()
 		if owners[sandboxID] == space {
 			return nil
@@ -277,10 +286,10 @@ func (c *spaceChain) State() *State {
 
 // Extend takes entries a device brings, keeping them once they verify.
 func (c *spaceChain) Extend(from int, entries []Entry) (*State, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	var out *State
 	err := c.store.locked(func() error {
+		c.mu.Lock()
+		defer c.mu.Unlock()
 		// Under the lock the file is read again whatever its time says, so another process's write is never lost.
 		c.state = nil
 		st, err := c.loadLocked()
@@ -334,6 +343,10 @@ func (c *spaceChain) Entries(from int) []Entry {
 // start at the genesis the ticket pins; the host signs its host.add, keeps the chain with it, and gives the entry back
 // to publish. The host's ID is the one the gateway knows it by.
 func (s *Store) Join(join *JoinTicket, entries []Entry, hostID string, now time.Time) (e Entry, st *State, err error) {
+	// The keys first: they are made under the lock, which isn't reentrant.
+	if _, err := s.Identity(); err != nil {
+		return Entry{}, nil, err
+	}
 	// The check against the chain held and the write are one step under the store's lock, so a session's extension
 	// between them can't be written over.
 	lerr := s.locked(func() error {

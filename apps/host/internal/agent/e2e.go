@@ -182,6 +182,11 @@ func (h *Host) gatewayMayCall(method string, params json.RawMessage) error {
 			// create uses.
 			t, _ := h.tier(p.Tier)
 			owner, known := h.snapshotOwner(t, p.From)
+			// Nor does an E2E space take a disk from elsewhere: a plaintext snapshot the gateway prepared (with its own
+			// /etc/profile.d, say) would run in every command a device runs.
+			if h.e2eMode(p.Owner) != e2e.ModeOff && (!known || owner != p.Owner) {
+				return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("%s is end-to-end encrypted: its sandboxes are made fresh or from its own snapshots, not from another space's", p.Owner)}
+			}
 			if s, covered := h.snapshotGuarded(t, p.From); covered {
 				if !known || owner != p.Owner {
 					return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("a sandbox made from a snapshot in %s, which is end-to-end encrypted, must be in that space", s)}
