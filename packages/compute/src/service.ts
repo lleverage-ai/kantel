@@ -1806,7 +1806,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return sandbox;
 	}
 
-	/** `settledFor`, refused with `conflict` unless the sandbox is running. */
 	/** Refuses a desktop or browser the sandbox doesn't have, with its image's reason where it reported one. */
 	function requireScreen(sandbox: StoredSandbox, screen: "desktop" | "browser"): void {
 		if (sandbox.capabilities[screen]) return;
@@ -1818,6 +1817,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		);
 	}
 
+	/** `settledFor`, refused with `conflict` unless the sandbox is running. */
 	async function requireRunning(principal: Principal, sandboxId: string): Promise<StoredSandbox> {
 		const sandbox = await settledFor(principal, sandboxId);
 		if (sandbox.state !== "running") {
